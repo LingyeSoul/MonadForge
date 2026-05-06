@@ -71,7 +71,7 @@ The DiT can be solved with a factory in an afternoon. The real pain is that `tra
 - `unet.llm_adapter` direct access
 - `unet._mod_guidance_*` distillation hooks
 - Fused-projection assumptions (`qkv_proj`, `kv_proj`)
-- The cross-attention LSE-correction path that depends on Anima's `crossattn_full_len` invariant (see `attention_dispatch.py`)
+- The cross-attention LSE-correction path tied to Anima's `crossattn_full_len` invariant — currently dormant along with flash4 (see `docs/optimizations/fa4.md`), but still part of the abstraction shape another DiT would have to either implement or explicitly opt out of.
 - The postfix / IP-Adapter / EasyControl monkey-patches that target Anima's exact module names
 - The 4096-patch constant-token bucketing built into `library/datasets/`
 

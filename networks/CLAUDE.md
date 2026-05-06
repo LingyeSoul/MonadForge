@@ -30,11 +30,7 @@ All live in `lora_modules/`. Stack freely via toggle flags in `configs/methods/l
 
 `attention_dispatch.py::dispatch_attention()` routes to the active backend (torch SDPA, xformers, flash-attn v2/v3, sageattn, flex attention). **Tensor layout differs by backend** — BHLD for SDPA/sageattn, BLHD for xformers/flash-attn — so callers must hand tensors to the dispatcher in a known layout and the dispatcher transposes as needed. Check the backend branches before adding new attention call sites.
 
-FA4 (flash-attention-sm120) was evaluated and is currently disabled — see `docs/optimizations/fa4.md`.
-
-### Flash4 LSE correction
-
-When cross-attention KV is trimmed (zero-padding removed for efficiency), the softmax denominator must be corrected. `attention_dispatch.py` applies a sigmoid-based LSE correction using `crossattn_full_len` to account for removed zero-key contributions. This pairs with the text-encoder-padding invariant in root CLAUDE.md — both must hold for cross-attention to produce correct output.
+FA4 (flash-attention-sm120) was evaluated and is currently disabled — see `docs/optimizations/fa4.md`. The KV-trim + LSE-correction path that depended on FA4 is dormant in the same dispatcher (`crossattn_full_len`, the `flash4` branch); see fa4.md for what would need to be re-enabled to restore it.
 
 ## Timestep masking — when to update what
 

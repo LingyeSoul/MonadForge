@@ -190,10 +190,6 @@ The pretrained model expects max-padded text encoder outputs — zero-padded pos
 
 All bucket resolutions ensure `(H/16)*(W/16) ~ 4096` patches. Batch elements are zero-padded to exactly 4096 tokens, giving `torch.compile` a single static shape — no recompilation across aspect ratios.
 
-### Flash4 LSE correction
-
-When cross-attention KV is trimmed (zero-padding removed for efficiency), the softmax denominator must be corrected. `networks/attention_dispatch.py` applies a sigmoid-based LSE correction using `crossattn_full_len` — pairs with the text-encoder padding rule above. See `networks/CLAUDE.md` for backend layout details.
-
 ### Lazy model loading
 
 DiT is loaded AFTER text encoder/VAE caching and unloading to avoid OOM. The sequence is: text encoder -> cache -> free -> VAE -> cache -> free -> load DiT.
@@ -201,10 +197,6 @@ DiT is loaded AFTER text encoder/VAE caching and unloading to avoid OOM. The seq
 ## Spectrum inference acceleration
 
 Training-free speedup via Chebyshev polynomial feature forecasting (Han et al., CVPR 2026). `--spectrum` flag on `inference.py` enables it. On cached steps, all transformer blocks are skipped — only `t_embedder` + `final_layer` + `unpatchify` run. A `register_forward_pre_hook` on `final_layer` captures block outputs without monkey-patching the model. The adaptive window schedule (controlled by `--spectrum_window_size` and `--spectrum_flex_window`) concentrates actual forwards on early high-noise steps and increasingly predicts later refinement steps. See `networks/spectrum.py` for the Anima integration and `docs/methods/spectrum.md` for usage notes.
-
-## P-GRAFT inference
-
-P-GRAFT (`--pgraft` flag on `inference.py`) is a mid-denoise LoRA cutoff: it loads the LoRA as dynamic forward hooks rather than static merge so it can be disabled at a given step (typically the last ~25%) to let the base model handle late-step refinement. Independent of the GRAFT training loop, which has been deprecated and moved to `archive/graft/`.
 
 ## APEX (1-NFE distillation)
 

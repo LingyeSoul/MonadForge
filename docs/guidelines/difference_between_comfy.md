@@ -18,9 +18,9 @@ This matters in particular for anything that hooks the forward path — notably 
 | `pooled_text_proj` MLP (distilled modulation-guidance head) | **present**, baked into `forward_mini_train_dit` | **absent entirely** |
 | `torch.compile` on block forwards | `compile_blocks()` compiles each `block._forward` | not used |
 | Static-shape bucketing (pad to 4096 tokens) | `set_static_token_count()` | not supported |
-| `crossattn_seqlens` / variable text length | computed from mask, used for flex block mask + KV trim | not computed; always pad to 512 |
-| Attention dispatch | unified `attention_dispatch.AttentionParams` (sdpa / flash / flash4 / sageattn / flex) | `transformer_options` dict + ComfyUI's own attention |
-| Flash4 LSE correction (trimmed KV softmax fix) | present | absent |
+| `crossattn_seqlens` / variable text length | computed from mask, used only for flex block mask (KV trim path is dormant — see `docs/optimizations/fa4.md`) | not computed; always pad to 512 |
+| Attention dispatch | unified `attention_dispatch.AttentionParams` (sdpa / flash / sageattn / flex; flash4 branch present but disabled) | `transformer_options` dict + ComfyUI's own attention |
+| Flash4 LSE correction (trimmed KV softmax fix) | infrastructure present, currently disabled along with flash4 | absent |
 | Custom block-swap / CPU offload | `enable_block_swap`, `ModelOffloader` | relies on ComfyUI's `model_management.py` |
 | Gradient checkpointing variants | standard / CPU-offload / unsloth | standard only |
 | Final-layer dtype cast | implicit (shared dtype assumed) | explicit `.to(crossattn_emb.dtype)` |
@@ -110,7 +110,7 @@ attn_params.crossattn_block_mask = attention_dispatch.create_block_mask(
 )
 ```
 
-It also supports bucketed KV trimming + sigmoid-based LSE correction for flash4 (`library/anima/models.py:1662-1679`, currently commented out but the correction is documented in `docs/methods/mod-guidance.md` and `docs/optimizations/fa4.md`).
+It also has dormant infrastructure for bucketed KV trimming + sigmoid-based LSE correction (flash4-only — both the trim block in `library/anima/models.py:1662-1679` and the flash4 branch in `attention_dispatch.py` are commented out). See `docs/optimizations/fa4.md` for why it was disabled and the recipe to bring it back.
 
 **comfy** — `comfy/comfy/ldm/anima/model.py:193-214` pads the llm_adapter output to a fixed 512 tokens:
 
@@ -121,7 +121,7 @@ return torch.nn.functional.pad(out, (0, 0, 0, 512 - out.shape[1]))
 
 It does not compute per-sample seqlens, does not set up flex block masks, and does not apply LSE correction. Cross-attention just sees 512 KV positions every time, with the padding tail implicitly handled as attention sinks (matching the "do NOT mask padding" invariant from `anima_lora/CLAUDE.md`).
 
-**Practical consequence.** Both paths produce the same image quality on normal prompts because the pretrained model was trained with max-padded text anyway (the padding positions act as attention sinks in cross-attention softmax — trimming or masking them produces black images, see `CLAUDE.md` § "Text encoder padding"). The anima_lora infrastructure for variable seqlens exists to enable the flash4 LSE correction path and future KV trimming experiments — it's not a correctness requirement. **ComfyUI's simpler path is safe.**
+**Practical consequence.** Both paths produce the same image quality on normal prompts because the pretrained model was trained with max-padded text anyway (the padding positions act as attention sinks in cross-attention softmax — trimming or masking them produces black images, see `CLAUDE.md` § "Text encoder padding"). The anima_lora infrastructure for variable seqlens was originally there to feed the flash4 LSE-correction path; with flash4 disabled it now only drives the flex block mask, and is not a correctness requirement. **ComfyUI's simpler path is safe.**
 
 ### 2.2 Static-shape token bucketing
 
@@ -151,7 +151,7 @@ def forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
 
 Two concrete divergences:
 
-1. **anima_lora's `AttentionParams`** is a dataclass that encapsulates `attn_mode`, `split_attn`, `softmax_scale`, `crossattn_block_mask`, and `crossattn_full_len` in one object passed positionally. ComfyUI passes `transformer_options: dict` that ComfyUI's attention dispatch reads ad-hoc.
+1. **anima_lora's `AttentionParams`** is a dataclass that encapsulates `attn_mode`, `split_attn`, `softmax_scale`, `crossattn_block_mask`, and `crossattn_full_len` (the last only used by the dormant flash4 LSE-correction branch) in one object passed positionally. ComfyUI passes `transformer_options: dict` that ComfyUI's attention dispatch reads ad-hoc.
 2. **RoPE shape.** anima_lora passes a `(cos, sin)` tuple computed per-forward. ComfyUI passes a single `rope_emb_L_1_1_D` already pre-unsqueezed. Semantically equivalent but not drop-in interchangeable.
 
 **Practical consequence for the per-block mod-guidance hooks** (now shipped on both sides — see `docs/methods/mod-guidance.md`): in both codebases the `t_emb` argument is at **positional index 1**, so block-level pre-forward hooks can rewrite `args[1]` identically in both implementations. The two signatures diverge on args 3+, but the per-block scheduler only cares about index 1, so the hook factory is portable.
@@ -254,7 +254,7 @@ The transformer-block math is identical — that's the point of loading the same
 - Inference performance infrastructure (compile, offload, static shapes) — anima_lora only.
 - Training infrastructure (gradient checkpointing variants, block swap training mode, distillation) — anima_lora only.
 - `pooled_text_proj` modulation-guidance head and its surrounding data flow — anima_lora only, grafted on via the custom node in ComfyUI.
-- Cross-attention masking / seqlens / flash4 LSE correction — anima_lora only.
+- Cross-attention masking / seqlens (flex-mode block mask only; flash4 LSE-correction path is dormant) — anima_lora only.
 - Text-encoder integration model (disk-cached vs sampler-inline) — different but equivalent.
 
 There is no reason to merge the two; they solve different problems. The point of this document is to make sure that when you're debugging "it works in `inference.py` but not in ComfyUI" (or vice versa), you can quickly check which of the divergences above might be responsible instead of assuming the underlying model differs.

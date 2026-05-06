@@ -174,7 +174,7 @@ Cross-attention KV length (the text sequence) is similarly bucketed — to one o
 _KV_BUCKETS = (128, 192, 256, 512)  # Keeps torch.compile shapes stable.
 ```
 
-Because padding tokens were trimmed from the KV side (padding is kept in training, but the *bucketed* K/V drops positions beyond the smallest covering bucket), the softmax denominator loses some zero-key sinks. An **LSE correction** in `networks/attention_dispatch.py` adds back a sigmoid-based term using `crossattn_full_len` so the softmax normalization is consistent with the unbucketed case.
+Bucketed KV trimming relied on flash4 (which alone exposed `lse` from the Python interface): a sigmoid-based **LSE correction** in `networks/attention_dispatch.py` re-added the lost zero-key sinks using `crossattn_full_len`. Both the trim path in `library/anima/models.py` and the `flash4` branch in the dispatcher are now disabled — `_KV_BUCKETS` survives only as a compile-shape inventory and the `crossattn_full_len` field on `AttentionParams` is plumbed but unused. Cross-attention runs full 512-length KV under FA2; padding tail acts as attention sinks. See `docs/optimizations/fa4.md` for the postmortem and the re-enable recipe.
 
 ---
 

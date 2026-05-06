@@ -49,11 +49,13 @@ New first-class `"flex"` attention mode with pre-computed `BlockMask` support fo
 | `softmax_scale` | Custom softmax scale passed through to all backends (avoids per-call branching) |
 | `crossattn_block_mask` | Pre-computed BlockMask for cross-attention KV trimming (flex mode) |
 | `selfattn_block_mask` | Pre-computed BlockMask for self-attention padding mask (flex, static-shape) |
-| `crossattn_full_len` | Original KV length before bucketed trimming, for LSE sink correction (flash4) |
+| `crossattn_full_len` | Original KV length before bucketed trimming, for LSE sink correction (flash4 — currently disabled, see `fa4.md`) |
 
-### 1.5 LSE sink correction for trimmed cross-attention (flash4)
+### 1.5 LSE sink correction for trimmed cross-attention (flash4 — disabled)
 
-When zero-padded KV positions are trimmed for efficiency, the softmax denominator must be corrected. New sigmoid-based correction:
+Disabled along with the rest of the flash4 path. The trim branch in `library/anima/models.py` and the `flash4` branch in `networks/attention_dispatch.py` are commented out; the field is plumbed but unused. See `docs/optimizations/fa4.md` for the postmortem and re-enable recipe.
+
+When the path was active, zero-padded KV positions were trimmed and the softmax denominator restored via:
 
 ```python
 correction = torch.sigmoid(lse - math.log(n_pad))
