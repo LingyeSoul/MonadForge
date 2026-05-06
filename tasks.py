@@ -95,6 +95,10 @@ COMMANDS = {
     ),
     "preprocess-vae": (preprocess.cmd_preprocess_vae, "Cache VAE latents"),
     "preprocess-te": (preprocess.cmd_preprocess_te, "Cache text encoder embeddings"),
+    "preprocess-pooled": (
+        preprocess.cmd_preprocess_pooled,
+        "Cache pooled text embeddings sidecar (consumed by distill-mod). No GPU.",
+    ),
     "preprocess-pe": (
         preprocess.cmd_preprocess_pe,
         "Cache PE-Core (or other registered) vision-encoder features into the "

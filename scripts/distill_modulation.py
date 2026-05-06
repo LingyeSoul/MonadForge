@@ -38,14 +38,120 @@ from library.anima.models import Anima
 from library.io.cache import (
     discover_cached_pairs,
     get_latent_resolution,
-    load_cached_crossattn_emb,
     load_cached_latents,
+    load_cached_text_features,
 )
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+# ---------------------------------------------------------------------------
+# Teacher prediction cache
+# ---------------------------------------------------------------------------
+
+
+class TeacherCache:
+    """In-RAM cache of teacher predictions keyed by ``(sample_idx, sigma_idx)``.
+
+    The teacher path is fully frozen (`skip_pooled_text_proj=True` and the
+    DiT body is not trained), so for a fixed
+    ``(latents, crossattn_emb, sigma, noise)`` quadruple the teacher pred is
+    invariant across iterations. This cache discretizes sigma onto a grid of
+    K pre-sampled values from the same ``sigmoid(scale * N(0,1))``
+    distribution as the original training-time sampler, and ties noise
+    deterministically to ``(sample_idx, sigma_idx)`` so that cache hits and
+    misses produce identical (latents, noise, sigma) inputs to the student.
+
+    Trade-off vs the original (continuous sigma + fresh noise per step):
+    each sample sees only K distinct (noise, sigma) pairs over the whole
+    run instead of one fresh pair per visit. K=16 still gives more variety
+    than the typical 10–20 visits per sample at default settings, but
+    discretizes the loss landscape — bench before shipping a quality claim.
+
+    Stored tensors are bf16 on CPU (~128 KB each at default token count;
+    ``N_samples * K * 128KB`` total RAM).
+    """
+
+    def __init__(self, K: int, sigmoid_scale: float, base_seed: int):
+        self.K = int(K)
+        self.base_seed = int(base_seed) & 0x7FFFFFFF
+        gen = torch.Generator().manual_seed(self.base_seed)
+        sigmas = torch.sigmoid(sigmoid_scale * torch.randn(self.K, generator=gen))
+        self.sigmas: list[float] = sigmas.tolist()
+        self._store: dict[tuple[int, int], torch.Tensor] = {}
+        self.hits = 0
+        self.misses = 0
+
+    def sample_sigma_idx(self, B: int) -> list[int]:
+        return torch.randint(0, self.K, (B,)).tolist()
+
+    def get_sigma(self, sigma_idx: int) -> float:
+        return self.sigmas[sigma_idx]
+
+    def make_noise(self, sample_idx: int, sigma_idx: int, shape, device, dtype):
+        seed = (
+            (self.base_seed * 1_000_003)
+            ^ (int(sample_idx) * 1009)
+            ^ (int(sigma_idx) + 1)
+        ) & 0x7FFFFFFFFFFFFFFF
+        gen = torch.Generator(device=device).manual_seed(seed)
+        return torch.randn(shape, device=device, dtype=dtype, generator=gen)
+
+    def get(self, sample_idx: int, sigma_idx: int):
+        v = self._store.get((int(sample_idx), int(sigma_idx)))
+        if v is not None:
+            self.hits += 1
+            return v
+        self.misses += 1
+        return None
+
+    def put(self, sample_idx: int, sigma_idx: int, teacher_pred):
+        self._store[(int(sample_idx), int(sigma_idx))] = (
+            teacher_pred.detach().to(dtype=torch.bfloat16, device="cpu")
+        )
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+
+def prefill_teacher_cache(teacher_cache, dataset, model, device, dtype):
+    """Eagerly compute teacher predictions for every (sample, sigma_idx) pair."""
+    K = teacher_cache.K
+    n = len(dataset)
+    logger.info(
+        f"Prefilling teacher cache: {n} samples × {K} sigmas = {n * K} entries"
+    )
+    for sample_idx in tqdm(range(n), desc="prefill teacher"):
+        _idx, latents_cpu, crossattn_emb_cpu, _pooled = dataset[sample_idx]
+        latents = latents_cpu.unsqueeze(0).to(device, dtype=dtype)
+        crossattn_emb = crossattn_emb_cpu.unsqueeze(0).to(device, dtype=dtype)
+        padding_mask = torch.zeros(
+            1, 1, latents.shape[-2], latents.shape[-1], dtype=dtype, device=device
+        )
+        for sigma_idx in range(K):
+            sigma = teacher_cache.get_sigma(sigma_idx)
+            sigma_t = torch.full((1,), float(sigma), device=device, dtype=latents.dtype)
+            noise = teacher_cache.make_noise(
+                sample_idx, sigma_idx, latents.shape, device, latents.dtype
+            )
+            sigma_e = sigma_t.view(1, 1, 1, 1)
+            noisy = (1.0 - sigma_e) * latents + sigma_e * noise
+            noisy = noisy.unsqueeze(2)
+            if model.blocks_to_swap:
+                model.prepare_block_swap_before_forward()
+            with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
+                teacher_pred = model.forward_mini_train_dit(
+                    noisy,
+                    sigma_t,
+                    crossattn_emb,
+                    padding_mask=padding_mask,
+                    skip_pooled_text_proj=True,
+                )
+            teacher_cache.put(sample_idx, sigma_idx, teacher_pred)
+    logger.info(f"Prefill complete: {len(teacher_cache)} entries cached")
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +177,7 @@ class CachedDataset(torch.utils.data.Dataset):
         split: str = "train",
         validation_split: float = 0.0,
         validation_seed: int = 42,
+        sample_ratio: float = 1.0,
     ):
         assert split in ("train", "val")
         self.data_dir = data_dir
@@ -86,6 +193,9 @@ class CachedDataset(torch.utils.data.Dataset):
 
         # Per-bucket deterministic shuffle, then carve last `validation_split`
         # off as val so train/val never overlap and remain bucket-grouped.
+        # Apply sample_ratio per-bucket (mirrors the LoRA pipeline's per-subset
+        # subsampling), keeping at least one sample per non-empty bucket so
+        # debug/half presets don't silently drop entire resolutions.
         # Drop per-bucket remainders for whichever side we're emitting.
         rng = random.Random(validation_seed)
         self.samples: list[tuple[str, str]] = []
@@ -101,12 +211,16 @@ class CachedDataset(torch.utils.data.Dataset):
             n_train += n_t
             n_val += n_v
             picked = train_items if split == "train" else val_items
+            if sample_ratio < 1.0 and picked:
+                n_keep = max(1, int(round(len(picked) * sample_ratio)))
+                picked = picked[:n_keep]
             full = (len(picked) // batch_size) * batch_size
             self.samples.extend(picked[:full])
 
+        sr_note = f", sample_ratio={sample_ratio}" if sample_ratio < 1.0 else ""
         logger.info(
             f"[{split}] {len(self.samples)} samples from {data_dir} "
-            f"({len(buckets)} buckets; pre-drop train={n_train}, val={n_val})"
+            f"({len(buckets)} buckets; pre-drop train={n_train}, val={n_val}{sr_note})"
         )
 
     def __len__(self):
@@ -115,8 +229,10 @@ class CachedDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         latent_path, te_path = self.samples[idx]
         latents, _res, _h, _w = load_cached_latents(latent_path)  # (16, H, W)
-        crossattn_emb = load_cached_crossattn_emb(te_path, variant="random")
-        return latents, crossattn_emb
+        crossattn_emb, pooled_text = load_cached_text_features(
+            te_path, variant="random"
+        )
+        return idx, latents, crossattn_emb, pooled_text
 
 
 @torch.no_grad()
@@ -139,11 +255,12 @@ def run_validation(
     per_sigma: dict[float, list[float]] = {s: [] for s in sigmas}
     overall: list[float] = []
 
-    for i, (latents, crossattn_emb) in enumerate(val_dataloader):
+    for i, (_idxs, latents, crossattn_emb, pooled_text) in enumerate(val_dataloader):
         if max_steps is not None and i >= max_steps:
             break
-        latents = latents.to(device, dtype=dtype)
-        crossattn_emb = crossattn_emb.to(device, dtype=dtype)
+        latents = latents.to(device, dtype=dtype, non_blocking=True)
+        crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
+        pooled_text = pooled_text.to(device, dtype=dtype, non_blocking=True)
         B = latents.shape[0]
 
         noise = torch.randn(
@@ -152,7 +269,7 @@ def run_validation(
         padding_mask = torch.zeros(
             B, 1, latents.shape[-2], latents.shape[-1], dtype=dtype, device=device
         )
-        pooled_text = crossattn_emb.max(dim=1).values
+        uncond = torch.zeros_like(crossattn_emb)
 
         for sigma in sigmas:
             sig_b = torch.full((B,), float(sigma), device=device, dtype=latents.dtype)
@@ -173,7 +290,6 @@ def run_validation(
 
             if model.blocks_to_swap:
                 model.prepare_block_swap_before_forward()
-            uncond = torch.zeros_like(crossattn_emb)
             with torch.autocast("cuda", dtype=dtype):
                 student_pred = model.forward_mini_train_dit(
                     noisy,
@@ -322,6 +438,14 @@ def main():
         help="Log scalars to TensorBoard every N optimizer steps",
     )
     parser.add_argument(
+        "--sample_ratio",
+        type=float,
+        default=1.0,
+        help="Fraction of (post-split) samples to keep per bucket. Mirrors the "
+        "LoRA per-subset sample_ratio; useful with PRESET=debug/half/quarter/tenth "
+        "for fast iteration on a small slice of the dataset.",
+    )
+    parser.add_argument(
         "--validation_split",
         type=float,
         default=0.05,
@@ -352,6 +476,33 @@ def main():
         default=None,
         help="Cap on validation batches per pass. None = use the entire val set.",
     )
+    parser.add_argument(
+        "--teacher_cache_K",
+        type=int,
+        default=8,
+        help="Number of pre-sampled sigma bins for the teacher prediction cache. "
+        "Each sample sees K distinct (sigma, noise) pairs over the run. "
+        "Higher K = more diversity but slower cache fill / larger RAM.",
+    )
+    parser.add_argument(
+        "--teacher_cache_seed",
+        type=int,
+        default=1234,
+        help="Seed for the K-sigma grid and per-(sample, sigma) deterministic noise. "
+        "Independent of --seed so cache contents are reproducible across training runs.",
+    )
+    parser.add_argument(
+        "--no_teacher_cache",
+        action="store_true",
+        help="Disable teacher prediction caching (re-runs the teacher forward every step). "
+        "Use to A/B against the cached path or to recover the original continuous-sigma sampler.",
+    )
+    parser.add_argument(
+        "--prefill_teacher_cache",
+        action="store_true",
+        help="Eagerly run teacher predictions for every (sample, sigma_idx) before training. "
+        "Adds ~K * N * t_teacher up front but eliminates teacher forwards during training.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -359,11 +510,18 @@ def main():
 
     # --- Dry run: test DataLoader collation without loading the model ---
     if args.dry_run:
-        dataset = CachedDataset(args.data_dir, batch_size=args.batch_size)
+        dataset = CachedDataset(
+            args.data_dir,
+            batch_size=args.batch_size,
+            sample_ratio=args.sample_ratio,
+        )
 
         def _collate_dry(batch):
-            return torch.stack([b[0] for b in batch]), torch.stack(
-                [b[1] for b in batch]
+            return (
+                [b[0] for b in batch],
+                torch.stack([b[1] for b in batch]),
+                torch.stack([b[2] for b in batch]),
+                torch.stack([b[3] for b in batch]),
             )
 
         dl = torch.utils.data.DataLoader(
@@ -376,10 +534,10 @@ def main():
             collate_fn=_collate_dry,
         )
         total = len(dl)
-        for i, (lat, te) in enumerate(tqdm(dl, desc="dry-run")):
+        for i, (_idxs, lat, te, pooled) in enumerate(tqdm(dl, desc="dry-run")):
             if (i + 1) % 200 == 0:
                 logger.info(
-                    f"  batch {i + 1}/{total}  latents={lat.shape}  te={te.shape}"
+                    f"  batch {i + 1}/{total}  latents={lat.shape}  te={te.shape}  pooled={pooled.shape}"
                 )
         logger.info(f"Dry run OK: {total} batches, no collation errors.")
         return
@@ -507,6 +665,7 @@ def main():
         split="train",
         validation_split=args.validation_split,
         validation_seed=args.validation_seed,
+        sample_ratio=args.sample_ratio,
     )
 
     val_dataset = None
@@ -518,12 +677,18 @@ def main():
             split="val",
             validation_split=args.validation_split,
             validation_seed=args.validation_seed,
+            sample_ratio=args.sample_ratio,
         )
 
     # Custom collate to bypass collate_tensor_fn's _new_shared_filename_cpu
     # which creates non-resizable storage on some PyTorch/Python 3.13 builds.
     def _collate(batch):
-        return torch.stack([b[0] for b in batch]), torch.stack([b[1] for b in batch])
+        return (
+            [b[0] for b in batch],
+            torch.stack([b[1] for b in batch]),
+            torch.stack([b[2] for b in batch]),
+            torch.stack([b[3] for b in batch]),
+        )
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -550,6 +715,29 @@ def main():
             "validation_split>0 but val set is empty after bucket-remainder drop; "
             "skipping validation. Lower batch_size or raise validation_split."
         )
+
+    # --- Teacher prediction cache (item 1: caches teacher forward results
+    # keyed by (sample_idx, sigma_idx) so subsequent visits skip the teacher
+    # forward entirely; sigmas are pre-sampled from the same sigmoid(scale * N(0,1))
+    # distribution as the original sampler, noise is deterministic per pair) ---
+    teacher_cache = None
+    if not args.no_teacher_cache:
+        teacher_cache = TeacherCache(
+            K=args.teacher_cache_K,
+            sigmoid_scale=args.sigmoid_scale,
+            base_seed=args.teacher_cache_seed,
+        )
+        # Per-entry size from the first sample's latent shape (16 ch * H * W * bf16).
+        _peek = dataset[0][1]
+        bytes_per_entry = _peek.numel() * 2
+        approx_gb = len(dataset) * args.teacher_cache_K * bytes_per_entry / 1e9
+        logger.info(
+            f"Teacher cache enabled: K={args.teacher_cache_K} sigmas, "
+            f"{len(dataset)} samples → up to {len(dataset) * args.teacher_cache_K} entries, "
+            f"~{approx_gb:.2f} GB RAM at full fill (bf16)."
+        )
+        if args.prefill_teacher_cache:
+            prefill_teacher_cache(teacher_cache, dataset, model, device, dtype)
 
     os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
 
@@ -580,26 +768,55 @@ def main():
     best_val_loss = float("inf")
 
     progress = tqdm(range(args.iterations), desc="distill")
+    accum_loss_t = torch.zeros((), device=device)
     for step in progress:
-        accum_loss = 0.0
+        accum_loss_t.zero_()
 
         for accum_step in range(grad_accum):
             # Get batch (infinite cycling)
             try:
-                latents, crossattn_emb = next(data_iter)
+                idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
             except StopIteration:
                 data_iter = iter(dataloader)
-                latents, crossattn_emb = next(data_iter)
+                idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
 
-            # latents: (B, 16, H, W), crossattn_emb: (B, seq, 1024)
-            latents = latents.to(device, dtype=dtype)
-            crossattn_emb = crossattn_emb.to(device, dtype=dtype)
+            # latents: (B, 16, H, W), crossattn_emb: (B, seq, 1024), pooled_text: (B, 1024)
+            latents = latents.to(device, dtype=dtype, non_blocking=True)
+            crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
+            pooled_text = pooled_text.to(device, dtype=dtype, non_blocking=True)
 
             B = latents.shape[0]
 
-            # Sample noise and timesteps (sigmoid sampling like training)
-            noise = torch.randn_like(latents)
-            sigmas = torch.sigmoid(args.sigmoid_scale * torch.randn(B, device=device))
+            # Sigma + noise: with teacher cache, draw from the K-grid and use
+            # deterministic noise per (sample_idx, sigma_idx) so cache hits and
+            # misses produce identical (latents, noise, sigma) inputs to the
+            # student. Without the cache, fall back to the original
+            # continuous-sigmoid sampler + fresh noise per step.
+            if teacher_cache is not None:
+                sigma_idx_list = teacher_cache.sample_sigma_idx(B)
+                sigmas = torch.tensor(
+                    [teacher_cache.get_sigma(si) for si in sigma_idx_list],
+                    device=device,
+                    dtype=latents.dtype,
+                )
+                noise_parts = [
+                    teacher_cache.make_noise(
+                        idx_list[i],
+                        sigma_idx_list[i],
+                        (1,) + tuple(latents.shape[1:]),
+                        device,
+                        latents.dtype,
+                    )
+                    for i in range(B)
+                ]
+                noise = torch.cat(noise_parts, dim=0)
+            else:
+                sigma_idx_list = None
+                noise = torch.randn_like(latents)
+                sigmas = torch.sigmoid(
+                    args.sigmoid_scale * torch.randn(B, device=device)
+                )
+
             timesteps = sigmas  # [0, 1] range (model expects this)
 
             # Noisy input: (1-σ) * latents + σ * noise
@@ -614,20 +831,39 @@ def main():
                 B, 1, latents.shape[-2], latents.shape[-1], dtype=dtype, device=device
             )
 
-            # Pre-compute pooled text from real crossattn_emb
-            pooled_text = crossattn_emb.max(dim=1).values  # (B, 1024)
-
             # --- Teacher forward: real crossattn, pooled_text_proj skipped ---
-            if model.blocks_to_swap:
-                model.prepare_block_swap_before_forward()
-            with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
-                teacher_pred = model.forward_mini_train_dit(
-                    noisy_input,
-                    timesteps,
-                    crossattn_emb,
-                    padding_mask=padding_mask,
-                    skip_pooled_text_proj=True,
+            # (skipped entirely on a full-batch cache hit).
+            cached_list = None
+            if teacher_cache is not None:
+                cached_list = [
+                    teacher_cache.get(idx_list[i], sigma_idx_list[i])
+                    for i in range(B)
+                ]
+                all_hit = all(c is not None for c in cached_list)
+            else:
+                all_hit = False
+
+            if all_hit:
+                teacher_pred = torch.cat(
+                    [c.to(device, dtype=dtype) for c in cached_list], dim=0
                 )
+            else:
+                if model.blocks_to_swap:
+                    model.prepare_block_swap_before_forward()
+                with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
+                    teacher_pred = model.forward_mini_train_dit(
+                        noisy_input,
+                        timesteps,
+                        crossattn_emb,
+                        padding_mask=padding_mask,
+                        skip_pooled_text_proj=True,
+                    )
+                if teacher_cache is not None:
+                    for i in range(B):
+                        if cached_list[i] is None:
+                            teacher_cache.put(
+                                idx_list[i], sigma_idx_list[i], teacher_pred[i : i + 1]
+                            )
 
             # --- Student forward: zeroed crossattn, real pooled text through proj ---
             # requires_grad_ needed for gradient checkpointing
@@ -648,7 +884,7 @@ def main():
             loss = nn.functional.mse_loss(student_pred.float(), teacher_pred.float())
             loss = loss / grad_accum
             loss.backward()
-            accum_loss += loss.item()
+            accum_loss_t += loss.detach()
 
         # Grad-norm snapshot before stepping (cheap; ~8M params)
         grad_norm = None
@@ -663,6 +899,7 @@ def main():
         optimizer.zero_grad()
         scheduler.step()
 
+        accum_loss = accum_loss_t.item()
         running_loss += accum_loss
         lr = scheduler.get_last_lr()[0]
 
@@ -671,6 +908,11 @@ def main():
             writer.add_scalar("train/lr", lr, step + 1)
             if grad_norm is not None:
                 writer.add_scalar("train/grad_norm", grad_norm, step + 1)
+            if teacher_cache is not None:
+                tc_total = teacher_cache.hits + teacher_cache.misses
+                hit_rate = teacher_cache.hits / tc_total if tc_total else 0.0
+                writer.add_scalar("teacher_cache/hit_rate", hit_rate, step + 1)
+                writer.add_scalar("teacher_cache/size", len(teacher_cache), step + 1)
 
         if (step + 1) % log_interval == 0:
             avg = running_loss / log_interval
@@ -743,6 +985,15 @@ def main():
                 f"Skipped save at step {step + 1}: "
                 f"val={overall_mean:.6f} >= best={best_val_loss:.6f}"
             )
+
+    if teacher_cache is not None:
+        tc_total = teacher_cache.hits + teacher_cache.misses
+        hit_rate = (teacher_cache.hits / tc_total * 100) if tc_total else 0.0
+        logger.info(
+            f"Teacher cache final: {len(teacher_cache)} entries, "
+            f"{teacher_cache.hits} hits / {teacher_cache.misses} misses "
+            f"({hit_rate:.1f}% hit rate)"
+        )
 
     if writer is not None:
         writer.close()

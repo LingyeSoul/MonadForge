@@ -64,6 +64,25 @@ def cmd_preprocess_te(extra):
     )
 
 
+def cmd_preprocess_pooled(extra):
+    """Cache pooled text embeddings (max over seq dim) from existing TE caches.
+
+    Reads ``{stem}_anima_te.safetensors`` from the LoRA cache dir and writes
+    ``{stem}_anima_pooled.safetensors`` sidecars next to them. Consumed by
+    ``make distill-mod`` to skip a redundant ``.max(dim=1)`` per training
+    microstep / val sigma. No GPU needed.
+    """
+    run(
+        [
+            PY,
+            "preprocess/cache_pooled_text.py",
+            "--dir",
+            _path("lora_cache_dir", "post_image_dataset/lora"),
+            *extra,
+        ]
+    )
+
+
 def cmd_preprocess_pe(extra):
     """Cache PE-Core (or other registered) vision-encoder features.
 

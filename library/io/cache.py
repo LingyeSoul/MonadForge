@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 LATENT_CACHE_SUFFIX = "_anima.npz"
 TE_CACHE_SUFFIX = "_anima_te.safetensors"
+POOLED_CACHE_SUFFIX = "_anima_pooled.safetensors"
 
 
 def resolve_cache_path(
@@ -161,6 +162,56 @@ def load_cached_crossattn_emb(
         return sd["crossattn_emb"].float()
 
     return None
+
+
+def load_cached_text_features(
+    te_path: str, *, variant: int | str = 0
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Load ``(crossattn_emb, pooled_text)`` for one sample.
+
+    The pooled tensor is sourced from a ``{stem}_anima_pooled.safetensors``
+    sidecar next to ``te_path`` when present (written by
+    ``preprocess/cache_pooled_text.py``). When the sidecar is missing — old
+    caches that predate the pooled-sidecar pass — pooled is computed at
+    load time via ``crossattn_emb.amax(dim=0)`` (cheaper than
+    ``.max(dim=0).values``, which also computes argmax). The same variant
+    index is used for both halves so cross-attn / pooled don't desync.
+
+    Returns ``(None, None)`` if no crossattn variant is found.
+    """
+    sd = load_file(te_path)
+
+    vi = 0
+    if "num_variants" in sd:
+        n = int(sd["num_variants"])
+        vi = random.randint(0, n - 1) if variant == "random" else min(int(variant), n - 1)
+
+    crossattn = None
+    if f"crossattn_emb_v{vi}" in sd:
+        crossattn = sd[f"crossattn_emb_v{vi}"].float()
+    elif "crossattn_emb_v0" in sd:
+        crossattn = sd["crossattn_emb_v0"].float()
+    elif "crossattn_emb" in sd:
+        crossattn = sd["crossattn_emb"].float()
+
+    if crossattn is None:
+        return None, None
+
+    pooled_path = te_path.removesuffix(TE_CACHE_SUFFIX) + POOLED_CACHE_SUFFIX
+    pooled = None
+    if os.path.exists(pooled_path):
+        psd = load_file(pooled_path)
+        if f"pooled_v{vi}" in psd:
+            pooled = psd[f"pooled_v{vi}"].float()
+        elif "pooled_v0" in psd:
+            pooled = psd["pooled_v0"].float()
+        elif "pooled" in psd:
+            pooled = psd["pooled"].float()
+
+    if pooled is None:
+        pooled = crossattn.amax(dim=0)
+
+    return crossattn, pooled
 
 
 def stem_from_cache_path(path: str | os.PathLike) -> str | None:
