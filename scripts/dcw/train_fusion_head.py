@@ -292,7 +292,7 @@ def main():
     p.add_argument(
         "--c_pool_norm",
         type=str,
-        default="l2",
+        default="none",
         choices=("none", "l2", "standardize", "l2_then_standardize"),
         help="Per-row c_pool preprocessing before the head sees it. "
         "l2 = unit-norm per row (removes caption-length magnitude bias). "

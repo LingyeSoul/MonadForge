@@ -42,9 +42,9 @@ dim_from_weights = true
 # signal to take effect after warmup. Adjust upward if the loss is still
 # trending down at end of training.
 learning_rate = 1e-4
-max_train_epochs = 4
-save_every_n_epochs = 4
-checkpointing_epochs = 4
+max_train_epochs = 6
+save_every_n_epochs = 6
+checkpointing_epochs = 6
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -54,9 +54,9 @@ caption_dropout_rate = 0.0
 weighting_scheme = "apex_omega"
 
 # APEX hyperparameters (paper Eq. 25: L_APEX = lam_p*L_fake + lam_c*L_mix) ----
-apex_lambda = 0.5           # target inner T_mix coefficient (Eq. 23) — ramps 0 → this
+apex_lambda = 0.25           # target inner T_mix coefficient (Eq. 23) — ramps 0 → this
 apex_lambda_c = 1.0         # outer L_mix weight, paper lam_c (constant)
-apex_lambda_p = 1.0         # target outer L_fake weight, paper lam_p — ramps 0 → this
+apex_lambda_p = 0.5         # target outer L_fake weight, paper lam_p — ramps 0 → this
 apex_loss_form = "mix"      # 'mix' (primary) | 'gapex' (debug fallback)
 
 # Warmup + rampup schedule (Phase 0 Finding B — Anima cold-start guard).
@@ -75,21 +75,54 @@ apex_warmup_ratio = 0.0     # warm-start makes the cold-start guard redundant
 apex_rampup_ratio = 0.10    # linear ramp of inner lambda + L_fake from step 0
 
 # ConditionShift (c_fake = A*c + b, Eq. 9).
-# `scalar` (a*c + b, 2 params) is the paper's headline mode at 20B scale but
-# at Anima scale it lands in a degenerate fixed point: the DiT is
-# condition-invariant to a uniform affine on cross-attn embeddings (LN +
-# softmax absorb it), so v_fake_sg ≈ F_real, MSE(v_fake_sg, F_real) → 0,
-# L_mix collapses to 0.25*FM and the adversarial signal vanishes. Watch
-# `apex/v_fake_divergence` in TB to confirm the shift is doing something.
-# `diag` gives 1024 per-channel (a_i, b_i) which can rotate/distort the
-# embedding enough that the model produces a meaningfully different output.
+# Anima cross-attn is bias-free kv_proj(c) → split → RMSNorm(k) → softmax.
+# Two structural absorptions kick in: softmax kills any token-independent
+# additive offset to logits, and RMSNorm on k kills global positive
+# rescaling. So a uniform shift mostly lands in attention's null space.
+#
+# bench/apex/probe_attention_visibility.py (real-q, 28 blocks × 16 prompts,
+# warm-start ⊕ this LoRA) measures the actual attention-map KL between
+# c and c_fake. Findings (2026-05-06, see docs/experimental/apex-0506.md):
+#
+#   shipped (a=-0.5, b=+1):  KL 0.53, indep 0.97 → ~97% of perturbation
+#     budget in the softmax-invisible token-independent subspace. KL
+#     drifts 0.56 / 0.53 / 0.47 across t∈{0.05, 0.5, 0.95} — fails the
+#     0.5-nat gate at high noise. Matches the prior run's symptom of
+#     (a, b) drifting <3% in 7k steps: the gradient on b is mostly
+#     useless directions.
+#
+#   sign-flip (a=-0.5, b=0):  KL 2.09, indep 0.13 → 4× the shipped
+#     config; t-stable (2.14 / 2.09 / 1.52). RMSNorm preserves sign,
+#     so c_fake = -0.5·c flips post-norm K and trained q's that
+#     aligned with K(c) anti-align with K(c_fake) — the affine family's
+#     one attention-altering mode.
+#
+#   diag at uniform init = scalar bit-for-bit. Only training drift
+#     breaks the equivalence. `mode = "diag"` is kept so drift CAN
+#     differentiate the channels later, but the init advantage over
+#     scalar is zero.
+#
+#   off-diag (full mode + orth jitter) is *worse* than sign-flip
+#     (KL 1.85 vs 2.09): rotating K into unrelated subspaces lowers
+#     amplification on trained q's compared to exact negation. Don't
+#     fork ConditionShift to per-token / K-V-rotation parametrizations
+#     yet — the affine family is structurally adequate.
+#
+# Watch `apex/v_fake_divergence` in training to confirm the shift is
+# doing something end-to-end; the bench probe is the load-bearing
+# pre-flight check.
 apex_condition_shift_mode = "diag"
-apex_condition_shift_init_a = -0.5   # Table 7 stable optimum (broadcast per-dim)
-apex_condition_shift_init_b = 1.0    # Table 7 range [0.1, 1.0]
-apex_shift_lr_scale = 1.0            # 1x LoRA LR. 0.1 left (a,b) glued to init in
-                                     # the first run (drift <3% over 7k steps),
-                                     # so L_fake never drove the adversarial signal.
-                                     # Table 7's stable region is wide enough.
+apex_condition_shift_init_a = -0.5   # sign-flip on K — the affine family's
+                                     # only attention-altering direction under
+                                     # RMSNorm + softmax (see bench above).
+apex_condition_shift_init_b = 0.0    # 0.0 (not paper Table 7 [0.1, 1.0]):
+                                     # b≠0 wastes ~97% of perturbation in the
+                                     # softmax-null subspace. real-q attn KL:
+                                     # 0.53 (b=1) → 2.09 (b=0).
+apex_shift_lr_scale = 1.0            # 1x LoRA LR. 0.1 left (a,b) glued to init
+                                     # in a prior run (drift <3% over 7k steps).
+                                     # With b=0 the only trainable direction is
+                                     # `a`, which has clean signal.
 
 
 blocks_to_swap = 0

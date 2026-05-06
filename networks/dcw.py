@@ -172,7 +172,7 @@ class FusionHead(nn.Module):
         c_proj_dim: int = 0,
         hidden: tuple[int, ...] = (256, 128),
         sigma_hidden: int = 64,
-        dropout: float = 0.0,
+        dropout: float = 0.05,
         log_sigma2_init: float = 0.0,
     ):
         super().__init__()
