@@ -29,6 +29,16 @@ def cmd_apex_combined(extra):
     train("apex_combined", extra)
 
 
+def cmd_apex_temporal(extra):
+    """APEX temporal-2F: t-shift only, no ConditionShift, no L_fake (2 fwd/step).
+
+    Selects ``configs/methods/apex_temporal.toml``. Same adapter dispatch as
+    ``cmd_apex_combined`` (``method.startswith("apex_")``); the temporal-2F
+    branch is gated by ``apex_temporal_only=true`` in the toml.
+    """
+    train("apex_temporal", extra)
+
+
 def cmd_postfix(extra):
     train("postfix", extra)
 

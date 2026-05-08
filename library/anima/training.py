@@ -531,6 +531,18 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "upper-edge artifact at t=0.98. Default 0.0 (off — shipped APEX "
         "behavior, bit-equivalent). See docs/experimental/apex-0508.md.",
     )
+    parser.add_argument(
+        "--apex_temporal_only",
+        action="store_true",
+        default=False,
+        help="APEX temporal-2F: skip ConditionShift entirely and run 2 "
+        "forwards/step instead of 3. Forward 2 queries v_fake_sg = "
+        "anima(x_t, t+Δt, c) — real condition, t-shifted — and L_fake is "
+        "dropped (no Forward 3, no fake-trajectory self-distillation). "
+        "Cold-start-safe (random F_θ poisoning via L_fake is structurally "
+        "removed) and 33% faster per step. Requires --apex_dt != 0. See "
+        "docs/experimental/apex-0508.md (cold-start-safe fallback lane).",
+    )
 
 
 # Loss weighting

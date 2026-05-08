@@ -1,0 +1,73 @@
+# APEX temporal-2F — t-shift-only self-adversarial distillation.
+#
+# Drops ConditionShift entirely. Forward 2 queries
+#   v_fake_sg = anima(x_t, t + Δt, c)            (real condition, t-shifted)
+# and L_fake / Forward 3 are removed. 2 forwards/step (vs 3 for shipped APEX
+# and combined-3F). Cold-start-safe: the random-F_θ poisoning failure mode of
+# L_fake (Phase 0 cold-start: -48% NFE=1 W1) is structurally absent because
+# there is no L_fake.
+#
+# Recommended *after* the apex_combined T3 lane: combined-3F at 384 steps
+# matched shipped APEX on L_mix descent (the supervision target it was
+# supposed to win on) while degrading samples — the "low-risk superset"
+# framing didn't hold. Temporal-2F is the higher-information next experiment
+# (apex-0508.md memo §2): it tests whether t-shift's structural advantages
+# (no L_fake, no ConditionShift, −1 forward) cost any quality vs. shipped
+# APEX, which the probe couldn't separate from any other lane on L_mix.
+#
+# Compute economy: 33% faster per step than shipped APEX. VRAM is the same
+# at blocks_to_swap=0 (peak is dominated by Forward 1's activations).
+#
+# USAGE:
+#   make exp-apex-temporal                # default preset
+#   python tasks.py exp-apex-temporal     # cross-platform
+#
+# Warm-start is mandatory (matches shipped APEX). The cold-start guard is
+# unconditional in ApexMethodAdapter.on_network_built; apex_warmup_ratio
+# alone would technically satisfy it, but cold-start temporal-2F has not
+# been tested.
+
+output_name = "anima_apex_temporal"
+logging_dir = "output/logs"
+log_with = "tensorboard"
+
+# Warm-start identical to apex.toml / apex_combined.toml.
+network_weights = "output/ckpt/anima-tlora-0507-12.safetensors"
+dim_from_weights = true
+
+learning_rate = 1e-4
+max_train_epochs = 3
+save_every_n_epochs = 3
+checkpointing_epochs = 3
+
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+caption_dropout_rate = 0.0
+
+weighting_scheme = "apex_omega"
+apex_anchor_ratio = 0.05
+
+# APEX hyperparameters — same as shipped baseline. apex_lambda_p is dead in
+# this lane (lam_f_eff is force-zeroed in code) but kept at 1.0 for parity.
+apex_lambda = 0.5
+apex_lambda_c = 1.0
+apex_lambda_p = 1.0
+apex_loss_form = "mix"
+
+apex_warmup_ratio = 0.0
+apex_rampup_ratio = 0.10
+
+# No ConditionShift in temporal-2F — the factory's _maybe_attach_apex_shift
+# early-returns when apex_condition_shift_mode is unset, and the adapter's
+# extra_forwards skips the ConditionShift bail when apex_temporal_only=true.
+apex_temporal_only = true
+
+# Δt = −0.05: same value as apex_combined.toml. Sits in cond_diag's MSE band
+# (0.80× — table 1 of apex-0508.md), and the −Δt direction was orthogonal to
+# c-shift (median cos ≈ 0) before we dropped c-shift, so the perturbation
+# magnitude is comparable to what shipped APEX's c_fake produces. Lower-edge
+# clamp at t=0.02 is hit on ~5% of steps (t ~ U(0.02, 0.98) puts ~5% of mass
+# in [0.02, 0.07]); watch apex/dt_clamp_frac to verify it stays small.
+apex_dt = -0.05
+
+blocks_to_swap = 0

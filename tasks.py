@@ -169,6 +169,11 @@ COMMANDS = {
         "[experimental] APEX combined-3F (c-shift + t-shift, Δt=-0.05). "
         "See docs/experimental/apex-0508.md.",
     ),
+    "exp-apex-temporal": (
+        exp_training.cmd_apex_temporal,
+        "[experimental] APEX temporal-2F (t-shift only, no ConditionShift, "
+        "no L_fake; 2 fwd/step). See docs/experimental/apex-0508.md.",
+    ),
     "exp-postfix": (
         exp_training.cmd_postfix,
         "[experimental] Postfix/prefix tuning (mode selected in configs/methods/postfix.toml)",

@@ -90,7 +90,7 @@ def cmd_test_apex(extra):
             "--guidance_scale",
             "1.0",
             "--sampler",
-            "lcm",
+            "euler",
             *extra,
         ]
     )

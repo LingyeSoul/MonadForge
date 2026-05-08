@@ -239,6 +239,19 @@ class ApexMethodAdapter(MethodAdapter):
                 "(warm-start). Cold-start training is known to regress vs. "
                 "plain FM on the one-step objective; see proposal.md §7.3."
             )
+        # Temporal-2F precondition: t-shift is the only perturbation source in
+        # this lane (no ConditionShift, no L_fake), so apex_dt == 0 reduces the
+        # whole method to plain FM with one wasted extra forward. Refuse explicitly
+        # rather than silently spending compute on an inert config.
+        if bool(getattr(args, "apex_temporal_only", False)):
+            apex_dt = float(getattr(args, "apex_dt", 0.0) or 0.0)
+            if apex_dt == 0.0:
+                raise ValueError(
+                    "--apex_temporal_only requires --apex_dt != 0. With Δt=0, "
+                    "Forward 2 is bit-identical to Forward 1 and v_fake_sg "
+                    "collapses to F_real — L_mix degenerates to plain FM. "
+                    "Recommended: --apex_dt -0.05. See docs/experimental/apex-0508.md."
+                )
         # Expose loss-side recorders to ``library/training/losses.py`` so the
         # _apex_mix_loss / _apex_fake_loss sites can append every step.
         if ctx.network is not None:
@@ -268,12 +281,14 @@ class ApexMethodAdapter(MethodAdapter):
         if not primary.is_train:
             return None
         network = ctx.network
-        if getattr(network, "apex_condition_shift", None) is None:
+        args = ctx.args
+        # temporal-2F runs without ConditionShift; every other lane requires it.
+        temporal_only = bool(getattr(args, "apex_temporal_only", False))
+        if not temporal_only and getattr(network, "apex_condition_shift", None) is None:
             return None
         if primary.crossattn_emb is None:
-            return None  # APEX needs the cross-attn embedding to shift
+            return None  # APEX needs the cross-attn embedding (shifted or not)
 
-        args = ctx.args
         anima = primary.anima_call
         noisy_model_input = primary.noisy_model_input  # 5D
         model_pred = primary.model_pred  # 5D
@@ -282,38 +297,27 @@ class ApexMethodAdapter(MethodAdapter):
         padding_mask = primary.padding_mask
         kw = primary.forward_kwargs
 
-        # Endpoint predictor (Eq. 11): x_fake = x_t - t * F_real, sg.
-        t_bcast = timesteps.view(-1, 1, 1, 1, 1).to(model_pred.dtype)
-        with torch.no_grad():
-            x_fake = noisy_model_input - t_bcast * model_pred.detach()
-        # Fresh noise + fresh t for the fake OT trajectory.
-        z_fake = torch.randn_like(x_fake)
-        t_fake = torch.rand(
-            noisy_model_input.shape[0],
-            device=noisy_model_input.device,
-            dtype=timesteps.dtype,
-        )
-        t_fake_bcast = t_fake.view(-1, 1, 1, 1, 1).to(model_pred.dtype)
-        x_fake_t = t_fake_bcast * z_fake + (1.0 - t_fake_bcast) * x_fake
-        # target_fake = z_fake - x_fake (OT velocity on the fake traj)
-        target_fake = z_fake - x_fake
+        # Forward-2 condition. Shipped APEX / combined-3F shift c via the
+        # learned affine; temporal-2F leaves c alone and relies on the t-shift
+        # alone for the perturbation.
+        if temporal_only:
+            c_for_fake = crossattn_emb  # no ConditionShift
+        else:
+            # Shifted condition (grad flows into ConditionShift via L_fake —
+            # the graph is preserved across the inline real-branch backward
+            # because nothing in the real branch depends on c_fake's autograd
+            # chain). Detached for the no_grad fake-target call below.
+            c_fake = network.apex_condition_shift(crossattn_emb)
+            c_for_fake = c_fake.detach()
 
-        # Shifted condition (grad flows into ConditionShift via L_fake — the
-        # graph is preserved across the inline real-branch backward because
-        # nothing in the real branch depends on c_fake's autograd chain).
-        c_fake = network.apex_condition_shift(crossattn_emb)
-
-        # (1) Fake branch at real (x_t, t, c_fake) — stop-gradient target for
-        #     L_mix. Paper §3.2: "v_fake := sg(F_theta(x_t, t, c_fake))". Under
-        #     no_grad so the fake call doesn't contribute to the real-branch
-        #     gradient path.
-        #
-        # combined-3F: when --apex_dt != 0, perturb t too (anima(x_t, t+Δt, c_fake))
-        # — c-shift and t-shift are roughly orthogonal in output-delta space (see
-        # docs/experimental/apex-0508.md), so combining adds non-redundant
-        # supervision at the same compute. Forward 1 and Forward 3 keep their
-        # original timesteps. Clamp keeps t_eff in the sampler's training range
-        # and avoids the t=0.98 upper-edge artifact.
+        # (1) Fake-target forward — stop-gradient target for L_mix.
+        # Shipped APEX (Δt=0, c=c_fake): paper §3.2 "v_fake := sg(F(x_t, t, c_fake))".
+        # combined-3F (Δt≠0, c=c_fake): orthogonal-in-output-space perturbation
+        # — c-shift and t-shift each carry distinct supervision (apex-0508.md).
+        # temporal-2F (Δt≠0, c=c): t-shift only — drops L_fake's cold-start
+        # poisoning risk at the cost of fake-trajectory self-distillation.
+        # Clamp keeps t_eff in the sampler's training range; avoids the t=0.98
+        # upper-edge artifact that degenerated ~5% of probe steps under +Δt.
         apex_dt = float(getattr(args, "apex_dt", 0.0) or 0.0)
         if apex_dt != 0.0:
             t_shifted = (timesteps.float() + apex_dt).clamp(0.02, 0.98)
@@ -328,19 +332,39 @@ class ApexMethodAdapter(MethodAdapter):
             v_fake_sg = anima(
                 noisy_model_input,
                 t_eff,
-                c_fake.detach(),
+                c_for_fake,
                 padding_mask=padding_mask,
                 **kw,
             )
-            # Degeneracy detector: how much does the shift actually change the
-            # model's output? If ~0, ConditionShift is a no-op and L_mix has
-            # no adversarial gradient (collapses to 0.25·MSE(F_real, v_data)).
+            # Degeneracy detector for c-shift lanes; for temporal-2F this
+            # reduces to MSE(F(x_t, t+Δt, c), F(x_t, t, c)) — the t-shift's
+            # output-space magnitude (probe table 1 metric). Either way, near-
+            # zero means the perturbation is invisible to the network.
             self._last_v_fake_divergence = float(
                 (v_fake_sg - model_pred.detach()).pow(2).mean().item()
             )
             self._v_fake_div_recorder.add(
                 epoch=0, step=self.step, loss=self._last_v_fake_divergence
             )
+
+        # Build x_fake / x_fake_t / target_fake only for 3-forward lanes.
+        # temporal-2F drops L_fake and Forward 3 entirely.
+        if not temporal_only:
+            # Endpoint predictor (Eq. 11): x_fake = x_t - t * F_real, sg.
+            t_bcast = timesteps.view(-1, 1, 1, 1, 1).to(model_pred.dtype)
+            with torch.no_grad():
+                x_fake = noisy_model_input - t_bcast * model_pred.detach()
+            # Fresh noise + fresh t for the fake OT trajectory.
+            z_fake = torch.randn_like(x_fake)
+            t_fake = torch.rand(
+                noisy_model_input.shape[0],
+                device=noisy_model_input.device,
+                dtype=timesteps.dtype,
+            )
+            t_fake_bcast = t_fake.view(-1, 1, 1, 1, 1).to(model_pred.dtype)
+            x_fake_t = t_fake_bcast * z_fake + (1.0 - t_fake_bcast) * x_fake
+            # target_fake = z_fake - x_fake (OT velocity on the fake traj)
+            target_fake = z_fake - x_fake
 
         # Resolve warmup/rampup schedule. inner-lambda controls T_mix's
         # supervision/adversarial blend; lam_f_eff gates the L_fake outer
@@ -365,6 +389,11 @@ class ApexMethodAdapter(MethodAdapter):
             lam_inner_target=float(getattr(args, "apex_lambda", 0.5)),
             lam_f_target=float(getattr(args, "apex_lambda_p", 1.0)),
         )
+        # temporal-2F has no Forward 3 → L_fake is structurally absent.
+        # Force the outer gate to 0 so apex_fake's loss path returns zeros
+        # regardless of the configured apex_lambda_p (which has no effect here).
+        if temporal_only:
+            lam_f_eff = 0.0
         self._last_lam_inner_eff = float(lam_inner_eff)
         self._last_lam_f_eff = float(lam_f_eff)
 
@@ -413,17 +442,22 @@ class ApexMethodAdapter(MethodAdapter):
         ).detach()
 
         # Stash everything ``extra_forwards_fake`` needs to run forward 3 after
-        # the trainer has freed forward 1's autograd graph.
-        self._fake_state = {
-            "anima_call": anima,
-            "x_fake_t": x_fake_t,
-            "t_fake": t_fake,
-            "c_fake": c_fake,
-            "padding_mask": padding_mask,
-            "kw": kw,
-            "target_fake": target_fake,
-            "lam_f_eff": lam_f_eff,
-        }
+        # the trainer has freed forward 1's autograd graph. temporal-2F skips
+        # this entirely — _fake_state stays None so extra_forwards_fake no-ops
+        # and the trainer never schedules Forward 3.
+        if temporal_only:
+            self._fake_state = None
+        else:
+            self._fake_state = {
+                "anima_call": anima,
+                "x_fake_t": x_fake_t,
+                "t_fake": t_fake,
+                "c_fake": c_fake,
+                "padding_mask": padding_mask,
+                "kw": kw,
+                "target_fake": target_fake,
+                "lam_f_eff": lam_f_eff,
+            }
 
         # Real-branch aux only — apex_fake is computed in compose_fake_branch
         # after extra_forwards_fake fills in F_fake_on_fake_xt below. lam_c
@@ -486,11 +520,17 @@ class ApexMethodAdapter(MethodAdapter):
         method = getattr(ctx.args, "method", None) or ""
         if not (method == "apex" or method.startswith("apex_")):
             return {}
+        # temporal-2F has no Forward 3; suppress L_fake / lam_f_eff scalars so
+        # TB doesn't grow flat-zero traces. v_fake_divergence stays — under
+        # temporal-2F it equals MSE(F(x_t, t+Δt, c), F(x_t, t, c)), the t-shift's
+        # output-space magnitude (probe table 1 metric).
+        temporal_only = bool(getattr(ctx.args, "apex_temporal_only", False))
         out: dict[str, float] = {
             "apex/lam_inner_eff": float(self._last_lam_inner_eff),
-            "apex/lam_f_eff": float(self._last_lam_f_eff),
             "apex/anchor_frac": float(self._last_anchor_frac),
         }
+        if not temporal_only:
+            out["apex/lam_f_eff"] = float(self._last_lam_f_eff)
         if self._last_v_fake_divergence is not None:
             out["apex/v_fake_divergence"] = float(self._last_v_fake_divergence)
         if len(self._v_fake_div_recorder.loss_list) > 0:
@@ -506,11 +546,12 @@ class ApexMethodAdapter(MethodAdapter):
             out["apex/loss_mix"] = float(mix_v)
         if len(self._mix_recorder.loss_list) > 0:
             out["apex/loss_mix_avg"] = float(self._mix_recorder.moving_average)
-        fake_v = getattr(network, "_last_apex_fake_value", None)
-        if fake_v is not None:
-            out["apex/loss_fake"] = float(fake_v)
-        if len(self._fake_recorder.loss_list) > 0:
-            out["apex/loss_fake_avg"] = float(self._fake_recorder.moving_average)
+        if not temporal_only:
+            fake_v = getattr(network, "_last_apex_fake_value", None)
+            if fake_v is not None:
+                out["apex/loss_fake"] = float(fake_v)
+            if len(self._fake_recorder.loss_list) > 0:
+                out["apex/loss_fake_avg"] = float(self._fake_recorder.moving_average)
 
         cs = getattr(network, "apex_condition_shift", None)
         if cs is not None:
