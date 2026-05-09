@@ -22,8 +22,39 @@ from ._common import (
 )
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _spectrum_flags(stop_caching_step: int = 29) -> list[str]:
+    return [
+        "--spectrum",
+        "--spectrum_window_size",
+        "2.0",
+        "--spectrum_flex_window",
+        "0.25",
+        "--spectrum_warmup",
+        "7",
+        "--spectrum_w",
+        "0.3",
+        "--spectrum_m",
+        "3",
+        "--spectrum_lam",
+        "0.1",
+        "--spectrum_stop_caching_step",
+        str(stop_caching_step),
+        "--spectrum_calibration",
+        "0.0",
+    ]
+
+
 def cmd_test(extra):
-    run([*INFERENCE_BASE, "--lora_weight", str(latest_lora()), *extra])
+    """Inference with the latest LoRA. ``SPECTRUM=1`` enables Spectrum acceleration."""
+    args = [*INFERENCE_BASE, "--lora_weight", str(latest_lora())]
+    if _env_truthy("SPECTRUM"):
+        args += _spectrum_flags()
+    args.extend(extra)
+    run(args)
 
 
 def cmd_test_mod(extra):
@@ -72,34 +103,6 @@ def cmd_test_merge(extra):
         print(f"MODEL_DIR path not found: {target}", file=sys.stderr)
         sys.exit(1)
     run([*INFERENCE_BASE, "--dit", str(chosen), *extra])
-
-
-def cmd_test_spectrum(extra):
-    run(
-        [
-            *INFERENCE_BASE,
-            "--lora_weight",
-            str(latest_lora()),
-            "--spectrum",
-            "--spectrum_window_size",
-            "2.0",
-            "--spectrum_flex_window",
-            "0.25",
-            "--spectrum_warmup",
-            "7",
-            "--spectrum_w",
-            "0.3",
-            "--spectrum_m",
-            "3",
-            "--spectrum_lam",
-            "0.1",
-            "--spectrum_stop_caching_step",
-            "29",
-            "--spectrum_calibration",
-            "0.0",
-            *extra,
-        ]
-    )
 
 
 def cmd_test_dcw(extra):
@@ -156,29 +159,13 @@ def cmd_test_dcw_v4(extra):
 
 
 def cmd_test_spectrum_dcw(extra):
-    """Spectrum + DCW composed. Same Spectrum knobs as test-spectrum."""
+    """Spectrum + DCW composed. Equivalent to ``make test SPECTRUM=1 --dcw``."""
     run(
         [
             *INFERENCE_BASE,
             "--lora_weight",
             str(latest_lora()),
-            "--spectrum",
-            "--spectrum_window_size",
-            "2.0",
-            "--spectrum_flex_window",
-            "0.25",
-            "--spectrum_warmup",
-            "7",
-            "--spectrum_w",
-            "0.3",
-            "--spectrum_m",
-            "3",
-            "--spectrum_lam",
-            "0.1",
-            "--spectrum_stop_caching_step",
-            "27",
-            "--spectrum_calibration",
-            "0.0",
+            *_spectrum_flags(stop_caching_step=27),
             "--dcw",
             *extra,
         ]
@@ -188,8 +175,8 @@ def cmd_test_spectrum_dcw(extra):
 def cmd_test_dcw_v4_spectrum(extra):
     """Spectrum + DCW learnable calibrator composed.
 
-    Same Spectrum knobs as test-spectrum (with stop_caching_step=27 to match
-    DCW's 28-step contract), plus DCW calibrator (auto-resolves the most recent
+    Spectrum knobs match ``cmd_test`` with stop_caching_step=27 to match
+    DCW's 28-step contract, plus DCW calibrator (auto-resolves the most recent
     fusion_head.safetensors). Pass --dcw_calibrator <path> in extra to override.
     """
     extra_has_calib = any(
@@ -201,23 +188,7 @@ def cmd_test_dcw_v4_spectrum(extra):
             *INFERENCE_BASE,
             "--lora_weight",
             str(latest_lora()),
-            "--spectrum",
-            "--spectrum_window_size",
-            "2.0",
-            "--spectrum_flex_window",
-            "0.25",
-            "--spectrum_warmup",
-            "7",
-            "--spectrum_w",
-            "0.3",
-            "--spectrum_m",
-            "3",
-            "--spectrum_lam",
-            "0.1",
-            "--spectrum_stop_caching_step",
-            "27",
-            "--spectrum_calibration",
-            "0.0",
+            *_spectrum_flags(stop_caching_step=27),
             *calib_args,
             "--infer_steps",
             "28",

@@ -293,7 +293,7 @@ def cmd_test_directedit(extra):
         if not anima_ckpt.exists():
             print(
                 f"  ! TAGGER=anima requested but {anima_ckpt} is missing — "
-                "train via `python scripts/train_anima_tagger.py`. "
+                "train via `python -m scripts.anima_tagger.cli`. "
                 "Falling back to wd-tagger.",
                 file=sys.stderr,
             )

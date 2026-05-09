@@ -1,5 +1,5 @@
 """Anima multi-label tagger trainer — package entry.
 
-CLI lives in :mod:`scripts.anima_tagger.cli`. The legacy
-``scripts/train_anima_tagger.py`` is a thin shim that calls into it.
+CLI lives in :mod:`scripts.anima_tagger.cli`. Invoke as
+``python -m scripts.anima_tagger.cli --mode <mode>``.
 """

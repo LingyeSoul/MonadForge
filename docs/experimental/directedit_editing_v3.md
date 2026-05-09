@@ -1,213 +1,300 @@
-# DirectEdit editing v3 — what changed in the implementation phase
+# DirectEdit (v3) — flow-inversion image editing on Anima
 
 Successor to [`docs/proposal/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md).
-v2 was the proposal; v3 documents what actually got built. Lives under
-`docs/experimental/` (not `docs/proposal/`) because the components below
-are wired and runnable, not speculative.
+v2 was the proposal; this doc covers what's actually wired and runnable
+in the tree. The Anima Tagger arm of v2 ("phase v3.0") is documented
+separately in [`anima_tagger.md`](./anima_tagger.md).
 
-Companion: [`anima_tagger.md`](./anima_tagger.md) — the tagger architecture
-and training procedure.
+## Status
 
-## What v2 picked
+| Component | State |
+|---|---|
+| `library/inference/directedit.py` — invert + edit_forward primitive | **wired** |
+| V-injection (paper Eq. 13) | **wired** in both CLI and ComfyUI node |
+| ψ_src tagger (Anima Tagger replacing wd-tagger) | **wired** with auto-fallback |
+| `scripts/edit.py` — standalone CLI | **wired** |
+| `make exp-test-directedit` / `exp-test-directedit-dry` driver | **wired** |
+| `comfyui-anima-directedit` ComfyUI node (stock MODEL/CLIP/VAE sockets) | **wired** |
+| Mask blending (paper Eq. 12) | **stub** — `--mask` accepted but ignored |
+| Embedding inversion fallback (v2.1) | **deferred** — `archive/inversion/` not yet promoted |
 
-v2 surveyed five paths for the case-1 ψ_src problem (external image,
-no recorded prompt) and recommended phasing in three steps:
+## Method recap
 
-* **v2.0** — train a custom tagger on Anima's caption distribution,
-  drop wd-tagger
-* **v2.1** — wire embedding inversion as an opt-in "premium" fallback
-* **v2.2** — reconsider full img2emb only if v2.0 + v2.1 don't close the gap
+Two passes through the frozen DiT (Yang & Ye, [arXiv:2605.02417v1](https://arxiv.org/abs/2605.02417v1)):
 
-This document covers **v2.0 implementation** (now phase v3.0 of the editing
-pipeline) plus the integration glue that landed alongside it.
+1. **Inversion** (clean → noise): step backward through the same Euler
+   ODE the generator runs forward, querying `v_θ` at each step's input.
+   Record per-step residuals `Δz_i = z_inv[i+1] − z_inv[i]` — these
+   are the "anchor" the paper uses to make reconstruction bit-exact
+   instead of trying to rectify the inversion path itself.
+2. **Editing** (noise → clean): standard generation loop, but every
+   model call is queried at `z[i] + Δz[i]` instead of `z[i]`. The
+   cross-attn prompt is the edit target ψ_tar; the residual Δz pins the
+   trajectory to the source. For `t_inj > 0` (paper Eq. 13), the first
+   `t_inj` steps additionally evolve a parallel ψ_src branch and inject
+   its self-attn V into the tar self-attn at all blocks except the last
+   (SD3.5-style default).
 
-## What v3.0 actually built
+Anima conventions used:
 
-Five concrete deliverables, all on disk:
+* `sigmas[0] = 1` (pure noise), `sigmas[T] = 0` (clean), per
+  `library/inference/sampling.py::get_timesteps_sigmas`.
+* Latents are 5D `[B, C, 1, H/8, W/8]` (frame dim of 1 — image, not
+  video).
+* DiT call signature mirrors what `generate_body` uses:
+  `anima(latents, t_expand, embed, padding_mask=...)` where `embed` is
+  already-preprocessed crossattn (post-T5, 512-padded).
 
-### 1. `library/captioning/anima_tagger.py` — drop-in tagger
+## The primitive — `library/inference/directedit.py`
 
-`AnimaTagger` mirrors `WDTagger`'s public surface (`predict`,
-`predict_caption`) so the swap is import-only. See
-[`anima_tagger.md`](./anima_tagger.md) for the full architecture.
+Self-contained module (~414 LoC). Two public entry points consumed by
+all three call sites (CLI, make-target driver, ComfyUI node):
 
-Key fact for v3: **the inference wrapper is functional even before any
-training** because the auto-detect in the edit driver falls back to
-wd-tagger when the checkpoint is missing. Editing pipeline doesn't break
-in either state.
+| Function | Signature highlights |
+|---|---|
+| `invert(anima, z_clean, embed_src, embed_neg, sigmas, guidance_scale=1.0)` | Returns `(z_inv: List[Tensor], delta_z: List[Tensor])`. Iterates `i = T-1 .. 0`: `z_inv[i] = z_inv[i+1] + (sigmas[i] − sigmas[i+1]) · v_θ(z_inv[i+1], σ=sigmas[i+1], embed_src)`. CFG defaults to 1.0 — the source has no negative concept to push away from. |
+| `edit_forward(anima, z_init, delta_z, embed_tar, embed_neg, sigmas, guidance_scale=4.0, embed_src=None, t_inj=0, t_inj_blocks=None, mask=None)` | Standard Euler from `z_init = z_inv[0]`, but `v_i = v_θ(z[i] + Δz[i], σ=sigmas[i], embed_tar)`. When `t_inj > 0`, first `t_inj` steps also evolve a parallel src branch (CFG=1, no neg) and inject its self-attn V into tar via `_v_injection_scope`. `mask=` reserved for paper Eq. 12 (currently warns + ignores). |
 
-### 2. `library/captioning/tag_rules.py` — caption normalization
+### V-injection plumbing (`_v_injection_scope`)
 
-Pure-Python port of the tag-rules semantics used to curate Anima's
-training captions. Replacements (`questionable → sensitive`,
-`&#039; → '`, alias rewrites), always-remove list, and clothing-base
-dedup map (e.g. drop `bra` when `black bra` is present).
+`_VInjectionState` carries a per-block V cache plus a mode flag
+(`CAPTURE` / `INJECT`). For each editing step with `i < t_inj`:
 
-Used in three places:
+1. `mode = CAPTURE`, run src forward → V tensors stashed per block.
+2. `mode = INJECT`, run tar forward → cached V replaces the freshly
+   computed V inside the patched `Attention.forward`.
 
-* **Vocab build:** parse caption files into clean tag lists
-* **Inference emit:** safety net before the tagger's output goes downstream
-* **Inference snapshot:** the tagger's checkpoint dir holds a frozen copy
-  of the rules used at vocab-build time, so the tagger's behavior doesn't
-  drift when the source `tag_rules.yaml` is updated
+The cache is overwritten each step (28 entries, no growth).
 
-### 3. `library/env.py` — minimal `.env` loader
+`_make_patched_self_attn_forward` builds a replacement
+`Attention.forward` that routes V through `state.hook` before the
+attention dispatcher. **Two backends are supported** so the same
+primitive runs in both call shapes:
 
-50 lines, no python-dotenv dep. Reads `KEY=VALUE` lines from
-`anima_lora/.env` into `os.environ` with no override of pre-existing
-env vars. Called once at the top of `scripts/train_anima_tagger.py`
-before argparse runs.
+* `library/anima/models.py::Attention` (standalone CLI) — signature
+  `(x, attn_params, context, rope_cos_sin=None)`, dispatches via
+  `attention_dispatch.dispatch_attention`.
+* `comfy/comfy/ldm/cosmos/predict2.py::Attention` (inside ComfyUI) —
+  signature `(x, context=None, rope_emb=None, transformer_options={})`,
+  dispatches via `self.compute_attention`.
 
-This is the indirection that hides the external corpus path from the
-codebase. The repo references `CAPTION_CORPUS_DIR`; the user binds it
-to whatever directory they keep crawled images in. No corpus-specific
-naming in code, comments, or commit history.
+The patcher detects via `hasattr(attn, "compute_attention")` and emits a
+function whose signature matches the actual call site. Patching with
+the wrong signature would raise `TypeError: ... unexpected keyword
+argument 'rope_emb'` on the first edit step.
 
-### 4. `scripts/train_anima_tagger.py` — four-stage pipeline
+The scope context manager carefully tracks whether each `Attention` had
+a pre-existing instance-level `forward` (vs the class method) and
+restores by either reassigning or `del`-ing — a plain reassign would
+leak instance state (and a method ref-cycle) across scopes.
 
-| `--mode` | Purpose | Inputs | Outputs |
-|---|---|---|---|
-| `build_vocab` | Scan caption sources, intersect with tag taxonomy, snapshot rules | `$CAPTION_CORPUS_DIR/{retrieved,selected,...}` + `tag_cache.json` + `tag_rules.yaml` | `vocab.json`, `rules.yaml`, `dataset.json` |
-| `build_features` | Encode each manifest image through frozen PE-Core, mean-pool, cache | `dataset.json` + PE-Core weights | `.cache/pooled-pe/{stem}.safetensors` |
-| `train` | Train trunk + tag head + rating head on cached features | Cached features + manifest | `model.safetensors`, `config.json`, `train_history.json` |
-| `calibrate` | Per-tag F1-optimal threshold sweep on val | Trained model + val features | `thresholds.safetensors` |
+When tar runs CFG (batch dim 2), the cached src V (batch dim 1) is
+broadcast via `repeat_interleave` so the injection still aligns.
 
-All four stages live in one script so the implementation stays in one
-file; CLI selects via `--mode`.
+### The src CFG=1 invariant
 
-### 5. `scripts/experimental_tasks/inference.py` — TAGGER env var
+The src capture pass is always run at CFG=1 (no `embed_neg`). Paper
+Algorithm 1 doesn't apply CFG to the src branch, and capturing V from a
+CFG-mixed branch would conflate ψ_src and the negative concept.
 
-The `make exp-test-directedit` driver now respects `TAGGER ∈ {anima, wd, auto}`
-(default `auto`). Auto-detects based on checkpoint presence. Fallback
-on missing-checkpoint is loud (warns to stderr) but non-fatal.
+## Call sites
+
+### 1. Standalone CLI — `scripts/edit.py`
 
 ```bash
-make exp-test-directedit PROMPT='glasses'                       # auto
-TAGGER=anima make exp-test-directedit PROMPT='glasses'          # force anima
-TAGGER=wd make exp-test-directedit PROMPT='glasses'             # force wd
+python scripts/edit.py \
+    --image path/to/source.png \
+    --prompt_src "1girl, smile, school_uniform" \
+    --prompt_tar "1girl, smile, school_uniform, double peace" \
+    --dit models/diffusion_models/anima-preview3-base.safetensors \
+    --text_encoder models/text_encoders/qwen_3_06b_base.safetensors \
+    --vae models/vae/qwen_image_vae.safetensors \
+    --save_path output/tests/directedit/
 ```
 
-## Pipeline diagram (case-1, external image)
+Notable flags:
 
+| Flag | Default | Notes |
+|---|---|---|
+| `--infer_steps` | 28 | Both inversion and edit step count. |
+| `--flow_shift` | 1.0 | Anima preview3 standard. |
+| `--guidance_scale` | 2.0 | CFG on the edit (target) pass. |
+| `--invert_guidance` | 1.0 | CFG during inversion. Raise only if you need the inverted noise to match a high-CFG generation seed. |
+| `--t_inj` | 12 | First N steps inject src self-attn V into tar (paper Eq. 13). 0 = pure ΔZ-anchored edit. Typical paper setting `T/10..T/3`. Higher = stronger source-feature preservation, weaker edit leverage. |
+| `--t_inj_blocks` | `all_but_last` | `all`, `all_but_last`, or comma/range string (`8-22`, `8,9,12,14-18`). |
+| `--image_size` | bucket-snap | Defaults to closest `CONSTANT_TOKEN_BUCKETS` entry by aspect ratio. |
+| `--cached_embed` | unset | Sanity-check mode: load preprocessed `_anima_te.safetensors` cache and run one invert + edit pass per stored variant with ψ_tar == ψ_src. Skips the text encoder entirely. |
+| `--cached_embed_variants` | `all` | Selector for `--cached_embed`. `all` sweeps every stored variant; otherwise comma-separated indices (`0`, `0,2`). |
+| `--mask` | unset | Reserved — paper Eq. 12 background-lock blend. Currently warns + ignored. |
+| `--compile_blocks` | on | Per-block torch.compile of `_forward`. Auto-disabled when `--t_inj > 0` because the V-injection scope monkey-patches `Attention.forward` and would invalidate the dynamo graph cache on every block on the first call. |
+
+The script orchestrates the full pipeline:
+
+1. Load source image, snap to bucket if `--image_size` unset.
+2. Tokenize/encoding strategies (matches `inference.py`).
+3. Load DiT (needed by `prepare_text_inputs`'s `_preprocess_text_embeds`).
+4. Encode `prompt_src` / `prompt_tar` / `negative_prompt` (or load from
+   `--cached_embed` cache). Logs `|src-tar|` / `|src-neg|` / `|tar-neg|`
+   abs-mean diffs as a sanity check that the encoder path is doing its
+   job; near-zero `|src-tar|` flags an empty/identical caption.
+5. VAE-encode source image to clean 5D latent (`[1, C, 1, H/8, W/8]`).
+6. Sigma schedule via `get_timesteps_sigmas`.
+7. Per-variant: `directedit.invert` → `directedit.edit_forward`. Variants
+   collapse to a single pass when `--cached_embed` is unset.
+8. Re-mount VAE, decode each `z_edit`, save with `save_images`.
+
+### 2. Make-target driver — `make exp-test-directedit{,-dry}`
+
+Lives in `scripts/experimental_tasks/inference.py` (`cmd_test_directedit`
+and `cmd_test_directedit_dry`).
+
+**`make exp-test-directedit`** picks a source image, runs a tagger to
+seed `--prompt_src`, builds `--prompt_tar = src + ", " + edit`, and
+invokes `scripts/edit.py`:
+
+```bash
+make exp-test-directedit PROMPT='double peace'                # random source from post_image_dataset/resized/
+REF_IMAGE=foo.png make exp-test-directedit PROMPT='glasses'   # explicit source
+python tasks.py exp-test-directedit foo.png --prompt 'smile'  # positional source
+TAGGER=anima make exp-test-directedit PROMPT='glasses'        # force Anima Tagger
+TAGGER=wd    make exp-test-directedit PROMPT='glasses'        # force wd-tagger
 ```
-                  external image
-                        │
-                        ▼
-           ┌──────────────────────────┐
-           │  AnimaTagger.predict_caption()  │
-           │   PIL → bucket-resize → PE-Core │
-           │   → trunk → tag/rating heads    │
-           │   → per-tag threshold filter    │
-           │   → canonical caption format    │
-           └────────────┬─────────────┘
-                        │     ψ_src ≈ "1girl, smile, school uniform, ..."
-                        ▼
-           ┌──────────────────────────┐
-           │  scripts/edit.py         │
-           │   (DirectEdit invert+edit)      │
-           │   ψ_src → invert; ψ_tar → edit  │
-           └────────────┬─────────────┘
-                        ▼
-                  edited image
-```
 
-For case 3 (Anima-generated, prompt recorded) and case 2 (Anima-generated,
-ComfyUI metadata): no tagging needed — the recorded ψ_src goes straight
-into DirectEdit. v3 doesn't change those paths.
+Tagger selection is `TAGGER` env (default `auto`): Anima if
+`models/captioners/anima-tagger-v1/model.safetensors` exists, else
+wd-tagger. `TAGGER=anima` with a missing checkpoint warns + falls back
+to wd-tagger rather than crashing. After the edit completes, the source
+is copied next to the output as `<name>_src.png` for side-by-side review.
 
-## What hasn't shipped yet (deferred from v2)
+**`make exp-test-directedit-dry`** is the reconstruction sanity check —
+auto-resolves the source's `_anima_te.safetensors` cache (the file
+`cache_text_embeddings.py` writes), passes it via `--cached_embed`, and
+runs invert + edit with ψ_tar == ψ_src. Output should reconstruct the
+source. With `--caption_shuffle_variants N` caches, this sweeps v0
+(pristine) + v1..v{N-1} (tag-shuffled re-encodings) — divergence across
+variants flags numeric drift in `invert`/`edit_forward`. Bypasses both
+the tagger and the text encoder.
 
-Two pieces from v2 are still pending:
+`_filter_inference_base_for_edit` strips generation-only flags from
+`INFERENCE_BASE` (`--prompt`, `--seed`, `--image_size`, `--infer_steps`,
+…) so `scripts/edit.py` keeps its own defaults; only model/path flags
+(`--dit`, `--text_encoder`, `--vae`, `--vae_chunk_size`, `--attn_mode`,
+`--vae_disable_cache`) are forwarded.
+
+### 3. ComfyUI node — `custom_nodes/comfyui-anima-directedit/`
+
+`AnimaDirectEdit` consumes stock ComfyUI sockets: `MODEL` (DiT via
+`UNETLoader`/`CheckpointLoaderSimple`), `CLIP` (Anima Qwen3 + T5 via
+`CLIPLoader`), `VAE` (Qwen Image VAE via `VAELoader`), `IMAGE`. ψ_src
+comes from either an `ANIMA_TAGGER` socket (the sibling
+`comfyui-anima-tagger` package's `AnimaTaggerLoader`) or a non-empty
+`prompt_src_override` STRING.
+
+Returns `(LATENT, prompt_src, prompt_tar)` — wire `LATENT` into
+`VAEDecode` to render. Returning latent (rather than IMAGE) keeps the
+node composable with downstream KSampler-style refiners.
+
+The node's pipeline mirrors `scripts/edit.py` but routes through
+ComfyUI's CLIP socket:
+
+* `_encode_prompt_comfy` — `clip.tokenize` →
+  `clip.encode_from_tokens(return_dict=True)` → mirror
+  `model_base.Anima.extra_conds` shape conventions →
+  `unet.preprocess_text_embeds(cond, t5xxl_ids, t5xxl_weights=...)` for
+  the LLMAdapter + 512 pad. Verified to land within numerical noise of
+  the library's `prepare_text_inputs` for the prompts DirectEdit feeds.
+* `vae.encode` → `model.model.process_latent_in` (Anima DiT was trained
+  on standardized latents — comfy's KSampler applies this via
+  `samplers.py::process_latent_in`, but since we call the diffusion
+  model directly we must do it ourselves; without this the model sees
+  OOD inputs and emits ~zero velocity, so the Δz-anchored Euler step
+  reconstructs the source regardless of `t_inj` / `guidance_scale`).
+* `directedit.invert` → `directedit.edit_forward` (with the same
+  `t_inj` / `t_inj_blocks=None` defaults as the CLI).
+* `model.model.process_latent_out` to return raw VAE-space LATENT in
+  the comfy convention.
+
+Two-phase progress bar: invert occupies `[0, T)`, edit occupies
+`[T, 2T)`.
+
+The package supports two install shapes:
+
+1. **Inside the anima_lora repo** (dev / monorepo). Imports the live
+   `library.inference.directedit` etc.
+2. **Standalone** (just dropped into vanilla ComfyUI `custom_nodes/`).
+   Falls back to a bundled inference subset under `_vendor/`,
+   regenerated by `python scripts/sync_vendor.py` from the live tree
+   before bumping the node version. The vendor resolution drops any
+   partially-imported `library.*` modules from `sys.modules` before
+   re-importing so vendor copies actually take effect.
+
+## What hasn't shipped (deferred from v2)
 
 ### v2.1 — embedding inversion as a premium fallback
 
 `archive/inversion/invert_embedding.py` already does per-image gradient
-descent on ψ_src to minimize FM loss through the frozen DiT. Ground-truth
+descent on ψ_src to minimize FM loss through the frozen DiT — ground-truth
 quality at the cost of minutes per image. Not yet wired into the edit
-pipeline. Intended use: a `--ψ_src_mode invert` flag in `scripts/edit.py`
-for users willing to wait for max fidelity.
+pipeline. Intended use: a `--psi_src_mode invert` flag in
+`scripts/edit.py` for users willing to wait for max fidelity.
 
 Move-out-of-archive needed; otherwise no new code.
 
 ### v2.2 — img2emb
 
-Defers per the v2 plan to "only if v3.0 (this) plus v2.1 don't cover the
+Defers per the v2 plan to "only if the tagger arm + v2.1 don't cover the
 use cases." Has its own design doc in
-[`docs/proposal/img2emb_plan.md`](../proposal/img2emb_plan.md). v3.0 was
-explicitly built first to avoid the failure mode the archived img2emb hit
-— solving the cheap problem (Anima-distribution vocabulary) before
+[`docs/proposal/img2emb_plan.md`](../proposal/img2emb_plan.md). The
+tagger arm shipped first to avoid the failure mode the archived img2emb
+hit — solving the cheap problem (Anima-distribution vocabulary) before
 attempting the hard one (manifold-correct continuous embeddings).
 
-### Other known gaps
+### Mask blending (paper Eq. 12)
 
-* **No bench harness.** `bench/anima_tagger/` per the standard envelope is
-  the next add. Will compare F1 against `WDTagger` on a shared held-out
-  set, plus a downstream eyeball edit-success-rate on a fixed DirectEdit set.
-* **No trained checkpoint shipped.** Vocab build, manifest, and partial
-  feature cache are on disk. Training run pending.
-* **Rating-class imbalance.** 0.6% `general` ratings will yield poor
-  rating-head F1 on that class. Class-weighted CE partly compensates.
-  If downstream consumers care about `general`-rating accuracy, oversample.
+`scripts/edit.py` and `library.inference.directedit.edit_forward` both
+accept a `mask=` argument that currently warns and is ignored. The
+intent is per-step background-lock blending: `z_new = mask * z_anchor +
+(1-mask) * z_predicted` so regions outside the edit area stay pinned to
+the source-anchor latent. Adding it is purely a per-step linear
+combination on top of the existing Δz step rule; not blocked by anything
+upstream.
 
-## How to validate the v3.0 ship
+### Other gaps
 
-The single test that matters:
+* **No bench harness.** `bench/directedit/` per the standard envelope
+  (cf. `bench/_common.py::write_result`) is the next add. Should
+  compare edit-success rate vs. ψ_src reconstruction fidelity across
+  tagger arms (Anima vs wd) and `t_inj` settings.
 
-```bash
-# After feature cache + train + calibrate complete:
-TAGGER=anima make exp-test-directedit PROMPT='double peace'
-TAGGER=wd    make exp-test-directedit PROMPT='double peace'
-```
+## Validation
 
-Compare both outputs visually for the same source image. If `TAGGER=anima`
-produces edits that better isolate the requested change while preserving
-non-edited regions, v3.0 is shipped.
+Two-tier:
 
-If both fail, the issue is *not* tagger vocabulary and we move directly
-to v2.1 (embedding inversion). If `TAGGER=wd` is competitive, the gain
-isn't worth the training pipeline's existence — but the testing data
-that motivated v2 in the first place suggests this won't happen.
+* **Reconstruction** (`make exp-test-directedit-dry`): ψ_tar == ψ_src
+  must reconstruct the source. With multi-variant caches, all variants
+  must agree pixel-wise within numeric noise. This isolates
+  `invert`/`edit_forward` correctness from edit semantics. Failure here
+  points at: VAE standardization (the `process_latent_in` issue the
+  ComfyUI node hit), text-encoder padding (must be max-padded, not
+  trimmed — see CLAUDE.md "Text encoder padding"), or sigma-schedule
+  drift.
+* **Edit leverage** (`make exp-test-directedit PROMPT='...'`): with a
+  good ψ_src and a clear edit instruction, the edit must apply locally
+  while preserving non-edited regions. Tagger choice matters here —
+  swap `TAGGER=anima` ↔ `TAGGER=wd` to attribute leverage failures to
+  ψ_src manifold-fit vs. the editing primitive.
 
-## Files touched in this iteration
+The CLI logs `|src-tar|` abs-mean as a quick sanity signal: near-zero
+means the encoder path collapsed (likely empty/identical caption); far
+from zero means ψ_src and ψ_tar are doing different things and the edit
+result is on the editor, not the encoder.
 
-```
-.env                                               +1 line  CAPTION_CORPUS_DIR=
-library/env.py                                     +60      .env loader
-library/captioning/__init__.py                     ~       expose AnimaTagger
-library/captioning/tag_rules.py                    +110    rule loader/applier
-library/captioning/anima_tagger.py                 +210    inference wrapper
-library/captioning/anima_tagger_data.py            +220    manifest+cache+dataset
-library/captioning/anima_tagger_model.py           +60     head architecture
-scripts/train_anima_tagger.py                      +600    4-mode CLI
-scripts/experimental_tasks/inference.py            ~30     TAGGER env var
-docs/experimental/anima_tagger.md                  new     architecture+procedure
-docs/experimental/directedit_editing_v3.md         new     this file
-models/captioners/anima-tagger-v1/                 new     vocab+manifest+rules+(partial)cache
-```
+## References
 
-Total net: ~1,300 LoC of code + 2 docs. Reuses existing `library/vision/`
-encoder + bucket utilities; doesn't touch DiT/training/inference paths.
-
-## Why this approach was right (in hindsight)
-
-The v2 proposal made the case for trying the cheap fix (vocabulary
-distribution) before the speculative fix (full img2emb). Three things
-during implementation reinforced that:
-
-1. **gelcrawl already had the components we needed.** The tag taxonomy
-   (`.tag_cache.json`), the rules YAML, and the canonical caption format
-   were all already-debugged artifacts. We saved weeks of "what's the
-   right output format" experimentation by adopting them.
-2. **The architectural pattern was already validated.** `gelcrawl/classify.py`
-   does frozen-encoder + MLP head + cached features for a different task
-   (quality classifier). We reused the pattern.
-3. **PE-Core caches existed.** The IP-Adapter pipeline already produces
-   `{stem}_anima_pe.safetensors`. For the curated set we got cache
-   coverage for free; for the larger crawled set we paid the build cost
-   once.
-
-If v3.0 ships and edit-success rate is good, v2.2 (img2emb) doesn't need
-to happen — phase complete. If v3.0 ships and edit-success is bad on a
-specific class of content, we have a much sharper problem statement to
-hand to v2.2 ("img2emb specifically needs to handle X") than the
-archived design started with.
+* **Paper.** Yang & Ye, "Direct flow-inversion image editing for rectified
+  flow models." [arXiv:2605.02417v1](https://arxiv.org/abs/2605.02417v1).
+* **Reference implementation.** [Tr1stesse/DirectEdit](https://github.com/Tr1stesse/DirectEdit) — original PyTorch
+  reference; source for the inversion / edit-forward step rules and the
+  V-injection scheme.
+* **Tagger arm.** [`anima_tagger.md`](./anima_tagger.md).
+* **v2 design doc.** [`docs/proposal/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md).

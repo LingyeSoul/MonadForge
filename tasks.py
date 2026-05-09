@@ -8,7 +8,7 @@ Examples:
     python tasks.py lora
     python tasks.py lora --network_dim 32 --max_train_epochs 64
     python tasks.py test
-    python tasks.py test-spectrum
+    python tasks.py test                     # add SPECTRUM=1 to enable Spectrum
     python tasks.py download-models
     python tasks.py exp-apex                 # experimental method
     python tasks.py exp-test-ip ref.png      # experimental inference
@@ -46,7 +46,10 @@ COMMANDS = {
         "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft, postfix_exp).",
     ),
     # ── Inference ─────────────────────────────────────────────────────
-    "test": (inference.cmd_test, "Inference with latest LoRA"),
+    "test": (
+        inference.cmd_test,
+        "Inference with latest LoRA. SPECTRUM=1 enables Spectrum acceleration.",
+    ),
     "test-mod": (
         inference.cmd_test_mod,
         "Inference with latest pooled_text_proj (modulation guidance)",
@@ -59,7 +62,6 @@ COMMANDS = {
         inference.cmd_test_merge,
         "Inference with latest *_merged.safetensors (MODEL_DIR=..., default 'output_temp')",
     ),
-    "test-spectrum": (inference.cmd_test_spectrum, "Spectrum-accelerated inference"),
     "test-dcw": (
         inference.cmd_test_dcw,
         "Inference with latest LoRA + DCW post-step bias correction",

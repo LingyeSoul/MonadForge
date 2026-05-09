@@ -2,11 +2,15 @@
 
 A small classifier that maps an image to a comma-separated tag string in
 exactly the format Anima's training-time T5 saw. Used as the case-1 ψ_src
-provider for DirectEdit (replacing wd-tagger when a checkpoint is present).
+provider for DirectEdit (replacing wd-tagger when a checkpoint is present),
+and as a standalone captioner for LoRA dataset prep / prompt scaffolding via
+the `comfyui-anima-tagger` ComfyUI node.
 
-Status: **training-ready** (vocabulary + manifest + feature cache builders +
-trainer + threshold calibrator + inference wrapper all wired). No trained
-checkpoint shipped yet — first run pending.
+Status: **shipped**. A trained checkpoint lives at
+`models/captioners/anima-tagger-v1/` (4,937-tag vocab, residual macro-F1
+~0.192 on val with softmax groups argmax-only). End-to-end PE-LoRA training
+path, typed tag-group routing, and a curator-side role-marker scanner are
+all wired.
 
 ## Why this exists
 
@@ -14,16 +18,15 @@ DirectEdit's invert/edit primitive is robust to ψ_src corruption — even
 shuffled or tag-dropped source captions reconstruct the source image at
 ~99% pixel fidelity. But edit *leverage* (whether ψ_tar = ψ_src + edit-tag
 actually applies the change) collapses when ψ_src is structurally far
-from Anima's training-time embedding manifold. wd-tagger output is bad
-enough at this to be the live blocker; see
-[`docs/proposal/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md)
-for the diagnosis.
+from Anima's training-time embedding manifold. wd-tagger output was bad
+enough at this to be the live blocker; this tagger replaces it for
+checkpoints in-tree, and falls back to wd-tagger when absent.
 
 ## Architecture
 
 ```
 PIL image → PIL LANCZOS-resize to PE-Core bucket size
-         → ToTensor + Normalize([0.5], [0.5])  (= [-1, 1])
+         → IMAGE_TRANSFORMS (= [-1, 1])
          → frozen PE-Core-L14-336 → patch tokens [T, 1024]
          → mean-pool over T → feature [1024]
          ──────────────────────────────────────────────────  trunk (frozen)
@@ -33,29 +36,33 @@ PIL image → PIL LANCZOS-resize to PE-Core bucket size
          └→ Linear(1024, 3)            → rating_logits  ──── 3-class rating head
 
 Per-tag F1-calibrated threshold sweep at the end of training picks the
-inference threshold for each output dimension.
+inference threshold for each output dimension. Tags belonging to a
+softmax group are excluded from the sweep — they're argmax-only at
+inference.
 ```
 
-Total trained params at default `n_tags=4965, d_hidden=1024`: **~6.1M**.
-Frozen PE-Core trunk is loaded from existing `models/pe/PE-Core-L14-336.pt`
-— shared with the IP-Adapter pipeline.
+Total trained params at default `n_tags=4937, d_hidden=1024`: **~6.1M**
+(frozen path). The end-to-end `--pe_lora_rank > 0` path adds a low-rank
+delta over the trailing PE-Core blocks; alpha/rank/layers configurable.
+
+The shipped checkpoint runs the frozen path (`pe_lora: false`), trained
+for 100 epochs at `lr=2e-4`, `batch_size=64`, `lambda_rating=0.1`.
 
 ### Why a shared trunk for both heads
 
 Rating prediction and tag prediction look at the same kinds of visual
-content — lots of the rating signal is also expressible as tag co-occurrence.
-A shared trunk gives the rating gradient a path into the same representation
-the tag head reads from, at the cost of one extra Linear at the head split.
-Empirically this is what gelcrawl's quality classifier does too
-(`gelcrawl/classify.py`); we reuse that pattern.
+content — lots of the rating signal is also expressible as tag
+co-occurrence. A shared trunk gives the rating gradient a path into the
+same representation the tag head reads from, at the cost of one extra
+Linear at the head split. Empirically this is what gelcrawl's quality
+classifier does too (`gelcrawl/classify.py`); we reuse that pattern.
 
 ### Why mean-pool over patch tokens
 
-PE-Core's CLS token is contrastive-image-text trained — useful for retrieval,
-not optimized for multi-label classification. Mean-pool over the patch
-tokens gives a content-weighted summary; head capacity is enough that the
-pooling choice doesn't bottleneck. Swap to attention pooling only if the
-linear probe + MLP-head doesn't saturate at expected F1.
+PE-Core's CLS token is contrastive-image-text trained — useful for
+retrieval, not optimized for multi-label classification. Mean-pool over
+the patch tokens gives a content-weighted summary; head capacity is
+enough that the pooling choice doesn't bottleneck.
 
 ### Why a sqrt(neg/pos) BCE pos-weight
 
@@ -65,17 +72,34 @@ gradient. Inverse-frequency weights (`n_neg/n_pos`) over-correct and
 explode rare-tag gradients. `sqrt(n_neg/n_pos)` is the standard middle
 ground — softens the long-tail without overshoot.
 
-## Files (under `library/captioning/`)
+## Code layout
+
+`library/captioning/` (inference + shared schema):
 
 | File | Role |
 |---|---|
-| `tag_rules.py` | Load + apply the `tag_rules.yaml` semantics (replacements / always-remove / clothing dedup). Mirror of `gelcrawl/postprocess.py::dedup_tags_in_file`. |
-| `anima_tagger_data.py` | `TaggerManifest` (loads `dataset.json`), `FeatureCacheBuilder` (PIL→PE-Core→pool→safetensors per stem), `CachedFeatureDataset` (in-memory tensors for the trainer), and `pil_resize_to_bucket` (LANCZOS→bucket pixel size). |
-| `anima_tagger_model.py` | `AnimaTaggerConfig`, `AnimaTaggerHead` (the trunk + two heads). Imported by both trainer and inference wrapper. |
-| `anima_tagger.py` | `AnimaTagger` — public inference class. Mirrors the `WDTagger` surface (`predict`, `predict_caption`). Loads checkpoint, encoder, vocab, thresholds, and rules from one directory. |
+| `anima_tagger.py` | `AnimaTagger` — public inference class. Mirrors `WDTagger.predict`/`predict_caption`. Loads checkpoint, encoder, vocab, thresholds, rules, optional groups, optional PE-LoRA delta from one directory. Implements all post-prediction refinements (group argmax, character floor, original-fallback, girls-count cap, top-1 artist/copyright). |
+| `anima_tagger_model.py` | `AnimaTaggerConfig` + `AnimaTaggerHead` (trunk + tag head + rating head). |
+| `anima_tagger_data.py` | `TaggerManifest`, `FeatureCacheBuilder`, `CachedFeatureDataset`, `ImageCacheBuilder`, `CachedImageDataset`, `BucketBatchSampler`, `pil_resize_to_bucket`. |
+| `tag_rules.py` | `tag_rules.yaml` loader/applier (replacements, always-remove, clothing dedup, `category_overrides`, `coverage_ignore`). |
+| `tag_groups.py` | `tag_groups.yaml` loader; `TagGroup`/`TagGroups`/`ResolvedGroup`; modes `softmax`, `softmax_when_solo`, `multilabel`. |
+| `wd_tagger.py` | Existing WD-tagger v3 wrapper kept as portable fallback when no Anima Tagger checkpoint is present. |
 
-Trainer and CLI live at `scripts/train_anima_tagger.py`; the env loader
-(`library/env.py`) reads paths from `anima_lora/.env`.
+`scripts/anima_tagger/` (CLI + training pipeline — invoke as
+`python -m scripts.anima_tagger.cli`):
+
+| File | Role |
+|---|---|
+| `cli.py` | Argparse + 7-mode dispatcher (`build_vocab`, `build_features`, `build_resized`, `train`, `calibrate`, `predict`, `scan_role_markers`). Loads `anima_lora/.env` so `CAPTION_CORPUS_DIR` resolves before defaults are computed. |
+| `vocab.py` | Caption discovery, tag categorization (rating literal → `@` artist → count regex → `category_overrides` → tag cache → `general` fallback), `min_freq` cut, train/val split, manifest build, group resolution against the kept vocab, coverage scan. |
+| `caches.py` | `cmd_build_features` (pooled PE features → `.cache/pooled-pe/`) and `cmd_build_resized` (LANCZOS-resized uint8 images → `.cache/resized-pe/`). |
+| `train_cached.py` | Frozen-encoder fast path: full train/val features pushed to VRAM once, sliced by index — no DataLoader. |
+| `train_pe_lora.py` | End-to-end PE-LoRA path: bucket-grouped image batches, two AdamW param groups (head at `--lr`, LoRA at `--pe_lora_lr`). |
+| `train_common.py` | `GroupRouter`, `compute_grouped_loss` (BCE + per-group CE with mask-out so each (sample, tag) is supervised by exactly one term), `eval_split` (residual macro-F1 + per-group argmax accuracy), `pos_weight_sqrt`, `rating_class_weights`, `save_history_plot`. |
+| `calibrate.py` | Per-tag F1-optimal threshold sweep on val (skips softmax-group tags). |
+| `predict.py` | Single-image debug entry; samples a random val stem when `--image` is omitted. |
+| `role_markers.py` | Read-only curator helper — scans the trained vocab + manifest for character-typed tags that behave like affiliation markers and emits a YAML stub ready to paste into `tag_rules.yaml`. |
+| `constants.py` | Tag-type ID map, `RATINGS`, `SLOT_ORDER`, count-tag regex, `find_image_for_caption`. |
 
 ## Configuration via `.env`
 
@@ -86,132 +110,155 @@ External corpus paths are routed via `CAPTION_CORPUS_DIR`. Add to
 CAPTION_CORPUS_DIR=/path/to/external/caption/corpus
 ```
 
-The corpus is expected to contain:
+Expected layout:
 
-| Path | What it is | How it's consumed |
+| Path | What it is | Consumer |
 |---|---|---|
-| `<corpus>/retrieved/{artist}/{stem}.{webp,jpg,png,jpeg}` | Source images, paired with `.txt` captions | Training input (image) + label (caption). 12k+ images. |
-| `<corpus>/retrieved/{artist}/{stem}.txt` | Booru-style caption per image, in Anima format (`rating, count, characters, copyrights, @artists, generals`) | Multi-hot label after `tag_rules` normalization |
-| `<corpus>/retrieved/.tag_cache.json` | `tag → integer type id` (0=general, 1=artist, 3=copyright, 4=character, 5=metadata, 6=deprecated) | Vocab categorization + canonical-emit-slot routing |
-| `<corpus>/tag_rules.yaml` | Replacements + always-remove + clothing dedup map | Applied at vocab-build time and snapshotted into the checkpoint dir for inference |
-| `<corpus>/selected/` (optional) | Curated subset (already deduped) | Additional caption source; folded into the vocab scan |
+| `<corpus>/retrieved/{artist}/{stem}.{webp,jpg,png,jpeg}` | Source images, paired with `.txt` captions | Training input + label. ~12k images. |
+| `<corpus>/retrieved/{artist}/{stem}.txt` | Booru-style caption per image, in Anima format (`rating, count, characters, copyrights, @artists, generals`) | Multi-hot label after `tag_rules` normalization. |
+| `<corpus>/retrieved/.tag_cache.json` | `tag → integer type id` (0=general, 1=artist, 3=copyright, 4=character, 5=metadata, 6=deprecated) | Vocab categorization + canonical-emit-slot routing. |
+| `<corpus>/tag_rules.yaml` | Replacements + always-remove + clothing dedup + `category_overrides` + `coverage_ignore` | Vocab-build time and inference safety net. Snapshotted into the checkpoint. |
+| `<corpus>/tag_groups.yaml` | Typed groupings (`eye_color`, `hair_color`, `hair_length`, `rating`, `top_garment`, …) | Group routing during training + inference. Snapshotted into the checkpoint. |
+| `<corpus>/selected/` (optional) | Curated subset (already deduped) | Additional caption source. |
 
-`image_dataset/` (Anima's training set, 2.6k curated images already
-preprocessed) is also scanned by default.
+`image_dataset/` (Anima's training set) is also scanned by default.
 
 `CAPTION_CORPUS_DIR` is **not committed** — it's per-user. The trained
-checkpoint snapshots `tag_rules.yaml` into `models/captioners/anima-tagger-v1/`
-so inference has zero runtime dependency on the corpus dir.
+checkpoint snapshots `rules.yaml` + `groups.yaml` so inference has zero
+runtime dependency on the corpus dir.
 
-## Training procedure
+## Training pipeline
 
-Four stages, each runnable independently:
+Seven modes, run independently via `python -m scripts.anima_tagger.cli`:
 
 ```bash
-# 1. Build the vocabulary + train/val split + per-stem dataset manifest.
-python scripts/train_anima_tagger.py --mode build_vocab --min_freq 5
+# 1. Build the vocabulary + train/val split + per-stem manifest +
+#    resolved typed groups.
+python -m scripts.anima_tagger.cli --mode build_vocab --min_freq 5
 
-# 2. Encode every manifest image through PE-Core, mean-pool, cache to disk.
-#    Idempotent — re-runnable on partial caches.
-python scripts/train_anima_tagger.py --mode build_features
+# 2a. Frozen-encoder path: cache pooled PE-Core features per stem.
+python -m scripts.anima_tagger.cli --mode build_features
 
-# 3. Train the head on cached features. ~50 MB total in VRAM, fast.
-python scripts/train_anima_tagger.py --mode train --epochs 30
+# 2b. End-to-end PE-LoRA path: cache LANCZOS-resized uint8 images instead.
+python -m scripts.anima_tagger.cli --mode build_resized
 
-# 4. Sweep per-tag F1-optimal thresholds on the val split.
-python scripts/train_anima_tagger.py --mode calibrate
+# 3a. Train the head on cached features (frozen encoder; default).
+python -m scripts.anima_tagger.cli --mode train --epochs 100
+
+# 3b. End-to-end PE-LoRA training (requires --mode build_resized first).
+python -m scripts.anima_tagger.cli --mode train \
+    --pe_lora_rank 16 --pe_lora_layers 4 --pe_lora_lr 1e-4 --epochs 30
+
+# 4. Sweep per-tag F1-optimal thresholds on val (skips softmax-group tags).
+python -m scripts.anima_tagger.cli --mode calibrate
+
+# 5. Single-image sanity check.
+python -m scripts.anima_tagger.cli --mode predict --image foo.png --show_scores
+
+# 6. Curator helper — find character tags that behave like affiliation markers.
+python -m scripts.anima_tagger.cli --mode scan_role_markers --out_yaml stub.yaml
 ```
 
-Each mode's outputs go to `--out_dir` (default
-`models/captioners/anima-tagger-v1/`). After all four:
+All artifacts go to `--out_dir` (default
+`models/captioners/anima-tagger-v1/`):
 
 ```
 models/captioners/anima-tagger-v1/
-├── vocab.json              # tag list with categories + median emit position
+├── vocab.json              # tag list + category + median emit pos + groups
 ├── rules.yaml              # snapshot of tag_rules.yaml at vocab-build time
+├── groups.yaml             # snapshot of tag_groups.yaml (optional)
 ├── dataset.json            # per-stem (image_path, multi_hot, rating) manifest
-├── .cache/pooled-pe/       # per-stem [d_enc] safetensors
-├── model.safetensors       # trained AnimaTaggerHead state_dict
-├── config.json             # model + training metadata
+├── .cache/pooled-pe/       # per-stem [d_enc] safetensors  (frozen path)
+├── .cache/resized-pe/      # per-stem uint8 [C, H, W] safetensors  (PE-LoRA path)
+├── model.safetensors       # AnimaTaggerHead state_dict
+├── pe_lora.safetensors     # PE-LoRA delta (only when trained with --pe_lora_rank > 0)
+├── config.json             # model + training metadata (incl. pe_lora flags)
 ├── thresholds.safetensors  # per-tag F1-calibrated thresholds + val_f1
-└── train_history.json      # per-epoch loss + val metrics
+├── train_history.json      # per-epoch loss + val metrics
+└── train_history.png       # 2-panel loss + val-F1 / rating-acc plot
 ```
 
-The checkpoint dir is **fully self-contained** — moveable across machines,
-no runtime dependency on `CAPTION_CORPUS_DIR`.
+The checkpoint is **fully self-contained** — no runtime dependency on
+`CAPTION_CORPUS_DIR`, moveable across machines.
 
-### Stage 1 outputs (this is what we have on disk now)
+### Frozen-encoder path (`train_cached.py`)
 
-```
-caption stems indexed:  12,951
-unique tags seen:       12,939
-vocab size (≥5):        4,965
-dropped (low-freq):     7,974
-cache hit rate:         98.83%   # tags categorized via .tag_cache.json
-category counts:
-  general    3,804
-  character    722
-  copyright    268
-  artist        89
-  deprecated    66
-  count         15
-  metadata       1
-rating coverage:        99.94%
-rating distribution:    explicit=8742  sensitive=4128  general=73
-split:                  12,303 train / 648 val
-trainable samples:      12,907   # captions with sibling images + valid rating
-```
+The whole train/val feature tensor (~50 MB at 12k × 1024 × float32) lives
+in VRAM after one push — no per-step dataloader. Rating-CE is class-weighted
+(inverse frequency normalized to mean=1); tag-BCE uses
+`sqrt(n_neg/n_pos)` per-tag pos-weight. Best macro-F1 on val saved.
 
-The 0.52% miss rate on tag categorization is dominated by apostrophe-vs-`&#039;`
-variants in tag names (`grabbing another's breast`, `girls' frontline`); fall-back
-to "general" is harmless. A future refinement could apply the
-`&#039; → '` replacement to cache keys at load time.
+### End-to-end PE-LoRA path (`train_pe_lora.py`)
 
-### Stage 2 — feature cache
+Set `--pe_lora_rank > 0` and the trainer ignores the pooled cache,
+reads pre-resized `uint8 [C,H,W]` from `.cache/resized-pe/`, and runs
+PE-Core + mean-pool + head per step. `inject_pe_lora` (from
+`networks/methods/ip_adapter_pe_lora.py`) injects a low-rank delta on the
+trailing `--pe_lora_layers` resblocks (default 4) targeting QKV / attn-out
+/ MLP (each toggleable). `BucketBatchSampler` groups same-shape images
+into shape-homogeneous batches so the encoder forwards stay
+recompile-free.
 
-Each cached file is a single safetensors tensor `feature [d_enc=1024]` in
-float32, ~4 KB per stem, ~50 MB total for the full set. Cold throughput on
-a single GPU is ~5 img/s with PIL LANCZOS pre-resize to bucket size; full
-build ~30–40 minutes. The pre-resize step is in
-`pil_resize_to_bucket()` and matters — without it, multi-megapixel source
-images get bilinear-resized inside the encoder, costing 2× throughput and
-arguably some quality on severe downscales.
+Two AdamW param groups — head at `--lr`, LoRA at `--pe_lora_lr` (default
+`1e-4`). `pe_lora.safetensors` is saved alongside `model.safetensors`,
+and `config.json` records every PE-LoRA flag so inference can reconstruct
+the encoder state exactly.
 
-### Stage 3 — training knobs
+### Group routing (`GroupRouter`)
 
-| Flag | Default | Notes |
-|---|---|---|
-| `--epochs` | 30 | Cosine LR schedule from `--lr` to `--lr * 0.05` |
-| `--batch_size` | 256 | Whole train set fits in one batch on most GPUs; small batch is just for SGD noise |
-| `--lr` | 1e-3 | AdamW |
-| `--weight_decay` | 0.01 | AdamW |
-| `--d_hidden` | 1024 | Trunk hidden dim |
-| `--dropout` | 0.1 | After GELU |
-| `--lambda_rating` | 0.1 | Weight on rating CE relative to tag BCE |
-| `--seed` | 42 | Permutation seed; eval split is set at vocab-build time |
+`tag_groups.yaml` declares typed groups with one of three modes:
 
-All training/val tensors live in VRAM after one push (~50 MB) — no per-step
-dataloader.
+* **`softmax_when_solo`** — K-way CE over the group's logits when the
+  sample is single-subject (`solo`/`1girl`/`1boy`/`1other` fires AND no
+  multi-count tag fires) AND no `escape:` tag fires; falls back to BCE
+  per-tag otherwise. Used for groups that are mutually exclusive
+  on a single subject (eye color, hair color, hair length, primary
+  garment) but irrelevant when an explicit escape applies (e.g.
+  `heterochromia` for eye_color, `multicolored hair` for hair_color).
+* **`softmax`** — always K-way CE (modulo `escape:`). Used for genuinely
+  exclusive groups like rating.
+* **`multilabel`** — left in BCE; the group only exists for
+  introspection / UI grouping.
 
-Loss formulation:
-```
-L = BCE_pos_weighted(tag_logits, multi_hot)
-  + λ_rating · CE_class_weighted(rating_logits, rating_idx)
+`compute_grouped_loss` runs BCE on every (sample, tag) and masks off the
+positions where CE supervises that pair, so each cell is supervised by
+exactly one term. `eval_split` reports macro-F1 over **residual**
+(BCE-supervised) tags only and per-group argmax accuracy separately —
+softmax-group tags' sigmoid scores are untrained noise, so the
+flat macro-F1 the cached path reports is conservatively low (best 0.192
+on the shipped checkpoint, with 5 active softmax groups).
 
-pos_weight = sqrt(n_neg / n_pos)   # per tag
-class_weight = inv_freq normalized  # 3-class rating
-```
+### Calibration
 
-### Stage 4 — calibration
+`calibrate.py` sweeps thresholds in `[0.05, 0.95]` step `0.05` per tag and
+picks the F1-maximizing one on val. Tags with no positive val examples,
+zero achievable F1, or membership in a softmax group keep `default=0.5`
+(softmax-group tags are routed by argmax at inference, so a
+sigmoid-threshold value never fires for them). Tag-block size of 256
+caps memory.
 
-`_calibrate_thresholds()` sweeps thresholds in [0.05, 0.95] step 0.05 per
-tag and picks the F1-maximizing one on the val split. Tags with no positive
-val examples or zero achievable F1 keep `default=0.5`. Tag-block size of
-256 caps memory.
+### Role-marker scan
 
-Calibrated thresholds are critical — a global 0.35 (wd-tagger's inheritance)
-under-fires rare tags and over-fires common ones. Empirically tags spread
-to thresholds in roughly [0.05, 0.65] with a long mode near 0.20.
+`role_markers.py` is a read-only curator helper. It reads `vocab.json`
++ `dataset.json` and ranks every `category=='character'` tag by its
+conditional co-occurrence with another character tag on **solo**
+training samples (using the same `solo`/`1girl`/`1boy`/`1other` predicate
+the trainer applies). Each candidate is auto-bucketed:
+
+* **A_costume** — candidate shares a name prefix with a top partner →
+  variant of an existing base. Curate via `tag_rules.yaml` `dedup:`.
+* **D_role** — broad partner pool (≥ `--min_role_partners` distinct
+  partners) → affiliation marker mistyped as character (`sensei (blue
+  archive)`, `producer (idolmaster)`, `doctor (arknights)`). Curate via
+  `tag_rules.yaml` `remove:`.
+* **C_pair** — narrow partner pool (top-1 partner ≥
+  `--pair_dominance` of co-occurrences) → genuine couple/sibling pair.
+  Leave alone.
+* **B_review** — everything else; eyeball.
+
+`--out_yaml stub.yaml` writes a YAML stub split into pasteable sections
+(A as dedup blocks, D under `remove:`, B/C as commented hints). No files
+in the checkpoint dir are mutated.
 
 ## Inference
 
@@ -224,23 +271,45 @@ caption = tagger.predict_caption(Image.open("foo.png"))
 # → "sensitive, 1girl, hatsune miku, vocaloid, @some_artist, blue eyes, ..."
 
 debug = tagger.predict(Image.open("foo.png"))
-# → {"rating": "sensitive", "rating_scores": {...}, "scores": {...}, "kept": {...}}
+# → {"rating": "...", "rating_scores": {...}, "scores": {...},
+#    "kept": {...}, "groups": {"eye_color": "blue eyes", ...}}
 ```
 
-The `predict_caption` emit pipeline:
+`AnimaTagger.predict`:
 
-1. PIL → bucket-resize → ToTensor+Normalize → frozen PE-Core → mean-pool → trunk → tag_logits + rating_logits
-2. `sigmoid(tag_logits) ≥ thresholds` → kept tags; `argmax(rating_logits)` → rating
-3. Slot kept tags by canonical category order: `rating, count, character, copyright, @artist, general`
-4. Within each slot, sort by `median_pos` (tag's median position in training captions) — deterministic, mirrors how the corpus orders tags
-5. Re-apply `tag_rules` as a safety net (the dedup rule was already enforced at training-data normalization, but the model could in principle predict both `bra` and `black bra`)
-6. `_underscore_to_space` on every tag, comma-join
+1. PIL → bucket-resize → IMAGE_TRANSFORMS → frozen PE-Core (+ optional
+   PE-LoRA delta loaded from `pe_lora.safetensors` when `config.pe_lora`
+   is true) → mean-pool → trunk → tag_logits + rating_logits.
+2. `sigmoid(tag_logits) ≥ thresholds` → `kept`; `argmax(rating_logits)`
+   → rating.
+3. **Group-aware refinement.** For each loaded `softmax`/`softmax_when_solo`
+   group, when the gating predicate applies (single-subject for
+   `softmax_when_solo`, always for `softmax`, both modulo escape tags),
+   replace any sigmoid-admitted members with the single argmax winner
+   over the group's logits.
+4. **Girls-count cap.** When `kept` contains digit-prefixed `Ngirls`, trim
+   character predictions to the top-`max(N)` by score — caps the
+   independent-sigmoid leakage on gender-ambiguous art.
+5. **Character floor + original fallback.** Any character below
+   `character_floor` (default `0.5`, sits above some F1 thresholds as
+   low as `0.05` for noisy long-tail characters) is dropped. When that
+   empties the character slot AND no copyright tag survives, add
+   `original` (booru convention for non-IP work) so the caption still
+   has a slot-filling copyright.
+6. **Top-1 artist + top-1 copyright.** Independent sigmoid heads can
+   admit several borderline tags; collapse to the highest-scoring one
+   (booru convention is one artist / one copyright per work).
 
-The per-tag thresholds were the missing piece in wd-tagger — the global
-0.35 there leaks too many low-confidence false positives and drops too
-many low-prevalence true positives.
+`predict_caption` then slots tags by canonical category order
+(`rating, count, character, copyright, artist, general`), within-slot by
+median emit position from the training corpus, re-applies `tag_rules` as
+a safety net (the dedup map already fired during training-data
+normalization, but the model could in principle predict both `bra` and
+`black bra`), replaces underscores with spaces, and joins with `, `.
 
 ## Wired-up touchpoints
+
+### CLI driver
 
 `scripts/experimental_tasks/inference.py::cmd_test_directedit` chooses
 between `WDTagger` and `AnimaTagger` via the `TAGGER` env var:
@@ -252,46 +321,66 @@ TAGGER=wd make exp-test-directedit PROMPT='glasses'             # force wd
 ```
 
 The auto-detect checks for `models/captioners/anima-tagger-v1/model.safetensors`.
-If the user requests `TAGGER=anima` but the checkpoint is missing, the driver
+If `TAGGER=anima` is requested but the checkpoint is missing, the driver
 falls back to wd-tagger with a warning rather than crashing.
 
 `scripts/edit.py` itself doesn't tag — it takes `--prompt_src` directly.
-The driver script is the only place tag-source selection happens.
+Tagging only happens in the make-target driver (CLI) or the ComfyUI node
+(see below).
+
+### ComfyUI nodes (`custom_nodes/comfyui-anima-tagger/`)
+
+Two nodes share the `ANIMA_TAGGER` socket type:
+
+| Node | Inputs | Outputs |
+|------|--------|---------|
+| `AnimaTaggerLoader` | `tagger_dir` (STRING) | `tagger` (ANIMA_TAGGER) |
+| `AnimaTaggerCaption` | `tagger` (ANIMA_TAGGER), `image` (IMAGE) | `caption` (STRING) |
+
+The package supports two install shapes:
+
+1. **Inside the anima_lora repo** (dev / monorepo). Imports the live
+   `library.captioning.anima_tagger`.
+2. **Standalone** (just this directory dropped into vanilla ComfyUI
+   `custom_nodes/`). Falls back to a bundled inference subset under
+   `_vendor/`, regenerated by `python scripts/sync_vendor.py` from the
+   live tree before bumping the node version.
+
+PE-Core-L14-336 (~1 GB) is auto-fetched from `facebook/PE-Core-L14-336`
+on first use into the `pe_ckpt` path on the loader.
+
+`AnimaTaggerCaption` outputs a STRING that drops into any text input —
+DirectEdit's `ANIMA_TAGGER` socket, `CLIPTextEncode` for prompt
+scaffolding, or `Save Text File` for LoRA dataset pre-fill.
 
 ## Known limitations
 
-1. **Tag-cache apostrophe miss.** Top-20 uncategorized tags all contain
-   apostrophes (`grabbing another's breast` etc.) — the cache keys used
-   `&#039;` instead. Affects 0.52% of tag occurrences, all fall back to
-   "general" category. Cheap fix, not yet applied.
-2. **Per-tag positives are thin for the long tail.** At `min_freq=5` and
-   12k training images, each long-tail tag has 5–20 positives. Calibrated
-   thresholds for those tags are noisier than for high-frequency ones.
-   `--min_freq 10` is a knob to revisit if F1 disappoints.
-3. **Heavy rating-class imbalance.** 8,742 explicit / 4,128 sensitive /
-   73 general (0.6%). The rating head will struggle on `general`. Class-weighted
-   CE compensates partially. If `general`-classification accuracy matters
-   for downstream consumers, consider over-sampling at training time.
-4. **No bench harness yet.** `bench/anima_tagger/` per the standard envelope
-   (cf. `bench/_common.py::write_result`) is the next thing to add — should
-   compare F1 vs `WDTagger` on a shared held-out set, plus a downstream
-   "edit-success-rate" metric on a small DirectEdit set.
+1. **Rating-class imbalance.** Train-corpus rating mix is ~67% explicit
+   / ~32% sensitive / ~0.6% general. Class-weighted CE compensates
+   partially. If `general`-rating accuracy matters downstream, oversample
+   at training time.
+2. **Per-tag positives are thin for the long tail.** At `min_freq=5`
+   each long-tail tag has 5–20 positives; calibrated thresholds for those
+   tags are noisier than for high-frequency ones. `--min_freq 10` is a
+   knob to revisit if F1 disappoints.
+3. **No bench harness yet.** `bench/anima_tagger/` per the standard
+   envelope (cf. `bench/_common.py::write_result`) is the next thing to
+   add — should compare F1 vs `WDTagger` on a shared held-out set, plus a
+   downstream "edit-success-rate" metric on a small DirectEdit set.
+4. **Long-tail characters benefit from `character_floor`.** Some F1
+   thresholds settle as low as `0.05` for noisy long-tail characters;
+   the post-prediction floor (default `0.5`) is what stops borderline
+   guesses from leaking into ψ_src on stylized / gender-ambiguous art.
+   Lowering the floor recovers recall at the cost of precision.
 
 ## Open design questions
 
-1. **Should we also produce embedding output?** Right now `predict_caption`
-   emits a string that gets re-tokenized by T5. We could add a head that
-   directly produces `[K, D_t5]` continuous tokens — but that's the
-   img2emb design (`docs/proposal/img2emb_plan.md`) and brings back the
-   structural challenges that the proposal documents. Stick with tag-string
-   output for v1.
-2. **Should we use DINOv3 instead of PE-Core?** gelcrawl's `classify.py`
-   uses DINOv3 ViT-L/16@224 and works well in this domain. PE-Core gives
-   us a pre-existing cache (IP-Adapter pipeline). If F1 saturates and we
-   suspect the trunk is the limit, swap encoders — `--encoder` flag
-   already plumbs through.
-3. **How aggressive should the dedup rule reapplication be at emit time?**
-   Currently `apply_rules` runs over the full predicted tag set after slot
-   ordering. If a user wants to keep both base and color variant ("show me
-   *bra* AND *black bra*"), they'd need to opt out. Probably no one wants
-   this — leave on by default.
+1. **DINOv3 trunk swap.** gelcrawl's `classify.py` uses DINOv3 ViT-L/16@224
+   and works well in this domain. If F1 saturates and we suspect the
+   trunk is the limit, swap encoders — `--encoder` flag already plumbs
+   through the loader registry.
+2. **Embedding output instead of tag string.** `predict_caption` emits a
+   string that gets re-tokenized by T5. We could add a head producing
+   `[K, D_t5]` continuous tokens directly — but that's the img2emb design
+   (`docs/proposal/img2emb_plan.md`) and hits the same structural
+   challenges. Stick with tag-string output for now.

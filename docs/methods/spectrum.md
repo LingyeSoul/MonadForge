@@ -9,7 +9,7 @@ Reference implementation: `Spectrum/` (cloned from upstream repo)
 ## Quick start
 
 ```bash
-make test-spectrum   # same as make test but with Spectrum enabled
+make test SPECTRUM=1   # same as make test but with Spectrum enabled
 ```
 
 Or add `--spectrum` to any `inference.py` invocation:

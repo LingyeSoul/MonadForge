@@ -4,7 +4,7 @@ Drop-in replacement for :class:`WDTagger` when feeding ψ_src to DirectEdit.
 Mirrors the same public surface (``predict``, ``predict_caption``) so existing
 callers swap by changing only the import.
 
-Checkpoint layout (produced by ``scripts/train_anima_tagger.py``):
+Checkpoint layout (produced by ``python -m scripts.anima_tagger.cli``):
 
 ::
 
@@ -19,7 +19,7 @@ Checkpoint layout (produced by ``scripts/train_anima_tagger.py``):
 
 If ``config.json`` has ``pe_lora: true`` and ``pe_lora.safetensors`` exists,
 the wrapper injects PE-LoRA on the encoder's trailing blocks and loads the
-delta weights — same code path as ``scripts/train_anima_tagger.py``.
+delta weights — same code path as ``python -m scripts.anima_tagger.cli``.
 
 When ``groups.yaml`` is present, prediction is group-aware: ``softmax`` and
 ``softmax_when_solo`` (the latter gated on solo + no-escape) groups emit

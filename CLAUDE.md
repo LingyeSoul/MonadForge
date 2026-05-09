@@ -77,7 +77,7 @@ make test
 make test-mod              # Test with modulation guidance (pooled_text_proj)
 make test-hydra            # HydraLoRA router-live (anima_hydra*_moe.safetensors)
 make test-merge            # Inference with a merged/baked DiT (no adapter loaded)
-make test-spectrum         # Spectrum-accelerated inference (~3.75x speedup)
+make test SPECTRUM=1       # Spectrum-accelerated inference (~3.75x speedup)
 make test-dcw              # Latest LoRA + DCW scalar bias correction (--dcw, λ=−0.015)
 make test-dcw-v4           # Latest LoRA + DCW v4 learnable calibrator (auto-resolves fusion_head.safetensors)
 make test-spectrum-dcw     # Spectrum + DCW scalar composed
@@ -241,7 +241,7 @@ Code: `library/inference/dcw_calibrator.py`, `networks/dcw.py`, `scripts/dcw/`, 
 
 Image-editing primitive that pairs an inversion (DDIM-style trajectory through the frozen DiT) with an edit-conditioning swap: ψ_src reconstructs the source image, ψ_tar = ψ_src + edit-instruction applies the change. Robust to ψ_src corruption for *reconstruction* but edit *leverage* collapses when ψ_src is structurally far from Anima's training-time embedding manifold — wd-tagger output was bad enough at this to be the live blocker, which is why **Anima Tagger** exists.
 
-- **Anima Tagger** (`library/captioning/anima_tagger.py`): small classifier mapping image → comma-separated tag string in exactly Anima's training-time T5 format. Drop-in replacement for `WDTagger` (same `predict` surface). Frozen PE-Core-L14-336 trunk + LayerNorm + Linear head. Train with `python scripts/train_anima_tagger.py` against `bench/wd_tagger_dataset/` (vocabulary + manifest + feature cache builders + threshold calibrator all wired). DirectEdit's case-1 ψ_src path picks Anima Tagger if a checkpoint is present, else falls back to WD Tagger.
+- **Anima Tagger** (`library/captioning/anima_tagger.py`): small classifier mapping image → comma-separated tag string in exactly Anima's training-time T5 format. Drop-in replacement for `WDTagger` (same `predict` surface). Frozen PE-Core-L14-336 trunk + LayerNorm + Linear head. Train with `python -m scripts.anima_tagger.cli` against `bench/wd_tagger_dataset/` (vocabulary + manifest + feature cache builders + threshold calibrator all wired). DirectEdit's case-1 ψ_src path picks Anima Tagger if a checkpoint is present, else falls back to WD Tagger.
 - **DirectEdit core** (`library/inference/directedit.py`): the invert+edit primitive. Invoked from `scripts/edit.py` (CLI), `scripts/experimental_tasks/inference.py` (`make exp-test-directedit` / `exp-test-directedit-dry`), and `custom_nodes/comfyui-anima-directedit/` (ComfyUI nodes).
 
 Use `make exp-test-directedit-dry` to verify ψ_tar == ψ_src reconstructs the source — gates whether the inversion is well-conditioned independent of edit semantics.
@@ -294,7 +294,7 @@ Utility scripts in `scripts/`:
 - `bench_methods.py` — Benchmark inference across method configurations (writes to `bench/`)
 - `compute_pe_centroid.py` — Compute PE-feature centroid for DCW v4's `cos(c_pool, μ_centroid)` channel.
 - `export_logs_json.py` — Export TensorBoard run scalars to JSON/JSONL (used by `make export-logs`)
-- `train_anima_tagger.py` — Train the Anima Tagger checkpoint used by DirectEdit. See `docs/experimental/anima_tagger.md`.
+- `anima_tagger/cli.py` — Train the Anima Tagger checkpoint used by DirectEdit (invoke as `python -m scripts.anima_tagger.cli`). See `docs/experimental/anima_tagger.md`.
 - `edit.py` — Standalone DirectEdit CLI entry (the `make exp-test-directedit` wrapper around it lives in `scripts/experimental_tasks/inference.py`).
 - `scripts/dcw/` — DCW v4 calibration pipeline: `measure_bias.py` (per-aspect trajectory dump), `train_fusion_head.py` (fusion-head trainer), `trajectory.py`, `haar.py`, etc. Driven by `make dcw` / `make dcw-train` (`scripts/tasks/dcw.py`).
 

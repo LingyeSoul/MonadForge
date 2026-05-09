@@ -36,7 +36,7 @@ python scripts/sync_vendor.py     # from the anima_lora repo root (refreshes bot
 
 ## Checkpoint layout
 
-`tagger_dir` must contain (produced by `scripts/train_anima_tagger.py` in the parent repo):
+`tagger_dir` must contain (produced by `python -m scripts.anima_tagger.cli` in the parent repo):
 
 ```
 <tagger_dir>/
@@ -94,4 +94,4 @@ DirectEdit owns its own ψ_tar logic and only needs the `ANIMA_TAGGER` socket �
 
 - **AnimaTagger architecture.** `docs/experimental/anima_tagger.md` in the parent repo.
 - **DirectEdit integration.** `docs/experimental/directedit_editing_v3.md` (why ψ_src manifold-fit matters).
-- **Trainer.** `scripts/train_anima_tagger.py` in the parent repo.
+- **Trainer.** `python -m scripts.anima_tagger.cli` in the parent repo (`scripts/anima_tagger/cli.py`).

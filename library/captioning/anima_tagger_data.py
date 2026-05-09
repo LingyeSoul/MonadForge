@@ -4,7 +4,7 @@ Five pieces:
 
 * :class:`TaggerManifest` — loads ``dataset.json`` (the per-stem
   image-path + multi-hot tag indices + rating-class index emitted by
-  ``scripts/train_anima_tagger.py --mode build_vocab``).
+  ``python -m scripts.anima_tagger.cli --mode build_vocab``).
 * :class:`FeatureCacheBuilder` — encodes each manifest image through a
   frozen PE-Core trunk, mean-pools over patch tokens, and writes a
   per-stem ``.safetensors`` to the cache dir. Idempotent: skips entries

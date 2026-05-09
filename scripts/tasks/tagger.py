@@ -1,7 +1,7 @@
 """Anima Tagger task entry-points: preprocess (vocab + feature cache),
 train (cached-encoder fast path), predict (single-image debug).
 
-All three shell out to ``scripts/train_anima_tagger.py`` with the appropriate
+All three invoke ``python -m scripts.anima_tagger.cli`` with the appropriate
 ``--mode`` flag. Extra args are forwarded verbatim, so per-mode knobs
 (``--epochs``, ``--image``, ``--show_scores``, …) work as documented in
 ``scripts/anima_tagger/cli.py``.
@@ -12,11 +12,8 @@ from __future__ import annotations
 from ._common import PY, run
 
 
-_TAGGER_SCRIPT = "scripts/train_anima_tagger.py"
-
-
 def _tagger(mode: str, extra):
-    run([PY, _TAGGER_SCRIPT, "--mode", mode, *extra])
+    run([PY, "-m", "scripts.anima_tagger.cli", "--mode", mode, *extra])
 
 
 def cmd_preprocess_tagger(extra):

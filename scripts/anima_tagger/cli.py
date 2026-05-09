@@ -32,9 +32,8 @@ import os
 import sys
 from pathlib import Path
 
-# Make ``anima_lora/`` importable when this module is loaded via the
-# ``scripts/train_anima_tagger.py`` shim — the shim adds parents[1] but
-# direct ``python -m scripts.anima_tagger.cli`` invocation also lands here.
+# Make ``anima_lora/`` importable when invoked as ``python -m
+# scripts.anima_tagger.cli`` from outside the project root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from library.env import load_dotenv  # noqa: E402
