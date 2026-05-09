@@ -392,6 +392,7 @@ class AnimaDirectEdit:
             embed_src=embed_src if t_inj > 0 else None,
             t_inj=t_inj,
             # t_inj_blocks=None -> directedit defaults to all-but-last (SD3.5 style).
+            z_inv=z_inv if t_inj > 0 else None,
             step_callback=lambda step, total: pbar.update_absolute(infer_steps + step),
         )
 

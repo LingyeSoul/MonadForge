@@ -77,47 +77,44 @@ def _v_pred(
 
 
 class _VInjectionState:
-    """Per-block self-attn V cache + mode flag.
+    """Row-indexed self-attn V swap inside a single batched forward.
 
-    Lifecycle for one editing step with ``i < t_inj``:
-      1. ``mode = "capture"``, run src forward → V tensors stashed per block.
-      2. ``mode = "inject"``, run tar forward → cached V replaces the freshly
-         computed V inside the patched ``Attention.forward``.
+    Author's reference (``DirectEdit/controller/attn_norm_ctrl_sd35.py:362``)
+    runs all branches through one transformer call and swaps V in-place by
+    row index — ``value[h//2:]`` operates on the cond half, with cond_tar's
+    V replaced by cond_src's V before the dispatcher.
 
-    The cache is overwritten each step (28 entries, no growth).
+    Anima port: caller stacks ``[neg_tar, cond_src, cond_tar]`` (3 rows when
+    CFG > 1) or ``[cond_src, cond_tar]`` (2 rows when CFG = 1) and sets
+    ``src_row`` / ``tar_row`` before each forward. The hook then does
+    ``v[tar_row] = v[src_row]`` on the configured blocks. Both ``None``
+    disables the swap (no-op pass-through), used for steps ``i >= t_inj``
+    when no injection is active.
     """
-
-    CAPTURE = "capture"
-    INJECT = "inject"
 
     def __init__(self, block_indices: Set[int]) -> None:
         self.block_indices = block_indices
-        self.cache: dict[int, torch.Tensor] = {}
-        self.mode: Optional[str] = None
+        self.src_row: Optional[int] = None
+        self.tar_row: Optional[int] = None
 
     def hook(self, block_idx: int, v: torch.Tensor) -> torch.Tensor:
-        if self.mode is None or block_idx not in self.block_indices:
+        if (
+            self.src_row is None
+            or self.tar_row is None
+            or block_idx not in self.block_indices
+        ):
             return v
-        if self.mode == self.CAPTURE:
-            # Detach so dynamo can't tie this into a graph; clone is unnecessary
-            # since the source forward is the only writer this step and we
-            # consume the cache before the next overwrite.
-            self.cache[block_idx] = v.detach()
-            return v
-        if self.mode == self.INJECT:
-            cached = self.cache.get(block_idx)
-            if cached is None:
-                return v
-            # Cached V is from src (cond, no CFG). Tar may run CFG, so the
-            # batch dim of `v` could be 2× the cached one — broadcast on dim 0.
-            if cached.shape[0] != v.shape[0] and v.shape[0] % cached.shape[0] == 0:
-                cached = cached.repeat_interleave(v.shape[0] // cached.shape[0], dim=0)
-            return cached.to(dtype=v.dtype, device=v.device)
+        # v shape: [B, S, n_heads, head_dim] (post-norm, pre-dispatch).
+        # Out-of-place clone — the dispatcher may consume v under autograd-off
+        # but in-place writes alias against q/k tensors that some backends
+        # share storage with via the qkv_proj split.
+        v = v.clone()
+        v[self.tar_row] = v[self.src_row]
         return v
 
-    def clear(self) -> None:
-        self.cache.clear()
-        self.mode = None
+    def set_rows(self, src_row: Optional[int], tar_row: Optional[int]) -> None:
+        self.src_row = src_row
+        self.tar_row = tar_row
 
 
 def _make_patched_self_attn_forward(attn, block_idx: int, state: _VInjectionState):
@@ -210,7 +207,7 @@ def _v_injection_scope(anima: anima_models.Anima, block_indices: Set[int]):
                 # Remove the instance attribute so attribute lookup falls back
                 # to the class method — exactly the pre-patch state.
                 del attn.forward
-        state.clear()
+        state.set_rows(None, None)
 
 
 def _resolve_t_inj_blocks(
@@ -256,8 +253,17 @@ def invert(
         — the anchor residuals consumed by ``edit_forward``.
 
     Inversion convention (paper §3.2 in our index):
-        ``z_inv[i] = z_inv[i+1] + (sigmas[i] − sigmas[i+1]) · v_θ(z_inv[i+1], σ=sigmas[i+1])``
-    iterated for ``i = T-1 .. 0``.
+        ``z_inv[i] = z_inv[i+1] + (sigmas[i] − sigmas[i+1]) · v_θ(z_inv[i+1], σ=sigmas[i])``
+    iterated for ``i = T-1 .. 0``. Note ``sigmas[i]`` (not ``sigmas[i+1]``):
+    v_θ is queried at the **destination** σ, not the input σ. This matches
+    the author's reference (``flow_direct_correction_inv_sd35.py:184, 200-208``)
+    where ``t = timesteps[num_steps - 1 - cur_step]`` corresponds to
+    ``sigma_next`` (the noisier endpoint of the current step) by way of
+    diffusers' ``timesteps[k] = sigmas[k] · 1000`` pairing. Crucially, at
+    the first iter (``i = T-1``) the input is clean (``z_inv[T]``, σ=0),
+    and querying at the input σ would feed σ=0 exactly — outside the model's
+    trained range and at the singular point of the sinusoidal ``t_embedder``.
+    See ``docs/proposal/directedit_gaps.md#gap-3``.
 
     CFG during inversion is usually a wash (the source has no negative concept
     to push away from). Default ``guidance_scale=1.0`` skips it. Pass >1.0
@@ -275,7 +281,9 @@ def invert(
 
     iterator = tqdm(range(T - 1, -1, -1), desc="DirectEdit inversion", total=T)
     for step_idx, i in enumerate(iterator, start=1):
-        sigma_in = sigmas[i + 1].to(device)  # σ of the input we feed v_θ
+        # Query v_θ at the destination σ (sigmas[i], the noisier endpoint),
+        # not the input's σ (sigmas[i+1]). Avoids feeding σ=0 at i=T-1.
+        sigma_in = sigmas[i].to(device)
         v = _v_pred(
             anima,
             z_inv[i + 1],
@@ -307,6 +315,7 @@ def edit_forward(
     embed_src: Optional[torch.Tensor] = None,
     t_inj: int = 0,
     t_inj_blocks: Optional[Iterable[int]] = None,
+    z_inv: Optional[List[torch.Tensor]] = None,
     mask: Optional[torch.Tensor] = None,  # noqa: ARG001 — Eq. 12 mask blend (v3)
     step_callback: Optional[Callable[[int, int], None]] = None,
 ) -> torch.Tensor:
@@ -317,28 +326,46 @@ def edit_forward(
         ``v_i = v_θ(ẑ_i, σ=sigmas[i], ψ_tar)             # query at anchored pt``
         ``z[i+1] = z[i] − (sigmas[i] − sigmas[i+1]) · v_i # standard Euler step``
 
-    For ``t_inj > 0`` (paper Eq. 13), the first ``t_inj`` steps additionally:
-      1. Evolve a parallel src branch ``Z_t^src`` (init = ``z_init``) with
-         ``v_θ(Ẑ_t^src, ψ_src)``, capturing each block's self-attn V.
-      2. Replace V in the tar self-attn with the cached src V before the
-         dispatcher (``F̂_t^tar = Attention(Q_t^tar, K_t^tar, V_t^src)``).
+    For ``t_inj > 0`` (paper Eq. 13) the first ``t_inj`` steps stack src and
+    tar into a single batched forward and swap V by row index inside the
+    patched ``self_attn``:
+
+      * CFG > 1 (3 rows): ``[neg_tar, cond_src, cond_tar]`` —
+        the hook copies ``v[1] → v[2]`` on the configured blocks. Output is
+        split per row; tar's CFG combine is
+        ``v_tar = v[0] + scale · (v[2] − v[0])``.
+      * CFG = 1 (2 rows): ``[cond_src, cond_tar]`` — hook copies
+        ``v[0] → v[1]``; tar = ``v[1]``.
+
+      Single forward + row-indexed swap matches the author's reference
+      (``DirectEdit/controller/attn_norm_ctrl_sd35.py:362``,
+      ``flow_direct_correction_inv_sd35.py:262-292``). Replaces the v1
+      "two separate forwards with mode-toggle cache" path which leaked src V
+      into the uncond branch (Gap 2 in ``docs/proposal/directedit_gaps.md``).
 
     Args:
       z_init: should be ``z_inv[0]`` from ``invert(...)`` for the residual
         trick to fire correctly.
-      embed_src: required when ``t_inj > 0`` (drives the src capture forward).
-      t_inj: number of early steps to inject src V into the tar self-attn.
-        ``0`` reproduces the v1 paper-baseline behavior (pure ΔZ-anchored
-        edit, no parallel src stream).
-      t_inj_blocks: which block indices to inject at. Default ``None`` →
+      embed_src: required when ``t_inj > 0`` (drives the cond_src row).
+      t_inj: number of early steps to run the batched src+tar forward with
+        V-swap. ``0`` skips the src branch entirely (pure ΔZ-anchored edit).
+      t_inj_blocks: which block indices to swap V at. Default ``None`` →
         all blocks except the final one (SD3.5-style default; Anima is
         single-stream cross-attn DiT, so this is the conservative analog).
+      z_inv: full inverted trajectory from ``invert(...)`` (length ``T+1``,
+        ``z_inv[i]`` at σ=``sigmas[i]``). **Required when ``t_inj > 0``** —
+        the batched-forward shape no longer carries a parallel
+        Euler-evolved src branch, so src is GT-rebased to ``z_inv[i]`` at
+        every injection step. Matches author's
+        ``prev_sample_src = gt_source_latent``.
       mask: paper Eq. 12 background-lock blend — still v3, ignored here.
 
-    Notes on src CFG: the src capture pass is always run at CFG=1 (no
-    embed_neg); paper Algorithm 1 doesn't apply CFG to the src branch, and
+    Notes on src CFG: the src row is always run at CFG=1 (no neg_src in the
+    batch). Paper Algorithm 1 doesn't apply CFG to the src branch, and
     capturing V from a CFG-mixed branch would conflate ψ_src and the
-    negative concept.
+    negative concept. If a separate ``inv_cfg != 1`` ever becomes necessary,
+    extend the batch to 4 rows (``[neg_src, neg_tar, cond_src, cond_tar]``)
+    and combine src per-branch — the row-indexed hook stays unchanged.
     """
     device = z_init.device
     T = sigmas.shape[0] - 1
@@ -356,22 +383,33 @@ def edit_forward(
         t_inj = T
     if t_inj > 0 and embed_src is None:
         raise ValueError("V-injection (t_inj > 0) requires embed_src (ψ_src).")
+    if t_inj > 0 and z_inv is None:
+        raise ValueError(
+            "V-injection (t_inj > 0) requires z_inv (full inverted trajectory). "
+            "The batched-forward shape doesn't carry a parallel Euler-evolved "
+            "src branch — src must be GT-rebased to z_inv[i] each step."
+        )
+    if z_inv is not None and len(z_inv) != T + 1:
+        raise ValueError(
+            f"z_inv has length {len(z_inv)} but sigmas implies T+1={T + 1} states "
+            "- inversion and editing must use the same sigma schedule."
+        )
     if mask is not None:
         logger.warning(
             "mask= ignored: per-step background-lock blending (paper Eq. 12) "
             "is v3 work; only V-injection is wired."
         )
 
-    padding_mask = _padding_mask_for(z_init)
     block_indices = _resolve_t_inj_blocks(anima, t_inj_blocks) if t_inj > 0 else set()
-
+    has_cfg = guidance_scale != 1.0 and embed_neg is not None
     z_tar = z_init.to(torch.bfloat16)
-    z_src = z_init.to(torch.bfloat16) if t_inj > 0 else None
 
     if t_inj > 0:
         logger.info(
-            "DirectEdit V-injection: t_inj=%d / T=%d, injecting at %d / %d blocks",
+            "DirectEdit V-injection: t_inj=%d / T=%d, injecting at %d / %d blocks "
+            "(batched forward, %d rows)",
             t_inj, T, len(block_indices), len(anima.blocks),
+            3 if has_cfg else 2,
         )
 
     with _v_injection_scope(anima, block_indices) as state:
@@ -383,28 +421,51 @@ def edit_forward(
             coeff = (sigmas[i] - sigmas[i + 1]).to(device, dtype=torch.float32)
 
             if i < t_inj:
-                # ── 1. Capture src V at this step (CFG=1, no neg).
-                z_hat_src = (z_src.float() + d).to(torch.bfloat16)
-                state.mode = state.CAPTURE
-                v_src = _v_pred(
-                    anima, z_hat_src, sigma_in,
-                    embed_src, None, 1.0, padding_mask,
-                )
-                # Evolve src branch (Algorithm 1 line: Z_{t+1}^src ← ...).
-                z_src = (z_src.float() - coeff * v_src.float()).to(torch.bfloat16)
+                # GT-rebase src to the inverted trajectory at this σ. The
+                # batched forward's cond_src row is what feeds the V-swap,
+                # so this drops any drift that would otherwise corrupt the
+                # captured V. Matches author's ``prev_sample_src = gt_source_latent``
+                # (DirectEdit/inversion/flow_direct_correction_inv_sd35.py:300).
+                z_src_i = z_inv[i].to(device=device, dtype=torch.bfloat16)
+                z_hat_src = (z_src_i.float() + d).to(torch.bfloat16)
 
-                # ── 2. Inject into tar self-attn for both CFG branches.
-                state.mode = state.INJECT
-                v_tar = _v_pred(
-                    anima, z_hat_tar, sigma_in,
-                    embed_tar, embed_neg, guidance_scale, padding_mask,
+                if has_cfg:
+                    # 3 rows: [neg_tar, cond_src, cond_tar]. The hook swaps
+                    # v[2] <- v[1] on configured blocks, so cond_tar's
+                    # self-attn output is computed against cond_src's V.
+                    # neg_tar (row 0) is untouched — uncond stays honest, no
+                    # leak through the patched path.
+                    latents = torch.cat([z_hat_tar, z_hat_src, z_hat_tar], dim=0)
+                    embeds = torch.cat([embed_neg, embed_src, embed_tar], dim=0)
+                    state.set_rows(src_row=1, tar_row=2)
+                else:
+                    # 2 rows: [cond_src, cond_tar]. No CFG, so neg row drops out.
+                    latents = torch.cat([z_hat_src, z_hat_tar], dim=0)
+                    embeds = torch.cat([embed_src, embed_tar], dim=0)
+                    state.set_rows(src_row=0, tar_row=1)
+
+                pad = _padding_mask_for(latents)
+                t_expand = sigma_in.expand(latents.shape[0]).to(
+                    latents.device, dtype=torch.bfloat16
                 )
-                state.mode = None
+                noise_pred = anima(latents, t_expand, embeds, padding_mask=pad)
+                state.set_rows(None, None)
+
+                if has_cfg:
+                    v_neg = noise_pred[0:1]
+                    v_cond_tar = noise_pred[2:3]
+                    v_tar = v_neg + guidance_scale * (v_cond_tar - v_neg)
+                else:
+                    v_tar = noise_pred[1:2]
             else:
-                # Past t_inj: pure tar forward, no parallel src.
+                # Past t_inj: standard CFG (or single) forward on tar only.
+                # _v_pred runs cond + uncond as two separate calls; that's
+                # fine here because no patched-attn injection is active —
+                # state.src_row/tar_row are None, so the hook is a pass-through.
+                pad = _padding_mask_for(z_hat_tar)
                 v_tar = _v_pred(
                     anima, z_hat_tar, sigma_in,
-                    embed_tar, embed_neg, guidance_scale, padding_mask,
+                    embed_tar, embed_neg, guidance_scale, pad,
                 )
 
             z_tar = (z_tar.float() - coeff * v_tar.float()).to(torch.bfloat16)

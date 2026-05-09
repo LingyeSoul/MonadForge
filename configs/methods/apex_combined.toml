@@ -35,7 +35,7 @@ log_with = "tensorboard"
 
 # Warm-start identical to apex.toml — combined-3F doesn't change cold-start
 # economics, just Forward 2's t.
-network_weights = "output/ckpt/anima-tlora-0507-12.safetensors"
+network_weights = "output/ckpt/anima-tlora-0509-12.safetensors"
 dim_from_weights = true
 
 learning_rate = 1e-4

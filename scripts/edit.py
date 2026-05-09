@@ -109,6 +109,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--negative_prompt",
         default="",
+        # default="worst quality, lowres, score_1, old, blurry, simple background, monochrome, sepia",
         help="Negative prompt for CFG on the edit pass (default empty). In "
         "--cached_embed mode, an empty value is auto-replaced with 'worst "
         "quality' so CFG can still fire (the TE is loaded briefly to encode "
@@ -126,7 +127,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--guidance_scale",
         type=float,
-        default=2.0,
+        default=4.0,
         help="CFG scale for the edit (target) pass.",
     )
     p.add_argument(
@@ -139,7 +140,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--t_inj",
         type=int,
-        default=12,
+        default=4,
         help="Number of early editing steps to inject src self-attn V into "
         "the tar pass (paper Eq. 13). Default 0 = pure ΔZ-anchored edit. "
         "Typical paper setting: t_inj ≈ T/10..T/3 (e.g. 3..9 at T=28). "
@@ -438,7 +439,7 @@ def main() -> None:
 
         # Cache file has no neg slot — encode one on the fly so CFG can fire.
         # Default to 'worst quality' when --negative_prompt is empty.
-        neg_prompt = args.negative_prompt or "worst quality"
+        neg_prompt = args.negative_prompt or ""
         if not args.negative_prompt:
             logger.info(
                 "DirectEdit dry: --negative_prompt empty; defaulting to "
@@ -592,6 +593,7 @@ def main() -> None:
             embed_src=e_src if args.t_inj > 0 else None,
             t_inj=args.t_inj,
             t_inj_blocks=t_inj_blocks,
+            z_inv=z_inv if args.t_inj > 0 else None,
         )
         z_edits.append((variant, z_edit))
 

@@ -88,9 +88,9 @@ def cmd_test_apex(extra):
             "--infer_steps",
             "8",
             "--guidance_scale",
-            "1.0",
+            "4.0",
             "--sampler",
-            "euler",
+            "er_sde",
             *extra,
         ]
     )
