@@ -1,13 +1,20 @@
 """Anima DirectEdit ComfyUI custom node.
 
-Single node (``AnimaDirectEdit``) that takes an image and an
-"edit text" (tags to add), runs the AnimaTagger to derive ``psi_src``,
-forms ``psi_tar = psi_src + ", " + edit_text``, then invokes the
-DirectEdit invert + edit_forward primitives on a freshly-loaded Anima DiT
-to produce an edited image. Loads DiT / TE / VAE / tagger from disk per
-invocation; does NOT consume ComfyUI's MODEL / CLIP / VAE handles
-(the underlying primitives target ``library/anima/models.py::Anima``,
-which has a different forward signature than ``comfy.ldm.anima.model.Anima``).
+One node:
+
+* ``AnimaDirectEdit`` — takes an image, an "edit text" (tags to add), and
+  optionally a tagger socket; runs the tagger to derive ``psi_src``
+  (or uses ``prompt_src_override``), forms
+  ``psi_tar = psi_src + ", " + edit_text``, then invokes the DirectEdit
+  invert + edit_forward primitives on the wired-in MODEL to produce an
+  edited image. Consumes ComfyUI's stock MODEL / CLIP / VAE sockets, so
+  ``LoraLoader`` / ``comfyui-hydralora``'s adapter loader compose
+  naturally upstream.
+
+The ``ANIMA_TAGGER`` socket is produced by ``AnimaTaggerLoader`` in the
+sibling ``comfyui-anima-tagger`` package — install both for image-driven
+ψ_src derivation, or supply ψ_src as a string via ``prompt_src_override``
+to skip the tagger entirely.
 """
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS

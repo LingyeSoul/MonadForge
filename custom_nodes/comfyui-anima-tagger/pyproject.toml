@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-anima-tagger"
+description = "Anima Tagger for ComfyUI: a multi-label image tagger trained on the Anima caption distribution. Provides a loader (image -> tagger socket) and a captioner (image -> caption string), reusable in DirectEdit, prompt pre-fill, and any workflow that needs Anima-formatted tags."
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/sorryhyun/anima_lora/tree/main/custom_nodes/comfyui-anima-tagger"
+
+[tool.comfy]
+PublisherId = "sorryhyun"
+DisplayName = "Anima Tagger"
+Icon = ""

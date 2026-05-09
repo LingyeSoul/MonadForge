@@ -25,14 +25,18 @@ Both `make` (Unix) and `python tasks.py` (cross-platform) are supported. The exa
 # Each training invocation selects a method + hardware preset. Method settings win
 # over preset settings on overlap (e.g. postfix forces blocks_to_swap=0).
 # Method files in configs/methods/: lora.toml, postfix.toml, apex.toml,
-# ip_adapter.toml, easycontrol.toml, soft_tokens.toml. Variants are toggle
-# blocks inside them — uncomment the target block to switch:
-#   lora.toml         — classic LoRA / OrthoLoRA / T-LoRA / HydraLoRA / ReFT
-#                       (default stacks LoRA + OrthoLoRA + T-LoRA + ReFT)
-#   postfix.toml      — postfix / postfix_exp / postfix_func / postfix_sigma / prefix
-#   ip_adapter.toml   — decoupled image cross-attention (PE-Core resampler)
-#   easycontrol.toml  — extended self-attn image conditioning (per-block cond LoRA)
-#   soft_tokens.toml  — SoftREPA-style per-layer × per-t soft text tokens (frozen DiT)
+# apex_combined.toml, apex_temporal.toml, ip_adapter.toml, easycontrol.toml,
+# soft_tokens.toml. Variants are toggle blocks inside them — uncomment the
+# target block to switch:
+#   lora.toml             — classic LoRA / OrthoLoRA / T-LoRA / HydraLoRA / ReFT
+#                           (default stacks LoRA + OrthoLoRA + T-LoRA + ReFT)
+#   postfix.toml          — postfix / postfix_exp / postfix_func / postfix_sigma / prefix
+#   apex.toml             — APEX self-adversarial 1-NFE distillation (3 fwd/step)
+#   apex_combined.toml    — APEX combined-objective variant
+#   apex_temporal.toml    — APEX temporal variant (no L_fake; 2 fwd/step). See docs/experimental/apex-0508.md.
+#   ip_adapter.toml       — decoupled image cross-attention (PE-Core resampler)
+#   easycontrol.toml      — extended self-attn image conditioning (per-block cond LoRA)
+#   soft_tokens.toml      — SoftREPA-style per-layer × per-t soft text tokens (frozen DiT)
 make lora                   # LoRA family (methods/lora.toml + presets.toml[default])
 python tasks.py lora        # Same, works on Windows too
 make lora PRESET=low_vram   # Override preset: methods/lora.toml + presets.toml[low_vram]
@@ -43,6 +47,8 @@ make lora PRESET=half       # Override preset: methods/lora.toml + presets.toml[
 # removed.
 make exp-postfix                # Postfix/prefix family (methods/postfix.toml)
 make exp-apex                   # APEX self-adversarial 1-NFE distillation (methods/apex.toml)
+make exp-apex-combined          # APEX combined-objective variant (methods/apex_combined.toml)
+make exp-apex-temporal          # APEX temporal variant — no L_fake, 2 fwd/step (methods/apex_temporal.toml)
 make exp-ip-adapter             # IP-Adapter image cross-attention (methods/ip_adapter.toml)
                                 # Reuses LoRA paths: source image_dataset/, cache post_image_dataset/lora/
 make exp-ip-adapter-preprocess  # Alias for `make preprocess` + `make preprocess-pe`
@@ -72,6 +78,15 @@ make test-mod              # Test with modulation guidance (pooled_text_proj)
 make test-hydra            # HydraLoRA router-live (anima_hydra*_moe.safetensors)
 make test-merge            # Inference with a merged/baked DiT (no adapter loaded)
 make test-spectrum         # Spectrum-accelerated inference (~3.75x speedup)
+make test-dcw              # Latest LoRA + DCW scalar bias correction (--dcw, λ=−0.015)
+make test-dcw-v4           # Latest LoRA + DCW v4 learnable calibrator (auto-resolves fusion_head.safetensors)
+make test-spectrum-dcw     # Spectrum + DCW scalar composed
+make test-dcw-v4-spectrum  # Spectrum + DCW v4 composed
+
+# DCW v4 calibration (one-shot per LoRA checkpoint)
+make dcw                   # Sample 5 aspect buckets + train fusion head (~3-5h on a 5060 Ti)
+make dcw-train             # Train-only on existing pool under bench/dcw/results/ (~30s)
+
 # Experimental inference (matched to make exp-* training)
 make exp-test-apex             # APEX 4-NFE euler inference
 make exp-test-prefix           # Test with prefix tuning
@@ -82,7 +97,10 @@ make exp-test-ip REF_IMAGE=... # IP-Adapter inference (image-conditioned)
 make exp-test-easycontrol REF_IMAGE=...  # EasyControl inference (image-conditioned)
 make exp-test-ref              # Inference with a learned prefix-slot weight (--prefix_weight)
 make exp-test-directedit PROMPT='double peace'  # DirectEdit on random source image
-                                                # (wd-tagger seeds prompt_src; PROMPT becomes the edit)
+                                                # (anima_tagger if present, else wd-tagger seeds prompt_src;
+                                                # PROMPT becomes the edit instruction)
+make exp-test-directedit-dry                    # DirectEdit reconstruction sanity check
+                                                # (ψ_tar == ψ_src; output should reconstruct the source)
 
 # GUI (PySide6 — config editing, IP-Adapter / EasyControl preprocess+train, dataset browsing)
 make gui
@@ -139,7 +157,7 @@ On Windows, use `python tasks.py <command>` instead of `make <command>`. Extra a
 | `scripts/tasks/` | Per-domain task implementations (`training`, `inference`, `preprocess`, `masking`, `gui`, `downloads`, `utilities`) — where command bodies actually live; `_common.py` holds shared helpers. |
 | `scripts/experimental_tasks/` | Bodies for the `exp-*` commands (apex, postfix, ip-adapter, easycontrol training + their `exp-test-*` inference). Reuses helpers from `scripts/tasks/_common.py`. |
 
-Deep-dives in `docs/methods/` (shipped): `dcw.md`, `hydra-lora.md`, `invert.md`, `mod-guidance.md`, `psoft-integrated-ortholora.md`, `reft.md`, `spectrum.md`, `timestep_mask.md`. Experimental method docs live under `docs/experimental/`: `apex.md`, `easycontrol.md`, `ip-adapter.md`, `postfix-sigma.md`, `prefix-tuning.md`, `soft_tokens.md`.
+Deep-dives in `docs/methods/` (shipped): `dcw.md`, `hydra-lora.md`, `invert.md`, `mod-guidance.md`, `psoft-integrated-ortholora.md`, `reft.md`, `spectrum.md`, `timestep_mask.md`. Experimental method docs live under `docs/experimental/`: `anima_tagger.md`, `apex.md`, `apex-0506.md`, `apex-0508.md`, `directedit_editing_v3.md`, `easycontrol.md`, `ip-adapter.md`, `postfix-sigma.md`, `prefix-tuning.md`, `soft_tokens.md`. Active proposals are in `docs/proposal/` (DirectEdit v2, DCW v4 calibrator, etc.).
 
 ## Config flow
 
@@ -148,14 +166,16 @@ Training is config-driven via a three-layer chain: `base.toml → presets.toml[<
 Layout:
 - `configs/base.toml` — shared infrastructure (model paths, optimizer, compile flags, etc.) AND the default LoRA dataset blueprint (`[general]` + `[[datasets]]` + `[[datasets.subsets]]`). LoRA reads resized images from `post_image_dataset/resized/` with caches redirected to `post_image_dataset/lora/` via `cache_dir`. Captions live in `image_dataset/` (master) — TE caching reads `.txt` from there, training reads only the cached prompt embeddings. The dataset sections are consumed by `BlueprintGenerator` and skipped by the flat method+preset merge chain (see `_DATASET_CONFIG_SECTIONS` in `library/train_util.py`). Override with `--dataset_config <path>` when you need a different blueprint.
 - `configs/presets.toml` — all hardware profiles in one file as TOML sections: `[default]`, `[fast_16gb]`, `[low_vram]` (also serves as Windows 8GB), `[half]` (experiment preset — sets `sample_ratio=0.5` for every subset via the global `--sample_ratio` override). Holds `blocks_to_swap`, `gradient_checkpointing`, `unsloth_offload_checkpointing`, etc.
-- `configs/methods/` — one file per algorithm family. Holds rank, method flags (`use_hydra`, `add_reft`, …), and the method's opinionated learning rate / epochs / output_name. Six files:
-  - `lora.toml` — LoRA / OrthoLoRA / T-LoRA / HydraLoRA / ReFT. Variants are toggle blocks; default stacks classic LoRA + OrthoLoRA + T-LoRA + ReFT.
+- `configs/methods/` — one file per algorithm family. Holds rank, method flags (`use_hydra`, `add_reft`, …), and the method's opinionated learning rate / epochs / output_name. Eight files:
+  - `lora.toml` — LoRA / OrthoLoRA / T-LoRA / HydraLoRA / ReFT. Variants are toggle blocks; default stacks classic LoRA + OrthoLoRA + T-LoRA + ReFT. Default ships `save_every_n_epochs = 2` / `checkpointing_epochs = 2` (mid-run snapshots, not just final).
   - `postfix.toml` — postfix / postfix_exp / postfix_func / postfix_sigma / prefix. Toggle blocks.
   - `apex.toml` — APEX self-adversarial distillation (arXiv:2604.12322). Warm-starts from a prior LoRA via `network_weights` + `dim_from_weights`.
+  - `apex_combined.toml` — APEX combined-objective variant (warm-starts from a prior LoRA same as base APEX).
+  - `apex_temporal.toml` — APEX temporal variant. **No `L_fake`** so only 2 DiT forwards per step (vs 3 for base APEX), but `blocks_to_swap = 0` is still method-forced. See `docs/experimental/apex-0508.md`.
   - `ip_adapter.toml` — IP-Adapter image cross-attention (DiT frozen; trains resampler + per-block `to_k_ip`/`to_v_ip`). Reuses the LoRA pipeline's data layout (`post_image_dataset/resized/` + `post_image_dataset/lora/`). Defaults to PRE-CACHED PE features (`make preprocess-pe`).
   - `easycontrol.toml` — EasyControl image conditioning (DiT frozen; trains per-block cond LoRA on self-attn + FFN + scalar `b_cond` gate). Source: `easycontrol-dataset/`. Caches: `post_image_dataset/easycontrol/`. Reuses cached VAE latents — no new sidecar.
   - `soft_tokens.toml` — SoftREPA-style per-layer × per-t soft text tokens (DiT frozen; per-block `Block.forward` monkey-patch splices `s^(k,t)` into `crossattn_emb`). ~1M params. Training-only v1 — inference path not wired.
-- `configs/gui-methods/` — GUI-friendly parallel tree. One self-contained TOML per **variant** instead of per family (`lora`, `lora-8gb`, `lora_longer`, `lora_repa`, `ortholora`, `tlora`, `tlora_ortho`, `tlora_ortho_reft`, `reft`, `hydralora_experimental`, `hydralora_sigma`, `postfix`, `postfix_exp`, `postfix_func`, `postfix_sigma`, `prefix`, `ip_adapter`, `easycontrol`, plus a copy of `apex`). No toggle blocks — what you see is what runs. Selected via `train.py --methods_subdir gui-methods` (wrapped by `make lora-gui GUI_PRESETS=<variant>` / `python tasks.py lora-gui <variant>`). Intended for basic users and as the eventual source of truth for the GUI's variant picker. Run `ls configs/gui-methods/` for the live list — variants get added/renamed.
+- `configs/gui-methods/` — GUI-friendly parallel tree. One self-contained TOML per **variant** instead of per family (`lora`, `lora-8gb`, `lora_longer`, `lora_repa`, `ortholora`, `tlora`, `tlora_ortho`, `tlora_ortho_reft`, `reft`, `hydralora_experimental`, `hydralora_sigma`, `postfix`, `postfix_exp`, `postfix_func`, `postfix_sigma`, `prefix`, `ip_adapter`, `easycontrol`, `soft_tokens`, plus a copy of `apex`). No toggle blocks — what you see is what runs. Selected via `train.py --methods_subdir gui-methods` (wrapped by `make lora-gui GUI_PRESETS=<variant>` / `python tasks.py lora-gui <variant>`). Intended for basic users and as the eventual source of truth for the GUI's variant picker. Run `ls configs/gui-methods/` for the live list — variants get added/renamed.
 
 Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder / PE caches are written to (and read from) that directory using stem-mirrored filenames, instead of sitting next to the source image. IP-Adapter and EasyControl method configs use this to keep `ip-adapter-dataset/` and `easycontrol-dataset/` purely user-facing source dirs while caches live under `post_image_dataset/`.
 
@@ -167,11 +187,14 @@ Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder 
   - `library/anima/` — anima-specific code: `models.py` (DiT class), `training.py` (training helpers, CLI args), `weights.py` (model/tokenizer loading + save), `strategy.py` (tokenization/encoding strategies), `configs/` (bundled Qwen3/T5 tokenizer configs).
   - `library/datasets/` — dataset classes, buckets, image utils.
   - `library/training/` — optimizer, scheduler, checkpoint, loss/sampler/metric registries (absorbs former `custom_train_functions`).
-  - `library/inference/` — generation, sampling, output.
+  - `library/inference/` — generation, sampling, output, plus `dcw_calibrator.py` (DCW v4 controller + scalar mode), `directedit.py` (DirectEdit invert+edit primitive), `mod_guidance.py`, `adapters.py`.
   - `library/models/` — ancillary model defs: `qwen_vae.py` (VAE), `sai_spec.py` (metadata spec).
+  - `library/captioning/` — Anima Tagger + WD Tagger wrappers used by DirectEdit's case-1 ψ_src path (`anima_tagger.py`, `wd_tagger.py`, shared `tag_rules.py`, plus `anima_tagger_data.py` / `anima_tagger_model.py` for training).
+  - `library/vision/` — shared vision tower / resampler / bucket helpers (extracted from `archive/img2emb`; live consumer is IP-Adapter).
   - `library/config/` — `schema.py` (validation), `loader.py` (TOML merge chain).
   - `library/io/` — `cache.py` (disk cache helpers), `safetensors.py`.
   - `library/runtime/` — `device.py`, `offloading.py`, `noise.py` (flow-matching sampling).
+  - `library/env.py` — environment / path resolution helpers.
   - `library/log.py` — logging setup + `fire_in_thread`.
 - **Strategy pattern** for model-specific tokenization/encoding (`library/anima/strategy.py`, `library/strategy_base.py`)
 - **Pluggable adapters** under `networks/` — selected via `network_module` config key. Covers LoRA / OrthoLoRA / T-LoRA / HydraLoRA / ReFT (in `networks/lora_modules/`), postfix / IP-Adapter / EasyControl / APEX (in `networks/methods/`), the unified attention-backend dispatcher (`networks/attention_dispatch.py`), and Spectrum inference (`networks/spectrum.py`). See `networks/CLAUDE.md` for the per-module map, variant details, and dispatch invariants.
@@ -203,9 +226,31 @@ DiT is loaded AFTER text encoder/VAE caching and unloading to avoid OOM. The seq
 
 Training-free speedup via Chebyshev polynomial feature forecasting (Han et al., CVPR 2026). `--spectrum` flag on `inference.py` enables it. On cached steps, all transformer blocks are skipped — only `t_embedder` + `final_layer` + `unpatchify` run. A `register_forward_pre_hook` on `final_layer` captures block outputs without monkey-patching the model. The adaptive window schedule (controlled by `--spectrum_window_size` and `--spectrum_flex_window`) concentrates actual forwards on early high-noise steps and increasingly predicts later refinement steps. See `networks/spectrum.py` for the Anima integration and `docs/methods/spectrum.md` for usage notes.
 
+## DCW (post-step SNR-t bias correction)
+
+Training-free, sampler-level correction that mixes each Euler step's `prev_sample` toward (or away from) the model's `x0_pred` to close the SNR-t bias of flow-matching DiTs (Yu et al., CVPR 2026; arXiv:2604.16044). Lives at the sampler boundary — composes with everything (LoRA, Spectrum, mod-guidance, IP-Adapter…). Two modes:
+
+- **Scalar** (`--dcw`, default `--dcw_lambda −0.015`, `--dcw_band_mask LL`): one global constant. Default tuned at CFG=1; at production CFG=4 the bias direction is **(CFG × aspect)-dependent** — non-square aspects want small *positive* λ, square + CFG=1 wants negative. Shipped scalar default is therefore wrong-direction on CFG=4 non-square; gate on prompt intent (helps detail-dense, hurts intentionally flat styles). The Spectrum ComfyUI node ships `+0.01` as its scalar default.
+- **v4 learnable** (`--dcw_v4 <fusion_head.safetensors|auto>`): MLP head fed `(aspect prior, prompt embedding, observed prefix gap over first k=7 steps)` predicts `(α̂, log σ̂²)` once at step k, then distributes `α_eff` across the remaining steps proportionally to the bucket's `μ_g[i]`. Per-step λ_i clamped to `±3·|λ_scalar[aspect]|`. `--dcw_v4_disable_shrinkage` is recommended until σ̂² calibration passes Gate B.
+
+Calibration (`make dcw`) runs `scripts/dcw/measure_bias.py` against 5 aspect buckets at the production env (CFG=4, mod_w=3.0), then chains `train_fusion_head.py`. Incremental: each run drops a `manifest.json`, and subsequent runs grow the pool via `--exclude_stems`. End artifact `<run>/fusion_head.safetensors` (~285k params + per-aspect bucket profile + standardization stats). `make test-dcw-v4` auto-resolves the newest by mtime under `post_image_dataset/dcw/` then `bench/dcw/results/`. The trainer is **bucket-agnostic** by design (single population μ_g, aspect_emb pinned to zero — see `project_dcw_bucket_prior_cosmetic` memory); per-bucket sampling is kept only to balance the prompt pool. Final Euler step (σ_{i+1}=0) is always skipped — DCW is a numerical no-op there.
+
+Code: `library/inference/dcw_calibrator.py`, `networks/dcw.py`, `scripts/dcw/`, `scripts/tasks/dcw.py`, `bench/dcw/`. See `docs/methods/dcw.md` and `docs/proposal/dcw-learnable-calibrator-v4.md`.
+
+## DirectEdit + Anima Tagger
+
+Image-editing primitive that pairs an inversion (DDIM-style trajectory through the frozen DiT) with an edit-conditioning swap: ψ_src reconstructs the source image, ψ_tar = ψ_src + edit-instruction applies the change. Robust to ψ_src corruption for *reconstruction* but edit *leverage* collapses when ψ_src is structurally far from Anima's training-time embedding manifold — wd-tagger output was bad enough at this to be the live blocker, which is why **Anima Tagger** exists.
+
+- **Anima Tagger** (`library/captioning/anima_tagger.py`): small classifier mapping image → comma-separated tag string in exactly Anima's training-time T5 format. Drop-in replacement for `WDTagger` (same `predict` surface). Frozen PE-Core-L14-336 trunk + LayerNorm + Linear head. Train with `python scripts/train_anima_tagger.py` against `bench/wd_tagger_dataset/` (vocabulary + manifest + feature cache builders + threshold calibrator all wired). DirectEdit's case-1 ψ_src path picks Anima Tagger if a checkpoint is present, else falls back to WD Tagger.
+- **DirectEdit core** (`library/inference/directedit.py`): the invert+edit primitive. Invoked from `scripts/edit.py` (CLI), `scripts/experimental_tasks/inference.py` (`make exp-test-directedit` / `exp-test-directedit-dry`), and `custom_nodes/comfyui-anima-directedit/` (ComfyUI nodes).
+
+Use `make exp-test-directedit-dry` to verify ψ_tar == ψ_src reconstructs the source — gates whether the inversion is well-conditioned independent of edit semantics.
+
+See `docs/experimental/directedit_editing_v3.md` (what's built) and `docs/experimental/anima_tagger.md` (tagger architecture). v2 proposal is in `docs/proposal/directedit_editing_v2.md`.
+
 ## APEX (1-NFE distillation)
 
-Self-adversarial condition-shift distillation — turns the pretrained velocity-field DiT into a 1–4 NFE generator without a discriminator or external teacher (`configs/methods/apex.toml`, `docs/experimental/apex.md`). The "adversarial" signal comes from querying the same network under a learned shifted text condition (`ConditionShift`, `c_fake = A·c + b`). Training does **3 DiT forwards per step** (real + fake@real_xt stop-grad + fake@fake_xt), so `blocks_to_swap = 0` is method-forced — block swapping would crash on the second forward with a `FakeTensor` device mismatch. Warm-start from a prior LoRA checkpoint is effectively mandatory (`network_weights` + `dim_from_weights=true`); cold-start catastrophically regressed in Phase 0 testing. Inference is `make exp-test-apex` (4 euler steps, `guidance_scale=1.0`).
+Self-adversarial condition-shift distillation — turns the pretrained velocity-field DiT into a 1–4 NFE generator without a discriminator or external teacher (`configs/methods/apex.toml`, `docs/experimental/apex.md`). The "adversarial" signal comes from querying the same network under a learned shifted text condition (`ConditionShift`, `c_fake = A·c + b`). Base APEX training does **3 DiT forwards per step** (real + fake@real_xt stop-grad + fake@fake_xt), so `blocks_to_swap = 0` is method-forced — block swapping would crash on the second forward with a `FakeTensor` device mismatch. The **temporal** variant (`apex_temporal.toml`, `make exp-apex-temporal`) drops `L_fake` and runs 2 forwards per step instead — same `blocks_to_swap = 0` constraint. Warm-start from a prior LoRA checkpoint is effectively mandatory across all APEX variants (`network_weights` + `dim_from_weights=true`); cold-start catastrophically regressed in Phase 0 testing. Inference is `make exp-test-apex` (4 euler steps, `guidance_scale=1.0`). See also `docs/experimental/apex-0506.md` / `apex-0508.md` and the `project_apex_visibility_settled` memory entry.
 
 ## Modulation guidance
 
@@ -233,7 +278,8 @@ Data preparation scripts in `preprocess/`:
 - `resize_images.py` — VAE-compatible image resizing (used by `make preprocess-resize`). Reads `image_dataset/`, writes resized PNGs to `post_image_dataset/resized/`. Drops images below `--min_pixels` (default 0.5MP). `--no_copy_captions` skips the `.txt` copy so captions stay only in `image_dataset/`.
 - `cache_latents.py` — Cache VAE latents (used by `make preprocess-vae`). Reads `post_image_dataset/resized/`, writes `{stem}_{WxH}_anima.npz` into `post_image_dataset/lora/` via `--cache_dir`.
 - `cache_text_embeddings.py` — Cache text encoder outputs (used by `make preprocess-te`). Reads `image_dataset/` (where `.txt` lives) and writes `{stem}_anima_te.safetensors` into `post_image_dataset/lora/` via `--cache_dir`. Mirrors `resize_images.py`'s `--min_pixels` filter so caches don't accumulate for images that would be dropped at resize.
-- `cache_pe_encoder.py` — Cache PE-Core vision encoder features (`{stem}_anima_pe.safetensors`). Wrapped by `make preprocess-pe` (reads `post_image_dataset/resized/`, writes `post_image_dataset/lora/`). Both the LoRA / REPA pipeline and IP-Adapter consume the same sidecars from `post_image_dataset/lora/`.
+- `cache_pe_encoder.py` — Cache PE-Core vision encoder features (`{stem}_anima_pe.safetensors`). Wrapped by `make preprocess-pe` (reads `post_image_dataset/resized/`, writes `post_image_dataset/lora/`). Both the LoRA / REPA pipeline and IP-Adapter consume the same sidecars from `post_image_dataset/lora/`. `PE_ENCODER=pe|pe-g` selects the variant.
+- `make preprocess-pooled` — Cache pooled text-embedding sidecars (consumed by `make distill-mod`). CPU-only; reads existing `_anima_te.safetensors` and writes pooled companions next to them.
 - `generate_masks.py` — SAM3-based text bubble mask generation
 - `generate_masks_mit.py` — MIT/ComicTextDetector mask generation (manga-specific)
 - `merge_masks.py` — Combine SAM3 + MIT masks into final mask set
@@ -246,15 +292,23 @@ Utility scripts in `scripts/`:
 - `comfy_batch.py` — Run ComfyUI batch workflow from `workflows/` directory
 - `merge_to_dit.py` — Bake a LoRA adapter into the base DiT (used by `make merge`)
 - `bench_methods.py` — Benchmark inference across method configurations (writes to `bench/`)
+- `compute_pe_centroid.py` — Compute PE-feature centroid for DCW v4's `cos(c_pool, μ_centroid)` channel.
 - `export_logs_json.py` — Export TensorBoard run scalars to JSON/JSONL (used by `make export-logs`)
+- `train_anima_tagger.py` — Train the Anima Tagger checkpoint used by DirectEdit. See `docs/experimental/anima_tagger.md`.
+- `edit.py` — Standalone DirectEdit CLI entry (the `make exp-test-directedit` wrapper around it lives in `scripts/experimental_tasks/inference.py`).
+- `scripts/dcw/` — DCW v4 calibration pipeline: `measure_bias.py` (per-aspect trajectory dump), `train_fusion_head.py` (fusion-head trainer), `trajectory.py`, `haar.py`, etc. Driven by `make dcw` / `make dcw-train` (`scripts/tasks/dcw.py`).
 
 Archived utilities (legacy, no longer wired up): `archive/img2emb/` (resampler training + inference) and `archive/inversion/` (embedding/reference inversion). The shared resampler/encoder/bucket modules they used have been extracted into `library/vision/` for live IP-Adapter use.
 
 ## Custom nodes
 
-Spectrum KSampler and mod guidance ComfyUI nodes live in a separate repo: https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler
+Spectrum KSampler and mod guidance ComfyUI nodes live in a separate repo: https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler (the Spectrum node also ships DCW: scalar default `+0.01` plus `auto` mode that runs the v4 fusion head in-node — see `reference_spectrum_node_dcw_defaults` memory).
 
-`custom_nodes/comfyui-hydralora/` — **Anima Adapter Loader** node (unified LoRA / Hydra / ReFT + prefix/postfix). See `custom_nodes/comfyui-hydralora/CLAUDE.md` for code-level details and the `forward_hook`-not-`forward`-override invariant; `README.md` for user-facing docs and changelog.
+In-tree under `custom_nodes/`:
+- `comfyui-hydralora/` — **Anima Adapter Loader** node (unified LoRA / Hydra / ReFT + prefix/postfix). See `custom_nodes/comfyui-hydralora/CLAUDE.md` for code-level details and the `forward_hook`-not-`forward`-override invariant; `README.md` for user-facing docs and changelog.
+- `comfyui-anima-directedit/` — `AnimaDirectEdit` node (invert + edit on a frozen Anima checkpoint, using stock MODEL/CLIP/VAE sockets). Consumes the `ANIMA_TAGGER` socket from `comfyui-anima-tagger`, or skips the tagger via the `prompt_src_override` STRING input. See its own `README.md`.
+- `comfyui-anima-tagger/` — `AnimaTaggerLoader` (→ `ANIMA_TAGGER` socket) and `AnimaTaggerCaption` (`ANIMA_TAGGER` + `IMAGE` → `STRING`). Standalone captioner usable outside DirectEdit (LoRA caption pre-fill, prompt scaffolding, etc.).
+- `comfyui-anima-trainer/` — In-ComfyUI training trigger nodes for Anima.
 
 ## External tools
 

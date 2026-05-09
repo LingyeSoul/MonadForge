@@ -17,8 +17,8 @@ network_dim = 48
 
 learning_rate = 2e-5
 max_train_epochs = 12
-save_every_n_epochs = 12
-checkpointing_epochs = 12
+save_every_n_epochs = 2
+checkpointing_epochs = 2
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true

@@ -1,0 +1,114 @@
+# Starter `tag_groups.yaml` — copy to $CAPTION_CORPUS_DIR/tag_groups.yaml
+# and curate before running --mode build_vocab. The build step will
+# resolve these against the kept vocab and embed the index sets into
+# `vocab.json`; tags listed below that fall under min_freq are silently
+# dropped (logged as "not_in_vocab" but not an error).
+#
+# Schema (see library/captioning/tag_groups.py for full validation rules):
+#
+#   <group_name>:
+#     mode: softmax_when_solo | softmax | multilabel
+#     description: optional one-line doc
+#     escape:      optional list of tag names that disable softmax routing
+#                  for this group on a given image (e.g. multicolored_hair
+#                  → hair_color group is skipped, sample falls back to BCE)
+#     tags:        list of canonical-space-form tag names
+#
+# Each tag may appear in at most ONE group. Validate by running
+#   python -c "from library.captioning import tag_groups; \
+#              tag_groups.load_groups('$CAPTION_CORPUS_DIR/tag_groups.yaml')"
+
+version: 1
+
+# ── Subject-level mutually-exclusive (when single-subject) ────────────────
+
+eye_color:
+  mode: softmax_when_solo
+  description: "Primary eye color. Skipped on multi-subject and on escape."
+  escape:
+    - heterochromia
+    - multicolored eyes
+  tags:
+    - blue eyes
+    - red eyes
+    - green eyes
+    - brown eyes
+    - black eyes
+    - purple eyes
+    - yellow eyes
+    - orange eyes
+    - pink eyes
+    - grey eyes
+    - aqua eyes
+    - white eyes
+
+hair_color:
+  mode: softmax_when_solo
+  description: "Primary hair color."
+  escape:
+    - multicolored hair
+    - two-tone hair
+    - gradient hair
+    - streaked hair
+  tags:
+    - blonde hair
+    - black hair
+    - brown hair
+    - blue hair
+    - red hair
+    - pink hair
+    - silver hair
+    - white hair
+    - green hair
+    - purple hair
+    - orange hair
+    - grey hair
+    - aqua hair
+    - light brown hair
+    - light blue hair
+
+hair_length:
+  mode: softmax_when_solo
+  description: "Coarse hair length bucket."
+  tags:
+    - very short hair
+    - short hair
+    - medium hair
+    - long hair
+    - very long hair
+    - absurdly long hair
+
+# ── Always-exclusive ──────────────────────────────────────────────────────
+# Already trained by the dedicated 3-class rating head; listing here keeps
+# the routing schema uniform and lets a UI introspect group membership.
+
+rating:
+  mode: softmax
+  description: "Booru rating bucket (post questionable→sensitive collapse)."
+  tags:
+    - general
+    - sensitive
+    - explicit
+
+# ── Multi-label, here for grouping/introspection only ─────────────────────
+# Layered outfits are real (jacket over shirt over chest binder), so these
+# stay sigmoid in training. The grouping is consumed by the GUI / debug
+# tooling, not by the loss router.
+
+top_garment:
+  mode: multilabel
+  description: "Primary upper-body garment family. Layering is allowed."
+  tags:
+    - shirt
+    - t-shirt
+    - blouse
+    - sweater
+    - hoodie
+    - jacket
+    - coat
+    - vest
+    - dress
+    - kimono
+    - crop top
+    - tank top
+    - bra

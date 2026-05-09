@@ -13,12 +13,19 @@ Checkpoint layout (produced by ``scripts/train_anima_tagger.py``):
       model.safetensors        # AnimaTaggerHead state dict
       pe_lora.safetensors      # PE-LoRA delta on PE-Core trailing blocks (optional)
       thresholds.safetensors   # per-tag F1-optimal thresholds
-      vocab.json               # tag list with category + median_pos info
+      vocab.json               # tag list with category + median_pos + group info
       rules.yaml               # caption-normalization rules snapshot
+      groups.yaml              # tag-group taxonomy (optional)
 
 If ``config.json`` has ``pe_lora: true`` and ``pe_lora.safetensors`` exists,
 the wrapper injects PE-LoRA on the encoder's trailing blocks and loads the
 delta weights — same code path as ``scripts/train_anima_tagger.py``.
+
+When ``groups.yaml`` is present, prediction is group-aware: ``softmax`` and
+``softmax_when_solo`` (the latter gated on solo + no-escape) groups emit
+exactly one tag per group (argmax over group logits), even when the
+sigmoid threshold would have admitted several. Multi-label groups and
+ungrouped tags fall back to the standard threshold path.
 
 The vision encoder (PE-Core-L14-336 by default) is loaded lazily on first
 ``predict`` call. Captions are emitted in Anima's canonical slot order:
@@ -40,6 +47,7 @@ import torch
 from PIL import Image
 from safetensors.torch import load_file as st_load
 
+from library.captioning import tag_groups as tg
 from library.captioning import tag_rules as tr
 from library.captioning.anima_tagger_data import pil_resize_to_bucket
 from library.captioning.anima_tagger_model import AnimaTaggerConfig, AnimaTaggerHead
@@ -145,6 +153,46 @@ class AnimaTagger:
         self.thresholds_dev = self.thresholds.to(self.device)
 
         self.rules = tr.load_rules(self.ckpt_dir / "rules.yaml")
+
+        # Optional groups snapshot. Built per-group caches so predict()
+        # doesn't reparse names every call. When the snapshot is missing
+        # (older checkpoints / flat-vocab builds) self._groups is None.
+        groups_path = self.ckpt_dir / "groups.yaml"
+        self._groups: Optional[tg.TagGroups] = None
+        # Per-group: name → {mode, tag_idx_tensor[K], escape_idx_tensor[E],
+        #                    tag_names_set, escape_names_set}
+        self._group_lookup: Dict[str, Dict] = {}
+        # Vocab indices used to detect "single-subject" at inference. We
+        # mirror the trainer's GroupRouter logic — `solo`/`1girl`/`1boy`/
+        # `1other` are single-count, anything else matching the count
+        # regex is multi-count.
+        self._single_count_names = {"solo", "1girl", "1boy", "1other"}
+        self._multi_count_names: set = set()
+        if groups_path.exists():
+            self._groups = tg.load_groups(groups_path)
+            tag_to_idx = {e.name: e.index for e in self.tag_entries}
+            for g in self._groups.groups:
+                if g.mode not in ("softmax", "softmax_when_solo"):
+                    continue
+                tag_idx = [tag_to_idx[t] for t in g.tags if t in tag_to_idx]
+                if not tag_idx:
+                    continue
+                self._group_lookup[g.name] = {
+                    "mode": g.mode,
+                    "tag_idx": torch.tensor(tag_idx, dtype=torch.long, device=self.device),
+                    "tag_names": tuple(g.tags),
+                    "escape_names": tuple(g.escape),
+                }
+            # Detect multi-count tags by regex over the vocab.
+            from re import compile as _re_compile
+            count_re = _re_compile(
+                r"^(?:\d+(?:girl|boy|other)s?|multiple[_ ](?:girls|boys|others))$"
+            )
+            for e in self.tag_entries:
+                if e.name in self._single_count_names:
+                    continue
+                if count_re.match(e.name):
+                    self._multi_count_names.add(e.name)
         self._encoder: Optional[VisionEncoderBundle] = None
 
     # ── Encoder lazy-load ──────────────────────────────────────────────
@@ -235,11 +283,16 @@ class AnimaTagger:
         * ``rating``: predicted rating string (one of ``self.ratings``)
         * ``rating_scores``: dict ``{rating: prob}``
         * ``scores``: dict ``{tag: prob}`` for *all* in-vocab tags
-        * ``kept``: dict ``{tag: prob}`` for tags above their per-tag threshold
+        * ``kept``: dict ``{tag: prob}`` for tags emitted as positives.
+          When typed groups are loaded, softmax-group winners are picked
+          by argmax (one per group) instead of by sigmoid threshold.
+        * ``groups``: dict ``{group_name: predicted_tag_or_None}`` — only
+          present when typed groups are loaded.
         """
         feat = self._encode_image(pil_img).unsqueeze(0).to(self.device)
         tag_logits, rating_logits = self.model(feat)
-        tag_probs = tag_logits.sigmoid()[0]                  # [n_tags]
+        tag_logits_row = tag_logits[0]                       # [n_tags]
+        tag_probs = tag_logits_row.sigmoid()                 # [n_tags]
         rating_probs = rating_logits.softmax(dim=-1)[0]      # [n_ratings]
         kept_mask = (tag_probs >= self.thresholds_dev).cpu()
         tag_probs_cpu = tag_probs.cpu()
@@ -253,7 +306,7 @@ class AnimaTagger:
             if kept_mask[i]
         }
         rating_idx = int(rating_probs.argmax().item())
-        return {
+        out: Dict[str, object] = {
             "rating": self.ratings[rating_idx],
             "rating_scores": {
                 r: float(rating_probs[i].cpu()) for i, r in enumerate(self.ratings)
@@ -261,6 +314,44 @@ class AnimaTagger:
             "scores": scores,
             "kept": kept,
         }
+
+        # Group-aware refinement of `kept`. Replaces softmax-group sigmoid
+        # threshold output with one argmax winner per applicable group.
+        if self._group_lookup:
+            kept_names = set(kept.keys())
+            is_solo = (
+                bool(kept_names & self._single_count_names)
+                and not (kept_names & self._multi_count_names)
+            )
+            group_preds: Dict[str, Optional[str]] = {}
+            for name, info in self._group_lookup.items():
+                mode = info["mode"]
+                escape_fired = bool(kept_names & set(info["escape_names"]))
+                if mode == "softmax_when_solo":
+                    applicable = is_solo and not escape_fired
+                else:                                            # "softmax"
+                    applicable = not escape_fired
+                if not applicable:
+                    # Leave the group's tags exactly as the per-tag
+                    # threshold decided. predict_caption can pull whatever
+                    # set the sigmoid path admitted.
+                    group_preds[name] = None
+                    continue
+                idx_t = info["tag_idx"]
+                group_logits = tag_logits_row.index_select(0, idx_t)
+                winner_local = int(group_logits.argmax().item())
+                winner_idx = int(idx_t[winner_local].item())
+                winner_name = self.tag_entries[winner_idx].name
+                # Drop any sigmoid-admitted tags from this group, then add
+                # the argmax winner back with its sigmoid probability so
+                # downstream callers can still inspect a confidence.
+                for t in info["tag_names"]:
+                    kept.pop(t, None)
+                kept[winner_name] = float(tag_probs_cpu[winner_idx])
+                group_preds[name] = winner_name
+            out["kept"] = kept
+            out["groups"] = group_preds
+        return out
 
     def predict_caption(self, pil_img: Image.Image) -> str:
         """Image → canonical Anima caption string (rating + slotted tags)."""
