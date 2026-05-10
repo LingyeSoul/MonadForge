@@ -1,0 +1,41 @@
+# gui-methods/postfix_ortho.toml — Postfix tuning with structural orthogonality.
+#
+# v2 (C1 + svd_te): Cayley-rotated SVD basis with a single scalar magnitude.
+# Trainable surface = (S: K×K skew + lambda_global: scalar + frozen K×D basis).
+# K=32 orthonormal directions of *uniform* magnitude — structurally K-rank
+# every gradient step AND structurally even per-slot pressure (no per-slot
+# magnitude knob to misuse).
+# Basis = top-K right singular vectors of cached `_anima_te.safetensors`,
+# row-shuffled deterministically by `ortho_basis_seed`, so each slot is a
+# meaningful dataset direction without "slot 0 = principal" inductive bias.
+# slot_embed_init_std + contrastive_weight from the legacy postfix path are
+# inert here and intentionally omitted.
+#
+# Rationale + risks: docs/proposal/orthogonal_postfix.md.
+
+network_module = "networks.methods.postfix"
+network_dim = 32
+network_args = [
+    "mode=postfix",
+    "splice_position=end_of_sequence",
+    "ortho=true",
+    "ortho_basis=svd_te",
+    "te_cache_dir=post_image_dataset/lora",
+    "svd_num_files=256",
+    "ortho_basis_seed=0",
+]
+output_name = "anima_postfix_ortho_v2"
+
+# Higher LR than legacy postfix because the trainable surface is K(K-1)/2 + 1
+# scalars (~497 at K=32) instead of K*D (~32k). The proposal calls out
+# "intentionally smaller capacity" — bump LR to compensate.
+learning_rate = 1e-3
+max_train_epochs = 2
+save_every_n_epochs = 1
+checkpointing_epochs = 1
+
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+
+blocks_to_swap = 0
+gradient_accumulation_steps = 4

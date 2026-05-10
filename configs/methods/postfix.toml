@@ -16,7 +16,7 @@ network_module = "networks.methods.postfix"
 
 # ── Postfix ─────────────────────────────────────────────────────────────
 # enum network_dim: postfix=16 | postfix_exp=64 | postfix_func=64 | prefix=16
-network_dim = 32
+# network_dim = 32
 # network_args = ["mode=postfix", "splice_position=end_of_sequence"]
 #
 # slot_embed_init_std   — breaks the K-slot permutation symmetry that otherwise
@@ -31,29 +31,29 @@ network_dim = 32
 # sigma_budget_weight   — soft L2 on ‖sigma_residual‖² (§B). Without this, the
 #                         σ-branch grows to 2.5× the base and eats capacity that
 #                         should belong to cond_mlp. cond-timestep only.
-network_args = [
-    "mode=cond-timestep",
-    "splice_position=front_of_padding", # front_of_padding | end_of_sequence
-    "cond_hidden_dim=256",
-    "sigma_feature_dim=32",
-    "sigma_hidden_dim=128",
-    "slot_embed_init_std=0.02",
-    "contrastive_weight=0.1",
-    "sigma_budget_weight=1e-3",
-]
-output_name = "anima_postfix"
+# network_args = [
+#     "mode=cond-timestep",
+#     "splice_position=front_of_padding", # front_of_padding | end_of_sequence
+#     "cond_hidden_dim=256",
+#     "sigma_feature_dim=32",
+#     "sigma_hidden_dim=128",
+#     "slot_embed_init_std=0.02",
+#     "contrastive_weight=0.1",
+#     "sigma_budget_weight=1e-3",
+# ]
+# output_name = "anima_postfix"
 
-learning_rate = 1e-4
-max_train_epochs = 1
-save_every_n_epochs = 1
-checkpointing_epochs = 1
+# learning_rate = 1e-4
+# max_train_epochs = 1
+# save_every_n_epochs = 1
+# checkpointing_epochs = 1
 
-use_shuffled_caption_variants = true
-cache_llm_adapter_outputs = true
+# use_shuffled_caption_variants = true
+# cache_llm_adapter_outputs = true
 
-# Postfix training needs a base LoRA and accumulates on cached TE — method-forced.
-blocks_to_swap = 0
-gradient_accumulation_steps = 4
+# # Postfix training needs a base LoRA and accumulates on cached TE — method-forced.
+# blocks_to_swap = 0
+# gradient_accumulation_steps = 4
 # lora_path = "output/ckpt/anima-tlora-0415-12.safetensors"
 
 # ── Postfix (exp — cond mode) ───────────────────────────────────────────
@@ -68,6 +68,37 @@ gradient_accumulation_steps = 4
 # output_name = "anima_postfix_exp"
 # max_train_epochs = 2
 # checkpointing_epochs = 2
+
+# ── Postfix (ortho cond — caption-conditional + structural ortho / C1) ──
+# cond+ortho v1: cond_mlp predicts (S(c), λ(c)) per caption — K(K-1)/2 + 1
+# scalars in the last layer instead of K·D. postfix(c) = Cayley(S(c)−Sᵀ(c))
+# @ basis · λ(c). Structurally `postfix(c) @ postfix(c).T = λ(c)² · I_K`
+# per caption — uniform magnitude across slots, varying across captions.
+# Drops slot_embed + contrastive_weight (rank-K is structural, not gradient
+# pressure). cond-timestep+ortho is deferred (raises NotImplementedError).
+#
+# Trainable surface ≈ 390k params at K=32, hidden=256, D=1024 (vs ~8.65M
+# for legacy cond at K=64).
+#
+# network_dim = 32
+# network_args = [
+#     "mode=cond",
+#     "splice_position=end_of_sequence",
+#     "cond_hidden_dim=256",
+#     "ortho=true",
+#     "ortho_basis=svd_te",
+#     "te_cache_dir=post_image_dataset/lora",
+#     "svd_num_files=256",
+#     "ortho_basis_seed=0",
+# ]
+# output_name = "anima_postfix_ortho_cond_v2"
+# learning_rate = 1e-3
+# max_train_epochs = 2
+# save_every_n_epochs = 1
+# checkpointing_epochs = 1
+# use_shuffled_caption_variants = true
+# cache_llm_adapter_outputs = true
+# blocks_to_swap = 0
 
 # ── Postfix (func — cond mode + functional MSE vs inversions) ───────────
 # Same as postfix_exp plus functional loss against saved inversion runs.
@@ -106,6 +137,43 @@ gradient_accumulation_steps = 4
 # output_name = "anima_postfix_sigma"
 # max_train_epochs = 2
 # checkpointing_epochs = 2
+
+# ── Postfix (ortho v2 — SVD basis + scalar lambda_global / C1) ─────────
+# K orthonormal slot vectors via Cayley rotation of a frozen basis. v2 over v1:
+#   - basis is `svd_te` (top-K right singular vectors of cached
+#     `_anima_te.safetensors` adapter outputs) row-shuffled deterministically,
+#     so each slot is a meaningful dataset direction without inductive bias
+#     toward "slot 0 is principal" (interleave-spirit, like OrthoHydra's
+#     `e mod B`);
+#   - lambda is a single scalar `lambda_global` instead of per-slot K-vector,
+#     enforcing uniform per-slot magnitude — eliminates the v1-fop failure
+#     mode where max/min |λ| > 100 left tail slots near-zero.
+# Trainable surface = K(K-1)/2 + 1 scalars (≈ 497 at K=32). Obsoletes
+# slot_embed_init_std + contrastive_weight for postfix mode. cond /
+# cond-timestep ortho still pending (proposal §C).
+#
+network_dim = 32
+network_args = [
+    "mode=postfix",
+    "splice_position=front_of_padding",
+    "ortho=true",
+    "ortho_basis=svd_te",
+    "te_cache_dir=post_image_dataset/lora",
+    "svd_num_files=256",
+    "ortho_basis_seed=0",
+]
+output_name = "anima_postfix_ortho_v2"
+learning_rate = 1e-3
+max_train_epochs = 2
+save_every_n_epochs = 1
+checkpointing_epochs = 1
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+blocks_to_swap = 0
+compile_mode="full"
+# # Cold-start: v1 (per-slot lambda_slot) checkpoints are NOT loadable here —
+# # `create_network_from_weights` raises on legacy `ortho_lambda` keys.
+# # See docs/proposal/orthogonal_postfix.md §D.
 
 # ── Prefix ──────────────────────────────────────────────────────────────
 # Prepends N vectors to cross-attention. No base LoRA — comment out
