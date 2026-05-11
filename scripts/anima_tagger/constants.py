@@ -90,23 +90,31 @@ def classify_people(tags: Iterable[str]) -> int:
     * ``1girl_1boy`` (2), ``2girls_1boy`` (4), ``2boys_1girl`` (5) —
       the three explicit mixed combos
     * ``multi`` (7) — anything else with a count tag: ``3+girls``,
-      ``3+boys``, ``2girls+2+boys``, ``multiple_*``, ``Nothers``, etc.
-      ``others`` count tags ride into ``multi`` since the head is
-      girls/boys-shaped.
+      ``3+boys``, ``2girls+2+boys``, ``Nothers``, or a ``multiple_*`` tag
+      with no explicit numeric companion. ``others`` count tags ride into
+      ``multi`` since the head is girls/boys-shaped.
+
+    Booru auto-fires ``multiple_girls`` / ``multiple_boys`` whenever the
+    count is ≥2, not just ≥3 — so it cannot be treated as a ≥3 signal on
+    its own. We defer to the explicit numeric count tag when one is
+    present; ``multiple_*`` only contributes as a floor of 2 when no
+    numeric tag for that gender was seen.
 
     Tag order in ``tags`` doesn't matter — counts are reduced first.
     """
     girls = boys = 0
-    saw_multi = False
+    saw_multi_g = saw_multi_b = False
+    saw_other = False
     for t in tags:
         if not is_count_tag(t):
             continue
         if t.startswith("multiple"):
-            saw_multi = True
             if "girl" in t:
-                girls = max(girls, 3)
+                saw_multi_g = True
             elif "boy" in t:
-                boys = max(boys, 3)
+                saw_multi_b = True
+            elif "other" in t:
+                saw_other = True
             continue
         m = _LEADING_INT_RE.match(t)
         if m is None:                    # e.g. malformed; defensive
@@ -119,11 +127,16 @@ def classify_people(tags: Iterable[str]) -> int:
         # "others" count tags are recorded as a "multi" indicator without
         # changing girls/boys directly — they don't fit the 7 buckets.
         elif "other" in t:
-            saw_multi = True
-    # multi catches the heavy cases first. (1g, 2b) is now its own bucket
-    # so it's excluded here — it's handled by the explicit checks below.
-    if saw_multi or girls >= 3 or boys >= 3 or (boys >= 2 and girls >= 2):
-        return 7                          # multi: 3+girls / 3+boys / 2g+2b+ / multiple_* / Nothers
+            saw_other = True
+    # ``multiple_*`` only kicks in when the explicit numeric tag is missing
+    # (rare — booru attaches both). Treat it as ≥2, not ≥3, since that's
+    # what the booru auto-tag actually means.
+    if saw_multi_g and girls == 0:
+        girls = 2
+    if saw_multi_b and boys == 0:
+        boys = 2
+    if saw_other or girls >= 3 or boys >= 3 or (boys >= 2 and girls >= 2):
+        return 7                          # multi: 3+girls / 3+boys / 2g+2b+ / lonely multiple_* / Nothers
     if girls == 0 and boys == 0:
         return 0                          # no_people (only when no count tag fired)
     if girls == 1 and boys == 0:
