@@ -10,7 +10,7 @@ Examples:
     python tasks.py test
     python tasks.py test                     # add SPECTRUM=1 to enable Spectrum
     python tasks.py download-models
-    python tasks.py exp-apex                 # experimental method
+    python tasks.py exp-postfix              # experimental method
     python tasks.py exp-test-ip ref.png      # experimental inference
 
 Command implementations live under ``scripts/tasks/`` (shipped methods) and
@@ -176,20 +176,6 @@ COMMANDS = {
     # ── Experimental ──────────────────────────────────────────────────
     # Unstable methods kept under exp-* so they don't pollute the main command
     # surface. May produce broken output, change without notice, or be removed.
-    "exp-apex": (
-        exp_training.cmd_apex,
-        "[experimental] APEX distillation (condition-shift self-adversarial)",
-    ),
-    "exp-apex-combined": (
-        exp_training.cmd_apex_combined,
-        "[experimental] APEX combined-3F (c-shift + t-shift, Δt=-0.05). "
-        "See docs/experimental/apex-0508.md.",
-    ),
-    "exp-apex-temporal": (
-        exp_training.cmd_apex_temporal,
-        "[experimental] APEX temporal-2F (t-shift only, no ConditionShift, "
-        "no L_fake; 2 fwd/step). See docs/experimental/apex-0508.md.",
-    ),
     "exp-postfix": (
         exp_training.cmd_postfix,
         "[experimental] Postfix/prefix tuning (mode selected in configs/methods/postfix.toml)",
@@ -215,10 +201,6 @@ COMMANDS = {
         exp_training.cmd_easycontrol_preprocess,
         "[experimental] Full EasyControl preprocess: latents + text emb. "
         "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
-    ),
-    "exp-test-apex": (
-        exp_inference.cmd_test_apex,
-        "[experimental] Inference with latest APEX LoRA",
     ),
     "exp-test-prefix": (
         exp_inference.cmd_test_prefix,

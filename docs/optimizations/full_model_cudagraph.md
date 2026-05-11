@@ -206,7 +206,6 @@ The `full` path force-asserts away two features (`train.py:2102`, `train.py:2105
 |---------|---------------------|
 | OrthoLoRA / T-LoRA / ReFT stack | ✅ all share the always-a-Tensor + in-place-mutation discipline |
 | HydraLoRA + sigma router | ✅ after the `set_sigma` in-place fix |
-| APEX (3 forwards/step) | ⚠ untested — APEX itself force-disables `blocks_to_swap`, but the `c_fake = A·c + b` shift introduces an extra cudagraph input |
 | IP-Adapter / EasyControl | ⚠ untested — image-stream KV adds tensors crossing the compile boundary |
 | LoRA's `use_custom_down_autograd` | ✅ confirmed compile-stable in 60-step A/B (see `for_compile.md` §5.2) |
 

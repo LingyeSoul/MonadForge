@@ -89,7 +89,6 @@ Not all adapter families port equally. Rough triage:
 | ReFT | High | Wraps block forwards; needs a block-naming pattern only |
 | HydraLoRA | High-medium | Same target story as LoRA + a router on the Linear's input |
 | T-LoRA | High | Timestep mask is model-agnostic |
-| APEX | Medium | Needs the trainer to do 3 forwards + warm-start LoRA target compatibility |
 | Modulation guidance | Medium-low | Assumes AdaLN coefficients of a specific shape; needs `pooled_text_proj` slot |
 | Postfix / Prefix | Low | Hardcoded to Anima cross-attention shape and module names |
 | IP-Adapter | Low | Per-block `to_k_ip` / `to_v_ip` parallel projections + Anima cross-attn patch |

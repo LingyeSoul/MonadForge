@@ -14,7 +14,6 @@ Training and inference algorithms.
 | [methods/postfix-sigma.md](methods/postfix-sigma.md) | σ-conditional postfix — caption-conditional postfix + zero-init σ residual |
 | [methods/mod-guidance.md](methods/mod-guidance.md) | Modulation guidance — text-conditioned AdaLN steering via distilled MLP |
 | [methods/invert.md](methods/invert.md) | Embedding inversion — optimize text embeddings (full and K-slot reference) |
-| [methods/apex.md](methods/apex.md) | APEX — self-adversarial one-step distillation |
 | [methods/spectrum.md](methods/spectrum.md) | Spectrum — training-free inference acceleration via Chebyshev forecasting |
 
 ## Optimizations

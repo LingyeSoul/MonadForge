@@ -105,7 +105,6 @@ DCW lives at the sampler boundary, not inside any module — composes with every
 
 Untested at v0:
 - CFG ≠ 4 with v4 (the prototype was calibrated at CFG=4; falls back to bucket prior or scalar via the proposal's fallback ladder).
-- APEX (APEX trains around the bias).
 - Stacked LoRA / OrthoLoRA / T-LoRA / ReFT (one row per family).
 
 ## v4 status (prototype)

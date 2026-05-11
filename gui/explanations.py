@@ -110,12 +110,12 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "ko": "DiT(U-Net)만 학습. 텍스트 인코더 가중치는 동결. 대부분의 LoRA 학습에 권장.",
     },
     "network_weights": {
-        "en": "Path to a pre-trained adapter checkpoint to warm-start from. APEX requires this — it distills the warm-start LoRA into a fast-inference (1–4 NFE) variant; cold-start catastrophically regresses. Leave empty for plain LoRA training.",
-        "ko": "워밍업으로 사용할 사전 학습 어댑터 체크포인트 경로. APEX에는 필수 — APEX는 워밍업 LoRA를 빠른 추론(1–4 NFE) 변형으로 distillation 학습하며, cold-start는 학습이 크게 무너집니다. 일반 LoRA 학습 시에는 비워두세요.",
+        "en": "Path to a pre-trained adapter checkpoint to warm-start from. Leave empty for plain LoRA training.",
+        "ko": "워밍업으로 사용할 사전 학습 어댑터 체크포인트 경로. 일반 LoRA 학습 시에는 비워두세요.",
     },
     "dim_from_weights": {
-        "en": "Read network_dim from the warm-start checkpoint instead of the form value. Set together with network_weights for APEX so rank matches the warm-start LoRA.",
-        "ko": "network_dim을 폼 값 대신 워밍업 체크포인트에서 읽기. APEX에서 network_weights와 함께 설정하여 랭크를 워밍업 LoRA와 일치시킵니다.",
+        "en": "Read network_dim from the warm-start checkpoint instead of the form value. Set together with network_weights so rank matches the warm-start LoRA.",
+        "ko": "network_dim을 폼 값 대신 워밍업 체크포인트에서 읽기. network_weights와 함께 설정하여 랭크를 워밍업 LoRA와 일치시킵니다.",
     },
     # Training
     "learning_rate": {
@@ -814,71 +814,6 @@ def reft_guide() -> str:
     return REFT_GUIDE.get(lang) or REFT_GUIDE["en"]
 
 
-# ── APEX guide ──────────────────────────────────────────────
-
-APEX_GUIDE: dict[str, str] = {
-    "en": (
-        "<div style='background:#1e3322; padding:10px 14px; border-left:3px solid #27ae60; "
-        "margin-bottom:14px; border-radius:3px;'>"
-        "<p style='margin:0 0 6px 0;'><b>APEX is a distillation step, not a "
-        "from-scratch LoRA.</b></p>"
-        "<p style='margin:0;'>It takes an already-trained LoRA as a warm-start "
-        "and refines it into a 1–4 NFE fast-inference variant via self-"
-        "adversarial condition-shift training. <b>Train a regular LoRA first</b>, "
-        "then point <code>network_weights</code> at that "
-        "<code>.safetensors</code> to start the APEX run. Cold-start (empty "
-        "<code>network_weights</code>) catastrophically regresses.</p>"
-        "</div>"
-        "<h2 style='margin:0 0 10px 0; font-size:17px;'>APEX (1-NFE distillation)</h2>"
-        "<p>Self-adversarial condition-shift distillation (Anima implementation of "
-        "arXiv:2604.12322). The \"adversarial\" signal comes from querying the "
-        "same network under a learned shifted text condition "
-        "(<code>ConditionShift</code>, <code>c_fake = A&middot;c + b</code>), so "
-        "no discriminator and no external teacher are needed.</p>"
-        "<p>Training does <b>3 DiT forwards per step</b> (real + fake@real_xt "
-        "stop-grad + fake@fake_xt), so <code>blocks_to_swap</code> is method-"
-        "forced to <code>0</code> — block swapping crashes on the second "
-        "forward with a FakeTensor device mismatch.</p>"
-        "<p>Inference: <code>make exp-test-apex</code> (4 euler steps, "
-        "<code>guidance_scale = 1.0</code>). Output is still a regular LoRA "
-        "<code>.safetensors</code> bakeable into the DiT — it just runs at far "
-        "fewer denoising steps than the warm-start LoRA. See "
-        "<code>docs/experimental/apex.md</code>.</p>"
-    ),
-    "ko": (
-        "<div style='background:#1e3322; padding:10px 14px; border-left:3px solid #27ae60; "
-        "margin-bottom:14px; border-radius:3px;'>"
-        "<p style='margin:0 0 6px 0;'><b>APEX는 distillation 단계이며, 처음부터 "
-        "학습하는 LoRA가 아닙니다.</b></p>"
-        "<p style='margin:0;'>이미 학습된 LoRA를 워밍업으로 받아 self-adversarial "
-        "condition-shift 학습으로 1–4 NFE 빠른 추론 변형으로 다듬는 방식입니다. "
-        "<b>먼저 일반 LoRA를 학습</b>한 뒤 <code>network_weights</code>를 그 "
-        "<code>.safetensors</code> 경로로 설정해 APEX 실행을 시작하세요. Cold-start"
-        "(<code>network_weights</code> 비움)는 학습이 크게 무너집니다.</p>"
-        "</div>"
-        "<h2 style='margin:0 0 10px 0; font-size:17px;'>APEX (1-NFE distillation)</h2>"
-        "<p>Self-adversarial condition-shift distillation (Anima에서의 "
-        "arXiv:2604.12322 구현). \"adversarial\" 신호는 학습된 시프트 텍스트 조건"
-        "(<code>ConditionShift</code>, <code>c_fake = A&middot;c + b</code>) 하에서 "
-        "동일한 네트워크를 질의하여 얻으므로, 별도의 discriminator나 외부 teacher가 "
-        "필요 없습니다.</p>"
-        "<p>학습 시 스텝당 <b>DiT를 3번 forward</b>합니다 (real + fake@real_xt "
-        "stop-grad + fake@fake_xt). 그래서 <code>blocks_to_swap</code>은 "
-        "<code>0</code>으로 method-forced됩니다 — 블록 스왑은 두 번째 forward에서 "
-        "FakeTensor 디바이스 불일치로 크래시합니다.</p>"
-        "<p>추론: <code>make exp-test-apex</code> (4 euler 스텝, "
-        "<code>guidance_scale = 1.0</code>). 결과는 여전히 DiT에 베이킹 가능한 일반 "
-        "LoRA <code>.safetensors</code>이며, 워밍업 LoRA보다 훨씬 적은 디노이징 "
-        "스텝으로 동작합니다. <code>docs/experimental/apex.md</code> 참조.</p>"
-    ),
-}
-
-
-def apex_guide() -> str:
-    lang = current_language()
-    return APEX_GUIDE.get(lang) or APEX_GUIDE["en"]
-
-
 def apply_note() -> str:
     """HTML block explaining Apply semantics — shown above variant guides."""
     lang = current_language()
@@ -899,9 +834,4 @@ def method_guide(method: str) -> str | None:
         return apply_note() + not_mergeable_note() + hydralora_guide()
     if method == "reft":
         return apply_note() + not_mergeable_note() + reft_guide()
-    if method == "apex":
-        # APEX produces a bakeable LoRA, so no "not mergeable" warning — but
-        # the warm-start requirement is the dominant pitfall, surfaced via the
-        # green callout at the top of apex_guide() instead.
-        return apply_note() + apex_guide()
     return None

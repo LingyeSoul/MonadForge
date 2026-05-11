@@ -1,4 +1,4 @@
-"""Experimental training entry-points: apex, postfix, ip-adapter, easycontrol.
+"""Experimental training entry-points: postfix, ip-adapter, easycontrol.
 
 These are wired up under ``make exp-*`` / ``python tasks.py exp-*`` to keep
 the unstable methods visually separate from the shipped ones (lora family,
@@ -11,32 +11,6 @@ from __future__ import annotations
 
 from scripts.tasks import preprocess as _preprocess
 from scripts.tasks._common import PY, run, train
-
-
-def cmd_apex(extra):
-    train("apex", extra)
-
-
-def cmd_apex_combined(extra):
-    """APEX combined-3F: shipped APEX + Forward 2 t-shift (Δt = -0.05).
-
-    Selects ``configs/methods/apex_combined.toml``. The adapter dispatch in
-    ``library/training/method_adapter.py`` matches both ``method == "apex"``
-    and ``method.startswith("apex_")``, so ``ApexMethodAdapter`` is picked
-    up automatically; ``apex_dt`` from the toml flows through to Forward 2
-    via the standard merge chain.
-    """
-    train("apex_combined", extra)
-
-
-def cmd_apex_temporal(extra):
-    """APEX temporal-2F: t-shift only, no ConditionShift, no L_fake (2 fwd/step).
-
-    Selects ``configs/methods/apex_temporal.toml``. Same adapter dispatch as
-    ``cmd_apex_combined`` (``method.startswith("apex_")``); the temporal-2F
-    branch is gated by ``apex_temporal_only=true`` in the toml.
-    """
-    train("apex_temporal", extra)
 
 
 def cmd_postfix(extra):

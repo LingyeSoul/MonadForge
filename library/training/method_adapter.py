@@ -127,30 +127,8 @@ class MethodAdapter:
         Called once per step, AFTER the primary forward, INSIDE the same
         ``set_grad_enabled`` / ``autocast`` scope. Returns a dict that the
         trainer merges into ``loss_aux`` for the LossComposer (e.g.
-        ``{"apex": {...}}``, ``{"func_loss": tensor}``). Return ``None`` (or
-        omit the override) when inactive for this step."""
-        return None
-
-    def wants_split_backward(self, *, is_train: bool) -> bool:
-        """If True, the trainer composes / backwards the real branch first
-        (freeing forward-1 activations), then calls ``extra_forwards_fake``
-        before composing / backwarding the fake branch. Used by APEX, where
-        the two grad-tracked DiT forwards are autograd-disjoint and keeping
-        both graphs live until a single backward roughly doubles peak
-        activation memory.
-
-        Default False — adapters that don't need this opt out and the trainer
-        runs the legacy single-pass compose+backward.
-        """
-        return False
-
-    def extra_forwards_fake(self, ctx: StepCtx) -> Optional[dict]:
-        """Deferred fake-branch forwards. Called only when the adapter
-        returned True from ``wants_split_backward`` and only after the
-        trainer has backwarded the real-branch loss (forward-1 activations
-        are gone by this point). Inside the trainer's own
-        ``set_grad_enabled`` / ``autocast`` scope. Returns a dict the trainer
-        merges into ``loss_aux`` before composing the fake-branch loss."""
+        ``{"func_loss": tensor}``). Return ``None`` (or omit the override)
+        when inactive for this step."""
         return None
 
     def validation_baselines(self) -> list[ValidationBaseline]:
@@ -196,10 +174,6 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
 
         adapters.append(REPAMethodAdapter())
     method = getattr(args, "method", None) or ""
-    if method == "apex" or method.startswith("apex_"):
-        from networks.methods.apex import ApexMethodAdapter
-
-        adapters.append(ApexMethodAdapter())
     if method == "soft_tokens" and float(
         getattr(network, "contrastive_weight", 0.0) or 0.0
     ) > 0.0:

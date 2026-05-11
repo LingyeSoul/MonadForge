@@ -744,8 +744,6 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
             "logit_normal",
             "mode",
             "cosmap",
-            "apex_omega",
-            "apex_x1_omega",
             "none",
             "uniform",
         ],

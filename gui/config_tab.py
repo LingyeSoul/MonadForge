@@ -90,9 +90,8 @@ class ConfigTab(QWidget):
         # users used to pick via presets, and all saves now write directly to
         # the current variant file (no preset/variant routing distinction).
         # `methods=` lets callers restrict the picker (e.g. the standard tab
-        # shows only lora; the experimental tab mounts a multi-method picker
-        # spanning hydralora / reft / postfix / apex). When only one method is
-        # allowed, the picker hides itself.
+        # shows only lora; the experimental tab mounts a method picker for
+        # postfix). When only one method is allowed, the picker hides itself.
         top = QHBoxLayout()
         method_items = methods if methods is not None else list_methods()
         self._method_label = QLabel("Method")
@@ -282,7 +281,7 @@ class ConfigTab(QWidget):
 
     def _current_variant(self) -> str:
         """gui-methods variant for the selected method. Falls back to the
-        method name itself when no variants are registered (apex, ip_adapter,
+        method name itself when no variants are registered (ip_adapter,
         easycontrol)."""
         v = self.variant_combo.currentText()
         return v or self.method_combo.currentText()

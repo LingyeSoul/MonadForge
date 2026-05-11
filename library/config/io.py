@@ -447,10 +447,9 @@ def _write_config_snapshot(
     logger.info(f"Config snapshot written: {path}")
 
     # Mirror into the run's TB log dir so the timestamped run dir becomes a
-    # self-contained record of "this run + the config that produced it". The
-    # canonical copy at output_dir/<output_name>.snapshot.toml stays
-    # load-bearing — apex inference reads it by stem to recover warm-start
-    # config — so a failure here is logged but not fatal.
+    # self-contained record of "this run + the config that produced it".
+    # The canonical copy at output_dir/<output_name>.snapshot.toml stays in
+    # place; a failure here is logged but not fatal.
     if getattr(args, "logging_dir", None):
         try:
             from library.runtime.accelerator import resolve_run_log_dir

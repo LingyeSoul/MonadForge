@@ -42,7 +42,6 @@ _METHOD_ORDER = (
     "hydralora",
     "reft",
     "postfix",
-    "apex",
     "ip_adapter",
     "easycontrol",
 )
@@ -80,7 +79,6 @@ _FAMILY_VARIANTS: dict[str, list[str]] = {
     "postfix": [
         "postfix_ortho_cond",
     ],
-    "apex": ["apex"],
     "ip_adapter": ["ip_adapter"],
     "easycontrol": ["easycontrol"],
 }

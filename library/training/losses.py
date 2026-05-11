@@ -3,18 +3,11 @@
 M1 extraction (plan.md): the loss side of `_process_batch_inner` becomes a
 registry of small callables. The composer calls the active handlers in three
 phases matching the pre-refactor reduction order — break that ordering and
-APEX / ortho / multiscale numerics shift.
+ortho / multiscale numerics shift.
 
 Reduction order (must match train.py pre-refactor):
   1. Per-sample [B] stage:
-       flow_match   — base FM (weighting + masked + loss_weights). Skipped
-                      when APEX is active — apex_mix subsumes it (T_mix at
-                      inner lambda=0 is exactly v_data, so L_mix = pure FM).
-       apex_mix     — L_mix scaled by args.apex_lambda_c (constant). Inner
-                      lambda is ramped 0 -> apex_lambda inside T_mix_v at
-                      forward time, so the warmup schedule lives there, not
-                      in the outer L_mix weight. [B]
-       apex_fake    — L_fake scaled by aux["apex"]["lam_f_eff"] (ramped). [B]
+       flow_match   — base FM (weighting + masked + loss_weights).
   2. Per-sample += scalar broadcast stage (was `post_process_loss`):
        ortho_reg     — OrthoLoRA orthogonality regularizer
        hydra_balance — MoE load-balance loss
@@ -22,8 +15,8 @@ Reduction order (must match train.py pre-refactor):
   3. Scalar stage (after `.mean()` reduction):
        multiscale    — avg_pool2d MSE on pred/target
 
-The composer does not own forward passes. APEX and functional-loss forwards
-still happen inside the trainer (they need `anima()` and post_process_network
+The composer does not own forward passes. Functional-loss forwards still
+happen inside the trainer (they need `anima()` and post_process_network
 hooks). Those forwards stash their aux tensors on `LossContext.aux`, and the
 composer consumes them.
 """
@@ -227,83 +220,6 @@ def _flow_match_loss(ctx: LossContext) -> torch.Tensor:
     return loss
 
 
-def _apex_mix_loss(ctx: LossContext) -> torch.Tensor:
-    """APEX L_mix: MSE(F_real, T_mix_v) scaled by args.apex_lambda_c. [B].
-
-    Outer L_mix weight (paper Eq. 25 lam_c) is constant across training. The
-    supervision/adversarial blend is governed by the inner lambda baked into
-    T_mix_v at forward time (see ApexMethodAdapter.extra_forwards): at
-    inner=0 T_mix_v == v_data so this is pure FM.
-    """
-    apex_aux = ctx.aux.get("apex") or {}
-    T_mix_v = apex_aux.get("T_mix_v")
-    if T_mix_v is None:
-        # Validation path: ApexMethodAdapter.extra_forwards is a no-op when
-        # is_train=False, so loss_aux has no "apex" key. T_mix_v at inner
-        # lambda=0 equals v_data == ctx.target exactly, so reporting plain FM
-        # is the correct mathematical limit and avoids the spurious 0 the
-        # tracker would otherwise log under "loss/validation/...".
-        return _flow_match_loss(ctx)
-    lam_c = float(getattr(ctx.args, "apex_lambda_c", 1.0))
-    if lam_c <= 0.0:
-        return ctx.model_pred.new_zeros(ctx.model_pred.shape[0])
-
-    l_mix = _conditional_loss(
-        ctx.model_pred.float(),
-        T_mix_v.float(),
-        ctx.args.loss_type,
-        "none",
-        ctx.huber_c,
-    )
-    if ctx.weighting is not None:
-        l_mix = l_mix * ctx.weighting
-    if ctx.args.masked_loss or (
-        "alpha_masks" in ctx.batch and ctx.batch["alpha_masks"] is not None
-    ):
-        l_mix = apply_masked_loss(l_mix, ctx.batch)
-    l_mix = l_mix.mean(dim=list(range(1, l_mix.ndim)))
-    l_mix = l_mix * ctx.loss_weights
-    # Stash unweighted scalar for the metric layer (read by _apex_loss_breakdown).
-    if ctx.network is not None:
-        mix_value = float(l_mix.detach().mean().item())
-        ctx.network._last_apex_mix_value = mix_value
-        recorder = getattr(ctx.network, "_apex_mix_recorder", None)
-        if recorder is not None:
-            recorder.add(epoch=0, step=len(recorder.loss_list), loss=mix_value)
-    return lam_c * l_mix
-
-
-def _apex_fake_loss(ctx: LossContext) -> torch.Tensor:
-    """APEX L_fake: MSE(F_fake_on_fake_xt, target_fake) gated by lam_f_eff. [B]."""
-    apex_aux = ctx.aux.get("apex") or {}
-    lam_f_eff = float(apex_aux.get("lam_f_eff", 0.0))
-    F_fake_on_fake_xt = apex_aux.get("F_fake_on_fake_xt")
-    target_fake = apex_aux.get("target_fake")
-    if lam_f_eff <= 0.0 or F_fake_on_fake_xt is None or target_fake is None:
-        return ctx.model_pred.new_zeros(ctx.model_pred.shape[0])
-
-    l_fake = _conditional_loss(
-        F_fake_on_fake_xt.float(),
-        target_fake.float(),
-        ctx.args.loss_type,
-        "none",
-        ctx.huber_c,
-    )
-    w_fake = apex_aux.get("weighting_fake")
-    if w_fake is not None:
-        l_fake = l_fake * w_fake
-    # No masked-loss: x_fake is synthetic, not tied to the input image mask.
-    l_fake = l_fake.mean(dim=list(range(1, l_fake.ndim)))
-    l_fake = l_fake * ctx.loss_weights
-    if ctx.network is not None:
-        fake_value = float(l_fake.detach().mean().item())
-        ctx.network._last_apex_fake_value = fake_value
-        recorder = getattr(ctx.network, "_apex_fake_recorder", None)
-        if recorder is not None:
-            recorder.add(epoch=0, step=len(recorder.loss_list), loss=fake_value)
-    return lam_f_eff * l_fake
-
-
 # ---------------------------------------------------------------------------
 # Scalar-broadcast regularizers (added to the per-sample [B] tensor)
 # ---------------------------------------------------------------------------
@@ -354,14 +270,6 @@ def _functional_loss(ctx: LossContext) -> torch.Tensor:
     # Per-sample running loss is float32 (flow_match casts inputs via .float()).
     # Match the pre-refactor cast: `func_weight * func_loss.to(loss.dtype)`.
     return weight * func_loss.float()
-
-
-def _condition_shift_loss(ctx: LossContext) -> torch.Tensor:
-    """Reserved slot: APEX's ConditionShift is trained implicitly via L_fake's
-    autograd path. No explicit loss term today; registered for symmetry with
-    the plan and in case a direct regularizer is added later.
-    """
-    return ctx.model_pred.new_zeros(())
 
 
 def _soft_tokens_contrastive_loss(ctx: LossContext) -> torch.Tensor:
@@ -428,12 +336,9 @@ def _multiscale_loss(ctx: LossContext) -> torch.Tensor:
 
 LOSS_REGISTRY: dict[str, LossFn] = {
     "flow_match": _flow_match_loss,
-    "apex_mix": _apex_mix_loss,
-    "apex_fake": _apex_fake_loss,
     "ortho_reg": _ortho_reg_loss,
     "hydra_balance": _hydra_balance_loss,
     "functional": _functional_loss,
-    "condition_shift": _condition_shift_loss,
     "multiscale": _multiscale_loss,
     "postfix_contrastive": _postfix_contrastive_loss,
     "postfix_sigma_budget": _postfix_sigma_budget_loss,
@@ -443,12 +348,11 @@ LOSS_REGISTRY: dict[str, LossFn] = {
 
 
 # Which stage each registered loss runs in (see module docstring).
-_STAGE_PER_SAMPLE = ("flow_match", "apex_mix", "apex_fake")
+_STAGE_PER_SAMPLE = ("flow_match",)
 _STAGE_SCALAR_BROADCAST = (
     "ortho_reg",
     "hydra_balance",
     "functional",
-    "condition_shift",
     "postfix_contrastive",
     "postfix_sigma_budget",
     "soft_tokens_contrastive",
@@ -531,82 +435,19 @@ class LossComposer:
 
         return scalar
 
-    # ---- Split-backward variants ---------------------------------------------------
-    # APEX runs two autograd-disjoint DiT forwards (real branch via L_sup+L_mix,
-    # fake branch via L_fake). Composing+backwarding them as one scalar keeps
-    # both graphs live until the single backward, roughly doubling peak
-    # activation memory. ``compose_real_branch`` returns everything except
-    # ``apex_fake``; ``compose_fake_branch`` returns ``apex_fake`` alone. Their
-    # sum equals ``compose`` numerically for the common case (no multiscale).
-    # When multiscale is active the blend is applied to the real-branch scalar
-    # only — multiscale operates on forward-1's ``model_pred``/``target`` and
-    # has no fake-branch counterpart.
-
-    def compose_real_branch(self, ctx: LossContext) -> torch.Tensor:
-        per_sample = ctx.model_pred.new_zeros(ctx.model_pred.shape[0])
-
-        first = True
-        for name in _STAGE_PER_SAMPLE:
-            if name == "apex_fake" or name not in self.active_losses:
-                continue
-            contribution = LOSS_REGISTRY[name](ctx)
-            per_sample = contribution if first else (per_sample + contribution)
-            first = False
-        if first:
-            raise RuntimeError(
-                "LossComposer.compose_real_branch: no per-sample loss "
-                "registered; 'flow_match' must be among active_losses"
-            )
-
-        for name in _STAGE_SCALAR_BROADCAST:
-            if name not in self.active_losses:
-                continue
-            reg = LOSS_REGISTRY[name](ctx)
-            if reg is None:
-                continue
-            per_sample = per_sample + reg
-
-        scalar = per_sample.mean()
-
-        if "multiscale" in self.active_losses:
-            ms_weight = float(getattr(ctx.args, "multiscale_loss_weight", 0.0) or 0.0)
-            if ms_weight > 0.0:
-                ms_loss = LOSS_REGISTRY["multiscale"](ctx)
-                if ms_loss is not None and torch.is_tensor(ms_loss) and ms_loss.numel():
-                    if not (ms_loss == 0).all():
-                        scalar = (scalar + ms_loss * ms_weight) / (1.0 + ms_weight)
-
-        return scalar
-
-    def compose_fake_branch(self, ctx: LossContext) -> torch.Tensor:
-        if "apex_fake" not in self.active_losses:
-            return ctx.model_pred.new_zeros(())
-        per_sample = LOSS_REGISTRY["apex_fake"](ctx)
-        return per_sample.mean()
-
-
 def build_loss_composer(args: argparse.Namespace, network: object) -> LossComposer:
     """Inspect args + network and return the active LossComposer.
 
     Rules:
-      - flow_match is active for every method except APEX. When APEX is
-        active, apex_mix subsumes flow_match (T_mix at inner lambda=0 is
-        v_data exactly, so L_mix is pure FM during the warmup window).
-      - apex_mix / apex_fake / condition_shift active iff args.method is
-        "apex" or "apex_*".
+      - flow_match is always active.
       - ortho_reg active iff network._ortho_reg_weight > 0.
       - hydra_balance active iff network._balance_loss_weight > 0.
       - functional active iff args.functional_loss_weight > 0.
       - multiscale active iff args.multiscale_loss_weight > 0.
     """
-    active: list[str] = []
+    active: list[str] = ["flow_match"]
 
     method = getattr(args, "method", None) or ""
-    is_apex = method == "apex" or method.startswith("apex_")
-    if is_apex:
-        active.extend(["apex_mix", "apex_fake", "condition_shift"])
-    else:
-        active.append("flow_match")
 
     if float(getattr(network, "_ortho_reg_weight", 0.0) or 0.0) > 0.0:
         active.append("ortho_reg")

@@ -1,8 +1,8 @@
 """Inference entry-points for shipped methods (test / test-* commands).
 
 All variants share ``INFERENCE_BASE`` from ``_common`` and add method-specific
-flags. Experimental inference commands (exp-test-apex, exp-test-postfix*,
-exp-test-prefix, exp-test-ref, exp-test-ip, exp-test-easycontrol) live in
+flags. Experimental inference commands (exp-test-postfix*, exp-test-prefix,
+exp-test-ref, exp-test-ip, exp-test-easycontrol) live in
 ``scripts/experimental_tasks/inference.py``.
 """
 

@@ -7,7 +7,7 @@ takes a built :class:`LoopState` plus the trainer instance so override hooks
 ``generate_step_logs``, ``step_logging``, ``epoch_logging``) keep working
 unchanged.
 
-State that used to be on ``self`` for cross-call signaling — ``_split_backward_consumed``,
+State that used to be on ``self`` for cross-call signaling —
 ``_last_router_H_postfix``, ``_cudagraph_mark_step``, ``_hydra_warmup_step``,
 ``_adapters`` — stays on the trainer; this module reads them through the
 ``trainer`` handle.
@@ -433,18 +433,11 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         if state.profile_started:
             torch.cuda.nvtx.range_pop()
 
-        # Split-backward path (APEX) backwards both branches inline inside
-        # process_batch and returns a detached scalar for logging. Skip the
-        # outer backward in that case so we don't double-step or crash on a
-        # no-grad tensor during warmup.
-        if getattr(trainer, "_split_backward_consumed", False):
-            trainer._split_backward_consumed = False
-        else:
-            if state.profile_started:
-                torch.cuda.nvtx.range_push("backward")
-            accelerator.backward(loss)
-            if state.profile_started:
-                torch.cuda.nvtx.range_pop()
+        if state.profile_started:
+            torch.cuda.nvtx.range_push("backward")
+        accelerator.backward(loss)
+        if state.profile_started:
+            torch.cuda.nvtx.range_pop()
 
         if accelerator.sync_gradients:
             # HydraLoRA "best-expert" warmup: keep grads only on top-k experts

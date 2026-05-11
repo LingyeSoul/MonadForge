@@ -2,7 +2,7 @@
 
 Each ``cmd_*`` is a thin shim that translates env vars + extra argv into the
 right ``train.py`` (via ``accelerate launch``) call. Experimental methods
-(apex, postfix, ip-adapter, easycontrol) live in
+(postfix, ip-adapter, easycontrol) live in
 ``scripts/experimental_tasks/training.py`` and are wired up under
 ``make exp-*`` in ``tasks.py``.
 """

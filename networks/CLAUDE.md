@@ -12,7 +12,6 @@ Pluggable adapter implementations selected at runtime via the `network_module` c
 | `methods/postfix.py` | Continuous postfix tuning: learns N vectors appended to adapter cross-attention (modes: hidden, embedding, cfg, dual). |
 | `methods/ip_adapter.py` | IP-Adapter: PE-Core-L14-336 vision encoder + Perceiver resampler + per-block `to_k_ip`/`to_v_ip`. |
 | `methods/easycontrol.py` | EasyControl: per-block cond LoRA on self-attn (q/k/v/o) + FFN + scalar `b_cond` logit-bias gate; two-stream block forward at training, KV-cache prefill at inference. |
-| `methods/apex.py` | APEX `ConditionShift` module (`c_fake = A·c + b`). |
 | `attention_dispatch.py` | Unified `dispatch_attention()` — backend router (SDPA / xformers / FA2 / FA3 / sageattn / flex). |
 | `spectrum.py` | Spectrum inference acceleration (Chebyshev feature forecasting). See root CLAUDE.md §Spectrum and `docs/methods/spectrum.md`. |
 

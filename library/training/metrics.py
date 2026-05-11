@@ -22,10 +22,9 @@ import torch
 class MetricContext:
     """What every producer is handed.
 
-    ``network`` is included so adapters can read network-level stashes (e.g.
-    APEX's loss-side ``_last_apex_mix_value`` lives on the network because
-    the loss code that writes it has no adapter handle). Producers ignore
-    fields they don't need.
+    ``network`` is included so adapters can read network-level stashes that
+    the loss code writes (the loss code has no adapter handle). Producers
+    ignore fields they don't need.
     """
 
     args: object

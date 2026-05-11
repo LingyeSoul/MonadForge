@@ -9,7 +9,7 @@ Four things this repo aims to do well:
 1. **Fast LoRA training** on consumer GPUs — full-model `torch.compile` with CUDAGraph capture, end to end.
 2. **Solid conventional implementations** — LoRA, OrthoLoRA, and T-LoRA stack together and bake losslessly into a standalone DiT checkpoint.
 3. **Recent methods, engineered for Anima** — Spectrum inference, DCW calibrator, OrthoHydraLoRA, and modulation guidance, each implemented end-to-end against Anima's compile/CUDAGraph contract rather than dropped in as a toy port.
-4. **A broad experimental surface** — APEX distillation, ReFT, postfix/prefix tuning, IP-Adapter, EasyControl, embedding inversion, img2emb, GRAFT.
+4. **A broad experimental surface** — ReFT, postfix/prefix tuning, IP-Adapter, EasyControl, embedding inversion, img2emb, GRAFT.
 
 > **At-a-glance diagrams** for every method (DiT internals, LoRA, OrthoLoRA, T-LoRA, HydraLoRA, ReFT, Spectrum, modulation, compile optimizations) live in [`docs/structure_images/`](docs/structure_images/) — paired with prose walkthroughs in [`docs/structure/`](docs/structure/).
 
@@ -91,7 +91,6 @@ Each ships with a doc — see the link for usage, flags, and caveats.
 
 | Feature | What it is | Doc |
 |---|---|---|
-| **APEX** | Self-adversarial 1–4 NFE distillation via learned condition shift; no discriminator, no teacher. | [apex.md](docs/experimental/apex.md) |
 | **ReFT** | Block-level residual-stream intervention (LoReFT, NeurIPS 2024). Composes with any LoRA variant. | [reft.md](docs/methods/reft.md) |
 | **Postfix / prefix tuning** | Continuous vectors appended (postfix) or prepended (prefix) to adapter cross-attention. Five postfix variants. | [postfix-sigma.md](docs/experimental/postfix-sigma.md), [prefix-tuning.md](docs/experimental/prefix-tuning.md) |
 | **IP-Adapter** | Decoupled image cross-attention (Ye et al. 2023). DiT frozen; trains Perceiver resampler + per-block `to_k_ip`/`to_v_ip`. | [ip-adapter.md](docs/experimental/ip-adapter.md) |
@@ -120,7 +119,7 @@ CLI path:
 
 ```bash
 make preprocess           # VAE-compatible resize & validation
-make lora                 # or: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-postfix / make exp-apex
+make lora                 # or: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-postfix
 make test                 # sample generation with the latest trained LoRA
 ```
 
@@ -136,7 +135,7 @@ Config chain: `configs/base.toml → configs/presets.toml[<preset>] → configs/
 | [guidelines/inference.md](docs/guidelines/inference.md) | Inference flags, P-GRAFT, prompt files, LoRA format conversion |
 | [guidelines/graft-guideline.md](docs/guidelines/graft-guideline.md) | GRAFT curation workflow |
 | [optimizations/](docs/optimizations/) | Compile pipeline, FA4 post-mortem, CUDA 13.2 |
-| [methods/](docs/methods/) | One doc per method — APEX, HydraLoRA, ReFT, Spectrum, inversion, mod guidance, postfix/prefix, T-LoRA, OrthoLoRA |
+| [methods/](docs/methods/) | One doc per method — HydraLoRA, ReFT, Spectrum, inversion, mod guidance, postfix/prefix, T-LoRA, OrthoLoRA |
 
 ---
 

@@ -103,18 +103,13 @@ class AnimaTrainer:
     def __init__(self):
         self.sample_prompts_te_outputs = None
         self._padding_mask_cache = {}
-        # Per-method extensions (EasyControl, IP-Adapter, APEX, …). Resolved
+        # Per-method extensions (EasyControl, IP-Adapter, …). Resolved
         # from args+network in train() right after _create_and_apply_network.
         self._adapters: list[MethodAdapter] = []
         # Per-step aux dict -- adapters' ``extra_forwards`` returns are merged
         # here in ``get_noise_pred_and_target`` and consumed by the loss
         # composer in ``_process_batch_inner``.
         self._extras_for_step: dict = {}
-        # Set by ``_process_batch_inner`` when the split-backward path runs
-        # both ``accelerator.backward`` calls inline. The train loop reads
-        # this and skips its own outer backward to avoid double-stepping or
-        # crashing on the detached return tensor.
-        self._split_backward_consumed: bool = False
 
     # region logging helpers
 
@@ -782,7 +777,7 @@ class AnimaTrainer:
                     **kw,
                 )
 
-                # Method-adapter extra forwards (APEX fake/mix branches, …).
+                # Method-adapter extra forwards (REPA, soft-tokens, …).
                 # Each adapter sees the primary forward's inputs + 5D output
                 # and may run additional anima(...) calls inside this same
                 # autocast / grad scope, returning aux loss tensors keyed for
@@ -1106,8 +1101,7 @@ class AnimaTrainer:
         huber_c = get_huber_threshold_if_needed(args, timesteps, noise_scheduler)
 
         # Assemble aux dict for the composer: extra_forwards returns from each
-        # method adapter (APEX tensors + schedule already mixed in, etc.) plus
-        # the trainer-owned functional-loss capture (next adapter target).
+        # method adapter plus the trainer-owned functional-loss capture.
         loss_aux: dict = dict(self._extras_for_step)
 
         func_loss = getattr(self, "_func_loss", None)
@@ -1130,72 +1124,7 @@ class AnimaTrainer:
                 aux=aux,
             )
 
-        # Split-backward: APEX runs two grad-tracked DiT forwards per step
-        # (real branch via L_mix, fake branch via L_fake) whose autograd
-        # graphs are disjoint -- forward 3's input is built from
-        # ``model_pred.detach()``. Composing+backwarding both as one scalar
-        # keeps both graphs live until backward, roughly doubling peak
-        # activation memory. When an adapter opts in, backward the real
-        # branch inline so forward-1 activations are freed before forward 3
-        # runs, then run forward 3 + L_fake. Total gradient = real + fake.
-        split_backward = is_train and any(
-            a.wants_split_backward(is_train=is_train) for a in self._adapters
-        )
-
-        # APEX warmup: ``lam_f_eff <= 0`` means ``apex_fake`` short-circuits
-        # to a no-graph zero tensor and forward 3 is not needed at all. Fall
-        # back to the legacy single-pass compose so the trainer's outer
-        # backward sees a graph from apex_mix. Also catches the case where
-        # the adapter returned no aux (e.g. crossattn_emb is None).
-        if split_backward:
-            apex_aux = loss_aux.get("apex") or {}
-            if float(apex_aux.get("lam_f_eff", 0.0)) <= 0.0:
-                split_backward = False
-
-        if not split_backward:
-            return composer.compose(_build_loss_ctx(loss_aux))
-
-        # --- real branch ---
-        loss_real = composer.compose_real_branch(_build_loss_ctx(loss_aux))
-        # accelerator.backward handles gradient_accumulation scaling; a second
-        # backward in the same accumulate scope just deposits more gradient
-        # into .grad.
-        accelerator.backward(loss_real)
-
-        # --- deferred fake branch (forward 3 + L_fake) ---
-        step_ctx = StepCtx(
-            args=args,
-            accelerator=accelerator,
-            network=network,
-            weight_dtype=weight_dtype,
-        )
-        with torch.set_grad_enabled(is_train), accelerator.autocast():
-            for adapter in self._adapters:
-                if not adapter.wants_split_backward(is_train=is_train):
-                    continue
-                out = adapter.extra_forwards_fake(step_ctx)
-                if not out:
-                    continue
-                # Merge into loss_aux: extend nested dicts (e.g. "apex") rather
-                # than overwriting the real-branch keys T_mix_v / lam_inner_eff.
-                for k, v in out.items():
-                    if (
-                        k in loss_aux
-                        and isinstance(loss_aux[k], dict)
-                        and isinstance(v, dict)
-                    ):
-                        loss_aux[k] = {**loss_aux[k], **v}
-                    else:
-                        loss_aux[k] = v
-
-        loss_fake = composer.compose_fake_branch(_build_loss_ctx(loss_aux))
-        if loss_fake.requires_grad:
-            accelerator.backward(loss_fake)
-        # Tell the train loop we've already consumed both branches' graphs;
-        # the returned tensor is detached and only carries the composite scalar
-        # for logging / metrics.
-        self._split_backward_consumed = True
-        return loss_real.detach() + loss_fake.detach()
+        return composer.compose(_build_loss_ctx(loss_aux))
 
     # endregion
 
@@ -2130,14 +2059,9 @@ class AnimaTrainer:
         progress_bar.unpause()
 
     def train(self, args):
-        from networks.methods.apex import (
-            promote_warmstart_to_merge as _apex_promote_warmstart_to_merge,
-        )
-
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
         verify_training_args(args)
-        _apex_promote_warmstart_to_merge(args)
         train_util.prepare_dataset_args(args, True)
         setup_logging(args, reset=True)
 
@@ -2291,7 +2215,7 @@ class AnimaTrainer:
         network, net_kwargs, train_unet, train_text_encoder = network_result
 
         # Resolve and run on_network_built for each method adapter (EasyControl,
-        # IP-Adapter, APEX, …). Each adapter validates its runtime contract and
+        # IP-Adapter, …). Each adapter validates its runtime contract and
         # logs/sets up auxiliary state before optimizer / accelerator wiring.
         self._adapters = resolve_adapters(args, network)
         if self._adapters:

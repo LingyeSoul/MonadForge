@@ -186,10 +186,10 @@ class LCMSampler:
     `denoised = latents - σ * v_pred` (x0 estimate) before invoking .step,
     matching the ERSDESampler interface.
 
-    Targeted at under-converged few-step distillations (APEX et al.) where
-    deterministic Euler can look dead — the per-step noise re-injection
-    gives the next forward something to refine. Trades seed determinism
-    for texture / detail recovery.
+    Targeted at under-converged few-step distillations where deterministic
+    Euler can look dead — the per-step noise re-injection gives the next
+    forward something to refine. Trades seed determinism for texture /
+    detail recovery.
 
     Reference: Luo et al. 2023 (Latent Consistency Models, arXiv:2310.04378);
     ComfyUI's `comfy/k_diffusion/sampling.py::sample_lcm`.

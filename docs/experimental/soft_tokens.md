@@ -56,7 +56,7 @@ n_layers · K · D       (base tokens)
 + n_t_buckets · n_layers · D   (t-offsets, broadcast across K)
 ```
 
-Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params**. Comparable to APEX scalars (negligible) and 30–60× lighter than a typical LoRA.
+Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params**. 30–60× lighter than a typical LoRA.
 
 ## Implementation map
 

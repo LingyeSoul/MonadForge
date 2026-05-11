@@ -251,9 +251,9 @@ class MainWindow(QMainWindow):
         # buffers survive toggling between modes.
         # Standard set: the official adapter families — plain LoRA (with
         # hardware variants), OrthoLoRA, T-LoRA (incl. T-LoRA + OrthoLoRA
-        # combo), HydraLoRA, and ReFT. Postfix / APEX and the image-
-        # conditioning adapters (IP-Adapter / EasyControl) live behind the
-        # experimental toggle.
+        # combo), HydraLoRA, and ReFT. Postfix and the image-conditioning
+        # adapters (IP-Adapter / EasyControl) live behind the experimental
+        # toggle.
         self.tabs = QTabWidget()
         self.tabs.addTab(
             ConfigTab(methods=["lora", "ortholora", "tlora", "hydralora", "reft"]),
@@ -263,15 +263,13 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(ImageViewerTab(), t("tab_images"))
         self.tabs.addTab(MergeTab(), t("tab_merge"))
 
-        # Experimental set: Postfix + APEX distillation + image-conditioning
-        # adapters. The first tab hosts a single ConfigTab with a method
-        # picker spanning Postfix / APEX — these share the same training UI
-        # so one tab with a picker keeps the tab bar manageable. IP-Adapter
-        # and EasyControl have their own preprocess/dataset lifecycles, so
-        # they keep dedicated tabs.
+        # Experimental set: Postfix + image-conditioning adapters. The first
+        # tab hosts a ConfigTab for Postfix. IP-Adapter and EasyControl have
+        # their own preprocess/dataset lifecycles, so they keep dedicated
+        # tabs.
         self.experimental_tabs = QTabWidget()
         self.experimental_tabs.addTab(
-            ConfigTab(methods=["postfix", "apex"]),
+            ConfigTab(methods=["postfix"]),
             t("tab_methods"),
         )
         self.experimental_tabs.addTab(IPAdapterTab(), t("tab_ip_adapter"))

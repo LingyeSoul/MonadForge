@@ -24,7 +24,7 @@ v0 design choices:
     ``make preprocess-pe``) are loaded into the batch — no new
     preprocessing pipeline.
   - The trainable MLP head is attached to the LoRA network as
-    ``network.repa_head`` (mirrors ``network.apex_condition_shift``);
+    ``network.repa_head``;
     ``prepare_optimizer_params_with_multiple_te_lrs`` registers it as its
     own param group with LR ``repa_lr_scale * unet_lr``.
 

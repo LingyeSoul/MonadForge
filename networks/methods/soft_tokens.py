@@ -518,12 +518,6 @@ class SoftTokensMethodAdapter:
     def prime_for_forward(self, ctx, batch, latents, *, is_train: bool) -> None:
         pass
 
-    def wants_split_backward(self, *, is_train: bool) -> bool:
-        return False
-
-    def extra_forwards_fake(self, ctx) -> Optional[dict]:
-        return None
-
     def validation_baselines(self):
         return []
 

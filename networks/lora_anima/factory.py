@@ -13,7 +13,6 @@ import torch
 
 from library.log import setup_logging
 from networks import NETWORK_REGISTRY, resolve_network_spec
-from networks.methods.apex import ConditionShift
 from networks.methods.repa import REPAHead
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
@@ -52,37 +51,6 @@ def _maybe_attach_repa_head(network: "LoRANetwork", kwargs: Dict[str, object]) -
     logger.info(
         f"REPA head attached: {dit_dim} -> {hidden_dim} -> {encoder_dim} "
         f"(lr_scale={lr_scale}x of unet_lr)"
-    )
-
-
-def _maybe_attach_apex_shift(network: "LoRANetwork", kwargs: Dict[str, object]) -> None:
-    """Attach ConditionShift (APEX, arXiv:2604.12322) if enabled via kwargs.
-
-    Called from both create_network (fresh) and create_network_from_weights
-    (warm start / dim_from_weights). Kwargs come from train.py's net_kwargs
-    which stringifies everything, so values are parsed defensively.
-    """
-    mode = kwargs.get("apex_condition_shift_mode", None)
-    if mode is None or str(mode).lower() in ("", "none"):
-        return
-    init_a = float(kwargs.get("apex_condition_shift_init_a", -1.0))
-    init_b = float(kwargs.get("apex_condition_shift_init_b", 0.5))
-    shift_lr_scale = float(kwargs.get("apex_shift_lr_scale", 0.1))
-    shift_dim = int(kwargs.get("apex_condition_shift_dim", 1024))
-    freeze_b_raw = kwargs.get("apex_condition_shift_freeze_b", False)
-    freeze_b = str(freeze_b_raw).lower() in ("true", "1", "yes")
-    cs = ConditionShift(
-        dim=shift_dim,
-        mode=str(mode),
-        init_a=init_a,
-        init_b=init_b,
-        freeze_b=freeze_b,
-    )
-    network.apex_condition_shift = cs
-    network._apex_shift_lr_scale = shift_lr_scale
-    logger.info(
-        f"APEX ConditionShift attached: mode={mode} "
-        f"(a={init_a}, b={init_b}, freeze_b={freeze_b}), lr_scale={shift_lr_scale}"
     )
 
 
@@ -179,7 +147,6 @@ def create_network(
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
 
-    _maybe_attach_apex_shift(network, kwargs)
     _maybe_attach_repa_head(network, kwargs)
 
     if use_custom_down_autograd:
@@ -605,7 +572,6 @@ def create_network_from_weights(
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
 
-    _maybe_attach_apex_shift(network, kwargs)
     _maybe_attach_repa_head(network, kwargs)
 
     if band_partition_on:

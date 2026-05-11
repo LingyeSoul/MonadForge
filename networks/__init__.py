@@ -60,7 +60,7 @@ class NetworkSpec:
 
 
 # Kwargs every LoRA-family variant consumes in ``create_network``: core
-# targeting knobs + cross-cutting add-ons (ReFT, APEX, channel scaling,
+# targeting knobs + cross-cutting add-ons (ReFT, channel scaling,
 # LoRA+, T-LoRA). Cross-cutting because these compose on top of any
 # variant rather than belonging to a single one.
 SHARED_KWARG_FLAGS: Tuple[str, ...] = (
@@ -101,13 +101,6 @@ SHARED_KWARG_FLAGS: Tuple[str, ...] = (
     "reft_dim",
     "reft_alpha",
     "reft_layers",
-    # APEX self-adversarial condition-space shifting (composes with any variant)
-    "apex_condition_shift_mode",
-    "apex_condition_shift_init_a",
-    "apex_condition_shift_init_b",
-    "apex_condition_shift_freeze_b",
-    "apex_shift_lr_scale",
-    "apex_condition_shift_dim",
     # REPA-style auxiliary alignment (composes with any variant). The factory
     # ``_maybe_attach_repa_head`` reads ``use_repa`` to decide whether to attach
     # the head, then sizes/weights it from the rest. Selection of the hooked

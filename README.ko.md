@@ -11,7 +11,7 @@
 1. **빠른 LoRA 학습** — 풀 모델 `torch.compile` + CUDAGraph 캡처를 엔드-투-엔드로 적용하여 소비자용 GPU에서 동작.
 2. **견고한 정통 구현** — LoRA, OrthoLoRA, T-LoRA가 한 세트로 스택되고, 독립형 DiT 체크포인트로 무손실 병합되어 그대로 배포 가능.
 3. **Anima에 맞춰 엔지니어링한 최신 기법** — Spectrum 추론, DCW 캘리브레이터, OrthoHydraLoRA, modulation guidance. 토이 포팅이 아니라 Anima의 컴파일 / CUDAGraph 계약에 맞춰 엔드-투-엔드로 구현.
-4. **넓은 실험적 기능 표면** — APEX distillation, ReFT, postfix/prefix tuning, IP-Adapter, EasyControl, 임베딩 인버전, img2emb, GRAFT.
+4. **넓은 실험적 기능 표면** — ReFT, postfix/prefix tuning, IP-Adapter, EasyControl, 임베딩 인버전, img2emb, GRAFT.
 
 > **한눈에 보는 구조도** (DiT 내부, LoRA, OrthoLoRA, T-LoRA, HydraLoRA, ReFT, Spectrum, modulation, 컴파일 최적화)는 [`docs/structure_images_korean/`](docs/structure_images_korean/)에 있습니다. 글로 된 해설은 [`docs/structure/`](docs/structure/) 참고.
 
@@ -94,7 +94,6 @@ Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe` / postfix / pre
 
 | 기능 | 설명 | 문서 |
 |---|---|---|
-| **APEX** | 학습된 condition shift를 활용한 self-adversarial 1–4 NFE distillation. 판별자 · 외부 teacher 불필요. | [apex.md](docs/experimental/apex.md) |
 | **ReFT** | 블록 단위 residual-stream intervention (LoReFT, NeurIPS 2024). 어떤 LoRA 변형과도 조합 가능. | [reft.md](docs/methods/reft.md) |
 | **Postfix / prefix tuning** | 어댑터 cross-attention에 연속 벡터를 뒤에(postfix) 또는 앞에(prefix) 붙임. postfix 변형 5종. | [postfix-sigma.md](docs/experimental/postfix-sigma.md), [prefix-tuning.md](docs/experimental/prefix-tuning.md) |
 | **IP-Adapter** | Decoupled image cross-attention (Ye et al. 2023). DiT는 frozen, Perceiver 리샘플러와 블록별 `to_k_ip`/`to_v_ip`만 학습. | [ip-adapter.md](docs/experimental/ip-adapter.md) |
@@ -121,7 +120,7 @@ CLI 경로:
 
 ```bash
 make preprocess           # VAE 호환 리사이즈 및 검증
-make lora                 # 또는: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-postfix / make exp-apex
+make lora                 # 또는: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-postfix
 make test                 # 최신 학습된 LoRA로 샘플 생성
 ```
 
@@ -137,7 +136,7 @@ make test                 # 최신 학습된 LoRA로 샘플 생성
 | [guidelines/inference.md](docs/guidelines/inference.md) | 추론 플래그, P-GRAFT, 프롬프트 파일, LoRA 포맷 변환 |
 | [guidelines/graft-guideline.md](docs/guidelines/graft-guideline.md) | GRAFT 큐레이션 워크플로우 |
 | [optimizations/](docs/optimizations/) | 컴파일 파이프라인, FA4 회고, CUDA 13.2 |
-| [methods/](docs/methods/) | 각 방법별 전용 문서 — APEX, HydraLoRA, ReFT, Spectrum, 인버전, mod guidance, postfix/prefix, T-LoRA, OrthoLoRA |
+| [methods/](docs/methods/) | 각 방법별 전용 문서 — HydraLoRA, ReFT, Spectrum, 인버전, mod guidance, postfix/prefix, T-LoRA, OrthoLoRA |
 
 ---
 

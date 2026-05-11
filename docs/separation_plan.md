@@ -44,7 +44,7 @@ Removed (moved to `anima_inference`):
 - `inference.py` (top-level).
 - `scripts/distill_modulation.py`.
 - All `cmd_test*` task commands in `scripts/tasks/inference.py` —
-  `test`, `test-mod`, `test-spectrum`, `test-spectrum-dcw`, `test-apex`,
+  `test`, `test-mod`, `test-spectrum`, `test-spectrum-dcw`,
   `test-hydra`, `test-prefix`, `test-postfix*`, `test-ip`,
   `test-easycontrol`, `test-merge`, `test-ref`.
 - `make distill-mod` target.
