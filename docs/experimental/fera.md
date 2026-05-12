@@ -113,6 +113,8 @@ About 6–7 M trainable params at defaults. Roughly 1.5× a `rank=16` plain LoRA
 | `fei_sigma_low_div` | 8.0 | `σ_low = min(H_lat, W_lat) / fei_sigma_low_div`. Bench-validated default; NOT the paper's pixel-domain `min(H, W) / 128` (that's SD2-512-specific). |
 | `fera_fecl_weight` | 0.1 | FECL aux loss weight (paper used 0.1–0.2). Activates the base-pass forward + FECL term inside the loss composer — 2× per-step forward cost. Set to 0 to disable. |
 | `fera_target_modules` | `.*\.(qkv_proj\|q_proj\|kv_proj\|output_proj\|layer[12])$` | Anima-naming regex covering self-attn fused QKV + cross-attn q/kv + attn output + MLP. Restrict to a subset to ablate. |
+| `fera_ortho` | `false` | Swap free per-expert `(down_k, up_k)` for PSOFT-style weight ortho on each expert: shared frozen top-r SVD bases `Q_basis / P_basis` + per-expert Cayley-rotated `S_q, S_p (E, r, r)` + per-expert diagonal `λ (E, r)`. See [Weight-ortho variant (`fera_ortho`)](#weight-ortho-variant-fera_ortho) below. |
+| `fera_ortho_init_std` | `0.02` | Stdev for random init on `S_p, S_q` when `fera_ortho=true`. Larger → experts start at larger rotations from identity; smaller → closer to vanilla deterministic SVD init (zero symmetry breaking). |
 
 Training defaults: `learning_rate = 1e-4`, `max_train_epochs = 4`, `cache_llm_adapter_outputs = true`, `caption_dropout_rate = 0.1`, `compile_mode = "full"`.
 
@@ -152,6 +154,72 @@ Two caveats:
 
 Setting `fera_fecl_weight = 0` skips the base-pass entirely (the gate is checked before the second forward in `get_noise_pred_and_target`), so the inactive case has zero overhead.
 
+## Weight-ortho variant (`fera_ortho`)
+
+Replaces each expert's free `(down_k, up_k)` Parameters with a PSOFT-style ([[psoft-integrated-ortholora]]) parameterization:
+
+```
+Q_basis : (r, in)   frozen — top-r right singular vectors of base Linear W   (shared across experts)
+P_basis : (out, r)  frozen — top-r left singular vectors of base Linear W    (shared across experts)
+S_q     : (E, r, r) trainable, random skew seed init                          (per-expert)
+S_p     : (E, r, r) trainable, random skew seed init                          (per-expert)
+λ       : (E, r)    trainable, zero init                                      (per-expert)
+
+Q_eff_k = cayley(S_q_k) @ Q_basis                # (r, in), orthonormal rows
+P_eff_k = P_basis @ cayley(S_p_k)                # (out, r), orthonormal columns
+ΔW_k    = P_eff_k @ diag(λ_k) @ Q_eff_k          # rank-r contribution from expert k
+```
+
+The Cayley transform `R = (I + A)^{-1}(I - A)` with `A = S - S^T` guarantees `R^T R = I` at every gradient step — no orthogonality regularizer. All `(E+E) × r × r` solves are batched into one `linalg.solve` (`_cayley_effective`), so the per-step overhead is one LU + TRSM launch per FeRALinear regardless of `E`.
+
+**Why shared bases, not disjoint slices.** The OrthoHydra path slices the top-`E·r` singular vectors into `E` disjoint bundles (`docs/structure/ortholora.md`) so experts are structurally orthogonal in output space. On Anima's DiT the singular spectrum decays fast enough that expert `E−1` would inherit a low-σ bundle and have nothing useful to contribute. Shared bases avoid this trap — every expert lives in the same high-energy subspace and only differs by rotation + diagonal scale.
+
+**Symmetry breaking via random skew init.** With identical SVD bases and zero-init `S, λ` every expert is bit-identical and the global router has no per-expert gradient signal — a Kaiming-on-A analog of FeRA's vanilla init. We instead seed `S_p, S_q ∼ N(0, fera_ortho_init_std²)` per expert. λ stays at zero so `ΔW = 0` at init, but each expert lives at a slightly different rotation within the shared basis and the router can pull them apart through λ gradients. Compared to vanilla FeRA's Kaiming on `down_k`: same role (stochastic differentiation), tighter guarantee (Cayley structural orthogonality vs approximate orthogonality from concentration of measure).
+
+**Parameter count.** Per adapted Linear:
+
+```
+vanilla FeRA:  E · r · (in + out)                            ≈ E · r · 4096   (≈ 16k at E=4, r=8)
+ortho:         E · (2r² + r) + (in + out) · r                ≈ E · 136 + 4k   (≈ 4.5k at E=4, r=8)
+                ^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^
+                trainable      frozen buffers (P_basis, Q_basis)
+```
+
+Trainable parameters drop ~3 orders of magnitude. Optimizer state shrinks proportionally. Frozen buffer size is similar to vanilla FeRA's lora_down + lora_up, so peak storage doesn't change much — but the trainable surface is tiny.
+
+**What stacks with what.**
+
+| Component | Compat under `fera_ortho=true` |
+|---|---|
+| Global FEI router | ✅ — the router consumes `z_t` spectral state and doesn't care how the experts are parameterized. Same gating, same shape. |
+| FECL aux loss | ✅ — operates on adapter output deltas, independent of expert internals. |
+| Spectrum inference | ✅ — saved file ships distilled `(lora_down, lora_up)` keys (see below) so the inference path is identical to vanilla FeRA. |
+| ComfyUI custom node | ✅ — same distilled-keys story; the node loads `lora_down / lora_up` and never touches `S_p / S_q / λ`. |
+| `torch.compile` | ⚠ — the `linalg.solve` inside `_cayley_effective` may force one graph break per FeRALinear under `compile_mode="full"`. Bench compile-on vs compile-off before relying on it; if it's a regression, the falsafe is to drop to `compile_mode = "default"` and let the rest of the DiT compile while the FeRALinear forward runs eagerly. |
+
+**Save format.** Both layouts are written to the same `.safetensors`:
+
+```
+# Distilled — inference, ComfyUI, Spectrum
+{lora_name}.lora_down                  (E, r, in)    bf16   ← Q_eff per expert
+{lora_name}.lora_up                    (E, out, r)   bf16   ← P_eff_k · λ_k folded in
+
+# Native — training resume only
+{lora_name}.S_p                        (E, r, r)     fp32
+{lora_name}.S_q                        (E, r, r)     fp32
+{lora_name}.lambda_layer               (E, r)        fp32
+{lora_name}.P_basis                    (out, r)      fp32   ← redundant with on-disk SVD but
+{lora_name}.Q_basis                    (r, in)       fp32     stored to avoid svd_lowrank non-determinism
+```
+
+Metadata stamps `ss_fera_ortho` + `ss_fera_ortho_init_std`. `create_network_from_weights` defaults to **non-ortho** (loads the distilled keys, runs the cheap vanilla forward) — opt back into ortho-mode rehydration by passing `fera_ortho=true` in the call kwargs (the trainer's resume path does this automatically via `network_args`).
+
+**What to bench against vanilla FeRA.**
+
+1. **Gate entropy + per-expert utilization** — ortho mode's symmetry breaking comes from random `S_p, S_q` init, not Kaiming on a high-dim `down_k`. Verify experts actually differentiate during training; collapse to a single expert is the failure mode to watch for.
+2. **Sample quality** at matched epochs — the question is whether constraining ΔW to live in W's top-r SVD subspace (rotated, scaled) costs expressiveness vs free A/B. Likely a wash on highly-redundant attention/MLP weights; could matter on early conv-like layers.
+3. **Optimizer memory + step time** — trainable params drop 3 OOM, so optimizer state shrinks. Per-step Cayley solve adds a tiny FLOP cost. Net should be a small win for memory, a small regression for step time at `compile_mode = "default"` and possibly larger at `compile_mode = "full"` if `linalg.solve` breaks the graph.
+
 ## Global-router invariant
 
 The single global router is the architectural commitment: **every adapted Linear sees the same `(B, num_experts)` gate this step**. `prepare_forward(z_t)` runs the router once and writes the same tensor reference into each `FeRALinear._routing_weights`; one Python-level write propagates to all sites.
@@ -172,11 +240,16 @@ router.net.0.weight                                        (router MLP, fp32)
 router.net.0.bias
 router.net.2.weight
 router.net.2.bias
-lora_unet_<dotted_path>.experts.0.lora_down.weight         (per-Linear, per-expert)
-lora_unet_<dotted_path>.experts.0.lora_up.weight
-lora_unet_<dotted_path>.experts.1.lora_down.weight
+lora_unet_<dotted_path>.lora_down                          (stacked Parameter, bf16)
+lora_unet_<dotted_path>.lora_up                            shape (E, r, in) / (E, out, r)
 …
 ```
+
+Each adapted Linear gets two flat stacked Parameters (`lora_down`, `lora_up`) — *not* an inner `experts.k.lora_{down,up}.weight` nesting like a ModuleList would produce. The training-side `FeRALinear` exposes them as `nn.Parameter` directly so a single `einsum` consumes all E experts at once (Hydra-style activation-memory layout).
+
+**ComfyUI compatibility — split q/k/v on disk.** ComfyUI's cosmos backbone (`comfy/comfy/ldm/cosmos/predict2.py`) uses split `q_proj` / `k_proj` / `v_proj` Linears while Anima's training-side DiT uses fused `qkv_proj` (self-attn) and `kv_proj` (cross-attn). `save_weights` always writes the **split** layout — the fused `lora_up` is sliced `[Q | K | V]` along its output axis (matching `Attention.compute_qkv`'s `unflatten(..., (3, n_heads, head_dim)).unbind(dim=-3)` order) and the shared `lora_down` is duplicated to each split prefix. `load_state_dict` recognizes split files and re-fuses on the fly so the training-side DiT (which adapts the fused `qkv_proj` / `kv_proj` Linears) receives a single stacked Parameter.
+
+Net effect: one checkpoint loads in both `python inference.py` (re-fused) and ComfyUI's `AnimaFeraLoader` (already split — zero conversion). Disk overhead vs the pre-split layout is ~10% on Anima at default rank (duplicated `lora_down` on the qkv/kv slots; `lora_up` is unchanged in aggregate).
 
 Metadata stamps:
 

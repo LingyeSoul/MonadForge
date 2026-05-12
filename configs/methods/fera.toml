@@ -28,8 +28,8 @@
 network_module = "networks.methods.fera"
 
 # Rank / scale per expert. Author paper uses rank=4 across SD2 LoRA targets.
-network_dim = 8
-network_alpha = 8
+network_dim = 48
+network_alpha = 48
 
 # Method-specific kwargs go through ``network_args`` (the convention every
 # ``networks/methods/*`` module follows — postfix, easycontrol, soft_tokens).
@@ -51,13 +51,33 @@ network_alpha = 8
 #   fera_target_modules  : Anima Linear naming — self-attn qkv_proj,
 #                          cross-attn q_proj + kv_proj, attn output_proj,
 #                          MLP layer1/2.
+#   fera_ortho           : PSOFT-style weight orthogonalization on each
+#                          expert's (A, B). Replaces free (down_k, up_k)
+#                          with frozen shared top-r SVD bases Q_basis/P_basis +
+#                          per-expert Cayley-rotated S_q/S_p (r×r skew) +
+#                          per-expert diagonal λ. ~3 orders of magnitude
+#                          fewer trainable params (2·r² + r vs r·(in+out)
+#                          per expert). Symmetry between experts is broken
+#                          by random skew init — every expert lives in the
+#                          same high-energy SVD subspace at slightly
+#                          different rotations, FeRA's global router pulls
+#                          them apart through λ gradients. Saved file is
+#                          still inference / ComfyUI compatible (distilled
+#                          (lora_down, lora_up) keys are written alongside
+#                          the native S/λ Parameters).
+#   fera_ortho_init_std  : stdev for random S_q / S_p init. Larger →
+#                          experts start farther apart at the cost of
+#                          larger initial Cayley rotation away from
+#                          identity. 0.02 is conservative; bench-tune.
 network_args = [
     "fera_num_experts=4",
-    "fera_num_bands=2",
+    "fera_num_bands=3",
     "fera_router_tau=0.7",
     "fera_router_hidden=64",
-    "fera_fecl_weight=0.0",
+    "fera_fecl_weight=0.1",
     "fera_target_modules=.*\\.(qkv_proj|q_proj|kv_proj|output_proj|layer[12])$",
+    "fera_ortho=true",
+    "fera_ortho_init_std=0.02",
 ]
 
 # Bucket-adaptive σ_low. 8.0 = bench-validated default across 1024² /
@@ -67,10 +87,10 @@ network_args = [
 fei_sigma_low_div = 8.0
 
 # Training schedule — close to author's SD2 paper recipe; tune on bench.
-learning_rate = 1e-4
-max_train_epochs = 4
-save_every_n_epochs = 4
-checkpointing_epochs = 4
+learning_rate = 2e-5
+max_train_epochs = 10
+save_every_n_epochs = 5
+checkpointing_epochs = 5
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -82,7 +102,7 @@ log_with = "tensorboard"
 # compile_mode = "full"
 # compile_inductor_mode = "reduce-overhead"
 
-blocks_to_swap=20
+blocks_to_swap=0
 
 # ──────────────────────────────────────────────────────────────────────────
 # Alternative — 2-band FEI router on HydraLoRA stack (plan.md Phase 1).

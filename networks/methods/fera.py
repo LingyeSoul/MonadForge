@@ -185,6 +185,20 @@ class FeRALinear(nn.Module):
 
     ``set_routing_weights(None)`` short-circuits to the frozen base —
     used by the FECL base-prediction pass.
+
+    ``ortho=True`` swaps the free ``(lora_down, lora_up)`` Parameters for a
+    PSOFT-style parameterization: frozen ``Q_basis (r, in)`` /
+    ``P_basis (out, r)`` from the base Linear's top-r SVD, plus
+    per-expert skew seeds ``S_q, S_p (E, r, r)`` Cayley-rotated to
+    orthogonal matrices, plus per-expert diagonal scale ``λ (E, r)``.
+    Each expert's effective ΔW is
+    ``P_basis @ cayley(S_p_k) @ diag(λ_k) @ cayley(S_q_k) @ Q_basis``.
+    Experts share the same singular-bundle (no disjoint slicing) so they
+    all live in W's high-energy subspace — symmetry between experts is
+    broken by small random init on ``S_p, S_q`` (Kaiming-analog). The
+    independent-A invariant from the author paper is preserved at the
+    *rotation* level: each expert owns its own ``(S_q_k, S_p_k, λ_k)``
+    and is free to rotate within the shared frozen basis.
     """
 
     def __init__(
@@ -194,6 +208,8 @@ class FeRALinear(nn.Module):
         rank: int,
         alpha: float,
         lora_name: str,
+        ortho: bool = False,
+        ortho_init_std: float = 0.02,
     ):
         super().__init__()
         self.in_features = base_layer.in_features
@@ -203,21 +219,71 @@ class FeRALinear(nn.Module):
         self.alpha = float(alpha)
         self.scale = float(alpha) / float(rank)
         self.lora_name = str(lora_name)
+        self.ortho = bool(ortho)
+        self.ortho_init_std = float(ortho_init_std)
 
-        # Stacked expert weights — single-matmul-friendly layout.
-        #   lora_down: (E, r, in)  — Kaiming on each (r, in) slice
-        #   lora_up:   (E, out, r) — zero-init (matches author LoRAExpert)
-        # Each Parameter has a flat 3D shape; we keep them as the trainable
-        # surface so ``state_dict`` and the optimizer see ``lora_down`` /
-        # ``lora_up`` directly without an inner ModuleList.
-        self.lora_down = nn.Parameter(
-            torch.empty(self.num_experts, self.rank, self.in_features)
-        )
-        self.lora_up = nn.Parameter(
-            torch.zeros(self.num_experts, self.out_features, self.rank)
-        )
-        for k in range(self.num_experts):
-            nn.init.kaiming_uniform_(self.lora_down[k], a=math.sqrt(5))
+        if self.ortho:
+            # PSOFT-style parameterization with shared bases across experts.
+            # See class docstring for the design rationale.
+            init_device = "cuda" if torch.cuda.is_available() else "cpu"
+            W = base_layer.weight.data.float().to(init_device)
+            q = min(self.rank + 6, min(W.shape))
+            U, _S_vals, V = torch.svd_lowrank(W, q=q, niter=2)
+            # U: (out, q), V: (in, q) — V is returned directly (not Vh).
+            P_init = U[:, : self.rank].clone().contiguous()  # (out, r)
+            Q_init = V[:, : self.rank].T.clone().contiguous()  # (r, in)
+            del U, _S_vals, V, W
+
+            # Frozen shared bases — define the subspace; per-expert Cayley
+            # rotations move within it.
+            self.register_buffer("P_basis", P_init.cpu())  # (out, r)
+            self.register_buffer("Q_basis", Q_init.cpu())  # (r, in)
+
+            # Per-expert trainable skew seeds. Random init (Kaiming-analog
+            # symmetry breaking) — with deterministic SVD init and zero λ,
+            # zero-init S would leave every expert bit-identical and the
+            # global router would have no gradient signal to differentiate
+            # them. ``ortho_init_std`` controls how far each expert starts
+            # from identity rotation.
+            self.S_p = nn.Parameter(
+                torch.randn(self.num_experts, self.rank, self.rank)
+                * self.ortho_init_std
+            )
+            self.S_q = nn.Parameter(
+                torch.randn(self.num_experts, self.rank, self.rank)
+                * self.ortho_init_std
+            )
+
+            # Per-expert diagonal scale — zero-init → ΔW = 0 at init even
+            # though S is non-zero. Same convention as standard LoRA's
+            # zero-init ``lora_up``.
+            self.lambda_layer = nn.Parameter(
+                torch.zeros(self.num_experts, self.rank)
+            )
+
+            # Pre-allocated identity for batched Cayley solves; allocating
+            # ``torch.eye`` per forward emits 2 tiny kernels per module per
+            # step under compile.
+            self.register_buffer(
+                "_eye_r",
+                torch.eye(self.rank, dtype=torch.float32),
+                persistent=False,
+            )
+        else:
+            # Stacked expert weights — single-matmul-friendly layout.
+            #   lora_down: (E, r, in)  — Kaiming on each (r, in) slice
+            #   lora_up:   (E, out, r) — zero-init (matches author LoRAExpert)
+            # Each Parameter has a flat 3D shape; we keep them as the trainable
+            # surface so ``state_dict`` and the optimizer see ``lora_down`` /
+            # ``lora_up`` directly without an inner ModuleList.
+            self.lora_down = nn.Parameter(
+                torch.empty(self.num_experts, self.rank, self.in_features)
+            )
+            self.lora_up = nn.Parameter(
+                torch.zeros(self.num_experts, self.out_features, self.rank)
+            )
+            for k in range(self.num_experts):
+                nn.init.kaiming_uniform_(self.lora_down[k], a=math.sqrt(5))
 
         # Transient reference to the parent Linear — held only until
         # ``apply_to()`` monkey-patches its forward, then dropped so the
@@ -251,11 +317,118 @@ class FeRALinear(nn.Module):
     def set_multiplier(self, multiplier: float) -> None:
         self._multiplier = float(multiplier)
 
+    def _cayley_effective(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute per-expert ``(Q_eff, P_eff)`` via batched Cayley solve.
+
+        Cayley transform: ``R = (I + A)^{-1} (I - A)``, ``A = S - S^T``.
+        ``S_q`` and ``S_p`` are stacked into one ``(2E, r, r)`` solve so a
+        single LU + TRSM launch covers every expert's both sides at once
+        (the same trick ``OrthoLoRAExpModule`` uses for its 2×r×r solve).
+
+        Returns:
+            Q_eff: (E, r, in)  — rotated input basis per expert.
+            P_eff: (E, out, r) — rotated output basis per expert.
+        """
+        # (E, r, r) on top of (E, r, r) -> (2E, r, r).
+        skew = torch.cat([self.S_q, self.S_p], dim=0)
+        A = skew - skew.transpose(-2, -1)
+        eye = self._eye_r  # (r, r); broadcasts across the leading 2E axis
+        R = torch.linalg.solve(eye + A, eye - A)  # (2E, r, r)
+        E = self.num_experts
+        R_q = R[:E]  # (E, r, r)
+        R_p = R[E:]  # (E, r, r)
+        # Q_eff[k] = R_q[k] @ Q_basis  -> (E, r, in)
+        Q_eff = torch.einsum("ekj,ji->eki", R_q, self.Q_basis)
+        # P_eff[k] = P_basis @ R_p[k]  -> (E, out, r)
+        P_eff = torch.einsum("oj,ejr->eor", self.P_basis, R_p)
+        return Q_eff, P_eff
+
+    @torch.no_grad()
+    def get_distilled_weights(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return the plain-FeRA ``(lora_down, lora_up)`` factors.
+
+        In non-ortho mode the trained Parameters are returned directly.
+        In ortho mode the Cayley-rotated bases are distilled into the
+        same ``(E, r, in)`` / ``(E, out, r)`` layout the inference path
+        expects — with ``λ`` folded into ``lora_up`` so that
+        ``Σ_e w_e · up_e @ down_e`` reproduces the ortho forward exactly.
+        Used at save time so disk files remain inference / ComfyUI
+        compatible regardless of whether the trainer used ortho mode.
+        """
+        if not self.ortho:
+            return self.lora_down, self.lora_up
+        Q_eff, P_eff = self._cayley_effective()
+        # Fold λ into lora_up along the rank axis. lambda_layer: (E, r);
+        # P_eff: (E, out, r); broadcast on the out axis. The broadcast
+        # result isn't contiguous (the λ side has stride 0 on the out
+        # axis); ``safetensors.save`` rejects non-contiguous tensors so
+        # we materialize both factors before returning.
+        lam = self.lambda_layer.view(self.num_experts, 1, self.rank).to(P_eff.dtype)
+        up = (P_eff * lam).contiguous()
+        return Q_eff.contiguous(), up
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base_out = self.org_forward(x)
         w = self._routing_weights
         if w is None or self._multiplier == 0.0:
             return base_out
+
+        if self.ortho:
+            # Ortho forward — low-dim factored path.
+            #
+            # The materialized form is
+            #   adapter = Σ_k w_k · P_eff_k · diag(λ_k) · Q_eff_k · x
+            #   Q_eff_k = R_q_k @ Q_basis,  P_eff_k = P_basis @ R_p_k
+            # Since (P_basis, Q_basis) are frozen and shared across experts,
+            # we factor them to the boundary and route entirely in r-dim:
+            #   adapter = P_basis @ [ Σ_k w_k · R_p_k · diag(λ_k) · R_q_k
+            #                         · (Q_basis @ x) ]
+            # vs the naive expansion this:
+            #   - removes the (E, r, in) and (E, out, r) intermediates that
+            #     autograd would otherwise pin until backward (~tens of MB
+            #     across Anima's adapted Linears under grad checkpointing).
+            #   - cuts the dominant per-token FLOPs from E·r·in + E·r·out
+            #     to (r·in + r·out) + 2·E·r² — roughly E× cheaper at default
+            #     (E, r) = (3, 4) since the (in→r) projection now runs once.
+            # Mathematically bit-equivalent to the naive form; only the
+            # autograd graph shape and FLOP count change.
+            skew = torch.cat([self.S_q, self.S_p], dim=0)
+            A = skew - skew.transpose(-2, -1)
+            eye = self._eye_r
+            R = torch.linalg.solve(eye + A, eye - A)  # (2E, r, r)
+            E = self.num_experts
+            R_q = R[:E]  # (E, r, r)
+            R_p = R[E:]  # (E, r, r)
+
+            compute_dtype = self.P_basis.dtype  # follow OrthoLoRA Exp convention
+            x_c = x if x.dtype == compute_dtype else x.to(compute_dtype)
+
+            # Down boundary: project x through frozen Q_basis ONCE (shared
+            # across experts). (..., in) → (..., r).
+            x_proj = torch.einsum("...i,ji->...j", x_c, self.Q_basis)
+
+            # Per-expert R_q rotation in r-dim. (..., r) → (..., E, r).
+            lx = torch.einsum("...j,eij->...ei", x_proj, R_q)
+
+            # Per-expert λ scaling — mirrors OrthoLoRA Exp placement
+            # (pre-gates).
+            lx = lx * self.lambda_layer.to(compute_dtype)
+
+            # Gate weighting — identical broadcasting to non-ortho.
+            B = w.shape[0]
+            n_mid = lx.ndim - 3
+            view_shape = (B,) + (1,) * n_mid + (E, 1)
+            lx = lx * w.view(view_shape).to(compute_dtype)
+
+            # Per-expert R_p rotation + sum-over-experts in one einsum.
+            # (E, r, r) · (..., E, r) → (..., r).
+            mid = torch.einsum("ejr,...er->...j", R_p, lx)
+
+            # Up boundary: project through frozen P_basis ONCE (shared).
+            # (out, r) · (..., r) → (..., out).
+            adapter = torch.einsum("oj,...j->...o", self.P_basis, mid)
+            adapter = adapter * (self.scale * self._multiplier)
+            return base_out + adapter.to(base_out.dtype)
 
         # x: (..., in). Anima's Linears see (B, T, in); some adapters use
         # (B, ..., in). einsum's "..." handles either.
@@ -484,6 +657,9 @@ def create_network(
     fei_sigma_low_div = float(kwargs.get("fei_sigma_low_div", 8.0))
     fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
     target_modules = str(kwargs.get("fera_target_modules", _DEFAULT_TARGET_REGEX))
+    ortho_raw = kwargs.get("fera_ortho", False)
+    ortho = ortho_raw if isinstance(ortho_raw, bool) else str(ortho_raw).lower() == "true"
+    ortho_init_std = float(kwargs.get("fera_ortho_init_std", 0.02))
 
     network = FeRANetwork(
         unet=unet,
@@ -497,6 +673,8 @@ def create_network(
         fei_sigma_low_div=fei_sigma_low_div,
         fecl_weight=fecl_weight,
         target_modules_regex=target_modules,
+        ortho=ortho,
+        ortho_init_std=ortho_init_std,
     )
     return network
 
@@ -554,6 +732,16 @@ def create_network_from_weights(
     target_modules = _meta(
         "fera_target_modules", str(kwargs.get("fera_target_modules", _DEFAULT_TARGET_REGEX))
     )
+    # Inference defaults to the distilled (lora_down, lora_up) path even when
+    # the checkpoint was trained ortho — distillation is bit-faithful and
+    # avoids the per-step Cayley solve. Resume callers can override via
+    # ``fera_ortho=true`` in kwargs to rehydrate native S/λ Parameters.
+    ortho_kw = kwargs.get("fera_ortho", False)
+    if isinstance(ortho_kw, bool):
+        ortho = ortho_kw
+    else:
+        ortho = str(ortho_kw).lower() == "true"
+    ortho_init_std = float(kwargs.get("fera_ortho_init_std", 0.02))
 
     network = FeRANetwork(
         unet=unet,
@@ -567,6 +755,8 @@ def create_network_from_weights(
         fei_sigma_low_div=float(fei_sigma_low_div),
         fecl_weight=float(fecl_weight),
         target_modules_regex=str(target_modules),
+        ortho=bool(ortho),
+        ortho_init_std=float(ortho_init_std),
     )
     return network, weights_sd
 
@@ -594,6 +784,8 @@ class FeRANetwork(nn.Module):
         fei_sigma_low_div: float = 8.0,
         fecl_weight: float = 0.0,
         target_modules_regex: str = _DEFAULT_TARGET_REGEX,
+        ortho: bool = False,
+        ortho_init_std: float = 0.02,
     ):
         super().__init__()
         self.rank = int(rank)
@@ -606,6 +798,8 @@ class FeRANetwork(nn.Module):
         self.fei_sigma_low_div = float(fei_sigma_low_div)
         self.fecl_weight = float(fecl_weight)
         self.target_modules_regex = str(target_modules_regex)
+        self.ortho = bool(ortho)
+        self.ortho_init_std = float(ortho_init_std)
 
         self.fei_indicator = FrequencyEnergyIndicator(
             num_bands=self.num_bands, fei_sigma_low_div=self.fei_sigma_low_div
@@ -633,6 +827,12 @@ class FeRANetwork(nn.Module):
         # Last FEI we computed (for diagnostics + FECL).
         self._last_fei: Optional[torch.Tensor] = None
 
+        ortho_str = (
+            f"ortho=True (init_std={self.ortho_init_std:g}, "
+            f"shared SVD bases + Cayley rotation per expert)"
+            if self.ortho
+            else "ortho=False (free A/B per expert)"
+        )
         logger.info(
             f"FeRANetwork: target_modules={self.target_modules_regex!r} "
             f"matched {len(self._planned)} Linears in DiT — "
@@ -640,7 +840,7 @@ class FeRANetwork(nn.Module):
             f"router({self.num_bands} bands → {self.router_hidden} → "
             f"{self.num_experts}, τ={self.router_tau:.2f}), "
             f"σ_low = min(H,W)/{self.fei_sigma_low_div:.1f}, "
-            f"fecl_weight={self.fecl_weight}"
+            f"fecl_weight={self.fecl_weight}, {ortho_str}"
         )
 
     # ---- target scan + apply -------------------------------------------------
@@ -651,6 +851,16 @@ class FeRANetwork(nn.Module):
         ``lora_name`` is ``lora_unet_<dotted path with . → _>`` so saved
         checkpoint keys stay readable and follow the same convention as
         ``networks/lora_modules``.
+
+        Skips ``llm_adapter.*`` modules to mirror the inference-side
+        filter in ``custom_nodes/comfyui-hydralora/fera.py``. FeRA
+        contributions on llm_adapter Linears can't be replayed at
+        ComfyUI inference — the router pre-hook fires on
+        ``diffusion_model.forward`` only, so a CFG-doubled (B=2) gate
+        from the previous step gets broadcast into the B=1 text-only
+        llm_adapter forward and crashes ``Attention.forward``. Training
+        them in the first place just bloats the checkpoint with dead
+        keys (see ``project_fera_llm_adapter_stale_gates``).
         """
         pattern = re.compile(self.target_modules_regex)
         for module_name, module in unet.named_modules():
@@ -660,6 +870,8 @@ class FeRANetwork(nn.Module):
                 full = f"{module_name}.{child_name}" if module_name else child_name
                 # Strip torch.compile wrapper if any
                 full = full.replace("_orig_mod.", "")
+                if full.startswith("llm_adapter.") or full == "llm_adapter":
+                    continue
                 if not pattern.fullmatch(full):
                     continue
                 lora_name = f"{LORA_PREFIX_ANIMA}.{full}".replace(".", "_")
@@ -688,6 +900,8 @@ class FeRANetwork(nn.Module):
                 rank=self.rank,
                 alpha=self.alpha,
                 lora_name=lora_name,
+                ortho=self.ortho,
+                ortho_init_std=self.ortho_init_std,
             )
             fera_layer.set_multiplier(self.multiplier)
             # Monkey-patch the original Linear's forward in place — the
@@ -870,18 +1084,47 @@ class FeRANetwork(nn.Module):
         # Per-layer stacked expert weights (fused names as they live in
         # the training-side DiT).
         # ``lora_down``: (E, r, in)   ``lora_up``: (E, out, r)
+        # Under ortho mode, ``get_distilled_weights`` rebuilds these from
+        # ``(Q_basis, P_basis, S_q, S_p, λ)`` so the saved file stays
+        # inference / ComfyUI compatible without any loader changes. The
+        # native ortho Parameters are *also* saved (below) so training
+        # resume can rehydrate the Cayley state.
         for lora_name, layer in self.fera_layers.items():
+            down, up = layer.get_distilled_weights()
             state_dict[f"{lora_name}.lora_down"] = (
-                layer.lora_down.detach().clone().cpu().to(dtype)
+                down.detach().clone().cpu().to(dtype)
             )
             state_dict[f"{lora_name}.lora_up"] = (
-                layer.lora_up.detach().clone().cpu().to(dtype)
+                up.detach().clone().cpu().to(dtype)
             )
+            if layer.ortho:
+                # Native ortho keys for training resume. Stored in fp32 so
+                # Cayley solve precision survives a round-trip (S/λ are
+                # tiny in absolute terms — bf16 quantization would shift
+                # the implied rotation noticeably at rank 8).
+                state_dict[f"{lora_name}.S_p"] = (
+                    layer.S_p.detach().clone().cpu().float()
+                )
+                state_dict[f"{lora_name}.S_q"] = (
+                    layer.S_q.detach().clone().cpu().float()
+                )
+                state_dict[f"{lora_name}.lambda_layer"] = (
+                    layer.lambda_layer.detach().clone().cpu().float()
+                )
+                state_dict[f"{lora_name}.P_basis"] = (
+                    layer.P_basis.detach().clone().cpu().float()
+                )
+                state_dict[f"{lora_name}.Q_basis"] = (
+                    layer.Q_basis.detach().clone().cpu().float()
+                )
 
         # ComfyUI's cosmos backbone uses split q/k/v Linears (not fused
         # qkv_proj / kv_proj), so we always write the split layout on
         # disk. ``load_state_dict`` re-fuses transparently when this same
         # file is loaded back into the training-side DiT.
+        # The ortho native keys (``.S_p``, ``.S_q``, ``.lambda_layer``,
+        # ``.P_basis``, ``.Q_basis``) pass through ``_split_fused_state_dict``
+        # untouched — it only rewrites ``.lora_down`` / ``.lora_up`` pairs.
         state_dict = _split_fused_state_dict(state_dict)
 
         if os.path.splitext(file)[1] == ".safetensors":
@@ -901,6 +1144,8 @@ class FeRANetwork(nn.Module):
             metadata["ss_fei_sigma_low_div"] = str(self.fei_sigma_low_div)
             metadata["ss_fera_fecl_weight"] = str(self.fecl_weight)
             metadata["ss_fera_target_modules"] = self.target_modules_regex
+            metadata["ss_fera_ortho"] = str(self.ortho)
+            metadata["ss_fera_ortho_init_std"] = str(self.ortho_init_std)
 
             model_hash, legacy_hash = precalculate_safetensors_hashes(
                 state_dict, metadata
@@ -939,15 +1184,30 @@ class FeRANetwork(nn.Module):
         # files still around.
         state_dict = _fuse_split_state_dict(dict(state_dict))
 
-        # Translate flat ``{lora_name}.lora_down`` / ``{lora_name}.lora_up``
-        # keys into the ModuleDict path so ``nn.Module.load_state_dict`` is
-        # happy. Router keys (``router.*``) pass through untouched.
+        # Translate flat per-Linear keys into the ModuleDict path so
+        # ``nn.Module.load_state_dict`` is happy. Router keys
+        # (``router.*``) pass through untouched. Both the distilled keys
+        # (``.lora_down`` / ``.lora_up``) and the native ortho keys
+        # (``.S_p`` / ``.S_q`` / ``.lambda_layer`` / ``.P_basis`` /
+        # ``.Q_basis``) get the same ``fera_layers.`` prefix added — the
+        # underlying nn.Module then accepts whichever subset matches the
+        # current network's parameterization (strict=False tolerates the
+        # leftovers when loading across mode boundaries).
+        _LAYER_SUFFIXES = (
+            ".lora_down",
+            ".lora_up",
+            ".S_p",
+            ".S_q",
+            ".lambda_layer",
+            ".P_basis",
+            ".Q_basis",
+        )
         remapped = {}
         for key, value in state_dict.items():
             if key.startswith("router."):
                 remapped[key] = value
                 continue
-            if key.endswith(".lora_down") or key.endswith(".lora_up"):
+            if any(key.endswith(s) for s in _LAYER_SUFFIXES):
                 remapped[f"fera_layers.{key}"] = value
             else:
                 remapped[key] = value

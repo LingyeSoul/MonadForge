@@ -58,6 +58,8 @@ Old `sigma_mlp.*` checkpoints are not supported (see README §2.1.0).
 
 Detection prefers `ss_network_module == "networks.methods.fera"` metadata; falls back to a key sniff for `router.net.*` + stacked `lora_unet_*.lora_down`/`.lora_up`. `AnimaFeraLoader` and `AnimaAdapterLoader` should not both target the same checkpoint — author-faithful FeRA and HydraLoRA-moe are alternative router schemes (mirrors the inference loader's `fera_mode`/`hydra_mode` check).
 
+**Key resolution — direct walk, not `model_lora_keys_unet`.** ComfyUI's `comfy.lora.model_lora_keys_unet` was designed around the older UNet convention where Q/K/V live in separate Linears; it doesn't enumerate fused projections by default and (more importantly for us) doesn't always reach modules inside the LLM adapter sub-tree. `fera.py::_build_fera_key_map` walks `diffusion_model.named_modules()` directly and emits one `lora_unet_<dotted>` entry per `nn.Linear`, mirroring the training-side `FeRANetwork._scan_targets` convention exactly. The save format also writes split q/k/v on disk (see `networks/methods/fera.py::_split_fused_state_dict`), so checkpoint prefixes match ComfyUI's split modules without any conversion at load time.
+
 Caveat: `is_mergeable() == False` on the training side because a router-mixed output isn't a single ΔW — there's no merge-into-DiT path. Stay on the live-routing node.
 
 ## Coexistence

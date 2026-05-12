@@ -297,6 +297,29 @@ def _make_fera_pre_hook(router: dict, cfg: dict, fera_state: dict):
     return fera_pre_hook
 
 
+def _make_fera_clear_hook(fera_state: dict):
+    """Forward (post) hook that drops gates at the end of each
+    ``diffusion_model.forward``.
+
+    Defense-in-depth against stale gates leaking into code paths that
+    run adapted Linears *outside* the diffusion forward — e.g. ComfyUI's
+    ``BaseModel.extra_conds`` calls ``diffusion_model.preprocess_text_embeds``
+    before sampling starts, and on a re-run the previous sample's
+    last-step gates (shape ``(B_latent, E)`` with B_latent doubled by CFG)
+    would otherwise broadcast through any FeRA hook fired in that
+    pre-sample path. The LLM adapter is excluded from the key map for
+    exactly this reason, but this clear keeps the invariant
+    independent of which modules end up adapted.
+    """
+
+    @torch._dynamo.disable
+    def fera_clear_hook(module, inputs, output):
+        fera_state["gates"] = None
+        return output
+
+    return fera_clear_hook
+
+
 def _make_fera_hook(
     lora_down: torch.Tensor,
     lora_up: torch.Tensor,
@@ -398,6 +421,22 @@ def _build_fera_key_map(model) -> Dict[str, str]:
     so this map is the literal inverse, built once at apply time. No
     ambiguity in the inverse direction — each live Linear produces
     exactly one ``lora_name``.
+
+    ``llm_adapter.*`` Linears are intentionally excluded. The LLM adapter
+    runs *outside* ``diffusion_model.forward`` at ComfyUI inference time —
+    ``model_base.Anima.extra_conds`` calls ``preprocess_text_embeds``
+    directly before the sampling loop, so the router pre-hook (which is
+    on ``diffusion_model._forward_pre_hooks``) has not fired yet and
+    ``fera_state["gates"]`` is either ``None`` (first sample) or *stale*
+    from the previous sample's last step. Stale gates from a CFG-doubled
+    latent (B=2) broadcast the per-Linear delta to B=2 in a B=1 text
+    forward, blowing up ``q_proj``'s output to twice the expected size
+    and crashing ``view([B, T, n_heads, head_dim])`` in the next line of
+    ``Attention.forward``. Training-side FeRA contributions on
+    ``llm_adapter.*_q_proj`` therefore can't be replayed at ComfyUI
+    inference — drop them on the floor here. The DiT (cosmos backbone)
+    FeRA contributions still apply correctly because those Linears run
+    inside ``diffusion_model.forward`` *after* the router pre-hook fires.
     """
     import torch.nn as nn
 
@@ -410,6 +449,8 @@ def _build_fera_key_map(model) -> Dict[str, str]:
         # FeRANetwork._scan_targets so the lora_name keys agree.
         clean = name.replace("_orig_mod.", "")
         if not clean:
+            continue
+        if clean.startswith("llm_adapter.") or clean == "llm_adapter":
             continue
         lora_name = "lora_unet_" + clean.replace(".", "_")
         out[lora_name] = f"diffusion_model.{clean}"
@@ -443,6 +484,16 @@ def apply_fera(model, file_path: str, strength: float) -> bool:
     new_pre_hooks[id(pre_hook)] = pre_hook
     model.add_object_patch(
         "diffusion_model._forward_pre_hooks", new_pre_hooks
+    )
+
+    # Post-hook clears gates at the end of every diffusion forward so
+    # subsequent samples don't read stale CFG-batched gates from the
+    # previous run's last step (see _make_fera_clear_hook).
+    clear_hook = _make_fera_clear_hook(fera_state)
+    new_dm_post_hooks = OrderedDict(diffusion_model._forward_hooks)
+    new_dm_post_hooks[id(clear_hook)] = clear_hook
+    model.add_object_patch(
+        "diffusion_model._forward_hooks", new_dm_post_hooks
     )
 
     # Direct walk of diffusion_model — covers fused qkv/kv projections
