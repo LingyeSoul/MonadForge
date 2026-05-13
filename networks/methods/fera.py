@@ -29,8 +29,9 @@
 #     author's ``Σ_k w_k · U_k @ D_k @ x``, but ~50× less per-Linear
 #     activation memory at default ``E=3, r=8`` on Anima MLP shapes.
 #
-# σ_low scaling follows the bench-validated rule
-# ``σ_low = min(H_lat, W_lat) / fei_sigma_low_div`` rather than the paper's
+# σ_low scaling follows the rule
+# ``σ_low = min(H_lat, W_lat) / fei_sigma_low_div`` (default ``4.0``,
+# picked by the 2026-05-13 dataset sweep) rather than the paper's
 # pixel-domain constant ``min(H, W)/128`` — the latter is dataset-specific
 # (see ``project_fera_probe_2band_decision`` and ``library/runtime/fei.py``).
 # ``num_bands`` defaults to 3 (paper) but can be set to 2 (Anima-validated).
@@ -54,6 +55,7 @@ import torch.nn.functional as F
 
 from library.log import setup_logging
 from library.runtime.fei import gaussian_blur_2d
+from library.training.metrics import MetricContext
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -89,7 +91,7 @@ class FrequencyEnergyIndicator(nn.Module):
     underflow at small energies).
     """
 
-    def __init__(self, num_bands: int = 3, fei_sigma_low_div: float = 8.0):
+    def __init__(self, num_bands: int = 3, fei_sigma_low_div: float = 4.0):
         super().__init__()
         if num_bands < 2:
             raise ValueError(f"num_bands must be >= 2, got {num_bands}")
@@ -101,8 +103,9 @@ class FrequencyEnergyIndicator(nn.Module):
 
         Author uses ``[2**k for k in range(num_bands)]`` scaled by ``κ``.
         We instead anchor σ_low to ``min(H_lat, W_lat) / fei_sigma_low_div``
-        (bench-validated) and double from there. Result: same ratio
-        structure as paper, but bucket-invariant in latent coordinates.
+        (default ``4.0`` from the 2026-05-13 dataset sweep) and double
+        from there. Result: same ratio structure as paper, but
+        bucket-invariant in latent coordinates.
         """
         sigma_low = float(min(h_lat, w_lat)) / self.fei_sigma_low_div
         return [sigma_low * (2.0**k) for k in range(self.num_bands - 1)]
@@ -654,7 +657,7 @@ def create_network(
     num_bands = int(kwargs.get("fera_num_bands", 3))
     router_tau = float(kwargs.get("fera_router_tau", 0.7))
     router_hidden = int(kwargs.get("fera_router_hidden", 64))
-    fei_sigma_low_div = float(kwargs.get("fei_sigma_low_div", 8.0))
+    fei_sigma_low_div = float(kwargs.get("fei_sigma_low_div", 4.0))
     fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
     target_modules = str(kwargs.get("fera_target_modules", _DEFAULT_TARGET_REGEX))
     ortho_raw = kwargs.get("fera_ortho", False)
@@ -725,6 +728,12 @@ def create_network_from_weights(
     router_hidden = _meta(
         "fera_router_hidden", int(kwargs.get("fera_router_hidden", 64))
     )
+    # Legacy fallback ``8.0`` (not ``4.0``) when loading a checkpoint that
+    # has *neither* an ``ss_fei_sigma_low_div`` metadata stamp *nor* a
+    # caller-supplied kwarg: such checkpoints predate the 2026-05-13
+    # sweep and were trained at div=8. New checkpoints always stamp the
+    # value used at train time, so this fallback only fires for old
+    # metadata-less files.
     fei_sigma_low_div = _meta(
         "fei_sigma_low_div", float(kwargs.get("fei_sigma_low_div", 8.0))
     )
@@ -781,7 +790,7 @@ class FeRANetwork(nn.Module):
         num_bands: int = 3,
         router_tau: float = 0.7,
         router_hidden: int = 64,
-        fei_sigma_low_div: float = 8.0,
+        fei_sigma_low_div: float = 4.0,
         fecl_weight: float = 0.0,
         target_modules_regex: str = _DEFAULT_TARGET_REGEX,
         ortho: bool = False,
@@ -826,6 +835,17 @@ class FeRANetwork(nn.Module):
         self._last_gates: Optional[torch.Tensor] = None
         # Last FEI we computed (for diagnostics + FECL).
         self._last_fei: Optional[torch.Tensor] = None
+
+        # Router-stat accumulators, drained by ``metrics()`` once per log
+        # step. Lazily allocated on first ``prepare_forward`` so they land
+        # on the same device as the gates (no D2H syncs in the hot path).
+        # Single-batch reads are noisy at FeRA's typical B=1 — averaging
+        # across all forwards between drains gives a usable curve.
+        self._stat_h_per_sum: Optional[torch.Tensor] = None    # scalar fp32
+        self._stat_margin_sum: Optional[torch.Tensor] = None   # scalar fp32
+        self._stat_gate_sum: Optional[torch.Tensor] = None     # (E,) fp32
+        self._stat_argmax_count: Optional[torch.Tensor] = None  # (E,) fp32
+        self._stat_n: int = 0  # samples accumulated since last drain
 
         ortho_str = (
             f"ortho=True (init_std={self.ortho_init_std:g}, "
@@ -939,8 +959,80 @@ class FeRANetwork(nn.Module):
         gates = self.router(fei)
         self._last_fei = fei.detach()
         self._last_gates = gates.detach()
+        self._update_router_stats(self._last_gates)
         self._push_gates(gates)
         return gates
+
+    @torch.no_grad()
+    def _update_router_stats(self, gates: torch.Tensor) -> None:
+        """Fold one batch of router gates into the metric accumulators.
+
+        Stays GPU-resident — the only D2H sync happens in ``metrics()``
+        when the values are drained for logging. ``gates`` is ``(B, E)``
+        fp32, post-softmax.
+        """
+        g = gates.float()
+        B, E = g.shape
+        if self._stat_h_per_sum is None:
+            dev = g.device
+            self._stat_h_per_sum = torch.zeros((), device=dev, dtype=torch.float32)
+            self._stat_margin_sum = torch.zeros((), device=dev, dtype=torch.float32)
+            self._stat_gate_sum = torch.zeros(E, device=dev, dtype=torch.float32)
+            self._stat_argmax_count = torch.zeros(E, device=dev, dtype=torch.float32)
+        p = g.clamp_min(1e-12)
+        # Per-sample entropy (B,), summed; normalization to log(E) deferred
+        # to drain so this stays one fused kernel.
+        self._stat_h_per_sum += -(p * p.log()).sum(-1).sum()
+        # Top-1 / top-2 margin per sample, summed.
+        top2 = p.topk(2, dim=-1).values
+        self._stat_margin_sum += (top2[..., 0] - top2[..., 1]).sum()
+        # Soft load (mean gate) and hard usage (argmax histogram), summed.
+        self._stat_gate_sum += g.sum(0)
+        self._stat_argmax_count += F.one_hot(g.argmax(-1), num_classes=E).float().sum(0)
+        self._stat_n += int(B)
+
+    def _reset_router_stats(self) -> None:
+        if self._stat_h_per_sum is not None:
+            self._stat_h_per_sum.zero_()
+            self._stat_margin_sum.zero_()
+            self._stat_gate_sum.zero_()
+            self._stat_argmax_count.zero_()
+        self._stat_n = 0
+
+    def metrics(self, ctx: MetricContext) -> Dict[str, float]:
+        """Drain router-stat accumulators into a log dict.
+
+        Emits per-sample-averaged keys matching Hydra's ``hydra/router_*``
+        convention so TensorBoard plots line up across method comparisons.
+        Resets the accumulators so the next log window starts fresh.
+        Returns ``{}`` if no batches have been routed since the last drain
+        (e.g. metric collection ran before the first forward).
+        """
+        if self._stat_n == 0 or self._stat_h_per_sum is None:
+            return {}
+        n = float(self._stat_n)
+        E = int(self.num_experts)
+        log_E = math.log(E) if E > 1 else 1.0
+        # Single packed [H_per_sample, margin] D2H, then the (E,) vectors.
+        scalar_pack = torch.stack(
+            [self._stat_h_per_sum / n, self._stat_margin_sum / n]
+        ).cpu()
+        gate_mean = (self._stat_gate_sum / n).cpu()
+        usage_mean = (self._stat_argmax_count / n).cpu()
+        # Collapse detector: entropy of mean-gate, normalized to [0, 1].
+        gm = gate_mean.clamp_min(1e-12)
+        h_collapse = float((-(gm * gm.log()).sum() / log_E).item())
+
+        out: Dict[str, float] = {
+            "fera/router_entropy": float(scalar_pack[0]) / log_E,
+            "fera/router_entropy_collapse": h_collapse,
+            "fera/router_margin": float(scalar_pack[1]),
+        }
+        for i in range(E):
+            out[f"fera/expert_usage/{i}"] = float(usage_mean[i])
+            out[f"fera/load/{i}"] = float(gate_mean[i])
+        self._reset_router_stats()
+        return out
 
     def clear_routing(self) -> None:
         """Drop routing weights (and step caches) — used at the end of an

@@ -38,11 +38,14 @@ hydra_router_layers = ".*(mlp\\.layer[12])$"
 use_sigma_router = false
 
 # FeRA-style FEI router (Phase 1 of plan.md). 2-band simplex on the rank-R
-# router input. fei_sigma_low_div=8 = bucket-adaptive σ_low validated by
-# bench/fera/results/20260512-1814-fera-pilot/.
+# router input. fei_sigma_low_div=4 = bucket-adaptive σ_low chosen by the
+# 2026-05-13 dataset sweep (bench/fera/results/20260513-1649-dataset-sweep/)
+# — highest router discriminative std(e_low) at low/mid t on real training
+# latents. Previous default 8.0 is still defensible; see
+# [[project_fera_probe_2band_decision]] for the full table.
 use_fei_router = true
 fei_feature_dim = 2
-fei_sigma_low_div = 8.0
+fei_sigma_low_div = 4.0
 fei_router_layers = ".*(mlp\\.layer[12])$"
 
 output_name = "anima_hydra_fei"

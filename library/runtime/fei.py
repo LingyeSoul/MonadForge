@@ -12,8 +12,14 @@ the energy at every σ_mid we tried — see
 2-band path; the 3-band reference still lives in the bench probe.
 
 Bucket-invariant scaling: ``σ_low = min(H_lat, W_lat) / fei_sigma_low_div``.
-The bench validated ``fei_sigma_low_div = 8`` across 1024², 832×1248,
-1248×832 — mean |Δ FEI| < 0.02 between mirror buckets.
+The 2026-05-13 dataset sweep (``bench/fera/probe_fei_dataset.py``) ranked
+divisors by population std(e_low) on real training latents; ``div=4``
+won at low/mid t (std≈0.13 at t=0.05 vs 0.11 for div=8 and 0.02 for the
+paper's div=128). Aspect invariance was previously validated at
+``fei_sigma_low_div = 8`` across 1024², 832×1248, 1248×832 (mean
+|Δ FEI| < 0.02 between mirror buckets) and the gap to div=4 is small on
+dominant buckets. The current default is **4.0**; 8.0 remains a Pareto
+choice. See ``[[project_fera_probe_2band_decision]]``.
 
 Both training (`train.py`) and inference (`library/inference/generation.py`)
 call ``compute_fei_2band`` once per step on the current `z_t`, then
@@ -97,7 +103,10 @@ def fei_sigma_low(h_lat: int, w_lat: int, fei_sigma_low_div: float) -> float:
     """``σ_low = min(H_lat, W_lat) / fei_sigma_low_div``.
 
     Bucket-adaptive — keeps the band semantic across aspect ratios with
-    no per-bucket router head. Bench-validated default ``8.0`` lives in
-    ``configs/methods/lora.toml`` (and ``configs/gui-methods/hydralora_fei.toml``).
+    no per-bucket router head. Default ``4.0`` (from the 2026-05-13
+    dataset sweep) lives in ``configs/methods/fera.toml`` and
+    ``configs/gui-methods/hydralora_fei.toml``; the FEI-on-Hydra
+    alternative block in ``configs/methods/lora.toml`` mirrors it.
+    Previous default ``8.0`` is a Pareto-defensible alternative.
     """
     return float(min(h_lat, w_lat)) / float(fei_sigma_low_div)

@@ -110,7 +110,7 @@ About 6–7 M trainable params at defaults. Roughly 1.5× a `rank=16` plain LoRA
 | `fera_num_bands` | 3 | Paper default. Drop to 2 for Anima's bench-validated bimodal split (see [[project_fera_probe_2band_decision]]). |
 | `fera_router_tau` | 0.7 | Softmax temperature. Lower → sharper expert specialization. |
 | `fera_router_hidden` | 64 | Router MLP hidden width. Author uses 64. |
-| `fei_sigma_low_div` | 8.0 | `σ_low = min(H_lat, W_lat) / fei_sigma_low_div`. Bench-validated default; NOT the paper's pixel-domain `min(H, W) / 128` (that's SD2-512-specific). |
+| `fei_sigma_low_div` | 4.0 | `σ_low = min(H_lat, W_lat) / fei_sigma_low_div`. Default picked from the 2026-05-13 dataset sweep — `div=4` yields the highest router std(e_low) at low/mid t on real training latents. NOT the paper's pixel-domain `min(H, W) / 128` (that's SD2-512-specific). Previous default `8.0` remains a Pareto-defensible alternative; see [[project_fera_probe_2band_decision]]. |
 | `fera_fecl_weight` | 0.1 | FECL aux loss weight (paper used 0.1–0.2). Activates the base-pass forward + FECL term inside the loss composer — 2× per-step forward cost. Set to 0 to disable. |
 | `fera_target_modules` | `.*\.(qkv_proj\|q_proj\|kv_proj\|output_proj\|layer[12])$` | Anima-naming regex covering self-attn fused QKV + cross-attn q/kv + attn output + MLP. Restrict to a subset to ablate. |
 | `fera_ortho` | `false` | Swap free per-expert `(down_k, up_k)` for PSOFT-style weight ortho on each expert: shared frozen top-r SVD bases `Q_basis / P_basis` + per-expert Cayley-rotated `S_q, S_p (E, r, r)` + per-expert diagonal `λ (E, r)`. See [Weight-ortho variant (`fera_ortho`)](#weight-ortho-variant-fera_ortho) below. |
@@ -120,13 +120,13 @@ Training defaults: `learning_rate = 1e-4`, `max_train_epochs = 4`, `cache_llm_ad
 
 ## σ_low rule (why not the paper's κ)
 
-The paper picks DoG kernel scale `κ = min(H, W) / 128` — a pixel-domain constant tuned for SD2 at 512×512. Anima trains under constant-token bucketing (`H_lat · W_lat ≈ 4096`) at varied aspect ratios, so a fixed pixel σ would land on different fractions of the latent grid per bucket. Bench probes (`bench/fera/results/20260512-1814-fera-pilot/`, `…20260512-1827-fera-midwide/`) validated the latent-domain rule
+The paper picks DoG kernel scale `κ = min(H, W) / 128` — a pixel-domain constant tuned for SD2 at 512×512. Anima trains under constant-token bucketing (`H_lat · W_lat ≈ 4096`) at varied aspect ratios, so a fixed pixel σ would land on different fractions of the latent grid per bucket. Bench probes (`bench/fera/results/20260512-1814-fera-pilot/`, `…20260512-1827-fera-midwide/`) validated the latent-domain rule on inference trajectories; the 2026-05-13 dataset sweep (`bench/fera/probe_fei_dataset.py`, results under `…20260513-1649-dataset-sweep/`) then picked `div=4` over `div=8` for real training-distribution router signal:
 
 ```
-σ_low = min(H_lat, W_lat) / fei_sigma_low_div     (default fei_sigma_low_div = 8.0)
+σ_low = min(H_lat, W_lat) / fei_sigma_low_div     (default fei_sigma_low_div = 4.0)
 ```
 
-across 1024², 832×1248, 1248×832 — mean `|Δ FEI|` between mirror buckets stayed below 0.02. This is the same rule the FEI-on-Hydra variant uses.
+aspect invariance held across 1024², 832×1248, 1248×832 at the inference probe (mean `|Δ FEI|` < 0.02 between mirror buckets). The dataset sweep ranked divisors by population std(e_low) at flow-matching training-input t: **div=4 highest** (0.131 at t=0.05), div=8 second (0.112), paper-style div=128 worst (0.020). This is the same rule the FEI-on-Hydra variant uses.
 
 ## 3 bands vs 2 bands
 
@@ -262,7 +262,7 @@ ss_fera_num_experts     = "3"
 ss_fera_num_bands       = "3"
 ss_fera_router_tau      = "0.7"
 ss_fera_router_hidden   = "64"
-ss_fei_sigma_low_div    = "8.0"
+ss_fei_sigma_low_div    = "4.0"
 ss_fera_fecl_weight     = "0.1"
 ss_fera_target_modules  = "..." (the regex used)
 ```
@@ -312,7 +312,7 @@ The only reason author-faithful FeRA is worth running on Anima is that the globa
 | `network_dim` (rank) | 4 | 2, 4, 8, 16 | Independent per-expert → rank multiplied by `E`. Going to 16 at `E=3` is ~Hydra-default territory. |
 | `fera_router_tau` | 0.7 | 0.3, 0.7, 1.0, 2.0 | Lower τ → sharper specialization but more sensitive to FEI noise. |
 | `fera_router_hidden` | 64 | 32, 64, 128 | Router input is only `num_bands` floats; the bottleneck is usually expressive enough. |
-| `fei_sigma_low_div` | 8.0 | 4, 8, 16 | Higher → tighter low band (more high-freq picked up there). Bench validated 8. |
+| `fei_sigma_low_div` | 4.0 | 2, 4, 8, 16 | Higher → tighter low band (more high-freq picked up there). 2026-05-13 dataset sweep picked 4 as the discriminative-signal winner over 8 on training latents; both 4 and 8 are in the Pareto region. |
 | `fera_target_modules` | all attn + MLP | MLP-only, attn-only | Ablate which sites benefit from FeRA gating. MLP-only mirrors the FEI-on-Hydra default. |
 | `fera_fecl_weight` | 0.1 | 0, 0.1, 0.2 | Activates the FECL base-pass + composer term (2× per-step forward cost). Only meaningful at `num_bands ≥ 3` (at 2 bands the term collapses to a magnitude regularizer). |
 | `multiplier` (inference) | 1.0 | 0.0, 0.5, 1.0, 1.5 | `0.0` short-circuits to frozen base for clean ablation. Per-layer multiplier control isn't exposed. |

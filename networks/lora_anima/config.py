@@ -213,12 +213,14 @@ class LoRANetworkCfg:
 
     # FEI-conditional router (FeRA-style content-aware routing on hydra).
     # ``fei_feature_dim`` defaults to 2 = the simplex ``(e_low, e_high)`` from
-    # ``library.runtime.fei.compute_fei_2band``. Bench-validated default
-    # ``fei_sigma_low_div=8.0`` for σ_low scaling — see
+    # ``library.runtime.fei.compute_fei_2band``. Default
+    # ``fei_sigma_low_div=4.0`` for σ_low scaling — chosen by the
+    # 2026-05-13 dataset sweep on real training latents (highest
+    # std(e_low) at low/mid t). 8.0 remains a Pareto choice. See
     # ``[[project_fera_probe_2band_decision]]``.
     use_fei_router: bool = False
     fei_feature_dim: int = 2
-    fei_sigma_low_div: float = 8.0
+    fei_sigma_low_div: float = 4.0
     fei_router_layers: Optional[str] = None
     fei_router_names: Optional[List[str]] = None
 
@@ -341,7 +343,7 @@ class LoRANetworkCfg:
 
         use_fei_router = _as_bool(kwargs.get("use_fei_router"))
         fei_feature_dim = int(kwargs.get("fei_feature_dim", 2))
-        fei_sigma_low_div = float(kwargs.get("fei_sigma_low_div", 8.0))
+        fei_sigma_low_div = float(kwargs.get("fei_sigma_low_div", 4.0))
         # Default to the same regex as σ — most users want one FEI router per
         # Hydra-routed module. Override per variant if needed.
         fei_router_layers = kwargs.get(
@@ -463,7 +465,7 @@ class LoRANetworkCfg:
             use_fei_router=bool(use_fei_router),
             fei_feature_dim=int(fei_feature_dim),
             fei_sigma_low_div=(
-                float(fei_sigma_low_div) if fei_sigma_low_div is not None else 8.0
+                float(fei_sigma_low_div) if fei_sigma_low_div is not None else 4.0
             ),
             fei_router_names=fei_router_names,
         )

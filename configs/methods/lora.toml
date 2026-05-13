@@ -109,10 +109,11 @@ compile_inductor_mode = "reduce-overhead"
 #   3. Change `output_name` on line 46 to `"anima_hydra_fei"` so artifacts
 #      don't collide with the σ-router run.
 # The bench probe collapsed FeRA's 3 bands → 2 (mid was structurally sparse
-# on flow-matching latents at every σ_mid we tried). σ_low scaling defaults
-# to D/8 across aspect buckets — see [[project_fera_probe_2band_decision]].
+# on flow-matching latents at every σ_mid we tried, confirmed on training
+# latents 2026-05-13). σ_low scaling defaults to D/4 across aspect buckets
+# from the dataset sweep — see [[project_fera_probe_2band_decision]].
 
 # use_fei_router = true
 # fei_feature_dim = 2          # raw simplex (e_low, e_high)
-# fei_sigma_low_div = 8.0      # σ_low = min(H_lat, W_lat) / 8 — bench-validated
+# fei_sigma_low_div = 4.0      # σ_low = min(H_lat, W_lat) / 4 — 2026-05-13 dataset sweep
 # fei_router_layers = ".*(mlp\\.layer[12])$"

@@ -16,9 +16,13 @@
 # flip to 2 to use the Anima-validated split. See [[project_fera_probe_2band_decision]].
 #
 # σ_low scaling follows the bench-validated rule
-# σ_low = min(H_lat, W_lat) / fei_sigma_low_div (default 8.0), NOT the
+# σ_low = min(H_lat, W_lat) / fei_sigma_low_div (default 4.0), NOT the
 # paper's pixel-domain constant min(H, W)/128. The latter is dataset-
-# specific to SD2 at 512×512.
+# specific to SD2 at 512×512. The 2026-05-13 dataset sweep
+# (bench/fera/results/20260513-1649-dataset-sweep/) found div=4 yields
+# ~15–20% higher std(e_low) at low/mid t on the real training
+# distribution than the original div=8 default; both produce monotonic
+# migration. See [[project_fera_probe_2band_decision]] for the sweep.
 #
 # FECL (frequency-energy consistency loss): exposed on the network class
 # but **not** wired into train.py's loss composer. Enabling it requires
@@ -28,8 +32,9 @@
 network_module = "networks.methods.fera"
 
 # Rank / scale per expert. Author paper uses rank=4 across SD2 LoRA targets.
-network_dim = 48
-network_alpha = 48
+network_dim = 32
+network_alpha = 32
+output_name = "anima_fera"
 
 # Method-specific kwargs go through ``network_args`` (the convention every
 # ``networks/methods/*`` module follows — postfix, easycontrol, soft_tokens).
@@ -71,26 +76,28 @@ network_alpha = 48
 #                          identity. 0.02 is conservative; bench-tune.
 network_args = [
     "fera_num_experts=4",
-    "fera_num_bands=3",
+    "fera_num_bands=2",
     "fera_router_tau=0.7",
     "fera_router_hidden=64",
-    "fera_fecl_weight=0.1",
+    "fera_fecl_weight=0.0",
     "fera_target_modules=.*\\.(qkv_proj|q_proj|kv_proj|output_proj|layer[12])$",
     "fera_ortho=true",
-    "fera_ortho_init_std=0.02",
+    "fera_ortho_init_std=0.1",
 ]
 
-# Bucket-adaptive σ_low. 8.0 = bench-validated default across 1024² /
-# 832×1248 / 1248×832 mirror buckets (mean |Δ FEI| < 0.02). Same default
-# the FEI-on-Hydra variant uses — already a registered top-level kwarg
-# via _HYDRA_KWARG_FLAGS, so it stays at top level here.
-fei_sigma_low_div = 8.0
+# Bucket-adaptive σ_low. 4.0 chosen from the 2026-05-13 dataset sweep
+# on real cached z_0 (bench/fera/probe_fei_dataset.py) — highest router
+# discriminative signal among {4, 8, 16, 32, 64, 128} at low/mid t.
+# Previous default 8.0 is still a defensible Pareto choice (slightly
+# better aspect invariance on small-population buckets); see the memory
+# note for the full table.
+fei_sigma_low_div = 4.0
 
 # Training schedule — close to author's SD2 paper recipe; tune on bench.
 learning_rate = 2e-5
-max_train_epochs = 10
-save_every_n_epochs = 5
-checkpointing_epochs = 5
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -147,7 +154,7 @@ blocks_to_swap=0
 #
 # use_fei_router = true
 # fei_feature_dim = 2
-# fei_sigma_low_div = 8.0
+# fei_sigma_low_div = 4.0      # see header — 2026-05-13 dataset sweep
 # fei_router_layers = ".*(mlp\\.layer[12])$"
 #
 # compile_mode = "full"
