@@ -27,23 +27,20 @@ use_timestep_mask = true
 min_rank = 1
 alpha_rank_scale = 1.0
 
-use_hydra = true
+use_moe_style = "shared_A"
+route_per_layer = true
+router_source = "fei"
 num_experts = 4
 balance_loss_weight = 3e-7
 
 hydra_router_layers = ".*(mlp\\.layer[12])$"
 
-# σ-router intentionally OFF for clean FEI-only A/B vs hydralora_sigma.
-# Both-on (σ + FEI) is supported by the code; sweep as a follow-up.
-use_sigma_router = false
-
-# FeRA-style FEI router (Phase 1 of plan.md). 2-band simplex on the rank-R
+# FeRA-style FEI router (Phase 1 of plan2.md). 2-band simplex on the rank-R
 # router input. fei_sigma_low_div=4 = bucket-adaptive σ_low chosen by the
 # 2026-05-13 dataset sweep (bench/fera/results/20260513-1649-dataset-sweep/)
 # — highest router discriminative std(e_low) at low/mid t on real training
 # latents. Previous default 8.0 is still defensible; see
 # [[project_fera_probe_2band_decision]] for the full table.
-use_fei_router = true
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
 fei_router_layers = ".*(mlp\\.layer[12])$"

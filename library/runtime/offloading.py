@@ -269,10 +269,11 @@ class ModelOffloader(Offloader):
         free_cache: bool = True,
     ):
         # ``free_cache=False`` skips the trailing ``empty_cache`` so callers
-        # that re-enter another forward in the same step (e.g. FeRA FECL's
-        # no-grad base pass) don't release the caching allocator's blocks
-        # just to have the next forward re-grow them — the visible nvidia-smi
-        # swing was ~1 GB per step on a 5060 Ti without changing peak allocated.
+        # that re-enter another forward in the same step (e.g. the FECL
+        # no-grad base pass for the FeRA stacked-experts path) don't release
+        # the caching allocator's blocks just to have the next forward
+        # re-grow them — the visible nvidia-smi swing was ~1 GB per step on
+        # a 5060 Ti without changing peak allocated.
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 

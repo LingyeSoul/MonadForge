@@ -280,21 +280,10 @@ def _fera_fecl_loss(ctx: LossContext) -> torch.Tensor:
 
     Bandwise consistency between adapter correction ``δ = z_fera − z_base``
     and residual ``r = z_fera − z_target``, weighted by the residual's
-    per-band energy share. Ported here from
-    ``FeRANetwork.compute_fecl_loss`` as part of plan2 §FECL → losses
-    registry — the math is identical, the move lifts FECL out of
-    ``methods/fera.py`` so the ``stacked_experts_global_fei`` spec on
-    ``LoRANetwork`` (which carries no compute_fecl_loss method) can use it.
-
-    Three input modes (tried in order):
-
-      * ``ctx.aux['fecl_loss']`` — pre-computed scalar (legacy
-        ``FeRANetwork`` path, where the trainer already ran the math).
-      * ``ctx.aux['fera']`` dict carrying ``z_base`` + ``z_fera`` —
-        the new path: the trainer hands the two predictions and the
-        handler runs the band decomposition.
-      * neither — returns 0 (FECL disabled or trainer didn't populate
-        the aux dict).
+    per-band energy share. Active on the ``stacked_experts_global_fei``
+    spec when ``fera_fecl_weight > 0`` — the trainer stashes ``z_base``
+    (no-grad base-pass prediction with routing zeroed) in
+    ``ctx.aux['fera']`` and this handler runs the band decomposition.
 
     The 2-band path collapses Eq. 10 to a content-free scalar (only two
     ratios that sum to 1), so production training should keep
@@ -309,12 +298,6 @@ def _fera_fecl_loss(ctx: LossContext) -> torch.Tensor:
     if weight <= 0.0:
         return ctx.model_pred.new_zeros(())
 
-    # Legacy path: trainer pre-computed the scalar.
-    pre = ctx.aux.get("fecl_loss")
-    if pre is not None:
-        return weight * pre.float()
-
-    # New path: compute in-handler from z_base + z_fera + z_target.
     fera_aux = ctx.aux.get("fera") or {}
     z_base = fera_aux.get("z_base")
     if z_base is None:
@@ -552,15 +535,15 @@ def build_loss_composer(args: argparse.Namespace, network: object) -> LossCompos
         and float(getattr(args, "repa_weight", 0.0) or 0.0) > 0.0
     ):
         active.append("repa")
-    # FeRA FECL: active iff a FeRANetwork (legacy ``methods/fera.py``) OR a
-    # ``LoRANetwork`` carrying the stacked_experts_global_fei spec has a
-    # positive ``fecl_weight``. The trainer's base-pass forward gate (in
+    # FeRA FECL: active iff a ``LoRANetwork`` carrying the
+    # stacked_experts_global_fei spec has a positive ``fecl_weight``. The
+    # trainer's base-pass forward gate (in
     # ``train.py::get_noise_pred_and_target``) is the same condition, so the
     # composer activation just mirrors it.
     fecl_weight = float(getattr(network, "fecl_weight", 0.0) or 0.0)
-    if fecl_weight > 0.0 and (
-        hasattr(network, "fera_layers")
-        or getattr(getattr(network, "cfg", None), "use_moe_style", False)
+    if (
+        fecl_weight > 0.0
+        and getattr(getattr(network, "cfg", None), "use_moe_style", False)
         == "independent_A"
     ):
         active.append("fera_fecl")

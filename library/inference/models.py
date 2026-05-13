@@ -28,33 +28,6 @@ def _is_hydra_moe(path: str) -> bool:
         return False
 
 
-def _is_fera(path: str) -> bool:
-    """Cheap header check for author-faithful FeRA checkpoints.
-
-    Detection prefers ``ss_network_module`` metadata; falls back to a key
-    sniff (``router.net.*`` + ``lora_unet_*.lora_down`` co-occurring).
-    Plain LoRA uses ``.lora_down.weight`` (nn.Linear), so the
-    no-``.weight`` suffix on a stacked nn.Parameter is the disambiguator.
-    """
-    from safetensors import safe_open
-
-    try:
-        with safe_open(path, framework="pt") as f:
-            meta = f.metadata() or {}
-            if meta.get("ss_network_module") == "networks.methods.fera":
-                return True
-            keys = list(f.keys())
-            has_router = any(k.startswith("router.net.") for k in keys)
-            has_stacked = any(
-                k.startswith("lora_unet_")
-                and (k.endswith(".lora_down") or k.endswith(".lora_up"))
-                for k in keys
-            )
-            return has_router and has_stacked
-    except Exception:
-        return False
-
-
 def load_dit_model(
     args: argparse.Namespace,
     device: torch.device,
@@ -66,11 +39,13 @@ def load_dit_model(
     if not args.lycoris:
         loading_device = device
 
-    # HydraLoRA moe: router-live inference can't go through static merge.
-    # Detect early so we can skip the baked-down path and take the dynamic
-    # hook route regardless of whether --pgraft is set.
+    # HydraLoRA moe (incl. FeRA-style stacked-experts global FEI): router-live
+    # inference can't go through static merge. Detect early so we can skip the
+    # baked-down path and take the dynamic hook route regardless of whether
+    # --pgraft is set. ``_is_hydra_moe`` matches the ``lora_ups.{i}.weight``
+    # key pattern shared by both shared-A Hydra and the plan2 stacked-experts
+    # save format.
     hydra_mode = False
-    fera_mode = False
     if args.lora_weight is not None and len(args.lora_weight) > 0:
         hydra_flags = [_is_hydra_moe(p) for p in args.lora_weight]
         if any(hydra_flags):
@@ -82,21 +57,6 @@ def load_dit_model(
                     "in separate invocations."
                 )
             hydra_mode = True
-        fera_flags = [_is_fera(p) for p in args.lora_weight]
-        if any(fera_flags):
-            if not all(fera_flags):
-                raise ValueError(
-                    "Mixing FeRA checkpoints with other adapter types in a "
-                    "single --lora_weight list is not supported. The "
-                    "in-place Linear replacement is destructive and can't "
-                    "compose with a static-merged baseline."
-                )
-            if hydra_mode:
-                raise ValueError(
-                    "Both FeRA and HydraLoRA-moe detected in --lora_weight; "
-                    "these are alternative router schemes — load one."
-                )
-            fera_mode = True
 
     # P-GRAFT: load without LoRA merge, attach dynamic hooks instead
     pgraft_mode = (
@@ -105,11 +65,10 @@ def load_dit_model(
         and len(args.lora_weight) > 0
     )
 
-    # load LoRA weights (skip static merge for P-GRAFT, HydraLoRA moe, and FeRA)
+    # load LoRA weights (skip static merge for P-GRAFT and HydraLoRA moe)
     if (
         not pgraft_mode
         and not hydra_mode
-        and not fera_mode
         and not args.lycoris
         and args.lora_weight is not None
         and len(args.lora_weight) > 0
@@ -239,50 +198,6 @@ def load_dit_model(
                 f"HydraLoRA: router-live attached "
                 f"({len(network.unet_loras)} modules, "
                 f"cutoff_step={getattr(args, 'lora_cutoff_step', None)})"
-            )
-
-    # Author-faithful FeRA (networks.methods.fera): in-place Linear → FeRALinear
-    # replacement on the DiT + one global router. The router consumes z_t each
-    # step (see ``library/inference/adapters.py::set_fera_zt``); no static merge.
-    if fera_mode:
-        from networks.methods import fera as fera_module
-
-        logger.info("FeRA: loading checkpoint as author-faithful router-live adapter")
-        for lora_weight_path in args.lora_weight:
-            multiplier = (
-                args.lora_multiplier
-                if isinstance(args.lora_multiplier, (int, float))
-                else args.lora_multiplier[0]
-            )
-            network, weights_sd = fera_module.create_network_from_weights(
-                multiplier=multiplier,
-                file=lora_weight_path,
-                ae=None,
-                text_encoders=[],
-                unet=model,
-                weights_sd=None,
-                for_inference=True,
-            )
-            network.apply_to([], model, apply_text_encoder=False, apply_unet=True)
-            info = network.load_state_dict(weights_sd, strict=False)
-            if info.unexpected_keys:
-                logger.warning(
-                    f"FeRA: unexpected keys: {info.unexpected_keys[:5]}..."
-                )
-            if info.missing_keys:
-                logger.warning(
-                    f"FeRA: missing keys: {info.missing_keys[:5]}..."
-                )
-            network.to(device, dtype=torch.bfloat16)
-            network.eval().requires_grad_(False)
-            fera_networks = list(getattr(model, "_fera_networks", []))
-            fera_networks.append(network)
-            model._fera_networks = fera_networks
-            model._fera_network = network
-            logger.info(
-                f"FeRA: router-live attached "
-                f"({len(network.fera_layers)} modules, "
-                f"{network.num_experts} experts × rank {network.rank})"
             )
 
     if getattr(args, "compile", False):

@@ -18,14 +18,14 @@ def cmd_postfix(extra):
 
 
 def cmd_fera(extra):
-    """FeRA-style content-aware routing on HydraLoRA (Phase 1 of plan.md).
+    """Author-faithful FeRA (Yin et al., arXiv:2511.17979).
 
-    Drives ``configs/methods/fera.toml`` — same LoRA + OrthoLoRA + T-LoRA +
-    Hydra + ReFT stack as ``make lora`` but with a 2-band FEI router in
-    place of the σ-router. A/B counterpart for measuring whether
-    content-aware routing beats σ-keyed routing on Anima.
+    Drives ``configs/gui-methods/fera.toml`` — independent-A stacked experts
+    + a single network-level GlobalRouter fed by FEI(z_t). Lives on the
+    LoRA-family network module via the ``stacked_experts_global_fei`` spec
+    (selected by ``use_moe_style="independent_A"``). plan2 §three-axis-config.
     """
-    train("fera", extra)
+    train("fera", extra, methods_subdir="gui-methods")
 
 
 def cmd_soft_tokens(extra):

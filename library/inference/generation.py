@@ -14,11 +14,9 @@ from diffusers.utils.torch_utils import randn_tensor
 
 from library.anima import models as anima_models
 from library.inference.adapters import (
-    clear_fera_zt,
     clear_hydra_fei,
     clear_hydra_sigma,
     compute_and_set_hydra_fei,
-    set_fera_zt,
     set_hydra_sigma,
 )
 from library.inference import sampling as inference_utils
@@ -245,12 +243,10 @@ def generate_body_tiled(
                 set_hydra_sigma(anima, t_expand)
                 # FEI router input — computed on the full latent (pre-tile)
                 # so every tile in this step sees the same per-sample FEI.
-                # No-op when no FEI router is attached.
+                # Drives both the per-Linear FEI router (FEI-on-Hydra) and
+                # the network-level GlobalRouter (FeRA / stacked_experts);
+                # no-op when no FEI router is attached.
                 compute_and_set_hydra_fei(anima, latents)
-                # Author-faithful FeRA (networks.methods.fera): global
-                # router fires once on z_t; no-op when no FeRA network is
-                # attached.
-                set_fera_zt(anima, latents)
 
                 noise_acc = torch.zeros_like(latents)
                 weight_acc = torch.zeros(
@@ -355,7 +351,6 @@ def generate_body_tiled(
     finally:
         clear_hydra_sigma(anima)
         clear_hydra_fei(anima)
-        clear_fera_zt(anima)
         # P-GRAFT: restore LoRA for next generation
         if pgraft_network is not None and lora_cutoff_step is not None:
             pgraft_network.set_enabled(True)
@@ -595,7 +590,6 @@ def generate_body(
                     t_expand = t.expand(latents.shape[0])
                     set_hydra_sigma(anima, t_expand)
                     compute_and_set_hydra_fei(anima, latents)
-                    set_fera_zt(anima, latents)
 
                     with (
                         torch.no_grad(),
@@ -705,7 +699,6 @@ def generate_body(
         finally:
             clear_hydra_sigma(anima)
             clear_hydra_fei(anima)
-            clear_fera_zt(anima)
             # P-GRAFT: restore LoRA for next generation
             if pgraft_network is not None and lora_cutoff_step is not None:
                 pgraft_network.set_enabled(True)

@@ -73,7 +73,6 @@ def test_hydra_router_kwargs_registered():
     """
     must_have = {
         "hydra_router_layers",
-        "use_sigma_router",
         "sigma_router_layers",
         "sigma_feature_dim",
         "sigma_hidden_dim",
@@ -104,14 +103,14 @@ def test_hydra_router_kwargs_registered():
     [
         ({}, "lora"),
         ({"use_ortho": "true"}, "ortho"),
-        ({"use_hydra": "true"}, "hydra"),
-        ({"use_hydra": "true", "use_ortho": "true"}, "ortho_hydra"),
+        ({"use_moe_style": "shared_A"}, "hydra"),
+        ({"use_moe_style": "shared_A", "use_ortho": "true"}, "ortho_hydra"),
+        ({"use_moe_style": "independent_A"}, "stacked_experts_global_fei"),
         ({"use_dora": "true"}, "dora"),
-        # bool values should resolve identically to the string form
-        ({"use_hydra": True}, "hydra"),
-        ({"use_hydra": False}, "lora"),
-        # casing + whitespace tolerance
-        ({"use_hydra": "True"}, "hydra"),
+        # Falsey forms of use_moe_style resolve to plain LoRA.
+        ({"use_moe_style": False}, "lora"),
+        ({"use_moe_style": "false"}, "lora"),
+        ({"use_moe_style": ""}, "lora"),
     ],
 )
 def test_resolve_precedence(kwargs, expected):
@@ -122,7 +121,7 @@ def test_resolve_precedence(kwargs, expected):
 @pytest.mark.parametrize(
     "kwargs",
     [
-        {"use_dora": "true", "use_hydra": "true"},
+        {"use_dora": "true", "use_moe_style": "shared_A"},
         {"use_dora": "true", "use_ortho": "true"},
     ],
 )

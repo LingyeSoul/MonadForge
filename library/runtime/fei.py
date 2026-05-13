@@ -104,7 +104,7 @@ def fei_sigma_low(h_lat: int, w_lat: int, fei_sigma_low_div: float) -> float:
 
     Bucket-adaptive — keeps the band semantic across aspect ratios with
     no per-bucket router head. Default ``4.0`` (from the 2026-05-13
-    dataset sweep) lives in ``configs/methods/fera.toml`` and
+    dataset sweep) lives in ``configs/gui-methods/fera.toml`` and
     ``configs/gui-methods/hydralora_fei.toml``; the FEI-on-Hydra
     alternative block in ``configs/methods/lora.toml`` mirrors it.
     Previous default ``8.0`` is a Pareto-defensible alternative.

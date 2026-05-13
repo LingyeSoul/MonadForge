@@ -51,7 +51,7 @@ def test_schema_has_known_keys(populated_parser):
         "mixed_precision",
         "attn_mode",
         "base_config",  # manual extra
-        "use_hydra",  # network-module allowlist
+        "use_moe_style",  # network-module allowlist (three-axis routing)
     ):
         assert k in schema, f"expected {k!r} in populated schema"
 

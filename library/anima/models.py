@@ -1400,26 +1400,6 @@ class Anima(nn.Module):
         self._mod_guidance_schedule.zero_()
         self._mod_guidance_final_w.zero_()
 
-    def set_fera_prep(self, prep) -> None:
-        """Install the FeRA inline-prep submodule's call hook.
-
-        ``prep`` is an instance of ``networks.methods.fera.FeRAPrep`` owned
-        by the attached FeRANetwork. We store it via ``object.__setattr__``
-        to bypass ``nn.Module.__setattr__``'s auto-registration: prep is
-        already a child of FeRANetwork (which owns its parameters/buffers
-        in state_dict); registering it again under the DiT would emit
-        duplicate keys and break save/load round-trips. The slot is read
-        inside ``_run_blocks`` to fire the prep at the top of the
-        compiled block stack (cudagraph-stable graph SSA for gates and R).
-        """
-        object.__setattr__(self, "_fera_prep_ref", prep)
-
-    def clear_fera_prep(self) -> None:
-        """Drop the FeRA inline-prep hook; ``_run_blocks`` falls back to a
-        no-op probe for it on the next forward. Used by the inference
-        loader at teardown / when reloading a non-FeRA network."""
-        object.__setattr__(self, "_fera_prep_ref", None)
-
     def init_weights(self) -> None:
         self.x_embedder.init_weights()
         self.pos_embedder.reset_parameters()
@@ -1686,17 +1666,6 @@ class Anima(nn.Module):
         Mod-guidance is applied via buffers on ``self`` (zero = off) so the
         per-block ``t_emb`` arithmetic is unconditional. No Python branches.
         """
-        # FeRA inline prep: run the router + batched Cayley solve *inside*
-        # the compiled region so cudagraph captures gates/R at allocator-
-        # managed (stable) addresses. Side-effect writes
-        # (``prep._gates = …`` etc.) are graph SSA values that downstream
-        # FeRALinear forwards read via their back-ref. No-op when no FeRA
-        # network with ``inline_prep=True`` is attached. See
-        # ``networks/methods/fera.py::FeRAPrep`` for the rationale.
-        prep = getattr(self, "_fera_prep_ref", None)
-        if prep is not None:
-            prep()
-
         # Normalize requires_grad once at the stack entry. Block 0 receives
         # requires_grad=False (frozen patch_embed output) while blocks 1+
         # receive True (LoRA-enhanced); a mismatch would fragment guards if

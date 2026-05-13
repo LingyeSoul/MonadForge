@@ -447,16 +447,10 @@ def create_network_from_weights(
     # the σ slice. The old broken shape (width ≈ in_dim, often thousands)
     # is caught by a sanity cap on excess width.
     #
-    # New three-axis stamps (``ss_router_source``) take precedence. Legacy
-    # ``ss_use_fei_router`` is honored when present for back-compat with
-    # checkpoints saved before the metadata cutover.
+    # plan2 task #6 retired the legacy ``ss_use_fei_router`` fallback;
+    # ``ss_router_source`` is now the sole discriminator.
     new_router_source = str(file_metadata.get("ss_router_source", "")).strip()
-    legacy_use_fei_router = (
-        str(file_metadata.get("ss_use_fei_router", "")).lower() == "true"
-    )
-    use_fei_router_meta = (
-        new_router_source == "fei" if new_router_source else legacy_use_fei_router
-    )
+    use_fei_router_meta = new_router_source == "fei"
     fei_feature_dim_detected: Optional[int] = (
         int(file_metadata["ss_fei_feature_dim"])
         if use_fei_router_meta and "ss_fei_feature_dim" in file_metadata
@@ -626,10 +620,10 @@ def create_network_from_weights(
     if use_fei_router_meta and (has_hydra or has_ortho_hydra):
         fei_router_names = sigma_router_names or sorted(hydra_module_names) or None
 
-    # New three-axis stamps. When ALL three are present they win over the
-    # legacy translation in ``LoRANetworkCfg.from_weights``. Otherwise the
-    # cfg falls back to the legacy derivation (which now also branches on
-    # the ``is_stacked_experts`` flag).
+    # Three-axis stamps stamped by ``LoRANetwork.save_weights``. All three
+    # must be present for MoE checkpoints (Hydra / OrthoHydra /
+    # StackedExperts); ``from_weights`` raises otherwise. plan2 task #6
+    # retired the legacy ``ss_use_hydra`` / ``ss_use_fei_router`` fallback.
     new_use_moe_style: Optional[str] = file_metadata.get("ss_use_moe_style") or None
     raw_route_per_layer = file_metadata.get("ss_route_per_layer")
     new_route_per_layer: Optional[bool] = (
@@ -658,7 +652,6 @@ def create_network_from_weights(
         specialize_experts_by_sigma_buckets=band_partition_on,
         num_sigma_buckets=band_num_buckets if band_partition_on else None,
         sigma_bucket_boundaries=band_boundaries if band_partition_on else None,
-        use_fei_router_legacy=use_fei_router_meta,
         fei_feature_dim=int(fei_feature_dim_detected or 0),
         fei_sigma_low_div=fei_sigma_low_div_meta,
         fei_router_names=fei_router_names,

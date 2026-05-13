@@ -1,13 +1,22 @@
 # LoRA family — method selection via toggle blocks.
 #
-# Default (uncommented) = classic LoRA.
-# To switch methods:
-#   - T-LoRA: uncomment the T-LoRA block, comment out any classic-LoRA values
-#             it overrides (`network_alpha`, `network_dim`, lr, epochs, …).
-#   - T-LoRA + ReFT: same idea, uncomment the T-LoRA + ReFT block.
-#   - HydraLoRA: uncomment the HydraLoRA block.
-# Each variant sets its own `output_name` so `make test`, `make test-hydra`
-# key off the right artifact.
+# Default (uncommented) = LoRA + OrthoLoRA + T-LoRA + Hydra (σ-routed) + ReFT.
+# Routing config is on the three-axis surface (plan2.md §three-axis-config):
+#
+#     use_moe_style    = False | "shared_A" | "independent_A"
+#     route_per_layer  = true | false
+#     router_source    = "none" | "input" | "sigma" | "fei"
+#
+# To switch routing modes:
+#   - Plain LoRA stack (no MoE): set `use_moe_style = false` and drop every
+#     `*router*` / `num_experts` / `balance_*` / `hydra_*` / `sigma_*` /
+#     `fei_*` key.
+#   - FEI-on-Hydra (Phase 1, FeRA-style content-aware on the shared-A stack):
+#     comment out the σ-router block and uncomment the FEI block near the
+#     bottom of this file.
+#   - Author-faithful FeRA (independent-A + global FEI router): use
+#     `configs/gui-methods/fera.toml` instead — that variant lives on the
+#     `lora-gui` Make target.
 #
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
@@ -41,26 +50,32 @@ alpha_rank_scale = 1.0
 
 
 # -------------
-# hydralora
+# hydralora (shared-A MoE, per-Linear router on σ features)
 
 output_name = "anima_hydra"
-use_hydra = true
+use_moe_style = "shared_A"  # False | "shared_A" | "independent_A"
+route_per_layer = true  # true | false
+router_source = "sigma" # "sigma" | "fei"
 num_experts = 12
 balance_loss_weight = 2e-7 # seems lr * 1/100 is proper
 
 balance_loss_warmup_ratio = 0.4
+
 network_router_lr_scale = 10
+
 hydra_router_layers = ".*(mlp\\.layer[12])$" # ".*(cross_attn\\.kv_proj)$"
 
-use_sigma_router = true
+
+# Under router_source = "sigma"
 sigma_feature_dim = 16
 sigma_hidden_dim = 16   # unused; retained for API compat
 sigma_router_layers = ".*(mlp\\.layer[12])$"
+
 per_bucket_balance_weight = 0.3   # × balance_loss_weight, per-bucket term
 num_sigma_buckets = 3
-
 specialize_experts_by_sigma_buckets = true
 sigma_bucket_boundaries = [0.0, 0.5, 0.8, 1.0]
+
 
 # -------------
 # reft
@@ -100,20 +115,20 @@ compile_inductor_mode = "reduce-overhead"
 # repa_lr_scale = 1.0       # head LR = repa_lr_scale * unet_lr
 
 # -------------
-# hydralora-fei (FeRA-style content-aware routing — Phase 1 of plan.md)
+# hydralora-fei (FeRA-style content-aware routing — Phase 1 of plan2.md)
 # Swaps the σ-keyed router for a 2-band FEI router (DoG-banded latent energy).
 # A/B target: this block vs the default σ-router block above. To activate:
-#   1. Comment out lines 55–63 (use_sigma_router, sigma_*, num_sigma_buckets,
+#   1. Replace `router_source = "sigma"` above with `router_source = "fei"`.
+#   2. Comment out the σ-router block (sigma_feature_dim, sigma_router_layers,
+#      per_bucket_balance_weight, num_sigma_buckets,
 #      specialize_experts_by_sigma_buckets, sigma_bucket_boundaries).
-#   2. Uncomment the FEI block below.
-#   3. Change `output_name` on line 46 to `"anima_hydra_fei"` so artifacts
-#      don't collide with the σ-router run.
+#   3. Uncomment the FEI block below.
+#   4. Change `output_name` to `"anima_hydra_fei"` so artifacts don't collide.
 # The bench probe collapsed FeRA's 3 bands → 2 (mid was structurally sparse
 # on flow-matching latents at every σ_mid we tried, confirmed on training
 # latents 2026-05-13). σ_low scaling defaults to D/4 across aspect buckets
 # from the dataset sweep — see [[project_fera_probe_2band_decision]].
 
-# use_fei_router = true
 # fei_feature_dim = 2          # raw simplex (e_low, e_high)
 # fei_sigma_low_div = 4.0      # σ_low = min(H_lat, W_lat) / 4 — 2026-05-13 dataset sweep
 # fei_router_layers = ".*(mlp\\.layer[12])$"

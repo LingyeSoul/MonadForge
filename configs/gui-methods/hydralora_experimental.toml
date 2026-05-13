@@ -1,9 +1,10 @@
-# gui-methods/hydralora_sigma.toml — HydraLoRA + σ-conditional router.
+# gui-methods/hydralora_experimental.toml — HydraLoRA + σ-conditional router
+# with hard σ-bucket expert partition (experimental).
 #
-# HydraLoRA (shared down + per-expert up heads) with a tiny sinusoidal(σ)→E
-# bias MLP per router, letting expert choice vary with denoising timestep.
-# Zero-init at the final layer → step-0 identical to base HydraLoRA, σ-
-# dependence only emerges if gradients push it. See docs/methods/hydra-lora.md.
+# Same shared-A MoE shape as ``hydralora_sigma.toml``, but with
+# ``specialize_experts_by_sigma_buckets = true`` and an explicit bucket-edge
+# vector pinning experts to disjoint σ regions. Use when you want hard
+# specialization instead of soft σ-conditional routing.
 
 network_dim = 32
 network_alpha = 32
@@ -23,14 +24,15 @@ use_timestep_mask = true
 min_rank = 1
 alpha_rank_scale = 1.0
 
-use_hydra = true
+use_moe_style = "shared_A"
+route_per_layer = true
+router_source = "sigma"
 num_experts = 6
 balance_loss_weight = 3e-7
 
 
 hydra_router_layers = ".*(mlp\\.layer[12])$"
 
-use_sigma_router = true
 sigma_feature_dim = 16
 sigma_hidden_dim = 16   # unused; retained for API compat
 sigma_router_layers = ".*(mlp\\.layer[12])$"

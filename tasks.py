@@ -186,8 +186,8 @@ COMMANDS = {
     ),
     "exp-fera": (
         exp_training.cmd_fera,
-        "[experimental] FeRA-style content-aware HydraLoRA routing "
-        "(2-band FEI router; configs/methods/fera.toml)",
+        "[experimental] Author-faithful FeRA (independent-A stacked experts + "
+        "global FEI router; configs/gui-methods/fera.toml)",
     ),
     "exp-soft-tokens": (
         exp_training.cmd_soft_tokens,

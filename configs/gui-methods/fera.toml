@@ -1,0 +1,81 @@
+# gui-methods/fera.toml — Author-faithful FeRA (Yin et al., arXiv:2511.17979).
+#
+# Independent-A stacked experts (each expert owns its own ``lora_down`` /
+# ``lora_up``) routed by a **single global router** fed by FEI(z_t). Lives on
+# the LoRA-family network module (``networks.lora_anima``) — selected by the
+# three-axis cfg below (plan2.md §three-axis-config):
+#
+#     use_moe_style    = "independent_A"   # stacked per-expert factors
+#     route_per_layer  = false             # one network-level router
+#     router_source    = "fei"             # gate input = FEI(z_t)
+#
+# Bench probes (bench/fera/results/20260512-*) collapsed the paper's 3-band
+# design to 2 bands on Anima flow-matching latents (mid band carried <8%
+# energy). Default below keeps num_bands=3 for author fidelity; flip to 2 to
+# use the Anima-validated split. See [[project_fera_probe_2band_decision]].
+#
+# σ_low scaling follows the bench-validated rule
+#     σ_low = min(H_lat, W_lat) / fei_sigma_low_div   (default 4.0)
+# rather than the paper's pixel-domain constant min(H, W)/128. The latter is
+# dataset-specific to SD2 at 512×512. The 2026-05-13 dataset sweep
+# (bench/fera/results/20260513-1649-dataset-sweep/) found div=4 yields ~15–
+# 20% higher std(e_low) at low/mid t on the real training distribution than
+# the original div=8 default; both produce monotonic migration.
+
+network_dim = 32
+network_alpha = 32
+
+learning_rate = 2e-5
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
+
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+caption_dropout_rate = 0.1
+
+logging_dir = "output/logs"
+log_with = "tensorboard"
+
+output_name = "anima_fera"
+
+# Three-axis routing: independent-A experts + global FEI router. Picked up
+# by ``resolve_network_spec`` → ``stacked_experts_global_fei`` spec.
+use_moe_style = "independent_A"
+route_per_layer = false
+router_source = "fei"
+num_experts = 4
+balance_loss_weight = 3e-7
+balance_loss_warmup_ratio = 0.4
+network_router_lr_scale = 10
+
+# OrthoLoRA parameterization on each expert's (down, up) — PSOFT-style
+# shared SVD bases + per-expert Cayley-rotated S_q/S_p + diagonal λ.
+# Composes with the independent-A layout via ``StackedExpertsLoRAModule``
+# (ortho mode).
+use_ortho = true
+
+# FEI band configuration. 3 bands = author-faithful; 2 bands matches the
+# Anima dataset probe (mid band sparse on flow-matching latents). Pair
+# num_bands=2 with fera_fecl_weight=0 — at 2 bands FECL degenerates to a
+# pure magnitude regularizer.
+fera_num_bands = 3
+fei_feature_dim = 2
+fei_sigma_low_div = 4.0
+
+# GlobalRouter MLP. Same shape as FeRA's SoftFrequencyRouter — Linear(F_in
+# → H) → ReLU → Linear(H → E) with τ-scaled softmax. Final layer is zero-
+# init so step-0 gates are uniform.
+router_hidden_dim = 64
+router_tau = 0.7
+
+# FECL (frequency-energy consistency loss, paper eq. 10): paper strength is
+# 0.1, but Anima's 2-band collapse makes it a pure magnitude regularizer.
+# Activation triggers a second no-grad DiT forward per step (≈ 2× per-step
+# cost). Default 0.0 = disabled.
+fera_fecl_weight = 0.0
+
+compile_mode = "full"
+compile_inductor_mode = "default"
+
+blocks_to_swap = 0

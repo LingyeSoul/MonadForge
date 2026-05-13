@@ -639,6 +639,12 @@ class AnimaTrainer:
         # Phase 1. No-op unless use_fei_router is on and the variant is
         # hydra/ortho_hydra. Same hookpoint as set_sigma so cudagraph capture
         # sees a stable order.
+        # FEI router input — set_fei() drives both the per-Linear FEI router
+        # (FEI-on-Hydra Phase 1) and the network-level GlobalRouter (FeRA /
+        # stacked_experts). FEI is a function of the actual input the model
+        # sees this step (``noisy_model_input``), not a leak from the target.
+        # No-op when the active network has no FEI router. Same hookpoint as
+        # set_sigma so cudagraph capture sees a stable order.
         if getattr(network, "use_fei_router", False):
             from library.runtime.fei import compute_fei_2band, fei_sigma_low
 
@@ -649,12 +655,6 @@ class AnimaTrainer:
             _div = float(getattr(network.cfg, "fei_sigma_low_div", 8.0))
             _fei = compute_fei_2band(_fei_z, fei_sigma_low(_h_lat, _w_lat, _div))
             network.set_fei(_fei)
-        # Author-faithful FeRA (networks.methods.fera): one global router on
-        # z_t, gates shared across every adapted Linear. Same hookpoint as
-        # set_fei so cudagraph capture sees a stable order. No-op when the
-        # active network isn't a FeRANetwork.
-        if hasattr(network, "prepare_forward") and hasattr(network, "fera_layers"):
-            network.prepare_forward(noisy_model_input)
         # HydraLoRA expert-warmup: during the first ``expert_warmup_ratio`` of
         # training, only one randomly-chosen expert per module receives
         # gradient (forward still uses all experts via the learned gate).
@@ -794,53 +794,6 @@ class AnimaTrainer:
                     **kw,
                 )
 
-                # FeRA FECL base-pass (Yin et al. eq. 10). When the active
-                # network is a FeRANetwork with ``fecl_weight > 0``, run a
-                # second no-grad forward with routing disabled to get the
-                # frozen-base prediction. Routing is restored right after so
-                # gradient checkpointing's backward-time forward replay sees
-                # the same gates as the main forward did. The loss itself is
-                # computed at the end of ``get_noise_pred_and_target`` once
-                # ``target`` is in scope; we just stash z_base here.
-                self._fera_z_base = None
-                if (
-                    is_train
-                    and hasattr(network, "fera_layers")
-                    and float(getattr(network, "fecl_weight", 0.0) or 0.0) > 0.0
-                ):
-                    network.clear_routing()
-                    # The primary forward left the offloader's rolling state
-                    # at "first (num_blocks − blocks_to_swap) blocks on CPU,
-                    # the rest on GPU" — fine for the upcoming backward, but
-                    # block 0 is on CPU and would crash the second forward
-                    # at the very first Linear (device-mismatch). Reset to
-                    # the initial swap layout; the FECL forward will end on
-                    # the same end-of-forward layout, which is what backward
-                    # expects, so no second reset is needed afterwards.
-                    if self.is_swapping_blocks:
-                        # free_cache=False: the next forward will immediately
-                        # re-allocate everything ``empty_cache`` would release,
-                        # so skipping the driver round-trip keeps nvidia-smi
-                        # reserved memory flat across the FECL pass.
-                        accelerator.unwrap_model(
-                            anima
-                        ).prepare_block_swap_before_forward(free_cache=False)
-                    with torch.no_grad():
-                        z_base = anima(
-                            noisy_model_input,
-                            timesteps,
-                            crossattn_emb,
-                            padding_mask=padding_mask,
-                            **kw,
-                        )
-                    # Re-install gates so gradient-checkpointing recompute
-                    # during ``accelerator.backward`` sees the FeRA-active
-                    # routing — without this, the recomputed forward would
-                    # produce a different ``model_pred`` than the one we
-                    # actually computed and the gradient is wrong.
-                    network.prepare_forward(noisy_model_input)
-                    self._fera_z_base = z_base.detach()
-
                 # Method-adapter extra forwards (REPA, soft-tokens, …).
                 # Each adapter sees the primary forward's inputs + 5D output
                 # and may run additional anima(...) calls inside this same
@@ -949,21 +902,6 @@ class AnimaTrainer:
         weighting = anima_train_utils.compute_loss_weighting_for_anima(
             weighting_scheme=args.weighting_scheme, sigmas=sigmas
         )
-
-        # FeRA FECL (paper eq. 10) — bandwise consistency between adapter
-        # correction δ = z_fera − z_base and residual r = z_fera − target.
-        # Unscaled here; ``library/training/losses.py::_fera_fecl_loss``
-        # applies ``network.fecl_weight``. Stashed on the trainer so
-        # ``process_batch`` can hand it to the loss composer aux dict.
-        self._fecl_loss = None
-        z_base = getattr(self, "_fera_z_base", None)
-        if z_base is not None:
-            self._fecl_loss = network.compute_fecl_loss(
-                z_base=z_base.squeeze(2),
-                z_fera=model_pred,
-                z_target=target,
-            )
-            self._fera_z_base = None  # free the cached base prediction
 
         return model_pred, target, timesteps, weighting
 
@@ -1186,10 +1124,6 @@ class AnimaTrainer:
         func_loss = getattr(self, "_func_loss", None)
         if func_loss is not None:
             loss_aux["func_loss"] = func_loss
-
-        fecl_loss = getattr(self, "_fecl_loss", None)
-        if fecl_loss is not None:
-            loss_aux["fecl_loss"] = fecl_loss
 
         composer = build_loss_composer(args, getattr(self, "_network", network))
 

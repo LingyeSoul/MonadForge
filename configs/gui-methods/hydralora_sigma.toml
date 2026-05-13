@@ -23,14 +23,15 @@ use_timestep_mask = true
 min_rank = 1
 alpha_rank_scale = 1.0
 
-use_hydra = true
+use_moe_style = "shared_A"
+route_per_layer = true
+router_source = "sigma"
 num_experts = 4
 balance_loss_weight = 3e-7
 
 
 hydra_router_layers = ".*(mlp\\.layer[12])$"
 
-use_sigma_router = true
 sigma_feature_dim = 16
 sigma_hidden_dim = 16   # unused; retained for API compat
 sigma_router_layers = ".*(mlp\\.layer[12])$"

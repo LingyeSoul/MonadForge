@@ -47,18 +47,18 @@ def test_defaults_when_all_kwargs_absent():
 
 
 def test_string_bool_parsing_matches_old_factory_path():
-    """Every bool kwarg used to come in as a literal "true"/"false" string
-    from train.py's net_kwargs. Make sure the canonical 'true' parses true,
-    arbitrary other strings parse false, and bool/None still work. Legacy
-    ``use_sigma_router`` still translates into ``router_source="sigma"``
-    via from_kwargs (task #3 keeps the TOMLs working until task #6).
+    """Every bool kwarg comes in as a literal "true"/"false" string from
+    train.py's net_kwargs. Make sure the canonical 'true' parses true,
+    arbitrary other strings parse false, and bool/None still work. The new
+    three-axis routing keys parse as expected.
     """
     kwargs = {
         "train_llm_adapter": "true",
         "add_reft": "True",  # case-insensitive
         "use_timestep_mask": "TRUE",
-        "use_hydra": True,  # legacy; routes to use_moe_style="shared_A"
-        "use_sigma_router": True,  # legacy; routes to router_source="sigma"
+        "use_moe_style": "shared_A",
+        "route_per_layer": "true",
+        "router_source": "sigma",
         "verbose": "false",
     }
     cfg = LoRANetworkCfg.from_kwargs(
@@ -75,6 +75,22 @@ def test_string_bool_parsing_matches_old_factory_path():
     assert cfg.route_per_layer is True
     assert cfg.router_source == "sigma"
     assert cfg.verbose is False
+
+
+def test_legacy_router_kwargs_raise():
+    """plan2 task #6 retired ``use_hydra`` / ``use_sigma_router`` /
+    ``use_fei_router``. Surfacing them must raise so a stale TOML can't
+    silently produce a no-MoE network.
+    """
+    for legacy_key in ("use_hydra", "use_sigma_router", "use_fei_router"):
+        with pytest.raises(ValueError, match="Legacy router kwarg"):
+            LoRANetworkCfg.from_kwargs(
+                {legacy_key: True},
+                network_dim=4,
+                network_alpha=1.0,
+                neuron_dropout=None,
+                module_class=LoRAModule,
+            )
 
 
 def test_numeric_string_parsing():
@@ -165,6 +181,18 @@ def test_reft_dim_falls_back_to_network_dim():
     assert cfg.reft_dim == 64
 
 
+def _moe_stamps(router_source: str = "sigma") -> dict:
+    """Three-axis stamps mimicking ``LoRANetwork.save_weights`` for a Hydra
+    checkpoint. plan2 task #6 retired the legacy ``ss_use_hydra`` /
+    ``ss_use_fei_router`` fallback; ``from_weights`` now requires these.
+    """
+    return {
+        "new_use_moe_style": "shared_A",
+        "new_route_per_layer": True,
+        "new_router_source": router_source,
+    }
+
+
 def test_from_weights_warm_start_shape():
     cfg = LoRANetworkCfg.from_weights(
         modules_dim={"foo": 4, "bar": 8},
@@ -180,6 +208,7 @@ def test_from_weights_warm_start_shape():
         sigma_router_names=["foo"],
         hydra_router_names=None,
         channel_scales_dict=None,
+        **_moe_stamps("sigma"),
     )
     assert cfg.modules_dim == {"foo": 4, "bar": 8}
     assert cfg.modules_alpha == {"foo": 1.0, "bar": 2.0}
@@ -224,6 +253,27 @@ def test_from_weights_no_reft_no_sigma():
     assert cfg.router_source == "none"
 
 
+def test_from_weights_moe_without_stamps_raises():
+    """plan2 task #6: a Hydra checkpoint missing the three-axis stamps must
+    refuse to load (pre-plan2 artifacts stop loading by design)."""
+    with pytest.raises(RuntimeError, match="three-axis routing stamps"):
+        LoRANetworkCfg.from_weights(
+            modules_dim={"foo": 4},
+            modules_alpha={"foo": 1.0},
+            module_class=HydraLoRAModule,
+            train_llm_adapter=False,
+            has_reft=False,
+            reft_dim=None,
+            reft_block_indices=set(),
+            is_hydra_or_ortho_hydra=True,
+            hydra_num_experts=4,
+            sigma_feature_dim_detected=16,
+            sigma_router_names=["foo"],
+            hydra_router_names=None,
+            channel_scales_dict=None,
+        )
+
+
 def test_from_weights_sigma_band_partition_off_by_default():
     cfg = LoRANetworkCfg.from_weights(
         modules_dim={"foo": 4},
@@ -239,6 +289,7 @@ def test_from_weights_sigma_band_partition_off_by_default():
         sigma_router_names=["foo"],
         hydra_router_names=None,
         channel_scales_dict=None,
+        **_moe_stamps("sigma"),
     )
     assert cfg.specialize_experts_by_sigma_buckets is False
 
@@ -260,6 +311,7 @@ def test_from_weights_sigma_band_partition_round_trip():
         channel_scales_dict=None,
         specialize_experts_by_sigma_buckets=True,
         num_sigma_buckets=4,
+        **_moe_stamps("sigma"),
     )
     assert cfg.specialize_experts_by_sigma_buckets is True
     assert cfg.num_sigma_buckets == 4
@@ -284,6 +336,7 @@ def test_from_weights_sigma_band_partition_with_custom_boundaries():
         specialize_experts_by_sigma_buckets=True,
         num_sigma_buckets=3,
         sigma_bucket_boundaries=[0.0, 0.5, 0.8, 1.0],
+        **_moe_stamps("sigma"),
     )
     assert cfg.sigma_bucket_boundaries == [0.0, 0.5, 0.8, 1.0]
 

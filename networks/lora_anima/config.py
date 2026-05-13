@@ -423,47 +423,32 @@ class LoRANetworkCfg:
         fera_fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
         fera_num_bands = int(kwargs.get("fera_num_bands", kwargs.get("num_bands", 3)))
 
-        # Three-axis routing resolution. Translate legacy ``use_hydra`` /
-        # ``use_sigma_router`` / ``use_fei_router`` kwargs into the new axes
-        # when the new keys aren't supplied. Legacy + new in the same call
-        # is rejected so the cutover can't silently mask a stale TOML.
-        use_hydra_legacy = _as_bool(kwargs.get("use_hydra"))
-        use_sigma_router_legacy_raw = kwargs.get("use_sigma_router")
-        use_fei_router_legacy_raw = kwargs.get("use_fei_router")
-        use_sigma_router_legacy = _as_bool(use_sigma_router_legacy_raw)
-        use_fei_router_legacy = _as_bool(use_fei_router_legacy_raw)
-
+        # Three-axis routing resolution (plan2.md §three-axis-config). The
+        # legacy ``use_hydra`` / ``use_sigma_router`` / ``use_fei_router``
+        # kwargs were retired in plan2 task #6 — every shipped TOML uses the
+        # new keys, and old `.safetensors` files (with ``ss_use_hydra`` etc.)
+        # stop loading by design (no legacy compat shim).
         raw_moe_style = kwargs.get("use_moe_style")
         raw_route_per_layer = kwargs.get("route_per_layer")
         raw_router_source = kwargs.get("router_source")
-        new_axes_supplied = any(
-            v is not None for v in (raw_moe_style, raw_route_per_layer, raw_router_source)
-        )
-        legacy_axes_supplied = (
-            use_sigma_router_legacy_raw is not None
-            or use_fei_router_legacy_raw is not None
-        )
-        if new_axes_supplied and legacy_axes_supplied:
-            raise ValueError(
-                "Mixing legacy router kwargs (use_sigma_router / use_fei_router) "
-                "with new three-axis kwargs (use_moe_style / route_per_layer / "
-                "router_source) is not supported. Pick one. "
-                "See plan2.md §three-axis-config for the new keys."
-            )
 
-        if raw_moe_style is not None:
-            use_moe_style: MoEStyle = _as_moe_style(raw_moe_style)
-        elif use_hydra_legacy:
-            use_moe_style = "shared_A"
-        else:
-            use_moe_style = False
+        for legacy_key in ("use_hydra", "use_sigma_router", "use_fei_router"):
+            if kwargs.get(legacy_key) is not None:
+                raise ValueError(
+                    f"Legacy router kwarg {legacy_key!r} is no longer "
+                    "supported. Use the three-axis keys instead: "
+                    "`use_moe_style` (False / 'shared_A' / 'independent_A'), "
+                    "`route_per_layer` (true / false), and `router_source` "
+                    "('none' / 'input' / 'sigma' / 'fei'). See plan2.md "
+                    "§three-axis-config."
+                )
+
+        use_moe_style: MoEStyle = (
+            _as_moe_style(raw_moe_style) if raw_moe_style is not None else False
+        )
 
         if raw_router_source is not None:
             router_source: RouterSource = _as_router_source(raw_router_source)
-        elif use_fei_router_legacy:
-            router_source = "fei"
-        elif use_sigma_router_legacy:
-            router_source = "sigma"
         elif use_moe_style is not False:
             # Hydra's default router input is the per-Linear input vector.
             router_source = "input"
@@ -473,7 +458,7 @@ class LoRANetworkCfg:
         if raw_route_per_layer is not None:
             route_per_layer = _as_bool(raw_route_per_layer)
         else:
-            # Legacy Hydra is per-layer routing; no-MoE means no router at all.
+            # No-MoE means no router at all; Hydra defaults to per-layer.
             route_per_layer = use_moe_style is not False
 
         # Validate impossible combos.
@@ -567,16 +552,12 @@ class LoRANetworkCfg:
         specialize_experts_by_sigma_buckets: bool = False,
         num_sigma_buckets: Optional[int] = None,
         sigma_bucket_boundaries: Optional[List[float]] = None,
-        use_fei_router_legacy: bool = False,
         fei_feature_dim: int = 0,
         fei_sigma_low_div: Optional[float] = None,
         fei_router_names: Optional[List[str]] = None,
-        # Three-axis stamps from new save metadata. When supplied they take
-        # precedence over the legacy ``use_fei_router_legacy`` / key-sniff
-        # translation; absent (the no-stamp path) falls back to the legacy
-        # derivation. ``is_stacked_experts`` is True iff the checkpoint
-        # carries the independent-A layout (per-expert ``lora_down_weight``).
         is_stacked_experts: bool = False,
+        # Three-axis stamps from save metadata. All three must be present
+        # for MoE checkpoints — pre-plan2 artifacts stop loading by design.
         new_use_moe_style: Optional[str] = None,
         new_route_per_layer: Optional[bool] = None,
         new_router_source: Optional[str] = None,
@@ -595,14 +576,12 @@ class LoRANetworkCfg:
         (``_expert_band`` / ``_sigma_edges`` are non-persistent) so it has to
         be reconstructed from those scalars at load time.
 
-        New three-axis stamps (``new_use_moe_style`` /
-        ``new_route_per_layer`` / ``new_router_source``) win when present.
-        Otherwise this method translates ``use_fei_router_legacy`` /
-        ``sigma_router_names`` presence + ``is_stacked_experts`` /
-        ``is_hydra_or_ortho_hydra`` into the new three-axis fields.
+        For non-MoE checkpoints (plain LoRA / OrthoLoRA / T-LoRA / ReFT) the
+        three-axis stamps are not stamped at save time; absence is taken as
+        ``(False, False, "none")``. MoE checkpoints (Hydra / OrthoHydra /
+        StackedExperts) must carry all three stamps — plan2 task #6 retired
+        the legacy ``ss_use_hydra`` / ``ss_use_fei_router`` fallback.
         """
-        # New stamps take precedence; fall back to legacy translation when
-        # any of the three is missing.
         if (
             new_use_moe_style is not None
             and new_route_per_layer is not None
@@ -611,21 +590,13 @@ class LoRANetworkCfg:
             use_moe_style: MoEStyle = _as_moe_style(new_use_moe_style)
             route_per_layer = bool(new_route_per_layer)
             router_source: RouterSource = _as_router_source(new_router_source)
-        elif is_stacked_experts:
-            # Independent-A always means MoE + (per-network global router) +
-            # FEI source (the only combo plan2 ships for v1).
-            use_moe_style = "independent_A"
-            route_per_layer = False
-            router_source = "fei"
-        elif is_hydra_or_ortho_hydra:
-            use_moe_style = "shared_A"
-            route_per_layer = True
-            if use_fei_router_legacy:
-                router_source = "fei"
-            elif sigma_router_names:
-                router_source = "sigma"
-            else:
-                router_source = "input"
+        elif is_hydra_or_ortho_hydra or is_stacked_experts:
+            raise RuntimeError(
+                "MoE checkpoint is missing the three-axis routing stamps "
+                "(ss_use_moe_style / ss_route_per_layer / ss_router_source). "
+                "Pre-plan2 checkpoints stop loading by design — retrain the "
+                "adapter to produce the new metadata."
+            )
         else:
             use_moe_style = False
             route_per_layer = False
