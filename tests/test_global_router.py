@@ -292,6 +292,51 @@ def test_metrics_emits_fera_keys_when_global_router_fired():
     assert "fera/expert_usage/0" in out
     assert "fera/expert_usage/1" in out
     assert "fera/expert_usage/2" in out
-    # Usage sums to ~1 (post-softmax argmax histogram across 2 samples).
+    # Usage sums to ~1 (per-expert mean gate weight, softmax rows → 1).
     total = sum(out[f"fera/expert_usage/{i}"] for i in range(3))
     assert abs(total - 1.0) < 1e-5
+
+
+def test_router_receives_gradient_from_expert_forward():
+    """FeRA eq. 6-7: gates appear as live multipliers in the expert mixing,
+    so plain L_denoise backprop must reach the GlobalRouter parameters via
+    ``∂L/∂α``. Asserts that a downstream loss on the routed adapter output
+    populates ``global_router.net[-1].weight.grad`` to a non-zero value.
+
+    Regression for the pre-fix state where ``set_fei`` ran the router under
+    ``torch.no_grad()`` and ``set_routing_weights`` detached the gates,
+    leaving the router with zero gradient signal and stuck at zero-init
+    (uniform 1/E) forever.
+    """
+    torch.manual_seed(0)
+    net = _make_minimal_stacked_experts_network(num_experts=3, fei_dim=2)
+    # Break the zero-init symmetry on the router output layer so gates are
+    # not exactly uniform (argmax-style metrics aside, gradient still flows
+    # at uniform; this just makes the test less fragile to numeric ties).
+    with torch.no_grad():
+        net.global_router.net[-1].weight.normal_(std=0.1)
+        net.global_router.net[-1].bias.normal_(std=0.1)
+        # Make experts non-trivial so adapter output isn't constant.
+        for lora in net._routing_aware_loras:
+            lora.lora_up_weight.data.normal_(std=0.1)
+
+    # Wire org_forward (apply_to) so the module's forward can run.
+    for lora in net._routing_aware_loras:
+        lora.apply_to()
+    fei = torch.tensor([[0.7, 0.3]])
+    net.set_fei(fei)
+    x = torch.randn(1, 8, requires_grad=False)
+    y = net._routing_aware_loras[0](x)
+    loss = y.pow(2).sum()
+    loss.backward()
+
+    final_layer = net.global_router.net[-1]
+    assert final_layer.weight.grad is not None, (
+        "GlobalRouter final-layer.weight.grad is None — autograd path from "
+        "expert forward to router is broken (set_fei or set_routing_weights "
+        "is detaching the gates)."
+    )
+    assert final_layer.weight.grad.abs().sum().item() > 0.0, (
+        "GlobalRouter final-layer.weight.grad is all zeros — gates are not "
+        "carrying gradient through the broadcast."
+    )

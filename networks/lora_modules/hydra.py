@@ -443,18 +443,17 @@ class HydraLoRAModule(BaseLoRAModule):
         _clear_fei_feature_cache(self)
 
     def set_routing_weights(self, weights: torch.Tensor) -> None:
-        # Mirrors ``StackedExpertsLoRAModule.set_routing_weights`` — the
-        # ``LoRANetwork._wire_shared_routing_buffers`` aliasing pass writes
-        # to one shared buffer and every module sees it. This per-module
-        # API is the fallback path for callers writing the buffer directly.
+        # Direct buffer reassignment (no ``.detach()``, no in-place ``.copy_()``)
+        # so the router's autograd ``grad_fn`` survives. See FeRA eq. 6-7, 11:
+        # gates ``α_t`` appear as live multipliers in ``y_t = Σ α_{t,m} E_m(z_t)``,
+        # so plain ``L_denoise`` backprop is the router's gradient path.
         if not getattr(self, "use_global_router", False):
             return
         buf = self._routing_weights
-        v = weights.detach().to(dtype=buf.dtype, device=buf.device)
-        if v.shape == buf.shape:
-            buf.copy_(v)
-        else:
-            self._buffers["_routing_weights"] = v.clone()
+        w = weights.to(dtype=buf.dtype, device=buf.device)
+        if w.dim() == 1:
+            w = w.unsqueeze(0)
+        self._routing_weights = w
 
     def clear_routing_weights(self) -> None:
         if not getattr(self, "use_global_router", False):

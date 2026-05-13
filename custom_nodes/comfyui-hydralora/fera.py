@@ -1,21 +1,31 @@
 """FeRA (Frequency-Energy constrained Routing) loading for Anima.
 
-Author-faithful port of Yin et al., arXiv:2511.17979 — the
-``networks.methods.fera`` training-side module. Distinct from the
-FEI-router-on-Hydra path that ``adapter.py`` handles (those load via
-``AnimaAdapterLoader``):
+Loader for two checkpoint formats with identical inference semantics
+(global FEI router + per-Linear independent stacked experts):
 
+  1. **Author-faithful FeRA** — ``networks.methods.fera``, the original
+     port of Yin et al., arXiv:2511.17979. Stacked Parameters appear as
+     ``lora_unet_*.lora_down`` / ``.lora_up`` (no ``.weight`` suffix),
+     router under ``router.net.*``. N-band FEI with ``[high, ..., low]``
+     ordering. Retired on the training side at plan2 but checkpoints
+     still load here.
+
+  2. **Plan2 stacked-experts** — ``networks.lora_anima`` with
+     ``ss_network_spec=stacked_experts_global_fei`` (FeRA cell of the
+     three-axis routing matrix: ``independent_A`` / ``route_per_layer=False``
+     / ``router_source="fei"``). Per-expert split keys
+     ``lora_unet_*.lora_downs.{i}.weight`` / ``.lora_ups.{i}.weight``,
+     router under ``global_router.net.*``. 2-band FEI with
+     ``[e_low, e_high]`` ordering (matches ``library/runtime/fei.py``).
+     Saved by ``networks/lora_save.py::_build_stacked_experts_state_dict``
+     as a ``*_moe.safetensors`` sibling.
+
+Both formats share:
   * One **global router** consumes the latent's spectral energy and
     emits a single ``(B, num_experts)`` gate that every adapted Linear
-    reuses for this step. Hydra routes per-Linear from its own input.
+    reuses for this step.
   * Each Linear carries **independent** stacked low-rank experts —
-    ``lora_down: (E, r, in)`` / ``lora_up: (E, out, r)`` — no shared-A
-    pooling.
-  * Save format is incompatible with vanilla LoRA loaders. Stacked
-    Parameters appear as ``lora_unet_*.lora_down`` / ``lora_unet_*.lora_up``
-    *without* the trailing ``.weight`` that plain LoRA / Hydra use (their
-    ``lora_down`` is an ``nn.Linear`` whose weight is a child tensor;
-    FeRA's is a flat Parameter).
+    ``lora_down: (E, r, in)`` / ``lora_up: (E, out, r)``.
   * Mutually exclusive with HydraLoRA-moe at the inference layer —
     ``library/inference/models.py`` refuses to load both. Same rule here.
 
@@ -66,7 +76,8 @@ def _compute_fei_nband(
     underflow at small energies in bf16.
 
     The router weights were trained against this exact ordering, so any
-    permutation here would corrupt the gate at inference.
+    permutation here would corrupt the gate at inference. Used by the
+    author-faithful FeRA format (``networks.methods.fera``).
     """
     z = z.float()
     sigmas: List[float] = [sigma_low * (2.0**k) for k in range(num_bands - 1)]
@@ -81,14 +92,31 @@ def _compute_fei_nband(
     return energies / energies.sum(dim=-1, keepdim=True).clamp_min(1e-12)
 
 
-def _looks_like_fera(weights_sd: Dict[str, torch.Tensor]) -> bool:
-    """Cheap key sniff for a FeRA checkpoint.
+def _compute_fei_2band_low_high(
+    z: torch.Tensor, sigma_low: float
+) -> torch.Tensor:
+    """Return ``(B, 2)`` simplex ``[e_low, e_high]`` on a 4D latent.
 
-    The save format pairs ``router.net.*`` MLP keys with stacked
-    Parameter keys ``lora_unet_*.lora_down`` / ``lora_unet_*.lora_up``
-    that do *not* end in ``.weight``. Plain LoRA / Hydra use
-    ``.lora_down.weight`` (the Linear's weight tensor is a child), so the
-    no-``.weight`` suffix on a stacked Parameter is the disambiguator.
+    Used by the plan2 ``stacked_experts_global_fei`` format — its
+    ``GlobalRouter`` was trained against ``library/runtime/fei.py::
+    compute_fei_2band``, which puts low-band first. Different ordering
+    from ``_compute_fei_nband`` above (which is high-first to match the
+    author-faithful FrequencyEnergyIndicator) — do not unify the two.
+    """
+    z = z.float()
+    lp = _gaussian_blur_2d(z, sigma_low)
+    e_low = lp.pow(2).flatten(1).sum(-1)
+    e_high = (z - lp).pow(2).flatten(1).sum(-1)
+    energies = torch.stack([e_low, e_high], dim=-1)
+    return energies / energies.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
+
+def _looks_like_fera_author(weights_sd: Dict[str, torch.Tensor]) -> bool:
+    """Author-faithful FeRA (``networks.methods.fera``) key sniff.
+
+    Pairs ``router.net.*`` MLP keys with stacked Parameter keys
+    ``lora_unet_*.lora_down`` / ``.lora_up`` (no ``.weight`` suffix —
+    flat Parameters, not ``nn.Linear`` children).
     """
     has_router = any(k.startswith("router.net.") for k in weights_sd)
     has_stacked = any(
@@ -99,38 +127,45 @@ def _looks_like_fera(weights_sd: Dict[str, torch.Tensor]) -> bool:
     return has_router and has_stacked
 
 
-def load_fera(file_path: str) -> dict:
-    """Parse a FeRA checkpoint once, cache by path.
+def _looks_like_stacked_experts_global_fei(
+    weights_sd: Dict[str, torch.Tensor],
+) -> bool:
+    """Plan2 ``stacked_experts_global_fei`` key sniff.
 
-    Returns a bundle with the router MLP weights, per-Linear stacked
-    expert weights keyed by ``lora_unet_<dotted>`` prefix, and a config
-    dict of (rank, alpha, num_experts, num_bands, router_tau,
-    router_hidden, fei_sigma_low_div, scale). Layer prefixes are matched
-    to live DiT modules at apply time via
-    ``comfy.lora.model_lora_keys_unet``.
+    Pairs ``global_router.net.*`` (network-level router on
+    ``LoRANetwork``) with per-expert split keys
+    ``lora_unet_*.lora_downs.{i}.weight`` / ``.lora_ups.{i}.weight``
+    (independent-A stacked experts saved per expert + per fused
+    q/k/v component by ``_build_stacked_experts_state_dict``).
     """
-    if file_path in _fera_cache:
-        return _fera_cache[file_path]
+    has_router = any(k.startswith("global_router.net.") for k in weights_sd)
+    has_split_downs = any(
+        k.startswith("lora_unet_")
+        and ".lora_downs." in k
+        and k.endswith(".weight")
+        for k in weights_sd
+    )
+    return has_router and has_split_downs
 
-    from safetensors import safe_open
-    from safetensors.torch import load_file
 
-    weights_sd = load_file(file_path)
-    with safe_open(file_path, framework="pt") as f:
-        meta = dict(f.metadata() or {})
+def _looks_like_fera(weights_sd: Dict[str, torch.Tensor]) -> bool:
+    """Either FeRA variant — author-faithful or plan2 stacked_experts."""
+    return _looks_like_fera_author(weights_sd) or _looks_like_stacked_experts_global_fei(weights_sd)
 
-    declared = meta.get("ss_network_module") == "networks.methods.fera"
-    if not declared and not _looks_like_fera(weights_sd):
-        raise ValueError(
-            f"{file_path} doesn't look like a FeRA checkpoint "
-            "(no router.net.* + lora_unet_*.lora_down / .lora_up keys). "
-            "For LoRA / HydraLoRA / ReFT files, use AnimaAdapterLoader."
-        )
 
-    # ─── Router params ─────────────────────────────────────────────────
-    # SoftFrequencyRouter.net = Linear → ReLU → Linear, so the saved keys
-    # are router.net.0.{weight,bias} (hidden) + router.net.2.{weight,bias}
-    # (output). The ReLU at index 1 has no parameters.
+def _parse_fera_author(
+    weights_sd: Dict[str, torch.Tensor], meta: Dict[str, str], file_path: str
+) -> dict:
+    """Author-faithful ``networks.methods.fera`` format.
+
+    Keys:
+      * ``router.net.0/2.weight/bias`` — 2-layer router MLP.
+      * ``lora_unet_*.lora_down`` / ``.lora_up`` — stacked Parameters
+        (no ``.weight`` suffix), shape ``(E, r, in)`` / ``(E, out, r)``.
+
+    Router input is N-band FEI with ``[high, ..., low]`` ordering
+    (``_compute_fei_nband``).
+    """
     required = (
         "router.net.0.weight",
         "router.net.0.bias",
@@ -150,17 +185,16 @@ def load_fera(file_path: str) -> dict:
         "b2": weights_sd["router.net.2.bias"],
     }
 
-    # ─── Per-Linear stacked experts ────────────────────────────────────
     layers: Dict[str, dict] = {}
     for key, value in weights_sd.items():
         if not key.startswith("lora_unet_"):
             continue
         if key.endswith(".lora_down"):
             prefix = key[: -len(".lora_down")]
-            layers.setdefault(prefix, {})["lora_down"] = value  # (E, r, in)
+            layers.setdefault(prefix, {})["lora_down"] = value
         elif key.endswith(".lora_up"):
             prefix = key[: -len(".lora_up")]
-            layers.setdefault(prefix, {})["lora_up"] = value  # (E, out, r)
+            layers.setdefault(prefix, {})["lora_up"] = value
 
     incomplete = [
         p for p, d in layers.items() if "lora_down" not in d or "lora_up" not in d
@@ -177,70 +211,248 @@ def load_fera(file_path: str) -> dict:
             f"{file_path}: parsed router but no usable per-Linear experts."
         )
 
-    # ─── Hyperparams (metadata first, infer from shapes as fallback) ───
-    sample = next(iter(layers.values()))
-    sample_down = sample["lora_down"]  # (E, r, in)
+    sample_down = next(iter(layers.values()))["lora_down"]  # (E, r, in)
     E_shape, r_shape = int(sample_down.shape[0]), int(sample_down.shape[1])
     router_hidden, router_in = int(router["w1"].shape[0]), int(router["w1"].shape[1])
 
-    def _meta_int(key: str, fallback: int) -> int:
+    def _mi(key: str, fb: int) -> int:
         v = meta.get(f"ss_{key}")
         try:
-            return int(v) if v is not None else fallback
+            return int(v) if v is not None else fb
         except (TypeError, ValueError):
-            return fallback
+            return fb
 
-    def _meta_float(key: str, fallback: float) -> float:
+    def _mf(key: str, fb: float) -> float:
         v = meta.get(f"ss_{key}")
         try:
-            return float(v) if v is not None else fallback
+            return float(v) if v is not None else fb
         except (TypeError, ValueError):
-            return fallback
+            return fb
 
     cfg = {
-        "rank": _meta_int("fera_rank", r_shape),
-        "alpha": _meta_float("fera_alpha", float(r_shape)),
-        "num_experts": _meta_int("fera_num_experts", E_shape),
-        "num_bands": _meta_int("fera_num_bands", router_in),
-        "router_tau": _meta_float("fera_router_tau", 0.7),
-        "router_hidden": _meta_int("fera_router_hidden", router_hidden),
-        "fei_sigma_low_div": _meta_float("fei_sigma_low_div", 8.0),
+        "rank": r_shape,
+        "alpha": _mf("fera_alpha", float(r_shape)),
+        "num_experts": E_shape,
+        "num_bands": router_in,
+        "router_tau": _mf("fera_router_tau", 0.7),
+        "router_hidden": router_hidden,
+        "fei_sigma_low_div": _mf("fei_sigma_low_div", 8.0),
+        "fei_kind": "nband",
+        "variant": "author",
     }
-    # Shape wins over metadata on conflict — the tensors are authoritative.
-    if cfg["num_experts"] != E_shape:
-        logger.warning(
-            f"FeRA: ss_fera_num_experts={cfg['num_experts']} disagrees with "
-            f"stacked-expert axis ({E_shape}); using shape."
-        )
-        cfg["num_experts"] = E_shape
-    if cfg["num_bands"] != router_in:
-        logger.warning(
-            f"FeRA: ss_fera_num_bands={cfg['num_bands']} disagrees with "
-            f"router input dim ({router_in}); using shape."
-        )
-        cfg["num_bands"] = router_in
-    if cfg["rank"] != r_shape:
-        logger.warning(
-            f"FeRA: ss_fera_rank={cfg['rank']} disagrees with stacked rank "
-            f"axis ({r_shape}); using shape."
-        )
-        cfg["rank"] = r_shape
     cfg["scale"] = cfg["alpha"] / cfg["rank"]
+    if _mi("fera_num_experts", E_shape) != E_shape:
+        logger.warning(
+            f"FeRA: ss_fera_num_experts mismatch with stacked axis ({E_shape}); using shape."
+        )
+    return {"router": router, "layers": layers, "cfg": cfg}
+
+
+def _parse_stacked_experts_global_fei(
+    weights_sd: Dict[str, torch.Tensor], meta: Dict[str, str], file_path: str
+) -> dict:
+    """Plan2 ``stacked_experts_global_fei`` format.
+
+    Keys:
+      * ``global_router.net.0/2.weight/bias`` — 2-layer router MLP
+        (``LoRANetwork.GlobalRouter``).
+      * ``lora_unet_*.lora_downs.{i}.weight`` / ``.lora_ups.{i}.weight`` —
+        per-expert stacked into ``(E, r, in)`` / ``(E, out, r)``.
+      * Per-fused-projection q/k/v are pre-split on disk (one prefix per
+        Linear), so a direct ``named_modules()`` walk on cosmos backbones
+        finds each prefix unchanged — same as the author-faithful path.
+
+    Router input is **2-band FEI** with ``[e_low, e_high]`` ordering
+    (``_compute_fei_2band_low_high``, matching
+    ``library/runtime/fei.py``). Plan2 default ``fei_sigma_low_div=4.0``.
+    """
+    required = (
+        "global_router.net.0.weight",
+        "global_router.net.0.bias",
+        "global_router.net.2.weight",
+        "global_router.net.2.bias",
+    )
+    missing = [k for k in required if k not in weights_sd]
+    if missing:
+        raise ValueError(
+            f"{file_path}: global_router keys missing ({missing}) — "
+            "checkpoint may be a partially-saved stacked_experts variant."
+        )
+    router = {
+        "w1": weights_sd["global_router.net.0.weight"],
+        "b1": weights_sd["global_router.net.0.bias"],
+        "w2": weights_sd["global_router.net.2.weight"],
+        "b2": weights_sd["global_router.net.2.bias"],
+    }
+
+    # Gather per-expert split shards: prefix -> {"lora_downs": {i: t},
+    # "lora_ups": {i: t}, "alpha": t}.
+    layers_raw: Dict[str, dict] = {}
+    for key, value in weights_sd.items():
+        if not key.startswith("lora_unet_"):
+            continue
+        # .lora_downs.{i}.weight
+        if ".lora_downs." in key and key.endswith(".weight"):
+            prefix = key.split(".lora_downs.")[0]
+            idx = int(key.split(".lora_downs.")[1].split(".")[0])
+            layers_raw.setdefault(prefix, {}).setdefault("downs", {})[idx] = value
+        elif ".lora_ups." in key and key.endswith(".weight"):
+            prefix = key.split(".lora_ups.")[0]
+            idx = int(key.split(".lora_ups.")[1].split(".")[0])
+            layers_raw.setdefault(prefix, {}).setdefault("ups", {})[idx] = value
+        elif key.endswith(".alpha") and key.count(".") == 1:
+            # Bare ``lora_unet_X.alpha`` (no expert index). Module-level
+            # shared alpha matches save format.
+            prefix = key[: -len(".alpha")]
+            layers_raw.setdefault(prefix, {})["alpha"] = value
+
+    layers: Dict[str, dict] = {}
+    incomplete: List[str] = []
+    for prefix, parts in layers_raw.items():
+        downs = parts.get("downs") or {}
+        ups = parts.get("ups") or {}
+        if not downs or not ups:
+            incomplete.append(prefix)
+            continue
+        if sorted(downs.keys()) != sorted(ups.keys()):
+            incomplete.append(prefix)
+            continue
+        idxs = sorted(downs.keys())
+        try:
+            lora_down = torch.stack([downs[i] for i in idxs], dim=0)
+            lora_up = torch.stack([ups[i] for i in idxs], dim=0)
+        except RuntimeError as exc:
+            logger.warning(
+                f"FeRA(stacked_experts): {prefix} expert shape mismatch: {exc}"
+            )
+            incomplete.append(prefix)
+            continue
+        entry = {"lora_down": lora_down, "lora_up": lora_up}
+        if "alpha" in parts:
+            entry["alpha"] = parts["alpha"]
+        layers[prefix] = entry
+
+    if incomplete:
+        logger.warning(
+            f"FeRA(stacked_experts): {len(incomplete)} prefix(es) skipped "
+            f"(incomplete or mismatched experts; first few: {incomplete[:5]})"
+        )
+    if not layers:
+        raise ValueError(
+            f"{file_path}: parsed global_router but no usable per-Linear experts."
+        )
+
+    sample = next(iter(layers.values()))
+    E_shape, r_shape = int(sample["lora_down"].shape[0]), int(sample["lora_down"].shape[1])
+    router_hidden = int(router["w1"].shape[0])
+    router_in = int(router["w1"].shape[1])  # = fei_feature_dim
+
+    def _mf(key: str, fb: float) -> float:
+        v = meta.get(f"ss_{key}")
+        try:
+            return float(v) if v is not None else fb
+        except (TypeError, ValueError):
+            return fb
+
+    # alpha may live per-prefix or fall back to the metadata-stamped
+    # ss_network_alpha. Sample's per-prefix alpha wins when present.
+    sample_alpha_t = sample.get("alpha")
+    if sample_alpha_t is not None:
+        alpha_default = float(
+            sample_alpha_t.item() if hasattr(sample_alpha_t, "item") else sample_alpha_t
+        )
+    else:
+        alpha_default = _mf("network_alpha", float(r_shape))
+
+    # Plan2 defaults: tau=0.7, fei_sigma_low_div=4.0. Neither stamped by
+    # default in the save metadata today, so we just hard-default.
+    cfg = {
+        "rank": r_shape,
+        "alpha": alpha_default,
+        "num_experts": E_shape,
+        "num_bands": router_in,  # = fei_feature_dim, expected 2
+        "router_tau": _mf("router_tau", 0.7),
+        "router_hidden": router_hidden,
+        "fei_sigma_low_div": _mf("fei_sigma_low_div", 4.0),
+        "fei_kind": "2band_low_high",
+        "variant": "stacked_experts_global_fei",
+    }
+    cfg["scale"] = cfg["alpha"] / cfg["rank"]
+    if router_in != 2:
+        logger.warning(
+            f"FeRA(stacked_experts): router input dim {router_in} ≠ 2 — "
+            "expected 2-band FEI. Treating as opaque routing key (will "
+            "compute 2 bands and slice/pad to fit, gate may misbehave)."
+        )
+    return {"router": router, "layers": layers, "cfg": cfg}
+
+
+def load_fera(file_path: str) -> dict:
+    """Parse a FeRA checkpoint once, cache by path.
+
+    Auto-routes between author-faithful (``networks.methods.fera``) and
+    plan2 stacked-experts (``stacked_experts_global_fei``) formats.
+    Returns a bundle with router MLP weights, per-Linear stacked expert
+    weights keyed by ``lora_unet_<dotted>`` prefix, and a config dict
+    (rank, alpha, num_experts, num_bands, router_tau, router_hidden,
+    fei_sigma_low_div, fei_kind, variant, scale).
+    """
+    if file_path in _fera_cache:
+        return _fera_cache[file_path]
+
+    from safetensors import safe_open
+    from safetensors.torch import load_file
+
+    weights_sd = load_file(file_path)
+    with safe_open(file_path, framework="pt") as f:
+        meta = dict(f.metadata() or {})
+
+    network_module = meta.get("ss_network_module", "")
+    network_spec = meta.get("ss_network_spec", "")
+
+    # Discriminate by metadata first (cheaper, unambiguous), fall back
+    # to a key sniff. Either format declares its variant explicitly on
+    # current training runs.
+    is_stacked = (
+        network_spec == "stacked_experts_global_fei"
+        or _looks_like_stacked_experts_global_fei(weights_sd)
+    )
+    is_author = (
+        not is_stacked
+        and (
+            network_module == "networks.methods.fera"
+            or _looks_like_fera_author(weights_sd)
+        )
+    )
+
+    if is_stacked:
+        parsed = _parse_stacked_experts_global_fei(weights_sd, meta, file_path)
+    elif is_author:
+        parsed = _parse_fera_author(weights_sd, meta, file_path)
+    else:
+        raise ValueError(
+            f"{file_path} doesn't look like a FeRA checkpoint "
+            "(no router.net.* + lora_unet_*.lora_down/lora_up, and no "
+            "global_router.net.* + lora_unet_*.lora_downs.{i}.weight). "
+            "For LoRA / HydraLoRA / ReFT files, use AnimaAdapterLoader."
+        )
 
     bundle = {
         "path": file_path,
-        "router": router,
-        "layers": layers,
-        "cfg": cfg,
+        "router": parsed["router"],
+        "layers": parsed["layers"],
+        "cfg": parsed["cfg"],
     }
     _fera_cache[file_path] = bundle
 
+    cfg = bundle["cfg"]
     logger.info(
-        f"Loaded FeRA: {len(layers)} adapted Linears, "
+        f"Loaded FeRA[{cfg['variant']}]: {len(bundle['layers'])} adapted Linears, "
         f"{cfg['num_experts']} experts × rank {cfg['rank']}, "
         f"router({cfg['num_bands']} bands → {cfg['router_hidden']} → "
-        f"{cfg['num_experts']}, τ={cfg['router_tau']:.2f}), "
-        f"σ_low_div={cfg['fei_sigma_low_div']:g} from {file_path}"
+        f"{cfg['num_experts']}, τ={cfg['router_tau']:.2f}, "
+        f"fei_kind={cfg['fei_kind']}), σ_low_div={cfg['fei_sigma_low_div']:g} "
+        f"from {file_path}"
     )
     return bundle
 
@@ -252,6 +464,11 @@ def _make_fera_pre_hook(router: dict, cfg: dict, fera_state: dict):
     ``diffusion_model`` forward. Per-Linear hooks read from there. Router
     weights migrate to the latent's device + fp32 on first call and stay
     there for the rest of the session.
+
+    Dispatches the FEI compute by ``cfg["fei_kind"]``:
+      * ``"nband"`` (author-faithful) — N-band pyramid, ``[high, ..., low]``.
+      * ``"2band_low_high"`` (plan2 stacked-experts) — 2-band Laplacian,
+        ``[e_low, e_high]``, matches ``library/runtime/fei.py``.
 
     The ``@torch._dynamo.disable`` guard mirrors
     ``adapter.py::_make_router_pre_hook`` — the dict store + FEI conv2d
@@ -268,6 +485,8 @@ def _make_fera_pre_hook(router: dict, cfg: dict, fera_state: dict):
     tau = float(cfg["router_tau"])
     num_bands = int(cfg["num_bands"])
     fei_sigma_low_div = float(cfg["fei_sigma_low_div"])
+    fei_kind = str(cfg.get("fei_kind", "nband"))
+    router_in = int(state["w1"].shape[1])
 
     def _ensure_on_device(x: torch.Tensor) -> None:
         if state["device"] == x.device:
@@ -289,7 +508,16 @@ def _make_fera_pre_hook(router: dict, cfg: dict, fera_state: dict):
             x = x.squeeze(2)
         h_lat, w_lat = int(x.shape[-2]), int(x.shape[-1])
         sigma_low = float(min(h_lat, w_lat)) / fei_sigma_low_div
-        fei = _compute_fei_nband(x, sigma_low, num_bands)
+        if fei_kind == "2band_low_high":
+            fei = _compute_fei_2band_low_high(x, sigma_low)
+            # Trim/pad to the router's input width — defensive against
+            # off-spec checkpoints with router_in != 2.
+            if fei.shape[-1] > router_in:
+                fei = fei[..., :router_in]
+            elif fei.shape[-1] < router_in:
+                fei = F.pad(fei, (0, router_in - fei.shape[-1]))
+        else:
+            fei = _compute_fei_nband(x, sigma_low, num_bands)
         hidden = F.relu(F.linear(fei, state["w1"], state["b1"]))
         logits = F.linear(hidden, state["w2"], state["b2"])
         fera_state["gates"] = F.softmax(logits / tau, dim=-1)
@@ -500,7 +728,8 @@ def apply_fera(model, file_path: str, strength: float) -> bool:
     # that ComfyUI's model_lora_keys_unet doesn't enumerate. See
     # ``_build_fera_key_map`` for why.
     key_map = _build_fera_key_map(model)
-    scale = float(cfg["scale"])
+    default_scale = float(cfg["scale"])
+    rank = int(cfg["rank"])
 
     patched = 0
     skipped: list[str] = []
@@ -514,8 +743,18 @@ def apply_fera(model, file_path: str, strength: float) -> bool:
         except (AttributeError, IndexError, ValueError) as e:
             skipped.append(f"{prefix}: resolve {module_path} failed ({e})")
             continue
+        # Per-prefix alpha wins over the bundle default — the stacked-
+        # experts save path writes one ``.alpha`` per fused-projection
+        # component, and modules can in principle have heterogeneous
+        # alpha. Fall back to the bundle default when absent.
+        alpha_t = layer.get("alpha")
+        if alpha_t is not None:
+            alpha_v = float(alpha_t.item() if hasattr(alpha_t, "item") else alpha_t)
+            layer_scale = alpha_v / rank
+        else:
+            layer_scale = default_scale
         hook = _make_fera_hook(
-            layer["lora_down"], layer["lora_up"], scale, strength, fera_state
+            layer["lora_down"], layer["lora_up"], layer_scale, strength, fera_state
         )
         new_hooks = OrderedDict(linear._forward_hooks)
         new_hooks[id(hook)] = hook
@@ -528,9 +767,9 @@ def apply_fera(model, file_path: str, strength: float) -> bool:
             f"first few: {skipped[:5]}"
         )
     logger.info(
-        f"FeRA: installed router pre-hook + {patched} per-Linear hooks "
-        f"(strength={strength}, {cfg['num_experts']} experts × rank "
-        f"{cfg['rank']}, {cfg['num_bands']} bands, "
-        f"σ_low_div={cfg['fei_sigma_low_div']:g})"
+        f"FeRA[{cfg['variant']}]: installed router pre-hook + {patched} "
+        f"per-Linear hooks (strength={strength}, {cfg['num_experts']} "
+        f"experts × rank {cfg['rank']}, {cfg['num_bands']} bands, "
+        f"fei_kind={cfg['fei_kind']}, σ_low_div={cfg['fei_sigma_low_div']:g})"
     )
     return patched > 0

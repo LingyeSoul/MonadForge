@@ -54,16 +54,56 @@ def load_bench_runs(
     require_cfg: float = 4.0,
     require_mod_w: float = 3.0,
     skip_with_lora: bool = True,
+    fei_source: str = "z",
+    run_dirs: list[Path] | None = None,
 ) -> list[Row]:
+    """Walk bench output and gather per-(stem, seed) trajectory rows.
+
+    ``fei_source`` selects how ``Row.fei_low`` gets populated:
+
+    - ``"z"`` (default): paper-faithful 2-band FEI on the per-step latent
+      ``z_t`` via ``library.runtime.fei.compute_fei_2band``. Read from the
+      ``"fei_low"`` key in ``gaps_per_sample.npz`` if present, or from a
+      ``fei_low.npz`` sidecar (written by
+      ``scripts/dcw/collect_fei_sidecar.py``) for legacy pools whose main
+      npz predates the FEI capture. Rows where neither is available stay
+      ``Row.fei_low = None`` (trainer filter at ``--fei_obs != off``).
+
+    - ``"v_surrogate"``: derive a 2-band simplex on the model output ``v_θ``
+      from the per-sample Haar-band norms already in the main npz::
+
+          e_low_v[r, i]  = v_rev_LL[r, i]² /
+                          (v_rev_LL² + v_rev_LH² + v_rev_HL² + v_rev_HH²)[r, i]
+
+      Zero-bench-cost first-look signal. Not paper-faithful (Haar-on-v ≠
+      DoG-on-z) — captures the same coarse-vs-fine partition but on a
+      different operand. Useful for deciding whether to invest in
+      collecting real z-FEI on the rest of the pool.
+
+    ``run_dirs`` (optional): explicit list of run dirs to load, bypassing
+    the ``results_roots.iterdir()`` walk. Use for targeted training on a
+    subset (single bucket / single experiment / replay-only test). When
+    set, ``results_roots`` is ignored entirely.
+    """
+    if fei_source not in ("z", "v_surrogate"):
+        raise ValueError(
+            f"fei_source must be 'z' or 'v_surrogate', got {fei_source!r}"
+        )
     if isinstance(results_roots, (str, Path)):
         results_roots = [Path(results_roots)]
     rows: list[Row] = []
     seen_run_names: set[str] = set()  # de-dup if same name appears in multiple roots
     candidate_dirs: list[Path] = []
-    for root in results_roots:
-        if not root.exists():
-            continue
-        candidate_dirs.extend(p for p in root.iterdir() if p.is_dir())
+    if run_dirs:
+        # Explicit targeting — skip the root walk; consume the given dirs
+        # in order. Caller is responsible for de-dup if they pass the same
+        # path twice (we still hit the seen_run_names guard below).
+        candidate_dirs.extend(Path(p) for p in run_dirs)
+    else:
+        for root in results_roots:
+            if not root.exists():
+                continue
+            candidate_dirs.extend(p for p in root.iterdir() if p.is_dir())
     for run_dir in sorted(candidate_dirs):
         if run_dir.name in seen_run_names:
             continue
@@ -110,9 +150,23 @@ def load_bench_runs(
         aspect_id = ASPECT_TABLE[(H, W)]
         # Old runs predate --baseline_lambda; absent ⇒ 0.0 (legacy no-DCW).
         baseline_lambda = float(a.get("baseline_lambda", 0.0))
-        # Pre-FEI-capture runs (before scripts/dcw/trajectory.py added the
-        # third return field) won't ship fei_low; back-compat ⇒ None per row.
-        fei_low_arr = z["fei_low"] if "fei_low" in z.files else None
+        # Per-row fei_low resolution order:
+        #   1. v_surrogate mode: derive from existing v_rev_band norms.
+        #   2. z mode + fei_low.npz sidecar present: read sidecar (rev-replay
+        #      collector, scripts/dcw/collect_fei_sidecar.py).
+        #   3. z mode + main npz has fei_low key: read it (post-capture runs).
+        #   4. else: None (rows filtered out by trainer when --fei_obs != off).
+        fei_low_arr: np.ndarray | None = None
+        if fei_source == "v_surrogate":
+            fei_low_arr = _derive_v_fei_surrogate(z)
+        else:  # z mode
+            sidecar = run_dir / "fei_low.npz"
+            if sidecar.exists():
+                sc = np.load(sidecar, allow_pickle=True)
+                if "fei_low" in sc.files:
+                    fei_low_arr = sc["fei_low"]
+            if fei_low_arr is None and "fei_low" in z.files:
+                fei_low_arr = z["fei_low"]
         for r in range(len(stems)):
             img_idx = r // n_seeds
             seed_idx = r % n_seeds
@@ -137,6 +191,33 @@ def load_bench_runs(
                 )
             )
     return rows
+
+
+_V_REV_BAND_KEYS = ("v_rev_LL", "v_rev_LH", "v_rev_HL", "v_rev_HH")
+
+
+def _derive_v_fei_surrogate(z: np.lib.npyio.NpzFile) -> np.ndarray | None:
+    """2-band v-FEI surrogate from per-sample Haar bands of v_θ.
+
+    Returns ``(N, n_steps)`` of e_low_v ∈ [0, 1] when all four bands are
+    present; ``None`` otherwise (pre-band-capture runs). Squared band
+    norms — same scale convention as Parseval-style energy. e_high is
+    redundant for 2-band so we only emit e_low.
+    """
+    if not all(k in z.files for k in _V_REV_BAND_KEYS):
+        return None
+    ll = np.asarray(z["v_rev_LL"], dtype=np.float64)
+    lh = np.asarray(z["v_rev_LH"], dtype=np.float64)
+    hl = np.asarray(z["v_rev_HL"], dtype=np.float64)
+    hh = np.asarray(z["v_rev_HH"], dtype=np.float64)
+    total = ll**2 + lh**2 + hl**2 + hh**2
+    # Avoid /0 at step boundaries where v is identically zero. The simplex
+    # is undefined there; falling back to 0.5 leaves the head's input on
+    # the simplex centroid (carries no information for that step).
+    safe = np.where(total > 1e-12, total, 1.0)
+    e_low = (ll**2) / safe
+    e_low = np.where(total > 1e-12, e_low, 0.5)
+    return e_low
 
 
 def _load_v_fwd_pop_mean(run_dir: Path, *, band: str = "LL") -> np.ndarray | None:

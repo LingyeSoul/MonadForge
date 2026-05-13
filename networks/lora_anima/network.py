@@ -1147,12 +1147,12 @@ class LoRANetwork(torch.nn.Module):
                     canonical.copy_(cast)
 
         # Global router (FeRA-style): fire on fresh FEI and broadcast gates.
-        # Fires under no_grad: the routing broadcast is a detached buffer
-        # write; FECL training (task #5) reads ``self.global_router._last_gates``
-        # then runs its own grad-carrying forward through the router.
+        # Router runs WITH grad so the autograd path ``L_denoise → y_t →
+        # α_{t,m} → g_φ`` (FeRA eq. 6-7, 11) reaches the GlobalRouter params.
+        # ``set_routing_weights`` reassigns each expert module's buffer slot
+        # to the live ``gates`` tensor (no detach, no in-place copy).
         if global_fei_router is not None:
-            with torch.no_grad():
-                gates = global_fei_router(fei)
+            gates = global_fei_router(fei)
             self.set_routing_weights(gates)
 
     def clear_fei(self) -> None:
@@ -1183,31 +1183,25 @@ class LoRANetwork(torch.nn.Module):
           * Externally by future ``"sigma"`` global-router paths /
             inference callers needing to push pre-computed gates.
 
-        Same shared-buffer aliasing protocol as ``set_fei`` / ``set_sigma``
-        (``[[project_set_sigma_aliasing_bug]]``): identity-check the
-        canonical module buffer, rebind on shape change or after
-        ``Module._apply`` orphans the alias. ``weights`` is detached at
-        write so the broadcast doesn't leak grad through the buffer (the
-        live autograd path stays on the GlobalRouter's direct return).
+        Assigns the SAME live ``weights`` tensor reference to every routing-
+        aware module's ``_routing_weights`` buffer slot (no detach, no in-
+        place copy). This is what gives the GlobalRouter its gradient path:
+        ``L_denoise`` backprop flows through ``y_t = Σ α_{t,m} E_m(z_t)``
+        (FeRA eq. 7) into ``α``, then through the assigned buffer reads
+        into ``g_φ``'s parameters. The cudagraph-pointer-stability story is
+        intentionally traded away here — gates are a tiny ``(B, E)`` tensor
+        and the autograd path is what makes the router train at all.
         """
         if not getattr(self, "_routing_aware_loras", None):
             return
         routing_loras = self._routing_aware_loras
-        canonical = routing_loras[0]._buffers["_routing_weights"]
-        cast = weights.detach().to(dtype=canonical.dtype, device=canonical.device)
-        if cast.dim() == 1:
-            cast = cast.unsqueeze(0)
-        needs_rebind = (
-            self._shared_routing_weights is not canonical
-            or canonical.shape != cast.shape
-        )
-        if needs_rebind:
-            new_w = cast.clone()
-            for lora in routing_loras:
-                lora._buffers["_routing_weights"] = new_w
-            self._shared_routing_weights = new_w
-        else:
-            canonical.copy_(cast)
+        canonical_buf = routing_loras[0]._buffers["_routing_weights"]
+        w = weights.to(dtype=canonical_buf.dtype, device=canonical_buf.device)
+        if w.dim() == 1:
+            w = w.unsqueeze(0)
+        for lora in routing_loras:
+            lora._routing_weights = w
+        self._shared_routing_weights = w
 
     def clear_routing_weights(self) -> None:
         """Reset gates to uniform ``1/E`` in place.
@@ -1920,13 +1914,11 @@ class LoRANetwork(torch.nn.Module):
                 # Top1-Top2 margin (confidence).
                 top2 = g.topk(2, dim=-1).values
                 margin = (top2[..., 0] - top2[..., 1]).mean()
-                # Expert-usage histogram by argmax.
-                idx = g.argmax(dim=-1)
-                usage = (
-                    torch.nn.functional.one_hot(idx, num_classes=E)
-                    .to(g.dtype)
-                    .mean(dim=0)
-                )
+                # Per-expert mean gate weight. argmax-histogram breaks exact
+                # ties to index 0 and misreports a uniform router as
+                # "100% expert 0"; mean(gates) reflects the actual soft
+                # distribution and still sums to 1.
+                usage = g.mean(dim=0)
                 summary = torch.stack([H.detach(), margin.detach()]).cpu()
                 out["fera/router_entropy"] = float(summary[0])
                 out["fera/router_margin"] = float(summary[1])

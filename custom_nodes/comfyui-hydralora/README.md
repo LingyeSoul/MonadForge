@@ -58,6 +58,18 @@ For both HydraLoRA and ReFT we install a `forward_hook` rather than overriding `
 
 ## Changelog
 
+### 3.2.0 — 2026-05-14 — AnimaFeraLoader handles plan2 `stacked_experts_global_fei`
+
+Plan2 reshaped the LoRA-family routing surface into three axes (`use_moe_style` / `route_per_layer` / `router_source`); the FeRA cell of that matrix (`independent_A` / `route_per_layer=False` / `router_source="fei"`) saves as `*_moe.safetensors` with `ss_network_spec=stacked_experts_global_fei`. Different on-disk shape from the older `networks.methods.fera` format:
+
+- Router under `global_router.net.*` (not `router.net.*`).
+- Per-Linear experts as **split** `lora_unet_*.lora_downs.{i}.weight` / `.lora_ups.{i}.weight` (not stacked flat `lora_down` / `lora_up` Parameters).
+- FEI is fixed 2-band, `[e_low, e_high]` ordering (matches `library/runtime/fei.py::compute_fei_2band`) rather than the author-faithful N-band `[high, ..., low]`.
+
+`AnimaFeraLoader` now auto-routes to the right parser based on metadata (`ss_network_spec` / `ss_network_module`) or a key sniff (`global_router.net.*` + `.lora_downs.{i}.weight`). Inference semantics are identical between the two formats — global router on the latent's FEI emits one `(B, num_experts)` gate per step, every adapted Linear adds `Σ_k w_k · U_k @ D_k @ x`. The pre-hook now dispatches the FEI compute by `cfg["fei_kind"]` so both orderings stay bit-correct.
+
+`AnimaAdapterLoader` also got an early-exit guard: feeding it a `stacked_experts_global_fei` file now raises with a clear "use AnimaFeraLoader" message instead of producing the previous "Hydra live-routing skipped 280 prefix(es): missing lora_down/lora_ups" + "no recognizable keys" pair, which gave no hint about the right node.
+
 ### 3.0.0 — 2026-05-12 — Split adapter/postfix into two nodes + FeRA FEI router
 
 **Breaking — workflow update required.** The single `AnimaAdapterLoader` with `use_adapter` / `use_postfix` toggle booleans is gone. In its place:

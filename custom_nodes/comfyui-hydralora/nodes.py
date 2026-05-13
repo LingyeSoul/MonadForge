@@ -108,7 +108,7 @@ class AnimaAdapterLoader:
 
 
 class AnimaFeraLoader:
-    """Apply an author-faithful FeRA adapter to a MODEL.
+    """Apply a FeRA adapter to a MODEL — either author-faithful or plan2.
 
     FeRA (Yin et al., arXiv:2511.17979): one **global router** consumes
     the latent's Frequency-Energy Indicator each denoising step and emits
@@ -117,12 +117,19 @@ class AnimaFeraLoader:
     low-rank experts (``lora_down: (E, r, in)``, ``lora_up: (E, out, r)``)
     and adds ``Σ_k w_k · U_k @ D_k @ x`` to the frozen base.
 
+    Loads two save formats with identical inference semantics:
+
+      * Author-faithful (``networks.methods.fera``) — N-band FEI,
+        ``router.net.*``, stacked-Parameter ``lora_down``/``lora_up``.
+      * Plan2 stacked-experts (``networks.lora_anima`` with
+        ``ss_network_spec=stacked_experts_global_fei``) — 2-band FEI,
+        ``global_router.net.*``, per-expert split
+        ``lora_downs.{i}.weight`` / ``lora_ups.{i}.weight``.
+
     Distinct from ``AnimaAdapterLoader``'s FEI-on-Hydra variant: that
     one routes per-Linear on Hydra's shared-A stack, this one routes
-    globally on independent experts. Different network module
-    (``networks.methods.fera`` vs ``networks.lora_anima``), different
-    save format, mutually exclusive at the inference layer — load one,
-    not both.
+    globally on independent experts. Mutually exclusive with HydraLoRA-
+    moe at the inference layer — load one, not both.
     """
 
     @classmethod
@@ -135,12 +142,14 @@ class AnimaFeraLoader:
                     loras,
                     {
                         "tooltip": (
-                            "Author-faithful FeRA file "
-                            "(networks.methods.fera). Stacked-Parameter "
-                            "lora_down / lora_up (no .weight suffix) plus "
-                            "router.net.* MLP keys; identified by "
-                            "ss_network_module=networks.methods.fera or "
-                            "the key sniff."
+                            "FeRA checkpoint — either author-faithful "
+                            "(networks.methods.fera; router.net.* + "
+                            "lora_unet_*.lora_down/lora_up) or plan2 "
+                            "stacked_experts_global_fei (global_router.net.* + "
+                            "lora_unet_*.lora_downs.{i}.weight / .lora_ups.{i}.weight, "
+                            "typically named *_moe.safetensors). Both use "
+                            "an independent-A stacked-expert layout with a "
+                            "single network-level FEI router."
                         )
                     },
                 ),

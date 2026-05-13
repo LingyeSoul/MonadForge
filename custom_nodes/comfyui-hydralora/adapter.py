@@ -231,6 +231,31 @@ def load_adapter(file_path: str) -> dict:
             "Retrain with the current codebase."
         )
 
+    # Plan2 stacked_experts_global_fei (FeRA cell of the three-axis routing
+    # matrix) saves with ``global_router.net.*`` + per-expert split
+    # ``.lora_downs.{i}.weight`` / ``.lora_ups.{i}.weight`` — incompatible
+    # with the shared-A Hydra parser below. Detect early and point users at
+    # AnimaFeraLoader instead of letting them hit the unhelpful "missing
+    # lora_down/lora_ups" skip path.
+    is_stacked_experts = (
+        file_metadata.get("ss_network_spec") == "stacked_experts_global_fei"
+        or (
+            any(k.startswith("global_router.net.") for k in weights_sd)
+            and any(
+                ".lora_downs." in k and k.endswith(".weight")
+                for k in weights_sd
+            )
+        )
+    )
+    if is_stacked_experts:
+        raise ValueError(
+            f"{file_path} is a plan2 stacked_experts_global_fei (FeRA) "
+            "checkpoint — load it with AnimaFeraLoader, not AnimaAdapterLoader. "
+            "Independent-A stacked experts + a network-level GlobalRouter "
+            "use a different application path than HydraLoRA's per-Linear "
+            "shared-A router."
+        )
+
     hydra = _parse_hydra(weights_sd)
     if hydra is not None:
         # Hard σ-band partition is non-persistent (training-side `_expert_band`

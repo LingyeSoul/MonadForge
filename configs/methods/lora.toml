@@ -67,7 +67,7 @@ use_ortho = true
 use_moe_style = "independent_A"
 route_per_layer = false 
 router_source = "fei"
-ortho_init_std = 0.1
+ortho_init_std = 0.05
 
 fei_feature_dim = 2          # raw simplex (e_low, e_high)
 fei_sigma_low_div = 4.0      # σ_low = min(H_lat, W_lat) / 4 — 2026-05-13 dataset sweep
@@ -80,7 +80,7 @@ num_experts = 4
 balance_loss_weight = 2e-7 # seems lr * 1/100 is proper
 
 balance_loss_warmup_ratio = 0.4
-network_router_lr_scale = 10
+# network_router_lr_scale = 10
 router_targets = ".*\\.(qkv_proj|q_proj|kv_proj|output_proj|layer[12])$"
 
 # -------------

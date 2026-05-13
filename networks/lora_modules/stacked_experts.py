@@ -83,9 +83,20 @@ def _copy_or_rebind_buffer(
 def _set_routing_weights(
     module: torch.nn.Module, weights: torch.Tensor
 ) -> None:
-    """Update ``_routing_weights`` per step. Detaches the gate (no graph
-    leak through the broadcast buffer)."""
-    _copy_or_rebind_buffer(module, "_routing_weights", weights.detach())
+    """Replace the ``_routing_weights`` buffer with the live router output.
+
+    Direct slot reassignment (NOT in-place ``.copy_()``) and no ``.detach()`` —
+    the buffer must carry the router's autograd ``grad_fn`` so ``∂L/∂α`` flows
+    back to the ``GlobalRouter`` parameters. This is the gradient path the
+    FeRA paper relies on (eq. 6-7, 11): ``α_t = softmax(g_φ(e_t)/τ)`` appears
+    as a live multiplier in ``y_t = Σ_m α_{t,m} E_m(z_t)``, so plain
+    ``L_denoise`` backprop trains the router with no special mechanism.
+    """
+    buf = module._routing_weights
+    w = weights.to(dtype=buf.dtype, device=buf.device)
+    if w.dim() == 1:
+        w = w.unsqueeze(0)
+    module._routing_weights = w
 
 
 def _clear_routing_weights(module: torch.nn.Module) -> None:

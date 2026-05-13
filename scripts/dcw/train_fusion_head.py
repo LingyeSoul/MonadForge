@@ -230,7 +230,18 @@ def main():
         "(post_image_dataset/dcw, bench/dcw/results) are excluded by default "
         "because they contained heterogeneous configs (A2 calibration runs "
         "with dcw_sweep=True mixed with λ=0 baselines), which contaminated "
-        "the 2026-05-05 seed-mean ablation. Pass them explicitly to opt back in.",
+        "the 2026-05-05 seed-mean ablation. Pass them explicitly to opt back in. "
+        "Ignored when --run_dirs is set.",
+    )
+    p.add_argument(
+        "--run_dirs",
+        type=Path,
+        nargs="+",
+        default=None,
+        help="Explicit run dirs to load, bypassing the --results_root walk. "
+        "Use to target a subset — e.g. single bucket for the z-FEI smoke "
+        "test after running collect_fei_sidecar on one run only. Passes "
+        "through to load_bench_runs's run_dirs kwarg.",
     )
     p.add_argument(
         "--out_root",
@@ -319,6 +330,19 @@ def main():
         "without g_obs on the smaller pool — re-test on n=1025.",
     )
     p.add_argument(
+        "--fei_source",
+        type=str,
+        default="z",
+        choices=("z", "v_surrogate"),
+        help="How `Row.fei_low` is populated. z (default) = paper-faithful "
+        "2-band FEI on per-step latent z_t, sourced from gaps_per_sample.npz "
+        "fei_low key or fei_low.npz sidecar. v_surrogate = derive 2-band "
+        "simplex on v_θ from existing Haar bands "
+        "(e_low_v = v_rev_LL² / Σ v_rev_band²) — zero-bench-cost first-look "
+        "signal for deciding whether to invest in real z-FEI collection. "
+        "Ignored when --fei_obs=off.",
+    )
+    p.add_argument(
         "--fei_obs",
         type=str,
         default="off",
@@ -357,7 +381,13 @@ def main():
     device = torch.device(args.device)
 
     print("[1/6] loading bench runs ...")
-    rows = load_bench_runs(args.results_root)
+    rows = load_bench_runs(
+        args.results_root,
+        fei_source=args.fei_source,
+        run_dirs=args.run_dirs,
+    )
+    if args.run_dirs:
+        print(f"  --run_dirs: explicit targeting ({len(args.run_dirs)} dir(s))")
     if not rows:
         sys.exit("no bench rows found")
     n_steps = len(rows[0].gap_LL)
@@ -546,6 +576,12 @@ def main():
             f"  --fei_obs={args.fei_obs}: FEI[:k={args.k_warmup}] "
             f"mean={fei_mean.mean():+.3f} std≈{fei_std.mean():.3f}"
         )
+        if args.fei_source == "v_surrogate":
+            print(
+                "  --fei_source=v_surrogate: head's FEI channel is the 2-band "
+                "simplex on v_θ (Haar-on-v), NOT paper-faithful DoG-on-z. "
+                "Use this only to decide whether to invest in collect_fei_sidecar."
+            )
         if args.fei_obs == "replace":
             g_obs_n = fei_n
             # Mirror FEI stats into the g_obs slot so the artifact's
@@ -823,6 +859,7 @@ def main():
         # surface is uniform. Phase 3 calibrator will key off these.
         "fei_obs": args.fei_obs,
         "fei_k": str(fei_k_meta),
+        "fei_source": args.fei_source,
     }
     save_file(state, str(run_dir / "fusion_head.safetensors"), metadata=meta)
 
