@@ -87,7 +87,7 @@ make exp-test-postfix-func     # Test with postfix tuning (func variant)
 make exp-test-ip REF_IMAGE=... # IP-Adapter inference (image-conditioned)
 make exp-test-easycontrol REF_IMAGE=...  # EasyControl inference (image-conditioned)
 make exp-test-directedit PROMPT='double peace'  # DirectEdit on random source image
-                                                # (anima_tagger if present, else wd-tagger seeds prompt_src;
+                                                # (Anima Tagger seeds prompt_src;
                                                 # PROMPT becomes the edit instruction)
 make exp-test-directedit-dry                    # DirectEdit reconstruction sanity check
                                                 # (ψ_tar == ψ_src; output should reconstruct the source)
@@ -176,7 +176,7 @@ Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder 
   - `library/training/` — optimizer, scheduler, checkpoint, loss/sampler/metric registries (absorbs former `custom_train_functions`).
   - `library/inference/` — generation, sampling, output, plus `dcw_calibrator.py` (DCW v4 controller + scalar mode), `directedit.py` (DirectEdit invert+edit primitive), `mod_guidance.py`, `adapters.py`.
   - `library/models/` — ancillary model defs: `qwen_vae.py` (VAE), `sai_spec.py` (metadata spec).
-  - `library/captioning/` — Anima Tagger + WD Tagger wrappers used by DirectEdit's case-1 ψ_src path (`anima_tagger.py`, `wd_tagger.py`, shared `tag_rules.py`, plus `anima_tagger_data.py` / `anima_tagger_model.py` for training).
+  - `library/captioning/` — Anima Tagger used by DirectEdit's case-1 ψ_src path (`anima_tagger.py`, shared `tag_rules.py`, plus `anima_tagger_data.py` / `anima_tagger_model.py` for training).
   - `library/vision/` — shared vision tower / resampler / bucket helpers (extracted from `archive/img2emb`; live consumer is IP-Adapter).
   - `library/config/` — `schema.py` (validation), `loader.py` (TOML merge chain).
   - `library/io/` — `cache.py` (disk cache helpers), `safetensors.py`.
@@ -226,9 +226,9 @@ Code: `library/inference/dcw_calibrator.py`, `networks/dcw.py`, `scripts/dcw/`, 
 
 ## DirectEdit + Anima Tagger
 
-Image-editing primitive that pairs an inversion (DDIM-style trajectory through the frozen DiT) with an edit-conditioning swap: ψ_src reconstructs the source image, ψ_tar = ψ_src + edit-instruction applies the change. Robust to ψ_src corruption for *reconstruction* but edit *leverage* collapses when ψ_src is structurally far from Anima's training-time embedding manifold — wd-tagger output was bad enough at this to be the live blocker, which is why **Anima Tagger** exists.
+Image-editing primitive that pairs an inversion (DDIM-style trajectory through the frozen DiT) with an edit-conditioning swap: ψ_src reconstructs the source image, ψ_tar = ψ_src + edit-instruction applies the change. Robust to ψ_src corruption for *reconstruction* but edit *leverage* collapses when ψ_src is structurally far from Anima's training-time embedding manifold — generic booru taggers were bad enough at this to be the live blocker, which is why **Anima Tagger** exists.
 
-- **Anima Tagger** (`library/captioning/anima_tagger.py`): small classifier mapping image → comma-separated tag string in exactly Anima's training-time T5 format. Drop-in replacement for `WDTagger` (same `predict` surface). Frozen PE-Core-L14-336 trunk + LayerNorm + Linear head. Train with `python -m scripts.anima_tagger.cli` against `bench/wd_tagger_dataset/` (vocabulary + manifest + feature cache builders + threshold calibrator all wired). DirectEdit's case-1 ψ_src path picks Anima Tagger if a checkpoint is present, else falls back to WD Tagger.
+- **Anima Tagger** (`library/captioning/anima_tagger.py`): small classifier mapping image → comma-separated tag string in exactly Anima's training-time T5 format. Frozen PE-Core-L14-336 trunk + LayerNorm + Linear head. Train with `python -m scripts.anima_tagger.cli` against `$CAPTION_CORPUS_DIR` (vocabulary + manifest + feature cache builders + threshold calibrator all wired). DirectEdit's case-1 ψ_src path requires this checkpoint at `models/captioners/anima-tagger-v1/`.
 - **DirectEdit core** (`library/inference/directedit.py`): the invert+edit primitive. Invoked from `scripts/edit.py` (CLI), `scripts/experimental_tasks/inference.py` (`make exp-test-directedit` / `exp-test-directedit-dry`), and `custom_nodes/comfyui-anima-directedit/` (ComfyUI nodes).
 
 Use `make exp-test-directedit-dry` to verify ψ_tar == ψ_src reconstructs the source — gates whether the inversion is well-conditioned independent of edit semantics.

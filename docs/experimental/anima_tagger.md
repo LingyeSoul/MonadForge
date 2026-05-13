@@ -2,9 +2,8 @@
 
 A small classifier that maps an image to a comma-separated tag string in
 exactly the format Anima's training-time T5 saw. Used as the case-1 ψ_src
-provider for DirectEdit (replacing wd-tagger when a checkpoint is present),
-and as a standalone captioner for LoRA dataset prep / prompt scaffolding via
-the `comfyui-anima-tagger` ComfyUI node.
+provider for DirectEdit, and as a standalone captioner for LoRA dataset
+prep / prompt scaffolding via the `comfyui-anima-tagger` ComfyUI node.
 
 Status: **shipped**. A trained checkpoint lives at
 `models/captioners/anima-tagger-v1/` (4,937-tag vocab, residual macro-F1
@@ -18,9 +17,9 @@ DirectEdit's invert/edit primitive is robust to ψ_src corruption — even
 shuffled or tag-dropped source captions reconstruct the source image at
 ~99% pixel fidelity. But edit *leverage* (whether ψ_tar = ψ_src + edit-tag
 actually applies the change) collapses when ψ_src is structurally far
-from Anima's training-time embedding manifold. wd-tagger output was bad
-enough at this to be the live blocker; this tagger replaces it for
-checkpoints in-tree, and falls back to wd-tagger when absent.
+from Anima's training-time embedding manifold. Generic booru taggers
+were bad enough at this to be the live blocker; this tagger replaces
+that role with an Anima-distribution head.
 
 ## Architecture
 
@@ -78,12 +77,11 @@ ground — softens the long-tail without overshoot.
 
 | File | Role |
 |---|---|
-| `anima_tagger.py` | `AnimaTagger` — public inference class. Mirrors `WDTagger.predict`/`predict_caption`. Loads checkpoint, encoder, vocab, thresholds, rules, optional groups, optional PE-LoRA delta from one directory. Implements all post-prediction refinements (group argmax, character floor, original-fallback, girls-count cap, top-1 artist/copyright). |
+| `anima_tagger.py` | `AnimaTagger` — public inference class. Exposes `predict`/`predict_caption`. Loads checkpoint, encoder, vocab, thresholds, rules, optional groups, optional PE-LoRA delta from one directory. Implements all post-prediction refinements (group argmax, character floor, original-fallback, girls-count cap, top-1 artist/copyright). |
 | `anima_tagger_model.py` | `AnimaTaggerConfig` + `AnimaTaggerHead` (trunk + tag head + rating head). |
 | `anima_tagger_data.py` | `TaggerManifest`, `FeatureCacheBuilder`, `CachedFeatureDataset`, `ImageCacheBuilder`, `CachedImageDataset`, `BucketBatchSampler`, `pil_resize_to_bucket`. |
 | `tag_rules.py` | `tag_rules.yaml` loader/applier (replacements, always-remove, clothing dedup, `category_overrides`, `coverage_ignore`). |
 | `tag_groups.py` | `tag_groups.yaml` loader; `TagGroup`/`TagGroups`/`ResolvedGroup`; modes `softmax`, `softmax_when_solo`, `multilabel`. |
-| `wd_tagger.py` | Existing WD-tagger v3 wrapper kept as portable fallback when no Anima Tagger checkpoint is present. |
 
 `scripts/anima_tagger/` (CLI + training pipeline — invoke as
 `python -m scripts.anima_tagger.cli`):
@@ -311,18 +309,16 @@ normalization, but the model could in principle predict both `bra` and
 
 ### CLI driver
 
-`scripts/experimental_tasks/inference.py::cmd_test_directedit` chooses
-between `WDTagger` and `AnimaTagger` via the `TAGGER` env var:
+`scripts/experimental_tasks/inference.py::cmd_test_directedit` runs the
+Anima Tagger on the source image to seed `--prompt_src`:
 
 ```bash
-make exp-test-directedit PROMPT='glasses'                       # auto: anima if checkpoint present, else wd
-TAGGER=anima make exp-test-directedit PROMPT='glasses'          # force anima
-TAGGER=wd make exp-test-directedit PROMPT='glasses'             # force wd
+make exp-test-directedit PROMPT='glasses'
 ```
 
-The auto-detect checks for `models/captioners/anima-tagger-v1/model.safetensors`.
-If `TAGGER=anima` is requested but the checkpoint is missing, the driver
-falls back to wd-tagger with a warning rather than crashing.
+Requires `models/captioners/anima-tagger-v1/model.safetensors`. The
+driver exits with a clear error if the checkpoint is missing — train it
+via `python -m scripts.anima_tagger.cli`.
 
 `scripts/edit.py` itself doesn't tag — it takes `--prompt_src` directly.
 Tagging only happens in the make-target driver (CLI) or the ComfyUI node
@@ -365,8 +361,8 @@ scaffolding, or `Save Text File` for LoRA dataset pre-fill.
    knob to revisit if F1 disappoints.
 3. **No bench harness yet.** `bench/anima_tagger/` per the standard
    envelope (cf. `bench/_common.py::write_result`) is the next thing to
-   add — should compare F1 vs `WDTagger` on a shared held-out set, plus a
-   downstream "edit-success-rate" metric on a small DirectEdit set.
+   add — should report F1 on a held-out set plus a downstream
+   "edit-success-rate" metric on a small DirectEdit set.
 4. **Long-tail characters benefit from `character_floor`.** Some F1
    thresholds settle as low as `0.05` for noisy long-tail characters;
    the post-prediction floor (default `0.5`) is what stops borderline

@@ -1,8 +1,8 @@
 """Per-tag F1-optimal threshold sweep on the val split.
 
-A global 0.5 (wd-tagger's inheritance) under-fires rare tags and over-fires
-common ones. This sweeps thresholds in [0.05, 0.95] step 0.05 per tag and
-picks the F1-maximizing one. Tags with no positive val examples or zero
+A global 0.5 threshold under-fires rare tags and over-fires common ones.
+This sweeps thresholds in [0.05, 0.95] step 0.05 per tag and picks the
+F1-maximizing one. Tags with no positive val examples or zero
 achievable F1 keep ``default=0.5`` — they can't be calibrated and the F1
 sweep is degenerate, but the floor keeps the head well-formed for inference.
 """

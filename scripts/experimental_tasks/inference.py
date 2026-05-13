@@ -203,39 +203,21 @@ def cmd_test_directedit(extra):
     if not edit_prompt:
         edit_prompt = "double peace, v v. She is showing double peace"
 
-    # 3. Run a tagger on the source. ``TAGGER`` env picks the backend
-    #    (``anima`` / ``wd``); default is auto — Anima if the checkpoint
-    #    is present, else wd-tagger as a portable fallback.
+    # 3. Run Anima Tagger on the source.
     sys.path.insert(0, str(ROOT))
     from PIL import Image  # noqa: PLC0415
 
-    tagger_choice = os.environ.get("TAGGER", "").strip().lower() or "auto"
     anima_ckpt = ROOT / "models" / "captioners" / "anima-tagger-v1" / "model.safetensors"
-    if tagger_choice == "auto":
-        tagger_choice = "anima" if anima_ckpt.exists() else "wd"
-
-    print(f"  > tagging source: {ref_image} (tagger={tagger_choice})")
-    if tagger_choice == "anima":
-        if not anima_ckpt.exists():
-            print(
-                f"  ! TAGGER=anima requested but {anima_ckpt} is missing — "
-                "train via `python -m scripts.anima_tagger.cli`. "
-                "Falling back to wd-tagger.",
-                file=sys.stderr,
-            )
-            tagger_choice = "wd"
-    if tagger_choice == "anima":
-        from library.captioning.anima_tagger import AnimaTagger  # noqa: PLC0415
-
-        tagger = AnimaTagger(ckpt_dir=anima_ckpt.parent)
-    elif tagger_choice == "wd":
-        from library.captioning.wd_tagger import WDTagger  # noqa: PLC0415
-
-        tagger = WDTagger()
-    else:
+    if not anima_ckpt.exists():
         raise SystemExit(
-            f"unknown TAGGER={tagger_choice!r} — expected 'anima', 'wd', or 'auto'"
+            f"Anima Tagger checkpoint missing at {anima_ckpt} — "
+            "train via `python -m scripts.anima_tagger.cli`."
         )
+
+    print(f"  > tagging source: {ref_image}")
+    from library.captioning.anima_tagger import AnimaTagger  # noqa: PLC0415
+
+    tagger = AnimaTagger(ckpt_dir=anima_ckpt.parent)
 
     src_caption = tagger.predict_caption(Image.open(ref_image))
     if not src_caption:
@@ -288,7 +270,7 @@ def cmd_test_directedit(extra):
 def cmd_test_directedit_dry(extra):
     """DirectEdit functional sanity check using preprocessed cross-emb variants.
 
-    Bypasses wd-tagger and the text encoder. Auto-resolves the source image's
+    Bypasses the tagger and the text encoder. Auto-resolves the source image's
     `_anima_te.safetensors` cache (the file `cache_text_embeddings.py` writes
     — same format the trainer consumes) and runs one invert + edit pass per
     stored variant with ψ_tar == ψ_src. With `--caption_shuffle_variants N`

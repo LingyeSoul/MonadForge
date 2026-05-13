@@ -11,7 +11,7 @@ separately in [`anima_tagger.md`](./anima_tagger.md).
 |---|---|
 | `library/inference/directedit.py` — invert + edit_forward primitive | **wired** |
 | V-injection (paper Eq. 13) | **wired** in both CLI and ComfyUI node |
-| ψ_src tagger (Anima Tagger replacing wd-tagger), CLI side | **wired** with auto-fallback |
+| ψ_src tagger (Anima Tagger), CLI side | **wired** |
 | `scripts/edit.py` — standalone CLI | **wired** |
 | `make exp-test-directedit` / `exp-test-directedit-dry` driver | **wired** |
 | `comfyui-anima-directedit` ComfyUI node (stock MODEL/CLIP/VAE sockets) | **wired**, 0.2.0 took caption inputs as plain STRINGs (no embedded tagger / dispatcher) |
@@ -148,23 +148,21 @@ The script orchestrates the full pipeline:
 Lives in `scripts/experimental_tasks/inference.py` (`cmd_test_directedit`
 and `cmd_test_directedit_dry`).
 
-**`make exp-test-directedit`** picks a source image, runs a tagger to
-seed `--prompt_src`, builds `--prompt_tar = src + ", " + edit`, and
-invokes `scripts/edit.py`:
+**`make exp-test-directedit`** picks a source image, runs the Anima
+Tagger to seed `--prompt_src`, builds `--prompt_tar = src + ", " + edit`,
+and invokes `scripts/edit.py`:
 
 ```bash
 make exp-test-directedit PROMPT='double peace'                # random source from post_image_dataset/resized/
 REF_IMAGE=foo.png make exp-test-directedit PROMPT='glasses'   # explicit source
 python tasks.py exp-test-directedit foo.png --prompt 'smile'  # positional source
-TAGGER=anima make exp-test-directedit PROMPT='glasses'        # force Anima Tagger
-TAGGER=wd    make exp-test-directedit PROMPT='glasses'        # force wd-tagger
 ```
 
-Tagger selection is `TAGGER` env (default `auto`): Anima if
-`models/captioners/anima-tagger-v1/model.safetensors` exists, else
-wd-tagger. `TAGGER=anima` with a missing checkpoint warns + falls back
-to wd-tagger rather than crashing. After the edit completes, the source
-is copied next to the output as `<name>_src.png` for side-by-side review.
+Requires the Anima Tagger checkpoint at
+`models/captioners/anima-tagger-v1/model.safetensors`; otherwise the
+task exits with an instruction to train it via `python -m
+scripts.anima_tagger.cli`. After the edit completes, the source is
+copied next to the output as `<name>_src.png` for side-by-side review.
 
 **`make exp-test-directedit-dry`** is the reconstruction sanity check —
 auto-resolves the source's `_anima_te.safetensors` cache (the file

@@ -17,8 +17,8 @@ Usage:
 
 Wired by ``scripts/experimental_tasks/inference.py::cmd_test_directedit``
 under ``make exp-test-directedit`` — that task picks a random source image,
-runs the wd-tagger to seed ``--prompt_src``, and forms ``--prompt_tar`` from
-``PROMPT`` env (the user's edit instruction).
+runs the Anima Tagger to seed ``--prompt_src``, and forms ``--prompt_tar``
+from ``PROMPT`` env (the user's edit instruction).
 
 v1.1 status:
   * V-injection: WIRED. ``--t_inj N`` injects src self-attn V into the tar
@@ -81,9 +81,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--prompt_src",
         default="",
-        help="Source caption (for inversion). Typically wd-tagger output for "
-        "external images, or the recorded prompt for self-generated images. "
-        "Ignored when --cached_embed is set.",
+        help="Source caption (for inversion). Typically Anima Tagger output "
+        "for external images, or the recorded prompt for self-generated "
+        "images. Ignored when --cached_embed is set.",
     )
     p.add_argument(
         "--prompt_tar",

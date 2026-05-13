@@ -1,8 +1,7 @@
 """AnimaTagger — multi-label tagger trained on the Anima caption distribution.
 
-Drop-in replacement for :class:`WDTagger` when feeding ψ_src to DirectEdit.
-Mirrors the same public surface (``predict``, ``predict_caption``) so existing
-callers swap by changing only the import.
+The ψ_src provider for DirectEdit. Public surface: ``predict``,
+``predict_caption``.
 
 Checkpoint layout (produced by ``python -m scripts.anima_tagger.cli``):
 
@@ -145,7 +144,7 @@ def _load_thresholds(path: Path, n_tags: int, default: float = 0.5) -> torch.Ten
 
 
 class AnimaTagger:
-    """Drop-in replacement for ``WDTagger`` with Anima-distribution vocabulary."""
+    """Multi-label tagger over the Anima-distribution vocabulary."""
 
     def __init__(
         self,
@@ -445,7 +444,7 @@ class AnimaTagger:
             return feats.mean(dim=0).to(torch.float32)
         return feats.to(torch.float32)        # [T, d_enc]
 
-    # ── Public API (mirrors WDTagger) ──────────────────────────────────
+    # ── Public API ──────────────────────────────────────────────────────
 
     @torch.no_grad()
     def predict(self, pil_img: Image.Image) -> Dict[str, object]:

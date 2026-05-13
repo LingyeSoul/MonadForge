@@ -234,7 +234,7 @@ COMMANDS = {
     "exp-test-directedit": (
         exp_inference.cmd_test_directedit,
         "[experimental] DirectEdit on a random source image. PROMPT='...' supplies the edit "
-        "instruction (appended to the wd-tagger source caption). REF_IMAGE=path overrides the "
+        "instruction (appended to the Anima Tagger source caption). REF_IMAGE=path overrides the "
         "random pick. Usage: exp-test-directedit [ref_image] [extra...]",
     ),
     "exp-test-directedit-dry": (
