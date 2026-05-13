@@ -58,8 +58,31 @@ PE_CORE_L14_336_SPEC = BucketSpec(
 )
 
 
+# PE-Spatial-B16-512 — 512px native, 32x32=1024 patch tokens + 1 CLS
+# (use_cls_token=True). Buckets sized so h*w ≈ 1024 (within ~3.5%). Patch=16,
+# so dimensions are integer multiples of 16. **Aspects mirror PE-Core**
+# (2.0/1.45/1.33/1.0/0.75/0.69/0.5) so a source image's bucket choice maps
+# 1:1 across the two specs — within-batch homogeneity from the main encoder's
+# bucket sampler carries over to the aux encoder for free.
+PE_SPATIAL_B16_512_SPEC = BucketSpec(
+    encoder="pe_spatial",
+    patch=16,
+    use_cls=True,
+    buckets=(
+        (46, 23),  # 2.00 portrait, 1058 tokens, 736x368 px
+        (39, 27),  # 1.44 portrait, 1053 tokens, 624x432 px
+        (37, 28),  # 1.32 portrait, 1036 tokens, 592x448 px
+        (32, 32),  # 1.00 square,   1024 tokens, 512x512 px (native)
+        (28, 37),  # 0.76 landscape,1036 tokens, 448x592 px
+        (27, 39),  # 0.69 landscape,1053 tokens, 432x624 px
+        (23, 46),  # 0.50 landscape,1058 tokens, 368x736 px
+    ),
+)
+
+
 _SPECS: dict[str, BucketSpec] = {
     "pe": PE_CORE_L14_336_SPEC,
+    "pe_spatial": PE_SPATIAL_B16_512_SPEC,
 }
 
 

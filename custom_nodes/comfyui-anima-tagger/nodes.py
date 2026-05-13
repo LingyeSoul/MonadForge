@@ -205,6 +205,23 @@ class AnimaTaggerLoader:
                         ),
                     },
                 ),
+                "pe_aux_ckpt": (
+                    "STRING",
+                    {
+                        "default": "models/pe/PE-Spatial-B16-512.pt",
+                        "tooltip": (
+                            "Auxiliary vision-encoder checkpoint (.pt) for "
+                            "dual-encoder tagger checkpoints. Only used when "
+                            "config.json in tagger_dir has 'aux_encoder' set "
+                            "(typically 'pe_spatial' → PE-Spatial-B16-512); "
+                            "ignored on single-encoder v1 checkpoints. "
+                            "Relative paths resolve against the anima_lora/ "
+                            "root; absolute paths used as-is. If the file is "
+                            "missing, it's auto-fetched from "
+                            "facebook/PE-Spatial-B16-512 on first use."
+                        ),
+                    },
+                ),
                 "use_pe_lora": (
                     "BOOLEAN",
                     {
@@ -260,6 +277,7 @@ class AnimaTaggerLoader:
         pe_ckpt: str,
         use_pe_lora: bool = True,
         pe_lora_path: str = "",
+        pe_aux_ckpt: str = "",
     ):
         tdir = Path(tagger_dir)
         if not tdir.is_absolute():
@@ -267,6 +285,15 @@ class AnimaTaggerLoader:
         pe_path = Path(pe_ckpt)
         if not pe_path.is_absolute():
             pe_path = ANIMA_LORA / pe_path
+        # Aux PE path is optional — empty string keeps the AnimaTagger
+        # constructor default (None → encoder registry default → HF fallback).
+        # Single-encoder checkpoints ignore this entirely.
+        pe_aux_resolved: Path | None = None
+        pe_aux_str = pe_aux_ckpt.strip() if pe_aux_ckpt else ""
+        if pe_aux_str:
+            pe_aux_resolved = Path(pe_aux_str)
+            if not pe_aux_resolved.is_absolute():
+                pe_aux_resolved = ANIMA_LORA / pe_aux_resolved
         # Dropdown's "default" sentinel maps to the colocated fallback inside
         # AnimaTagger (None override -> <ckpt_dir>/pe_lora.safetensors). When
         # use_pe_lora is off, the dropdown is ignored entirely and the
@@ -282,11 +309,12 @@ class AnimaTaggerLoader:
         _ensure_tagger_dir(tdir)
         device = comfy.model_management.get_torch_device()
         logger.info(
-            "AnimaTaggerLoader: loading %s on %s (pe=%s, pe_lora=%s)",
+            "AnimaTaggerLoader: loading %s on %s (pe=%s, pe_lora=%s, pe_aux=%s)",
             tdir,
             device,
             pe_path,
             "<disabled>" if not use_pe_lora else pe_lora_resolved,
+            pe_aux_resolved if pe_aux_resolved else "<registry default>",
         )
         tagger = AnimaTagger(
             ckpt_dir=tdir,
@@ -294,6 +322,7 @@ class AnimaTaggerLoader:
             pe_ckpt=pe_path,
             pe_lora_path=pe_lora_resolved,
             pe_lora_disabled=not use_pe_lora,
+            pe_aux_ckpt=pe_aux_resolved,
         )
         return (tagger,)
 

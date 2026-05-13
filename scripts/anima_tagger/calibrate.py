@@ -102,25 +102,30 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model.to(device).eval()
 
-    # Pool kind drives the cache layout + eval iteration shape. CLI
-    # default is 'map'; respect the saved config.json so calibrate matches
-    # what was actually trained when the user ran train+calibrate as a
-    # batch without thinking about flags.
+    # Pool kind + encoder drive the cache layout + eval iteration shape.
+    # Respect the saved config.json so calibrate matches what was actually
+    # trained — the user doesn't have to re-pass --pool_kind / --encoder
+    # / --aux_encoder. CLI args still win (lets you calibrate against an
+    # alternate cache if you really need to).
     pool_kind = str(cfg_d.get("pool_kind", cfg.pool_kind))
+    encoder = cfg_d.get("encoder") or args.encoder
 
-    cache_dir = cache_dir_for(out_dir, pool_kind, args.encoder)
+    cache_dir = cache_dir_for(out_dir, pool_kind, encoder)
     if not cache_dir.exists():
         raise SystemExit(
             f"missing {cache_dir} — calibrate needs the same cache the "
-            f"trainer used (pool_kind={pool_kind!r}). Re-run "
-            f"`--mode build_features --pool_kind={pool_kind}` if you "
-            f"deleted it."
+            f"trainer used (encoder={encoder!r} pool_kind={pool_kind!r}). "
+            f"Re-run `--mode build_features --pool_kind={pool_kind} "
+            f"--encoder {encoder}` if you deleted it."
         )
 
     from library.captioning.anima_tagger_data import TaggerManifest
     manifest = TaggerManifest.from_path(out_dir / "dataset.json")
 
-    if pool_kind == "mean":
+    # Dual-encoder models always go through the bucket-loader path
+    # (CachedDualDataset handles the mean / map combos per side); the
+    # in-VRAM-tensor shortcut only fires for true single-encoder mean models.
+    if pool_kind == "mean" and not cfg.has_aux:
         from library.captioning.anima_tagger_data import CachedFeatureDataset
 
         val_ds = CachedFeatureDataset(manifest, cache_dir, stems_subset=manifest.val_stems)
@@ -140,7 +145,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         )
         from library.vision.encoders import get_encoder_info
 
-        spec = get_encoder_info(args.encoder).bucket_spec if pool_kind == "map" else None
+        spec = get_encoder_info(encoder).bucket_spec if pool_kind == "map" else None
         # Mirror the training-time aux choice from the saved config so the
         # user doesn't have to re-pass --aux_encoder / --pool_kind_aux.
         # CLI flags still win (lets you calibrate against an alternate cache).

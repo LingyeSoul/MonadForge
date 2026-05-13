@@ -28,7 +28,14 @@ sigmoid threshold would have admitted several. Multi-label groups and
 ungrouped tags fall back to the standard threshold path.
 
 The vision encoder (PE-Core-L14-336 by default) is loaded lazily on first
-``predict`` call. Captions are emitted in Anima's canonical slot order:
+``predict`` call. When the checkpoint was trained with an auxiliary
+encoder (``config.json`` has ``"aux_encoder"`` and ``model.d_in_aux`` is
+set — typically PE-Spatial-B16-512 for the long-tail / spatial-detail
+boost), the wrapper lazy-loads both encoders and runs both forwards per
+``predict`` call. Old single-encoder v1 checkpoints continue to load
+unchanged via the absent-aux path.
+
+Captions are emitted in Anima's canonical slot order:
 ``rating, count_tags, characters, copyrights, @artists, generals``, with
 underscores replaced by spaces (matching how Anima's training-time T5 saw
 the data).
@@ -149,6 +156,7 @@ class AnimaTagger:
         character_floor: float = 0.5,
         pe_lora_path: str | Path | None = None,
         pe_lora_disabled: bool = False,
+        pe_aux_ckpt: str | Path | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         if device is None:
@@ -156,6 +164,11 @@ class AnimaTagger:
         self.device = torch.device(device)
         self.dtype = dtype
         self.pe_ckpt = Path(pe_ckpt) if pe_ckpt else None
+        # Optional override for the auxiliary encoder's weights path. None →
+        # fall back to the encoder registry's default (e.g. PE-Spatial-B16-512
+        # at ``models/pe/PE-Spatial-B16-512.pt``). Only consulted when the
+        # checkpoint is dual-encoder (``cfg.has_aux``); ignored otherwise.
+        self.pe_aux_ckpt = Path(pe_aux_ckpt) if pe_aux_ckpt else None
         # Optional override for the PE-LoRA sidecar location. Empty / None →
         # fall back to ``ckpt_dir / pe_lora.safetensors`` (the colocated default
         # produced by ``train-pe-lora``). Useful when the user keeps the LoRA
@@ -179,7 +192,27 @@ class AnimaTagger:
         with open(self.ckpt_dir / "config.json") as f:
             cfg_d = json.load(f)
         self.encoder_name: str = cfg_d.get("encoder", "pe")
+        # Optional auxiliary encoder (e.g. PE-Spatial-B16-512). Present only
+        # for dual-encoder checkpoints; absent on legacy v1 single-encoder
+        # configs (kept loading via the AnimaTaggerConfig defaults).
+        self.aux_encoder_name: Optional[str] = cfg_d.get("aux_encoder")
         self.cfg = AnimaTaggerConfig.from_dict(cfg_d["model"])
+        # Sanity: config.has_aux must agree with the recorded aux_encoder
+        # field (both present or both absent). Mismatch suggests a hand-edited
+        # config.json, fail fast with a clear message.
+        if self.cfg.has_aux and not self.aux_encoder_name:
+            raise ValueError(
+                f"config.json has model.d_in_aux set but no top-level "
+                f"'aux_encoder' field — can't determine which auxiliary "
+                f"encoder to load. Re-train or hand-add `\"aux_encoder\": "
+                f"\"pe_spatial\"` to {self.ckpt_dir / 'config.json'}."
+            )
+        if self.aux_encoder_name and not self.cfg.has_aux:
+            raise ValueError(
+                "config.json has 'aux_encoder' but model.d_in_aux is unset; "
+                "the head wasn't built dual-encoder. Drop the aux_encoder "
+                "field or re-train."
+            )
         self._cfg_d = cfg_d
 
         self.model = AnimaTaggerHead(self.cfg)
@@ -271,6 +304,7 @@ class AnimaTagger:
                 if count_re.match(e.name):
                     self._multi_count_names.add(e.name)
         self._encoder: Optional[VisionEncoderBundle] = None
+        self._encoder_aux: Optional[VisionEncoderBundle] = None
 
     # ── Encoder lazy-load ──────────────────────────────────────────────
 
@@ -284,6 +318,27 @@ class AnimaTagger:
             )
             self._maybe_apply_pe_lora(self._encoder)
         return self._encoder
+
+    def _bundle_aux(self) -> VisionEncoderBundle:
+        """Lazy-load the auxiliary encoder. Only valid when the checkpoint
+        was trained with one (``self.cfg.has_aux``); raises otherwise."""
+        if not self.cfg.has_aux:
+            raise RuntimeError(
+                "AnimaTagger has no aux encoder configured (cfg.d_in_aux=None)"
+            )
+        if self._encoder_aux is None:
+            # PE-LoRA on the aux encoder is not supported in v1. ``pe_aux_ckpt``
+            # overrides the registry's default checkpoint location when set;
+            # otherwise None lets ``load_pe_encoder`` resolve via the registry
+            # (e.g. ``models/pe/PE-Spatial-B16-512.pt``). The registry's loader
+            # auto-fetches from HF when the file is absent.
+            self._encoder_aux = load_pe_encoder(
+                self.device,
+                name=self.aux_encoder_name,
+                model_id=str(self.pe_aux_ckpt) if self.pe_aux_ckpt else None,
+                dtype=self.dtype,
+            )
+        return self._encoder_aux
 
     def _maybe_apply_pe_lora(self, bundle: VisionEncoderBundle) -> None:
         """Inject PE-LoRA on the encoder's trailing blocks and load delta weights.
@@ -349,13 +404,46 @@ class AnimaTagger:
 
     @torch.no_grad()
     def _encode_image(self, pil_img: Image.Image) -> torch.Tensor:
-        """Image → pooled feature ``[d_in]`` on ``self.device``."""
-        bundle = self._bundle()
-        pil_img = pil_resize_to_bucket(pil_img.convert("RGB"), bundle.bucket_spec)
-        tensor = IMAGE_TRANSFORMS(np.array(pil_img)).unsqueeze(0)
+        """Image → main encoder feature on ``self.device``.
+
+        Shape depends on ``cfg.pool_kind``:
+          * ``mean`` → ``[d_enc]`` mean-pooled feature.
+          * ``map`` → ``[T, d_enc]`` token sequence; head's MAPHead pools
+            internally.
+        """
+        return self._encode_with(pil_img, self._bundle(), self.cfg.pool_kind)
+
+    @torch.no_grad()
+    def _encode_image_aux(self, pil_img: Image.Image) -> torch.Tensor:
+        """Image → aux encoder feature, shape per ``cfg.effective_pool_kind_aux``.
+
+        Mirrors :meth:`_encode_image` but for the auxiliary encoder. When
+        the aux side is mean-pool, returns ``[d_enc_aux]``; when map,
+        returns ``[T_a, d_enc_aux]``."""
+        return self._encode_with(
+            pil_img, self._bundle_aux(), self.cfg.effective_pool_kind_aux,
+        )
+
+    @torch.no_grad()
+    def _encode_with(
+        self,
+        pil_img: Image.Image,
+        bundle: VisionEncoderBundle,
+        pool_kind: str,
+    ) -> torch.Tensor:
+        """Shared image → feature path used by both encoders.
+
+        Each bundle has its own bucket spec so the same source image is
+        re-bucketed independently per encoder. Returns ``[T, d_enc]`` tokens
+        for ``pool_kind="map"``, or mean-pooled ``[d_enc]`` for ``"mean"``.
+        """
+        pil_resized = pil_resize_to_bucket(pil_img.convert("RGB"), bundle.bucket_spec)
+        tensor = IMAGE_TRANSFORMS(np.array(pil_resized)).unsqueeze(0)
         feats_list = encode_pe_from_imageminus1to1(bundle, tensor, same_bucket=True)
         feats = feats_list[0]                # [T, d_enc]
-        return feats.mean(dim=0).to(torch.float32)
+        if pool_kind == "mean":
+            return feats.mean(dim=0).to(torch.float32)
+        return feats.to(torch.float32)        # [T, d_enc]
 
     # ── Public API (mirrors WDTagger) ──────────────────────────────────
 
@@ -379,7 +467,11 @@ class AnimaTagger:
           present when typed groups are loaded.
         """
         feat = self._encode_image(pil_img).unsqueeze(0).to(self.device)
-        tag_logits, rating_logits, people_logits = self.model(feat)
+        if self.cfg.has_aux:
+            feat_aux = self._encode_image_aux(pil_img).unsqueeze(0).to(self.device)
+            tag_logits, rating_logits, people_logits = self.model(feat, feat_aux)
+        else:
+            tag_logits, rating_logits, people_logits = self.model(feat)
         tag_logits_row = tag_logits[0]                       # [n_tags]
         tag_probs = tag_logits_row.sigmoid()                 # [n_tags]
         rating_probs = rating_logits.softmax(dim=-1)[0]      # [n_ratings]

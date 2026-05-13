@@ -156,6 +156,7 @@ class AnimaTagger:
         character_floor: float = 0.5,
         pe_lora_path: str | Path | None = None,
         pe_lora_disabled: bool = False,
+        pe_aux_ckpt: str | Path | None = None,
     ):
         self.ckpt_dir = Path(ckpt_dir)
         if device is None:
@@ -163,6 +164,11 @@ class AnimaTagger:
         self.device = torch.device(device)
         self.dtype = dtype
         self.pe_ckpt = Path(pe_ckpt) if pe_ckpt else None
+        # Optional override for the auxiliary encoder's weights path. None →
+        # fall back to the encoder registry's default (e.g. PE-Spatial-B16-512
+        # at ``models/pe/PE-Spatial-B16-512.pt``). Only consulted when the
+        # checkpoint is dual-encoder (``cfg.has_aux``); ignored otherwise.
+        self.pe_aux_ckpt = Path(pe_aux_ckpt) if pe_aux_ckpt else None
         # Optional override for the PE-LoRA sidecar location. Empty / None →
         # fall back to ``ckpt_dir / pe_lora.safetensors`` (the colocated default
         # produced by ``train-pe-lora``). Useful when the user keeps the LoRA
@@ -321,13 +327,15 @@ class AnimaTagger:
                 "AnimaTagger has no aux encoder configured (cfg.d_in_aux=None)"
             )
         if self._encoder_aux is None:
-            # PE-LoRA on the aux encoder is not supported in v1 — pass
-            # model_id=None so the registry's default checkpoint resolves
-            # (e.g. models/pe/PE-Spatial-B16-512.pt).
+            # PE-LoRA on the aux encoder is not supported in v1. ``pe_aux_ckpt``
+            # overrides the registry's default checkpoint location when set;
+            # otherwise None lets ``load_pe_encoder`` resolve via the registry
+            # (e.g. ``models/pe/PE-Spatial-B16-512.pt``). The registry's loader
+            # auto-fetches from HF when the file is absent.
             self._encoder_aux = load_pe_encoder(
                 self.device,
                 name=self.aux_encoder_name,
-                model_id=None,
+                model_id=str(self.pe_aux_ckpt) if self.pe_aux_ckpt else None,
                 dtype=self.dtype,
             )
         return self._encoder_aux

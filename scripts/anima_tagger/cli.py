@@ -85,12 +85,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--aux_encoder",
-        default=None,
-        help="Optional auxiliary vision encoder for dual-encoder training "
-        "(e.g. 'pe_spatial' for PE-Spatial-B16-512). When set, build_features "
-        "builds a parallel cache, train builds a dual-MAPHead model that "
-        "concatenates pool outputs from both encoders. Must use --pool_kind=map. "
-        "Default: None (single-encoder, backward-compatible).",
+        default="pe_spatial",
+        help="Auxiliary vision encoder for dual-encoder training (default: "
+        "'pe_spatial' for PE-Spatial-B16-512). build_features builds a "
+        "parallel cache; train builds a dual-MAPHead model that concatenates "
+        "pool outputs from both encoders. Pass --aux_encoder '' (empty) for "
+        "the single-encoder path.",
     )
     p.add_argument(
         "--device",
@@ -145,7 +145,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
 
     # Train-mode knobs.
-    p.add_argument("--epochs", type=int, default=10)
+    p.add_argument("--epochs", type=int, default=30)
     p.add_argument("--batch_size", type=int, default=64)
     p.add_argument(
         "--postfix_every",
@@ -155,8 +155,17 @@ def parse_args() -> argparse.Namespace:
         "host-device sync) every N steps. Higher = fewer syncs / faster "
         "training; lower = more responsive progress bar (default: 10).",
     )
-    p.add_argument("--lr", type=float, default=1e-4)
+    p.add_argument("--lr", type=float, default=2e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
+    p.add_argument(
+        "--warmup_steps",
+        type=int,
+        default=250,
+        help="Linear lr warmup over the first N optimizer steps before cosine "
+        "decay takes over. 0 (default) disables warmup and runs pure cosine "
+        "on a per-step schedule. Typical values: 200-1000 for fresh-head "
+        "training on this scale.",
+    )
     p.add_argument("--d_hidden", type=int, default=1024)
     p.add_argument("--dropout", type=float, default=0.1)
 
@@ -168,7 +177,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_kind",
         choices=["map", "mean"],
-        default="map",
+        default="mean",
         help="Pool head over the main encoder's tokens. 'map' (default): "
         "K-query attention pool + CLS + mean concat → trunk. 'mean': "
         "single-vector mean-pool. Selects cache subdir "
@@ -177,17 +186,15 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_kind_aux",
         choices=["map", "mean"],
-        default=None,
-        help="Pool kind for the auxiliary encoder. Defaults to inheriting "
-        "--pool_kind. Set explicitly to mix — e.g. '--pool_kind mean "
-        "--aux_encoder pe_spatial --pool_kind_aux map' rides PE-Core's "
-        "cheap CLIP-aligned mean pool plus PE-Spatial's full MAP for "
-        "spatial detail.",
+        default="map",
+        help="Pool kind for the auxiliary encoder. Default 'map' pairs with "
+        "PE-Spatial's full attention pool. Set 'mean' to swap for a cheap "
+        "mean-pool on the aux side (rare — defeats the point of PE-Spatial).",
     )
     p.add_argument(
         "--pool_n_queries",
         type=int,
-        default=4,
+        default=0,
         help="MAP pool: number of learnable queries (default 4). Each query "
         "produces one [d_enc] vector; trunk input is "
         "(K + use_cls + use_mean) * d_enc.",
@@ -195,7 +202,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_n_heads",
         type=int,
-        default=8,
+        default=0,
         help="MAP pool: number of attention heads (default 8). Must divide "
         "the encoder dim (d_enc=1024 for PE-Core).",
     )
@@ -209,7 +216,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_use_mean",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="MAP pool: concat the patch-token mean as an aux channel "
         "(default on — gives the legacy baseline as a residual).",
     )
@@ -243,6 +250,18 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Aux MAP pool: concat the patch-token mean (default on).",
+    )
+    p.add_argument(
+        "--use_per_head_routing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Replace the concat-trunk + single tag_head with two parallel "
+        "trunks (one per encoder) and per-head soft gates. tag_head is split "
+        "by vocab category into a main-lean sub-head "
+        "(character/copyright/artist/count) biased toward PE-Core and an "
+        "aux-lean sub-head (general/metadata/deprecated) biased toward "
+        "PE-Spatial; rating + people heads start main-leaning. Requires "
+        "--aux_encoder. Default off (legacy concat-trunk path).",
     )
     p.add_argument(
         "--lambda_rating",
@@ -416,6 +435,13 @@ def parse_args() -> argparse.Namespace:
                 "to anima_lora/.env, or pass the paths via CLI flags."
             )
 
+    # Empty-string opt-out: --aux_encoder "" disables the dual-encoder path.
+    # Both --aux_encoder and --pool_kind_aux now default to truthy values
+    # (pe_spatial / map), so opting out via empty string is the user-facing
+    # off switch. Normalize to None so downstream truthiness checks work.
+    if args.aux_encoder == "":
+        args.aux_encoder = None
+
     if args.aux_encoder:
         if args.aux_encoder == args.encoder:
             raise SystemExit(
@@ -427,13 +453,20 @@ def parse_args() -> argparse.Namespace:
                 "--aux_encoder + --pe_lora_rank>0 is not supported. PE-LoRA "
                 "training reads pre-resized images and runs the encoder live; "
                 "the dual-encoder path consumes pre-encoded caches. "
-                "Use --pe_lora_rank=0 for v1."
+                "Use --pe_lora_rank=0 for v1 (or pass --aux_encoder '' "
+                "to disable the default aux encoder)."
             )
-    if args.pool_kind_aux is not None and not args.aux_encoder:
-        raise SystemExit(
-            "--pool_kind_aux only makes sense alongside --aux_encoder; "
-            "drop the flag or pass --aux_encoder <name>."
-        )
+    # calibrate / predict load encoder + aux config from out_dir/config.json,
+    # so cross-arg validation only applies to modes that consume CLI flags
+    # as the source of truth.
+    if args.mode in ("train", "build_features", "build_resized"):
+        if args.use_per_head_routing and not args.aux_encoder:
+            raise SystemExit(
+                "--use_per_head_routing needs --aux_encoder (the per-head soft "
+                "gate mixes a main and an aux trunk — there's no aux trunk to "
+                "mix in single-encoder mode). Drop --aux_encoder '' or pass "
+                "an explicit aux encoder name."
+            )
 
     return args
 

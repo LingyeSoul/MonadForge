@@ -7,6 +7,18 @@ separately via ``pool_kind`` (main) and ``pool_kind_aux`` (aux), so e.g.
 PE-Core can ride a cheap mean pool while PE-Spatial gets the full MAP
 treatment for spatial detail.
 
+When ``use_per_head_routing=True`` (dual-encoder only), the head replaces
+the single concat-trunk with two parallel projection trunks (main-only
+and aux-only, both → ``[B, d_hidden]``) plus a learnable scalar gate per
+output head. Each output head fuses ``α · h_main + (1 − α) · h_aux`` with
+``α = sigmoid(gate)``; the gate is initialized to bias each head toward
+its "natural" encoder (PE-Core for identity-class tags / rating / people-
+count, PE-Spatial for general / metadata / deprecated). The multi-label
+``tag_head`` is split into two sub-heads (main-lean over ``tag_indices_main``
+and aux-lean over ``tag_indices_aux``) and the two outputs are scattered
+back into a full ``[B, n_tags]`` tensor in vocab order so the downstream
+loss / threshold paths see the same shape as the legacy architecture.
+
 Architecture (dual-encoder, ``pool_kind="map"`` + ``pool_kind_aux="map"``):
 
 ::
@@ -57,8 +69,8 @@ checkpoints; ``forward`` returns ``None`` in that slot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -95,11 +107,55 @@ class AnimaTaggerConfig:
     pool_n_heads_aux: int = 8
     pool_use_cls_aux: bool = True
     pool_use_mean_aux: bool = True
+    # Per-head routing — split tag_head by category, gate each output head
+    # between main / aux trunks. Requires dual encoder. When False, the head
+    # collapses to the legacy concat-trunk + single tag_head path.
+    use_per_head_routing: bool = False
+    # Vocab indices routed to the main-leaning tag sub-head (typically
+    # character / copyright / artist / count). The aux-leaning sub-head
+    # receives the complement. Together they MUST partition [0, n_tags).
+    tag_indices_main: List[int] = field(default_factory=list)
+    tag_indices_aux: List[int] = field(default_factory=list)
+    # Sigmoid-of-scalar gate init biases. +2.0 → α ≈ 0.88 (main-lean),
+    # −2.0 → α ≈ 0.12 (aux-lean). The trainer can override but the model
+    # ignores these after init (they're a head-by-head prior, not a runtime
+    # knob).
+    gate_init_bias_main: float = 2.0
+    gate_init_bias_aux: float = -2.0
 
     @property
     def effective_pool_kind_aux(self) -> str:
         """Resolved aux pool kind. Mirrors ``pool_kind`` when unset."""
         return self.pool_kind_aux or self.pool_kind
+
+    def _validate_routing(self) -> None:
+        """Sanity-check routing fields when ``use_per_head_routing`` is on."""
+        if not self.use_per_head_routing:
+            return
+        if not self.has_aux:
+            raise ValueError(
+                "use_per_head_routing=True requires d_in_aux (dual encoder) — "
+                "the per-head gate has no aux trunk to mix in otherwise."
+            )
+        main = list(self.tag_indices_main)
+        aux = list(self.tag_indices_aux)
+        if not main and not aux:
+            raise ValueError(
+                "use_per_head_routing=True requires tag_indices_main / "
+                "tag_indices_aux to be set (built from vocab categories at "
+                "trainer init)."
+            )
+        combined = sorted(main + aux)
+        if combined != list(range(self.n_tags)):
+            raise ValueError(
+                f"tag_indices_main ∪ tag_indices_aux must partition "
+                f"[0, n_tags={self.n_tags}); got {len(main)} main + "
+                f"{len(aux)} aux = {len(combined)} total (with duplicates "
+                f"or gaps)."
+            )
+
+    def __post_init__(self) -> None:
+        self._validate_routing()
 
     def _trunk_chans(
         self, d_in: int, kind: str, n_q: int, use_cls: bool, use_mean: bool,
@@ -128,6 +184,24 @@ class AnimaTaggerConfig:
                 self.pool_n_queries_aux, self.pool_use_cls_aux, self.pool_use_mean_aux,
             )
         return total
+
+    @property
+    def main_trunk_in_dim(self) -> int:
+        """Width of the *main-only* trunk Linear (per-head routing path)."""
+        return self._trunk_chans(
+            self.d_in, self.pool_kind,
+            self.pool_n_queries, self.pool_use_cls, self.pool_use_mean,
+        )
+
+    @property
+    def aux_trunk_in_dim(self) -> int:
+        """Width of the *aux-only* trunk Linear (per-head routing path)."""
+        if not self.has_aux:
+            raise ValueError("aux_trunk_in_dim is only defined when d_in_aux is set")
+        return self._trunk_chans(
+            self.d_in_aux, self.effective_pool_kind_aux,
+            self.pool_n_queries_aux, self.pool_use_cls_aux, self.pool_use_mean_aux,
+        )
 
     @property
     def has_aux(self) -> bool:
@@ -162,6 +236,14 @@ class AnimaTaggerConfig:
             # default-pool_kind config.json identical to the prior version.
             if self.pool_kind_aux is not None and self.pool_kind_aux != self.pool_kind:
                 d["pool_kind_aux"] = self.pool_kind_aux
+        # Routing block — only emitted when active. Keeps non-routed configs
+        # byte-identical to the prior shape so legacy checkpoints round-trip.
+        if self.use_per_head_routing:
+            d["use_per_head_routing"] = True
+            d["tag_indices_main"] = list(self.tag_indices_main)
+            d["tag_indices_aux"] = list(self.tag_indices_aux)
+            d["gate_init_bias_main"] = self.gate_init_bias_main
+            d["gate_init_bias_aux"] = self.gate_init_bias_aux
         return d
 
     @classmethod
@@ -186,6 +268,11 @@ class AnimaTaggerConfig:
             pool_n_heads_aux=int(d.get("pool_n_heads_aux", 8)),
             pool_use_cls_aux=bool(d.get("pool_use_cls_aux", True)),
             pool_use_mean_aux=bool(d.get("pool_use_mean_aux", True)),
+            use_per_head_routing=bool(d.get("use_per_head_routing", False)),
+            tag_indices_main=list(d.get("tag_indices_main") or []),
+            tag_indices_aux=list(d.get("tag_indices_aux") or []),
+            gate_init_bias_main=float(d.get("gate_init_bias_main", 2.0)),
+            gate_init_bias_aux=float(d.get("gate_init_bias_aux", -2.0)),
         )
 
 
@@ -251,18 +338,72 @@ class AnimaTaggerHead(nn.Module):
                 d=cfg.d_in_aux,
                 n_queries=cfg.pool_n_queries_aux,
                 n_heads=cfg.pool_n_heads_aux,
-                dropout=0.0,
+                dropout=0.1,
             )
             if cfg.has_aux and cfg.effective_pool_kind_aux == "map" else None
         )
 
-        self.trunk = nn.Sequential(
-            nn.LayerNorm(cfg.trunk_in_dim),
-            nn.Linear(cfg.trunk_in_dim, cfg.d_hidden),
-            nn.GELU(),
-            nn.Dropout(cfg.dropout),
-        )
-        self.tag_head = nn.Linear(cfg.d_hidden, cfg.n_tags)
+        if cfg.use_per_head_routing:
+            # Two parallel projection trunks — each pool projects to d_hidden
+            # independently, then per-head soft gates fuse them. No shared
+            # concat trunk on this path.
+            self.trunk = None
+            self.trunk_main = nn.Sequential(
+                nn.LayerNorm(cfg.main_trunk_in_dim),
+                nn.Linear(cfg.main_trunk_in_dim, cfg.d_hidden),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+            )
+            self.trunk_aux = nn.Sequential(
+                nn.LayerNorm(cfg.aux_trunk_in_dim),
+                nn.Linear(cfg.aux_trunk_in_dim, cfg.d_hidden),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+            )
+            # Per-head scalar gates. α = sigmoid(g); main-lean inits to +2.0
+            # (α ≈ 0.88), aux-lean to −2.0 (α ≈ 0.12). The split tag heads
+            # supervise disjoint vocab slices — scattered back into [n_tags]
+            # in forward() so callers see the legacy output shape.
+            self.gate_tag_main = nn.Parameter(
+                torch.full((), cfg.gate_init_bias_main)
+            )
+            self.gate_tag_aux = nn.Parameter(
+                torch.full((), cfg.gate_init_bias_aux)
+            )
+            self.gate_rating = nn.Parameter(
+                torch.full((), cfg.gate_init_bias_main)
+            )
+            n_main = len(cfg.tag_indices_main)
+            n_aux = len(cfg.tag_indices_aux)
+            self.tag_head_main = nn.Linear(cfg.d_hidden, n_main) if n_main > 0 else None
+            self.tag_head_aux = nn.Linear(cfg.d_hidden, n_aux) if n_aux > 0 else None
+            # Cache the vocab-index tensors as non-trainable buffers so they
+            # ride device / dtype moves with the module and round-trip in
+            # state_dict (useful for sanity-checking loaded checkpoints).
+            self.register_buffer(
+                "tag_idx_main",
+                torch.tensor(cfg.tag_indices_main, dtype=torch.long),
+                persistent=True,
+            )
+            self.register_buffer(
+                "tag_idx_aux",
+                torch.tensor(cfg.tag_indices_aux, dtype=torch.long),
+                persistent=True,
+            )
+            self.tag_head = None
+        else:
+            self.trunk = nn.Sequential(
+                nn.LayerNorm(cfg.trunk_in_dim),
+                nn.Linear(cfg.trunk_in_dim, cfg.d_hidden),
+                nn.GELU(),
+                nn.Dropout(cfg.dropout),
+            )
+            self.tag_head = nn.Linear(cfg.d_hidden, cfg.n_tags)
+            self.trunk_main = None
+            self.trunk_aux = None
+            self.tag_head_main = None
+            self.tag_head_aux = None
+
         self.rating_head = nn.Linear(cfg.d_hidden, cfg.n_ratings)
         # Optional — older checkpoints have n_people_counts=0 and no people
         # head in the state_dict. Keeping the attribute as None lets `forward`
@@ -271,6 +412,14 @@ class AnimaTaggerHead(nn.Module):
             nn.Linear(cfg.d_hidden, cfg.n_people_counts)
             if cfg.n_people_counts > 0 else None
         )
+        # Gate for the people head — main-lean. Only created on the routing
+        # path AND when the people head exists.
+        if cfg.use_per_head_routing and self.people_head is not None:
+            self.gate_people: Optional[nn.Parameter] = nn.Parameter(
+                torch.full((), cfg.gate_init_bias_main)
+            )
+        else:
+            self.gate_people = None
 
     @staticmethod
     def _pool_one(
@@ -340,16 +489,50 @@ class AnimaTaggerHead(nn.Module):
             feat, cfg.pool_kind, self.pool,
             cfg.pool_use_cls, cfg.pool_use_mean, "main",
         )
+        aux: Optional[torch.Tensor] = None
         if cfg.has_aux:
             assert feat_aux is not None
             aux = self._pool_side(
                 feat_aux, cfg.effective_pool_kind_aux, self.pool_aux,
                 cfg.pool_use_cls_aux, cfg.pool_use_mean_aux, "aux",
             )
-            x = torch.cat([main, aux], dim=-1)
-        else:
-            x = main
 
+        if cfg.use_per_head_routing:
+            # Dual-trunk + per-head soft gate. Each output head fuses
+            # `α · h_main + (1 − α) · h_aux` with its own learnable α.
+            assert aux is not None  # use_per_head_routing forces has_aux
+            assert self.trunk_main is not None and self.trunk_aux is not None
+            h_main = self.trunk_main(main)
+            h_aux = self.trunk_aux(aux)
+
+            def _fuse(gate: torch.Tensor) -> torch.Tensor:
+                alpha = torch.sigmoid(gate)
+                return alpha * h_main + (1.0 - alpha) * h_aux
+
+            B = h_main.shape[0]
+            tag_logits = h_main.new_zeros((B, cfg.n_tags))
+            if self.tag_head_main is not None:
+                h_tg_main = _fuse(self.gate_tag_main)
+                logits_main = self.tag_head_main(h_tg_main)
+                tag_logits.index_copy_(1, self.tag_idx_main, logits_main)
+            if self.tag_head_aux is not None:
+                h_tg_aux = _fuse(self.gate_tag_aux)
+                logits_aux = self.tag_head_aux(h_tg_aux)
+                tag_logits.index_copy_(1, self.tag_idx_aux, logits_aux)
+
+            h_rate = _fuse(self.gate_rating)
+            rating_logits = self.rating_head(h_rate)
+
+            if self.people_head is not None and self.gate_people is not None:
+                h_people = _fuse(self.gate_people)
+                people_logits = self.people_head(h_people)
+            else:
+                people_logits = None
+            return tag_logits, rating_logits, people_logits
+
+        # Legacy concat-trunk path.
+        x = torch.cat([main, aux], dim=-1) if aux is not None else main
+        assert self.trunk is not None and self.tag_head is not None
         h = self.trunk(x)
         people_logits = self.people_head(h) if self.people_head is not None else None
         return self.tag_head(h), self.rating_head(h), people_logits

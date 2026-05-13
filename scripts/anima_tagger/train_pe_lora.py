@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 
 from .train_common import (
     GroupRouter,
+    build_warmup_cosine_scheduler,
     compute_grouped_loss,
     people_class_weights,
     rating_class_weights,
@@ -195,19 +196,6 @@ def cmd_train_pe_lora(args: argparse.Namespace) -> None:
     else:
         logger.info("no typed groups — pure BCE on every tag")
 
-    # Two param groups so the head trains at --lr and the LoRA at --pe_lora_lr.
-    opt = torch.optim.AdamW(
-        [
-            {"params": list(model.parameters()), "lr": args.lr,
-             "weight_decay": args.weight_decay},
-            {"params": list(pe_lora.parameters()), "lr": args.pe_lora_lr,
-             "weight_decay": 0.0},
-        ]
-    )
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=args.epochs, eta_min=args.lr * 0.05
-    )
-
     train_sampler = BucketBatchSampler(
         train_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=True
     )
@@ -227,6 +215,22 @@ def cmd_train_pe_lora(args: argparse.Namespace) -> None:
         num_workers=args.feature_cache_workers,
         collate_fn=collate_image_batch,
         pin_memory=True,
+    )
+
+    # Two param groups so the head trains at --lr and the LoRA at --pe_lora_lr.
+    opt = torch.optim.AdamW(
+        [
+            {"params": list(model.parameters()), "lr": args.lr,
+             "weight_decay": args.weight_decay},
+            {"params": list(pe_lora.parameters()), "lr": args.pe_lora_lr,
+             "weight_decay": 0.0},
+        ]
+    )
+    sched = build_warmup_cosine_scheduler(
+        opt,
+        warmup_steps=int(getattr(args, "warmup_steps", 0)),
+        total_steps=max(args.epochs * len(train_loader), 1),
+        eta_min=args.lr * 0.05,
     )
 
     def _forward_pool(images_u8: torch.Tensor) -> torch.Tensor:
@@ -292,6 +296,7 @@ def cmd_train_pe_lora(args: argparse.Namespace) -> None:
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
+            sched.step()
             ep_loss += loss.detach()
             ep_tag_loss += l_tag.detach()
             ep_rate_loss += l_rate.detach()
@@ -306,7 +311,6 @@ def cmd_train_pe_lora(args: argparse.Namespace) -> None:
                 if ce_people is not None and people_logits is not None:
                     postfix["ppl"] = f"{l_people.item():.4f}"
                 bar.set_postfix(**postfix)
-        sched.step()
         denom = max(n_batches, 1)
         avg_loss = (ep_loss / denom).item()
         avg_tag = (ep_tag_loss / denom).item()

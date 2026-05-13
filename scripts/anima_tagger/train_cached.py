@@ -21,13 +21,14 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 
 from .caches import cache_dir_for
 from .train_common import (
     GroupRouter,
+    build_warmup_cosine_scheduler,
     compute_grouped_loss,
     eval_split,
     people_class_weights,
@@ -38,14 +39,62 @@ from .train_common import (
 logger = logging.getLogger(__name__)
 
 
+def _routing_indices_from_vocab(
+    vocab_dict: Dict, n_tags: int,
+) -> Tuple[List[int], List[int]]:
+    """Split vocab indices into (main-lean, aux-lean) buckets by category.
+
+    Main-lean (PE-Core-aligned): character, copyright, artist, count — these
+    are global semantic / identity-class signals that match what CLIP-style
+    PE-Core was trained to recognize. Aux-lean (PE-Spatial-aligned):
+    everything else (general, metadata, deprecated) — patch-level detail
+    where the spatial encoder's per-token features carry the signal.
+
+    Returns a deterministic partition of ``[0, n_tags)`` in vocab order.
+    """
+    main_cats = {"character", "copyright", "artist", "count"}
+    main: List[int] = []
+    aux: List[int] = []
+    for t in vocab_dict.get("tags", []):
+        idx = int(t["index"])
+        cat = str(t.get("category", "general"))
+        if cat in main_cats:
+            main.append(idx)
+        else:
+            aux.append(idx)
+    main.sort()
+    aux.sort()
+    if sorted(main + aux) != list(range(n_tags)):
+        raise SystemExit(
+            f"routing partition is malformed: {len(main)} main + {len(aux)} aux "
+            f"!= {n_tags} expected. vocab.json may carry duplicate or missing "
+            f"tag indices."
+        )
+    return main, aux
+
+
 def _make_cfg_from_args(
-    args, d_in, n_tags, n_ratings, n_people_counts, *, d_in_aux: Optional[int] = None,
+    args,
+    d_in,
+    n_tags,
+    n_ratings,
+    n_people_counts,
+    *,
+    d_in_aux: Optional[int] = None,
+    routing: Optional[Tuple[List[int], List[int]]] = None,
 ):
     from library.captioning.anima_tagger_model import AnimaTaggerConfig
 
     # pool_kind_aux=None inherits pool_kind (matches the dual-MAP path's
     # original behavior); pass through whatever the CLI set explicitly so
     # mixed configs (mean main + map aux) round-trip.
+    use_routing = bool(getattr(args, "use_per_head_routing", False))
+    if use_routing and routing is None:
+        raise SystemExit(
+            "use_per_head_routing=True but no (main, aux) index partition was "
+            "supplied — call _routing_indices_from_vocab(vocab_dict, n_tags) first."
+        )
+    tag_main, tag_aux = routing if (use_routing and routing) else ([], [])
     return AnimaTaggerConfig(
         d_in=d_in,
         n_tags=n_tags,
@@ -64,6 +113,9 @@ def _make_cfg_from_args(
         pool_n_heads_aux=args.pool_n_heads_aux,
         pool_use_cls_aux=args.pool_use_cls_aux,
         pool_use_mean_aux=args.pool_use_mean_aux,
+        use_per_head_routing=use_routing,
+        tag_indices_main=tag_main,
+        tag_indices_aux=tag_aux,
     )
 
 
@@ -87,6 +139,10 @@ def _save_cfg_dict(args, cfg, d_in, best_f1):
     if aux_encoder:
         d["aux_encoder"] = aux_encoder
         d["d_in_aux"] = cfg.d_in_aux
+    if cfg.use_per_head_routing:
+        d["use_per_head_routing"] = True
+        d["n_tag_indices_main"] = len(cfg.tag_indices_main)
+        d["n_tag_indices_aux"] = len(cfg.tag_indices_aux)
     return d
 
 
@@ -126,6 +182,13 @@ def _train_cached_mean(args: argparse.Namespace) -> None:
     )
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if getattr(args, "use_per_head_routing", False):
+        # Mean-pool path is single-encoder; routing requires aux. Fail fast.
+        raise SystemExit(
+            "--use_per_head_routing requires --aux_encoder, which is "
+            "incompatible with the single-encoder mean-pool path. Re-run "
+            "with --aux_encoder pe_spatial --pool_kind map."
+        )
     cfg = _make_cfg_from_args(
         args,
         d_in=train_ds.d_in,
@@ -179,11 +242,15 @@ def _train_cached_mean(args: argparse.Namespace) -> None:
     opt = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
     )
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=args.epochs, eta_min=args.lr * 0.05
+    n_train = len(train_ds)
+    steps_per_epoch = (n_train + args.batch_size - 1) // args.batch_size
+    sched = build_warmup_cosine_scheduler(
+        opt,
+        warmup_steps=int(getattr(args, "warmup_steps", 0)),
+        total_steps=max(args.epochs * steps_per_epoch, 1),
+        eta_min=args.lr * 0.05,
     )
 
-    n_train = len(train_ds)
     rng = torch.Generator(device="cpu").manual_seed(args.seed)
     best_f1 = -1.0
     best_state: Dict[str, torch.Tensor] = {}
@@ -224,6 +291,7 @@ def _train_cached_mean(args: argparse.Namespace) -> None:
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
+            sched.step()
             ep_loss += loss.item()
             ep_tag_loss += l_tag.item()
             ep_rate_loss += l_rate.item()
@@ -236,7 +304,6 @@ def _train_cached_mean(args: argparse.Namespace) -> None:
             if ce_people is not None and people_logits is not None:
                 postfix["ppl"] = f"{l_people.item():.4f}"
             bar.set_postfix(**postfix)
-        sched.step()
         denom = max(n_batches, 1)
         avg_loss = ep_loss / denom
         avg_tag = ep_tag_loss / denom
@@ -506,6 +573,19 @@ def _train_cached_map(args: argparse.Namespace) -> None:
     )
 
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    routing: Optional[Tuple[List[int], List[int]]] = None
+    if getattr(args, "use_per_head_routing", False):
+        if not dual:
+            raise SystemExit(
+                "--use_per_head_routing requires --aux_encoder (the per-head "
+                "soft gate needs an aux trunk to mix in)."
+            )
+        routing = _routing_indices_from_vocab(vocab_dict, train_ds.n_tags)
+        logger.info(
+            "per-head routing: %d main-lean tags (character/copyright/artist/count) + "
+            "%d aux-lean tags (general/metadata/deprecated)",
+            len(routing[0]), len(routing[1]),
+        )
     cfg = _make_cfg_from_args(
         args,
         d_in=train_ds.d_in,
@@ -513,13 +593,19 @@ def _train_cached_map(args: argparse.Namespace) -> None:
         n_ratings=train_ds.n_ratings,
         n_people_counts=train_ds.n_people_counts,
         d_in_aux=d_in_aux,
+        routing=routing,
     )
     model = AnimaTaggerHead(cfg).to(device)
     logger.info(
         "head: pool_kind=%s n_queries=%d n_heads=%d use_cls=%s use_mean=%s "
-        "trunk_in=%d d_hidden=%d%s",
+        "trunk_in=%s d_hidden=%d%s",
         cfg.pool_kind, cfg.pool_n_queries, cfg.pool_n_heads,
-        cfg.pool_use_cls, cfg.pool_use_mean, cfg.trunk_in_dim, cfg.d_hidden,
+        cfg.pool_use_cls, cfg.pool_use_mean,
+        (
+            f"main={cfg.main_trunk_in_dim}/aux={cfg.aux_trunk_in_dim} (routed)"
+            if cfg.use_per_head_routing else str(cfg.trunk_in_dim)
+        ),
+        cfg.d_hidden,
         (
             f"  aux: n_q={cfg.pool_n_queries_aux} n_h={cfg.pool_n_heads_aux} "
             f"use_cls={cfg.pool_use_cls_aux} use_mean={cfg.pool_use_mean_aux}"
@@ -562,13 +648,6 @@ def _train_cached_map(args: argparse.Namespace) -> None:
     else:
         logger.info("no typed groups — pure BCE on every tag")
 
-    opt = torch.optim.AdamW(
-        model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
-    )
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(
-        opt, T_max=args.epochs, eta_min=args.lr * 0.05
-    )
-
     train_sampler = BucketBatchSampler(
         train_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=True
     )
@@ -589,6 +668,16 @@ def _train_cached_map(args: argparse.Namespace) -> None:
         num_workers=args.feature_cache_workers,
         collate_fn=collate_fn,
         pin_memory=True,
+    )
+
+    opt = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay,
+    )
+    sched = build_warmup_cosine_scheduler(
+        opt,
+        warmup_steps=int(getattr(args, "warmup_steps", 0)),
+        total_steps=max(args.epochs * len(train_loader), 1),
+        eta_min=args.lr * 0.05,
     )
 
     best_f1 = -1.0
@@ -639,6 +728,7 @@ def _train_cached_map(args: argparse.Namespace) -> None:
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
+            sched.step()
             ep_loss += loss.detach()
             ep_tag_loss += l_tag.detach()
             ep_rate_loss += l_rate.detach()
@@ -653,7 +743,6 @@ def _train_cached_map(args: argparse.Namespace) -> None:
                 if ce_people is not None and people_logits is not None:
                     postfix["ppl"] = f"{l_people.item():.4f}"
                 bar.set_postfix(**postfix)
-        sched.step()
         denom = max(n_batches, 1)
         avg_loss = (ep_loss / denom).item()
         avg_tag = (ep_tag_loss / denom).item()

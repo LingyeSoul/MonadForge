@@ -1,12 +1,23 @@
-"""Vision-encoder registry (originally for img2emb; reused live by IP-Adapter).
+"""Vision-encoder registry (originally for img2emb; reused live by IP-Adapter
+and the Anima Tagger).
 
-PE-Core-L14-336 (Meta Perception Encoder) is the sole supported encoder,
-vendored at ``library/models/pe.py`` so we don't have to clone
+Two Meta Perception Encoder variants are registered:
+
+* ``pe`` — PE-Core-L14-336. Global / CLIP-aligned features. Used by IP-Adapter,
+  REPA, the LoRA pipeline's PE feature cache, and the Anima Tagger's primary
+  encoder.
+* ``pe_spatial`` — PE-Spatial-B16-512. Spatial-fine-tuned variant from the same
+  paper. Patch=16, native 32×32 grid. No CLIP projection / no LN-post / no
+  pool head — only the patch token sequence is meaningful. Used by the Anima
+  Tagger as the auxiliary encoder for spatial detail / long-tail tags.
+
+Both vendored at ``library/models/pe.py`` so we don't have to clone
 perception_models or install xformers.
 
 ``encode(pixel_values)`` returns ``(last_hidden_state[B, T, D],
-pooled[B, D_pool])``. ``T`` includes a CLS token at position 0 (PE-Core-L14-336
-has ``use_cls_token=True``).
+pooled[B, D_pool])``. ``T`` includes a CLS token at position 0 for both
+variants. For ``pe_spatial`` the "pooled" output is just the token sequence
+again (pool_type="none"); callers should consume ``last_hidden_state`` only.
 """
 
 from __future__ import annotations
@@ -43,11 +54,15 @@ class _EncoderOutput:
         self.pooler_output = pooler_output
 
 
-# --------------------------------------------------------------------------- PE-Core-L14-336
+# --------------------------------------------------------------------------- PE family
 
 
 def _default_pe_model_id() -> str:
     return str(REPO_ROOT / "models" / "pe" / "PE-Core-L14-336.pt")
+
+
+def _default_pe_spatial_model_id() -> str:
+    return str(REPO_ROOT / "models" / "pe" / "PE-Spatial-B16-512.pt")
 
 
 class _PEProcessor:
@@ -93,11 +108,22 @@ class _PEEncoder:
         return _EncoderOutput(last_hidden_state=feats, pooler_output=pooled)
 
 
-def _load_pe_encoder(device: torch.device, model_id: str) -> _PEEncoder:
-    """Build the vendored PE vision tower and load Meta's official ``.pt``
-    checkpoint (CLIP-format). ``model_id`` is a local file path to the ``.pt``;
-    if missing, we auto-fetch ``facebook/PE-Core-L14-336/PE-Core-L14-336.pt``
-    from the Hugging Face Hub into that path (one-time)."""
+def _load_pe_variant(
+    device: torch.device,
+    model_id: str,
+    *,
+    config_name: str,
+    repo_id: str,
+    filename: str,
+    download_make_target: str,
+) -> _PEEncoder:
+    """Build a vendored PE vision tower and load Meta's official ``.pt`` weights.
+
+    ``config_name`` selects the ``PE_CONFIGS`` entry to instantiate;
+    ``repo_id`` / ``filename`` parameterize the HF auto-download fallback.
+    Used by both PE-Core and PE-Spatial registry entries — the only thing
+    that differs between them is the build name and the download tuple.
+    """
     from library.models.pe import build_pe_vision
 
     ckpt_path = Path(model_id)
@@ -106,19 +132,19 @@ def _load_pe_encoder(device: torch.device, model_id: str) -> _PEEncoder:
             from huggingface_hub import hf_hub_download
         except ImportError as e:
             raise FileNotFoundError(
-                f"PE checkpoint not found at {ckpt_path} and huggingface_hub "
-                f"is not available for auto-download. Run `make download-pe` "
-                f"or install huggingface_hub."
+                f"{config_name} checkpoint not found at {ckpt_path} and "
+                f"huggingface_hub is not available for auto-download. "
+                f"Run `make {download_make_target}` or install huggingface_hub."
             ) from e
         logger.info(
-            f"PE checkpoint missing at {ckpt_path} - fetching "
-            f"facebook/PE-Core-L14-336/PE-Core-L14-336.pt (one-time)."
+            f"{config_name} checkpoint missing at {ckpt_path} - fetching "
+            f"{repo_id}/{filename} (one-time)."
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         downloaded = Path(
             hf_hub_download(
-                repo_id="facebook/PE-Core-L14-336",
-                filename="PE-Core-L14-336.pt",
+                repo_id=repo_id,
+                filename=filename,
                 local_dir=str(ckpt_path.parent),
             )
         )
@@ -126,15 +152,38 @@ def _load_pe_encoder(device: torch.device, model_id: str) -> _PEEncoder:
             shutil.move(str(downloaded), str(ckpt_path))
         if not ckpt_path.is_file():
             raise FileNotFoundError(
-                f"PE checkpoint expected at {ckpt_path} after download but "
-                f"missing. Check huggingface_hub or run `make download-pe`."
+                f"{config_name} checkpoint expected at {ckpt_path} after "
+                f"download but missing. Check huggingface_hub or run "
+                f"`make {download_make_target}`."
             )
-    logger.info(f"Loading PE-Core-L14-336 from {ckpt_path}")
-    model = build_pe_vision("PE-Core-L14-336")
+    logger.info(f"Loading {config_name} from {ckpt_path}")
+    model = build_pe_vision(config_name)
     model.load_pe_checkpoint(str(ckpt_path), verbose=True)
     model = model.to(dtype=torch.bfloat16, device=device).eval()
     model.requires_grad_(False)
     return _PEEncoder(model)
+
+
+def _load_pe_encoder(device: torch.device, model_id: str) -> _PEEncoder:
+    return _load_pe_variant(
+        device,
+        model_id,
+        config_name="PE-Core-L14-336",
+        repo_id="facebook/PE-Core-L14-336",
+        filename="PE-Core-L14-336.pt",
+        download_make_target="download-pe",
+    )
+
+
+def _load_pe_spatial_encoder(device: torch.device, model_id: str) -> _PEEncoder:
+    return _load_pe_variant(
+        device,
+        model_id,
+        config_name="PE-Spatial-B16-512",
+        repo_id="facebook/PE-Spatial-B16-512",
+        filename="PE-Spatial-B16-512.pt",
+        download_make_target="download-pe-spatial",
+    )
 
 
 # --------------------------------------------------------------------------- registry
@@ -163,6 +212,18 @@ _REGISTRY: dict[str, EncoderInfo] = {
         default_model_id=_default_pe_model_id,
         processor_factory=_PEProcessor,
         loader=_load_pe_encoder,
+    ),
+    # PE-Spatial-B16-512 — spatial-fine-tuned PE, base width. d_pool=d_enc
+    # because pool_type="none" (no separate pooled output exists; downstream
+    # consumers use the token sequence directly).
+    "pe_spatial": EncoderInfo(
+        name="pe_spatial",
+        bucket_spec=get_bucket_spec("pe_spatial"),
+        d_enc=768,
+        d_pool=768,
+        default_model_id=_default_pe_spatial_model_id,
+        processor_factory=_PEProcessor,
+        loader=_load_pe_spatial_encoder,
     ),
 }
 

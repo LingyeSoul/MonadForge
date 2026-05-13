@@ -26,6 +26,40 @@ def pos_weight_sqrt(multi_hot: torch.Tensor) -> torch.Tensor:
     return torch.sqrt(n_neg / n_pos)
 
 
+def build_warmup_cosine_scheduler(
+    opt: torch.optim.Optimizer,
+    *,
+    warmup_steps: int,
+    total_steps: int,
+    eta_min: float,
+) -> torch.optim.lr_scheduler.LRScheduler:
+    """Linear warmup (1e-3 → 1.0) then cosine decay to ``eta_min``.
+
+    Stepped per batch — callers must call ``sched.step()`` after every
+    ``opt.step()``, not per epoch. When ``warmup_steps == 0`` returns a
+    plain ``CosineAnnealingLR`` (drop-in for the legacy schedule, just on
+    a per-step cadence).
+    """
+    if total_steps <= 0:
+        raise ValueError(f"total_steps must be > 0, got {total_steps}")
+    if not 0 <= warmup_steps < total_steps:
+        raise ValueError(
+            f"warmup_steps must be in [0, total_steps); got "
+            f"warmup_steps={warmup_steps} total_steps={total_steps}"
+        )
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        opt, T_max=total_steps - warmup_steps, eta_min=eta_min
+    )
+    if warmup_steps == 0:
+        return cosine
+    warmup = torch.optim.lr_scheduler.LinearLR(
+        opt, start_factor=1e-3, end_factor=1.0, total_iters=warmup_steps
+    )
+    return torch.optim.lr_scheduler.SequentialLR(
+        opt, schedulers=[warmup, cosine], milestones=[warmup_steps]
+    )
+
+
 def rating_class_weights(rating_idx: torch.Tensor, n_ratings: int) -> torch.Tensor:
     """Inverse-frequency weights, normalized so mean weight = 1."""
     counts = torch.bincount(rating_idx, minlength=n_ratings).float().clamp_min(1.0)
