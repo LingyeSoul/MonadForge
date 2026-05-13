@@ -17,6 +17,7 @@ from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
     _parse_reft_layers,
     _refuse_split_hydra_keys,
+    _refuse_split_stacked_experts_keys,
     _refuse_unfused_attn_lora_keys,
     _stack_lora_ups,
 )
@@ -26,6 +27,7 @@ from networks.lora_modules import (
     OrthoHydraLoRAExpModule,
     OrthoLoRAExpModule,
     ReFTModule,
+    StackedExpertsLoRAModule,
     _sigma_sinusoidal_features,
 )
 
@@ -33,6 +35,82 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 _BLOCK_IDX_RE = re.compile(r"blocks\.(\d+)\.")
+
+
+class GlobalRouter(torch.nn.Module):
+    """Single network-level router feeding every routing-aware module.
+
+    Two-layer MLP → softmax/τ — same parameterization as FeRA's
+    ``SoftFrequencyRouter``. Final layer is zero-init so step-0 gates
+    are uniform across experts. Combined with zero-init expert ups (free
+    mode) or zero-init ``lambda_layer`` (ortho mode) this guarantees
+    ΔW=0 at the first optimizer step (clean residual baseline).
+
+    Owned by ``LoRANetwork`` when ``cfg.route_per_layer=False`` and
+    ``cfg.use_moe_style`` selects an MoE layout. Reads the per-step
+    routing signal (FEI simplex / sinusoidal σ features) supplied by
+    the train loop via ``set_fei`` / ``set_sigma``, and broadcasts the
+    resulting gates ``(B, E)`` to every routing-aware module's
+    ``_routing_weights`` buffer via ``LoRANetwork.set_routing_weights``.
+
+    Exposes ``_last_gates`` / ``_last_input`` for the metrics layer
+    (``LoRANetwork.metrics`` and the future FECL handler in task #5);
+    both are detached and overwritten per forward.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        num_experts: int,
+        *,
+        hidden_dim: int = 64,
+        tau: float = 0.7,
+    ) -> None:
+        super().__init__()
+        if input_dim <= 0:
+            raise ValueError(
+                f"GlobalRouter: input_dim must be > 0, got {input_dim}"
+            )
+        if num_experts <= 1:
+            raise ValueError(
+                f"GlobalRouter: num_experts must be > 1, got {num_experts}"
+            )
+        self.input_dim = int(input_dim)
+        self.num_experts = int(num_experts)
+        self.tau = float(tau)
+        self.net = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, num_experts),
+        )
+        # Uniform-at-init: zero the output layer so softmax(0/τ) = 1/E.
+        torch.nn.init.zeros_(self.net[-1].weight)
+        torch.nn.init.zeros_(self.net[-1].bias)
+
+        # Per-step diagnostics. Overwritten on every forward; readable by
+        # ``LoRANetwork.metrics`` and the FECL loss handler. Detached at
+        # write so holding the reference across the step boundary doesn't
+        # pin autograd state. ``_last_fei`` is an alias of ``_last_input``
+        # under the FEI router source — wired in ``forward``.
+        self._last_gates: Optional[torch.Tensor] = None
+        self._last_input: Optional[torch.Tensor] = None
+        self._last_fei: Optional[torch.Tensor] = None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, input_dim). Promote to fp32 for the matmul + softmax —
+        # bf16 logits + softmax(τ<1) underflow at low energies.
+        x32 = x.float()
+        logits = self.net(x32)
+        gates = torch.softmax(logits / self.tau, dim=-1)
+        self._last_gates = gates.detach()
+        # ``_last_input`` is the raw routing-signal tensor that fed this
+        # forward — FEI simplex (router_source="fei") or sinusoidal-σ
+        # features ("sigma"). Aliased as ``_last_fei`` for the FECL handler
+        # / plan2 task #5 — keeps the diagnostic surface stable across
+        # router-source variants.
+        self._last_input = x32.detach()
+        self._last_fei = self._last_input
+        return gates
 
 
 class LoRANetwork(torch.nn.Module):
@@ -589,6 +667,37 @@ class LoRANetwork(torch.nn.Module):
         # ~56 per-module ``copy_`` calls per training step.
         self._wire_shared_sigma_buffers()
         self._wire_shared_fei_buffers()
+        self._wire_shared_routing_buffers()
+
+        # Build the network-level GlobalRouter when the cfg selects MoE
+        # without per-Linear routers. The input dim is derived from the
+        # routing signal: ``"fei"`` → ``fei_feature_dim`` simplex,
+        # ``"sigma"`` → ``sigma_feature_dim`` sinusoidal features. When the
+        # routing-aware module list is empty (no StackedExperts in the
+        # build, e.g. shared_A + per-network global is a future stub),
+        # the router is built but never fires.
+        self.global_router: Optional[GlobalRouter] = None
+        if cfg.use_moe_style is not False and not cfg.route_per_layer:
+            if cfg.router_source == "fei":
+                router_input_dim = int(cfg.fei_feature_dim)
+            elif cfg.router_source == "sigma":
+                router_input_dim = int(cfg.sigma_feature_dim)
+            else:
+                router_input_dim = 0
+            if router_input_dim > 0 and cfg.num_experts > 1:
+                self.global_router = GlobalRouter(
+                    input_dim=router_input_dim,
+                    num_experts=int(cfg.num_experts),
+                    hidden_dim=int(cfg.router_hidden_dim),
+                    tau=float(cfg.router_tau),
+                )
+                logger.info(
+                    f"GlobalRouter: source={cfg.router_source!r}, "
+                    f"input_dim={router_input_dim}, "
+                    f"num_experts={cfg.num_experts}, "
+                    f"hidden={cfg.router_hidden_dim}, τ={cfg.router_tau:.2f}, "
+                    f"routing-aware modules={len(self._routing_aware_loras)}"
+                )
 
     def _wire_shared_sigma_buffers(self) -> None:
         """Replace each HydraLoRA / OrthoHydraLoRA module's ``_sigma`` and
@@ -670,6 +779,36 @@ class LoRANetwork(torch.nn.Module):
             for lora in loras:
                 lora._buffers["_fei"] = shared_feat
             self._shared_fei[dim] = shared_feat
+
+    def _wire_shared_routing_buffers(self) -> None:
+        """Alias every routing-aware module's ``_routing_weights`` buffer to
+        one network-level shared tensor.
+
+        Mirrors ``_wire_shared_sigma_buffers`` / ``_wire_shared_fei_buffers``.
+        ``StackedExpertsLoRAModule.__init__`` registers a ``(1, E)`` uniform
+        placeholder; this pass picks the first module's buffer as canonical
+        and rebinds every other module to the same object. ``set_routing_weights``
+        then updates one shared tensor per step; aliased module buffers
+        see the new gates through shared storage.
+
+        All routing-aware modules in our build share the same ``num_experts``
+        by construction (driven by ``cfg.num_experts``), so a single shared
+        tensor is enough — no per-dim split like ``_shared_fei``.
+        """
+        routing_loras: List[torch.nn.Module] = []
+        for lora in self.unet_loras + self.text_encoder_loras:
+            if "_routing_weights" not in lora._buffers:
+                continue
+            routing_loras.append(lora)
+        self._routing_aware_loras = routing_loras
+        if not routing_loras:
+            self._shared_routing_weights: Optional[torch.Tensor] = None
+            return
+
+        canonical = routing_loras[0]._buffers["_routing_weights"]
+        for lora in routing_loras:
+            lora._buffers["_routing_weights"] = canonical
+        self._shared_routing_weights = canonical
 
     def prepare_network(self, args):
         if getattr(args, "lora_fp32_accumulation", False):
@@ -917,35 +1056,65 @@ class LoRANetwork(torch.nn.Module):
         ``cfg.fei_feature_dim`` (default 2 for the simplex). Caller is the
         train/inference loop running ``library.runtime.fei.compute_fei_2band``
         on ``z_t`` once per step.
+
+        When ``cfg.route_per_layer=False`` and a ``GlobalRouter`` is wired,
+        the router fires on the fresh FEI and its gates are broadcast to
+        every routing-aware module via ``set_routing_weights`` in the same
+        call — one entry point for the FeRA-style global-router path.
         """
         fei = fei.detach()
-        if not getattr(self, "_fei_aware_loras", None):
-            return
-        if not self.use_fei_router:
-            return
-        # Group loras by their feature dim — every fei-aware module currently
-        # in our network shares the same dim (cfg-level), but the loop is
-        # robust to a future per-layer dim override.
-        for dim, loras in self._fei_aware_loras_by_dim.items():
-            canonical = loras[0]._buffers["_fei"]
-            cast = fei.to(dtype=canonical.dtype, device=canonical.device)
-            if cast.dim() == 1:
-                cast = cast.unsqueeze(0)
-            if cast.shape[-1] != dim:
-                raise ValueError(
-                    f"set_fei: fei.shape[-1]={cast.shape[-1]} != fei_feature_dim={dim}"
-                )
-            current_shared = self._shared_fei.get(dim)
-            needs_rebind = (
-                current_shared is not canonical or canonical.shape != cast.shape
+        # Fast-path: if there are no per-Linear FEI consumers and no global
+        # router needs FEI either, nothing to do.
+        has_per_layer_fei = bool(getattr(self, "_fei_aware_loras", None))
+        global_fei_router = (
+            self.global_router
+            if (
+                self.global_router is not None
+                and self.cfg.router_source == "fei"
+                and not self.cfg.route_per_layer
             )
-            if needs_rebind:
-                new_fei = cast.detach().clone()
-                for lora in loras:
-                    lora._buffers["_fei"] = new_fei
-                self._shared_fei[dim] = new_fei
-            else:
-                canonical.copy_(cast)
+            else None
+        )
+        if not (has_per_layer_fei or global_fei_router is not None):
+            return
+        if not (self.use_fei_router or global_fei_router is not None):
+            return
+
+        # Per-layer FEI broadcast (legacy path — FEI-on-Hydra Phase 1).
+        if has_per_layer_fei:
+            # Group loras by their feature dim — every fei-aware module
+            # currently in our network shares the same dim (cfg-level), but
+            # the loop is robust to a future per-layer dim override.
+            for dim, loras in self._fei_aware_loras_by_dim.items():
+                canonical = loras[0]._buffers["_fei"]
+                cast = fei.to(dtype=canonical.dtype, device=canonical.device)
+                if cast.dim() == 1:
+                    cast = cast.unsqueeze(0)
+                if cast.shape[-1] != dim:
+                    raise ValueError(
+                        f"set_fei: fei.shape[-1]={cast.shape[-1]} != fei_feature_dim={dim}"
+                    )
+                current_shared = self._shared_fei.get(dim)
+                needs_rebind = (
+                    current_shared is not canonical
+                    or canonical.shape != cast.shape
+                )
+                if needs_rebind:
+                    new_fei = cast.detach().clone()
+                    for lora in loras:
+                        lora._buffers["_fei"] = new_fei
+                    self._shared_fei[dim] = new_fei
+                else:
+                    canonical.copy_(cast)
+
+        # Global router (FeRA-style): fire on fresh FEI and broadcast gates.
+        # Fires under no_grad: the routing broadcast is a detached buffer
+        # write; FECL training (task #5) reads ``self.global_router._last_gates``
+        # then runs its own grad-carrying forward through the router.
+        if global_fei_router is not None:
+            with torch.no_grad():
+                gates = global_fei_router(fei)
+            self.set_routing_weights(gates)
 
     def clear_fei(self) -> None:
         """Reset cached FEI to zeros without rebinding pointers.
@@ -964,6 +1133,60 @@ class LoRANetwork(torch.nn.Module):
                     lora._buffers["_fei"] = canonical
                 self._shared_fei[dim] = canonical
             canonical.zero_()
+
+    def set_routing_weights(self, weights: torch.Tensor) -> None:
+        """Broadcast a ``(B, E)`` gate tensor to every routing-aware module.
+
+        Called either:
+          * Internally by ``set_fei`` when ``cfg.route_per_layer=False`` and
+            ``cfg.router_source="fei"`` — the GlobalRouter fires on the
+            fresh FEI and its output is broadcast here.
+          * Externally by future ``"sigma"`` global-router paths /
+            inference callers needing to push pre-computed gates.
+
+        Same shared-buffer aliasing protocol as ``set_fei`` / ``set_sigma``
+        (``[[project_set_sigma_aliasing_bug]]``): identity-check the
+        canonical module buffer, rebind on shape change or after
+        ``Module._apply`` orphans the alias. ``weights`` is detached at
+        write so the broadcast doesn't leak grad through the buffer (the
+        live autograd path stays on the GlobalRouter's direct return).
+        """
+        if not getattr(self, "_routing_aware_loras", None):
+            return
+        routing_loras = self._routing_aware_loras
+        canonical = routing_loras[0]._buffers["_routing_weights"]
+        cast = weights.detach().to(dtype=canonical.dtype, device=canonical.device)
+        if cast.dim() == 1:
+            cast = cast.unsqueeze(0)
+        needs_rebind = (
+            self._shared_routing_weights is not canonical
+            or canonical.shape != cast.shape
+        )
+        if needs_rebind:
+            new_w = cast.clone()
+            for lora in routing_loras:
+                lora._buffers["_routing_weights"] = new_w
+            self._shared_routing_weights = new_w
+        else:
+            canonical.copy_(cast)
+
+    def clear_routing_weights(self) -> None:
+        """Reset gates to uniform ``1/E`` in place.
+
+        Called between training steps (or by inference teardown). Pointer
+        stays stable for cudagraph capture; re-aliases if ``Module._apply``
+        broke the link.
+        """
+        if not getattr(self, "_routing_aware_loras", None):
+            return
+        routing_loras = self._routing_aware_loras
+        canonical = routing_loras[0]._buffers["_routing_weights"]
+        if self._shared_routing_weights is not canonical:
+            for lora in routing_loras:
+                lora._buffers["_routing_weights"] = canonical
+            self._shared_routing_weights = canonical
+        E = int(canonical.shape[-1])
+        canonical.fill_(1.0 / max(E, 1))
 
     def clear_step_caches(self) -> None:
         """Drop per-step tensor references (``_last_gate``) between training
@@ -992,6 +1215,14 @@ class LoRANetwork(torch.nn.Module):
         for lora in self.unet_loras + self.text_encoder_loras:
             if hasattr(lora, "_last_gate"):
                 lora._last_gate = None
+        # Drop the GlobalRouter's per-step transients for the same reason —
+        # ``_last_gates`` / ``_last_input`` are detached tensors that may live
+        # in the inductor cudagraph memory pool; holding a Python reference
+        # across the step boundary blocks pool reclamation.
+        if self.global_router is not None:
+            self.global_router._last_gates = None
+            self.global_router._last_input = None
+            self.global_router._last_fei = None
 
     def step_balance_loss_warmup(self, global_step: int, max_train_steps: int) -> None:
         """Activate the MoE load-balance penalty once training crosses the
@@ -1631,6 +1862,38 @@ class LoRANetwork(torch.nn.Module):
             for i, v in enumerate(picks):
                 out[f"hydra/expert_warmup_pick/{i}"] = float(v)
 
+        # GlobalRouter stats — for stacked-experts + per-network routing
+        # (plan2 §three-axis-config). Mirrors the per-Linear hydra keys but
+        # under the ``fera/`` namespace so dashboards can compare across
+        # variants. ``_last_gates`` is populated by ``GlobalRouter.forward``;
+        # absent (None) outside of a step that fired the router.
+        if (
+            self.global_router is not None
+            and self.global_router._last_gates is not None
+        ):
+            gates = self.global_router._last_gates  # (B, E) detached
+            if gates.dim() == 2 and gates.shape[1] > 1:
+                g = gates.float().clamp_min(1e-12)
+                E = int(g.shape[-1])
+                # Per-batch normalized entropy.
+                norm = math.log(E)
+                H = -(g * g.log()).sum(dim=-1).mean() / norm
+                # Top1-Top2 margin (confidence).
+                top2 = g.topk(2, dim=-1).values
+                margin = (top2[..., 0] - top2[..., 1]).mean()
+                # Expert-usage histogram by argmax.
+                idx = g.argmax(dim=-1)
+                usage = (
+                    torch.nn.functional.one_hot(idx, num_classes=E)
+                    .to(g.dtype)
+                    .mean(dim=0)
+                )
+                summary = torch.stack([H.detach(), margin.detach()]).cpu()
+                out["fera/router_entropy"] = float(summary[0])
+                out["fera/router_margin"] = float(summary[1])
+                for i, v in enumerate(usage.detach().cpu().tolist()):
+                    out[f"fera/expert_usage/{i}"] = float(v)
+
         return out
 
     @staticmethod
@@ -1660,7 +1923,13 @@ class LoRANetwork(torch.nn.Module):
                 weights_sd[new_key] = weights_sd.pop(key)
 
         # Stack per-expert hydra ups into fused lora_up_weight (training form).
+        # Also stacks per-expert ``.lora_downs.{i}.weight`` for the
+        # StackedExperts (independent-A) layout — no-op for Hydra.
         weights_sd = _stack_lora_ups(weights_sd)
+        # Refuse split stacked-experts first (its discriminator is per-expert
+        # ``lora_down_weight`` 3-D, which the hydra refuser would otherwise
+        # short-circuit on the absent shared ``lora_down.weight``).
+        weights_sd = _refuse_split_stacked_experts_keys(weights_sd)
         # Refuse split hydra attn keys BEFORE the regular refuser: hydra splits
         # carry no lora_up.weight, so the regular path would skip them anyway,
         # but running hydra first means any non-hydra attention still goes
@@ -2001,15 +2270,22 @@ class LoRANetwork(torch.nn.Module):
                     list(self.cfg.sigma_bucket_boundaries)
                 )
 
-        # FEI router state (FeRA-style content-aware routing). Same rationale
-        # as the σ-band metadata: the router-input width on disk is
-        # ``lora_dim + sigma_feature_dim + fei_feature_dim``, and the from-
-        # weights factory has to know the ``fei_feature_dim`` slice width to
-        # reserve for FEI vs σ before falling back to σ-only assumptions.
-        # Save stamp name remains ``ss_use_fei_router`` for task #3 — task #4
-        # will switch save metadata to the new three-axis stamps.
+        # Three-axis routing config (plan2 §three-axis-config). Stamped on
+        # every save so the loader can reconstruct the exact router layout
+        # without key-sniffing — particularly important for distinguishing
+        # ``stacked_experts_global_fei`` (independent-A) from ``hydra``
+        # (shared-A) at a glance.
+        if self.cfg.use_moe_style is not False:
+            metadata["ss_use_moe_style"] = str(self.cfg.use_moe_style)
+            metadata["ss_route_per_layer"] = (
+                "true" if self.cfg.route_per_layer else "false"
+            )
+            metadata["ss_router_source"] = str(self.cfg.router_source)
+
+        # FEI router params (router-source-specific scalars the loader needs
+        # to size the router input). Stamped for both per-Linear and global
+        # FEI routers.
         if self.cfg.router_source == "fei" and self.cfg.fei_feature_dim > 0:
-            metadata["ss_use_fei_router"] = "true"
             metadata["ss_fei_feature_dim"] = str(int(self.cfg.fei_feature_dim))
             metadata["ss_fei_sigma_low_div"] = str(float(self.cfg.fei_sigma_low_div))
 

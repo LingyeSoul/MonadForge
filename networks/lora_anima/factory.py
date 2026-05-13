@@ -17,6 +17,7 @@ from networks.methods.repa import REPAHead
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
     _refuse_split_hydra_keys,
+    _refuse_split_stacked_experts_keys,
     _refuse_unfused_attn_lora_keys,
     _stack_lora_ups,
 )
@@ -295,10 +296,11 @@ def create_network_from_weights(
     # Strip torch.compile '_orig_mod_' from old checkpoint keys
     weights_sd = LoRANetwork._strip_orig_mod_keys(weights_sd)
 
-    # HydraLoRA moe files: stack per-expert ups and fuse split q/k/v first so
-    # the fused training-runtime keys are what the regular attention refuser
-    # and the downstream detection loop see.
+    # MoE files: stack per-expert ups (and downs, for StackedExperts) and
+    # fuse split q/k/v first so the fused training-runtime keys are what
+    # the regular attention refuser and the downstream detection loop see.
     weights_sd = _stack_lora_ups(weights_sd)
+    weights_sd = _refuse_split_stacked_experts_keys(weights_sd)
     weights_sd = _refuse_split_hydra_keys(weights_sd)
     # Refuse unfused attn projections so modules_dim reflects the runtime (qkv/kv fused).
     weights_sd = _refuse_unfused_attn_lora_keys(weights_sd)
@@ -310,6 +312,13 @@ def create_network_from_weights(
     has_ortho = False
     has_ortho_hydra = False
     has_hydra = False
+    # StackedExperts (independent-A): per-expert ``lora_down_weight`` (E, r, in)
+    # AND per-expert ``lora_up_weight`` (E, out, r) — discriminated from Hydra
+    # by the 3-D ``lora_down_weight`` (Hydra's down is the 2-D shared
+    # ``lora_down.weight``). Note that the plan-2 metadata stamps
+    # (ss_use_moe_style etc.) are the canonical discriminator; the key-sniff
+    # here is a fallback for unstamped or legacy artifacts.
+    has_stacked_experts = False
     hydra_num_experts = 0
     has_reft = False
     reft_dim = None
@@ -355,8 +364,19 @@ def create_network_from_weights(
 
         if "alpha" in key:
             modules_alpha[lora_name] = value
+        elif key.endswith(".lora_down_weight") and value.dim() == 3:
+            # StackedExperts (independent-A) per-expert lora_down.
+            # Shape: (E, r, in). Discriminator vs Hydra (whose down is the
+            # 2-D shared ``lora_down.weight``) — flips the spec resolver
+            # below to ``stacked_experts_global_fei``.
+            has_stacked_experts = True
+            hydra_num_experts = max(hydra_num_experts, value.size(0))
+            modules_dim[lora_name] = value.size(1)
+            hydra_module_names.add(lora_name)
         elif "lora_up_weight" in key:
-            has_hydra = True
+            # Stacked-3-D in both Hydra and StackedExperts; the
+            # discriminator is the down (handled above for SE, below for
+            # Hydra). Defer the has_hydra decision until after the loop.
             hydra_num_experts = max(hydra_num_experts, value.size(0))
             hydra_module_names.add(lora_name)
         elif key.endswith(".lora_up.weight"):
@@ -385,10 +405,19 @@ def create_network_from_weights(
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
 
-    # has_hydra / has_ortho_hydra win over for_inference: the router is
-    # sample-dependent and can't be folded into a static-merge path.
-    # The dynamic forward-hook path works in eval mode too.
-    if has_ortho_hydra:
+    # Finalize the MoE shape now that the full scan is done. A module that
+    # has only ``lora_up_weight`` (3-D) but no matching ``lora_down_weight``
+    # (3-D) is Hydra (shared lora_down.weight); both 3-D means StackedExperts.
+    if not has_stacked_experts and hydra_module_names and not has_ortho_hydra:
+        has_hydra = True
+
+    # has_hydra / has_ortho_hydra / has_stacked_experts win over for_inference:
+    # the router is sample-dependent and can't be folded into a static-merge
+    # path. The dynamic forward-hook path works in eval mode too.
+    if has_stacked_experts:
+        spec = NETWORK_REGISTRY["stacked_experts_global_fei"]
+        module_class = spec.module_class
+    elif has_ortho_hydra:
         spec = NETWORK_REGISTRY["ortho_hydra"]
         module_class = spec.module_class
     elif has_hydra:
@@ -413,12 +442,20 @@ def create_network_from_weights(
     # Old-format per-module router — was Linear(in_dim, E). Current router is
     # Linear(lora_dim + sigma_feature_dim + fei_feature_dim, E); width >= lora_dim,
     # with any excess split between σ + FEI features. The FEI slice width is
-    # stamped into safetensors metadata (``ss_fei_feature_dim``) when
-    # ``use_fei_router`` was on at save time — subtract it from the excess to
-    # recover the σ slice. The old broken shape (width ≈ in_dim, often
-    # thousands) is caught by a sanity cap on excess width.
-    use_fei_router_meta = (
+    # stamped into safetensors metadata (``ss_fei_feature_dim``) when FEI
+    # routing was on at save time — subtract it from the excess to recover
+    # the σ slice. The old broken shape (width ≈ in_dim, often thousands)
+    # is caught by a sanity cap on excess width.
+    #
+    # New three-axis stamps (``ss_router_source``) take precedence. Legacy
+    # ``ss_use_fei_router`` is honored when present for back-compat with
+    # checkpoints saved before the metadata cutover.
+    new_router_source = str(file_metadata.get("ss_router_source", "")).strip()
+    legacy_use_fei_router = (
         str(file_metadata.get("ss_use_fei_router", "")).lower() == "true"
+    )
+    use_fei_router_meta = (
+        new_router_source == "fei" if new_router_source else legacy_use_fei_router
     )
     fei_feature_dim_detected: Optional[int] = (
         int(file_metadata["ss_fei_feature_dim"])
@@ -582,10 +619,27 @@ def create_network_from_weights(
     # FEI router presence is metadata-stamped; the per-module activation list
     # falls back to the same set as σ-router (or all hydra modules if σ off).
     # Phase 1's hydralora_fei variant turns on FEI router on the same regex as
-    # σ, so this mirroring is correct in practice.
+    # σ, so this mirroring is correct in practice. StackedExperts uses a
+    # single network-level router instead, so no per-module activation list
+    # is needed there.
     fei_router_names: Optional[List[str]] = None
     if use_fei_router_meta and (has_hydra or has_ortho_hydra):
         fei_router_names = sigma_router_names or sorted(hydra_module_names) or None
+
+    # New three-axis stamps. When ALL three are present they win over the
+    # legacy translation in ``LoRANetworkCfg.from_weights``. Otherwise the
+    # cfg falls back to the legacy derivation (which now also branches on
+    # the ``is_stacked_experts`` flag).
+    new_use_moe_style: Optional[str] = file_metadata.get("ss_use_moe_style") or None
+    raw_route_per_layer = file_metadata.get("ss_route_per_layer")
+    new_route_per_layer: Optional[bool] = (
+        (str(raw_route_per_layer).strip().lower() == "true")
+        if raw_route_per_layer is not None
+        else None
+    )
+    new_router_source_stamp: Optional[str] = (
+        new_router_source if new_router_source else None
+    )
 
     cfg = LoRANetworkCfg.from_weights(
         modules_dim=modules_dim,
@@ -608,6 +662,10 @@ def create_network_from_weights(
         fei_feature_dim=int(fei_feature_dim_detected or 0),
         fei_sigma_low_div=fei_sigma_low_div_meta,
         fei_router_names=fei_router_names,
+        is_stacked_experts=has_stacked_experts,
+        new_use_moe_style=new_use_moe_style,
+        new_route_per_layer=new_route_per_layer,
+        new_router_source=new_router_source_stamp,
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)

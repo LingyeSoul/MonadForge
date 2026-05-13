@@ -107,6 +107,12 @@ SHARED_KWARG_FLAGS: Tuple[str, ...] = (
     "use_moe_style",
     "route_per_layer",
     "router_source",
+    # GlobalRouter knobs (consumed only when route_per_layer=False).
+    "router_hidden_dim",
+    "router_tau",
+    # FECL knobs (FeRA auxiliary loss; opt-in via fera_fecl_weight > 0).
+    "fera_fecl_weight",
+    "fera_num_bands",
     # ReFT add-on (composes with any variant)
     "add_reft",
     "reft_dim",
@@ -138,6 +144,15 @@ def _post_init_hydra(network: Any, kwargs: Mapping[str, Any]) -> None:
     # LoRANetwork.step_balance_loss_warmup once global_step crosses the ratio.
     network._balance_loss_weight = 0.0 if warmup_ratio > 0.0 else target
     network._use_hydra = True
+    # FECL weight surface: ``_fera_fecl_loss`` reads
+    # ``ctx.network.fecl_weight``. Mirror the cfg value here (and fall back
+    # to the kwarg when no cfg is present — keeps unit tests that hand a
+    # network without a full cfg working).
+    cfg_weight = getattr(getattr(network, "cfg", None), "fera_fecl_weight", None)
+    if cfg_weight is not None:
+        network.fecl_weight = float(cfg_weight)
+    else:
+        network.fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0) or 0.0)
 
 
 _HYDRA_KWARG_FLAGS: Tuple[str, ...] = (

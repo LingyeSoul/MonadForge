@@ -31,19 +31,23 @@ from typing import Dict, List, Optional
 import torch
 
 from library.log import setup_logging
+from networks.lora_anima.attn_fuse import ATTN_FUSE_SPECS, AttnFuseSpec
 from networks.lora_modules import OrthoHydraLoRAExpModule, OrthoLoRAExpModule
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 
-# Fused→split mapping: the training runtime uses fused self_attn.qkv_proj
-# and cross_attn.kv_proj, but ComfyUI's Anima model has separate
-# q_proj/k_proj/v_proj. Shared between hydra and standard save paths.
-_FUSED_SPLIT: Dict[str, tuple] = {
-    "self_attn_qkv_proj": ("self_attn_{}_proj", ("q", "k", "v")),
-    "cross_attn_kv_proj": ("cross_attn_{}_proj", ("k", "v")),
-}
+def _match_fused_spec(prefix: str) -> Optional[AttnFuseSpec]:
+    """Return the AttnFuseSpec whose ``fused_frag`` ends ``prefix``, else None.
+
+    Replaces the old ``_FUSED_SPLIT`` dict lookup. Iterates the small
+    shared spec tuple — single source of truth with ``loading.py``.
+    """
+    for spec in ATTN_FUSE_SPECS:
+        if prefix.endswith(spec.fused_frag):
+            return spec
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +67,19 @@ def _convert_ortho_hydra_to_hydra(
     """
     prefixes = set()
     for key in list(state_dict.keys()):
-        if key.endswith(".S_p") and state_dict[key].dim() == 3:
-            prefixes.add(key[: -len(".S_p")])
+        if not (key.endswith(".S_p") and state_dict[key].dim() == 3):
+            continue
+        prefix = key[: -len(".S_p")]
+        # Discriminator vs StackedExperts ortho: OrthoHydra's S_q is 2-D
+        # ``(r, r)`` (shared across experts), StackedExperts ortho's S_q is
+        # 3-D ``(E, r, r)`` (per-expert). The 3-D case is handled by
+        # ``_convert_ortho_stacked_experts`` which runs before this step.
+        S_q_key = f"{prefix}.S_q"
+        if S_q_key not in state_dict:
+            continue
+        if state_dict[S_q_key].dim() != 2:
+            continue
+        prefixes.add(prefix)
 
     for prefix in prefixes:
         S_p = state_dict[f"{prefix}.S_p"]  # (E, r, r)
@@ -255,18 +270,17 @@ def _rename_dora_and_defuse_standard(
             del state_dict[key]
 
     # Split fused qkv_proj / kv_proj into per-component weights.
-    fused_prefixes: List[tuple] = []
+    fused_groups: List[tuple] = []
     for key in list(state_dict.keys()):
         if not key.endswith(".lora_down.weight"):
             continue
         prefix = key.removesuffix(".lora_down.weight")
-        for fused_frag in _FUSED_SPLIT:
-            if prefix.endswith(fused_frag):
-                fused_prefixes.append((prefix, fused_frag))
-                break
+        spec = _match_fused_spec(prefix)
+        if spec is not None:
+            fused_groups.append((prefix, spec))
 
-    for prefix, fused_frag in fused_prefixes:
-        template, suffixes = _FUSED_SPLIT[fused_frag]
+    for prefix, spec in fused_groups:
+        suffixes = spec.component_letters
         n = len(suffixes)
         down = state_dict.pop(f"{prefix}.lora_down.weight")
         up = state_dict.pop(f"{prefix}.lora_up.weight")
@@ -278,9 +292,9 @@ def _rename_dora_and_defuse_standard(
             dora_scale.chunk(n, dim=0) if dora_scale is not None else [None] * n
         )
 
-        base_prefix = prefix.removesuffix(fused_frag)
-        for suffix, up_chunk, dora_chunk in zip(suffixes, up_chunks, dora_chunks):
-            new_prefix = base_prefix + template.format(suffix)
+        base_prefix = prefix.removesuffix(spec.fused_frag)
+        for letter, up_chunk, dora_chunk in zip(suffixes, up_chunks, dora_chunks):
+            new_prefix = base_prefix + spec.component_frag(letter)
             state_dict[f"{new_prefix}.lora_down.weight"] = down.clone()
             state_dict[f"{new_prefix}.lora_up.weight"] = up_chunk
             if alpha is not None:
@@ -319,18 +333,17 @@ def _build_hydra_moe_state_dict(
     # Split fused attention prefixes per-expert. lora_down / alpha / router /
     # inv_scale are shared across q/k/v (same layer input, same routing
     # decision), so clone them into each split component.
-    hydra_fused_prefixes: List[tuple] = []
+    hydra_fused_groups: List[tuple] = []
     for key in list(hydra_sd.keys()):
         if not key.endswith(".lora_down.weight"):
             continue
         prefix = key.removesuffix(".lora_down.weight")
-        for fused_frag in _FUSED_SPLIT:
-            if prefix.endswith(fused_frag):
-                hydra_fused_prefixes.append((prefix, fused_frag))
-                break
+        spec = _match_fused_spec(prefix)
+        if spec is not None:
+            hydra_fused_groups.append((prefix, spec))
 
-    for prefix, fused_frag in hydra_fused_prefixes:
-        template, suffixes = _FUSED_SPLIT[fused_frag]
+    for prefix, spec in hydra_fused_groups:
+        suffixes = spec.component_letters
         n = len(suffixes)
         down = hydra_sd.pop(f"{prefix}.lora_down.weight")
         alpha = hydra_sd.pop(f"{prefix}.alpha", None)
@@ -374,9 +387,9 @@ def _build_hydra_moe_state_dict(
             dora_scale.chunk(n, dim=0) if dora_scale is not None else None
         )
 
-        base_prefix = prefix.removesuffix(fused_frag)
-        for ci, suffix in enumerate(suffixes):
-            new_prefix = base_prefix + template.format(suffix)
+        base_prefix = prefix.removesuffix(spec.fused_frag)
+        for ci, letter in enumerate(suffixes):
+            new_prefix = base_prefix + spec.component_frag(letter)
             hydra_sd[f"{new_prefix}.lora_down.weight"] = down.clone()
             for ei, u_chunks in enumerate(ups_chunked):
                 hydra_sd[f"{new_prefix}.lora_ups.{ei}.weight"] = (
@@ -406,6 +419,171 @@ def _build_hydra_moe_state_dict(
 
 
 # ---------------------------------------------------------------------------
+# Step 1b: ortho StackedExperts → free StackedExperts (per-expert lora_down/up)
+# ---------------------------------------------------------------------------
+
+
+def _convert_ortho_stacked_experts(
+    state_dict: Dict[str, torch.Tensor], dtype: Optional[torch.dtype]
+) -> None:
+    """Mutate state_dict in place.
+
+    Ortho ``StackedExpertsLoRAModule`` saves with per-expert ``S_p``,
+    ``S_q``, ``lambda_layer`` plus shared ``P_basis``, ``Q_basis`` — the
+    Cayley-rotated SVD layout. Convert to the free per-expert
+    ``lora_down_weight (E, r, in)`` + ``lora_up_weight (E, out, r)``
+    layout so the on-disk file matches the free StackedExperts shape and
+    can be loaded by either mode (the runtime ortho path is reachable
+    only via the cfg — checkpoints distill at save).
+
+    Discriminator from OrthoHydra: ``S_q`` here is 3-D ``(E, r, r)``,
+    versus OrthoHydra's 2-D ``S_q (r, r)``. So we detect by checking
+    both ``.S_p`` and ``.S_q`` are 3-D for the same prefix.
+    """
+    prefixes = set()
+    for key in list(state_dict.keys()):
+        if not key.endswith(".S_q"):
+            continue
+        if state_dict[key].dim() != 3:
+            continue
+        prefix = key[: -len(".S_q")]
+        if state_dict.get(f"{prefix}.S_p") is None or state_dict[f"{prefix}.S_p"].dim() != 3:
+            continue
+        prefixes.add(prefix)
+
+    for prefix in prefixes:
+        S_p = state_dict[f"{prefix}.S_p"]  # (E, r, r)
+        S_q = state_dict[f"{prefix}.S_q"]  # (E, r, r)
+        P_basis = state_dict[f"{prefix}.P_basis"]  # (out, r)
+        Q_basis = state_dict[f"{prefix}.Q_basis"]  # (r, in)
+        lam = state_dict[f"{prefix}.lambda_layer"]  # (E, r)
+        alpha = state_dict.get(f"{prefix}.alpha")
+        save_dtype = dtype if dtype is not None else P_basis.dtype
+
+        # Batched Cayley over S_p and S_q for every expert. Same parameter-free
+        # transform as ``StackedExpertsLoRAModule._cayley_rotations`` but in
+        # fp32 here for save-time stability.
+        E, r, _ = S_p.shape
+        skew = torch.cat([S_q.float(), S_p.float()], dim=0)  # (2E, r, r)
+        A = skew - skew.transpose(-2, -1)
+        eye = torch.eye(r, dtype=torch.float32, device=skew.device)
+        R = torch.linalg.solve(eye + A, eye - A)  # (2E, r, r)
+        R_q = R[:E]  # (E, r, r)
+        R_p = R[E:]  # (E, r, r)
+
+        # Per-expert effective bases.
+        # Q_eff[e]  = R_q[e] @ Q_basis  → (r, in)
+        # P_eff[e]  = P_basis @ R_p[e]  → (out, r)
+        Q_eff = torch.einsum("erj,ji->eri", R_q, Q_basis.float())
+        P_eff = torch.einsum("oj,ejr->eor", P_basis.float(), R_p)
+
+        # Sqrt-split λ between sides so ΔW = P_eff @ diag(λ) @ Q_eff is
+        # preserved bit-exactly under the (down, up) factorization.
+        lam_abs = lam.float().abs()
+        lam_sign = lam.float().sign()
+        lam_sqrt = lam_abs.sqrt()  # (E, r)
+
+        # lora_down_weight: (E, r, in) — absorb |sqrt(λ)| into Q_eff's rank axis.
+        lora_down_weight = (
+            Q_eff * lam_sqrt.unsqueeze(-1)
+        ).to(save_dtype).cpu().contiguous()
+        # lora_up_weight: (E, out, r) — absorb sign*sqrt(λ) into P_eff's rank axis.
+        lora_up_weight = (
+            P_eff * (lam_sqrt * lam_sign).unsqueeze(1)
+        ).to(save_dtype).cpu().contiguous()
+
+        for suffix in ("S_p", "S_q", "lambda_layer", "P_basis", "Q_basis", "_eye_r"):
+            state_dict.pop(f"{prefix}.{suffix}", None)
+
+        state_dict[f"{prefix}.lora_down_weight"] = lora_down_weight
+        state_dict[f"{prefix}.lora_up_weight"] = lora_up_weight
+        if alpha is not None:
+            state_dict[f"{prefix}.alpha"] = alpha
+
+
+# ---------------------------------------------------------------------------
+# Step 4 (stacked-experts variant): per-expert ups + downs, q/k/v split
+# ---------------------------------------------------------------------------
+
+
+def _build_stacked_experts_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    dtype: Optional[torch.dtype],
+) -> Dict[str, torch.Tensor]:
+    """Build the StackedExperts ``_moe.safetensors`` payload.
+
+    Independent-A variant of :func:`_build_hydra_moe_state_dict`: BOTH
+    ``lora_up_weight (E, out, r)`` AND ``lora_down_weight (E, r, in)`` are
+    expanded per-expert (``.lora_ups.{i}.weight`` / ``.lora_downs.{i}.weight``),
+    then fused attention prefixes are split per-expert per-component so q/k/v
+    keys land on separate components.
+
+    No router/sigma_mlp/inv_scale handling here — the GlobalRouter lives at
+    network top-level (``global_router.*``), not per-Linear.
+    """
+    sd: Dict[str, torch.Tensor] = {}
+    for k, v in state_dict.items():
+        v = v.detach().clone().to("cpu")
+        if k.endswith(".lora_up_weight"):
+            prefix = k.removesuffix(".lora_up_weight")
+            for i in range(v.size(0)):
+                sd[f"{prefix}.lora_ups.{i}.weight"] = v[i]
+        elif k.endswith(".lora_down_weight"):
+            prefix = k.removesuffix(".lora_down_weight")
+            for i in range(v.size(0)):
+                sd[f"{prefix}.lora_downs.{i}.weight"] = v[i]
+        else:
+            sd[k] = v
+
+    # Per-expert q/k/v split for fused attention prefixes.
+    fused_groups: List[tuple] = []
+    for key in list(sd.keys()):
+        if not key.endswith(".lora_downs.0.weight"):
+            continue
+        prefix = key.removesuffix(".lora_downs.0.weight")
+        spec = _match_fused_spec(prefix)
+        if spec is not None:
+            fused_groups.append((prefix, spec))
+
+    for prefix, spec in fused_groups:
+        suffixes = spec.component_letters
+        n = len(suffixes)
+        alpha = sd.pop(f"{prefix}.alpha", None)
+
+        # Collect per-expert ups + downs.
+        ups_keys = sorted(
+            (k for k in list(sd.keys()) if k.startswith(f"{prefix}.lora_ups.") and k.endswith(".weight")),
+            key=lambda k: int(k.removeprefix(f"{prefix}.lora_ups.").removesuffix(".weight")),
+        )
+        downs_keys = sorted(
+            (k for k in list(sd.keys()) if k.startswith(f"{prefix}.lora_downs.") and k.endswith(".weight")),
+            key=lambda k: int(k.removeprefix(f"{prefix}.lora_downs.").removesuffix(".weight")),
+        )
+        ups = [sd.pop(k) for k in ups_keys]
+        downs = [sd.pop(k) for k in downs_keys]
+        # Per-expert chunk-of-out_dim across q/k/v components.
+        ups_chunked = [u.chunk(n, dim=0) for u in ups]
+
+        base_prefix = prefix.removesuffix(spec.fused_frag)
+        for ci, letter in enumerate(suffixes):
+            new_prefix = base_prefix + spec.component_frag(letter)
+            for ei, u_chunks in enumerate(ups_chunked):
+                sd[f"{new_prefix}.lora_ups.{ei}.weight"] = (
+                    u_chunks[ci].contiguous().clone()
+                )
+            # Downs are shared across q/k/v inputs (the fused Linear sees one
+            # input vector), so clone each expert's down into every component.
+            for ei, d in enumerate(downs):
+                sd[f"{new_prefix}.lora_downs.{ei}.weight"] = d.clone()
+            if alpha is not None:
+                sd[f"{new_prefix}.alpha"] = alpha.clone()
+
+    if dtype is not None:
+        sd = {k: v.to(dtype) for k, v in sd.items()}
+    return sd
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -425,16 +603,39 @@ def save_network_weights(
     if metadata is not None and len(metadata) == 0:
         metadata = None
 
-    # Steps 1–3: key-triggered conversions. Ordering is load-bearing —
-    # ortho_hydra_to_hydra must run before ortho_to_lora because both key
-    # off ``.S_p``.
+    # Steps 1–3: key-triggered conversions. Ordering is load-bearing:
+    #   * ortho_stacked_experts runs first (3-D S_q only).
+    #   * ortho_hydra_to_hydra (2-D S_q + 3-D S_p) then.
+    #   * ortho_to_lora (2-D S_p + 2-D S_q) last among the S_p paths.
+    # The S_q dimensionality is the discriminator.
+    _convert_ortho_stacked_experts(state_dict, dtype)
     _convert_ortho_hydra_to_hydra(state_dict, dtype)
     _convert_ortho_to_lora(state_dict, dtype)
     _convert_legacy_ortho_to_lora(state_dict, dtype)
 
-    is_hydra_variant = save_variant in ("hydra_moe", "ortho_hydra_to_hydra") or any(
-        k.endswith(".lora_up_weight") for k in state_dict.keys()
-    )
+    # Variant dispatch. ``stacked_experts_global_fei`` writes the
+    # independent-A per-expert (lora_downs.{i}, lora_ups.{i}) layout;
+    # ``hydra_moe`` / ``ortho_hydra_to_hydra`` write the shared-A Hydra
+    # layout (single lora_down, lora_ups.{i}). Auto-fallback on any
+    # ``.lora_up_weight`` key for backward-compat with paths that don't
+    # plumb ``save_variant`` through.
+    is_stacked_experts_variant = save_variant == "stacked_experts_global_fei"
+    is_hydra_variant = (
+        save_variant in ("hydra_moe", "ortho_hydra_to_hydra")
+        or any(k.endswith(".lora_up_weight") for k in state_dict.keys())
+    ) and not is_stacked_experts_variant
+
+    if is_stacked_experts_variant:
+        # StackedExperts: discriminator is per-expert lora_down_weight
+        # (3-D). Loader sniffs ``.lora_downs.{i}.weight`` to disambiguate
+        # from Hydra's shared down at load time.
+        se_file = os.path.splitext(file)[0] + "_moe.safetensors"
+        se_sd = _build_stacked_experts_state_dict(state_dict, dtype)
+        from safetensors.torch import save_file as sf_save
+
+        sf_save(se_sd, se_file, metadata or {})
+        logger.info(f"StackedExperts full format saved to {se_file}")
+        return
 
     if is_hydra_variant:
         hydra_file = os.path.splitext(file)[0] + "_moe.safetensors"

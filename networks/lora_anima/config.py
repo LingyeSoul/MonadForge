@@ -273,6 +273,23 @@ class LoRANetworkCfg:
     fei_router_layers: Optional[str] = None
     fei_router_names: Optional[List[str]] = None
 
+    # GlobalRouter parameters (consumed when ``route_per_layer=False``).
+    # Two-layer MLP feeding softmax/τ — same shape as FeRA's
+    # ``SoftFrequencyRouter``. Final layer is zero-init so step-0 gates are
+    # uniform; combined with zero-init expert ups this guarantees ΔW=0 at
+    # the first optimizer step.
+    router_hidden_dim: int = 64
+    router_tau: float = 0.7
+
+    # FECL (Frequency-Energy Consistency Loss) — opt-in auxiliary loss for
+    # the FeRA family. Default ``0.0`` keeps it disabled (the 2-band path
+    # collapses to a content-free scalar; bench at 3 bands if revisiting).
+    # ``library/training/losses.py::_fera_fecl_loss`` reads
+    # ``network.fecl_weight`` (set in ``_post_init_hydra``) and applies it
+    # to the unscaled scalar computed by ``library/training/fecl.compute_fecl``.
+    fera_fecl_weight: float = 0.0
+    fera_num_bands: int = 3
+
     # SmoothQuant-style per-channel input pre-scaling
     channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None
 
@@ -397,6 +414,15 @@ class LoRANetworkCfg:
             "fei_router_layers", _DEFAULT_SIGMA_ROUTER_LAYERS
         )
 
+        # GlobalRouter knobs (only consumed when ``route_per_layer=False``).
+        router_hidden_dim = int(kwargs.get("router_hidden_dim", kwargs.get("router_hidden", 64)))
+        router_tau = float(kwargs.get("router_tau", 0.7))
+
+        # FECL knobs. Default off; turning it on requires `num_bands >= 3`
+        # to be a meaningful objective (see compute_fecl docstring).
+        fera_fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
+        fera_num_bands = int(kwargs.get("fera_num_bands", kwargs.get("num_bands", 3)))
+
         # Three-axis routing resolution. Translate legacy ``use_hydra`` /
         # ``use_sigma_router`` / ``use_fei_router`` kwargs into the new axes
         # when the new keys aren't supplied. Legacy + new in the same call
@@ -513,6 +539,10 @@ class LoRANetworkCfg:
             fei_feature_dim=fei_feature_dim,
             fei_sigma_low_div=fei_sigma_low_div,
             fei_router_layers=fei_router_layers,
+            router_hidden_dim=router_hidden_dim,
+            router_tau=router_tau,
+            fera_fecl_weight=fera_fecl_weight,
+            fera_num_bands=fera_num_bands,
             channel_scales_dict=channel_scales_dict,
             verbose=verbose,
         )
@@ -541,6 +571,15 @@ class LoRANetworkCfg:
         fei_feature_dim: int = 0,
         fei_sigma_low_div: Optional[float] = None,
         fei_router_names: Optional[List[str]] = None,
+        # Three-axis stamps from new save metadata. When supplied they take
+        # precedence over the legacy ``use_fei_router_legacy`` / key-sniff
+        # translation; absent (the no-stamp path) falls back to the legacy
+        # derivation. ``is_stacked_experts`` is True iff the checkpoint
+        # carries the independent-A layout (per-expert ``lora_down_weight``).
+        is_stacked_experts: bool = False,
+        new_use_moe_style: Optional[str] = None,
+        new_route_per_layer: Optional[bool] = None,
+        new_router_source: Optional[str] = None,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -556,19 +595,33 @@ class LoRANetworkCfg:
         (``_expert_band`` / ``_sigma_edges`` are non-persistent) so it has to
         be reconstructed from those scalars at load time.
 
-        Translates the legacy boolean ``use_fei_router_legacy`` /
-        ``sigma_router_names`` presence into the new three-axis fields. Task
-        #4 will switch save metadata to stamp the new keys directly; until
-        then the legacy stamps drive this translation.
+        New three-axis stamps (``new_use_moe_style`` /
+        ``new_route_per_layer`` / ``new_router_source``) win when present.
+        Otherwise this method translates ``use_fei_router_legacy`` /
+        ``sigma_router_names`` presence + ``is_stacked_experts`` /
+        ``is_hydra_or_ortho_hydra`` into the new three-axis fields.
         """
-        # Translate legacy stamps → new axes. The from-weights path always
-        # runs on an existing Hydra/OrthoHydra checkpoint, so MoE+per-layer
-        # are pinned for any checkpoint that carries router state.
-        if is_hydra_or_ortho_hydra:
-            use_moe_style: MoEStyle = "shared_A"
+        # New stamps take precedence; fall back to legacy translation when
+        # any of the three is missing.
+        if (
+            new_use_moe_style is not None
+            and new_route_per_layer is not None
+            and new_router_source is not None
+        ):
+            use_moe_style: MoEStyle = _as_moe_style(new_use_moe_style)
+            route_per_layer = bool(new_route_per_layer)
+            router_source: RouterSource = _as_router_source(new_router_source)
+        elif is_stacked_experts:
+            # Independent-A always means MoE + (per-network global router) +
+            # FEI source (the only combo plan2 ships for v1).
+            use_moe_style = "independent_A"
+            route_per_layer = False
+            router_source = "fei"
+        elif is_hydra_or_ortho_hydra:
+            use_moe_style = "shared_A"
             route_per_layer = True
             if use_fei_router_legacy:
-                router_source: RouterSource = "fei"
+                router_source = "fei"
             elif sigma_router_names:
                 router_source = "sigma"
             else:

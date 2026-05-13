@@ -249,21 +249,115 @@ def _functional_loss(ctx: LossContext) -> torch.Tensor:
     return weight * func_loss.float()
 
 
+def _fera_fecl_bands(
+    z: torch.Tensor, num_bands: int, fei_sigma_low_div: float
+) -> list[torch.Tensor]:
+    """Decompose ``z (B, C, H, W)`` into ``num_bands`` Laplacian-pyramid
+    components (high → low). Uses ``library.runtime.fei.gaussian_blur_2d``;
+    fp32 internally so bf16 latents don't underflow the squared norm.
+
+    ``σ_low = min(H_lat, W_lat) / fei_sigma_low_div`` keeps band semantics
+    aspect-invariant; subsequent σ's double outward.
+    """
+    if num_bands < 2:
+        raise ValueError(f"num_bands must be >= 2, got {num_bands}")
+    from library.runtime.fei import gaussian_blur_2d
+
+    z = z.float()
+    h_lat, w_lat = int(z.shape[-2]), int(z.shape[-1])
+    sigma_low = float(min(h_lat, w_lat)) / float(fei_sigma_low_div)
+    sigmas = [sigma_low * (2.0**k) for k in range(num_bands - 1)]
+    pyr = [z]
+    for s in sigmas:
+        pyr.append(gaussian_blur_2d(pyr[-1], s))
+    bands = [pyr[k] - pyr[k + 1] for k in range(num_bands - 1)]
+    bands.append(pyr[-1])
+    return bands
+
+
 def _fera_fecl_loss(ctx: LossContext) -> torch.Tensor:
     """FeRA Frequency-Energy Consistency Loss (Yin et al. eq. 10).
 
-    The unscaled scalar is computed inside
-    ``train.py::get_noise_pred_and_target`` (after a no-grad base-pass
-    forward with FeRA routing disabled) and stashed in
-    ``ctx.aux['fecl_loss']``. This handler just multiplies by
-    ``network.fecl_weight`` — keeping the scaling knob in one place,
-    matches the soft-tokens / REPA registry pattern.
+    Bandwise consistency between adapter correction ``δ = z_fera − z_base``
+    and residual ``r = z_fera − z_target``, weighted by the residual's
+    per-band energy share. Ported here from
+    ``FeRANetwork.compute_fecl_loss`` as part of plan2 §FECL → losses
+    registry — the math is identical, the move lifts FECL out of
+    ``methods/fera.py`` so the ``stacked_experts_global_fei`` spec on
+    ``LoRANetwork`` (which carries no compute_fecl_loss method) can use it.
+
+    Three input modes (tried in order):
+
+      * ``ctx.aux['fecl_loss']`` — pre-computed scalar (legacy
+        ``FeRANetwork`` path, where the trainer already ran the math).
+      * ``ctx.aux['fera']`` dict carrying ``z_base`` + ``z_fera`` —
+        the new path: the trainer hands the two predictions and the
+        handler runs the band decomposition.
+      * neither — returns 0 (FECL disabled or trainer didn't populate
+        the aux dict).
+
+    The 2-band path collapses Eq. 10 to a content-free scalar (only two
+    ratios that sum to 1), so production training should keep
+    ``fera_fecl_weight = 0.0`` until bench-validated at 3 bands — see
+    ``[[project_fera_probe_2band_decision]]``.
     """
-    weight = float(getattr(ctx.network, "fecl_weight", 0.0) or 0.0)
-    loss = ctx.aux.get("fecl_loss")
-    if weight <= 0.0 or loss is None:
+    weight = float(
+        getattr(ctx.network, "fecl_weight", None)
+        or getattr(getattr(ctx.network, "cfg", None), "fera_fecl_weight", 0.0)
+        or 0.0
+    )
+    if weight <= 0.0:
         return ctx.model_pred.new_zeros(())
-    return weight * loss.float()
+
+    # Legacy path: trainer pre-computed the scalar.
+    pre = ctx.aux.get("fecl_loss")
+    if pre is not None:
+        return weight * pre.float()
+
+    # New path: compute in-handler from z_base + z_fera + z_target.
+    fera_aux = ctx.aux.get("fera") or {}
+    z_base = fera_aux.get("z_base")
+    if z_base is None:
+        return ctx.model_pred.new_zeros(())
+
+    cfg = getattr(ctx.network, "cfg", None)
+    num_bands = int(
+        getattr(cfg, "fera_num_bands", None)
+        or fera_aux.get("num_bands", 3)
+    )
+    fei_sigma_low_div = float(
+        getattr(cfg, "fei_sigma_low_div", None)
+        or fera_aux.get("fei_sigma_low_div", 4.0)
+    )
+
+    def _to4(x: torch.Tensor) -> torch.Tensor:
+        return x.squeeze(2) if x.dim() == 5 else x
+
+    z_base_4 = _to4(z_base).float()
+    z_fera = _to4(ctx.model_pred).float()
+    z_target = _to4(ctx.target).float()
+
+    delta = z_fera - z_base_4
+    resid = z_fera - z_target
+    delta_bands = _fera_fecl_bands(delta, num_bands, fei_sigma_low_div)
+    resid_bands = _fera_fecl_bands(resid, num_bands, fei_sigma_low_div)
+
+    eps = 1e-8
+    d_total = delta.flatten(1).pow(2).sum(-1).sqrt().clamp_min(eps)
+    r_total = resid.flatten(1).pow(2).sum(-1).sqrt().clamp_min(eps)
+    r_band_e = torch.stack(
+        [b.flatten(1).pow(2).sum(-1) for b in resid_bands], dim=-1
+    )
+    r_share = r_band_e / r_band_e.sum(-1, keepdim=True).clamp_min(eps)
+
+    loss = z_target.new_zeros(z_target.shape[0])
+    for k in range(num_bands):
+        d_band = delta_bands[k].flatten(1).pow(2).sum(-1).sqrt()
+        r_band = resid_bands[k].flatten(1).pow(2).sum(-1).sqrt()
+        term = (d_band / d_total - r_band / r_total).pow(2)
+        loss = loss + r_share[:, k] * term
+
+    return weight * loss.mean()
 
 
 def _soft_tokens_contrastive_loss(ctx: LossContext) -> torch.Tensor:
@@ -458,13 +552,17 @@ def build_loss_composer(args: argparse.Namespace, network: object) -> LossCompos
         and float(getattr(args, "repa_weight", 0.0) or 0.0) > 0.0
     ):
         active.append("repa")
-    # FeRA FECL: active iff the network is a FeRANetwork with fecl_weight > 0.
-    # The trainer's base-pass forward + ``compute_fecl_loss`` only runs under
-    # the same gate (see ``train.py::get_noise_pred_and_target``), so the
-    # composer activation just mirrors that condition.
-    if hasattr(network, "fera_layers") and float(
-        getattr(network, "fecl_weight", 0.0) or 0.0
-    ) > 0.0:
+    # FeRA FECL: active iff a FeRANetwork (legacy ``methods/fera.py``) OR a
+    # ``LoRANetwork`` carrying the stacked_experts_global_fei spec has a
+    # positive ``fecl_weight``. The trainer's base-pass forward gate (in
+    # ``train.py::get_noise_pred_and_target``) is the same condition, so the
+    # composer activation just mirrors it.
+    fecl_weight = float(getattr(network, "fecl_weight", 0.0) or 0.0)
+    if fecl_weight > 0.0 and (
+        hasattr(network, "fera_layers")
+        or getattr(getattr(network, "cfg", None), "use_moe_style", False)
+        == "independent_A"
+    ):
         active.append("fera_fecl")
 
     return LossComposer(active_losses=active)
