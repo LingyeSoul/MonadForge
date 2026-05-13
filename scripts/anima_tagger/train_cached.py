@@ -38,9 +38,14 @@ from .train_common import (
 logger = logging.getLogger(__name__)
 
 
-def _make_cfg_from_args(args, d_in, n_tags, n_ratings, n_people_counts):
+def _make_cfg_from_args(
+    args, d_in, n_tags, n_ratings, n_people_counts, *, d_in_aux: Optional[int] = None,
+):
     from library.captioning.anima_tagger_model import AnimaTaggerConfig
 
+    # pool_kind_aux=None inherits pool_kind (matches the dual-MAP path's
+    # original behavior); pass through whatever the CLI set explicitly so
+    # mixed configs (mean main + map aux) round-trip.
     return AnimaTaggerConfig(
         d_in=d_in,
         n_tags=n_tags,
@@ -53,11 +58,17 @@ def _make_cfg_from_args(args, d_in, n_tags, n_ratings, n_people_counts):
         pool_n_heads=args.pool_n_heads,
         pool_use_cls=args.pool_use_cls,
         pool_use_mean=args.pool_use_mean,
+        d_in_aux=d_in_aux,
+        pool_kind_aux=args.pool_kind_aux,
+        pool_n_queries_aux=args.pool_n_queries_aux,
+        pool_n_heads_aux=args.pool_n_heads_aux,
+        pool_use_cls_aux=args.pool_use_cls_aux,
+        pool_use_mean_aux=args.pool_use_mean_aux,
     )
 
 
 def _save_cfg_dict(args, cfg, d_in, best_f1):
-    return {
+    d = {
         "model": cfg.to_dict(),
         "encoder": args.encoder,
         "d_in": d_in,
@@ -72,6 +83,11 @@ def _save_cfg_dict(args, cfg, d_in, best_f1):
         "pe_lora": False,
         "pool_kind": args.pool_kind,
     }
+    aux_encoder = getattr(args, "aux_encoder", None)
+    if aux_encoder:
+        d["aux_encoder"] = aux_encoder
+        d["d_in_aux"] = cfg.d_in_aux
+    return d
 
 
 # ── pool_kind == "mean" : legacy in-VRAM-tensor path ─────────────────────
@@ -292,12 +308,16 @@ def _eval_via_token_loader(
     ce_people: Optional[torch.nn.Module],
     lambda_rating: float,
     lambda_people: float,
+    dual: bool = False,
     threshold: float = 0.5,
 ) -> Dict[str, float]:
     """Run val through a bucket-grouped token DataLoader and compute the
     same metrics ``eval_split`` produces. Logits are concatenated across
     buckets before metric reduction so macro-F1 / per-group accuracy are
     over the full val set.
+
+    ``dual=True`` switches to the paired-token loader format
+    ``(tokens, tokens_aux, mh, rate, people, bucket_pair)``.
     """
     model.eval()
     tag_chunks: List[torch.Tensor] = []
@@ -308,12 +328,18 @@ def _eval_via_token_loader(
     people_target_chunks: List[torch.Tensor] = []
     has_people_head = False
     with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-        for tokens, mh, rate, people, _bucket in loader:
+        for batch in loader:
+            if dual:
+                tokens, tokens_aux, mh, rate, people, _bucket = batch
+                tokens_aux = tokens_aux.to(device, non_blocking=True)
+            else:
+                tokens, mh, rate, people, _bucket = batch
+                tokens_aux = None
             tokens = tokens.to(device, non_blocking=True)
             mh_dev = mh.to(device, non_blocking=True)
             rate_dev = rate.to(device, non_blocking=True)
             people_dev = people.to(device, non_blocking=True)
-            tl, rl, pl = model(tokens)
+            tl, rl, pl = model(tokens, tokens_aux) if dual else model(tokens)
             tag_chunks.append(tl.float())
             rate_chunks.append(rl.float())
             mh_chunks.append(mh_dev)
@@ -398,13 +424,18 @@ def _eval_via_token_loader(
 
 
 def _train_cached_map(args: argparse.Namespace) -> None:
+    """Single-encoder MAP-pool training (no aux). The dual-encoder path (any
+    pool_kind combination) is handled by :func:`_train_cached_dual`.
+    """
     from safetensors.torch import save_file as st_save
     from torch.utils.data import DataLoader
 
     from library.captioning.anima_tagger_data import (
         BucketBatchSampler,
+        CachedDualDataset,
         CachedTokenDataset,
         TaggerManifest,
+        collate_dual_token_batch,
         collate_token_batch,
     )
     from library.captioning.anima_tagger_model import AnimaTaggerHead
@@ -420,22 +451,57 @@ def _train_cached_map(args: argparse.Namespace) -> None:
         raise SystemExit(f"missing {vocab_path} — run --mode build_vocab first.")
     if not cache_dir.exists():
         raise SystemExit(
-            f"missing {cache_dir} — run --mode build_features --pool_kind=map first."
+            f"missing {cache_dir} — run --mode build_features "
+            f"--pool_kind={args.pool_kind} --encoder {args.encoder} first."
         )
     manifest = TaggerManifest.from_path(manifest_path)
     with open(vocab_path) as f:
         vocab_dict = json.load(f)
     spec = get_encoder_info(args.encoder).bucket_spec
 
-    train_ds = CachedTokenDataset(
-        manifest, cache_dir, spec, stems_subset=manifest.train_stems
-    )
-    val_ds = CachedTokenDataset(
-        manifest, cache_dir, spec, stems_subset=manifest.val_stems
-    )
+    aux_encoder = getattr(args, "aux_encoder", None)
+    dual = bool(aux_encoder)
+    if dual:
+        # Per-side pool_kind. None inherits main → preserves the dual-MAP
+        # default. Aux cache_dir is keyed on its own pool_kind so mixed
+        # configs (mean main + map aux) read from .cache/tokens-pe_spatial/
+        # while the main side reads from .cache/tokens-pe/.
+        pool_kind_aux = args.pool_kind_aux or args.pool_kind
+        spec_aux = (
+            get_encoder_info(aux_encoder).bucket_spec
+            if pool_kind_aux == "map" else None
+        )
+        cache_dir_aux = cache_dir_for(out_dir, pool_kind_aux, aux_encoder)
+        if not cache_dir_aux.exists():
+            raise SystemExit(
+                f"missing aux cache {cache_dir_aux} — run "
+                f"`--mode build_features --pool_kind={args.pool_kind} "
+                f"--encoder {args.encoder} --aux_encoder {aux_encoder} "
+                f"--pool_kind_aux {pool_kind_aux}` first."
+            )
+        train_ds = CachedDualDataset(
+            manifest, cache_dir, args.pool_kind, spec,
+            cache_dir_aux, pool_kind_aux, spec_aux,
+            stems_subset=manifest.train_stems,
+        )
+        val_ds = CachedDualDataset(
+            manifest, cache_dir, args.pool_kind, spec,
+            cache_dir_aux, pool_kind_aux, spec_aux,
+            stems_subset=manifest.val_stems,
+        )
+        d_in_aux = train_ds.d_in_aux
+    else:
+        train_ds = CachedTokenDataset(
+            manifest, cache_dir, spec, stems_subset=manifest.train_stems
+        )
+        val_ds = CachedTokenDataset(
+            manifest, cache_dir, spec, stems_subset=manifest.val_stems
+        )
+        d_in_aux = None
     logger.info(
-        "train (cached map): N=%d  val: N=%d  d_in=%d  n_tags=%d  n_ratings=%d  n_people=%d",
+        "train (cached map): N=%d  val: N=%d  d_in=%d%s  n_tags=%d  n_ratings=%d  n_people=%d",
         len(train_ds), len(val_ds), train_ds.d_in,
+        f"  d_in_aux={d_in_aux}" if dual else "",
         train_ds.n_tags, train_ds.n_ratings, train_ds.n_people_counts,
     )
 
@@ -446,13 +512,19 @@ def _train_cached_map(args: argparse.Namespace) -> None:
         n_tags=train_ds.n_tags,
         n_ratings=train_ds.n_ratings,
         n_people_counts=train_ds.n_people_counts,
+        d_in_aux=d_in_aux,
     )
     model = AnimaTaggerHead(cfg).to(device)
     logger.info(
         "head: pool_kind=%s n_queries=%d n_heads=%d use_cls=%s use_mean=%s "
-        "trunk_in=%d d_hidden=%d",
+        "trunk_in=%d d_hidden=%d%s",
         cfg.pool_kind, cfg.pool_n_queries, cfg.pool_n_heads,
         cfg.pool_use_cls, cfg.pool_use_mean, cfg.trunk_in_dim, cfg.d_hidden,
+        (
+            f"  aux: n_q={cfg.pool_n_queries_aux} n_h={cfg.pool_n_heads_aux} "
+            f"use_cls={cfg.pool_use_cls_aux} use_mean={cfg.pool_use_mean_aux}"
+            if dual else ""
+        ),
     )
 
     train_mh_full = train_ds.multi_hot.to(device)
@@ -503,18 +575,19 @@ def _train_cached_map(args: argparse.Namespace) -> None:
     val_sampler = BucketBatchSampler(
         val_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=False
     )
+    collate_fn = collate_dual_token_batch if dual else collate_token_batch
     train_loader = DataLoader(
         train_ds,
         batch_sampler=train_sampler,
         num_workers=args.feature_cache_workers,
-        collate_fn=collate_token_batch,
+        collate_fn=collate_fn,
         pin_memory=True,
     )
     val_loader = DataLoader(
         val_ds,
         batch_sampler=val_sampler,
         num_workers=args.feature_cache_workers,
-        collate_fn=collate_token_batch,
+        collate_fn=collate_fn,
         pin_memory=True,
     )
 
@@ -540,13 +613,21 @@ def _train_cached_map(args: argparse.Namespace) -> None:
             leave=False,
             unit="step",
         )
-        for step, (tokens, mh_cpu, rate_cpu, people_cpu, _bucket) in enumerate(bar):
+        for step, batch in enumerate(bar):
+            if dual:
+                tokens, tokens_aux, mh_cpu, rate_cpu, people_cpu, _bucket = batch
+                tokens_aux = tokens_aux.to(device, non_blocking=True)
+            else:
+                tokens, mh_cpu, rate_cpu, people_cpu, _bucket = batch
+                tokens_aux = None
             tokens = tokens.to(device, non_blocking=True)
             mh = mh_cpu.to(device, non_blocking=True)
             rate = rate_cpu.to(device, non_blocking=True)
             people = people_cpu.to(device, non_blocking=True)
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                tag_logits, rating_logits, people_logits = model(tokens)
+                tag_logits, rating_logits, people_logits = (
+                    model(tokens, tokens_aux) if dual else model(tokens)
+                )
                 l_tag, _per_group = compute_grouped_loss(tag_logits, mh, router)
                 l_rate = ce(rating_logits, rate)
                 loss = l_tag + args.lambda_rating * l_rate
@@ -584,6 +665,7 @@ def _train_cached_map(args: argparse.Namespace) -> None:
             ce=ce, ce_people=ce_people,
             lambda_rating=args.lambda_rating,
             lambda_people=args.lambda_people,
+            dual=dual,
         )
         people_acc = val_metrics.get("people_acc", float("nan"))
         people_loss = val_metrics.get("val_people_loss", float("nan"))
@@ -631,8 +713,19 @@ def _train_cached_map(args: argparse.Namespace) -> None:
 
 
 def cmd_train_cached(args: argparse.Namespace) -> None:
-    """Frozen-encoder path. Dispatches on ``--pool_kind``."""
-    if args.pool_kind == "mean":
+    """Frozen-encoder path. Dispatches on ``--pool_kind`` and ``--aux_encoder``.
+
+    * single encoder, mean pool → :func:`_train_cached_mean` (in-VRAM tensors)
+    * single encoder, map pool → :func:`_train_cached_map` (bucket DataLoader)
+    * dual encoder (any per-side pool kind) → also :func:`_train_cached_map`,
+      which now consumes :class:`CachedDualDataset` and dispatches per-side
+      cache layout. The "_map" name is historical; the function is the
+      bucket-DataLoader path generally.
+    """
+    aux_encoder = getattr(args, "aux_encoder", None)
+    if aux_encoder:
+        _train_cached_map(args)
+    elif args.pool_kind == "mean":
         _train_cached_mean(args)
     elif args.pool_kind == "map":
         _train_cached_map(args)

@@ -134,6 +134,10 @@ COMMANDS = {
         downloads.cmd_download_pe,
         "Download PE-Core-L14-336 (img2emb encoder)",
     ),
+    "download-pe-spatial": (
+        downloads.cmd_download_pe_spatial,
+        "Download PE-Spatial-B16-512 (Anima Tagger aux encoder)",
+    ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (masking.cmd_mask, "Generate SAM3 + MIT masks, then merge"),
     "mask-sam": (masking.cmd_mask_sam, "Generate SAM3 masks only"),

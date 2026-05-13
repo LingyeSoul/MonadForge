@@ -133,15 +133,47 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
         from library.captioning.anima_tagger_data import (
             BucketBatchSampler,
+            CachedDualDataset,
             CachedTokenDataset,
+            collate_dual_token_batch,
             collate_token_batch,
         )
         from library.vision.encoders import get_encoder_info
 
-        spec = get_encoder_info(args.encoder).bucket_spec
-        val_ds = CachedTokenDataset(
-            manifest, cache_dir, spec, stems_subset=manifest.val_stems
-        )
+        spec = get_encoder_info(args.encoder).bucket_spec if pool_kind == "map" else None
+        # Mirror the training-time aux choice from the saved config so the
+        # user doesn't have to re-pass --aux_encoder / --pool_kind_aux.
+        # CLI flags still win (lets you calibrate against an alternate cache).
+        aux_encoder = args.aux_encoder or cfg_d.get("aux_encoder")
+        dual = bool(aux_encoder) and cfg.has_aux
+        if cfg.has_aux and not aux_encoder:
+            raise SystemExit(
+                "config has aux encoder (d_in_aux set) but --aux_encoder wasn't "
+                "given and the saved config.json doesn't record an aux_encoder "
+                "name. Re-pass --aux_encoder pe_spatial."
+            )
+        if dual:
+            from .caches import cache_dir_for as _cache_dir_for
+            pool_kind_aux = args.pool_kind_aux or cfg.effective_pool_kind_aux
+            spec_aux = (
+                get_encoder_info(aux_encoder).bucket_spec
+                if pool_kind_aux == "map" else None
+            )
+            cache_dir_aux = _cache_dir_for(out_dir, pool_kind_aux, aux_encoder)
+            if not cache_dir_aux.exists():
+                raise SystemExit(
+                    f"missing aux cache {cache_dir_aux} — calibrate needs the "
+                    f"same cache the trainer used (pool_kind_aux={pool_kind_aux})."
+                )
+            val_ds = CachedDualDataset(
+                manifest, cache_dir, pool_kind, spec,
+                cache_dir_aux, pool_kind_aux, spec_aux,
+                stems_subset=manifest.val_stems,
+            )
+        else:
+            val_ds = CachedTokenDataset(
+                manifest, cache_dir, spec, stems_subset=manifest.val_stems
+            )
         val_mh = val_ds.multi_hot.to(device)
         sampler = BucketBatchSampler(
             val_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=False
@@ -150,14 +182,22 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             val_ds,
             batch_sampler=sampler,
             num_workers=args.feature_cache_workers,
-            collate_fn=collate_token_batch,
+            collate_fn=collate_dual_token_batch if dual else collate_token_batch,
             pin_memory=True,
         )
         chunks: list[torch.Tensor] = []
         with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            for tokens, _mh, _rate, _people, _bucket in loader:
+            for batch in loader:
+                if dual:
+                    tokens, tokens_aux, _mh, _rate, _people, _bucket = batch
+                    tokens_aux = tokens_aux.to(device, non_blocking=True)
+                else:
+                    tokens, _mh, _rate, _people, _bucket = batch
+                    tokens_aux = None
                 tokens = tokens.to(device, non_blocking=True)
-                tl, _rl, _pl = model(tokens)
+                tl, _rl, _pl = (
+                    model(tokens, tokens_aux) if dual else model(tokens)
+                )
                 chunks.append(tl.float())
         tag_logits = torch.cat(chunks, dim=0)
         # CachedTokenDataset's multi_hot is already aligned with iter order

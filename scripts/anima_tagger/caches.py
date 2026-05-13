@@ -39,12 +39,66 @@ def cache_dir_for(out_dir: Path, pool_kind: str, encoder: str) -> Path:
     return out_dir / ".cache" / f"{sub}-{encoder}"
 
 
-def cmd_build_features(args: argparse.Namespace) -> None:
+def _build_one_encoder(
+    args: argparse.Namespace,
+    manifest,
+    encoder_name: str,
+    pool_kind: str,
+    device: torch.device,
+) -> None:
+    """Build a single token / feature cache for one encoder at the given pool_kind."""
     from library.captioning.anima_tagger_data import (
         FeatureCacheBuilder,
-        TaggerManifest,
         TokenCacheBuilder,
     )
+
+    out_dir = Path(args.out_dir)
+    cache_dir = cache_dir_for(out_dir, pool_kind, encoder_name)
+    # Auto-shortcut PIL decode + LANCZOS when the resized cache for this
+    # encoder is already on disk (output bit-equivalent up to uint8
+    # quantization — well below the encoder's bf16 noise floor).
+    resized_cache_dir = out_dir / ".cache" / f"resized-{encoder_name}"
+    resized_present = resized_cache_dir.exists() and any(resized_cache_dir.iterdir())
+    logger.info(
+        "build_features: pool_kind=%s  %d manifest entries → %s (device=%s, encoder=%s, "
+        "resized_shortcut=%s)",
+        pool_kind,
+        len(manifest.stems),
+        cache_dir,
+        device,
+        encoder_name,
+        resized_present,
+    )
+    builder_kwargs = dict(
+        manifest=manifest,
+        cache_dir=cache_dir,
+        device=device,
+        encoder_name=encoder_name,
+        num_workers=args.feature_cache_workers,
+        resized_cache_dir=resized_cache_dir if resized_present else None,
+    )
+    if pool_kind == "map":
+        builder = TokenCacheBuilder(**builder_kwargs)
+    else:
+        builder = FeatureCacheBuilder(**builder_kwargs)
+    n_new = builder.build()
+    n_total = len(manifest.stems) - len(builder.missing_stems())
+    print(f"  [{encoder_name}/{pool_kind}] cache dir:        {cache_dir}")
+    print(f"  [{encoder_name}/{pool_kind}] newly encoded:    {n_new}")
+    print(f"  [{encoder_name}/{pool_kind}] cached / total:   {n_total} / {len(manifest.stems)}")
+
+
+def cmd_build_features(args: argparse.Namespace) -> None:
+    """Build per-encoder token / feature caches.
+
+    With ``--aux_encoder`` set, also builds a parallel cache for the
+    auxiliary encoder. The two sides may use different pool kinds —
+    ``--pool_kind`` controls main, ``--pool_kind_aux`` controls aux (defaults
+    to inheriting ``--pool_kind``). Each ``(encoder, pool_kind)`` pair gets
+    its own ``.cache/{tokens,pooled}-<name>/`` subdir so they can be built
+    / refreshed independently.
+    """
+    from library.captioning.anima_tagger_data import TaggerManifest
 
     out_dir = Path(args.out_dir)
     manifest_path = out_dir / "dataset.json"
@@ -53,41 +107,13 @@ def cmd_build_features(args: argparse.Namespace) -> None:
             f"missing {manifest_path} — run --mode build_vocab first."
         )
     manifest = TaggerManifest.from_path(manifest_path)
-    cache_dir = cache_dir_for(out_dir, args.pool_kind, args.encoder)
-    # Auto-shortcut PIL decode + LANCZOS when the PE-LoRA path's resized
-    # cache is already on disk. Output is bit-equivalent up to uint8
-    # quantization (≤ 1/127.5 per channel — well below the encoder's
-    # bf16 noise floor).
-    resized_cache_dir = out_dir / ".cache" / f"resized-{args.encoder}"
-    resized_present = resized_cache_dir.exists() and any(resized_cache_dir.iterdir())
     device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    logger.info(
-        "build_features: pool_kind=%s  %d manifest entries → %s (device=%s, encoder=%s, "
-        "resized_shortcut=%s)",
-        args.pool_kind,
-        len(manifest.stems),
-        cache_dir,
-        device,
-        args.encoder,
-        resized_present,
-    )
-    builder_kwargs = dict(
-        manifest=manifest,
-        cache_dir=cache_dir,
-        device=device,
-        encoder_name=args.encoder,
-        num_workers=args.feature_cache_workers,
-        resized_cache_dir=resized_cache_dir if resized_present else None,
-    )
-    if args.pool_kind == "map":
-        builder = TokenCacheBuilder(**builder_kwargs)
-    else:
-        builder = FeatureCacheBuilder(**builder_kwargs)
-    n_new = builder.build()
-    n_total = len(manifest.stems) - len(builder.missing_stems())
-    print(f"  cache dir:        {cache_dir}")
-    print(f"  newly encoded:    {n_new}")
-    print(f"  cached / total:   {n_total} / {len(manifest.stems)}")
+
+    _build_one_encoder(args, manifest, args.encoder, args.pool_kind, device)
+    aux_encoder = getattr(args, "aux_encoder", None)
+    if aux_encoder:
+        pool_kind_aux = args.pool_kind_aux or args.pool_kind
+        _build_one_encoder(args, manifest, aux_encoder, pool_kind_aux, device)
 
 
 def cmd_build_resized(args: argparse.Namespace) -> None:

@@ -32,6 +32,23 @@ def cmd_download_pe(_extra):
     )
 
 
+def cmd_download_pe_spatial(_extra):
+    # PE-Spatial-B16-512 — auxiliary encoder for the Anima Tagger's
+    # dual-encoder configuration. Same vendored vision tower (different
+    # config entry); only the .pt is fetched here.
+    (ROOT / "models" / "pe").mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "hf",
+            "download",
+            "facebook/PE-Spatial-B16-512",
+            "PE-Spatial-B16-512.pt",
+            "--local-dir",
+            "models/pe",
+        ]
+    )
+
+
 def cmd_download_mit(_extra):
     (ROOT / "models" / "mit").mkdir(parents=True, exist_ok=True)
     run(
@@ -79,3 +96,4 @@ def cmd_download_models(_extra):
     cmd_download_sam3(_extra)
     cmd_download_mit(_extra)
     cmd_download_pe(_extra)
+    cmd_download_pe_spatial(_extra)

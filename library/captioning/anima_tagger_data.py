@@ -628,6 +628,213 @@ def collate_token_batch(batch):
     return tokens, multi_hot, rating_idx, people_idx, bucket
 
 
+# ── Dual-encoder cache (PE-Core + PE-Spatial; per-side pool kind) ────────
+
+
+class CachedDualDataset(Dataset):
+    """Lazy per-stem ``(feat_main, feat_aux, multi_hot, rating, people, bucket_pair)``.
+
+    Each side independently picks ``"mean"`` or ``"map"``:
+      * ``"mean"`` → load pooled cache (``{stem}.safetensors`` with key
+        ``"feature"``), shape ``[D]``. Bucket key is ``None`` for that side
+        (no shape variation → no batch-bucketing constraint).
+      * ``"map"`` → load token cache (``{stem}.safetensors`` with key
+        ``"tokens"``), shape ``[T, D]``. Bucket key is ``(h_p, w_p)`` derived
+        from T via the encoder's :class:`BucketSpec`.
+
+    The compound bucket key is ``(main_bucket | None, aux_bucket | None)``;
+    :class:`BucketBatchSampler` groups by it, so within-batch shape
+    homogeneity holds for whichever side(s) need it. When PE-Core uses
+    mean and PE-Spatial uses map (the most common asymmetric setup),
+    batches are grouped by aux bucket only.
+
+    ``cache_dir`` / ``cache_dir_aux`` should be the per-side outputs of
+    :func:`scripts.anima_tagger.caches.cache_dir_for` (i.e.
+    ``.cache/pooled-<encoder>/`` for mean, ``.cache/tokens-<encoder>/`` for
+    map). Spec is only used when the side is map (to map T → bucket); pass
+    ``None`` for the spec on a mean side.
+
+    Stems present in only one cache are skipped (logged); typical cause is
+    an asymmetric incremental cache build.
+    """
+
+    def __init__(
+        self,
+        manifest: TaggerManifest,
+        cache_dir: Path,
+        pool_kind: str,
+        spec: Optional[BucketSpec],
+        cache_dir_aux: Path,
+        pool_kind_aux: str,
+        spec_aux: Optional[BucketSpec],
+        stems_subset: Optional[Sequence[str]] = None,
+    ):
+        if pool_kind not in ("mean", "map"):
+            raise ValueError(f"pool_kind must be 'mean' or 'map', got {pool_kind!r}")
+        if pool_kind_aux not in ("mean", "map"):
+            raise ValueError(f"pool_kind_aux must be 'mean' or 'map', got {pool_kind_aux!r}")
+        if pool_kind == "map" and spec is None:
+            raise ValueError("pool_kind='map' requires a BucketSpec for the main side")
+        if pool_kind_aux == "map" and spec_aux is None:
+            raise ValueError("pool_kind_aux='map' requires a BucketSpec for the aux side")
+
+        idx_of = manifest.stem_index()
+        if stems_subset is None:
+            stems_subset = manifest.stems
+
+        # Per-side T → bucket map (only used on map sides). For mean sides
+        # the dict is empty and the bucket key is fixed at None.
+        def _bucket_map(spec: Optional[BucketSpec]) -> Dict[int, tuple[int, int]]:
+            if spec is None:
+                return {}
+            return {
+                h * w + (1 if spec.use_cls else 0): (h, w) for h, w in spec.buckets
+            }
+
+        token_to_bucket = _bucket_map(spec)
+        token_to_bucket_aux = _bucket_map(spec_aux)
+
+        kept_stems: List[str] = []
+        kept_paths: List[Path] = []
+        kept_paths_aux: List[Path] = []
+        kept_tag_idx: List[List[int]] = []
+        kept_rating_idx: List[int] = []
+        kept_people_idx: List[int] = []
+        kept_buckets: List[tuple[Optional[tuple[int, int]], Optional[tuple[int, int]]]] = []
+        has_people = bool(manifest.people_count_indices)
+        n_missing_main = 0
+        n_missing_aux = 0
+        n_unknown_bucket = 0
+        for stem in stems_subset:
+            i = idx_of.get(stem)
+            if i is None:
+                n_missing_main += 1
+                continue
+            # Both pooled and token caches use the same per-stem filename;
+            # the differentiator is the cache_dir (.cache/pooled-X/ vs
+            # .cache/tokens-X/) and the safetensors key inside.
+            cache_file = cache_dir / f"{stem}.safetensors"
+            cache_file_aux = cache_dir_aux / f"{stem}.safetensors"
+            if not cache_file.exists():
+                n_missing_main += 1
+                continue
+            if not cache_file_aux.exists():
+                n_missing_aux += 1
+                continue
+            bucket_main: Optional[tuple[int, int]] = None
+            if pool_kind == "map":
+                with safe_open(str(cache_file), framework="pt") as f:
+                    T_main = int(f.get_slice("tokens").get_shape()[0])
+                bucket_main = token_to_bucket.get(T_main)
+                if bucket_main is None:
+                    n_unknown_bucket += 1
+                    continue
+            bucket_aux: Optional[tuple[int, int]] = None
+            if pool_kind_aux == "map":
+                with safe_open(str(cache_file_aux), framework="pt") as f:
+                    T_aux = int(f.get_slice("tokens").get_shape()[0])
+                bucket_aux = token_to_bucket_aux.get(T_aux)
+                if bucket_aux is None:
+                    n_unknown_bucket += 1
+                    continue
+            kept_stems.append(stem)
+            kept_paths.append(cache_file)
+            kept_paths_aux.append(cache_file_aux)
+            kept_tag_idx.append(manifest.tag_indices[i])
+            kept_rating_idx.append(manifest.rating_indices[i])
+            kept_people_idx.append(manifest.people_count_indices[i] if has_people else 0)
+            kept_buckets.append((bucket_main, bucket_aux))
+        if not kept_stems:
+            raise RuntimeError(
+                f"no paired sidecars in {cache_dir} + {cache_dir_aux} for the "
+                f"requested stems (n_requested={len(stems_subset)}, "
+                f"n_missing_main={n_missing_main}, n_missing_aux={n_missing_aux}, "
+                f"n_unknown_bucket={n_unknown_bucket})"
+            )
+        if n_missing_main or n_missing_aux:
+            logger.warning(
+                "CachedDualDataset: missing main=%d aux=%d (out of %d "
+                "requested) - those stems are skipped",
+                n_missing_main, n_missing_aux, len(stems_subset),
+            )
+        if n_unknown_bucket:
+            logger.warning(
+                "CachedDualDataset: %d stems had unexpected token counts "
+                "(not in spec.buckets) and were skipped",
+                n_unknown_bucket,
+            )
+        self.stems = kept_stems
+        self.paths = kept_paths
+        self.paths_aux = kept_paths_aux
+        self.buckets = kept_buckets
+        self.pool_kind = pool_kind
+        self.pool_kind_aux = pool_kind_aux
+        self.multi_hot = torch.zeros(len(kept_stems), manifest.n_tags)
+        for row, idxs in enumerate(kept_tag_idx):
+            self.multi_hot[row, idxs] = 1.0
+        self.rating_idx = torch.tensor(kept_rating_idx, dtype=torch.long)
+        self.people_idx = torch.tensor(kept_people_idx, dtype=torch.long)
+        self.n_tags = manifest.n_tags
+        self.n_ratings = manifest.n_ratings
+        self.n_people_counts = manifest.n_people_counts
+        self.spec = spec
+        self.spec_aux = spec_aux
+        # Peek the first sidecar of each side to record d_in / d_in_aux.
+        # Key differs by pool_kind ("feature" for mean, "tokens" for map).
+        self.d_in = self._peek_d(kept_paths[0], pool_kind)
+        self.d_in_aux = self._peek_d(kept_paths_aux[0], pool_kind_aux)
+
+    @staticmethod
+    def _peek_d(path: Path, kind: str) -> int:
+        key = "feature" if kind == "mean" else "tokens"
+        with safe_open(str(path), framework="pt") as f:
+            return int(f.get_slice(key).get_shape()[-1])
+
+    def __len__(self) -> int:
+        return len(self.stems)
+
+    @staticmethod
+    def _load_one(path: Path, kind: str) -> torch.Tensor:
+        key = "feature" if kind == "mean" else "tokens"
+        return st_load(str(path))[key]
+
+    def __getitem__(self, idx: int):
+        feat = self._load_one(self.paths[idx], self.pool_kind)
+        feat_aux = self._load_one(self.paths_aux[idx], self.pool_kind_aux)
+        return (
+            feat,
+            feat_aux,
+            self.multi_hot[idx],
+            self.rating_idx[idx],
+            self.people_idx[idx],
+            self.buckets[idx],
+        )
+
+
+# Back-compat alias — earlier code (and the smoke tests) refer to the
+# original name. The new class generalizes the original; callers that
+# imported the old name keep working.
+CachedDualTokenDataset = CachedDualDataset
+
+
+def collate_dual_token_batch(batch):
+    """Stack a same-bucket-pair batch into
+    ``(feat_main, feat_aux, multi_hot, rating, people, bucket_pair)``.
+
+    BucketBatchSampler guarantees both shapes are constant within a batch
+    (sampler groups by the compound ``(main_bucket | None, aux_bucket | None)``
+    key). torch.stack works whether each side is rank-2 (mean-pool) or
+    rank-3 (token sequence).
+    """
+    feat = torch.stack([b[0] for b in batch], dim=0)          # [B, ...] (rank depends on side)
+    feat_aux = torch.stack([b[1] for b in batch], dim=0)      # [B, ...]
+    multi_hot = torch.stack([b[2] for b in batch], dim=0)     # [B, n_tags]
+    rating_idx = torch.stack([b[3] for b in batch], dim=0)    # [B]
+    people_idx = torch.stack([b[4] for b in batch], dim=0)    # [B]
+    bucket_pair = batch[0][5]
+    return feat, feat_aux, multi_hot, rating_idx, people_idx, bucket_pair
+
+
 # ── Pre-resized image cache (for end-to-end PE-LoRA training) ─────────────
 
 

@@ -84,6 +84,15 @@ def parse_args() -> argparse.Namespace:
         "Default: pe (PE-Core-L14-336).",
     )
     p.add_argument(
+        "--aux_encoder",
+        default=None,
+        help="Optional auxiliary vision encoder for dual-encoder training "
+        "(e.g. 'pe_spatial' for PE-Spatial-B16-512). When set, build_features "
+        "builds a parallel cache, train builds a dual-MAPHead model that "
+        "concatenates pool outputs from both encoders. Must use --pool_kind=map. "
+        "Default: None (single-encoder, backward-compatible).",
+    )
+    p.add_argument(
         "--device",
         default=None,
         help="Torch device for build_features / train (default: cuda if available).",
@@ -160,10 +169,20 @@ def parse_args() -> argparse.Namespace:
         "--pool_kind",
         choices=["map", "mean"],
         default="map",
-        help="Pool head over PE-Core tokens. 'map' (default): K-query "
-        "attention pool + CLS + mean concat → trunk. 'mean': legacy "
+        help="Pool head over the main encoder's tokens. 'map' (default): "
+        "K-query attention pool + CLS + mean concat → trunk. 'mean': "
         "single-vector mean-pool. Selects cache subdir "
         "(.cache/tokens-<encoder>/ vs pooled-<encoder>/) and head arch.",
+    )
+    p.add_argument(
+        "--pool_kind_aux",
+        choices=["map", "mean"],
+        default=None,
+        help="Pool kind for the auxiliary encoder. Defaults to inheriting "
+        "--pool_kind. Set explicitly to mix — e.g. '--pool_kind mean "
+        "--aux_encoder pe_spatial --pool_kind_aux map' rides PE-Core's "
+        "cheap CLIP-aligned mean pool plus PE-Spatial's full MAP for "
+        "spatial detail.",
     )
     p.add_argument(
         "--pool_n_queries",
@@ -193,6 +212,37 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="MAP pool: concat the patch-token mean as an aux channel "
         "(default on — gives the legacy baseline as a residual).",
+    )
+
+    # Aux encoder MAP-pool knobs. Only consulted when --aux_encoder is set;
+    # otherwise inert. Defaults mirror the main pool — change per-encoder
+    # only when there's a reason (e.g. PE-Spatial's d=768 admits more head
+    # divisors so a bigger n_heads_aux is fine if it pays off in F1).
+    p.add_argument(
+        "--pool_n_queries_aux",
+        type=int,
+        default=4,
+        help="Aux MAP pool: number of learnable queries (default 4). Each "
+        "query produces one [d_in_aux] vector.",
+    )
+    p.add_argument(
+        "--pool_n_heads_aux",
+        type=int,
+        default=8,
+        help="Aux MAP pool: attention heads (default 8). Must divide d_in_aux "
+        "(768 for PE-Spatial-B16-512 — divisors include 8, 12, 16, 24).",
+    )
+    p.add_argument(
+        "--pool_use_cls_aux",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Aux MAP pool: concat the encoder's CLS token (default on).",
+    )
+    p.add_argument(
+        "--pool_use_mean_aux",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Aux MAP pool: concat the patch-token mean (default on).",
     )
     p.add_argument(
         "--lambda_rating",
@@ -365,6 +415,25 @@ def parse_args() -> argparse.Namespace:
                 "    CAPTION_CORPUS_DIR=/path/to/corpus\n"
                 "to anima_lora/.env, or pass the paths via CLI flags."
             )
+
+    if args.aux_encoder:
+        if args.aux_encoder == args.encoder:
+            raise SystemExit(
+                f"--aux_encoder={args.aux_encoder!r} matches --encoder; aux must "
+                f"be a different encoder (e.g. --encoder pe --aux_encoder pe_spatial)."
+            )
+        if args.mode == "train" and args.pe_lora_rank > 0:
+            raise SystemExit(
+                "--aux_encoder + --pe_lora_rank>0 is not supported. PE-LoRA "
+                "training reads pre-resized images and runs the encoder live; "
+                "the dual-encoder path consumes pre-encoded caches. "
+                "Use --pe_lora_rank=0 for v1."
+            )
+    if args.pool_kind_aux is not None and not args.aux_encoder:
+        raise SystemExit(
+            "--pool_kind_aux only makes sense alongside --aux_encoder; "
+            "drop the flag or pass --aux_encoder <name>."
+        )
 
     return args
 

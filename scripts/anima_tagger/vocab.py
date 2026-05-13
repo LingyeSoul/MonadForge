@@ -597,7 +597,7 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     print(f"  vocab size (≥{args.min_freq}):       {vocab['n_tags_kept']}")
     print(f"  dropped (low-freq):     {vocab['n_tags_dropped_lowfreq']}")
     print(f"  cache hit rate:         {vocab['cache_hit_rate']}")
-    print(f"  category counts:")
+    print("  category counts:")
     for cat, n in sorted(vocab["category_counts"].items(), key=lambda kv: -kv[1]):
         print(f"    {cat:<12} {n}")
     print(f"  rating coverage:        {vocab['rating_coverage']}")

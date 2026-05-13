@@ -498,6 +498,16 @@ PE_CONFIGS: dict[str, PEConfig] = {
         image_size=336, patch_size=14, width=1024, layers=24, heads=16,
         mlp_ratio=4.0, output_dim=1024, use_cls_token=True, pool_type="attn",
     ),
+    # Spatial variant — 512px / patch 16 → 32×32=1024 patches + 1 CLS = 1025
+    # tokens. No CLIP projection (output_dim=None), no LN-post, no pool head
+    # (pool_type="none") — Meta's spatial-alignment fine-tune drops the
+    # global-alignment plumbing PE-Core uses. We only consume the patch
+    # token sequence (`last_hidden_state`), so the missing pool/proj is fine.
+    "PE-Spatial-B16-512": PEConfig(
+        image_size=512, patch_size=16, width=768, layers=12, heads=12,
+        mlp_ratio=4.0, output_dim=None, use_cls_token=True, pool_type="none",
+        use_ln_post=False,
+    ),
 }
 
 
