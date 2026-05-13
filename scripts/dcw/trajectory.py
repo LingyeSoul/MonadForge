@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from library.inference.adapters import set_hydra_sigma
+from library.runtime.fei import compute_fei_2band, fei_sigma_low
 from scripts.dcw.haar import BANDS, apply_dcw_LL_only_batched, haar_band_norms_batched
 
 
@@ -174,9 +175,12 @@ def run_reverse_batched(
     embed_uncond: torch.Tensor | None = None,
     cfg_scale: float = 1.0,
     return_final: bool = False,
+    fei_sigma_low_div: float = 4.0,
 ) -> (
-    list[tuple[np.ndarray, dict[str, np.ndarray]]]
-    | tuple[list[tuple[np.ndarray, dict[str, np.ndarray]]], torch.Tensor]
+    list[tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]]
+    | tuple[
+        list[tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]], torch.Tensor
+    ]
 ):
     """Run N reverse trajectories in parallel along batch, where each row
     is the (seed, λ) pair ``(noise_seeds[r], dcw_lams[r])``.
@@ -200,8 +204,13 @@ def run_reverse_batched(
     ``scalar_i = λ · (1 − σ_i)``, applied to ``(prev − x0_pred)``
     independently per row.
 
-    Returns one (norms, bands) tuple per row, in input order.
+    Returns one (norms, bands, fei_low) tuple per row, in input order.
     ``norms`` shape: (n_steps,). ``bands[b]`` shape: (n_steps,).
+    ``fei_low`` shape: (n_steps,) — 2-band FEI's low-band energy share
+    on the simplex (∈ [0,1]), captured on the latent **entering** each
+    step (pre-forward, pre-DCW correction) so the timing matches the
+    inference-side ``set_fei`` call site in ``library/inference/generation.py``.
+    ``e_high = 1 − e_low`` is redundant for 2-band and not stored.
 
     If ``return_final`` is True, additionally returns the final
     reverse-trajectory latent per row (the σ → 0 endpoint), shape
@@ -227,6 +236,12 @@ def run_reverse_batched(
 
     norms_gpu = torch.zeros(n_steps, n_rows, dtype=torch.float32, device=device)
     bands_gpu = torch.zeros(n_steps, n_rows, 4, dtype=torch.float32, device=device)
+    fei_low_gpu = torch.zeros(n_steps, n_rows, dtype=torch.float32, device=device)
+    # σ_low depends only on latent (H_lat, W_lat); same across rows + steps
+    # because the spatial dims don't change during denoising. Match FeRA's
+    # production rule from library.runtime.fei.fei_sigma_low.
+    h_lat, w_lat = x_hat.shape[-2], x_hat.shape[-1]
+    sigma_low = fei_sigma_low(h_lat, w_lat, fei_sigma_low_div)
 
     for i in range(n_steps):
         sigma_i = float(sigmas[i])
@@ -236,6 +251,14 @@ def run_reverse_batched(
         # to match the batch.
         t_one = torch.full((1,), sigma_i, device=device, dtype=torch.bfloat16)
         t_b = torch.full((n_rows,), sigma_i, device=device, dtype=torch.bfloat16)
+
+        # FEI on the latent entering this step — timing matches the
+        # inference-side set_fei call in library/inference/generation.py
+        # (computed on the pre-forward z_t, before any update).
+        # x_hat is (n_rows, C, T=1, H, W); squeeze the T axis for compute_fei_2band.
+        z_in = x_hat[:, :, 0] if x_hat.ndim == 5 else x_hat
+        fei = compute_fei_2band(z_in, sigma_low)  # (n_rows, 2), fp32
+        fei_low_gpu[i] = fei[:, 0]
 
         set_hydra_sigma(anima, t_one)
         v = _cfg_velocity(
@@ -260,11 +283,12 @@ def run_reverse_batched(
 
     norms_np = norms_gpu.cpu().numpy().astype(np.float64)
     bands_np = bands_gpu.cpu().numpy().astype(np.float64)
+    fei_low_np = fei_low_gpu.cpu().numpy().astype(np.float64)
 
-    out: list[tuple[np.ndarray, dict[str, np.ndarray]]] = []
+    out: list[tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]] = []
     for j in range(n_rows):
         bands_dict = {b: bands_np[:, j, k] for k, b in enumerate(BANDS)}
-        out.append((norms_np[:, j], bands_dict))
+        out.append((norms_np[:, j], bands_dict, fei_low_np[:, j]))
 
     if return_final:
         return out, x_hat.float().cpu()

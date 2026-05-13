@@ -100,6 +100,9 @@ SHARED_KWARG_FLAGS: Tuple[str, ...] = (
     # Variant selectors (read by resolve_network_spec)
     "use_dora",
     "use_ortho",
+    # PSOFT-style Cayley-init magnitude (consumed by OrthoHydra +
+    # StackedExperts in ortho mode).
+    "ortho_init_std",
     # Three-axis routing config (see plan2.md §three-axis-config). Drives
     # `LoRANetworkCfg.from_kwargs` translation; `resolve_network_spec` also
     # dispatches on `use_moe_style="independent_A"` → `stacked_experts_global_fei`.

@@ -41,6 +41,11 @@ class Row:
     # gap_LL / v_rev_LL are residuals on top of that scalar baseline, and the
     # head's α̂ is the residual.
     baseline_lambda: float
+    # 2-band FEI low-band energy ∈ [0,1] captured on the latent entering each
+    # reverse step (matches inference set_fei timing). None for legacy pools
+    # collected before the FEI capture landed; downstream trainer code must
+    # filter rows when --fei_obs != off.
+    fei_low: np.ndarray | None = None
 
 
 def load_bench_runs(
@@ -105,6 +110,9 @@ def load_bench_runs(
         aspect_id = ASPECT_TABLE[(H, W)]
         # Old runs predate --baseline_lambda; absent ⇒ 0.0 (legacy no-DCW).
         baseline_lambda = float(a.get("baseline_lambda", 0.0))
+        # Pre-FEI-capture runs (before scripts/dcw/trajectory.py added the
+        # third return field) won't ship fei_low; back-compat ⇒ None per row.
+        fei_low_arr = z["fei_low"] if "fei_low" in z.files else None
         for r in range(len(stems)):
             img_idx = r // n_seeds
             seed_idx = r % n_seeds
@@ -121,6 +129,11 @@ def load_bench_runs(
                     v_rev_source=source,
                     sigma_i=sigma_i,
                     baseline_lambda=baseline_lambda,
+                    fei_low=(
+                        np.asarray(fei_low_arr[r], dtype=np.float64)
+                        if fei_low_arr is not None
+                        else None
+                    ),
                 )
             )
     return rows

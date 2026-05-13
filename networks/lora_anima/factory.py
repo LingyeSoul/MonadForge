@@ -187,6 +187,7 @@ def create_network(
             "router_source='sigma' but no modules matched router_targets "
             f"regex {cfg.router_targets!r} — σ-routing is inactive"
         )
+    routing_aware_count = len(getattr(network, "_routing_aware_loras", []))
     if cfg.router_source == "fei" and network._global_router_hits > 0:
         logger.info(
             f"GlobalRouter (FEI) → Hydra: {network._global_router_hits} "
@@ -200,6 +201,16 @@ def create_network(
             f"FEI-conditional HydraLoRA router: {network._fei_router_hits} modules "
             f"with FEI ({cfg.fei_feature_dim}-band simplex) concatenated to router input "
             f"(σ_low_div={cfg.fei_sigma_low_div}). FeRA-style content-aware routing."
+        )
+    elif (
+        cfg.router_source == "fei"
+        and cfg.use_moe_style == "independent_A"
+        and routing_aware_count > 0
+    ):
+        logger.info(
+            f"GlobalRouter (FEI) → StackedExperts: {routing_aware_count} "
+            f"independent-A modules consume gates from the network-level router "
+            f"on FEI ({cfg.fei_feature_dim}-band simplex, σ_low_div={cfg.fei_sigma_low_div})."
         )
     elif cfg.router_source == "fei":
         logger.warning(

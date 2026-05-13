@@ -257,6 +257,14 @@ class LoRANetworkCfg:
     route_per_layer: bool = False
     router_source: RouterSource = "none"
 
+    # PSOFT-style Cayley/SVD parameterization (per-module bool). Selects
+    # ``ortho`` mode on ``StackedExpertsLoRAModule`` when paired with
+    # ``use_moe_style="independent_A"``; for the non-MoE / shared_A cells the
+    # ``ortho``-ness is already encoded in the chosen module class
+    # (``OrthoLoRAExp`` / ``OrthoHydra``) and this field is informational.
+    use_ortho: bool = False
+    ortho_init_std: float = 0.02
+
     # σ-conditional router parameters (consumed when ``router_source="sigma"``).
     # Layer scope is shared with Hydra and FEI via ``router_targets`` above.
     sigma_feature_dim: int = 16
@@ -421,6 +429,9 @@ class LoRANetworkCfg:
         router_hidden_dim = int(kwargs.get("router_hidden_dim", kwargs.get("router_hidden", 64)))
         router_tau = float(kwargs.get("router_tau", 0.7))
 
+        use_ortho = _as_bool(kwargs.get("use_ortho"))
+        ortho_init_std = float(kwargs.get("ortho_init_std", 0.02))
+
         # FECL knobs. Default off; turning it on requires `num_bands >= 3`
         # to be a meaningful objective (see compute_fecl docstring).
         fera_fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
@@ -526,6 +537,8 @@ class LoRANetworkCfg:
             fei_sigma_low_div=fei_sigma_low_div,
             router_hidden_dim=router_hidden_dim,
             router_tau=router_tau,
+            use_ortho=use_ortho,
+            ortho_init_std=ortho_init_std,
             fera_fecl_weight=fera_fecl_weight,
             fera_num_bands=fera_num_bands,
             channel_scales_dict=channel_scales_dict,

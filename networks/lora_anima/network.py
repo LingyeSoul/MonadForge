@@ -475,6 +475,17 @@ class LoRANetwork(torch.nn.Module):
                     if self._use_global_router_for_hydra:
                         extra_kwargs["use_global_router"] = True
                         self._global_router_hits += 1
+                elif effective_module_class == StackedExpertsLoRAModule:
+                    # Independent-A (FeRA). Gates arrive via the network-level
+                    # ``GlobalRouter`` through the shared ``_routing_weights``
+                    # buffer — no per-Linear router knob to set. ``num_experts``
+                    # must match ``cfg.num_experts`` (and therefore the
+                    # GlobalRouter's output width) or the routing-weight
+                    # broadcast inside ``forward`` shape-mismatches.
+                    extra_kwargs["num_experts"] = cfg.num_experts
+                    extra_kwargs["ortho"] = cfg.use_ortho
+                    if cfg.use_ortho:
+                        extra_kwargs["ortho_init_std"] = cfg.ortho_init_std
 
                 # Hard σ-band expert partition: applied to every Hydra/
                 # OrthoHydra module (independent of the σ-feature router

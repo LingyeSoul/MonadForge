@@ -122,25 +122,33 @@ def train_one_fold(
     lambda_sigma_aux: float,
     verbose: bool = False,
 ) -> tuple[FusionHead, dict]:
+    # Concat-mode adds a "fei" feature column; replace mode reuses the g_obs
+    # slot (head sees no architectural difference). off keeps the historical
+    # in_dim. fei_k > 0 only on concat.
+    fei_k = int(features["fei"].shape[1]) if "fei" in features else 0
     head = FusionHead(
         c_pool_dim=features["c_pool"].shape[1],
         k=features["g_obs"].shape[1],
         aux_dim=features["aux"].shape[1],
         c_proj_dim=c_proj_dim,
         log_sigma2_init=float(np.log(max(sigma2_pop, 1e-6))),
+        fei_k=fei_k,
     ).to(device)
     opt = torch.optim.AdamW(head.parameters(), lr=lr, weight_decay=weight_decay)
 
     def to_dev(idx):
-        return (
+        base = (
             torch.tensor(features["c_pool"][idx], device=device),
             torch.tensor(features["g_obs"][idx], device=device),
             torch.tensor(features["aux"][idx], device=device),
             torch.tensor(targets[idx], device=device),
         )
+        if fei_k > 0:
+            return base + (torch.tensor(features["fei"][idx], device=device),)
+        return base + (None,)
 
-    c_t, g_t, x_t, r_t = to_dev(train_idx)
-    c_v, g_v, x_v, r_v = to_dev(val_idx)
+    c_t, g_t, x_t, r_t, fei_t = to_dev(train_idx)
+    c_v, g_v, x_v, r_v, fei_v = to_dev(val_idx)
     stem_groups_train = _build_stem_groups(stems, train_idx, device)
     stem_groups_val = _build_stem_groups(stems, val_idx, device)
 
@@ -154,7 +162,7 @@ def train_one_fold(
     for ep in range(epochs):
         head.train()
         opt.zero_grad()
-        alpha_hat, log_sigma2 = head(c_t, g_t, x_t)
+        alpha_hat, log_sigma2 = head(c_t, g_t, x_t, fei=fei_t)
         nll = gaussian_nll(alpha_hat, log_sigma2, r_t)
         if lambda_sigma_aux > 0.0:
             aux = sigma_aux_loss(log_sigma2, r_t, stem_groups_train)
@@ -166,7 +174,7 @@ def train_one_fold(
         opt.step()
         head.eval()
         with torch.no_grad():
-            ah_v, ls_v = head(c_v, g_v, x_v)
+            ah_v, ls_v = head(c_v, g_v, x_v, fei=fei_v)
             val_nll = gaussian_nll(ah_v, ls_v, r_v).item()
             # 0.0 (not NaN) when no multi-seed val groups exist — matches
             # sigma_aux_loss's own empty-group return. Using NaN here
@@ -202,7 +210,7 @@ def train_one_fold(
         head.load_state_dict(best_state)
     head.eval()
     with torch.no_grad():
-        ah_v, ls_v = head(c_v, g_v, x_v)
+        ah_v, ls_v = head(c_v, g_v, x_v, fei=fei_v)
     return head, {
         "val_score": best_val,
         "alpha_hat": ah_v.cpu().numpy(),
@@ -311,6 +319,25 @@ def main():
         "without g_obs on the smaller pool — re-test on n=1025.",
     )
     p.add_argument(
+        "--fei_obs",
+        type=str,
+        default="off",
+        choices=("off", "replace", "concat"),
+        help="Use 2-band FEI low-band energy (FeRA paper, arXiv:2511.17979) "
+        "on the per-step latent as a conditioning channel for the head. "
+        "off (default) = legacy v5 behavior. replace = swap g_obs slot for "
+        "FEI[:k_warmup] (direct A/B vs g_obs's ||v_rev_LL|| at the same "
+        "shape — head architecture unchanged). concat = keep both g_obs "
+        "and FEI as parallel feature columns (fei_k=k_warmup; head gets "
+        "an extra slot). Requires bench pool with `fei_low` captured "
+        "(scripts/dcw/trajectory.py post-FEI-capture); rows without FEI "
+        "are filtered out when this is != off. Phase 1+2 only — the "
+        "inference calibrator does NOT yet capture per-step FEI, so "
+        "trained replace/concat artifacts are offline-CV-only until the "
+        "Phase 3 calibrator hook lands. Schema gates `dcw_v6_fei_replace` "
+        "/ `dcw_v6_fei_concat` make the current calibrator refuse them.",
+    )
+    p.add_argument(
         "--lambda_sigma_aux",
         type=float,
         default=1.0,
@@ -382,6 +409,26 @@ def main():
     feat = load_text_features(stems, args.dataset_dir, variant=args.text_variant)
     rows = [r for r in rows if r.stem in feat]
     print(f"  {len(feat)} unique stems, {len(rows)} rows after te-cache filter")
+
+    if args.fei_obs != "off":
+        # Drop rows whose pool predates the FEI capture (no `fei_low` key in
+        # gaps_per_sample.npz). Mixing FEI-present and FEI-absent rows would
+        # either crash on stack() or require zero-fill, which would alias FEI
+        # with "no signal" and confound the ablation.
+        n_before = len(rows)
+        rows = [r for r in rows if r.fei_low is not None]
+        n_dropped = n_before - len(rows)
+        if n_dropped:
+            print(
+                f"  --fei_obs={args.fei_obs}: dropped {n_dropped} rows "
+                f"without fei_low (legacy pools predating FEI capture)"
+            )
+        if not rows:
+            sys.exit(
+                f"--fei_obs={args.fei_obs} requested but no rows in the pool "
+                "carry fei_low. Re-run `make dcw` to collect a fresh pool with "
+                "FEI captured (scripts/dcw/trajectory.py post-FEI integration)."
+            )
 
     print("[3/6] computing population μ_g ...")
     mu_g_pop = build_population_mu_g(rows, n_steps)  # (n_steps,)
@@ -479,6 +526,42 @@ def main():
         g_obs_n = np.zeros_like(g_obs_n)
         print("  --zero_g_obs: g_obs features replaced with zeros")
 
+    # FEI feature column. Off ⇒ unused. Replace ⇒ overwrite the g_obs slot
+    # so the head architecture matches the pre-FEI v5 head exactly (clean A/B
+    # vs ||v_rev_LL||). Concat ⇒ keep both as parallel slots in the head.
+    fei_mean = np.zeros(args.k_warmup, dtype=np.float32)
+    fei_std = np.ones(args.k_warmup, dtype=np.float32)
+    fei_n: np.ndarray | None = None
+    if args.fei_obs != "off":
+        fei_arr = np.stack([r.fei_low[: args.k_warmup] for r in rows]).astype(
+            np.float32
+        )
+        fei_mean = fei_arr.mean(axis=0)
+        # std clip floor 1e-3 (vs g_obs's 1.0) — FEI lives on the [0,1]
+        # simplex so per-step std is naturally small. A floor of 1.0 would
+        # crush the channel to zero post-standardization.
+        fei_std = fei_arr.std(axis=0).clip(min=1e-3)
+        fei_n = (fei_arr - fei_mean) / fei_std
+        print(
+            f"  --fei_obs={args.fei_obs}: FEI[:k={args.k_warmup}] "
+            f"mean={fei_mean.mean():+.3f} std≈{fei_std.mean():.3f}"
+        )
+        if args.fei_obs == "replace":
+            g_obs_n = fei_n
+            # Mirror FEI stats into the g_obs slot so the artifact's
+            # g_obs_mean / g_obs_std fields describe whatever raw signal
+            # actually fills that slot. A Phase 3 calibrator that feeds FEI
+            # values into the head's g_obs slot must standardize against
+            # FEI stats — saving v_rev_LL stats here would silently bias
+            # the normalization at inference.
+            g_obs_mean = fei_mean
+            g_obs_std = fei_std
+            fei_n = None  # head sees only one channel (in g_obs slot)
+            print(
+                "  --fei_obs=replace: head's g_obs slot now carries FEI values; "
+                "v_rev_LL ||LL|| not used (g_obs_mean/std stats redirected to FEI)"
+            )
+
     # Per-(stem, seed) LSQ fit: λ̂*_p = Σ gap·s / Σ s² over [s_start:s_end],
     # where s_i = 1 − σ_i. Single scalar per row, in raw gap-norm-per-(1−σ)
     # units (typical magnitude ~350). Then rescale targets to λ-units so
@@ -548,6 +631,8 @@ def main():
         "g_obs": g_obs_n,
         "aux": aux_n,
     }
+    if fei_n is not None:
+        features["fei"] = fei_n
 
     print(f"[5/6] {args.n_folds}-fold prompt-stratified CV ...")
     rng = np.random.default_rng(args.seed)
@@ -694,8 +779,31 @@ def main():
     state["g_obs_std"] = torch.tensor(g_obs_std, dtype=torch.float32)
     state["c_pool_mean"] = torch.tensor(c_pool_mean, dtype=torch.float32)
     state["c_pool_std"] = torch.tensor(c_pool_std, dtype=torch.float32)
+    # FEI stats always shipped (even in `off` mode they're zero/one no-ops),
+    # so the artifact carries a self-describing fei_mean/fei_std pair when
+    # the Phase 3 calibrator ships. `replace` overwrote g_obs with FEI,
+    # so g_obs_mean/std above already reflect FEI's distribution — fei_mean
+    # / fei_std here mirror that for clarity at load time.
+    if args.fei_obs == "replace":
+        state["fei_mean"] = torch.tensor(g_obs_mean, dtype=torch.float32)
+        state["fei_std"] = torch.tensor(g_obs_std, dtype=torch.float32)
+    else:
+        state["fei_mean"] = torch.tensor(fei_mean, dtype=torch.float32)
+        state["fei_std"] = torch.tensor(fei_std, dtype=torch.float32)
+    # Schema selection: pre-FEI artifacts keep `dcw_v5_lambda_scalar` so the
+    # current calibrator continues to load them. Replace/concat get v6 names
+    # so the current calibrator's _VALID_SCHEMAS check refuses them (head
+    # shape is fine on `replace` but the inference path still feeds g_obs
+    # from haar_LL_norm, which would be wrong — schema gate forces a retrain
+    # or Phase 3 calibrator update before use).
+    schema = {
+        "off": "dcw_v5_lambda_scalar",
+        "replace": "dcw_v6_fei_replace",
+        "concat": "dcw_v6_fei_concat",
+    }[args.fei_obs]
+    fei_k_meta = int(args.k_warmup if args.fei_obs == "concat" else 0)
     meta = {
-        "schema": "dcw_v5_lambda_scalar",
+        "schema": schema,
         "k_warmup": str(args.k_warmup),
         "target_start": str(t_start),
         "target_end": str(t_end),
@@ -711,6 +819,10 @@ def main():
         # (one_minus_sigma schedule). Calibrator adds it on every step so
         # α̂ acts as a residual on top — kills the v4 dead-zone mismatch.
         "baseline_lambda": f"{baseline_lambda:.6g}",
+        # FEI ablation knobs — present even in `off` mode so the metadata
+        # surface is uniform. Phase 3 calibrator will key off these.
+        "fei_obs": args.fei_obs,
+        "fei_k": str(fei_k_meta),
     }
     save_file(state, str(run_dir / "fusion_head.safetensors"), metadata=meta)
 
@@ -757,6 +869,8 @@ def main():
         "n_rows": len(rows),
         "n_unique_stems": len(unique_stems),
         "per_aspect_counts": {ASPECT_NAMES[a]: counts[a] for a in range(N_ASPECTS)},
+        "fei_obs": args.fei_obs,
+        "fei_k": fei_k_meta,
         "k_warmup": args.k_warmup,
         "target_start": t_start,
         "target_end": t_end,

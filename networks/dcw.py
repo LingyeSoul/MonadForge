@@ -149,7 +149,7 @@ def haar_LL_norm(v: torch.Tensor) -> float:
 
 
 class FusionHead(nn.Module):
-    """v4 fusion head: (c_pool, g_obs[0:k], aux) → (α̂, log σ̂²).
+    """v4 fusion head: (c_pool, g_obs[0:k], [fei[0:fei_k]], aux) → (α̂, log σ̂²).
 
     Shared by the trainer (``scripts/dcw/train_fusion_head.py``) and the
     inference controller (``library/inference/dcw_calibrator.py``) so the MLP
@@ -162,6 +162,15 @@ class FusionHead(nn.Module):
     (memory `project_dcw_bucket_prior_cosmetic`) confirmed it was cosmetic
     end-to-end. Pre-cleanup artifacts fail to load with a shape mismatch
     — retrain with ``make dcw-train``.
+
+    Optional ``fei_k`` slot (default 0) carries 2-band FEI low-band energy
+    over the first ``fei_k`` steps — derived from ``compute_fei_2band`` on
+    the per-step latent (see ``library/runtime/fei.py``). Reuses FeRA's
+    frequency-energy routing intuition: a deterministic, content-aware
+    descriptor of where this trajectory is on the coarse→fine progression,
+    contrasted with ``g_obs`` (||v_rev_LL||) which inherits seed variance
+    at early steps. ``fei_k=0`` keeps the architecture bit-equivalent to
+    the pre-FEI v5 head — back-compat for ``dcw_v5_lambda_scalar`` artifacts.
     """
 
     def __init__(
@@ -174,9 +183,11 @@ class FusionHead(nn.Module):
         sigma_hidden: int = 64,
         dropout: float = 0.1,
         log_sigma2_init: float = 0.0,
+        fei_k: int = 0,
     ):
         super().__init__()
         self.k = k
+        self.fei_k = fei_k
         self.c_pool_dim = c_pool_dim
         # c_proj_dim == 0 → identity passthrough (raw c_pool into concat).
         # > 0 → LN + Linear(c_pool_dim → c_proj_dim) before concat. The
@@ -193,7 +204,7 @@ class FusionHead(nn.Module):
         else:
             self.c_proj = nn.Identity()
             cat_dim = c_pool_dim
-        in_dim = cat_dim + k + aux_dim
+        in_dim = cat_dim + k + fei_k + aux_dim
 
         # α̂ and log σ̂² use independent trunks. Sharing a single trunk turned
         # the per-prompt seed-variance aux loss into a destructive interference
@@ -230,7 +241,23 @@ class FusionHead(nn.Module):
         c_pool: torch.Tensor,
         g_obs: torch.Tensor,
         aux: torch.Tensor,
+        fei: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         c = self.c_proj(c_pool)
-        x = torch.cat([c, g_obs, aux], dim=-1)
+        if self.fei_k > 0:
+            if fei is None:
+                raise ValueError(
+                    f"FusionHead built with fei_k={self.fei_k} but forward() "
+                    "got fei=None — caller must pass the per-row FEI tensor "
+                    "(shape (B, fei_k))."
+                )
+            x = torch.cat([c, g_obs, fei, aux], dim=-1)
+        else:
+            if fei is not None:
+                raise ValueError(
+                    "FusionHead built with fei_k=0 but forward() got a fei "
+                    "tensor — head architecture has no FEI slot. Build with "
+                    "fei_k>0 or pass fei=None."
+                )
+            x = torch.cat([c, g_obs, aux], dim=-1)
         return self.alpha_mlp(x).squeeze(-1), self.sigma_mlp(x).squeeze(-1)

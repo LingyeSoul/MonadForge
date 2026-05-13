@@ -67,6 +67,7 @@ use_ortho = true
 use_moe_style = "independent_A"
 route_per_layer = false 
 router_source = "fei"
+ortho_init_std = 0.1
 
 fei_feature_dim = 2          # raw simplex (e_low, e_high)
 fei_sigma_low_div = 4.0      # σ_low = min(H_lat, W_lat) / 4 — 2026-05-13 dataset sweep
@@ -90,7 +91,7 @@ router_targets = ".*\\.(qkv_proj|q_proj|kv_proj|output_proj|layer[12])$"
 # reft_alpha = 64
 # reft_layers = "last_8"
 
-compile_mode = "full"
+# compile_mode = "full"
 # compile_inductor_mode = "reduce-overhead"
 
 

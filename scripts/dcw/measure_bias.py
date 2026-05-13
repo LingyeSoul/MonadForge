@@ -348,11 +348,17 @@ def main() -> None:
 
     per_sample_bands: dict[str, np.ndarray] | None = None
     per_sample_v_rev_bands: dict[str, np.ndarray] | None = None
+    per_sample_fei_low: np.ndarray | None = None
     per_sample_stems: list[str] | None = None
     if args.dump_per_sample_gaps:
         n_traj = len(encoded) * args.n_seeds
         per_sample_bands = {b: np.zeros((n_traj, n_steps)) for b in BANDS}
         per_sample_v_rev_bands = {b: np.zeros((n_traj, n_steps)) for b in BANDS}
+        # 2-band FEI low-band energy ∈ [0,1] per (row, step). e_high = 1 − e_low
+        # so we don't store it separately. Filled from run_reverse_batched's
+        # third return-tuple field; consumed downstream by the v6 trainer flag
+        # --fei_obs (in scripts/dcw/train_fusion_head.py).
+        per_sample_fei_low = np.zeros((n_traj, n_steps), dtype=np.float64)
         per_sample_stems = [""] * n_traj
 
     # Per-(stem, seed_int, config_name) final latent collected for VAE decode
@@ -421,7 +427,7 @@ def main() -> None:
                     final_latents = None
                 v_fwd, fwd_bands = fwd_cache[(img_idx, seed_idx)]
                 for j, (name, _lam) in enumerate(configs):
-                    rev_norms, rev_bands = rev_results[j]
+                    rev_norms, rev_bands, rev_fei_low = rev_results[j]
                     _accumulate_row(
                         accum,
                         name,
@@ -436,6 +442,8 @@ def main() -> None:
                         seed_idx,
                         args.n_seeds,
                         stem,
+                        fei_low=rev_fei_low,
+                        per_sample_fei_low=per_sample_fei_low,
                     )
                     if finals_to_decode is not None and final_latents is not None:
                         finals_to_decode.append(
@@ -465,7 +473,9 @@ def main() -> None:
             else:
                 rev_results = rev_out
                 final_latents = None
-            for seed_idx, (rev_norms, rev_bands) in enumerate(rev_results):
+            for seed_idx, (rev_norms, rev_bands, rev_fei_low) in enumerate(
+                rev_results
+            ):
                 v_fwd, fwd_bands = fwd_cache[(img_idx, seed_idx)]
                 _accumulate_row(
                     accum,
@@ -481,6 +491,8 @@ def main() -> None:
                     seed_idx,
                     args.n_seeds,
                     stem,
+                    fei_low=rev_fei_low,
+                    per_sample_fei_low=per_sample_fei_low,
                 )
                 if finals_to_decode is not None and final_latents is not None:
                     finals_to_decode.append(
@@ -631,6 +643,7 @@ def main() -> None:
             sigmas=sigmas.numpy()[:n_steps],
             stems=np.array(per_sample_stems, dtype=object),
             seeds=per_sample_seeds,
+            fei_low=per_sample_fei_low,
             **{f"gap_{b}": per_sample_bands[b] for b in BANDS},
             **{f"v_rev_{b}": per_sample_v_rev_bands[b] for b in BANDS},
         )

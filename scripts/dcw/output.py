@@ -29,8 +29,17 @@ def _accumulate_row(
     seed_idx: int,
     n_seeds: int,
     stem: str,
+    fei_low: np.ndarray | None = None,
+    per_sample_fei_low: np.ndarray | None = None,
 ) -> None:
-    """Fold one (img, seed, config) trajectory into the accumulator."""
+    """Fold one (img, seed, config) trajectory into the accumulator.
+
+    ``fei_low`` (shape ``(n_steps,)``, ∈[0,1] simplex) is the 2-band FEI
+    low-band energy captured per-step on the latent entering the step.
+    Mirrors the per-sample band slot — only stashed for the ``baseline``
+    config and only when ``--dump_per_sample_gaps`` allocated
+    ``per_sample_fei_low``. Optional so legacy callers stay valid.
+    """
     gap = rev_norms - v_fwd
     accum[name]["v_fwd"] += v_fwd
     accum[name]["v_rev"] += rev_norms
@@ -46,6 +55,13 @@ def _accumulate_row(
             per_sample_bands[b][row] = gap_b
             per_sample_v_rev_bands[b][row] = rev_bands[b]
             per_sample_stems[row] = stem
+    if (
+        name == "baseline"
+        and per_sample_fei_low is not None
+        and fei_low is not None
+    ):
+        row = img_idx * n_seeds + seed_idx
+        per_sample_fei_low[row] = fei_low
     accum[name]["n"] += 1
 
 
