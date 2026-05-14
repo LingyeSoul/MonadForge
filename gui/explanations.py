@@ -670,6 +670,75 @@ def postfix_guide() -> str:
     return POSTFIX_GUIDE.get(lang) or POSTFIX_GUIDE["en"]
 
 
+# ── FeRA guide ───────────────────────────────────────────────
+
+FERA_GUIDE: dict[str, str] = {
+    "en": (
+        "<h2 style='margin:0 0 10px 0; font-size:17px;'>FeRA</h2>"
+        "<p>Author-faithful FeRA (Yin et al., arXiv:2511.17979). "
+        "<b>Independent-A</b> stacked experts &mdash; each expert owns its own "
+        "<code>lora_down</code>/<code>lora_up</code> &mdash; gated by a "
+        "<b>single global router</b> fed by a frequency-energy index "
+        "<code>FEI(z_t)</code> rather than the per-layer activation router used "
+        "by HydraLoRA. Lives on the LoRA-family network module via the three-"
+        "axis cfg <code>use_moe_style=\"independent_A\"</code> + "
+        "<code>route_per_layer=false</code> + <code>router_source=\"fei\"</code>.</p>"
+        "<p>Each expert is OrthoLoRA-parameterized "
+        "(<code>use_ortho=true</code>) so per-expert (down, up) factors share "
+        "PSOFT-style SVD bases with per-expert Cayley rotation + diagonal λ. "
+        "FECL (frequency-energy consistency loss) is wired but defaults off "
+        "&mdash; activating it doubles per-step cost via a second no-grad DiT "
+        "forward.</p>"
+        "<p><b>Bench notes.</b> The paper's 3-band split collapses to ~2 bands "
+        "on Anima flow-matching latents (mid band &lt;8% energy). Default keeps "
+        "<code>fera_num_bands=3</code> for author fidelity; flip to 2 with "
+        "<code>fera_fecl_weight=0</code> for the Anima-validated split. The "
+        "<code>σ_low = min(H_lat, W_lat) / fei_sigma_low_div</code> rule "
+        "(default div=4) is bench-validated for Anima &mdash; the paper's "
+        "pixel-domain <code>min(H, W)/128</code> is SD2-512²-specific.</p>"
+        "<p>Training produces <code>anima_fera*.safetensors</code> + a "
+        "<code>*_moe.safetensors</code> sibling holding the global router; "
+        "router-live inference uses <code>make test-hydra</code> / ComfyUI "
+        "<i>Anima Adapter Loader</i> (the same sniff path as HydraLoRA). "
+        "Requires <code>cache_llm_adapter_outputs=true</code>.</p>"
+    ),
+    "ko": (
+        "<h2 style='margin:0 0 10px 0; font-size:17px;'>FeRA</h2>"
+        "<p>저자 충실 FeRA (Yin et al., arXiv:2511.17979). "
+        "<b>Independent-A</b> 스택드 전문가 &mdash; 각 전문가가 자체 "
+        "<code>lora_down</code>/<code>lora_up</code>을 가지며 &mdash; "
+        "<b>단일 글로벌 라우터</b>가 주파수-에너지 지수 "
+        "<code>FEI(z_t)</code>를 입력으로 받아 게이팅합니다 (HydraLoRA의 레이어별 "
+        "활성화 라우터와 대조). LoRA 계열 네트워크 모듈에서 3축 설정 "
+        "<code>use_moe_style=\"independent_A\"</code> + "
+        "<code>route_per_layer=false</code> + <code>router_source=\"fei\"</code>로 "
+        "선택됩니다.</p>"
+        "<p>각 전문가는 OrthoLoRA 파라미터화 (<code>use_ortho=true</code>) — "
+        "전문가별 (down, up)이 PSOFT 스타일 SVD 베이시스를 공유하며 전문가별 "
+        "Cayley 회전 + 대각 λ를 가집니다. FECL (주파수-에너지 일관성 손실)은 "
+        "배선되어 있지만 기본 비활성 &mdash; 활성화하면 두 번째 no-grad DiT "
+        "포워드 때문에 스텝당 비용이 ~2배가 됩니다.</p>"
+        "<p><b>벤치 노트.</b> 논문의 3밴드 분할은 Anima flow-matching 잠재공간에서 "
+        "~2밴드로 수렴합니다 (중간 밴드 &lt;8% 에너지). 기본값은 저자 충실성을 위해 "
+        "<code>fera_num_bands=3</code>; Anima-검증 분할은 "
+        "<code>fera_fecl_weight=0</code>과 함께 2로 설정. "
+        "<code>σ_low = min(H_lat, W_lat) / fei_sigma_low_div</code> 규칙 "
+        "(기본 div=4)은 Anima에서 벤치-검증; 논문의 픽셀 도메인 "
+        "<code>min(H, W)/128</code>은 SD2-512² 전용입니다.</p>"
+        "<p>학습 시 <code>anima_fera*.safetensors</code> + 글로벌 라우터를 담은 "
+        "<code>*_moe.safetensors</code> 동반 파일이 생성됩니다. 라우터-라이브 "
+        "추론은 <code>make test-hydra</code> / ComfyUI "
+        "<i>Anima Adapter Loader</i> 사용 (HydraLoRA와 동일 sniff 경로). "
+        "<code>cache_llm_adapter_outputs=true</code> 필요.</p>"
+    ),
+}
+
+
+def fera_guide() -> str:
+    lang = current_language()
+    return FERA_GUIDE.get(lang) or FERA_GUIDE["en"]
+
+
 # ── "Not mergeable" callout ───────────────────────────────────
 # Reused by HydraLoRA / ReFT / Postfix guides — these methods can't be
 # baked into a plain DiT via scripts/merge_to_dit.py (router is layer-local
@@ -830,4 +899,6 @@ def method_guide(method: str) -> str | None:
         return apply_note() + not_mergeable_note() + hydralora_guide()
     if method == "reft":
         return apply_note() + not_mergeable_note() + reft_guide()
+    if method == "fera":
+        return apply_note() + not_mergeable_note() + fera_guide()
     return None

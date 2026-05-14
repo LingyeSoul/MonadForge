@@ -45,9 +45,8 @@ use_moe_style = "independent_A"
 route_per_layer = false
 router_source = "fei"
 num_experts = 4
-balance_loss_weight = 3e-7
+balance_loss_weight = 5e-7
 balance_loss_warmup_ratio = 0.4
-network_router_lr_scale = 10
 
 # OrthoLoRA parameterization on each expert's (down, up) — PSOFT-style
 # shared SVD bases + per-expert Cayley-rotated S_q/S_p + diagonal λ.
@@ -59,7 +58,7 @@ use_ortho = true
 # Anima dataset probe (mid band sparse on flow-matching latents). Pair
 # num_bands=2 with fera_fecl_weight=0 — at 2 bands FECL degenerates to a
 # pure magnitude regularizer.
-fera_num_bands = 3
+fera_num_bands = 2
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
 
@@ -75,7 +74,7 @@ router_tau = 0.7
 # cost). Default 0.0 = disabled.
 fera_fecl_weight = 0.0
 
-compile_mode = "full"
-compile_inductor_mode = "default"
+# compile_mode = "full"
+# compile_inductor_mode = "default"
 
 blocks_to_swap = 0
