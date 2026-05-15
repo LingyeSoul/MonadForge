@@ -733,7 +733,11 @@ class LoRANetworkCfg:
             use_moe_style=use_moe_style,
             route_per_layer=route_per_layer,
             router_source=router_source,
-            sigma_feature_dim=sigma_feature_dim_detected or 128,
+            sigma_feature_dim=(
+                sigma_feature_dim_detected
+                if sigma_feature_dim_detected is not None
+                else 128
+            ),
             sigma_router_names=sigma_router_names,
             hydra_router_names=hydra_router_names,
             specialize_experts_by_sigma_buckets=specialize_experts_by_sigma_buckets,

@@ -67,6 +67,7 @@ num_experts_freq = 3
 # only scalars on the balance loss. Default per-pool weights match the
 # OrthoHydra production value (~2e-5, see
 # [[project_hydra_balance_weight_ceiling]]).
+balance_loss_warmup_ratio = 0.4
 balance_loss_weight = 1.0
 balance_w_content = 2e-7
 balance_w_freq = 2e-7

@@ -99,7 +99,12 @@ class GlobalRouter(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, input_dim). Promote to fp32 for the matmul + softmax —
-        # bf16 logits + softmax(τ<1) underflow at low energies.
+        # bf16 logits + softmax(τ<1) underflow at low energies. Inference
+        # casts the parent LoRANetwork to bf16, which would otherwise drag
+        # the router weights along; re-pin to fp32 on first forward so the
+        # matmul dtype matches the upcast input.
+        if self.net[0].weight.dtype != torch.float32:
+            self.net.float()
         x32 = x.float()
         logits = self.net(x32)
         gates = torch.softmax(logits / self.tau, dim=-1)
@@ -171,6 +176,11 @@ class FreqRouter(torch.nn.Module):
         self._last_input: Optional[torch.Tensor] = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # See GlobalRouter.forward — fp32 compute is load-bearing for the
+        # softmax(logits / τ) precision at small τ. Inference casts the
+        # parent LoRANetwork to bf16; re-pin router weights to fp32.
+        if self.net[0].weight.dtype != torch.float32:
+            self.net.float()
         x32 = x.float()
         logits = self.net(x32)
         gates = torch.softmax(logits / self.tau, dim=-1)
@@ -1451,16 +1461,26 @@ class LoRANetwork(torch.nn.Module):
         canonical.fill_(1.0 / max(K_f, 1))
 
     def clear_step_caches(self) -> None:
-        """Drop per-step tensor references (``_last_gate``) between training
-        steps.
+        """Drop per-step tensor references (``_last_gate``) and invalidate
+        memoized router-stats caches between training steps.
 
-        ``_last_gate`` caches a tensor produced inside the compiled forward —
-        under ``torch.compile(mode='reduce-overhead')`` that tensor lives in
-        the inductor cudagraph memory pool. Holding a Python reference across
-        the step boundary prevents ``cudagraph_trees`` from reclaiming pool
-        memory and silently demotes the run to the eager fallback path. Call
-        this right before ``torch.compiler.cudagraph_mark_step_begin()`` so
-        the pool is free to reuse memory on the next iteration.
+        Called unconditionally from the training loop before each forward,
+        for two reasons:
+
+        (1) ``_last_gate`` caches a tensor produced inside the compiled
+        forward — under ``torch.compile(mode='reduce-overhead')`` that tensor
+        lives in the inductor cudagraph memory pool. Holding a Python
+        reference across the step boundary prevents ``cudagraph_trees`` from
+        reclaiming pool memory and silently demotes the run to the eager
+        fallback path. Call must precede ``cudagraph_mark_step_begin()``.
+
+        (2) ``_router_stats_cache`` / ``_chimera_router_stats_cache`` memoize
+        per-step router diagnostics so the progress-bar postfix and the TB
+        logging layer share one D2H sync. Without per-step invalidation
+        these freeze at their first computed values — and on runs without
+        cudagraph mode (``_cudagraph_mark_step=False``) the invalidation has
+        no other trigger, so TB shows the same usage/entropy on every log
+        step.
 
         ``_sigma`` is intentionally *not* cleared: it's rebound by
         ``set_sigma`` before every forward, the caller passes a tensor from

@@ -411,21 +411,26 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         # preprocess batch for each model
         trainer.on_step_start(state.train_ctx, batch, is_train=True)
 
-        # CUDAGraphs (reduce-overhead / max-autotune) need an explicit
+        # Clear last-step gate/σ tensor refs + memoized router-stats caches
+        # before the next forward. Called unconditionally — the cudagraph
+        # branch below also needs it (lingering refs into the cudagraph
+        # memory pool block pool reclamation, demoting the run to eager),
+        # and the eager path needs it so per-step memoized stats
+        # (``_router_stats_cache`` / ``_chimera_router_stats_cache``) get
+        # invalidated each step instead of freezing at their first computed
+        # values. Cost is ~60 Python attr writes; stats compute itself is
+        # already log-step-gated by callers.
+        net_unwrapped = accelerator.unwrap_model(network)
+        if hasattr(net_unwrapped, "clear_step_caches"):
+            net_unwrapped.clear_step_caches()
+
+        # CUDAGraphs (reduce-overhead / max-autotune) also need an explicit
         # iteration boundary for inductor's cudagraph_trees. Without this
         # call, the "pending, uninvoked backwards" fast-path check fails
         # every step and cudagraphs silently fall back to the eager path —
         # you pay compile latency and keep launch overhead. Must be called
         # before the forward on every step.
-        #
-        # Also clear Python references to last-step gate/σ tensors *before*
-        # marking — those tensors live in the cudagraph memory pool, and a
-        # lingering self._last_gate/self._sigma reference keeps the pool
-        # pinned regardless of the mark call, which defeats the whole point.
         if trainer._cudagraph_mark_step:
-            net_unwrapped = accelerator.unwrap_model(network)
-            if hasattr(net_unwrapped, "clear_step_caches"):
-                net_unwrapped.clear_step_caches()
             torch.compiler.cudagraph_mark_step_begin()
 
         if state.profile_started:
