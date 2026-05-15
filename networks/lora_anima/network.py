@@ -692,6 +692,7 @@ class LoRANetwork(torch.nn.Module):
         if text_encoders is not None and module_class not in (
             OrthoLoRAExpModule,
             OrthoHydraLoRAExpModule,
+            ChimeraHydraLoRAExpModule,
         ):
             for i, text_encoder in enumerate(text_encoders):
                 if text_encoder is None:

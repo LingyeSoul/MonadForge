@@ -84,7 +84,16 @@ class OrthoLoRAExpModule(BaseLoRAModule):
         self.lambda_layer = torch.nn.Parameter(torch.zeros(1, lora_dim))
 
         # Absorb into Q_basis so the frozen path carries the rebalance.
+        # Run while the buffer is still fp32 so the in-place ``weight.mul_``
+        # happens at fp32 precision; downcast immediately after.
         self._register_channel_scale(self.Q_basis, channel_scale)
+
+        # Frozen bases → bf16. The activation chain (lx, out) inherits this
+        # dtype via ``dtype = self.P_basis.dtype`` below, halving the
+        # saved-for-backward budget. Cayley solve stays fp32 in ``forward``
+        # (orthogonality invariant: ``R^T R = I`` ~1e-7 in fp32 vs ~1e-2 in bf16).
+        self.P_basis = self.P_basis.to(torch.bfloat16)
+        self.Q_basis = self.Q_basis.to(torch.bfloat16)
 
         # Q_eff projection only; P_eff input is already rank-sized.
         self.use_custom_down_autograd = False
@@ -114,28 +123,38 @@ class OrthoLoRAExpModule(BaseLoRAModule):
         if self._skip_module():
             return org_forwarded
 
+        work = self.P_basis.dtype  # bf16 — bases live here, chain follows
+
         # Stack S_q + S_p into one (2, r, r) solve — halves LU/TRSM launches.
+        # Cayley island stays fp32; we cast R only at the boundary into the
+        # basis matmuls so orthogonality is preserved while downstream
+        # activations stay bf16.
         skew = torch.stack([self.S_q, self.S_p])
         A = skew - skew.transpose(-2, -1)
         R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
-        R_q, R_p = R[0], R[1]
-        Q_eff = R_q @ self.Q_basis
+        R_q = R[0].to(work)
+        R_p = R[1].to(work)
+        Q_eff = R_q @ self.Q_basis  # bf16
 
         if self.use_custom_down_autograd and self.training:
             inv_scale = self.inv_scale if self._has_channel_scale else None
-            lx = lora_down_project(x, Q_eff, inv_scale)
+            # ``lora_down_project`` runs its matmul in fp32 internally; cast
+            # the output back to ``work`` so the saved-for-backward ``lx``
+            # downstream is bf16.
+            lx = lora_down_project(x, Q_eff, inv_scale).to(work)
         else:
-            dtype = self.P_basis.dtype
-            x_lora = self._rebalance(x.to(dtype))
+            x_lora = self._rebalance(x.to(work))
             lx = torch.nn.functional.linear(x_lora, Q_eff)
-        lx = lx * self.lambda_layer * self._timestep_mask
+        # λ stays a fp32 Parameter (Adam state precision); cast at multiply
+        # so the chain remains bf16. Same for the timestep mask buffer.
+        lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
 
         if self.dropout is not None and self.training:
             lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
         lx, scale = self._apply_rank_dropout(lx)
 
-        P_eff = self.P_basis @ R_p
+        P_eff = self.P_basis @ R_p  # bf16
         out = torch.nn.functional.linear(lx, P_eff)
 
         lora_out = out * self.multiplier * scale
@@ -256,7 +275,14 @@ class OrthoHydraLoRAExpModule(BaseLoRAModule):
                 torch.nn.init.normal_(self.router.weight[:, :lora_dim], std=0.01)
                 self.router.bias.zero_()
 
+        # Channel-scale absorption runs in fp32; downcast the bases afterward.
         self._register_channel_scale(self.Q_basis, channel_scale)
+
+        # Frozen bases → bf16. ``dtype = self.P_bases.dtype`` downstream
+        # carries the bf16 through the activation chain (lx, P_combined, out).
+        # Cayley stays fp32 (orthogonality invariant; see forward).
+        self.P_bases = self.P_bases.to(torch.bfloat16)
+        self.Q_basis = self.Q_basis.to(torch.bfloat16)
 
         # Q_eff projection only; router + P_eff paths are rank/expert-sized.
         self.use_custom_down_autograd = False
@@ -367,38 +393,43 @@ class OrthoHydraLoRAExpModule(BaseLoRAModule):
         if self._skip_module():
             return org_forwarded
 
+        work = self.P_bases.dtype  # bf16 — bases + downstream activations
+
         # Stack S_q with S_p into one (E+1, r, r) solve — single LU+TRSM
         # launch covers shared Q rotation and all per-expert P rotations.
+        # Cayley solve stays fp32; boundary cast feeds R into the basis matmuls.
         skew = torch.cat([self.S_q.unsqueeze(0), self.S_p], dim=0)
         A = skew - skew.transpose(-2, -1)
         R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
-        R_q = R[0]
-        R_p = R[1:]
-        Q_eff = R_q @ self.Q_basis
+        R_q = R[0].to(work)
+        R_p = R[1:].to(work)
+        Q_eff = R_q @ self.Q_basis  # bf16
 
         if self.use_custom_down_autograd and self.training:
             inv_scale = self.inv_scale if self._has_channel_scale else None
-            lx = lora_down_project(x, Q_eff, inv_scale)
+            lx = lora_down_project(x, Q_eff, inv_scale).to(work)
         else:
-            dtype = self.P_bases.dtype
-            x_lora = self._rebalance(x.to(dtype))
+            x_lora = self._rebalance(x.to(work))
             lx = torch.nn.functional.linear(x_lora, Q_eff)
 
         # Pool pre-λ (zero-init λ would zero the router input at step 0).
-        gate = self._compute_gate(lx)  # (B, E)
+        gate = self._compute_gate(lx)  # (B, E) — fp32 from the router
         if self.training:
-            # Plain STORE_ATTR — see HydraLoRAModule.forward.
+            # Plain STORE_ATTR — see HydraLoRAModule.forward. Keep native
+            # dtype here so the balance loss reads the router-native gate.
             self._last_gate = gate
 
-        lx = lx * self.lambda_layer * self._timestep_mask
+        lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
 
         if self.dropout is not None and self.training:
             lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
         lx, scale = self._apply_rank_dropout(lx)
 
-        P_eff = self.P_bases @ R_p  # (E, out, r)
-        P_combined = torch.einsum("be,eor->bor", gate, P_eff)  # (B, out, r)
+        P_eff = self.P_bases @ R_p  # (E, out, r) bf16
+        # Cast gate at the einsum boundary so bf16 × fp32 doesn't promote
+        # P_combined back to fp32 and inflate the saved activation.
+        P_combined = torch.einsum("be,eor->bor", gate.to(work), P_eff)
 
         orig_shape = lx.shape
         B = orig_shape[0]

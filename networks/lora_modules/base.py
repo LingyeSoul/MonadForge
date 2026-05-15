@@ -116,7 +116,12 @@ class BaseLoRAModule(torch.nn.Module):
         )
 
     def _rebalance(self, x: torch.Tensor) -> torch.Tensor:
-        return x * self.inv_scale if self._has_channel_scale else x
+        # inv_scale stays fp32 in storage (calibration precision), but cast
+        # at the multiply site so `bf16 × fp32 → bf16` instead of being
+        # promoted back to fp32 and collapsing the bf16 activation chain.
+        if not self._has_channel_scale:
+            return x
+        return x * self.inv_scale.to(x.dtype)
 
     def _apply_rank_dropout(self, lx: torch.Tensor):
         if self.rank_dropout is not None and self.training:

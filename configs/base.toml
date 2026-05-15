@@ -47,7 +47,7 @@ save_precision= "bf16"
 use_custom_down_autograd = true
 log_every_n_steps=2
 dataloader_pin_memory = true
-persistent_data_loader_workers=true
+persistent_data_loader_workers= false
 use_cmmd = false
 
 # ── Dataset config ───────────────────────────────────────────────────────

@@ -16,6 +16,7 @@
 
 import torch
 
+from networks.lora_modules.custom_autograd import lora_down_project
 from networks.lora_modules.ortho import OrthoHydraLoRAExpModule
 
 
@@ -160,56 +161,72 @@ class ChimeraHydraLoRAExpModule(OrthoHydraLoRAExpModule):
         if self._skip_module():
             return org_forwarded
 
-        # One batched (E+1, r, r) solve covers R_q + all R_p[e].
+        work = self.P_bases.dtype  # bf16 — bases + downstream activations
+
+        # One batched (E+1, r, r) solve covers R_q + all R_p[e]. Cayley stays
+        # fp32; boundary cast feeds R into the bf16 basis matmuls.
         skew = torch.cat([self.S_q.unsqueeze(0), self.S_p], dim=0)
         A = skew - skew.transpose(-2, -1)
         R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
-        R_q = R[0]
-        R_p = R[1:]
-        Q_eff = R_q @ self.Q_basis
+        R_q = R[0].to(work)
+        R_p = R[1:].to(work)
+        Q_eff = R_q @ self.Q_basis  # bf16
 
-        dtype = self.P_bases.dtype
-        x_lora = self._rebalance(x.to(dtype))
-        lx = torch.nn.functional.linear(x_lora, Q_eff)
+        if self.use_custom_down_autograd and self.training:
+            inv_scale = self.inv_scale if self._has_channel_scale else None
+            # lora_down_project upcasts internally; bring lx back to work
+            # dtype so saved-for-backward activation downstream is bf16.
+            lx = lora_down_project(x, Q_eff, inv_scale).to(work)
+        else:
+            x_lora = self._rebalance(x.to(work))
+            lx = torch.nn.functional.linear(x_lora, Q_eff)
 
         # Pool pre-λ (zero-init λ would zero the router input at step 0).
-        gate = self._compute_gate(lx)  # (B, K_c + K_f)
+        gate = self._compute_gate(lx)  # (B, K_c + K_f) — fp32 from the router
         if self.training:
             # Plain STORE_ATTR — see HydraLoRAModule.forward. Balance loss
-            # reads this and splits across the two pools.
+            # reads this and splits across the two pools. Keep native dtype.
             self._last_gate = gate
 
-        # Apply λ once; T-LoRA mask is applied per-branch below so the freq
-        # pool keeps full rank at every t (rationale: docs/proposal/
-        # chimera_hydra.md §T-LoRA integration).
-        lx_scaled = lx * self.lambda_layer
+        # Apply λ once; T-LoRA mask is folded into ``P_combined_c`` below so
+        # the freq pool keeps full rank at every t (rationale: docs/proposal/
+        # chimera_hydra.md §T-LoRA integration). λ stays a fp32 Parameter
+        # (Adam state precision); cast at the multiply.
+        lx_scaled = lx * self.lambda_layer.to(work)
 
         if self.dropout is not None and self.training:
             lx_scaled = torch.nn.functional.dropout(lx_scaled, p=self.dropout)
         lx_scaled, scale = self._apply_rank_dropout(lx_scaled)
 
-        P_eff = self.P_bases @ R_p  # (E, out, r)
+        P_eff = self.P_bases @ R_p  # (E, out, r) bf16
         K_c = self.num_experts_content
 
-        gate_c = gate[..., :K_c]  # (B, K_c)
-        gate_f = gate[..., K_c:]  # (B, K_f)
+        # Cast gate at the einsum boundary so bf16 × fp32 doesn't promote
+        # P_combined back to fp32 and inflate the saved activation.
+        gate_w = gate.to(work)
+        gate_c = gate_w[..., :K_c]  # (B, K_c)
+        gate_f = gate_w[..., K_c:]  # (B, K_f)
         P_eff_c = P_eff[:K_c]
         P_eff_f = P_eff[K_c:]
 
         P_combined_c = torch.einsum("bc,cor->bor", gate_c, P_eff_c)
         P_combined_f = torch.einsum("bf,for->bor", gate_f, P_eff_f)
 
+        # Fold the T-LoRA mask into the content branch's P_combined on the
+        # rank axis (broadcast (1,1,r) over (B,out,r)) instead of allocating
+        # a separate mask-scaled lx_c. Lets us add the two pools and issue
+        # one bmm (saves a kernel + the duplicate (B,L,r) saved-for-backward
+        # activation). Path stays shape-static under torch.compile because
+        # the mask buffer is always-a-Tensor (see base.py).
+        P_combined_c = P_combined_c * self._timestep_mask.to(work).view(1, 1, -1)
+        P_combined = P_combined_c + P_combined_f
+
         orig_shape = lx_scaled.shape
         B = orig_shape[0]
-        # Content branch consumes mask-scaled lx; freq branch sees full
-        # rank. Issuing two bmm regardless of mask state keeps the path
-        # shape-static under torch.compile (no Python-bool guard on
-        # ``use_timestep_mask`` / the live mask value).
-        lx_c = (lx_scaled * self._timestep_mask).reshape(B, -1, orig_shape[-1])
-        lx_f = lx_scaled.reshape(B, -1, orig_shape[-1])
-        out_c = torch.bmm(lx_c, P_combined_c.transpose(1, 2))
-        out_f = torch.bmm(lx_f, P_combined_f.transpose(1, 2))
-        out = (out_c + out_f).reshape(*orig_shape[:-1], -1)
+        lx_3d = lx_scaled.reshape(B, -1, orig_shape[-1])
+        out = torch.bmm(lx_3d, P_combined.transpose(1, 2)).reshape(
+            *orig_shape[:-1], -1
+        )
 
         lora_out = out * self.multiplier * scale
         return org_forwarded + lora_out.to(org_forwarded.dtype)

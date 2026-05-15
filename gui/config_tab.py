@@ -369,9 +369,7 @@ class ConfigTab(QWidget):
                 notes = (note,)
 
                 lbl.clicked.connect(
-                    lambda _k=k, _h=help_text, _n=notes: self._show_explain(
-                        _k, _h, _n
-                    )
+                    lambda _k=k, _h=help_text, _n=notes: self._show_explain(_k, _h, _n)
                 )
                 form.addRow(lbl, w)
             box.setLayout(form)
@@ -601,7 +599,24 @@ class ConfigTab(QWidget):
             QMessageBox.warning(self, t("error"), t("new_variant_exists", name=name))
             return
         new_path.parent.mkdir(parents=True, exist_ok=True)
-        new_path.write_text("", encoding="utf-8")
+        # Seed from the currently-selected variant so the form has all
+        # method-specific knobs. network_dim / network_alpha only live in
+        # gui-methods/<variant>.toml — an empty seed silently drops them from
+        # the form, then sparse-diff Save persists nothing, then training
+        # falls back to argparse defaults (network_alpha=1) and produces a
+        # near-zero-scale adapter. Strip [variant] since it described the
+        # source family.
+        seed: dict[str, Any] = {}
+        current = self.variant_combo.currentText()
+        if current:
+            seed_path = variant_path(current)
+            if seed_path.is_file():
+                seed = _load(seed_path)
+                seed.pop("variant", None)
+        if seed:
+            _save(new_path, seed)
+        else:
+            new_path.write_text("", encoding="utf-8")
         # Rebuild combo and select the new entry. _reload fires via the
         # currentTextChanged signal once we set the index.
         method = self.method_combo.currentText()
