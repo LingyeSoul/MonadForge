@@ -22,6 +22,7 @@ from networks.lora_anima.loading import (
     _stack_lora_ups,
 )
 from networks.lora_modules import (
+    ChimeraHydraInferenceModule,
     ChimeraHydraLoRAExpModule,
     HydraLoRAModule,
     LoRAModule,
@@ -522,6 +523,7 @@ class LoRANetwork(torch.nn.Module):
                         HydraLoRAModule,
                         OrthoHydraLoRAExpModule,
                         ChimeraHydraLoRAExpModule,
+                        ChimeraHydraInferenceModule,
                     )
                     and is_unet
                 ):
@@ -537,9 +539,16 @@ class LoRANetwork(torch.nn.Module):
                         self._hydra_router_misses += 1
                         if module_class is HydraLoRAModule:
                             effective_module_class = LoRAModule
+                        elif module_class is ChimeraHydraInferenceModule:
+                            # Load path. Unrouted leg was saved as plain LoRA
+                            # (OrthoLoRA distilled to ``.lora_down.weight`` +
+                            # ``.lora_up.weight`` at save time — see
+                            # ``_convert_ortho_to_lora``).
+                            effective_module_class = LoRAModule
                         else:
-                            # OrthoHydra and Chimera both share the OrthoLoRAExp
-                            # Cayley parameterization on the unrouted leg.
+                            # Train path (ChimeraHydraLoRAExpModule) and
+                            # OrthoHydra: unrouted leg uses the OrthoLoRAExp
+                            # Cayley parameterization.
                             effective_module_class = OrthoLoRAExpModule
 
                 extra_kwargs = {}
@@ -551,6 +560,13 @@ class LoRANetwork(torch.nn.Module):
                     # FreqRouter owns those axes — see chimera.py module
                     # docstring). The pool sum must equal cfg.num_experts
                     # by ``LoRANetworkCfg.from_kwargs`` invariant.
+                    extra_kwargs["num_experts_content"] = cfg.num_experts_content
+                    extra_kwargs["num_experts_freq"] = cfg.num_experts_freq
+                elif effective_module_class == ChimeraHydraInferenceModule:
+                    # Inference (free-form) twin of the chimera training
+                    # class. Same constructor surface — both pool sizes
+                    # arrive from the chimera-stamped metadata via
+                    # ``cfg.from_weights``.
                     extra_kwargs["num_experts_content"] = cfg.num_experts_content
                     extra_kwargs["num_experts_freq"] = cfg.num_experts_freq
                 elif effective_module_class == OrthoHydraLoRAExpModule:
@@ -693,6 +709,7 @@ class LoRANetwork(torch.nn.Module):
             OrthoLoRAExpModule,
             OrthoHydraLoRAExpModule,
             ChimeraHydraLoRAExpModule,
+            ChimeraHydraInferenceModule,
         ):
             for i, text_encoder in enumerate(text_encoders):
                 if text_encoder is None:

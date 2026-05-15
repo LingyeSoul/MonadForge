@@ -1,5 +1,21 @@
 # ChimeraHydra — Dual-pool additive routing for timestep-aware MoE
 
+> **2026-05-15 erratum.** ChimeraHydra moved from one-A-per-Linear (this
+> proposal's original framing) to **two A's per Linear** — one A per pool,
+> shared within that pool's experts. The chimera now is literally two
+> HydraLoRAs (Tian et al., NeurIPS'24, [arXiv:2404.19245](https://arxiv.org/abs/2404.19245))
+> glued at the residual: content half routed by per-Linear lx-router,
+> freq half routed by network-level FEI router (FeRA shape,
+> [arXiv:2511.17979](https://arxiv.org/abs/2511.17979)), with TimeStep Master
+> ([arXiv:2503.07416](https://arxiv.org/abs/2503.07416)) asymmetric per-pool
+> timestep treatment (freq always full-rank, content T-LoRA-masked). The
+> SVD partition now applies on **both** sides — pool A's project from
+> disjoint right-singular subspaces, pool B's project to disjoint
+> left-singular subspaces — strictly stronger orthogonality than the
+> single-A version. See `docs/experimental/chimera-hydra.md` for the
+> live design. The text below preserves the original single-A motivation
+> for archival reasons.
+
 A single-phase MoE-LoRA recipe for Anima's ortho-hydra setup. Two pools
 of B-heads share one A per adapted Linear — a **content** pool and a
 **frequency** pool (the two heads of the chimera). Each pool is routed by

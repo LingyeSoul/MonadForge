@@ -32,7 +32,11 @@ import torch
 
 from library.log import setup_logging
 from networks.lora_anima.attn_fuse import ATTN_FUSE_SPECS, AttnFuseSpec
-from networks.lora_modules import OrthoHydraLoRAExpModule, OrthoLoRAExpModule
+from networks.lora_modules import (
+    ChimeraHydraLoRAExpModule,
+    OrthoHydraLoRAExpModule,
+    OrthoLoRAExpModule,
+)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -584,6 +588,231 @@ def _build_stacked_experts_state_dict(
 
 
 # ---------------------------------------------------------------------------
+# Step 1c: ChimeraHydra dual-A → free-form per-pool (Cayley → lora_down/up)
+# ---------------------------------------------------------------------------
+
+
+def _convert_chimera_dual_a_to_hydra(
+    state_dict: Dict[str, torch.Tensor], dtype: Optional[torch.dtype]
+) -> None:
+    """Mutate state_dict in place.
+
+    ChimeraHydra training-form keys (per Linear):
+      ``.S_q_c`` (r, r) / ``.S_q_f`` (r, r)
+      ``.S_p_c`` (K_c, r, r) / ``.S_p_f`` (K_f, r, r)
+      ``.Q_basis_c`` / ``.Q_basis_f`` (r, in)
+      ``.P_bases_c`` (K_c, out, r) / ``.P_bases_f`` (K_f, out, r)
+      ``.lambda_c`` / ``.lambda_f`` (1, r)
+      ``.router.weight`` (K_c, r) / ``.router.bias`` (K_c,)
+      ``.alpha`` / (optional) ``.inv_scale``
+
+    Distill each pool's Cayley-rotated SVD layout into free-form
+    (lora_down, stacked lora_up_weight). Sub-key naming uses ``_c`` / ``_f``
+    suffixes within ONE prefix so the existing fused-qkv defuse can match
+    on the prefix's tail (which is the original adapted Linear name).
+
+    Discriminator vs the OrthoHydra → Hydra path: those check ``.S_p`` /
+    ``.S_q`` (no suffix). Chimera's ``.S_p_c`` / ``.S_p_f`` keys never
+    match that converter, so ordering only matters relative to the
+    in-place key mutations: this step runs FIRST so the ortho-* converters
+    can't see chimera tensors.
+    """
+    prefixes = set()
+    for key in list(state_dict.keys()):
+        if not key.endswith(".S_q_c"):
+            continue
+        prefix = key[: -len(".S_q_c")]
+        if state_dict.get(f"{prefix}.S_q_f") is None:
+            continue
+        prefixes.add(prefix)
+
+    for prefix in prefixes:
+        S_q_c = state_dict[f"{prefix}.S_q_c"]
+        S_q_f = state_dict[f"{prefix}.S_q_f"]
+        S_p_c = state_dict[f"{prefix}.S_p_c"]  # (K_c, r, r)
+        S_p_f = state_dict[f"{prefix}.S_p_f"]  # (K_f, r, r)
+        Q_basis_c = state_dict[f"{prefix}.Q_basis_c"]
+        Q_basis_f = state_dict[f"{prefix}.Q_basis_f"]
+        P_bases_c = state_dict[f"{prefix}.P_bases_c"]  # (K_c, out, r)
+        P_bases_f = state_dict[f"{prefix}.P_bases_f"]  # (K_f, out, r)
+        lam_c = state_dict[f"{prefix}.lambda_c"]
+        lam_f = state_dict[f"{prefix}.lambda_f"]
+        alpha = state_dict.get(f"{prefix}.alpha")
+        save_dtype = dtype if dtype is not None else P_bases_c.dtype
+
+        # Per-pool Cayley + (P @ R_p) / (R_q @ Q) effective bases.
+        R_q_c = ChimeraHydraLoRAExpModule._cayley(S_q_c.float())
+        R_q_f = ChimeraHydraLoRAExpModule._cayley(S_q_f.float())
+        R_p_c = ChimeraHydraLoRAExpModule._cayley(S_p_c.float())
+        R_p_f = ChimeraHydraLoRAExpModule._cayley(S_p_f.float())
+        Q_eff_c = R_q_c @ Q_basis_c.float()  # (r, in)
+        Q_eff_f = R_q_f @ Q_basis_f.float()
+        P_eff_c = P_bases_c.float() @ R_p_c  # (K_c, out, r)
+        P_eff_f = P_bases_f.float() @ R_p_f
+
+        # sqrt-split λ per pool so ΔW = P @ diag(λ) @ Q is preserved
+        # bit-exactly under the (down, up) factorization. Same trick as
+        # _convert_ortho_hydra_to_hydra; see that docstring.
+        def _split(P_eff, Q_eff, lam, save_dtype):
+            lam_1d = lam.squeeze(0).float()
+            lam_sqrt = lam_1d.abs().sqrt()
+            lam_sign = lam_1d.sign()
+            lora_down = (
+                (Q_eff * lam_sqrt.unsqueeze(1)).to(save_dtype).cpu().contiguous()
+            )
+            lora_up_weight = (
+                (P_eff * (lam_sqrt * lam_sign).unsqueeze(0).unsqueeze(0))
+                .to(save_dtype)
+                .cpu()
+                .contiguous()
+            )
+            return lora_down, lora_up_weight
+
+        lora_down_c, lora_up_c_weight = _split(P_eff_c, Q_eff_c, lam_c, save_dtype)
+        lora_down_f, lora_up_f_weight = _split(P_eff_f, Q_eff_f, lam_f, save_dtype)
+
+        # Drop chimera training-form keys.
+        for suffix in (
+            "S_q_c",
+            "S_q_f",
+            "S_p_c",
+            "S_p_f",
+            "Q_basis_c",
+            "Q_basis_f",
+            "P_bases_c",
+            "P_bases_f",
+            "lambda_c",
+            "lambda_f",
+        ):
+            state_dict.pop(f"{prefix}.{suffix}", None)
+
+        # Insert distilled per-pool keys. ``router.weight``/``router.bias``
+        # are kept as-is (already the K_c-narrowed content router).
+        state_dict[f"{prefix}.lora_down_c.weight"] = lora_down_c
+        state_dict[f"{prefix}.lora_up_c_weight"] = lora_up_c_weight
+        state_dict[f"{prefix}.lora_down_f.weight"] = lora_down_f
+        state_dict[f"{prefix}.lora_up_f_weight"] = lora_up_f_weight
+        if alpha is not None:
+            state_dict[f"{prefix}.alpha"] = alpha
+
+
+# ---------------------------------------------------------------------------
+# Step 4 (chimera variant): expand per-pool stacked ups, q/k/v split per-pool
+# ---------------------------------------------------------------------------
+
+
+def _build_chimera_moe_state_dict(
+    state_dict: Dict[str, torch.Tensor],
+    dtype: Optional[torch.dtype],
+) -> Dict[str, torch.Tensor]:
+    """Build the ``*_chimera.safetensors`` payload from a state_dict whose
+    chimera dual-A keys have already been distilled to free-form (i.e.
+    ``_convert_chimera_dual_a_to_hydra`` has run).
+
+    Two transforms:
+      1. Expand stacked ``.lora_up_c_weight (K_c, out, r)`` →
+         per-expert ``.lora_ups_c.{i}.weight`` keys; same for ``_f``.
+         Mirrors :func:`_build_hydra_moe_state_dict`'s expansion of
+         ``.lora_up_weight``.
+      2. Per-pool fused-qkv defuse on attention prefixes. Both pools share
+         the same prefix (chimera = one module per Linear), so when the
+         prefix ends in a fused frag (``.qkv_proj`` etc.) we split BOTH
+         pools' (lora_down + ups stack) per component. ``router.*`` /
+         ``alpha`` / ``inv_scale`` clone into each split component
+         (same input/router decision per q/k/v).
+
+    Top-level ``freq_router.*`` keys pass through untouched (they don't
+    have a ``lora_unet_*`` prefix and don't match any fused-frag suffix).
+    """
+    sd: Dict[str, torch.Tensor] = {}
+    for k, v in state_dict.items():
+        v = v.detach().clone().to("cpu")
+        if k.endswith(".lora_up_c_weight"):
+            prefix = k.removesuffix(".lora_up_c_weight")
+            for i in range(v.size(0)):
+                sd[f"{prefix}.lora_ups_c.{i}.weight"] = v[i]
+        elif k.endswith(".lora_up_f_weight"):
+            prefix = k.removesuffix(".lora_up_f_weight")
+            for j in range(v.size(0)):
+                sd[f"{prefix}.lora_ups_f.{j}.weight"] = v[j]
+        else:
+            sd[k] = v
+
+    # Per-pool q/k/v split. Detect by either pool's down key (both should
+    # be present per chimera prefix; iterating one set is sufficient).
+    fused_groups: List[tuple] = []
+    for key in list(sd.keys()):
+        if not key.endswith(".lora_down_c.weight"):
+            continue
+        prefix = key.removesuffix(".lora_down_c.weight")
+        spec = _match_fused_spec(prefix)
+        if spec is not None:
+            fused_groups.append((prefix, spec))
+
+    for prefix, spec in fused_groups:
+        suffixes = spec.component_letters
+        n = len(suffixes)
+        down_c = sd.pop(f"{prefix}.lora_down_c.weight")
+        down_f = sd.pop(f"{prefix}.lora_down_f.weight")
+        alpha = sd.pop(f"{prefix}.alpha", None)
+        router_w = sd.pop(f"{prefix}.router.weight", None)
+        router_b = sd.pop(f"{prefix}.router.bias", None)
+        inv_scale = sd.pop(f"{prefix}.inv_scale", None)
+
+        ups_c_keys = sorted(
+            (
+                k
+                for k in list(sd.keys())
+                if k.startswith(f"{prefix}.lora_ups_c.") and k.endswith(".weight")
+            ),
+            key=lambda k: int(
+                k.removeprefix(f"{prefix}.lora_ups_c.").removesuffix(".weight")
+            ),
+        )
+        ups_f_keys = sorted(
+            (
+                k
+                for k in list(sd.keys())
+                if k.startswith(f"{prefix}.lora_ups_f.") and k.endswith(".weight")
+            ),
+            key=lambda k: int(
+                k.removeprefix(f"{prefix}.lora_ups_f.").removesuffix(".weight")
+            ),
+        )
+        ups_c = [sd.pop(k) for k in ups_c_keys]
+        ups_f = [sd.pop(k) for k in ups_f_keys]
+        # Per-expert chunk-of-out_dim across q/k/v components.
+        ups_c_chunked = [u.chunk(n, dim=0) for u in ups_c]
+        ups_f_chunked = [u.chunk(n, dim=0) for u in ups_f]
+
+        base_prefix = prefix.removesuffix(spec.fused_frag)
+        for ci, letter in enumerate(suffixes):
+            new_prefix = base_prefix + spec.component_frag(letter)
+            sd[f"{new_prefix}.lora_down_c.weight"] = down_c.clone()
+            sd[f"{new_prefix}.lora_down_f.weight"] = down_f.clone()
+            for ei, u_chunks in enumerate(ups_c_chunked):
+                sd[f"{new_prefix}.lora_ups_c.{ei}.weight"] = (
+                    u_chunks[ci].contiguous().clone()
+                )
+            for ei, u_chunks in enumerate(ups_f_chunked):
+                sd[f"{new_prefix}.lora_ups_f.{ei}.weight"] = (
+                    u_chunks[ci].contiguous().clone()
+                )
+            if alpha is not None:
+                sd[f"{new_prefix}.alpha"] = alpha.clone()
+            if router_w is not None:
+                sd[f"{new_prefix}.router.weight"] = router_w.clone()
+            if router_b is not None:
+                sd[f"{new_prefix}.router.bias"] = router_b.clone()
+            if inv_scale is not None:
+                sd[f"{new_prefix}.inv_scale"] = inv_scale.clone()
+
+    if dtype is not None:
+        sd = {k: v.to(dtype) for k, v in sd.items()}
+    return sd
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -604,10 +833,15 @@ def save_network_weights(
         metadata = None
 
     # Steps 1–3: key-triggered conversions. Ordering is load-bearing:
-    #   * ortho_stacked_experts runs first (3-D S_q only).
+    #   * chimera_dual_a runs first — its keys end ``.S_q_c`` / ``.S_q_f``
+    #     and never collide with the other ortho converters, but going
+    #     first keeps each subsequent converter looking at a clean,
+    #     chimera-free state_dict.
+    #   * ortho_stacked_experts runs next (3-D S_q only).
     #   * ortho_hydra_to_hydra (2-D S_q + 3-D S_p) then.
     #   * ortho_to_lora (2-D S_p + 2-D S_q) last among the S_p paths.
     # The S_q dimensionality is the discriminator.
+    _convert_chimera_dual_a_to_hydra(state_dict, dtype)
     _convert_ortho_stacked_experts(state_dict, dtype)
     _convert_ortho_hydra_to_hydra(state_dict, dtype)
     _convert_ortho_to_lora(state_dict, dtype)
@@ -615,14 +849,14 @@ def save_network_weights(
 
     # Variant dispatch. ``stacked_experts_global_fei`` writes the
     # independent-A per-expert (lora_downs.{i}, lora_ups.{i}) layout;
-    # ``hydra_moe`` / ``ortho_hydra_to_hydra`` / ``chimera_hydra_moe``
-    # write the shared-A Hydra layout (single lora_down, lora_ups.{i}).
-    # ``chimera_hydra_moe`` mirrors hydra_moe but writes to a
-    # ``*_chimera.safetensors`` sibling (the chimera suffix distinguishes
-    # files carrying top-level ``freq_router.*`` keys and the K_c-narrowed
-    # per-Linear content router). Auto-fallback on any ``.lora_up_weight``
-    # key for backward-compat with paths that don't plumb ``save_variant``
-    # through.
+    # ``hydra_moe`` / ``ortho_hydra_to_hydra`` write the shared-A Hydra
+    # layout (single lora_down, lora_ups.{i}); ``chimera_hydra_moe``
+    # writes the dual-A chimera layout (per-pool lora_down_{c,f} +
+    # stacked lora_ups_{c,f}.{i} + content router) into a
+    # ``*_chimera.safetensors`` sibling, with top-level ``freq_router.*``
+    # keys for the network-level freq pool router. Auto-fallback on any
+    # ``.lora_up_weight`` key for backward-compat with paths that don't
+    # plumb ``save_variant`` through.
     is_stacked_experts_variant = save_variant == "stacked_experts_global_fei"
     is_chimera_variant = save_variant == "chimera_hydra_moe"
     is_hydra_variant = (
@@ -646,14 +880,14 @@ def save_network_weights(
         return
 
     if is_chimera_variant:
-        # ChimeraHydra writes the Hydra-MoE distilled layout (shared
-        # lora_down + per-expert lora_ups.{i}) with q/k/v defused, PLUS
-        # top-level ``freq_router.*`` keys for the network-level freq
-        # pool router. ``_build_hydra_moe_state_dict`` only touches
-        # ``lora_unet_*`` prefixes, so the freq_router.* keys flow through
-        # unchanged into the output payload.
+        # ChimeraHydra writes the dual-A distilled layout (per-pool
+        # ``lora_down_{c,f}`` + per-expert ``lora_ups_{c,f}.{i}.weight``)
+        # with q/k/v defused on both pools, PLUS top-level
+        # ``freq_router.*`` keys for the network-level freq router.
+        # ``_build_chimera_moe_state_dict`` only touches ``lora_unet_*``
+        # prefixes, so freq_router.* flows through unchanged.
         chimera_file = os.path.splitext(file)[0] + "_chimera.safetensors"
-        chimera_sd = _build_hydra_moe_state_dict(state_dict, dtype)
+        chimera_sd = _build_chimera_moe_state_dict(state_dict, dtype)
         from safetensors.torch import save_file as sf_save
 
         sf_save(chimera_sd, chimera_file, metadata or {})

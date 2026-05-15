@@ -16,9 +16,11 @@ from networks import NETWORK_REGISTRY, resolve_network_spec
 from networks.methods.repa import REPAHead
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
+    _refuse_split_chimera_keys,
     _refuse_split_hydra_keys,
     _refuse_split_stacked_experts_keys,
     _refuse_unfused_attn_lora_keys,
+    _stack_chimera_lora_ups,
     _stack_lora_ups,
 )
 from networks.lora_anima.network import LoRANetwork
@@ -331,9 +333,14 @@ def create_network_from_weights(
     # MoE files: stack per-expert ups (and downs, for StackedExperts) and
     # fuse split q/k/v first so the fused training-runtime keys are what
     # the regular attention refuser and the downstream detection loop see.
+    # Chimera dual-A files have their own per-pool ups (.lora_ups_c.{i} /
+    # .lora_ups_f.{i}) and stacked Parameters (.lora_up_c_weight /
+    # .lora_up_f_weight); a separate stack/refuse pair handles them.
     weights_sd = _stack_lora_ups(weights_sd)
+    weights_sd = _stack_chimera_lora_ups(weights_sd)
     weights_sd = _refuse_split_stacked_experts_keys(weights_sd)
     weights_sd = _refuse_split_hydra_keys(weights_sd)
+    weights_sd = _refuse_split_chimera_keys(weights_sd)
     # Refuse unfused attn projections so modules_dim reflects the runtime (qkv/kv fused).
     weights_sd = _refuse_unfused_attn_lora_keys(weights_sd)
 
@@ -363,6 +370,10 @@ def create_network_from_weights(
     plain_module_names: set[str] = set()
     # Block-level ReFT key pattern: reft_unet_blocks_<idx>.<...>
     _reft_block_re = re.compile(r"^reft_unet_blocks_(\d+)$")
+    # Discriminator for chimera dual-A keys: any module with a
+    # ``.lora_up_c_weight`` (post-stack form) is a chimera Linear and
+    # should NOT be classified as plain Hydra. Collected in the loop below.
+    chimera_dual_a_modules: set[str] = set()
     for key, value in weights_sd.items():
         if "." not in key:
             continue
@@ -396,6 +407,21 @@ def create_network_from_weights(
 
         if "alpha" in key:
             modules_alpha[lora_name] = value
+        elif key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
+            # Chimera dual-A per-pool stacked ups (post-stack form). r is
+            # the last dim; out_dim of this side is dim 1; pool size is
+            # dim 0. Track for the post-loop chimera detection — modules_dim
+            # is filled by the matching ``.lora_down_{c,f}.weight`` branch
+            # below (same r, same prefix).
+            chimera_dual_a_modules.add(lora_name)
+        elif (
+            key.endswith(".lora_down_c.weight") or key.endswith(".lora_down_f.weight")
+        ):
+            # Chimera dual-A per-pool down. Same r as the matching ups; the
+            # pair (down_c, down_f) lives under one prefix. Both keys hit
+            # this branch and overwrite modules_dim with the same r → safe.
+            chimera_dual_a_modules.add(lora_name)
+            modules_dim[lora_name] = value.size(0)
         elif key.endswith(".lora_down_weight") and value.dim() == 3:
             # StackedExperts (independent-A) per-expert lora_down.
             # Shape: (E, r, in). Discriminator vs Hydra (whose down is the
@@ -589,14 +615,23 @@ def create_network_from_weights(
     # *both* hydra-style and plain-LoRA-style leaves, we're reloading a mixed
     # router_targets result and need to build each leaf with its original
     # class. If every module is hydra, leave as None (= apply the nominal
-    # hydra class everywhere, legacy behaviour).
-    hydra_router_names = (
-        sorted(hydra_module_names)
-        if (
-            (has_hydra or has_ortho_hydra) and plain_module_names and hydra_module_names
-        )
-        else None
+    # hydra class everywhere, legacy behaviour). For chimera dual-A files,
+    # use ``chimera_dual_a_modules`` as the routing-aware set so unrouted
+    # Linears (saved as OrthoLoRA fallback with ``.S_p`` keys) fall back to
+    # ``OrthoLoRAExpModule`` instead of being mis-typed as chimera.
+    _is_chimera_meta = (
+        str(file_metadata.get("ss_use_chimera_hydra", "")).strip().lower() == "true"
     )
+    if _is_chimera_meta and chimera_dual_a_modules:
+        hydra_router_names = sorted(chimera_dual_a_modules)
+    else:
+        hydra_router_names = (
+            sorted(hydra_module_names)
+            if (
+                (has_hydra or has_ortho_hydra) and plain_module_names and hydra_module_names
+            )
+            else None
+        )
 
     # Hard σ-band partition is non-persistent at the tensor level (`_expert_band`
     # is registered persistent=False; `_sigma_band_partition` is a Python attr).
@@ -704,18 +739,35 @@ def create_network_from_weights(
         else None
     )
     if is_chimera_hydra:
-        # The on-disk format is the distilled Hydra-MoE layout (shared
-        # ``lora_down`` + per-expert ``lora_ups.{i}``, q/k/v defused, plus
-        # top-level ``freq_router.*``). The ``chimera_hydra`` spec's
-        # ``ChimeraHydraLoRAExpModule`` (Cayley) is training-only — load
-        # builds ``HydraLoRAModule`` with ``num_experts_content > 0`` for
-        # the dual-pool runtime form. The chimera_hydra spec stays selected
-        # so post_init / save_variant fire correctly; only the module class
-        # swaps.
+        # On-disk format: per-pool distilled chimera (lora_down_{c,f} +
+        # stacked lora_up_{c,f}_weight + content router) with q/k/v defused
+        # on both pools, plus top-level freq_router.*. The 1-A chimera
+        # legacy fallback was removed — pre-2-A checkpoints stop loading.
+        if not chimera_dual_a_modules:
+            raise RuntimeError(
+                "Checkpoint is stamped ss_use_chimera_hydra=true but contains "
+                "no dual-A chimera keys (.lora_up_c_weight / .lora_up_f_weight). "
+                "The 1-A chimera format is no longer supported — retrain to "
+                "produce the dual-A format."
+            )
         spec = NETWORK_REGISTRY["chimera_hydra"]
-        from networks.lora_modules import HydraLoRAModule
+        from networks.lora_modules import ChimeraHydraInferenceModule
 
-        module_class = HydraLoRAModule
+        module_class = ChimeraHydraInferenceModule
+        # Chimera dual-A keys are NOT Hydra; clear the auto-set has_hydra
+        # flag from the key sniff above so cfg.from_weights doesn't demand
+        # the three-axis stamps via the MoE branch (the chimera path supplies
+        # them via its own pin in cfg.from_kwargs / from_weights).
+        has_hydra = False
+        # hydra_num_experts is needed only for the chimera consistency
+        # check (K_c + K_f == E); derive from the stamped pool sizes.
+        if (
+            chimera_num_experts_content is not None
+            and chimera_num_experts_freq is not None
+        ):
+            hydra_num_experts = (
+                chimera_num_experts_content + chimera_num_experts_freq
+            )
         # Surface the chimera-specific σ/FEI dims into the cfg slots the
         # FreqRouter reads (``cfg.fei_feature_dim`` / ``cfg.sigma_feature_dim``).
         # Without these overrides the loader would fall back to the legacy
