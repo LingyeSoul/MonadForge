@@ -202,6 +202,10 @@ _CHIMERA_KWARG_FLAGS: Tuple[str, ...] = (
     # FreqRouter init magnitude (small N(0, std)) — non-zero so the freq
     # pool differentiates at step 0.
     "freq_router_init_std",
+    # Per-modality LayerNorm on FreqRouter input. Active only when both
+    # FEI and σ feature blocks are enabled — equalizes the variance budget
+    # so the higher-dim σ block doesn't fan-in-overpower the 2-D FEI simplex.
+    "freq_router_layer_norm",
     # Per-pool router LR multipliers — stack on top of network_router_lr_scale.
     # Defaults to 1.0 (no-op). Bump content when the per-layer router stays
     # near-uniform too long (std=0.01 init is slow to break symmetry).

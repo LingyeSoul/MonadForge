@@ -137,6 +137,17 @@ class FreqRouter(torch.nn.Module):
     differentiate the experts and the gradient `∂L/∂W_router` would never
     leave zero. The chimera proposal mandates non-zero output init for
     exactly this reason (see proposal §"Init").
+
+    Per-modality LayerNorm (``apply_layer_norm=True``): when both
+    ``fei_dim`` and ``sigma_dim`` are > 0, each modality's slice of the
+    concat input is passed through a parameterless ``LayerNorm`` before
+    the MLP. The 2-D FEI simplex and the 16/32-D sinusoidal-σ block have
+    different per-channel variance budgets at init (variance contribution
+    scales as ``n_channels``), so without LN the higher-dim σ block can
+    fan-in-overpower FEI ~``sigma_dim/fei_dim``× at init. LN is
+    intentionally parameterless (``elementwise_affine=False``) — keeps the
+    save/load surface unchanged, no metadata stamp needed for the LN
+    weights themselves (only for the on/off flag).
     """
 
     def __init__(
@@ -147,6 +158,9 @@ class FreqRouter(torch.nn.Module):
         hidden_dim: int = 32,
         tau: float = 1.0,
         init_std: float = 0.1,
+        fei_dim: int = 0,
+        sigma_dim: int = 0,
+        apply_layer_norm: bool = False,
     ) -> None:
         super().__init__()
         if input_dim <= 0:
@@ -158,6 +172,19 @@ class FreqRouter(torch.nn.Module):
         self.input_dim = int(input_dim)
         self.num_freq_experts = int(num_freq_experts)
         self.tau = float(tau)
+        self.fei_dim = int(fei_dim)
+        self.sigma_dim = int(sigma_dim)
+        # LN only fires when both modalities are present — its job is
+        # variance balance across the concat, which is a no-op (or worse,
+        # destructive on the 2-D simplex) when only one modality is in
+        # play. The dim-sum check guards against the rebuild path where
+        # fei_dim+sigma_dim wasn't threaded through; in that case LN stays
+        # off and the router behaves like the pre-LN build.
+        self.apply_layer_norm = bool(apply_layer_norm) and (
+            self.fei_dim > 0
+            and self.sigma_dim > 0
+            and self.fei_dim + self.sigma_dim == self.input_dim
+        )
         # SiLU (proposal §Routers): smoother than ReLU on small-input MLPs
         # and consistent with the DiT's own activation choice.
         self.net = torch.nn.Sequential(
@@ -172,6 +199,17 @@ class FreqRouter(torch.nn.Module):
             torch.nn.init.normal_(self.net[-1].weight, std=float(init_std))
             torch.nn.init.zeros_(self.net[-1].bias)
 
+        # Parameterless per-modality LN. elementwise_affine=False keeps the
+        # state_dict free of ln_* keys, so old (LN-off) checkpoints stay
+        # load-compatible — the on/off semantics are carried by the
+        # ``apply_layer_norm`` flag (stamped to metadata), not by tensor
+        # presence in the state_dict.
+        self.ln_fei: Optional[torch.nn.LayerNorm] = None
+        self.ln_sigma: Optional[torch.nn.LayerNorm] = None
+        if self.apply_layer_norm:
+            self.ln_fei = torch.nn.LayerNorm(self.fei_dim, elementwise_affine=False)
+            self.ln_sigma = torch.nn.LayerNorm(self.sigma_dim, elementwise_affine=False)
+
         # Per-step diagnostics, parallel to GlobalRouter.
         self._last_gates: Optional[torch.Tensor] = None
         self._last_input: Optional[torch.Tensor] = None
@@ -183,6 +221,10 @@ class FreqRouter(torch.nn.Module):
         if self.net[0].weight.dtype != torch.float32:
             self.net.float()
         x32 = x.float()
+        if self.apply_layer_norm:
+            fei_part = self.ln_fei(x32[..., : self.fei_dim])
+            sigma_part = self.ln_sigma(x32[..., self.fei_dim : self.fei_dim + self.sigma_dim])
+            x32 = torch.cat([fei_part, sigma_part], dim=-1)
         logits = self.net(x32)
         gates = torch.softmax(logits / self.tau, dim=-1)
         self._last_gates = gates.detach()
@@ -877,6 +919,9 @@ class LoRANetwork(torch.nn.Module):
                 hidden_dim=int(cfg.router_hidden_dim),
                 tau=float(cfg.router_tau),
                 init_std=float(cfg.freq_router_init_std),
+                fei_dim=int(cfg.fei_feature_dim),
+                sigma_dim=int(cfg.sigma_feature_dim),
+                apply_layer_norm=bool(cfg.freq_router_layer_norm),
             )
             # Force the per-step conditioning hook to fire set_fei every
             # step (router_conditioning.py reads this flag). Chimera ties
@@ -888,6 +933,7 @@ class LoRANetwork(torch.nn.Module):
                 f"(FEI={cfg.fei_feature_dim} + σ={cfg.sigma_feature_dim}), "
                 f"K_f={cfg.num_experts_freq}, hidden={cfg.router_hidden_dim}, "
                 f"τ={cfg.router_tau:.2f}, init_std={cfg.freq_router_init_std}, "
+                f"LN={self.freq_router.apply_layer_norm}, "
                 f"chimera modules={len(self._chimera_aware_loras)}"
             )
 
@@ -2721,6 +2767,13 @@ class LoRANetwork(torch.nn.Module):
             )
             metadata["ss_chimera_fei_sigma_low_div"] = str(
                 float(self.cfg.fei_sigma_low_div)
+            )
+            # FreqRouter input LN flag. Parameterless LN leaves no tensor
+            # footprint in the state_dict, so the loader can't sniff it from
+            # weights — has to come from metadata. Default-off on rebuild
+            # when absent preserves pre-LN checkpoint inference.
+            metadata["ss_chimera_freq_router_layer_norm"] = (
+                "true" if self.cfg.freq_router_layer_norm else "false"
             )
 
         state_dict = self.state_dict()

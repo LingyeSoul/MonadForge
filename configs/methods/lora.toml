@@ -24,9 +24,9 @@ network_alpha = 32
 network_dim = 32
 
 learning_rate = 2e-5
-max_train_epochs = 3
-save_every_n_epochs = 3
-checkpointing_epochs = 3
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true

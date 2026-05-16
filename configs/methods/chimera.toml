@@ -70,7 +70,7 @@ num_experts_freq = 2
 balance_loss_warmup_ratio = 0.2
 balance_loss_weight = 1.0
 balance_w_content = 2e-7
-balance_w_freq = 1e-6
+balance_w_freq = 2e-7
 network_content_router_lr_scale = 10
 network_freq_router_lr_scale = 2.0
 
@@ -81,7 +81,16 @@ network_freq_router_lr_scale = 2.0
 
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
-sigma_feature_dim = 0
+sigma_feature_dim = 16
+
+# Per-modality LayerNorm on the FreqRouter input. Active only when BOTH
+# FEI and σ feature blocks are enabled (variance balance is the only job
+# — with σ off, LN either no-ops or destroys the 2-D FEI simplex). At
+# fei_feature_dim=2 + sigma_feature_dim=16 the σ block fan-in-overpowers
+# FEI ~8× at init; LN equalizes per-modality contribution variance so
+# the router can actually learn from FEI instead of routing on σ alone.
+# Parameterless (elementwise_affine=False) — no state_dict footprint.
+freq_router_layer_norm = true
 
 # FreqRouter init magnitude (N(0, std) on the output Linear). Non-zero is
 # load-bearing — zero-init would make the freq pool a fixed point of the

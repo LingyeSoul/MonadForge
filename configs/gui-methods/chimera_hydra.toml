@@ -62,6 +62,11 @@ fei_feature_dim = 2
 fei_sigma_low_div = 4.0
 sigma_feature_dim = 0
 freq_router_init_std = 0.02
+# Per-modality LayerNorm on the FreqRouter input. Only active when both
+# FEI and σ feature blocks are enabled — fires automatically once
+# sigma_feature_dim > 0 to prevent the higher-dim σ block from
+# fan-in-overpowering the 2-D FEI simplex. No-op while σ is off.
+freq_router_layer_norm = true
 
 # Routing scope: same default as the other hydra variants — every Linear
 # matched by the regex becomes a chimera leaf; non-matching layers fall

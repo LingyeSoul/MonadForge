@@ -11,7 +11,7 @@ Anima — LoRA/T-LoRA training and inference pipeline for the Anima diffusion mo
 ```bash
 uv sync                    # Install dependencies (Python 3.13)
 hf auth login              # Authenticate for model downloads
-make download-models       # Download DiT, text encoder, VAE from HuggingFace
+make download-models       # Download DiT, text encoder, VAE, SAM3, MIT, PE-Core, PE-Spatial
 # Training images go in image_dataset/ with .txt caption sidecars
 make preprocess            # Resize → post_image_dataset/resized/, cache → post_image_dataset/lora/
 ```

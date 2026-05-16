@@ -733,6 +733,14 @@ def create_network_from_weights(
         if is_chimera_hydra and "ss_chimera_fei_sigma_low_div" in file_metadata
         else None
     )
+    # Default false when the stamp is absent — pre-LN checkpoints were
+    # trained on raw concat(FEI, σ); rebuilding with LN on would feed the
+    # trained MLP a different-statistics input and silently shift outputs.
+    chimera_freq_router_layer_norm: bool = (
+        is_chimera_hydra
+        and str(file_metadata.get("ss_chimera_freq_router_layer_norm", "")).strip().lower()
+        == "true"
+    )
     if is_chimera_hydra:
         # On-disk format: per-pool distilled chimera (lora_down_{c,f} +
         # stacked lora_up_{c,f}_weight + content router) with q/k/v defused
@@ -803,6 +811,7 @@ def create_network_from_weights(
         is_chimera_hydra=is_chimera_hydra,
         num_experts_content=chimera_num_experts_content,
         num_experts_freq=chimera_num_experts_freq,
+        freq_router_layer_norm=chimera_freq_router_layer_norm,
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)

@@ -312,6 +312,13 @@ class LoRANetworkCfg:
     # immediately as FEI/σ vary across the batch — zero-weight init would
     # be a fixed point under the additive composition (see proposal §"Init").
     freq_router_init_std: float = 0.1
+    # Per-modality LayerNorm on the FreqRouter input. Active only when both
+    # FEI and σ feature blocks are enabled (variance balance is the whole
+    # point — with one modality off LN either no-ops or destroys the 2-D
+    # FEI simplex's magnitude). Parameterless (``elementwise_affine=False``)
+    # so the state_dict format is unchanged; the on/off semantics live in
+    # the ``ss_chimera_freq_router_layer_norm`` metadata stamp.
+    freq_router_layer_norm: bool = True
     # Per-pool router LR multipliers (chimera-only). Stack on top of the
     # global ``router_lr_scale``: effective LR = ``unet_lr × router_lr_scale
     # × <pool>_router_lr_scale``. Default 1.0 = preserves the previous
@@ -464,6 +471,7 @@ class LoRANetworkCfg:
             float(balance_w_freq_raw) if balance_w_freq_raw is not None else None
         )
         freq_router_init_std = float(kwargs.get("freq_router_init_std", 0.1))
+        freq_router_layer_norm = _as_bool(kwargs.get("freq_router_layer_norm", True))
         content_router_lr_scale = float(
             kwargs.get("network_content_router_lr_scale", 1.0)
         )
@@ -618,6 +626,7 @@ class LoRANetworkCfg:
             balance_w_content=balance_w_content,
             balance_w_freq=balance_w_freq,
             freq_router_init_std=freq_router_init_std,
+            freq_router_layer_norm=freq_router_layer_norm,
             content_router_lr_scale=content_router_lr_scale,
             freq_router_lr_scale=freq_router_lr_scale,
             channel_scales_dict=channel_scales_dict,
@@ -659,6 +668,7 @@ class LoRANetworkCfg:
         is_chimera_hydra: bool = False,
         num_experts_content: Optional[int] = None,
         num_experts_freq: Optional[int] = None,
+        freq_router_layer_norm: bool = False,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -757,4 +767,5 @@ class LoRANetworkCfg:
             num_experts_freq=(
                 int(num_experts_freq) if num_experts_freq is not None else 3
             ),
+            freq_router_layer_norm=bool(freq_router_layer_norm),
         )
