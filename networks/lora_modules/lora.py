@@ -2,9 +2,11 @@
 # weight; `fuse_weight` bakes the live delta and turns forward into a no-op.
 
 import math
+from typing import Dict, List
 
 import torch
 
+from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
 from networks.lora_modules.custom_autograd import lora_down_project
 
@@ -201,3 +203,88 @@ class LoRAModule(BaseLoRAModule):
         delta = self.get_weight().to(org_module.weight.dtype)
         org_module.weight.data -= delta
         self._fused = False
+
+
+# ---------------------------------------------------------------------------
+# Save-pipeline helpers (state_dict-level, no module instance required).
+#
+# Co-located with LoRAModule because they operate on the layout this class
+# writes (``.lora_down.weight`` / ``.lora_up.weight`` / ``.alpha`` /
+# optional ``.dora_scale``). The standard variant write fires these; the
+# Hydra and Chimera writers also defuse their plain-LoRA legs by calling
+# :func:`defuse_standard_qkv` directly.
+# ---------------------------------------------------------------------------
+
+
+def rename_dora_keys(state_dict: Dict[str, torch.Tensor]) -> None:
+    """Rename ``.magnitude`` → ``.dora_scale`` and drop ``._org_weight_norm``.
+
+    DoRA training stores its learned column-norm vector under
+    ``.magnitude``; ComfyUI's LoRA loader looks for ``.dora_scale``. The
+    ``_org_weight_norm`` buffer is a training-only frozen reference and
+    isn't consumed downstream.
+    """
+    for key in list(state_dict.keys()):
+        if key.endswith(".magnitude"):
+            new_key = key.replace(".magnitude", ".dora_scale")
+            state_dict[new_key] = state_dict.pop(key)
+        elif key.endswith("._org_weight_norm"):
+            del state_dict[key]
+
+
+def defuse_standard_qkv(state_dict: Dict[str, torch.Tensor]) -> None:
+    """Split runtime-fused ``…_qkv_proj`` / ``…_kv_proj`` keys per-component.
+
+    Operates on the plain LoRA layout (single ``.lora_down.weight`` +
+    single ``.lora_up.weight`` per fused Linear). The down projection is
+    cloned per component; the up projection (rows = concatenated output
+    channels) is chunked along dim 0. ``.alpha`` / ``.dora_scale`` get
+    cloned/chunked alongside.
+
+    Used by:
+      * the standard write path,
+      * the Hydra write path's "plain-LoRA leg" (modules excluded from
+        ``router_targets`` save under the plain layout),
+      * the Chimera write path's plain-LoRA leg (router_targets excludes
+        attention projections by default — OrthoLoRAExp fallback lands as
+        plain LoRA after the ortho distill step).
+    """
+    fused_groups: List[tuple] = []
+    for key in list(state_dict.keys()):
+        if not key.endswith(".lora_down.weight"):
+            continue
+        prefix = key.removesuffix(".lora_down.weight")
+        spec = match_fused_spec(prefix)
+        if spec is not None:
+            fused_groups.append((prefix, spec))
+
+    for prefix, spec in fused_groups:
+        suffixes = spec.component_letters
+        n = len(suffixes)
+        down = state_dict.pop(f"{prefix}.lora_down.weight")
+        up = state_dict.pop(f"{prefix}.lora_up.weight")
+        alpha = state_dict.pop(f"{prefix}.alpha", None)
+        dora_scale = state_dict.pop(f"{prefix}.dora_scale", None)
+
+        up_chunks = up.chunk(n, dim=0)
+        dora_chunks = (
+            dora_scale.chunk(n, dim=0) if dora_scale is not None else [None] * n
+        )
+
+        base_prefix = prefix.removesuffix(spec.fused_frag)
+        for letter, up_chunk, dora_chunk in zip(suffixes, up_chunks, dora_chunks):
+            new_prefix = base_prefix + spec.component_frag(letter)
+            state_dict[f"{new_prefix}.lora_down.weight"] = down.clone()
+            state_dict[f"{new_prefix}.lora_up.weight"] = up_chunk
+            if alpha is not None:
+                state_dict[f"{new_prefix}.alpha"] = alpha.clone()
+            if dora_chunk is not None:
+                state_dict[f"{new_prefix}.dora_scale"] = dora_chunk
+
+
+def rename_dora_and_defuse_standard(
+    state_dict: Dict[str, torch.Tensor],
+) -> None:
+    """Standard write pipeline: DoRA rename + qkv defuse, in that order."""
+    rename_dora_keys(state_dict)
+    defuse_standard_qkv(state_dict)

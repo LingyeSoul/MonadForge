@@ -84,7 +84,7 @@ The three-axis surface (plan2.md §three-axis-config) covers both points in the 
 |------|------|
 | `networks/lora_anima/network.py` | `LoRANetwork` (the shared LoRA network) + `GlobalRouter` (Linear→ReLU→Linear→softmax/τ). On `use_moe_style="independent_A"` + `route_per_layer=False` + `router_source="fei"`, the network builds one `GlobalRouter` and fires it from `set_fei(z_t)` once per step; the resulting `(B, num_experts)` tensor is written by reference into every routing-aware module's `_routing_weights` buffer. |
 | `networks/lora_modules/stacked_experts.py` | `StackedExpertsLoRAModule` — independent-A expert layout. Owns `lora_downs` / `lora_ups` as `(E, …)` stacked Parameters consumed in one `einsum`. Supports both free and PSOFT-style ortho parameterization (shared `Q_basis`/`P_basis` SVD bases + per-expert Cayley `S_q, S_p` + per-expert diagonal `λ`). |
-| `networks/lora_anima/attn_fuse.py` | `AttnFuseSpec` + `iter_split_groups` — single source of truth for the runtime-fused `qkv_proj`/`kv_proj` ↔ on-disk split `q/k/v_proj` layout. Save and load both walk these specs; centralizing them keeps the two scanners from drifting. |
+| `networks/attn_fuse.py` | `AttnFuseSpec` + `iter_split_groups` — single source of truth for the runtime-fused `qkv_proj`/`kv_proj` ↔ on-disk split `q/k/v_proj` layout. Save and load both walk these specs; centralizing them keeps the two scanners from drifting. |
 | `networks/lora_save.py` | `stacked_experts_global_fei` save handler — writes split-attention `lora_downs.{i}` / `lora_ups.{i}` + the global router state dict + the three plan2 metadata stamps (`ss_use_moe_style` / `ss_route_per_layer` / `ss_router_source`). Distills the ortho parameterization to plain `(lora_down, lora_up)` keys for inference. |
 | `networks/__init__.py` | `resolve_network_spec` dispatches `use_moe_style="independent_A"` to the `stacked_experts_global_fei` NetworkSpec. |
 | `library/runtime/fei.py` | `gaussian_blur_2d` + DoG kernel cache + `compute_fei` helper. Shared with the FEI-on-Hydra variant — single kernel cache keyed by `(σ_low, σ_mid, kernel_size)`. |
@@ -260,7 +260,7 @@ The bet is that the global router on latent spectral state captures *per-prompt*
 
 - `networks/lora_anima/network.py` — `LoRANetwork` + `GlobalRouter`.
 - `networks/lora_modules/stacked_experts.py` — `StackedExpertsLoRAModule`.
-- `networks/lora_anima/attn_fuse.py` — `AttnFuseSpec`, the qkv/kv fuse↔split spec.
+- `networks/attn_fuse.py` — `AttnFuseSpec`, the qkv/kv fuse↔split spec.
 - `networks/lora_save.py` — `stacked_experts_global_fei` save handler.
 - `networks/__init__.py` — `resolve_network_spec` + `NETWORK_REGISTRY`.
 - `configs/gui-methods/fera.toml` — author-faithful FeRA cell config.

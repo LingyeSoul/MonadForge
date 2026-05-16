@@ -6,9 +6,10 @@ Pluggable adapter implementations selected at runtime via the `network_module` c
 
 | Path | Role |
 |------|------|
-| `lora_anima/` | LoRA network creation, module targeting, timestep-masking orchestration, global routing. Split into `network.py`, `factory.py`, `loading.py`, `config.py`, and `attn_fuse.py`. |
-| `lora_modules/` | Per-variant module implementations: `lora.py`, `ortho.py`, `hydra.py`, `reft.py`, `stacked_experts.py`, plus `base.py` and `custom_autograd.py`. |
-| `lora_save.py`, `lora_utils.py` | Save-time SVD distillation (OrthoLoRA → plain LoRA, ortho-stacked → distilled `(lora_down, lora_up)`) and shared helpers. Owns the `stacked_experts_global_fei` save handler used by FeRA. |
+| `lora_anima/` | LoRA network creation, module targeting, timestep-masking orchestration, global routing. Split into `network.py`, `factory.py`, `loading.py`, and `config.py`. |
+| `lora_modules/` | Per-variant module implementations: `lora.py`, `ortho.py`, `hydra.py`, `reft.py`, `stacked_experts.py`, `chimera.py`, plus `base.py` and `custom_autograd.py`. Each module class owns its own save-pipeline hook (`distill_save_state_dict` / `build_moe_state_dict`) — the Cayley/SVD math and per-pool MoE layout live next to the variant that defined them. |
+| `attn_fuse.py` | `AttnFuseSpec` + `iter_split_groups` + `match_fused_spec` — single source of truth for the runtime-fused `qkv_proj`/`kv_proj` ↔ on-disk split `q/k/v_proj` layout. Sits at the `networks/` top level so save (`lora_save.py`) and load (`lora_anima/loading.py`) both reach it without a cross-package import. |
+| `lora_save.py`, `lora_utils.py` | Thin save-pipeline orchestrator + shared helpers. `lora_save.save_network_weights` calls each variant's `distill_save_state_dict` in fixed order, then dispatches to the matching `build_moe_state_dict`. Owns only the legacy sig-type OrthoLoRA distill (no live module class for it) and the variant-write sibling-file naming. |
 | `methods/postfix.py` | Continuous postfix tuning: learns N vectors appended to adapter cross-attention (modes: hidden, embedding, cfg, dual). |
 | `methods/ip_adapter.py` | IP-Adapter: PE-Core-L14-336 vision encoder + Perceiver resampler + per-block `to_k_ip`/`to_v_ip`. |
 | `methods/easycontrol.py` | EasyControl: per-block cond LoRA on self-attn (q/k/v/o) + FFN + scalar `b_cond` logit-bias gate; two-stream block forward at training, KV-cache prefill at inference. |
@@ -62,7 +63,7 @@ Training-loop call: `train.py` fires `network.set_fei(noisy_model_input)` at the
 
 ## Attn fuse spec (qkv/kv fuse↔split)
 
-`lora_anima/attn_fuse.py::AttnFuseSpec` + `iter_split_groups` is the single source of truth for the runtime-fused `qkv_proj` (self-attn) / `kv_proj` (cross-attn) ↔ on-disk split `q/k/v_proj` layout. ComfyUI's cosmos backbone uses the split layout while Anima's training-side DiT uses the fused projections; save always writes split, load always re-fuses. Both `lora_save.py` and `loading.py` walk the same specs, so adding a new fused projection only needs one entry here.
+`attn_fuse.py::AttnFuseSpec` + `iter_split_groups` + `match_fused_spec` is the single source of truth for the runtime-fused `qkv_proj` (self-attn) / `kv_proj` (cross-attn) ↔ on-disk split `q/k/v_proj` layout. ComfyUI's cosmos backbone uses the split layout while Anima's training-side DiT uses the fused projections; save always writes split, load always re-fuses. Both `lora_save.py` and `loading.py` walk the same specs, so adding a new fused projection only needs one entry here.
 
 ## Attention dispatch
 

@@ -11,7 +11,7 @@ from library.io.safetensors import (
     get_split_weight_filenames,
 )
 from library.log import setup_logging
-from networks.lora_anima.attn_fuse import ATTN_FUSE_SPECS
+from networks.attn_fuse import ATTN_FUSE_SPECS
 
 setup_logging()
 import logging  # noqa: E402

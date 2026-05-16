@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterator, List, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import torch
 
@@ -52,6 +52,21 @@ ATTN_FUSE_SPECS: Tuple[AttnFuseSpec, ...] = (
     AttnFuseSpec("self_attn", "qkv", ("q", "k", "v")),
     AttnFuseSpec("cross_attn", "kv", ("k", "v")),
 )
+
+
+def match_fused_spec(prefix: str) -> Optional[AttnFuseSpec]:
+    """Return the AttnFuseSpec whose ``fused_frag`` ends ``prefix``, else None.
+
+    Save-side dual of :func:`iter_split_groups` — the loader walks split
+    component keys to detect groups that need re-fusing, while the saver
+    walks fused prefixes (e.g. ``…self_attn_qkv_proj``) to detect groups
+    that need splitting. Both sides consult the same ATTN_FUSE_SPECS tuple
+    so adding a new fused projection touches one entry.
+    """
+    for spec in ATTN_FUSE_SPECS:
+        if prefix.endswith(spec.fused_frag):
+            return spec
+    return None
 
 
 def iter_split_groups(

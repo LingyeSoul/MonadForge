@@ -1,7 +1,7 @@
 # OrthoLoRA variants: Cayley-parameterized orthogonal low-rank adapters,
 # plus the OrthoHydra MoE combination.
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import torch
 
@@ -110,7 +110,7 @@ class OrthoLoRAExpModule(BaseLoRAModule):
     def _cayley(S: torch.Tensor) -> torch.Tensor:
         """R = (I - A)(I + A)^{-1}, A = S - S^T.
 
-        Kept for save-time SVD distillation in `networks/lora_save.py`;
+        Kept for save-time SVD distillation in :meth:`distill_save_state_dict`;
         forward uses a batched solve instead.
         """
         A = S - S.T
@@ -164,6 +164,67 @@ class OrthoLoRAExpModule(BaseLoRAModule):
         """No-op: Cayley guarantees orthogonality structurally."""
         zero = torch.tensor(0.0, device=self.S_p.device)
         return zero, zero
+
+    @classmethod
+    def distill_save_state_dict(
+        cls,
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> None:
+        """OrthoLoRA → standard LoRA: Cayley + frozen SVD → ``lora_down``/``lora_up``.
+
+        Mutates ``state_dict`` in place.
+
+        Discriminator: ``.S_p`` keys with ``dim == 2``. The OrthoHydra path
+        owns the 3-D ``.S_p`` shape and must run before this method, otherwise
+        the 2-D handler would mis-reduce 3-D tensors. Sets are tracked by
+        prefix so each module's keys are converted atomically.
+
+        Sqrt-splits ``λ`` between the two factors so the on-disk product
+        ``ΔW = P_eff @ diag(λ) @ Q_eff`` is preserved bit-exactly under
+        the ``(lora_down, lora_up)`` factorization.
+        """
+        prefixes = set()
+        for key in state_dict.keys():
+            if key.endswith(".S_p") and state_dict[key].dim() == 2:
+                prefixes.add(key[: -len(".S_p")])
+
+        for prefix in prefixes:
+            S_p = state_dict[f"{prefix}.S_p"]
+            S_q = state_dict[f"{prefix}.S_q"]
+            P_basis = state_dict[f"{prefix}.P_basis"]
+            Q_basis = state_dict[f"{prefix}.Q_basis"]
+            lam = state_dict[f"{prefix}.lambda_layer"]  # (1, r)
+            alpha = state_dict.get(f"{prefix}.alpha")
+            save_dtype = dtype if dtype is not None else P_basis.dtype
+
+            R_p = cls._cayley(S_p.float())
+            R_q = cls._cayley(S_q.float())
+            P_eff = P_basis.float() @ R_p  # (out, r)
+            Q_eff = R_q @ Q_basis.float()  # (r, in)
+
+            lam_1d = lam.squeeze(0).float()
+            lam_abs = lam_1d.abs()
+            lam_sign = lam_1d.sign()
+            lam_sqrt = lam_abs.sqrt()
+            lora_up = (
+                (P_eff * (lam_sqrt * lam_sign).unsqueeze(0))
+                .to(save_dtype)
+                .cpu()
+                .contiguous()
+            )
+            lora_down = (
+                (Q_eff * lam_sqrt.unsqueeze(1)).to(save_dtype).cpu().contiguous()
+            )
+
+            for suffix in ("S_p", "S_q", "lambda_layer", "P_basis", "Q_basis"):
+                state_dict.pop(f"{prefix}.{suffix}", None)
+            # inv_scale stays — shared buffer, not an ortho-exp-only key.
+
+            state_dict[f"{prefix}.lora_up.weight"] = lora_up
+            state_dict[f"{prefix}.lora_down.weight"] = lora_down
+            if alpha is not None:
+                state_dict[f"{prefix}.alpha"] = alpha
 
 
 class OrthoHydraLoRAExpModule(BaseLoRAModule):
@@ -444,3 +505,87 @@ class OrthoHydraLoRAExpModule(BaseLoRAModule):
         """No-op: Cayley guarantees orthogonality structurally."""
         zero = torch.tensor(0.0, device=self.S_p.device)
         return zero, zero
+
+    @classmethod
+    def distill_save_state_dict(
+        cls,
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> None:
+        """OrthoHydra → Hydra runtime form (shared down + stacked ups).
+
+        Mutates ``state_dict`` in place. Discriminator: ``.S_p`` with
+        ``dim == 3`` AND co-located ``.S_q`` with ``dim == 2``. The 2-D
+        ``S_q`` is the only thing that distinguishes OrthoHydra (shared
+        Q rotation across experts) from StackedExperts-ortho (per-expert
+        ``S_q`` is 3-D), and ``StackedExpertsLoRAModule.distill_save_state_dict``
+        must run before this method.
+
+        Outputs: ``.lora_down.weight`` (shared) + ``.lora_up_weight``
+        (stacked ``(E, out, r)`` — the Hydra training runtime layout). The
+        downstream MoE writer in :meth:`HydraLoRAModule.build_moe_state_dict`
+        expands this into per-expert ``.lora_ups.{i}.weight`` keys.
+        """
+        prefixes = set()
+        for key in list(state_dict.keys()):
+            if not (key.endswith(".S_p") and state_dict[key].dim() == 3):
+                continue
+            prefix = key[: -len(".S_p")]
+            S_q_key = f"{prefix}.S_q"
+            if S_q_key not in state_dict or state_dict[S_q_key].dim() != 2:
+                continue
+            prefixes.add(prefix)
+
+        for prefix in prefixes:
+            S_p = state_dict[f"{prefix}.S_p"]  # (E, r, r)
+            S_q = state_dict[f"{prefix}.S_q"]  # (r, r)
+            # Per-expert disjoint bases (new) or legacy shared basis (old ckpts).
+            P_bases = state_dict.get(f"{prefix}.P_bases")
+            if P_bases is None:
+                P_bases = state_dict[f"{prefix}.P_basis"]  # (out, r) legacy
+            Q_basis = state_dict[f"{prefix}.Q_basis"]  # (r, in)
+            lam = state_dict[f"{prefix}.lambda_layer"]  # (1, r)
+            alpha = state_dict.get(f"{prefix}.alpha")
+            save_dtype = dtype if dtype is not None else P_bases.dtype
+
+            R_q = cls._cayley(S_q.float())  # (r, r)
+            Q_eff = R_q @ Q_basis.float()  # (r, in)
+
+            R_p = cls._cayley(S_p.float())  # (E, r, r)
+            if P_bases.dim() == 3:
+                # (E, out, r) @ (E, r, r) = (E, out, r)
+                P_eff = P_bases.float() @ R_p
+            else:
+                # legacy shared (out, r): broadcast over experts
+                P_eff = P_bases.float().unsqueeze(0) @ R_p  # (E, out, r)
+
+            # sqrt-split lambda so ΔW = P @ diag(λ) @ Q is preserved bit-exactly
+            lam_1d = lam.squeeze(0).float()
+            lam_abs = lam_1d.abs()
+            lam_sign = lam_1d.sign()
+            lam_sqrt = lam_abs.sqrt()
+
+            lora_down = (
+                (Q_eff * lam_sqrt.unsqueeze(1)).to(save_dtype).cpu().contiguous()
+            )
+            lora_up_weight = (
+                (P_eff * (lam_sqrt * lam_sign).unsqueeze(0).unsqueeze(0))
+                .to(save_dtype)
+                .cpu()
+                .contiguous()
+            )
+
+            for suffix in (
+                "S_p",
+                "S_q",
+                "lambda_layer",
+                "P_basis",
+                "P_bases",
+                "Q_basis",
+            ):
+                state_dict.pop(f"{prefix}.{suffix}", None)
+
+            state_dict[f"{prefix}.lora_down.weight"] = lora_down
+            state_dict[f"{prefix}.lora_up_weight"] = lora_up_weight
+            if alpha is not None:
+                state_dict[f"{prefix}.alpha"] = alpha

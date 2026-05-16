@@ -32,11 +32,14 @@
 #   output-side orthogonality (B-pool subspaces) while sharing one A.
 
 import logging
+from typing import Dict, List, Optional
 
 import torch
 
+from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule, _absorb_channel_scale
 from networks.lora_modules.custom_autograd import lora_down_project
+from networks.lora_modules.lora import defuse_standard_qkv
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +61,9 @@ class ChimeraHydraLoRAExpModule(BaseLoRAModule):
     at step 0. Cayley rotates each within its assigned subspace.
 
     Save distills Cayley → free-form per pool (see
-    ``networks/lora_save.py::_convert_chimera_dual_a_to_hydra``); load
-    rebuilds a ``ChimeraHydraInferenceModule`` rather than re-instantiating
-    this class.
+    :meth:`distill_save_state_dict` / :meth:`build_moe_state_dict` below);
+    load rebuilds a ``ChimeraHydraInferenceModule`` rather than
+    re-instantiating this class.
     """
 
     def __init__(
@@ -237,7 +240,7 @@ class ChimeraHydraLoRAExpModule(BaseLoRAModule):
     def _cayley(S: torch.Tensor) -> torch.Tensor:
         """R = (I - A)(I + A)^{-1}, A = S - S^T. 2D or batched 3D.
 
-        Kept for save-time SVD distillation in ``networks/lora_save.py``;
+        Kept for save-time SVD distillation in :meth:`distill_save_state_dict`;
         forward uses a batched solve over the cat'd skew stack.
         """
         A = S - S.transpose(-2, -1)
@@ -404,6 +407,229 @@ class ChimeraHydraLoRAExpModule(BaseLoRAModule):
         """No-op: Cayley guarantees orthogonality structurally on both A's."""
         zero = torch.tensor(0.0, device=self.S_p_c.device)
         return zero, zero
+
+    # ------------------------------------------------------------------
+    # Save-pipeline hooks: dual-A distill + per-pool MoE writer.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def distill_save_state_dict(
+        cls,
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> None:
+        """Chimera training-form → free-form per-pool (Cayley → lora_{down,up}).
+
+        Mutates ``state_dict`` in place. Discriminator: co-located
+        ``.S_q_c`` + ``.S_q_f`` keys (chimera is the only variant with
+        per-pool ``_c`` / ``_f`` suffixes — never collides with the other
+        ortho converters). Runs FIRST in the save pipeline so subsequent
+        converters see a chimera-free state_dict.
+
+        Per pool, distill the Cayley-rotated SVD layout into free-form
+        (``.lora_down_{c,f}.weight``, ``.lora_up_{c,f}_weight``). The MoE
+        writer in :meth:`build_moe_state_dict` then expands the stacked
+        per-pool ups into per-expert ``.lora_ups_{c,f}.{i}.weight`` keys
+        and per-component q/k/v splits.
+        """
+        prefixes = set()
+        for key in list(state_dict.keys()):
+            if not key.endswith(".S_q_c"):
+                continue
+            prefix = key[: -len(".S_q_c")]
+            if state_dict.get(f"{prefix}.S_q_f") is None:
+                continue
+            prefixes.add(prefix)
+
+        for prefix in prefixes:
+            S_q_c = state_dict[f"{prefix}.S_q_c"]
+            S_q_f = state_dict[f"{prefix}.S_q_f"]
+            S_p_c = state_dict[f"{prefix}.S_p_c"]  # (K_c, r, r)
+            S_p_f = state_dict[f"{prefix}.S_p_f"]  # (K_f, r, r)
+            Q_basis_c = state_dict[f"{prefix}.Q_basis_c"]
+            Q_basis_f = state_dict[f"{prefix}.Q_basis_f"]
+            P_bases_c = state_dict[f"{prefix}.P_bases_c"]  # (K_c, out, r)
+            P_bases_f = state_dict[f"{prefix}.P_bases_f"]  # (K_f, out, r)
+            lam_c = state_dict[f"{prefix}.lambda_c"]
+            lam_f = state_dict[f"{prefix}.lambda_f"]
+            alpha = state_dict.get(f"{prefix}.alpha")
+            save_dtype = dtype if dtype is not None else P_bases_c.dtype
+
+            R_q_c = cls._cayley(S_q_c.float())
+            R_q_f = cls._cayley(S_q_f.float())
+            R_p_c = cls._cayley(S_p_c.float())
+            R_p_f = cls._cayley(S_p_f.float())
+            Q_eff_c = R_q_c @ Q_basis_c.float()  # (r, in)
+            Q_eff_f = R_q_f @ Q_basis_f.float()
+            P_eff_c = P_bases_c.float() @ R_p_c  # (K_c, out, r)
+            P_eff_f = P_bases_f.float() @ R_p_f
+
+            def _split(P_eff, Q_eff, lam):
+                lam_1d = lam.squeeze(0).float()
+                lam_sqrt = lam_1d.abs().sqrt()
+                lam_sign = lam_1d.sign()
+                lora_down = (
+                    (Q_eff * lam_sqrt.unsqueeze(1))
+                    .to(save_dtype)
+                    .cpu()
+                    .contiguous()
+                )
+                lora_up_weight = (
+                    (P_eff * (lam_sqrt * lam_sign).unsqueeze(0).unsqueeze(0))
+                    .to(save_dtype)
+                    .cpu()
+                    .contiguous()
+                )
+                return lora_down, lora_up_weight
+
+            lora_down_c, lora_up_c_weight = _split(P_eff_c, Q_eff_c, lam_c)
+            lora_down_f, lora_up_f_weight = _split(P_eff_f, Q_eff_f, lam_f)
+
+            for suffix in (
+                "S_q_c",
+                "S_q_f",
+                "S_p_c",
+                "S_p_f",
+                "Q_basis_c",
+                "Q_basis_f",
+                "P_bases_c",
+                "P_bases_f",
+                "lambda_c",
+                "lambda_f",
+            ):
+                state_dict.pop(f"{prefix}.{suffix}", None)
+
+            # ``router.weight`` / ``router.bias`` are kept as-is (already
+            # the K_c-narrowed content router).
+            state_dict[f"{prefix}.lora_down_c.weight"] = lora_down_c
+            state_dict[f"{prefix}.lora_up_c_weight"] = lora_up_c_weight
+            state_dict[f"{prefix}.lora_down_f.weight"] = lora_down_f
+            state_dict[f"{prefix}.lora_up_f_weight"] = lora_up_f_weight
+            if alpha is not None:
+                state_dict[f"{prefix}.alpha"] = alpha
+
+    @staticmethod
+    def build_moe_state_dict(
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> Dict[str, torch.Tensor]:
+        """Build the ``*_chimera.safetensors`` payload.
+
+        Expects :meth:`distill_save_state_dict` to have already run.
+
+        Two transforms:
+          1. Expand stacked ``.lora_up_c_weight (K_c, out, r)`` →
+             per-expert ``.lora_ups_c.{i}.weight``; same for ``_f``.
+          2. Per-pool fused-qkv defuse on attention prefixes. Both pools
+             share the prefix (chimera = one module per Linear), so when
+             the prefix ends in a fused frag we split BOTH pools'
+             (lora_down + ups stack) per component. ``router.*`` /
+             ``alpha`` / ``inv_scale`` clone into each split component.
+
+        Top-level ``freq_router.*`` keys pass through untouched (they
+        don't carry a ``lora_unet_*`` prefix and don't match any fused
+        frag suffix).
+
+        After the per-pool split, the remaining fused-qkv prefixes are
+        the OrthoLoRAExp fallbacks for attention projections excluded
+        from ``router_targets`` (already distilled to plain LoRA by
+        :meth:`OrthoLoRAExpModule.distill_save_state_dict`). Run them
+        through the shared :func:`defuse_standard_qkv` so they emerge
+        in the split q/k/v layout that ComfyUI's cosmos backbone
+        expects — otherwise they surface as ``lora key not loaded``
+        warnings at load time.
+        """
+        sd: Dict[str, torch.Tensor] = {}
+        for k, v in state_dict.items():
+            v = v.detach().clone().to("cpu")
+            if k.endswith(".lora_up_c_weight"):
+                prefix = k.removesuffix(".lora_up_c_weight")
+                for i in range(v.size(0)):
+                    sd[f"{prefix}.lora_ups_c.{i}.weight"] = v[i]
+            elif k.endswith(".lora_up_f_weight"):
+                prefix = k.removesuffix(".lora_up_f_weight")
+                for j in range(v.size(0)):
+                    sd[f"{prefix}.lora_ups_f.{j}.weight"] = v[j]
+            else:
+                sd[k] = v
+
+        # Per-pool q/k/v split. Detect by either pool's down key (both
+        # should be present per chimera prefix; iterating one set is
+        # sufficient).
+        fused_groups: List[tuple] = []
+        for key in list(sd.keys()):
+            if not key.endswith(".lora_down_c.weight"):
+                continue
+            prefix = key.removesuffix(".lora_down_c.weight")
+            spec = match_fused_spec(prefix)
+            if spec is not None:
+                fused_groups.append((prefix, spec))
+
+        for prefix, spec in fused_groups:
+            suffixes = spec.component_letters
+            n = len(suffixes)
+            down_c = sd.pop(f"{prefix}.lora_down_c.weight")
+            down_f = sd.pop(f"{prefix}.lora_down_f.weight")
+            alpha = sd.pop(f"{prefix}.alpha", None)
+            router_w = sd.pop(f"{prefix}.router.weight", None)
+            router_b = sd.pop(f"{prefix}.router.bias", None)
+            inv_scale = sd.pop(f"{prefix}.inv_scale", None)
+
+            ups_c_keys = sorted(
+                (
+                    k
+                    for k in list(sd.keys())
+                    if k.startswith(f"{prefix}.lora_ups_c.")
+                    and k.endswith(".weight")
+                ),
+                key=lambda k: int(
+                    k.removeprefix(f"{prefix}.lora_ups_c.").removesuffix(".weight")
+                ),
+            )
+            ups_f_keys = sorted(
+                (
+                    k
+                    for k in list(sd.keys())
+                    if k.startswith(f"{prefix}.lora_ups_f.")
+                    and k.endswith(".weight")
+                ),
+                key=lambda k: int(
+                    k.removeprefix(f"{prefix}.lora_ups_f.").removesuffix(".weight")
+                ),
+            )
+            ups_c = [sd.pop(k) for k in ups_c_keys]
+            ups_f = [sd.pop(k) for k in ups_f_keys]
+            ups_c_chunked = [u.chunk(n, dim=0) for u in ups_c]
+            ups_f_chunked = [u.chunk(n, dim=0) for u in ups_f]
+
+            base_prefix = prefix.removesuffix(spec.fused_frag)
+            for ci, letter in enumerate(suffixes):
+                new_prefix = base_prefix + spec.component_frag(letter)
+                sd[f"{new_prefix}.lora_down_c.weight"] = down_c.clone()
+                sd[f"{new_prefix}.lora_down_f.weight"] = down_f.clone()
+                for ei, u_chunks in enumerate(ups_c_chunked):
+                    sd[f"{new_prefix}.lora_ups_c.{ei}.weight"] = (
+                        u_chunks[ci].contiguous().clone()
+                    )
+                for ei, u_chunks in enumerate(ups_f_chunked):
+                    sd[f"{new_prefix}.lora_ups_f.{ei}.weight"] = (
+                        u_chunks[ci].contiguous().clone()
+                    )
+                if alpha is not None:
+                    sd[f"{new_prefix}.alpha"] = alpha.clone()
+                if router_w is not None:
+                    sd[f"{new_prefix}.router.weight"] = router_w.clone()
+                if router_b is not None:
+                    sd[f"{new_prefix}.router.bias"] = router_b.clone()
+                if inv_scale is not None:
+                    sd[f"{new_prefix}.inv_scale"] = inv_scale.clone()
+
+        # Plain-LoRA leg defuse on any remaining fused attention prefixes.
+        defuse_standard_qkv(sd)
+
+        if dtype is not None:
+            sd = {k: v.to(dtype) for k, v in sd.items()}
+        return sd
 
 
 class ChimeraHydraInferenceModule(BaseLoRAModule):

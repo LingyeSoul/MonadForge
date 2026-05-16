@@ -1,10 +1,11 @@
 # HydraLoRA: MoE-style multi-head LoRA with layer-local routing.
 
 import math
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import torch
 
+from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
 from networks.lora_modules.custom_autograd import lora_down_project
 from networks.lora_modules.router_state import (
@@ -369,3 +370,122 @@ class HydraLoRAModule(BaseLoRAModule):
         out = out.reshape(*orig_shape[:-1], -1)
 
         return org_forwarded + (out * self.multiplier * scale).to(org_forwarded.dtype)
+
+    # ------------------------------------------------------------------
+    # Save-pipeline hook. The training runtime keeps experts stacked under
+    # ``.lora_up_weight (E, out, r)`` — ComfyUI's HydraLoRA custom node
+    # expects per-expert ``.lora_ups.{i}.weight`` keys, so save expands
+    # them here. Fused-qkv prefixes are split per-expert per-component.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def build_moe_state_dict(
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> Dict[str, torch.Tensor]:
+        """Build the Hydra ``*_moe.safetensors`` payload.
+
+        Expects the state_dict to already be in the training-runtime form
+        (stacked ``.lora_up_weight``) — :meth:`OrthoHydraLoRAExpModule.distill_save_state_dict`
+        runs first if the live checkpoint came from the ortho-hydra path.
+
+        Two transforms:
+          1. Expand ``.lora_up_weight (E, out, r)`` → per-expert
+             ``.lora_ups.{i}.weight`` keys.
+          2. Per-pool fused-qkv defuse on attention prefixes. ``lora_down``
+             / ``alpha`` / ``router.*`` / ``sigma_mlp.*`` / ``inv_scale``
+             are shared across q/k/v (same Linear input, same routing
+             decision), so clone them into each split component. The
+             plain-LoRA leg (modules excluded from ``router_targets``)
+             gets its own per-component split — the fused qkv carries
+             standard ``.lora_up.weight`` + optional ``.dora_scale``.
+        """
+        hydra_sd: Dict[str, torch.Tensor] = {}
+        for k, v in state_dict.items():
+            v = v.detach().clone().to("cpu")
+            if k.endswith(".lora_up_weight"):
+                prefix = k.removesuffix(".lora_up_weight")
+                for i in range(v.size(0)):
+                    hydra_sd[f"{prefix}.lora_ups.{i}.weight"] = v[i]
+            else:
+                hydra_sd[k] = v
+
+        hydra_fused_groups: List[tuple] = []
+        for key in list(hydra_sd.keys()):
+            if not key.endswith(".lora_down.weight"):
+                continue
+            prefix = key.removesuffix(".lora_down.weight")
+            spec = match_fused_spec(prefix)
+            if spec is not None:
+                hydra_fused_groups.append((prefix, spec))
+
+        for prefix, spec in hydra_fused_groups:
+            suffixes = spec.component_letters
+            n = len(suffixes)
+            down = hydra_sd.pop(f"{prefix}.lora_down.weight")
+            alpha = hydra_sd.pop(f"{prefix}.alpha", None)
+            router_w = hydra_sd.pop(f"{prefix}.router.weight", None)
+            router_b = hydra_sd.pop(f"{prefix}.router.bias", None)
+            inv_scale = hydra_sd.pop(f"{prefix}.inv_scale", None)
+            sigma_mlp_keys = [
+                k
+                for k in list(hydra_sd.keys())
+                if k.startswith(f"{prefix}.sigma_mlp.")
+            ]
+            sigma_mlp_state = {k: hydra_sd.pop(k) for k in sigma_mlp_keys}
+
+            ups_keys = sorted(
+                (
+                    k
+                    for k in list(hydra_sd.keys())
+                    if k.startswith(f"{prefix}.lora_ups.")
+                    and k.endswith(".weight")
+                ),
+                key=lambda k: int(
+                    k.removeprefix(f"{prefix}.lora_ups.").removesuffix(".weight")
+                ),
+            )
+            ups = [hydra_sd.pop(k) for k in ups_keys]
+            ups_chunked = [u.chunk(n, dim=0) for u in ups]
+
+            # Plain-LoRA leg (present when router_targets excluded this
+            # module). Split these per-component so q/k/v keys are
+            # consistent with the already-split ``.lora_down.weight`` above.
+            plain_up = hydra_sd.pop(f"{prefix}.lora_up.weight", None)
+            plain_up_chunks = (
+                plain_up.chunk(n, dim=0) if plain_up is not None else None
+            )
+            dora_scale = hydra_sd.pop(f"{prefix}.dora_scale", None)
+            dora_chunks = (
+                dora_scale.chunk(n, dim=0) if dora_scale is not None else None
+            )
+
+            base_prefix = prefix.removesuffix(spec.fused_frag)
+            for ci, letter in enumerate(suffixes):
+                new_prefix = base_prefix + spec.component_frag(letter)
+                hydra_sd[f"{new_prefix}.lora_down.weight"] = down.clone()
+                for ei, u_chunks in enumerate(ups_chunked):
+                    hydra_sd[f"{new_prefix}.lora_ups.{ei}.weight"] = (
+                        u_chunks[ci].contiguous().clone()
+                    )
+                if plain_up_chunks is not None:
+                    hydra_sd[f"{new_prefix}.lora_up.weight"] = (
+                        plain_up_chunks[ci].contiguous().clone()
+                    )
+                if dora_chunks is not None:
+                    hydra_sd[f"{new_prefix}.dora_scale"] = dora_chunks[ci].clone()
+                if alpha is not None:
+                    hydra_sd[f"{new_prefix}.alpha"] = alpha.clone()
+                if router_w is not None:
+                    hydra_sd[f"{new_prefix}.router.weight"] = router_w.clone()
+                if router_b is not None:
+                    hydra_sd[f"{new_prefix}.router.bias"] = router_b.clone()
+                if inv_scale is not None:
+                    hydra_sd[f"{new_prefix}.inv_scale"] = inv_scale.clone()
+                for k, v in sigma_mlp_state.items():
+                    subkey = k.removeprefix(f"{prefix}.")
+                    hydra_sd[f"{new_prefix}.{subkey}"] = v.clone()
+
+        if dtype is not None:
+            hydra_sd = {k: v.to(dtype) for k, v in hydra_sd.items()}
+        return hydra_sd

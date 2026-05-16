@@ -24,9 +24,11 @@
 # on Anima MLP shapes.
 
 import math
+from typing import Dict, List, Optional
 
 import torch
 
+from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
 from networks.lora_modules.router_state import (
     _clear_routing_weights,
@@ -233,3 +235,186 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
         device = self.S_p.device if self.ortho else self.lora_down_weight.device
         zero = torch.tensor(0.0, device=device)
         return zero, zero
+
+    # ------------------------------------------------------------------
+    # Save-pipeline hooks. The ortho variant lives in the runtime as
+    # ``S_p`` / ``S_q`` / ``P_basis`` / ``Q_basis`` / ``lambda_layer`` —
+    # distilled to free per-expert ``lora_down_weight (E, r, in)`` +
+    # ``lora_up_weight (E, out, r)`` here so the on-disk file matches
+    # the free-StackedExperts shape and either runtime mode can load it.
+    # The MoE writer then expands to per-expert ``.lora_{ups,downs}.{i}``.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def distill_save_state_dict(
+        cls,
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> None:
+        """Ortho StackedExperts → free StackedExperts (per-expert down/up).
+
+        Mutates ``state_dict`` in place. Discriminator: ``.S_p`` AND ``.S_q``
+        both 3-D ``(E, r, r)`` for the same prefix. OrthoHydra's ``S_q`` is
+        2-D, so its dimensionality is the only thing that separates the two
+        ortho-flavored MoE variants; this method must run BEFORE
+        :meth:`OrthoHydraLoRAExpModule.distill_save_state_dict`.
+        """
+        prefixes = set()
+        for key in list(state_dict.keys()):
+            if not key.endswith(".S_q"):
+                continue
+            if state_dict[key].dim() != 3:
+                continue
+            prefix = key[: -len(".S_q")]
+            S_p = state_dict.get(f"{prefix}.S_p")
+            if S_p is None or S_p.dim() != 3:
+                continue
+            prefixes.add(prefix)
+
+        for prefix in prefixes:
+            S_p = state_dict[f"{prefix}.S_p"]  # (E, r, r)
+            S_q = state_dict[f"{prefix}.S_q"]  # (E, r, r)
+            P_basis = state_dict[f"{prefix}.P_basis"]  # (out, r)
+            Q_basis = state_dict[f"{prefix}.Q_basis"]  # (r, in)
+            lam = state_dict[f"{prefix}.lambda_layer"]  # (E, r)
+            alpha = state_dict.get(f"{prefix}.alpha")
+            save_dtype = dtype if dtype is not None else P_basis.dtype
+
+            # Batched Cayley over S_p and S_q for every expert. Same
+            # parameter-free transform as ``_cayley_rotations`` but in fp32
+            # here for save-time stability.
+            E, r, _ = S_p.shape
+            skew = torch.cat([S_q.float(), S_p.float()], dim=0)  # (2E, r, r)
+            A = skew - skew.transpose(-2, -1)
+            eye = torch.eye(r, dtype=torch.float32, device=skew.device)
+            R = torch.linalg.solve(eye + A, eye - A)  # (2E, r, r)
+            R_q = R[:E]
+            R_p = R[E:]
+
+            Q_eff = torch.einsum("erj,ji->eri", R_q, Q_basis.float())  # (E, r, in)
+            P_eff = torch.einsum("oj,ejr->eor", P_basis.float(), R_p)  # (E, out, r)
+
+            # sqrt-split λ between sides so ΔW = P_eff @ diag(λ) @ Q_eff is
+            # preserved bit-exactly under the (down, up) factorization.
+            lam_abs = lam.float().abs()
+            lam_sign = lam.float().sign()
+            lam_sqrt = lam_abs.sqrt()
+
+            lora_down_weight = (
+                (Q_eff * lam_sqrt.unsqueeze(-1))
+                .to(save_dtype)
+                .cpu()
+                .contiguous()
+            )
+            lora_up_weight = (
+                (P_eff * (lam_sqrt * lam_sign).unsqueeze(1))
+                .to(save_dtype)
+                .cpu()
+                .contiguous()
+            )
+
+            for suffix in (
+                "S_p",
+                "S_q",
+                "lambda_layer",
+                "P_basis",
+                "Q_basis",
+                "_eye_r",
+            ):
+                state_dict.pop(f"{prefix}.{suffix}", None)
+
+            state_dict[f"{prefix}.lora_down_weight"] = lora_down_weight
+            state_dict[f"{prefix}.lora_up_weight"] = lora_up_weight
+            if alpha is not None:
+                state_dict[f"{prefix}.alpha"] = alpha
+
+    @staticmethod
+    def build_moe_state_dict(
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> Dict[str, torch.Tensor]:
+        """Build the StackedExperts ``_moe.safetensors`` payload.
+
+        Independent-A counterpart to :meth:`HydraLoRAModule.build_moe_state_dict`:
+        BOTH ``lora_up_weight (E, out, r)`` AND ``lora_down_weight (E, r, in)``
+        are expanded per-expert (``.lora_ups.{i}.weight`` /
+        ``.lora_downs.{i}.weight``), then fused attention prefixes are split
+        per-expert per-component so q/k/v keys land on separate components.
+
+        No router / sigma_mlp / inv_scale handling here — the GlobalRouter
+        lives at network top-level (``global_router.*``), not per-Linear.
+        """
+        sd: Dict[str, torch.Tensor] = {}
+        for k, v in state_dict.items():
+            v = v.detach().clone().to("cpu")
+            if k.endswith(".lora_up_weight"):
+                prefix = k.removesuffix(".lora_up_weight")
+                for i in range(v.size(0)):
+                    sd[f"{prefix}.lora_ups.{i}.weight"] = v[i]
+            elif k.endswith(".lora_down_weight"):
+                prefix = k.removesuffix(".lora_down_weight")
+                for i in range(v.size(0)):
+                    sd[f"{prefix}.lora_downs.{i}.weight"] = v[i]
+            else:
+                sd[k] = v
+
+        # Per-expert q/k/v split for fused attention prefixes.
+        fused_groups: List[tuple] = []
+        for key in list(sd.keys()):
+            if not key.endswith(".lora_downs.0.weight"):
+                continue
+            prefix = key.removesuffix(".lora_downs.0.weight")
+            spec = match_fused_spec(prefix)
+            if spec is not None:
+                fused_groups.append((prefix, spec))
+
+        for prefix, spec in fused_groups:
+            suffixes = spec.component_letters
+            n = len(suffixes)
+            alpha = sd.pop(f"{prefix}.alpha", None)
+
+            ups_keys = sorted(
+                (
+                    k
+                    for k in list(sd.keys())
+                    if k.startswith(f"{prefix}.lora_ups.")
+                    and k.endswith(".weight")
+                ),
+                key=lambda k: int(
+                    k.removeprefix(f"{prefix}.lora_ups.").removesuffix(".weight")
+                ),
+            )
+            downs_keys = sorted(
+                (
+                    k
+                    for k in list(sd.keys())
+                    if k.startswith(f"{prefix}.lora_downs.")
+                    and k.endswith(".weight")
+                ),
+                key=lambda k: int(
+                    k.removeprefix(f"{prefix}.lora_downs.").removesuffix(".weight")
+                ),
+            )
+            ups = [sd.pop(k) for k in ups_keys]
+            downs = [sd.pop(k) for k in downs_keys]
+            # Per-expert chunk-of-out_dim across q/k/v components.
+            ups_chunked = [u.chunk(n, dim=0) for u in ups]
+
+            base_prefix = prefix.removesuffix(spec.fused_frag)
+            for ci, letter in enumerate(suffixes):
+                new_prefix = base_prefix + spec.component_frag(letter)
+                for ei, u_chunks in enumerate(ups_chunked):
+                    sd[f"{new_prefix}.lora_ups.{ei}.weight"] = (
+                        u_chunks[ci].contiguous().clone()
+                    )
+                # Downs are shared across q/k/v inputs (the fused Linear sees
+                # one input vector), so clone each expert's down into every
+                # component.
+                for ei, d in enumerate(downs):
+                    sd[f"{new_prefix}.lora_downs.{ei}.weight"] = d.clone()
+                if alpha is not None:
+                    sd[f"{new_prefix}.alpha"] = alpha.clone()
+
+        if dtype is not None:
+            sd = {k: v.to(dtype) for k, v in sd.items()}
+        return sd

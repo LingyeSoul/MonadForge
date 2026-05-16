@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 import torch
 
 from library.log import setup_logging
-from networks.lora_anima.attn_fuse import iter_split_groups
+from networks.attn_fuse import iter_split_groups
 
 setup_logging()
 logger = logging.getLogger(__name__)
