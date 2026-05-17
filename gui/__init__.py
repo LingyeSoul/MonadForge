@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import toml
 from PySide6.QtCore import Qt
@@ -216,6 +216,7 @@ _GROUPS = {
         "lr_scheduler",
         "timestep_sampling",
         "discrete_flow_shift",
+        "use_valid",
     },
     "Performance": {
         "attn_mode",
@@ -254,6 +255,13 @@ _GROUPS = {
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
 
+# Virtual keys appear in the form like normal fields but don't round-trip as
+# flat TOML keys — they're derived from / written into structured sections
+# (e.g. ``use_valid`` toggles a `[[datasets]]` validation_split_num override).
+# The save loop in ConfigTab skips these, and per-key apply helpers handle the
+# structured write.
+_VIRTUAL_KEYS = {"use_valid"}
+
 # Fields shown under the "Basic" section. Everything else falls under the
 # collapsible "Advanced" section. Picked to cover the knobs a first-time user
 # realistically wants to touch (rate/length/output, headline architecture
@@ -276,6 +284,7 @@ _BASIC = {
     "source_image_dir",
     "resized_image_dir",
     "output_dir",
+    "use_valid",
 }
 
 
@@ -336,7 +345,88 @@ def merged_gui_variant_preset(
     for k, v in meth.items():
         merged[k] = v
         origin[k] = "method"
+
+    # Inject the `use_valid` virtual key derived from the [[datasets]] block.
+    # The variant file may shallow-override base.toml's validation_split_num /
+    # validation_split via _apply_dataset_overrides in library/config/io.py; we
+    # surface that as a single checkbox the user can flip in the form.
+    variant_override = _variant_validation_override(meth)
+    if variant_override is not None:
+        merged["use_valid"] = variant_override
+        origin["use_valid"] = "method"
+    else:
+        merged["use_valid"] = _base_validation_enabled(base)
+        origin["use_valid"] = "base"
     return merged, origin
+
+
+def _validation_enabled_from_datasets(datasets: Any) -> Optional[bool]:
+    """Inspect a TOML ``[[datasets]]`` list and decide whether validation is
+    enabled. Returns ``True`` / ``False`` when either validation key is
+    explicitly set on the first dataset entry, or ``None`` when no override
+    is present (caller falls back to the parent layer in the merge chain)."""
+    if not isinstance(datasets, list) or not datasets:
+        return None
+    first = datasets[0]
+    if not isinstance(first, dict):
+        return None
+    vsn = first.get("validation_split_num")
+    vs = first.get("validation_split")
+    if vsn is None and vs is None:
+        return None
+    return (vsn or 0) > 0 or (vs or 0.0) > 0.0
+
+
+def _variant_validation_override(variant_data: dict) -> Optional[bool]:
+    """Return the variant TOML's explicit use_valid override, or None when
+    the variant doesn't touch validation_split[_num]."""
+    return _validation_enabled_from_datasets(variant_data.get("datasets"))
+
+
+def _base_validation_enabled(base_data: dict) -> bool:
+    """Default use_valid pulled from configs/base.toml's [[datasets]] block.
+    Falls back to False when the block is missing — matches the
+    `validation_split == 0 and validation_split_num <= 0` short-circuit in
+    library/config/loader.py:generate_dataset_group_by_blueprint."""
+    return bool(_validation_enabled_from_datasets(base_data.get("datasets")))
+
+
+def apply_validation_choice(out: dict, enabled: bool) -> None:
+    """Encode the use_valid checkbox into the variant TOML dict ``out``.
+
+    Enabled  → strip any zero-override on the first [[datasets]] entry so the
+               base.toml validation_split_num wins through the merge chain.
+    Disabled → write {validation_split_num = 0, validation_split = 0.0} on the
+               first [[datasets]] entry, creating the block if absent. This is
+               applied by _apply_dataset_overrides in library/config/io.py and
+               causes generate_dataset_group_by_blueprint to skip the val set.
+
+    Other keys in the variant's [[datasets]] block (e.g. a custom batch_size)
+    are preserved; we only touch the two validation keys."""
+    existing = out.get("datasets")
+    if enabled:
+        if not isinstance(existing, list) or not existing:
+            return
+        first = existing[0]
+        if not isinstance(first, dict):
+            return
+        first.pop("validation_split_num", None)
+        first.pop("validation_split", None)
+        if not first and len(existing) == 1:
+            del out["datasets"]
+        return
+
+    if not isinstance(existing, list):
+        existing = []
+        out["datasets"] = existing
+    if not existing:
+        existing.append({})
+    first = existing[0]
+    if not isinstance(first, dict):
+        first = {}
+        existing[0] = first
+    first["validation_split_num"] = 0
+    first["validation_split"] = 0.0
 
 
 def confirm_resumable_checkpoint(parent: QWidget | None, merged: dict) -> bool:

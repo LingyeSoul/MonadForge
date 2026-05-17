@@ -265,6 +265,10 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "en": "Use CMMD (PE-Core MMD²) as the validation signal. Off by default in the GUI — CMMD adds the PE encoder + a sampling pass per held-out item, which costs extra VRAM and time. Off → falls back to the cheaper per-σ FM-MSE val pass (uninformative on Anima but free).",
         "ko": "CMMD (PE-Core MMD²)를 검증 신호로 사용. GUI 기본값은 OFF — CMMD는 검증 항목마다 PE 인코더와 샘플링 패스를 추가해 VRAM과 시간 비용이 큼. OFF면 더 저렴한 σ별 FM-MSE 검증으로 대체 (Anima에서 유의미한 신호는 아니지만 무료).",
     },
+    "use_valid": {
+        "en": "Hold out a small validation slice from the training set (16 images by default — pinned via base.toml's validation_split_num). When off, the whole pool is used for training and no validation pass runs — skips the FM-MSE / CMMD eval and lets very small datasets train without losing samples. Writes/strips a {validation_split_num = 0, validation_split = 0.0} override on the variant's [[datasets]] block; base.toml is not touched.",
+        "ko": "학습 셋에서 검증용 일부(기본 16장 — base.toml의 validation_split_num에서 지정)를 분리. 끄면 전체 풀이 학습에 쓰이고 검증 패스(FM-MSE / CMMD)는 실행되지 않음 — 데이터셋이 매우 작아 한 장도 빼기 싫을 때 유용. 변환 파일의 [[datasets]] 블록에 validation_split_num = 0, validation_split = 0.0 오버라이드를 쓰거나 제거함; base.toml은 건드리지 않음.",
+    },
     # Paths
     "pretrained_model_name_or_path": {
         "en": "Path to the base DiT model weights (.safetensors).",

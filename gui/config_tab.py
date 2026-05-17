@@ -38,10 +38,12 @@ from gui import (
     _GROUPS,
     _K2G,
     _SKIP,
+    _VIRTUAL_KEYS,
     _load,
     _read,
     _save,
     _widget,
+    apply_validation_choice,
     confirm_existing_caches,
     confirm_resumable_checkpoint,
     is_basic_field,
@@ -544,10 +546,18 @@ class ConfigTab(QWidget):
         out: dict[str, Any] = dict(method_orig)
 
         for k, w in self._w.items():
+            if k in _VIRTUAL_KEYS:
+                # Virtual keys (e.g. use_valid) aren't real flat TOML keys —
+                # their writeback is handled below via per-key apply helpers.
+                continue
             baseline = method_orig.get(k, implicit_pset.get(k, base.get(k)))
             v = _read(w, baseline)
             if k in method_orig or v != baseline:
                 out[k] = v
+
+        use_valid_w = self._w.get("use_valid")
+        if use_valid_w is not None:
+            apply_validation_choice(out, bool(_read(use_valid_w)))
 
         # Extra-args textarea: parse as TOML and merge in. Textarea overrides
         # the form for any duplicate key (it's the more explicit signal).
