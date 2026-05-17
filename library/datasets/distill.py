@@ -8,6 +8,7 @@ the bucket-based batching used in LoRA training). Shared by
 
 from __future__ import annotations
 
+import glob
 import logging
 import os
 import random
@@ -15,6 +16,7 @@ import random
 import torch
 
 from library.io.cache import (
+    LATENT_CACHE_SUFFIX,
     discover_cached_pairs,
     get_latent_resolution,
     load_cached_latents,
@@ -51,18 +53,29 @@ class CachedDataset(torch.utils.data.Dataset):
         cached = discover_cached_pairs(data_dir)
 
         # When --synth_data_dir is set, rewrite each sample's latent path to the
-        # synthetic NPZ at the same (stem, HxW). Samples without a synthetic
+        # synthetic NPZ for the same stem. Samples without a synthetic
         # counterpart are dropped — the teacher pool is bounded by what was
         # generated via `make distill-prep`. TE paths remain in data_dir.
+        # Lookup is stem-keyed (not basename-keyed) because the lora cache uses
+        # WxH pixel dims zero-padded to 4 (e.g. `0896x1152`) while the synth
+        # writer uses HxW latent dims (e.g. `144x112`) — the same logical pair
+        # has different basenames in the two dirs.
         n_dropped_no_synth = 0
         if synth_data_dir is not None:
+            synth_by_stem: dict[str, str] = {}
+            for path in glob.glob(
+                os.path.join(synth_data_dir, f"*{LATENT_CACHE_SUFFIX}")
+            ):
+                # `{stem}_{HxW}_anima.npz` → strip suffix, drop trailing `_HxW`
+                without_suffix = os.path.basename(path).removesuffix(LATENT_CACHE_SUFFIX)
+                stem = without_suffix.rsplit("_", 1)[0]
+                synth_by_stem.setdefault(stem, path)
             remapped: list = []
             for img in cached:
                 if img.te_path is None:
                     continue
-                npz_name = os.path.basename(img.npz_path)
-                synth_path = os.path.join(synth_data_dir, npz_name)
-                if not os.path.exists(synth_path):
+                synth_path = synth_by_stem.get(img.stem)
+                if synth_path is None:
                     n_dropped_no_synth += 1
                     continue
                 # Reuse CachedImage shape so the downstream code is unchanged.

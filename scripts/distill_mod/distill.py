@@ -113,7 +113,7 @@ def main():
         help="Number of transformer blocks to offload to CPU",
     )
     parser.add_argument(
-        "--save_every", type=int, default=2500, help="Save checkpoint every N iterations"
+        "--save_every", type=int, default=250, help="Save checkpoint every N iterations"
     )
     parser.add_argument(
         "--attn_mode",
