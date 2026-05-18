@@ -232,7 +232,12 @@ def _build_svd_te_basis(
 
     from safetensors.torch import load_file as _load_file
 
-    files = sorted(glob.glob(os.path.join(cache_dir, "*_anima_te.safetensors")))
+    files = sorted(
+        glob.glob(
+            os.path.join(cache_dir, "**", "*_anima_te.safetensors"),
+            recursive=True,
+        )
+    )
     if not files:
         raise FileNotFoundError(
             f"ortho_basis='svd_te' requires cached *_anima_te.safetensors files "

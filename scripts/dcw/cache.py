@@ -42,7 +42,9 @@ def pick_cached_samples(
     remaining candidates' shuffle order is independent of pool size.
     """
     candidates: list[tuple[str, Path, Path]] = []
-    for npz_path in sorted(dataset_dir.glob("*_anima.npz")):
+    # rglob so nested caches are walked; the TE sidecar lives in the same
+    # subdir as its latent NPZ, so we resolve it relative to npz_path.parent.
+    for npz_path in sorted(dataset_dir.rglob("*_anima.npz")):
         m = _LATENT_RE.match(npz_path.name)
         if not m:
             continue
@@ -53,7 +55,7 @@ def pick_cached_samples(
         stem = m.group("stem")
         if exclude_stems is not None and stem in exclude_stems:
             continue
-        te_path = dataset_dir / f"{stem}_anima_te.safetensors"
+        te_path = npz_path.parent / f"{stem}_anima_te.safetensors"
         if not te_path.exists():
             continue
         candidates.append((stem, npz_path, te_path))

@@ -51,13 +51,19 @@ def _stem(path: Path) -> str:
 
 
 def _count_caches(cache_dir: Path, stems: set[str], require_pe: bool) -> dict[str, int]:
-    """Count how many of the given stems have each cache type present."""
+    """Count how many of the given stems have each cache type present.
+
+    Walks ``cache_dir`` recursively so nested cache layouts (mirroring a
+    subfoldered source tree) are picked up. Stems are still compared
+    flat — two cached ``cover`` files in different subdirs each contribute,
+    but the caller's ``stems`` set will only match once per name.
+    """
     if not cache_dir.exists():
         return {"latents": 0, "te": 0, "pe": 0}
     have_lat: set[str] = set()
     have_te: set[str] = set()
     have_pe: set[str] = set()
-    for p in cache_dir.iterdir():
+    for p in cache_dir.rglob("*"):
         if not p.is_file():
             continue
         name = p.name

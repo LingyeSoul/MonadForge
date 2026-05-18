@@ -512,28 +512,33 @@ def glob_images(directory, base="*", recursive: bool = False):
 
 
 def _assert_unique_stems(img_paths, source_label: str = "directory") -> None:
-    """Raise if two image paths share a stem (case-insensitive on Windows).
+    """Raise if two image paths share a stem *within the same subfolder*.
 
-    Cache filenames are stem-keyed and live flat in cache_dir, so duplicate
-    stems across subfolders would silently overwrite each other.
+    Cache filenames are stem-keyed and the cache layout now mirrors the
+    source-tree subfolder structure, so the collision constraint is local:
+    two ``cover.png`` files in different character folders are fine, but
+    two files with the same stem in the same folder (e.g. ``cover.png`` +
+    ``cover.jpg``) would still overwrite each other's cache.
     """
-    seen: dict = {}
-    collisions: dict = {}
+    seen: dict[tuple[str, str], str] = {}
+    collisions: dict[tuple[str, str], list[str]] = {}
     for p in img_paths:
+        parent = os.path.dirname(p)
         stem = os.path.splitext(os.path.basename(p))[0]
-        if stem in seen:
-            collisions.setdefault(stem, [seen[stem]]).append(p)
+        key = (parent, stem)
+        if key in seen:
+            collisions.setdefault(key, [seen[key]]).append(p)
         else:
-            seen[stem] = p
+            seen[key] = p
     if collisions:
         lines = [
-            f"  stem '{stem}': " + ", ".join(paths)
-            for stem, paths in sorted(collisions.items())
+            f"  stem '{stem}' in {parent}: " + ", ".join(paths)
+            for (parent, stem), paths in sorted(collisions.items())
         ]
         raise ValueError(
-            f"Duplicate image stems found while recursing {source_label}. "
-            f"Cache filenames are stem-keyed; please rename so every image has "
-            f"a unique stem across all subfolders.\n" + "\n".join(lines)
+            f"Duplicate image stems within a single folder of {source_label}. "
+            f"Cache filenames are stem-keyed; rename one of the colliding "
+            f"files (or move it to a different subfolder).\n" + "\n".join(lines)
         )
 
 

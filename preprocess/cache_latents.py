@@ -17,7 +17,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from library.io.cache import LATENT_CACHE_SUFFIX
+from library.io.cache import LATENT_CACHE_SUFFIX, resolve_cache_path
 from library.datasets.image_utils import IMAGE_EXTENSIONS, IMAGE_TRANSFORMS
 
 
@@ -25,20 +25,29 @@ def get_latents_npz_path(
     image_path: Path,
     image_size: tuple[int, int],
     cache_dir: Path | None = None,
+    image_dir: Path | None = None,
 ) -> Path:
     """Match the naming convention used by AnimaLatentsCachingStrategy.
 
-    When ``cache_dir`` is provided, the cache lives under that directory with
-    a stem-mirrored filename instead of as a sidecar.
+    When ``cache_dir`` is provided, the cache lives under that directory.
+    With ``image_dir`` also set, the relative subpath of ``image_path``
+    under ``image_dir`` is mirrored into the cache tree so nested source
+    layouts produce nested caches; otherwise the cache lives flat in
+    ``cache_dir`` (legacy layout).
     """
-    name = (
-        f"{image_path.stem}_{image_size[0]:04d}x{image_size[1]:04d}"
-        f"{LATENT_CACHE_SUFFIX}"
+    suffix = (
+        f"_{image_size[0]:04d}x{image_size[1]:04d}{LATENT_CACHE_SUFFIX}"
     )
-    if cache_dir is not None:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / name
-    return image_path.with_name(name)
+    if cache_dir is None:
+        return image_path.with_name(image_path.stem + suffix)
+    return Path(
+        resolve_cache_path(
+            str(image_path),
+            suffix,
+            cache_dir=str(cache_dir),
+            image_dir=str(image_dir) if image_dir is not None else None,
+        )
+    )
 
 
 def main() -> None:
@@ -73,9 +82,9 @@ def main() -> None:
         "--recursive",
         action="store_true",
         help=(
-            "Walk subfolders under --dir. Caches are still written flat "
-            "(stem-based filenames); image stems must therefore be unique "
-            "across the entire source tree."
+            "Walk subfolders under --dir. Caches mirror the source subdir "
+            "structure under --cache_dir; stems must be unique within each "
+            "subfolder but the same stem can repeat across folders."
         ),
     )
     args = parser.parse_args()
@@ -106,15 +115,23 @@ def main() -> None:
             for p in data_dir.rglob("*")
             if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
         )
-        stems: dict[str, Path] = {}
+        # Per-subdir uniqueness: two files in the same folder with the same
+        # stem (e.g. cover.png + cover.jpg) would still overwrite each
+        # other's cache. Same stem in different subfolders is fine — the
+        # nested cache layout disambiguates by folder.
+        seen: dict[tuple[Path, str], Path] = {}
         collisions: list[tuple[str, Path, Path]] = []
         for p in image_files:
-            if p.stem in stems:
-                collisions.append((p.stem, stems[p.stem], p))
+            key = (p.parent, p.stem)
+            if key in seen:
+                collisions.append((p.stem, seen[key], p))
             else:
-                stems[p.stem] = p
+                seen[key] = p
         if collisions:
-            print("Duplicate image stems found under --dir (caches are stem-keyed):")
+            print(
+                "Duplicate image stems within a single folder of --dir "
+                "(caches collide on identical stems in the same subdir):"
+            )
             for stem, a, b in collisions:
                 print(f"  '{stem}': {a} <-> {b}")
             sys.exit(1)
@@ -141,7 +158,7 @@ def main() -> None:
             tensors = []
 
             for p in batch_paths:
-                npz_path = get_latents_npz_path(p, (w, h), cache_dir=cache_dir)
+                npz_path = get_latents_npz_path(p, (w, h), cache_dir=cache_dir, image_dir=data_dir)
                 if npz_path.exists():
                     latents_size = (h // 8, w // 8)
                     key = f"latents_{latents_size[0]}x{latents_size[1]}"
@@ -174,7 +191,9 @@ def main() -> None:
                 latents_size = lat.shape[-2:]  # H/8, W/8
                 key_reso_suffix = f"_{latents_size[0]}x{latents_size[1]}"
 
-                npz_path = get_latents_npz_path(p, size, cache_dir=cache_dir)
+                npz_path = get_latents_npz_path(
+                    p, size, cache_dir=cache_dir, image_dir=data_dir
+                )
                 kwargs = {}
                 if npz_path.exists():
                     npz = np.load(npz_path)

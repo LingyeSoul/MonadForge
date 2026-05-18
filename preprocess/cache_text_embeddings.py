@@ -181,9 +181,9 @@ def main() -> None:
         "--recursive",
         action="store_true",
         help=(
-            "Walk subfolders under --dir. Caches are still written flat "
-            "(stem-based filenames); image stems must therefore be unique "
-            "across the entire source tree."
+            "Walk subfolders under --dir. Caches mirror the source subdir "
+            "structure under --cache_dir; stems must be unique within each "
+            "subfolder but the same stem can repeat across folders."
         ),
     )
     args = parser.parse_args()
@@ -228,15 +228,20 @@ def main() -> None:
             for p in data_dir.rglob("*")
             if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
         )
-        seen_stems: dict[str, Path] = {}
+        # Per-subdir uniqueness — see cache_latents.py for the rationale.
+        seen_stems: dict[tuple[Path, str], Path] = {}
         collisions: list[tuple[str, Path, Path]] = []
         for p in candidates:
-            if p.stem in seen_stems:
-                collisions.append((p.stem, seen_stems[p.stem], p))
+            key = (p.parent, p.stem)
+            if key in seen_stems:
+                collisions.append((p.stem, seen_stems[key], p))
             else:
-                seen_stems[p.stem] = p
+                seen_stems[key] = p
         if collisions:
-            print("Duplicate image stems found under --dir (caches are stem-keyed):")
+            print(
+                "Duplicate image stems within a single folder of --dir "
+                "(caches collide on identical stems in the same subdir):"
+            )
             for stem, a, b in collisions:
                 print(f"  '{stem}': {a} <-> {b}")
             sys.exit(1)
@@ -301,12 +306,19 @@ def main() -> None:
         # Skip already-cached entries
         to_encode: list[tuple[Path, str, Path]] = []
         for img_path, caption in batch:
-            cache_name = img_path.stem + TE_CACHE_SUFFIX
-            cache_path = (
-                cache_dir / cache_name
-                if cache_dir is not None
-                else img_path.with_name(cache_name)
-            )
+            if cache_dir is not None:
+                from library.io.cache import resolve_cache_path
+
+                cache_path = Path(
+                    resolve_cache_path(
+                        str(img_path),
+                        TE_CACHE_SUFFIX,
+                        cache_dir=str(cache_dir),
+                        image_dir=str(data_dir),
+                    )
+                )
+            else:
+                cache_path = img_path.with_name(img_path.stem + TE_CACHE_SUFFIX)
             if cache_path.exists():
                 skipped += 1
                 pbar.update(1)

@@ -699,6 +699,7 @@ class BaseDataset(torch.utils.data.Dataset):
                         info.absolute_path,
                         info.image_size,
                         cache_dir=getattr(subset, "cache_dir", None),
+                        image_dir=getattr(subset, "image_dir", None),
                     )
 
                     # if the modulo of num_processes is not equal to process_index, skip caching
@@ -874,6 +875,7 @@ class BaseDataset(torch.utils.data.Dataset):
                 te_out_npz = caching_strategy.get_outputs_npz_path(
                     info.absolute_path,
                     cache_dir=getattr(subset, "cache_dir", None),
+                    image_dir=getattr(subset, "image_dir", None),
                 )
                 info.text_encoder_outputs_npz = te_out_npz
 
@@ -1136,9 +1138,22 @@ class BaseDataset(torch.utils.data.Dataset):
         suffix = f"_anima_{self.ip_features_encoder}.safetensors"
         subset = self.image_to_subset.get(image_abs_path)
         cache_dir = getattr(subset, "cache_dir", None) if subset is not None else None
+        image_dir = getattr(subset, "image_dir", None) if subset is not None else None
         candidates: list[str] = []
         if cache_dir:
-            candidates.append(os.path.join(str(cache_dir), stem + suffix))
+            # Nested-mirror lookup first (image_dataset/charA/img1.png →
+            # cache_dir/charA/img1_anima_pe.safetensors); fall back to the
+            # legacy flat layout so caches written before nested support
+            # still resolve when the source image sits at the tree root.
+            from library.io.cache import resolve_cache_path
+
+            nested = resolve_cache_path(
+                image_abs_path, suffix, cache_dir=str(cache_dir), image_dir=image_dir
+            )
+            candidates.append(nested)
+            flat = os.path.join(str(cache_dir), stem + suffix)
+            if flat != nested:
+                candidates.append(flat)
         candidates.append(
             os.path.join(os.path.dirname(image_abs_path), stem + suffix)
         )
@@ -1874,27 +1889,51 @@ class DreamBoothDataset(BaseDataset):
                 # Subset may redirect TE caches to a separate `cache_dir` (e.g.
                 # captions live in image_dataset/ but resized images live in
                 # post_image_dataset/resized/ with caches in
-                # post_image_dataset/lora/). When a TE cache exists for a
-                # given stem, missing .txt sidecars are expected, not an error
-                # — training reads the cached prompt embeddings.
+                # post_image_dataset/lora/). When a TE cache exists for the
+                # image's relative path, missing .txt sidecars are expected,
+                # not an error — training reads the cached prompt embeddings.
+                # Key by (rel_subdir, stem) to support nested cache layouts
+                # where two images can share a stem in different subdirs.
                 cache_dir = getattr(subset, "cache_dir", None)
                 te_suffix = "_anima_te.safetensors"
-                te_cached_stems: set[str] = set()
+                te_cached_keys: set[tuple[str, str]] = set()
                 if cache_dir and os.path.isdir(cache_dir):
-                    for name in os.listdir(cache_dir):
-                        if name.endswith(te_suffix):
-                            te_cached_stems.add(name.removesuffix(te_suffix))
+                    cache_root = os.fspath(cache_dir)
+                    for dirpath, _dirnames, filenames in os.walk(cache_root):
+                        try:
+                            rel_dir = os.path.relpath(dirpath, cache_root)
+                        except ValueError:
+                            rel_dir = ""
+                        if rel_dir == ".":
+                            rel_dir = ""
+                        rel_dir = rel_dir.replace(os.sep, "/")
+                        for name in filenames:
+                            if name.endswith(te_suffix):
+                                te_cached_keys.add(
+                                    (rel_dir, name.removesuffix(te_suffix))
+                                )
 
+                image_root = getattr(subset, "image_dir", None)
                 captions = []
                 missing_captions = []
                 for img_path in tqdm(img_paths, desc="read caption"):
                     cap_for_img = read_caption(
                         img_path, subset.caption_extension, subset.enable_wildcard
                     )
-                    has_te_cache = (
-                        os.path.splitext(os.path.basename(img_path))[0]
-                        in te_cached_stems
-                    )
+                    if image_root:
+                        try:
+                            img_rel_dir = os.path.relpath(
+                                os.path.dirname(img_path), image_root
+                            )
+                        except ValueError:
+                            img_rel_dir = ""
+                        if img_rel_dir == ".":
+                            img_rel_dir = ""
+                        img_rel_dir = img_rel_dir.replace(os.sep, "/")
+                    else:
+                        img_rel_dir = ""
+                    img_stem = os.path.splitext(os.path.basename(img_path))[0]
+                    has_te_cache = (img_rel_dir, img_stem) in te_cached_keys
                     if cap_for_img is None and subset.class_tokens is None:
                         if not has_te_cache:
                             logger.warning(

@@ -61,11 +61,15 @@ def _write_centroid_sidecar(
     encoder: str,
     limit: int = 0,
 ) -> None:
-    """Stream-pool cached PE features in ``cache_dir`` -> centroid sidecar."""
+    """Stream-pool cached PE features in ``cache_dir`` -> centroid sidecar.
+
+    Walks ``cache_dir`` recursively so nested caches (mirroring the source
+    subfolder structure) are included in the pool.
+    """
     from safetensors.torch import load_file, save_file
 
     suffix = f"_anima_{encoder}.safetensors"
-    files = sorted(p for p in cache_dir.iterdir() if p.name.endswith(suffix))
+    files = sorted(p for p in cache_dir.rglob(f"*{suffix}") if p.is_file())
     files = [p for p in files if not p.name.startswith("anima_pe_centroid")]
     if not files:
         print(f"No '{suffix}' caches under {cache_dir}", file=sys.stderr)
@@ -113,13 +117,24 @@ def _write_centroid_sidecar(
 
 
 def cache_path_for(
-    image_path: Path, encoder: str, cache_dir: Path | None = None
+    image_path: Path,
+    encoder: str,
+    cache_dir: Path | None = None,
+    image_dir: Path | None = None,
 ) -> Path:
-    name = f"{image_path.stem}_anima_{encoder}.safetensors"
-    if cache_dir is not None:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / name
-    return image_path.with_name(name)
+    suffix = f"_anima_{encoder}.safetensors"
+    if cache_dir is None:
+        return image_path.with_name(image_path.stem + suffix)
+    from library.io.cache import resolve_cache_path
+
+    return Path(
+        resolve_cache_path(
+            str(image_path),
+            suffix,
+            cache_dir=str(cache_dir),
+            image_dir=str(image_dir) if image_dir is not None else None,
+        )
+    )
 
 
 class _PEImageGroup(Dataset):
@@ -210,9 +225,9 @@ def main() -> None:
         "--recursive",
         action="store_true",
         help=(
-            "Walk subfolders under --dir. Caches are still written flat "
-            "(stem-based filenames); image stems must therefore be unique "
-            "across the entire source tree."
+            "Walk subfolders under --dir. Caches mirror the source subdir "
+            "structure under --cache_dir; stems must be unique within each "
+            "subfolder but the same stem can repeat across folders."
         ),
     )
     parser.add_argument(
@@ -304,15 +319,20 @@ def main() -> None:
             for p in data_dir.rglob("*")
             if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
         )
-        stems: dict[str, Path] = {}
+        # Per-subdir uniqueness — see cache_latents.py for the rationale.
+        stems: dict[tuple[Path, str], Path] = {}
         collisions: list[tuple[str, Path, Path]] = []
         for p in image_files:
-            if p.stem in stems:
-                collisions.append((p.stem, stems[p.stem], p))
+            key = (p.parent, p.stem)
+            if key in stems:
+                collisions.append((p.stem, stems[key], p))
             else:
-                stems[p.stem] = p
+                stems[key] = p
         if collisions:
-            print("Duplicate image stems found under --dir (caches are stem-keyed):")
+            print(
+                "Duplicate image stems within a single folder of --dir "
+                "(caches collide on identical stems in the same subdir):"
+            )
             for stem, a, b in collisions:
                 print(f"  '{stem}': {a} <-> {b}")
             sys.exit(1)
@@ -330,7 +350,9 @@ def main() -> None:
     pending: list[Path] = []
     skipped = 0
     for p in image_files:
-        if cache_path_for(p, bundle.name, cache_dir=cache_dir).exists():
+        if cache_path_for(
+            p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
+        ).exists():
             skipped += 1
         else:
             pending.append(p)
@@ -355,7 +377,10 @@ def main() -> None:
     )
     for (w, h), paths in reso_groups.items():
         out_paths = [
-            cache_path_for(p, bundle.name, cache_dir=cache_dir) for p in paths
+            cache_path_for(
+                p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
+            )
+            for p in paths
         ]
         ds = _PEImageGroup(paths, out_paths)
         loader = DataLoader(

@@ -553,16 +553,19 @@ _PE_SUFFIX = "_anima_pe.safetensors"
 
 
 def count_preprocess_caches(cache_dir: Path) -> dict[str, int]:
-    """Count existing latent / TE / PE cache sidecars in a cache directory.
+    """Count existing latent / TE / PE cache sidecars under a cache directory.
 
     Returns zeros (without raising) if the directory does not exist. Used to
     surface a reassurance popup that ``make preprocess`` reuses existing caches
     rather than wiping them — a recurring point of confusion for new users.
+
+    Walks recursively so nested caches (mirroring a subfoldered source tree)
+    are counted.
     """
     out = {"latents": 0, "te": 0, "pe": 0}
     if not cache_dir.is_dir():
         return out
-    for p in cache_dir.iterdir():
+    for p in cache_dir.rglob("*"):
         if not p.is_file():
             continue
         n = p.name

@@ -411,7 +411,10 @@ class TextEncoderOutputsCachingStrategy:
         return self._is_weighted
 
     def get_outputs_npz_path(
-        self, image_abs_path: str, cache_dir: Optional[str] = None
+        self,
+        image_abs_path: str,
+        cache_dir: Optional[str] = None,
+        image_dir: Optional[str] = None,
     ) -> str:
         raise NotImplementedError
 
@@ -476,6 +479,7 @@ class LatentsCachingStrategy:
         absolute_path: str,
         image_size: Tuple[int, int],
         cache_dir: Optional[str] = None,
+        image_dir: Optional[str] = None,
     ) -> str:
         raise NotImplementedError
 

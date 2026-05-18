@@ -68,7 +68,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cache_dir = Path(args.dir)
-    te_files = sorted(cache_dir.glob(f"*{TE_CACHE_SUFFIX}"))
+    # rglob so nested caches (mirroring subfoldered source layouts) are
+    # picked up. Pooled sidecars are written next to each TE file, so the
+    # same nested structure is preserved automatically.
+    te_files = sorted(cache_dir.rglob(f"*{TE_CACHE_SUFFIX}"))
     if not te_files:
         print(f"No {TE_CACHE_SUFFIX} files found in {cache_dir}")
         return

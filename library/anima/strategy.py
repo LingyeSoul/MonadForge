@@ -212,12 +212,16 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         self.use_shuffled_caption_variants = use_shuffled_caption_variants
 
     def get_outputs_npz_path(
-        self, image_abs_path: str, cache_dir: Optional[str] = None
+        self,
+        image_abs_path: str,
+        cache_dir: Optional[str] = None,
+        image_dir: Optional[str] = None,
     ) -> str:
         return resolve_cache_path(
             image_abs_path,
             self.ANIMA_TEXT_ENCODER_OUTPUTS_CACHE_SUFFIX,
             cache_dir=cache_dir,
+            image_dir=image_dir,
         )
 
     def is_disk_cached_outputs_expected(self, cache_path: str) -> bool:
@@ -517,12 +521,15 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         absolute_path: str,
         image_size: Tuple[int, int],
         cache_dir: Optional[str] = None,
+        image_dir: Optional[str] = None,
     ) -> str:
         suffix = (
             f"_{image_size[0]:04d}x{image_size[1]:04d}"
             + self.ANIMA_LATENTS_NPZ_SUFFIX
         )
-        return resolve_cache_path(absolute_path, suffix, cache_dir=cache_dir)
+        return resolve_cache_path(
+            absolute_path, suffix, cache_dir=cache_dir, image_dir=image_dir
+        )
 
     def is_disk_cached_latents_expected(
         self,

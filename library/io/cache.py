@@ -26,23 +26,44 @@ def resolve_cache_path(
     image_abs_path: str | os.PathLike,
     suffix: str,
     cache_dir: str | os.PathLike | None = None,
+    image_dir: str | os.PathLike | None = None,
 ) -> str:
     """Build a cache file path from a source image path + suffix.
 
     Sidecar default (``cache_dir=None``) preserves the legacy behavior of
     writing the cache next to the image. With ``cache_dir`` set, the cache
-    is redirected into that directory using a stem-mirrored filename — the
-    pattern IP-Adapter / EasyControl use to keep ``ip-adapter-dataset/`` and
-    ``easycontrol-dataset/`` purely user-facing source dirs while caches
-    live under ``post_image_dataset/``.
+    is redirected into that directory.
+
+    When ``image_dir`` is also provided, the relative subpath from
+    ``image_dir`` to ``image_abs_path`` is mirrored under ``cache_dir`` so
+    nested source layouts (``image_dataset/charA/img1.png``) produce nested
+    caches (``cache_dir/charA/img1{suffix}``). Without ``image_dir`` the
+    legacy flat layout is preserved — used by callers that don't know the
+    source root.
     """
     src = str(image_abs_path)
     stem = os.path.splitext(os.path.basename(src))[0]
     if cache_dir is None:
         return os.path.splitext(src)[0] + suffix
-    cache_dir_str = str(cache_dir)
-    os.makedirs(cache_dir_str, exist_ok=True)
-    return os.path.join(cache_dir_str, stem + suffix)
+    cache_dir_path = os.fspath(cache_dir)
+    rel_dir = ""
+    if image_dir is not None:
+        try:
+            rel = os.path.relpath(os.path.dirname(src), os.fspath(image_dir))
+        except ValueError:
+            rel = ""
+        # relpath returns "." when the image is directly under image_dir;
+        # treat that as "no subdir" so the flat layout is preserved. Bail to
+        # flat when the image escapes the supplied root (rel starts with
+        # ".."), since persisting cache files outside cache_dir would be
+        # surprising and the lookup-side scanners wouldn't see them anyway.
+        if rel and rel != "." and not rel.startswith(".."):
+            rel_dir = rel
+    target_dir = (
+        os.path.join(cache_dir_path, rel_dir) if rel_dir else cache_dir_path
+    )
+    os.makedirs(target_dir, exist_ok=True)
+    return os.path.join(target_dir, stem + suffix)
 
 
 class CachedImage(NamedTuple):
@@ -80,17 +101,21 @@ def discover_cached_images(data_dir: str) -> list[CachedImage]:
 
 
 def discover_cached_pairs(cache_dir: str) -> list[CachedImage]:
-    """Find latent+TE cache pairs in a directory without requiring source PNGs.
+    """Find latent+TE cache pairs anywhere under a cache directory.
 
-    Use this when the cache directory is decoupled from the source images
-    (e.g. ``post_image_dataset/lora/`` holds caches written from
-    ``post_image_dataset/resized/`` via the subset-level ``cache_dir`` knob).
+    Walks ``cache_dir`` recursively so nested layouts (caches mirrored from
+    a subfoldered ``image_dataset/`` source tree) are discovered. Each
+    latent NPZ is looked up next to the TE sidecar (same subdir + same
+    stem), which is where the writers place them.
     """
     images = []
-    te_paths = sorted(glob.glob(os.path.join(cache_dir, f"*{TE_CACHE_SUFFIX}")))
+    te_paths = sorted(
+        glob.glob(os.path.join(cache_dir, "**", f"*{TE_CACHE_SUFFIX}"), recursive=True)
+    )
     for te_path in te_paths:
         stem = os.path.basename(te_path).removesuffix(TE_CACHE_SUFFIX)
-        npz_files = glob.glob(os.path.join(cache_dir, f"{stem}_*{LATENT_CACHE_SUFFIX}"))
+        parent = os.path.dirname(te_path)
+        npz_files = glob.glob(os.path.join(parent, f"{stem}_*{LATENT_CACHE_SUFFIX}"))
         if not npz_files:
             continue
         images.append(
