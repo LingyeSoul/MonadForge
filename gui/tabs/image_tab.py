@@ -12,6 +12,7 @@ from PySide6.QtCore import QEvent, QRect, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QImage,
     QKeySequence,
     QPainter,
     QPen,
@@ -22,6 +23,7 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -40,8 +42,80 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import ScaledImageLabel, _image_dirs, _imgs
+from gui import ROOT, ScaledImageLabel, _image_dirs, _imgs
 from gui.i18n import t
+
+
+# Mask overlay tint — translucent red on top of the *masked-out* region (the
+# inverted mask: where the trainer ignores pixels). 55% opacity is strong
+# enough to see the masked region clearly without burying source detail.
+# We pre-multiply on the fly by filling an opaque red and then driving alpha
+# from the mask + QPainter.setOpacity rather than baking alpha into the color.
+_MASK_OVERLAY_COLOR_OPAQUE = QColor(255, 60, 60, 255)
+_MASK_OVERLAY_OPACITY = 0.55
+
+
+def _resolve_mask_path(image_path: Path, current_dir: Path | None) -> Path | None:
+    """Locate the merged mask PNG for ``image_path``.
+
+    Mirrors the trainer's mask layout: ``post_image_dataset/masks/<rel>/<stem>_mask.png``
+    where ``rel`` is the image's parent relative to ``current_dir``. Falls back
+    to the legacy ``masks/merged/...`` tree before giving up.
+    """
+    if current_dir is None:
+        return None
+    try:
+        rel = image_path.relative_to(current_dir)
+    except ValueError:
+        return None
+    rel_parent = rel.parent
+    name = f"{image_path.stem}_mask.png"
+    for root in (ROOT / "post_image_dataset" / "masks", ROOT / "masks" / "merged"):
+        candidate = root / rel_parent / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _compose_mask_overlay(source: QPixmap, mask_path: Path) -> QPixmap:
+    """Return ``source`` with a red translucent tint over the masked-out region.
+
+    Convention from ``preprocess/merge_masks.py``: **white = "train here",
+    black = ignored (text bubble / artifact)**. We invert so the tint lands
+    on the *ignored* region — that's the half users want to see at a glance
+    ("did the detector catch every bubble?").
+
+    Implementation note: ``convertToFormat(Alpha8)`` does **not** repurpose a
+    grayscale channel as alpha — Qt fills it with the source's actual alpha
+    (which is opaque-255 for Grayscale8), giving a uniform tint. Use
+    ``setAlphaChannel`` instead: when given a grayscale image, it copies the
+    luminance into the alpha channel of an ARGB32 layer.
+
+    The mask is scaled to the source's resolution before being attached as the
+    alpha channel (resized-tree vs original image_dataset).
+    """
+    mask_img = QImage(str(mask_path))
+    if mask_img.isNull():
+        return source
+    gray = mask_img.convertToFormat(QImage.Format_Grayscale8)
+    gray.invertPixels()  # bubble (was 0) → 255, train-here (was 255) → 0
+    if gray.size() != source.size():
+        gray = gray.scaled(
+            source.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation
+        )
+
+    layer = QImage(source.size(), QImage.Format_ARGB32)
+    layer.fill(_MASK_OVERLAY_COLOR_OPAQUE)
+    layer.setAlphaChannel(gray)
+
+    result = QPixmap(source)
+    p = QPainter(result)
+    try:
+        p.setOpacity(_MASK_OVERLAY_OPACITY)
+        p.drawImage(0, 0, layer)
+    finally:
+        p.end()
+    return result
 
 
 # Inline-highlight palette for the editor: a translucent green for inserted
@@ -408,6 +482,12 @@ class ImageViewerTab(QWidget):
         self._suspend_dirty = False  # while we set text programmatically
         self._search_text: str = ""
         self._sort_desc: bool = False
+        # Source pixmap + resolved mask for the currently shown image.
+        # _overlay_pm is lazily composed on first toggle and cached so flipping
+        # the checkbox doesn't re-run the QPainter pipeline.
+        self._source_pm: QPixmap | None = None
+        self._mask_path: Path | None = None
+        self._overlay_pm: QPixmap | None = None
         lay = QVBoxLayout(self)
 
         top = QHBoxLayout()
@@ -460,6 +540,20 @@ class ImageViewerTab(QWidget):
         right = QWidget()
         rl = QVBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0)
+
+        # Mask-overlay toggle. Disabled when the current image has no merged
+        # mask under post_image_dataset/masks/; the checked state is preserved
+        # across image navigation so it acts as a sticky "show overlay when
+        # available" preference.
+        img_head = QHBoxLayout()
+        img_head.setContentsMargins(0, 0, 0, 0)
+        self.overlay_cb = QCheckBox(t("dataset_mask_overlay"))
+        self.overlay_cb.setEnabled(False)
+        self.overlay_cb.toggled.connect(self._on_overlay_toggled)
+        img_head.addWidget(self.overlay_cb)
+        img_head.addStretch()
+        rl.addLayout(img_head)
+
         self.img = ScaledImageLabel()
         self.img.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.img.setMinimumSize(400, 400)
@@ -675,7 +769,9 @@ class ImageViewerTab(QWidget):
         p = self._images[row]
         pm = QPixmap(str(p))
         if not pm.isNull():
-            self.img.set_source(pm)
+            self._set_image(p, pm)
+        else:
+            self._set_image(p, None)
         cp = p.with_suffix(".txt")
         self._current_caption_path = cp
         if cp.exists():
@@ -686,6 +782,32 @@ class ImageViewerTab(QWidget):
         self._set_caption_text(text if text else "")
         self._refresh_buttons()
         self._refresh_inline_diff()
+
+    def _set_image(self, p: Path, source: QPixmap | None) -> None:
+        """Bind a new source pixmap + its (possibly absent) mask, then refresh."""
+        self._source_pm = source
+        self._mask_path = (
+            _resolve_mask_path(p, self._current_dir) if source is not None else None
+        )
+        self._overlay_pm = None  # compose lazily in _apply_image_view
+        self.overlay_cb.setEnabled(self._mask_path is not None)
+        self._apply_image_view()
+
+    def _apply_image_view(self) -> None:
+        """Push the right pixmap onto ``self.img`` based on overlay state."""
+        if self._source_pm is None:
+            return
+        if self.overlay_cb.isChecked() and self._mask_path is not None:
+            if self._overlay_pm is None:
+                self._overlay_pm = _compose_mask_overlay(
+                    self._source_pm, self._mask_path
+                )
+            self.img.set_source(self._overlay_pm)
+        else:
+            self.img.set_source(self._source_pm)
+
+    def _on_overlay_toggled(self, _checked: bool) -> None:
+        self._apply_image_view()
 
     # ── caption editing ───────────────────────────────────────
 

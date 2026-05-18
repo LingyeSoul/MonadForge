@@ -24,8 +24,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.adapter_tab import EasyControlTab, IPAdapterTab
-from gui.config_tab import ConfigTab
 from gui.i18n import (
     available_languages,
     current_language,
@@ -33,9 +31,11 @@ from gui.i18n import (
     save_language,
     t,
 )
-from gui.image_tab import ImageViewerTab
-from gui.merge_tab import MergeTab
-from gui.preprocess_tab import PreprocessingTab
+from gui.tabs.adapter_tab import EasyControlTab, IPAdapterTab
+from gui.tabs.config_tab import ConfigTab
+from gui.tabs.image_tab import ImageViewerTab
+from gui.tabs.merge_tab import MergeTab
+from gui.tabs.preprocess_tab import PreprocessingTab
 from gui.system_dialog import (
     GITHUB_ISSUES_URL,
     open_models_dialog,

@@ -49,14 +49,14 @@ from PySide6.QtWidgets import (
 )
 
 from gui import IMAGE_EXTS, ROOT, count_preprocess_caches
-from gui.config_tab import ClickableLabel
 from gui.explanations import preprocess_field_help, preprocess_guide
 from gui.i18n import t
 from gui.process import kill_process_tree, make_subprocess_env, setup_kill_safe
 from gui.progress import TQDM_RE, TqdmProgressTracker, make_progress_bar
+from gui.tabs.config_tab import ClickableLabel
 
 SAM_YAML = ROOT / "configs" / "sam_mask.yaml"
-SETTINGS_FILE = Path(__file__).resolve().parent / "gui_settings.json"
+SETTINGS_FILE = Path(__file__).resolve().parent.parent / "gui_settings.json"
 
 # Defaults match the historical hardcoded values in scripts/tasks/preprocess.py
 # and preprocess/generate_masks_mit.py so a freshly installed GUI runs the

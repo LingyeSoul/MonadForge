@@ -34,3 +34,4 @@ logs
 .anima-update-backups
 node.zip
 _archive/
+gui/gui_settings.json
