@@ -39,6 +39,7 @@ from library.datasets.subsets import (
     BaseSubset,
     DreamBoothSubset,
     ImageInfo,
+    filter_paths_by_glob,
     split_train_val,
 )
 
@@ -1767,6 +1768,20 @@ class DreamBoothDataset(BaseDataset):
             if use_cached_info_for_subset:
                 with open(info_cache_file, "r", encoding="utf-8") as f:
                     metas = json.load(f)
+                pattern = getattr(subset, "path_pattern", "*") or "*"
+                if pattern != "*":
+                    meta_paths = list(metas.keys())
+                    keep = filter_paths_by_glob(
+                        meta_paths, subset.image_dir, pattern
+                    )
+                    metas = {
+                        p: metas[p] for p, k in zip(meta_paths, keep) if k
+                    }
+                    logger.info(
+                        f"path_pattern={pattern!r} kept {len(metas)}/"
+                        f"{len(meta_paths)} cached entries from "
+                        f"{subset.image_dir}"
+                    )
                 img_paths = list(metas.keys())
                 sizes: List[Optional[Tuple[int, int]]] = [
                     meta["resolution"] for meta in metas.values()
@@ -1776,6 +1791,17 @@ class DreamBoothDataset(BaseDataset):
                 img_paths = glob_images(subset.image_dir, "*", recursive=recursive)
                 if recursive:
                     _assert_unique_stems(img_paths, source_label=subset.image_dir)
+                pattern = getattr(subset, "path_pattern", "*") or "*"
+                if pattern != "*":
+                    keep = filter_paths_by_glob(
+                        img_paths, subset.image_dir, pattern
+                    )
+                    pre_n = len(img_paths)
+                    img_paths = [p for p, k in zip(img_paths, keep) if k]
+                    logger.info(
+                        f"path_pattern={pattern!r} kept {len(img_paths)}/"
+                        f"{pre_n} images from {subset.image_dir}"
+                    )
                 sizes: List[Optional[Tuple[int, int]]] = [None] * len(img_paths)
 
                 strategy = LatentsCachingStrategy.get_strategy()

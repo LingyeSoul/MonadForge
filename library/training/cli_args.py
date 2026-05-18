@@ -1158,6 +1158,18 @@ def add_dataset_arguments(
             "`[half]` can propagate a single value across the dataset blueprint."
         ),
     )
+    parser.add_argument(
+        "--path_pattern",
+        type=str,
+        default=None,
+        help=(
+            "fnmatch glob applied to each image's path relative to its "
+            "subset's image_dir. `|` separates alternatives — e.g. "
+            "`char_a/*` keeps only the char_a/ subfolder, "
+            "`char_a/*|char_b/*` keeps either. Unset / `*` = use everything. "
+            "Validation and image-count thresholds honour the filtered pool."
+        ),
+    )
 
     if support_caption_dropout:
         parser.add_argument(

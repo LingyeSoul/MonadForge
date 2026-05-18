@@ -36,8 +36,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStackedWidget,
     QTextBrowser,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -511,9 +514,11 @@ class ImageViewerTab(QWidget):
 
         sp = QSplitter(Qt.Horizontal)
 
-        # Left panel: search + sort row, then the file list. Wrapping the
-        # list in a container lets us put the search bar directly above it
-        # while leaving the splitter's two-pane geometry intact.
+        # Left panel: search + sort + view-toggle row, then a stack holding
+        # the list and tree widgets. The two views are kept in sync via the
+        # _images array (selecting either one routes through _select_path).
+        # ``_view_mode`` is "list" by default — flipping the toggle button
+        # swaps the stacked widget without reloading images.
         left = QWidget()
         ll = QVBoxLayout(left)
         ll.setContentsMargins(0, 0, 0, 0)
@@ -525,6 +530,11 @@ class ImageViewerTab(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._on_search_changed)
         search_row.addWidget(self.search, 1)
+        self.view_btn = QPushButton("⊞")
+        self.view_btn.setFixedWidth(28)
+        self.view_btn.setToolTip(t("dataset_view_list_tooltip"))
+        self.view_btn.clicked.connect(self._toggle_view_mode)
+        search_row.addWidget(self.view_btn)
         self.sort_btn = QPushButton("↑")
         self.sort_btn.setFixedWidth(28)
         self.sort_btn.setToolTip(t("dataset_sort_asc_tooltip"))
@@ -532,9 +542,22 @@ class ImageViewerTab(QWidget):
         search_row.addWidget(self.sort_btn)
         ll.addLayout(search_row)
 
+        self._view_mode = "list"
         self.fl = QListWidget()
         self.fl.currentRowChanged.connect(self._on_row_changed)
-        ll.addWidget(self.fl, 1)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.currentItemChanged.connect(self._on_tree_item_changed)
+        # Map item → image index so selections in the tree route through the
+        # same _show(index) flow as list-row clicks.
+        self._tree_item_to_index: dict[QTreeWidgetItem, int] = {}
+
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.fl)
+        self.view_stack.addWidget(self.tree)
+        ll.addWidget(self.view_stack, 1)
         sp.addWidget(left)
 
         right = QWidget()
@@ -682,16 +705,21 @@ class ImageViewerTab(QWidget):
                 break
 
         self.fl.blockSignals(True)
+        self.tree.blockSignals(True)
         try:
             self.fl.clear()
             for p in visible:
                 self.fl.addItem(self._display_label(p))
+            self._rebuild_tree(visible)
             if target_row >= 0:
                 self.fl.setCurrentRow(target_row)
+                self._select_tree_index(target_row)
             else:
                 self.fl.setCurrentRow(-1)
+                self.tree.setCurrentItem(None)
         finally:
             self.fl.blockSignals(False)
+            self.tree.blockSignals(False)
 
         total = len(self._all_images)
         shown = len(visible)
@@ -701,9 +729,96 @@ class ImageViewerTab(QWidget):
             self.cnt.setText(t("n_images", n=total))
         return target_row >= 0
 
+    def _rebuild_tree(self, visible: list[Path]) -> None:
+        """Rebuild the tree widget from ``visible``, mirroring the relative
+        folder structure under ``self._current_dir``. Leaves are image stems;
+        folders auto-expand the first time the user enters tree view so the
+        hierarchy is visible without an extra click."""
+        self.tree.clear()
+        self._tree_item_to_index.clear()
+        if not visible:
+            return
+        # Cache folder QTreeWidgetItems by their relative parent path so
+        # sibling images in the same folder share one parent node.
+        folder_items: dict[Path, QTreeWidgetItem] = {}
+        for idx, p in enumerate(visible):
+            rel: Path
+            if self._current_dir is None:
+                rel = Path(p.name)
+            else:
+                try:
+                    rel = p.relative_to(self._current_dir)
+                except ValueError:
+                    rel = Path(p.name)
+            parent = self._ensure_tree_folder(rel.parent, folder_items)
+            leaf = QTreeWidgetItem(parent, [p.stem])
+            self._tree_item_to_index[leaf] = idx
+        self.tree.expandAll()
+
+    def _ensure_tree_folder(
+        self, rel_parent: Path, folder_items: dict[Path, QTreeWidgetItem]
+    ) -> QTreeWidget | QTreeWidgetItem:
+        """Resolve (and lazily create) the QTreeWidgetItem for ``rel_parent``.
+
+        Returns ``self.tree`` for the root (Path('.')) so callers can pass it
+        as the parent of a leaf item directly — QTreeWidgetItem(parent, …)
+        accepts either the tree widget or another item.
+        """
+        if rel_parent in (Path("."), Path("")):
+            return self.tree
+        cached = folder_items.get(rel_parent)
+        if cached is not None:
+            return cached
+        grandparent = self._ensure_tree_folder(rel_parent.parent, folder_items)
+        item = QTreeWidgetItem(grandparent, [rel_parent.name])
+        folder_items[rel_parent] = item
+        return item
+
+    def _select_tree_index(self, idx: int) -> None:
+        """Highlight the tree leaf corresponding to image index ``idx``."""
+        for item, i in self._tree_item_to_index.items():
+            if i == idx:
+                self.tree.setCurrentItem(item)
+                return
+        self.tree.setCurrentItem(None)
+
     def _on_search_changed(self, text: str) -> None:
         self._search_text = text
         self._apply_filter_and_sort()
+
+    def _toggle_view_mode(self) -> None:
+        """Flip between list and tree view of the same image set.
+
+        We rebuild on every flip (rather than only on _apply_filter_and_sort)
+        so the tree picks up structural changes (newly added subfolders) from
+        operations performed while it wasn't visible.
+        """
+        if self._view_mode == "list":
+            self._view_mode = "tree"
+            self.view_btn.setText("☰")
+            self.view_btn.setToolTip(t("dataset_view_tree_tooltip"))
+            self.view_stack.setCurrentWidget(self.tree)
+            row = self.fl.currentRow()
+            if 0 <= row < len(self._images):
+                self.tree.blockSignals(True)
+                try:
+                    self._select_tree_index(row)
+                finally:
+                    self.tree.blockSignals(False)
+        else:
+            self._view_mode = "list"
+            self.view_btn.setText("⊞")
+            self.view_btn.setToolTip(t("dataset_view_list_tooltip"))
+            self.view_stack.setCurrentWidget(self.fl)
+            item = self.tree.currentItem()
+            if item is not None:
+                idx = self._tree_item_to_index.get(item)
+                if idx is not None:
+                    self.fl.blockSignals(True)
+                    try:
+                        self.fl.setCurrentRow(idx)
+                    finally:
+                        self.fl.blockSignals(False)
 
     def _toggle_sort(self) -> None:
         self._sort_desc = not self._sort_desc
@@ -762,6 +877,42 @@ class ImageViewerTab(QWidget):
                 self.fl.blockSignals(False)
             return
         self._show(row)
+        # Keep the tree's highlight in sync so a later view-mode flip lands
+        # on the same image rather than resetting selection.
+        self.tree.blockSignals(True)
+        try:
+            self._select_tree_index(row)
+        finally:
+            self.tree.blockSignals(False)
+
+    def _on_tree_item_changed(self, current, _previous) -> None:
+        """Tree-side equivalent of ``_on_row_changed``.
+
+        Folder rows (no index) are non-selectable in the data sense; only
+        leaves correspond to an image. We confirm-discard before switching so
+        the unsaved-edit prompt works identically across views.
+        """
+        if current is None:
+            return
+        idx = self._tree_item_to_index.get(current)
+        if idx is None:
+            return
+        if not self._confirm_discard_if_dirty():
+            prev = self._row_for_path(self._current_caption_path)
+            if prev is not None and prev != idx:
+                self.tree.blockSignals(True)
+                try:
+                    self._select_tree_index(prev)
+                finally:
+                    self.tree.blockSignals(False)
+            return
+        self._show(idx)
+        # Keep the list selection aligned for next view-mode flip / arrow nav.
+        self.fl.blockSignals(True)
+        try:
+            self.fl.setCurrentRow(idx)
+        finally:
+            self.fl.blockSignals(False)
 
     def _show(self, row: int):
         if not 0 <= row < len(self._images):

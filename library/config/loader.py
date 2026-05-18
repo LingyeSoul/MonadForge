@@ -30,6 +30,7 @@ from library.datasets import (
     DatasetGroup,
     glob_images,
 )
+from library.datasets.subsets import filter_paths_by_glob
 from library.training import (
     add_dataset_arguments,
     add_training_arguments,
@@ -78,6 +79,10 @@ class BaseSubsetParams:
     validation_split_num: int = 0
     resize_interpolation: Optional[str] = None
     recursive: bool = False
+    # fnmatch glob on each image's path relative to image_dir; `*` (or empty)
+    # is no-op. Propagated from a top-level `path_pattern` argparse arg
+    # through the BlueprintGenerator fallback chain.
+    path_pattern: str = "*"
 
 
 @dataclass
@@ -174,6 +179,7 @@ class ConfigSanitizer:
         "caption_suffix": str,
         "custom_attributes": dict,
         "resize_interpolation": str,
+        "path_pattern": str,
     }
     # DO means DropOut
     DO_SUBSET_ASCENDABLE_SCHEMA = {
@@ -409,11 +415,12 @@ def _count_training_image_paths(dataset_blueprint: "DatasetBlueprint") -> int:
         image_dir = getattr(params, "image_dir", None)
         if not image_dir or not os.path.isdir(image_dir):
             continue
-        total += len(
-            glob_images(
-                image_dir, "*", recursive=bool(getattr(params, "recursive", False))
-            )
+        paths = glob_images(
+            image_dir, "*", recursive=bool(getattr(params, "recursive", False))
         )
+        pattern = getattr(params, "path_pattern", "*") or "*"
+        keep = filter_paths_by_glob(paths, image_dir, pattern)
+        total += sum(keep)
     return total
 
 

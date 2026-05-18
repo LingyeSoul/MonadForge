@@ -251,6 +251,7 @@ _GROUPS = {
         "source_image_dir",
         "resized_image_dir",
         "lora_cache_dir",
+        "path_pattern",
     },
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
@@ -284,6 +285,7 @@ _BASIC = {
     "source_image_dir",
     "lora_cache_dir",
     "output_dir",
+    "path_pattern",
     "use_valid",
     "validation_split_num",
 }

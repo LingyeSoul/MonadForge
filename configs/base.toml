@@ -20,6 +20,13 @@ network_train_unet_only = true
 source_image_dir = "image_dataset"
 resized_image_dir = "post_image_dataset/resized"
 lora_cache_dir = "post_image_dataset/lora"
+# fnmatch glob applied to each image's path relative to its subset's image_dir.
+# `*` (or unset) trains on everything. Use `|` to OR-combine patterns:
+#   `char_a/*`           → one subfolder
+#   `char_a/*|char_b/*`  → two subfolders
+#   `*portrait*`         → any path containing "portrait"
+# Same blueprint applies to validation enumeration.
+path_pattern = "*"
 
 optimizer_type = "AdamW"
 lr_scheduler = "constant"

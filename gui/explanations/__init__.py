@@ -337,6 +337,28 @@ FIELD_HELP: dict[str, dict[str, str]] = {
             "서브셋의 cache_dir로도 사용됩니다."
         ),
     },
+    "path_pattern": {
+        "en": (
+            "fnmatch glob applied to each image's path relative to its subset's "
+            "image_dir. Lets one variant TOML train on a slice of the full "
+            "dataset without re-running preprocessing. `|` separates "
+            "alternatives — OR-combine multiple patterns. Examples: `*` keeps "
+            "everything; `char_a/*` keeps only files under the char_a/ "
+            "subfolder; `char_a/*|char_b/*` keeps either folder; "
+            "`*portrait*` keeps anything whose path contains 'portrait'. "
+            "Validation enumeration and the image-count threshold honour the "
+            "filtered pool."
+        ),
+        "ko": (
+            "각 이미지의 image_dir 기준 상대 경로에 적용되는 fnmatch 글롭. "
+            "전처리를 다시 돌리지 않고도 하나의 variant TOML로 전체 데이터셋의 "
+            "일부만 학습할 수 있습니다. `|`로 여러 패턴을 OR 결합할 수 있습니다. "
+            "예: `*`는 전체 사용, `char_a/*`는 char_a/ 하위만, "
+            "`char_a/*|char_b/*`는 두 폴더 모두, `*portrait*`는 경로에 "
+            "'portrait'이 포함된 파일만. 검증 데이터 열거와 이미지 개수 "
+            "임계값도 필터링된 풀을 기준으로 동작합니다."
+        ),
+    },
 }
 
 
