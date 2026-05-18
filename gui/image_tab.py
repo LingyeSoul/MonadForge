@@ -147,7 +147,12 @@ def _tag_ranges(text: str):
 
 
 def _tag_border_color(tag: str) -> QColor:
-    if tag.startswith("@"):
+    # Mirror library.anima.training._is_artist_tag: `@<non-space>` is an
+    # artist handle (`@sincos`, `@no-artist` placeholder), while `@ @`
+    # (booru `@_@` eye-shape, space-form) is a general-category tag and
+    # must not steal the warm artist tint. Kept inline so this module
+    # stays free of heavy library/* imports at GUI startup.
+    if len(tag) >= 2 and tag[0] == "@" and not tag[1].isspace():
         return _BOX_BORDER_ARTIST
     if (
         tag.startswith("On the ")

@@ -196,7 +196,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "start the next with <span style='color:#5e8eb0;'>On the&nbsp;…,</span> "
             "or <span style='color:#5e8eb0;'>In the&nbsp;…,</span>. "
             "Tags up to and including the first <code>@artist</code> are kept fixed; "
-            "everything after is shuffled within each section."
+            "everything after is shuffled within each section. "
+            "<b>No artist?</b> Drop in "
+            "<span style='color:#c9a227;'>@no-artist</span> as a placeholder — "
+            "it anchors the shuffle boundary the same way and is stripped before "
+            "tokenization, so it never reaches the model."
         ),
         # Language
         "language": "Language:",
@@ -474,7 +478,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
             "<span style='color:#5e8eb0;'>On the&nbsp;…,</span> 또는 "
             "<span style='color:#5e8eb0;'>In the&nbsp;…,</span> 로 시작. "
             "첫 <code>@작가</code> 태그까지는 순서가 고정되고, 그 이후는 "
-            "섹션 내에서 셔플됩니다."
+            "섹션 내에서 셔플됩니다. "
+            "<b>작가 정보가 없을 때:</b> "
+            "<span style='color:#c9a227;'>@no-artist</span> 를 자리표시자로 "
+            "넣어주세요 — 셔플 경계 역할만 하고 토큰화 직전에 제거되어 "
+            "모델까지 전달되지 않습니다."
         ),
         # Language
         "language": "언어:",
