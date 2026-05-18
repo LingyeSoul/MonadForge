@@ -230,6 +230,10 @@ Calibration (`make dcw`) runs `scripts/dcw/measure_bias.py` against 5 aspect buc
 
 Code: `library/inference/dcw_calibrator.py`, `networks/dcw.py`, `scripts/dcw/`, `scripts/tasks/dcw.py`, `bench/dcw/`. See `docs/methods/dcw.md` and `_archive/dcw-learnable-calibrator/proposals/dcw-learnable-calibrator-v4.md`.
 
+## SMC-CFG (α-adaptive sliding-mode CFG)
+
+Training-free CFG-combine modification that treats CFG as a control problem (Wang et al., arXiv:2603.03281). At each step, applies a bang-bang sliding-mode correction `Δe = −k_t · sign(s)` to the velocity-space residual `e = v_cond − v_uncond`, where `s = (e − e_prev) + λ·e_prev` is the sliding surface and `k_t = α·mean(|e_t|)` is the **α-adaptive gain** (paper's fixed `k=0.1` was ~14× off on Anima — see `bench/smc_cfg/analysis_and_proposal.md` §A; the α path replaces it entirely). Implementation ships `sign()` only — the tanh boundary-layer ε was tested and removed (concentrates correction into fewer voxels → grain). Defaults: λ=5, α=0.2. Observable effects: detail/fingers recover, outputs run slightly darker (anti-DC pull from clamping small-|e| brightness channels). Composes with DCW (post-step x-space), mod-guidance (AdaLN-side), Spectrum (cached-step combine still fires). Code: `library/inference/smc_cfg.py`, calls inside `library/inference/generation.py` + `networks/spectrum.py`. See `docs/methods/smc_cfg.md`.
+
 ## DirectEdit + Anima Tagger
 
 Image-editing primitive that pairs an inversion (DDIM-style trajectory through the frozen DiT) with an edit-conditioning swap: ψ_src reconstructs the source image, ψ_tar = ψ_src + edit-instruction applies the change. Robust to ψ_src corruption for *reconstruction* but edit *leverage* collapses when ψ_src is structurally far from Anima's training-time embedding manifold — generic booru taggers were bad enough at this to be the live blocker, which is why **Anima Tagger** exists.

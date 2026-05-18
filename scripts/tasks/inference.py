@@ -58,7 +58,7 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
     return args
 
 
-def _spectrum_flags(stop_caching_step: int = 29) -> list[str]:
+def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
     return [
         "--spectrum",
         "--spectrum_window_size",
@@ -134,9 +134,9 @@ def cmd_test_dcw(extra):
 def cmd_test_smc_cfg(extra):
     """Inference with latest LoRA + SMC-CFG (arXiv:2603.03281).
 
-    Paper defaults (λ=5, k=0.1). Override via --smc_cfg_lambda / --smc_cfg_k
-    in extra. Honors SPECTRUM / MOD / NOLORA env levers (see ``_base_test_args``);
-    composes with --dcw via extra.
+    Production defaults (λ=5, α=0.2). Override via --smc_cfg_lambda /
+    --smc_cfg_alpha in extra. Honors SPECTRUM / MOD / NOLORA env levers
+    (see ``_base_test_args``); composes with --dcw via extra.
     """
     run([*_base_test_args(), "--smc_cfg", *extra])
 

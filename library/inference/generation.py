@@ -225,13 +225,7 @@ def generate_body_tiled(
     smc_cfg = (
         SMCCFGState(
             lam=args.smc_cfg_lambda,
-            k=args.smc_cfg_k,
-            eps=(None if args.smc_cfg_eps < 0 else args.smc_cfg_eps),
-            alpha=(
-                None
-                if getattr(args, "smc_cfg_alpha", -1.0) < 0
-                else args.smc_cfg_alpha
-            ),
+            alpha=args.smc_cfg_alpha,
         )
         if do_cfg and getattr(args, "smc_cfg", False)
         else None
@@ -536,13 +530,7 @@ def generate_body(
     smc_cfg = (
         SMCCFGState(
             lam=args.smc_cfg_lambda,
-            k=args.smc_cfg_k,
-            eps=(None if args.smc_cfg_eps < 0 else args.smc_cfg_eps),
-            alpha=(
-                None
-                if getattr(args, "smc_cfg_alpha", -1.0) < 0
-                else args.smc_cfg_alpha
-            ),
+            alpha=args.smc_cfg_alpha,
         )
         if do_cfg and getattr(args, "smc_cfg", False)
         else None

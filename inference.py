@@ -464,15 +464,16 @@ def parse_args() -> argparse.Namespace:
         "value to flip sign. The per-step λ is clamped to ±0.05.",
     )
 
-    # SMC-CFG: Sliding-Mode Control CFG (Wang et al., arXiv:2603.03281).
+    # SMC-CFG: Sliding-Mode Control CFG (α-adaptive variant; arXiv:2603.03281).
     # Drop-in CFG modification: replaces w·e with w·(e + Δe) where
-    # Δe = -k·sign(s), s = (e - e_prev) + λ·e_prev. No extra DiT forwards;
-    # one prev-step velocity-residual buffer. Composes with --dcw / --spectrum /
-    # --mod_guidance (operates strictly on the velocity-space CFG combine).
+    # Δe = -k_t·sign(s), s = (e - e_prev) + λ·e_prev, k_t = α·mean(|e_t|).
+    # No extra DiT forwards; one prev-step velocity-residual buffer. Composes
+    # with --dcw / --spectrum / --mod_guidance (operates strictly on the
+    # velocity-space CFG combine). See docs/methods/smc_cfg.md.
     parser.add_argument(
         "--smc_cfg",
         action="store_true",
-        help="Enable Sliding-Mode Control CFG (paper defaults λ=5, k=0.1). "
+        help="Enable Sliding-Mode Control CFG (defaults λ=5, α=0.2). "
         "Modifies the cond/uncond combine; no extra forwards.",
     )
     parser.add_argument(
@@ -482,30 +483,13 @@ def parse_args() -> argparse.Namespace:
         help="SMC-CFG sliding-manifold slope λ. Paper sweeps {3,4,5,6}; 5 was best.",
     )
     parser.add_argument(
-        "--smc_cfg_k",
-        type=float,
-        default=0.1,
-        help="SMC-CFG switching gain k. Paper sweeps {0.1,0.4,0.7,1.0}; 0.1 was best.",
-    )
-    parser.add_argument(
-        "--smc_cfg_eps",
-        type=float,
-        default=-1.0,
-        help="SMC-CFG boundary-layer ε for tanh(s/ε) chattering reduction. "
-        "-1 (default) = auto (ε := mean(|s|) per step, signal-adaptive). "
-        "0 = paper-exact sign(s) (chattering — visible noise on Anima at CFG=4). "
-        ">0 = fixed ε in s-units.",
-    )
-    parser.add_argument(
         "--smc_cfg_alpha",
         type=float,
-        default=1.0,
-        help="SMC-CFG adaptive gain α ∈ (0, 1]. "
-        "-1 (default) = use fixed --smc_cfg_k. "
-        ">0 = adaptive k_t := α·|e_t|.mean() per step — self-scales across "
-        "model / CFG / σ / sample. Paper's fixed k=0.1 is off by ~14× on Anima "
-        "(bench/smc_cfg/analysis_and_proposal.md); α=0.2 is the recommended "
-        "starting point. Wins over --smc_cfg_k when both are set.",
+        default=0.2,
+        help="SMC-CFG adaptive gain α ∈ (0, 1]. k_t := α·|e_t|.mean() per "
+        "step — self-scales across model / CFG / σ / sample. Paper's fixed "
+        "k=0.1 was off by ~14× on Anima (bench/smc_cfg/analysis_and_proposal.md), "
+        "so the α path is the only mode now. α=0.2 is the production default.",
     )
 
     # arguments for batch and interactive modes

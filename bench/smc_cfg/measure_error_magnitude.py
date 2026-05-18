@@ -90,13 +90,13 @@ def _parse_args() -> argparse.Namespace:
                    help="crossattn_emb_v{N} key in cached _anima_te.safetensors")
     p.add_argument("--image_h", type=int, default=1024)
     p.add_argument("--image_w", type=int, default=1024)
-    p.add_argument("--n_prompts", type=int, default=4)
+    p.add_argument("--n_prompts", type=int, default=10)
     p.add_argument("--shuffle_seed", type=int, default=0)
     p.add_argument("--seed", type=int, default=0,
                    help="Single noise seed shared across all (prompt, cfg) cells.")
     p.add_argument("--negative_prompt", type=str, default="")
     p.add_argument("--cfgs", nargs="+", type=float,
-                   default=[2.0, 4.0, 6.0, 8.0])
+                   default=[4.0])
     p.add_argument("--infer_steps", type=int, default=28)
     p.add_argument("--flow_shift", type=float, default=1.0)
     p.add_argument("--lam", type=float, default=5.0,

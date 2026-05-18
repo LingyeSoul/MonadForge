@@ -2,7 +2,7 @@
 """SMC-CFG A/B harness.
 
 For each (prompt × seed × aspect) cell, runs inference.py twice — once with
-vanilla CFG, once with --smc_cfg at the chosen (λ, k) — keeping every other
+vanilla CFG, once with --smc_cfg at the chosen (λ, α) — keeping every other
 flag identical. Same seed within a cell, so the two outputs are directly
 comparable.
 
@@ -147,8 +147,9 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=28)
     ap.add_argument("--lambda", dest="lam", type=float, default=5.0,
                     help="SMC-CFG λ (default 5.0, paper-best on SD3.5/Flux/Qwen)")
-    ap.add_argument("--k", type=float, default=0.02,
-                    help="SMC-CFG k (default 0.02, conservative from paper-best 0.1)")
+    ap.add_argument("--alpha", type=float, default=0.2,
+                    help="SMC-CFG α (default 0.2, production setting on Anima — "
+                    "k_t := α·mean(|e_t|) per step)")
     ap.add_argument("--lora_weight", default=None,
                     help="LoRA safetensors path (default: latest under output/ckpt/). "
                     "Pass --no_lora to disable LoRA loading entirely (base DiT only).")
@@ -197,7 +198,7 @@ def main() -> None:
                 tag = f"{p_idx:02d}_{asp_w}x{asp_h}_s{seed}"
                 smc_png = run_dir / "smc" / f"{tag}.png"
 
-                print(f"[{tag}] smc-cfg (λ={args.lam}, k={args.k}) …")
+                print(f"[{tag}] smc-cfg (λ={args.lam}, α={args.alpha}) …")
                 run_inference(
                     prompt=pos, negative=neg, seed=seed,
                     width=asp_w, height=asp_h,
@@ -207,7 +208,7 @@ def main() -> None:
                         *args.extra_flag,
                         "--smc_cfg",
                         "--smc_cfg_lambda", str(args.lam),
-                        "--smc_cfg_k", str(args.k),
+                        "--smc_cfg_alpha", str(args.alpha),
                     ],
                     infer_steps=args.steps, cfg=args.cfg,
                 )
@@ -242,7 +243,7 @@ def main() -> None:
     l2s = [r["l2"] for r in rows if r.get("l2") is not None]
     metrics = {
         "n_pairs": len(rows),
-        "lambda": args.lam, "k": args.k,
+        "lambda": args.lam, "alpha": args.alpha,
         "cfg": args.cfg, "steps": args.steps,
         "lora_weight": str(lora) if lora is not None else None,
         "baseline_dir": str(baseline_dir) if baseline_dir is not None else None,
