@@ -37,23 +37,30 @@ def _generate_caption_variants(
     v0 = pristine original caption. v1..v{N-1} are smart-shuffled (preserving
     the @artist prefix and "On the …" / "In the …" section anchors), then
     every tag *after* the @artist prefix is independently dropped with
-    probability ``tag_dropout_rate``. The prefix up to and including the first
-    @-tag is never shuffled or dropped.
+    probability ``tag_dropout_rate``. The prefix up to and including the
+    trailing tag of the leading artist run is never shuffled or dropped (see
+    ``library.anima.training.find_anima_prefix_end``).
+
+    The ``@no-artist`` sentinel (``library.anima.training.NO_ARTIST_SENTINEL``)
+    participates in the boundary but is stripped from every variant before it
+    is written to the cache — including v0, so the pristine caption is also
+    sentinel-free.
     """
     from library.anima import training as anima_train_utils
 
+    sentinel = anima_train_utils.NO_ARTIST_SENTINEL
+
     tags = [t.strip() for t in caption.split(",")]
+    split_idx = anima_train_utils.find_anima_prefix_end(tags)
 
-    # Match anima_smart_shuffle_caption's prefix boundary: tags up to and
-    # including the first @artist tag are protected from both shuffle and
-    # dropout.
-    split_idx = 0
-    for idx, tag in enumerate(tags):
-        if tag.startswith("@"):
-            split_idx = idx + 1
-            break
+    # v0 stays byte-identical to the source caption unless the sentinel is
+    # actually present — re-joining would normalize whitespace around commas
+    # for every existing dataset otherwise.
+    if sentinel in tags:
+        variants = [", ".join(anima_train_utils.strip_no_artist_sentinel(tags))]
+    else:
+        variants = [caption]
 
-    variants = [caption]
     for _ in range(max(0, num_variants - 1)):
         shuffled = anima_train_utils.anima_smart_shuffle_caption(tags.copy())
         if tag_dropout_rate > 0.0 and len(shuffled) > split_idx:
@@ -64,6 +71,7 @@ def _generate_caption_variants(
             if not kept:
                 kept = shuffled[:1]
             shuffled = kept
+        shuffled = anima_train_utils.strip_no_artist_sentinel(shuffled)
         variants.append(", ".join(shuffled))
     return variants
 
