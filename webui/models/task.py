@@ -17,9 +17,10 @@ class TaskState(str, Enum):
 
 
 class TaskInfo(BaseModel):
-    id: str
+    task_id: str
     command: str
     state: TaskState
     pid: Optional[int] = None
     exit_code: Optional[int] = None
-    lines: int = 0
+    output_lines: int = 0
+    started_at: Optional[str] = None

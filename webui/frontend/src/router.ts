@@ -30,6 +30,11 @@ const router = createRouter({
       component: () => import('./views/MergeView.vue'),
     },
     {
+      path: '/tasks',
+      name: 'tasks',
+      component: () => import('./views/TaskMonitorView.vue'),
+    },
+    {
       path: '/system',
       name: 'system',
       component: () => import('./views/SystemView.vue'),

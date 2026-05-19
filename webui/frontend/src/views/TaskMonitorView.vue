@@ -1,22 +1,24 @@
 <template>
-  <div class="d-flex flex-column" style="height: 100%">
-    <v-toolbar density="compact" color="surface">
-      <v-toolbar-title class="text-subtitle-1">{{ t('navTasks') }}</v-toolbar-title>
+  <v-container fluid class="pa-4 d-flex flex-column" style="flex: 1 1 auto; min-height: 0;">
+    <div class="d-flex align-center mb-1">
+      <div class="text-h5">{{ t('taskTitle') }}</div>
       <v-spacer />
-      <v-btn
-        icon="mdi-refresh"
-        variant="text"
-        size="small"
-        @click="taskStore.fetchTasks()"
-      />
-    </v-toolbar>
+      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="taskStore.fetchTasks()">
+        {{ t('ppRefresh') }}
+      </v-btn>
+    </div>
+    <div class="text-body-2 text-medium-emphasis mb-4">{{ t('taskSubtitle') }}</div>
 
-    <div class="flex-grow-1 d-flex flex-column overflow-hidden pa-2">
-      <div v-if="taskStore.tasks.length === 0" class="text-center text-medium-emphasis pa-8">
-        {{ t('taskNoActive') }}
+    <div v-if="taskStore.tasks.length === 0" class="d-flex align-center justify-center flex-grow-1">
+      <div class="text-center text-medium-emphasis">
+        <v-icon icon="mdi-check-circle-outline" size="48" class="mb-2" />
+        <div>{{ t('taskNoActive') }}</div>
       </div>
+    </div>
 
+    <div v-else class="d-flex flex-column flex-grow-1" style="min-height: 0;">
       <template v-for="task in taskStore.tasks" :key="task.task_id">
+        <!-- Compact card for non-selected tasks -->
         <v-card
           v-if="selectedTask !== task.task_id"
           class="mb-2"
@@ -25,28 +27,29 @@
         >
           <v-card-title class="text-body-2 d-flex align-center">
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
-            {{ task.command }}
+            <span class="text-truncate">{{ task.command }}</span>
             <v-spacer />
-            <v-chip size="x-small" variant="outlined">{{ task.state }}</v-chip>
+            <v-chip size="x-small" variant="outlined" class="ml-2">{{ task.state }}</v-chip>
           </v-card-title>
           <v-card-subtitle class="text-caption">
             {{ task.task_id.slice(0, 8) }} &middot; PID {{ task.pid ?? '—' }}
           </v-card-subtitle>
           <v-card-text v-if="task.state === 'running'" class="pt-0">
             <v-progress-linear indeterminate color="primary" height="2" />
-            <div class="d-flex justify-end mt-1">
-              <v-btn
-                size="x-small"
-                color="error"
-                variant="text"
-                @click="taskStore.cancelTask(task.task_id)"
-              >
-                {{ t('taskCancel') }}
-              </v-btn>
-            </div>
           </v-card-text>
-          <v-card-actions v-if="task.state === 'running' || task.output_lines > 0">
+          <v-card-actions>
             <v-btn
+              v-if="task.state === 'running'"
+              size="x-small"
+              color="error"
+              variant="text"
+              @click="taskStore.cancelTask(task.task_id)"
+            >
+              {{ t('taskCancel') }}
+            </v-btn>
+            <v-spacer />
+            <v-btn
+              v-if="task.state === 'running' || task.output_lines > 0"
               size="x-small"
               variant="text"
               @click="selectedTask = task.task_id"
@@ -56,6 +59,7 @@
           </v-card-actions>
         </v-card>
 
+        <!-- Expanded card with full-height log stream -->
         <v-card
           v-else
           class="mb-2 d-flex flex-column"
@@ -63,55 +67,51 @@
           :color="stateColor(task.state)"
           style="flex: 1 1 0; min-height: 0;"
         >
-          <v-card-title class="text-body-2 d-flex align-center flex-shrink-0">
+          <v-card-title class="text-body-2 d-flex align-center flex-shrink-0 py-2">
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
-            {{ task.command }}
+            <span class="text-truncate">{{ task.command }}</span>
             <v-spacer />
-            <v-chip size="x-small" variant="outlined">{{ task.state }}</v-chip>
+            <v-chip size="x-small" variant="outlined" class="ml-2">{{ task.state }}</v-chip>
           </v-card-title>
           <v-card-subtitle class="text-caption flex-shrink-0">
             {{ task.task_id.slice(0, 8) }} &middot; PID {{ task.pid ?? '—' }}
           </v-card-subtitle>
-          <v-card-text v-if="task.state === 'running'" class="pt-0 flex-shrink-0">
-            <v-progress-linear indeterminate color="primary" height="2" />
-            <div class="d-flex justify-end mt-1">
-              <v-btn
-                size="x-small"
-                color="error"
-                variant="text"
-                @click="taskStore.cancelTask(task.task_id)"
-              >
-                {{ t('taskCancel') }}
-              </v-btn>
-            </div>
-          </v-card-text>
-          <v-card-text class="d-flex flex-column pt-0" style="flex: 1 1 0; min-height: 0;">
+          <v-progress-linear v-if="task.state === 'running'" indeterminate color="primary" height="2" class="flex-shrink-0" />
+          <v-card-text class="d-flex flex-column pa-2" style="flex: 1 1 0; min-height: 0;">
             <LogStream :task-id="task.task_id" />
           </v-card-text>
-          <v-card-actions class="flex-shrink-0">
+          <v-card-actions class="flex-shrink-0 py-1">
             <v-btn
+              v-if="task.state === 'running'"
               size="x-small"
+              color="error"
               variant="text"
-              @click="selectedTask = ''"
+              @click="taskStore.cancelTask(task.task_id)"
             >
+              {{ t('taskCancel') }}
+            </v-btn>
+            <v-spacer />
+            <v-btn size="x-small" variant="text" @click="selectedTask = ''">
               {{ t('taskHideLogs') }}
             </v-btn>
           </v-card-actions>
         </v-card>
       </template>
     </div>
-  </div>
+  </v-container>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
-import LogStream from './LogStream.vue'
+import LogStream from '../components/LogStream.vue'
 
 const taskStore = useTaskStore()
 const { t } = useI18n()
 const selectedTask = ref('')
+
+taskStore.fetchTasks()
 
 function stateColor(state: string) {
   if (state === 'running') return 'info'

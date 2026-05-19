@@ -6,7 +6,7 @@ export interface TaskInfo {
   command: string
   state: 'pending' | 'running' | 'success' | 'failed' | 'cancelled'
   pid: number | null
-  started_at: string
+  started_at: string | null
   output_lines: number
 }
 

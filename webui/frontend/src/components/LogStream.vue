@@ -1,5 +1,5 @@
 <template>
-  <div ref="logContainer" class="log-stream pa-2" style="max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px; background: rgba(0,0,0,0.3); border-radius: 4px;">
+  <div ref="logContainer" class="log-stream pa-2" style="flex: 1 1 0; min-height: 0; overflow-y: auto; font-family: monospace; font-size: 12px; background: rgba(0,0,0,0.3); border-radius: 4px;">
     <div v-if="!connected && messages.length === 0" class="text-medium-emphasis">
       {{ t('taskConnecting') }}
     </div>

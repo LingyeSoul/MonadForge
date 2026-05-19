@@ -8,6 +8,7 @@ import os
 import sys
 import uuid
 from collections import defaultdict
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -36,16 +37,18 @@ class Task:
     exit_code: Optional[int] = None
     lines: list[str] = field(default_factory=list)
     process: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
+    started_at: Optional[str] = field(default=None)
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
 
     def info(self) -> dict:
         return {
-            "id": self.id,
+            "task_id": self.id,
             "command": self.command,
             "state": self.state.value,
             "pid": self.pid,
             "exit_code": self.exit_code,
-            "lines": len(self.lines),
+            "output_lines": len(self.lines),
+            "started_at": self.started_at,
         }
 
 
@@ -79,6 +82,10 @@ class TaskService:
 
         cmd = [self._python, "tasks.py", command, *(args or [])]
         merged_env = {**os.environ, **(env or {})}
+        # Force unbuffered stdout/stderr so readline() sees output immediately.
+        # Without this, Python detects the pipe and uses full buffering (4-8 KB),
+        # causing the first N kilobytes of output to be silently lost.
+        merged_env["PYTHONUNBUFFERED"] = "1"
 
         logger.info("Starting task %s: %s", task_id, " ".join(cmd))
 
@@ -93,6 +100,7 @@ class TaskService:
             task.process = process
             task.pid = process.pid
             task.state = TaskState.RUNNING
+            task.started_at = datetime.now(timezone.utc).isoformat()
 
             # Fire-and-forget reader — updates task state when done
             asyncio.create_task(self._read_output(task))

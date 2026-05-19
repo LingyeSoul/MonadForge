@@ -1,10 +1,12 @@
-"""WebSocket endpoint skeleton for real-time task logs."""
+"""WebSocket endpoint for real-time task log streaming."""
 
 from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from webui.services.task_service import task_service
 
 logger = logging.getLogger(__name__)
 
@@ -15,21 +17,26 @@ router = APIRouter()
 async def task_log_ws(websocket: WebSocket, task_id: str):
     """Stream task output lines over WebSocket.
 
-    Phase 2 will wire this to the task_service subprocess manager.
-    For now, it accepts the connection and sends a placeholder.
+    Subscribes to the task_service subscriber queue and forwards
+    each message to the client until the task completes or the
+    client disconnects.
     """
     await websocket.accept()
+    queue = task_service.subscribe(task_id)
     try:
-        await websocket.send_json({"type": "connected", "task_id": task_id})
-        # Placeholder — Phase 2 will loop over subprocess stdout lines
-        await websocket.send_json(
-            {
-                "type": "log",
-                "line": f"[Phase 2] Task {task_id} log streaming not yet implemented.",
-            }
-        )
-        await websocket.send_json({"type": "done", "exit_code": 0})
+        while True:
+            msg = await queue.get()
+            await websocket.send_json(msg)
+            # Stop after a terminal message
+            if msg.get("type") in ("done", "cancelled", "error"):
+                break
+    except WebSocketDisconnect:
+        logger.debug("Client disconnected from task %s", task_id)
     except Exception:
         logger.exception("WebSocket error for task %s", task_id)
     finally:
-        await websocket.close()
+        task_service.unsubscribe(task_id, queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass

@@ -92,6 +92,15 @@ def get_task(task_id: str):
     return info
 
 
+@router.get("/{task_id}/output")
+def get_task_output(task_id: str):
+    """Get all accumulated output lines for a task."""
+    task = task_service.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return {"lines": task.lines, "state": task.state.value, "exit_code": task.exit_code}
+
+
 @router.post("")
 async def start_task(body: TaskStartRequest):
     """Start a new task."""

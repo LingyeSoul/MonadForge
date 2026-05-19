@@ -61,7 +61,7 @@
               <v-btn variant="outlined" block prepend-icon="mdi-cog-transfer-outline" to="/config">
                 {{ t('sysConfigEditor') }}
               </v-btn>
-              <v-btn variant="outlined" block prepend-icon="mdi-console" @click="appStore.toggleTaskDrawer()">
+              <v-btn variant="outlined" block prepend-icon="mdi-console" to="/tasks">
                 {{ t('sysTaskMonitor') }}
               </v-btn>
               <v-btn variant="outlined" block prepend-icon="mdi-test-tube" :loading="isRunning('test-unit')" @click="runTask('test-unit')">
@@ -102,11 +102,9 @@
 
 <script setup lang="ts">
 import { useTaskStore } from '../stores/task'
-import { useAppStore } from '../stores/app'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
-const appStore = useAppStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 

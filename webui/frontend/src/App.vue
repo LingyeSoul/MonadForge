@@ -44,12 +44,6 @@
             to="/system"
             rounded="xl"
           />
-          <v-list-item
-            :prepend-icon="taskStore.tasks.length > 0 ? 'mdi-console' : 'mdi-console-outline'"
-            :title="taskStore.tasks.length > 0 ? t('navTasksCount', { n: taskStore.tasks.length }) : t('navTasks')"
-            rounded="xl"
-            @click="appStore.toggleTaskDrawer()"
-          />
         </v-list>
         <div class="pa-2">
           <v-btn-toggle
@@ -68,15 +62,6 @@
       </template>
     </v-navigation-drawer>
 
-    <v-navigation-drawer
-      v-model="appStore.taskDrawer"
-      location="right"
-      width="420"
-      temporary
-    >
-      <TaskPanel />
-    </v-navigation-drawer>
-
     <v-main>
       <router-view />
     </v-main>
@@ -86,12 +71,9 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useAppStore } from './stores/app'
-import { useTaskStore } from './stores/task'
 import { useI18n } from './composables/useI18n'
-import TaskPanel from './components/TaskPanel.vue'
 
 const appStore = useAppStore()
-const taskStore = useTaskStore()
 const { t, setLanguage } = useI18n()
 
 const drawer = ref(true)
@@ -103,6 +85,7 @@ const navItems = [
   { icon: 'mdi-cogs', titleKey: 'navPreprocess', to: '/preprocess' },
   { icon: 'mdi-puzzle-outline', titleKey: 'navAdapter', to: '/adapter' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },
+  { icon: 'mdi-console-outline', titleKey: 'navTasks', to: '/tasks' },
 ]
 
 async function onLangChange(lang: unknown) {
@@ -110,6 +93,21 @@ async function onLangChange(lang: unknown) {
     await setLanguage(lang)
   }
 }
-
-taskStore.fetchTasks()
 </script>
+
+<style>
+/* Make v-main a proper flex-height container so fill-height children work */
+.v-main {
+  display: flex !important;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+.v-main > .v-main__wrap {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: auto;
+}
+</style>
