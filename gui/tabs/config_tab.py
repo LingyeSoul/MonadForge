@@ -509,7 +509,7 @@ class ConfigTab(QWidget):
         ]
         if help_text:
             parts.append(
-                f"<p style='font-size:14px; line-height:1.6;'>{html.escape(help_text)}</p>"
+                f"<p style='font-size:14px; line-height:1.6;'>{help_text}</p>"
             )
         else:
             parts.append(

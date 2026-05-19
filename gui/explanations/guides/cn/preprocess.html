@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:18px;'>预处理</h2>
+<p>训练由两条产出通道提供数据：</p>
+<p><b>1. 缓存</b> &mdash; 将图像调整至固定令牌桶，并通过 Qwen3 + T5 对字幕进行分词，写入 <code>{stem}_anima.npz</code> 潜变量和 <code>{stem}_anima_te.safetensors</code> 附属文件。当<i>洗牌变体数</i> &gt; 0 时，每个 TE 缓存存储 N 条字幕，数据加载器在每个训练步中抽取一条（需在方法配置中开启 <code>use_shuffled_caption_variants</code>）。</p>
+<p><b>2. 遮罩</b> &mdash; 通过临时目录并行运行 SAM3（自然语言文字气泡提示）和 MIT（漫画字形分割器），然后合并到 <code>post_image_dataset/masks/&lt;rel&gt;/{stem}_mask.png</code>。各工具的中间结果不会持久化 &mdash; 合并后清理临时目录。遮罩目录存在时，训练子集会自动使用（参见方法配置中的 <code>masked_loss</code>）。</p>
+<p style='color:#888; font-style:italic; margin-top:12px;'>点击左侧字段标签，可在此处查看其说明。</p>

@@ -1,0 +1,9 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>T-LoRA</h2>
+<p>时间步依赖的秩掩码。有效 LoRA 秩随去噪时间步按幂律调度变化：<br>
+&bull; 高噪声（早期步骤）&rarr; 完整秩（最大表现力）<br>
+&bull; 低噪声（后期步骤）&rarr; 降低秩（低至 <code>min_rank</code>）<br>
+将容量集中在决定结构的阶段。掩码仅在训练时应用 — 推理时所有 t 均使用完整秩 — 因此保存的 <code>.safetensors</code> 是可正常烘焙的 LoRA。参见 <code>docs/methods/timestep_mask.md</code>。</p>
+<p>开关：<code>use_timestep_mask = true</code>。</p>
+<p><b>变体</b><br>
+&bull; <b>tlora</b> &mdash; T-LoRA 叠加 OrthoLoRA（<code>use_ortho = true</code> + <code>use_timestep_mask = true</code>）。默认可烘焙组合 &mdash; σ 分级秩调度与正交正则化结合。完全可烘焙。<br>
+&bull; <b>tlora-8gb</b> &mdash; 相同架构，低显存配置（梯度检查点 + 卸载）；如果默认配置 OOM，请选此变体。</p>
