@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { useAppStore } from './app'
+import { getFrontendTranslations } from '../i18n'
 
 export interface FieldMeta {
   key: string
@@ -7,12 +9,35 @@ export interface FieldMeta {
   default_value: unknown
   field_type: string
   description: string
+  description_en?: string
   origin: string
   group: string
   is_virtual: boolean
 }
 
+const _GROUP_LABELS: Record<string, Record<string, string>> = {
+  en: {
+    Architecture: 'Architecture',
+    Training: 'Training',
+    Performance: 'Performance',
+    Paths: 'Paths',
+  },
+  cn: {
+    Architecture: '模型架构',
+    Training: '训练参数',
+    Performance: '性能优化',
+    Paths: '路径配置',
+  },
+}
+
+function _t(key: string, lang: string): string {
+  const msgs = getFrontendTranslations(lang)
+  return msgs[key] ?? key
+}
+
 export const useConfigStore = defineStore('config', () => {
+  const appStore = useAppStore()
+
   const fields = ref<FieldMeta[]>([])
   const variant = ref('')
   const preset = ref('default')
@@ -29,9 +54,12 @@ export const useConfigStore = defineStore('config', () => {
   const advancedFields = computed(() => fields.value.filter(f => f.group !== 'basic'))
 
   const groupedAdvanced = computed(() => {
+    const lang = appStore.language
+    const labels = _GROUP_LABELS[lang] ?? _GROUP_LABELS.en
     const groups: Record<string, FieldMeta[]> = {}
     for (const f of advancedFields.value) {
-      const g = f.group || 'Other'
+      const raw = f.group || 'Other'
+      const g = labels[raw] ?? raw
       if (!groups[g]) groups[g] = []
       groups[g].push(f)
     }
@@ -44,7 +72,8 @@ export const useConfigStore = defineStore('config', () => {
       const data = await res.json()
       methods.value = data.methods || []
     } catch (e) {
-      error.value = `Failed to load methods: ${e}`
+      const lang = appStore.language
+      error.value = _t('cfgErrLoadMethods', lang).replace('{error}', String(e))
     }
   }
 
@@ -55,7 +84,8 @@ export const useConfigStore = defineStore('config', () => {
       variants.value = data.variants || []
       variantLabels.value = data.labels || {}
     } catch (e) {
-      error.value = `Failed to load variants: ${e}`
+      const lang = appStore.language
+      error.value = _t('cfgErrLoadVariants', lang).replace('{error}', String(e))
     }
   }
 
@@ -65,7 +95,8 @@ export const useConfigStore = defineStore('config', () => {
       const data = await res.json()
       presets.value = data.presets || []
     } catch (e) {
-      error.value = `Failed to load presets: ${e}`
+      const lang = appStore.language
+      error.value = _t('cfgErrLoadPresets', lang).replace('{error}', String(e))
     }
   }
 
@@ -73,7 +104,8 @@ export const useConfigStore = defineStore('config', () => {
     loading.value = true
     error.value = ''
     try {
-      const res = await fetch(`/api/config/merged?variant=${encodeURIComponent(v)}&preset=${encodeURIComponent(pre)}`)
+      const lang = appStore.language
+      const res = await fetch(`/api/config/merged?variant=${encodeURIComponent(v)}&preset=${encodeURIComponent(pre)}&lang=${encodeURIComponent(lang)}`)
       const data = await res.json()
       fields.value = data.fields || []
       variant.value = v
@@ -81,7 +113,8 @@ export const useConfigStore = defineStore('config', () => {
       editedValues.value = {}
       dirty.value = false
     } catch (e) {
-      error.value = `Failed to load config: ${e}`
+      const lang = appStore.language
+      error.value = _t('cfgErrLoadConfig', lang).replace('{error}', String(e))
     } finally {
       loading.value = false
     }
@@ -103,6 +136,7 @@ export const useConfigStore = defineStore('config', () => {
     loading.value = true
     error.value = ''
     try {
+      const lang = appStore.language
       const res = await fetch(`/api/config/method`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -110,11 +144,13 @@ export const useConfigStore = defineStore('config', () => {
       })
       if (!res.ok) {
         const data = await res.json()
-        throw new Error(data.detail || 'Save failed')
+        const detail = data.detail || _t('cfgErrSaveDetail', lang)
+        throw new Error(detail)
       }
       await fetchMerged(variant.value, preset.value)
     } catch (e) {
-      error.value = `Save failed: ${e}`
+      const lang = appStore.language
+      error.value = _t('cfgErrSave', lang).replace('{error}', String(e))
     } finally {
       loading.value = false
     }

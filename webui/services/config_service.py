@@ -6,12 +6,19 @@ desktop GUI and WebUI can share it.
 
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 from typing import Any, Optional
 
 import re
 
 import toml
+
+from gui.explanations import (
+    FIELD_HELP as _FIELD_HELP,
+    PREPROCESS_FIELD_HELP as _PRE_FIELD_HELP,
+)
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
 # Allow letters, digits, hyphens, underscores, and `custom/<name>` prefixes.
@@ -349,6 +356,24 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
 # ── Field metadata for the frontend ────────────────────────────
 
 
+def _field_desc(key: str, lang: str) -> str | None:
+    """Return the localized description for *key* from FIELD_HELP."""
+    for src in (_PRE_FIELD_HELP, _FIELD_HELP):
+        entry = src.get(key)
+        if entry:
+            return entry.get(lang) or entry.get("en")
+    return None
+
+
+def _field_desc_en(key: str) -> str | None:
+    """Return the English description for *key* from FIELD_HELP."""
+    for src in (_PRE_FIELD_HELP, _FIELD_HELP):
+        entry = src.get(key)
+        if entry:
+            return entry.get("en")
+    return None
+
+
 def get_field_type(key: str, value: Any) -> str:
     """Map a Python value + key to a frontend widget type."""
     if key == "attn_mode":
@@ -364,7 +389,7 @@ def get_field_type(key: str, value: Any) -> str:
     return "str"
 
 
-def build_merged_config(variant: str, preset: str) -> dict:
+def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
     """Build the full merged config with field metadata for the frontend.
 
     Returns a dict with ``fields`` (list of FieldMeta-like dicts),
@@ -386,6 +411,8 @@ def build_merged_config(variant: str, preset: str) -> dict:
                 "is_basic": key in _BASIC,
                 "is_virtual": key in _VIRTUAL_KEYS,
                 "options": _ATTN_MODES if ftype == "select" else None,
+                "description": _field_desc(key, lang),
+                "description_en": _field_desc_en(key),
             }
         )
     return {"fields": fields, "variant": variant, "preset": preset}
@@ -524,3 +551,111 @@ def save_variant_config(variant: str, data: dict) -> None:
         current[key] = value
 
     _save(path, current)
+
+
+# ── Prelaunch checks (cache + checkpoint) ───────────────────────
+
+# Cache-file suffixes (kept in sync with gui/__init__.py)
+_LATENT_SUFFIX = "_anima.npz"
+_TE_SUFFIX = "_anima_te.safetensors"
+_PE_SUFFIX = "_anima_pe.safetensors"
+
+# Variant families that require PE cache
+_PE_REQUIRED_FAMILIES = {"ip_adapter", "easycontrol"}
+
+
+def count_preprocess_caches(cache_dir: Path) -> dict[str, int]:
+    """Count latent / TE / PE cache sidecars under *cache_dir*."""
+    out = {"latents": 0, "te": 0, "pe": 0}
+    if not cache_dir.is_dir():
+        return out
+    for p in cache_dir.rglob("*"):
+        if not p.is_file():
+            continue
+        n = p.name
+        if n.endswith(_TE_SUFFIX):
+            out["te"] += 1
+        elif n.endswith(_PE_SUFFIX):
+            out["pe"] += 1
+        elif n.endswith(_LATENT_SUFFIX):
+            out["latents"] += 1
+    return out
+
+
+def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
+    """Check for a resumable checkpoint state directory.
+
+    Returns ``(state_dir, current_step)`` or ``None``.
+    """
+    if not merged.get("checkpointing_epochs"):
+        return None
+    output_dir = merged.get("output_dir")
+    output_name = merged.get("output_name") or "last"
+    if not output_dir:
+        return None
+    state_dir = ROOT / output_dir / f"{output_name}-checkpoint-state"
+    train_state_file = state_dir / "train_state.json"
+    if not train_state_file.is_file():
+        return None
+    try:
+        data = json.loads(train_state_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    step = int(data.get("current_step", 0))
+    return state_dir, step
+
+
+def prelaunch_check(variant: str, preset: str) -> dict:
+    """Check cache counts and checkpoint state for a training launch.
+
+    Returns a dict with cache_counts, has_cache, checkpoint info,
+    and whether PE cache is required.
+    """
+    merged, _origin = merged_gui_variant_preset(variant, preset)
+
+    # Resolve cache directory
+    cache_dir_str = merged.get("lora_cache_dir", "post_image_dataset/lora")
+    cache_dir = ROOT / cache_dir_str
+    cache_counts = count_preprocess_caches(cache_dir)
+
+    # Check if PE cache is required
+    meta = _read_variant_metadata(GUI_METHODS_DIR / f"{variant}.toml")
+    family = meta.get("family", "")
+    requires_pe = family in _PE_REQUIRED_FAMILIES
+
+    has_cache = (
+        cache_counts["latents"] > 0
+        or cache_counts["te"] > 0
+        or (requires_pe and cache_counts["pe"] > 0)
+    )
+
+    # Check checkpoint
+    ckpt = find_resumable_checkpoint(merged)
+    checkpoint_info = None
+    if ckpt is not None:
+        state_dir, step = ckpt
+        checkpoint_info = {
+            "state_dir": str(state_dir),
+            "step": step,
+        }
+
+    return {
+        "cache_counts": cache_counts,
+        "has_cache": has_cache,
+        "checkpoint": checkpoint_info,
+        "requires_pe": requires_pe,
+    }
+
+
+def wipe_checkpoint(output_dir: str, output_name: str) -> None:
+    """Delete a checkpoint state directory and its sidecar adapter file.
+
+    Raises ``OSError`` if deletion fails.
+    """
+    name = output_name or "last"
+    state_dir = ROOT / output_dir / f"{name}-checkpoint-state"
+    sidecar = state_dir.parent / f"{name}-checkpoint.safetensors"
+    if state_dir.is_dir():
+        shutil.rmtree(state_dir)
+    if sidecar.is_file():
+        sidecar.unlink()

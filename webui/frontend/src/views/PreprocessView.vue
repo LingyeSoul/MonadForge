@@ -3,6 +3,142 @@
     <div class="text-h5 mb-1">{{ t('ppTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('ppSubtitle') }}</div>
 
+    <!-- Status Dashboard -->
+    <v-card variant="tonal" class="mb-4">
+      <v-card-title class="text-subtitle-1">
+        <v-icon icon="mdi-chart-box-outline" class="mr-2" />
+        {{ t('ppStatus') }}
+      </v-card-title>
+      <v-card-text>
+        <div class="d-flex flex-wrap ga-2">
+          <v-chip prepend-icon="mdi-resize" :color="status.resized > 0 ? 'success' : 'default'" variant="tonal">
+            {{ t('ppStatusResized') }}: {{ status.resized }}
+          </v-chip>
+          <v-chip prepend-icon="mdi-cached" :color="status.cache.latents > 0 ? 'success' : 'default'" variant="tonal">
+            {{ t('ppStatusLatents') }}: {{ status.cache.latents }}
+          </v-chip>
+          <v-chip prepend-icon="mdi-text-box-outline" :color="status.cache.te > 0 ? 'success' : 'default'" variant="tonal">
+            {{ t('ppStatusTe') }}: {{ status.cache.te }}
+          </v-chip>
+          <v-chip prepend-icon="mdi-eye-outline" :color="status.cache.pe > 0 ? 'success' : 'default'" variant="tonal">
+            {{ t('ppStatusPe') }}: {{ status.cache.pe }}
+          </v-chip>
+          <v-chip prepend-icon="mdi-image-filter-center-focus" :color="status.masks > 0 ? 'success' : 'default'" variant="tonal">
+            {{ t('ppStatusMasks') }}: {{ status.masks }}
+          </v-chip>
+        </div>
+      </v-card-text>
+    </v-card>
+
+    <!-- Settings Panel -->
+    <v-expansion-panels class="mb-4">
+      <v-expansion-panel>
+        <v-expansion-panel-title>
+          <v-icon icon="mdi-cog-outline" class="mr-2" />
+          {{ t('ppSettings') }}
+        </v-expansion-panel-title>
+        <v-expansion-panel-text>
+          <v-row>
+            <!-- SAM Settings -->
+            <v-col cols="12" md="4">
+              <div class="text-subtitle-2 mb-2">{{ t('ppSamGroup') }}</div>
+              <v-switch v-model="settings.run_sam_mask" :label="t('ppRunSamMask')" density="compact" hide-details class="mb-2" />
+              <v-textarea
+                v-model="samPromptsText"
+                :label="t('ppSamPrompts')"
+                :hint="t('ppSamPromptsHint')"
+                rows="3"
+                density="compact"
+                hide-details="auto"
+                class="mb-2"
+              />
+              <v-text-field
+                v-model.number="settings.sam.threshold"
+                :label="t('ppSamThreshold')"
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                density="compact"
+                hide-details="auto"
+                class="mb-2"
+              />
+              <v-text-field
+                v-model.number="settings.sam.dilate"
+                :label="t('ppSamDilate')"
+                type="number"
+                step="1"
+                min="0"
+                max="64"
+                density="compact"
+                hide-details="auto"
+              />
+            </v-col>
+
+            <!-- MIT Settings -->
+            <v-col cols="12" md="4">
+              <div class="text-subtitle-2 mb-2">{{ t('ppMitGroup') }}</div>
+              <v-switch v-model="settings.run_mit_mask" :label="t('ppRunMitMask')" density="compact" hide-details class="mb-2" />
+              <v-text-field
+                v-model.number="settings.mit_text_threshold"
+                :label="t('ppMitThreshold')"
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                density="compact"
+                hide-details="auto"
+                class="mb-2"
+              />
+              <v-text-field
+                v-model.number="settings.mit_dilate"
+                :label="t('ppMitDilate')"
+                type="number"
+                step="1"
+                min="0"
+                max="64"
+                density="compact"
+                hide-details="auto"
+              />
+            </v-col>
+
+            <!-- Caption Settings -->
+            <v-col cols="12" md="4">
+              <div class="text-subtitle-2 mb-2">{{ t('ppCaptionGroup') }}</div>
+              <v-text-field
+                v-model.number="settings.caption_shuffle_variants"
+                :label="t('ppShuffleVariants')"
+                type="number"
+                step="1"
+                min="0"
+                max="64"
+                density="compact"
+                hide-details="auto"
+                class="mb-2"
+              />
+              <v-text-field
+                v-model.number="settings.caption_tag_dropout_rate"
+                :label="t('ppTagDropout')"
+                type="number"
+                step="0.05"
+                min="0"
+                max="1"
+                density="compact"
+                hide-details="auto"
+              />
+            </v-col>
+          </v-row>
+
+          <div class="mt-3">
+            <v-btn color="primary" size="small" prepend-icon="mdi-content-save" @click="saveSettings">
+              {{ t('ppSaveSettings') }}
+            </v-btn>
+          </div>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
+
+    <!-- Task Cards -->
     <v-row>
       <v-col cols="12" md="4">
         <v-card variant="tonal">
@@ -115,7 +251,7 @@
     <div class="d-flex align-center mb-2">
       <div class="text-subtitle-1">{{ t('ppActiveTasks') }}</div>
       <v-spacer />
-      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="taskStore.fetchTasks()">
+      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="refresh">
         {{ t('ppRefresh') }}
       </v-btn>
     </div>
@@ -134,11 +270,16 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('ppNoTasks') }}</div>
+
+    <!-- Save feedback snackbar -->
+    <v-snackbar v-model="showSaveMsg" :timeout="2000" color="success">
+      {{ t('ppSettingsSaved') }}
+    </v-snackbar>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
 
@@ -150,6 +291,87 @@ const preprocessCommands = [
   'preprocess', 'preprocess-resize', 'preprocess-vae', 'preprocess-te',
   'preprocess-pe', 'mask', 'mask-clean',
 ]
+
+// ── Status dashboard ──────────────────────────────────────────
+
+const status = reactive({
+  resized: 0,
+  masks: 0,
+  cache: { latents: 0, te: 0, pe: 0 },
+})
+
+async function fetchStatus() {
+  try {
+    const res = await fetch('/api/preprocess/status')
+    if (!res.ok) return
+    const data = await res.json()
+    status.resized = data.resized ?? 0
+    status.masks = data.masks ?? 0
+    status.cache.latents = data.cache?.latents ?? 0
+    status.cache.te = data.cache?.te ?? 0
+    status.cache.pe = data.cache?.pe ?? 0
+  } catch { /* ignore */ }
+}
+
+onMounted(fetchStatus)
+
+// Refresh status when tasks finish
+const runningCount = computed(() =>
+  taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command) && tp.state === 'running').length
+)
+watch(runningCount, (newVal, oldVal) => {
+  if (oldVal > newVal) fetchStatus()
+})
+
+// ── Settings ──────────────────────────────────────────────────
+
+const defaultSettings = () => ({
+  sam: { prompts: ['speech bubble', 'text bubble'], threshold: 0.5, dilate: 5 },
+  run_sam_mask: true,
+  run_mit_mask: true,
+  caption_shuffle_variants: 4,
+  caption_tag_dropout_rate: 0.1,
+  mit_text_threshold: 0.8,
+  mit_dilate: 5,
+})
+
+const settings = reactive(defaultSettings())
+const showSaveMsg = ref(false)
+
+const samPromptsText = computed({
+  get: () => settings.sam.prompts.join('\n'),
+  set: (val: string) => { settings.sam.prompts = val.split('\n').map(s => s.trim()).filter(Boolean) },
+})
+
+async function fetchSettings() {
+  try {
+    const res = await fetch('/api/preprocess/settings')
+    if (!res.ok) return
+    const data = await res.json()
+    Object.assign(settings.sam, data.sam ?? {})
+    settings.run_sam_mask = data.run_sam_mask ?? true
+    settings.run_mit_mask = data.run_mit_mask ?? true
+    settings.caption_shuffle_variants = data.caption_shuffle_variants ?? 4
+    settings.caption_tag_dropout_rate = data.caption_tag_dropout_rate ?? 0.1
+    settings.mit_text_threshold = data.mit_text_threshold ?? 0.8
+    settings.mit_dilate = data.mit_dilate ?? 5
+  } catch { /* ignore */ }
+}
+
+onMounted(fetchSettings)
+
+async function saveSettings() {
+  try {
+    const res = await fetch('/api/preprocess/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    })
+    if (res.ok) showSaveMsg.value = true
+  } catch { /* ignore */ }
+}
+
+// ── Task management ──────────────────────────────────────────
 
 const preprocessTasks = computed(() =>
   taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command))
@@ -167,6 +389,29 @@ function stateColor(state: string) {
 }
 
 async function runTask(command: string) {
-  await taskStore.startTask(command)
+  // Save settings before running mask/te tasks so env vars are current
+  if (['mask', 'preprocess-te', 'preprocess'].includes(command)) {
+    await saveSettings()
+  }
+
+  // Pass relevant env vars for tasks that read them
+  const env: Record<string, string> = {}
+  if (['mask', 'preprocess'].includes(command)) {
+    env.MIT_TEXT_THRESHOLD = String(settings.mit_text_threshold)
+    env.MIT_DILATE = String(settings.mit_dilate)
+    env.RUN_SAM_MASK = settings.run_sam_mask ? '1' : '0'
+    env.RUN_MIT_MASK = settings.run_mit_mask ? '1' : '0'
+  }
+  if (['preprocess-te', 'preprocess'].includes(command)) {
+    env.CAPTION_SHUFFLE_VARIANTS = String(settings.caption_shuffle_variants)
+    env.CAPTION_TAG_DROPOUT_RATE = String(settings.caption_tag_dropout_rate)
+  }
+
+  await taskStore.startTask(command, [], Object.keys(env).length > 0 ? env : undefined)
+}
+
+function refresh() {
+  taskStore.fetchTasks()
+  fetchStatus()
 }
 </script>

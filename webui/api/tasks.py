@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -115,5 +114,7 @@ async def stop_task(task_id: str):
     """Cancel a running task."""
     ok = await task_service.cancel_task(task_id)
     if not ok:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found or not running")
+        raise HTTPException(
+            status_code=404, detail=f"Task {task_id} not found or not running"
+        )
     return {"status": "cancelled", "task_id": task_id}

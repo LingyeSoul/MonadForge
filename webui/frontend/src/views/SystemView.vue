@@ -4,6 +4,7 @@
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('sysSubtitle') }}</div>
 
     <v-row>
+      <!-- Model Downloads -->
       <v-col cols="12" md="6">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -12,13 +13,40 @@
           </v-card-title>
           <v-card-text>
             <div class="text-body-2 mb-3">{{ t('sysDownloadsDesc') }}</div>
+            <v-list density="compact" class="mb-3">
+              <v-list-item
+                v-for="group in modelGroups"
+                :key="group.id"
+              >
+                <template #prepend>
+                  <v-icon :icon="group.installed ? 'mdi-check-circle' : 'mdi-alert-circle'" :color="group.installed ? 'success' : 'warning'" />
+                </template>
+                <v-list-item-title>{{ t(`sysModel_${group.id}`) }}</v-list-item-title>
+                <v-list-item-subtitle>
+                  <v-chip size="x-small" :color="group.installed ? 'success' : 'warning'" variant="tonal">
+                    {{ group.installed ? t('sysInstalled') : t('sysMissing') }}
+                  </v-chip>
+                </v-list-item-subtitle>
+                <template #append>
+                  <v-btn
+                    size="small"
+                    variant="text"
+                    :loading="isRunning(`download-${group.id}`)"
+                    @click="runTask(`download-${group.id}`)"
+                  >
+                    {{ group.installed ? t('sysRedownload') : t('sysDownload') }}
+                  </v-btn>
+                </template>
+              </v-list-item>
+            </v-list>
             <v-btn color="primary" block :loading="isRunning('download-models')" @click="runTask('download-models')">
-              {{ t('sysDownloadBtn') }}
+              {{ t('sysDownloadAll') }}
             </v-btn>
           </v-card-text>
         </v-card>
       </v-col>
 
+      <!-- Self Update -->
       <v-col cols="12" md="6">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -27,13 +55,14 @@
           </v-card-title>
           <v-card-text>
             <div class="text-body-2 mb-3">{{ t('sysUpdateDesc') }}</div>
-            <v-btn color="primary" block :loading="isRunning('update')" @click="runTask('update')">
+            <v-btn color="primary" block :loading="isRunning('update')" @click="showUpdateDlg = true">
               {{ t('sysUpdateBtn') }}
             </v-btn>
           </v-card-text>
         </v-card>
       </v-col>
 
+      <!-- Environment -->
       <v-col cols="12" md="6">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -50,6 +79,7 @@
         </v-card>
       </v-col>
 
+      <!-- Quick Actions -->
       <v-col cols="12" md="6">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -97,16 +127,76 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('sysNoTasks') }}</div>
+
+    <!-- Update dialog -->
+    <v-dialog v-model="showUpdateDlg" max-width="450">
+      <v-card>
+        <v-card-title>{{ t('sysUpdate') }}</v-card-title>
+        <v-card-text>
+          <v-checkbox v-model="updateDryRun" :label="t('sysUpdateDryRun')" density="compact" hide-details class="mb-2" />
+          <div class="text-subtitle-2 mb-1">{{ t('sysUpdateConflictPolicy') }}</div>
+          <v-radio-group v-model="updateConflictPolicy" density="compact" hide-details>
+            <v-radio :label="t('sysUpdateKeepConflicts')" value="keep" />
+            <v-radio :label="t('sysUpdateOverwrite')" value="overwrite" />
+          </v-radio-group>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showUpdateDlg = false">{{ t('dsCancel') }}</v-btn>
+          <v-btn color="primary" :loading="isRunning('update')" @click="runUpdate">
+            {{ t('sysUpdateBtn') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
+
+// ── Model groups ──────────────────────────────────────────────
+
+interface ModelGroup {
+  id: string
+  installed: boolean
+  files: { path: string; exists: boolean }[]
+}
+
+const modelGroups = ref<ModelGroup[]>([])
+
+async function fetchModelGroups() {
+  try {
+    const res = await fetch('/api/system/models')
+    if (!res.ok) return
+    const data = await res.json()
+    modelGroups.value = data.groups || []
+  } catch { /* ignore */ }
+}
+
+onMounted(fetchModelGroups)
+
+// ── Update dialog ─────────────────────────────────────────────
+
+const showUpdateDlg = ref(false)
+const updateDryRun = ref(false)
+const updateConflictPolicy = ref('keep')
+
+function runUpdate() {
+  const args: string[] = []
+  if (updateDryRun.value) args.push('--dry-run')
+  if (updateConflictPolicy.value === 'overwrite') args.push('--overwrite-conflicts')
+  showUpdateDlg.value = false
+  taskStore.startTask('update', args)
+}
+
+// ── Helpers ───────────────────────────────────────────────────
 
 function isRunning(command: string) {
   return taskStore.tasks.some(tp => tp.command === command && tp.state === 'running')

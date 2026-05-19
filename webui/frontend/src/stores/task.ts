@@ -40,13 +40,13 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function startTask(command: string, args: string[] = []): Promise<string | null> {
+  async function startTask(command: string, args: string[] = [], env?: Record<string, string>): Promise<string | null> {
     loading.value = true
     try {
       const res = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command, args }),
+        body: JSON.stringify({ command, args, env: env || {} }),
       })
       const data = await res.json()
       await fetchTasks()

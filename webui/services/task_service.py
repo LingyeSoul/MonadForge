@@ -7,7 +7,6 @@ import logging
 import os
 import sys
 import uuid
-from collections import defaultdict
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from enum import Enum
@@ -127,7 +126,9 @@ class TaskService:
                 task.process.terminate()
             task.state = TaskState.CANCELLED
             task.lines.append(f"[cancelled] Task {task_id} terminated by user")
-            await self._notify_subscribers(task, {"type": "cancelled", "task_id": task_id})
+            await self._notify_subscribers(
+                task, {"type": "cancelled", "task_id": task_id}
+            )
             return True
         except Exception:
             logger.exception("Failed to cancel task %s", task_id)
@@ -144,7 +145,11 @@ class TaskService:
                 queue.put_nowait({"type": "log", "line": line})
             if task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
                 queue.put_nowait(
-                    {"type": "done", "exit_code": task.exit_code, "state": task.state.value}
+                    {
+                        "type": "done",
+                        "exit_code": task.exit_code,
+                        "state": task.state.value,
+                    }
                 )
         else:
             queue.put_nowait({"type": "error", "message": f"Task {task_id} not found"})
@@ -176,7 +181,11 @@ class TaskService:
             else:
                 task.state = TaskState.FAILED
 
-            msg = {"type": "done", "exit_code": task.exit_code, "state": task.state.value}
+            msg = {
+                "type": "done",
+                "exit_code": task.exit_code,
+                "state": task.state.value,
+            }
             await self._notify_subscribers(task, msg)
         except Exception:
             logger.exception("Error reading output for task %s", task.id)

@@ -85,7 +85,7 @@ const navItems = [
   { icon: 'mdi-cogs', titleKey: 'navPreprocess', to: '/preprocess' },
   { icon: 'mdi-puzzle-outline', titleKey: 'navAdapter', to: '/adapter' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },
-  { icon: 'mdi-console-outline', titleKey: 'navTasks', to: '/tasks' },
+  { icon: 'mdi-console-line', titleKey: 'navTasks', to: '/tasks' },
 ]
 
 async function onLangChange(lang: unknown) {

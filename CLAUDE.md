@@ -14,11 +14,14 @@ hf auth login              # Authenticate for model downloads
 make download-models       # Download DiT, text encoder, VAE, SAM3, MIT, PE-Core, PE-Spatial
 # Training images go in image_dataset/ with .txt caption sidecars
 make preprocess            # Resize → post_image_dataset/resized/, cache → post_image_dataset/lora/
+# WebUI setup (optional — for the browser-based interface)
+cd webui/frontend && npm install && npm run build   # Build frontend dist/
+python -m webui            # Start WebUI at http://127.0.0.1:8000
 ```
 
 ## Commands
 
-Both `make` (Unix) and `python tasks.py` (cross-platform) are supported. The examples below show both forms. The `Makefile` is a thin catch-all dispatcher — every target forwards to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; per-domain command implementations live in `scripts/tasks/{training,inference,preprocess,masking,gui,downloads,utilities,tagger,dcw}.py`, with the experimental commands (`exp-*`) in `scripts/experimental_tasks/{training,inference}.py`. Don't grep the Makefile for a target's recipe — look in `scripts/tasks/` (or `scripts/experimental_tasks/` for `exp-*`).
+Both `make` (Unix) and `python tasks.py` (cross-platform) are supported. The examples below show both forms. The `Makefile` is a thin catch-all dispatcher — every target forwards to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; per-domain command implementations live in `scripts/tasks/{training,inference,preprocess,masking,webui,downloads,utilities,tagger,dcw}.py`, with the experimental commands (`exp-*`) in `scripts/experimental_tasks/{training,inference}.py`. Don't grep the Makefile for a target's recipe — look in `scripts/tasks/` (or `scripts/experimental_tasks/` for `exp-*`).
 
 ```bash
 # Training (run from anima_lora/)
@@ -57,9 +60,9 @@ make exp-easycontrol-preprocess # Resize + VAE + text caches into post_image_dat
 make exp-soft-tokens            # SoftREPA-style per-layer × per-t soft tokens (training-only v1)
 make exp-chimera                # ChimeraHydra dual-pool additive MoE (methods/chimera.toml)
 
-# GUI-friendly per-variant path (configs/gui-methods/<variant>.toml — clean,
-# self-contained, no toggle blocks). Intended for basic users who don't want
-# to hand-edit methods/lora.toml's comment-toggle system.
+# WebUI-friendly per-variant path (configs/gui-methods/<variant>.toml — clean,
+# self-contained, no toggle blocks). Intended for users who interact through
+# the WebUI instead of hand-editing methods/lora.toml's comment-toggle system.
 make lora-gui GUI_PRESETS=tlora                                # gui-methods/tlora.toml + preset default
 make lora-gui GUI_PRESETS=hydralora_experimental PRESET=low_vram  # override preset as usual
 python tasks.py lora-gui hydralora_sigma                       # Windows; variant can also be 1st positional arg
@@ -106,10 +109,12 @@ make exp-test-directedit PROMPT='double peace'  # DirectEdit on random source im
 make exp-test-directedit-dry                    # DirectEdit reconstruction sanity check
                                                 # (ψ_tar == ψ_src; output should reconstruct the source)
 
-# GUI (PySide6 — config editing, IP-Adapter / EasyControl preprocess+train, dataset browsing)
-make gui
-python tasks.py gui        # Windows
-make gui-shortcut          # Create "Anima LoRA GUI.lnk" on the Windows desktop (no console window)
+# WebUI (FastAPI + Vue 3 — config editing, dataset browsing, preprocessing,
+#   IP-Adapter / EasyControl training, task monitoring, system management)
+python -m webui               # Start WebUI server (http://127.0.0.1:8000)
+python -m webui --dev         # Dev mode: auto-reload, wildcard CORS (frontend via npm run dev)
+start-webui-win.bat           # Windows: launch server + open browser
+build-webui-win.bat           # Windows: npm install + npm run build (rebuild frontend dist/)
 
 # Masking (for masked loss training)
 # Merged masks land in post_image_dataset/masks/<rel>/{stem}_mask.png. SAM +
@@ -156,9 +161,9 @@ On Windows, use `python tasks.py <command>` instead of `make <command>`. Extra a
 | `train.py` | `AnimaTrainer` class — main training loop via HF Accelerate |
 | `inference.py` | Standalone image generation (`--help` for all flags) |
 | `networks/spectrum.py` | Spectrum inference acceleration (Chebyshev feature forecasting) |
-| `gui/` | PySide6 GUI package: config editing with presets, IP-Adapter / EasyControl preprocess+train tabs, dataset browser, training monitor |
+| `webui/` | FastAPI + Vue 3 WebUI: config editing, dataset browsing, preprocessing, IP-Adapter / EasyControl training, task monitoring, system management. Backend: `webui/server.py` (FastAPI app factory), `webui/api/` (REST + WebSocket routes), `webui/services/` (config, image, task services), `webui/models/` (Pydantic schemas). Frontend: `webui/frontend/` (Vue 3 + Vuetify 4 + Pinia + TypeScript + Vite SPA) |
 | `tasks.py` | Cross-platform task runner (Windows-compatible Makefile alternative). Source of truth for every `make` target. |
-| `scripts/tasks/` | Per-domain task implementations (`training`, `inference`, `preprocess`, `masking`, `gui`, `downloads`, `utilities`, `tagger`, `dcw`) — where command bodies actually live; `_common.py` holds shared helpers. |
+| `scripts/tasks/` | Per-domain task implementations (`training`, `inference`, `preprocess`, `masking`, `webui`, `downloads`, `utilities`, `tagger`, `dcw`) — where command bodies actually live; `_common.py` holds shared helpers. |
 | `scripts/experimental_tasks/` | Bodies for the `exp-*` commands (postfix, ip-adapter, easycontrol training + their `exp-test-*` inference). Reuses helpers from `scripts/tasks/_common.py`. |
 
 Method deep-dives in `docs/methods/` (shipped); experimental method docs in `docs/experimental/`; active proposals in `docs/proposal/`. Retired material lives under `_archive/`.
@@ -177,7 +182,7 @@ Layout:
   - `ip_adapter.toml` — IP-Adapter image cross-attention (DiT frozen; trains resampler + per-block `to_k_ip`/`to_v_ip`). Reuses the LoRA pipeline's data layout (`post_image_dataset/resized/` + `post_image_dataset/lora/`). Defaults to PRE-CACHED PE features (`make preprocess-pe`).
   - `easycontrol.toml` — EasyControl image conditioning (DiT frozen; trains per-block cond LoRA on self-attn + FFN + scalar `b_cond` gate). Source: `easycontrol-dataset/`. Caches: `post_image_dataset/easycontrol/`. Reuses cached VAE latents — no new sidecar.
   - `soft_tokens.toml` — SoftREPA-style per-layer × per-t soft text tokens (DiT frozen; per-block `Block.forward` monkey-patch splices `s^(k,t)` into `crossattn_emb`). ~1M params. Training-only v1 — inference path not wired.
-- `configs/gui-methods/` — GUI-friendly parallel tree. One self-contained TOML per **variant** instead of per family (`lora`, `lora-8gb`, `lora_repa`, `ortholora`, `tlora`, `tlora_ortho`, `tlora_ortho_reft`, `reft`, `hydralora_experimental`, `hydralora_sigma`, `hydralora_fei`, `fera`, `chimera_hydra`, `postfix_ortho_cond`, `ip_adapter`, `easycontrol`, `soft_tokens`). No toggle blocks — what you see is what runs. Selected via `train.py --methods_subdir gui-methods` (wrapped by `make lora-gui GUI_PRESETS=<variant>` / `python tasks.py lora-gui <variant>`). `postfix_ortho_cond` is the GUI-exposed postfix path; `fera` is the author-faithful FeRA cell of the three-axis matrix (`use_moe_style="independent_A"` + `route_per_layer=False` + `router_source="fei"`). Run `ls configs/gui-methods/` for the live list — variants get added/renamed.
+- `configs/gui-methods/` — WebUI-friendly parallel tree. One self-contained TOML per **variant** instead of per family (`lora`, `lora-8gb`, `lora_repa`, `ortholora`, `tlora`, `tlora_ortho`, `tlora_ortho_reft`, `reft`, `hydralora_experimental`, `hydralora_sigma`, `hydralora_fei`, `fera`, `chimera_hydra`, `postfix_ortho_cond`, `ip_adapter`, `easycontrol`, `soft_tokens`). No toggle blocks — what you see is what runs. Selected via `train.py --methods_subdir gui-methods` (wrapped by `make lora-gui GUI_PRESETS=<variant>` / `python tasks.py lora-gui <variant>`). `postfix_ortho_cond` is the WebUI-exposed postfix path; `fera` is the author-faithful FeRA cell of the three-axis matrix (`use_moe_style="independent_A"` + `route_per_layer=False` + `router_source="fei"`). Run `ls configs/gui-methods/` for the live list — variants get added/renamed.
 
 Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder / PE caches are written to (and read from) that directory using stem-mirrored filenames, instead of sitting next to the source image. IP-Adapter and EasyControl method configs use this to keep `ip-adapter-dataset/` and `easycontrol-dataset/` purely user-facing source dirs while caches live under `post_image_dataset/`.
 
@@ -200,6 +205,7 @@ Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder 
   - `library/log.py` — logging setup + `fire_in_thread`.
 - **Strategy pattern** for model-specific tokenization/encoding (`library/anima/strategy.py`, `library/strategy_base.py`)
 - **Pluggable adapters** under `networks/` — selected via `network_module` config key plus (for the LoRA family) the three-axis routing cfg. Covers LoRA / OrthoLoRA / T-LoRA / HydraLoRA / FeRA / ReFT / ChimeraHydra (in `networks/lora_modules/` — including `stacked_experts.py` for FeRA's independent-A layout and `chimera.py` for the dual-pool MoE) coordinated by `networks/lora_anima/` (`network.py`, `factory.py`, `loading.py`, `config.py`, `attn_fuse.py`); postfix / IP-Adapter / EasyControl / REPA (in `networks/methods/`); the unified attention-backend dispatcher (`networks/attention_dispatch.py`); and Spectrum inference (`networks/spectrum.py`). See `networks/CLAUDE.md` for the per-module map, three-axis surface, variant details, and dispatch invariants.
+- **WebUI (`webui/`)**: FastAPI + Vue 3 SPA replacing the former PySide6 desktop GUI. Backend: `server.py` (FastAPI app factory, serves SPA in production), `api/` (REST routes for config/images/tasks/i18n + WebSocket at `/ws/tasks/{id}` for live log streaming), `services/` (config_service for TOML merge chain, image_service for dataset browsing, task_service for async subprocess lifecycle), `models/` (Pydantic schemas). Frontend: Vue 3 + Vuetify 4 + Pinia + Vue Router + TypeScript SPA in `frontend/`, built with Vite. Seven views: Config Editor, Dataset Browser, Preprocess, Adapter Training, LoRA Merge, Task Monitor, System. Launch: `python -m webui` (production) or `python -m webui --dev` (dev mode with auto-reload). Build frontend: `build-webui-win.bat` or `cd webui/frontend && npm run build`.
 
 ## Critical invariants
 

@@ -222,6 +222,18 @@
                 persistent-hint
                 class="caption-editor"
               />
+              <!-- Tag preview -->
+              <div v-if="editCaption" class="tag-preview mt-2">
+                <div class="text-caption text-medium-emphasis mb-1">{{ t('dsTagPreview') }}</div>
+                <div class="tag-preview-content">
+                  <span
+                    v-for="(tag, ti) in parsedTags"
+                    :key="ti"
+                    class="tag-chip"
+                    :class="tagClass(tag)"
+                  >{{ tag }}</span>
+                </div>
+              </div>
             </v-col>
           </v-row>
         </v-card-text>
@@ -273,7 +285,7 @@
     </v-dialog>
 
     <!-- Version history dialog -->
-    <v-dialog v-model="versionsDialog" max-width="800">
+    <v-dialog v-model="versionsDialog" max-width="1000">
       <v-card v-if="selectedImage">
         <v-card-title class="d-flex align-center">
           <v-icon icon="mdi-history" class="mr-2" />
@@ -283,34 +295,49 @@
           <div v-if="versions.length === 0" class="text-center text-medium-emphasis pa-8">
             {{ t('dsNoVersions') }}
           </div>
-          <v-list v-else lines="two" density="compact">
-            <v-list-item
-              v-for="(v, i) in versions"
-              :key="i"
-              :active="selectedVersion === i"
-              @click="selectedVersion = i"
-            >
-              <template #prepend>
-                <v-icon icon="mdi-clock-outline" size="small" />
-              </template>
-              <v-list-item-title class="text-caption">
-                {{ v.ts }}
-              </v-list-item-title>
-              <v-list-item-subtitle class="text-truncate" style="max-width: 600px">
-                {{ v.text.slice(0, 200) }}
-              </v-list-item-subtitle>
-              <template #append>
-                <v-btn
-                  size="x-small"
-                  variant="text"
-                  color="primary"
-                  @click.stop="restoreVersion(v.text)"
+          <v-row v-else>
+            <!-- Version list -->
+            <v-col cols="12" md="4" style="max-height: 500px; overflow-y: auto">
+              <v-list density="compact">
+                <v-list-item
+                  v-for="(v, i) in versions"
+                  :key="i"
+                  :active="selectedVersion === i"
+                  @click="selectedVersion = i"
                 >
-                  {{ t('dsRestore') }}
-                </v-btn>
-              </template>
-            </v-list-item>
-          </v-list>
+                  <template #prepend>
+                    <v-icon icon="mdi-clock-outline" size="small" />
+                  </template>
+                  <v-list-item-title class="text-caption">{{ v.ts }}</v-list-item-title>
+                  <v-list-item-subtitle class="text-truncate">{{ v.text.slice(0, 80) }}</v-list-item-subtitle>
+                  <template #append>
+                    <v-btn size="x-small" variant="text" color="primary" @click.stop="restoreVersion(v.text)">
+                      {{ t('dsRestore') }}
+                    </v-btn>
+                  </template>
+                </v-list-item>
+              </v-list>
+            </v-col>
+
+            <!-- Diff display -->
+            <v-col cols="12" md="8">
+              <div v-if="selectedVersion >= 0 && selectedVersion < versions.length">
+                <div class="text-subtitle-2 mb-2 d-flex align-center ga-2">
+                  <v-chip size="small" color="success" variant="tonal">
+                    +{{ diffStats.added }} {{ t('dsDiffInsertions') }}
+                  </v-chip>
+                  <v-chip size="small" color="error" variant="tonal">
+                    -{{ diffStats.removed }} {{ t('dsDiffDeletions') }}
+                  </v-chip>
+                </div>
+                <pre class="diff-output"><template v-for="(line, li) in diffLines" :key="li"><span :class="diffLineClass(line)">{{ line }}</span>
+</template></pre>
+              </div>
+              <div v-else class="text-center text-medium-emphasis pa-8">
+                {{ t('dsDiffSelectVersion') }}
+              </div>
+            </v-col>
+          </v-row>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -562,6 +589,106 @@ function restoreVersion(text: string) {
   versionsDialog.value = false
 }
 
+// ── Tag preview ───────────────────────────────────────────────
+
+const parsedTags = computed(() => {
+  if (!editCaption.value) return []
+  return editCaption.value.split(',').map(s => s.trim()).filter(Boolean)
+})
+
+function tagClass(tag: string): string {
+  if (/^by\s/i.test(tag)) return 'tag-artist'
+  if (/^(on the|in the)\s/i.test(tag)) return 'tag-section'
+  return 'tag-plain'
+}
+
+// ── Diff computation ──────────────────────────────────────────
+
+const diffLines = computed(() => {
+  if (selectedVersion.value < 0 || selectedVersion.value >= versions.value.length) return []
+  const oldText = versions.value[selectedVersion.value].text
+  const newText = diskCaption.value
+  return computeUnifiedDiff(oldText, newText)
+})
+
+const diffStats = computed(() => {
+  let added = 0
+  let removed = 0
+  for (const line of diffLines.value) {
+    if (line.startsWith('+')) added++
+    else if (line.startsWith('-')) removed++
+  }
+  return { added, removed }
+})
+
+function diffLineClass(line: string): string {
+  if (line.startsWith('@@')) return 'diff-hunk'
+  if (line.startsWith('+')) return 'diff-add'
+  if (line.startsWith('-')) return 'diff-del'
+  return 'diff-ctx'
+}
+
+function computeUnifiedDiff(oldText: string, newText: string): string[] {
+  const oldLines = oldText.split('\n')
+  const newLines = newText.split('\n')
+  const result: string[] = []
+
+  // Simple LCS-based diff
+  const m = oldLines.length
+  const n = newLines.length
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+
+  // Backtrack to build diff
+  const ops: { type: string; line: string }[] = []
+  let i = m
+  let j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
+      ops.unshift({ type: ' ', line: oldLines[i - 1] })
+      i--
+      j--
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      ops.unshift({ type: '+', line: newLines[j - 1] })
+      j--
+    } else {
+      ops.unshift({ type: '-', line: oldLines[i - 1] })
+      i--
+    }
+  }
+
+  // Format as unified diff with context
+  const contextLines = 3
+  let opIdx = 0
+  while (opIdx < ops.length) {
+    // Find next change
+    if (ops[opIdx].type === ' ') {
+      // Check if this is near a change (within contextLines)
+      let nearChange = false
+      for (let k = Math.max(0, opIdx - contextLines); k <= Math.min(ops.length - 1, opIdx + contextLines); k++) {
+        if (ops[k].type !== ' ') { nearChange = true; break }
+      }
+      if (nearChange) {
+        result.push(` ${ops[opIdx].line}`)
+      } else if (opIdx === 0 || (opIdx > 0 && ops[opIdx - 1].type !== ' ')) {
+        result.push(` ${ops[opIdx].line}`)
+      }
+    } else {
+      result.push(`${ops[opIdx].type}${ops[opIdx].line}`)
+    }
+    opIdx++
+  }
+
+  return result
+}
+
 // ── lifecycle ─────────────────────────────────────────────────
 
 onMounted(async () => {
@@ -586,5 +713,68 @@ onMounted(async () => {
 .caption-editor :deep(.v-field) {
   font-family: monospace;
   font-size: 13px;
+}
+
+/* Tag preview */
+.tag-preview-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.tag-chip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-size: 11px;
+}
+
+.tag-plain {
+  border-color: #888;
+  color: #ccc;
+}
+
+.tag-artist {
+  border-color: #d4a017;
+  color: #d4a017;
+}
+
+.tag-section {
+  border-color: #5e8eb0;
+  color: #5e8eb0;
+}
+
+/* Diff display */
+.diff-output {
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  padding: 8px 12px;
+  max-height: 450px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-add {
+  background: rgba(72, 199, 142, 0.15);
+  color: #9ad17a;
+}
+
+.diff-del {
+  background: rgba(224, 122, 122, 0.15);
+  color: #e07a7a;
+}
+
+.diff-hunk {
+  color: #7aa6da;
+}
+
+.diff-ctx {
+  color: #aaa;
 }
 </style>

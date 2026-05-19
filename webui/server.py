@@ -15,6 +15,9 @@ from starlette.routing import Route
 from webui.api import config as config_api
 from webui.api import i18n as i18n_api
 from webui.api import images as images_api
+from webui.api import merge as merge_api
+from webui.api import preprocess as preprocess_api
+from webui.api import system as system_api
 from webui.api import tasks as tasks_api
 from webui.api import ws as ws_api
 
@@ -50,6 +53,9 @@ def create_app(dev: bool = False) -> FastAPI:
     app.include_router(config_api.router, prefix="/api/config")
     app.include_router(i18n_api.router, prefix="/api/i18n")
     app.include_router(images_api.router, prefix="/api/images")
+    app.include_router(merge_api.router, prefix="/api/merge")
+    app.include_router(preprocess_api.router, prefix="/api/preprocess")
+    app.include_router(system_api.router, prefix="/api/system")
     app.include_router(tasks_api.router, prefix="/api/tasks")
     app.include_router(ws_api.router)
 

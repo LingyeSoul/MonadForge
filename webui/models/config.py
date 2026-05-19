@@ -18,6 +18,8 @@ class FieldMeta(BaseModel):
     is_basic: bool = False
     is_virtual: bool = False
     options: Optional[list[str]] = None  # for select fields (attn_mode, etc.)
+    description: Optional[str] = None  # localized help text
+    description_en: Optional[str] = None  # English tip (always English)
 
 
 class ConfigLayerResponse(BaseModel):
