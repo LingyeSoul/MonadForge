@@ -36,3 +36,4 @@ node.zip
 _archive/
 gui/gui_settings.json
 /docs
+/webui/frontend/node_modules

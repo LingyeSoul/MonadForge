@@ -89,6 +89,10 @@ dependencies = [
     "simpleeval>=1.0.7",
     "pytest>=9.0.3",
     "blake3>=1.0.8",
+    # WebUI
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
