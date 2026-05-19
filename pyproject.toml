@@ -1,7 +1,7 @@
 [project]
-name = "anima-lora"
+name = "monad-forge"
 version = "0.1.0"
-description = "Standalone Anima LoRA training pipeline"
+description = "MonadForge — improved fork of anima_lora (https://github.com/sorryhyun/anima_lora)"
 requires-python = "==3.13.*"
 dependencies = [
     # Core ML.
@@ -69,7 +69,7 @@ dependencies = [
     # Windows: cuda132 opt-in — trimmed FA2 (bf16 + head_dim=128 + non-causal)
     # built against torch 2.12 + CUDA 13.2. See flash-attention/repack_wheel.py.
     # "flash-attn @ https://github.com/sorryhyun/flash-attention-sm120-fix/releases/download/fa2cuda132/flash_attn-2.8.4-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-    "triton-windows>=3.6.0 ; sys_platform == 'win32'",
+    "triton-windows>=3.6.0,<3.8 ; sys_platform == 'win32'",
     "pyside6>=6.11.0",
     "ruff>=0.15.9",
     "matplotlib",
