@@ -200,6 +200,13 @@ _CHIMERA_KWARG_FLAGS: Tuple[str, ...] = (
     # near-uniform too long (std=0.01 init is slow to break symmetry).
     "network_content_router_lr_scale",
     "network_freq_router_lr_scale",
+    # Optional global content router (replaces the per-Linear lx-router with
+    # a single network-level ContentRouter fed by pooled crossattn_emb).
+    # Consumed by ``LoRANetworkCfg.from_kwargs`` — see chimera.toml's "Optional:
+    # global content router" block.
+    "content_router_source",
+    "content_router_init_std",
+    "content_router_layer_norm",
 )
 
 

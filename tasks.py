@@ -243,6 +243,12 @@ COMMANDS = {
         exp_inference.cmd_test_postfix,
         "[experimental] Inference with latest postfix weight",
     ),
+    "exp-test-soft": (
+        exp_inference.cmd_test_soft,
+        "[experimental] Inference with latest soft_tokens weight "
+        "(SoftREPA-style per-layer × per-t bank, spliced into cross-attn via "
+        "monkey-patched Block.forward). Composes freely with --spectrum.",
+    ),
     "exp-test-turbo": (
         exp_inference.cmd_test_turbo,
         "[experimental] Inference with latest turbo student LoRA at 4 steps, cfg=1.0 "

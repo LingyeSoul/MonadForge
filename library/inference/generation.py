@@ -36,6 +36,50 @@ logger = logging.getLogger(__name__)
 _SPECTRUM_RUNNER = None
 
 
+def _setup_soft_tokens(args, anima, device):
+    """Build + apply the soft_tokens network from ``--soft_tokens_weight``.
+
+    Returns ``None`` when the flag isn't set. Otherwise returns the network with
+    ``apply_to(unet=anima)`` already called — the per-block ``Block.forward``
+    monkey-patches are live, but ``_step_layer_tokens`` is empty until the
+    caller fires ``network.append_postfix(..., timesteps=t)`` each step. Match
+    the postfix block's pattern (line 447 below).
+    """
+    soft_weight = getattr(args, "soft_tokens_weight", None)
+    if soft_weight is None:
+        return None
+    from networks.methods.soft_tokens import create_network_from_weights
+
+    net, _ = create_network_from_weights(
+        multiplier=1.0,
+        file=soft_weight,
+        ae=None,
+        text_encoders=None,
+        unet=anima,
+        for_inference=True,
+    )
+    net.load_weights(soft_weight)
+    net.to(device, dtype=torch.bfloat16)
+    net.apply_to(text_encoders=None, unet=anima, apply_text_encoder=False, apply_unet=True)
+    logger.info(
+        f"soft_tokens: loaded {soft_weight} "
+        f"(n_layers={net.n_layers}, K={net.num_tokens}, "
+        f"n_t_buckets={net.n_t_buckets}, splice={net.splice_position})"
+    )
+    return net
+
+
+def _seqlens_from_context(context_dict, device):
+    """Extract per-sample text seqlens from the context's attention mask.
+
+    Mirrors the postfix block. ``context['embed'][3]`` is the cached attention
+    mask (1 inside text, 0 in padding) — sum along the sequence axis gives the
+    real token count per sample, which the ``front_of_padding`` splice needs.
+    """
+    embed_mask = context_dict["embed"][3].to(device)
+    return embed_mask.sum(dim=-1).to(torch.int32)
+
+
 def register_spectrum_runner(fn):
     """Plug in a spectrum_denoise implementation.
 
@@ -185,6 +229,17 @@ def generate_body_tiled(
             f"Postfix: appended {postfix_net.num_postfix_tokens} tokens after text"
         )
 
+    # Soft tokens — see generate_body() for the long-form comment.
+    soft_tokens_net = _setup_soft_tokens(args, anima, device)
+    soft_tokens_embed_seqlens = (
+        _seqlens_from_context(context, device) if soft_tokens_net is not None else None
+    )
+    soft_tokens_neg_seqlens = (
+        _seqlens_from_context(context_null, device)
+        if soft_tokens_net is not None
+        else None
+    )
+
     num_channels_latents = anima_models.Anima.LATENT_CHANNELS
     h_latent = height // 8
     w_latent = width // 8
@@ -287,6 +342,10 @@ def generate_body_tiled(
                     # ChimeraHydra ContentRouter — π_c depends on the caption,
                     # so fire separately for cond vs uncond. No-op otherwise.
                     set_hydra_content(anima, embed)
+                    if soft_tokens_net is not None:
+                        soft_tokens_net.append_postfix(
+                            embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                        )
                     with torch.no_grad():
                         tile_pred = anima(
                             tile_latent,
@@ -306,6 +365,12 @@ def generate_body_tiled(
                         if anima.blocks_to_swap:
                             anima.prepare_block_swap_before_forward()
                         set_hydra_content(anima, negative_embed)
+                        if soft_tokens_net is not None:
+                            soft_tokens_net.append_postfix(
+                                negative_embed,
+                                soft_tokens_neg_seqlens,
+                                timesteps=t_expand,
+                            )
                         with torch.no_grad():
                             uncond_tile_pred = anima(
                                 tile_latent,
@@ -467,6 +532,19 @@ def generate_body(
             f"Postfix: appended {postfix_net.num_postfix_tokens} tokens after text"
         )
 
+    # Soft tokens: build + apply the monkey-patches once. The per-step
+    # append_postfix(..., timesteps=t) call fires inside the loop below — and
+    # is mirrored in the Spectrum runner for the --spectrum path.
+    soft_tokens_net = _setup_soft_tokens(args, anima, device)
+    soft_tokens_embed_seqlens = (
+        _seqlens_from_context(context, device) if soft_tokens_net is not None else None
+    )
+    soft_tokens_neg_seqlens = (
+        _seqlens_from_context(context_null, device)
+        if soft_tokens_net is not None
+        else None
+    )
+
     # Create padding mask
     padding_mask = torch.zeros(
         bs, 1, h_latent, w_latent, dtype=torch.bfloat16, device=device
@@ -582,6 +660,9 @@ def generate_body(
             dcw_band_mask=getattr(args, "dcw_band_mask", "LL"),
             dcw_calibrator=dcw_calibrator,
             smc_cfg=smc_cfg,
+            soft_tokens_net=soft_tokens_net,
+            soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
+            soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,
         )
     else:
         try:
@@ -607,6 +688,10 @@ def generate_body(
                         dcw_calibrator.record_latent_pre_forward(i, latents)
 
                     set_hydra_content(anima, embed)
+                    if soft_tokens_net is not None:
+                        soft_tokens_net.append_postfix(
+                            embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                        )
                     with torch.no_grad():
                         _pos_kw = (
                             {"pooled_text_override": _pooled_text_pos}
@@ -623,6 +708,12 @@ def generate_body(
 
                     if do_cfg:
                         set_hydra_content(anima, negative_embed)
+                        if soft_tokens_net is not None:
+                            soft_tokens_net.append_postfix(
+                                negative_embed,
+                                soft_tokens_neg_seqlens,
+                                timesteps=t_expand,
+                            )
                         with torch.no_grad():
                             _neg_kw = (
                                 {"pooled_text_override": _pooled_text_neg}

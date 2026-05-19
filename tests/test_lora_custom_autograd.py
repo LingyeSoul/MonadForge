@@ -601,8 +601,10 @@ def test_chimera_flag_on_matches_legacy_gradients():
 
 def test_chimera_channel_scale_flag_on_matches_legacy_gradients():
     """ChimeraHydraLoRAModule + channel_scale: both pools share the same
-    inv_scale, applied per-pool in the custom path. Pre-fix this would have
-    silently broken — there were no Chimera channel_scale tests.
+    inv_scale, folded per-pool into each ``ScaledLoRADownProjectFn`` matmul
+    in the custom path. Allclose (not torch.equal) because the custom path
+    keeps ``inv_scale`` fp32 while the legacy ``_rebalance(x.to(bf16))`` path
+    bf16-rounds it — matches the LoRA / Ortho / Hydra channel_scale tests.
     """
     from networks.lora_modules.chimera import ChimeraHydraLoRAModule
 
@@ -638,7 +640,11 @@ def test_chimera_channel_scale_flag_on_matches_legacy_gradients():
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
 
-    assert torch.equal(o_legacy, o_custom), "Chimera+channel_scale forward differs"
-    _assert_grads_equal(g_legacy, g_custom, "Chimera+channel_scale")
-    assert torch.equal(gx_legacy, gx_custom), "Chimera+channel_scale grad_x differs"
+    assert torch.allclose(o_legacy, o_custom, atol=_CS_ATOL, rtol=_CS_RTOL), (
+        "Chimera+channel_scale forward differs beyond bf16 rounding tolerance"
+    )
+    _assert_grads_close(g_legacy, g_custom, "Chimera+channel_scale", _CS_ATOL, _CS_RTOL)
+    assert torch.allclose(gx_legacy, gx_custom, atol=_CS_ATOL, rtol=_CS_RTOL), (
+        "Chimera+channel_scale grad_x differs beyond bf16 rounding tolerance"
+    )
     assert g_legacy["S_q_c"].abs().sum() > 0 and g_legacy["S_q_f"].abs().sum() > 0

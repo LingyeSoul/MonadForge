@@ -377,16 +377,25 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         Q_eff_f = R_q_f @ self.Q_basis_f  # (r, in)
 
         if self.use_custom_down_autograd and self.training:
-            # Apply the SmoothQuant rebalance ONCE upstream of both pools so
-            # ``grad_x`` aggregates over `c` + `f` *before* the bf16 multiply
-            # backward — matches the legacy `_rebalance(x).then(F.linear×2)`
-            # autograd order bitwise. Saved-for-backward is the same shape /
-            # dtype as raw ``x`` (bf16), so no memory regression vs the prior
-            # per-pool scaled path; ``x_in`` dedupes across the two unscaled
-            # Functions, only Q_eff_{c,f} are saved per call.
-            x_in = self._rebalance(x.to(work)) if self._has_channel_scale else x
-            lx_c = lora_down_project(x_in, Q_eff_c, None).to(work)
-            lx_f = lora_down_project(x_in, Q_eff_f, None).to(work)
+            # Per-pool scaled-down-project: pass raw ``x`` + fp32 ``inv_scale``
+            # into each call. ``ScaledLoRADownProjectFn`` folds ``inv_scale``
+            # into ``Q_eff`` at the fp32 matmul instead of materializing a
+            # ``(B, L, in_dim)`` bf16 rebalanced tensor. The prior upstream
+            # ``x_in = _rebalance(x)`` allocated that tensor per Linear under
+            # channel_scaling, pinning low-GiB extra activation on Anima
+            # (worse under torch.compile + reduce-overhead CUDA graphs that
+            # also pin the buffer in the graph pool). Saved-for-backward now
+            # aliases the same ``x`` tensor ``org_forward`` already pinned,
+            # so the channel_scaling toggle no longer adds per-Linear
+            # activation memory. PyTorch sums ``grad_x`` across the two
+            # Functions automatically (same input, two consumers). With
+            # ``inv_scale`` kept fp32 throughout, the custom path differs
+            # from the bf16 legacy path by bf16 rounding on the rebalance
+            # — see the matching allclose contract in
+            # ``test_chimera_channel_scale_flag_on_matches_legacy_gradients``.
+            inv = self.inv_scale if self._has_channel_scale else None
+            lx_c = lora_down_project(x, Q_eff_c, inv).to(work)
+            lx_f = lora_down_project(x, Q_eff_f, inv).to(work)
         else:
             x_lora = self._rebalance(x.to(work))
             lx_c = torch.nn.functional.linear(x_lora, Q_eff_c)

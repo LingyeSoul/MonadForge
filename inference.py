@@ -94,6 +94,14 @@ def parse_args() -> argparse.Namespace:
         "Supports postfix (free param) and cond+ortho modes.",
     )
     parser.add_argument(
+        "--soft_tokens_weight",
+        type=str,
+        default=None,
+        help="Soft tokens weight path (networks.methods.soft_tokens .safetensors). "
+        "SoftREPA-style per-layer × per-t bank; spliced into the cross-attn input "
+        "of the first n_layers DiT blocks via monkey-patched Block.forward.",
+    )
+    parser.add_argument(
         "--ip_adapter_weight",
         type=str,
         default=None,

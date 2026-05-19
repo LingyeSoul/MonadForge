@@ -41,15 +41,25 @@ network_dim = 4
 #                                 arXiv:2506.09027). Adapted to B=1 by
 #                                 dispersing along the bank's K and
 #                                 n_t_buckets axes (paper's batch-axis form
-#                                 is unusable at B=1). 0.0 disables. Paper
-#                                 default 0.5; start lower on a 1M-param bank.
+#                                 is unusable at B=1). 0.0 disables. Bench
+#                                 probe at bench/soft_tokens_dispersive/ found
+#                                 the paper's exp-form (``current``) unbounded
+#                                 below — start with a bounded form below and
+#                                 a small λ (~0.01).
 # bank_dispersive_warmup_ratio  — fraction of total training steps before the
 #                                 regularizer activates. Holds at 0 during
 #                                 warmup so the bank can develop initial
 #                                 structure from FM gradient before the
 #                                 "don't collapse" prior fires.
-# bank_dispersive_tau           — temperature in exp(-pdist²/τ). Larger τ →
-#                                 softer push. Paper default 0.5.
+# bank_dispersive_tau           — τ for ``current`` / ``normalized_pdist`` forms
+#                                 (exp(-pdist²/τ)). Unused by other forms.
+# dispersive_form               — kernel shape. One of:
+#                                   current           paper exp-form (UNBOUNDED ↓)
+#                                   normalized_pdist  exp-form on unit-normalized vecs (bounded)
+#                                   cosine_sq         mean cos² over pairs (bounded [0,1])
+#                                   cosine_abs        mean |cos| over pairs (bounded [0,1])
+#                                   hinge             mean max(0, ε − d²) (bounded ≥ 0)
+# dispersive_hinge_eps          — ε for the ``hinge`` form only.
 network_args = [
     "n_layers=10",
     "n_t_buckets=14",
@@ -58,6 +68,8 @@ network_args = [
     "bank_dispersive_weight=0.5",
     "bank_dispersive_warmup_ratio=0.1",
     "bank_dispersive_tau=0.5",
+    "dispersive_form=cosine_sq",
+    "dispersive_hinge_eps=1.0",
 ]
 output_name = "anima_soft_tokens"
 
@@ -77,3 +89,6 @@ checkpointing_epochs = 4
 # swapping is incompatible — the hook captures the block by reference at
 # apply_to() time and a swapped block is a different object instance.
 blocks_to_swap = 0
+
+logging_dir = "output/logs"
+log_with = "tensorboard"

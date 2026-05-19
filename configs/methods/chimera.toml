@@ -37,8 +37,9 @@ log_with = "tensorboard"
 
 use_ortho = true
 use_timestep_mask = true
-min_rank = 8
+min_rank = 16
 alpha_rank_scale = 1.0
+channel_scaling_alpha = 0.5
 
 # -------------
 # ChimeraHydra activation. The three-axis routing fields
@@ -49,7 +50,7 @@ alpha_rank_scale = 1.0
 # path.
 
 use_chimera_hydra = true
-num_experts_content = 4
+num_experts_content = 6
 num_experts_freq = 2
 
 # Outer balance multiplier is 1.0 so the per-pool weights below are the
@@ -62,11 +63,11 @@ num_experts_freq = 2
 # bypasses warmup entirely — its FEI input + ``freq_router_init_std``
 # break symmetry from step 0, so its load-balance pressure can fire
 # immediately without pinning the router to uniform.
-balance_loss_warmup_ratio = 0.3
+balance_loss_warmup_ratio = 0.0
 balance_loss_weight = 1.0
-balance_w_content = 2e-7
+balance_w_content = 5e-6
 balance_w_freq = 1e-6
-network_content_router_lr_scale = 10
+network_content_router_lr_scale = 1
 network_freq_router_lr_scale = 2.0
 
 # FreqRouter input. FEI = 2-band simplex (e_low, e_high). σ-features

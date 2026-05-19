@@ -187,6 +187,7 @@ class LossContext:
     loss_weights: torch.Tensor
     network: object
     aux: dict = field(default_factory=dict)
+    is_train: bool = True
 
 
 LossFn = Callable[[LossContext], torch.Tensor]
@@ -319,10 +320,16 @@ def _soft_tokens_bank_dispersive_loss(ctx: LossContext) -> torch.Tensor:
 
     Reads ``_bank_dispersive_weight`` (warmup-gated, updated each step by
     ``SoftTokensNetwork.step_bank_dispersive_warmup``) and calls
-    ``network.bank_dispersive_loss()`` to compute the pdist-based term over
-    the K and n_t_buckets axes of the bank. Batch-size independent — the
-    loss only reads parameters, so it fires at B=1 too.
+    ``network.bank_dispersive_loss()`` to compute the configured dispersive
+    term over the K and n_t_buckets axes of the bank. Batch-size independent
+    — the loss only reads parameters, so it fires at B=1 too.
+
+    Training-only: gated on ``ctx.is_train`` so validation FM-MSE stays a
+    clean per-token regression metric (the bank-axis term has no relationship
+    to held-out denoise quality and would just push val numbers around).
     """
+    if not ctx.is_train:
+        return ctx.model_pred.new_zeros(())
     weight = float(getattr(ctx.network, "_bank_dispersive_weight", 0.0) or 0.0)
     if weight <= 0.0:
         return ctx.model_pred.new_zeros(())

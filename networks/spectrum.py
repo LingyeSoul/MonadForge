@@ -252,6 +252,9 @@ def spectrum_denoise(
     dcw_band_mask: str = "LL",
     dcw_calibrator=None,
     smc_cfg: "Optional[SMCCFGState]" = None,
+    soft_tokens_net=None,
+    soft_tokens_embed_seqlens: Optional[torch.Tensor] = None,
+    soft_tokens_neg_seqlens: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Spectrum-accelerated denoising loop.
 
@@ -325,6 +328,10 @@ def spectrum_denoise(
 
                 if actual:
                     # --- Full forward pass ---
+                    if soft_tokens_net is not None:
+                        soft_tokens_net.append_postfix(
+                            embed, soft_tokens_embed_seqlens, timesteps=t_exp
+                        )
                     with torch.no_grad():
                         _pos_kw = (
                             {"pooled_text_override": pooled_text_pos}
@@ -345,6 +352,12 @@ def spectrum_denoise(
                     cond_fc.update(float(i), feat)
 
                     if do_cfg:
+                        if soft_tokens_net is not None:
+                            soft_tokens_net.append_postfix(
+                                negative_embed,
+                                soft_tokens_neg_seqlens,
+                                timesteps=t_exp,
+                            )
                         with torch.no_grad():
                             _neg_kw = (
                                 {"pooled_text_override": pooled_text_neg}

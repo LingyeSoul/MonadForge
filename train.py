@@ -1098,6 +1098,7 @@ class AnimaTrainer:
                 loss_weights=batch["loss_weights"],
                 network=getattr(self, "_network", network),
                 aux=aux,
+                is_train=is_train,
             )
 
         return composer.compose(_build_loss_ctx(loss_aux))
