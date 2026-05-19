@@ -244,6 +244,8 @@ STRINGS: dict[str, str] = {
     "models_btn_tooltip": "Download or re-download model checkpoints (Anima base, SAM3, MIT, IP-Adapter encoders)",
     "update_btn": "Update",
     "update_btn_tooltip": "Pull the latest anima_lora release from GitHub and run uv sync",
+    "update_btn_available": "Update ●",
+    "update_btn_available_tooltip": "New release {v} available — click to view release notes",
     "report_issue": "Report Issue",
     "report_issue_tooltip": "Open the GitHub issue tracker in your browser",
     "experimental_features": "🧪 Experimental",

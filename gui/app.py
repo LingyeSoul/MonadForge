@@ -38,6 +38,7 @@ from gui.tabs.merge_tab import MergeTab
 from gui.tabs.preprocess_tab import PreprocessingTab
 from gui.system_dialog import (
     GITHUB_ISSUES_URL,
+    check_for_update_async,
     open_models_dialog,
     open_update_dialog,
 )
@@ -206,6 +207,13 @@ class MainWindow(QMainWindow):
         self.update_btn.setToolTip(t("update_btn_tooltip"))
         self.update_btn.clicked.connect(lambda: open_update_dialog(self))
         lang_bar.addWidget(self.update_btn)
+        # Background check — paints the button amber + "Update ●" when a newer
+        # release exists. Skips silently when .anima_release.json is missing
+        # (no baseline → can't tell if user is already current) and reuses the
+        # 6h gui_settings.json cache so launches don't hit GitHub each time.
+        self._update_check_thread = check_for_update_async(
+            self, self._show_update_available
+        )
 
         self.issues_btn = QPushButton(t("report_issue"))
         self.issues_btn.setToolTip(t("report_issue_tooltip"))
@@ -294,6 +302,15 @@ class MainWindow(QMainWindow):
                 if callable(cleanup):
                     cleanup()
         super().closeEvent(event)
+
+    def _show_update_available(self, latest_tag: str) -> None:
+        self.update_btn.setText(t("update_btn_available"))
+        self.update_btn.setToolTip(t("update_btn_available_tooltip", v=latest_tag))
+        self.update_btn.setStyleSheet(
+            "QPushButton { background:#b45309; color:white; font-weight:bold; "
+            "padding:4px 12px; border:1px solid #b45309; border-radius:3px; }"
+            "QPushButton:hover { background:#d97706; }"
+        )
 
     def _toggle_experimental(self, on: bool):
         self.tab_stack.setCurrentWidget(self.experimental_tabs if on else self.tabs)

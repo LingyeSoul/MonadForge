@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 from PySide6.QtCore import QProcess, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QTextCursor
@@ -234,6 +236,14 @@ GITHUB_ISSUES_URL = f"{GITHUB_REPO_URL}/issues"
 RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 MANIFEST_FILE = ROOT / ".anima_release.json"
 
+# Cache of the most recent GitHub release tag, persisted in gui_settings.json
+# so the on-launch badge check doesn't hit GitHub every time the app starts.
+# 6h is short enough to surface a release the same day it ships, long enough
+# to avoid being a per-launch network dependency for power users.
+_GUI_SETTINGS_FILE = Path(__file__).resolve().parent / "gui_settings.json"
+UPDATE_CACHE_TTL_SECONDS = 6 * 3600
+_UPDATE_CACHE_KEY = "update_check"
+
 
 def _load_local_version() -> str | None:
     """Read the baseline tag from .anima_release.json, or None if absent."""
@@ -244,6 +254,43 @@ def _load_local_version() -> str | None:
     except (json.JSONDecodeError, OSError):
         return None
     return data.get("version")
+
+
+def _read_gui_settings() -> dict:
+    if not _GUI_SETTINGS_FILE.exists():
+        return {}
+    try:
+        return json.loads(_GUI_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _write_gui_settings(settings: dict) -> None:
+    try:
+        _GUI_SETTINGS_FILE.write_text(json.dumps(settings), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _load_cached_latest_tag(ttl: int = UPDATE_CACHE_TTL_SECONDS) -> str | None:
+    entry = _read_gui_settings().get(_UPDATE_CACHE_KEY)
+    if not isinstance(entry, dict):
+        return None
+    tag = entry.get("latest_tag")
+    checked_at = entry.get("checked_at")
+    if not isinstance(tag, str) or not isinstance(checked_at, (int, float)):
+        return None
+    if time.time() - float(checked_at) > ttl:
+        return None
+    return tag or None
+
+
+def _save_cached_latest_tag(tag: str) -> None:
+    if not tag:
+        return
+    settings = _read_gui_settings()
+    settings[_UPDATE_CACHE_KEY] = {"latest_tag": tag, "checked_at": int(time.time())}
+    _write_gui_settings(settings)
 
 
 class _UpdateCheckThread(QThread):
@@ -272,6 +319,8 @@ class _UpdateCheckThread(QThread):
             result["tag"] = data.get("tag_name", "") or ""
             result["body"] = data.get("body", "") or ""
             result["html_url"] = data.get("html_url", "") or ""
+            if result["tag"]:
+                _save_cached_latest_tag(result["tag"])
         except urllib.error.HTTPError as e:
             result["error"] = f"HTTP {e.code} {e.reason}"
         except urllib.error.URLError as e:
@@ -521,11 +570,48 @@ def open_update_dialog(parent=None):
     UpdateDialog(parent).exec()
 
 
+def check_for_update_async(parent, on_available) -> QThread | None:
+    """Fire a non-blocking update check used by the top-bar update badge.
+
+    Skips entirely when ``.anima_release.json`` is missing — without a
+    baseline we can't tell whether the user is already on the latest tag,
+    and a false "update available" badge is worse than no badge.
+
+    Uses the 6h ``gui_settings.json`` cache to avoid a network round-trip
+    on every launch. ``on_available(latest_tag)`` is invoked only when a
+    newer tag is detected; the caller is responsible for keeping the
+    returned ``QThread`` alive (parent it on a widget) so Qt doesn't tear
+    it down mid-fetch.
+    """
+    local = _load_local_version()
+    if local is None:
+        return None
+    cached = _load_cached_latest_tag()
+    if cached is not None:
+        if cached != local:
+            on_available(cached)
+        return None
+
+    thread = _UpdateCheckThread(parent)
+
+    def _handler(result: dict) -> None:
+        if not result.get("ok"):
+            return
+        latest = result.get("tag", "") or ""
+        if latest and latest != local:
+            on_available(latest)
+
+    thread.finished_check.connect(_handler)
+    thread.start()
+    return thread
+
+
 __all__ = [
     "GITHUB_ISSUES_URL",
     "GITHUB_REPO_URL",
     "ModelsDialog",
     "UpdateDialog",
+    "check_for_update_async",
     "open_models_dialog",
     "open_update_dialog",
 ]

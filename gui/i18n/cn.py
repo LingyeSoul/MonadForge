@@ -241,6 +241,8 @@ STRINGS: dict[str, str] = {
     "models_btn_tooltip": "下载或重新下载模型检查点 (Anima 基础、SAM3、MIT、IP-Adapter 编码器)",
     "update_btn": "更新",
     "update_btn_tooltip": "从 GitHub 拉取最新 anima_lora 版本并运行 uv sync",
+    "update_btn_available": "更新 ●",
+    "update_btn_available_tooltip": "有新版本 {v} 可用 — 点击查看发布说明",
     "report_issue": "提交问题",
     "report_issue_tooltip": "在浏览器中打开 GitHub 问题追踪",
     "experimental_features": "🧪 实验功能",
