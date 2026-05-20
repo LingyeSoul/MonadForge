@@ -637,26 +637,35 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--sample_sampler",
         type=str,
-        default="ddim",
-        choices=[
-            "ddim",
-            "pndm",
-            "lms",
-            "euler",
-            "euler_a",
-            "heun",
-            "dpm_2",
-            "dpm_2_a",
-            "dpmsolver",
-            "dpmsolver++",
-            "dpmsingle",
-            "k_lms",
-            "k_euler",
-            "k_euler_a",
-            "k_dpm_2",
-            "k_dpm_2_a",
-        ],
-        help="sampler (scheduler) type for sample images",
+        default="euler",
+        choices=["euler", "er_sde", "euler_a"],
+        help="sampler for sample images: euler (deterministic ODE), er_sde (Extended Reverse-Time SDE), euler_a (Euler Ancestral with noise injection)",
+    )
+    parser.add_argument(
+        "--sample_guidance_scale",
+        type=float,
+        default=3.5,
+        help="CFG guidance scale for sample images",
+    )
+    parser.add_argument(
+        "--sample_flow_shift",
+        type=float,
+        default=5.0,
+        help="flow shift for sample image sigma schedule",
+    )
+    parser.add_argument(
+        "--sample_image_size",
+        type=int,
+        nargs=2,
+        default=[1024, 1024],
+        metavar=("HEIGHT", "WIDTH"),
+        help="sample image size as height width (default: 1024 1024)",
+    )
+    parser.add_argument(
+        "--sample_seed",
+        type=int,
+        default=None,
+        help="fixed seed for sample image generation (default: random per prompt)",
     )
 
     parser.add_argument(
