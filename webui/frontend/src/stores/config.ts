@@ -13,6 +13,7 @@ export interface FieldMeta {
   origin: string
   group: string
   is_virtual: boolean
+  options?: string[]
 }
 
 const _GROUP_LABELS: Record<string, Record<string, string>> = {
@@ -21,12 +22,14 @@ const _GROUP_LABELS: Record<string, Record<string, string>> = {
     Training: 'Training',
     Performance: 'Performance',
     Paths: 'Paths',
+    'Preview Sampling': 'Preview Sampling',
   },
   cn: {
     Architecture: '模型架构',
     Training: '训练参数',
     Performance: '性能优化',
     Paths: '路径配置',
+    'Preview Sampling': '预览采样',
   },
 }
 

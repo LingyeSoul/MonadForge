@@ -138,8 +138,9 @@ const hintText = computed(() => {
 })
 
 const selectItems = computed(() => {
+  if (props.field.key === 'sample_sampler') return ['euler', 'er_sde', 'euler_a']
   if (props.field.key === 'attn_mode') return ['sdpa', 'xformers', 'flash_attention', 'torch']
-  return []
+  return props.field.options ?? []
 })
 
 function tryParse(val: string) {
