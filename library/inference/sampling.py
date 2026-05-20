@@ -174,6 +174,71 @@ class ERSDESampler:
         return x
 
 
+class EulerAncestralSampler:
+    """Euler Ancestral sampler for flow-matching.
+
+    Combines deterministic Euler ODE prediction with stochastic noise injection
+    scaled by the ancestral sigma coefficient. Produces more textured results
+    than pure Euler at the cost of seed non-determinism across step counts.
+
+    Interface matches ERSDESampler / LCMSampler: .step(latents, denoised, step_i).
+    The caller computes denoised = latents - sigma * v_pred before calling .step.
+    """
+
+    def __init__(
+        self,
+        sigmas: torch.Tensor,
+        seed: Optional[int] = None,
+        device: torch.device = torch.device("cpu"),
+    ):
+        self.sigmas = sigmas.clone().float()
+        self._generator = None
+        if seed is not None:
+            self._generator = torch.Generator(device=device)
+            self._generator.manual_seed(seed)
+        self._noise_device = device
+
+    def step(
+        self, latents: torch.Tensor, denoised: torch.Tensor, step_i: int
+    ) -> torch.Tensor:
+        """Perform one Euler Ancestral step.
+
+        Args:
+            latents: Current noisy latents (x_s).
+            denoised: Model's denoised prediction (x_0 hat).
+            step_i: Current step index.
+
+        Returns:
+            Updated latents (x_t).
+        """
+        sigma = self.sigmas[step_i]
+        sigma_next = self.sigmas[step_i + 1]
+
+        # Final step: return denoised directly
+        if sigma_next == 0:
+            return denoised.float()
+
+        # Euler ODE derivative: dx/dt = (x - x0) / sigma
+        derivative = (latents.float() - denoised.float()) / sigma
+
+        # Ancestral sigma decomposition
+        sigma_up = (sigma_next**2 * (sigma**2 - sigma_next**2) / sigma**2).sqrt().nan_to_num()
+        sigma_down = (sigma_next**2 - sigma_up**2).sqrt()
+
+        # Deterministic Euler step to sigma_down
+        dt = sigma_down - sigma
+        prev_sample = latents.float() + derivative * dt
+
+        # Stochastic noise injection
+        noise = torch.randn(
+            latents.shape, dtype=latents.dtype,
+            device=self._noise_device, generator=self._generator,
+        )
+        prev_sample = prev_sample + noise * sigma_up
+
+        return prev_sample.to(latents.dtype)
+
+
 class LCMSampler:
     """LCM-style stochastic sampler for distilled few-step flow-matching models.
 
