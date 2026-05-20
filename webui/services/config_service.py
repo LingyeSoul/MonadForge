@@ -81,6 +81,29 @@ _METHOD_ORDER = (
 )
 
 _ATTN_MODES = ["flex", "flash"]
+_SAMPLER_CHOICES = ["euler", "er_sde", "euler_a"]
+
+_SELECT_OPTIONS: dict[str, list[str]] = {
+    "attn_mode": _ATTN_MODES,
+    "optimizer_type": [
+        "AdamW", "AdamW8bit", "Lion", "Lion8bit",
+        "SGDNesterov", "SGDNesterov8bit",
+        "PagedAdamW", "PagedAdamW8bit", "PagedAdamW32bit", "PagedLion8bit",
+        "DAdaptation", "DAdaptAdam", "DAdaptAdamPreprint",
+        "DAdaptAdaGrad", "DAdaptAdan", "DAdaptAdanIP",
+        "DAdaptLion", "DAdaptSGD",
+        "Prodigy", "Adafactor",
+        "RAdamScheduleFree", "AdamWScheduleFree", "SGDScheduleFree",
+    ],
+    "lr_scheduler": [
+        "constant", "constant_with_warmup", "linear", "cosine",
+        "cosine_with_restarts", "polynomial", "inverse_sqrt",
+        "cosine_with_min_lr", "piecewise_constant", "warmup_stable_decay",
+    ],
+    "timestep_sampling": [
+        "sigmoid", "sigma", "uniform", "shift", "flux_shift",
+    ],
+}
 
 _GROUPS = {
     "Architecture": {
@@ -162,6 +185,17 @@ _GROUPS = {
         "path_pattern",
         "drop_lowres_images",
         "min_pixels",
+    },
+    "Preview Sampling": {
+        "sample_every_n_epochs",
+        "sample_every_n_steps",
+        "sample_at_first",
+        "sample_prompts",
+        "sample_sampler",
+        "sample_guidance_scale",
+        "sample_flow_shift",
+        "sample_image_size",
+        "sample_seed",
     },
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
@@ -473,7 +507,9 @@ def _field_desc_en(key: str) -> str | None:
 
 def get_field_type(key: str, value: Any) -> str:
     """Map a Python value + key to a frontend widget type."""
-    if key == "attn_mode":
+    if key in _SELECT_OPTIONS:
+        return "select"
+    if key == "sample_sampler":
         return "select"
     if isinstance(value, bool):
         return "bool"
@@ -507,7 +543,8 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
                 "group": _K2G.get(key),
                 "is_basic": key in _BASIC,
                 "is_virtual": key in _VIRTUAL_KEYS,
-                "options": _ATTN_MODES if ftype == "select" else None,
+                "options": (_SAMPLER_CHOICES if key == "sample_sampler"
+                           else _SELECT_OPTIONS.get(key)),
                 "description": _field_desc(key, lang),
                 "description_en": _field_desc_en(key),
             }

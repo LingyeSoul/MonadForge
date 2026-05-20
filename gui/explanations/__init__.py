@@ -503,6 +503,52 @@ FIELD_HELP: dict[str, dict[str, str]] = {
             "设为 0（保持开关开启）可在不关闭开关的情况下禁用过滤。"
         ),
     },
+    # Preview Sampling
+    "sample_every_n_epochs": {
+        "en": "Generate preview images every N epochs (at checkpoint save). Leave empty to disable.",
+        "cn": "每 N 个 epoch 生成预览图（与检查点保存同步）。留空则禁用。",
+        "ko": "매 N 에폭마다 미리보기 이미지 생성 (체크포인트 저장과 동기화). 비활성화하려면 비워두세요.",
+    },
+    "sample_every_n_steps": {
+        "en": "Generate preview images every N training steps.",
+        "cn": "每 N 步生成预览图。",
+        "ko": "매 N 스텝마다 미리보기 이미지 생성.",
+    },
+    "sample_at_first": {
+        "en": "Generate preview images before training starts (step 0).",
+        "cn": "训练开始前（第 0 步）生成预览图。",
+        "ko": "훈련 시작 전 (스텝 0) 미리보기 이미지 생성.",
+    },
+    "sample_prompts": {
+        "en": "Path to prompt file for preview images (.txt, .toml, or .json).",
+        "cn": "预览图提示词文件路径（支持 .txt / .toml / .json）。",
+        "ko": "미리보기 프롬프트 파일 경로 (.txt / .toml / .json).",
+    },
+    "sample_sampler": {
+        "en": "Sampling algorithm: euler (deterministic ODE), er_sde (Extended Reverse-Time SDE), euler_a (Euler Ancestral with noise injection).",
+        "cn": "采样算法：euler（确定性 ODE）、er_sde（扩展逆时 SDE）、euler_a（欧拉祖先采样，带噪声注入）。",
+        "ko": "샘플링 알고리즘: euler (ODE), er_sde (역방향 SDE), euler_a (노이즈 주입 Euler Ancestral).",
+    },
+    "sample_guidance_scale": {
+        "en": "CFG guidance scale for preview images. Higher values = stronger prompt adherence.",
+        "cn": "预览图 CFG 引导强度。值越高越贴合提示词。",
+        "ko": "미리보기 CFG 가이던스 스케일. 높을수록 프롬프트 충실도 증가.",
+    },
+    "sample_flow_shift": {
+        "en": "Flow shift parameter for the sigma schedule. Controls noise distribution across steps.",
+        "cn": "Flow shift 参数，控制 sigma 调度的噪声分布。",
+        "ko": "시그마 스케줄의 flow shift 파라미터.",
+    },
+    "sample_image_size": {
+        "en": "Preview image size as [height, width]. Default [1024, 1024].",
+        "cn": "预览图尺寸 [高度, 宽度]。默认 [1024, 1024]。",
+        "ko": "미리보기 이미지 크기 [높이, 너비]. 기본값 [1024, 1024].",
+    },
+    "sample_seed": {
+        "en": "Fixed seed for reproducible preview images. Leave empty for random.",
+        "cn": "固定随机种子以复现预览图。留空则随机。",
+        "ko": "재현 가능한 미리보기를 위한 고정 시드. 비어 있으면 랜덤.",
+    },
 }
 
 
