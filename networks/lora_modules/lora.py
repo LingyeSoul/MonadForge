@@ -1,6 +1,7 @@
 # Classic LoRA. `merge_to` bakes a checkpoint slice into the base Linear/Conv2d
 # weight; `fuse_weight` bakes the live delta and turns forward into a no-op.
 
+import logging
 import math
 from typing import Dict, List
 
@@ -9,6 +10,8 @@ import torch
 from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
 from networks.lora_modules.custom_autograd import lora_down_project
+
+logger = logging.getLogger(__name__)
 
 
 class LoRAModule(BaseLoRAModule):
@@ -287,9 +290,47 @@ def defuse_standard_qkv(state_dict: Dict[str, torch.Tensor]) -> None:
                 state_dict[f"{new_prefix}.inv_scale"] = inv_scale.clone()
 
 
+def bake_inv_scale(state_dict: Dict[str, torch.Tensor]) -> None:
+    """Fold per_channel_scaling ``inv_scale`` into ``lora_down`` and drop the key.
+
+    ``per_channel_scaling`` (SmoothQuant-style channel absorption) bakes
+    ``s_norm`` into the saved ``lora_down`` (``W[:,c] *= s_norm[c]``) and stores
+    ``inv_scale = 1/s_norm`` separately; the trained forward is
+    ``F.linear(x * inv_scale, down)``. Pre-folding ``down *= inv_scale`` makes
+    the on-disk delta act on raw inputs — a standard LoRA that any consumer
+    (stock ComfyUI, ``merge_to_dit``, third-party loaders) applies correctly
+    without knowing the ``.inv_scale`` convention. This is exactly what every
+    loader does on load (``LoRAModule.merge_to`` / ``get_weight`` / the inference
+    factory's ``inv_scale``-keyed reconstruction), precomputed once at save.
+
+    Operates on the split (post-defuse) layout: each ``<prefix>.inv_scale`` has
+    a sibling ``<prefix>.lora_down.weight``. Run AFTER ``defuse_standard_qkv``.
+    Mutates ``state_dict`` in place. Resume re-derives the reparameterization
+    from calibration — see ``LoRANetwork.load_weights``'s re-absorb guard.
+    """
+    for key in list(state_dict.keys()):
+        if not key.endswith(".inv_scale"):
+            continue
+        prefix = key.removesuffix(".inv_scale")
+        down_key = f"{prefix}.lora_down.weight"
+        inv_scale = state_dict.pop(key)
+        down = state_dict.get(down_key)
+        if down is None or down.dim() != 2:
+            logger.warning(
+                f"bake_inv_scale: no 2D sibling lora_down for {key}; "
+                "dropping inv_scale unbaked (delta will be wrong)."
+            )
+            continue
+        orig_dtype = down.dtype
+        state_dict[down_key] = (
+            down.to(torch.float) * inv_scale.to(torch.float).unsqueeze(0)
+        ).to(orig_dtype)
+
+
 def rename_dora_and_defuse_standard(
     state_dict: Dict[str, torch.Tensor],
 ) -> None:
-    """Standard write pipeline: DoRA rename + qkv defuse, in that order."""
+    """Standard write pipeline: DoRA rename + qkv defuse + inv_scale bake."""
     rename_dora_keys(state_dict)
     defuse_standard_qkv(state_dict)
+    bake_inv_scale(state_dict)

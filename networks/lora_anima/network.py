@@ -2639,8 +2639,43 @@ class LoRANetwork(torch.nn.Module):
         # Refuse unfused attn projections (inverse of save_weights defusing).
         weights_sd = _refuse_unfused_attn_lora_keys(weights_sd)
 
+        self._reabsorb_baked_inv_scale(weights_sd)
+
         info = self.load_state_dict(weights_sd, False)
         return info
+
+    def _reabsorb_baked_inv_scale(self, weights_sd: Dict[str, torch.Tensor]) -> None:
+        """Resume guard for baked (inv_scale-folded) checkpoints.
+
+        ``save_network_weights`` now bakes ``inv_scale`` into ``lora_down`` and
+        drops the key (see ``lora.bake_inv_scale``), so a baked checkpoint
+        carries a raw-input ``down`` and no ``inv_scale``. On *resume*
+        (``create_network`` with ``channel_scaling_alpha>0`` → modules build an
+        ``inv_scale`` buffer ``1/s_norm`` and bake ``s_norm`` into their init
+        ``down``), ``load_state_dict`` would overwrite ``down`` with the raw
+        delta while the buffer survives — so the forward ``x*inv_scale @ down``
+        would apply ``1/s_norm`` with nothing absorbing it. Re-absorb here: move
+        the incoming raw ``down`` back into training space (``down *= s_norm``)
+        and re-inject the buffer's ``inv_scale`` so the round trip is exact.
+
+        No-op for inference (modules built without channel scaling) and for
+        legacy checkpoints that still carry ``inv_scale`` (the key is present,
+        so we leave both ``down`` and the buffer to load straight through).
+        """
+        for lora in self.unet_loras + self.text_encoder_loras:
+            if not getattr(lora, "_has_channel_scale", False):
+                continue
+            name = lora.lora_name
+            down_key = f"{name}.lora_down.weight"
+            if f"{name}.inv_scale" in weights_sd or down_key not in weights_sd:
+                continue
+            inv_scale = lora.inv_scale  # (in,) fp32, == 1/s_norm
+            down = weights_sd[down_key]
+            s_norm = inv_scale.to(torch.float).clamp_min(1e-12).reciprocal()
+            weights_sd[down_key] = (
+                down.to(torch.float) * s_norm.unsqueeze(0)
+            ).to(down.dtype)
+            weights_sd[f"{name}.inv_scale"] = inv_scale.clone()
 
     def apply_to(self, text_encoders, unet, apply_text_encoder=True, apply_unet=True):
         if apply_text_encoder:
