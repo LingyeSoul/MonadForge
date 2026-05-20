@@ -137,10 +137,10 @@ export const useConfigStore = defineStore('config', () => {
     error.value = ''
     try {
       const lang = appStore.language
-      const res = await fetch(`/api/config/method`, {
+      const res = await fetch(`/api/config/method?variant=${encodeURIComponent(variant.value)}&preset=${encodeURIComponent(preset.value)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ variant: variant.value, values: editedValues.value }),
+        body: JSON.stringify({ data: editedValues.value }),
       })
       if (!res.ok) {
         const data = await res.json()

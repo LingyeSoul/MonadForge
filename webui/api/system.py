@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from webui.services.config_service import ROOT, read_layer, write_layer
+from webui.services.config_service import ROOT, read_layer
 
 router = APIRouter()
 
@@ -117,11 +117,19 @@ def get_model_paths():
 
 @router.put("/model-paths")
 def update_model_paths(body: list[ModelPathUpdate]):
-    """Update model paths in base.toml."""
-    base = read_layer("base")
+    """Update model paths in base.toml.
+
+    Does a targeted update of only the model path keys to avoid
+    destroying ``[[datasets]]`` and ``[general]`` sections.
+    """
+    import toml as _toml
+
+    base_path = Path(__file__).resolve().parent.parent.parent / "configs" / "base.toml"
+    # Read raw to preserve all sections (datasets, general, etc.)
+    base = _toml.loads(base_path.read_text(encoding="utf-8")) if base_path.exists() else {}
     valid_keys = {tk for _, tk, _ in _MODEL_PATH_KEYS}
     for item in body:
         if item.key in valid_keys:
             base[item.key] = item.value
-    write_layer("base", base)
+    base_path.write_text(_toml.dumps(base), encoding="utf-8")
     return {"ok": True}
