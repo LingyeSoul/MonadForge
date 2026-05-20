@@ -174,6 +174,12 @@ export default {
   ppTagDropout: 'Tag Dropout Rate',
   ppSaveSettings: 'Save Settings',
   ppSettingsSaved: 'Settings saved',
+  ppDatasetPaths: 'Dataset Paths',
+  ppPathSource: 'Source Image Dir',
+  ppPathResized: 'Resized Image Dir',
+  ppPathCache: 'Cache Dir',
+  ppSavePaths: 'Save Paths',
+  ppPathsSaved: 'Paths saved',
 
   // Adapter View
   adTitle: 'Adapter Training',

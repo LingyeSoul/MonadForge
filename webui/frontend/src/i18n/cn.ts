@@ -174,6 +174,12 @@ export default {
   ppTagDropout: '标签 Dropout 率',
   ppSaveSettings: '保存设置',
   ppSettingsSaved: '设置已保存',
+  ppDatasetPaths: '数据集路径',
+  ppPathSource: '源图片目录',
+  ppPathResized: '缩放后目录',
+  ppPathCache: '缓存目录',
+  ppSavePaths: '保存路径',
+  ppPathsSaved: '路径已保存',
 
   // Adapter View
   adTitle: '适配器训练',

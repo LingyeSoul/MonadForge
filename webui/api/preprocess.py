@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from webui.services import preprocess_service as svc
@@ -41,6 +41,18 @@ class PreprocessStatus(BaseModel):
     cache: CacheCounts = CacheCounts()
 
 
+class DatasetPaths(BaseModel):
+    source_image_dir: str = ""
+    resized_image_dir: str = ""
+    lora_cache_dir: str = ""
+
+
+class SavePathsRequest(BaseModel):
+    source_image_dir: str | None = None
+    resized_image_dir: str | None = None
+    lora_cache_dir: str | None = None
+
+
 # ── Endpoints ────────────────────────────────────────────────────
 
 
@@ -57,6 +69,29 @@ def put_settings(body: PreprocessSettings):
 
 
 @router.get("/status", response_model=PreprocessStatus)
-def get_status():
+def get_status(
+    variant: str | None = Query(None),
+    preset: str | None = Query(None),
+):
     """Return current preprocess pipeline counts."""
-    return svc.get_status()
+    return svc.get_status(variant=variant, preset=preset)
+
+
+@router.get("/paths", response_model=DatasetPaths)
+def get_paths(
+    variant: str | None = Query(None),
+    preset: str | None = Query(None),
+):
+    """Return resolved dataset paths from the config chain."""
+    return svc.get_paths(variant=variant, preset=preset)
+
+
+@router.put("/paths", response_model=DatasetPaths)
+def save_paths(
+    body: SavePathsRequest,
+    variant: str = Query(""),
+):
+    """Save path overrides to the variant TOML."""
+    if not variant:
+        raise HTTPException(status_code=400, detail="variant query parameter is required")
+    return svc.save_path_overrides(variant, body.model_dump(exclude_none=True))

@@ -30,6 +30,44 @@
       </v-card-text>
     </v-card>
 
+    <!-- Dataset Paths -->
+    <v-card variant="tonal" class="mb-4">
+      <v-card-title class="text-subtitle-1">
+        <v-icon icon="mdi-folder-outline" class="mr-2" />
+        {{ t('ppDatasetPaths') }}
+      </v-card-title>
+      <v-card-text>
+        <v-text-field
+          v-model="paths.source"
+          :label="t('ppPathSource')"
+          :loading="pathsLoading"
+          density="compact"
+          hide-details="auto"
+          class="mb-2"
+        />
+        <v-text-field
+          :model-value="paths.resized"
+          :label="t('ppPathResized')"
+          readonly
+          density="compact"
+          hide-details="auto"
+          class="mb-2"
+        />
+        <v-text-field
+          :model-value="paths.cache"
+          :label="t('ppPathCache')"
+          readonly
+          density="compact"
+          hide-details="auto"
+        />
+      </v-card-text>
+      <v-card-actions>
+        <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="pathsSaving" @click="savePaths">
+          {{ t('ppSavePaths') }}
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+
     <!-- Settings Panel -->
     <v-expansion-panels class="mb-4">
       <v-expansion-panel>
@@ -274,13 +312,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
+import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
 const notify = useNotifyStore()
+const configStore = useConfigStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 
@@ -299,7 +339,13 @@ const status = reactive({
 
 async function fetchStatus() {
   try {
-    const res = await fetch('/api/preprocess/status')
+    const v = configStore.variant
+    const p = configStore.preset
+    const qs = new URLSearchParams()
+    if (v) qs.set('variant', v)
+    if (p) qs.set('preset', p)
+    const url = '/api/preprocess/status' + (qs.toString() ? '?' + qs : '')
+    const res = await fetch(url)
     if (!res.ok) return
     const data = await res.json()
     status.resized = data.resized ?? 0
@@ -356,6 +402,76 @@ async function fetchSettings() {
 
 onMounted(fetchSettings)
 
+// ── Dataset paths ──────────────────────────────────────────────
+
+const paths = reactive({ source: '', resized: '', cache: '' })
+const pathsLoading = ref(false)
+const pathsSaving = ref(false)
+
+async function ensureVariant() {
+  if (configStore.variant) return
+  if (!configStore.methods.length) await configStore.fetchMethods()
+  if (!configStore.methods.length) return
+  const m = configStore.methods[0]
+  if (!configStore.variants.length) await configStore.fetchVariants(m)
+  const v = configStore.variants[0] || m
+  await configStore.fetchMerged(v, configStore.preset || 'default')
+}
+
+async function fetchPaths() {
+  pathsLoading.value = true
+  try {
+    await ensureVariant()
+    const v = configStore.variant
+    const p = configStore.preset
+    const qs = new URLSearchParams()
+    if (v) qs.set('variant', v)
+    if (p) qs.set('preset', p)
+    const url = '/api/preprocess/paths' + (qs.toString() ? '?' + qs : '')
+    const res = await fetch(url)
+    if (!res.ok) return
+    const data = await res.json()
+    paths.source = data.source_image_dir ?? ''
+    paths.resized = data.resized_image_dir ?? ''
+    paths.cache = data.lora_cache_dir ?? ''
+  } catch { /* ignore */ }
+  finally { pathsLoading.value = false }
+}
+
+async function savePaths() {
+  pathsSaving.value = true
+  try {
+    await ensureVariant()
+    if (!configStore.variant) {
+      notify.show(t('notifyConfigSaveFailed'), 'error')
+      return
+    }
+    const qs = new URLSearchParams()
+    qs.set('variant', configStore.variant)
+    const url = '/api/preprocess/paths?' + qs
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_image_dir: paths.source }),
+    })
+    if (res.ok) {
+      const data = await res.json()
+      paths.source = data.source_image_dir ?? paths.source
+      paths.resized = data.resized_image_dir ?? paths.resized
+      paths.cache = data.lora_cache_dir ?? paths.cache
+      notify.show(t('ppPathsSaved'), 'success')
+      fetchStatus()
+    } else {
+      notify.show(t('notifyConfigSaveFailed'), 'error')
+    }
+  } catch {
+    notify.show(t('notifyConfigSaveFailed'), 'error')
+  }
+  finally { pathsSaving.value = false }
+}
+
+onMounted(fetchPaths)
+
 async function saveSettings() {
   try {
     const res = await fetch('/api/preprocess/settings', {
@@ -398,6 +514,10 @@ async function runTask(command: string) {
 
   // Pass relevant env vars for tasks that read them
   const env: Record<string, string> = {}
+  if (configStore.variant) {
+    env.METHOD = configStore.variant
+    env.METHODS_SUBDIR = 'gui-methods'
+  }
   if (['mask', 'preprocess'].includes(command)) {
     env.MIT_TEXT_THRESHOLD = String(settings.mit_text_threshold)
     env.MIT_DILATE = String(settings.mit_dilate)

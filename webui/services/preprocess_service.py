@@ -26,14 +26,37 @@ def _resolve(p: str) -> Path:
     return pp if pp.is_absolute() else ROOT / pp
 
 
-def _get_paths() -> dict[str, Path]:
+def _get_paths(
+    variant: str | None = None, preset: str | None = None
+) -> dict[str, Path]:
     """Return resolved dataset paths from the config chain."""
-    paths = get_path_overrides()
+    paths = get_path_overrides(preset=preset or "default", variant=variant)
     return {
         "resized": _resolve(paths["resized_image_dir"]),
         "masks": _resolve(paths["resized_image_dir"]).parent / "masks",
         "cache": _resolve(paths["lora_cache_dir"]),
     }
+
+
+def get_paths(variant: str | None = None, preset: str | None = None) -> dict[str, str]:
+    """Return the raw resolved path strings for the frontend."""
+    paths = get_path_overrides(preset=preset or "default", variant=variant)
+    return {
+        "source_image_dir": paths["source_image_dir"],
+        "resized_image_dir": paths["resized_image_dir"],
+        "lora_cache_dir": paths["lora_cache_dir"],
+    }
+
+
+def save_path_overrides(variant: str, data: dict[str, str]) -> dict[str, str]:
+    """Persist path overrides to the variant TOML and return updated paths."""
+    from webui.services.config_service import save_variant_config
+
+    allowed = {"source_image_dir", "resized_image_dir", "lora_cache_dir"}
+    filtered = {k: v for k, v in data.items() if k in allowed and v}
+    if filtered:
+        save_variant_config(variant, filtered)
+    return get_paths(variant=variant)
 
 
 # ── Cache-file suffixes (kept in sync with gui/__init__.py) ──────
@@ -70,7 +93,7 @@ class _IndentedListDumper(yaml.SafeDumper):
 
 
 def _increase_indent(self, flow=False, indentless=False):
-    return super().increase_indent(flow, indentless=False)
+    return super(_IndentedListDumper, self).increase_indent(flow, indentless=False)
 
 
 _IndentedListDumper.increase_indent = _increase_indent  # type: ignore[assignment]
@@ -166,9 +189,9 @@ def save_settings(data: dict) -> dict:
 # ── Status / cache counting ──────────────────────────────────────
 
 
-def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
+def _count_cache_files(cache_dir: Path, fallback: Path | None = None) -> dict[str, int]:
     """Count latent / TE / PE cache sidecars under *cache_dir*."""
-    d = cache_dir or _get_paths()["cache"]
+    d = fallback or cache_dir
     out = {"latents": 0, "te": 0, "pe": 0}
     if not d.is_dir():
         return out
@@ -185,9 +208,14 @@ def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
     return out
 
 
-def count_resized() -> int:
-    """Count resized images under the configured ``resized_image_dir``."""
-    d = _get_paths()["resized"]
+def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
+    """Count latent / TE / PE cache sidecars under *cache_dir*."""
+    d = cache_dir or _get_paths()["cache"]
+    return _count_cache_files(d)
+
+
+def _count_images(d: Path) -> int:
+    """Count image files under *d*."""
     if not d.is_dir():
         return 0
     return sum(
@@ -195,18 +223,32 @@ def count_resized() -> int:
     )
 
 
-def count_masks() -> int:
-    """Count merged mask files under the configured masks directory."""
-    d = _get_paths()["masks"]
+def count_resized() -> int:
+    """Count resized images under the configured ``resized_image_dir``."""
+    return _count_images(_get_paths()["resized"])
+
+
+def _count_mask_files(d: Path) -> int:
+    """Count merged mask files under *d*."""
     if not d.is_dir():
         return 0
     return sum(1 for _ in d.rglob("*_mask.png"))
 
 
-def get_status(cache_dir: Path | None = None) -> dict:
+def count_masks() -> int:
+    """Count merged mask files under the configured masks directory."""
+    return _count_mask_files(_get_paths()["masks"])
+
+
+def get_status(
+    cache_dir: Path | None = None,
+    variant: str | None = None,
+    preset: str | None = None,
+) -> dict:
     """Return a snapshot of preprocess pipeline counts."""
+    p = _get_paths(variant=variant, preset=preset)
     return {
-        "resized": count_resized(),
-        "masks": count_masks(),
-        "cache": count_caches(cache_dir),
+        "resized": _count_images(p["resized"]),
+        "masks": _count_mask_files(p["masks"]),
+        "cache": _count_cache_files(p["cache"], cache_dir),
     }
