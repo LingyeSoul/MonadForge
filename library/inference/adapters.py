@@ -134,6 +134,26 @@ def clear_hydra_content(model: Any) -> None:
             clear_content()
 
 
+def set_hydra_crossattn(model: Any, crossattn_emb: torch.Tensor) -> None:
+    """Fire the network-level GlobalRouter on a pooled text vector.
+
+    Mirrors :func:`set_hydra_content`, but for the non-chimera Hydra / FeRA
+    pool routed on text (``router_source="crossattn_emb"``,
+    ``route_per_layer=False``). ``crossattn_emb`` is the post-LLM-adapter
+    feature tensor (B, L, D) fed into the DiT's cross-attention. No-op on
+    networks without a crossattn GlobalRouter.
+
+    Call BEFORE each forward, separately for cond and uncond branches — the
+    two have different captions and therefore different gates.
+    """
+    for network in iter_hydra_networks(model):
+        if not getattr(network, "use_crossattn_router", False):
+            continue
+        set_crossattn = getattr(network, "set_crossattn_routing", None)
+        if callable(set_crossattn):
+            set_crossattn(crossattn_emb)
+
+
 def compute_and_set_hydra_fei(model: Any, z: torch.Tensor) -> None:
     """One-shot per-step FEI compute + propagate.
 

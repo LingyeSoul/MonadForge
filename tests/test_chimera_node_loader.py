@@ -440,11 +440,14 @@ def _write_chimera_dual_a_crossattn_checkpoint(
     fr_hidden: int = 8,
     layer_norm: bool = True,
     prefix: str = "lora_unet_blocks_0_mlp_layer1",
+    source_stamp: str = "crossattn",
 ) -> None:
     """Synth a chimera dual-A checkpoint trained with
-    ``content_router_source="crossattn"`` — the per-Linear ``router.*``
+    ``content_router_source="crossattn_emb"`` — the per-Linear ``router.*``
     keys are absent and the network-level ``content_router.net.*`` MLP
-    is present.
+    is present. ``source_stamp`` selects the on-disk metadata spelling so
+    both the current ``"crossattn_emb"`` and the legacy ``"crossattn"`` alias
+    can be exercised.
     """
     torch.manual_seed(555)
     sd = {
@@ -476,7 +479,7 @@ def _write_chimera_dual_a_crossattn_checkpoint(
         "ss_use_moe_style": "shared_A",
         "ss_route_per_layer": "true",
         "ss_router_source": "input",
-        "ss_chimera_content_router_source": "crossattn",
+        "ss_chimera_content_router_source": source_stamp,
         "ss_chimera_content_router_layer_norm": "true" if layer_norm else "false",
     }
     save_file(sd, str(path), metadata=metadata)
@@ -498,6 +501,28 @@ def test_load_adapter_recognizes_crossattn_content_router(tmp_path):
     cd = bundle["chimera_dual_a"]
     assert cd is not None
     assert cd["content_router_source"] == "crossattn"
+    cr = cd["content_router"]
+    assert cr is not None
+    assert cr["K_c"] == 4
+    assert cr["input_dim"] == 1024
+
+
+def test_load_adapter_recognizes_crossattn_emb_content_router(tmp_path):
+    """The current ``"crossattn_emb"`` stamp loads the same way as the
+    legacy ``"crossattn"`` alias (backward + forward compatibility)."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+
+    path = tmp_path / "anima_chimera_crossattn_emb_chimera.safetensors"
+    _write_chimera_dual_a_crossattn_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8,
+        fei_dim=2, sigma_dim=0, cr_input_dim=1024,
+        source_stamp="crossattn_emb",
+    )
+
+    bundle = adapter.load_adapter(str(path))
+    cd = bundle["chimera_dual_a"]
+    assert cd is not None
     cr = cd["content_router"]
     assert cr is not None
     assert cr["K_c"] == 4

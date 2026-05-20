@@ -67,7 +67,9 @@ def _parse_chimera_content_router(
     ``ContentRouter`` in ``networks/lora_anima/network.py``.
     """
     source = str(file_metadata.get("ss_chimera_content_router_source", "input")).strip().lower()
-    if source != "crossattn":
+    # ``"crossattn"`` is the pre-rename spelling; accept it alongside the
+    # current ``"crossattn_emb"`` so older chimera checkpoints still load.
+    if source not in ("crossattn", "crossattn_emb"):
         return None
     try:
         cr_w0 = weights_sd["content_router.net.0.weight"]
@@ -76,7 +78,7 @@ def _parse_chimera_content_router(
         cr_b2 = weights_sd["content_router.net.2.bias"]
     except KeyError as exc:
         raise ValueError(
-            f"{file_path}: ss_chimera_content_router_source='crossattn' but "
+            f"{file_path}: ss_chimera_content_router_source={source!r} but "
             f"checkpoint is missing ContentRouter weight key {exc} "
             "(expected content_router.net.{0,2}.weight/bias)."
         ) from exc

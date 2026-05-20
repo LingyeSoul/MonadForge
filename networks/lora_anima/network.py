@@ -75,6 +75,7 @@ class GlobalRouter(torch.nn.Module):
         *,
         hidden_dim: int = 64,
         tau: float = 0.7,
+        apply_layer_norm: bool = False,
     ) -> None:
         super().__init__()
         if input_dim <= 0:
@@ -88,6 +89,19 @@ class GlobalRouter(torch.nn.Module):
         self.input_dim = int(input_dim)
         self.num_experts = int(num_experts)
         self.tau = float(tau)
+        # Parameterless input LN — used by the ``crossattn_emb`` source, where
+        # the pooled T5-space text vector has a wide per-channel variance
+        # budget (the first Linear's effective input scale would otherwise
+        # track caption length / padding ratio). Same trick as ContentRouter;
+        # ``elementwise_affine=False`` keeps the state_dict free of ln_* keys
+        # and the on/off state is deterministic from ``router_source`` so no
+        # metadata stamp is needed. No-op for the σ / FEI sources.
+        self.apply_layer_norm = bool(apply_layer_norm)
+        self.ln_in: Optional[torch.nn.LayerNorm] = (
+            torch.nn.LayerNorm(self.input_dim, elementwise_affine=False)
+            if self.apply_layer_norm
+            else None
+        )
         self.net = torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim),
             torch.nn.ReLU(),
@@ -114,7 +128,17 @@ class GlobalRouter(torch.nn.Module):
         # matmul dtype matches the upcast input.
         if self.net[0].weight.dtype != torch.float32:
             self.net.float()
+            if self.ln_in is not None:
+                self.ln_in.float()
         x32 = x.float()
+        # ``crossattn_emb`` source hands a raw ``(B, L, D)`` text tensor; pool
+        # to ``(B, D)`` with RMS over the sequence axis (matches ContentRouter
+        # / chimera per-Linear pooling). σ / FEI sources already arrive as
+        # ``(B, input_dim)`` and skip this branch.
+        if x32.dim() == 3:
+            x32 = x32.pow(2).mean(dim=1).sqrt()
+        if self.ln_in is not None:
+            x32 = self.ln_in(x32)
         logits = self.net(x32)
         gates = torch.softmax(logits / self.tau, dim=-1)
         self._last_gates = gates.detach()
@@ -976,11 +1000,22 @@ class LoRANetwork(torch.nn.Module):
         # consume the broadcast gates; ``shared_A`` (Hydra / OrthoHydra)
         # consumes them when built with ``use_global_router=True``.
         self.global_router: Optional[GlobalRouter] = None
+        # ``use_crossattn_router`` advertises to the train / inference call
+        # sites that they must fire ``set_crossattn_routing`` with the pooled
+        # text tensor each forward (parallel to chimera's ``use_content_router``
+        # but broadcasting to the standard ``_routing_weights`` slot).
+        self.use_crossattn_router: bool = False
         if cfg.use_moe_style is not False and not cfg.route_per_layer:
+            router_layer_norm = False
             if cfg.router_source == "fei":
                 router_input_dim = int(cfg.fei_feature_dim)
             elif cfg.router_source == "sigma":
                 router_input_dim = int(cfg.sigma_feature_dim)
+            elif cfg.router_source == "crossattn_emb":
+                # Pooled post-LLM-adapter text feature (the DiT's cross-attn
+                # K/V). LN on by default — wide T5-space variance budget.
+                router_input_dim = CROSSATTN_EMB_DIM
+                router_layer_norm = True
             else:
                 router_input_dim = 0
             if router_input_dim > 0 and cfg.num_experts > 1:
@@ -989,12 +1024,15 @@ class LoRANetwork(torch.nn.Module):
                     num_experts=int(cfg.num_experts),
                     hidden_dim=int(cfg.router_hidden_dim),
                     tau=float(cfg.router_tau),
+                    apply_layer_norm=router_layer_norm,
                 )
+                self.use_crossattn_router = cfg.router_source == "crossattn_emb"
                 logger.info(
                     f"GlobalRouter: source={cfg.router_source!r}, "
                     f"input_dim={router_input_dim}, "
                     f"num_experts={cfg.num_experts}, "
                     f"hidden={cfg.router_hidden_dim}, τ={cfg.router_tau:.2f}, "
+                    f"LN={router_layer_norm}, "
                     f"routing-aware modules={len(self._routing_aware_loras)}"
                 )
 
@@ -1040,7 +1078,7 @@ class LoRANetwork(torch.nn.Module):
 
         # ChimeraHydra ContentRouter: network-level twin of FreqRouter for
         # the content pool. Built only when ``content_router_source ==
-        # "crossattn"`` AND at least one chimera module exists. Per-Linear
+        # "crossattn_emb"`` AND at least one chimera module exists. Per-Linear
         # ``self.router`` is None on those modules in that case — π_c flows
         # exclusively through the broadcast ``_content_routing_weights``
         # slot. ``use_content_router=True`` advertises to the train /
@@ -1050,7 +1088,7 @@ class LoRANetwork(torch.nn.Module):
         self.use_content_router: bool = False
         if (
             cfg.use_chimera_hydra
-            and cfg.content_router_source == "crossattn"
+            and cfg.content_router_source == "crossattn_emb"
             and self._chimera_aware_loras
         ):
             self.content_router = ContentRouter(
@@ -1653,6 +1691,30 @@ class LoRANetwork(torch.nn.Module):
             self._shared_routing_weights = canonical
         E = int(canonical.shape[-1])
         canonical.fill_(1.0 / max(E, 1))
+
+    def set_crossattn_routing(self, crossattn_emb: torch.Tensor) -> None:
+        """Fire the network-level GlobalRouter on a pooled text vector.
+
+        Used when ``cfg.router_source="crossattn_emb"`` (route_per_layer=False).
+        ``crossattn_emb`` is the post-LLM-adapter text feature tensor — either
+        ``(B, L, D)`` (raw, the GlobalRouter pools) or ``(B, D)`` (pre-pooled).
+        No-op when no crossattn GlobalRouter is wired.
+
+        Router runs WITH grad so ``L_denoise → y_t → α → GlobalRouter params``
+        is intact; broadcast through :meth:`set_routing_weights` (the same
+        ``_routing_weights`` slot the σ/FEI global router writes — the Hydra /
+        stacked-experts modules need no crossattn-specific buffer).
+
+        Call BEFORE each forward, separately for cond / uncond branches at
+        inference — gates depend on the caption, so the two branches route
+        differently (parallel to chimera's ``set_content``).
+        """
+        if self.global_router is None or not getattr(
+            self, "use_crossattn_router", False
+        ):
+            return
+        gates = self.global_router(crossattn_emb)
+        self.set_routing_weights(gates)
 
     def set_freq_routing_weights(self, weights: torch.Tensor) -> None:
         """Broadcast ``π_f`` from the FreqRouter to every chimera module.
@@ -3013,14 +3075,14 @@ class LoRANetwork(torch.nn.Module):
             # ContentRouter source. Default ``"input"`` matches pre-router
             # checkpoints (per-Linear softmax over pooled lx_c lives on
             # every chimera module as ``router.weight`` / ``router.bias``).
-            # ``"crossattn"`` flips to the network-level ContentRouter; the
+            # ``"crossattn_emb"`` flips to the network-level ContentRouter; the
             # per-Linear router is then absent from state_dict and the
             # loader must rebuild a ContentRouter from the stamped input dim
             # + LN flag (parameterless LN leaves no tensor footprint).
             metadata["ss_chimera_content_router_source"] = str(
                 self.cfg.content_router_source
             )
-            if self.cfg.content_router_source == "crossattn":
+            if self.cfg.content_router_source == "crossattn_emb":
                 metadata["ss_chimera_content_router_layer_norm"] = (
                     "true" if self.cfg.content_router_layer_norm else "false"
                 )

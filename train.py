@@ -728,6 +728,17 @@ class AnimaTrainer:
         ):
             network.set_content(crossattn_emb)
 
+        # Network-level GlobalRouter routed on pooled text
+        # (``router_source="crossattn_emb"``, route_per_layer=False). Same
+        # timing rationale as the content router above — fires once per step
+        # on the materialized cross-attn text features. No-op otherwise.
+        if (
+            getattr(network, "use_crossattn_router", False)
+            and crossattn_emb is not None
+            and hasattr(network, "set_crossattn_routing")
+        ):
+            network.set_crossattn_routing(crossattn_emb)
+
         # Create padding mask
         bs = latents.shape[0]
         h_latent = latents.shape[-2]

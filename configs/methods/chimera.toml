@@ -91,7 +91,7 @@ output_name = "anima_chimera"
 # -------------
 # Optional: global content router. Default is the paper-faithful per-Linear
 # softmax over pooled rank-R lx_c (`self.router` on every chimera module).
-# Flipping `content_router_source = "crossattn"` swaps that for a single
+# Flipping `content_router_source = "crossattn_emb"` swaps that for a single
 # network-level ContentRouter fed by pooled crossattn_emb (post-LLM-adapter
 # T5-space text features). π_c then routes from a global "caption regime"
 # axis instead of a per-site decision — analogous to FeRA on the freq pool.
@@ -107,8 +107,8 @@ output_name = "anima_chimera"
 #    failure mode as FeRA's GlobalRouter — see networks/CLAUDE.md).
 #  • LR-sensitive. Start with the same scale FreqRouter uses (10×).
 #
-content_router_source = "crossattn"
-content_router_init_std = 0.1      # non-zero (uniform would be a fixed point)
+content_router_source = "crossattn_emb"
+content_router_init_std = 0.01      # non-zero (uniform would be a fixed point)
 content_router_layer_norm = true   # parameterless LN on the pooled input
 
 # -------------

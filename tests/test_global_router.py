@@ -110,6 +110,67 @@ def test_global_router_uniform_at_init():
     assert router._last_input is not None
 
 
+def test_global_router_pools_and_layernorms_text_input():
+    """``crossattn_emb`` source: ``GlobalRouter(apply_layer_norm=True)`` takes
+    a raw ``(B, L, D)`` text tensor, RMS-pools over the sequence axis, and
+    stays uniform-at-init (zero output layer → softmax = 1/E)."""
+    from networks.lora_anima.network import CROSSATTN_EMB_DIM
+
+    router = GlobalRouter(
+        input_dim=CROSSATTN_EMB_DIM,
+        num_experts=4,
+        hidden_dim=8,
+        tau=0.7,
+        apply_layer_norm=True,
+    )
+    assert router.ln_in is not None
+    x = torch.randn(3, 7, CROSSATTN_EMB_DIM)  # (B, L, D)
+    gates = router(x)
+    assert gates.shape == (3, 4)
+    assert torch.allclose(gates, torch.full_like(gates, 0.25), atol=1e-6)
+
+
+def test_set_crossattn_routing_broadcasts_text_gates():
+    """``set_crossattn_routing`` fires the crossattn GlobalRouter on a raw
+    ``(B, L, D)`` text tensor and broadcasts the gates to every routing-aware
+    module — the same ``_routing_weights`` slot the σ/FEI router writes."""
+    from networks.lora_anima.network import CROSSATTN_EMB_DIM
+
+    net = _make_minimal_stacked_experts_network(num_experts=3, fei_dim=2)
+    # Reconfigure for the crossattn-emb cell: advertise the flag and swap in a
+    # text-fed GlobalRouter (pooling + LN).
+    net.use_crossattn_router = True
+    net.global_router = GlobalRouter(
+        input_dim=CROSSATTN_EMB_DIM,
+        num_experts=3,
+        hidden_dim=32,
+        tau=0.7,
+        apply_layer_norm=True,
+    )
+    net.add_module("global_router", net.global_router)
+    with torch.no_grad():
+        net.global_router.net[-1].weight.normal_(std=1.0)
+        net.global_router.net[-1].bias.normal_(std=1.0)
+    emb = torch.randn(1, 5, CROSSATTN_EMB_DIM)  # (B, L, D)
+    net.set_crossattn_routing(emb)
+    canonical = net._routing_aware_loras[0]._buffers["_routing_weights"]
+    with torch.no_grad():
+        expected = net.global_router(emb)
+    assert torch.allclose(canonical, expected, atol=1e-6)
+
+
+def test_set_crossattn_routing_noop_without_flag():
+    """No crossattn router wired (``use_crossattn_router`` falsy) → the call
+    leaves the uniform placeholder untouched."""
+    net = _make_minimal_stacked_experts_network(num_experts=3, fei_dim=2)
+    net.clear_routing_weights()
+    before = net._routing_aware_loras[0]._buffers["_routing_weights"].clone()
+    # Default helper sets up a FEI router, not a crossattn one.
+    net.set_crossattn_routing(torch.randn(1, 4, 1024))
+    after = net._routing_aware_loras[0]._buffers["_routing_weights"]
+    assert torch.allclose(before, after)
+
+
 def test_set_routing_weights_broadcasts():
     """``set_routing_weights`` writes one gate tensor to every routing-aware module."""
     net = _make_minimal_stacked_experts_network(num_experts=3, fei_dim=2)

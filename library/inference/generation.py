@@ -18,6 +18,7 @@ from library.inference.adapters import (
     clear_hydra_sigma,
     compute_and_set_hydra_fei,
     set_hydra_content,
+    set_hydra_crossattn,
     set_hydra_sigma,
 )
 from library.inference import sampling as inference_utils
@@ -339,9 +340,11 @@ def generate_body_tiled(
                     # Conditional pass
                     if anima.blocks_to_swap:
                         anima.prepare_block_swap_before_forward()
-                    # ChimeraHydra ContentRouter — π_c depends on the caption,
+                    # Caption-dependent routers (chimera ContentRouter and the
+                    # crossattn-emb GlobalRouter) — gates depend on the caption,
                     # so fire separately for cond vs uncond. No-op otherwise.
                     set_hydra_content(anima, embed)
+                    set_hydra_crossattn(anima, embed)
                     if soft_tokens_net is not None:
                         soft_tokens_net.append_postfix(
                             embed, soft_tokens_embed_seqlens, timesteps=t_expand
@@ -365,6 +368,7 @@ def generate_body_tiled(
                         if anima.blocks_to_swap:
                             anima.prepare_block_swap_before_forward()
                         set_hydra_content(anima, negative_embed)
+                        set_hydra_crossattn(anima, negative_embed)
                         if soft_tokens_net is not None:
                             soft_tokens_net.append_postfix(
                                 negative_embed,
@@ -688,6 +692,7 @@ def generate_body(
                         dcw_calibrator.record_latent_pre_forward(i, latents)
 
                     set_hydra_content(anima, embed)
+                    set_hydra_crossattn(anima, embed)
                     if soft_tokens_net is not None:
                         soft_tokens_net.append_postfix(
                             embed, soft_tokens_embed_seqlens, timesteps=t_expand
@@ -708,6 +713,7 @@ def generate_body(
 
                     if do_cfg:
                         set_hydra_content(anima, negative_embed)
+                        set_hydra_crossattn(anima, negative_embed)
                         if soft_tokens_net is not None:
                             soft_tokens_net.append_postfix(
                                 negative_embed,
