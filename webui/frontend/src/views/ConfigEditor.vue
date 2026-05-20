@@ -1,7 +1,7 @@
 <template>
   <v-container fluid class="pa-4 config-editor">
     <v-row align="center" class="mb-4">
-      <v-col cols="12" md="3">
+      <v-col cols="12" md="2">
         <v-select
           v-model="selectedMethod"
           :items="configStore.methods"
@@ -12,7 +12,7 @@
           @update:model-value="onMethodChange"
         />
       </v-col>
-      <v-col cols="12" md="3">
+      <v-col cols="12" md="4">
         <v-select
           v-model="selectedVariant"
           :items="variantItems"
@@ -131,10 +131,15 @@
             <v-col
               v-for="field in groupFields"
               :key="field.key"
-              cols="12"
-              md="6"
+              :cols="field.key === 'sample_prompts' ? 12 : undefined"
+              :md="field.key === 'sample_prompts' ? 12 : 6"
             >
+              <PreviewPromptEditor
+                v-if="field.key === 'sample_prompts'"
+                :prompt-path="String(field.value ?? 'sample_prompts.txt')"
+              />
               <ConfigField
+                v-else
                 :field="field"
                 @update="(v) => configStore.setFieldValue(field.key, v)"
               />
@@ -193,6 +198,7 @@ import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
 import ConfigField from '../components/ConfigField.vue'
+import PreviewPromptEditor from '../components/PreviewPromptEditor.vue'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()

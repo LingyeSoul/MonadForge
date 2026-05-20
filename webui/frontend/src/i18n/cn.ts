@@ -104,6 +104,7 @@ export default {
   dsAddPath: '添加',
   dsPathAdded: '已添加目录: {path}',
   dsPathNotFound: '目录不存在: {path}',
+  dsRemovePath: '移除',
 
   // Preprocess View
   ppTitle: '预处理',
@@ -258,6 +259,17 @@ export default {
 
   // Config Store Errors
   cfgErrLoadMethods: '加载训练方法失败：{error}',
+
+  // Preview Prompt Editor
+  ppeTitle: '预览提示词',
+  ppePositive: '正向提示词',
+  ppeNegative: '反向提示词',
+  ppeAdd: '添加提示词',
+  ppeRemove: '删除',
+  ppeSave: '保存提示词',
+  ppeSaved: '提示词已保存',
+  ppeSaveFailed: '提示词保存失败',
+  ppeEmpty: '暂无提示词，点击"添加提示词"开始。',
   cfgErrLoadVariants: '加载变体失败：{error}',
   cfgErrLoadPresets: '加载预设失败：{error}',
   cfgErrLoadConfig: '加载配置失败：{error}',

@@ -104,6 +104,7 @@ export default {
   dsAddPath: 'Add',
   dsPathAdded: 'Added directory: {path}',
   dsPathNotFound: 'Directory not found: {path}',
+  dsRemovePath: 'Remove',
 
   // Preprocess View
   ppTitle: 'Preprocessing',
@@ -258,6 +259,17 @@ export default {
 
   // Config Store Errors
   cfgErrLoadMethods: 'Failed to load methods: {error}',
+
+  // Preview Prompt Editor
+  ppeTitle: 'Preview Prompts',
+  ppePositive: 'Positive Prompt',
+  ppeNegative: 'Negative Prompt',
+  ppeAdd: 'Add Prompt',
+  ppeRemove: 'Remove',
+  ppeSave: 'Save Prompts',
+  ppeSaved: 'Prompts saved',
+  ppeSaveFailed: 'Failed to save prompts',
+  ppeEmpty: 'No prompts configured. Click "Add Prompt" to get started.',
   cfgErrLoadVariants: 'Failed to load variants: {error}',
   cfgErrLoadPresets: 'Failed to load presets: {error}',
   cfgErrLoadConfig: 'Failed to load config: {error}',

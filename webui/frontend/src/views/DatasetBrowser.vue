@@ -1,17 +1,15 @@
 <template>
-  <v-container fluid class="pa-4">
+  <v-container fluid class="dataset-page pa-4">
     <!-- Header row -->
-    <v-row align="center" class="mb-4">
-      <v-col cols="auto">
-        <div class="text-h5">{{ t('dsTitle') }}</div>
-        <div class="text-body-2 text-medium-emphasis">{{ t('dsSubtitle') }}</div>
-      </v-col>
-    </v-row>
+    <div class="ds-header mb-2">
+      <div class="text-h5">{{ t('dsTitle') }}</div>
+      <div class="text-body-2 text-medium-emphasis">{{ t('dsSubtitle') }}</div>
+    </div>
 
     <!-- Toolbar: directory, search, sort, view toggle -->
-    <v-card variant="tonal" class="mb-4 pa-3">
+    <v-card variant="tonal" class="mb-4 pa-3 ds-header">
       <v-row align="center" dense>
-        <v-col cols="12" sm="4" md="3">
+        <v-col cols="12" sm="4" md="3" class="toolbar-dir">
           <v-select
             v-model="directory"
             :items="directories"
@@ -24,7 +22,24 @@
             prepend-inner-icon="mdi-folder-outline"
             :loading="loadingDirs"
             @update:model-value="onDirectoryChange"
-          />
+          >
+            <template #item="{ props }">
+              <v-list-item v-bind="props">
+                <template #append>
+                  <v-icon
+                    v-if="isCustomDir(String(props.value))"
+                    icon="mdi-close-circle-outline"
+                    size="small"
+                    color="medium-emphasis"
+                    class="remove-dir-btn"
+                    :title="t('dsRemovePath')"
+                    @mousedown.stop.prevent
+                    @click.stop.prevent="removeDirectory(String(props.value))"
+                  />
+                </template>
+              </v-list-item>
+            </template>
+          </v-select>
         </v-col>
         <v-col cols="12" sm="4" md="4">
           <v-text-field
@@ -99,105 +114,108 @@
       </v-row>
     </v-card>
 
-    <!-- Grid view -->
-    <v-row v-if="viewMode === 'grid' && images.length > 0">
-      <v-col
-        v-for="img in images"
-        :key="img.path"
-        cols="6"
-        sm="4"
-        md="3"
-        lg="2"
-      >
-        <v-card
-          class="mx-auto"
-          variant="tonal"
-          :class="{ 'border-primary': selectedImage?.path === img.path }"
-          @click="selectImage(img)"
+    <!-- Scrollable content area -->
+    <div class="content-scroll">
+      <!-- Grid view -->
+      <v-row v-if="viewMode === 'grid' && images.length > 0">
+        <v-col
+          v-for="img in images"
+          :key="img.path"
+          cols="6"
+          sm="4"
+          md="3"
+          lg="2"
         >
-          <v-img
-            :src="imageUrl(img)"
-            :alt="img.filename"
-            aspect-ratio="1"
-            cover
-            class="bg-grey-darken-3"
+          <v-card
+            class="mx-auto"
+            variant="tonal"
+            :class="{ 'border-primary': selectedImage?.path === img.path }"
+            @click="selectImage(img)"
           >
-            <template #placeholder>
-              <div class="d-flex align-center justify-center fill-height">
-                <v-progress-circular indeterminate color="primary" size="24" />
+            <v-img
+              :src="imageUrl(img)"
+              :alt="img.filename"
+              aspect-ratio="1"
+              cover
+              class="bg-grey-darken-3"
+            >
+              <template #placeholder>
+                <div class="d-flex align-center justify-center fill-height">
+                  <v-progress-circular indeterminate color="primary" size="24" />
+                </div>
+              </template>
+              <template #error>
+                <div class="d-flex align-center justify-center fill-height">
+                  <v-icon icon="mdi-image-broken" size="32" color="grey" />
+                </div>
+              </template>
+              <div v-if="img.has_mask" class="mask-badge">
+                <v-icon icon="mdi-checkerboard" size="14" />
               </div>
-            </template>
-            <template #error>
-              <div class="d-flex align-center justify-center fill-height">
-                <v-icon icon="mdi-image-broken" size="32" color="grey" />
-              </div>
-            </template>
-            <div v-if="img.has_mask" class="mask-badge">
-              <v-icon icon="mdi-checkerboard" size="14" />
-            </div>
-          </v-img>
-          <v-card-subtitle class="text-caption text-truncate pa-2">
-            {{ img.stem }}
-          </v-card-subtitle>
-        </v-card>
-      </v-col>
-    </v-row>
+            </v-img>
+            <v-card-subtitle class="text-caption text-truncate pa-2">
+              {{ img.stem }}
+            </v-card-subtitle>
+          </v-card>
+        </v-col>
+      </v-row>
 
-    <!-- List view -->
-    <v-data-table
-      v-if="viewMode === 'list' && images.length > 0"
-      :items="images"
-      :headers="listHeaders"
-      item-key="path"
-      hover
-      density="compact"
-      @click:row="onRowClick"
-    >
-      <template #item.preview="{ item }">
-        <v-img
-          :src="imageUrl(item)"
-          width="48"
-          height="48"
-          cover
-          class="rounded my-1"
-        >
-          <template #error>
-            <v-icon icon="mdi-image-broken" size="20" color="grey" />
-          </template>
-        </v-img>
-      </template>
-      <template #item.caption="{ item }">
-        <span class="text-truncate d-inline-block" style="max-width: 500px">
-          {{ item.caption ? item.caption.slice(0, 120) : '—' }}
-        </span>
-      </template>
-      <template #item.has_mask="{ item }">
-        <v-icon
-          v-if="item.has_mask"
-          icon="mdi-checkerboard"
-          size="small"
-          color="warning"
-        />
-      </template>
-    </v-data-table>
-
-    <!-- Pagination -->
-    <div v-if="totalPages > 1" class="d-flex justify-center mt-4">
-      <v-pagination
-        v-model="page"
-        :length="totalPages"
-        :total-visible="7"
+      <!-- List view -->
+      <v-data-table
+        v-if="viewMode === 'list' && images.length > 0"
+        :items="images"
+        :headers="listHeaders"
+        item-key="path"
+        hover
         density="compact"
-        rounded="circle"
-        @update:model-value="onPageChange"
-      />
-    </div>
+        @click:row="onRowClick"
+      >
+        <template #item.preview="{ item }">
+          <v-img
+            :src="imageUrl(item)"
+            width="48"
+            height="48"
+            cover
+            class="rounded my-1"
+          >
+            <template #error>
+              <v-icon icon="mdi-image-broken" size="20" color="grey" />
+            </template>
+          </v-img>
+        </template>
+        <template #item.caption="{ item }">
+          <span class="text-truncate d-inline-block" style="max-width: 500px">
+            {{ item.caption ? item.caption.slice(0, 120) : '—' }}
+          </span>
+        </template>
+        <template #item.has_mask="{ item }">
+          <v-icon
+            v-if="item.has_mask"
+            icon="mdi-checkerboard"
+            size="small"
+            color="warning"
+          />
+        </template>
+      </v-data-table>
 
-    <!-- Empty state -->
-    <div v-if="!loadingImages && images.length === 0" class="text-center pa-12">
-      <v-icon icon="mdi-image-off-outline" size="64" color="grey" class="mb-4" />
-      <div class="text-h6 text-medium-emphasis">{{ t('dsNoImages') }}</div>
-      <div class="text-body-2 text-medium-emphasis" v-html="t('dsNoImagesHint')" />
+      <!-- Pagination -->
+      <div v-if="totalPages > 1" class="d-flex justify-center mt-4">
+        <v-pagination
+          v-model="page"
+          :length="totalPages"
+          :total-visible="7"
+          density="compact"
+          rounded="circle"
+          @update:model-value="onPageChange"
+        />
+      </div>
+
+      <!-- Empty state -->
+      <div v-if="!loadingImages && images.length === 0" class="text-center pa-12">
+        <v-icon icon="mdi-image-off-outline" size="64" color="grey" class="mb-4" />
+        <div class="text-h6 text-medium-emphasis">{{ t('dsNoImages') }}</div>
+        <div class="text-body-2 text-medium-emphasis" v-html="t('dsNoImagesHint')" />
+      </div>
     </div>
 
     <!-- Caption editor dialog -->
@@ -485,6 +503,23 @@ function _loadCustomPaths(): Directory[] {
 
 function _saveCustomPaths(dirs: Directory[]) {
   localStorage.setItem(_CUSTOM_PATHS_KEY, JSON.stringify(dirs))
+}
+
+const customDirNames = ref(new Set(_loadCustomPaths().map(d => d.name)))
+
+function isCustomDir(name: string): boolean {
+  return customDirNames.value.has(name)
+}
+
+function removeDirectory(name: string) {
+  const saved = _loadCustomPaths().filter(d => d.name !== name)
+  _saveCustomPaths(saved)
+  customDirNames.value = new Set(saved.map(d => d.name))
+  directories.value = directories.value.filter(d => d.name !== name)
+  if (directory.value === name) {
+    directory.value = directories.value.length > 0 ? directories.value[0].name : ''
+    onDirectoryChange()
+  }
 }
 
 async function loadDirectories() {
@@ -780,6 +815,33 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.dataset-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.ds-header {
+  flex-shrink: 0;
+}
+
+.content-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.toolbar-dir {
+  min-width: 0;
+}
+
+.toolbar-dir :deep(.v-select__selection-text) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mask-badge {
   position: absolute;
   top: 4px;
@@ -858,5 +920,16 @@ onMounted(async () => {
 
 .diff-ctx {
   color: #aaa;
+}
+
+.remove-dir-btn {
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.remove-dir-btn:hover {
+  opacity: 1;
+  color: rgb(var(--v-theme-error)) !important;
 }
 </style>

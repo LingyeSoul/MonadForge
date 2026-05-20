@@ -103,6 +103,7 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
     "timestep_sampling": [
         "sigmoid", "sigma", "uniform", "shift", "flux_shift",
     ],
+    "sample_sampler": ["euler", "er_sde", "euler_a"],
 }
 
 _GROUPS = {
@@ -409,15 +410,22 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     meth = _load(GUI_METHODS_DIR / f"{variant}.toml")
     merged: dict = {}
     origin: dict[str, str] = {}
-    for k, v in base.items():
-        merged[k] = v
-        origin[k] = "base"
-    for k, v in pset.items():
-        merged[k] = v
-        origin[k] = "preset"
-    for k, v in meth.items():
-        merged[k] = v
-        origin[k] = "method"
+
+    def _merge_layer(layer: dict, src: str) -> None:
+        for k, v in layer.items():
+            if isinstance(v, dict) and k not in _SKIP:
+                # Flatten nested TOML sections (e.g. [preview]) into
+                # top-level keys so they appear individually in the WebUI.
+                for sub_k, sub_v in v.items():
+                    merged[sub_k] = sub_v
+                    origin[sub_k] = src
+            else:
+                merged[k] = v
+                origin[k] = src
+
+    _merge_layer(base, "base")
+    _merge_layer(pset, "preset")
+    _merge_layer(meth, "method")
 
     # Inject virtual keys from [[datasets]]
     variant_override = _validation_enabled_from_datasets(meth.get("datasets"))
@@ -888,3 +896,52 @@ def wipe_checkpoint(output_dir: str, output_name: str) -> None:
         shutil.rmtree(state_dir)
     if sidecar.is_file():
         sidecar.unlink()
+
+
+# ── Sample prompts file I/O ────────────────────────────────────
+
+
+_NEG_PROMPT_RE = re.compile(r"n (.+)", re.IGNORECASE)
+
+
+def read_sample_prompts(path_str: str) -> list[dict]:
+    """Parse a sample_prompts.txt file into structured prompt entries.
+
+    Returns a list of ``{"prompt": str, "negative_prompt": str}`` dicts.
+    Lines starting with ``#`` and blank lines are skipped.
+    """
+    path = ROOT / path_str
+    if not path.is_file():
+        return []
+    entries: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(" --")
+        prompt = parts[0]
+        neg = ""
+        for part in parts[1:]:
+            m = _NEG_PROMPT_RE.match(part.strip())
+            if m:
+                neg = m.group(1).strip()
+                break
+        entries.append({"prompt": prompt, "negative_prompt": neg})
+    return entries
+
+
+def write_sample_prompts(path_str: str, entries: list[dict]) -> None:
+    """Write structured prompt entries back to a .txt file."""
+    path = ROOT / path_str
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    for entry in entries:
+        prompt = entry.get("prompt", "").strip()
+        if not prompt:
+            continue
+        neg = entry.get("negative_prompt", "").strip()
+        if neg:
+            lines.append(f"{prompt} --n {neg}")
+        else:
+            lines.append(prompt)
+    path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")

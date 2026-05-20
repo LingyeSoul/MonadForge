@@ -54,6 +54,42 @@ def get_merged_config(
     return MergedConfigResponse(**result)
 
 
+# ── Sample prompts file I/O ───────────────────────────────────
+
+
+class SamplePromptEntry(BaseModel):
+    prompt: str
+    negative_prompt: str = ""
+
+
+class SamplePromptsResponse(BaseModel):
+    path: str
+    entries: list[SamplePromptEntry]
+
+
+class SamplePromptsUpdate(BaseModel):
+    path: str
+    entries: list[SamplePromptEntry]
+
+
+@router.get("/sample-prompts", response_model=SamplePromptsResponse)
+def get_sample_prompts(path: str = Query("sample_prompts.txt")):
+    entries = svc.read_sample_prompts(path)
+    return SamplePromptsResponse(
+        path=path,
+        entries=[SamplePromptEntry(**e) for e in entries],
+    )
+
+
+@router.put("/sample-prompts")
+def put_sample_prompts(body: SamplePromptsUpdate):
+    svc.write_sample_prompts(body.path, [e.model_dump() for e in body.entries])
+    return {"status": "ok"}
+
+
+# ── Layer read/write (catch-all) ───────────────────────────────
+
+
 @router.get("/{layer}", response_model=ConfigLayerResponse)
 def get_layer(
     layer: str,
@@ -97,7 +133,7 @@ def get_groups():
     return svc.get_field_groups()
 
 
-# ── Prelaunch check & checkpoint management ─────────────────────
+# ── Prelaunch check & checkpoint management ───────────────────
 
 
 class PrelaunchCheckResponse(BaseModel):
