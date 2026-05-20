@@ -169,7 +169,12 @@ export default {
 
   // System View
   sysTitle: 'System',
-  sysSubtitle: 'Model downloads, self-update, and environment management',
+  sysSubtitle: 'Model paths, downloads, self-update, and environment management',
+  sysCoreModels: 'Core Model Paths',
+  sysCoreModelsDesc: 'Configure paths for DiT, text encoder, and VAE model weights. Supports project-relative and absolute paths.',
+  sysSavePaths: 'Save Paths',
+  sysPathsSaved: 'Model paths saved',
+  sysPathsSaveFailed: 'Failed to save model paths',
   sysDownloads: 'Model Downloads',
   sysDownloadsDesc: 'Download pretrained models (DiT, text encoder, VAE, SAM3, MIT, PE-Core, PE-Spatial).',
   sysDownload: 'Download',
@@ -178,6 +183,9 @@ export default {
   sysInstalled: 'Installed',
   sysMissing: 'Missing',
   sysModel_anima: 'Anima (DiT + TE + VAE)',
+  sysModel_anima_dit: 'DiT Diffusion Model',
+  sysModel_anima_te: 'Qwen3 Text Encoder',
+  sysModel_anima_vae: 'VAE Decoder',
   sysModel_sam3: 'SAM3',
   sysModel_mit: 'MIT / ComicTextDetector',
   sysModel_pe: 'PE-Core-L14-336',

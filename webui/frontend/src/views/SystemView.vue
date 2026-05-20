@@ -4,7 +4,68 @@
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('sysSubtitle') }}</div>
 
     <v-row>
-      <!-- Model Downloads -->
+      <!-- Core Model Paths -->
+      <v-col cols="12" md="6">
+        <v-card variant="tonal">
+          <v-card-title class="text-subtitle-1">
+            <v-icon icon="mdi-cube-outline" class="mr-2" />
+            {{ t('sysCoreModels') }}
+          </v-card-title>
+          <v-card-text>
+            <div class="text-body-2 mb-3">{{ t('sysCoreModelsDesc') }}</div>
+            <div
+              v-for="mp in modelPaths"
+              :key="mp.id"
+              class="mb-3"
+            >
+              <v-text-field
+                v-model="mp.path"
+                :label="t(`sysModel_${mp.id}`)"
+                variant="outlined"
+                density="compact"
+                hide-details="auto"
+                :loading="mp.validating"
+                @update:model-value="onModelPathChange(mp)"
+              >
+                <template #append-inner>
+                  <v-icon
+                    v-if="mp.exists === true"
+                    icon="mdi-check-circle"
+                    color="success"
+                    size="small"
+                    class="mr-1"
+                  />
+                  <v-icon
+                    v-else-if="mp.exists === false"
+                    icon="mdi-alert-circle"
+                    color="warning"
+                    size="small"
+                    class="mr-1"
+                  />
+                  <v-btn
+                    icon="mdi-folder-open"
+                    size="x-small"
+                    variant="text"
+                    @click="openModelBrowser(mp)"
+                  />
+                </template>
+              </v-text-field>
+            </div>
+            <v-btn
+              color="primary"
+              block
+              :disabled="!modelPathsDirty"
+              :loading="modelPathsSaving"
+              prepend-icon="mdi-content-save"
+              @click="saveModelPaths"
+            >
+              {{ t('sysSavePaths') }}{{ modelPathsDirty ? ' *' : '' }}
+            </v-btn>
+          </v-card-text>
+        </v-card>
+      </v-col>
+
+      <!-- Download Status -->
       <v-col cols="12" md="6">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
@@ -128,6 +189,60 @@
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('sysNoTasks') }}</div>
 
+    <!-- Model file browser dialog -->
+    <v-dialog v-model="showBrowserDlg" max-width="700" scrollable>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon icon="mdi-folder-open" class="mr-2" />
+          {{ t('cfSelectModel') }}
+        </v-card-title>
+        <v-card-subtitle class="text-caption pb-2">{{ browserCurrentDir }}</v-card-subtitle>
+        <v-divider />
+        <v-card-text style="max-height: 50vh" class="pa-0">
+          <v-list density="compact" class="py-0">
+            <v-list-item
+              v-if="browserParent"
+              prepend-icon="mdi-arrow-up-bold"
+              :title="t('cfParentDir')"
+              @click="browseTo(browserParent)"
+            />
+            <v-list-item
+              v-for="dir in browserSubdirs"
+              :key="dir.path"
+              prepend-icon="mdi-folder"
+              :title="dir.name"
+              @click="browseTo(dir.path)"
+            />
+            <v-divider v-if="browserSubdirs.length > 0 && browserFiles.length > 0" />
+            <v-list-item
+              v-for="file in browserFiles"
+              :key="file.path"
+              :active="browserSelected === file.path"
+              @click="browserSelected = file.path"
+            >
+              <template #prepend>
+                <v-icon icon="mdi-file-outline" class="mr-2" />
+              </template>
+              <v-list-item-title>{{ file.name }}</v-list-item-title>
+              <v-list-item-subtitle>{{ file.size_human }}</v-list-item-subtitle>
+              <template #append>
+                <v-icon v-if="browserSelected === file.path" icon="mdi-check" color="primary" />
+              </template>
+            </v-list-item>
+            <v-list-item v-if="browserSubdirs.length === 0 && browserFiles.length === 0">
+              <v-list-item-title class="text-medium-emphasis">{{ t('cfNoFiles') }}</v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-card-text>
+        <v-divider />
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showBrowserDlg = false">{{ t('cfCancel') }}</v-btn>
+          <v-btn color="primary" :disabled="!browserSelected" @click="confirmBrowser">{{ t('cfConfirm') }}</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Update dialog -->
     <v-dialog v-model="showUpdateDlg" max-width="450">
       <v-card>
@@ -153,7 +268,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
@@ -163,7 +278,7 @@ const notify = useNotifyStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 
-// ── Model groups ──────────────────────────────────────────────
+// ── Model groups (download status) ─────────────────────────────
 
 interface ModelGroup {
   id: string
@@ -182,9 +297,127 @@ async function fetchModelGroups() {
   } catch { /* ignore */ }
 }
 
-onMounted(fetchModelGroups)
+// ── Model paths (configurable) ─────────────────────────────────
 
-// ── Update dialog ─────────────────────────────────────────────
+interface ModelPath {
+  id: string
+  toml_key: string
+  path: string
+  resolved: string
+  exists: boolean
+  validating: boolean
+  _original: string
+}
+
+const modelPaths = ref<ModelPath[]>([])
+const modelPathsSaving = ref(false)
+
+const modelPathsDirty = computed(() =>
+  modelPaths.value.some(mp => mp.path !== mp._original)
+)
+
+async function fetchModelPaths() {
+  try {
+    const res = await fetch('/api/system/model-paths')
+    if (!res.ok) return
+    const data = await res.json()
+    modelPaths.value = (data.paths || []).map((p: any) => ({
+      ...p,
+      validating: false,
+      _original: p.path,
+    }))
+  } catch { /* ignore */ }
+}
+
+let validateTimers: Record<string, ReturnType<typeof setTimeout>> = {}
+
+function onModelPathChange(mp: ModelPath) {
+  if (validateTimers[mp.id]) clearTimeout(validateTimers[mp.id])
+  mp.validating = true
+  validateTimers[mp.id] = setTimeout(async () => {
+    try {
+      const res = await fetch(`/api/files/validate?path=${encodeURIComponent(mp.path)}`)
+      const data = await res.json()
+      mp.exists = data.exists
+    } catch {
+      mp.exists = false
+    } finally {
+      mp.validating = false
+    }
+  }, 500)
+}
+
+async function saveModelPaths() {
+  modelPathsSaving.value = true
+  try {
+    const body = modelPaths.value.map(mp => ({ key: mp.toml_key, value: mp.path }))
+    const res = await fetch('/api/system/model-paths', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) throw new Error('Save failed')
+    notify.show(t('sysPathsSaved'), 'success')
+    await fetchModelPaths()
+    await fetchModelGroups() // refresh download status with new paths
+  } catch {
+    notify.show(t('sysPathsSaveFailed'), 'error')
+  } finally {
+    modelPathsSaving.value = false
+  }
+}
+
+// ── File browser dialog ────────────────────────────────────────
+
+const showBrowserDlg = ref(false)
+const browserTarget = ref<ModelPath | null>(null)
+const browserCurrentDir = ref('')
+const browserParent = ref<string | null>(null)
+const browserSubdirs = ref<{ name: string; path: string }[]>([])
+const browserFiles = ref<{ name: string; path: string; size_human: string }[]>([])
+const browserSelected = ref<string | null>(null)
+
+const _DEFAULT_DIRS: Record<string, string> = {
+  anima_dit: 'models/diffusion_models',
+  anima_te: 'models/text_encoders',
+  anima_vae: 'models/vae',
+}
+
+function openModelBrowser(mp: ModelPath) {
+  browserTarget.value = mp
+  browserSelected.value = null
+  const val = mp.path
+  let startDir = _DEFAULT_DIRS[mp.id] || 'models'
+  if (val) {
+    const lastSlash = Math.max(val.lastIndexOf('/'), val.lastIndexOf('\\'))
+    if (lastSlash > 0) startDir = val.substring(0, lastSlash)
+  }
+  browseTo(startDir)
+  showBrowserDlg.value = true
+}
+
+async function browseTo(dirPath: string) {
+  browserSelected.value = null
+  try {
+    const res = await fetch(`/api/files/browse?dir=${encodeURIComponent(dirPath)}&ext=.safetensors`)
+    const data = await res.json()
+    if (data.error) return
+    browserCurrentDir.value = data.current_dir || data.current_dir_abs || dirPath
+    browserParent.value = data.parent
+    browserSubdirs.value = data.subdirs || []
+    browserFiles.value = data.files || []
+  } catch { /* ignore */ }
+}
+
+function confirmBrowser() {
+  if (browserSelected.value && browserTarget.value) {
+    browserTarget.value.path = browserSelected.value
+    onModelPathChange(browserTarget.value)
+    showBrowserDlg.value = false
+  }
+}
+
+// ── Update dialog ──────────────────────────────────────────────
 
 const showUpdateDlg = ref(false)
 const updateDryRun = ref(false)
@@ -204,7 +437,7 @@ function runUpdate() {
   })
 }
 
-// ── Helpers ───────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────
 
 function isRunning(command: string) {
   return taskStore.tasks.some(tp => tp.command === command && tp.state === 'running')
@@ -225,4 +458,11 @@ async function runTask(command: string) {
     notify.show(t('notifyTaskStartFailed', { command }), 'error')
   }
 }
+
+// ── Init ───────────────────────────────────────────────────────
+
+onMounted(() => {
+  fetchModelGroups()
+  fetchModelPaths()
+})
 </script>

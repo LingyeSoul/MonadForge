@@ -169,7 +169,12 @@ export default {
 
   // System View
   sysTitle: '系统',
-  sysSubtitle: '模型下载、自动更新与环境管理',
+  sysSubtitle: '模型路径配置、下载管理、自动更新与环境信息',
+  sysCoreModels: '核心模型路径',
+  sysCoreModelsDesc: '配置 DiT、文本编码器、VAE 三个核心模型的权重文件路径。支持项目相对路径和绝对路径。',
+  sysSavePaths: '保存路径',
+  sysPathsSaved: '模型路径已保存',
+  sysPathsSaveFailed: '模型路径保存失败',
   sysDownloads: '模型下载',
   sysDownloadsDesc: '下载预训练模型（DiT、文本编码器、VAE、SAM3、MIT、PE-Core、PE-Spatial）。',
   sysDownload: '下载',
@@ -178,6 +183,9 @@ export default {
   sysInstalled: '已安装',
   sysMissing: '缺失',
   sysModel_anima: 'Anima (DiT + TE + VAE)',
+  sysModel_anima_dit: 'DiT 扩散模型',
+  sysModel_anima_te: 'Qwen3 文本编码器',
+  sysModel_anima_vae: 'VAE 解码器',
   sysModel_sam3: 'SAM3',
   sysModel_mit: 'MIT / ComicTextDetector',
   sysModel_pe: 'PE-Core-L14-336',

@@ -332,6 +332,11 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "ko": "'use_valid'가 켜져 있을 때 검증용으로 분리할 이미지 수. base.toml 기본값은 16. 값을 늘리면 CMMD 곡선이 매끄러워지지만 학습 샘플이 줄어듦. 'use_valid'가 꺼져 있으면 무시됨.",
         "cn": "'use_valid' 开启时用于验证的图片数量。base.toml 默认 16——足以稳定测量 paired CMMD，又几乎不影响训练池。增大可使 CMMD 曲线更平滑，但减少训练样本。'use_valid' 关闭时忽略。",
     },
+    "batch_size": {
+        "en": "Number of images per training micro-step. Effective batch = batch_size × gradient_accumulation_steps × num_processes. Higher values use more VRAM; start with 1 on 8 GB cards.",
+        "ko": "학습 마이크로스텝당 이미지 수. 실효 배치 = batch_size × gradient_accumulation_steps × num_processes. 값이 클수록 VRAM 사용량 증가; 8GB 카드에서는 1부터 시작.",
+        "cn": "每个训练微步的图片数量。有效批次 = batch_size × gradient_accumulation_steps × num_processes。值越大显存占用越高；8 GB 显卡建议从 1 开始。",
+    },
     # Paths
     "pretrained_model_name_or_path": {
         "en": "Path to the base DiT model weights (.safetensors).",

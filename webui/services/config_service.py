@@ -536,6 +536,33 @@ def apply_validation_choice(
     first["validation_split"] = 0.0
 
 
+def _apply_batch_size(out: dict, value: int, base_value: int) -> None:
+    """Write or strip the batch_size override in the variant TOML's [[datasets]]."""
+    existing = out.get("datasets")
+    if value != base_value:
+        # Write override
+        if not isinstance(existing, list):
+            existing = []
+            out["datasets"] = existing
+        if not existing:
+            existing.append({})
+        first = existing[0]
+        if not isinstance(first, dict):
+            first = {}
+            existing[0] = first
+        first["batch_size"] = value
+        return
+    # Same as base — strip override to keep variant TOML clean
+    if not isinstance(existing, list) or not existing:
+        return
+    first = existing[0]
+    if not isinstance(first, dict):
+        return
+    first.pop("batch_size", None)
+    if not first and len(existing) == 1:
+        del out["datasets"]
+
+
 def validate_config(data: dict) -> list[str]:
     """Validate a config dict. Returns a list of error strings (empty = valid)."""
     errors: list[str] = []
@@ -551,6 +578,10 @@ def validate_config(data: dict) -> list[str]:
         ep = data["max_train_epochs"]
         if isinstance(ep, int) and ep <= 0:
             errors.append("max_train_epochs must be positive")
+    if "batch_size" in data:
+        bs = data["batch_size"]
+        if isinstance(bs, int) and bs <= 0:
+            errors.append("batch_size must be positive")
     return errors
 
 
@@ -569,10 +600,16 @@ def save_variant_config(variant: str, data: dict) -> None:
     # Handle virtual keys
     use_valid = data.pop("use_valid", None)
     vsn = data.pop("validation_split_num", None)
+    bs = data.pop("batch_size", None)
     if use_valid is not None:
         base = _load(CONFIGS_DIR / "base.toml")
         base_vsn = _base_validation_split_num(base)
         apply_validation_choice(current, use_valid, vsn, base_vsn)
+
+    if bs is not None:
+        base = _load(CONFIGS_DIR / "base.toml")
+        base_bs = _base_batch_size(base)
+        _apply_batch_size(current, int(bs), base_bs)
 
     # Write flat keys
     for key, value in data.items():
