@@ -48,7 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import IMAGE_EXTS, ROOT, count_preprocess_caches
+from gui import IMAGE_EXTS, ROOT, LazyTabMixin, count_preprocess_caches
 from gui.explanations import preprocess_field_help, preprocess_guide
 from gui.i18n import t
 from gui.process import kill_process_tree, make_subprocess_env, setup_kill_safe
@@ -152,7 +152,7 @@ def _count_resized() -> int:
     )
 
 
-class PreprocessingTab(QWidget):
+class PreprocessingTab(LazyTabMixin, QWidget):
     def __init__(self):
         super().__init__()
         self._proc = QProcess(self)
@@ -370,6 +370,8 @@ class PreprocessingTab(QWidget):
         vsplit.setSizes([520, 200])
         outer.addWidget(vsplit, 1)
 
+    def _lazy_init(self) -> None:
+        # Cache-count scan deferred to first show of the tab.
         self._refresh_status()
 
     # ── Field labels & explain panel ───────────────────────────────
@@ -516,9 +518,7 @@ class PreprocessingTab(QWidget):
         run_sam = self.run_sam_mask_chk.isChecked()
         run_mit = self.run_mit_mask_chk.isChecked()
         if not (run_sam or run_mit):
-            QMessageBox.warning(
-                self, t("error"), t("preprocess_mask_nothing_enabled")
-            )
+            QMessageBox.warning(self, t("error"), t("preprocess_mask_nothing_enabled"))
             return
         env = make_subprocess_env(
             MIT_TEXT_THRESHOLD=self.mit_threshold_edit.text().strip(),

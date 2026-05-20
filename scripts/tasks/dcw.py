@@ -43,9 +43,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from library.datasets.buckets import DCW_ASPECT_BUCKETS
-
 from ._common import run
+
+# NOTE: ``DCW_ASPECT_BUCKETS`` is imported lazily inside the one function that
+# uses it — importing ``library.datasets`` at module load drags in torch (the
+# package __init__ chain), and ``tasks.py`` imports every command module up
+# front to build its dispatch table, so a top-level import here makes *every*
+# `python tasks.py <anything>` (incl. `gui`) pay torch's ~2.7s startup.
 
 
 def _pop_kv(extra: list[str], key: str, default: str) -> tuple[str, list[str]]:
@@ -83,9 +87,7 @@ def _latest_bucket_dir(out_root: Path, bucket_label: str) -> Path | None:
     return matches[0] if matches else None
 
 
-def _emit_aggregate_plot(
-    out_root: Path, bucket_dirs: list[Path], label: str
-) -> None:
+def _emit_aggregate_plot(out_root: Path, bucket_dirs: list[Path], label: str) -> None:
     """Pool baseline trajectories across bucket runs and write a single plot.
 
     Replaces the per-bucket gap_curves.png that we suppress via
@@ -193,14 +195,14 @@ def cmd_dcw(extra):
     if not allow_repeats:
         exclude_dir.mkdir(parents=True, exist_ok=True)
 
+    from library.datasets.buckets import DCW_ASPECT_BUCKETS
+
     bucket_run_dirs: list[Path] = []
     for H, W in DCW_ASPECT_BUCKETS:
         bucket_label = f"{label}-{H}x{W}"
         exclude_args: list[str] = []
         if not allow_repeats:
-            used, n_runs = _scan_used_stems(
-                out_root_path, H, W, float(baseline_lambda)
-            )
+            used, n_runs = _scan_used_stems(out_root_path, H, W, float(baseline_lambda))
             exclude_path = exclude_dir / f"{H}x{W}.txt"
             exclude_path.write_text(
                 "\n".join(

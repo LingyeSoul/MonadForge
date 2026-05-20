@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import ROOT, _adapter_dirs, _safetensors_in
+from gui import ROOT, LazyTabMixin, _adapter_dirs, _safetensors_in
 from gui.i18n import t
 from gui.process import kill_process_tree, setup_kill_safe
 
@@ -104,7 +104,9 @@ def _scan_adapter(path: Path) -> dict:
     # don't share a useful prefix we could grep.
     metadata_mode: str | None = None
     try:
-        with safe_open(str(path), framework="pt") as f:
+        # framework="np" — we only read keys + metadata, never tensors, so this
+        # must NOT be "pt" (that drags torch in, ~1.4s, for nothing).
+        with safe_open(str(path), framework="np") as f:
             keys = list(f.keys())
             try:
                 meta = f.metadata() or {}
@@ -160,9 +162,7 @@ def _scan_adapter(path: Path) -> dict:
         details.append(f"{counts['postfix']} {metadata_mode} keys")
 
     is_hydra = bool(counts["lora_up_weight"] or counts["lora_ups"])
-    is_postfix_only = is_postfix and not (
-        counts["lora_down"] or counts["ortho_sp"]
-    )
+    is_postfix_only = is_postfix and not (counts["lora_down"] or counts["ortho_sp"])
     has_lora_like = bool(counts["lora_down"] or counts["ortho_sp"])
 
     if is_hydra:
@@ -195,7 +195,7 @@ def _scan_adapter(path: Path) -> dict:
 # ── Tab ──────────────────────────────────────────────────────────
 
 
-class MergeTab(QWidget):
+class MergeTab(LazyTabMixin, QWidget):
     def __init__(self):
         super().__init__()
 
@@ -319,6 +319,10 @@ class MergeTab(QWidget):
         self._proc.finished.connect(self._on_finished)
 
         self._clear_details()
+
+    def _lazy_init(self) -> None:
+        # Deferred to first show: scanning the dir + classifying the latest
+        # adapter is what used to make the whole window wait on this tab.
         if self._dirs:
             self._load_dir(self.dir_combo.currentText())
         else:
