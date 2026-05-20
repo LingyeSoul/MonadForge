@@ -127,10 +127,44 @@ winget install ezwinports.make
 uv sync
 ```
 
-`uv sync` reads `pyproject.toml`/`uv.lock`, creates a virtual environment, and installs all dependencies. Once done, activate the shell with one of:
+`uv sync` reads `pyproject.toml`/`uv.lock`, then **creates a virtual environment (a self-contained Python install) in a `.venv/` folder inside `anima_lora/`** and installs every dependency into it. It does *not* touch your system Python, so nothing here pollutes other projects. This is normal — you do not need to `pip install` anything yourself.
 
-- Activate per session (recommended): `.venv\Scripts\activate`
-- VSCode users can activate the environment relatively easily through the editor.
+> **This is the step most newcomers get stuck on.** After `uv sync` finishes, the packages live inside `.venv/`, not in your global Python. If you just open a terminal and run `python tasks.py ...` or `make lora`, you'll likely hit `ModuleNotFoundError` because that shell is still using the *system* Python, which doesn't have the dependencies. You have to point the commands at the `.venv/` interpreter. There are two ways to do that:
+
+**Option A — `uv run` (no activation, works everywhere).** Prefix any command with `uv run` and it transparently uses `.venv/`:
+
+```bash
+uv run make lora              # or: uv run python tasks.py lora
+uv run hf auth login
+uv run make download-models
+```
+
+This is the most foolproof option — it never depends on your shell state, so it can't "forget" the environment.
+
+**Option B — activate the venv once per terminal.** Activating puts `.venv/`'s `python` first on your `PATH` for that shell session, so plain `make ...` / `python tasks.py ...` work without the `uv run` prefix:
+
+```powershell
+.venv\Scripts\activate        # Windows (PowerShell / cmd)
+```
+```bash
+source .venv/bin/activate     # Linux / macOS / WSL
+```
+
+You'll know it worked when your prompt shows a `(anima_lora)` (or `(.venv)`) prefix. **You must re-activate in every new terminal window** — activation does not persist. To leave it, run `deactivate`. VSCode users can select the `.venv` interpreter once (Command Palette → *Python: Select Interpreter*) and its integrated terminal will auto-activate.
+
+> Throughout the rest of this guide, commands are written as plain `make ...` / `python tasks.py ...`, which assume you've **either** activated the venv (Option B) **or** are prefixing with `uv run` (Option A). If a command fails with `ModuleNotFoundError` or `command not found: make`, this is almost always the cause — activate the venv or add `uv run`.
+
+---
+
+> ## 🖥️ Prefer not to use the command line? Use the GUI.
+>
+> With dependencies installed, you can do almost everything from here on in the GUI instead of typing commands — **model download, preprocessing, training, dataset/caption browsing, and merging are all buttons in one window.** Most newcomers will be happiest this way:
+>
+> ```bash
+> make gui          # (or: uv run make gui)
+> ```
+>
+> You'll still want to skim **§4** to create a Hugging Face token and log in (`hf auth login`) before the GUI's download button can fetch models, and **§5** to lay out your dataset. After that, the GUI covers the rest. Sections §6–§11 document the equivalent CLI commands — read them if you want to understand or script what the GUI does, but you don't have to run them by hand. Full GUI walkthrough: **[§7 Using the GUI](#7-using-the-gui)**.
 
 ---
 
