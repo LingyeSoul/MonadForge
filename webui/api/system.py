@@ -1,4 +1,4 @@
-"""System API — model group status, model paths, and environment info."""
+"""System API — model group status, model paths, environment info, and hw stats."""
 
 from __future__ import annotations
 
@@ -133,3 +133,60 @@ def update_model_paths(body: list[ModelPathUpdate]):
             base[item.key] = item.value
     base_path.write_text(_toml.dumps(base), encoding="utf-8")
     return {"ok": True}
+
+
+# ── Hardware stats ─────────────────────────────────────────────
+
+
+@router.get("/hw-stats")
+def get_hw_stats():
+    """Return live GPU / CPU / memory statistics."""
+    import psutil
+
+    # CPU & system memory
+    cpu_percent = psutil.cpu_percent(interval=0)
+    vm = psutil.virtual_memory()
+
+    stats: dict = {
+        "cpu_percent": cpu_percent,
+        "mem_used_gb": round(vm.used / (1024**3), 1),
+        "mem_total_gb": round(vm.total / (1024**3), 1),
+        "mem_percent": vm.percent,
+    }
+
+    # GPU — torch.cuda for memory, nvidia-smi for util & temp
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            idx = torch.cuda.current_device()
+            stats["gpu_name"] = torch.cuda.get_device_name(idx)
+            stats["gpu_mem_used_gb"] = round(torch.cuda.memory_allocated(idx) / (1024**3), 1)
+            stats["gpu_mem_total_gb"] = round(torch.cuda.get_device_properties(idx).total_memory / (1024**3), 1)
+            stats["gpu_mem_reserved_gb"] = round(torch.cuda.memory_reserved(idx) / (1024**3), 1)
+
+            # nvidia-smi for utilization & temperature
+            try:
+                import subprocess
+
+                result = subprocess.run(
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=utilization.gpu,temperature.gpu",
+                        "--format=csv,noheader,nounits",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    parts = result.stdout.strip().split(",")
+                    if len(parts) >= 2:
+                        stats["gpu_util_percent"] = int(parts[0].strip())
+                        stats["gpu_temp_c"] = int(parts[1].strip())
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return stats

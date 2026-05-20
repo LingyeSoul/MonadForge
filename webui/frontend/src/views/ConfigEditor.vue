@@ -27,15 +27,35 @@
         />
       </v-col>
       <v-col cols="12" md="2">
-        <v-select
-          v-model="selectedPreset"
-          :items="configStore.presets"
-          :label="t('cfgPreset')"
-          variant="outlined"
-          density="compact"
-          hide-details
-          @update:model-value="onVariantChange"
-        />
+        <div class="d-flex align-center ga-1">
+          <v-select
+            v-model="selectedPreset"
+            :items="configStore.presets"
+            :label="t('cfgPreset')"
+            variant="outlined"
+            density="compact"
+            hide-details
+            @update:model-value="onVariantChange"
+          />
+          <v-btn
+            icon="mdi-plus"
+            variant="text"
+            density="compact"
+            size="small"
+            :title="t('cfgPresetCreate')"
+            @click="openCreatePreset"
+          />
+          <v-btn
+            v-if="isCustomPreset"
+            icon="mdi-delete-outline"
+            variant="text"
+            density="compact"
+            size="small"
+            color="error"
+            :title="t('cfgPresetDelete')"
+            @click="deleteCurrentPreset"
+          />
+        </div>
       </v-col>
       <v-col cols="12" md="4" class="d-flex justify-end ga-2 flex-wrap">
         <v-btn
@@ -188,6 +208,35 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Create preset dialog -->
+    <v-dialog v-model="showCreatePresetDlg" max-width="400">
+      <v-card>
+        <v-card-title>{{ t('cfgPresetCreate') }}</v-card-title>
+        <v-card-text>
+          <v-text-field
+            v-model="newPresetName"
+            :label="t('cfgPresetName')"
+            :placeholder="t('cfgPresetNameHint')"
+            variant="outlined"
+            density="compact"
+            autofocus
+            @keyup.enter="confirmCreatePreset"
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showCreatePresetDlg = false">{{ t('cfgCancel') }}</v-btn>
+          <v-btn
+            color="primary"
+            :disabled="!newPresetName.trim()"
+            @click="confirmCreatePreset"
+          >
+            {{ t('cfgPresetCreate') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -218,6 +267,18 @@ const showNoCacheDlg = ref(false)
 const showCheckpointDlg = ref(false)
 const checkpointInfo = ref<{ state_dir: string; step: number } | null>(null)
 const prelaunchResult = ref<any>(null)
+
+// Preset management
+const showCreatePresetDlg = ref(false)
+const newPresetName = ref('')
+
+const isCustomPreset = computed(() => {
+  // Built-in presets: default, low_vram, graft, half, quarter, tenth, debug
+  // Custom presets come from configs/custom/*.toml — they exist in the list but
+  // we detect them by checking if they're NOT in the known built-in set.
+  const builtin = ['default', 'low_vram', 'graft', 'half', 'quarter', 'tenth', 'debug']
+  return selectedPreset.value && !builtin.includes(selectedPreset.value)
+})
 
 const variantItems = computed(() =>
   configStore.variants.map(v => ({
@@ -260,6 +321,46 @@ async function onSave() {
     notify.show(t('notifyConfigSaved'), 'success')
   } catch (e: any) {
     notify.show(t('notifyConfigSaveFailed'), 'error')
+  }
+}
+
+// ── Preset management ────────────────────────────────────────
+
+function openCreatePreset() {
+  newPresetName.value = ''
+  showCreatePresetDlg.value = true
+}
+
+async function confirmCreatePreset() {
+  const name = newPresetName.value.trim()
+  if (!name) return
+  // Collect current edited values + existing field values as preset data
+  const data: Record<string, unknown> = {}
+  for (const f of configStore.fields) {
+    if (f.is_virtual) continue
+    if (f.key in configStore.editedValues) {
+      data[f.key] = configStore.editedValues[f.key]
+    } else if (f.origin !== 'base') {
+      data[f.key] = f.value
+    }
+  }
+  const ok = await configStore.createPreset(name, data)
+  if (ok) {
+    showCreatePresetDlg.value = false
+    selectedPreset.value = name
+    await loadConfig()
+    notify.show(t('cfgPresetCreated', { name }), 'success')
+  }
+}
+
+async function deleteCurrentPreset() {
+  const name = selectedPreset.value
+  if (!name || !isCustomPreset.value) return
+  const ok = await configStore.deletePreset(name)
+  if (ok) {
+    selectedPreset.value = configStore.presets.includes('default') ? 'default' : (configStore.presets[0] || '')
+    await loadConfig()
+    notify.show(t('cfgPresetDeleted', { name }), 'success')
   }
 }
 

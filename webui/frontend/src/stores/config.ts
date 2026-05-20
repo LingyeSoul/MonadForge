@@ -159,11 +159,50 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
+  async function createPreset(name: string, data: Record<string, unknown>): Promise<boolean> {
+    try {
+      const res = await fetch('/api/config/presets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, data }),
+      })
+      if (!res.ok) {
+        const body = await res.json()
+        throw new Error(body.detail || 'Failed to create preset')
+      }
+      const body = await res.json()
+      presets.value = body.presets || []
+      return true
+    } catch (e) {
+      error.value = String(e)
+      return false
+    }
+  }
+
+  async function deletePreset(name: string): Promise<boolean> {
+    try {
+      const res = await fetch(`/api/config/presets/${encodeURIComponent(name)}`, {
+        method: 'DELETE',
+      })
+      if (!res.ok) {
+        const body = await res.json()
+        throw new Error(body.detail || 'Failed to delete preset')
+      }
+      const body = await res.json()
+      presets.value = body.presets || []
+      return true
+    } catch (e) {
+      error.value = String(e)
+      return false
+    }
+  }
+
   return {
     fields, variant, preset, methods, variants, variantLabels, presets,
     loading, dirty, error, editedValues,
     basicFields, advancedFields, groupedAdvanced,
     fetchMethods, fetchVariants, fetchPresets, fetchMerged,
     setFieldValue, getFieldValue, save,
+    createPreset, deletePreset,
   }
 })

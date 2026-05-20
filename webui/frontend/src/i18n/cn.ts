@@ -47,6 +47,14 @@ export default {
   dashEventCheckpoint: '检查点已保存',
   dashLiveLog: '实时日志',
 
+  // System Monitoring (dashboard)
+  dashSysMon: '系统监控',
+  dashGpuUtil: 'GPU 占用',
+  dashGpuMem: '显存',
+  dashGpuTemp: 'GPU 温度',
+  dashCpu: 'CPU 占用',
+  dashMem: '内存占用',
+
   // Config Editor
   cfgMethod: '训练方法',
   cfgVariant: '变体',
@@ -65,6 +73,15 @@ export default {
   cfgResume: '恢复',
   cfgWipe: '重新开始',
   cfgStartFresh: '重新开始',
+  cfgPresetCreate: '新建预设',
+  cfgPresetDelete: '删除预设',
+  cfgPresetName: '预设名称',
+  cfgPresetNameHint: '仅允许字母、数字、下划线和连字符',
+  cfgPresetCreated: '预设已创建: {name}',
+  cfgPresetDeleted: '预设已删除: {name}',
+  cfgPresetBuiltin: '内置预设不可删除',
+  cfgPresetNameConflict: '该名称已存在',
+  cfgCancel: '取消',
 
   // Dataset Browser
   dsTitle: '数据集浏览',

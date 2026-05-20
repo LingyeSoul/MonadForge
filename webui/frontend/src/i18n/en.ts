@@ -47,6 +47,14 @@ export default {
   dashEventCheckpoint: 'Checkpoint saved',
   dashLiveLog: 'Live Log',
 
+  // System Monitoring (dashboard)
+  dashSysMon: 'System Monitoring',
+  dashGpuUtil: 'GPU Usage',
+  dashGpuMem: 'VRAM',
+  dashGpuTemp: 'GPU Temp',
+  dashCpu: 'CPU',
+  dashMem: 'Memory',
+
   // Config Editor
   cfgMethod: 'Method',
   cfgVariant: 'Variant',
@@ -65,6 +73,15 @@ export default {
   cfgResume: 'Resume',
   cfgWipe: 'Start Fresh',
   cfgStartFresh: 'Start Fresh',
+  cfgPresetCreate: 'New Preset',
+  cfgPresetDelete: 'Delete Preset',
+  cfgPresetName: 'Preset Name',
+  cfgPresetNameHint: 'Letters, digits, underscores, and hyphens only',
+  cfgPresetCreated: 'Preset created: {name}',
+  cfgPresetDeleted: 'Preset deleted: {name}',
+  cfgPresetBuiltin: 'Built-in presets cannot be deleted',
+  cfgPresetNameConflict: 'Name already exists',
+  cfgCancel: 'Cancel',
 
   // Dataset Browser
   dsTitle: 'Dataset Browser',

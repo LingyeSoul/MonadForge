@@ -338,6 +338,36 @@ def list_presets() -> list[str]:
     return sorted(_load_all_presets())
 
 
+def is_builtin_preset(name: str) -> bool:
+    """Check if a preset is defined in the built-in presets.toml."""
+    if not PRESETS_FILE.exists():
+        return False
+    data = toml.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+    return name in data and isinstance(data[name], dict)
+
+
+def create_custom_preset(name: str, data: dict) -> list[str]:
+    """Create a custom preset in configs/custom/<name>.toml."""
+    _safe_variant(name)
+    if is_builtin_preset(name):
+        raise ValueError(f"Cannot overwrite built-in preset: {name}")
+    CUSTOM_DIR.mkdir(parents=True, exist_ok=True)
+    _save(CUSTOM_DIR / f"{name}.toml", data)
+    return list_presets()
+
+
+def delete_custom_preset(name: str) -> list[str]:
+    """Delete a custom preset. Built-in presets cannot be deleted."""
+    _safe_variant(name)
+    if is_builtin_preset(name):
+        raise ValueError(f"Cannot delete built-in preset: {name}")
+    path = CUSTOM_DIR / f"{name}.toml"
+    if not path.exists():
+        raise ValueError(f"Custom preset not found: {name}")
+    path.unlink()
+    return list_presets()
+
+
 # ── Merge chain ────────────────────────────────────────────────
 
 

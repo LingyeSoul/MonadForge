@@ -61,6 +61,11 @@ class PresetsResponse(BaseModel):
     presets: list[str]
 
 
+class CreatePresetRequest(BaseModel):
+    name: str
+    data: dict[str, Any]
+
+
 class VariantMetaResponse(BaseModel):
     variant: str
     family: Optional[str] = None

@@ -10,6 +10,7 @@ from webui.models.config import (
     ConfigLayerResponse,
     ConfigUpdateRequest,
     ConfigValidationResult,
+    CreatePresetRequest,
     MergedConfigResponse,
     MethodsResponse,
     PresetsResponse,
@@ -36,6 +37,24 @@ def get_variants(method: str = Query("lora")):
 @router.get("/presets", response_model=PresetsResponse)
 def get_presets():
     return PresetsResponse(presets=svc.list_presets())
+
+
+@router.post("/presets", response_model=PresetsResponse)
+def create_preset(body: CreatePresetRequest):
+    try:
+        presets = svc.create_custom_preset(body.name, body.data)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return PresetsResponse(presets=presets)
+
+
+@router.delete("/presets/{name}", response_model=PresetsResponse)
+def delete_preset(name: str):
+    try:
+        presets = svc.delete_custom_preset(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return PresetsResponse(presets=presets)
 
 
 @router.get("/variant-meta", response_model=VariantMetaResponse)

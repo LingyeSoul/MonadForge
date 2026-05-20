@@ -84,6 +84,29 @@
         </v-col>
       </v-row>
 
+      <!-- Row 1.5: System Monitoring -->
+      <v-card variant="tonal" class="pa-4">
+        <div class="text-subtitle-2 mb-3">{{ t('dashSysMon') }}</div>
+        <v-row dense>
+          <v-col v-for="card in sysCards" :key="card.key" cols="6" sm="4" md="2">
+            <div class="metric-card pa-3 rounded-lg" style="background: rgba(255,255,255,0.03);">
+              <div class="text-caption text-medium-emphasis mb-1">{{ card.label }}</div>
+              <div class="text-h6 font-weight-medium" :style="{ color: card.color }">
+                {{ card.value }}
+              </div>
+              <v-progress-linear
+                v-if="card.percent !== undefined"
+                :model-value="card.percent"
+                :color="card.color"
+                height="4"
+                rounded
+                class="mt-1"
+              />
+            </div>
+          </v-col>
+        </v-row>
+      </v-card>
+
       <!-- Row 2: Loss Curve -->
       <v-card variant="tonal" class="pa-4">
         <div class="d-flex align-center mb-2">
@@ -162,6 +185,15 @@ const trainingStore = useTrainingStore()
 const taskStore = useTaskStore()
 const m = computed(() => trainingStore.metrics)
 
+// Hardware stats (polled independently)
+const hw = ref<Record<string, any>>({})
+async function fetchHwStats() {
+  try {
+    const res = await fetch('/api/system/hw-stats')
+    if (res.ok) hw.value = await res.json()
+  } catch { /* ignore */ }
+}
+
 const selectedTaskId = ref('')
 let stream: ReturnType<typeof useTrainingStream> | null = null
 
@@ -196,6 +228,7 @@ const reversedEvents = computed(() => [...m.value.events].reverse())
 const metricCards = computed(() => {
   const cards: { key: string; label: string; value: string; color?: string }[] = [
     { key: 'loss', label: t('dashLoss'), value: m.value.avr_loss > 0 ? m.value.avr_loss.toFixed(5) : '—', color: '#BB86FC' },
+    { key: 'lr', label: t('dashLearningRate'), value: m.value.lr > 0 ? m.value.lr.toExponential(2) : '—', color: '#CF6679' },
     { key: 'speed', label: t('dashSpeed'), value: m.value.speed ? `${m.value.speed} it/s` : '—' },
     { key: 'step', label: t('dashStep'), value: m.value.total_steps > 0 ? `${m.value.step}/${m.value.total_steps}` : '—' },
   ]
@@ -207,6 +240,31 @@ const metricCards = computed(() => {
   }
   if (m.value.keys_scaled !== null && m.value.keys_scaled !== undefined) {
     cards.push({ key: 'keys_scaled', label: t('dashKeysScaled'), value: String(m.value.keys_scaled) })
+  }
+  return cards
+})
+
+const sysCards = computed(() => {
+  const cards: { key: string; label: string; value: string; color?: string; percent?: number }[] = []
+  const v = hw.value
+  if (!v || Object.keys(v).length === 0) return cards
+
+  if (v.gpu_util_percent !== undefined) {
+    cards.push({ key: 'gpu_util', label: t('dashGpuUtil'), value: `${v.gpu_util_percent}%`, color: '#4CAF50', percent: v.gpu_util_percent })
+  }
+  if (v.gpu_mem_total_gb) {
+    const pct = v.gpu_mem_total_gb > 0 ? Math.round((v.gpu_mem_used_gb / v.gpu_mem_total_gb) * 100) : 0
+    cards.push({ key: 'gpu_mem', label: t('dashGpuMem'), value: `${v.gpu_mem_used_gb}/${v.gpu_mem_total_gb} GB`, color: '#FF9800', percent: pct })
+  }
+  if (v.gpu_temp_c !== undefined) {
+    const color = v.gpu_temp_c >= 80 ? '#F44336' : v.gpu_temp_c >= 65 ? '#FF9800' : '#4CAF50'
+    cards.push({ key: 'gpu_temp', label: t('dashGpuTemp'), value: `${v.gpu_temp_c}°C`, color })
+  }
+  if (v.cpu_percent !== undefined) {
+    cards.push({ key: 'cpu', label: t('dashCpu'), value: `${v.cpu_percent}%`, color: '#2196F3', percent: v.cpu_percent })
+  }
+  if (v.mem_total_gb) {
+    cards.push({ key: 'mem', label: t('dashMem'), value: `${v.mem_used_gb}/${v.mem_total_gb} GB`, color: '#9C27B0', percent: v.mem_percent })
   }
   return cards
 })
@@ -234,9 +292,12 @@ watch(selectedTaskId, (id) => {
   }
 })
 
-// Periodically refresh task list
+// Periodically refresh task list + hw stats
 let refreshTimer = 0
+let hwTimer = 0
 onMounted(() => {
+  fetchHwStats()
+  hwTimer = window.setInterval(fetchHwStats, 3000)
   refreshTimer = window.setInterval(async () => {
     await taskStore.fetchTasks()
     autoSelect()
@@ -244,6 +305,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (refreshTimer) clearInterval(refreshTimer)
+  if (hwTimer) clearInterval(hwTimer)
 })
 </script>
 
