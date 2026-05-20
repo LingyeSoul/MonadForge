@@ -935,11 +935,13 @@ def _sample_image_inference(
     prompt = prompt_dict.get("prompt", "")
     negative_prompt = prompt_dict.get("negative_prompt", "")
     sample_steps = prompt_dict.get("sample_steps", 30)
-    width = prompt_dict.get("width", 512)
-    height = prompt_dict.get("height", 512)
-    scale = prompt_dict.get("scale", 7.5)
-    seed = prompt_dict.get("seed")
-    flow_shift = prompt_dict.get("flow_shift", 3.0)
+    _img_size = getattr(args, "sample_image_size", [1024, 1024])
+    width = prompt_dict.get("width", _img_size[1])
+    height = prompt_dict.get("height", _img_size[0])
+    scale = prompt_dict.get("scale", getattr(args, "sample_guidance_scale", 3.5))
+    seed = prompt_dict.get("seed", getattr(args, "sample_seed", None))
+    flow_shift = prompt_dict.get("flow_shift", getattr(args, "sample_flow_shift", 5.0))
+    sampler = prompt_dict.get("sample_sampler", getattr(args, "sample_sampler", "euler"))
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -956,7 +958,7 @@ def _sample_image_inference(
     width = max(64, width - width % 16)
 
     logger.info(
-        f"  prompt: {prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, flow_shift: {flow_shift}, seed: {seed}"
+        f"  prompt: {prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, flow_shift: {flow_shift}, seed: {seed}, sampler: {sampler}"
     )
 
     # Encode prompt
@@ -1054,6 +1056,7 @@ def _sample_image_inference(
         scale,
         flow_shift,
         neg_crossattn_emb,
+        sampler=sampler,
     )
 
     # Decode latents
