@@ -3,7 +3,7 @@
 Centralizes:
 - ``ROOT`` (project root, regardless of where the calling module lives)
 - ``PY`` resolution (venv-aware, pythonw.exe-safe)
-- ``run`` / ``accelerate_launch`` / ``train`` subprocess helpers
+- ``run`` / ``build_launch_cmd`` / ``accelerate_launch`` / ``train`` subprocess helpers
 - ``latest_output`` / ``latest_lora`` / ``latest_hydra`` checkpoint pickers
 - ``INFERENCE_BASE`` — shared inference.py argv prefix
 - ``_path`` / ``_preset`` config-overlay helpers
@@ -441,8 +441,17 @@ def _nsys_run_stats(rep_path: Path) -> None:
         print(f"warn: nsys stats failed: {e}", file=sys.stderr)
 
 
-def accelerate_launch(*args: str):
-    """Launch training via accelerate with extra CLI args forwarded.
+def build_launch_cmd(*args: str) -> list[str]:
+    """Build the ``accelerate launch ... train.py`` command list (no side effects).
+
+    Pure command construction — the returned list is exactly what launches
+    training. Extracted from ``accelerate_launch`` so other spawners (the
+    training daemon under ``scripts/daemon/``) can ``Popen`` the same command
+    themselves — detached, with their own stdio redirection and process-tree
+    monitoring — instead of going through ``run()``'s blocking
+    ``subprocess.run`` + ``sys.exit``-on-failure path. The nsys profiling
+    wrapper stays in ``accelerate_launch``: it's a CLI-only concern, not
+    something the daemon ever applies.
 
     Invoked as ``python -m accelerate.commands.accelerate_cli launch`` rather
     than the bare ``accelerate`` console-script. This keeps ``sys.executable``
@@ -450,14 +459,8 @@ def accelerate_launch(*args: str):
     the GUI is launched via pythonw.exe (no console), the workers also run
     under pythonw.exe and don't pop terminal windows. The accelerate.exe
     shim hardcodes python.exe as the worker interpreter, defeating that.
-
-    When PROFILE_STEPS is set, wraps the launch with ``nsys profile`` so
-    ``make <method> PROFILE_STEPS=3-5`` produces a navigable Nsight report
-    at ``output/nsys/profile.nsys-rep`` (override with NSYS_OUT). After the
-    run, generates per-report textual summaries via ``nsys stats`` next to
-    the .nsys-rep.
     """
-    cmd = [
+    return [
         PY,
         "-m",
         "accelerate.commands.accelerate_cli",
@@ -469,6 +472,19 @@ def accelerate_launch(*args: str):
         "train.py",
         *args,
     ]
+
+
+def accelerate_launch(*args: str):
+    """Launch training via accelerate with extra CLI args forwarded (blocking).
+
+    Builds the command via ``build_launch_cmd`` then runs it through ``run``
+    (blocking, exits on failure). When PROFILE_STEPS is set, wraps the launch
+    with ``nsys profile`` so ``make <method> PROFILE_STEPS=3-5`` produces a
+    navigable Nsight report at ``output/nsys/profile.nsys-rep`` (override with
+    NSYS_OUT). After the run, generates per-report textual summaries via
+    ``nsys stats`` next to the .nsys-rep.
+    """
+    cmd = build_launch_cmd(*args)
     nsys_prefix, nsys_out = _nsys_wrapper()
     if nsys_prefix is not None:
         cmd = nsys_prefix + ["--"] + cmd
