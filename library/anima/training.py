@@ -725,7 +725,7 @@ def save_anima_model_on_epoch_end_or_stepwise(
     )
 
 
-# Sampling (Euler discrete for rectified flow)
+# Sampling (Euler discrete / ER-SDE / Euler Ancestral for rectified flow)
 def do_sample(
     height: int,
     width: int,
@@ -739,8 +739,9 @@ def do_sample(
     flow_shift: float = 3.0,
     neg_crossattn_emb: Optional[torch.Tensor] = None,
     show_progress: bool = True,
+    sampler: str = "euler",
 ) -> torch.Tensor:
-    """Generate a sample using Euler discrete sampling for rectified flow.
+    """Generate a sample using configurable sampling for rectified flow.
 
     Args:
         height, width: Output image dimensions
@@ -753,10 +754,14 @@ def do_sample(
         guidance_scale: CFG scale (1.0 = no guidance)
         flow_shift: Flow shift parameter for rectified flow
         neg_crossattn_emb: Negative cross-attention embeddings for CFG
+        sampler: Sampling algorithm - "euler" (deterministic ODE),
+                 "er_sde" (Extended Reverse-Time SDE), "euler_a" (Euler Ancestral)
 
     Returns:
         Denoised latents
     """
+    from library.inference import sampling as inference_utils
+
     # Latent shape: (1, 16, 1, H/8, W/8) for single image
     latent_h = height // 8
     latent_w = width // 8
@@ -784,10 +789,17 @@ def do_sample(
     # Start from pure noise
     x = noise.clone()
 
-    # Padding mask (zeros = no padding) — resized in prepare_embedded_sequence to match latent dims
+    # Padding mask (zeros = no padding)
     padding_mask = torch.zeros(1, 1, latent_h, latent_w, dtype=dtype, device=device)
 
     use_cfg = guidance_scale > 1.0 and neg_crossattn_emb is not None
+
+    # Create sampler object for er_sde / euler_a; euler uses inline steps
+    sampler_obj = None
+    if sampler == "er_sde":
+        sampler_obj = inference_utils.ERSDESampler(sigmas, seed=seed, device=device)
+    elif sampler == "euler_a":
+        sampler_obj = inference_utils.EulerAncestralSampler(sigmas, seed=seed, device=device)
 
     for i in tqdm(range(steps), desc="Sampling", disable=not show_progress):
         sigma = sigmas[i]
@@ -805,9 +817,16 @@ def do_sample(
             model_output = dit(x, t, crossattn_emb, padding_mask=padding_mask)
             model_output = model_output.float()
 
-        # Euler step: x_{t-1} = x_t - (sigma_t - sigma_{t-1}) * model_output
-        dt = sigmas[i + 1] - sigma
-        x = x + model_output * dt
+        # Compute denoised prediction
+        denoised = x.float() - sigmas[i] * model_output.float()
+
+        if sampler_obj is not None:
+            # ER-SDE or Euler Ancestral: delegate to sampler
+            x = sampler_obj.step(x, denoised, i)
+        else:
+            # Euler ODE step: x_{t-1} = x_t - (sigma_t - sigma_{t-1}) * v_pred
+            dt = sigmas[i + 1] - sigmas[i]
+            x = x + model_output * dt
         x = x.to(dtype)
 
     return x
