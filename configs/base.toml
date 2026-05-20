@@ -35,6 +35,17 @@ log_every_n_steps = 2
 dataloader_pin_memory = true
 persistent_data_loader_workers = false
 use_cmmd = false
+
+# Preview sampling — generate sample images at checkpoint saves
+[preview]
+sample_every_n_epochs = 2
+sample_prompts = "sample_prompts.txt"
+sample_sampler = "euler"
+sample_guidance_scale = 3.5
+sample_flow_shift = 5.0
+sample_image_size = [1024, 1024]
+# sample_seed = 42  # uncomment for reproducible previews
+
 [[datasets]]
 resolution = 1024
 batch_size = 1
