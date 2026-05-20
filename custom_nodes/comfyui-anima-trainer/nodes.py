@@ -93,14 +93,23 @@ def _train_and_save(
     prompt: str,
     dataset_dir: str,
 ) -> str:
-    """Run training end-to-end; return absolute path of the saved safetensors."""
+    """Submit training to the local daemon and block until it finishes.
+
+    The daemon runs ``accelerate launch … train.py`` in its **own** detached
+    subprocess (out of the ComfyUI process), so a CUDA OOM / segfault kills only
+    the job — not ComfyUI — and the UI no longer freezes for the whole run. This
+    call polls the daemon's ``GET /jobs/{id}`` and drives a ``ProgressBar`` from
+    the structured progress stream until the job reaches a terminal state, then
+    returns the absolute path of the saved safetensors.
+    """
+    import time
+
     import comfy.model_management
+    import comfy.utils
+
+    from scripts.daemon.client import ensure_daemon
 
     from .dataset_prep import prepare_dataset_dir
-    from .training import (
-        build_training_namespace,
-        run_training,
-    )
 
     root = _anima_lora_root()
     tmp_root = os.path.join(root, "output", "tmp_trainer")
@@ -118,26 +127,14 @@ def _train_and_save(
     overrides.setdefault("output_dir", output_dir)
     overrides.setdefault("output_name", output_name)
 
-    args = build_training_namespace(
-        anima_lora_root=root,
-        method=method,
-        preset=preset,
-        methods_subdir="gui-methods",
-        overrides=overrides,
-    )
-
     print(
-        f"[Anima Trainer] method={method} preset={preset} "
-        f"rank={getattr(args, 'network_dim', '?')} "
-        f"epochs={getattr(args, 'max_train_epochs', '?')} "
-        f"lr={getattr(args, 'learning_rate', '?')} "
-        f"blocks_to_swap={getattr(args, 'blocks_to_swap', '?')} "
+        f"[Anima Trainer] submitting method={method} preset={preset} "
         f"images={n_images} → {output_name}.safetensors",
         flush=True,
     )
 
-    # Free ComfyUI-held models so the trainer has room for its own DiT +
-    # optimizer state. Training then runs in-process.
+    # Free ComfyUI-held VRAM so the (separate) training process has room for its
+    # own DiT + optimizer state. The daemon spawns the job; we just watch.
     comfy.model_management.unload_all_models()
     try:
         import gc
@@ -150,9 +147,84 @@ def _train_and_save(
     except Exception:
         pass
 
-    saved_path = run_training(args, anima_lora_root=root)
-    print(f"[Anima Trainer] saved {saved_path}", flush=True)
-    return saved_path
+    client = ensure_daemon()
+    job_id = client.submit(
+        method=method,
+        preset=preset,
+        methods_subdir="gui-methods",
+        overrides=overrides,
+    )["job_id"]
+    print(f"[Anima Trainer] queued as job {job_id}", flush=True)
+
+    expected = os.path.join(output_dir, f"{output_name}.safetensors")
+    pbar = None
+    total = None
+    last_state = None
+    while True:
+        try:
+            job = client.get(job_id)
+        except Exception as e:  # daemon hiccup — keep polling briefly
+            print(f"[Anima Trainer] poll error: {e}", flush=True)
+            time.sleep(2.0)
+            continue
+
+        state = job.get("state")
+        if state != last_state:
+            print(f"[Anima Trainer] job {job_id}: {state}", flush=True)
+            last_state = state
+
+        latest = job.get("latest") or {}
+        if total is None:
+            total = _read_total_steps(job.get("progress_path"))
+            if total:
+                pbar = comfy.utils.ProgressBar(total)
+        step = latest.get("global_step")
+        if pbar is not None and isinstance(step, int):
+            pbar.update_absolute(min(step, total), total)
+
+        if state in ("done", "error", "stopped"):
+            break
+        time.sleep(1.5)
+
+    if state == "done":
+        path = expected if os.path.exists(expected) else job.get("ckpt_path")
+        if not path or not os.path.exists(path):
+            raise RuntimeError(
+                f"Training finished but no checkpoint found (expected {expected}). "
+                f"See the job stdout log: {job.get('stdout_path')}"
+            )
+        print(f"[Anima Trainer] saved {path}", flush=True)
+        return path
+
+    raise RuntimeError(
+        f"Training job {job_id} ended as '{state}': {job.get('error') or '(no detail)'}. "
+        f"See the job stdout log: {job.get('stdout_path')}"
+    )
+
+
+def _read_total_steps(progress_path) -> int | None:
+    """Read ``total_steps`` from the run_start line of a job's progress.jsonl.
+
+    The daemon and ComfyUI share a machine, so reading the local file is the
+    cheapest way to size the progress bar without bloating the HTTP API.
+    """
+    if not progress_path or not os.path.isfile(progress_path):
+        return None
+    try:
+        import json
+
+        with open(progress_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if '"run_start"' not in line:
+                    continue
+                rec = json.loads(line)
+                if rec.get("ev") == "run_start":
+                    val = rec.get("total_steps")
+                    return int(val) if val else None
+    except (OSError, ValueError):
+        return None
+    return None
 
 
 def _apply_lora_to_model(model_clone, file_path: str, strength: float) -> None:
@@ -187,9 +259,7 @@ def _apply_lora_to_model(model_clone, file_path: str, strength: float) -> None:
                 f"not found at {sibling}. Install that custom node alongside "
                 "this one, or patch the resulting LoRA manually via KSampler."
             )
-        spec = importlib.util.spec_from_file_location(
-            "_anima_trainer_adapter", sibling
-        )
+        spec = importlib.util.spec_from_file_location("_anima_trainer_adapter", sibling)
         mod = importlib.util.module_from_spec(spec)
         assert spec.loader is not None
         spec.loader.exec_module(mod)
@@ -254,8 +324,7 @@ class AnimaLoRATrainer:
                     {
                         "default": False,
                         "tooltip": (
-                            "When `train` is off, apply the selected adapter "
-                            "to MODEL."
+                            "When `train` is off, apply the selected adapter to MODEL."
                         ),
                     },
                 ),
@@ -286,8 +355,9 @@ class AnimaLoRATrainer:
         "Train an Anima T-LoRA + OrthoLoRA from a single image+prompt or a "
         "directory with .txt sidecars, then apply the trained LoRA to MODEL. "
         "With `train` off, optionally applies a pre-existing adapter. "
-        "Training runs in-process and blocks the workflow until done; watch "
-        "the ComfyUI console for progress."
+        "Training runs in a local daemon subprocess (not in ComfyUI), so the UI "
+        "stays responsive and a moving progress bar tracks the run. The daemon "
+        "auto-starts on first use."
     )
 
     def apply(
@@ -361,11 +431,7 @@ class AnimaLoRATrainerAdvanced:
                 ),
                 "preset": (
                     presets,
-                    {
-                        "default": "default"
-                        if "default" in presets
-                        else presets[0]
-                    },
+                    {"default": "default" if "default" in presets else presets[0]},
                 ),
                 "dataset_dir": ("STRING", {"default": "", "multiline": False}),
                 "prompt": ("STRING", {"default": "", "multiline": True}),

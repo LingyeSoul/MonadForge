@@ -298,6 +298,7 @@ class CheckpointSaver:
         get_sai_model_spec_fn: Callable[[argparse.Namespace], dict],
         current_epoch,
         current_step,
+        progress_sink=None,
     ):
         self.args = args
         self.accelerator = accelerator
@@ -307,6 +308,9 @@ class CheckpointSaver:
         self.get_sai_model_spec_fn = get_sai_model_spec_fn
         self.current_epoch = current_epoch
         self.current_step = current_step
+        # Optional structured-progress sink (Phase 0). When set, every
+        # checkpoint write emits a ``ckpt`` event.
+        self.progress_sink = progress_sink
         # Set by the load_state pre-hook when resuming. Read by train() to
         # decide initial_step.
         self.steps_from_state: Optional[int] = None
@@ -408,6 +412,9 @@ class CheckpointSaver:
         metadata_to_save.update(sai_metadata)
 
         unwrapped_nw.save_weights(ckpt_file, self.save_dtype, metadata_to_save)
+
+        if self.progress_sink is not None:
+            self.progress_sink.ckpt(global_step=steps, path=ckpt_file)
 
     def remove(self, old_ckpt_name: str) -> None:
         """Delete an old checkpoint plus its HydraLoRA ``_moe`` sibling if present."""

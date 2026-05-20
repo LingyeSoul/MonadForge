@@ -178,6 +178,14 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="base name of trained model file",
     )
     parser.add_argument(
+        "--progress_jsonl",
+        type=str,
+        default=None,
+        help="path to the structured progress JSONL event stream. Unset → derive "
+        "<output_dir>/<output_name>.progress.jsonl (default on). Pass an empty string "
+        "/ 'none' / 'off' to disable.",
+    )
+    parser.add_argument(
         "--huggingface_repo_id",
         type=str,
         default=None,

@@ -106,6 +106,26 @@ make exp-test-directedit PROMPT='double peace'  # DirectEdit on random source im
 make exp-test-directedit-dry                    # DirectEdit reconstruction sanity check
                                                 # (ψ_tar == ψ_src; output should reconstruct the source)
 
+# Training daemon (local job queue — see plan.md, Phases 1–2)
+# Single localhost process: FIFO serial queue + worker that spawns each job as a
+# detached `accelerate launch` subprocess and follows it via the Phase-0
+# progress.jsonl. The ComfyUI trainer node, the GUI Train button, and `--queue`
+# all submit jobs; the daemon auto-starts on first submit.
+make daemon                # Start (idempotent; detached, waits for /health)
+make daemon-attach         # Follow events read-only (JOB=<id> tails that job's stdout); ctrl-C detaches only
+make daemon-kill           # Abort the running job (or JOB=<id>); daemon stays up, advances the queue
+make daemon-terminate      # Stop the daemon entirely (active job killed, GPU freed)
+# `--queue` enqueues instead of running inline — the overnight sweep (submit ×N,
+# drains serially). Works on `make lora` and `make lora-gui`:
+make lora --queue                          # enqueue a default-preset LoRA run
+make lora-gui GUI_PRESETS=tlora --queue    # enqueue a gui-methods variant
+# The GUI Train button submits to the daemon too, so training survives closing
+# the GUI; reopening re-attaches to the running job. Preprocessing (the
+# Preprocessing tab's caching/mask Runs + the Train button's auto-chain cache
+# build) also submits to the daemon — as a "command" job (a plain
+# `python tasks.py <target>` with its knobs in extra_env) that queues serially
+# behind training on the single GPU. Only the Test button stays in-process.
+
 # GUI (PySide6 — config editing, IP-Adapter / EasyControl preprocess+train, dataset browsing)
 make gui
 python tasks.py gui        # Windows

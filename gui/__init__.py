@@ -62,6 +62,31 @@ _METHOD_ORDER = (
 # they were before.
 
 
+class LazyTabMixin:
+    """Defer a tab's first expensive scan until the tab is actually opened.
+
+    Several tabs walk dataset/checkpoint directories (and the Merge tab reads
+    safetensors keys) during construction. Doing that for *every* tab up front
+    is what made the window slow to appear, even though only the first tab is
+    visible at launch. Mixing this in lets construction stay cheap: the heavy
+    work runs on the first ``showEvent`` — i.e. when the user selects the tab —
+    and exactly once thereafter. Subclasses override ``_lazy_init``.
+
+    Mix in BEFORE ``QWidget`` so ``super().showEvent`` resolves to Qt's.
+    """
+
+    _lazy_done = False
+
+    def showEvent(self, event):  # noqa: N802 — Qt event handler name
+        super().showEvent(event)
+        if not self._lazy_done:
+            self._lazy_done = True
+            self._lazy_init()
+
+    def _lazy_init(self) -> None:
+        """Run the tab's first directory scan / classification. Override."""
+
+
 def _read_variant_metadata(path: Path) -> dict:
     """Return the ``[variant]`` table from a gui-methods TOML, or ``{}``.
 

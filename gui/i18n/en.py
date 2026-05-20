@@ -131,6 +131,14 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/ is empty.",
     "finished": "--- Finished (exit code {code}) ---",
     "starting": "Starting… (loading torch / accelerate)",
+    # Daemon-backed training (Phase 2 — training survives GUI close)
+    "daemon_submitting": "Submitting job to the training daemon…",
+    "daemon_submit_failed": "Could not reach the training daemon: {err}",
+    "daemon_queued": "Queued job {job_id} on the training daemon.\n",
+    "daemon_reattached": "Re-attached to running job {job_id} (started in a previous session).\n",
+    "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "train_queued": "Train (queued)",
+    "train_running_daemon": "Train (running…)",
     "update_success_title": "Update applied",
     "update_success_message": (
         "anima_lora was updated to {v}.\n\n"

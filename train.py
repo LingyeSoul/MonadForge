@@ -88,6 +88,8 @@ from library.training import (
     verify_training_args,
 )
 from library.training.loop import build_loop_state, run_training_loop
+from library.training.log_dispatch import dispatch_logs
+from library.training.progress import ProgressSink, run_scope
 from library.training.router_conditioning import apply_router_conditioning
 from library.training.text_conds import prepare_text_conds
 from library.training.forward_kwargs import build_forward_kwargs
@@ -225,12 +227,26 @@ class AnimaTrainer:
     def step_logging(
         self, accelerator: Accelerator, logs: dict, global_step: int, epoch: int
     ):
-        self.accelerator_logging(accelerator, logs, global_step, global_step, epoch)
+        dispatch_logs(
+            accelerator,
+            logs,
+            global_step,
+            global_step,
+            epoch,
+            progress_sink=getattr(self, "progress_sink", None),
+        )
 
     def epoch_logging(
         self, accelerator: Accelerator, logs: dict, global_step: int, epoch: int
     ):
-        self.accelerator_logging(accelerator, logs, epoch, global_step, epoch)
+        dispatch_logs(
+            accelerator,
+            logs,
+            epoch,
+            global_step,
+            epoch,
+            progress_sink=getattr(self, "progress_sink", None),
+        )
 
     def val_logging(
         self,
@@ -240,45 +256,15 @@ class AnimaTrainer:
         epoch: int,
         val_step: int,
     ):
-        self.accelerator_logging(
-            accelerator, logs, global_step + val_step, global_step, epoch, val_step
+        dispatch_logs(
+            accelerator,
+            logs,
+            global_step + val_step,
+            global_step,
+            epoch,
+            val_step,
+            progress_sink=getattr(self, "progress_sink", None),
         )
-
-    def accelerator_logging(
-        self,
-        accelerator: Accelerator,
-        logs: dict,
-        step_value: int,
-        global_step: int,
-        epoch: int,
-        val_step: Optional[int] = None,
-    ):
-        """
-        step_value is for tensorboard, other values are for wandb
-        """
-        tensorboard_tracker = None
-        wandb_tracker = None
-        other_trackers = []
-        for tracker in accelerator.trackers:
-            if tracker.name == "tensorboard":
-                tensorboard_tracker = accelerator.get_tracker("tensorboard")
-            elif tracker.name == "wandb":
-                wandb_tracker = accelerator.get_tracker("wandb")
-            else:
-                other_trackers.append(accelerator.get_tracker(tracker.name))
-
-        if tensorboard_tracker is not None:
-            tensorboard_tracker.log(logs, step=step_value)
-
-        if wandb_tracker is not None:
-            logs["global_step"] = global_step
-            logs["epoch"] = epoch
-            if val_step is not None:
-                logs["val_step"] = val_step
-            wandb_tracker.log(logs)
-
-        for tracker in other_trackers:
-            tracker.log(logs, step=step_value)
 
     # endregion
 
@@ -2086,6 +2072,27 @@ class AnimaTrainer:
             len(train_dataloader) / args.gradient_accumulation_steps
         )
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+
+        # Structured progress sink (Phase 0): a JSONL event stream next to the
+        # checkpoint that the GUI / daemon can tail instead of regex-parsing
+        # tqdm. Main-process only; default on, gated by --progress_jsonl.
+        self.progress_sink = None
+        if is_main_process:
+            progress_path = ProgressSink.resolve_path(args)
+            if progress_path is not None:
+                self.progress_sink = ProgressSink(
+                    progress_path,
+                    run=args.output_name or "run",
+                    method=getattr(args, "method", None),
+                    preset=getattr(args, "preset", None),
+                    t0=training_started_at,
+                )
+                self.progress_sink.run_start(
+                    total_steps=args.max_train_steps,
+                    total_epochs=num_train_epochs,
+                    pid=os.getpid(),
+                )
+
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
             args.save_every_n_epochs = (
                 math.floor(num_train_epochs / args.save_n_epoch_ratio) or 1
@@ -2150,6 +2157,7 @@ class AnimaTrainer:
             get_sai_model_spec_fn=self.get_sai_model_spec,
             current_epoch=current_epoch,
             current_step=current_step,
+            progress_sink=self.progress_sink,
         )
         saver.register_hooks(network)
 
@@ -2245,16 +2253,19 @@ class AnimaTrainer:
             metadata=metadata,
         )
 
-        run_training_loop(self, loop_state)
+        # run_scope emits the matching run_end (ok / stopped / error) on exit;
+        # run_start already fired when the sink was constructed above.
+        with run_scope(self.progress_sink, final_step=lambda: loop_state.global_step):
+            run_training_loop(self, loop_state)
 
-        accelerator.end_training()
-        optimizer_eval_fn()
+            accelerator.end_training()
+            optimizer_eval_fn()
 
-        if is_main_process and (args.save_state or args.save_state_on_train_end):
-            save_state_on_train_end(args, accelerator)
+            if is_main_process and (args.save_state or args.save_state_on_train_end):
+                save_state_on_train_end(args, accelerator)
 
-        saver.cleanup_resumable()
-        saver.save_final(network, loop_state.global_step, num_train_epochs)
+            saver.cleanup_resumable()
+            saver.save_final(network, loop_state.global_step, num_train_epochs)
 
     # endregion
 

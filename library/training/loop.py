@@ -592,6 +592,15 @@ def _log_step(
         logs["router_H"] = f"{_router_H_cached:.3f}"
     state.progress_bar.set_postfix(refresh=False, **{**max_mean_logs, **logs})
 
+    # The Phase-0 progress sink (GUI / daemon progress bar tails progress.jsonl)
+    # needs `step` events even with no tracker configured. When tracking, the
+    # step_logging call below already feeds the sink via dispatch_logs; emit a
+    # lightweight event directly only when untracked, so the bar advances
+    # without paying for the full generate_step_logs + collect_metrics path.
+    progress_sink = getattr(trainer, "progress_sink", None)
+    if should_log_step and not state.is_tracking and progress_sink is not None:
+        progress_sink.log(logs, global_step=state.global_step, epoch=epoch + 1)
+
     if state.is_tracking and should_log_step:
         logs = trainer.generate_step_logs(
             args,

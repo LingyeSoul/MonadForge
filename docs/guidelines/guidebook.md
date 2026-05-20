@@ -127,10 +127,44 @@ winget install ezwinports.make
 uv sync
 ```
 
-`uv sync` reads `pyproject.toml`/`uv.lock`, creates a virtual environment, and installs all dependencies. Once done, activate the shell with one of:
+`uv sync` reads `pyproject.toml`/`uv.lock`, then **creates a virtual environment (a self-contained Python install) in a `.venv/` folder inside `anima_lora/`** and installs every dependency into it. It does *not* touch your system Python, so nothing here pollutes other projects. This is normal — you do not need to `pip install` anything yourself.
 
-- Activate per session (recommended): `.venv\Scripts\activate`
-- VSCode users can activate the environment relatively easily through the editor.
+> **This is the step most newcomers get stuck on.** After `uv sync` finishes, the packages live inside `.venv/`, not in your global Python. If you just open a terminal and run `python tasks.py ...` or `make lora`, you'll likely hit `ModuleNotFoundError` because that shell is still using the *system* Python, which doesn't have the dependencies. You have to point the commands at the `.venv/` interpreter. There are two ways to do that:
+
+**Option A — `uv run` (no activation, works everywhere).** Prefix any command with `uv run` and it transparently uses `.venv/`:
+
+```bash
+uv run make lora              # or: uv run python tasks.py lora
+uv run hf auth login
+uv run make download-models
+```
+
+This is the most foolproof option — it never depends on your shell state, so it can't "forget" the environment.
+
+**Option B — activate the venv once per terminal.** Activating puts `.venv/`'s `python` first on your `PATH` for that shell session, so plain `make ...` / `python tasks.py ...` work without the `uv run` prefix:
+
+```powershell
+.venv\Scripts\activate        # Windows (PowerShell / cmd)
+```
+```bash
+source .venv/bin/activate     # Linux / macOS / WSL
+```
+
+You'll know it worked when your prompt shows a `(anima_lora)` (or `(.venv)`) prefix. **You must re-activate in every new terminal window** — activation does not persist. To leave it, run `deactivate`. VSCode users can select the `.venv` interpreter once (Command Palette → *Python: Select Interpreter*) and its integrated terminal will auto-activate.
+
+> Throughout the rest of this guide, commands are written as plain `make ...` / `python tasks.py ...`, which assume you've **either** activated the venv (Option B) **or** are prefixing with `uv run` (Option A). If a command fails with `ModuleNotFoundError` or `command not found: make`, this is almost always the cause — activate the venv or add `uv run`.
+
+---
+
+> ## 🖥️ Prefer not to use the command line? Use the GUI.
+>
+> With dependencies installed, you can do almost everything from here on in the GUI instead of typing commands — **model download, preprocessing, training, dataset/caption browsing, and merging are all buttons in one window.** Most newcomers will be happiest this way:
+>
+> ```bash
+> make gui          # (or: uv run make gui)
+> ```
+>
+> You'll still want to skim **§4** to create a Hugging Face token and log in (`hf auth login`) before the GUI's download button can fetch models, and **§5** to lay out your dataset. After that, the GUI covers the rest. Sections §6–§11 document the equivalent CLI commands — read them if you want to understand or script what the GUI does, but you don't have to run them by hand. Full GUI walkthrough: **[§7 Using the GUI](#7-using-the-gui)**.
 
 ---
 
@@ -295,6 +329,17 @@ How to use it in the GUI:
 - **After changing the dataset or core settings (rank/LR/epoch count etc.)** and wanting a fresh start, manually delete `output/ckpt/<output_name>-checkpoint-state/` before clicking `Train`, otherwise training continues on top of the old state.
 
 Detailed behavior is covered in [§8.6 Auto-Resume](#86-auto-resume-checkpointing_epochs), including the difference from `save_every_n_epochs`.
+
+### 7.3 Stopping Training and Closing the GUI
+
+Training does not run *inside* the GUI window — when you click `Train`, the job is handed to a small background **training daemon** that runs `train.py` as a detached process. This has two practical consequences:
+
+- **The `Stop` button aborts the current training job.** The daemon keeps running and advances to the next queued job (if any), so stopping one run never tears down the queue. This is the same as `make daemon-kill` on the CLI. (`Stop` also cancels an in-progress `Test` or `Preprocess`, which *do* run inside the GUI.)
+- **Closing the GUI does NOT stop training.** Because the job runs in the detached daemon, training keeps going after you close the window — handy for long runs you want to leave overnight. When you reopen the GUI (`make gui`), it automatically reconnects to the still-running job and you'll see `Re-attached to running job …` in the log, with the progress bar and output picking up live again. (This also surfaces jobs started from the CLI or the ComfyUI trainer node.)
+
+> To fully shut training down — kill the active job *and* stop the daemon to free the GPU — use `make daemon-terminate` on the CLI. `Stop` alone leaves the daemon up.
+>
+> `Test` and `Preprocess` are the exception: they run as in-window subprocesses, so closing the GUI cancels them.
 
 ---
 

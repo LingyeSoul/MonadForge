@@ -20,7 +20,7 @@ Full user-facing docs and changelog live in `README.md`. This file is for code-l
 | `adapter.py` | LoRA / Hydra / ReFT key parsing, classification, hook install + the `load_adapter` / `apply_adapter` top-level dispatch. Owns the live-or-vendor resolver for `library.inference.router_compute` and re-exports the kernel names (`gaussian_blur_2d`, `compute_fei_2band`, `compute_fei_nband_high_to_low`, `fei_sigma_low`, `sigma_sinusoidal_features`, `apply_sigma_band_mask`) so `chimera.py` / `fera.py` and the Hydra hooks share one source of truth. Single-A chimera apply still lives here (inside `_apply_hydra_live_to_model`'s chimera branch — single-A and plain Hydra share the same `lora_down` + per-expert `lora_ups.{i}` shape and the same dispatch loop, so they're co-located). |
 | `chimera.py` | ChimeraHydra parse + hook factories + dual-A apply: `_parse_chimera_content_router`, `_parse_chimera_dual_a`, `_attach_single_a_chimera_metadata` / `_finalize_dual_a_chimera` (the two metadata-validation helpers called from `load_adapter`), `_make_content_router_llm_adapter_hook`, `_make_chimera_pre_hook`, `_make_chimera_hook`, `_make_chimera_dual_a_hook`, `_apply_chimera_dual_a_to_model`. Imports kernel re-exports + `_T5_PAD_LEN` + `_resolve_module` from `adapter.py`; `adapter.py` re-imports the public hook factories and apply entry so calling sites in `_apply_hydra_live_to_model` (single-A chimera branch) and `apply_adapter` look unchanged. |
 | `fera.py` | Author-faithful FeRA + plan2 `stacked_experts_global_fei` parsing + apply. Imports the FEI kernels from `adapter.py` — the ordering split (high→low for author-faithful, low→high for plan2) lives on the kernel names, not duplicated implementations. |
-| `postfix.py` | Prefix / postfix / cond context splicing on `diffusion_model.forward`. |
+| `postfix.py` | Prefix / postfix / cond context splicing via per-block `crossattn_emb` `forward_pre_hook`s (no `forward` override). |
 | `soft_tokens.py` | SoftREPA soft-token bank loading (`load_soft_tokens`) + per-block splice via `forward_pre_hook`. Standalone — no ComfyUI imports at module scope (only `apply_soft_tokens` touches the ModelPatcher), and no router-compute dependency, so it isn't part of the `_vendor` surface. |
 | `nodes.py` | `AnimaAdapterLoader` + `AnimaFeraLoader` + `AnimaPostfixLoader` + `AnimaSoftTokensLoader` ComfyUI node definitions. |
 | `__init__.py` | Re-exports `NODE_CLASS_MAPPINGS` / `NODE_DISPLAY_NAME_MAPPINGS`. |
@@ -42,16 +42,16 @@ Each node sniffs its safetensors header and routes each component independently 
 | HydraLoRA | Per-Linear `forward_hook` installed via `ModelPatcher.add_object_patch` on each adapted Linear's `_forward_hooks`. |
 | FeRA (author-faithful) | One global `forward_pre_hook` on `diffusion_model._forward_pre_hooks` computes per-step FEI + router gates; per-Linear `forward_hook`s on each adapted Linear's `_forward_hooks` add the gated stacked-expert correction. Same hook-not-override invariant as Hydra. |
 | ReFT | Per-block `forward_hook` installed via `ModelPatcher.add_object_patch` on `diffusion_model.blocks.<idx>._forward_hooks`. |
-| Prefix / postfix / cond | `ModelPatcher.add_object_patch` on `diffusion_model.forward`, splicing learned vectors into the T5-compatible crossattn embedding **after** the LLM adapter + pad-to-512 step. CFG-safe via `cond_or_uncond` from `transformer_options`. |
+| Prefix / postfix / cond | Per-block `with_kwargs` `forward_pre_hook` on **every** `diffusion_model.blocks.<idx>._forward_pre_hooks`, rewriting each block's post-adapter `crossattn_emb` arg (index 2). The model runs the LLM adapter + pad-to-512 inside its own `forward` and hands the same `crossattn_emb` to every block, so all blocks must be hooked. CFG-safe via `cond_or_uncond` read from the block's `transformer_options` kwarg (positive rows only). Hook-not-override invariant holds. |
 | Soft tokens | Per-block `forward_pre_hook` on the first `n_layers` `diffusion_model.blocks.<idx>._forward_pre_hooks` rewrites each block's `crossattn_emb` arg; one `diffusion_model._forward_pre_hooks` pre-hook records per-step σ and precomputes the bank. Whole batch (both CFG branches). Hook-not-override invariant holds (block `forward` is untouched). |
 
 ## Critical invariant: forward_hook, never override `forward`
 
 For Hydra and ReFT, install a `forward_hook` — do **not** replace `block.forward` / `linear.forward`. Overriding `forward` strands weights on CPU under ComfyUI's cast-weights path: ComfyUI walks the real `forward` to drive its `comfy_cast_weights` machinery, and replacing the method confuses it — blocks end up with `comfy_cast_weights=False` and their Linears stay on CPU, producing a device mismatch at runtime. A hook leaves `forward` untouched, traces cleanly through `torch.compile`, and is properly reverted on `unpatch_model`.
 
-Prefix/postfix is the exception (it patches `diffusion_model.forward` itself), but that's the model-level forward, not a per-Linear / per-block one — same rule, different scope.
+Postfix/prefix/cond and soft tokens both honor the rule by splicing at the block level: a `forward_pre_hook` (not a `forward` override) returns a modified positional-args tuple, so `crossattn_emb` (block arg index 2) is rewritten before `forward` runs. Pre-hooks that return a non-`None` value replace the call's args — that's the supported way to edit a block's inputs without touching its `forward`. (Postfix previously *did* replace `diffusion_model.forward` to run `preprocess_text_embeds` itself; that stranded the DiT's own `x_embedder` on CPU under ComfyUI's dynamic-VRAM / cast-weights staging walk — even a model-level forward override is unsafe there. The block-hook rewrite removed it.)
 
-Soft tokens splice at the block level but still honor the rule: a `forward_pre_hook` (not a `forward` override) returns a modified positional-args tuple, so `crossattn_emb` (block arg index 2) is rewritten before `forward` runs. Pre-hooks that return a non-`None` value replace the call's args — that's the supported way to edit a block's inputs without touching its `forward`.
+Postfix's positive-only CFG routing needs `cond_or_uncond`, which lives in the block's `transformer_options` **kwarg**, so its pre-hooks are registered `with_kwargs=True`. PyTorch keys the with-kwargs dispatch on the hook id (`if hook_id in self._forward_pre_hooks_with_kwargs`), so `postfix.py::_merge_pre_hook` patches **both** `_forward_pre_hooks` and the sibling `_forward_pre_hooks_with_kwargs` map via `add_object_patch`. Soft tokens take whole-batch args (no kwargs) and skip this.
 
 ## Soft tokens (SoftREPA splice)
 
@@ -115,7 +115,7 @@ Hard error if the file claims `crossattn` but is missing `content_router.net.*` 
 
 - The hook runs `torch._dynamo.disable`d (same as the chimera pre-hook) — softmax/τ at small τ underflows in bf16, so it stays fp32.
 - `_T5_PAD_LEN` is hardcoded to 512 because T5 tokenization and `Anima.preprocess_text_embeds` both pin it. If T5 max_length ever varies, plumb a metadata stamp.
-- Postfix composes fine — postfix splices its vectors into `context` AFTER `preprocess_text_embeds`, so the llm_adapter hook always sees the unmodified post-T5 features.
+- Postfix composes fine — postfix splices its vectors into `crossattn_emb` at the block level (per-block pre-hooks), which fire *after* the `llm_adapter` `forward_hook`, so the content router always sees the unmodified post-T5 features.
 
 ## Author-faithful FeRA (`fera.py`)
 

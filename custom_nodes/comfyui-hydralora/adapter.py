@@ -918,11 +918,41 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
     return patched
 
 
+def _fold_inv_scale(lora_sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Fold per_channel_scaling ``inv_scale`` into ``lora_down`` and drop it.
+
+    ``per_channel_scaling`` (SmoothQuant-style channel absorption) bakes
+    ``s_norm`` into the saved ``lora_down.weight`` (``W[:,c] *= s_norm[c]``)
+    and stores ``inv_scale = 1/s_norm`` separately; the trained forward is
+    ``F.linear(x * inv_scale, down)``. ComfyUI's LoRA patcher doesn't know the
+    ``.inv_scale`` suffix, so it would warn ``lora key not loaded`` and silently
+    drop it — applying a delta that's off by ``s_norm`` per input column.
+
+    Mirror ``LoRAModule.merge_to`` exactly: ``down *= inv_scale`` then strip the
+    key. Returns a new dict (the caller's dict is cached by path, so we must not
+    mutate it — repeated applies would double-fold).
+    """
+    inv_keys = [k for k in lora_sd if k.endswith(".inv_scale")]
+    if not inv_keys:
+        return lora_sd
+    out = dict(lora_sd)
+    for inv_key in inv_keys:
+        prefix = inv_key[: -len(".inv_scale")]
+        down_key = f"{prefix}.lora_down.weight"
+        inv_scale = out.pop(inv_key)
+        down = out.get(down_key)
+        if down is None or down.dim() != 2:
+            continue
+        out[down_key] = down.to(torch.float) * inv_scale.to(torch.float).unsqueeze(0)
+    return out
+
+
 def _apply_lora_sd_to_model(model, lora_sd: Dict[str, torch.Tensor], strength: float):
     """Apply a standard LoRA state_dict via ComfyUI's weight patching."""
     import comfy.lora
     import comfy.lora_convert
 
+    lora_sd = _fold_inv_scale(lora_sd)
     key_map = comfy.lora.model_lora_keys_unet(model.model, {})
     lora_sd = comfy.lora_convert.convert_lora(lora_sd)
     loaded = comfy.lora.load_lora(lora_sd, key_map)

@@ -29,8 +29,9 @@ import sys
 from pathlib import Path
 
 import yaml
-from PySide6.QtCore import QProcess, Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFormLayout,
     QGroupBox,
@@ -48,10 +49,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import IMAGE_EXTS, ROOT, count_preprocess_caches
+from gui import IMAGE_EXTS, ROOT, LazyTabMixin, count_preprocess_caches
+from gui import daemon as gui_daemon
 from gui.explanations import preprocess_field_help, preprocess_guide
 from gui.i18n import t
-from gui.process import kill_process_tree, make_subprocess_env, setup_kill_safe
 from gui.progress import TQDM_RE, TqdmProgressTracker, make_progress_bar
 from gui.tabs.config_tab import ClickableLabel
 
@@ -152,16 +153,22 @@ def _count_resized() -> int:
     )
 
 
-class PreprocessingTab(QWidget):
+class PreprocessingTab(LazyTabMixin, QWidget):
     def __init__(self):
         super().__init__()
-        self._proc = QProcess(self)
-        self._proc.setWorkingDirectory(str(ROOT))
-        self._proc.setProcessChannelMode(QProcess.MergedChannels)
-        setup_kill_safe(self._proc)
-        self._proc.readyReadStandardOutput.connect(self._read_stdout)
-        self._proc.finished.connect(self._on_finished)
-        self._buf = ""
+        # Daemon-backed preprocessing (mirrors ConfigTab's Train button): each
+        # Run submits a "command" job to the local daemon — not a child of this
+        # tab — so a long cache build / mask pass survives the GUI closing and
+        # shares the daemon's serial queue with training (one GPU, one job at a
+        # time). The tab observes the job by polling the per-job files the
+        # daemon writes (job.json for state, stdout.log for the log/bar) off a
+        # single timer; no SSE thread (daemon is localhost-only).
+        self._job_id: str | None = None
+        self._stdout_tailer = gui_daemon.FileTailer()
+        self._stdout_buf = ""
+        self._job_timer = QTimer(self)
+        self._job_timer.setInterval(400)
+        self._job_timer.timeout.connect(self._poll_job)
         self._run_buttons: list[QPushButton] = []
 
         outer = QVBoxLayout(self)
@@ -169,7 +176,7 @@ class PreprocessingTab(QWidget):
         # ── Top action bar ────────────────────────────────────────
         # Mirrors ConfigTab: Save + per-step Run buttons + Stop, all under
         # the tab strip on a single row. No manual refresh — the status
-        # one-liner is rebuilt automatically on every _on_finished.
+        # one-liner is rebuilt automatically when a job finishes.
         top = QHBoxLayout()
 
         # Color semantics (matches ConfigTab):
@@ -210,8 +217,8 @@ class PreprocessingTab(QWidget):
         outer.addLayout(top)
 
         # tqdm bar (same look as ConfigTab — shared QSS in gui/progress.py).
-        # Shown when a child process emits a parseable tqdm line, hidden again
-        # on _on_finished.
+        # Shown when the observed daemon job emits a parseable tqdm line, hidden
+        # again when the job finishes.
         self.progress = make_progress_bar()
         self._progress_tracker = TqdmProgressTracker(self.progress)
         outer.addWidget(self.progress)
@@ -370,7 +377,12 @@ class PreprocessingTab(QWidget):
         vsplit.setSizes([520, 200])
         outer.addWidget(vsplit, 1)
 
+    def _lazy_init(self) -> None:
+        # Cache-count scan deferred to first show of the tab.
         self._refresh_status()
+        # Re-bind to a preprocess/mask job still running from a previous GUI
+        # session (or one submitted by the CLI) so closing+reopening re-attaches.
+        self._try_reattach()
 
     # ── Field labels & explain panel ───────────────────────────────
 
@@ -484,10 +496,10 @@ class PreprocessingTab(QWidget):
         if self._save_all():
             QMessageBox.information(self, t("saved"), t("preprocess_settings_saved"))
 
-    # ── Subprocess actions ─────────────────────────────────────────
+    # ── Daemon job actions ─────────────────────────────────────────
 
     def _is_running(self) -> bool:
-        return self._proc.state() != QProcess.NotRunning
+        return self._job_id is not None
 
     def _run_te(self) -> None:
         # Unified "caching" step — runs `tasks.py preprocess`, which chains
@@ -498,11 +510,14 @@ class PreprocessingTab(QWidget):
         # currently have no GUI-tunable parameters, so the form stays TE-only.
         if not self._save_all():
             return
-        env = make_subprocess_env(
-            CAPTION_SHUFFLE_VARIANTS=str(int(self.shuffle_spin.value())),
-            CAPTION_TAG_DROPOUT_RATE=self.dropout_edit.text().strip(),
+        self._submit(
+            label="preprocess",
+            argv=["tasks.py", "preprocess"],
+            extra_env={
+                "CAPTION_SHUFFLE_VARIANTS": str(int(self.shuffle_spin.value())),
+                "CAPTION_TAG_DROPOUT_RATE": self.dropout_edit.text().strip(),
+            },
         )
-        self._launch(["tasks.py", "preprocess"], env=env)
 
     def _run_mask(self) -> None:
         # Single-shot pipeline. ``tasks.py mask`` runs SAM and/or MIT into
@@ -516,67 +531,160 @@ class PreprocessingTab(QWidget):
         run_sam = self.run_sam_mask_chk.isChecked()
         run_mit = self.run_mit_mask_chk.isChecked()
         if not (run_sam or run_mit):
-            QMessageBox.warning(
-                self, t("error"), t("preprocess_mask_nothing_enabled")
-            )
+            QMessageBox.warning(self, t("error"), t("preprocess_mask_nothing_enabled"))
             return
-        env = make_subprocess_env(
-            MIT_TEXT_THRESHOLD=self.mit_threshold_edit.text().strip(),
-            MIT_DILATE=str(int(self.mit_dilate_spin.value())),
-            RUN_SAM_MASK="1" if run_sam else "0",
-            RUN_MIT_MASK="1" if run_mit else "0",
+        self._submit(
+            label="mask",
+            argv=["tasks.py", "mask"],
+            extra_env={
+                "MIT_TEXT_THRESHOLD": self.mit_threshold_edit.text().strip(),
+                "MIT_DILATE": str(int(self.mit_dilate_spin.value())),
+                "RUN_SAM_MASK": "1" if run_sam else "0",
+                "RUN_MIT_MASK": "1" if run_mit else "0",
+            },
         )
-        self._launch(["tasks.py", "mask"], env=env)
 
-    def _launch(self, argv: list[str], env=None) -> None:
+    def _submit(self, *, label: str, argv: list[str], extra_env: dict) -> None:
+        """Submit a preprocess/mask job to the daemon, then observe it.
+
+        The daemon spawns ``python <argv>`` detached and serializes it behind
+        any running training job (single GPU). Pre-launch validation
+        (``_save_all`` + per-step gating) is the caller's job."""
         if self._is_running():
             QMessageBox.information(self, "", t("preprocess_already_running"))
             return
-        if env is not None:
-            self._proc.setProcessEnvironment(env)
-        self.log.clear()
-        self._buf = ""
-        self._progress_tracker.reset()
-        self.log.appendPlainText("> " + " ".join([sys.executable, *argv]))
-        self._proc.start(sys.executable, argv)
+        # Busy UI + repaint before the submit so the tab feels responsive while
+        # the daemon auto-start + /health wait completes on a cold start.
         for btn in self._run_buttons:
             btn.setEnabled(False)
         self.save_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self.log.clear()
+        self._stdout_buf = ""
+        self._progress_tracker.reset()
+        self._progress_tracker.mark_starting(t("starting"))
+        self.log.appendPlainText("> " + " ".join([sys.executable, *argv]))
+        self.log.appendPlainText(t("daemon_submitting"))
+        QApplication.processEvents()
 
-    def _stop(self) -> None:
-        kill_process_tree(self._proc)
+        try:
+            resp = gui_daemon.submit_command(
+                label=label, argv=argv, extra_env=extra_env
+            )
+        except Exception as e:  # noqa: BLE001 — daemon failed to start / submit
+            QMessageBox.warning(self, t("error"), t("daemon_submit_failed", err=str(e)))
+            self._restore_idle_ui()
+            return
+        job_id = resp.get("job_id") if isinstance(resp, dict) else None
+        if not job_id:
+            QMessageBox.warning(
+                self, t("error"), t("daemon_submit_failed", err=str(resp))
+            )
+            self._restore_idle_ui()
+            return
+        self.log.appendPlainText(t("daemon_queued", job_id=job_id).rstrip("\n"))
+        self._attach_to_job(job_id, replay_log=False)
 
-    def cleanup_subprocess(self) -> None:
-        """Hook for app shutdown — kill any running preprocess subtree."""
-        kill_process_tree(self._proc)
+    def _try_reattach(self) -> None:
+        """Bind to a preprocess/mask job still running when the tab first opens.
 
-    def _read_stdout(self) -> None:
-        # Split on \n and \r so tqdm's carriage-return updates feed the bar
-        # without spamming the log. Mirrors ConfigTab._handle_stream.
-        data = bytes(self._proc.readAllStandardOutput()).decode(
-            "utf-8", errors="replace"
-        )
-        self._buf += data
-        parts = re.split(r"[\r\n]", self._buf)
-        self._buf = parts[-1]  # incomplete trailing fragment stays buffered
+        Makes "close GUI mid-preprocess → reopen → re-attach" work. Skips a
+        training job (that one belongs to the ConfigTab) and stays idle when the
+        daemon is down."""
+        try:
+            job_id = gui_daemon.active_job_id()
+        except Exception:  # noqa: BLE001 — daemon unreachable → nothing to attach
+            return
+        if not job_id or gui_daemon.read_job_kind(job_id) != "command":
+            return
+        # An auto-chain preprocess (tagged ANIMA_CHAIN_TRAIN) belongs to the
+        # ConfigTab — it re-claims that one so the bar + Train-blocking + chain
+        # into training stay on the training tab. Leave it alone here.
+        if gui_daemon.read_job_chain_variant(job_id):
+            return
+        self.log.clear()
+        self._stdout_buf = ""
+        self._progress_tracker.reset()
+        self._progress_tracker.mark_starting(t("starting"))
+        self.log.appendPlainText(t("daemon_reattached", job_id=job_id).rstrip("\n"))
+        self._attach_to_job(job_id, replay_log=True)
+
+    def _attach_to_job(self, job_id: str, *, replay_log: bool) -> None:
+        """Point the log + bar at a daemon job's on-disk files and start polling.
+
+        ``replay_log`` reads ``stdout.log`` from the top (re-attach after a GUI
+        restart); otherwise pre-existing output is skipped so a fresh launch
+        shows only new lines."""
+        self._job_id = job_id
+        self._stdout_buf = ""
+        self._stdout_tailer.watch(gui_daemon.stdout_path(job_id))
+        if not replay_log:
+            self._stdout_tailer.read_new()  # discard backlog
+        for btn in self._run_buttons:
+            btn.setEnabled(False)
+        self.save_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self._job_timer.start()
+
+    def _poll_job(self) -> None:
+        if not self._job_id:
+            return
+        self._drain_job_stdout()
+        state = gui_daemon.read_job_state(self._job_id)
+        if gui_daemon.is_terminal(state):
+            self._on_job_finished(state)
+
+    def _drain_job_stdout(self) -> None:
+        """Append new stdout.log lines to the log (carriage-return aware); tqdm
+        lines drive the bar instead of spamming the log (no progress.jsonl for
+        preprocess/mask, so tqdm is the only progress signal)."""
+        chunk = self._stdout_tailer.read_new()
+        if not chunk:
+            return
+        parts = re.split(r"[\r\n]", self._stdout_buf + chunk)
+        self._stdout_buf = parts[-1]  # incomplete trailing fragment
         for line in parts[:-1]:
             if self._progress_tracker.feed(line):
                 continue
             if line:
                 self.log.appendPlainText(line)
 
-    def _on_finished(self, code: int, _status) -> None:
-        # Flush any leftover non-tqdm tail before the finish banner. A
-        # trailing tqdm fragment is dropped — the bar already reflected its
-        # state and a half-written progress line in the log is just noise.
-        if self._buf and not TQDM_RE.search(self._buf):
-            self.log.appendPlainText(self._buf)
-        self._buf = ""
-        self.log.appendPlainText(t("finished", code=code))
+    def _on_job_finished(self, state: str | None) -> None:
+        self._job_timer.stop()
+        # Drain any trailing stdout before the finish banner. A half-written
+        # tqdm fragment is dropped — the bar already reflected its state.
+        self._drain_job_stdout()
+        if self._stdout_buf and not TQDM_RE.search(self._stdout_buf):
+            self.log.appendPlainText(self._stdout_buf)
+        self._stdout_buf = ""
+        job_id = self._job_id
+        self._job_id = None
+        self._stdout_tailer.reset()
         self._progress_tracker.reset()
+        self.log.appendPlainText(
+            t("daemon_job_finished", job_id=job_id, state=state or "ended")
+        )
+        self._restore_idle_ui()
+        self._refresh_status()
+
+    def _restore_idle_ui(self) -> None:
         for btn in self._run_buttons:
             btn.setEnabled(True)
         self.save_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
-        self._refresh_status()
+
+    def _stop(self) -> None:
+        # Abort the daemon job; the poll loop then observes the 'stopped' state
+        # and restores the UI. The daemon stays up and advances its queue.
+        if not self._job_id:
+            return
+        try:
+            gui_daemon.stop_job(self._job_id)
+        except Exception as e:  # noqa: BLE001
+            self.log.appendPlainText(f"stop failed: {e}")
+
+    def cleanup_subprocess(self) -> None:
+        """App-shutdown hook. Stops observing but deliberately leaves the daemon
+        job alive — it runs detached so a cache build / mask pass survives the
+        GUI closing (re-attached on next launch)."""
+        self._job_timer.stop()

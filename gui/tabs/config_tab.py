@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -52,10 +51,16 @@ from gui import (
     merged_gui_variant_preset,
     variant_path,
 )
+from gui import daemon as gui_daemon
 from gui.explanations import field_help, method_guide
 from gui.i18n import t
-from gui.process import kill_process_tree, make_subprocess_env, setup_kill_safe
-from gui.progress import TQDM_RE, TqdmProgressTracker, make_progress_bar
+from gui.process import kill_process_tree, setup_kill_safe
+from gui.progress import (
+    TQDM_RE,
+    JsonlProgressReader,
+    TqdmProgressTracker,
+    make_progress_bar,
+)
 
 
 class ClickableLabel(QLabel):
@@ -193,6 +198,12 @@ class ConfigTab(QWidget):
 
         self.progress = make_progress_bar()
         self._progress_tracker = TqdmProgressTracker(self.progress)
+        # Phase-0 structured progress: tails the run's progress.jsonl and takes
+        # over the bar once events appear; tqdm parsing above is the fallback.
+        self._jsonl_reader = JsonlProgressReader(self.progress)
+        self._jsonl_timer = QTimer(self)
+        self._jsonl_timer.setInterval(400)
+        self._jsonl_timer.timeout.connect(self._jsonl_reader.poll)
         lay.addWidget(self.progress)
 
         # Vertical splitter: config form on top, log on bottom
@@ -269,8 +280,26 @@ class ConfigTab(QWidget):
         self._stdout_buf = ""
         self._stderr_buf = ""
 
+        # Daemon-backed training (Phase 2). Training is submitted to the local
+        # daemon — not run as a child of this QProcess — so it survives the GUI
+        # closing. The tab observes the job by polling the per-job files the
+        # daemon writes (job.json / progress.jsonl / stdout.log) off a single
+        # timer; no SSE thread (daemon is localhost-only, files are right here).
+        self._job_id: str | None = None
+        # Kind of the observed daemon job: "train" or "preprocess" (the
+        # auto-chain cache build). Drives the chain-to-train decision in
+        # _on_job_finished and the busy-button label.
+        self._job_kind: str | None = None
+        self._stdout_tailer = gui_daemon.FileTailer()
+        self._job_timer = QTimer(self)
+        self._job_timer.setInterval(400)
+        self._job_timer.timeout.connect(self._poll_job)
+
         self._origin: dict[str, str] = {}
         self._reload()
+        # Re-bind to a job still running from a previous GUI session (or one the
+        # CLI / ComfyUI node submitted) so closing+reopening re-attaches.
+        self._try_reattach()
 
     # Preset selection is no longer surfaced in the GUI — variants encode the
     # hardware/perf knobs that used to live in presets. The merge still uses
@@ -704,46 +733,77 @@ class ConfigTab(QWidget):
         return cache_dir
 
     def _launch_preprocess(self, variant: str) -> None:
-        """Start the preprocess subprocess for ``variant``. Only caller is the
-        Train auto-chain (no Preprocess button on this tab); the
-        PreprocessingTab owns the standalone preprocess UI."""
-        python = sys.executable
-        args = ["tasks.py", "preprocess"]
+        """Submit the auto-chain preprocess step to the daemon (Phase 2).
 
-        # Point tasks.py at the same variant training will use, so any
-        # source_image_dir / resized_image_dir / lora_cache_dir override the
-        # user wrote into the variant file is honored by preprocess too.
-        # drop_lowres_images / min_pixels are read straight from the merged
-        # config chain by scripts/tasks/preprocess.py via _path_overrides().
-        self._proc.setProcessEnvironment(
-            make_subprocess_env(
-                METHOD=variant,
-                METHODS_SUBDIR="gui-methods",
-                PRESET=self._IMPLICIT_PRESET,
-            )
-        )
+        Only caller is the Train auto-chain (no Preprocess button on this tab);
+        the PreprocessingTab owns the standalone preprocess UI. Runs as a daemon
+        "command" job — like training — so the cache build survives the GUI
+        closing and shares the daemon's serial queue with the training run that
+        follows it (one GPU, one job at a time). On success _on_job_finished
+        chains into training; on failure/cancel it stays idle so we never train
+        over a broken cache.
 
+        METHOD / METHODS_SUBDIR / PRESET point tasks.py at the same variant
+        training will use, so any source_image_dir / resized_image_dir /
+        lora_cache_dir override in the variant file is honored by preprocess too
+        (read via scripts/tasks/_common._path_overrides; drop_lowres_images /
+        min_pixels likewise come from the merged config chain)."""
+        self.train_btn.setText(t("train_preprocessing"))
+        self.train_btn.setStyleSheet(self._train_busy_style)
+        self.train_btn.setEnabled(False)
+        self.test_btn.setEnabled(False)
+        self.method_combo.setEnabled(False)
+        self.variant_combo.setEnabled(False)
+        self.new_variant_btn.setEnabled(False)
         self.log.clear()
         self._reset_progress()
         self._progress_tracker.mark_starting(t("starting"))
         if getattr(self, "_chain_train_after_preprocess", False):
             self._log(t("train_autopreprocess_log"))
-        self._log(
-            f"> METHOD={variant} METHODS_SUBDIR=gui-methods python {' '.join(args)}\n"
+        self._log(t("daemon_submitting") + "\n")
+        QApplication.processEvents()
+
+        # Remember the variant to train so a re-attach after a GUI reopen can
+        # show the right one even if the combo is touched.
+        self._chain_variant = variant
+        # When the user clicked Train (auto-chain), hand the daemon a chain_train
+        # spec so IT enqueues the follow-on training the moment preprocess
+        # succeeds — the chain then completes even if the GUI closes mid-cache.
+        # The spec also tags this command job as *this tab's* preprocess, so
+        # ConfigTab re-claims it on reopen and the PreprocessingTab leaves it be.
+        chain_train = (
+            {"method": variant, "preset": self._IMPLICIT_PRESET, "methods_subdir": "gui-methods"}
+            if getattr(self, "_chain_train_after_preprocess", False)
+            else None
         )
-        self._running_mode = "preprocess"
-        self._proc.start(python, args)
-        # Train is the only visible action — surface the preprocess phase on
-        # it so the user sees that something is running before training
-        # actually starts.
-        self.train_btn.setText(t("train_preprocessing"))
-        self.train_btn.setStyleSheet(self._train_busy_style)
-        self.train_btn.setEnabled(False)
-        self.test_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.method_combo.setEnabled(False)
-        self.variant_combo.setEnabled(False)
-        self.new_variant_btn.setEnabled(False)
+        try:
+            resp = gui_daemon.submit_command(
+                label="preprocess",
+                argv=["tasks.py", "preprocess"],
+                extra_env={
+                    "METHOD": variant,
+                    "METHODS_SUBDIR": "gui-methods",
+                    "PRESET": self._IMPLICIT_PRESET,
+                },
+                chain_train=chain_train,
+            )
+        except Exception as e:  # noqa: BLE001 — daemon failed to start / submit
+            QMessageBox.warning(self, t("error"), t("daemon_submit_failed", err=str(e)))
+            self._chain_train_after_preprocess = False
+            self._restore_idle_ui()
+            return
+
+        job_id = resp.get("job_id") if isinstance(resp, dict) else None
+        if not job_id:
+            QMessageBox.warning(
+                self, t("error"), t("daemon_submit_failed", err=str(resp))
+            )
+            self._chain_train_after_preprocess = False
+            self._restore_idle_ui()
+            return
+
+        self._log(t("daemon_queued", job_id=job_id))
+        self._attach_to_job(job_id, replay_log=False, kind="preprocess")
 
     def _start_training(self):
         # Flush form edits to disk first — train.py reads the variant file
@@ -763,23 +823,38 @@ class ConfigTab(QWidget):
         decision = confirm_train_using_cache(self, cache_dir)
         if decision is False:
             return
+
+        # Resume prompt up-front (before any submit) for BOTH paths. The daemon
+        # now owns the preprocess→train chain, so it can't pause to ask once
+        # preprocess finishes (the GUI may be closed by then) — the user's
+        # resume/fresh choice has to be captured here and baked in. The helper
+        # does its wipe-for-fresh synchronously, so it's settled before training
+        # ever runs. Returns True with no prompt when there's nothing to resume.
+        merged, _ = merged_gui_variant_preset(variant, self._IMPLICIT_PRESET)
+        if not confirm_resumable_checkpoint(self, merged):
+            return
+
         if decision is None:
+            # Cache missing → auto-chain Preprocess → Train. The daemon enqueues
+            # the training itself when preprocess succeeds (see _launch_preprocess
+            # chain_train); _on_job_finished just hops the UI onto it.
             self._chain_train_after_preprocess = True
             self._launch_preprocess(variant)
             return
 
         # Cache exists and user confirmed — go straight to training.
-        merged, _ = merged_gui_variant_preset(variant, self._IMPLICIT_PRESET)
-        if not confirm_resumable_checkpoint(self, merged):
-            return
         self._launch_training(variant)
 
     def _launch_training(self, variant: str) -> None:
-        """Start the training subprocess. Caller owns all pre-launch
-        confirmations (cache-reuse popup, resume-checkpoint prompt)."""
-        # Flip button visuals to busy + repaint BEFORE the slow accelerate
-        # import and QProcess.start, otherwise Qt's event loop is blocked
-        # long enough for Windows to flag the GUI as "Not Responding".
+        """Submit a training job to the local daemon (Phase 2).
+
+        Training no longer runs as a child of this tab's QProcess — it's
+        enqueued on the daemon, which spawns ``accelerate launch … train.py``
+        detached. That's what lets training survive the GUI closing. The caller
+        owns all pre-launch confirmations (cache-reuse popup, resume prompt).
+        """
+        # Flip to busy + repaint before the submit so the UI feels responsive
+        # (the daemon auto-start + /health wait can take a moment on cold start).
         self.train_btn.setText(t("train") + " ...")
         self.train_btn.setStyleSheet(self._train_busy_style)
         self.train_btn.setEnabled(False)
@@ -789,48 +864,215 @@ class ConfigTab(QWidget):
         self.new_variant_btn.setEnabled(False)
         self.log.clear()
         self._reset_progress()
-        # Indeterminate "busy" bar bridges the gap until the child's first
-        # tqdm line — without it, Windows reads the gray button + still GUI
-        # as "Not Responding" during the multi-second torch import.
         self._progress_tracker.mark_starting(t("starting"))
+        self._log(t("daemon_submitting") + "\n")
         QApplication.processEvents()
 
-        # find_spec, not import: actually importing accelerate transitively
-        # imports torch, which blocks the GUI thread for several seconds on
-        # Windows and freezes the marquee. find_spec just resolves the module
-        # location without executing it.
-        if importlib.util.find_spec("accelerate.commands.accelerate_cli") is None:
-            QMessageBox.warning(self, t("error"), t("accelerate_not_found"))
-            self._restore_train_idle()
+        try:
+            resp = gui_daemon.submit_training(
+                method=variant,
+                preset=self._IMPLICIT_PRESET,
+                methods_subdir="gui-methods",
+            )
+        except Exception as e:  # noqa: BLE001 — daemon failed to start / submit
+            QMessageBox.warning(
+                self, t("error"), t("daemon_submit_failed", err=str(e))
+            )
+            self._restore_idle_ui()
             return
 
-        # Route through tasks.py rather than spawning accelerate directly:
-        # tasks.py uses python.exe + CREATE_NO_WINDOW for its subprocess calls,
-        # which keeps tqdm output flowing back to the GUI. If we spawned
-        # accelerate from this process (sys.executable = pythonw.exe under the
-        # desktop shortcut), accelerate's workers would inherit pythonw and
-        # their stdio would silently drop.
-        args = ["tasks.py", "lora-gui", variant]
+        job_id = resp.get("job_id") if isinstance(resp, dict) else None
+        if not job_id:
+            QMessageBox.warning(
+                self, t("error"), t("daemon_submit_failed", err=str(resp))
+            )
+            self._restore_idle_ui()
+            return
 
-        self._log(f"> python {' '.join(args)}\n")
-        self._running_mode = "train"
-        self._proc.start(sys.executable, args)
+        self._log(t("daemon_queued", job_id=job_id))
+        self._attach_to_job(job_id, replay_log=False)
+
+    # ── Daemon job observation ──
+
+    def _try_reattach(self) -> None:
+        """Bind to a daemon job still running when this tab is constructed.
+
+        Makes "close GUI mid-train → reopen → re-attach" work, and surfaces a
+        job the CLI / ComfyUI node submitted. Best-effort: a down/idle daemon
+        leaves the tab in its normal idle state."""
+        try:
+            job_id = gui_daemon.active_job_id()
+        except Exception:  # noqa: BLE001 — daemon unreachable → nothing to attach
+            return
+        if not job_id:
+            return
+        kind = gui_daemon.read_job_kind(job_id)
+        if kind != "train":
+            # A command job is ours only if it's the auto-chain preprocess this
+            # tab's Train button submitted (tagged ANIMA_CHAIN_TRAIN). A
+            # standalone preprocess/mask belongs to the PreprocessingTab.
+            chain_variant = gui_daemon.read_job_chain_variant(job_id)
+            if not chain_variant:
+                return
+            # Re-arm the chain so the bar stays live + Train stays blocked, and
+            # training launches for the right variant when preprocess finishes.
+            self._chain_train_after_preprocess = True
+            self._chain_variant = chain_variant
+            reattach_kind = "preprocess"
+        else:
+            reattach_kind = "train"
+        self.log.clear()
+        self._reset_progress()
+        self._progress_tracker.mark_starting(t("starting"))
+        self._log(t("daemon_reattached", job_id=job_id))
+        self._attach_to_job(job_id, replay_log=True, kind=reattach_kind)
+
+    def _attach_to_job(
+        self, job_id: str, *, replay_log: bool, kind: str = "train"
+    ) -> None:
+        """Point the bar + log at a daemon job's on-disk files and start polling.
+
+        ``replay_log`` reads ``stdout.log`` from the top (re-attach after a GUI
+        restart); otherwise pre-existing output is skipped so a fresh launch
+        shows only new lines. ``kind`` is "train" or "preprocess" (the auto-chain
+        cache build) — preprocess command jobs emit no progress.jsonl, so the bar
+        falls back to tqdm parsing in _drain_job_stdout."""
+        self._job_id = job_id
+        self._job_kind = kind
+        self._running_mode = kind
+        self._stdout_buf = ""
+        self._jsonl_reader.watch(gui_daemon.progress_path(job_id))
+        self._stdout_tailer.watch(gui_daemon.stdout_path(job_id))
+        if not replay_log:
+            self._stdout_tailer.read_new()  # discard backlog
+        self.train_btn.setText(
+            t("train_preprocessing") if kind == "preprocess" else t("train_running_daemon")
+        )
+        self.train_btn.setStyleSheet(self._train_busy_style)
+        self.train_btn.setEnabled(False)
+        self.test_btn.setEnabled(False)
+        self.method_combo.setEnabled(False)
+        self.variant_combo.setEnabled(False)
+        self.new_variant_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
+        self._job_timer.start()
 
-    def _restore_train_idle(self):
+    def _drain_job_stdout(self) -> None:
+        """Append new stdout.log lines to the log widget (carriage-return aware).
+
+        When the structured progress.jsonl stream is driving the bar (training),
+        tqdm lines are swallowed so they don't fight it. When it isn't (a
+        preprocess command job emits no jsonl), tqdm drives the bar instead —
+        mirrors the QProcess _handle_stream path."""
+        chunk = self._stdout_tailer.read_new()
+        if not chunk:
+            return
+        parts = re.split(r"[\r\n]", self._stdout_buf + chunk)
+        self._stdout_buf = parts[-1]  # incomplete trailing fragment
+        for line in parts[:-1]:
+            if self._jsonl_reader.active:
+                if TQDM_RE.search(line):
+                    continue
+            elif self._progress_tracker.feed(line):
+                continue
+            if line:
+                self._log(line + "\n")
+
+    def _poll_job(self) -> None:
+        if not self._job_id:
+            return
+        self._jsonl_reader.poll()
+        self._drain_job_stdout()
+        state = gui_daemon.read_job_state(self._job_id)
+        if gui_daemon.is_terminal(state):
+            self._on_job_finished(state)
+
+    def _on_job_finished(self, state: str | None) -> None:
+        self._job_timer.stop()
+        # Drain the last progress event + any trailing stdout before tearing down.
+        self._jsonl_reader.poll()
+        self._drain_job_stdout()
+        if self._stdout_buf:
+            self._log(self._stdout_buf + "\n")
+        self._stdout_buf = ""
+        job_id = self._job_id
+        kind = self._job_kind
+        self._job_id = None
+        self._job_kind = None
+        self._jsonl_timer.stop()
+        self._jsonl_reader.reset()
+        self._stdout_tailer.reset()
+        self.progress.setVisible(False)
+        self._log(
+            "\n" + t("daemon_job_finished", job_id=job_id, state=state or "ended") + "\n"
+        )
+
+        # Auto-chain Train after a successful preprocess command job when the
+        # user originally clicked Train against an empty cache. The DAEMON owns
+        # the chain now: on a successful tagged preprocess it has already
+        # enqueued the training job and recorded its id (chained_job_id), so we
+        # just hop the UI onto that job. On failure/Stop there's no chained job,
+        # so we clear the flag and stay idle — never training over a broken cache.
+        if kind == "preprocess":
+            chain = getattr(self, "_chain_train_after_preprocess", False)
+            self._chain_train_after_preprocess = False
+            self._chain_variant = None
+            if state == "done":
+                self._preprocessed = True
+            if chain and state == "done":
+                chained = gui_daemon.read_job_chained_id(job_id)
+                if chained:
+                    # Defer so this poll callback finishes (job state fully torn
+                    # down) before we attach the daemon-enqueued training job.
+                    QTimer.singleShot(
+                        0,
+                        lambda jid=chained: self._reattach_chained_training(jid),
+                    )
+                    return  # stay busy — training is starting
+        self._restore_idle_ui()
+
+    def _reattach_chained_training(self, job_id: str) -> None:
+        """Bind the UI to a training job the daemon auto-chained off a preprocess.
+
+        The daemon already enqueued it (so the chain survives a GUI close); this
+        only re-points the bar + log at it. ``replay_log=False`` because we were
+        watching live and the training stdout is fresh."""
+        self.log.clear()
+        self._reset_progress()
+        self._progress_tracker.mark_starting(t("starting"))
+        self._attach_to_job(job_id, replay_log=False, kind="train")
+
+    def _restore_idle_ui(self):
+        """Return every control to its idle state (shared by the daemon-job and
+        QProcess-error paths)."""
         self.train_btn.setText(t("train"))
         self.train_btn.setStyleSheet(self._train_idle_style)
         self.train_btn.setEnabled(True)
+        self.test_btn.setText(t("test"))
+        self.test_btn.setStyleSheet(self._test_idle_style)
         self.test_btn.setEnabled(self._has_lora_output())
+        self.stop_btn.setEnabled(False)
         self.method_combo.setEnabled(True)
         self.variant_combo.setEnabled(True)
         self.new_variant_btn.setEnabled(True)
 
     def _stop_training(self):
+        # A daemon training job is aborted via the daemon (the job timer then
+        # observes the 'stopped' state and restores the UI). A QProcess-backed
+        # test/preprocess run is killed directly.
+        if self._job_id:
+            try:
+                gui_daemon.stop_job(self._job_id)
+            except Exception as e:  # noqa: BLE001
+                self._log(f"stop failed: {e}\n")
+            return
         kill_process_tree(self._proc)
 
     def cleanup_subprocess(self):
-        """Hook for app shutdown — kill any running launcher + descendants."""
+        """App-shutdown hook. Kills a running test/preprocess subprocess, but
+        deliberately leaves a daemon training job alive — it runs detached so
+        training survives the GUI closing (re-attached on next launch)."""
+        self._job_timer.stop()
         kill_process_tree(self._proc)
 
     def _read_stdout(self):
@@ -846,7 +1088,12 @@ class ConfigTab(QWidget):
         parts = re.split(r"[\r\n]", buf)
         tail = parts[-1]  # incomplete trailing fragment — keep buffered
         for line in parts[:-1]:
-            if self._progress_tracker.feed(line):
+            if self._jsonl_reader.active:
+                # JSONL drives the bar now; just swallow tqdm lines so they
+                # don't spam the log, but don't let tqdm move the bar.
+                if TQDM_RE.search(line):
+                    continue
+            elif self._progress_tracker.feed(line):
                 continue
             if line:
                 self._log(line + "\n")
@@ -856,49 +1103,26 @@ class ConfigTab(QWidget):
         self._stdout_buf = ""
         self._stderr_buf = ""
         self._progress_tracker.reset()
+        self._jsonl_timer.stop()
+        self._jsonl_reader.reset()
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus):
-        # Flush any buffered partial lines before the finish banner.
+        # QProcess now backs only the Test button — training and the auto-chain
+        # preprocess both run as daemon jobs (see _attach_to_job /
+        # _on_job_finished). Test output is shown on success; nothing chains.
         for buf_name in ("_stdout_buf", "_stderr_buf"):
             leftover = getattr(self, buf_name, "")
             if leftover and not TQDM_RE.search(leftover):
                 self._log(leftover + "\n")
             setattr(self, buf_name, "")
+        self._jsonl_timer.stop()
+        self._jsonl_reader.poll()
+        self._jsonl_reader.reset()
         self.progress.setVisible(False)
         self._log(f"\n{t('finished', code=exit_code)}\n")
-        mode = getattr(self, "_running_mode", "train")
-        if mode == "preprocess" and exit_code == 0:
-            self._preprocessed = True
-        if mode == "test" and exit_code == 0:
+        if getattr(self, "_running_mode", "test") == "test" and exit_code == 0:
             self._show_test_output()
-        self.train_btn.setText(t("train"))
-        self.train_btn.setStyleSheet(self._train_idle_style)
-        self.train_btn.setEnabled(True)
-        self.test_btn.setText(t("test"))
-        self.test_btn.setStyleSheet(self._test_idle_style)
-        self.test_btn.setEnabled(self._has_lora_output())
-        self.stop_btn.setEnabled(False)
-        self.method_combo.setEnabled(True)
-        self.variant_combo.setEnabled(True)
-        self.new_variant_btn.setEnabled(True)
-
-        # Auto-chain Train after a successful Preprocess when the user
-        # originally clicked Train against an empty cache. On preprocess
-        # failure (or user cancel via Stop), clear the flag and stay idle —
-        # we shouldn't quietly launch training over a broken cache.
-        chain = getattr(self, "_chain_train_after_preprocess", False)
-        self._chain_train_after_preprocess = False
-        if chain and mode == "preprocess" and exit_code == 0:
-            variant = self._current_variant()
-            merged, _ = merged_gui_variant_preset(variant, self._IMPLICIT_PRESET)
-            # Resume-checkpoint check still fires — the user might have
-            # previously trained this variant; we don't want to silently wipe
-            # or silently resume without asking.
-            if confirm_resumable_checkpoint(self, merged):
-                # Defer the launch so Qt finishes processing this
-                # ``finished`` signal (clears QProcess state) before we
-                # ``start`` again on the same QProcess instance.
-                QTimer.singleShot(0, lambda v=variant: self._launch_training(v))
+        self._restore_idle_ui()
 
     def _log(self, text: str):
         self.log.moveCursor(QTextCursor.End)

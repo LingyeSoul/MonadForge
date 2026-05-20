@@ -9,10 +9,14 @@ columns ship to disk while ``inv_scale`` is dropped — reload then treats
 Coverage:
 
 * ``inv_scale`` survives the defuse → refuse round trip on a fused-qkv-shaped
-  state_dict.
+  state_dict (``defuse_standard_qkv`` / ``_refuse_unfused_attn_lora_keys`` in
+  isolation — the bake runs *after* defuse, so these helpers are unchanged).
 * End-to-end: build a real ``LoRAModule`` with ``channel_scale``, run defuse,
   refuse, and verify the rebuilt fused module produces identical output to the
   in-memory original.
+* Bake: the production ``rename_dora_and_defuse_standard`` path now folds
+  ``inv_scale`` into ``lora_down`` and drops the key, so a plain (no
+  channel-scale) consumer reproduces the channel-scaled forward bitwise.
 """
 
 from __future__ import annotations
@@ -21,7 +25,12 @@ import torch
 
 from networks.lora_anima.loading import _refuse_unfused_attn_lora_keys
 from networks.lora_modules.base import BaseLoRAModule
-from networks.lora_modules.lora import LoRAModule, defuse_standard_qkv
+from networks.lora_modules.lora import (
+    LoRAModule,
+    bake_inv_scale,
+    defuse_standard_qkv,
+    rename_dora_and_defuse_standard,
+)
 
 
 def _make_calibration(in_dim: int, seed: int = 0) -> torch.Tensor:
@@ -228,6 +237,85 @@ def test_inv_scale_round_trip_is_idempotent_under_repeated_defuse():
     defuse_standard_qkv(sd)
     for k, v in snapshot.items():
         assert torch.equal(sd[k], v), f"defuse mutated already-split key {k}"
+
+
+def test_bake_inv_scale_drops_key_and_folds_down():
+    """bake_inv_scale folds inv_scale into the sibling down and removes the key."""
+    in_dim, rank, out_dim = 32, 4, 16
+    down = torch.randn(rank, in_dim)
+    inv = torch.rand(in_dim) + 0.1
+    prefix = "lora_unet_blocks_0_self_attn_q_proj"
+    sd = {
+        f"{prefix}.lora_down.weight": down.clone(),
+        f"{prefix}.lora_up.weight": torch.randn(out_dim, rank),
+        f"{prefix}.alpha": torch.tensor(float(rank)),
+        f"{prefix}.inv_scale": inv.clone(),
+    }
+    bake_inv_scale(sd)
+    assert f"{prefix}.inv_scale" not in sd, "bake must drop the inv_scale key"
+    expected = down * inv.unsqueeze(0)
+    assert torch.allclose(sd[f"{prefix}.lora_down.weight"], expected, atol=1e-6)
+
+
+def test_baked_save_reproduces_channel_scaled_forward():
+    """The production save path (rename_dora_and_defuse_standard) bakes
+    inv_scale, so a *plain* LoRAModule (no channel_scale) loading the baked
+    weights reproduces the original channel-scaled forward bitwise — this is
+    what stock ComfyUI / merge_to_dit now apply correctly."""
+    in_dim = 32
+    out_dim_per_comp = 16
+    n = 3
+    out_dim = out_dim_per_comp * n
+    rank = 4
+
+    torch.manual_seed(7)
+    base = torch.nn.Linear(in_dim, out_dim, bias=False)
+    calibration = _make_calibration(in_dim)
+
+    lora = LoRAModule(
+        "lora_unet_blocks_0_self_attn_qkv_proj",
+        base,
+        multiplier=1.0,
+        lora_dim=rank,
+        alpha=rank,
+        channel_scale=calibration,
+    )
+    torch.nn.init.normal_(lora.lora_up.weight, std=0.05)
+    lora.eval()
+
+    x = torch.randn(2, 7, in_dim) * 4.0
+    x[..., 7] += 30.0
+    with torch.no_grad():
+        orig = lora.lora_up(lora.lora_down(lora._rebalance(x))) * lora.scale
+
+    # Production save: defuse → bake. After this there are NO inv_scale keys.
+    sd = {f"{lora.lora_name}.{k}": v for k, v in lora.state_dict().items()}
+    rename_dora_and_defuse_standard(sd)
+    assert not any(k.endswith(".inv_scale") for k in sd), (
+        "baked save must not ship inv_scale keys"
+    )
+
+    # Load refuse (re-fuse split q/k/v) and rebuild a PLAIN module (channel
+    # scaling off — the absence of inv_scale keys is the inference signal).
+    _refuse_unfused_attn_lora_keys(sd)
+    fused = "lora_unet_blocks_0_self_attn_qkv_proj"
+    base_rebuilt = torch.nn.Linear(in_dim, out_dim, bias=False)
+    base_rebuilt.load_state_dict(base.state_dict())
+    plain = LoRAModule(fused, base_rebuilt, multiplier=1.0, lora_dim=rank, alpha=rank)
+    rebuilt_sd = {
+        k[len(fused) + 1 :]: v for k, v in sd.items() if k.startswith(fused + ".")
+    }
+    _, unexpected = plain.load_state_dict(rebuilt_sd, strict=False)
+    assert not unexpected, f"unexpected keys: {unexpected}"
+    plain.eval()
+    assert not plain._has_channel_scale
+
+    with torch.no_grad():
+        new = plain.lora_up(plain.lora_down(plain._rebalance(x))) * plain.scale
+
+    assert torch.allclose(new, orig, atol=1e-6), (
+        "baked plain forward diverged from the channel-scaled original"
+    )
 
 
 # Sanity: BaseLoRAModule.inv_scale buffer is persistent so state_dict() carries it.

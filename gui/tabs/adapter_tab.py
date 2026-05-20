@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 
 from gui import (
     ROOT,
+    LazyTabMixin,
     ScaledImageLabel,
     _imgs,
     confirm_existing_caches,
@@ -85,14 +86,14 @@ def _count_caches(cache_dir: Path, stems: set[str], require_pe: bool) -> dict[st
     return out
 
 
-class _AdapterTab(QWidget):
+class _AdapterTab(LazyTabMixin, QWidget):
     """Shared layout for IP-Adapter / EasyControl launcher tabs."""
 
-    SOURCE_DIR: str = ""        # e.g. "ip-adapter-dataset"
-    CACHE_DIR: str = ""         # e.g. "post_image_dataset/ip-adapter"
-    PREPROCESS_TASK: str = ""   # tasks.py target, e.g. "exp-ip-adapter-preprocess"
-    TRAIN_TASK: str = ""        # tasks.py target, e.g. "exp-ip-adapter"
-    TRAIN_METHOD: str = ""      # configs/methods/<TRAIN_METHOD>.toml, e.g. "ip_adapter"
+    SOURCE_DIR: str = ""  # e.g. "ip-adapter-dataset"
+    CACHE_DIR: str = ""  # e.g. "post_image_dataset/ip-adapter"
+    PREPROCESS_TASK: str = ""  # tasks.py target, e.g. "exp-ip-adapter-preprocess"
+    TRAIN_TASK: str = ""  # tasks.py target, e.g. "exp-ip-adapter"
+    TRAIN_METHOD: str = ""  # configs/methods/<TRAIN_METHOD>.toml, e.g. "ip_adapter"
     REQUIRE_PE: bool = False
     METHOD_LABEL: str = ""
 
@@ -216,6 +217,8 @@ class _AdapterTab(QWidget):
         self._proc.finished.connect(self._on_finished)
         self._buf = ""
 
+    def _lazy_init(self) -> None:
+        # Scanning source/cache dirs is deferred to first show of the tab.
         self._reload()
 
     # ── Dataset state ──────────────────────────────────────────────
@@ -273,9 +276,7 @@ class _AdapterTab(QWidget):
 
     def _start_train(self):
         if not self._source.exists() or not any(self._source.iterdir()):
-            QMessageBox.warning(
-                self, t("error"), t("adapter_no_dataset")
-            )
+            QMessageBox.warning(self, t("error"), t("adapter_no_dataset"))
             return
         # Mirror the same merge train.py would do (configs/methods/<TRAIN_METHOD>.toml)
         # so the resume prompt reads the right output_dir / output_name.

@@ -12,7 +12,7 @@
 
 network_module = "networks.methods.postfix"
 
-network_dim = 48
+network_dim = 32
 network_args = [
     "mode=cond",
     "cond_hidden_dim=1024",  # v3: match D so cond_mlp isn't bottlenecked at 256 hidden → 1129 outputs
@@ -31,14 +31,14 @@ network_args = [
 output_name = "anima_postfix_ortho_v4"
 learning_rate = 5e-4
 
-max_train_epochs = 2
-save_every_n_epochs = 2
-checkpointing_epochs = 2
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
 blocks_to_swap = 0
 
-compile_mode="full"
+# compile_mode="full"
 compile_inductor_mode = "reduce-overhead"
 

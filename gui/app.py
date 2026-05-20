@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from gui import daemon as gui_daemon
 from gui.i18n import (
     available_languages,
     current_language,
@@ -386,6 +387,11 @@ def main():
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     _dark(app)
+    # Bring the local training daemon up at launch (idempotent — reuses one
+    # already started by the CLI / a previous session, spawns one otherwise) so
+    # the queue, the Train button, and re-attach are ready immediately. Best-
+    # effort: a failure here never blocks the GUI from opening.
+    gui_daemon.ensure_daemon_quietly()
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

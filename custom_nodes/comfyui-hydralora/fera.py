@@ -655,9 +655,9 @@ def apply_fera(model, file_path: str, strength: float) -> bool:
 
     # Install the model-level pre-hook (router runs once per forward).
     # Patch _forward_pre_hooks (an OrderedDict) via add_object_patch so
-    # it's reverted on ModelPatcher.unpatch_model. Composes with any
-    # prior diffusion_model.forward object_patch (postfix wraps forward;
-    # the pre-hook fires before that wrapper sees args).
+    # it's reverted on ModelPatcher.unpatch_model. Composes with the
+    # postfix / soft-token block-level pre-hooks (disjoint hook dicts —
+    # this one is on diffusion_model, theirs are on the blocks).
     diffusion_model = model.get_model_object("diffusion_model")
     pre_hook = _make_fera_pre_hook(bundle["router"], cfg, fera_state)
     new_pre_hooks = OrderedDict(diffusion_model._forward_pre_hooks)

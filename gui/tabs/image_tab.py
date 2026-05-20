@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui import ROOT, ScaledImageLabel, _image_dirs, _imgs
+from gui import ROOT, LazyTabMixin, ScaledImageLabel, _image_dirs, _imgs
 from gui.i18n import t
 
 
@@ -508,7 +508,7 @@ class CaptionVersionsDialog(QDialog):
         return self._restored
 
 
-class ImageViewerTab(QWidget):
+class ImageViewerTab(LazyTabMixin, QWidget):
     def __init__(self):
         super().__init__()
         self._all_images: list[Path] = []  # unfiltered, alphabetical (from _imgs)
@@ -663,6 +663,9 @@ class ImageViewerTab(QWidget):
         QShortcut(QKeySequence("Right"), self, lambda: self._nav(1))
         QShortcut(QKeySequence("Left"), self, lambda: self._nav(-1))
         QShortcut(QKeySequence.Save, self, self._save)
+
+    def _lazy_init(self) -> None:
+        # Walking the image dir + building the tree is deferred to first show.
         if self._dirs:
             self._load_dir(self.dc.currentText())
 
