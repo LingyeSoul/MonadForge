@@ -99,6 +99,11 @@ export default {
   dsDiffInsertions: '处新增',
   dsDiffDeletions: '处删除',
   dsDiffSelectVersion: '选择一个版本以查看差异',
+  dsCustomPath: '自定义路径',
+  dsCustomPathHint: '输入图片目录的绝对或相对路径',
+  dsAddPath: '添加',
+  dsPathAdded: '已添加目录: {path}',
+  dsPathNotFound: '目录不存在: {path}',
 
   // Preprocess View
   ppTitle: '预处理',

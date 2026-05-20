@@ -99,6 +99,11 @@ export default {
   dsDiffInsertions: 'insertions',
   dsDiffDeletions: 'deletions',
   dsDiffSelectVersion: 'Select a version to view diff',
+  dsCustomPath: 'Custom Path',
+  dsCustomPathHint: 'Enter absolute or relative path to image directory',
+  dsAddPath: 'Add',
+  dsPathAdded: 'Added directory: {path}',
+  dsPathNotFound: 'Directory not found: {path}',
 
   // Preprocess View
   ppTitle: 'Preprocessing',

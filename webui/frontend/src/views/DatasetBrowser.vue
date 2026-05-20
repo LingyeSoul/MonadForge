@@ -70,6 +70,33 @@
           </span>
         </v-col>
       </v-row>
+      <!-- Custom path row -->
+      <v-row align="center" dense class="mt-1">
+        <v-col>
+          <v-text-field
+            v-model="customPath"
+            prepend-inner-icon="mdi-folder-plus-outline"
+            :label="t('dsCustomPath')"
+            :placeholder="t('dsCustomPathHint')"
+            variant="outlined"
+            density="compact"
+            hide-details
+            clearable
+            @keyup.enter="addCustomPath"
+          />
+        </v-col>
+        <v-col cols="auto">
+          <v-btn
+            color="primary"
+            variant="tonal"
+            density="compact"
+            :disabled="!customPath.trim()"
+            @click="addCustomPath"
+          >
+            {{ t('dsAddPath') }}
+          </v-btn>
+        </v-col>
+      </v-row>
     </v-card>
 
     <!-- Grid view -->
@@ -351,6 +378,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from '../composables/useI18n'
+import { useNotifyStore } from '../stores/notify'
 
 interface ImageItem {
   path: string
@@ -371,11 +399,13 @@ interface VersionEntry {
 }
 
 const { t } = useI18n()
+const notify = useNotifyStore()
 
 // ── state ─────────────────────────────────────────────────────
 
 const directories = ref<Directory[]>([])
 const directory = ref('image_dataset')
+const customPath = ref('')
 const images = ref<ImageItem[]>([])
 const search = ref('')
 const sortDesc = ref(false)
@@ -441,16 +471,37 @@ function maskUrl(img: ImageItem): string {
 
 // ── data loading ──────────────────────────────────────────────
 
+const _CUSTOM_PATHS_KEY = 'ds_custom_paths'
+
+function _loadCustomPaths(): Directory[] {
+  try {
+    const raw = localStorage.getItem(_CUSTOM_PATHS_KEY)
+    if (!raw) return []
+    return JSON.parse(raw) as Directory[]
+  } catch {
+    return []
+  }
+}
+
+function _saveCustomPaths(dirs: Directory[]) {
+  localStorage.setItem(_CUSTOM_PATHS_KEY, JSON.stringify(dirs))
+}
+
 async function loadDirectories() {
   loadingDirs.value = true
   try {
     const res = await fetch('/api/images/directories')
-    directories.value = await res.json()
+    const serverDirs: Directory[] = await res.json()
+    // Merge in saved custom paths (dedup by name)
+    const serverNames = new Set(serverDirs.map(d => d.name))
+    const customDirs = _loadCustomPaths().filter(d => !serverNames.has(d.name))
+    directories.value = [...serverDirs, ...customDirs]
     if (directories.value.length > 0 && !directories.value.find(d => d.name === directory.value)) {
       directory.value = directories.value[0].name
     }
   } catch {
-    directories.value = [{ name: 'image_dataset', path: '' }]
+    const customDirs = _loadCustomPaths()
+    directories.value = [{ name: 'image_dataset', path: '' }, ...customDirs]
   } finally {
     loadingDirs.value = false
   }
@@ -483,6 +534,37 @@ async function loadImages() {
 function onDirectoryChange() {
   page.value = 1
   loadImages()
+}
+
+async function addCustomPath() {
+  const raw = customPath.value.trim()
+  if (!raw) return
+  // Check if already in the list
+  if (directories.value.some(d => d.name === raw)) {
+    directory.value = raw
+    onDirectoryChange()
+    customPath.value = ''
+    return
+  }
+  // Validate by attempting to list images
+  try {
+    const params = new URLSearchParams({ directory: raw, page_size: '1' })
+    const res = await fetch(`/api/images?${params}`)
+    if (!res.ok) throw new Error()
+    // Add to local list and select
+    const entry: Directory = { name: raw, path: raw }
+    directories.value.push(entry)
+    directory.value = raw
+    // Persist to localStorage
+    const saved = _loadCustomPaths()
+    saved.push(entry)
+    _saveCustomPaths(saved)
+    customPath.value = ''
+    onDirectoryChange()
+    notify.show(t('dsPathAdded', { path: raw }), 'success')
+  } catch {
+    notify.show(t('dsPathNotFound', { path: raw }), 'error')
+  }
 }
 
 function onSearchChange() {
