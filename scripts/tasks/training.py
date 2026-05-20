@@ -33,10 +33,14 @@ def cmd_lora_gui(extra):
     variant = variant or "lora"
 
     expected = ROOT / "configs" / "gui-methods" / f"{variant}.toml"
-    if not expected.exists():
+    custom_overlay = ROOT / "configs" / "custom" / "variants" / f"{variant}.toml"
+    if not expected.exists() and not custom_overlay.exists():
         available = sorted(
             p.stem for p in (ROOT / "configs" / "gui-methods").glob("*.toml")
         )
+        custom = ROOT / "configs" / "custom" / "variants"
+        if custom.is_dir():
+            available.extend(f"custom/{p.stem}" for p in sorted(custom.glob("*.toml")))
         print(
             f"Unknown gui-methods variant: {variant!r}\n"
             f"Available: {', '.join(available)}",

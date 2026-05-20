@@ -129,6 +129,11 @@ def put_layer(
     variant: str = Query("lora"),
     preset: str = Query("default"),
 ):
+    if layer in ("base", "preset"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Layer '{layer}' is read-only. Use custom overlays instead.",
+        )
     try:
         if layer == "method":
             svc.save_variant_config(variant, body.data)

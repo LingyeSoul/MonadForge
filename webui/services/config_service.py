@@ -32,13 +32,30 @@ def _safe_variant(variant: str) -> str:
     return variant
 
 
+def _resolve_variant_path(variant: str) -> Path:
+    """Resolve a variant name to its TOML file path.
+
+    For custom/<name> variants, returns CUSTOM_VARIANTS_DIR/<name>.toml.
+    For built-in variants, checks CUSTOM_VARIANTS_DIR/<variant>.toml first
+    (overlay), then falls back to GUI_METHODS_DIR/<variant>.toml.
+    """
+    if variant.startswith("custom/"):
+        stem = variant[len("custom/") :]
+        return CUSTOM_VARIANTS_DIR / f"{stem}.toml"
+    overlay = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
+    if overlay.exists():
+        return overlay
+    return GUI_METHODS_DIR / f"{variant}.toml"
+
+
 ROOT = _ROOT
 CONFIGS_DIR = ROOT / "configs"
 METHODS_DIR = CONFIGS_DIR / "methods"
 GUI_METHODS_DIR = CONFIGS_DIR / "gui-methods"
 PRESETS_FILE = CONFIGS_DIR / "presets.toml"
 CUSTOM_DIR = CONFIGS_DIR / "custom"
-CUSTOM_VARIANTS_DIR = GUI_METHODS_DIR / "custom"
+CUSTOM_VARIANTS_DIR = CUSTOM_DIR / "variants"
+CUSTOM_PRESETS_DIR = CUSTOM_DIR / "presets"
 
 # ── Path overrides from the config chain ──────────────────────────
 
@@ -86,22 +103,48 @@ _SAMPLER_CHOICES = ["euler", "er_sde", "euler_a"]
 _SELECT_OPTIONS: dict[str, list[str]] = {
     "attn_mode": _ATTN_MODES,
     "optimizer_type": [
-        "AdamW", "AdamW8bit", "Lion", "Lion8bit",
-        "SGDNesterov", "SGDNesterov8bit",
-        "PagedAdamW", "PagedAdamW8bit", "PagedAdamW32bit", "PagedLion8bit",
-        "DAdaptation", "DAdaptAdam", "DAdaptAdamPreprint",
-        "DAdaptAdaGrad", "DAdaptAdan", "DAdaptAdanIP",
-        "DAdaptLion", "DAdaptSGD",
-        "Prodigy", "Adafactor",
-        "RAdamScheduleFree", "AdamWScheduleFree", "SGDScheduleFree",
+        "AdamW",
+        "AdamW8bit",
+        "Lion",
+        "Lion8bit",
+        "SGDNesterov",
+        "SGDNesterov8bit",
+        "PagedAdamW",
+        "PagedAdamW8bit",
+        "PagedAdamW32bit",
+        "PagedLion8bit",
+        "DAdaptation",
+        "DAdaptAdam",
+        "DAdaptAdamPreprint",
+        "DAdaptAdaGrad",
+        "DAdaptAdan",
+        "DAdaptAdanIP",
+        "DAdaptLion",
+        "DAdaptSGD",
+        "Prodigy",
+        "Adafactor",
+        "RAdamScheduleFree",
+        "AdamWScheduleFree",
+        "SGDScheduleFree",
     ],
     "lr_scheduler": [
-        "constant", "constant_with_warmup", "linear", "cosine",
-        "cosine_with_restarts", "polynomial", "inverse_sqrt",
-        "cosine_with_min_lr", "piecewise_constant", "warmup_stable_decay",
+        "constant",
+        "constant_with_warmup",
+        "linear",
+        "cosine",
+        "cosine_with_restarts",
+        "polynomial",
+        "inverse_sqrt",
+        "cosine_with_min_lr",
+        "piecewise_constant",
+        "warmup_stable_decay",
     ],
     "timestep_sampling": [
-        "sigmoid", "sigma", "uniform", "shift", "flux_shift",
+        "sigmoid",
+        "sigma",
+        "uniform",
+        "shift",
+        "flux_shift",
     ],
     "sample_sampler": ["euler", "er_sde", "euler_a"],
 }
@@ -281,7 +324,10 @@ def list_gui_variants(method: str) -> list[str]:
     by_family = _builtin_variants_by_family()
     ordered = [stem for _order, stem, _label in by_family.get(method, [])]
     if CUSTOM_VARIANTS_DIR.exists():
+        builtin_stems = set(ordered)
         for p in sorted(CUSTOM_VARIANTS_DIR.glob("*.toml")):
+            if p.stem in builtin_stems:
+                continue  # overlay for built-in; already listed
             ordered.append(f"custom/{p.stem}")
     return ordered
 
@@ -292,7 +338,10 @@ def variant_labels(method: str) -> dict[str, str]:
     for _order, stem, label in by_family.get(method, []):
         out[stem] = label
     if CUSTOM_VARIANTS_DIR.exists():
+        builtin_stems = set(out)
         for p in sorted(CUSTOM_VARIANTS_DIR.glob("*.toml")):
+            if p.stem in builtin_stems:
+                continue
             out[f"custom/{p.stem}"] = p.stem
     return out
 
@@ -304,7 +353,11 @@ def get_field_groups() -> dict[str, set[str]]:
 
 def variant_metadata(variant: str) -> dict:
     _safe_variant(variant)
-    path = GUI_METHODS_DIR / f"{variant}.toml"
+    # Always read metadata from the built-in file, not the custom overlay
+    if variant.startswith("custom/"):
+        path = _resolve_variant_path(variant)
+    else:
+        path = GUI_METHODS_DIR / f"{variant}.toml"
     meta = _read_variant_metadata(path)
     return {
         "variant": variant,
@@ -317,7 +370,8 @@ def variant_metadata(variant: str) -> dict:
 
 
 def variant_path(variant: str) -> Path:
-    return GUI_METHODS_DIR / f"{variant}.toml"
+    _safe_variant(variant)
+    return _resolve_variant_path(variant)
 
 
 def _load_all_presets() -> dict:
@@ -325,8 +379,8 @@ def _load_all_presets() -> dict:
     if PRESETS_FILE.exists():
         data = toml.loads(PRESETS_FILE.read_text(encoding="utf-8"))
         presets.update({k: v for k, v in data.items() if isinstance(v, dict)})
-    if CUSTOM_DIR.exists():
-        for p in sorted(CUSTOM_DIR.glob("*.toml")):
+    if CUSTOM_PRESETS_DIR.exists():
+        for p in sorted(CUSTOM_PRESETS_DIR.glob("*.toml")):
             try:
                 presets[p.stem] = toml.loads(p.read_text(encoding="utf-8"))
             except (toml.TomlDecodeError, OSError):
@@ -347,12 +401,12 @@ def is_builtin_preset(name: str) -> bool:
 
 
 def create_custom_preset(name: str, data: dict) -> list[str]:
-    """Create a custom preset in configs/custom/<name>.toml."""
+    """Create a custom preset in configs/custom/presets/<name>.toml."""
     _safe_variant(name)
     if is_builtin_preset(name):
         raise ValueError(f"Cannot overwrite built-in preset: {name}")
-    CUSTOM_DIR.mkdir(parents=True, exist_ok=True)
-    _save(CUSTOM_DIR / f"{name}.toml", data)
+    CUSTOM_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
+    _save(CUSTOM_PRESETS_DIR / f"{name}.toml", data)
     return list_presets()
 
 
@@ -361,7 +415,7 @@ def delete_custom_preset(name: str) -> list[str]:
     _safe_variant(name)
     if is_builtin_preset(name):
         raise ValueError(f"Cannot delete built-in preset: {name}")
-    path = CUSTOM_DIR / f"{name}.toml"
+    path = CUSTOM_PRESETS_DIR / f"{name}.toml"
     if not path.exists():
         raise ValueError(f"Custom preset not found: {name}")
     path.unlink()
@@ -437,7 +491,12 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     _safe_variant(variant)
     base = _load(CONFIGS_DIR / "base.toml")
     pset = _load_all_presets().get(preset, {})
-    meth = _load(GUI_METHODS_DIR / f"{variant}.toml")
+    if variant.startswith("custom/"):
+        meth = _load(_resolve_variant_path(variant))
+    else:
+        builtin = _load(GUI_METHODS_DIR / f"{variant}.toml")
+        overlay = _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
+        meth = {**builtin, **overlay}
     merged: dict = {}
     origin: dict[str, str] = {}
 
@@ -581,8 +640,12 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
                 "group": _K2G.get(key),
                 "is_basic": key in _BASIC,
                 "is_virtual": key in _VIRTUAL_KEYS,
-                "options": (_SAMPLER_CHOICES if key == "sample_sampler"
-                           else _SELECT_OPTIONS.get(key)),
+                "read_only": origin.get(key, "base") in ("base", "preset"),
+                "options": (
+                    _SAMPLER_CHOICES
+                    if key == "sample_sampler"
+                    else _SELECT_OPTIONS.get(key)
+                ),
                 "description": _field_desc(key, lang),
                 "description_en": _field_desc_en(key),
             }
@@ -601,7 +664,7 @@ def read_layer(layer: str, variant: str = "lora", preset: str = "default") -> di
         return _load_all_presets().get(preset, {})
     if layer == "method":
         _safe_variant(variant)
-        return _load(GUI_METHODS_DIR / f"{variant}.toml")
+        return _load(_resolve_variant_path(variant))
     raise ValueError(f"Unknown layer: {layer}")
 
 
@@ -609,20 +672,19 @@ def write_layer(
     layer: str, data: dict, variant: str = "lora", preset: str = "default"
 ) -> None:
     """Write a single config layer. Only method layer is user-editable."""
+    if layer == "base":
+        raise ValueError("base.toml is read-only; edit via custom/variants/ overlays")
+    if layer == "preset":
+        raise ValueError(
+            "presets.toml is read-only; create custom presets in custom/presets/"
+        )
     if layer == "method":
         _safe_variant(variant)
-        path = GUI_METHODS_DIR / f"{variant}.toml"
-        _save(path, data)
-    elif layer == "base":
-        _save(CONFIGS_DIR / "base.toml", data)
-    elif layer == "preset":
-        # Presets are in one file — update the specific section
-        if PRESETS_FILE.exists():
-            all_presets = toml.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+        if variant.startswith("custom/"):
+            path = _resolve_variant_path(variant)
         else:
-            all_presets = {}
-        all_presets[preset] = data
-        _save(PRESETS_FILE, all_presets)
+            path = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
+        _save(path, data)
     else:
         raise ValueError(f"Unknown layer: {layer}")
 
@@ -788,7 +850,11 @@ def save_variant_config(variant: str, data: dict) -> None:
     """
     _safe_variant(variant)
     data = dict(data)  # copy to avoid mutating caller's dict
-    path = GUI_METHODS_DIR / f"{variant}.toml"
+    if variant.startswith("custom/"):
+        path = _resolve_variant_path(variant)
+    else:
+        # Built-in variant: always save to custom overlay, never to template
+        path = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
     current = _load(path)
 
     # Handle virtual keys

@@ -5,6 +5,7 @@
       :model-value="currentValue"
       :label="field.key"
       :hint="hintText"
+      :disabled="field.read_only"
       persistent-hint
       color="primary"
       density="compact"
@@ -12,12 +13,17 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append>
-        <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined" class="ml-2">
-          {{ field.origin }}
+        <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
+          {{ t('cfReadOnly') }}
         </v-chip>
-        <v-chip v-if="field.is_virtual" size="x-small" color="warning" variant="outlined" class="ml-1">
-          {{ t('cfVirtual') }}
-        </v-chip>
+        <template v-else>
+          <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined" class="ml-2">
+            {{ field.origin }}
+          </v-chip>
+          <v-chip v-if="field.is_virtual" size="x-small" color="warning" variant="outlined" class="ml-1">
+            {{ t('cfVirtual') }}
+          </v-chip>
+        </template>
       </template>
     </v-switch>
 
@@ -27,6 +33,7 @@
       :label="field.key"
       :items="selectItems"
       :hint="hintText"
+      :disabled="field.read_only"
       persistent-hint
       variant="outlined"
       density="compact"
@@ -34,7 +41,10 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append>
-        <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined" class="ml-2">
+        <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
+          {{ t('cfReadOnly') }}
+        </v-chip>
+        <v-chip v-else-if="field.origin !== 'method'" size="x-small" variant="outlined" class="ml-2">
           {{ field.origin }}
         </v-chip>
       </template>
@@ -45,6 +55,7 @@
       :model-value="currentValue"
       :label="field.key"
       :hint="hintText"
+      :disabled="field.read_only"
       persistent-hint
       type="number"
       variant="outlined"
@@ -53,7 +64,10 @@
       @update:model-value="emit('update', Number($event))"
     >
       <template #append-inner>
-        <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined">
+        <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
+          {{ t('cfReadOnly') }}
+        </v-chip>
+        <v-chip v-else-if="field.origin !== 'method'" size="x-small" variant="outlined">
           {{ field.origin }}
         </v-chip>
       </template>
@@ -64,6 +78,7 @@
       :model-value="currentValue"
       :label="field.key"
       :hint="hintText"
+      :disabled="field.read_only"
       persistent-hint
       type="number"
       step="any"
@@ -73,7 +88,10 @@
       @update:model-value="emit('update', Number($event))"
     >
       <template #append-inner>
-        <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined">
+        <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
+          {{ t('cfReadOnly') }}
+        </v-chip>
+        <v-chip v-else-if="field.origin !== 'method'" size="x-small" variant="outlined">
           {{ field.origin }}
         </v-chip>
       </template>
@@ -84,6 +102,7 @@
       :model-value="JSON.stringify(currentValue)"
       :label="field.key"
       :hint="hintText"
+      :disabled="field.read_only"
       persistent-hint
       variant="outlined"
       density="compact"
@@ -91,7 +110,10 @@
       @update:model-value="tryParse($event)"
     >
       <template #append-inner>
-        <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined">
+        <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
+          {{ t('cfReadOnly') }}
+        </v-chip>
+        <v-chip v-else-if="field.origin !== 'method'" size="x-small" variant="outlined">
           {{ field.origin }}
         </v-chip>
       </template>
@@ -102,6 +124,7 @@
       :model-value="currentValue"
       :label="field.key"
       :hint="hintText"
+      :disabled="field.read_only"
       persistent-hint
       variant="outlined"
       density="compact"
@@ -109,7 +132,10 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append-inner>
-        <v-chip v-if="field.origin !== 'method'" size="x-small" variant="outlined">
+        <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
+          {{ t('cfReadOnly') }}
+        </v-chip>
+        <v-chip v-else-if="field.origin !== 'method'" size="x-small" variant="outlined">
           {{ field.origin }}
         </v-chip>
       </template>

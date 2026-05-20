@@ -35,5 +35,6 @@ logs
 node.zip
 _archive/
 gui/gui_settings.json
+configs/custom/
 /docs
 /webui/frontend/node_modules

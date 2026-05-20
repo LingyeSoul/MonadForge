@@ -17,6 +17,7 @@ class FieldMeta(BaseModel):
     group: Optional[str] = None  # Architecture / Training / Performance / Paths
     is_basic: bool = False
     is_virtual: bool = False
+    read_only: bool = False  # true for base/preset origin fields
     options: Optional[list[str]] = None  # for select fields (attn_mode, etc.)
     description: Optional[str] = None  # localized help text
     description_en: Optional[str] = None  # English tip (always English)

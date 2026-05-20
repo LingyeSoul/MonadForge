@@ -13,6 +13,7 @@ export interface FieldMeta {
   origin: string
   group: string
   is_virtual: boolean
+  read_only: boolean
   options?: string[]
 }
 

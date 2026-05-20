@@ -29,10 +29,10 @@ METHODS_DIR = CONFIGS_DIR / "methods"
 GUI_METHODS_DIR = CONFIGS_DIR / "gui-methods"
 PRESETS_FILE = CONFIGS_DIR / "presets.toml"
 CUSTOM_DIR = CONFIGS_DIR / "custom"
-# User-created variants live alongside the curated gui-methods files but in
-# their own subdirectory so they're easy to find and don't pollute the
-# built-in family list.
-CUSTOM_VARIANTS_DIR = GUI_METHODS_DIR / "custom"
+# User-created variants live under configs/custom/variants/ so they're
+# gitignored and don't pollute the built-in family list.
+CUSTOM_VARIANTS_DIR = CUSTOM_DIR / "variants"
+CUSTOM_PRESETS_DIR = CUSTOM_DIR / "presets"
 
 
 _METHOD_ORDER = (
@@ -117,18 +117,14 @@ def list_methods() -> list[str]:
 
 
 def list_gui_variants(method: str) -> list[str]:
-    """gui-methods/*.toml files for the method family + all user customs.
-
-    Built-in variants are filtered to those whose ``[variant].family`` matches
-    ``method``, sorted by ``[variant].order`` then by file stem. Custom
-    variants in ``configs/gui-methods/custom/*.toml`` are surfaced for every
-    family — users name them freely and we don't try to bind a file to a
-    specific family.
-    """
+    """gui-methods/*.toml files for the method family + all user customs."""
     by_family = _builtin_variants_by_family()
     ordered = [stem for _order, stem, _label in by_family.get(method, [])]
     if CUSTOM_VARIANTS_DIR.exists():
+        builtin_stems = set(ordered)
         for p in sorted(CUSTOM_VARIANTS_DIR.glob("*.toml")):
+            if p.stem in builtin_stems:
+                continue  # overlay for built-in; already listed
             ordered.append(f"custom/{p.stem}")
     return ordered
 
@@ -143,20 +139,31 @@ def custom_variant_path(name: str) -> Path:
     return CUSTOM_VARIANTS_DIR / f"{stem}.toml"
 
 
+def _resolve_variant_path(variant: str) -> Path:
+    """Resolve a variant name to its TOML file, checking custom overlay first."""
+    if variant.startswith("custom/"):
+        stem = variant[len("custom/"):]
+        return CUSTOM_VARIANTS_DIR / f"{stem}.toml"
+    overlay = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
+    if overlay.exists():
+        return overlay
+    return GUI_METHODS_DIR / f"{variant}.toml"
+
+
 def variant_path(variant: str) -> Path:
     """Resolve a variant identifier (built-in or 'custom/<name>') to its file."""
-    return GUI_METHODS_DIR / f"{variant}.toml"
+    return _resolve_variant_path(variant)
 
 
 def _load_all_presets() -> dict:
     """Built-in sections in ``configs/presets.toml`` plus user-created flat
-    files under ``configs/custom/<name>.toml`` (one preset per file)."""
+    files under ``configs/custom/presets/<name>.toml`` (one preset per file)."""
     presets: dict = {}
     if PRESETS_FILE.exists():
         data = toml.loads(PRESETS_FILE.read_text(encoding="utf-8"))
         presets.update({k: v for k, v in data.items() if isinstance(v, dict)})
-    if CUSTOM_DIR.exists():
-        for p in sorted(CUSTOM_DIR.glob("*.toml")):
+    if CUSTOM_PRESETS_DIR.exists():
+        for p in sorted(CUSTOM_PRESETS_DIR.glob("*.toml")):
             try:
                 presets[p.stem] = toml.loads(p.read_text(encoding="utf-8"))
             except (toml.TomlDecodeError, OSError):
@@ -169,11 +176,11 @@ def list_presets() -> list[str]:
 
 
 def is_custom_preset(name: str) -> bool:
-    return (CUSTOM_DIR / f"{name}.toml").exists()
+    return (CUSTOM_PRESETS_DIR / f"{name}.toml").exists()
 
 
 def custom_preset_path(name: str) -> Path:
-    return CUSTOM_DIR / f"{name}.toml"
+    return CUSTOM_PRESETS_DIR / f"{name}.toml"
 
 
 _GROUPS = {
@@ -339,7 +346,12 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     per-variant file, not the toggle-block methods/ tree."""
     base = _load(CONFIGS_DIR / "base.toml")
     pset = _load_all_presets().get(preset, {})
-    meth = _load(GUI_METHODS_DIR / f"{variant}.toml")
+    if variant.startswith("custom/"):
+        meth = _load(_resolve_variant_path(variant))
+    else:
+        builtin = _load(GUI_METHODS_DIR / f"{variant}.toml")
+        overlay = _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
+        meth = {**builtin, **overlay}
     merged: dict = {}
     origin: dict[str, str] = {}
     for k, v in base.items():

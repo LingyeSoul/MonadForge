@@ -40,6 +40,11 @@ def _spa_fallback(request: Request):
 
 
 def create_app(dev: bool = False) -> FastAPI:
+    # Migrate legacy custom config layout on startup
+    from library.config.io import migrate_custom_configs
+
+    migrate_custom_configs()
+
     app = FastAPI(title="MonadForge WebUI", version="0.1.0")
 
     origins = ["*"] if dev else _ALLOWED_ORIGINS

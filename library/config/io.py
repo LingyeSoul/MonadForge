@@ -250,8 +250,7 @@ def load_path_overrides(
         return {
             k: v
             for k, v in d.items()
-            if k not in _NON_FLAT_SECTIONS
-            and not isinstance(v, (dict, list))
+            if k not in _NON_FLAT_SECTIONS and not isinstance(v, (dict, list))
         }
 
     base_path = os.path.join(configs_dir, "base.toml")
@@ -267,6 +266,13 @@ def load_path_overrides(
 
     if method:
         method_path = os.path.join(configs_dir, methods_subdir, f"{method}.toml")
+        # Check for custom overlay when using gui-methods
+        if methods_subdir == "gui-methods":
+            custom_overlay = os.path.join(
+                configs_dir, "custom", "variants", f"{method}.toml"
+            )
+            if os.path.exists(custom_overlay):
+                method_path = custom_overlay
         if os.path.exists(method_path):
             with open(method_path, "r", encoding="utf-8") as f:
                 out.update(_flat_scalars(toml.load(f)))
@@ -290,9 +296,7 @@ def _load_toml_with_base(path: str, *, strict: bool = False) -> dict:
     return merged
 
 
-def _resolve_preset(
-    preset: str, configs_dir: str = "configs"
-) -> tuple[dict, str, str]:
+def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, str, str]:
     """Resolve a preset name to ``(section, source_path, source_tag)``.
 
     Looks in ``configs/presets.toml`` first (built-in sections); falls back to
@@ -306,26 +310,28 @@ def _resolve_preset(
         if preset in presets:
             section = presets[preset]
             if not isinstance(section, dict):
-                raise ValueError(
-                    f"Preset '{preset}' in {presets_path} is not a table"
-                )
+                raise ValueError(f"Preset '{preset}' in {presets_path} is not a table")
             return dict(section), presets_path, f"{presets_path}[{preset}]"
     custom_path = os.path.join(configs_dir, "custom", f"{preset}.toml")
-    if os.path.exists(custom_path):
-        with open(custom_path, "r", encoding="utf-8") as f:
-            data = toml.load(f)
-        if not isinstance(data, dict):
-            raise ValueError(f"Custom preset {custom_path} is not a TOML table")
-        return data, custom_path, custom_path
+    # Check new layout first (custom/presets/), then legacy flat location
+    for subdir in ("custom/presets", "custom"):
+        cp = os.path.join(configs_dir, subdir, f"{preset}.toml")
+        if os.path.exists(cp):
+            with open(cp, "r", encoding="utf-8") as f:
+                data = toml.load(f)
+            if not isinstance(data, dict):
+                raise ValueError(f"Custom preset {cp} is not a TOML table")
+            return data, cp, cp
     available: list[str] = []
     if os.path.exists(presets_path):
         with open(presets_path, "r", encoding="utf-8") as f:
             available.extend(sorted(toml.load(f)))
-    custom_dir = os.path.join(configs_dir, "custom")
-    if os.path.isdir(custom_dir):
-        available.extend(
-            sorted(n[:-5] for n in os.listdir(custom_dir) if n.endswith(".toml"))
-        )
+    for subdir in ("custom/presets", "custom"):
+        custom_dir = os.path.join(configs_dir, subdir)
+        if os.path.isdir(custom_dir):
+            available.extend(
+                sorted(n[:-5] for n in os.listdir(custom_dir) if n.endswith(".toml"))
+            )
     raise KeyError(
         f"Preset '{preset}' not found in {presets_path} or {custom_path}. "
         f"Available: {sorted(set(available))}"
@@ -363,6 +369,13 @@ def load_method_preset(
     """
     base_path = os.path.join(configs_dir, "base.toml")
     method_path = os.path.join(configs_dir, methods_subdir, f"{method}.toml")
+    # Check for custom overlay when using gui-methods
+    if methods_subdir == "gui-methods":
+        custom_overlay = os.path.join(
+            configs_dir, "custom", "variants", f"{method}.toml"
+        )
+        if os.path.exists(custom_overlay):
+            method_path = custom_overlay
     for p in (base_path, method_path):
         if not os.path.exists(p):
             raise FileNotFoundError(f"Config file not found: {p}")
@@ -472,9 +485,7 @@ def _render_merged_toml(
     def _rank(src: str) -> int:
         if src == "configs/base.toml":
             return 0
-        if src.startswith("configs/presets.toml") or src.startswith(
-            "configs/custom/"
-        ):
+        if src.startswith("configs/presets.toml") or src.startswith("configs/custom/"):
             return 1
         # Method file — lives under configs/methods/ by default, or under
         # configs/gui-methods/ when --methods_subdir=gui-methods is used.
@@ -532,9 +543,7 @@ def _write_config_snapshot(
             logger.warning(f"Could not resolve run log dir for snapshot mirror: {e}")
             run_log_dir = None
         if run_log_dir:
-            mirror_path = os.path.join(
-                run_log_dir, f"{output_name}{_SNAPSHOT_SUFFIX}"
-            )
+            mirror_path = os.path.join(run_log_dir, f"{output_name}{_SNAPSHOT_SUFFIX}")
             try:
                 os.makedirs(run_log_dir, exist_ok=True)
                 with open(mirror_path, "w", encoding="utf-8") as f:
@@ -655,3 +664,46 @@ def read_config_from_file(args: argparse.Namespace, parser: argparse.ArgumentPar
         _write_config_snapshot(args, parser, provenance)
 
     return args
+
+
+# ── Custom config migration ───────────────────────────────────────
+
+
+def migrate_custom_configs(configs_dir: str = "configs") -> None:
+    """One-time migration: move legacy custom files to the new layout.
+
+    Moves:
+      configs/gui-methods/custom/*.toml  ->  configs/custom/variants/*.toml
+      configs/custom/*.toml              ->  configs/custom/presets/*.toml
+    Skips files that already exist at the destination.
+    """
+    import shutil
+
+    cd = os.path.join(configs_dir, "custom")
+
+    # Migrate gui-methods/custom/ -> custom/variants/
+    old_variants = os.path.join(configs_dir, "gui-methods", "custom")
+    new_variants = os.path.join(cd, "variants")
+    if os.path.isdir(old_variants):
+        os.makedirs(new_variants, exist_ok=True)
+        for f in os.listdir(old_variants):
+            if f.endswith(".toml"):
+                src = os.path.join(old_variants, f)
+                dst = os.path.join(new_variants, f)
+                if not os.path.exists(dst):
+                    shutil.move(src, dst)
+        try:
+            os.rmdir(old_variants)
+        except OSError:
+            pass
+
+    # Migrate custom/*.toml -> custom/presets/*.toml
+    new_presets = os.path.join(cd, "presets")
+    if os.path.isdir(cd):
+        for f in os.listdir(cd):
+            if f.endswith(".toml"):
+                src = os.path.join(cd, f)
+                dst = os.path.join(new_presets, f)
+                if os.path.isfile(src) and not os.path.exists(dst):
+                    os.makedirs(new_presets, exist_ok=True)
+                    shutil.move(src, dst)

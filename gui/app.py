@@ -352,6 +352,9 @@ def _ensure_source_image_dir() -> None:
 
 def main():
     load_language()
+    from library.config.io import migrate_custom_configs
+
+    migrate_custom_configs()
     _ensure_source_image_dir()
     app = QApplication(sys.argv)
     if ICON_PATH.exists():

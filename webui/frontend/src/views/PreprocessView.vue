@@ -1,5 +1,5 @@
 <template>
-  <v-container fluid class="pa-4">
+  <v-container fluid class="pa-4 preprocess-page">
     <div class="text-h5 mb-1">{{ t('ppTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('ppSubtitle') }}</div>
 
@@ -542,3 +542,11 @@ function refresh() {
   fetchStatus()
 }
 </script>
+
+<style scoped>
+.preprocess-page {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+</style>
