@@ -1,0 +1,4 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>ReFT</h2>
+<p>块级残差流干预（Wu et al., NeurIPS 2024）。在选定的每个 DiT 块上添加一个 <code>ReFTModule</code>，将 <code>R^T &middot; (&Delta;W&middot;h + b) &middot; scale</code> 添加到块输出上 — 这不是 Linear 的权重差分，而是额外的旁路通道。可与所有 LoRA 变体组合使用，保存在同一个 <code>.safetensors</code> 文件中。</p>
+<p>通过 <code>reft_layers</code> 选择块（例如 <code>last_8</code>、<code>stride_2</code> 或逗号分隔的索引）。<code>reft_dim</code> 设置干预 rank，<code>reft_alpha</code> 通过 <code>alpha / dim</code> 设置有效缩放。</p>
+<p><b>tlora_ortho_reft</b> 是将 ReFT 与 T-LoRA + OrthoLoRA 打包到一次训练中的变体。LoRA 部分可烘焙，但 ReFT 块钩子无法烘焙，合并后的 DiT 中 ReFT 贡献会消失（Merge 工具会发出警告并要求 <code>--allow-partial</code>）。</p>

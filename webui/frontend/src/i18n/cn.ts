@@ -11,6 +11,11 @@ export default {
   navTasksCount: '任务 ({n})',
   navDashboard: '仪表盘',
 
+  // Guidebook
+  guidebook: '指南手册',
+  guidebookClose: '关闭',
+  reportIssue: '报告问题',
+
   // Task Panel
   taskTitle: '任务监控',
   taskSubtitle: '查看运行中的任务、实时日志与任务管理',
@@ -83,6 +88,24 @@ export default {
   cfgPresetNameConflict: '该名称已存在',
   cfgCancel: '取消',
 
+  // Config Help Panel
+  cfgHelpPanel: '帮助',
+  cfgFieldHelp: '字段帮助',
+  cfgNoHelp: '此字段暂无帮助信息',
+  cfgMethodGuide: '方法指南',
+  cfgOrigin: '来源',
+  cfgOriginFrom: '来自 {layer}',
+  cfgExtraArgs: '额外参数',
+  cfgExtraArgsHint: '原始 TOML 键值覆盖。保存时解析并合并到变体配置中。每行一对（key = value）。',
+  cfgExtraArgsParseError: '额外参数 TOML 解析失败',
+  cfgNewVariant: '新建变体',
+  cfgNewVariantName: '变体名称',
+  cfgNewVariantNameHint: '仅允许字母、数字、下划线和连字符',
+  cfgNewVariantNameInvalid: '仅允许字母、数字、下划线和连字符',
+  cfgNewVariantSeed: '从当前变体复制设置',
+  cfgNewVariantCreated: '变体已创建: {name}',
+  cfgExperimentalWarning: '这是实验性方法。功能可能随时变更或移除。',
+
   // Dataset Browser
   dsTitle: '数据集浏览',
   dsSubtitle: '浏览训练图片、编辑标签描述、管理遮罩',
@@ -122,6 +145,9 @@ export default {
   dsPathAdded: '已添加目录: {path}',
   dsPathNotFound: '目录不存在: {path}',
   dsRemovePath: '移除',
+
+  // Caption Grammar Guide
+  dsGrammarGuide: '标签顺序：<b>分级 → 数量 → 角色(系列) → 系列 → <span class="tag-artist-hint">@画师</span> → 内容标签</b>。段落语法：前一段以 <code>.</code> 结尾，下一段以 <code>On the...</code> 或 <code>In the...</code> 开头（<span class="tag-section-hint">蓝色</span>）。至 <span class="tag-artist-hint">@画师</span> 为止的标签固定不动，其后标签在各段落内随机打乱。',
 
   // Preprocess View
   ppTitle: '预处理',
@@ -196,6 +222,8 @@ export default {
   adTrainEasy: '训练 EasyControl',
   adActiveTasks: '活跃的适配器任务',
   adNoTasks: '暂无适配器任务运行',
+  adDatasetPreview: '数据集预览',
+  adBrowseDataset: '浏览',
 
   // Merge View
   mgTitle: 'LoRA 合并',

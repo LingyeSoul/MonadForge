@@ -11,6 +11,11 @@ export default {
   navTasksCount: 'Tasks ({n})',
   navDashboard: 'Dashboard',
 
+  // Guidebook
+  guidebook: 'Guidebook',
+  guidebookClose: 'Close',
+  reportIssue: 'Report Issue',
+
   // Task Panel
   taskTitle: 'Task Monitor',
   taskSubtitle: 'View running tasks, streaming logs, and manage execution',
@@ -83,6 +88,24 @@ export default {
   cfgPresetNameConflict: 'Name already exists',
   cfgCancel: 'Cancel',
 
+  // Config Help Panel
+  cfgHelpPanel: 'Help',
+  cfgFieldHelp: 'Field Help',
+  cfgNoHelp: 'No help available for this field',
+  cfgMethodGuide: 'Method Guide',
+  cfgOrigin: 'Source',
+  cfgOriginFrom: 'from {layer}',
+  cfgExtraArgs: 'Extra Args',
+  cfgExtraArgsHint: 'Raw TOML key-value overrides. Parsed on save and merged into the variant config. One pair per line (key = value).',
+  cfgExtraArgsParseError: 'Failed to parse extra args as TOML',
+  cfgNewVariant: 'New Variant',
+  cfgNewVariantName: 'Variant Name',
+  cfgNewVariantNameHint: 'Letters, digits, underscores, and hyphens only',
+  cfgNewVariantNameInvalid: 'Only letters, digits, underscores, and hyphens allowed',
+  cfgNewVariantSeed: 'Copy settings from current variant',
+  cfgNewVariantCreated: 'Variant created: {name}',
+  cfgExperimentalWarning: 'This is an experimental method. Features may change or be removed without notice.',
+
   // Dataset Browser
   dsTitle: 'Dataset Browser',
   dsSubtitle: 'Browse training images, edit captions, and manage masks',
@@ -122,6 +145,9 @@ export default {
   dsPathAdded: 'Added directory: {path}',
   dsPathNotFound: 'Directory not found: {path}',
   dsRemovePath: 'Remove',
+
+  // Caption Grammar Guide
+  dsGrammarGuide: 'Tag order: <b>rating → count → character (series) → series → <span class="tag-artist-hint">@artist</span> → content tags</b>. Section syntax: end previous with <code>.</code>, start next with <code>On the...</code> or <code>In the...</code> (<span class="tag-section-hint">blue</span>). Tags up to and including <span class="tag-artist-hint">@artist</span> are fixed; everything after shuffles within each section.',
 
   // Preprocess View
   ppTitle: 'Preprocessing',
@@ -196,6 +222,8 @@ export default {
   adTrainEasy: 'Train EasyControl',
   adActiveTasks: 'Active Adapter Tasks',
   adNoTasks: 'No adapter tasks running',
+  adDatasetPreview: 'Dataset Preview',
+  adBrowseDataset: 'Browse',
 
   // Merge View
   mgTitle: 'LoRA Merge',

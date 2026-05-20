@@ -351,6 +351,35 @@ def get_field_groups() -> dict[str, set[str]]:
     return dict(_GROUPS)
 
 
+def create_variant(name: str, seed_from: str | None = None) -> list[str]:
+    """Create a new custom variant, optionally seeded from an existing one.
+
+    Returns the updated variants list for the variant's family.
+    """
+    _safe_variant(name)
+    CUSTOM_VARIANTS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = CUSTOM_VARIANTS_DIR / f"{name}.toml"
+    if dest.exists():
+        raise ValueError(f"Variant already exists: {name}")
+
+    seed_data: dict = {}
+    if seed_from:
+        _safe_variant(seed_from)
+        seed_path = _resolve_variant_path(seed_from)
+        if seed_path.is_file():
+            seed_data = _load(seed_path)
+            seed_data.pop("variant", None)  # strip [variant] metadata
+
+    _save(dest, seed_data)
+    # Return variants for the same family as seed_from (or all if no seed)
+    if seed_from:
+        meta = _read_variant_metadata(GUI_METHODS_DIR / f"{seed_from}.toml")
+        family = meta.get("family", "lora")
+    else:
+        family = "lora"
+    return list_gui_variants(family)
+
+
 def variant_metadata(variant: str) -> dict:
     _safe_variant(variant)
     # Always read metadata from the built-in file, not the custom overlay
@@ -626,21 +655,29 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
     ``variant``, and ``preset``.
     """
     merged, origin = merged_gui_variant_preset(variant, preset)
+    custom_preset = not is_builtin_preset(preset)
     fields = []
     for key, value in sorted(merged.items()):
         if key in _SKIP:
             continue
         ftype = get_field_type(key, value)
+        orig = origin.get(key, "base")
+        # Custom presets: all fields are editable (user owns the preset)
+        # Built-in presets: only method-layer fields are editable
+        if custom_preset:
+            read_only = False
+        else:
+            read_only = orig in ("base", "preset")
         fields.append(
             {
                 "key": key,
                 "value": value,
-                "origin": origin.get(key, "base"),
+                "origin": orig,
                 "field_type": ftype,
                 "group": _K2G.get(key),
                 "is_basic": key in _BASIC,
                 "is_virtual": key in _VIRTUAL_KEYS,
-                "read_only": origin.get(key, "base") in ("base", "preset"),
+                "read_only": read_only,
                 "options": (
                     _SAMPLER_CHOICES
                     if key == "sample_sampler"
@@ -847,6 +884,10 @@ def save_variant_config(variant: str, data: dict) -> None:
     Separates virtual keys (written into [[datasets]] blocks) from
     flat TOML keys. Skips ``_SKIP`` keys and keys that match the
     merged base+preset values (no-op saves).
+
+    If ``data`` contains an ``extra_args`` key with a non-empty string,
+    it is parsed as TOML and merged as overrides (extra_args win on
+    conflicts with form values).
     """
     _safe_variant(variant)
     data = dict(data)  # copy to avoid mutating caller's dict
@@ -856,6 +897,24 @@ def save_variant_config(variant: str, data: dict) -> None:
         # Built-in variant: always save to custom overlay, never to template
         path = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
     current = _load(path)
+
+    # Handle extra_args: parse as TOML and merge as overrides
+    extra_text = data.pop("extra_args", None)
+    extras: dict = {}
+    if isinstance(extra_text, str) and extra_text.strip():
+        text = extra_text.strip()
+        try:
+            parsed = toml.loads(text)
+        except Exception:
+            # Windows path backslash workaround: bare backslashes break TOML
+            if "\\" in text:
+                try:
+                    parsed = toml.loads(text.replace("\\", "/"))
+                except Exception:
+                    parsed = {}
+            else:
+                parsed = {}
+        extras = {k: v for k, v in parsed.items() if not isinstance(v, dict)}
 
     # Handle virtual keys
     use_valid = data.pop("use_valid", None)
@@ -882,6 +941,10 @@ def save_variant_config(variant: str, data: dict) -> None:
         if key in _SKIP:
             continue
         current[key] = value
+
+    # Extra args override form values
+    if extras:
+        current.update(extras)
 
     _save(path, current)
 
@@ -1041,3 +1104,57 @@ def write_sample_prompts(path_str: str, entries: list[dict]) -> None:
         else:
             lines.append(prompt)
     path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
+
+
+# ── Field help + method guide ──────────────────────────────────
+
+
+def get_field_help_data(variant: str, lang: str = "cn") -> dict:
+    """Return field help dict + method guide HTML for the config editor.
+
+    Returns ``{"field_help": {key: text}, "guide_html": str}``.
+    """
+    _safe_variant(variant)
+    meta = _read_variant_metadata(GUI_METHODS_DIR / f"{variant}.toml")
+    family = meta.get("family", variant)
+
+    # Collect all field help entries for the requested language
+    field_help: dict[str, str] = {}
+    for src in (_PRE_FIELD_HELP, _FIELD_HELP):
+        for key, entry in src.items():
+            if isinstance(entry, dict):
+                text = entry.get(lang) or entry.get("en")
+                if text:
+                    field_help[key] = text
+
+    # Load method guide HTML from gui/explanations/guides/
+    guide_html = _load_method_guide(family, lang)
+
+    return {"field_help": field_help, "guide_html": guide_html}
+
+
+_GUIDES_DIR = ROOT / "gui" / "explanations" / "guides"
+_NOT_MERGEABLE = frozenset({"postfix", "hydralora", "reft", "fera"})
+_KNOWN_GUIDE_METHODS = frozenset({"lora", "tlora", "postfix", "hydralora", "reft", "fera"})
+
+
+def _read_guide(name: str, lang: str) -> str:
+    """Read a guide HTML file with fallback: lang → en."""
+    path = _GUIDES_DIR / f"{name}.{lang}.html"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    path = _GUIDES_DIR / f"{name}.en.html"
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return ""
+
+
+def _load_method_guide(method: str, lang: str = "cn") -> str:
+    """Assemble the full method guide HTML for the given method and language."""
+    if method not in _KNOWN_GUIDE_METHODS:
+        return ""
+    parts = [_read_guide("_apply_note", lang)]
+    if method in _NOT_MERGEABLE:
+        parts.append(_read_guide("_not_mergeable", lang))
+    parts.append(_read_guide(method, lang))
+    return "".join(parts)

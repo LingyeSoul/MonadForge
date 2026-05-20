@@ -39,7 +39,7 @@ use_cmmd = false
 # Preview sampling — generate sample images at checkpoint saves
 [preview]
 sample_every_n_epochs = 2
-sample_prompts = "sample_prompts.txt"
+sample_prompts = "configs/custom/sample_prompts.txt"
 sample_sampler = "euler"
 sample_guidance_scale = 3.5
 sample_flow_shift = 5.0

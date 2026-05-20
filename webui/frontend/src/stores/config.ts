@@ -135,16 +135,18 @@ export const useConfigStore = defineStore('config', () => {
     return field?.value
   }
 
-  async function save() {
-    if (!dirty.value) return
+  async function save(extraArgs?: string) {
+    if (!dirty.value && !extraArgs) return
     loading.value = true
     error.value = ''
     try {
       const lang = appStore.language
+      const body: Record<string, unknown> = { data: editedValues.value }
+      if (extraArgs) body.data = { ...editedValues.value, extra_args: extraArgs }
       const res = await fetch(`/api/config/method?variant=${encodeURIComponent(variant.value)}&preset=${encodeURIComponent(preset.value)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: editedValues.value }),
+        body: JSON.stringify(body),
       })
       if (!res.ok) {
         const data = await res.json()

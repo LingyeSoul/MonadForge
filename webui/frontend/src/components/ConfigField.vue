@@ -13,6 +13,12 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append>
+        <v-icon
+          icon="mdi-information-outline"
+          size="small"
+          class="ml-1 help-icon"
+          @click.stop="emit('help-click', field.key)"
+        />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -41,6 +47,12 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append>
+        <v-icon
+          icon="mdi-information-outline"
+          size="small"
+          class="ml-1 help-icon"
+          @click.stop="emit('help-click', field.key)"
+        />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -64,6 +76,12 @@
       @update:model-value="emit('update', Number($event))"
     >
       <template #append-inner>
+        <v-icon
+          icon="mdi-information-outline"
+          size="small"
+          class="help-icon"
+          @click.stop="emit('help-click', field.key)"
+        />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -88,6 +106,12 @@
       @update:model-value="emit('update', Number($event))"
     >
       <template #append-inner>
+        <v-icon
+          icon="mdi-information-outline"
+          size="small"
+          class="help-icon"
+          @click.stop="emit('help-click', field.key)"
+        />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -110,6 +134,12 @@
       @update:model-value="tryParse($event)"
     >
       <template #append-inner>
+        <v-icon
+          icon="mdi-information-outline"
+          size="small"
+          class="help-icon"
+          @click.stop="emit('help-click', field.key)"
+        />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -132,6 +162,12 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append-inner>
+        <v-icon
+          icon="mdi-information-outline"
+          size="small"
+          class="help-icon"
+          @click.stop="emit('help-click', field.key)"
+        />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -150,7 +186,7 @@ import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ field: FieldMeta }>()
-const emit = defineEmits<{ update: [value: unknown] }>()
+const emit = defineEmits<{ update: [value: unknown]; 'help-click': [key: string] }>()
 const configStore = useConfigStore()
 const { t } = useI18n()
 
@@ -177,3 +213,15 @@ function tryParse(val: string) {
   }
 }
 </script>
+
+<style scoped>
+.help-icon {
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+.help-icon:hover {
+  opacity: 1;
+  color: rgb(var(--v-theme-primary));
+}
+</style>

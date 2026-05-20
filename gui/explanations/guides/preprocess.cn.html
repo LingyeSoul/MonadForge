@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:18px;'>预处理</h2>
+<p>训练使用两条产出流水线：</p>
+<p><b>1. 缓存</b> &mdash; 将图像缩放到 constant-token 分桶尺寸，并用 Qwen3 + T5 对 caption 进行分词，保存为 <code>{stem}_anima.npz</code> latent 和 <code>{stem}_anima_te.safetensors</code> 伴随文件。<i>打乱变体数</i>大于 0 时，每个 TE 缓存中包含 N 个 caption，数据加载器在每个训练步采样其中一个（需要在方法设置中启用 <code>use_shuffled_caption_variants</code>）。</p>
+<p><b>2. 掩码</b> &mdash; 通过临时目录运行 SAM3（自然语言气泡提示）和 MIT（漫画字形分割器），然后合并输出到 <code>post_image_dataset/masks/&lt;rel&gt;/{stem}_mask.png</code>。各工具的中间结果不保留在磁盘上，合并后临时目录会被清理。掩码目录存在时，训练子集会自动使用（参见方法设置中的 <code>masked_loss</code>）。</p>
+<p style='color:#888; font-style:italic; margin-top:12px;'>点击左侧字段标签可在此处查看说明。</p>

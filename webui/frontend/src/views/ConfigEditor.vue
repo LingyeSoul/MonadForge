@@ -12,7 +12,7 @@
           @update:model-value="onMethodChange"
         />
       </v-col>
-      <v-col cols="12" md="4">
+      <v-col cols="12" md="3">
         <v-select
           v-model="selectedVariant"
           :items="variantItems"
@@ -24,6 +24,17 @@
           hide-details
           :disabled="!selectedMethod"
           @update:model-value="onVariantChange"
+        />
+      </v-col>
+      <v-col cols="12" md="1" class="d-flex align-center ga-1">
+        <v-btn
+          icon="mdi-plus"
+          variant="text"
+          density="compact"
+          size="small"
+          :disabled="!selectedMethod"
+          :title="t('cfgNewVariant')"
+          @click="openCreateVariant"
         />
       </v-col>
       <v-col cols="12" md="2">
@@ -59,13 +70,13 @@
       </v-col>
       <v-col cols="12" md="4" class="d-flex justify-end ga-2 flex-wrap">
         <v-btn
-          :color="configStore.dirty ? 'warning' : 'primary'"
+          :color="(configStore.dirty || extraArgs) ? 'warning' : 'primary'"
           :loading="configStore.loading"
-          :disabled="!configStore.dirty"
+          :disabled="!configStore.dirty && !extraArgs"
           prepend-icon="mdi-content-save"
           @click="onSave"
         >
-          {{ t('cfgSave') }}{{ configStore.dirty ? ' *' : '' }}
+          {{ t('cfgSave') }}{{ (configStore.dirty || extraArgs) ? ' *' : '' }}
         </v-btn>
         <v-btn
           variant="outlined"
@@ -114,65 +125,124 @@
       class="mb-4"
     />
 
-    <v-card v-if="configStore.basicFields.length > 0" class="mb-4" variant="tonal">
-      <v-card-title class="text-subtitle-1">
-        <v-icon icon="mdi-tune" class="mr-2" />
-        {{ t('cfgBasicSettings') }}
-      </v-card-title>
-      <v-card-text>
-        <v-row>
-          <v-col
-            v-for="field in configStore.basicFields"
-            :key="field.key"
-            cols="12"
-            md="6"
+    <v-alert
+      v-if="isExperimental"
+      type="warning"
+      variant="tonal"
+      density="compact"
+      class="mb-4"
+      icon="mdi-flask-outline"
+    >
+      {{ t('cfgExperimentalWarning') }}
+    </v-alert>
+
+    <!-- Two-column layout: form left, help panel right -->
+    <v-row>
+      <v-col cols="12" :lg="selectedVariant ? 8 : 12" class="form-column">
+        <v-card v-if="configStore.basicFields.length > 0" class="mb-4" variant="tonal">
+          <v-card-title class="text-subtitle-1">
+            <v-icon icon="mdi-tune" class="mr-2" />
+            {{ t('cfgBasicSettings') }}
+          </v-card-title>
+          <v-card-text>
+            <v-row>
+              <v-col
+                v-for="field in configStore.basicFields"
+                :key="field.key"
+                cols="12"
+                md="6"
+              >
+                <ConfigField
+                  :field="field"
+                  @update="(v) => configStore.setFieldValue(field.key, v)"
+                  @help-click="(k) => onFieldHelp(k, field.origin)"
+                />
+              </v-col>
+            </v-row>
+          </v-card-text>
+        </v-card>
+
+        <v-expansion-panels v-if="Object.keys(configStore.groupedAdvanced).length > 0" variant="accordion">
+          <v-expansion-panel
+            v-for="(groupFields, groupName) in configStore.groupedAdvanced"
+            :key="groupName"
           >
-            <ConfigField
-              :field="field"
-              @update="(v) => configStore.setFieldValue(field.key, v)"
-            />
-          </v-col>
-        </v-row>
-      </v-card-text>
-    </v-card>
+            <v-expansion-panel-title>
+              <v-icon icon="mdi-cog-outline" class="mr-2" size="small" />
+              {{ groupName }}
+              <v-chip size="x-small" class="ml-2" variant="outlined">{{ groupFields.length }}</v-chip>
+            </v-expansion-panel-title>
+            <v-expansion-panel-text>
+              <v-row>
+                <v-col
+                  v-for="field in groupFields"
+                  :key="field.key"
+                  :cols="field.key === 'sample_prompts' ? 12 : undefined"
+                  :md="field.key === 'sample_prompts' ? 12 : 6"
+                >
+                  <PreviewPromptEditor
+                    v-if="field.key === 'sample_prompts'"
+                    :prompt-path="String(field.value ?? 'sample_prompts.txt')"
+                  />
+                  <ConfigField
+                    v-else
+                    :field="field"
+                    @update="(v) => configStore.setFieldValue(field.key, v)"
+                    @help-click="(k) => onFieldHelp(k, field.origin)"
+                  />
+                </v-col>
+              </v-row>
+            </v-expansion-panel-text>
+          </v-expansion-panel>
+        </v-expansion-panels>
 
-    <v-expansion-panels v-if="Object.keys(configStore.groupedAdvanced).length > 0" variant="accordion">
-      <v-expansion-panel
-        v-for="(groupFields, groupName) in configStore.groupedAdvanced"
-        :key="groupName"
-      >
-        <v-expansion-panel-title>
-          <v-icon icon="mdi-cog-outline" class="mr-2" size="small" />
-          {{ groupName }}
-          <v-chip size="x-small" class="ml-2" variant="outlined">{{ groupFields.length }}</v-chip>
-        </v-expansion-panel-title>
-        <v-expansion-panel-text>
-          <v-row>
-            <v-col
-              v-for="field in groupFields"
-              :key="field.key"
-              :cols="field.key === 'sample_prompts' ? 12 : undefined"
-              :md="field.key === 'sample_prompts' ? 12 : 6"
-            >
-              <PreviewPromptEditor
-                v-if="field.key === 'sample_prompts'"
-                :prompt-path="String(field.value ?? 'sample_prompts.txt')"
+        <!-- Extra Args section -->
+        <v-card v-if="selectedVariant" class="mt-4" variant="outlined">
+          <v-card-title
+            class="text-subtitle-1 d-flex align-center cursor-pointer"
+            @click="showExtraArgs = !showExtraArgs"
+          >
+            <v-icon icon="mdi-code-braces" class="mr-2" size="small" />
+            {{ t('cfgExtraArgs') }}
+            <v-spacer />
+            <v-icon :icon="showExtraArgs ? 'mdi-chevron-up' : 'mdi-chevron-down'" />
+          </v-card-title>
+          <v-expand-transition>
+            <v-card-text v-show="showExtraArgs">
+              <v-textarea
+                v-model="extraArgs"
+                :placeholder="t('cfgExtraArgsHint')"
+                variant="outlined"
+                density="compact"
+                rows="4"
+                auto-grow
+                max-rows="10"
+                hide-details
+                style="font-family: monospace; font-size: 13px;"
               />
-              <ConfigField
-                v-else
-                :field="field"
-                @update="(v) => configStore.setFieldValue(field.key, v)"
-              />
-            </v-col>
-          </v-row>
-        </v-expansion-panel-text>
-      </v-expansion-panel>
-    </v-expansion-panels>
+            </v-card-text>
+          </v-expand-transition>
+        </v-card>
 
-    <div v-if="!configStore.loading && configStore.fields.length === 0" class="text-center pa-12">
-      <v-icon icon="mdi-cog-transfer-outline" size="64" color="grey" class="mb-4" />
-      <div class="text-h6 text-medium-emphasis">{{ t('cfgSelectHint') }}</div>
-    </div>
+        <div v-if="!configStore.loading && configStore.fields.length === 0" class="text-center pa-12">
+          <v-icon icon="mdi-cog-transfer-outline" size="64" color="grey" class="mb-4" />
+          <div class="text-h6 text-medium-emphasis">{{ t('cfgSelectHint') }}</div>
+        </div>
+      </v-col>
+
+      <!-- Help panel: only shown when a variant is selected -->
+      <v-col v-if="selectedVariant" cols="12" lg="4">
+        <div class="help-panel-sticky">
+          <HelpPanel
+            ref="helpPanelRef"
+            :variant="selectedVariant"
+            :field-help="fieldHelpData"
+            :guide-html="guideHtml"
+            height="calc(100vh - 140px)"
+          />
+        </div>
+      </v-col>
+    </v-row>
 
     <!-- No-cache warning dialog -->
     <v-dialog v-model="showNoCacheDlg" max-width="500">
@@ -237,21 +307,60 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Create variant dialog -->
+    <v-dialog v-model="showCreateVariantDlg" max-width="400">
+      <v-card>
+        <v-card-title>{{ t('cfgNewVariant') }}</v-card-title>
+        <v-card-text>
+          <v-text-field
+            v-model="newVariantName"
+            :label="t('cfgNewVariantName')"
+            :placeholder="t('cfgNewVariantNameHint')"
+            :rules="[variantNameRule]"
+            variant="outlined"
+            density="compact"
+            autofocus
+            @keyup.enter="confirmCreateVariant"
+          />
+          <v-checkbox
+            v-model="seedFromCurrent"
+            :label="t('cfgNewVariantSeed')"
+            density="compact"
+            hide-details
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showCreateVariantDlg = false">{{ t('cfgCancel') }}</v-btn>
+          <v-btn
+            color="primary"
+            :disabled="!newVariantName.trim() || !!variantNameRule(newVariantName.trim())"
+            @click="confirmCreateVariant"
+          >
+            {{ t('cfgNewVariant') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
+import { useAppStore } from '../stores/app'
 import { useI18n } from '../composables/useI18n'
 import ConfigField from '../components/ConfigField.vue'
 import PreviewPromptEditor from '../components/PreviewPromptEditor.vue'
+import HelpPanel from '../components/HelpPanel.vue'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()
 const notify = useNotifyStore()
+const appStore = useAppStore()
 const { t } = useI18n()
 
 const selectedMethod = ref('')
@@ -261,6 +370,18 @@ const selectedPreset = ref('default')
 const trainingLaunching = ref(false)
 const testLaunching = ref(false)
 const preprocessRunning = ref(false)
+
+// Extra args state
+const extraArgs = ref('')
+const showExtraArgs = ref(false)
+
+// Experimental feature tracking
+const isExperimental = ref(false)
+
+// Help panel state
+const helpPanelRef = ref<InstanceType<typeof HelpPanel> | null>(null)
+const fieldHelpData = ref<Record<string, string>>({})
+const guideHtml = ref('')
 
 // Dialog state
 const showNoCacheDlg = ref(false)
@@ -272,10 +393,17 @@ const prelaunchResult = ref<any>(null)
 const showCreatePresetDlg = ref(false)
 const newPresetName = ref('')
 
+// Variant management
+const showCreateVariantDlg = ref(false)
+const newVariantName = ref('')
+const seedFromCurrent = ref(true)
+
+const variantNameRule = (v: string) => {
+  if (!v) return true
+  return /^[A-Za-z0-9_-]+$/.test(v) ? true : t('cfgNewVariantNameInvalid')
+}
+
 const isCustomPreset = computed(() => {
-  // Built-in presets: default, low_vram, graft, half, quarter, tenth, debug
-  // Custom presets come from configs/custom/*.toml — they exist in the list but
-  // we detect them by checking if they're NOT in the known built-in set.
   const builtin = ['default', 'low_vram', 'graft', 'half', 'quarter', 'tenth', 'debug']
   return selectedPreset.value && !builtin.includes(selectedPreset.value)
 })
@@ -303,7 +431,44 @@ async function onVariantChange() {
 async function loadConfig() {
   if (selectedVariant.value) {
     await configStore.fetchMerged(selectedVariant.value, selectedPreset.value)
+    await fetchFieldHelp()
+    await checkExperimental()
   }
+}
+
+async function fetchFieldHelp() {
+  if (!selectedVariant.value) return
+  try {
+    const lang = appStore.language
+    const res = await fetch(`/api/config/field-help?variant=${encodeURIComponent(selectedVariant.value)}&lang=${encodeURIComponent(lang)}`)
+    if (res.ok) {
+      const data = await res.json()
+      fieldHelpData.value = data.field_help || {}
+      guideHtml.value = data.guide_html || ''
+    }
+  } catch {
+    // Silently ignore — help is non-critical
+  }
+}
+
+async function checkExperimental() {
+  if (!selectedVariant.value) {
+    isExperimental.value = false
+    return
+  }
+  try {
+    const res = await fetch(`/api/config/variant-meta?variant=${encodeURIComponent(selectedVariant.value)}`)
+    if (res.ok) {
+      const data = await res.json()
+      isExperimental.value = !!data.experimental
+    }
+  } catch {
+    isExperimental.value = false
+  }
+}
+
+function onFieldHelp(key: string, origin: string) {
+  helpPanelRef.value?.showFieldHelp(key, origin)
 }
 
 onMounted(async () => {
@@ -313,11 +478,18 @@ onMounted(async () => {
   ])
 })
 
+// Refetch help data when language changes
+watch(() => appStore.language, () => {
+  if (selectedVariant.value) fetchFieldHelp()
+})
+
 // ── Save ───────────────────────────────────────────────────────
 
 async function onSave() {
   try {
-    await configStore.save()
+    const args = extraArgs.value.trim() || undefined
+    await configStore.save(args)
+    if (args) extraArgs.value = ''
     notify.show(t('notifyConfigSaved'), 'success')
   } catch (e: any) {
     notify.show(t('notifyConfigSaveFailed'), 'error')
@@ -334,7 +506,6 @@ function openCreatePreset() {
 async function confirmCreatePreset() {
   const name = newPresetName.value.trim()
   if (!name) return
-  // Collect current edited values + existing field values as preset data
   const data: Record<string, unknown> = {}
   for (const f of configStore.fields) {
     if (f.is_virtual) continue
@@ -364,6 +535,43 @@ async function deleteCurrentPreset() {
   }
 }
 
+// ── Variant management ──────────────────────────────────────
+
+function openCreateVariant() {
+  newVariantName.value = ''
+  seedFromCurrent.value = true
+  showCreateVariantDlg.value = true
+}
+
+async function confirmCreateVariant() {
+  const name = newVariantName.value.trim()
+  if (!name) return
+  try {
+    const body: Record<string, unknown> = { name }
+    if (seedFromCurrent.value && selectedVariant.value) {
+      body.seed_from = selectedVariant.value
+    }
+    const res = await fetch('/api/config/variants', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const data = await res.json()
+      configStore.error = data.detail || 'Failed to create variant'
+      return
+    }
+    const data = await res.json()
+    configStore.variants = data.variants || []
+    showCreateVariantDlg.value = false
+    selectedVariant.value = `custom/${name}`
+    await loadConfig()
+    notify.show(t('cfgNewVariantCreated', { name }), 'success')
+  } catch (e: any) {
+    configStore.error = e.message
+  }
+}
+
 // ── Prelaunch check ──────────────────────────────────────────
 
 async function fetchPrelaunch(): Promise<any> {
@@ -377,8 +585,10 @@ async function fetchPrelaunch(): Promise<any> {
 }
 
 async function autoSaveIfDirty() {
-  if (configStore.dirty) {
-    await configStore.save()
+  if (configStore.dirty || extraArgs.value.trim()) {
+    const args = extraArgs.value.trim() || undefined
+    await configStore.save(args)
+    if (args) extraArgs.value = ''
   }
 }
 
@@ -393,20 +603,17 @@ async function startTraining() {
     const result = await fetchPrelaunch()
     prelaunchResult.value = result
 
-    // No cache → prompt preprocess
     if (!result.has_cache) {
       showNoCacheDlg.value = true
       return
     }
 
-    // Has checkpoint → prompt resume/wipe
     if (result.checkpoint) {
       checkpointInfo.value = result.checkpoint
       showCheckpointDlg.value = true
       return
     }
 
-    // All clear → launch training
     await launchTrainingTask()
   } catch (e: any) {
     configStore.error = e.message
@@ -439,12 +646,9 @@ async function wipeAndTrain() {
   if (!checkpointInfo.value) return
   trainingLaunching.value = true
   try {
-    // Extract output_dir and output_name from the state_dir path
-    // state_dir is like "output/ckpt/last-checkpoint-state"
     const stateDir = checkpointInfo.value.state_dir
     const stateDirName = stateDir.split(/[/\\]/).pop() || ''
     const outputName = stateDirName.replace('-checkpoint-state', '')
-    // Derive output_dir by removing the state dir name from the path
     const outputDir = stateDir.replace(/[/\\][^/\\]+$/, '').replace(/\\/g, '/')
 
     await fetch('/api/config/wipe-checkpoint', {
@@ -464,15 +668,12 @@ async function runPreprocessThenTrain() {
   showNoCacheDlg.value = false
   preprocessRunning.value = true
   try {
-    // Start preprocessing, then poll for completion
     const taskId = await taskStore.startTask('preprocess')
     if (!taskId) {
       configStore.error = 'Failed to start preprocessing'
       return
     }
-    // Poll until preprocess finishes
     await waitForTask(taskId)
-    // Re-check and launch training
     const result = await fetchPrelaunch()
     if (result.has_cache) {
       if (result.checkpoint) {
@@ -497,7 +698,6 @@ async function startTest() {
   testLaunching.value = true
   try {
     await autoSaveIfDirty()
-    // Determine test command based on variant family
     const meta = await fetch(`/api/config/variant-meta?variant=${selectedVariant.value}`)
     const metaData = await meta.json()
     let command = 'test'
@@ -545,5 +745,10 @@ function waitForTask(taskId: string): Promise<void> {
 .config-editor {
   min-height: 100%;
   overflow-y: auto;
+}
+
+.help-panel-sticky {
+  position: sticky;
+  top: 16px;
 }
 </style>

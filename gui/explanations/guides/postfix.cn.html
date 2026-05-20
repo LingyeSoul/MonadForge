@@ -1,0 +1,3 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Postfix (cond + ortho)</h2>
+<p><b>postfix_ortho_cond</b> &mdash; 具有结构正交性的条件化后缀。小型 <code>cond_mlp</code> 读取池化后的 caption 嵌入，为每个 caption 生成 <code>(S(c), λ(c))</code> — 不直接输出 <code>K·D</code> 的 postfix 张量，而是为每个 caption 仅输出 <code>K(K-1)/2 + 1</code> 个标量。每个 caption 的 postfix 为 <code>Cayley(S(c) − S(c)ᵀ) @ basis · λ(c)</code>，因此结构性地满足 <code>postfix(c) @ postfix(c).T = λ(c)² · I_K</code>：同一 caption 内各槽位的尺度一致，不同 caption 之间的尺度可变。</p>
+<p>basis 为缓存的 <code>_anima_te.safetensors</code> 中的 top-K 右奇异向量，按 <code>ortho_basis_seed</code> 进行确定性行洗牌。可学习参数量约为：K=32 / hidden=256 / D=1024 时约 390k（对比 K=64 时无约束的旧版 cond postfix 约 8.65M）。参见 <code>docs/proposal/orthogonal_postfix.md §C</code>。</p>

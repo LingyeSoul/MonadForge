@@ -106,6 +106,42 @@ def put_sample_prompts(body: SamplePromptsUpdate):
     return {"status": "ok"}
 
 
+# ── Field help + method guide ───────────────────────────────────
+
+
+class FieldHelpResponse(BaseModel):
+    field_help: dict[str, str]
+    guide_html: str = ""
+
+
+class CreateVariantRequest(BaseModel):
+    name: str
+    seed_from: str | None = None
+
+
+@router.post("/variants", response_model=VariantsResponse)
+def create_variant(body: CreateVariantRequest):
+    """Create a new custom variant, optionally seeded from an existing one."""
+    try:
+        variants = svc.create_variant(body.name, seed_from=body.seed_from)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return VariantsResponse(variants=variants, labels={})
+
+
+@router.get("/field-help", response_model=FieldHelpResponse)
+def get_field_help(
+    variant: str = Query("lora"),
+    lang: str = Query("cn"),
+):
+    """Return per-field help text + method guide HTML for the config editor."""
+    try:
+        result = svc.get_field_help_data(variant, lang=lang)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return FieldHelpResponse(**result)
+
+
 # ── Layer read/write (catch-all) ───────────────────────────────
 
 

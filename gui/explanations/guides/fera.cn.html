@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>FeRA</h2>
+<p>忠实于论文的 FeRA（Yin et al., arXiv:2511.17979）。<b>Independent-A</b> 堆叠专家 — 每个专家拥有独立的 <code>lora_down</code>/<code>lora_up</code> — 由<b>单一全局路由器</b>以频率能量指数 <code>FEI(z_t)</code> 作为输入进行门控（与 HydraLoRA 的逐层激活路由器形成对比）。通过 LoRA 系列网络模块的三轴配置 <code>use_moe_style="independent_A"</code> + <code>route_per_layer=false</code> + <code>router_source="fei"</code> 选择。</p>
+<p>每个专家采用 OrthoLoRA 参数化（<code>use_ortho=true</code>） — 各专家的 (down, up) 共享 PSOFT 风格的 SVD 基底，各专家拥有独立的 Cayley 旋转 + 对角 λ。FECL（频率能量一致性损失）已接入但默认禁用 — 启用后由于需要第二次 no-grad DiT 前向传播，每步成本约增加 2 倍。</p>
+<p><b>基准测试备注。</b>论文中的 3 频带划分在 Anima flow-matching 潜空间中收敛为约 2 个频带（中间频带能量 &lt;8%）。默认值为保持论文忠实性设为 <code>fera_num_bands=3</code>；经 Anima 验证的划分为设为 2 并配合 <code>fera_fecl_weight=0</code>。<code>σ_low = min(H_lat, W_lat) / fei_sigma_low_div</code> 规则（默认 div=4）已在 Anima 上完成基准验证；论文中的像素域 <code>min(H, W)/128</code> 仅适用于 SD2-512²。</p>
+<p>训练时生成 <code>anima_fera*.safetensors</code> + 包含全局路由器的 <code>*_moe.safetensors</code> 伴随文件。路由器在线推理使用 <code>make test-hydra</code> / ComfyUI <i>Anima Adapter Loader</i>（与 HydraLoRA 相同的嗅探路径）。需要 <code>cache_llm_adapter_outputs=true</code>。</p>

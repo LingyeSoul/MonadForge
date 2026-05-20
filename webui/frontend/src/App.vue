@@ -39,6 +39,19 @@
         <v-divider />
         <v-list density="compact" nav>
           <v-list-item
+            prepend-icon="mdi-book-open-page-variant-outline"
+            :title="t('guidebook')"
+            rounded="xl"
+            @click="showGuidebook = true"
+          />
+          <v-list-item
+            prepend-icon="mdi-bug-outline"
+            :title="t('reportIssue')"
+            rounded="xl"
+            href="https://github.com/LingyeSoul/MonadForge/issues"
+            target="_blank"
+          />
+          <v-list-item
             prepend-icon="mdi-cog-outline"
             :title="t('navSystem')"
             to="/system"
@@ -66,6 +79,8 @@
       <router-view />
     </v-main>
 
+    <GuidebookDialog v-model="showGuidebook" />
+
     <v-snackbar
       v-model="snackbarOpen"
       :color="notifyStore.current?.type"
@@ -83,12 +98,14 @@ import { ref, watch } from 'vue'
 import { useAppStore } from './stores/app'
 import { useNotifyStore } from './stores/notify'
 import { useI18n } from './composables/useI18n'
+import GuidebookDialog from './components/GuidebookDialog.vue'
 
 const appStore = useAppStore()
 const notifyStore = useNotifyStore()
 const { t, setLanguage } = useI18n()
 
 const snackbarOpen = ref(false)
+const showGuidebook = ref(false)
 
 watch(() => notifyStore.current, (item) => {
   if (item) snackbarOpen.value = true

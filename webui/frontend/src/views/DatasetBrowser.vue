@@ -76,6 +76,7 @@
           <v-btn-toggle v-model="viewMode" mandatory density="compact" variant="outlined">
             <v-btn value="grid" icon="mdi-view-grid" />
             <v-btn value="list" icon="mdi-view-list" />
+            <v-btn value="tree" icon="mdi-file-tree" />
           </v-btn-toggle>
         </v-col>
         <v-spacer />
@@ -198,6 +199,76 @@
         </template>
       </v-data-table>
 
+      <!-- Tree view -->
+      <div v-if="viewMode === 'tree' && images.length > 0" class="tree-view">
+        <v-list density="compact" open-strategy="multiple">
+          <template v-for="node in treeNodes" :key="node.name">
+            <!-- Folder node with children -->
+            <v-list-group v-if="node.children && node.children.length > 0" :value="node.name">
+              <template #activator="{ props }">
+                <v-list-item v-bind="props" prepend-icon="mdi-folder">
+                  <v-list-item-title>{{ node.name }}</v-list-item-title>
+                  <template #append>
+                    <v-chip size="x-small" variant="outlined">{{ node.children.length }}</v-chip>
+                  </template>
+                </v-list-item>
+              </template>
+              <v-list-item
+                v-for="img in node.children"
+                :key="img.path"
+                :title="img.filename"
+                :active="selectedImage?.path === img.path"
+                @click="selectImage(img)"
+              >
+                <template #prepend>
+                  <v-img
+                    :src="imageUrl(img)"
+                    width="32"
+                    height="32"
+                    cover
+                    class="rounded mr-2"
+                  >
+                    <template #error>
+                      <v-icon icon="mdi-image-broken" size="16" color="grey" />
+                    </template>
+                  </v-img>
+                </template>
+                <template #append>
+                  <v-icon
+                    v-if="img.has_mask"
+                    icon="mdi-checkerboard"
+                    size="x-small"
+                    color="warning"
+                  />
+                </template>
+              </v-list-item>
+            </v-list-group>
+            <!-- Flat file (no folder) -->
+            <v-list-item
+              v-else
+              :title="node.name"
+              :active="selectedImage?.path === node.image?.path"
+              @click="node.image && selectImage(node.image)"
+            >
+              <template #prepend>
+                <v-img
+                  v-if="node.image"
+                  :src="imageUrl(node.image)"
+                  width="32"
+                  height="32"
+                  cover
+                  class="rounded mr-2"
+                >
+                  <template #error>
+                    <v-icon icon="mdi-image-broken" size="16" color="grey" />
+                  </template>
+                </v-img>
+              </template>
+            </v-list-item>
+          </template>
+        </v-list>
+      </div>
+
       <!-- Pagination -->
       <div v-if="totalPages > 1" class="d-flex justify-center mt-4">
         <v-pagination
@@ -279,6 +350,16 @@
                   >{{ tag }}</span>
                 </div>
               </div>
+              <!-- Inline diff display -->
+              <div v-if="isDirty && inlineDiffSpans.length" class="inline-diff mt-1">
+                <span
+                  v-for="(span, si) in inlineDiffSpans"
+                  :key="si"
+                  :class="{ 'diff-inline-add': span.type === 'add', 'diff-inline-del': span.type === 'del' }"
+                >{{ span.text }}</span>
+              </div>
+              <!-- Grammar guide -->
+              <div v-if="grammarGuideText" class="grammar-guide mt-2" v-html="grammarGuideText" />
             </v-col>
           </v-row>
         </v-card-text>
@@ -394,7 +475,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import { useNotifyStore } from '../stores/notify'
 
@@ -427,7 +508,7 @@ const customPath = ref('')
 const images = ref<ImageItem[]>([])
 const search = ref('')
 const sortDesc = ref(false)
-const viewMode = ref<'grid' | 'list'>('grid')
+const viewMode = ref<'grid' | 'list' | 'tree'>('grid')
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
@@ -459,9 +540,12 @@ const isDirty = computed(() => editCaption.value !== diskCaption.value)
 
 const captionHint = computed(() => {
   if (!isDirty.value) return ''
-  const added = editCaption.value.length - diskCaption.value.length
-  if (added > 0) return `+${added} chars`
-  return `${added} chars`
+  const diff = computeCharDiff(diskCaption.value, editCaption.value)
+  if (diff.added === 0 && diff.removed === 0) return ''
+  const parts: string[] = []
+  if (diff.added > 0) parts.push(`+${diff.added}`)
+  if (diff.removed > 0) parts.push(`-${diff.removed}`)
+  return parts.join(' / ') + ' chars'
 })
 
 const totalLabel = computed(() => {
@@ -706,6 +790,104 @@ function restoreVersion(text: string) {
   versionsDialog.value = false
 }
 
+// ── Tree view ────────────────────────────────────────────────
+
+interface TreeNode {
+  name: string
+  children?: ImageItem[]
+  image?: ImageItem
+}
+
+const treeNodes = computed<TreeNode[]>(() => {
+  const folders = new Map<string, ImageItem[]>()
+  const rootItems: ImageItem[] = []
+
+  for (const img of images.value) {
+    const parts = img.path.replace(/\\/g, '/').split('/')
+    if (parts.length <= 1) {
+      rootItems.push(img)
+    } else {
+      const folder = parts.slice(0, -1).join('/')
+      if (!folders.has(folder)) folders.set(folder, [])
+      folders.get(folder)!.push(img)
+    }
+  }
+
+  const nodes: TreeNode[] = []
+  for (const [folder, imgs] of [...folders.entries()].sort()) {
+    nodes.push({ name: folder, children: imgs })
+  }
+  for (const img of rootItems) {
+    nodes.push({ name: img.filename, image: img })
+  }
+  return nodes
+})
+
+// ── Inline character diff ─────────────────────────────────────
+
+interface CharDiffResult { added: number; removed: number; spans: { text: string; type: 'eq' | 'add' | 'del' }[] }
+
+function computeCharDiff(oldText: string, newText: string): CharDiffResult {
+  // Simple LCS-based character diff
+  const m = oldText.length
+  const n = newText.length
+  // For very long texts, skip detailed diff
+  if (m * n > 500000) {
+    const delta = newText.length - oldText.length
+    return { added: Math.max(0, delta), removed: Math.max(0, -delta), spans: [] }
+  }
+
+  const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = oldText[i - 1] === newText[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
+    }
+  }
+
+  // Backtrack
+  const ops: { type: 'eq' | 'add' | 'del'; ch: string }[] = []
+  let i = m, j = n
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldText[i - 1] === newText[j - 1]) {
+      ops.unshift({ type: 'eq', ch: oldText[i - 1] })
+      i--; j--
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      ops.unshift({ type: 'add', ch: newText[j - 1] })
+      j--
+    } else {
+      ops.unshift({ type: 'del', ch: oldText[i - 1] })
+      i--
+    }
+  }
+
+  // Merge consecutive same-type ops into spans
+  let added = 0, removed = 0
+  const spans: CharDiffResult['spans'] = []
+  let curType: 'eq' | 'add' | 'del' | null = null
+  let curText = ''
+  for (const op of ops) {
+    if (op.type === 'add') added++
+    if (op.type === 'del') removed++
+    if (op.type !== curType) {
+      if (curText) spans.push({ text: curText, type: curType! })
+      curType = op.type
+      curText = op.ch
+    } else {
+      curText += op.ch
+    }
+  }
+  if (curText) spans.push({ text: curText, type: curType! })
+
+  return { added, removed, spans }
+}
+
+const inlineDiffSpans = computed(() => {
+  if (!isDirty.value) return []
+  return computeCharDiff(diskCaption.value, editCaption.value).spans
+})
+
 // ── Tag preview ───────────────────────────────────────────────
 
 const parsedTags = computed(() => {
@@ -806,11 +988,68 @@ function computeUnifiedDiff(oldText: string, newText: string): string[] {
   return result
 }
 
+// ── Keyboard shortcuts ────────────────────────────────────────
+
+function navigateImage(delta: number) {
+  if (!images.value.length) return
+  const currentIdx = selectedImage.value
+    ? images.value.findIndex(i => i.path === selectedImage.value!.path)
+    : -1
+  const newIdx = Math.max(0, Math.min(images.value.length - 1, currentIdx + delta))
+  if (newIdx !== currentIdx && newIdx >= 0) {
+    selectImage(images.value[newIdx])
+  }
+}
+
+function _onKeyDown(e: KeyboardEvent) {
+  // Don't intercept when typing in an input/textarea
+  const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
+  const isInput = tag === 'input' || tag === 'textarea'
+
+  if (editorDialog.value) {
+    // Editor-specific shortcuts
+    if (e.ctrlKey && e.key === 's') {
+      e.preventDefault()
+      if (isDirty.value) saveCaption()
+      return
+    }
+    if (e.key === 'Escape' && !isDirty.value) {
+      editorDialog.value = false
+      return
+    }
+  }
+
+  // Global navigation (only when not typing)
+  if (!isInput && !editorDialog.value) {
+    if (e.key === 'ArrowRight') {
+      e.preventDefault()
+      navigateImage(1)
+    } else if (e.key === 'ArrowLeft') {
+      e.preventDefault()
+      navigateImage(-1)
+    }
+  }
+}
+
+// ── Grammar guide ─────────────────────────────────────────────
+
+const grammarGuideText = computed(() => {
+  // Try to get localized version, fall back to English
+  const key = 'dsGrammarGuide'
+  const text = t(key)
+  return text === key ? undefined : text
+})
+
 // ── lifecycle ─────────────────────────────────────────────────
 
 onMounted(async () => {
   await loadDirectories()
   await loadImages()
+  document.addEventListener('keydown', _onKeyDown)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', _onKeyDown)
 })
 </script>
 
@@ -920,6 +1159,58 @@ onMounted(async () => {
 
 .diff-ctx {
   color: #aaa;
+}
+
+/* Grammar guide */
+.grammar-guide {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #888;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.grammar-guide :deep(.tag-artist-hint) {
+  color: #c9a227;
+  font-weight: 500;
+}
+
+.grammar-guide :deep(.tag-section-hint) {
+  color: #5e8eb0;
+  font-weight: 500;
+}
+
+/* Inline diff */
+.inline-diff {
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.15);
+  max-height: 80px;
+  overflow-y: auto;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
+.diff-inline-add {
+  background: rgba(72, 199, 142, 0.25);
+  color: #9ad17a;
+  text-decoration: none;
+}
+
+.diff-inline-del {
+  background: rgba(224, 122, 122, 0.25);
+  color: #e07a7a;
+  text-decoration: line-through;
+}
+
+/* Tree view */
+.tree-view {
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
 }
 
 .remove-dir-btn {

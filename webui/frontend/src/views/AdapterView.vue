@@ -15,6 +15,31 @@
             <v-alert type="info" variant="tonal" density="compact" class="mb-2">
               <span v-html="t('adIpHint')" />
             </v-alert>
+            <!-- Dataset preview -->
+            <div v-if="ipPreviewImages.length" class="dataset-preview mt-3">
+              <div class="d-flex align-center mb-1">
+                <span class="text-caption text-medium-emphasis">{{ t('adDatasetPreview') }}</span>
+                <v-spacer />
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  :to="{ path: '/dataset', query: { dir: 'image_dataset' } }"
+                >
+                  {{ t('adBrowseDataset') }}
+                </v-btn>
+              </div>
+              <div class="preview-thumbs">
+                <v-img
+                  v-for="img in ipPreviewImages"
+                  :key="img.path"
+                  :src="`/api/images/file/${encodeURIComponent(img.path)}?directory=image_dataset`"
+                  class="preview-thumb rounded"
+                  width="64"
+                  height="64"
+                  cover
+                />
+              </div>
+            </div>
           </v-card-text>
           <v-card-actions>
             <v-btn color="primary" :loading="isRunning('exp-ip-adapter')" @click="runTask('exp-ip-adapter')">
@@ -38,6 +63,31 @@
             <v-alert type="info" variant="tonal" density="compact" class="mb-2">
               <span v-html="t('adEasyHint')" />
             </v-alert>
+            <!-- Dataset preview -->
+            <div v-if="ecPreviewImages.length" class="dataset-preview mt-3">
+              <div class="d-flex align-center mb-1">
+                <span class="text-caption text-medium-emphasis">{{ t('adDatasetPreview') }}</span>
+                <v-spacer />
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  :to="{ path: '/dataset', query: { dir: 'easycontrol-dataset' } }"
+                >
+                  {{ t('adBrowseDataset') }}
+                </v-btn>
+              </div>
+              <div class="preview-thumbs">
+                <v-img
+                  v-for="img in ecPreviewImages"
+                  :key="img.path"
+                  :src="`/api/images/file/${encodeURIComponent(img.path)}?directory=easycontrol-dataset`"
+                  class="preview-thumb rounded"
+                  width="64"
+                  height="64"
+                  cover
+                />
+              </div>
+            </div>
           </v-card-text>
           <v-card-actions>
             <v-btn color="primary" :loading="isRunning('exp-easycontrol')" @click="runTask('exp-easycontrol')">
@@ -72,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
@@ -110,4 +160,43 @@ async function runTask(command: string) {
     notify.show(t('notifyTaskStartFailed', { command }), 'error')
   }
 }
+
+// ── Dataset preview ──────────────────────────────────────────
+
+interface PreviewImage { path: string; filename: string }
+
+const ipPreviewImages = ref<PreviewImage[]>([])
+const ecPreviewImages = ref<PreviewImage[]>([])
+
+async function fetchPreview(dir: string): Promise<PreviewImage[]> {
+  try {
+    const res = await fetch(`/api/images?directory=${encodeURIComponent(dir)}&page=1&page_size=8`)
+    if (!res.ok) return []
+    const data = await res.json()
+    return (data.items || []).map((i: any) => ({ path: i.path, filename: i.filename }))
+  } catch {
+    return []
+  }
+}
+
+onMounted(async () => {
+  const [ip, ec] = await Promise.all([
+    fetchPreview('image_dataset'),
+    fetchPreview('easycontrol-dataset'),
+  ])
+  ipPreviewImages.value = ip
+  ecPreviewImages.value = ec
+})
 </script>
+
+<style scoped>
+.preview-thumbs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.preview-thumb {
+  border: 1px solid rgba(var(--v-border-color), 0.3);
+}
+</style>
