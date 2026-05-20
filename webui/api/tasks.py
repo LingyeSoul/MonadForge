@@ -100,6 +100,15 @@ def get_task_output(task_id: str):
     return {"lines": task.lines, "state": task.state.value, "exit_code": task.exit_code}
 
 
+@router.get("/{task_id}/metrics")
+def get_task_metrics(task_id: str):
+    """Get parsed training metrics for a task."""
+    metrics = task_service.get_task_metrics(task_id)
+    if metrics is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return metrics
+
+
 @router.post("")
 async def start_task(body: TaskStartRequest):
     """Start a new task."""

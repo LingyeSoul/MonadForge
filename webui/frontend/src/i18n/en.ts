@@ -9,6 +9,7 @@ export default {
   navSystem: 'System',
   navTasks: 'Tasks',
   navTasksCount: 'Tasks ({n})',
+  navDashboard: 'Dashboard',
 
   // Task Panel
   taskTitle: 'Task Monitor',
@@ -19,6 +20,32 @@ export default {
   taskHideLogs: 'Hide Logs',
   taskState: 'State',
   taskConnecting: 'Connecting...',
+
+  // Training Dashboard
+  dashTitle: 'Training Dashboard',
+  dashSubtitle: 'Real-time training metrics and progress visualization',
+  dashNoTask: 'No training task running',
+  dashSelectTask: 'Select Task',
+  dashProgress: 'Progress',
+  dashLoss: 'Loss',
+  dashLearningRate: 'Learning Rate',
+  dashSpeed: 'Speed',
+  dashElapsed: 'Elapsed',
+  dashEta: 'ETA',
+  dashEpoch: 'Epoch',
+  dashStep: 'Step',
+  dashRouterH: 'Router Entropy',
+  dashKeysScaled: 'Keys Scaled',
+  dashAvgKeyNorm: 'Avg Key Norm',
+  dashCheckpoint: 'Checkpoint Saved',
+  dashEvents: 'Events',
+  dashLossCurve: 'Loss Curve',
+  dashMetrics: 'Key Metrics',
+  dashPoints: 'points',
+  dashWaitingLoss: 'Waiting for loss data...',
+  dashEventEpoch: 'Epoch {epoch}/{total} started',
+  dashEventCheckpoint: 'Checkpoint saved',
+  dashLiveLog: 'Live Log',
 
   // Config Editor
   cfgMethod: 'Method',

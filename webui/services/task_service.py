@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+from webui.services.training_log_parser import TrainingLogParser
+
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -38,6 +40,7 @@ class Task:
     process: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
     started_at: Optional[str] = field(default=None)
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
+    parser: TrainingLogParser = field(default_factory=TrainingLogParser, repr=False)
 
     def info(self) -> dict:
         return {
@@ -67,6 +70,10 @@ class TaskService:
     def get_task_info(self, task_id: str) -> Optional[dict]:
         t = self._tasks.get(task_id)
         return t.info() if t else None
+
+    def get_task_metrics(self, task_id: str) -> Optional[dict]:
+        t = self._tasks.get(task_id)
+        return t.parser.metrics.snapshot() if t else None
 
     async def start_task(
         self,
@@ -172,6 +179,13 @@ class TaskService:
                 line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
                 task.lines.append(line)
                 await self._notify_subscribers(task, {"type": "log", "line": line})
+
+                # Parse training metrics from the line
+                if task.parser.feed(line):
+                    await self._notify_subscribers(
+                        task,
+                        {"type": "metrics", "data": task.parser.metrics.snapshot()},
+                    )
 
             task.exit_code = await task.process.wait()
             if task.state == TaskState.CANCELLED:

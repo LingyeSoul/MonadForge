@@ -12,31 +12,62 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from webui.services.config_service import ROOT
+from webui.services.config_service import ROOT, get_path_overrides
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 # Allow safe relative paths only — no traversal.
 _SAFE_REL = re.compile(r"^[a-zA-Z0-9_./-]+$")
 
-_MASK_SEARCH_ROOTS = [
+_MASK_SEARCH_ROOTS_FALLBACK = [
     ROOT / "post_image_dataset" / "masks",
     ROOT / "masks" / "merged",
 ]
+
+
+def _get_mask_search_roots() -> list[Path]:
+    """Mask search roots derived from the config chain's ``resized_image_dir``."""
+    paths = get_path_overrides()
+    resized = Path(paths["resized_image_dir"])
+    if not resized.is_absolute():
+        resized = ROOT / resized
+    return [
+        resized.parent / "masks",
+        ROOT / "masks" / "merged",
+    ]
 
 
 # ── directory discovery ─────────────────────────────────────────
 
 
 def list_directories() -> list[dict[str, str]]:
-    """Return available dataset directories (mirrors ``gui._image_dirs``)."""
-    candidates = [
-        ("image_dataset", ROOT / "image_dataset"),
-        ("post_image_dataset/resized", ROOT / "post_image_dataset" / "resized"),
+    """Return available dataset directories (mirrors ``gui._image_dirs``).
+
+    Includes paths from the config chain (``source_image_dir``,
+    ``resized_image_dir``, ``lora_cache_dir``) alongside the fixed entries.
+    """
+    paths = get_path_overrides()
+    seen: set[str] = set()
+    candidates: list[tuple[str, Path]] = []
+
+    # Config-driven paths (may be absolute or relative)
+    for key in ("source_image_dir", "resized_image_dir", "lora_cache_dir"):
+        raw = paths[key]
+        p = Path(raw) if Path(raw).is_absolute() else ROOT / raw
+        if raw not in seen:
+            candidates.append((raw, p))
+            seen.add(raw)
+
+    # Fixed entries
+    for name, path in [
         ("ip-adapter-dataset", ROOT / "ip-adapter-dataset"),
         ("easycontrol-dataset", ROOT / "easycontrol-dataset"),
         ("output/tests", ROOT / "output" / "tests"),
-    ]
+    ]:
+        if name not in seen:
+            candidates.append((name, path))
+            seen.add(name)
+
     return [
         {"name": name, "path": str(path)} for name, path in candidates if path.exists()
     ]
@@ -48,13 +79,19 @@ def resolve_directory(name: str) -> Path | None:
     Accepts the short names returned by :func:`list_directories` as well as
     absolute paths for user-added directories.
     """
-    candidates = {
-        "image_dataset": ROOT / "image_dataset",
-        "post_image_dataset/resized": ROOT / "post_image_dataset" / "resized",
-        "ip-adapter-dataset": ROOT / "ip-adapter-dataset",
-        "easycontrol-dataset": ROOT / "easycontrol-dataset",
-        "output/tests": ROOT / "output" / "tests",
-    }
+    paths = get_path_overrides()
+    candidates: dict[str, Path] = {}
+
+    # Config-driven paths
+    for key in ("source_image_dir", "resized_image_dir", "lora_cache_dir"):
+        raw = paths[key]
+        candidates[raw] = Path(raw) if Path(raw).is_absolute() else ROOT / raw
+
+    # Fixed entries
+    candidates["ip-adapter-dataset"] = ROOT / "ip-adapter-dataset"
+    candidates["easycontrol-dataset"] = ROOT / "easycontrol-dataset"
+    candidates["output/tests"] = ROOT / "output" / "tests"
+
     if name in candidates:
         p = candidates[name]
         return p if p.exists() else None
@@ -254,7 +291,7 @@ def resolve_mask_path(image_path: Path, base: Path | None = None) -> Path | None
         return None
     rel_parent = rel.parent
     name = f"{image_path.stem}_mask.png"
-    for mask_root in _MASK_SEARCH_ROOTS:
+    for mask_root in _get_mask_search_roots():
         candidate = mask_root / rel_parent / name
         if candidate.is_file():
             return candidate

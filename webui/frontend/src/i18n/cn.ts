@@ -9,6 +9,7 @@ export default {
   navSystem: '系统',
   navTasks: '任务',
   navTasksCount: '任务 ({n})',
+  navDashboard: '仪表盘',
 
   // Task Panel
   taskTitle: '任务监控',
@@ -19,6 +20,32 @@ export default {
   taskHideLogs: '隐藏日志',
   taskState: '状态',
   taskConnecting: '连接中...',
+
+  // Training Dashboard
+  dashTitle: '训练仪表盘',
+  dashSubtitle: '实时训练指标与进度可视化',
+  dashNoTask: '暂无训练任务运行',
+  dashSelectTask: '选择任务',
+  dashProgress: '进度',
+  dashLoss: '损失',
+  dashLearningRate: '学习率',
+  dashSpeed: '速度',
+  dashElapsed: '已用时间',
+  dashEta: '预计剩余',
+  dashEpoch: '轮次',
+  dashStep: '步数',
+  dashRouterH: '路由器熵',
+  dashKeysScaled: '缩放键数',
+  dashAvgKeyNorm: '平均键范数',
+  dashCheckpoint: '检查点已保存',
+  dashEvents: '事件',
+  dashLossCurve: '损失曲线',
+  dashMetrics: '关键指标',
+  dashPoints: '个数据点',
+  dashWaitingLoss: '等待损失数据...',
+  dashEventEpoch: '第 {epoch}/{total} 轮开始',
+  dashEventCheckpoint: '检查点已保存',
+  dashLiveLog: '实时日志',
 
   // Config Editor
   cfgMethod: '训练方法',

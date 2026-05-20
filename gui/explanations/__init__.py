@@ -337,6 +337,11 @@ FIELD_HELP: dict[str, dict[str, str]] = {
         "ko": "학습 마이크로스텝당 이미지 수. 실효 배치 = batch_size × gradient_accumulation_steps × num_processes. 값이 클수록 VRAM 사용량 증가; 8GB 카드에서는 1부터 시작.",
         "cn": "每个训练微步的图片数量。有效批次 = batch_size × gradient_accumulation_steps × num_processes。值越大显存占用越高；8 GB 显卡建议从 1 开始。",
     },
+    "num_repeats": {
+        "en": "Number of times each image is repeated per epoch. Useful for small datasets — e.g. 10 images × 10 repeats = 100 steps/epoch. Default 1.",
+        "ko": "에포크당 이미지 반복 횟수. 소규모 데이터셋에 유용 — 예: 10장 × 10회 반복 = 100 스텝/에포크. 기본값 1.",
+        "cn": "每个 epoch 中每张图片重复的次数。适用于小数据集——例如 10 张图 × 10 次重复 = 100 步/epoch。默认 1。",
+    },
     # Paths
     "pretrained_model_name_or_path": {
         "en": "Path to the base DiT model weights (.safetensors).",

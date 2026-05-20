@@ -40,6 +40,34 @@ PRESETS_FILE = CONFIGS_DIR / "presets.toml"
 CUSTOM_DIR = CONFIGS_DIR / "custom"
 CUSTOM_VARIANTS_DIR = GUI_METHODS_DIR / "custom"
 
+# ── Path overrides from the config chain ──────────────────────────
+
+_DEFAULT_PATHS = {
+    "source_image_dir": "image_dataset",
+    "resized_image_dir": "post_image_dataset/resized",
+    "lora_cache_dir": "post_image_dataset/lora",
+}
+
+
+def get_path_overrides(
+    preset: str = "default", variant: str | None = None
+) -> dict[str, str]:
+    """Resolve dataset paths from the config chain (base → preset → method).
+
+    Returns ``{"source_image_dir": ..., "resized_image_dir": ...,
+    "lora_cache_dir": ...}`` with defaults filled in for missing keys.
+    """
+    from library.config.io import load_path_overrides
+
+    method = variant
+    overrides = load_path_overrides(
+        preset=preset,
+        method=method,
+        methods_subdir="gui-methods" if method else "methods",
+    )
+    return {k: overrides.get(k, v) for k, v in _DEFAULT_PATHS.items()}
+
+
 _METHOD_ORDER = (
     "lora",
     "tlora",
@@ -88,6 +116,7 @@ _GROUPS = {
         "save_every_n_epochs",
         "checkpointing_epochs",
         "batch_size",
+        "num_repeats",
         "gradient_accumulation_steps",
         "use_shuffled_caption_variants",
         "caption_dropout_rate",
@@ -137,7 +166,7 @@ _GROUPS = {
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
-_VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size"}
+_VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats"}
 
 _BASIC = {
     "learning_rate",
@@ -149,6 +178,7 @@ _BASIC = {
     "num_experts",
     "output_name",
     "batch_size",
+    "num_repeats",
     "use_shuffled_caption_variants",
     "caption_dropout_rate",
     "gradient_checkpointing",
@@ -315,6 +345,24 @@ def _base_batch_size(base_data: dict) -> int:
     return int(bs) if bs is not None else 1
 
 
+def _base_num_repeats(base_data: dict) -> int:
+    """Read num_repeats from the first subset of the first dataset in *base_data*."""
+    datasets = base_data.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        return 1
+    first_ds = datasets[0]
+    if not isinstance(first_ds, dict):
+        return 1
+    subsets = first_ds.get("subsets")
+    if not isinstance(subsets, list) or not subsets:
+        return 1
+    first_sub = subsets[0]
+    if not isinstance(first_sub, dict):
+        return 1
+    nr = first_sub.get("num_repeats")
+    return int(nr) if nr is not None else 1
+
+
 def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str, str]]:
     """Merge base + preset + gui-methods/<variant>.toml.
 
@@ -379,6 +427,25 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     else:
         merged["batch_size"] = _base_batch_size(base)
         origin["batch_size"] = "base"
+
+    # num_repeats virtual key (subset-level: datasets[0].subsets[0].num_repeats)
+    variant_nr = None
+    if isinstance(datasets, list) and datasets and isinstance(datasets[0], dict):
+        subsets = datasets[0].get("subsets")
+        if isinstance(subsets, list) and subsets and isinstance(subsets[0], dict):
+            nr = subsets[0].get("num_repeats")
+            if nr is not None:
+                try:
+                    variant_nr = int(nr)
+                except (TypeError, ValueError):
+                    pass
+
+    if variant_nr is not None:
+        merged["num_repeats"] = variant_nr
+        origin["num_repeats"] = "method"
+    else:
+        merged["num_repeats"] = _base_num_repeats(base)
+        origin["num_repeats"] = "base"
 
     return merged, origin
 
@@ -563,6 +630,54 @@ def _apply_batch_size(out: dict, value: int, base_value: int) -> None:
         del out["datasets"]
 
 
+def _apply_num_repeats(out: dict, value: int, base_value: int) -> None:
+    """Write or strip the num_repeats override in the variant TOML's [[datasets.subsets]]."""
+    if value == base_value:
+        # Same as base — strip override to keep variant TOML clean
+        datasets = out.get("datasets")
+        if not isinstance(datasets, list) or not datasets:
+            return
+        first_ds = datasets[0]
+        if not isinstance(first_ds, dict):
+            return
+        subsets = first_ds.get("subsets")
+        if not isinstance(subsets, list) or not subsets:
+            return
+        first_sub = subsets[0]
+        if not isinstance(first_sub, dict):
+            return
+        first_sub.pop("num_repeats", None)
+        # Clean up empty subset -> empty datasets chain
+        if not first_sub and len(subsets) == 1:
+            del first_ds["subsets"]
+            if not first_ds and len(datasets) == 1:
+                del out["datasets"]
+        return
+
+    # Write override — ensure datasets -> subsets chain exists
+    datasets = out.get("datasets")
+    if not isinstance(datasets, list):
+        datasets = []
+        out["datasets"] = datasets
+    if not datasets:
+        datasets.append({})
+    first_ds = datasets[0]
+    if not isinstance(first_ds, dict):
+        first_ds = {}
+        datasets[0] = first_ds
+    subsets = first_ds.get("subsets")
+    if not isinstance(subsets, list):
+        subsets = []
+        first_ds["subsets"] = subsets
+    if not subsets:
+        subsets.append({})
+    first_sub = subsets[0]
+    if not isinstance(first_sub, dict):
+        first_sub = {}
+        subsets[0] = first_sub
+    first_sub["num_repeats"] = value
+
+
 def validate_config(data: dict) -> list[str]:
     """Validate a config dict. Returns a list of error strings (empty = valid)."""
     errors: list[str] = []
@@ -582,6 +697,10 @@ def validate_config(data: dict) -> list[str]:
         bs = data["batch_size"]
         if isinstance(bs, int) and bs <= 0:
             errors.append("batch_size must be positive")
+    if "num_repeats" in data:
+        nr = data["num_repeats"]
+        if isinstance(nr, int) and nr < 1:
+            errors.append("num_repeats must be at least 1")
     return errors
 
 
@@ -601,6 +720,7 @@ def save_variant_config(variant: str, data: dict) -> None:
     use_valid = data.pop("use_valid", None)
     vsn = data.pop("validation_split_num", None)
     bs = data.pop("batch_size", None)
+    nr = data.pop("num_repeats", None)
     if use_valid is not None:
         base = _load(CONFIGS_DIR / "base.toml")
         base_vsn = _base_validation_split_num(base)
@@ -610,6 +730,11 @@ def save_variant_config(variant: str, data: dict) -> None:
         base = _load(CONFIGS_DIR / "base.toml")
         base_bs = _base_batch_size(base)
         _apply_batch_size(current, int(bs), base_bs)
+
+    if nr is not None:
+        base = _load(CONFIGS_DIR / "base.toml")
+        base_nr = _base_num_repeats(base)
+        _apply_num_repeats(current, int(nr), base_nr)
 
     # Write flat keys
     for key, value in data.items():

@@ -8,8 +8,14 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from webui.services import image_service as svc
+from webui.services.config_service import get_path_overrides
 
 router = APIRouter()
+
+
+def _default_directory() -> str:
+    """Default directory name from the config chain."""
+    return get_path_overrides()["source_image_dir"]
 
 
 # ── request/response models ─────────────────────────────────────
@@ -40,7 +46,7 @@ def list_directories():
 
 @router.get("", response_model=ImagePageResponse)
 def list_images(
-    directory: str = Query("image_dataset"),
+    directory: str | None = Query(None),
     search: str = Query("", description="Filename filter (case-insensitive)"),
     sort_desc: bool = Query(False),
     page: int = Query(1, ge=1),
@@ -48,7 +54,7 @@ def list_images(
 ):
     """Paginated image listing with search and sort."""
     return svc.list_images(
-        directory=directory,
+        directory=directory or _default_directory(),
         search=search,
         sort_desc=sort_desc,
         page=page,
@@ -60,9 +66,9 @@ def list_images(
 
 
 @router.get("/file/{path:path}")
-def get_image_file(path: str, directory: str = Query("image_dataset")):
+def get_image_file(path: str, directory: str | None = Query(None)):
     """Serve an image file by its relative path."""
-    img = svc.resolve_image_path(directory, path)
+    img = svc.resolve_image_path(directory or _default_directory(), path)
     if img is None:
         raise HTTPException(status_code=404, detail=f"Image not found: {path}")
     return FileResponse(str(img))
@@ -72,8 +78,9 @@ def get_image_file(path: str, directory: str = Query("image_dataset")):
 
 
 @router.get("/mask-file/{path:path}")
-def get_mask_file(path: str, directory: str = Query("image_dataset")):
+def get_mask_file(path: str, directory: str | None = Query(None)):
     """Serve a mask overlay file by its relative path."""
+    directory = directory or _default_directory()
     img = svc.resolve_image_path(directory, path)
     if img is None:
         raise HTTPException(status_code=404, detail=f"Image not found: {path}")
@@ -88,21 +95,19 @@ def get_mask_file(path: str, directory: str = Query("image_dataset")):
 
 
 @router.get("/caption/{path:path}")
-def get_caption(path: str, directory: str = Query("image_dataset")):
+def get_caption(path: str, directory: str | None = Query(None)):
     """Read caption for an image."""
     try:
-        return svc.get_caption(directory, path)
+        return svc.get_caption(directory or _default_directory(), path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.put("/caption/{path:path}")
-def update_caption(
-    path: str, body: CaptionUpdate, directory: str = Query("image_dataset")
-):
+def update_caption(path: str, body: CaptionUpdate, directory: str | None = Query(None)):
     """Write caption + append previous version to history."""
     try:
-        return svc.save_caption(directory, path, body.content)
+        return svc.save_caption(directory or _default_directory(), path, body.content)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -111,10 +116,10 @@ def update_caption(
 
 
 @router.get("/versions/{path:path}")
-def get_versions(path: str, directory: str = Query("image_dataset")):
+def get_versions(path: str, directory: str | None = Query(None)):
     """Return caption version history (newest first)."""
     try:
-        return svc.get_versions(directory, path)
+        return svc.get_versions(directory or _default_directory(), path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -123,9 +128,9 @@ def get_versions(path: str, directory: str = Query("image_dataset")):
 
 
 @router.get("/mask-info/{path:path}")
-def get_mask_info(path: str, directory: str = Query("image_dataset")):
+def get_mask_info(path: str, directory: str | None = Query(None)):
     """Return mask metadata for an image."""
     try:
-        return svc.get_mask_info(directory, path)
+        return svc.get_mask_info(directory or _default_directory(), path)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

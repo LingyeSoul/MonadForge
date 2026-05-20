@@ -111,6 +111,7 @@ const navItems = [
   { icon: 'mdi-puzzle-outline', titleKey: 'navAdapter', to: '/adapter' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },
   { icon: 'mdi-console-line', titleKey: 'navTasks', to: '/tasks' },
+  { icon: 'mdi-chart-line', titleKey: 'navDashboard', to: '/dashboard' },
 ]
 
 async function onLangChange(lang: unknown) {

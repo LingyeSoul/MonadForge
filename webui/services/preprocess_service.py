@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from webui.services.config_service import ROOT
+from webui.services.config_service import ROOT, get_path_overrides
 
 # ── Paths ─────────────────────────────────────────────────────────
 
@@ -19,9 +19,22 @@ CONFIGS_DIR = ROOT / "configs"
 SAM_YAML = CONFIGS_DIR / "sam_mask.yaml"
 SETTINGS_FILE = ROOT / "gui" / "gui_settings.json"
 
-RESIZED_DIR = ROOT / "post_image_dataset" / "resized"
-MASK_DIR = ROOT / "post_image_dataset" / "masks"
-DEFAULT_CACHE_DIR = ROOT / "post_image_dataset" / "lora"
+
+def _resolve(p: str) -> Path:
+    """Resolve a possibly-relative path against ROOT."""
+    pp = Path(p)
+    return pp if pp.is_absolute() else ROOT / pp
+
+
+def _get_paths() -> dict[str, Path]:
+    """Return resolved dataset paths from the config chain."""
+    paths = get_path_overrides()
+    return {
+        "resized": _resolve(paths["resized_image_dir"]),
+        "masks": _resolve(paths["resized_image_dir"]).parent / "masks",
+        "cache": _resolve(paths["lora_cache_dir"]),
+    }
+
 
 # ── Cache-file suffixes (kept in sync with gui/__init__.py) ──────
 
@@ -155,7 +168,7 @@ def save_settings(data: dict) -> dict:
 
 def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
     """Count latent / TE / PE cache sidecars under *cache_dir*."""
-    d = cache_dir or DEFAULT_CACHE_DIR
+    d = cache_dir or _get_paths()["cache"]
     out = {"latents": 0, "te": 0, "pe": 0}
     if not d.is_dir():
         return out
@@ -173,21 +186,21 @@ def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
 
 
 def count_resized() -> int:
-    """Count resized images under ``post_image_dataset/resized/``."""
-    if not RESIZED_DIR.is_dir():
+    """Count resized images under the configured ``resized_image_dir``."""
+    d = _get_paths()["resized"]
+    if not d.is_dir():
         return 0
     return sum(
-        1
-        for p in RESIZED_DIR.rglob("*")
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        1 for p in d.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS
     )
 
 
 def count_masks() -> int:
-    """Count merged mask files under ``post_image_dataset/masks/``."""
-    if not MASK_DIR.is_dir():
+    """Count merged mask files under the configured masks directory."""
+    d = _get_paths()["masks"]
+    if not d.is_dir():
         return 0
-    return sum(1 for _ in MASK_DIR.rglob("*_mask.png"))
+    return sum(1 for _ in d.rglob("*_mask.png"))
 
 
 def get_status(cache_dir: Path | None = None) -> dict:
