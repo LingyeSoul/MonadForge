@@ -16,14 +16,13 @@
 # the denoise loss + per-pool balance loss. T-LoRA's mask is applied to
 # the content branch only (the freq branch keeps full rank at every t).
 
-network_alpha = 32
-network_dim = 32
+network_alpha = 48
+network_dim = 48
 
-
-learning_rate = 5e-5
-max_train_epochs = 4
-save_every_n_epochs = 4
-checkpointing_epochs = 4
+learning_rate = 2e-5
+max_train_epochs = 10
+save_every_n_epochs = 2
+checkpointing_epochs = 2
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -37,7 +36,7 @@ log_with = "tensorboard"
 
 use_ortho = true
 use_timestep_mask = true
-min_rank = 8
+min_rank = 16
 alpha_rank_scale = 1.0
 channel_scaling_alpha = 0.5
 
@@ -50,7 +49,7 @@ channel_scaling_alpha = 0.5
 # path.
 
 use_chimera_hydra = true
-num_experts_content = 4
+num_experts_content = 6
 num_experts_freq = 2
 
 # Outer balance multiplier is 1.0 so the per-pool weights below are the
@@ -63,12 +62,17 @@ num_experts_freq = 2
 # bypasses warmup entirely — its FEI input + ``freq_router_init_std``
 # break symmetry from step 0, so its load-balance pressure can fire
 # immediately without pinning the router to uniform.
-balance_loss_warmup_ratio = 0.0
+
+balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
-balance_w_content = 5e-6
-balance_w_freq = 1e-6
-network_content_router_lr_scale = 1
+balance_w_content = 2e-6
+balance_w_freq = 1e-5
+network_content_router_lr_scale = 10.0
 network_freq_router_lr_scale = 2.0
+
+content_router_source = "crossattn_emb"
+content_router_init_std = 0.001      # non-zero (uniform would be a fixed point)
+content_router_layer_norm = true   # parameterless LN on the pooled input
 
 # FreqRouter input. FEI = 2-band simplex (e_low, e_high). σ-features
 # disabled by default (sigma_feature_dim = 0), so the FreqRouter input
@@ -86,7 +90,7 @@ freq_router_init_std = 0.1
 # no router). Same default as the other hydra variants.
 # router_targets = ".*(output_proj|mlp\\.layer[12])$"
 router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
-output_name = "anima_chimera"
+output_name = "anima_chimera_perlayer"
 
 # -------------
 # Optional: global content router. Default is the paper-faithful per-Linear
@@ -107,9 +111,6 @@ output_name = "anima_chimera"
 #    failure mode as FeRA's GlobalRouter — see networks/CLAUDE.md).
 #  • LR-sensitive. Start with the same scale FreqRouter uses (10×).
 #
-content_router_source = "crossattn_emb"
-content_router_init_std = 0.01      # non-zero (uniform would be a fixed point)
-content_router_layer_norm = true   # parameterless LN on the pooled input
 
 # -------------
 # VR-loss composition is not gated. It modifies what shared A learns, so

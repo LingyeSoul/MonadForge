@@ -142,17 +142,6 @@ def gpu_tier_overrides(tier: str) -> dict:
     return {}
 
 
-def rank_overrides(rank: int) -> dict:
-    """lr + dim + alpha mapping for the simple node."""
-    if rank not in (16, 32):
-        raise ValueError(f"Simple node only supports rank 16 or 32, got {rank}")
-    return {
-        "network_dim": rank,
-        "network_alpha": float(rank),
-        "learning_rate": 1e-4 if rank == 16 else 5e-5,
-    }
-
-
 def find_anima_lora_root(start: Optional[str] = None) -> str:
     """Walk up from ``start`` to find the directory holding ``train.py`` +
     ``configs/base.toml`` — i.e. the anima_lora workspace root."""

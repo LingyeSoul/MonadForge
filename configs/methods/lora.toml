@@ -13,9 +13,10 @@
 #   - FEI-on-Hydra (Phase 1, FeRA-style content-aware on the shared-A stack):
 #     comment out the σ-router block and uncomment the FEI block near the
 #     bottom of this file.
-#   - Author-faithful FeRA (independent-A + global FEI router): use
-#     `configs/gui-methods/fera.toml` instead — that variant lives on the
-#     `lora-gui` Make target.
+#   - Author-faithful FeRA (independent-A + global FEI router): set
+#     `use_moe_style = "independent_A"` + `route_per_layer = false` +
+#     `router_source = "fei"` here. (The standalone `gui-methods/fera.toml`
+#     variant and its `make exp-fera` shortcut were removed.)
 #
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.

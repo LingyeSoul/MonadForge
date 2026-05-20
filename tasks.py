@@ -46,7 +46,7 @@ COMMANDS = {
     "lora-gui": (
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
-        "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft, fera).",
+        "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft).",
     ),
     # ── Training daemon ───────────────────────────────────────────────
     "daemon": (
@@ -222,11 +222,6 @@ COMMANDS = {
         "[experimental] Decoupled DMD2 distillation — bakes CFG=4 / 28-step Anima "
         "into a 4-step LoRA student (configs/methods/turbo.toml). "
         "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod).",
-    ),
-    "exp-fera": (
-        exp_training.cmd_fera,
-        "[experimental] Author-faithful FeRA (independent-A stacked experts + "
-        "global FEI router; configs/gui-methods/fera.toml)",
     ),
     "exp-soft-tokens": (
         exp_training.cmd_soft_tokens,

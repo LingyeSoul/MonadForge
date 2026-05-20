@@ -1,4 +1,4 @@
-"""Experimental training entry-points: ip-adapter, easycontrol, fera, chimera.
+"""Experimental training entry-points: ip-adapter, easycontrol, turbo, chimera.
 
 These are wired up under ``make exp-*`` / ``python tasks.py exp-*`` to keep
 the unstable methods visually separate from the shipped ones (lora family,
@@ -32,17 +32,6 @@ def cmd_turbo(extra):
     """
     preset_flags = bespoke_preset_flags(_preset())
     run([PY, "scripts/distill_turbo.py", *preset_flags, *extra])
-
-
-def cmd_fera(extra):
-    """Author-faithful FeRA (Yin et al., arXiv:2511.17979).
-
-    Drives ``configs/gui-methods/fera.toml`` — independent-A stacked experts
-    + a single network-level GlobalRouter fed by FEI(z_t). Lives on the
-    LoRA-family network module via the ``stacked_experts_global_fei`` spec
-    (selected by ``use_moe_style="independent_A"``). plan2 §three-axis-config.
-    """
-    train("fera", extra, methods_subdir="gui-methods")
 
 
 def cmd_soft_tokens(extra):

@@ -26,27 +26,32 @@ Both `make` (Unix) and `python tasks.py` (cross-platform) are supported. The exa
 # over preset settings on overlap (e.g. a frozen-DiT method can force
 # blocks_to_swap=0).
 # Method files in configs/methods/: lora.toml, chimera.toml,
-# ip_adapter.toml, easycontrol.toml, soft_tokens.toml. Variants are toggle
-# blocks inside them — uncomment the target block to switch:
+# ip_adapter.toml, easycontrol.toml, soft_tokens.toml, turbo.toml. Variants are
+# toggle blocks inside them — uncomment the target block to switch:
 #   lora.toml             — LoRA / OrthoLoRA / T-LoRA / HydraLoRA / FeRA / ReFT,
 #                           routed via three-axis cfg (use_moe_style /
 #                           route_per_layer / router_source). Default stacks
 #                           LoRA + OrthoLoRA + T-LoRA + shared_A FEI-routed
-#                           experts (ReFT block is commented).
+#                           experts (ReFT block is commented). (DoRA retired —
+#                           use_dora is no longer trained/saved/loaded.)
 #   chimera.toml          — ChimeraHydra dual-pool additive MoE (content pool
 #                           routed by per-Linear lx-router + freq pool routed
 #                           by network-level FEI router; two A's per Linear)
 #   ip_adapter.toml       — decoupled image cross-attention (PE-Core resampler)
 #   easycontrol.toml      — extended self-attn image conditioning (per-block cond LoRA)
 #   soft_tokens.toml      — SoftREPA-style per-layer × per-t soft text tokens (frozen DiT)
+#   turbo.toml            — Turbo Anima (Decoupled-Hybrid DMD2 distillation).
+#                           BESPOKE schema (sections, not flat kwargs); read by
+#                           scripts/distill_turbo.py, NOT by train.py — don't
+#                           `print-config METHOD=turbo`. Output is a normal LoRA.
 make lora                   # LoRA family (methods/lora.toml + presets.toml[default])
 python tasks.py lora        # Same, works on Windows too
 make lora PRESET=low_vram   # Override preset: methods/lora.toml + presets.toml[low_vram]
 make lora PRESET=fast_16gb  # Override preset: methods/lora.toml + presets.toml[fast_16gb]
 make lora PRESET=half       # Override preset: methods/lora.toml + presets.toml[half] (sample_ratio=0.5)
 # Experimental methods are exposed under exp-* (ip-adapter, easycontrol,
-# soft-tokens, chimera). They may produce broken output, change without
-# notice, or be removed.
+# soft-tokens, chimera, turbo). They may produce broken output, change
+# without notice, or be removed.
 make exp-ip-adapter             # IP-Adapter image cross-attention (methods/ip_adapter.toml)
                                 # Reuses LoRA paths: source image_dataset/, cache post_image_dataset/lora/
 make exp-ip-adapter-preprocess  # Alias for `make preprocess` + `make preprocess-pe`
@@ -55,15 +60,19 @@ make exp-easycontrol            # EasyControl image conditioning (methods/easyco
 make exp-easycontrol-preprocess # Resize + VAE + text caches into post_image_dataset/easycontrol/
 make exp-soft-tokens            # SoftREPA-style per-layer × per-t soft tokens (training-only v1)
 make exp-chimera                # ChimeraHydra dual-pool additive MoE (methods/chimera.toml)
+make exp-turbo                  # Turbo Anima DMD2 distillation (scripts/distill_turbo.py + methods/turbo.toml)
+                                # Output anima_turbo.safetensors is a normal LoRA: infer with --infer_steps 4 --cfg 1.0
 
 # GUI-friendly per-variant path (configs/gui-methods/<variant>.toml — clean,
 # self-contained, no toggle blocks). Intended for basic users who don't want
 # to hand-edit methods/lora.toml's comment-toggle system.
 make lora-gui GUI_PRESETS=tlora                                # gui-methods/tlora.toml + preset default
-make lora-gui GUI_PRESETS=hydralora_experimental PRESET=low_vram  # override preset as usual
-python tasks.py lora-gui hydralora_sigma                       # Windows; variant can also be 1st positional arg
-make lora-gui GUI_PRESETS=fera                                 # FeRA (independent_A + global FEI router)
-make lora-gui GUI_PRESETS=hydralora_fei                        # Hydra with FEI-on-Hydra (shared_A + FEI router)
+make lora-gui GUI_PRESETS=hydralora PRESET=low_vram            # override preset as usual
+python tasks.py lora-gui hydralora-8gb                         # Windows; variant can also be 1st positional arg
+make lora-gui GUI_PRESETS=tlora_ortho_reft                     # T-LoRA + OrthoLoRA + ReFT stack
+# Run `ls configs/gui-methods/` for the live variant list — files get added/renamed
+# (current: lora, lora-8gb, hydralora, hydralora-8gb, tlora, tlora-8gb,
+#  tlora_ortho_reft, reft, chimera_hydra, ip_adapter, easycontrol, soft_tokens).
 
 # Modulation guidance distillation
 make distill-prep          # Stage T5("") uncond sidecar (Phase 1) + teacher-synthetic
@@ -94,6 +103,8 @@ make dcw                   # Sample 5 aspect buckets + train fusion head (~3-5h 
 make dcw-train             # Train-only on existing pool under bench/dcw/results/ (~30s)
 
 # Experimental inference (matched to make exp-* training)
+make exp-test-soft             # Soft-tokens inference (latest soft_tokens checkpoint)
+make exp-test-turbo            # Turbo LoRA inference (4-step, CFG=1.0 baked-in student)
 make exp-test-ip REF_IMAGE=... # IP-Adapter inference (image-conditioned)
 make exp-test-easycontrol REF_IMAGE=...  # EasyControl inference (image-conditioned)
 make exp-test-directedit PROMPT='double peace'  # DirectEdit on random source image
@@ -186,13 +197,14 @@ Training is config-driven via a three-layer chain: `base.toml → presets.toml[<
 Layout:
 - `configs/base.toml` — shared infrastructure (model paths, optimizer, compile flags, etc.) AND the default LoRA dataset blueprint (`[general]` + `[[datasets]]` + `[[datasets.subsets]]`). LoRA reads resized images from `post_image_dataset/resized/` with caches redirected to `post_image_dataset/lora/` via `cache_dir`. Captions live in `image_dataset/` (master) — TE caching reads `.txt` from there, training reads only the cached prompt embeddings. The dataset sections are consumed by `BlueprintGenerator` and skipped by the flat method+preset merge chain (see `_DATASET_CONFIG_SECTIONS` in `library/train_util.py`); use `--dataset_config <path>` for a wholly different blueprint, or drop a `[general]` / `[[datasets]]` block into the method TOML to shallow-override top-level scalars (e.g. `batch_size`) on the base blueprint — see `_apply_dataset_overrides` in `library/config/io.py`. Subset-level overrides are not supported via this path.
 - `configs/presets.toml` — all hardware profiles in one file as TOML sections: `[default]`, `[fast_16gb]`, `[low_vram]` (also serves as Windows 8GB), `[half]` (experiment preset — sets `sample_ratio=0.5` for every subset via the global `--sample_ratio` override). Holds `blocks_to_swap`, `gradient_checkpointing`, `unsloth_offload_checkpointing`, etc.
-- `configs/methods/` — one file per algorithm family. Holds rank, the three-axis routing knobs (`use_moe_style` / `route_per_layer` / `router_source`), other method flags (`add_reft`, `use_ortho`, `use_timestep_mask`, …), and the method's opinionated learning rate / epochs / output_name. Six files:
+- `configs/methods/` — one file per algorithm family. Holds rank, the three-axis routing knobs (`use_moe_style` / `route_per_layer` / `router_source`), other method flags (`add_reft`, `use_ortho`, `use_timestep_mask`, …), and the method's opinionated learning rate / epochs / output_name. Six files (`lora`, `chimera`, `ip_adapter`, `easycontrol`, `soft_tokens` are flat method+preset configs read by `train.py`; `turbo.toml` is the odd one out — a bespoke sectioned schema read only by `scripts/distill_turbo.py`, see the ChimeraHydra/Turbo notes below):
   - `lora.toml` — LoRA / OrthoLoRA / T-LoRA / HydraLoRA / FeRA / ReFT. Variants are toggle blocks; default stacks LoRA + OrthoLoRA + T-LoRA + Hydra (`use_moe_style="shared_A"` + `route_per_layer=False` + `router_source="fei"`). The σ-routed Hydra and ReFT blocks are present but commented. Default ships `save_every_n_epochs = 4` / `checkpointing_epochs = 4`. **Pre-three-axis checkpoints with `ss_use_hydra`/`ss_use_fei_router` metadata no longer load** — the legacy fallback was removed.
   - `chimera.toml` — ChimeraHydra dual-pool additive MoE (`networks/lora_modules/chimera.py`, registered as `chimera_hydra` in `networks/__init__.py::NETWORK_REGISTRY`). Two A's per Linear (one per pool): content pool with K_c B-heads routed by per-Linear lx-router, freq pool with K_f B-heads routed by the network-level FreqRouter on concat(FEI(z_t), sinusoidal-σ). Pool outputs are added; T-LoRA mask applies to the content branch only.
   - `ip_adapter.toml` — IP-Adapter image cross-attention (DiT frozen; trains resampler + per-block `to_k_ip`/`to_v_ip`). Reuses the LoRA pipeline's data layout (`post_image_dataset/resized/` + `post_image_dataset/lora/`). Defaults to PRE-CACHED PE features (`make preprocess-pe`).
   - `easycontrol.toml` — EasyControl image conditioning (DiT frozen; trains per-block cond LoRA on self-attn + FFN + scalar `b_cond` gate). Source: `easycontrol-dataset/`. Caches: `post_image_dataset/easycontrol/`. Reuses cached VAE latents — no new sidecar.
   - `soft_tokens.toml` — SoftREPA-style per-layer × per-t soft text tokens (DiT frozen; per-block `Block.forward` monkey-patch splices `s^(k,t)` into `crossattn_emb`). ~1M params. Inference is wired: standalone via `inference.py --soft_tokens_weight` (`library/inference/generation.py`) and in ComfyUI via the `AnimaSoftTokensLoader` node (`custom_nodes/comfyui-hydralora/soft_tokens.py`).
-- `configs/gui-methods/` — GUI-friendly parallel tree. One self-contained TOML per **variant** instead of per family (`lora`, `lora-8gb`, `ortholora`, `tlora`, `tlora_ortho`, `tlora_ortho_reft`, `reft`, `hydralora_experimental`, `hydralora_sigma`, `hydralora_fei`, `fera`, `chimera_hydra`, `ip_adapter`, `easycontrol`, `soft_tokens`). No toggle blocks — what you see is what runs. Selected via `train.py --methods_subdir gui-methods` (wrapped by `make lora-gui GUI_PRESETS=<variant>` / `python tasks.py lora-gui <variant>`). `fera` is the author-faithful FeRA cell of the three-axis matrix (`use_moe_style="independent_A"` + `route_per_layer=False` + `router_source="fei"`). Run `ls configs/gui-methods/` for the live list — variants get added/renamed.
+  - `turbo.toml` — Turbo Anima (Decoupled-Hybrid DMD2 distillation, Liu et al. arXiv:2511.22677; proposal `docs/proposal/turbo_anima_dmd_lora.md`). **Bespoke sectioned schema** (`[network]`, etc.) read by `scripts/distill_turbo.py`, NOT by `train.py` — don't `print-config METHOD=turbo`. Trains a student + a fake-score LoRA stack on one frozen DiT; output `anima_turbo.safetensors` is a normal LoRA loaded through the standard inference path with `--infer_steps 4 --cfg 1.0` (CFG baked into the student).
+- `configs/gui-methods/` — GUI-friendly parallel tree. One self-contained TOML per **variant** instead of per family. No toggle blocks — what you see is what runs. Selected via `train.py --methods_subdir gui-methods` (wrapped by `make lora-gui GUI_PRESETS=<variant>` / `python tasks.py lora-gui <variant>`). Current variants: `lora`, `lora-8gb`, `hydralora`, `hydralora-8gb`, `tlora`, `tlora-8gb`, `tlora_ortho_reft`, `reft`, `chimera_hydra`, `ip_adapter`, `easycontrol`, `soft_tokens`. Run `ls configs/gui-methods/` for the live list — variants get added/renamed (e.g. the old `fera`/`ortholora`/`hydralora_*` variants were removed; FeRA now lives only on the `methods/lora.toml` `independent_A` toggle).
 
 Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder / PE caches are written to (and read from) that directory using stem-mirrored filenames, instead of sitting next to the source image. IP-Adapter and EasyControl method configs use this to keep `ip-adapter-dataset/` and `easycontrol-dataset/` purely user-facing source dirs while caches live under `post_image_dataset/`.
 
@@ -315,9 +327,10 @@ In-tree under `custom_nodes/`:
 - `comfyui-hydralora/` — three loader nodes: **Anima Adapter Loader** (LoRA / Hydra / ReFT), **Anima FeRA Loader**, and **Anima Soft Tokens Loader** (SoftREPA per-block crossattn splice). (The Anima Postfix Loader was retired when the postfix method was archived.) See `custom_nodes/comfyui-hydralora/CLAUDE.md` for code-level details and the `forward_hook`-not-`forward`-override invariant; `README.md` for user-facing docs and changelog.
 - `comfyui-anima-directedit/` — `AnimaDirectEdit` node (invert + edit on a frozen Anima checkpoint, using stock MODEL/CLIP/VAE sockets). Consumes the `ANIMA_TAGGER` socket from `comfyui-anima-tagger`, or skips the tagger via the `prompt_src_override` STRING input. See its own `README.md`.
 - `comfyui-anima-tagger/` — `AnimaTaggerLoader` (→ `ANIMA_TAGGER` socket) and `AnimaTaggerCaption` (`ANIMA_TAGGER` + `IMAGE` → `STRING`). Standalone captioner usable outside DirectEdit (LoRA caption pre-fill, prompt scaffolding, etc.).
-- `comfyui-anima-trainer/` — In-ComfyUI training trigger nodes for Anima.
+- `comfyui-anima-trainer/` — single **Anima LoRA Trainer** node: one image + caption → trains a T-LoRA + OrthoLoRA via the local daemon, then loads the chosen base checkpoint and returns it patched (a drop-in for the Anima Adapter Loader's MODEL). No MODEL input (avoids holding the DiT resident during training → OOM); errors if the daemon isn't already running.
+- `comfyui-anima-blockcompile/` — single **Anima Block Compile** (`AnimaBlockCompile`) node that `torch.compile`s the DiT one transformer block at a time (faster compile, fewer graph breaks) — the same `--compile_mode blocks` strategy the training/inference pipeline uses by default.
 
-The hydralora, anima-tagger, and anima-directedit nodes each carry a `_vendor/` subset of the live `library.*` / `networks.*` tree so they keep working when installed outside the anima_lora repo. The vendor trees are regenerated by `scripts/sync_vendor.py` (`make vendor-sync`); for hydralora the canonical kernels are `library/inference/router_compute.py` + `library/runtime/fei.py` + `networks/lora_modules/router_state.py`. Re-run before every node publish — see [[feedback_vendor_sync]].
+The hydralora, anima-tagger, anima-directedit, and anima-trainer nodes each carry a `_vendor/` subset of the live tree so they keep working when installed outside the anima_lora repo. The vendor trees are regenerated by `scripts/sync_vendor.py` (`make vendor-sync`); for hydralora the canonical kernels are `library/inference/router_compute.py` + `library/runtime/fei.py` + `networks/lora_modules/router_state.py`; for anima-trainer it's the stdlib daemon *client* (`scripts/daemon/{config,client}.py` verbatim + a psutil-free `proc.py` trimmed to `read_pidfile`). Re-run before every node publish — see [[feedback_vendor_sync]].
 
 ## External tools
 
