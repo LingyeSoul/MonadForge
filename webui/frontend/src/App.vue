@@ -65,16 +65,41 @@
     <v-main>
       <router-view />
     </v-main>
+
+    <v-snackbar
+      v-model="snackbarOpen"
+      :color="notifyStore.current?.type"
+      :timeout="notifyStore.current?.timeout ?? 3000"
+      location="top end"
+      @update:model-value="onSnackbarUpdate"
+    >
+      {{ notifyStore.current?.message }}
+    </v-snackbar>
   </v-app>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useAppStore } from './stores/app'
+import { useNotifyStore } from './stores/notify'
 import { useI18n } from './composables/useI18n'
 
 const appStore = useAppStore()
+const notifyStore = useNotifyStore()
 const { t, setLanguage } = useI18n()
+
+const snackbarOpen = ref(false)
+
+watch(() => notifyStore.current, (item) => {
+  if (item) snackbarOpen.value = true
+})
+
+function onSnackbarUpdate(open: boolean) {
+  if (!open) {
+    snackbarOpen.value = false
+    notifyStore.dismiss()
+  }
+}
 
 const drawer = ref(true)
 const rail = ref(true)

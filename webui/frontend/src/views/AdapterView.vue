@@ -74,9 +74,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useTaskStore } from '../stores/task'
+import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
+const notify = useNotifyStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 
@@ -101,6 +103,11 @@ function stateColor(state: string) {
 }
 
 async function runTask(command: string) {
-  await taskStore.startTask(command)
+  const taskId = await taskStore.startTask(command)
+  if (taskId) {
+    notify.show(t('notifyTaskStarted', { command }), 'success')
+  } else {
+    notify.show(t('notifyTaskStartFailed', { command }), 'error')
+  }
 }
 </script>

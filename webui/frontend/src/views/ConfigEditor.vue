@@ -43,7 +43,7 @@
           :loading="configStore.loading"
           :disabled="!configStore.dirty"
           prepend-icon="mdi-content-save"
-          @click="configStore.save()"
+          @click="onSave"
         >
           {{ t('cfgSave') }}{{ configStore.dirty ? ' *' : '' }}
         </v-btn>
@@ -190,11 +190,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { useTaskStore } from '../stores/task'
+import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
 import ConfigField from '../components/ConfigField.vue'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()
+const notify = useNotifyStore()
 const { t } = useI18n()
 
 const selectedMethod = ref('')
@@ -243,6 +245,17 @@ onMounted(async () => {
     configStore.fetchPresets(),
   ])
 })
+
+// ── Save ───────────────────────────────────────────────────────
+
+async function onSave() {
+  try {
+    await configStore.save()
+    notify.show(t('notifyConfigSaved'), 'success')
+  } catch (e: any) {
+    notify.show(t('notifyConfigSaveFailed'), 'error')
+  }
+}
 
 // ── Prelaunch check ──────────────────────────────────────────
 
@@ -296,7 +309,12 @@ async function startTraining() {
 }
 
 async function launchTrainingTask() {
-  await taskStore.startTask('lora-gui', [selectedVariant.value])
+  const taskId = await taskStore.startTask('lora-gui', [selectedVariant.value])
+  if (taskId) {
+    notify.show(t('notifyTrainingLaunched'), 'success')
+  } else {
+    notify.show(t('notifyTaskStartFailed', { command: t('cfgTrain') }), 'error')
+  }
 }
 
 async function resumeTrain() {
@@ -383,7 +401,12 @@ async function startTest() {
     else if (family === 'easycontrol') command = 'exp-test-easycontrol'
     else if (family === 'chimera') command = 'test-hydra'
 
-    await taskStore.startTask(command)
+    const taskId = await taskStore.startTask(command)
+    if (taskId) {
+      notify.show(t('notifyTestLaunched'), 'success')
+    } else {
+      notify.show(t('notifyTaskStartFailed', { command: t('cfgTest') }), 'error')
+    }
   } catch (e: any) {
     configStore.error = e.message
   } finally {

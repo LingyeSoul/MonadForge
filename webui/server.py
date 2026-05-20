@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from webui.api import config as config_api
+from webui.api import files as files_api
 from webui.api import i18n as i18n_api
 from webui.api import images as images_api
 from webui.api import merge as merge_api
@@ -51,6 +52,7 @@ def create_app(dev: bool = False) -> FastAPI:
 
     # API routers
     app.include_router(config_api.router, prefix="/api/config")
+    app.include_router(files_api.router, prefix="/api/files")
     app.include_router(i18n_api.router, prefix="/api/i18n")
     app.include_router(images_api.router, prefix="/api/images")
     app.include_router(merge_api.router, prefix="/api/merge")

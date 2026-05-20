@@ -206,6 +206,16 @@ export default {
   cfOrigin: 'base',
   cfVirtual: '虚拟',
 
+  // Model Path Field
+  cfBrowse: '浏览',
+  cfSelectModel: '选择模型文件',
+  cfFileExists: '文件存在',
+  cfFileMissing: '文件不存在',
+  cfParentDir: '上级目录',
+  cfNoFiles: '未找到 .safetensors 文件',
+  cfConfirm: '确认',
+  cfCancel: '取消',
+
   // Config Store Errors
   cfgErrLoadMethods: '加载训练方法失败：{error}',
   cfgErrLoadVariants: '加载变体失败：{error}',
@@ -214,4 +224,12 @@ export default {
   cfgErrSaveDetail: '保存失败',
   cfgErrSave: '保存失败：{error}',
   cfgGroupOther: '其他',
+
+  // Notifications
+  notifyConfigSaved: '配置已保存',
+  notifyConfigSaveFailed: '配置保存失败',
+  notifyTrainingLaunched: '训练已启动',
+  notifyTestLaunched: '测试推理已启动',
+  notifyTaskStarted: '{command} 已启动',
+  notifyTaskStartFailed: '{command} 启动失败',
 }

@@ -206,6 +206,16 @@ export default {
   cfOrigin: 'base',
   cfVirtual: 'virtual',
 
+  // Model Path Field
+  cfBrowse: 'Browse',
+  cfSelectModel: 'Select Model File',
+  cfFileExists: 'File exists',
+  cfFileMissing: 'File not found',
+  cfParentDir: 'Parent Directory',
+  cfNoFiles: 'No .safetensors files found',
+  cfConfirm: 'Confirm',
+  cfCancel: 'Cancel',
+
   // Config Store Errors
   cfgErrLoadMethods: 'Failed to load methods: {error}',
   cfgErrLoadVariants: 'Failed to load variants: {error}',
@@ -214,4 +224,12 @@ export default {
   cfgErrSaveDetail: 'Save failed',
   cfgErrSave: 'Save failed: {error}',
   cfgGroupOther: 'Other',
+
+  // Notifications
+  notifyConfigSaved: 'Config saved',
+  notifyConfigSaveFailed: 'Failed to save config',
+  notifyTrainingLaunched: 'Training started',
+  notifyTestLaunched: 'Test inference started',
+  notifyTaskStarted: '{command} started',
+  notifyTaskStartFailed: 'Failed to start {command}',
 }

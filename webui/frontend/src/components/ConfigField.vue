@@ -97,6 +97,12 @@
       </template>
     </v-text-field>
 
+    <ModelPathField
+      v-else-if="isModelPath"
+      :field="field"
+      @update="(v) => emit('update', v)"
+    />
+
     <v-text-field
       v-else
       :model-value="currentValue"
@@ -122,6 +128,9 @@ import { computed } from 'vue'
 import type { FieldMeta } from '../stores/config'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
+import ModelPathField from './ModelPathField.vue'
+
+const _MODEL_PATH_KEYS = new Set(['pretrained_model_name_or_path', 'qwen3', 'vae'])
 
 const props = defineProps<{ field: FieldMeta }>()
 const emit = defineEmits<{ update: [value: unknown] }>()
@@ -129,6 +138,8 @@ const configStore = useConfigStore()
 const { t } = useI18n()
 
 const currentValue = computed(() => configStore.getFieldValue(props.field.key))
+
+const isModelPath = computed(() => _MODEL_PATH_KEYS.has(props.field.key))
 
 const hintText = computed(() => {
   const desc = props.field.description

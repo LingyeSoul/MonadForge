@@ -270,20 +270,17 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('ppNoTasks') }}</div>
-
-    <!-- Save feedback snackbar -->
-    <v-snackbar v-model="showSaveMsg" :timeout="2000" color="success">
-      {{ t('ppSettingsSaved') }}
-    </v-snackbar>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, watch } from 'vue'
 import { useTaskStore } from '../stores/task'
+import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
+const notify = useNotifyStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 
@@ -336,7 +333,6 @@ const defaultSettings = () => ({
 })
 
 const settings = reactive(defaultSettings())
-const showSaveMsg = ref(false)
 
 const samPromptsText = computed({
   get: () => settings.sam.prompts.join('\n'),
@@ -367,8 +363,14 @@ async function saveSettings() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings),
     })
-    if (res.ok) showSaveMsg.value = true
-  } catch { /* ignore */ }
+    if (res.ok) {
+      notify.show(t('ppSettingsSaved'), 'success')
+    } else {
+      notify.show(t('notifyConfigSaveFailed'), 'error')
+    }
+  } catch {
+    notify.show(t('notifyConfigSaveFailed'), 'error')
+  }
 }
 
 // ── Task management ──────────────────────────────────────────
@@ -407,7 +409,12 @@ async function runTask(command: string) {
     env.CAPTION_TAG_DROPOUT_RATE = String(settings.caption_tag_dropout_rate)
   }
 
-  await taskStore.startTask(command, [], Object.keys(env).length > 0 ? env : undefined)
+  const taskId = await taskStore.startTask(command, [], Object.keys(env).length > 0 ? env : undefined)
+  if (taskId) {
+    notify.show(t('notifyTaskStarted', { command }), 'success')
+  } else {
+    notify.show(t('notifyTaskStartFailed', { command }), 'error')
+  }
 }
 
 function refresh() {

@@ -155,9 +155,11 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useTaskStore } from '../stores/task'
+import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
+const notify = useNotifyStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 
@@ -193,7 +195,13 @@ function runUpdate() {
   if (updateDryRun.value) args.push('--dry-run')
   if (updateConflictPolicy.value === 'overwrite') args.push('--overwrite-conflicts')
   showUpdateDlg.value = false
-  taskStore.startTask('update', args)
+  taskStore.startTask('update', args).then(taskId => {
+    if (taskId) {
+      notify.show(t('notifyTaskStarted', { command: t('sysUpdate') }), 'success')
+    } else {
+      notify.show(t('notifyTaskStartFailed', { command: t('sysUpdate') }), 'error')
+    }
+  })
 }
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -210,6 +218,11 @@ function stateColor(state: string) {
 }
 
 async function runTask(command: string) {
-  await taskStore.startTask(command)
+  const taskId = await taskStore.startTask(command)
+  if (taskId) {
+    notify.show(t('notifyTaskStarted', { command }), 'success')
+  } else {
+    notify.show(t('notifyTaskStartFailed', { command }), 'error')
+  }
 }
 </script>

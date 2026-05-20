@@ -87,6 +87,7 @@ _GROUPS = {
         "max_train_epochs",
         "save_every_n_epochs",
         "checkpointing_epochs",
+        "batch_size",
         "gradient_accumulation_steps",
         "use_shuffled_caption_variants",
         "caption_dropout_rate",
@@ -136,7 +137,7 @@ _GROUPS = {
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
-_VIRTUAL_KEYS = {"use_valid", "validation_split_num"}
+_VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size"}
 
 _BASIC = {
     "learning_rate",
@@ -147,6 +148,7 @@ _BASIC = {
     "network_weights",
     "num_experts",
     "output_name",
+    "batch_size",
     "use_shuffled_caption_variants",
     "caption_dropout_rate",
     "gradient_checkpointing",
@@ -302,6 +304,17 @@ def _base_validation_split_num(base_data: dict) -> int:
     return int(vsn) if vsn is not None else 0
 
 
+def _base_batch_size(base_data: dict) -> int:
+    datasets = base_data.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        return 1
+    first = datasets[0]
+    if not isinstance(first, dict):
+        return 1
+    bs = first.get("batch_size")
+    return int(bs) if bs is not None else 1
+
+
 def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str, str]]:
     """Merge base + preset + gui-methods/<variant>.toml.
 
@@ -349,6 +362,23 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     else:
         merged["validation_split_num"] = _base_validation_split_num(base)
         origin["validation_split_num"] = "base"
+
+    # batch_size virtual key
+    variant_bs = None
+    if isinstance(datasets, list) and datasets and isinstance(datasets[0], dict):
+        bs = datasets[0].get("batch_size")
+        if bs is not None:
+            try:
+                variant_bs = int(bs)
+            except (TypeError, ValueError):
+                pass
+
+    if variant_bs is not None:
+        merged["batch_size"] = variant_bs
+        origin["batch_size"] = "method"
+    else:
+        merged["batch_size"] = _base_batch_size(base)
+        origin["batch_size"] = "base"
 
     return merged, origin
 

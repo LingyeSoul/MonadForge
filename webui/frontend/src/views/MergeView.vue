@@ -174,9 +174,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useTaskStore } from '../stores/task'
+import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
 
 const taskStore = useTaskStore()
+const notify = useNotifyStore()
 const { t } = useI18n()
 taskStore.fetchTasks()
 
@@ -278,7 +280,12 @@ async function runMerge() {
   if (dtype.value !== 'bf16') args.push('--dtype', dtype.value)
   if (outputPath.value) args.push('--output', outputPath.value)
   if (allowPartial.value) args.push('--allow_partial')
-  await taskStore.startTask('merge', args)
+  const taskId = await taskStore.startTask('merge', args)
+  if (taskId) {
+    notify.show(t('notifyTaskStarted', { command: t('mgMergeBtn') }), 'success')
+  } else {
+    notify.show(t('notifyTaskStartFailed', { command: t('mgMergeBtn') }), 'error')
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────
