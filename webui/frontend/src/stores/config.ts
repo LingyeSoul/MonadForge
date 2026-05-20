@@ -43,6 +43,7 @@ export const useConfigStore = defineStore('config', () => {
   const appStore = useAppStore()
 
   const fields = ref<FieldMeta[]>([])
+  const method = ref('')
   const variant = ref('')
   const preset = ref('default')
   const methods = ref<string[]>([])
@@ -81,9 +82,10 @@ export const useConfigStore = defineStore('config', () => {
     }
   }
 
-  async function fetchVariants(method: string) {
+  async function fetchVariants(m: string) {
+    method.value = m
     try {
-      const res = await fetch(`/api/config/variants?method=${encodeURIComponent(method)}`)
+      const res = await fetch(`/api/config/variants?method=${encodeURIComponent(m)}`)
       const data = await res.json()
       variants.value = data.variants || []
       variantLabels.value = data.labels || {}
@@ -201,7 +203,7 @@ export const useConfigStore = defineStore('config', () => {
   }
 
   return {
-    fields, variant, preset, methods, variants, variantLabels, presets,
+    fields, method, variant, preset, methods, variants, variantLabels, presets,
     loading, dirty, error, editedValues,
     basicFields, advancedFields, groupedAdvanced,
     fetchMethods, fetchVariants, fetchPresets, fetchMerged,

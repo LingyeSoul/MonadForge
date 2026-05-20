@@ -84,7 +84,7 @@
     <v-snackbar
       v-model="snackbarOpen"
       :color="notifyStore.current?.type"
-      :timeout="notifyStore.current?.timeout ?? 3000"
+      timeout="-1"
       location="top end"
       @update:model-value="onSnackbarUpdate"
     >
@@ -94,7 +94,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onBeforeUnmount } from 'vue'
 import { useAppStore } from './stores/app'
 import { useNotifyStore } from './stores/notify'
 import { useI18n } from './composables/useI18n'
@@ -105,18 +105,33 @@ const notifyStore = useNotifyStore()
 const { t, setLanguage } = useI18n()
 
 const snackbarOpen = ref(false)
+const snackbarTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 const showGuidebook = ref(false)
 
 watch(() => notifyStore.current, (item) => {
-  if (item) snackbarOpen.value = true
+  if (item) {
+    snackbarOpen.value = true
+    if (snackbarTimer.value) clearTimeout(snackbarTimer.value)
+    snackbarTimer.value = setTimeout(() => {
+      snackbarOpen.value = false
+    }, item.timeout)
+  }
 })
 
 function onSnackbarUpdate(open: boolean) {
   if (!open) {
+    if (snackbarTimer.value) {
+      clearTimeout(snackbarTimer.value)
+      snackbarTimer.value = null
+    }
     snackbarOpen.value = false
     notifyStore.dismiss()
   }
 }
+
+onBeforeUnmount(() => {
+  if (snackbarTimer.value) clearTimeout(snackbarTimer.value)
+})
 
 const drawer = ref(true)
 const rail = ref(true)

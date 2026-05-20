@@ -476,6 +476,17 @@ onMounted(async () => {
     configStore.fetchMethods(),
     configStore.fetchPresets(),
   ])
+
+  // Restore previous selections from store (survives page navigation)
+  if (configStore.method) {
+    selectedMethod.value = configStore.method
+    await configStore.fetchVariants(configStore.method)
+    if (configStore.variant) {
+      selectedVariant.value = configStore.variant
+      selectedPreset.value = configStore.preset
+      await loadConfig()
+    }
+  }
 })
 
 // Refetch help data when language changes

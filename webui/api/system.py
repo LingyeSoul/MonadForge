@@ -11,8 +11,7 @@ from webui.services.config_service import ROOT, read_layer
 
 router = APIRouter()
 
-# Model groups (mirrors gui/system_dialog.py _MODEL_GROUPS)
-# The anima group reads actual paths from base.toml; others are fixed.
+# Model groups — the anima group reads actual paths from base.toml; others are fixed.
 _ANIMA_PATH_KEYS = [
     ("pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
     ("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),

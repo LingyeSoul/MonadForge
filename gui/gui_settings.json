@@ -1,9 +1,0 @@
-{
-  "language": "ko",
-  "caption_shuffle_variants": 4,
-  "caption_tag_dropout_rate": 0.1,
-  "mit_text_threshold": 0.8,
-  "mit_dilate": 5,
-  "run_sam_mask": false,
-  "run_mit_mask": false
-}

@@ -1,6 +1,6 @@
 """Preprocessing settings and status service — no Qt dependencies.
 
-Reads/writes ``configs/sam_mask.yaml`` and ``gui/gui_settings.json``, and
+Reads/writes ``configs/sam_mask.yaml`` and ``configs/webui_settings.json``, and
 counts preprocess caches for the status dashboard.
 """
 
@@ -17,7 +17,7 @@ from webui.services.config_service import ROOT, get_path_overrides
 
 CONFIGS_DIR = ROOT / "configs"
 SAM_YAML = CONFIGS_DIR / "sam_mask.yaml"
-SETTINGS_FILE = ROOT / "gui" / "gui_settings.json"
+SETTINGS_FILE = CONFIGS_DIR / "webui_settings.json"
 
 
 def _resolve(p: str) -> Path:
@@ -59,7 +59,7 @@ def save_path_overrides(variant: str, data: dict[str, str]) -> dict[str, str]:
     return get_paths(variant=variant)
 
 
-# ── Cache-file suffixes (kept in sync with gui/__init__.py) ──────
+# ── Cache-file suffixes ─────────────────────────────────────────
 
 _LATENT_SUFFIX = "_anima.npz"
 _TE_SUFFIX = "_anima_te.safetensors"
@@ -67,7 +67,7 @@ _PE_SUFFIX = "_anima_pe.safetensors"
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-# ── Defaults (match gui/tabs/preprocess_tab.py) ──────────────────
+# ── Defaults ─────────────────────────────────────────────────────
 
 DEFAULTS = {
     "sam_prompts": ["speech bubble", "text bubble"],

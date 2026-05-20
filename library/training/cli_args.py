@@ -690,7 +690,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--methods_subdir",
         type=str,
         default="methods",
-        help="subfolder under configs/ that holds the method file (default 'methods'). Use 'gui-methods' for the GUI-friendly per-variant configs (lora, ortholora, tlora, reft, hydralora, …).",
+        help="subfolder under configs/ that holds the method file (default 'methods'). Use 'gui-methods' for self-contained per-variant configs (lora, ortholora, tlora, reft, hydralora, …).",
     )
     parser.add_argument(
         "--output_config",

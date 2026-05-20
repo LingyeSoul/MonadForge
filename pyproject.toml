@@ -70,7 +70,6 @@ dependencies = [
     # built against torch 2.12 + CUDA 13.2. See flash-attention/repack_wheel.py.
     # "flash-attn @ https://github.com/sorryhyun/flash-attention-sm120-fix/releases/download/fa2cuda132/flash_attn-2.8.4-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
     "triton-windows>=3.6.0,<3.8 ; sys_platform == 'win32'",
-    "pyside6>=6.11.0",
     "ruff>=0.15.9",
     "matplotlib",
     "torchsde>=0.2.6",
@@ -96,7 +95,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["PySide6>=6.7"]
 dev = [
     "pytest>=8.0",
     "pytest-xdist>=3.6",

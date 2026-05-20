@@ -1,7 +1,6 @@
 """Image / caption / version-history service — no Qt dependencies.
 
-Extracts the logic from ``gui/tabs/image_tab.py`` so the WebUI can serve
-dataset browsing, caption editing, and mask overlay over REST.
+Handles dataset browsing, caption editing, and mask overlay for the WebUI.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Korean strings for the Anima LoRA GUI."""
+"""Korean strings for the Anima WebUI."""
 
 from __future__ import annotations
 

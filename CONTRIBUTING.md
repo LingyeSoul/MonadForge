@@ -73,24 +73,25 @@ A second-order bench-gap contribution worth calling out:
 
 ### 5. Translations & localization
 
-Translatable content lives in four places, each with its own contribution shape but all reviewed as Tier 1 (no bench, no test — `make gui` walkthrough screenshots in the PR description are the proof). Missing entries in every surface below **fall back to English**, so it's fine to ship an incomplete translation and grow it over time. Currently shipped: `en` (canonical), `ko` (mostly complete), `cn` (machine-translated stub, unproofread).
+Translatable content lives in four places, each with its own contribution shape but all reviewed as Tier 1 (no bench, no test — `python -m webui` walkthrough screenshots in the PR description are the proof). Missing entries in every surface below **fall back to English**, so it's fine to ship an incomplete translation and grow it over time. Currently shipped: `en` (canonical), `ko` (mostly complete), `cn` (machine-translated stub, unproofread).
 
-**(a) GUI strings — `gui/i18n/<code>.py`.** One module per language, each exporting `STRINGS: dict[str, str]`. `gui/i18n/__init__.py` assembles these into `TRANSLATIONS` and `t(key, **kwargs)` resolves keys against the current language. To **add a new language**, drop in `gui/i18n/<code>.py` mirroring `en.py`'s key set, register it in `TRANSLATIONS`, and add a friendly label to `LANG_NAMES` in `gui/app.py` (e.g. `"ja": "日本語"`). Every key you do include must use the same `{placeholder}` names as the English source — `t()` calls `.format(**kwargs)` and will raise at runtime on a typo. *[Tier 1]*
+**(a) UI strings — `webui/i18n/strings/<code>.py`.** One module per language, each exporting `STRINGS: dict[str, str]`. `webui/i18n/loader.py` assembles these via `get_translations()` and exposes `current_language()` / `set_language()`. To **add a new language**, drop in `webui/i18n/strings/<code>.py` mirroring `en.py`'s key set, and register it in the `get_translations()` loop. Every key you do include must use the same `{placeholder}` names as the English source — the i18n lookup calls `.format(**kwargs)` and will raise at runtime on a typo. *[Tier 1]*
 
-**(b) Per-field tooltips — `gui/explanations/__init__.py`.** Two dict-of-dicts power the form-field help: `FIELD_HELP` (config-form tooltips, ~50 keys) and `PREPROCESS_FIELD_HELP` (Preprocessing tab knobs, ~10 keys). Each entry is `{"en": "...", "ko": "..."}`. Add your language code as a sibling key in every entry you want translated. `field_help()` / `preprocess_field_help()` fall back to `"en"` for missing language keys. These are the strings users see when they click a form-row label, so translation quality matters more than for transient buttons — keep technical terms (LoRA, MoE, σ-bucket, VAE) untranslated. *[Tier 1]*
+**(b) Per-field tooltips — `webui/explanations/__init__.py`.** Two dict-of-dicts power the form-field help: `FIELD_HELP` (config-form tooltips, ~50 keys) and `PREPROCESS_FIELD_HELP` (Preprocessing tab knobs, ~10 keys). Each entry is `{"en": "...", "ko": "..."}`. Add your language code as a sibling key in every entry you want translated. `field_help()` / `preprocess_field_help()` fall back to `"en"` for missing language keys. These are the strings users see when they click a form-row label, so translation quality matters more than for transient buttons — keep technical terms (LoRA, MoE, σ-bucket, VAE) untranslated. *[Tier 1]*
 
-**(c) Long-form method guides — `gui/explanations/guides/<name>.<lang>.html`.** Right-panel HTML blocks for method variants and the Preprocessing tab. Filename convention is `<name>.<lang>.html`; the loader (`_read_guide` in `gui/explanations/__init__.py`) auto-falls back to `.en.html` when the language version is absent. Names currently present: `lora`, `tlora`, `hydralora`, `fera`, `reft`, `postfix`, `preprocess`, plus the shared snippets `_apply_note` and `_not_mergeable`. To translate, drop in `<name>.<code>.html` files alongside the English ones — no code change required. Preserve any `<a href="…">`, `<code>`, and color-coded `<span>` markup; the GUI's QTextBrowser renders these. *[Tier 1]*
+**(c) Long-form method guides — `webui/explanations/guides/<name>.<lang>.html`.** Right-panel HTML blocks for method variants and the Preprocessing tab. Filename convention is `<name>.<lang>.html`; the loader (`_read_guide` in `webui/explanations/__init__.py`) auto-falls back to `.en.html` when the language version is absent. Names currently present: `lora`, `tlora`, `hydralora`, `fera`, `reft`, `postfix`, `preprocess`, plus the shared snippets `_apply_note` and `_not_mergeable`. To translate, drop in `<name>.<code>.html` files alongside the English ones — no code change required. Preserve any `<a href="…">`, `<code>`, and color-coded `<span>` markup. *[Tier 1]*
 
 **(d) Docs and structure images — `docs/`.**
-- `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience. The `guidebook_tooltip` string in `gui/i18n/en.py` currently points users at the Korean file — once a translation lands, wire the Guidebook button (in `gui/app.py`) to pick the right file based on `current_language()`.
+- `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience.
 - `docs/structure_images_korean/` holds Korean-labeled versions of the architecture diagrams under `docs/structure_images/` (e.g. `animakor.png` ↔ `anima.png`). English/other-language equivalents are welcome under the natural sibling tree (`docs/structure_images/` is the English baseline; `docs/structure_images_<lang>/` for translations). Mention which markdown files reference the diagram so the reviewer can update the embed paths.
-- Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. If you contribute one, also propose how it should surface (e.g. a language switcher in the README's docs table, or wiring it into a GUI "Open method doc" button). Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
+- Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
 
 **Parity check (covers all per-language surfaces):**
 ```bash
 python -c "
-from gui.i18n import TRANSLATIONS as T
-from gui.explanations import FIELD_HELP, PREPROCESS_FIELD_HELP
+from webui.i18n.loader import get_translations
+from webui.explanations import FIELD_HELP, PREPROCESS_FIELD_HELP
+T = get_translations()
 en_keys = set(T['en'])
 for lang in T:
     if lang == 'en': continue
@@ -104,11 +105,11 @@ for name, d in (('FIELD_HELP', FIELD_HELP), ('PREPROCESS_FIELD_HELP', PREPROCESS
 "
 ```
 
-If a translated string is too long for its widget, mention it in the PR — the fix is usually a layout tweak in the relevant `gui/tabs/*.py`, not a shorter translation.
+If a translated string is too long for its widget, mention it in the PR.
 
 ## Tier 1 — bug fixes, typos, UI, arg/CLI tweaks
 
-Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typo in a docstring, a confused error message, a GUI label, a missing CLI flag, a `tasks.py` argument-forwarding bug.
+Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typo in a docstring, a confused error message, a UI label, a missing CLI flag, a `tasks.py` argument-forwarding bug.
 
 **Requirements:**
 - Existing tests pass:
@@ -116,7 +117,7 @@ Lightweight contributions. Examples: fixing a regex in a LoRA target list, a typ
   make test-unit
   ```
 - The change is minimal and scoped. No drive-by refactors, no new abstractions, no "while I'm here" reformatting in unrelated files.
-- For GUI changes, actually launch the GUI (`make gui`) and exercise the affected tab before claiming the PR is done. Type-checking is not a substitute for clicking the button.
+- For WebUI changes, actually launch the WebUI (`python -m webui`) and exercise the affected view before claiming the PR is done. Type-checking is not a substitute for clicking the button.
 - For training-path changes, smoke-test one short run end-to-end (`PRESET=low_vram make lora` truncated to a few steps is fine) and paste the tail of the log into the PR description.
 
 That's it. Open the PR.

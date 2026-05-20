@@ -113,7 +113,7 @@ uv sync                   # Python 3.13 with pre-built flash attention 2
 hf auth login
 make download-models      # DiT + Qwen3 텍스트 인코더 + QwenImage VAE를 models/로
 # 학습 이미지를 image_dataset/에 배치 (.txt 캡션 사이드카 함께)
-make gui                  # 추천 — 설정 에디터 + 데이터셋 브라우저 + 학습 모니터
+python -m webui            # 추천 — 설정 에디터 + 데이터셋 브라우저 + 학습 모니터
 ```
 
 CLI 경로:

@@ -12,7 +12,7 @@ This document is a comprehensive English guide for the complete **Anima LoRA** t
 4. [Hugging Face Authentication and Model Download](#4-hugging-face-authentication-and-model-download)
 5. [Dataset Preparation](#5-dataset-preparation)
 6. [Preprocessing: Resize, Latent Caching, Text Embedding Caching](#6-preprocessing-resize-latent-caching-text-embedding-caching)
-7. [GUI Usage](#7-gui-usage)
+7. [WebUI Usage](#7-webui-usage)
 8. [Training Execution](#8-training-execution)
 9. [LoRA / Adapter Variant Selection Guide](#9-lora--adapter-variant-selection-guide)
 10. [Inference](#10-inference)
@@ -201,7 +201,7 @@ In `configs/base.toml` under `[[datasets.subsets]]`, you will see `num_repeats =
 
 - **Keep it at `1` for the standard workflow described in this guide.** In the common use case of training with all images in a single `image_dataset/` folder, increasing `num_repeats` only *extends the length of a single epoch*, which is equivalent to increasing `max_train_epochs`. It is always more intuitive to adjust training volume by changing the number of epochs, and all presets and method configurations in this project are tuned assuming `num_repeats = 1`.
 - **When does increasing it make sense?** When training with *multiple different subsets (folders)* where the number of images per folder varies significantly, `num_repeats` can serve as a *balancing tool* to equalize the exposure frequency of smaller folders to match larger ones (e.g., Character A: 1000 images + Character B: 50 images, then set `num_repeats = 20` only for the B subset). This does not apply to single-folder training.
-- **Where to modify it?** `num_repeats` belongs to the *dataset configuration*, not the method configuration, so it is not exposed in `configs/methods/`, `configs/gui-methods/`, or the GUI Training tab. If you need to modify it, directly edit `[[datasets.subsets]]` in `configs/base.toml` (or in the TOML file specified via `--dataset_config <path>`). *If you simply want to train the same image more times*, the correct approach is to increase `max_train_epochs`, not to modify `num_repeats`.
+- **Where to modify it?** `num_repeats` belongs to the *dataset configuration*, not the method configuration, so it is not exposed in `configs/methods/`, `configs/gui-methods/`, or the WebUI Training view. If you need to modify it, directly edit `[[datasets.subsets]]` in `configs/base.toml` (or in the TOML file specified via `--dataset_config <path>`). *If you simply want to train the same image more times*, the correct approach is to increase `max_train_epochs`, not to modify `num_repeats`.
 
 ---
 
@@ -257,7 +257,7 @@ make preprocess-pe           # (Optional) PE-Core vision encoder feature caching
 
 ---
 
-## 7. GUI Usage
+## 7. WebUI Usage
 
 Using the WebUI-based browser interface, you can complete configuration editing, dataset browsing, preprocessing, training execution/monitoring, and LoRA merging all in one interface.
 
@@ -265,18 +265,18 @@ Using the WebUI-based browser interface, you can complete configuration editing,
 python -m webui              # Start WebUI server (http://127.0.0.1:8000)
 ```
 
-Main GUI tabs:
+Main WebUI views:
 
 - **Training Config**: Select the LoRA family variant from the dropdown (recommended: `tlora` — Ortho + T-LoRA / others include `lora`, `tlora-8gb`, `tlora_ortho_reft`, `hydralora`, `reft`, etc.), and directly modify `presets.toml` presets (default / low_vram, etc.) and all training parameters, then start training
 - **Preprocess**: One-click resize + VAE + text embedding caching
 - **Dataset**: Preview images/captions and edit captions directly
 - **Merge**: Bake the trained LoRA into the base DiT and save as a standalone ComfyUI checkpoint (supports only basic LoRA / OrthoLoRA / T-LoRA)
 
-GUI training internally calls `train.py`, so identical parameters can be fully reproduced in the CLI. The GUI reads from `configs/gui-methods/<variant>.toml` (single-file variants without toggle blocks), so the variant list exposed in the GUI is consistent with the CLI's `make lora-gui GUI_PRESETS=<variant>`. The current state of the variant list can be viewed via `ls configs/gui-methods/`.
+WebUI training internally calls `train.py`, so identical parameters can be fully reproduced in the CLI. The WebUI reads from `configs/gui-methods/<variant>.toml` (single-file variants without toggle blocks), so the variant list exposed in the WebUI is consistent with the CLI's `make lora-gui GUI_PRESETS=<variant>`. The current state of the variant list can be viewed via `ls configs/gui-methods/`.
 
 ### 7.1 Form Editing and Save Behavior
 
-The training/preprocessing subprocess re-reads the variant TOML file from disk, so if you only modify the form without saving, those changes will not be reflected in training. The GUI handles this in two ways:
+The training/preprocessing subprocess re-reads the variant TOML file from disk, so if you only modify the form without saving, those changes will not be reflected in training. The WebUI handles this in two ways:
 
 - **Change detection**: When any field in the form (or the `+ Extra args` text box) is edited, the `Save` button turns orange and displays a `Save *` marker. This indicates *the variant file on disk is inconsistent with what is shown on screen*. Click `Save` or re-select the variant to reload from disk to clear the marker.
 - **Auto-save**: Even if you forget to save and click `Train` / `Preprocess`, the current form values are automatically written to the variant file before the subprocess is executed. In other words, the values displayed on screen are the ones actually used for training. (`Test` infers from the last training result's checkpoint, so it does not trigger auto-save.)
@@ -289,7 +289,7 @@ Even if training is interrupted midway, clicking `Train` again will **automatica
 
 How to use it in the GUI:
 
-- In the Training Config tab, the **Training** group contains a `checkpointing_epochs` field (gui-methods variants default to `2`, `methods/lora.toml` defaults to `4`). It saves the resume state every N epochs, overwriting the same file, without growing disk usage.
+- In the Training Config view, the **Training** group contains a `checkpointing_epochs` field (gui-methods variants default to `2`, `methods/lora.toml` defaults to `4`). It saves the resume state every N epochs, overwriting the same file, without growing disk usage.
 - After training is interrupted, click `Train` again with the same variant, and the log window will display `auto-resuming from checkpoint at step N`, continuing training from that point. No manual flag adjustments are needed.
 - After training completes normally, the resume temporary files are automatically deleted, and the final result is saved as `output/ckpt/<output_name>.safetensors`.
 - **If you change the dataset or core configuration (rank, LR, epoch count, etc.)** and want to restart training, manually delete the `output/ckpt/<output_name>-checkpoint-state/` folder before clicking `Train`. Otherwise, training will continue from the old state.

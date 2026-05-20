@@ -9,10 +9,7 @@ from webui.services.config_service import ROOT
 
 
 def list_adapter_dirs() -> list[dict]:
-    """List directories likely to contain .safetensors adapter files.
-
-    Mirrors ``gui/__init__.py::_adapter_dirs()``.
-    """
+    """List directories likely to contain .safetensors adapter files."""
     candidates = [
         ("output/ckpt", ROOT / "output" / "ckpt"),
         ("output_temp", ROOT / "output_temp"),
@@ -87,7 +84,6 @@ def scan_adapter(file_path: str) -> dict:
     """Scan a .safetensors file for bakeability.
 
     Classifies keys into families and returns a severity verdict.
-    Mirrors ``gui/tabs/merge_tab.py::_scan_adapter()``.
     """
     try:
         from safetensors import safe_open
@@ -140,7 +136,7 @@ def scan_adapter(file_path: str) -> dict:
     if ss_mode in ("postfix", "postfix_exp", "postfix_func", "cond"):
         counts["postfix"] = len(keys)
 
-    # Severity verdict (matches gui/tabs/merge_tab.py lines 162-185)
+    # Severity verdict
     has_hydra = counts["lora_up_weight"] > 0 or counts["lora_ups"] > 0
     has_lora_like = counts["lora_down"] > 0 or counts["ortho_sp"] > 0
     has_reft = counts["reft"] > 0

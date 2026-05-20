@@ -13,7 +13,7 @@ from __future__ import annotations
 import functools
 from pathlib import Path
 
-from gui.i18n import current_language
+from webui.i18n.loader import current_language
 
 _GUIDES_DIR = Path(__file__).parent / "guides"
 
@@ -228,9 +228,9 @@ FIELD_HELP: dict[str, dict[str, str]] = {
     },
     # Performance
     "attn_mode": {
-        "en": "Attention backend. flash4: FlashAttention-4 (Linux, fastest). flash: FlashAttention-2. flex: PyTorch flex attention (cross-platform).",
-        "ko": "어텐션 백엔드. flash4: FlashAttention-4 (Linux, 최속). flash: FlashAttention-2. flex: PyTorch flex attention (크로스 플랫폼).",
-        "cn": "注意力后端。flash4：FlashAttention-4（Linux，最快）。flash：FlashAttention-2。flex：PyTorch flex attention（跨平台）。",
+        "en": "Attention backend. flash: FlashAttention-2 (Linux, fastest). torch: PyTorch SDPA. sageattn: SageAttention. flex: PyTorch flex attention (cross-platform). xformers: xformers memory-efficient attention.",
+        "ko": "어텐션 백엔드. flash: FlashAttention-2 (Linux, 최속). torch: PyTorch SDPA. sageattn: SageAttention. flex: PyTorch flex attention (크로스 플랫폼). xformers: xformers 메모리 효율 어텐션.",
+        "cn": "注意力后端。flash：FlashAttention-2（Linux，最快）。torch：PyTorch SDPA。sageattn：SageAttention。flex：PyTorch flex attention（跨平台）。xformers：xformers 内存高效注意力。",
     },
     "gradient_checkpointing": {
         "en": "Recompute activations during backward pass instead of storing them. Trades compute for VRAM. Essential for low-VRAM setups.",

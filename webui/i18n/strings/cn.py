@@ -1,4 +1,4 @@
-"""Simplified Chinese strings for the Anima LoRA GUI.
+"""Simplified Chinese strings for the Anima WebUI.
 
 Best-effort machine translation — please proofread before relying on it.
 Missing keys fall back to English via the `t()` lookup in `__init__.py`.

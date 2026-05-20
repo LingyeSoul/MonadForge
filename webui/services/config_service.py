@@ -1,7 +1,7 @@
 """Pure TOML config service — no Qt dependencies.
 
-Extracts the merge/read/write logic from ``gui/__init__.py`` so both the
-desktop GUI and WebUI can share it.
+Handles the merge/read/write logic for training configs, variant discovery,
+and field help for the WebUI.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import re
 
 import toml
 
-from gui.explanations import (
+from webui.explanations import (
     FIELD_HELP as _FIELD_HELP,
     PREPROCESS_FIELD_HELP as _PRE_FIELD_HELP,
 )
@@ -97,7 +97,7 @@ _METHOD_ORDER = (
     "easycontrol",
 )
 
-_ATTN_MODES = ["flex", "flash"]
+_ATTN_MODES = ["flash", "torch", "sageattn", "flex", "xformers"]
 _SAMPLER_CHOICES = ["euler", "er_sde", "euler_a"]
 
 _SELECT_OPTIONS: dict[str, list[str]] = {
@@ -951,7 +951,7 @@ def save_variant_config(variant: str, data: dict) -> None:
 
 # ── Prelaunch checks (cache + checkpoint) ───────────────────────
 
-# Cache-file suffixes (kept in sync with gui/__init__.py)
+# Cache-file suffixes
 _LATENT_SUFFIX = "_anima.npz"
 _TE_SUFFIX = "_anima_te.safetensors"
 _PE_SUFFIX = "_anima_pe.safetensors"
@@ -1127,13 +1127,13 @@ def get_field_help_data(variant: str, lang: str = "cn") -> dict:
                 if text:
                     field_help[key] = text
 
-    # Load method guide HTML from gui/explanations/guides/
+    # Load method guide HTML from webui/explanations/guides/
     guide_html = _load_method_guide(family, lang)
 
     return {"field_help": field_help, "guide_html": guide_html}
 
 
-_GUIDES_DIR = ROOT / "gui" / "explanations" / "guides"
+_GUIDES_DIR = Path(__file__).resolve().parent.parent / "explanations" / "guides"
 _NOT_MERGEABLE = frozenset({"postfix", "hydralora", "reft", "fera"})
 _KNOWN_GUIDE_METHODS = frozenset({"lora", "tlora", "postfix", "hydralora", "reft", "fera"})
 

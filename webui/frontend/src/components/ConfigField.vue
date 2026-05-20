@@ -4,9 +4,7 @@
       v-if="field.field_type === 'bool'"
       :model-value="currentValue"
       :label="field.key"
-      :hint="hintText"
       :disabled="field.read_only"
-      persistent-hint
       color="primary"
       density="compact"
       hide-details="auto"
@@ -38,9 +36,7 @@
       :model-value="String(currentValue ?? '')"
       :label="field.key"
       :items="selectItems"
-      :hint="hintText"
       :disabled="field.read_only"
-      persistent-hint
       variant="outlined"
       density="compact"
       hide-details="auto"
@@ -66,9 +62,7 @@
       v-else-if="field.field_type === 'int'"
       :model-value="currentValue"
       :label="field.key"
-      :hint="hintText"
       :disabled="field.read_only"
-      persistent-hint
       type="number"
       variant="outlined"
       density="compact"
@@ -95,9 +89,7 @@
       v-else-if="field.field_type === 'float'"
       :model-value="currentValue"
       :label="field.key"
-      :hint="hintText"
       :disabled="field.read_only"
-      persistent-hint
       type="number"
       step="any"
       variant="outlined"
@@ -125,9 +117,7 @@
       v-else-if="field.field_type === 'list'"
       :model-value="JSON.stringify(currentValue)"
       :label="field.key"
-      :hint="hintText"
       :disabled="field.read_only"
-      persistent-hint
       variant="outlined"
       density="compact"
       hide-details="auto"
@@ -153,9 +143,7 @@
       v-else
       :model-value="currentValue"
       :label="field.key"
-      :hint="hintText"
       :disabled="field.read_only"
-      persistent-hint
       variant="outlined"
       density="compact"
       hide-details="auto"
@@ -192,16 +180,8 @@ const { t } = useI18n()
 
 const currentValue = computed(() => configStore.getFieldValue(props.field.key))
 
-const hintText = computed(() => {
-  const desc = props.field.description
-  const descEn = props.field.description_en
-  if (!desc && !descEn) return undefined
-  return desc || descEn
-})
-
 const selectItems = computed(() => {
   if (props.field.key === 'sample_sampler') return ['euler', 'er_sde', 'euler_a']
-  if (props.field.key === 'attn_mode') return ['sdpa', 'xformers', 'flash_attention', 'torch']
   return props.field.options ?? []
 })
 

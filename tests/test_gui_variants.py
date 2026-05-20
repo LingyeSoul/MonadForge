@@ -1,7 +1,7 @@
-"""Tests for the Track 2 GUI variant registry (``configs/gui-methods/*.toml``).
+"""Tests for the GUI variant registry (``configs/gui-methods/*.toml``).
 
 Built-in variants are discovered from each file's ``[variant]`` metadata
-table (see ``gui/__init__.py``). This module pins:
+table (see ``webui/services/config_service.py``). This module pins:
 
 * every built-in is loadable via ``load_method_preset(..., methods_subdir="gui-methods")``
 * every built-in carries a ``[variant].family`` string
@@ -127,7 +127,7 @@ def test_no_unintentional_output_name_collisions():
 def test_variant_discovery_matches_filesystem():
     """``list_gui_variants`` should surface every built-in whose ``[variant]
     .family`` matches the requested family — no hardcoded map drift."""
-    from gui import list_gui_variants
+    from webui.services.config_service import list_gui_variants
 
     expected_by_family: dict[str, set[str]] = {}
     for path in BUILTINS:

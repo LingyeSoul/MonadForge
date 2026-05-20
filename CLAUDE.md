@@ -14,7 +14,7 @@ hf auth login              # Authenticate for model downloads
 make download-models       # Download DiT, text encoder, VAE, SAM3, MIT, PE-Core, PE-Spatial
 # Training images go in image_dataset/ with .txt caption sidecars
 make preprocess            # Resize → post_image_dataset/resized/, cache → post_image_dataset/lora/
-# WebUI setup (optional — for the browser-based interface)
+# WebUI (browser-based interface)
 cd webui/frontend && npm install && npm run build   # Build frontend dist/
 python -m webui            # Start WebUI at http://127.0.0.1:8000
 ```
@@ -205,7 +205,7 @@ Subsets accept an optional `cache_dir` key — when set, all VAE / text-encoder 
   - `library/log.py` — logging setup + `fire_in_thread`.
 - **Strategy pattern** for model-specific tokenization/encoding (`library/anima/strategy.py`, `library/strategy_base.py`)
 - **Pluggable adapters** under `networks/` — selected via `network_module` config key plus (for the LoRA family) the three-axis routing cfg. Covers LoRA / OrthoLoRA / T-LoRA / HydraLoRA / FeRA / ReFT / ChimeraHydra (in `networks/lora_modules/` — including `stacked_experts.py` for FeRA's independent-A layout and `chimera.py` for the dual-pool MoE) coordinated by `networks/lora_anima/` (`network.py`, `factory.py`, `loading.py`, `config.py`, `attn_fuse.py`); postfix / IP-Adapter / EasyControl / REPA (in `networks/methods/`); the unified attention-backend dispatcher (`networks/attention_dispatch.py`); and Spectrum inference (`networks/spectrum.py`). See `networks/CLAUDE.md` for the per-module map, three-axis surface, variant details, and dispatch invariants.
-- **WebUI (`webui/`)**: FastAPI + Vue 3 SPA replacing the former PySide6 desktop GUI. Backend: `server.py` (FastAPI app factory, serves SPA in production), `api/` (REST routes for config/images/tasks/i18n + WebSocket at `/ws/tasks/{id}` for live log streaming), `services/` (config_service for TOML merge chain, image_service for dataset browsing, task_service for async subprocess lifecycle), `models/` (Pydantic schemas). Frontend: Vue 3 + Vuetify 4 + Pinia + Vue Router + TypeScript SPA in `frontend/`, built with Vite. Seven views: Config Editor, Dataset Browser, Preprocess, Adapter Training, LoRA Merge, Task Monitor, System. Launch: `python -m webui` (production) or `python -m webui --dev` (dev mode with auto-reload). Build frontend: `build-webui-win.bat` or `cd webui/frontend && npm run build`.
+- **WebUI (`webui/`)**: FastAPI + Vue 3 SPA for config editing, dataset browsing, preprocessing, training, and system management. Backend: `server.py` (FastAPI app factory, serves SPA in production), `api/` (REST routes for config/images/tasks/i18n + WebSocket at `/ws/tasks/{id}` for live log streaming), `services/` (config_service for TOML merge chain, image_service for dataset browsing, task_service for async subprocess lifecycle), `models/` (Pydantic schemas). Frontend: Vue 3 + Vuetify 4 + Pinia + Vue Router + TypeScript SPA in `frontend/`, built with Vite. Seven views: Config Editor, Dataset Browser, Preprocess, Adapter Training, LoRA Merge, Task Monitor, System. Launch: `python -m webui` (production) or `python -m webui --dev` (dev mode with auto-reload). Build frontend: `build-webui-win.bat` or `cd webui/frontend && npm run build`.
 
 ## Critical invariants
 
