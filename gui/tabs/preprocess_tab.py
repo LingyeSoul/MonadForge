@@ -597,6 +597,11 @@ class PreprocessingTab(LazyTabMixin, QWidget):
             return
         if not job_id or gui_daemon.read_job_kind(job_id) != "command":
             return
+        # An auto-chain preprocess (tagged ANIMA_CHAIN_TRAIN) belongs to the
+        # ConfigTab — it re-claims that one so the bar + Train-blocking + chain
+        # into training stay on the training tab. Leave it alone here.
+        if gui_daemon.read_job_chain_variant(job_id):
+            return
         self.log.clear()
         self._stdout_buf = ""
         self._progress_tracker.reset()

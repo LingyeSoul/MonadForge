@@ -362,16 +362,20 @@ class JobManager:
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
 
-        # Command jobs (preprocess / mask) are a plain task invocation. Use the
-        # venv's python.exe (NOT sys.executable — the daemon itself runs under
-        # pythonw.exe so it has no closable console window): pythonw children
-        # don't surface working stdout/stderr, which would silently drop the
-        # tqdm progress the GUI tails from stdout.log. No --progress_jsonl
+        # Command jobs (preprocess / mask) are a plain task invocation. Launch
+        # under pythonw.exe (windowless): a uv-venv python.exe is a trampoline
+        # that re-execs the real interpreter, and CREATE_NO_WINDOW doesn't
+        # survive that re-exec — so a python.exe child pops a console window
+        # that, when closed (or torn down with the GUI), kills the job with
+        # STATUS_CONTROL_C_EXIT (0xC000013A). pythonw.exe never allocates a
+        # console; the tqdm progress the GUI tails from stdout.log still lands
+        # because spawn_detached redirects the child's stdout/stderr to that
+        # file (a real handle, not an inherited console). No --progress_jsonl
         # injection — these emit tqdm to stdout and the monitor finalizes them
         # on exit code (no run_end event).
         if job.kind == "command":
             env.update(job.extra_env or {})
-            return [venv_python(), *job.argv], env
+            return [venv_python(windowless=True), *job.argv], env
 
         # Imported lazily so loading the daemon package never drags in the task
         # runner's transitive imports until a job actually launches.
@@ -405,7 +409,11 @@ class JobManager:
             methods_subdir=job.methods_subdir,
             extra=extra,
         )
-        cmd = build_launch_cmd(*args)
+        # Windowless interpreter for the same reason as command jobs above:
+        # accelerate's `python -m accelerate_cli launch` parent and the train.py
+        # workers it spawns (via sys.executable) all inherit pythonw.exe, so
+        # nothing pops a closable console that would CTRL_CLOSE the run.
+        cmd = build_launch_cmd(*args, python_exe=venv_python(windowless=True))
         return cmd, env
 
     # ----- reconciliation (boot) -----

@@ -139,6 +139,26 @@ def read_job_kind(job_id: str) -> str:
     return data.get("kind") or "train"
 
 
+def read_job_chain_variant(job_id: str) -> Optional[str]:
+    """The training variant a command job is the auto-chain preprocess for.
+
+    The ConfigTab's Train button submits its auto-chain preprocess as a
+    ``command`` job tagged with ``ANIMA_CHAIN_TRAIN=<variant>`` in ``extra_env``
+    (persisted in ``job.json``). That marker is how the ConfigTab re-attaches to
+    *its own* preprocess on GUI reopen — distinguishing it from a standalone
+    preprocess/mask the PreprocessingTab owns — so it can keep the bar live,
+    keep Train blocked, and chain into training when the cache build finishes.
+    Returns ``None`` for a job without the marker.
+    """
+    try:
+        data = json.loads(
+            (_cfg.job_dir(job_id) / "job.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None
+    return (data.get("extra_env") or {}).get("ANIMA_CHAIN_TRAIN")
+
+
 def is_terminal(state: Optional[str]) -> bool:
     return state in TERMINAL_STATES
 

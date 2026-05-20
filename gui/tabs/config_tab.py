@@ -763,6 +763,9 @@ class ConfigTab(QWidget):
         self._log(t("daemon_submitting") + "\n")
         QApplication.processEvents()
 
+        # Remember the variant to train so the auto-chain (and a re-attach after
+        # a GUI reopen) launches the right one even if the combo is touched.
+        self._chain_variant = variant
         try:
             resp = gui_daemon.submit_command(
                 label="preprocess",
@@ -771,6 +774,11 @@ class ConfigTab(QWidget):
                     "METHOD": variant,
                     "METHODS_SUBDIR": "gui-methods",
                     "PRESET": self._IMPLICIT_PRESET,
+                    # Marks this command job as *this tab's* auto-chain preprocess
+                    # so ConfigTab._try_reattach re-claims it on reopen (bar live,
+                    # Train blocked, chains into training) and the PreprocessingTab
+                    # leaves it alone. Value = the variant to train next.
+                    "ANIMA_CHAIN_TRAIN": variant,
                 },
             )
         except Exception as e:  # noqa: BLE001 — daemon failed to start / submit
@@ -881,15 +889,26 @@ class ConfigTab(QWidget):
             return
         if not job_id:
             return
-        # The daemon's active job may be a preprocess/mask command job submitted
-        # from the PreprocessingTab — that one belongs to that tab, not here.
-        if gui_daemon.read_job_kind(job_id) != "train":
-            return
+        kind = gui_daemon.read_job_kind(job_id)
+        if kind != "train":
+            # A command job is ours only if it's the auto-chain preprocess this
+            # tab's Train button submitted (tagged ANIMA_CHAIN_TRAIN). A
+            # standalone preprocess/mask belongs to the PreprocessingTab.
+            chain_variant = gui_daemon.read_job_chain_variant(job_id)
+            if not chain_variant:
+                return
+            # Re-arm the chain so the bar stays live + Train stays blocked, and
+            # training launches for the right variant when preprocess finishes.
+            self._chain_train_after_preprocess = True
+            self._chain_variant = chain_variant
+            reattach_kind = "preprocess"
+        else:
+            reattach_kind = "train"
         self.log.clear()
         self._reset_progress()
         self._progress_tracker.mark_starting(t("starting"))
         self._log(t("daemon_reattached", job_id=job_id))
-        self._attach_to_job(job_id, replay_log=True)
+        self._attach_to_job(job_id, replay_log=True, kind=reattach_kind)
 
     def _attach_to_job(
         self, job_id: str, *, replay_log: bool, kind: str = "train"
@@ -981,7 +1000,10 @@ class ConfigTab(QWidget):
             if state == "done":
                 self._preprocessed = True
             if chain and state == "done":
-                variant = self._current_variant()
+                # Prefer the variant captured at submit time (survives a combo
+                # change after a GUI reopen); fall back to the live selection.
+                variant = getattr(self, "_chain_variant", None) or self._current_variant()
+                self._chain_variant = None
                 merged, _ = merged_gui_variant_preset(variant, self._IMPLICIT_PRESET)
                 # Resume-checkpoint check still fires — the user might have
                 # previously trained this variant; don't silently wipe/resume.

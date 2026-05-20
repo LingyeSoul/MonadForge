@@ -446,7 +446,7 @@ def _nsys_run_stats(rep_path: Path) -> None:
         print(f"warn: nsys stats failed: {e}", file=sys.stderr)
 
 
-def build_launch_cmd(*args: str) -> list[str]:
+def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
     """Build the ``accelerate launch ... train.py`` command list (no side effects).
 
     Pure command construction — the returned list is exactly what launches
@@ -459,14 +459,23 @@ def build_launch_cmd(*args: str) -> list[str]:
     something the daemon ever applies.
 
     Invoked as ``python -m accelerate.commands.accelerate_cli launch`` rather
-    than the bare ``accelerate`` console-script. This keeps ``sys.executable``
-    propagating from this process through to accelerate's workers — so when
-    the GUI is launched via pythonw.exe (no console), the workers also run
-    under pythonw.exe and don't pop terminal windows. The accelerate.exe
-    shim hardcodes python.exe as the worker interpreter, defeating that.
+    than the bare ``accelerate`` console-script. This keeps the launching
+    interpreter propagating from this process through to accelerate's workers
+    (via ``sys.executable``) — the accelerate.exe shim hardcodes python.exe as
+    the worker interpreter, defeating that.
+
+    ``python_exe`` overrides the launching interpreter (default ``PY`` =
+    python.exe). The detached daemon passes ``pythonw.exe`` here: a uv-venv
+    python.exe is a trampoline that re-execs the real interpreter, and
+    ``CREATE_NO_WINDOW`` doesn't survive that re-exec — so a python.exe worker
+    pops a console window that, when closed, kills the job with
+    ``STATUS_CONTROL_C_EXIT``. pythonw.exe never allocates a console; stdio
+    still works because the daemon redirects the child's stdout/stderr to a
+    file (not an inherited console), and the worker interpreter inherited via
+    sys.executable is windowless too.
     """
     return [
-        PY,
+        python_exe or PY,
         "-m",
         "accelerate.commands.accelerate_cli",
         "launch",
