@@ -142,6 +142,44 @@ def get_field_help(
     return FieldHelpResponse(**result)
 
 
+# ── Prelaunch check & checkpoint management ───────────────────
+
+
+class PrelaunchCheckResponse(BaseModel):
+    cache_counts: dict[str, int]
+    has_cache: bool
+    checkpoint: dict | None = None
+    requires_pe: bool = False
+
+
+class WipeCheckpointRequest(BaseModel):
+    output_dir: str
+    output_name: str = "last"
+
+
+@router.get("/prelaunch-check", response_model=PrelaunchCheckResponse)
+def prelaunch_check(
+    variant: str = Query(...),
+    preset: str = Query("default"),
+):
+    """Check cache counts and checkpoint state before training launch."""
+    try:
+        result = svc.prelaunch_check(variant, preset)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return PrelaunchCheckResponse(**result)
+
+
+@router.post("/wipe-checkpoint")
+def wipe_checkpoint(body: WipeCheckpointRequest):
+    """Delete a checkpoint state directory and its sidecar adapter file."""
+    try:
+        svc.wipe_checkpoint(body.output_dir, body.output_name)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "ok"}
+
+
 # ── Layer read/write (catch-all) ───────────────────────────────
 
 
@@ -191,41 +229,3 @@ def validate_config(body: ConfigUpdateRequest):
 def get_groups():
     """Return field groupings for the form layout."""
     return svc.get_field_groups()
-
-
-# ── Prelaunch check & checkpoint management ───────────────────
-
-
-class PrelaunchCheckResponse(BaseModel):
-    cache_counts: dict[str, int]
-    has_cache: bool
-    checkpoint: dict | None = None
-    requires_pe: bool = False
-
-
-class WipeCheckpointRequest(BaseModel):
-    output_dir: str
-    output_name: str = "last"
-
-
-@router.get("/prelaunch-check", response_model=PrelaunchCheckResponse)
-def prelaunch_check(
-    variant: str = Query(...),
-    preset: str = Query("default"),
-):
-    """Check cache counts and checkpoint state before training launch."""
-    try:
-        result = svc.prelaunch_check(variant, preset)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return PrelaunchCheckResponse(**result)
-
-
-@router.post("/wipe-checkpoint")
-def wipe_checkpoint(body: WipeCheckpointRequest):
-    """Delete a checkpoint state directory and its sidecar adapter file."""
-    try:
-        svc.wipe_checkpoint(body.output_dir, body.output_name)
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    return {"status": "ok"}

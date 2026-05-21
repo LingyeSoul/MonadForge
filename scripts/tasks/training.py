@@ -31,6 +31,8 @@ def cmd_lora_gui(extra):
         variant = extra[0]
         extra = extra[1:]
     variant = variant or "lora"
+    preset_env = os.environ.get("PRESET", "<not set>")
+    print(f"[cmd_lora_gui] variant={variant!r} PRESET env={preset_env!r}", file=sys.stderr)
 
     expected = ROOT / "configs" / "gui-methods" / f"{variant}.toml"
     custom_overlay = ROOT / "configs" / "custom" / "variants" / f"{variant}.toml"

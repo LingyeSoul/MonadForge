@@ -14,7 +14,7 @@ let nextId = 0
 
 export const useNotifyStore = defineStore('notify', () => {
   const current = ref<NotifyItem | null>(null)
-  const queue: NotifyItem[] = []
+  let queue: NotifyItem[] = []
 
   function show(message: string, type: NotifyType = 'info', timeout = 3000) {
     const item: NotifyItem = { id: nextId++, message, type, timeout }
@@ -26,7 +26,11 @@ export const useNotifyStore = defineStore('notify', () => {
   }
 
   function dismiss() {
-    current.value = queue.shift() || null
+    if (queue.length > 0) {
+      current.value = queue.shift()!
+    } else {
+      current.value = null
+    }
   }
 
   return { current, show, dismiss }

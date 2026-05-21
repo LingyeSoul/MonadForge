@@ -884,8 +884,60 @@ def process_interactive(args: argparse.Namespace) -> None:
 # region Main
 
 
+def _resolve_model_path(path: str | None) -> str | None:
+    """Resolve a model path to an absolute path, relative to the project root.
+
+    Absolute paths are returned as-is. Relative paths are resolved against
+    the directory containing this script (the project root), not the CWD.
+    This lets users invoke ``inference.py`` from any working directory
+    without breaking model lookups.
+    """
+    if path is None:
+        return None
+    if os.path.isabs(path):
+        return path
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(project_root, path)
+
+
+def _validate_model_path(path: str | None, label: str) -> None:
+    """Raise a clear error if *path* does not point to an existing file."""
+    if path is None:
+        return
+    if not os.path.isfile(path):
+        raise FileNotFoundError(
+            f"{label} not found: {path}\n"
+            f"Make sure the file exists or provide an absolute path via the CLI flag."
+        )
+
+
 def main():
     args = parse_args()
+
+    # Resolve model paths early so relative paths work from any CWD.
+    args.dit = _resolve_model_path(args.dit)
+    args.vae = _resolve_model_path(args.vae)
+    args.text_encoder = _resolve_model_path(args.text_encoder)
+    if args.lora_weight:
+        args.lora_weight = [_resolve_model_path(p) for p in args.lora_weight]
+    if getattr(args, "postfix_weight", None):
+        args.postfix_weight = _resolve_model_path(args.postfix_weight)
+    if getattr(args, "ip_adapter_weight", None):
+        args.ip_adapter_weight = _resolve_model_path(args.ip_adapter_weight)
+    if getattr(args, "easycontrol_weight", None):
+        args.easycontrol_weight = _resolve_model_path(args.easycontrol_weight)
+    if getattr(args, "pooled_text_proj", None):
+        args.pooled_text_proj = _resolve_model_path(args.pooled_text_proj)
+    if getattr(args, "dcw_calibrator", None):
+        args.dcw_calibrator = _resolve_model_path(args.dcw_calibrator)
+
+    # Validate core model paths before entering the expensive loading code.
+    _validate_model_path(args.dit, "DiT model")
+    _validate_model_path(args.vae, "VAE model")
+    _validate_model_path(args.text_encoder, "Text encoder")
+    if args.lora_weight:
+        for p in args.lora_weight:
+            _validate_model_path(p, "LoRA weight")
 
     # Check if latents are provided
     latents_mode = args.latent_path is not None and len(args.latent_path) > 0

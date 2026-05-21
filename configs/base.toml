@@ -1,6 +1,11 @@
 pretrained_model_name_or_path = "D:\\AIArt\\ComfyUI-aki-v2\\ComfyUI\\models\\diffusion_models\\anima-base-v1.0.safetensors"
 qwen3 = "D:\\AIArt\\ComfyUI-aki-v2\\ComfyUI\\models\\clip\\qwen_3_06b_base.safetensors"
 vae = "D:\\AIArt\\ComfyUI-aki-v2\\ComfyUI\\models\\vae\\qwen_image_vae.safetensors"
+
+# Test inference defaults (used by `make test` / WebUI "Test" button)
+test_prompt = "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top and denim shorts is standing outdoors. She's holding a rectangular sign out in front of her that reads \"ANIMA\". She's looking at the viewer with a smile. The background features some trees and blue sky with clouds."
+test_negative_prompt = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
+
 output_dir = "output/ckpt"
 output_name = "anima_lora"
 save_model_as = "safetensors"
@@ -42,7 +47,7 @@ sample_every_n_epochs = 2
 sample_prompts = "configs/custom/sample_prompts.txt"
 sample_sampler = "euler"
 sample_guidance_scale = 3.5
-sample_flow_shift = 5.0
+sample_flow_shift = 1.0
 sample_image_size = [1024, 1024]
 # sample_seed = 42  # uncomment for reproducible previews
 

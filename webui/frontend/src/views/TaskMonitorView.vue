@@ -1,5 +1,5 @@
 <template>
-  <v-container fluid class="pa-4 d-flex flex-column" style="flex: 1 1 auto; min-height: 0;">
+  <v-container fluid class="pa-4 d-flex flex-column" style="flex: 1 1 0; min-height: 0; overflow: hidden;">
     <div class="d-flex align-center mb-1">
       <div class="text-h5">{{ t('taskTitle') }}</div>
       <v-spacer />
@@ -78,7 +78,7 @@
           </v-card-subtitle>
           <v-progress-linear v-if="task.state === 'running'" indeterminate color="primary" height="2" class="flex-shrink-0" />
           <v-card-text class="d-flex flex-column pa-2" style="flex: 1 1 0; min-height: 0;">
-            <LogStream :task-id="task.task_id" />
+            <LogStream :task-id="task.task_id" @done="onTaskDone" />
           </v-card-text>
           <v-card-actions class="flex-shrink-0 py-1">
             <v-btn
@@ -102,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
 import LogStream from '../components/LogStream.vue'
@@ -111,7 +111,20 @@ const taskStore = useTaskStore()
 const { t } = useI18n()
 const selectedTask = ref('')
 
-taskStore.fetchTasks()
+let pollTimer = 0
+
+onMounted(() => {
+  taskStore.fetchTasks()
+  pollTimer = window.setInterval(() => taskStore.fetchTasks(), 5000)
+})
+
+onUnmounted(() => {
+  clearInterval(pollTimer)
+})
+
+function onTaskDone() {
+  taskStore.fetchTasks()
+}
 
 function stateColor(state: string) {
   if (state === 'running') return 'info'

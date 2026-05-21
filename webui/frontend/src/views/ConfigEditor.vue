@@ -634,7 +634,7 @@ async function startTraining() {
 }
 
 async function launchTrainingTask() {
-  const taskId = await taskStore.startTask('lora-gui', [selectedVariant.value])
+  const taskId = await taskStore.startTask('lora-gui', [selectedVariant.value], { PRESET: selectedPreset.value })
   if (taskId) {
     notify.show(t('notifyTrainingLaunched'), 'success')
   } else {
@@ -719,7 +719,15 @@ async function startTest() {
     else if (family === 'easycontrol') command = 'exp-test-easycontrol'
     else if (family === 'chimera') command = 'test-hydra'
 
-    const taskId = await taskStore.startTask(command)
+    // Pass test prompt/negative_prompt from config so the backend uses
+    // the user's custom values instead of the hardcoded defaults.
+    const args: string[] = []
+    const prompt = configStore.getFieldValue('test_prompt')
+    if (prompt) args.push('--prompt', String(prompt))
+    const negPrompt = configStore.getFieldValue('test_negative_prompt')
+    if (negPrompt) args.push('--negative_prompt', String(negPrompt))
+
+    const taskId = await taskStore.startTask(command, args)
     if (taskId) {
       notify.show(t('notifyTestLaunched'), 'success')
     } else {

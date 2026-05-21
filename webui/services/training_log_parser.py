@@ -3,17 +3,31 @@
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass, field
 
+logger = logging.getLogger(__name__)
+
 # tqdm progress bar line:
-# steps:  45%|████████▌           | 450/1000 [05:23<06:39,  1.38it/s, avr_loss=0.0234, router_H=1.872]
+# steps:  45%|████████▌           | 450/1000 [05:23<06:39,  1.38it/s, avr_loss=0.0234, lr=1.23e-04, router_H=1.872]
+# Note: tqdm shows "s/it" when slow, "it/s" when fast — match both.
 _TQDM_RE = re.compile(
     r"steps:\s+(\d+)%\|.*?\|\s+(\d+)/(\d+)\s+"
-    r"\[(.+?)<(.+?),\s+([\d.]+)\s*it/s"
+    r"\[(.+?)<(.+?),\s+([\d.]+)\s*((?:it/s|s/it))"
     r"(?:,\s*avr_loss=([\d.]+))?"
+    r"(?:,\s*lr=([0-9.eE+\-]+))?"
     r"(?:,\s*router_H=([\d.]+))?"
     r"(?:,\s*Keys Scaled=(\d+))?"
     r"(?:,\s*Average key norm=([\d.]+))?"
+)
+
+# Direct step progress line from training loop (stdout):
+# step 450/1000 loss=0.02345 lr=1.23e-04 speed=1.380
+_STEP_RE = re.compile(
+    r"^step\s+(\d+)/(\d+)"
+    r"(?:\s+loss=([\d.]+))?"
+    r"(?:\s+lr=([0-9.eE+\-]+))?"
+    r"(?:\s+speed=([\d.]+))?"
 )
 
 # epoch 3/10
@@ -87,6 +101,16 @@ class TrainingLogParser:
             self._parse_tqdm(m)
             return self._dirty
 
+        # Try direct step progress line (stdout fallback when tqdm stderr is lost)
+        m = _STEP_RE.match(stripped)
+        if m:
+            self._parse_step(m)
+            return self._dirty
+
+        # Log step-like lines that didn't match (debug)
+        if stripped.startswith("step "):
+            print(f"[parser] Step line NOT matched: {stripped!r}", flush=True)
+
         # Try epoch marker
         m = _EPOCH_RE.match(stripped)
         if m:
@@ -105,16 +129,17 @@ class TrainingLogParser:
         total = int(m.group(3))
         elapsed = m.group(4).strip()
         eta = m.group(5).strip()
-        speed = m.group(6).strip()
+        speed_num = m.group(6).strip()
+        speed_unit = m.group(7).strip()  # "it/s" or "s/it"
 
         self.metrics.step = step
         self.metrics.total_steps = total
         self.metrics.elapsed = elapsed
         self.metrics.eta = eta
-        self.metrics.speed = speed
+        self.metrics.speed = f"{speed_num} {speed_unit}"
 
-        if m.group(7):  # avr_loss
-            loss = float(m.group(7))
+        if m.group(8):  # avr_loss
+            loss = float(m.group(8))
             self.metrics.avr_loss = loss
             # Append to rolling history (downsample if exceeding max)
             if not self.metrics.step_history or step != self.metrics.step_history[-1]:
@@ -126,12 +151,39 @@ class TrainingLogParser:
                     self.metrics.loss_history = self.metrics.loss_history[::stride]
                     self.metrics.step_history = self.metrics.step_history[::stride]
 
-        if m.group(8):  # router_H
-            self.metrics.router_h = float(m.group(8))
-        if m.group(9):  # Keys Scaled
-            self.metrics.keys_scaled = int(m.group(9))
-        if m.group(10):  # Average key norm
-            self.metrics.avg_key_norm = float(m.group(10))
+        if m.group(9):  # lr
+            self.metrics.lr = float(m.group(9))
+        if m.group(10):  # router_H
+            self.metrics.router_h = float(m.group(10))
+        if m.group(11):  # Keys Scaled
+            self.metrics.keys_scaled = int(m.group(11))
+        if m.group(12):  # Average key norm
+            self.metrics.avg_key_norm = float(m.group(12))
+
+        self._dirty = True
+
+    def _parse_step(self, m: re.Match) -> None:
+        """Parse direct step progress: ``step 450/1000 loss=0.02345 lr=1.23e-04 speed=1.380``."""
+        step = int(m.group(1))
+        total = int(m.group(2))
+        self.metrics.step = step
+        self.metrics.total_steps = total
+
+        if m.group(3):  # loss
+            loss = float(m.group(3))
+            self.metrics.avr_loss = loss
+            if not self.metrics.step_history or step != self.metrics.step_history[-1]:
+                self.metrics.loss_history.append(loss)
+                self.metrics.step_history.append(step)
+                if len(self.metrics.loss_history) > _MAX_HISTORY:
+                    stride = len(self.metrics.loss_history) // _MAX_HISTORY + 1
+                    self.metrics.loss_history = self.metrics.loss_history[::stride]
+                    self.metrics.step_history = self.metrics.step_history[::stride]
+
+        if m.group(4):  # lr
+            self.metrics.lr = float(m.group(4))
+        if m.group(5):  # speed
+            self.metrics.speed = m.group(5)
 
         self._dirty = True
 

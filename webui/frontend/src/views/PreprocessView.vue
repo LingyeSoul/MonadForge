@@ -518,6 +518,9 @@ async function runTask(command: string) {
     env.METHOD = configStore.variant
     env.METHODS_SUBDIR = 'gui-methods'
   }
+  if (configStore.preset) {
+    env.PRESET = configStore.preset
+  }
   if (['mask', 'preprocess'].includes(command)) {
     env.MIT_TEXT_THRESHOLD = String(settings.mit_text_threshold)
     env.MIT_DILATE = String(settings.mit_dilate)

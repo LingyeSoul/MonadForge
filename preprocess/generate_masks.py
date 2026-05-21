@@ -158,7 +158,7 @@ def main() -> None:
     load_futures = [pool.submit(load_image, work_items[j][0]) for j in range(prefetch)]
     save_futures = []
 
-    pbar = tqdm(total=total, desc="Generating masks")
+    pbar = tqdm(total=total, desc="Generating masks", ascii=True)
     for batch_start in range(0, total, batch_size):
         batch_end = min(batch_start + batch_size, total)
         batch = []

@@ -1,5 +1,5 @@
 <template>
-  <v-container fluid class="pa-4 d-flex flex-column" style="flex: 1 1 auto; min-height: 0;">
+  <v-container fluid class="pa-4 d-flex flex-column" style="flex: 1 1 0; min-height: 0; overflow: hidden;">
     <!-- Header -->
     <div class="d-flex align-center mb-1">
       <div class="text-h5">{{ t('dashTitle') }}</div>
@@ -28,9 +28,9 @@
     </div>
 
     <!-- Dashboard content -->
-    <div v-else class="d-flex flex-column gap-3" style="flex: 1 1 auto; min-height: 0; overflow-y: auto;">
+    <div v-else class="d-flex flex-column" style="flex: 1 1 0; min-height: 0; overflow-y: auto; gap: 20px;">
       <!-- Row 1: Progress + Metrics -->
-      <v-row dense>
+      <v-row dense style="flex: 0 0 auto;">
         <!-- Progress Ring -->
         <v-col cols="12" md="4">
           <v-card variant="tonal" class="pa-4 h-100">
@@ -44,7 +44,7 @@
                 <div class="text-center">
                   <div class="text-h5 font-weight-bold">{{ progressPercent.toFixed(0) }}%</div>
                   <div class="text-caption text-medium-emphasis">
-                    {{ m.step }} / {{ m.total_steps }}
+                    {{ m.total_steps > 0 ? `${m.step} / ${m.total_steps}` : '— / —' }}
                   </div>
                 </div>
               </v-progress-circular>
@@ -59,7 +59,7 @@
                   <template v-if="m.eta"> &middot; {{ t('dashEta') }}: {{ m.eta }}</template>
                 </div>
                 <div v-if="m.speed" class="text-caption text-medium-emphasis">
-                  {{ m.speed }} it/s
+                  {{ m.speed }}
                 </div>
               </div>
             </div>
@@ -85,7 +85,7 @@
       </v-row>
 
       <!-- Row 1.5: System Monitoring -->
-      <v-card variant="tonal" class="pa-4">
+      <v-card variant="tonal" class="pa-4" style="flex: 0 0 auto;">
         <div class="text-subtitle-2 mb-3">{{ t('dashSysMon') }}</div>
         <v-row dense>
           <v-col v-for="card in sysCards" :key="card.key" cols="6" sm="4" md="2">
@@ -108,7 +108,7 @@
       </v-card>
 
       <!-- Row 2: Loss Curve -->
-      <v-card variant="tonal" class="pa-4">
+      <v-card variant="tonal" class="pa-4" style="flex: 0 0 auto;">
         <div class="d-flex align-center mb-2">
           <div class="text-subtitle-2">{{ t('dashLossCurve') }}</div>
           <v-spacer />
@@ -125,7 +125,7 @@
       </v-card>
 
       <!-- Row 3: Events Timeline -->
-      <v-card v-if="m.events.length > 0" variant="tonal" class="pa-4">
+      <v-card v-if="m.events.length > 0" variant="tonal" class="pa-4" style="flex: 0 0 auto;">
         <div class="text-subtitle-2 mb-2">{{ t('dashEvents') }}</div>
         <div class="events-list" style="max-height: 200px; overflow-y: auto;">
           <div
@@ -155,18 +155,16 @@
         </div>
       </v-card>
 
-      <!-- Row 4: Live Log (collapsible) -->
-      <v-expansion-panels variant="accordion">
-        <v-expansion-panel>
-          <v-expansion-panel-title>
-            <v-icon icon="mdi-console-line" size="small" class="mr-2" />
-            {{ t('dashLiveLog') }}
-          </v-expansion-panel-title>
-          <v-expansion-panel-text>
-            <LogStream :task-id="selectedTaskId" />
-          </v-expansion-panel-text>
-        </v-expansion-panel>
-      </v-expansion-panels>
+      <!-- Row 4: Live Log (fixed height, scrolls internally) -->
+      <v-card variant="tonal" style="flex: 0 0 320px; display: flex; flex-direction: column; overflow: hidden;">
+        <v-card-title class="text-subtitle-2 d-flex align-center pa-3 pb-0">
+          <v-icon icon="mdi-console-line" size="small" class="mr-2" />
+          {{ t('dashLiveLog') }}
+        </v-card-title>
+        <v-card-text class="pa-2 d-flex flex-column" style="flex: 1 1 0; min-height: 0; overflow: hidden;">
+          <LogStream :task-id="selectedTaskId" />
+        </v-card-text>
+      </v-card>
     </div>
   </v-container>
 </template>
@@ -229,7 +227,7 @@ const metricCards = computed(() => {
   const cards: { key: string; label: string; value: string; color?: string }[] = [
     { key: 'loss', label: t('dashLoss'), value: m.value.avr_loss > 0 ? m.value.avr_loss.toFixed(5) : '—', color: '#BB86FC' },
     { key: 'lr', label: t('dashLearningRate'), value: m.value.lr > 0 ? m.value.lr.toExponential(2) : '—', color: '#CF6679' },
-    { key: 'speed', label: t('dashSpeed'), value: m.value.speed ? `${m.value.speed} it/s` : '—' },
+    { key: 'speed', label: t('dashSpeed'), value: m.value.speed || '—' },
     { key: 'step', label: t('dashStep'), value: m.value.total_steps > 0 ? `${m.value.step}/${m.value.total_steps}` : '—' },
   ]
   if (m.value.router_h !== null && m.value.router_h !== undefined) {
@@ -252,9 +250,13 @@ const sysCards = computed(() => {
   if (v.gpu_util_percent !== undefined) {
     cards.push({ key: 'gpu_util', label: t('dashGpuUtil'), value: `${v.gpu_util_percent}%`, color: '#4CAF50', percent: v.gpu_util_percent })
   }
-  if (v.gpu_mem_total_gb) {
+  if (v.gpu_mem_total_gb !== undefined && v.gpu_mem_total_gb > 0) {
     const pct = v.gpu_mem_total_gb > 0 ? Math.round((v.gpu_mem_used_gb / v.gpu_mem_total_gb) * 100) : 0
-    cards.push({ key: 'gpu_mem', label: t('dashGpuMem'), value: `${v.gpu_mem_used_gb}/${v.gpu_mem_total_gb} GB`, color: '#FF9800', percent: pct })
+    let memLabel = `${v.gpu_mem_used_gb}/${v.gpu_mem_total_gb} GB`
+    if (v.gpu_mem_reserved_gb !== undefined && v.gpu_mem_reserved_gb !== v.gpu_mem_used_gb) {
+      memLabel += ` (R: ${v.gpu_mem_reserved_gb})`
+    }
+    cards.push({ key: 'gpu_mem', label: t('dashGpuMem'), value: memLabel, color: '#FF9800', percent: pct })
   }
   if (v.gpu_temp_c !== undefined) {
     const color = v.gpu_temp_c >= 80 ? '#F44336' : v.gpu_temp_c >= 65 ? '#FF9800' : '#4CAF50'

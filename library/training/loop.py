@@ -359,6 +359,8 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         )
         state.initial_step = 1
 
+    _prev_step_ts = time.monotonic()
+
     for step, batch in enumerate(skipped_dataloader or state.train_dataloader):
         state.current_step.value = state.global_step
         if state.initial_step > 0:
@@ -380,7 +382,7 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             state.saver.maybe_save_step(state.network, state.global_step, epoch)
             state.optimizer_train_fn()
 
-        _log_step(
+        avr_loss = _log_step(
             trainer,
             state,
             loss=loss,
@@ -391,6 +393,22 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             maximum_norm=maximum_norm,
             max_mean_logs=max_mean_logs,
         )
+
+        # Enriched stdout line for WebUI parser — includes loss, lr, speed
+        # in addition to the step count, so the dashboard works even when
+        # tqdm stderr is lost through the subprocess pipe chain.
+        if accelerator.sync_gradients:
+            _now = time.monotonic()
+            _dt = _now - _prev_step_ts
+            _speed = f"{1.0 / _dt:.3f}" if _dt > 0 else "0"
+            _prev_step_ts = _now
+            _lrs = state.lr_scheduler.get_last_lr()
+            _lr = _lrs[0] if _lrs else 0.0
+            accelerator.print(
+                f"step {state.global_step}/{args.max_train_steps}"
+                f" loss={avr_loss:.5f} lr={_lr:.2e} speed={_speed}",
+                flush=True,
+            )
         _maybe_run_step_validation(trainer, state, epoch)
 
         if state.global_step >= args.max_train_steps:
@@ -559,7 +577,7 @@ def _log_step(
     mean_norm,
     maximum_norm,
     max_mean_logs,
-) -> None:
+) -> float:
     args = state.args
     log_every = max(1, int(getattr(args, "log_every_n_steps", 1) or 1))
     # Gate on sync_gradients: with gradient_accumulation_steps > 1 the
@@ -576,7 +594,9 @@ def _log_step(
     current_loss = loss.detach().item()
     state.loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
     avr_loss: float = state.loss_recorder.moving_average
-    logs = {"avr_loss": avr_loss}
+    # Include lr in tqdm postfix so the WebUI parser can extract it.
+    lrs = state.lr_scheduler.get_last_lr()
+    logs = {"avr_loss": avr_loss, "lr": lrs[0] if lrs else 0.0}
     _unwrapped_net = state.accelerator.unwrap_model(state.network)
     # Refresh router_H only on log cadence — get_router_entropy → full
     # get_router_stats compute (with D2H syncs) is wasted if the only
@@ -613,6 +633,7 @@ def _log_step(
             )
         )
         trainer.step_logging(state.accelerator, logs, state.global_step, epoch + 1)
+    return avr_loss
 
 
 def _maybe_run_step_validation(trainer, state: LoopState, epoch: int) -> None:

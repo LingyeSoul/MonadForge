@@ -153,38 +153,50 @@ def get_hw_stats():
         "mem_percent": vm.percent,
     }
 
-    # GPU — torch.cuda for memory, nvidia-smi for util & temp
+    # GPU detection: nvidia-smi primary (system-wide GPU memory/util/temp),
+    # torch.cuda supplement (device name, per-process reserved memory).
+    #
+    # nvidia-smi reports the ACTUAL system-wide memory usage — torch.cuda only
+    # sees the current process's allocation (0 for the WebUI server process
+    # since training runs in a separate subprocess).  So nvidia-smi values
+    # always win for memory / util / temp.
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            parts = [p.strip() for p in result.stdout.strip().split(",")]
+            if len(parts) >= 5:
+                stats["gpu_name"] = parts[0]
+                stats["gpu_mem_used_gb"] = round(int(parts[1]) / 1024, 1)
+                stats["gpu_mem_total_gb"] = round(int(parts[2]) / 1024, 1)
+                stats["gpu_util_percent"] = int(parts[3])
+                stats["gpu_temp_c"] = int(parts[4])
+    except Exception:
+        pass
+
+    # torch.cuda: supplement with device name + reserved memory when available
     try:
         import torch
 
         if torch.cuda.is_available():
             idx = torch.cuda.current_device()
-            stats["gpu_name"] = torch.cuda.get_device_name(idx)
-            stats["gpu_mem_used_gb"] = round(torch.cuda.memory_allocated(idx) / (1024**3), 1)
-            stats["gpu_mem_total_gb"] = round(torch.cuda.get_device_properties(idx).total_memory / (1024**3), 1)
+            stats.setdefault("gpu_name", torch.cuda.get_device_name(idx))
+            stats.setdefault(
+                "gpu_mem_total_gb",
+                round(torch.cuda.get_device_properties(idx).total_memory / (1024**3), 1),
+            )
+            # Per-process allocated + reserved (useful for debugging OOM)
             stats["gpu_mem_reserved_gb"] = round(torch.cuda.memory_reserved(idx) / (1024**3), 1)
-
-            # nvidia-smi for utilization & temperature
-            try:
-                import subprocess
-
-                result = subprocess.run(
-                    [
-                        "nvidia-smi",
-                        "--query-gpu=utilization.gpu,temperature.gpu",
-                        "--format=csv,noheader,nounits",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.returncode == 0:
-                    parts = result.stdout.strip().split(",")
-                    if len(parts) >= 2:
-                        stats["gpu_util_percent"] = int(parts[0].strip())
-                        stats["gpu_temp_c"] = int(parts[1].strip())
-            except Exception:
-                pass
     except Exception:
         pass
 

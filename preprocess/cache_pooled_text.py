@@ -80,7 +80,7 @@ def main() -> None:
     skipped = 0
     failed = 0
 
-    for te_path in tqdm(te_files, desc="Caching pooled"):
+    for te_path in tqdm(te_files, desc="Caching pooled", ascii=True):
         stem = te_path.name.removesuffix(TE_CACHE_SUFFIX)
         pooled_path = te_path.parent / (stem + POOLED_CACHE_SUFFIX)
         if pooled_path.exists() and not args.overwrite:

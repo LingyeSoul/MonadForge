@@ -148,6 +148,13 @@ def _unpad_static_shape(x, pad_info):
     T_s, H_s, W_s, seq_len = pad_info
     x = x.squeeze(3).squeeze(1)
     x = x[:, :seq_len, :]
+    assert x.shape[1] == T_s * H_s * W_s, (
+        f"_unpad_static_shape: shape mismatch after slicing to seq_len={seq_len}: "
+        f"got dim-1={x.shape[1]}, expected T*H*W={T_s}*{H_s}*{W_s}={T_s * H_s * W_s}. "
+        f"Original pad_info={pad_info}, tensor shape before slice was {x.shape}. "
+        f"This usually means static_token_count is set but the input spatial "
+        f"dimensions are incompatible with the constant-token bucket size."
+    )
     x = x.unflatten(1, (T_s, H_s, W_s))
     return x
 

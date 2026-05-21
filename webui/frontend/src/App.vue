@@ -107,25 +107,41 @@ const { t, setLanguage } = useI18n()
 const snackbarOpen = ref(false)
 const snackbarTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 const showGuidebook = ref(false)
+let dismissing = false
+
+function scheduleClose(timeout: number) {
+  if (snackbarTimer.value) clearTimeout(snackbarTimer.value)
+  snackbarTimer.value = setTimeout(() => {
+    snackbarTimer.value = null
+    closeAndAdvance()
+  }, timeout)
+}
+
+function closeAndAdvance() {
+  if (dismissing) return
+  dismissing = true
+  if (snackbarTimer.value) {
+    clearTimeout(snackbarTimer.value)
+    snackbarTimer.value = null
+  }
+  snackbarOpen.value = false
+  // Let Vuetify finish its close animation before popping the queue
+  setTimeout(() => {
+    notifyStore.dismiss()
+    dismissing = false
+  }, 300)
+}
 
 watch(() => notifyStore.current, (item) => {
   if (item) {
     snackbarOpen.value = true
-    if (snackbarTimer.value) clearTimeout(snackbarTimer.value)
-    snackbarTimer.value = setTimeout(() => {
-      snackbarOpen.value = false
-    }, item.timeout)
+    scheduleClose(item.timeout)
   }
 })
 
 function onSnackbarUpdate(open: boolean) {
   if (!open) {
-    if (snackbarTimer.value) {
-      clearTimeout(snackbarTimer.value)
-      snackbarTimer.value = null
-    }
-    snackbarOpen.value = false
-    notifyStore.dismiss()
+    closeAndAdvance()
   }
 }
 
@@ -166,6 +182,6 @@ async function onLangChange(lang: unknown) {
   flex-direction: column;
   flex: 1 1 0;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
 }
 </style>

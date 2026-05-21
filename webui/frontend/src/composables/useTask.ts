@@ -1,67 +1,52 @@
-import { ref, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 
 interface WsMessage {
   type: 'connected' | 'log' | 'done' | 'cancelled' | 'error'
   line?: string
+  replace?: boolean
   task_id?: string
   exit_code?: number
   state?: string
   message?: string
 }
 
-export function useTaskStream(taskId: string) {
+export function useTaskStream(taskId: string | (() => string)) {
   const messages = ref<string[]>([])
   const connected = ref(false)
   const done = ref(false)
   const exitCode = ref<number | null>(null)
   let ws: WebSocket | null = null
 
-  // Number of WS "log" messages to skip (subscribe() replays these)
-  let replayRemaining = 0
+  const resolvedId = typeof taskId === 'function' ? taskId : () => taskId
 
   // rAF batching — coalesce rapid WS messages into a single DOM update
-  const pendingLines: string[] = []
+  const pendingLines: Array<{ line: string; replace: boolean }> = []
   let rafId = 0
 
   function flushPending() {
     rafId = 0
     if (pendingLines.length === 0) return
-    messages.value.push(...pendingLines.splice(0))
+    const batch = pendingLines.splice(0)
+    for (const { line, replace } of batch) {
+      if (replace && messages.value.length > 0) {
+        messages.value.splice(messages.value.length - 1, 1, line)
+      } else {
+        messages.value.push(line)
+      }
+    }
   }
 
-  function enqueueLine(line: string) {
-    pendingLines.push(line)
+  function enqueueLine(line: string, replace = false) {
+    pendingLines.push({ line, replace })
     if (!rafId) {
       rafId = requestAnimationFrame(flushPending)
     }
   }
 
-  async function connect() {
-    // 1. Fetch accumulated history via REST (single request, not N WS messages)
-    let historyCount = 0
-    try {
-      const res = await fetch(`/api/tasks/${taskId}/output`)
-      if (res.ok) {
-        const data = await res.json()
-        if (data.lines?.length) {
-          historyCount = data.lines.length
-          messages.value.push(...data.lines)
-        }
-        if (data.state && data.state !== 'running' && data.state !== 'pending') {
-          done.value = true
-          exitCode.value = data.exit_code ?? null
-        }
-      }
-    } catch {
-      // REST failed — let WS replay handle everything
-    }
-
-    // WS subscribe() will replay these same lines; skip them
-    replayRemaining = historyCount
-
-    // 2. Open WebSocket for live updates
+  function _connect(id: string) {
+    if (!id) return
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    ws = new WebSocket(`${protocol}//${location.host}/ws/tasks/${taskId}`)
+    ws = new WebSocket(`${protocol}//${location.host}/ws/tasks/${id}`)
 
     ws.onopen = () => {
       connected.value = true
@@ -70,12 +55,7 @@ export function useTaskStream(taskId: string) {
       try {
         const msg: WsMessage = JSON.parse(event.data)
         if (msg.type === 'log' && msg.line) {
-          if (replayRemaining > 0) {
-            // Part of the subscribe() replay — already loaded via REST
-            replayRemaining--
-            return
-          }
-          enqueueLine(msg.line)
+          enqueueLine(msg.line, msg.replace === true)
         } else if (msg.type === 'done') {
           done.value = true
           exitCode.value = msg.exit_code ?? null
@@ -105,7 +85,20 @@ export function useTaskStream(taskId: string) {
     if (rafId) cancelAnimationFrame(rafId)
   }
 
+  function reconnect(id: string) {
+    disconnect()
+    messages.value = []
+    done.value = false
+    exitCode.value = null
+    _connect(id)
+  }
+
+  // Reconnect whenever the task ID changes
+  watch(resolvedId, (id) => {
+    reconnect(id)
+  }, { immediate: true })
+
   onUnmounted(disconnect)
 
-  return { messages, connected, done, exitCode, connect, disconnect }
+  return { messages, connected, done, exitCode, disconnect }
 }

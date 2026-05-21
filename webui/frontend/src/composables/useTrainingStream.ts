@@ -87,6 +87,7 @@ export function useTrainingStream(taskId: string) {
           }
           enqueueLine(msg.line)
         } else if (msg.type === 'metrics' && msg.data) {
+          console.debug('[TrainingStream] metrics received:', msg.data.step, msg.data.total_steps, msg.data.avr_loss)
           store.updateFromWs(msg.data)
         } else if (msg.type === 'done') {
           done.value = true

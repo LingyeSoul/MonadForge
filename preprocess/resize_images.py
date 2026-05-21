@@ -248,11 +248,11 @@ def main() -> None:
             ): img_path
             for img_path in image_files
         }
-        pbar = tqdm(as_completed(futures), total=len(futures), desc="Resizing")
+        pbar = tqdm(as_completed(futures), total=len(futures), desc="Resizing", ascii=True)
         for future in pbar:
             name, reso = future.result()
             bucket_counts[reso] = bucket_counts.get(reso, 0) + 1
-            pbar.set_postfix_str(f"{name} → {reso[0]}x{reso[1]}")
+            pbar.set_postfix_str(f"{name} -> {reso[0]}x{reso[1]}")
 
     print("\nBucket distribution:")
     for reso in sorted(bucket_counts):

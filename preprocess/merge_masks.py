@@ -45,7 +45,7 @@ def main() -> None:
         return
 
     merged = 0
-    for (rel_str, name), sources in tqdm(sorted(by_rel.items()), desc="Merging masks"):
+    for (rel_str, name), sources in tqdm(sorted(by_rel.items()), desc="Merging masks", ascii=True):
         if len(sources) == 1:
             arr = np.array(Image.open(sources[0]))
         else:

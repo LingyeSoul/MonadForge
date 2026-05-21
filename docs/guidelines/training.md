@@ -170,8 +170,8 @@ user-facing while caches all land under `post_image_dataset/`.
 
 To shallow-override the blueprint, drop a `[general]` / `[[datasets]]` block
 into the method TOML — `_apply_dataset_overrides` in `library/config/io.py`
-merges top-level scalars (e.g. `batch_size`). Subset-level keys must go
-through `--dataset_config <path>`.
+merges top-level scalars (e.g. `batch_size`) and subset-level scalars
+(e.g. `num_repeats`, `keep_tokens`) by index.
 
 The `[half]` preset (and similar) sets `sample_ratio = 0.5` for every
 subset via the global `--sample_ratio` override — it shrinks **train only**;

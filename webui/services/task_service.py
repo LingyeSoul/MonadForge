@@ -90,10 +90,17 @@ class TaskService:
         merged_env = {**os.environ, **(env or {})}
         # Force unbuffered stdout/stderr so readline() sees output immediately.
         # Without this, Python detects the pipe and uses full buffering (4-8 KB),
-        # causing the first N kilobytes of output to be silently lost.
+        # causing the first N kilobytes of output to be silently lossy.
         merged_env["PYTHONUNBUFFERED"] = "1"
+        # Force child Python processes to use UTF-8 for stdout/stderr.
+        # Without this, Windows uses the system locale encoding (e.g. GBK/CP936
+        # on Chinese Windows), causing non-ASCII characters to be garbled when
+        # decoded as UTF-8 on the receiving end.
+        merged_env["PYTHONIOENCODING"] = "utf-8"
 
-        logger.info("Starting task %s: %s", task_id, " ".join(cmd))
+        logger.info("Starting task %s: %s (env override keys: %s)", task_id, " ".join(cmd), list((env or {}).keys()))
+        if env and "PRESET" in env:
+            logger.info("Task %s PRESET env override: %r", task_id, env["PRESET"])
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -168,24 +175,77 @@ class TaskService:
             task._subscribers.remove(queue)
 
     async def _read_output(self, task: Task) -> None:
-        """Read subprocess stdout line-by-line and dispatch to subscribers."""
+        """Read subprocess stdout and dispatch to subscribers.
+
+        Splits on both ``\\n`` and ``\\r`` so tqdm progress-bar updates
+        (which use bare ``\\r`` to overwrite the previous line) arrive as
+        individual messages instead of being concatenated into one giant line.
+
+        Lines ending with ``\\r`` (progress updates) are sent with
+        ``replace: true`` so the frontend can overwrite the previous line
+        instead of appending.  They also replace the last entry in
+        ``task.lines`` so that late-joining subscribers (REST replay) see
+        only the final progress-bar state.
+        """
         assert task.process is not None
         assert task.process.stdout is not None
+
+        _LF = ord("\n")
+        _CR = ord("\r")
+        buf = bytearray()
+        pending_cr = False  # \r at end of previous chunk; check next chunk for \n
         try:
             while True:
-                raw = await task.process.stdout.readline()
-                if not raw:
+                chunk = await task.process.stdout.read(4096)
+                if not chunk:
                     break
-                line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
-                task.lines.append(line)
-                await self._notify_subscribers(task, {"type": "log", "line": line})
+                i = 0
+                end = len(chunk)
+                # Handle \r from previous chunk boundary
+                if pending_cr:
+                    pending_cr = False
+                    line = bytes(buf).decode("utf-8", errors="replace")
+                    buf.clear()
+                    if chunk[0] == _LF:
+                        # \r\n across chunk boundary → regular line
+                        i = 1
+                        await self._emit_line(task, line, replace=False)
+                    else:
+                        # bare \r → progress update
+                        await self._emit_line(task, line, replace=True)
+                while i < end:
+                    b = chunk[i]
+                    if b == _CR:
+                        line = bytes(buf).decode("utf-8", errors="replace")
+                        buf.clear()
+                        if i + 1 < end:
+                            # \r\n within same chunk → regular line ending
+                            if chunk[i + 1] == _LF:
+                                i += 2
+                                await self._emit_line(task, line, replace=False)
+                                continue
+                            # bare \r → tqdm progress update
+                            i += 1
+                            await self._emit_line(task, line, replace=True)
+                        else:
+                            # \r at chunk boundary — defer until next chunk
+                            pending_cr = True
+                            i += 1
+                    elif b == _LF:
+                        line = bytes(buf).decode("utf-8", errors="replace")
+                        buf.clear()
+                        i += 1
+                        await self._emit_line(task, line, replace=False)
+                    else:
+                        buf.append(b)
+                        i += 1
 
-                # Parse training metrics from the line
-                if task.parser.feed(line):
-                    await self._notify_subscribers(
-                        task,
-                        {"type": "metrics", "data": task.parser.metrics.snapshot()},
-                    )
+            # Flush remaining bytes (partial line without terminator)
+            if buf or pending_cr:
+                line = bytes(buf).decode("utf-8", errors="replace")
+                await self._emit_line(
+                    task, line, replace=pending_cr
+                )
 
             task.exit_code = await task.process.wait()
             if task.state == TaskState.CANCELLED:
@@ -206,6 +266,37 @@ class TaskService:
             task.state = TaskState.FAILED
             await self._notify_subscribers(
                 task, {"type": "done", "exit_code": -1, "state": "failed"}
+            )
+
+    async def _emit_line(
+        self, task: Task, line: str, *, replace: bool
+    ) -> None:
+        """Append (or replace) a line and notify subscribers.
+
+        When *replace* is ``True`` the line is a tqdm progress update that
+        should overwrite the previous line in the frontend.
+        """
+        if replace and task.lines:
+            task.lines[-1] = line
+        else:
+            task.lines.append(line)
+
+        msg: dict = {"type": "log", "line": line}
+        if replace:
+            msg["replace"] = True
+        await self._notify_subscribers(task, msg)
+
+        # Parse training metrics from the line
+        if task.parser.feed(line):
+            snapshot = task.parser.metrics.snapshot()
+            print(
+                f"[metrics] step={snapshot.get('step')}/{snapshot.get('total_steps')} "
+                f"loss={snapshot.get('avr_loss')} lr={snapshot.get('lr')} speed={snapshot.get('speed')}",
+                flush=True,
+            )
+            await self._notify_subscribers(
+                task,
+                {"type": "metrics", "data": snapshot},
             )
 
     async def _notify_subscribers(self, task: Task, msg: dict) -> None:

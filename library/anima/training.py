@@ -888,6 +888,15 @@ def sample_images(
     except Exception:
         pass
 
+    # Temporarily disable static-shape padding during sample inference.
+    # Sample image dimensions may not match constant-token bucket sizes
+    # (static_token_count), which causes _unpad_static_shape to fail when
+    # T_s*H_s*W_s != static_token_count.  Disabling is safe here because
+    # sample generation runs under torch.no_grad() with no compile pressure.
+    saved_static_token_count = dit.static_token_count
+    if saved_static_token_count is not None:
+        dit.set_static_token_count(None)
+
     with torch.no_grad(), accelerator.autocast():
         for prompt_dict in prompts:
             dit.prepare_block_swap_before_forward()
@@ -906,6 +915,10 @@ def sample_images(
                 sample_prompts_te_outputs,
                 prompt_replacement,
             )
+
+    # Restore static_token_count for subsequent training steps
+    if saved_static_token_count is not None:
+        dit.set_static_token_count(saved_static_token_count)
 
     # Restore RNG state
     torch.set_rng_state(rng_state)

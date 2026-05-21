@@ -222,7 +222,7 @@ def main() -> None:
 
     pool = ThreadPoolExecutor(max_workers=args.workers)
 
-    pbar = tqdm(total=total, desc="Generating masks")
+    pbar = tqdm(total=total, desc="Generating masks", ascii=True)
     for image_path, mask_path in work_items:
         # Load image as RGB numpy array
         pil_image = Image.open(image_path).convert("RGB")

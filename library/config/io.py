@@ -145,9 +145,10 @@ def _apply_dataset_overrides(blueprint: dict, override: dict) -> None:
 
     - ``[general]``: per-key overwrite.
     - ``[[datasets]]``: matched by index against the base blueprint; only
-      top-level scalars on the dataset table are overwritten. ``subsets``
-      arrays in the override are ignored with a warning — subset-level
-      overrides are intentionally out of scope to keep the merge predictable.
+      top-level scalars on the dataset table are overwritten.
+    - ``[[datasets.subsets]]``: matched by index against the base dataset's
+      subsets; per-key shallow merge.  Extra subsets in the override beyond
+      the base length are ignored.
     """
     g_override = override.get("general")
     if isinstance(g_override, dict):
@@ -166,16 +167,30 @@ def _apply_dataset_overrides(blueprint: dict, override: dict) -> None:
                 i,
             )
             continue
-        if "subsets" in override_ds:
-            logger.warning(
-                "Dataset override index %d declares [[datasets.subsets]]; "
-                "subset-level overrides are not supported. Ignoring `subsets`.",
-                i,
-            )
+        # Merge top-level dataset scalars (batch_size, resolution, …)
+        override_subsets = override_ds.get("subsets")
         for k, v in override_ds.items():
             if k == "subsets":
                 continue
             base_datasets[i][k] = v
+        # Merge subset-level scalars (num_repeats, keep_tokens, …)
+        if isinstance(override_subsets, list):
+            base_subsets = base_datasets[i].get("subsets") or []
+            for j, override_sub in enumerate(override_subsets):
+                if not isinstance(override_sub, dict):
+                    continue
+                if j >= len(base_subsets):
+                    logger.warning(
+                        "Subset override index %d on dataset %d has no matching "
+                        "base subset; ignoring.",
+                        j,
+                        i,
+                    )
+                    continue
+                if not isinstance(base_subsets[j], dict):
+                    continue
+                for k, v in override_sub.items():
+                    base_subsets[j][k] = v
 
 
 def load_dataset_config_from_base(
@@ -197,8 +212,9 @@ def load_dataset_config_from_base(
 
     When ``method`` is given, ``[general]`` and ``[[datasets]]`` sections in
     the matching method TOML shallow-override the base blueprint (top-level
-    scalars only — see ``_apply_dataset_overrides``). This lets a method file
-    bump ``batch_size`` etc. without duplicating the whole blueprint.
+    scalars and subset-level scalars — see ``_apply_dataset_overrides``).
+    For gui-methods, the custom overlay at ``configs/custom/variants/`` takes
+    precedence over the template.
     """
     base_path = os.path.join(configs_dir, "base.toml")
     if not os.path.exists(base_path):
@@ -211,6 +227,13 @@ def load_dataset_config_from_base(
 
     if method is not None:
         method_path = os.path.join(configs_dir, methods_subdir, f"{method}.toml")
+        # Check for custom overlay when using gui-methods
+        if methods_subdir == "gui-methods":
+            custom_overlay = os.path.join(
+                configs_dir, "custom", "variants", f"{method}.toml"
+            )
+            if os.path.exists(custom_overlay):
+                method_path = custom_overlay
         method_override = _read_dataset_sections(method_path)
         if method_override:
             _apply_dataset_overrides(sections, method_override)

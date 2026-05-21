@@ -299,7 +299,7 @@ def main() -> None:
             "--caption_shuffle_variants <= 0 (single-variant cache)."
         )
 
-    pbar = tqdm(total=total, desc="Caching text embeddings")
+    pbar = tqdm(total=total, desc="Caching text embeddings", ascii=True)
     for batch_start in range(0, total, args.batch_size):
         batch = entries[batch_start : batch_start + args.batch_size]
 

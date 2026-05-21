@@ -13,11 +13,11 @@ import { useTaskStream } from '../composables/useTask'
 import { useI18n } from '../composables/useI18n'
 
 const props = defineProps<{ taskId: string }>()
+const emit = defineEmits<{ done: [] }>()
 const logContainer = ref<HTMLElement>()
 const { t } = useI18n()
 
-const { messages, connected, connect } = useTaskStream(props.taskId)
-connect()
+const { messages, connected, done } = useTaskStream(() => props.taskId)
 
 watch(messages, async () => {
   await nextTick()
@@ -25,6 +25,10 @@ watch(messages, async () => {
     logContainer.value.scrollTop = logContainer.value.scrollHeight
   }
 }, { deep: true })
+
+watch(done, (val) => {
+  if (val) emit('done')
+})
 </script>
 
 <style scoped>

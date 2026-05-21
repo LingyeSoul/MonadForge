@@ -80,7 +80,7 @@ def _write_centroid_sidecar(
     print(f"\nCentroid pass: {len(files)} files under {cache_dir}")
     centroid: torch.Tensor | None = None
     n = 0
-    for p in tqdm(files, desc="pooling"):
+    for p in tqdm(files, desc="pooling", ascii=True):
         sd = load_file(str(p))
         feats = sd.get("image_features")
         if feats is None:
@@ -383,6 +383,7 @@ def main() -> None:
     pbar = tqdm(
         total=len(pending),
         desc=f"Caching {bundle.name} features",
+        ascii=True,
     )
     for (w, h), paths in reso_groups.items():
         out_paths = [
@@ -411,7 +412,7 @@ def main() -> None:
                 _save_safetensors(save_dict, dst, metadata=metadata)
                 cached += 1
                 pbar.update(1)
-                pbar.set_postfix_str(f"{Path(src).name} → T={feats.shape[0]}")
+                pbar.set_postfix_str(f"{Path(src).name} -> T={feats.shape[0]}")
 
     pbar.close()
     print(

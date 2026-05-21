@@ -491,6 +491,7 @@ def train(
     redirects output to `output/ckpt-artist/`).
     """
     args = ["--method", method, "--preset", preset or _preset()]
+    print(f"[train] method={method!r} preset_arg={preset!r} _preset()={_preset()!r} resolved={preset or _preset()!r}", file=sys.stderr)
     if methods_subdir:
         args += ["--methods_subdir", methods_subdir]
     artist = os.environ.get("ARTIST")
@@ -502,42 +503,52 @@ def train(
     accelerate_launch(*args, *extra)
 
 
-INFERENCE_BASE = [
-    PY,
-    "inference.py",
-    "--dit",
-    "models/diffusion_models/anima-base-v1.0.safetensors",
-    "--text_encoder",
-    "models/text_encoders/qwen_3_06b_base.safetensors",
-    "--vae",
-    "models/vae/qwen_image_vae.safetensors",
-    "--vae_chunk_size",
-    "64",
-    "--vae_disable_cache",
-    "--attn_mode",
-    "flash",  # flash4 not supported yet (flash-attention-sm120 disabled)
-    "--lora_multiplier",
-    "1.0",
-    "--prompt",
-    "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top"
-    " and denim shorts is standing outdoors. She's holding a rectangular sign out in"
-    ' front of her that reads "ANIMA". She\'s looking at the viewer with a smile. The'
-    " background features some trees and blue sky with clouds.",
-    "--negative_prompt",
-    "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
-    "--image_size",
-    "1024",
-    "1024",
-    "--infer_steps",
-    "28",
-    "--flow_shift",
-    "1.0",
-    "--sampler",
-    "er_sde",
-    "--guidance_scale",
-    "4.0",
-    "--seed",
-    "40",
-    "--save_path",
-    "output/tests",
-]
+def get_inference_base() -> list[str]:
+    """Build the shared ``inference.py`` argv prefix.
+
+    Model paths and prompts are read from the config chain (base.toml →
+    preset → method) via ``_path()``. Users customize test behavior by
+    editing ``test_prompt`` / ``test_negative_prompt`` in base.toml (or
+    the corresponding preset/method overlay).
+    """
+    return [
+        PY,
+        "inference.py",
+        "--dit",
+        _path("pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
+        "--text_encoder",
+        _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
+        "--vae",
+        _path("vae", "models/vae/qwen_image_vae.safetensors"),
+        "--vae_chunk_size",
+        "64",
+        "--vae_disable_cache",
+        "--attn_mode",
+        "flash",  # flash4 not supported yet (flash-attention-sm120 disabled)
+        "--lora_multiplier",
+        "1.0",
+        "--prompt",
+        _path("test_prompt", "masterpiece, best quality, score_7, safe"),
+        "--negative_prompt",
+        _path("test_negative_prompt", "worst quality, low quality, score_1, score_2, score_3"),
+        "--image_size",
+        "1024",
+        "1024",
+        "--infer_steps",
+        "28",
+        "--flow_shift",
+        "1.0",
+        "--sampler",
+        "er_sde",
+        "--guidance_scale",
+        "4.0",
+        "--seed",
+        "40",
+        "--save_path",
+        "output/tests",
+    ]
+
+
+# Backward-compatible alias — resolved once at import time so all existing
+# ``INFERENCE_BASE`` references keep working without code changes.
+INFERENCE_BASE = get_inference_base()

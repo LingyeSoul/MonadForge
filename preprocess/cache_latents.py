@@ -149,7 +149,7 @@ def main() -> None:
     cached = 0
     skipped = 0
 
-    pbar = tqdm(total=total, desc="Caching latents")
+    pbar = tqdm(total=total, desc="Caching latents", ascii=True)
     for (w, h), paths in reso_groups.items():
         for batch_start in range(0, len(paths), args.batch_size):
             batch_paths = paths[batch_start : batch_start + args.batch_size]
@@ -210,7 +210,7 @@ def main() -> None:
 
                 cached += 1
                 pbar.update(1)
-                pbar.set_postfix_str(f"{p.name} → {size[0]}x{size[1]}")
+                pbar.set_postfix_str(f"{p.name} -> {size[0]}x{size[1]}")
 
     pbar.close()
     print(
