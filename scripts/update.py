@@ -329,6 +329,49 @@ def update(
         )
 
 
+def _restart_daemon_if_idle() -> None:
+    """Bring the training daemon onto the freshly-updated code.
+
+    The daemon supervisor runs detached and has already imported the OLD
+    ``scripts/daemon/*`` into memory; swapping the files on disk doesn't touch
+    it, so a new-code client would otherwise be talking to a stale-code daemon.
+    Restarting fixes that — but training jobs run in their own detached
+    processes (they imported everything at launch), so an *active* run is not
+    disrupted by a supervisor restart and must not be killed:
+
+    - idle → graceful shutdown (``kill_jobs=False``); the next ``ensure_daemon``
+      relaunches it on the new code.
+    - busy → leave it; warn that it stays on old code until the job finishes.
+
+    Best-effort: any daemon hiccup is reported, never fatal to the update.
+    """
+    try:
+        from scripts.daemon import client as _client
+    except Exception:  # noqa: BLE001 — daemon module optional / mid-swap
+        return
+    if not _client.is_running():
+        return
+    cl = _client.DaemonClient()
+    active = (cl.health() or {}).get("active_job")
+    if active:
+        print(
+            f"\n⚠ training daemon left running on the OLD code: job {active} is "
+            "active.\n"
+            "  It keeps using the pre-update daemon until that job finishes.\n"
+            "  Restart when convenient — `make daemon-terminate` (it relaunches\n"
+            "  on the new code the next time it's used)."
+        )
+        return
+    try:
+        cl.shutdown(kill_jobs=False)
+        print(
+            "\ntraining daemon stopped (was idle) — it will relaunch on the new "
+            "code next time it's used."
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"\ncould not stop the idle training daemon: {e} (restart manually)")
+
+
 def _apply(
     new_root: Path,
     new_tag: str,
@@ -460,6 +503,20 @@ def _apply(
         except subprocess.CalledProcessError as e:
             print(f"  uv sync failed (exit {e.returncode}); rerun manually")
             return e.returncode
+
+    # Code on disk changed → the running daemon supervisor is now stale. Only
+    # bother if something was actually written (a pure no-op update leaves the
+    # daemon correct as-is).
+    changed = (
+        summary["wrote_new"]
+        + summary["overwrote_unchanged"]
+        + summary["code_backed_up"]
+        + summary["config_overwrote"]
+        + summary["config_backed_up"]
+        + summary["deleted"]
+    )
+    if changed:
+        _restart_daemon_if_idle()
 
     return 0
 

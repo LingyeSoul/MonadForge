@@ -38,6 +38,33 @@ logger = logging.getLogger("anima.daemon")
 _POLL_INTERVAL = 1.0  # seconds between liveness checks
 _SENTINEL = "__stop__"
 
+# Signal → user-actionable hint, for a process that died without writing a
+# run_end event. POSIX ``Popen.poll()`` reports a signal death as a negative
+# number; a shell/launcher layer (``accelerate launch``) relays it as 128+N.
+_SIGNAL_HINTS = {
+    9: "killed (SIGKILL) — almost always out of memory. Lower batch size, "
+    "raise blocks_to_swap, or try PRESET=low_vram.",
+    6: "aborted (SIGABRT) — usually a CUDA assert / illegal memory access. "
+    "See the last traceback above.",
+    11: "segfault (SIGSEGV) — a native crash. See the last traceback above.",
+    15: "terminated (SIGTERM).",
+}
+
+
+def _classify_exit(rc) -> str:
+    """Human-readable diagnosis for a nonzero/unknown process exit code."""
+    sig = None
+    if rc is not None and rc < 0:
+        sig = -rc
+    elif rc is not None and rc > 128:
+        sig = rc - 128
+    if sig in _SIGNAL_HINTS:
+        return f"process exited (code={rc}): {_SIGNAL_HINTS[sig]}"
+    return (
+        f"process exited (code={rc}) — crashed before finishing. "
+        "See the last traceback above."
+    )
+
 
 class JobManager:
     def __init__(self) -> None:
@@ -270,12 +297,11 @@ class JobManager:
             self._finalize(job, STATE_DONE)
         else:
             # No run_end and a nonzero/unknown exit — the trainer died before it
-            # could write its terminal event.
-            self._finalize(
-                job,
-                STATE_ERROR,
-                error=f"process exited (code={rc}) without a run_end event",
-            )
+            # could write its terminal event. Classify the code into something
+            # actionable: signal deaths (OOM-killer SIGKILL, CUDA SIGABRT,
+            # segfault) leave NO Python traceback in stdout.log, so the exit
+            # code is the only signal the user gets.
+            self._finalize(job, STATE_ERROR, error=_classify_exit(rc))
 
     def _finalize(
         self,

@@ -122,7 +122,7 @@ ip_pair_caption_strip_p = 0.0
 # Read by train.py when use_ip_adapter is on.
 use_ip_adapter = true
 ip_image_drop_p = 0.05
-caption_dropout_rate = 0.05
+caption_dropout_rate = 0.1
 gradient_accumulation_steps = 2
 
 # DiT is frozen; resampler + KV proj + PE-LoRA + live PE encoder all sit on

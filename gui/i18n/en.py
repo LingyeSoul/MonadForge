@@ -136,6 +136,8 @@ STRINGS: dict[str, str] = {
     "daemon_queued": "Queued job {job_id} on the training daemon.\n",
     "daemon_reattached": "Re-attached to running job {job_id} (started in a previous session).\n",
     "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ likely cause: {summary}",
     "train_queued": "Train (queued)",
     "train_running_daemon": "Train (running…)",
     "update_success_title": "Update applied",

@@ -129,6 +129,8 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/ が空です。",
     "finished": "--- 完了 (終了コード {code}) ---",
     "starting": "起動中… (torch / accelerate を読み込んでいます)",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ 推定される原因: {summary}",
     "update_success_title": "更新完了",
     "update_success_message": (
         "anima_lora が {v} に更新されました。\n\n"

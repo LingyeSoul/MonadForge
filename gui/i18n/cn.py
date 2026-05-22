@@ -128,6 +128,8 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/ 为空。",
     "finished": "--- 完成 (退出码 {code}) ---",
     "starting": "启动中…… (加载 torch / accelerate)",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ 可能原因: {summary}",
     "update_success_title": "更新已应用",
     "update_success_message": (
         "anima_lora 已更新至 {v}。\n\n"

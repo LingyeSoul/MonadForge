@@ -126,6 +126,8 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/가 비어 있습니다.",
     "finished": "--- 완료 (종료 코드 {code}) ---",
     "starting": "시작 중… (torch / accelerate 로딩)",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ 추정 원인: {summary}",
     "update_success_title": "업데이트 완료",
     "update_success_message": (
         "anima_lora이(가) {v}(으)로 업데이트되었습니다.\n\n"

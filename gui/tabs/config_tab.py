@@ -1003,9 +1003,7 @@ class ConfigTab(QWidget):
         self._jsonl_reader.reset()
         self._stdout_tailer.reset()
         self.progress.setVisible(False)
-        self._log(
-            "\n" + t("daemon_job_finished", job_id=job_id, state=state or "ended") + "\n"
-        )
+        self._log("\n" + gui_daemon.format_finish_banner(job_id, state) + "\n")
 
         # Auto-chain Train after a successful preprocess command job when the
         # user originally clicked Train against an empty cache. The DAEMON owns

@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Optional
 
 from scripts.daemon import client as _client
 from scripts.daemon import config as _cfg
-from scripts.daemon.jobs import TERMINAL_STATES
+from scripts.daemon.jobs import STATE_ERROR, STATE_STOPPED, TERMINAL_STATES
 
 # Re-export so callers don't reach into scripts.daemon themselves.
 ensure_daemon = _client.ensure_daemon
@@ -190,8 +191,95 @@ def read_job_chained_id(job_id: str) -> Optional[str]:
     return data.get("chained_job_id")
 
 
+def read_job_error(job_id: str) -> Optional[str]:
+    """The daemon's terminal-state diagnosis from ``job.json`` (None if clean).
+
+    The manager always records *why* a job ended in ``error``/``stopped`` —
+    e.g. ``"process exited (code=137): killed (SIGKILL) — almost always out of
+    memory…"`` for a silent OOM-killer death that left no traceback. The GUI
+    reads it here so the finish banner can show the reason, not just the state.
+    """
+    data = _read_job_record(job_id)
+    if not data:
+        return None
+    return data.get("error") or data.get("status_detail")
+
+
 def is_terminal(state: Optional[str]) -> bool:
     return state in TERMINAL_STATES
+
+
+# Exception markers scanned (tail-first) when a job ends in error. The real
+# traceback is streamed live but scrolls far above the finish banner; on
+# failure we re-surface its salient line right next to the banner so the cause
+# sits where the user is already looking. High-value (actionable) patterns are
+# preferred over a generic ``SomethingError:`` so an accelerate-launch
+# CalledProcessError wrapper doesn't mask the child's real OOM/missing-file.
+_HIGH_VALUE_RE = re.compile(
+    r"(torch\.cuda\.OutOfMemoryError|CUDA out of memory|CUDA error:?|"
+    r"FileNotFoundError|ModuleNotFoundError|ImportError|"
+    r"KeyError|AssertionError|NotImplementedError)[^\n]*"
+)
+_GENERIC_ERR_RE = re.compile(r"^\s*[\w.]*(?:Error|Exception):[^\n]*", re.MULTILINE)
+
+
+def _tail_text(path: str, *, max_bytes: int = 65536) -> str:
+    """Last ``max_bytes`` of a (possibly huge) log, decoded leniently."""
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > max_bytes:
+                f.seek(size - max_bytes)
+            data = f.read()
+    except OSError:
+        return ""
+    return data.decode("utf-8", errors="replace")
+
+
+def extract_error_summary(job_id: str) -> Optional[str]:
+    """Best-guess cause line from the tail of ``stdout.log`` (None if unfound).
+
+    Two-pass over the log tail: prefer the last *actionable* exception line
+    (OOM, missing file/module, CUDA error); else fall back to the last generic
+    ``…Error:``/``…Exception:`` line. Returns a single trimmed line.
+    """
+    tail_txt = _tail_text(stdout_path(job_id))
+    if not tail_txt:
+        return None
+    high = _HIGH_VALUE_RE.findall(tail_txt)
+    if high:
+        # findall on a single-group regex yields the matched prefixes; re-find
+        # the full last match for the complete message line.
+        last = list(_HIGH_VALUE_RE.finditer(tail_txt))[-1].group(0)
+        return last.strip()
+    generic = _GENERIC_ERR_RE.findall(tail_txt)
+    if generic:
+        return generic[-1].strip()
+    return None
+
+
+def format_finish_banner(job_id: str, state: Optional[str]) -> str:
+    """The GUI finish banner: state line + the daemon's error reason + a
+    best-guess cause line scraped from stdout.log. Multi-line, no surrounding
+    newlines. Shared by ConfigTab and PreprocessingTab so they stay in sync.
+
+    On a clean ``done`` it's just the plain banner; on ``error`` it carries the
+    daemon's diagnosis (``job.error``) and, when distinct, the salient
+    traceback line so the user doesn't have to scroll up for the cause.
+    """
+    from gui.i18n import t
+
+    st = state or "ended"
+    err = read_job_error(job_id) if state in (STATE_ERROR, STATE_STOPPED) else None
+    if err:
+        lines = [t("daemon_job_failed", job_id=job_id, state=st, error=err)]
+    else:
+        lines = [t("daemon_job_finished", job_id=job_id, state=st)]
+    if state == STATE_ERROR:
+        summary = extract_error_summary(job_id)
+        if summary and (not err or summary not in err):
+            lines.append(t("daemon_error_cause", summary=summary))
+    return "\n".join(lines)
 
 
 class FileTailer:

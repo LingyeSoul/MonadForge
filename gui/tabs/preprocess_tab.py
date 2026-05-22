@@ -661,9 +661,7 @@ class PreprocessingTab(LazyTabMixin, QWidget):
         self._job_id = None
         self._stdout_tailer.reset()
         self._progress_tracker.reset()
-        self.log.appendPlainText(
-            t("daemon_job_finished", job_id=job_id, state=state or "ended")
-        )
+        self.log.appendPlainText(gui_daemon.format_finish_banner(job_id, state))
         self._restore_idle_ui()
         self._refresh_status()
 
