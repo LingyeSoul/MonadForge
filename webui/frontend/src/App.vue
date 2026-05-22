@@ -7,11 +7,15 @@
       @click="rail = false"
     >
       <v-list-item
-        prepend-icon="mdi-anvil"
         :title="t('appName')"
         class="monadforge-logo py-3"
         nav
       >
+        <template #prepend>
+          <v-avatar size="32" class="mr-2">
+            <img src="/logo.svg" alt="MonadForge" />
+          </v-avatar>
+        </template>
         <template #append>
           <v-btn
             icon="mdi-chevron-left"

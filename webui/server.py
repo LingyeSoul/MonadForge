@@ -36,7 +36,13 @@ _ALLOWED_ORIGINS = [
 
 
 def _spa_fallback(request: Request):
-    """Return index.html for any non-API, non-asset path."""
+    """Serve real files from dist/ first; fall back to index.html for SPA routes."""
+    # Strip leading slash and resolve against dist root
+    rel = request.url.path.lstrip("/")
+    candidate = (_DIST_DIR / rel).resolve()
+    # Only serve if the resolved path is inside dist/ (prevent path traversal)
+    if candidate.is_file() and str(candidate).startswith(str(_DIST_DIR.resolve())):
+        return FileResponse(candidate)
     return FileResponse(_INDEX_HTML, media_type="text/html")
 
 
@@ -76,8 +82,9 @@ def create_app(dev: bool = False) -> FastAPI:
             "/assets", StaticFiles(directory=str(_DIST_DIR / "assets")), name="assets"
         )
 
-        # SPA catch-all: every other non-API path returns index.html so that
-        # vue-router handles client-side routing (/config, /dataset, …).
+        # SPA catch-all: serves real files from dist/ (favicon.svg, logo.svg,
+        # etc.) when they exist, otherwise returns index.html for vue-router
+        # client-side routing (/config, /dataset, …).
         spa_app = Starlette(
             routes=[
                 Route("/", _spa_fallback),

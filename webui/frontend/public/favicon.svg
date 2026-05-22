@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="flame" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0%" stop-color="#B34700"/>
+      <stop offset="50%" stop-color="#F5A623"/>
+      <stop offset="100%" stop-color="#FFD700"/>
+    </linearGradient>
+    <linearGradient id="anvil" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#B87333"/>
+      <stop offset="100%" stop-color="#6B4226"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Hexagonal dark background -->
+  <polygon points="50,2 93,25 93,75 50,98 7,75 7,25" fill="#1A1210"/>
+
+  <!-- Soft glow halo behind flame -->
+  <ellipse cx="50" cy="56" rx="22" ry="20" fill="#F5A623" opacity="0.12"/>
+
+  <!-- Outer flame -->
+  <path d="M50,28 C42,38 32,50 32,60 C32,68 40,74 50,74 C60,74 68,68 68,60 C68,50 58,38 50,28Z"
+        fill="url(#flame)" opacity="0.9"/>
+  <!-- Inner flame core -->
+  <path d="M50,38 C46,44 40,52 40,58 C40,63 44,67 50,67 C56,67 60,63 60,58 C60,52 54,44 50,38Z"
+        fill="#FFD700" opacity="0.8"/>
+  <!-- Flame tip highlight -->
+  <circle cx="50" cy="42" r="2.5" fill="#FFFBE6" opacity="0.9"/>
+
+  <!-- Anvil base -->
+  <path d="M26,72 L74,72 L78,80 C78,83 76,85 73,85 L27,85 C24,85 22,83 22,80Z"
+        fill="url(#anvil)" stroke="#D4943A" stroke-width="1.2"/>
+  <line x1="30" y1="72.5" x2="70" y2="72.5" stroke="#D4943A" stroke-width="0.8" opacity="0.6"/>
+
+  <!-- Ember particles -->
+  <circle cx="38" cy="52" r="1.2" fill="#FFD700" opacity="0.6"/>
+  <circle cx="63" cy="48" r="0.9" fill="#FFAA33" opacity="0.5"/>
+  <circle cx="45" cy="36" r="0.7" fill="#FFD700" opacity="0.4"/>
+  <circle cx="56" cy="40" r="1.0" fill="#FF8844" opacity="0.45"/>
+  <circle cx="34" cy="58" r="0.8" fill="#FF6633" opacity="0.35"/>
+  <circle cx="66" cy="55" r="0.7" fill="#FFD700" opacity="0.3"/>
+</svg>
