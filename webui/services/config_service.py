@@ -16,8 +16,10 @@ import re
 import toml
 
 from webui.explanations import (
-    FIELD_HELP as _FIELD_HELP,
-    PREPROCESS_FIELD_HELP as _PRE_FIELD_HELP,
+    field_help_lang as _field_help_lang,
+    preprocess_field_help_lang as _pre_field_help_lang,
+    _read_fields,
+    _read_preprocess_fields,
 )
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -615,20 +617,12 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
 
 def _field_desc(key: str, lang: str) -> str | None:
     """Return the localized description for *key* from FIELD_HELP."""
-    for src in (_PRE_FIELD_HELP, _FIELD_HELP):
-        entry = src.get(key)
-        if entry:
-            return entry.get(lang) or entry.get("en")
-    return None
+    return _pre_field_help_lang(key, lang) or _field_help_lang(key, lang)
 
 
 def _field_desc_en(key: str) -> str | None:
     """Return the English description for *key* from FIELD_HELP."""
-    for src in (_PRE_FIELD_HELP, _FIELD_HELP):
-        entry = src.get(key)
-        if entry:
-            return entry.get("en")
-    return None
+    return _pre_field_help_lang(key, "en") or _field_help_lang(key, "en")
 
 
 def get_field_type(key: str, value: Any) -> str:
@@ -1118,14 +1112,17 @@ def get_field_help_data(variant: str, lang: str = "cn") -> dict:
     meta = _read_variant_metadata(GUI_METHODS_DIR / f"{variant}.toml")
     family = meta.get("family", variant)
 
-    # Collect all field help entries for the requested language
+    # Collect all field help entries for the requested language (English fallback)
     field_help: dict[str, str] = {}
-    for src in (_PRE_FIELD_HELP, _FIELD_HELP):
-        for key, entry in src.items():
-            if isinstance(entry, dict):
-                text = entry.get(lang) or entry.get("en")
-                if text:
-                    field_help[key] = text
+    for src_fn in (_read_preprocess_fields, _read_fields):
+        en_data = src_fn("en") if lang != "en" else {}
+        for key, text in src_fn(lang).items():
+            if text:
+                field_help[key] = text
+        # Fill in any keys present in English but missing in requested lang
+        for key, text in en_data.items():
+            if key not in field_help and text:
+                field_help[key] = text
 
     # Load method guide HTML from webui/explanations/guides/
     guide_html = _load_method_guide(family, lang)

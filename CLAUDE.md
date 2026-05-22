@@ -46,12 +46,7 @@ make distill-mod           # train pooled_text_proj MLP (add --synth_data_dir fo
 make dcw                   # sample 5 aspect buckets + train fusion head (~3-5h on a 5060 Ti)
 make dcw-train             # train-only on existing pool (~30s)
 
-# Training daemon (local FIFO job queue — see plan.md). Auto-starts on first submit.
-make daemon | daemon-attach [JOB=<id>] | daemon-kill [JOB=<id>] | daemon-terminate
-make lora --queue                        # enqueue instead of run inline (overnight sweep)
-# GUI Train button + ComfyUI trainer node + preprocessing all submit to the daemon.
-
-make gui                   # PySide6 GUI (config editing, preprocess+train tabs, dataset browser)
+python -m webui            # WebUI (FastAPI + Vue 3 — config editing, dataset browsing, training)
 make mask | mask-clean     # SAM3 + MIT → post_image_dataset/masks/ (for masked loss)
 make merge ADAPTER_DIR=output/ckpt [MULTIPLIER=0.8]   # bake LoRA into DiT (LoRA/Ortho/T-LoRA only)
 make comfy-batch           # run ComfyUI batch workflow
@@ -132,7 +127,7 @@ Caches live under `post_image_dataset/lora/`: `{stem}_{WxH}_anima.npz` (VAE), `{
 
 ## Custom nodes
 
-Spectrum KSampler + mod-guidance nodes live in a separate repo (https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler; ships DCW scalar default `+0.01` + `auto` mode). In-tree under `custom_nodes/`: `comfyui-hydralora/` (Adapter / FeRA / Soft Tokens loaders — see its `CLAUDE.md` for the `forward_hook`-not-override invariant), `comfyui-anima-directedit/`, `comfyui-anima-tagger/`, `comfyui-anima-trainer/` (daemon-backed one-shot trainer), `comfyui-anima-blockcompile/`.
+Spectrum KSampler + mod-guidance nodes live in a separate repo (https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler; ships DCW scalar default `+0.01` + `auto` mode). In-tree under `custom_nodes/`: `comfyui-hydralora/` (Adapter / FeRA / Soft Tokens loaders — see its `CLAUDE.md` for the `forward_hook`-not-override invariant), `comfyui-anima-directedit/`, `comfyui-anima-tagger/`, `comfyui-anima-trainer/`, `comfyui-anima-blockcompile/`.
 
 Several nodes carry a `_vendor/` subset of the live tree. **Regenerate vendor trees with `make vendor-sync` (`scripts/sync_vendor.py`), never `cp` by hand** — re-run before every node publish. See [[feedback_vendor_sync]]. Note `../comfy/custom_nodes/` is symlinked into this repo — edit the source here, not the symlink.
 

@@ -25,7 +25,6 @@ import sys
 from scripts.experimental_tasks import inference as exp_inference
 from scripts.experimental_tasks import training as exp_training
 from scripts.tasks import (
-    daemon,
     dcw,
     downloads,
     inference,
@@ -46,25 +45,6 @@ COMMANDS = {
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
         "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft).",
-    ),
-    # ── Training daemon ───────────────────────────────────────────────
-    "daemon": (
-        daemon.cmd_daemon,
-        "Start the local training-job daemon (idempotent; detached, waits for /health).",
-    ),
-    "daemon-attach": (
-        daemon.cmd_daemon_attach,
-        "Follow the daemon (read-only). JOB=<id> tails that job's stdout; "
-        "ctrl-C detaches only — training keeps running.",
-    ),
-    "daemon-kill": (
-        daemon.cmd_daemon_kill,
-        "Abort the running job (or JOB=<id>) and free the GPU; daemon stays up "
-        "and starts the next queued job.",
-    ),
-    "daemon-terminate": (
-        daemon.cmd_daemon_terminate,
-        "Stop the daemon entirely (active job killed, GPU freed, queue discarded).",
     ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (

@@ -300,6 +300,7 @@ export default {
   // Config Field
   cfOrigin: 'base',
   cfVirtual: '虚拟',
+  cfInvalidNumber: '无效数字',
 
   // Model Path Field
   cfBrowse: '浏览',

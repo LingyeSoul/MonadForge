@@ -300,6 +300,7 @@ export default {
   // Config Field
   cfOrigin: 'base',
   cfVirtual: 'virtual',
+  cfInvalidNumber: 'Invalid number',
 
   // Model Path Field
   cfBrowse: 'Browse',
