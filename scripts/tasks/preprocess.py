@@ -150,6 +150,27 @@ def cmd_preprocess_pe(extra):
     )
 
 
+def cmd_caption_index(extra):
+    """Build the method-agnostic typed-tag caption index.
+
+    Walks caption sidecars under the source dir, classifies tags into
+    character / copyright / artist / count via the Anima Tagger vocab, and
+    writes ``post_image_dataset/captions/caption_index.json`` (per-image typed
+    tags + group inversions). Pure data, no GPU. Consumed by the IP-Adapter
+    distinct-pair sampler, artist balancing, and dataset analytics. Regenerate
+    when the dataset or vocab changes.
+    """
+    run(
+        [
+            PY,
+            "preprocess/build_caption_index.py",
+            "--src",
+            _path("source_image_dir", "image_dataset"),
+            *extra,
+        ]
+    )
+
+
 def cmd_preprocess(extra):
     # PE features are intentionally NOT cached here — only IP-Adapter / CMMD /
     # DCW v4 need them, and those paths chain `preprocess-pe` explicitly (see

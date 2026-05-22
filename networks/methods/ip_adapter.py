@@ -1096,6 +1096,11 @@ class IPAdapterMethodAdapter(MethodAdapter):
         # next prime_for_forward, so the baseline forward measures DiT-only
         # behavior (no IP path). Restored to False after the baseline forward.
         self._force_drop_ip_tokens: bool = False
+        # Set by the shuffled_ref validation baseline to source IP tokens from
+        # ``batch["ip_features_shuffled"]`` (an unrelated image) instead of the
+        # matched-distinct reference, isolating identity-specificity. None ⇒
+        # use the primary reference. Restored after the baseline forward.
+        self._ref_override: Optional[str] = None
 
     def on_network_built(self, ctx: SetupCtx) -> None:
         args = ctx.args
@@ -1177,7 +1182,17 @@ class IPAdapterMethodAdapter(MethodAdapter):
             return
 
         pe_lora = getattr(network, "pe_lora_enabled", False)
-        cached = batch.get("ip_features") if isinstance(batch, dict) else None
+        feature_key = (
+            "ip_features_shuffled"
+            if self._ref_override == "shuffled"
+            else "ip_features"
+        )
+        cached = batch.get(feature_key) if isinstance(batch, dict) else None
+        if self._ref_override == "shuffled" and cached is None:
+            # No shuffled reference available for this val item (e.g. self-only
+            # target) — drop IP so the baseline still runs cleanly.
+            network.set_ip_tokens(None)
+            return
         if pe_lora:
             images = batch.get("images") if isinstance(batch, dict) else None
             if images is None:
@@ -1220,20 +1235,39 @@ class IPAdapterMethodAdapter(MethodAdapter):
         network.set_ip_tokens(ip_tokens)
 
     def validation_baselines(self) -> list[ValidationBaseline]:
-        # Reference and target are the same image during training, so naive FM
-        # loss can be lowered just by routing IP tokens through to_k_ip/to_v_ip
-        # (a copy shortcut). Pair the primary forward with a "no_ip" forward —
-        # same noise, same batch, same sigma, but ip_tokens=None — so the
-        # logged delta isolates the IP path's actual contribution. If the
-        # delta is ~0 the resampler / per-block KV aren't learning anything
-        # useful; if it's growing the IP path is doing real work.
-        def _enter() -> None:
+        # Under distinct-pair training the validation primary forward uses the
+        # *matched_distinct* reference (a held-out different image of the
+        # target's identity — the deployment condition; the val dataset
+        # populates ``batch["ip_features"]`` with it). Two baselines isolate
+        # what the IP path contributes, both relative to that primary:
+        #
+        #   no_ip       — ip_tokens=None. delta>0 ⇒ the IP path helps at all.
+        #   shuffled_ref— reference swapped for an unrelated image. delta>0 ⇒
+        #                 the help is *identity-specific*, not "any image".
+        #
+        # Phase-1 gate: matched_distinct beats both ⇒ both deltas positive.
+        # (Self-paired training could never show the shuffled_ref contrast.)
+        # NB: FM-MSE deltas are necessary-not-sufficient on Anima
+        # (project_fm_val_loss_uninformative) — confirm with the CMMD/exp-test-ip
+        # ladder before trusting a win.
+        def _no_ip_enter() -> None:
             self._force_drop_ip_tokens = True
 
-        def _exit() -> None:
+        def _no_ip_exit() -> None:
             self._force_drop_ip_tokens = False
 
-        return [ValidationBaseline(name="no_ip", enter=_enter, exit=_exit)]
+        def _shuffled_enter() -> None:
+            self._ref_override = "shuffled"
+
+        def _shuffled_exit() -> None:
+            self._ref_override = None
+
+        return [
+            ValidationBaseline(name="no_ip", enter=_no_ip_enter, exit=_no_ip_exit),
+            ValidationBaseline(
+                name="shuffled_ref", enter=_shuffled_enter, exit=_shuffled_exit
+            ),
+        ]
 
     def on_epoch_end(self, ctx: StepCtx) -> None:
         # Dump per-block param norms + ‖ip_out‖/‖text_result‖ ratio averaged

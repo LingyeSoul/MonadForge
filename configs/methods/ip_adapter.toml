@@ -13,11 +13,21 @@
 #              + `make preprocess-pe` once and both pipelines reuse them).
 # The dataset blueprint lives in configs/datasets/ip_adapter.toml.
 #
-# Feature source: defaults to PRE-CACHED PE features
-# ({stem}_anima_pe.safetensors produced by `make preprocess-pe`). This lets
-# cache_latents / cache_text_encoder_outputs all stay true and skips loading
-# the vision encoder during training. Set `ip_features_cache_to_disk = false`
-# and `cache_latents = false` to fall back to the original live-encoding path.
+# Feature source: PRE-CACHED PE features ({stem}_anima_pe.safetensors produced
+# by `make preprocess-pe`). cache_latents / cache_text_encoder_outputs all stay
+# true and the vision encoder is NOT loaded during training. Set
+# `ip_features_cache_to_disk = false` + `cache_latents = false` (and
+# pe_lora_enabled=true) to fall back to the live-encoding / PE-LoRA path.
+#
+# Phase 1 — distinct-pair (identity) training (Phase 1 of
+# docs/proposal/ip-adapter-identity-pairs.md). `ip_pair_mode = "identity"`
+# decouples the IP-path reference from the VAE target: each step draws the PE
+# features of a *different* image of the target's identity (character →
+# franchise → artist back-off via post_image_dataset/captions/caption_index.json,
+# `make caption-index`), removing the self-pair copy shortcut. This is a stem
+# swap on the cached features — cheap, and it does NOT use PE-LoRA (so no live
+# vision encoder forward/backward). Set ip_pair_mode = "self" for the legacy
+# self-paired behavior.
 
 dataset_config = "configs/datasets/ip_adapter.toml"
 
@@ -56,7 +66,11 @@ network_args = [
     # Forces ip_features_cache_to_disk=false because cached features can't
     # track a moving encoder.
 
-    "pe_lora_enabled=true",
+    # PE-LoRA OFF for Phase 1 — it owns the vision encoder and trains it live
+    # (slow: a PE forward+backward every step). Distinct-pair training attacks
+    # the objective instead and runs entirely off cached features. Flip back to
+    # true (+ ip_features_cache_to_disk=false, cache_latents=false) to combine.
+    "pe_lora_enabled=false",
     "pe_lora_rank=16",
     "pe_lora_alpha=16",
     "pe_lora_layer_from=8",
@@ -85,9 +99,24 @@ checkpointing_epochs = 8
 
 ip_diagnostics_epochs = 999
 
-# PE-LoRA owns the encoder and trains it live — pre-cached PE features can't
-# track the moving LoRA, so feature caching is off. 
-# ip_features_cache_to_disk = true
+# Pre-cached PE features (no PE-LoRA) — encoder not loaded during training.
+ip_features_cache_to_disk = true
+cache_latents = true
+
+# Distinct-pair (identity) training. mode: "self" | "identity" |
+# "identity_cross_artist". "identity" walks character → franchise → artist and
+# falls back to self when no distinct positive exists. "identity_cross_artist"
+# additionally requires character/franchise matches to come from a *different*
+# artist (forces pure identity transfer, drops the source style).
+ip_pair_mode = "identity"
+ip_pair_prob = 0.8                 # fraction of steps drawing a distinct reference
+ip_pair_min_level = "artist"       # loosest tier before self-fallback
+# Caption-leakage guard: probability of dropping the target's character/
+# copyright tokens from the caption on distinct-pair steps so identity must
+# flow through the IP image path, not the text. INERT while
+# cache_text_encoder_outputs=true (the model reads the cached full embedding) —
+# set it false to enable the guard (Phase 2). Kept 0 here for the fast path.
+ip_pair_caption_strip_p = 0.0
 
 # CFG dropout for image conditioning (independent of text dropout).
 # Read by train.py when use_ip_adapter is on.

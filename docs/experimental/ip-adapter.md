@@ -60,7 +60,33 @@ PE-Core-L14-336 supports **dynamic resolution** out of the box — each ref imag
 4. The DiT forward runs as normal. Inside each cross-attn, the patched forward computes the text path via the existing `attention_dispatch.dispatch_attention(...)` call, then adds `scale * SDPA(q, ip_k, ip_v)` before `output_proj`.
 5. Backward flows through the IP path back through the resampler and per-block KV projections. DiT params have `requires_grad=False`.
 
-Reference image and target image are the **same image** (sampled from `post_image_dataset/`). The model learns: "given image X as reference + caption Y, generate X." With image dropout it also learns "given caption Y alone, generate something that looks like Y" — preserving the base behavior.
+By default (`ip_pair_mode = "self"`) reference image and target image are the **same image** (sampled from `post_image_dataset/`). The model learns: "given image X as reference + caption Y, generate X." With image dropout it also learns "given caption Y alone, generate something that looks like Y" — preserving the base behavior.
+
+### Distinct-pair (identity) training
+
+Self-pairing has a structural weakness: because the reference *is* the target, the IP path's lowest-loss behavior is to **copy the target's own pixels** through `to_k_ip`/`to_v_ip` — a genuine loss reduction that never forces the resampler to find the *identity* axis. At inference the user hands a new reference and expects identity transfer onto a different prompt, a generalization the self-paired objective never asked for. (This is the "narrow signal on a collapsed manifold" the 0502 trail diagnosed — `docs/proposal/ip-adapter-0502.md`.)
+
+`ip_pair_mode = "identity"` (or `"identity_cross_artist"`) decouples the reference from the VAE target: each step draws the PE features of a **different image of the target's identity**, walking a tiered character → franchise → artist back-off over the shared caption index (`make caption-index` → `post_image_dataset/captions/caption_index.json`). The only signal the IP path can then carry that consistently lowers loss is what is *invariant across the pair* — identity — since pose/crop/background differ and are useless to copy. Because the pairing is just a **stem swap on the cached PE features** (`_load_ip_features_for_stem` resolves the partner's nested cache), this needs no new preprocessing and **does not use PE-LoRA** — the live vision encoder stays unloaded, so it's the fast path. Full design + phasing: `docs/proposal/ip-adapter-identity-pairs.md`.
+
+Knobs (top-level args; method TOML scalars):
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `ip_pair_mode` | `self` | `self` \| `identity` \| `identity_cross_artist` (latter forces character/franchise matches from a *different* artist → drops source style) |
+| `ip_pair_prob` | `0.8` | fraction of steps drawing a distinct reference (rest self-pair, for warm-up stability) |
+| `ip_pair_min_level` | `artist` | loosest tier before self-fallback (`character` = same-character only) |
+| `ip_pair_caption_strip_p` | `0.0` | prob. of dropping the target's character/copyright tokens from the caption on distinct steps, forcing identity through the image path. **Inert while `cache_text_encoder_outputs=true`** (the cached embedding still carries identity); enable with `cache_text_encoder_outputs=false`. |
+
+Requires `ip_features_cache_to_disk=true` (the stem swap operates on cached features; `pe_lora_enabled=true` is rejected). `ip_pair_index` is an internal default, not a user knob. The shipped `configs/methods/ip_adapter.toml` runs `identity` with PE-LoRA off.
+
+#### Validation baselines (the success signal)
+
+Under distinct-pair training the validation **primary** forward uses a *matched_distinct* reference (a held-out different image of the target's identity — the deployment condition). `IPAdapterMethodAdapter.validation_baselines()` adds two perturbed re-forwards on the same (batch, sigma, noise):
+
+- `no_ip` — `ip_tokens=None`. `delta>0` ⇒ the IP path helps at all.
+- `shuffled_ref` — reference swapped for an unrelated image. `delta>0` ⇒ the help is *identity-specific*, not "any image helps".
+
+Logged as `loss/validation/baseline_{no_ip,shuffled_ref}[_delta]` by `library/training/validation.py::_run_validation_baselines` (this FM-MSE baseline pass was re-wired to run independently of the CMMD val path it was orphaned from). **Phase-1 gate: matched_distinct beats both.** Caveat: FM-MSE deltas are necessary-not-sufficient on Anima (lower val FM-MSE has not tracked sample quality) — confirm any win with CMMD and the `exp-test-ip` ladder below.
 
 ### Caption dropout pitfall
 

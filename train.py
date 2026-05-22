@@ -352,6 +352,49 @@ class AnimaTrainer:
                 for dataset in val_dataset_group.datasets:
                     dataset.force_load_images_for_ip = True
 
+        # IP-Adapter distinct-pair (identity) training. When opted in
+        # (ip_pair_mode != "self") each dataset draws the IP-path reference from
+        # a *different* image of the target's identity instead of the target
+        # itself, removing the self-pair copy shortcut. Requires cached PE
+        # features (the pairing is a stem swap on disk). See
+        # docs/proposal/ip-adapter-identity-pairs.md.
+        ip_pair_mode = str(getattr(args, "ip_pair_mode", "self") or "self")
+        if getattr(args, "use_ip_adapter", False) and ip_pair_mode != "self":
+            if not getattr(args, "ip_features_cache_to_disk", False):
+                raise ValueError(
+                    "ip_pair_mode requires ip_features_cache_to_disk=true "
+                    "(distinct-pair training swaps which stem's cached PE "
+                    "features feed the IP path). PE-LoRA's live encoder is "
+                    "incompatible — set pe_lora_enabled=false."
+                )
+            index_path = getattr(
+                args,
+                "ip_pair_index",
+                "post_image_dataset/captions/caption_index.json",
+            )
+            if not os.path.exists(index_path):
+                raise FileNotFoundError(
+                    f"ip_pair_index not found: {index_path}. Run `make caption-index`."
+                )
+            pair_kwargs = dict(
+                index_path=index_path,
+                mode=ip_pair_mode,
+                prob=float(getattr(args, "ip_pair_prob", 0.8)),
+                min_level=str(getattr(args, "ip_pair_min_level", "artist")),
+                caption_strip_p=float(getattr(args, "ip_pair_caption_strip_p", 0.0)),
+            )
+            for dataset in train_dataset_group.datasets:
+                dataset.setup_identity_pairs(is_validation=False, **pair_kwargs)
+            if val_dataset_group is not None:
+                for dataset in val_dataset_group.datasets:
+                    dataset.setup_identity_pairs(is_validation=True, **pair_kwargs)
+            logger.info(
+                f"IP-Adapter distinct pairs: mode={ip_pair_mode} "
+                f"prob={pair_kwargs['prob']} min_level={pair_kwargs['min_level']} "
+                f"caption_strip_p={pair_kwargs['caption_strip_p']} "
+                f"index={index_path}"
+            )
+
         train_dataset_group.verify_bucket_reso_steps(
             16
         )  # WanVAE spatial downscale = 8 and patch size = 2

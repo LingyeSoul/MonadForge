@@ -134,6 +134,11 @@ COMMANDS = {
         "Cache PE-Core vision-encoder features into the LoRA cache dir. "
         "Consumed by IP-Adapter live-disk mode and the DCW v4 fusion head.",
     ),
+    "caption-index": (
+        preprocess.cmd_caption_index,
+        "Build the typed-tag caption index (character/copyright/artist groups) "
+        "at post_image_dataset/captions/caption_index.json. Pure data, no GPU.",
+    ),
     # ── Anima Tagger ──────────────────────────────────────────────────
     "preprocess-tagger": (
         tagger.cmd_preprocess_tagger,
