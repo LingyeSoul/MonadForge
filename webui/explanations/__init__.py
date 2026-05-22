@@ -54,7 +54,11 @@ def _read_preprocess_fields(lang: str) -> dict[str, str]:
 
 def field_help(key: str) -> str | None:
     """Return the help string for *key* in the current language, or None."""
-    lang = current_language()
+    return field_help_lang(key, current_language())
+
+
+def field_help_lang(key: str, lang: str) -> str | None:
+    """Return the help string for *key* in *lang*, falling back to English."""
     value = _read_fields(lang).get(key)
     if value is not None:
         return value
@@ -65,7 +69,11 @@ def field_help(key: str) -> str | None:
 
 def preprocess_field_help(key: str) -> str | None:
     """Per-field help for the Preprocessing tab. Falls back to field_help."""
-    lang = current_language()
+    return preprocess_field_help_lang(key, current_language())
+
+
+def preprocess_field_help_lang(key: str, lang: str) -> str | None:
+    """Per-field preprocess help for *key* in *lang*, falling back to English then field_help."""
     value = _read_preprocess_fields(lang).get(key)
     if value is not None:
         return value
@@ -73,7 +81,7 @@ def preprocess_field_help(key: str) -> str | None:
         en_value = _read_preprocess_fields("en").get(key)
         if en_value is not None:
             return en_value
-    return field_help(key)
+    return field_help_lang(key, lang)
 
 
 def preprocess_guide() -> str:

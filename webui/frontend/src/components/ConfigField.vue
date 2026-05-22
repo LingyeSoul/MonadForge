@@ -87,15 +87,15 @@
 
     <v-text-field
       v-else-if="field.field_type === 'float'"
-      :model-value="currentValue"
+      :model-value="floatDisplay"
       :label="field.key"
       :disabled="field.read_only"
-      type="number"
-      step="any"
       variant="outlined"
       density="compact"
       hide-details="auto"
-      @update:model-value="emit('update', Number($event))"
+      :rules="[validateFloat]"
+      @update:model-value="onFloatInput($event)"
+      @blur="onFloatBlur"
     >
       <template #append-inner>
         <v-icon
@@ -168,7 +168,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { FieldMeta } from '../stores/config'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
@@ -179,6 +179,53 @@ const configStore = useConfigStore()
 const { t } = useI18n()
 
 const currentValue = computed(() => configStore.getFieldValue(props.field.key))
+
+// --- Float field with scientific notation support ---
+
+function formatFloat(v: unknown): string {
+  if (v === null || v === undefined || v === '') return ''
+  const n = Number(v)
+  if (Number.isNaN(n)) return String(v)
+  // Show scientific notation for very small/large numbers
+  if ((n !== 0 && Math.abs(n) < 0.001) || Math.abs(n) >= 1e7) return n.toExponential()
+  return String(n)
+}
+
+function parseFloatInput(raw: string): number | null {
+  if (raw.trim() === '') return null
+  const n = Number(raw)
+  return Number.isNaN(n) ? null : n
+}
+
+// Local editing buffer so typing "1e-" mid-stream doesn't emit invalid values
+const floatRaw = ref<string | null>(null) // null = not editing
+const floatDisplay = computed(() =>
+  floatRaw.value !== null ? floatRaw.value : formatFloat(currentValue.value),
+)
+
+function onFloatInput(val: string) {
+  floatRaw.value = val
+  const parsed = parseFloatInput(val)
+  if (parsed !== null) emit('update', parsed)
+}
+
+function onFloatBlur() {
+  if (floatRaw.value !== null) {
+    const parsed = parseFloatInput(floatRaw.value)
+    emit('update', parsed ?? currentValue.value)
+    floatRaw.value = null // snap back to formatted display
+  }
+}
+
+function validateFloat(val: string): true | string {
+  if (val.trim() === '') return true
+  return parseFloatInput(val) !== null ? true : t('cfInvalidNumber')
+}
+
+// Reset editing buffer when the underlying value changes externally
+watch(currentValue, () => { if (floatRaw.value !== null) floatRaw.value = null })
+
+// --- End float field ---
 
 const selectItems = computed(() => {
   if (props.field.key === 'sample_sampler') return ['euler', 'er_sde', 'euler_a']
