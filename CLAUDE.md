@@ -18,7 +18,7 @@ make preprocess            # Resize → post_image_dataset/resized/, cache → p
 
 ## Commands
 
-Both `make` (Unix) and `python tasks.py` (cross-platform/Windows) work — the `Makefile` is a thin dispatcher forwarding every target to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; command bodies live in `scripts/tasks/{training,inference,preprocess,masking,gui,downloads,utilities,tagger,dcw}.py` and `scripts/experimental_tasks/` (for `exp-*`). Don't grep the Makefile for a recipe — look there.
+Both `make` (Unix) and `python tasks.py` (cross-platform/Windows) work — the `Makefile` is a thin dispatcher forwarding every target to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; command bodies live in `scripts/tasks/{training,inference,preprocess,masking,webui,downloads,utilities,tagger,dcw}.py` and `scripts/experimental_tasks/` (for `exp-*`). Don't grep the Makefile for a recipe — look there.
 
 All training uses `accelerate launch --mixed_precision bf16` with `train.py --method <name> --preset <name>`. Override any config value from CLI (`--network_dim 32 --max_train_epochs 64`) or the preset via `PRESET=low_vram make lora`. `exp-*` targets are experimental — may break or be removed.
 
@@ -66,7 +66,7 @@ Gotchas: `merge` refuses ReFT / Hydra moe / postfix (not foldable) unless `--all
 | `train.py` | `AnimaTrainer` — main training loop via HF Accelerate |
 | `inference.py` | Standalone image generation (`--help` for all flags) |
 | `networks/spectrum.py` | Spectrum inference acceleration |
-| `gui/` | PySide6 GUI package |
+| `webui/` | FastAPI + Vue 3 WebUI (config editing, dataset browsing, training, system management) |
 | `tasks.py` | Cross-platform task runner — source of truth for every `make` target |
 | `scripts/tasks/` + `scripts/experimental_tasks/` | Where command bodies actually live (`_common.py` = shared helpers) |
 
