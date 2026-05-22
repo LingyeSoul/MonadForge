@@ -103,6 +103,27 @@ Steps:
 
 This project uses [`uv`](https://github.com/astral-sh/uv) for dependency management with Python 3.13.
 
+### 3.0 One-line install (easiest, no git required) ✅
+
+Recommended for beginners. Paste this single line into PowerShell — it installs `uv` if missing, downloads the latest release, runs `uv sync`, and creates an **"Anima LoRA GUI" desktop shortcut**:
+
+```powershell
+irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
+```
+
+Installs into `.\anima_lora\` (override with `$env:ANIMA_DIR`; pin a version with `$env:ANIMA_VERSION='v1.4.0'`). When it finishes:
+
+1. `cd anima_lora`
+2. Create a Hugging Face token and log in with `hf auth login` (see **§4**)
+3. Download models: `python tasks.py download-models`
+4. Double-click the **"Anima LoRA GUI"** desktop shortcut to launch (or `python tasks.py gui`)
+
+> This path assumes GUI-centric use and does **not** install `make`. Most tasks are GUI buttons, so that's fine — but if you want to run `make ...` from the CLI, either run `winget install ezwinports.make` (§3.3) or use `python tasks.py` instead of `make`.
+>
+> Update later from inside the folder with `python tasks.py update` (release-tarball merge, no git needed).
+
+Sections **§3.1–§3.3** below are the manual install for those who prefer `git clone` or want to understand each step.
+
 ### 3.1 Install `uv`
 
   ```powershell
