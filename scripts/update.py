@@ -258,6 +258,30 @@ def _prompt_conflict(rel: str, user_path: Path, new_path: Path) -> str:
         print("    invalid choice; please pick k/o/b/d")
 
 
+def seed_manifest(version: str | None) -> int:
+    """Write .anima_release.json for the current tree without downloading.
+
+    Used by the bootstrap installer (install.sh / install.ps1) right after it
+    extracts a release tarball, so the *first* `make update` has a correct
+    baseline and treats nothing as user-modified. The non-preserved file set
+    hashed here must match exactly what `_apply` records, otherwise a later
+    update would see preserved files as "upstream-removed" and delete them —
+    so this reuses `_is_preserved` / `_sha256_file` rather than reimplementing
+    the walk in shell. Run before `uv sync` so `.venv` doesn't exist yet.
+    """
+    if version is None:
+        version, _, _ = _resolve_release(None)
+    hashes: dict[str, str] = {}
+    for p in _walk_tree(ROOT):
+        rel = p.relative_to(ROOT).as_posix()
+        if _is_preserved(rel):
+            continue
+        hashes[rel] = _sha256_file(p)
+    _save_manifest(version, hashes)
+    print(f"seeded {MANIFEST_FILE.name} → {version} ({len(hashes)} files)")
+    return 0
+
+
 def update(
     version: str | None,
     dry_run: bool,
@@ -466,7 +490,14 @@ def main() -> int:
         "-y", "--yes", action="store_true",
         help="Skip the changelog confirmation prompt (e.g. when invoked from a GUI)",
     )
+    ap.add_argument(
+        "--seed-manifest", action="store_true",
+        help="Write .anima_release.json for the current tree (no download) and exit; "
+             "used by the bootstrap installer. Records --version, else resolves latest tag.",
+    )
     args = ap.parse_args()
+    if args.seed_manifest:
+        return seed_manifest(args.version)
     return update(
         version=args.version,
         dry_run=args.dry_run,

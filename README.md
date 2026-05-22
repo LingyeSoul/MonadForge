@@ -102,6 +102,32 @@ Each ships with a doc — see the link for usage, flags, and caveats.
 
 ## Setup
 
+### Quick install (no git required)
+
+One line — installs [uv](https://astral.sh/uv) if missing, fetches the latest release, and runs `uv sync`:
+
+```bash
+# Linux / macOS
+curl -LsSf https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.sh | sh
+```
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
+```
+
+Installs into `./anima_lora/` (override with `ANIMA_DIR`; pin a tag with `ANIMA_VERSION=v1.4.0`). On Windows it also drops an **"Anima LoRA GUI"** shortcut on your desktop. Then authenticate and pull models:
+
+```bash
+cd anima_lora
+hf auth login
+make download-models      # DiT + Qwen3 text encoder + QwenImage VAE into models/
+make gui                  # recommended — config editor + dataset browser + training monitor
+```
+
+Update later in place with `make update` (release-tarball merge, no git needed).
+
+### Manual (from a clone)
+
 ```bash
 uv sync                   # Python 3.13 with pre-built flash attention 2
 hf auth login
