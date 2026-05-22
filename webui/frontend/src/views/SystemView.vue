@@ -426,7 +426,7 @@ const updateConflictPolicy = ref('keep')
 function runUpdate() {
   const args: string[] = []
   if (updateDryRun.value) args.push('--dry-run')
-  if (updateConflictPolicy.value === 'overwrite') args.push('--overwrite-conflicts')
+  if (updateConflictPolicy.value === 'overwrite') args.push('--yes-overwrite')
   showUpdateDlg.value = false
   taskStore.startTask('update', args).then(taskId => {
     if (taskId) {

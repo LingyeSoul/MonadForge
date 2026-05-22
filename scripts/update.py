@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Update anima_lora from a GitHub release.
+"""Update MonadForge from a GitHub release.
 
-Downloads the release tarball from sorryhyun/anima_lora, extracts it to a
+Downloads the release tarball from LingyeSoul/MonadForge, extracts it to a
 temp dir, then merges over the working tree using a 3-way reconciliation
 of (baseline / user / new) sha256 hashes:
 
@@ -52,7 +52,7 @@ for _stream in (sys.stdout, sys.stderr):
             pass
 
 ROOT = Path(__file__).resolve().parent.parent
-REPO = "sorryhyun/anima_lora"
+REPO = "LingyeSoul/MonadForge"
 MANIFEST_FILE = ROOT / ".anima_release.json"
 BACKUP_ROOT = ROOT / ".anima-update-backups"
 
@@ -268,7 +268,7 @@ def update(
 ) -> int:
     if yes_overwrite and keep_conflicts:
         sys.exit("--yes-overwrite and --keep-conflicts are mutually exclusive")
-    print(f"anima_lora update — repo {REPO}")
+    print(f"MonadForge update — repo {REPO}")
     tag, tarball_url, body = _resolve_release(version)
     print(f"  target: {tag}")
 
@@ -429,8 +429,14 @@ def _apply(
 
     if not no_sync:
         print("\nrunning uv sync …")
+        import os
+
+        env = os.environ.copy()
+        venv_scripts = ROOT / ".venv" / ("Scripts" if sys.platform == "win32" else "bin")
+        if venv_scripts.exists():
+            env["PATH"] = str(venv_scripts) + os.pathsep + env.get("PATH", "")
         try:
-            subprocess.run(["uv", "sync"], cwd=ROOT, check=True)
+            subprocess.run(["uv", "sync"], cwd=ROOT, check=True, env=env)
         except FileNotFoundError:
             print("  uv not found on PATH; skip or run `uv sync` manually")
         except subprocess.CalledProcessError as e:
@@ -441,7 +447,7 @@ def _apply(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Update anima_lora from GitHub release")
+    ap = argparse.ArgumentParser(description="Update MonadForge from GitHub release")
     ap.add_argument(
         "--version",
         help='Tag to install (e.g. "v1.0"). Default: latest release. Use "main" for the main branch tarball.',

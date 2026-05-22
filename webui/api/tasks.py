@@ -67,6 +67,9 @@ _COMMAND_DESCRIPTIONS = {
     "exp-test-easycontrol": "EasyControl inference",
     "exp-test-directedit": "DirectEdit inference",
     "exp-test-directedit-dry": "DirectEdit dry run",
+    "update": "Self-update from GitHub release",
+    "vendor-sync": "Sync vendor trees for custom nodes",
+    "export-logs": "Export TensorBoard logs to JSON",
 }
 
 
