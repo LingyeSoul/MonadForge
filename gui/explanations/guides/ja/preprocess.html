@@ -1,5 +1,0 @@
-<h2 style='margin:0 0 10px 0; font-size:18px;'>前処理</h2>
-<p>学習を支える 2 つのアーティファクトレーン:</p>
-<p><b>1. キャッシング</b> &mdash; 画像を定数トークンバケットにリサイズし、Qwen3 + T5 を通じてキャプションをトークン化して、<code>{stem}_anima.npz</code> 潜在変数と <code>{stem}_anima_te.safetensors</code> サイドカーを書き込みます。<i>シャッフルバリアント</i> &gt; 0 の場合、各 TE キャッシュには N 個のキャプションが含まれ、データローダーが学習ステップごとに 1 つをサンプリングします (使用するには手法設定で <code>use_shuffled_caption_variants</code> を有効にしてください)。</p>
-<p><b>2. マスキング</b> &mdash; SAM3 (自然言語テキストバブルプロンプト) と MIT (漫画専用グリフセグメンター) を一時ディレクトリで並行実行し、<code>post_image_dataset/masks/&lt;rel&gt;/{stem}_mask.png</code> にマージします。ツールごとの中間ファイルは保持されません — 一時ディレクトリはマージ後にクリーンアップされます。マスクディレクトリが存在する場合、学習サブセットは自動的にそれを使用します (手法設定の <code>masked_loss</code> を参照)。</p>
-<p style='color:#888; font-style:italic; margin-top:12px;'>左側のフィールドラベルをクリックすると説明がここに表示されます。</p>

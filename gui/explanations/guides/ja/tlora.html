@@ -1,9 +1,0 @@
-<h2 style='margin:0 0 10px 0; font-size:17px;'>T-LoRA</h2>
-<p>タイムステップ依存のランクマスキング。冪乗則スケジュールによってノイズ除去タイムステップに応じて有効 LoRA ランクが変化します:<br>
-&bull; 高ノイズ (初期ステップ) &rarr; フルランク (最大表現力)<br>
-&bull; 低ノイズ (後期ステップ) &rarr; 縮小ランク (<code>min_rank</code> まで)<br>
-構造が決定される場所に容量を集中させます。マスクは学習時のみ — 推論では設計上すべての t でフルランクを使用するため、保存された <code>.safetensors</code> は通常のベイク可能な LoRA です。詳細は <code>docs/methods/timestep_mask.md</code> を参照。</p>
-<p>トグル: <code>use_timestep_mask = true</code>。</p>
-<p><b>バリアント</b><br>
-&bull; <b>tlora</b> &mdash; OrthoLoRA の上に積み重ねた T-LoRA (<code>use_ortho = true</code> + <code>use_timestep_mask = true</code>)。デフォルトのマージ可能な組み合わせ — 直交正則化付きランク-σ スケジューリング。完全にベイク可能。<br>
-&bull; <b>tlora-8gb</b> &mdash; 同じアーキテクチャの低 VRAM プロファイル (勾配チェックポインティング + オフロード); デフォルトで OOM になる場合はこちらを選択してください。</p>
