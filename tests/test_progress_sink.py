@@ -14,12 +14,14 @@ def _read_events(path: str) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def test_resolve_path_default_derives_from_output_name(tmp_path):
+def test_resolve_path_default_derives_to_sibling_logs_dir(tmp_path):
+    ckpt = tmp_path / "ckpt"
     args = argparse.Namespace(
-        progress_jsonl=None, output_dir=str(tmp_path), output_name="my_run"
+        progress_jsonl=None, output_dir=str(ckpt), output_name="my_run"
     )
     resolved = ProgressSink.resolve_path(args)
-    assert resolved == os.path.join(str(tmp_path), "my_run.progress.jsonl")
+    # sibling logs/ dir, not the checkpoint dir
+    assert resolved == os.path.join(str(tmp_path), "logs", "my_run.progress.jsonl")
 
 
 def test_resolve_path_disable_tokens():

@@ -14,14 +14,11 @@ hf auth login              # Authenticate for model downloads
 make download-models       # Download DiT, text encoder, VAE, SAM3, MIT, PE-Core, PE-Spatial
 # Training images go in image_dataset/ with .txt caption sidecars
 make preprocess            # Resize → post_image_dataset/resized/, cache → post_image_dataset/lora/
-# WebUI (browser-based interface)
-cd webui/frontend && npm install && npm run build   # Build frontend dist/
-python -m webui            # Start WebUI at http://127.0.0.1:8000
 ```
 
 ## Commands
 
-Both `make` (Unix) and `python tasks.py` (cross-platform/Windows) work — the `Makefile` is a thin dispatcher forwarding every target to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; command bodies live in `scripts/tasks/{training,inference,preprocess,masking,webui,downloads,utilities,tagger,dcw}.py` and `scripts/experimental_tasks/` (for `exp-*`). Don't grep the Makefile for a recipe — look there.
+Both `make` (Unix) and `python tasks.py` (cross-platform/Windows) work — the `Makefile` is a thin dispatcher forwarding every target to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; command bodies live in `scripts/tasks/{training,inference,preprocess,masking,gui,downloads,utilities,tagger,dcw}.py` and `scripts/experimental_tasks/` (for `exp-*`). Don't grep the Makefile for a recipe — look there.
 
 All training uses `accelerate launch --mixed_precision bf16` with `train.py --method <name> --preset <name>`. Override any config value from CLI (`--network_dim 32 --max_train_epochs 64`) or the preset via `PRESET=low_vram make lora`. `exp-*` targets are experimental — may break or be removed.
 
@@ -54,7 +51,7 @@ make daemon | daemon-attach [JOB=<id>] | daemon-kill [JOB=<id>] | daemon-termina
 make lora --queue                        # enqueue instead of run inline (overnight sweep)
 # GUI Train button + ComfyUI trainer node + preprocessing all submit to the daemon.
 
-python -m webui            # WebUI (FastAPI + Vue 3 — config editing, dataset browsing, training)
+make gui                   # PySide6 GUI (config editing, preprocess+train tabs, dataset browser)
 make mask | mask-clean     # SAM3 + MIT → post_image_dataset/masks/ (for masked loss)
 make merge ADAPTER_DIR=output/ckpt [MULTIPLIER=0.8]   # bake LoRA into DiT (LoRA/Ortho/T-LoRA only)
 make comfy-batch           # run ComfyUI batch workflow
@@ -74,7 +71,7 @@ Gotchas: `merge` refuses ReFT / Hydra moe / postfix (not foldable) unless `--all
 | `train.py` | `AnimaTrainer` — main training loop via HF Accelerate |
 | `inference.py` | Standalone image generation (`--help` for all flags) |
 | `networks/spectrum.py` | Spectrum inference acceleration |
-| `webui/` | FastAPI + Vue 3 WebUI (config editing, dataset browsing, training, system management) |
+| `gui/` | PySide6 GUI package |
 | `tasks.py` | Cross-platform task runner — source of truth for every `make` target |
 | `scripts/tasks/` + `scripts/experimental_tasks/` | Where command bodies actually live (`_common.py` = shared helpers) |
 
@@ -142,10 +139,6 @@ Several nodes carry a `_vendor/` subset of the live tree. **Regenerate vendor tr
 ## External tools
 
 ComfyUI, SAM3, and manga-image-translator live in the parent directory (`../comfy/`, `../sam3/`, etc.).
-
-## WebUI
-
-FastAPI + Vue 3 SPA for config editing, dataset browsing, preprocessing, training, and system management. Backend: `webui/server.py` (FastAPI app factory, serves SPA in production), `webui/api/` (REST + WebSocket routes), `webui/services/` (config, image, task services), `webui/models/` (Pydantic schemas). Frontend: Vue 3 + Vuetify 4 + Pinia + Vue Router + TypeScript SPA in `webui/frontend/`, built with Vite. Launch: `python -m webui` (production) or `python -m webui --dev` (dev mode with auto-reload). Build frontend: `build-webui-win.bat` or `cd webui/frontend && npm run build`.
 
 ## Contributing
 

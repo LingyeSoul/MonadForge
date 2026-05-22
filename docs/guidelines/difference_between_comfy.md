@@ -151,7 +151,7 @@ def forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
 
 Two concrete divergences:
 
-1. **anima_lora's `AttentionParams`** is a dataclass that encapsulates `attn_mode`, `split_attn`, `softmax_scale`, and `crossattn_block_mask` in one object passed positionally. ComfyUI passes `transformer_options: dict` that ComfyUI's attention dispatch reads ad-hoc.
+1. **anima_lora's `AttentionParams`** is a dataclass that encapsulates `attn_mode`, `softmax_scale`, and `crossattn_block_mask` in one object passed positionally. ComfyUI passes `transformer_options: dict` that ComfyUI's attention dispatch reads ad-hoc.
 2. **RoPE shape.** anima_lora passes a `(cos, sin)` tuple computed per-forward. ComfyUI passes a single `rope_emb_L_1_1_D` already pre-unsqueezed. Semantically equivalent but not drop-in interchangeable.
 
 **Practical consequence for the per-block mod-guidance hooks** (now shipped on both sides — see `docs/methods/mod-guidance.md`): in both codebases the `t_emb` argument is at **positional index 1**, so block-level pre-forward hooks can rewrite `args[1]` identically in both implementations. The two signatures diverge on args 3+, but the per-block scheduler only cares about index 1, so the hook factory is portable.

@@ -507,7 +507,6 @@ def main():
         device=device,
         dit_path=args.dit,
         attn_mode=args.attn_mode,
-        split_attn=True,
         loading_device=device,
         dit_weight_dtype=torch.bfloat16,
     )

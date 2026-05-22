@@ -203,8 +203,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--flow_shift",
         type=float,
-        default=5.0,
-        help="Shift factor for flow matching schedulers. Default is 5.0.",
+        default=3.0,
+        help="Shift factor for flow matching schedulers. Default is 3.0 (matches the official Anima scheduler config).",
     )
     parser.add_argument(
         "--sampler",

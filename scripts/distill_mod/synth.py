@@ -220,7 +220,6 @@ def generate_synthetic_latents(
         device,
         dit_path,
         attn_mode=attn_mode,
-        split_attn=False,
         loading_device="cpu" if blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
     )

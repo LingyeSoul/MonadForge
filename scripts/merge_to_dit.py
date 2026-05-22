@@ -173,7 +173,6 @@ def main() -> int:
         device=args.device,
         dit_path=str(args.dit),
         attn_mode="torch",  # merge never runs a forward pass
-        split_attn=False,
         loading_device=args.device,
         dit_weight_dtype=dtype,
     )

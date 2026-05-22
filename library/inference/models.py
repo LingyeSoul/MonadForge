@@ -130,7 +130,6 @@ def load_dit_model(
         device,
         args.dit,
         args.attn_mode,
-        True,  # enable split_attn to trim masked tokens
         loading_device,
         dit_weight_dtype,
         lora_weights_list=lora_weights_list,

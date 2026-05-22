@@ -315,7 +315,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
             "sdpa",
         ],  # "sdpa" is for backward compatibility
         default=None,
-        help="Attention implementation to use. Default is None (torch). xformers requires --split_attn. sageattn does not support training (inference only). This option overrides --xformers or --sdpa."
+        help="Attention implementation to use. Default is None (torch). sageattn does not support training (inference only). This option overrides --xformers or --sdpa."
         "",
     )
     parser.add_argument(
@@ -324,11 +324,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="Pad all forward passes to this many visual tokens (e.g. 4096). "
         "Enables constant-shape buckets and eliminates torch.compile recompilation.",
-    )
-    parser.add_argument(
-        "--split_attn",
-        action="store_true",
-        help="split attention computation to reduce memory usage",
     )
     parser.add_argument(
         "--attn_softmax_scale",

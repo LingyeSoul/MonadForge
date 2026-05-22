@@ -336,7 +336,6 @@ def main():
         device,
         args.dit_path,
         attn_mode=args.attn_mode,
-        split_attn=False,
         loading_device="cpu" if args.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
     )

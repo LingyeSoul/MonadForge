@@ -166,7 +166,6 @@ def main() -> None:
         device,
         args.dit,
         attn_mode=args.attn_mode,
-        split_attn=False,
         loading_device=device,
         dit_weight_dtype=dtype,
     )

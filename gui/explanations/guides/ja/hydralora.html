@@ -1,0 +1,7 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>HydraLoRA</h2>
+<p>LoRA の上に MoE スタイルのルーティング: 共有 <code>lora_down</code> + <code>num_experts</code> 個の per-expert <code>lora_up</code> ヘッド。適応された Linear の入力からレイヤーローカルでルーティングされます。負荷分散ロス (<code>balance_loss_weight</code>) でルーターが単一エキスパートに崩壊するのを防ぎます。</p>
+<p>正弦波(σ)→E のルーターバイアスと σ バンドへの強制特化を追加します: <code>specialize_experts_by_sigma_buckets = true</code> でエキスパートプールをタイムステップバケットで分割し、各 σ バンドが割り当てられたエキスパートにのみルーティングします (例: <code>num_experts = 6</code> と 3 バケットで、バンドごとに 2 エキスパート)。<code>sigma_bucket_boundaries = [0.0, 0.5, 0.8, 1.0]</code> で低ノイズの後期精製レジームに多く割り当てます。</p>
+<p><b>バリアント</b><br>
+&bull; <b>hydralora</b> &mdash; デフォルト 16GB 以上のプロファイル。<br>
+&bull; <b>hydralora-8gb</b> &mdash; 同じアーキテクチャの低 VRAM プロファイル (勾配チェックポインティング + オフロード); デフォルトで OOM になる場合はこちらを選択してください。</p>
+<p>学習するとアダプターの隣に <code>*_moe.safetensors</code> サイドカーが生成されます。ルーターライブ推論には両方のファイルが必要です (<code>make test-hydra</code> / ComfyUI の <i>Anima Adapter Loader</i>)。<code>cache_llm_adapter_outputs = true</code> が必要です。</p>

@@ -102,9 +102,12 @@ class ProgressSink:
     def resolve_path(args) -> Optional[str]:
         """Resolve the JSONL path from args, or ``None`` to disable.
 
-        ``--progress_jsonl`` unset → derive ``<output_dir>/<output_name>.progress.jsonl``
-        (default on). Explicit empty / ``none`` / ``off`` → disabled. Any other
-        value → that literal path.
+        ``--progress_jsonl`` unset → derive
+        ``<output_dir>/../logs/<output_name>.progress.jsonl`` (default on) — a
+        sibling ``logs/`` dir so the checkpoint dir holds only model artifacts.
+        Explicit empty / ``none`` / ``off`` → disabled. Any other value → that
+        literal path. (The daemon always passes an explicit per-job path, so this
+        derived default only governs inline CLI runs.)
         """
         explicit = getattr(args, "progress_jsonl", None)
         if explicit is not None:
@@ -116,7 +119,11 @@ class ProgressSink:
         if not output_dir:
             return None
         output_name = getattr(args, "output_name", None) or "run"
-        return os.path.join(output_dir, f"{output_name}.progress.jsonl")
+        # Sibling logs/ dir next to the checkpoint dir (parent of output_dir);
+        # fall back to a logs/ subdir if output_dir has no parent component.
+        parent = os.path.dirname(os.path.normpath(output_dir))
+        logs_dir = os.path.join(parent or output_dir, "logs")
+        return os.path.join(logs_dir, f"{output_name}.progress.jsonl")
 
     def _emit(self, ev: str, **fields: Any) -> None:
         if self._closed or self._fh is None:

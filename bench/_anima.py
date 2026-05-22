@@ -196,7 +196,6 @@ def build_anima(
     train_mode: bool = False,
     network_requires_grad: bool = True,
     multiplier: float = 1.0,
-    split_attn: bool = False,
 ) -> AnimaBundle:
     """Load the DiT (+ optional adapter) with the correct ordering.
 
@@ -231,7 +230,6 @@ def build_anima(
             (default) or are frozen.
         multiplier: Adapter forward-time multiplier. ``set_multiplier(0.0)``
             can flip it later to recover the base-model output.
-        split_attn: Forwarded to ``load_anima_model``.
 
     Returns:
         ``AnimaBundle(anima, network, device, dtype)``.
@@ -257,7 +255,6 @@ def build_anima(
         device=device,
         dit_path=dit_path,
         attn_mode=attn_mode,
-        split_attn=split_attn,
         loading_device=device,
         dit_weight_dtype=dtype,
     )

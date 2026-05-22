@@ -57,7 +57,6 @@ except ImportError:
 @dataclass
 class AttentionParams:
     attn_mode: Optional[str] = None
-    split_attn: bool = False
     img_len: Optional[int] = None
     attention_mask: Optional[torch.Tensor] = None
     seqlens: Optional[torch.Tensor] = None
@@ -88,37 +87,23 @@ class AttentionParams:
     @staticmethod
     def create_attention_params(
         attn_mode: Optional[str],
-        split_attn: bool,
         softmax_scale: Optional[float] = None,
     ) -> "AttentionParams":
-        return AttentionParams(attn_mode, split_attn, softmax_scale=softmax_scale)
+        return AttentionParams(attn_mode, softmax_scale=softmax_scale)
 
     @staticmethod
     def create_attention_params_from_mask(
         attn_mode: Optional[str],
-        split_attn: bool,
         img_len: Optional[int],
         attention_mask: Optional[torch.Tensor],
     ) -> "AttentionParams":
         if attention_mask is None:
             # No attention mask provided: assume all tokens are valid
-            return AttentionParams(attn_mode, split_attn, None, None, None, None, None)
+            return AttentionParams(attn_mode, None, None, None, None, None)
         else:
             # Note: attention_mask is only for text tokens, not including image tokens
             seqlens = attention_mask.sum(dim=1).to(torch.int32) + img_len  # [B]
             max_seqlen = attention_mask.shape[1] + img_len
-
-            if split_attn:
-                # cu_seqlens is not needed for split attention
-                return AttentionParams(
-                    attn_mode,
-                    split_attn,
-                    img_len,
-                    attention_mask,
-                    seqlens,
-                    None,
-                    max_seqlen,
-                )
 
             # Convert attention mask to cumulative sequence lengths for flash attention
             batch_size = attention_mask.shape[0]
@@ -151,7 +136,6 @@ class AttentionParams:
 
             return AttentionParams(
                 attn_mode,
-                split_attn,
                 img_len,
                 attention_mask,
                 seqlens,
@@ -195,7 +179,7 @@ def dispatch_attention(
             "k and v must be provided if qkv_or_q is a tensor"
         )
     if attn_params is None:
-        attn_params = AttentionParams.create_attention_params("torch", False)
+        attn_params = AttentionParams.create_attention_params("torch")
 
     # Flex attention: early return using BlockMask for variable-length handling (compile-friendly)
     if attn_params.attn_mode == "flex":
@@ -241,13 +225,9 @@ def dispatch_attention(
         x = x.flatten(2)  # [B, L, H*D]
         return x
 
-    # If split attn is False, attention mask is provided and all sequence lengths are same, we can trim the sequence
+    # If attention mask is provided and all sequence lengths are the same, we can trim the sequence
     seqlen_trimmed = False
-    if (
-        not attn_params.split_attn
-        and attn_params.attention_mask is not None
-        and attn_params.seqlens is not None
-    ):
+    if attn_params.attention_mask is not None and attn_params.seqlens is not None:
         if attn_params.uniform_seqlens or torch.all(
             attn_params.seqlens == attn_params.seqlens[0]
         ):
@@ -257,121 +237,50 @@ def dispatch_attention(
             v = v[:, :seqlen]
             max_seqlen = attn_params.max_seqlen
             attn_params = AttentionParams.create_attention_params(
-                attn_params.attn_mode, False, softmax_scale=attn_params.softmax_scale
+                attn_params.attn_mode, softmax_scale=attn_params.softmax_scale
             )  # do not in-place modify
             attn_params.max_seqlen = max_seqlen  # keep max_seqlen for padding
             seqlen_trimmed = True
 
     # Determine tensor layout based on attention implementation
     if attn_params.attn_mode == "torch" or (
-        attn_params.attn_mode == "sageattn"
-        and (attn_params.split_attn or attn_params.cu_seqlens is None)
+        attn_params.attn_mode == "sageattn" and attn_params.cu_seqlens is None
     ):
 
         def transpose_fn(x):
             return x.transpose(
                 1, 2
             )  # [B, H, L, D] for SDPA and sageattn with fixed length
-
-        def pad_fn(x, pad_to):  # pad on sequence length dimension
-            return torch.nn.functional.pad(x, (0, 0, 0, pad_to - x.shape[-2]), value=0)
     else:
 
         def transpose_fn(x):
             return x  # [B, L, H, D] for other implementations
 
-        def pad_fn(x, pad_to):  # pad on sequence length dimension
-            return torch.nn.functional.pad(
-                x, (0, 0, 0, 0, 0, pad_to - x.shape[-3]), value=0
-            )
-
-    # Process each batch element with its valid sequence lengths
-    if attn_params.split_attn:
-        if attn_params.seqlens is None:
-            # If no seqlens provided, assume all tokens are valid
-            attn_params = AttentionParams.create_attention_params(
-                attn_params.attn_mode, True, softmax_scale=attn_params.softmax_scale
-            )  # do not in-place modify
-            attn_params.seqlens = torch.tensor(
-                [q.shape[1]] * q.shape[0], device=q.device
-            )
-            attn_params.max_seqlen = q.shape[1]
-        q = [
-            transpose_fn(q[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(q))
-        ]
-        k = [
-            transpose_fn(k[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(k))
-        ]
-        v = [
-            transpose_fn(v[i : i + 1, : attn_params.seqlens[i]]) for i in range(len(v))
-        ]
-    else:
-        q = transpose_fn(q)
-        k = transpose_fn(k)
-        v = transpose_fn(v)
+    q = transpose_fn(q)
+    k = transpose_fn(k)
+    v = transpose_fn(v)
 
     scale = attn_params.softmax_scale  # None = default 1/sqrt(head_dim)
 
     if attn_params.attn_mode == "torch":
-        if attn_params.split_attn:
-            x = []
-            for i in range(len(q)):
-                x_i = torch.nn.functional.scaled_dot_product_attention(
-                    q[i], k[i], v[i], dropout_p=drop_rate, scale=scale
-                )
-                q[i] = None
-                k[i] = None
-                v[i] = None
-                x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, H, L, D
-            x = torch.cat(x, dim=0)
-            del q, k, v
-
-        else:
-            x = torch.nn.functional.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=attn_params.attention_mask,
-                dropout_p=drop_rate,
-                scale=scale,
-            )
-            del q, k, v
+        x = torch.nn.functional.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            attn_mask=attn_params.attention_mask,
+            dropout_p=drop_rate,
+            scale=scale,
+        )
+        del q, k, v
 
     elif attn_params.attn_mode == "xformers":
-        if attn_params.split_attn:
-            x = []
-            for i in range(len(q)):
-                x_i = xops.memory_efficient_attention(
-                    q[i], k[i], v[i], p=drop_rate, scale=scale
-                )
-                q[i] = None
-                k[i] = None
-                v[i] = None
-                x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, L, H, D
-            x = torch.cat(x, dim=0)
-            del q, k, v
-
-        else:
-            x = xops.memory_efficient_attention(
-                q, k, v, attn_bias=attn_params.attention_mask, p=drop_rate, scale=scale
-            )
-            del q, k, v
+        x = xops.memory_efficient_attention(
+            q, k, v, attn_bias=attn_params.attention_mask, p=drop_rate, scale=scale
+        )
+        del q, k, v
 
     elif attn_params.attn_mode == "sageattn":
-        if attn_params.split_attn:
-            x = []
-            for i in range(len(q)):
-                # HND seems to cause an error
-                x_i = sageattn(
-                    q[i], k[i], v[i], sm_scale=scale
-                )  # B, H, L, D. No dropout support
-                q[i] = None
-                k[i] = None
-                v[i] = None
-                x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, H, L, D
-            x = torch.cat(x, dim=0)
-            del q, k, v
-        elif attn_params.cu_seqlens is None:  # all tokens are valid
+        if attn_params.cu_seqlens is None:  # all tokens are valid
             x = sageattn(q, k, v, sm_scale=scale)  # B, L, H, D. No dropout support
             del q, k, v
         else:
@@ -398,20 +307,7 @@ def dispatch_attention(
             x = x.view(batch_size, seqlen, x.shape[-2], x.shape[-1])  # B, L, H, D
 
     elif attn_params.attn_mode == "flash":
-        if attn_params.split_attn:
-            x = []
-            for i in range(len(q)):
-                # HND seems to cause an error
-                x_i = flash_attn_func(
-                    q[i], k[i], v[i], drop_rate, softmax_scale=scale
-                )  # B, L, H, D
-                q[i] = None
-                k[i] = None
-                v[i] = None
-                x.append(pad_fn(x_i, attn_params.max_seqlen))  # B, L, H, D
-            x = torch.cat(x, dim=0)
-            del q, k, v
-        elif attn_params.cu_seqlens is None:  # all tokens are valid
+        if attn_params.cu_seqlens is None:  # all tokens are valid
             x = flash_attn_func(q, k, v, drop_rate, softmax_scale=scale)  # B, L, H, D
             del q, k, v
         else:

@@ -1,0 +1,7 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>LoRA</h2>
+<p>古典的な低ランク適応。既存の重み層に小さな学習可能な行列 (down &times; up) を追加します。<br>
+<code>y = x + (x @ down @ up) &times; scale &times; multiplier</code><br>
+シンプルで効果的、ほとんどのファインチューニングタスクのデフォルト選択肢です。ベース DiT への完全なベイクが可能です。</p>
+<p><b>バリアント</b><br>
+&bull; <b>lora</b> &mdash; デフォルト 16GB 以上のプロファイル。<br>
+&bull; <b>lora-8gb</b> &mdash; 低 VRAM プロファイル (ブロックスワップ + オフロードチェックポインティング); デフォルトで OOM になる場合はこちらを選択してください。</p>

@@ -373,15 +373,11 @@ def _load_anima(args, device: torch.device):
         device="cpu" if is_swapping else device,
         dit_path=args.dit,
         attn_mode=args.attn_mode,
-        split_attn=True,
         loading_device="cpu" if is_swapping else device,
         dit_weight_dtype=torch.bfloat16,
     )
     anima.to(torch.bfloat16)
     anima.requires_grad_(False)
-    # All steps share the same image, so no per-sample variance to exploit —
-    # turn off split_attn to avoid data-dependent graph breaks.
-    anima.split_attn = False
 
     if is_swapping:
         logger.info(f"Enabling block swap: {args.blocks_to_swap} blocks to CPU")

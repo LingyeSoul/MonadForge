@@ -53,7 +53,6 @@ def build_small_dit(device, dtype):
         use_adaln_lora=True,
         adaln_lora_dim=256,
         attn_mode="flash",
-        split_attn=False,
     )
     dit.set_static_token_count(4096)
     dit = dit.to(device=device, dtype=dtype)

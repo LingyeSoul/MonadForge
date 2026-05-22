@@ -8,9 +8,9 @@ This is "Case B" of the SPD investigation — see
 is a normal LoRA: load it through the standard inference path and run it with
 the SPD sampler (``--spd``) at the *same* schedule it was trained on.
 
-Unlike ``distill_turbo.py`` there is **no teacher, no fake-score network, no
-adversarial loop, no CFG-bake** — the §4.3 target velocity is analytic. The
-only thing that differs from ordinary Anima LoRA training is the *noising
+The analytic backbone (``--on_policy_ratio 0``) needs **no teacher, no fake-score
+network, no adversarial loop, no CFG-bake** — the §4.3 target velocity is analytic.
+The only thing that differs from ordinary Anima LoRA training is the *noising
 process*: instead of one straight line from a clean latent to white noise at
 full resolution, each step regresses ``v_θ`` onto the per-stage segment of the
 SPD trajectory at that stage's resolution. The stage-target construction
@@ -18,9 +18,17 @@ SPD trajectory at that stage's resolution. The stage-target construction
 train-time stage-entry state matches the sampler's spectral expansion
 bit-for-bit (the Phase-0 contract in the proposal).
 
+With ``--on_policy_ratio > 0`` a fraction of steps switch to a DAgger-style
+teacher-distillation tail (see ``_onpolicy_loss``): roll the adapter-on prefix to
+the *actual* handoff state and distill the tail toward the frozen base model's own
+full-res / full-step gold sample for the same seed — the trusted answer at the
+visited state. This is the only place a teacher (the frozen base itself, run
+expensive + LoRA-off) enters; there is still no separate teacher network or
+adversary, and the gold can be cached offline (a future lever).
+
 Models the structure on ``scripts/distill_mod/distill.py`` /
 ``scripts/distill_turbo.py`` (frozen-DiT + adapter-only + single MSE backward),
-but strictly simpler: one adapter, one optimizer, no teacher cache.
+but strictly simpler: one adapter, one optimizer.
 
 Usage::
 
@@ -31,12 +39,13 @@ Usage::
 
 Compile note: SPD trains one resolution per batch, so the constant-token
 bucketing invariant (everything padded to 4096) does NOT apply — the block
-input shape varies per (stage x aspect-bucket). ``--torch_compile`` pads each
-stage to its *own* constant token count (``_stage_static_token_counts``),
-collapsing the bucket axis so torch.compile traces exactly ``len(stages)`` fwd
-+ ``len(stages)`` bwd graphs (e.g. 2+2 for ``[0.5, 1.0]``) instead of one per
-bucket — and forces ``attn_mode=flex`` so the pad tokens are masked out of
-self-attention. Low-res stages stay cheap (no pad up to full res).
+input shape varies per (stage x aspect-bucket). ``--torch_compile`` compiles
+each block's ``_forward`` with ``dynamic=False`` and lets torch.compile
+recompile once per distinct (stage x bucket) shape, each at its real token
+count on the normal flash backend (no padding, no masking). The dynamo cache
+limit is raised to ``~len(stages) * num_buckets`` so every specialization stays
+cached instead of falling back to eager. Recompiles are a one-time warmup cost
+(seconds per new shape), not a correctness issue.
 """
 
 from __future__ import annotations
@@ -61,7 +70,6 @@ from library.anima.models import Anima  # noqa: E402
 from library.datasets.distill import CachedDataset  # noqa: E402
 from networks.lora_anima.factory import create_network  # noqa: E402
 from networks.lora_save import save_network_weights  # noqa: E402
-from networks import attention_dispatch  # noqa: E402
 from networks.spd import (  # noqa: E402
     _snap,
     spd_rollout_to_stage,
@@ -129,7 +137,6 @@ def _stage_static_token_counts(
         counts.append(((mx + granule - 1) // granule) * granule)
     return counts
 
-
 def main():
     parser = argparse.ArgumentParser(
         description="SPD fine-tuning LoRA — §4.3 trajectory adapter"
@@ -178,11 +185,12 @@ def main():
         type=float,
         default=-1.0,
         help="Fraction of steps that train the full-res tail on the *on-policy* handoff "
-        "state (anchored prefix rollout → spectral_expand → tail), vs the analytic "
-        "backbone. 0 = today's analytic-only behavior. The analytic steps anchor the "
-        "prefix (one LoRA can't be frozen by module), so MIX, don't set to 1.0. "
+        "state (prefix rollout → spectral_expand → tail) by distilling toward the "
+        "frozen-base teacher's gold sample, vs the analytic backbone. 0 = analytic-only. "
+        "The analytic steps still train the prefix (the on-policy rollout is no_grad), "
+        "so MIX, don't set to 1.0. "
         "v0: 2-stage schedules only. Works with --torch_compile (plain inductor — "
-        "two static shapes, rollout + tail); not with --compile_inductor_mode "
+        "rollout + tail recompile per shape); not with --compile_inductor_mode "
         "reduce-overhead (CUDAGraphs can't span the eval/grad toggle).",
     )
     parser.add_argument(
@@ -191,6 +199,14 @@ def main():
         default=-1,
         help="Euler steps for the on-policy prefix rollout (coarser than inference is "
         "fine; the rollout only needs a representative handoff state). Default 16.",
+    )
+    parser.add_argument(
+        "--teacher_steps",
+        type=int,
+        default=-1,
+        help="Euler steps for the frozen-base teacher's full-res gold rollout (LoRA "
+        "off), which supplies the on-policy clean target. Should be at least as fine "
+        "as deployment. Default 24.",
     )
     parser.add_argument(
         "--tail_band",
@@ -224,12 +240,13 @@ def main():
     parser.add_argument("--no_grad_ckpt", dest="grad_ckpt", action="store_false")
     parser.add_argument(
         "--torch_compile",
-        default="True",
-        action="store_true",
-        help="Per-stage static-shape block compile. Pads each stage's tokens to a "
-        "stage-specific constant (collapsing the aspect-bucket axis) so "
-        "torch.compile traces one fwd+bwd graph per stage (len(stages)*2 total) "
-        "instead of one per (stage x bucket). Forces attn_mode=flex.",
+        default=True,
+        action=argparse.BooleanOptionalAction,
+        help="torch.compile each block's _forward (dynamic=False). Recompiles "
+        "once per distinct (stage x bucket) shape on the flash backend, each at "
+        "its real token count (no padding); the dynamo cache limit is raised to "
+        "keep every specialization cached. On by default; pass --no-torch_compile "
+        "to run eager.",
     )
     parser.add_argument("--dynamo_backend", type=str, default="inductor")
     parser.add_argument(
@@ -280,16 +297,6 @@ def main():
         _flatten(cfg, "network.alpha", rank) if args.alpha == -1.0 else args.alpha
     )
     attn_mode = pick(args.attn_mode, "network.attn_mode", "flash")
-    if args.torch_compile and attn_mode != "flex":
-        # Static padding pads each stage's batch with dead tokens; only the flex
-        # self-attn block mask (forward_mini_train_dit) excludes them. Any other
-        # backend would let padded zeros pollute self-attention.
-        logger.info(
-            "torch_compile: forcing attn_mode 'flex' (was '%s') so static-pad "
-            "tokens are masked out of self-attention.",
-            attn_mode,
-        )
-        attn_mode = "flex"
     if (
         args.torch_compile
         and args.compile_inductor_mode == "reduce-overhead"
@@ -316,6 +323,7 @@ def main():
     # On-policy handoff tail (Idea 2).
     on_policy_ratio = float(pick(args.on_policy_ratio, "onpolicy.ratio", 0.0))
     rollout_steps = int(pick(args.rollout_steps, "onpolicy.rollout_steps", 16))
+    teacher_steps = int(pick(args.teacher_steps, "onpolicy.teacher_steps", 24))
     tail_band = pick(args.tail_band, "onpolicy.tail_band", "entry")
     sigma_floor = float(pick(args.sigma_floor, "onpolicy.sigma_floor", 0.1))
     flow_shift = float(pick(args.flow_shift, "onpolicy.flow_shift", 1.0))
@@ -347,13 +355,11 @@ def main():
                 f"--on_policy_ratio v0 supports 2-stage schedules only, got stages={stages}."
             )
         if args.torch_compile and args.compile_inductor_mode == "reduce-overhead":
-            # Plain inductor is fine (and the memory lever the full-res tail needs):
-            # the rollout returns the *pre-expansion* low-res state for a 2-stage
-            # schedule, so every leg is one of two static shapes (stage-0 count for
-            # the rollout, full-res count for the tail) — exactly the per-stage
-            # contract compile_blocks already handles. reduce-overhead (CUDAGraphs)
-            # is the exception: it can't capture across the eval↔train + no_grad↔grad
-            # toggle the two-pass step makes, and pins freshly-allocated inputs.
+            # Plain inductor is fine: torch.compile recompiles per shape, so the
+            # rollout (low-res) and tail (full-res) legs each get their own
+            # specialization. reduce-overhead (CUDAGraphs) is the exception: it
+            # can't capture across the eval↔train + no_grad↔grad toggle the
+            # two-pass step makes, and pins freshly-allocated inputs.
             raise ValueError(
                 "--on_policy_ratio with --torch_compile requires plain inductor: drop "
                 "--compile_inductor_mode reduce-overhead (CUDAGraphs can't span the "
@@ -374,6 +380,7 @@ def main():
     # --- Schedule bands (data-independent; weights keep marginal-over-t uniform) ---
     bands = spd_schedule_bands(stages, transition_sigmas)
     band_widths = torch.tensor([hi - lo for (lo, hi) in bands], dtype=torch.float64)
+    band_widths_f = band_widths.float()  # hoisted for the per-step multinomial
     stage_probs = (band_widths / band_widths.sum()).tolist()
     logger.info(
         "SPD schedule '%s': stages=%s transition_sigmas=%s",
@@ -392,11 +399,13 @@ def main():
         )
     if on_policy_ratio > 0.0:
         logger.info(
-            "on-policy handoff tail: ratio=%.2f  band=%s  rollout_steps=%d  "
-            "sigma_floor=%.3f  flow_shift=%.2f  (anchored rollout, target (x̃−x0)/σ̃)",
+            "on-policy teacher-distill tail: ratio=%.2f  band=%s  rollout_steps=%d  "
+            "teacher_steps=%d  sigma_floor=%.3f  flow_shift=%.2f  "
+            "(target (x̃−x0_teacher)/σ̃; teacher = frozen base, LoRA off, full-res)",
             on_policy_ratio,
             tail_band,
             rollout_steps,
+            teacher_steps,
             sigma_floor,
             flow_shift,
         )
@@ -460,7 +469,6 @@ def main():
         device,
         dit_path,
         attn_mode=attn_mode,
-        split_attn=False,
         loading_device="cpu" if args.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
     )
@@ -516,42 +524,35 @@ def main():
         len(network.unet_loras),
     )
 
-    # --- Per-stage static-shape block compile (Option B) ---
-    # Pad each stage to its own constant token count so torch.compile sees
-    # exactly len(stages) shapes (one fwd+bwd graph each), not one per
-    # (stage x aspect-bucket). set_static_token_count is updated per step below.
-    stage_token_counts: list[int] | None = None
+    # --- Per-shape block compile ---
+    # Compile each block's _forward (dynamic=False) and let torch.compile
+    # recompile once per distinct (stage x aspect-bucket) shape on the flash
+    # backend — each at its real token count, no padding/masking. Raise the
+    # dynamo cache limit to cover every (stage x bucket) specialization plus its
+    # backward graph so none falls back to eager. Recompiles are a one-time
+    # warmup cost, not a correctness issue.
     if args.torch_compile:
         import torch._dynamo as _dynamo
 
-        if attention_dispatch.create_block_mask is None:  # type: ignore[attr-defined]
-            raise RuntimeError(
-                "--torch_compile requires flex attention (create_block_mask), "
-                "which is unavailable in this torch build. Without it the "
-                "static-pad tokens cannot be masked out of self-attention."
-            )
+        n_buckets = len({get_latent_resolution(npz) for npz, _te in dataset.samples})
+        n_shapes = len(stages) * max(1, n_buckets)
         stage_token_counts = _stage_static_token_counts(
             dataset.samples, stages, patch, model.patch_temporal
         )
-        # The block stack shares one `_forward` bytecode, so its dynamo recompile
-        # counter accumulates every stage shape; give it headroom over the
-        # default 8 for long schedules.
+        # fwd + bwd entries share the one `_forward` bytecode; give headroom.
         _dynamo.config.cache_size_limit = max(
-            _dynamo.config.cache_size_limit, 2 * len(stages) + 4
+            _dynamo.config.cache_size_limit, 2 * n_shapes + 8
         )
         model.compile_blocks(args.dynamo_backend, mode=args.compile_inductor_mode)
-        for i, (s, c) in enumerate(zip(stages, stage_token_counts)):
-            logger.info(
-                "  compile stage %d  scale=%.3f  static_token_count=%d", i, s, c
-            )
         logger.info(
             "torch_compile: %d block._forward compiled (backend=%s, mode=%s); "
-            "expect %d fwd+%d bwd graph traces over the first steps.",
+            "up to %d (stage x bucket) shapes recompile over the first steps "
+            "(cache_size_limit=%d).",
             len(model.blocks),
             args.dynamo_backend,
             args.compile_inductor_mode,
-            len(stages),
-            len(stages),
+            n_shapes,
+            _dynamo.config.cache_size_limit,
         )
 
     # --- Optimizer + warmup→cosine ---
@@ -639,21 +640,45 @@ def main():
                 x5, sig_vec, cattn, padding_mask=pad, skip_pooled_text_proj=True
             )
 
-    def _onpolicy_loss(x0f, cattn, trans):
-        """Idea 2 two-pass step (2-stage only): roll the *anchored* adapter-on prefix
-        from pure noise to the handoff, spectral-expand to full res, and regress the
-        tail toward the true clean latent. The target is ``(x̃ − x0)/σ̃`` — the
-        straight line from the *actual* on-policy state to x0 — not a fresh ``ε − x0``
-        (which would train the tail to ignore the very bias we want it to correct).
+    def _teacher_denoise(eps_full, cattn, n_steps, fshift):
+        """Frozen-base gold rollout: full-res, full-step Euler denoise from ``eps_full``
+        with the LoRA *disabled* → the clean sample the expensive (non-SPD) path
+        produces for this seed+prompt. Conditional-only + ``skip_pooled_text_proj``,
+        matching the student tail forward, so teacher and student live on the same
+        conditioning manifold. Caller has already disabled the adapter and set the
+        full-res static token count; this just runs the Euler loop (no_grad upstream).
+        """
+        sig = torch.linspace(1.0, 0.0, n_steps + 1, device=device, dtype=torch.float32)
+        sig = (fshift * sig) / (1.0 + (fshift - 1.0) * sig)
+        x = eps_full
+        for i in range(n_steps):
+            s = float(sig[i])
+            v = _forward_dit(
+                x, x.new_full((x.shape[0],), s, dtype=dtype), cattn
+            ).float()
+            x = (x.float() + v * (float(sig[i + 1]) - s)).to(dtype)
+        return x  # ≈ x0_teacher at σ=0
 
-        Anchoring (Phase-0 note in proposal.md): the rollout starts from the noise
-        whose DCT-lowpass *is* the analytic entry's ε, and the prefix is adapter-on
-        (its analytic objective already points it at ``x0_lo``). A free rollout would
-        head to a model sample for which x0 is the wrong target.
+    def _onpolicy_loss(x0f, cattn, trans):
+        """On-policy *teacher-distillation* step (2-stage only). Roll the adapter-on
+        SPD prefix from pure noise to the handoff and spectral-expand to full res —
+        the exact state the deployed sampler visits — then regress the grad tail
+        toward ``(x̃ − x0_teacher)/σ̃``, where ``x0_teacher`` is the frozen base
+        model's own full-res / full-step gold sample for the *same* ε and prompt.
+
+        Why the teacher, not the dataset latent: the prefix rolls a fresh ε to *a*
+        prompt-consistent sample, never to the specific dataset ``x0`` (Phase-0 probe:
+        implied-clean recovery rel_x0_on ≈ 0.83→0.98). Targeting dataset ``x0`` asks
+        the tail to bend every trajectory toward one arbitrary latent → mean-regression
+        → blur. The frozen base, run the expensive seam-free way from the *same* seed,
+        is the trusted "correct answer" at the visited state (DAgger expert), and the
+        shared seed keeps its layout aligned with the cheap path's so the tail's job is
+        HF/seam correction, not a relayout.
         """
         B = x0f.shape[0]
         H, W = int(x0f.shape[-2]), int(x0f.shape[-1])
-        # Anchoring init: full-res white noise; its lowpass is the prefix's σ=1 entry.
+        # Shared init: full-res white noise. Lowpassed internally for the prefix
+        # rollout; consumed at full res by the teacher → both target the same sample.
         eps_full = torch.randn(
             x0f.shape, generator=gen, device=device, dtype=torch.float32
         ).to(dtype)
@@ -673,12 +698,23 @@ def main():
         model.eval()
         try:
             with torch.no_grad():
-                # Under --torch_compile the two legs are two static shapes: the
-                # rollout stays at the stage-0 (pre-expansion) count, the tail at the
-                # full-res count. Set them so the compiled blocks see one shape per
-                # leg, not one per aspect bucket. No-op (None) when compile is off.
+                # --- Teacher: frozen-base gold (LoRA OFF), full-res from the same ε.
+                # The teacher rolls at full res, so pin the full-res static count
+                # FIRST. Otherwise a stale low-res count left by the previous step
+                # (e.g. an analytic step at stage 0) makes forward_mini_train_dit
+                # pad to a target < the real seq_len → negative pad truncates the
+                # sequence → the unpad reshape blows up. Same count as the grad
+                # tail below, so no extra compile graph.
+                if stage_token_counts is not None:
+                    model.set_static_token_count(stage_token_counts[-1])
+                network.set_enabled(False)
+                x0_teacher = _teacher_denoise(eps_full, cattn, teacher_steps, flow_shift)
+                network.set_enabled(True)
                 if stage_token_counts is not None:
                     model.set_static_token_count(stage_token_counts[0])
+                # --- Student: adapter-on cheap SPD prefix → on-policy handoff state.
+                # The rollout runs at the stage-0 (pre-expansion) resolution and the
+                # tail at full res; torch.compile recompiles per shape on demand.
                 x_entry, sig_cross, scale_lo = spd_rollout_to_stage(
                     _roll_v,
                     eps_full,
@@ -721,15 +757,20 @@ def main():
                 else:
                     x_state, sig_state = x_tilde, sig_tilde
         finally:
+            network.set_enabled(True)  # never leave the adapter off for the grad tail
             if was_training:
                 model.train()
 
-        # Grad tail forward at the (full-res) on-policy state.
-        x_state = x_state.detach().requires_grad_()
+        # Grad tail forward at the (full-res) on-policy state, distilling toward the
+        # frozen-base gold: (x̃ − x0_teacher)/σ̃ — the straight line from the visited
+        # state to the sample the expensive path produces for this seed.
+        x_state = x_state.detach()
+        if args.grad_ckpt:  # reentrant checkpoint needs a grad-requiring input
+            x_state.requires_grad_()
         pred = _forward_dit(
             x_state, x_state.new_full((B,), float(sig_state), dtype=dtype), cattn
         )
-        v_target = (x_state.detach().float() - x0f.float()) / float(sig_state)
+        v_target = (x_state.detach().float() - x0_teacher.float()) / float(sig_state)
         return nn.functional.mse_loss(pred.float(), v_target)
 
     # --- Training loop ---
@@ -773,19 +814,27 @@ def main():
             stage_idx = len(stages) - 1  # logs against the full-res tail
             loss = _onpolicy_loss(x0_full, crossattn_emb, trans)
         else:
-            # Sample one stage for the whole batch (single-resolution — the
-            # static-shape concession), weighted by band width.
+            # Sample one stage for the whole batch (single-resolution per step),
+            # weighted by band width.
             stage_idx = int(
-                torch.multinomial(band_widths.float(), 1, generator=stage_rng).item()
+                torch.multinomial(band_widths_f, 1, generator=stage_rng).item()
             )
-            t_lo, t_hi = spd_schedule_bands(stages, trans)[stage_idx]
+            # Bands depend only on the schedule, so reuse the precomputed ones;
+            # only jitter (which builds a fresh `trans`) needs a recompute.
+            t_lo, t_hi = (
+                bands[stage_idx]
+                if trans is transition_sigmas
+                else spd_schedule_bands(stages, trans)[stage_idx]
+            )
             x0_si, eps_si = spd_stage_target(
                 x0_full, stage_idx, stages, trans, patch=patch, gen=gen
             )
             # FM training sample + analytic velocity target at scale s_i (Eq. 13–14).
             t = (t_lo + (t_hi - t_lo) * torch.rand(B, device=device)).to(dtype)
             t_e = t.view(B, 1, 1, 1, 1)
-            x_t = ((1.0 - t_e) * x0_si + t_e * eps_si).requires_grad_()
+            x_t = (1.0 - t_e) * x0_si + t_e * eps_si
+            if args.grad_ckpt:  # reentrant checkpoint needs a grad-requiring input
+                x_t.requires_grad_()
             v_target = (eps_si - x0_si).float()
             # Pad this stage's tokens to its constant count so the compiled blocks
             # see a single shape per stage. No-op when --torch_compile is off.

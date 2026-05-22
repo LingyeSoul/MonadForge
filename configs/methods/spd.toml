@@ -44,25 +44,36 @@ label = "single_late_0.5_sigma0.5"
 # each step so the segment geometry is learned as a band, not a point. 0 = off.
 sigma_jitter = 0.0
 
-# On-policy handoff tail (proposal.md Idea 2; Phase-0 PASSED 2026-05-21 —
-# bench/spd/probe_onpolicy_handoff.py). Trains the full-res tail on the state the
-# *anchored* adapter-on prefix actually rolls to (then spectral-expanded), toward
-# the true clean latent `(x̃ − x0)/σ̃`, instead of the idealized analytic entry.
-# Fixes the exposure bias that grows as the transition σ drops. v0: 2-stage only.
-# Works with --torch_compile (plain inductor: rollout + tail are two static shapes);
-# not with --compile_inductor_mode reduce-overhead (CUDAGraphs span the eval/grad toggle).
+# On-policy teacher-distillation tail (proposal.md Idea 2). Trains the full-res
+# tail on the handoff state the adapter-on prefix actually rolls to (then
+# spectral-expanded), distilling toward the FROZEN BASE model's own full-res /
+# full-step gold sample for the same ε+prompt: `(x̃ − x0_teacher)/σ̃`.
+#
+# This replaces the original `(x̃ − x0_dataset)/σ̃` target, which was wrong by
+# construction: a fresh-ε prefix rollout lands on *a* prompt-consistent sample,
+# never on the specific dataset latent (Phase-0 probe rel_x0_on ≈ 0.83→0.98), so
+# regressing toward x0_dataset bent every trajectory toward one arbitrary latent
+# → mean-regression → blurry samples. The frozen-base teacher, run the expensive
+# seam-free way from the *same* seed, is the trusted answer at the visited state
+# (DAgger expert); the shared seed keeps its layout aligned with the cheap path's.
+# v0: 2-stage only. Works with --torch_compile (plain inductor: teacher/rollout/
+# tail are static shapes); not with --compile_inductor_mode reduce-overhead
+# (CUDAGraphs span the eval/grad + LoRA on/off toggles).
 [onpolicy]
-# Fraction of steps that use the on-policy tail; the rest stay the analytic
-# backbone that anchors the prefix. 0 = analytic-only (today's behavior). MIX —
-# one LoRA can't be frozen by module, so 1.0 lets the prefix drift.
-ratio = 0.0
+# Fraction of steps that use the on-policy teacher tail; the rest stay the analytic
+# backbone (which still trains the prefix — the on-policy rollout is no_grad). 0 =
+# analytic-only. MIX — one LoRA can't be frozen by module, so 1.0 lets the prefix
+# drift untrained. NOTE: prefer warming up analytic-only before enabling this, so
+# the prefix rollout is sane when the teacher tail starts trusting its handoff state.
+ratio = 0.5
 # Site of supervision: 'entry' = the handoff σ̃ only (attacks the seam, cheapest);
 # 'full' = DAgger across the tail band (roll the tail no_grad to a random σ in
 # [sigma_floor, σ̃] and supervise there — needed to claim the high-res stage can
 # be shortened).
 tail_band = "entry"
 rollout_steps = 16      # Euler steps for the prefix rollout (coarser than infer is fine)
-sigma_floor = 0.1       # lower σ clamp for 'full' band (caps the (x−x0)/σ variance)
+teacher_steps = 24      # Euler steps for the frozen-base gold rollout (≥ deployment grid)
+sigma_floor = 0.1       # lower σ clamp for 'full' band (caps the (x−x0_teacher)/σ variance)
 flow_shift = 1.0        # σ-schedule shift for the rollout (matches inference)
 
 [optim]

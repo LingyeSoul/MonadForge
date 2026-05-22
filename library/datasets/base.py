@@ -616,6 +616,57 @@ class BaseDataset(torch.utils.data.Dataset):
             ]
         )
 
+    def is_latents_cache_complete(self) -> bool:
+        """True iff every image already has a valid on-disk latents cache.
+
+        Read-only probe (no model, no GPU) used by the trainer to decide
+        whether the VAE needs loading at all. Mirrors the per-file skip
+        condition inside ``new_cache_latents``; honours ``skip_cache_check``
+        via the strategy's ``is_disk_cached_latents_expected``.
+        """
+        caching_strategy = LatentsCachingStrategy.get_strategy()
+        if caching_strategy is None or not caching_strategy.cache_to_disk:
+            return False
+        for info in self.image_data.values():
+            if info.latents_npz is not None:  # fine tuning dataset: pre-set path
+                continue
+            subset = self.image_to_subset[info.image_key]
+            npz_path = caching_strategy.get_latents_npz_path(
+                info.absolute_path,
+                info.image_size,
+                cache_dir=getattr(subset, "cache_dir", None),
+                image_dir=getattr(subset, "image_dir", None),
+            )
+            if not caching_strategy.is_disk_cached_latents_expected(
+                info.bucket_reso,
+                npz_path,
+                subset.flip_aug,
+                subset.alpha_mask,
+            ):
+                return False
+        return True
+
+    def is_text_encoder_outputs_cache_complete(self) -> bool:
+        """True iff every image already has a valid on-disk text-encoder cache.
+
+        Read-only probe (no model, no GPU) used by the trainer to decide
+        whether the text encoder needs loading at all. Mirrors the per-file
+        skip condition inside ``new_cache_text_encoder_outputs``.
+        """
+        caching_strategy = TextEncoderOutputsCachingStrategy.get_strategy()
+        if caching_strategy is None or not caching_strategy.cache_to_disk:
+            return False
+        for info in self.image_data.values():
+            subset = self.image_to_subset.get(info.image_key)
+            npz_path = caching_strategy.get_outputs_npz_path(
+                info.absolute_path,
+                cache_dir=getattr(subset, "cache_dir", None),
+                image_dir=getattr(subset, "image_dir", None),
+            )
+            if not caching_strategy.is_disk_cached_outputs_expected(npz_path):
+                return False
+        return True
+
     def new_cache_latents(self, model: Any, accelerator: Accelerator):
         r"""
         a brand new method to cache latents. This method caches latents with caching strategy.

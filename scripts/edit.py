@@ -477,17 +477,6 @@ def main() -> None:
     logger.info("Loading DiT model...")
     anima = load_dit_model(args, device, dit_weight_dtype=torch.bfloat16)
     if args.compile_blocks:
-        # split_attn=True (the inference default) slices q/k/v per batch
-        # element with `attn_params.seqlens[i]` as the slice end — a 0-dim
-        # CUDA tensor whose use as a Python slice forces a `.item()` sync,
-        # which breaks the dynamo graph inside every block._forward.
-        # Batch=1 DirectEdit at a single bucket has no real per-element
-        # trimming to do, so we disable split_attn for the compile path.
-        # Self-attn now sees the ~0–1.6% image-token padding (zero keys
-        # /values) instead of trimming it; cross-attn is unchanged from the
-        # trained zero-padded-text invariant (see CLAUDE.md "Text encoder
-        # padding").
-        anima.split_attn = False
         anima.compile_blocks(mode=args.compile_inductor_mode)
 
     # 4. Encode source + target text — or, in --cached_embed mode, load

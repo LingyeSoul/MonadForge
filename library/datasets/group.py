@@ -126,6 +126,15 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     def is_latent_cacheable(self) -> bool:
         return all([dataset.is_latent_cacheable() for dataset in self.datasets])
 
+    def is_latents_cache_complete(self) -> bool:
+        return all(dataset.is_latents_cache_complete() for dataset in self.datasets)
+
+    def is_text_encoder_outputs_cache_complete(self) -> bool:
+        return all(
+            dataset.is_text_encoder_outputs_cache_complete()
+            for dataset in self.datasets
+        )
+
     def is_text_encoder_output_cacheable(
         self, cache_supports_dropout: bool = False
     ) -> bool:

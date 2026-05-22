@@ -347,7 +347,6 @@ def main():
         device=device,
         dit_path=trainable_path,
         attn_mode=args.attn_mode,
-        split_attn=False,
         loading_device=device,
         dit_weight_dtype=dtype,
     )
@@ -365,7 +364,6 @@ def main():
             device=device,
             dit_path=frozen_path,
             attn_mode=args.attn_mode,
-            split_attn=False,
             loading_device=device,
             dit_weight_dtype=dtype,
         )

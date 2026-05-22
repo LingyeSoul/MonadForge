@@ -603,7 +603,6 @@ def train(
     """
     preset = preset or _preset()
     extra = list(extra or [])
-    print(f"[train] method={method!r} preset_arg={preset!r} _preset()={_preset()!r} resolved={preset!r}", file=sys.stderr)
     artist = os.environ.get("ARTIST")
     profile_steps = os.environ.get("PROFILE_STEPS")
 
@@ -665,7 +664,7 @@ INFERENCE_BASE = [
     "--guidance_scale",
     "4.0",
     "--seed",
-    "40",
+    "42",
     "--save_path",
     "output/tests",
 ]
