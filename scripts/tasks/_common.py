@@ -535,55 +535,6 @@ def build_method_args(
     return [*args, *extra]
 
 
-def _queue_submit(
-    method: str,
-    *,
-    preset: str,
-    methods_subdir: str | None,
-    extra: list[str],
-    artist: str | None,
-    profile_steps: str | None,
-) -> None:
-    """Enqueue a training job on the local daemon instead of running it inline.
-
-    The ``--queue`` path (``make lora --queue``, ``make lora-gui <v> --queue``)
-    turns the CLI into a job *producer*: it auto-starts the daemon if needed and
-    POSTs the same method/preset/methods_subdir the inline path would have built,
-    then returns immediately. Submit ×N to drain an overnight sweep serially.
-
-    ARTIST / PROFILE_STEPS are folded into ``extra`` as explicit flags here
-    because the daemon's own ``build_method_args`` call (in
-    ``scripts/daemon/manager.py``) doesn't read those env vars — without folding,
-    a queued artist run would silently train the full dataset.
-    """
-    extra = list(extra)
-    if artist and "--artist_filter" not in extra:
-        extra += ["--artist_filter", artist]
-    if profile_steps and "--profile_steps" not in extra:
-        extra += ["--profile_steps", profile_steps]
-
-    # Local import: the daemon client is pure stdlib (no torch / library.*), but
-    # keep it off the module-load path for the inline-training majority case.
-    from scripts.daemon import client as _daemon_client
-
-    cl = _daemon_client.ensure_daemon()
-    resp = cl.submit(
-        method=method,
-        preset=preset,
-        methods_subdir=methods_subdir,
-        extra=extra,
-    )
-    job_id = resp.get("job_id")
-    print(
-        f"queued job {job_id} (method={method}, preset={preset}). "
-        f"daemon: {cl.base}\n"
-        f"  make daemon-attach JOB={job_id}   # follow this job's output\n"
-        f"  make daemon-attach                # follow queue/lifecycle events\n"
-        f"  make daemon-kill JOB={job_id}     # cancel it\n"
-        f"  make daemon-terminate             # stop the daemon + discard queue"
-    )
-
-
 def train(
     method: str, extra, preset: str | None = None, methods_subdir: str | None = None
 ):
@@ -596,28 +547,12 @@ def train(
     ARTIST env var trains an artist-only LoRA — equivalent to passing
     `--artist_filter <name>` (filters dataset to `@<name>`-tagged captions and
     redirects output to `output/ckpt-artist/`).
-
-    ``--queue`` anywhere in ``extra`` enqueues the job on the local training
-    daemon and returns immediately instead of running it inline (the overnight
-    sweep path — see ``_queue_submit``).
     """
     preset = preset or _preset()
     extra = list(extra or [])
     print(f"[train] method={method!r} preset_arg={preset!r} _preset()={_preset()!r} resolved={preset!r}", file=sys.stderr)
     artist = os.environ.get("ARTIST")
     profile_steps = os.environ.get("PROFILE_STEPS")
-
-    if "--queue" in extra:
-        extra.remove("--queue")
-        _queue_submit(
-            method,
-            preset=preset,
-            methods_subdir=methods_subdir,
-            extra=extra,
-            artist=artist,
-            profile_steps=profile_steps,
-        )
-        return
 
     args = build_method_args(
         method,
