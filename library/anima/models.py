@@ -16,10 +16,6 @@ from library.runtime import offloading as custom_offloading_utils
 from library.runtime.device import weighs_to_device
 from networks import attention_dispatch
 
-# KV length buckets for cross-attention trimming. Captions trimmed to the smallest
-# bucket >= max(real_token_lengths). Keeps torch.compile shapes stable (max 4 variants).
-_KV_BUCKETS = (128, 192, 256, 512)
-
 
 def to_device(x, device):
     if isinstance(x, torch.Tensor):
@@ -1626,7 +1622,6 @@ class Anima(nn.Module):
         t5_input_ids: Optional[torch.Tensor] = None,
         t5_attn_mask: Optional[torch.Tensor] = None,
         crossattn_seqlens: Optional[torch.Tensor] = None,
-        max_crossattn_seqlen: Optional[int] = None,
         h_offset: int = 0,
         w_offset: int = 0,
         pooled_text_override: Optional[torch.Tensor] = None,
@@ -1746,25 +1741,6 @@ class Anima(nn.Module):
         attn_params = attention_dispatch.AttentionParams.create_attention_params(
             self.attn_mode, self.split_attn, self.attn_softmax_scale
         )
-
-        # Bucketed KV trimming for cross-attention requires flash4 (LSE correction),
-        # which is not supported yet (flash-attention-sm120 disabled).
-        # if (
-        #     crossattn_seqlens is not None
-        #     and getattr(self, "trim_crossattn_kv", False)
-        #     and self.attn_mode == "flash4"
-        #     and not self.split_attn
-        # ):
-        #     full_len = crossattn_emb.shape[1]
-        #     max_real_len = (
-        #         max_crossattn_seqlen
-        #         if max_crossattn_seqlen is not None
-        #         else int(crossattn_seqlens.max())
-        #     )
-        #     trim_len = next((b for b in _KV_BUCKETS if b >= max_real_len), full_len)
-        #     if trim_len < full_len:
-        #         crossattn_emb = crossattn_emb[:, :trim_len].contiguous()
-        #         attn_params.crossattn_full_len = full_len
 
         # Pre-compute cross-attention BlockMask once for all blocks (flex mode only)
         if (
@@ -1915,10 +1891,10 @@ class Anima(nn.Module):
             context = source_hidden_states
             crossattn_mask = source_attention_mask
 
-        # Compute seqlens from mask for bucketed KV trimming with LSE correction.
-        # Pretrained model expects padding as attention sinks (zero keys contribute
-        # exp(0)=1 to softmax denominator); the attention function accounts for
-        # removed sinks via an exact sigmoid correction on the logsumexp.
+        # Compute per-sample text token counts from the mask. Used only by the
+        # flex-attention BlockMask path (attn_mode="flex"); the default sink-
+        # padded attention modes ignore it and treat zero keys as attention
+        # sinks, which is what the pretrained model expects.
         crossattn_seqlens = None
         if crossattn_mask is not None:
             crossattn_seqlens = crossattn_mask.sum(dim=-1).to(torch.int32)

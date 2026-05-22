@@ -35,31 +35,44 @@ network_dim = 4
 # splice_position    — "end_of_sequence" (default) overwrites the K tail
 #                      zero-padding slots; preserves the strongest sinks.
 #                      "front_of_padding" scatters at [seqlens[i], +K) per
-#                      sample (caption-position-aware). Contrastive loss
-#                      currently requires "end_of_sequence" (FOP scatter is
-#                      not trivially invertible for the rolled-text trick).
-# contrastive_weight — λ on the InfoNCE term added to plain FM (paper §3.1).
-#                      Paper used pure contrastive; here it's a regularizer
-#                      on top of FM. Range 0–0.1; SD3 hit FID regression at
-#                      paper-strength so we start small.
-# contrastive_k      — number of in-batch negatives per anchor. Each negative
-#                      = one extra DiT forward, so total step cost ≈ (1+k)×
-#                      plain-FM. Paper had k=N-1 (full batch); we default to
-#                      1 for tractability. Capped at batch_size-1 at runtime.
-# contrastive_tau    — temperature in exp(-MSE/τ); paper §3.1 introduces it
-#                      to constrain the unbounded MSE-as-similarity. Larger
-#                      τ → softer logits, weaker contrastive pressure.
+#                      sample (caption-position-aware).
+# bank_dispersive_weight        — λ on the bank-axis dispersive regularizer
+#                                 (Wang & He, "Diffuse and Disperse",
+#                                 arXiv:2506.09027). Adapted to B=1 by
+#                                 dispersing along the bank's K and
+#                                 n_t_buckets axes (paper's batch-axis form
+#                                 is unusable at B=1). 0.0 disables. Bench
+#                                 probe at bench/soft_tokens_dispersive/ found
+#                                 the paper's exp-form (``current``) unbounded
+#                                 below — start with a bounded form below and
+#                                 a small λ (~0.01).
+# bank_dispersive_warmup_ratio  — fraction of total training steps before the
+#                                 regularizer activates. Holds at 0 during
+#                                 warmup so the bank can develop initial
+#                                 structure from FM gradient before the
+#                                 "don't collapse" prior fires.
+# bank_dispersive_tau           — τ for ``current`` / ``normalized_pdist`` forms
+#                                 (exp(-pdist²/τ)). Unused by other forms.
+# dispersive_form               — kernel shape. One of:
+#                                   current           paper exp-form (UNBOUNDED ↓)
+#                                   normalized_pdist  exp-form on unit-normalized vecs (bounded)
+#                                   cosine_sq         mean cos² over pairs (bounded [0,1])
+#                                   cosine_abs        mean |cos| over pairs (bounded [0,1])
+#                                   hinge             mean max(0, ε − d²) (bounded ≥ 0)
+# dispersive_hinge_eps          — ε for the ``hinge`` form only.
 network_args = [
-    "n_layers=10",
+    "n_layers=6",
     "n_t_buckets=14",
     "init_std=0.02",
-    "splice_position=end_of_sequence",
-    "contrastive_weight=0.05",
-    "contrastive_k=1",
-    "contrastive_tau=1.0",
+    "splice_position=front_of_padding",
+    "bank_dispersive_weight=0.5",
+    "bank_dispersive_warmup_ratio=0.1",
+    "bank_dispersive_tau=0.5",
+    "dispersive_form=cosine_sq",
+    "dispersive_hinge_eps=1.0",
 ]
 output_name = "anima_soft_tokens"
-
+weight_decay=1e-4
 # Soft tokens are independent of the cached crossattn (they overwrite zero-
 # padding tail), so cache_llm_adapter_outputs is the right default.
 use_shuffled_caption_variants = true
@@ -70,9 +83,13 @@ learning_rate = 1e-3
 max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
+compile_inductor_mode = "reduce-overhead"
 
 # Per-block monkey-patch on Block.forward; gradient checkpoint() inside the
 # original forward is preserved (our hook is the outermost wrapper). Block
 # swapping is incompatible — the hook captures the block by reference at
 # apply_to() time and a swapped block is a different object instance.
 blocks_to_swap = 0
+
+logging_dir = "output/logs"
+log_with = "tensorboard"

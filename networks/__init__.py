@@ -17,8 +17,7 @@ Flag precedence (evaluated top to bottom, first match wins):
 The legacy ``use_hydra`` / ``use_sigma_router`` / ``use_fei_router``
 kwargs were retired in plan2 task #6 — see ``LoRANetworkCfg.from_kwargs``
 for the rejection message. ``use_dora`` was retired alongside the
-``lora_deprecated`` module; ``.dora_scale`` keys in external LoRAs still
-load through the plain ``lora`` spec.
+``lora_deprecated`` module; DoRA is no longer trained, saved, or loaded.
 """
 
 from __future__ import annotations
@@ -92,9 +91,9 @@ SHARED_KWARG_FLAGS: Tuple[str, ...] = (
     "use_timestep_mask",
     "min_rank",
     "alpha_rank_scale",
-    # Per-channel input pre-scaling (SmoothQuant-style)
-    "per_channel_scaling",
-    "channel_stats_path",
+    # Per-channel input pre-scaling (SmoothQuant-style). Gated by alpha:
+    # 0.0 disables; 0.5 = sqrt balance; 1.0 fully flattens. Calibration is
+    # vendored at `networks/calibration/channel_stats.safetensors`.
     "channel_scaling_alpha",
     # Memory-saving down-projection autograd (classic LoRA only; bitwise-equal grads)
     "use_custom_down_autograd",
@@ -120,17 +119,6 @@ SHARED_KWARG_FLAGS: Tuple[str, ...] = (
     "reft_dim",
     "reft_alpha",
     "reft_layers",
-    # REPA-style auxiliary alignment (composes with any variant). The factory
-    # ``_maybe_attach_repa_head`` reads ``use_repa`` to decide whether to attach
-    # the head, then sizes/weights it from the rest. Selection of the hooked
-    # block index and the loss weight live as top-level argparse flags
-    # (``--repa_layer``, ``--repa_weight``) — the network module doesn't need
-    # them, only the adapter / loss handler does.
-    "use_repa",
-    "repa_dit_dim",
-    "repa_hidden_dim",
-    "repa_encoder_dim",
-    "repa_lr_scale",
 )
 
 
@@ -211,6 +199,13 @@ _CHIMERA_KWARG_FLAGS: Tuple[str, ...] = (
     # near-uniform too long (std=0.01 init is slow to break symmetry).
     "network_content_router_lr_scale",
     "network_freq_router_lr_scale",
+    # Optional global content router (replaces the per-Linear lx-router with
+    # a single network-level ContentRouter fed by pooled crossattn_emb).
+    # Consumed by ``LoRANetworkCfg.from_kwargs`` — see chimera.toml's "Optional:
+    # global content router" block.
+    "content_router_source",
+    "content_router_init_std",
+    "content_router_layer_norm",
 )
 
 

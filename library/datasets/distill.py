@@ -64,7 +64,8 @@ class CachedDataset(torch.utils.data.Dataset):
         if synth_data_dir is not None:
             synth_by_stem: dict[str, str] = {}
             for path in glob.glob(
-                os.path.join(synth_data_dir, f"*{LATENT_CACHE_SUFFIX}")
+                os.path.join(synth_data_dir, "**", f"*{LATENT_CACHE_SUFFIX}"),
+                recursive=True,
             ):
                 # `{stem}_{HxW}_anima.npz` → strip suffix, drop trailing `_HxW`
                 without_suffix = os.path.basename(path).removesuffix(LATENT_CACHE_SUFFIX)

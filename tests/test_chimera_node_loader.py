@@ -24,6 +24,8 @@ path requires ``comfy.lora`` (ComfyUI is not on the unit-test sys.path).
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -32,14 +34,33 @@ from safetensors.torch import save_file
 
 
 def _load_adapter_module():
-    """Import the node's ``adapter.py`` without depending on ComfyUI."""
+    """Import the node's ``adapter.py`` without depending on ComfyUI.
+
+    ``adapter.py`` does ``from .chimera import ...``, so it must be loaded
+    as a submodule of a package. We register a stub parent package whose
+    ``__path__`` points at the node directory — skipping the real
+    ``__init__.py`` (which imports ComfyUI) — and load ``adapter`` under it.
+    """
     here = Path(__file__).resolve().parent.parent
+    node_dir = here / "custom_nodes" / "comfyui-hydralora"
+
+    pkg_name = "_anima_node_pkg"
+    if pkg_name not in sys.modules:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = [str(node_dir)]
+        sys.modules[pkg_name] = pkg
+
+    adapter_name = f"{pkg_name}.adapter"
+    if adapter_name in sys.modules:
+        return sys.modules[adapter_name]
+
     spec = importlib.util.spec_from_file_location(
-        "_anima_node_adapter",
-        here / "custom_nodes" / "comfyui-hydralora" / "adapter.py",
+        adapter_name,
+        node_dir / "adapter.py",
     )
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[adapter_name] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -81,7 +102,10 @@ def _write_chimera_checkpoint(
         "ss_num_experts_freq": str(K_f),
         "ss_chimera_fei_feature_dim": str(fei_dim),
         "ss_chimera_sigma_feature_dim": str(sigma_dim),
-        "ss_chimera_fei_sigma_low_div": "4.0",
+        # Non-default (config default is 4.0) so a key-name typo on the read
+        # side surfaces instead of coinciding with the fallback. 8.0 keeps the
+        # blur kernel small enough for the 16x16 synth latent in the pre-hook test.
+        "ss_chimera_fei_sigma_low_div": "8.0",
         "ss_use_moe_style": "shared_A",
         "ss_route_per_layer": "true",
         "ss_router_source": "input",
@@ -111,6 +135,9 @@ def test_load_adapter_recognizes_chimera(tmp_path):
     assert chimera["num_experts_freq"] == 2
     assert chimera["fei_feature_dim"] == 2
     assert chimera["sigma_feature_dim"] == 0
+    # Stamped σ_low div must survive the read (guards the ss_chimera_fei_sigma_low_div
+    # key name — a typo here would silently fall back to the 4.0 default).
+    assert chimera["fei_sigma_low_div"] == 8.0
     fr = chimera["freq_router_sd"]
     assert fr["net.0.weight"].shape == (8, 2)
     assert fr["net.2.weight"].shape == (2, 8)
@@ -199,7 +226,6 @@ def test_chimera_hook_dispatches_dual_pool(tmp_path):
     )
     bundle = adapter.load_adapter(str(path))
     hydra = bundle["hydra"]
-    chimera = hydra["chimera"]
     prefix = "lora_unet_blocks_0_mlp_layer1"
     mod = hydra["modules"][prefix]
     ups_stacked = torch.stack(
@@ -402,6 +428,236 @@ def test_chimera_dual_a_hook_dispatches_two_pools(tmp_path):
     )
     assert delta_a.abs().mean() > 1e-3
     assert delta_b.abs().mean() > 1e-3
+
+
+def _write_chimera_dual_a_crossattn_checkpoint(
+    path: Path,
+    *,
+    K_c: int,
+    K_f: int,
+    rank: int,
+    in_dim: int,
+    out_dim: int,
+    fei_dim: int,
+    sigma_dim: int,
+    cr_input_dim: int = 1024,
+    cr_hidden: int = 64,
+    fr_hidden: int = 8,
+    layer_norm: bool = True,
+    prefix: str = "lora_unet_blocks_0_mlp_layer1",
+    source_stamp: str = "crossattn",
+) -> None:
+    """Synth a chimera dual-A checkpoint trained with
+    ``content_router_source="crossattn_emb"`` — the per-Linear ``router.*``
+    keys are absent and the network-level ``content_router.net.*`` MLP
+    is present. ``source_stamp`` selects the on-disk metadata spelling so
+    both the current ``"crossattn_emb"`` and the legacy ``"crossattn"`` alias
+    can be exercised.
+    """
+    torch.manual_seed(555)
+    sd = {
+        f"{prefix}.lora_down_c.weight": torch.randn(rank, in_dim),
+        f"{prefix}.lora_down_f.weight": torch.randn(rank, in_dim),
+        f"{prefix}.alpha": torch.tensor(float(rank)),
+        # Network-level ContentRouter (Linear → SiLU → Linear → softmax/τ).
+        "content_router.net.0.weight": torch.randn(cr_hidden, cr_input_dim),
+        "content_router.net.0.bias": torch.zeros(cr_hidden),
+        "content_router.net.2.weight": torch.randn(K_c, cr_hidden) * 0.1,
+        "content_router.net.2.bias": torch.zeros(K_c),
+        "freq_router.net.0.weight": torch.randn(fr_hidden, fei_dim + sigma_dim),
+        "freq_router.net.0.bias": torch.zeros(fr_hidden),
+        "freq_router.net.2.weight": torch.randn(K_f, fr_hidden) * 0.5,
+        "freq_router.net.2.bias": torch.zeros(K_f),
+    }
+    for i in range(K_c):
+        sd[f"{prefix}.lora_ups_c.{i}.weight"] = torch.randn(out_dim, rank)
+    for j in range(K_f):
+        sd[f"{prefix}.lora_ups_f.{j}.weight"] = torch.randn(out_dim, rank)
+
+    metadata = {
+        "ss_use_chimera_hydra": "true",
+        "ss_num_experts_content": str(K_c),
+        "ss_num_experts_freq": str(K_f),
+        "ss_chimera_fei_feature_dim": str(fei_dim),
+        "ss_chimera_sigma_feature_dim": str(sigma_dim),
+        "ss_chimera_fei_sigma_low_div": "4.0",
+        "ss_use_moe_style": "shared_A",
+        "ss_route_per_layer": "true",
+        "ss_router_source": "input",
+        "ss_chimera_content_router_source": source_stamp,
+        "ss_chimera_content_router_layer_norm": "true" if layer_norm else "false",
+    }
+    save_file(sd, str(path), metadata=metadata)
+
+
+def test_load_adapter_recognizes_crossattn_content_router(tmp_path):
+    """``load_adapter`` captures the network-level ContentRouter weights +
+    layer-norm flag when chimera was trained with crossattn-sourced π_c."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+
+    path = tmp_path / "anima_chimera_crossattn_chimera.safetensors"
+    _write_chimera_dual_a_crossattn_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8,
+        fei_dim=2, sigma_dim=0, cr_input_dim=1024,
+    )
+
+    bundle = adapter.load_adapter(str(path))
+    cd = bundle["chimera_dual_a"]
+    assert cd is not None
+    assert cd["content_router_source"] == "crossattn"
+    cr = cd["content_router"]
+    assert cr is not None
+    assert cr["K_c"] == 4
+    assert cr["input_dim"] == 1024
+
+
+def test_load_adapter_recognizes_crossattn_emb_content_router(tmp_path):
+    """The current ``"crossattn_emb"`` stamp loads the same way as the
+    legacy ``"crossattn"`` alias (backward + forward compatibility)."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+
+    path = tmp_path / "anima_chimera_crossattn_emb_chimera.safetensors"
+    _write_chimera_dual_a_crossattn_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8,
+        fei_dim=2, sigma_dim=0, cr_input_dim=1024,
+        source_stamp="crossattn_emb",
+    )
+
+    bundle = adapter.load_adapter(str(path))
+    cd = bundle["chimera_dual_a"]
+    assert cd is not None
+    cr = cd["content_router"]
+    assert cr is not None
+    assert cr["K_c"] == 4
+    assert cr["input_dim"] == 1024
+    assert cr["layer_norm"] is True
+    assert cr["sd"]["net.0.weight"].shape == (64, 1024)
+    assert cr["sd"]["net.2.weight"].shape == (4, 64)
+    # Per-Linear router_w / router_b must be absent under global mode.
+    mod = cd["modules"]["lora_unet_blocks_0_mlp_layer1"]
+    assert "router_w" not in mod
+    assert "router_b" not in mod
+    # Plain-LoRA extraction must not catch content_router.* keys.
+    assert bundle["lora"] is None
+
+
+def test_load_adapter_rejects_crossattn_without_content_router_keys(tmp_path):
+    """Metadata claims crossattn but the file is missing
+    ``content_router.net.*`` — load_adapter fails loudly."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+    path = tmp_path / "bad_crossattn_chimera.safetensors"
+    _write_chimera_dual_a_crossattn_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8,
+        fei_dim=2, sigma_dim=0,
+    )
+    from safetensors.torch import load_file
+    from safetensors import safe_open
+    sd = load_file(str(path))
+    for k in [k for k in list(sd.keys()) if k.startswith("content_router.")]:
+        del sd[k]
+    with safe_open(str(path), framework="pt") as f:
+        meta = dict(f.metadata() or {})
+    save_file(sd, str(path), metadata=meta)
+    with pytest.raises(ValueError, match="ContentRouter weight key"):
+        adapter.load_adapter(str(path))
+
+
+def test_content_router_llm_adapter_hook_emits_pi_c(tmp_path):
+    """Forward hook on llm_adapter pools the post-T5 features, runs the
+    ContentRouter MLP, and writes a ``(B, K_c)`` softmax into the shared
+    state."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+    path = tmp_path / "anima_chimera_crossattn.safetensors"
+    _write_chimera_dual_a_crossattn_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8,
+        fei_dim=2, sigma_dim=0, cr_input_dim=16, cr_hidden=8,
+    )
+    bundle = adapter.load_adapter(str(path))
+    cr = bundle["chimera_dual_a"]["content_router"]
+
+    state: dict = {}
+    hook = adapter._make_content_router_llm_adapter_hook(
+        cr, router_tau=1.0, router_state=state
+    )
+    B = 3
+    adapter_out = torch.randn(B, 117, 16)  # < 512: hook should zero-pad
+    hook(None, (None,), adapter_out)
+
+    pi_c = state.get("pi_c")
+    assert pi_c is not None, "hook did not write pi_c"
+    assert pi_c.shape == (B, 4)
+    assert pi_c.dtype == torch.float32
+    assert torch.allclose(pi_c.sum(dim=-1), torch.ones(B), atol=1e-5)
+    assert (pi_c > 0).all()
+
+
+def test_chimera_dual_a_hook_uses_global_pi_c(tmp_path):
+    """Per-Linear dual-A hook in global mode reads ``pi_c`` from shared
+    state and ignores ``router_w/router_b`` entirely (they are None).
+    Verifies the content branch responds to π_c swaps without any pooled-
+    lx_c softmax firing."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+    rank, in_dim, out_dim = 4, 8, 8
+    K_c, K_f = 3, 2
+    path = tmp_path / "anima_chimera_crossattn_dual.safetensors"
+    _write_chimera_dual_a_crossattn_checkpoint(
+        path, K_c=K_c, K_f=K_f, rank=rank, in_dim=in_dim, out_dim=out_dim,
+        fei_dim=2, sigma_dim=0,
+    )
+    bundle = adapter.load_adapter(str(path))
+    cd = bundle["chimera_dual_a"]
+    mod = cd["modules"]["lora_unet_blocks_0_mlp_layer1"]
+    ups_c_stacked = torch.stack(
+        [mod["lora_ups_c"][i] for i in sorted(mod["lora_ups_c"].keys())], dim=0
+    )
+    ups_f_stacked = torch.stack(
+        [mod["lora_ups_f"][i] for i in sorted(mod["lora_ups_f"].keys())], dim=0
+    )
+    params = {
+        "lora_down_c": mod["lora_down_c"],
+        "lora_down_f": mod["lora_down_f"],
+        "lora_up_c_stack": ups_c_stacked,
+        "lora_up_f_stack": ups_f_stacked,
+        "router_w": None,
+        "router_b": None,
+        "inv_scale": None,
+        "num_experts_content": K_c,
+        "num_experts_freq": K_f,
+        "global_content_router": True,
+    }
+
+    state: dict = {"pi_f": torch.tensor([[1.0, 0.0], [1.0, 0.0]])}
+    hook = adapter._make_chimera_dual_a_hook(params, strength=1.0, router_state=state)
+
+    linear = torch.nn.Linear(in_dim, out_dim, bias=False)
+    x = torch.randn(2, 5, in_dim)
+    base_out = linear(x)
+
+    # Case A: π_c one-hot on content expert 0.
+    state["pi_c"] = torch.tensor([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    delta_a = hook(linear, (x,), base_out.clone()) - base_out
+
+    # Case B: π_c one-hot on content expert 2 — freq path identical, so
+    # only the content-pool contribution differs.
+    state["pi_c"] = torch.tensor([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+    delta_b = hook(linear, (x,), base_out.clone()) - base_out
+
+    assert not torch.allclose(delta_a, delta_b, atol=1e-5), (
+        "Swapping π_c one-hot between content experts produced identical "
+        "deltas — global ContentRouter gate is not reaching the content "
+        "B-stack einsum."
+    )
+
+    # Falls back to uniform 1/K_c when pi_c is absent (e.g. llm_adapter
+    # hook hasn't fired yet on the very first compile-cache miss).
+    state.pop("pi_c", None)
+    delta_fallback = hook(linear, (x,), base_out.clone()) - base_out
+    assert delta_fallback.abs().mean() > 1e-3
 
 
 def test_chimera_dual_a_metadata_mismatch_rejected(tmp_path):

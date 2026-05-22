@@ -12,7 +12,7 @@ Examples:
     python tasks.py test                     # add MOD=1 to enable modulation guidance
     python tasks.py test                     # add NOLORA=1 to run against the bare DiT
     python tasks.py download-models
-    python tasks.py exp-postfix              # experimental method
+    python tasks.py exp-chimera              # experimental method
     python tasks.py exp-test-ip ref.png      # experimental inference
 
 Command implementations live under ``scripts/tasks/`` (shipped methods) and
@@ -25,6 +25,7 @@ import sys
 from scripts.experimental_tasks import inference as exp_inference
 from scripts.experimental_tasks import training as exp_training
 from scripts.tasks import (
+    daemon,
     dcw,
     downloads,
     inference,
@@ -44,7 +45,26 @@ COMMANDS = {
     "lora-gui": (
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
-        "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft, postfix_exp).",
+        "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft).",
+    ),
+    # ── Training daemon ───────────────────────────────────────────────
+    "daemon": (
+        daemon.cmd_daemon,
+        "Start the local training-job daemon (idempotent; detached, waits for /health).",
+    ),
+    "daemon-attach": (
+        daemon.cmd_daemon_attach,
+        "Follow the daemon (read-only). JOB=<id> tails that job's stdout; "
+        "ctrl-C detaches only — training keeps running.",
+    ),
+    "daemon-kill": (
+        daemon.cmd_daemon_kill,
+        "Abort the running job (or JOB=<id>) and free the GPU; daemon stays up "
+        "and starts the next queued job.",
+    ),
+    "daemon-terminate": (
+        daemon.cmd_daemon_terminate,
+        "Stop the daemon entirely (active job killed, GPU freed, queue discarded).",
     ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (
@@ -111,7 +131,7 @@ COMMANDS = {
     "preprocess-pe": (
         preprocess.cmd_preprocess_pe,
         "Cache PE-Core vision-encoder features into the LoRA cache dir. "
-        "Consumed by REPA (--use_repa) and IP-Adapter live-disk mode.",
+        "Consumed by IP-Adapter live-disk mode and the DCW v4 fusion head.",
     ),
     # ── Anima Tagger ──────────────────────────────────────────────────
     "preprocess-tagger": (
@@ -190,20 +210,18 @@ COMMANDS = {
     # ── Experimental ──────────────────────────────────────────────────
     # Unstable methods kept under exp-* so they don't pollute the main command
     # surface. May produce broken output, change without notice, or be removed.
-    "exp-postfix": (
-        exp_training.cmd_postfix,
-        "[experimental] Postfix tuning (mode selected in configs/methods/postfix.toml)",
-    ),
     "exp-turbo": (
         exp_training.cmd_turbo,
         "[experimental] Decoupled DMD2 distillation — bakes CFG=4 / 28-step Anima "
         "into a 4-step LoRA student (configs/methods/turbo.toml). "
         "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod).",
     ),
-    "exp-fera": (
-        exp_training.cmd_fera,
-        "[experimental] Author-faithful FeRA (independent-A stacked experts + "
-        "global FEI router; configs/gui-methods/fera.toml)",
+    "exp-spd": (
+        exp_training.cmd_spd,
+        "[experimental] SPD fine-tuning LoRA — §4.3 trajectory adapter that teaches a "
+        "plain LoRA to follow the SPD multi-resolution trajectory (configs/methods/spd.toml). "
+        "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod). "
+        "Output is a normal LoRA — infer with the SPD sampler at the trained schedule.",
     ),
     "exp-soft-tokens": (
         exp_training.cmd_soft_tokens,
@@ -232,22 +250,21 @@ COMMANDS = {
         "[experimental] Full EasyControl preprocess: latents + text emb. "
         "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
     ),
-    "exp-test-postfix": (
-        exp_inference.cmd_test_postfix,
-        "[experimental] Inference with latest postfix weight",
+    "exp-test-soft": (
+        exp_inference.cmd_test_soft,
+        "[experimental] Inference with latest soft_tokens weight "
+        "(SoftREPA-style per-layer × per-t bank, spliced into cross-attn via "
+        "monkey-patched Block.forward). Composes freely with --spectrum.",
     ),
     "exp-test-turbo": (
         exp_inference.cmd_test_turbo,
         "[experimental] Inference with latest turbo student LoRA at 4 steps, cfg=1.0 "
         "(CFG is baked into the student).",
     ),
-    "exp-test-postfix-exp": (
-        exp_inference.cmd_test_postfix_exp,
-        "[experimental] Inference with latest postfix-exp weight",
-    ),
-    "exp-test-postfix-func": (
-        exp_inference.cmd_test_postfix_func,
-        "[experimental] Inference with latest postfix-func weight",
+    "exp-test-spd": (
+        exp_inference.cmd_test_spd,
+        "[experimental] Inference with latest SPD fine-tune LoRA on the SPD sampler "
+        "at its trained schedule (read from safetensors metadata). cfg=4.0, Euler.",
     ),
     "exp-test-ip": (
         exp_inference.cmd_test_ip,

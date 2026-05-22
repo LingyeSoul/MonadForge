@@ -5,6 +5,7 @@ import torch
 from library.inference.adapters import clear_hydra_sigma, set_hydra_sigma
 from library.inference.generation import generate_body, generate_body_tiled
 from networks.spectrum import spectrum_denoise
+from library.inference.sampler_context import SamplerSideChannels
 
 
 class FakeHydraNetwork:
@@ -172,6 +173,7 @@ def test_spectrum_sets_hydra_sigma_each_step():
         guidance_scale=1.0,
         sampler=None,
         device=torch.device("cpu"),
+        ctx=SamplerSideChannels(),
         warmup_steps=3,
     )
 

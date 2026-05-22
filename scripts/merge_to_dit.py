@@ -5,7 +5,7 @@ The merged output is a standalone DiT checkpoint (ComfyUI-compatible, `net.`
 prefixed) that reproduces LoRA+base inference without needing the adapter at
 load time.
 
-Supported: plain LoRA, OrthoLoRA, DoRA, T-LoRA. (T-LoRA's timestep mask is
+Supported: plain LoRA, OrthoLoRA, T-LoRA. (T-LoRA's timestep mask is
 training-only — inference already runs full rank, so baking is bit-equivalent.)
 
 Not supported (refuse by default; --allow-partial to drop and proceed):

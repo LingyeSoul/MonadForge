@@ -11,7 +11,7 @@
 1. **빠른 LoRA 학습** — 풀 모델 `torch.compile` + CUDAGraph 캡처를 엔드-투-엔드로 적용하여 소비자용 GPU에서 동작.
 2. **견고한 정통 구현** — LoRA, OrthoLoRA, T-LoRA가 한 세트로 스택되고, 독립형 DiT 체크포인트로 무손실 병합되어 그대로 배포 가능.
 3. **Anima에 맞춰 엔지니어링한 최신 기법** — Spectrum 추론, DCW 캘리브레이터, OrthoHydraLoRA, modulation guidance. 토이 포팅이 아니라 Anima의 컴파일 / CUDAGraph 계약에 맞춰 엔드-투-엔드로 구현.
-4. **넓은 실험적 기능 표면** — ReFT, postfix/prefix tuning, IP-Adapter, EasyControl, 임베딩 인버전, img2emb, GRAFT.
+4. **넓은 실험적 기능 표면** — ReFT, IP-Adapter, EasyControl, 임베딩 인버전.
 
 > **한눈에 보는 구조도** (DiT 내부, LoRA, OrthoLoRA, T-LoRA, HydraLoRA, ReFT, Spectrum, modulation, 컴파일 최적화)는 [`docs/structure_images_korean/`](docs/structure_images_korean/)에 있습니다. 글로 된 해설은 [`docs/structure/`](docs/structure/) 참고.
 
@@ -45,7 +45,7 @@
 | **OrthoLoRA** | SVD 파라미터화 + 직교성 정규화. 저장 시 일반 LoRA로 내보냄. | [psoft-integrated-ortholora.md](docs/methods/psoft-integrated-ortholora.md) |
 | **T-LoRA** | 타임스텝 의존 랭크 마스킹 — 고노이즈 구간은 저랭크, 저노이즈 구간은 풀 랭크. 마스크가 학습 전용이라 머지 결과는 비트 동일. | [timestep_mask.md](docs/methods/timestep_mask.md) |
 
-**사이드 바이 사이드** — 동일 프롬프트, `er_sde` 30 스텝, `cfg=4.0`, 1024². 각 LoRA는 rank 16, 2 에포크, 20% 서브셋, 학습 seed 42로 학습했고 추론 seed는 `{41, 42, 43}`. 재현은 `python archive/bench_methods.py`.
+**사이드 바이 사이드** — 동일 프롬프트, `er_sde` 30 스텝, `cfg=4.0`, 1024². 각 LoRA는 rank 16, 2 에포크, 20% 서브셋, 학습 seed 42로 학습했고 추론 seed는 `{41, 42, 43}`. 재현은 `python _archive/bench_methods.py`.
 
 |  | **LoRA** | **OrthoLoRA + T-LoRA** |
 |:---:|:---:|:---:|
@@ -71,7 +71,7 @@ make merge                                  # output/ckpt 내 최신 LoRA를 배
 make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8
 ```
 
-Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe` / postfix / prefix)은 기본적으로 머지 거부. `--allow-partial`로 넘기면 해당 파트를 drop하고 LoRA 부분만 구워냅니다.
+Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe`)은 기본적으로 머지 거부. `--allow-partial`로 넘기면 해당 파트를 drop하고 LoRA 부분만 구워냅니다.
 
 ---
 
@@ -95,12 +95,9 @@ Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe` / postfix / pre
 | 기능 | 설명 | 문서 |
 |---|---|---|
 | **ReFT** | 블록 단위 residual-stream intervention (LoReFT, NeurIPS 2024). 어떤 LoRA 변형과도 조합 가능. | [reft.md](docs/methods/reft.md) |
-| **Postfix (cond+ortho)** | 캡션 조건부 postfix 벡터를 Cayley 회전된 frozen SVD 기저에 묶어 구조적 직교성을 강제. DiT는 frozen, `cond_mlp`만 학습. | [postfix.md](docs/experimental/postfix.md) |
 | **IP-Adapter** | Decoupled image cross-attention (Ye et al. 2023). DiT는 frozen, Perceiver 리샘플러와 블록별 `to_k_ip`/`to_v_ip`만 학습. | [ip-adapter.md](docs/experimental/ip-adapter.md) |
 | **EasyControl** | 확장 self-attention 이미지 조건화. DiT는 frozen, 블록별 cond LoRA(self-attn + FFN)와 스칼라 `b_cond` 게이트만 학습. | [easycontrol.md](docs/experimental/easycontrol.md) |
 | **임베딩 인버전** | frozen DiT를 통과시켜 타깃 이미지에 맞도록 텍스트 임베딩을 최적화. | [invert.md](docs/methods/invert.md) |
-| **img2emb 리샘플러** | TIPSv2-L/14 features + anchor injection을 이용한 참조 이미지 → 임베딩 매핑 학습. | [archive/img2emb/README.md](archive/img2emb/README.md) |
-| **GRAFT** | 리젝션 샘플링 파인튜닝 — 학습 → 생성 → survivor 큐레이션 → 재학습 루프. | [graft-guideline.md](docs/guidelines/graft-guideline.md) |
 
 > **기여하고 싶으신가요?** 외부 기여가 특히 큰 임팩트를 낼 수 있는 두 영역: **IP-Adapter 프로덕션화** (테스트, 공개 레퍼런스 체크포인트, 더 가벼운 비전 인코더) 와 **EasyControl 어댑터** (canny / depth / pose / … — 컨트롤 타입 하나가 곧 자체 완결 PR 한 건). 자세한 내용은 [CONTRIBUTING.md → Priority areas](CONTRIBUTING.md#priority-areas).
 
@@ -120,7 +117,7 @@ CLI 경로:
 
 ```bash
 make preprocess           # VAE 호환 리사이즈 및 검증
-make lora                 # 또는: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-postfix
+make lora                 # 또는: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-chimera
 make test                 # 최신 학습된 LoRA로 샘플 생성
 ```
 
@@ -134,9 +131,8 @@ make test                 # 최신 학습된 LoRA로 샘플 생성
 |------|------|
 | [guidelines/training.md](docs/guidelines/training.md) | 학습 플래그, LoRA 변형, 캡션 셔플, 마스크 로스, 데이터셋 설정 |
 | [guidelines/inference.md](docs/guidelines/inference.md) | 추론 플래그, P-GRAFT, 프롬프트 파일, LoRA 포맷 변환 |
-| [guidelines/graft-guideline.md](docs/guidelines/graft-guideline.md) | GRAFT 큐레이션 워크플로우 |
 | [optimizations/](docs/optimizations/) | 컴파일 파이프라인, FA4 회고, CUDA 13.2 |
-| [methods/](docs/methods/) | 각 방법별 전용 문서 — HydraLoRA, ReFT, Spectrum, 인버전, mod guidance, postfix/prefix, T-LoRA, OrthoLoRA |
+| [methods/](docs/methods/) | 각 방법별 전용 문서 — HydraLoRA, ReFT, Spectrum, 인버전, mod guidance, T-LoRA, OrthoLoRA |
 
 ---
 

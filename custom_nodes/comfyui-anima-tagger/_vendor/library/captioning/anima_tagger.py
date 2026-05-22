@@ -96,6 +96,36 @@ SLOT_ORDER: Tuple[str, ...] = (
     "general",
 )
 
+# Booru-style tag-type integer → category name. Source of truth for the
+# trainer's view of the corpus; written into vocab.json and read back by the
+# inference wrapper, so changes here invalidate existing checkpoints.
+TAG_TYPE_NAMES: Dict[int, str] = {
+    0: "general",
+    1: "artist",
+    3: "copyright",
+    4: "character",
+    5: "metadata",
+    6: "deprecated",
+}
+
+# 3-class rating set (post-``questionable→sensitive`` collapse).
+RATINGS: Tuple[str, ...] = ("general", "sensitive", "explicit")
+
+# 8-class people-count bucket. Derived from parsed count tags
+# (``scripts.anima_tagger.constants.classify_people``); trained as a dedicated
+# softmax head separate from the multi-label tag head. Order is the canonical
+# class index — do not reorder without rebuilding vocab.
+PEOPLE_COUNT_LABELS: Tuple[str, ...] = (
+    "no_people",   # 0 — no count tag at all
+    "1girl",       # 1 — 1girl, no boy
+    "1girl_1boy",  # 2 — exactly one of each
+    "2girls",      # 3 — 2girls, no boy
+    "2girls_1boy", # 4 — 2girls + 1boy
+    "2boys_1girl", # 5 — 2boys + 1girl  (mirror of 2girls_1boy)
+    "1boy",        # 6 — 1boy, no girl (solo male)
+    "multi",       # 7 — 3+girls / 3+boys / 2g-2b+ / multiple_* / Nothers
+)
+
 
 @dataclass
 class _TagEntry:

@@ -427,20 +427,20 @@ def _refuse_unfused_attn_lora_keys(
         downs: List[torch.Tensor] = []
         ups: List[torch.Tensor] = []
         alphas: List[Optional[torch.Tensor]] = []
-        mags: List[Optional[torch.Tensor]] = []
+        inv_scales: List[Optional[torch.Tensor]] = []
         complete = True
         for suf in suffixes:
             dk = f"{shared_prefix}{suf}_proj.lora_down.weight"
             uk = f"{shared_prefix}{suf}_proj.lora_up.weight"
             ak = f"{shared_prefix}{suf}_proj.alpha"
-            mk = f"{shared_prefix}{suf}_proj.magnitude"
+            ik = f"{shared_prefix}{suf}_proj.inv_scale"
             if dk not in state_dict or uk not in state_dict:
                 complete = False
                 break
             downs.append(state_dict[dk])
             ups.append(state_dict[uk])
             alphas.append(state_dict.get(ak))
-            mags.append(state_dict.get(mk))
+            inv_scales.append(state_dict.get(ik))
         if not complete:
             continue
 
@@ -508,13 +508,17 @@ def _refuse_unfused_attn_lora_keys(
         state_dict[f"{fused_prefix}.lora_up.weight"] = up_fused
         state_dict[f"{fused_prefix}.alpha"] = alpha_fused
 
-        # DoRA magnitude is per-output-row; concat matches the fused qkv/kv out dim.
-        if all(m is not None for m in mags):
-            state_dict[f"{fused_prefix}.magnitude"] = torch.cat(mags, dim=0)
-        elif any(m is not None for m in mags):
+        # per_channel_scaling inv_scale: q/k/v all see the same Linear input
+        # so save cloned the [in_dim] vector across components. Picking the
+        # first is correct; warn if a partial set is present (likely a mix
+        # of channel-scaled and non-channel-scaled per-component training,
+        # which the fused-runtime path can't reconcile).
+        if all(s is not None for s in inv_scales):
+            state_dict[f"{fused_prefix}.inv_scale"] = inv_scales[0]
+        elif any(s is not None for s in inv_scales):
             logger.warning(
-                f"attn LoRA fuse: partial DoRA magnitude at {shared_prefix}*, "
-                "dropping DoRA on fused module"
+                f"attn LoRA fuse: partial inv_scale at {shared_prefix}*, "
+                "dropping channel scaling on fused module"
             )
 
         for suf in suffixes:
@@ -522,7 +526,7 @@ def _refuse_unfused_attn_lora_keys(
                 "lora_down.weight",
                 "lora_up.weight",
                 "alpha",
-                "magnitude",
+                "inv_scale",
             ):
                 state_dict.pop(f"{shared_prefix}{suf}_proj.{subk}", None)
 

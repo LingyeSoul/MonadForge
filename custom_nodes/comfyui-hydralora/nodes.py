@@ -14,22 +14,22 @@ workflow needs more than one.
     independent experts. Different network family from
     ``AnimaAdapterLoader``'s Hydra/FEI variant: incompatible save format,
     mutually exclusive with HydraLoRA-moe (load one, not both).
-  - ``AnimaPostfixLoader``: prefix / postfix / cond context splicing.
-    Wraps ``diffusion_model.forward`` to splice learned vectors into the
-    T5-compatible crossattn embedding after the LLM adapter, CFG-safe via
-    ``cond_or_uncond``.
+  - ``AnimaSoftTokensLoader``: SoftREPA-parameterization soft tokens.
+    Per-block forward pre-hooks splice per-layer x per-timestep-bucket
+    learned tokens into the crossattn embedding inside the first n_layers
+    DiT blocks; a diffusion_model pre-hook records the per-step sigma.
 
-Adapter and postfix loaders were previously bundled in a single node
-with toggle booleans; they were split in v3.0.0 so each does one thing
-and users can bypass / reorder them with ComfyUI's standard MODEL-chain
-wiring. ``AnimaFeraLoader`` was added in v3.1.0.
+``AnimaFeraLoader`` was added in v3.1.0; ``AnimaSoftTokensLoader`` in
+v3.6.0. The ``AnimaPostfixLoader`` node was retired when the postfix
+training method was archived (the prefix / postfix / cond splice has no
+live trainer; see the repo's _archive/postfix/).
 """
 
 import folder_paths
 
 from .adapter import apply_adapter
 from .fera import apply_fera
-from .postfix import apply_postfix
+from .soft_tokens import apply_soft_tokens
 
 
 class AnimaAdapterLoader:
@@ -44,7 +44,6 @@ class AnimaAdapterLoader:
         the checkpoint's metadata declares ``ss_use_fei_router=true``)
       - ReFT → per-block ``forward_hook`` on the DiT's blocks
 
-    Postfix / prefix / cond files load through ``AnimaPostfixLoader``.
     """
 
     @classmethod
@@ -102,9 +101,7 @@ class AnimaAdapterLoader:
         "additionally runs a network-level FreqRouter on FEI+σ each step, "
         "splits experts into content (K_c, per-Linear) + frequency (K_f, "
         "global) pools, and dispatches the concat gate through the same "
-        "Hydra einsum. ReFT installs per-block forward hooks. For prefix "
-        "/ postfix / cond context splicing, chain an AnimaPostfixLoader "
-        "after this node."
+        "Hydra einsum. ReFT installs per-block forward hooks."
     )
 
     def apply(self, model, adapter, strength_lora, strength_reft):
@@ -186,8 +183,7 @@ class AnimaFeraLoader:
         "per-step Frequency-Energy Indicator and global router gates, plus "
         "per-Linear forward_hooks that add the gated stacked-expert "
         "correction. Mutually exclusive with HydraLoRA — for FEI-on-Hydra "
-        "checkpoints, use AnimaAdapterLoader. For prefix / postfix / cond, "
-        "chain an AnimaPostfixLoader after this node."
+        "checkpoints, use AnimaAdapterLoader."
     )
 
     def apply(self, model, adapter, strength):
@@ -197,18 +193,19 @@ class AnimaFeraLoader:
         return (new_model,)
 
 
-class AnimaPostfixLoader:
-    """Apply an Anima prefix / postfix / cond file to a MODEL.
+class AnimaSoftTokensLoader:
+    """Apply Anima soft tokens (SoftREPA parameterization) to a MODEL.
 
-    Wraps ``diffusion_model.forward`` to splice the learned vectors into
-    the T5-compatible crossattn embedding after the LLM adapter + pad-to-512
-    step. Positive-batch rows only (CFG-safe via ``cond_or_uncond`` from
-    ``transformer_options``). Mode (prefix / postfix / cond) is
-    auto-detected from the safetensors keys.
+    Splices per-layer, per-timestep-bucket learned soft tokens into the
+    T5-compatible crossattn embedding **inside** the first ``n_layers`` DiT
+    blocks (the same surface anima_lora's trainer monkey-patches). A
+    ``forward_pre_hook`` on each block rewrites its ``crossattn_emb`` argument;
+    a ``diffusion_model`` pre-hook records the per-step sigma and precomputes
+    the bank, so ``forward`` is never overridden (same invariant as Hydra/ReFT).
 
-    Chain after ``AnimaAdapterLoader`` when a workflow needs both — the
-    postfix wrapper sees the model with adapter modifications already in
-    place.
+    Applies to the whole batch (both CFG branches) — soft tokens are part of
+    the conditioning the trainer always saw. Chain after ``AnimaAdapterLoader``
+    when a workflow needs more than one intervention.
     """
 
     @classmethod
@@ -217,23 +214,23 @@ class AnimaPostfixLoader:
         return {
             "required": {
                 "model": ("MODEL",),
-                "postfix": (
+                "soft_tokens": (
                     loras,
                     {
                         "tooltip": (
-                            "Postfix / prefix / cond file (prefix_embeds, "
-                            "postfix_embeds, or cond_mlp.* keys)."
+                            "Soft-token file (tokens + t_offsets.weight keys, "
+                            "from `make exp-soft-tokens`)."
                         )
                     },
                 ),
-                "strength_postfix": (
+                "strength": (
                     "FLOAT",
                     {
                         "default": 1.0,
                         "min": 0.0,
                         "max": 2.0,
                         "step": 0.05,
-                        "tooltip": "Strength multiplier for the postfix vectors.",
+                        "tooltip": "Strength multiplier for the spliced soft tokens.",
                     },
                 ),
             },
@@ -243,28 +240,27 @@ class AnimaPostfixLoader:
     FUNCTION = "apply"
     CATEGORY = "loaders"
     DESCRIPTION = (
-        "Anima postfix loader. Splices learned prefix / postfix / cond "
-        "vectors into the T5-compatible crossattn embedding after the "
-        "LLM adapter. Mode auto-detected from safetensors keys. "
-        "Positive-batch only (CFG-safe). For LoRA / HydraLoRA / ReFT "
-        "adapters, chain an AnimaAdapterLoader before this node."
+        "Anima soft-token loader. Splices per-layer x per-t learned soft "
+        "tokens into the crossattn embedding inside the first n_layers DiT "
+        "blocks via forward pre-hooks. Applies to both CFG branches. Chain "
+        "after an adapter loader when a workflow needs both."
     )
 
-    def apply(self, model, postfix, strength_postfix):
+    def apply(self, model, soft_tokens, strength):
         new_model = model.clone()
-        file_path = folder_paths.get_full_path("loras", postfix)
-        apply_postfix(new_model, file_path, strength_postfix)
+        file_path = folder_paths.get_full_path("loras", soft_tokens)
+        apply_soft_tokens(new_model, file_path, strength)
         return (new_model,)
 
 
 NODE_CLASS_MAPPINGS = {
     "AnimaAdapterLoader": AnimaAdapterLoader,
     "AnimaFeraLoader": AnimaFeraLoader,
-    "AnimaPostfixLoader": AnimaPostfixLoader,
+    "AnimaSoftTokensLoader": AnimaSoftTokensLoader,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AnimaAdapterLoader": "Anima Adapter Loader",
     "AnimaFeraLoader": "Anima FeRA Loader",
-    "AnimaPostfixLoader": "Anima Postfix Loader",
+    "AnimaSoftTokensLoader": "Anima Soft Tokens Loader",
 }

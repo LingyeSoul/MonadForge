@@ -29,6 +29,14 @@ _adapter_cache: Dict[str, dict] = {}
 
 _REFT_KEY_RE = re.compile(r"^reft_unet_blocks_(\d+)\.(.+)$")
 
+# Pad target for ChimeraHydra ContentRouter input. Matches the training side
+# (T5 ``padding="max_length"`` with ``t5_max_length=512``) and ComfyUI's
+# ``Anima.preprocess_text_embeds`` zero-pad-to-512 step — together those
+# guarantee the per-step pooled vector has the same RMS over the same
+# denominator as the network saw at training. Hardcoded because both ends
+# pin it to 512; revisit if T5 max_length ever varies.
+_T5_PAD_LEN: int = 512
+
 
 # ---------------------------------------------------------------------------
 # Resolve where to import ``library.inference.router_compute`` from.
@@ -78,6 +86,33 @@ compute_fei_nband_high_to_low = _rc.compute_fei_nband_high_to_low
 fei_sigma_low = _rc.fei_sigma_low
 sigma_sinusoidal_features = _rc.sigma_sinusoidal_features
 apply_sigma_band_mask = _rc.apply_sigma_band_mask
+
+
+def _resolve_module(model, dotted_path: str):
+    """Walk attribute / index path under ``model.model``."""
+    obj = model.model
+    for part in dotted_path.split("."):
+        if part.isdigit():
+            obj = obj[int(part)]
+        else:
+            obj = getattr(obj, part)
+    return obj
+
+
+# Chimera lives in its own module. Import order matters: chimera.py imports
+# the kernel re-exports + ``_T5_PAD_LEN`` + ``_resolve_module`` from here,
+# all defined above; this import is reached afterwards so the partial-module
+# circular import resolves cleanly.
+from .chimera import (  # noqa: E402 — see ordering note above
+    _apply_chimera_dual_a_to_model,
+    _attach_single_a_chimera_metadata,
+    _finalize_dual_a_chimera,
+    _make_chimera_dual_a_hook,
+    _make_chimera_hook,
+    _make_chimera_pre_hook,
+    _make_content_router_llm_adapter_hook,
+    _parse_chimera_dual_a,
+)
 
 
 def _parse_reft(weights_sd: Dict[str, torch.Tensor]) -> Optional[Dict[int, dict]]:
@@ -135,7 +170,7 @@ def _parse_hydra(weights_sd: Dict[str, torch.Tensor]) -> Optional[dict]:
     """
     modules: Dict[str, dict] = {}
     for key, value in weights_sd.items():
-        if key.startswith("reft_"):
+        if key.startswith(("reft_", "freq_router.", "content_router.")):
             continue
         parts = key.split(".")
         prefix = parts[0]
@@ -168,83 +203,10 @@ def _parse_hydra(weights_sd: Dict[str, torch.Tensor]) -> Optional[dict]:
     return {"num_experts": num_experts, "modules": hydra_only}
 
 
-def _parse_chimera_dual_a(
-    weights_sd: Dict[str, torch.Tensor],
-) -> Optional[dict]:
-    """Group ChimeraHydra dual-A keys. Returns None if no dual-A prefixes
-    are present.
-
-    Dual-A on-disk shape per Linear (q/k/v already defused):
-
-      * ``prefix.lora_down_c.weight`` (r, in)    content A
-      * ``prefix.lora_down_f.weight`` (r, in)    freq    A
-      * ``prefix.lora_ups_c.{i}.weight`` (out, r) for i in 0..K_c-1
-      * ``prefix.lora_ups_f.{j}.weight`` (out, r) for j in 0..K_f-1
-      * ``prefix.router.weight`` (K_c, r)
-      * ``prefix.router.bias``   (K_c,)
-      * ``prefix.alpha``                            optional
-      * ``prefix.inv_scale``                        optional
-
-    Distinct from the single-A chimera path handled by ``_parse_hydra``
-    (which sees ``lora_down.weight`` + ``lora_ups.{i}.weight``). The two
-    formats never coexist on the same prefix, so detection is by key
-    suffix only. Discriminator: any ``.lora_down_c.weight`` key in the
-    state dict ⇒ dual-A chimera.
-
-    Per-pool K is derived from the highest expert index seen in
-    ``lora_ups_{c,f}.{i}.weight`` — must match the
-    ``ss_num_experts_content`` / ``ss_num_experts_freq`` stamps captured
-    by ``load_adapter`` (cross-check performed there).
-    """
-    modules: Dict[str, dict] = {}
-    for key, value in weights_sd.items():
-        if key.startswith("reft_") or key.startswith("freq_router."):
-            continue
-        parts = key.split(".")
-        prefix = parts[0]
-        rest = ".".join(parts[1:])
-        mod = modules.setdefault(prefix, {})
-        if rest == "lora_down_c.weight":
-            mod["lora_down_c"] = value
-        elif rest == "lora_down_f.weight":
-            mod["lora_down_f"] = value
-        elif rest.startswith("lora_ups_c.") and rest.endswith(".weight"):
-            idx = int(rest.split(".")[1])
-            mod.setdefault("lora_ups_c", {})[idx] = value
-        elif rest.startswith("lora_ups_f.") and rest.endswith(".weight"):
-            idx = int(rest.split(".")[1])
-            mod.setdefault("lora_ups_f", {})[idx] = value
-        elif rest == "alpha":
-            mod["alpha"] = value
-        elif rest == "inv_scale":
-            mod["inv_scale"] = value
-        elif rest == "router.weight":
-            mod["router_w"] = value
-        elif rest == "router.bias":
-            mod["router_b"] = value
-
-    # Only return prefixes that have BOTH lora_down_c and at least one
-    # lora_ups_c — the discriminator above is permissive (a single key
-    # would seed an entry). A well-formed dual-A module always has both.
-    dual_only: Dict[str, dict] = {
-        prefix: mod
-        for prefix, mod in modules.items()
-        if "lora_down_c" in mod and "lora_ups_c" in mod
-    }
-    if not dual_only:
-        return None
-    K_c = max(max(m["lora_ups_c"].keys()) + 1 for m in dual_only.values())
-    K_f = max(
-        (max(m["lora_ups_f"].keys()) + 1 for m in dual_only.values() if "lora_ups_f" in m),
-        default=0,
-    )
-    return {"num_experts_content": K_c, "num_experts_freq": K_f, "modules": dual_only}
-
-
 def _extract_lora_sd(
     weights_sd: Dict[str, torch.Tensor],
 ) -> Optional[Dict[str, torch.Tensor]]:
-    """Pull standard LoRA keys (lora_down/lora_up/alpha/dora_scale).
+    """Pull standard LoRA keys (lora_down/lora_up/alpha).
     Returns None if no lora_up.weight keys are present.
 
     Hydra-prefix keys are excluded *entirely* — not just the per-expert
@@ -287,6 +249,10 @@ def _extract_lora_sd(
             continue  # ChimeraHydra network-level FreqRouter — handled
             # via _parse_hydra's chimera branch or
             # _parse_chimera_dual_a's branch.
+        if key.startswith("content_router."):
+            continue  # ChimeraHydra network-level ContentRouter
+            # (content_router_source="crossattn") — handled in the
+            # chimera branch of load_adapter alongside freq_router.
         if key.endswith(".lora_up_weight") or key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
             continue  # Stacked-ups runtime form (shouldn't appear post-save)
         prefix = key.split(".", 1)[0]
@@ -413,210 +379,37 @@ def load_adapter(file_path: str) -> dict:
             fei_feature_dim = 0
         try:
             fei_sigma_low_div = (
-                float(file_metadata["ssfei_sigma_low_div"])
-                if fei_on and "ssfei_sigma_low_div" in file_metadata
-                else 8.0  # training-side default (configs/methods/fera.toml)
+                float(file_metadata["ss_fei_sigma_low_div"])
+                if fei_on and "ss_fei_sigma_low_div" in file_metadata
+                else 4.0  # training-side default (config.py / configs/methods/lora.toml)
             )
         except (TypeError, ValueError):
             logger.warning(
-                f"{file_path}: ssfei_sigma_low_div is malformed "
-                f"({file_metadata.get('ssfei_sigma_low_div')!r}) — using default 8.0."
+                f"{file_path}: ss_fei_sigma_low_div is malformed "
+                f"({file_metadata.get('ss_fei_sigma_low_div')!r}) — using default 4.0."
             )
-            fei_sigma_low_div = 8.0
+            fei_sigma_low_div = 4.0
         hydra["use_fei_router"] = fei_on and fei_feature_dim > 0
         hydra["fei_feature_dim"] = fei_feature_dim if hydra["use_fei_router"] else 0
         hydra["fei_sigma_low_div"] = fei_sigma_low_div
 
-        # ChimeraHydra (dual-pool routing) — same Hydra-MoE on-disk shape
-        # (shared lora_down + per-expert lora_ups.{i}) plus a network-level
-        # ``freq_router.net.*`` block and a K_c-narrowed per-Linear content
-        # router. K_c + K_f = num_experts; the FreqRouter input is
-        # ``concat(FEI, sinusoidal(σ))`` with dims from the chimera-specific
-        # metadata stamps. See ``networks/lora_modules/chimera.py`` and
-        # ``networks/lora_anima/network.py::FreqRouter``.
-        is_chimera = (
-            str(file_metadata.get("ss_use_chimera_hydra", "")).strip().lower() == "true"
+        # ChimeraHydra single-A (legacy on-disk format): same Hydra-MoE
+        # shape (shared ``lora_down`` + per-expert ``lora_ups.{i}``) plus
+        # a top-level ``freq_router.net.*`` block and K_c-narrowed per-
+        # Linear content router. No-op when ss_use_chimera_hydra != "true".
+        _attach_single_a_chimera_metadata(
+            hydra, weights_sd, file_metadata, file_path
         )
-        if is_chimera:
-            try:
-                K_c = int(file_metadata["ss_num_experts_content"])
-                K_f = int(file_metadata["ss_num_experts_freq"])
-            except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"{file_path}: ss_use_chimera_hydra=true but "
-                    "ss_num_experts_content / ss_num_experts_freq are "
-                    f"missing or malformed ({exc}) — checkpoint is bad."
-                ) from exc
-            if K_c + K_f != hydra["num_experts"]:
-                raise ValueError(
-                    f"{file_path}: chimera K_c={K_c} + K_f={K_f} != "
-                    f"num_experts={hydra['num_experts']} (from lora_ups). "
-                    "Checkpoint is inconsistent."
-                )
-
-            try:
-                chimera_fei_dim = int(
-                    file_metadata.get("ss_chimera_fei_feature_dim", 0)
-                )
-                chimera_sigma_dim = int(
-                    file_metadata.get("ss_chimera_sigma_feature_dim", 0)
-                )
-                chimera_sigma_low_div = float(
-                    file_metadata.get("ss_chimerafei_sigma_low_div", 4.0)
-                )
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"{file_path}: malformed chimera σ/FEI feature dims ({exc})."
-                ) from exc
-            if chimera_fei_dim + chimera_sigma_dim <= 0:
-                raise ValueError(
-                    f"{file_path}: chimera FreqRouter requires "
-                    "fei_feature_dim + sigma_feature_dim > 0 "
-                    f"(got FEI={chimera_fei_dim}, σ={chimera_sigma_dim})."
-                )
-
-            # FreqRouter MLP: Linear → SiLU → Linear → softmax/τ. Keys
-            # mirror ``torch.nn.Sequential`` indices (SiLU at index 1
-            # carries no params).
-            try:
-                fr_w0 = weights_sd["freq_router.net.0.weight"]
-                fr_b0 = weights_sd["freq_router.net.0.bias"]
-                fr_w2 = weights_sd["freq_router.net.2.weight"]
-                fr_b2 = weights_sd["freq_router.net.2.bias"]
-            except KeyError as exc:
-                raise ValueError(
-                    f"{file_path}: chimera checkpoint is missing FreqRouter "
-                    f"weight key {exc} (expected freq_router.net.{{0,2}}.weight"
-                    f"/bias)."
-                ) from exc
-
-            if fr_w2.shape[0] != K_f:
-                raise ValueError(
-                    f"{file_path}: FreqRouter output dim {fr_w2.shape[0]} != K_f={K_f}."
-                )
-
-            expected_in = chimera_fei_dim + chimera_sigma_dim
-            if fr_w0.shape[1] != expected_in:
-                raise ValueError(
-                    f"{file_path}: FreqRouter input dim {fr_w0.shape[1]} "
-                    f"!= FEI({chimera_fei_dim}) + σ({chimera_sigma_dim})."
-                )
-
-            hydra["chimera"] = {
-                "num_experts_content": K_c,
-                "num_experts_freq": K_f,
-                "fei_feature_dim": chimera_fei_dim,
-                "sigma_feature_dim": chimera_sigma_dim,
-                "fei_sigma_low_div": chimera_sigma_low_div,
-                # τ is not stamped — both the FreqRouter and the live
-                # GlobalRouter default to 1.0 from cfg.router_tau, and the
-                # production chimera.toml does not override it. If a future
-                # checkpoint stamps ss_router_tau, plumb it here.
-                "router_tau": float(file_metadata.get("ss_router_tau", 1.0)),
-                "freq_router_sd": {
-                    "net.0.weight": fr_w0,
-                    "net.0.bias": fr_b0,
-                    "net.2.weight": fr_w2,
-                    "net.2.bias": fr_b2,
-                },
-            }
 
     # ChimeraHydra dual-A on-disk format (post-c4851b6): two independent A's
     # per Linear (``lora_down_c.weight`` + ``lora_down_f.weight``) and two
     # per-pool B stacks (``lora_ups_c.{i}.weight`` + ``lora_ups_f.{j}.weight``).
-    # The single-A chimera path (``lora_down.weight`` + interleaved
-    # ``lora_ups.{i}.weight`` over K_c+K_f experts) is the legacy format
-    # captured by ``_parse_hydra`` above; the two never coexist on the same
-    # prefix. ``_parse_chimera_dual_a`` returns None for legacy files.
+    # The single-A chimera path is captured by ``_parse_hydra`` above; the
+    # two never coexist on the same prefix. ``_parse_chimera_dual_a`` returns
+    # None for legacy files.
     chimera_dual = _parse_chimera_dual_a(weights_sd)
     if chimera_dual is not None:
-        is_chimera_dual_flagged = (
-            str(file_metadata.get("ss_use_chimera_hydra", "")).strip().lower() == "true"
-        )
-        if not is_chimera_dual_flagged:
-            raise ValueError(
-                f"{file_path}: found chimera dual-A keys (lora_down_c / "
-                "lora_down_f) but metadata is missing ss_use_chimera_hydra=true. "
-                "Checkpoint is inconsistent."
-            )
-        try:
-            K_c = int(file_metadata["ss_num_experts_content"])
-            K_f = int(file_metadata["ss_num_experts_freq"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{file_path}: chimera dual-A checkpoint missing or malformed "
-                f"ss_num_experts_content / ss_num_experts_freq ({exc})."
-            ) from exc
-        if K_c != chimera_dual["num_experts_content"]:
-            raise ValueError(
-                f"{file_path}: ss_num_experts_content={K_c} != "
-                f"max(lora_ups_c idx)+1={chimera_dual['num_experts_content']}."
-            )
-        if K_f != chimera_dual["num_experts_freq"]:
-            raise ValueError(
-                f"{file_path}: ss_num_experts_freq={K_f} != "
-                f"max(lora_ups_f idx)+1={chimera_dual['num_experts_freq']}."
-            )
-
-        try:
-            chimera_fei_dim = int(
-                file_metadata.get("ss_chimera_fei_feature_dim", 0)
-            )
-            chimera_sigma_dim = int(
-                file_metadata.get("ss_chimera_sigma_feature_dim", 0)
-            )
-            # New stamp name (post-c4851b6): ``ss_chimera_fei_sigma_low_div``
-            # with an underscore. Fall back to the legacy single-A stamp
-            # ``ss_chimerafei_sigma_low_div`` (no underscore) for forward-
-            # compat with files saved on the legacy code path.
-            chimera_sigma_low_div = float(
-                file_metadata.get(
-                    "ss_chimera_fei_sigma_low_div",
-                    file_metadata.get("ss_chimerafei_sigma_low_div", 4.0),
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{file_path}: malformed chimera σ/FEI feature dims ({exc})."
-            ) from exc
-        if chimera_fei_dim + chimera_sigma_dim <= 0:
-            raise ValueError(
-                f"{file_path}: chimera FreqRouter requires "
-                "fei_feature_dim + sigma_feature_dim > 0 "
-                f"(got FEI={chimera_fei_dim}, σ={chimera_sigma_dim})."
-            )
-
-        try:
-            fr_w0 = weights_sd["freq_router.net.0.weight"]
-            fr_b0 = weights_sd["freq_router.net.0.bias"]
-            fr_w2 = weights_sd["freq_router.net.2.weight"]
-            fr_b2 = weights_sd["freq_router.net.2.bias"]
-        except KeyError as exc:
-            raise ValueError(
-                f"{file_path}: chimera dual-A checkpoint is missing FreqRouter "
-                f"weight key {exc} (expected freq_router.net.{{0,2}}.weight/bias)."
-            ) from exc
-        if fr_w2.shape[0] != K_f:
-            raise ValueError(
-                f"{file_path}: FreqRouter output dim {fr_w2.shape[0]} != K_f={K_f}."
-            )
-        expected_in = chimera_fei_dim + chimera_sigma_dim
-        if fr_w0.shape[1] != expected_in:
-            raise ValueError(
-                f"{file_path}: FreqRouter input dim {fr_w0.shape[1]} "
-                f"!= FEI({chimera_fei_dim}) + σ({chimera_sigma_dim})."
-            )
-
-        chimera_dual["fei_feature_dim"] = chimera_fei_dim
-        chimera_dual["sigma_feature_dim"] = chimera_sigma_dim
-        chimera_dual["fei_sigma_low_div"] = chimera_sigma_low_div
-        chimera_dual["router_tau"] = float(file_metadata.get("ss_router_tau", 1.0))
-        chimera_dual["freq_router_sd"] = {
-            "net.0.weight": fr_w0,
-            "net.0.bias": fr_b0,
-            "net.2.weight": fr_w2,
-            "net.2.bias": fr_b2,
-        }
+        _finalize_dual_a_chimera(chimera_dual, weights_sd, file_metadata, file_path)
 
     bundle = {
         "path": file_path,
@@ -636,11 +429,16 @@ def load_adapter(file_path: str) -> dict:
         routing = []
         chimera = bundle["hydra"].get("chimera")
         if chimera is not None:
+            cr_tag = (
+                ", ContentRouter=crossattn"
+                if chimera.get("content_router") is not None
+                else ""
+            )
             routing.append(
                 f"chimera K_c={chimera['num_experts_content']}+"
                 f"K_f={chimera['num_experts_freq']}, "
                 f"FreqRouter in={chimera['fei_feature_dim']}+"
-                f"{chimera['sigma_feature_dim']}"
+                f"{chimera['sigma_feature_dim']}{cr_tag}"
             )
         elif bundle["hydra"].get("use_fei_router"):
             routing.append(f"FEI={bundle['hydra']['fei_feature_dim']}d")
@@ -653,11 +451,16 @@ def load_adapter(file_path: str) -> dict:
         )
     if bundle["chimera_dual_a"] is not None:
         cd = bundle["chimera_dual_a"]
+        cr_tag = (
+            ", ContentRouter=crossattn"
+            if cd.get("content_router") is not None
+            else ""
+        )
         summary.append(
             f"ChimeraDualA(K_c={cd['num_experts_content']} + K_f="
             f"{cd['num_experts_freq']}, {len(cd['modules'])} modules, "
             f"FreqRouter in=FEI({cd['fei_feature_dim']}) + "
-            f"σ({cd['sigma_feature_dim']}))"
+            f"σ({cd['sigma_feature_dim']}){cr_tag})"
         )
     if bundle["reft"] is not None:
         summary.append(f"ReFT({len(bundle['reft'])} blocks)")
@@ -852,323 +655,6 @@ def _make_router_pre_hook(
     return router_pre_hook
 
 
-def _make_chimera_pre_hook(
-    router_state: dict,
-    freq_router_sd: Dict[str, torch.Tensor],
-    fei_feature_dim: int,
-    sigma_feature_dim: int,
-    fei_sigma_low_div: float,
-    router_tau: float,
-    K_f: int,
-):
-    """Pre-hook for ChimeraHydra: capture σ, compute FEI, run FreqRouter.
-
-    Same wrapping contract as ``_make_router_pre_hook`` (attached to
-    ``diffusion_model._forward_pre_hooks`` via ``add_object_patch``), but
-    additionally evaluates the network-level FreqRouter MLP on
-    ``concat(FEI, sinusoidal(σ))`` once per denoising step and stores the
-    softmax/τ output as ``router_state["pi_f"]`` (shape ``(B, K_f)``).
-    Each per-Linear chimera hook then concatenates ``π_f`` onto its own
-    K_c content gate and dispatches the standard Hydra einsum/bmm — no
-    duplicated work.
-
-    Concat order matches ``networks/lora_anima/network.py::set_fei``'s
-    chimera branch: ``[FEI, sinusoidal(σ)]``. Reversing it silently scrambles
-    the FreqRouter input and routes on the wrong axes.
-    """
-    fr_state: dict = {
-        "net0_w": freq_router_sd["net.0.weight"],
-        "net0_b": freq_router_sd["net.0.bias"],
-        "net2_w": freq_router_sd["net.2.weight"],
-        "net2_b": freq_router_sd["net.2.bias"],
-        "device": None,
-    }
-
-    def _ensure_fr_on_device(x: torch.Tensor) -> None:
-        if fr_state["device"] == x.device:
-            return
-        for k in ("net0_w", "net0_b", "net2_w", "net2_b"):
-            fr_state[k] = fr_state[k].to(device=x.device, dtype=torch.float32)
-        fr_state["device"] = x.device
-
-    @torch._dynamo.disable
-    def chimera_pre_hook(module, args):
-        if len(args) >= 2 and args[1] is not None:
-            # fp32 normalize once per step (see _make_router_pre_hook).
-            router_state["sigma"] = args[1].detach().float()
-        if len(args) >= 1 and args[0] is not None:
-            x = args[0].detach()
-            if x.dim() == 5:
-                x = x.squeeze(2)
-            h_lat = int(x.shape[-2])
-            w_lat = int(x.shape[-1])
-            sigma_low = fei_sigma_low(h_lat, w_lat, fei_sigma_low_div)
-            fei = compute_fei_2band(x, sigma_low)  # (B, 2), fp32
-            router_state["fei"] = fei
-            _ensure_fr_on_device(fei)
-
-            # Build router input: cat([FEI[:, :fei_dim], σ-sin features]).
-            # Either slice may be empty; chimera.toml ships
-            # fei_feature_dim=2, sigma_feature_dim=0 — i.e. FEI-only.
-            parts = []
-            if fei_feature_dim > 0:
-                parts.append(fei[:, :fei_feature_dim])
-            if sigma_feature_dim > 0:
-                sigma = router_state.get("sigma")
-                if sigma is None:
-                    return
-                sigma_feat = sigma_sinusoidal_features(sigma, sigma_feature_dim)
-                if sigma_feat.shape[0] == 1 and fei.shape[0] != 1:
-                    sigma_feat = sigma_feat.expand(fei.shape[0], -1)
-                parts.append(sigma_feat)
-            if not parts:
-                return
-            router_in = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
-
-            # FreqRouter: Linear → SiLU → Linear → softmax/τ. fp32 for the
-            # same precision reason as GlobalRouter — softmax(logits / τ)
-            # at small τ underflows in bf16.
-            h = torch.nn.functional.linear(
-                router_in, fr_state["net0_w"], fr_state["net0_b"]
-            )
-            h = torch.nn.functional.silu(h)
-            logits = torch.nn.functional.linear(
-                h, fr_state["net2_w"], fr_state["net2_b"]
-            )
-            router_state["pi_f"] = torch.softmax(logits / router_tau, dim=-1)
-            # (Defensive) shape check — if K_f drifted, fail loud rather
-            # than silently emit a misshaped gate cat downstream.
-            if router_state["pi_f"].shape[-1] != K_f:
-                raise RuntimeError(
-                    f"ChimeraHydra: FreqRouter emitted K_f="
-                    f"{router_state['pi_f'].shape[-1]}, expected {K_f}."
-                )
-
-    return chimera_pre_hook
-
-
-def _make_chimera_hook(params: dict, strength: float, router_state: dict):
-    """Per-Linear hook for ChimeraHydra (dual-pool additive routing).
-
-    Differs from ``_make_hydra_hook``:
-
-      * The per-Linear router has K_c outputs (content pool only); its
-        input is pooled rank-R lx with NO σ/FEI columns.
-      * π_f arrives precomputed in ``router_state["pi_f"]`` (shape
-        ``(B, K_f)``); the hook concatenates ``[π_c, π_f]`` and runs the
-        standard Hydra einsum/bmm over the full E = K_c + K_f experts.
-      * σ-band partition is unsupported by construction — chimera trains
-        with ``specialize_experts_by_sigma_buckets=False``.
-
-    Matches ``networks/lora_modules/chimera.py::ChimeraHydraLoRAModule
-    .forward`` (minus the T-LoRA mask, which is training-only — see
-    ``[[project_tlora_inference_full_rank]]``).
-    """
-    state = {
-        "lora_down": params["lora_down"],
-        "lora_ups": params["lora_ups"],  # (E, out, rank)
-        "router_w": params["router_w"],  # (K_c, rank)
-        "router_b": params["router_b"],  # (K_c,)
-        "inv_scale": params.get("inv_scale"),  # (in_dim,) or None
-        "scale": params["scale"],
-        "K_c": int(params["num_experts_content"]),
-        "K_f": int(params["num_experts_freq"]),
-        "device": None,
-    }
-
-    def _ensure_on_device(x: torch.Tensor) -> None:
-        if state["device"] == x.device:
-            return
-        for k in ("lora_down", "lora_ups", "router_w", "router_b", "inv_scale"):
-            if state[k] is not None:
-                state[k] = state[k].to(device=x.device, dtype=torch.float32)
-        state["device"] = x.device
-
-    def chimera_hook(module, inputs, output):
-        x = inputs[0]
-        _ensure_on_device(x)
-
-        x_lora = x.float()
-        if state["inv_scale"] is not None:
-            x_lora = x_lora * state["inv_scale"]
-
-        # down projection (B, *, rank), fp32 — feeds the content router
-        # AND the gate-weighted bmm.
-        lx = torch.nn.functional.linear(x_lora, state["lora_down"])
-
-        # Content router: pooled rank-R → softmax → π_c (B, K_c). No σ/FEI
-        # — chimera deliberately starves the content router of frequency
-        # information (see proposal §"Why HydraLoRA's auto-specialization
-        # argument gets stronger").
-        B = lx.shape[0]
-        if lx.dim() >= 3:
-            pooled = lx.reshape(B, -1, lx.shape[-1]).pow(2).mean(dim=1).sqrt()
-        else:
-            pooled = lx
-        logits_c = torch.nn.functional.linear(
-            pooled, state["router_w"], state["router_b"]
-        )
-        pi_c = torch.softmax(logits_c, dim=-1)  # (B, K_c)
-
-        pi_f = router_state.get("pi_f")
-        if pi_f is None:
-            # FreqRouter pre-hook didn't fire (e.g. compile cache miss
-            # before the first step) — fall back to uniform 1/K_f. Matches
-            # ChimeraHydraLoRAModule's placeholder buffer init.
-            pi_f = torch.full(
-                (B, state["K_f"]),
-                1.0 / max(state["K_f"], 1),
-                device=lx.device,
-                dtype=lx.dtype,
-            )
-        else:
-            pi_f = pi_f.to(dtype=lx.dtype)
-            if pi_f.dim() == 1:
-                pi_f = pi_f.unsqueeze(0)
-            if pi_f.shape[0] == 1 and B != 1:
-                pi_f = pi_f.expand(B, -1)
-
-        gate = torch.cat([pi_c, pi_f], dim=-1)  # (B, K_c + K_f)
-
-        combined = torch.einsum("be,eor->bor", gate, state["lora_ups"])
-
-        orig_shape = lx.shape
-        lx_3d = lx.reshape(B, -1, orig_shape[-1])
-        delta = torch.bmm(lx_3d, combined.transpose(1, 2)).reshape(*orig_shape[:-1], -1)
-        return output + (delta * (state["scale"] * strength)).to(output.dtype)
-
-    return chimera_hook
-
-
-def _make_chimera_dual_a_hook(params: dict, strength: float, router_state: dict):
-    """Per-Linear hook for ChimeraHydra dual-A (two independent A's per
-    Linear, one per pool).
-
-    Differs from ``_make_chimera_hook`` (single-A legacy):
-
-      * Two down projections (``lora_down_c`` and ``lora_down_f``) instead
-        of one shared ``lora_down`` — the two pools see disjoint latents.
-      * Two B stacks (``lora_up_c_stack`` / ``lora_up_f_stack``), each
-        gated by its own pool's gate, summed at the output.
-      * Content router pools ``lx_c`` (the content branch's latent), NOT
-        a shared ``lx``. Mirrors
-        ``ChimeraHydraInferenceModule._compute_content_gate``.
-      * The training-time ``lambda_c`` / ``lambda_f`` scalars are baked
-        into the saved ``lora_down_{c,f}`` / ``lora_up_{c,f}`` via the
-        sqrt-split in ``_convert_chimera_dual_a_to_hydra`` — no extra
-        scaling factor at inference. ``alpha`` / ``inv_scale`` are
-        passed through for the standard SmoothQuant rebalance only.
-
-    Matches ``networks/lora_modules/chimera.py::ChimeraHydraInferenceModule
-    .forward`` (T-LoRA's content mask stays training-only — see
-    ``[[project_tlora_inference_full_rank]]``).
-    """
-    state = {
-        "lora_down_c": params["lora_down_c"],
-        "lora_down_f": params["lora_down_f"],
-        "lora_up_c_stack": params["lora_up_c_stack"],  # (K_c, out, rank)
-        "lora_up_f_stack": params["lora_up_f_stack"],  # (K_f, out, rank)
-        "router_w": params["router_w"],  # (K_c, rank)
-        "router_b": params["router_b"],  # (K_c,)
-        "inv_scale": params.get("inv_scale"),  # (in_dim,) or None
-        "K_c": int(params["num_experts_content"]),
-        "K_f": int(params["num_experts_freq"]),
-        "device": None,
-    }
-
-    def _ensure_on_device(x: torch.Tensor) -> None:
-        if state["device"] == x.device:
-            return
-        for k in (
-            "lora_down_c",
-            "lora_down_f",
-            "lora_up_c_stack",
-            "lora_up_f_stack",
-            "router_w",
-            "router_b",
-            "inv_scale",
-        ):
-            if state[k] is not None:
-                state[k] = state[k].to(device=x.device, dtype=torch.float32)
-        state["device"] = x.device
-
-    def chimera_dual_a_hook(module, inputs, output):
-        x = inputs[0]
-        _ensure_on_device(x)
-
-        x_lora = x.float()
-        if state["inv_scale"] is not None:
-            x_lora = x_lora * state["inv_scale"]
-
-        # Two independent down projections (B, *, rank) — content + freq.
-        # No shared lx: routers and ups for each pool see distinct latents,
-        # which is the whole point of going dual-A (input-side ortho via
-        # the SVD partition at init).
-        lx_c = torch.nn.functional.linear(x_lora, state["lora_down_c"])
-        lx_f = torch.nn.functional.linear(x_lora, state["lora_down_f"])
-
-        # Content router on pooled lx_c. RMS pool over the sequence dim
-        # matches ``_compute_content_gate``; using lx_c (not lx_f or x)
-        # is load-bearing per the chimera proposal — pooling lx_f would
-        # cross-couple the two pools and defeat the input-separation
-        # argument.
-        B = lx_c.shape[0]
-        if lx_c.dim() >= 3:
-            pooled_c = lx_c.reshape(B, -1, lx_c.shape[-1]).pow(2).mean(dim=1).sqrt()
-        else:
-            pooled_c = lx_c
-        logits_c = torch.nn.functional.linear(
-            pooled_c, state["router_w"], state["router_b"]
-        )
-        pi_c = torch.softmax(logits_c, dim=-1)  # (B, K_c)
-
-        pi_f = router_state.get("pi_f")
-        if pi_f is None:
-            # FreqRouter pre-hook didn't fire (compile cache miss before
-            # first step or wrapper bypass) — fall back to uniform 1/K_f.
-            # Matches ChimeraHydraInferenceModule's placeholder buffer.
-            pi_f = torch.full(
-                (B, state["K_f"]),
-                1.0 / max(state["K_f"], 1),
-                device=lx_c.device,
-                dtype=lx_c.dtype,
-            )
-        else:
-            pi_f = pi_f.to(dtype=lx_c.dtype)
-            if pi_f.dim() == 1:
-                pi_f = pi_f.unsqueeze(0)
-            if pi_f.shape[0] == 1 and B != 1:
-                pi_f = pi_f.expand(B, -1)
-
-        # Gate-weighted per-pool combined ups (B, out, rank). Two einsums
-        # because the two pools have different K — keeps the math 1:1
-        # with the training/inference module rather than padding to a
-        # joint stack.
-        comb_c = torch.einsum("bc,cor->bor", pi_c, state["lora_up_c_stack"])
-        comb_f = torch.einsum("bf,for->bor", pi_f, state["lora_up_f_stack"])
-
-        orig_shape = lx_c.shape
-        lx_c_3d = lx_c.reshape(B, -1, orig_shape[-1])
-        lx_f_3d = lx_f.reshape(B, -1, orig_shape[-1])
-        out_c = torch.bmm(lx_c_3d, comb_c.transpose(1, 2))
-        out_f = torch.bmm(lx_f_3d, comb_f.transpose(1, 2))
-        delta = (out_c + out_f).reshape(*orig_shape[:-1], -1)
-        return output + (delta * strength).to(output.dtype)
-
-    return chimera_dual_a_hook
-
-
-def _resolve_module(model, dotted_path: str):
-    """Walk attribute / index path under ``model.model``."""
-    obj = model.model
-    for part in dotted_path.split("."):
-        if part.isdigit():
-            obj = obj[int(part)]
-        else:
-            obj = getattr(obj, part)
-    return obj
-
-
 def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
     """Install live-routing forward hooks on each Hydra-adapted Linear.
 
@@ -1257,15 +743,44 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
     new_pre_hooks[id(router_pre_hook)] = router_pre_hook
     model.add_object_patch("diffusion_model._forward_pre_hooks", new_pre_hooks)
 
+    # ChimeraHydra global ContentRouter (single-A path). Mirrors the dual-A
+    # branch: install a forward_hook on diffusion_model.llm_adapter that
+    # writes π_c into sigma_state once per step, and flag every per-Linear
+    # chimera hook to broadcast it instead of running the local softmax.
+    global_cr = chimera_data.get("content_router") if chimera_on else None
+    global_cr_on = global_cr is not None
+    if global_cr_on:
+        if not hasattr(diffusion_model, "llm_adapter"):
+            raise RuntimeError(
+                "ChimeraHydra content_router_source='crossattn' requires "
+                "diffusion_model.llm_adapter (Anima DiT). Loaded model has "
+                "no llm_adapter attribute."
+            )
+        cr_hook = _make_content_router_llm_adapter_hook(
+            global_cr,
+            router_tau=float(chimera_data["router_tau"]),
+            router_state=sigma_state,
+        )
+        new_adapter_hooks = OrderedDict(diffusion_model.llm_adapter._forward_hooks)
+        new_adapter_hooks[id(cr_hook)] = cr_hook
+        model.add_object_patch(
+            "diffusion_model.llm_adapter._forward_hooks", new_adapter_hooks
+        )
+
     patched = 0
     skipped: list[str] = []
     for prefix, mod in hydra_data["modules"].items():
         if "lora_down" not in mod or "lora_ups" not in mod:
             skipped.append(f"{prefix}: missing lora_down/lora_ups")
             continue
-        if "router_w" not in mod or "router_b" not in mod:
-            skipped.append(f"{prefix}: missing router")
-            continue
+        # Under the global ContentRouter the per-Linear router.weight/bias
+        # keys are absent (ChimeraHydraInferenceModule sets self.router=None
+        # under use_global_content_router=True). Outside chimera the σ/FEI
+        # HydraLoRA router is always per-Linear, so the check stays.
+        if not (chimera_on and global_cr_on):
+            if "router_w" not in mod or "router_b" not in mod:
+                skipped.append(f"{prefix}: missing router")
+                continue
 
         comfy_sd_key = key_map.get(prefix)
         if comfy_sd_key is None:
@@ -1295,24 +810,31 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
 
         if chimera_on:
             # Chimera content router: shape (K_c, rank) — no σ/FEI columns.
+            # Absent under the global ContentRouter (crossattn source).
             K_c = int(chimera_data["num_experts_content"])
             K_f = int(chimera_data["num_experts_freq"])
-            r_w = mod["router_w"]
-            if r_w.shape != (K_c, rank):
-                skipped.append(
-                    f"{prefix}: chimera content router shape "
-                    f"{tuple(r_w.shape)} != (K_c={K_c}, rank={rank})"
-                )
-                continue
+            if global_cr_on:
+                r_w = None
+                r_b = None
+            else:
+                r_w = mod["router_w"]
+                r_b = mod["router_b"]
+                if r_w.shape != (K_c, rank):
+                    skipped.append(
+                        f"{prefix}: chimera content router shape "
+                        f"{tuple(r_w.shape)} != (K_c={K_c}, rank={rank})"
+                    )
+                    continue
             params = {
                 "lora_down": mod["lora_down"],
                 "lora_ups": ups_stacked,
                 "router_w": r_w,
-                "router_b": mod["router_b"],
+                "router_b": r_b,
                 "inv_scale": mod.get("inv_scale"),
                 "scale": alpha / rank,
                 "num_experts_content": K_c,
                 "num_experts_freq": K_f,
+                "global_content_router": global_cr_on,
             }
             hook = _make_chimera_hook(params, strength, sigma_state)
         else:
@@ -1357,6 +879,12 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
             f"first few: {skipped[:5]}"
         )
     if chimera_on:
+        cr_tag = (
+            f", ContentRouter=crossattn(in={global_cr['input_dim']}, "
+            f"LN={'on' if global_cr['layer_norm'] else 'off'})"
+            if global_cr_on
+            else ""
+        )
         logger.info(
             f"ChimeraHydra live-routing installed {patched} hooks "
             f"(strength={strength}, K_c={chimera_data['num_experts_content']} + "
@@ -1364,7 +892,7 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
             f"FEI({chimera_data['fei_feature_dim']}) + "
             f"σ({chimera_data['sigma_feature_dim']}), "
             f"σ_low_div={chimera_data['fei_sigma_low_div']:g}, "
-            f"τ={chimera_data['router_tau']:g})"
+            f"τ={chimera_data['router_tau']:g}{cr_tag})"
         )
         return patched
     # Decide what's actually being routed on by checking the router-input
@@ -1390,147 +918,33 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
     return patched
 
 
-def _apply_chimera_dual_a_to_model(
-    model, chimera_data: dict, strength: float
-) -> int:
-    """Install live-routing forward hooks on each ChimeraHydra dual-A
-    Linear.
+def _fold_inv_scale(lora_sd: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    """Fold per_channel_scaling ``inv_scale`` into ``lora_down`` and drop it.
 
-    Counterpart to ``_apply_hydra_live_to_model``'s chimera branch but
-    for the dual-A on-disk format (post-c4851b6 chimera). Same FreqRouter
-    pre-hook (one network-level π_f per step on
-    ``concat(FEI, sinusoidal(σ))``) — only the per-Linear math changes
-    (two A's + two B stacks, summed at the output). Mutually exclusive
-    with the legacy single-A chimera path; the loader picks one based
-    on the key shape and produces exactly one of
-    ``hydra["chimera"]`` / ``chimera_dual_a``.
+    ``per_channel_scaling`` (SmoothQuant-style channel absorption) bakes
+    ``s_norm`` into the saved ``lora_down.weight`` (``W[:,c] *= s_norm[c]``)
+    and stores ``inv_scale = 1/s_norm`` separately; the trained forward is
+    ``F.linear(x * inv_scale, down)``. ComfyUI's LoRA patcher doesn't know the
+    ``.inv_scale`` suffix, so it would warn ``lora key not loaded`` and silently
+    drop it — applying a delta that's off by ``s_norm`` per input column.
 
-    Returns number of hooks installed.
+    Mirror ``LoRAModule.merge_to`` exactly: ``down *= inv_scale`` then strip the
+    key. Returns a new dict (the caller's dict is cached by path, so we must not
+    mutate it — repeated applies would double-fold).
     """
-    import comfy.lora
-
-    if strength == 0:
-        return 0
-
-    key_map = comfy.lora.model_lora_keys_unet(model.model, {})
-
-    # Shared routing state — same dict the single-A chimera path uses.
-    # FreqRouter pre-hook writes ``pi_f`` once per denoising step; every
-    # per-Linear hook reads it.
-    sigma_state: dict = {}
-
-    diffusion_model = model.get_model_object("diffusion_model")
-    router_pre_hook = _make_chimera_pre_hook(
-        sigma_state,
-        chimera_data["freq_router_sd"],
-        fei_feature_dim=int(chimera_data["fei_feature_dim"]),
-        sigma_feature_dim=int(chimera_data["sigma_feature_dim"]),
-        fei_sigma_low_div=float(chimera_data["fei_sigma_low_div"]),
-        router_tau=float(chimera_data["router_tau"]),
-        K_f=int(chimera_data["num_experts_freq"]),
-    )
-    new_pre_hooks = OrderedDict(diffusion_model._forward_pre_hooks)
-    new_pre_hooks[id(router_pre_hook)] = router_pre_hook
-    model.add_object_patch("diffusion_model._forward_pre_hooks", new_pre_hooks)
-
-    K_c = int(chimera_data["num_experts_content"])
-    K_f = int(chimera_data["num_experts_freq"])
-
-    patched = 0
-    skipped: list[str] = []
-    for prefix, mod in chimera_data["modules"].items():
-        required = ("lora_down_c", "lora_down_f", "lora_ups_c", "router_w", "router_b")
-        missing = [k for k in required if k not in mod]
-        if missing:
-            skipped.append(f"{prefix}: missing {missing}")
+    inv_keys = [k for k in lora_sd if k.endswith(".inv_scale")]
+    if not inv_keys:
+        return lora_sd
+    out = dict(lora_sd)
+    for inv_key in inv_keys:
+        prefix = inv_key[: -len(".inv_scale")]
+        down_key = f"{prefix}.lora_down.weight"
+        inv_scale = out.pop(inv_key)
+        down = out.get(down_key)
+        if down is None or down.dim() != 2:
             continue
-        # K_f == 0 is structurally legal (degenerates to "content only"),
-        # but the training cfg refuses it — so a missing lora_ups_f stack
-        # under K_f > 0 indicates a malformed checkpoint.
-        if K_f > 0 and "lora_ups_f" not in mod:
-            skipped.append(f"{prefix}: missing lora_ups_f under K_f={K_f}")
-            continue
-
-        comfy_sd_key = key_map.get(prefix)
-        if comfy_sd_key is None:
-            skipped.append(f"{prefix}: not in ComfyUI key_map")
-            continue
-        module_path = (
-            comfy_sd_key[: -len(".weight")]
-            if comfy_sd_key.endswith(".weight")
-            else comfy_sd_key
-        )
-
-        try:
-            linear = _resolve_module(model, module_path)
-        except (AttributeError, IndexError, ValueError) as e:
-            skipped.append(f"{prefix}: resolve {module_path} failed ({e})")
-            continue
-
-        ups_c_dict = mod["lora_ups_c"]
-        ups_c_stacked = torch.stack(
-            [ups_c_dict[i] for i in sorted(ups_c_dict.keys())], dim=0
-        )
-        if ups_c_stacked.shape[0] != K_c:
-            skipped.append(
-                f"{prefix}: lora_ups_c stack size {ups_c_stacked.shape[0]} != K_c={K_c}"
-            )
-            continue
-        if K_f > 0:
-            ups_f_dict = mod["lora_ups_f"]
-            ups_f_stacked = torch.stack(
-                [ups_f_dict[i] for i in sorted(ups_f_dict.keys())], dim=0
-            )
-            if ups_f_stacked.shape[0] != K_f:
-                skipped.append(
-                    f"{prefix}: lora_ups_f stack size {ups_f_stacked.shape[0]} != K_f={K_f}"
-                )
-                continue
-        else:
-            ups_f_stacked = torch.empty(
-                0, ups_c_stacked.shape[1], ups_c_stacked.shape[2]
-            )
-
-        rank = mod["lora_down_c"].shape[0]
-        if mod["router_w"].shape != (K_c, rank):
-            skipped.append(
-                f"{prefix}: content router shape {tuple(mod['router_w'].shape)} "
-                f"!= (K_c={K_c}, rank={rank})"
-            )
-            continue
-
-        params = {
-            "lora_down_c": mod["lora_down_c"],
-            "lora_down_f": mod["lora_down_f"],
-            "lora_up_c_stack": ups_c_stacked,
-            "lora_up_f_stack": ups_f_stacked,
-            "router_w": mod["router_w"],
-            "router_b": mod["router_b"],
-            "inv_scale": mod.get("inv_scale"),
-            "num_experts_content": K_c,
-            "num_experts_freq": K_f,
-        }
-        hook = _make_chimera_dual_a_hook(params, strength, sigma_state)
-
-        new_hooks = OrderedDict(linear._forward_hooks)
-        new_hooks[id(hook)] = hook
-        model.add_object_patch(f"{module_path}._forward_hooks", new_hooks)
-        patched += 1
-
-    if skipped:
-        logger.warning(
-            f"ChimeraHydra dual-A skipped {len(skipped)} prefix(es); "
-            f"first few: {skipped[:5]}"
-        )
-    logger.info(
-        f"ChimeraHydra dual-A live-routing installed {patched} hooks "
-        f"(strength={strength}, K_c={K_c} + K_f={K_f}, FreqRouter input="
-        f"FEI({chimera_data['fei_feature_dim']}) + "
-        f"σ({chimera_data['sigma_feature_dim']}), "
-        f"σ_low_div={chimera_data['fei_sigma_low_div']:g}, "
-        f"τ={chimera_data['router_tau']:g})"
-    )
-    return patched
+        out[down_key] = down.to(torch.float) * inv_scale.to(torch.float).unsqueeze(0)
+    return out
 
 
 def _apply_lora_sd_to_model(model, lora_sd: Dict[str, torch.Tensor], strength: float):
@@ -1538,6 +952,7 @@ def _apply_lora_sd_to_model(model, lora_sd: Dict[str, torch.Tensor], strength: f
     import comfy.lora
     import comfy.lora_convert
 
+    lora_sd = _fold_inv_scale(lora_sd)
     key_map = comfy.lora.model_lora_keys_unet(model.model, {})
     lora_sd = comfy.lora_convert.convert_lora(lora_sd)
     loaded = comfy.lora.load_lora(lora_sd, key_map)

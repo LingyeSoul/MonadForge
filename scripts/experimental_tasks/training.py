@@ -1,4 +1,4 @@
-"""Experimental training entry-points: postfix, ip-adapter, easycontrol.
+"""Experimental training entry-points: ip-adapter, easycontrol, turbo, chimera.
 
 These are wired up under ``make exp-*`` / ``python tasks.py exp-*`` to keep
 the unstable methods visually separate from the shipped ones (lora family,
@@ -11,10 +11,6 @@ from __future__ import annotations
 
 from scripts.tasks import preprocess as _preprocess
 from scripts.tasks._common import PY, _preset, bespoke_preset_flags, run, train
-
-
-def cmd_postfix(extra):
-    train("postfix", extra)
 
 
 def cmd_turbo(extra):
@@ -38,15 +34,29 @@ def cmd_turbo(extra):
     run([PY, "scripts/distill_turbo.py", *preset_flags, *extra])
 
 
-def cmd_fera(extra):
-    """Author-faithful FeRA (Yin et al., arXiv:2511.17979).
+def cmd_spd(extra):
+    """SPD fine-tuning LoRA — §4.3 trajectory adapter (proposal: docs/proposal/spd_finetune_lora.md).
 
-    Drives ``configs/gui-methods/fera.toml`` — independent-A stacked experts
-    + a single network-level GlobalRouter fed by FEI(z_t). Lives on the
-    LoRA-family network module via the ``stacked_experts_global_fei`` spec
-    (selected by ``use_moe_style="independent_A"``). plan2 §three-axis-config.
+    "Case B" of the SPD investigation. Bypasses train.py / accelerate (single-GPU
+    bespoke loop, like distill-mod / turbo). Reads ``configs/methods/spd.toml``;
+    trailing args are forwarded so user CLI flags override TOML values, e.g.::
+
+        make exp-spd                                   # defaults: rank=32, single-late schedule
+        make exp-spd ARGS="--iterations 2000 --single_prompt_idx 0"   # Phase 0 overfit
+        make exp-spd ARGS="--stages 0.5 0.75 1.0 --transition_sigmas 0.6 0.4"
+        make exp-spd ARGS="--torch_compile"            # per-stage static-shape compile
+
+    ``--torch_compile`` pads each stage to its own constant token count so
+    torch.compile traces only len(stages) fwd+bwd graphs (not one per
+    aspect-bucket); forces attn_mode=flex. Keeps low-res stages cheap.
+
+    Trains a plain LoRA to follow the SPD multi-resolution trajectory; output is
+    a normal LoRA — infer with the SPD sampler (``make exp-test-spd``) at the
+    *same* schedule (snapshotted into the safetensors metadata). Honors
+    ``PRESET`` like ``exp-turbo`` (block swap / grad ckpt / sample_ratio).
     """
-    train("fera", extra, methods_subdir="gui-methods")
+    preset_flags = bespoke_preset_flags(_preset())
+    run([PY, "scripts/distill_spd.py", *preset_flags, *extra])
 
 
 def cmd_soft_tokens(extra):

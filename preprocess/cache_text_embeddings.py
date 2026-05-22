@@ -220,6 +220,27 @@ def main() -> None:
     )
     encoding_strategy = AnimaTextEncodingStrategy()
 
+    # Stage the T5("") sidecar while Qwen3 + LLM adapter are already on
+    # device. Every training/distill run reuses this one tiny file as the
+    # CFG-uncond crossattn input — matches `library/inference/text.py`.
+    # Skipped when ``--dit`` is omitted (only TE outputs cached; no
+    # llm_adapter, so we can't produce crossattn embeddings here).
+    if llm_adapter is not None:
+        from library.inference.uncond import (
+            DEFAULT_UNCOND_DIR,
+            stage_uncond_sidecar_with_models,
+        )
+
+        stage_uncond_sidecar_with_models(
+            DEFAULT_UNCOND_DIR,
+            text_encoder,
+            tokenize_strategy,
+            encoding_strategy,
+            llm_adapter,
+            device=device,
+            overwrite=bool(getattr(args, "force_recache_uncond", False)),
+        )
+
     # Collect images that have caption sidecars. Mirror the resize filter so
     # we don't cache TE for images that would be dropped at resize time.
     if args.recursive:

@@ -67,6 +67,7 @@ from library.training.metrics import (
     collect_metrics,
 )
 from library.training.contexts import (
+    RuntimeState,
     TrainCtx,
     ValCtx,
 )
@@ -101,6 +102,7 @@ from library.training.checkpoints import (
 
 __all__ = [
     # contexts
+    "RuntimeState",
     "TrainCtx",
     "ValCtx",
     # samplers

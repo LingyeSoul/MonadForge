@@ -183,7 +183,7 @@ def _setup_text_state(
         )
 
     if args.get("pooled_text_proj"):
-        from library.inference.mod_guidance import setup_mod_guidance
+        from library.inference.corrections.mod_guidance import setup_mod_guidance
 
         mod_args = _ArgsNS(
             pooled_text_proj=args["pooled_text_proj"],

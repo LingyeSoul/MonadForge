@@ -271,28 +271,12 @@ def load_safetensors_with_lora(
                     ).permute(1, 0, 2, 3)
                     delta = multiplier * conved * scale
 
-                dora_scale_key = lora_name + ".dora_scale"
-                dora_scale = lora_sd.get(dora_scale_key, None)
-                if dora_scale is not None:
-                    # DoRA: W' = (m / ||W_org||) * (W + delta)
-                    dora_scale = dora_scale.to(calc_device).float()
-                    org_norm = model_weight.float().norm(p=2, dim=1).clamp(min=1e-8)
-                    mag_scale = dora_scale / org_norm
-                    # reshape for broadcasting: [out] -> [out, 1, ...]
-                    for _ in range(model_weight.dim() - 1):
-                        mag_scale = mag_scale.unsqueeze(-1)
-                    model_weight = (
-                        mag_scale * (model_weight.float() + delta.float())
-                    ).to(model_weight.dtype)
-                else:
-                    model_weight = model_weight + delta
+                model_weight = model_weight + delta
 
                 lora_weight_keys.remove(down_key)
                 lora_weight_keys.remove(up_key)
                 if alpha_key in lora_weight_keys:
                     lora_weight_keys.remove(alpha_key)
-                if dora_scale_key in lora_weight_keys:
-                    lora_weight_keys.remove(dora_scale_key)
 
             if not keep_on_calc_device and original_device != calc_device:
                 model_weight = model_weight.to(

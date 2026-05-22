@@ -23,9 +23,11 @@
 # block via monkey-patched Block.forward (ReFT-pattern), a fundamentally
 # different surface.
 #
-# v1: training only. Inference would require the per-step splice to be re-run
-# inside the denoising loop; until that's wired up, save_weights still emits a
-# usable file but inference.py will refuse to load it.
+# Inference path: the per-step splice runs from inside the denoising loop —
+# library/inference/generation.py + networks/spectrum.py call append_postfix(...,
+# timesteps=t) per CFG branch before each forward, mirroring the training-side
+# trainer hook. On Spectrum cached steps the blocks don't fire, so soft tokens
+# silently no-op for those steps (composes freely with --spectrum).
 
 import os
 from typing import Optional
@@ -44,6 +46,21 @@ logger = logging.getLogger(__name__)
 # Anima cached crossattn_emb dimension (Qwen3 hidden size, post LLM-adapter).
 DEFAULT_EMBED_DIM = 1024
 
+# Bank-dispersive regularizer form. See ``SoftTokensNetwork.bank_dispersive_loss``.
+# Probe at ``bench/soft_tokens_dispersive/probe.py`` (2026-05-19) found ``current``
+# structurally unbounded — the optimizer drives bank norms arbitrarily large to
+# push log(mean(exp(-d²/τ))) toward −∞. The bounded forms (cosine_sq, cosine_abs,
+# normalized_pdist, hinge) all saturate within ~500 steps without FM counterforce.
+DISPERSIVE_FORMS = (
+    "current",            # log(mean(exp(-pdist²/τ))) on raw bank vectors. Unbounded below.
+    "normalized_pdist",   # same form on unit-normalized vectors. Bounded; magnitude untouched.
+    "cosine_sq",          # mean cos(v_i, v_j)² over pairs. Bounded [0, 1], smooth.
+    "cosine_abs",         # mean |cos(v_i, v_j)| over pairs. Bounded [0, 1], non-smooth at 0.
+    "hinge",              # mean max(0, ε − pdist²) over pairs. Bounded ≥ 0.
+)
+DEFAULT_DISPERSIVE_FORM = "current"  # back-compat default; new configs should override.
+DEFAULT_DISPERSIVE_HINGE_EPS = 1.0
+
 
 def create_network(
     multiplier: float,
@@ -61,9 +78,15 @@ def create_network(
     n_t_buckets = int(kwargs.get("n_t_buckets", 100))
     init_std = float(kwargs.get("init_std", 0.02))
     splice_position = kwargs.get("splice_position", "end_of_sequence")
-    contrastive_weight = float(kwargs.get("contrastive_weight", 0.0))
-    contrastive_k = int(kwargs.get("contrastive_k", 1))
-    contrastive_tau = float(kwargs.get("contrastive_tau", 1.0))
+    bank_dispersive_weight = float(kwargs.get("bank_dispersive_weight", 0.0))
+    bank_dispersive_warmup_ratio = float(
+        kwargs.get("bank_dispersive_warmup_ratio", 0.1)
+    )
+    bank_dispersive_tau = float(kwargs.get("bank_dispersive_tau", 0.5))
+    dispersive_form = str(kwargs.get("dispersive_form", DEFAULT_DISPERSIVE_FORM))
+    dispersive_hinge_eps = float(
+        kwargs.get("dispersive_hinge_eps", DEFAULT_DISPERSIVE_HINGE_EPS)
+    )
     network = SoftTokensNetwork(
         num_tokens=num_tokens,
         embed_dim=embed_dim,
@@ -71,9 +94,11 @@ def create_network(
         n_t_buckets=n_t_buckets,
         init_std=init_std,
         splice_position=splice_position,
-        contrastive_weight=contrastive_weight,
-        contrastive_k=contrastive_k,
-        contrastive_tau=contrastive_tau,
+        bank_dispersive_weight=bank_dispersive_weight,
+        bank_dispersive_warmup_ratio=bank_dispersive_warmup_ratio,
+        bank_dispersive_tau=bank_dispersive_tau,
+        dispersive_form=dispersive_form,
+        dispersive_hinge_eps=dispersive_hinge_eps,
         multiplier=multiplier,
     )
     return network
@@ -89,11 +114,6 @@ def create_network_from_weights(
     for_inference=False,
     **kwargs,
 ):
-    if for_inference:
-        raise NotImplementedError(
-            "soft_tokens v1 is training-only. Inference plumbing (per-step "
-            "block hooks inside the denoising loop) is not wired up yet."
-        )
     if weights_sd is None:
         if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file
@@ -120,12 +140,36 @@ def create_network_from_weights(
         with safe_open(file, framework="pt") as f:
             meta = f.metadata() or {}
             metadata_splice = meta.get("ss_splice_position")
+    # Pull metadata for the dispersive form + hinge ε too — both are saved
+    # by ``get_metadata`` and should round-trip on load. CLI/TOML kwargs still
+    # win for post-hoc overrides.
+    metadata_form = None
+    metadata_hinge_eps = None
+    if file is not None and os.path.splitext(file)[1] == ".safetensors":
+        from safetensors import safe_open
+
+        with safe_open(file, framework="pt") as f:
+            meta = f.metadata() or {}
+            metadata_form = meta.get("ss_dispersive_form")
+            metadata_hinge_eps = meta.get("ss_dispersive_hinge_eps")
     splice_position = kwargs.get(
         "splice_position", metadata_splice or "end_of_sequence"
     )
-    contrastive_weight = float(kwargs.get("contrastive_weight", 0.0))
-    contrastive_k = int(kwargs.get("contrastive_k", 1))
-    contrastive_tau = float(kwargs.get("contrastive_tau", 1.0))
+    bank_dispersive_weight = float(kwargs.get("bank_dispersive_weight", 0.0))
+    bank_dispersive_warmup_ratio = float(
+        kwargs.get("bank_dispersive_warmup_ratio", 0.1)
+    )
+    bank_dispersive_tau = float(kwargs.get("bank_dispersive_tau", 0.5))
+    dispersive_form = str(
+        kwargs.get("dispersive_form", metadata_form or DEFAULT_DISPERSIVE_FORM)
+    )
+    dispersive_hinge_eps = float(
+        kwargs.get(
+            "dispersive_hinge_eps",
+            metadata_hinge_eps if metadata_hinge_eps is not None
+            else DEFAULT_DISPERSIVE_HINGE_EPS,
+        )
+    )
     network = SoftTokensNetwork(
         num_tokens=num_tokens,
         embed_dim=embed_dim,
@@ -133,9 +177,11 @@ def create_network_from_weights(
         n_t_buckets=n_t_buckets,
         init_std=0.0,  # weights are loaded; init_std doesn't matter
         splice_position=splice_position,
-        contrastive_weight=contrastive_weight,
-        contrastive_k=contrastive_k,
-        contrastive_tau=contrastive_tau,
+        bank_dispersive_weight=bank_dispersive_weight,
+        bank_dispersive_warmup_ratio=bank_dispersive_warmup_ratio,
+        bank_dispersive_tau=bank_dispersive_tau,
+        dispersive_form=dispersive_form,
+        dispersive_hinge_eps=dispersive_hinge_eps,
         multiplier=multiplier,
     )
     return network, weights_sd
@@ -165,9 +211,11 @@ class SoftTokensNetwork(AdapterNetworkBase):
         n_t_buckets: int = 100,
         init_std: float = 0.02,
         splice_position: str = "end_of_sequence",
-        contrastive_weight: float = 0.0,
-        contrastive_k: int = 1,
-        contrastive_tau: float = 1.0,
+        bank_dispersive_weight: float = 0.0,
+        bank_dispersive_warmup_ratio: float = 0.1,
+        bank_dispersive_tau: float = 0.5,
+        dispersive_form: str = DEFAULT_DISPERSIVE_FORM,
+        dispersive_hinge_eps: float = DEFAULT_DISPERSIVE_HINGE_EPS,
         multiplier: float = 1.0,
     ):
         super().__init__()
@@ -183,24 +231,45 @@ class SoftTokensNetwork(AdapterNetworkBase):
                 f"splice_position must be 'front_of_padding' or 'end_of_sequence', "
                 f"got {splice_position!r}"
             )
+        if bank_dispersive_tau <= 0.0:
+            raise ValueError(
+                f"bank_dispersive_tau must be positive, got {bank_dispersive_tau}"
+            )
+        if dispersive_form not in DISPERSIVE_FORMS:
+            raise ValueError(
+                f"dispersive_form must be one of {DISPERSIVE_FORMS}, "
+                f"got {dispersive_form!r}"
+            )
+        if dispersive_hinge_eps <= 0.0:
+            raise ValueError(
+                f"dispersive_hinge_eps must be positive, got {dispersive_hinge_eps}"
+            )
 
         self.num_tokens = num_tokens
         self.embed_dim = embed_dim
         self.n_layers = n_layers
         self.n_t_buckets = n_t_buckets
         self.splice_position = splice_position
-        # Paper's InfoNCE objective. ``contrastive_k`` is the number of
-        # in-batch negatives per anchor (paper had N-1 = full batch; we use a
-        # tunable subset since each negative costs one extra DiT forward).
-        # ``contrastive_tau`` constrains the unbounded MSE-as-similarity per
-        # paper §3.1 ("exponential function to constrain the logit values").
-        self.contrastive_weight = contrastive_weight
-        self.contrastive_k = max(int(contrastive_k), 0)
-        self.contrastive_tau = float(contrastive_tau)
-        # Latest contrastive value cached by SoftTokensMethodAdapter for
-        # logging via metrics(); ``_last_*`` mirrors the postfix pattern.
-        self._last_contrastive_value: Optional[float] = None
         self.multiplier = multiplier
+
+        # Parameter-space dispersive regularizer over the K and n_t_buckets axes
+        # (Wang & He, "Diffuse and Disperse", arXiv:2506.09027). Adapted to a
+        # B=1 regime by dispersing along the bank's intrinsic axes — not the
+        # batch axis the paper uses — which lets the term fire every step
+        # regardless of which timestep bucket was sampled. ``_bank_dispersive_weight``
+        # is the live value (held at 0 during warmup); ``_bank_dispersive_target_weight``
+        # is the post-warmup target. Composer activation gates on the target.
+        self._bank_dispersive_target_weight = float(bank_dispersive_weight)
+        self._bank_dispersive_warmup_ratio = float(bank_dispersive_warmup_ratio)
+        self._bank_dispersive_tau = float(bank_dispersive_tau)
+        self._dispersive_form = str(dispersive_form)
+        self._dispersive_hinge_eps = float(dispersive_hinge_eps)
+        # Live weight: starts at 0 if warmup is on, jumps to target after.
+        self._bank_dispersive_weight = (
+            0.0
+            if self._bank_dispersive_warmup_ratio > 0.0
+            else self._bank_dispersive_target_weight
+        )
 
         self.tokens = nn.Parameter(
             torch.randn(n_layers, num_tokens, embed_dim) * init_std
@@ -226,15 +295,22 @@ class SoftTokensNetwork(AdapterNetworkBase):
 
         n_token_params = self.tokens.numel()
         n_offset_params = self.t_offsets.weight.numel()
-        cs_note = (
-            f", contrastive(λ={contrastive_weight}, k={contrastive_k}, "
-            f"τ={contrastive_tau})"
-            if contrastive_weight > 0.0
-            else ""
-        )
+        if bank_dispersive_weight > 0.0:
+            if dispersive_form == "hinge":
+                form_args = f"ε={dispersive_hinge_eps}"
+            elif dispersive_form in ("current", "normalized_pdist"):
+                form_args = f"τ={bank_dispersive_tau}"
+            else:
+                form_args = "—"
+            disp_note = (
+                f", bank_dispersive(form={dispersive_form}, λ={bank_dispersive_weight}, "
+                f"warmup={bank_dispersive_warmup_ratio}, {form_args})"
+            )
+        else:
+            disp_note = ""
         logger.info(
             f"SoftTokensNetwork: {n_layers} layers × {num_tokens} tokens × dim {embed_dim}, "
-            f"{n_t_buckets} t-buckets, splice={splice_position}{cs_note} → "
+            f"{n_t_buckets} t-buckets, splice={splice_position}{disp_note} → "
             f"{n_token_params + n_offset_params} params "
             f"({n_token_params} base + {n_offset_params} t-offset)"
         )
@@ -413,9 +489,11 @@ class SoftTokensNetwork(AdapterNetworkBase):
             "ss_n_layers": str(self.n_layers),
             "ss_n_t_buckets": str(self.n_t_buckets),
             "ss_splice_position": self.splice_position,
-            "ss_contrastive_weight": str(self.contrastive_weight),
-            "ss_contrastive_k": str(self.contrastive_k),
-            "ss_contrastive_tau": str(self.contrastive_tau),
+            "ss_bank_dispersive_weight": str(self._bank_dispersive_target_weight),
+            "ss_bank_dispersive_warmup_ratio": str(self._bank_dispersive_warmup_ratio),
+            "ss_bank_dispersive_tau": str(self._bank_dispersive_tau),
+            "ss_dispersive_form": self._dispersive_form,
+            "ss_dispersive_hinge_eps": str(self._dispersive_hinge_eps),
         }
 
     def load_weights(self, file):
@@ -438,182 +516,186 @@ class SoftTokensNetwork(AdapterNetworkBase):
         )
 
     def metrics(self, ctx) -> dict[str, float]:
+        """TensorBoard signals for the bank-dispersive regularizer.
+
+        Two groups:
+
+        ``reg/*`` — regularizer-side values. ``loss`` is the raw dispersive
+        term recomputed under no_grad (the trainer wraps ``metrics()`` in
+        ``torch.no_grad``); ``loss_weighted`` is λ · loss; ``lambda_live`` is
+        the warmup-gated weight actually applied this step. Watching
+        ``lambda_live`` jump at the warmup boundary confirms the gate fired.
+
+        ``soft_tokens/*`` — bank-state diagnostics, computed on the K base
+        tokens averaged over layers (the same axis the probe at
+        ``bench/soft_tokens_dispersive/`` scored variants on). Read these as
+        a collapse / divergence detector:
+          - ``tokens_mean_cos`` near 0  → bank is orthogonal-ish (good).
+          - ``tokens_mean_cos`` near 1  → collapse (bad — regularizer is dead).
+          - ``tokens_mean_norm`` blowing up → unbounded form is winning
+            (only possible with ``dispersive_form="current"``).
+          - ``offset_mean_norm`` staying ~0 → t-offset buckets aren't training
+            (FM gradient isn't reaching them; check warmup + LR).
+        """
+        del ctx
         out: dict[str, float] = {}
-        if self.contrastive_weight > 0.0 and self._last_contrastive_value is not None:
-            v = float(self._last_contrastive_value)
-            out["reg/soft_tokens_contrastive"] = v
-            out["reg/soft_tokens_contrastive_weighted"] = self.contrastive_weight * v
+        target = float(self._bank_dispersive_target_weight)
+        live = float(self._bank_dispersive_weight)
+        if target > 0.0:
+            # collect_metrics wraps this in no_grad; safe to recompute.
+            loss_val = float(self.bank_dispersive_loss().item())
+            out["reg/soft_tokens_dispersive"] = loss_val
+            out["reg/soft_tokens_dispersive_weighted"] = live * loss_val
+            out["reg/soft_tokens_dispersive_lambda_live"] = live
+
+        # Bank-state diagnostics always logged when there are ≥ 2 tokens per
+        # layer to take pairs from — cheap, and the most useful signal for
+        # "is the regularizer doing anything".
+        if self.num_tokens >= 2 and self.n_layers > 0:
+            tokens = self.tokens.detach()
+            # Pairwise cos / d² per layer, averaged across layers.
+            cos_sum = 0.0
+            d_min = float("inf")
+            for k in range(self.n_layers):
+                z = tokens[k]
+                zn = torch.nn.functional.normalize(z, dim=-1, eps=1e-8)
+                gram = zn @ zn.t()
+                n = gram.shape[0]
+                iu = torch.triu_indices(n, n, offset=1, device=gram.device)
+                cos_sum += float(gram[iu[0], iu[1]].mean().item())
+                d_sq = torch.pdist(z, p=2).pow(2)
+                if d_sq.numel():
+                    d_min = min(d_min, float(d_sq.min().item()))
+            out["soft_tokens/tokens_mean_cos"] = cos_sum / self.n_layers
+            out["soft_tokens/tokens_min_d_sq"] = (
+                d_min if d_min != float("inf") else 0.0
+            )
+            out["soft_tokens/tokens_mean_norm"] = float(
+                tokens.flatten(1).norm(dim=-1).mean().item()
+            )
+        out["soft_tokens/offset_mean_norm"] = float(
+            self.t_offsets.weight.detach()
+            .view(self.n_t_buckets, self.n_layers, self.embed_dim)
+            .permute(1, 0, 2)
+            .flatten(1)
+            .norm(dim=-1)
+            .mean()
+            .item()
+        )
         return out
 
+    def step_bank_dispersive_warmup(
+        self, global_step: int, max_train_steps: int
+    ) -> None:
+        """Activate the bank-dispersive regularizer once training crosses the
+        warmup window. Step function (mirroring ``step_balance_loss_warmup``
+        on LoRANetwork): ``_bank_dispersive_weight`` holds at 0 during the
+        first ``_bank_dispersive_warmup_ratio`` of steps, then flips to
+        ``_bank_dispersive_target_weight``. No-op when target is 0.
 
-# ───────────────────────────────────────────────── trainer integration
+        The bank starts near-zero (``init_std=0.02`` on tokens, zero-init on
+        t_offsets); pushing for K-axis / bucket-axis dispersion before
+        gradients have shaped *any* structure would fight the FM signal.
+        Letting denoise loss develop a non-degenerate bank first, then turning
+        on the dispersive push, keeps the regularizer's intent ("don't let
+        slots collapse to each other") aligned with the FM trajectory.
+        """
+        target = float(self._bank_dispersive_target_weight)
+        ratio = float(self._bank_dispersive_warmup_ratio)
+        if target <= 0.0:
+            return
+        if ratio <= 0.0 or max_train_steps <= 0:
+            self._bank_dispersive_weight = target
+            return
+        warmup_steps = int(max_train_steps * ratio)
+        self._bank_dispersive_weight = 0.0 if global_step < warmup_steps else target
 
+    def bank_dispersive_loss(self) -> torch.Tensor:
+        """Parameter-space dispersive regularizer over the bank's K and
+        n_t_buckets axes. Form selected by ``_dispersive_form``.
 
-class SoftTokensMethodAdapter:
-    """Trainer adapter: paper §3.1 InfoNCE forwards on top of plain FM.
+        All five forms compute one per-layer scalar from each ``(K, D)`` slab
+        of base tokens (6 pairs per layer at default K=4) and from each
+        ``(n_buckets, D)`` slab of t-offsets (91 pairs per layer at default
+        n_t_buckets=14), then average across the per-layer terms.
 
-    For each anchor i, run k extra DiT forwards with the *same* (x_t, ε, t)
-    but with text features rolled by j ∈ {1, …, k} along the batch axis —
-    giving k mismatched (x_i, y_{(i+j) mod B}) pairs. Build the (1+k)-way
-    InfoNCE softmax over the negative diffusion-loss logits (paper eq. 13–14)
-    with a constant temperature τ. The matched FM loss is unchanged — this
-    adds a contrastive *regularizer* to the existing per-sample FM, not a
-    replacement (the paper had FID regress under the contrastive weight on
-    SD3 and Anima's narrower caption distribution likely needs a softer
-    blend).
+        Forms (see DISPERSIVE_FORMS docstring above):
+          - ``current``           — paper-style ``log(mean(exp(-d²/τ)))``.
+                                    Bench probe at
+                                    ``bench/soft_tokens_dispersive/`` showed this
+                                    is unbounded below: the optimizer drives bank
+                                    norms arbitrarily large to push the loss to
+                                    −∞ even without FM signal. Kept for back-compat.
+          - ``normalized_pdist``  — same form on unit-normalized vectors. d² ∈
+                                    [0, 4] so the loss saturates near a finite
+                                    floor. Gradient flows to direction only;
+                                    magnitude is left to the FM signal.
+          - ``cosine_sq``         — ``mean(cos²)`` over pairs. Bounded [0, 1],
+                                    smooth gradient at orthogonal pairs.
+          - ``cosine_abs``        — ``mean(|cos|)`` over pairs. Bounded [0, 1],
+                                    non-smooth at the orthogonal floor.
+          - ``hinge``             — ``mean(max(0, ε - d²))`` over pairs. Bounded
+                                    ≥ 0; saturates entirely once every pair
+                                    exceeds the ε floor.
 
-    The soft tokens themselves don't depend on text content, so the cached
-    ``_step_layer_tokens`` from the matched forward is reused across negative
-    forwards (the per-block hook re-splices into the *rolled* crossattn).
-    Per-sample seqlens, however, do roll with the text — for FOP splice we
-    refresh ``_step_seqlens`` before each negative forward.
+        Both axes are fixed dimensions of the bank parameters, so the loss is
+        batch-size independent (works at B=1) and provides gradient signal to
+        every (layer, k) and (layer, bucket) parameter every step — including
+        the t-buckets that the timestep sampler didn't draw this step.
 
-    No-op when ``network.contrastive_weight <= 0``, in validation, when
-    ``crossattn_emb`` is None (uncached path), or when batch size < 2 (no
-    in-batch negatives possible).
-    """
+        Returns a scalar averaged across the per-layer terms. The trainer
+        multiplies by ``_bank_dispersive_weight`` (warmup-gated, see
+        ``step_bank_dispersive_warmup``) on the loss-handler side.
+        """
+        form = self._dispersive_form
+        tau = float(self._bank_dispersive_tau)
+        hinge_eps = float(self._dispersive_hinge_eps)
 
-    name = "soft_tokens"
+        def _pdist_sq(z: torch.Tensor) -> torch.Tensor:
+            return torch.pdist(z, p=2).pow(2)
 
-    def __init__(self) -> None:
-        self._last_contrastive_value: Optional[float] = None
-
-    def on_network_built(self, ctx) -> None:
-        # Surface the adapter back to the network so its ``metrics()`` can
-        # mirror our last contrastive value (mirroring postfix's pattern).
-        if ctx.network is not None and not hasattr(ctx.network, "_soft_tokens_adapter"):
-            ctx.network._soft_tokens_adapter = self
-
-    def on_step_start(self, ctx, batch, *, is_train: bool) -> None:
-        pass
-
-    def prime_for_forward(self, ctx, batch, latents, *, is_train: bool) -> None:
-        pass
-
-    def validation_baselines(self):
-        return []
-
-    def on_epoch_end(self, ctx) -> None:
-        pass
-
-    def metrics(self, ctx) -> dict:
-        return {}
-
-    def extra_forwards(self, ctx, primary) -> Optional[dict]:
-        if not primary.is_train:
-            return None
-        network = ctx.network
-        weight = float(getattr(network, "contrastive_weight", 0.0) or 0.0)
-        k = int(getattr(network, "contrastive_k", 0) or 0)
-        if weight <= 0.0 or k <= 0:
-            return None
-        if primary.crossattn_emb is None:
-            # Uncached text path — the rolled-text trick needs the (B, S, D)
-            # tensor pre-splice. Fail loudly so users notice the gate.
-            raise RuntimeError(
-                "soft_tokens contrastive requires cached crossattn (set "
-                "cache_llm_adapter_outputs=true in the method config)"
+        def _logmeanexp_neg(d_sq: torch.Tensor) -> torch.Tensor:
+            # log(mean(exp(-d²/τ))) via logsumexp − log(N).
+            return torch.logsumexp(-d_sq / tau, dim=-1) - torch.log(
+                d_sq.new_tensor(float(d_sq.numel()))
             )
 
-        anima = primary.anima_call
-        noisy = primary.noisy_model_input  # 5D
-        timesteps = primary.timesteps
-        target = primary.noise - primary.latents  # [B, C, H, W]
-        padding_mask = primary.padding_mask
-        kw = primary.forward_kwargs
+        def _cos_pairs(z: torch.Tensor) -> torch.Tensor:
+            zn = torch.nn.functional.normalize(z, dim=-1, eps=1e-8)
+            gram = zn @ zn.t()
+            n = gram.shape[0]
+            iu = torch.triu_indices(n, n, offset=1, device=gram.device)
+            return gram[iu[0], iu[1]]
 
-        # The block hook inside Block.forward consumes whatever the most
-        # recent ``append_postfix`` call cached on the network. The hook
-        # re-runs in this scope when we call anima(...) with rolled text, so
-        # the same per-(layer, t) tokens splice into the rolled crossattn —
-        # exactly the paper's "shared (x_t, t, ε), varying y" setup. The
-        # primary forward already wrote crossattn_emb that has the spliced
-        # tokens at the splice position; we need the PRE-splice tensor to
-        # roll. Recover it by undoing the splice on the cached tokens, then
-        # roll, then let the block hook re-splice.
-        spliced = primary.crossattn_emb  # post-splice from primary call
-        B = spliced.shape[0]
-        if B < 2:
-            return None  # batchsize 1: no in-batch negatives
+        def _term(z: torch.Tensor) -> torch.Tensor:
+            if z.shape[0] < 2:
+                return z.new_zeros(())
+            if form == "current":
+                return _logmeanexp_neg(_pdist_sq(z))
+            if form == "normalized_pdist":
+                zn = torch.nn.functional.normalize(z, dim=-1, eps=1e-8)
+                return _logmeanexp_neg(_pdist_sq(zn))
+            if form == "cosine_sq":
+                return _cos_pairs(z).pow(2).mean()
+            if form == "cosine_abs":
+                return _cos_pairs(z).abs().mean()
+            if form == "hinge":
+                return torch.clamp(hinge_eps - _pdist_sq(z), min=0.0).mean()
+            raise RuntimeError(f"unhandled dispersive_form {form!r}")  # validated in __init__
 
-        K = network.num_tokens
-        S = spliced.shape[1]
-        # Reverse the EOS splice so we have the original (zero-padded) text;
-        # for FOP we just trust the original cached path holds (the splice
-        # writes K tokens at variable per-sample offsets, scatter is not
-        # trivially invertible — gate FOP+contrastive off for now).
-        if network.splice_position != "end_of_sequence":
-            raise RuntimeError(
-                "soft_tokens contrastive currently requires "
-                "splice_position='end_of_sequence' (FOP scatter is not "
-                "trivially invertible). Switch the config or set "
-                "contrastive_weight=0."
+        total = self.tokens.new_zeros(())
+        n_terms = 0
+        if self.num_tokens >= 2:
+            for k in range(self.n_layers):
+                total = total + _term(self.tokens[k])
+                n_terms += 1
+        if self.n_t_buckets >= 2:
+            offsets = self.t_offsets.weight.view(
+                self.n_t_buckets, self.n_layers, self.embed_dim
             )
-        # The K tail slots were originally zero-padding; restore that for
-        # rolling so the rolled negative isn't contaminated by the matched
-        # anchor's spliced tokens.
-        zero_tail = torch.zeros(
-            B, K, spliced.shape[2], dtype=spliced.dtype, device=spliced.device
-        )
-        original_text = torch.cat([spliced[:, : S - K, :], zero_tail], dim=1)
-
-        # Per-sample MSE for matched (already computed by the trainer): same
-        # functional form as paper eq. 13's logit numerator. We recompute on
-        # the primary model_pred to avoid re-running the matched forward.
-        # primary.model_pred is 5D; squeeze to 4D for per-sample MSE.
-        v_match = primary.model_pred.squeeze(2)  # [B, C, H, W]
-        per_sample_mse_list = [((v_match - target) ** 2).mean(dim=(1, 2, 3))]
-
-        # k extra forwards with rolled text. Cyclic shifts ensure each anchor
-        # sees k distinct negatives (provided B > k). When B <= k we run only
-        # B-1 shifts (still informative).
-        k_eff = min(k, B - 1)
-        for j in range(1, k_eff + 1):
-            rolled_text = torch.roll(original_text, shifts=j, dims=0)
-            # Re-call append_postfix to refresh cached state (timesteps and
-            # — for FOP — seqlens). The cached tokens are the same since
-            # timesteps haven't changed, but this is the contract.
-            seqlens_kwarg = (
-                kw.get("crossattn_seqlens") if isinstance(kw, dict) else None
-            )
-            if seqlens_kwarg is None:
-                seqlens_kwarg = torch.full(
-                    (B,), S - K, dtype=torch.int32, device=rolled_text.device
-                )
-            rolled_seqlens = torch.roll(seqlens_kwarg, shifts=j, dims=0)
-            network.append_postfix(rolled_text, rolled_seqlens, timesteps=timesteps)
-            v_neg = anima(
-                noisy,
-                timesteps,
-                rolled_text,
-                padding_mask=padding_mask,
-                **kw,
-            ).squeeze(2)  # [B, C, H, W]
-            per_sample_mse_list.append(((v_neg - target) ** 2).mean(dim=(1, 2, 3)))
-
-        # Restore the primary's cached state so any downstream code that
-        # peeks at network._step_layer_tokens / _step_seqlens sees the
-        # matched-anchor view (the loss-side reads target=ε−x and won't
-        # trigger another splice, but be defensive).
-        primary_seqlens = (
-            kw.get("crossattn_seqlens") if isinstance(kw, dict) else None
-        )
-        if primary_seqlens is None:
-            primary_seqlens = torch.full(
-                (B,), S - K, dtype=torch.int32, device=spliced.device
-            )
-        network.append_postfix(original_text, primary_seqlens, timesteps=timesteps)
-
-        # InfoNCE: -log( exp(-mse_match/τ) / Σ_j exp(-mse_j/τ) )
-        # Equivalent to log_softmax over (1+k_eff) candidates at index 0.
-        mse_stack = torch.stack(per_sample_mse_list, dim=0)  # [(1+k_eff), B]
-        logits = -mse_stack / max(network.contrastive_tau, 1e-6)
-        log_probs = torch.nn.functional.log_softmax(logits, dim=0)
-        contrastive_per_sample = -log_probs[0]  # [B]
-        contrastive_loss = contrastive_per_sample.mean()
-
-        # Cache scalar value for metrics().
-        network._last_contrastive_value = float(contrastive_loss.detach().item())
-        self._last_contrastive_value = network._last_contrastive_value
-
-        return {"soft_tokens": {"contrastive_loss": contrastive_loss}}
+            for k in range(self.n_layers):
+                total = total + _term(offsets[:, k, :])
+                n_terms += 1
+        if n_terms == 0:
+            return total
+        return total / float(n_terms)

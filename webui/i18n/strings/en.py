@@ -8,7 +8,6 @@ STRINGS: dict[str, str] = {
     "tab_config": "Training Config",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
-    "tab_postfix": "Postfix",
     "tab_methods": "Methods",
     "tab_images": "Dataset",
     "tab_merge": "Merge",
@@ -131,6 +130,14 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/ is empty.",
     "finished": "--- Finished (exit code {code}) ---",
     "starting": "Starting… (loading torch / accelerate)",
+    # Daemon-backed training (Phase 2 — training survives GUI close)
+    "daemon_submitting": "Submitting job to the training daemon…",
+    "daemon_submit_failed": "Could not reach the training daemon: {err}",
+    "daemon_queued": "Queued job {job_id} on the training daemon.\n",
+    "daemon_reattached": "Re-attached to running job {job_id} (started in a previous session).\n",
+    "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "train_queued": "Train (queued)",
+    "train_running_daemon": "Train (running…)",
     "update_success_title": "Update applied",
     "update_success_message": (
         "anima_lora was updated to {v}.\n\n"
@@ -234,8 +241,8 @@ STRINGS: dict[str, str] = {
     # Language
     "language": "Language:",
     # Guidebook
-    "guidebook": "📖 Guide",
-    "guidebook_tooltip": "Open the Korean end-to-end guide (docs/guidelines/가이드북.md)",
+    "guidebook": "📖 Guidebook",
+    "guidebook_tooltip": "Open the end-to-end guide (docs/guidelines/guidebook.md)",
     "guidebook_missing": "Guide not found at {path}",
     "guidebook_open_external": "Open in system viewer",
     "guidebook_close": "Close",
@@ -244,6 +251,8 @@ STRINGS: dict[str, str] = {
     "models_btn_tooltip": "Download or re-download model checkpoints (Anima base, SAM3, MIT, IP-Adapter encoders)",
     "update_btn": "Update",
     "update_btn_tooltip": "Pull the latest anima_lora release from GitHub and run uv sync",
+    "update_btn_available": "Update ●",
+    "update_btn_available_tooltip": "New release {v} available — click to view release notes",
     "report_issue": "Report Issue",
     "report_issue_tooltip": "Open the GitHub issue tracker in your browser",
     "experimental_features": "🧪 Experimental",

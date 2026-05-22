@@ -79,6 +79,7 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         num_experts_content: int = 3,
         num_experts_freq: int = 3,
         channel_scale=None,
+        use_global_content_router: bool = False,
     ):
         super().__init__(
             lora_name,
@@ -96,6 +97,10 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
                 f"ChimeraHydra requires both pools non-empty: "
                 f"K_c={num_experts_content}, K_f={num_experts_freq}"
             )
+        # When True, the per-Linear ``self.router`` is skipped and π_c
+        # arrives via slot-assign on ``_content_routing_weights`` (network-
+        # level ContentRouter — same contract as the freq pool).
+        self.use_global_content_router = bool(use_global_content_router)
 
         K_c = int(num_experts_content)
         K_f = int(num_experts_freq)
@@ -183,11 +188,17 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         # Per-Linear content router: pooled rank-R lx_c → K_c. The freq
         # router lives at the network level (one FreqRouter shared across
         # all chimera Linears) and writes π_f via the slot-assigned
-        # ``_freq_routing_weights`` buffer below.
-        self.router = torch.nn.Linear(r, K_c, bias=True)
-        with torch.no_grad():
-            torch.nn.init.normal_(self.router.weight, std=0.01)
-            self.router.bias.zero_()
+        # ``_freq_routing_weights`` buffer below. Skipped entirely under
+        # global mode — π_c arrives via ``_content_routing_weights`` from
+        # the network-level ContentRouter, so the per-Linear router would
+        # be dead weight and inflate the on-disk checkpoint.
+        if not self.use_global_content_router:
+            self.router = torch.nn.Linear(r, K_c, bias=True)
+            with torch.no_grad():
+                torch.nn.init.normal_(self.router.weight, std=0.01)
+                self.router.bias.zero_()
+        else:
+            self.router = None
 
         # Channel-scale absorption: SmoothQuant-style x rebalance happens
         # ONCE at the input (via inv_scale), then both A_c and A_f need
@@ -231,6 +242,20 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         )
         self.register_buffer("_freq_routing_weights", placeholder, persistent=False)
 
+        # Content pool's gate buffer for the global-router path. Same
+        # slot-assign contract as ``_freq_routing_weights``. Registered
+        # unconditionally so ``_wire_shared_content_buffers`` on the
+        # network side can identify chimera modules by buffer presence;
+        # under per-Linear (default) mode the buffer is read but the
+        # ``_compute_content_gate`` path overwrites π_c with its own
+        # softmax so the buffer value never reaches forward.
+        content_placeholder = torch.full(
+            (1, K_c), 1.0 / max(K_c, 1), dtype=torch.float32
+        )
+        self.register_buffer(
+            "_content_routing_weights", content_placeholder, persistent=False
+        )
+
         # Cached gate (B, K_c+K_f) for the per-pool balance loss.
         # _last_gate is read by ``LoRANetwork._get_chimera_balance_loss``
         # which slices at K_c into independent Switch losses per pool.
@@ -268,6 +293,25 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         """Reset to uniform 1/K_f without rebinding the pointer."""
         K_f = int(self._freq_routing_weights.shape[-1])
         self._freq_routing_weights.fill_(1.0 / max(K_f, 1))
+
+    def set_content_routing_weights(self, weights: torch.Tensor) -> None:
+        """Slot-assign π_c from the network-level ContentRouter.
+
+        Mirrors :meth:`set_freq_routing_weights`. Direct slot assignment
+        (NO .detach(), NO .copy_()) so ``∂L_denoise/∂π_c`` reaches
+        ContentRouter parameters through the same path the freq router
+        uses. Only meaningful when ``use_global_content_router`` is True;
+        per-Linear modules ignore the buffer in forward.
+        """
+        buf = self._content_routing_weights
+        w = weights.to(dtype=buf.dtype, device=buf.device)
+        if w.dim() == 1:
+            w = w.unsqueeze(0)
+        self._content_routing_weights = w
+
+    def clear_content_routing_weights(self) -> None:
+        K_c = int(self._content_routing_weights.shape[-1])
+        self._content_routing_weights.fill_(1.0 / max(K_c, 1))
 
     def _compute_content_gate(self, lx_c: torch.Tensor) -> torch.Tensor:
         """RMS-pool lx_c over the sequence axis (matches HydraLoRA), then
@@ -332,25 +376,53 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         Q_eff_c = R_q_c @ self.Q_basis_c  # (r, in)
         Q_eff_f = R_q_f @ self.Q_basis_f  # (r, in)
 
+        # Single rank-cat down-projection for both pools. The two pools share
+        # the same input ``x`` but have distinct ``Q_eff``; running them as
+        # two separate matmuls makes backward materialize TWO ``(B, L, in)``
+        # ``grad_x`` tensors that autograd then sums. On wide-input Linears
+        # (``mlp.layer2``, in=8192) that doubled fp32 transient cost ~62 MiB
+        # /module → ~1.7 GiB across 28 blocks. Concatenating ``Q_eff`` along
+        # the rank axis computes ``grad_x`` ONCE; the split is a free view.
+        # Mirrors the up-side rank-cat bmm below (``lx_cat`` / ``P_combined_cat``).
+        # Bit-identical to the per-pool calls — see
+        # ``test_chimera_down_proj_rank_cat_matches_separate``.
+        r = self.lora_dim
+        Q_eff_cat = torch.cat([Q_eff_c, Q_eff_f], dim=0)  # (2r, in)
         if self.use_custom_down_autograd and self.training:
-            # Apply the SmoothQuant rebalance ONCE upstream of both pools so
-            # ``grad_x`` aggregates over `c` + `f` *before* the bf16 multiply
-            # backward — matches the legacy `_rebalance(x).then(F.linear×2)`
-            # autograd order bitwise. Saved-for-backward is the same shape /
-            # dtype as raw ``x`` (bf16), so no memory regression vs the prior
-            # per-pool scaled path; ``x_in`` dedupes across the two unscaled
-            # Functions, only Q_eff_{c,f} are saved per call.
-            x_in = self._rebalance(x.to(work)) if self._has_channel_scale else x
-            lx_c = lora_down_project(x_in, Q_eff_c, None).to(work)
-            lx_f = lora_down_project(x_in, Q_eff_f, None).to(work)
+            # ``ScaledLoRADownProjectFn`` folds ``inv_scale`` into ``Q_eff_cat``
+            # at the fp32 matmul (both pools share the same per-input-channel
+            # ``inv_scale``), so no rebalanced ``(B, L, in)`` bf16 activation is
+            # materialized; saved-for-backward aliases the same ``x`` the
+            # original Linear already pinned. With ``inv_scale`` kept fp32 the
+            # custom path differs from the bf16 legacy ``_rebalance`` path only
+            # by bf16 rounding — see the allclose contract in
+            # ``test_chimera_channel_scale_flag_on_matches_legacy_gradients``.
+            inv = self.inv_scale if self._has_channel_scale else None
+            lx_down_cat = lora_down_project(x, Q_eff_cat, inv).to(work)
         else:
             x_lora = self._rebalance(x.to(work))
-            lx_c = torch.nn.functional.linear(x_lora, Q_eff_c)
-            lx_f = torch.nn.functional.linear(x_lora, Q_eff_f)
+            lx_down_cat = torch.nn.functional.linear(x_lora, Q_eff_cat)
+        lx_c = lx_down_cat[..., :r]
+        lx_f = lx_down_cat[..., r:]
 
-        # Content router pools lx_c (pre-λ; zero-init λ would zero the
-        # router input at step 0 and freeze the router gradient).
-        pi_c = self._compute_content_gate(lx_c)  # (B, K_c) fp32
+        # Content router. Global-router path reads the broadcast buffer
+        # written by the network-level ContentRouter (slot-assigned with
+        # grad_fn intact); the per-Linear default re-pools lx_c through
+        # the local softmax (pre-λ; zero-init λ would zero the router
+        # input at step 0 and freeze the router gradient).
+        if self.use_global_content_router:
+            pi_c = self._content_routing_weights
+            if pi_c.dim() == 1:
+                pi_c = pi_c.unsqueeze(0)
+            # Broadcast along the batch axis when the buffer is (1, K_c)
+            # at init or when the router fires on a single FEI/text input.
+            if pi_c.shape[0] == 1 and lx_c.shape[0] > 1:
+                pi_c = pi_c.expand(lx_c.shape[0], -1)
+            # Match the per-Linear path's fp32 contract — downstream einsum
+            # casts to ``work`` (bf16) at the boundary either way.
+            pi_c = pi_c.float()
+        else:
+            pi_c = self._compute_content_gate(lx_c)  # (B, K_c) fp32
         if self.training:
             # Plain STORE_ATTR — see HydraLoRAModule.forward for the
             # rationale; @compiler.disable would force a graph break and
@@ -668,6 +740,7 @@ class ChimeraHydraInferenceModule(BaseLoRAModule):
         num_experts_content: int = 3,
         num_experts_freq: int = 3,
         channel_scale=None,
+        use_global_content_router: bool = False,
     ):
         super().__init__(
             lora_name,
@@ -690,6 +763,7 @@ class ChimeraHydraInferenceModule(BaseLoRAModule):
         self.num_experts_freq = K_f
         self.num_experts = K_c + K_f
         self.in_dim = in_dim
+        self.use_global_content_router = bool(use_global_content_router)
 
         # Free-form down-projections (one per pool). Initialized empty;
         # actual weights overwritten by load_state_dict.
@@ -705,8 +779,12 @@ class ChimeraHydraInferenceModule(BaseLoRAModule):
             torch.zeros(K_f, out_dim, r)
         )
         # Content router: identical shape to HydraLoRAModule's K_c-narrowed
-        # router (see hydra.py for the chimera-load contract).
-        self.router = torch.nn.Linear(r, K_c, bias=True)
+        # router (see hydra.py for the chimera-load contract). Absent under
+        # global mode — π_c is broadcast from the network-level ContentRouter.
+        if not self.use_global_content_router:
+            self.router = torch.nn.Linear(r, K_c, bias=True)
+        else:
+            self.router = None
 
         if channel_scale is not None:
             self._register_channel_scale(self.lora_down_c.weight.data, channel_scale)
@@ -716,6 +794,12 @@ class ChimeraHydraInferenceModule(BaseLoRAModule):
             (1, K_f), 1.0 / max(K_f, 1), dtype=torch.float32
         )
         self.register_buffer("_freq_routing_weights", placeholder, persistent=False)
+        content_placeholder = torch.full(
+            (1, K_c), 1.0 / max(K_c, 1), dtype=torch.float32
+        )
+        self.register_buffer(
+            "_content_routing_weights", content_placeholder, persistent=False
+        )
         self._last_gate = None
 
     def set_freq_routing_weights(self, weights: torch.Tensor) -> None:
@@ -730,6 +814,18 @@ class ChimeraHydraInferenceModule(BaseLoRAModule):
     def clear_freq_routing_weights(self) -> None:
         K_f = int(self._freq_routing_weights.shape[-1])
         self._freq_routing_weights.fill_(1.0 / max(K_f, 1))
+
+    def set_content_routing_weights(self, weights: torch.Tensor) -> None:
+        """Inference twin of ChimeraHydraLoRAModule.set_content_routing_weights."""
+        buf = self._content_routing_weights
+        w = weights.to(dtype=buf.dtype, device=buf.device)
+        if w.dim() == 1:
+            w = w.unsqueeze(0)
+        self._content_routing_weights = w
+
+    def clear_content_routing_weights(self) -> None:
+        K_c = int(self._content_routing_weights.shape[-1])
+        self._content_routing_weights.fill_(1.0 / max(K_c, 1))
 
     def _compute_content_gate(self, lx_c: torch.Tensor) -> torch.Tensor:
         if lx_c.dim() >= 3:
@@ -754,7 +850,15 @@ class ChimeraHydraInferenceModule(BaseLoRAModule):
         lx_c = torch.nn.functional.linear(x_f32, self.lora_down_c.weight.float())
         lx_f = torch.nn.functional.linear(x_f32, self.lora_down_f.weight.float())
 
-        pi_c = self._compute_content_gate(lx_c)  # (B, K_c)
+        if self.use_global_content_router:
+            pi_c = self._content_routing_weights
+            if pi_c.dim() == 1:
+                pi_c = pi_c.unsqueeze(0)
+            if pi_c.shape[0] == 1 and lx_c.shape[0] > 1:
+                pi_c = pi_c.expand(lx_c.shape[0], -1)
+            pi_c = pi_c.float()
+        else:
+            pi_c = self._compute_content_gate(lx_c)  # (B, K_c)
         pi_f = self._freq_routing_weights
         if pi_f.dim() == 1:
             pi_f = pi_f.unsqueeze(0)

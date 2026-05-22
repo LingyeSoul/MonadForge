@@ -41,6 +41,8 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
       decides whether the caller wants a LoRA by default — ``test-dcw-v4`` opts
       out (DCW v4 is meant to ride on the bare DiT unless the user adds one).
     - ``SPECTRUM=1`` appends Spectrum flags.
+    - ``SPD=1`` appends SPD (Spectral Progressive Diffusion) flags. Mutually
+      exclusive with ``SPECTRUM=1`` (both replace the denoise loop).
     - ``MOD=1`` appends ``--pooled_text_proj <latest>``.
     """
     args = list(INFERENCE_BASE)
@@ -51,8 +53,12 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
         include_lora = not _env_truthy("NOLORA")
     if include_lora:
         args += ["--lora_weight", str(latest_lora())]
+    if _env_truthy("SPECTRUM") and _env_truthy("SPD"):
+        raise SystemExit("SPECTRUM=1 and SPD=1 are mutually exclusive (both replace the denoise loop).")
     if _env_truthy("SPECTRUM"):
         args += _spectrum_flags()
+    if _env_truthy("SPD"):
+        args += _spd_flags()
     if _env_truthy("MOD"):
         args += _mod_flags()
     return args
@@ -77,6 +83,19 @@ def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
         str(stop_caching_step),
         "--spectrum_calibration",
         "0.0",
+    ]
+
+
+def _spd_flags() -> list[str]:
+    """SPD single-late knee: one handoff 0.5 → 1.0 at σ0.7. Override on the CLI
+    with --spd_stages / --spd_transition_sigmas (passed via ``extra``)."""
+    return [
+        "--spd",
+        "--spd_stages",
+        "0.5",
+        "1.0",
+        "--spd_transition_sigmas",
+        "0.5",
     ]
 
 

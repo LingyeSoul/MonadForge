@@ -49,10 +49,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from library.anima import strategy as strategy_anima, text_strategies  # noqa: E402
 from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS  # noqa: E402
-from library.inference import directedit, sampling as inference_utils  # noqa: E402
-from library.inference.directedit_splice import splice_crossattn_emb  # noqa: E402
-from library.inference.smc_cfg import SMCCFGState  # noqa: E402
-from library.inference.edit_dispatcher import (  # noqa: E402
+from library.inference import sampling as inference_utils  # noqa: E402
+from library.inference.editing import directedit  # noqa: E402
+from library.inference.editing.directedit_splice import splice_crossattn_emb  # noqa: E402
+from library.inference.corrections.smc_cfg import SMCCFGState  # noqa: E402
+from library.inference.editing.edit_dispatcher import (  # noqa: E402
     derive_target_caption,
     encode_last_pooled_via_anima_strategy,
 )

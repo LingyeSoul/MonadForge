@@ -57,7 +57,7 @@ sys.path.insert(0, str(ANIMA_ROOT))
 import torch  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
-from library.inference.postfix_inversion import (  # noqa: E402
+from library.inference.editing.postfix_inversion import (  # noqa: E402
     TailInversionConfig,
     invert_tail,
     load_cached_prefix,

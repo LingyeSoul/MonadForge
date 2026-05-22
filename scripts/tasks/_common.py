@@ -3,7 +3,7 @@
 Centralizes:
 - ``ROOT`` (project root, regardless of where the calling module lives)
 - ``PY`` resolution (venv-aware, pythonw.exe-safe)
-- ``run`` / ``accelerate_launch`` / ``train`` subprocess helpers
+- ``run`` / ``build_launch_cmd`` / ``accelerate_launch`` / ``train`` subprocess helpers
 - ``latest_output`` / ``latest_lora`` / ``latest_hydra`` checkpoint pickers
 - ``INFERENCE_BASE`` — shared inference.py argv prefix
 - ``_path`` / ``_preset`` config-overlay helpers
@@ -118,7 +118,9 @@ def bespoke_preset_flags(preset: str) -> list[str]:
     if "blocks_to_swap" in section:
         flags += ["--blocks_to_swap", str(int(section["blocks_to_swap"]))]
     if "gradient_checkpointing" in section:
-        flags.append("--grad_ckpt" if section["gradient_checkpointing"] else "--no_grad_ckpt")
+        flags.append(
+            "--grad_ckpt" if section["gradient_checkpointing"] else "--no_grad_ckpt"
+        )
     else:
         flags.append("--no_grad_ckpt")
     if "sample_ratio" in section:
@@ -374,7 +376,10 @@ def _nsys_gpu_metrics_available(nsys: str) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     blob = (out.stdout or "") + (out.stderr or "")
-    return "Insufficient privilege" not in blob and "None of the installed GPUs" not in blob
+    return (
+        "Insufficient privilege" not in blob
+        and "None of the installed GPUs" not in blob
+    )
 
 
 # nsys stats reports auto-generated after profiling. Tuned for kernel
@@ -441,24 +446,36 @@ def _nsys_run_stats(rep_path: Path) -> None:
         print(f"warn: nsys stats failed: {e}", file=sys.stderr)
 
 
-def accelerate_launch(*args: str):
-    """Launch training via accelerate with extra CLI args forwarded.
+def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
+    """Build the ``accelerate launch ... train.py`` command list (no side effects).
+
+    Pure command construction — the returned list is exactly what launches
+    training. Extracted from ``accelerate_launch`` so other spawners (the
+    training daemon under ``scripts/daemon/``) can ``Popen`` the same command
+    themselves — detached, with their own stdio redirection and process-tree
+    monitoring — instead of going through ``run()``'s blocking
+    ``subprocess.run`` + ``sys.exit``-on-failure path. The nsys profiling
+    wrapper stays in ``accelerate_launch``: it's a CLI-only concern, not
+    something the daemon ever applies.
 
     Invoked as ``python -m accelerate.commands.accelerate_cli launch`` rather
-    than the bare ``accelerate`` console-script. This keeps ``sys.executable``
-    propagating from this process through to accelerate's workers — so when
-    the GUI is launched via pythonw.exe (no console), the workers also run
-    under pythonw.exe and don't pop terminal windows. The accelerate.exe
-    shim hardcodes python.exe as the worker interpreter, defeating that.
+    than the bare ``accelerate`` console-script. This keeps the launching
+    interpreter propagating from this process through to accelerate's workers
+    (via ``sys.executable``) — the accelerate.exe shim hardcodes python.exe as
+    the worker interpreter, defeating that.
 
-    When PROFILE_STEPS is set, wraps the launch with ``nsys profile`` so
-    ``make <method> PROFILE_STEPS=3-5`` produces a navigable Nsight report
-    at ``output/nsys/profile.nsys-rep`` (override with NSYS_OUT). After the
-    run, generates per-report textual summaries via ``nsys stats`` next to
-    the .nsys-rep.
+    ``python_exe`` overrides the launching interpreter (default ``PY`` =
+    python.exe). The detached daemon passes ``pythonw.exe`` here: a uv-venv
+    python.exe is a trampoline that re-execs the real interpreter, and
+    ``CREATE_NO_WINDOW`` doesn't survive that re-exec — so a python.exe worker
+    pops a console window that, when closed, kills the job with
+    ``STATUS_CONTROL_C_EXIT``. pythonw.exe never allocates a console; stdio
+    still works because the daemon redirects the child's stdout/stderr to a
+    file (not an inherited console), and the worker interpreter inherited via
+    sys.executable is windowless too.
     """
-    cmd = [
-        PY,
+    return [
+        python_exe or PY,
         "-m",
         "accelerate.commands.accelerate_cli",
         "launch",
@@ -469,12 +486,102 @@ def accelerate_launch(*args: str):
         "train.py",
         *args,
     ]
+
+
+def accelerate_launch(*args: str):
+    """Launch training via accelerate with extra CLI args forwarded (blocking).
+
+    Builds the command via ``build_launch_cmd`` then runs it through ``run``
+    (blocking, exits on failure). When PROFILE_STEPS is set, wraps the launch
+    with ``nsys profile`` so ``make <method> PROFILE_STEPS=3-5`` produces a
+    navigable Nsight report at ``output/nsys/profile.nsys-rep`` (override with
+    NSYS_OUT). After the run, generates per-report textual summaries via
+    ``nsys stats`` next to the .nsys-rep.
+    """
+    cmd = build_launch_cmd(*args)
     nsys_prefix, nsys_out = _nsys_wrapper()
     if nsys_prefix is not None:
         cmd = nsys_prefix + ["--"] + cmd
     run(cmd)
     if nsys_out is not None:
         _nsys_run_stats(nsys_out)
+
+
+def build_method_args(
+    method: str,
+    *,
+    preset: str,
+    methods_subdir: str | None = None,
+    extra=None,
+    artist: str | None = None,
+    profile_steps: str | None = None,
+) -> list[str]:
+    """Assemble the ``["--method", m, "--preset", p, ...]`` train.py arg list.
+
+    Pure — no env reads, no subprocess. Shared by the CLI ``train()`` path and
+    the training daemon (``scripts/daemon``) so the daemon doesn't duplicate the
+    ARTIST / PROFILE_STEPS handling. ``extra`` is appended verbatim; ``artist`` /
+    ``profile_steps`` add their flags only when the caller didn't already pass
+    them in ``extra``.
+    """
+    extra = list(extra or [])
+    args = ["--method", method, "--preset", preset]
+    if methods_subdir:
+        args += ["--methods_subdir", methods_subdir]
+    if artist and not any(a == "--artist_filter" for a in extra):
+        args += ["--artist_filter", artist]
+    if profile_steps and not any(a == "--profile_steps" for a in extra):
+        args += ["--profile_steps", profile_steps]
+    return [*args, *extra]
+
+
+def _queue_submit(
+    method: str,
+    *,
+    preset: str,
+    methods_subdir: str | None,
+    extra: list[str],
+    artist: str | None,
+    profile_steps: str | None,
+) -> None:
+    """Enqueue a training job on the local daemon instead of running it inline.
+
+    The ``--queue`` path (``make lora --queue``, ``make lora-gui <v> --queue``)
+    turns the CLI into a job *producer*: it auto-starts the daemon if needed and
+    POSTs the same method/preset/methods_subdir the inline path would have built,
+    then returns immediately. Submit ×N to drain an overnight sweep serially.
+
+    ARTIST / PROFILE_STEPS are folded into ``extra`` as explicit flags here
+    because the daemon's own ``build_method_args`` call (in
+    ``scripts/daemon/manager.py``) doesn't read those env vars — without folding,
+    a queued artist run would silently train the full dataset.
+    """
+    extra = list(extra)
+    if artist and "--artist_filter" not in extra:
+        extra += ["--artist_filter", artist]
+    if profile_steps and "--profile_steps" not in extra:
+        extra += ["--profile_steps", profile_steps]
+
+    # Local import: the daemon client is pure stdlib (no torch / library.*), but
+    # keep it off the module-load path for the inline-training majority case.
+    from scripts.daemon import client as _daemon_client
+
+    cl = _daemon_client.ensure_daemon()
+    resp = cl.submit(
+        method=method,
+        preset=preset,
+        methods_subdir=methods_subdir,
+        extra=extra,
+    )
+    job_id = resp.get("job_id")
+    print(
+        f"queued job {job_id} (method={method}, preset={preset}). "
+        f"daemon: {cl.base}\n"
+        f"  make daemon-attach JOB={job_id}   # follow this job's output\n"
+        f"  make daemon-attach                # follow queue/lifecycle events\n"
+        f"  make daemon-kill JOB={job_id}     # cancel it\n"
+        f"  make daemon-terminate             # stop the daemon + discard queue"
+    )
 
 
 def train(
@@ -489,66 +596,76 @@ def train(
     ARTIST env var trains an artist-only LoRA — equivalent to passing
     `--artist_filter <name>` (filters dataset to `@<name>`-tagged captions and
     redirects output to `output/ckpt-artist/`).
+
+    ``--queue`` anywhere in ``extra`` enqueues the job on the local training
+    daemon and returns immediately instead of running it inline (the overnight
+    sweep path — see ``_queue_submit``).
     """
-    args = ["--method", method, "--preset", preset or _preset()]
-    print(f"[train] method={method!r} preset_arg={preset!r} _preset()={_preset()!r} resolved={preset or _preset()!r}", file=sys.stderr)
-    if methods_subdir:
-        args += ["--methods_subdir", methods_subdir]
+    preset = preset or _preset()
+    extra = list(extra or [])
+    print(f"[train] method={method!r} preset_arg={preset!r} _preset()={_preset()!r} resolved={preset!r}", file=sys.stderr)
     artist = os.environ.get("ARTIST")
-    if artist and not any(a == "--artist_filter" for a in extra):
-        args += ["--artist_filter", artist]
     profile_steps = os.environ.get("PROFILE_STEPS")
-    if profile_steps and not any(a == "--profile_steps" for a in extra):
-        args += ["--profile_steps", profile_steps]
-    accelerate_launch(*args, *extra)
+
+    if "--queue" in extra:
+        extra.remove("--queue")
+        _queue_submit(
+            method,
+            preset=preset,
+            methods_subdir=methods_subdir,
+            extra=extra,
+            artist=artist,
+            profile_steps=profile_steps,
+        )
+        return
+
+    args = build_method_args(
+        method,
+        preset=preset,
+        methods_subdir=methods_subdir,
+        extra=extra,
+        artist=artist,
+        profile_steps=profile_steps,
+    )
+    accelerate_launch(*args)
 
 
-def get_inference_base() -> list[str]:
-    """Build the shared ``inference.py`` argv prefix.
-
-    Model paths and prompts are read from the config chain (base.toml →
-    preset → method) via ``_path()``. Users customize test behavior by
-    editing ``test_prompt`` / ``test_negative_prompt`` in base.toml (or
-    the corresponding preset/method overlay).
-    """
-    return [
-        PY,
-        "inference.py",
-        "--dit",
-        _path("pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
-        "--text_encoder",
-        _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
-        "--vae",
-        _path("vae", "models/vae/qwen_image_vae.safetensors"),
-        "--vae_chunk_size",
-        "64",
-        "--vae_disable_cache",
-        "--attn_mode",
-        "flash",  # flash4 not supported yet (flash-attention-sm120 disabled)
-        "--lora_multiplier",
-        "1.0",
-        "--prompt",
-        _path("test_prompt", "masterpiece, best quality, score_7, safe"),
-        "--negative_prompt",
-        _path("test_negative_prompt", "worst quality, low quality, score_1, score_2, score_3"),
-        "--image_size",
-        "1024",
-        "1024",
-        "--infer_steps",
-        "28",
-        "--flow_shift",
-        "1.0",
-        "--sampler",
-        "er_sde",
-        "--guidance_scale",
-        "4.0",
-        "--seed",
-        "40",
-        "--save_path",
-        "output/tests",
-    ]
-
-
-# Backward-compatible alias — resolved once at import time so all existing
-# ``INFERENCE_BASE`` references keep working without code changes.
-INFERENCE_BASE = get_inference_base()
+INFERENCE_BASE = [
+    PY,
+    "inference.py",
+    "--dit",
+    "models/diffusion_models/anima-base-v1.0.safetensors",
+    "--text_encoder",
+    "models/text_encoders/qwen_3_06b_base.safetensors",
+    "--vae",
+    "models/vae/qwen_image_vae.safetensors",
+    "--vae_chunk_size",
+    "64",
+    "--vae_disable_cache",
+    "--attn_mode",
+    "flash",  # flash4 not supported yet (flash-attention-sm120 disabled)
+    "--lora_multiplier",
+    "1.0",
+    "--prompt",
+    "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top"
+    " and denim shorts is standing outdoors. She's holding a rectangular sign out in"
+    ' front of her that reads "ANIMA". She\'s looking at the viewer with a smile. The'
+    " background features some trees and blue sky with clouds.",
+    "--negative_prompt",
+    "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia",
+    "--image_size",
+    "1024",
+    "1024",
+    "--infer_steps",
+    "28",
+    "--flow_shift",
+    "1.0",
+    "--sampler",
+    "er_sde",
+    "--guidance_scale",
+    "4.0",
+    "--seed",
+    "40",
+    "--save_path",
+    "output/tests",
+]

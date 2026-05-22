@@ -40,20 +40,19 @@ compiled_flex_attention = _flex_attention  # raw, not torch.compile(...)
 
 ### 1.3 Flex attention early-return path
 
-New first-class `"flex"` attention mode with pre-computed `BlockMask` support for both cross-attention (KV trimming) and self-attention (static-shape padding). This avoids data-dependent control flow that would cause graph breaks.
+New first-class `"flex"` attention mode with pre-computed `BlockMask` support for both cross-attention (padding mask) and self-attention (static-shape padding). This avoids data-dependent control flow that would cause graph breaks.
 
 ### 1.4 New AttentionParams fields
 
 | Field | Purpose |
 |-------|---------|
 | `softmax_scale` | Custom softmax scale passed through to all backends (avoids per-call branching) |
-| `crossattn_block_mask` | Pre-computed BlockMask for cross-attention KV trimming (flex mode) |
+| `crossattn_block_mask` | Pre-computed BlockMask for the cross-attention padding mask (flex mode) |
 | `selfattn_block_mask` | Pre-computed BlockMask for self-attention padding mask (flex, static-shape) |
-| `crossattn_full_len` | Original KV length before bucketed trimming, for LSE sink correction (flash4 — currently disabled, see `fa4.md`) |
 
-### 1.5 LSE sink correction for trimmed cross-attention (flash4 — disabled)
+### 1.5 LSE sink correction for trimmed cross-attention (flash4 — removed)
 
-Disabled along with the rest of the flash4 path. The trim branch in `library/anima/models.py` and the `flash4` branch in `networks/attention_dispatch.py` are commented out; the field is plumbed but unused. See `docs/optimizations/fa4.md` for the postmortem and re-enable recipe.
+The KV-trim + LSE-sigmoid correction path was bundled with FA4 and depended on FA4's `return_lse`. Both FA4 and the trim plumbing were removed (the `crossattn_full_len` field and the `_KV_BUCKETS` constant are gone as of 2026-05-20). See `docs/optimizations/fa4.md` for the postmortem; reviving it now means reimplementing the trim, not uncommenting it.
 
 When the path was active, zero-padded KV positions were trimmed and the softmax denominator restored via:
 
@@ -95,9 +94,9 @@ padding_mask.unsqueeze(1).repeat(1, n_heads, 1)
 padding_mask.unsqueeze(2).expand(-1, -1, n_heads)
 ```
 
-### 2.4 KV bucket trimming constants
+### 2.4 KV bucket trimming constants (removed)
 
-New `_KV_BUCKETS = (64, 128, 256, 512)` — cross-attention KV sequences are trimmed to the smallest bucket that fits, giving `torch.compile` at most 4 shape variants instead of one per unique caption length.
+`_KV_BUCKETS` trimmed cross-attention KV sequences to the smallest fitting bucket, capping `torch.compile` shape variants. It was tied to the FA4-only trim path and was removed along with it (2026-05-20). Cross-attention now runs the full 512-length KV under FA2. See `docs/optimizations/fa4.md`.
 
 ### 2.5 `set_static_token_count(count)`
 
@@ -309,7 +308,6 @@ for k, v in lora_sd.items():
 | Argument | File | Purpose |
 |----------|------|---------|
 | `--static_token_count N` | `library/anima/training.py` | Pad to N visual tokens; enables constant-shape buckets |
-| `--trim_crossattn_kv` | `library/anima/training.py` | Enable bucketed KV trimming for cross-attention (no-op since FA4 removal) |
 
 ### Changed behavior
 
@@ -333,7 +331,7 @@ The fork eliminates all three:
 | Source | Solution | Files |
 |--------|----------|-------|
 | Spatial resolution | `CONSTANT_TOKEN_BUCKETS` + `static_token_count` padding | `buckets.py`, `library/anima/models.py` |
-| Caption length | `_KV_BUCKETS` bucketed trimming (max 4 variants) | `library/anima/models.py`, `networks/attention_dispatch.py` |
+| Caption length | Text encoder output zero-padded to a fixed 512-token KV (sink padding) | `library/anima/strategy.py`, `library/anima/models.py` |
 | Batch size | Drop incomplete last batches | `library/datasets/base.py` |
 
 With shapes stabilized, `compile_blocks()` compiles each block's `_forward` with `dynamic=True` — the inductor backend generates optimized kernels once and reuses them for every step.

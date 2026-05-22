@@ -28,8 +28,8 @@ _ATTR_TO_MODULE = {
     "process_escape": "text",
     "prepare_text_inputs": "text",
     # mod_guidance
-    "build_mod_schedule": "mod_guidance",
-    "setup_mod_guidance": "mod_guidance",
+    "build_mod_schedule": "corrections.mod_guidance",
+    "setup_mod_guidance": "corrections.mod_guidance",
     # generation
     "GenerationSettings": "generation",
     "get_generation_settings": "generation",

@@ -34,9 +34,11 @@ def cmd_comfy_batch(extra):
 def cmd_distill_prep(extra):
     """Pre-stage artifacts for ``make distill-mod``.
 
-    Phase 1: emits ``post_image_dataset/lora/_anima_uncond_te.safetensors``
+    Phase 1: emits ``post_image_dataset/_anima_uncond_te.safetensors``
     (T5("") cross-attn baseline) — consumed as the student's unconditional
-    text input, replacing the zeroed-crossattn shortcut.
+    text input, replacing the zeroed-crossattn shortcut. ``make preprocess-te``
+    already produces this for free; this Phase 1 block is the explicit
+    re-stager (useful with ``--overwrite`` after a model swap).
 
     Phase 2: emits teacher-synthesized clean latents under
     ``post_image_dataset/distill_mod_synth/`` (same NPZ layout as

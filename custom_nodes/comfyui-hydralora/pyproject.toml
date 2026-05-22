@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-hydralora"
-description = "Anima loader nodes for ComfyUI. AnimaAdapterLoader auto-detects LoRA, HydraLoRA multi-head with live σ-conditional and FeRA-style FEI-conditional routing, ChimeraHydra dual-pool routing (per-Linear content router + network-level FreqRouter on FEI+σ), and LoReFT residual-stream edits. AnimaFeraLoader handles FeRA (Yin et al., arXiv:2511.17979) — both the author-faithful networks.methods.fera format and the plan2 stacked_experts_global_fei format with global router on the latent's spectral energy + independent stacked experts per Linear. AnimaPostfixLoader handles prefix/postfix/cond context splicing. Three single-purpose nodes; chain via the MODEL socket."
-version = "3.4.0"
+description = "Anima loader nodes for ComfyUI. AnimaAdapterLoader auto-detects LoRA, HydraLoRA multi-head with live σ-conditional and FeRA-style FEI-conditional routing, ChimeraHydra dual-pool routing (per-Linear content router + network-level FreqRouter on FEI+σ), and LoReFT residual-stream edits. AnimaFeraLoader handles FeRA (Yin et al., arXiv:2511.17979) — both the author-faithful networks.methods.fera format and the plan2 stacked_experts_global_fei format with global router on the latent's spectral energy + independent stacked experts per Linear. AnimaSoftTokensLoader handles SoftREPA-parameterization soft tokens (Lee et al., arXiv:2503.08250) — per-layer × per-timestep-bucket learned tokens spliced into the crossattn embedding inside the first n_layers DiT blocks. Three single-purpose nodes; chain via the MODEL socket."
+version = "3.7.0"
 license = { file = "LICENSE" }
 dependencies = []
 

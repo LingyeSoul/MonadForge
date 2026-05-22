@@ -1,0 +1,18 @@
+[project]
+name = "comfyui-anima-blockcompile"
+description = "Anima Block Compile for ComfyUI: a one-purpose node that runs torch.compile on the Anima DiT per transformer block (diffusion_model.blocks.{i}) instead of the whole model. Faster compile, fewer graph breaks. A thin, Anima-named wrapper over ComfyUI core's set_torch_compile_wrapper."
+version = "0.1.0"
+license = { file = "LICENSE" }
+# torch ships with any ComfyUI install; listed so a bare `pip install .`
+# outside ComfyUI still resolves.
+dependencies = [
+    "torch",
+]
+
+[project.urls]
+Repository = "https://github.com/sorryhyun/anima_lora/tree/main/custom_nodes/comfyui-anima-blockcompile"
+
+[tool.comfy]
+PublisherId = "sorryhyun"
+DisplayName = "Anima Block Compile"
+Icon = ""

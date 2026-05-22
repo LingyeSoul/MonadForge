@@ -1,8 +1,8 @@
 """Save/load round-trip + lifecycle defaults for AdapterNetworkBase subclasses.
 
-Track 3 of refactoring_proposal.md: networks/methods/{postfix, ip_adapter,
-easycontrol, soft_tokens} all subclass AdapterNetworkBase. These tests pin
-the protocol invariants that the trainer relies on:
+Track 3 of refactoring_proposal.md: networks/methods/{ip_adapter, easycontrol,
+soft_tokens} all subclass AdapterNetworkBase. These tests pin the protocol
+invariants that the trainer relies on:
 
   - is_mergeable() == False
   - enable_gradient_checkpointing() is a no-op
@@ -25,27 +25,6 @@ from safetensors import safe_open
 #  - factory() returns a freshly constructed adapter network.
 #  - must_have_metadata_keys are method-specific ss_* stamps that should
 #    appear in the saved file's metadata.
-def _make_postfix_cond():
-    from networks.methods.postfix import PostfixNetwork
-
-    return PostfixNetwork(
-        num_postfix_tokens=4,
-        embed_dim=16,
-        mode="cond",
-        ortho_basis="random",
-    )
-
-
-def _make_postfix_plain():
-    from networks.methods.postfix import PostfixNetwork
-
-    return PostfixNetwork(
-        num_postfix_tokens=4,
-        embed_dim=16,
-        mode="postfix",
-    )
-
-
 def _make_soft_tokens():
     from networks.methods.soft_tokens import SoftTokensNetwork
 
@@ -94,22 +73,6 @@ def _make_easycontrol():
 
 
 CASES = [
-    pytest.param(
-        "postfix_cond",
-        _make_postfix_cond,
-        "networks.methods.postfix",
-        "postfix",
-        {"ss_mode": "cond", "ss_num_postfix_tokens": "4", "ss_embed_dim": "16"},
-        id="postfix_cond",
-    ),
-    pytest.param(
-        "postfix_plain",
-        _make_postfix_plain,
-        "networks.methods.postfix",
-        "postfix",
-        {"ss_mode": "postfix", "ss_num_postfix_tokens": "4"},
-        id="postfix_plain",
-    ),
     pytest.param(
         "soft_tokens",
         _make_soft_tokens,

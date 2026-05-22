@@ -325,9 +325,9 @@ compute isn't worth it.
    LPIPS term is the lever — not richer λ (v2/v3 are falsified).
 
 3. **Interaction with existing losses.** Anima's training loss has multiple
-   components (FM + REPA + FECL + functional + soft-tokens + …). VR replaces
-   the FM term, not the others. If REPA or FECL depend on the FM loss having
-   its native variance, there could be second-order effects. Stage 1 A/B is
+   components (FM + FECL + functional + soft-tokens + …). VR replaces the
+   FM term, not the others. If FECL depends on the FM loss having its
+   native variance, there could be second-order effects. Stage 1 A/B is
    the only way to surface these.
 
 4. **Static-shape compile.** The extra forward needs the same static padded

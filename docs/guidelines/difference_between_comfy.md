@@ -18,9 +18,8 @@ This matters in particular for anything that hooks the forward path — notably 
 | `pooled_text_proj` MLP (distilled modulation-guidance head) | **present**, baked into `forward_mini_train_dit` | **absent entirely** |
 | `torch.compile` on block forwards | `compile_blocks()` compiles each `block._forward` | not used |
 | Static-shape bucketing (pad to 4096 tokens) | `set_static_token_count()` | not supported |
-| `crossattn_seqlens` / variable text length | computed from mask, used only for flex block mask (KV trim path is dormant — see `docs/optimizations/fa4.md`) | not computed; always pad to 512 |
+| `crossattn_seqlens` / variable text length | computed from mask, used only for the flex block mask | not computed; always pad to 512 |
 | Attention dispatch | unified `attention_dispatch.AttentionParams` (sdpa / flash / sageattn / flex; flash4 branch present but disabled) | `transformer_options` dict + ComfyUI's own attention |
-| Flash4 LSE correction (trimmed KV softmax fix) | infrastructure present, currently disabled along with flash4 | absent |
 | Custom block-swap / CPU offload | `enable_block_swap`, `ModelOffloader` | relies on ComfyUI's `model_management.py` |
 | Gradient checkpointing variants | standard / CPU-offload / unsloth | standard only |
 | Final-layer dtype cast | implicit (shared dtype assumed) | explicit `.to(crossattn_emb.dtype)` |
@@ -111,7 +110,7 @@ attn_params.crossattn_block_mask = attention_dispatch.create_block_mask(
 )
 ```
 
-It also has dormant infrastructure for bucketed KV trimming + sigmoid-based LSE correction (flash4-only — both the trim block in `library/anima/models.py:1820-1837` and the flash4 branch in `attention_dispatch.py` are commented out). See `docs/optimizations/fa4.md` for why it was disabled and the recipe to bring it back.
+It previously carried bucketed KV trimming + sigmoid-based LSE correction (flash4-only), but that plumbing was removed with FA4 (2026-05-20); only the `flash4` branch stub remains in `attention_dispatch.py`. See `docs/optimizations/fa4.md` for why it was disabled.
 
 **comfy** — `comfy/comfy/ldm/anima/model.py:193-214` pads the llm_adapter output to a fixed 512 tokens:
 
@@ -152,7 +151,7 @@ def forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
 
 Two concrete divergences:
 
-1. **anima_lora's `AttentionParams`** is a dataclass that encapsulates `attn_mode`, `split_attn`, `softmax_scale`, `crossattn_block_mask`, and `crossattn_full_len` (the last only used by the dormant flash4 LSE-correction branch) in one object passed positionally. ComfyUI passes `transformer_options: dict` that ComfyUI's attention dispatch reads ad-hoc.
+1. **anima_lora's `AttentionParams`** is a dataclass that encapsulates `attn_mode`, `split_attn`, `softmax_scale`, and `crossattn_block_mask` in one object passed positionally. ComfyUI passes `transformer_options: dict` that ComfyUI's attention dispatch reads ad-hoc.
 2. **RoPE shape.** anima_lora passes a `(cos, sin)` tuple computed per-forward. ComfyUI passes a single `rope_emb_L_1_1_D` already pre-unsqueezed. Semantically equivalent but not drop-in interchangeable.
 
 **Practical consequence for the per-block mod-guidance hooks** (now shipped on both sides — see `docs/methods/mod-guidance.md`): in both codebases the `t_emb` argument is at **positional index 1**, so block-level pre-forward hooks can rewrite `args[1]` identically in both implementations. The two signatures diverge on args 3+, but the per-block scheduler only cares about index 1, so the hook factory is portable.

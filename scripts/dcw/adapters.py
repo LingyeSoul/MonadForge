@@ -7,7 +7,7 @@ import logging
 import torch
 from safetensors.torch import load_file
 
-from library.inference.models import _is_hydra_moe
+from library.inference.models import _is_chimera_moe, _is_hydra_moe
 
 log = logging.getLogger("dcw-bench")
 
@@ -42,8 +42,19 @@ def attach_loras(
         )
 
     for path, mult in zip(paths, mults):
+        # Read __metadata__ explicitly — load_file() drops it, and the three-
+        # axis routing stamps (ss_use_moe_style / ss_route_per_layer /
+        # ss_router_source) live there. Without them MoE checkpoints trip the
+        # "missing three-axis stamps" raise in LoRANetworkCfg.from_weights.
+        # Chimera files carry top-level freq_router.* outside lora_unet_*, so
+        # skip the filter for them.
+        from safetensors import safe_open
+
+        with safe_open(path, framework="pt") as f:
+            meta = dict(f.metadata() or {})
         sd = load_file(path)
-        sd = {k: v for k, v in sd.items() if k.startswith("lora_unet_")}
+        if not _is_chimera_moe(path):
+            sd = {k: v for k, v in sd.items() if k.startswith("lora_unet_")}
         network, weights_sd = lora_anima.create_network_from_weights(
             multiplier=mult,
             file=None,
@@ -51,6 +62,7 @@ def attach_loras(
             text_encoders=[],
             unet=anima,
             weights_sd=sd,
+            metadata=meta,
             for_inference=True,
         )
         network.apply_to([], anima, apply_text_encoder=False, apply_unet=True)

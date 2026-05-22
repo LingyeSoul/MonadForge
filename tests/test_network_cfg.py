@@ -77,6 +77,79 @@ def test_string_bool_parsing_matches_old_factory_path():
     assert cfg.verbose is False
 
 
+def test_crossattn_emb_router_source_parses():
+    """``router_source="crossattn_emb"`` is a network-level cell — it requires
+    ``route_per_layer=False`` and an MoE layout. The pooled cross-attention
+    text feature routes one GlobalRouter for the whole pool.
+    """
+    cfg = LoRANetworkCfg.from_kwargs(
+        {
+            "use_moe_style": "shared_A",
+            "route_per_layer": "false",
+            "router_source": "crossattn_emb",
+        },
+        network_dim=8,
+        network_alpha=4.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert cfg.use_moe_style == "shared_A"
+    assert cfg.route_per_layer is False
+    assert cfg.router_source == "crossattn_emb"
+
+
+def test_crossattn_emb_router_source_rejects_per_layer():
+    """There is no per-Linear crossattn signal — pairing the source with
+    ``route_per_layer=True`` must raise rather than silently fall back.
+    """
+    with pytest.raises(ValueError, match="route_per_layer=False"):
+        LoRANetworkCfg.from_kwargs(
+            {
+                "use_moe_style": "shared_A",
+                "route_per_layer": "true",
+                "router_source": "crossattn_emb",
+            },
+            network_dim=8,
+            network_alpha=4.0,
+            neuron_dropout=None,
+            module_class=LoRAModule,
+        )
+
+
+def test_content_router_source_accepts_legacy_crossattn_alias():
+    """The chimera ``content_router_source`` was renamed ``crossattn`` →
+    ``crossattn_emb``; the old spelling parses as a deprecated alias and
+    normalizes to the new value so pre-rename checkpoints still load.
+    """
+    cfg = LoRANetworkCfg.from_kwargs(
+        {
+            "use_chimera_hydra": "true",
+            "num_experts_content": "3",
+            "num_experts_freq": "3",
+            "content_router_source": "crossattn",
+        },
+        network_dim=8,
+        network_alpha=4.0,
+        neuron_dropout=None,
+        module_class=HydraLoRAModule,
+    )
+    assert cfg.content_router_source == "crossattn_emb"
+
+
+def test_content_router_source_crossattn_emb_requires_chimera():
+    """``content_router_source="crossattn_emb"`` is chimera-only; without
+    ``use_chimera_hydra`` it must raise and point at ``router_source``.
+    """
+    with pytest.raises(ValueError, match="requires use_chimera_hydra"):
+        LoRANetworkCfg.from_kwargs(
+            {"content_router_source": "crossattn_emb"},
+            network_dim=8,
+            network_alpha=4.0,
+            neuron_dropout=None,
+            module_class=LoRAModule,
+        )
+
+
 def test_legacy_router_kwargs_raise():
     """plan2 task #6 retired ``use_hydra`` / ``use_sigma_router`` /
     ``use_fei_router``. Surfacing them must raise so a stale TOML can't

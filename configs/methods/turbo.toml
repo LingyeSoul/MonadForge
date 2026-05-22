@@ -45,7 +45,7 @@ tau_ca_skip_above_t = 0.95      # if generator t > this, skip CA branch (DM-only
 student_lr = 5e-6
 fake_lr = 5e-5
 fake_steps_per_student_step = 2
-alpha_warmup_steps = 100       # linear ramp α_eff: 1.0 → teacher_cfg over these steps
+alpha_warmup_steps = 500       # linear ramp α_eff: 1.0 → teacher_cfg over these steps
 weight_decay = 0.0
 grad_clip = 1.0                 # student grad-norm cap
 

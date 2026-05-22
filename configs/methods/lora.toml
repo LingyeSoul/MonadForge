@@ -5,7 +5,7 @@
 #
 #     use_moe_style    = False | "shared_A" | "independent_A"
 #     route_per_layer  = true | false
-#     router_source    = "none" | "input" | "sigma" | "fei"
+#     router_source    = "none" | "input" | "sigma" | "fei" | "crossattn_emb"
 #
 # To switch routing modes:
 #   - Plain LoRA stack (no MoE): set `use_moe_style = false` and drop every
@@ -13,9 +13,10 @@
 #   - FEI-on-Hydra (Phase 1, FeRA-style content-aware on the shared-A stack):
 #     comment out the σ-router block and uncomment the FEI block near the
 #     bottom of this file.
-#   - Author-faithful FeRA (independent-A + global FEI router): use
-#     `configs/gui-methods/fera.toml` instead — that variant lives on the
-#     `lora-gui` Make target.
+#   - Author-faithful FeRA (independent-A + global FEI router): set
+#     `use_moe_style = "independent_A"` + `route_per_layer = false` +
+#     `router_source = "fei"` here. (The standalone `gui-methods/fera.toml`
+#     variant and its `make exp-fera` shortcut were removed.)
 #
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
@@ -23,10 +24,10 @@
 network_alpha = 96
 network_dim = 96
 
-learning_rate = 1e-5
-max_train_epochs = 12
-save_every_n_epochs = 4
-checkpointing_epochs = 4
+learning_rate = 1e-4
+max_train_epochs = 3
+save_every_n_epochs = 3
+checkpointing_epochs = 3
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -35,12 +36,14 @@ caption_dropout_rate = 0.1
 logging_dir = "output/logs"
 log_with = "tensorboard"
 
-# output_name = "anima_vr"
+output_name = "anima_hydra"
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
 
 # compile_mode = "full"
-compile_inductor_mode = "reduce-overhead"
+# compile_inductor_mode = "reduce-overhead"
+
+channel_scaling_alpha = 0.5
 
 # -------------
 # Ortho-lora
@@ -51,26 +54,37 @@ use_ortho = true
 # Timestep mask
 
 use_timestep_mask = true
-min_rank = 32
+min_rank = 8
 alpha_rank_scale = 1.0
 
 
 # -------------
-# "independent_A" and route_per_layer=true -> hydralora
+# "shared_A" and route_per_layer=false -> hydralora
 
 # use_moe_style = "shared_A"
 # route_per_layer = true
-# router_source = "sigma"
+# router_source = "crossattn_emb"
+# network_router_lr_scale = 10
+# # router_source = "crossattn_emb"
+
+# fei_feature_dim = 2          # raw simplex (e_low, e_high)
+# fei_sigma_low_div = 4.0      # σ_low = min(H_lat, W_lat) / 4 — 2026-05-13 dataset sweep
+# fera_num_bands = 2
+# fera_fecl_weight = 0.0
 
 # sigma_feature_dim = 16
-# per_bucket_balance_weight = 0.3   # × balance_loss_weight, per-bucket term
-# num_sigma_buckets = 3
-# specialize_experts_by_sigma_buckets = true
-# sigma_bucket_boundaries = [0.0, 0.5, 0.8, 1.0]
-# router_targets = ".*(mlp\\.layer[12])$" 
+# # per_bucket_balance_weight = 0.3   # × balance_loss_weight, per-bucket term
+# # num_sigma_buckets = 3
+# # specialize_experts_by_sigma_buckets = true
+# # sigma_bucket_boundaries = [0.0, 0.5, 0.8, 1.0]
+# router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
+
+# num_experts = 4
+# balance_loss_weight = 1e-7 # seems lr * 1/100 is proper
+# balance_loss_warmup_ratio = 0.4
 
 # -------------
-# "shared_A" and route_per_layer=false -> fera
+# "independent_A" and route_per_layer=true -> fera
 
 # use_moe_style = "independent_A"
 # route_per_layer = false 
@@ -91,25 +105,32 @@ alpha_rank_scale = 1.0
 # router_targets = ".*\\.(qkv_proj|q_proj|kv_proj|output_proj|layer[12])$"
 
 # -------------
+# Text-routed pool (route_per_layer=false + router_source="crossattn_emb")
+#
+# One network-level GlobalRouter routes the whole pool by PROMPT CONTENT —
+# it reads the pooled post-LLM-adapter cross-attn text vector (the DiT's
+# K/V), not σ / noise-frequency. Works with shared_A (Hydra) or
+# independent_A (FeRA-style) layouts. The router pools (B,L,D)→(B,D) over the
+# sequence axis and LayerNorms before the MLP; gates fire per cond/uncond
+# branch at inference. Caveat: experts specialize by caption regime, a
+# different inductive bias from FEI/σ routing — bench before adopting.
+
+# use_moe_style = "shared_A"
+# route_per_layer = false
+# router_source = "crossattn_emb"
+# num_experts = 6
+# balance_loss_weight = 2e-7
+# balance_loss_warmup_ratio = 0.4
+# router_targets = ".*\\.(qkv_proj|q_proj|kv_proj|output_proj|layer[12])$"
+# output_name = "anima_crossattn_routed"
+
+# -------------
 # reft
 
 # add_reft = true
 # reft_dim = 64
 # reft_alpha = 64
 # reft_layers = "last_8"
-
-
-# ── Per-channel input pre-scaling (SmoothQuant-style, optional) ─────────
-# Balances ∂L/∂lora_down column gradients when activations have DC-bias
-# outlier channels (see archive/bench/channel_dominance_analysis.md). Calibration-
-# only — no runtime overhead. Generate the stats file once:
-#   python archive/bench/analyze_lora_input_channels.py \
-#       --dump_channel_stats archive/bench/results/channel_stats.safetensors
-# Then flip `per_channel_scaling` on. α=0.5 = SmoothQuant default (sqrt
-# balance); α=1.0 fully flattens per-channel scale; α=0 disables.
-# per_channel_scaling = true
-# channel_stats_path = "archive/bench/results/channel_stats.safetensors"
-# channel_scaling_alpha = 0.5
 
 # -------------
 # Variance-reduced FM loss (AsymFlow §5.2, arXiv:2605.12964). One extra
@@ -120,15 +141,3 @@ alpha_rank_scale = 1.0
 # See bench/fm_vr_headroom/proposal.md.
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
-
-# -------------
-# REPA (Yu et al., arxiv:2410.06940) — auxiliary alignment loss between a
-# mid-block DiT hidden state and a cached PE-Core feature. Composes on top
-# of any LoRA variant. Requires {stem}_anima_pe.safetensors sidecars from
-# `make preprocess-pe` for every image (auto-enables ip_features_cache_to_disk).
-# Hooks one DiT block; default 8 of 28 mirrors the paper's SiT-XL choice.
-
-# use_repa = true
-# repa_weight = 0.5
-# repa_layer = 8
-# repa_lr_scale = 1.0       # head LR = repa_lr_scale * unet_lr

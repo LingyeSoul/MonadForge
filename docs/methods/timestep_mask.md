@@ -31,7 +31,6 @@ Timestep masking composes with every adapter module type. The mask is applied at
 | Module | Where mask is applied |
 |--------|----------------------|
 | **LoRA** | After `lora_down`, before dropout and `lora_up` |
-| **DoRA** | Same as LoRA; magnitude `dora_scale` is separate |
 | **OrthoLoRA (Cayley)** | After `Q_eff` projection, multiplied with `lambda_layer` |
 | **HydraLoRA** | After shared `lora_down`; per-expert `lora_up` heads unaffected |
 | **ReFT** | Separate mask with its own `reft_dim` and floor of 1 |

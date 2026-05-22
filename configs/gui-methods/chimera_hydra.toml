@@ -49,12 +49,12 @@ num_experts_freq = 2
 # Outer balance multiplier is 1.0 so the per-pool weights below are the
 # only knobs. Default per-pool weights match the OrthoHydra production
 # value (~2e-5 from project_hydra_balance_weight_ceiling).
+balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
-balance_w_content = 2e-7
-balance_w_freq = 5e-7
-network_content_router_lr_scale = 10
+balance_w_content = 2e-6
+balance_w_freq = 5e-6
+network_content_router_lr_scale = 10.0
 network_freq_router_lr_scale = 2.0
-balance_loss_warmup_ratio = 0.2
 
 # FreqRouter input. FEI = 2-band simplex; σ-features disabled by default
 # (sigma_feature_dim = 0). Total input dim = 2 — flip sigma_feature_dim > 0
@@ -63,16 +63,16 @@ fei_feature_dim = 2
 fei_sigma_low_div = 4.0
 sigma_feature_dim = 16
 freq_router_init_std = 0.02
-# Per-modality LayerNorm on the FreqRouter input. Only active when both
-# FEI and σ feature blocks are enabled — fires automatically once
-# sigma_feature_dim > 0 to prevent the higher-dim σ block from
-# fan-in-overpowering the 2-D FEI simplex. No-op while σ is off.
 freq_router_layer_norm = true
+
+content_router_source = "crossattn_emb"
+content_router_init_std = 0.001
+content_router_layer_norm = true
 
 # Routing scope: same default as the other hydra variants — every Linear
 # matched by the regex becomes a chimera leaf; non-matching layers fall
 # back to OrthoLoRA (single-pool Cayley, no router).
-router_targets = ".*(mlp\\.layer[12])$"
+router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
 
 output_name = "anima_chimera"
 

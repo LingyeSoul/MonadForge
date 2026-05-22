@@ -1,8 +1,8 @@
 """Unit tests for the DirectEdit smart-edit primitives.
 
 Two modules under test:
-  * ``library.inference.edit_dispatcher`` — REMOVE/REPLACE/APPEND routing.
-  * ``library.inference.directedit_splice`` — T5 diff-span + crossattn surgery.
+  * ``library.inference.editing.edit_dispatcher`` — REMOVE/REPLACE/APPEND routing.
+  * ``library.inference.editing.directedit_splice`` — T5 diff-span + crossattn surgery.
 
 The dispatcher's REPLACE branch normally calls Qwen3; we mock the encoder
 shim with controlled cosine-similarity vectors so the test suite stays
@@ -15,11 +15,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from library.inference.directedit_splice import (
+from library.inference.editing.directedit_splice import (
     find_t5_diff_span,
     splice_crossattn_emb,
 )
-from library.inference.edit_dispatcher import derive_target_caption
+from library.inference.editing.edit_dispatcher import derive_target_caption
 
 
 # ---------------------------------------------------------------------------

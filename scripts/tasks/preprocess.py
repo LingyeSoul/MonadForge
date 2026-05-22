@@ -131,9 +131,8 @@ def cmd_preprocess_pe(extra):
     ``{stem}_anima_pe.safetensors`` sidecars into the LoRA cache dir so the
     dataset's existing ``cache_dir`` lookup finds them.
 
-    Consumed by methods that align against frozen vision features —
-    currently REPA (--use_repa) and IP-Adapter when reading PE features off
-    disk.
+    Consumed by IP-Adapter when reading PE features off disk and by the
+    DCW v4 fusion head's pooled-image-feature input channel.
     """
     run(
         [
@@ -152,8 +151,8 @@ def cmd_preprocess_pe(extra):
 
 
 def cmd_preprocess(extra):
-    # PE features are intentionally NOT cached here — only REPA / IP-Adapter /
-    # CMMD need them, and those paths chain `preprocess-pe` explicitly (see
+    # PE features are intentionally NOT cached here — only IP-Adapter / CMMD /
+    # DCW v4 need them, and those paths chain `preprocess-pe` explicitly (see
     # `exp-ip-adapter-preprocess`). Leaving PE out keeps the default LoRA
     # preprocess fast on machines that won't ever use the vision tower.
     cmd_preprocess_resize(extra)

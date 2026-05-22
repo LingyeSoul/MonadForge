@@ -37,6 +37,23 @@ def _is_hydra_moe(path: str) -> bool:
         return False
 
 
+def _has_te_keys(path: str) -> bool:
+    """Cheap header peek: does this safetensors LoRA carry any ``lora_te_*`` keys?
+
+    Lets ``load_text_encoder`` skip a redundant ``load_file`` + empty-dict merge
+    when the LoRA is DiT-only (the common case — turbo, plain LoRA, postfix, …).
+    Returns False on any read error so the caller falls back to the no-LoRA TE
+    load path (a truly broken file would have already tripped the DiT loader).
+    """
+    from safetensors import safe_open
+
+    try:
+        with safe_open(path, framework="pt") as f:
+            return any(k.startswith("lora_te_") for k in f.keys())
+    except Exception:
+        return False
+
+
 def _is_chimera_moe(path: str) -> bool:
     """Peek at safetensors metadata for ``ss_use_chimera_hydra="true"``.
 
@@ -181,23 +198,26 @@ def load_dit_model(
         from networks import lora_anima
 
         logger.info("HydraLoRA: loading moe file as router-live dynamic hooks")
+        from safetensors import safe_open
+
         for lora_weight_path in args.lora_weight:
-            # Chimera files (dual-pool) carry top-level ``freq_router.*``
-            # keys outside the ``lora_unet_*`` namespace and require the
-            # factory to read ``ss_use_chimera_hydra`` from on-disk metadata.
-            # Pass file=path and skip the lora_unet_* filter so both bits
-            # survive into create_network_from_weights.
+            # Read the three-axis routing stamps (and chimera stamps) from
+            # on-disk __metadata__ — load_file() drops it. Chimera files
+            # (dual-pool) carry top-level ``freq_router.*`` keys outside the
+            # ``lora_unet_*`` namespace, so they must NOT be filtered; plain
+            # Hydra moe keeps the lora_unet_* filter. Passing ``metadata=``
+            # alongside ``weights_sd=`` lets both layouts go through one code
+            # path — no more file=path vs weights_sd= fork.
+            with safe_open(lora_weight_path, framework="pt") as f:
+                lora_metadata = dict(f.metadata() or {})
             is_chimera = _is_chimera_moe(lora_weight_path)
+            lora_sd = load_file(lora_weight_path)
             if is_chimera:
-                lora_sd = None
-                factory_file = lora_weight_path
                 logger.info("HydraLoRA: chimera file — dual-pool routing wired")
             else:
-                lora_sd = load_file(lora_weight_path)
                 lora_sd = {
                     k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")
                 }
-                factory_file = None
 
             multiplier = (
                 args.lora_multiplier
@@ -206,11 +226,12 @@ def load_dit_model(
             )
             network, weights_sd = lora_anima.create_network_from_weights(
                 multiplier=multiplier,
-                file=factory_file,
+                file=None,
                 ae=None,
                 text_encoders=[],
                 unet=model,
                 weights_sd=lora_sd,
+                metadata=lora_metadata,
                 for_inference=True,
             )
             network.apply_to([], model, apply_text_encoder=False, apply_unet=True)
@@ -256,7 +277,11 @@ def load_text_encoder(
     device: torch.device = torch.device("cpu"),
 ) -> torch.nn.Module:
     lora_weights_list = None
-    if args.lora_weight is not None and len(args.lora_weight) > 0:
+    if (
+        args.lora_weight is not None
+        and len(args.lora_weight) > 0
+        and any(_has_te_keys(p) for p in args.lora_weight)
+    ):
         lora_weights_list = []
         for lora_weight in args.lora_weight:
             logger.info(f"Loading LoRA weight from: {lora_weight}")

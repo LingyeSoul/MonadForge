@@ -11,8 +11,9 @@ Distillation setup (Starodubcev et al., ICLR 2026, Section 5):
     but pooled_text_proj receives the real pooled text vector.
   - Loss: MSE(student_pred, teacher_pred).
 
-The unconditional sidecar is staged by ``make distill-prep`` (writes
-``<data_dir>/_anima_uncond_te.safetensors``).
+The unconditional sidecar is normally produced by ``make preprocess-te`` (and
+also re-stageable via ``make distill-prep``) at
+``post_image_dataset/_anima_uncond_te.safetensors``.
 
 This forces pooled_text_proj to encode text information through modulation,
 complementing the cross-attention path.
@@ -43,15 +44,15 @@ from tqdm import tqdm  # noqa: E402
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
 from library.datasets.distill import CachedDataset  # noqa: E402
+from library.inference.uncond import (  # noqa: E402
+    default_uncond_path,
+    load_uncond_crossattn,
+    uncond_for_batch,
+)
 from scripts.distill_mod.teacher_cache import (  # noqa: E402
     TeacherCache,
     ValTeacherCache,
     prefill_teacher_cache,
-)
-from scripts.distill_mod.uncond import (  # noqa: E402
-    UNCOND_TE_FILENAME,
-    load_uncond_crossattn,
-    uncond_for_batch,
 )
 from scripts.distill_mod.validation import run_validation  # noqa: E402
 
@@ -76,7 +77,7 @@ def main():
         help=(
             "Path to the T5(\"\") sidecar used as the student's unconditional "
             "cross-attention input. Defaults to "
-            "``<data_dir>/_anima_uncond_te.safetensors`` (staged by "
+            "``post_image_dataset/_anima_uncond_te.safetensors`` (staged by "
             "``make distill-prep``)."
         ),
     )
@@ -104,7 +105,7 @@ def main():
         help="Where to save the trained projection weights",
     )
     parser.add_argument("--iterations", type=int, default=7500)
-    parser.add_argument("--lr", type=float, default=1e-5)
+    parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
     parser.add_argument(
         "--blocks_to_swap",
@@ -322,9 +323,7 @@ def main():
     dtype = torch.bfloat16
 
     # --- Load unconditional T5("") sidecar (staged by `make distill-prep`) ---
-    uncond_te_path = args.uncond_te_path or os.path.join(
-        args.data_dir, UNCOND_TE_FILENAME
-    )
+    uncond_te_path = args.uncond_te_path or str(default_uncond_path())
     uncond_te_1 = load_uncond_crossattn(uncond_te_path, device, dtype)
     logger.info(
         f"Loaded uncond crossattn from {uncond_te_path} "

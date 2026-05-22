@@ -12,7 +12,6 @@ STRINGS: dict[str, str] = {
     "tab_config": "训练配置",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
-    "tab_postfix": "Postfix",
     "tab_methods": "方法",
     "tab_images": "数据集",
     "tab_merge": "合并",
@@ -231,8 +230,8 @@ STRINGS: dict[str, str] = {
     # Language
     "language": "语言:",
     # Guidebook
-    "guidebook": "📖 指南",
-    "guidebook_tooltip": "打开韩文综合指南 (docs/guidelines/가이드북.md)",
+    "guidebook": "📖 指南书",
+    "guidebook_tooltip": "打开中文综合指南 (docs/guidelines/指南书.md)",
     "guidebook_missing": "在 {path} 找不到指南",
     "guidebook_open_external": "用系统查看器打开",
     "guidebook_close": "关闭",
@@ -241,6 +240,8 @@ STRINGS: dict[str, str] = {
     "models_btn_tooltip": "下载或重新下载模型检查点 (Anima 基础、SAM3、MIT、IP-Adapter 编码器)",
     "update_btn": "更新",
     "update_btn_tooltip": "从 GitHub 拉取最新 anima_lora 版本并运行 uv sync",
+    "update_btn_available": "更新 ●",
+    "update_btn_available_tooltip": "有新版本 {v} 可用 — 点击查看发布说明",
     "report_issue": "提交问题",
     "report_issue_tooltip": "在浏览器中打开 GitHub 问题追踪",
     "experimental_features": "🧪 实验功能",

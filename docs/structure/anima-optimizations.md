@@ -166,15 +166,11 @@ And `_sa_seq_len` is deliberately a **0-dim tensor, not a Python int** (`models.
 
 A detail that only matters once you've watched it happen: switching from `int` to `Tensor` is the difference between one compile and five.
 
-### Cross-attention side: bucketed KV
+### Cross-attention side: full-length KV
 
-Cross-attention KV length (the text sequence) is similarly bucketed — to one of `(128, 192, 256, 512)` — so there are at most 4 compile variants for the cross-attn path (`library/anima/models.py:19–20`):
+Cross-attention KV length (the text sequence) is fixed: the text encoder output is zero-padded to 512 tokens, so the cross-attn path is already shape-stable with no trimming needed. The padding tail acts as attention sinks, which the pretrained model expects.
 
-```python
-_KV_BUCKETS = (128, 192, 256, 512)  # Keeps torch.compile shapes stable.
-```
-
-Bucketed KV trimming relied on flash4 (which alone exposed `lse` from the Python interface): a sigmoid-based **LSE correction** in `networks/attention_dispatch.py` re-added the lost zero-key sinks using `crossattn_full_len`. Both the trim path in `library/anima/models.py` and the `flash4` branch in the dispatcher are now disabled — `_KV_BUCKETS` survives only as a compile-shape inventory and the `crossattn_full_len` field on `AttentionParams` is plumbed but unused. Cross-attention runs full 512-length KV under FA2; padding tail acts as attention sinks. See `docs/optimizations/fa4.md` for the postmortem and the re-enable recipe.
+There used to be a flash4-only **bucketed KV trim** here — sequences trimmed to one of `(128, 192, 256, 512)` (`_KV_BUCKETS`) with a sigmoid-based **LSE correction** in `networks/attention_dispatch.py` (via `crossattn_full_len`) re-adding the lost zero-key sinks. That path was bundled with FA4 and removed with it (2026-05-20) — `_KV_BUCKETS`, `crossattn_full_len`, the `trim_crossattn_kv` flag, and the trim block are all gone. Cross-attention now always runs full 512-length KV under FA2. See `docs/optimizations/fa4.md` for the postmortem.
 
 ---
 

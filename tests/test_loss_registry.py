@@ -61,13 +61,13 @@ def test_hydra_balance_activates_when_network_requests_it():
     assert "flow_match" in composer.active_losses
 
 
-def test_postfix_func_activates_functional():
-    args = _make_args(method="postfix_func", functional_loss_weight=1.0)
+def test_functional_activates_when_weight_set():
+    args = _make_args(method="lora", functional_loss_weight=1.0)
     composer = build_loss_composer(args, _net())
     assert "functional" in composer.active_losses
 
 
-def test_postfix_activates_multiscale_when_weight_set():
-    args = _make_args(method="postfix", multiscale_loss_weight=0.5)
+def test_multiscale_activates_when_weight_set():
+    args = _make_args(method="lora", multiscale_loss_weight=0.5)
     composer = build_loss_composer(args, _net())
     assert "multiscale" in composer.active_losses

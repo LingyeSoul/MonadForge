@@ -19,9 +19,8 @@
 network_alpha = 48
 network_dim = 48
 
-
 learning_rate = 2e-5
-max_train_epochs = 8
+max_train_epochs = 10
 save_every_n_epochs = 2
 checkpointing_epochs = 2
 
@@ -37,8 +36,9 @@ log_with = "tensorboard"
 
 use_ortho = true
 use_timestep_mask = true
-min_rank = 8
+min_rank = 16
 alpha_rank_scale = 1.0
+channel_scaling_alpha = 0.5
 
 # -------------
 # ChimeraHydra activation. The three-axis routing fields
@@ -49,7 +49,7 @@ alpha_rank_scale = 1.0
 # path.
 
 use_chimera_hydra = true
-num_experts_content = 4
+num_experts_content = 6
 num_experts_freq = 2
 
 # Outer balance multiplier is 1.0 so the per-pool weights below are the
@@ -62,12 +62,17 @@ num_experts_freq = 2
 # bypasses warmup entirely — its FEI input + ``freq_router_init_std``
 # break symmetry from step 0, so its load-balance pressure can fire
 # immediately without pinning the router to uniform.
-balance_loss_warmup_ratio = 0.3
+
+balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
-balance_w_content = 2e-7
-balance_w_freq = 1e-6
-network_content_router_lr_scale = 10
+balance_w_content = 2e-6
+balance_w_freq = 5e-6
+network_content_router_lr_scale = 10.0
 network_freq_router_lr_scale = 2.0
+
+content_router_source = "crossattn_emb"
+content_router_init_std = 0.001      # non-zero (uniform would be a fixed point)
+content_router_layer_norm = true   # parameterless LN on the pooled input
 
 # FreqRouter input. FEI = 2-band simplex (e_low, e_high). σ-features
 # disabled by default (sigma_feature_dim = 0), so the FreqRouter input
@@ -85,10 +90,29 @@ freq_router_init_std = 0.1
 # no router). Same default as the other hydra variants.
 # router_targets = ".*(output_proj|mlp\\.layer[12])$"
 router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
-output_name = "anima_chimera"
-
+output_name = "anima_chimera-0521"
 
 # -------------
-# REPA / VR-loss compositions are not gated. Both modify what shared A
-# learns, so co-train compat is unknown — sanity-check at bench before
-# stacking on top of chimera.
+# Optional: global content router. Default is the paper-faithful per-Linear
+# softmax over pooled rank-R lx_c (`self.router` on every chimera module).
+# Flipping `content_router_source = "crossattn_emb"` swaps that for a single
+# network-level ContentRouter fed by pooled crossattn_emb (post-LLM-adapter
+# T5-space text features). π_c then routes from a global "caption regime"
+# axis instead of a per-site decision — analogous to FeRA on the freq pool.
+# Per-Linear `router.weight` / `router.bias` keys are absent from the
+# checkpoint in that case; FreqRouter contract is unchanged.
+#
+# Tradeoffs:
+#  • Faster convergence on the content axis (one router updated jointly
+#    by all chimera Linears) and fewer params on disk.
+#  • Loses per-site specialization (cross_attn.output_proj vs mlp.layer1
+#    can no longer pick different K_c partitions).
+#  • Router-collapse risk is correlated across every chimera layer (same
+#    failure mode as FeRA's GlobalRouter — see networks/CLAUDE.md).
+#  • LR-sensitive. Start with the same scale FreqRouter uses (10×).
+#
+
+# -------------
+# VR-loss composition is not gated. It modifies what shared A learns, so
+# co-train compat is unknown — sanity-check at bench before stacking on
+# top of chimera.

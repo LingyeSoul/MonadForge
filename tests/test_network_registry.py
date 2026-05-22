@@ -336,26 +336,6 @@ def test_save_ortho_hydra_legacy_P_basis_still_bakes(tmp_path: Path):
             assert loaded[f"{base}_{suffix}.lora_ups.{e}.weight"].shape == (out_dim, r)
 
 
-def test_save_dora_roundtrip(tmp_path: Path):
-    # DoRA is standard LoRA + a .magnitude key that renames to .dora_scale.
-    r, in_dim, out_dim = 4, 8, 12
-    prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
-    sd = _make_std_lora_sd(prefix, r, in_dim, out_dim)
-    sd[f"{prefix}.magnitude"] = torch.randn(3 * out_dim)
-    sd[f"{prefix}._org_weight_norm"] = torch.randn(3 * out_dim)  # should be dropped
-
-    loaded = _save_and_reload(sd, tmp_path, save_variant="standard")
-
-    base = "lora_unet_blocks_0_self_attn"
-    # dora_scale should be split per-component
-    for suffix in ("q_proj", "k_proj", "v_proj"):
-        assert loaded[f"{base}_{suffix}.dora_scale"].shape == (out_dim,)
-    # magnitude + _org_weight_norm buffers must be absent
-    for k in loaded:
-        assert not k.endswith(".magnitude")
-        assert not k.endswith("._org_weight_norm")
-
-
 # ---------------------------------------------------------------------------
 # Metadata stamp
 # ---------------------------------------------------------------------------

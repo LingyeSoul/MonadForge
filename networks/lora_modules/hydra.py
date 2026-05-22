@@ -83,6 +83,7 @@ class HydraLoRAModule(BaseLoRAModule):
         fei_feature_dim: int = 0,
         use_global_router: bool = False,
         num_experts_content: int = 0,
+        use_global_content_router: bool = False,
     ):
         super().__init__(
             lora_name,
@@ -126,6 +127,7 @@ class HydraLoRAModule(BaseLoRAModule):
         self.num_experts_freq = (
             num_experts - self.num_experts_content if self.num_experts_content > 0 else 0
         )
+        self.use_global_content_router = bool(use_global_content_router)
         if self.num_experts_content > 0:
             if self.num_experts_freq <= 0:
                 raise ValueError(
@@ -142,6 +144,11 @@ class HydraLoRAModule(BaseLoRAModule):
                     "num_experts_content > 0 requires sigma_feature_dim == 0 and "
                     "fei_feature_dim == 0 — those axes belong to the FreqRouter."
                 )
+        elif self.use_global_content_router:
+            raise ValueError(
+                "use_global_content_router=True requires num_experts_content > 0 "
+                "(global content router only runs on the chimera content pool)."
+            )
         # Local router on pooled rank-R (not raw in_dim): raw DiT inputs have
         # 80–96× DC-bias outliers + 4096 tokens, mean-pool collapses to DC and
         # the router gets no trainable gradient. lora_down is trained jointly,
@@ -150,6 +157,13 @@ class HydraLoRAModule(BaseLoRAModule):
         if self.use_global_router:
             self.sigma_feature_dim = 0
             self.fei_feature_dim = 0
+        elif self.use_global_content_router:
+            # Chimera load form with the network-level ContentRouter active.
+            # Per-Linear router is absent on disk; π_c arrives via the
+            # ``_content_routing_weights`` slot-assigned buffer below.
+            self.sigma_feature_dim = 0
+            self.fei_feature_dim = 0
+            self.router = None
         else:
             self.sigma_feature_dim = int(sigma_feature_dim)
             # FEI default (fei_dim=2) = raw 2-band simplex (e_low, e_high) from
@@ -201,6 +215,19 @@ class HydraLoRAModule(BaseLoRAModule):
             self.register_buffer(
                 "_freq_routing_weights", placeholder, persistent=False
             )
+            # Content-pool gate buffer for the global-router path. Same
+            # contract; placeholder uniform 1/K_c. Registered unconditionally
+            # on chimera modules so ``_wire_shared_content_buffers`` can
+            # identify them by buffer presence — per-Linear (default) form
+            # still computes π_c from its own router and the buffer is dead.
+            content_placeholder = torch.full(
+                (1, self.num_experts_content),
+                1.0 / max(self.num_experts_content, 1),
+                dtype=torch.float32,
+            )
+            self.register_buffer(
+                "_content_routing_weights", content_placeholder, persistent=False
+            )
         # σ-band partition: experts split into num_sigma_buckets bands;
         # out-of-band logits masked to -inf before softmax, soft routing
         # within each band. Independent of σ-feature router. Incompatible
@@ -239,6 +266,22 @@ class HydraLoRAModule(BaseLoRAModule):
             if w.dim() == 1:
                 w = w.unsqueeze(0)
             return w.to(lx.dtype).expand(B, -1)
+        if self.use_global_content_router:
+            # Chimera global-content path: π_c is broadcast from the
+            # network-level ContentRouter; π_f from the FreqRouter. No
+            # per-Linear router call — ``self.router`` is None.
+            B = lx.shape[0] if lx.dim() >= 1 else 1
+            pi_c = self._content_routing_weights
+            if pi_c.dim() == 1:
+                pi_c = pi_c.unsqueeze(0)
+            if pi_c.shape[0] == 1 and B > 1:
+                pi_c = pi_c.expand(B, -1)
+            pi_c = pi_c.to(lx.dtype)
+            pi_f = self._freq_routing_weights
+            if pi_f.dim() == 1:
+                pi_f = pi_f.unsqueeze(0)
+            pi_f = pi_f.to(pi_c.dtype).expand(pi_c.shape[0], -1)
+            return torch.cat([pi_c, pi_f], dim=-1)
         if lx.dim() >= 3:
             B = lx.shape[0]
             pooled = lx.reshape(B, -1, lx.shape[-1]).pow(2).mean(dim=1).sqrt()
@@ -296,6 +339,26 @@ class HydraLoRAModule(BaseLoRAModule):
             return
         K_f = int(self._freq_routing_weights.shape[-1])
         self._freq_routing_weights.fill_(1.0 / max(K_f, 1))
+
+    def set_content_routing_weights(self, weights: torch.Tensor) -> None:
+        """Inference-side slot-assign for the chimera global-content path.
+
+        Mirrors :meth:`set_freq_routing_weights`. No-op on non-chimera
+        modules (those have no ``_content_routing_weights`` buffer).
+        """
+        if self.num_experts_content <= 0:
+            return
+        buf = self._content_routing_weights
+        w = weights.to(dtype=buf.dtype, device=buf.device)
+        if w.dim() == 1:
+            w = w.unsqueeze(0)
+        self._content_routing_weights = w
+
+    def clear_content_routing_weights(self) -> None:
+        if self.num_experts_content <= 0:
+            return
+        K_c = int(self._content_routing_weights.shape[-1])
+        self._content_routing_weights.fill_(1.0 / max(K_c, 1))
 
     def set_sigma(
         self, sigmas: torch.Tensor, sigma_features: torch.Tensor | None = None
@@ -398,7 +461,7 @@ class HydraLoRAModule(BaseLoRAModule):
              decision), so clone them into each split component. The
              plain-LoRA leg (modules excluded from ``router_targets``)
              gets its own per-component split — the fused qkv carries
-             standard ``.lora_up.weight`` + optional ``.dora_scale``.
+             standard ``.lora_up.weight``.
         """
         hydra_sd: Dict[str, torch.Tensor] = {}
         for k, v in state_dict.items():
@@ -455,10 +518,6 @@ class HydraLoRAModule(BaseLoRAModule):
             plain_up_chunks = (
                 plain_up.chunk(n, dim=0) if plain_up is not None else None
             )
-            dora_scale = hydra_sd.pop(f"{prefix}.dora_scale", None)
-            dora_chunks = (
-                dora_scale.chunk(n, dim=0) if dora_scale is not None else None
-            )
 
             base_prefix = prefix.removesuffix(spec.fused_frag)
             for ci, letter in enumerate(suffixes):
@@ -472,8 +531,6 @@ class HydraLoRAModule(BaseLoRAModule):
                     hydra_sd[f"{new_prefix}.lora_up.weight"] = (
                         plain_up_chunks[ci].contiguous().clone()
                     )
-                if dora_chunks is not None:
-                    hydra_sd[f"{new_prefix}.dora_scale"] = dora_chunks[ci].clone()
                 if alpha is not None:
                     hydra_sd[f"{new_prefix}.alpha"] = alpha.clone()
                 if router_w is not None:

@@ -1,7 +1,7 @@
 """Shared lifecycle base for non-LoRA adapter networks.
 
-The four method networks under ``networks/methods/`` (postfix, ip_adapter,
-easycontrol, soft_tokens) all expose the same trainer-facing protocol:
+The method networks under ``networks/methods/`` (ip_adapter, easycontrol,
+soft_tokens) all expose the same trainer-facing protocol:
 
   - ``set_multiplier`` / ``is_mergeable`` / ``enable_gradient_checkpointing``
   - ``prepare_grad_etc`` / ``on_epoch_start`` / ``get_trainable_params``
@@ -17,7 +17,7 @@ need more than one).
 
 LoRA-family networks under ``networks/lora_anima/`` are *not* subclasses
 here: they carry their own concerns (``merge_to``, ``backup_weights``,
-``pre_calculation``, ``apply_max_norm_regularization``, REPA head, three-axis
+``pre_calculation``, ``apply_max_norm_regularization``, three-axis
 routing metadata) and the proposal scopes the base to ``networks/methods/``.
 They're still duck-typed to the same protocol — the trainer doesn't care
 about inheritance.
@@ -73,7 +73,7 @@ class AdapterNetworkBase(nn.Module):
       - ``prepare_optimizer_params_with_multiple_te_lrs(...)`` — only when
         more than one param group is needed.
       - ``load_weights(file)`` — only when the default strict-ish load can't
-        do the validation the method needs (postfix is one such case).
+        do the validation the method needs (ip_adapter is one such case).
     """
 
     network_module: ClassVar[str] = ""

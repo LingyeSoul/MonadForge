@@ -47,7 +47,6 @@ The `OrthoHydraLoRAModule` default (both `use_ortho = true` and `use_hydra = tru
 ## Composition with other variants
 
 - **T-LoRA** — timestep rank masking applies to `lora_down` (shared across experts), so it composes directly. HydraLoRA + T-LoRA is the configured default.
-- **DoRA** — currently not supported on HydraLoRA. Each expert would need its own magnitude vector, which is an unimplemented extension.
 - **OrthoLoRA** — supported via `OrthoHydraLoRAModule` (`networks/lora_modules/ortho.py`). Cayley-parameterized orthogonal `S_p` becomes per-expert (`(num_experts, r, r)`), `S_q` stays shared (matching the shared `lora_down` story). Activated by setting both `use_ortho = true` and `use_hydra = true` — this is the configured default.
 - **Spectrum** — composes cleanly. Cached steps skip all transformer blocks entirely (router included), so hydra just runs fewer times.
 - **Modulation guidance** — orthogonal. Touches AdaLN only, outside the hydra-adapted Linears.

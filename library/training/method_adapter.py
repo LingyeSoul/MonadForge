@@ -75,7 +75,7 @@ class ForwardArtifacts:
       - ``timesteps``:         ``[B]`` in ``[0, 1]``
       - ``crossattn_emb``:     ``[B, S, D]`` after any prefix/postfix injection
       - ``forward_kwargs``:    extra kwargs the trainer passed to ``anima(...)``
-                                (``crossattn_seqlens``, ``max_crossattn_seqlen``)
+                                (e.g. ``crossattn_seqlens``)
 
     ``noise`` and ``latents`` are 4D ``[B, C, H, W]`` (post-shift-scale, post-squeeze).
     ``anima_call`` invokes the DiT with the same patched-network state the primary
@@ -119,9 +119,7 @@ class MethodAdapter:
         post-squeeze). Adapters that don't need latents (e.g. IP-Adapter,
         which works off ``batch['images']``) can ignore the argument."""
 
-    def extra_forwards(
-        self, ctx: StepCtx, primary: ForwardArtifacts
-    ) -> Optional[dict]:
+    def extra_forwards(self, ctx: StepCtx, primary: ForwardArtifacts) -> Optional[dict]:
         """Run additional DiT forwards and return aux loss tensors.
 
         Called once per step, AFTER the primary forward, INSIDE the same
@@ -169,15 +167,4 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
         from networks.methods.easycontrol import EasyControlMethodAdapter
 
         adapters.append(EasyControlMethodAdapter())
-    if getattr(args, "use_repa", False):
-        from networks.methods.repa import REPAMethodAdapter
-
-        adapters.append(REPAMethodAdapter())
-    method = getattr(args, "method", None) or ""
-    if method == "soft_tokens" and float(
-        getattr(network, "contrastive_weight", 0.0) or 0.0
-    ) > 0.0:
-        from networks.methods.soft_tokens import SoftTokensMethodAdapter
-
-        adapters.append(SoftTokensMethodAdapter())
     return adapters

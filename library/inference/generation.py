@@ -17,14 +17,17 @@ from library.inference.adapters import (
     clear_hydra_fei,
     clear_hydra_sigma,
     compute_and_set_hydra_fei,
+    set_hydra_content,
+    set_hydra_crossattn,
     set_hydra_sigma,
 )
 from library.inference import sampling as inference_utils
 from library.inference.output import check_inputs
 from library.inference.text import prepare_text_inputs
 from library.inference.models import load_dit_model
-from library.inference.mod_guidance import setup_mod_guidance
-from library.inference.smc_cfg import SMCCFGState
+from library.inference.corrections.mod_guidance import setup_mod_guidance
+from library.inference.corrections.smc_cfg import SMCCFGState
+from library.inference.sampler_context import SamplerSideChannels
 
 logger = logging.getLogger(__name__)
 
@@ -34,16 +37,101 @@ logger = logging.getLogger(__name__)
 # from a downstream inference package without inverting.
 _SPECTRUM_RUNNER = None
 
+# SPD (Spectral Progressive Diffusion) runner registry — same pattern as
+# Spectrum. networks/spd.py self-registers on import; --spd dispatches to it.
+_SPD_RUNNER = None
+
+
+def _setup_soft_tokens(args, anima, device):
+    """Build + apply the soft_tokens network from ``--soft_tokens_weight``.
+
+    Returns ``None`` when the flag isn't set. Otherwise returns the network with
+    ``apply_to(unet=anima)`` already called — the per-block ``Block.forward``
+    monkey-patches are live, but ``_step_layer_tokens`` is empty until the
+    caller fires ``network.append_postfix(..., timesteps=t)`` each step.
+    """
+    soft_weight = getattr(args, "soft_tokens_weight", None)
+    if soft_weight is None:
+        return None
+    from networks.methods.soft_tokens import create_network_from_weights
+
+    net, _ = create_network_from_weights(
+        multiplier=1.0,
+        file=soft_weight,
+        ae=None,
+        text_encoders=None,
+        unet=anima,
+        for_inference=True,
+    )
+    net.load_weights(soft_weight)
+    net.to(device, dtype=torch.bfloat16)
+    net.apply_to(text_encoders=None, unet=anima, apply_text_encoder=False, apply_unet=True)
+    logger.info(
+        f"soft_tokens: loaded {soft_weight} "
+        f"(n_layers={net.n_layers}, K={net.num_tokens}, "
+        f"n_t_buckets={net.n_t_buckets}, splice={net.splice_position})"
+    )
+    return net
+
+
+def _seqlens_from_context(context_dict, device):
+    """Extract per-sample text seqlens from the context's attention mask.
+
+    ``context['embed'][3]`` is the cached attention mask (1 inside text, 0 in
+    padding) — sum along the sequence axis gives the real token count per
+    sample, which the ``front_of_padding`` splice needs.
+    """
+    embed_mask = context_dict["embed"][3].to(device)
+    return embed_mask.sum(dim=-1).to(torch.int32)
+
 
 def register_spectrum_runner(fn):
     """Plug in a spectrum_denoise implementation.
 
-    The runner must accept the same kwargs as networks.spectrum.spectrum_denoise.
-    Called by networks/spectrum.py at import time, or by a downstream inference
-    package that ships its own spectrum module.
+    The runner must match networks.spectrum.spectrum_denoise's signature: the
+    core positional args, a ``SamplerSideChannels`` (see
+    ``library.inference.sampler_context``) carrying the shared DCW / SMC-CFG /
+    soft-tokens / P-GRAFT / pooled-text channels, then the spectrum-specific
+    keyword knobs. Called by networks/spectrum.py at import time, or by a
+    downstream inference package that ships its own spectrum module.
     """
     global _SPECTRUM_RUNNER
     _SPECTRUM_RUNNER = fn
+
+
+def register_spd_runner(fn):
+    """Plug in an spd_denoise implementation (Spectral Progressive Diffusion).
+
+    The runner must match networks.spd.spd_denoise's signature: the core
+    positional args, a ``SamplerSideChannels`` (shared side-channels), then the
+    SPD-specific keyword knobs. Called by networks/spd.py at import time,
+    mirroring register_spectrum_runner.
+    """
+    global _SPD_RUNNER
+    _SPD_RUNNER = fn
+
+
+def _resolve_spd_schedule(args) -> Tuple[List[float], List[float]]:
+    """Resolve (stages, transition_sigmas) for --spd from CLI args.
+
+    Default is the bench-recommended single-late knee: one handoff
+    ``0.5 → 1.0`` at σ≈0.7 (conservative; gentler trajectory than σ0.5). A
+    final ``1.0`` stage is appended automatically. ``--spd_transition_sigmas``
+    must have ``len(stages) - 1`` entries.
+    """
+    stages = list(getattr(args, "spd_stages", None) or [0.5])
+    if not stages or stages[-1] != 1.0:
+        stages.append(1.0)
+    transition_sigmas = list(getattr(args, "spd_transition_sigmas", None) or [])
+    if not transition_sigmas:
+        # one default σ per handoff; single-late knee for the common 2-stage case
+        transition_sigmas = [0.7] * (len(stages) - 1)
+    if len(transition_sigmas) != len(stages) - 1:
+        raise ValueError(
+            f"--spd_transition_sigmas needs {len(stages) - 1} value(s) for "
+            f"stages {stages}, got {transition_sigmas}"
+        )
+    return stages, transition_sigmas
 
 
 class GenerationSettings:
@@ -164,25 +252,16 @@ def generate_body_tiled(
         context_null = context
     negative_embed = context_null["embed"][0].to(device, dtype=torch.bfloat16)
 
-    # Postfix tuning: splice learned vectors into the cached adapter output.
-    postfix_weight = getattr(args, "postfix_weight", None)
-    if postfix_weight is not None:
-        from networks.methods.postfix import create_network_from_weights
-
-        postfix_net, postfix_sd = create_network_from_weights(
-            multiplier=1.0, file=postfix_weight, ae=None, text_encoders=None, unet=None
-        )
-        postfix_net.load_weights(postfix_weight)
-        postfix_net.to(device, dtype=torch.bfloat16)
-        embed_mask = context["embed"][3].to(device)
-        embed_seqlens = embed_mask.sum(dim=-1).to(torch.int32)
-        embed = postfix_net.append_postfix(embed, embed_seqlens)
-        neg_mask = context_null["embed"][3].to(device)
-        neg_seqlens = neg_mask.sum(dim=-1).to(torch.int32)
-        negative_embed = postfix_net.append_postfix(negative_embed, neg_seqlens)
-        logger.info(
-            f"Postfix: appended {postfix_net.num_postfix_tokens} tokens after text"
-        )
+    # Soft tokens — see generate_body() for the long-form comment.
+    soft_tokens_net = _setup_soft_tokens(args, anima, device)
+    soft_tokens_embed_seqlens = (
+        _seqlens_from_context(context, device) if soft_tokens_net is not None else None
+    )
+    soft_tokens_neg_seqlens = (
+        _seqlens_from_context(context_null, device)
+        if soft_tokens_net is not None
+        else None
+    )
 
     num_channels_latents = anima_models.Anima.LATENT_CHANNELS
     h_latent = height // 8
@@ -283,6 +362,15 @@ def generate_body_tiled(
                     # Conditional pass
                     if anima.blocks_to_swap:
                         anima.prepare_block_swap_before_forward()
+                    # Caption-dependent routers (chimera ContentRouter and the
+                    # crossattn-emb GlobalRouter) — gates depend on the caption,
+                    # so fire separately for cond vs uncond. No-op otherwise.
+                    set_hydra_content(anima, embed)
+                    set_hydra_crossattn(anima, embed)
+                    if soft_tokens_net is not None:
+                        soft_tokens_net.append_postfix(
+                            embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                        )
                     with torch.no_grad():
                         tile_pred = anima(
                             tile_latent,
@@ -301,6 +389,14 @@ def generate_body_tiled(
                     if do_cfg:
                         if anima.blocks_to_swap:
                             anima.prepare_block_swap_before_forward()
+                        set_hydra_content(anima, negative_embed)
+                        set_hydra_crossattn(anima, negative_embed)
+                        if soft_tokens_net is not None:
+                            soft_tokens_net.append_postfix(
+                                negative_embed,
+                                soft_tokens_neg_seqlens,
+                                timesteps=t_expand,
+                            )
                         with torch.no_grad():
                             uncond_tile_pred = anima(
                                 tile_latent,
@@ -434,33 +530,23 @@ def generate_body(
         context_null = context  # dummy for unconditional
     negative_embed = context_null["embed"][0].to(device, dtype=torch.bfloat16)
 
-    # Postfix tuning: splice learned vectors into cross-attention embeddings.
-    # Pool text BEFORE injection so modulation guidance sees only real text tokens.
+    # Optional pooled-text override for modulation guidance (left unset here;
+    # downstream guards on ``is not None``).
     _pooled_text_pos = None
     _pooled_text_neg = None
 
-    postfix_weight = getattr(args, "postfix_weight", None)
-    if postfix_weight is not None:
-        from networks.methods.postfix import create_network_from_weights
-
-        _pooled_text_pos = embed.max(dim=1).values  # (1, 1024)
-        _pooled_text_neg = negative_embed.max(dim=1).values
-
-        postfix_net, postfix_sd = create_network_from_weights(
-            multiplier=1.0, file=postfix_weight, ae=None, text_encoders=None, unet=None
-        )
-        postfix_net.load_weights(postfix_weight)
-        postfix_net.to(device, dtype=torch.bfloat16)
-        # Compute seqlens from attention masks
-        embed_mask = context["embed"][3].to(device)
-        embed_seqlens = embed_mask.sum(dim=-1).to(torch.int32)
-        neg_mask = context_null["embed"][3].to(device)
-        neg_seqlens = neg_mask.sum(dim=-1).to(torch.int32)
-        embed = postfix_net.append_postfix(embed, embed_seqlens)
-        negative_embed = postfix_net.append_postfix(negative_embed, neg_seqlens)
-        logger.info(
-            f"Postfix: appended {postfix_net.num_postfix_tokens} tokens after text"
-        )
+    # Soft tokens: build + apply the monkey-patches once. The per-step
+    # append_postfix(..., timesteps=t) call fires inside the loop below — and
+    # is mirrored in the Spectrum runner for the --spectrum path.
+    soft_tokens_net = _setup_soft_tokens(args, anima, device)
+    soft_tokens_embed_seqlens = (
+        _seqlens_from_context(context, device) if soft_tokens_net is not None else None
+    )
+    soft_tokens_neg_seqlens = (
+        _seqlens_from_context(context_null, device)
+        if soft_tokens_net is not None
+        else None
+    )
 
     # Create padding mask
     padding_mask = torch.zeros(
@@ -491,7 +577,7 @@ def generate_body(
     dcw_calibrator = None
     calibrator_path = getattr(args, "dcw_calibrator", None) or getattr(args, "dcw_v4", None)
     if calibrator_path:
-        from library.inference.dcw_calibrator import OnlineDCWCalibrator
+        from library.inference.corrections.dcw_calibrator import OnlineDCWCalibrator
 
         artifact_path = Path(calibrator_path)
         if artifact_path.is_dir():
@@ -540,7 +626,52 @@ def generate_body(
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
 
-    if getattr(args, "spectrum", False):
+    # Shared conditioning side-channels handed to whichever loop runner is active
+    # (spectrum / spd). The standard inline loop below reads the locals directly.
+    _side_channels = SamplerSideChannels.from_args(
+        args,
+        pgraft_network=pgraft_network,
+        lora_cutoff_step=lora_cutoff_step,
+        pooled_text_pos=_pooled_text_pos,
+        pooled_text_neg=_pooled_text_neg,
+        dcw_calibrator=dcw_calibrator,
+        smc_cfg=smc_cfg,
+        soft_tokens_net=soft_tokens_net,
+        soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
+        soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,
+    )
+
+    if getattr(args, "spd", False):
+        if getattr(args, "spectrum", False):
+            raise ValueError(
+                "--spd and --spectrum are mutually exclusive (both replace the "
+                "denoise loop). Compose them via a future SPD∘Spectrum runner, "
+                "not by passing both."
+            )
+        if _SPD_RUNNER is None:
+            raise RuntimeError(
+                "--spd was passed but no SPD runner is registered. "
+                "Import networks.spd before calling generate()."
+            )
+
+        stages, transition_sigmas = _resolve_spd_schedule(args)
+        latents = _SPD_RUNNER(
+            anima,
+            latents,
+            timesteps,
+            sigmas,
+            embed,
+            negative_embed,
+            padding_mask,
+            args.guidance_scale,
+            er_sde,
+            device,
+            _side_channels,
+            stages=stages,
+            transition_sigmas=transition_sigmas,
+            seed=seed if isinstance(seed, int) else seed[0],
+        )
+    elif getattr(args, "spectrum", False):
         if _SPECTRUM_RUNNER is None:
             raise RuntimeError(
                 "--spectrum was passed but no spectrum runner is registered. "
@@ -559,6 +690,7 @@ def generate_body(
             args.guidance_scale,
             er_sde,
             device,
+            _side_channels,
             window_size=getattr(args, "spectrum_window_size", 2.0),
             flex_window=getattr(args, "spectrum_flex_window", 0.25),
             warmup_steps=getattr(args, "spectrum_warmup", 6),
@@ -567,16 +699,6 @@ def generate_body(
             lam=getattr(args, "spectrum_lam", 0.1),
             stop_caching_step=getattr(args, "spectrum_stop_caching_step", -1),
             calibration_strength=getattr(args, "spectrum_calibration", 0.0),
-            pgraft_network=pgraft_network,
-            pooled_text_pos=_pooled_text_pos,
-            pooled_text_neg=_pooled_text_neg,
-            lora_cutoff_step=lora_cutoff_step,
-            dcw=getattr(args, "dcw", False),
-            dcw_lambda=getattr(args, "dcw_lambda", -0.015),
-            dcw_schedule=getattr(args, "dcw_schedule", "one_minus_sigma"),
-            dcw_band_mask=getattr(args, "dcw_band_mask", "LL"),
-            dcw_calibrator=dcw_calibrator,
-            smc_cfg=smc_cfg,
         )
     else:
         try:
@@ -601,6 +723,12 @@ def generate_body(
                         # for v6 fei_obs={replace,concat} artifacts. No-op for v5.
                         dcw_calibrator.record_latent_pre_forward(i, latents)
 
+                    set_hydra_content(anima, embed)
+                    set_hydra_crossattn(anima, embed)
+                    if soft_tokens_net is not None:
+                        soft_tokens_net.append_postfix(
+                            embed, soft_tokens_embed_seqlens, timesteps=t_expand
+                        )
                     with torch.no_grad():
                         _pos_kw = (
                             {"pooled_text_override": _pooled_text_pos}
@@ -616,6 +744,14 @@ def generate_body(
                         )
 
                     if do_cfg:
+                        set_hydra_content(anima, negative_embed)
+                        set_hydra_crossattn(anima, negative_embed)
+                        if soft_tokens_net is not None:
+                            soft_tokens_net.append_postfix(
+                                negative_embed,
+                                soft_tokens_neg_seqlens,
+                                timesteps=t_expand,
+                            )
                         with torch.no_grad():
                             _neg_kw = (
                                 {"pooled_text_override": _pooled_text_neg}

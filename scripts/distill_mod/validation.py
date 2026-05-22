@@ -12,8 +12,9 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from library.inference.uncond import uncond_for_batch
+
 from .teacher_cache import ValTeacherCache
-from .uncond import uncond_for_batch
 
 
 @torch.no_grad()

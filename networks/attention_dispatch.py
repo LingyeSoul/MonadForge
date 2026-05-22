@@ -72,9 +72,6 @@ class AttentionParams:
     selfattn_block_mask: Optional[object] = (
         None  # pre-computed BlockMask for self-attention padding (flex mode, static-shape training)
     )
-    crossattn_full_len: Optional[int] = (
-        None  # original KV length before bucketed trimming (for LSE sink correction)
-    )
     uniform_seqlens: bool = (
         False  # caller guarantees all seqlens are equal (skips GPU sync check)
     )

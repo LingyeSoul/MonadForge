@@ -178,6 +178,14 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="base name of trained model file",
     )
     parser.add_argument(
+        "--progress_jsonl",
+        type=str,
+        default=None,
+        help="path to the structured progress JSONL event stream. Unset → derive "
+        "<output_dir>/<output_name>.progress.jsonl (default on). Pass an empty string "
+        "/ 'none' / 'off' to disable.",
+    )
+    parser.add_argument(
         "--huggingface_repo_id",
         type=str,
         default=None,
@@ -678,7 +686,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--method",
         type=str,
         default=None,
-        help="method name under configs/methods/ (e.g. 'tlora', 'hydralora', 'postfix'). Merged after preset so method settings win on overlap.",
+        help="method name under configs/methods/ (e.g. 'tlora', 'hydralora', 'chimera'). Merged after preset so method settings win on overlap.",
     )
     parser.add_argument(
         "--preset",
@@ -861,7 +869,7 @@ def add_network_arguments(parser: argparse.ArgumentParser):
         type=str,
         default=None,
         help="path to a pretrained LoRA checkpoint to merge into DiT weights before training. "
-        "Intended for postfix/prefix training on top of a fixed LoRA. "
+        "Intended for adapter training on top of a fixed LoRA. "
         "The LoRA is baked into the base weights at load time — no runtime hooks.",
     )
     parser.add_argument(

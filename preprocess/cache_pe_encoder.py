@@ -9,8 +9,8 @@ encoder's nearest-aspect bucket, runs a single forward, and saves
 the image when omitted). Skips already-cached entries (idempotent).
 
 Wrapped by ``make preprocess-pe`` (reads ``post_image_dataset/resized/``,
-writes ``post_image_dataset/lora/``). The same sidecars are consumed by the
-LoRA / REPA pipeline and by IP-Adapter -- they share the cache directory.
+writes ``post_image_dataset/lora/``). The same sidecars are consumed by
+IP-Adapter and the DCW v4 fusion head -- they share the cache directory.
 
 The cache key matches what the encoder produces at training time:
 ``encode_pe_from_imageminus1to1(bundle, x, same_bucket=True)`` -> ``[T_pe, d_enc]``.

@@ -208,7 +208,7 @@ def main() -> None:
             )
 
         if args.pooled_text_proj:
-            from library.inference.mod_guidance import setup_mod_guidance
+            from library.inference.corrections.mod_guidance import setup_mod_guidance
 
             setup_mod_guidance(
                 args,

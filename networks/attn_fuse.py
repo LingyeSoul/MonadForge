@@ -81,8 +81,8 @@ def iter_split_groups(
     ``{shared_prefix}{letter}_proj.*`` shape and can refuse them. The
     discriminator is the sentinel suffix:
 
-      * ``".lora_down.weight"`` — plain LoRA / DoRA (each component
-        carries an independent down projection).
+      * ``".lora_down.weight"`` — plain LoRA (each component carries an
+        independent down projection).
       * ``".lora_up_weight"`` — Hydra-form (stacked per-expert ups, shared
         per-component down written under ``.lora_down.weight``).
       * ``".lora_ups.0.weight"`` — pre-stack Hydra-form on disk (one key

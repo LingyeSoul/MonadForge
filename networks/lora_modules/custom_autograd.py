@@ -2,9 +2,10 @@
 #
 # `F.linear(x.float(), weight.float())` saves the fp32-cast input for backward
 # (~32 MiB per 2048-wide Linear at 4096 tokens, ×N adapted modules). These
-# Functions save the bf16 `x` and recompute the cast in backward. Forward and
-# backward matmuls run in fp32 — bitwise-identical to the existing path for
-# deterministic kernels.
+# Functions save the bf16 `x` and recompute the cast in backward. The unscaled
+# Function is bitwise-identical to the legacy path; the scaled variant folds
+# `inv_scale` into the weight at the matmul (avoiding a (B, L, in_dim) bf16
+# intermediate), so it is equivalent up to fp32-vs-bf16 rounding order.
 #
 # Two Functions (scaled / unscaled) instead of one with an optional tensor:
 # keeps the compile graph shape fixed.
@@ -37,44 +38,49 @@ class LoRADownProjectFn(torch.autograd.Function):
 
 
 class ScaledLoRADownProjectFn(torch.autograd.Function):
-    """Scaled variant: forward is ``F.linear((x * inv_scale.to(x.dtype)).float(), weight.float())``.
+    """Scaled variant: equivalent to ``F.linear(x * inv_scale, weight)`` in fp32.
 
-    Matches the legacy ``_rebalance`` path exactly — ``inv_scale`` is cast to
-    ``x.dtype`` (bf16 under full_bf16) before the multiply, so the rebalance
-    keeps the bf16 activation chain instead of getting promoted to fp32.
+    Identity used: ``F.linear(x * c, W) == F.linear(x, W * c)`` for a per-input
+    feature scale ``c``. We fold ``inv_scale`` into ``weight`` at the matmul
+    instead of materializing ``x_work = x * inv`` (a ``(B, L, in_dim)`` bf16
+    tensor). Under ``compile_inductor_mode = "reduce-overhead"`` the
+    intermediate would otherwise get pinned in the CUDA-Graph pool across all
+    adapted Linears — ~16 MiB × N modules of avoidable activation memory.
 
-    ``inv_scale`` is a calibration buffer (no gradient). Saving bf16 ``x`` plus
-    the 1-D ``inv_scale`` (size == in_features) avoids retaining the
-    materialized fp32 ``x * inv_scale`` that the current path otherwise holds.
+    ``inv_scale`` is a calibration buffer (no gradient), stored fp32 for
+    1/s_norm precision; cast to fp32 at the matmul boundary is free since the
+    matmul is already fp32. Saved-for-backward stays bf16 ``x`` + bf16
+    ``weight`` + fp32 ``inv_scale`` (in_features-sized, negligible).
     """
 
     @staticmethod
     def forward(ctx, x, weight, inv_scale):
-        inv = inv_scale.to(x.dtype)
-        x_work = x * inv  # bf16 = bf16 * bf16, matches legacy _rebalance
-        out = torch.nn.functional.linear(x_work.float(), weight.float())
+        inv_f = inv_scale.float()
+        w_scaled = weight.float() * inv_f.unsqueeze(0)
+        out = torch.nn.functional.linear(x.float(), w_scaled)
         ctx.save_for_backward(x, weight, inv_scale)
         return out
 
     @staticmethod
     def backward(ctx, grad_out):
         x, weight, inv_scale = ctx.saved_tensors
-        inv = inv_scale.to(x.dtype)
-        x_work = x * inv  # bf16 recompute matches forward
         go = grad_out.float()
+        inv_f = inv_scale.float()
         w_f = weight.float()
-        x_f = x_work.float()
+        x_f = x.float()
 
-        grad_weight = go.reshape(-1, go.shape[-1]).transpose(0, 1).matmul(
+        # out = x_f @ (W_f * inv).T
+        #   ⇒ grad_W_scaled = go^T @ x_f         (fp32, (r, in))
+        #   ⇒ grad_W        = grad_W_scaled * inv  (chain rule: W_scaled = W * inv)
+        grad_w_scaled = go.reshape(-1, go.shape[-1]).transpose(0, 1).matmul(
             x_f.reshape(-1, x_f.shape[-1])
         )
+        grad_weight = grad_w_scaled * inv_f.unsqueeze(0)
 
-        # Legacy autograd for ``out = F.linear((x * inv).float(), w.float())``:
-        #   grad_y_fp32 = go @ w_f          (fp32)
-        #   grad_x_work = grad_y_fp32.to(x.dtype)   (bf16, from .float() backward)
-        #   grad_x      = grad_x_work * inv         (bf16, from multiply backward)
-        grad_x_work = go.matmul(w_f).to(x.dtype)
-        grad_x = grad_x_work * inv
+        # grad_x = go @ W_scaled (fp32 throughout, cast at end); avoids
+        # materializing a bf16 grad_x_work intermediate.
+        w_scaled = w_f * inv_f.unsqueeze(0)
+        grad_x = go.matmul(w_scaled).to(x.dtype)
         return grad_x, grad_weight.to(weight.dtype), None
 
 

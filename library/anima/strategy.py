@@ -147,6 +147,7 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         t5_input_ids: Optional[torch.Tensor] = None,
         t5_attn_mask: Optional[torch.Tensor] = None,
         crossattn_emb: Optional[torch.Tensor] = None,
+        uncond_crossattn_emb: Optional[torch.Tensor] = None,
     ) -> None:
         """Zero per-sample text conditioning at the per-sample dropout rate.
 
@@ -155,8 +156,14 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         aliased to the dataloader's CPU tensors). Pass only the tensors
         actually consumed downstream so the unused ones can stay on CPU.
 
-        Replaces dropped items with the unconditional encoding (encoding "")
-        to match diffusion-pipe-main behavior.
+        ``uncond_crossattn_emb`` is the T5("") sidecar (shape ``(1, S, D)``
+        staged by ``make distill-prep`` — see
+        ``library/inference/uncond.py``). When provided, dropped rows of
+        ``crossattn_emb`` are replaced with it so the trained adapter sees
+        the *same* unconditional embedding at CFG-uncond time that
+        ``library/inference/text.py:99-127`` feeds at inference. When None,
+        falls back to zeros — legacy behavior that drives the LoRA's
+        learned CFG-uncond branch out of distribution.
         """
         device_tensor = next(
             (
@@ -185,7 +192,18 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
             t5_attn_mask[drop_mask, 0] = 1
             t5_attn_mask[drop_mask, 1:] = 0
         if crossattn_emb is not None:
-            crossattn_emb[drop_mask] = 0
+            if uncond_crossattn_emb is not None:
+                # uncond is (1, S_u, D); pad/truncate to crossattn S then
+                # rely on (1, S, D) → (K, S, D) broadcast over drop_mask.
+                S = crossattn_emb.shape[1]
+                u = uncond_crossattn_emb
+                if u.shape[1] < S:
+                    u = torch.nn.functional.pad(u, (0, 0, 0, S - u.shape[1]))
+                elif u.shape[1] > S:
+                    u = u[:, :S, :]
+                crossattn_emb[drop_mask] = u.to(crossattn_emb.dtype)
+            else:
+                crossattn_emb[drop_mask] = 0
 
 
 class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):

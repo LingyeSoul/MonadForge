@@ -1,8 +1,8 @@
 # Soft Tokens — per-layer × per-t learnable text tokens (SoftREPA)
 
-Per-layer, time-indexed soft tokens in T5-compatible space. DiT is frozen. ~1M trainable params at default config (n_layers=10, K=4, D=1024, n_t_buckets=100). Each of the first `n_layers` DiT blocks gets its own learned (K, D) token bank plus a per-(t-bucket, layer) D-vector offset, spliced into `crossattn_emb` for that block alone. Trained with plain FM **plus** the paper's InfoNCE contrastive objective on diffusion-loss logits, blended at a small weight.
+Per-layer, time-indexed soft tokens in T5-compatible space. DiT is frozen. ~1M trainable params at default config (n_layers=10, K=4, D=1024, n_t_buckets=100). Each of the first `n_layers` DiT blocks gets its own learned (K, D) token bank plus a per-(t-bucket, layer) D-vector offset, spliced into `crossattn_emb` for that block alone. Trained with plain FM.
 
-Reference: Lee et al., *Aligning Text to Image in Diffusion Models is Easier Than You Think* (arXiv:2503.08250, NeurIPS 2025) — "SoftREPA". We adopt the full methodology — both the per-layer × per-t parameterization and the InfoNCE objective — but blend the contrastive term as a small-λ regularizer on top of plain FM (paper used pure contrastive, which produced an SD3 FID regression — see §"Contrastive integration" below).
+Reference: Lee et al., *Aligning Text to Image in Diffusion Models is Easier Than You Think* (arXiv:2503.08250, NeurIPS 2025) — "SoftREPA". We adopt only the parameterization (per-layer × per-t soft tokens); the paper's InfoNCE contrastive objective is intentionally skipped — at Anima's training batch size (B=1) there are no in-batch negatives, and the paper itself reported SD3 FID regression at paper-strength contrastive.
 
 ## Quick start
 
@@ -62,8 +62,7 @@ Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params
 
 | File | Role |
 |------|------|
-| `networks/methods/soft_tokens.py` | `SoftTokensNetwork` — per-(layer, t) token bank, splice hook, save/load. `SoftTokensMethodAdapter` — paper InfoNCE forwards (k extra DiT calls with rolled text). |
-| `library/training/losses.py::_soft_tokens_contrastive_loss` | Loss-registry handler that multiplies the adapter's stashed contrastive scalar by `network.contrastive_weight`. Active in `_STAGE_SCALAR_BROADCAST` when method is `soft_tokens` and `contrastive_weight > 0`. |
+| `networks/methods/soft_tokens.py` | `SoftTokensNetwork` — per-(layer, t) token bank, splice hook, save/load. |
 | `apply_to(text_encoders, unet)` | Walks `unet.blocks[:n_layers]`, replaces each `block.forward` with a wrapper that splices `s^(k, t)` into `crossattn_emb` before calling the original (ReFT-pattern monkey-patch). |
 | `append_postfix(crossattn_emb, seqlens, timesteps)` | Receives `timesteps` from `train.py`'s existing per-step hook; computes `(n_layers, B, K, D)` step-scoped tokens and caches them on the network. **Returns `crossattn_emb` unchanged** — splicing happens inside the block hooks. |
 | `_make_block_hook(layer_idx, org_forward)` | Closure that reads the cached step tokens at `layer_idx`, splices into `crossattn_emb`, calls the original block forward. |
@@ -79,34 +78,11 @@ Two options, mirroring postfix:
 | Mode | Where | Trade-off |
 |---|---|---|
 | `end_of_sequence` (default) | overwrite the K tail slots `[S-K, S)` of the zero-padding region | Static splice index → maximally compile-friendly. Caption-position-agnostic. Preserves the strongest front-of-padding attention sinks intact. |
-| `front_of_padding` | place K tokens at `[seqlens[i], seqlens[i]+K)` per sample (`scatter`) | Caption-position-aware. Displaces the strongest sinks. Per-sample variable indices via the cached `crossattn_seqlens`. Incompatible with `trim_crossattn_kv=true`. |
+| `front_of_padding` | place K tokens at `[seqlens[i], seqlens[i]+K)` per sample (`scatter`) | Caption-position-aware. Displaces the strongest sinks. Per-sample variable indices via the cached `crossattn_seqlens`. |
 
 Toggle via `network_args = ["splice_position=front_of_padding"]`. The choice is metadata-tagged (`ss_splice_position`) so checkpoints round-trip with the right splice mode.
 
 Anima's text-encoder padding invariant (zero-padded positions act as cross-attention sinks) means writing into the padded tail is *not* a no-op — those slots receive attention mass and the soft tokens get exposure to every spatial query. See the "Text encoder padding" note in the root CLAUDE.md.
-
-## Contrastive integration
-
-The paper's InfoNCE objective (§3.1, eq. 13–14) is wired up as `SoftTokensMethodAdapter`. For each anchor `i`, the adapter runs `k` extra DiT forwards with text rolled by `j ∈ {1..k}` along the batch axis — same `(x_t, ε, t)`, varying `y` — and builds a `(1+k)`-way softmax over negative diffusion-loss logits:
-
-```
-l(x, y) = exp(−‖v_θ(x_t, t, y, s) − (ε − x_0)‖² / τ)
-L_contrastive = −E_i[ log( exp(l(x_i, y_i)) / Σ_j∈{i,(i+1),..,(i+k)} exp(l(x_i, y_j)) ) ]
-L_total = L_FM(matched) + λ · L_contrastive
-```
-
-The soft tokens themselves don't depend on text content, so the same `_step_layer_tokens` cached during the matched forward is reused across negative forwards (the per-block hook re-splices into the rolled crossattn). Per-sample seqlens roll with the text.
-
-**Why hybrid (`L_FM + λ · L_contrastive`) rather than pure contrastive (paper):**
-- The paper showed an SD3 FID regression at paper-strength contrastive (FID 31.59 → 36.21 on COCO val5K) while ImageReward gained ~14%. SD3 is the closest analogue to Anima.
-- Anima's caption distribution (booru-style tags / structured prompts) is narrower than COCO's natural-language captions, so in-batch negatives are weaker (more semantic overlap). Pure contrastive on weak negatives over-tunes the discriminative signal at the cost of fidelity.
-- Keeping plain FM at full strength preserves fidelity; the contrastive term acts as a small-λ regularizer that pushes layer-tokens to make matched (x, y) pairs more discriminable than mismatched ones — the load-bearing signal that drives **per-layer specialization**.
-
-**Cost.** Each step does `1 + min(k, B-1)` DiT forwards instead of 1. At default `k=1`, batch-size 2+: 2× FM-only forward cost. At `k=2`, batch-size 3+: 3×. Memory scales linearly because each negative forward keeps activations live until backward (we don't `wants_split_backward` — all `(1+k)` candidates contribute to a single InfoNCE loss).
-
-**Splice constraint.** The contrastive path currently requires `splice_position=end_of_sequence`. The rolled-text trick reconstructs the pre-splice tensor from the post-splice tensor by zeroing the K tail slots, which works for EOS (constant tail) but not FOP (per-sample variable splice indices, scatter is not trivially invertible). FOP-with-contrastive is a TODO.
-
-**Disabling contrastive.** Set `contrastive_weight=0` in `network_args` to drop back to plain FM with just the parameterization. The adapter short-circuits at `weight ≤ 0` and the loss composer omits the term.
 
 ## Why a separate module from `postfix.py`
 
@@ -115,6 +91,22 @@ Postfix splices **once** at the cached adapter output (training-time and inferen
 ## Why no slot-collapse
 
 The existing postfix module logs an aggressive guard against K-slot permutation symmetry collapse (`anima_postfix.safetensors` was effectively K=1 due to zero-init + symmetric splice — see the postfix module docstring and the `slot_embed_init_std` knob). Soft tokens **structurally avoid** this: tokens at different `(k, t)` pairs are consumed at different positions in the network and gradients differ from step 1, so no symmetry to break.
+
+## Bank-axis dispersive regularizer
+
+Optional parameter-space regularizer that pushes the bank's `K` (per-layer slot) axis and `n_t_buckets` (bucket) axis apart, controlled by `bank_dispersive_weight` / `bank_dispersive_warmup_ratio` / `bank_dispersive_tau` in `network_args`. Adapted from Wang & He, *Diffuse and Disperse* (arXiv:2506.09027) — the paper disperses along the *batch* axis at large batch sizes; this port disperses along the bank's intrinsic `K` and `n_t_buckets` axes instead, which keeps the loss usable at `B=1` (paper's form pdist's a single-row tensor and degenerates).
+
+```
+L_disp = mean_{layer k} [ log(mean_pairs(exp(-‖tokens[k,i] − tokens[k,j]‖² / τ)))
+                        + log(mean_pairs(exp(-‖t_offsets[:,k,i] − t_offsets[:,k,j]‖² / τ))) ]
+L_total = L_FM + bank_dispersive_weight · L_disp                       (post-warmup)
+```
+
+Failure modes it targets:
+- **K-axis collapse.** K=4 slots collapsing toward each other → effectively K=1 per layer, postfix slot-collapse style ([[project_postfix_slot_collapse]]). Per-step push along K keeps the slots from drifting together.
+- **Under-sampled bucket degeneracy.** At `B=1` with `n_t_buckets=14`, the FM loss touches one bucket per step. Buckets the timestep sampler rarely picks stay near their (zero) init forever. The bucket-axis dispersive term provides every bucket a non-zero gradient every step.
+
+`bank_dispersive_warmup_ratio` (default 0.1) holds the term at 0 for the first 10% of training so the bank can develop initial structure from the FM gradient before the "don't collapse" prior fires; `step_bank_dispersive_warmup` flips the live weight from 0 to target after `ratio · max_train_steps` steps. Numerically stable via `logsumexp` even when bank vectors disperse to large pairwise distances (where naive `mean(exp(-D/τ))` underflows). Set `bank_dispersive_weight=0` to disable entirely.
 
 ## Compatibility
 
@@ -128,7 +120,6 @@ The existing postfix module logs an aggressive guard against K-slot permutation 
 | `gradient_checkpointing` | ✅ | The hook is the outermost wrapper; the original `forward` (which itself runs `checkpoint(_forward, ...)`) is called underneath, and the spliced `crossattn_emb` is part of the saved input graph. |
 | Modulation guidance | ✅ orthogonal | Modulation = per-block AdaLN path; soft tokens = K/V input path per block. |
 | T-LoRA / OrthoLoRA / ReFT | n/a | Soft tokens freeze the DiT; LoRA-family methods are not stacked in this config. |
-| `trim_crossattn_kv=true` | ⚠ EOS only | Soft tokens overwrite the zero-padding tail (no seqlen change), so trim's KV slice is correct. With `front_of_padding` the tokens land *inside* what trim treats as real-text region; leave trim off. |
 
 ## Evaluation
 
@@ -148,8 +139,5 @@ What to measure to know if this is doing anything:
 | `network_dim` (K) | 4 | 1, 4, 8, 16 | SoftREPA used m=4 on SD3. K=1 collapses to "per-layer prefix vector" — clean ablation. |
 | `n_t_buckets` | 100 | 0 (disable t-cond), 20, 100 | Setting `t_offsets.weight.requires_grad_(False)` is a clean ablation for whether time conditioning is load-bearing. |
 | `init_std` | 0.02 | 0.0, 0.02, 0.1 | Zero-init = strict identity at step 0 (block sees zeroed padding tail). 0.02 = small perturbation. 0.1 = aggressive. |
-| `splice_position` | `end_of_sequence` | both | See §"Splice position" above. FOP currently incompatible with contrastive. |
+| `splice_position` | `end_of_sequence` | both | See §"Splice position" above. |
 | `learning_rate` | 1e-3 | 1e-4 to 5e-3 | Soft tokens are tiny + zero-inited offsets; high LR is fine. |
-| `contrastive_weight` | 0.05 | 0, 0.01, 0.05, 0.1, 0.5 | Paper-strength is closer to 1.0 (pure contrastive); we default low to preserve fidelity. 0 disables contrastive entirely (parameterization-only ablation). |
-| `contrastive_k` | 1 | 1, 2, 3 | Each k-increment adds one DiT forward per step. Capped at `batch_size - 1` at runtime. |
-| `contrastive_tau` | 1.0 | 0.5, 1.0, 2.0 | Temperature in `exp(−MSE / τ)`. Smaller τ → sharper logits, stronger contrastive pressure. |

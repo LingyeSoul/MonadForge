@@ -259,7 +259,15 @@ def generate_synthetic_latents(
             logger.warning(f"  skip {pair.stem}: bad latent NPZ ({e})")
             continue
 
-        out_path = synth_dir / f"{pair.stem}_{H_lat}x{W_lat}_anima.npz"
+        # Mirror cache_dir's subdir layout (post_image_dataset/lora/<artist>/…)
+        # under synth_dir so the synth pool stays browsable per artist.
+        try:
+            rel_parent = Path(pair.te_path).parent.relative_to(cache_dir)
+        except ValueError:
+            rel_parent = Path()
+        out_parent = synth_dir / rel_parent
+        out_parent.mkdir(parents=True, exist_ok=True)
+        out_path = out_parent / f"{pair.stem}_{H_lat}x{W_lat}_anima.npz"
         if out_path.exists() and not overwrite:
             n_skipped += 1
             pbar.set_postfix_str(f"skip {pair.stem}")

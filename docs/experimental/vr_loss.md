@@ -234,8 +234,7 @@ For LoRA-family runs this is bit-equivalent to a frozen copy of the base
 DiT: the base weights are frozen for the whole training run, and adapters
 are *additive residuals* on top — turning the multiplier to zero collapses
 the model to its base. No `--vr_frozen_ref_dit` flag, no second model copy
-in VRAM, no `static_token_count` / `trim_crossattn_kv` mirroring to keep in
-sync.
+in VRAM, no `static_token_count` mirroring to keep in sync.
 
 `set_multiplier(0)` covers both `LoRA` / `OrthoLoRA` / `HydraLoRA` /
 `StackedExperts` *and* `ReFT` (the network walks both lists in one call).
@@ -253,9 +252,9 @@ postfix-appended tokens as the gradient forward — postfix is therefore
 > postfix+VR as experimental; gate it explicitly per-run rather than
 > mixing the two by default.
 
-Hooks on the unet (REPA capture, functional MSE captures) fire on this
-forward too, but they are consumed *before* the VR block runs — see the
-order in `train.py::get_noise_pred_and_target`.
+Hooks on the unet (functional MSE captures) fire on this forward too,
+but they are consumed *before* the VR block runs — see the order in
+`train.py::get_noise_pred_and_target`.
 
 ## Implementation map
 
@@ -300,9 +299,9 @@ gradient-tracked forward, so net step cost is ~1.4×.
 
 If block swap is on, the bypass forward also pays the swap cost. That's
 compute, not memory, but it slightly inflates the 1.4× figure on heavily
-swapped presets. Forward hooks (REPA capture, functional MSE capture)
-also fire on the bypass forward — they're benign because the captured
-state is consumed *before* the VR block runs.
+swapped presets. Forward hooks (functional MSE capture) also fire on
+the bypass forward — they're benign because the captured state is
+consumed *before* the VR block runs.
 
 Net training win requires VR to give >1.4× effective convergence. The
 paper reports +0.96 HPSv3 from VR alone on AsymFLUX.2 klein (Table 3).

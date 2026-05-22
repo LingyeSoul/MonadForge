@@ -1,15 +1,17 @@
 """Shared training/validation context dataclasses.
 
-Frozen bundles built once at the top of ``train()`` and threaded through
-per-step / per-batch methods on the trainer plus the loop runner in
-:mod:`library.training.loop`. Lives here (rather than in ``train.py``) so
-``loop.py`` and any future trainer entrypoints can import them directly
-instead of receiving them as injected class parameters.
+``TrainCtx``/``ValCtx`` are frozen bundles built once at the top of
+``train()`` and threaded through per-step / per-batch methods on the trainer
+plus the loop runner in :mod:`library.training.loop`. ``RuntimeState`` is the
+mutable counterpart -- per-run feature state that methods mutate as training
+progresses. All live here (rather than in ``train.py``) so ``loop.py`` and any
+future trainer entrypoints can import them directly instead of receiving them
+as injected class parameters.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import torch
@@ -58,3 +60,31 @@ class ValCtx:
     # held-out items (absolute_path, caption, bucket_reso, text_encoder_outputs_npz)
     # for paired sample generation against the cached PE reference pool.
     dataset_group: Any = None
+
+
+@dataclass
+class RuntimeState:
+    """Per-run mutable state that's threaded across trainer methods.
+
+    Unlike the frozen ``*Ctx`` bundles above, these fields are mutated as
+    training progresses. Grouped together so the lifecycle of each feature's
+    state is documented in one place rather than scattered as bare attributes.
+    """
+
+    # Per-step aux dict -- adapters' ``extra_forwards`` returns are merged
+    # here in ``get_noise_pred_and_target`` and consumed by the loss composer
+    # in ``_process_batch_inner``.
+    extras_for_step: dict = field(default_factory=dict)
+    # EMA λ state, mutated by the flow_matching_vr loss handler each step. The
+    # "frozen reference" for the AsymFlow §5.2 control variate is just the
+    # trainable DiT with ``network.set_multiplier(0)`` — see the VR block in
+    # ``get_noise_pred_and_target``.
+    vr: dict = field(default_factory=lambda: {"lambda_ema": None})
+    # T5("") crossattn sidecar (shape ``(1, S, 1024)`` bf16 on device).
+    # Populated by ``_ensure_uncond_crossattn`` when caption dropout is
+    # enabled; consumed by ``prepare_text_conds`` so dropped rows match
+    # Anima's CFG-uncond inference path instead of falling back to zeros.
+    uncond_crossattn_1: torch.Tensor | None = None
+    # Set during dataset prep from subset.caption_dropout_rate; gates whether
+    # ``_ensure_uncond_crossattn`` actually stages the sidecar.
+    caption_dropout_enabled: bool = False

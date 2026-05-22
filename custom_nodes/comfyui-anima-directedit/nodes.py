@@ -60,9 +60,9 @@ def _resolve_anima_modules():
 
     def _imports():
         buckets_mod = importlib.import_module("library.datasets.buckets")
-        directedit_mod = importlib.import_module("library.inference.directedit")
+        directedit_mod = importlib.import_module("library.inference.editing.directedit")
         sampling_mod = importlib.import_module("library.inference.sampling")
-        splice_mod = importlib.import_module("library.inference.directedit_splice")
+        splice_mod = importlib.import_module("library.inference.editing.directedit_splice")
         return (buckets_mod, directedit_mod, sampling_mod, splice_mod)
 
     try:

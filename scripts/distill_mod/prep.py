@@ -4,9 +4,12 @@ Pre-generates auxiliary artifacts consumed by
 ``scripts/distill_mod/distill.py``.
 
 Phase 1 — uncond TE sidecar:
-    Emits ``<cache_dir>/_anima_uncond_te.safetensors`` — the ``T5("")``
+    Emits ``<uncond_dir>/_anima_uncond_te.safetensors`` (default
+    ``post_image_dataset/_anima_uncond_te.safetensors``) — the ``T5("")``
     cross-attention baseline used as the student's *unconditional* text input
-    AND as CFG-negative during Phase 2 synthesis. Replaces the
+    AND as CFG-negative during Phase 2 synthesis. ``make preprocess-te``
+    normally produces this for free; this Phase 1 block is the explicit
+    re-stager when you want a fresh encode. Replaces the
     ``torch.zeros_like(crossattn_emb)`` shortcut, which is neither paper-
     faithful (Starodubcev et al., ICLR 2026, arXiv:2602.09268v1 §5: "we
     propagate the textual prompt solely through the pooled text embedding,
@@ -50,12 +53,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from library.datasets.buckets import DCW_ASPECT_NAMES  # noqa: E402
-from scripts.distill_mod.synth import generate_synthetic_latents  # noqa: E402
-from scripts.distill_mod.uncond import (  # noqa: E402
+from library.inference.uncond import (  # noqa: E402
     DEFAULT_SEQ_LEN,
+    DEFAULT_UNCOND_DIR,
     UNCOND_TE_FILENAME,
     stage_uncond_sidecar,
 )
+from scripts.distill_mod.synth import generate_synthetic_latents  # noqa: E402
 
 # Phase 2 default synthesis allowlist: DCW's top-5 portrait buckets plus the
 # next 3 most-frequent buckets in post_image_dataset/lora/ (960x1088 near-square
@@ -81,6 +85,16 @@ def main() -> None:
         type=str,
         default="post_image_dataset/lora",
         help="LoRA cache dir (source TE + real-image latents).",
+    )
+    parser.add_argument(
+        "--uncond_dir",
+        type=str,
+        default=str(DEFAULT_UNCOND_DIR),
+        help=(
+            "Where to stage the T5(\"\") sidecar. Model-scoped, lives at the "
+            "dataset root above the per-pipeline cache subdirs so every "
+            "training/distill run can share one file."
+        ),
     )
     parser.add_argument(
         "--synth_dir",
@@ -219,12 +233,13 @@ def main() -> None:
 
     cache_dir = Path(args.cache_dir)
     synth_dir = Path(args.synth_dir)
+    uncond_dir = Path(args.uncond_dir)
 
     # ── Phase 1 ────────────────────────────────────────────────────────
-    uncond_path = cache_dir / UNCOND_TE_FILENAME
+    uncond_path = uncond_dir / UNCOND_TE_FILENAME
     if not args.skip_uncond:
         uncond_path = stage_uncond_sidecar(
-            cache_dir,
+            uncond_dir,
             args.qwen3,
             args.dit,
             t5_tokenizer_path=args.t5_tokenizer_path,

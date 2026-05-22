@@ -62,8 +62,13 @@ from tqdm import tqdm
 
 from library.anima import weights as anima_utils
 from library.anima.models import Anima
-from networks.methods.turbo_dmd import TurboDMDNetwork
 from library.datasets.distill import CachedDataset
+from library.inference.uncond import (
+    default_uncond_path,
+    load_uncond_crossattn,
+    uncond_for_batch,
+)
+from networks.methods.turbo_dmd import TurboDMDNetwork
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -314,7 +319,9 @@ def main():
     turbo.freeze_dit()
     turbo.student.to(device=device, dtype=dtype)
     turbo.fake.to(device=device, dtype=dtype)
-    model.train()  # block.forward gates ckpt on self.training
+    # `model.training` gates grad-ckpt inside block.forward; toggled per
+    # forward in `_forward` below so no_grad teacher/fake forwards don't
+    # incur grad-ckpt setup cost. Initial state set by the first call.
 
     n_student = sum(p.numel() for p in turbo.student_params())
     n_fake = sum(p.numel() for p in turbo.fake_params())
@@ -425,13 +432,24 @@ def main():
         logger.info(f"TB logs -> {run_log}")
 
     # ---------------- Training loop ----------------
-    # Per-step caches keyed by tensor shape. ``pad`` is a zero tensor in the
-    # spatial shape of ``latents``; with constant-token bucketing the shape is
-    # stable within a step (and constant in single-prompt mode), so we recycle
-    # it instead of re-allocating per forward. Same idea for ``c_null`` — the
-    # CFG uncond branch reads ``zeros_like(crossattn_emb)`` 1×/step at most.
+    # Per-step pad cache, keyed by tensor shape. ``pad`` is a zero tensor in
+    # the spatial shape of ``latents``; with constant-token bucketing the shape
+    # is stable within a step (and constant in single-prompt mode), so we
+    # recycle it instead of re-allocating per forward.
     _pad_cache: dict[tuple[int, int, int], torch.Tensor] = {}
-    _c_null_cache: dict[tuple, torch.Tensor] = {}
+
+    # CFG-uncond cross-attention input. Anima's inference path uses the T5("")
+    # embedding (real BOS/EOS/sentinel tokens nonzero; only padding zeroed) —
+    # passing a fully-zero tensor here is fed-out-of-distribution and the
+    # resulting `v_real_uncond_ca` is a meaningless direction that, amplified
+    # at (α-1)=3×, drives the student off-manifold (saturated white output).
+    # Staged by `make preprocess-te` (or `make distill-prep`); shared with
+    # the mod-guidance distill (`library/inference/uncond.py`).
+    uncond_path = str(default_uncond_path())
+    uncond_base = load_uncond_crossattn(uncond_path, device=device, dtype=dtype)
+    logger.info(
+        f"loaded T5('') uncond sidecar: {uncond_path}  shape={tuple(uncond_base.shape)}"
+    )
 
     def _get_pad(x: torch.Tensor) -> torch.Tensor:
         key = (x.shape[0], x.shape[-2], x.shape[-1])
@@ -452,6 +470,12 @@ def main():
         ``set_view`` short-circuits when already in ``view`` (see
         ``TurboDMDNetwork.set_view``), and the cudagraph step-begin marker
         is hoisted to once per outer step in the loop below.
+
+        The DiT is frozen (``freeze_dit`` in ``__init__``) and grad-ckpt is
+        off in this script's default path, so ``model.training`` is left at
+        whatever it was post-construction — toggling it per forward only
+        gated grad-ckpt setup that isn't active here, and the recursive
+        submodule walk it triggered was the dominant per-forward CPU stall.
         """
         turbo.set_view(view)
         if model.blocks_to_swap:
@@ -472,22 +496,21 @@ def main():
     logger.info(f"starting DMD2 training: {iterations} iterations")
     data_iter = iter(dataloader)
     progress = tqdm(range(iterations), desc="turbo")
-    running_student = 0.0
-    running_fake = 0.0
-    running_alpha = 0.0
-    running_grad = 0.0
-    running_dm = 0.0
-    running_cfg = 0.0
-    running_xpred = 0.0
-    running_v_student = 0.0
-    running_v_real_dm = 0.0
-    running_v_fake_dm = 0.0
+    # GPU-tensor accumulators — flushed in one stacked .tolist() at every
+    # log_interval, replacing ~9 .item() CUDA syncs per step.
+    def _z():
+        return torch.zeros((), device=device)
+    acc_student = _z(); acc_fake = _z(); acc_grad = _z()
+    acc_dm = _z(); acc_cfg = _z(); acc_xpred = _z()
+    acc_v_student = _z(); acc_v_real_dm = _z(); acc_v_fake_dm = _z()
+    running_alpha = 0.0  # pure-Python; no GPU work
     # Per-τ_DM-bucket δ_dm tracking (proposal R1 mitigation b): three bins
     # over [0, 1/3), [1/3, 2/3), [2/3, 1]. Lets us see whether the fake is
-    # under-tracking globally or only at a specific noise band.
+    # under-tracking globally or only at a specific noise band. scatter_add_
+    # lives entirely on GPU so the per-sample .item() loop is gone.
     bucket_labels = ("lo", "mid", "hi")
-    running_dm_buckets = [0.0, 0.0, 0.0]
-    running_dm_bucket_counts = [0, 0, 0]
+    acc_dm_buckets = torch.zeros(3, device=device)
+    acc_dm_bucket_counts = torch.zeros(3, device=device)
 
     for step in progress:
         try:
@@ -506,11 +529,16 @@ def main():
         # the script switches to ``mode="reduce-overhead"``.
         torch.compiler.cudagraph_mark_step_begin()
 
-        # --- Sample generator-t ---
+        # --- Sample generator-t on CPU so the do_ca skip-check below stays
+        # sync-free. (proposal R5: skip CA when t is very late — collapsed
+        # interval → noisy grad.) Mid-step .item() on a device tensor would
+        # drain the CUDA pipeline between the student forward and CA branch.
         if t_distribution == "uniform":
-            t = torch.rand(B, device=device, dtype=dtype)
-        else:  # sigmoid
-            t = torch.sigmoid(sigmoid_scale * torch.randn(B, device=device, dtype=dtype))
+            t_cpu = torch.rand(B, dtype=torch.float32)
+        else:
+            t_cpu = torch.sigmoid(sigmoid_scale * torch.randn(B, dtype=torch.float32))
+        do_ca = bool((t_cpu < tau_ca_skip_above_t).any().item())  # CPU op, no sync
+        t = t_cpu.to(device=device, dtype=dtype, non_blocking=True)
 
         # --- Build x_t = (1-t)·x_0 + t·ε ---
         eps = torch.randn_like(latents)
@@ -524,8 +552,6 @@ def main():
         x_pred = x_t.squeeze(2) - t_e * v_student   # (B, 16, H, W), grad-bearing
 
         # --- 2. CA BRANCH (no grad, teacher × 2) ---
-        # Skip CA when t is very late (proposal R5): collapsed interval → noisy grad.
-        do_ca = bool((t < tau_ca_skip_above_t).any().item())
         if do_ca:
             tau_ca = sample_t_above(t.float(), min_gap=tau_ca_min_gap).to(dtype)
             eps_ca = torch.randn_like(x_pred)
@@ -533,13 +559,7 @@ def main():
             v_real_cond_ca = _forward(
                 "teacher", x_renoised_ca, tau_ca, crossattn_emb, no_grad=True
             ).squeeze(2)
-            # zeros_like is cheap, but reusing one buffer also lets dynamo
-            # avoid retracing on a fresh tensor id every step.
-            key = tuple(crossattn_emb.shape)
-            c_null = _c_null_cache.get(key)
-            if c_null is None or c_null.dtype != crossattn_emb.dtype or c_null.device != crossattn_emb.device:
-                c_null = torch.zeros_like(crossattn_emb)
-                _c_null_cache[key] = c_null
+            c_null = uncond_for_batch(uncond_base, crossattn_emb)
             v_real_uncond_ca = _forward(
                 "teacher", x_renoised_ca, tau_ca, c_null, no_grad=True
             ).squeeze(2)
@@ -582,7 +602,7 @@ def main():
         # Standard DMD2 practice: keep the fake's regression target ahead of
         # the student's moving x_pred distribution.
         x_pred_d = x_pred.detach()
-        fake_loss_sum = 0.0
+        fake_loss_sum = torch.zeros((), device=device)  # GPU accumulator → no inner .item()
         for _ in range(fake_steps_per_student_step):
             tau_fake = (
                 torch.rand(B, device=device, dtype=dtype)
@@ -602,77 +622,62 @@ def main():
             fake_opt.step()
             fake_opt.zero_grad(set_to_none=True)
             fake_sched.step()
-            fake_loss_sum += fake_loss.detach().item()
-        fake_loss_mean = fake_loss_sum / fake_steps_per_student_step
+            fake_loss_sum = fake_loss_sum + fake_loss.detach()
+        fake_loss_mean_t = fake_loss_sum / fake_steps_per_student_step
 
-        # --- logging ---
+        # --- logging accumulators (all GPU-side; flushed below every
+        # log_interval in one stacked .tolist() so per-step CUDA syncs go
+        # to zero) ---
         # DMD2 health scalars. loss_student is a sign-random gradient vehicle
         # (not a real loss); the RMS norms below are what actually track
         # whether the student is getting a usable signal:
-        #   grad_rms — overall DMD2 gradient magnitude into x_pred
-        #   dm_rms   — DM regularizer strength (v_real - v_fake)
-        #   cfg_rms  — CA branch strength (CFG bake direction)
-        #   xpred_rms — x_pred dispersion: → 0 means collapse to mean,
-        #               drifting upward means student is exploding.
-        s_now = loss_student.detach().item()
-        f_now = fake_loss_mean
+        #   grad   — overall DMD2 gradient magnitude into x_pred
+        #   dm     — DM regularizer strength (v_real - v_fake)
+        #   cfg    — CA branch strength (CFG bake direction)
+        #   xpred  — x_pred dispersion: → 0 means collapse to mean,
+        #            drifting upward means student is exploding.
         with torch.no_grad():
-            grad_rms = grad_signal.float().pow(2).mean().sqrt().item()
-            dm_rms = delta_dm.float().pow(2).mean().sqrt().item()
-            cfg_rms = delta_cfg.float().pow(2).mean().sqrt().item()
-            xpred_rms = x_pred.detach().float().std().item()
+            acc_student.add_(loss_student.detach().float())
+            acc_fake.add_(fake_loss_mean_t.float())
+            acc_grad.add_(grad_signal.float().pow(2).mean().sqrt())
+            acc_dm.add_(delta_dm.float().pow(2).mean().sqrt())
+            acc_cfg.add_(delta_cfg.float().pow(2).mean().sqrt())
+            acc_xpred.add_(x_pred.detach().float().std())
             # Direct student velocity magnitude — runaway student manifests
             # here before x_pred_std catches up (x_pred = x_t − t·v_student).
-            v_student_rms = v_student.detach().float().pow(2).mean().sqrt().item()
+            acc_v_student.add_(v_student.detach().float().pow(2).mean().sqrt())
             # Teacher vs fake magnitudes at the DM-branch evaluation point.
             # If v_real_dm stays bounded while v_fake_dm explodes (or stays
             # tiny while real grows), the fake-tracking gap is asymmetric in
             # a diagnostic way the aggregate δ_dm hides.
-            v_real_dm_rms = v_real_cond_dm.float().pow(2).mean().sqrt().item()
-            v_fake_dm_rms = v_fake_cond_dm.float().pow(2).mean().sqrt().item()
-            # Per-sample δ_dm, bucketed by τ_DM. Tells us whether the fake's
-            # tracking gap is uniform across noise levels or concentrated at
-            # one band (the proposal's R1 mitigation b).
+            acc_v_real_dm.add_(v_real_cond_dm.float().pow(2).mean().sqrt())
+            acc_v_fake_dm.add_(v_fake_cond_dm.float().pow(2).mean().sqrt())
+            # Per-sample δ_dm, scatter-bucketed by τ_DM — pure GPU op replaces
+            # the old per-sample .item() Python loop (proposal R1 mitigation b).
             per_sample_dm = delta_dm.float().pow(2).mean(dim=(1, 2, 3)).sqrt()  # (B,)
             tau_dm_bucket = (tau_dm.float() * 3.0).clamp(max=2.999).floor().long()  # (B,)
-            for b in range(B):
-                bi = int(tau_dm_bucket[b].item())
-                running_dm_buckets[bi] += float(per_sample_dm[b].item())
-                running_dm_bucket_counts[bi] += 1
-        running_student += s_now
-        running_fake += f_now
+            acc_dm_buckets.scatter_add_(0, tau_dm_bucket, per_sample_dm)
+            acc_dm_bucket_counts.scatter_add_(0, tau_dm_bucket, torch.ones_like(per_sample_dm))
         running_alpha += alpha_eff
-        running_grad += grad_rms
-        running_dm += dm_rms
-        running_cfg += cfg_rms
-        running_xpred += xpred_rms
-        running_v_student += v_student_rms
-        running_v_real_dm += v_real_dm_rms
-        running_v_fake_dm += v_fake_dm_rms
-
-        # Update tqdm every step so the bar always shows live signal (gating
-        # this behind ``log_interval`` left the first N steps with a blank
-        # postfix). TB scalars stay on the log_interval cadence below.
-        progress.set_postfix(
-            g=f"{grad_rms:.3e}",
-            dca=f"{cfg_rms:.3e}",
-            ddm=f"{dm_rms:.3e}",
-            xp=f"{xpred_rms:.3f}",
-            vs=f"{v_student_rms:.3f}",
-            fake=f"{f_now:.3e}",
-        )
 
         if (step + 1) % log_interval == 0:
-            avg_s = running_student / log_interval
-            avg_f = running_fake / log_interval
+            # One CUDA sync per log boundary: stack everything and read in
+            # a single .tolist().
+            stacked = (
+                torch.stack([
+                    acc_student, acc_fake, acc_grad, acc_dm, acc_cfg,
+                    acc_xpred, acc_v_student, acc_v_real_dm, acc_v_fake_dm,
+                ])
+                / log_interval
+            )
+            bucket_means = acc_dm_buckets / acc_dm_bucket_counts.clamp(min=1)
+            packed = torch.cat([stacked, bucket_means, acc_dm_bucket_counts]).tolist()
+            (avg_s, avg_f, avg_g, avg_dm, avg_cfg,
+             avg_xp, avg_vs, avg_vrdm, avg_vfdm) = packed[0:9]
+            bucket_vals = packed[9:12]
+            bucket_cnts = packed[12:15]
             avg_a = running_alpha / log_interval
-            avg_g = running_grad / log_interval
-            avg_dm = running_dm / log_interval
-            avg_cfg = running_cfg / log_interval
-            avg_xp = running_xpred / log_interval
-            avg_vs = running_v_student / log_interval
-            avg_vrdm = running_v_real_dm / log_interval
-            avg_vfdm = running_v_fake_dm / log_interval
+            t_mean = float(t_cpu.mean())  # CPU-side already
             if writer is not None:
                 writer.add_scalar("train/student_loss", avg_s, step + 1)
                 writer.add_scalar("train/fake_loss", avg_f, step + 1)
@@ -685,23 +690,35 @@ def main():
                 writer.add_scalar("train/v_real_dm_rms", avg_vrdm, step + 1)
                 writer.add_scalar("train/v_fake_dm_rms", avg_vfdm, step + 1)
                 for bi, label in enumerate(bucket_labels):
-                    n = running_dm_bucket_counts[bi]
-                    if n > 0:
+                    if bucket_cnts[bi] > 0:
                         writer.add_scalar(
                             f"train/delta_dm_rms_tau_{label}",
-                            running_dm_buckets[bi] / n,
+                            bucket_vals[bi],
                             step + 1,
                         )
                 writer.add_scalar(
                     "train/student_lr", student_sched.get_last_lr()[0], step + 1
                 )
                 writer.add_scalar("train/fake_lr", fake_sched.get_last_lr()[0], step + 1)
-                writer.add_scalar("train/t_mean", t.float().mean().item(), step + 1)
-            running_student = running_fake = running_alpha = 0.0
-            running_grad = running_dm = running_cfg = running_xpred = 0.0
-            running_v_student = running_v_real_dm = running_v_fake_dm = 0.0
-            running_dm_buckets = [0.0, 0.0, 0.0]
-            running_dm_bucket_counts = [0, 0, 0]
+                writer.add_scalar("train/t_mean", t_mean, step + 1)
+
+            # tqdm postfix at log_interval cadence (per-step would re-introduce
+            # the syncs we just eliminated). First log_interval steps show
+            # no postfix — harmless.
+            progress.set_postfix(
+                g=f"{avg_g:.3e}",
+                dca=f"{avg_cfg:.3e}",
+                ddm=f"{avg_dm:.3e}",
+                xp=f"{avg_xp:.3f}",
+                vs=f"{avg_vs:.3f}",
+                fake=f"{avg_f:.3e}",
+            )
+
+            acc_student.zero_(); acc_fake.zero_(); acc_grad.zero_()
+            acc_dm.zero_(); acc_cfg.zero_(); acc_xpred.zero_()
+            acc_v_student.zero_(); acc_v_real_dm.zero_(); acc_v_fake_dm.zero_()
+            acc_dm_buckets.zero_(); acc_dm_bucket_counts.zero_()
+            running_alpha = 0.0
 
         # --- save ---
         if (step + 1) % save_every == 0 or (step + 1) == iterations:

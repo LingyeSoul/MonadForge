@@ -233,29 +233,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "Set to 0 to skip even the warm-up logs, or a large number to keep them on.",
     )
     parser.add_argument(
-        "--use_repa",
-        action="store_true",
-        help="Enable REPA-style auxiliary alignment loss (Yu et al., arXiv:2410.06940). "
-        "Adds a cosine-similarity loss between a mid-block DiT hidden state (mean-pooled) "
-        "and a cached PE-Core image feature. Forces --ip_features_cache_to_disk=true; "
-        "requires `make preprocess-pe` to have been run. Composes with the LoRA family.",
-    )
-    parser.add_argument(
-        "--repa_weight",
-        type=float,
-        default=0.5,
-        help="REPA loss weight, broadcast onto the per-sample flow-matching loss. "
-        "Default 0.5 follows the REPA paper's lambda=0.5 starting point.",
-    )
-    parser.add_argument(
-        "--repa_layer",
-        type=int,
-        default=8,
-        help="DiT block index whose output is hooked for REPA alignment. Default 8 of 28 "
-        "mirrors the paper's SiT-XL block-8 choice. Earlier layers learn cleaner "
-        "discriminative features; later layers carry more denoising-specific signal.",
-    )
-    parser.add_argument(
         "--use_easycontrol",
         action="store_true",
         help="Enable EasyControl image conditioning (extended self-attn KV with "
@@ -340,13 +317,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="Attention implementation to use. Default is None (torch). xformers requires --split_attn. sageattn does not support training (inference only). This option overrides --xformers or --sdpa."
         "",
-    )
-    parser.add_argument(
-        "--trim_crossattn_kv",
-        action="store_true",
-        help="Trim zero-padded KV positions in cross-attention (flash4 only). "
-        "Uses bucketed lengths + LSE sigmoid correction for exact equivalence. "
-        "Typical 4x KV reduction for short captions → ~10-15%% faster training.",
     )
     parser.add_argument(
         "--static_token_count",

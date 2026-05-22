@@ -10,7 +10,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from library.inference.directedit import (
+from library.inference.editing.directedit import (
     _resolve_t_inj_blocks,
     _v_injection_scope,
     _VInjectionState,

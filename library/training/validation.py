@@ -1,0 +1,385 @@
+"""Validation pass: CMMD (primary) with per-sigma FM-MSE fallback.
+
+Extracted from ``train.py`` so the trainer class only owns hook points
+(``process_batch``, ``on_step_start``, ``on_validation_step_end``,
+``_switch_rng_state`` / ``_restore_rng_state``). The PE encoder is cached on
+the trainer as ``trainer._cmmd_pe_bundle`` to avoid reloading PE-Core each pass.
+
+CMMD is the primary signal — the legacy FM-MSE pass did not track sample
+quality on Anima (see ``project_fm_val_loss_uninformative``). FM-MSE still
+runs as the silent-loss fallback when CMMD can't (no PE/TE cache, sampling
+error, missing references)."""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import torch
+from safetensors.torch import load_file as _load_safetensors
+from tqdm import tqdm
+
+from library.anima import training as anima_train_utils
+from library.runtime.device import clean_memory_on_device
+from library.training.cmmd import (
+    cmmd_from_pools,
+    load_reference_features,
+    pool_and_normalize,
+    resolve_pe_sidecar,
+)
+from library.vision.encoder import encode_pe_from_imageminus1to1, load_pe_encoder
+
+logger = logging.getLogger(__name__)
+
+
+def run_validation(
+    trainer,
+    ctx,
+    val,
+    *,
+    val_loss_recorder,
+    epoch,
+    global_step,
+    progress_bar,
+    progress_desc,
+    postfix_label,
+    log_avg_key,
+    log_div_key,
+    logging_fn,
+) -> None:
+    """Validation = CMMD between the live model's samples and the held-out
+    reference's cached PE features, falling back to per-sigma FM-MSE on
+    ``val.dataloader`` if CMMD can't run (no PE/TE cache, sampling error)."""
+    args = ctx.args
+    accelerator = ctx.accelerator
+
+    ctx.optimizer_eval_fn()
+    accelerator.unwrap_model(ctx.network).eval()
+    unwrapped_unet = accelerator.unwrap_model(ctx.unet)
+    if hasattr(unwrapped_unet, "switch_block_swap_for_inference"):
+        unwrapped_unet.switch_block_swap_for_inference()
+    rng_states = trainer._switch_rng_state(
+        args.validation_seed if args.validation_seed is not None else args.seed
+    )
+
+    try:
+        cmmd_ok = False
+        if getattr(args, "use_cmmd", True):
+            cmmd_ok = _try_cmmd_validation(
+                trainer,
+                ctx=ctx,
+                val=val,
+                unwrapped_unet=unwrapped_unet,
+                val_loss_recorder=val_loss_recorder,
+                epoch=epoch,
+                global_step=global_step,
+                progress_desc=progress_desc,
+                log_avg_key=log_avg_key,
+                log_div_key=log_div_key,
+                logging_fn=logging_fn,
+            )
+        if not cmmd_ok:
+            _run_fm_validation(
+                trainer,
+                ctx=ctx,
+                val=val,
+                val_loss_recorder=val_loss_recorder,
+                epoch=epoch,
+                global_step=global_step,
+                progress_desc=progress_desc,
+                postfix_label=postfix_label,
+                log_avg_key=log_avg_key,
+                log_div_key=log_div_key,
+                logging_fn=logging_fn,
+            )
+    finally:
+        trainer._restore_rng_state(rng_states)
+        args.t_min = val.original_t_min
+        args.t_max = val.original_t_max
+        ctx.optimizer_train_fn()
+        accelerator.unwrap_model(ctx.network).train()
+        if hasattr(unwrapped_unet, "switch_block_swap_for_training"):
+            unwrapped_unet.switch_block_swap_for_training()
+        clean_memory_on_device(accelerator.device)
+
+
+def _try_cmmd_validation(
+    trainer,
+    *,
+    ctx,
+    val,
+    unwrapped_unet,
+    val_loss_recorder,
+    epoch,
+    global_step,
+    progress_desc,
+    log_avg_key,
+    log_div_key,
+    logging_fn,
+) -> bool:
+    """Run CMMD-based validation. Returns True if it logged a value, False
+    if the caller should fall back to FM-MSE (no dataset group, no PE/TE
+    cache, ``load_reference_features`` failure, or any sampling exception)."""
+    args = ctx.args
+    accelerator = ctx.accelerator
+
+    if val.dataset_group is None:
+        return False
+
+    val_items: list = []
+    for ds in val.dataset_group.datasets:
+        val_items.extend(ds.image_data.values())
+    if not val_items:
+        return False
+
+    # Reference PE features sit next to each val item's cached TE
+    # output (both produced by `make preprocess-pe` / `-te`).
+    ref_sidecars = []
+    ref_items = []
+    for item in val_items:
+        te_path = item.text_encoder_outputs_npz
+        if te_path is None:
+            continue
+        cache_dir = os.path.dirname(te_path)
+        ref_sidecars.append(
+            resolve_pe_sidecar(
+                item.absolute_path, encoder="pe", cache_dir=cache_dir
+            )
+        )
+        ref_items.append(item)
+    if not ref_sidecars:
+        logger.warning(
+            "CMMD val: no items had cached TE outputs; falling back to FM-MSE."
+        )
+        return False
+    try:
+        ref_pool = load_reference_features(ref_sidecars).to(accelerator.device)
+    except RuntimeError as exc:
+        logger.warning(f"CMMD val ref load failed ({exc}); falling back to FM-MSE.")
+        return False
+
+    if getattr(trainer, "_cmmd_pe_bundle", None) is None:
+        trainer._cmmd_pe_bundle = load_pe_encoder(accelerator.device)
+        # Park PE-Core (~600 MB bf16) on CPU between encodes so the DiT
+        # sample step has the full GPU budget. Bundle keeps device=cuda
+        # so encode_pe_from_imageminus1to1 still routes inputs correctly;
+        # we shuttle the underlying model to GPU only for the encode call.
+        trainer._cmmd_pe_bundle.encoder.inner.to("cpu")
+    bundle = trainer._cmmd_pe_bundle
+
+    sample_steps = int(getattr(args, "validation_sample_steps", 20))
+    cfg_scale = float(getattr(args, "validation_cfg_scale", 1.0))
+    flow_shift = float(getattr(args, "discrete_flow_shift", 1.0))
+
+    val_progress_bar = tqdm(
+        range(len(ref_items)),
+        smoothing=0,
+        disable=not accelerator.is_local_main_process,
+        desc=progress_desc,
+    )
+
+    gen_pooled: list[torch.Tensor] = []
+    seed_base = (
+        args.validation_seed if args.validation_seed is not None else args.seed
+    )
+
+    # Two-phase val to keep DiT and PE-Core off the GPU at the same time:
+    # phase 1 generates every sample with DiT resident and parks the
+    # decoded pixels on CPU; phase 2 swaps DiT → CPU + PE → GPU and
+    # encodes them all. One DiT round-trip per val pass instead of N.
+    pixel_images: list[torch.Tensor] = []
+    try:
+        with torch.no_grad(), accelerator.autocast():
+            unwrapped_unet.prepare_block_swap_before_forward()
+            for i, item in enumerate(ref_items):
+                sd = _load_safetensors(item.text_encoder_outputs_npz)
+                crossattn_emb = _build_val_crossattn_emb(
+                    unwrapped_unet, sd, accelerator
+                )
+
+                bucket_w, bucket_h = item.bucket_reso
+
+                image = anima_train_utils.sample_image_to_tensor(
+                    accelerator=accelerator,
+                    dit=unwrapped_unet,
+                    vae=ctx.vae,
+                    height=int(bucket_h),
+                    width=int(bucket_w),
+                    crossattn_emb=crossattn_emb,
+                    sample_steps=sample_steps,
+                    guidance_scale=cfg_scale,
+                    flow_shift=flow_shift,
+                    seed=seed_base + i,
+                    show_progress=False,
+                )
+                pixel_images.append(image.detach().cpu())
+                del image, crossattn_emb
+                clean_memory_on_device(accelerator.device)
+                val_progress_bar.update(1)
+
+                trainer.on_validation_step_end(ctx, {})
+
+            # Hand the GPU to PE: park DiT on CPU, bring PE on.
+            unwrapped_unet.to("cpu")
+            clean_memory_on_device(accelerator.device)
+            bundle.encoder.inner.to(accelerator.device)
+            try:
+                # Batch PE encoding by bucket: same-shape images go through
+                # one same_bucket=True forward instead of N. Original order
+                # is preserved so gen_pooled[i] still pairs with ref_pool[i].
+                bucket_groups: dict[tuple[int, int], list[int]] = {}
+                for idx, img in enumerate(pixel_images):
+                    key = (int(img.shape[-2]), int(img.shape[-1]))
+                    bucket_groups.setdefault(key, []).append(idx)
+
+                pooled_slots: list[torch.Tensor | None] = [None] * len(pixel_images)
+                for indices in bucket_groups.values():
+                    batch = torch.stack(
+                        [pixel_images[idx] for idx in indices], dim=0
+                    ).to(accelerator.device)
+                    feats_list = encode_pe_from_imageminus1to1(
+                        bundle, batch, same_bucket=True
+                    )
+                    for idx, feats in zip(indices, feats_list):
+                        pooled_slots[idx] = pool_and_normalize(feats).cpu()
+                    del batch, feats_list
+                gen_pooled = [t for t in pooled_slots if t is not None]
+            finally:
+                bundle.encoder.inner.to("cpu")
+                clean_memory_on_device(accelerator.device)
+                unwrapped_unet.to(accelerator.device)
+    except (KeyError, RuntimeError, FileNotFoundError) as exc:
+        val_progress_bar.close()
+        logger.warning(
+            f"CMMD val sampling failed ({type(exc).__name__}: {exc}); "
+            "falling back to FM-MSE."
+        )
+        return False
+
+    val_progress_bar.close()
+
+    gen_pool = torch.stack(gen_pooled, dim=0).to(accelerator.device)
+    cmmd_value = cmmd_from_pools(ref_pool, gen_pool)
+    val_loss_recorder.add(epoch=epoch, step=global_step, loss=cmmd_value)
+
+    if ctx.is_tracking:
+        logs = {
+            log_avg_key: cmmd_value,
+            log_div_key: cmmd_value - val.train_loss_recorder.moving_average,
+            log_avg_key.removesuffix("_average") + "_cmmd": cmmd_value,
+            log_avg_key.removesuffix("_average") + "_n": len(ref_items),
+        }
+        logging_fn(accelerator, logs, global_step, epoch + 1)
+    return True
+
+
+def _run_fm_validation(
+    trainer,
+    *,
+    ctx,
+    val,
+    val_loss_recorder,
+    epoch,
+    global_step,
+    progress_desc,
+    postfix_label,
+    log_avg_key,
+    log_div_key,
+    logging_fn,
+) -> None:
+    """Legacy per-sigma FM-MSE validation, used as a fallback when CMMD
+    can't run. Pins ``args.t_{min,max}`` to each sigma in ``val.sigmas``
+    and runs ``process_batch`` over up to ``val.steps`` batches of
+    ``val.dataloader``. The caller owns RNG save/restore and eval-mode
+    switching; this helper only restores ``t_{min,max}`` since it mutates
+    them per sigma."""
+    args = ctx.args
+    accelerator = ctx.accelerator
+
+    if val.dataloader is None or len(val.dataloader) == 0 or not val.sigmas:
+        return
+
+    val_progress_bar = tqdm(
+        range(val.total_steps),
+        smoothing=0,
+        disable=not accelerator.is_local_main_process,
+        desc=f"{progress_desc} (fm-mse)",
+    )
+    val_timesteps_step = 0
+    per_sigma_losses = {s: [] for s in val.sigmas}
+
+    try:
+        for val_step, batch in enumerate(val.dataloader):
+            if val_step >= val.steps:
+                break
+
+            for sigma in val.sigmas:
+                trainer.on_step_start(ctx, batch, is_train=False)
+                args.t_min = args.t_max = sigma
+
+                loss = trainer.process_batch(ctx, batch, is_train=False)
+                current_loss = loss.detach().item()
+                val_loss_recorder.add(
+                    epoch=epoch, step=val_timesteps_step, loss=current_loss
+                )
+                per_sigma_losses[sigma].append(current_loss)
+                val_progress_bar.update(1)
+                val_progress_bar.set_postfix(
+                    {
+                        postfix_label: val_loss_recorder.moving_average,
+                        "sigma": f"{sigma:.2f}",
+                    }
+                )
+                trainer.on_validation_step_end(ctx, batch)
+                val_timesteps_step += 1
+    finally:
+        val_progress_bar.close()
+
+    if ctx.is_tracking:
+        logs = {
+            log_avg_key: val_loss_recorder.moving_average,
+            log_div_key: val_loss_recorder.moving_average
+            - val.train_loss_recorder.moving_average,
+            log_avg_key.removesuffix("_average") + "_fm_fallback": 1.0,
+        }
+        for s, losses in per_sigma_losses.items():
+            if losses:
+                logs[f"loss/validation/sigma_{s:.2f}"] = sum(losses) / len(losses)
+        logging_fn(accelerator, logs, global_step, epoch + 1)
+
+
+def _build_val_crossattn_emb(dit, sd, accelerator):
+    """Construct the cross-attention embedding the DiT expects from a
+    cached TE sidecar — using the saved post-LLM-adapter ``crossattn_emb``
+    when present, otherwise running ``llm_adapter`` exactly like
+    ``_sample_image_inference`` does. Pads to 512 tokens (the model's
+    fixed context length). Multi-variant caches expose `<key>_v0` (pristine
+    caption) instead of `<key>`; pin to v0 for deterministic validation."""
+    device = accelerator.device
+    dtype = dit.dtype
+    suffix = "" if "prompt_embeds" in sd or "crossattn_emb" in sd else "_v0"
+    ce_key = f"crossattn_emb{suffix}"
+    if ce_key in sd:
+        ce = sd[ce_key].unsqueeze(0).to(device, dtype=dtype)
+        if ce.shape[1] < 512:
+            ce = torch.nn.functional.pad(ce, (0, 0, 0, 512 - ce.shape[1]))
+        return ce
+
+    prompt_embeds = sd[f"prompt_embeds{suffix}"].unsqueeze(0).to(device, dtype=dtype)
+    attn_mask = sd[f"attn_mask{suffix}"].unsqueeze(0).to(device)
+    t5_ids = sd[f"t5_input_ids{suffix}"].unsqueeze(0).to(device, dtype=torch.long)
+    t5_attn_mask = sd[f"t5_attn_mask{suffix}"].unsqueeze(0).to(device)
+
+    if getattr(dit, "use_llm_adapter", False):
+        ce = dit.llm_adapter(
+            source_hidden_states=prompt_embeds,
+            target_input_ids=t5_ids,
+            target_attention_mask=t5_attn_mask,
+            source_attention_mask=attn_mask,
+        )
+        ce[~t5_attn_mask.bool()] = 0
+    else:
+        ce = prompt_embeds
+    if ce.shape[1] < 512:
+        ce = torch.nn.functional.pad(ce, (0, 0, 0, 512 - ce.shape[1]))
+    return ce

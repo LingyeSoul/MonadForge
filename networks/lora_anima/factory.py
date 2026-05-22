@@ -7,13 +7,13 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
 
 from library.log import setup_logging
 from networks import NETWORK_REGISTRY, resolve_network_spec
-from networks.methods.repa import REPAHead
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
     _refuse_split_chimera_keys,
@@ -29,75 +29,48 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-def _maybe_attach_repa_head(network: "LoRANetwork", kwargs: Dict[str, object]) -> None:
-    """Attach REPAHead (Yu et al., arXiv:2410.06940) when use_repa=true.
-
-    Called from create_network only — warm-start does not currently restore
-    head weights (the LoRA save pipeline doesn't include them yet), so a
-    fresh head is built whenever REPA is enabled. Acceptable for v0; the
-    head is small and re-converges quickly.
-    """
-    use_repa = kwargs.get("use_repa", "false")
-    if isinstance(use_repa, str):
-        use_repa = use_repa.lower() == "true"
-    if not use_repa:
-        return
-    dit_dim = int(kwargs.get("repa_dit_dim", 2048))
-    hidden_dim = int(kwargs.get("repa_hidden_dim", 2048))
-    encoder_dim = int(kwargs.get("repa_encoder_dim", 1024))
-    lr_scale = float(kwargs.get("repa_lr_scale", 1.0))
-    head = REPAHead(
-        dit_dim=dit_dim, hidden_dim=hidden_dim, encoder_dim=encoder_dim
-    )
-    network.repa_head = head
-    network._repa_lr_scale = lr_scale
-    logger.info(
-        f"REPA head attached: {dit_dim} -> {hidden_dim} -> {encoder_dim} "
-        f"(lr_scale={lr_scale}x of unet_lr)"
-    )
+# Vendored SmoothQuant-style calibration — ships in-tree (~3.5 MB) so deploys
+# (including custom_nodes/*/_vendor/ trees) work without a separate download.
+# Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
+_CHANNEL_STATS_PATH = (
+    Path(__file__).resolve().parent.parent / "calibration" / "channel_stats.safetensors"
+)
 
 
 def _load_channel_scales(
     kwargs: Dict[str, object],
 ) -> Optional[Dict[str, torch.Tensor]]:
-    """Load per-channel input pre-scaling stats from disk, if requested.
+    """Load per-channel input pre-scaling stats, gated on ``channel_scaling_alpha``.
 
-    SmoothQuant-style. Requires a calibration file produced by
-    ``archive/bench/analyze_lora_input_channels.py --dump_channel_stats <path>``.
-    See ``archive/bench/channel_dominance_analysis.md`` for motivation.
+    SmoothQuant-style. ``channel_scaling_alpha`` is the sole user knob:
+    0.0 (default) disables; 0.5 = sqrt balance; 1.0 fully flattens. The
+    calibration file is vendored at ``networks/calibration/channel_stats.safetensors``;
+    regenerate it with ``bench/channel_stats/analyze_lora_input_channels.py``.
+    See ``bench/channel_stats/channel_dominance_analysis.md`` for motivation.
     """
-    per_channel_scaling = kwargs.get("per_channel_scaling", "false")
-    if per_channel_scaling is not None:
-        per_channel_scaling = str(per_channel_scaling).lower() == "true"
-    if not per_channel_scaling:
+    raw_alpha = kwargs.get("channel_scaling_alpha", 0.0)
+    channel_scaling_alpha = float(raw_alpha) if raw_alpha is not None else 0.0
+    if channel_scaling_alpha == 0.0:
         return None
 
-    channel_stats_path = kwargs.get("channel_stats_path", None)
-    channel_scaling_alpha = kwargs.get("channel_scaling_alpha", None)
-    channel_scaling_alpha = (
-        float(channel_scaling_alpha) if channel_scaling_alpha is not None else 0.5
-    )
-
-    if not channel_stats_path:
-        raise ValueError(
-            "per_channel_scaling=true requires channel_stats_path. Generate one with:\n"
-            "  python archive/bench/analyze_lora_input_channels.py --dump_channel_stats <path.safetensors>"
-        )
-    if not os.path.isfile(channel_stats_path):
+    if not _CHANNEL_STATS_PATH.is_file():
         raise FileNotFoundError(
-            f"channel_stats_path does not exist: {channel_stats_path}"
+            f"vendored channel stats missing at {_CHANNEL_STATS_PATH}. "
+            f"Regenerate with:\n"
+            f"  python bench/channel_stats/analyze_lora_input_channels.py "
+            f"--per_artist --dump_channel_stats {_CHANNEL_STATS_PATH}"
         )
     from safetensors.torch import load_file as _load_channel_stats_file
 
-    raw_stats = _load_channel_stats_file(channel_stats_path)
+    raw_stats = _load_channel_stats_file(str(_CHANNEL_STATS_PATH))
     out: Dict[str, torch.Tensor] = {}
     for _lora_name, _mean_abs in raw_stats.items():
         _s = _mean_abs.float().clamp_min(1e-6).pow(channel_scaling_alpha)
         _s = _s / _s.mean().clamp_min(1e-12)
         out[_lora_name] = _s
     logger.info(
-        f"Per-channel input pre-scaling: alpha={channel_scaling_alpha}, "
-        f"stats={channel_stats_path} ({len(out)} calibrated modules)"
+        f"channel_scaling: alpha={channel_scaling_alpha}, "
+        f"stats={_CHANNEL_STATS_PATH.name} ({len(out)} calibrated modules)"
     )
     return out
 
@@ -149,8 +122,6 @@ def create_network(
     network._network_spec = spec
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
-
-    _maybe_attach_repa_head(network, kwargs)
 
     if use_custom_down_autograd:
         _hits = 0
@@ -313,19 +284,38 @@ def create_network_from_weights(
     unet,
     weights_sd=None,
     for_inference=False,
+    metadata: Optional[Dict[str, str]] = None,
     **kwargs,
 ):
-    file_metadata: Dict[str, str] = {}
+    # Metadata flows independently of the tensor-loading path. ``load_file()``
+    # discards safetensors ``__metadata__``, so a caller that pre-loads tensors
+    # (e.g. to filter to ``lora_unet_*``) and passes ``weights_sd=`` would
+    # otherwise lose the three-axis routing stamps (ss_use_moe_style /
+    # ss_route_per_layer / ss_router_source) and trip the "missing three-axis
+    # stamps" raise in ``LoRANetworkCfg.from_weights`` — pointing at the
+    # checkpoint when the real fault is the call site. Precedence for
+    # ``file_metadata``: explicit ``metadata=`` wins; else read from ``file``
+    # when it's a ``.safetensors`` path (regardless of whether ``weights_sd``
+    # was also supplied); else ``{}``.
+    file_metadata: Dict[str, str] = dict(metadata) if metadata else {}
     if weights_sd is None:
         if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file
             from safetensors import safe_open
 
             weights_sd = load_file(file)
-            with safe_open(file, framework="pt") as f:
-                file_metadata = dict(f.metadata() or {})
+            if not file_metadata:
+                with safe_open(file, framework="pt") as f:
+                    file_metadata = dict(f.metadata() or {})
         else:
             weights_sd = torch.load(file, map_location="cpu")
+    elif file and not file_metadata and os.path.splitext(str(file))[1] == ".safetensors":
+        # Tensors supplied directly, but stamps can still be recovered from the
+        # on-disk file the caller named alongside them.
+        from safetensors import safe_open
+
+        with safe_open(file, framework="pt") as f:
+            file_metadata = dict(f.metadata() or {})
 
     # Strip torch.compile '_orig_mod_' from old checkpoint keys
     weights_sd = LoRANetwork._strip_orig_mod_keys(weights_sd)
@@ -465,6 +455,21 @@ def create_network_from_weights(
     if not has_stacked_experts and hydra_module_names and not has_ortho_hydra:
         has_hydra = True
 
+    # Early de-footgun: MoE keys present but no metadata almost always means a
+    # caller pre-loaded tensors via ``load_file()`` (which drops __metadata__)
+    # and passed ``weights_sd=`` without ``file=`` / ``metadata=``. The three-
+    # axis stamps live only in __metadata__, so ``from_weights`` is about to
+    # raise an error that blames the checkpoint. Surface the real cause here.
+    if (has_hydra or has_ortho_hydra or has_stacked_experts) and not file_metadata:
+        logger.warning(
+            "MoE checkpoint keys detected but no safetensors metadata was "
+            "available — the three-axis routing stamps (ss_use_moe_style / "
+            "ss_route_per_layer / ss_router_source) live in __metadata__, which "
+            "load_file() drops. If you passed a pre-loaded weights_sd=, also "
+            "pass file=<path> or metadata=<dict> to create_network_from_weights "
+            "so the stamps survive; otherwise loading will fail."
+        )
+
     # has_hydra / has_ortho_hydra / has_stacked_experts win over for_inference:
     # the router is sample-dependent and can't be folded into a static-merge
     # path. The dynamic forward-hook path works in eval mode too.
@@ -562,8 +567,6 @@ def create_network_from_weights(
         # Force the plain LoRA spec even for ortho checkpoints — the
         # merge_to / fuse_weight path expects flat down/up weights, and
         # ortho checkpoints are distilled to LoRA shape at save time.
-        # External ``.dora_scale`` keys also flow through this branch and
-        # are applied by the merge helper in ``lora_utils.merge_to``.
         spec = NETWORK_REGISTRY["lora"]
         module_class = spec.module_class
     elif has_ortho:
@@ -741,6 +744,21 @@ def create_network_from_weights(
         and str(file_metadata.get("ss_chimera_freq_router_layer_norm", "")).strip().lower()
         == "true"
     )
+    # ContentRouter stamps. Absent / "input" preserves the per-Linear router
+    # (today's chimera). "crossattn" rebuilds a network-level ContentRouter
+    # fed by pooled crossattn_emb; per-Linear ``self.router`` is then absent
+    # from state_dict. Input dim is fixed by the DiT (CROSSATTN_EMB_DIM),
+    # not configurable — no stamp needed.
+    chimera_content_router_source: str = str(
+        file_metadata.get("ss_chimera_content_router_source", "input")
+        if is_chimera_hydra
+        else "input"
+    ).strip() or "input"
+    chimera_content_router_layer_norm: bool = (
+        is_chimera_hydra
+        and str(file_metadata.get("ss_chimera_content_router_layer_norm", "")).strip().lower()
+        == "true"
+    )
     if is_chimera_hydra:
         # On-disk format: per-pool distilled chimera (lora_down_{c,f} +
         # stacked lora_up_{c,f}_weight + content router) with q/k/v defused
@@ -812,6 +830,8 @@ def create_network_from_weights(
         num_experts_content=chimera_num_experts_content,
         num_experts_freq=chimera_num_experts_freq,
         freq_router_layer_norm=chimera_freq_router_layer_norm,
+        content_router_source=chimera_content_router_source,
+        content_router_layer_norm=chimera_content_router_layer_norm,
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)
@@ -822,8 +842,6 @@ def create_network_from_weights(
     network._network_spec = spec
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
-
-    _maybe_attach_repa_head(network, kwargs)
 
     if band_partition_on:
         experts_per_band = hydra_num_experts // band_num_buckets

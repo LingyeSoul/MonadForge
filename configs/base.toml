@@ -32,7 +32,6 @@ vae_disable_cache = true
 masked_loss = true
 torch_compile = true
 static_token_count = 4096
-trim_crossattn_kv = false
 attn_mode = "flash"
 save_precision = "bf16"
 use_custom_down_autograd = true

@@ -28,8 +28,6 @@ class PreparedTextConds:
     attn_mask: Optional[torch.Tensor]
     t5_input_ids: Optional[torch.Tensor]
     t5_attn_mask: Optional[torch.Tensor]
-    # CPU-precomputed max sequence length for KV trimming. None when trim is off.
-    max_crossattn_seqlen: Optional[int]
 
 
 def prepare_text_conds(
@@ -40,7 +38,7 @@ def prepare_text_conds(
     network: Any,
     device: torch.device,
     weight_dtype: torch.dtype,
-    trim_crossattn_kv: bool,
+    uncond_crossattn_emb: Optional[torch.Tensor] = None,
 ) -> PreparedTextConds:
     """Unpack the conds tuple, move to device, and apply caption dropout in-place."""
     # Unpack
@@ -52,11 +50,6 @@ def prepare_text_conds(
     else:
         prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = text_encoder_conds
 
-    # Pre-compute max sequence length on CPU to avoid GPU sync in KV trimming
-    max_crossattn_seqlen: Optional[int] = None
-    if trim_crossattn_kv and t5_attn_mask is not None:
-        max_crossattn_seqlen = int(t5_attn_mask.sum(dim=-1).max())
-
     # H2D move
     if crossattn_emb is None:
         prompt_embeds = prompt_embeds.to(device, dtype=weight_dtype)
@@ -65,7 +58,7 @@ def prepare_text_conds(
         t5_attn_mask = t5_attn_mask.to(device)
     else:
         crossattn_emb = crossattn_emb.to(device, dtype=weight_dtype)
-        if trim_crossattn_kv or hasattr(network, "append_postfix"):
+        if hasattr(network, "append_postfix"):
             t5_attn_mask = t5_attn_mask.to(device)
 
     # On-device caption dropout. The freshly-transferred GPU tensors are
@@ -95,6 +88,7 @@ def prepare_text_conds(
                     if t5_attn_mask is not None and t5_attn_mask.is_cuda
                     else None
                 ),
+                uncond_crossattn_emb=uncond_crossattn_emb,
             )
 
     return PreparedTextConds(
@@ -103,5 +97,4 @@ def prepare_text_conds(
         attn_mask=attn_mask if crossattn_emb is None else None,
         t5_input_ids=t5_input_ids if crossattn_emb is None else None,
         t5_attn_mask=t5_attn_mask,
-        max_crossattn_seqlen=max_crossattn_seqlen,
     )

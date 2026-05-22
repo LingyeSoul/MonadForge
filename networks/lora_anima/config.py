@@ -24,7 +24,7 @@ from networks.lora_modules import LoRAModule
 
 # Three-axis routing config (see plan2.md §three-axis-config).
 MoEStyle = Union[Literal[False], Literal["shared_A"], Literal["independent_A"]]
-RouterSource = Literal["input", "sigma", "fei", "none"]
+RouterSource = Literal["input", "sigma", "fei", "crossattn_emb", "none"]
 
 logger = logging.getLogger(__name__)
 
@@ -58,17 +58,23 @@ def _as_moe_style(value: Any) -> MoEStyle:
 
 
 def _as_router_source(value: Any) -> RouterSource:
-    """Parse the ``router_source`` kwarg. Empty / None → ``"none"``."""
+    """Parse the ``router_source`` kwarg. Empty / None → ``"none"``.
+
+    ``"crossattn_emb"`` routes the network-level GlobalRouter on the pooled
+    post-LLM-adapter text features the DiT cross-attends to (route_per_layer
+    must be False — there is no per-Linear crossattn signal).
+    """
     if value is None:
         return "none"
     if isinstance(value, str):
         v = value.strip()
         if v == "":
             return "none"
-        if v in ("input", "sigma", "fei", "none"):
+        if v in ("input", "sigma", "fei", "crossattn_emb", "none"):
             return v  # type: ignore[return-value]
     raise ValueError(
-        f"router_source={value!r}: expected 'input', 'sigma', 'fei', or 'none'."
+        f"router_source={value!r}: expected 'input', 'sigma', 'fei', "
+        "'crossattn_emb', or 'none'."
     )
 
 
@@ -328,6 +334,20 @@ class LoRANetworkCfg:
     # is a faster lever than raising ``balance_w_content``.
     content_router_lr_scale: float = 1.0
     freq_router_lr_scale: float = 1.0
+    # ChimeraHydra content-router source. ``"input"`` (default) keeps the
+    # paper-faithful per-Linear softmax over pooled rank-R ``lx_c`` —
+    # ``self.router`` lives on every chimera module. ``"crossattn"`` builds a
+    # single network-level ``ContentRouter`` fed by the pooled
+    # ``crossattn_emb`` (post-LLM-adapter T5-space text features, fixed
+    # 1024-D for Anima — see ``crossattn_emb_channels`` in
+    # ``library/anima/models.py``); the per-Linear router is skipped at
+    # construction and ``π_c`` is broadcast via ``_content_routing_weights``
+    # the same way ``π_f`` flows from FreqRouter. Lifts the K_c content axis
+    # from a per-site decision to a single shared partition (analogous to
+    # FeRA → Hydra → FeRA on the freq side); see chimera proposal §"Router".
+    content_router_source: Literal["input", "crossattn_emb"] = "input"
+    content_router_init_std: float = 0.1
+    content_router_layer_norm: bool = True
 
     # SmoothQuant-style per-channel input pre-scaling
     channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None
@@ -478,6 +498,26 @@ class LoRANetworkCfg:
         freq_router_lr_scale = float(
             kwargs.get("network_freq_router_lr_scale", 1.0)
         )
+        raw_content_router_source = kwargs.get("content_router_source")
+        if raw_content_router_source is None:
+            content_router_source: Literal["input", "crossattn_emb"] = "input"
+        else:
+            v = str(raw_content_router_source).strip()
+            # ``"crossattn"`` is the pre-rename spelling — accept it as a
+            # deprecated alias so chimera checkpoints stamped before the
+            # rename still load, then normalize to ``"crossattn_emb"``.
+            if v == "crossattn":
+                v = "crossattn_emb"
+            if v not in ("input", "crossattn_emb"):
+                raise ValueError(
+                    f"content_router_source={raw_content_router_source!r}: "
+                    "expected 'input' or 'crossattn_emb'."
+                )
+            content_router_source = v  # type: ignore[assignment]
+        content_router_init_std = float(kwargs.get("content_router_init_std", 0.1))
+        content_router_layer_norm = _as_bool(
+            kwargs.get("content_router_layer_norm", True), default=True
+        )
         if use_chimera_hydra:
             if num_experts_content <= 0 or num_experts_freq <= 0:
                 raise ValueError(
@@ -485,6 +525,13 @@ class LoRANetworkCfg:
                     f"and num_experts_freq > 0 (got K_c={num_experts_content}, "
                     f"K_f={num_experts_freq})."
                 )
+        if content_router_source == "crossattn_emb" and not use_chimera_hydra:
+            raise ValueError(
+                "content_router_source='crossattn_emb' requires use_chimera_hydra=True "
+                "(the global content router only routes the chimera content pool). "
+                "For a non-chimera Hydra/FeRA pool routed on text, use "
+                "router_source='crossattn_emb' instead."
+            )
             # Derive total E from the pool split so the rest of the
             # cfg machinery (warmup masks, balance loss accumulators, etc.)
             # sees a consistent num_experts.
@@ -506,8 +553,8 @@ class LoRANetworkCfg:
                     "supported. Use the three-axis keys instead: "
                     "`use_moe_style` (False / 'shared_A' / 'independent_A'), "
                     "`route_per_layer` (true / false), and `router_source` "
-                    "('none' / 'input' / 'sigma' / 'fei'). See plan2.md "
-                    "§three-axis-config."
+                    "('none' / 'input' / 'sigma' / 'fei' / 'crossattn_emb'). "
+                    "See plan2.md §three-axis-config."
                 )
 
         use_moe_style: MoEStyle = (
@@ -571,6 +618,13 @@ class LoRANetworkCfg:
                 "router_source='input' requires route_per_layer=True — no "
                 "network-level 'input' signal exists per DiT forward."
             )
+        if route_per_layer and router_source == "crossattn_emb":
+            raise ValueError(
+                "router_source='crossattn_emb' requires route_per_layer=False — "
+                "the pooled cross-attention text feature is a single per-sample "
+                "vector routed by one network-level GlobalRouter, with no "
+                "per-Linear variant."
+            )
 
         reg_dims_str = kwargs.get("network_reg_dims")
         reg_dims = _parse_kv_pairs(reg_dims_str, is_int=True) if reg_dims_str else None
@@ -629,6 +683,9 @@ class LoRANetworkCfg:
             freq_router_layer_norm=freq_router_layer_norm,
             content_router_lr_scale=content_router_lr_scale,
             freq_router_lr_scale=freq_router_lr_scale,
+            content_router_source=content_router_source,
+            content_router_init_std=content_router_init_std,
+            content_router_layer_norm=content_router_layer_norm,
             channel_scales_dict=channel_scales_dict,
             verbose=verbose,
         )
@@ -669,6 +726,8 @@ class LoRANetworkCfg:
         num_experts_content: Optional[int] = None,
         num_experts_freq: Optional[int] = None,
         freq_router_layer_norm: bool = False,
+        content_router_source: str = "input",
+        content_router_layer_norm: bool = True,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -702,8 +761,12 @@ class LoRANetworkCfg:
             raise RuntimeError(
                 "MoE checkpoint is missing the three-axis routing stamps "
                 "(ss_use_moe_style / ss_route_per_layer / ss_router_source). "
-                "Pre-plan2 checkpoints stop loading by design — retrain the "
-                "adapter to produce the new metadata."
+                "Two common causes: (1) it is a pre-plan2 checkpoint, which "
+                "stops loading by design — retrain the adapter to produce the "
+                "new metadata; or (2) you passed a pre-loaded weights_sd= to "
+                "create_network_from_weights without file= or metadata=. "
+                "load_file() drops safetensors __metadata__, so the stamps "
+                "vanish — pass file=<path> or metadata=<dict> so they survive."
             )
         else:
             use_moe_style = False
@@ -768,4 +831,12 @@ class LoRANetworkCfg:
                 int(num_experts_freq) if num_experts_freq is not None else 3
             ),
             freq_router_layer_norm=bool(freq_router_layer_norm),
+            content_router_source=(
+                # ``"crossattn"`` is the pre-rename stamp; normalize the
+                # deprecated alias so old chimera checkpoints still load.
+                "crossattn_emb"
+                if content_router_source in ("crossattn", "crossattn_emb")
+                else "input"
+            ),
+            content_router_layer_norm=bool(content_router_layer_norm),
         )

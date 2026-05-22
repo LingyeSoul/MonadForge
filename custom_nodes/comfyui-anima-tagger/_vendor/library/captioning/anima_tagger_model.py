@@ -82,7 +82,7 @@ class AnimaTaggerConfig:
     n_tags: int
     n_ratings: int = 3
     # 0 = no people head (legacy checkpoint). Trainer always sets this from
-    # the manifest (currently len(PEOPLE_COUNT_LABELS) == 8) when in use.
+    # the manifest (currently len(library.captioning.anima_tagger.PEOPLE_COUNT_LABELS) == 8) when in use.
     n_people_counts: int = 0
     d_hidden: int = 1024
     dropout: float = 0.1

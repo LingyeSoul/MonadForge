@@ -7,6 +7,10 @@ dist/
 build/
 output/
 *.safetensors
+# Ship the SmoothQuant-style per-channel calibration as a vendored asset —
+# small (~3.5MB), strictly an input-magnitude prior on the base DiT, not a
+# checkpoint. Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
+!networks/calibration/channel_stats.safetensors
 *.ckpt
 *.pt
 .DS_Store
