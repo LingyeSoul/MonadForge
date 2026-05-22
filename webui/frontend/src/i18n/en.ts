@@ -48,6 +48,8 @@ export default {
   dashMetrics: 'Key Metrics',
   dashPoints: 'points',
   dashWaitingLoss: 'Waiting for loss data...',
+  dashLrCurve: 'Learning Rate Curve',
+  dashWaitingLr: 'Waiting for LR data...',
   dashEventEpoch: 'Epoch {epoch}/{total} started',
   dashEventCheckpoint: 'Checkpoint saved',
   dashLiveLog: 'Live Log',

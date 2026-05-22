@@ -10,6 +10,7 @@ export interface TrainingMetrics {
   loss_history: number[]
   step_history: number[]
   lr: number
+  lr_history: number[]
   speed: string
   elapsed: string
   eta: string
@@ -38,6 +39,7 @@ const emptyMetrics: TrainingMetrics = {
   loss_history: [],
   step_history: [],
   lr: 0,
+  lr_history: [],
   speed: '',
   elapsed: '',
   eta: '',
@@ -58,7 +60,7 @@ export const useTrainingStore = defineStore('training', () => {
   }
 
   function reset() {
-    Object.assign(metrics.value, { ...emptyMetrics, events: [], loss_history: [], step_history: [] })
+    Object.assign(metrics.value, { ...emptyMetrics, events: [], loss_history: [], step_history: [], lr_history: [] })
     connected.value = false
     done.value = false
   }

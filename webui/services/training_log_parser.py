@@ -52,6 +52,7 @@ class TrainingMetrics:
     loss_history: list[float] = field(default_factory=list)
     step_history: list[int] = field(default_factory=list)
     lr: float = 0.0
+    lr_history: list[float] = field(default_factory=list)
     speed: str = ""
     elapsed: str = ""
     eta: str = ""
@@ -72,6 +73,7 @@ class TrainingMetrics:
             "loss_history": list(self.loss_history),
             "step_history": list(self.step_history),
             "lr": self.lr,
+            "lr_history": list(self.lr_history),
             "speed": self.speed,
             "elapsed": self.elapsed,
             "eta": self.eta,
@@ -138,6 +140,8 @@ class TrainingLogParser:
         self.metrics.eta = eta
         self.metrics.speed = f"{speed_num} {speed_unit}"
 
+        if m.group(9):  # lr
+            self.metrics.lr = float(m.group(9))
         if m.group(8):  # avr_loss
             loss = float(m.group(8))
             self.metrics.avr_loss = loss
@@ -145,14 +149,14 @@ class TrainingLogParser:
             if not self.metrics.step_history or step != self.metrics.step_history[-1]:
                 self.metrics.loss_history.append(loss)
                 self.metrics.step_history.append(step)
+                self.metrics.lr_history.append(self.metrics.lr)
                 if len(self.metrics.loss_history) > _MAX_HISTORY:
                     # Keep every Nth point to stay under limit
                     stride = len(self.metrics.loss_history) // _MAX_HISTORY + 1
                     self.metrics.loss_history = self.metrics.loss_history[::stride]
                     self.metrics.step_history = self.metrics.step_history[::stride]
+                    self.metrics.lr_history = self.metrics.lr_history[::stride]
 
-        if m.group(9):  # lr
-            self.metrics.lr = float(m.group(9))
         if m.group(10):  # router_H
             self.metrics.router_h = float(m.group(10))
         if m.group(11):  # Keys Scaled
@@ -169,19 +173,21 @@ class TrainingLogParser:
         self.metrics.step = step
         self.metrics.total_steps = total
 
+        if m.group(4):  # lr
+            self.metrics.lr = float(m.group(4))
         if m.group(3):  # loss
             loss = float(m.group(3))
             self.metrics.avr_loss = loss
             if not self.metrics.step_history or step != self.metrics.step_history[-1]:
                 self.metrics.loss_history.append(loss)
                 self.metrics.step_history.append(step)
+                self.metrics.lr_history.append(self.metrics.lr)
                 if len(self.metrics.loss_history) > _MAX_HISTORY:
                     stride = len(self.metrics.loss_history) // _MAX_HISTORY + 1
                     self.metrics.loss_history = self.metrics.loss_history[::stride]
                     self.metrics.step_history = self.metrics.step_history[::stride]
+                    self.metrics.lr_history = self.metrics.lr_history[::stride]
 
-        if m.group(4):  # lr
-            self.metrics.lr = float(m.group(4))
         if m.group(5):  # speed
             self.metrics.speed = m.group(5)
 

@@ -107,22 +107,43 @@
         </v-row>
       </v-card>
 
-      <!-- Row 2: Loss Curve -->
-      <v-card variant="tonal" class="pa-4" style="flex: 0 0 auto;">
-        <div class="d-flex align-center mb-2">
-          <div class="text-subtitle-2">{{ t('dashLossCurve') }}</div>
-          <v-spacer />
-          <v-chip v-if="m.loss_history.length > 0" size="x-small" variant="outlined">
-            {{ m.loss_history.length }} {{ t('dashPoints') }}
-          </v-chip>
-        </div>
-        <LossChart
-          :data="lossChartData"
-          color="#BB86FC"
-          :height="220"
-          :empty-label="t('dashWaitingLoss')"
-        />
-      </v-card>
+      <!-- Row 2: Loss Curve + LR Curve -->
+      <v-row dense style="flex: 0 0 auto;">
+        <v-col cols="12" md="6">
+          <v-card variant="tonal" class="pa-4 h-100">
+            <div class="d-flex align-center mb-2">
+              <div class="text-subtitle-2">{{ t('dashLossCurve') }}</div>
+              <v-spacer />
+              <v-chip v-if="m.loss_history.length > 0" size="x-small" variant="outlined">
+                {{ m.loss_history.length }} {{ t('dashPoints') }}
+              </v-chip>
+            </div>
+            <LossChart
+              :data="lossChartData"
+              color="#BB86FC"
+              :height="220"
+              :empty-label="t('dashWaitingLoss')"
+            />
+          </v-card>
+        </v-col>
+        <v-col cols="12" md="6">
+          <v-card variant="tonal" class="pa-4 h-100">
+            <div class="d-flex align-center mb-2">
+              <div class="text-subtitle-2">{{ t('dashLrCurve') }}</div>
+              <v-spacer />
+              <v-chip v-if="m.lr_history.length > 0" size="x-small" variant="outlined">
+                {{ m.lr_history.length }} {{ t('dashPoints') }}
+              </v-chip>
+            </div>
+            <LossChart
+              :data="lrChartData"
+              color="#CF6679"
+              :height="220"
+              :empty-label="t('dashWaitingLr')"
+            />
+          </v-card>
+        </v-col>
+      </v-row>
 
       <!-- Row 3: Events Timeline -->
       <v-card v-if="m.events.length > 0" variant="tonal" class="pa-4" style="flex: 0 0 auto;">
@@ -219,6 +240,10 @@ const progressPercent = computed(() => {
 
 const lossChartData = computed(() =>
   m.value.step_history.map((step, i) => ({ step, value: m.value.loss_history[i] }))
+)
+
+const lrChartData = computed(() =>
+  m.value.step_history.map((step, i) => ({ step, value: m.value.lr_history[i] }))
 )
 
 const reversedEvents = computed(() => [...m.value.events].reverse())

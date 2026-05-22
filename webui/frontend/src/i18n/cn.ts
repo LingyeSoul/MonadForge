@@ -48,6 +48,8 @@ export default {
   dashMetrics: '关键指标',
   dashPoints: '个数据点',
   dashWaitingLoss: '等待损失数据...',
+  dashLrCurve: '学习率曲线',
+  dashWaitingLr: '等待学习率数据...',
   dashEventEpoch: '第 {epoch}/{total} 轮开始',
   dashEventCheckpoint: '检查点已保存',
   dashLiveLog: '实时日志',
