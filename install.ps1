@@ -46,14 +46,19 @@ if ((Test-Path $Dir) -and (Get-ChildItem -Force $Dir | Select-Object -First 1)) 
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("anima-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 try {
-  $Tarball = "https://github.com/$Repo/archive/refs/tags/$Version.tar.gz"
-  Say "downloading $Tarball"
-  $tgz = Join-Path $Tmp 'release.tar.gz'
-  irm $Tarball -OutFile $tgz
-  # tar ships with Windows 10+; extracts the single top-level dir.
-  tar -xzf $tgz -C $Tmp
-  $top = Get-ChildItem -Directory $Tmp | Where-Object { $_.Name -ne 'release.tar.gz' } | Select-Object -First 1
-  if (-not $top) { Die 'unexpected tarball layout' }
+  # Use the zipball + .NET unzip, NOT the bundled tar.exe: Windows' bsdtar
+  # decodes archive entry names with the active ANSI code page and chokes on
+  # the non-ASCII guidebook filenames under docs/guidelines/ (가이드북.md,
+  # ガイドブック.md, 指南书.md) with "Invalid empty pathname". GitHub's zipball
+  # flags entry names as UTF-8 and .NET's ZipFile honors that.
+  $Zipball = "https://github.com/$Repo/archive/refs/tags/$Version.zip"
+  Say "downloading $Zipball"
+  $zip = Join-Path $Tmp 'release.zip'
+  irm $Zipball -OutFile $zip
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $Tmp, [System.Text.Encoding]::UTF8)
+  $top = Get-ChildItem -Directory $Tmp | Select-Object -First 1
+  if (-not $top) { Die 'unexpected archive layout' }
   New-Item -ItemType Directory -Force -Path $Dir | Out-Null
   Copy-Item -Path (Join-Path $top.FullName '*') -Destination $Dir -Recurse -Force
 } finally {

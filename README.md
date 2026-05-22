@@ -15,6 +15,32 @@ Four things this repo aims to do well:
 
 ---
 
+## How to start
+
+One line — installs [uv](https://astral.sh/uv) if missing, fetches the latest release, and runs `uv sync` (no git required):
+
+```bash
+# Linux / macOS
+curl -LsSf https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.sh | sh
+```
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
+```
+
+Installs into `./anima_lora/` (override with `ANIMA_DIR`; pin a tag with `ANIMA_VERSION=v1.4.0`). On Windows it also drops an **"Anima LoRA GUI"** shortcut on your desktop. Then authenticate and pull models:
+
+```bash
+cd anima_lora
+hf auth login
+make download-models      # DiT + Qwen3 text encoder + QwenImage VAE into models/
+make gui                  # recommended — config editor + dataset browser + training monitor
+```
+
+Update later in place with `make update` (release-tarball merge, no git needed). Prefer cloning the repo? See [Setup → Manual](#manual-from-a-clone).
+
+---
+
 ## 1. Fast training
 
 **13.4 GB peak VRAM · 1.1 s/step** on a single RTX 5060 Ti while **rank=32 1MP resolution lora training** — achieved by co-designing the data pipeline, attention, and compiler stack so Dynamo sees one static shape for the whole run.
@@ -102,29 +128,7 @@ Each ships with a doc — see the link for usage, flags, and caveats.
 
 ## Setup
 
-### Quick install (no git required)
-
-One line — installs [uv](https://astral.sh/uv) if missing, fetches the latest release, and runs `uv sync`:
-
-```bash
-# Linux / macOS
-curl -LsSf https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.sh | sh
-```
-```powershell
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
-```
-
-Installs into `./anima_lora/` (override with `ANIMA_DIR`; pin a tag with `ANIMA_VERSION=v1.4.0`). On Windows it also drops an **"Anima LoRA GUI"** shortcut on your desktop. Then authenticate and pull models:
-
-```bash
-cd anima_lora
-hf auth login
-make download-models      # DiT + Qwen3 text encoder + QwenImage VAE into models/
-make gui                  # recommended — config editor + dataset browser + training monitor
-```
-
-Update later in place with `make update` (release-tarball merge, no git needed).
+> Quick one-line install is up top in [How to start](#how-to-start). The manual clone path is below.
 
 ### Manual (from a clone)
 
