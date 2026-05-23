@@ -72,6 +72,7 @@ log_every_n_steps=2
 dataloader_pin_memory = true
 persistent_data_loader_workers= false
 use_cmmd = false
+max_data_loader_n_workers=0
 
 # ── Dataset config ───────────────────────────────────────────────────────
 # Formerly configs/dataset_config.toml. Consumed directly by the dataset
@@ -93,7 +94,7 @@ enable_bucket = true
 # val machinery. Set `validation_split_num` (integer) to pin an exact
 # count; when non-zero it wins over the fractional `validation_split`.
 # validation_split = 0.025
-validation_split_num = 16
+validation_split_num = 0
 validation_seed = 42
 
   [[datasets.subsets]]
