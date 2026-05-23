@@ -49,7 +49,7 @@ def venv_python(*, windowless: bool = False) -> str:
 
 
 def _resolve_port() -> int:
-    info = proc.read_pidfile(config.PIDFILE)
+    info = proc.read_pidfile(config.discover_pidfile())
     if info and info.get("port"):
         return int(info["port"])
     return config.DEFAULT_PORT

@@ -39,3 +39,64 @@ def ensure_state_dirs() -> None:
 
 def job_dir(job_id: str) -> Path:
     return JOBS_DIR / job_id
+
+
+def global_pidfile() -> Path:
+    """Stable, repo-independent pidfile location the daemon also mirrors to.
+
+    The in-repo ``PIDFILE`` lives under *this checkout's* ``output/daemon/``; a
+    ComfyUI node installed in a different directory tree (the published,
+    standalone shape — this whole module is vendored into the node) can't
+    compute that path. So the daemon mirrors its pidfile here too, at a fixed
+    per-user location both sides derive without knowing each other's paths —
+    letting the node discover a running daemon, and its possibly-ephemeral
+    fallback port, on its own.
+
+    Override with ``$ANIMA_DAEMON_PIDFILE`` (also honored by
+    ``discover_pidfile``).
+    """
+    override = os.environ.get("ANIMA_DAEMON_PIDFILE")
+    if override:
+        return Path(override)
+    return Path.home() / ".anima" / "daemon.json"
+
+
+def discover_pidfile() -> Path:
+    """Locate a running daemon's pidfile across install shapes.
+
+    First existing candidate wins:
+
+      1. the in-repo ``PIDFILE`` — authoritative when this module runs inside
+         the anima_lora checkout (``parents[2]`` is the repo root);
+      2. ``global_pidfile()`` — the per-user mirror (covers the
+         ``$ANIMA_DAEMON_PIDFILE`` override and the standalone-node case where
+         ``parents[2]`` points at the vendor dir and ``PIDFILE`` never exists);
+      3. ``$ANIMA_LORA_ROOT/output/daemon/daemon.json`` — an explicit repo root;
+      4. an upward search from this file for a repo root (``train.py`` +
+         ``configs/``), then its ``output/daemon/daemon.json``.
+
+    Falls back to ``PIDFILE`` (nonexistent → the client uses ``DEFAULT_PORT`` /
+    ``$ANIMA_DAEMON_PORT``) when nothing is found.
+    """
+    if PIDFILE.exists():
+        return PIDFILE
+
+    mirror = global_pidfile()
+    if mirror.exists():
+        return mirror
+
+    env_root = os.environ.get("ANIMA_LORA_ROOT")
+    if env_root:
+        cand = Path(env_root) / "output" / "daemon" / "daemon.json"
+        if cand.exists():
+            return cand
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "train.py").is_file() and (parent / "configs").is_dir():
+            cand = parent / "output" / "daemon" / "daemon.json"
+            if cand.exists():
+                return cand
+            break
+
+    return PIDFILE

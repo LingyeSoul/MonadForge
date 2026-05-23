@@ -64,6 +64,16 @@ def main() -> int:
         return 3
 
     proc.write_pidfile(config.PIDFILE, pid=os.getpid(), port=server.server_address[1])
+    # Mirror to a stable per-user path so a ComfyUI trainer node installed
+    # *outside* this checkout can discover us (and our bound port) without
+    # knowing the repo location. Best-effort: a read-only home dir shouldn't
+    # stop the daemon from serving in-repo clients.
+    try:
+        proc.write_pidfile(
+            config.global_pidfile(), pid=os.getpid(), port=server.server_address[1]
+        )
+    except OSError as exc:
+        log.warning("could not write global pidfile mirror (%s)", exc)
     log.info(
         "anima training daemon up on http://%s:%s (pid %s)",
         config.HOST,
@@ -75,10 +85,11 @@ def main() -> int:
     except KeyboardInterrupt:
         manager.shutdown(kill_jobs=False)
     finally:
-        try:
-            config.PIDFILE.unlink()
-        except OSError:
-            pass
+        for pid_path in (config.PIDFILE, config.global_pidfile()):
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
         log.info("daemon stopped")
     return 0
 
