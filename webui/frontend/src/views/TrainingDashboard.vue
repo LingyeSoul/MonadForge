@@ -4,6 +4,17 @@
     <div class="d-flex align-center mb-1">
       <div class="text-h5">{{ t('dashTitle') }}</div>
       <v-spacer />
+      <v-btn
+        v-if="wandbRunUrl"
+        :href="wandbRunUrl"
+        target="_blank"
+        variant="tonal"
+        size="small"
+        prepend-icon="mdi-chart-box"
+        class="mr-2"
+      >
+        {{ t('dashWandbBoard') }}
+      </v-btn>
       <v-select
         v-if="trainingTasks.length > 0"
         v-model="selectedTaskId"
@@ -203,6 +214,8 @@ const { t } = useI18n()
 const trainingStore = useTrainingStore()
 const taskStore = useTaskStore()
 const m = computed(() => trainingStore.metrics)
+
+const wandbRunUrl = computed(() => m.value.wandb_run_url || null)
 
 // Hardware stats (polled independently)
 const hw = ref<Record<string, any>>({})

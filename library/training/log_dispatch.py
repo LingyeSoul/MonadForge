@@ -61,3 +61,22 @@ def dispatch_logs(
         progress_sink.log(
             logs, global_step=global_step, epoch=epoch, val_step=val_step
         )
+
+
+def dispatch_wandb_extras(accelerator, extras: dict, step_value: int) -> None:
+    """Send wandb-only objects (Histogram, Image, Table) to the wandb tracker.
+
+    ``extras`` may contain ``wandb.Histogram`` / ``wandb.Image`` / etc.
+    that TensorBoard cannot consume, so they are routed exclusively to wandb.
+    """
+    if not extras:
+        return
+    wandb_tracker = None
+    for tracker in accelerator.trackers:
+        if tracker.name == "wandb":
+            wandb_tracker = accelerator.get_tracker("wandb")
+            break
+    if wandb_tracker is None:
+        return
+    extras["global_step"] = step_value
+    wandb_tracker.log(extras)

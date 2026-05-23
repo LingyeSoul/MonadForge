@@ -113,6 +113,33 @@ def resolve_run_log_dir(args: argparse.Namespace) -> Optional[str]:
 def prepare_accelerator(args: argparse.Namespace):
     logging_dir = resolve_run_log_dir(args)
 
+    # WebUI-injected env overrides (set by ConfigEditor before launching
+    # the training subprocess).  These take precedence over TOML / CLI args
+    # so the user can toggle wandb from the UI without touching config files.
+    wandb_env_enabled = os.environ.get("WANDB_ENABLED") == "1"
+    if wandb_env_enabled and getattr(args, "log_with", None) not in ("wandb", "all"):
+        args.log_with = "all"  # both tensorboard + wandb
+    env_run_name = os.environ.get("WANDB_RUN_NAME")
+    if env_run_name:
+        args.wandb_run_name = env_run_name
+    env_api_key = os.environ.get("WANDB_API_KEY")
+    if env_api_key:
+        args.wandb_api_key = env_api_key
+    env_log_every = os.environ.get("WANDB_LOG_EVERY_N")
+    if env_log_every:
+        try:
+            args.log_every_n_steps = int(env_log_every)
+        except ValueError:
+            pass
+    env_project = os.environ.get("WANDB_PROJECT")
+    if env_project:
+        args._wandb_project = env_project
+        os.environ.setdefault("WANDB_PROJECT", env_project)
+    # Collector feature flags — stored on args for loop.py to read
+    args._wandb_log_gradients = os.environ.get("WANDB_LOG_GRADIENTS") == "1"
+    args._wandb_log_weights = os.environ.get("WANDB_LOG_WEIGHTS") == "1"
+    args._wandb_log_artifact = os.environ.get("WANDB_LOG_ARTIFACT") == "1"
+
     if args.log_with is None:
         if logging_dir is not None:
             log_with = "tensorboard"

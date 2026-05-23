@@ -68,5 +68,8 @@
   "lora_cache_dir": "전처리가 VAE 잠재 변수(.npz)와 텍스트 인코더 출력(_anima_te.safetensors) 캐시를 저장하는 디렉토리. 학습 시 데이터셋 서브셋의 cache_dir로도 사용됩니다.",
   "path_pattern": "각 이미지의 image_dir 기준 상대 경로에 적용되는 fnmatch 글롭. 전처리를 다시 돌리지 않고도 하나의 variant TOML로 전체 데이터셋의 일부만 학습할 수 있습니다. `|`로 여러 패턴을 OR 결합할 수 있습니다. 예: `*`는 전체 사용, `char_a/*`는 char_a/ 하위만, `char_a/*|char_b/*`는 두 폴더 모두, `*portrait*`는 경로에 'portrait'이 포함된 파일만. 검증 데이터 열거와 이미지 개수 임계값도 필터링된 풀을 기준으로 동작합니다.",
   "drop_lowres_images": "체크 시, 학습 자동 체인의 전처리가 `min_pixels` 임계값 미만의 원본 이미지를 건너뛰어 리사이즈 / VAE / TE 캐시에 들어가지 않도록 합니다. preprocess/resize_images.py와 preprocess/cache_text_embeddings.py 양쪽에 동일한 `--min_pixels` 인자로 전달됩니다. 체크 해제하면 크기와 무관하게 모든 이미지를 사용합니다.",
-  "min_pixels": "`drop_lowres_images`에서 사용하는 픽셀 수 임계값 (기본값 500_000 = 0.5MP). preprocess/resize_images.py와 cache_text_embeddings.py에 `--min_pixels`로 그대로 전달됩니다. `drop_lowres_images = false`일 때는 무시됩니다. 체크박스를 끄지 않고 필터만 비활성화하려면 0으로 설정하세요."
+  "min_pixels": "`drop_lowres_images`에서 사용하는 픽셀 수 임계값 (기본값 500_000 = 0.5MP). preprocess/resize_images.py와 cache_text_embeddings.py에 `--min_pixels`로 그대로 전달됩니다. `drop_lowres_images = false`일 때는 무시됩니다. 체크박스를 끄지 않고 필터만 비활성화하려면 0으로 설정하세요.",
+  "batch_size": "학습 스텝당 이미지 수로, 하나의 가로세로 비율 버킷에서 가져옵니다. 배치 크기를 키우면 학습 속도가 빨라지지만 VRAM 사용량이 증가합니다; 8GB GPU는 1~4 권장. 변형 TOML의 [[datasets]] 블록에 batch_size 오버라이드를 쓰거나 제거합니다; base.toml 값과 동일하면 오버라이드를 제거하여 base가 우선합니다.",
+  "num_repeats": "에포크당 각 이미지의 반복 횟수. 1 = 각 이미지를 한 번만 학습; 늘리면 소규모 데이터셋을 효과적으로 증강하지만 에포크당 스텝 수가 선형적으로 증가합니다. 변형 TOML의 [[datasets.subsets]] 블록에 num_repeats 오버라이드를 쓰거나 제거합니다; base.toml 값과 동일하면 오버라이드를 제거하여 base가 우선합니다.",
+  "sample_ratio": "학습 데이터셋의 서브샘플 비율 (0.0–1.0). 1.0 = 전체 이미지, 0.5 = 절반, 0.1 = 10%. half/quarter/tenth/debug 프리셋은 빠른 반복을 위해 1.0 미만으로 설정합니다 — 실제 학습 시에는 반드시 1.0으로 복원하세요. 변형 TOML의 [[datasets.subsets]] 블록에 sample_ratio 오버라이드를 쓰거나 제거합니다; base.toml 값과 동일하면 오버라이드를 제거하여 base가 우선합니다."
 }

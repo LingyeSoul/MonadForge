@@ -107,6 +107,106 @@
       </v-col>
     </v-row>
 
+    <!-- WandB Tracking Panel -->
+    <v-expansion-panels v-model="wandbPanel" class="mb-4" variant="accordion">
+      <v-expansion-panel elevation="0">
+        <v-expansion-panel-title class="text-subtitle-2">
+          <v-icon icon="mdi-chart-box" class="mr-2" />
+          {{ t('cfgWandbSection') }}
+          <v-spacer />
+          <v-switch
+            v-model="wandb.enabled"
+            :label="t('cfgWandbEnabled')"
+            density="compact"
+            hide-details
+            color="primary"
+            class="mr-2"
+            @click.stop
+            @update:model-value="saveWandbSettings"
+          />
+        </v-expansion-panel-title>
+        <v-expansion-panel-text>
+          <v-row dense>
+            <v-col cols="12" md="4">
+              <v-text-field
+                v-model="wandb.project"
+                :label="t('cfgWandbProject')"
+                variant="outlined"
+                density="compact"
+                hide-details
+                @change="saveWandbSettings"
+              />
+            </v-col>
+            <v-col cols="12" md="4">
+              <v-text-field
+                v-model="wandb.run_name"
+                :label="t('cfgWandbRunName')"
+                variant="outlined"
+                density="compact"
+                hide-details
+                @change="saveWandbSettings"
+              />
+            </v-col>
+            <v-col cols="12" md="4">
+              <v-text-field
+                v-model="wandb.api_key"
+                :label="t('cfgWandbApiKey')"
+                type="password"
+                variant="outlined"
+                density="compact"
+                hide-details
+                @change="saveWandbSettings"
+              />
+            </v-col>
+          </v-row>
+          <v-row dense class="mt-2">
+            <v-col cols="12" md="3">
+              <v-text-field
+                v-model.number="wandb.log_every_n_steps"
+                :label="t('cfgWandbLogEvery')"
+                type="number"
+                variant="outlined"
+                density="compact"
+                hide-details
+                min="1"
+                @change="saveWandbSettings"
+              />
+            </v-col>
+            <v-col cols="12" md="3" class="d-flex align-center">
+              <v-checkbox
+                v-model="wandb.log_gradients"
+                :label="t('cfgWandbLogGradients')"
+                density="compact"
+                hide-details
+                color="primary"
+                @update:model-value="saveWandbSettings"
+              />
+            </v-col>
+            <v-col cols="12" md="3" class="d-flex align-center">
+              <v-checkbox
+                v-model="wandb.log_weights"
+                :label="t('cfgWandbLogWeights')"
+                density="compact"
+                hide-details
+                color="primary"
+                @update:model-value="saveWandbSettings"
+              />
+            </v-col>
+            <v-col cols="12" md="3" class="d-flex align-center">
+              <v-checkbox
+                v-model="wandb.log_checkpoint_artifact"
+                :label="t('cfgWandbLogArtifact')"
+                density="compact"
+                hide-details
+                color="primary"
+                @update:model-value="saveWandbSettings"
+              />
+            </v-col>
+          </v-row>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
+
     <v-alert
       v-if="configStore.error"
       type="error"
@@ -398,6 +498,37 @@ const showCreateVariantDlg = ref(false)
 const newVariantName = ref('')
 const seedFromCurrent = ref(true)
 
+// WandB settings
+const wandb = ref({
+  enabled: false,
+  project: 'anima-lora',
+  run_name: '',
+  api_key: '',
+  log_every_n_steps: 50,
+  log_gradients: true,
+  log_weights: true,
+  log_checkpoint_artifact: true,
+})
+const wandbPanel = ref(false)
+
+async function loadWandbSettings() {
+  try {
+    const res = await fetch('/api/config/wandb-settings')
+    if (res.ok) wandb.value = await res.json()
+  } catch { /* ignore */ }
+}
+
+async function saveWandbSettings() {
+  try {
+    await fetch('/api/config/wandb-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(wandb.value),
+    })
+    notify.show(t('cfgWandbSaved'), 'success')
+  } catch { /* ignore */ }
+}
+
 const variantNameRule = (v: string) => {
   if (!v) return true
   return /^[A-Za-z0-9_-]+$/.test(v) ? true : t('cfgNewVariantNameInvalid')
@@ -475,6 +606,7 @@ onMounted(async () => {
   await Promise.all([
     configStore.fetchMethods(),
     configStore.fetchPresets(),
+    loadWandbSettings(),
   ])
 
   // Restore previous selections from store (survives page navigation)
@@ -634,7 +766,21 @@ async function startTraining() {
 }
 
 async function launchTrainingTask() {
-  const taskId = await taskStore.startTask('lora-gui', [selectedVariant.value], { PRESET: selectedPreset.value })
+  const env: Record<string, string> = { PRESET: selectedPreset.value }
+
+  // Inject wandb env vars when enabled
+  if (wandb.value.enabled) {
+    env['WANDB_ENABLED'] = '1'
+    if (wandb.value.project) env['WANDB_PROJECT'] = wandb.value.project
+    if (wandb.value.run_name) env['WANDB_RUN_NAME'] = wandb.value.run_name
+    if (wandb.value.api_key) env['WANDB_API_KEY'] = wandb.value.api_key
+    env['WANDB_LOG_EVERY_N'] = String(wandb.value.log_every_n_steps || 50)
+    if (wandb.value.log_gradients) env['WANDB_LOG_GRADIENTS'] = '1'
+    if (wandb.value.log_weights) env['WANDB_LOG_WEIGHTS'] = '1'
+    if (wandb.value.log_checkpoint_artifact) env['WANDB_LOG_ARTIFACT'] = '1'
+  }
+
+  const taskId = await taskStore.startTask('lora-gui', [selectedVariant.value], env)
   if (taskId) {
     notify.show(t('notifyTrainingLaunched'), 'success')
   } else {

@@ -19,6 +19,7 @@ export interface TrainingMetrics {
   avg_key_norm: number | null
   checkpoint_saved: boolean
   events: TrainingEvent[]
+  wandb_run_url: string | null
 }
 
 export interface TrainingEvent {
@@ -48,6 +49,7 @@ const emptyMetrics: TrainingMetrics = {
   avg_key_norm: null,
   checkpoint_saved: false,
   events: [],
+  wandb_run_url: null,
 }
 
 export const useTrainingStore = defineStore('training', () => {

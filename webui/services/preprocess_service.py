@@ -79,6 +79,7 @@ DEFAULTS = {
     "caption_tag_dropout_rate": 0.1,
     "mit_text_threshold": 0.8,
     "mit_dilate": 5,
+    "resize_resolution": 1024,
 }
 
 
@@ -142,6 +143,7 @@ def get_settings() -> dict:
             "mit_text_threshold", DEFAULTS["mit_text_threshold"]
         ),
         "mit_dilate": gui.get("mit_dilate", DEFAULTS["mit_dilate"]),
+        "resize_resolution": gui.get("resize_resolution", DEFAULTS["resize_resolution"]),
     }
 
 
@@ -177,6 +179,7 @@ def save_settings(data: dict) -> dict:
         "caption_tag_dropout_rate",
         "mit_text_threshold",
         "mit_dilate",
+        "resize_resolution",
     ):
         if key in data:
             gui[key] = data[key]

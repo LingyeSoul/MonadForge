@@ -20,6 +20,7 @@ from webui.api import images as images_api
 from webui.api import merge as merge_api
 from webui.api import preprocess as preprocess_api
 from webui.api import system as system_api
+from webui.api import tagger as tagger_api
 from webui.api import tasks as tasks_api
 from webui.api import ws as ws_api
 
@@ -71,6 +72,7 @@ def create_app(dev: bool = False) -> FastAPI:
     app.include_router(merge_api.router, prefix="/api/merge")
     app.include_router(preprocess_api.router, prefix="/api/preprocess")
     app.include_router(system_api.router, prefix="/api/system")
+    app.include_router(tagger_api.router, prefix="/api/tagger")
     app.include_router(tasks_api.router, prefix="/api/tasks")
     app.include_router(ws_api.router)
 

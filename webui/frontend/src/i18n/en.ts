@@ -148,6 +148,20 @@ export default {
   dsPathNotFound: 'Directory not found: {path}',
   dsRemovePath: 'Remove',
 
+  // WD Tagger
+  tgAutoTag: 'Auto Tag',
+  tgTagging: 'Tagging...',
+  tgTagComplete: 'Tagged {count} images',
+  tgTagSkipped: '{count} skipped',
+  tgTagErrors: '{count} errors',
+  tgModel: 'Tagger Model',
+  tgThreshold: 'Threshold',
+  tgSkipExisting: 'Skip existing',
+  tgModelNotReady: 'Model not downloaded',
+  tgConfirmTag: 'Tag all images in "{dir}"?',
+  tgEva02: 'EVA02-Large',
+  tgSwinV2: 'SwinV2',
+
   // Caption Grammar Guide
   dsGrammarGuide: 'Tag order: <b>rating → count → character (series) → series → <span class="tag-artist-hint">@artist</span> → content tags</b>. Section syntax: end previous with <code>.</code>, start next with <code>On the...</code> or <code>In the...</code> (<span class="tag-section-hint">blue</span>). Tags up to and including <span class="tag-artist-hint">@artist</span> are fixed; everything after shuffles within each section.',
 
@@ -190,6 +204,8 @@ export default {
   ppSamGroup: 'SAM Mask',
   ppMitGroup: 'MIT Mask',
   ppCaptionGroup: 'Caption Caching',
+  ppResizeGroup: 'Resize',
+  ppResizeResolution: 'Resolution',
   ppSamPrompts: 'SAM Prompts',
   ppSamPromptsHint: 'One prompt per line',
   ppSamThreshold: 'SAM Threshold',
@@ -339,4 +355,19 @@ export default {
   notifyTestLaunched: 'Test inference started',
   notifyTaskStarted: '{command} started',
   notifyTaskStartFailed: 'Failed to start {command}',
+
+  // WandB Tracking
+  cfgWandbSection: 'W&B Tracking',
+  cfgWandbEnabled: 'Enable W&B',
+  cfgWandbProject: 'Project Name',
+  cfgWandbRunName: 'Run Name (auto if empty)',
+  cfgWandbApiKey: 'API Key (optional)',
+  cfgWandbLogEvery: 'Log Gradients Every N Steps',
+  cfgWandbLogGradients: 'Log Gradient Histograms',
+  cfgWandbLogWeights: 'Log Weight Snapshots',
+  cfgWandbLogArtifact: 'Log Checkpoint Artifacts',
+  cfgWandbSaved: 'W&B settings saved',
+
+  // Dashboard WandB
+  dashWandbBoard: 'W&B Dashboard',
 }

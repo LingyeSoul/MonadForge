@@ -148,6 +148,20 @@ export default {
   dsPathNotFound: '目录不存在: {path}',
   dsRemovePath: '移除',
 
+  // WD Tagger
+  tgAutoTag: '自动打标',
+  tgTagging: '打标中...',
+  tgTagComplete: '已标注 {count} 张图片',
+  tgTagSkipped: '跳过 {count} 张',
+  tgTagErrors: '{count} 张出错',
+  tgModel: '打标模型',
+  tgThreshold: '阈值',
+  tgSkipExisting: '跳过已有标注',
+  tgModelNotReady: '模型未下载',
+  tgConfirmTag: '确认对 "{dir}" 中所有图片打标？',
+  tgEva02: 'EVA02-Large',
+  tgSwinV2: 'SwinV2',
+
   // Caption Grammar Guide
   dsGrammarGuide: '标签顺序：<b>分级 → 数量 → 角色(系列) → 系列 → <span class="tag-artist-hint">@画师</span> → 内容标签</b>。段落语法：前一段以 <code>.</code> 结尾，下一段以 <code>On the...</code> 或 <code>In the...</code> 开头（<span class="tag-section-hint">蓝色</span>）。至 <span class="tag-artist-hint">@画师</span> 为止的标签固定不动，其后标签在各段落内随机打乱。',
 
@@ -190,6 +204,8 @@ export default {
   ppSamGroup: 'SAM 遮罩',
   ppMitGroup: 'MIT 遮罩',
   ppCaptionGroup: '标签缓存',
+  ppResizeGroup: '缩放',
+  ppResizeResolution: '分辨率',
   ppSamPrompts: 'SAM 提示词',
   ppSamPromptsHint: '每行一个提示词',
   ppSamThreshold: 'SAM 阈值',
@@ -339,4 +355,19 @@ export default {
   notifyTestLaunched: '测试推理已启动',
   notifyTaskStarted: '{command} 已启动',
   notifyTaskStartFailed: '{command} 启动失败',
+
+  // WandB Tracking
+  cfgWandbSection: 'W&B 追踪',
+  cfgWandbEnabled: '启用 W&B',
+  cfgWandbProject: '项目名称',
+  cfgWandbRunName: '运行名称（留空自动生成）',
+  cfgWandbApiKey: 'API Key（可选）',
+  cfgWandbLogEvery: '每 N 步记录梯度',
+  cfgWandbLogGradients: '记录梯度直方图',
+  cfgWandbLogWeights: '记录权重快照',
+  cfgWandbLogArtifact: '记录 Checkpoint 制品',
+  cfgWandbSaved: 'W&B 设置已保存',
+
+  // Dashboard WandB
+  dashWandbBoard: 'W&B 看板',
 }

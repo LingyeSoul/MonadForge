@@ -27,6 +27,7 @@ class PreprocessSettings(BaseModel):
     caption_tag_dropout_rate: float = 0.1
     mit_text_threshold: float = 0.8
     mit_dilate: int = 5
+    resize_resolution: int = 1024
 
 
 class CacheCounts(BaseModel):

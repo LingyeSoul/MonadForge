@@ -280,6 +280,22 @@ def init_trackers(
         init_kwargs = {}
         if args.wandb_run_name:
             init_kwargs["wandb"] = {"name": args.wandb_run_name}
+
+        # Enrich wandb init with group / tags for professional dashboard
+        # organization (run comparison, filtering).
+        _wb_init = init_kwargs.setdefault("wandb", {})
+        method = getattr(args, "method", None)
+        preset = getattr(args, "preset", None)
+        if method or preset:
+            _wb_init["group"] = "_".join(p for p in (method, preset) if p)
+        _tags = []
+        for tag_key in ("method", "preset", "network_module", "optimizer_type", "mixed_precision"):
+            val = getattr(args, tag_key, None)
+            if val:
+                _tags.append(str(val))
+        if _tags:
+            _wb_init["tags"] = _tags
+
         if args.log_tracker_config is not None:
             init_kwargs = toml.load(args.log_tracker_config)
         accelerator.init_trackers(

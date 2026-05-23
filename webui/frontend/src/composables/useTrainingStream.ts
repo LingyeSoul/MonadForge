@@ -3,13 +3,14 @@ import { useTrainingStore } from '../stores/training'
 import type { TrainingMetrics } from '../stores/training'
 
 interface WsMessage {
-  type: 'connected' | 'log' | 'done' | 'cancelled' | 'error' | 'metrics'
+  type: 'connected' | 'log' | 'done' | 'cancelled' | 'error' | 'metrics' | 'wandb_url'
   line?: string
   task_id?: string
   exit_code?: number
   state?: string
   message?: string
   data?: Partial<TrainingMetrics>
+  url?: string
 }
 
 export function useTrainingStream(taskId: string) {
@@ -100,6 +101,8 @@ export function useTrainingStream(taskId: string) {
           enqueueLine('[cancelled]')
         } else if (msg.type === 'error' && msg.message) {
           enqueueLine(`[error] ${msg.message}`)
+        } else if (msg.type === 'wandb_url' && msg.url) {
+          store.updateFromWs({ wandb_run_url: msg.url })
         }
       } catch {
         enqueueLine(event.data)

@@ -7,6 +7,7 @@ and field help for the WebUI.
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from pathlib import Path
 from typing import Any, Optional
@@ -186,6 +187,7 @@ _GROUPS = {
         "checkpointing_epochs",
         "batch_size",
         "num_repeats",
+        "sample_ratio",
         "gradient_accumulation_steps",
         "use_shuffled_caption_variants",
         "caption_dropout_rate",
@@ -246,7 +248,7 @@ _GROUPS = {
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
-_VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats"}
+_VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats", "sample_ratio"}
 
 _BASIC = {
     "learning_rate",
@@ -513,6 +515,24 @@ def _base_num_repeats(base_data: dict) -> int:
     return int(nr) if nr is not None else 1
 
 
+def _base_sample_ratio(base_data: dict) -> float:
+    """Read sample_ratio from the first subset of the first dataset in *base_data*."""
+    datasets = base_data.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        return 1.0
+    first_ds = datasets[0]
+    if not isinstance(first_ds, dict):
+        return 1.0
+    subsets = first_ds.get("subsets")
+    if not isinstance(subsets, list) or not subsets:
+        return 1.0
+    first_sub = subsets[0]
+    if not isinstance(first_sub, dict):
+        return 1.0
+    sr = first_sub.get("sample_ratio")
+    return float(sr) if sr is not None else 1.0
+
+
 def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str, str]]:
     """Merge base + preset + gui-methods/<variant>.toml.
 
@@ -608,6 +628,25 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     else:
         merged["num_repeats"] = _base_num_repeats(base)
         origin["num_repeats"] = "base"
+
+    # sample_ratio virtual key (subset-level: datasets[0].subsets[0].sample_ratio)
+    variant_sr = None
+    if isinstance(datasets, list) and datasets and isinstance(datasets[0], dict):
+        subsets = datasets[0].get("subsets")
+        if isinstance(subsets, list) and subsets and isinstance(subsets[0], dict):
+            sr = subsets[0].get("sample_ratio")
+            if sr is not None:
+                try:
+                    variant_sr = float(sr)
+                except (TypeError, ValueError):
+                    pass
+
+    if variant_sr is not None:
+        merged["sample_ratio"] = variant_sr
+        origin["sample_ratio"] = "method"
+    else:
+        merged["sample_ratio"] = _base_sample_ratio(base)
+        origin["sample_ratio"] = "base"
 
     return merged, origin
 
@@ -846,6 +885,54 @@ def _apply_num_repeats(out: dict, value: int, base_value: int) -> None:
     first_sub["num_repeats"] = value
 
 
+def _apply_sample_ratio(out: dict, value: float, base_value: float) -> None:
+    """Write or strip the sample_ratio override in the variant TOML's [[datasets.subsets]]."""
+    if math.isclose(value, base_value, rel_tol=1e-9):
+        # Same as base -- strip override to keep variant TOML clean
+        datasets = out.get("datasets")
+        if not isinstance(datasets, list) or not datasets:
+            return
+        first_ds = datasets[0]
+        if not isinstance(first_ds, dict):
+            return
+        subsets = first_ds.get("subsets")
+        if not isinstance(subsets, list) or not subsets:
+            return
+        first_sub = subsets[0]
+        if not isinstance(first_sub, dict):
+            return
+        first_sub.pop("sample_ratio", None)
+        # Clean up empty subset -> empty datasets chain
+        if not first_sub and len(subsets) == 1:
+            del first_ds["subsets"]
+            if not first_ds and len(datasets) == 1:
+                del out["datasets"]
+        return
+
+    # Write override -- ensure datasets -> subsets chain exists
+    datasets = out.get("datasets")
+    if not isinstance(datasets, list):
+        datasets = []
+        out["datasets"] = datasets
+    if not datasets:
+        datasets.append({})
+    first_ds = datasets[0]
+    if not isinstance(first_ds, dict):
+        first_ds = {}
+        datasets[0] = first_ds
+    subsets = first_ds.get("subsets")
+    if not isinstance(subsets, list):
+        subsets = []
+        first_ds["subsets"] = subsets
+    if not subsets:
+        subsets.append({})
+    first_sub = subsets[0]
+    if not isinstance(first_sub, dict):
+        first_sub = {}
+        subsets[0] = first_sub
+    first_sub["sample_ratio"] = value
+
+
 def validate_config(data: dict) -> list[str]:
     """Validate a config dict. Returns a list of error strings (empty = valid)."""
     errors: list[str] = []
@@ -869,6 +956,10 @@ def validate_config(data: dict) -> list[str]:
         nr = data["num_repeats"]
         if isinstance(nr, int) and nr < 1:
             errors.append("num_repeats must be at least 1")
+    if "sample_ratio" in data:
+        sr = data["sample_ratio"]
+        if isinstance(sr, (int, float)) and not (0.0 < sr <= 1.0):
+            errors.append("sample_ratio must be between 0.0 (exclusive) and 1.0 (inclusive)")
     return errors
 
 
@@ -915,6 +1006,7 @@ def save_variant_config(variant: str, data: dict) -> None:
     vsn = data.pop("validation_split_num", None)
     bs = data.pop("batch_size", None)
     nr = data.pop("num_repeats", None)
+    sr = data.pop("sample_ratio", None)
     if use_valid is not None:
         base = _load(CONFIGS_DIR / "base.toml")
         base_vsn = _base_validation_split_num(base)
@@ -929,6 +1021,11 @@ def save_variant_config(variant: str, data: dict) -> None:
         base = _load(CONFIGS_DIR / "base.toml")
         base_nr = _base_num_repeats(base)
         _apply_num_repeats(current, int(nr), base_nr)
+
+    if sr is not None:
+        base = _load(CONFIGS_DIR / "base.toml")
+        base_sr = _base_sample_ratio(base)
+        _apply_sample_ratio(current, float(sr), base_sr)
 
     # Write flat keys
     for key, value in data.items():
@@ -1154,4 +1251,57 @@ def _load_method_guide(method: str, lang: str = "cn") -> str:
     if method in _NOT_MERGEABLE:
         parts.append(_read_guide("_not_mergeable", lang))
     parts.append(_read_guide(method, lang))
+    return "".join(parts)
+
+
+# ── WandB settings (persisted in webui_settings.json) ─────────────────
+
+_WANDB_DEFAULTS = {
+    "enabled": False,
+    "project": "anima-lora",
+    "run_name": "",
+    "api_key": "",
+    "log_every_n_steps": 50,
+    "log_gradients": True,
+    "log_weights": True,
+    "log_checkpoint_artifact": True,
+}
+
+_SETTINGS_FILE = _ROOT / "configs" / "webui_settings.json"
+
+
+def get_wandb_settings() -> dict:
+    """Read wandb settings from webui_settings.json, with defaults."""
+    if not _SETTINGS_FILE.exists():
+        return dict(_WANDB_DEFAULTS)
+    try:
+        data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return dict(_WANDB_DEFAULTS)
+    stored = data.get("wandb", {})
+    merged = dict(_WANDB_DEFAULTS)
+    merged.update(stored)
+    return merged
+
+
+def save_wandb_settings(settings: dict) -> dict:
+    """Write wandb settings to webui_settings.json. Returns saved settings."""
+    allowed_keys = set(_WANDB_DEFAULTS.keys())
+    filtered = {k: v for k, v in settings.items() if k in allowed_keys}
+
+    data = {}
+    if _SETTINGS_FILE.exists():
+        try:
+            data = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    existing_wandb = data.get("wandb", {})
+    existing_wandb.update(filtered)
+    data["wandb"] = existing_wandb
+
+    _SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    return get_wandb_settings()
     return "".join(parts)

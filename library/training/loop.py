@@ -35,6 +35,12 @@ from library.training.contexts import TrainCtx, ValCtx
 from library.training.method_adapter import StepCtx
 from library.training.metrics import MetricContext, collect_metrics
 from library.training.validation import run_validation
+from library.training.wandb_metrics import (
+    GradientHistogramCollector,
+    SystemMetricsCollector,
+    WeightSnapshotCollector,
+)
+from library.training.log_dispatch import dispatch_wandb_extras
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +143,16 @@ def build_loop_state(
     noise_scheduler = trainer.get_noise_scheduler(args, accelerator.device)
 
     train_util.init_trackers(accelerator, args, "network_train")
+
+    # Initialize wandb-enhanced collectors when wandb tracker is active.
+    # Stored on trainer for _log_step to pick up.
+    trainer._wandb_collectors = {}
+    _has_wandb = "wandb" in [t.name for t in accelerator.trackers]
+    if _has_wandb:
+        trainer._wandb_collectors["sys"] = SystemMetricsCollector()
+        _grad_freq = int(getattr(args, "log_every_n_steps", 1) or 1) * 50
+        trainer._wandb_collectors["grad"] = GradientHistogramCollector(freq=_grad_freq)
+        trainer._wandb_collectors["weight"] = WeightSnapshotCollector()
 
     loss_recorder = LossRecorder()
     val_step_loss_recorder = LossRecorder()
@@ -298,6 +314,40 @@ def build_loop_state(
     )
 
 
+def _log_checkpoint_artifact(trainer, args, state: LoopState, epoch: int) -> None:
+    """Log the latest checkpoint as a wandb artifact, if wandb is active."""
+    _wb = getattr(trainer, "_wandb_collectors", {})
+    if not _wb or not getattr(args, "_wandb_log_artifact", False):
+        return
+    try:
+        import wandb
+
+        if not wandb.run:
+            return
+        # Construct the expected checkpoint path using the same helpers
+        # the CheckpointSaver uses internally.
+        from library.training.checkpoints import (
+            get_epoch_ckpt_name,
+            get_step_ckpt_name,
+        )
+
+        ext = "." + args.save_model_as
+        ckpt_name = get_epoch_ckpt_name(args, ext, epoch + 1)
+        ckpt_path = os.path.join(args.output_dir, ckpt_name)
+        if not os.path.isfile(ckpt_path):
+            ckpt_name = get_step_ckpt_name(args, ext, state.global_step)
+            ckpt_path = os.path.join(args.output_dir, ckpt_name)
+        if os.path.isfile(ckpt_path):
+            artifact = wandb.Artifact(
+                name=f"{args.output_name or 'model'}_step_{state.global_step}",
+                type="model",
+            )
+            artifact.add_file(ckpt_path)
+            wandb.log_artifact(artifact)
+    except Exception as e:
+        logger.warning(f"WandB checkpoint artifact logging failed: {e}")
+
+
 def run_training_loop(trainer, state: LoopState) -> None:
     """Run the full for-epoch training loop and the post-loop end-of-training
     metadata write. Mutates ``state.global_step``, profiler bookkeeping, and
@@ -321,6 +371,15 @@ def run_training_loop(trainer, state: LoopState) -> None:
         _log_epoch_average(trainer, state, epoch)
         _run_adapter_epoch_hooks(trainer, state)
 
+        # WandB weight snapshot at epoch boundary
+        _wb = getattr(trainer, "_wandb_collectors", {})
+        if _wb:
+            weight_collector: WeightSnapshotCollector = _wb.get("weight")
+            if weight_collector and weight_collector.should_collect(epoch_boundary=True):
+                _unwrapped = accelerator.unwrap_model(state.network)
+                extras = weight_collector.collect(_unwrapped)
+                dispatch_wandb_extras(accelerator, extras, state.global_step)
+
         accelerator.wait_for_everyone()
 
         state.optimizer_eval_fn()
@@ -330,6 +389,9 @@ def run_training_loop(trainer, state: LoopState) -> None:
         state.saver.maybe_save_resumable(
             state.network, state.global_step, epoch, state.num_train_epochs
         )
+
+        # Log checkpoint as wandb artifact when enabled
+        _log_checkpoint_artifact(trainer, args, state, epoch)
 
         trainer.sample_images(
             accelerator,
@@ -381,6 +443,7 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             state.global_step += 1
             _sample_at_step(trainer, state)
             state.saver.maybe_save_step(state.network, state.global_step, epoch)
+            _log_checkpoint_artifact(trainer, args, state, epoch)
             state.optimizer_train_fn()
 
         avr_loss = _log_step(
@@ -643,6 +706,24 @@ def _log_step(
             )
         )
         trainer.step_logging(state.accelerator, logs, state.global_step, epoch + 1)
+
+        # WandB enhanced metrics — system stats go into the regular log dict;
+        # gradient histograms are wandb-only objects dispatched separately.
+        _wb = getattr(trainer, "_wandb_collectors", {})
+        if _wb:
+            sys_collector: SystemMetricsCollector = _wb.get("sys")
+            if sys_collector:
+                logs.update(sys_collector.collect())
+                # Re-dispatch with system metrics included (wandb only gets
+                # the extra keys; tensorboard already received the base set).
+                dispatch_wandb_extras(
+                    state.accelerator, sys_collector.collect(), state.global_step
+                )
+            grad_collector: GradientHistogramCollector = _wb.get("grad")
+            if grad_collector and grad_collector.should_collect(state.global_step):
+                extras = grad_collector.collect(_unwrapped_net)
+                dispatch_wandb_extras(state.accelerator, extras, state.global_step)
+
     return avr_loss
 
 

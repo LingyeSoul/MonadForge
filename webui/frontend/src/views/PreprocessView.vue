@@ -46,17 +46,15 @@
           class="mb-2"
         />
         <v-text-field
-          :model-value="paths.resized"
+          v-model="paths.resized"
           :label="t('ppPathResized')"
-          readonly
           density="compact"
           hide-details="auto"
           class="mb-2"
         />
         <v-text-field
-          :model-value="paths.cache"
+          v-model="paths.cache"
           :label="t('ppPathCache')"
-          readonly
           density="compact"
           hide-details="auto"
         />
@@ -77,8 +75,23 @@
         </v-expansion-panel-title>
         <v-expansion-panel-text>
           <v-row>
+            <!-- Resize Settings -->
+            <v-col cols="12" md="3">
+              <div class="text-subtitle-2 mb-2">{{ t('ppResizeGroup') }}</div>
+              <v-text-field
+                v-model.number="settings.resize_resolution"
+                :label="t('ppResizeResolution')"
+                type="number"
+                step="64"
+                min="256"
+                max="2048"
+                density="compact"
+                hide-details="auto"
+              />
+            </v-col>
+
             <!-- SAM Settings -->
-            <v-col cols="12" md="4">
+            <v-col cols="12" md="3">
               <div class="text-subtitle-2 mb-2">{{ t('ppSamGroup') }}</div>
               <v-switch v-model="settings.run_sam_mask" :label="t('ppRunSamMask')" density="compact" hide-details class="mb-2" />
               <v-textarea
@@ -114,7 +127,7 @@
             </v-col>
 
             <!-- MIT Settings -->
-            <v-col cols="12" md="4">
+            <v-col cols="12" md="3">
               <div class="text-subtitle-2 mb-2">{{ t('ppMitGroup') }}</div>
               <v-switch v-model="settings.run_mit_mask" :label="t('ppRunMitMask')" density="compact" hide-details class="mb-2" />
               <v-text-field
@@ -141,7 +154,7 @@
             </v-col>
 
             <!-- Caption Settings -->
-            <v-col cols="12" md="4">
+            <v-col cols="12" md="3">
               <div class="text-subtitle-2 mb-2">{{ t('ppCaptionGroup') }}</div>
               <v-text-field
                 v-model.number="settings.caption_shuffle_variants"
@@ -376,6 +389,7 @@ const defaultSettings = () => ({
   caption_tag_dropout_rate: 0.1,
   mit_text_threshold: 0.8,
   mit_dilate: 5,
+  resize_resolution: 1024,
 })
 
 const settings = reactive(defaultSettings())
@@ -397,6 +411,7 @@ async function fetchSettings() {
     settings.caption_tag_dropout_rate = data.caption_tag_dropout_rate ?? 0.1
     settings.mit_text_threshold = data.mit_text_threshold ?? 0.8
     settings.mit_dilate = data.mit_dilate ?? 5
+    settings.resize_resolution = data.resize_resolution ?? 1024
   } catch { /* ignore */ }
 }
 
@@ -452,7 +467,11 @@ async function savePaths() {
     const res = await fetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source_image_dir: paths.source }),
+      body: JSON.stringify({
+        source_image_dir: paths.source,
+        resized_image_dir: paths.resized,
+        lora_cache_dir: paths.cache,
+      }),
     })
     if (res.ok) {
       const data = await res.json()
@@ -512,6 +531,12 @@ async function runTask(command: string) {
     await saveSettings()
   }
 
+  // Build CLI args for tasks that accept them
+  const args: string[] = []
+  if (command === 'preprocess-resize') {
+    args.push('--resolution', String(settings.resize_resolution))
+  }
+
   // Pass relevant env vars for tasks that read them
   const env: Record<string, string> = {}
   if (configStore.variant) {
@@ -532,7 +557,7 @@ async function runTask(command: string) {
     env.CAPTION_TAG_DROPOUT_RATE = String(settings.caption_tag_dropout_rate)
   }
 
-  const taskId = await taskStore.startTask(command, [], Object.keys(env).length > 0 ? env : undefined)
+  const taskId = await taskStore.startTask(command, args, Object.keys(env).length > 0 ? env : undefined)
   if (taskId) {
     notify.show(t('notifyTaskStarted', { command }), 'success')
   } else {

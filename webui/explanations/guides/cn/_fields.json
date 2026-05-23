@@ -68,5 +68,8 @@
   "lora_cache_dir": "预处理写入VAE潜变量（.npz）和文本编码器（_anima_te.safetensors）缓存的目录。训练时也解析为数据集子集的cache_dir。",
   "path_pattern": "应用于每张图像相对于其子集image_dir路径的fnmatch glob。无需重新运行预处理即可用单个variant TOML训练完整数据集的一个子集。`|`分隔多个模式进行OR组合。示例：`*`保留所有；`char_a/*`仅保留char_a/子文件夹下的文件；`char_a/*|char_b/*`保留两个文件夹；`*portrait*`保留路径包含'portrait'的所有文件。验证枚举和图像计数阈值遵循过滤后的池。",
   "drop_lowres_images": "若为true，预处理自动链跳过低于`min_pixels`阈值的源图像，使其不进入调整大小/VAE/TE缓存。通过相同的`--min_pixels`参数应用于preprocess/resize_images.py和preprocess/cache_text_embeddings.py。取消勾选则无论大小保留所有图像。",
-  "min_pixels": "`drop_lowres_images`使用的像素数阈值（默认500_000 = 0.5MP）。原样传递给preprocess/resize_images.py和cache_text_embeddings.py作为`--min_pixels`。`drop_lowres_images = false`时忽略。若在不关闭复选框的情况下禁用过滤，设为0。"
+  "min_pixels": "`drop_lowres_images`使用的像素数阈值（默认500_000 = 0.5MP）。原样传递给preprocess/resize_images.py和cache_text_embeddings.py作为`--min_pixels`。`drop_lowres_images = false`时忽略。若在不关闭复选框的情况下禁用过滤，设为0。",
+  "batch_size": "每步从同一个宽高比桶中取多少张图片训练。增大批大小可加速训练但增加显存占用；8GB显存建议1~4。在变体的[[datasets]]块上写入/删除{batch_size=N}覆盖；与base.toml的值相同时删除覆盖，由base优先。",
+  "num_repeats": "每张图片在一个epoch内重复训练的次数。1=每张只训练一次；增大可等效扩增小数据集，但会线性增加每epoch步数。在变体的[[datasets.subsets]]块上写入/删除{num_repeats=N}覆盖；与base.toml的值相同时删除覆盖，由base优先。",
+  "sample_ratio": "训练集子采样比例（0.0~1.0）。1.0=全量，0.5=半数，0.1=10%。预设half/quarter/tenth/debug会设为<1.0用于快速调试——正式训练务必恢复为1.0。写入/删除[[datasets.subsets]]中的sample_ratio覆盖；与base.toml的值相同时删除覆盖，由base优先。"
 }

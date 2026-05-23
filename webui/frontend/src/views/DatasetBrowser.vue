@@ -79,6 +79,28 @@
             <v-btn value="tree" icon="mdi-file-tree" />
           </v-btn-toggle>
         </v-col>
+        <v-col cols="auto">
+          <v-btn
+            color="primary"
+            variant="tonal"
+            density="compact"
+            :loading="tagging"
+            :disabled="tagging"
+            @click="startTagging"
+          >
+            <v-icon icon="mdi-tag-outline" class="mr-1" />
+            {{ t('tgAutoTag') }}
+          </v-btn>
+        </v-col>
+        <v-col cols="auto">
+          <v-btn
+            icon="mdi-cog-outline"
+            variant="text"
+            density="compact"
+            :active="showTaggerSettings"
+            @click="showTaggerSettings = !showTaggerSettings"
+          />
+        </v-col>
         <v-spacer />
         <v-col cols="auto">
           <span class="text-caption text-medium-emphasis">
@@ -113,6 +135,59 @@
           </v-btn>
         </v-col>
       </v-row>
+      <!-- Tagger settings row -->
+      <v-expand-transition>
+        <v-row v-if="showTaggerSettings" align="center" dense class="mt-1">
+          <v-col cols="12" sm="4">
+            <v-select
+              v-model="taggerSettings.model_name"
+              :items="[
+                { title: t('tgEva02'), value: 'wd-eva02-large-tagger-v3' },
+                { title: t('tgSwinV2'), value: 'wd-swinv2-tagger-v3' },
+              ]"
+              :label="t('tgModel')"
+              variant="outlined"
+              density="compact"
+              hide-details
+              @update:model-value="saveTaggerSettings"
+            />
+          </v-col>
+          <v-col cols="12" sm="3">
+            <v-slider
+              v-model="taggerSettings.threshold"
+              :label="t('tgThreshold')"
+              :min="0.05"
+              :max="0.95"
+              :step="0.05"
+              thumb-label
+              density="compact"
+              hide-details
+              @update:model-value="saveTaggerSettings"
+            />
+          </v-col>
+          <v-col cols="auto">
+            <v-checkbox
+              v-model="skipExisting"
+              :label="t('tgSkipExisting')"
+              density="compact"
+              hide-details
+            />
+          </v-col>
+        </v-row>
+      </v-expand-transition>
+      <!-- Tagger progress -->
+      <v-progress-linear
+        v-if="tagging"
+        :model-value="tagProgress.total > 0 ? (tagProgress.current / tagProgress.total) * 100 : 0"
+        color="primary"
+        height="22"
+        class="mt-2"
+        rounded
+      >
+        <template #default>
+          <span class="text-caption">{{ tagProgress.current }} / {{ tagProgress.total }}</span>
+        </template>
+      </v-progress-linear>
     </v-card>
 
     <!-- Scrollable content area -->
@@ -534,6 +609,13 @@ const versionsDialog = ref(false)
 const versions = ref<VersionEntry[]>([])
 const selectedVersion = ref(-1)
 
+// Tagger
+const taggerSettings = ref({ model_name: 'wd-eva02-large-tagger-v3', threshold: 0.35 })
+const skipExisting = ref(true)
+const tagging = ref(false)
+const tagProgress = ref({ current: 0, total: 0 })
+const showTaggerSettings = ref(false)
+
 // ── computed ──────────────────────────────────────────────────
 
 const isDirty = computed(() => editCaption.value !== diskCaption.value)
@@ -700,6 +782,79 @@ function toggleSort() {
 function onPageChange(p: number) {
   page.value = p
   loadImages()
+}
+
+// ── Tagger ────────────────────────────────────────────────────
+
+async function fetchTaggerSettings() {
+  try {
+    const res = await fetch('/api/tagger/settings')
+    if (res.ok) taggerSettings.value = await res.json()
+  } catch { /* ignore */ }
+}
+
+async function saveTaggerSettings() {
+  try {
+    await fetch('/api/tagger/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(taggerSettings.value),
+    })
+  } catch { /* ignore */ }
+}
+
+async function startTagging() {
+  tagging.value = true
+  tagProgress.value = { current: 0, total: 0 }
+
+  try {
+    const res = await fetch('/api/tagger/tag', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directory: directory.value,
+        threshold: taggerSettings.value.threshold,
+        skip_existing: skipExisting.value,
+        model_name: taggerSettings.value.model_name,
+      }),
+    })
+
+    const reader = res.body!.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop()!
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(line.slice(6))
+          if (data.current && data.total) {
+            tagProgress.value = { current: data.current, total: data.total }
+          }
+          if (data.error) {
+            notify.show(`Error: ${data.file}: ${data.error}`, 'error')
+          }
+          if (data.done) {
+            notify.show(
+              t('tgTagComplete', { count: data.tagged }) +
+                (data.skipped > 0 ? ` (${t('tgTagSkipped', { count: data.skipped })})` : ''),
+              'success'
+            )
+          }
+        } catch { /* skip malformed lines */ }
+      }
+    }
+  } catch (err: any) {
+    notify.show(err.message || 'Tagging failed', 'error')
+  } finally {
+    tagging.value = false
+    loadImages()
+  }
 }
 
 // ── image selection + caption editor ──────────────────────────
@@ -1045,6 +1200,7 @@ const grammarGuideText = computed(() => {
 onMounted(async () => {
   await loadDirectories()
   await loadImages()
+  fetchTaggerSettings()
   document.addEventListener('keydown', _onKeyDown)
 })
 

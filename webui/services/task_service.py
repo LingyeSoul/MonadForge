@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import re
 from webui.services.training_log_parser import TrainingLogParser
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class Task:
     started_at: Optional[str] = field(default=None)
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
     parser: TrainingLogParser = field(default_factory=TrainingLogParser, repr=False)
+    wandb_run_url: Optional[str] = None
 
     def info(self) -> dict:
         return {
@@ -51,6 +53,7 @@ class Task:
             "exit_code": self.exit_code,
             "output_lines": len(self.lines),
             "started_at": self.started_at,
+            "wandb_run_url": self.wandb_run_url,
         }
 
 
@@ -73,7 +76,11 @@ class TaskService:
 
     def get_task_metrics(self, task_id: str) -> Optional[dict]:
         t = self._tasks.get(task_id)
-        return t.parser.metrics.snapshot() if t else None
+        if t is None:
+            return None
+        snapshot = t.parser.metrics.snapshot()
+        snapshot["wandb_run_url"] = t.wandb_run_url
+        return snapshot
 
     async def start_task(
         self,
@@ -298,6 +305,16 @@ class TaskService:
                 task,
                 {"type": "metrics", "data": snapshot},
             )
+
+        # Capture wandb run URL from stdout (wandb prints "Run page: https://...")
+        if task.wandb_run_url is None:
+            _wb_match = re.search(r"https://wandb\.ai/\S+", line)
+            if _wb_match:
+                task.wandb_run_url = _wb_match.group(0)
+                await self._notify_subscribers(
+                    task,
+                    {"type": "wandb_url", "url": task.wandb_run_url},
+                )
 
     async def _notify_subscribers(self, task: Task, msg: dict) -> None:
         dead: list[asyncio.Queue] = []
