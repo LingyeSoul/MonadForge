@@ -61,6 +61,14 @@ class Job:
     chain_train: Optional[dict] = None
     chained_job_id: Optional[str] = None
 
+    # Set on the follow-on train job the daemon spawns from a chain_train spec.
+    # The pre-launch GPU guard is skipped for these: the daemon itself just ran
+    # (and reaped) the preceding preprocess step on this same serial queue, so
+    # it already knows nothing external owns the card — guarding here only races
+    # against the just-exited preprocess's not-yet-released VRAM. Defaults False
+    # so standalone train jobs (and legacy job.json) still guard normally.
+    from_chain: bool = False
+
     state: str = STATE_QUEUED
     submitted_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None

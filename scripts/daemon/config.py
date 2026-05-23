@@ -32,6 +32,18 @@ DAEMON_LOG = STATE_DIR / "daemon.log"
 DEFAULT_PORT = int(os.environ.get("ANIMA_DAEMON_PORT", "8765"))
 HOST = "127.0.0.1"
 
+# Pre-launch GPU guard (see manager._gpu_guard). Loose by default: this is a
+# single-GPU *serial* queue, so the only thing the guard must catch is VRAM
+# leaked by our own dead jobs (reaped by pid, independent of the threshold).
+# The total-VRAM fraction is just a heuristic for "some *other* process owns the
+# card"; keep it high so a loaded ComfyUI / browser / idle desktop doesn't trip
+# it and stall every launch. All three are env-tunable for odd setups.
+#   busy_frac: treat the card as busy only above this used/total fraction.
+#   retries/delay: how long to wait for it to free up before launching anyway.
+GPU_GUARD_BUSY_FRAC = float(os.environ.get("ANIMA_DAEMON_GPU_BUSY_FRAC", "0.85"))
+GPU_GUARD_RETRIES = int(os.environ.get("ANIMA_DAEMON_GPU_RETRIES", "3"))
+GPU_GUARD_DELAY = float(os.environ.get("ANIMA_DAEMON_GPU_DELAY", "5.0"))
+
 
 def ensure_state_dirs() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)

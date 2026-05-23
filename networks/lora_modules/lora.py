@@ -301,7 +301,8 @@ def bake_inv_scale(state_dict: Dict[str, torch.Tensor]) -> None:
             continue
         orig_dtype = down.dtype
         state_dict[down_key] = (
-            down.to(torch.float) * inv_scale.to(torch.float).unsqueeze(0)
+            down.to(torch.float)
+            * inv_scale.to(device=down.device, dtype=torch.float).unsqueeze(0)
         ).to(orig_dtype)
 
 

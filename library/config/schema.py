@@ -201,6 +201,26 @@ def populate_schema(
         ),
     )
 
+    # `--no_static_pad` is a store_false flag whose value lives on dest
+    # `static_pad`, so the auto-walk only registers the option-string key
+    # `no_static_pad`. base.toml sets the value via the dest (`static_pad =
+    # false`, the native-shape default), so register that name too.
+    CONFIG_SCHEMA.setdefault(
+        "static_pad",
+        ConfigKey(
+            name="static_pad",
+            type="bool",
+            default=True,
+            help=(
+                "Zero-pad every bucket to static_token_count (one compiled graph "
+                "but leaks padding into flash self-attention). False = native "
+                "shapes (--no_static_pad): one graph per distinct bucket token-"
+                "count, no leak. Required by the 4200-token bucket family."
+            ),
+            source="manual",
+        ),
+    )
+
     if extras:
         for k, v in extras.items():
             CONFIG_SCHEMA[k] = v

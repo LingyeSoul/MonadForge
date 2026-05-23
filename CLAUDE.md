@@ -100,7 +100,7 @@ Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with s
 The pretrained model expects max-padded text encoder outputs — zero-padded positions act as attention sinks in cross-attention softmax. Trimming to actual text length produces **black images**. Both training and inference must pad to `max_length` and must NOT mask out padding via `crossattn_seqlens`. Regenerate disk-cached `.npz` after any tokenizer/padding change.
 
 ### Constant-token bucketing
-All bucket resolutions ensure `(H/16)*(W/16) ~ 4096` patches; batch elements are zero-padded to exactly 4096 tokens, giving `torch.compile` a single static shape — no recompilation across aspect ratios.
+`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 and 4200** — each entry *exactly* filling its count (zero intra-bucket padding by construction), tuples in `(W, H)` order. The default path is now native shapes (`static_pad = false` in `base.toml`, the old `--no_static_pad`): each forward runs at its real token count, so `torch.compile` traces **one block graph per distinct token-count (2)** — no flash static-pad leak. The legacy pad-to-static path (one graph, pad to `static_token_count`, leaks padding into flash self-attn) still exists behind `static_pad = true` but **can't run this table** (4200 > 4096 would truncate; guarded in `models.py`). Note this diverges from `DCW_ASPECT_BUCKETS` (the 4056 HD pair is no longer a training bucket). Regenerate disk caches after changing the table.
 
 ### Lazy model loading
 DiT loads AFTER text-encoder/VAE caching and unloading, to avoid OOM: text encoder → cache → free → VAE → cache → free → load DiT → attach adapter → train.

@@ -44,6 +44,7 @@ from gui import (
     _widget,
     apply_validation_choice,
     confirm_resumable_checkpoint,
+    confirm_stale_caches,
     confirm_train_using_cache,
     is_basic_field,
     list_gui_variants,
@@ -822,6 +823,13 @@ class ConfigTab(QWidget):
         # _on_finished can pick it up once preprocess succeeds.
         decision = confirm_train_using_cache(self, cache_dir)
         if decision is False:
+            return
+
+        # Stale-cache guard: a cache that exists but was written under the old
+        # bucket layout (resolutions not in the 4032/4200 table) would be
+        # silently skipped/mis-bucketed at train time. Only meaningful when a
+        # cache is actually present (decision is True).
+        if decision is True and not confirm_stale_caches(self, cache_dir):
             return
 
         # Resume prompt up-front (before any submit) for BOTH paths. The daemon

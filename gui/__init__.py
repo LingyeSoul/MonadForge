@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -681,6 +682,68 @@ def confirm_train_using_cache(
     box.setText(body)
     box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
     box.setDefaultButton(QMessageBox.Yes)
+    return box.exec() == QMessageBox.Yes
+
+
+def find_stale_latent_caches(cache_dir: Path) -> dict[str, int]:
+    """Return a ``{"WxH": count}`` map of VAE latent caches whose pixel
+    resolution is NOT in the live ``CONSTANT_TOKEN_BUCKETS`` table.
+
+    Caches written under an older bucket layout (pre-4032/4200) sit at
+    resolutions the current dataloader no longer buckets at, so they get
+    skipped or mis-bucketed at train time. Returns ``{}`` when the directory
+    is missing or every cache matches a live bucket. Resolution is parsed from
+    the ``{stem}_{WxH}_anima.npz`` filename — a cheap name-only scan, no npz
+    reads.
+    """
+    if not cache_dir.is_dir():
+        return {}
+    from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+
+    valid = {f"{w}x{h}" for (w, h) in CONSTANT_TOKEN_BUCKETS}
+    stale: dict[str, int] = {}
+    for p in cache_dir.rglob("*"):
+        if not p.is_file() or not p.name.endswith(_LATENT_SUFFIX):
+            continue
+        # {stem}_{WxH}_anima.npz → take the trailing "_{WxH}" segment.
+        tail = p.name.removesuffix(_LATENT_SUFFIX).rsplit("_", 1)
+        if len(tail) < 2:
+            continue
+        m = re.fullmatch(r"(\d+)x(\d+)", tail[1])
+        if not m:
+            continue
+        # int() normalizes the zero-padded {W:04d}x{H:04d} on-disk form.
+        key = f"{int(m.group(1))}x{int(m.group(2))}"
+        if key not in valid:
+            stale[key] = stale.get(key, 0) + 1
+    return stale
+
+
+def confirm_stale_caches(parent: QWidget | None, cache_dir: Path) -> bool:
+    """Warn if any VAE latent cache sits at a resolution outside the current
+    4032/4200 bucket table. Returns True to proceed (no stale caches found, or
+    the user chose to train anyway), False if the user cancelled.
+
+    No-op (returns True without prompting) when there are no stale caches, so
+    the call site can wrap every train launch in this.
+    """
+    stale = find_stale_latent_caches(cache_dir)
+    if not stale:
+        return True
+    total = sum(stale.values())
+    shown = sorted(stale.items(), key=lambda kv: -kv[1])[:6]
+    examples = "\n".join(f"  • {reso}  ({n}×)" for reso, n in shown)
+    if len(stale) > len(shown):
+        examples += "\n  • …"
+    body = t(
+        "stale_cache_body", n=total, cache_dir=str(cache_dir), examples=examples
+    )
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle(t("stale_cache_title"))
+    box.setText(body)
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+    box.setDefaultButton(QMessageBox.Cancel)
     return box.exec() == QMessageBox.Yes
 
 

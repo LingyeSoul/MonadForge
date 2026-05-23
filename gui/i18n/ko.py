@@ -8,6 +8,7 @@ STRINGS: dict[str, str] = {
     "tab_config": "학습 설정",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
+    "tab_spd": "SPD",
     "tab_methods": "메소드",
     "tab_images": "데이터셋",
     "tab_merge": "병합",
@@ -116,6 +117,16 @@ STRINGS: dict[str, str] = {
         "캡션을 수정해서 다시 반영하고 싶다면, 취소를 누르고 먼저 "
         "전처리를 실행하세요.\n\n"
         "기존 캐시로 학습을 진행할까요?"
+    ),
+    "stale_cache_title": "오래된 데이터셋 캐시",
+    "stale_cache_body": (
+        "{n}개의 VAE 잠재변수 캐시가 다음 경로 아래에 있습니다:\n  {cache_dir}\n\n"
+        "이 파일들은 현재 버킷 테이블 "
+        "(4032 / 4200 토큰 수 계열)에 더 이상 포함되지 않는 해상도로 캐싱되었습니다:\n\n{examples}\n\n"
+        "예전 버킷 구성으로 캐싱된 파일들로, 학습 시 건너뛰거나 잘못된 버킷에 "
+        "배정될 수 있습니다. 취소를 누르고 전처리를 다시 실행하여 (덮어쓰기 옵션 사용) "
+        "캐시를 다시 만드세요.\n\n"
+        "오래된 캐시를 그대로 사용하여 학습을 진행할까요?"
     ),
     "train_autopreprocess_log": (
         "전처리 캐시가 없어 전처리를 먼저 실행한 뒤 자동으로 학습을 시작합니다.\n"

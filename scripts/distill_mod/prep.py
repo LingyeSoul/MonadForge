@@ -289,7 +289,7 @@ def main() -> None:
         buckets=buckets,
         n_per_bucket=args.n_per_bucket,
         shuffle_seed=args.shuffle_seed,
-        compile_core=not args.no_compile,
+        do_compile=not args.no_compile,
     )
 
 

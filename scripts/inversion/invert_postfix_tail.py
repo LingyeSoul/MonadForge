@@ -394,14 +394,20 @@ def _load_anima(args, device: torch.device):
             for block in anima.blocks:  # type: ignore[union-attr]
                 block.train()
         if args.compile_blocks:
-            # Per-block compile against the 4096-token bucket. Pinning the token
-            # count once means every aspect bucket in the run traces through the
-            # same shape — no Dynamo recompile when we move from a 720×1440 image
-            # to a 1024×1024 one. Compiles block._forward (not .forward) so the
-            # unsloth_checkpoint @torch._disable_dynamo decorator doesn't blow
-            # the trace under grad_ckpt — same contract as train.py's
-            # compile_mode='blocks' path.
-            anima.set_static_token_count(4096)
+            # Native-shape per-block compile: each aspect bucket runs at its real
+            # token count (no static padding → no flash pad-leak; same contract as
+            # train.py's --no_static_pad path). Dynamo recompiles block._forward
+            # once per distinct token count (e.g. 720×1440 vs 1024×1024) — a
+            # one-time warmup, not per-step. Compiles block._forward (not .forward)
+            # so the unsloth_checkpoint @torch._disable_dynamo decorator doesn't
+            # blow the trace under grad_ckpt. The static count value is just a
+            # non-None sentinel enabling the mode.
+            import torch._dynamo as _dynamo
+
+            _dynamo.config.cache_size_limit = max(
+                _dynamo.config.cache_size_limit, 64
+            )
+            anima.set_static_token_count(4096, pad=False)
             anima.compile_blocks(
                 backend="inductor", mode=args.compile_inductor_mode
             )

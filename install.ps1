@@ -88,8 +88,49 @@ try {
 }
 
 # 5. dependencies ------------------------------------------------------------
+# Best-effort Defender exclusions so the install dir + uv cache are skipped by
+# real-time scanning. uv populates .venv\Scripts\ with unsigned trampoline
+# .exe launchers (uv-trampoline-*.exe, written-then-renamed); Defender often
+# locks/quarantines those mid-write and `uv sync` dies with "Access is denied".
+# Add-MpPreference needs elevation + Defender as the active AV -- if either is
+# missing this no-ops silently and we fall back to the retry loop below.
+$uvCache = Join-Path $env:LOCALAPPDATA 'uv'
+try {
+  Add-MpPreference -ExclusionPath (Resolve-Path '.').Path, $uvCache -ErrorAction Stop
+  Say 'added Windows Defender exclusions for the install dir + uv cache'
+} catch {
+  # not elevated, third-party AV, or Defender disabled -- retry loop handles it
+}
+
 Say 'running uv sync (this resolves torch + flash-attn; may take a while)'
-uv sync
+$syncOk = $false
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+  uv sync
+  if ($LASTEXITCODE -eq 0) { $syncOk = $true; break }
+  if ($attempt -lt 3) {
+    Say "uv sync failed (exit $LASTEXITCODE); retrying ($attempt/2) in 3s -- often a transient antivirus lock on a trampoline .exe"
+    Start-Sleep -Seconds 3
+  }
+}
+if (-not $syncOk) {
+  Write-Host ""
+  Write-Host "uv sync did not complete after 3 attempts." -ForegroundColor Red
+  Write-Host @"
+This is almost always Windows Defender (or another antivirus) blocking uv's
+trampoline .exe files. To fix:
+
+  1. Open 'Windows Security' -> 'Virus & threat protection' -> 'Manage settings'
+     and add folder exclusions for:
+        $((Resolve-Path '.').Path)
+        $uvCache
+        $env:TEMP
+     (or run this installer from an elevated PowerShell so it can add them
+     automatically), then re-run:  uv sync
+  2. If that still fails, briefly turn off 'Real-time protection', run
+     'uv sync', then turn it back on.
+"@ -ForegroundColor Yellow
+  Die 'dependency install incomplete'
+}
 
 # 6. desktop shortcut (best-effort — never abort the install over this) ------
 Say 'creating desktop shortcut (Anima LoRA GUI)'

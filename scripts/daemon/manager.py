@@ -110,6 +110,7 @@ class JobManager:
         methods_subdir: Optional[str],
         overrides: dict,
         extra: list[str],
+        from_chain: bool = False,
     ) -> Job:
         job = Job(
             id=new_job_id(),
@@ -118,6 +119,7 @@ class JobManager:
             methods_subdir=methods_subdir,
             overrides=dict(overrides or {}),
             extra=list(extra or []),
+            from_chain=from_chain,
         )
         return self._register_and_queue(job)
 
@@ -226,7 +228,12 @@ class JobManager:
             if job.stop_requested:
                 self._finalize(job, STATE_STOPPED, detail="cancelled while queued")
                 continue
-            self._gpu_guard(job)
+            # Auto-chained train steps skip the guard: the daemon just ran the
+            # preceding preprocess on this same serial queue, so the only VRAM
+            # in flight is that step's still-releasing allocation, which the
+            # guard would needlessly wait on. Standalone jobs still guard.
+            if not job.from_chain:
+                self._gpu_guard(job)
             self._launch_and_monitor(job)
 
     def _launch_and_monitor(self, job: Job) -> None:
@@ -337,6 +344,7 @@ class JobManager:
                     methods_subdir=ct.get("methods_subdir"),
                     overrides=ct.get("overrides") or {},
                     extra=ct.get("extra") or [],
+                    from_chain=True,
                 )
                 job.chained_job_id = follow.id
                 logger.info(
@@ -350,7 +358,12 @@ class JobManager:
     # ----- gpu guard -----
 
     def _gpu_guard(
-        self, job: Job, *, retries: int = 6, delay: float = 5.0, busy_frac: float = 0.50
+        self,
+        job: Job,
+        *,
+        retries: int = config.GPU_GUARD_RETRIES,
+        delay: float = config.GPU_GUARD_DELAY,
+        busy_frac: float = config.GPU_GUARD_BUSY_FRAC,
     ) -> None:
         """Before launching, make sure the GPU is actually free.
 
@@ -359,10 +372,15 @@ class JobManager:
         as a "compute" process, so gating on process presence stalled the queue
         on a dozen innocent renderers every launch. A real training run holds
         GBs; an idle desktop holds <1 GB — so `used/total < busy_frac` reliably
-        means "go". Process enumeration is kept only to reap VRAM leaked by our
-        *own* dead jobs, matched by pid (a stranger's pid never matches a job,
-        so the polluted holder list is harmless on that path). If we can't probe
-        memory at all we assume free rather than deadlock the queue.
+        means "go". The threshold is deliberately loose (default 0.85): the only
+        thing the guard *must* catch is VRAM leaked by our own dead jobs, and
+        that is reaped by pid below regardless of the fraction; the fraction only
+        guesses whether some *other* process owns the card, so a partially-loaded
+        ComfyUI / browser shouldn't trip it. Process enumeration is kept only to
+        reap VRAM leaked by our *own* dead jobs, matched by pid (a stranger's pid
+        never matches a job, so the polluted holder list is harmless on that
+        path). If we can't probe memory at all we assume free rather than
+        deadlock the queue. Tunable via ANIMA_DAEMON_GPU_{BUSY_FRAC,RETRIES,DELAY}.
         """
         for attempt in range(retries):
             # Reap leftovers from our own (now-terminal/dead) jobs. Safe even

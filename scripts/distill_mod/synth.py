@@ -173,7 +173,7 @@ def generate_synthetic_latents(
     buckets: list[tuple[int, int]] | None = None,
     n_per_bucket: int | None = None,
     shuffle_seed: int | None = None,
-    compile_core: bool = True,
+    do_compile: bool = True,
 ) -> None:
     """Phase 2 entry point. Iterates TE caches, runs teacher denoising, dumps NPZs."""
     from library.anima import weights as anima_utils
@@ -228,19 +228,30 @@ def generate_synthetic_latents(
         model.move_to_device_except_swap_blocks(device)
     else:
         model.to(device)
-    model.set_static_token_count(4096)
+    # Native-shape buckets: each sample is denoised at its real latent token
+    # count (no static padding → no flash pad-leak baked into the teacher
+    # latents). The value here is just a non-None sentinel enabling the mode;
+    # every forward reshapes to its own seq_len.
+    model.set_static_token_count(4096, pad=False)
     model.eval()
 
-    # Compile the constant-shape block stack — set_static_token_count(4096)
-    # above is the precondition. Traces once; one CUDAGraph serves every
-    # bucket in pairs, and both CFG branches reuse it.
-    if compile_core and blocks_to_swap == 0:
-        try:
-            model.compile_core(mode="default")
-        except Exception as e:
-            logger.warning(f"compile_core failed ({e}); falling back to eager.")
-    elif compile_core and blocks_to_swap > 0:
-        logger.info("compile_core skipped: incompatible with blocks_to_swap>0.")
+    # Native-shape per-block compile: traces one block graph per distinct latent
+    # token count in `pairs`. Raise the dynamo cache so every distinct shape
+    # traces instead of falling back to eager mid-warmup. (compile_core, the old
+    # single-CUDAGraph path, required static padding and is gone — see
+    # docs/static-pad migration.)
+    if do_compile and blocks_to_swap == 0:
+        import torch._dynamo as _dynamo
+
+        n_res = len({get_latent_resolution(p.npz_path) for p in pairs})
+        _dynamo.config.cache_size_limit = max(
+            _dynamo.config.cache_size_limit, 2 * n_res + 8
+        )
+        model.compile_blocks(mode="default")
+    elif do_compile and blocks_to_swap > 0:
+        logger.info(
+            "torch.compile skipped: block swap moves weights mid-forward; eager."
+        )
 
     crossattn_neg = _load_uncond_for_synth(uncond_path, device, dtype)
 

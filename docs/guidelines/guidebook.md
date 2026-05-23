@@ -280,7 +280,7 @@ make preprocess-pe           # (Optional) PE-Core vision encoder feature caching
 ### 6.1 What the Resize Step Does
 
 - Resizes images to the pixel alignment required by the VAE
-- Automatically sorts images into fixed token buckets where *(H/16) × (W/16) ≈ 4096 patches*
+- Automatically sorts images into fixed token buckets, two token-count families of *(H/16) × (W/16) = 4032 or 4200 patches* (each bucket fills its count exactly)
 - Automatically excludes images that are too small (default: below 0.5 MP) and reports them
 - Saves results as PNGs in `post_image_dataset/resized/`
 

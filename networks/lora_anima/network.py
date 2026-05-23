@@ -2666,7 +2666,11 @@ class LoRANetwork(torch.nn.Module):
                 continue
             inv_scale = lora.inv_scale  # (in,) fp32, == 1/s_norm
             down = weights_sd[down_key]
-            s_norm = inv_scale.to(torch.float).clamp_min(1e-12).reciprocal()
+            s_norm = (
+                inv_scale.to(device=down.device, dtype=torch.float)
+                .clamp_min(1e-12)
+                .reciprocal()
+            )
             weights_sd[down_key] = (
                 down.to(torch.float) * s_norm.unsqueeze(0)
             ).to(down.dtype)

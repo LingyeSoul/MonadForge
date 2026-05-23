@@ -8,24 +8,6 @@ This is "Case B" of the SPD investigation — see
 is a normal LoRA: load it through the standard inference path and run it with
 the SPD sampler (``--spd``) at the *same* schedule it was trained on.
 
-The analytic backbone (``--on_policy_ratio 0``) needs **no teacher, no fake-score
-network, no adversarial loop, no CFG-bake** — the §4.3 target velocity is analytic.
-The only thing that differs from ordinary Anima LoRA training is the *noising
-process*: instead of one straight line from a clean latent to white noise at
-full resolution, each step regresses ``v_θ`` onto the per-stage segment of the
-SPD trajectory at that stage's resolution. The stage-target construction
-(``networks.spd.spd_stage_target``) is shared with the SPD sampler so the
-train-time stage-entry state matches the sampler's spectral expansion
-bit-for-bit (the Phase-0 contract in the proposal).
-
-With ``--on_policy_ratio > 0`` a fraction of steps switch to a DAgger-style
-teacher-distillation tail (see ``_onpolicy_loss``): roll the adapter-on prefix to
-the *actual* handoff state and distill the tail toward the frozen base model's own
-full-res / full-step gold sample for the same seed — the trusted answer at the
-visited state. This is the only place a teacher (the frozen base itself, run
-expensive + LoRA-off) enters; there is still no separate teacher network or
-adversary, and the gold can be cached offline (a future lever).
-
 Models the structure on ``scripts/distill_mod/distill.py`` /
 ``scripts/distill_turbo.py`` (frozen-DiT + adapter-only + single MSE backward),
 but strictly simpler: one adapter, one optimizer.
@@ -37,15 +19,6 @@ Usage::
     make exp-spd PRESET=low_vram                  # block swap + grad ckpt
     make exp-spd ARGS="--torch_compile"           # per-stage static-shape compile
 
-Compile note: SPD trains one resolution per batch, so the constant-token
-bucketing invariant (everything padded to 4096) does NOT apply — the block
-input shape varies per (stage x aspect-bucket). ``--torch_compile`` compiles
-each block's ``_forward`` with ``dynamic=False`` and lets torch.compile
-recompile once per distinct (stage x bucket) shape, each at its real token
-count on the normal flash backend (no padding, no masking). The dynamo cache
-limit is raised to ``~len(stages) * num_buckets`` so every specialization stays
-cached instead of falling back to eager. Recompiles are a one-time warmup cost
-(seconds per new shape), not a correctness issue.
 """
 
 from __future__ import annotations
@@ -72,10 +45,8 @@ from networks.lora_anima.factory import create_network  # noqa: E402
 from networks.lora_save import save_network_weights  # noqa: E402
 from networks.spd import (  # noqa: E402
     _snap,
-    spd_rollout_to_stage,
     spd_schedule_bands,
     spd_stage_target,
-    spectral_expand,
 )
 from library.io.cache import get_latent_resolution  # noqa: E402
 
@@ -179,61 +150,16 @@ def main():
         default=-1.0,
         help="±absolute uniform jitter on transition σ each step (R2 robustness). 0 = off.",
     )
-    # --- On-policy handoff tail (proposal.md Idea 2; Phase-0 PASSED 2026-05-21) ---
-    parser.add_argument(
-        "--on_policy_ratio",
-        type=float,
-        default=-1.0,
-        help="Fraction of steps that train the full-res tail on the *on-policy* handoff "
-        "state (prefix rollout → spectral_expand → tail) by distilling toward the "
-        "frozen-base teacher's gold sample, vs the analytic backbone. 0 = analytic-only. "
-        "The analytic steps still train the prefix (the on-policy rollout is no_grad), "
-        "so MIX, don't set to 1.0. "
-        "v0: 2-stage schedules only. Works with --torch_compile (plain inductor — "
-        "rollout + tail recompile per shape); not with --compile_inductor_mode "
-        "reduce-overhead (CUDAGraphs can't span the eval/grad toggle).",
-    )
-    parser.add_argument(
-        "--rollout_steps",
-        type=int,
-        default=-1,
-        help="Euler steps for the on-policy prefix rollout (coarser than inference is "
-        "fine; the rollout only needs a representative handoff state). Default 16.",
-    )
-    parser.add_argument(
-        "--teacher_steps",
-        type=int,
-        default=-1,
-        help="Euler steps for the frozen-base teacher's full-res gold rollout (LoRA "
-        "off), which supplies the on-policy clean target. Should be at least as fine "
-        "as deployment. Default 24.",
-    )
-    parser.add_argument(
-        "--tail_band",
-        type=str,
-        default=None,
-        choices=["entry", "full"],
-        help="On-policy supervision site: 'entry' = the handoff σ̃ only (attacks the "
-        "seam, cheapest); 'full' = DAgger across the tail band (roll the tail no_grad "
-        "to a random σ in [sigma_floor, σ̃], supervise there — needed to claim the "
-        "high-res stage can be shortened). Default 'entry'.",
-    )
-    parser.add_argument(
-        "--sigma_floor",
-        type=float,
-        default=-1.0,
-        help="Lower σ clamp for the 'full' tail-band sampling (avoids the high-variance "
-        "(x−x0)/σ target as σ→0). Default 0.1.",
-    )
-    parser.add_argument(
-        "--flow_shift",
-        type=float,
-        default=-1.0,
-        help="Flow-matching σ-schedule shift for the rollout (matches inference). "
-        "Default 1.0 (base.toml discrete_flow_shift).",
-    )
     parser.add_argument("--lr", type=float, default=-1.0)
     parser.add_argument("--grad_clip", type=float, default=-1.0)
+    parser.add_argument(
+        "--grad_accum",
+        type=int,
+        default=-1,
+        help="Micro-steps accumulated per optimizer step (resampling the SPD "
+        "stage each one, so updates mix low-/full-res). 1 = off. `iterations` "
+        "counts optimizer steps, so wall-clock scales ~linearly with this.",
+    )
     parser.add_argument("--warmup", type=float, default=-1.0)
     parser.add_argument("--blocks_to_swap", type=int, default=0)
     parser.add_argument("--grad_ckpt", action="store_true", default=False)
@@ -320,14 +246,6 @@ def main():
     schedule_label = _flatten(cfg, "schedule.label", "custom")
     sigma_jitter = float(pick(args.sigma_jitter, "schedule.sigma_jitter", 0.0))
 
-    # On-policy handoff tail (Idea 2).
-    on_policy_ratio = float(pick(args.on_policy_ratio, "onpolicy.ratio", 0.0))
-    rollout_steps = int(pick(args.rollout_steps, "onpolicy.rollout_steps", 16))
-    teacher_steps = int(pick(args.teacher_steps, "onpolicy.teacher_steps", 24))
-    tail_band = pick(args.tail_band, "onpolicy.tail_band", "entry")
-    sigma_floor = float(pick(args.sigma_floor, "onpolicy.sigma_floor", 0.1))
-    flow_shift = float(pick(args.flow_shift, "onpolicy.flow_shift", 1.0))
-
     # Schedule sanity — same invariants spd_denoise / spd_schedule_bands assume.
     if not stages or abs(stages[-1] - 1.0) > 1e-9:
         raise ValueError(f"schedule.stages must end at 1.0, got {stages}")
@@ -339,36 +257,10 @@ def main():
             f"({len(stages) - 1}); stages={stages}, transition_sigmas={transition_sigmas}"
         )
 
-    # On-policy v0 limitations (proposal.md Idea 2 file-level plan).
-    if on_policy_ratio > 0.0:
-        if not (0.0 < on_policy_ratio <= 1.0):
-            raise ValueError(
-                f"--on_policy_ratio must be in (0,1], got {on_policy_ratio}"
-            )
-        if on_policy_ratio >= 1.0:
-            logger.warning(
-                "--on_policy_ratio=1.0 trains *only* on-policy; nothing anchors the prefix "
-                "(one LoRA, no module-level prefix/tail split) so it can drift. Prefer ≤0.5."
-            )
-        if len(stages) != 2:
-            raise ValueError(
-                f"--on_policy_ratio v0 supports 2-stage schedules only, got stages={stages}."
-            )
-        if args.torch_compile and args.compile_inductor_mode == "reduce-overhead":
-            # Plain inductor is fine: torch.compile recompiles per shape, so the
-            # rollout (low-res) and tail (full-res) legs each get their own
-            # specialization. reduce-overhead (CUDAGraphs) is the exception: it
-            # can't capture across the eval↔train + no_grad↔grad toggle the
-            # two-pass step makes, and pins freshly-allocated inputs.
-            raise ValueError(
-                "--on_policy_ratio with --torch_compile requires plain inductor: drop "
-                "--compile_inductor_mode reduce-overhead (CUDAGraphs can't span the "
-                "rollout's eval/no_grad ↔ tail train/grad toggle)."
-            )
-
     lr = float(pick(args.lr, "optim.lr", 1e-4))
     weight_decay = float(_flatten(cfg, "optim.weight_decay", 0.0))
     grad_clip = float(pick(args.grad_clip, "optim.grad_clip", 1.0))
+    grad_accum = max(1, int(pick(args.grad_accum, "optim.grad_accum", 1)))
     warmup = float(pick(args.warmup, "optim.warmup", 0.02))
 
     save_every = int(pick(args.save_every, "io.save_every", 500))
@@ -396,18 +288,6 @@ def main():
             lo,
             hi,
             p,
-        )
-    if on_policy_ratio > 0.0:
-        logger.info(
-            "on-policy teacher-distill tail: ratio=%.2f  band=%s  rollout_steps=%d  "
-            "teacher_steps=%d  sigma_floor=%.3f  flow_shift=%.2f  "
-            "(target (x̃−x0_teacher)/σ̃; teacher = frozen base, LoRA off, full-res)",
-            on_policy_ratio,
-            tail_band,
-            rollout_steps,
-            teacher_steps,
-            sigma_floor,
-            flow_shift,
         )
 
     device = torch.device("cuda")
@@ -640,150 +520,35 @@ def main():
                 x5, sig_vec, cattn, padding_mask=pad, skip_pooled_text_proj=True
             )
 
-    def _teacher_denoise(eps_full, cattn, n_steps, fshift):
-        """Frozen-base gold rollout: full-res, full-step Euler denoise from ``eps_full``
-        with the LoRA *disabled* → the clean sample the expensive (non-SPD) path
-        produces for this seed+prompt. Conditional-only + ``skip_pooled_text_proj``,
-        matching the student tail forward, so teacher and student live on the same
-        conditioning manifold. Caller has already disabled the adapter and set the
-        full-res static token count; this just runs the Euler loop (no_grad upstream).
-        """
-        sig = torch.linspace(1.0, 0.0, n_steps + 1, device=device, dtype=torch.float32)
-        sig = (fshift * sig) / (1.0 + (fshift - 1.0) * sig)
-        x = eps_full
-        for i in range(n_steps):
-            s = float(sig[i])
-            v = _forward_dit(
-                x, x.new_full((x.shape[0],), s, dtype=dtype), cattn
-            ).float()
-            x = (x.float() + v * (float(sig[i + 1]) - s)).to(dtype)
-        return x  # ≈ x0_teacher at σ=0
-
-    def _onpolicy_loss(x0f, cattn, trans):
-        """On-policy *teacher-distillation* step (2-stage only). Roll the adapter-on
-        SPD prefix from pure noise to the handoff and spectral-expand to full res —
-        the exact state the deployed sampler visits — then regress the grad tail
-        toward ``(x̃ − x0_teacher)/σ̃``, where ``x0_teacher`` is the frozen base
-        model's own full-res / full-step gold sample for the *same* ε and prompt.
-
-        Why the teacher, not the dataset latent: the prefix rolls a fresh ε to *a*
-        prompt-consistent sample, never to the specific dataset ``x0`` (Phase-0 probe:
-        implied-clean recovery rel_x0_on ≈ 0.83→0.98). Targeting dataset ``x0`` asks
-        the tail to bend every trajectory toward one arbitrary latent → mean-regression
-        → blur. The frozen base, run the expensive seam-free way from the *same* seed,
-        is the trusted "correct answer" at the visited state (DAgger expert), and the
-        shared seed keeps its layout aligned with the cheap path's so the tail's job is
-        HF/seam correction, not a relayout.
-        """
-        B = x0f.shape[0]
-        H, W = int(x0f.shape[-2]), int(x0f.shape[-1])
-        # Shared init: full-res white noise. Lowpassed internally for the prefix
-        # rollout; consumed at full res by the teacher → both target the same sample.
-        eps_full = torch.randn(
-            x0f.shape, generator=gen, device=device, dtype=torch.float32
-        ).to(dtype)
-
-        def _roll_v(x5, sig):
-            return _forward_dit(
-                x5, x5.new_full((x5.shape[0],), float(sig), dtype=dtype), cattn
-            )
-
-        # Roll in EVAL mode: the LoRA then takes its inference branch — matching
-        # (a) deployment (SPD inference runs eval) and (b) the Phase-0 probe that
-        # validated this approach — so the on-policy states are the ones the adapter
-        # will actually face, not train-mode (fp32-bottleneck) variants. Also skips
-        # the wasted custom-autograd fp32 path under no_grad. Restored to train()
-        # before the grad tail forward (where custom autograd + grad-ckpt must be live).
-        was_training = model.training
-        model.eval()
-        try:
-            with torch.no_grad():
-                # --- Teacher: frozen-base gold (LoRA OFF), full-res from the same ε.
-                # The teacher rolls at full res, so pin the full-res static count
-                # FIRST. Otherwise a stale low-res count left by the previous step
-                # (e.g. an analytic step at stage 0) makes forward_mini_train_dit
-                # pad to a target < the real seq_len → negative pad truncates the
-                # sequence → the unpad reshape blows up. Same count as the grad
-                # tail below, so no extra compile graph.
-                if stage_token_counts is not None:
-                    model.set_static_token_count(stage_token_counts[-1])
-                network.set_enabled(False)
-                x0_teacher = _teacher_denoise(eps_full, cattn, teacher_steps, flow_shift)
-                network.set_enabled(True)
-                if stage_token_counts is not None:
-                    model.set_static_token_count(stage_token_counts[0])
-                # --- Student: adapter-on cheap SPD prefix → on-policy handoff state.
-                # The rollout runs at the stage-0 (pre-expansion) resolution and the
-                # tail at full res; torch.compile recompiles per shape on demand.
-                x_entry, sig_cross, scale_lo = spd_rollout_to_stage(
-                    _roll_v,
-                    eps_full,
-                    stages,
-                    trans,
-                    infer_steps=rollout_steps,
-                    flow_shift=flow_shift,
-                    patch=patch,
-                    gen=gen,
-                    stop_stage=1,
-                )
-                if stage_token_counts is not None:
-                    model.set_static_token_count(stage_token_counts[-1])
-                x_tilde, sig_tilde = spectral_expand(
-                    x_entry, sig_cross, scale_lo, 1.0, H, W, patch, gen
-                )
-                # Tail band: 'entry' supervises at the handoff σ̃ (attacks the seam);
-                # 'full' rolls the tail no_grad to a random σ in [sigma_floor, σ̃] and
-                # supervises there (DAgger across the band — lets the high-res stage
-                # be shortened). Both states are on-policy (adapter-on rollout).
-                if tail_band == "full" and sig_tilde > sigma_floor + 1e-4:
-                    n_tail = max(2, int(round(rollout_steps * sig_tilde)))
-                    tsig = torch.linspace(sig_tilde, 0.0, n_tail + 1, device=device)
-                    tsig = (flow_shift * tsig) / (1.0 + (flow_shift - 1.0) * tsig)
-                    valid = [
-                        k for k in range(1, n_tail) if float(tsig[k]) >= sigma_floor
-                    ]
-                    stop_k = (
-                        valid[int(torch.randint(len(valid), (1,), generator=stage_rng))]
-                        if valid
-                        else 1
-                    )
-                    xs = x_tilde
-                    for k in range(stop_k):
-                        v = _roll_v(xs, float(tsig[k])).float()
-                        xs = (
-                            xs.float() + v * (float(tsig[k + 1]) - float(tsig[k]))
-                        ).to(dtype)
-                    x_state, sig_state = xs, float(tsig[stop_k])
-                else:
-                    x_state, sig_state = x_tilde, sig_tilde
-        finally:
-            network.set_enabled(True)  # never leave the adapter off for the grad tail
-            if was_training:
-                model.train()
-
-        # Grad tail forward at the (full-res) on-policy state, distilling toward the
-        # frozen-base gold: (x̃ − x0_teacher)/σ̃ — the straight line from the visited
-        # state to the sample the expensive path produces for this seed.
-        x_state = x_state.detach()
-        if args.grad_ckpt:  # reentrant checkpoint needs a grad-requiring input
-            x_state.requires_grad_()
-        pred = _forward_dit(
-            x_state, x_state.new_full((B,), float(sig_state), dtype=dtype), cattn
-        )
-        v_target = (x_state.detach().float() - x0_teacher.float()) / float(sig_state)
-        return nn.functional.mse_loss(pred.float(), v_target)
-
     # --- Training loop ---
     logger.info("Starting SPD distillation: %d iterations", iterations)
-    data_iter = iter(dataloader)
-    running = 0.0
+    data_iter = [iter(dataloader)]  # boxed so _micro_step can refresh on exhaustion
     progress = tqdm(range(iterations), desc="spd")
-    for step in progress:
+    # GPU-side logging accumulators — flushed in one stacked .tolist() at every
+    # log_interval, replacing the per-micro-step loss.item() (grad_accum CUDA
+    # syncs per optimizer step) and the per-parameter .item() walk in the
+    # LoRA-norm logging. Mirrors the accumulator pattern in distill_turbo.py.
+    n_stages = len(stages)
+    acc_loss = torch.zeros((), device=device)              # Σ step-mean loss
+    acc_loss_stage = torch.zeros(n_stages, device=device)  # Σ micro-loss by stage
+    acc_stage_cnt = torch.zeros(n_stages, device=device)   # micro-steps by stage
+    def _micro_step():
+        """One sample → scaled backward. Returns (unscaled_loss_tensor, stage_idx).
+
+        The loss is returned as a *detached GPU tensor* (not ``.item()``) so the
+        accumulation in the training loop stays sync-free; grad_accum micro-steps
+        would otherwise force that many CUDA syncs per optimizer step.
+
+        Stage is resampled here (not once per optimizer step), so when
+        grad_accum > 1 each update averages gradients across the low-res and
+        full-res regimes instead of swinging between them — the high CoV in the
+        stage losses is regime-switching noise, which accumulation cancels.
+        """
         try:
-            _idx, latents, crossattn_emb, _pooled = next(data_iter)
+            _idx, latents, crossattn_emb, _pooled = next(data_iter[0])
         except StopIteration:
-            data_iter = iter(dataloader)
-            _idx, latents, crossattn_emb, _pooled = next(data_iter)
+            data_iter[0] = iter(dataloader)
+            _idx, latents, crossattn_emb, _pooled = next(data_iter[0])
 
         latents = latents.to(device, dtype=dtype, non_blocking=True)
         crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
@@ -791,7 +556,7 @@ def main():
         x0_full = latents.unsqueeze(2)  # (B, 16, 1, H, W)
 
         # Optional R2 jitter: perturb the transition σ so the segment geometry is
-        # learned as a band, not a point (shared by both training modes).
+        # learned as a band, not a point.
         trans = transition_sigmas
         if sigma_jitter > 0.0 and len(transition_sigmas) > 0:
             trans = [
@@ -804,71 +569,85 @@ def main():
                 for s in transition_sigmas
             ]
 
-        # Mode select: on-policy handoff tail (Idea 2) vs analytic backbone. The
-        # analytic steps anchor the prefix, so we mix rather than replace.
-        on_policy = (
-            on_policy_ratio > 0.0
-            and float(torch.rand(1, generator=stage_rng).item()) < on_policy_ratio
+        # Sample one stage for this micro-batch (single-resolution per forward),
+        # weighted by band width.
+        stage_idx = int(
+            torch.multinomial(band_widths_f, 1, generator=stage_rng).item()
         )
-        if on_policy:
-            stage_idx = len(stages) - 1  # logs against the full-res tail
-            loss = _onpolicy_loss(x0_full, crossattn_emb, trans)
-        else:
-            # Sample one stage for the whole batch (single-resolution per step),
-            # weighted by band width.
-            stage_idx = int(
-                torch.multinomial(band_widths_f, 1, generator=stage_rng).item()
-            )
-            # Bands depend only on the schedule, so reuse the precomputed ones;
-            # only jitter (which builds a fresh `trans`) needs a recompute.
-            t_lo, t_hi = (
-                bands[stage_idx]
-                if trans is transition_sigmas
-                else spd_schedule_bands(stages, trans)[stage_idx]
-            )
-            x0_si, eps_si = spd_stage_target(
-                x0_full, stage_idx, stages, trans, patch=patch, gen=gen
-            )
-            # FM training sample + analytic velocity target at scale s_i (Eq. 13–14).
-            t = (t_lo + (t_hi - t_lo) * torch.rand(B, device=device)).to(dtype)
-            t_e = t.view(B, 1, 1, 1, 1)
-            x_t = (1.0 - t_e) * x0_si + t_e * eps_si
-            if args.grad_ckpt:  # reentrant checkpoint needs a grad-requiring input
-                x_t.requires_grad_()
-            v_target = (eps_si - x0_si).float()
-            # Pad this stage's tokens to its constant count so the compiled blocks
-            # see a single shape per stage. No-op when --torch_compile is off.
-            if stage_token_counts is not None:
-                model.set_static_token_count(stage_token_counts[stage_idx])
-            pred = _forward_dit(x_t, t, crossattn_emb)
-            loss = nn.functional.mse_loss(pred.float(), v_target)
+        # Bands depend only on the schedule, so reuse the precomputed ones;
+        # only jitter (which builds a fresh `trans`) needs a recompute.
+        t_lo, t_hi = (
+            bands[stage_idx]
+            if trans is transition_sigmas
+            else spd_schedule_bands(stages, trans)[stage_idx]
+        )
+        x0_si, eps_si = spd_stage_target(
+            x0_full, stage_idx, stages, trans, patch=patch, gen=gen
+        )
+        # FM training sample + analytic velocity target at scale s_i (Eq. 13–14).
+        t = (t_lo + (t_hi - t_lo) * torch.rand(B, device=device)).to(dtype)
+        t_e = t.view(B, 1, 1, 1, 1)
+        x_t = (1.0 - t_e) * x0_si + t_e * eps_si
+        if args.grad_ckpt:  # reentrant checkpoint needs a grad-requiring input
+            x_t.requires_grad_()
+        v_target = (eps_si - x0_si).float()
+        # Native-shape mode for this stage's bucket: the forward runs at its
+        # real token count (no static padding → no flash pad-leak). The per-stage
+        # count value is now just a non-None sentinel enabling the mode;
+        # compile_blocks above traces one graph per (stage × bucket) shape.
+        # No-op when --torch_compile is off.
+        if stage_token_counts is not None:
+            model.set_static_token_count(stage_token_counts[stage_idx], pad=False)
+        pred = _forward_dit(x_t, t, crossattn_emb)
+        loss = nn.functional.mse_loss(pred.float(), v_target)
+        # Scale so accumulated grads are the *mean* over micro-steps (matches a
+        # true batch); LR/grad_clip semantics stay invariant to grad_accum.
+        (loss / grad_accum).backward()
+        return loss.detach(), stage_idx
 
-        loss.backward()
+    for step in progress:
+        step_loss = torch.zeros((), device=device)  # mean micro-loss, GPU-side
+        for _ in range(grad_accum):
+            micro_loss, stage_idx = _micro_step()
+            step_loss = step_loss + micro_loss / grad_accum
+            acc_loss_stage[stage_idx] += micro_loss  # python idx → no sync
+            acc_stage_cnt[stage_idx] += 1
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(trainable, grad_clip)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         scheduler.step()
+        acc_loss.add_(step_loss)
 
-        loss_v = loss.item()
-        running += loss_v
-        cur_lr = scheduler.get_last_lr()[0]
         if (step + 1) % log_interval == 0:
-            avg = running / log_interval
-            running = 0.0
+            # LoRA L2 norms: accumulate squared sums on-device and fold them into
+            # the single sync below (was one .item() per trainable parameter).
             with torch.no_grad():
-                up_sq = 0.0
-                down_sq = 0.0
+                up_sq = torch.zeros((), device=device)
+                down_sq = torch.zeros((), device=device)
                 for name, p in network.named_parameters():
                     if not p.requires_grad:
                         continue
-                    s = p.detach().float().pow(2).sum().item()
+                    s = p.detach().float().pow(2).sum()
                     if "lora_up" in name:
-                        up_sq += s
+                        up_sq = up_sq + s
                     elif "lora_down" in name:
-                        down_sq += s
-                up_norm = up_sq**0.5
-                down_norm = down_sq**0.5
+                        down_sq = down_sq + s
+            # One CUDA sync per log boundary: stack every scalar, read once.
+            stage_means = acc_loss_stage / acc_stage_cnt.clamp(min=1)
+            packed = torch.cat(
+                [
+                    (acc_loss / log_interval).reshape(1),
+                    up_sq.sqrt().reshape(1),
+                    down_sq.sqrt().reshape(1),
+                    stage_means,
+                    acc_stage_cnt,
+                ]
+            ).tolist()
+            avg, up_norm, down_norm = packed[0], packed[1], packed[2]
+            stage_vals = packed[3 : 3 + n_stages]
+            stage_cnts = packed[3 + n_stages : 3 + 2 * n_stages]
+            cur_lr = scheduler.get_last_lr()[0]  # CPU-side; no sync
             progress.set_postfix(
                 loss=f"{avg:.5f}",
                 stage=stage_idx,
@@ -880,7 +659,15 @@ def main():
                 writer.add_scalar("train/lr", cur_lr, step + 1)
                 writer.add_scalar("train/lora_up_norm", up_norm, step + 1)
                 writer.add_scalar("train/lora_down_norm", down_norm, step + 1)
-                writer.add_scalar(f"train/loss_stage{stage_idx}", loss_v, step + 1)
+                # Per-stage mean loss over the interval (only stages touched).
+                for si in range(n_stages):
+                    if stage_cnts[si] > 0:
+                        writer.add_scalar(
+                            f"train/loss_stage{si}", stage_vals[si], step + 1
+                        )
+            acc_loss.zero_()
+            acc_loss_stage.zero_()
+            acc_stage_cnt.zero_()
 
         if (step + 1) % save_every == 0 or (step + 1) == iterations:
             _save(step + 1)

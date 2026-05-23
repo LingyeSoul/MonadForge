@@ -553,18 +553,48 @@ class AnimaTrainer:
             attn_softmax_scale=attn_softmax_scale,
         )
 
-        # Static token count (constant-shape padding for torch.compile)
+        # Static token count (constant-shape buckets for torch.compile)
         if getattr(args, "static_token_count", None) is not None:
-            model.set_static_token_count(args.static_token_count)
+            static_pad = getattr(args, "static_pad", True)
+            model.set_static_token_count(args.static_token_count, pad=static_pad)
+            if not static_pad and getattr(args, "compile_mode", "blocks") == "full":
+                raise ValueError(
+                    "--no_static_pad is incompatible with --compile_mode full: "
+                    "the native (unpadded) block stack is not shape-invariant. "
+                    "Use --compile_mode blocks (the default)."
+                )
             if (
                 args.torch_compile
                 and getattr(args, "compile_mode", "blocks") == "blocks"
             ):
+                if not static_pad:
+                    # Native mode traces one block graph per distinct bucket
+                    # token-count; fwd+bwd share the one `_forward` bytecode, so
+                    # give dynamo headroom or it falls back to eager mid-warmup.
+                    import torch._dynamo as _dynamo
+
+                    from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+
+                    n_shapes = len(
+                        {(h // 16) * (w // 16) for h, w in CONSTANT_TOKEN_BUCKETS}
+                    )
+                    _dynamo.config.cache_size_limit = max(
+                        _dynamo.config.cache_size_limit, 2 * n_shapes + 8
+                    )
+                    logger.info(
+                        "no_static_pad: %d distinct bucket token-counts; "
+                        "cache_size_limit=%d",
+                        n_shapes,
+                        _dynamo.config.cache_size_limit,
+                    )
                 model.compile_blocks(
                     args.dynamo_backend,
                     mode=getattr(args, "compile_inductor_mode", None),
                 )
-            logger.info(f"static_token_count={args.static_token_count}")
+            logger.info(
+                f"static_token_count={args.static_token_count} "
+                f"pad_to_static={static_pad}"
+            )
 
         # Store unsloth preference so that when the base trainer calls
         # dit.enable_gradient_checkpointing(cpu_offload=...), we can override to use unsloth.

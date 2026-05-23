@@ -192,17 +192,22 @@ def apply_rotary_pos_emb_qk(
 
     cos_q = cos_.to(q.dtype)
     sin_q = sin_.to(q.dtype)
-    q_rot, q_pass = q[..., :rot_dim], q[..., rot_dim:]
-    q = torch.cat(
-        ((q_rot * cos_q) + (_rotate_half(q_rot, False) * sin_q), q_pass), dim=-1
-    )
+    # For Anima, dim_t+dim_h+dim_w sum to head_dim by construction (see the
+    # assert in VideoRopePosition3DEmb.__init__), so rot_dim == head_dim and the
+    # pass-through slice is empty. Skip the torch.cat in that case — it would
+    # otherwise allocate+copy a full (B,L,H,D) tensor per Q/K per block for
+    # nothing. `rot_dim == q.shape[-1]` is a compile-time constant (head_dim
+    # never varies across buckets), so the branch resolves once under
+    # torch.compile and never recompiles per bucket.
+    q_rot = q[..., :rot_dim]
+    q_emb = (q_rot * cos_q) + (_rotate_half(q_rot, False) * sin_q)
+    q = q_emb if rot_dim == q.shape[-1] else torch.cat((q_emb, q[..., rot_dim:]), dim=-1)
 
     cos_k = cos_q if k.dtype == q.dtype else cos_.to(k.dtype)
     sin_k = sin_q if k.dtype == q.dtype else sin_.to(k.dtype)
-    k_rot, k_pass = k[..., :rot_dim], k[..., rot_dim:]
-    k = torch.cat(
-        ((k_rot * cos_k) + (_rotate_half(k_rot, False) * sin_k), k_pass), dim=-1
-    )
+    k_rot = k[..., :rot_dim]
+    k_emb = (k_rot * cos_k) + (_rotate_half(k_rot, False) * sin_k)
+    k = k_emb if rot_dim == k.shape[-1] else torch.cat((k_emb, k[..., rot_dim:]), dim=-1)
 
     return q, k
 
@@ -1225,6 +1230,11 @@ class Anima(nn.Module):
         # torch.compile recompilation across different bucket resolutions.
         # Set via set_static_token_count(). None = disabled (original behavior).
         self.static_token_count: Optional[int] = None
+        # When static_token_count is set, whether to zero-pad up to it (single
+        # static shape, one compiled graph) or run each bucket at its native
+        # token count (no padding → no static-pad attention leak; recompiles
+        # once per distinct bucket token-count instead). See set_static_token_count.
+        self.pad_to_static: bool = True
 
         self.build_patch_embed()
         self.build_pos_embed()
@@ -1279,6 +1289,15 @@ class Anima(nn.Module):
             nn.Linear(model_channels, model_channels),
         )
 
+        # Whether the per-forward pooled_text_proj path runs. Default off: the
+        # base DiT checkpoint never carries these weights (re-zeroed on load), so
+        # the proj is a no-op and the max-reduce + 2 linears are pure per-step
+        # overhead. Flipped True only where the module becomes active —
+        # ``load_pooled_text_proj`` (inference / DCW) and distill-mod training.
+        # A plain Python bool set once at load: it guards once under compile (like
+        # ``pad_to_static``) and never toggles per-forward, so no recompile churn.
+        self.enable_pooled_text_modulation = False
+
         # Modulation guidance runtime state as non-persistent buffers (zeros = off).
         # Registered unconditionally so the forward can do unconditional arithmetic
         # (``t_emb + schedule[l] * delta``) without a Python-level None/zero branch —
@@ -1332,13 +1351,30 @@ class Anima(nn.Module):
         for block in self.blocks:
             block.disable_gradient_checkpointing()
 
-    def set_static_token_count(self, count: Optional[int]):
-        """Enable static-shape training by padding all token sequences to `count`.
+    def set_static_token_count(self, count: Optional[int], pad: bool = True):
+        """Select constant-token-bucket mode and how it feeds torch.compile.
 
-        All bucket resolutions must produce <= `count` spatial tokens after
-        patchification.  Passing None disables static-shape mode.
+        ``count`` is the static token target; all bucket resolutions must
+        produce <= ``count`` spatial tokens after patchification.  Passing
+        None disables the mode entirely (original behavior).
+
+        ``pad`` controls the compile/correctness tradeoff when ``count`` is set:
+
+        * ``pad=True`` (default) — zero-pad every bucket's patch sequence up to
+          ``count`` so all forwards share one shape and one compiled block graph.
+          Under flash this leaks the padded tokens into the real-token output
+          (the AdaLN shift + Q/K/V bias make padded rows non-zero into
+          attention; see bench/static_padding). flex masks it but is ~4.5x slower.
+        * ``pad=False`` — run each bucket at its native token count. No padding
+          → no leak (native flash matches the no-pad ground truth bit-for-bit).
+          Block-compile then traces one graph per distinct bucket token-count
+          (CONSTANT_TOKEN_BUCKETS collapses to 2: the 4032 and 4200 families),
+          a bounded one-time warmup.
+          Incompatible with ``compile_core`` / ``compile_mode='full'`` (that
+          path assumes a single shape-invariant block stack).
         """
         self.static_token_count = count
+        self.pad_to_static = pad
 
     def compile_blocks(self, backend: str = "inductor", mode: Optional[str] = None):
         """torch.compile each block's _forward individually.
@@ -1378,6 +1414,11 @@ class Anima(nn.Module):
         """
         assert self.static_token_count is not None, (
             "compile_core requires set_static_token_count() to be called first"
+        )
+        assert self.pad_to_static, (
+            "compile_core requires pad_to_static=True: _run_blocks is only "
+            "shape-invariant when sequences are padded to a single token count. "
+            "Use compile_blocks for the native (no-pad) multi-shape path."
         )
         compile_kwargs = {"backend": backend, "dynamic": False}
         if mode is not None:
@@ -1663,23 +1704,50 @@ class Anima(nn.Module):
         # with t=1, w=1 produces the same flat sequential order as the original.
         _static_pad_info = None
         if self.static_token_count is not None:
-            target = self.static_token_count
             B_s, T_s, H_s, W_s, D_s = x_B_T_H_W_D.shape
             seq_len = T_s * H_s * W_s
+            # pad_to_static: pad up to the global target so every bucket shares
+            #   one shape → one compiled block graph (but the pad leaks into
+            #   flash self-attention; see bench/static_padding).
+            # else (no-pad): target = seq_len, so we *flatten only* (zero pad).
+            #   This is the key to the recompile budget: the block stack must see
+            #   a flat (B,1,L,1,D) sequence keyed solely by token count, otherwise
+            #   dynamo guards on H and W separately and recompiles per *resolution*
+            #   (24 buckets) instead of per token-count (2 distinct). Bit-exact to
+            #   native — it's the gap=0 control the leak probe verifies.
+            target = self.static_token_count if self.pad_to_static else seq_len
+            # In pad mode a bucket larger than the target would make
+            # (target - seq_len) negative, and F.pad would *truncate* real
+            # tokens silently. The shipped CONSTANT_TOKEN_BUCKETS 4200 family
+            # exceeds the legacy 4096 target — guard so a stale static_token_count
+            # fails loudly instead of corrupting the latent. (No-op in native mode.)
+            if self.pad_to_static and seq_len > target:
+                raise ValueError(
+                    f"bucket has {seq_len} tokens > static_token_count={target}; "
+                    "padding would truncate. Raise static_token_count or use "
+                    "no_static_pad (native shapes)."
+                )
             _static_pad_info = (T_s, H_s, W_s, seq_len)
 
-            # Flatten 5D → 2D and pad sequence to target length.
-            # Always pad (even when seq_len == target) to avoid a data-dependent
-            # branch that causes torch.compile recompilation across bucket shapes.
+            # Flatten 5D → 2D and (in pad mode) pad sequence to target length.
+            # The pad is gated on the static Python bool `self.pad_to_static`,
+            # NOT on `target - seq_len > 0`: under torch.compile (full/compile_core
+            # mode, which only runs with pad_to_static=True) seq_len is a SymInt,
+            # so a shape-dependent branch would recompile per bucket — the concern
+            # the original "always pad" comment guarded against. Keying on the
+            # static bool specializes once. In native mode (pad_to_static=False)
+            # target == seq_len by construction, so the pad was a pure no-op copy
+            # of x (~16 MiB) + the two RoPE tensors every forward; skip it.
             x_B_T_H_W_D = x_B_T_H_W_D.flatten(1, 3)
-            x_B_T_H_W_D = torch.nn.functional.pad(
-                x_B_T_H_W_D, (0, 0, 0, target - seq_len)
-            )
+            if self.pad_to_static:
+                x_B_T_H_W_D = torch.nn.functional.pad(
+                    x_B_T_H_W_D, (0, 0, 0, target - seq_len)
+                )
             # Reshape to fake-5D: (B, 1, target, 1, D)
             x_B_T_H_W_D = x_B_T_H_W_D.unsqueeze(1).unsqueeze(3)
 
             # Pad RoPE cos/sin: each (L, 1, 1, D_head) → (target, 1, 1, D_head)
-            if rope_cos_sin is not None:
+            if self.pad_to_static and rope_cos_sin is not None:
                 pad = (0, 0, 0, 0, 0, 0, 0, target - rope_cos_sin[0].shape[0])
                 rope_cos_sin = (
                     torch.nn.functional.pad(rope_cos_sin[0], pad),
@@ -1704,7 +1772,10 @@ class Anima(nn.Module):
         # - pooled_text_override: use this tensor instead of computing from crossattn_emb
         #   (used to decouple modulation from prefix/postfix tokens)
         # - skip_pooled_text_proj: disable entirely (for distillation teacher forward)
-        if not skip_pooled_text_proj:
+        # The enable flag short-circuits the whole max/proj path when no trained
+        # pooled_text_proj is loaded (the common LoRA train/infer case) — bit-exact
+        # to running it, since the output layer is zero-init there.
+        if self.enable_pooled_text_modulation and not skip_pooled_text_proj:
             if pooled_text_override is not None:
                 pooled_text = pooled_text_override
             elif crossattn_emb is not None:
@@ -1765,6 +1836,7 @@ class Anima(nn.Module):
         # the recompile limit and falls back to eager, losing flex_attention fusion.
         if (
             _static_pad_info is not None
+            and self.pad_to_static
             and self.attn_mode == "flex"
             and attention_dispatch.create_block_mask is not None
         ):

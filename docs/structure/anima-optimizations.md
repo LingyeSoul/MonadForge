@@ -4,7 +4,7 @@ A tour of the non-obvious decisions the codebase makes to run fast on consumer G
 
 1. **QKV fusion** — fewer, wider GEMMs.
 2. **FP32 accumulation in the right places** — bf16 for storage, fp32 for the reductions that bf16 would wreck.
-3. **Constant-token padding to `~4096`** — one static shape so `torch.compile` stops recompiling.
+3. **Constant-token bucketing (4032 / 4200 families)** — a tiny fixed set of token counts so `torch.compile` stops recompiling, with no padding to leak into attention.
 4. **Compile-friendly code polish** — the dozen little rules that keep dynamo's guard cache from evicting.
 
 ![Anima performance & compile optimizations](../structure_images/optimization.png)
@@ -117,7 +117,7 @@ Upcast to fp32 **exactly at reductions** — the dot products inside LoRA, the s
 
 ---
 
-## 3. Constant-token padding to `~4096`
+## 3. Constant-token bucketing (4032 / 4200 families)
 
 ### The problem
 
@@ -127,44 +127,36 @@ $$
 L_\text{bucket} = \frac{H}{16}\cdot\frac{W}{16}
 $$
 
-A naive implementation lets this shape propagate through the DiT. Every bucket then triggers `torch.compile` to retrace and recompile — and with 28 blocks × 5 buckets × 2 `requires_grad` states, you blow past dynamo's recompile limit and fall back to eager. Losing the compiled path is a ~2× regression.
+A naive implementation lets this shape propagate through the DiT. Every distinct sequence length then triggers `torch.compile` to retrace and recompile — and with 28 blocks × many buckets × 2 `requires_grad` states, you blow past dynamo's recompile limit and fall back to eager. Losing the compiled path is a ~2× regression.
 
-### The fix
+### The fix: collapse to a few exact token counts, run them natively
 
-`library/anima/models.py:1593–1621`. Pad the token axis of every batch to a single fixed target (default `4096`, `configs/base.toml:32`) and reshape into a *fake-5D* tensor that the block code already knows how to consume:
+`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 (= 63·64) and 4200 (= 60·70)**. Every bucket resolution *exactly* fills its family's count, so there is **zero intra-bucket padding by construction**. The default path (`static_pad = false` in `configs/base.toml`) feeds each forward at its native token count, so dynamo guards only on the token count — and the whole table collapses to **two** distinct counts → two compiled block graphs.
+
+`library/anima/models.py`'s `forward_mini_train_dit` still flattens `(B, T, H, W, D)` into a *fake-5D* `(B, 1, L, 1, D)` tensor the block code already knows how to consume — but with `pad=False` the target `L` is just the real `seq_len`, so the `F.pad` is a no-op:
 
 ```python
-target = self.static_token_count                      # e.g. 4096
+target = seq_len if not self.pad_to_static else self.static_token_count
 B, T, H, W, D = x.shape
 seq_len = T * H * W
 
 x = x.flatten(1, 3)                                   # (B, seq_len, D)
-x = F.pad(x, (0, 0, 0, target - seq_len))             # (B, target, D) — always
+x = F.pad(x, (0, 0, 0, target - seq_len))             # no-op when pad=False
 x = x.unsqueeze(1).unsqueeze(3)                       # (B, 1, target, 1, D)
 ```
 
-Two comments in the source drive the subtle points:
-
-> Always pad (even when `seq_len == target`) to avoid a data-dependent branch that causes `torch.compile` recompilation across bucket shapes.
+The fake-5D reshape is what makes the block stack key on token count alone rather than guarding `H` and `W` separately (which would recompile *per resolution*, 24 graphs instead of 2):
 
 > The fake-5D shape `(B, 1, target, 1, D)` is compatible with existing Block code because `rearrange("b t h w d -> b (t h w) d")` with `t=1, w=1` produces the same flat sequential order as the original.
 
-So the shape is always `(B, 1, 4096, 1, D)` regardless of bucket. `RoPE` cos/sin get padded identically (lines 1617–1621), keeping every tensor consumed by every block the same shape.
+### Why not just pad everything to one shape?
 
-### Masking the padding
+The original design did exactly that — pad every bucket up to a single static target (`static_token_count`) for *one* graph. That path still exists behind `static_pad = true`, but it is **no longer the default**, for two reasons:
 
-Padded tokens must not leak into softmax. In `flex` attention mode a `BlockMask` zeroes them out (`models.py:1725–1726`):
+- **It can't run this table.** The 4200 family exceeds the legacy 4096 cap and would truncate (guarded in `models.py`).
+- **The padding isn't free.** Under `attn_mode="flash"` (no padding mask) the zero-padded tokens are *not* harmless attention sinks — AdaLN shift + Q/K/V bias leak them into the real-token output (up to ~6.5% rel-L2 on the 4032-token buckets). The native path has no pad to leak and matches the no-pad ground truth bit-for-bit. See `docs/optimizations/no_static_pad.md` and `bench/static_padding/`.
 
-```python
-def _selfattn_mask_mod(b, h, q_idx, kv_idx):
-    return kv_idx < _sa_seq_len
-```
-
-And `_sa_seq_len` is deliberately a **0-dim tensor, not a Python int** (`models.py:1719–1721`):
-
-> Use a tensor instead of a Python `int` so dynamo tracks it symbolically rather than guarding on the exact value. A plain int in the `mask_mod` closure causes a recompile per bucket size.
-
-A detail that only matters once you've watched it happen: switching from `int` to `Tensor` is the difference between one compile and five.
+(Under `flex` attention a `BlockMask` *does* zero padded tokens out of softmax, with `_sa_seq_len` carried as a 0-dim tensor so dynamo tracks it symbolically rather than recompiling per bucket — but flex is not the training default, and flash is where the leak bites.)
 
 ### Cross-attention side: full-length KV
 
@@ -265,7 +257,7 @@ Reading `_forward` (`models.py:1067+`) and `forward_mini_train_dit` (`1537+`), t
 | ------------------------- | ------------------------------------------ | --------------------------------------------- |
 | QKV + KV fusion           | 2× fewer GEMMs, 3× fewer HBM reads on x    | Three small kernels per attention sub-layer   |
 | Fp32 at reductions        | Gradient precision for LoRA / norm stats   | LoRA stalls, norms drift at D=2048            |
-| Static 4096-token padding | 1 compile graph instead of `~5 × 2 × 28`   | Recompile storm, fallback to eager            |
+| Native 4032/4200 token buckets | 2 compile graphs instead of `~24 × 2 × 28`, no pad leak | Recompile storm, fallback to eager           |
 | `_forward` compile target | Real fusion past `unsloth_checkpoint`      | Graph break, guards still checked every step  |
 | Tensor (not int) seq-len  | Symbolic tracking across buckets           | Per-bucket recompile                          |
 | No dict cache under trace | Stable guards                              | Cache-miss guard invalidation mid-training    |

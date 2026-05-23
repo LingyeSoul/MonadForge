@@ -98,9 +98,12 @@ padding_mask.unsqueeze(2).expand(-1, -1, n_heads)
 
 `_KV_BUCKETS` trimmed cross-attention KV sequences to the smallest fitting bucket, capping `torch.compile` shape variants. It was tied to the FA4-only trim path and was removed along with it (2026-05-20). Cross-attention now runs the full 512-length KV under FA2. See `docs/optimizations/fa4.md`.
 
-### 2.5 `set_static_token_count(count)`
+### 2.5 `set_static_token_count(count, pad=...)`
 
-API to enable static-shape training. When set, every forward pass pads visual token sequences to exactly `count` tokens (typically 4096), eliminating shape variation across bucket resolutions.
+API to enable constant-token bucketing. Any non-`None` `count` turns the mode on; the `pad` flag picks how it feeds `torch.compile`:
+
+- **`pad=False` (default, `static_pad = false`)** — each forward runs at its bucket's *native* token count. `count` itself is unused as a target; Dynamo traces one block graph per distinct token-count. With the shipped 4032/4200 table that collapses to **two** graphs, and there is no padding to leak into flash self-attention.
+- **`pad=True` (legacy)** — every forward zero-pads visual tokens up to `count`, giving one static shape / one graph. This path **cannot run the 4032/4200 table** (4200 > 4096 would truncate) and leaks padding into flash self-attention (see § 2.7 caveat).
 
 ### 2.6 `compile_blocks(backend="inductor")`
 
@@ -115,13 +118,23 @@ for block in self.blocks:
 
 ### 2.7 Static-shape padding in `forward_mini_train_dit`
 
-When `static_token_count` is set:
+This describes the legacy `pad=True` path only — it is **not** the default (see § 2.5). When `static_token_count` is set *and* `static_pad = true`:
 
 1. Flatten 5D input `(B, T, H, W, D)` to `(B, seq_len, D)`.
 2. Pad sequence dim to target length with zeros.
 3. Reshape to fake-5D `(B, 1, target, 1, D)` — compatible with existing block code.
 4. Pad RoPE embeddings and extra positional embeddings to match.
 5. After all blocks: squeeze fake dims and strip padding to restore `(B, T, H, W, D)`.
+
+> **Correctness caveat (why this path is no longer the default):** under
+> `attn_mode="flash"` (no padding mask) the zero-padded tokens are *not* harmless
+> sinks — AdaLN shift + Q/K/V bias leak them into the real-token output (up to
+> ~6.5% rel-L2 on the 4032-token buckets). The default `pad=False` variant
+> (`set_static_token_count(count, pad=False)`, `static_pad = false`, the old
+> `--no_static_pad`) runs native token counts instead, trading the single padded
+> shape for one graph per token-count family (2 with the 4032/4200 table) and
+> removing the leak entirely (there is no pad to leak). See
+> [`no_static_pad.md`](no_static_pad.md) and `bench/static_padding/`.
 
 ### 2.8 Pre-computed BlockMask for flex attention
 
@@ -138,17 +151,24 @@ These are passed via `AttentionParams` so flex attention never needs to create m
 
 ### 3.1 Constant-token buckets (`buckets.py`)
 
-New `CONSTANT_TOKEN_BUCKETS` — 17 predefined `(W, H)` resolutions where `(W/16)·(H/16) ~ 4096` tokens with minimal padding (0.0%–1.6%). Used with `--static_token_count=4096` to make every forward pass shape-identical.
+`CONSTANT_TOKEN_BUCKETS` — 24 predefined `(W, H)` resolutions grouped into **two token-count families**, 4032 (= 63·64) and 4200 (= 60·70). Each resolution *exactly* fills its family's count, so there is **zero intra-bucket padding** by construction. Under the default native path (`static_pad = false`) every forward runs at its real token count, so `torch.compile` traces one block graph per distinct count — just **two** for this table.
 
 ```python
 CONSTANT_TOKEN_BUCKETS = [
-    (1024, 1024),   # 4096 tokens, 0.0% pad
-    (960, 1088),    # 4080 tokens, 0.4% pad
-    (1088, 960),
-    # ... 14 more landscape/portrait pairs
-    (2048, 512),    # 4096 tokens, 0.0% pad
+    # ---- 4032-token family (63*64) ----
+    (1008, 1024),   # 63 x 64, ar 0.98 (nearest to square)
+    (1024, 1008),   #          ar 1.02
+    (896, 1152),    # 56 x 72, ar 0.78
+    # ... 9 more landscape/portrait pairs
+    (2016, 512),    # 32 x 126, ar 3.94
+    # ---- 4200-token family (60*70) ----
+    (960, 1120),    # 60 x 70, ar 0.86
+    # ... 11 more landscape/portrait pairs
+    (1920, 560),    # 35 x 120, ar 3.43
 ]
 ```
+
+Two families instead of one because a single count's divisors near √N are sparse (4032 alone jumps aspect 1.29→1.75); interleaving 4032 and 4200 densely covers aspect space at the cost of one extra graph. This table is **incompatible with the legacy pad-to-static@4096 path** — the 4200 family exceeds 4096 and would truncate (guarded in `models.py`). Note this diverges from `DCW_ASPECT_BUCKETS`: the 832×1248 / 1248×832 HD pair (4056 tokens) is no longer a training bucket.
 
 `BucketManager.make_buckets()` accepts `constant_token_buckets=True` to use these instead of dynamically generated resolutions.
 

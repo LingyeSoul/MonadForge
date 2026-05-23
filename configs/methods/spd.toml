@@ -17,17 +17,12 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 24000
+iterations = 4000
 batch_size = 1
 seed = 42
 compile_inductor_mode = "reduce-overhead"
 
 [network]
-# Paper-faithful plain LoRA (Table 2 used rank-32). NOT the Anima default
-# T-LoRA+Ortho+Hydra stack — fewer moving parts for the first falsification,
-# and T-LoRA's timestep mask interacts with the per-stage t-routing in ways to
-# study separately (proposal "Plain LoRA for v0"). alpha = rank (scale 1.0),
-# matching the LoRA-family convention.
 rank = 64
 alpha = 64
 attn_mode = "flash"
@@ -45,45 +40,18 @@ label = "single_0.5_sigma0.7"
 # each step so the segment geometry is learned as a band, not a point. 0 = off.
 sigma_jitter = 0.0
 
-# On-policy teacher-distillation tail (proposal.md Idea 2). Trains the full-res
-# tail on the handoff state the adapter-on prefix actually rolls to (then
-# spectral-expanded), distilling toward the FROZEN BASE model's own full-res /
-# full-step gold sample for the same ε+prompt: `(x̃ − x0_teacher)/σ̃`.
-#
-# This replaces the original `(x̃ − x0_dataset)/σ̃` target, which was wrong by
-# construction: a fresh-ε prefix rollout lands on *a* prompt-consistent sample,
-# never on the specific dataset latent (Phase-0 probe rel_x0_on ≈ 0.83→0.98), so
-# regressing toward x0_dataset bent every trajectory toward one arbitrary latent
-# → mean-regression → blurry samples. The frozen-base teacher, run the expensive
-# seam-free way from the *same* seed, is the trusted answer at the visited state
-# (DAgger expert); the shared seed keeps its layout aligned with the cheap path's.
-# v0: 2-stage only. Works with --torch_compile (plain inductor: teacher/rollout/
-# tail are static shapes); not with --compile_inductor_mode reduce-overhead
-# (CUDAGraphs span the eval/grad + LoRA on/off toggles).
-[onpolicy]
-# Fraction of steps that use the on-policy teacher tail; the rest stay the analytic
-# backbone (which still trains the prefix — the on-policy rollout is no_grad). 0 =
-# analytic-only. MIX — one LoRA can't be frozen by module, so 1.0 lets the prefix
-# drift untrained. NOTE: prefer warming up analytic-only before enabling this, so
-# the prefix rollout is sane when the teacher tail starts trusting its handoff state.
-ratio = 0.0
-# Site of supervision: 'entry' = the handoff σ̃ only (attacks the seam, cheapest);
-# 'full' = DAgger across the tail band (roll the tail no_grad to a random σ in
-# [sigma_floor, σ̃] and supervise there — needed to claim the high-res stage can
-# be shortened).
-tail_band = "entry"
-rollout_steps = 16      # Euler steps for the prefix rollout (coarser than infer is fine)
-teacher_steps = 24      # Euler steps for the frozen-base gold rollout (≥ deployment grid)
-sigma_floor = 0.1       # lower σ clamp for 'full' band (caps the (x−x0_teacher)/σ variance)
-flow_shift = 1.0        # σ-schedule shift for the rollout (matches inference)
-
 [optim]
-lr = 2e-5
+lr = 5e-5
 weight_decay = 0.0
 grad_clip = 1.0
-warmup = 0.02            # ratio of iterations (int >=1 → absolute steps)
+# Micro-steps accumulated per optimizer step; the SPD stage is resampled each
+# one so every update mixes low-res and full-res grads (cancels the
+# regime-switching noise). 1 = off. `iterations` counts optimizer steps, so
+# wall-clock scales ~linearly. 4 is the suggested starting point.
+grad_accum = 4
+warmup = 0.02           # ratio of iterations (int >=1 → absolute steps)
 
 [io]
-save_every = 4000
-log_interval = 10
+save_every = 1000
+log_interval = 2
 log_dir = "output/logs/spd"

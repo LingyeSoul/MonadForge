@@ -4,6 +4,8 @@ Design notes for `compile_mode = "full"` paired with `compile_inductor_mode = "r
 
 The headline number: in `compile_mode = "full"` we hand inductor a single 28-block graph and let `cudagraph_trees` capture *one* CUDAGraph that gets replayed every step. There is no per-block launch boundary, no per-step kernel-launch overhead, no per-bucket recompilation. The cost of getting there is a strict static-shape contract for the compile zone and a buffer-mutation discipline for everything reachable from it.
 
+> **Scope.** This "one CUDAGraph, one shape" story assumes the legacy single-static-shape mode (`static_pad = true`, padding every bucket up to one `static_token_count`). That is **not** the default training path: `configs/base.toml` ships `static_pad = false`, where each forward runs at its native token count and the 4032/4200 table collapses to two block graphs (see [`no_static_pad.md`](no_static_pad.md)). The default `blocks` compile mode handles the two-graph case fine; the full-model CUDAGraph path below is built around exactly one captured shape, so read every `static_token_count = 4096` / "one shape" claim as describing the `static_pad = true` configuration.
+
 ---
 
 ## 1. Goals and tradeoffs
@@ -34,7 +36,7 @@ The choice to compile `_run_blocks` specifically — not `forward_mini_train_dit
 
 ### Why this split
 
-- **The pre-blocks region produces bucket-dependent shapes.** `(T_s, H_s, W_s)` differs across the 17 entries of `CONSTANT_TOKEN_BUCKETS`. If we compiled this region, we'd record one CUDAGraph per bucket. With reduce-overhead that's 17 separate captures, each ~6 GiB of cudagraph pool, replayed on whichever bucket the dataloader happens to serve.
+- **The pre-blocks region produces bucket-dependent shapes.** `(T_s, H_s, W_s)` differs across the 24 entries of `CONSTANT_TOKEN_BUCKETS`. If we compiled this region, we'd record one CUDAGraph per bucket. With reduce-overhead that's 24 separate captures, each ~6 GiB of cudagraph pool, replayed on whichever bucket the dataloader happens to serve.
 - **`_run_blocks` is shape-invariant by construction.** Its inputs are flattened-and-padded to `static_token_count = 4096` *before* it's called. One graph serves every bucket.
 - **The post-blocks region is also bucket-dependent**, plus it needs to know the original `seq_len` to strip padding. We can't compile it for the same reason.
 

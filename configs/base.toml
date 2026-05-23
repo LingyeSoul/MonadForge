@@ -33,7 +33,10 @@ path_pattern = "*"
 # preprocess/cache_text_embeddings.py so under-sized source images never
 # enter the resize / VAE / TE caches. Default 500_000 = 0.5MP — matches the
 # scripts' own argparse defaults. Set drop_lowres_images = false to keep
-# every image regardless of size.
+# every image regardless of size. Override per-run without editing this file:
+#   make preprocess ARGS="--min_pixels 0"        # explicit threshold (wins)
+#   make preprocess ARGS="--no_drop_lowres"      # keep every image
+#   make preprocess ARGS="--drop_lowres"         # force the configured threshold
 drop_lowres_images = true
 min_pixels = 500000
 
@@ -55,7 +58,13 @@ vae_chunk_size = 64
 vae_disable_cache = true
 masked_loss = true
 torch_compile = true
-static_token_count = 4096
+static_token_count = 4200          # enables constant-token bucketing (any non-None value does).
+                                   # Under static_pad=false the value itself is unused — each
+                                   # forward runs at its bucket's real token count, not this number.
+                                   # (Only a pad target when static_pad=true, which this table can't use.)
+static_pad = false                 # native shapes (--no_static_pad): one block graph per distinct
+                                   # token count (2: the 4032/4200 families), zero pad, no flash
+                                   # static-pad leak. Pad mode (true) can't run this table — 4200 > 4096.
 attn_mode = "flash"
 save_precision= "bf16"
 use_custom_down_autograd = true

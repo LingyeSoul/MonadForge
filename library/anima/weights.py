@@ -235,6 +235,8 @@ def load_pooled_text_proj(
 
     state = load_file(path, device=str(device))
     model.pooled_text_proj.load_state_dict(state, assign=True)
+    # Trained weights are now live — arm the per-forward modulation path.
+    model.enable_pooled_text_modulation = True
     logger.info(f"Loaded pooled_text_proj from {path}")
 
 

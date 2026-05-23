@@ -294,10 +294,19 @@ def main():
     else:
         model.to(device)
 
-    # Static 4096 tokens so torch.compile sees a single shape across buckets.
-    model.set_static_token_count(4096)
+    # Native-shape buckets: each aspect bucket runs at its real token count
+    # (no static padding → no flash pad-leak). The value here is just a non-None
+    # sentinel enabling the mode; each forward reshapes to its own seq_len.
+    model.set_static_token_count(4096, pad=False)
 
     if args.torch_compile:
+        import torch._dynamo as _dynamo
+
+        # Native mode traces one block graph per distinct token count; give the
+        # dynamo cache headroom so each shape traces instead of eager fallback.
+        _dynamo.config.cache_size_limit = max(
+            _dynamo.config.cache_size_limit, 64
+        )
         model.compile_blocks(mode="default")
 
     if args.grad_ckpt:

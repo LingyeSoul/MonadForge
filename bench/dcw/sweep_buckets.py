@@ -67,9 +67,10 @@ sys.path.insert(0, str(ROOT))
 
 from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
 
-# Bucket presets. ``CONSTANT_TOKEN_BUCKETS`` is the canonical 17-entry
-# list from ``library/datasets/buckets.py`` — every entry has
-# (W/16)*(H/16) ≤ 4096 tokens and gets padded to exactly 4096 at runtime.
+# Bucket presets. ``CONSTANT_TOKEN_BUCKETS`` is the canonical 24-entry list
+# from ``library/datasets/buckets.py`` — two token-count families (4032 and
+# 4200), each entry exactly filling its count (no padding) under the native
+# (no_static_pad) path that is now the base.toml default.
 PRESETS: dict[str, list[tuple[int, int]]] = {
     # Square + 1.5 mirror pair. Cheapest sign-flip / sanity check.
     "minimal": [(1024, 1024), (832, 1248), (1248, 832)],

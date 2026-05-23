@@ -12,6 +12,7 @@ STRINGS: dict[str, str] = {
     "tab_config": "训练配置",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
+    "tab_spd": "SPD",
     "tab_methods": "方法",
     "tab_images": "数据集",
     "tab_merge": "合并",
@@ -118,6 +119,15 @@ STRINGS: dict[str, str] = {
         "训练将原样复用此缓存。若你添加了新图像或修改了标注并希望生效,"
         "请取消并先运行预处理。\n\n"
         "用现有缓存继续训练吗?"
+    ),
+    "stale_cache_title": "过时的数据集缓存",
+    "stale_cache_body": (
+        "以下路径下有 {n} 个 VAE 隐变量缓存:\n  {cache_dir}\n\n"
+        "这些文件的分辨率已不在当前桶表 "
+        "(4032 / 4200 token 数系列) 中:\n\n{examples}\n\n"
+        "这些缓存是在旧的桶布局下生成的 —— 训练时会跳过或将其归入错误的桶。"
+        "请取消并重新运行预处理 (使用「覆盖」选项) 以重新生成缓存。\n\n"
+        "仍然使用过时缓存继续训练吗?"
     ),
     "train_autopreprocess_log": (
         "未找到预处理缓存 —— 将先运行预处理,然后自动开始训练。\n"

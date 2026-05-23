@@ -4,28 +4,54 @@ from typing import NamedTuple, Tuple
 
 import numpy as np
 
-# Bucket resolutions where (W/16)*(H/16) <= 4096 tokens, with minimal padding
-# to reach 4096.  Using these with static_token_count=4096 makes every forward
-# pass shape-identical, eliminating torch.compile recompilation.
-# Landscape mirrors (swap W, H) are included explicitly.
+# Bucket resolutions as (W, H), grouped into two token-count families: 4032
+# (= 63*64) and 4200 (= 60*70). Both are highly composite, so each factors into
+# many near-square→elongated patch grids — and crucially every bucket *exactly*
+# fills its token count, so there is zero intra-bucket padding by construction.
+#
+# This table is designed for the native (no_static_pad) path: it collapses to
+# just TWO distinct token counts → two compiled block graphs, and removes the
+# flash static-pad leak entirely (there is no pad to leak). It is NOT usable
+# with pad-to-static@4096 — the 4200 family exceeds 4096 and would truncate;
+# base.toml therefore defaults `static_pad = false`. The rope per-axis cap is
+# 256 patches (max_img/patch_spatial); the largest dim here is 2016px → 126.
+#
+# Two families instead of one because a single token count's divisors near √N
+# are sparse (4032 alone jumps aspect 1.29→1.75); interleaving 4032 and 4200
+# densely covers aspect space at the cost of one extra graph. Landscape mirrors
+# (swap W, H) are included explicitly. Token count = (W//16)*(H//16).
+#
+# NOTE: this diverges from DCW_ASPECT_BUCKETS below — the 832x1248 / 1248x832
+# HD pair (4056 tokens) is no longer a training bucket, so a future `make dcw`
+# recalibration will produce zero rows for those two aspect_ids. See the DCW
+# table's note; do not reorder it (shipped fusion-head checkpoints key off it).
 CONSTANT_TOKEN_BUCKETS = [
-    (1024, 1024),  # 4096 tokens, 0.0% pad
-    (960, 1088),  # 4080 tokens, 0.4% pad
-    (1088, 960),
-    (896, 1152),  # 4032 tokens, 1.6% pad
-    (1152, 896),
-    (832, 1248),  # 4056 tokens, 1.0% pad
-    (1248, 832),
-    (768, 1344),  # 4032 tokens, 1.6% pad
-    (1344, 768),
-    (720, 1440),  # 4050 tokens, 1.1% pad
-    (1440, 720),
-    (640, 1632),  # 4080 tokens, 0.4% pad
-    (1632, 640),
-    (576, 1792),  # 4032 tokens, 1.6% pad
-    (1792, 576),
-    (512, 2048),  # 4096 tokens, 0.0% pad
-    (2048, 512),
+    # ---- 4032-token family (63*64) ----
+    (1008, 1024),  # 63 x 64, ar 0.98 (nearest to square)
+    (1024, 1008),  #          ar 1.02
+    (896, 1152),  # 56 x 72, ar 0.78
+    (1152, 896),  #          ar 1.29
+    (768, 1344),  # 48 x 84, ar 0.57
+    (1344, 768),  #          ar 1.75
+    (672, 1536),  # 42 x 96, ar 0.44
+    (1536, 672),  #          ar 2.29
+    (576, 1792),  # 36 x 112, ar 0.32
+    (1792, 576),  #           ar 3.11
+    (512, 2016),  # 32 x 126, ar 0.25
+    (2016, 512),  #           ar 3.94
+    # ---- 4200-token family (60*70) ----
+    (960, 1120),  # 60 x 70, ar 0.86
+    (1120, 960),  #          ar 1.17
+    (896, 1200),  # 56 x 75, ar 0.75
+    (1200, 896),  #          ar 1.34
+    (800, 1344),  # 50 x 84, ar 0.60
+    (1344, 800),  #          ar 1.68
+    (672, 1600),  # 42 x 100, ar 0.42
+    (1600, 672),  #           ar 2.38
+    (640, 1680),  # 40 x 105, ar 0.38
+    (1680, 640),  #           ar 2.62
+    (560, 1920),  # 35 x 120, ar 0.29
+    (1920, 560),  #           ar 3.43
 ]
 
 # DCW v4 calibration aspect-bucket set.
@@ -47,9 +73,7 @@ DCW_ASPECT_BUCKETS: Tuple[Tuple[int, int], ...] = (
     (1152, 896),  # 3 — 3:4 landscape
     (1248, 832),  # 4 — HD landscape
 )
-DCW_ASPECT_NAMES: Tuple[str, ...] = tuple(
-    f"{h}x{w}" for h, w in DCW_ASPECT_BUCKETS
-)
+DCW_ASPECT_NAMES: Tuple[str, ...] = tuple(f"{h}x{w}" for h, w in DCW_ASPECT_BUCKETS)
 DCW_ASPECT_TABLE: dict = {hw: i for i, hw in enumerate(DCW_ASPECT_BUCKETS)}
 N_DCW_ASPECTS: int = len(DCW_ASPECT_BUCKETS)
 
