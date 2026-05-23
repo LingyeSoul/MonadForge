@@ -36,7 +36,49 @@ def _min_pixels_args() -> list[str]:
     return ["--min_pixels", str(n)]
 
 
+def _config_min_pixels() -> int:
+    """The configured ``min_pixels`` threshold (merged chain), default 0.5MP."""
+    from ._common import _path_overrides
+
+    raw = _path_overrides().get("min_pixels", 500_000)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 500_000
+
+
+def _resolve_lowres_filter(extra) -> tuple[list[str], list[str]]:
+    """Reconcile the low-res input filter against CLI ``ARGS``.
+
+    Returns ``(min_pixels_args, cleaned_extra)`` where ``cleaned_extra`` has
+    our two convenience flags popped so the underlying scripts never see an
+    arg their argparse doesn't define. Precedence (highest first):
+
+      1. An explicit ``--min_pixels N`` in ``ARGS`` — left in ``extra`` and
+         wins outright; we inject nothing (no duplicate ``--min_pixels``).
+      2. ``--no_drop_lowres`` in ``ARGS`` → ``--min_pixels 0`` (keep every
+         image), overriding ``drop_lowres_images = true`` in the TOML.
+      3. ``--drop_lowres`` in ``ARGS`` → force the configured ``min_pixels``
+         threshold, overriding ``drop_lowres_images = false`` in the TOML.
+      4. Neither flag → fall back to the merged-config behavior
+         (``_min_pixels_args``)."""
+    cleaned = list(extra)
+    no_drop = "--no_drop_lowres" in cleaned
+    drop = "--drop_lowres" in cleaned
+    cleaned = [a for a in cleaned if a not in ("--no_drop_lowres", "--drop_lowres")]
+
+    # An explicit threshold in ARGS is authoritative; leave it in place.
+    if "--min_pixels" in cleaned:
+        return [], cleaned
+    if no_drop:  # disable wins over enable when both are passed
+        return ["--min_pixels", "0"], cleaned
+    if drop:
+        return ["--min_pixels", str(_config_min_pixels())], cleaned
+    return _min_pixels_args(), cleaned
+
+
 def cmd_preprocess_resize(extra):
+    mp_args, extra = _resolve_lowres_filter(extra)
     run(
         [
             PY,
@@ -47,7 +89,7 @@ def cmd_preprocess_resize(extra):
             _path("resized_image_dir", "post_image_dataset/resized"),
             "--no_copy_captions",
             "--recursive",
-            *_min_pixels_args(),
+            *mp_args,
             *extra,
         ]
     )
@@ -81,6 +123,7 @@ def cmd_preprocess_te(extra):
     # unchanged.
     shuffle_variants = os.environ.get("CAPTION_SHUFFLE_VARIANTS", "4")
     tag_dropout_rate = os.environ.get("CAPTION_TAG_DROPOUT_RATE", "0.1")
+    mp_args, extra = _resolve_lowres_filter(extra)
     run(
         [
             PY,
@@ -98,7 +141,7 @@ def cmd_preprocess_te(extra):
             "--caption_tag_dropout_rate",
             tag_dropout_rate,
             "--recursive",
-            *_min_pixels_args(),
+            *mp_args,
             *extra,
         ]
     )
@@ -177,7 +220,11 @@ def cmd_preprocess(extra):
     # `exp-ip-adapter-preprocess`). Leaving PE out keeps the default LoRA
     # preprocess fast on machines that won't ever use the vision tower.
     cmd_preprocess_resize(extra)
-    cmd_preprocess_vae(extra)
+    # The VAE step doesn't filter on size; strip the low-res convenience flags
+    # so its argparse never sees an arg it doesn't define. (resize/te pop them
+    # themselves via _resolve_lowres_filter.)
+    _, vae_extra = _resolve_lowres_filter(extra)
+    cmd_preprocess_vae(vae_extra)
     cmd_preprocess_te(extra)
 
 
