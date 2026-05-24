@@ -184,6 +184,13 @@ def ensure_daemon(*, timeout: float = 60.0, port: Optional[int] = None) -> Daemo
     is taken by a stranger (see ``server.serve_with_fallback``); it records the
     actual port in the pidfile, so we re-resolve from there each tick and follow
     it rather than polling a port nothing is listening on.
+
+    The poll cadence ramps: a freshly-spawned daemon is usually answering in
+    well under a second (the package imports in ~tens of ms; the dominant cost
+    is the OS process spawn), so a flat 0.5s interval would idle past a daemon
+    that's already up. We poll fast at first (0.1s) and back off toward 0.5s, so
+    the common case returns as soon as the daemon binds without busy-spinning on
+    a genuinely slow start.
     """
     requested = port or _resolve_port()
     client = DaemonClient(requested)
@@ -201,13 +208,15 @@ def ensure_daemon(*, timeout: float = 60.0, port: Optional[int] = None) -> Daemo
         stdout_path=config.DAEMON_LOG,
     )
     deadline = time.time() + timeout
+    interval = 0.1
     while time.time() < deadline:
         resolved = _resolve_port()  # follow a fallback-to-ephemeral daemon
         if resolved != client.port:
             client = DaemonClient(resolved)
         if client.health() is not None:
             return client
-        time.sleep(0.5)
+        time.sleep(interval)
+        interval = min(interval * 1.5, 0.5)  # ramp 0.1 → 0.5s
     raise RuntimeError(
         f"daemon did not come up within {timeout:.0f}s; see {config.DAEMON_LOG}"
     )

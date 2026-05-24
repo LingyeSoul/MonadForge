@@ -41,8 +41,8 @@ HOST = "127.0.0.1"
 #   busy_frac: treat the card as busy only above this used/total fraction.
 #   retries/delay: how long to wait for it to free up before launching anyway.
 GPU_GUARD_BUSY_FRAC = float(os.environ.get("ANIMA_DAEMON_GPU_BUSY_FRAC", "0.85"))
-GPU_GUARD_RETRIES = int(os.environ.get("ANIMA_DAEMON_GPU_RETRIES", "3"))
-GPU_GUARD_DELAY = float(os.environ.get("ANIMA_DAEMON_GPU_DELAY", "5.0"))
+GPU_GUARD_RETRIES = int(os.environ.get("ANIMA_DAEMON_GPU_RETRIES", "1"))
+GPU_GUARD_DELAY = float(os.environ.get("ANIMA_DAEMON_GPU_DELAY", "2.0"))
 
 
 def ensure_state_dirs() -> None:

@@ -65,11 +65,23 @@ def spawn_detached(
 
     Detaching is what lets a console ctrl-C miss the child:
     ``start_new_session=True`` on POSIX (new session/process group, terminal
-    SIGINT only reaches the foreground group), ``CREATE_NO_WINDOW |
-    DETACHED_PROCESS`` on Windows (a console CTRL_C_EVENT can't reach a
-    detached process). A detached Windows process also has no inherited stdio,
-    so redirecting to a file is mandatory there — we do it on both platforms
-    for uniformity.
+    SIGINT only reaches the foreground group), ``CREATE_NO_WINDOW`` on Windows.
+
+    Windows console nuance — why ``CREATE_NO_WINDOW`` *without*
+    ``DETACHED_PROCESS``: detaching gives the whole training tree **no console
+    at all**, so when ``torch.compile``'s inductor/Triton backend shells out to
+    native compilers (``ptxas.exe`` per CUDA kernel, ``cl.exe`` for the C++
+    wrapper) with no creation flags, Windows sees "parent has no console" and
+    allocates a fresh **visible** console for each — a burst of terminal-window
+    flashes on every compile-heavy training start. ``CREATE_NO_WINDOW`` instead
+    gives the tree a console that *exists but is hidden*; those compiler
+    grandchildren inherit it rather than popping their own. CTRL_C isolation is
+    preserved regardless: the daemon runs under ``pythonw`` with no console of
+    its own, and a ``CREATE_NO_WINDOW`` child gets its own private hidden
+    console, so a stray terminal CTRL_C still can't reach it (and we kill jobs
+    via ``kill_tree``, not console events). Stdio still has no usable inherited
+    handles, so redirecting to a file stays mandatory — we do it on both
+    platforms for uniformity.
 
     Window suppression on Windows is the *interpreter's* job, not a creation
     flag's: the uv venv ``python.exe`` is a trampoline that re-launches the real
@@ -87,9 +99,7 @@ def spawn_detached(
         "env": env,
     }
     if sys.platform == "win32":
-        kwargs["creationflags"] = (
-            subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-        )
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     else:
         kwargs["start_new_session"] = True
     try:

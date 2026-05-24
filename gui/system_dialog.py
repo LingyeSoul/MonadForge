@@ -216,7 +216,7 @@ class ModelsDialog(_StreamingDialog):
         for _status, _paths, b in self._rows:
             b.setEnabled(not busy)
 
-    def _after_finished(self, _exit_code: int) -> None:
+    def _after_finished(self, exit_code: int) -> None:
         # Refresh every row's status — handles both per-group downloads and
         # download-models, which touches several groups in one run.
         for status_lbl, paths, btn in self._rows:
@@ -228,6 +228,19 @@ class ModelsDialog(_StreamingDialog):
                 "color:#4ade80;" if installed else "color:#f87171;"
             )
             btn.setText(t("models_redownload") if installed else t("models_download"))
+
+        if exit_code != 0:
+            QMessageBox.warning(
+                self,
+                t("models_failed_title"),
+                t("models_failed_message", code=exit_code),
+            )
+        else:
+            QMessageBox.information(
+                self,
+                t("models_done_title"),
+                t("models_done_message"),
+            )
 
 
 GITHUB_REPO = "sorryhyun/anima_lora"
