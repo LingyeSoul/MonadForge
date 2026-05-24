@@ -422,8 +422,6 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         )
         state.initial_step = 1
 
-    _prev_step_ts = time.monotonic()
-
     for step, batch in enumerate(skipped_dataloader or state.train_dataloader):
         state.current_step.value = state.global_step
         if state.initial_step > 0:
@@ -458,21 +456,6 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             max_mean_logs=max_mean_logs,
         )
 
-        # Enriched stdout line for WebUI parser — includes loss, lr, speed
-        # in addition to the step count, so the dashboard works even when
-        # tqdm stderr is lost through the subprocess pipe chain.
-        if accelerator.sync_gradients:
-            _now = time.monotonic()
-            _dt = _now - _prev_step_ts
-            _speed = f"{1.0 / _dt:.3f}" if _dt > 0 else "0"
-            _prev_step_ts = _now
-            _lrs = state.lr_scheduler.get_last_lr()
-            _lr = _lrs[0] if _lrs else 0.0
-            accelerator.print(
-                f"step {state.global_step}/{args.max_train_steps}"
-                f" loss={avr_loss:.5f} lr={_lr:.2e} speed={_speed}",
-                flush=True,
-            )
         _maybe_run_step_validation(trainer, state, epoch)
 
         if state.global_step >= args.max_train_steps:
@@ -723,6 +706,19 @@ def _log_step(
             if grad_collector and grad_collector.should_collect(state.global_step):
                 extras = grad_collector.collect(_unwrapped_net)
                 dispatch_wandb_extras(state.accelerator, extras, state.global_step)
+
+    # Write a lightweight step event to the JSONL progress sink every
+    # sync step so the WebUI can tail structured metrics instead of
+    # regex-parsing stdout.  The sink is line-buffered and async-safe;
+    # failures are swallowed internally and never crash training.
+    if state.accelerator.sync_gradients:
+        _sink = getattr(trainer, "progress_sink", None)
+        if _sink is not None:
+            _sink.log(
+                {"avr_loss": avr_loss, "lr": logs.get("lr", 0.0)},
+                global_step=state.global_step,
+                epoch=epoch,
+            )
 
     return avr_loss
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -124,6 +125,13 @@ class TaskService:
 
             # Fire-and-forget reader — updates task state when done
             asyncio.create_task(self._read_output(task))
+
+            # Tail the structured progress JSONL for richer metrics.
+            # The training subprocess auto-derives the path from
+            # output_dir/output_name when --progress_jsonl is not passed.
+            jsonl_path = self._derive_progress_jsonl_path(args or [])
+            if jsonl_path:
+                asyncio.create_task(self._watch_progress_jsonl(task, jsonl_path))
         except Exception as exc:
             task.state = TaskState.FAILED
             task.lines.append(f"[error] Failed to start: {exc}")
@@ -274,6 +282,153 @@ class TaskService:
             await self._notify_subscribers(
                 task, {"type": "done", "exit_code": -1, "state": "failed"}
             )
+
+    # ── Progress JSONL tailing ────────────────────────────────────────
+
+    @staticmethod
+    def _arg_value(args: list[str], flag: str) -> Optional[str]:
+        """Extract ``--flag value`` or ``--flag=value`` from an arg list."""
+        prefix = flag + "="
+        for i, a in enumerate(args):
+            if a.startswith(prefix):
+                return a[len(prefix) :]
+            if a == flag and i + 1 < len(args):
+                return args[i + 1]
+        return None
+
+    def _derive_progress_jsonl_path(self, args: list[str]) -> Optional[str]:
+        """Mirror ``ProgressSink.resolve_path`` logic on the arg list.
+
+        Returns the expected JSONL path so the watcher can tail it, or
+        ``None`` when the path cannot be determined (e.g. no output_dir).
+        """
+        output_dir = self._arg_value(args, "--output_dir") or "output/ckpt"
+        output_name = self._arg_value(args, "--output_name") or "anima_lora"
+        parent = os.path.dirname(os.path.normpath(output_dir))
+        logs_dir = os.path.join(parent or output_dir, "logs")
+        return os.path.join(ROOT, logs_dir, f"{output_name}.progress.jsonl")
+
+    async def _watch_progress_jsonl(
+        self, task: Task, jsonl_path: str
+    ) -> None:
+        """Tail the structured progress JSONL and push metrics to subscribers.
+
+        Runs alongside ``_read_output``.  The training subprocess writes
+        line-buffered JSONL events (``{"ev":"step", ...}``) that carry
+        structured scalars (loss, lr, …) at the ``log_every_n_steps``
+        cadence.  This coroutine polls the file for new data and emits
+        ``{"type":"metrics", "data":{...}}`` messages to WebSocket
+        subscribers — the same message format the stdout parser produces,
+        so the frontend code is unchanged.
+        """
+        # Wait for the file to appear (training subprocess creates it on
+        # first run_start).  Give up after 60 s — if the file never
+        # appears the stdout fallback still works.
+        for _ in range(120):
+            if task.state != TaskState.RUNNING:
+                return
+            if os.path.isfile(jsonl_path):
+                break
+            await asyncio.sleep(0.5)
+        else:
+            logger.debug(
+                "progress JSONL not found after 60 s, skipping watcher: %s",
+                jsonl_path,
+            )
+            return
+
+        logger.info("Tailing progress JSONL: %s", jsonl_path)
+        offset = 0
+        try:
+            while task.state == TaskState.RUNNING:
+                try:
+                    size = os.path.getsize(jsonl_path)
+                except OSError:
+                    await asyncio.sleep(0.5)
+                    continue
+                if size <= offset:
+                    await asyncio.sleep(0.3)
+                    continue
+                # Read new bytes in a thread so we don't block the event loop.
+                result: Optional[tuple[list[str], int]] = (
+                    await asyncio.to_thread(
+                        self._read_jsonl_bytes, jsonl_path, offset
+                    )
+                )
+                if result is not None:
+                    new_lines, new_offset = result
+                    offset = new_offset
+                    for raw_line in new_lines:
+                        try:
+                            ev = json.loads(raw_line)
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+                        if ev.get("ev") != "step":
+                            continue
+                        metrics = task.parser.metrics
+                        if "global_step" in ev:
+                            metrics.step = ev["global_step"]
+                        if "epoch" in ev:
+                            metrics.epoch = ev["epoch"]
+                        if "avr_loss" in ev:
+                            loss = ev["avr_loss"]
+                            metrics.avr_loss = loss
+                            s = metrics.step
+                            if (
+                                not metrics.step_history
+                                or s != metrics.step_history[-1]
+                            ):
+                                metrics.loss_history.append(loss)
+                                metrics.step_history.append(s)
+                                metrics.lr_history.append(metrics.lr)
+                        if "lr" in ev:
+                            metrics.lr = ev["lr"]
+                        snapshot = metrics.snapshot()
+                        await self._notify_subscribers(
+                            task,
+                            {"type": "metrics", "data": snapshot},
+                        )
+                else:
+                    # File may have been rotated; reset.
+                    offset = 0
+                await asyncio.sleep(0.3)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception(
+                "Progress JSONL watcher failed for task %s", task.id
+            )
+
+    @staticmethod
+    def _read_jsonl_bytes(
+        path: str, offset: int
+    ) -> Optional[tuple[list[str], int]]:
+        """Read complete JSONL lines starting at *offset* (blocking I/O).
+
+        Returns ``(None, -)`` if the file is shorter than *offset* (rotation),
+        otherwise ``(lines, new_offset)`` where *lines* may be empty.
+        """
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                fh.seek(offset)
+                raw = fh.read()
+                end = fh.tell()
+        except FileNotFoundError:
+            return None
+        if not raw:
+            return [], offset
+        # The last line may be incomplete (no trailing \n yet); don't
+        # consume it — the next poll will pick it up.
+        lines = raw.split("\n")
+        if not raw.endswith("\n"):
+            incomplete = lines.pop()
+            # Adjust offset back by the length of the incomplete tail.
+            end -= len(incomplete.encode("utf-8")) + 1  # +1 for the \n split
+        else:
+            # Strip trailing empty string from split on final \n.
+            if lines and lines[-1] == "":
+                lines.pop()
+        return [l for l in lines if l.strip()], end
 
     async def _emit_line(
         self, task: Task, line: str, *, replace: bool
