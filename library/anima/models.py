@@ -129,19 +129,19 @@ def unsloth_checkpoint(function, *args):
 
 
 @torch.compiler.disable(recursive=True)
-def _unpad_static_shape(x, pad_info):
-    """Strip the static-shape padding back to (B, T, H, W, D).
+def _unflatten_native_shape(x, flatten_info):
+    """Restore the fake-5D flattened sequence back to (B, T, H, W, D).
 
-    Disabled from dynamo tracing on purpose: pad_info is a 4-tuple of Python
-    ints (T_s, H_s, W_s, seq_len) computed from the input's pre-pad shape, so
+    Disabled from dynamo tracing on purpose: flatten_info is a 4-tuple of Python
+    ints (T_s, H_s, W_s, seq_len) computed from the input's pre-flatten shape, so
     if this ran inside the compiled frame each bucket would specialize
-    ``pad_info[1] == H_s`` (per-value guard) and narrow the symbolic range
-    on ``pad_info[3]`` (per-bucket seq_len guard). Running it eagerly keeps
+    ``flatten_info[1] == H_s`` (per-value guard) and narrow the symbolic range
+    on ``flatten_info[3]`` (per-bucket seq_len guard). Running it eagerly keeps
     the returned tensor's shape as the only signal crossing back into the
     compile zone — downstream ops (final_layer, unpatchify) then pick up
     symbolic T/H/W from the tensor itself, not from Python ints.
     """
-    T_s, H_s, W_s, seq_len = pad_info
+    T_s, H_s, W_s, seq_len = flatten_info
     x = x.squeeze(3).squeeze(1)
     x = x[:, :seq_len, :]
     x = x.unflatten(1, (T_s, H_s, W_s))
@@ -501,8 +501,8 @@ class VideoRopePosition3DEmb(VideoPositionEmb):
 
         # Skip Python dict cache inside compiled code — dict mutations cause dynamo
         # guard failures and recompilation.  The RoPE computation is pure tensor math
-        # that dynamo traces cleanly; with static_token_count the shapes are constant
-        # so there is no recompilation from shape guards.
+        # that dynamo traces cleanly; under native flatten the block graph keys on
+        # token count so there is no recompilation from shape guards.
         _compiling = torch.compiler.is_compiling()
 
         if not _compiling:
@@ -1226,15 +1226,13 @@ class Anima(nn.Module):
         # Stashed blocks_to_swap while paused (e.g. during eval). None = not paused.
         self._paused_blocks_to_swap: Optional[int] = None
 
-        # Static-shape training: pad all token sequences to this count to eliminate
-        # torch.compile recompilation across different bucket resolutions.
-        # Set via set_static_token_count(). None = disabled (original behavior).
-        self.static_token_count: Optional[int] = None
-        # When static_token_count is set, whether to zero-pad up to it (single
-        # static shape, one compiled graph) or run each bucket at its native
-        # token count (no padding → no static-pad attention leak; recompiles
-        # once per distinct bucket token-count instead). See set_static_token_count.
-        self.pad_to_static: bool = True
+        # Native-shape flattening for torch.compile. Flipped True by
+        # compile_blocks(): the forward flattens each bucket's patch sequence to
+        # a fake-5D (B, 1, seq_len, 1, D) shape so dynamo keys the block graph on
+        # token count alone (2 families) instead of guarding H and W separately
+        # (one graph per resolution). Eager forwards leave it False and skip the
+        # reshape — bit-exact to the flattened path, slightly cheaper.
+        self._native_flatten: bool = False
 
         self.build_patch_embed()
         self.build_pos_embed()
@@ -1295,7 +1293,7 @@ class Anima(nn.Module):
         # overhead. Flipped True only where the module becomes active —
         # ``load_pooled_text_proj`` (inference / DCW) and distill-mod training.
         # A plain Python bool set once at load: it guards once under compile (like
-        # ``pad_to_static``) and never toggles per-forward, so no recompile churn.
+        # ``_native_flatten``) and never toggles per-forward, so no recompile churn.
         self.enable_pooled_text_modulation = False
 
         # Modulation guidance runtime state as non-persistent buffers (zeros = off).
@@ -1351,80 +1349,66 @@ class Anima(nn.Module):
         for block in self.blocks:
             block.disable_gradient_checkpointing()
 
-    def set_static_token_count(self, count: Optional[int], pad: bool = True):
-        """Select constant-token-bucket mode and how it feeds torch.compile.
-
-        ``count`` is the static token target; all bucket resolutions must
-        produce <= ``count`` spatial tokens after patchification.  Passing
-        None disables the mode entirely (original behavior).
-
-        ``pad`` controls the compile/correctness tradeoff when ``count`` is set:
-
-        * ``pad=True`` (default) — zero-pad every bucket's patch sequence up to
-          ``count`` so all forwards share one shape and one compiled block graph.
-          Under flash this leaks the padded tokens into the real-token output
-          (the AdaLN shift + Q/K/V bias make padded rows non-zero into
-          attention; see bench/static_padding). flex masks it but is ~4.5x slower.
-        * ``pad=False`` — run each bucket at its native token count. No padding
-          → no leak (native flash matches the no-pad ground truth bit-for-bit).
-          Block-compile then traces one graph per distinct bucket token-count
-          (CONSTANT_TOKEN_BUCKETS collapses to 2: the 4032 and 4200 families),
-          a bounded one-time warmup.
-          Incompatible with ``compile_core`` / ``compile_mode='full'`` (that
-          path assumes a single shape-invariant block stack).
-        """
-        self.static_token_count = count
-        self.pad_to_static = pad
-
     def compile_blocks(self, backend: str = "inductor", mode: Optional[str] = None):
-        """torch.compile each block's _forward individually.
+        """Enable native-shape flattening and torch.compile each block's _forward.
 
-        Compiles _forward (the actual attention/MLP computation) rather than
-        forward (the checkpointing wrapper).  This is critical because
-        unsloth_checkpoint has @torch._disable_dynamo, which causes an
-        immediate graph break if forward itself is compiled — dynamo compiles
-        nothing useful but still checks shape guards, causing recompile storms.
+        Two coupled effects, both owned by this one call:
+
+        1. Sets ``self._native_flatten = True`` so the forward flattens every
+           bucket's patch sequence to a fake-5D ``(B, 1, seq_len, 1, D)`` shape.
+           This is what keys the block graph on token count alone — the shipped
+           ``CONSTANT_TOKEN_BUCKETS`` collapses to 2 token-count families (the
+           4032 and 4200 groups) — instead of guarding H and W separately (one
+           graph per resolution, ~24 buckets). Native shapes, no padding, so
+           flash self-attention sees no padded tokens (bit-exact to the eager
+           5D path; the gap=0 control of the retired pad-leak probe verified it).
+
+        2. Compiles ``_forward`` (the actual attention/MLP computation) rather
+           than ``forward`` (the checkpointing wrapper). This is critical because
+           unsloth_checkpoint has @torch._disable_dynamo, which causes an
+           immediate graph break if forward itself is compiled — dynamo compiles
+           nothing useful but still checks shape guards, causing recompile storms.
+
+        Also raises the dynamo cache-size budget to fit those token-count
+        families. ``2 * n + 8``: the ``2 *`` covers fwd+bwd sharing the one
+        ``_forward`` bytecode, the ``+ 8`` covers requires_grad / stride
+        specializations (the live path traces ~5 graphs, not 2). ``max()`` is
+        load-bearing — a caller that knows it has *more* distinct shapes (e.g.
+        the multi-resolution SPD distill) raises the limit higher beforehand and
+        this must not clobber it back down. This call's own budget only ever
+        covers the two full-res families.
 
         ``mode`` maps to torch.compile's inductor preset (e.g. ``reduce-overhead``
         to enable per-block CUDAGraphs). ``None`` leaves it unset (inductor default).
         """
+        self._native_flatten = True
+
+        # Local import: library.datasets.buckets does not import models, so
+        # importing it here (rather than at module top) avoids a circular import.
+        import torch._dynamo as _dynamo
+
+        from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+
+        n = len(
+            {
+                (h // self.patch_spatial) * (w // self.patch_spatial)
+                for h, w in CONSTANT_TOKEN_BUCKETS
+            }
+        )
+        _dynamo.config.cache_size_limit = max(
+            _dynamo.config.cache_size_limit, 2 * n + 8
+        )
+
         compile_kwargs = {"backend": backend, "dynamic": False}
         if mode is not None:
             compile_kwargs["mode"] = mode
-        for i, block in enumerate(self.blocks):
+        for block in self.blocks:
             block._forward = torch.compile(block._forward, **compile_kwargs)
         print(
-            f"Anima: compiled {len(self.blocks)} block._forward with "
-            f"backend={backend}, mode={mode}"
+            f"Anima: native_flatten on, {n} token-count families "
+            f"(cache_size_limit={_dynamo.config.cache_size_limit}); compiled "
+            f"{len(self.blocks)} block._forward with backend={backend}, mode={mode}"
         )
-
-    def compile_core(self, backend: str = "inductor", mode: Optional[str] = None):
-        """torch.compile the constant-shape block stack (``_run_blocks``).
-
-        Works with ``set_static_token_count``: the pre-blocks eager region
-        (patch/embed/static-pad/RoPE-pad/t_embedder/BlockMask construction)
-        hands off a shape-invariant bundle, so ``_run_blocks`` traces once
-        and a single CUDAGraph serves every bucket in CONSTANT_TOKEN_BUCKETS.
-        Post-blocks (unpad/final_layer/unpatchify) stay eager.
-
-        Requires ``static_token_count`` to be set, ``gradient_checkpointing``
-        off, and ``blocks_to_swap`` unset — the caller asserts these.
-        ``dynamic=False`` is safe because every input to ``_run_blocks`` is
-        shape-pinned by the pre-blocks eager region.
-        """
-        assert self.static_token_count is not None, (
-            "compile_core requires set_static_token_count() to be called first"
-        )
-        assert self.pad_to_static, (
-            "compile_core requires pad_to_static=True: _run_blocks is only "
-            "shape-invariant when sequences are padded to a single token count. "
-            "Use compile_blocks for the native (no-pad) multi-shape path."
-        )
-        compile_kwargs = {"backend": backend, "dynamic": False}
-        if mode is not None:
-            compile_kwargs["mode"] = mode
-        self._run_blocks = torch.compile(self._run_blocks, **compile_kwargs)
-        print(f"Anima: compiled _run_blocks with backend={backend}, mode={mode}")
 
     @property
     def device(self):
@@ -1601,15 +1585,15 @@ class Anima(nn.Module):
         attn_params,
         **block_kwargs,
     ) -> torch.Tensor:
-        """Constant-shape block stack — the compile target for compile_core.
+        """The block loop — the per-block compiled hot path (see compile_blocks).
 
-        Every input is shape-pinned by the eager pre-blocks region:
-        - ``x_padded``: ``(B, 1, static_token_count, 1, D)`` via flatten+pad
+        Inputs from the eager pre-blocks region:
+        - ``x_padded``: ``(B, 1, seq_len, 1, D)`` when native-flattened, else the
+          plain ``(B, T, H, W, D)`` grid (eager forwards skip the flatten)
         - ``t_embedding_B_T_D``: ``(B, 1, D)``
         - ``crossattn_emb``: ``(B, max_text_len, D)`` (padded to max_length)
-        - ``attn_params``: BlockMasks built with tensor-valued seq lens so
-          no per-bucket guards fire on the mask_mod closure
-        - ``block_kwargs["rope_cos_sin"]``: each ``(static_token_count, 1, 1, D_head)``
+        - ``attn_params``: attention params (no self-attn mask in native mode)
+        - ``block_kwargs["rope_cos_sin"]``: each ``(seq_len, 1, 1, D_head)``
         - ``block_kwargs["adaln_lora_B_T_3D"]``: ``(B, 1, 3, D)``
 
         Mod-guidance is applied via buffers on ``self`` (zero = off) so the
@@ -1697,62 +1681,26 @@ class Anima(nn.Module):
             w_offset=w_offset,
         )
 
-        # --- Static-shape padding: flatten, pad to fixed token count, reshape to fake-5D ---
-        # This makes ALL block inputs shape-identical across buckets, eliminating
-        # torch.compile recompilation.  The fake-5D shape (B, 1, target, 1, D) is
+        # --- Native-shape flattening: flatten 5D → fake-5D so the block graph
+        # keys on token count, not on H/W separately ---
+        # Enabled by compile_blocks(). The fake-5D shape (B, 1, seq_len, 1, D) is
         # compatible with existing Block code because rearrange("b t h w d -> b (t h w) d")
-        # with t=1, w=1 produces the same flat sequential order as the original.
-        _static_pad_info = None
-        if self.static_token_count is not None:
+        # with t=1, w=1 produces the same flat sequential order as the original,
+        # so the block stack sees a flat (B,1,L,1,D) sequence keyed solely by
+        # token count. Otherwise dynamo guards on H and W separately and recompiles
+        # per *resolution* (24 buckets) instead of per token-count (2 families).
+        # No padding → native flash, bit-exact to the eager 5D path (the gap=0
+        # control of the retired pad-leak probe verified it). Eager forwards leave
+        # _native_flatten False and skip the reshape entirely.
+        _native_flatten_info = None
+        if self._native_flatten:
             B_s, T_s, H_s, W_s, D_s = x_B_T_H_W_D.shape
             seq_len = T_s * H_s * W_s
-            # pad_to_static: pad up to the global target so every bucket shares
-            #   one shape → one compiled block graph (but the pad leaks into
-            #   flash self-attention; see bench/static_padding).
-            # else (no-pad): target = seq_len, so we *flatten only* (zero pad).
-            #   This is the key to the recompile budget: the block stack must see
-            #   a flat (B,1,L,1,D) sequence keyed solely by token count, otherwise
-            #   dynamo guards on H and W separately and recompiles per *resolution*
-            #   (24 buckets) instead of per token-count (2 distinct). Bit-exact to
-            #   native — it's the gap=0 control the leak probe verifies.
-            target = self.static_token_count if self.pad_to_static else seq_len
-            # In pad mode a bucket larger than the target would make
-            # (target - seq_len) negative, and F.pad would *truncate* real
-            # tokens silently. The shipped CONSTANT_TOKEN_BUCKETS 4200 family
-            # exceeds the legacy 4096 target — guard so a stale static_token_count
-            # fails loudly instead of corrupting the latent. (No-op in native mode.)
-            if self.pad_to_static and seq_len > target:
-                raise ValueError(
-                    f"bucket has {seq_len} tokens > static_token_count={target}; "
-                    "padding would truncate. Raise static_token_count or use "
-                    "no_static_pad (native shapes)."
-                )
-            _static_pad_info = (T_s, H_s, W_s, seq_len)
+            _native_flatten_info = (T_s, H_s, W_s, seq_len)
 
-            # Flatten 5D → 2D and (in pad mode) pad sequence to target length.
-            # The pad is gated on the static Python bool `self.pad_to_static`,
-            # NOT on `target - seq_len > 0`: under torch.compile (full/compile_core
-            # mode, which only runs with pad_to_static=True) seq_len is a SymInt,
-            # so a shape-dependent branch would recompile per bucket — the concern
-            # the original "always pad" comment guarded against. Keying on the
-            # static bool specializes once. In native mode (pad_to_static=False)
-            # target == seq_len by construction, so the pad was a pure no-op copy
-            # of x (~16 MiB) + the two RoPE tensors every forward; skip it.
+            # Flatten 5D → 2D, then reshape to fake-5D: (B, 1, seq_len, 1, D).
             x_B_T_H_W_D = x_B_T_H_W_D.flatten(1, 3)
-            if self.pad_to_static:
-                x_B_T_H_W_D = torch.nn.functional.pad(
-                    x_B_T_H_W_D, (0, 0, 0, target - seq_len)
-                )
-            # Reshape to fake-5D: (B, 1, target, 1, D)
             x_B_T_H_W_D = x_B_T_H_W_D.unsqueeze(1).unsqueeze(3)
-
-            # Pad RoPE cos/sin: each (L, 1, 1, D_head) → (target, 1, 1, D_head)
-            if self.pad_to_static and rope_cos_sin is not None:
-                pad = (0, 0, 0, 0, 0, 0, 0, target - rope_cos_sin[0].shape[0])
-                rope_cos_sin = (
-                    torch.nn.functional.pad(rope_cos_sin[0], pad),
-                    torch.nn.functional.pad(rope_cos_sin[1], pad),
-                )
 
         # Cast RoPE cos/sin to the block compute dtype once. Without this, every
         # block's apply_rotary_pos_emb_qk re-materializes the fp32 cache in bf16.
@@ -1827,42 +1775,12 @@ class Anima(nn.Module):
                 device=x_B_T_H_W_D.device,
             )
 
-        # Pre-compute self-attention BlockMask for static-shape mode (flex only).
-        # IMPORTANT: always create the mask (even when seq_len == target, i.e. no
-        # actual padding) so that the compiled _forward always takes the same
-        # code path.  A None-vs-BlockMask control-flow difference triggers dynamo
-        # recompilation; with 5 bucket token-counts × 2 requires_grad states the
-        # shared code cache (all blocks use the same _forward bytecode) exceeds
-        # the recompile limit and falls back to eager, losing flex_attention fusion.
-        if (
-            _static_pad_info is not None
-            and self.pad_to_static
-            and self.attn_mode == "flex"
-            and attention_dispatch.create_block_mask is not None
-        ):
-            # Use a tensor instead of a Python int so dynamo tracks it
-            # symbolically rather than guarding on the exact value.  A plain
-            # int in the mask_mod closure causes a recompile per bucket size.
-            _sa_seq_len = torch.tensor(
-                _static_pad_info[3], dtype=torch.int64, device=x_B_T_H_W_D.device
-            )
-            _sa_target = self.static_token_count
-            _sa_B = x_B_T_H_W_D.shape[0]
+        # No self-attention pad-mask: native shapes never have padded KV
+        # positions, so attn_params.selfattn_block_mask stays None (the legacy
+        # pad-to-static path masked padded positions; that path is gone).
 
-            def _selfattn_mask_mod(b, h, q_idx, kv_idx):
-                return kv_idx < _sa_seq_len
-
-            attn_params.selfattn_block_mask = attention_dispatch.create_block_mask(
-                _selfattn_mask_mod,
-                _sa_B,
-                None,
-                _sa_target,
-                _sa_target,
-                device=x_B_T_H_W_D.device,
-            )
-
-        # Block stack runs in _run_blocks — a split point so `compile_core`
-        # can wrap just the shape-invariant region while pre/post stay eager.
+        # Block stack runs in _run_blocks — a split point kept so pre/post-block
+        # regions stay eager while the block loop is the compiled hot path.
         x_B_T_H_W_D = self._run_blocks(
             x_B_T_H_W_D,
             t_embedding_B_T_D,
@@ -1871,12 +1789,12 @@ class Anima(nn.Module):
             **block_kwargs,
         )
 
-        # --- Static-shape: strip padding and restore original 5D shape ---
+        # --- Native flatten: restore the original 5D shape ---
         # Delegated to a @torch.compiler.disable'd helper so the bucket-
         # dependent tuple (T_s, H_s, W_s, seq_len) never enters the compile
-        # zone. See _unpad_static_shape for rationale.
-        if _static_pad_info is not None:
-            x_B_T_H_W_D = _unpad_static_shape(x_B_T_H_W_D, _static_pad_info)
+        # zone. See _unflatten_native_shape for rationale.
+        if _native_flatten_info is not None:
+            x_B_T_H_W_D = _unflatten_native_shape(x_B_T_H_W_D, _native_flatten_info)
 
         # Unconditional: zero buffers collapse to identity when guidance is off.
         t_emb_final = t_embedding_B_T_D + (

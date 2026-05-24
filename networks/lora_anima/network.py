@@ -1367,7 +1367,7 @@ class LoRANetwork(torch.nn.Module):
         via the shared reference; modules with local defaults are already
         neutral. Never set to None: the always-a-Tensor invariant is what
         keeps the adapter forward free of a None-vs-Tensor guard under
-        ``compile_mode=full``.
+        ``torch.compile``.
         """
         shared = getattr(self, "_shared_timestep_mask", None)
         if shared is not None:
@@ -1472,7 +1472,7 @@ class LoRANetwork(torch.nn.Module):
 
         Never set to None: ``_sigma`` stays a Tensor so the unconditional
         sinusoidal path in ``_compute_gate`` has no None-vs-Tensor guard to
-        recompile on under ``compile_mode=full``. Used in eval / validation
+        recompile on under ``torch.compile``. Used in eval / validation
         and by inference teardown (``clear_hydra_sigma``). Zero in place to
         keep the cudagraph data pointer stable (see ``set_sigma`` note).
 
@@ -1830,7 +1830,7 @@ class LoRANetwork(torch.nn.Module):
         outside the compiled region (the flow-matching sampler's ``timesteps``,
         not a pool-allocated intermediate), and keeping it a Tensor at all
         times is what lets the adapter ``_compute_gate`` drop the None-vs-
-        Tensor guard under ``compile_mode=full``.
+        Tensor guard under ``torch.compile``.
 
         Safe to call unconditionally — consumers (balance loss, router stats)
         read ``_last_gate`` only within the step that wrote it.

@@ -17,7 +17,7 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 4000
+iterations = 2000
 batch_size = 1
 seed = 42
 compile_inductor_mode = "reduce-overhead"
@@ -26,6 +26,13 @@ compile_inductor_mode = "reduce-overhead"
 rank = 64
 alpha = 64
 attn_mode = "flash"
+# SmoothQuant-style per-channel input pre-scaling on the LoRA down projection
+# (vendored stats: networks/calibration/channel_stats.safetensors). 0.0 = off /
+# paper-faithful; 0.5 = sqrt balance; 1.0 = full flatten. inv_scale is baked into
+# the saved weights at write time, so inference needs no extra plumbing. Only ever
+# bench-validated on plain identity-LoRA — treat as experimental on a distill
+# objective and A/B against 0.0. CLI override: --channel_scaling_alpha.
+channel_scaling_alpha = 0.5
 
 # SPD schedule — the segment geometry this LoRA learns and MUST infer with.
 # Ascending resolution scales (last must be 1.0) and the σ thresholds at which
@@ -41,17 +48,17 @@ label = "single_0.5_sigma0.7"
 sigma_jitter = 0.0
 
 [optim]
-lr = 5e-5
+lr = 2e-5
 weight_decay = 0.0
 grad_clip = 1.0
 # Micro-steps accumulated per optimizer step; the SPD stage is resampled each
 # one so every update mixes low-res and full-res grads (cancels the
 # regime-switching noise). 1 = off. `iterations` counts optimizer steps, so
 # wall-clock scales ~linearly. 4 is the suggested starting point.
-grad_accum = 4
+# grad_accum = 4
 warmup = 0.02           # ratio of iterations (int >=1 → absolute steps)
 
 [io]
-save_every = 1000
+save_every = 2000
 log_interval = 2
 log_dir = "output/logs/spd"

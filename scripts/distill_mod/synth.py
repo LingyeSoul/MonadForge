@@ -228,18 +228,14 @@ def generate_synthetic_latents(
         model.move_to_device_except_swap_blocks(device)
     else:
         model.to(device)
-    # Native-shape buckets: each sample is denoised at its real latent token
-    # count (no static padding → no flash pad-leak baked into the teacher
-    # latents). The value here is just a non-None sentinel enabling the mode;
-    # every forward reshapes to its own seq_len.
-    model.set_static_token_count(4096, pad=False)
     model.eval()
 
-    # Native-shape per-block compile: traces one block graph per distinct latent
-    # token count in `pairs`. Raise the dynamo cache so every distinct shape
-    # traces instead of falling back to eager mid-warmup. (compile_core, the old
-    # single-CUDAGraph path, required static padding and is gone — see
-    # docs/static-pad migration.)
+    # compile_blocks turns on native-shape flattening (each sample denoised at
+    # its real latent token count, no padding → no flash pad-leak baked into the
+    # teacher latents) and traces one block graph per distinct token count in
+    # `pairs`. The pool spans more than the 2 CONSTANT_TOKEN_BUCKETS families, so
+    # pre-raise the dynamo cache (compile_blocks' max() won't lower it) to trace
+    # every distinct shape instead of falling back to eager mid-warmup.
     if do_compile and blocks_to_swap == 0:
         import torch._dynamo as _dynamo
 

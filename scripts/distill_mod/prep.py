@@ -170,8 +170,8 @@ def main() -> None:
     parser.add_argument(
         "--buckets",
         type=str,
-        default="1200x896",
-        # default=",".join(_DEFAULT_SYNTH_BUCKETS),
+        # default="1200x896",
+        default=",".join(_DEFAULT_SYNTH_BUCKETS),
         help=(
             "Comma-separated (H_pix x W_pix) resolution allowlist for synthesis. "
             "Default = DCW_ASPECT_NAMES (top-5 by frequency in "
@@ -184,7 +184,7 @@ def main() -> None:
     parser.add_argument(
         "--n_per_bucket",
         type=int,
-        default=10,
+        default=1000,
         help=(
             "Cap synthesized stems per bucket (None = use every stem in the "
             "allowlist's buckets). With --shuffle_seed, picks deterministically "
@@ -205,8 +205,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Disable torch.compile of the DiT block stack. Compile is on by "
-            "default (one CUDAGraph across every bucket via set_static_token_count); "
-            "auto-skipped when --blocks_to_swap > 0."
+            "default (compile_blocks: native-shape flatten, one block graph per "
+            "token-count family); auto-skipped when --blocks_to_swap > 0."
         ),
     )
     parser.add_argument(

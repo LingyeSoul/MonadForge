@@ -131,32 +131,30 @@ A naive implementation lets this shape propagate through the DiT. Every distinct
 
 ### The fix: collapse to a few exact token counts, run them natively
 
-`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 (= 63·64) and 4200 (= 60·70)**. Every bucket resolution *exactly* fills its family's count, so there is **zero intra-bucket padding by construction**. The default path (`static_pad = false` in `configs/base.toml`) feeds each forward at its native token count, so dynamo guards only on the token count — and the whole table collapses to **two** distinct counts → two compiled block graphs.
+`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 (= 63·64) and 4200 (= 60·70)**. Every bucket resolution *exactly* fills its family's count, so there is **zero intra-bucket padding by construction**. Native shapes are the only mode: every forward runs at its real token count, so dynamo guards only on the token count — and the whole table collapses to **two** distinct counts → two compiled block graphs.
 
-`library/anima/models.py`'s `forward_mini_train_dit` still flattens `(B, T, H, W, D)` into a *fake-5D* `(B, 1, L, 1, D)` tensor the block code already knows how to consume — but with `pad=False` the target `L` is just the real `seq_len`, so the `F.pad` is a no-op:
+When `compile_blocks` is active, `library/anima/models.py`'s forward flattens `(B, T, H, W, D)` into a *fake-5D* `(B, 1, seq_len, 1, D)` tensor the block code already knows how to consume:
 
 ```python
-target = seq_len if not self.pad_to_static else self.static_token_count
 B, T, H, W, D = x.shape
 seq_len = T * H * W
 
-x = x.flatten(1, 3)                                   # (B, seq_len, D)
-x = F.pad(x, (0, 0, 0, target - seq_len))             # no-op when pad=False
-x = x.unsqueeze(1).unsqueeze(3)                       # (B, 1, target, 1, D)
+x = x.flatten(1, 3)              # (B, seq_len, D)
+x = x.unsqueeze(1).unsqueeze(3)  # (B, 1, seq_len, 1, D)
 ```
 
 The fake-5D reshape is what makes the block stack key on token count alone rather than guarding `H` and `W` separately (which would recompile *per resolution*, 24 graphs instead of 2):
 
-> The fake-5D shape `(B, 1, target, 1, D)` is compatible with existing Block code because `rearrange("b t h w d -> b (t h w) d")` with `t=1, w=1` produces the same flat sequential order as the original.
+> The fake-5D shape `(B, 1, seq_len, 1, D)` is compatible with existing Block code because `rearrange("b t h w d -> b (t h w) d")` with `t=1, w=1` produces the same flat sequential order as the original.
+
+Eager (uncompiled) forwards leave `_native_flatten = False` and skip the reshape entirely — bit-exact, slightly cheaper.
 
 ### Why not just pad everything to one shape?
 
-The original design did exactly that — pad every bucket up to a single static target (`static_token_count`) for *one* graph. That path still exists behind `static_pad = true`, but it is **no longer the default**, for two reasons:
+The original design did exactly that — pad every bucket up to a single static target for *one* graph (`set_static_token_count(count, pad=True)` + `compile_core`). That path was **removed 2026-05-24**, for two reasons:
 
-- **It can't run this table.** The 4200 family exceeds the legacy 4096 cap and would truncate (guarded in `models.py`).
-- **The padding isn't free.** Under `attn_mode="flash"` (no padding mask) the zero-padded tokens are *not* harmless attention sinks — AdaLN shift + Q/K/V bias leak them into the real-token output (up to ~6.5% rel-L2 on the 4032-token buckets). The native path has no pad to leak and matches the no-pad ground truth bit-for-bit. See `docs/optimizations/no_static_pad.md` and `bench/static_padding/`.
-
-(Under `flex` attention a `BlockMask` *does* zero padded tokens out of softmax, with `_sa_seq_len` carried as a 0-dim tensor so dynamo tracks it symbolically rather than recompiling per bucket — but flex is not the training default, and flash is where the leak bites.)
+- **It can't run this table.** The 4200 family exceeds the legacy 4096 cap and would truncate.
+- **The padding isn't free.** Under `attn_mode="flash"` (no padding mask) the zero-padded tokens are *not* harmless attention sinks — AdaLN shift + Q/K/V bias leak them into the real-token output (up to ~6.5% rel-L2 on the 4032-token buckets). Native shapes have no pad to leak and match the no-pad ground truth bit-for-bit.
 
 ### Cross-attention side: full-length KV
 
@@ -190,8 +188,8 @@ Five more rules the code follows:
 
 ```python
 # Do NOT pre-compile flex_attention here. When blocks are individually
-# compiled (static_token_count mode) or the full model is compiled,
-# the outer torch.compile already traces into _flex_attention and fuses it.
+# compiled (compile_blocks / native-flatten mode), the outer torch.compile
+# already traces into _flex_attention and fuses it.
 # Pre-compiling causes nested compilation which exhausts dynamo's
 # recompile limit (grad_mode guard × mask variants) and falls back to
 # the slow unfused path.

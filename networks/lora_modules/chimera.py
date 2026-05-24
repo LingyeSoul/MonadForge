@@ -426,7 +426,7 @@ class ChimeraHydraLoRAModule(BaseLoRAModule):
         if self.training:
             # Plain STORE_ATTR — see HydraLoRAModule.forward for the
             # rationale; @compiler.disable would force a graph break and
-            # explode saved-for-backward memory under compile_mode=full.
+            # explode saved-for-backward memory under torch.compile.
             self._last_gate = self._full_gate(pi_c)
 
         # λ application + T-LoRA mask (content only). Freq branch keeps

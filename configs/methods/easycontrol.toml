@@ -67,5 +67,3 @@ easycontrol_cond_noise_max = 0.3
 blocks_to_swap = 0
 gradient_checkpointing = true
 unsloth_offload_checkpointing = true
-
-# compile_mode = "full"

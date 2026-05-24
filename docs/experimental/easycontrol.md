@@ -132,11 +132,12 @@ trainable count.
 ## `cond_token_count`: cond static-pad budget
 
 Cond is static-padded to `cond_token_count` so block compute sees a single
-S_c across all batches and buckets (compile-friendly). The default is **4096**
-to match Anima's `static_token_count = 4096` constant-token bucketing — for
-the common ref==target setup (where cond is the SAME cached VAE latent used
-by target), cond's native tokens are ≤ 4096 by bucket design and just pad to
-4096 with no downsample needed.
+S_c across all batches and buckets (compile-friendly). This is EasyControl's
+own cond-stream padding, independent of the DiT's native-shape flatten. The
+default is **4096**; for the common ref==target setup (where cond is the SAME
+cached VAE latent used by target) cond's native tokens just pad up to it.
+(Note: the 4200-token bucket family exceeds 4096 — raise `cond_token_count`
+to 4200 if you train on those buckets.)
 
 | `cond_token_count` | What you get                                                 | Memory cost vs no-cond baseline |
 | -----------------: | ------------------------------------------------------------ | -------------------------------: |

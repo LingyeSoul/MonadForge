@@ -42,10 +42,10 @@ output_name = "anima_all"
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
 
-# compile_mode = "full"
-# compile_inductor_mode = "reduce-overhead"
+compile_inductor_mode = "reduce-overhead"
 
 channel_scaling_alpha = 0.5
+max_data_loader_n_workers=1
 
 # -------------
 # Ortho-lora
@@ -60,7 +60,7 @@ min_rank = 16
 alpha_rank_scale = 1.0
 
 [[datasets]]
-validation_split_num = 0
+validation_split_num = 8
 
 # -------------
 # "shared_A" and route_per_layer=false -> hydralora

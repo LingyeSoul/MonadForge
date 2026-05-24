@@ -620,8 +620,8 @@ class BaseDataset(torch.utils.data.Dataset):
         """Pin one batch of the highest-token-count bucket to the front of the
         epoch order.
 
-        With native-shape buckets (``static_pad = false``) each distinct token
-        count traces its own ``torch.compile`` block graph, and the largest
+        With native-shape buckets each distinct token count traces its own
+        ``torch.compile`` block graph, and the largest
         bucket also carries the biggest activations. Front-loading it forces
         that worst-case graph compile + peak allocation onto step 0, so a
         too-tight VRAM budget fails fast at start instead of OOMing mid-epoch

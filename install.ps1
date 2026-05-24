@@ -145,13 +145,22 @@ Write-Host ""
 Write-Host "[OK] installed to $Dir\" -ForegroundColor Green
 Write-Host @"
 
-Next steps:
-  cd $Dir
-  hf auth login            # authenticate for gated model downloads
-  python tasks.py download-models   # DiT + Qwen3 text encoder + VAE into models\
+The GUI is opening now. To finish setup from inside it:
+  - authenticate for gated downloads (run 'hf auth login' in a terminal once)
+  - use the Models dialog to fetch the DiT + Qwen3 text encoder + VAE
 
-Then launch the GUI from the "Anima LoRA GUI" desktop shortcut,
-or run:  python tasks.py gui
+Re-launch later from the "Anima LoRA GUI" desktop shortcut,
+or run:  cd $Dir; python tasks.py gui
 
 Update later with:  python tasks.py update
 "@
+
+# 7. launch the GUI (best-effort, detached — never abort a finished install) -
+# Start-Process so the installer returns immediately with the message above
+# visible; a launch failure on a headless box just falls back to the shortcut.
+Say 'launching the Anima LoRA GUI'
+try {
+  Start-Process -FilePath 'uv' -ArgumentList 'run', 'python', 'tasks.py', 'gui' -WorkingDirectory (Resolve-Path '.').Path
+} catch {
+  Say 'GUI launch skipped; start it later with: python tasks.py gui'
+}

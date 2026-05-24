@@ -129,7 +129,7 @@ Far heavier than vanilla LoRA at the same rank because the per-expert `(down, up
 | `balance_loss_warmup_ratio` | 0.4 | Linear ramp over first 40% of training. |
 | `fera_fecl_weight` | 0.0 | FECL aux loss weight (paper used 0.1–0.2). Activates the base-pass forward inside the loss composer — 2× per-step forward cost. Default 0 = disabled. |
 | `router_targets` | regex over qkv/q/kv/output/MLP | Which adapted Linears feed the routing-weight broadcast. Restrict to ablate. |
-| `compile_mode` | `"full"` | The `linalg.solve` inside the ortho Cayley path may force a graph break per StackedExperts module; bench compile-on vs compile-off before relying on it. |
+| `torch_compile` | `true` | The `linalg.solve` inside the ortho Cayley path may force a graph break per StackedExperts module under `compile_blocks`; bench compile-on vs compile-off before relying on it. |
 
 ## σ_low rule (why not the paper's κ)
 

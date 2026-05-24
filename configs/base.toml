@@ -57,14 +57,10 @@ skip_cache_check = true
 vae_chunk_size = 64
 vae_disable_cache = true
 masked_loss = true
-torch_compile = true
-static_token_count = 4200          # enables constant-token bucketing (any non-None value does).
-                                   # Under static_pad=false the value itself is unused — each
-                                   # forward runs at its bucket's real token count, not this number.
-                                   # (Only a pad target when static_pad=true, which this table can't use.)
-static_pad = false                 # native shapes (--no_static_pad): one block graph per distinct
-                                   # token count (2: the 4032/4200 families), zero pad, no flash
-                                   # static-pad leak. Pad mode (true) can't run this table — 4200 > 4096.
+torch_compile = true               # native constant-token bucketing is the only mode; when
+                                   # torch_compile is on, compile_blocks() turns on native-shape
+                                   # flattening (one block graph per token-count family: 4032/4200)
+                                   # and compiles each block. No padding, no flash static-pad leak.
 attn_mode = "flash"
 save_precision= "bf16"
 use_custom_down_autograd = true

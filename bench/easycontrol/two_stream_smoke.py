@@ -54,7 +54,6 @@ def build_small_dit(device, dtype):
         adaln_lora_dim=256,
         attn_mode="flash",
     )
-    dit.set_static_token_count(4096)
     dit = dit.to(device=device, dtype=dtype)
     dit.eval()  # frozen
     for p in dit.parameters():

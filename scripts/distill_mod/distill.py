@@ -365,17 +365,14 @@ def main():
     else:
         model.to(device)
 
-    # Native-shape buckets: every aspect bucket runs at its real token count
-    # (no static padding → no flash pad-leak into the distillation target). The
-    # value here is just a non-None sentinel enabling the mode; each forward
-    # reshapes to its own seq_len.
-    model.set_static_token_count(4096, pad=False)
-
-    # Compile individual block._forward for speedup. unsloth_checkpoint wraps
-    # Block.forward with @torch._disable_dynamo, so we compile _forward (the
-    # inner computation) not forward. Native mode traces one block graph per
-    # distinct latent token count; raise the dynamo cache so every distinct
-    # shape traces instead of falling back to eager mid-warmup.
+    # Compile individual block._forward for speedup. compile_blocks turns on
+    # native-shape flattening (every aspect bucket runs at its real token count,
+    # no padding → no flash pad-leak into the distillation target) and compiles
+    # _forward (the inner computation) not forward — unsloth_checkpoint wraps
+    # Block.forward with @torch._disable_dynamo. This pool's latents span more
+    # than the 2 CONSTANT_TOKEN_BUCKETS families, so pre-raise the dynamo cache
+    # (compile_blocks' max() won't lower it) to trace every distinct token count
+    # instead of falling back to eager mid-warmup.
     if args.torch_compile:
         import torch._dynamo as _dynamo
 

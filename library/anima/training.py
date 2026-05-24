@@ -360,24 +360,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "",
     )
     parser.add_argument(
-        "--static_token_count",
-        type=int,
-        default=None,
-        help="Pad all forward passes to this many visual tokens (e.g. 4096). "
-        "Enables constant-shape buckets and eliminates torch.compile recompilation.",
-    )
-    parser.add_argument(
-        "--no_static_pad",
-        action="store_false",
-        dest="static_pad",
-        help="With --static_token_count set, run each bucket at its native token "
-        "count instead of zero-padding to the target. Removes the flash static-pad "
-        "leak (bench/static_padding) at the cost of one block recompile per distinct "
-        "bucket token-count (2 with the shipped 4032/4200 buckets). This is the "
-        "base.toml default. Incompatible with --compile_mode full.",
-    )
-    parser.set_defaults(static_pad=True)
-    parser.add_argument(
         "--attn_softmax_scale",
         type=float,
         default=None,

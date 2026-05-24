@@ -47,7 +47,6 @@ ip_image_drop_p = 0.1
 caption_dropout_rate = 0.2
 
 blocks_to_swap = 0
-compile_mode = "full"
 
 use_cmmd = false
 

@@ -197,7 +197,7 @@ class HydraLoRAModule(BaseLoRAModule):
         # σ / FEI / routing-weights placeholders: always-a-Tensor invariant +
         # pointer-stable buffers (see router_state.py). Routes through the
         # registration helpers so the cat / branch in ``_compute_gate`` runs
-        # unconditionally — no None-vs-Tensor guard under compile_mode=full.
+        # unconditionally — no None-vs-Tensor guard under torch.compile.
         _register_sigma_feature_cache(self, self.sigma_feature_dim)
         _register_fei_feature_cache(self, self.fei_feature_dim)
         if self.use_global_router:
@@ -412,7 +412,7 @@ class HydraLoRAModule(BaseLoRAModule):
         if self.training:
             # Plain STORE_ATTR (NOT @compiler.disable): a disabled helper
             # forces a graph break per LoRA forward and explodes
-            # saved-for-backward memory under compile_mode=full (observed
+            # saved-for-backward memory under torch.compile (observed
             # OOM at 56 MoE + 140 OrthoLoRA modules on T4-class budget).
             self._last_gate = gate
 

@@ -12,8 +12,8 @@ of identical transformer blocks. Compiling each block separately:
 * is much less likely to hit a graph break or recompile that silently falls
   back to eager, because each block is a small, regular subgraph.
 
-This mirrors the anima_lora training/inference default (``--compile_mode
-blocks``), which compiles each block's ``_forward`` for the same reasons.
+This mirrors anima_lora's training/inference behavior, which compiles each
+block's ``_forward`` (``DiT.compile_blocks``) for the same reasons.
 
 Mechanically this is exactly what ComfyUI core already supports via
 ``set_torch_compile_wrapper(model, keys=[...])`` — it ``torch.compile``\\s each

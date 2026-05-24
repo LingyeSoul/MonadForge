@@ -129,4 +129,3 @@ gradient_accumulation_steps = 2
 # the GPU alongside the DiT. blocks_to_swap=12 leaves headroom for the live
 # PE forward without disturbing the DiT-side memory budget.
 blocks_to_swap = 0
-# compile_mode = "full"

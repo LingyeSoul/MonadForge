@@ -9,12 +9,11 @@ import numpy as np
 # many near-square→elongated patch grids — and crucially every bucket *exactly*
 # fills its token count, so there is zero intra-bucket padding by construction.
 #
-# This table is designed for the native (no_static_pad) path: it collapses to
-# just TWO distinct token counts → two compiled block graphs, and removes the
-# flash static-pad leak entirely (there is no pad to leak). It is NOT usable
-# with pad-to-static@4096 — the 4200 family exceeds 4096 and would truncate;
-# base.toml therefore defaults `static_pad = false`. The rope per-axis cap is
-# 256 patches (max_img/patch_spatial); the largest dim here is 2016px → 126.
+# This table is designed for native shapes (the only mode): it collapses to
+# just TWO distinct token counts → two compiled block graphs (via
+# compile_blocks' flatten), with no padding and therefore no flash pad leak.
+# The rope per-axis cap is 256 patches (max_img/patch_spatial); the largest dim
+# here is 2016px → 126.
 #
 # Two families instead of one because a single token count's divisors near √N
 # are sparse (4032 alone jumps aspect 1.29→1.75); interleaving 4032 and 4200

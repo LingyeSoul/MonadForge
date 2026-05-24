@@ -553,47 +553,13 @@ class AnimaTrainer:
             attn_softmax_scale=attn_softmax_scale,
         )
 
-        # Static token count (constant-shape buckets for torch.compile)
-        if getattr(args, "static_token_count", None) is not None:
-            static_pad = getattr(args, "static_pad", True)
-            model.set_static_token_count(args.static_token_count, pad=static_pad)
-            if not static_pad and getattr(args, "compile_mode", "blocks") == "full":
-                raise ValueError(
-                    "--no_static_pad is incompatible with --compile_mode full: "
-                    "the native (unpadded) block stack is not shape-invariant. "
-                    "Use --compile_mode blocks (the default)."
-                )
-            if (
-                args.torch_compile
-                and getattr(args, "compile_mode", "blocks") == "blocks"
-            ):
-                if not static_pad:
-                    # Native mode traces one block graph per distinct bucket
-                    # token-count; fwd+bwd share the one `_forward` bytecode, so
-                    # give dynamo headroom or it falls back to eager mid-warmup.
-                    import torch._dynamo as _dynamo
-
-                    from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
-
-                    n_shapes = len(
-                        {(h // 16) * (w // 16) for h, w in CONSTANT_TOKEN_BUCKETS}
-                    )
-                    _dynamo.config.cache_size_limit = max(
-                        _dynamo.config.cache_size_limit, 2 * n_shapes + 8
-                    )
-                    logger.info(
-                        "no_static_pad: %d distinct bucket token-counts; "
-                        "cache_size_limit=%d",
-                        n_shapes,
-                        _dynamo.config.cache_size_limit,
-                    )
-                model.compile_blocks(
-                    args.dynamo_backend,
-                    mode=getattr(args, "compile_inductor_mode", None),
-                )
-            logger.info(
-                f"static_token_count={args.static_token_count} "
-                f"pad_to_static={static_pad}"
+        # Native-shape flattening + per-block torch.compile. compile_blocks turns
+        # on the flatten (one block graph per token-count family: 4032/4200) and
+        # raises the dynamo cache-size budget itself.
+        if args.torch_compile:
+            model.compile_blocks(
+                args.dynamo_backend,
+                mode=getattr(args, "compile_inductor_mode", None),
             )
 
         # Store unsloth preference so that when the base trainer calls
@@ -1516,8 +1482,10 @@ class AnimaTrainer:
             train_dataset_group, val_dataset_group = (
                 config_util.generate_dataset_group_by_blueprint(
                     blueprint.dataset_group,
-                    constant_token_buckets=getattr(args, "static_token_count", None)
-                    is not None,
+                    # Native constant-token bucketing is the only mode: the sampler
+                    # buckets into CONSTANT_TOKEN_BUCKETS (the 4032/4200 families)
+                    # so compile_blocks' flatten keys on token count, not resolution.
+                    constant_token_buckets=True,
                 )
             )
 
@@ -1898,41 +1866,6 @@ class AnimaTrainer:
                 if t_enc is None:
                     continue
                 t_enc.eval()
-
-        # compile_mode='full': narrow torch.compile to _run_blocks (the constant-
-        # shape block stack). Pre-blocks (patch/embed/static-pad/RoPE-pad/t_embedder/
-        # BlockMask) and post-blocks (unpad/final_layer/unpatchify) stay eager --
-        # their shapes vary per CONSTANT_TOKEN_BUCKETS entry, so wrapping them
-        # would force one CUDAGraph per bucket. Pinning the compile boundary to
-        # the shape-invariant region yields a single CUDAGraph across all buckets.
-        if args.torch_compile and getattr(args, "compile_mode", "blocks") == "full":
-            assert not args.gradient_checkpointing, (
-                "compile_mode='full' is incompatible with gradient checkpointing"
-            )
-            assert not self.is_swapping_blocks, (
-                "compile_mode='full' is incompatible with block swap"
-            )
-            inductor_mode = getattr(args, "compile_inductor_mode", None)
-            # Compile on the unwrapped DiT so the instance-bound method sticks
-            # regardless of accelerator wrapping (DDP/etc resolve self._run_blocks
-            # against the underlying module's __dict__).
-            accelerator.unwrap_model(unet).compile_core(
-                backend=args.dynamo_backend, mode=inductor_mode
-            )
-            logger.info(
-                f"compile_core: _run_blocks compiled "
-                f"(backend={args.dynamo_backend}, mode={inductor_mode})"
-            )
-
-            # Also compile the network's hot path when it exposes one (currently
-            # only the postfix cond+ortho path — `_compute_ortho_cond_postfix`).
-            # No-op for everything else. Shape-static once bucketing is fixed,
-            # so dynamic=False is safe (same justification as compile_core).
-            net_unwrapped = accelerator.unwrap_model(network)
-            if hasattr(net_unwrapped, "compile_hot_path"):
-                net_unwrapped.compile_hot_path(
-                    backend=args.dynamo_backend, mode=inductor_mode
-                )
 
         accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 

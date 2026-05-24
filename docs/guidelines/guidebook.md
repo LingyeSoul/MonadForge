@@ -593,6 +593,5 @@ make update -- --dry-run # Preview which files would change
 - [`docs/methods/reft.md`](../methods/reft.md) — ReFT representation editing
 - [`docs/experimental/postfix.md`](../experimental/postfix.md) — Postfix (cond+ortho)
 - [`docs/optimizations/cuda132.md`](../optimizations/cuda132.md) — How to upgrade to CUDA 13.2
-- [`docs/optimizations/full_model_cudagraph.md`](../optimizations/full_model_cudagraph.md) — `compile_mode=full` + CUDAGraph invariants and debugging
 
 Questions and bug reports are welcome on GitHub Issues. Happy training!

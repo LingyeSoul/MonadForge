@@ -248,7 +248,7 @@ python inference.py \
 | Cached text encoder outputs | ✅ | Text path is unchanged — works exactly as in LoRA training. |
 | `caption_shuffle_variants` | ✅ | Image conditioning is independent of caption shuffling. |
 | Gradient checkpointing | ✅ | Patched cross-attn lives on the module instance; recompute reads the same stashed K/V. |
-| `torch.compile` (`static_token_count=4096`) | ✅ | Patched forward is regular Python; SDPA inlines under compile. Constant-token bucketing applies as usual. |
+| `torch.compile` (`compile_blocks`) | ✅ | Patched forward is regular Python; SDPA inlines under compile. Native-shape constant-token bucketing applies as usual. |
 | Block swapping | ✅ (irrelevant) | DiT is frozen; `blocks_to_swap=0` is the default. |
 | Modulation guidance | ✅ orthogonal | Modulation = AdaLN path; IP-Adapter = parallel cross-attn. Stack freely. |
 | LoRA stack | ⚠ untested | Should compose (LoRA targets `Linear`, IP-Adapter targets `cross_attn.forward`). v1 is adapter-only; LoRA-on-top is a future variant. |

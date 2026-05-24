@@ -29,7 +29,7 @@ def flash_attn_4_varlen_func(*args, **kwargs):
 
 ### 1.2 Flex attention: NOT pre-compiled
 
-When blocks are individually compiled (`static_token_count` mode), the outer `torch.compile` already traces into `flex_attention` and fuses it. Pre-compiling causes nested compilation that exhausts dynamo's recompile limit (`grad_mode` guard x mask variants) and falls back to the slow unfused path.
+When blocks are individually compiled (`compile_blocks` / native-flatten mode), the outer `torch.compile` already traces into `flex_attention` and fuses it. Pre-compiling causes nested compilation that exhausts dynamo's recompile limit (`grad_mode` guard x mask variants) and falls back to the slow unfused path.
 
 ```python
 # NEW — intentionally NOT compiled
@@ -40,7 +40,7 @@ compiled_flex_attention = _flex_attention  # raw, not torch.compile(...)
 
 ### 1.3 Flex attention early-return path
 
-New first-class `"flex"` attention mode with pre-computed `BlockMask` support for both cross-attention (padding mask) and self-attention (static-shape padding). This avoids data-dependent control flow that would cause graph breaks.
+New first-class `"flex"` attention mode with pre-computed `BlockMask` support for the cross-attention padding mask. This avoids data-dependent control flow that would cause graph breaks. (The self-attention `BlockMask` only ever served the retired static-pad path; native shapes have no padded self-attn KV, so `selfattn_block_mask` stays `None`.)
 
 ### 1.4 New AttentionParams fields
 
@@ -48,7 +48,7 @@ New first-class `"flex"` attention mode with pre-computed `BlockMask` support fo
 |-------|---------|
 | `softmax_scale` | Custom softmax scale passed through to all backends (avoids per-call branching) |
 | `crossattn_block_mask` | Pre-computed BlockMask for the cross-attention padding mask (flex mode) |
-| `selfattn_block_mask` | Pre-computed BlockMask for self-attention padding mask (flex, static-shape) |
+| `selfattn_block_mask` | Unused in native mode (no padded self-attn KV); stays `None` |
 
 ### 1.5 LSE sink correction for trimmed cross-attention (flash4 — removed)
 
@@ -98,52 +98,22 @@ padding_mask.unsqueeze(2).expand(-1, -1, n_heads)
 
 `_KV_BUCKETS` trimmed cross-attention KV sequences to the smallest fitting bucket, capping `torch.compile` shape variants. It was tied to the FA4-only trim path and was removed along with it (2026-05-20). Cross-attention now runs the full 512-length KV under FA2. See `docs/optimizations/fa4.md`.
 
-### 2.5 `set_static_token_count(count, pad=...)`
+### 2.5 `compile_blocks(backend="inductor")` — the single switch
 
-API to enable constant-token bucketing. Any non-`None` `count` turns the mode on; the `pad` flag picks how it feeds `torch.compile`:
+`compile_blocks` is the one call that turns on `torch.compile`. It does two coupled things and raises the dynamo cache-size budget itself:
 
-- **`pad=False` (default, `static_pad = false`)** — each forward runs at its bucket's *native* token count. `count` itself is unused as a target; Dynamo traces one block graph per distinct token-count. With the shipped 4032/4200 table that collapses to **two** graphs, and there is no padding to leak into flash self-attention.
-- **`pad=True` (legacy)** — every forward zero-pads visual tokens up to `count`, giving one static shape / one graph. This path **cannot run the 4032/4200 table** (4200 > 4096 would truncate) and leaks padding into flash self-attention (see § 2.7 caveat).
+1. **Native-shape flattening (`self._native_flatten = True`).** The forward flattens each bucket's patch grid `(B, T, H, W, D)` to a fake-5D `(B, 1, seq_len, 1, D)` shape (`unflatten`-restored after the block loop). This keys the block graph on **token count alone** — the shipped `CONSTANT_TOKEN_BUCKETS` collapses to **two** token-count families (4032 and 4200) — instead of guarding `H` and `W` separately (one graph per resolution, 24 buckets). No padding, so flash self-attention sees no padded tokens. Bit-exact to the eager 5D path; eager (uncompiled) forwards leave the flag `False` and skip the reshape.
 
-### 2.6 `compile_blocks(backend="inductor")`
+2. **Per-block compile.** Compiles each block's `_forward` method:
+   ```python
+   for block in self.blocks:
+       block._forward = torch.compile(block._forward, backend=backend, dynamic=False)
+   ```
+   **Critical:** compiles `_forward` (the actual attention/MLP), NOT `forward` (the checkpointing wrapper). The gradient checkpointing decorator (`unsloth_checkpoint`) uses `@torch._disable_dynamo`, which would cause an immediate graph break if `forward` itself were compiled — dynamo compiles nothing useful but still checks shape guards, causing recompile storms.
 
-Compiles each transformer block's `_forward` method individually:
+The cache budget is `cache_size_limit = max(current, 2*n + 8)` where `n` is the number of token-count families (2): the `2*` covers fwd+bwd sharing the one `_forward` bytecode, the `+8` covers requires_grad / stride specializations. The `max()` lets a multi-resolution caller (e.g. SPD distill, whose downsampled stages produce more distinct shapes) pre-raise the limit without `compile_blocks` lowering it.
 
-```python
-for block in self.blocks:
-    block._forward = torch.compile(block._forward, backend=backend, dynamic=True)
-```
-
-**Critical:** compiles `_forward` (the actual attention/MLP), NOT `forward` (the checkpointing wrapper). The gradient checkpointing decorator (`unsloth_checkpoint`) uses `@torch._disable_dynamo`, which would cause an immediate graph break if `forward` itself were compiled — dynamo compiles nothing useful but still checks shape guards, causing recompile storms.
-
-### 2.7 Static-shape padding in `forward_mini_train_dit`
-
-This describes the legacy `pad=True` path only — it is **not** the default (see § 2.5). When `static_token_count` is set *and* `static_pad = true`:
-
-1. Flatten 5D input `(B, T, H, W, D)` to `(B, seq_len, D)`.
-2. Pad sequence dim to target length with zeros.
-3. Reshape to fake-5D `(B, 1, target, 1, D)` — compatible with existing block code.
-4. Pad RoPE embeddings and extra positional embeddings to match.
-5. After all blocks: squeeze fake dims and strip padding to restore `(B, T, H, W, D)`.
-
-> **Correctness caveat (why this path is no longer the default):** under
-> `attn_mode="flash"` (no padding mask) the zero-padded tokens are *not* harmless
-> sinks — AdaLN shift + Q/K/V bias leak them into the real-token output (up to
-> ~6.5% rel-L2 on the 4032-token buckets). The default `pad=False` variant
-> (`set_static_token_count(count, pad=False)`, `static_pad = false`, the old
-> `--no_static_pad`) runs native token counts instead, trading the single padded
-> shape for one graph per token-count family (2 with the 4032/4200 table) and
-> removing the leak entirely (there is no pad to leak). See
-> [`no_static_pad.md`](no_static_pad.md) and `bench/static_padding/`.
-
-### 2.8 Pre-computed BlockMask for flex attention
-
-In static-shape mode, two BlockMasks are created before the block loop:
-
-- **Cross-attention mask**: masks out zero-padded KV positions from bucketed trimming.
-- **Self-attention mask**: masks out padding tokens introduced by `static_token_count`.
-
-These are passed via `AttentionParams` so flex attention never needs to create masks inside the compiled region (which would cause data-dependent graph breaks).
+There is no padded mode anymore. The legacy `set_static_token_count(count, pad=True)` path zero-padded every bucket up to a single shape, but it leaked padded tokens into flash self-attention (AdaLN shift + Q/K/V bias make zero-input padded rows emit non-trivial K/V; up to ~6.5% rel-L2 on the 4032 buckets) and couldn't even run the shipped table (4200 > the legacy 4096 target → truncation). It was removed 2026-05-24 along with `compile_core` / `--compile_mode full`, `static_token_count`, `static_pad`, and the flex self-attn pad-mask.
 
 ---
 
@@ -151,7 +121,7 @@ These are passed via `AttentionParams` so flex attention never needs to create m
 
 ### 3.1 Constant-token buckets (`buckets.py`)
 
-`CONSTANT_TOKEN_BUCKETS` — 24 predefined `(W, H)` resolutions grouped into **two token-count families**, 4032 (= 63·64) and 4200 (= 60·70). Each resolution *exactly* fills its family's count, so there is **zero intra-bucket padding** by construction. Under the default native path (`static_pad = false`) every forward runs at its real token count, so `torch.compile` traces one block graph per distinct count — just **two** for this table.
+`CONSTANT_TOKEN_BUCKETS` — 24 predefined `(W, H)` resolutions grouped into **two token-count families**, 4032 (= 63·64) and 4200 (= 60·70). Each resolution *exactly* fills its family's count, so there is **zero intra-bucket padding** by construction. Native shapes are the only mode: every forward runs at its real token count, so `compile_blocks`' flatten makes `torch.compile` trace one block graph per distinct count — just **two** for this table.
 
 ```python
 CONSTANT_TOKEN_BUCKETS = [
@@ -168,7 +138,7 @@ CONSTANT_TOKEN_BUCKETS = [
 ]
 ```
 
-Two families instead of one because a single count's divisors near √N are sparse (4032 alone jumps aspect 1.29→1.75); interleaving 4032 and 4200 densely covers aspect space at the cost of one extra graph. This table is **incompatible with the legacy pad-to-static@4096 path** — the 4200 family exceeds 4096 and would truncate (guarded in `models.py`). Note this diverges from `DCW_ASPECT_BUCKETS`: the 832×1248 / 1248×832 HD pair (4056 tokens) is no longer a training bucket.
+Two families instead of one because a single count's divisors near √N are sparse (4032 alone jumps aspect 1.29→1.75); interleaving 4032 and 4200 densely covers aspect space at the cost of one extra graph. Note this diverges from `DCW_ASPECT_BUCKETS`: the 832×1248 / 1248×832 HD pair (4056 tokens) is no longer a training bucket.
 
 `BucketManager.make_buckets()` accepts `constant_token_buckets=True` to use these instead of dynamically generated resolutions.
 
@@ -187,25 +157,21 @@ Skipped when `sample_ratio < 1.0` (where every image matters more).
 
 ## 4. Training script (`train.py`)
 
-### 4.1 Conditional block-level compilation
+### 4.1 Block-level compilation
 
 ```python
-if getattr(args, "static_token_count", None) is not None:
-    model.set_static_token_count(args.static_token_count)
-    if args.torch_compile:
-        model.compile_blocks(args.dynamo_backend)
+if args.torch_compile:
+    model.compile_blocks(args.dynamo_backend, mode=getattr(args, "compile_inductor_mode", None))
 ```
 
-When `--static_token_count` is set, block-level compilation is used instead of full-graph compilation via Accelerator.
+`compile_blocks` is the only compile path: it enables native-shape flattening and compiles each block individually (never a full-graph compile of the DiT).
 
-### 4.2 Dynamo backend routing (`library/train_util.py`)
+### 4.2 Dynamo backend routing (`library/runtime/accelerator.py`)
 
 ```python
-# Only enable Accelerator-level dynamo when static_token_count is NOT used
-# (block-level compilation handles it separately)
+# Always "NO": torch.compile is applied per-block by compile_blocks. Letting
+# Accelerate full-compile on top would double-compile / graph-break.
 dynamo_backend = "NO"
-if args.torch_compile and not getattr(args, "static_token_count", None):
-    dynamo_backend = args.dynamo_backend
 ```
 
 **sd-scripts**: Always passes `dynamo_backend` to Accelerator when `torch_compile` is set.
@@ -222,7 +188,7 @@ padding_mask = self._padding_mask_cache.get(padding_mask_key)
 ### 4.4 `constant_token_buckets` plumbed to dataset config
 
 ```python
-constant_token_buckets=getattr(args, "static_token_count", None) is not None,
+constant_token_buckets=True,  # native constant-token bucketing is the only mode
 ```
 
 Passed through `library/config/` to `BucketManager.make_buckets()`.
@@ -263,7 +229,7 @@ The LoRA down projection runs its matmul in fp32 for accumulation precision:
 lx = F.linear(x_lora.float(), self.lora_down.weight.float())
 ```
 
-`F.linear`'s backward saves the exact forward input, so the `.float()` upcast of `x` is retained across the fwd→bwd window as an fp32 tensor (4 B / elem). At `static_token_count=4096` this is 32 MiB per 2048-wide Linear and 128 MiB for the 8192-wide MLP `layer2` input; accumulated across 28 DiT blocks × ~5–6 adapted Linears per block this was the largest single source of LoRA-side activation VRAM.
+`F.linear`'s backward saves the exact forward input, so the `.float()` upcast of `x` is retained across the fwd→bwd window as an fp32 tensor (4 B / elem). At a ~4096-token bucket this is 32 MiB per 2048-wide Linear and 128 MiB for the 8192-wide MLP `layer2` input; accumulated across 28 DiT blocks × ~5–6 adapted Linears per block this was the largest single source of LoRA-side activation VRAM.
 
 The fix is a targeted activation-recompute trick: a custom `torch.autograd.Function` that saves the low-precision `x` (bf16, 2 B / elem) and recomputes `x.float()` (or `(x * inv_scale).float()`) in backward. The fp32 bottleneck matmul is preserved in both directions, so gradients are bitwise-identical to the legacy path for deterministic kernels.
 
@@ -323,18 +289,12 @@ for k, v in lora_sd.items():
 
 ## 8. CLI arguments
 
-### New in anima_lora
-
-| Argument | File | Purpose |
-|----------|------|---------|
-| `--static_token_count N` | `library/anima/training.py` | Pad to N visual tokens; enables constant-shape buckets |
-
 ### Changed behavior
 
 | Argument | sd-scripts | anima_lora |
 |----------|-----------|------------|
-| `--torch_compile` | Full-graph via Accelerator | Block-level if `static_token_count` set; Accelerator-level otherwise |
-| `--dynamo_backend` | Always forwarded to Accelerator | Conditional: only forwarded when `static_token_count` is NOT used |
+| `--torch_compile` | Full-graph via Accelerator | Per-block via `compile_blocks` (native-shape flatten); never full-graph |
+| `--dynamo_backend` | Always forwarded to Accelerator | Forwarded to `compile_blocks`; Accelerate's own dynamo stays `"NO"` |
 
 ---
 
@@ -350,8 +310,8 @@ The fork eliminates all three:
 
 | Source | Solution | Files |
 |--------|----------|-------|
-| Spatial resolution | `CONSTANT_TOKEN_BUCKETS` + `static_token_count` padding | `buckets.py`, `library/anima/models.py` |
+| Spatial resolution | `CONSTANT_TOKEN_BUCKETS` + `compile_blocks` native-shape flatten (graph keys on token count) | `buckets.py`, `library/anima/models.py` |
 | Caption length | Text encoder output zero-padded to a fixed 512-token KV (sink padding) | `library/anima/strategy.py`, `library/anima/models.py` |
 | Batch size | Drop incomplete last batches | `library/datasets/base.py` |
 
-With shapes stabilized, `compile_blocks()` compiles each block's `_forward` with `dynamic=True` — the inductor backend generates optimized kernels once and reuses them for every step.
+With shapes stabilized, `compile_blocks()` compiles each block's `_forward` with `dynamic=False` — the inductor backend generates optimized kernels once per token-count family (two) and reuses them for every step.

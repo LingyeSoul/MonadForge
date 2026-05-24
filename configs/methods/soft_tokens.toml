@@ -10,7 +10,7 @@
 network_module = "networks.methods.soft_tokens"
 
 # network_dim → num_tokens (K) per layer per timestep bucket.
-network_dim = 4
+network_dim = 8
 
 # n_layers           — number of leading DiT blocks to attach soft tokens to
 #                      (Anima has 28; SoftREPA used 5/24 on SD3, scale
@@ -72,7 +72,7 @@ network_dim = 4
 #                                 off (must be in (0,1); slower = steadier Δ).
 
 network_args = [
-    "n_layers=6",
+    "n_layers=14",
     "n_t_buckets=14",
     "init_std=0.02",
     "splice_position=front_of_padding",
@@ -108,3 +108,6 @@ blocks_to_swap = 0
 
 logging_dir = "output/logs"
 log_with = "tensorboard"
+
+max_data_loader_n_workers=1
+validation_split_num = 8

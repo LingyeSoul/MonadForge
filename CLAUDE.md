@@ -46,7 +46,7 @@ make distill-mod           # train pooled_text_proj MLP (add --synth_data_dir fo
 make dcw                   # sample 5 aspect buckets + train fusion head (~3-5h on a 5060 Ti)
 make dcw-train             # train-only on existing pool (~30s)
 
-# Training daemon (local FIFO job queue — see plan.md). Auto-starts on first submit.
+# Training daemon (local FIFO job queue). Auto-starts on first submit.
 make daemon | daemon-attach [JOB=<id>] | daemon-kill [JOB=<id>] | daemon-terminate
 make lora --queue                        # enqueue instead of run inline (overnight sweep)
 # GUI Train button + ComfyUI trainer node + preprocessing all submit to the daemon.
@@ -99,8 +99,8 @@ Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with s
 ### Text encoder padding
 The pretrained model expects max-padded text encoder outputs — zero-padded positions act as attention sinks in cross-attention softmax. Trimming to actual text length produces **black images**. Both training and inference must pad to `max_length` and must NOT mask out padding via `crossattn_seqlens`. Regenerate disk-cached `.npz` after any tokenizer/padding change.
 
-### Constant-token bucketing
-`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 and 4200** — each entry *exactly* filling its count (zero intra-bucket padding by construction), tuples in `(W, H)` order. The default path is now native shapes (`static_pad = false` in `base.toml`, the old `--no_static_pad`): each forward runs at its real token count, so `torch.compile` traces **one block graph per distinct token-count (2)** — no flash static-pad leak. The legacy pad-to-static path (one graph, pad to `static_token_count`, leaks padding into flash self-attn) still exists behind `static_pad = true` but **can't run this table** (4200 > 4096 would truncate; guarded in `models.py`). Note this diverges from `DCW_ASPECT_BUCKETS` (the 4056 HD pair is no longer a training bucket). Regenerate disk caches after changing the table.
+### Constant-token bucketing — native shapes are the only mode
+`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 and 4200** — each entry *exactly* filling its count (zero intra-bucket padding by construction), tuples in `(W, H)` order. Each forward runs at its real token count. `compile_blocks()` is the single switch: when `torch_compile` is on it sets `_native_flatten` so the forward flattens each bucket's patch grid to a fake-5D `(B, 1, seq_len, 1, D)` shape, keying the block graph on **token count alone (2 graphs)** instead of per-resolution (24). No padding → no flash static-pad leak; bit-exact to the eager 5D path (eager forwards skip the flatten). The legacy pad-to-static path (`set_static_token_count(pad=True)` / `compile_core` / `--compile_mode full` / `static_token_count` / `static_pad`) was **removed 2026-05-24** — it leaked padding into flash self-attn and couldn't run this table (4200 > 4096). Note this diverges from `DCW_ASPECT_BUCKETS` (the 4056 HD pair is no longer a training bucket). Regenerate disk caches after changing the table.
 
 ### Lazy model loading
 DiT loads AFTER text-encoder/VAE caching and unloading, to avoid OOM: text encoder → cache → free → VAE → cache → free → load DiT → attach adapter → train.
