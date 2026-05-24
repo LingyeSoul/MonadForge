@@ -49,7 +49,10 @@ sys.path.insert(0, str(ROOT))
 from library.anima import weights as anima_utils  # noqa: E402
 from library.inference import sampling as inference_utils  # noqa: E402
 from library.inference.adapters import clear_hydra_sigma  # noqa: E402
-from library.inference.text import MAX_CROSSATTN_TOKENS  # noqa: E402
+from library.inference.text import (  # noqa: E402
+    MAX_CROSSATTN_TOKENS,
+    ensure_text_strategies,
+)
 from scripts.dcw.cache import load_cached, pick_cached_samples  # noqa: E402
 from scripts.dcw.trajectory import (  # noqa: E402
     encode_uncond_embed,
@@ -138,27 +141,17 @@ def _setup_text_state(
     Mirrors measure_bias.py's transient TE block. Frees the TE before
     returning — replay shouldn't keep it resident.
     """
-    needs_te = bool(args.get("pooled_text_proj")) or float(
-        args.get("guidance_scale", 1.0)
-    ) != 1.0
+    needs_te = (
+        bool(args.get("pooled_text_proj"))
+        or float(args.get("guidance_scale", 1.0)) != 1.0
+    )
     if not needs_te:
         anima.reset_mod_guidance()
         return None
 
-    from library.anima import strategy as strategy_anima, text_strategies
     from library.inference.models import load_text_encoder
 
-    text_strategies.TokenizeStrategy.set_strategy(
-        strategy_anima.AnimaTokenizeStrategy(
-            qwen3_path=text_encoder_path,
-            t5_tokenizer_path=None,
-            qwen3_max_length=MAX_CROSSATTN_TOKENS,
-            t5_max_length=MAX_CROSSATTN_TOKENS,
-        )
-    )
-    text_strategies.TextEncodingStrategy.set_strategy(
-        strategy_anima.AnimaTextEncodingStrategy()
-    )
+    ensure_text_strategies(text_encoder_path, MAX_CROSSATTN_TOKENS)
 
     # load_text_encoder also reads args.lora_weight and args.lora_multiplier
     # to decide if any LoRA changes the TE-side strategy (none here — replay
@@ -197,7 +190,9 @@ def _setup_text_state(
             mod_final_w=float(args.get("mod_final_w", 0.0)),
             text_encoder=text_encoder_path,
         )
-        setup_mod_guidance(mod_args, anima, device, shared_models={"text_encoder": text_encoder})
+        setup_mod_guidance(
+            mod_args, anima, device, shared_models={"text_encoder": text_encoder}
+        )
     else:
         anima.reset_mod_guidance()
 

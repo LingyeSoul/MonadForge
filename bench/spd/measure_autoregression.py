@@ -226,10 +226,13 @@ def main() -> None:
     import inference as inference_mod
     from diffusers.utils.torch_utils import randn_tensor
 
-    from library.anima import strategy as strategy_anima, text_strategies
     from library.inference import sampling as inference_utils
     from library.inference.models import load_dit_model
-    from library.inference.text import MAX_CROSSATTN_TOKENS, prepare_text_inputs
+    from library.inference.text import (
+        MAX_CROSSATTN_TOKENS,
+        ensure_text_strategies,
+        prepare_text_inputs,
+    )
     from library.models import qwen_vae
 
     infer_argv = [
@@ -275,17 +278,7 @@ def main() -> None:
     iargs.lora_weight = None
     iargs.sampler = "euler"
 
-    text_strategies.TokenizeStrategy.set_strategy(
-        strategy_anima.AnimaTokenizeStrategy(
-            qwen3_path=args.text_encoder,
-            t5_tokenizer_path=None,
-            qwen3_max_length=MAX_CROSSATTN_TOKENS,
-            t5_max_length=MAX_CROSSATTN_TOKENS,
-        )
-    )
-    text_strategies.TextEncodingStrategy.set_strategy(
-        strategy_anima.AnimaTextEncodingStrategy()
-    )
+    ensure_text_strategies(args.text_encoder, MAX_CROSSATTN_TOKENS)
 
     log.info("Loading bare DiT (no LoRA, eager / dynamic shape) ...")
     anima = load_dit_model(iargs, device, torch.bfloat16)

@@ -140,9 +140,9 @@ def test_shuffle_keeps_sentinel_in_output_for_caller_strip():
 
 
 def _gen_variants(*args, **kwargs):
-    from preprocess.cache_text_embeddings import _generate_caption_variants
+    from library.preprocess import generate_caption_variants
 
-    return _generate_caption_variants(*args, **kwargs)
+    return generate_caption_variants(*args, **kwargs)
 
 
 def test_variants_strip_sentinel_from_v0():

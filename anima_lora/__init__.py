@@ -23,14 +23,27 @@ The canonical homes are unchanged — this module only re-exports them:
 | ``load_anima_model`` | ``library.anima.weights`` |
 | ``load_dit_model`` | ``library.inference.models`` |
 | ``load_vae`` | ``library.models.qwen_vae`` |
+| ``str_to_dtype`` | ``library.runtime.device`` |
+
+``ROOT`` is the repo root (the directory holding ``configs/``, ``output/`` …) as
+a ``pathlib.Path`` — the single source of truth for building repo-relative paths
+in tooling, instead of each script re-deriving it with its own
+``Path(__file__).parents[N]`` arithmetic.
 
 Note: model/config paths are still resolved relative to the current working
-directory — run from the repo root (``anima_lora/``), same as the CLI.
+directory — run from the repo root (``anima_lora/``), same as the CLI. Internal
+tooling under ``bench/`` / ``scripts/`` / ``preprocess/`` still needs its
+``sys.path`` bootstrap to import *sibling* modules (those trees are not
+installed packages — only ``anima_lora`` / ``library`` / ``networks`` are).
 """
 
 from __future__ import annotations
 
 import importlib as _importlib
+from pathlib import Path as _Path
+
+#: Repo root (``anima_lora/``), resolved from this file's location.
+ROOT = _Path(__file__).resolve().parent.parent
 
 # export name -> dotted module that defines it
 _ATTR_TO_MODULE: dict[str, str] = {
@@ -49,6 +62,8 @@ _ATTR_TO_MODULE: dict[str, str] = {
     "load_anima_model": "library.anima.weights",
     "load_dit_model": "library.inference.models",
     "load_vae": "library.models.qwen_vae",
+    # device / dtype helpers (library.runtime.device)
+    "str_to_dtype": "library.runtime.device",
 }
 
 
@@ -63,4 +78,4 @@ def __dir__() -> list[str]:
     return sorted(__all__)
 
 
-__all__ = list(_ATTR_TO_MODULE.keys())
+__all__ = [*_ATTR_TO_MODULE.keys(), "ROOT"]

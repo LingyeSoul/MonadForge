@@ -50,14 +50,10 @@ import torch
 
 log = logging.getLogger("bench._anima")
 
-_DTYPE_MAP = {
-    "bf16": torch.bfloat16,
-    "bfloat16": torch.bfloat16,
-    "fp16": torch.float16,
-    "float16": torch.float16,
-    "fp32": torch.float32,
-    "float32": torch.float32,
-}
+# --dtype choices. The string→torch.dtype mapping itself lives in the canonical
+# library helper (library.runtime.device.str_to_dtype); resolve_dtype delegates
+# to it so bench doesn't carry a parallel table.
+_DTYPE_CHOICES = ("bf16", "bfloat16", "fp16", "float16", "fp32", "float32")
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +114,7 @@ def add_common_args(
         parser.add_argument(
             "--dtype",
             type=str,
-            choices=sorted(_DTYPE_MAP.keys()),
+            choices=_DTYPE_CHOICES,
             default="bf16",
             help="Model dtype. bf16 is the production default.",
         )
@@ -164,8 +160,15 @@ def add_common_args(
 
 
 def resolve_dtype(name: str) -> torch.dtype:
-    """Map a --dtype string to a torch dtype. Raises KeyError on unknown."""
-    return _DTYPE_MAP[name]
+    """Map a --dtype string to a torch dtype. Raises ValueError on unknown.
+
+    Delegates to ``library.runtime.device.str_to_dtype`` (the canonical home,
+    also exported as ``anima_lora.str_to_dtype``) so the bench harness shares one
+    source of truth for the mapping.
+    """
+    from library.runtime.device import str_to_dtype
+
+    return str_to_dtype(name)
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from library.datasets.image_utils import IMAGE_EXTENSIONS
+from library.preprocess import walk_images
 
 # --- Text segmentation model (Manga-Text-Segmentation-2025) ---
 
@@ -117,18 +117,6 @@ def _detect_mask(
     return mask
 
 
-def get_image_files(image_dir: Path, recursive: bool = False) -> list[Path]:
-    if recursive:
-        return sorted(
-            p
-            for p in image_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-    return sorted(
-        p for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
-    )
-
-
 def save_mask(path: Path, alpha_mask: np.ndarray) -> None:
     Image.fromarray(alpha_mask, mode="L").save(path)
 
@@ -184,21 +172,10 @@ def main() -> None:
     masks_dir = Path(args.mask_dir)
     masks_dir.mkdir(parents=True, exist_ok=True)
 
-    image_files = get_image_files(image_dir, recursive=args.recursive)
-    if args.recursive:
-        seen: dict[tuple[Path, str], Path] = {}
-        collisions: list[tuple[str, Path, Path]] = []
-        for p in image_files:
-            key = (p.parent, p.stem)
-            if key in seen:
-                collisions.append((p.stem, seen[key], p))
-            else:
-                seen[key] = p
-        if collisions:
-            print("Duplicate image stems within a single folder of --image-dir:")
-            for stem, a, b in collisions:
-                print(f"  '{stem}': {a} <-> {b}")
-            sys.exit(1)
+    # walk_images enforces per-subfolder stem uniqueness (same-folder stem
+    # collisions would overwrite each other's mask); same stem across folders
+    # is fine — the nested output layout disambiguates by subdir.
+    image_files = walk_images(image_dir, recursive=args.recursive)
 
     # Filter to work items
     work_items = []

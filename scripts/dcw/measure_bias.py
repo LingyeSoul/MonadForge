@@ -119,7 +119,10 @@ from bench._common import make_run_dir, write_result  # noqa: E402
 from library.anima import weights as anima_utils  # noqa: E402
 from library.inference import sampling as inference_utils  # noqa: E402
 from library.inference.adapters import clear_hydra_sigma  # noqa: E402
-from library.inference.text import MAX_CROSSATTN_TOKENS  # noqa: E402
+from library.inference.text import (  # noqa: E402
+    MAX_CROSSATTN_TOKENS,
+    ensure_text_strategies,
+)
 from scripts.dcw.adapters import attach_loras  # noqa: E402
 from scripts.dcw.cache import load_cached, pick_cached_samples  # noqa: E402
 from scripts.dcw.haar import BANDS  # noqa: E402
@@ -176,23 +179,12 @@ def main() -> None:
     embed_uncond: torch.Tensor | None = None
     needs_text_encoder = bool(args.pooled_text_proj) or args.guidance_scale != 1.0
     if needs_text_encoder:
-        from library.anima import strategy as strategy_anima, text_strategies
         from library.inference.models import load_text_encoder
 
         # Mirror inference.py:909-918 — mod_guidance.tokenize_strategy.tokenize()
         # reads the module-level singletons, so they have to be primed before
         # setup_mod_guidance encodes the pos/neg prompts.
-        text_strategies.TokenizeStrategy.set_strategy(
-            strategy_anima.AnimaTokenizeStrategy(
-                qwen3_path=args.text_encoder,
-                t5_tokenizer_path=None,
-                qwen3_max_length=MAX_CROSSATTN_TOKENS,
-                t5_max_length=MAX_CROSSATTN_TOKENS,
-            )
-        )
-        text_strategies.TextEncodingStrategy.set_strategy(
-            strategy_anima.AnimaTextEncodingStrategy()
-        )
+        ensure_text_strategies(args.text_encoder, MAX_CROSSATTN_TOKENS)
 
         text_encoder = load_text_encoder(args, dtype=torch.bfloat16, device=device)
         text_encoder.eval()
@@ -473,9 +465,7 @@ def main() -> None:
             else:
                 rev_results = rev_out
                 final_latents = None
-            for seed_idx, (rev_norms, rev_bands, rev_fei_low) in enumerate(
-                rev_results
-            ):
+            for seed_idx, (rev_norms, rev_bands, rev_fei_low) in enumerate(rev_results):
                 v_fwd, fwd_bands = fwd_cache[(img_idx, seed_idx)]
                 _accumulate_row(
                     accum,
@@ -663,9 +653,7 @@ def main() -> None:
             else None
         ),
         "label": args.label,
-        "baseline_lambda": (
-            0.0 if args.dcw_sweep else float(args.baseline_lambda)
-        ),
+        "baseline_lambda": (0.0 if args.dcw_sweep else float(args.baseline_lambda)),
         "shuffle_seed": args.shuffle_seed,
         "seed_base": int(args.seed_base),
         "n_seeds": int(args.n_seeds),

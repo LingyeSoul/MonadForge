@@ -580,10 +580,13 @@ def _setup_models(args, device, prompts: list[tuple[str, str]], *, need_vae: boo
     import torch
 
     import inference as inference_mod
-    from library.anima import strategy as strategy_anima, text_strategies
     from library.inference import sampling as inference_utils
     from library.inference.models import load_dit_model
-    from library.inference.text import MAX_CROSSATTN_TOKENS, prepare_text_inputs
+    from library.inference.text import (
+        MAX_CROSSATTN_TOKENS,
+        ensure_text_strategies,
+        prepare_text_inputs,
+    )
     from library.models import qwen_vae
 
     infer_argv = [
@@ -633,17 +636,7 @@ def _setup_models(args, device, prompts: list[tuple[str, str]], *, need_vae: boo
     iargs.lora_weight = [args.lora] if getattr(args, "lora", None) else None
     iargs.sampler = "euler"
 
-    text_strategies.TokenizeStrategy.set_strategy(
-        strategy_anima.AnimaTokenizeStrategy(
-            qwen3_path=args.text_encoder,
-            t5_tokenizer_path=None,
-            qwen3_max_length=MAX_CROSSATTN_TOKENS,
-            t5_max_length=MAX_CROSSATTN_TOKENS,
-        )
-    )
-    text_strategies.TextEncodingStrategy.set_strategy(
-        strategy_anima.AnimaTextEncodingStrategy()
-    )
+    ensure_text_strategies(args.text_encoder, MAX_CROSSATTN_TOKENS)
 
     log.info(
         "Loading DiT (eager)%s ...",
@@ -874,7 +867,14 @@ def _capture_spd_features(
                         r = nxt / cur_scale
                         kappa = r / (1.0 + (r - 1.0) * sigma)
                         x5, sigma_new = spectral_expand(
-                            x5, sigma, cur_scale, nxt, H_full, W_full, patch, gen,
+                            x5,
+                            sigma,
+                            cur_scale,
+                            nxt,
+                            H_full,
+                            W_full,
+                            patch,
+                            gen,
                             hf_scale=hf_scale,
                         )
                         cur_scale = nxt
@@ -1201,13 +1201,24 @@ def run_frontier(args) -> None:
         )
         inits[p_label] = init
         _rec, x5_base = _capture_spd_features(
-            anima, init, embed, neg_embed, sigmas, args.guidance_scale,
-            device, patch, [1.0], [], torch.Generator(device=device).manual_seed(seed),
+            anima,
+            init,
+            embed,
+            neg_embed,
+            sigmas,
+            args.guidance_scale,
+            device,
+            patch,
+            [1.0],
+            [],
+            torch.Generator(device=device).manual_seed(seed),
         )
         base_hf[p_label] = _hf_energy_frac(x5_base, s0, patch)
         if device.type == "cuda":
             torch.cuda.empty_cache()
-    log.info("baseline HF-energy frac: %s", {k: round(v, 4) for k, v in base_hf.items()})
+    log.info(
+        "baseline HF-energy frac: %s", {k: round(v, 4) for k, v in base_hf.items()}
+    )
 
     cells: list[dict] = []
     for sig in sig_grid:
@@ -1216,8 +1227,17 @@ def run_frontier(args) -> None:
             for p_label, embed in embeds:
                 spd_gen = torch.Generator(device=device).manual_seed(seed + 10_000)
                 records, x5 = _capture_spd_features(
-                    anima, inits[p_label], embed, neg_embed, sigmas,
-                    args.guidance_scale, device, patch, [s0, 1.0], [sig], spd_gen,
+                    anima,
+                    inits[p_label],
+                    embed,
+                    neg_embed,
+                    sigmas,
+                    args.guidance_scale,
+                    device,
+                    patch,
+                    [s0, 1.0],
+                    [sig],
+                    spd_gen,
                     hf_scale=gam,
                 )
                 m = continuity_metrics(records, args.cheb_degree, args.fit_window)
@@ -1238,21 +1258,30 @@ def run_frontier(args) -> None:
             cells.append(cell)
             log.info(
                 "  σ=%.2f γ=%.2f  seam ×%.2f±%.2f  detail %.2f  (n=%d)",
-                sig, gam, cell["seam_ratio_mean"], cell["seam_ratio_std"],
-                cell["detail_retention_mean"], cell["n_prompts_ok"],
+                sig,
+                gam,
+                cell["seam_ratio_mean"],
+                cell["seam_ratio_std"],
+                cell["detail_retention_mean"],
+                cell["n_prompts_ok"],
             )
 
     # ── Verdict: read the frozen Pareto frontier ──
     valid = [c for c in cells if math.isfinite(c["seam_ratio_mean"])]
     below = [c for c in valid if c["seam_ratio_mean"] <= args.pass_ratio]
     anchor = next(
-        (c for c in cells if abs(c["transition_sigma"] - 0.5) < 1e-6
-         and abs(c["hf_scale"] - 1.0) < 1e-6),
+        (
+            c
+            for c in cells
+            if abs(c["transition_sigma"] - 0.5) < 1e-6
+            and abs(c["hf_scale"] - 1.0) < 1e-6
+        ),
         None,
     )
     anchor_note = (
         f" (σ0.5,γ1.0 anchor ×{anchor['seam_ratio_mean']:.2f} vs report ×4.49)"
-        if anchor else ""
+        if anchor
+        else ""
     )
     if not valid:
         verdict = "INVALID — no cell produced a usable transition; check the grid."
@@ -1305,22 +1334,40 @@ def run_frontier(args) -> None:
 
         fig, ax = plt.subplots(figsize=(7, 5.5))
         for sig in sig_grid:
-            row = [c for c in cells if c["transition_sigma"] == sig
-                   and math.isfinite(c["seam_ratio_mean"])]
+            row = [
+                c
+                for c in cells
+                if c["transition_sigma"] == sig and math.isfinite(c["seam_ratio_mean"])
+            ]
             row.sort(key=lambda c: c["hf_scale"])
             ax.plot(
                 [c["seam_ratio_mean"] for c in row],
                 [c["detail_retention_mean"] for c in row],
-                "o-", label=f"σ={sig:.2f}",
+                "o-",
+                label=f"σ={sig:.2f}",
             )
             for c in row:
-                ax.annotate(f"γ{c['hf_scale']:.2f}",
-                            (c["seam_ratio_mean"], c["detail_retention_mean"]),
-                            fontsize=7, xytext=(3, 3), textcoords="offset points")
-        ax.axvline(args.pass_ratio, ls="--", color="r", lw=1,
-                   label=f"seam gate ×{args.pass_ratio}")
-        ax.axhline(args.detail_pass, ls=":", color="g", lw=1,
-                   label=f"detail floor {args.detail_pass}")
+                ax.annotate(
+                    f"γ{c['hf_scale']:.2f}",
+                    (c["seam_ratio_mean"], c["detail_retention_mean"]),
+                    fontsize=7,
+                    xytext=(3, 3),
+                    textcoords="offset points",
+                )
+        ax.axvline(
+            args.pass_ratio,
+            ls="--",
+            color="r",
+            lw=1,
+            label=f"seam gate ×{args.pass_ratio}",
+        )
+        ax.axhline(
+            args.detail_pass,
+            ls=":",
+            color="g",
+            lw=1,
+            label=f"detail floor {args.detail_pass}",
+        )
         ax.set_xlabel("seam LL-residual ratio (standardized) — lower = more continuous")
         ax.set_ylabel("detail retention (HF energy vs baseline) — higher = sharper")
         ax.set_title(f"SPD seam-continuity frontier  [{decision.upper()}]")
@@ -1349,8 +1396,12 @@ def run_frontier(args) -> None:
         "verdict": verdict,
     }
     write_result(
-        run_dir, script=__file__, args=args, metrics=metrics,
-        artifacts=artifacts, device=device,
+        run_dir,
+        script=__file__,
+        args=args,
+        metrics=metrics,
+        artifacts=artifacts,
+        device=device,
     )
     log.info("wrote %s", run_dir / "result.json")
 

@@ -21,19 +21,7 @@ from tqdm import tqdm
 # Allow running from preprocess/ subdirectory
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from library.datasets.image_utils import IMAGE_EXTENSIONS
-
-
-def get_image_files(image_dir: Path, recursive: bool = False) -> list[Path]:
-    if recursive:
-        return sorted(
-            p
-            for p in image_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-    return sorted(
-        p for p in image_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
-    )
+from library.preprocess import walk_images
 
 
 def load_image(path: Path) -> Image.Image:
@@ -112,22 +100,8 @@ def main() -> None:
     # Per-subdir uniqueness check (the same stem may legitimately appear in
     # multiple subfolders — the nested output layout disambiguates by folder —
     # but two files with the same stem in the *same* folder would overwrite
-    # each other's mask).
-    image_files = get_image_files(image_dir, recursive=args.recursive)
-    if args.recursive:
-        seen: dict[tuple[Path, str], Path] = {}
-        collisions: list[tuple[str, Path, Path]] = []
-        for p in image_files:
-            key = (p.parent, p.stem)
-            if key in seen:
-                collisions.append((p.stem, seen[key], p))
-            else:
-                seen[key] = p
-        if collisions:
-            print("Duplicate image stems within a single folder of --image-dir:")
-            for stem, a, b in collisions:
-                print(f"  '{stem}': {a} <-> {b}")
-            sys.exit(1)
+    # each other's mask). walk_images raises on that collision.
+    image_files = walk_images(image_dir, recursive=args.recursive)
 
     # Filter to work items upfront
     work_items = []

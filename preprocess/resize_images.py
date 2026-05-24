@@ -3,88 +3,24 @@
 
 Reads images from a source directory, resizes and center-crops them to the
 nearest bucket resolution, writes the results plus caption sidecars to an
-output directory.
+output directory (mirroring the source subdir layout).
+
+The walk → filter → parallel resize → caption-mirror loop lives in
+``library/preprocess/images.py``; this file is argparse only.
 """
 
 import argparse
-import shutil
-from concurrent.futures import ProcessPoolExecutor, as_completed
-from pathlib import Path
-
-from PIL import Image
-from tqdm import tqdm
-
-import sys
 import os
+import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from library.datasets.buckets import BucketManager
-from library.datasets.image_utils import IMAGE_EXTENSIONS
+from library.preprocess import resize_to_buckets, tqdm_progress
 
-CAPTION_EXTENSIONS = {".txt", ".caption"}
-
-
-def process_image(
-    image_path: Path,
-    out_dir: Path,
-    bucket_args: tuple,
-    copy_captions: bool = True,
-    rel_dir: str = "",
-) -> tuple[str, tuple[int, int]]:
-    """Worker function -- receives bucket params instead of BucketManager to be picklable.
-
-    ``rel_dir`` is the (possibly empty) relative subdir under the source root.
-    The output mirrors the source layout: ``out_dir / rel_dir / stem.png``.
-    Empty ``rel_dir`` collapses back to the flat layout for users without
-    nested image_dataset/ trees.
-    """
-    max_reso, min_size, max_size, reso_steps, use_constant = bucket_args
-    bucket_mgr = BucketManager(
-        no_upscale=False,
-        max_reso=max_reso,
-        min_size=min_size,
-        max_size=max_size,
-        reso_steps=reso_steps,
-    )
-    bucket_mgr.make_buckets(constant_token_buckets=use_constant)
-
-    img = Image.open(image_path).convert("RGB")
-    w, h = img.size
-
-    bucket_reso, _, _ = bucket_mgr.select_bucket(w, h)
-    bw, bh = bucket_reso
-
-    # Resize preserving aspect ratio so the image covers the bucket
-    ar_img = w / h
-    ar_bucket = bw / bh
-    if ar_img > ar_bucket:
-        new_h = bh
-        new_w = round(bh * ar_img)
-    else:
-        new_w = bw
-        new_h = round(bw / ar_img)
-
-    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-    # Center crop to bucket resolution
-    left = (new_w - bw) // 2
-    top = (new_h - bh) // 2
-    img = img.crop((left, top, left + bw, top + bh))
-
-    target_dir = out_dir / rel_dir if rel_dir else out_dir
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = target_dir / f"{image_path.stem}.png"
-    img.save(out_path, format="PNG")
-
-    if copy_captions:
-        for ext in CAPTION_EXTENSIONS:
-            cap = image_path.with_suffix(ext)
-            if cap.exists():
-                shutil.copy2(cap, target_dir / f"{image_path.stem}{ext}")
-
-    return image_path.name, bucket_reso
+# Re-exported for callers/tests that import the picklable worker directly
+# (the loop moved to library/preprocess/images.py).
+from library.preprocess.images import process_image  # noqa: F401,E402
 
 
 def main() -> None:
@@ -154,112 +90,24 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.no_constant_token_buckets:
-        args.constant_token_buckets = False
-
-    src = Path(args.src)
-    dst = Path(args.dst)
-    dst.mkdir(parents=True, exist_ok=True)
-
-    use_constant = args.constant_token_buckets
-    bucket_args = (
-        (args.resolution, args.resolution),
-        args.min_bucket_reso,
-        args.max_bucket_reso,
-        args.bucket_reso_steps,
-        use_constant,
+    constant_token_buckets = (
+        args.constant_token_buckets and not args.no_constant_token_buckets
     )
 
-    if args.recursive:
-        image_files = sorted(
-            p
-            for p in src.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-        # Per-subdir uniqueness: two files in the same folder with the same
-        # stem (e.g. cover.png + cover.jpg) would collide on the resized
-        # output. Same stem in different subfolders is fine — the nested
-        # output layout disambiguates by folder.
-        seen: dict[tuple[Path, str], Path] = {}
-        collisions: list[tuple[str, Path, Path]] = []
-        for p in image_files:
-            key = (p.parent, p.stem)
-            if key in seen:
-                collisions.append((p.stem, seen[key], p))
-            else:
-                seen[key] = p
-        if collisions:
-            print("Duplicate image stems within a single folder of --src:")
-            for stem, a, b in collisions:
-                print(f"  '{stem}': {a} <-> {b}")
-            sys.exit(1)
-    else:
-        image_files = sorted(
-            p for p in src.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-
-    if args.min_pixels > 0:
-        kept: list[Path] = []
-        skipped: list[tuple[Path, int, int]] = []
-        for p in image_files:
-            try:
-                with Image.open(p) as im:
-                    w, h = im.size
-            except Exception as e:
-                print(f"  warn: could not read {p.name}: {e}")
-                continue
-            if w * h < args.min_pixels:
-                skipped.append((p, w, h))
-            else:
-                kept.append(p)
-        if skipped:
-            print(
-                f"Skipping {len(skipped)} images below {args.min_pixels:,} pixels "
-                f"({args.min_pixels / 1e6:.2f}MP):"
-            )
-            for p, w, h in skipped:
-                print(f"  {p.name}  {w}x{h}  ({w * h / 1e6:.3f}MP)")
-        image_files = kept
-
-    print(
-        f"Resizing {len(image_files)} images to "
-        f"{'constant-token' if use_constant else 'standard'} buckets"
+    resize_to_buckets(
+        Path(args.src),
+        Path(args.dst),
+        resolution=args.resolution,
+        min_bucket_reso=args.min_bucket_reso,
+        max_bucket_reso=args.max_bucket_reso,
+        bucket_reso_steps=args.bucket_reso_steps,
+        constant_token_buckets=constant_token_buckets,
+        workers=args.workers,
+        min_pixels=args.min_pixels,
+        copy_captions=not args.no_copy_captions,
+        recursive=args.recursive,
+        progress=tqdm_progress("Resizing"),
     )
-    bucket_counts: dict[tuple[int, int], int] = {}
-    copy_captions = not args.no_copy_captions
-
-    def _rel_for(p: Path) -> str:
-        try:
-            rel = p.parent.relative_to(src)
-        except ValueError:
-            return ""
-        rel_str = str(rel)
-        return "" if rel_str == "." else rel_str
-
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
-        futures = {
-            pool.submit(
-                process_image,
-                img_path,
-                dst,
-                bucket_args,
-                copy_captions,
-                _rel_for(img_path),
-            ): img_path
-            for img_path in image_files
-        }
-        pbar = tqdm(as_completed(futures), total=len(futures), desc="Resizing")
-        for future in pbar:
-            name, reso = future.result()
-            bucket_counts[reso] = bucket_counts.get(reso, 0) + 1
-            pbar.set_postfix_str(f"{name} → {reso[0]}x{reso[1]}")
-
-    print("\nBucket distribution:")
-    for reso in sorted(bucket_counts):
-        tokens = (reso[0] // 16) * (reso[1] // 16)
-        print(
-            f"  {reso[0]:>4d}x{reso[1]:<4d}: {bucket_counts[reso]:>3d} images  ({tokens} tokens)"
-        )
 
 
 if __name__ == "__main__":

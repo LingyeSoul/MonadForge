@@ -16,6 +16,9 @@ The cache key matches what the encoder produces at training time:
 ``encode_pe_from_imageminus1to1(bundle, x, same_bucket=True)`` -> ``[T_pe, d_enc]``.
 Variable T per encoder bucket; per-image stored as a single tensor (no padding).
 
+The walk → group → encode → save loop and the centroid pooling pass live in
+``library/preprocess/pe.py``; this file is argparse + encoder load + reporting.
+
 Centroid sidecar
 ----------------
 
@@ -33,138 +36,36 @@ import os
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
-from PIL import Image
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from library.datasets.image_utils import IMAGE_EXTENSIONS, IMAGE_TRANSFORMS
-from library.vision.encoder import encode_pe_from_imageminus1to1, load_pe_encoder
+from library.preprocess import (
+    cache_pe_features,
+    tqdm_progress,
+    write_pe_centroid,
+)
+from library.vision.encoder import load_pe_encoder
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _pool_pe(feats: torch.Tensor, *, drop_cls: bool = True) -> torch.Tensor:
-    """Mean over patch tokens. ``feats`` is ``[T, D]``; returns ``[D]``."""
-    if drop_cls and feats.shape[0] > 1:
-        feats = feats[1:]
-    return feats.mean(dim=0)
-
-
-def _write_centroid_sidecar(
-    cache_dir: Path,
-    out_path: Path,
-    *,
-    encoder: str,
-    limit: int = 0,
-) -> None:
-    """Stream-pool cached PE features in ``cache_dir`` -> centroid sidecar.
-
-    Walks ``cache_dir`` recursively so nested caches (mirroring the source
-    subfolder structure) are included in the pool.
-    """
-    from safetensors.torch import load_file, save_file
-
-    suffix = f"_anima_{encoder}.safetensors"
-    files = sorted(p for p in cache_dir.rglob(f"*{suffix}") if p.is_file())
-    files = [p for p in files if not p.name.startswith("anima_pe_centroid")]
-    if not files:
-        print(f"No '{suffix}' caches under {cache_dir}", file=sys.stderr)
-        sys.exit(1)
-    if limit > 0:
-        files = files[:limit]
-
-    print(f"\nCentroid pass: {len(files)} files under {cache_dir}")
-    centroid: torch.Tensor | None = None
-    n = 0
-    for p in tqdm(files, desc="pooling"):
-        sd = load_file(str(p))
-        feats = sd.get("image_features")
-        if feats is None:
-            print(f"  skip {p.name}: no 'image_features' key", file=sys.stderr)
-            continue
-        pool = _pool_pe(feats.to(torch.float32))
-        if centroid is None:
-            centroid = torch.zeros_like(pool)
-        centroid += pool
-        n += 1
-
-    if n == 0 or centroid is None:
-        print("No usable PE features found.", file=sys.stderr)
-        sys.exit(1)
-    centroid = centroid / n
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    save_file(
-        {"centroid": centroid.contiguous()},
-        str(out_path),
-        metadata={
-            "encoder": encoder,
-            "n_images": str(n),
-            "d_enc": str(centroid.shape[0]),
-            "pool": "mean_over_patch_tokens",
-        },
+def _default_centroid_out(encoder: str) -> Path:
+    return (
+        ROOT
+        / "post_image_dataset"
+        / "ip_adapter"
+        / f"anima_pe_centroid_{encoder}.safetensors"
     )
+
+
+def _report_centroid(n: int, centroid: torch.Tensor, out_path: Path) -> None:
     print(
         f"centroid shape: {tuple(centroid.shape)}  "
         f"‖centroid‖={float(centroid.norm()):.3f}  "
         f"mean={float(centroid.mean()):.4f}  std={float(centroid.std()):.4f}"
     )
-    print(f"wrote {out_path}")
-
-
-def cache_path_for(
-    image_path: Path,
-    encoder: str,
-    cache_dir: Path | None = None,
-    image_dir: Path | None = None,
-) -> Path:
-    suffix = f"_anima_{encoder}.safetensors"
-    if cache_dir is None:
-        return image_path.with_name(image_path.stem + suffix)
-    from library.io.cache import resolve_cache_path
-
-    return Path(
-        resolve_cache_path(
-            str(image_path),
-            suffix,
-            cache_dir=str(cache_dir),
-            image_dir=str(image_dir) if image_dir is not None else None,
-        )
-    )
-
-
-class _PEImageGroup(Dataset):
-    """Reads images from one ``(W, H)`` resolution group.
-
-    Each ``__getitem__`` returns ``(str_path, str_out_path, [3, H, W] tensor in
-    [-1, 1])`` so the main thread can write safetensors in batch order without
-    holding the PIL.Image object across the worker boundary. We pass paths as
-    strings (instead of ``Path``) because ``Path`` is picklable but heavier;
-    safetensors' ``save_file`` takes a string anyway.
-    """
-
-    def __init__(self, paths: list[Path], out_paths: list[Path]):
-        self._paths = [str(p) for p in paths]
-        self._out_paths = [str(p) for p in out_paths]
-
-    def __len__(self) -> int:
-        return len(self._paths)
-
-    def __getitem__(self, idx: int):
-        p = self._paths[idx]
-        with Image.open(p) as img:
-            tensor = IMAGE_TRANSFORMS(np.array(img.convert("RGB")))
-        return p, self._out_paths[idx], tensor
-
-
-def _collate(batch):
-    """Stack tensors into ``[B, 3, H, W]``; group already guarantees same shape."""
-    paths, out_paths, tensors = zip(*batch)
-    return list(paths), list(out_paths), torch.stack(tensors, dim=0)
+    print(f"wrote {out_path}  (pooled {n} images)")
 
 
 def main() -> None:
@@ -274,10 +175,9 @@ def main() -> None:
             "alongside-image layout has no single dir to walk)"
         )
 
-    from safetensors.torch import save_file as _save_safetensors
-
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
 
+    # Centroid-only: no encoding, just pool existing caches.
     if args.centroid_only:
         centroid_cache_dir = cache_dir or (ROOT / "post_image_dataset" / "lora")
         if not centroid_cache_dir.is_absolute():
@@ -288,17 +188,19 @@ def main() -> None:
         out_path = (
             Path(args.centroid_out)
             if args.centroid_out
-            else ROOT
-            / "post_image_dataset"
-            / "ip_adapter"
-            / f"anima_pe_centroid_{args.encoder}.safetensors"
+            else _default_centroid_out(args.encoder)
         )
-        _write_centroid_sidecar(
-            centroid_cache_dir,
-            out_path,
-            encoder=args.encoder,
-            limit=args.centroid_limit,
-        )
+        try:
+            n, centroid = write_pe_centroid(
+                centroid_cache_dir,
+                out_path,
+                encoder=args.encoder,
+                limit=args.centroid_limit,
+            )
+        except (FileNotFoundError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+        _report_centroid(n, centroid, out_path)
         return
 
     data_dir = Path(args.dir)
@@ -320,122 +222,34 @@ def main() -> None:
         f"patch={bundle.bucket_spec.patch} cls={bundle.bucket_spec.use_cls}"
     )
 
-    # Group images by their post-resize pixel dimensions so a single forward
-    # serves the whole group (same encoder bucket -> same T_pe -> same shape).
-    if args.recursive:
-        image_files = sorted(
-            p
-            for p in data_dir.rglob("*")
-            if p.is_file() and p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-        # Per-subdir uniqueness — see cache_latents.py for the rationale.
-        stems: dict[tuple[Path, str], Path] = {}
-        collisions: list[tuple[str, Path, Path]] = []
-        for p in image_files:
-            key = (p.parent, p.stem)
-            if key in stems:
-                collisions.append((p.stem, stems[key], p))
-            else:
-                stems[key] = p
-        if collisions:
-            print(
-                "Duplicate image stems within a single folder of --dir "
-                "(caches collide on identical stems in the same subdir):"
-            )
-            for stem, a, b in collisions:
-                print(f"  '{stem}': {a} <-> {b}")
-            sys.exit(1)
-    else:
-        image_files = sorted(
-            p for p in data_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
-        )
-    if not image_files:
+    stats = cache_pe_features(
+        data_dir,
+        bundle,
+        cache_dir=cache_dir,
+        recursive=args.recursive,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        save_dtype=save_dtype,
+        progress=tqdm_progress(f"Caching {bundle.name} features"),
+    )
+    if stats.seen == 0:
         print(f"No images found in {data_dir}/", file=sys.stderr)
         sys.exit(1)
-
-    # Pre-skip cached files so workers never decode them. The header read in
-    # PIL.Image.open is cheap but adds up at 100k+ images; we still do it
-    # below for grouping, but only on uncached entries.
-    pending: list[Path] = []
-    skipped = 0
-    for p in image_files:
-        if cache_path_for(
-            p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
-        ).exists():
-            skipped += 1
-        else:
-            pending.append(p)
-
-    reso_groups: dict[tuple[int, int], list[Path]] = {}
-    for p in pending:
-        with Image.open(p) as img:
-            size = img.size  # (W, H)
-        reso_groups.setdefault(size, []).append(p)
-
-    cached = 0
-
-    metadata = {
-        "encoder": bundle.name,
-        "d_enc": str(bundle.d_enc),
-        "patch": str(bundle.bucket_spec.patch),
-    }
-
-    pbar = tqdm(
-        total=len(pending),
-        desc=f"Caching {bundle.name} features",
-    )
-    for (w, h), paths in reso_groups.items():
-        out_paths = [
-            cache_path_for(p, bundle.name, cache_dir=cache_dir, image_dir=data_dir)
-            for p in paths
-        ]
-        ds = _PEImageGroup(paths, out_paths)
-        loader = DataLoader(
-            ds,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=args.num_workers,
-            collate_fn=_collate,
-            pin_memory=(device.type == "cuda"),
-            persistent_workers=(args.num_workers > 0 and len(paths) > args.batch_size),
-        )
-        for batch_paths, batch_out_paths, img_batch in loader:
-            with torch.no_grad():
-                feats_list = encode_pe_from_imageminus1to1(
-                    bundle, img_batch, same_bucket=True
-                )
-            for src, dst, feats in zip(batch_paths, batch_out_paths, feats_list):
-                save_dict = {
-                    "image_features": feats.detach().to(save_dtype).cpu().contiguous()
-                }
-                _save_safetensors(save_dict, dst, metadata=metadata)
-                cached += 1
-                pbar.update(1)
-                pbar.set_postfix_str(f"{Path(src).name} → T={feats.shape[0]}")
-
-    pbar.close()
     print(
-        f"\n{bundle.name} feature caching complete: {cached} cached, {skipped} skipped"
+        f"\n{bundle.name} feature caching complete: "
+        f"{stats.written} cached, {stats.skipped} skipped"
     )
-
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
     if args.centroid:
         out_path = (
             Path(args.centroid_out)
             if args.centroid_out
-            else ROOT
-            / "post_image_dataset"
-            / "ip_adapter"
-            / f"anima_pe_centroid_{bundle.name}.safetensors"
+            else _default_centroid_out(bundle.name)
         )
-        _write_centroid_sidecar(
-            cache_dir,
-            out_path,
-            encoder=bundle.name,
-            limit=args.centroid_limit,
+        n, centroid = write_pe_centroid(
+            cache_dir, out_path, encoder=bundle.name, limit=args.centroid_limit
         )
+        _report_centroid(n, centroid, out_path)
 
 
 if __name__ == "__main__":
