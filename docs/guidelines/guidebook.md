@@ -33,16 +33,16 @@ This document is a comprehensive English guide for using the **Anima LoRA** trai
 
 ---
 
-## 2. Installing CUDA 13.0.2
+## 2. Installing CUDA 13.2
 
-You need the latest CUDA for stable operation with PyTorch 2.x + Flash Attention 2. Download 13.0.2 from the NVIDIA official archive.
+You need the latest CUDA for stable operation with PyTorch 2.x + Flash Attention 2. Download 13.2 from the NVIDIA official archive.
 
-Download page: <https://developer.nvidia.com/cuda-13-0-2-download-archive>
+Download page: <https://developer.nvidia.com/cuda-13-2-0-download-archive>
 
 ### 2.1 Windows Installation
 
 1. On the page above, select **Operating System: Windows → Architecture: x86_64 → Version: 11/10 → Installer Type: exe (local)**.
-2. Run the downloaded `cuda_13.0.2_windows.exe` → choose "Express (Recommended)" install.
+2. Run the downloaded `cuda_13.2.1_windows.exe` → choose "Express (Recommended)" install.
 3. After installation, verify in PowerShell:
 
    ```powershell
@@ -53,51 +53,13 @@ Download page: <https://developer.nvidia.com/cuda-13-0-2-download-archive>
 4. If `nvcc` is not recognized, add the following to your system `Path` environment variable:
 
    ```
-   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\bin
-   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0\libnvvp
+   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin
+   C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\libnvvp
    ```
 
 5. Reboot and verify `nvcc --version` again.
 
-> **Driver note**: CUDA 13.x requires NVIDIA driver 580 or higher. If you have an older driver, update it first via GeForce Experience or the NVIDIA Download Center.
-
-### 2.2 (Optional) Upgrading to CUDA 13.2 + torch 2.12 nightly
-
-The default install is CUDA 13.0 + torch 2.11 stable. For approximately **10% faster training** on RTX 50-series GPUs and similar, you can switch to CUDA 13.2 + torch 2.12 nightly (see [docs/optimizations/cuda132.md](../optimizations/cuda132.md) for benchmarks). No build tools are needed — a pre-built trimmed FA2 wheel is already referenced in `pyproject.toml` and `uv sync` will download it automatically.
-
-Steps:
-
-1. **Download and install CUDA 13.2.**
-   At <https://developer.nvidia.com/cuda-downloads?target_os=Windows>, select **Windows → x86_64 → 11/10 → exe (local)**. You can install it on top of 13.0 or let both versions coexist (they get separate `v13.2` and `v13.0` directories).
-2. **Toggle comments in `pyproject.toml`.** Make two edits:
-
-   **(a) torch / torchvision** — comment out the "Windows: stable" two lines and uncomment the "Windows: cuda132 opt-in" two lines inside `dependencies`:
-
-   ```toml
-   # Windows: stable (default).
-   # "torch>=2.11.0,<2.12 ; sys_platform == 'win32'",
-   # "torchvision>=0.26.0,<0.27 ; sys_platform == 'win32'",
-   # Windows: cuda132 opt-in. ...
-   "torch>=2.12.0.dev0,<2.13 ; sys_platform == 'win32'",
-   "torchvision>=0.27.0.dev0,<0.28 ; sys_platform == 'win32'",
-   ```
-
-   **(b) flash-attn** — comment out the "Windows: stable (default) — built against torch 2.11 + CUDA 13.0" line in the same `dependencies` block, then uncomment the "Windows: cuda132 opt-in — trimmed FA2" line below it:
-
-   ```toml
-   # Windows: stable (default) — built against torch 2.11 + CUDA 13.0.
-   # "flash-attn @ https://github.com/mjun0812/.../flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-   # Windows: cuda132 opt-in — trimmed FA2 ...
-   "flash-attn @ https://github.com/sorryhyun/flash-attention-sm120-fix/releases/download/fa2cuda132/flash_attn-2.8.4-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-   ```
-
-3. **Re-sync**: run `uv sync`. This downloads torch 2.12 nightly from the cu132 index and installs the trimmed FA2 wheel from the release.
-
-> To revert: toggle the comments back to their original state and run `uv sync` again.
->
-> If you need to build from source (different GPU, different Python version, or managing wheels from your own fork): see [docs/optimizations/cuda132.md](../optimizations/cuda132.md).
-
----
+> **Driver note**: CUDA 13.x requires NVIDIA driver 595 or higher. If you have an older driver, update it first via GeForce Experience or the NVIDIA Download Center.
 
 ## 3. Python Environment and Repository Setup
 
@@ -592,6 +554,5 @@ make update -- --dry-run # Preview which files would change
 - [`docs/methods/hydra-lora.md`](../methods/hydra-lora.md) — HydraLoRA multi-head routing
 - [`docs/methods/reft.md`](../methods/reft.md) — ReFT representation editing
 - [`docs/experimental/postfix.md`](../experimental/postfix.md) — Postfix (cond+ortho)
-- [`docs/optimizations/cuda132.md`](../optimizations/cuda132.md) — How to upgrade to CUDA 13.2
 
 Questions and bug reports are welcome on GitHub Issues. Happy training!
