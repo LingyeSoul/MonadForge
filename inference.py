@@ -51,8 +51,12 @@ logger = logging.getLogger(__name__)
 # region Argument parsing
 
 
-def parse_args() -> argparse.Namespace:
-    """parse command line arguments"""
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """parse command line arguments
+
+    ``argv=None`` reads ``sys.argv`` (the CLI path). Pass an explicit list to
+    build an args namespace programmatically — see ``examples/01_generate.py``.
+    """
     parser = argparse.ArgumentParser(description="HunyuanImage inference script")
 
     parser.add_argument("--dit", type=str, default=None, help="DiT directory or path")
@@ -558,7 +562,7 @@ def parse_args() -> argparse.Namespace:
         "'reduce-overhead'). None = inductor default.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Validate arguments
     if args.from_file and args.interactive:
