@@ -290,6 +290,13 @@ def _load_toml_with_base(path: str, *, strict: bool = False) -> dict:
     return merged
 
 
+def _posix(path: str) -> str:
+    """Normalize a path to forward slashes for stable, cross-platform
+    human-readable provenance tags (e.g. ``configs/base.toml`` on Windows too).
+    """
+    return path.replace(os.sep, "/")
+
+
 def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, str, str]:
     """Resolve a preset name to ``(section, source_path, source_tag)``.
 
@@ -305,14 +312,14 @@ def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, st
             section = presets[preset]
             if not isinstance(section, dict):
                 raise ValueError(f"Preset '{preset}' in {presets_path} is not a table")
-            return dict(section), presets_path, f"{presets_path}[{preset}]"
+            return dict(section), presets_path, f"{_posix(presets_path)}[{preset}]"
     custom_path = os.path.join(configs_dir, "custom", f"{preset}.toml")
     if os.path.exists(custom_path):
         with open(custom_path, "r", encoding="utf-8") as f:
             data = toml.load(f)
         if not isinstance(data, dict):
             raise ValueError(f"Custom preset {custom_path} is not a TOML table")
-        return data, custom_path, custom_path
+        return data, custom_path, _posix(custom_path)
     available: list[str] = []
     if os.path.exists(presets_path):
         with open(presets_path, "r", encoding="utf-8") as f:
@@ -369,9 +376,10 @@ def load_method_preset(
     with open(base_path, "r", encoding="utf-8") as f:
         base_raw = toml.load(f)
     base_flat = _flatten_toml(base_raw, source=base_path, strict=strict)
+    base_tag = _posix(base_path)
     for k, v in base_flat.items():
         merged[k] = v
-        provenance[k] = base_path
+        provenance[k] = base_tag
 
     preset_section, preset_path, preset_tag = _resolve_preset(preset, configs_dir)
     preset_flat = _flatten_toml(
@@ -384,9 +392,10 @@ def load_method_preset(
     with open(method_path, "r", encoding="utf-8") as f:
         method_raw = toml.load(f)
     method_flat = _flatten_toml(method_raw, source=method_path, strict=strict)
+    method_tag = _posix(method_path)
     for k, v in method_flat.items():
         merged[k] = v
-        provenance[k] = method_path
+        provenance[k] = method_tag
 
     if return_provenance:
         return merged, provenance

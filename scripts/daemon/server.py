@@ -239,7 +239,12 @@ class _Handler(BaseHTTPRequestHandler):
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # SO_REUSEADDR means "rebind a TIME_WAIT socket" on POSIX (safe, wanted for
+    # quick restarts) but "double-bind a live in-use port" on Windows — which
+    # would silently spin up a second daemon on a port a sibling/stranger
+    # already holds, defeating serve_with_fallback's collision detection. So
+    # enable it only off-Windows; on Windows a contested bind must fail loudly.
+    allow_reuse_address = os.name != "nt"
 
     def __init__(self, addr, manager: JobManager):
         super().__init__(addr, _Handler)
