@@ -17,7 +17,7 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 8000
+iterations = 20000
 batch_size = 1
 seed = 42
 compile_inductor_mode = "reduce-overhead"
@@ -48,7 +48,7 @@ label = "single_0.5_sigma0.5"
 sigma_jitter = 0.0
 
 [optim]
-lr = 2e-5
+lr = 1e-5
 weight_decay = 0.0
 grad_clip = 1.0
 # Micro-steps accumulated per optimizer step; the SPD stage is resampled each

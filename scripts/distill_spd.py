@@ -199,9 +199,12 @@ def main():
     channel_scaling_alpha = float(
         pick(args.channel_scaling_alpha, "network.channel_scaling_alpha", 0.0)
     )
+    compile_inductor_mode = pick(
+        args.compile_inductor_mode, "compile_inductor_mode", None
+    )
     if (
         args.torch_compile
-        and args.compile_inductor_mode == "reduce-overhead"
+        and compile_inductor_mode == "reduce-overhead"
         and (args.blocks_to_swap > 0)
     ):
         logger.warning(
@@ -400,14 +403,14 @@ def main():
             enabled=True,
             cache_size_limit=2 * n_shapes + 8,
             backend=args.dynamo_backend,
-            mode=args.compile_inductor_mode,
+            mode=compile_inductor_mode,
         )
         logger.info(
             "torch_compile: %d block._forward compiled (backend=%s, mode=%s); "
             "up to %d (stage x bucket) shapes recompile over the first steps.",
             len(model.blocks),
             args.dynamo_backend,
-            args.compile_inductor_mode,
+            compile_inductor_mode,
             n_shapes,
         )
 
@@ -507,6 +510,14 @@ def main():
 
     # --- Training loop ---
     logger.info("Starting SPD distillation: %d iterations", iterations)
+    # Under reduce-overhead (CUDA graphs), grad_accum keeps the previous step's
+    # autograd outputs alive when the next step's forward begins, so inductor
+    # skips the cudagraph fast path ("outputs from a previous step still require
+    # backward"). Marking the step boundary lets the cudagraph tree recycle its
+    # static pool each optimizer step. No-op when cudagraphs aren't active.
+    cudagraph_step = bool(
+        args.torch_compile and compile_inductor_mode == "reduce-overhead"
+    )
     data_iter = [iter(dataloader)]  # boxed so _micro_step can refresh on exhaustion
     progress = tqdm(range(iterations), desc="spd")
     # GPU-side logging accumulators — flushed in one stacked .tolist() at every
@@ -587,6 +598,8 @@ def main():
         return loss.detach(), stage_idx
 
     for step in progress:
+        if cudagraph_step:
+            torch.compiler.cudagraph_mark_step_begin()
         step_loss = torch.zeros((), device=device)  # mean micro-loss, GPU-side
         for _ in range(grad_accum):
             micro_loss, stage_idx = _micro_step()

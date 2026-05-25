@@ -45,7 +45,6 @@ output_name = "anima_quarter"
 # compile_inductor_mode = "reduce-overhead"
 
 channel_scaling_alpha = 0.5
-max_data_loader_n_workers=1
 
 # -------------
 # Ortho-lora
