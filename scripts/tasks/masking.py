@@ -24,6 +24,25 @@ from ._common import PY, ROOT, run
 
 MASK_OUTPUT_DIR = ROOT / "post_image_dataset" / "masks"
 RESIZED_IMAGE_DIR = ROOT / "post_image_dataset" / "resized"
+SAM_CONFIG = ROOT / "configs" / "sam_mask.yaml"
+
+
+def _config_path_pattern() -> str | None:
+    """Read ``path_pattern`` from sam_mask.yaml so both backends filter alike.
+
+    The key lives in the SAM config but is a dataset-level filter, so ``make
+    mask`` forwards it to the MIT backend too (both run on the same resized
+    dir). Missing key / ``"*"`` means mask everything.
+    """
+    try:
+        import yaml
+
+        with open(SAM_CONFIG) as f:
+            cfg = yaml.safe_load(f) or {}
+    except (OSError, ImportError):
+        return None
+    pattern = cfg.get("path_pattern")
+    return pattern if pattern and pattern != "*" else None
 
 
 def _run_sam(image_dir: Path, out_dir: Path, extra: list[str]) -> None:
@@ -90,15 +109,17 @@ def cmd_mask(extra):
     if not (run_sam or run_mit):
         print("Both SAM and MIT masking are disabled — nothing to do.")
         return
+    pattern = _config_path_pattern()
+    pattern_args = ["--path-pattern", pattern] if pattern else []
     with tempfile.TemporaryDirectory(prefix="anima-masks-") as tmp_root:
         merge_sources: list[str] = []
         if run_sam:
             tmp_sam = Path(tmp_root) / "sam"
-            _run_sam(RESIZED_IMAGE_DIR, tmp_sam, [])
+            _run_sam(RESIZED_IMAGE_DIR, tmp_sam, [*pattern_args])
             merge_sources.append(str(tmp_sam))
         if run_mit:
             tmp_mit = Path(tmp_root) / "mit"
-            _run_mit(RESIZED_IMAGE_DIR, tmp_mit, [])
+            _run_mit(RESIZED_IMAGE_DIR, tmp_mit, [*pattern_args])
             merge_sources.append(str(tmp_mit))
         MASK_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         run(

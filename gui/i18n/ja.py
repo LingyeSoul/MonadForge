@@ -61,6 +61,14 @@ STRINGS: dict[str, str] = {
         "MIT/ComicTextDetector テキストセグメンタの信頼度しきい値。"
         "デフォルト 0.8。"
     ),
+    "preprocess_mask_path_pattern": "マスクパスフィルター:",
+    "preprocess_mask_path_pattern_tip": (
+        "マスク対象のリサイズ済み画像を絞り込む fnmatch glob パターン。"
+        "post_image_dataset/resized を基準とした各パスに対してマッチングされます。"
+        "SAM と MIT の両方に適用されます。学習用 path_pattern と同じ文法: "
+        "'*'(または空欄) で全件マスク; 'char_a/*' で 1 サブフォルダー; "
+        "'char_a/*|char_b/*' で OR 結合。"
+    ),
     "preprocess_run_mask": "マスキング実行",
     "preprocess_run_sam_mask": "SAM マスキング実行",
     "preprocess_run_sam_mask_tip": (

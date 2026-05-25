@@ -58,6 +58,13 @@ STRINGS: dict[str, str] = {
         "Confidence threshold for the MIT/ComicTextDetector text segmenter. "
         "Default 0.8."
     ),
+    "preprocess_mask_path_pattern": "Mask path filter:",
+    "preprocess_mask_path_pattern_tip": (
+        "fnmatch glob restricting which resized images get masked, matched on "
+        "each path relative to post_image_dataset/resized. Scopes BOTH SAM and "
+        "MIT. Same syntax as the training path_pattern: '*' (or blank) masks "
+        "everything; 'char_a/*' one subfolder; 'char_a/*|char_b/*' to OR-combine."
+    ),
     "preprocess_run_mask": "Run masking",
     "preprocess_run_sam_mask": "Run SAM masking",
     "preprocess_run_sam_mask_tip": (

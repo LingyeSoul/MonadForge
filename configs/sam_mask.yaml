@@ -4,3 +4,10 @@ prompts:
 
 threshold: 0.5
 dilate: 5
+
+# fnmatch glob on each image's path relative to the mask --image-dir
+# (post_image_dataset/resized for `make mask`), restricting which images get
+# masked. Same semantics as base.toml's training path_pattern; `make mask`
+# forwards it to both SAM and MIT backends. `*` (or unset) masks everything.
+# Use `|` to OR-combine: `char_a/*|char_b/*`.
+path_pattern: "*"

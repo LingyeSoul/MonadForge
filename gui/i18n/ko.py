@@ -56,6 +56,14 @@ STRINGS: dict[str, str] = {
     "preprocess_mit_threshold_tip": (
         "MIT/ComicTextDetector 텍스트 세그멘터의 신뢰도 임계값. 기본값 0.8."
     ),
+    "preprocess_mask_path_pattern": "마스크 경로 필터:",
+    "preprocess_mask_path_pattern_tip": (
+        "마스킹할 리사이즈 이미지를 제한하는 fnmatch glob 패턴. "
+        "post_image_dataset/resized 기준 각 경로에 대해 매칭됩니다. "
+        "SAM과 MIT 모두에 적용됩니다. 학습용 path_pattern과 동일한 문법: "
+        "'*'(또는 빈 값)이면 전체 마스킹; 'char_a/*'이면 한 하위 폴더; "
+        "'char_a/*|char_b/*'으로 OR 조합."
+    ),
     "preprocess_run_mask": "마스킹 실행",
     "preprocess_run_sam_mask": "SAM 마스킹 실행",
     "preprocess_run_sam_mask_tip": (

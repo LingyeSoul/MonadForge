@@ -67,6 +67,7 @@ DEFAULT_TE_TAG_DROPOUT = 0.1
 DEFAULT_SAM_PROMPTS = ("speech bubble", "text bubble")
 DEFAULT_SAM_THRESHOLD = 0.5
 DEFAULT_SAM_DILATE = 5
+DEFAULT_MASK_PATH_PATTERN = "*"
 DEFAULT_MIT_TEXT_THRESHOLD = 0.8
 DEFAULT_MIT_DILATE = 5
 DEFAULT_RUN_SAM_MASK = True
@@ -118,9 +119,21 @@ class _IndentedListDumper(yaml.SafeDumper):
         return super().increase_indent(flow, False)
 
 
-def _save_sam_yaml(prompts: list[str], threshold: float, dilate: int) -> None:
+def _save_sam_yaml(
+    prompts: list[str],
+    threshold: float,
+    dilate: int,
+    path_pattern: str = DEFAULT_MASK_PATH_PATTERN,
+) -> None:
     SAM_YAML.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"prompts": prompts, "threshold": threshold, "dilate": dilate}
+    payload = {
+        "prompts": prompts,
+        "threshold": threshold,
+        "dilate": dilate,
+        # Read by scripts/tasks/masking.py and forwarded to BOTH the SAM and
+        # MIT backends; "*" (the default) masks every resized image.
+        "path_pattern": path_pattern or DEFAULT_MASK_PATH_PATTERN,
+    }
     text = yaml.dump(
         payload,
         Dumper=_IndentedListDumper,
@@ -245,6 +258,7 @@ class PreprocessingTab(LazyTabMixin, QWidget):
         sam_prompts = sam_yaml.get("prompts") or list(DEFAULT_SAM_PROMPTS)
         sam_threshold = float(sam_yaml.get("threshold", DEFAULT_SAM_THRESHOLD))
         sam_dilate = int(sam_yaml.get("dilate", DEFAULT_SAM_DILATE))
+        mask_path_pattern = sam_yaml.get("path_pattern") or DEFAULT_MASK_PATH_PATTERN
 
         # Text caching group
         text_box = QGroupBox(t("preprocess_text_caching"))
@@ -311,6 +325,16 @@ class PreprocessingTab(LazyTabMixin, QWidget):
         sam_form.addRow(
             self._field_label("sam_dilate", t("preprocess_dilate")),
             self.sam_dilate_spin,
+        )
+
+        # Stored in sam_mask.yaml but scopes BOTH backends — masking.py reads
+        # it and forwards --path-pattern to SAM and MIT alike.
+        self.mask_path_pattern_edit = QLineEdit(mask_path_pattern)
+        self.mask_path_pattern_edit.setPlaceholderText("*")
+        self.mask_path_pattern_edit.setToolTip(t("preprocess_mask_path_pattern_tip"))
+        sam_form.addRow(
+            self._field_label("mask_path_pattern", t("preprocess_mask_path_pattern")),
+            self.mask_path_pattern_edit,
         )
         sam_box.setLayout(sam_form)
         form_layout.addWidget(sam_box)
@@ -479,7 +503,15 @@ class PreprocessingTab(LazyTabMixin, QWidget):
         if not prompts:
             prompts = list(DEFAULT_SAM_PROMPTS)
 
-        _save_sam_yaml(prompts, sam_threshold, int(self.sam_dilate_spin.value()))
+        mask_path_pattern = (
+            self.mask_path_pattern_edit.text().strip() or DEFAULT_MASK_PATH_PATTERN
+        )
+        _save_sam_yaml(
+            prompts,
+            sam_threshold,
+            int(self.sam_dilate_spin.value()),
+            mask_path_pattern,
+        )
         _save_settings(
             {
                 "caption_shuffle_variants": int(self.shuffle_spin.value()),

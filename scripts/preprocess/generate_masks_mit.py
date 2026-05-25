@@ -156,6 +156,16 @@ def main() -> None:
             "subdir structure under --mask-dir."
         ),
     )
+    parser.add_argument(
+        "--path-pattern",
+        type=str,
+        default=None,
+        help=(
+            "fnmatch glob (| to OR-combine) on each image's path relative to "
+            "--image-dir, restricting which images get masked. Same semantics "
+            "as the training path_pattern."
+        ),
+    )
     args = parser.parse_args()
 
     dilate_kernel = (
@@ -172,7 +182,9 @@ def main() -> None:
     # walk_images enforces per-subfolder stem uniqueness (same-folder stem
     # collisions would overwrite each other's mask); same stem across folders
     # is fine — the nested output layout disambiguates by subdir.
-    image_files = walk_images(image_dir, recursive=args.recursive)
+    image_files = walk_images(
+        image_dir, recursive=args.recursive, pattern=args.path_pattern
+    )
 
     # Filter to work items
     work_items = []

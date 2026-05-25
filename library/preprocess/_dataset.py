@@ -25,6 +25,7 @@ from typing import Callable, Iterable
 from PIL import Image
 
 from library.datasets.image_utils import _assert_unique_stems, glob_images_pathlib
+from library.datasets.subsets import filter_paths_by_glob
 
 
 @dataclass
@@ -42,7 +43,9 @@ class PreprocessStats:
     failed: int = 0
 
 
-def walk_images(data_dir: Path, recursive: bool = False) -> list[Path]:
+def walk_images(
+    data_dir: Path, recursive: bool = False, pattern: str | None = None
+) -> list[Path]:
     """Enumerate dataset images under ``data_dir``, sorted and de-duplicated.
 
     With ``recursive`` set, walks subfolders; the same stem may repeat across
@@ -50,8 +53,18 @@ def walk_images(data_dir: Path, recursive: bool = False) -> list[Path]:
     that share a stem *within one folder* would overwrite each other's
     stem-keyed sidecar, so that raises ``ValueError`` (via
     :func:`library.datasets.image_utils._assert_unique_stems`).
+
+    ``pattern`` is an optional ``fnmatch`` glob (``|``-OR-combined) matched
+    against each path relative to ``data_dir``, with the same semantics as the
+    training subset ``path_pattern`` (:func:`filter_paths_by_glob`). ``None``,
+    empty, or ``"*"`` keeps everything. The uniqueness check runs on the
+    filtered set so a narrowed pattern can't trip a collision in files it
+    excludes.
     """
     paths = glob_images_pathlib(data_dir, recursive)
+    if pattern and pattern != "*":
+        keep = filter_paths_by_glob([str(p) for p in paths], str(data_dir), pattern)
+        paths = [p for p, k in zip(paths, keep) if k]
     _assert_unique_stems([str(p) for p in paths], source_label=str(data_dir))
     return paths
 

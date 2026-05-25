@@ -65,6 +65,17 @@ def main() -> None:
             "subdir structure under --mask-dir."
         ),
     )
+    parser.add_argument(
+        "--path-pattern",
+        type=str,
+        default=None,
+        help=(
+            "fnmatch glob (| to OR-combine) on each image's path relative to "
+            "--image-dir, restricting which images get masked. Same semantics "
+            "as the training path_pattern. Overrides the YAML's path_pattern "
+            "when given; falls back to it otherwise."
+        ),
+    )
     args = parser.parse_args()
 
     with open(args.config) as f:
@@ -73,6 +84,7 @@ def main() -> None:
     prompts = config["prompts"]
     threshold = config.get("threshold", 0.5)
     dilate = config.get("dilate", 5)
+    path_pattern = args.path_pattern or config.get("path_pattern")
     dilate_kernel = np.ones((dilate, dilate), dtype=np.uint8) if dilate > 0 else None
 
     import torch
@@ -96,7 +108,9 @@ def main() -> None:
     # multiple subfolders — the nested output layout disambiguates by folder —
     # but two files with the same stem in the *same* folder would overwrite
     # each other's mask). walk_images raises on that collision.
-    image_files = walk_images(image_dir, recursive=args.recursive)
+    image_files = walk_images(
+        image_dir, recursive=args.recursive, pattern=path_pattern
+    )
 
     # Filter to work items upfront
     work_items = []

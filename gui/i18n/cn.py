@@ -60,6 +60,14 @@ STRINGS: dict[str, str] = {
     "preprocess_mit_threshold_tip": (
         "MIT/ComicTextDetector 文字分割器的置信度阈值。默认 0.8。"
     ),
+    "preprocess_mask_path_pattern": "蒙版路径过滤器:",
+    "preprocess_mask_path_pattern_tip": (
+        "限制哪些已缩放图像参与蒙版生成的 fnmatch glob 模式，"
+        "以 post_image_dataset/resized 为基准对每个路径进行匹配。"
+        "同时作用于 SAM 和 MIT。与训练用 path_pattern 语法相同："
+        "'*'（或空白）遮罩全部；'char_a/*' 限定单个子文件夹；"
+        "'char_a/*|char_b/*' 进行 OR 组合。"
+    ),
     "preprocess_run_mask": "运行蒙版生成",
     "preprocess_run_sam_mask": "运行 SAM 蒙版",
     "preprocess_run_sam_mask_tip": (
