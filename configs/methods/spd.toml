@@ -17,14 +17,14 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 20000
+iterations = 2000
 batch_size = 1
 seed = 42
 compile_inductor_mode = "reduce-overhead"
 
 [network]
-rank = 64
-alpha = 64
+rank = 32
+alpha = 32
 attn_mode = "flash"
 # SmoothQuant-style per-channel input pre-scaling on the LoRA down projection
 # (vendored stats: networks/calibration/channel_stats.safetensors). 0.0 = off /
@@ -41,14 +41,14 @@ channel_scaling_alpha = 0.5
 # run t∈(0.5,1] at half resolution, expand at σ≈0.5, finish full-res.
 [schedule]
 stages = [0.5, 1.0]
-transition_sigmas = [0.5]
-label = "single_0.5_sigma0.5"
+transition_sigmas = [0.7]
+label = "single_0.5_sigma0.7"
 # Optional R2 robustness: jitter the transition σ by ±this (absolute, uniform)
 # each step so the segment geometry is learned as a band, not a point. 0 = off.
 sigma_jitter = 0.0
 
 [optim]
-lr = 1e-5
+lr = 2e-5
 weight_decay = 0.0
 grad_clip = 1.0
 # Micro-steps accumulated per optimizer step; the SPD stage is resampled each
