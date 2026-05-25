@@ -117,7 +117,8 @@ COMMANDS = {
     # ── Preprocess ────────────────────────────────────────────────────
     "preprocess": (
         preprocess.cmd_preprocess,
-        "Full preprocessing (resize + VAE + text embeddings)",
+        "Full preprocessing (resize + VAE + text embeddings + caption index "
+        "when the tagger vocab is present)",
     ),
     "preprocess-config": (
         preprocess.cmd_preprocess_config,
@@ -174,6 +175,10 @@ COMMANDS = {
     "download-pe-spatial": (
         downloads.cmd_download_pe_spatial,
         "Download PE-Spatial-B16-512 (Anima Tagger aux encoder)",
+    ),
+    "download-tagger": (
+        downloads.cmd_download_tagger,
+        "Download Anima Tagger v2 vocab.json (caption-index dependency; not the full model)",
     ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (

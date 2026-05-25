@@ -1,4 +1,4 @@
-"""Model download entry-points (Anima base, SAM3, MIT, PE-Core).
+"""Model download entry-points (Anima base, SAM3, MIT, PE-Core, Tagger vocab).
 
 All targets shell out to ``hf download`` (rather than the SDK) so the user's
 ``hf auth login`` cache is honored.
@@ -49,6 +49,34 @@ def cmd_download_pe_spatial(_extra):
     )
 
 
+def cmd_download_tagger(_extra):
+    # Just the Anima Tagger v2 ``vocab.json`` (~0.7 MB) — the only piece
+    # ``make caption-index`` / ``make preprocess`` need to classify tags. The
+    # full tagger model is not fetched here (train it locally or pull it
+    # separately); this deliberately won't clobber a local ``model.safetensors``.
+    dst = ROOT / "models" / "captioners" / "anima-tagger-v2"
+    dst.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "hf",
+            "download",
+            "sorryhyun/anima-tagger",
+            "v2/vocab.json",
+            "--local-dir",
+            "models/captioners/anima-tagger-v2",
+        ]
+    )
+    # The file lands under the repo's ``v2/`` prefix; flatten it up one level.
+    sub = dst / "v2"
+    if sub.exists():
+        for f in sub.iterdir():
+            target = dst / f.name
+            if target.exists():
+                target.unlink()
+            shutil.move(str(f), str(target))
+        sub.rmdir()
+
+
 def cmd_download_mit(_extra):
     (ROOT / "models" / "mit").mkdir(parents=True, exist_ok=True)
     run(
@@ -97,3 +125,4 @@ def cmd_download_models(_extra):
     cmd_download_mit(_extra)
     cmd_download_pe(_extra)
     cmd_download_pe_spatial(_extra)
+    cmd_download_tagger(_extra)
