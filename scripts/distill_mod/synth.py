@@ -5,7 +5,7 @@ sibling latent NPZ's resolution, runs the frozen teacher (base DiT,
 ``skip_pooled_text_proj=True``) from fresh noise through full CFG denoising
 (positive = cached crossattn_emb v0, negative = T5("") from the Phase 1
 sidecar), saves the resulting clean latent under ``--synth_dir`` using the
-same NPZ layout as ``preprocess/cache_latents.py``. The trainer can then point
+same NPZ layout as ``scripts/preprocess/cache_latents.py``. The trainer can then point
 at ``--synth_dir`` instead of (or alongside) the real-image cache to fit on
 the teacher's own manifold, removing the real-vs-teacher distribution gap
 that inflates the irreducible MSE floor.
@@ -173,7 +173,7 @@ def generate_synthetic_latents(
     buckets: list[tuple[int, int]] | None = None,
     n_per_bucket: int | None = None,
     shuffle_seed: int | None = None,
-    compile_core: bool = True,
+    do_compile: bool = True,
 ) -> None:
     """Phase 2 entry point. Iterates TE caches, runs teacher denoising, dumps NPZs."""
     from library.anima import weights as anima_utils
@@ -228,19 +228,26 @@ def generate_synthetic_latents(
         model.move_to_device_except_swap_blocks(device)
     else:
         model.to(device)
-    model.set_static_token_count(4096)
     model.eval()
 
-    # Compile the constant-shape block stack — set_static_token_count(4096)
-    # above is the precondition. Traces once; one CUDAGraph serves every
-    # bucket in pairs, and both CFG branches reuse it.
-    if compile_core and blocks_to_swap == 0:
-        try:
-            model.compile_core(mode="default")
-        except Exception as e:
-            logger.warning(f"compile_core failed ({e}); falling back to eager.")
-    elif compile_core and blocks_to_swap > 0:
-        logger.info("compile_core skipped: incompatible with blocks_to_swap>0.")
+    # compile_blocks turns on native-shape flattening (each sample denoised at
+    # its real latent token count, no padding → no flash pad-leak baked into the
+    # teacher latents) and traces one block graph per distinct token count in
+    # `pairs`. The pool spans more than the 2 CONSTANT_TOKEN_BUCKETS families, so
+    # pre-raise the dynamo cache (compile_blocks' max() won't lower it) to trace
+    # every distinct shape instead of falling back to eager mid-warmup.
+    if do_compile and blocks_to_swap == 0:
+        import torch._dynamo as _dynamo
+
+        n_res = len({get_latent_resolution(p.npz_path) for p in pairs})
+        _dynamo.config.cache_size_limit = max(
+            _dynamo.config.cache_size_limit, 2 * n_res + 8
+        )
+        model.compile_blocks(mode="default")
+    elif do_compile and blocks_to_swap > 0:
+        logger.info(
+            "torch.compile skipped: block swap moves weights mid-forward; eager."
+        )
 
     crossattn_neg = _load_uncond_for_synth(uncond_path, device, dtype)
 

@@ -62,7 +62,6 @@ def _path_overrides() -> dict:
     global _PATH_OVERRIDES_CACHE
     if _PATH_OVERRIDES_CACHE is not None:
         return _PATH_OVERRIDES_CACHE
-    sys.path.insert(0, str(ROOT))
     try:
         from library.config.io import load_path_overrides
 
@@ -98,7 +97,6 @@ def bespoke_preset_flags(preset: str) -> list[str]:
     ``--no_grad_ckpt`` (the trainable footprints here are tiny; ckpt is a perf
     loss when VRAM isn't tight). Other preset keys are silently dropped.
     """
-    sys.path.insert(0, str(ROOT))
     try:
         from library.config.io import load_preset_section
     except Exception as e:  # noqa: BLE001
@@ -447,7 +445,7 @@ def _nsys_run_stats(rep_path: Path) -> None:
 
 
 def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
-    """Build the ``accelerate launch ... train.py`` command list (no side effects).
+    """Build the ``train.py`` launch command list (no side effects).
 
     Pure command construction — the returned list is exactly what launches
     training. Extracted from ``accelerate_launch`` so other spawners (the
@@ -458,11 +456,20 @@ def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
     wrapper stays in ``accelerate_launch``: it's a CLI-only concern, not
     something the daemon ever applies.
 
-    Invoked as ``python -m accelerate.commands.accelerate_cli launch`` rather
-    than the bare ``accelerate`` console-script. This keeps the launching
-    interpreter propagating from this process through to accelerate's workers
-    (via ``sys.executable``) — the accelerate.exe shim hardcodes python.exe as
-    the worker interpreter, defeating that.
+    Single-GPU fast path (default): invoke ``train.py`` directly. The
+    ``accelerate launch`` wrapper is a *second* full Python bootstrap — the
+    launcher process imports accelerate (which drags in torch, ~5s) only to
+    spawn one local worker, pure overhead on a single-GPU box. ``train.py``
+    builds its own ``Accelerator()``, which defaults to single-process, and
+    ``prepare_accelerator`` reads ``mixed_precision`` from the config chain
+    (``base.toml`` → ``bf16``), so the launcher's ``--mixed_precision bf16`` was
+    redundant. The dropped ``--num_cpu_threads_per_process 3`` only capped CPU
+    intra-op threads to avoid multi-process oversubscription — irrelevant for a
+    single GPU-bound process.
+
+    Set ``ANIMA_ACCELERATE_LAUNCH=1`` to force the accelerate launcher, which
+    multi-GPU / distributed runs genuinely need (it sets rank / world-size env
+    and re-execs one worker per device).
 
     ``python_exe`` overrides the launching interpreter (default ``PY`` =
     python.exe). The detached daemon passes ``pythonw.exe`` here: a uv-venv
@@ -471,11 +478,21 @@ def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
     pops a console window that, when closed, kills the job with
     ``STATUS_CONTROL_C_EXIT``. pythonw.exe never allocates a console; stdio
     still works because the daemon redirects the child's stdout/stderr to a
-    file (not an inherited console), and the worker interpreter inherited via
-    sys.executable is windowless too.
+    file (not an inherited console). With the direct path train.py runs as that
+    windowless interpreter itself; under the accelerate launcher the workers it
+    re-spawns inherit it via ``sys.executable``.
+
+    The accelerate path is invoked as
+    ``python -m accelerate.commands.accelerate_cli launch`` rather than the bare
+    ``accelerate`` console-script, so the launching interpreter propagates to
+    accelerate's workers via ``sys.executable`` — the accelerate.exe shim
+    hardcodes python.exe as the worker interpreter, defeating that.
     """
+    py = python_exe or PY
+    if not os.environ.get("ANIMA_ACCELERATE_LAUNCH"):
+        return [py, "train.py", *args]
     return [
-        python_exe or PY,
+        py,
         "-m",
         "accelerate.commands.accelerate_cli",
         "launch",

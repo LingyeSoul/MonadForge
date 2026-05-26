@@ -355,23 +355,19 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="dynamo backend type (default is inductor)",
     )
     parser.add_argument(
-        "--compile_mode",
-        type=str,
-        default="blocks",
-        choices=["blocks", "full"],
-        help="torch.compile mode: 'blocks' compiles each DiT block individually (default), "
-        "'full' compiles the entire model as one graph for cross-block memory optimization "
-        "(incompatible with gradient checkpointing and block swap)",
-    )
-    parser.add_argument(
         "--compile_inductor_mode",
         type=str,
         default=None,
-        choices=[None, "default", "reduce-overhead", "max-autotune", "max-autotune-no-cudagraphs"],
+        choices=[
+            None,
+            "default",
+            "reduce-overhead",
+            "max-autotune",
+            "max-autotune-no-cudagraphs",
+        ],
         help="Inductor preset forwarded as torch.compile(..., mode=...). "
         "'reduce-overhead' enables CUDAGraphs — requires stable tensor addresses "
-        "across steps and is incompatible with block swap. Works with both "
-        "--compile_mode=blocks and --compile_mode=full (per-block graph vs one graph).",
+        "across steps and is incompatible with block swap.",
     )
     parser.add_argument(
         "--xformers", action="store_true", help="use xformers for CrossAttention"
@@ -400,7 +396,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--max_data_loader_n_workers",
         type=int,
-        default=4,
+        default=1,
         help="max num workers for DataLoader",
     )
     parser.add_argument(
@@ -414,7 +410,7 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--dataloader_prefetch_factor",
         type=int,
-        default=12,
+        default=1,
         help="prefetch_factor for DataLoader workers (only valid when num_workers>0)",
     )
     parser.add_argument(
@@ -728,14 +724,13 @@ def add_masked_loss_arguments(parser: argparse.ArgumentParser):
 
 def add_dit_training_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
-        "--cache_text_encoder_outputs",
-        action="store_true",
-        help="cache text encoder outputs",
-    )
-    parser.add_argument(
-        "--cache_text_encoder_outputs_to_disk",
-        action="store_true",
-        help="cache text encoder outputs to disk",
+        "--use_text_cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cache text-encoder outputs to disk and read them during training "
+        "(load TE → cache → free → load DiT). Set false for live encoding "
+        "(e.g. IP-Adapter live mode). Subsumes the legacy "
+        "cache_text_encoder_outputs{,_to_disk} pair.",
     )
     parser.add_argument(
         "--text_encoder_batch_size",
@@ -969,11 +964,16 @@ def verify_training_args(args: argparse.Namespace):
     if args.v2 and args.clip_skip is not None:
         logger.warning("v2 with clip_skip will be unexpected")
 
-    if args.cache_latents_to_disk and not args.cache_latents:
-        args.cache_latents = True
-        logger.warning(
-            "cache_latents_to_disk is enabled, so cache_latents is also enabled"
-        )
+    # Expand the two semantic cache knobs into the legacy internal flags that
+    # the dataset / strategy / metadata code still reads. `use_vae_cache` and
+    # `use_text_cache` are the only config-facing surface; disk caching is the
+    # only supported mode (RAM-only was never used), so the `_to_disk` siblings
+    # always track their base flag. The old keys survive as schema aliases
+    # (see library/config/schema.py) so pre-existing configs still resolve.
+    args.cache_latents = args.cache_latents_to_disk = bool(args.use_vae_cache)
+    args.cache_text_encoder_outputs = args.cache_text_encoder_outputs_to_disk = bool(
+        args.use_text_cache
+    )
 
     if args.adaptive_noise_scale is not None and args.noise_offset is None:
         raise ValueError("adaptive_noise_scale requires noise_offset")
@@ -1079,56 +1079,21 @@ def add_dataset_arguments(
         help="show images for debugging (do not train)",
     )
     parser.add_argument(
-        "--resolution",
-        type=str,
-        default=None,
-        help="resolution in training ('size' or 'width,height')",
-    )
-    parser.add_argument(
-        "--cache_latents",
-        action="store_true",
-        help="cache latents to main memory to reduce VRAM usage",
+        "--use_vae_cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cache VAE-encoded latents to disk and read them during training. "
+        "Set false for live VAE encoding (e.g. IP-Adapter live mode, where "
+        "batch['images'] carries the raw reference). Subsumes the legacy "
+        "cache_latents{,_to_disk} pair.",
     )
     parser.add_argument(
         "--vae_batch_size", type=int, default=1, help="batch size for caching latents"
     )
     parser.add_argument(
-        "--cache_latents_to_disk",
-        action="store_true",
-        help="cache latents to disk to reduce VRAM usage",
-    )
-    parser.add_argument(
         "--skip_cache_check",
         action="store_true",
         help="skip the content validation of cache",
-    )
-    parser.add_argument(
-        "--enable_bucket",
-        action="store_true",
-        help="enable buckets for multi aspect ratio training",
-    )
-    parser.add_argument(
-        "--min_bucket_reso",
-        type=int,
-        default=256,
-        help="minimum resolution for buckets",
-    )
-    parser.add_argument(
-        "--max_bucket_reso",
-        type=int,
-        default=1024,
-        help="maximum resolution for buckets",
-    )
-    parser.add_argument(
-        "--bucket_reso_steps",
-        type=int,
-        default=64,
-        help="steps of resolution for buckets",
-    )
-    parser.add_argument(
-        "--bucket_no_upscale",
-        action="store_true",
-        help="make bucket for each image without upscaling",
     )
     parser.add_argument(
         "--resize_interpolation",

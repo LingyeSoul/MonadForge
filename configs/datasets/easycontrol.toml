@@ -10,9 +10,7 @@ caption_extension = '.txt'
 keep_tokens = 3
 
 [[datasets]]
-resolution = 1024
 batch_size = 1
-enable_bucket = true
 validation_split = 0.025
 validation_seed = 42
 

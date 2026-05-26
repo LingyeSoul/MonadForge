@@ -13,11 +13,6 @@ network_args = [
     "n_t_buckets=100",
     "init_std=0.02",
     "splice_position=end_of_sequence",
-    "bank_dispersive_weight=0.01",    # cosine_sq is bounded; small λ
-    "bank_dispersive_warmup_ratio=0.1",
-    "bank_dispersive_tau=0.5",        # only used by current / normalized_pdist
-    "dispersive_form=cosine_sq",      # bench/soft_tokens_dispersive: ``current`` is unbounded
-    "dispersive_hinge_eps=1.0",
 ]
 output_name = "anima_soft_tokens"
 

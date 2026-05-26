@@ -234,7 +234,7 @@ For LoRA-family runs this is bit-equivalent to a frozen copy of the base
 DiT: the base weights are frozen for the whole training run, and adapters
 are *additive residuals* on top — turning the multiplier to zero collapses
 the model to its base. No `--vr_frozen_ref_dit` flag, no second model copy
-in VRAM, no `static_token_count` mirroring to keep in sync.
+in VRAM, no constant-token-bucket state mirroring to keep in sync.
 
 `set_multiplier(0)` covers both `LoRA` / `OrthoLoRA` / `HydraLoRA` /
 `StackedExperts` *and* `ReFT` (the network walks both lists in one call).

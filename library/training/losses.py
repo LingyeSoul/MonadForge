@@ -315,28 +315,29 @@ def _functional_loss(ctx: LossContext) -> torch.Tensor:
     return weight * func_loss.float()
 
 
-def _soft_tokens_bank_dispersive_loss(ctx: LossContext) -> torch.Tensor:
-    """Parameter-space dispersive regularizer on the soft-tokens bank.
+def _soft_tokens_contrastive_loss(ctx: LossContext) -> torch.Tensor:
+    """SoftREPA-style contrastive term on the soft-tokens bank.
 
-    Reads ``_bank_dispersive_weight`` (warmup-gated, updated each step by
-    ``SoftTokensNetwork.step_bank_dispersive_warmup``) and calls
-    ``network.bank_dispersive_loss()`` to compute the configured dispersive
-    term over the K and n_t_buckets axes of the bank. Batch-size independent
-    — the loss only reads parameters, so it fires at B=1 too.
+    The InfoNCE scalar itself is computed by ``SoftTokensMethodAdapter``
+    (it needs ``k`` extra DiT forwards) and stashed under
+    ``aux["soft_tokens_contrastive"]``; this handler just applies the
+    warmup-gated weight ``network._contrastive_weight`` (updated each step by
+    ``SoftTokensNetwork.step_contrastive_warmup``).
 
-    Training-only: gated on ``ctx.is_train`` so validation FM-MSE stays a
-    clean per-token regression metric (the bank-axis term has no relationship
-    to held-out denoise quality and would just push val numbers around).
+    Training-only: gated on ``ctx.is_train`` so validation FM-MSE stays a clean
+    per-token regression metric (the contrastive term is a separate objective
+    that doesn't track held-out denoise quality on Anima —
+    ``project_fm_val_loss_uninformative``).
     """
     if not ctx.is_train:
         return ctx.model_pred.new_zeros(())
-    weight = float(getattr(ctx.network, "_bank_dispersive_weight", 0.0) or 0.0)
+    weight = float(getattr(ctx.network, "_contrastive_weight", 0.0) or 0.0)
     if weight <= 0.0:
         return ctx.model_pred.new_zeros(())
-    fn = getattr(ctx.network, "bank_dispersive_loss", None)
-    if fn is None:
+    con_loss = ctx.aux.get("soft_tokens_contrastive")
+    if con_loss is None:
         return ctx.model_pred.new_zeros(())
-    return weight * fn().float()
+    return weight * con_loss.float()
 
 
 def _fera_fecl_bands(
@@ -465,7 +466,7 @@ LOSS_REGISTRY: dict[str, LossFn] = {
     "functional": _functional_loss,
     "multiscale": _multiscale_loss,
     "fera_fecl": _fera_fecl_loss,
-    "soft_tokens_bank_dispersive": _soft_tokens_bank_dispersive_loss,
+    "soft_tokens_contrastive": _soft_tokens_contrastive_loss,
 }
 
 
@@ -478,7 +479,7 @@ _STAGE_SCALAR_BROADCAST = (
     "hydra_balance",
     "functional",
     "fera_fecl",
-    "soft_tokens_bank_dispersive",
+    "soft_tokens_contrastive",
 )
 _STAGE_SCALAR_POST = ("multiscale",)
 # _STAGE_SCALAR_POST is consulted by LossComposer.compose via the hard-coded
@@ -569,8 +570,8 @@ def build_loss_composer(args: argparse.Namespace, network: object) -> LossCompos
       - hydra_balance active iff network._balance_loss_weight > 0.
       - functional active iff args.functional_loss_weight > 0.
       - multiscale active iff args.multiscale_loss_weight > 0.
-      - soft_tokens_bank_dispersive active iff
-        network._bank_dispersive_target_weight > 0 (gated on the target,
+      - soft_tokens_contrastive active iff
+        network._contrastive_target_weight > 0 (gated on the target,
         not the live warmup-held value).
     """
     fm_name = (
@@ -605,10 +606,10 @@ def build_loss_composer(args: argparse.Namespace, network: object) -> LossCompos
         == "independent_A"
     ):
         active.append("fera_fecl")
-    # soft_tokens bank-dispersive: gate on the *target* weight (warmup may hold
-    # the live ``_bank_dispersive_weight`` at 0 for the first ratio*steps; the
-    # composer activates anyway so the handler fires once warmup ends).
-    if float(getattr(network, "_bank_dispersive_target_weight", 0.0) or 0.0) > 0.0:
-        active.append("soft_tokens_bank_dispersive")
+    # soft_tokens contrastive: gate on the *target* weight (warmup may hold the
+    # live ``_contrastive_weight`` at 0 for the first ratio*steps). The
+    # SoftTokensMethodAdapter supplies the InfoNCE scalar via aux.
+    if float(getattr(network, "_contrastive_target_weight", 0.0) or 0.0) > 0.0:
+        active.append("soft_tokens_contrastive")
 
     return LossComposer(active_losses=active)

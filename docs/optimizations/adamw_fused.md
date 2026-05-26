@@ -35,7 +35,7 @@ optimizer_args = ["fused=True"]
 ## Trade-off
 
 - **VRAM**: state grows from ~2 bytes/param (bnb 8-bit) to 8 bytes/param (fp32 m + v). For LoRA-only training with `network_train_unet_only=true` and dim=32 (~30 M trainable params), that's about **+180 MB** — fits comfortably on a 16 GB card. For a full-DiT train it would be a few GB extra and may not fit. None of the shipped configs hit that case.
-- **Speed**: step time drops from ~1.17 s to ~0.86 s on the same RTX 5060 Ti / FA2 / static-token-pad setup that produced the [cuda132.md](cuda132.md) numbers. GPU utilization sits flat at ~99 %.
+- **Speed**: step time drops from ~1.17 s to ~0.86 s on the same RTX 5060 Ti / FA2 / static-token-pad setup that produced the numbers. GPU utilization sits flat at ~99 %.
 - **Numerics**: full-precision optimizer state. No quantization noise on the second moment, so anything sensitive to that (very small LR, long training runs accumulating error) will be slightly more stable. Not a measurable quality difference at our typical scales.
 
 ## bitsandbytes is gone

@@ -28,6 +28,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
+from library.env import resolve_under_home
 from library.io.safetensors import load_safetensors
 
 from library.log import setup_logging
@@ -1807,8 +1808,17 @@ def load_vae(
     disable_mmap: bool = False,
     spatial_chunk_size: Optional[int] = None,
     disable_cache: bool = False,
+    dtype: Optional[torch.dtype] = None,
+    eval: bool = False,
 ) -> AutoencoderKLQwenImage:
-    """Load VAE from a given path."""
+    """Load VAE from a given path.
+
+    ``dtype`` and ``eval`` are conveniences for the near-universal
+    ``vae.to(torch.bfloat16); vae.eval()`` that almost every call site repeats:
+    pass ``dtype=torch.bfloat16, eval=True`` to get a ready-to-run model.
+    Both default off to preserve the historical "raw load" behaviour.
+    """
+    vae_path = str(resolve_under_home(vae_path))
     VAE_CONFIG_JSON = """
 {
   "_class_name": "AutoencoderKLQwenImage",
@@ -1901,6 +1911,10 @@ def load_vae(
     logger.info(f"Loaded VAE: {info}")
 
     vae.to(device)
+    if dtype is not None:
+        vae.to(dtype)
+    if eval:
+        vae.eval()
     return vae
 
 

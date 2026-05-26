@@ -25,7 +25,7 @@ Anima is a **flow-matching DiT** (Diffusion Transformer) operating in latent spa
 The DiT's output $\hat v$ is the **predicted velocity** at the noisy point $x_t$ — a tensor of the same shape as the latent that, under rectified flow, points from the noise toward the clean data: $\hat v = v_\theta(x_t, t, c) \approx \varepsilon - x_0$. Integrating $\hat v$ along the trajectory $t: 1 \to 0$ at inference time is what turns pure noise into a latent the VAE can decode. Training teaches the DiT to make $\hat v$ match the true velocity; see §5 for the loss.
 
 - **DiT.** `class Anima` in `library/anima/models.py:1227–1816`. 28 `Block`s with hidden dim `D = 2048`, 16 heads × 128 head-dim, MLP expansion ratio 4 → hidden `8192`. Cross-attention `context_dim = 1024`.
-- **Token budget.** Every batch element is zero-padded to a fixed token count (`~4096` patches after bucketing).
+- **Token budget.** Bucketing sorts each batch into one of two token-count families (4032 / 4200 patches), each bucket *exactly* filling its count — so by default forwards run at native token counts with no intra-bucket padding.
 
 ---
 
@@ -105,7 +105,7 @@ Cross-attention is not the only way the caption reaches the DiT. A max-pooled su
 
 Anima uses the **Qwen VAE** (from the Qwen-Image family), 8× spatial compression, 16 latent channels. An input image of `H × W` pixels becomes a latent of shape `(16, H/8, W/8)`.
 
-Latent caching (`preprocess/cache_latents.py`) is the second half of the offline pipeline: run the VAE over every training image once, write the latents to disk, free the VAE from VRAM. During training, only cached latents are loaded — the VAE does not need to be resident.
+Latent caching (`scripts/preprocess/cache_latents.py`) is the second half of the offline pipeline: run the VAE over every training image once, write the latents to disk, free the VAE from VRAM. During training, only cached latents are loaded — the VAE does not need to be resident.
 
 PatchEmbed inside the DiT then divides the latent spatially by 2 and maps channels `16 → 2048`, giving roughly `(H/16) × (W/16)` DiT tokens per frame.
 

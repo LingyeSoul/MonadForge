@@ -8,7 +8,7 @@ the model targets at training time.
 Pipeline at each val pass:
 
 1. Load cached reference PE features from ``{stem}_anima_pe.safetensors``
-   sidecars (produced by ``preprocess/cache_pe_encoder.py``) for every
+   sidecars (produced by ``scripts/preprocess/cache_pe_encoder.py``) for every
    image in the validation split.
 2. For each val item, sample an image using the live model + cached prompt
    embedding (paired by stem with the reference).
@@ -43,7 +43,7 @@ _SCALE = 1000.0
 def _pool_pe(feats: torch.Tensor, *, drop_cls: bool = True) -> torch.Tensor:
     """Mean over patch tokens. ``feats`` is ``[T, D]``; returns ``[D]``.
 
-    Matches ``preprocess/cache_pe_encoder.py:_pool_pe`` so the CMMD reference
+    Matches ``scripts/preprocess/cache_pe_encoder.py:_pool_pe`` so the CMMD reference
     pool is comparable to the IP-Adapter centroid.
     """
     if drop_cls and feats.shape[0] > 1:

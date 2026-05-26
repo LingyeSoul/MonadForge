@@ -158,14 +158,18 @@ def test_load_adapter_rejects_misshaped_freq_router(tmp_path):
     )
     from safetensors.torch import load_file
     from safetensors import safe_open
-    sd = load_file(str(path))
-    sd["freq_router.net.2.weight"] = torch.randn(99, 8)
-    sd["freq_router.net.2.bias"] = torch.zeros(99)
+    # Clone out of the mmap so the source file's mapping is dropped before we
+    # write — on Windows an open mmap blocks overwriting the same path
+    # (os error 1224). Write the misshaped copy to a fresh path to be safe.
+    sd = {k: v.clone() for k, v in load_file(str(path)).items()}
     with safe_open(str(path), framework="pt") as f:
         meta = dict(f.metadata() or {})
-    save_file(sd, str(path), metadata=meta)
+    sd["freq_router.net.2.weight"] = torch.randn(99, 8)
+    sd["freq_router.net.2.bias"] = torch.zeros(99)
+    bad_path = tmp_path / "bad_chimera_misshaped.safetensors"
+    save_file(sd, str(bad_path), metadata=meta)
     with pytest.raises(ValueError, match="FreqRouter output dim"):
-        adapter.load_adapter(str(path))
+        adapter.load_adapter(str(bad_path))
 
 
 def test_chimera_pre_hook_emits_pi_f(tmp_path):
@@ -555,14 +559,17 @@ def test_load_adapter_rejects_crossattn_without_content_router_keys(tmp_path):
     )
     from safetensors.torch import load_file
     from safetensors import safe_open
-    sd = load_file(str(path))
+    # Clone out of the mmap before writing — an open mmap blocks overwriting
+    # the same path on Windows (os error 1224); write to a fresh path too.
+    sd = {k: v.clone() for k, v in load_file(str(path)).items()}
     for k in [k for k in list(sd.keys()) if k.startswith("content_router.")]:
         del sd[k]
     with safe_open(str(path), framework="pt") as f:
         meta = dict(f.metadata() or {})
-    save_file(sd, str(path), metadata=meta)
+    bad_path = tmp_path / "bad_crossattn_chimera_stripped.safetensors"
+    save_file(sd, str(bad_path), metadata=meta)
     with pytest.raises(ValueError, match="ContentRouter weight key"):
-        adapter.load_adapter(str(path))
+        adapter.load_adapter(str(bad_path))
 
 
 def test_content_router_llm_adapter_hook_emits_pi_c(tmp_path):
@@ -675,10 +682,13 @@ def test_chimera_dual_a_metadata_mismatch_rejected(tmp_path):
     # Rewrite metadata with bogus K_c so loader can catch it.
     from safetensors.torch import load_file
     from safetensors import safe_open
-    sd = load_file(str(path))
+    # Clone out of the mmap before writing — an open mmap blocks overwriting
+    # the same path on Windows (os error 1224); write to a fresh path too.
+    sd = {k: v.clone() for k, v in load_file(str(path)).items()}
     with safe_open(str(path), framework="pt") as f:
         meta = dict(f.metadata() or {})
     meta["ss_num_experts_content"] = "99"
-    save_file(sd, str(path), metadata=meta)
+    bad_path = tmp_path / "bad_dual_chimera_mismatch.safetensors"
+    save_file(sd, str(bad_path), metadata=meta)
     with pytest.raises(ValueError, match="ss_num_experts_content=99"):
-        adapter.load_adapter(str(path))
+        adapter.load_adapter(str(bad_path))

@@ -4,33 +4,59 @@ from typing import NamedTuple, Tuple
 
 import numpy as np
 
-# Bucket resolutions where (W/16)*(H/16) <= 4096 tokens, with minimal padding
-# to reach 4096.  Using these with static_token_count=4096 makes every forward
-# pass shape-identical, eliminating torch.compile recompilation.
-# Landscape mirrors (swap W, H) are included explicitly.
+# Bucket resolutions as (W, H), grouped into two token-count families: 4032
+# (= 63*64) and 4200 (= 60*70). Both are highly composite, so each factors into
+# many near-square→elongated patch grids — and crucially every bucket *exactly*
+# fills its token count, so there is zero intra-bucket padding by construction.
+#
+# This table is designed for native shapes (the only mode): it collapses to
+# just TWO distinct token counts → two compiled block graphs (via
+# compile_blocks' flatten), with no padding and therefore no flash pad leak.
+# The rope per-axis cap is 256 patches (max_img/patch_spatial); the largest dim
+# here is 2016px → 126.
+#
+# Two families instead of one because a single token count's divisors near √N
+# are sparse (4032 alone jumps aspect 1.29→1.75); interleaving 4032 and 4200
+# densely covers aspect space at the cost of one extra graph. Landscape mirrors
+# (swap W, H) are included explicitly. Token count = (W//16)*(H//16).
+#
+# NOTE: DCW_ASPECT_BUCKETS below now draws its top-5 from this table (every
+# entry is a real training bucket), so `make dcw` recalibration produces rows
+# for every aspect_id. Do not reorder the DCW table (shipped fusion-head
+# checkpoints key off it).
 CONSTANT_TOKEN_BUCKETS = [
-    (1024, 1024),  # 4096 tokens, 0.0% pad
-    (960, 1088),  # 4080 tokens, 0.4% pad
-    (1088, 960),
-    (896, 1152),  # 4032 tokens, 1.6% pad
-    (1152, 896),
-    (832, 1248),  # 4056 tokens, 1.0% pad
-    (1248, 832),
-    (768, 1344),  # 4032 tokens, 1.6% pad
-    (1344, 768),
-    (720, 1440),  # 4050 tokens, 1.1% pad
-    (1440, 720),
-    (640, 1632),  # 4080 tokens, 0.4% pad
-    (1632, 640),
-    (576, 1792),  # 4032 tokens, 1.6% pad
-    (1792, 576),
-    (512, 2048),  # 4096 tokens, 0.0% pad
-    (2048, 512),
+    # ---- 4032-token family (63*64) ----
+    (1008, 1024),  # 63 x 64, ar 0.98 (nearest to square)
+    (1024, 1008),  #          ar 1.02
+    (896, 1152),  # 56 x 72, ar 0.78
+    (1152, 896),  #          ar 1.29
+    (768, 1344),  # 48 x 84, ar 0.57
+    (1344, 768),  #          ar 1.75
+    (672, 1536),  # 42 x 96, ar 0.44
+    (1536, 672),  #          ar 2.29
+    (576, 1792),  # 36 x 112, ar 0.32
+    (1792, 576),  #           ar 3.11
+    (512, 2016),  # 32 x 126, ar 0.25
+    (2016, 512),  #           ar 3.94
+    # ---- 4200-token family (60*70) ----
+    (960, 1120),  # 60 x 70, ar 0.86
+    (1120, 960),  #          ar 1.17
+    (896, 1200),  # 56 x 75, ar 0.75
+    (1200, 896),  #          ar 1.34
+    (800, 1344),  # 50 x 84, ar 0.60
+    (1344, 800),  #          ar 1.68
+    (672, 1600),  # 42 x 100, ar 0.42
+    (1600, 672),  #           ar 2.38
+    (640, 1680),  # 40 x 105, ar 0.38
+    (1680, 640),  #           ar 2.62
+    (560, 1920),  # 35 x 120, ar 0.29
+    (1920, 560),  #           ar 3.43
 ]
 
 # DCW v4 calibration aspect-bucket set.
 #
-# Top 5 (H, W) resolutions by frequency in post_image_dataset/lora/. List
+# Top 5 (H, W) resolutions by frequency in post_image_dataset/lora/ (recounted
+# 2026-05-23; every entry is a CONSTANT_TOKEN_BUCKETS training bucket). List
 # order *is* the canonical aspect_id index — DCW v4's per-aspect statistics
 # (fusion_head.safetensors per-bucket μ_g, σ²_prior, λ_scalar) key off this
 # order, so a reorder invalidates every shipped fusion-head checkpoint.
@@ -41,15 +67,13 @@ CONSTANT_TOKEN_BUCKETS = [
 # lookup that decides which run rows feed the trainer). Inference itself
 # is bucket-agnostic post-cleanup — see project_dcw_bucket_prior_cosmetic.
 DCW_ASPECT_BUCKETS: Tuple[Tuple[int, int], ...] = (
-    (832, 1248),  # 0 — HD portrait (most common)
-    (896, 1152),  # 1 — 3:4 portrait
-    (768, 1344),  # 2 — tall portrait
-    (1152, 896),  # 3 — 3:4 landscape
-    (1248, 832),  # 4 — HD landscape
+    (1200, 896),  # 0 — 896x1200 portrait (most common, 4200-tok)
+    (1344, 800),  # 1 — 800x1344 tall portrait (4200-tok)
+    (896, 1200),  # 2 — 1200x896 landscape (4200-tok)
+    (1344, 768),  # 3 — 768x1344 tall portrait (4032-tok)
+    (1152, 896),  # 4 — 896x1152 portrait (4032-tok)
 )
-DCW_ASPECT_NAMES: Tuple[str, ...] = tuple(
-    f"{h}x{w}" for h, w in DCW_ASPECT_BUCKETS
-)
+DCW_ASPECT_NAMES: Tuple[str, ...] = tuple(f"{h}x{w}" for h, w in DCW_ASPECT_BUCKETS)
 DCW_ASPECT_TABLE: dict = {hw: i for i, hw in enumerate(DCW_ASPECT_BUCKETS)}
 N_DCW_ASPECTS: int = len(DCW_ASPECT_BUCKETS)
 
@@ -80,7 +104,9 @@ def make_bucket_resolutions(max_reso, min_size=256, max_size=1024, divisible=64)
 
 
 class BucketManager:
-    def __init__(self, no_upscale, max_reso, min_size, max_size, reso_steps) -> None:
+    def __init__(
+        self, max_reso=None, min_size=None, max_size=None, reso_steps=None
+    ) -> None:
         if max_size is not None:
             if max_reso is not None:
                 assert max_size >= max_reso[0], (
@@ -94,7 +120,6 @@ class BucketManager:
                     "the max_size should be larger than the min_size"
                 )
 
-        self.no_upscale = no_upscale
         if max_reso is None:
             self.max_reso = None
             self.max_area = None
@@ -153,66 +178,26 @@ class BucketManager:
             self.resos.append(reso)
             self.buckets.append([])
 
-    def round_to_steps(self, x):
-        x = int(x + 0.5)
-        return x - x % self.reso_steps
-
     def select_bucket(self, image_width, image_height):
         aspect_ratio = image_width / image_height
-        if not self.no_upscale:
-            reso = (image_width, image_height)
-            if reso in self.predefined_resos_set:
-                pass
-            else:
-                ar_errors = self.predefined_aspect_ratios - aspect_ratio
-                predefined_bucket_id = np.abs(ar_errors).argmin()
-                reso = self.predefined_resos[predefined_bucket_id]
-
-            ar_reso = reso[0] / reso[1]
-            if aspect_ratio > ar_reso:
-                scale = reso[1] / image_height
-            else:
-                scale = reso[0] / image_width
-
-            resized_size = (
-                int(image_width * scale + 0.5),
-                int(image_height * scale + 0.5),
-            )
+        reso = (image_width, image_height)
+        if reso in self.predefined_resos_set:
+            pass
         else:
-            if image_width * image_height > self.max_area:
-                resized_width = math.sqrt(self.max_area * aspect_ratio)
-                resized_height = self.max_area / resized_width
-                assert abs(resized_width / resized_height - aspect_ratio) < 1e-2, (
-                    "aspect is illegal"
-                )
+            ar_errors = self.predefined_aspect_ratios - aspect_ratio
+            predefined_bucket_id = np.abs(ar_errors).argmin()
+            reso = self.predefined_resos[predefined_bucket_id]
 
-                b_width_rounded = self.round_to_steps(resized_width)
-                b_height_in_wr = self.round_to_steps(b_width_rounded / aspect_ratio)
-                ar_width_rounded = b_width_rounded / b_height_in_wr
+        ar_reso = reso[0] / reso[1]
+        if aspect_ratio > ar_reso:
+            scale = reso[1] / image_height
+        else:
+            scale = reso[0] / image_width
 
-                b_height_rounded = self.round_to_steps(resized_height)
-                b_width_in_hr = self.round_to_steps(b_height_rounded * aspect_ratio)
-                ar_height_rounded = b_width_in_hr / b_height_rounded
-
-                if abs(ar_width_rounded - aspect_ratio) < abs(
-                    ar_height_rounded - aspect_ratio
-                ):
-                    resized_size = (
-                        b_width_rounded,
-                        int(b_width_rounded / aspect_ratio + 0.5),
-                    )
-                else:
-                    resized_size = (
-                        int(b_height_rounded * aspect_ratio + 0.5),
-                        b_height_rounded,
-                    )
-            else:
-                resized_size = (image_width, image_height)
-
-            bucket_width = resized_size[0] - resized_size[0] % self.reso_steps
-            bucket_height = resized_size[1] - resized_size[1] % self.reso_steps
-
-            reso = (bucket_width, bucket_height)
+        resized_size = (
+            int(image_width * scale + 0.5),
+            int(image_height * scale + 0.5),
+        )
 
         self.add_if_new_reso(reso)
 

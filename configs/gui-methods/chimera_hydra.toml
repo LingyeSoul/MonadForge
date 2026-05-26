@@ -52,7 +52,7 @@ num_experts_freq = 2
 balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
 balance_w_content = 2e-6
-balance_w_freq = 5e-6
+balance_w_freq = 2e-6
 network_content_router_lr_scale = 10.0
 network_freq_router_lr_scale = 2.0
 

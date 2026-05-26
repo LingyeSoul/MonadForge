@@ -129,6 +129,16 @@ class MethodAdapter:
         when inactive for this step."""
         return None
 
+    def after_backward(self, ctx: StepCtx) -> None:
+        """Called once per train micro-step, AFTER ``accelerator.backward`` and
+        BEFORE gradient clipping / the optimizer step.
+
+        Lets an adapter inject extra gradient contributions that can't share the
+        primary forward/backward (e.g. soft-tokens gradient-cached contrastive
+        negatives, which can't reuse the anchor's block-swap cycle). Manual
+        backwards here accumulate into the trainable params' ``.grad`` alongside
+        the primary loss and are clipped/stepped with it. No-op by default."""
+
     def validation_baselines(self) -> list[ValidationBaseline]:
         """Return baselines to evaluate alongside the primary validation
         forward. For each baseline, the trainer re-runs ``process_batch`` on
@@ -167,4 +177,11 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
         from networks.methods.easycontrol import EasyControlMethodAdapter
 
         adapters.append(EasyControlMethodAdapter())
+    # Soft-tokens contrastive: opt-in via a positive contrastive weight on the
+    # built network (the objective leaves no learned params, so it's detected
+    # off the network's target weight rather than an args flag).
+    if float(getattr(network, "_contrastive_target_weight", 0.0) or 0.0) > 0.0:
+        from networks.methods.soft_tokens import SoftTokensMethodAdapter
+
+        adapters.append(SoftTokensMethodAdapter())
     return adapters

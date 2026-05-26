@@ -5,28 +5,8 @@ description = "MonadForge — improved fork of anima_lora (https://github.com/so
 requires-python = "==3.13.*"
 dependencies = [
     # Core ML.
-    # Default: torch 2.12 nightly + CUDA 13.2 on Linux, torch 2.11 stable +
-    # CUDA 13.0 on Windows (a prebuilt FA2 wheel for that torch ABI exists).
-    #
-    # To switch Windows to CUDA 13.2 + torch 2.12 nightly (~10% throughput
-    # win, see docs/optimizations/cuda132.md):
-    #   1. Install CUDA 13.2 toolkit + MSVC 2019 Build Tools.
-    #   2. Build the trimmed FA2 wheel per docs/optimizations/cuda132.md
-    #      (or use the prebuilt one if you have access).
-    #   3. Comment out the three "Windows: stable" lines below and uncomment
-    #      the three "Windows: cuda132" lines.
-    #   4. uv sync
-    #
-    # Linux (always cu132 nightly):
-    "torch>=2.12.0,<2.13 ; sys_platform == 'linux'",
-    "torchvision>=0.27.0,<0.28 ; sys_platform == 'linux'",
-    # Windows: stable (default).
-    "torch>=2.11.0,<2.12 ; sys_platform == 'win32'",
-    "torchvision>=0.26.0,<0.27 ; sys_platform == 'win32'",
-    # Windows: cuda132 opt-in. Uncomment to switch (and comment out the two
-    # "Windows: stable" lines above).
-    # "torch>=2.12.0,<2.13 ; sys_platform == 'win32'",
-    # "torchvision>=0.27.0,<0.28 ; sys_platform == 'win32'",
+    "torch>=2.12.0,<2.13",
+    "torchvision>=0.27.0,<0.28",
     "accelerate>=1.13.0",
     "transformers>=5.3.0",
     "diffusers>=0.37.0",
@@ -60,17 +40,13 @@ dependencies = [
     "albumentations>=1.4.0",
     "packaging",
     "pycocotools>=2.0.11",
-    # FA2 wheels — paired with the torch lines above. Switch the Windows
-    # FA2 wheel together with torch when toggling between stable and cuda132.
-    # flash-attn-4 (flash-attention-sm120) is disabled — kernel is unstable
-    # on our targets, see docs/methods/fa4.md.
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl ; sys_platform == 'linux'",
     # Windows: stable (default) — built against torch 2.11 + CUDA 13.0.
     "flash-attn @ https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
     # Windows: cuda132 opt-in — trimmed FA2 (bf16 + head_dim=128 + non-causal)
     # built against torch 2.12 + CUDA 13.2. See flash-attention/repack_wheel.py.
     # "flash-attn @ https://github.com/sorryhyun/flash-attention-sm120-fix/releases/download/fa2cuda132/flash_attn-2.8.4-cp313-cp313-win_amd64.whl ; sys_platform == 'win32'",
-    "triton-windows>=3.6.0,<3.8 ; sys_platform == 'win32'",
+    "triton-windows>=3.7.0,<3.8.0 ; sys_platform == 'win32'",
     "ruff>=0.15.9",
     "matplotlib",
     "torchsde>=0.2.6",
@@ -109,8 +85,7 @@ index-strategy = "unsafe-best-match"
 # Both wheels are looked up from these indexes — the version pin in
 # `dependencies` (active vs. commented) decides which one resolves.
 extra-index-url = [
-    "https://download.pytorch.org/whl/cu132",
-    "https://download.pytorch.org/whl/cu130",
+    "https://download.pytorch.org/whl/cu132"
 ]
 prerelease = "allow"
 override-dependencies = ["numpy>=2.0.0"]
@@ -141,8 +116,15 @@ reportIncompatibleVariableOverride = "none"
 reportInvalidStringEscapeSequence = "none"
 reportUnsupportedDunderAll = "none"
 
-[tool.setuptools]
-packages = []
+# Expose the importable package trees so `pip install` / `uv sync` makes
+# `import anima_lora` (the programmatic front door) + `import library` /
+# `networks` resolve without the repo root on sys.path. The tooling trees
+# (`bench` / `scripts` / `preprocess`) are also installed so cross-tree imports
+# (`from bench._common import …`, `from scripts.dcw.haar import …`) resolve via
+# the editable finder instead of per-file `sys.path.insert` shims — and any tool
+# runs as `python -m bench.spd.foo`. `gui` stays CLI-only (not importable).
+[tool.setuptools.packages.find]
+include = ["anima_lora*", "library*", "networks*", "bench*", "scripts*", "preprocess*"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

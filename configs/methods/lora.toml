@@ -21,10 +21,10 @@
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
 
-network_alpha = 96
-network_dim = 96
+network_alpha = 32
+network_dim = 32
 
-learning_rate = 1e-4
+learning_rate = 2e-5
 max_train_epochs = 3
 save_every_n_epochs = 3
 checkpointing_epochs = 3
@@ -36,7 +36,9 @@ caption_dropout_rate = 0.1
 logging_dir = "output/logs"
 log_with = "tensorboard"
 
-output_name = "anima_hydra"
+output_name = "anima_quarter"
+# path_pattern = "ama_mitsuki/*|channel_(caststation)/*|sweetonedollar/*"
+
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
 
@@ -54,9 +56,11 @@ use_ortho = true
 # Timestep mask
 
 use_timestep_mask = true
-min_rank = 8
+min_rank = 16
 alpha_rank_scale = 1.0
 
+[[datasets]]
+validation_split_num = 8
 
 # -------------
 # "shared_A" and route_per_layer=false -> hydralora

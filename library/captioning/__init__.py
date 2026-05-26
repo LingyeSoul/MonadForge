@@ -8,11 +8,21 @@ Exposes ``predict(pil_img)`` and ``predict_caption(pil_img)`` for a
 comma-separated tag string.
 """
 
-# AnimaTagger pulls in PE-Core lazily on import (it doesn't load weights
-# until first predict), but the import itself touches torch/safetensors —
-# keep it eager so that ``from library.captioning import AnimaTagger`` works
-# but in environments without a built checkpoint, callers handle the
-# ``FileNotFoundError`` from ``AnimaTagger.__init__``.
-from library.captioning.anima_tagger import AnimaTagger
+# ``AnimaTagger`` lives in ``anima_tagger``, whose import touches
+# torch/safetensors. Expose it lazily (PEP 562) so that
+# ``from library.captioning import AnimaTagger`` still works, while torch-free
+# siblings — notably ``library.captioning.taxonomy`` (pure-stdlib tag-shape
+# primitives, imported by the caption-index preprocessing script) — can be
+# imported without dragging torch in through this package ``__init__``.
+# Callers in environments without a built checkpoint still handle the
+# ``FileNotFoundError`` raised by ``AnimaTagger.__init__`` at construction time.
 
 __all__ = ["AnimaTagger"]
+
+
+def __getattr__(name: str):
+    if name == "AnimaTagger":
+        from library.captioning.anima_tagger import AnimaTagger
+
+        return AnimaTagger
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

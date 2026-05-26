@@ -27,7 +27,9 @@ _REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 def _random_ref_image(directory: Path) -> str | None:
     if not directory.is_dir():
         return None
-    pool = [p for p in directory.iterdir() if p.suffix.lower() in _REF_IMAGE_EXTS]
+    # resized/ (and other source layouts) nest images under per-artist subdirs,
+    # so recurse rather than only scanning top-level files.
+    pool = [p for p in directory.rglob("*") if p.suffix.lower() in _REF_IMAGE_EXTS]
     if not pool:
         return None
     pick = random.choice(pool)
@@ -179,7 +181,16 @@ def cmd_test_ip(extra):
     ]
     if scale := os.environ.get("IP_SCALE"):
         args += ["--ip_scale", scale]
-    args += ["--prompt", os.environ.get("PROMPT") or "double peace, v v,"]
+    # Default is a coherent *target*-scene prompt with NO character/copyright
+    # tag, so any identity match must come through the IP image rather than the
+    # text path. (Distinct-pair training pairs the target's own caption with the
+    # denoised latent; identity flows from a *different* ref image's PE features.
+    # A thin prompt like "double peace" under-constrains the scene -> garbage.)
+    default_prompt = (
+        "masterpiece, best quality, score_7, safe. 1girl, solo, standing in a "
+        "cafe, holding a coffee cup, looking at viewer, smile, soft lighting."
+    )
+    args += ["--prompt", os.environ.get("PROMPT") or default_prompt]
     if neg := os.environ.get("NEG"):
         args += ["--negative_prompt", neg]
     args += list(extra)
@@ -255,10 +266,11 @@ def cmd_test_directedit(extra):
         edit_prompt = "double peace, v v. She is showing double peace"
 
     # 3. Run Anima Tagger on the source.
-    sys.path.insert(0, str(ROOT))
     from PIL import Image  # noqa: PLC0415
 
-    anima_ckpt = ROOT / "models" / "captioners" / "anima-tagger-v1" / "model.safetensors"
+    anima_ckpt = (
+        ROOT / "models" / "captioners" / "anima-tagger-v1" / "model.safetensors"
+    )
     if not anima_ckpt.exists():
         raise SystemExit(
             f"Anima Tagger checkpoint missing at {anima_ckpt} — "
@@ -277,7 +289,9 @@ def cmd_test_directedit(extra):
             "prompt — DirectEdit reconstruction will be weaker than usual.",
             file=sys.stderr,
         )
-    print(f"  > src caption: {src_caption[:120]}{'...' if len(src_caption) > 120 else ''}")
+    print(
+        f"  > src caption: {src_caption[:120]}{'...' if len(src_caption) > 120 else ''}"
+    )
 
     # 4. Save dir + edit.py invocation. Reuse INFERENCE_BASE for the model
     #    path trio (--dit / --text_encoder / --vae) so this stays in sync with
@@ -298,10 +312,14 @@ def cmd_test_directedit(extra):
     leftover_base = list(base_iter)
     args = [py, "scripts/edit.py", *_filter_inference_base_for_edit(leftover_base)]
     args += [
-        "--image", str(ref_image),
-        "--prompt_src", src_caption,
-        "--edit_instruction", edit_prompt,
-        "--save_path", str(save_dir),
+        "--image",
+        str(ref_image),
+        "--prompt_src",
+        src_caption,
+        "--edit_instruction",
+        edit_prompt,
+        "--save_path",
+        str(save_dir),
     ]
     args += list(extra)
     run(args)
@@ -381,9 +399,12 @@ def cmd_test_directedit_dry(extra):
     leftover_base = list(base_iter)
     args = [py, "scripts/edit.py", *_filter_inference_base_for_edit(leftover_base)]
     args += [
-        "--image", str(ref_image),
-        "--cached_embed", str(cache_path),
-        "--save_path", str(save_dir),
+        "--image",
+        str(ref_image),
+        "--cached_embed",
+        str(cache_path),
+        "--save_path",
+        str(save_dir),
     ]
     args += list(extra)
     run(args)
@@ -421,7 +442,7 @@ def _resolve_ref_image_pool(directory: Path, n: int) -> list[str]:
     """
     if not directory.is_dir():
         return []
-    pool = [p for p in directory.iterdir() if p.suffix.lower() in _REF_IMAGE_EXTS]
+    pool = [p for p in directory.rglob("*") if p.suffix.lower() in _REF_IMAGE_EXTS]
     if not pool:
         return []
     if n >= len(pool):
@@ -467,7 +488,6 @@ def cmd_invert_directedit(extra):
       N_IMAGES=3 make exp-invert-directedit
       K=8 INVERT_STEPS=50 make exp-invert-directedit
     """
-    sys.path.insert(0, str(ROOT))
 
     # 1. Resolve image pool.
     ref_image_override = os.environ.get("REF_IMAGE", "").strip()
@@ -572,23 +592,39 @@ def cmd_invert_directedit(extra):
             invert_cmd = [
                 py,
                 "scripts/inversion/invert_postfix_tail.py",
-                "--dit", str(dit_path),
-                "--attn_mode", str(attn_mode),
-                "--image_dir", str(te_path.parent),
-                "--image_stem", stem,
-                "--K", str(K),
-                "--basis", basis_kind,
-                "--basis_path", str(basis_path),
-                "--steps", str(invert_steps),
-                "--lr", str(invert_lr),
-                "--lambda_zero", str(lambda_zero),
-                "--sigma_min", str(sigma_min),
-                "--sigma_max", str(sigma_max),
-                "--seed", str(seed),
-                "--timesteps_per_step", str(timesteps_per_step),
-                "--grad_accum", str(grad_accum),
-                "--output_dir", str(invert_out),
-                "--vr"
+                "--dit",
+                str(dit_path),
+                "--attn_mode",
+                str(attn_mode),
+                "--image_dir",
+                str(te_path.parent),
+                "--image_stem",
+                stem,
+                "--K",
+                str(K),
+                "--basis",
+                basis_kind,
+                "--basis_path",
+                str(basis_path),
+                "--steps",
+                str(invert_steps),
+                "--lr",
+                str(invert_lr),
+                "--lambda_zero",
+                str(lambda_zero),
+                "--sigma_min",
+                str(sigma_min),
+                "--sigma_max",
+                str(sigma_max),
+                "--seed",
+                str(seed),
+                "--timesteps_per_step",
+                str(timesteps_per_step),
+                "--grad_accum",
+                str(grad_accum),
+                "--output_dir",
+                str(invert_out),
+                "--vr",
             ]
             run(invert_cmd)
             if not s_path.exists():
@@ -631,21 +667,21 @@ def cmd_invert_directedit(extra):
             save_dir.mkdir(parents=True, exist_ok=True)
             edit_cmd = [
                 *edit_base_args,
-                "--image", str(ref_image),
-                "--cached_embed", str(cache_for_run),
-                "--cached_embed_variants", "0",
-                "--save_path", str(save_dir),
+                "--image",
+                str(ref_image),
+                "--cached_embed",
+                str(cache_for_run),
+                "--cached_embed_variants",
+                "0",
+                "--save_path",
+                str(save_dir),
                 *list(extra),
             ]
             run(edit_cmd)
 
             # Paste the source for side-by-side eyeballing.
             pngs = sorted(
-                (
-                    p
-                    for p in save_dir.glob("*.png")
-                    if not p.name.endswith("_src.png")
-                ),
+                (p for p in save_dir.glob("*.png") if not p.name.endswith("_src.png")),
                 key=lambda p: p.stat().st_mtime,
                 reverse=True,
             )

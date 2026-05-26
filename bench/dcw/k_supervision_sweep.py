@@ -58,12 +58,13 @@ import numpy as np
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
 from bench._common import make_run_dir, write_result  # noqa: E402
+from library.datasets.buckets import (  # noqa: E402
+    DCW_ASPECT_NAMES,
+    N_DCW_ASPECTS,
+)
 from scripts.dcw.fusion_data import (  # noqa: E402
-    ASPECT_NAMES,
-    N_ASPECTS,
     build_population_mu_g,
     load_bench_runs,
     load_text_features,
@@ -96,9 +97,7 @@ def integrated_target(rows, mu_g_pop, start: int, end: int) -> np.ndarray:
 
 
 def per_step_target(rows, mu_g_pop, t: int) -> np.ndarray:
-    return np.array(
-        [float(r.gap_LL[t] - mu_g_pop[t]) for r in rows], dtype=np.float32
-    )
+    return np.array([float(r.gap_LL[t] - mu_g_pop[t]) for r in rows], dtype=np.float32)
 
 
 def cv_run(
@@ -150,7 +149,9 @@ def cv_run(
     out = {
         "n_valid": int(valid.sum()),
         "sigma2_pop": sigma2_pop,
-        "fold_scores_mean": float(np.mean(fold_scores)) if fold_scores else float("nan"),
+        "fold_scores_mean": float(np.mean(fold_scores))
+        if fold_scores
+        else float("nan"),
         "r_alpha_mean": float("nan"),
         "r_alpha_seed": float("nan"),
         "r_sigma": float("nan"),
@@ -178,7 +179,9 @@ def cv_run(
             per_prompt_sigma_hat.append(np.exp(0.5 * cv_ls[m]).mean())
             per_prompt_seed_std.append(cv_t[m].std(ddof=1))
 
-    out["r_alpha_mean"] = pearson(np.array(per_prompt_alpha), np.array(per_prompt_target))
+    out["r_alpha_mean"] = pearson(
+        np.array(per_prompt_alpha), np.array(per_prompt_target)
+    )
     out["r_alpha_seed"] = pearson(cv_a, cv_t)
     if per_prompt_seed_std:
         out["r_sigma"] = pearson(
@@ -197,11 +200,11 @@ def cv_run(
         out["nll_head"] = nll_head
         out["nll_improvement"] = (nll_baseline - nll_head) / abs(nll_baseline)
 
-    for a in range(N_ASPECTS):
+    for a in range(N_DCW_ASPECTS):
         m = asp_arr == a
         if m.sum() < 4:
             continue
-        out["per_aspect_r"][ASPECT_NAMES[a]] = {
+        out["per_aspect_r"][DCW_ASPECT_NAMES[a]] = {
             "n": int(m.sum()),
             "r_seed": pearson(cv_a[m], cv_t[m]),
         }
@@ -317,8 +320,12 @@ def main() -> None:
     if args.no_g_obs:
         g_obs_n = np.zeros((len(rows), 0), dtype=np.float32)
     else:
-        g_obs_arr = np.stack([r.v_rev_LL[: args.k_warmup] for r in rows]).astype(np.float32)
-        g_obs_n = (g_obs_arr - g_obs_arr.mean(axis=0)) / g_obs_arr.std(axis=0).clip(min=1.0)
+        g_obs_arr = np.stack([r.v_rev_LL[: args.k_warmup] for r in rows]).astype(
+            np.float32
+        )
+        g_obs_n = (g_obs_arr - g_obs_arr.mean(axis=0)) / g_obs_arr.std(axis=0).clip(
+            min=1.0
+        )
 
     aspect_arr = np.array([r.aspect_id for r in rows], dtype=np.int64)
     stems_arr = np.array([r.stem for r in rows])

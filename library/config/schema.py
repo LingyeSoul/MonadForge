@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 
@@ -120,6 +120,22 @@ def populate_schema(
             continue
         CONFIG_SCHEMA[key.name] = key
 
+    # Back-compat aliases: the cache surface collapsed from four flags
+    # (cache_latents{,_to_disk}, cache_text_encoder_outputs{,_to_disk}) to two
+    # semantic knobs. Old configs / snapshots still resolve onto the new keys.
+    for _canon, _old in (
+        ("use_vae_cache", ("cache_latents", "cache_latents_to_disk")),
+        (
+            "use_text_cache",
+            ("cache_text_encoder_outputs", "cache_text_encoder_outputs_to_disk"),
+        ),
+    ):
+        if _canon in CONFIG_SCHEMA:
+            CONFIG_SCHEMA[_canon] = replace(
+                CONFIG_SCHEMA[_canon],
+                aliases=CONFIG_SCHEMA[_canon].aliases + _old,
+            )
+
     # Manual TOML-only / non-argparse extras. `base_config` is the only one
     # essential today; future methods can extend via ``extras``.
     CONFIG_SCHEMA.setdefault(
@@ -143,17 +159,17 @@ def populate_schema(
         (
             "source_image_dir",
             "image_dataset",
-            "Where raw images and .txt captions live. Read by preprocess/resize_images.py and preprocess/cache_text_embeddings.py.",
+            "Where raw images and .txt captions live. Read by scripts/preprocess/resize_images.py and scripts/preprocess/cache_text_embeddings.py.",
         ),
         (
             "resized_image_dir",
             "post_image_dataset/resized",
-            "Where preprocess/resize_images.py writes VAE-aligned PNGs. Also resolved into the dataset subset's image_dir at training time.",
+            "Where scripts/preprocess/resize_images.py writes VAE-aligned PNGs. Also resolved into the dataset subset's image_dir at training time.",
         ),
         (
             "lora_cache_dir",
             "post_image_dataset/lora",
-            "Where preprocess/cache_latents.py and cache_text_embeddings.py write VAE/TE caches. Also resolved into the dataset subset's cache_dir.",
+            "Where scripts/preprocess/cache_latents.py and cache_text_embeddings.py write VAE/TE caches. Also resolved into the dataset subset's cache_dir.",
         ),
     ):
         CONFIG_SCHEMA.setdefault(
@@ -168,7 +184,7 @@ def populate_schema(
         )
 
     # Preprocess input filter — consumed by scripts/tasks/preprocess.py (forwarded
-    # to preprocess/resize_images.py and preprocess/cache_text_embeddings.py as
+    # to scripts/preprocess/resize_images.py and scripts/preprocess/cache_text_embeddings.py as
     # ``--min_pixels``). Not an argparse arg on train.py — preprocess reads it
     # straight from the merged config chain via load_path_overrides().
     CONFIG_SCHEMA.setdefault(
@@ -194,7 +210,7 @@ def populate_schema(
             help=(
                 "Pixel-count threshold for ``drop_lowres_images`` "
                 "(default 500_000 = 0.5MP). Forwarded to "
-                "preprocess/resize_images.py + cache_text_embeddings.py as "
+                "scripts/preprocess/resize_images.py + cache_text_embeddings.py as "
                 "``--min_pixels``. Ignored when ``drop_lowres_images=false``."
             ),
             source="manual",

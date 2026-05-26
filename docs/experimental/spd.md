@@ -2,7 +2,7 @@
 
 Port of Xiao et al., *Spectral Progressive Diffusion* (arXiv:2605.18736, [project page](https://howardxiao.ca/speed/)). Grow the spatial resolution along the denoising trajectory: run the early, noise-dominated steps at **low resolution**, then inject high-frequency detail via **spectral noise expansion** only once finer frequencies emerge from noise. Because the latent power spectrum decays as a power law (`P_ω ∝ |ω|^{-β}`, **β ≈ 2.26** on Anima — `bench/spd/`), high frequencies carry far less signal and are cheap to defer.
 
-This is the **training-free** path ("Case A"): the bare DiT — or any existing LoRA checkpoint — runs the multi-resolution trajectory through the standard inference path with no training. The follow-on trajectory-adapter fine-tune ("Case B") is a separate, greenlit-but-not-shipped proposal: `docs/proposal/spd_finetune_lora.md`.
+Two paths: **Case A** is training-free — the bare DiT, or any existing LoRA checkpoint, runs the multi-resolution trajectory through the standard inference path with no training. **Case B** is a trajectory-adapter fine-tune (a plain LoRA trained on the SPD velocity targets) so the model *sees* the multi-resolution trajectory; it is now implemented and trained (see [Fine-tune (Case B)](#fine-tune-case-b) below).
 
 - **Implementation:** `networks/spd.py` (sampler-level runner, self-registers at import like `networks/spectrum.py`).
 - **Dispatch:** `--spd` in `inference.py`, routed by `library/inference/generation.py::generate_body`.
@@ -88,6 +88,16 @@ SPD was integrated behind a **gated** plan (`bench/spd/plan.md`) — each phase 
 - **Phase 2 — resolution generalization: PASS.** The bare DiT denoises low-res latents and accepts the spectral-expansion handoff with no instability (std ×0.95, no NaN, no smear/double-image), across both single-stage and community schedules. This was the real go/no-go — if the model mushed at low res, training-free SPD would be dead. (`probe_lowres_denoise.py`.)
 - **Phase 3 — integration: shipped (v0).** Runner + CLI in `networks/spd.py`; speed/quality bench + SPD∘Spectrum study still open.
 
-## Fine-tune (Case B) — pointer
+## Fine-tune (Case B)
 
-`docs/proposal/spd_finetune_lora.md` proposes a plain rank-48 LoRA trained on the stage-specific straight-line velocity targets (§4.3, Eq. 11–14) so the model *sees* the multi-resolution trajectory and can hold a **more aggressive schedule** than training-free tolerates. It needs no teacher and no fake-score net (unlike Turbo) — analytic MSE targets only. The train-time stage-entry state is built by the *same* `spectral_expand` primitive the sampler runs (`spd_stage_target` / `spd_schedule_bands` in `networks/spd.py`), so the train/inference geometry is bit-aligned. v0 training script is implemented (`scripts/distill_spd.py` + `make exp-spd` / `make exp-test-spd`, config `configs/methods/spd.toml`) but not yet trained-for-real or benched.
+A plain rank-64 LoRA trained on the stage-specific straight-line velocity targets (§4.3, Eq. 11–14) so the model *sees* the multi-resolution trajectory instead of being asked to generalize to it zero-shot. It needs **no teacher and no fake-score net** (unlike Turbo) — the per-stage target velocity is analytic, so the loop is ordinary frozen-DiT + adapter-only MSE; the only thing that differs from normal Anima LoRA training is the *noising process* (each step regresses `v_θ` onto the per-stage SPD segment at that stage's resolution). The train-time stage-entry state is built by the *same* `spectral_expand` primitive the sampler runs (`spd_stage_target` / `spd_schedule_bands` in `networks/spd.py`), so train/inference geometry is bit-aligned.
+
+```bash
+make exp-spd                                   # rank-64, single-late knee, config defaults
+make exp-spd ARGS="--torch_compile"            # per-stage static-shape compile
+make exp-test-spd                              # infer; reads schedule back from metadata
+```
+
+Config is `configs/methods/spd.toml` (bespoke sectioned schema, read by `scripts/distill_spd.py` — **don't** `print-config METHOD=spd`). The output `output/ckpt/anima_spd.safetensors` is a normal LoRA; its trained schedule is snapshotted into the safetensors metadata (`ss_spd_stages` / `ss_spd_transition_sigmas` / `ss_spd_schedule_label`), and `make exp-test-spd` reads those back so you can't silently infer at a geometry the LoRA never saw.
+
+**Status (2026-05-23):** trained for real — 8k steps, single-late knee (`stages = [0.5, 1.0]`, `transition_sigma = 0.7`). At that schedule the fine-tune is **qualitatively cleaner than training-free SPD (Case A)** on the same trajectory: training-free leaves the sharper/higher-contrast signature noted above, while the adapter holds the handoff with fewer artifacts. This is an eyeball result at only 8k steps — no formal speed/quality bench yet, and the "**more aggressive schedule than training-free tolerates**" headroom (the Phase-1 δ-conservatism gap) is the open claim Case B was meant to chase but hasn't yet been measured. v1 distillation is the analytic backbone only; the earlier on-policy teacher-distillation tail was removed (see `bench/spd/plan.md`).

@@ -16,23 +16,30 @@ _ATTR_TO_MODULE = {
     # output
     "check_inputs": "output",
     "decode_latent": "output",
+    "decode_to_pil": "output",
+    "pixels_to_pil": "output",
     "get_time_flag": "output",
     "save_latent": "output",
     "save_images": "output",
     "save_output": "output",
     # models
     "load_dit_model": "models",
+    "attach_adapters": "models",
     "load_text_encoder": "models",
     "load_shared_models": "models",
     # text
     "process_escape": "text",
     "prepare_text_inputs": "text",
+    "ensure_text_strategies": "text",
+    # request object (typed front door for generate())
+    "GenerationRequest": "request",
     # mod_guidance
     "build_mod_schedule": "corrections.mod_guidance",
     "setup_mod_guidance": "corrections.mod_guidance",
     # generation
     "GenerationSettings": "generation",
     "get_generation_settings": "generation",
+    "resolve_seed": "generation",
     "compute_tile_positions": "generation",
     "create_tile_blend_weight": "generation",
     "generate_body": "generation",

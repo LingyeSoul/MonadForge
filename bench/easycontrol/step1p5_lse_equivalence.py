@@ -57,12 +57,10 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from bench._common import make_run_dir, write_result  # noqa: E402
 from library.log import setup_logging  # noqa: E402
 from networks import attention_dispatch as anima_attention  # noqa: E402

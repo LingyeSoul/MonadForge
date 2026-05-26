@@ -4,15 +4,15 @@ import logging
 from typing import Any, Optional
 
 import torch
-import transformers
-from diffusers.optimization import (
-    SchedulerType as DiffusersSchedulerType,
-    TYPE_TO_SCHEDULER_FUNCTION as DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION,
-)
 from torch.optim import Optimizer
-from transformers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 
 from library.training.optimizers import is_schedulefree_optimizer
+
+# transformers (~1.3s) and diffusers (~2s) are imported lazily inside
+# get_scheduler_fix so that merely importing this module (and, transitively,
+# library.train_util) doesn't pay for them. Only the actual scheduler-build
+# path needs them, and only the adafactor/piecewise_constant branches reach
+# into transformers.Adafactor / diffusers.optimization respectively.
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +84,8 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         return wrap_check_needless_num_warmup_steps(lr_scheduler)
 
     if name.startswith("adafactor"):
+        import transformers
+
         assert isinstance(optimizer, transformers.optimization.Adafactor), (
             "adafactor scheduler must be used with Adafactor optimizer"
         )
@@ -92,10 +94,19 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             transformers.optimization.AdafactorSchedule(optimizer, initial_lr)
         )
 
-    if name == DiffusersSchedulerType.PIECEWISE_CONSTANT.value:
+    # Gate on the literal value ("piecewise_constant") so the diffusers import
+    # (~2s) is only paid when that scheduler is actually requested.
+    if name == "piecewise_constant":
+        from diffusers.optimization import (
+            SchedulerType as DiffusersSchedulerType,
+            TYPE_TO_SCHEDULER_FUNCTION as DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION,
+        )
+
         name = DiffusersSchedulerType(name)
         schedule_func = DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION[name]
         return schedule_func(optimizer, **lr_scheduler_kwargs)
+
+    from transformers.optimization import SchedulerType, TYPE_TO_SCHEDULER_FUNCTION
 
     name = SchedulerType(name)
     schedule_func = TYPE_TO_SCHEDULER_FUNCTION[name]

@@ -57,14 +57,10 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
-from pathlib import Path
 
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
 
 from bench._common import make_run_dir, write_result  # noqa: E402
 from library.anima import weights as anima_utils  # noqa: E402

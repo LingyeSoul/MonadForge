@@ -262,15 +262,8 @@ class AnimaTrainer:
         train_dataset_group: Union[DatasetGroup, MinimalDataset],
         val_dataset_group: Optional[DatasetGroup],
     ):
-        if (
-            args.cache_text_encoder_outputs_to_disk
-            and not args.cache_text_encoder_outputs
-        ):
-            logger.warning(
-                "cache_text_encoder_outputs_to_disk is enabled, so cache_text_encoder_outputs is also enabled"
-            )
-            args.cache_text_encoder_outputs = True
-
+        # use_text_cache → cache_text_encoder_outputs{,_to_disk} is expanded in
+        # verify_training_args (runs first); just read the derived flag here.
         if args.cache_text_encoder_outputs:
             assert train_dataset_group.is_text_encoder_output_cacheable(
                 cache_supports_dropout=True
@@ -352,11 +345,93 @@ class AnimaTrainer:
                 for dataset in val_dataset_group.datasets:
                     dataset.force_load_images_for_ip = True
 
-        train_dataset_group.verify_bucket_reso_steps(
-            16
-        )  # WanVAE spatial downscale = 8 and patch size = 2
-        if val_dataset_group is not None:
-            val_dataset_group.verify_bucket_reso_steps(16)
+        # IP-Adapter distinct-pair (identity) training. When opted in
+        # (ip_pair_mode != "self") each dataset draws the IP-path reference from
+        # a *different* image of the target's identity instead of the target
+        # itself, removing the self-pair copy shortcut. Requires cached PE
+        # features (the pairing is a stem swap on disk). See
+        # docs/proposal/ip-adapter-identity-pairs.md.
+        ip_pair_mode = str(getattr(args, "ip_pair_mode", "self") or "self")
+        if getattr(args, "use_ip_adapter", False) and ip_pair_mode != "self":
+            if not getattr(args, "ip_features_cache_to_disk", False):
+                raise ValueError(
+                    "ip_pair_mode requires ip_features_cache_to_disk=true "
+                    "(distinct-pair training swaps which stem's cached PE "
+                    "features feed the IP path). PE-LoRA's live encoder is "
+                    "incompatible — set pe_lora_enabled=false."
+                )
+            index_path = getattr(
+                args,
+                "ip_pair_index",
+                "post_image_dataset/captions/caption_index.json",
+            )
+            if not os.path.exists(index_path):
+                raise FileNotFoundError(
+                    f"ip_pair_index not found: {index_path}. Run `make caption-index`."
+                )
+            pair_kwargs = dict(
+                index_path=index_path,
+                mode=ip_pair_mode,
+                prob=float(getattr(args, "ip_pair_prob", 0.8)),
+                min_level=str(getattr(args, "ip_pair_min_level", "artist")),
+                caption_strip_p=float(getattr(args, "ip_pair_caption_strip_p", 0.0)),
+            )
+            for dataset in train_dataset_group.datasets:
+                dataset.setup_identity_pairs(is_validation=False, **pair_kwargs)
+            if val_dataset_group is not None:
+                for dataset in val_dataset_group.datasets:
+                    dataset.setup_identity_pairs(is_validation=True, **pair_kwargs)
+            logger.info(
+                f"IP-Adapter distinct pairs: mode={ip_pair_mode} "
+                f"prob={pair_kwargs['prob']} min_level={pair_kwargs['min_level']} "
+                f"caption_strip_p={pair_kwargs['caption_strip_p']} "
+                f"index={index_path}"
+            )
+
+        # Soft-tokens contrastive negatives. The objective's knobs live in
+        # ``network_args`` (see configs/methods/soft_tokens.toml); preview them
+        # here to decide whether
+        # the dataset should surface cached negative text embeddings. Off unless
+        # contrastive_weight > 0. See docs/proposal/soft_tokens_contrastive.md.
+        if str(getattr(args, "network_module", "") or "") == (
+            "networks.methods.soft_tokens"
+        ):
+            net_arg_preview: dict[str, str] = {}
+            for na in args.network_args or []:
+                if "=" in na:
+                    pk, pv = na.split("=", 1)
+                    net_arg_preview[pk] = pv
+            con_weight = float(net_arg_preview.get("contrastive_weight", 0.0) or 0.0)
+            if con_weight > 0.0:
+                con_k = int(net_arg_preview.get("contrastive_k", 1) or 1)
+                con_mode = str(
+                    net_arg_preview.get("contrastive_negative_mode", "shuffled")
+                )
+                # The negative grouping always comes from the shared caption
+                # index `make caption-index` writes — not a user knob.
+                con_index = "post_image_dataset/captions/caption_index.json"
+                if not os.path.exists(con_index):
+                    raise FileNotFoundError(
+                        f"contrastive_index not found: {con_index}. "
+                        f"Run `make caption-index`."
+                    )
+                if not getattr(args, "cache_llm_adapter_outputs", False):
+                    raise ValueError(
+                        "soft_tokens contrastive requires "
+                        "cache_llm_adapter_outputs=true (negatives are cached "
+                        "crossattn_emb swapped off disk)."
+                    )
+                # Negatives only feed the training-step contrastive forward; the
+                # validation FM-MSE stays a clean baseline, so val datasets are
+                # left untouched.
+                for dataset in train_dataset_group.datasets:
+                    dataset.setup_contrastive_negatives(
+                        con_index, k=con_k, mode=con_mode, is_validation=False
+                    )
+                logger.info(
+                    f"Soft-tokens contrastive: weight={con_weight} k={con_k} "
+                    f"mode={con_mode} index={con_index}"
+                )
 
     def load_target_model(
         self, args, weight_dtype, accelerator, load_qwen3=True, load_vae=True
@@ -465,18 +540,14 @@ class AnimaTrainer:
             attn_softmax_scale=attn_softmax_scale,
         )
 
-        # Static token count (constant-shape padding for torch.compile)
-        if getattr(args, "static_token_count", None) is not None:
-            model.set_static_token_count(args.static_token_count)
-            if (
-                args.torch_compile
-                and getattr(args, "compile_mode", "blocks") == "blocks"
-            ):
-                model.compile_blocks(
-                    args.dynamo_backend,
-                    mode=getattr(args, "compile_inductor_mode", None),
-                )
-            logger.info(f"static_token_count={args.static_token_count}")
+        # Native-shape flattening + per-block torch.compile. compile_blocks turns
+        # on the flatten (one block graph per token-count family: 4032/4200) and
+        # raises the dynamo cache-size budget itself.
+        if args.torch_compile:
+            model.compile_blocks(
+                args.dynamo_backend,
+                mode=getattr(args, "compile_inductor_mode", None),
+            )
 
         # Store unsloth preference so that when the base trainer calls
         # dit.enable_gradient_checkpointing(cpu_offload=...), we can override to use unsloth.
@@ -669,6 +740,9 @@ class AnimaTrainer:
             is_train=is_train,
             warmup_step=int(getattr(self, "_hydra_warmup_step", 0)),
             max_train_steps=int(getattr(args, "max_train_steps", 0) or 0),
+            gradient_accumulation_steps=int(
+                getattr(args, "gradient_accumulation_steps", 1) or 1
+            ),
         )
 
         # Gradient checkpointing support
@@ -1183,6 +1257,20 @@ class AnimaTrainer:
         for adapter in self._adapters:
             adapter.on_step_start(step_ctx, batch, is_train=is_train)
 
+    def run_after_backward(self, ctx: TrainCtx):
+        """Dispatch the post-backward hook to adapters (between
+        ``accelerator.backward`` and gradient clipping)."""
+        if not self._adapters:
+            return
+        step_ctx = StepCtx(
+            args=ctx.args,
+            accelerator=ctx.accelerator,
+            network=ctx.network,
+            weight_dtype=ctx.weight_dtype,
+        )
+        for adapter in self._adapters:
+            adapter.after_backward(step_ctx)
+
     def is_train_text_encoder(self, args):
         return not args.network_train_unet_only
 
@@ -1381,8 +1469,10 @@ class AnimaTrainer:
             train_dataset_group, val_dataset_group = (
                 config_util.generate_dataset_group_by_blueprint(
                     blueprint.dataset_group,
-                    constant_token_buckets=getattr(args, "static_token_count", None)
-                    is not None,
+                    # Native constant-token bucketing is the only mode: the sampler
+                    # buckets into CONSTANT_TOKEN_BUCKETS (the 4032/4200 families)
+                    # so compile_blocks' flatten keys on token count, not resolution.
+                    constant_token_buckets=True,
                 )
             )
 
@@ -1391,7 +1481,9 @@ class AnimaTrainer:
                 for ds in train_dataset_group.datasets
                 for subset in ds.subsets
             ]
-            self._state.caption_dropout_enabled = bool(rates) and any(r > 0 for r in rates)
+            self._state.caption_dropout_enabled = bool(rates) and any(
+                r > 0 for r in rates
+            )
             if self._state.caption_dropout_enabled:
                 logger.info(f"caption dropout ENABLED -- per-subset rates: {rates}")
             else:
@@ -1762,41 +1854,6 @@ class AnimaTrainer:
                     continue
                 t_enc.eval()
 
-        # compile_mode='full': narrow torch.compile to _run_blocks (the constant-
-        # shape block stack). Pre-blocks (patch/embed/static-pad/RoPE-pad/t_embedder/
-        # BlockMask) and post-blocks (unpad/final_layer/unpatchify) stay eager --
-        # their shapes vary per CONSTANT_TOKEN_BUCKETS entry, so wrapping them
-        # would force one CUDAGraph per bucket. Pinning the compile boundary to
-        # the shape-invariant region yields a single CUDAGraph across all buckets.
-        if args.torch_compile and getattr(args, "compile_mode", "blocks") == "full":
-            assert not args.gradient_checkpointing, (
-                "compile_mode='full' is incompatible with gradient checkpointing"
-            )
-            assert not self.is_swapping_blocks, (
-                "compile_mode='full' is incompatible with block swap"
-            )
-            inductor_mode = getattr(args, "compile_inductor_mode", None)
-            # Compile on the unwrapped DiT so the instance-bound method sticks
-            # regardless of accelerator wrapping (DDP/etc resolve self._run_blocks
-            # against the underlying module's __dict__).
-            accelerator.unwrap_model(unet).compile_core(
-                backend=args.dynamo_backend, mode=inductor_mode
-            )
-            logger.info(
-                f"compile_core: _run_blocks compiled "
-                f"(backend={args.dynamo_backend}, mode={inductor_mode})"
-            )
-
-            # Also compile the network's hot path when it exposes one (currently
-            # only the postfix cond+ortho path — `_compute_ortho_cond_postfix`).
-            # No-op for everything else. Shape-static once bucketing is fixed,
-            # so dynamic=False is safe (same justification as compile_core).
-            net_unwrapped = accelerator.unwrap_model(network)
-            if hasattr(net_unwrapped, "compile_hot_path"):
-                net_unwrapped.compile_hot_path(
-                    backend=args.dynamo_backend, mode=inductor_mode
-                )
-
         accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 
         if not cache_latents:
@@ -1930,7 +1987,7 @@ class AnimaTrainer:
             raise RuntimeError(
                 "Latent cache is incomplete. train.py requires a completed "
                 "preprocess pass — run `make preprocess` (or set "
-                "cache_latents = false for live VAE encoding)."
+                "use_vae_cache = false for live VAE encoding)."
             )
 
         if args.cache_text_encoder_outputs and not (
@@ -1939,7 +1996,7 @@ class AnimaTrainer:
             raise RuntimeError(
                 "Text-encoder cache is incomplete. train.py requires a completed "
                 "preprocess pass — run `make preprocess` (or set "
-                "cache_text_encoder_outputs = false for live encoding)."
+                "use_text_cache = false for live encoding)."
             )
 
         # CMMD validation generates samples and decodes them through the VAE
@@ -2460,6 +2517,17 @@ def setup_parser() -> argparse.ArgumentParser:
         "on tight VRAM where the PE encoder + sampling path doesn't fit.",
     )
     parser.add_argument(
+        "--validation_baselines",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run each method adapter's validation baselines (e.g. IP-Adapter "
+        "no_ip / shuffled_ref) as FM-MSE delta diagnostics during validation. "
+        "Set `validation_baselines = false` in the method TOML (or pass "
+        "`--no-validation_baselines`) to skip them — each baseline adds a full "
+        "extra val forward per (batch, σ), so this roughly halves IP-Adapter "
+        "validation time when you don't need the deltas.",
+    )
+    parser.add_argument(
         "--unsloth_offload_checkpointing",
         action="store_true",
         help="offload activations to CPU RAM using async non-blocking transfers (faster than --cpu_offload_checkpointing). "
@@ -2519,7 +2587,78 @@ def build_network_extras() -> dict[str, _config_schema.ConfigKey]:
     }
 
 
+def _install_crash_reporter(argv: list[str]) -> None:
+    """Record a fatal startup/training exception into ``--progress_jsonl``.
+
+    The daemon launches us windowless under ``pythonw.exe``; that interpreter
+    drops the child's stdout/stderr (only the ``accelerate launch`` *parent*'s
+    output reaches ``stdout.log``), so an uncaught traceback here is lost and the
+    daemon falls back to a generic "process exited (code=1)" with nothing
+    actionable. ``progress.jsonl`` is written by path, not via the dead std
+    streams, so it survives — and it's what the daemon already reads to diagnose
+    a job (``manager._finalize_from_exit`` → ``run_end.error``).
+
+    ``run_scope`` already emits ``run_end(error=…)`` for failures inside the
+    training loop, but only *after* ``ProgressSink.run_start`` has fired — late
+    in ``train()``. Errors before that (latent/TE cache incomplete, config or
+    dataset build, model load) escape it entirely. This excepthook is the
+    catch-all: it appends a ``run_end`` error event for any uncaught exception,
+    wherever it's raised, so the GUI's finish banner shows the real cause.
+    """
+    path = None
+    for i, tok in enumerate(argv):
+        if tok == "--progress_jsonl" and i + 1 < len(argv):
+            path = argv[i + 1]
+        elif tok.startswith("--progress_jsonl="):
+            path = tok.split("=", 1)[1]
+    if not path or path.strip().lower() in ("", "none", "off"):
+        return
+
+    import json as _json
+
+    prev_hook = sys.excepthook
+
+    def _hook(exc_type, exc, tb):
+        # KeyboardInterrupt is a clean stop, handled by run_scope/the daemon's
+        # stop_requested path — don't mislabel it an error.
+        if not issubclass(exc_type, KeyboardInterrupt):
+            try:
+                # Dedupe: run_scope may already have written the terminal event
+                # for an in-loop failure; don't append a second one.
+                already_ended = False
+                if os.path.isfile(path):
+                    with open(path, "r", encoding="utf-8") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if line:
+                                last = line
+                    try:
+                        already_ended = _json.loads(last).get("ev") == "run_end"
+                    except (NameError, ValueError):
+                        already_ended = False
+                if not already_ended:
+                    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+                    with open(path, "a", encoding="utf-8") as fh:
+                        fh.write(
+                            _json.dumps(
+                                {
+                                    "ev": "run_end",
+                                    "status": "error",
+                                    "final_step": -1,
+                                    "error": f"{exc_type.__name__}: {exc}",
+                                }
+                            )
+                            + "\n"
+                        )
+            except Exception:  # noqa: BLE001 — reporting must never mask the crash
+                pass
+        prev_hook(exc_type, exc, tb)
+
+    sys.excepthook = _hook
+
+
 if __name__ == "__main__":
+    _install_crash_reporter(sys.argv)
     parser = setup_parser()
     _config_schema.populate_schema(parser, extras=build_network_extras())
 

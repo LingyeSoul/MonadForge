@@ -12,6 +12,7 @@ STRINGS: dict[str, str] = {
     "tab_config": "训练配置",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
+    "tab_spd": "SPD",
     "tab_methods": "方法",
     "tab_images": "数据集",
     "tab_merge": "合并",
@@ -58,6 +59,14 @@ STRINGS: dict[str, str] = {
     "preprocess_mit_threshold": "MIT 文字阈值 (0.0–1.0):",
     "preprocess_mit_threshold_tip": (
         "MIT/ComicTextDetector 文字分割器的置信度阈值。默认 0.8。"
+    ),
+    "preprocess_mask_path_pattern": "蒙版路径过滤器:",
+    "preprocess_mask_path_pattern_tip": (
+        "限制哪些已缩放图像参与蒙版生成的 fnmatch glob 模式，"
+        "以 post_image_dataset/resized 为基准对每个路径进行匹配。"
+        "同时作用于 SAM 和 MIT。与训练用 path_pattern 语法相同："
+        "'*'（或空白）遮罩全部；'char_a/*' 限定单个子文件夹；"
+        "'char_a/*|char_b/*' 进行 OR 组合。"
     ),
     "preprocess_run_mask": "运行蒙版生成",
     "preprocess_run_sam_mask": "运行 SAM 蒙版",
@@ -119,6 +128,15 @@ STRINGS: dict[str, str] = {
         "请取消并先运行预处理。\n\n"
         "用现有缓存继续训练吗?"
     ),
+    "stale_cache_title": "过时的数据集缓存",
+    "stale_cache_body": (
+        "以下路径下有 {n} 个 VAE 隐变量缓存:\n  {cache_dir}\n\n"
+        "这些文件的分辨率已不在当前桶表 "
+        "(4032 / 4200 token 数系列) 中:\n\n{examples}\n\n"
+        "这些缓存是在旧的桶布局下生成的 —— 训练时会跳过或将其归入错误的桶。"
+        "请取消并重新运行预处理 (使用「覆盖」选项) 以重新生成缓存。\n\n"
+        "仍然使用过时缓存继续训练吗?"
+    ),
     "train_autopreprocess_log": (
         "未找到预处理缓存 —— 将先运行预处理,然后自动开始训练。\n"
     ),
@@ -128,6 +146,8 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/ 为空。",
     "finished": "--- 完成 (退出码 {code}) ---",
     "starting": "启动中…… (加载 torch / accelerate)",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ 可能原因: {summary}",
     "update_success_title": "更新已应用",
     "update_success_message": (
         "anima_lora 已更新至 {v}。\n\n"
@@ -188,6 +208,8 @@ STRINGS: dict[str, str] = {
     "directory": "目录:",
     "dataset_reload": "重新加载",
     "dataset_reload_tooltip": "重新扫描当前目录并刷新图像列表和选择。",
+    "dataset_open_dir": "打开",
+    "dataset_open_dir_tooltip": "在系统文件管理器中打开当前目录。",
     "dataset_add_dir": "添加目录……",
     "dataset_add_dir_tooltip": "选择另一个目录并在本次会话中加入下拉框。",
     "dataset_add_dir_picker": "选择要添加的目录",

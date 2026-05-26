@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Union
 
 from library.log import setup_logging
+from library.runtime.proc import no_window_kwargs
 
 setup_logging()
 
@@ -73,6 +74,7 @@ def _implementation_version() -> str:
             text=True,
             cwd=os.path.dirname(os.path.dirname(__file__)),
             timeout=5,
+            **no_window_kwargs(),
         )
         if result.returncode == 0:
             return f"anima-lora/{result.stdout.strip()}"

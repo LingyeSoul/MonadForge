@@ -20,6 +20,10 @@ from library.models import sai_spec as sai_model_spec
 from library.training import get_sanitized_config_or_none
 from library.log import setup_logging
 
+# Convenience re-export: the canonical home is library.config.io, but
+# convention (and embedders) reach for it on this facade. See examples/.
+from library.config.io import load_method_preset, read_config_from_file  # noqa: F401
+
 setup_logging()
 
 logger = logging.getLogger(__name__)
@@ -75,7 +79,13 @@ def get_sai_model_spec_dataclass(
             value = getattr(args, attr_name, None)
             if value is not None:
                 field_name = attr_name[9:]
-                if field_name not in {"title", "author", "description", "license", "tags"}:
+                if field_name not in {
+                    "title",
+                    "author",
+                    "description",
+                    "license",
+                    "tags",
+                }:
                     extracted_metadata[field_name] = value
     if optional_metadata:
         extracted_metadata.update(optional_metadata)
@@ -84,7 +94,7 @@ def get_sai_model_spec_dataclass(
         lora,
         timestamp,
         title=title,
-        reso=args.resolution,
+        reso=None,
         author=args.metadata_author,
         description=args.metadata_description,
         license=args.metadata_license,
@@ -94,18 +104,10 @@ def get_sai_model_spec_dataclass(
     )
 
 
-
-
 def prepare_dataset_args(args: argparse.Namespace, support_metadata: bool):
     if args.caption_extention is not None:
         args.caption_extension = args.caption_extention
         args.caption_extention = None
-
-    if args.resolution is not None:
-        args.resolution = tuple([int(r) for r in args.resolution.split(",")])
-        if len(args.resolution) == 1:
-            args.resolution = (args.resolution[0], args.resolution[0])
-        assert len(args.resolution) == 2, "resolution must be 'size' or 'width,height'"
 
     if args.face_crop_aug_range is not None:
         args.face_crop_aug_range = tuple(
@@ -125,7 +127,6 @@ def prepare_dataset_args(args: argparse.Namespace, support_metadata: bool):
             )
 
 
-
 def get_timesteps(
     min_timestep: int, max_timestep: int, b_size: int, device: torch.device
 ) -> torch.Tensor:
@@ -135,7 +136,6 @@ def get_timesteps(
         timesteps = torch.full((b_size,), max_timestep, device="cpu")
     timesteps = timesteps.long().to(device)
     return timesteps
-
 
 
 def append_lr_to_logs(logs, lr_scheduler, optimizer_type, including_unet=True):

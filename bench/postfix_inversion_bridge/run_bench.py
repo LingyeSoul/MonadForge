@@ -11,15 +11,12 @@ from __future__ import annotations
 import argparse
 import csv
 import glob
-import sys
 from collections import Counter
 from pathlib import Path
 
 import torch
 from safetensors.torch import load_file, save_file
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
 from bench._common import make_run_dir, write_result  # noqa: E402
 
@@ -114,14 +111,18 @@ def split(N: int, test_frac: float, seed: int) -> tuple[torch.Tensor, torch.Tens
     return perm[n_test:], perm[:n_test]  # train, test
 
 
-def fit_ridge(F_train: torch.Tensor, S_train: torch.Tensor, ridge: float) -> torch.Tensor:
+def fit_ridge(
+    F_train: torch.Tensor, S_train: torch.Tensor, ridge: float
+) -> torch.Tensor:
     """A ∈ (D_pe, K) such that S ≈ F @ A."""
     D = F_train.shape[1]
     gram = F_train.T @ F_train + ridge * torch.eye(D, dtype=F_train.dtype)
     return torch.linalg.solve(gram, F_train.T @ S_train)
 
 
-def fit_rect_procrustes(F_train: torch.Tensor, S_train: torch.Tensor) -> tuple[torch.Tensor, float]:
+def fit_rect_procrustes(
+    F_train: torch.Tensor, S_train: torch.Tensor
+) -> tuple[torch.Tensor, float]:
     """Rectangular Procrustes with global scale.
 
     Solve A ∈ R^{D×K}, A^T A = I_K; plus scalar c, minimizing
@@ -278,9 +279,15 @@ def main():
 
     print(f"[bench] wrote results to {run_dir}")
     print(f"[bench]   N={N} K={K} D_pe={D_pe}")
-    print(f"[bench]   ridge test_r2={metrics['ridge_test_r2']:+.4f}  warm_gain={metrics['ridge_mean_warm_gain']:+.4f}  cos={metrics['ridge_mean_cosine']:+.4f}")
-    print(f"[bench]   procrustes test_r2={metrics['procrustes_test_r2']:+.4f}  warm_gain={metrics['procrustes_mean_warm_gain']:+.4f}  cos={metrics['procrustes_mean_cosine']:+.4f}")
-    print(f"[bench]   top1 var={metrics['ridge_top1_var']:.3f}  top5 var={metrics['ridge_top5_var']:.3f}")
+    print(
+        f"[bench]   ridge test_r2={metrics['ridge_test_r2']:+.4f}  warm_gain={metrics['ridge_mean_warm_gain']:+.4f}  cos={metrics['ridge_mean_cosine']:+.4f}"
+    )
+    print(
+        f"[bench]   procrustes test_r2={metrics['procrustes_test_r2']:+.4f}  warm_gain={metrics['procrustes_mean_warm_gain']:+.4f}  cos={metrics['procrustes_mean_cosine']:+.4f}"
+    )
+    print(
+        f"[bench]   top1 var={metrics['ridge_top1_var']:.3f}  top5 var={metrics['ridge_top5_var']:.3f}"
+    )
 
 
 if __name__ == "__main__":

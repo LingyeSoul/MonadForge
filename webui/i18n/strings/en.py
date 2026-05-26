@@ -8,6 +8,7 @@ STRINGS: dict[str, str] = {
     "tab_config": "Training Config",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
+    "tab_spd": "SPD",
     "tab_methods": "Methods",
     "tab_images": "Dataset",
     "tab_merge": "Merge",
@@ -56,6 +57,13 @@ STRINGS: dict[str, str] = {
     "preprocess_mit_threshold_tip": (
         "Confidence threshold for the MIT/ComicTextDetector text segmenter. "
         "Default 0.8."
+    ),
+    "preprocess_mask_path_pattern": "Mask path filter:",
+    "preprocess_mask_path_pattern_tip": (
+        "fnmatch glob restricting which resized images get masked, matched on "
+        "each path relative to post_image_dataset/resized. Scopes BOTH SAM and "
+        "MIT. Same syntax as the training path_pattern: '*' (or blank) masks "
+        "everything; 'char_a/*' one subfolder; 'char_a/*|char_b/*' to OR-combine."
     ),
     "preprocess_run_mask": "Run masking",
     "preprocess_run_sam_mask": "Run SAM masking",
@@ -120,6 +128,16 @@ STRINGS: dict[str, str] = {
         "Preprocess first.\n\n"
         "Proceed with the existing cache?"
     ),
+    "stale_cache_title": "Stale dataset cache",
+    "stale_cache_body": (
+        "{n} VAE latent cache(s) under:\n  {cache_dir}\n\n"
+        "are at resolutions no longer in the current bucket table "
+        "(the 4032 / 4200 token-count families):\n\n{examples}\n\n"
+        "These were cached under an older bucket layout — training will skip "
+        "or mis-bucket them. Cancel and re-run Preprocess (with Overwrite) to "
+        "regenerate the cache.\n\n"
+        "Train anyway with the stale caches?"
+    ),
     "train_autopreprocess_log": (
         "No preprocessed cache found — running preprocess first, "
         "then training automatically.\n"
@@ -136,6 +154,8 @@ STRINGS: dict[str, str] = {
     "daemon_queued": "Queued job {job_id} on the training daemon.\n",
     "daemon_reattached": "Re-attached to running job {job_id} (started in a previous session).\n",
     "daemon_job_finished": "--- Job {job_id} {state} ---",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ likely cause: {summary}",
     "train_queued": "Train (queued)",
     "train_running_daemon": "Train (running…)",
     "update_success_title": "Update applied",
@@ -198,6 +218,8 @@ STRINGS: dict[str, str] = {
     "directory": "Directory:",
     "dataset_reload": "Reload",
     "dataset_reload_tooltip": "Re-scan the current directory and refresh the image list and selection.",
+    "dataset_open_dir": "Open",
+    "dataset_open_dir_tooltip": "Open the current directory in the system file manager.",
     "dataset_add_dir": "Add directory…",
     "dataset_add_dir_tooltip": "Pick another directory and add it to the dropdown for this session.",
     "dataset_add_dir_picker": "Pick a directory to add",
@@ -267,6 +289,10 @@ STRINGS: dict[str, str] = {
     "models_redownload": "Re-download",
     "models_installed": "✓ Installed",
     "models_missing": "✗ Missing",
+    "models_done_title": "Download complete",
+    "models_done_message": "Models downloaded successfully. Files are saved under models/.",
+    "models_failed_title": "Download failed",
+    "models_failed_message": "Download exited with code {code}. See the log for details.",
     "model_anima": "Anima — DiT + text encoder + VAE",
     "model_sam3": "SAM3 — text-bubble masking",
     "model_mit": "MIT — manga text masking",

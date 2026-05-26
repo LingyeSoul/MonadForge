@@ -56,15 +56,12 @@ import glob
 import json
 import logging
 import os
-import sys
 from collections import defaultdict
-from pathlib import Path
 
 import numpy as np
 import torch
 from safetensors.torch import load_file, save_file
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from library.anima import weights as anima_utils
 from library.log import setup_logging
@@ -131,7 +128,10 @@ def parse_args():
 # identical for every component (same x feeds q, k, v of a fused projection),
 # so we emit the same per-channel vector under each split key as well.
 _FUSED_TO_SPLIT_SUFFIXES = (
-    ("self_attn_qkv_proj", ("self_attn_q_proj", "self_attn_k_proj", "self_attn_v_proj")),
+    (
+        "self_attn_qkv_proj",
+        ("self_attn_q_proj", "self_attn_k_proj", "self_attn_v_proj"),
+    ),
     ("cross_attn_kv_proj", ("cross_attn_k_proj", "cross_attn_v_proj")),
 )
 
@@ -175,7 +175,9 @@ def dump_channel_stats_safetensors(stats, out_path, prefix="lora_unet_"):
 def find_sample_stems(dataset_dir, n, seed, per_artist=False):
     # Walk recursively — post-2026-04 the dataset is nested by artist subdir.
     te_files = sorted(
-        glob.glob(os.path.join(dataset_dir, "**", "*_anima_te.safetensors"), recursive=True)
+        glob.glob(
+            os.path.join(dataset_dir, "**", "*_anima_te.safetensors"), recursive=True
+        )
     )
     if not te_files:
         raise FileNotFoundError(f"no *_anima_te.safetensors found in {dataset_dir}")

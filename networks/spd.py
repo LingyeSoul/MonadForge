@@ -61,12 +61,25 @@ log = logging.getLogger(__name__)
 # Promoted verbatim from bench/spd/probe_lowres_denoise.py.
 
 
+# The type-II DCT basis is constant for a given (n, device, dtype), and both the
+# SPD sampler and the fine-tune target construction only ever see a handful of
+# bucket sizes — so build each matrix once and reuse it read-only instead of
+# rebuilding dense (n×n) matrices on every dct2/idct2 call. Callers must NOT
+# mutate the returned tensor (dct2/idct2 only matmul against it). Math is
+# bit-identical to the un-cached construction.
+_DCT_CACHE: dict[tuple[int, torch.device, torch.dtype], torch.Tensor] = {}
+
+
 def _dct_matrix(n: int, device, dtype) -> torch.Tensor:
-    nr = torch.arange(n, device=device, dtype=dtype)
-    k = nr.unsqueeze(1)
-    m = torch.cos(torch.pi * k * (2 * nr + 1) / (2 * n))
-    m[0] *= 1.0 / math.sqrt(n)
-    m[1:] *= math.sqrt(2.0 / n)
+    key = (n, device, dtype)
+    m = _DCT_CACHE.get(key)
+    if m is None:
+        nr = torch.arange(n, device=device, dtype=dtype)
+        k = nr.unsqueeze(1)
+        m = torch.cos(torch.pi * k * (2 * nr + 1) / (2 * n))
+        m[0] *= 1.0 / math.sqrt(n)
+        m[1:] *= math.sqrt(2.0 / n)
+        _DCT_CACHE[key] = m
     return m
 
 

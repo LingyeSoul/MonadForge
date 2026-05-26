@@ -4,7 +4,7 @@ These are wired up under ``make exp-*`` / ``python tasks.py exp-*`` to keep
 the unstable methods visually separate from the shipped ones (lora family,
 modulation guidance, hydra). Each ``cmd_*`` is a thin shim that translates env
 vars + extra argv into the right ``train.py`` (via ``accelerate launch``) or
-``preprocess/*.py`` call.
+``scripts/preprocess/*.py`` call.
 """
 
 from __future__ import annotations
@@ -106,7 +106,7 @@ def cmd_easycontrol_preprocess(extra):
     run(
         [
             PY,
-            "preprocess/cache_latents.py",
+            "scripts/preprocess/cache_latents.py",
             "--dir",
             src,
             "--cache_dir",
@@ -122,7 +122,7 @@ def cmd_easycontrol_preprocess(extra):
     run(
         [
             PY,
-            "preprocess/cache_text_embeddings.py",
+            "scripts/preprocess/cache_text_embeddings.py",
             "--dir",
             src,
             "--cache_dir",

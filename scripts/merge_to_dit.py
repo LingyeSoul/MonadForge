@@ -26,9 +26,6 @@ from pathlib import Path
 
 import torch
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from library.anima import weights as anima_weights  # noqa: E402
 from library.log import setup_logging  # noqa: E402
@@ -163,7 +160,8 @@ def main() -> int:
             )
             return 2
         logger.warning(
-            msg + " --allow-partial set; these components will be absent from the merged DiT."
+            msg
+            + " --allow-partial set; these components will be absent from the merged DiT."
         )
 
     dtype = _DTYPE_MAP[args.dtype]
@@ -177,9 +175,7 @@ def main() -> int:
         dit_weight_dtype=dtype,
     )
 
-    logger.info(
-        f"building adapter network from weights (multiplier={args.multiplier})"
-    )
+    logger.info(f"building adapter network from weights (multiplier={args.multiplier})")
     network_module = importlib.import_module(args.network_module)
     network, weights_sd = network_module.create_network_from_weights(
         args.multiplier, str(adapter), None, None, unet, for_inference=True
@@ -196,9 +192,7 @@ def main() -> int:
         "ss_base_dit": args.dit.name,
     }
     logger.info(f"saving merged DiT: {out}")
-    anima_weights.save_anima_model(
-        str(out), unet.state_dict(), metadata, dtype=dtype
-    )
+    anima_weights.save_anima_model(str(out), unet.state_dict(), metadata, dtype=dtype)
     logger.info("done")
     return 0
 

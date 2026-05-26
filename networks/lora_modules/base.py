@@ -35,7 +35,11 @@ def _absorb_channel_scale(
     s = s / s.mean().clamp_min(eps)
     with torch.no_grad():
         weight.mul_(s.to(weight).unsqueeze(0))
-    return (1.0 / s).contiguous()
+    # inv_scale must live on the same device as the weight it rebalances: ``s``
+    # is seeded from the calibration file (CPU), but the buffer has to track
+    # ``weight`` so the forward multiply and the save-time bake never straddle
+    # cuda/cpu. fp32 storage is intentional — only the device moves.
+    return (1.0 / s).to(weight.device).contiguous()
 
 
 class BaseLoRAModule(torch.nn.Module):
@@ -77,7 +81,7 @@ class BaseLoRAModule(torch.nn.Module):
         self._has_channel_scale = False
         # Default all-ones mask → identity multiply; every forward can apply
         # `lx * self._timestep_mask` unconditionally (no None-vs-Tensor guard
-        # under compile_mode=full). T-LoRA rebinds via LoRANetwork.set_timestep_mask.
+        # under torch.compile). T-LoRA rebinds via LoRANetwork.set_timestep_mask.
         self.register_buffer(
             "_timestep_mask",
             torch.ones(1, lora_dim, dtype=torch.float32),
@@ -122,7 +126,7 @@ class BaseLoRAModule(torch.nn.Module):
         # × N_modules — ~1 MiB on Anima, negligible vs activations.
         if not self._has_channel_scale:
             return x
-        return x * self.inv_scale.to(x.dtype)
+        return x * self.inv_scale.to(device=x.device, dtype=x.dtype)
 
     def _apply_rank_dropout(self, lx: torch.Tensor):
         if self.rank_dropout is not None and self.training:

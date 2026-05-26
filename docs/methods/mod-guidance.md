@@ -197,7 +197,7 @@ python -m scripts.distill_mod.distill \
 | `--grad_accum` | 1 | Gradient accumulation steps (effective batch = `batch_size * grad_accum`). |
 | `--grad_ckpt` / `--no_grad_ckpt` | on | Gradient checkpointing w/ unsloth CPU offload. Disable if you have VRAM headroom — faster iteration. |
 | `--blocks_to_swap` | 0 | CPU-offload N transformer blocks. Only needed on very tight VRAM. |
-| `--torch_compile` / `--no_compile` | on | Compile each `Block._forward` (`--compile_mode full` compiles `_run_blocks` end-to-end, requires `--no_grad_ckpt` + `--blocks_to_swap 0`). |
+| `--torch_compile` / `--no_compile` | on | Compile each `Block._forward` on native-shape buckets (one block graph per distinct token count, no static-pad flash leak). |
 | `--validation_split` | 0.05 | Held-out fraction for val pass; set 0 to disable. |
 | `--validate_every_n_steps` | 1000 | Val cadence. Best-val checkpoint replaces step-cadence saves when validation is on. |
 | `--teacher_cache_K` | 6 | Number of pre-sampled sigma bins per sample. Each visit returns one of K deterministic (σ, noise) pairs, so the teacher forward is run at most K times per sample across the run. |

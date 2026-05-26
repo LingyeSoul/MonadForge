@@ -24,6 +24,43 @@ from library.datasets.subsets import (
 logger = logging.getLogger(__name__)
 
 
+def read_caption(img_path, caption_extension, enable_wildcard):
+    """Read the caption sidecar for ``img_path``.
+
+    Returns ``None`` when no sidecar file exists. An empty (or
+    whitespace-only) caption file is a valid *explicit empty caption*
+    (unconditional / style-LoRA training) and resolves to ``""`` rather than
+    raising — callers treat ``""`` as a real caption, not a missing one.
+    """
+    base_name = os.path.splitext(img_path)[0]
+    base_name_face_det = base_name
+    tokens = base_name.split("_")
+    if len(tokens) >= 5:
+        base_name_face_det = "_".join(tokens[:-4])
+    cap_paths = [
+        base_name + caption_extension,
+        base_name_face_det + caption_extension,
+    ]
+
+    caption = None
+    for cap_path in cap_paths:
+        if os.path.isfile(cap_path):
+            with open(cap_path, "rt", encoding="utf-8") as f:
+                try:
+                    lines = f.readlines()
+                except UnicodeDecodeError as e:
+                    logger.error("illegal char in file (not UTF-8)")
+                    raise e
+                if enable_wildcard:
+                    caption = "\n".join(
+                        [line.strip() for line in lines if line.strip() != ""]
+                    )
+                else:
+                    caption = lines[0].strip() if lines else ""
+            break
+    return caption
+
+
 class DreamBoothDataset(BaseDataset):
     IMAGE_INFO_CACHE_FILE = "metadata_cache.json"
 
@@ -32,13 +69,7 @@ class DreamBoothDataset(BaseDataset):
         subsets: Sequence[DreamBoothSubset],
         is_training_dataset: bool,
         batch_size: int,
-        resolution,
         network_multiplier: float,
-        enable_bucket: bool,
-        min_bucket_reso: int,
-        max_bucket_reso: int,
-        bucket_reso_steps: int,
-        bucket_no_upscale: bool,
         prior_loss_weight: float,
         debug_dataset: bool,
         validation_split: float,
@@ -46,65 +77,15 @@ class DreamBoothDataset(BaseDataset):
         resize_interpolation: Optional[str],
         validation_split_num: int = 0,
     ) -> None:
-        super().__init__(
-            resolution, network_multiplier, debug_dataset, resize_interpolation
-        )
-
-        assert resolution is not None, "resolution is required"
+        super().__init__(network_multiplier, debug_dataset, resize_interpolation)
 
         self.batch_size = batch_size
-        self.size = min(self.width, self.height)
         self.prior_loss_weight = prior_loss_weight
         self.latents_cache = None
         self.is_training_dataset = is_training_dataset
         self.validation_seed = validation_seed
         self.validation_split = validation_split
         self.validation_split_num = int(validation_split_num or 0)
-
-        self.enable_bucket = enable_bucket
-        if self.enable_bucket:
-            min_bucket_reso, max_bucket_reso = self.adjust_min_max_bucket_reso_by_steps(
-                resolution, min_bucket_reso, max_bucket_reso, bucket_reso_steps
-            )
-            self.min_bucket_reso = min_bucket_reso
-            self.max_bucket_reso = max_bucket_reso
-            self.bucket_reso_steps = bucket_reso_steps
-            self.bucket_no_upscale = bucket_no_upscale
-        else:
-            self.min_bucket_reso = None
-            self.max_bucket_reso = None
-            self.bucket_reso_steps = None
-            self.bucket_no_upscale = False
-
-        def read_caption(img_path, caption_extension, enable_wildcard):
-            base_name = os.path.splitext(img_path)[0]
-            base_name_face_det = base_name
-            tokens = base_name.split("_")
-            if len(tokens) >= 5:
-                base_name_face_det = "_".join(tokens[:-4])
-            cap_paths = [
-                base_name + caption_extension,
-                base_name_face_det + caption_extension,
-            ]
-
-            caption = None
-            for cap_path in cap_paths:
-                if os.path.isfile(cap_path):
-                    with open(cap_path, "rt", encoding="utf-8") as f:
-                        try:
-                            lines = f.readlines()
-                        except UnicodeDecodeError as e:
-                            logger.error("illegal char in file (not UTF-8)")
-                            raise e
-                        assert len(lines) > 0, "caption file is empty"
-                        if enable_wildcard:
-                            caption = "\n".join(
-                                [line.strip() for line in lines if line.strip() != ""]
-                            )
-                        else:
-                            caption = lines[0].strip()
-                    break
-            return caption
 
         def load_dreambooth_dir(subset: DreamBoothSubset):
             if not os.path.isdir(subset.image_dir):

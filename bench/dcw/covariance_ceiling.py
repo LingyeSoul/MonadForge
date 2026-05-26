@@ -30,12 +30,13 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 
 from bench._common import make_run_dir, write_result  # noqa: E402
+from library.datasets.buckets import (  # noqa: E402
+    DCW_ASPECT_NAMES,
+    N_DCW_ASPECTS,
+)
 from scripts.dcw.fusion_data import (  # noqa: E402
-    ASPECT_NAMES,
-    N_ASPECTS,
     load_bench_runs,
     load_text_features,
 )
@@ -282,18 +283,17 @@ def main() -> None:
         c_pool = np.stack([feat[r.stem]["c_pool"] for r in rows]).astype(np.float64)
     else:
         cp_alt = load_c_pool_with_method(
-            stems, args.dataset_dir, method=args.c_pool_method, variant=args.text_variant
+            stems,
+            args.dataset_dir,
+            method=args.c_pool_method,
+            variant=args.text_variant,
         )
         rows = [r for r in rows if r.stem in cp_alt]
         c_pool = np.stack([cp_alt[r.stem] for r in rows]).astype(np.float64)
         n = len(rows)
         print(f"  c_pool_method={args.c_pool_method} → c_pool shape {c_pool.shape}")
-    cap_len = np.array(
-        [feat[r.stem]["caption_length"] for r in rows], dtype=np.float64
-    )
-    tok_l2 = np.array(
-        [feat[r.stem]["token_l2_std"] for r in rows], dtype=np.float64
-    )
+    cap_len = np.array([feat[r.stem]["caption_length"] for r in rows], dtype=np.float64)
+    tok_l2 = np.array([feat[r.stem]["token_l2_std"] for r in rows], dtype=np.float64)
     centroid = c_pool.mean(axis=0)
     cos_centroid = np.array(
         [
@@ -305,13 +305,13 @@ def main() -> None:
     aux = np.stack([cap_len, cos_centroid, tok_l2], axis=-1)
 
     aspect = np.array([r.aspect_id for r in rows], dtype=np.int64)
-    aspect_oh = np.zeros((n, N_ASPECTS), dtype=np.float64)
+    aspect_oh = np.zeros((n, N_DCW_ASPECTS), dtype=np.float64)
     aspect_oh[np.arange(n), aspect] = 1.0
     aspect_oh = aspect_oh[:, 1:]  # drop one column to avoid collinearity with intercept
 
-    g_obs_full = np.stack(
-        [r.v_rev_LL[: max(args.k_prefix_list)] for r in rows]
-    ).astype(np.float64)
+    g_obs_full = np.stack([r.v_rev_LL[: max(args.k_prefix_list)] for r in rows]).astype(
+        np.float64
+    )
 
     c_pool_proc = c_pool.copy()
     if args.c_pool_norm in ("l2", "l2_then_standardize"):
@@ -325,9 +325,7 @@ def main() -> None:
     c_pool_pca = _pca(c_pool_proc, args.c_pool_pca_dim)
 
     # group id: same prompt at same aspect = one group (3 seeds inside)
-    groups = np.array(
-        [hash((r.stem, r.aspect_id)) for r in rows], dtype=np.int64
-    )
+    groups = np.array([hash((r.stem, r.aspect_id)) for r in rows], dtype=np.int64)
 
     if args.seed_mean:
         # Collapse to per-group means: Y, g_obs (per-row), aspect/aux/c_pool
@@ -374,15 +372,13 @@ def main() -> None:
         blocks[f"g_obs[:{k}] + aspect"] = np.concatenate(
             [g_obs_full[:, :k], aspect_oh], axis=1
         )
-        blocks[f"g_obs[:{k}] + aux"] = np.concatenate(
-            [g_obs_full[:, :k], aux], axis=1
-        )
+        blocks[f"g_obs[:{k}] + aux"] = np.concatenate([g_obs_full[:, :k], aux], axis=1)
         blocks[f"g_obs[:{k}] + aux + c_pool_pca{args.c_pool_pca_dim}"] = np.concatenate(
             [g_obs_full[:, :k], aux, c_pool_pca], axis=1
         )
-        blocks[
-            f"g_obs[:{k}] + aux + c_pool_pca{args.c_pool_pca_dim} + aspect"
-        ] = np.concatenate([g_obs_full[:, :k], aux, c_pool_pca, aspect_oh], axis=1)
+        blocks[f"g_obs[:{k}] + aux + c_pool_pca{args.c_pool_pca_dim} + aspect"] = (
+            np.concatenate([g_obs_full[:, :k], aux, c_pool_pca, aspect_oh], axis=1)
+        )
 
     # ---- compute ceilings ---------------------------------------------------
     print(f"[4/4] computing R² ceilings (ridge={args.ridge}, k-fold={args.n_folds})")
@@ -402,7 +398,9 @@ def main() -> None:
                 "r2_in_sample": float(r2_in),
                 "r2_cv_random": float(r2_cv_random),
                 "r2_cv_grouped": float(r2_cv_grouped),
-                "r_cv_grouped": float(np.sign(r2_cv_grouped) * np.sqrt(max(r2_cv_grouped, 0.0))),
+                "r_cv_grouped": float(
+                    np.sign(r2_cv_grouped) * np.sqrt(max(r2_cv_grouped, 0.0))
+                ),
             }
         )
 
@@ -475,13 +473,13 @@ def main() -> None:
 
     # ---- per-aspect Y stats (sanity) ---------------------------------------
     print("\nper-aspect Y stats (sanity):")
-    for a in range(N_ASPECTS):
+    for a in range(N_DCW_ASPECTS):
         mask = aspect == a
         if mask.sum() == 0:
             continue
         ya = Y[mask]
         print(
-            f"  {ASPECT_NAMES[a]:<10} n={mask.sum():>3}  "
+            f"  {DCW_ASPECT_NAMES[a]:<10} n={mask.sum():>3}  "
             f"mean={ya.mean():+8.2f}  std={ya.std():>6.2f}  "
             f"|mean|/std={abs(ya.mean()) / max(ya.std(), 1e-9):.2f}"
         )

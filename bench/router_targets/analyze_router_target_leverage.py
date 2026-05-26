@@ -73,15 +73,12 @@ import argparse
 import glob
 import logging
 import os
-import sys
 from collections import defaultdict
-from pathlib import Path
 
 import numpy as np
 import torch
 from safetensors.torch import load_file
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from bench._common import make_run_dir, write_result
 from library.anima import weights as anima_utils
@@ -141,9 +138,7 @@ def find_sample_stems(dataset_dir, n, seed):
     for te_path in te_files:
         base = os.path.basename(te_path).replace("_anima_te.safetensors", "")
         # Pair the npz from the TE file's own directory.
-        npz = glob.glob(
-            os.path.join(os.path.dirname(te_path), f"{base}_*_anima.npz")
-        )
+        npz = glob.glob(os.path.join(os.path.dirname(te_path), f"{base}_*_anima.npz"))
         if npz:
             stems.append((base, npz[0], te_path))
     if not stems:

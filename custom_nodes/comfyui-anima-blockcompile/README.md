@@ -14,8 +14,8 @@ transformer blocks. Compiling each block on its own:
 - **breaks less** — each block is a small, regular subgraph, so you're far less
   likely to hit a graph break or a recompile that silently falls back to eager.
 
-This is the same strategy the `anima_lora` training/inference pipeline uses by
-default (`--compile_mode blocks`).
+This is the same strategy the `anima_lora` training/inference pipeline uses
+(`DiT.compile_blocks`).
 
 Under the hood this is just ComfyUI core's
 `set_torch_compile_wrapper(model, keys=[...])` pointed at

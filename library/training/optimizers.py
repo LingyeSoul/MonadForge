@@ -5,8 +5,10 @@ import logging
 from typing import Callable, Tuple
 
 import torch
-import transformers
 from torch.optim import Optimizer
+# transformers (~1.3s) is imported lazily inside the Adafactor branch of
+# get_optimizer; no other optimizer needs it, so importing this module stays
+# cheap.
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +266,8 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
                 logger.warning("constant_with_warmup will be good")
             if optimizer_kwargs.get("clip_threshold", 1.0) != 1.0:
                 logger.warning("clip_threshold=1.0 will be good")
+
+        import transformers
 
         optimizer_class = transformers.optimization.Adafactor
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)

@@ -8,9 +8,9 @@ Covers:
   flat-fallback, missing.
 - ``library.datasets.subsets._resolve_default_mask_dir`` — priority order
   across the new + legacy candidates.
-- ``preprocess.merge_masks`` end-to-end through ``main()`` — `(rel_dir,
+- ``scripts.preprocess.merge_masks`` end-to-end through ``main()`` — `(rel_dir,
   name)` keying, flat-to-flat passthrough, mixed nested+flat inputs.
-- ``preprocess.resize_images.process_image`` — writes under
+- ``scripts.preprocess.resize_images.process_image`` — writes under
   ``out_dir/<rel>/`` and mirrors the caption sidecar.
 """
 
@@ -206,9 +206,9 @@ def test_resolve_default_mask_dir_priority(
 
 
 def _run_merge(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> None:
-    """Run ``preprocess/merge_masks.py:main`` with the given argv."""
+    """Run ``scripts/preprocess/merge_masks.py:main`` with the given argv."""
     repo_root = Path(__file__).resolve().parent.parent
-    preprocess_dir = repo_root / "preprocess"
+    preprocess_dir = repo_root / "scripts" / "preprocess"
     monkeypatch.syspath_prepend(str(preprocess_dir))
     monkeypatch.setattr(sys, "argv", ["merge_masks.py", *argv])
 
@@ -311,7 +311,7 @@ def _write_test_image(path: Path, size: tuple[int, int] = (1024, 1024)) -> None:
 def test_resize_images_nested_output(tmp_path: Path) -> None:
     """process_image writes under out_dir/<rel>/ when rel_dir is set."""
     repo_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(repo_root / "preprocess"))
+    sys.path.insert(0, str(repo_root / "scripts" / "preprocess"))
     try:
         from resize_images import process_image
     finally:
@@ -348,7 +348,7 @@ def test_resize_images_nested_output(tmp_path: Path) -> None:
 def test_resize_images_flat_output(tmp_path: Path) -> None:
     """Empty rel_dir collapses back to the legacy flat layout (no breakage)."""
     repo_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(repo_root / "preprocess"))
+    sys.path.insert(0, str(repo_root / "scripts" / "preprocess"))
     try:
         from resize_images import process_image
     finally:

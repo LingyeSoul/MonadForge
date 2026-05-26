@@ -2,8 +2,8 @@
 blocks_to_swap = 0
 
 [low_vram]
-gradient_checkpointing = true
-unsloth_offload_checkpointing = true
+gradient_checkpointing = true # only triggered when low_vram was set
+unsloth_offload_checkpointing = true  # only triggered when low_vram was set
 
 [graft]
 blocks_to_swap = 20

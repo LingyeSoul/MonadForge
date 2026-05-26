@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-animalora-trainer"
+description = "Supported by anima_lora trainer daemon, this introduces simplified comfyui ui for training in background."
+version = "0.1.0"
+license = { file = "LICENSE" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/sorryhyun/anima_lora"
+
+[tool.comfy]
+PublisherId = "sorryhyun"
+DisplayName = "Anima Adapter Loader"
+Icon = ""

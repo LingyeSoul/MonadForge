@@ -22,7 +22,6 @@ from library.anima.text_strategies import (
 )
 from library.datasets.buckets import BucketBatchIndex, BucketManager
 from library.datasets.image_utils import (
-    resize_image,
     validate_interpolation_fn,
     IMAGE_TRANSFORMS,
     is_disk_cached_latents_is_expected,
@@ -71,15 +70,12 @@ def enable_high_vram():
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        resolution: Optional[Tuple[int, int]],
         network_multiplier: float,
         debug_dataset: bool,
         resize_interpolation: Optional[str] = None,
     ) -> None:
         super().__init__()
 
-        # width/height is used when enable_bucket==False
-        self.width, self.height = (None, None) if resolution is None else resolution
         self.network_multiplier = network_multiplier
         self.debug_dataset = debug_dataset
 
@@ -90,12 +86,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.XTI_layers = None
         self.token_strings = None
 
-        self.enable_bucket = False
         self.bucket_manager: BucketManager = None  # not initialized
-        self.min_bucket_reso = None
-        self.max_bucket_reso = None
-        self.bucket_reso_steps = None
-        self.bucket_no_upscale = None
         self.bucket_info = None  # for metadata
 
         self.current_epoch: int = 0
@@ -142,6 +133,31 @@ class BaseDataset(torch.utils.data.Dataset):
         # the deterministic crop baked into the cached latent.
         self.force_load_images_for_ip: bool = False
 
+        # IP-Adapter distinct-pair (identity) training. When an
+        # IdentityPairSampler is attached via ``setup_identity_pairs`` the
+        # reference fed to the IP path (``example["ip_features"]``) is decoupled
+        # from the VAE target: with probability ``ip_pair_prob`` a *different*
+        # image of the target's identity supplies the PE features, removing the
+        # self-pair copy shortcut. ``self`` (no sampler) = bit-identical legacy
+        # behavior. See docs/proposal/ip-adapter-identity-pairs.md.
+        self.identity_pair_sampler = None  # IdentityPairSampler | None
+        self.ip_pair_prob: float = 0.8
+        self.ip_pair_caption_strip_p: float = 0.0
+        self.ip_pair_is_validation: bool = False
+        self._ip_pair_strip_warned: bool = False
+
+        # Soft-tokens contrastive negatives. When a sampler is attached via
+        # ``setup_contrastive_negatives`` each example carries
+        # ``neg_crossattn_emb`` of shape (B, k, S, D): k cached text embeddings
+        # of *unrelated* images, used as InfoNCE negatives. Reuses the
+        # IdentityPairSampler's ``shuffled`` policy (Phase 1). Decoupled from the
+        # VAE target — same cached-feature-swap trick as IP-Adapter pairs, but
+        # the swapped feature is the text embedding, not the PE feature. See
+        # docs/proposal/soft_tokens_contrastive.md.
+        self.contrastive_neg_sampler = None  # IdentityPairSampler | None
+        self.contrastive_neg_k: int = 1
+        self.contrastive_neg_mode: str = "shuffled"
+
         # caching
         self.caching_mode = None  # None, 'latents', 'text'
 
@@ -155,42 +171,6 @@ class BaseDataset(torch.utils.data.Dataset):
             TextEncoderOutputsCachingStrategy.get_strategy()
         )
         self.latents_caching_strategy = LatentsCachingStrategy.get_strategy()
-
-    def adjust_min_max_bucket_reso_by_steps(
-        self,
-        resolution: Tuple[int, int],
-        min_bucket_reso: int,
-        max_bucket_reso: int,
-        bucket_reso_steps: int,
-    ) -> Tuple[int, int]:
-        # make min/max bucket reso to be multiple of bucket_reso_steps
-        if min_bucket_reso % bucket_reso_steps != 0:
-            adjusted_min_bucket_reso = (
-                min_bucket_reso - min_bucket_reso % bucket_reso_steps
-            )
-            logger.warning(
-                "min_bucket_reso is adjusted to be multiple of bucket_reso_steps"
-            )
-            min_bucket_reso = adjusted_min_bucket_reso
-        if max_bucket_reso % bucket_reso_steps != 0:
-            adjusted_max_bucket_reso = (
-                max_bucket_reso
-                + bucket_reso_steps
-                - max_bucket_reso % bucket_reso_steps
-            )
-            logger.warning(
-                "max_bucket_reso is adjusted to be multiple of bucket_reso_steps"
-            )
-            max_bucket_reso = adjusted_max_bucket_reso
-
-        assert min(resolution) >= min_bucket_reso, (
-            "min_bucket_reso must be equal or less than resolution"
-        )
-        assert max(resolution) <= max_bucket_reso, (
-            "max_bucket_reso must be equal or greater than resolution"
-        )
-
-        return min_bucket_reso, max_bucket_reso
 
     def set_seed(self, seed):
         self.seed = seed
@@ -446,58 +426,35 @@ class BaseDataset(torch.utils.data.Dataset):
         self.image_to_subset[info.image_key] = subset
 
     def make_buckets(self, constant_token_buckets: bool = False):
-        """
-        bucketingbucket
-        min_size and max_size are ignored when enable_bucket is False
+        """Assign every image to its nearest bucket resolution.
+
+        With ``constant_token_buckets`` (the only training mode) buckets come
+        from the fixed ``CONSTANT_TOKEN_BUCKETS`` table — native shapes, no
+        padding.
         """
         logger.info("loading image sizes.")
         for info in tqdm(self.image_data.values()):
             if info.image_size is None:
                 info.image_size = self.get_image_size(info.absolute_path)
 
-        if self.enable_bucket:
-            logger.info("make buckets")
-        else:
-            logger.info("prepare dataset")
+        logger.info("make buckets")
 
-        if self.enable_bucket:
-            if self.bucket_manager is None:
-                self.bucket_manager = BucketManager(
-                    self.bucket_no_upscale,
-                    (self.width, self.height),
-                    self.min_bucket_reso,
-                    self.max_bucket_reso,
-                    self.bucket_reso_steps,
-                )
-                if not self.bucket_no_upscale:
-                    self.bucket_manager.make_buckets(
-                        constant_token_buckets=constant_token_buckets
-                    )
-                else:
-                    logger.warning(
-                        "min_bucket_reso and max_bucket_reso are ignored if bucket_no_upscale is set, because bucket reso is defined by image size automatically"
-                    )
-
-            img_ar_errors = []
-            for image_info in self.image_data.values():
-                image_width, image_height = image_info.image_size
-                image_info.bucket_reso, image_info.resized_size, ar_error = (
-                    self.bucket_manager.select_bucket(image_width, image_height)
-                )
-
-                img_ar_errors.append(abs(ar_error))
-
-            self.bucket_manager.sort()
-        else:
-            self.bucket_manager = BucketManager(
-                False, (self.width, self.height), None, None, None
+        if self.bucket_manager is None:
+            self.bucket_manager = BucketManager()
+            self.bucket_manager.make_buckets(
+                constant_token_buckets=constant_token_buckets
             )
-            self.bucket_manager.set_predefined_resos([(self.width, self.height)])
-            for image_info in self.image_data.values():
-                image_width, image_height = image_info.image_size
-                image_info.bucket_reso, image_info.resized_size, _ = (
-                    self.bucket_manager.select_bucket(image_width, image_height)
-                )
+
+        img_ar_errors = []
+        for image_info in self.image_data.values():
+            image_width, image_height = image_info.image_size
+            image_info.bucket_reso, image_info.resized_size, ar_error = (
+                self.bucket_manager.select_bucket(image_width, image_height)
+            )
+
+            img_ar_errors.append(abs(ar_error))
+
+        self.bucket_manager.sort()
 
         for image_info in self.image_data.values():
             for _ in range(image_info.num_repeats):
@@ -505,27 +462,26 @@ class BaseDataset(torch.utils.data.Dataset):
                     image_info.bucket_reso, image_info.image_key
                 )
 
-        if self.enable_bucket:
-            self.bucket_info = {"buckets": {}}
-            logger.info("number of images (including repeats)")
-            for i, (reso, bucket) in enumerate(
-                zip(self.bucket_manager.resos, self.bucket_manager.buckets)
-            ):
-                count = len(bucket)
-                if count > 0:
-                    self.bucket_info["buckets"][i] = {
-                        "resolution": reso,
-                        "count": len(bucket),
-                    }
-                    logger.info(f"bucket {i}: resolution {reso}, count: {len(bucket)}")
+        self.bucket_info = {"buckets": {}}
+        logger.info("number of images (including repeats)")
+        for i, (reso, bucket) in enumerate(
+            zip(self.bucket_manager.resos, self.bucket_manager.buckets)
+        ):
+            count = len(bucket)
+            if count > 0:
+                self.bucket_info["buckets"][i] = {
+                    "resolution": reso,
+                    "count": len(bucket),
+                }
+                logger.info(f"bucket {i}: resolution {reso}, count: {len(bucket)}")
 
-            if len(img_ar_errors) == 0:
-                mean_img_ar_error = 0  # avoid NaN
-            else:
-                img_ar_errors = np.array(img_ar_errors)
-                mean_img_ar_error = np.mean(np.abs(img_ar_errors))
-            self.bucket_info["mean_img_ar_error"] = mean_img_ar_error
-            logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
+        if len(img_ar_errors) == 0:
+            mean_img_ar_error = 0  # avoid NaN
+        else:
+            img_ar_errors = np.array(img_ar_errors)
+            mean_img_ar_error = np.mean(np.abs(img_ar_errors))
+        self.bucket_info["mean_img_ar_error"] = mean_img_ar_error
+        logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
 
         # Drop incomplete last batches to keep batch dim constant for torch.compile,
         # but only when no subset uses sample_ratio (where every image matters more).
@@ -589,14 +545,34 @@ class BaseDataset(torch.utils.data.Dataset):
 
         random.shuffle(self.buckets_indices)
         self.bucket_manager.shuffle()
+        self._largest_bucket_first()
 
-    def verify_bucket_reso_steps(self, min_steps: int):
-        assert (
-            self.bucket_reso_steps is None or self.bucket_reso_steps % min_steps == 0
-        ), (
-            f"bucket_reso_steps is {self.bucket_reso_steps}. it must be divisible by {min_steps}.\n"
-            + f"bucket_reso_steps{self.bucket_reso_steps}{min_steps}"
-        )
+    def _largest_bucket_first(self):
+        """Pin one batch of the highest-token-count bucket to the front of the
+        epoch order.
+
+        With native-shape buckets each distinct token count traces its own
+        ``torch.compile`` block graph, and the largest
+        bucket also carries the biggest activations. Front-loading it forces
+        that worst-case graph compile + peak allocation onto step 0, so a
+        too-tight VRAM budget fails fast at start instead of OOMing mid-epoch
+        when the big bucket happens to come up in the shuffle. Only the first
+        batch is reordered; the rest of the epoch stays randomly shuffled.
+        """
+        if not self.buckets_indices:
+            return
+        # resos are (W, H); pixel area is the token-count proxy.
+        if getattr(self, "_largest_bucket_index", None) is None:
+            resos = self.bucket_manager.resos
+            present = {bbi.bucket_index for bbi in self.buckets_indices}
+            self._largest_bucket_index = max(
+                present, key=lambda bi: resos[bi][0] * resos[bi][1]
+            )
+        for i, bbi in enumerate(self.buckets_indices):
+            if bbi.bucket_index == self._largest_bucket_index:
+                if i:
+                    self.buckets_indices.insert(0, self.buckets_indices.pop(i))
+                return
 
     def is_latent_cacheable(self):
         return all(
@@ -1099,67 +1075,12 @@ class BaseDataset(torch.utils.data.Dataset):
 
         return img, face_cx, face_cy, face_w, face_h
 
-    def crop_target(self, subset: BaseSubset, image, face_cx, face_cy, face_w, face_h):
-        height, width = image.shape[0:2]
-        if height == self.height and width == self.width:
-            return image
-
-        face_size = max(face_w, face_h)
-        size = min(self.height, self.width)
-        min_scale = max(self.height / height, self.width / width)
-        min_scale = min(
-            1.0, max(min_scale, size / (face_size * subset.face_crop_aug_range[1]))
-        )
-        max_scale = min(
-            1.0, max(min_scale, size / (face_size * subset.face_crop_aug_range[0]))
-        )
-        if min_scale >= max_scale:
-            scale = min_scale
-        else:
-            scale = random.uniform(min_scale, max_scale)
-
-        nh = int(height * scale + 0.5)
-        nw = int(width * scale + 0.5)
-        assert nh >= self.height and nw >= self.width, (
-            f"internal error. small scale {scale}, {width}*{height}"
-        )
-        image = resize_image(image, width, height, nw, nh, subset.resize_interpolation)
-        face_cx = int(face_cx * scale + 0.5)
-        face_cy = int(face_cy * scale + 0.5)
-        height, width = nh, nw
-
-        for axis, (target_size, length, face_p) in enumerate(
-            zip((self.height, self.width), (height, width), (face_cy, face_cx))
-        ):
-            p1 = face_p - target_size // 2
-
-            if subset.random_crop:
-                range_ = max(length - face_p, face_p)
-                p1 = (
-                    p1
-                    + (random.randint(0, range_) + random.randint(0, range_))
-                    - range_
-                )
-            else:
-                if subset.face_crop_aug_range[0] != subset.face_crop_aug_range[1]:
-                    if face_size > size // 10 and face_size >= 40:
-                        p1 = p1 + random.randint(-face_size // 20, +face_size // 20)
-
-            p1 = max(0, min(p1, length - target_size))
-
-            if axis == 0:
-                image = image[p1 : p1 + target_size, :]
-            else:
-                image = image[:, p1 : p1 + target_size]
-
-        return image
-
     def __len__(self):
         return self._length
 
     def _try_load_ip_features(self, image_abs_path: str) -> Optional[torch.Tensor]:
         """Load ``{stem}_anima_{encoder}.safetensors`` produced by
-        ``preprocess/cache_pe_encoder.py``.
+        ``scripts/preprocess/cache_pe_encoder.py``.
 
         Looks first in the subset's ``cache_dir`` (when set) and falls back to
         the legacy sidecar location next to the source image, so existing
@@ -1210,10 +1131,212 @@ class BaseDataset(torch.utils.data.Dataset):
                 f"keys={list(sd.keys())}. Re-run `make preprocess-pe`."
             )
         # Hand back the on-disk dtype unchanged (bf16 by default; see
-        # preprocess/cache_pe_encoder.py --dtype). The IP-Adapter resampler
+        # scripts/preprocess/cache_pe_encoder.py --dtype). The IP-Adapter resampler
         # runs in bf16, so upcasting to fp32 here only doubles CPU memory and
         # H2D bandwidth before being cast right back down.
         return feats
+
+    def setup_identity_pairs(
+        self,
+        index_path: str,
+        *,
+        mode: str,
+        prob: float,
+        min_level: str,
+        caption_strip_p: float,
+        is_validation: bool,
+    ) -> None:
+        """Attach an IdentityPairSampler so ``__getitem__`` draws a distinct
+        same-identity reference for the IP path. ``mode`` is one of
+        ``identity`` / ``identity_cross_artist`` (``self`` should not call
+        this). For training the candidate pool is restricted to this dataset's
+        registered stems (no validation-image leakage); for validation it spans
+        the whole index so each held-out target can reach its identity siblings
+        in the training pool (the deployment condition)."""
+        from library.datasets.identity_pairs import IdentityPairSampler
+
+        registered = {
+            os.path.splitext(os.path.basename(info.absolute_path))[0]
+            for info in self.image_data.values()
+        }
+        restrict = None if is_validation else registered
+        self.identity_pair_sampler = IdentityPairSampler(
+            index_path,
+            min_level=min_level,
+            cross_artist=(mode == "identity_cross_artist"),
+            restrict_stems=restrict,
+        )
+        self.ip_pair_prob = float(prob)
+        self.ip_pair_caption_strip_p = float(caption_strip_p)
+        self.ip_pair_is_validation = bool(is_validation)
+        n_missing = sum(1 for s in registered if not self.identity_pair_sampler.has(s))
+        if n_missing:
+            logger.warning(
+                f"[ip-pair] {n_missing}/{len(registered)} registered stems are "
+                f"absent from {index_path} (will self-pair). Re-run "
+                f"`make caption-index` if the dataset changed."
+            )
+
+    def _load_ip_features_for_stem(
+        self, stem: str, subset, rel_dir: str
+    ) -> Optional[torch.Tensor]:
+        """Load a *reference* stem's cached PE features by reconstructing its
+        nested cache path (``cache_dir/<rel_dir>/<stem>_anima_<enc>.safetensors``,
+        with a flat fallback). Unlike ``_try_load_ip_features`` this resolves a
+        stem that may not be a registered image of this dataset (the pair
+        partner often lives in a different subset/split)."""
+        if not self.ip_features_cache_to_disk:
+            return None
+        from safetensors.torch import load_file
+
+        suffix = f"_anima_{self.ip_features_encoder}.safetensors"
+        cache_dir = getattr(subset, "cache_dir", None) if subset is not None else None
+        candidates: list[str] = []
+        if cache_dir:
+            if rel_dir:
+                candidates.append(os.path.join(str(cache_dir), rel_dir, stem + suffix))
+            candidates.append(os.path.join(str(cache_dir), stem + suffix))
+        cache_path = next((c for c in candidates if os.path.exists(c)), None)
+        if cache_path is None:
+            raise FileNotFoundError(
+                f"PE feature cache missing for reference stem {stem!r}. "
+                f"Looked in: {candidates}. Run `make preprocess-pe`."
+            )
+        feats = load_file(cache_path).get("image_features")
+        if feats is None:
+            raise KeyError(
+                f"Cache {cache_path} has no 'image_features' key. "
+                f"Re-run `make preprocess-pe`."
+            )
+        return feats
+
+    def setup_contrastive_negatives(
+        self,
+        index_path: str,
+        *,
+        k: int,
+        mode: str,
+        is_validation: bool,
+    ) -> None:
+        """Attach an IdentityPairSampler so ``__getitem__`` surfaces ``k``
+        cached negative text embeddings (``neg_crossattn_emb``) per example for
+        the soft-tokens contrastive objective.
+
+        ``mode`` (docs/proposal/soft_tokens_contrastive.md):
+          - ``shuffled``    — an unrelated image (no character/copyright overlap).
+          - ``jaccard``     — shuffled sourcing + a per-negative tag-overlap
+            weight (``neg_jaccard``) the loss uses to down-weight near-misses.
+          - ``hard``        — a same-artist / different-character sibling (falls
+            back to shuffled for orphan artists).
+          - ``hard_backoff`` — tiered hard negative: same-artist/different-
+            character → same-copyright/different-character → shuffled. The
+            copyright tier rescues most of ``hard``'s ~71% orphan fallback.
+
+        The candidate pool is restricted to this dataset's registered stems so
+        negatives never leak in from another split."""
+        if mode not in ("shuffled", "jaccard", "hard", "hard_backoff"):
+            raise ValueError(
+                "contrastive_negative_mode must be shuffled/jaccard/hard/"
+                f"hard_backoff, got {mode!r}"
+            )
+        from library.datasets.identity_pairs import IdentityPairSampler
+
+        registered = {
+            os.path.splitext(os.path.basename(info.absolute_path))[0]
+            for info in self.image_data.values()
+        }
+        self.contrastive_neg_sampler = IdentityPairSampler(
+            index_path,
+            min_level="artist",
+            cross_artist=False,
+            restrict_stems=registered,
+        )
+        self.contrastive_neg_k = int(k)
+        self.contrastive_neg_mode = str(mode)
+        n_missing = sum(
+            1 for s in registered if not self.contrastive_neg_sampler.has(s)
+        )
+        if n_missing:
+            logger.warning(
+                f"[contrastive] {n_missing}/{len(registered)} registered stems "
+                f"are absent from {index_path} (will skip negatives for those). "
+                f"Re-run `make caption-index` if the dataset changed."
+            )
+
+        # One-shot hardness diagnostic: tally the negative *level* each registered
+        # stem would draw under this mode (one deterministic draw per stem). Lets
+        # you read the strict-vs-shuffled mix before committing to a run — e.g.
+        # how much of `hard`'s shuffled fallback the `hard_backoff` copyright tier
+        # actually rescues. Skipped for shuffled/jaccard (every draw is shuffled).
+        if mode in ("hard", "hard_backoff"):
+            from collections import Counter
+
+            diag_rng = random.Random(0)
+            hist: Counter[str] = Counter()
+            for s in sorted(registered):
+                if self.contrastive_neg_sampler.has(s):
+                    _, lvl = self.contrastive_neg_sampler.draw(s, mode, diag_rng)
+                    hist[lvl] += 1
+            total = sum(hist.values())
+            if total:
+                breakdown = ", ".join(
+                    f"{lvl}={n} ({100 * n / total:.0f}%)"
+                    for lvl, n in sorted(hist.items(), key=lambda kv: -kv[1])
+                )
+                logger.info(
+                    f"[contrastive] negative-level mix ({mode}, n={total}): {breakdown}"
+                )
+
+    def _load_te_for_stem(
+        self, stem: str, subset, rel_dir: str
+    ) -> Optional[torch.Tensor]:
+        """Load a *negative* stem's cached text embedding (post-LLM-adapter
+        ``crossattn_emb``) by reconstructing its nested cache path. Mirrors
+        ``_load_ip_features_for_stem`` but swaps the PE feature for the TE
+        feature (``{stem}_anima_te.safetensors``). Returns ``(S, D)`` or None."""
+        from safetensors import safe_open
+
+        suffix = "_anima_te.safetensors"
+        cache_dir = getattr(subset, "cache_dir", None) if subset is not None else None
+        candidates: list[str] = []
+        if cache_dir:
+            if rel_dir:
+                candidates.append(os.path.join(str(cache_dir), rel_dir, stem + suffix))
+            candidates.append(os.path.join(str(cache_dir), stem + suffix))
+        cache_path = next((c for c in candidates if os.path.exists(c)), None)
+        if cache_path is None:
+            raise FileNotFoundError(
+                f"TE cache missing for contrastive negative stem {stem!r}. "
+                f"Looked in: {candidates}. Run `make preprocess-te` with "
+                f"cache_llm_adapter_outputs=true."
+            )
+        with safe_open(cache_path, framework="pt") as f:
+            keys = set(f.keys())
+            # Prefer the pristine v0 variant; fall back to single-variant cache.
+            for key in ("crossattn_emb_v0", "crossattn_emb"):
+                if key in keys:
+                    return f.get_tensor(key)
+        raise KeyError(
+            f"TE cache {cache_path} has no 'crossattn_emb' key — the negative "
+            f"requires cache_llm_adapter_outputs=true. Re-run `make preprocess-te`."
+        )
+
+    @staticmethod
+    def _strip_identity_tags(caption: str, meta: dict) -> str:
+        """Drop the target's character/copyright tags from a comma-separated
+        caption (case-insensitive), so identity must flow through the IP image
+        path rather than the text. Leaves all other tags (incl. artist) intact.
+        No-op when ``caption`` carries no comma structure or no identity tag
+        matches."""
+        drop = {
+            t.strip().lower()
+            for t in (meta.get("character", []) + meta.get("copyright", []))
+            if t.strip()
+        }
+        if not drop or "," not in caption:
+            return caption
+        kept = [tok for tok in caption.split(",") if tok.strip().lower() not in drop]
+        return ",".join(kept)
 
     def _try_load_inversion_runs(self, image_abs_path: str) -> Optional[torch.Tensor]:
         """Load <stem>_inverted_run{0..N-1}.safetensors from self.inversion_dir.
@@ -1253,14 +1376,13 @@ class BaseDataset(torch.utils.data.Dataset):
         img, _, _, _, _ = self.load_image_with_face_info(
             subset, image_info.absolute_path, subset.alpha_mask
         )
-        if self.enable_bucket:
-            img, _, _ = trim_and_resize_if_required(
-                False,  # force deterministic crop — must match the cached latent
-                img,
-                image_info.bucket_reso,
-                image_info.resized_size,
-                resize_interpolation=image_info.resize_interpolation,
-            )
+        img, _, _ = trim_and_resize_if_required(
+            False,  # force deterministic crop — must match the cached latent
+            img,
+            image_info.bucket_reso,
+            image_info.resized_size,
+            resize_interpolation=image_info.resize_interpolation,
+        )
         if flipped:
             img = img[:, ::-1, :].copy()
         img = img[:, :, :3]
@@ -1290,6 +1412,12 @@ class BaseDataset(torch.utils.data.Dataset):
         custom_attributes = []
         inversion_runs_list: List[Optional[torch.Tensor]] = []
         ip_features_list: List[Optional[torch.Tensor]] = []
+        ip_features_shuffled_list: List[Optional[torch.Tensor]] = []
+        # Soft-tokens contrastive negatives: per-image (k, S, D) stack of cached
+        # negative text embeddings, or None when no sampler is attached.
+        neg_crossattn_list: List[Optional[torch.Tensor]] = []
+        # Per-image (k,) tag-overlap weights for jaccard mode; None otherwise.
+        neg_jaccard_list: List[Optional[torch.Tensor]] = []
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
@@ -1340,42 +1468,17 @@ class BaseDataset(torch.utils.data.Dataset):
                 else:
                     image = None
             else:
-                img, face_cx, face_cy, face_w, face_h = self.load_image_with_face_info(
+                img, _, _, _, _ = self.load_image_with_face_info(
                     subset, image_info.absolute_path, subset.alpha_mask
                 )
-                im_h, im_w = img.shape[0:2]
 
-                if self.enable_bucket:
-                    img, original_size, crop_ltrb = trim_and_resize_if_required(
-                        subset.random_crop,
-                        img,
-                        image_info.bucket_reso,
-                        image_info.resized_size,
-                        resize_interpolation=image_info.resize_interpolation,
-                    )
-                else:
-                    if face_cx > 0:
-                        img = self.crop_target(
-                            subset, img, face_cx, face_cy, face_w, face_h
-                        )
-                    elif im_h > self.height or im_w > self.width:
-                        assert subset.random_crop, (
-                            "image too large, but cropping and bucketing are disabled"
-                        )
-                        if im_h > self.height:
-                            p = random.randint(0, im_h - self.height)
-                            img = img[p : p + self.height]
-                        if im_w > self.width:
-                            p = random.randint(0, im_w - self.width)
-                            img = img[:, p : p + self.width]
-
-                    im_h, im_w = img.shape[0:2]
-                    assert im_h == self.height and im_w == self.width, (
-                        "image size is small"
-                    )
-
-                    original_size = [im_w, im_h]
-                    crop_ltrb = (0, 0, 0, 0)
+                img, original_size, crop_ltrb = trim_and_resize_if_required(
+                    subset.random_crop,
+                    img,
+                    image_info.bucket_reso,
+                    image_info.resized_size,
+                    resize_interpolation=image_info.resize_interpolation,
+                )
 
                 aug = self.aug_helper.get_augmentor(subset.color_aug)
                 if aug is not None:
@@ -1449,12 +1552,73 @@ class BaseDataset(torch.utils.data.Dataset):
             target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
             flippeds.append(flipped)
 
+            # IP-Adapter distinct-pair resolution. Decide which stem's PE
+            # features feed the IP path (decoupled from this VAE target), and
+            # whether to strip the target's identity tokens from the caption so
+            # the identity has to flow through the image path, not the text.
+            ip_ref_stem, ip_ref_subset, ip_ref_reldir = (
+                None,
+                subset,
+                "",
+            )
+            ip_shuffled_stem = None
+            strip_identity = False
+            sampler = self.identity_pair_sampler
+            target_stem = os.path.splitext(os.path.basename(image_info.absolute_path))[
+                0
+            ]
+            if (
+                sampler is not None
+                and self.ip_features_cache_to_disk
+                and sampler.has(target_stem)
+            ):
+                if self.ip_pair_is_validation:
+                    # Deterministic per target so the matched/shuffled deltas
+                    # are stable across epochs (the held-out gate).
+                    drng = random.Random(self.seed ^ (hash(target_stem) & 0xFFFFFFFF))
+                    ip_ref_stem, _ = sampler.resolve(target_stem, drng)
+                    ip_shuffled_stem, _ = sampler.shuffled(target_stem, drng)
+                else:
+                    if random.random() < self.ip_pair_prob:
+                        ip_ref_stem, _ = sampler.resolve(target_stem, random)
+                    else:
+                        ip_ref_stem = target_stem  # self-pair in the mix
+                    strip_identity = (
+                        ip_ref_stem != target_stem
+                        and self.ip_pair_caption_strip_p > 0.0
+                        and random.random() < self.ip_pair_caption_strip_p
+                    )
+                if ip_ref_stem and ip_ref_stem != target_stem:
+                    ip_ref_reldir = sampler.rel_dir(ip_ref_stem)
+
             caption = image_info.caption
+            if strip_identity:
+                caption = self._strip_identity_tags(
+                    caption, sampler.image_meta.get(target_stem, {})
+                )
 
             tokenization_required = (
                 self.text_encoder_output_caching_strategy is None
                 or self.text_encoder_output_caching_strategy.is_partial
             )
+            # The caption-leakage strip only reaches the model when captions
+            # are tokenized live. With cached TE outputs the model reads the
+            # full (identity-bearing) embedding regardless, so the strip is
+            # inert — warn once instead of silently doing nothing.
+            if (
+                sampler is not None
+                and not self.ip_pair_is_validation
+                and self.ip_pair_caption_strip_p > 0.0
+                and not tokenization_required
+                and image_info.text_encoder_outputs_npz is not None
+                and not self._ip_pair_strip_warned
+            ):
+                self._ip_pair_strip_warned = True
+                logger.warning(
+                    "[ip-pair] ip_pair_caption_strip_p>0 but text-encoder "
+                    "outputs are cached — the strip is inert. Set "
+                    "cache_text_encoder_outputs=false for the guard to take effect."
+                )
             text_encoder_outputs = None
             input_ids = None
 
@@ -1484,9 +1648,65 @@ class BaseDataset(torch.utils.data.Dataset):
             else:
                 inversion_runs_list.append(None)
 
-            ip_features_list.append(
-                self._try_load_ip_features(image_info.absolute_path)
-            )
+            if ip_ref_stem is None or ip_ref_stem == target_stem:
+                ip_features_list.append(
+                    self._try_load_ip_features(image_info.absolute_path)
+                )
+            else:
+                ip_features_list.append(
+                    self._load_ip_features_for_stem(
+                        ip_ref_stem, ip_ref_subset, ip_ref_reldir
+                    )
+                )
+            if ip_shuffled_stem is not None and ip_shuffled_stem != target_stem:
+                ip_features_shuffled_list.append(
+                    self._load_ip_features_for_stem(
+                        ip_shuffled_stem, subset, sampler.rel_dir(ip_shuffled_stem)
+                    )
+                )
+            else:
+                ip_features_shuffled_list.append(
+                    self._try_load_ip_features(image_info.absolute_path)
+                    if ip_shuffled_stem is not None
+                    else None
+                )
+
+            # Soft-tokens contrastive negatives: draw k unrelated stems and load
+            # their cached text embeddings. Deterministic per target on the
+            # rare chance this dataset is used for validation; random in
+            # training. None when no sampler is attached or the target is absent
+            # from the index (the adapter then skips the contrastive forward).
+            neg_sampler = self.contrastive_neg_sampler
+            if neg_sampler is not None and neg_sampler.has(target_stem):
+                k = self.contrastive_neg_k
+                mode = self.contrastive_neg_mode
+                nrng = random.Random(self.seed ^ (hash(target_stem) & 0xFFFFFFFF))
+                neg_feats: List[torch.Tensor] = []
+                neg_jacc: List[float] = []
+                for _ in range(k):
+                    neg_stem, _lvl = neg_sampler.draw(target_stem, mode, nrng)
+                    if neg_stem == target_stem:
+                        continue  # no distinct negative reachable
+                    feat = self._load_te_for_stem(
+                        neg_stem, subset, neg_sampler.rel_dir(neg_stem)
+                    )
+                    if feat is not None:
+                        neg_feats.append(feat)
+                        neg_jacc.append(
+                            neg_sampler.tag_jaccard(target_stem, neg_stem)
+                            if mode == "jaccard"
+                            else 0.0
+                        )
+                ok = len(neg_feats) == k
+                neg_crossattn_list.append(torch.stack(neg_feats, dim=0) if ok else None)
+                neg_jaccard_list.append(
+                    torch.tensor(neg_jacc, dtype=torch.float32)
+                    if (ok and mode == "jaccard")
+                    else None
+                )
+            else:
+                neg_crossattn_list.append(None)
+                neg_jaccard_list.append(None)
 
         def none_or_stack_elements(tensors_list, converter):
             if (
@@ -1634,6 +1854,29 @@ class BaseDataset(torch.utils.data.Dataset):
             example["ip_features"] = torch.stack(ip_features_list, dim=0)
         else:
             example["ip_features"] = None
+        # Validation-only shuffled (unrelated) reference for the
+        # IPAdapterMethodAdapter shuffled_ref baseline. None outside validation.
+        if ip_features_shuffled_list and ip_features_shuffled_list[0] is not None:
+            example["ip_features_shuffled"] = torch.stack(
+                ip_features_shuffled_list, dim=0
+            )
+        else:
+            example["ip_features_shuffled"] = None
+
+        # Soft-tokens contrastive negatives: (B, k, S, D) cached text embeddings.
+        # All cached crossattn_emb share the padded sequence length, so a plain
+        # stack works. None when no sampler is attached (or any target in the
+        # bucket couldn't reach k distinct negatives).
+        if neg_crossattn_list and all(t is not None for t in neg_crossattn_list):
+            example["neg_crossattn_emb"] = torch.stack(neg_crossattn_list, dim=0)
+        else:
+            example["neg_crossattn_emb"] = None
+        # Per-negative tag-overlap weights (B, k) for jaccard mode; None for
+        # shuffled / hard (the loss then runs plain InfoNCE).
+        if neg_jaccard_list and all(t is not None for t in neg_jaccard_list):
+            example["neg_jaccard"] = torch.stack(neg_jaccard_list, dim=0)
+        else:
+            example["neg_jaccard"] = None
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]

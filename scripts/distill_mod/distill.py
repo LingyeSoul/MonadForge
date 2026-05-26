@@ -29,11 +29,7 @@ import logging
 import math
 import os
 import random
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
 
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
@@ -44,6 +40,11 @@ from tqdm import tqdm  # noqa: E402
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
 from library.datasets.distill import CachedDataset  # noqa: E402
+from library.runtime.harness import (  # noqa: E402
+    compile_dit_blocks,
+    enable_training_grad_ckpt,
+    place_dit_for_training,
+)
 from library.inference.uncond import (  # noqa: E402
     default_uncond_path,
     load_uncond_crossattn,
@@ -75,7 +76,7 @@ def main():
         type=str,
         default=None,
         help=(
-            "Path to the T5(\"\") sidecar used as the student's unconditional "
+            'Path to the T5("") sidecar used as the student\'s unconditional '
             "cross-attention input. Defaults to "
             "``post_image_dataset/_anima_uncond_te.safetensors`` (staged by "
             "``make distill-prep``)."
@@ -151,15 +152,6 @@ def main():
         help="Disable torch.compile",
     )
     parser.add_argument(
-        "--compile_mode",
-        type=str,
-        choices=["blocks", "full"],
-        default="blocks",
-        help="'blocks': compile each block._forward (default). "
-        "'full': compile the constant-shape _run_blocks stack (one CUDAGraph "
-        "across buckets — requires --no_grad_ckpt and --blocks_to_swap 0).",
-    )
-    parser.add_argument(
         "--compile_inductor_mode",
         type=str,
         default="",
@@ -182,6 +174,15 @@ def main():
         type=float,
         default=0.02,
         help="Warmup steps: int >= 1 for absolute steps, float < 1 for ratio of iterations",
+    )
+    parser.add_argument(
+        "--no_shuffle",
+        dest="shuffle",
+        action="store_false",
+        default=True,
+        help="Disable per-epoch shuffling of the (bucket-grouped) batch order. "
+        "Default shuffles batch order each epoch while keeping every batch "
+        "single-resolution and pinning the largest-token bucket to step 0.",
     )
     parser.add_argument(
         "--dry_run",
@@ -357,49 +358,20 @@ def main():
         state = load_file(args.resume)
         model.pooled_text_proj.load_state_dict(state)
 
-    # Enable block swap for VRAM efficiency (two forwards per step)
-    if args.blocks_to_swap > 0:
-        model.enable_block_swap(args.blocks_to_swap, device)
-        model.move_to_device_except_swap_blocks(device)
-        model.switch_block_swap_for_training()  # forward+backward block movement
-    else:
-        model.to(device)
+    # Block swap for VRAM efficiency (two forwards per step), then compile each
+    # block._forward (native-shape flatten → no flash pad-leak into the target).
+    # This pool's latents span more than the 2 CONSTANT_TOKEN_BUCKETS families,
+    # so bump the dynamo cache to trace every distinct token count.
+    place_dit_for_training(model, device, blocks_to_swap=args.blocks_to_swap)
+    compile_dit_blocks(
+        model, enabled=args.torch_compile, mode=args.compile_inductor_mode
+    )
 
-    # Static token count: pad all spatial sequences to 4096 tokens so
-    # torch.compile sees a single shape across all bucket resolutions.
-    model.set_static_token_count(4096)
-
-    # Compile individual block._forward for speedup.
-    # unsloth_checkpoint wraps Block.forward with @torch._disable_dynamo,
-    # so we compile _forward (the inner computation) not forward.
-    # compile_mode='full' instead compiles the constant-shape _run_blocks stack
-    # — single trace across all buckets, but incompatible with grad ckpt / block swap.
-    if args.torch_compile:
-        if args.compile_mode == "full":
-            assert not args.grad_ckpt, (
-                "compile_mode='full' is incompatible with gradient checkpointing — "
-                "pass --no_grad_ckpt"
-            )
-            assert args.blocks_to_swap == 0, (
-                "compile_mode='full' is incompatible with block swap — "
-                "pass --blocks_to_swap 0"
-            )
-            model.compile_core(mode=args.compile_inductor_mode)
-        else:
-            model.compile_blocks(mode=args.compile_inductor_mode)
-
-    # Gradient checkpointing with CPU offload: recompute block activations
-    # during backward, offloading saved tensors to CPU between forward/backward.
-    # Teacher runs under no_grad so only the student pass holds activations;
-    # peak is ~12 GB without checkpointing, flat otherwise. Disable with
-    # --no_grad_ckpt for speed when you have the VRAM headroom.
-    # Note: must keep model in train() mode because Block.forward gates
-    # checkpointing behind self.training.
-    if args.grad_ckpt:
-        model.enable_gradient_checkpointing(unsloth_offload=True)
-        logger.info("Gradient checkpointing: enabled (unsloth CPU offload)")
-    else:
-        logger.info("Gradient checkpointing: disabled")
+    # Gradient checkpointing recomputes block activations in backward (teacher
+    # runs under no_grad, so only the student pass holds activations; peak ~12 GB
+    # off, flat on). Keep the model in train() mode — Block.forward gates
+    # checkpointing on self.training.
+    enable_training_grad_ckpt(model, enabled=args.grad_ckpt)
     model.train()
 
     # Freeze everything, then unfreeze pooled_text_proj
@@ -407,6 +379,11 @@ def main():
         param.requires_grad_(False)
     for param in model.pooled_text_proj.parameters():
         param.requires_grad_(True)
+
+    # Arm the student forward's pooled_text_proj path. The output layer starts
+    # zero-init, so without this the gate would skip the proj and starve its
+    # gradient — the teacher forward still passes skip_pooled_text_proj=True.
+    model.enable_pooled_text_modulation = True
 
     # Train pooled_text_proj in float32 for precision
     model.pooled_text_proj.to(dtype=torch.float32)
@@ -480,13 +457,14 @@ def main():
             torch.stack([b[3] for b in batch]),
         )
 
+    # Bucket-grouped batch sampler: every batch is one resolution (so the
+    # stacking _collate works at batch_size>1) and, when shuffling, batch order
+    # is reshuffled per epoch with the largest-token bucket pinned first.
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=args.batch_size,
-        shuffle=False,  # dataset is pre-bucketed; shuffling would mix resolutions
+        batch_sampler=dataset.make_batch_sampler(shuffle=args.shuffle, seed=args.seed),
         num_workers=2,
         pin_memory=True,
-        drop_last=True,
         collate_fn=_collate,
     )
 
@@ -540,7 +518,9 @@ def main():
         run_log_dir = os.path.join(args.log_dir, run_name)
         os.makedirs(run_log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=run_log_dir)
-        writer.add_text("config", "  \n".join(f"{k}: {v}" for k, v in vars(args).items()))
+        writer.add_text(
+            "config", "  \n".join(f"{k}: {v}" for k, v in vars(args).items())
+        )
         logger.info(f"TensorBoard logs -> {run_log_dir}")
 
     # --- Training loop ---
@@ -629,8 +609,7 @@ def main():
             cached_list = None
             if teacher_cache is not None:
                 cached_list = [
-                    teacher_cache.get(idx_list[i], sigma_idx_list[i])
-                    for i in range(B)
+                    teacher_cache.get(idx_list[i], sigma_idx_list[i]) for i in range(B)
                 ]
                 all_hit = all(c is not None for c in cached_list)
             else:
@@ -748,18 +727,14 @@ def main():
             sigma_str = ", ".join(
                 f"σ={s:.2f}:{v:.4e}" for s, v in per_sigma_mean.items()
             )
-            logger.info(
-                f"[val @ step {step + 1}] mean={overall_mean:.6f}  {sigma_str}"
-            )
+            logger.info(f"[val @ step {step + 1}] mean={overall_mean:.6f}  {sigma_str}")
             if writer is not None:
                 writer.add_scalar("val/loss", overall_mean, step + 1)
                 for s, v in per_sigma_mean.items():
                     writer.add_scalar(f"val/loss_sigma_{s:.2f}", v, step + 1)
                 if val_teacher_cache is not None:
                     vc_total = val_teacher_cache.hits + val_teacher_cache.misses
-                    vc_hit_rate = (
-                        val_teacher_cache.hits / vc_total if vc_total else 0.0
-                    )
+                    vc_hit_rate = val_teacher_cache.hits / vc_total if vc_total else 0.0
                     writer.add_scalar(
                         "val_teacher_cache/hit_rate", vc_hit_rate, step + 1
                     )
@@ -775,9 +750,9 @@ def main():
         if val_enabled:
             should_save = improved
         else:
-            should_save = (
-                (step + 1) % args.save_every == 0 or (step + 1) == args.iterations
-            )
+            should_save = (step + 1) % args.save_every == 0 or (
+                step + 1
+            ) == args.iterations
         if should_save:
             save_path = args.output_path
             state = {

@@ -74,12 +74,9 @@ from __future__ import annotations
 import argparse
 import logging
 import math
-import sys
-from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from bench._common import make_run_dir, write_result  # noqa: E402
 from library.log import setup_logging  # noqa: E402
 

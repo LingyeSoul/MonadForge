@@ -112,7 +112,7 @@ Module-global `dict[(half_dim, device), Tensor]` caches the frequency
 vector that `_sigma_sinusoidal_features` previously rebuilt on every
 call. Exercised per training step from `set_sigma` /
 `_set_sigma_feature_cache`. The function runs outside the compiled
-forward, so a Python-level dict cache is safe under `compile_mode=full`.
+block forward, so a Python-level dict cache is safe under `compile_blocks`.
 
 Bit-equivalent to a fresh recompute (verified `0.0` max diff).
 

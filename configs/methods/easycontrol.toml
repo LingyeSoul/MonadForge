@@ -17,7 +17,7 @@
 # Feature source: cached VAE latents on disk. EasyControl's cond input is the
 # clean VAE latent of the reference, which is identical to the existing
 # {stem}_anima_latent.safetensors when ref==target. No new sidecar needed for
-# Phase 1; reuses cache_latents output directly.
+# Phase 1; reuses the VAE-cache output directly.
 
 dataset_config = "configs/datasets/easycontrol.toml"
 
@@ -45,10 +45,9 @@ save_every_n_epochs = 3
 checkpointing_epochs = 3
 
 # Cached-feature path: VAE latents and text encoder outputs live on disk as
-# sibling sidecars. EasyControl reuses the existing cache_latents output as
-# the cond source — no separate sidecar.
-# (cache_latents{_to_disk} and cache_text_encoder_outputs{_to_disk} default to
-# true in configs/base.toml.)
+# sibling sidecars. EasyControl reuses the existing VAE-cache output as the
+# cond source — no separate sidecar.
+# (use_vae_cache and use_text_cache default to true in configs/base.toml.)
 
 # CFG dropout for image conditioning (independent of text dropout).
 # Read by train.py when use_easycontrol is on.
@@ -67,5 +66,3 @@ easycontrol_cond_noise_max = 0.3
 blocks_to_swap = 0
 gradient_checkpointing = true
 unsloth_offload_checkpointing = true
-
-# compile_mode = "full"

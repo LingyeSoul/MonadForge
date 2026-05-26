@@ -8,6 +8,7 @@ STRINGS: dict[str, str] = {
     "tab_config": "学習設定",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
+    "tab_spd": "SPD",
     "tab_methods": "手法",
     "tab_images": "データセット",
     "tab_merge": "マージ",
@@ -59,6 +60,14 @@ STRINGS: dict[str, str] = {
     "preprocess_mit_threshold_tip": (
         "MIT/ComicTextDetector テキストセグメンタの信頼度しきい値。"
         "デフォルト 0.8。"
+    ),
+    "preprocess_mask_path_pattern": "マスクパスフィルター:",
+    "preprocess_mask_path_pattern_tip": (
+        "マスク対象のリサイズ済み画像を絞り込む fnmatch glob パターン。"
+        "post_image_dataset/resized を基準とした各パスに対してマッチングされます。"
+        "SAM と MIT の両方に適用されます。学習用 path_pattern と同じ文法: "
+        "'*'(または空欄) で全件マスク; 'char_a/*' で 1 サブフォルダー; "
+        "'char_a/*|char_b/*' で OR 結合。"
     ),
     "preprocess_run_mask": "マスキング実行",
     "preprocess_run_sam_mask": "SAM マスキング実行",
@@ -120,6 +129,16 @@ STRINGS: dict[str, str] = {
         "キャプションを編集した場合は、キャンセルして前処理を実行してください。\n\n"
         "既存のキャッシュで続行しますか?"
     ),
+    "stale_cache_title": "古いデータセットキャッシュ",
+    "stale_cache_body": (
+        "次のディレクトリ以下に {n} 件の VAE 潜在変数キャッシュがあります:\n  {cache_dir}\n\n"
+        "これらは現在のバケットテーブル "
+        "(4032 / 4200 トークン数ファミリー) に含まれない解像度でキャッシュされています:\n\n{examples}\n\n"
+        "古いバケットレイアウトでキャッシュされたファイルです — 学習時にスキップされるか、"
+        "誤ったバケットに割り当てられる可能性があります。キャンセルして前処理を再実行し "
+        "(「上書き」オプションを使用)、キャッシュを再生成してください。\n\n"
+        "古いキャッシュのまま学習を続行しますか?"
+    ),
     "train_autopreprocess_log": (
         "前処理済みキャッシュが見つかりません — 前処理を実行してから自動的に学習を開始します。\n"
     ),
@@ -129,6 +148,8 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/ が空です。",
     "finished": "--- 完了 (終了コード {code}) ---",
     "starting": "起動中… (torch / accelerate を読み込んでいます)",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ 推定される原因: {summary}",
     "update_success_title": "更新完了",
     "update_success_message": (
         "anima_lora が {v} に更新されました。\n\n"
@@ -189,6 +210,8 @@ STRINGS: dict[str, str] = {
     "directory": "ディレクトリ:",
     "dataset_reload": "再読み込み",
     "dataset_reload_tooltip": "現在のディレクトリを再スキャンして画像リストと選択を更新します。",
+    "dataset_open_dir": "開く",
+    "dataset_open_dir_tooltip": "現在のディレクトリをシステムのファイルマネージャーで開きます。",
     "dataset_add_dir": "ディレクトリを追加…",
     "dataset_add_dir_tooltip": "別のディレクトリを選択してこのセッションのドロップダウンに追加します。",
     "dataset_add_dir_picker": "追加するディレクトリを選択",

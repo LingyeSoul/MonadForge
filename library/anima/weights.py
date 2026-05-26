@@ -10,6 +10,7 @@ from accelerate import init_empty_weights
 
 from networks.lora_utils import load_safetensors_with_lora
 from library.anima import models as anima_models
+from library.env import resolve_under_home
 from library.io.safetensors import WeightTransformHooks
 from library.log import setup_logging
 
@@ -123,6 +124,11 @@ def load_anima_model(
     """
     Load Anima model from the specified checkpoint.
 
+    This is the explicit-argument primitive. For the inference CLI path, see
+    ``library.inference.models.load_dit_model`` — a thin Namespace adapter that
+    reads these arguments off an argparse ``args`` and additionally handles
+    LoRA attach / merge, P-GRAFT hooks, and torch.compile.
+
     Args:
         device (Union[str, torch.device]): Device for optimization or merging
         dit_path (str): Path to the DiT model checkpoint.
@@ -136,6 +142,7 @@ def load_anima_model(
     if dit_weight_dtype is None:
         dit_weight_dtype = torch.bfloat16
 
+    dit_path = str(resolve_under_home(dit_path))
     device = torch.device(device)
     loading_device = torch.device(loading_device)
 
@@ -235,6 +242,8 @@ def load_pooled_text_proj(
 
     state = load_file(path, device=str(device))
     model.pooled_text_proj.load_state_dict(state, assign=True)
+    # Trained weights are now live — arm the per-forward modulation path.
+    model.enable_pooled_text_modulation = True
     logger.info(f"Loaded pooled_text_proj from {path}")
 
 
@@ -347,6 +356,7 @@ def load_qwen3_tokenizer(qwen3_path: str):
     """
     from transformers import AutoTokenizer
 
+    qwen3_path = str(resolve_under_home(qwen3_path))
     if os.path.isdir(qwen3_path):
         tokenizer = AutoTokenizer.from_pretrained(qwen3_path, local_files_only=True)
     else:
@@ -381,6 +391,7 @@ def load_qwen3_text_encoder(
     import transformers
     from transformers import AutoTokenizer
 
+    qwen3_path = str(resolve_under_home(qwen3_path))
     is_qwen35 = _is_qwen3_5(qwen3_path)
     model_label = "Qwen3.5" if is_qwen35 else "Qwen3"
     logger.info(f"Loading {model_label} text encoder from {qwen3_path}")

@@ -17,7 +17,7 @@ This matters in particular for anything that hooks the forward path — notably 
 |---|---|---|
 | `pooled_text_proj` MLP (distilled modulation-guidance head) | **present**, baked into `forward_mini_train_dit` | **absent entirely** |
 | `torch.compile` on block forwards | `compile_blocks()` compiles each `block._forward` | not used |
-| Static-shape bucketing (pad to 4096 tokens) | `set_static_token_count()` | not supported |
+| Constant-token bucketing (native 4032/4200 shapes) | `compile_blocks()` native-shape flatten | not supported |
 | `crossattn_seqlens` / variable text length | computed from mask, used only for the flex block mask | not computed; always pad to 512 |
 | Attention dispatch | unified `attention_dispatch.AttentionParams` (sdpa / flash / sageattn / flex; flash4 branch present but disabled) | `transformer_options` dict + ComfyUI's own attention |
 | Custom block-swap / CPU offload | `enable_block_swap`, `ModelOffloader` | relies on ComfyUI's `model_management.py` |
@@ -125,11 +125,11 @@ It does not compute per-sample seqlens, does not set up flex block masks, and do
 
 ### 2.2 Static-shape token bucketing
 
-**anima_lora** — `set_static_token_count(4096)` (defined at `library/anima/models.py:1427`) enables a transform in `forward_mini_train_dit` (`library/anima/models.py:1757-1780`) that flattens `(B, T, H, W, D)` into a fake 5D shape of `(B, 1, target, 1, D)` and zero-pads to 4096 tokens, with the post-blocks unpad at `library/anima/models.py:1909-1910`. Together with bucket resolutions that satisfy `(H/16)·(W/16) ≈ 4096`, this gives `torch.compile` a single static shape across all aspect ratios — no recompilation across buckets.
+**anima_lora** — `compile_blocks()` (`library/anima/models.py`) enables native-shape flattening: the forward flattens `(B, T, H, W, D)` into a fake 5D shape of `(B, 1, seq_len, 1, D)`, restored after the block loop by `_unflatten_native_shape`. The shipped bucket table is two token-count families (4032 / 4200), each exactly filling its count, so `torch.compile` sees one block graph per token-count family (two total) with no padding. Eager forwards skip the flatten (bit-exact). The earlier `set_static_token_count(count, pad=True)` zero-padded every bucket to a single shape, but leaked padding into flash self-attention and couldn't run this table (4200 > 4096); it was removed 2026-05-24.
 
 **comfy** — no static-shape mode. Processes variable `(B, T, H, W, D)` directly. Only padding is to patch boundaries via `comfy.ldm.common_dit.pad_to_patch_size()`.
 
-**Practical consequence.** ComfyUI runs Anima eagerly with per-bucket shape changes, which is fine because it also doesn't use `torch.compile`. If you want to run anima_lora's compiled path in ComfyUI, you need to both install `set_static_token_count` AND arrange the workflow's latent resolution to a compile-compatible bucket — which is realistically an "no, don't try it" situation.
+**Practical consequence.** ComfyUI runs Anima eagerly with per-bucket shape changes, which is fine because it also doesn't use `torch.compile`. If you want to run anima_lora's compiled path in ComfyUI, you need to both wire up `compile_blocks` AND arrange the workflow's latent resolution to a compile-compatible bucket — which is realistically an "no, don't try it" situation.
 
 ### 2.3 Block forward signature
 
@@ -186,7 +186,7 @@ ComfyUI explicitly casts `x` to `crossattn_emb.dtype` before the final layer; an
 | Gradient checkpointing — standard | yes | yes |
 | Gradient checkpointing — CPU offload | yes (`enable_gradient_checkpointing(cpu_offload=True)`) | no |
 | Gradient checkpointing — unsloth offload | yes (`enable_gradient_checkpointing(unsloth_offload=True)`) | no |
-| Static-shape to stabilize compile cache | `set_static_token_count(4096)` | no |
+| Constant-token bucketing to stabilize compile cache | `compile_blocks()` native-shape flatten (native 4032/4200, two graphs) | no |
 | Block swap / CPU offload inference | `enable_block_swap`, `ModelOffloader` at `library/anima/models.py:1571-1580` | relies on `comfy/model_management.py` LoRAM reservation |
 | Switch offload mode between training/inference | `switch_block_swap_for_inference()` / `switch_block_swap_for_training()` | N/A |
 
@@ -206,7 +206,7 @@ anima_lora's entire performance stack is structured around "16GB VRAM must work 
 
 Both paths ultimately expect the same thing: a `(B, 512, 1024)` post-llm-adapter cross-attention input. The differences are in **how you get there**.
 
-**anima_lora** — `library/anima/weights.py` loads a Qwen3 tokenizer + encoder, runs the llm_adapter outside the DiT (cached to disk via `preprocess/cache_text_embeddings.py`), and passes the resulting `crossattn_emb` directly into `forward_mini_train_dit` as `context`. `crossattn_seqlens` is either derived from the attention mask or passed explicitly.
+**anima_lora** — `library/anima/weights.py` loads a Qwen3 tokenizer + encoder, runs the llm_adapter outside the DiT (cached to disk via `scripts/preprocess/cache_text_embeddings.py`), and passes the resulting `crossattn_emb` directly into `forward_mini_train_dit` as `context`. `crossattn_seqlens` is either derived from the attention mask or passed explicitly.
 
 **comfy** — ComfyUI's CLIP/text encoder framework wraps the Qwen3 + llm_adapter path in a CONDITIONING object that bypasses disk caching. The llm_adapter call is inside the Anima wrapper's `preprocess_text_embeds` (`comfy/comfy/ldm/anima/model.py:193+`), which is called during the ComfyUI sample loop rather than ahead-of-time.
 

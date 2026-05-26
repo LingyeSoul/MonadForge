@@ -98,7 +98,7 @@ def encode_uncond_crossattn(
     on CPU. Shape: ``(seq_len, 1024)`` and ``(1024,)``.
 
     Mirrors the negative-prompt path in ``library/inference/text.py:99-127``
-    and the encode path in ``preprocess/cache_text_embeddings.py:71-105``.
+    and the encode path in ``scripts/preprocess/cache_text_embeddings.py:71-105``.
     """
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -196,7 +196,7 @@ def stage_uncond_sidecar_with_models(
     """Stage the sidecar using already-loaded models. No-op when the file
     already exists unless ``overwrite=True``. Returns the sidecar path.
 
-    Intended for ``preprocess/cache_text_embeddings.py`` and any other entry
+    Intended for ``scripts/preprocess/cache_text_embeddings.py`` and any other entry
     point that already has Qwen3 + LLM adapter on device — encoding ``T5("")``
     is one extra batch so the marginal cost is ~ms.
     """

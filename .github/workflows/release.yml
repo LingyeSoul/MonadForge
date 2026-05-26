@@ -1,0 +1,65 @@
+name: release
+
+# Builds the verifiable install surface for a tagged release: uploads the
+# bootstrap installers and a checksums.txt covering them + the source archives,
+# so `irm | iex` users (and `make update`) can verify what they fetch.
+#
+# No test gate (deliberate — the CUDA/flash-attn stack is too heavy for a free
+# runner). Tests stay a local / pre-tag concern.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)build release assets for'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release-assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch source archives for the tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          repo="${{ github.repository }}"
+          # Same URLs scripts/update.py pulls — checksum exactly what users download.
+          curl -fLsS "https://github.com/${repo}/archive/refs/tags/${TAG}.tar.gz" -o "anima_lora-${TAG}.tar.gz"
+          curl -fLsS "https://github.com/${repo}/archive/refs/tags/${TAG}.zip"    -o "anima_lora-${TAG}.zip"
+
+      - name: Generate checksums
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          sha256sum install.ps1 install.sh \
+            "anima_lora-${TAG}.tar.gz" "anima_lora-${TAG}.zip" > checksums.txt
+          echo "----- checksums.txt -----"
+          cat checksums.txt
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # Create the release on a bare tag push; no-op if one already exists
+          # (e.g. published manually with notes first).
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" install.ps1 install.sh checksums.txt --clobber

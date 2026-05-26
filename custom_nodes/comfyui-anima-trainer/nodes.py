@@ -19,9 +19,7 @@ Design notes:
 from __future__ import annotations
 
 import datetime as _dt
-import importlib
 import os
-import sys
 
 import folder_paths  # ComfyUI builtin
 
@@ -41,45 +39,122 @@ def _anima_lora_root() -> str:
     return find_anima_lora_root(os.path.dirname(__file__))
 
 
+def _load_node_defaults() -> dict:
+    """Read the sibling ``node_defaults.toml`` of trainer-node-only overrides.
+
+    These tune the few-image training regime this node runs in (DataLoader
+    worker policy, log cadence) without editing the shared ``configs/base.toml``.
+    They're layered *below* the UI fields in ``train()`` so user choices win.
+    Re-read on every run; a missing or unparseable file is treated as empty so
+    the node still works if it's deleted.
+    """
+    import tomllib
+
+    path = os.path.join(os.path.dirname(__file__), "node_defaults.toml")
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        print(f"[Anima Trainer] could not read node_defaults.toml ({e}); "
+              f"using base/preset defaults.", flush=True)
+        return {}
+
+
+def _input_subdirs() -> list[str]:
+    """List immediate subdirectories of ComfyUI's input dir, as relative names.
+
+    Populates the folder-mode trainer's dataset dropdown. Re-evaluated whenever
+    ComfyUI rebuilds INPUT_TYPES (graph load / refresh), so newly-added dataset
+    folders show up after a node refresh. Returns ``[""]`` (a single blank entry)
+    when the input dir has no subfolders, so the node still loads.
+    """
+    try:
+        root = folder_paths.get_input_directory()
+        subdirs = sorted(
+            entry
+            for entry in os.listdir(root)
+            if os.path.isdir(os.path.join(root, entry))
+        )
+    except OSError:
+        subdirs = []
+    return subdirs or [""]
+
+
+_MASK_NONE = "(none)"
+
+
+def _input_subdirs_optional() -> list[str]:
+    """Input-dir subfolders prefixed with a ``(none)`` sentinel for the mask picker."""
+    subdirs = [d for d in _input_subdirs() if d]
+    return [_MASK_NONE, *subdirs]
+
+
 def _comfy_loras_dir() -> str:
-    """Return the first directory registered under ComfyUI's 'loras' folder."""
-    entry = folder_paths.folder_names_and_paths.get("loras")
-    if not entry or not entry[0]:
+    """Return the directory to save trained LoRAs into, under ComfyUI's loras.
+
+    Prefers ComfyUI's *native* ``models/loras`` over any path an
+    ``extra_model_paths.yaml`` entry registers (which, with ``is_default: true``,
+    would otherwise sort first — e.g. anima_lora's ``output/``). Falls back to
+    the first registered loras path when the native dir isn't registered.
+    """
+    paths = folder_paths.get_folder_paths("loras") or []
+    if not paths:
         raise RuntimeError("ComfyUI has no 'loras' folder registered.")
-    return entry[0][0]
+    models_dir = getattr(folder_paths, "models_dir", None)
+    if models_dir:
+        native = os.path.abspath(os.path.join(models_dir, "loras"))
+        for p in paths:
+            if os.path.abspath(p) == native:
+                return p
+    return paths[0]
+
+
+def _comfy_model_path(folder: str, preferred: str) -> str | None:
+    """Resolve a model file through ComfyUI's ``folder_paths``, or ``None``.
+
+    Lets the trainer source the VAE / text-encoder used for caching from
+    whatever ComfyUI registers (its ``models/`` dirs, or any ``base_path`` from
+    ``extra_model_paths.yaml``) — the same way the base DiT is already resolved —
+    instead of assuming a copy under ``anima_lora/models/``. Returns ``None``
+    when nothing usable is found, so the caller falls back to the
+    preprocess-config defaults rather than passing a bad path.
+
+    Tries the canonical Anima filename first; if absent, accepts a sole file in
+    the folder (the common case — one VAE, one TE); otherwise gives up rather
+    than guess among several.
+    """
+    path = folder_paths.get_full_path(folder, preferred)
+    if path:
+        return path
+    files = folder_paths.get_filename_list(folder) or []
+    if len(files) == 1:
+        return folder_paths.get_full_path(folder, files[0])
+    return None
 
 
 def _resolve_daemon_client():
-    """Return the ``DaemonClient`` class, live-or-vendor.
+    """Return the bundled stdlib ``DaemonClient`` class.
 
-    Mirrors the live-or-vendor pattern in the sibling nodes (see
-    ``comfyui-hydralora/adapter.py``). Two install shapes:
+    The trainer node is self-contained: it talks to a running Anima daemon over
+    localhost HTTP through the pure-stdlib client vendored under ``_vendor/``
+    (kept verbatim-in-sync with the live ``scripts/daemon/client.py`` by
+    ``scripts/sync_vendor.py``). We import it via a *relative* import so we
+    never bind the generic top-level ``scripts`` name — the old live-first probe
+    did ``import scripts.daemon.client`` against a ``../..`` it assumed was the
+    repo, which is ComfyUI's root in a standalone install; that poisoned
+    ``sys.modules['scripts']`` with some unrelated on-path package and broke the
+    vendor fallback too (``ModuleNotFoundError: scripts.daemon``).
 
-    1. **Inside anima_lora** — the live ``scripts.daemon.client`` is reachable;
-       it resolves the daemon port from the repo's pidfile, so it follows a
-       daemon that bound a fallback port.
-    2. **Standalone** (this folder dropped into ``ComfyUI/custom_nodes/``) —
-       falls back to the pure-stdlib client under ``_vendor/`` (regenerated by
-       ``scripts/sync_vendor.py``). With no repo pidfile to read it talks to the
-       default port (``127.0.0.1:8765``; override with ``ANIMA_DAEMON_PORT``).
-
-    Either way the client only *talks* to a daemon — it never starts one, so
-    the anima_lora repo + its daemon must be running on this machine.
+    The client never *starts* a daemon — it only talks to one. Its
+    ``config.discover_pidfile`` finds a running daemon's pidfile (the per-user
+    ``~/.anima/daemon.json`` mirror, ``$ANIMA_DAEMON_PIDFILE``,
+    ``$ANIMA_LORA_ROOT``, or an in-repo path) to follow even an ephemeral
+    fallback port; failing all that it uses ``127.0.0.1:8765`` (override with
+    ``$ANIMA_DAEMON_PORT``).
     """
-    here = os.path.dirname(os.path.abspath(__file__))
-    repo_root = os.path.abspath(os.path.join(here, "..", ".."))
-    vendor = os.path.join(here, "_vendor")
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
-    try:
-        mod = importlib.import_module("scripts.daemon.client")
-    except ImportError:
-        if not os.path.isdir(vendor):
-            raise
-        if vendor not in sys.path:
-            sys.path.insert(0, vendor)
-        mod = importlib.import_module("scripts.daemon.client")
-    return mod.DaemonClient
+    from ._vendor.scripts.daemon.client import DaemonClient
+
+    return DaemonClient
 
 
 def _trainer_tmp_root() -> str:
@@ -106,10 +181,18 @@ def _train_and_save(
     method: str,
     preset: str,
     overrides: dict,
-    image,
-    prompt: str,
+    image=None,
+    prompt: str = "",
+    dataset_dir: str = "",
+    mask=None,
+    mask_dir: str = "",
 ) -> str:
-    """Submit single-image training to the local daemon and block until done.
+    """Submit training to the local daemon and block until done.
+
+    Either an ``image`` + ``prompt`` (single-image mode) or a ``dataset_dir``
+    (directory mode) supplies the data; ``prepare_dataset_dir`` picks the mode.
+    An optional ``mask`` (MASK tensor, single-image) or ``mask_dir`` (directory)
+    turns on masked loss.
 
     The daemon runs ``accelerate launch … train.py`` in its **own** detached
     subprocess, so a CUDA OOM / segfault kills only the job — not ComfyUI. This
@@ -120,10 +203,7 @@ def _train_and_save(
     Raises ``RuntimeError`` if the daemon is not already running — this node
     does not auto-start it.
     """
-    import time
-
     import comfy.model_management
-    import comfy.utils
 
     from .dataset_prep import prepare_dataset_dir
 
@@ -137,9 +217,20 @@ def _train_and_save(
             "re-run this node."
         )
 
-    # dataset_dir="" → single-image mode (writes the IMAGE batch + caption sidecars).
-    work_dir, dataset_cfg, n_images = prepare_dataset_dir(
-        image, prompt, "", tmp_root=_trainer_tmp_root()
+    # image set → single-image mode (writes the IMAGE batch + caption sidecars);
+    # dataset_dir set → directory mode (user's dir of images + .txt sidecars).
+    # src_dir = originals (read-only input to preprocess); image_dir/cache_dir =
+    # where resized images + caches land; dataset_cfg names image_dir + cache_dir.
+    (
+        src_dir,
+        _image_dir,
+        _cache_dir,
+        dataset_cfg,
+        n_images,
+        resolved_mask_dir,
+    ) = prepare_dataset_dir(
+        image, prompt, dataset_dir, tmp_root=_trainer_tmp_root(), mask=mask,
+        mask_dir=mask_dir,
     )
 
     ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -150,10 +241,15 @@ def _train_and_save(
     overrides.setdefault("dataset_config", dataset_cfg)
     overrides.setdefault("output_dir", output_dir)
     overrides.setdefault("output_name", output_name)
+    # Masks present → force masked loss on (the gui-method TOML leaves it off).
+    # The dataset config already carries the resolved mask_dir.
+    if resolved_mask_dir:
+        overrides["masked_loss"] = True
 
     print(
         f"[Anima Trainer] submitting method={method} preset={preset} "
-        f"images={n_images} → {output_name}.safetensors",
+        f"images={n_images}{' +masks' if resolved_mask_dir else ''} "
+        f"→ {output_name}.safetensors",
         flush=True,
     )
 
@@ -171,43 +267,71 @@ def _train_and_save(
     except Exception:
         pass
 
-    job_id = client.submit(
-        method=method,
-        preset=preset,
-        methods_subdir="gui-methods",
-        overrides=overrides,
+    # train.py refuses to run on an incomplete latent/TE cache, and the temp
+    # dir starts empty. So we submit a `preprocess-config` *command* job that
+    # bucket-resizes + caches the dataset, carrying a `chain_train` spec: the
+    # daemon enqueues the follow-on training job itself the moment preprocess
+    # succeeds (and persists the link as `chained_job_id`), so the chain
+    # completes even if ComfyUI stops polling. Both run on the daemon's single
+    # serial GPU queue, so they can't fight over VRAM.
+    # Cache against the models ComfyUI registers (the DiT the user selected, plus
+    # the VAE + text-encoder resolved through folder_paths) so preprocess never
+    # assumes a copy under anima_lora/models/. Unresolved ones are simply omitted
+    # → preprocess-config falls back to its config-default models/ paths.
+    pp_argv = [
+        "tasks.py",
+        "preprocess-config",
+        "--dataset_config",
+        dataset_cfg,
+        "--src",
+        src_dir,
+    ]
+    dit_path = overrides.get("pretrained_model_name_or_path")
+    if dit_path:
+        pp_argv += ["--dit", dit_path]
+    vae_path = _comfy_model_path("vae", "qwen_image_vae.safetensors")
+    if vae_path:
+        pp_argv += ["--vae", vae_path]
+    qwen3_path = _comfy_model_path("text_encoders", "qwen_3_06b_base.safetensors")
+    if qwen3_path:
+        pp_argv += ["--qwen3", qwen3_path]
+
+    pp_job_id = client.submit_command(
+        label="preprocess",
+        argv=pp_argv,
+        chain_train={
+            "method": method,
+            "preset": preset,
+            "methods_subdir": "gui-methods",
+            "overrides": overrides,
+        },
     )["job_id"]
-    print(f"[Anima Trainer] queued as job {job_id}", flush=True)
+    print(f"[Anima Trainer] preprocess queued as job {pp_job_id}", flush=True)
 
+    # Phase 1: wait for preprocess. No progress bar (it emits no step total).
+    pp_job = _poll_job(client, pp_job_id, label="preprocess")
+    pp_state = pp_job.get("state")
+    if pp_state != "done":
+        raise RuntimeError(
+            f"Preprocess job {pp_job_id} ended as '{pp_state}': "
+            f"{pp_job.get('error') or '(no detail)'}. "
+            f"See the job stdout log: {pp_job.get('stdout_path')}"
+        )
+
+    # The daemon stamps the chained training job id on the (now done) command
+    # job. If it's missing the chain didn't fire — fail loudly rather than hang.
+    job_id = pp_job.get("chained_job_id")
+    if not job_id:
+        raise RuntimeError(
+            f"Preprocess job {pp_job_id} finished but did not chain a training "
+            f"job. See the job stdout log: {pp_job.get('stdout_path')}"
+        )
+    print(f"[Anima Trainer] training queued as job {job_id}", flush=True)
+
+    # Phase 2: wait for training, driving a step ProgressBar.
     expected = os.path.join(output_dir, f"{output_name}.safetensors")
-    pbar = None
-    total = None
-    last_state = None
-    while True:
-        try:
-            job = client.get(job_id)
-        except Exception as e:  # daemon hiccup — keep polling briefly
-            print(f"[Anima Trainer] poll error: {e}", flush=True)
-            time.sleep(2.0)
-            continue
-
-        state = job.get("state")
-        if state != last_state:
-            print(f"[Anima Trainer] job {job_id}: {state}", flush=True)
-            last_state = state
-
-        latest = job.get("latest") or {}
-        if total is None:
-            total = _read_total_steps(job.get("progress_path"))
-            if total:
-                pbar = comfy.utils.ProgressBar(total)
-        step = latest.get("global_step")
-        if pbar is not None and isinstance(step, int):
-            pbar.update_absolute(min(step, total), total)
-
-        if state in ("done", "error", "stopped"):
-            break
-        time.sleep(1.5)
+    job = _poll_job(client, job_id, label="train", with_progress=True)
+    state = job.get("state")
 
     if state == "done":
         path = expected if os.path.exists(expected) else job.get("ckpt_path")
@@ -223,6 +347,70 @@ def _train_and_save(
         f"Training job {job_id} ended as '{state}': {job.get('error') or '(no detail)'}. "
         f"See the job stdout log: {job.get('stdout_path')}"
     )
+
+
+def _poll_job(client, job_id: str, *, label: str, with_progress: bool = False) -> dict:
+    """Poll ``GET /jobs/{id}`` until terminal; return the final job dict.
+
+    Prints state transitions tagged with ``label``. When ``with_progress`` is
+    set, lazily sizes a ComfyUI ``ProgressBar`` from the job's ``total_steps``
+    (read from its progress.jsonl) and advances it by ``global_step``.
+
+    If the user hits ComfyUI's interrupt (Cancel) button while we're blocked
+    here, the daemon job is detached and keeps burning the GPU regardless. So we
+    poll ``processing_interrupted()`` each tick and, when set, abort the job via
+    ``client.stop(job_id)`` — the same call ``make daemon-kill JOB=<id>`` makes —
+    before re-raising ``InterruptProcessingException`` so ComfyUI marks the node
+    cancelled.
+    """
+    import time
+
+    import comfy.model_management
+    import comfy.utils
+
+    pbar = None
+    total = None
+    last_state = None
+    while True:
+        if comfy.model_management.processing_interrupted():
+            print(
+                f"[Anima Trainer] interrupted — aborting {label} job {job_id} "
+                f"(daemon stays up)",
+                flush=True,
+            )
+            try:
+                client.stop(job_id)
+            except Exception as e:  # best-effort; still surface the interrupt
+                print(
+                    f"[Anima Trainer] failed to stop job {job_id}: {e}",
+                    flush=True,
+                )
+            raise comfy.model_management.InterruptProcessingException()
+
+        try:
+            job = client.get(job_id)
+        except Exception as e:  # daemon hiccup — keep polling briefly
+            print(f"[Anima Trainer] poll error ({label}): {e}", flush=True)
+            time.sleep(2.0)
+            continue
+
+        state = job.get("state")
+        if state != last_state:
+            print(f"[Anima Trainer] {label} job {job_id}: {state}", flush=True)
+            last_state = state
+
+        if with_progress:
+            if total is None:
+                total = _read_total_steps(job.get("progress_path"))
+                if total:
+                    pbar = comfy.utils.ProgressBar(total)
+            step = (job.get("latest") or {}).get("global_step")
+            if pbar is not None and isinstance(step, int):
+                pbar.update_absolute(min(step, total), total)
+
+        if state in ("done", "error", "stopped"):
+            return job
+        time.sleep(1.5)
 
 
 def _read_total_steps(progress_path) -> int | None:
@@ -264,36 +452,52 @@ def _load_anima_model(anima_model: str):
 
 
 def _apply_lora_to_model(model, file_path: str, strength: float) -> None:
-    """Apply an anima-family adapter (LoRA / Hydra / ReFT) to a MODEL.
+    """Patch the trained LoRA onto ``model`` in place via ComfyUI's native path.
 
-    Delegates to the sibling ``comfyui-hydralora`` custom node for the actual
-    patching so there is one source of truth for key-sniffing + hook install.
+    The trainer only ever emits an ortho-T-LoRA, which serialises as plain LoRA
+    keys: OrthoLoRA folds down to ``lora_down``/``lora_up`` at save time, and the
+    T-LoRA rank mask is training-only (inference is full-rank). So ComfyUI's
+    stock machinery — ``model_lora_keys_unet`` + ``convert_lora`` + ``load_lora``
+    — maps and applies it directly, exactly as the built-in LoraLoader node would
+    on a natively-loaded Anima DiT. No Anima adapter loader (HydraLoRA / ReFT /
+    Chimera live routing) is involved, so we don't pull in the comfyui-hydralora
+    node here (which imports its chimera module at load time).
     """
-    try:
-        from custom_nodes.comfyui_hydralora.adapter import apply_adapter
-    except ImportError:
-        # ComfyUI registers custom nodes under hyphenated dir names; the
-        # hyphen→underscore module alias is not automatic. Fall back to a direct
-        # path import of the sibling node.
-        import importlib.util
+    import comfy.lora
+    import comfy.lora_convert
+    import comfy.utils
 
-        sibling = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "comfyui-hydralora",
-            "adapter.py",
-        )
-        if not os.path.exists(sibling):
-            raise RuntimeError(
-                "Cannot apply adapter: sibling `comfyui-hydralora/adapter.py` "
-                f"not found at {sibling}. Install that custom node alongside "
-                "this one, or load the resulting LoRA manually."
-            )
-        spec = importlib.util.spec_from_file_location("_anima_trainer_adapter", sibling)
-        mod = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(mod)
-        apply_adapter = mod.apply_adapter
-    apply_adapter(model, file_path, strength, strength)
+    lora_sd = comfy.utils.load_torch_file(file_path, safe_load=True)
+    lora_sd = _fold_inv_scale(lora_sd)
+    key_map = comfy.lora.model_lora_keys_unet(model.model, {})
+    lora_sd = comfy.lora_convert.convert_lora(lora_sd)
+    loaded = comfy.lora.load_lora(lora_sd, key_map)
+    model.add_patches(loaded, strength)
+
+
+def _fold_inv_scale(lora_sd: dict) -> dict:
+    """Fold ``per_channel_scaling`` ``inv_scale`` into ``lora_down`` and drop it.
+
+    Inert for the trainer's default ortho-T-LoRA (no ``per_channel_scaling`` →
+    no ``.inv_scale`` keys). Kept as a guard so the native patcher never silently
+    drops an ``.inv_scale`` suffix it doesn't recognise and applies a delta
+    that's off by ``s_norm`` per input column. Mirrors ``LoRAModule.merge_to``:
+    ``down *= inv_scale`` then strip the key. Returns a new dict.
+    """
+    inv_keys = [k for k in lora_sd if k.endswith(".inv_scale")]
+    if not inv_keys:
+        return lora_sd
+    import torch
+
+    out = dict(lora_sd)
+    for inv_key in inv_keys:
+        down_key = f"{inv_key[: -len('.inv_scale')]}.lora_down.weight"
+        inv_scale = out.pop(inv_key)
+        down = out.get(down_key)
+        if down is None or down.dim() != 2:
+            continue
+        out[down_key] = down.to(torch.float) * inv_scale.to(torch.float).unsqueeze(0)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +531,19 @@ class AnimaLoRATrainer:
                 "text": (
                     "STRING",
                     {
+                        "forceInput": True,
+                        "tooltip": "Caption for the training image (STRING input).",
+                    },
+                ),
+                "save_as": (
+                    "STRING",
+                    {
                         "default": "",
-                        "multiline": True,
-                        "tooltip": "Caption for the training image.",
+                        "tooltip": (
+                            "Output LoRA filename (without extension), saved into "
+                            "ComfyUI's loras folder. Leave blank for an "
+                            "auto-timestamped name."
+                        ),
                     },
                 ),
                 "rank": (
@@ -345,7 +559,30 @@ class AnimaLoRATrainer:
                     "INT",
                     {"default": 25, "min": 1, "max": 10000},
                 ),
+                "lr": (
+                    "FLOAT",
+                    {
+                        "default": 5e-5,
+                        "min": 1e-7,
+                        "max": 1e-2,
+                        "step": 1e-6,
+                        "round": False,
+                        "tooltip": "Learning rate (network learning_rate).",
+                    },
+                ),
                 "gpu": (["8GB", "16GB", "high"], {"default": "16GB"}),
+            },
+            "optional": {
+                "mask": (
+                    "MASK",
+                    {
+                        "tooltip": (
+                            "Optional loss mask(s). White = train on this region, "
+                            "black = ignore. One mask per image, or a single mask "
+                            "broadcast to all. Connecting it turns on masked loss."
+                        )
+                    },
+                ),
             },
         }
 
@@ -357,8 +594,9 @@ class AnimaLoRATrainer:
         "Train an Anima T-LoRA + OrthoLoRA from a single image + caption, then "
         "load the chosen base checkpoint and return it with the trained LoRA "
         "applied — a drop-in for the Anima Adapter Loader's MODEL output. "
-        "Training runs in the local Anima daemon (errors if the daemon isn't "
-        "running); the UI stays responsive and a progress bar tracks the run."
+        "Optionally accepts a MASK to train with masked loss. Training runs in "
+        "the local Anima daemon (errors if the daemon isn't running); the UI "
+        "stays responsive and a progress bar tracks the run."
     )
 
     def train(
@@ -368,9 +606,12 @@ class AnimaLoRATrainer:
         text: str,
         rank: int,
         epochs: int,
+        lr: float,
+        save_as: str,
         gpu: str,
+        mask=None,
     ):
-        from .training import GPU_TIER_PRESET, gpu_tier_overrides
+        from .training import GPU_TIER_PRESET
 
         anima_path = folder_paths.get_full_path_or_raise(
             "diffusion_models", anima_model
@@ -380,10 +621,24 @@ class AnimaLoRATrainer:
             "network_dim": int(rank),
             "network_alpha": float(rank),
             "max_train_epochs": int(epochs),
+            "learning_rate": float(lr),
             # Train against the user-selected base checkpoint.
             "pretrained_model_name_or_path": anima_path,
         }
-        overrides.update(gpu_tier_overrides(gpu))
+        # Layer the node-only training defaults *below* the explicit UI fields
+        # already in `overrides` (rank/epochs/lr/model) — setdefault means
+        # anything the user typed in the node still wins. The gpu dropdown only
+        # selects the hardware preset (see GPU_TIER_PRESET); blocks_to_swap and
+        # the checkpointing flags come from that preset + node_defaults.toml.
+        for key, value in _load_node_defaults().items():
+            overrides.setdefault(key, value)
+
+        # Optional user-supplied output name; blank → auto-timestamped default in
+        # `_train_and_save`. Strip any path parts / extension so it can't escape
+        # the loras folder or end up double-suffixed (`x.safetensors.safetensors`).
+        name = os.path.splitext(os.path.basename(save_as.strip()))[0]
+        if name:
+            overrides["output_name"] = name
 
         saved_path = _train_and_save(
             method="tlora",
@@ -391,6 +646,179 @@ class AnimaLoRATrainer:
             overrides=overrides,
             image=image,
             prompt=text,
+            mask=mask,
+        )
+
+        # Load the base DiT ourselves (avoids holding it resident during the run)
+        # and return it patched — a drop-in for the Anima Adapter Loader.
+        model = _load_anima_model(anima_model)
+        _apply_lora_to_model(model, saved_path, 1.0)
+        return (model,)
+
+
+class AnimaLoRATrainerFolder:
+    """Train an Anima LoRA (T-LoRA + OrthoLoRA) from a folder of images + captions.
+
+    Like ``AnimaLoRATrainer`` but reads its dataset from a directory of images
+    each paired with a same-stem ``.txt`` caption sidecar, instead of a single
+    connected IMAGE. Loads the chosen base checkpoint after training and returns
+    a patched MODEL — a drop-in for the Anima Adapter Loader's MODEL output.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        unets = folder_paths.get_filename_list("diffusion_models") or [""]
+        return {
+            "required": {
+                "anima_model": (
+                    unets,
+                    {
+                        "tooltip": (
+                            "Base Anima DiT checkpoint (ComfyUI diffusion_models "
+                            "folder). Used for training and reloaded afterwards to "
+                            "produce the output MODEL."
+                        )
+                    },
+                ),
+                "dataset_dir": (
+                    _input_subdirs(),
+                    {
+                        "tooltip": (
+                            "Subfolder of ComfyUI's input/ directory holding the "
+                            "training images, each with a same-stem .txt caption "
+                            "sidecar next to it. Read-only (images are "
+                            "bucket-resized into a temp dir). Refresh the node to "
+                            "pick up newly-added folders."
+                        ),
+                    },
+                ),
+                "save_as": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "tooltip": (
+                            "Output LoRA filename (without extension), saved into "
+                            "ComfyUI's loras folder. Leave blank for an "
+                            "auto-timestamped name."
+                        ),
+                    },
+                ),
+                "rank": (
+                    "INT",
+                    {
+                        "default": 16,
+                        "min": 1,
+                        "max": 256,
+                        "tooltip": "LoRA rank (network_dim); alpha is tied to it.",
+                    },
+                ),
+                "epochs": (
+                    "INT",
+                    {"default": 25, "min": 1, "max": 10000},
+                ),
+                "lr": (
+                    "FLOAT",
+                    {
+                        "default": 5e-5,
+                        "min": 1e-7,
+                        "max": 1e-2,
+                        "step": 1e-6,
+                        "round": False,
+                        "tooltip": "Learning rate (network learning_rate).",
+                    },
+                ),
+                "gpu": (["8GB", "16GB", "high"], {"default": "16GB"}),
+            },
+            "optional": {
+                "mask_dir": (
+                    _input_subdirs_optional(),
+                    {
+                        "tooltip": (
+                            "Optional subfolder of ComfyUI's input/ directory "
+                            "holding `{stem}_mask.png` loss masks (white = keep), "
+                            "one per training image by matching stem. Pick "
+                            "'(none)' to train without masked loss."
+                        ),
+                    },
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "train"
+    CATEGORY = "anima/training"
+    DESCRIPTION = (
+        "Train an Anima T-LoRA + OrthoLoRA from a folder of images + caption "
+        "sidecars, then load the chosen base checkpoint and return it with the "
+        "trained LoRA applied — a drop-in for the Anima Adapter Loader's MODEL "
+        "output. Optionally point it at a folder of `{stem}_mask.png` masks to "
+        "train with masked loss. Training runs in the local Anima daemon (errors "
+        "if the daemon isn't running); the UI stays responsive and a progress "
+        "bar tracks the run."
+    )
+
+    def train(
+        self,
+        anima_model: str,
+        dataset_dir: str,
+        rank: int,
+        epochs: int,
+        lr: float,
+        save_as: str,
+        gpu: str,
+        mask_dir: str = _MASK_NONE,
+    ):
+        from .training import GPU_TIER_PRESET
+
+        anima_path = folder_paths.get_full_path_or_raise(
+            "diffusion_models", anima_model
+        )
+
+        # Resolve the chosen subfolder name to an absolute path under ComfyUI's
+        # input dir. `get_input_directory` honours the same root the dropdown was
+        # built from in `_input_subdirs`.
+        if not dataset_dir:
+            raise ValueError(
+                "No dataset folder selected. Drop a folder of images + .txt "
+                "captions into ComfyUI's input/ directory and refresh the node."
+            )
+        dataset_path = os.path.join(folder_paths.get_input_directory(), dataset_dir)
+
+        # Optional mask folder, resolved the same way; "(none)" → no masked loss.
+        mask_path = ""
+        if mask_dir and mask_dir != _MASK_NONE:
+            mask_path = os.path.join(folder_paths.get_input_directory(), mask_dir)
+
+        overrides: dict = {
+            "network_dim": int(rank),
+            "network_alpha": float(rank),
+            "max_train_epochs": int(epochs),
+            "learning_rate": float(lr),
+            # Train against the user-selected base checkpoint.
+            "pretrained_model_name_or_path": anima_path,
+        }
+        # Layer the node-only training defaults *below* the explicit UI fields
+        # already in `overrides` (rank/epochs/lr/model) — setdefault means
+        # anything the user typed in the node still wins. The gpu dropdown only
+        # selects the hardware preset (see GPU_TIER_PRESET); blocks_to_swap and
+        # the checkpointing flags come from that preset + node_defaults.toml.
+        for key, value in _load_node_defaults().items():
+            overrides.setdefault(key, value)
+
+        # Optional user-supplied output name; blank → auto-timestamped default in
+        # `_train_and_save`. Strip any path parts / extension so it can't escape
+        # the loras folder or end up double-suffixed (`x.safetensors.safetensors`).
+        name = os.path.splitext(os.path.basename(save_as.strip()))[0]
+        if name:
+            overrides["output_name"] = name
+
+        saved_path = _train_and_save(
+            method="tlora",
+            preset=GPU_TIER_PRESET[gpu],
+            overrides=overrides,
+            dataset_dir=dataset_path,
+            mask_dir=mask_path,
         )
 
         # Load the base DiT ourselves (avoids holding it resident during the run)
@@ -402,8 +830,10 @@ class AnimaLoRATrainer:
 
 NODE_CLASS_MAPPINGS = {
     "AnimaLoRATrainer": AnimaLoRATrainer,
+    "AnimaLoRATrainerFolder": AnimaLoRATrainerFolder,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AnimaLoRATrainer": "Anima LoRA Trainer",
+    "AnimaLoRATrainerFolder": "Anima LoRA Trainer (Folder)",
 }

@@ -24,6 +24,34 @@ def project_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def anima_home() -> Path:
+    """Repo home used to anchor every repo-relative path.
+
+    Defaults to :func:`project_root` (the ``anima_lora/`` checkout that holds
+    ``configs/``, ``models/``, ``output/`` …). Set ``ANIMA_HOME`` to override —
+    this is what lets ``import anima_lora`` and the CLI run from *any* working
+    directory instead of requiring a ``cd`` into the repo first.
+    """
+    override = os.environ.get("ANIMA_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    return project_root()
+
+
+def resolve_under_home(path) -> Path:
+    """Resolve a possibly-relative path against :func:`anima_home`.
+
+    Absolute and ``~``-prefixed paths pass through untouched; bare relative
+    paths are interpreted relative to the repo home rather than the current
+    working directory. Idempotent (absolute in → same path out), so it is safe
+    to call at every layer of a call chain without double-anchoring.
+    """
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return p
+    return anima_home() / p
+
+
 def load_dotenv(path: Optional[Path] = None) -> dict[str, str]:
     """Read a ``.env`` file into ``os.environ`` (without overriding existing keys).
 
@@ -32,7 +60,7 @@ def load_dotenv(path: Optional[Path] = None) -> dict[str, str]:
     depend on .env being present.
     """
     if path is None:
-        path = project_root() / ".env"
+        path = anima_home() / ".env"
     added: dict[str, str] = {}
     if not path.exists():
         return added

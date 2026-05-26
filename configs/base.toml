@@ -15,6 +15,16 @@ source_image_dir = "image_dataset"
 resized_image_dir = "post_image_dataset/resized"
 lora_cache_dir = "post_image_dataset/lora"
 path_pattern = "*"
+
+# Preprocess input filter. When true, scripts/tasks/preprocess.py forwards
+# `--min_pixels = min_pixels` to both preprocess/resize_images.py and
+# preprocess/cache_text_embeddings.py so under-sized source images never
+# enter the resize / VAE / TE caches. Default 500_000 = 0.5MP — matches the
+# scripts' own argparse defaults. Set drop_lowres_images = false to keep
+# every image regardless of size. Override per-run without editing this file:
+#   make preprocess ARGS="--min_pixels 0"        # explicit threshold (wins)
+#   make preprocess ARGS="--no_drop_lowres"      # keep every image
+#   make preprocess ARGS="--drop_lowres"         # force the configured threshold
 drop_lowres_images = true
 min_pixels = 500000
 optimizer_type = "AdamW"
@@ -31,7 +41,6 @@ vae_chunk_size = 64
 vae_disable_cache = true
 masked_loss = true
 torch_compile = true
-static_token_count = 4096
 attn_mode = "flash"
 save_precision = "bf16"
 use_custom_down_autograd = true
@@ -51,7 +60,6 @@ sample_image_size = [1024, 1024]
 # sample_seed = 42  # uncomment for reproducible previews
 
 [[datasets]]
-resolution = 1024
 batch_size = 1
 enable_bucket = true
 validation_split_num = 16

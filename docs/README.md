@@ -16,6 +16,14 @@ Training and inference algorithms.
 | [methods/invert.md](methods/invert.md) | Embedding inversion — optimize text embeddings (full and K-slot reference) |
 | [methods/spectrum.md](methods/spectrum.md) | Spectrum — training-free inference acceleration via Chebyshev forecasting |
 
+## Findings
+
+Negative results and feasibility probes — methods evaluated and not adopted.
+
+| Doc | Description |
+|-----|-------------|
+| [findings/selfflow.md](findings/selfflow.md) | Self-Flow rep-loss — falsified on the frozen Anima backbone (no information asymmetry to distill; alignment target trivially satisfiable) |
+
 ## Optimizations
 
 Compiler, kernel, and hardware setup.
@@ -25,7 +33,6 @@ Compiler, kernel, and hardware setup.
 | [optimizations/for_compile.md](optimizations/for_compile.md) | Changes from sd-scripts for torch.compile / dynamo |
 | [optimizations/fa4.md](optimizations/fa4.md) | Flash Attention 4 — why it was evaluated and removed |
 | [optimizations/adamw_fused.md](optimizations/adamw_fused.md) | AdamW8bit → fused AdamW — why bitsandbytes was dropped |
-| [optimizations/cuda132.md](optimizations/cuda132.md) | CUDA 13.2 installation (driver, FA2) |
 
 ## Guidelines
 

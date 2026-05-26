@@ -92,6 +92,23 @@ def run_validation(
                 log_div_key=log_div_key,
                 logging_fn=logging_fn,
             )
+        # Method-adapter baseline deltas (e.g. IP-Adapter no_ip / shuffled_ref).
+        # Runs independently of CMMD/FM above — these are FM-MSE re-forwards on
+        # the same (batch, sigma, noise) with the adapter perturbed, so the
+        # delta isolates the adapter's contribution. Gated by
+        # ``--validation_baselines`` (default on): each baseline is a full extra
+        # val forward per (batch, sigma), so skipping them roughly halves
+        # IP-Adapter validation time.
+        if getattr(args, "validation_baselines", True):
+            _run_validation_baselines(
+                trainer,
+                ctx=ctx,
+                val=val,
+                epoch=epoch,
+                global_step=global_step,
+                progress_desc=progress_desc,
+                logging_fn=logging_fn,
+            )
     finally:
         trainer._restore_rng_state(rng_states)
         args.t_min = val.original_t_min
@@ -345,6 +362,108 @@ def _run_fm_validation(
         for s, losses in per_sigma_losses.items():
             if losses:
                 logs[f"loss/validation/sigma_{s:.2f}"] = sum(losses) / len(losses)
+        logging_fn(accelerator, logs, global_step, epoch + 1)
+
+
+def _run_validation_baselines(
+    trainer,
+    *,
+    ctx,
+    val,
+    epoch,
+    global_step,
+    progress_desc,
+    logging_fn,
+) -> None:
+    """Run each method adapter's ``validation_baselines`` and log the FM-MSE
+    delta vs the (adapter-active) primary forward.
+
+    For every (val batch, sigma): re-seed to a per-item deterministic point,
+    run the primary forward, then for each baseline re-seed to the *same*
+    point, ``enter()`` the perturbation, re-forward, ``exit()``. Identical
+    noise + sigma means ``delta = baseline_loss − primary_loss`` isolates the
+    adapter's contribution (positive ⇒ the adapter is helping).
+
+    Logged as ``loss/validation/baseline_<name>`` and ``..._delta``. Runs only
+    when at least one adapter exposes a baseline (others no-op). This is the
+    FM-MSE signal — necessary-not-sufficient on Anima; pair with CMMD."""
+    args = ctx.args
+    accelerator = ctx.accelerator
+
+    adapters = getattr(trainer, "_adapters", None) or []
+    pairs = []  # (baseline,)
+    for adapter in adapters:
+        for baseline in adapter.validation_baselines():
+            pairs.append(baseline)
+    if not pairs:
+        return
+    if val.dataloader is None or len(val.dataloader) == 0 or not val.sigmas:
+        return
+
+    seed = args.validation_seed if args.validation_seed is not None else args.seed
+    primary_losses: list[float] = []
+    base_losses: dict[str, list[float]] = {b.name: [] for b in pairs}
+    base_deltas: dict[str, list[float]] = {b.name: [] for b in pairs}
+
+    n_forwards = val.total_steps * (1 + len(pairs))
+    bar = tqdm(
+        range(n_forwards),
+        smoothing=0,
+        disable=not accelerator.is_local_main_process,
+        desc=f"{progress_desc} (baselines)",
+    )
+    try:
+        for val_step, batch in enumerate(val.dataloader):
+            if val_step >= val.steps:
+                break
+            for sigma in val.sigmas:
+                args.t_min = args.t_max = sigma
+                item_seed = seed + val_step * 1009 + int(sigma * 997)
+
+                # Seed to a deterministic point and leave it seeded; the outer
+                # run_validation snapshotted the true RNG and restores it.
+                trainer._switch_rng_state(item_seed)
+                trainer.on_step_start(ctx, batch, is_train=False)
+                primary = trainer.process_batch(ctx, batch, is_train=False)
+                primary_loss = primary.detach().item()
+                trainer.on_validation_step_end(ctx, batch)
+                primary_losses.append(primary_loss)
+                bar.update(1)
+
+                for baseline in pairs:
+                    # Re-seed to the SAME starting point so the baseline forward
+                    # sees identical noise; the only difference is the perturbation.
+                    trainer._switch_rng_state(item_seed)
+                    baseline.enter()
+                    try:
+                        trainer.on_step_start(ctx, batch, is_train=False)
+                        b_loss = (
+                            trainer.process_batch(ctx, batch, is_train=False)
+                            .detach()
+                            .item()
+                        )
+                        trainer.on_validation_step_end(ctx, batch)
+                    finally:
+                        baseline.exit()
+                    base_losses[baseline.name].append(b_loss)
+                    base_deltas[baseline.name].append(b_loss - primary_loss)
+                    bar.update(1)
+    finally:
+        bar.close()
+
+    if ctx.is_tracking and primary_losses:
+        logs = {
+            "loss/validation/baseline_primary": sum(primary_losses)
+            / len(primary_losses)
+        }
+        for name in base_losses:
+            losses = base_losses[name]
+            deltas = base_deltas[name]
+            if losses:
+                logs[f"loss/validation/baseline_{name}"] = sum(losses) / len(losses)
+                logs[f"loss/validation/baseline_{name}_delta"] = sum(deltas) / len(
+                    deltas
+                )
         logging_fn(accelerator, logs, global_step, epoch + 1)
 
 

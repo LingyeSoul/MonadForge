@@ -21,6 +21,7 @@ from library.models import qwen_vae as qwen_image_autoencoder_kl
 from library.runtime.device import clean_memory_on_device
 from library.inference import (
     get_generation_settings,
+    resolve_seed,
     check_inputs,
     load_dit_model,
     load_text_encoder,
@@ -51,8 +52,12 @@ logger = logging.getLogger(__name__)
 # region Argument parsing
 
 
-def parse_args() -> argparse.Namespace:
-    """parse command line arguments"""
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """parse command line arguments
+
+    ``argv=None`` reads ``sys.argv`` (the CLI path). Pass an explicit list to
+    build an args namespace programmatically — see ``examples/01_generate.py``.
+    """
     parser = argparse.ArgumentParser(description="HunyuanImage inference script")
 
     parser.add_argument("--dit", type=str, default=None, help="DiT directory or path")
@@ -558,7 +563,7 @@ def parse_args() -> argparse.Namespace:
         "'reduce-overhead'). None = inductor default.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Validate arguments
     if args.from_file and args.interactive:
@@ -678,7 +683,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         return
 
     gen_settings = get_generation_settings(args)
-    dit_weight_dtype = gen_settings.dit_weight_dtype
+    dit_weight_dtype = torch.bfloat16
     device = gen_settings.device
 
     # 1. Prepare VAE
@@ -897,6 +902,9 @@ def process_interactive(args: argparse.Namespace) -> None:
                 prompt_data = parse_prompt_line(line)
                 prompt_args = apply_overrides(args, prompt_data)
 
+                # Pin the resolved seed for save_output (generate() no longer
+                # writes it back to the namespace).
+                prompt_args.seed = resolve_seed(prompt_args)
                 latent = generate(prompt_args, gen_settings, shared_models)
 
                 save_output(prompt_args, vae, latent, device)
@@ -1062,6 +1070,9 @@ def main():
         else:
             # Single prompt mode
             gen_settings = get_generation_settings(args)
+            # generate() no longer writes the resolved seed back to args, so
+            # pin it here for save_output()'s filename + metadata.
+            args.seed = resolve_seed(args)
             latent = generate(args, gen_settings)
 
             clean_memory_on_device(device)

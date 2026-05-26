@@ -31,9 +31,9 @@ def check_inputs(args) -> Tuple[int, int]:
     height = args.image_size[0]
     width = args.image_size[1]
 
-    if height % 32 != 0 or width % 32 != 0:
+    if height % 16 != 0 or width % 16 != 0:
         raise ValueError(
-            f"`height` and `width` have to be divisible by 32 but are {height} and {width}."
+            f"`height` and `width` have to be divisible by 16 but are {height} and {width}."
         )
 
     return height, width
@@ -100,6 +100,32 @@ def save_latent(
     return latent_path
 
 
+def pixels_to_pil(sample: torch.Tensor) -> Image.Image:
+    """Convert a ``[-1, 1]`` CHW pixel tensor (VAE output) to a PIL image.
+
+    The single source of truth for the ``[-1,1] → [0,255] → HWC → PIL`` step,
+    shared by ``save_images`` (file write) and ``decode_to_pil`` (in-memory).
+    """
+    x = torch.clamp(sample, -1.0, 1.0)
+    x = ((x + 1.0) * 127.5).to(torch.uint8).cpu().numpy()
+    x = x.transpose(1, 2, 0)  # C, H, W -> H, W, C
+    return Image.fromarray(x)
+
+
+def decode_to_pil(
+    vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage,
+    latent: torch.Tensor,
+    device: torch.device,
+) -> Image.Image:
+    """Decode a clean latent straight to a ``PIL.Image`` — the in-memory exit.
+
+    Composes ``decode_latent`` (VAE decode → ``[-1,1]`` CHW tensor) with
+    ``pixels_to_pil``, so embedders who want an image to composite / return over
+    HTTP / score don't have to round-trip through a temp PNG via ``save_output``.
+    """
+    return pixels_to_pil(decode_latent(vae, latent, device))
+
+
 def save_images(
     sample: torch.Tensor,
     args: argparse.Namespace,
@@ -118,11 +144,7 @@ def save_images(
     original_name = "" if original_base_name is None else f"_{original_base_name}"
     image_name = f"{time_flag}_{seed}{original_name}"
 
-    x = torch.clamp(sample, -1.0, 1.0)
-    x = ((x + 1.0) * 127.5).to(torch.uint8).cpu().numpy()
-    x = x.transpose(1, 2, 0)  # C, H, W -> H, W, C
-
-    image = Image.fromarray(x)
+    image = pixels_to_pil(sample)
     image.save(os.path.join(save_path, f"{image_name}.png"))
 
     logger.info(f"Sample images saved to: {save_path}/{image_name}")

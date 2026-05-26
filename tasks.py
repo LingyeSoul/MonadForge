@@ -96,7 +96,13 @@ COMMANDS = {
     # ── Preprocess ────────────────────────────────────────────────────
     "preprocess": (
         preprocess.cmd_preprocess,
-        "Full preprocessing (resize + VAE + text embeddings)",
+        "Full preprocessing (resize + VAE + text embeddings + caption index "
+        "when the tagger vocab is present)",
+    ),
+    "preprocess-config": (
+        preprocess.cmd_preprocess_config,
+        "Preprocess the dirs named in a --dataset_config TOML (resize --src "
+        "→ image_dir, then VAE + TE caches → cache_dir). Used by the trainer node.",
     ),
     "preprocess-resize": (
         preprocess.cmd_preprocess_resize,
@@ -112,6 +118,11 @@ COMMANDS = {
         preprocess.cmd_preprocess_pe,
         "Cache PE-Core vision-encoder features into the LoRA cache dir. "
         "Consumed by IP-Adapter live-disk mode and the DCW v4 fusion head.",
+    ),
+    "caption-index": (
+        preprocess.cmd_caption_index,
+        "Build the typed-tag caption index (character/copyright/artist groups) "
+        "at post_image_dataset/captions/caption_index.json. Pure data, no GPU.",
     ),
     # ── Anima Tagger ──────────────────────────────────────────────────
     "preprocess-tagger": (
@@ -143,6 +154,10 @@ COMMANDS = {
     "download-pe-spatial": (
         downloads.cmd_download_pe_spatial,
         "Download PE-Spatial-B16-512 (Anima Tagger aux encoder)",
+    ),
+    "download-tagger": (
+        downloads.cmd_download_tagger,
+        "Download Anima Tagger v2 vocab.json (caption-index dependency; not the full model)",
     ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (

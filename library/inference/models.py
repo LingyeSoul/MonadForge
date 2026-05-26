@@ -73,86 +73,27 @@ def _is_chimera_moe(path: str) -> bool:
         return False
 
 
-def load_dit_model(
+def attach_adapters(
+    model: anima_models.Anima,
     args: argparse.Namespace,
     device: torch.device,
-    dit_weight_dtype: Optional[torch.dtype] = None,
-) -> anima_models.Anima:
-    """Load DiT model with optional LoRA merge, P-GRAFT hooks, and torch.compile."""
+    *,
+    pgraft_mode: bool,
+    hydra_mode: bool,
+) -> None:
+    """Attach LoRA-family adapters that ride as dynamic forward hooks.
 
-    loading_device = device
+    Covers the two routes that can't go through ``load_anima_model``'s static
+    merge: **P-GRAFT** (toggleable mid-denoising) and **HydraLoRA moe / chimera**
+    (router-live, runs per-sample). Both rehydrate a network, ``apply_to`` the
+    already-loaded ``model`` in place, and stash it on ``model`` for the sampler
+    toggle sites to find. No-op when neither mode is set. Mutates ``model``;
+    returns nothing. The static-merge path and ``torch.compile`` stay in
+    :func:`load_dit_model` — this does only the dynamic-hook attach.
 
-    # HydraLoRA moe (incl. FeRA-style stacked-experts global FEI): router-live
-    # inference can't go through static merge. Detect early so we can skip the
-    # baked-down path and take the dynamic hook route regardless of whether
-    # --pgraft is set. ``_is_hydra_moe`` matches the ``lora_ups.{i}.weight``
-    # key pattern shared by both shared-A Hydra and the plan2 stacked-experts
-    # save format.
-    hydra_mode = False
-    if args.lora_weight is not None and len(args.lora_weight) > 0:
-        hydra_flags = [_is_hydra_moe(p) for p in args.lora_weight]
-        if any(hydra_flags):
-            if not all(hydra_flags):
-                raise ValueError(
-                    "Mixing HydraLoRA moe files with regular LoRA files in a "
-                    "single --lora_weight list is not supported. The static "
-                    "merge + dynamic hook interaction is untested. Pass them "
-                    "in separate invocations."
-                )
-            hydra_mode = True
-
-    # P-GRAFT: load without LoRA merge, attach dynamic hooks instead
-    pgraft_mode = (
-        getattr(args, "pgraft", False)
-        and args.lora_weight is not None
-        and len(args.lora_weight) > 0
-    )
-
-    # load LoRA weights (skip static merge for P-GRAFT and HydraLoRA moe)
-    if (
-        not pgraft_mode
-        and not hydra_mode
-        and args.lora_weight is not None
-        and len(args.lora_weight) > 0
-    ):
-        lora_weights_list = []
-        for lora_weight in args.lora_weight:
-            logger.info(f"Loading LoRA weight from: {lora_weight}")
-            lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
-            lora_sd = {
-                k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")
-            }  # only keep unet lora weights
-            lora_weights_list.append(lora_sd)
-    else:
-        lora_weights_list = None
-
-    model = anima_utils.load_anima_model(
-        device,
-        args.dit,
-        args.attn_mode,
-        loading_device,
-        dit_weight_dtype,
-        lora_weights_list=lora_weights_list,
-        lora_multipliers=args.lora_multiplier,
-    )
-
-    # Modulation guidance: load trained pooled_text_proj weights before .to()
-    # (pooled_text_proj params are meta tensors when not in the pretrained checkpoint)
-    pooled_text_proj_path = getattr(args, "pooled_text_proj", None)
-    if pooled_text_proj_path is not None:
-        anima_utils.load_pooled_text_proj(model, pooled_text_proj_path, "cpu")
-
-    target_dtype = dit_weight_dtype
-    if target_dtype is not None:
-        logger.info(f"Convert model to {target_dtype}")
-    logger.info(f"Move model to device: {device}")
-    model.to(device, target_dtype)
-
-    # model.to(device)
-    model.to(device, dtype=torch.bfloat16)  # ensure model is in bfloat16 for inference
-
-    model.eval().requires_grad_(False)
-
+    ``pgraft_mode`` / ``hydra_mode`` are passed in (not recomputed) because the
+    caller already derives them to decide whether to skip the static merge.
+    """
     # P-GRAFT: attach LoRA as dynamic hooks (can be toggled mid-denoising)
     if pgraft_mode and not hydra_mode:
         from networks import lora_anima
@@ -258,6 +199,98 @@ def load_dit_model(
                 f"({len(network.unet_loras)} modules, "
                 f"cutoff_step={getattr(args, 'lora_cutoff_step', None)})"
             )
+
+
+def load_dit_model(
+    args: argparse.Namespace,
+    device: torch.device,
+    dit_weight_dtype: Optional[torch.dtype] = None,
+) -> anima_models.Anima:
+    """Load DiT model with optional LoRA merge, P-GRAFT hooks, and torch.compile.
+
+    Namespace-driven adapter over the explicit-argument primitive
+    ``library.anima.weights.load_anima_model``: it pulls ``dit``/``attn_mode``/
+    ``lora_weight``/etc. off ``args``, then hands the dynamic-hook adapter attach
+    to :func:`attach_adapters` and applies ``torch.compile``. Reach for
+    ``load_anima_model`` directly when you want just the weights and no Namespace.
+    """
+
+    loading_device = device
+
+    # HydraLoRA moe (incl. FeRA-style stacked-experts global FEI): router-live
+    # inference can't go through static merge. Detect early so we can skip the
+    # baked-down path and take the dynamic hook route regardless of whether
+    # --pgraft is set. ``_is_hydra_moe`` matches the ``lora_ups.{i}.weight``
+    # key pattern shared by both shared-A Hydra and the plan2 stacked-experts
+    # save format.
+    hydra_mode = False
+    if args.lora_weight is not None and len(args.lora_weight) > 0:
+        hydra_flags = [_is_hydra_moe(p) for p in args.lora_weight]
+        if any(hydra_flags):
+            if not all(hydra_flags):
+                raise ValueError(
+                    "Mixing HydraLoRA moe files with regular LoRA files in a "
+                    "single --lora_weight list is not supported. The static "
+                    "merge + dynamic hook interaction is untested. Pass them "
+                    "in separate invocations."
+                )
+            hydra_mode = True
+
+    # P-GRAFT: load without LoRA merge, attach dynamic hooks instead
+    pgraft_mode = (
+        getattr(args, "pgraft", False)
+        and args.lora_weight is not None
+        and len(args.lora_weight) > 0
+    )
+
+    # load LoRA weights (skip static merge for P-GRAFT and HydraLoRA moe)
+    if (
+        not pgraft_mode
+        and not hydra_mode
+        and args.lora_weight is not None
+        and len(args.lora_weight) > 0
+    ):
+        lora_weights_list = []
+        for lora_weight in args.lora_weight:
+            logger.info(f"Loading LoRA weight from: {lora_weight}")
+            lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
+            lora_sd = {
+                k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")
+            }  # only keep unet lora weights
+            lora_weights_list.append(lora_sd)
+    else:
+        lora_weights_list = None
+
+    model = anima_utils.load_anima_model(
+        device,
+        args.dit,
+        args.attn_mode,
+        loading_device,
+        dit_weight_dtype,
+        lora_weights_list=lora_weights_list,
+        lora_multipliers=args.lora_multiplier,
+    )
+
+    # Modulation guidance: load trained pooled_text_proj weights before .to()
+    # (pooled_text_proj params are meta tensors when not in the pretrained checkpoint)
+    pooled_text_proj_path = getattr(args, "pooled_text_proj", None)
+    if pooled_text_proj_path is not None:
+        anima_utils.load_pooled_text_proj(model, pooled_text_proj_path, "cpu")
+
+    target_dtype = dit_weight_dtype
+    if target_dtype is not None:
+        logger.info(f"Convert model to {target_dtype}")
+    logger.info(f"Move model to device: {device}")
+    model.to(device, target_dtype)
+
+    # model.to(device)
+    model.to(device, dtype=torch.bfloat16)  # ensure model is in bfloat16 for inference
+
+    model.eval().requires_grad_(False)
+
+    # Dynamic-hook adapters (P-GRAFT toggle / HydraLoRA router-live) that can't
+    # ride the static merge above.
+    attach_adapters(model, args, device, pgraft_mode=pgraft_mode, hydra_mode=hydra_mode)
 
     if getattr(args, "compile", False):
         logger.info("Compiling DiT model with torch.compile...")

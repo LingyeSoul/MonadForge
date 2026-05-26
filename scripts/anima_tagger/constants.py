@@ -11,19 +11,22 @@ bucketing) consume those constants.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
-# Count-tag detection. Matches ``1girl``, ``2girls``, ``1boy``, ``3others``,
-# ``multiple_girls``, ``multiple_boys``. Also matches ``6+girls`` /
-# ``6+boys`` (booru convention for "≥6 of"). Underscores or spaces both fine.
-_COUNT_RE = re.compile(
-    r"^(?:\d+\+?(?:girl|boy|other)s?|multiple[_ ](?:girls|boys|others))$"
-)
+# Count-tag detection now lives in the shared, torch-free tag-shape module so
+# the tagger vocab build and the caption-index builder can't drift. Re-exported
+# here (``_COUNT_RE`` is imported by ``train_common``) for back-compat.
+from library.captioning.taxonomy import _COUNT_RE, _LEADING_INT_RE, is_count_tag
 
-# Pull the leading integer off a count tag like "3girls" / "6+girls" → 3 / 6.
-_LEADING_INT_RE = re.compile(r"^(\d+)")
+__all__ = [
+    "_COUNT_RE",
+    "_LEADING_INT_RE",
+    "is_count_tag",
+    "IMAGE_EXTS",
+    "find_image_for_caption",
+    "classify_people",
+]
 
 # Image extensions we look for next to each .txt caption file. Order is
 # preference; first hit wins.
@@ -37,10 +40,6 @@ def find_image_for_caption(caption_path: Path) -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
-
-
-def is_count_tag(tag: str) -> bool:
-    return bool(_COUNT_RE.match(tag))
 
 
 def classify_people(tags: Iterable[str]) -> int:

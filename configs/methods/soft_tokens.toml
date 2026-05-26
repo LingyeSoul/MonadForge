@@ -6,22 +6,11 @@
 # parameterization (per-layer × per-t soft tokens) and skip the contrastive
 # InfoNCE objective; trained under standard flow-matching loss.
 #
-# DiT is FROZEN. Trains ~1M params total (n_layers × num_tokens × D + n_t_buckets
-# × n_layers × D). Each of the first n_layers DiT blocks gets its own learned
-# (K, D) token bank plus a per-t-bucket D-vector offset, spliced into the tail
-# of crossattn_emb (overwriting zero-padding) at that block only.
-#
-# v1 is TRAINING-ONLY — inference path needs per-step block hooks inside the
-# denoising loop, not yet wired up.
-#
-# USAGE:
-#   make exp-soft-tokens                  # default preset
-#   python tasks.py exp-soft-tokens       # cross-platform
 
 network_module = "networks.methods.soft_tokens"
 
 # network_dim → num_tokens (K) per layer per timestep bucket.
-network_dim = 4
+network_dim = 8
 
 # n_layers           — number of leading DiT blocks to attach soft tokens to
 #                      (Anima has 28; SoftREPA used 5/24 on SD3, scale
@@ -36,42 +25,74 @@ network_dim = 4
 #                      zero-padding slots; preserves the strongest sinks.
 #                      "front_of_padding" scatters at [seqlens[i], +K) per
 #                      sample (caption-position-aware).
-# bank_dispersive_weight        — λ on the bank-axis dispersive regularizer
-#                                 (Wang & He, "Diffuse and Disperse",
-#                                 arXiv:2506.09027). Adapted to B=1 by
-#                                 dispersing along the bank's K and
-#                                 n_t_buckets axes (paper's batch-axis form
-#                                 is unusable at B=1). 0.0 disables. Bench
-#                                 probe at bench/soft_tokens_dispersive/ found
-#                                 the paper's exp-form (``current``) unbounded
-#                                 below — start with a bounded form below and
-#                                 a small λ (~0.01).
-# bank_dispersive_warmup_ratio  — fraction of total training steps before the
-#                                 regularizer activates. Holds at 0 during
-#                                 warmup so the bank can develop initial
-#                                 structure from FM gradient before the
-#                                 "don't collapse" prior fires.
-# bank_dispersive_tau           — τ for ``current`` / ``normalized_pdist`` forms
-#                                 (exp(-pdist²/τ)). Unused by other forms.
-# dispersive_form               — kernel shape. One of:
-#                                   current           paper exp-form (UNBOUNDED ↓)
-#                                   normalized_pdist  exp-form on unit-normalized vecs (bounded)
-#                                   cosine_sq         mean cos² over pairs (bounded [0,1])
-#                                   cosine_abs        mean |cos| over pairs (bounded [0,1])
-#                                   hinge             mean max(0, ε − d²) (bounded ≥ 0)
-# dispersive_hinge_eps          — ε for the ``hinge`` form only.
+#
+# ── Contrastive objective (SoftREPA InfoNCE via cached-TE negatives) ──────────
+# A training-only objective that sharpens prompt-following (data-conditioned) by
+# making the matched text explain the anchor's latent better than mismatched
+# text. Each negative costs one extra full DiT forward, so keep contrastive_k
+# small. Off by default (weight 0.0 = plain-FM behavior, bit-identical).
+# See docs/proposal/soft_tokens_contrastive.md.
+# contrastive_weight            — λ_con. 0.0 disables (and the dataset stops
+#                                 producing negatives, so no extra forwards).
+# contrastive_k                 — negatives per step → (k+1)× step time. Keep 1–2.
+# contrastive_every_n           — run the negative forwards only every Nth
+#                                 optimizer step (1 = every step). Manual
+#                                 frequency knob, NOT auto-scaled: effective
+#                                 strength ≈ weight × 1/N, so bump
+#                                 contrastive_weight if you want to hold the
+#                                 average pull constant. Costs no extra memory
+#                                 (firing-step peak unchanged, off-steps cheaper).
+# contrastive_negative_mode     — negative sourcing: "shuffled" (unrelated),
+#                                 "jaccard" (shuffled + tag-overlap logit
+#                                 down-weight), "hard" (same-artist/diff-char),
+#                                 or "hard_backoff" (tiered same-artist → same-
+#                                 copyright → same-artist-`original` → shuffled).
+#                                 Setup log prints the level mix; genuine-negative
+#                                 rate tracks caption_index.json char coverage —
+#                                 regen with `make caption-index` if stale.
+# contrastive_jaccard_alpha     — logit penalty for "jaccard" mode (ℓ_neg −= α·s,
+#                                 sweep 0.5–2.0). Unused by other modes.
+# contrastive_tau               — InfoNCE temperature on the logit
+#                                 (−FM-error / τ). Unused by the agsm objective.
+# contrastive_warmup_ratio      — hold λ_con at 0 for the first fraction of
+#                                 steps (lets plain FM shape the bank first).
+#
+# ── AGSM objective (bounded target-shift) — docs/proposal/soft_tokens_agsm.md ──
+# Alternative to InfoNCE on the SAME extra-forward plumbing (negatives, warmup,
+# every_n, compose seam). Diagnoses SoftREPA's instability as unbounded negative
+# divergence and fixes it by regressing toward fixed shifted targets instead of
+# maximizing negative error:
+#   positives → v_target + γ·Δ,   negatives → v_target − γ·Δ
+# Δ = v̂⁺_ema − mean_j v̂⁻_ema_j is the matched-minus-mismatched velocity read off
+# an EMA shadow of the bank's own predictions (reward-free self-distillation; no
+# external scorer). Phase 2 = single bank, constant Ã(t)=1. Costs ~(2k+1) extra
+# forwards/firing-step vs InfoNCE's k (the EMA value passes), all no_grad except
+# the deferred negative replay — keep contrastive_k ∈ {1,2}.
+# contrastive_objective         — "infonce" (default) | "agsm".
+# agsm_gamma                    — γ, target-shift magnitude (used for both signs
+#                                 in Phase 2). Sweep ~0.25–1.0.
+# agsm_ema_decay                — EMA decay for the bank shadow that Δ is read
+#                                 off (must be in (0,1); slower = steadier Δ).
+
 network_args = [
-    "n_layers=6",
+    "n_layers=14",
     "n_t_buckets=14",
     "init_std=0.02",
     "splice_position=front_of_padding",
-    "bank_dispersive_weight=0.5",
-    "bank_dispersive_warmup_ratio=0.1",
-    "bank_dispersive_tau=0.5",
-    "dispersive_form=cosine_sq",
-    "dispersive_hinge_eps=1.0",
+    "contrastive_weight=0.15",
+    "contrastive_every_n=3",
+    "contrastive_k=1",
+    "contrastive_negative_mode=hard_backoff",
+
+    "contrastive_objective=agsm",
+    "agsm_gamma=0.5",
+    "agsm_ema_decay=0.99",
+
+    "contrastive_jaccard_alpha=1.0",
+    "contrastive_tau=0.5",
+    "contrastive_warmup_ratio=0.1",
 ]
-output_name = "anima_soft_tokens"
+output_name = "anima_soft_tokens_tenth"
 weight_decay=1e-4
 # Soft tokens are independent of the cached crossattn (they overwrite zero-
 # padding tail), so cache_llm_adapter_outputs is the right default.
@@ -83,13 +104,13 @@ learning_rate = 1e-3
 max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
-compile_inductor_mode = "reduce-overhead"
+# compile_inductor_mode = "reduce-overhead"
 
-# Per-block monkey-patch on Block.forward; gradient checkpoint() inside the
-# original forward is preserved (our hook is the outermost wrapper). Block
-# swapping is incompatible — the hook captures the block by reference at
-# apply_to() time and a swapped block is a different object instance.
+# gradient_accumulation_steps = 2
 blocks_to_swap = 0
 
 logging_dir = "output/logs"
 log_with = "tensorboard"
+
+max_data_loader_n_workers=1
+validation_split_num = 8

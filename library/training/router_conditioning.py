@@ -24,6 +24,7 @@ def apply_router_conditioning(
     warmup_step: int,
     max_train_steps: int,
     crossattn_emb: Optional[torch.Tensor] = None,
+    gradient_accumulation_steps: int = 1,
 ) -> int:
     """Run all per-step router conditioning. Returns the next warmup_step value.
 
@@ -75,10 +76,14 @@ def apply_router_conditioning(
     if is_train and hasattr(network, "step_balance_loss_warmup"):
         network.step_balance_loss_warmup(warmup_step, max_train_steps)
         incremented = True
-    # Soft-tokens bank-dispersive warmup: parallel branch (mutually exclusive
-    # with the LoRA-family network above — different network class) but kept
-    # as a separate ``if`` so the order of checks doesn't matter.
-    if is_train and hasattr(network, "step_bank_dispersive_warmup"):
-        network.step_bank_dispersive_warmup(warmup_step, max_train_steps)
+    # Soft-tokens contrastive warmup: parallel branch (mutually exclusive with
+    # the LoRA-family network above — different network class) but kept as a
+    # separate ``if`` so the order of checks doesn't matter.
+    if is_train and hasattr(network, "step_contrastive_warmup"):
+        # ``warmup_step`` is the micro-batch counter; soft_tokens converts it to
+        # the optimizer-step clock with ``accum`` for its cadence gate.
+        network.step_contrastive_warmup(
+            warmup_step, max_train_steps, gradient_accumulation_steps
+        )
         incremented = True
     return warmup_step + 1 if incremented else warmup_step

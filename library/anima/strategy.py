@@ -453,7 +453,7 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         infos: List,
     ):
         # Inline caching always writes a single variant. Multi-variant caches
-        # are produced exclusively by `preprocess/cache_text_embeddings.py`.
+        # are produced exclusively by `scripts/preprocess/cache_text_embeddings.py`.
         anima_text_encoding_strategy: AnimaTextEncodingStrategy = text_encoding_strategy
         self._cache_batch_outputs_single(
             tokenize_strategy, models, anima_text_encoding_strategy, infos

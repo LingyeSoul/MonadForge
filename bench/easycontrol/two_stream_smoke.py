@@ -19,12 +19,9 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
-from pathlib import Path
 
 import torch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from bench._common import make_run_dir, write_result  # noqa: E402
 from library.log import setup_logging  # noqa: E402
 
@@ -54,7 +51,6 @@ def build_small_dit(device, dtype):
         adaln_lora_dim=256,
         attn_mode="flash",
     )
-    dit.set_static_token_count(4096)
     dit = dit.to(device=device, dtype=dtype)
     dit.eval()  # frozen
     for p in dit.parameters():

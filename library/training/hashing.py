@@ -15,6 +15,8 @@ from io import BytesIO
 
 import safetensors.torch
 
+from library.runtime.proc import no_window_kwargs
+
 
 def model_hash(filename: str) -> str:
     """Old model hash used by stable-diffusion-webui."""
@@ -99,7 +101,9 @@ def get_git_revision_hash() -> str:
     try:
         return (
             subprocess.check_output(
-                ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(__file__)
+                ["git", "rev-parse", "HEAD"],
+                cwd=os.path.dirname(__file__),
+                **no_window_kwargs(),
             )
             .decode("ascii")
             .strip()

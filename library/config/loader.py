@@ -98,7 +98,6 @@ class DreamBoothSubsetParams(BaseSubsetParams):
 
 @dataclass
 class BaseDatasetParams:
-    resolution: Optional[Tuple[int, int]] = None
     network_multiplier: float = 1.0
     debug_dataset: bool = False
     validation_seed: Optional[int] = None
@@ -110,11 +109,6 @@ class BaseDatasetParams:
 @dataclass
 class DreamBoothDatasetParams(BaseDatasetParams):
     batch_size: int = 1
-    enable_bucket: bool = False
-    min_bucket_reso: int = 256
-    max_bucket_reso: int = 1024
-    bucket_reso_steps: int = 64
-    bucket_no_upscale: bool = False
     prior_loss_weight: float = 1.0
 
 
@@ -204,17 +198,9 @@ class ConfigSanitizer:
     # datasets schema
     DATASET_ASCENDABLE_SCHEMA = {
         "batch_size": int,
-        "bucket_no_upscale": bool,
-        "bucket_reso_steps": int,
-        "enable_bucket": bool,
-        "max_bucket_reso": int,
-        "min_bucket_reso": int,
         "validation_seed": int,
         "validation_split": float,
         "validation_split_num": int,
-        "resolution": functools.partial(
-            __validate_and_convert_scalar_or_twodim.__func__, int
-        ),
         "network_multiplier": float,
         "resize_interpolation": str,
     }
@@ -228,7 +214,6 @@ class ConfigSanitizer:
     # for handling default None value of argparse
     ARGPARSE_NULLABLE_OPTNAMES = [
         "face_crop_aug_range",
-        "resolution",
     ]
     # prepare map because option name may differ among argparse and user config
     ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME = {
@@ -508,23 +493,9 @@ def generate_dataset_group_by_blueprint(
             info += dedent(f"""\
                 [{dataset_type} {i}]
                   batch_size: {dataset.batch_size}
-                  resolution: {(dataset.width, dataset.height)}
                   resize_interpolation: {dataset.resize_interpolation}
-                  enable_bucket: {dataset.enable_bucket}
             """)
-
-            if dataset.enable_bucket:
-                info += indent(
-                    dedent(f"""\
-                  min_bucket_reso: {dataset.min_bucket_reso}
-                  max_bucket_reso: {dataset.max_bucket_reso}
-                  bucket_reso_steps: {dataset.bucket_reso_steps}
-                  bucket_no_upscale: {dataset.bucket_no_upscale}
-                \n"""),
-                    "  ",
-                )
-            else:
-                info += "\n"
+            info += "\n"
 
             for j, subset in enumerate(dataset.subsets):
                 info += indent(

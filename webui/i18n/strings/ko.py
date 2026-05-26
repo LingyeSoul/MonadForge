@@ -8,6 +8,7 @@ STRINGS: dict[str, str] = {
     "tab_config": "학습 설정",
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
+    "tab_spd": "SPD",
     "tab_methods": "메소드",
     "tab_images": "데이터셋",
     "tab_merge": "병합",
@@ -54,6 +55,14 @@ STRINGS: dict[str, str] = {
     "preprocess_mit_threshold": "MIT 텍스트 임계값 (0.0–1.0):",
     "preprocess_mit_threshold_tip": (
         "MIT/ComicTextDetector 텍스트 세그멘터의 신뢰도 임계값. 기본값 0.8."
+    ),
+    "preprocess_mask_path_pattern": "마스크 경로 필터:",
+    "preprocess_mask_path_pattern_tip": (
+        "마스킹할 리사이즈 이미지를 제한하는 fnmatch glob 패턴. "
+        "post_image_dataset/resized 기준 각 경로에 대해 매칭됩니다. "
+        "SAM과 MIT 모두에 적용됩니다. 학습용 path_pattern과 동일한 문법: "
+        "'*'(또는 빈 값)이면 전체 마스킹; 'char_a/*'이면 한 하위 폴더; "
+        "'char_a/*|char_b/*'으로 OR 조합."
     ),
     "preprocess_run_mask": "마스킹 실행",
     "preprocess_run_sam_mask": "SAM 마스킹 실행",
@@ -117,6 +126,16 @@ STRINGS: dict[str, str] = {
         "전처리를 실행하세요.\n\n"
         "기존 캐시로 학습을 진행할까요?"
     ),
+    "stale_cache_title": "오래된 데이터셋 캐시",
+    "stale_cache_body": (
+        "{n}개의 VAE 잠재변수 캐시가 다음 경로 아래에 있습니다:\n  {cache_dir}\n\n"
+        "이 파일들은 현재 버킷 테이블 "
+        "(4032 / 4200 토큰 수 계열)에 더 이상 포함되지 않는 해상도로 캐싱되었습니다:\n\n{examples}\n\n"
+        "예전 버킷 구성으로 캐싱된 파일들로, 학습 시 건너뛰거나 잘못된 버킷에 "
+        "배정될 수 있습니다. 취소를 누르고 전처리를 다시 실행하여 (덮어쓰기 옵션 사용) "
+        "캐시를 다시 만드세요.\n\n"
+        "오래된 캐시를 그대로 사용하여 학습을 진행할까요?"
+    ),
     "train_autopreprocess_log": (
         "전처리 캐시가 없어 전처리를 먼저 실행한 뒤 자동으로 학습을 시작합니다.\n"
     ),
@@ -126,6 +145,8 @@ STRINGS: dict[str, str] = {
     "test_output_empty": "output/tests/가 비어 있습니다.",
     "finished": "--- 완료 (종료 코드 {code}) ---",
     "starting": "시작 중… (torch / accelerate 로딩)",
+    "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
+    "daemon_error_cause": "↳ 추정 원인: {summary}",
     "update_success_title": "업데이트 완료",
     "update_success_message": (
         "anima_lora이(가) {v}(으)로 업데이트되었습니다.\n\n"
@@ -186,6 +207,8 @@ STRINGS: dict[str, str] = {
     "directory": "디렉토리:",
     "dataset_reload": "새로고침",
     "dataset_reload_tooltip": "현재 디렉토리를 다시 스캔해서 이미지 목록과 선택을 갱신합니다.",
+    "dataset_open_dir": "열기",
+    "dataset_open_dir_tooltip": "현재 디렉토리를 시스템 파일 관리자에서 엽니다.",
     "dataset_add_dir": "디렉토리 추가…",
     "dataset_add_dir_tooltip": "다른 디렉토리를 골라 이번 세션 동안 드롭다운에 추가합니다.",
     "dataset_add_dir_picker": "추가할 디렉토리 선택",

@@ -9,6 +9,8 @@ import glob
 import logging
 import os
 import random
+import re
+from pathlib import Path
 from typing import NamedTuple
 
 import numpy as np
@@ -196,7 +198,7 @@ def load_cached_text_features(
 
     The pooled tensor is sourced from a ``{stem}_anima_pooled.safetensors``
     sidecar next to ``te_path`` when present (written by
-    ``preprocess/cache_pooled_text.py``). When the sidecar is missing — old
+    ``scripts/preprocess/cache_pooled_text.py``). When the sidecar is missing — old
     caches that predate the pooled-sidecar pass — pooled is computed at
     load time via ``crossattn_emb.amax(dim=0)`` (cheaper than
     ``.max(dim=0).values``, which also computes argmax). The same variant
@@ -256,3 +258,95 @@ def stem_from_cache_path(path: str | os.PathLike) -> str | None:
         parts = without_suffix.rsplit("_", 1)
         return parts[0] if len(parts) >= 2 else without_suffix
     return None
+
+
+# ---------------------------------------------------------------------------
+# Bucketed sample discovery (promoted from bench/_anima.py).
+# ---------------------------------------------------------------------------
+
+_RES_RE = re.compile(r"_(\d{3,5})x(\d{3,5})_anima\.npz$")
+
+
+def discover_bucketed_samples(
+    data_dir: Path,
+    bucket: str | None,
+    num_samples: int,
+    seed: int,
+    *,
+    allow_replace: bool = False,
+) -> tuple[str, list[tuple[str, str, str, str]]]:
+    """Scan ``data_dir`` for (latent npz, TE sidecar) pairs grouped by bucket.
+
+    Filename convention: ``{stem}_{Wpix}x{Hpix}_anima.npz`` paired with
+    ``{stem}_anima_te.safetensors``. Items without a matching TE sidecar
+    are skipped. ``latents_{WxH}`` keys inside the npz define the bucket
+    string.
+
+    Sits next to :func:`discover_cached_images` / :func:`discover_cached_pairs`
+    but answers a different question: pick a *bucket* and draw ``num_samples``
+    random members of it. Used by the bench/probe harnesses that need a fixed
+    same-shape batch for σ-schedule and rollout experiments.
+
+    Args:
+        data_dir: e.g. ``Path("post_image_dataset/lora")``.
+        bucket: Bucket string like ``"128x192"`` (latent dims, not pixel
+            dims). If None, the most populous bucket is chosen.
+        num_samples: How many samples to return.
+        seed: For the np.random.choice.
+        allow_replace: If True and the pool is smaller than
+            ``num_samples``, resample with replacement (logs a warning).
+            If False (default), raises.
+
+    Returns:
+        ``(chosen_bucket, [(stem, latent_key, npz_path, te_path), ...])``.
+
+    Raises:
+        SystemExit: if no pairs are found, the requested bucket is empty,
+            or the pool is too small and ``allow_replace=False``.
+    """
+    npz_paths = sorted(glob.glob(str(data_dir / "*_anima.npz")))
+    if not npz_paths:
+        raise SystemExit(f"no `*_anima.npz` in {data_dir}")
+
+    by_bucket: dict[str, list[tuple[str, str, str, str]]] = {}
+    for p in npz_paths:
+        name = Path(p).name
+        m = _RES_RE.search(name)
+        if not m:
+            continue
+        stem = name[: m.start()]
+        te = data_dir / f"{stem}_anima_te.safetensors"
+        if not te.exists():
+            continue
+        with np.load(p) as z:
+            for k in z.keys():
+                if k.startswith("latents_"):
+                    bk = k.removeprefix("latents_")
+                    by_bucket.setdefault(bk, []).append((stem, k, p, str(te)))
+                    break
+
+    if not by_bucket:
+        raise SystemExit("no paired (latent, TE) samples found")
+
+    chosen = bucket or max(by_bucket, key=lambda k: len(by_bucket[k]))
+    if chosen not in by_bucket:
+        top = sorted(((k, len(v)) for k, v in by_bucket.items()), key=lambda x: -x[1])[
+            :5
+        ]
+        raise SystemExit(f"bucket {chosen!r} not found. Top buckets: {top}")
+
+    pool = by_bucket[chosen]
+    if len(pool) < num_samples:
+        if not allow_replace:
+            raise SystemExit(
+                f"bucket {chosen!r} has {len(pool)} samples; need {num_samples}. "
+                f"Pass allow_replace=True to resample with replacement."
+            )
+        logger.warning(
+            f"bucket {chosen!r} has {len(pool)} samples; resampling with "
+            f"replacement to reach {num_samples}."
+        )
+
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(pool), size=num_samples, replace=(len(pool) < num_samples))
+    return chosen, [pool[i] for i in idx]

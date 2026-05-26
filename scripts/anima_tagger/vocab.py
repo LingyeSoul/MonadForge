@@ -33,6 +33,8 @@ from library.captioning.anima_tagger import (
     TAG_TYPE_NAMES,
 )
 
+from library.captioning.taxonomy import is_artist_tag, strip_artist_prefix
+
 from .constants import (
     classify_people,
     find_image_for_caption,
@@ -154,11 +156,11 @@ def categorize(
     # separate corpus field, not the tag system).
     if tag in RATINGS:
         return "rating"
-    if len(tag) >= 2 and tag[0] == "@" and not tag[1].isspace():
+    if is_artist_tag(tag):
         return "artist"
     if is_count_tag(tag):
         return "count"
-    bare = tag[1:] if tag.startswith("@") else tag
+    bare = strip_artist_prefix(tag)
     if overrides:
         ov = overrides.get(tag) or overrides.get(bare)
         if ov is not None:

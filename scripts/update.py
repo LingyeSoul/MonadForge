@@ -258,6 +258,30 @@ def _prompt_conflict(rel: str, user_path: Path, new_path: Path) -> str:
         print("    invalid choice; please pick k/o/b/d")
 
 
+def seed_manifest(version: str | None) -> int:
+    """Write .anima_release.json for the current tree without downloading.
+
+    Used by the bootstrap installer (install.sh / install.ps1) right after it
+    extracts a release tarball, so the *first* `make update` has a correct
+    baseline and treats nothing as user-modified. The non-preserved file set
+    hashed here must match exactly what `_apply` records, otherwise a later
+    update would see preserved files as "upstream-removed" and delete them —
+    so this reuses `_is_preserved` / `_sha256_file` rather than reimplementing
+    the walk in shell. Run before `uv sync` so `.venv` doesn't exist yet.
+    """
+    if version is None:
+        version, _, _ = _resolve_release(None)
+    hashes: dict[str, str] = {}
+    for p in _walk_tree(ROOT):
+        rel = p.relative_to(ROOT).as_posix()
+        if _is_preserved(rel):
+            continue
+        hashes[rel] = _sha256_file(p)
+    _save_manifest(version, hashes)
+    print(f"seeded {MANIFEST_FILE.name} → {version} ({len(hashes)} files)")
+    return 0
+
+
 def update(
     version: str | None,
     dry_run: bool,
@@ -303,6 +327,49 @@ def update(
             keep_conflicts=keep_conflicts,
             no_sync=no_sync,
         )
+
+
+def _restart_daemon_if_idle() -> None:
+    """Bring the training daemon onto the freshly-updated code.
+
+    The daemon supervisor runs detached and has already imported the OLD
+    ``scripts/daemon/*`` into memory; swapping the files on disk doesn't touch
+    it, so a new-code client would otherwise be talking to a stale-code daemon.
+    Restarting fixes that — but training jobs run in their own detached
+    processes (they imported everything at launch), so an *active* run is not
+    disrupted by a supervisor restart and must not be killed:
+
+    - idle → graceful shutdown (``kill_jobs=False``); the next ``ensure_daemon``
+      relaunches it on the new code.
+    - busy → leave it; warn that it stays on old code until the job finishes.
+
+    Best-effort: any daemon hiccup is reported, never fatal to the update.
+    """
+    try:
+        from scripts.daemon import client as _client
+    except Exception:  # noqa: BLE001 — daemon module optional / mid-swap
+        return
+    if not _client.is_running():
+        return
+    cl = _client.DaemonClient()
+    active = (cl.health() or {}).get("active_job")
+    if active:
+        print(
+            f"\n⚠ training daemon left running on the OLD code: job {active} is "
+            "active.\n"
+            "  It keeps using the pre-update daemon until that job finishes.\n"
+            "  Restart when convenient — `make daemon-terminate` (it relaunches\n"
+            "  on the new code the next time it's used)."
+        )
+        return
+    try:
+        cl.shutdown(kill_jobs=False)
+        print(
+            "\ntraining daemon stopped (was idle) — it will relaunch on the new "
+            "code next time it's used."
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"\ncould not stop the idle training daemon: {e} (restart manually)")
 
 
 def _apply(
@@ -443,6 +510,20 @@ def _apply(
             print(f"  uv sync failed (exit {e.returncode}); rerun manually")
             return e.returncode
 
+    # Code on disk changed → the running daemon supervisor is now stale. Only
+    # bother if something was actually written (a pure no-op update leaves the
+    # daemon correct as-is).
+    changed = (
+        summary["wrote_new"]
+        + summary["overwrote_unchanged"]
+        + summary["code_backed_up"]
+        + summary["config_overwrote"]
+        + summary["config_backed_up"]
+        + summary["deleted"]
+    )
+    if changed:
+        _restart_daemon_if_idle()
+
     return 0
 
 
@@ -472,7 +553,14 @@ def main() -> int:
         "-y", "--yes", action="store_true",
         help="Skip the changelog confirmation prompt (e.g. when invoked from a GUI)",
     )
+    ap.add_argument(
+        "--seed-manifest", action="store_true",
+        help="Write .anima_release.json for the current tree (no download) and exit; "
+             "used by the bootstrap installer. Records --version, else resolves latest tag.",
+    )
     args = ap.parse_args()
+    if args.seed_manifest:
+        return seed_manifest(args.version)
     return update(
         version=args.version,
         dry_run=args.dry_run,

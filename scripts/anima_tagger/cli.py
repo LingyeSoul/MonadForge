@@ -32,12 +32,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 from pathlib import Path
-
-# Make ``anima_lora/`` importable when invoked as ``python -m
-# scripts.anima_tagger.cli`` from outside the project root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from library.env import load_dotenv  # noqa: E402
 from library.log import setup_logging  # noqa: E402
@@ -210,8 +205,7 @@ def parse_args() -> argparse.Namespace:
         "--pool_use_cls",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="MAP pool: concat the encoder's CLS token as an aux channel "
-        "(default on).",
+        help="MAP pool: concat the encoder's CLS token as an aux channel (default on).",
     )
     p.add_argument(
         "--pool_use_mean",

@@ -10,9 +10,7 @@ caption_extension = '.txt'
 keep_tokens = 3
 
 [[datasets]]
-resolution = 1024
 batch_size = 1
-enable_bucket = true
 validation_split = 0.025
 validation_seed = 42
 
@@ -20,3 +18,7 @@ validation_seed = 42
   image_dir = 'post_image_dataset/resized'
   cache_dir = 'post_image_dataset/lora'
   num_repeats = 1
+  # Images live in nested artist subfolders (post_image_dataset/resized/<artist>/);
+  # walk them like the LoRA pipeline. Caches stay flat in cache_dir (stem-keyed),
+  # so stems must be unique across the tree.
+  recursive = true

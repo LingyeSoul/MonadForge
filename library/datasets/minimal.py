@@ -2,7 +2,6 @@ import importlib
 import logging
 import os
 import random
-from typing import List, Tuple
 
 import numpy as np
 
@@ -12,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 class MinimalDataset(BaseDataset):
-    def __init__(self, resolution, network_multiplier, debug_dataset=False):
-        super().__init__(resolution, network_multiplier, debug_dataset)
+    def __init__(self, network_multiplier, debug_dataset=False):
+        super().__init__(network_multiplier, debug_dataset)
 
         self.num_train_images = 0
         self.num_reg_images = 0
@@ -27,9 +26,6 @@ class MinimalDataset(BaseDataset):
         self.is_reg = False
         self.image_dir = "dummy"
 
-    def verify_bucket_reso_steps(self, min_steps: int):
-        pass
-
     def is_latent_cacheable(self) -> bool:
         return False
 
@@ -42,17 +38,16 @@ class MinimalDataset(BaseDataset):
     def __getitem__(self, idx):
         raise NotImplementedError
 
-    def get_resolutions(self) -> List[Tuple[int, int]]:
-        return []
-
 
 def load_arbitrary_dataset(args, tokenizer=None) -> MinimalDataset:
     module = ".".join(args.dataset_class.split(".")[:-1])
     dataset_class = args.dataset_class.split(".")[-1]
     module = importlib.import_module(module)
     dataset_class = getattr(module, dataset_class)
+    # resolution is no longer a knob (native constant-token bucketing); pass
+    # None for the legacy positional slot in the external dataset contract.
     train_dataset_group: MinimalDataset = dataset_class(
-        tokenizer, args.max_token_length, args.resolution, args.debug_dataset
+        tokenizer, args.max_token_length, None, args.debug_dataset
     )
     return train_dataset_group
 

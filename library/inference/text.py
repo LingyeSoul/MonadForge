@@ -25,13 +25,69 @@ def process_escape(text: str) -> str:
     return text.encode("utf-8").decode("unicode_escape")
 
 
+def ensure_text_strategies(
+    text_encoder_path: Optional[str],
+    max_length: int = MAX_CROSSATTN_TOKENS,
+) -> None:
+    """Idempotently install the global tokenize/encode strategy singletons.
+
+    Anima encodes prompts through two *process-global* singletons —
+    ``TokenizeStrategy`` and ``TextEncodingStrategy`` (the strategy pattern in
+    ``library/anima/strategy.py``). The CLI sets them in ``inference.main``; an
+    embedder calling ``generate()`` / ``prepare_text_inputs()`` directly must too,
+    or ``get_strategy()`` returns ``None`` and the first ``tokenize()`` call dies
+    with a cryptic ``'NoneType' object has no attribute 'tokenize'``.
+
+    This installs whichever singleton is still unset, building the tokenizer from
+    ``text_encoder_path``. It is a **no-op when both are already installed**, so it
+    composes with the CLI path (and is safe to call on every generation). If a
+    strategy is missing *and* no path is available to build it, it raises a clear
+    ``ValueError`` instead of failing later deep in the encode call.
+    """
+    from library.anima import strategy as strategy_anima
+
+    need_tok = text_strategies.TokenizeStrategy.get_strategy() is None
+    need_enc = text_strategies.TextEncodingStrategy.get_strategy() is None
+
+    if need_tok:
+        if not text_encoder_path:
+            raise ValueError(
+                "Text strategies are not initialized and no text-encoder path was "
+                "provided to initialize them. Either set them yourself "
+                "(text_strategies.TokenizeStrategy.set_strategy(...) + "
+                "TextEncodingStrategy.set_strategy(...)) or pass a text-encoder path."
+            )
+        text_strategies.TokenizeStrategy.set_strategy(
+            strategy_anima.AnimaTokenizeStrategy(
+                qwen3_path=text_encoder_path,
+                t5_tokenizer_path=None,
+                qwen3_max_length=max_length,
+                t5_max_length=max_length,
+            )
+        )
+    if need_enc:
+        text_strategies.TextEncodingStrategy.set_strategy(
+            strategy_anima.AnimaTextEncodingStrategy()
+        )
+
+
 def prepare_text_inputs(
     args,
     device: torch.device,
     anima: anima_models.Anima,
     shared_models: Optional[Dict] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Prepare text-related inputs for T2I: LLM encoding. Anima model is also needed for preprocessing."""
+    """Prepare text-related inputs for T2I: LLM encoding. Anima model is also needed for preprocessing.
+
+    The tokenize/encode strategy singletons are lazily installed from
+    ``args.text_encoder`` via ``ensure_text_strategies`` if a caller (an embedder
+    driving ``generate()`` directly) hasn't set them — a no-op on the CLI path,
+    which sets them in ``inference.main``.
+    """
+
+    # Install the global tokenize/encode strategies if the caller didn't (the
+    # CLI does; a bare generate() embedder may not). No-op when already set.
+    ensure_text_strategies(getattr(args, "text_encoder", None))
 
     # load text encoder: conds_cache holds cached encodings for prompts without padding
     conds_cache = {}

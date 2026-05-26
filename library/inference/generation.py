@@ -65,7 +65,9 @@ def _setup_soft_tokens(args, anima, device):
     )
     net.load_weights(soft_weight)
     net.to(device, dtype=torch.bfloat16)
-    net.apply_to(text_encoders=None, unet=anima, apply_text_encoder=False, apply_unet=True)
+    net.apply_to(
+        text_encoders=None, unet=anima, apply_text_encoder=False, apply_unet=True
+    )
     logger.info(
         f"soft_tokens: loaded {soft_weight} "
         f"(n_layers={net.n_layers}, K={net.num_tokens}, "
@@ -135,26 +137,28 @@ def _resolve_spd_schedule(args) -> Tuple[List[float], List[float]]:
 
 
 class GenerationSettings:
-    def __init__(
-        self, device: torch.device, dit_weight_dtype: Optional[torch.dtype] = None
-    ):
+    # ``dit_weight_dtype`` was dropped 2026-05-24: it was vestigial — the model
+    # is forced to bf16 in ``load_dit_model`` regardless, so the field never
+    # influenced anything. The DiT runs in bf16 for inference.
+    def __init__(self, device: torch.device):
         self.device = device
-        self.dit_weight_dtype = (
-            dit_weight_dtype  # not used currently because model may be optimized
-        )
 
 
 def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
     device = torch.device(args.device)
+    logger.info(f"Using device: {device}, DiT weight precision: bfloat16")
+    return GenerationSettings(device=device)
 
-    dit_weight_dtype = torch.bfloat16  # default
 
-    logger.info(
-        f"Using device: {device}, DiT weight weight precision: {dit_weight_dtype}"
-    )
+def resolve_seed(args: argparse.Namespace) -> int:
+    """Return the seed to use: ``args.seed`` if set, else a fresh random one.
 
-    gen_settings = GenerationSettings(device=device, dit_weight_dtype=dit_weight_dtype)
-    return gen_settings
+    Pure — does **not** mutate ``args``. Callers that need ``args.seed`` set for
+    downstream saving (filename / metadata) should assign the return value
+    themselves. ``generate()`` resolves a seed this way per call without writing
+    back to the namespace, so one namespace is safe to reuse across calls.
+    """
+    return args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
 
 
 # region Tiling helpers
@@ -380,9 +384,7 @@ def generate_body_tiled(
                             h_offset=h_off,
                             w_offset=w_off,
                         )
-                    noise_acc[:, :, :, y : y + tile_h, x : x + tile_w] += (
-                        tile_pred * bw
-                    )
+                    noise_acc[:, :, :, y : y + tile_h, x : x + tile_w] += tile_pred * bw
                     weight_acc[:, :, :, y : y + tile_h, x : x + tile_w] += bw
 
                     # Unconditional pass
@@ -575,7 +577,9 @@ def generate_body(
 
     # DCW: load + setup the learnable calibrator if requested.
     dcw_calibrator = None
-    calibrator_path = getattr(args, "dcw_calibrator", None) or getattr(args, "dcw_v4", None)
+    calibrator_path = getattr(args, "dcw_calibrator", None) or getattr(
+        args, "dcw_v4", None
+    )
     if calibrator_path:
         from library.inference.corrections.dcw_calibrator import OnlineDCWCalibrator
 
@@ -587,7 +591,9 @@ def generate_body(
                 artifact_path, device=device
             )
         except Exception as e:
-            logger.warning("DCW calibrator: failed to load %s: %s — disabling", artifact_path, e)
+            logger.warning(
+                "DCW calibrator: failed to load %s: %s — disabling", artifact_path, e
+            )
             dcw_calibrator = None
         if dcw_calibrator is not None:
             calib_embed_mask = (
@@ -596,9 +602,10 @@ def generate_body(
                 else None
             )
             dcw_calibrator.setup(
-                embed=embed, embed_mask=calib_embed_mask,
+                embed=embed,
+                embed_mask=calib_embed_mask,
                 gain=getattr(args, "dcw_calibrator_gain", None)
-                    or getattr(args, "dcw_v4_alpha_gain", 1.0),
+                or getattr(args, "dcw_v4_alpha_gain", 1.0),
             )
             if not dcw_calibrator.is_active:
                 dcw_calibrator = None  # graceful degrade to scalar/none
@@ -794,10 +801,15 @@ def generate_body(
                         from networks.dcw import apply_dcw, parse_band_mask
 
                         if dcw_calibrator is not None:
-                            lam_i_calib = dcw_calibrator.lambda_for_step(i, float(sigmas[i]))
+                            lam_i_calib = dcw_calibrator.lambda_for_step(
+                                i, float(sigmas[i])
+                            )
                             new_latents = apply_dcw(
-                                new_latents.float(), denoised, float(sigmas[i]),
-                                lam=lam_i_calib, schedule="const",
+                                new_latents.float(),
+                                denoised,
+                                float(sigmas[i]),
+                                lam=lam_i_calib,
+                                schedule="const",
                                 bands=frozenset({"LL"}),
                             )
                         else:
@@ -822,7 +834,8 @@ def generate_body(
                         if i < dcw_calibrator.k_warmup:
                             pbar.set_postfix_str(
                                 f"λ_i={lam_i_calib:+.4f} (warmup {i + 1}/{dcw_calibrator.k_warmup})"
-                                if lam_i_calib is not None else f"warmup {i + 1}/{dcw_calibrator.k_warmup}"
+                                if lam_i_calib is not None
+                                else f"warmup {i + 1}/{dcw_calibrator.k_warmup}"
                             )
                         else:
                             pbar.set_postfix_str(
@@ -854,15 +867,16 @@ def generate(
     Returns:
         torch.Tensor: generated latent
     """
-    device, dit_weight_dtype = (gen_settings.device, gen_settings.dit_weight_dtype)
+    device = gen_settings.device
 
-    # prepare seed
-    seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
-    args.seed = seed  # set seed to args for saving
+    # Resolve the seed for this call without mutating ``args`` (callers that
+    # save by ``args.seed`` resolve it themselves — see ``resolve_seed`` /
+    # ``GenerationRequest`` docs).
+    seed = resolve_seed(args)
 
     if shared_models is None or "model" not in shared_models:
-        # load DiT model
-        anima = load_dit_model(args, device, dit_weight_dtype)
+        # load DiT model (bf16 — see GenerationSettings note)
+        anima = load_dit_model(args, device, torch.bfloat16)
 
         if shared_models is not None:
             shared_models["model"] = anima
@@ -956,8 +970,12 @@ def _setup_ip_adapter(args, anima, device):
     network.apply_to(text_encoders=None, unet=anima)
 
     img = Image.open(ip_image).convert("RGB")
-    tfm = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
-    img_t = tfm(img).unsqueeze(0).to(device, dtype=torch.bfloat16)  # [1, 3, H, W] in [-1, 1]
+    tfm = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+    )
+    img_t = (
+        tfm(img).unsqueeze(0).to(device, dtype=torch.bfloat16)
+    )  # [1, 3, H, W] in [-1, 1]
 
     with torch.no_grad():
         if getattr(network, "pe_lora_enabled", False):
@@ -1052,8 +1070,12 @@ def _setup_easycontrol(args, anima, device, shared_models):
     # Resize to args.image_size first so the cond bucket matches the target.
     h_pix, w_pix = args.image_size
     img = Image.open(ec_image).convert("RGB").resize((w_pix, h_pix), Image.LANCZOS)
-    tfm = transforms.Compose([transforms.ToTensor(), transforms.Normalize([0.5], [0.5])])
-    img_t = tfm(img).unsqueeze(0).to(device, dtype=torch.bfloat16)  # [1,3,H,W] in [-1,1]
+    tfm = transforms.Compose(
+        [transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+    )
+    img_t = (
+        tfm(img).unsqueeze(0).to(device, dtype=torch.bfloat16)
+    )  # [1,3,H,W] in [-1,1]
 
     vae = (shared_models or {}).get("vae")
     vae_was_shared = vae is not None

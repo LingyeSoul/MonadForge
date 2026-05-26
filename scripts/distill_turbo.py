@@ -50,10 +50,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
 import torch.nn as nn
@@ -63,6 +61,11 @@ from tqdm import tqdm
 from library.anima import weights as anima_utils
 from library.anima.models import Anima
 from library.datasets.distill import CachedDataset
+from library.runtime.harness import (
+    compile_dit_blocks,
+    enable_training_grad_ckpt,
+    place_dit_for_training,
+)
 from library.inference.uncond import (
     default_uncond_path,
     load_uncond_crossattn,
@@ -133,7 +136,9 @@ def sample_t_above(t: torch.Tensor, min_gap: float = 0.05) -> torch.Tensor:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Turbo Anima — Decoupled DMD2 distillation")
+    parser = argparse.ArgumentParser(
+        description="Turbo Anima — Decoupled DMD2 distillation"
+    )
     parser.add_argument(
         "--config",
         type=str,
@@ -175,9 +180,19 @@ def main():
         "(τ, ε) noise against the same x_pred.detach(). Default: TOML "
         "(optim.fake_steps_per_student_step, default 1).",
     )
-    parser.add_argument("--alpha", type=float, default=-1.0, help="DMD CFG-bake α (overrides dmd.teacher_cfg)")
+    parser.add_argument(
+        "--alpha",
+        type=float,
+        default=-1.0,
+        help="DMD CFG-bake α (overrides dmd.teacher_cfg)",
+    )
     parser.add_argument("--alpha_warmup_steps", type=int, default=-1)
-    parser.add_argument("--student_steps", type=int, default=-1, help="Sampler step count baked into the student")
+    parser.add_argument(
+        "--student_steps",
+        type=int,
+        default=-1,
+        help="Sampler step count baked into the student",
+    )
     parser.add_argument("--blocks_to_swap", type=int, default=0)
     parser.add_argument("--attn_mode", type=str, default="flash")
     parser.add_argument("--grad_ckpt", action="store_true", default=False)
@@ -210,7 +225,9 @@ def main():
             return cli_val
         return _flatten(cfg, toml_key, default)
 
-    dit_path = pick(args.dit_path, "dit_path", "models/diffusion_models/anima-base-v1.0.safetensors")
+    dit_path = pick(
+        args.dit_path, "dit_path", "models/diffusion_models/anima-base-v1.0.safetensors"
+    )
     data_dir = pick(args.data_dir, "data_dir", "post_image_dataset/lora")
     output_dir = pick(args.output_dir, "output_dir", "output/ckpt")
     output_name = pick(args.output_name, "output_name", "anima_turbo")
@@ -226,7 +243,9 @@ def main():
     # use_custom_down_autograd lives at TOML top level (matches the LoRA family's
     # config layout in methods/lora.toml). CLI flag wins when set explicitly.
     if args.use_custom_down_autograd is None:
-        use_custom_down_autograd = bool(_flatten(cfg, "use_custom_down_autograd", False))
+        use_custom_down_autograd = bool(
+            _flatten(cfg, "use_custom_down_autograd", False)
+        )
     else:
         use_custom_down_autograd = bool(args.use_custom_down_autograd)
 
@@ -246,7 +265,9 @@ def main():
         raise ValueError(
             f"optim.fake_steps_per_student_step={fake_steps_per_student_step}: must be ≥ 1"
         )
-    alpha_warmup_steps = int(pick(args.alpha_warmup_steps, "optim.alpha_warmup_steps", 1000))
+    alpha_warmup_steps = int(
+        pick(args.alpha_warmup_steps, "optim.alpha_warmup_steps", 1000)
+    )
     weight_decay = float(_flatten(cfg, "optim.weight_decay", 0.0))
     grad_clip = float(_flatten(cfg, "optim.grad_clip", 1.0))
 
@@ -261,11 +282,17 @@ def main():
 
     # Sanity checks (cheap, catch config typos early).
     if tau_ca_strategy not in ("above_t",):
-        raise ValueError(f"dmd.tau_ca_strategy={tau_ca_strategy!r}: only 'above_t' supported in v1")
+        raise ValueError(
+            f"dmd.tau_ca_strategy={tau_ca_strategy!r}: only 'above_t' supported in v1"
+        )
     if tau_dm_strategy not in ("uniform",):
-        raise ValueError(f"dmd.tau_dm_strategy={tau_dm_strategy!r}: only 'uniform' supported in v1")
+        raise ValueError(
+            f"dmd.tau_dm_strategy={tau_dm_strategy!r}: only 'uniform' supported in v1"
+        )
     if t_distribution not in ("uniform", "sigmoid"):
-        raise ValueError(f"sampling.t_distribution={t_distribution!r}: expected 'uniform' or 'sigmoid'")
+        raise ValueError(
+            f"sampling.t_distribution={t_distribution!r}: expected 'uniform' or 'sigmoid'"
+        )
     if fake_rank < student_rank:
         logger.warning(
             f"fake_rank={fake_rank} < student_rank={student_rank}: DM regularizer "
@@ -286,25 +313,13 @@ def main():
         dit_weight_dtype=dtype,
     )
 
-    # Block swap setup (per-forward prepare hook done at each forward call below).
-    if args.blocks_to_swap > 0:
-        model.enable_block_swap(args.blocks_to_swap, device)
-        model.move_to_device_except_swap_blocks(device)
-        model.switch_block_swap_for_training()
-    else:
-        model.to(device)
+    # Block swap setup (per-forward prepare hook done at each forward call below),
+    # then compile each block._forward (native-shape flatten, one graph per
+    # token count; the pool spans more than the 2 CONSTANT_TOKEN_BUCKETS families).
+    place_dit_for_training(model, device, blocks_to_swap=args.blocks_to_swap)
+    compile_dit_blocks(model, enabled=args.torch_compile, mode="default")
 
-    # Static 4096 tokens so torch.compile sees a single shape across buckets.
-    model.set_static_token_count(4096)
-
-    if args.torch_compile:
-        model.compile_blocks(mode="default")
-
-    if args.grad_ckpt:
-        model.enable_gradient_checkpointing(unsloth_offload=True)
-        logger.info("gradient checkpointing: on (unsloth CPU offload)")
-    else:
-        logger.info("gradient checkpointing: off")
+    enable_training_grad_ckpt(model, enabled=args.grad_ckpt)
 
     # ---------------- LoRA stacks ----------------
     turbo = TurboDMDNetwork(
@@ -385,7 +400,9 @@ def main():
             [b[0] for b in batch],
             torch.stack([b[1] for b in batch]),
             torch.stack([b[2] for b in batch]),
-            torch.stack([b[3] for b in batch]),  # pooled — unused, but CachedDataset returns it
+            torch.stack(
+                [b[3] for b in batch]
+            ),  # pooled — unused, but CachedDataset returns it
         )
 
     dataloader = torch.utils.data.DataLoader(
@@ -413,18 +430,23 @@ def main():
             "  \n".join(
                 f"{k}: {v}"
                 for k, v in {
-                    "student_rank": student_rank, "fake_rank": fake_rank,
-                    "student_steps": student_steps, "teacher_cfg": teacher_cfg,
+                    "student_rank": student_rank,
+                    "fake_rank": fake_rank,
+                    "student_steps": student_steps,
+                    "teacher_cfg": teacher_cfg,
                     "alpha_warmup_steps": alpha_warmup_steps,
-                    "student_lr": student_lr, "fake_lr": fake_lr,
+                    "student_lr": student_lr,
+                    "fake_lr": fake_lr,
                     "fake_steps_per_student_step": fake_steps_per_student_step,
-                    "iterations": iterations, "batch_size": batch_size,
+                    "iterations": iterations,
+                    "batch_size": batch_size,
                     "tau_ca_strategy": tau_ca_strategy,
                     "tau_dm_strategy": tau_dm_strategy,
                     "tau_ca_min_gap": tau_ca_min_gap,
                     "tau_ca_skip_above_t": tau_ca_skip_above_t,
                     "t_distribution": t_distribution,
-                    "data_dir": data_dir, "dit_path": dit_path,
+                    "data_dir": data_dir,
+                    "dit_path": dit_path,
                 }.items()
             ),
         )
@@ -460,7 +482,9 @@ def main():
             _pad_cache[key] = pad
         return pad
 
-    def _forward(view: str, x: torch.Tensor, t_b: torch.Tensor, c: torch.Tensor, *, no_grad: bool):
+    def _forward(
+        view: str, x: torch.Tensor, t_b: torch.Tensor, c: torch.Tensor, *, no_grad: bool
+    ):
         """Helper: switch view, prepare block swap, run forward.
 
         ``x`` is (B, 16, H, W); we unsqueeze to (B, 16, 1, H, W) inside.
@@ -495,13 +519,21 @@ def main():
     logger.info(f"starting DMD2 training: {iterations} iterations")
     data_iter = iter(dataloader)
     progress = tqdm(range(iterations), desc="turbo")
+
     # GPU-tensor accumulators — flushed in one stacked .tolist() at every
     # log_interval, replacing ~9 .item() CUDA syncs per step.
     def _z():
         return torch.zeros((), device=device)
-    acc_student = _z(); acc_fake = _z(); acc_grad = _z()
-    acc_dm = _z(); acc_cfg = _z(); acc_xpred = _z()
-    acc_v_student = _z(); acc_v_real_dm = _z(); acc_v_fake_dm = _z()
+
+    acc_student = _z()
+    acc_fake = _z()
+    acc_grad = _z()
+    acc_dm = _z()
+    acc_cfg = _z()
+    acc_xpred = _z()
+    acc_v_student = _z()
+    acc_v_real_dm = _z()
+    acc_v_fake_dm = _z()
     running_alpha = 0.0  # pure-Python; no GPU work
     # Per-τ_DM-bucket δ_dm tracking (proposal R1 mitigation b): three bins
     # over [0, 1/3), [1/3, 2/3), [2/3, 1]. Lets us see whether the fake is
@@ -542,13 +574,15 @@ def main():
         # --- Build x_t = (1-t)·x_0 + t·ε ---
         eps = torch.randn_like(latents)
         t_e = t.view(B, 1, 1, 1)
-        x_t = ((1.0 - t_e) * latents + t_e * eps).requires_grad_()  # requires_grad for grad-ckpt
+        x_t = (
+            (1.0 - t_e) * latents + t_e * eps
+        ).requires_grad_()  # requires_grad for grad-ckpt
 
         # --- 1. STUDENT FORWARD (grad to student) ---
         v_student = _forward("student", x_t, t, crossattn_emb, no_grad=False)
         # v_student: (B, 16, 1, H, W). Drop temporal dim for arithmetic.
         v_student = v_student.squeeze(2)
-        x_pred = x_t.squeeze(2) - t_e * v_student   # (B, 16, H, W), grad-bearing
+        x_pred = x_t.squeeze(2) - t_e * v_student  # (B, 16, H, W), grad-bearing
 
         # --- 2. CA BRANCH (no grad, teacher × 2) ---
         if do_ca:
@@ -601,12 +635,16 @@ def main():
         # Standard DMD2 practice: keep the fake's regression target ahead of
         # the student's moving x_pred distribution.
         x_pred_d = x_pred.detach()
-        fake_loss_sum = torch.zeros((), device=device)  # GPU accumulator → no inner .item()
+        fake_loss_sum = torch.zeros(
+            (), device=device
+        )  # GPU accumulator → no inner .item()
         for _ in range(fake_steps_per_student_step):
             tau_fake = (
                 torch.rand(B, device=device, dtype=dtype)
                 if t_distribution == "uniform"
-                else torch.sigmoid(sigmoid_scale * torch.randn(B, device=device, dtype=dtype))
+                else torch.sigmoid(
+                    sigmoid_scale * torch.randn(B, device=device, dtype=dtype)
+                )
             )
             eps_fake = torch.randn_like(x_pred_d)
             x_t_fake = renoise(x_pred_d, tau_fake, eps_fake).requires_grad_()
@@ -654,25 +692,47 @@ def main():
             # Per-sample δ_dm, scatter-bucketed by τ_DM — pure GPU op replaces
             # the old per-sample .item() Python loop (proposal R1 mitigation b).
             per_sample_dm = delta_dm.float().pow(2).mean(dim=(1, 2, 3)).sqrt()  # (B,)
-            tau_dm_bucket = (tau_dm.float() * 3.0).clamp(max=2.999).floor().long()  # (B,)
+            tau_dm_bucket = (
+                (tau_dm.float() * 3.0).clamp(max=2.999).floor().long()
+            )  # (B,)
             acc_dm_buckets.scatter_add_(0, tau_dm_bucket, per_sample_dm)
-            acc_dm_bucket_counts.scatter_add_(0, tau_dm_bucket, torch.ones_like(per_sample_dm))
+            acc_dm_bucket_counts.scatter_add_(
+                0, tau_dm_bucket, torch.ones_like(per_sample_dm)
+            )
         running_alpha += alpha_eff
 
         if (step + 1) % log_interval == 0:
             # One CUDA sync per log boundary: stack everything and read in
             # a single .tolist().
             stacked = (
-                torch.stack([
-                    acc_student, acc_fake, acc_grad, acc_dm, acc_cfg,
-                    acc_xpred, acc_v_student, acc_v_real_dm, acc_v_fake_dm,
-                ])
+                torch.stack(
+                    [
+                        acc_student,
+                        acc_fake,
+                        acc_grad,
+                        acc_dm,
+                        acc_cfg,
+                        acc_xpred,
+                        acc_v_student,
+                        acc_v_real_dm,
+                        acc_v_fake_dm,
+                    ]
+                )
                 / log_interval
             )
             bucket_means = acc_dm_buckets / acc_dm_bucket_counts.clamp(min=1)
             packed = torch.cat([stacked, bucket_means, acc_dm_bucket_counts]).tolist()
-            (avg_s, avg_f, avg_g, avg_dm, avg_cfg,
-             avg_xp, avg_vs, avg_vrdm, avg_vfdm) = packed[0:9]
+            (
+                avg_s,
+                avg_f,
+                avg_g,
+                avg_dm,
+                avg_cfg,
+                avg_xp,
+                avg_vs,
+                avg_vrdm,
+                avg_vfdm,
+            ) = packed[0:9]
             bucket_vals = packed[9:12]
             bucket_cnts = packed[12:15]
             avg_a = running_alpha / log_interval
@@ -698,7 +758,9 @@ def main():
                 writer.add_scalar(
                     "train/student_lr", student_sched.get_last_lr()[0], step + 1
                 )
-                writer.add_scalar("train/fake_lr", fake_sched.get_last_lr()[0], step + 1)
+                writer.add_scalar(
+                    "train/fake_lr", fake_sched.get_last_lr()[0], step + 1
+                )
                 writer.add_scalar("train/t_mean", t_mean, step + 1)
 
             # tqdm postfix at log_interval cadence (per-step would re-introduce
@@ -713,10 +775,17 @@ def main():
                 fake=f"{avg_f:.3e}",
             )
 
-            acc_student.zero_(); acc_fake.zero_(); acc_grad.zero_()
-            acc_dm.zero_(); acc_cfg.zero_(); acc_xpred.zero_()
-            acc_v_student.zero_(); acc_v_real_dm.zero_(); acc_v_fake_dm.zero_()
-            acc_dm_buckets.zero_(); acc_dm_bucket_counts.zero_()
+            acc_student.zero_()
+            acc_fake.zero_()
+            acc_grad.zero_()
+            acc_dm.zero_()
+            acc_cfg.zero_()
+            acc_xpred.zero_()
+            acc_v_student.zero_()
+            acc_v_real_dm.zero_()
+            acc_v_fake_dm.zero_()
+            acc_dm_buckets.zero_()
+            acc_dm_bucket_counts.zero_()
             running_alpha = 0.0
 
         # --- save ---

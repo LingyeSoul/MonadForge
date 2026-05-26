@@ -31,7 +31,6 @@ import torch
 from safetensors.torch import save_file
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
 from bench._common import make_run_dir, write_result  # noqa: E402
 from library.datasets.buckets import DCW_ASPECT_NAMES, N_DCW_ASPECTS  # noqa: E402
 from networks.dcw import FusionHead  # noqa: E402
@@ -909,7 +908,9 @@ def main():
     metrics = {
         "n_rows": len(rows),
         "n_unique_stems": len(unique_stems),
-        "per_aspect_counts": {DCW_ASPECT_NAMES[a]: counts[a] for a in range(N_DCW_ASPECTS)},
+        "per_aspect_counts": {
+            DCW_ASPECT_NAMES[a]: counts[a] for a in range(N_DCW_ASPECTS)
+        },
         "fei_obs": args.fei_obs,
         "fei_k": fei_k_meta,
         "k_warmup": args.k_warmup,
@@ -924,7 +925,9 @@ def main():
         "sigma2_prior": {
             DCW_ASPECT_NAMES[a]: float(sigma2_prior[a]) for a in range(N_DCW_ASPECTS)
         },
-        "lam_scalar": {DCW_ASPECT_NAMES[a]: float(lam_scalar[a]) for a in range(N_DCW_ASPECTS)},
+        "lam_scalar": {
+            DCW_ASPECT_NAMES[a]: float(lam_scalar[a]) for a in range(N_DCW_ASPECTS)
+        },
         "cv_fold_val_scores": fold_scores_safe,
         "r_alpha_mean_per_prompt": _safe(r_alpha_mean),
         "r_alpha_seed_conditional": _safe(r_alpha_seed),

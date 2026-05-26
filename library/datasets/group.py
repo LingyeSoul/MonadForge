@@ -1,5 +1,5 @@
 import logging
-from typing import Any, List, Sequence, Tuple
+from typing import Any, List, Sequence
 
 import torch
 from accelerate import Accelerator
@@ -115,13 +115,6 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     def set_caching_mode(self, caching_mode):
         for dataset in self.datasets:
             dataset.set_caching_mode(caching_mode)
-
-    def verify_bucket_reso_steps(self, min_steps: int):
-        for dataset in self.datasets:
-            dataset.verify_bucket_reso_steps(min_steps)
-
-    def get_resolutions(self) -> List[Tuple[int, int]]:
-        return [(dataset.width, dataset.height) for dataset in self.datasets]
 
     def is_latent_cacheable(self) -> bool:
         return all([dataset.is_latent_cacheable() for dataset in self.datasets])
