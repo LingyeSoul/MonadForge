@@ -157,6 +157,7 @@ export default {
   tgModel: 'Tagger Model',
   tgThreshold: 'Threshold',
   tgSkipExisting: 'Skip existing',
+  tgTriggerWord: 'Trigger Word',
   tgModelNotReady: 'Model not downloaded',
   tgConfirmTag: 'Tag all images in "{dir}"?',
   tgEva02: 'EVA02-Large',

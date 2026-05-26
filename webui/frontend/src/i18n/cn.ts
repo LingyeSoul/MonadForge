@@ -157,6 +157,7 @@ export default {
   tgModel: '打标模型',
   tgThreshold: '阈值',
   tgSkipExisting: '跳过已有标注',
+  tgTriggerWord: '触发词',
   tgModelNotReady: '模型未下载',
   tgConfirmTag: '确认对 "{dir}" 中所有图片打标？',
   tgEva02: 'EVA02-Large',

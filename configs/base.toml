@@ -61,7 +61,6 @@ sample_image_size = [1024, 1024]
 
 [[datasets]]
 batch_size = 1
-enable_bucket = true
 validation_split_num = 16
 validation_seed = 42
 [[datasets.subsets]]

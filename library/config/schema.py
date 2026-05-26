@@ -217,6 +217,30 @@ def populate_schema(
         ),
     )
 
+    # Test inference defaults — read by WebUI ConfigEditor "Test" button and
+    # by scripts/tasks/inference.py.  Not argparse args on train.py; the
+    # WebUI reads them via configStore.getFieldValue().
+    CONFIG_SCHEMA.setdefault(
+        "test_prompt",
+        ConfigKey(
+            name="test_prompt",
+            type="str",
+            default=None,
+            help="Default positive prompt for WebUI quick-test inference.",
+            source="manual",
+        ),
+    )
+    CONFIG_SCHEMA.setdefault(
+        "test_negative_prompt",
+        ConfigKey(
+            name="test_negative_prompt",
+            type="str",
+            default=None,
+            help="Default negative prompt for WebUI quick-test inference.",
+            source="manual",
+        ),
+    )
+
     if extras:
         for k, v in extras.items():
             CONFIG_SCHEMA[k] = v

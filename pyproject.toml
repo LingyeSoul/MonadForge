@@ -69,8 +69,10 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "python-multipart>=0.0.20",
-    # WD Tagger
-    "onnxruntime-gpu>=1.21.0",
+    # WD Tagger (timm + PyTorch, no ONNX Runtime)
+    "timm>=1.0.0",
+    # Experiment tracking
+    "wandb>=0.19.0",
 ]
 
 [project.optional-dependencies]
@@ -88,7 +90,7 @@ extra-index-url = [
     "https://download.pytorch.org/whl/cu132"
 ]
 prerelease = "allow"
-override-dependencies = ["numpy>=2.0.0"]
+override-dependencies = ["numpy>=2.0.0", "httptools<0.8.0"]
 
 [tool.pyright]
 extraPaths = ["."]

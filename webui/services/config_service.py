@@ -209,7 +209,6 @@ _GROUPS = {
         "cache_llm_adapter_outputs",
         "masked_loss",
         "mixed_precision",
-        "static_token_count",
         "vae_chunk_size",
         "vae_disable_cache",
         "cache_latents",

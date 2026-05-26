@@ -1,4 +1,4 @@
-"""WD Tagger API — auto-tag images with ONNX models."""
+"""WD Tagger API — auto-tag images with timm (PyTorch) models."""
 
 from __future__ import annotations
 
@@ -21,11 +21,13 @@ class TagRequest(BaseModel):
     threshold: float | None = None
     skip_existing: bool = True
     model_name: str | None = None
+    trigger_word: str | None = None
 
 
 class TaggerSettings(BaseModel):
     model_name: str = svc.DEFAULT_MODEL
     threshold: float = svc.DEFAULT_THRESHOLD
+    trigger_word: str = svc.DEFAULT_TRIGGER_WORD
 
 
 # ── Endpoints ───────────────────────────────────────────────────
@@ -47,6 +49,7 @@ def tag_directory(body: TagRequest):
             body.threshold,
             body.skip_existing,
             body.model_name,
+            body.trigger_word,
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
@@ -57,11 +60,11 @@ def tag_directory(body: TagRequest):
 def get_settings() -> TaggerSettings:
     """Return current tagger settings."""
     s = svc.get_settings()
-    return TaggerSettings(model_name=s["model_name"], threshold=s["threshold"])
+    return TaggerSettings(model_name=s["model_name"], threshold=s["threshold"], trigger_word=s.get("trigger_word", ""))
 
 
 @router.put("/settings", response_model=TaggerSettings)
 def save_settings(body: TaggerSettings) -> TaggerSettings:
     """Persist tagger settings."""
-    svc.save_settings(body.model_name, body.threshold)
+    svc.save_settings(body.model_name, body.threshold, body.trigger_word)
     return body

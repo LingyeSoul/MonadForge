@@ -37,8 +37,10 @@ logs
 .env
 .anima-update-backups
 node.zip
+tools/
 _archive/
 configs/webui_settings.json
 configs/custom/
 /docs/plans
 /webui/frontend/node_modules
+/wandb

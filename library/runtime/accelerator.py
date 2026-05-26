@@ -118,7 +118,25 @@ def prepare_accelerator(args: argparse.Namespace):
     # so the user can toggle wandb from the UI without touching config files.
     wandb_env_enabled = os.environ.get("WANDB_ENABLED") == "1"
     if wandb_env_enabled and getattr(args, "log_with", None) not in ("wandb", "all"):
-        args.log_with = "all"  # both tensorboard + wandb
+        # Only enable wandb logging when credentials are available — either an
+        # explicit WANDB_API_KEY env var or a previously-saved `wandb login`.
+        # Without auth, wandb.init() would raise UsageError mid-training.
+        _wandb_ready = bool(os.environ.get("WANDB_API_KEY"))
+        if not _wandb_ready:
+            try:
+                import wandb as _wb
+                _wandb_ready = bool(_wb.Api().api_key)
+            except Exception:
+                pass
+        if not _wandb_ready:
+            logger.warning(
+                "WANDB_ENABLED=1 but no wandb API key found; skipping wandb. "
+                "Run `wandb login` or set WANDB_API_KEY."
+            )
+        elif logging_dir is not None:
+            args.log_with = "all"
+        else:
+            args.log_with = "wandb"
     env_run_name = os.environ.get("WANDB_RUN_NAME")
     if env_run_name:
         args.wandb_run_name = env_run_name
@@ -149,12 +167,27 @@ def prepare_accelerator(args: argparse.Namespace):
         log_with = args.log_with
         if log_with in ["tensorboard", "all"]:
             if logging_dir is None:
-                raise ValueError("logging_dir is required when log_with is tensorboard")
+                if log_with == "all":
+                    logger.warning(
+                        "log_with='all' but logging_dir is unset; "
+                        "disabling tensorboard, keeping wandb only."
+                    )
+                    log_with = "wandb"
+                else:
+                    logger.warning(
+                        "log_with='tensorboard' but logging_dir is unset; "
+                        "disabling tensorboard logging."
+                    )
+                    log_with = None
         if log_with in ["wandb", "all"]:
             try:
                 import wandb
             except ImportError:
-                raise ImportError("No wandb")
+                logger.warning(
+                    "wandb is not installed; disabling wandb logging. "
+                    "Install with: pip install wandb"
+                )
+                log_with = "tensorboard" if log_with == "all" and logging_dir else None
             if logging_dir is not None:
                 os.makedirs(logging_dir, exist_ok=True)
                 os.environ["WANDB_DIR"] = logging_dir

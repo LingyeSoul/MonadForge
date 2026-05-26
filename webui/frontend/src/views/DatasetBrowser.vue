@@ -153,6 +153,18 @@
             />
           </v-col>
           <v-col cols="12" sm="3">
+            <v-text-field
+              v-model="taggerSettings.trigger_word"
+              :label="t('tgTriggerWord')"
+              placeholder="e.g. ohwx"
+              variant="outlined"
+              density="compact"
+              hide-details
+              clearable
+              @update:model-value="saveTaggerSettings"
+            />
+          </v-col>
+          <v-col cols="12" sm="3">
             <v-slider
               v-model="taggerSettings.threshold"
               :label="t('tgThreshold')"
@@ -610,7 +622,7 @@ const versions = ref<VersionEntry[]>([])
 const selectedVersion = ref(-1)
 
 // Tagger
-const taggerSettings = ref({ model_name: 'wd-eva02-large-tagger-v3', threshold: 0.35 })
+const taggerSettings = ref({ model_name: 'wd-eva02-large-tagger-v3', threshold: 0.35, trigger_word: '' })
 const skipExisting = ref(true)
 const tagging = ref(false)
 const tagProgress = ref({ current: 0, total: 0 })
@@ -816,6 +828,7 @@ async function startTagging() {
         threshold: taggerSettings.value.threshold,
         skip_existing: skipExisting.value,
         model_name: taggerSettings.value.model_name,
+        trigger_word: taggerSettings.value.trigger_word,
       }),
     })
 
