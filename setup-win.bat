@@ -4,7 +4,6 @@ setlocal enabledelayedexpansion
 echo ============================================================
 echo   MonadForge - Windows One-Click Setup
 echo   Forked from https://github.com/sorryhyun/anima_lora
-echo   Python 3.13 / PyTorch 2.11 + CUDA 13.0
 echo ============================================================
 echo.
 
