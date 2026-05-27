@@ -12,12 +12,12 @@
 # shape-agnostic; only the learned behavior is coupled to the schedule below,
 # so it is snapshotted into the safetensors metadata (R2).
 
-output_name = "anima_spd_2k"
+output_name = "anima_spd_4k"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 2000
+iterations = 4000
 batch_size = 1
 seed = 42
 # compile_inductor_mode = "reduce-overhead"
@@ -41,8 +41,8 @@ channel_scaling_alpha = 0.5
 # run t∈(0.5,1] at half resolution, expand at σ≈0.5, finish full-res.
 [schedule]
 stages = [0.5, 1.0]
-transition_sigmas = [0.7]
-label = "single_0.5_sigma0.7"
+transition_sigmas = [0.5]
+label = "single_0.5_sigma0.5"
 # Optional R2 robustness: jitter the transition σ by ±this (absolute, uniform)
 # each step so the segment geometry is learned as a band, not a point. 0 = off.
 sigma_jitter = 0.0
@@ -63,7 +63,7 @@ warmup = 0.02           # ratio of iterations (int >=1 → absolute steps)
 ema_decay = 0.0
 
 [io]
-save_every = 2000
+save_every = 500
 log_interval = 2
 log_dir = "output/logs/spd"
 # CMMD-free validation: held out per-bucket (never trained on), scored as the
@@ -72,5 +72,5 @@ log_dir = "output/logs/spd"
 # comparable step-to-step, so train↓/val↑ flags the trajectory-memorisation
 # overfit. 0 = off. CLI: --val_split / --val_interval / --n_val_sigmas.
 val_split = 0.005
-val_interval = 200
+val_interval = 500
 n_val_sigmas = 4

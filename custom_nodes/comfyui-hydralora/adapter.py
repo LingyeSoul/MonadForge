@@ -356,6 +356,13 @@ def load_adapter(file_path: str) -> dict:
         hydra["num_sigma_buckets"] = num_buckets
         hydra["sigma_bucket_boundaries"] = boundaries
 
+        # OrthoHydra centered-gate: distilled with (g_e - 1/E) combine. Stamped
+        # only when on; absent → standard softmax combine. Single-pool only —
+        # ignored for chimera dual-pool (handled by its own hook).
+        hydra["ortho_centered_gate"] = (
+            str(file_metadata.get("ss_ortho_centered_gate", "")).lower() == "true"
+        )
+
         # FeRA-style FEI router (content-aware routing). Trained when
         # `use_fei_router=true`; the router's input dim then has
         # `fei_feature_dim` columns past the σ-feature slice, fed per-step
@@ -503,6 +510,11 @@ def _make_hydra_hook(params: dict, strength: float, sigma_state: dict):
         "num_sigma_buckets": int(params.get("num_sigma_buckets", 0)),
         "expert_band": params.get("expert_band"),  # (E,) long, or None
         "sigma_edges": params.get("sigma_edges"),  # (B-1,) fp32, or None
+        # OrthoHydra centered-gate parity: combine with (g_e - 1/E) instead of
+        # the raw softmax. λ is folded symmetrically into the saved ups, so
+        # this exactly reproduces the trained ``ortho_centered_gate`` forward.
+        "centered_gate": bool(params.get("ortho_centered_gate", False)),
+        "num_experts": int(params["lora_ups"].shape[0]),
         "device": None,
     }
 
@@ -590,6 +602,8 @@ def _make_hydra_hook(params: dict, strength: float, sigma_state: dict):
                 state["sigma_edges"],
             )
         gate = torch.softmax(logits, dim=-1)
+        if state["centered_gate"]:
+            gate = gate - (1.0 / state["num_experts"])
 
         # gate-weighted combined ups (B, out, rank)
         combined = torch.einsum("be,eor->bor", gate, state["lora_ups"])
@@ -865,6 +879,9 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
                 "num_sigma_buckets": num_sigma_buckets,
                 "expert_band": expert_band,
                 "sigma_edges": sigma_edges,
+                "ortho_centered_gate": bool(
+                    hydra_data.get("ortho_centered_gate", False)
+                ),
             }
             hook = _make_hydra_hook(params, strength, sigma_state)
 

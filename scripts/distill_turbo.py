@@ -30,9 +30,17 @@ time, gradient is one ODE step from the sampled generator-t):
         Δ_dm = v_real_cond_dm - v_fake_cond_dm
 
     4.  α_eff ramps 1.0 → α over alpha_warmup_steps         # CA warmup
-        grad_signal = Δ_dm + (α_eff - 1) · Δ_cfg
-        loss_student = (-grad_signal · x_pred).mean()
-        loss_student.backward()  → student.step()
+        The DiT predicts velocity v = ε − x0, so the x0-prediction gap the
+        DMD2 update acts on converts with a +τ factor (per branch):
+            x0_real − x0_fake          = −τ_dm·Δ_dm
+            CFG-baked x0 shift          = −τ_ca·(α−1)·Δ_cfg
+        We want x_pred to move TOWARD x0_real / the CFG-baked endpoint, so the
+        surrogate-loss gradient on x_pred must be +(τ_dm·Δ_dm + τ_ca·(α−1)·Δ_cfg);
+        gradient descent then steps x_pred along the negative of that — the
+        desired direction.
+            grad_signal  = τ_dm·Δ_dm + τ_ca·(α_eff − 1)·Δ_cfg
+            loss_student = (grad_signal · x_pred).mean()
+            loss_student.backward()  → student.step()
 
     5.  Fake update — flow-matching loss on student's x_pred distribution:
         τ_fake ~ U[0,1]
@@ -615,12 +623,24 @@ def main():
         # --- 4. ASSEMBLE + BACKWARD into student ---
         warmup_frac = min(1.0, (step + 1) / max(1, alpha_warmup_steps))
         alpha_eff = teacher_cfg * warmup_frac + 1.0 * (1.0 - warmup_frac)
-        grad_signal = (delta_dm + (alpha_eff - 1.0) * delta_cfg).detach()
 
-        # DMD2 grad trick: sneak the detached gradient into autograd via a
-        # dummy scalar whose ∂/∂x_pred equals weight. Backward then walks
-        # x_pred -> v_student -> student params.
-        loss_student = (-grad_signal * x_pred).mean()
+        # DMD2 gradient in x0 space. The DiT predicts velocity (v = ε − x0), so
+        # the teacher/fake x0-prediction gap converts to velocity with a +τ
+        # factor: x0_real − x0_fake = −τ·Δ_dm. We want x_pred to move toward
+        # x0_real (and the CFG-baked endpoint), so the surrogate-loss gradient
+        # on x_pred is +τ·grad_signal — descent then steps x_pred by −τ·grad,
+        # the desired direction. Each branch carries its OWN renoise level τ.
+        tau_dm_e = tau_dm.view(B, 1, 1, 1).float()
+        grad_signal = tau_dm_e * delta_dm.float()
+        if do_ca:
+            tau_ca_e = tau_ca.view(B, 1, 1, 1).float()
+            grad_signal = grad_signal + tau_ca_e * (alpha_eff - 1.0) * delta_cfg.float()
+        grad_signal = grad_signal.detach()
+
+        # DMD2 grad trick: a dummy scalar whose ∂/∂x_pred equals grad_signal.
+        # Backward walks x_pred -> v_student -> student params; the optimizer's
+        # descent step then moves x_pred along −τ·grad_signal toward x0_real.
+        loss_student = (grad_signal * x_pred.float()).mean()
         loss_student.backward()
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(turbo.student_params(), max_norm=grad_clip)

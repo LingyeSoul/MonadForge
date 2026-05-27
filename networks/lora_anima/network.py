@@ -734,11 +734,17 @@ class LoRANetwork(torch.nn.Module):
                         extra_kwargs["use_global_content_router"] = True
                 elif effective_module_class == OrthoHydraLoRAModule:
                     extra_kwargs["num_experts"] = cfg.num_experts
+                    extra_kwargs["centered_gate"] = cfg.ortho_centered_gate
+                    extra_kwargs["lambda_init"] = cfg.ortho_lambda_init
                     if self._use_global_router_for_hydra:
                         extra_kwargs["use_global_router"] = True
                         self._global_router_hits += 1
                 elif effective_module_class == HydraLoRAModule:
                     extra_kwargs["num_experts"] = cfg.num_experts
+                    # Runtime parity for OrthoHydra checkpoints distilled with
+                    # ortho_centered_gate (inert for plain Hydra / chimera —
+                    # the module gates it on single-pool num_experts_content==0).
+                    extra_kwargs["centered_gate"] = cfg.ortho_centered_gate
                     if cfg.expert_init_std > 0.0:
                         extra_kwargs["expert_init_std"] = cfg.expert_init_std
                     if self._use_global_router_for_hydra:
@@ -2341,12 +2347,20 @@ class LoRANetwork(torch.nn.Module):
         up_grads: List[torch.Tensor] = []  # each (E, out_i, R)
         sp_grads: List[torch.Tensor] = []  # each (E, r, r)
         expert_band_ref: Optional[torch.Tensor] = None
+        # Per-layer router-weight grad sum-of-squares (centered-gate diagnostic:
+        # confirms router logits get nonzero gradient at step 0). Skipped under
+        # the network-level GlobalRouter — no per-Linear ``router`` then.
+        router_grad_sq: Optional[torch.Tensor] = None
 
         for lora in self.unet_loras + self.text_encoder_loras:
             up = getattr(lora, "lora_up_weight", None)
             sp = getattr(lora, "S_p", None)
             up_grad = up.grad if isinstance(up, torch.nn.Parameter) else None
             sp_grad = sp.grad if isinstance(sp, torch.nn.Parameter) else None
+            rtr = getattr(lora, "router", None)
+            if isinstance(rtr, torch.nn.Linear) and rtr.weight.grad is not None:
+                g2 = rtr.weight.grad.detach().float().square().sum()
+                router_grad_sq = g2 if router_grad_sq is None else router_grad_sq + g2
             if up_grad is not None:
                 up_grads.append(up_grad.detach())
             if sp_grad is not None and sp_grad.dim() == 3:
@@ -2382,6 +2396,7 @@ class LoRANetwork(torch.nn.Module):
                 below_per_exp = sq_up[:, :, :min_rank].sum(dim=(1, 2))
                 above_per_exp = sq_up[:, :, min_rank:].sum(dim=(1, 2))
 
+        sp_coupling: Optional[torch.Tensor] = None
         if sp_grads:
             # All entries share (E, r, r). Stack into (M, E, r, r) and reduce
             # over modules + r×r in one pass.
@@ -2389,6 +2404,22 @@ class LoRANetwork(torch.nn.Module):
             sp_total_per_exp = big_sp.square().sum(dim=(0, 2, 3))
             if device_ref is None:
                 device_ref = sp_total_per_exp.device
+
+            # Cross-expert coupling of the rotation-generator gradients. The
+            # P_e subspaces are Euclidean-orthogonal by construction (so the
+            # structural ``ortho/subspace_overlap`` is a constant), but the
+            # loss can still push two experts the same way — that shows up as
+            # aligned ∂L/∂S_p[e]. Mean |cosine| over expert pairs and modules:
+            # the loss-geometry coupling the gradient-Gram is after, read off
+            # parameter grads (no activation hooks / no pre-forward arming).
+            E_ = big_sp.shape[1]
+            if E_ > 1:
+                flat = big_sp.reshape(big_sp.shape[0], E_, -1)  # (M, E, r*r)
+                flat = torch.nn.functional.normalize(flat, dim=-1, eps=1e-12)
+                cos = torch.matmul(flat, flat.transpose(1, 2)).abs()  # (M, E, E)
+                diag = cos.diagonal(dim1=1, dim2=2).sum(dim=1)  # (M,)
+                off = (cos.sum(dim=(1, 2)) - diag) / (E_ * (E_ - 1))  # (M,)
+                sp_coupling = off.mean().reshape(1)
 
         # Stash on-device tensors only — the D2H happens in
         # ``get_up_grad_stats`` so non-log steps avoid the
@@ -2404,6 +2435,10 @@ class LoRANetwork(torch.nn.Module):
             out["above"] = above_per_exp
         if sp_total_per_exp is not None:
             out["sp_total"] = sp_total_per_exp
+        if sp_coupling is not None:
+            out["sp_coupling"] = sp_coupling
+        if router_grad_sq is not None:
+            out["router_grad_sq"] = router_grad_sq.reshape(1)
 
         # Per-band aggregation: scatter the per-expert sum-of-squares along
         # _expert_band. Only meaningful when σ-bucket partition is active —
@@ -2564,6 +2599,23 @@ class LoRANetwork(torch.nn.Module):
                     ) ** 0.5 / (float(bv) ** 0.5 + eps)
             if "sp_total_band" in up:
                 _emit_per_band("sp_total", up["sp_total_band"])
+            # OrthoHydra centered-gate diagnostics.
+            if up.get("router_grad_sq"):
+                out["ortho/router_grad_norm"] = float(up["router_grad_sq"][0]) ** 0.5
+            if up.get("sp_coupling"):
+                out["ortho/grad_coupling"] = float(up["sp_coupling"][0])
+
+        # Structural guardrail: cross-expert column-space overlap of the
+        # OrthoHydra ``P_bases``. Constant by construction (~0 disjoint, ~1
+        # narrow-layer fallback); a drift off this baseline flags a basis/init
+        # regression. Cheap (cached per module) — see OrthoHydra.subspace_overlap.
+        ov_vals = [
+            lora.subspace_overlap()
+            for lora in self.unet_loras + self.text_encoder_loras
+            if hasattr(lora, "subspace_overlap")
+        ]
+        if ov_vals:
+            out["ortho/subspace_overlap"] = float(sum(ov_vals) / len(ov_vals))
 
         # GlobalRouter stats — for stacked-experts + per-network routing
         # (plan2 §three-axis-config). Mirrors the per-Linear hydra keys but
@@ -3073,6 +3125,13 @@ class LoRANetwork(torch.nn.Module):
                 "true" if self.cfg.route_per_layer else "false"
             )
             metadata["ss_router_source"] = str(self.cfg.router_source)
+
+        # OrthoHydra centered-gate: the distilled ``_moe`` ups are combined
+        # with ``(g_e - 1/E)`` rather than the raw softmax. Stamp only when on
+        # so unconfigured checkpoints stay byte-identical; the loader threads
+        # it back into the runtime HydraLoRAModule combine for inference parity.
+        if getattr(self.cfg, "ortho_centered_gate", False):
+            metadata["ss_ortho_centered_gate"] = "true"
 
         # FEI router params (router-source-specific scalars the loader needs
         # to size the router input). Stamped for both per-Linear and global

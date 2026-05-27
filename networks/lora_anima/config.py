@@ -220,6 +220,16 @@ class LoRANetworkCfg:
     # init in plain HydraLoRA only (NOT OrthoHydra disjoint or fallback) —
     # paper baseline knob; production training should leave at 0.0.
     expert_init_std: float = 0.0
+    # OrthoHydra centered-gate init. When on, the expert gate is recentered to
+    # ``g_e - 1/E`` in the forward, the per-Linear router is fully zero-init
+    # (no normal seed) so step-0 gates are exactly uniform, and ``lambda_layer``
+    # starts at ``ortho_lambda_init`` (small nonzero) instead of 0. Result:
+    # ΔW = 0 at init (base preserved exactly), yet router logits get nonzero
+    # gradient at step 0 because the disjoint P_e directions survive the mean
+    # subtraction. Off + ``ortho_lambda_init=0.0`` reproduces the legacy
+    # zero-init-λ behaviour (router gradient gated off until λ ramps).
+    ortho_centered_gate: bool = False
+    ortho_lambda_init: float = 0.0
     router_lr_scale: float = 1.0
     # Single regex that scopes which Linear modules participate in routed
     # adaptation. Matched modules become HydraLoRA leaves; non-matching
@@ -406,6 +416,20 @@ class LoRANetworkCfg:
         num_experts = kwargs.get("num_experts")
         num_experts = int(num_experts) if num_experts is not None else 4
         expert_init_std = float(kwargs.get("expert_init_std", 0.0))
+
+        ortho_centered_gate = _as_bool(kwargs.get("ortho_centered_gate"))
+        ortho_lambda_init = float(kwargs.get("ortho_lambda_init", 0.0))
+        if ortho_centered_gate and ortho_lambda_init <= 0.0:
+            # Centering with λ0=0 is a no-op: the router-logit gradient is
+            # ∝ (P_k - mean) diag(λ0) ℓ and vanishes when λ0=0. Pick a small
+            # nonzero default so the mechanism actually fires (and stays
+            # useful in bf16 — 1e-6 would be mathematically nonzero but lost
+            # to noise). See [[project_dcw_*]]-style "direction-only" caveat.
+            ortho_lambda_init = 1e-2
+            logger.info(
+                "ortho_centered_gate=True with ortho_lambda_init<=0; "
+                "defaulting ortho_lambda_init=1e-2 (centering needs λ0>0)."
+            )
 
         router_lr_scale = kwargs.get("network_router_lr_scale")
         router_lr_scale = float(router_lr_scale) if router_lr_scale is not None else 1.0
@@ -656,6 +680,8 @@ class LoRANetworkCfg:
             reft_layers=reft_layers,
             num_experts=num_experts,
             expert_init_std=expert_init_std,
+            ortho_centered_gate=ortho_centered_gate,
+            ortho_lambda_init=ortho_lambda_init,
             router_lr_scale=router_lr_scale,
             router_targets=router_targets,
             per_bucket_balance_weight=per_bucket_balance_weight,
@@ -719,6 +745,7 @@ class LoRANetworkCfg:
         new_use_moe_style: Optional[str] = None,
         new_route_per_layer: Optional[bool] = None,
         new_router_source: Optional[str] = None,
+        ortho_centered_gate: bool = False,
         # ChimeraHydra stamps. Present only on chimera checkpoints — when
         # set the loader builds ``ChimeraHydraLoRAModule`` instead of
         # ``OrthoHydraLoRAModule`` and the network attaches a FreqRouter.
@@ -806,6 +833,7 @@ class LoRANetworkCfg:
             use_moe_style=use_moe_style,
             route_per_layer=route_per_layer,
             router_source=router_source,
+            ortho_centered_gate=bool(ortho_centered_gate),
             sigma_feature_dim=(
                 sigma_feature_dim_detected
                 if sigma_feature_dim_detected is not None

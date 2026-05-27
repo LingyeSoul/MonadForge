@@ -266,6 +266,8 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         sigma_bucket_boundaries: Optional[List[float]] = None,
         fei_feature_dim: int = 0,
         use_global_router: bool = False,
+        centered_gate: bool = False,
+        lambda_init: float = 0.0,
     ):
         super().__init__(
             lora_name,
@@ -282,6 +284,9 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         out_dim = org_module.out_features
         self.num_experts = num_experts
         self.in_dim = in_dim
+        # Centered-gate residual: forward uses (g_e - 1/E) and λ starts
+        # nonzero so ΔW=0 at init but router logits get step-0 gradient.
+        self._centered_gate = bool(centered_gate)
 
         # SVD-informed init with disjoint per-expert P slices. Top E*r U columns
         # split into E slices of r — each slice orthonormal, mutually orthogonal.
@@ -319,7 +324,13 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         # E distinct P_eff slices; in the narrow-layer fallback all experts
         # start identical and must diverge through training-time updates.
         self.S_p = torch.nn.Parameter(torch.zeros(num_experts, lora_dim, lora_dim))
-        self.lambda_layer = torch.nn.Parameter(torch.zeros(1, lora_dim))
+        # λ zero-init keeps ΔW=0 at step 0 but gates the router gradient off
+        # until λ ramps. Under centered_gate the gate residual (g_e - 1/E)
+        # already preserves ΔW=0 at init, so λ can start small-nonzero and the
+        # router receives gradient at literal step 0.
+        self.lambda_layer = torch.nn.Parameter(
+            torch.full((1, lora_dim), float(lambda_init))
+        )
 
         self.use_global_router = bool(use_global_router)
         # Layer-local router: see HydraLoRAModule for σ + FEI routing surface.
@@ -333,7 +344,13 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
             self.router = torch.nn.Linear(router_in_dim, num_experts, bias=True)
             with torch.no_grad():
                 self.router.weight.zero_()
-                torch.nn.init.normal_(self.router.weight[:, :lora_dim], std=0.01)
+                # The normal seed is the legacy symmetry-breaker for zero-init
+                # λ (it gives the gate a tiny non-uniform tilt at step 0). Under
+                # centered_gate the symmetry break comes from (P_k - mean)·λ0
+                # instead, and we want the gate *exactly* uniform at init so the
+                # residual vanishes — so leave the router fully zero-init.
+                if not self._centered_gate:
+                    torch.nn.init.normal_(self.router.weight[:, :lora_dim], std=0.01)
                 self.router.bias.zero_()
 
         # Channel-scale absorption runs in fp32; downcast the bases afterward.
@@ -488,9 +505,17 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         lx, scale = self._apply_rank_dropout(lx)
 
         P_eff = self.P_bases @ R_p  # (E, out, r) bf16
+        # Centered-gate residual: (g_e - 1/E). With a uniform (zero-init)
+        # router this is exactly 0 at init → ΔW=0 (base preserved), while
+        # ∂Δy/∂a_k ∝ (P_k - P̄)·diag(λ0)·ℓ ≠ 0 → router gradient at step 0.
+        # _last_gate stays the raw softmax so the balance loss still reads a
+        # proper distribution.
+        gate_eff = gate
+        if self._centered_gate:
+            gate_eff = gate - (1.0 / self.num_experts)
         # Cast gate at the einsum boundary so bf16 × fp32 doesn't promote
         # P_combined back to fp32 and inflate the saved activation.
-        P_combined = torch.einsum("be,eor->bor", gate.to(work), P_eff)
+        P_combined = torch.einsum("be,eor->bor", gate_eff.to(work), P_eff)
 
         orig_shape = lx.shape
         B = orig_shape[0]
@@ -505,6 +530,34 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         """No-op: Cayley guarantees orthogonality structurally."""
         zero = torch.tensor(0.0, device=self.S_p.device)
         return zero, zero
+
+    def subspace_overlap(self) -> float:
+        """Mean normalized cross-expert column-space overlap of ``P_bases``.
+
+        ``‖P_iᵀ P_j‖_F / √r`` averaged over expert pairs i<j: ~0 when the
+        per-expert slices are disjoint (the design invariant), ~1 in the
+        narrow-layer shared-basis fallback. Constant across training — the
+        Cayley ``R_p`` rotations preserve each slice's span, so this is a
+        structural *guardrail* (catches a basis/init regression), not a
+        learning signal. Computed once from the frozen buffer and cached.
+        """
+        cached = getattr(self, "_subspace_overlap_cached", None)
+        if cached is not None:
+            return cached
+        with torch.no_grad():
+            P = self.P_bases.float()  # (E, out, r)
+            E = P.shape[0]
+            r = P.shape[-1]
+            if E < 2 or r == 0:
+                self._subspace_overlap_cached = 0.0
+                return 0.0
+            # (E, E, r, r) cross-Gram, Frobenius over the (r, r) block.
+            cross = torch.einsum("ior,jos->ijrs", P, P)
+            fro = cross.pow(2).sum(dim=(-1, -2)).sqrt()  # (E, E)
+            off = (fro.sum() - fro.diagonal().sum()) / (E * (E - 1))
+            val = float((off / (r**0.5)).item())
+        self._subspace_overlap_cached = val
+        return val
 
     @classmethod
     def distill_save_state_dict(
@@ -525,6 +578,17 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         (stacked ``(E, out, r)`` — the Hydra training runtime layout). The
         downstream MoE writer in :meth:`HydraLoRAModule.build_moe_state_dict`
         expands this into per-expert ``.lora_ups.{i}.weight`` keys.
+
+        NOTE (centered_gate parity): the runtime MoE form combines per-expert
+        ups with the raw softmax gate, i.e. ``Σ_e g_e P_e``. A checkpoint
+        trained with ``ortho_centered_gate=True`` actually computed
+        ``Σ_e (g_e - 1/E) P_e = Σ_e g_e P_e - (1/E)Σ_e P_e`` — an extra fixed
+        ``-(1/E)Σ_e P_e`` mean-expert bias (a plain-LoRA branch) that this
+        runtime form does NOT carry. In-training CMMD validation runs the
+        live (centered) module forward and is faithful; deploying the
+        distilled ``_moe`` checkpoint is not, until the router-live node
+        subtracts the mean expert. Treat centered_gate as train/research-only
+        for now. See proposal.md / [[project_crossattn_emb_router_source]].
         """
         prefixes = set()
         for key in list(state_dict.keys()):

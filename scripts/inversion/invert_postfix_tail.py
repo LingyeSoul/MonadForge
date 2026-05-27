@@ -59,6 +59,7 @@ from library.inference.editing.postfix_inversion import (  # noqa: E402
     invert_tail,
     load_cached_prefix,
     load_or_build_basis,
+    save_soft_tokens_bank,
     save_tail_s,
 )
 from library.io.cache import (  # noqa: E402
@@ -200,6 +201,50 @@ def parse_args() -> argparse.Namespace:
         help="T5-compatible embedding dim (Qwen3 hidden size = 1024)",
     )
 
+    # Parameterization
+    p.add_argument(
+        "--parameterization",
+        type=str,
+        default="ortho_tail",
+        choices=["ortho_tail", "soft_tokens"],
+        help="How to fill the K postfix slots. 'ortho_tail' (default) = K scalars "
+        "over a frozen orthonormal Q, one tail shared across all blocks and all t. "
+        "'soft_tokens' = SoftREPA bank (per-block × per-t free tokens, no ortho, no "
+        "caption-conditioning) to measure the per-image floor with that extra freedom. "
+        "soft_tokens ignores --basis*/--K-vs-embed_dim and saves a {tokens, "
+        "t_offsets.weight} bank instead of an s-vector.",
+    )
+    p.add_argument(
+        "--st_n_layers",
+        type=int,
+        default=0,
+        help="soft_tokens: number of leading DiT blocks to patch with the splice "
+        "hook. 0 (default) = all blocks (max per-block freedom for a ceiling probe).",
+    )
+    p.add_argument(
+        "--st_n_t_buckets",
+        type=int,
+        default=14,
+        help="soft_tokens: number of σ buckets (per-t freedom). Each bucket gets its "
+        "own per-layer offset vector. 1 collapses to a single t-independent tail.",
+    )
+    p.add_argument(
+        "--st_init_std",
+        type=float,
+        default=0.02,
+        help="soft_tokens: Gaussian std for the base-token init (t_offsets always "
+        "zero-init). Nonzero by default — random per-token init breaks the within-"
+        "layer slot symmetry that collapsed the old postfix to K=1. 0.0 = zero-init.",
+    )
+    p.add_argument(
+        "--st_splice_position",
+        type=str,
+        default="end_of_sequence",
+        choices=["end_of_sequence", "front_of_padding"],
+        help="soft_tokens: where the K tokens land. Default end_of_sequence matches "
+        "the ortho_tail probe (apples-to-apples — only the parameterization differs).",
+    )
+
     # Optimization
     p.add_argument("--steps", type=int, default=50, help="Optimization steps per image")
     p.add_argument("--lr", type=float, default=0.01, help="Learning rate (AdamW)")
@@ -309,8 +354,18 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
     if args.K < 1:
         p.error("--K must be >= 1")
-    if args.K > args.embed_dim:
-        p.error(f"--K ({args.K}) must be <= --embed_dim ({args.embed_dim})")
+    if args.parameterization == "ortho_tail":
+        # K orthonormal rows must fit in D-dim space.
+        if args.K > args.embed_dim:
+            p.error(f"--K ({args.K}) must be <= --embed_dim ({args.embed_dim})")
+    else:
+        # soft_tokens: K is a sequence-slot count; bound by the tail capacity.
+        from library.inference.editing.postfix_inversion import MAX_SEQ_LEN
+
+        if args.K >= MAX_SEQ_LEN:
+            p.error(f"--K ({args.K}) must be < MAX_SEQ_LEN ({MAX_SEQ_LEN})")
+        if args.st_n_t_buckets < 1:
+            p.error("--st_n_t_buckets must be >= 1")
     return args
 
 
@@ -358,9 +413,14 @@ def _pick_images(args) -> list:
     return images
 
 
-def _load_anima(args, device: torch.device):
+def _load_anima(args, device: torch.device, apply_before_compile=None):
     """Load DiT frozen on device, with the same swap/grad-ckpt switches as
-    archive/inversion/invert_reference.py."""
+    archive/inversion/invert_reference.py.
+
+    ``apply_before_compile`` (if given) is invoked with the placed-but-uncompiled
+    DiT right before the compile step. soft_tokens mode uses it to monkey-patch
+    the Block.forward splice hooks first — torch.compile traces those hooks, so
+    they MUST be installed before compile_blocks (the build_anima invariant)."""
     is_swapping = args.blocks_to_swap > 0
     grad_ckpt = args.blocks_to_swap < 0
     logger.info(f"Loading DiT: {args.dit}")
@@ -380,7 +440,9 @@ def _load_anima(args, device: torch.device):
         anima.move_to_device_except_swap_blocks(device)
         anima.prepare_block_swap_before_forward()
         # block_swap moves weights CPU↔GPU mid-forward; incompatible with any
-        # torch.compile mode — leave eager.
+        # torch.compile mode — leave eager. Apply the splice hooks now anyway.
+        if apply_before_compile is not None:
+            apply_before_compile(anima)
     else:
         anima.to(device)
         if grad_ckpt:
@@ -388,6 +450,8 @@ def _load_anima(args, device: torch.device):
             anima.enable_gradient_checkpointing()
             for block in anima.blocks:  # type: ignore[union-attr]
                 block.train()
+        if apply_before_compile is not None:
+            apply_before_compile(anima)
         if args.compile_blocks:
             # compile_blocks turns on native-shape flattening (each aspect bucket
             # at its real token count, no padding → no flash pad-leak) and compiles
@@ -406,6 +470,36 @@ def _load_anima(args, device: torch.device):
     return anima
 
 
+def _build_soft_tokens_net(args, anima, device):
+    """Build a SoftTokensNetwork sized for this DiT (fp32 params on device).
+
+    Caller is responsible for ``apply_to`` (done before compile via
+    _load_anima's apply_before_compile hook). Params are reset per image inside
+    invert_tail, so one network is reused across the whole run."""
+    from networks.methods.soft_tokens import SoftTokensNetwork
+
+    n_blocks = len(anima.blocks)  # type: ignore[arg-type]
+    n_layers = args.st_n_layers if args.st_n_layers > 0 else n_blocks
+    if n_layers > n_blocks:
+        raise ValueError(f"--st_n_layers ({n_layers}) > DiT block count ({n_blocks})")
+    net = SoftTokensNetwork(
+        num_tokens=args.K,
+        embed_dim=args.embed_dim,
+        n_layers=n_layers,
+        n_t_buckets=args.st_n_t_buckets,
+        init_std=args.st_init_std,
+        splice_position=args.st_splice_position,
+        contrastive_weight=0.0,  # contrastive is training-only; off for the probe
+    )
+    net.to(device)  # keep fp32 params (master weights); hook casts to bf16 per forward
+    logger.info(
+        f"soft_tokens probe net: {n_layers} layers × K={args.K} × D={args.embed_dim}, "
+        f"{args.st_n_t_buckets} t-buckets, splice={args.st_splice_position}, "
+        f"init_std={args.st_init_std}"
+    )
+    return net
+
+
 def main() -> None:
     args = parse_args()
     device = _resolve_device(args)
@@ -414,26 +508,43 @@ def main() -> None:
     images = _pick_images(args)
     logger.info(f"Inverting {len(images)} images from {args.image_dir}")
 
+    soft_tokens = args.parameterization == "soft_tokens"
+
     out_root = Path(args.output_dir)
-    s_dir = out_root / "s"
+    # ortho_tail saves an s-vector under s/; soft_tokens saves a bank under bank/.
+    bank_dir_name = "bank" if soft_tokens else "s"
+    s_dir = out_root / bank_dir_name
     loss_dir = out_root / "loss"
     s_dir.mkdir(parents=True, exist_ok=True)
     loss_dir.mkdir(parents=True, exist_ok=True)
 
-    # Pre-build / cache the basis BEFORE the DiT load so its VRAM cost is
-    # peaked first (SVD over a 256-file corpus is CPU-bound but allocates).
-    basis_te_dir = args.basis_te_dir or args.image_dir
-    Q = load_or_build_basis(
-        K=args.K,
-        D=args.embed_dim,
-        kind=args.basis,
-        te_cache_dir=basis_te_dir,
-        basis_path=args.basis_path,
-        svd_num_files=args.svd_num_files,
-        seed=args.basis_seed,
-    )
+    # Basis is ortho_tail-only; soft_tokens needs no SVD corpus.
+    Q = None
+    if not soft_tokens:
+        # Pre-build / cache the basis BEFORE the DiT load so its VRAM cost is
+        # peaked first (SVD over a 256-file corpus is CPU-bound but allocates).
+        basis_te_dir = args.basis_te_dir or args.image_dir
+        Q = load_or_build_basis(
+            K=args.K,
+            D=args.embed_dim,
+            kind=args.basis,
+            te_cache_dir=basis_te_dir,
+            basis_path=args.basis_path,
+            svd_num_files=args.svd_num_files,
+            seed=args.basis_seed,
+        )
 
-    anima = _load_anima(args, device)
+    # soft_tokens: build + apply the splice net before compile (build_anima
+    # compile-after-apply invariant). One net, reused across images.
+    st_holder: dict = {}
+
+    def _apply_st(_anima):
+        net = _build_soft_tokens_net(args, _anima, device)
+        net.apply_to(text_encoders=None, unet=_anima, apply_unet=True)
+        st_holder["net"] = net
+
+    anima = _load_anima(args, device, apply_before_compile=_apply_st if soft_tokens else None)
+    soft_tokens_net = st_holder.get("net")
 
     cfg = TailInversionConfig(
         K=args.K,
@@ -449,6 +560,7 @@ def main() -> None:
         lambda_zero=args.lambda_zero,
         init_std=args.init_std,
         log_every=args.log_every,
+        parameterization=args.parameterization,
         vr_enabled=args.vr_enabled,
         vr_pool_size=args.vr_pool_size,
         vr_lambda_beta=args.vr_lambda_beta,
@@ -458,6 +570,15 @@ def main() -> None:
     manifest = {
         "K": args.K,
         "embed_dim": args.embed_dim,
+        "parameterization": args.parameterization,
+        "st_n_layers": (
+            (args.st_n_layers if args.st_n_layers > 0 else len(anima.blocks))
+            if soft_tokens
+            else None
+        ),
+        "st_n_t_buckets": args.st_n_t_buckets if soft_tokens else None,
+        "st_init_std": args.st_init_std if soft_tokens else None,
+        "st_splice_position": args.st_splice_position if soft_tokens else None,
         "basis": args.basis,
         "basis_seed": args.basis_seed,
         "basis_path": args.basis_path,
@@ -491,7 +612,7 @@ def main() -> None:
 
     for i, img in enumerate(images):
         stem = img.stem
-        s_path = s_dir / f"{stem}_s.safetensors"
+        s_path = s_dir / f"{stem}_{'bank' if soft_tokens else 's'}.safetensors"
         loss_path = loss_dir / f"{stem}.csv"
 
         if s_path.exists() and not args.overwrite:
@@ -513,31 +634,47 @@ def main() -> None:
             device=device,
             seed=args.seed,
             log_path=str(loss_path),
+            soft_tokens_net=soft_tokens_net,
         )
 
-        save_tail_s(
-            str(s_path),
-            result.s,
-            K=args.K,
-            D=args.embed_dim,
-            basis_kind=args.basis,
-            metadata={
-                "ss_source_stem": stem,
-                "ss_image_hw": f"{orig_h}x{orig_w}",
-                "ss_best_loss": f"{result.best_loss:.6f}",
-                "ss_best_fm_loss": f"{result.best_fm_loss:.6f}",
-                "ss_best_step": str(result.best_step),
-                "ss_final_s_l2": f"{result.final_s_l2:.6f}",
-                "ss_steps": str(args.steps),
-                "ss_lr": str(args.lr),
-                "ss_lambda_zero": str(args.lambda_zero),
-                "ss_init_std": str(args.init_std),
-                "ss_sigma_min": str(args.sigma_min),
-                "ss_sigma_max": str(args.sigma_max),
-                "ss_seed": str(args.seed),
-                "ss_basis_kind": args.basis,
-            },
-        )
+        common_meta = {
+            "ss_source_stem": stem,
+            "ss_image_hw": f"{orig_h}x{orig_w}",
+            "ss_best_loss": f"{result.best_loss:.6f}",
+            "ss_best_fm_loss": f"{result.best_fm_loss:.6f}",
+            "ss_best_step": str(result.best_step),
+            "ss_final_param_l2": f"{result.final_s_l2:.6f}",
+            "ss_steps": str(args.steps),
+            "ss_lr": str(args.lr),
+            "ss_lambda_zero": str(args.lambda_zero),
+            "ss_sigma_min": str(args.sigma_min),
+            "ss_sigma_max": str(args.sigma_max),
+            "ss_seed": str(args.seed),
+        }
+        if soft_tokens:
+            save_soft_tokens_bank(
+                str(s_path),
+                result.bank,
+                n_layers=soft_tokens_net.n_layers,
+                num_tokens=soft_tokens_net.num_tokens,
+                embed_dim=soft_tokens_net.embed_dim,
+                n_t_buckets=soft_tokens_net.n_t_buckets,
+                splice_position=soft_tokens_net.splice_position,
+                metadata={**common_meta, "ss_init_std": str(args.st_init_std)},
+            )
+        else:
+            save_tail_s(
+                str(s_path),
+                result.s,
+                K=args.K,
+                D=args.embed_dim,
+                basis_kind=args.basis,
+                metadata={
+                    **common_meta,
+                    "ss_init_std": str(args.init_std),
+                    "ss_basis_kind": args.basis,
+                },
+            )
 
         manifest["results"].append(
             {

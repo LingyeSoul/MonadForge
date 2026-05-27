@@ -24,7 +24,7 @@
 network_alpha = 32
 network_dim = 32
 
-learning_rate = 2e-5
+learning_rate = 5e-5
 max_train_epochs = 3
 save_every_n_epochs = 3
 checkpointing_epochs = 3
@@ -36,8 +36,8 @@ caption_dropout_rate = 0.1
 logging_dir = "output/logs"
 log_with = "tensorboard"
 
-output_name = "anima_biased"
-sigmoid_bias = 0.5
+output_name = "anima_quarter"
+# sigmoid_bias = 0.5
 # path_pattern = "ama_mitsuki/*|channel_(caststation)/*|sweetonedollar/*"
 
 # vr_loss_weight = 1.0
@@ -86,6 +86,17 @@ validation_split_num = 8
 # num_experts = 4
 # balance_loss_weight = 1e-7 # seems lr * 1/100 is proper
 # balance_loss_warmup_ratio = 0.4
+
+# OrthoHydra centered-gate init (function-preserving step-0 router gradient).
+# Recenters the gate to (g_e - 1/E), zero-inits the router (exactly uniform at
+# step 0), and starts λ at ortho_lambda_init. ΔW=0 at init yet router logits
+# get gradient from step 0 (disjoint P_e survive the mean subtraction).
+# Watch ortho/router_grad_norm (>0 from step 0), ortho/grad_coupling (cross-
+# expert loss-geometry coupling), ortho/subspace_overlap (structural guardrail).
+# NOTE: distilled _moe checkpoints drop the -(1/E)Σ_e P_e bias → train/research
+# only until the router-live node subtracts the mean expert (see ortho.py).
+# ortho_centered_gate = true
+# ortho_lambda_init = 1e-2     # auto-bumped from 0 when centered_gate is on
 
 # -------------
 # "independent_A" and route_per_layer=true -> fera

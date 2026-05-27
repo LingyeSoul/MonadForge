@@ -495,6 +495,13 @@ class TailInversionConfig:
     lambda_zero: float = 0.0  # ‖s‖² regularization weight
     init_std: float = 0.0  # 0 → zero-init; >0 → N(0, init_std²)
     log_every: int = 10
+    # Tail parameterization. ``ortho_tail`` (default) is the K-scalar ``s`` over a
+    # frozen orthonormal basis Q — one tail shared across all blocks and all t.
+    # ``soft_tokens`` swaps in the SoftREPA parameterization (per-block × per-t
+    # free tokens, no ortho, no caption-conditioning) to measure how much that
+    # extra freedom lowers the per-image inversion floor. The optimization loop,
+    # VR control variate, σ sampling, and logging are identical across both.
+    parameterization: str = "ortho_tail"  # "ortho_tail" or "soft_tokens"
     # AsymFlow §5.2 control-variate loss adapted for per-image inversion.
     # Reference forward is the same frozen DiT with s=0 (postfix tail zeroed),
     # evaluated on FEI-low-passed latents. (σ, noise, z) tuples are pre-sampled
@@ -510,13 +517,202 @@ class TailInversionConfig:
 class TailInversionResult:
     """Output of one inversion run — the things the analyzer reads."""
 
-    s: torch.Tensor  # (K,) float32, on CPU
+    s: Optional[torch.Tensor]  # (K,) float32 CPU for ortho_tail; None for soft_tokens
     best_loss: float  # best (fm_loss + reg) across optimization steps
     best_fm_loss: float  # fm component at the best-loss step
     best_step: int
-    final_s_l2: float
+    final_s_l2: float  # final ‖params‖₂ (the K-vector, or the whole bank)
     final_lambda_ema: Optional[float] = None  # VR λ EMA at end of optimization
     history: list[dict] = field(default_factory=list)
+    # soft_tokens parameterization saves a {tokens, t_offsets.weight} bank here
+    # at the best-loss step (CPU fp32); None for ortho_tail.
+    bank: Optional[dict] = None
+
+
+# region Parameterizations
+#
+# Two ways to fill the K postfix slots, sharing one optimization loop. Each
+# object owns: its trainable leaves, how to turn the current state into the
+# crossattn embedding handed to the frozen DiT (``make_emb``), an optional ‖·‖²
+# regularizer, an L2 readout for the CSV, and a best-step snapshot. ``make_emb``
+# is the load-bearing seam — ``ortho_tail`` splices once at the input (all blocks
+# see the same tail), ``soft_tokens`` sets per-block × per-t tokens that its own
+# Block.forward hooks splice during the DiT forward.
+
+
+class _OrthoTailParam:
+    """``tail = Q · diag(s)`` — K trainable scalars over a frozen orthonormal Q."""
+
+    kind = "ortho_tail"
+
+    def __init__(
+        self,
+        *,
+        prefix_emb: torch.Tensor,
+        basis_Q: torch.Tensor,
+        device: torch.device,
+        init_std: float,
+        lambda_zero: float,
+    ):
+        self.prefix_emb = prefix_emb
+        self.Q = basis_Q.to(device=device, dtype=torch.float32).contiguous()
+        self.K, self.D = self.Q.shape
+        self.lambda_zero = lambda_zero
+        if init_std <= 0.0:
+            s_init = torch.zeros(self.K, dtype=torch.float32, device=device)
+        else:
+            s_init = torch.randn(self.K, dtype=torch.float32, device=device) * init_std
+        self.s = torch.nn.Parameter(s_init)
+        self._best: Optional[torch.Tensor] = None
+
+    def trainable(self) -> list:
+        return [self.s]
+
+    def make_emb(self, sigmas: torch.Tensor) -> torch.Tensor:
+        # tail independent of σ; sigmas accepted for a uniform make_emb() seam.
+        tail = (self.Q * self.s.unsqueeze(-1)).unsqueeze(0)  # (1, K, D) fp32
+        return assemble_emb(self.prefix_emb, tail)
+
+    def reg(self, device: torch.device) -> torch.Tensor:
+        if self.lambda_zero > 0.0:
+            return self.lambda_zero * self.s.pow(2).sum()
+        return torch.zeros((), device=device, dtype=torch.float32)
+
+    def param_l2(self) -> float:
+        return float(self.s.detach().norm().item())
+
+    def snapshot_best(self) -> None:
+        self._best = self.s.detach().clone().cpu()
+
+    def result_fields(self) -> dict:
+        return {"s": self._best, "bank": None}
+
+
+class _SoftTokensParam:
+    """SoftREPA bank — per-block × per-t free tokens, spliced by the network's
+    own Block.forward hooks. ``net`` is built + ``apply_to``-d once by the caller
+    (so the monkey-patch + any torch.compile ordering is handled outside); this
+    object resets its params in-place per image."""
+
+    kind = "soft_tokens"
+
+    def __init__(
+        self,
+        *,
+        net,
+        prefix_emb: torch.Tensor,
+        device: torch.device,
+        init_std: float,
+        lambda_zero: float,
+    ):
+        self.net = net
+        self.prefix_emb = prefix_emb
+        self.lambda_zero = lambda_zero
+        self.K = net.num_tokens
+        self.D = net.embed_dim
+        # Real (non-padding) token count per sample — only consumed by the
+        # front_of_padding splice; harmless for end_of_sequence.
+        self.seqlens = (
+            (prefix_emb.abs().sum(dim=-1) > 0).sum(dim=1).to(torch.int32)
+        )  # (B,)
+        # Fresh start per image: re-init the bank in place (same Parameter
+        # objects → caller can build one optimizer per image over them).
+        with torch.no_grad():
+            if init_std <= 0.0:
+                net.tokens.zero_()
+            else:
+                net.tokens.normal_(0.0, init_std)
+            net.t_offsets.weight.zero_()
+        net._step_layer_tokens = None  # ensure s=0 baseline for the VR pool build
+        self._best: Optional[dict] = None
+
+    def trainable(self) -> list:
+        return [self.net.tokens, self.net.t_offsets.weight]
+
+    def make_emb(self, sigmas: torch.Tensor) -> torch.Tensor:
+        # Sets _step_layer_tokens (with grad) for this σ; the per-block hooks
+        # splice it during the DiT forward, so we hand back the bare prefix.
+        self.net.append_postfix(self.prefix_emb, self.seqlens, timesteps=sigmas)
+        return self.prefix_emb
+
+    def reg(self, device: torch.device) -> torch.Tensor:
+        if self.lambda_zero > 0.0:
+            return self.lambda_zero * (
+                self.net.tokens.pow(2).sum()
+                + self.net.t_offsets.weight.pow(2).sum()
+            )
+        return torch.zeros((), device=device, dtype=torch.float32)
+
+    def param_l2(self) -> float:
+        with torch.no_grad():
+            sq = (
+                self.net.tokens.detach().pow(2).sum()
+                + self.net.t_offsets.weight.detach().pow(2).sum()
+            )
+            return float(sq.sqrt().item())
+
+    def snapshot_best(self) -> None:
+        self._best = {
+            "tokens": self.net.tokens.detach().clone().cpu().float(),
+            "t_offsets.weight": self.net.t_offsets.weight.detach().clone().cpu().float(),
+        }
+
+    def result_fields(self) -> dict:
+        return {"s": None, "bank": self._best}
+
+
+def _build_parameterization(
+    config: TailInversionConfig,
+    *,
+    prefix_emb: torch.Tensor,
+    basis_Q: Optional[torch.Tensor],
+    soft_tokens_net,
+    device: torch.device,
+):
+    """Pick + construct the parameterization object from the config."""
+    kind = config.parameterization
+    if kind == "ortho_tail":
+        if basis_Q is None:
+            raise ValueError("parameterization='ortho_tail' requires basis_Q")
+        K, D = basis_Q.shape
+        if K != config.K:
+            raise ValueError(f"basis_Q rows ({K}) != config.K ({config.K})")
+        if prefix_emb.shape[-1] != D:
+            raise ValueError(
+                f"prefix_emb dim ({prefix_emb.shape[-1]}) != basis_Q dim ({D})"
+            )
+        return _OrthoTailParam(
+            prefix_emb=prefix_emb,
+            basis_Q=basis_Q,
+            device=device,
+            init_std=config.init_std,
+            lambda_zero=config.lambda_zero,
+        )
+    if kind == "soft_tokens":
+        if soft_tokens_net is None:
+            raise ValueError(
+                "parameterization='soft_tokens' requires a pre-built + applied "
+                "soft_tokens_net (build it before torch.compile — see the "
+                "build_anima compile-after-apply invariant)"
+            )
+        if prefix_emb.shape[-1] != soft_tokens_net.embed_dim:
+            raise ValueError(
+                f"prefix_emb dim ({prefix_emb.shape[-1]}) != soft_tokens_net "
+                f"embed_dim ({soft_tokens_net.embed_dim})"
+            )
+        return _SoftTokensParam(
+            net=soft_tokens_net,
+            prefix_emb=prefix_emb,
+            device=device,
+            init_std=config.init_std,
+            lambda_zero=config.lambda_zero,
+        )
+    raise ValueError(
+        f"unknown parameterization {kind!r}: expected 'ortho_tail' or 'soft_tokens'"
+    )
+
+
+# endregion
 
 
 def invert_tail(
@@ -524,47 +720,51 @@ def invert_tail(
     *,
     prefix_emb: torch.Tensor,
     latents: torch.Tensor,
-    basis_Q: torch.Tensor,
+    basis_Q: Optional[torch.Tensor] = None,
     config: TailInversionConfig,
     device: torch.device,
     seed: int = 0,
     log_path: Optional[str] = None,
+    soft_tokens_net=None,
 ) -> TailInversionResult:
-    """Optimize ``s`` for one image. Returns the best-loss ``s`` and diagnostics.
+    """Optimize the postfix tail for one image; return the best-loss state + diagnostics.
+
+    The trainable object depends on ``config.parameterization`` (see
+    ``_build_parameterization``): ``ortho_tail`` optimizes the K-scalar ``s`` over
+    ``basis_Q``; ``soft_tokens`` optimizes a pre-built+applied ``soft_tokens_net``
+    bank. The loop below (VR pool, σ sampling, grad-accum, logging, best-tracking)
+    is identical across both — only ``param.make_emb`` / ``param.reg`` differ.
 
     Args:
         anima: frozen DiT (already ``requires_grad_(False)``-ed; ``torch.compile``
             on the outside is fine — shapes are static for fixed K + image size).
         prefix_emb: ``(1, MAX_SEQ_LEN, D)`` bf16 cached T5 output for this image.
         latents: ``(B=1, C, H/8, W/8)`` bf16 cached VAE latents for this image.
-        basis_Q: ``(K, D)`` row-orthonormal fp32 basis (frozen). Caller is
-            responsible for matching ``K == config.K``.
-        config: optimization knobs.
+        basis_Q: ``(K, D)`` row-orthonormal fp32 basis (frozen) — ``ortho_tail`` only.
+        config: optimization knobs (incl. ``parameterization``).
         device: cuda or cpu.
-        seed: RNG seed for sigma sampling + ``s`` init.
-        log_path: optional CSV path for per-step loss / s‖²/ grad norm.
+        seed: RNG seed for sigma sampling + param init.
+        log_path: optional CSV path for per-step loss / ‖params‖₂ / grad norm.
+        soft_tokens_net: pre-built + ``apply_to``-d ``SoftTokensNetwork`` —
+            required for ``parameterization='soft_tokens'``, ignored otherwise.
     """
     cfg = config
-    K, D = basis_Q.shape
-    if K != cfg.K:
-        raise ValueError(f"basis_Q rows ({K}) != config.K ({cfg.K})")
-    if prefix_emb.shape[-1] != D:
-        raise ValueError(
-            f"prefix_emb dim ({prefix_emb.shape[-1]}) != basis_Q dim ({D})"
-        )
 
     torch.manual_seed(seed)
     if device.type == "cuda":
         torch.cuda.manual_seed(seed)
 
-    if cfg.init_std <= 0.0:
-        s_init = torch.zeros(K, dtype=torch.float32, device=device)
-    else:
-        s_init = torch.randn(K, dtype=torch.float32, device=device) * cfg.init_std
-    s = torch.nn.Parameter(s_init)
+    param = _build_parameterization(
+        cfg,
+        prefix_emb=prefix_emb,
+        basis_Q=basis_Q,
+        soft_tokens_net=soft_tokens_net,
+        device=device,
+    )
+    K, D = param.K, param.D
 
     optimizer = torch.optim.AdamW(
-        [s], lr=cfg.lr, weight_decay=0.0, fused=(device.type == "cuda")
+        param.trainable(), lr=cfg.lr, weight_decay=0.0, fused=(device.type == "cuda")
     )
     scheduler = (
         torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -573,8 +773,6 @@ def invert_tail(
         if cfg.lr_schedule == "cosine"
         else None
     )
-
-    Q = basis_Q.to(device=device, dtype=torch.float32).contiguous()
 
     h_lat, w_lat = latents.shape[-2], latents.shape[-1]
     padding_mask = torch.zeros(1, 1, h_lat, w_lat, dtype=torch.bfloat16, device=device)
@@ -646,7 +844,7 @@ def invert_tail(
 
     best_loss = float("inf")
     best_fm_loss = float("inf")
-    best_s: Optional[torch.Tensor] = None
+    have_best = False
     best_step = 0
     history: list[dict] = []
 
@@ -663,12 +861,13 @@ def invert_tail(
         accum_fm = 0.0
         accum_reg = 0.0
         for _ in range(microsteps):
-            # tail = Q · diag(s) computed in fp32, cast to bf16 inside assemble_emb
-            tail = (Q * s.unsqueeze(-1)).unsqueeze(0)  # (1, K, D) fp32
-            emb_full = assemble_emb(prefix_emb, tail)
+            # σ first, then build the emb from it — soft_tokens' make_emb is
+            # σ-dependent (per-t bucket); ortho_tail's ignores σ. make_emb is the
+            # only place the two parameterizations diverge inside the loop.
             if vr_pool is not None:
                 idx = int(torch.randint(len(vr_pool), (1,)).item())
                 entry = vr_pool[idx]
+                emb_full = param.make_emb(entry["sigma"])
                 fm_loss, lambda_batch = _vr_loss_step(
                     anima,
                     latents,
@@ -695,20 +894,20 @@ def invert_tail(
                     sigma_min=cfg.sigma_min,
                     sigma_max=cfg.sigma_max,
                 )
+                emb_full = param.make_emb(sigmas)
                 fm_loss = fm_loss_step(
                     anima, latents, emb_full, sigmas, padding_mask
                 )
-            if cfg.lambda_zero > 0.0:
-                reg = cfg.lambda_zero * s.pow(2).sum()
-            else:
-                reg = torch.zeros((), device=device, dtype=fm_loss.dtype)
+            reg = param.reg(device)
             loss = fm_loss + reg
             (loss / microsteps).backward()
             accum_loss += loss.item()
             accum_fm += fm_loss.item()
             accum_reg += float(reg.detach().item())
 
-        grad_norm = torch.nn.utils.clip_grad_norm_([s], max_norm=1.0).item()
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            param.trainable(), max_norm=1.0
+        ).item()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
@@ -716,13 +915,14 @@ def invert_tail(
         loss_val = accum_loss / microsteps
         fm_val = accum_fm / microsteps
         reg_val = accum_reg / microsteps
-        s_l2 = float(s.detach().norm().item())
+        s_l2 = param.param_l2()  # ‖s‖ (ortho_tail) or ‖bank‖ (soft_tokens)
         lr_now = optimizer.param_groups[0]["lr"]
 
         if loss_val < best_loss:
             best_loss = loss_val
             best_fm_loss = fm_val
-            best_s = s.detach().clone().cpu()
+            param.snapshot_best()
+            have_best = True
             best_step = step
 
         if step % cfg.log_every == 0 or step == cfg.steps - 1:
@@ -765,15 +965,17 @@ def invert_tail(
     if csv_file is not None:
         csv_file.close()
 
-    assert best_s is not None, "optimization produced no best_s"
+    assert have_best, "optimization produced no best step"
+    fields = param.result_fields()
     return TailInversionResult(
-        s=best_s,
+        s=fields["s"],
         best_loss=best_loss,
         best_fm_loss=best_fm_loss,
         best_step=best_step,
-        final_s_l2=float(s.detach().norm().item()),
+        final_s_l2=param.param_l2(),
         final_lambda_ema=None if lambda_ema is None else float(lambda_ema),
         history=history,
+        bank=fields["bank"],
     )
 
 
@@ -806,6 +1008,48 @@ def save_tail_s(
         "ss_K": str(K),
         "ss_D": str(D),
         "ss_basis_kind": basis_kind,
+    }
+    if metadata:
+        for k, v in metadata.items():
+            meta[str(k)] = str(v)
+    save_file(state, save_path, metadata=meta)
+
+
+def save_soft_tokens_bank(
+    save_path: str,
+    bank: dict,
+    *,
+    n_layers: int,
+    num_tokens: int,
+    embed_dim: int,
+    n_t_buckets: int,
+    splice_position: str,
+    metadata: Optional[dict] = None,
+) -> None:
+    """Save a per-image soft-tokens bank (``tokens`` + ``t_offsets.weight``).
+
+    Schema matches ``SoftTokensNetwork.state_dict_for_save`` /
+    ``create_network_from_weights`` so the same loader reads a probe bank as a
+    deployable one — though this is a per-image inversion artifact, not a
+    generalizing adapter. Metadata pins the parameterization for the analyzer.
+    """
+    os.makedirs(os.path.dirname(save_path) or ".", exist_ok=True)
+    state = {
+        "tokens": bank["tokens"].detach().clone().cpu().float().contiguous(),
+        "t_offsets.weight": bank["t_offsets.weight"]
+        .detach()
+        .clone()
+        .cpu()
+        .float()
+        .contiguous(),
+    }
+    meta = {
+        "ss_artifact": "postfix_tail_soft_tokens_bank",
+        "ss_n_layers": str(n_layers),
+        "ss_num_tokens": str(num_tokens),
+        "ss_embed_dim": str(embed_dim),
+        "ss_n_t_buckets": str(n_t_buckets),
+        "ss_splice_position": splice_position,
     }
     if metadata:
         for k, v in metadata.items():
