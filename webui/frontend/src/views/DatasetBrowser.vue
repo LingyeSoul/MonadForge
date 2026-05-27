@@ -215,7 +215,7 @@
           lg="2"
         >
           <v-card
-            class="mx-auto"
+            class="mx-auto dataset-card"
             variant="tonal"
             :class="{ 'border-primary': selectedImage?.path === img.path }"
             @click="selectImage(img)"
@@ -1391,5 +1391,30 @@ onUnmounted(() => {
 .remove-dir-btn:hover {
   opacity: 1;
   color: rgb(var(--v-theme-error)) !important;
+}
+
+/* Image card hover effect */
+.dataset-card {
+  transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.dataset-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Selected image: amber border */
+.dataset-card.selected {
+  border-color: var(--forge-amber) !important;
+  box-shadow: 0 0 0 2px rgba(212, 145, 42, 0.2);
+}
+
+/* View toggle brand styling */
+:deep(.v-btn-toggle) {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+}
+:deep(.v-btn-toggle .v-btn--selected) {
+  background: rgba(199, 91, 26, 0.12) !important;
+  color: var(--forge-amber) !important;
 }
 </style>
