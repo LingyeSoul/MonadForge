@@ -916,4 +916,13 @@ function waitForTask(taskId: string): Promise<void> {
   position: sticky;
   top: 16px;
 }
+
+/* Config section cards: subtle hover lift */
+:deep(.v-card) {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+:deep(.v-card:hover) {
+  border-color: var(--border-default);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
 </style>
