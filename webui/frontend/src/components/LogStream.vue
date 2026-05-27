@@ -3,7 +3,12 @@
     <div v-if="!connected && messages.length === 0" class="text-medium-emphasis">
       {{ t('taskConnecting') }}
     </div>
-    <div v-for="(msg, i) in messages" :key="i" class="log-line">{{ msg }}</div>
+    <div
+      v-for="(msg, i) in messages"
+      :key="i"
+      class="log-line"
+      :class="logLevel(msg)"
+    >{{ msg }}</div>
   </div>
 </template>
 
@@ -29,13 +34,33 @@ watch(messages, async () => {
 watch(done, (val) => {
   if (val) emit('done')
 })
+
+function logLevel(msg: string): string {
+  const upper = msg.toUpperCase()
+  if (upper.includes('ERROR') || upper.includes('EXCEPTION') || upper.includes('TRACEBACK')) return 'log-error'
+  if (upper.includes('WARN')) return 'log-warn'
+  if (upper.includes('INFO')) return 'log-info'
+  return ''
+}
 </script>
 
 <style scoped>
 .log-line {
   white-space: pre-wrap;
   word-break: break-all;
-  line-height: 1.4;
-  color: var(--text-primary);
+  line-height: 1.5;
+  color: var(--text-secondary);
+  font-size: 12px;
+  padding: 1px 0;
+  animation: logEntry 0.2s ease-out both;
 }
+
+@keyframes logEntry {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.log-info { color: var(--info); }
+.log-warn { color: var(--warning); }
+.log-error { color: var(--error); font-weight: 500; }
 </style>
