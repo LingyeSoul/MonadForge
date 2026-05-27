@@ -11,7 +11,7 @@
 
     <div v-if="taskStore.tasks.length === 0" class="d-flex align-center justify-center flex-grow-1">
       <div class="text-center text-medium-emphasis">
-        <v-icon icon="mdi-check-circle-outline" size="48" class="mb-2" />
+        <v-icon icon="mdi-candle" size="48" class="mb-2 ember-icon" />
         <div>{{ t('taskNoActive') }}</div>
       </div>
     </div>
@@ -22,6 +22,7 @@
         <v-card
           v-if="selectedTask !== task.task_id"
           class="mb-2"
+          :class="{ 'task-complete': task.state === 'success', 'task-failed': task.state === 'failed', 'task-running': task.state === 'running' }"
           variant="tonal"
           :color="stateColor(task.state)"
         >
@@ -63,6 +64,7 @@
         <v-card
           v-else
           class="mb-2 d-flex flex-column"
+          :class="{ 'task-complete': task.state === 'success', 'task-failed': task.state === 'failed', 'task-running': task.state === 'running' }"
           variant="tonal"
           :color="stateColor(task.state)"
           style="flex: 1 1 0; min-height: 0;"
@@ -141,3 +143,32 @@ function stateIcon(state: string) {
   return 'mdi-clock-outline'
 }
 </script>
+
+<style scoped>
+/* Task status left-border accents */
+.task-complete {
+  border-left: 3px solid var(--success) !important;
+}
+.task-failed {
+  border-left: 3px solid var(--error) !important;
+}
+.task-running {
+  border-left: 3px solid var(--forge-ember) !important;
+}
+
+/* Card hover */
+:deep(.v-card) {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* Empty state ember icon */
+.ember-icon {
+  color: var(--forge-ember);
+  animation: ember-glow 2.5s ease-in-out infinite;
+}
+
+@keyframes ember-glow {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
+}
+</style>
