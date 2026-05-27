@@ -1,0 +1,56 @@
+# ControlNet-LLLite — lightweight lateral conditioning injection.
+#
+# Adapter-only: DiT is frozen, training updates only per-block zero-conv
+# projections that inject conditioning features into the block output.
+# Step-0 baseline equivalence: all zero-conv weights init to 0.
+#
+# Conditioning source: pre-cached VAE latents from conditioning_data_dir.
+# These are cached separately from target latents using the
+# configs/datasets/controlnet.toml dataset blueprint.
+#
+# The conditioning_data_dir in the dataset config points to the directory
+# of conditioning images (depth maps, edge maps, reference images, etc.).
+# Each conditioning image must have the same filename stem as the
+# corresponding target training image.
+
+dataset_config = "configs/datasets/controlnet.toml"
+
+network_module = "networks.methods.controlnet_lllite"
+
+# injection_scale: multiplier for the conditioning injection.
+# 1.0 is a good default; lower values (0.5-0.8) for subtler conditioning.
+injection_scale = 1.0
+
+# cond_channels: VAE latent channels. Anima VAE uses 16 channels.
+cond_channels = 16
+
+network_args = [
+    "injection_scale=1.0",
+    "cond_channels=16",
+]
+
+output_name = "anima_controlnet"
+
+logging_dir = "output/logs"
+log_with = "tensorboard"
+
+learning_rate = 1e-4
+max_train_epochs = 10
+save_every_n_epochs = 3
+checkpointing_epochs = 3
+
+# ControlNet-LLLite only trains zero-conv projections.
+# Use a higher LR than LoRA since the parameter count is small.
+# network_dim/network_alpha are unused by this module (zero-conv has no rank)
+# but train.py still reads them, so set to 1 to minimize overhead.
+network_dim = 1
+network_alpha = 1
+
+# CFG dropout for image conditioning (independent of text dropout).
+use_controlnet = true
+controlnet_drop_p = 0.1
+caption_dropout_rate = 0.1
+
+blocks_to_swap = 0
+gradient_checkpointing = true
+unsloth_offload_checkpointing = true

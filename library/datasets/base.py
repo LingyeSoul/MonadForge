@@ -1078,6 +1078,63 @@ class BaseDataset(torch.utils.data.Dataset):
     def __len__(self):
         return self._length
 
+    def _load_conditioning_latent(self, image_info) -> Optional[torch.Tensor]:
+        """Load conditioning VAE latent for ControlNet-LLLite training.
+
+        Loads pre-cached latent with ``_anima_cond`` suffix from the same cache
+        directory as the target latent. Raises ``FileNotFoundError`` if the
+        cache is missing (caller should run ``make preprocess-vae`` with
+        conditioning images).
+        """
+        from library.io.cache import COND_CACHE_SUFFIX, LATENT_CACHE_SUFFIX
+
+        cond_img_path = getattr(image_info, "cond_img_path", None)
+        if cond_img_path is None:
+            return None
+
+        # Pre-cached conditioning latent: {stem}_{WxH}_anima_cond.npz
+        bucket_reso = getattr(image_info, "bucket_reso", None)
+        if bucket_reso is None or image_info.latents_npz is None:
+            raise FileNotFoundError(
+                f"No latent cache info for conditioning image {cond_img_path}. "
+                f"Ensure target latents are cached first."
+            )
+
+        target_npz = image_info.latents_npz
+        # Replace suffix in filename only, preserving the cache directory
+        dirname = os.path.dirname(target_npz)
+        basename = os.path.basename(target_npz)
+        cond_basename = basename.replace(LATENT_CACHE_SUFFIX, COND_CACHE_SUFFIX)
+        cond_npz = os.path.join(dirname, cond_basename)
+
+        if not os.path.exists(cond_npz):
+            raise FileNotFoundError(
+                f"Conditioning latent cache missing: {cond_npz}. "
+                f"Run preprocessing with conditioning images in conditioning_data_dir, "
+                f"or check that conditioning images exist."
+            )
+
+        try:
+            npz = np.load(cond_npz)
+            w, h = bucket_reso
+            key = f"latents_{h}x{w}"
+            if key in npz:
+                return torch.FloatTensor(npz[key])
+            # Exact key not found — try any latents key
+            for k in npz.files:
+                if k.startswith("latents_"):
+                    return torch.FloatTensor(npz[k])
+            raise KeyError(
+                f"Cache {cond_npz} has no 'latents_*' key; available keys: {npz.files}"
+            )
+        except FileNotFoundError:
+            raise
+        except KeyError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to load conditioning latent from {cond_npz}: {e}")
+            return None
+
     def _try_load_ip_features(self, image_abs_path: str) -> Optional[torch.Tensor]:
         """Load ``{stem}_anima_{encoder}.safetensors`` produced by
         ``scripts/preprocess/cache_pe_encoder.py``.
@@ -1410,6 +1467,7 @@ class BaseDataset(torch.utils.data.Dataset):
         flippeds = []
         text_encoder_outputs_list = []
         custom_attributes = []
+        image_infos = []
         inversion_runs_list: List[Optional[torch.Tensor]] = []
         ip_features_list: List[Optional[torch.Tensor]] = []
         ip_features_shuffled_list: List[Optional[torch.Tensor]] = []
@@ -1424,6 +1482,7 @@ class BaseDataset(torch.utils.data.Dataset):
             subset = self.image_to_subset[image_key]
 
             custom_attributes.append(subset.custom_attributes)
+            image_infos.append(image_info)
 
             loss_weights.append(self.prior_loss_weight if image_info.is_reg else 1.0)
 
@@ -1877,6 +1936,23 @@ class BaseDataset(torch.utils.data.Dataset):
             example["neg_jaccard"] = torch.stack(neg_jaccard_list, dim=0)
         else:
             example["neg_jaccard"] = None
+
+        # Conditioning latent for ControlNet-LLLite training. Loaded from
+        # pre-cached VAE latents with _anima_cond suffix if present, otherwise
+        # from the raw conditioning image pixels.
+        if any(
+            getattr(info, "cond_img_path", None) is not None for info in image_infos
+        ):
+            cond_latents = []
+            for info in image_infos:
+                cond_lat = self._load_conditioning_latent(info)
+                cond_latents.append(cond_lat)
+            if all(t is not None for t in cond_latents):
+                example["conditioning_latent"] = torch.stack(cond_latents)
+            else:
+                example["conditioning_latent"] = None
+        else:
+            example["conditioning_latent"] = None
 
         if self.debug_dataset:
             example["image_keys"] = bucket[image_index : image_index + self.batch_size]

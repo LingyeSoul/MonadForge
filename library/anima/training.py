@@ -301,6 +301,22 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "stays in the training distribution so clean-cond inference still works.",
     )
     parser.add_argument(
+        "--use_controlnet",
+        action="store_true",
+        help="Enable ControlNet-LLLite image conditioning (per-block zero-conv "
+        "lateral injection of conditioning features). Requires conditioning_data_dir "
+        "in the dataset config pointing to paired conditioning images (depth maps, "
+        "edge maps, reference images). The conditioning latent is loaded from "
+        "pre-cached VAE latents with _anima_cond suffix.",
+    )
+    parser.add_argument(
+        "--controlnet_drop_p",
+        type=float,
+        default=0.1,
+        help="ControlNet image-conditioning dropout probability per batch (CFG dropout "
+        "for image branch). Independent of text-side caption_dropout_rate; default 0.1.",
+    )
+    parser.add_argument(
         "--use_shuffled_caption_variants",
         action="store_true",
         help="Consume preprocessed caption-shuffle variants from the text-encoder cache "
@@ -798,7 +814,9 @@ def do_sample(
     if sampler == "er_sde":
         sampler_obj = inference_utils.ERSDESampler(sigmas, seed=seed, device=device)
     elif sampler == "euler_a":
-        sampler_obj = inference_utils.EulerAncestralSampler(sigmas, seed=seed, device=device)
+        sampler_obj = inference_utils.EulerAncestralSampler(
+            sigmas, seed=seed, device=device
+        )
 
     for i in tqdm(range(steps), desc="Sampling", disable=not show_progress):
         sigma = sigmas[i]
@@ -940,7 +958,9 @@ def _sample_image_inference(
     scale = prompt_dict.get("scale", getattr(args, "sample_guidance_scale", 3.5))
     seed = prompt_dict.get("seed", getattr(args, "sample_seed", None))
     flow_shift = prompt_dict.get("flow_shift", getattr(args, "sample_flow_shift", 5.0))
-    sampler = prompt_dict.get("sample_sampler", getattr(args, "sample_sampler", "euler"))
+    sampler = prompt_dict.get(
+        "sample_sampler", getattr(args, "sample_sampler", "euler")
+    )
 
     if prompt_replacement is not None:
         prompt = prompt.replace(prompt_replacement[0], prompt_replacement[1])
@@ -1042,6 +1062,48 @@ def _sample_image_inference(
                 neg_crossattn_emb = neg_pe
 
     # Generate sample
+    # ControlNet-LLLite: if "controlnet_image" was specified in the prompt, load and encode
+    # the conditioning image, then prime the network before do_sample().
+    controlnet_net = (
+        getattr(dit.blocks[0], "_controlnet_net", None)
+        if hasattr(dit, "blocks")
+        else None
+    )
+    controlnet_image_path = prompt_dict.get("controlnet_image")
+    if controlnet_net is not None and controlnet_image_path:
+        logger.info(f"  loading controlnet image: {controlnet_image_path}")
+        try:
+            from library.datasets.image_utils import load_image
+            import numpy as np
+
+            cn_img = load_image(controlnet_image_path)
+            if cn_img is not None:
+                cn_img = cn_img.convert("RGB")  # handle grayscale depth/edge maps
+                cn_arr = np.array(cn_img).astype(np.float32) / 255.0
+                cn_tensor = torch.from_numpy(cn_arr.transpose(2, 0, 1)).unsqueeze(0)
+                cn_tensor = cn_tensor.to(accelerator.device, dtype=dit.dtype)
+                # Resize to match the target latent dimensions
+                cn_tensor = torch.nn.functional.interpolate(
+                    cn_tensor,
+                    size=(height, width),
+                    mode="bilinear",
+                    align_corners=False,
+                )
+                # VAE encode
+                gc.collect()
+                synchronize_device(accelerator.device)
+                org_vae_device = vae.device
+                vae.to(accelerator.device)
+                try:
+                    with torch.no_grad():
+                        cn_latent = vae.encode_pixels_to_latents(cn_tensor)
+                finally:
+                    vae.to(org_vae_device)
+                controlnet_net.set_cond_latent(cn_latent)
+        except Exception as e:
+            logger.warning(f"  failed to load controlnet image: {e}")
+            controlnet_net.clear_cond_latent()
+
     clean_memory_on_device(accelerator.device)
     latents = do_sample(
         height,
@@ -1057,6 +1119,10 @@ def _sample_image_inference(
         neg_crossattn_emb,
         sampler=sampler,
     )
+
+    # Clear ControlNet conditioning after generation
+    if controlnet_net is not None:
+        controlnet_net.clear_cond_latent()
 
     # Decode latents
     gc.collect()

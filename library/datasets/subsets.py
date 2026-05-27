@@ -326,6 +326,7 @@ class DreamBoothSubset(BaseSubset):
         resize_interpolation: Optional[str] = None,
         mask_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        conditioning_data_dir: Optional[str] = None,
         recursive: bool = False,
         path_pattern: Optional[str] = None,
     ) -> None:
@@ -382,6 +383,10 @@ class DreamBoothSubset(BaseSubset):
         self.cache_dir = cache_dir
         if cache_dir:
             os.makedirs(cache_dir, exist_ok=True)
+        # Optional directory of conditioning images (depth maps, edge maps,
+        # reference images) for ControlNet-style training. Must have matching
+        # filenames with the target image_dir.
+        self.conditioning_data_dir = conditioning_data_dir
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, DreamBoothSubset):

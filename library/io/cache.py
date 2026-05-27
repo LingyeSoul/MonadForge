@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 LATENT_CACHE_SUFFIX = "_anima.npz"
 TE_CACHE_SUFFIX = "_anima_te.safetensors"
 POOLED_CACHE_SUFFIX = "_anima_pooled.safetensors"
+COND_CACHE_SUFFIX = "_anima_cond.npz"
 
 
 def resolve_cache_path(
@@ -61,9 +62,7 @@ def resolve_cache_path(
         # surprising and the lookup-side scanners wouldn't see them anyway.
         if rel and rel != "." and not rel.startswith(".."):
             rel_dir = rel
-    target_dir = (
-        os.path.join(cache_dir_path, rel_dir) if rel_dir else cache_dir_path
-    )
+    target_dir = os.path.join(cache_dir_path, rel_dir) if rel_dir else cache_dir_path
     os.makedirs(target_dir, exist_ok=True)
     return os.path.join(target_dir, stem + suffix)
 
@@ -178,7 +177,11 @@ def load_cached_crossattn_emb(
 
     if "num_variants" in sd:
         n = int(sd["num_variants"])
-        vi = random.randint(0, n - 1) if variant == "random" else min(int(variant), n - 1)
+        vi = (
+            random.randint(0, n - 1)
+            if variant == "random"
+            else min(int(variant), n - 1)
+        )
         key = f"crossattn_emb_v{vi}"
         if key in sd:
             return sd[key].float()
@@ -211,7 +214,11 @@ def load_cached_text_features(
     vi = 0
     if "num_variants" in sd:
         n = int(sd["num_variants"])
-        vi = random.randint(0, n - 1) if variant == "random" else min(int(variant), n - 1)
+        vi = (
+            random.randint(0, n - 1)
+            if variant == "random"
+            else min(int(variant), n - 1)
+        )
 
     crossattn = None
     if f"crossattn_emb_v{vi}" in sd:

@@ -1,0 +1,42 @@
+# ControlNet-LLLite dataset blueprint.
+#
+# Target training images live in the standard LoRA pipeline
+# (post_image_dataset/resized + post_image_dataset/lora caches).
+# Conditioning images (depth maps, edge maps, reference images, etc.)
+# live in a separate directory specified by conditioning_data_dir.
+#
+# Each conditioning image must have the same filename stem as the
+# corresponding target image. For example:
+#   target:    image_dataset/artistA/img001.png
+#   condition: conditioning_data/artistA/img001.png  (or .jpg)
+#
+# Preprocessing:
+#   1. Resize conditioning images to match target bucket resolutions:
+#      python scripts/preprocess/resize_images.py \
+#          --src conditioning_data/ --dst post_image_dataset/cond_resized/
+#   2. Cache conditioning VAE latents:
+#      python scripts/preprocess/cache_latents.py \
+#          --dir post_image_dataset/cond_resized/ \
+#          --cache_dir post_image_dataset/controlnet/
+#
+# The cached conditioning latents will be stored as
+# {stem}_{WxH}_anima_cond.npz in the cache_dir.
+
+[general]
+caption_extension = '.txt'
+keep_tokens = 3
+
+[[datasets]]
+batch_size = 1
+validation_split = 0.025
+validation_seed = 42
+
+  [[datasets.subsets]]
+  image_dir = 'post_image_dataset/resized'
+  cache_dir = 'post_image_dataset/lora'
+  # Conditioning images directory. Pre-resized to match target bucket
+  # resolutions. Cached VAE latents live under the same cache_dir as
+  # target latents, with _anima_cond suffix.
+  conditioning_data_dir = 'post_image_dataset/cond_resized'
+  num_repeats = 1
+  recursive = true

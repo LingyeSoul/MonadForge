@@ -177,6 +177,10 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
         from networks.methods.easycontrol import EasyControlMethodAdapter
 
         adapters.append(EasyControlMethodAdapter())
+    if getattr(args, "use_controlnet", False):
+        from networks.methods.controlnet_lllite import ControlNetMethodAdapter
+
+        adapters.append(ControlNetMethodAdapter())
     # Soft-tokens contrastive: opt-in via a positive contrastive weight on the
     # built network (the objective leaves no learned params, so it's detected
     # off the network's target weight rather than an args flag).

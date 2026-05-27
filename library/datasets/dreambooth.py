@@ -423,6 +423,34 @@ class DreamBoothDataset(BaseDataset):
                         if os.path.exists(mask_path):
                             info.mask_path = mask_path
                             break
+                # Conditioning image path resolution (same nested-then-flat
+                # pattern as mask_dir). Supports ControlNet-LLLite training.
+                if getattr(subset, "conditioning_data_dir", None):
+                    stem = os.path.splitext(os.path.basename(img_path))[0]
+                    cond_candidates: list[str] = []
+                    image_dir = getattr(subset, "image_dir", None)
+                    if image_dir:
+                        try:
+                            rel = os.path.relpath(os.path.dirname(img_path), image_dir)
+                        except ValueError:
+                            rel = ""
+                        if rel and rel != "." and not rel.startswith(".."):
+                            cond_candidates.append(
+                                os.path.join(subset.conditioning_data_dir, rel, f"{stem}.png")
+                            )
+                            cond_candidates.append(
+                                os.path.join(subset.conditioning_data_dir, rel, f"{stem}.jpg")
+                            )
+                    cond_candidates.append(
+                        os.path.join(subset.conditioning_data_dir, f"{stem}.png")
+                    )
+                    cond_candidates.append(
+                        os.path.join(subset.conditioning_data_dir, f"{stem}.jpg")
+                    )
+                    for cp in cond_candidates:
+                        if os.path.exists(cp):
+                            info.cond_img_path = cp
+                            break
                 if size is not None:
                     info.image_size = size
                 if subset.is_reg:
