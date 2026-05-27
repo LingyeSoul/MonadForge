@@ -204,4 +204,28 @@ defineExpose({ showFieldHelp })
   padding: 8px 12px;
   margin: 0.5em 0;
 }
+
+/* Brand: active topic indicator */
+.help-panel {
+  border-left: 3px solid var(--forge-ember);
+}
+
+/* Code blocks: bg-deep terminal style */
+.guide-html :deep(pre) {
+  background: var(--bg-deep);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.guide-html :deep(code) {
+  background: var(--bg-deep);
+  color: var(--forge-amber);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
 </style>
