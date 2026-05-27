@@ -258,7 +258,7 @@ def main() -> None:
     if ch_betas:
         log.info(f"  per-channel beta: {np.mean(ch_betas):.2f} ± {np.std(ch_betas):.2f}  "
                  f"[{np.min(ch_betas):.2f}, {np.max(ch_betas):.2f}]")
-    log.info(f"  paper: FLUX beta≈1.92, claimed range [2,3]")
+    log.info("  paper: FLUX beta≈1.92, claimed range [2,3]")
     log.info(f"  {verdict}")
     log.info(f"  → {run_dir}")
     log.info("=" * 64)

@@ -40,18 +40,23 @@ class PreprocessStatus(BaseModel):
     resized: int = 0
     masks: int = 0
     cache: CacheCounts = CacheCounts()
+    cond_resized: int = 0
 
 
 class DatasetPaths(BaseModel):
     source_image_dir: str = ""
     resized_image_dir: str = ""
     lora_cache_dir: str = ""
+    conditioning_data_dir: str = ""
+    conditioning_resized_dir: str = ""
 
 
 class SavePathsRequest(BaseModel):
     source_image_dir: str | None = None
     resized_image_dir: str | None = None
     lora_cache_dir: str | None = None
+    conditioning_data_dir: str | None = None
+    conditioning_resized_dir: str | None = None
 
 
 # ── Endpoints ────────────────────────────────────────────────────

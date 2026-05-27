@@ -60,6 +60,17 @@
             hide-details
             @update:model-value="updateEntry(i, 'negative_prompt', $event)"
           />
+          <v-text-field
+            :model-value="entry.controlnet_image"
+            :label="t('ppeControlnetImage')"
+            density="compact"
+            variant="outlined"
+            hide-details="auto"
+            clearable
+            prepend-icon="mdi-image-multiple-outline"
+            class="mt-2"
+            @update:model-value="updateEntry(i, 'controlnet_image', $event || '')"
+          />
         </v-card-text>
       </v-card>
 
@@ -96,6 +107,7 @@ import { useI18n } from '../composables/useI18n'
 interface PromptEntry {
   prompt: string
   negative_prompt: string
+  controlnet_image: string
 }
 
 const props = defineProps<{ promptPath: string }>()
@@ -141,7 +153,7 @@ async function save() {
 }
 
 function addEntry() {
-  entries.value.push({ prompt: '', negative_prompt: '' })
+  entries.value.push({ prompt: '', negative_prompt: '', controlnet_image: '' })
   dirty.value = true
 }
 

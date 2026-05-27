@@ -66,6 +66,8 @@ _DEFAULT_PATHS = {
     "source_image_dir": "image_dataset",
     "resized_image_dir": "post_image_dataset/resized",
     "lora_cache_dir": "post_image_dataset/lora",
+    "conditioning_data_dir": "conditioning_data",
+    "conditioning_resized_dir": "post_image_dataset/cond_resized",
 }
 
 
@@ -98,6 +100,7 @@ _METHOD_ORDER = (
     "chimera",
     "ip_adapter",
     "easycontrol",
+    "controlnet",
 )
 
 _ATTN_MODES = ["flash", "torch", "sageattn", "flex", "xformers"]
@@ -1151,12 +1154,13 @@ def wipe_checkpoint(output_dir: str, output_name: str) -> None:
 
 
 _NEG_PROMPT_RE = re.compile(r"n (.+)", re.IGNORECASE)
+_CN_RE = re.compile(r"cn (.+)", re.IGNORECASE)
 
 
 def read_sample_prompts(path_str: str) -> list[dict]:
     """Parse a sample_prompts.txt file into structured prompt entries.
 
-    Returns a list of ``{"prompt": str, "negative_prompt": str}`` dicts.
+    Returns a list of ``{"prompt": str, "negative_prompt": str, "controlnet_image": str}`` dicts.
     Lines starting with ``#`` and blank lines are skipped.
     """
     path = ROOT / path_str
@@ -1170,12 +1174,20 @@ def read_sample_prompts(path_str: str) -> list[dict]:
         parts = line.split(" --")
         prompt = parts[0]
         neg = ""
+        cn = ""
         for part in parts[1:]:
             m = _NEG_PROMPT_RE.match(part.strip())
             if m:
                 neg = m.group(1).strip()
-                break
-        entries.append({"prompt": prompt, "negative_prompt": neg})
+                continue
+            m = _CN_RE.match(part.strip())
+            if m:
+                cn = m.group(1).strip()
+                continue
+        entry: dict[str, str] = {"prompt": prompt, "negative_prompt": neg}
+        if cn:
+            entry["controlnet_image"] = cn
+        entries.append(entry)
     return entries
 
 
@@ -1188,11 +1200,14 @@ def write_sample_prompts(path_str: str, entries: list[dict]) -> None:
         prompt = entry.get("prompt", "").strip()
         if not prompt:
             continue
+        parts = [prompt]
         neg = entry.get("negative_prompt", "").strip()
+        cn = entry.get("controlnet_image", "").strip()
         if neg:
-            lines.append(f"{prompt} --n {neg}")
-        else:
-            lines.append(prompt)
+            parts.append(f"--n {neg}")
+        if cn:
+            parts.append(f"--cn {cn}")
+        lines.append(" ".join(parts))
     path.write_text("\n".join(lines) + "\n" if lines else "", encoding="utf-8")
 
 

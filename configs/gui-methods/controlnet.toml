@@ -1,0 +1,52 @@
+# ControlNet-LLLite — lightweight lateral conditioning injection.
+# GUI-friendly self-contained variant — no toggle blocks.
+#
+# Adapter-only: DiT is frozen, training updates only per-block zero-conv
+# projections that inject conditioning features into the block output.
+# Step-0 baseline equivalence: all zero-conv weights init to 0.
+#
+# Preprocessing required:
+#   1. Resize conditioning images to match target bucket resolutions:
+#      python scripts/preprocess/resize_images.py \
+#          --src <conditioning_dir> --dst post_image_dataset/cond_resized/
+#   2. Cache conditioning VAE latents:
+#      python scripts/preprocess/cache_latents.py \
+#          --dir post_image_dataset/cond_resized/ \
+#          --cache_dir post_image_dataset/lora/
+#   3. Target images use the standard LoRA pipeline caches.
+
+dataset_config = "configs/datasets/controlnet.toml"
+
+network_module = "networks.methods.controlnet_lllite"
+
+network_dim = 1
+network_alpha = 1
+
+network_args = [
+    "injection_scale=1.0",
+    "cond_channels=16",
+]
+
+output_name = "anima_controlnet"
+
+logging_dir = "output/logs"
+log_with = "tensorboard"
+
+learning_rate = 1e-4
+max_train_epochs = 10
+save_every_n_epochs = 10
+checkpointing_epochs = 10
+
+use_controlnet = true
+controlnet_drop_p = 0.1
+caption_dropout_rate = 0.2
+
+blocks_to_swap = 0
+
+use_cmmd = false
+
+[variant]
+family = "controlnet"
+label = "ControlNet-LLLite"
+description = "Per-block zero-conv lateral injection of conditioning features."
+order = 10

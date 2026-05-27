@@ -199,6 +199,18 @@ export default {
   ppStatusTe: '文本嵌入',
   ppStatusPe: '视觉特征',
   ppStatusMasks: '遮罩',
+  ppStatusCondResized: '条件图Resize',
+
+  // Conditioning Preprocessing
+  ppCondTitle: '条件图预处理 (ControlNet)',
+  ppCondResize: 'Resize 条件图',
+  ppCondResizeDesc: '将条件图（深度图、边缘图、参考图等）Resize 到训练 bucket 分辨率。',
+  ppCondCacheVae: '缓存条件图 VAE',
+  ppCondCacheVaeDesc: '缓存条件图的 VAE latent，与目标图 latent 同目录存储，文件名带 <code>_anima_cond</code> 后缀。',
+  ppCondRunResize: 'Resize 条件图',
+  ppCondRunCacheVae: '缓存条件图 VAE',
+  ppPathCondSource: '条件图源目录',
+  ppPathCondResized: '条件图 Resize 目录',
 
   // Preprocess Settings
   ppSettings: '预处理设置',
@@ -336,6 +348,7 @@ export default {
   ppeTitle: '预览提示词',
   ppePositive: '正向提示词',
   ppeNegative: '反向提示词',
+  ppeControlnetImage: '条件图 (--cn)',
   ppeAdd: '添加提示词',
   ppeRemove: '删除',
   ppeSave: '保存提示词',

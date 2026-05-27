@@ -119,6 +119,14 @@ COMMANDS = {
         "Cache PE-Core vision-encoder features into the LoRA cache dir. "
         "Consumed by IP-Adapter live-disk mode and the DCW v4 fusion head.",
     ),
+    "preprocess-cond-resize": (
+        preprocess.cmd_preprocess_cond_resize,
+        "Resize conditioning images to bucket resolutions",
+    ),
+    "preprocess-cond-vae": (
+        preprocess.cmd_preprocess_cond_vae,
+        "Cache conditioning VAE latents",
+    ),
     "caption-index": (
         preprocess.cmd_caption_index,
         "Build the typed-tag caption index (character/copyright/artist groups) "

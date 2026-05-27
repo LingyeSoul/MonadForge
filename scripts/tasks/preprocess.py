@@ -116,6 +116,45 @@ def cmd_preprocess_vae(extra):
     )
 
 
+def cmd_preprocess_cond_resize(extra):
+    """Resize conditioning images to match target bucket resolutions."""
+    run(
+        [
+            PY,
+            "scripts/preprocess/resize_images.py",
+            "--src",
+            _path("conditioning_data_dir", os.environ.get("CONDITIONING_DATA_DIR", "conditioning_data")),
+            "--dst",
+            _path("conditioning_resized_dir", os.environ.get("CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized")),
+            "--no_copy_captions",
+            "--recursive",
+            *extra,
+        ]
+    )
+
+
+def cmd_preprocess_cond_vae(extra):
+    """Cache VAE latents for conditioning images."""
+    run(
+        [
+            PY,
+            "scripts/preprocess/cache_latents.py",
+            "--dir",
+            _path("conditioning_resized_dir", os.environ.get("CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized")),
+            "--cache_dir",
+            _path("lora_cache_dir", "post_image_dataset/lora"),
+            "--vae",
+            _path("vae", "models/vae/qwen_image_vae.safetensors"),
+            "--batch_size",
+            "4",
+            "--chunk_size",
+            "64",
+            "--recursive",
+            *extra,
+        ]
+    )
+
+
 def cmd_preprocess_te(extra):
     # CAPTION_SHUFFLE_VARIANTS / CAPTION_TAG_DROPOUT_RATE let the GUI's
     # Preprocessing tab control these without editing this file. Defaults

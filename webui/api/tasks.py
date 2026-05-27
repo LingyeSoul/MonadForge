@@ -39,6 +39,8 @@ _COMMAND_DESCRIPTIONS = {
     "preprocess-te": "Cache text embeddings",
     "preprocess-pooled": "Cache pooled text embeddings",
     "preprocess-pe": "Cache PE features",
+    "preprocess-cond-resize": "Resize conditioning images",
+    "preprocess-cond-vae": "Cache conditioning VAE latents",
     "mask": "Run SAM + MIT masking",
     "mask-clean": "Remove masks",
     "merge": "Merge LoRA into DiT",

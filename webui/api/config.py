@@ -79,6 +79,7 @@ def get_merged_config(
 class SamplePromptEntry(BaseModel):
     prompt: str
     negative_prompt: str = ""
+    controlnet_image: str = ""
 
 
 class SamplePromptsResponse(BaseModel):

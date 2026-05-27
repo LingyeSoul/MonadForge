@@ -26,6 +26,9 @@
           <v-chip prepend-icon="mdi-image-filter-center-focus" :color="status.masks > 0 ? 'success' : 'default'" variant="tonal">
             {{ t('ppStatusMasks') }}: {{ status.masks }}
           </v-chip>
+          <v-chip prepend-icon="mdi-image-multiple-outline" :color="status.cond_resized > 0 ? 'success' : 'default'" variant="tonal">
+            {{ t('ppStatusCondResized') }}: {{ status.cond_resized }}
+          </v-chip>
         </div>
       </v-card-text>
     </v-card>
@@ -55,6 +58,20 @@
         <v-text-field
           v-model="paths.cache"
           :label="t('ppPathCache')"
+          density="compact"
+          hide-details="auto"
+          class="mb-2"
+        />
+        <v-text-field
+          v-model="paths.condSource"
+          :label="t('ppPathCondSource')"
+          density="compact"
+          hide-details="auto"
+          class="mb-2"
+        />
+        <v-text-field
+          v-model="paths.condResized"
+          :label="t('ppPathCondResized')"
           density="compact"
           hide-details="auto"
         />
@@ -297,6 +314,48 @@
       </v-col>
     </v-row>
 
+    <!-- Conditioning Preprocessing -->
+    <v-divider class="my-4" />
+    <div class="text-subtitle-1 mb-2">
+      <v-icon icon="mdi-image-multiple-outline" class="mr-1" />
+      {{ t('ppCondTitle') }}
+    </div>
+    <v-row>
+      <v-col cols="12" md="4">
+        <v-card variant="tonal">
+          <v-card-title class="text-subtitle-1">
+            <v-icon icon="mdi-resize" class="mr-2" />
+            {{ t('ppCondResize') }}
+          </v-card-title>
+          <v-card-text>
+            <div class="text-body-2 mb-2" v-html="t('ppCondResizeDesc')" />
+          </v-card-text>
+          <v-card-actions>
+            <v-btn color="primary" :loading="isRunning('preprocess-cond-resize')" @click="runTask('preprocess-cond-resize')">
+              {{ t('ppCondRunResize') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-col>
+
+      <v-col cols="12" md="4">
+        <v-card variant="tonal">
+          <v-card-title class="text-subtitle-1">
+            <v-icon icon="mdi-cached" class="mr-2" />
+            {{ t('ppCondCacheVae') }}
+          </v-card-title>
+          <v-card-text>
+            <div class="text-body-2 mb-2" v-html="t('ppCondCacheVaeDesc')" />
+          </v-card-text>
+          <v-card-actions>
+            <v-btn color="primary" :loading="isRunning('preprocess-cond-vae')" @click="runTask('preprocess-cond-vae')">
+              {{ t('ppCondRunCacheVae') }}
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-col>
+    </v-row>
+
     <v-divider class="my-4" />
 
     <div class="d-flex align-center mb-2">
@@ -339,7 +398,8 @@ taskStore.fetchTasks()
 
 const preprocessCommands = [
   'preprocess', 'preprocess-resize', 'preprocess-vae', 'preprocess-te',
-  'preprocess-pe', 'mask', 'mask-clean',
+  'preprocess-pe', 'preprocess-cond-resize', 'preprocess-cond-vae',
+  'mask', 'mask-clean',
 ]
 
 // ── Status dashboard ──────────────────────────────────────────
@@ -348,6 +408,7 @@ const status = reactive({
   resized: 0,
   masks: 0,
   cache: { latents: 0, te: 0, pe: 0 },
+  cond_resized: 0,
 })
 
 async function fetchStatus() {
@@ -366,6 +427,7 @@ async function fetchStatus() {
     status.cache.latents = data.cache?.latents ?? 0
     status.cache.te = data.cache?.te ?? 0
     status.cache.pe = data.cache?.pe ?? 0
+    status.cond_resized = data.cond_resized ?? 0
   } catch { /* ignore */ }
 }
 
@@ -419,7 +481,7 @@ onMounted(fetchSettings)
 
 // ── Dataset paths ──────────────────────────────────────────────
 
-const paths = reactive({ source: '', resized: '', cache: '' })
+const paths = reactive({ source: '', resized: '', cache: '', condSource: '', condResized: '' })
 const pathsLoading = ref(false)
 const pathsSaving = ref(false)
 
@@ -449,6 +511,8 @@ async function fetchPaths() {
     paths.source = data.source_image_dir ?? ''
     paths.resized = data.resized_image_dir ?? ''
     paths.cache = data.lora_cache_dir ?? ''
+    paths.condSource = data.conditioning_data_dir ?? ''
+    paths.condResized = data.conditioning_resized_dir ?? ''
   } catch { /* ignore */ }
   finally { pathsLoading.value = false }
 }
@@ -471,6 +535,8 @@ async function savePaths() {
         source_image_dir: paths.source,
         resized_image_dir: paths.resized,
         lora_cache_dir: paths.cache,
+        conditioning_data_dir: paths.condSource,
+        conditioning_resized_dir: paths.condResized,
       }),
     })
     if (res.ok) {
@@ -478,6 +544,8 @@ async function savePaths() {
       paths.source = data.source_image_dir ?? paths.source
       paths.resized = data.resized_image_dir ?? paths.resized
       paths.cache = data.lora_cache_dir ?? paths.cache
+      paths.condSource = data.conditioning_data_dir ?? paths.condSource
+      paths.condResized = data.conditioning_resized_dir ?? paths.condResized
       notify.show(t('ppPathsSaved'), 'success')
       fetchStatus()
     } else {
@@ -555,6 +623,10 @@ async function runTask(command: string) {
   if (['preprocess-te', 'preprocess'].includes(command)) {
     env.CAPTION_SHUFFLE_VARIANTS = String(settings.caption_shuffle_variants)
     env.CAPTION_TAG_DROPOUT_RATE = String(settings.caption_tag_dropout_rate)
+  }
+  if (['preprocess-cond-resize', 'preprocess-cond-vae'].includes(command)) {
+    if (paths.condSource) env.CONDITIONING_DATA_DIR = paths.condSource
+    if (paths.condResized) env.CONDITIONING_RESIZED_DIR = paths.condResized
   }
 
   const taskId = await taskStore.startTask(command, args, Object.keys(env).length > 0 ? env : undefined)

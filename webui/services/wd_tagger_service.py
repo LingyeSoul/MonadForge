@@ -105,7 +105,6 @@ def _ensure_model_files(model_name: str) -> Path:
     Downloads config.json, model.safetensors, and selected_tags.csv.
     Returns the model directory path.
     """
-    import os
     import urllib.request
 
     base_url = f"https://hf-mirror.com/{MODEL_REPO_MAP[model_name]}/resolve/main"

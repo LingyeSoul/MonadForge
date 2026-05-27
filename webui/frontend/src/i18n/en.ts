@@ -199,6 +199,18 @@ export default {
   ppStatusTe: 'TE',
   ppStatusPe: 'PE',
   ppStatusMasks: 'Masks',
+  ppStatusCondResized: 'Cond Resized',
+
+  // Conditioning Preprocessing
+  ppCondTitle: 'Conditioning Preprocessing (ControlNet)',
+  ppCondResize: 'Resize Conditioning Images',
+  ppCondResizeDesc: 'Resize conditioning images (depth maps, edge maps, reference images) to match training bucket resolutions.',
+  ppCondCacheVae: 'Cache Conditioning VAE',
+  ppCondCacheVaeDesc: 'Cache VAE latents for conditioning images. These are stored alongside target latents with <code>_anima_cond</code> suffix.',
+  ppCondRunResize: 'Resize Cond.',
+  ppCondRunCacheVae: 'Cache Cond. VAE',
+  ppPathCondSource: 'Conditioning Source Dir',
+  ppPathCondResized: 'Conditioning Resized Dir',
 
   // Preprocess Settings
   ppSettings: 'Preprocessing Settings',
@@ -336,6 +348,7 @@ export default {
   ppeTitle: 'Preview Prompts',
   ppePositive: 'Positive Prompt',
   ppeNegative: 'Negative Prompt',
+  ppeControlnetImage: 'Conditioning Image (--cn)',
   ppeAdd: 'Add Prompt',
   ppeRemove: 'Remove',
   ppeSave: 'Save Prompts',

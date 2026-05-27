@@ -35,6 +35,7 @@ def _get_paths(
         "resized": _resolve(paths["resized_image_dir"]),
         "masks": _resolve(paths["resized_image_dir"]).parent / "masks",
         "cache": _resolve(paths["lora_cache_dir"]),
+        "cond_resized": _resolve(paths["conditioning_resized_dir"]),
     }
 
 
@@ -45,6 +46,8 @@ def get_paths(variant: str | None = None, preset: str | None = None) -> dict[str
         "source_image_dir": paths["source_image_dir"],
         "resized_image_dir": paths["resized_image_dir"],
         "lora_cache_dir": paths["lora_cache_dir"],
+        "conditioning_data_dir": paths["conditioning_data_dir"],
+        "conditioning_resized_dir": paths["conditioning_resized_dir"],
     }
 
 
@@ -52,7 +55,7 @@ def save_path_overrides(variant: str, data: dict[str, str]) -> dict[str, str]:
     """Persist path overrides to the variant TOML and return updated paths."""
     from webui.services.config_service import save_variant_config
 
-    allowed = {"source_image_dir", "resized_image_dir", "lora_cache_dir"}
+    allowed = {"source_image_dir", "resized_image_dir", "lora_cache_dir", "conditioning_data_dir", "conditioning_resized_dir"}
     filtered = {k: v for k, v in data.items() if k in allowed and v}
     if filtered:
         save_variant_config(variant, filtered)
@@ -254,4 +257,5 @@ def get_status(
         "resized": _count_images(p["resized"]),
         "masks": _count_mask_files(p["masks"]),
         "cache": _count_cache_files(p["cache"], cache_dir),
+        "cond_resized": _count_images(p["cond_resized"]),
     }
