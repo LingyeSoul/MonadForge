@@ -354,38 +354,8 @@ class EasyControlTab(_AdapterTab):
     METHOD_LABEL = "EasyControl"
 
 
-class SPDTrainTab(_AdapterTab):
-    # SPD "Case B": a trajectory LoRA distilled to follow the multi-resolution
-    # SPD inference path. It trains on the SAME data + cache as ordinary LoRA
-    # training (image_dataset/ → post_image_dataset/lora/, VAE + TE only — no PE),
-    # via the bespoke loop `make exp-spd` (scripts/distill_spd.py, NOT train.py),
-    # so it has no dataset of its own: "Preprocess" just runs `make preprocess`.
-    # Output anima_spd.safetensors is a normal LoRA — infer with the SPD sampler
-    # at the trained schedule (`make exp-test-spd`). See docs/experimental/spd.md.
-    SOURCE_DIR = "image_dataset"
-    CACHE_DIR = "post_image_dataset/lora"
-    PREPROCESS_TASK = "preprocess"
-    TRAIN_TASK = "exp-spd"
-    TRAIN_METHOD = "spd"
-    REQUIRE_PE = False
-    METHOD_LABEL = "SPD"
-
-
-class TurboTrainTab(_AdapterTab):
-    # Turbo Anima: a 4-step LoRA student distilled from the 28-step CFG=4
-    # teacher via Decoupled-Hybrid DMD2. Like SPD it trains on the SAME data +
-    # cache as ordinary LoRA training (image_dataset/ → post_image_dataset/lora/,
-    # VAE + TE only — no PE), through the bespoke loop `make exp-turbo`
-    # (scripts/distill_turbo.py, NOT train.py), so it has no dataset of its own:
-    # "Preprocess" just runs `make preprocess`. Output anima_turbo.safetensors is
-    # a normal LoRA — infer at 4 steps cfg=1.0 (`make exp-test-turbo`). The
-    # turbo.toml schema is bespoke/sectioned but its flat output_name/output_dir
-    # top-level keys are enough for the resume prompt. See
-    # docs/proposal/turbo_anima_dmd_lora.md.
-    SOURCE_DIR = "image_dataset"
-    CACHE_DIR = "post_image_dataset/lora"
-    PREPROCESS_TASK = "preprocess"
-    TRAIN_TASK = "exp-turbo"
-    TRAIN_METHOD = "turbo"
-    REQUIRE_PE = False
-    METHOD_LABEL = "Turbo"
+# SPD and Turbo used to live here as _AdapterTab subclasses, but they have no
+# dataset of their own (they reuse the ordinary LoRA cache) and train via
+# bespoke sectioned-TOML distill loops, so the dataset-browser launcher was a
+# poor fit. They now get a structured config-editor tab — see
+# gui/tabs/distill_tab.py (SPDTrainTab / TurboTrainTab).

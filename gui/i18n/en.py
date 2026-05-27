@@ -232,6 +232,13 @@ STRINGS: dict[str, str] = {
     "adapter_preprocess_pe": "Preprocess (resize + VAE + text + PE)",
     "adapter_train": "Train",
     "adapter_stop": "Stop",
+    # SPD / Turbo distillation config tabs (gui/tabs/distill_tab.py)
+    "distill_general_section": "general",
+    "distill_preprocess_tooltip": "Build the shared LoRA cache (image_dataset/ → "
+    "post_image_dataset/lora/). SPD and Turbo train on the same cache as ordinary "
+    "LoRA — skip this if you've already preprocessed.",
+    "distill_job_running": "A job is already running on this tab.",
+    "distill_config_missing": "Could not read the config file: {err}",
     "adapter_log_placeholder": "Run output will appear here...",
     "adapter_no_dataset": "Source dataset directory does not exist. Create it and drop in image+caption pairs.",
     "adapter_open_dir": "Open directory",

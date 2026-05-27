@@ -16,13 +16,13 @@
 # the denoise loss + per-pool balance loss. T-LoRA's mask is applied to
 # the content branch only (the freq branch keeps full rank at every t).
 
-network_alpha = 64
-network_dim = 64
+network_alpha = 32
+network_dim = 32
 
-learning_rate = 2e-5
-max_train_epochs = 10
-save_every_n_epochs = 2
-checkpointing_epochs = 2
+learning_rate = 5e-5
+max_train_epochs = 3
+save_every_n_epochs = 3
+checkpointing_epochs = 3
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -55,6 +55,7 @@ blocks_to_swap=8
 use_chimera_hydra = true
 num_experts_content = 6
 num_experts_freq = 2
+chimera_centered_gate = true
 
 # Outer balance multiplier is 1.0 so the per-pool weights below are the
 # only scalars on the balance loss. Default per-pool weights match the
@@ -72,22 +73,10 @@ balance_loss_weight = 1.0
 balance_w_content = 1e-6
 balance_w_freq = 1e-6
 network_content_router_lr_scale = 10.0
-network_freq_router_lr_scale = 2.0
+network_freq_router_lr_scale = 1.0
 
 content_router_source = "crossattn_emb"
-content_router_init_std = 0.001      # non-zero (uniform would be a fixed point);
-                                     # IGNORED under chimera_centered_gate (router zero-init).
 content_router_layer_norm = true   # parameterless LN on the pooled input
-
-# Centered-gate init (both pools). Recenters each pool's gate to (π − 1/K),
-# zero-inits the content + freq routers, and starts λ_c / λ_f at
-# chimera_lambda_init instead of 0. ΔW = 0 at step 0 (base preserved) while
-# both routers get a step-0 gradient from their disjoint per-expert
-# P-subspaces — the routers learn to route from the first step instead of
-# waiting for λ to ramp. Overrides content_router_init_std / freq_router_init_std
-# to 0 internally. See LoRANetworkCfg.chimera_centered_gate.
-chimera_centered_gate = true
-chimera_lambda_init = 0.01
 
 # FreqRouter input. FEI = 2-band simplex (e_low, e_high). σ-features
 # disabled by default (sigma_feature_dim = 0), so the FreqRouter input
@@ -98,7 +87,6 @@ fei_feature_dim = 2
 fei_sigma_low_div = 4.0
 sigma_feature_dim = 16
 freq_router_layer_norm = true
-freq_router_init_std = 0.1
 max_data_loader_n_workers=1
 # Routing scope. Every Linear matched by this regex becomes a chimera
 # leaf; non-matching layers fall back to OrthoLoRA (single-pool Cayley,

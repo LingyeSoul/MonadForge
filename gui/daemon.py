@@ -150,6 +150,15 @@ def read_job_kind(job_id: str) -> str:
     return data.get("kind") or "train"
 
 
+def read_job_label(job_id: str) -> Optional[str]:
+    """Display label of a command job (its ``method`` field doubles as the
+    label — see ``scripts/daemon/jobs.Job``). Lets a tab re-claim *its own*
+    command job (e.g. ``exp-spd``) on GUI reopen without grabbing another tab's.
+    ``None`` for a missing/unreadable record."""
+    data = _read_job_record(job_id)
+    return data.get("method") if data else None
+
+
 def _read_job_record(job_id: str) -> Optional[dict]:
     try:
         return json.loads(

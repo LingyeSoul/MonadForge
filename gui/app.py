@@ -35,10 +35,9 @@ from gui.i18n import (
 from gui.tabs.adapter_tab import (
     EasyControlTab,
     IPAdapterTab,
-    SPDTrainTab,
-    TurboTrainTab,
 )
 from gui.tabs.config_tab import ConfigTab
+from gui.tabs.distill_tab import SPDTrainTab, TurboTrainTab
 from gui.tabs.image_tab import ImageViewerTab
 from gui.tabs.merge_tab import MergeTab
 from gui.tabs.preprocess_tab import PreprocessingTab

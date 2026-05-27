@@ -221,6 +221,13 @@ STRINGS: dict[str, str] = {
     "adapter_preprocess_pe": "预处理 (调整大小 + VAE + 文本 + PE)",
     "adapter_train": "训练",
     "adapter_stop": "停止",
+    # SPD / Turbo 蒸馏配置标签页 (gui/tabs/distill_tab.py)
+    "distill_general_section": "通用",
+    "distill_preprocess_tooltip": "构建共享的 LoRA 缓存 (image_dataset/ → "
+    "post_image_dataset/lora/)。SPD 和 Turbo 与普通 LoRA 使用相同的缓存 —— "
+    "若已预处理过可跳过。",
+    "distill_job_running": "此标签页已有任务正在运行。",
+    "distill_config_missing": "无法读取配置文件: {err}",
     "adapter_log_placeholder": "运行输出将显示在此处……",
     "adapter_no_dataset": "源数据集目录不存在。请创建该目录并放入图像 + 标注配对。",
     "adapter_open_dir": "打开目录",

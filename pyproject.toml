@@ -18,6 +18,7 @@ dependencies = [
     "prodigyopt>=1.1.2",
     # Data & Config
     "toml>=0.10.2",
+    "tomlkit>=0.13",  # style-preserving TOML for the GUI's sectioned distill-config editor
     "voluptuous>=0.15.2",
     "safetensors>=0.7.0",
     "imagesize>=1.4.1",
