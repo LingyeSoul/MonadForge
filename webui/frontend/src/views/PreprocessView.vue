@@ -577,4 +577,21 @@ function refresh() {
   min-height: 0;
   overflow-y: auto;
 }
+
+/* Pipeline action cards: hover transition */
+:deep(.v-card) {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+/* Status chips: ember tint for active/selected */
+:deep(.v-chip--selected),
+:deep(.v-chip[aria-selected="true"]) {
+  background: rgba(199, 91, 26, 0.12) !important;
+  border-color: var(--forge-ember) !important;
+}
+
+/* Progress bars: smooth border radius */
+:deep(.v-progress-linear) {
+  border-radius: 4px;
+}
 </style>
