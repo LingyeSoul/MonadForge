@@ -13,18 +13,22 @@ import { md3 } from 'vuetify/blueprints'
 const monadForgeDark = {
   dark: true,
   colors: {
-    background:     '#0C0C10',
-    surface:        '#1A1A22',
-    'surface-bright':  '#22222C',
-    'surface-variant': '#2A2A36',
-    primary:        '#C75B1A',  // Ember
-    secondary:      '#D4912A',  // Amber
-    'on-primary':   '#FFFFFF',
-    'on-secondary': '#1A1A22',
-    error:          '#CF6679',
-    info:           '#64B5F6',
-    success:        '#4CAF50',
-    warning:        '#FB8C00',
+    background:           '#0C0C10',
+    surface:              '#1A1A22',
+    'surface-bright':     '#22222C',
+    'surface-variant':    '#2A2A36',
+    'on-surface':         '#F0EDE8',
+    'on-surface-variant': '#A8A0A0',
+    primary:              '#C75B1A',  // Ember
+    secondary:            '#D4912A',  // Amber
+    'on-primary':         '#FFFFFF',
+    'on-secondary':       '#1A1A22',
+    error:                '#CF6679',
+    info:                 '#64B5F6',
+    success:              '#4CAF50',
+    warning:              '#FB8C00',
+    outline:              '#2A2A36',
+    'outline-variant':    '#1E1E28',
   },
   variables: {
     'border-color':          '#2A2A36',
@@ -43,10 +47,11 @@ export default createVuetify({
   },
   defaults: {
     VTextField: { variant: 'outlined', density: 'compact' },
-    VSelect: { variant: 'outlined', density: 'compact' },
-    VSwitch: { color: 'primary', density: 'compact' },
-    VBtn: { variant: 'flat' },
-    VCard: { elevation: 0 },
-    VTextarea: { variant: 'outlined', density: 'compact' },
+    VSelect:    { variant: 'outlined', density: 'compact' },
+    VSwitch:    { color: 'secondary', density: 'compact' },
+    VBtn:       { variant: 'flat' },
+    VCard:      { elevation: 0 },
+    VTextarea:  { variant: 'outlined', density: 'compact' },
+    VChip:      { size: 'small', variant: 'tonal' },
   },
 })
