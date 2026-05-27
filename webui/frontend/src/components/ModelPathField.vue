@@ -9,6 +9,7 @@
       variant="outlined"
       density="compact"
       hide-details="auto"
+      class="font-mono-field"
       @update:model-value="onInput"
     >
       <template #append-inner>
@@ -231,3 +232,13 @@ function confirmSelection() {
   }
 }
 </script>
+
+<style scoped>
+:deep(.v-field--focused) {
+  box-shadow: 0 0 0 2px rgba(199, 91, 26, 0.15);
+  border-radius: var(--radius-md);
+}
+:deep(.v-field--focused .v-field__outline) {
+  border-color: var(--forge-ember) !important;
+}
+</style>
