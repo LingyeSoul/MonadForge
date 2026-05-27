@@ -16,10 +16,13 @@ import logging
 import os
 import random
 
+import numpy as np
 import torch
+from PIL import Image
 
 from library.io.cache import (
     LATENT_CACHE_SUFFIX,
+    TE_CACHE_SUFFIX,
     discover_cached_pairs,
     get_latent_resolution,
     load_cached_latents,
@@ -85,10 +88,15 @@ class CachedDataset(torch.utils.data.Dataset):
         validation_seed: int = 42,
         sample_ratio: float = 1.0,
         synth_data_dir: str | None = None,
+        mask_dir: str | None = None,
     ):
         assert split in ("train", "val")
         self.data_dir = data_dir
         self.synth_data_dir = synth_data_dir
+        # When set, ``__getitem__`` appends a latent-resolution foreground mask
+        # (in [0, 1]) as a 5th tuple element; consumers that don't pass
+        # ``mask_dir`` keep the legacy 4-tuple. See ``_resolve_mask_path``.
+        self.mask_dir = mask_dir
         cached = discover_cached_pairs(data_dir)
 
         # When --synth_data_dir is set, rewrite each sample's latent path to the
@@ -197,6 +205,25 @@ class CachedDataset(torch.utils.data.Dataset):
             f"({len(buckets)} buckets; pre-drop train={n_train}, val={n_val}{sr_note})"
         )
 
+        # Masked loss coverage check (main process only — DataLoader workers are
+        # forked, so per-fetch counters wouldn't propagate back). A run with
+        # ``mask_dir`` set but no resolvable masks would silently degrade to a
+        # no-op (every mask all-ones), so surface coverage up front.
+        if self.mask_dir is not None and self.samples:
+            n_found = sum(
+                1 for _, te in self.samples if self._resolve_mask_path(te) is not None
+            )
+            logger.info(
+                f"[{split}] masked loss: {n_found}/{len(self.samples)} samples have a "
+                f"{{stem}}_mask.png under {self.mask_dir} "
+                f"(missing → all-ones mask, full loss)"
+            )
+            if n_found == 0:
+                logger.warning(
+                    f"[{split}] mask_dir={self.mask_dir} resolved 0 masks — masked "
+                    "loss is a no-op. Did you run `make mask`?"
+                )
+
     def __len__(self):
         return len(self.samples)
 
@@ -226,4 +253,42 @@ class CachedDataset(torch.utils.data.Dataset):
         # a random variant per visit would let cache hits return a teacher pred
         # computed under a different caption than the student is conditioned on.
         crossattn_emb, pooled_text = load_cached_text_features(te_path, variant=0)
+        if self.mask_dir is not None:
+            mask = self._load_mask(te_path, latents.shape[-2], latents.shape[-1])
+            return idx, latents, crossattn_emb, pooled_text, mask
         return idx, latents, crossattn_emb, pooled_text
+
+    def _resolve_mask_path(self, te_path: str) -> str | None:
+        """Map a TE cache path to its ``{stem}_mask.png``, or None if absent.
+
+        The TE sidecar always lives under ``data_dir`` (even in synth mode,
+        where only the latent path is rewritten), so its dir mirrors the
+        image-dir layout that ``make mask`` reproduces under ``mask_dir``.
+        Prefers the nested path, falls back to a flat layout — matching
+        ``dreambooth.py``'s mask resolution.
+        """
+        stem = os.path.basename(te_path).removesuffix(TE_CACHE_SUFFIX)
+        rel = os.path.relpath(os.path.dirname(te_path), self.data_dir)
+        candidates: list[str] = []
+        if rel and rel != "." and not rel.startswith(".."):
+            candidates.append(os.path.join(self.mask_dir, rel, f"{stem}_mask.png"))
+        candidates.append(os.path.join(self.mask_dir, f"{stem}_mask.png"))
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _load_mask(self, te_path: str, h: int, w: int) -> torch.Tensor:
+        """Foreground mask for this sample at latent resolution ``(h, w)``.
+
+        Returns a ``[1, h, w]`` float tensor in ``[0, 1]`` (grayscale PNG /255,
+        area-downsampled to match the latent grid). Falls back to all-ones when
+        no mask file exists, so unmasked samples contribute their full loss.
+        """
+        path = self._resolve_mask_path(te_path)
+        if path is None:
+            return torch.ones(1, h, w, dtype=torch.float32)
+        img = Image.open(path).convert("L")
+        m = torch.from_numpy(np.asarray(img, dtype=np.float32))[None, None] / 255.0
+        m = torch.nn.functional.interpolate(m, size=(h, w), mode="area")
+        return m[0]  # [1, h, w]

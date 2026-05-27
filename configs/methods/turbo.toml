@@ -18,13 +18,12 @@ batch_size = 1
 seed = 42
 use_custom_down_autograd = true
 
+# Masked loss (student-only): when true, the per-image foreground mask multiplies
+# the student DMD2 gradient so distribution-matching focuses on the subject;
+# the fake/critic regression is left full-frame.
+use_masked_loss = true
+
 [network]
-# Student capacity. rank=48 deliberately smaller than the proposal's 128 to
-# match deployable-LoRA scale; expect to revisit if Phase 1 hits R3/R4.
-# alpha = rank (scale = 1.0) matches the project's LoRA-family default —
-# the student needs to absorb a large functional change (28→4 step trajectory
-# remap), so we don't pre-halve its contribution. LR + α-warmup + grad-clip
-# are the stability knobs, not alpha.
 student_rank = 64
 student_alpha = 64
 fake_rank = 64

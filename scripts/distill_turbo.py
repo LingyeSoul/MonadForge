@@ -176,6 +176,26 @@ def main():
         dest="use_custom_down_autograd",
         action="store_false",
     )
+    parser.add_argument(
+        "--use_masked_loss",
+        action="store_true",
+        default=None,
+        help="Apply the per-image foreground mask to the student DMD2 gradient "
+        "(masked-out latents get zero student push). Fake/critic loss is "
+        "unaffected. Default: read from TOML (top-level scalar), else off.",
+    )
+    parser.add_argument(
+        "--no_use_masked_loss",
+        dest="use_masked_loss",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--mask_dir",
+        type=str,
+        default=None,
+        help="Mask root for --use_masked_loss (default: TOML mask_dir, else "
+        "post_image_dataset/masks). Mirrors data_dir's subdir layout.",
+    )
     parser.add_argument("--student_lr", type=float, default=-1.0)
     parser.add_argument("--fake_lr", type=float, default=-1.0)
     parser.add_argument(
@@ -256,6 +276,13 @@ def main():
         )
     else:
         use_custom_down_autograd = bool(args.use_custom_down_autograd)
+
+    # Masked loss: top-level scalar (matches use_custom_down_autograd), CLI wins.
+    if args.use_masked_loss is None:
+        use_masked_loss = bool(_flatten(cfg, "use_masked_loss", False))
+    else:
+        use_masked_loss = bool(args.use_masked_loss)
+    mask_dir = pick(args.mask_dir, "mask_dir", "post_image_dataset/masks")
 
     student_steps = int(pick(args.student_steps, "dmd.student_steps", 4))
     teacher_cfg = float(pick(args.alpha, "dmd.teacher_cfg", 4.0))
@@ -388,6 +415,7 @@ def main():
         data_dir,
         batch_size=batch_size,
         sample_ratio=args.sample_ratio,
+        mask_dir=mask_dir if use_masked_loss else None,
     )
     if args.single_prompt_idx is not None:
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
@@ -404,14 +432,17 @@ def main():
         )
 
     def _collate(batch):
-        return (
+        out = [
             [b[0] for b in batch],
             torch.stack([b[1] for b in batch]),
             torch.stack([b[2] for b in batch]),
             torch.stack(
                 [b[3] for b in batch]
             ),  # pooled — unused, but CachedDataset returns it
-        )
+        ]
+        if use_masked_loss:
+            out.append(torch.stack([b[4] for b in batch]))  # [B, 1, H, W] mask
+        return tuple(out)
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -453,6 +484,7 @@ def main():
                     "tau_ca_min_gap": tau_ca_min_gap,
                     "tau_ca_skip_above_t": tau_ca_skip_above_t,
                     "t_distribution": t_distribution,
+                    "use_masked_loss": use_masked_loss,
                     "data_dir": data_dir,
                     "dit_path": dit_path,
                 }.items()
@@ -553,10 +585,18 @@ def main():
 
     for step in progress:
         try:
-            _idx, latents, crossattn_emb, _pooled = next(data_iter)
+            batch = next(data_iter)
         except StopIteration:
             data_iter = iter(dataloader)
-            _idx, latents, crossattn_emb, _pooled = next(data_iter)
+            batch = next(data_iter)
+        if use_masked_loss:
+            _idx, latents, crossattn_emb, _pooled, mask = batch
+            # float (not bf16): the student loss is assembled in fp32. [B,1,H,W]
+            # broadcasts over the [B,16,H,W] grad signal.
+            mask = mask.to(device, dtype=torch.float32, non_blocking=True)
+        else:
+            _idx, latents, crossattn_emb, _pooled = batch
+            mask = None
 
         latents = latents.to(device, dtype=dtype, non_blocking=True)
         crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
@@ -640,7 +680,14 @@ def main():
         # DMD2 grad trick: a dummy scalar whose ∂/∂x_pred equals grad_signal.
         # Backward walks x_pred -> v_student -> student params; the optimizer's
         # descent step then moves x_pred along −τ·grad_signal toward x0_real.
-        loss_student = (grad_signal * x_pred.float()).mean()
+        # Masked loss (student-only): zeroing the surrogate in background latents
+        # zeroes the student push there, focusing distribution-matching on the
+        # foreground. Normalization stays /numel (no renorm by mask area), matching
+        # apply_masked_loss — so a masked run sees a lower effective gradient.
+        if mask is not None:
+            loss_student = (grad_signal * x_pred.float() * mask).mean()
+        else:
+            loss_student = (grad_signal * x_pred.float()).mean()
         loss_student.backward()
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(turbo.student_params(), max_norm=grad_clip)
