@@ -353,5 +353,17 @@ onUnmounted(() => {
 .metric-card {
   border: 1px solid var(--border-subtle);
   background: var(--bg-surface);
+  border-top: 2px solid var(--forge-amber);
+}
+
+/* Progress ring: ember gradient stroke */
+:deep(.v-progress-circular__overlay) {
+  stroke: var(--forge-ember) !important;
+  filter: drop-shadow(0 0 6px rgba(199, 91, 26, 0.3));
+}
+
+/* GPU / system progress bars: ember->amber gradient */
+:deep(.v-progress-linear__determinate) {
+  background: linear-gradient(90deg, var(--forge-ember), var(--forge-amber)) !important;
 }
 </style>
