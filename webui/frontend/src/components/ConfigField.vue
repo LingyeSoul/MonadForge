@@ -67,6 +67,7 @@
       variant="outlined"
       density="compact"
       hide-details="auto"
+      class="font-mono-field"
       @update:model-value="emit('update', Number($event))"
     >
       <template #append-inner>
@@ -93,6 +94,7 @@
       variant="outlined"
       density="compact"
       hide-details="auto"
+      class="font-mono-field"
       :rules="[validateFloat]"
       @update:model-value="onFloatInput($event)"
       @blur="onFloatBlur"
@@ -250,5 +252,26 @@ function tryParse(val: string) {
 .help-icon:hover {
   opacity: 1;
   color: rgb(var(--v-theme-primary));
+}
+
+/* Focus glow on all fields in this component */
+:deep(.v-field--focused) {
+  box-shadow: 0 0 0 2px rgba(199, 91, 26, 0.15);
+  border-radius: var(--radius-md);
+}
+
+:deep(.v-field--focused .v-field__outline) {
+  border-color: var(--forge-ember) !important;
+}
+
+/* Switch ember gradient track */
+:deep(.v-switch__track) {
+  transition: background 0.2s ease;
+}
+
+/* Select dropdown: selected item amber left border */
+:deep(.v-list-item--active) {
+  border-left: 3px solid var(--forge-amber);
+  padding-left: 13px;
 }
 </style>
