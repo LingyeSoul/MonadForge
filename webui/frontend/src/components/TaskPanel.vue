@@ -22,6 +22,7 @@
           class="mb-2"
           variant="tonal"
           :color="stateColor(task.state)"
+          :class="{ 'anim-pulse-glow': task.state === 'running' }"
         >
           <v-card-title class="text-body-2 d-flex align-center">
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
@@ -33,7 +34,7 @@
             {{ task.task_id.slice(0, 8) }} &middot; PID {{ task.pid ?? '—' }}
           </v-card-subtitle>
           <v-card-text v-if="task.state === 'running'" class="pt-0">
-            <v-progress-linear indeterminate color="primary" height="2" />
+            <v-progress-linear indeterminate color="primary" height="3" class="anim-progress-stripe" />
             <div class="d-flex justify-end mt-1">
               <v-btn
                 size="x-small"
@@ -61,6 +62,7 @@
           class="mb-2 d-flex flex-column"
           variant="tonal"
           :color="stateColor(task.state)"
+          :class="{ 'anim-pulse-glow': task.state === 'running' }"
           style="flex: 1 1 0; min-height: 0;"
         >
           <v-card-title class="text-body-2 d-flex align-center flex-shrink-0">
@@ -73,7 +75,7 @@
             {{ task.task_id.slice(0, 8) }} &middot; PID {{ task.pid ?? '—' }}
           </v-card-subtitle>
           <v-card-text v-if="task.state === 'running'" class="pt-0 flex-shrink-0">
-            <v-progress-linear indeterminate color="primary" height="2" />
+            <v-progress-linear indeterminate color="primary" height="3" class="anim-progress-stripe" />
             <div class="d-flex justify-end mt-1">
               <v-btn
                 size="x-small"
