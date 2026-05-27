@@ -309,3 +309,30 @@ function stateColor(state: string) {
   return undefined
 }
 </script>
+
+<style scoped>
+/* File tree: hover highlight */
+:deep(.v-list-item:hover) {
+  background: rgba(199, 91, 26, 0.06) !important;
+}
+
+/* Weight slider: ember track */
+:deep(.v-slider-track__fill) {
+  background: linear-gradient(90deg, var(--forge-ember), var(--forge-amber)) !important;
+}
+:deep(.v-slider-thumb) {
+  color: var(--forge-ember) !important;
+}
+
+/* Merge strategy radio: card style */
+:deep(.v-selection-control) {
+  padding: 8px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  transition: border-color 0.15s;
+}
+:deep(.v-selection-control--selected) {
+  border-color: var(--forge-ember) !important;
+  background: rgba(199, 91, 26, 0.04);
+}
+</style>
