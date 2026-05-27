@@ -14,7 +14,7 @@
         :y1="y"
         :x2="width - paddingRight"
         :y2="y"
-        stroke="rgba(240,237,232,0.07)"
+        stroke="var(--border-subtle)"
         stroke-width="1"
       />
       <!-- Y-axis labels -->
@@ -23,7 +23,7 @@
         :key="'yl' + i"
         :x="paddingLeft - 6"
         :y="tick.y + 4"
-        fill="rgba(240,237,232,0.4)"
+        fill="var(--text-muted)"
         font-size="10"
         text-anchor="end"
         font-family="var(--font-mono)"
