@@ -122,6 +122,7 @@ STRINGS: dict[str, str] = {
     "saved": "저장 완료",
     "saved_file": "{name} 저장됨",
     "invalid_toml": "잘못된 TOML",
+    "config_bad_keys_header": "알 수 없는 데이터셋 키 — 이 키들을 제거하기 전까지 학습이 실패합니다:",
     "error": "오류",
     "accelerate_not_found": "PATH에서 accelerate를 찾을 수 없습니다",
     "preprocess": "전처리",

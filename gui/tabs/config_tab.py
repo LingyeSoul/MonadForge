@@ -47,6 +47,7 @@ from gui import (
     confirm_stale_caches,
     confirm_train_using_cache,
     is_basic_field,
+    lint_variant_configs,
     list_gui_variants,
     list_methods,
     merged_gui_variant_preset,
@@ -196,6 +197,20 @@ class ConfigTab(QWidget):
         top.addWidget(self.stop_btn)
 
         lay.addLayout(top)
+
+        # Config-health banner: flags dataset-blueprint keys the trainer will
+        # reject (e.g. a stale `resolution` in base.toml's [[datasets]]) before
+        # a run dies in the daemon with a raw voluptuous traceback. Rebuilt on
+        # every _reload; hidden when the config is clean.
+        self._config_warning = QLabel()
+        self._config_warning.setWordWrap(True)
+        self._config_warning.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._config_warning.setStyleSheet(
+            "background:#5c1a1a;color:#ffd9d9;border:1px solid #a33;"
+            "border-radius:4px;padding:8px 10px;font-size:12px;"
+        )
+        self._config_warning.setVisible(False)
+        lay.addWidget(self._config_warning)
 
         self.progress = make_progress_bar()
         self._progress_tracker = TqdmProgressTracker(self.progress)
@@ -448,6 +463,32 @@ class ConfigTab(QWidget):
         for w in self._w.values():
             self._connect_dirty_signal(w)
         self._clear_dirty()
+
+        self._refresh_config_warnings(variant)
+
+    def _refresh_config_warnings(self, variant: str) -> None:
+        """Show/hide the config-health banner based on a torch-free scan of the
+        active dataset-blueprint sections (base.toml + variant file)."""
+        try:
+            issues = lint_variant_configs(variant)
+        except Exception:
+            # Linting must never break the form; a config that won't even parse
+            # is surfaced elsewhere (Save / load chain).
+            self._config_warning.setVisible(False)
+            return
+        if not issues:
+            self._config_warning.setVisible(False)
+            return
+        lines = "<br>".join(
+            f"&nbsp;&nbsp;• <b>{html.escape(i.key)}</b> in "
+            f"<code>[{html.escape(i.section)}]</code> "
+            f"({html.escape(i.location)})"
+            for i in issues
+        )
+        self._config_warning.setText(
+            f"⚠ {t('config_bad_keys_header')}<br>{lines}"
+        )
+        self._config_warning.setVisible(True)
 
     # ── Dirty tracking ──
 

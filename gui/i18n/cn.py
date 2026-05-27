@@ -125,6 +125,7 @@ STRINGS: dict[str, str] = {
     "saved": "已保存",
     "saved_file": "已保存 {name}",
     "invalid_toml": "无效的 TOML",
+    "config_bad_keys_header": "未知的数据集键 — 删除这些键之前训练将会失败:",
     "error": "错误",
     "accelerate_not_found": "在 PATH 中找不到 accelerate",
     "preprocess": "预处理",

@@ -127,6 +127,7 @@ STRINGS: dict[str, str] = {
     "saved": "保存済み",
     "saved_file": "{name} を保存しました",
     "invalid_toml": "TOML が不正です",
+    "config_bad_keys_header": "不明なデータセットキー — これらを削除するまで学習は失敗します:",
     "error": "エラー",
     "accelerate_not_found": "PATH に accelerate が見つかりません",
     "preprocess": "前処理",

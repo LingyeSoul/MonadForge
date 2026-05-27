@@ -334,6 +334,34 @@ def _save(p: Path, d: dict):
     p.write_text(toml.dumps(d), encoding="utf-8")
 
 
+def lint_variant_configs(variant: str) -> list:
+    """Scan the dataset-blueprint sections of ``base.toml`` and the variant
+    file for keys the trainer's validator will reject (e.g. a stale
+    ``resolution`` in ``[[datasets]]``). Returns a list of
+    ``library.config.dataset_keys.DatasetKeyIssue``.
+
+    Torch-free: imports only the static allow-list module, so it's safe to run
+    on every Config-tab reload without dragging the training stack into the GUI
+    process.
+    """
+    from library.config.dataset_keys import lint_dataset_sections
+
+    issues: list = []
+    for path, label in (
+        (CONFIGS_DIR / "base.toml", "base.toml"),
+        (variant_path(variant), f"gui-methods/{variant}.toml"),
+    ):
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+            raw = toml.loads(text)
+        except (OSError, toml.TomlDecodeError):
+            continue
+        issues.extend(lint_dataset_sections(raw, source=label, text=text))
+    return issues
+
+
 def merged_method_preset(method: str, preset: str) -> tuple[dict, dict[str, str]]:
     """Return (merged_dict, origin_map). origin_map[key] is 'base' | 'preset' | 'method'."""
     base = _load(CONFIGS_DIR / "base.toml")

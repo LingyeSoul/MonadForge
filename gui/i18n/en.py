@@ -124,6 +124,7 @@ STRINGS: dict[str, str] = {
     "saved": "Saved",
     "saved_file": "Saved {name}",
     "invalid_toml": "Invalid TOML",
+    "config_bad_keys_header": "Unknown dataset keys — training will fail until these are removed:",
     "error": "Error",
     "accelerate_not_found": "accelerate not found on PATH",
     "preprocess": "Preprocess",
