@@ -466,3 +466,26 @@ onMounted(() => {
   fetchModelPaths()
 })
 </script>
+
+<style scoped>
+/* Environment info: mono font for paths/values */
+:deep(.v-list-item-subtitle) {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Download progress: brand styling */
+:deep(.v-progress-linear) {
+  border-radius: 4px;
+}
+
+/* System cards: subtle brand border on hover */
+:deep(.v-card) {
+  transition: border-color 0.2s;
+}
+
+:deep(.v-card:hover) {
+  border-color: var(--border-default);
+}
+</style>
