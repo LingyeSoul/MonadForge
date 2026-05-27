@@ -199,4 +199,20 @@ onMounted(async () => {
 .preview-thumb {
   border: 1px solid rgba(var(--v-border-color), 0.3);
 }
+
+/* Adapter cards: hover lift */
+:deep(.v-card) {
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+}
+:deep(.v-card:hover) {
+  border-color: var(--border-default);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+/* Version chip: amber accent */
+:deep(.v-chip[variant="outlined"]) {
+  border-color: rgba(212, 145, 42, 0.4);
+  color: var(--forge-amber);
+}
 </style>
