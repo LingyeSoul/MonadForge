@@ -44,3 +44,4 @@ configs/custom/
 /docs/plans
 /webui/frontend/node_modules
 /wandb
+/.playwright-mcp

@@ -14,7 +14,7 @@
         :y1="y"
         :x2="width - paddingRight"
         :y2="y"
-        stroke="rgba(255,255,255,0.07)"
+        stroke="rgba(240,237,232,0.07)"
         stroke-width="1"
       />
       <!-- Y-axis labels -->
@@ -23,10 +23,10 @@
         :key="'yl' + i"
         :x="paddingLeft - 6"
         :y="tick.y + 4"
-        fill="rgba(255,255,255,0.4)"
+        fill="rgba(240,237,232,0.4)"
         font-size="10"
         text-anchor="end"
-        font-family="monospace"
+        font-family="var(--font-mono)"
       >
         {{ tick.label }}
       </text>
@@ -67,7 +67,7 @@ const props = withDefaults(defineProps<{
   height?: number
   emptyLabel?: string
 }>(), {
-  color: '#BB86FC',
+  color: '#C75B1A',
   label: '',
   height: 200,
   emptyLabel: 'Waiting for data...',

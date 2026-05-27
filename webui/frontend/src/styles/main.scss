@@ -1,9 +1,167 @@
-// Global style overrides for Vuetify 4
+// ====== MonadForge Brand System ======
+// Global design tokens + Vuetify overrides + animation system
+
+// ---- CSS Custom Properties (brand tokens) ----
+:root {
+  // Brand color ramp
+  --forge-ember:   #C75B1A;
+  --forge-amber:   #D4912A;
+  --forge-gold:    #E8C547;
+  --forge-copper:  #B87333;
+  --forge-bronze:  #6B4226;
+
+  // Surface hierarchy (4 levels)
+  --bg-deep:       #0C0C10;
+  --bg-base:       #121218;
+  --bg-surface:    #1A1A22;
+  --bg-elevated:   #22222C;
+  --bg-hover:      #2A2A36;
+
+  // Text
+  --text-primary:   #F0EDE8;
+  --text-secondary: #A8A0A0;
+  --text-muted:     #706868;
+  --text-disabled:  #4A4444;
+
+  // Borders
+  --border-subtle:  #1E1E28;
+  --border-default: #2A2A36;
+  --border-strong:  #3A3A48;
+
+  // Glow & gradients
+  --glow-ember:    rgba(199, 91, 26, 0.15);
+  --gradient-fire: linear-gradient(135deg, #8B3A0F, #C75B1A, #D4912A, #E8C547);
+
+  // Typography
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  // Radius
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+}
+
+// ---- Vuetify SCSS variable overrides ----
+$body-font-family: 'Roboto', 'Noto Sans SC', sans-serif;
+$border-radius-root: 10px;
+$card-border-radius: 14px;
+$card-elevation: 0;
+
+// ---- Base overrides ----
 html {
   overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+// Scrollbar theming
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--forge-copper);
 }
 
 .monadforge-logo {
   font-weight: 700;
   letter-spacing: 0.02em;
+}
+
+// Numeric / code fields use JetBrains Mono
+.font-mono-field {
+  font-family: var(--font-mono) !important;
+}
+
+// ---- Metric cards ----
+.metric-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+// ---- Animation Keyframes ----
+@keyframes fadeSlideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseGlow {
+  0%, 100% { box-shadow: 0 0 12px var(--glow-ember); }
+  50%      { box-shadow: 0 0 24px rgba(199, 91, 26, 0.3); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes progressStripe {
+  0%   { background-position: 0 0; }
+  100% { background-position: 40px 0; }
+}
+
+// ---- Animation utility classes ----
+.anim-fade-up {
+  animation: fadeSlideUp 0.3s ease-out both;
+}
+
+.anim-pulse-glow {
+  animation: pulseGlow 2s ease-in-out infinite;
+}
+
+.anim-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-surface) 25%,
+    var(--bg-elevated) 50%,
+    var(--bg-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease infinite;
+}
+
+.anim-progress-stripe {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--forge-ember),
+    var(--forge-ember) 10px,
+    rgba(199, 91, 26, 0.7) 10px,
+    rgba(199, 91, 26, 0.7) 20px
+  );
+  background-size: 40px 100%;
+  animation: progressStripe 1s linear infinite;
+}
+
+// ---- Vue route transitions ----
+.fade-slide-enter-active {
+  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
+}
+.fade-slide-leave-active {
+  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
+}
+.fade-slide-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+.fade-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+// ---- Accessibility: reduced motion ----
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

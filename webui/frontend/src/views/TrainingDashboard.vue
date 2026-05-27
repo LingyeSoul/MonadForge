@@ -83,7 +83,7 @@
             <div class="text-subtitle-2 mb-3">{{ t('dashMetrics') }}</div>
             <v-row dense>
               <v-col v-for="card in metricCards" :key="card.key" cols="6" sm="4">
-                <div class="metric-card pa-3 rounded-lg" style="background: rgba(255,255,255,0.03);">
+                <div class="metric-card pa-3 rounded-lg">
                   <div class="text-caption text-medium-emphasis mb-1">{{ card.label }}</div>
                   <div class="text-h6 font-weight-medium" :style="{ color: card.color }">
                     {{ card.value }}
@@ -131,7 +131,7 @@
             </div>
             <LossChart
               :data="lossChartData"
-              color="#BB86FC"
+              color="#C75B1A"
               :height="220"
               :empty-label="t('dashWaitingLoss')"
             />
@@ -148,7 +148,7 @@
             </div>
             <LossChart
               :data="lrChartData"
-              color="#CF6679"
+              color="#D4912A"
               :height="220"
               :empty-label="t('dashWaitingLr')"
             />
@@ -263,13 +263,13 @@ const reversedEvents = computed(() => [...m.value.events].reverse())
 
 const metricCards = computed(() => {
   const cards: { key: string; label: string; value: string; color?: string }[] = [
-    { key: 'loss', label: t('dashLoss'), value: m.value.avr_loss > 0 ? m.value.avr_loss.toFixed(5) : '—', color: '#BB86FC' },
-    { key: 'lr', label: t('dashLearningRate'), value: m.value.lr > 0 ? m.value.lr.toExponential(2) : '—', color: '#CF6679' },
+    { key: 'loss', label: t('dashLoss'), value: m.value.avr_loss > 0 ? m.value.avr_loss.toFixed(5) : '—', color: '#C75B1A' },
+    { key: 'lr', label: t('dashLearningRate'), value: m.value.lr > 0 ? m.value.lr.toExponential(2) : '—', color: '#D4912A' },
     { key: 'speed', label: t('dashSpeed'), value: m.value.speed || '—' },
     { key: 'step', label: t('dashStep'), value: m.value.total_steps > 0 ? `${m.value.step}/${m.value.total_steps}` : '—' },
   ]
   if (m.value.router_h !== null && m.value.router_h !== undefined) {
-    cards.push({ key: 'router_h', label: t('dashRouterH'), value: m.value.router_h.toFixed(3), color: '#03DAC6' })
+    cards.push({ key: 'router_h', label: t('dashRouterH'), value: m.value.router_h.toFixed(3), color: '#D4912A' })
   }
   if (m.value.avg_key_norm !== null && m.value.avg_key_norm !== undefined) {
     cards.push({ key: 'avg_key_norm', label: t('dashAvgKeyNorm'), value: m.value.avg_key_norm.toFixed(4) })
@@ -301,7 +301,7 @@ const sysCards = computed(() => {
     cards.push({ key: 'gpu_temp', label: t('dashGpuTemp'), value: `${v.gpu_temp_c}°C`, color })
   }
   if (v.cpu_percent !== undefined) {
-    cards.push({ key: 'cpu', label: t('dashCpu'), value: `${v.cpu_percent}%`, color: '#2196F3', percent: v.cpu_percent })
+    cards.push({ key: 'cpu', label: t('dashCpu'), value: `${v.cpu_percent}%`, color: '#64B5F6', percent: v.cpu_percent })
   }
   if (v.mem_total_gb) {
     cards.push({ key: 'mem', label: t('dashMem'), value: `${v.mem_used_gb}/${v.mem_total_gb} GB`, color: '#9C27B0', percent: v.mem_percent })
@@ -351,6 +351,7 @@ onUnmounted(() => {
 
 <style scoped>
 .metric-card {
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
 }
 </style>

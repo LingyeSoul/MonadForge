@@ -8,11 +8,12 @@
     >
       <v-list-item
         :title="t('appName')"
-        class="monadforge-logo py-3"
+        class="monadforge-logo py-3 pl-4"
+        density="compact"
         nav
       >
         <template #prepend>
-          <v-avatar size="32" class="mr-2">
+          <v-avatar size="24" rounded="0">
             <img src="/logo.svg" alt="MonadForge" />
           </v-avatar>
         </template>
@@ -80,7 +81,11 @@
     </v-navigation-drawer>
 
     <v-main>
-      <router-view />
+      <router-view v-slot="{ Component }">
+        <Transition name="fade-slide" mode="out-in">
+          <component :is="Component" />
+        </Transition>
+      </router-view>
     </v-main>
 
     <GuidebookDialog v-model="showGuidebook" />

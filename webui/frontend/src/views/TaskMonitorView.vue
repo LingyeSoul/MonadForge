@@ -127,7 +127,7 @@ function onTaskDone() {
 }
 
 function stateColor(state: string) {
-  if (state === 'running') return 'info'
+  if (state === 'running') return 'primary'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
   return undefined
