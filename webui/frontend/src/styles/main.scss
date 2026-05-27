@@ -39,6 +39,15 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
+
+  // Typography scale (responsive clamp)
+  --fs-display: clamp(28px, 3.5vw, 48px);
+  --fs-h1:      clamp(24px, 2.5vw, 32px);
+  --fs-h2:      clamp(20px, 2vw, 24px);
+  --fs-h3:      16px;
+  --fs-body:    14px;
+  --fs-caption: 12px;
+  --fs-micro:   11px;
 }
 
 // ---- Vuetify SCSS variable overrides ----
@@ -84,6 +93,51 @@ body {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+}
+
+// ---- Focus / interaction glow ----
+.v-field--focused {
+  .v-field__outline {
+    border-color: var(--forge-ember) !important;
+  }
+  box-shadow: 0 0 0 2px var(--glow-ember);
+  border-radius: var(--radius-md);
+}
+
+// Button press micro-interaction
+.v-btn:not(.v-btn--disabled):active {
+  transform: scale(0.97);
+  filter: brightness(1.1);
+  transition: transform 0.1s ease, filter 0.1s ease;
+}
+
+// ---- Skeleton / loading ----
+.skeleton-block {
+  border-radius: var(--radius-sm);
+  @extend .anim-shimmer;
+  min-height: 16px;
+}
+
+// ---- Shake animation for validation ----
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
+}
+
+.anim-shake {
+  animation: shake 0.3s ease-in-out;
+}
+
+// ---- Confetti burst ----
+@keyframes confetti-fall {
+  0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(40px) rotate(360deg); opacity: 0; }
+}
+
+// ---- Stagger item utility ----
+.stagger-item {
+  animation: fadeSlideUp 0.3s ease-out both;
 }
 
 // ---- Animation Keyframes ----
