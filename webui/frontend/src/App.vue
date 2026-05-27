@@ -193,4 +193,22 @@ async function onLangChange(lang: unknown) {
   min-height: 0;
   overflow: hidden;
 }
+
+/* Navigation drawer branding */
+.v-navigation-drawer .v-list-item--active {
+  background: rgba(199, 91, 26, 0.08) !important;
+  border-left: 3px solid var(--forge-ember) !important;
+}
+.v-navigation-drawer .v-list-item:not(.v-list-item--active):hover {
+  background: rgba(199, 91, 26, 0.04);
+  border-left: 3px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+.v-navigation-drawer .v-list-item--active .v-icon {
+  color: rgb(var(--v-theme-primary)) !important;
+}
+.monadforge-logo .v-avatar {
+  box-shadow: 0 0 12px rgba(199, 91, 26, 0.2);
+  border-radius: 6px;
+}
 </style>
