@@ -677,7 +677,7 @@ INFERENCE_BASE = [
     "--flow_shift",
     "1.0",
     "--sampler",
-    "er_sde",
+    "euler",
     "--guidance_scale",
     "4.0",
     "--seed",

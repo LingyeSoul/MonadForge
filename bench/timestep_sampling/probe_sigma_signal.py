@@ -150,18 +150,56 @@ def build_sample_strip(
     col_labels: list[str],
     title: str,
     max_px: int,
+    layout: str = "grid",
+    grid_cols: int = 3,
 ) -> Image.Image:
-    """One strip for ONE sample: a single row of [true x0] + x0_pred(σ).
+    """One strip for ONE sample: [true x0] + x0_pred(σ).
 
-    Kept per-sample (rather than a stacked grid) so each is legible at a
-    glance — open them side by side in an image viewer to compare samples.
+    Kept per-sample (rather than a stacked grid across samples) so each is
+    legible at a glance — open them side by side in an image viewer to
+    compare samples.
+
+    ``layout="grid"`` packs the cells row-major into ``grid_cols`` columns
+    (true x0 in the top-left, then σ ascending). ``layout="vertical"`` stacks
+    σ top→bottom with labels left of each tile. ``layout="horizontal"`` is
+    the legacy single row.
     """
     thumbs = [_thumb(im, max_px) for im in images]
     cell_w = max(im.width for im in thumbs)
     cell_h = max(im.height for im in thumbs)
-    pad, header, title_h = 6, 26, 20
-    ncol = len(images)
-    W = ncol * (cell_w + pad) + pad
+    pad, title_h, header = 6, 20, 30
+    n = len(images)
+    if layout == "grid":
+        cols = max(1, grid_cols)
+        rows = (n + cols - 1) // cols
+        W = cols * (cell_w + pad) + pad
+        H = title_h + rows * (cell_h + header + pad) + pad
+        canvas = Image.new("RGB", (W, H), "white")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((pad, 4), title, fill="black")
+        for i, (lab, im) in enumerate(zip(col_labels, thumbs)):
+            r, c = divmod(i, cols)
+            x = c * (cell_w + pad) + pad
+            y_label = title_h + r * (cell_h + header + pad) + 2
+            y_img = y_label + header
+            draw.multiline_text((x + 2, y_label), lab, fill="black", spacing=2)
+            canvas.paste(im, (x, y_img))
+        return canvas
+    if layout == "vertical":
+        label_w = 120
+        W = label_w + cell_w + 2 * pad
+        H = title_h + n * (cell_h + pad) + pad
+        canvas = Image.new("RGB", (W, H), "white")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((pad, 4), title, fill="black")
+        for r, (lab, im) in enumerate(zip(col_labels, thumbs)):
+            y = title_h + r * (cell_h + pad) + pad
+            draw.multiline_text(
+                (pad, y + max(0, cell_h // 2 - 14)), lab, fill="black", spacing=2
+            )
+            canvas.paste(im, (label_w, y))
+        return canvas
+    W = n * (cell_w + pad) + pad
     H = title_h + header + cell_h + 2 * pad
     canvas = Image.new("RGB", (W, H), "white")
     draw = ImageDraw.Draw(canvas)
@@ -211,8 +249,22 @@ def main() -> None:
     ap.add_argument(
         "--strip_max_px",
         type=int,
-        default=200,
+        default=1024,
         help="Max edge (px) of each decoded tile in x0_vs_sigma.png.",
+    )
+    ap.add_argument(
+        "--layout",
+        choices=("grid", "vertical", "horizontal"),
+        default="grid",
+        help="Per-sample strip orientation: grid packs cells row-major into "
+        "--grid_cols columns (default); vertical stacks σ top→bottom with "
+        "labels on the left; horizontal is the legacy single row.",
+    )
+    ap.add_argument(
+        "--grid_cols",
+        type=int,
+        default=3,
+        help="Columns for --layout grid (default 3).",
     )
     add_common_args(p := ap)  # --label/--seed/--device/--dtype/--attn_mode/--compile/…
     args = p.parse_args()
@@ -318,7 +370,14 @@ def main() -> None:
         col_labels = ["x0 (true)"] + [
             f"σ={s:.2f}\nmse={e:.4f}" for s, e in zip(sigma_grid, px_row)
         ]
-        strip = build_sample_strip(imgs, col_labels, title, args.strip_max_px)
+        strip = build_sample_strip(
+            imgs,
+            col_labels,
+            title,
+            args.strip_max_px,
+            layout=args.layout,
+            grid_cols=args.grid_cols,
+        )
         name = f"x0_vs_sigma_s{si}.png"
         strip.save(run_dir / name)
         strip_names.append(name)

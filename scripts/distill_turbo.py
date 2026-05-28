@@ -77,6 +77,7 @@ from tqdm import tqdm
 from library.anima import weights as anima_utils
 from library.anima.models import Anima
 from library.datasets.distill import CachedDataset
+from library.runtime.fei import gaussian_blur_2d
 from library.runtime.harness import (
     compile_dit_blocks,
     enable_training_grad_ckpt,
@@ -262,6 +263,37 @@ def main():
         help="clamp_min for the x0-norm denominator (latent scale); only active "
         "with --dm_x0_norm.",
     )
+    # σ-band LP-preview auxiliary (lever B.5, dmd2_decoupled_improvements.md §2B.5).
+    # Off by default — set --preview_lp_w > 0 to enable.
+    parser.add_argument(
+        "--preview_lp_w",
+        type=float,
+        default=-1.0,
+        help="σ-band LP-preview aux weight (0 = off, default). Adds "
+        "L_preview = mse(LP(x0_S), LP(x0_T_cfg1)) restricted to "
+        "t ∈ [preview_band_lo, preview_band_hi]. One extra teacher forward "
+        "per in-band step. See dmd2_decoupled_improvements.md §2B.5.",
+    )
+    parser.add_argument(
+        "--preview_band_lo",
+        type=float,
+        default=-1.0,
+        help="Preview band lower bound (default 0.55; matches "
+        "docs/findings/sigma_signal_where_anima_resolves.md).",
+    )
+    parser.add_argument(
+        "--preview_band_hi",
+        type=float,
+        default=-1.0,
+        help="Preview band upper bound (default 0.75).",
+    )
+    parser.add_argument(
+        "--preview_lp_sigma_div",
+        type=float,
+        default=-1.0,
+        help="LP filter divisor: σ_low = min(H_lat, W_lat) / preview_lp_sigma_div. "
+        "Default 4.0 (FEI 2-band finding).",
+    )
     parser.add_argument("--blocks_to_swap", type=int, default=0)
     parser.add_argument("--attn_mode", type=str, default="flash")
     parser.add_argument("--grad_ckpt", action="store_true", default=False)
@@ -336,6 +368,30 @@ def main():
     # policies, not additive; (b) ≈ "drop the τ-weight, magnitude-normalize."
     dm_x0_norm = bool(pick(args.dm_x0_norm, "dmd.dm_x0_norm", False))
     norm_floor = float(pick(args.norm_floor, "dmd.norm_floor", 0.05))
+
+    # σ-band LP-preview aux (lever B.5). Defaults match docs/findings/sigma_signal_*.
+    preview_lp_w = float(pick(args.preview_lp_w, "preview.lp_w", 0.0))
+    preview_band_lo = float(pick(args.preview_band_lo, "preview.band_lo", 0.55))
+    preview_band_hi = float(pick(args.preview_band_hi, "preview.band_hi", 0.75))
+    preview_lp_sigma_div = float(
+        pick(args.preview_lp_sigma_div, "preview.lp_sigma_div", 4.0)
+    )
+    if preview_lp_w < 0.0:
+        raise ValueError(f"preview.lp_w={preview_lp_w}: must be ≥ 0")
+    if not (0.0 <= preview_band_lo < preview_band_hi <= 1.0):
+        raise ValueError(
+            f"preview band [{preview_band_lo}, {preview_band_hi}]: require 0 ≤ lo < hi ≤ 1"
+        )
+    if preview_lp_sigma_div <= 0.0:
+        raise ValueError(
+            f"preview.lp_sigma_div={preview_lp_sigma_div}: must be > 0"
+        )
+    if preview_lp_w > 0.0:
+        logger.info(
+            f"preview-LP aux ENABLED: w={preview_lp_w}, "
+            f"band=[{preview_band_lo}, {preview_band_hi}], "
+            f"σ_low_div={preview_lp_sigma_div}"
+        )
 
     student_lr = float(pick(args.student_lr, "optim.student_lr", 1e-5))
     fake_lr = float(pick(args.fake_lr, "optim.fake_lr", 1e-5))
@@ -653,6 +709,14 @@ def main():
     acc_cos = _z()
     acc_dm_to_ca = _z()
     acc_ca_steps = _z()
+    # σ-band LP-preview diagnostic (lever B.5).
+    #   preview_lp_gap — rms(LP(x0_S) − LP(x0_T)) / rms(LP(x0_T)), in-band only.
+    #   ↓ over training = student is catching up on the coarse structure the
+    #   teacher already has in σ ∈ [preview_band_lo, preview_band_hi]. Floor
+    #   ≈ teacher's own per-σ reconstruction error in that window (norm-MSE
+    #   0.09–0.33 from sigma_signal_resolves_by_045).
+    acc_preview_gap = _z()
+    acc_preview_steps = _z()
     running_alpha = 0.0  # pure-Python; no GPU work
 
     # ---------------- Fake (critic) head-start ----------------
@@ -765,6 +829,13 @@ def main():
         else:
             t_cpu = torch.sigmoid(sigmoid_scale * torch.randn(B, dtype=torch.float32))
         do_ca = bool((t_cpu < tau_ca_skip_above_t).any().item())  # CPU op, no sync
+        # σ-band LP-preview gating (sync-free; t_cpu already on CPU).
+        if preview_lp_w > 0.0:
+            in_band_cpu = (t_cpu >= preview_band_lo) & (t_cpu < preview_band_hi)
+            do_preview = bool(in_band_cpu.any().item())
+        else:
+            in_band_cpu = None
+            do_preview = False
         t = t_cpu.to(device=device, dtype=dtype, non_blocking=True)
 
         # --- Build x_t = (1-t)·x_0 + t·ε ---
@@ -852,6 +923,53 @@ def main():
             loss_student = (grad_signal * x_pred.float() * mask).mean()
         else:
             loss_student = (grad_signal * x_pred.float()).mean()
+
+        # --- σ-band LP-preview aux (lever B.5) ---
+        # Only when t lands in [preview_band_lo, preview_band_hi]: this is the
+        # window where the teacher's x0_pred is genuinely informative (norm-MSE
+        # 0.09–0.33 per sigma_signal_resolves_by_045) but the LATENT itself
+        # doesn't carry the answer yet — i.e. the band where adapter capacity
+        # actually has room. One extra teacher CFG=1 forward at student-t; LP
+        # filter discards the HF that even the teacher doesn't have at this σ.
+        # Off when preview_lp_w == 0.0 (zero extra forwards).
+        preview_lp_gap_this = None
+        if do_preview:
+            h_lat, w_lat = x_pred.shape[-2], x_pred.shape[-1]
+            sigma_low = float(min(h_lat, w_lat)) / preview_lp_sigma_div
+            with torch.no_grad():
+                # Teacher CFG=1 at student-t. LP-band is coarse structure, so
+                # the CFG-bake signal (HF caption-adherence) is mostly orthogonal
+                # to what LP retains — saves one teacher forward vs CFG=4.
+                v_teacher_t = _forward(
+                    "teacher", x_t.detach(), t, crossattn_emb, no_grad=True
+                ).squeeze(2)
+                x0_T_lp = gaussian_blur_2d(
+                    (x_t.squeeze(2).detach() - t_e * v_teacher_t).float(),
+                    sigma_low,
+                )
+            # Student side: LP through the live grad path (conv2d, no params).
+            x0_S = x_pred.float()
+            x0_S_lp = gaussian_blur_2d(x0_S, sigma_low)
+            band_mask_e = (
+                in_band_cpu.to(device=device, dtype=torch.float32).view(B, 1, 1, 1)
+            )
+            n_in = float(in_band_cpu.sum().item())
+            diff_sq = (x0_S_lp - x0_T_lp).pow(2)
+            # Average over in-band samples only; preview_lp_w stays interpretable
+            # regardless of how many batch slots happened to be in-band this step.
+            per_elem = float(x0_S_lp[0].numel())
+            loss_preview = (diff_sq * band_mask_e).sum() / (n_in * per_elem)
+            loss_student = loss_student + preview_lp_w * loss_preview
+            # Gradient-free diagnostic — stashed for accumulation post-backward.
+            with torch.no_grad():
+                rms_diff = diff_sq.detach().mean(dim=(1, 2, 3)).sqrt()
+                rms_T = (
+                    x0_T_lp.pow(2).mean(dim=(1, 2, 3)).sqrt().clamp_min(1e-8)
+                )
+                band_mask_1d = band_mask_e.squeeze(-1).squeeze(-1).squeeze(-1)
+                preview_lp_gap_this = (
+                    (rms_diff / rms_T) * band_mask_1d
+                ).sum() / max(n_in, 1.0)
         loss_student.backward()
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(turbo.student_params(), max_norm=grad_clip)
@@ -929,6 +1047,10 @@ def main():
                 ca_w = (tau_ca_e * (alpha_eff - 1.0) * delta_cfg.float()).pow(2).mean().sqrt()
                 acc_dm_to_ca.add_(dm_w / (ca_w + eps_r))
                 acc_ca_steps.add_(1.0)
+            # σ-band LP-preview diagnostic (only defined when preview ran).
+            if preview_lp_gap_this is not None:
+                acc_preview_gap.add_(preview_lp_gap_this)
+                acc_preview_steps.add_(1.0)
         running_alpha += alpha_eff
 
         if (step + 1) % log_interval == 0:
@@ -950,10 +1072,18 @@ def main():
                 )
                 / log_interval
             )
-            # dm_to_ca has its own denominator (only do_ca steps contribute).
+            # dm_to_ca and preview_lp_gap each have their own denominator
+            # (only do_ca / in-band steps contribute respectively).
             dm_to_ca = acc_dm_to_ca / acc_ca_steps.clamp(min=1.0)
+            preview_gap_avg = acc_preview_gap / acc_preview_steps.clamp(min=1.0)
             packed = torch.cat(
-                [stacked, dm_to_ca.reshape(1), acc_ca_steps.reshape(1)]
+                [
+                    stacked,
+                    dm_to_ca.reshape(1),
+                    acc_ca_steps.reshape(1),
+                    preview_gap_avg.reshape(1),
+                    acc_preview_steps.reshape(1),
+                ]
             ).tolist()
             (
                 avg_f,
@@ -968,6 +1098,8 @@ def main():
             ) = packed[0:9]
             avg_dmca = packed[9]
             ca_steps = packed[10]
+            avg_preview_gap = packed[11]
+            preview_steps = packed[12]
             avg_a = running_alpha / log_interval
             if writer is not None:
                 writer.add_scalar("train/fake_loss", avg_f, step + 1)
@@ -982,6 +1114,10 @@ def main():
                 writer.add_scalar("train/dm_cos", avg_cos, step + 1)
                 if ca_steps > 0:
                     writer.add_scalar("train/dm_to_ca", avg_dmca, step + 1)
+                if preview_steps > 0:
+                    writer.add_scalar(
+                        "train/preview_lp_gap", avg_preview_gap, step + 1
+                    )
                 writer.add_scalar(
                     "train/student_lr", student_sched.get_last_lr()[0], step + 1
                 )
@@ -1012,6 +1148,8 @@ def main():
             acc_cos.zero_()
             acc_dm_to_ca.zero_()
             acc_ca_steps.zero_()
+            acc_preview_gap.zero_()
+            acc_preview_steps.zero_()
             running_alpha = 0.0
 
         # --- save ---

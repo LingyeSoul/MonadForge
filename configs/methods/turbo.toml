@@ -8,7 +8,7 @@
 # LoRA — load it through the standard inference path with --infer_steps 4 --cfg 1.0
 # (CFG is baked into the student during distillation).
 
-output_name = "anima_turbo_C"
+output_name = "anima_turbo_D"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
@@ -65,6 +65,21 @@ grad_clip = 1.0                 # student grad-norm cap
 [sampling]
 t_distribution = "uniform"      # "uniform" or "sigmoid"
 sigmoid_scale = 1.0
+
+# σ-band LP-preview auxiliary (lever B.5).
+#
+# When t falls in [band_lo, band_hi], add a low-pass-filtered x0-space MSE
+# between student and teacher@CFG=1: the band where the teacher's x0_pred is
+# genuinely informative (norm-MSE 0.09-0.33 per docs/findings/
+# sigma_signal_where_anima_resolves.md) but the latent itself doesn't carry
+# the answer yet. lp_w = 0.0 disables (no extra forwards). Costs one extra
+# teacher forward per in-band step (≈ +10% wall-clock under uniform t).
+# See docs/proposal/dmd2_decoupled_improvements.md §2B.5.
+[preview]
+lp_w = 0.1                      # 0 = off (default); 0.05-0.10 = enabled
+band_lo = 0.55
+band_hi = 0.75
+lp_sigma_div = 4.0              # σ_low = min(H_lat, W_lat) / lp_sigma_div (FEI 2-band finding)
 
 # Logging / checkpoints.
 [io]
