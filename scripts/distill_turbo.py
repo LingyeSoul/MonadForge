@@ -221,6 +221,25 @@ def main():
         default=-1,
         help="Sampler step count baked into the student",
     )
+    parser.add_argument(
+        "--dm_x0_norm",
+        dest="dm_x0_norm",
+        action="store_const",
+        const=True,
+        default=None,
+        help="DMD per-sample x0-space magnitude normalization (policy 'b'): "
+        "grad_dm = τ·Δ_dm / clamp(τ·mean|v_real|, norm_floor). Because the denom "
+        "≈ τ·mean|v_real|, the τ CANCELS across the bulk → ≈ no-τ, magnitude-"
+        "normalized. This REPLACES the default τ-damping (policy 'a'); it does NOT "
+        "stack with it (that would be policy 'c'). A/B lever — see proposal.md §2B.",
+    )
+    parser.add_argument(
+        "--norm_floor",
+        type=float,
+        default=-1.0,
+        help="clamp_min for the x0-norm denominator (latent scale); only active "
+        "with --dm_x0_norm.",
+    )
     parser.add_argument("--blocks_to_swap", type=int, default=0)
     parser.add_argument("--attn_mode", type=str, default="flash")
     parser.add_argument("--grad_ckpt", action="store_true", default=False)
@@ -290,6 +309,11 @@ def main():
     tau_dm_strategy = _flatten(cfg, "dmd.tau_dm_strategy", "uniform")
     tau_ca_min_gap = float(_flatten(cfg, "dmd.tau_ca_min_gap", 0.05))
     tau_ca_skip_above_t = float(_flatten(cfg, "dmd.tau_ca_skip_above_t", 0.95))
+    # DM-branch gradient policy: (a) τ-damping [default] vs (b) DMD per-sample
+    # x0-space magnitude normalization. See proposal.md §2B — these are alternative
+    # policies, not additive; (b) ≈ "drop the τ-weight, magnitude-normalize."
+    dm_x0_norm = bool(pick(args.dm_x0_norm, "dmd.dm_x0_norm", False))
+    norm_floor = float(pick(args.norm_floor, "dmd.norm_floor", 0.05))
 
     student_lr = float(pick(args.student_lr, "optim.student_lr", 1e-5))
     fake_lr = float(pick(args.fake_lr, "optim.fake_lr", 1e-5))
@@ -334,6 +358,16 @@ def main():
             "has less capacity than the student — proposal R1 risk amplified. "
             "Consider bumping fake_rank to 2 x student_rank."
         )
+    if norm_floor <= 0.0:
+        raise ValueError(f"dmd.norm_floor={norm_floor}: must be > 0 (latent scale)")
+    logger.info(
+        "DM gradient policy: "
+        + (
+            f"(b) x0-norm, norm_floor={norm_floor} — τ cancels, ≈ magnitude-normalized"
+            if dm_x0_norm
+            else "(a) τ-damping [default]"
+        )
+    )
 
     device = torch.device("cuda")
     dtype = torch.bfloat16
@@ -352,7 +386,7 @@ def main():
     # then compile each block._forward (native-shape flatten, one graph per
     # token count; the pool spans more than the 2 CONSTANT_TOKEN_BUCKETS families).
     place_dit_for_training(model, device, blocks_to_swap=args.blocks_to_swap)
-    compile_dit_blocks(model, enabled=args.torch_compile, mode="default")
+    compile_dit_blocks(model, enabled=args.torch_compile, mode="reduce-overhead")
 
     enable_training_grad_ckpt(model, enabled=args.grad_ckpt)
 
@@ -565,23 +599,29 @@ def main():
     def _z():
         return torch.zeros((), device=device)
 
-    acc_student = _z()
     acc_fake = _z()
     acc_grad = _z()
     acc_dm = _z()
     acc_cfg = _z()
     acc_xpred = _z()
     acc_v_student = _z()
-    acc_v_real_dm = _z()
-    acc_v_fake_dm = _z()
+    # Fake-tracking diagnostics — the real triggers (see proposal.md). A rising
+    # fake_loss against a moving, sharpening student is expected, not a problem;
+    # what tells us the fake has actually fallen behind is the *effective DM
+    # residual* and the fake↔teacher score agreement at the DM eval point:
+    #   rel_gap   — rms(τ·Δ_dm) / rms(τ·v_real_dm): fraction of the teacher score
+    #               the DM gap still represents. ↑ = fake lagging → bump fake.
+    #   mag_ratio — rms(v_fake_dm) / rms(v_real_dm): ≈1 healthy; collapse/blow-up bad.
+    #   cos       — cosine(v_fake_dm, v_real_dm): ↓ = fake pointing the wrong way.
+    #   dm_to_ca  — effective DM vs CA magnitude. Decoupled DMD wants CA as the
+    #               engine and DM as the shield, so DM ≳ CA for long stretches is
+    #               a red flag. Accumulated only on do_ca steps (own denominator).
+    acc_rel_gap = _z()
+    acc_mag_ratio = _z()
+    acc_cos = _z()
+    acc_dm_to_ca = _z()
+    acc_ca_steps = _z()
     running_alpha = 0.0  # pure-Python; no GPU work
-    # Per-τ_DM-bucket δ_dm tracking (proposal R1 mitigation b): three bins
-    # over [0, 1/3), [1/3, 2/3), [2/3, 1]. Lets us see whether the fake is
-    # under-tracking globally or only at a specific noise band. scatter_add_
-    # lives entirely on GPU so the per-sample .item() loop is gone.
-    bucket_labels = ("lo", "mid", "hi")
-    acc_dm_buckets = torch.zeros(3, device=device)
-    acc_dm_bucket_counts = torch.zeros(3, device=device)
 
     for step in progress:
         try:
@@ -671,7 +711,23 @@ def main():
         # on x_pred is +τ·grad_signal — descent then steps x_pred by −τ·grad,
         # the desired direction. Each branch carries its OWN renoise level τ.
         tau_dm_e = tau_dm.view(B, 1, 1, 1).float()
-        grad_signal = tau_dm_e * delta_dm.float()
+        grad_dm = tau_dm_e * delta_dm.float()
+        if dm_x0_norm:
+            # Policy (b): DMD per-sample x0-space magnitude normalization. The DM
+            # x0-gap is x0_real − x_renoised = −τ·v_real_cond_dm, so its magnitude
+            # is denom = τ·mean|v_real|. Dividing by it cancels the τ across the
+            # bulk of the range (only the clamp_min bites, for τ < norm_floor /
+            # mean|v_real|) → ≈ Δ_dm / mean|v_real|. This REPLACES the τ-damping in
+            # grad_dm; stacking the two is policy (c) and is NOT what this does.
+            # DM term only — the CA engine below keeps its own τ_ca weighting.
+            denom = (
+                (tau_dm_e * v_real_cond_dm.float())
+                .abs()
+                .mean(dim=(1, 2, 3), keepdim=True)
+                .clamp_min(norm_floor)
+            )
+            grad_dm = grad_dm / denom
+        grad_signal = grad_dm
         if do_ca:
             tau_ca_e = tau_ca.view(B, 1, 1, 1).float()
             grad_signal = grad_signal + tau_ca_e * (alpha_eff - 1.0) * delta_cfg.float()
@@ -733,15 +789,15 @@ def main():
         # log_interval in one stacked .tolist() so per-step CUDA syncs go
         # to zero) ---
         # DMD2 health scalars. loss_student is a sign-random gradient vehicle
-        # (not a real loss); the RMS norms below are what actually track
-        # whether the student is getting a usable signal:
+        # (not a real loss), so it is no longer logged; the RMS norms + the
+        # fake-tracking ratios below are what actually track whether the student
+        # is getting a usable signal:
         #   grad   — overall DMD2 gradient magnitude into x_pred
         #   dm     — DM regularizer strength (v_real - v_fake)
         #   cfg    — CA branch strength (CFG bake direction)
         #   xpred  — x_pred dispersion: → 0 means collapse to mean,
         #            drifting upward means student is exploding.
         with torch.no_grad():
-            acc_student.add_(loss_student.detach().float())
             acc_fake.add_(fake_loss_mean_t.float())
             acc_grad.add_(grad_signal.float().pow(2).mean().sqrt())
             acc_dm.add_(delta_dm.float().pow(2).mean().sqrt())
@@ -750,22 +806,21 @@ def main():
             # Direct student velocity magnitude — runaway student manifests
             # here before x_pred_std catches up (x_pred = x_t − t·v_student).
             acc_v_student.add_(v_student.detach().float().pow(2).mean().sqrt())
-            # Teacher vs fake magnitudes at the DM-branch evaluation point.
-            # If v_real_dm stays bounded while v_fake_dm explodes (or stays
-            # tiny while real grows), the fake-tracking gap is asymmetric in
-            # a diagnostic way the aggregate δ_dm hides.
-            acc_v_real_dm.add_(v_real_cond_dm.float().pow(2).mean().sqrt())
-            acc_v_fake_dm.add_(v_fake_cond_dm.float().pow(2).mean().sqrt())
-            # Per-sample δ_dm, scatter-bucketed by τ_DM — pure GPU op replaces
-            # the old per-sample .item() Python loop (proposal R1 mitigation b).
-            per_sample_dm = delta_dm.float().pow(2).mean(dim=(1, 2, 3)).sqrt()  # (B,)
-            tau_dm_bucket = (
-                (tau_dm.float() * 3.0).clamp(max=2.999).floor().long()
-            )  # (B,)
-            acc_dm_buckets.scatter_add_(0, tau_dm_bucket, per_sample_dm)
-            acc_dm_bucket_counts.scatter_add_(
-                0, tau_dm_bucket, torch.ones_like(per_sample_dm)
+            # --- fake-tracking diagnostics at the DM eval point ---
+            eps_r = 1e-8
+            vr = v_real_cond_dm.float()
+            vf = v_fake_cond_dm.float()
+            dm_w = (tau_dm_e * delta_dm.float()).pow(2).mean().sqrt()  # effective DM
+            acc_rel_gap.add_(dm_w / ((tau_dm_e * vr).pow(2).mean().sqrt() + eps_r))
+            acc_mag_ratio.add_(
+                vf.pow(2).mean().sqrt() / (vr.pow(2).mean().sqrt() + eps_r)
             )
+            acc_cos.add_((vf * vr).sum() / (vf.norm() * vr.norm() + eps_r))
+            # Effective DM vs CA magnitude — only defined when CA ran this step.
+            if do_ca:
+                ca_w = (tau_ca_e * (alpha_eff - 1.0) * delta_cfg.float()).pow(2).mean().sqrt()
+                acc_dm_to_ca.add_(dm_w / (ca_w + eps_r))
+                acc_ca_steps.add_(1.0)
         running_alpha += alpha_eff
 
         if (step + 1) % log_interval == 0:
@@ -774,38 +829,39 @@ def main():
             stacked = (
                 torch.stack(
                     [
-                        acc_student,
                         acc_fake,
                         acc_grad,
                         acc_dm,
                         acc_cfg,
                         acc_xpred,
                         acc_v_student,
-                        acc_v_real_dm,
-                        acc_v_fake_dm,
+                        acc_rel_gap,
+                        acc_mag_ratio,
+                        acc_cos,
                     ]
                 )
                 / log_interval
             )
-            bucket_means = acc_dm_buckets / acc_dm_bucket_counts.clamp(min=1)
-            packed = torch.cat([stacked, bucket_means, acc_dm_bucket_counts]).tolist()
+            # dm_to_ca has its own denominator (only do_ca steps contribute).
+            dm_to_ca = acc_dm_to_ca / acc_ca_steps.clamp(min=1.0)
+            packed = torch.cat(
+                [stacked, dm_to_ca.reshape(1), acc_ca_steps.reshape(1)]
+            ).tolist()
             (
-                avg_s,
                 avg_f,
                 avg_g,
                 avg_dm,
                 avg_cfg,
                 avg_xp,
                 avg_vs,
-                avg_vrdm,
-                avg_vfdm,
+                avg_relgap,
+                avg_magr,
+                avg_cos,
             ) = packed[0:9]
-            bucket_vals = packed[9:12]
-            bucket_cnts = packed[12:15]
+            avg_dmca = packed[9]
+            ca_steps = packed[10]
             avg_a = running_alpha / log_interval
-            t_mean = float(t_cpu.mean())  # CPU-side already
             if writer is not None:
-                writer.add_scalar("train/student_loss", avg_s, step + 1)
                 writer.add_scalar("train/fake_loss", avg_f, step + 1)
                 writer.add_scalar("train/alpha_eff", avg_a, step + 1)
                 writer.add_scalar("train/grad_signal_rms", avg_g, step + 1)
@@ -813,46 +869,41 @@ def main():
                 writer.add_scalar("train/delta_cfg_rms", avg_cfg, step + 1)
                 writer.add_scalar("train/x_pred_std", avg_xp, step + 1)
                 writer.add_scalar("train/v_student_rms", avg_vs, step + 1)
-                writer.add_scalar("train/v_real_dm_rms", avg_vrdm, step + 1)
-                writer.add_scalar("train/v_fake_dm_rms", avg_vfdm, step + 1)
-                for bi, label in enumerate(bucket_labels):
-                    if bucket_cnts[bi] > 0:
-                        writer.add_scalar(
-                            f"train/delta_dm_rms_tau_{label}",
-                            bucket_vals[bi],
-                            step + 1,
-                        )
+                writer.add_scalar("train/dm_rel_gap", avg_relgap, step + 1)
+                writer.add_scalar("train/dm_mag_ratio", avg_magr, step + 1)
+                writer.add_scalar("train/dm_cos", avg_cos, step + 1)
+                if ca_steps > 0:
+                    writer.add_scalar("train/dm_to_ca", avg_dmca, step + 1)
                 writer.add_scalar(
                     "train/student_lr", student_sched.get_last_lr()[0], step + 1
                 )
                 writer.add_scalar(
                     "train/fake_lr", fake_sched.get_last_lr()[0], step + 1
                 )
-                writer.add_scalar("train/t_mean", t_mean, step + 1)
 
             # tqdm postfix at log_interval cadence (per-step would re-introduce
             # the syncs we just eliminated). First log_interval steps show
             # no postfix — harmless.
             progress.set_postfix(
-                g=f"{avg_g:.3e}",
-                dca=f"{avg_cfg:.3e}",
-                ddm=f"{avg_dm:.3e}",
+                g=f"{avg_g:.2e}",
+                relg=f"{avg_relgap:.3f}",
+                cos=f"{avg_cos:.3f}",
+                dmca=f"{avg_dmca:.2f}",
                 xp=f"{avg_xp:.3f}",
-                vs=f"{avg_vs:.3f}",
-                fake=f"{avg_f:.3e}",
+                fake=f"{avg_f:.2e}",
             )
 
-            acc_student.zero_()
             acc_fake.zero_()
             acc_grad.zero_()
             acc_dm.zero_()
             acc_cfg.zero_()
             acc_xpred.zero_()
             acc_v_student.zero_()
-            acc_v_real_dm.zero_()
-            acc_v_fake_dm.zero_()
-            acc_dm_buckets.zero_()
-            acc_dm_bucket_counts.zero_()
+            acc_rel_gap.zero_()
+            acc_mag_ratio.zero_()
+            acc_cos.zero_()
+            acc_dm_to_ca.zero_()
+            acc_ca_steps.zero_()
             running_alpha = 0.0
 
         # --- save ---

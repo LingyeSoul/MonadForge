@@ -8,12 +8,12 @@
 # LoRA — load it through the standard inference path with --infer_steps 4 --cfg 1.0
 # (CFG is baked into the student during distillation).
 
-output_name = "anima_turbo"
+output_name = "anima_turbo_C"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 2000
+iterations = 1000
 batch_size = 1
 seed = 42
 use_custom_down_autograd = true
@@ -38,13 +38,18 @@ tau_ca_strategy = "above_t"     # τ_CA > t  (CA focuses on still-unresolved con
 tau_dm_strategy = "uniform"     # τ_DM ∈ [0, 1]  (DM corrects global artifacts)
 tau_ca_min_gap = 0.05           # clamp τ_CA ≥ t + this gap (proposal R5: late-step stability)
 tau_ca_skip_above_t = 0.95      # if generator t > this, skip CA branch (DM-only that step)
+dm_x0_norm = true              # DM-grad policy: false = (a) τ-damping [shipped]; true = (b)
+                                # DMD per-sample x0-norm. (b) cancels the τ across the bulk
+                                # → ≈ no-τ magnitude-normalized. A/B lever — do NOT stack on
+                                # τ-weighting (that's (c)). See proposal.md §2B. CLI: --dm_x0_norm
+norm_floor = 0.05               # clamp_min for the (b) denominator (latent scale); inert under (a)
 
 # Optimization.
 [optim]
 student_lr = 2e-5
-fake_lr = 2e-5
-fake_steps_per_student_step = 1
-alpha_warmup_steps = 1000       # linear ramp α_eff: 1.0 → teacher_cfg over these steps
+fake_lr = 3e-5
+fake_steps_per_student_step = 2
+alpha_warmup_steps = 500       # linear ramp α_eff: 1.0 → teacher_cfg over these steps
 weight_decay = 0.0
 grad_clip = 1.0                 # student grad-norm cap
 

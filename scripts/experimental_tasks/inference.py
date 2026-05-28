@@ -22,6 +22,43 @@ from scripts.tasks._common import (
 )
 
 _REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+_TE_SUFFIX = "_anima_te.safetensors"
+
+
+def _te_cache_candidates(ref_image: str | os.PathLike) -> list[Path]:
+    """TE cache locations to probe for a resized reference image.
+
+    Preprocessing writes caches under ``post_image_dataset/lora/`` mirroring
+    the per-artist subdir layout of ``post_image_dataset/resized/`` (see
+    ``resolve_cache_path`` with ``image_dir``). So for
+    ``resized/mejikara_scene/10083096.png`` the cache lands at
+    ``lora/mejikara_scene/10083096_anima_te.safetensors`` — not flat under
+    ``lora/``. Probe, in order: the nested mirror, the flat ``lora/`` root,
+    and the legacy sidecar next to the image.
+    """
+    from library.io.cache import resolve_cache_path  # noqa: PLC0415
+
+    ref = Path(ref_image)
+    stem = ref.stem
+    resized_root = ROOT / "post_image_dataset" / "resized"
+    lora_root = ROOT / "post_image_dataset" / "lora"
+    nested = Path(
+        resolve_cache_path(
+            str(ref),
+            _TE_SUFFIX,
+            cache_dir=str(lora_root),
+            image_dir=str(resized_root),
+        )
+    )
+    # Deduplicate while preserving order (nested == flat when no subdir).
+    candidates = [nested, lora_root / f"{stem}{_TE_SUFFIX}", ref.parent / f"{stem}{_TE_SUFFIX}"]
+    seen: set[Path] = set()
+    return [p for p in candidates if not (p in seen or seen.add(p))]
+
+
+def _resolve_te_cache(ref_image: str | os.PathLike) -> Path | None:
+    """First existing TE cache for ``ref_image``, or ``None``."""
+    return next((p for p in _te_cache_candidates(ref_image) if p.is_file()), None)
 
 
 def _random_ref_image(directory: Path) -> str | None:
@@ -367,22 +404,16 @@ def cmd_test_directedit_dry(extra):
         )
         sys.exit(1)
 
-    # Auto-resolve the matching TE cache file. Try the standard cache_dir
-    # location first (post_image_dataset/lora/ — what configs/base.toml's
-    # subset cache_dir points at), then the legacy sidecar location next to
-    # the source image.
-    stem = Path(ref_image).stem
-    suffix = "_anima_te.safetensors"
-    candidates = [
-        ROOT / "post_image_dataset" / "lora" / f"{stem}{suffix}",
-        Path(ref_image).parent / f"{stem}{suffix}",
-    ]
-    cache_path = next((p for p in candidates if p.is_file()), None)
+    # Auto-resolve the matching TE cache file. Preprocessing mirrors the
+    # resized/ subdir layout under post_image_dataset/lora/, so probe the
+    # nested mirror first, then the flat lora/ root, then the legacy sidecar.
+    candidates = _te_cache_candidates(ref_image)
+    cache_path = _resolve_te_cache(ref_image)
     if cache_path is None:
+        looked = "\n".join(f"      {p}" for p in candidates)
         print(
             f"  ! No TE cache found for {ref_image}.\n"
-            f"    Looked in: {candidates[0]}\n"
-            f"           and: {candidates[1]}\n"
+            f"    Looked in:\n{looked}\n"
             "    Run `make preprocess-te` first (with --caption_shuffle_variants N "
             "to get a multi-variant cache).",
             file=sys.stderr,
@@ -522,16 +553,16 @@ def cmd_invert_directedit(extra):
 
     # 2. Inversion knobs — env overrides for the common dials, defaults match
     #    the proposal (and the invert_postfix_tail.py CLI defaults).
-    K = int(os.environ.get("K", "32"))
-    invert_steps = int(os.environ.get("INVERT_STEPS", "30"))
+    K = int(os.environ.get("K", "8"))
+    invert_steps = int(os.environ.get("INVERT_STEPS", "50"))
     invert_lr = float(os.environ.get("INVERT_LR", "1e-2"))
     lambda_zero = float(os.environ.get("LAMBDA_ZERO", "0.0"))
     sigma_min = float(os.environ.get("SIGMA_MIN", "0"))
-    sigma_max = float(os.environ.get("SIGMA_MAX", "0.5"))
+    sigma_max = float(os.environ.get("SIGMA_MAX", "1.0"))
     basis_kind = os.environ.get("BASIS", "svd_te").strip()
     seed = int(os.environ.get("SEED", "0"))
-    timesteps_per_step = int(os.environ.get("TIMESTEPS_PER_STEP", "2"))
-    grad_accum = int(os.environ.get("GRAD_ACCUM", "6"))
+    timesteps_per_step = int(os.environ.get("TIMESTEPS_PER_STEP", "1"))
+    grad_accum = int(os.environ.get("GRAD_ACCUM", "3"))
 
     run_root = ROOT / "output" / "tests" / "invert_directedit"
     run_root.mkdir(parents=True, exist_ok=True)
@@ -567,16 +598,13 @@ def cmd_invert_directedit(extra):
         print(f"\n=== [{i + 1}/{len(images)}] {stem} ===")
 
         # 4. Find the cached TE for this image (the baseline v0 prefix).
-        suffix = "_anima_te.safetensors"
-        te_candidates = [
-            ROOT / "post_image_dataset" / "lora" / f"{stem}{suffix}",
-            Path(ref_image).parent / f"{stem}{suffix}",
-        ]
-        te_path = next((p for p in te_candidates if p.is_file()), None)
+        #    Caches mirror the resized/ subdir layout under lora/, so probe
+        #    the nested mirror before the flat root and the legacy sidecar.
+        te_path = _resolve_te_cache(ref_image)
         if te_path is None:
+            looked = "\n".join(f"    {p}" for p in _te_cache_candidates(ref_image))
             print(
-                f"  ! No TE cache found for {stem}. Looked in:\n"
-                f"    {te_candidates[0]}\n    {te_candidates[1]}\n"
+                f"  ! No TE cache found for {stem}. Looked in:\n{looked}\n"
                 "    Run `make preprocess-te` first.",
                 file=sys.stderr,
             )
@@ -624,7 +652,6 @@ def cmd_invert_directedit(extra):
                 str(grad_accum),
                 "--output_dir",
                 str(invert_out),
-                "--vr",
             ]
             run(invert_cmd)
             if not s_path.exists():

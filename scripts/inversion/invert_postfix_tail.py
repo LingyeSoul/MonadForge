@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--blocks_to_swap",
         type=int,
-        default=16,
+        default=8,
         help="Number of transformer blocks to swap to CPU (0 = none, "
         "<0 = gradient checkpointing instead)",
     )
@@ -163,7 +163,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--K",
         type=int,
-        default=48,
+        default=8,
         help="Tail length (number of orthonormal slots). Default 48 matches "
         "the companion encoder proposal.",
     )
@@ -205,7 +205,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--parameterization",
         type=str,
-        default="ortho_tail",
+        default="soft_tokens",
         choices=["ortho_tail", "soft_tokens"],
         help="How to fill the K postfix slots. 'ortho_tail' (default) = K scalars "
         "over a frozen orthonormal Q, one tail shared across all blocks and all t. "
@@ -217,7 +217,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--st_n_layers",
         type=int,
-        default=0,
+        default=10,
         help="soft_tokens: number of leading DiT blocks to patch with the splice "
         "hook. 0 (default) = all blocks (max per-block freedom for a ceiling probe).",
     )
@@ -239,7 +239,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--st_splice_position",
         type=str,
-        default="end_of_sequence",
+        default="front_of_padding",
         choices=["end_of_sequence", "front_of_padding"],
         help="soft_tokens: where the K tokens land. Default end_of_sequence matches "
         "the ortho_tail probe (apples-to-apples — only the parameterization differs).",
@@ -283,7 +283,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--sigma_max",
         type=float,
-        default=0.25,
+        default=1.0,
         help="Upper bound for sampled sigmas. Set < 1.0 to restrict supervision "
         "to low-σ steps (e.g. 0.25), where the FM target carries more per-image "
         "identity. Must be > --sigma_min.",
