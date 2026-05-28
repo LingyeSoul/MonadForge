@@ -1,6 +1,6 @@
 # Turbo Anima — Decoupled DMD distillation (docs: docs/experimental/dmd2-decoupled.md).
 #
-# Read by scripts/distill_turbo.py — NOT by train.py. Schema is bespoke
+# Read by scripts/distill_turbo/ — NOT by train.py. Schema is bespoke
 # (sections instead of flat kwargs). Don't `python tasks.py print-config METHOD=turbo`.
 #
 # Trains two LoRA stacks on one frozen Anima DiT via Liu et al. (arXiv:2511.22677)

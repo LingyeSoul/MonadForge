@@ -11,7 +11,7 @@ Each LoRA module short-circuits at ``not self.enabled`` (see
 ``set_enabled(bool)`` on each network — O(num_modules) Python loop, negligible
 vs a DiT forward.
 
-Used by ``scripts/distill_turbo.py``. Inference loads the saved
+Used by ``scripts/distill_turbo/distill.py``. Inference loads the saved
 ``anima_turbo.safetensors`` through the standard LoRA path (no inference-side
 turbo code) — the student LoRA is just a normal LoRA with CFG=4 baked in.
 

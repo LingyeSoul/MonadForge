@@ -31,7 +31,7 @@ def cmd_turbo(extra):
     ``extra`` is appended last, so user CLI overrides win.
     """
     preset_flags = bespoke_preset_flags(_preset())
-    run([PY, "scripts/distill_turbo.py", *preset_flags, *extra])
+    run([PY, "-m", "scripts.distill_turbo.distill", *preset_flags, *extra])
 
 
 def cmd_spd(extra):

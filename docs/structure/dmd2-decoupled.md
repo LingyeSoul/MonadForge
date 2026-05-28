@@ -139,7 +139,7 @@ x_\tau = (1-\tau)\,x_\text{pred} + \tau\,\varepsilon, \qquad \varepsilon \sim \m
 $$
 
 — the same forward path, applied to the *predicted* clean image instead of a dataset
-latent (`renoise()` in `distill_turbo.py`).
+latent (`renoise()` in `scripts/distill_turbo/primitives.py`).
 
 **Sign / scale of the update.** The DM and CA deltas are *velocity* gaps; the
 distribution-matching update acts in **x0 space**. Converting a velocity gap to its x0

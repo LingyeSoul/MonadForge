@@ -4,7 +4,7 @@ Loads pre-cached VAE latents + text encoder outputs from disk, grouped by
 latent resolution so that each batch has uniform spatial dimensions (matching
 the bucket-based batching used in LoRA training). Despite the name it is not
 distill-specific — it is the general train-cache reader, used by the distill
-scripts (``scripts/distill_mod/distill.py``, ``scripts/distill_turbo.py``,
+scripts (``scripts/distill_mod/distill.py``, ``scripts/distill_turbo/distill.py``,
 ``scripts/distill_spd.py``) and the SPD probes. ``library.datasets.distill``
 re-exports it for back-compat.
 """

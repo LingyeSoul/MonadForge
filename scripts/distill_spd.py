@@ -9,7 +9,7 @@ is a normal LoRA: load it through the standard inference path and run it with
 the SPD sampler (``--spd``) at the *same* schedule it was trained on.
 
 Models the structure on ``scripts/distill_mod/distill.py`` /
-``scripts/distill_turbo.py`` (frozen-DiT + adapter-only + single MSE backward),
+``scripts/distill_turbo/distill.py`` (frozen-DiT + adapter-only + single MSE backward),
 but strictly simpler: one adapter, one optimizer.
 
 Usage::
@@ -631,7 +631,7 @@ def main():
     # GPU-side logging accumulators — flushed in one stacked .tolist() at every
     # log_interval, replacing the per-micro-step loss.item() (grad_accum CUDA
     # syncs per optimizer step) and the per-parameter .item() walk in the
-    # LoRA-norm logging. Mirrors the accumulator pattern in distill_turbo.py.
+    # LoRA-norm logging. Mirrors the accumulator pattern in scripts/distill_turbo/metrics.py.
     n_stages = len(stages)
     acc_loss = torch.zeros((), device=device)  # Σ step-mean loss
     acc_loss_stage = torch.zeros(n_stages, device=device)  # Σ micro-loss by stage

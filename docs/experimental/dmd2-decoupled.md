@@ -13,7 +13,7 @@ during distillation).
 > x0-norm vs τ-damping policy), see **`docs/structure/dmd2-decoupled.md`**. This
 > doc is the usage / ops / decision-log reference.
 
-- **Training:** `scripts/distill_turbo.py` — bespoke single-GPU loop (bypasses
+- **Training:** `scripts/distill_turbo/distill.py` — bespoke single-GPU loop (bypasses
   `train.py`/accelerate, like `distill-mod` / `distill-spd`).
 - **Harness:** `networks/methods/turbo_dmd.py::TurboDMDNetwork` — two `LoRANetwork`
   stacks (student + fake) view-toggled on one frozen DiT.
@@ -82,7 +82,7 @@ mod-guidance distill.
 ## Config surface (`configs/methods/turbo.toml`)
 
 Sectioned, bespoke. Every key has a matching CLI override flag (see
-`scripts/distill_turbo.py` argparse). The shipped defaults:
+`scripts/distill_turbo/config.py` argparse). The shipped defaults:
 
 | Section | Key | Default | Notes |
 |---|---|---|---|

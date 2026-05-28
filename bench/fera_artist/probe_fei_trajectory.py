@@ -35,7 +35,7 @@ Reports:
   - Per-(artist, step) ``(t_sampler, sigma_low, e_low, e_high)`` in CSV.
   - Population-aggregated **teacher curve** ``teacher_curve.json``:
     ``[{step, t, n, mu_low, std_low, mu_high, std_high}, ...]`` —
-    consumable by ``scripts/distill_turbo.py`` for FEI-trajectory-weighted
+    consumable by ``scripts/distill_turbo/`` for FEI-trajectory-weighted
     CA (the gap ``teacher_FEI − student_FEI`` weighting CA bands).
   - Per-artist trajectories — high-frequency-dominant styles should
     track lower ``e_low`` throughout, mirroring the training-time
@@ -692,12 +692,12 @@ def main() -> None:
         help="Root holding the .txt caption sidecars referenced by caption_index.",
     )
     p.add_argument(
-        "--k_per_artist", type=int, default=1,
+        "--k_per_artist", type=int, default=4,
         help="Captions drawn per artist (K=1 strict-balanced).",
     )
     p.add_argument("--include_untagged", action="store_true")
     p.add_argument(
-        "--max_artists", type=int, default=10,
+        "--max_artists", type=int, default=20,
         help="If >0, cap the number of artists run (useful for smoke).",
     )
     p.add_argument(
@@ -712,7 +712,7 @@ def main() -> None:
     p.add_argument("--flow_shift", type=float, default=3.0)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument(
-        "--fei_sigma_low_div", type=float, default=4.0,
+        "--fei_sigma_low_div", type=float, default=16.0,
         help="DoG divisor used for the captured FEI (matches live default). "
         "Ignored in paired (--adapter) mode; use --fei_sigma_low_divs instead.",
     )
