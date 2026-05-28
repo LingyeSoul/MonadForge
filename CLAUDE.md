@@ -131,7 +131,7 @@ Each method has a deep-dive doc; the prose below is one-line orientation plus th
 | **EasyControl** | Extended self-attn image conditioning; frozen DiT, per-block cond LoRA + scalar `b_cond` gate. Source `easycontrol-dataset/`. | `docs/experimental/easycontrol.md` |
 | **Soft Tokens** | SoftREPA per-layer × per-t soft text tokens (~1M params); frozen DiT, per-block `Block.forward` splice into `crossattn_emb`. | InfoNCE objective intentionally skipped. `configs/methods/soft_tokens.toml` |
 | **ChimeraHydra** | Dual-pool additive MoE: content pool (lx-router) + freq pool (network FreqRouter on FEI+σ), two A's per Linear off disjoint SVD subspaces. | T-LoRA mask hits content branch only. `docs/proposal/chimera_hydra.md`, `networks/lora_modules/chimera.py` |
-| **Turbo** | Decoupled-Hybrid DMD2 distillation; output is a normal LoRA. | Bespoke schema read by `scripts/distill_turbo.py` — don't `print-config`. `docs/proposal/turbo_anima_dmd_lora.md` |
+| **Turbo** | Decoupled-Hybrid DMD2 distillation; output is a normal LoRA. | Bespoke schema read by `scripts/distill_turbo.py` — don't `print-config`. `docs/experimental/dmd2-decoupled.md` (ops) + `docs/structure/dmd2-decoupled.md` (math). |
 | **Postfix-tail inversion** | Per-image inversion *probe* (training method archived 2026-05-20). | Observation tool, not a deployable adapter. `library/inference/postfix_inversion.py` |
 
 ## Preprocessing & scripts

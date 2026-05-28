@@ -15,7 +15,7 @@ Used by ``scripts/distill_turbo.py``. Inference loads the saved
 ``anima_turbo.safetensors`` through the standard LoRA path (no inference-side
 turbo code) — the student LoRA is just a normal LoRA with CFG=4 baked in.
 
-Proposal: ``docs/proposal/turbo_anima_dmd_lora.md``.
+Docs: ``docs/structure/dmd2-decoupled.md`` (math), ``docs/experimental/dmd2-decoupled.md`` (ops).
 Paper: Liu et al., "CFG Augmentation as the Spear, Distribution Matching as
 the Shield" (arXiv:2511.22677).
 """

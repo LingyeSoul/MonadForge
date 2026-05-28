@@ -95,14 +95,6 @@ class _DistillConfigTab(LazyTabMixin, QWidget):
         self._save_btn.clicked.connect(lambda: self._save())
         top.addWidget(self._save_btn)
 
-        self.preprocess_btn = QPushButton(t("adapter_preprocess"))
-        self.preprocess_btn.setStyleSheet(
-            "background:#2980b9;color:white;font-weight:bold;padding:4px 16px;"
-        )
-        self.preprocess_btn.setToolTip(t("distill_preprocess_tooltip"))
-        self.preprocess_btn.clicked.connect(self._start_preprocess)
-        top.addWidget(self.preprocess_btn)
-
         self.train_btn = QPushButton(t("train"))
         self._train_idle_style = (
             "background:#27ae60;color:white;font-weight:bold;padding:4px 16px;"
@@ -375,9 +367,6 @@ class _DistillConfigTab(LazyTabMixin, QWidget):
 
     # ── Training (daemon) ──
 
-    def _start_preprocess(self):
-        self._launch("preprocess", ["tasks.py", "preprocess"])
-
     def _start_train(self):
         self._launch(self.TRAIN_TASK, ["tasks.py", self.TRAIN_TASK])
 
@@ -492,7 +481,6 @@ class _DistillConfigTab(LazyTabMixin, QWidget):
         self.train_btn.setText(t("train") + " ...")
         self.train_btn.setStyleSheet(self._train_busy_style)
         self.train_btn.setEnabled(False)
-        self.preprocess_btn.setEnabled(False)
         self._save_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
 
@@ -500,7 +488,6 @@ class _DistillConfigTab(LazyTabMixin, QWidget):
         self.train_btn.setText(t("train"))
         self.train_btn.setStyleSheet(self._train_idle_style)
         self.train_btn.setEnabled(True)
-        self.preprocess_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
 
@@ -530,7 +517,7 @@ class TurboTrainTab(_DistillConfigTab):
     # (scripts/distill_turbo.py, NOT train.py). Output anima_turbo.safetensors is
     # a normal LoRA — infer at 4 steps cfg=1.0 (`make exp-test-turbo`). The
     # turbo.toml schema is bespoke/sectioned. See
-    # docs/proposal/turbo_anima_dmd_lora.md.
+    # docs/experimental/dmd2-decoupled.md.
     CONFIG_PATH = "configs/methods/turbo.toml"
     TRAIN_TASK = "exp-turbo"
     METHOD_LABEL = "Turbo"

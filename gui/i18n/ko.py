@@ -224,9 +224,6 @@ STRINGS: dict[str, str] = {
     "adapter_stop": "정지",
     # SPD / Turbo 증류 설정 탭 (gui/tabs/distill_tab.py)
     "distill_general_section": "일반",
-    "distill_preprocess_tooltip": "공유 LoRA 캐시를 생성 (image_dataset/ → "
-    "post_image_dataset/lora/). SPD와 Turbo는 일반 LoRA와 같은 캐시로 학습합니다 —— "
-    "이미 전처리했다면 건너뛰어도 됩니다.",
     "distill_job_running": "이 탭에서 이미 작업이 실행 중입니다.",
     "distill_config_missing": "설정 파일을 읽을 수 없습니다: {err}",
     "adapter_log_placeholder": "실행 출력이 여기에 표시됩니다...",

@@ -28,7 +28,7 @@ Per-block cond LoRA on self-attn + FFN with a logit-bias gate. DiT frozen; train
 
 ### 2. Turbo LoRA (Decoupled DMD distillation)
 
-Distill 28-step Anima @ CFG=4 into a 4–8 step generator using **co-LoRA** (LoRA for both the student and the fake score model on the same frozen DiT). The deployment story is that `turbo_anima_lora.safetensors` stacks on top of any existing concept LoRA at inference, the same way LCM-LoRA composes with style LoRAs. See [`docs/proposal/turbo_anima_dmd_lora.md`](docs/proposal/turbo_anima_dmd_lora.md) — Decoupled DMD reference: Liu et al., arXiv:2511.22677.
+Distill 28-step Anima @ CFG=4 into a 4–8 step generator using **co-LoRA** (LoRA for both the student and the fake score model on the same frozen DiT). The deployment story is that `turbo_anima_lora.safetensors` stacks on top of any existing concept LoRA at inference, the same way LCM-LoRA composes with style LoRAs. See [`docs/experimental/dmd2-decoupled.md`](docs/experimental/dmd2-decoupled.md) (ops) and [`docs/structure/dmd2-decoupled.md`](docs/structure/dmd2-decoupled.md) (math) — Decoupled DMD reference: Liu et al., arXiv:2511.22677.
 
 Status: proposal only — no code, no checkpoints, no bench. The proposal is fully scoped (file-level plan, phased validation, risk register) and is waiting on an implementer.
 

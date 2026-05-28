@@ -227,9 +227,6 @@ STRINGS: dict[str, str] = {
     "adapter_stop": "停止",
     # SPD / Turbo 蒸留設定タブ (gui/tabs/distill_tab.py)
     "distill_general_section": "全般",
-    "distill_preprocess_tooltip": "共有 LoRA キャッシュを構築 (image_dataset/ → "
-    "post_image_dataset/lora/)。SPD と Turbo は通常の LoRA と同じキャッシュで学習します —— "
-    "既に前処理済みならスキップ可能。",
     "distill_job_running": "このタブでは既にジョブが実行中です。",
     "distill_config_missing": "設定ファイルを読み込めませんでした: {err}",
     "adapter_log_placeholder": "実行出力がここに表示されます...",

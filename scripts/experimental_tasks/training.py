@@ -14,7 +14,7 @@ from scripts.tasks._common import PY, _preset, bespoke_preset_flags, run, train
 
 
 def cmd_turbo(extra):
-    """Turbo Anima — Decoupled DMD2 distillation (proposal: docs/proposal/turbo_anima_dmd_lora.md).
+    """Turbo Anima — Decoupled DMD2 distillation (docs: docs/experimental/dmd2-decoupled.md).
 
     Bypasses train.py / accelerate (single-GPU bespoke loop, like distill-mod).
     Reads ``configs/methods/turbo.toml``; trailing args are forwarded so user

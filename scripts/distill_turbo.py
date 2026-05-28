@@ -4,7 +4,9 @@ Trains a 4-step LoRA student against the 28-step CFG=4 Anima teacher, using
 Liu et al.'s Decoupled-Hybrid schedule (arXiv:2511.22677, Table 1 row 4) on
 top of a co-LoRA fake score model.
 
-Proposal: ``docs/proposal/turbo_anima_dmd_lora.md``.
+Docs:     ``docs/experimental/dmd2-decoupled.md`` (usage / ops),
+          ``docs/structure/dmd2-decoupled.md`` (math / walkthrough),
+          ``docs/proposal/dmd2_decoupled_improvements.md`` (decision log).
 Config:   ``configs/methods/turbo.toml`` (CLI flags override TOML values).
 
 One frozen DiT serves three roles via per-network ``set_enabled`` toggling:
@@ -231,7 +233,8 @@ def main():
         "grad_dm = τ·Δ_dm / clamp(τ·mean|v_real|, norm_floor). Because the denom "
         "≈ τ·mean|v_real|, the τ CANCELS across the bulk → ≈ no-τ, magnitude-"
         "normalized. This REPLACES the default τ-damping (policy 'a'); it does NOT "
-        "stack with it (that would be policy 'c'). A/B lever — see proposal.md §2B.",
+        "stack with it (that would be policy 'c'). A/B lever — see "
+        "docs/proposal/dmd2_decoupled_improvements.md §2B.",
     )
     parser.add_argument(
         "--norm_floor",
@@ -310,7 +313,7 @@ def main():
     tau_ca_min_gap = float(_flatten(cfg, "dmd.tau_ca_min_gap", 0.05))
     tau_ca_skip_above_t = float(_flatten(cfg, "dmd.tau_ca_skip_above_t", 0.95))
     # DM-branch gradient policy: (a) τ-damping [default] vs (b) DMD per-sample
-    # x0-space magnitude normalization. See proposal.md §2B — these are alternative
+    # x0-space magnitude normalization. See dmd2_decoupled_improvements.md §2B — alternative
     # policies, not additive; (b) ≈ "drop the τ-weight, magnitude-normalize."
     dm_x0_norm = bool(pick(args.dm_x0_norm, "dmd.dm_x0_norm", False))
     norm_floor = float(pick(args.norm_floor, "dmd.norm_floor", 0.05))
@@ -605,7 +608,7 @@ def main():
     acc_cfg = _z()
     acc_xpred = _z()
     acc_v_student = _z()
-    # Fake-tracking diagnostics — the real triggers (see proposal.md). A rising
+    # Fake-tracking diagnostics — the real triggers (see the improvement proposal). A rising
     # fake_loss against a moving, sharpening student is expected, not a problem;
     # what tells us the fake has actually fallen behind is the *effective DM
     # residual* and the fake↔teacher score agreement at the DM eval point:
