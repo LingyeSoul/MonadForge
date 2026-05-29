@@ -11,6 +11,13 @@ import random
 import time
 from multiprocessing import Value
 
+# Windows: suppress per-kernel ptxas.exe / cl.exe console flashes from
+# torch.compile + Triton. Must run before any subprocess.Popen call (i.e.
+# before torch import on Windows where inductor may prefetch toolchain).
+from library.runtime.proc import install_no_window_default
+
+install_no_window_default()
+
 import torch
 import torch.nn as nn
 from library.runtime.device import clean_memory_on_device

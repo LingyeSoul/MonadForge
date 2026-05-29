@@ -643,13 +643,25 @@ def _log_step(
         or (state.global_step >= args.max_train_steps)
     )
 
-    current_loss = loss.detach().item()
-    state.loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
-    avr_loss: float = state.loss_recorder.moving_average
-    # Include lr in tqdm postfix so the WebUI parser can extract it.
-    lrs = state.lr_scheduler.get_last_lr()
-    logs = {"avr_loss": avr_loss, "lr": lrs[0] if lrs else 0.0}
+    # Only trigger the D2H sync (loss.detach().item()) on log cadence.
+    # Between log steps the tqdm postfix shows the last-cached loss value —
+    # the WebUI polls at ~300ms intervals so log_every_n_steps granularity
+    # is more than sufficient for a responsive UI.  This eliminates a
+    # per-step GPU→CPU synchronisation point that stalls the pipeline.
     _unwrapped_net = state.accelerator.unwrap_model(state.network)
+    _cached_avr = getattr(trainer, "_last_postfix_avr", 0.0)
+    _cached_lr = getattr(trainer, "_last_postfix_lr", 0.0)
+    if should_log_step:
+        current_loss = loss.detach().item()
+        state.loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
+        _cached_avr = state.loss_recorder.moving_average
+        trainer._last_postfix_avr = _cached_avr
+        lrs = state.lr_scheduler.get_last_lr()
+        _cached_lr = lrs[0] if lrs else 0.0
+        trainer._last_postfix_lr = _cached_lr
+
+    # Lightweight tqdm postfix update every step using cached values.
+    logs = {"avr_loss": _cached_avr, "lr": _cached_lr}
     # Refresh router_H only on log cadence — get_router_entropy → full
     # get_router_stats compute (with D2H syncs) is wasted if the only
     # consumer is the progress-bar postfix. Cache last value on trainer
@@ -663,11 +675,12 @@ def _log_step(
         logs["router_H"] = f"{_router_H_cached:.3f}"
     state.progress_bar.set_postfix(refresh=False, **{**max_mean_logs, **logs})
 
-    # The Phase-0 progress sink (GUI / daemon progress bar tails progress.jsonl)
-    # needs `step` events even with no tracker configured. When tracking, the
-    # step_logging call below already feeds the sink via dispatch_logs; emit a
-    # lightweight event directly only when untracked, so the bar advances
-    # without paying for the full generate_step_logs + collect_metrics path.
+    # The Phase-0 progress sink (GUI / daemon progress bar tails progress.jsonl).
+    # Only write on log cadence to avoid per-step synchronous disk I/O that
+    # stalls the training loop — the WebUI polls at ~300ms intervals so a
+    # log_every_n_steps cadence (typically every 2 steps) is more than fast
+    # enough for a responsive UI. When tracking is active the step_logging
+    # call below already feeds the sink via dispatch_logs.
     progress_sink = getattr(trainer, "progress_sink", None)
     if should_log_step and not state.is_tracking and progress_sink is not None:
         progress_sink.log(logs, global_step=state.global_step, epoch=epoch + 1)
@@ -676,7 +689,7 @@ def _log_step(
         logs = trainer.generate_step_logs(
             args,
             current_loss,
-            avr_loss,
+            _cached_avr,
             state.lr_scheduler,
             state.lr_descriptions,
             state.optimizer,
@@ -712,20 +725,22 @@ def _log_step(
                 extras = grad_collector.collect(_unwrapped_net)
                 dispatch_wandb_extras(state.accelerator, extras, state.global_step)
 
-    # Write a lightweight step event to the JSONL progress sink every
-    # sync step so the WebUI can tail structured metrics instead of
-    # regex-parsing stdout.  The sink is line-buffered and async-safe;
-    # failures are swallowed internally and never crash training.
-    if state.accelerator.sync_gradients:
+    # Write a lightweight step event to the JSONL progress sink on
+    # log cadence (matching tensorboard write frequency) so the WebUI
+    # can tail structured metrics.  Writing every sync_gradients step
+    # adds synchronous disk I/O that stalls the GPU pipeline — the
+    # WebUI polls at ~300ms intervals so log_every_n_steps cadence is
+    # sufficient for a responsive UI.
+    if should_log_step:
         _sink = getattr(trainer, "progress_sink", None)
         if _sink is not None:
             _sink.log(
-                {"avr_loss": avr_loss, "lr": logs.get("lr", 0.0)},
+                {"avr_loss": _cached_avr, "lr": logs.get("lr", 0.0)},
                 global_step=state.global_step,
                 epoch=epoch,
             )
 
-    return avr_loss
+    return _cached_avr
 
 
 def _maybe_run_step_validation(trainer, state: LoopState, epoch: int) -> None:
