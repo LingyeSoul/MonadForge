@@ -7,7 +7,6 @@ Training and inference algorithms.
 | Doc | Description |
 |-----|-------------|
 | [methods/hydra-lora.md](methods/hydra-lora.md) | HydraLoRA — MoE multi-head routing (shared-A experts), one cell of the three-axis routing surface in `configs/methods/lora.toml` |
-| [experimental/fera.md](experimental/fera.md) | FeRA — independent-A stacked experts with a single global FEI router; another cell of the same three-axis surface |
 | [methods/psoft-integrated-ortholora.md](methods/psoft-integrated-ortholora.md) | OrthoLoRA (Cayley) — SVD-informed init, structural orthogonality |
 | [methods/timestep_mask.md](methods/timestep_mask.md) | T-LoRA — timestep-dependent rank masking |
 | [methods/reft.md](methods/reft.md) | ReFT — block-level residual-stream intervention |

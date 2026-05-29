@@ -1,5 +1,19 @@
 # Soft Tokens — AGSM: bounded dual-token alignment guidance
 
+Status: **ARCHIVED 2026-05-29 — LANDED.** The bounded AGSM target shipped on the
+soft-tokens path (`contrastive_objective=agsm`, paper-faithful Plackett–Luce Δ +
+γ⁺/γ⁻ self-anneal, dual-bank ψ⁺/ψ⁻ behind `agsm_dual_bank`) and an A/B showed it
+**helps prompt-following and quality**. Phase 0 reward premise held
+([[project_agsm_reward_premise_holds]]); the implementation and PL correction are
+recorded in [[project_soft_tokens_agsm_pl_correction]]. Open items below are
+faithfulness refinements, not blockers: **3b renoise = DEFER** (probe MATTERS by
+the literal gate but is weak in practice), **3c time-shaping = PARKED**, and the
+**dual-bank ship-vs-revert A/B** (3a) remains the one outstanding decision. The
+method now lives in the code + method doc (`docs/experimental/soft_tokens.md`); the
+original proposal text is preserved below for the phasing/gating rationale.
+
+# Original proposal
+
 Status: **proposal** (2026-05-22). Builds on `docs/experimental/soft_tokens.md`
 and supersedes the InfoNCE direction in `docs/proposal/soft_tokens_contrastive.md`
 *conditionally* — see "Relationship to the contrastive proposal". Reuses the

@@ -64,8 +64,9 @@ See [`../methods/timestep_mask.md`](../methods/timestep_mask.md).
 
 ### HydraLoRA / FeRA / Hydra+FEI
 
-Multi-head expert routing variants. See [`../methods/hydra-lora.md`](../methods/hydra-lora.md)
-and [`../../docs/experimental/fera.md`](../experimental/fera.md). The
+Multi-head expert routing variants. See [`../methods/hydra-lora.md`](../methods/hydra-lora.md);
+FEI-routed shared-A is the shipped default and the FEI lineage is documented in
+[`../experimental/chimera-hydra.md`](../experimental/chimera-hydra.md). The
 `balance_loss_weight` ceiling is ~5e-5 on Anima — above that the Switch loss
 saturates.
 
