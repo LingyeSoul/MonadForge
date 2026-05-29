@@ -163,6 +163,31 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Reserved — background-lock mask path (v2). Currently ignored.",
     )
+    p.add_argument(
+        "--fm_score",
+        action="store_true",
+        help="AGSM-style ψ_src probe: score each variant's source conditioning "
+        "by its intrinsic flow-matching error against the source latent "
+        "(lower = the model finds the caption a better explanation = more "
+        "on-manifold). σ and noise are held FIXED across variants so the "
+        "ranking reflects only the conditioning (the reward-premise contract: "
+        "relative ranking on one image cancels per-sample noise). In "
+        "--cached_embed mode also logs each variant's latent reconstruction "
+        "MSE so you can check whether the lowest-FM variant reconstructs best.",
+    )
+    p.add_argument(
+        "--fm_score_sigmas",
+        default="0.25,0.5,0.7,0.9",
+        help="Comma-separated σ grid for --fm_score (default biased mid/high, "
+        "where the AGSM reward margin is largest). One forward per variant.",
+    )
+    p.add_argument(
+        "--fm_score_seed",
+        type=int,
+        default=None,
+        help="Seed for the fixed --fm_score noise draw (default: --seed). "
+        "Same seed across variants is what makes the ranking comparable.",
+    )
 
     # Sampling knobs.
     p.add_argument("--infer_steps", type=int, default=28)
@@ -420,6 +445,90 @@ def _load_cached_embed_variants(
     return out
 
 
+@torch.no_grad()
+def _fm_error_score(
+    anima,
+    z_clean: torch.Tensor,
+    emb: torch.Tensor,
+    sv: torch.Tensor,
+    noise: torch.Tensor,
+) -> float:
+    """AGSM intrinsic reward (negated) for one conditioning ``emb``.
+
+    Returns the mean flow-matching error ``‖v_θ(x_σ, σ, emb) − (noise − x0)‖²``
+    over the FIXED ``(sv, noise)`` grid. Lower = the model finds ``emb`` a
+    better explanation of the source image = more on-manifold. The σ/noise
+    grid is shared across every variant, so differences are attributable to
+    the conditioning alone — this is the regime where the FM signal is
+    informative (relative ranking on one image), unlike absolute FM val loss.
+
+    ``z_clean`` is the 5D source latent ``[1, C, 1, H, W]``; ``sv`` is
+    ``(n, 1, 1, 1)`` and ``noise`` is ``(n, C, H, W)``.
+    """
+    lat = z_clean.squeeze(2)  # [1, C, H, W]
+    n = noise.shape[0]
+    lat = lat.expand(n, -1, -1, -1)
+    # Cast σ to the latent dtype (bf16) so the mix stays bf16 — sv arrives fp32
+    # from torch.tensor(); a bf16*fp32 mix would promote the latent to fp32 and
+    # mismatch the DiT's bf16 weights (mirrors fm_loss_step's cast).
+    sv = sv.to(lat.dtype)
+    noisy = ((1.0 - sv) * lat + sv * noise).unsqueeze(2)  # 5D for the DiT
+    emb_e = emb.expand(n, -1, -1)
+    pm = torch.zeros(
+        n, 1, lat.shape[-2], lat.shape[-1], dtype=torch.bfloat16, device=lat.device
+    )
+    timesteps = sv.view(-1).to(torch.bfloat16)
+    pred = anima(noisy, timesteps, emb_e, padding_mask=pm).squeeze(2)
+    target = noise - lat
+    return ((pred.float() - target.float()) ** 2).mean().item()
+
+
+def _log_fm_score_table(rows: list[dict]) -> None:
+    """Log the per-variant FM-error / reconstruction table + a probe verdict.
+
+    ``rows`` carry ``label``, ``fm`` (always) and ``recon`` (cached_embed mode
+    only). Sorted by FM error so the on-manifold ranking reads top-down. When
+    reconstruction MSE is present the summary reports whether the lowest-FM
+    variant is also the best-reconstructing one and, for n≥3, the Pearson r
+    between the two — the core question the probe exists to answer.
+    """
+    have_recon = all(r.get("recon") is not None for r in rows)
+    ordered = sorted(rows, key=lambda r: r["fm"])
+    header = "  rank  variant            fm_error" + (
+        "   recon_mse" if have_recon else ""
+    )
+    logger.info("ψ_src FM-error probe (lower fm_error = more on-manifold):")
+    logger.info(header)
+    for i, r in enumerate(ordered):
+        line = f"  {i:>4}  {str(r['label']):<16}  {r['fm']:.6f}"
+        if have_recon:
+            line += f"   {r['recon']:.6f}"
+        logger.info(line)
+    if not have_recon or len(rows) < 2:
+        return
+    best_fm = min(rows, key=lambda r: r["fm"])
+    best_recon = min(rows, key=lambda r: r["recon"])
+    logger.info(
+        "  lowest-fm variant=%s  |  best-reconstructing variant=%s  |  match=%s",
+        best_fm["label"],
+        best_recon["label"],
+        best_fm["label"] == best_recon["label"],
+    )
+    if len(rows) >= 3:
+        fm = torch.tensor([r["fm"] for r in rows], dtype=torch.float64)
+        rc = torch.tensor([r["recon"] for r in rows], dtype=torch.float64)
+        fm = fm - fm.mean()
+        rc = rc - rc.mean()
+        denom = (fm.norm() * rc.norm()).item()
+        r = (fm @ rc).item() / denom if denom > 0 else float("nan")
+        logger.info(
+            "  Pearson r(fm_error, recon_mse) = %+.3f over n=%d variants "
+            "(want > 0: low FM error predicts faithful reconstruction).",
+            r,
+            len(rows),
+        )
+
+
 def main() -> None:
     args = parse_args()
 
@@ -670,11 +779,47 @@ def main() -> None:
     else:
         variant_passes = [(None, embed_src, embed_tar)]
 
+    # 7b. AGSM-style ψ_src probe grid. Sample one fixed (σ, noise) batch and
+    #     reuse it for every variant so the FM-error ranking reflects only the
+    #     conditioning, not the noise/σ draw (relative-ranking contract).
+    fm_grid = None
+    fm_rows: list[dict] = []
+    if args.fm_score:
+        sig_vals = [float(s) for s in args.fm_score_sigmas.split(",") if s.strip()]
+        if not sig_vals:
+            raise SystemExit("--fm_score_sigmas parsed to empty list")
+        seed = args.fm_score_seed if args.fm_score_seed is not None else args.seed
+        gen = torch.Generator(device=device).manual_seed(int(seed))
+        sv = torch.tensor(sig_vals, device=device).view(-1, 1, 1, 1)
+        lat4 = z_clean.squeeze(2)
+        noise = torch.randn(
+            len(sig_vals),
+            lat4.shape[1],
+            lat4.shape[2],
+            lat4.shape[3],
+            device=device,
+            dtype=lat4.dtype,
+            generator=gen,
+        )
+        fm_grid = (sv, noise)
+        logger.info(
+            "ψ_src FM-error probe enabled: σ grid=%s, seed=%d, %d variant(s).",
+            sig_vals,
+            int(seed),
+            len(variant_passes),
+        )
+
     # 8. Inversion -> editing per variant. Hold all z_edits before re-mounting
     #    the VAE so we only do one DiT-off / VAE-on swap.
     z_edits: list[tuple[Optional[str], torch.Tensor]] = []
     for variant, e_src, e_tar in variant_passes:
         tag = f"variant={variant}, " if variant else ""
+        if fm_grid is not None:
+            fm = _fm_error_score(anima, z_clean, e_src, fm_grid[0], fm_grid[1])
+            fm_rows.append(
+                {"label": variant if variant is not None else "src", "fm": fm}
+            )
+            logger.info("  %sψ_src FM-error = %.6f", tag, fm)
         # Fresh SMC state per variant so e_prev resets cleanly between passes.
         # SMC is no-op on the inversion path (single-forward, no residual).
         smc_state = (
@@ -724,6 +869,20 @@ def main() -> None:
             smc_cfg_state=smc_state,
         )
         z_edits.append((variant, z_edit))
+        # In cached_embed mode ψ_tar == ψ_src, so the edit pass is a pure
+        # reconstruction — its latent MSE against the source is the quality
+        # signal we correlate the FM-error ranking against.
+        if fm_grid is not None and cached_variants is not None:
+            with torch.no_grad():
+                recon = (
+                    ((z_edit.reshape(-1).float() - z_clean.reshape(-1).float()) ** 2)
+                    .mean()
+                    .item()
+                )
+            fm_rows[-1]["recon"] = recon
+
+    if fm_rows:
+        _log_fm_score_table(fm_rows)
 
     # 9. Decode + save (one VAE re-mount for all variants).
     del anima

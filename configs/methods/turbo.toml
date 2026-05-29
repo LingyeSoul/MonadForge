@@ -8,7 +8,7 @@
 # LoRA — load it through the standard inference path with --infer_steps 4 --cfg 1.0
 # (CFG is baked into the student during distillation).
 
-output_name = "anima_turbo_F96"
+output_name = "anima_turbo_G"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
@@ -23,11 +23,16 @@ use_custom_down_autograd = true
 # the fake/critic regression is left full-frame.
 use_masked_loss = false
 
+# Curation gate (item 5; see item5_plan.md). When true, training reads only the
+# stems in the keep_list.json from `make exp-turbo-prep` (the noise/HF-curated
+# high-signal subset) instead of the full pool.
+use_prep_list = true
+
 [network]
-student_rank = 96
-student_alpha = 96
-fake_rank = 96
-fake_alpha = 96
+student_rank = 64
+student_alpha = 64
+fake_rank = 64
+fake_alpha = 64
 attn_mode = "flash"
 
 # DMD2 schedule (proposal §Schedule, paper Table 1 row 4: Decoupled-Hybrid).

@@ -89,6 +89,7 @@ class CachedDataset(torch.utils.data.Dataset):
         sample_ratio: float = 1.0,
         synth_data_dir: str | None = None,
         mask_dir: str | None = None,
+        keep_list: set[str] | None = None,
     ):
         assert split in ("train", "val")
         self.data_dir = data_dir
@@ -98,6 +99,17 @@ class CachedDataset(torch.utils.data.Dataset):
         # ``mask_dir`` keep the legacy 4-tuple. See ``_resolve_mask_path``.
         self.mask_dir = mask_dir
         cached = discover_cached_pairs(data_dir)
+
+        # Curation gate (turbo item 5): when a keep_list of stems is supplied,
+        # drop every cached pair whose stem isn't in it BEFORE bucketing/split,
+        # so the cut narrows the actual train pool. None → no filter (legacy).
+        if keep_list is not None:
+            n_before = len(cached)
+            cached = [img for img in cached if img.stem in keep_list]
+            logger.info(
+                f"[{split}] keep_list filter: {len(cached)}/{n_before} pairs "
+                f"survive (keep_list has {len(keep_list)} stems)"
+            )
 
         # When --synth_data_dir is set, rewrite each sample's latent path to the
         # synthetic NPZ for the same stem. Samples without a synthetic

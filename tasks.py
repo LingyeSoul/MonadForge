@@ -238,6 +238,13 @@ COMMANDS = {
         "into a 4-step LoRA student (configs/methods/turbo.toml). "
         "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod).",
     ),
+    "exp-turbo-prep": (
+        exp_training.cmd_turbo_prep,
+        "[experimental] Turbo dataset curation (item 5) — score every cached stem "
+        "(latent HF energy + Immerkær grain detector on resized px) and emit "
+        "post_image_dataset/turbo_prep/keep_list.json. No GPU. Consumed by exp-turbo "
+        "when use_prep_list=true in configs/methods/turbo.toml.",
+    ),
     "exp-spd": (
         exp_training.cmd_spd,
         "[experimental] SPD fine-tuning LoRA — §4.3 trajectory adapter that teaches a "

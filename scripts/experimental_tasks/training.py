@@ -34,6 +34,25 @@ def cmd_turbo(extra):
     run([PY, "-m", "scripts.distill_turbo.distill", *preset_flags, *extra])
 
 
+def cmd_turbo_prep(extra):
+    """Turbo dataset curation — score every cached stem, emit keep_list.json (item 5).
+
+    Walks ``post_image_dataset/lora`` + the resized PNGs, computes per-stem
+    ``hf_ratio`` (latent HF band energy) + ``noise_sigma`` (Immerkær grain
+    detector on the resized image), then cuts to ``--target`` (default 500) with
+    stratified coverage repair. Writes only
+    ``post_image_dataset/turbo_prep/keep_list.json`` — consumed by
+    ``make exp-turbo`` when ``use_prep_list = true`` in ``configs/methods/turbo.toml``.
+
+    No GPU, ~1 min. Trailing args forward to the script, e.g.::
+
+        make exp-turbo-prep                              # default target 500
+        make exp-turbo-prep ARGS="--target 1000 --alpha 0.5"
+        make exp-turbo-prep ARGS="--dry_run"             # log the cut, write nothing
+    """
+    run([PY, "-m", "scripts.distill_turbo.prep", *extra])
+
+
 def cmd_spd(extra):
     """SPD fine-tuning LoRA — §4.3 trajectory adapter (proposal: docs/proposal/spd_finetune_lora.md).
 

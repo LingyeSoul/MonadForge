@@ -223,6 +223,22 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Phase 0 overfit mode — pin the dataloader to a single (latent, text) pair.",
     )
     parser.add_argument("--sample_ratio", type=float, default=1.0)
+    # Curation gate (item 5): restrict training to the stems in a keep_list.json
+    # produced by `make exp-turbo-prep`. Tri-state like use_masked_loss — None
+    # falls back to the TOML `use_prep_list`.
+    parser.add_argument(
+        "--use_prep_list", action="store_true", default=None,
+        help="Gate training on the curation keep_list (item 5).",
+    )
+    parser.add_argument(
+        "--no_use_prep_list", dest="use_prep_list", action="store_false",
+        help="Ignore the curation keep_list even if turbo.toml enables it.",
+    )
+    parser.add_argument(
+        "--prep_list_path", type=str, default=None,
+        help="keep_list.json path (default: TOML prep_list_path, else "
+        "post_image_dataset/turbo_prep/keep_list.json).",
+    )
     return parser
 
 
@@ -261,6 +277,10 @@ class TurboConfig:
     # Masked loss
     use_masked_loss: bool
     mask_dir: str
+
+    # Curation gate (item 5)
+    use_prep_list: bool
+    prep_list_path: str
 
     # DMD core
     student_steps: int
@@ -337,6 +357,16 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     else:
         use_masked_loss = bool(args.use_masked_loss)
     mask_dir = _pick(args.mask_dir, cfg, "mask_dir", "post_image_dataset/masks")
+
+    # Curation gate (item 5) — top-level TOML keys, CLI wins when explicit.
+    if args.use_prep_list is None:
+        use_prep_list = bool(_flatten(cfg, "use_prep_list", False))
+    else:
+        use_prep_list = bool(args.use_prep_list)
+    prep_list_path = _pick(
+        args.prep_list_path, cfg, "prep_list_path",
+        "post_image_dataset/turbo_prep/keep_list.json",
+    )
 
     # DMD core
     student_steps = int(_pick(args.student_steps, cfg, "dmd.student_steps", 4))
@@ -472,6 +502,8 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         use_custom_down_autograd=use_custom_down_autograd,
         use_masked_loss=use_masked_loss,
         mask_dir=mask_dir,
+        use_prep_list=use_prep_list,
+        prep_list_path=prep_list_path,
         student_steps=student_steps,
         teacher_cfg=teacher_cfg,
         tau_ca_strategy=tau_ca_strategy,

@@ -61,6 +61,31 @@ def _resolve_te_cache(ref_image: str | os.PathLike) -> Path | None:
     return next((p for p in _te_cache_candidates(ref_image) if p.is_file()), None)
 
 
+def _resolve_ref_image(ref_image: str) -> str:
+    """Resolve a possibly-partial ``REF_IMAGE`` to a real file under ``resized/``.
+
+    Accepts a path that already exists as given, or a partial path relative to
+    ``post_image_dataset/resized/`` with or without an extension (e.g.
+    ``sushispin/10186995`` → ``.../resized/sushispin/10186995.png``). Returning
+    the full nested path is what lets ``_te_cache_candidates`` /
+    ``resolve_cache_path`` mirror the per-artist subdir into the cache lookup —
+    a bare ``artist/stem`` makes ``relpath`` escape the resized root and fall
+    back to the (wrong) flat ``lora/stem`` candidate. Returns ``ref_image``
+    untouched when nothing matches, so downstream "not found" messaging fires.
+    """
+    if Path(ref_image).is_file():
+        return ref_image
+    resized_root = ROOT / "post_image_dataset" / "resized"
+    base = resized_root / ref_image
+    if base.is_file():
+        return str(base)
+    for ext in _REF_IMAGE_EXTS:
+        for cand in (Path(f"{base}{ext}"), base.with_suffix(ext)):
+            if cand.is_file():
+                return str(cand)
+    return ref_image
+
+
 def _random_ref_image(directory: Path) -> str | None:
     if not directory.is_dir():
         return None
@@ -282,6 +307,7 @@ def cmd_test_directedit(extra):
             file=sys.stderr,
         )
         sys.exit(1)
+    ref_image = _resolve_ref_image(ref_image)
 
     # 2. Pull the user-supplied edit instruction. PROMPT env wins; fall back
     #    to a ``--prompt`` flag in extra; final default = "double peace".
@@ -384,10 +410,16 @@ def cmd_test_directedit_dry(extra):
     should reconstruct the source; divergence flags numeric drift in
     invert/edit_forward against that variant's cross-emb representation.
 
+    Add ``--fm_score`` to also rank each variant's ψ_src by its intrinsic
+    flow-matching error (AGSM-style reward; lower = more on-manifold) and
+    correlate that ranking against each variant's reconstruction MSE — a
+    quantitative replacement for eyeballing the side-by-side divergence.
+
     Examples:
       make exp-test-directedit-dry
       REF_IMAGE=foo.png make exp-test-directedit-dry
       python tasks.py exp-test-directedit-dry foo.png --seed 7
+      python tasks.py exp-test-directedit-dry foo.png --fm_score
     """
     ref_image = os.environ.get("REF_IMAGE", "").strip()
     if not ref_image and extra and not extra[0].startswith("-"):
@@ -403,6 +435,7 @@ def cmd_test_directedit_dry(extra):
             file=sys.stderr,
         )
         sys.exit(1)
+    ref_image = _resolve_ref_image(ref_image)
 
     # Auto-resolve the matching TE cache file. Preprocessing mirrors the
     # resized/ subdir layout under post_image_dataset/lora/, so probe the
@@ -536,7 +569,7 @@ def cmd_invert_directedit(extra):
         n_images = 1
 
     if ref_image_override:
-        images = [ref_image_override]
+        images = [_resolve_ref_image(ref_image_override)]
     else:
         images = _resolve_ref_image_pool(
             ROOT / "post_image_dataset" / "resized", n_images

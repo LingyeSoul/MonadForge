@@ -135,11 +135,27 @@ def main():
     )
 
     # ---------------- Dataset ----------------
+    # Curation gate (item 5): load the keep_list stems from `make exp-turbo-prep`
+    # and pass them to the reader, which drops every stem not in the cut.
+    keep_list: set[str] | None = None
+    if cfg.use_prep_list:
+        prep_path = Path(cfg.prep_list_path)
+        if not prep_path.exists():
+            raise FileNotFoundError(
+                f"use_prep_list=true but keep_list missing: {prep_path}. "
+                f"Run `make exp-turbo-prep` first (or set use_prep_list=false)."
+            )
+        import json
+
+        keep_list = set(json.loads(prep_path.read_text())["kept"])
+        logger.info(f"curation gate ON: {len(keep_list)} stems from {prep_path}")
+
     dataset = CachedDataset(
         cfg.data_dir,
         batch_size=cfg.batch_size,
         sample_ratio=cfg.sample_ratio,
         mask_dir=cfg.mask_dir if cfg.use_masked_loss else None,
+        keep_list=keep_list,
     )
     if cfg.single_prompt_idx is not None:
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
