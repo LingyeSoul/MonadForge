@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 
-import inference
 from library.anima import weights as anima_weights
 from library.inference.models import load_text_encoder
 from library.inference.text import (
@@ -78,23 +77,21 @@ def main() -> None:
     # Prompt encoding goes through two process-global strategy singletons (the
     # strategy pattern in library/anima/strategy.py). ensure_text_strategies()
     # installs them from the text-encoder path — a no-op if already set, and the
-    # same call prepare_text_inputs() now makes internally, so this line is
-    # really just here to show the seam. (Forget it and you'd get a cryptic
-    # `'NoneType' object has no attribute 'tokenize'`.)
-    ensure_text_strategies(TEXT_ENCODER, max_length=MAX_CROSSATTN_TOKENS)
+    # same call prepare_text_inputs() makes internally — and hands them back so
+    # you can see (and use) them rather than fishing them out of the globals.
+    # (Skip it and the first tokenize() dies with `'NoneType' has no tokenize`.)
+    tokenize_strategy, encoding_strategy = ensure_text_strategies(
+        TEXT_ENCODER, max_length=MAX_CROSSATTN_TOKENS
+    )
+    print(
+        f"Strat : {type(tokenize_strategy).__name__} + "
+        f"{type(encoding_strategy).__name__}"
+    )
 
+    # Loading the encoder needs only its path — pass it as a keyword. (No prompt,
+    # no save_path: those belong to generation, not to loading a model.)
     text_encoder = load_text_encoder(
-        # prepare_text_inputs/load_text_encoder read these off an args namespace.
-        inference.parse_args(
-            [
-                "--text_encoder",
-                TEXT_ENCODER,
-                "--prompt",
-                opts.prompt,
-                "--save_path",
-                "/tmp/unused.png",
-            ]
-        ),
+        text_encoder=TEXT_ENCODER,
         dtype=torch.bfloat16,
         device=device,
     )
@@ -103,19 +100,13 @@ def main() -> None:
 
     # prepare_text_inputs returns (context, context_null); context['embed'][0] is
     # the cross-attn embedding the DiT consumes, max-padded to MAX_CROSSATTN_TOKENS.
-    enc_args = inference.parse_args(
-        [
-            "--text_encoder",
-            TEXT_ENCODER,
-            "--prompt",
-            opts.prompt,
-            "--save_path",
-            "/tmp/unused.png",
-        ]
-    )
-    enc_args.device = device
+    # Pass the request as keywords — the encoder is already loaded, so hand it in
+    # via shared_models and prepare_text_inputs won't reload it.
     context, _context_null = prepare_text_inputs(
-        enc_args, device, dit, shared_models={"text_encoder": text_encoder}
+        device=device,
+        anima=dit,
+        prompt=opts.prompt,
+        shared_models={"text_encoder": text_encoder},
     )
     crossattn = context["embed"][0]
     print(

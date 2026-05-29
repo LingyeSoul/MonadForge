@@ -70,28 +70,21 @@ def build_network(merged: dict):
     """
     import torch
 
-    import inference
-    from library.inference.models import load_dit_model
+    from library.anima import weights as anima_weights
     from networks.lora_anima import create_network
 
-    # A minimal args namespace just to drive the DiT loader.
-    args = inference.parse_args(
-        [
-            "--dit",
-            "models/diffusion_models/anima-base-v1.0.safetensors",
-            "--vae",
-            "models/vae/qwen_image_vae.safetensors",
-            "--text_encoder",
-            "models/text_encoders/qwen_3_06b_base.safetensors",
-            "--prompt",
-            "x",  # unused; satisfies the parser's "need a prompt" check
-            "--save_path",
-            "/tmp/unused.png",
-        ]
-    )
+    # We only need the raw DiT weights to bind a fresh network to — no LoRA / no
+    # adapters to attach. So skip the namespace-driven load_dit_model and call the
+    # explicit-argument primitive directly (as its docstring advises, and as
+    # examples/05 does). attn_mode "torch" is the portable default.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args.device = device
-    unet = load_dit_model(args, device, torch.bfloat16)
+    unet = anima_weights.load_anima_model(
+        device=device,
+        dit_path="models/diffusion_models/anima-base-v1.0.safetensors",
+        attn_mode="torch",
+        loading_device=device,
+        dit_weight_dtype=torch.bfloat16,
+    )
 
     # Forward the routing surface (skip None — let create_network use its own
     # defaults) plus any other str-valued knobs the module reads from kwargs.

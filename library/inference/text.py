@@ -1,5 +1,6 @@
 """Text encoding and preparation for Anima inference."""
 
+import argparse
 import gc
 import logging
 from typing import Optional, Tuple, Any, Dict
@@ -28,8 +29,10 @@ def process_escape(text: str) -> str:
 def ensure_text_strategies(
     text_encoder_path: Optional[str],
     max_length: int = MAX_CROSSATTN_TOKENS,
-) -> None:
-    """Idempotently install the global tokenize/encode strategy singletons.
+) -> Tuple[
+    "text_strategies.TokenizeStrategy", "text_strategies.TextEncodingStrategy"
+]:
+    """Idempotently install (and return) the tokenize/encode strategy singletons.
 
     Anima encodes prompts through two *process-global* singletons —
     ``TokenizeStrategy`` and ``TextEncodingStrategy`` (the strategy pattern in
@@ -43,6 +46,11 @@ def ensure_text_strategies(
     composes with the CLI path (and is safe to call on every generation). If a
     strategy is missing *and* no path is available to build it, it raises a clear
     ``ValueError`` instead of failing later deep in the encode call.
+
+    Returns the two live strategies (whether freshly installed or pre-existing) so
+    a caller can use them directly instead of fishing them back out of the globals
+    with ``get_strategy()``. They remain global — the return value is the same
+    object the downstream encode path reads, not a private copy.
     """
     from library.anima import strategy as strategy_anima
 
@@ -70,28 +78,76 @@ def ensure_text_strategies(
             strategy_anima.AnimaTextEncodingStrategy()
         )
 
+    return (
+        text_strategies.TokenizeStrategy.get_strategy(),
+        text_strategies.TextEncodingStrategy.get_strategy(),
+    )
+
 
 def prepare_text_inputs(
-    args,
-    device: torch.device,
-    anima: anima_models.Anima,
+    args: Optional[argparse.Namespace] = None,
+    device: Optional[torch.device] = None,
+    anima: Optional[anima_models.Anima] = None,
     shared_models: Optional[Dict] = None,
+    *,
+    prompt: Optional[str] = None,
+    negative_prompt: Optional[str] = None,
+    text_encoder_path: Optional[str] = None,
+    text_encoder_cpu: Optional[bool] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """Prepare text-related inputs for T2I: LLM encoding. Anima model is also needed for preprocessing.
 
-    The tokenize/encode strategy singletons are lazily installed from
-    ``args.text_encoder`` via ``ensure_text_strategies`` if a caller (an embedder
+    Only four things are read from the request: ``prompt``, ``negative_prompt``,
+    the text-encoder path, and whether to keep the encoder on CPU. Pass them as
+    keywords for a self-documenting call (no ``inference.parse_args`` needed)::
+
+        prepare_text_inputs(
+            device=device, anima=dit, prompt="a lighthouse at dusk",
+            shared_models={"text_encoder": text_encoder},
+        )
+
+    The legacy ``args`` namespace is still accepted as a positional fallback (the
+    CLI and ``generate()`` pass one); explicit keywords win over it. ``device`` and
+    ``anima`` are always required — they keep ``None`` defaults only so ``args`` can
+    be omitted entirely without reordering positional callers.
+
+    The tokenize/encode strategy singletons are lazily installed from the
+    text-encoder path via ``ensure_text_strategies`` if a caller (an embedder
     driving ``generate()`` directly) hasn't set them — a no-op on the CLI path,
     which sets them in ``inference.main``.
     """
+    if device is None or anima is None:
+        raise ValueError("prepare_text_inputs requires `device` and `anima`.")
+
+    # Explicit keyword wins; otherwise fall back to the namespace; otherwise default.
+    prompt = prompt if prompt is not None else getattr(args, "prompt", None)
+    if prompt is None:
+        raise ValueError(
+            "prepare_text_inputs needs a prompt (pass prompt=... or args.prompt)."
+        )
+    negative_prompt = (
+        negative_prompt
+        if negative_prompt is not None
+        else (getattr(args, "negative_prompt", "") or "")
+    )
+    te_path = (
+        text_encoder_path
+        if text_encoder_path is not None
+        else getattr(args, "text_encoder", None)
+    )
+    te_cpu = (
+        text_encoder_cpu
+        if text_encoder_cpu is not None
+        else bool(getattr(args, "text_encoder_cpu", False))
+    )
 
     # Install the global tokenize/encode strategies if the caller didn't (the
     # CLI does; a bare generate() embedder may not). No-op when already set.
-    ensure_text_strategies(getattr(args, "text_encoder", None))
+    ensure_text_strategies(te_path)
 
     # load text encoder: conds_cache holds cached encodings for prompts without padding
     conds_cache = {}
-    text_encoder_device = torch.device("cpu") if args.text_encoder_cpu else device
+    text_encoder_device = torch.device("cpu") if te_cpu else device
     if shared_models is not None:
         text_encoder = shared_models.get("text_encoder")
 
@@ -101,9 +157,18 @@ def prepare_text_inputs(
         # text_encoder is on device (batched inference) or CPU (interactive inference)
     else:  # Load if not in shared_models
         text_encoder_dtype = torch.bfloat16  # Default dtype for Text Encoder
-        text_encoder = load_text_encoder(
-            args, dtype=text_encoder_dtype, device=text_encoder_device
-        )
+        # Pass the namespace through when we have one so TE-side LoRA
+        # (lora_weight/lora_multiplier) still folds in; otherwise load from path.
+        if args is not None:
+            text_encoder = load_text_encoder(
+                args, dtype=text_encoder_dtype, device=text_encoder_device
+            )
+        else:
+            text_encoder = load_text_encoder(
+                text_encoder=te_path,
+                dtype=text_encoder_dtype,
+                device=text_encoder_device,
+            )
         text_encoder.eval()
 
     # Store original devices to move back later if they were shared.
@@ -127,7 +192,7 @@ def prepare_text_inputs(
 
     logger.info("Encoding prompt with Text Encoder")
 
-    prompt = process_escape(args.prompt)
+    prompt = process_escape(prompt)
     cache_key = prompt
     if cache_key in conds_cache:
         embed = conds_cache[cache_key]
@@ -159,7 +224,7 @@ def prepare_text_inputs(
 
         conds_cache[cache_key] = embed
 
-    negative_prompt = process_escape(args.negative_prompt)
+    negative_prompt = process_escape(negative_prompt)
     cache_key = negative_prompt
     if cache_key in conds_cache:
         negative_embed = conds_cache[cache_key]

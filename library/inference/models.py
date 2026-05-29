@@ -304,20 +304,46 @@ def load_dit_model(
 
 
 def load_text_encoder(
-    args: argparse.Namespace,
+    args: argparse.Namespace | None = None,
     dtype: torch.dtype = torch.bfloat16,
     device: torch.device = torch.device("cpu"),
+    *,
+    text_encoder: str | None = None,
+    lora_weight: list[str] | None = None,
+    lora_multiplier: float | list[float] | None = None,
 ) -> torch.nn.Module:
+    """Load the Qwen3 text encoder (optionally folding in TE-side LoRA).
+
+    Only three fields matter here: the encoder path and the LoRA weight/multiplier
+    list. Pass them as keywords for a self-documenting call::
+
+        load_text_encoder(text_encoder=TEXT_ENCODER, device=device)
+
+    The legacy ``args`` namespace is still accepted as a fallback (the CLI and
+    ``prepare_text_inputs`` pass one); explicit keywords win over it when both are
+    given. Don't reach for ``inference.parse_args`` just to feed this — that drags
+    in unrelated required flags (``--save_path``) and reads nothing else here.
+    """
+    # Explicit keyword wins; otherwise fall back to the namespace; otherwise default.
+    te_path = text_encoder if text_encoder is not None else getattr(args, "text_encoder", None)
+    if te_path is None:
+        raise ValueError(
+            "load_text_encoder needs a text_encoder path "
+            "(pass text_encoder=... or an args namespace with .text_encoder)"
+        )
+    lw = lora_weight if lora_weight is not None else getattr(args, "lora_weight", None)
+    lm = (
+        lora_multiplier
+        if lora_multiplier is not None
+        else getattr(args, "lora_multiplier", 1.0)
+    )
+
     lora_weights_list = None
-    if (
-        args.lora_weight is not None
-        and len(args.lora_weight) > 0
-        and any(_has_te_keys(p) for p in args.lora_weight)
-    ):
+    if lw is not None and len(lw) > 0 and any(_has_te_keys(p) for p in lw):
         lora_weights_list = []
-        for lora_weight in args.lora_weight:
-            logger.info(f"Loading LoRA weight from: {lora_weight}")
-            lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
+        for lora_weight_path in lw:
+            logger.info(f"Loading LoRA weight from: {lora_weight_path}")
+            lora_sd = load_file(lora_weight_path)  # load on CPU, dtype is as is
             lora_sd = {
                 "model_" + k[len("lora_te_") :]: v
                 for k, v in lora_sd.items()
@@ -325,11 +351,11 @@ def load_text_encoder(
             }  # only keep Text Encoder lora weights, remove prefix "lora_te_" and add "model_" prefix
             lora_weights_list.append(lora_sd)
 
-    lora_multipliers = args.lora_multiplier
+    lora_multipliers = lm
     if lora_multipliers is not None and not isinstance(lora_multipliers, list):
         lora_multipliers = [lora_multipliers]
     text_encoder, _ = anima_utils.load_qwen3_text_encoder(
-        args.text_encoder,
+        te_path,
         dtype=dtype,
         device=device,
         lora_weights=lora_weights_list,
