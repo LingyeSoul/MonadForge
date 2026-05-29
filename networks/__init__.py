@@ -216,17 +216,12 @@ _CHIMERA_KWARG_FLAGS: Tuple[str, ...] = (
     # near-uniform too long (std=0.01 init is slow to break symmetry).
     "network_content_router_lr_scale",
     "network_freq_router_lr_scale",
-    # Optional global content router (replaces the per-Linear lx-router with
-    # a single network-level ContentRouter fed by pooled crossattn_emb).
-    # Consumed by ``LoRANetworkCfg.from_kwargs`` — see chimera.toml's "Optional:
-    # global content router" block.
-    "content_router_source",
-    "content_router_init_std",
+    # Parameterless LN on the network-level ContentRouter's pooled crossattn_emb
+    # input. Consumed by ``LoRANetworkCfg.from_kwargs``.
     "content_router_layer_norm",
-    # Centered-gate init for BOTH pools: recenter each pool's gate to (π - 1/K)
-    # + zero-init the content/freq routers + start λ_c/λ_f at chimera_lambda_init.
-    # The dual-pool analogue of ortho_centered_gate. LoRANetworkCfg.from_kwargs.
-    "chimera_centered_gate",
+    # Centered-gate λ init for BOTH pools (always-on): recenter each pool's gate
+    # to (π - 1/K) + zero-init the content/freq routers + start λ_c/λ_f at
+    # chimera_lambda_init. LoRANetworkCfg.from_kwargs.
     "chimera_lambda_init",
 )
 

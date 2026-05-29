@@ -309,7 +309,9 @@ def create_network_from_weights(
                     file_metadata = dict(f.metadata() or {})
         else:
             weights_sd = torch.load(file, map_location="cpu")
-    elif file and not file_metadata and os.path.splitext(str(file))[1] == ".safetensors":
+    elif (
+        file and not file_metadata and os.path.splitext(str(file))[1] == ".safetensors"
+    ):
         # Tensors supplied directly, but stamps can still be recovered from the
         # on-disk file the caller named alongside them.
         from safetensors import safe_open
@@ -403,9 +405,7 @@ def create_network_from_weights(
             # is filled by the matching ``.lora_down_{c,f}.weight`` branch
             # below (same r, same prefix).
             chimera_dual_a_modules.add(lora_name)
-        elif (
-            key.endswith(".lora_down_c.weight") or key.endswith(".lora_down_f.weight")
-        ):
+        elif key.endswith(".lora_down_c.weight") or key.endswith(".lora_down_f.weight"):
             # Chimera dual-A per-pool down. Same r as the matching ups; the
             # pair (down_c, down_f) lives under one prefix. Both keys hit
             # this branch and overwrite modules_dim with the same r → safe.
@@ -626,7 +626,9 @@ def create_network_from_weights(
         hydra_router_names = (
             sorted(hydra_module_names)
             if (
-                (has_hydra or has_ortho_hydra) and plain_module_names and hydra_module_names
+                (has_hydra or has_ortho_hydra)
+                and plain_module_names
+                and hydra_module_names
             )
             else None
         )
@@ -746,7 +748,9 @@ def create_network_from_weights(
     # trained MLP a different-statistics input and silently shift outputs.
     chimera_freq_router_layer_norm: bool = (
         is_chimera_hydra
-        and str(file_metadata.get("ss_chimera_freq_router_layer_norm", "")).strip().lower()
+        and str(file_metadata.get("ss_chimera_freq_router_layer_norm", ""))
+        .strip()
+        .lower()
         == "true"
     )
     # Freq routing mode. Absent stamp ⇒ "learned" (pre-2026-05-27 checkpoints,
@@ -762,25 +766,30 @@ def create_network_from_weights(
         if is_chimera_hydra
         else 1.0
     )
-    # ContentRouter stamps. Absent / "input" preserves the per-Linear router
-    # (today's chimera). "crossattn" rebuilds a network-level ContentRouter
-    # fed by pooled crossattn_emb; per-Linear ``self.router`` is then absent
-    # from state_dict. Input dim is fixed by the DiT (CROSSATTN_EMB_DIM),
-    # not configurable — no stamp needed.
-    chimera_content_router_source: str = str(
-        file_metadata.get("ss_chimera_content_router_source", "input")
-        if is_chimera_hydra
-        else "input"
-    ).strip() or "input"
+    # Content routing is always the network-level ContentRouter fed pooled
+    # crossattn_emb (input dim fixed by the DiT = CROSSATTN_EMB_DIM). The
+    # retired per-Linear ("input") path no longer loads — reject it with a
+    # clear error rather than silently mis-loading. ``content_router_layer_norm``
+    # is the only ContentRouter stamp that still varies (parameterless LN, no
+    # tensor footprint).
+    if is_chimera_hydra:
+        _content_src = (
+            str(file_metadata.get("ss_chimera_content_router_source", "input"))
+            .strip()
+            .lower()
+        )
+        if _content_src not in ("crossattn", "crossattn_emb"):
+            raise RuntimeError(
+                "Chimera checkpoint uses the retired per-Linear content router "
+                f"(ss_chimera_content_router_source={_content_src!r}); only the "
+                "network-level crossattn_emb ContentRouter is supported now. "
+                "Retrain to produce a crossattn_emb chimera checkpoint."
+            )
     chimera_content_router_layer_norm: bool = (
         is_chimera_hydra
-        and str(file_metadata.get("ss_chimera_content_router_layer_norm", "")).strip().lower()
-        == "true"
-    )
-    # Centered-gate: both pools' inference combine subtracts 1/K like training.
-    chimera_centered_gate: bool = (
-        is_chimera_hydra
-        and str(file_metadata.get("ss_chimera_centered_gate", "")).strip().lower()
+        and str(file_metadata.get("ss_chimera_content_router_layer_norm", ""))
+        .strip()
+        .lower()
         == "true"
     )
     if is_chimera_hydra:
@@ -810,9 +819,7 @@ def create_network_from_weights(
             chimera_num_experts_content is not None
             and chimera_num_experts_freq is not None
         ):
-            hydra_num_experts = (
-                chimera_num_experts_content + chimera_num_experts_freq
-            )
+            hydra_num_experts = chimera_num_experts_content + chimera_num_experts_freq
         # Surface the chimera-specific σ/FEI dims into the cfg slots the
         # FreqRouter reads (``cfg.fei_feature_dim`` / ``cfg.sigma_feature_dim``).
         # Without these overrides the loader would fall back to the legacy
@@ -857,9 +864,7 @@ def create_network_from_weights(
         freq_router_layer_norm=chimera_freq_router_layer_norm,
         freq_router_mode=chimera_freq_router_mode,
         freq_router_tau=chimera_freq_router_tau,
-        content_router_source=chimera_content_router_source,
         content_router_layer_norm=chimera_content_router_layer_norm,
-        chimera_centered_gate=chimera_centered_gate,
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)

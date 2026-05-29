@@ -138,7 +138,9 @@ def test_module_flag_off_is_bitwise_identical_to_legacy_path():
     assert module.use_custom_down_autograd is False
 
     x = torch.randn(1, 8, 32, dtype=torch.bfloat16)
-    out_default = base.forward(x)  # org_module is deleted after apply_to; uses LoRA forward
+    out_default = base.forward(
+        x
+    )  # org_module is deleted after apply_to; uses LoRA forward
 
     # Flip the flag on and confirm equality of forward output
     module.use_custom_down_autograd = True
@@ -211,7 +213,7 @@ def _assert_grads_close(a: dict, b: dict, label: str, atol: float, rtol: float):
     for k in a:
         assert torch.allclose(a[k], b[k], atol=atol, rtol=rtol), (
             f"{label}: grad on {k!r} differs beyond bf16 rounding tolerance: "
-            f"max={ (a[k] - b[k]).abs().max().item():.4e}"
+            f"max={(a[k] - b[k]).abs().max().item():.4e}"
         )
 
 
@@ -227,8 +229,13 @@ def test_hydra_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = HydraLoRAModule(
-            "h", base, multiplier=1.0, lora_dim=4, alpha=4,
-            num_experts=3, sigma_feature_dim=0,
+            "h",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts=3,
+            sigma_feature_dim=0,
         )
         module.apply_to()
         module.train()
@@ -238,7 +245,11 @@ def test_hydra_flag_on_matches_legacy_gradients():
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -258,8 +269,13 @@ def test_hydra_sigma_feature_cache_updates_and_clears():
     torch.manual_seed(0)
     base = torch.nn.Linear(32, 24, bias=False)
     module = HydraLoRAModule(
-        "h", base, multiplier=1.0, lora_dim=4, alpha=4,
-        num_experts=3, sigma_feature_dim=8,
+        "h",
+        base,
+        multiplier=1.0,
+        lora_dim=4,
+        alpha=4,
+        num_experts=3,
+        sigma_feature_dim=8,
     )
 
     sigmas = torch.tensor([0.25, 0.5], dtype=torch.float32)
@@ -303,7 +319,11 @@ def test_ortho_flag_on_matches_legacy_gradients():
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -328,8 +348,13 @@ def test_ortho_hydra_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = OrthoHydraLoRAModule(
-            "oh", base, multiplier=1.0, lora_dim=4, alpha=4,
-            num_experts=3, sigma_feature_dim=0,
+            "oh",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts=3,
+            sigma_feature_dim=0,
         )
         module.apply_to()
         module.train()
@@ -344,7 +369,11 @@ def test_ortho_hydra_flag_on_matches_legacy_gradients():
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -391,7 +420,11 @@ def test_lora_channel_scale_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = LoRAModule(
-            "t", base, multiplier=1.0, lora_dim=4, alpha=4,
+            "t",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
             channel_scale=cs.clone(),
         )
         module.apply_to()
@@ -401,15 +434,17 @@ def test_lora_channel_scale_flag_on_matches_legacy_gradients():
         # Wake up lora_up so the down branch carries a non-zero loss
         # gradient; default zero-init would zero out every comparison.
         with torch.no_grad():
-            module.lora_up.weight.copy_(
-                torch.randn_like(module.lora_up.weight) * 0.05
-            )
+            module.lora_up.weight.copy_(torch.randn_like(module.lora_up.weight) * 0.05)
 
         torch.manual_seed(1)
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -437,8 +472,13 @@ def test_hydra_channel_scale_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = HydraLoRAModule(
-            "h", base, multiplier=1.0, lora_dim=4, alpha=4,
-            num_experts=3, sigma_feature_dim=0,
+            "h",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts=3,
+            sigma_feature_dim=0,
             channel_scale=cs.clone(),
         )
         module.apply_to()
@@ -446,15 +486,17 @@ def test_hydra_channel_scale_flag_on_matches_legacy_gradients():
         module.use_custom_down_autograd = use_custom
 
         with torch.no_grad():
-            module.lora_up_weight.copy_(
-                torch.randn_like(module.lora_up_weight) * 0.05
-            )
+            module.lora_up_weight.copy_(torch.randn_like(module.lora_up_weight) * 0.05)
 
         torch.manual_seed(1)
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -480,7 +522,11 @@ def test_ortho_channel_scale_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = OrthoLoRAModule(
-            "o", base, multiplier=1.0, lora_dim=4, alpha=4,
+            "o",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
             channel_scale=cs.clone(),
         )
         module.apply_to()
@@ -496,7 +542,11 @@ def test_ortho_channel_scale_flag_on_matches_legacy_gradients():
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -522,8 +572,13 @@ def test_ortho_hydra_channel_scale_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = OrthoHydraLoRAModule(
-            "oh", base, multiplier=1.0, lora_dim=4, alpha=4,
-            num_experts=3, sigma_feature_dim=0,
+            "oh",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts=3,
+            sigma_feature_dim=0,
             channel_scale=cs.clone(),
         )
         module.apply_to()
@@ -539,7 +594,11 @@ def test_ortho_hydra_channel_scale_flag_on_matches_legacy_gradients():
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -547,7 +606,9 @@ def test_ortho_hydra_channel_scale_flag_on_matches_legacy_gradients():
     assert torch.allclose(o_legacy, o_custom, atol=_CS_ATOL, rtol=_CS_RTOL), (
         "OrthoHydra+channel_scale forward differs beyond bf16 rounding tolerance"
     )
-    _assert_grads_close(g_legacy, g_custom, "OrthoHydra+channel_scale", _CS_ATOL, _CS_RTOL)
+    _assert_grads_close(
+        g_legacy, g_custom, "OrthoHydra+channel_scale", _CS_ATOL, _CS_RTOL
+    )
     assert torch.allclose(gx_legacy, gx_custom, atol=_CS_ATOL, rtol=_CS_RTOL), (
         "OrthoHydra+channel_scale grad_x differs beyond bf16 rounding tolerance"
     )
@@ -566,8 +627,13 @@ def test_chimera_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = ChimeraHydraLoRAModule(
-            "c", base, multiplier=1.0, lora_dim=4, alpha=4,
-            num_experts_content=3, num_experts_freq=3,
+            "c",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts_content=3,
+            num_experts_freq=3,
         )
         module.apply_to()
         module.train()
@@ -583,11 +649,22 @@ def test_chimera_flag_on_matches_legacy_gradients():
             module.lambda_c.copy_(torch.randn_like(module.lambda_c) * 0.1)
             module.lambda_f.copy_(torch.randn_like(module.lambda_f) * 0.1)
 
+        # π_c / π_f now arrive from the network-level Content/Freq routers;
+        # feed deterministic NON-uniform gates so both pools contribute (the
+        # always-on centered gate zeroes a uniform gate by construction, which
+        # would make the per-pool grads vacuously zero).
+        module.set_content_routing_weights(torch.tensor([[0.5, 0.3, 0.2]]))
+        module.set_freq_routing_weights(torch.tensor([[0.2, 0.5, 0.3]]))
+
         torch.manual_seed(1)
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -615,8 +692,13 @@ def test_chimera_channel_scale_flag_on_matches_legacy_gradients():
         base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
         base.weight.requires_grad_(False)
         module = ChimeraHydraLoRAModule(
-            "c", base, multiplier=1.0, lora_dim=4, alpha=4,
-            num_experts_content=3, num_experts_freq=3,
+            "c",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts_content=3,
+            num_experts_freq=3,
             channel_scale=cs.clone(),
         )
         module.apply_to()
@@ -631,11 +713,22 @@ def test_chimera_channel_scale_flag_on_matches_legacy_gradients():
             module.lambda_c.copy_(torch.randn_like(module.lambda_c) * 0.1)
             module.lambda_f.copy_(torch.randn_like(module.lambda_f) * 0.1)
 
+        # π_c / π_f now arrive from the network-level Content/Freq routers;
+        # feed deterministic NON-uniform gates so both pools contribute (the
+        # always-on centered gate zeroes a uniform gate by construction, which
+        # would make the per-pool grads vacuously zero).
+        module.set_content_routing_weights(torch.tensor([[0.5, 0.3, 0.2]]))
+        module.set_freq_routing_weights(torch.tensor([[0.2, 0.5, 0.3]]))
+
         torch.manual_seed(1)
         x = torch.randn(2, 8, 32, dtype=torch.bfloat16, requires_grad=True)
         out = base.forward(x)
         out.sum().backward()
-        return out.detach().clone(), _named_trainable_grads(module), x.grad.detach().clone()
+        return (
+            out.detach().clone(),
+            _named_trainable_grads(module),
+            x.grad.detach().clone(),
+        )
 
     o_legacy, g_legacy, gx_legacy = run(False)
     o_custom, g_custom, gx_custom = run(True)
@@ -699,9 +792,9 @@ def _check_down_proj_rank_cat_matches_separate(scaled: bool):
     assert torch.allclose(cat_c, sep_c, **ac) and torch.allclose(cat_f, sep_f, **ac), (
         f"rank-cat down-proj forward differs beyond bf16 tolerance ({tag})"
     )
-    assert torch.allclose(cat_gQc, sep_gQc, **ac) and torch.allclose(cat_gQf, sep_gQf, **ac), (
-        f"rank-cat down-proj grad_weight differs beyond bf16 tolerance ({tag})"
-    )
+    assert torch.allclose(cat_gQc, sep_gQc, **ac) and torch.allclose(
+        cat_gQf, sep_gQf, **ac
+    ), f"rank-cat down-proj grad_weight differs beyond bf16 tolerance ({tag})"
     assert torch.allclose(cat_gx, sep_gx, **ac), (
         f"rank-cat down-proj grad_x differs beyond bf16 tolerance ({tag})"
     )

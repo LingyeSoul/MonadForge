@@ -45,8 +45,8 @@ alpha_rank_scale = 1.0
 use_chimera_hydra = true
 num_experts_content = 4
 num_experts_freq = 2
-chimera_centered_gate = true
-content_router_source = "crossattn_emb"
+# Content routing is always the network-level ContentRouter (crossattn_emb) and
+# both pools are always centered-gate; only the LN toggle is configurable.
 content_router_layer_norm = true   # parameterless LN on the pooled input
 
 freq_router_mode = "fei"

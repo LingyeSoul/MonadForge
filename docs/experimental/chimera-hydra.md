@@ -1,6 +1,16 @@
 # ChimeraHydra — dual-A additive routing for timestep-aware MoE
 
-Proposal: [`docs/proposal/chimera_hydra.md`](../proposal/chimera_hydra.md).
+> **Shipped configuration (2026-05, code consolidation).** The implementation
+> now ships a single chimera variant: the content pool is routed by the
+> **network-level ContentRouter on pooled `crossattn_emb`** (NOT the per-Linear
+> `lx_c` softmax this doc's "Content half" section originally described), and
+> **both pools are always centered-gate**. The per-Linear content router
+> (`content_router_source="input"`), its `content_router_init_std` knob, and the
+> non-centered path were removed; `content_router_source` / `chimera_centered_gate`
+> are no longer config knobs. Checkpoints stamped with the retired per-Linear
+> content router no longer load. The prose below describes the original design
+> space — read the "Content half" / per-Linear router parts as historical
+> motivation, not the current code.
 
 ## Why "chimera"
 

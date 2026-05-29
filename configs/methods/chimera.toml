@@ -54,25 +54,25 @@ blocks_to_swap=4
 use_chimera_hydra = true
 num_experts_content = 6
 num_experts_freq = 2
-chimera_centered_gate = true
 
 # Outer balance multiplier is 1.0 so the per-pool weights below are the
 # only scalars on the balance loss. Default per-pool weights match the
 # OrthoHydra production value (~2e-5, see
 # [[project_hydra_balance_weight_ceiling]]).
 #
-# Warmup is asymmetric on the chimera path: only the per-Linear CONTENT
-# router gates through ``balance_loss_warmup_ratio``. The FREQ router
-# bypasses warmup entirely — its FEI input + ``freq_router_init_std``
-# break symmetry from step 0, so its load-balance pressure can fire
-# immediately without pinning the router to uniform.
+# Warmup is asymmetric on the chimera path: only the CONTENT router gates
+# through ``balance_loss_warmup_ratio``. The FREQ router bypasses warmup
+# entirely — its FEI input breaks symmetry from step 0, so its load-balance
+# pressure can fire immediately without pinning the router to uniform.
 
 balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
 balance_w_content = 1e-6
 network_content_router_lr_scale = 10.0
 
-content_router_source = "crossattn_emb"
+# Content routing is always the network-level ContentRouter fed the pooled
+# crossattn_emb (the per-Linear lx_c router was removed). Only the LN toggle
+# remains configurable.
 content_router_layer_norm = true   # parameterless LN on the pooled input
 
 # Freq-pool routing mode.

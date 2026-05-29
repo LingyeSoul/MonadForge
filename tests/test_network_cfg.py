@@ -116,40 +116,6 @@ def test_crossattn_emb_router_source_rejects_per_layer():
         )
 
 
-def test_content_router_source_accepts_legacy_crossattn_alias():
-    """The chimera ``content_router_source`` was renamed ``crossattn`` →
-    ``crossattn_emb``; the old spelling parses as a deprecated alias and
-    normalizes to the new value so pre-rename checkpoints still load.
-    """
-    cfg = LoRANetworkCfg.from_kwargs(
-        {
-            "use_chimera_hydra": "true",
-            "num_experts_content": "3",
-            "num_experts_freq": "3",
-            "content_router_source": "crossattn",
-        },
-        network_dim=8,
-        network_alpha=4.0,
-        neuron_dropout=None,
-        module_class=HydraLoRAModule,
-    )
-    assert cfg.content_router_source == "crossattn_emb"
-
-
-def test_content_router_source_crossattn_emb_requires_chimera():
-    """``content_router_source="crossattn_emb"`` is chimera-only; without
-    ``use_chimera_hydra`` it must raise and point at ``router_source``.
-    """
-    with pytest.raises(ValueError, match="requires use_chimera_hydra"):
-        LoRANetworkCfg.from_kwargs(
-            {"content_router_source": "crossattn_emb"},
-            network_dim=8,
-            network_alpha=4.0,
-            neuron_dropout=None,
-            module_class=LoRAModule,
-        )
-
-
 def test_freq_router_mode_defaults_to_learned():
     """Absent ``freq_router_mode`` ⇒ "learned" (the paper-faithful MLP path)."""
     cfg = LoRANetworkCfg.from_kwargs(
