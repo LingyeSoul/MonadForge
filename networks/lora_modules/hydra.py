@@ -84,6 +84,7 @@ class HydraLoRAModule(BaseLoRAModule):
         use_global_router: bool = False,
         num_experts_content: int = 0,
         use_global_content_router: bool = False,
+        centered_gate: bool = False,
     ):
         super().__init__(
             lora_name,
@@ -101,6 +102,13 @@ class HydraLoRAModule(BaseLoRAModule):
 
         self.num_experts = num_experts
         self.in_dim = in_dim
+        # Centered-gate runtime parity: a checkpoint distilled from an
+        # OrthoHydra trained with ``ortho_centered_gate`` combined experts with
+        # ``(g_e - 1/E)`` rather than the raw softmax. λ is folded symmetrically
+        # into the saved per-expert ups, so reproducing it here is exactly
+        # ``gate -= 1/E`` before the combine. Single-pool only (never chimera —
+        # the concat gate isn't a single E-simplex). See ortho.py distill note.
+        self._centered_gate = bool(centered_gate)
 
         # Shared down projection.
         self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
@@ -424,8 +432,16 @@ class HydraLoRAModule(BaseLoRAModule):
 
         lx, scale = self._apply_rank_dropout(lx)
 
+        # Centered-gate parity (single-pool only). The concat gate of a chimera
+        # dual-pool form is not one E-simplex, so centering is gated off there.
+        gate_eff = gate
+        if self._centered_gate and self.num_experts_content == 0:
+            gate_eff = gate - (1.0 / self.num_experts)
+
         # Gate-weighted up projection: (B, out, r) per batch element.
-        combined = torch.einsum("be,eod->bod", gate.float(), self.lora_up_weight.float())
+        combined = torch.einsum(
+            "be,eod->bod", gate_eff.float(), self.lora_up_weight.float()
+        )
         orig_shape = lx.shape
         B = orig_shape[0]
         lx_3d = lx.reshape(B, -1, orig_shape[-1])

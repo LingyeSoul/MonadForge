@@ -73,6 +73,22 @@ def _sigma_sinusoidal_features(
     return torch.cat([torch.cos(angles), torch.sin(angles)], dim=-1)
 
 
+def _fei_temperature(fei: torch.Tensor, tau: float) -> torch.Tensor:
+    """Hardwired-FEI freq gate: ``π_f = normalize(FEI ** (1/τ))``.
+
+    Used by the ChimeraHydra ``freq_router_mode="fei"`` path, which routes the
+    freq pool directly by the FEI band-simplex instead of a learned MLP. FEI
+    is already a normalized simplex, so τ=1.0 returns it unchanged
+    (``softmax(log p) = p``). τ<1 sharpens the low/high crossover, τ>1 flattens
+    it. The power form (rather than ``softmax(log FEI / τ)``) avoids ``log(0)``
+    on the high-σ steps where ``e_low ≈ 0`` (``0 ** (1/τ) = 0``).
+    """
+    if abs(tau - 1.0) < 1e-8:
+        return fei
+    p = fei.clamp_min(0).pow(1.0 / max(tau, 1e-6))
+    return p / p.sum(dim=-1, keepdim=True).clamp_min(1e-12)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # σ feature cache
 # ─────────────────────────────────────────────────────────────────────────────

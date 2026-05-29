@@ -212,6 +212,77 @@ def test_chimera_router_stats_cache_invalidated_by_clear():
     assert s2 == {}
 
 
+def test_hardwired_fei_freq_gate_broadcasts_simplex():
+    """``freq_router_mode="fei"``: set_fei broadcasts ``normalize(FEI**(1/τ))``
+    straight to every chimera module's ``_freq_routing_weights`` — no learned
+    router. At τ=1 the gate IS the FEI simplex (softmax(log p) identity)."""
+    net = _make_minimal_chimera_network(K_c=4, K_f=2, fei_dim=2)
+    # Convert the harness network to the hardwired-FEI path: drop the learned
+    # router, flag the mode, and expose the chimera modules to set_fei.
+    net.freq_router = None
+    if "freq_router" in net._modules:
+        del net._modules["freq_router"]
+    net.freq_router_mode = "fei"
+    net.freq_router_tau = 1.0
+    net._chimera_aware_loras = list(net.unet_loras)
+
+    fei = torch.rand(3, 2)
+    fei = fei / fei.sum(dim=-1, keepdim=True)  # a proper simplex
+    net.set_fei(fei)
+
+    for lora in net.unet_loras:
+        pi_f = lora._freq_routing_weights
+        assert pi_f.shape == (3, 2)
+        assert torch.allclose(pi_f.float(), fei, atol=1e-5)
+        # No grad_fn: a fixed function of z_t, like the T-LoRA mask.
+        assert not pi_f.requires_grad
+
+
+def test_hardwired_fei_freq_gate_temperature_sharpens():
+    """τ<1 sharpens the FEI gate toward the dominant band; output stays a
+    normalized simplex."""
+    net = _make_minimal_chimera_network(K_c=4, K_f=2, fei_dim=2)
+    net.freq_router = None
+    if "freq_router" in net._modules:
+        del net._modules["freq_router"]
+    net.freq_router_mode = "fei"
+    net.freq_router_tau = 0.5
+    net._chimera_aware_loras = list(net.unet_loras)
+
+    fei = torch.tensor([[0.8, 0.2]])
+    net.set_fei(fei)
+    pi_f = net.unet_loras[0]._freq_routing_weights.float()
+    assert torch.allclose(pi_f.sum(-1), torch.ones(1), atol=1e-6)
+    # normalize([0.8,0.2]**2) = [0.64,0.04]/0.68 ≈ [0.941, 0.059] — sharper.
+    assert pi_f[0, 0] > 0.8
+
+
+def test_post_init_forces_zero_freq_balance_under_fei_mode():
+    """``_post_init_hydra`` zeroes ``_balance_w_freq`` under fei mode (no router
+    params to balance) while leaving the content weight intact."""
+    from types import SimpleNamespace
+
+    from networks import _post_init_hydra
+
+    cfg = SimpleNamespace(
+        use_chimera_hydra=True,
+        balance_w_content=1e-6,
+        balance_w_freq=1e-6,
+        fera_fecl_weight=0.0,
+        freq_router_mode="fei",
+    )
+    net = SimpleNamespace(cfg=cfg)
+    _post_init_hydra(net, {"balance_loss_weight": 0.01})
+    assert net._balance_w_freq == 0.0
+    assert net._balance_w_content == 1e-6
+
+    # Learned mode keeps the configured freq weight.
+    cfg.freq_router_mode = "learned"
+    net2 = SimpleNamespace(cfg=cfg)
+    _post_init_hydra(net2, {"balance_loss_weight": 0.01})
+    assert net2._balance_w_freq == 1e-6
+
+
 def test_chimera_router_stats_empty_on_non_chimera_network():
     """``get_chimera_router_stats`` short-circuits to ``{}`` when the network
     isn't chimera — no spurious empty keys leak into a plain hydra run."""

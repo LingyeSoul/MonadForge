@@ -40,6 +40,7 @@ from .adapter import (
     _resolve_module,
     compute_fei_2band,
     fei_sigma_low,
+    fei_temperature,
     sigma_sinusoidal_features,
 )
 
@@ -49,6 +50,28 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Parsing
 # ---------------------------------------------------------------------------
+
+
+def _parse_freq_router_mode(file_metadata: Dict[str, str]) -> tuple[str, float]:
+    """Resolve the freq-pool routing mode + FEI temperature from metadata.
+
+    ``ss_chimera_freq_router_mode`` ∈ {"learned", "fei"}; absent ⇒ "learned"
+    (every pre-2026-05-27 chimera checkpoint carries a FreqRouter MLP).
+    ``ss_chimera_freq_router_tau`` is the power-temperature for the hardwired
+    FEI gate (``normalize(FEI ** (1/τ))``); only meaningful under "fei".
+    """
+    mode = str(
+        file_metadata.get("ss_chimera_freq_router_mode", "learned")
+    ).strip().lower() or "learned"
+    if mode not in ("learned", "fei"):
+        raise ValueError(
+            f"ss_chimera_freq_router_mode={mode!r}: expected 'learned' or 'fei'."
+        )
+    try:
+        tau = float(file_metadata.get("ss_chimera_freq_router_tau", 1.0))
+    except (TypeError, ValueError):
+        tau = 1.0
+    return mode, tau
 
 
 def _parse_chimera_content_router(
@@ -235,32 +258,50 @@ def _attach_single_a_chimera_metadata(
             f"(got FEI={chimera_fei_dim}, σ={chimera_sigma_dim})."
         )
 
-    # FreqRouter MLP: Linear → SiLU → Linear → softmax/τ. Keys
-    # mirror ``torch.nn.Sequential`` indices (SiLU at index 1
-    # carries no params).
-    try:
-        fr_w0 = weights_sd["freq_router.net.0.weight"]
-        fr_b0 = weights_sd["freq_router.net.0.bias"]
-        fr_w2 = weights_sd["freq_router.net.2.weight"]
-        fr_b2 = weights_sd["freq_router.net.2.bias"]
-    except KeyError as exc:
-        raise ValueError(
-            f"{file_path}: chimera checkpoint is missing FreqRouter "
-            f"weight key {exc} (expected freq_router.net.{{0,2}}.weight"
-            f"/bias)."
-        ) from exc
+    freq_router_mode, freq_router_fei_tau = _parse_freq_router_mode(file_metadata)
+    if freq_router_mode == "fei":
+        # Hardwired-FEI freq gate: no FreqRouter MLP on disk. π_f =
+        # normalize(FEI ** (1/τ)) is computed in the pre-hook. The FEI
+        # band count IS the expert count, so K_f must equal fei_dim.
+        if chimera_fei_dim != K_f:
+            raise ValueError(
+                f"{file_path}: freq_router_mode='fei' requires "
+                f"fei_feature_dim == K_f (got FEI={chimera_fei_dim}, K_f={K_f})."
+            )
+        freq_router_sd = None
+    else:
+        # FreqRouter MLP: Linear → SiLU → Linear → softmax/τ. Keys
+        # mirror ``torch.nn.Sequential`` indices (SiLU at index 1
+        # carries no params).
+        try:
+            fr_w0 = weights_sd["freq_router.net.0.weight"]
+            fr_b0 = weights_sd["freq_router.net.0.bias"]
+            fr_w2 = weights_sd["freq_router.net.2.weight"]
+            fr_b2 = weights_sd["freq_router.net.2.bias"]
+        except KeyError as exc:
+            raise ValueError(
+                f"{file_path}: chimera checkpoint is missing FreqRouter "
+                f"weight key {exc} (expected freq_router.net.{{0,2}}.weight"
+                f"/bias)."
+            ) from exc
 
-    if fr_w2.shape[0] != K_f:
-        raise ValueError(
-            f"{file_path}: FreqRouter output dim {fr_w2.shape[0]} != K_f={K_f}."
-        )
+        if fr_w2.shape[0] != K_f:
+            raise ValueError(
+                f"{file_path}: FreqRouter output dim {fr_w2.shape[0]} != K_f={K_f}."
+            )
 
-    expected_in = chimera_fei_dim + chimera_sigma_dim
-    if fr_w0.shape[1] != expected_in:
-        raise ValueError(
-            f"{file_path}: FreqRouter input dim {fr_w0.shape[1]} "
-            f"!= FEI({chimera_fei_dim}) + σ({chimera_sigma_dim})."
-        )
+        expected_in = chimera_fei_dim + chimera_sigma_dim
+        if fr_w0.shape[1] != expected_in:
+            raise ValueError(
+                f"{file_path}: FreqRouter input dim {fr_w0.shape[1]} "
+                f"!= FEI({chimera_fei_dim}) + σ({chimera_sigma_dim})."
+            )
+        freq_router_sd = {
+            "net.0.weight": fr_w0,
+            "net.0.bias": fr_b0,
+            "net.2.weight": fr_w2,
+            "net.2.bias": fr_b2,
+        }
 
     content_router = _parse_chimera_content_router(
         weights_sd, file_metadata, file_path, K_c
@@ -276,12 +317,11 @@ def _attach_single_a_chimera_metadata(
         # production chimera.toml does not override it. If a future
         # checkpoint stamps ss_router_tau, plumb it here.
         "router_tau": float(file_metadata.get("ss_router_tau", 1.0)),
-        "freq_router_sd": {
-            "net.0.weight": fr_w0,
-            "net.0.bias": fr_b0,
-            "net.2.weight": fr_w2,
-            "net.2.bias": fr_b2,
-        },
+        # Freq routing mode: "learned" (FreqRouter MLP) or "fei" (hardwired
+        # π_f = normalize(FEI ** (1/freq_router_fei_tau))).
+        "freq_router_mode": freq_router_mode,
+        "freq_router_fei_tau": freq_router_fei_tau,
+        "freq_router_sd": freq_router_sd,
         # Network-level ContentRouter (chimera content_router_source
         # ="crossattn"). None ⇒ the per-Linear softmax over pooled
         # lx_c is in use (default); a dict ⇒ pool the post-LLM-
@@ -359,37 +399,49 @@ def _finalize_dual_a_chimera(
             f"(got FEI={chimera_fei_dim}, σ={chimera_sigma_dim})."
         )
 
-    try:
-        fr_w0 = weights_sd["freq_router.net.0.weight"]
-        fr_b0 = weights_sd["freq_router.net.0.bias"]
-        fr_w2 = weights_sd["freq_router.net.2.weight"]
-        fr_b2 = weights_sd["freq_router.net.2.bias"]
-    except KeyError as exc:
-        raise ValueError(
-            f"{file_path}: chimera dual-A checkpoint is missing FreqRouter "
-            f"weight key {exc} (expected freq_router.net.{{0,2}}.weight/bias)."
-        ) from exc
-    if fr_w2.shape[0] != K_f:
-        raise ValueError(
-            f"{file_path}: FreqRouter output dim {fr_w2.shape[0]} != K_f={K_f}."
-        )
-    expected_in = chimera_fei_dim + chimera_sigma_dim
-    if fr_w0.shape[1] != expected_in:
-        raise ValueError(
-            f"{file_path}: FreqRouter input dim {fr_w0.shape[1]} "
-            f"!= FEI({chimera_fei_dim}) + σ({chimera_sigma_dim})."
-        )
+    freq_router_mode, freq_router_fei_tau = _parse_freq_router_mode(file_metadata)
+    if freq_router_mode == "fei":
+        # Hardwired-FEI freq gate — no FreqRouter MLP keys on disk.
+        if chimera_fei_dim != K_f:
+            raise ValueError(
+                f"{file_path}: freq_router_mode='fei' requires "
+                f"fei_feature_dim == K_f (got FEI={chimera_fei_dim}, K_f={K_f})."
+            )
+        chimera_dual["freq_router_sd"] = None
+    else:
+        try:
+            fr_w0 = weights_sd["freq_router.net.0.weight"]
+            fr_b0 = weights_sd["freq_router.net.0.bias"]
+            fr_w2 = weights_sd["freq_router.net.2.weight"]
+            fr_b2 = weights_sd["freq_router.net.2.bias"]
+        except KeyError as exc:
+            raise ValueError(
+                f"{file_path}: chimera dual-A checkpoint is missing FreqRouter "
+                f"weight key {exc} (expected freq_router.net.{{0,2}}.weight/bias)."
+            ) from exc
+        if fr_w2.shape[0] != K_f:
+            raise ValueError(
+                f"{file_path}: FreqRouter output dim {fr_w2.shape[0]} != K_f={K_f}."
+            )
+        expected_in = chimera_fei_dim + chimera_sigma_dim
+        if fr_w0.shape[1] != expected_in:
+            raise ValueError(
+                f"{file_path}: FreqRouter input dim {fr_w0.shape[1]} "
+                f"!= FEI({chimera_fei_dim}) + σ({chimera_sigma_dim})."
+            )
+        chimera_dual["freq_router_sd"] = {
+            "net.0.weight": fr_w0,
+            "net.0.bias": fr_b0,
+            "net.2.weight": fr_w2,
+            "net.2.bias": fr_b2,
+        }
 
     chimera_dual["fei_feature_dim"] = chimera_fei_dim
     chimera_dual["sigma_feature_dim"] = chimera_sigma_dim
     chimera_dual["fei_sigma_low_div"] = chimera_sigma_low_div
     chimera_dual["router_tau"] = float(file_metadata.get("ss_router_tau", 1.0))
-    chimera_dual["freq_router_sd"] = {
-        "net.0.weight": fr_w0,
-        "net.0.bias": fr_b0,
-        "net.2.weight": fr_w2,
-        "net.2.bias": fr_b2,
-    }
+    chimera_dual["freq_router_mode"] = freq_router_mode
+    chimera_dual["freq_router_fei_tau"] = freq_router_fei_tau
     # Network-level ContentRouter (chimera dual-A with
     # ``content_router_source="crossattn"``). None ⇒ per-Linear softmax
     # over pooled lx_c (default).
@@ -398,6 +450,13 @@ def _finalize_dual_a_chimera(
     )
     chimera_dual["content_router_source"] = (
         "crossattn" if chimera_dual["content_router"] is not None else "input"
+    )
+    # Centered-gate: both pools' combine subtracts 1/K (λ is baked into the
+    # saved ups, so this alone reproduces the trained forward). Matches
+    # ChimeraHydraInferenceModule with ``centered_gate=True``.
+    chimera_dual["centered_gate"] = (
+        str(file_metadata.get("ss_chimera_centered_gate", "")).strip().lower()
+        == "true"
     )
 
 
@@ -511,38 +570,48 @@ def _make_content_router_llm_adapter_hook(
 
 def _make_chimera_pre_hook(
     router_state: dict,
-    freq_router_sd: Dict[str, torch.Tensor],
+    freq_router_sd: Optional[Dict[str, torch.Tensor]],
     fei_feature_dim: int,
     sigma_feature_dim: int,
     fei_sigma_low_div: float,
     router_tau: float,
     K_f: int,
+    freq_router_mode: str = "learned",
+    freq_router_fei_tau: float = 1.0,
 ):
-    """Pre-hook for ChimeraHydra: capture σ, compute FEI, run FreqRouter.
+    """Pre-hook for ChimeraHydra: capture σ, compute FEI, emit ``π_f``.
 
     Same wrapping contract as ``_make_router_pre_hook`` (attached to
-    ``diffusion_model._forward_pre_hooks`` via ``add_object_patch``), but
-    additionally evaluates the network-level FreqRouter MLP on
-    ``concat(FEI, sinusoidal(σ))`` once per denoising step and stores the
-    softmax/τ output as ``router_state["pi_f"]`` (shape ``(B, K_f)``).
-    Each per-Linear chimera hook then concatenates ``π_f`` onto its own
-    K_c content gate and dispatches the standard Hydra einsum/bmm — no
-    duplicated work.
+    ``diffusion_model._forward_pre_hooks`` via ``add_object_patch``). Once
+    per denoising step it computes FEI on the latent and writes
+    ``router_state["pi_f"]`` (shape ``(B, K_f)``); each per-Linear chimera
+    hook then concatenates ``π_f`` onto its own K_c content gate.
 
-    Concat order matches ``networks/lora_anima/network.py::set_fei``'s
-    chimera branch: ``[FEI, sinusoidal(σ)]``. Reversing it silently scrambles
-    the FreqRouter input and routes on the wrong axes.
+    Two modes:
+
+    * ``"learned"`` — evaluate the network-level FreqRouter MLP on
+      ``concat(FEI, sinusoidal(σ))`` → softmax/τ. Concat order matches
+      ``networks/lora_anima/network.py::set_fei``'s chimera branch
+      (``[FEI, sinusoidal(σ)]``); reversing it scrambles the input.
+    * ``"fei"`` — hardwire ``π_f = normalize(FEI ** (1/freq_router_fei_tau))``
+      (``fei_temperature``). No FreqRouter MLP, no σ-features; the FEI
+      band-simplex IS the gate (K_f == fei bands). Matches training-side
+      ``set_fei`` under ``freq_router_mode="fei"``.
     """
-    fr_state: dict = {
-        "net0_w": freq_router_sd["net.0.weight"],
-        "net0_b": freq_router_sd["net.0.bias"],
-        "net2_w": freq_router_sd["net.2.weight"],
-        "net2_b": freq_router_sd["net.2.bias"],
-        "device": None,
-    }
+    fei_mode = str(freq_router_mode).lower() == "fei"
+    fr_state: dict = {"device": None}
+    if not fei_mode:
+        fr_state.update(
+            {
+                "net0_w": freq_router_sd["net.0.weight"],
+                "net0_b": freq_router_sd["net.0.bias"],
+                "net2_w": freq_router_sd["net.2.weight"],
+                "net2_b": freq_router_sd["net.2.bias"],
+            }
+        )
 
     def _ensure_fr_on_device(x: torch.Tensor) -> None:
-        if fr_state["device"] == x.device:
+        if fei_mode or fr_state["device"] == x.device:
             return
         for k in ("net0_w", "net0_b", "net2_w", "net2_b"):
             fr_state[k] = fr_state[k].to(device=x.device, dtype=torch.float32)
@@ -564,9 +633,20 @@ def _make_chimera_pre_hook(
             router_state["fei"] = fei
             _ensure_fr_on_device(fei)
 
+            if fei_mode:
+                # Hardwired-FEI gate: π_f = normalize(FEI**(1/τ)) over the
+                # first K_f bands. No MLP, no σ — mirrors training set_fei.
+                pi_f = fei_temperature(fei[:, :K_f], freq_router_fei_tau)
+                router_state["pi_f"] = pi_f
+                if pi_f.shape[-1] != K_f:
+                    raise RuntimeError(
+                        f"ChimeraHydra: hardwired-FEI gate emitted K_f="
+                        f"{pi_f.shape[-1]}, expected {K_f}."
+                    )
+                return
+
             # Build router input: cat([FEI[:, :fei_dim], σ-sin features]).
-            # Either slice may be empty; chimera.toml ships
-            # fei_feature_dim=2, sigma_feature_dim=0 — i.e. FEI-only.
+            # Either slice may be empty.
             parts = []
             if fei_feature_dim > 0:
                 parts.append(fei[:, :fei_feature_dim])
@@ -761,6 +841,9 @@ def _make_chimera_dual_a_hook(params: dict, strength: float, router_state: dict)
         # and the per-Linear pooled-lx_c softmax is skipped. Matches
         # ChimeraHydraInferenceModule with ``use_global_content_router=True``.
         "global_content_router": bool(params.get("global_content_router", False)),
+        # Centered-gate: subtract 1/K per pool before each combine (parity with
+        # ChimeraHydraInferenceModule.forward — λ is baked into the saved ups).
+        "centered_gate": bool(params.get("centered_gate", False)),
         "device": None,
     }
 
@@ -848,6 +931,12 @@ def _make_chimera_dual_a_hook(params: dict, strength: float, router_state: dict)
             if pi_f.shape[0] == 1 and B != 1:
                 pi_f = pi_f.expand(B, -1)
 
+        # Centered-gate parity: subtract per-pool 1/K so a uniform gate
+        # contributes 0 (mirrors training's recentered combine).
+        if state["centered_gate"]:
+            pi_c = pi_c - (1.0 / max(state["K_c"], 1))
+            pi_f = pi_f - (1.0 / max(state["K_f"], 1))
+
         # Gate-weighted per-pool combined ups (B, out, rank). Two einsums
         # because the two pools have different K — keeps the math 1:1
         # with the training/inference module rather than padding to a
@@ -910,6 +999,8 @@ def _apply_chimera_dual_a_to_model(
         fei_sigma_low_div=float(chimera_data["fei_sigma_low_div"]),
         router_tau=float(chimera_data["router_tau"]),
         K_f=int(chimera_data["num_experts_freq"]),
+        freq_router_mode=str(chimera_data.get("freq_router_mode", "learned")),
+        freq_router_fei_tau=float(chimera_data.get("freq_router_fei_tau", 1.0)),
     )
     new_pre_hooks = OrderedDict(diffusion_model._forward_pre_hooks)
     new_pre_hooks[id(router_pre_hook)] = router_pre_hook
@@ -1029,6 +1120,7 @@ def _apply_chimera_dual_a_to_model(
             "num_experts_content": K_c,
             "num_experts_freq": K_f,
             "global_content_router": global_cr_on,
+            "centered_gate": bool(chimera_data.get("centered_gate", False)),
         }
         hook = _make_chimera_dual_a_hook(params, strength, sigma_state)
 
@@ -1048,12 +1140,19 @@ def _apply_chimera_dual_a_to_model(
         if global_cr_on
         else ""
     )
+    if str(chimera_data.get("freq_router_mode", "learned")) == "fei":
+        freq_desc = (
+            f"freq=hardwired-FEI(τ={chimera_data.get('freq_router_fei_tau', 1.0):g})"
+        )
+    else:
+        freq_desc = (
+            f"FreqRouter input=FEI({chimera_data['fei_feature_dim']}) + "
+            f"σ({chimera_data['sigma_feature_dim']}), "
+            f"τ={chimera_data['router_tau']:g}"
+        )
     logger.info(
         f"ChimeraHydra dual-A live-routing installed {patched} hooks "
-        f"(strength={strength}, K_c={K_c} + K_f={K_f}, FreqRouter input="
-        f"FEI({chimera_data['fei_feature_dim']}) + "
-        f"σ({chimera_data['sigma_feature_dim']}), "
-        f"σ_low_div={chimera_data['fei_sigma_low_div']:g}, "
-        f"τ={chimera_data['router_tau']:g}{cr_tag})"
+        f"(strength={strength}, K_c={K_c} + K_f={K_f}, {freq_desc}, "
+        f"σ_low_div={chimera_data['fei_sigma_low_div']:g}{cr_tag})"
     )
     return patched

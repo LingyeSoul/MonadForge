@@ -22,6 +22,7 @@ from library.inference.router_compute import (
     compute_fei_2band,
     compute_fei_nband_high_to_low,
     fei_sigma_low,
+    fei_temperature,
     gaussian_blur_2d,
     sigma_sinusoidal_features,
 )
@@ -29,6 +30,9 @@ from library.runtime.fei import compute_fei_2band as _live_fei_2band
 from library.runtime.fei import gaussian_blur_2d as _live_blur
 from networks.lora_modules.router_state import (
     _apply_sigma_band_mask as _live_apply_mask,
+)
+from networks.lora_modules.router_state import (
+    _fei_temperature as _live_fei_temperature,
 )
 from networks.lora_modules.router_state import (
     _sigma_sinusoidal_features as _live_sigma_feat,
@@ -56,6 +60,25 @@ def test_router_compute_is_canonical_sigma_features():
 
 def test_router_compute_is_canonical_band_mask():
     assert apply_sigma_band_mask is _live_apply_mask
+
+
+def test_router_compute_is_canonical_fei_temperature():
+    assert fei_temperature is _live_fei_temperature
+
+
+def test_fei_temperature_identity_at_tau_one():
+    """τ=1.0 returns the FEI simplex unchanged (softmax(log p) = p)."""
+    fei = torch.tensor([[0.7, 0.3], [0.2, 0.8]])
+    out = fei_temperature(fei, 1.0)
+    assert torch.allclose(out, fei, atol=1e-6)
+
+
+def test_fei_temperature_sharpens_and_normalizes():
+    """τ<1 sharpens toward the dominant band; output stays a simplex."""
+    fei = torch.tensor([[0.8, 0.2]])
+    out = fei_temperature(fei, 0.5)
+    assert torch.allclose(out.sum(-1), torch.ones(1), atol=1e-6)
+    assert out[0, 0] > fei[0, 0]  # dominant band gets more mass
 
 
 # ---------------------------------------------------------------------------

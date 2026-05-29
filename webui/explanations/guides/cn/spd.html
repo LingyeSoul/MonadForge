@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>SPD</h2>
+<p>Spectral Progressive Diffusion &mdash; 免训练的多分辨率推理（Xiao et al., arXiv:2605.18736）。沿去噪轨迹逐步提升空间分辨率：噪声主导的早期步骤以<b>低分辨率</b>运行，待细粒度频率从噪声中显现后，再通过<b>谱噪声扩展</b>注入高频细节。由于潜在功率谱按幂律衰减（<code>P_&omega; &prop; |&omega;|^&minus;&beta;</code>，在 Anima 上 &beta; &asymp; 2.26），高频携带的信号很少，延后处理代价低廉。</p>
+<p>这是一种<b>采样器级推理模式</b>，而非权重适配器 &mdash; 用 <code>--spd</code>（或 <code>make test SPD=1</code>）启用。它可与裸 DiT 或任意现有 LoRA 检查点配合使用。调度由 <code>--spd_stages</code>（升序分辨率比例，如 <code>0.5 1.0</code>）和 <code>--spd_transition_sigmas</code>（扩展到下一阶段的 &sigma; 阈值）设定。</p>
+<p><b>两条路径。</b> <b>Case A</b> 完全免训练 &mdash; 此处不训练任何内容。<b>Case B</b> 是可选的轨迹适配器微调（<code>make exp-spd</code>）：在 SPD 速度目标上训练的普通 LoRA，让模型<i>真正看到</i>多分辨率轨迹。其输出是可烘焙的普通 LoRA。</p>
+<p><b>v0 限制。</b> 仅支持 Euler（随机采样器会带警告回退），且<b>不</b>与 Spectrum / DCW / SMC-CFG 组合 &mdash; <code>SPECTRUM=1 SPD=1</code> 会报错（两者都会替换去噪循环）。参见 <code>docs/experimental/spd.md</code>。</p>

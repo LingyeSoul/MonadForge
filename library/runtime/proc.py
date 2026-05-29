@@ -16,6 +16,12 @@ exactly what these short-lived metadata/probe calls invoke.
 Usage::
 
     subprocess.run([...], **no_window_kwargs())
+
+For library code that can't be patched (``torch.compile`` / Triton / Inductor
+shelling out to ``ptxas.exe`` and ``cl.exe`` per kernel), call
+``install_no_window_default()`` once at process start — it monkey-patches
+``subprocess.Popen`` to default-on ``CREATE_NO_WINDOW`` for callers that
+didn't pick a console-creation flag themselves.
 """
 
 from __future__ import annotations
@@ -34,3 +40,54 @@ def no_window_kwargs() -> dict:
     if sys.platform == "win32":
         return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {}
+
+
+_INSTALLED = False
+
+
+def install_no_window_default() -> None:
+    """Default-on ``CREATE_NO_WINDOW`` for every ``subprocess.Popen`` (Windows).
+
+    No-op on Linux/macOS and on any second call. On Windows, wraps
+    ``subprocess.Popen.__init__`` so that when the caller hasn't already
+    specified one of ``CREATE_NEW_CONSOLE``/``CREATE_NO_WINDOW``/
+    ``DETACHED_PROCESS``/``CREATE_NEW_PROCESS_GROUP``, we OR in
+    ``CREATE_NO_WINDOW`` before delegating.
+
+    Why this exists: ``torch.compile`` (inductor + Triton) shells out to
+    ``ptxas.exe`` / ``cl.exe`` / ``cuobjdump.exe`` per generated kernel during
+    the first training step. Those call sites are inside PyTorch / Triton —
+    we can't pass ``no_window_kwargs()`` there. If the Python parent ends up
+    with no inherited console (uv-venv ``python.exe`` trampoline re-exec,
+    pythonw.exe GUI parent, certain double-click launchers), Windows allocates
+    a fresh **visible** console for each grandchild → the "lots of terminal
+    flash" effect users report at training start. Pre-allocating a hidden
+    console here flips those grandchildren over to inheriting it.
+
+    Safe defaults: ptxas / cl / cuobjdump never read from a console and their
+    stdout/stderr are always captured via pipes by torch — losing the visible
+    console loses no output. Callers that explicitly want a new visible window
+    keep working because we only set the flag when no console-disposition flag
+    is present.
+    """
+    global _INSTALLED
+    if _INSTALLED or sys.platform != "win32":
+        return
+
+    flag = subprocess.CREATE_NO_WINDOW
+    console_flags = (
+        subprocess.CREATE_NEW_CONSOLE
+        | subprocess.CREATE_NO_WINDOW
+        | subprocess.DETACHED_PROCESS
+        | subprocess.CREATE_NEW_PROCESS_GROUP
+    )
+    original_init = subprocess.Popen.__init__
+
+    def patched_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        cf = kwargs.get("creationflags", 0) or 0
+        if not (cf & console_flags):
+            kwargs["creationflags"] = cf | flag
+        return original_init(self, *args, **kwargs)
+
+    subprocess.Popen.__init__ = patched_init  # type: ignore[method-assign]
+    _INSTALLED = True

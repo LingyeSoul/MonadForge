@@ -28,13 +28,13 @@ Per-block cond LoRA on self-attn + FFN with a logit-bias gate. DiT frozen; train
 
 ### 2. Turbo LoRA (Decoupled DMD distillation)
 
-Distill 28-step Anima @ CFG=4 into a 4–8 step generator using **co-LoRA** (LoRA for both the student and the fake score model on the same frozen DiT). The deployment story is that `turbo_anima_lora.safetensors` stacks on top of any existing concept LoRA at inference, the same way LCM-LoRA composes with style LoRAs. See [`docs/proposal/turbo_anima_dmd_lora.md`](docs/proposal/turbo_anima_dmd_lora.md) — Decoupled DMD reference: Liu et al., arXiv:2511.22677.
+Distill 28-step Anima @ CFG=4 into a 4–8 step generator using **co-LoRA** (LoRA for both the student and the fake score model on the same frozen DiT). The deployment story is that `turbo_anima_lora.safetensors` stacks on top of any existing concept LoRA at inference, the same way LCM-LoRA composes with style LoRAs. See [`docs/experimental/dmd2-decoupled.md`](docs/experimental/dmd2-decoupled.md) (ops) and [`docs/structure/dmd2-decoupled.md`](docs/structure/dmd2-decoupled.md) (math) — Decoupled DMD reference: Liu et al., arXiv:2511.22677.
 
 Status: proposal only — no code, no checkpoints, no bench. The proposal is fully scoped (file-level plan, phased validation, risk register) and is waiting on an implementer.
 
 What's missing — this is one Tier 2 PR by definition (new method + paper + `bench/turbo/` + docs/methods entry + `make exp-turbo` / `make exp-test-turbo`), but it splits cleanly along phase boundaries:
 
-- **Phase 0: single-prompt overfit (~1 day).** Implement `networks/methods/turbo_dmd.py` (two LoRA networks, attachment toggle), `scripts/distill_turbo.py` (CA + DM gradient assembly, two optimizer states, the renoise primitive), `configs/methods/turbo.toml`, `make exp-turbo`. Prove the loop converges on one prompt at batch 1, 2k iterations. *[Tier 2 — drop a `bench/turbo/results/<ts>-phase0/` with teacher@28 vs student@4 side-by-side on a fixed seed]*
+- **Phase 0: single-prompt overfit (~1 day).** Implement `networks/methods/turbo_dmd.py` (two LoRA networks, attachment toggle), `scripts/distill_turbo/` (CA + DM gradient assembly, two optimizer states, the renoise primitive), `configs/methods/turbo.toml`, `make exp-turbo`. Prove the loop converges on one prompt at batch 1, 2k iterations. *[Tier 2 — drop a `bench/turbo/results/<ts>-phase0/` with teacher@28 vs student@4 side-by-side on a fixed seed]*
 - **Phase 1: 100-prompt sweep (~3 days).** Image Reward + HPS v2.1 + per-aspect breakdown (1024², 832×1248, 1248×832). Pass = student IR ≥ 80% of teacher, no aspect below 60%. *[Tier 2 continuation]*
 - **Phase 2: full HPS bench (~1 week).** 1k COCO-prompt sample, all 4 schedule configs from the paper's Table 1 as an ablation, replicates the paper's Decoupled-Hybrid claim on Anima. *[Tier 1.5 once Phase 1 has landed]*
 - **Phase 3: composition test (~2 days).** (turbo only) vs (concept LoRA @ 28) vs (turbo + concept @ 4) on three existing concept checkpoints. Validates the deployment story. *[Tier 1.5]*

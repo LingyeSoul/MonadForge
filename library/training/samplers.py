@@ -3,9 +3,9 @@
 M1 extraction (plan.md): isolates the noise-and-timestep draw out of
 `get_noise_pred_and_target` so new schedules can be added by registering a
 `SamplerFn` instead of branching in-trainer. The default sampler preserves
-the pre-refactor behavior byte-for-byte — it delegates to
-`noise_utils.get_noisy_model_input_and_timesteps` and applies the /1000
-rescale.
+the pre-refactor behavior — it delegates to
+`noise_utils.get_noisy_model_input_and_timesteps`, which already returns the
+DiT-scale time argument (σ∈[0,1]); no rescale is applied here.
 """
 
 from __future__ import annotations
@@ -48,7 +48,6 @@ def _default_sampler(ctx: SamplerContext) -> SamplerOut:
         ctx.device,
         ctx.weight_dtype,
     )
-    timesteps = timesteps / 1000.0
     return SamplerOut(noisy_input=noisy_input, timesteps=timesteps, sigmas=sigmas)
 
 

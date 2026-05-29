@@ -9,10 +9,23 @@ network_module = "networks.methods.soft_tokens"
 
 network_dim = 4
 network_args = [
-    "n_layers=10",
-    "n_t_buckets=100",
+    "n_layers=6",
+    "n_t_buckets=14",
     "init_std=0.02",
-    "splice_position=end_of_sequence",
+    "splice_position=front_of_padding",
+    "contrastive_weight=0.15",
+    "contrastive_every_n=3",
+    "contrastive_k=1",
+    "contrastive_negative_mode=hard_backoff",
+
+    "contrastive_objective=agsm",
+    "agsm_gamma=1.0",
+    "agsm_gamma_neg=0.1",
+    "agsm_ema_decay=0.99",
+    "agsm_dual_bank=true",
+    "contrastive_jaccard_alpha=1.0",
+    "contrastive_tau=0.5",
+    "contrastive_warmup_ratio=0.1",
 ]
 output_name = "anima_soft_tokens"
 

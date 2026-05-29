@@ -419,7 +419,7 @@ def main() -> None:
     vae.to(torch.bfloat16)
     vae.eval()
 
-    timesteps, sigmas = inference_utils.get_timesteps_sigmas(
+    _, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps, args.flow_shift, device
     )
     sigmas = sigmas.to(device)  # (n+1,), σ ∈ [0,1]

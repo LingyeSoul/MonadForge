@@ -10,7 +10,7 @@
 network_module = "networks.methods.soft_tokens"
 
 # network_dim → num_tokens (K) per layer per timestep bucket.
-network_dim = 8
+network_dim = 4
 
 # n_layers           — number of leading DiT blocks to attach soft tokens to
 #                      (Anima has 28; SoftREPA used 5/24 on SD3, scale
@@ -52,8 +52,11 @@ network_dim = 8
 #                                 regen with `make caption-index` if stale.
 # contrastive_jaccard_alpha     — logit penalty for "jaccard" mode (ℓ_neg −= α·s,
 #                                 sweep 0.5–2.0). Unused by other modes.
-# contrastive_tau               — InfoNCE temperature on the logit
-#                                 (−FM-error / τ). Unused by the agsm objective.
+# contrastive_tau               — temperature on the −FM-error logit. InfoNCE: the
+#                                 softmax temperature. AGSM: the Plackett–Luce
+#                                 temperature for the candidate weights w_j (lower
+#                                 = sharper preference for the best-matching
+#                                 caption → faster Δ self-annealing).
 # contrastive_warmup_ratio      — hold λ_con at 0 for the first fraction of
 #                                 steps (lets plain FM shape the bank first).
 #
@@ -61,21 +64,41 @@ network_dim = 8
 # Alternative to InfoNCE on the SAME extra-forward plumbing (negatives, warmup,
 # every_n, compose seam). Diagnoses SoftREPA's instability as unbounded negative
 # divergence and fixes it by regressing toward fixed shifted targets instead of
-# maximizing negative error:
-#   positives → v_target + γ·Δ,   negatives → v_target − γ·Δ
-# Δ = v̂⁺_ema − mean_j v̂⁻_ema_j is the matched-minus-mismatched velocity read off
-# an EMA shadow of the bank's own predictions (reward-free self-distillation; no
-# external scorer). Phase 2 = single bank, constant Ã(t)=1. Costs ~(2k+1) extra
-# forwards/firing-step vs InfoNCE's k (the EMA value passes), all no_grad except
-# the deferred negative replay — keep contrastive_k ∈ {1,2}.
+# maximizing negative error (paper Algorithm 1 / Eq. 17, single-bank Phase 2):
+#   positives → v_target + γ⁺·Δ⁺,   negatives → v_target − γ⁻·Δ⁻_j
+# with per-candidate Plackett–Luce guidance off an EMA shadow of the bank's own
+# predictions (reward-free self-distillation; no external scorer):
+#   w_j   = softmax_j( −‖v̂_ema_j − v_target‖² / τ )   over {matched, neg₁…neg_k}
+#   Δ_j   = v̂_ema_j − Σ_k w_k·v̂_ema_k
+# As the matched caption wins (w_matched→1) the baseline → v̂⁺_ema so Δ→0 and the
+# target relaxes to plain FM — the normalized self-annealing that bounds it.
+# τ is contrastive_tau (above). Phase 2 = single bank, constant Ã(t)=1. Costs
+# ~(2k+1) extra forwards/firing-step vs InfoNCE's k (the EMA value passes), all
+# no_grad except the deferred negative replay — keep contrastive_k ∈ {1,2}.
 # contrastive_objective         — "infonce" (default) | "agsm".
-# agsm_gamma                    — γ, target-shift magnitude (used for both signs
-#                                 in Phase 2). Sweep ~0.25–1.0.
+# agsm_gamma                    — γ⁺, positive-branch target-shift magnitude.
+#                                 Sweep ~0.25–1.0 (paper SD3 γ⁺=1).
+# agsm_gamma_neg                — γ⁻, negative-branch magnitude. Unset ⇒ = γ⁺
+#                                 (symmetric). Paper's flow model (SD3) used a
+#                                 deliberately weaker γ⁻=0.1 for stability.
 # agsm_ema_decay                — EMA decay for the bank shadow that Δ is read
 #                                 off (must be in (0,1); slower = steadier Δ).
+# agsm_dual_bank                — dual token banks ψ⁺/ψ⁻ (Phase 3a, paper §3.3).
+#                                 false (default) = single shared bank (Phase 2,
+#                                 bit-identical, 3D on-disk). true = a branch axis
+#                                 on the bank: ψ⁺ is spliced on the anchor +
+#                                 positive value passes (and is the ONLY bank used
+#                                 at inference — Appendix H found injecting ψ⁻ at
+#                                 inference over-suppresses detail), ψ⁻ on the
+#                                 negative value passes (training-only). Lets the
+#                                 negative push refine ψ⁻ without spending
+#                                 generative fidelity on the kept bank. Doubles the
+#                                 bank params + EMA shadow; ψ⁻ is free at inference.
+#                                 Checkpoints stamp ss_n_banks; single-bank
+#                                 checkpoints stay loadable.
 
 network_args = [
-    "n_layers=14",
+    "n_layers=6",
     "n_t_buckets=14",
     "init_std=0.02",
     "splice_position=front_of_padding",
@@ -85,14 +108,17 @@ network_args = [
     "contrastive_negative_mode=hard_backoff",
 
     "contrastive_objective=agsm",
-    "agsm_gamma=0.5",
+    "agsm_gamma=1.0",
+    "agsm_gamma_neg=0.1",
     "agsm_ema_decay=0.99",
+    # Phase 3a A/B: flip on for dual ψ⁺/ψ⁻ banks (inference keeps ψ⁺ only).
+    "agsm_dual_bank=true",
 
     "contrastive_jaccard_alpha=1.0",
     "contrastive_tau=0.5",
     "contrastive_warmup_ratio=0.1",
 ]
-output_name = "anima_soft_tokens_tenth"
+output_name = "anima_soft_tokens_tenth2"
 weight_decay=1e-4
 # Soft tokens are independent of the cached crossattn (they overwrite zero-
 # padding tail), so cache_llm_adapter_outputs is the right default.

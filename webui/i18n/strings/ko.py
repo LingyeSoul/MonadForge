@@ -9,6 +9,7 @@ STRINGS: dict[str, str] = {
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
+    "tab_turbo": "Turbo",
     "tab_methods": "메소드",
     "tab_images": "데이터셋",
     "tab_merge": "병합",
@@ -41,6 +42,27 @@ STRINGS: dict[str, str] = {
     "preprocess_sam_prompts_tip": (
         "SAM3이 찾을 텍스트 프롬프트. 한 줄에 하나씩. "
         "기본값: 'speech bubble', 'text bubble'."
+    ),
+    "preprocess_sam_focus_prompts": "SAM 포커스 프롬프트 (한 줄에 하나):",
+    "preprocess_sam_focus_prompts_tip": (
+        "반전 극성: 유지할 피사체를 지정합니다. 설정하면 마스크는 해당 피사체에만 "
+        "학습이 적용되고 나머지는 모두 무시됩니다 (예: 'girl'을 지정하면 배경 전체가 "
+        "무시 영역이 됩니다). 위의 프롬프트와 합성되어, 최종 학습 영역은 포커스 "
+        "피사체에서 무시 영역을 뺀 부분이 됩니다. 비워두면 기본 무시 전용 동작이 "
+        "적용됩니다."
+    ),
+    "preprocess_sam_rule": "마스크 규칙",
+    "preprocess_sam_add_rule": "+ 규칙 추가",
+    "preprocess_sam_add_rule_tip": (
+        "마스크 규칙을 하나 더 추가합니다. 각 규칙은 경로 패턴으로 이미지 "
+        "서브셋을 대상으로 하며, 패턴이 일치하는 규칙들은 서로 합성됩니다."
+    ),
+    "preprocess_sam_remove_rule": "규칙 삭제",
+    "preprocess_sam_rule_path_pattern": "경로 패턴 (이 규칙):",
+    "preprocess_sam_rule_path_pattern_tip": (
+        "이 규칙이 적용될 이미지를 지정합니다 — 데이터셋 루트 기준 각 이미지 "
+        "경로에 대한 fnmatch 글로브 ('|'로 OR 조합). 예: 'character_a/*'. "
+        "빈 값 또는 '*'는 모든 이미지에 매칭되는 기본 규칙입니다."
     ),
     "preprocess_sam_threshold": "SAM 임계값 (0.0–1.0):",
     "preprocess_sam_threshold_tip": (
@@ -100,6 +122,10 @@ STRINGS: dict[str, str] = {
     "saved": "저장 완료",
     "saved_file": "{name} 저장됨",
     "invalid_toml": "잘못된 TOML",
+    "config_bad_keys_header": "알 수 없는 데이터셋 키 — 이 키들을 제거하기 전까지 학습이 실패합니다:",
+    "config_remove_keys_btn": "제거",
+    "config_remove_keys_confirm": "이 오래된 키 {n}개를 설정 파일에서 삭제할까요?\n\n{keys}",
+    "config_remove_keys_none": "제거된 키가 없습니다 (디스크의 해당 줄이 변경되었을 수 있습니다).",
     "error": "오류",
     "accelerate_not_found": "PATH에서 accelerate를 찾을 수 없습니다",
     "preprocess": "전처리",
@@ -199,6 +225,10 @@ STRINGS: dict[str, str] = {
     "adapter_preprocess_pe": "전처리 (리사이즈 + VAE + 텍스트 + PE)",
     "adapter_train": "학습",
     "adapter_stop": "정지",
+    # SPD / Turbo 증류 설정 탭 (gui/tabs/distill_tab.py)
+    "distill_general_section": "일반",
+    "distill_job_running": "이 탭에서 이미 작업이 실행 중입니다.",
+    "distill_config_missing": "설정 파일을 읽을 수 없습니다: {err}",
     "adapter_log_placeholder": "실행 출력이 여기에 표시됩니다...",
     "adapter_no_dataset": "소스 데이터셋 디렉토리가 없습니다. 디렉토리를 만들고 이미지+캡션 쌍을 넣어주세요.",
     "adapter_open_dir": "디렉토리 열기",

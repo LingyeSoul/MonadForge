@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>SPD</h2>
+<p>Spectral Progressive Diffusion &mdash; 학습이 필요 없는 다중 해상도 추론 (Xiao et al., arXiv:2605.18736). 디노이징 궤적을 따라 공간 해상도를 키웁니다: 노이즈가 지배적인 초기 스텝은 <b>저해상도</b>로 실행한 뒤, 노이즈에서 미세 주파수가 드러나면 <b>스펙트럼 노이즈 확장</b>으로 고주파 디테일을 주입합니다. 잠재 파워 스펙트럼이 거듭제곱 법칙(<code>P_&omega; &prop; |&omega;|^&minus;&beta;</code>, Anima에서 &beta; &asymp; 2.26)으로 감쇠하므로 고주파는 신호가 적어 나중으로 미루기에 저렴합니다.</p>
+<p>이것은 가중치 어댑터가 아니라 <b>샘플러 수준의 추론 모드</b>입니다 &mdash; <code>--spd</code> (또는 <code>make test SPD=1</code>)로 활성화합니다. 베어 DiT 또는 기존 LoRA 체크포인트 어느 쪽과도 함께 동작합니다. 스케줄은 <code>--spd_stages</code> (오름차순 해상도 배율, 예: <code>0.5 1.0</code>)와 <code>--spd_transition_sigmas</code> (다음 스테이지로 확장할 &sigma; 임계값)로 설정합니다.</p>
+<p><b>두 가지 경로.</b> <b>Case A</b>는 완전히 학습이 필요 없습니다 &mdash; 여기서는 아무것도 학습하지 않습니다. <b>Case B</b>는 선택적 궤적 어댑터 파인튜닝(<code>make exp-spd</code>)으로, 모델이 다중 해상도 궤적을 <i>직접 보도록</i> SPD 속도 타깃으로 학습한 일반 LoRA입니다. 출력은 베이킹 가능한 일반 LoRA입니다.</p>
+<p><b>v0 제약.</b> Euler 전용(확률적 샘플러는 경고와 함께 폴백)이며, Spectrum / DCW / SMC-CFG와는 <b>조합되지 않습니다</b> &mdash; <code>SPECTRUM=1 SPD=1</code>은 오류를 냅니다(둘 다 디노이즈 루프를 대체). <code>docs/experimental/spd.md</code> 참조.</p>

@@ -7,6 +7,10 @@ import os
 import random
 from typing import List, Dict, Any
 
+from library.runtime.proc import install_no_window_default
+
+install_no_window_default()
+
 import torch
 from safetensors.torch import load_file
 from safetensors import safe_open

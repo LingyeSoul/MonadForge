@@ -68,7 +68,7 @@ Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params
 | `_make_block_hook(layer_idx, org_forward)` | Closure that reads the cached step tokens at `layer_idx`, splices into `crossattn_emb`, calls the original block forward. |
 | `SoftTokensMethodAdapter` (same file) | Contrastive extra-forward driver: stashes `neg_crossattn_emb` in `prime_for_forward`, runs the negative forwards + the active objective in `extra_forwards`, replays the deferred ∂L/∂v_neg + refreshes the AGSM bank-EMA in `after_backward`, surfaces metrics. Auto-resolved by `resolve_adapters` when `_contrastive_target_weight > 0`. |
 | `contrastive_loss(...)` / `step_contrastive_warmup(...)` | InfoNCE over the negatives (with optional jaccard penalty) + the warmup gate. |
-| `agsm_delta(...)` / `agsm_losses(...)` / `update_bank_ema()` | AGSM target-shift objective: Δ off the bank-EMA shadow + the bounded ±γ·Δ losses + the EMA refresh (`contrastive_objective=agsm`). See `docs/proposal/soft_tokens_agsm.md`. |
+| `_agsm_pl_weights(...)` / `agsm_targets(...)` / `agsm_losses(...)` / `update_bank_ema()` | AGSM target-shift objective: Plackett–Luce candidate weights + per-candidate Δ off the bank-EMA shadow + the bounded `±γ_z·Δ` losses + the EMA refresh (`contrastive_objective=agsm`). Dual ψ⁺/ψ⁻ banks (Phase 3a) ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See `docs/proposal/soft_tokens_agsm.md`. |
 | `library/datasets/base.py` | `setup_contrastive_negatives` / `_load_te_for_stem` — negative TE sourcing + `neg_crossattn_emb` / `neg_jaccard` on the example. |
 | `library/datasets/identity_pairs.py` | `IdentityPairSampler.hard_negative` / `shuffled` / `tag_jaccard` — negative policy. |
 | `library/training/losses.py::_soft_tokens_contrastive_loss` | Applies the warmup-gated `λ_con` to the adapter's InfoNCE scalar. |
@@ -160,48 +160,73 @@ A second objective on the **same** extra-forward plumbing (negatives, warmup,
 It diagnoses SoftREPA's contrastive instability (val reward degrades while loss
 drops) as **unbounded negative divergence** — maximizing negative error has no
 fixed point — and replaces the InfoNCE softmax with regression toward fixed,
-shifted targets:
+shifted targets. Per candidate `j ∈ {matched, neg₁…neg_k}`, with the implicit
+reward `r_j = −‖v̂_ema_j − v_target‖²` and Plackett–Luce weights `w = softmax(r/τ)`:
 
 ```
-positives → v_target + γ·Δ          L⁺ = ‖ v_θ^ψ⁺ − (v_target + γ·Δ) ‖²
-negatives → v_target − γ·Δ          L⁻ = mean_j ‖ v_θ^ψ⁻ − (v_target − γ·Δ) ‖²
-Δ = v̂⁺_ema − mean_j v̂⁻_ema_j        (detached; matched − mismatched velocity)
+baseline = Σ_j w_j · v̂_ema_j               (PL-weighted over ALL candidates)
+Δ_j      = v̂_ema_j − baseline              (per-candidate, detached)
+positives → v_target + γ⁺·Δ⁺               L⁺ = ‖ v_θ^ψ⁺ − (v_target + γ⁺·Δ⁺) ‖²
+negatives → v_target − γ⁻·Δ⁻_j             L⁻ = mean_j ‖ v_θ^ψ⁻ − (v_target − γ⁻·Δ⁻_j) ‖²
 ```
 
-`Δ` is the alignment direction read off an **EMA shadow of the bank's own
-predictions** — reward-free self-distillation, no external scorer. Because Anima
-is velocity flow-matching (`v = ε − x₀`, fixed `x₀`), shifting the ε-target by `δ`
-is exactly shifting the v-target by `δ`, so the paper's ε-prediction math maps
-across with no reparameterization. Both targets are constants each step
-(`v_target` and `Δ` detached), so each term has a bounded fixed point — the fix.
+`Δ` is read off an **EMA shadow of the bank's own predictions** — reward-free
+self-distillation, no external scorer. The PL weighting is the load-bearing
+**self-annealing** (paper §3.3): as the matched caption wins (`w_matched → 1`) the
+baseline → v̂⁺ so `Δ → 0` and the target relaxes to plain FM — a normalized
+correction that *bounds* the negative branch (the InfoNCE failure AGSM removes).
+Because Anima is velocity flow-matching (`v = ε − x₀`, fixed `x₀`), shifting the
+ε-target by `δ` is exactly shifting the v-target by `δ`, so the paper's
+ε-prediction math maps across with no reparameterization. Both targets are
+constants each step (`v_target` and the `Δ_j` detached), so each term has a bounded
+fixed point — the fix.
 
-This is **Phase 2**: single bank (ψ⁺ = ψ⁻ = the one bank, only `crossattn_emb`
-differs across forwards) and a constant time-weight `Ã(t)=1`. Dual banks ψ⁺/ψ⁻ +
-`Ã(t)` shaping + Plackett–Luce reward-weighting of Δ are Phase 3, not yet built.
+This was reconstructed against the paper's Algorithm 1 / Eq. 17 (PL-weighted,
+per-candidate Δ; separate γ⁺/γ⁻ — the paper's SD3/flow run used `(1, 0.1)`). It is
+**single-bank Phase 2** by default: ψ⁺ = ψ⁻ = the one bank (only `crossattn_emb`
+differs across forwards) and a constant time-weight `Ã(t)=1`.
+
+**Dual banks ψ⁺/ψ⁻ (Phase 3a, opt-in `agsm_dual_bank=true`).** A branch axis on
+the bank: `tokens (2,n_layers,K,D)` + bank-major `t_offsets` + a doubled EMA
+shadow. ψ⁺ is spliced on the anchor + matched-EMA passes, ψ⁻ on the negative
+value/EMA/replay passes — the negative push refines ψ⁻ without spending generative
+fidelity on the bank kept at inference. **Inference uses ψ⁺ only** (Appendix H: ψ⁻
+in the uncond branch over-suppresses detail), so the checkpoint stamps `ss_n_banks`
+and `load_weights` slices the ψ⁺ branch when an inference net reads a dual file;
+single-bank checkpoints stay loadable and `agsm_dual_bank=false` (default) is
+bit-identical to Phase 2. Whether dual beats single at equal ψ⁺ budget is an open
+A/B — see the proposal's Phase 3a.
 
 Gradient flow mirrors InfoNCE exactly — `L⁺` rides the anchor's FM backward (grad
 via the live `v_pos`), `L⁻`'s gradient is deferred to `after_backward` (the
 block-swap-safe grad-cache split, [[project_blockswap_extra_forwards_gradcache]]).
 The EMA shadow is refreshed once per optimizer step in `after_backward` (gated on
 `sync_gradients`); it is a plain tensor attribute, so it never enters the saved
-checkpoint — a trained `.safetensors` is bit-identical to plain-FM and inference
-ignores AGSM entirely, same as InfoNCE.
+checkpoint — a trained `.safetensors` carries only the bank(s), and inference
+ignores the AGSM machinery entirely, same as InfoNCE.
 
 **Cost.** AGSM adds the EMA value passes (matched + each mismatched caption through
 the shadow bank) on top of the live negative passes: ~`(2k+1)` extra forwards per
 firing step vs InfoNCE's `k`, all `no_grad` except the deferred replay. Keep
-`contrastive_k ∈ {1, 2}` and lean on `contrastive_every_n` to amortize.
+`contrastive_k ∈ {1, 2}` and lean on `contrastive_every_n` to amortize. Dual banks
+add no forwards (just a branch index on the same passes).
 
 | Knob | Default | Meaning |
 |---|---|---|
 | `contrastive_objective` | `infonce` | `infonce` \| `agsm`. |
-| `agsm_gamma` | `0.5` | γ, target-shift magnitude (both signs in Phase 2). Sweep ~0.25–1.0. |
+| `agsm_gamma` | `0.5` | γ⁺, positive-branch target-shift magnitude. Sweep ~0.25–1.0 (paper SD3 γ⁺=1; the toml sets 1.0). |
+| `agsm_gamma_neg` | = γ⁺ | γ⁻, negative-branch magnitude. Unset ⇒ symmetric; the paper's flow model used a deliberately weaker `0.1` (the toml sets 0.1). |
 | `agsm_ema_decay` | `0.99` | EMA decay for the bank shadow Δ is read off; must be in `(0,1)`. |
+| `agsm_dual_bank` | `false` | dual ψ⁺/ψ⁻ banks (Phase 3a); inference keeps ψ⁺ only. |
+| `contrastive_tau` | `0.5` | doubles as the Plackett–Luce temperature for the candidate weights `w_j` (lower = sharper matched preference → faster Δ self-anneal). |
 
 TensorBoard signals (AGSM): `reg/soft_tokens_contrastive` (= L⁺ + L⁻), `_weighted`,
 `_lambda_live`, `soft_tokens/agsm_l_pos`, `soft_tokens/agsm_l_neg` (both should sit
 at a bounded steady state, not `l_neg` diverging), `soft_tokens/agsm_delta_norm`
-(near 0 ⇒ matched/mismatched preds collapsed → no alignment signal).
+(near 0 ⇒ matched/mismatched preds collapsed → no alignment signal),
+`soft_tokens/agsm_w_matched` (the PL self-anneal scalar; rising toward 1 with
+bounded losses is the healthy signature), and under dual bank
+`soft_tokens/tokens_neg_mean_norm` (ψ⁻ magnitude).
 
 > **Gating.** AGSM is only justified if the plain-InfoNCE A/B exhibits the
 > SoftREPA degrade-while-loss-drops pattern on Anima, and after the Phase 0

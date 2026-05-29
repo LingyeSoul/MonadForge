@@ -30,6 +30,7 @@ min_pixels = 500000
 optimizer_type = "AdamW"
 lr_scheduler = "constant"
 timestep_sampling = "sigmoid"
+sigmoid_bias = 0.0
 discrete_flow_shift = 1.0
 mixed_precision = "bf16"
 cache_latents = true
@@ -48,6 +49,7 @@ log_every_n_steps = 2
 dataloader_pin_memory = true
 persistent_data_loader_workers = false
 use_cmmd = false
+channel_scaling_alpha = 0.5
 
 # Preview sampling — generate sample images at checkpoint saves
 [preview]

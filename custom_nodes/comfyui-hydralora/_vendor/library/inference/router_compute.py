@@ -33,6 +33,9 @@ Public surface:
   the DiT t_embedder functional form.
 * ``apply_sigma_band_mask`` — mask out-of-band expert logits to -inf for
   the σ-band partition routing.
+* ``fei_temperature(fei, tau) -> simplex`` — ChimeraHydra hardwired-FEI freq
+  gate ``normalize(FEI ** (1/τ))``. Used when ``freq_router_mode="fei"`` (no
+  FreqRouter MLP on disk); τ=1.0 returns FEI unchanged.
 
 The node also imports ``_FREQS_CACHE`` indirectly via this module; do not
 expose it as part of the public surface — it's an implementation detail of
@@ -57,6 +60,7 @@ from library.runtime.fei import (
 # helpers stay private to router_state.
 from networks.lora_modules.router_state import (
     _apply_sigma_band_mask as apply_sigma_band_mask,
+    _fei_temperature as fei_temperature,
     _sigma_sinusoidal_features as sigma_sinusoidal_features,
 )
 
@@ -97,4 +101,5 @@ __all__ = [
     "fei_sigma_low",
     "sigma_sinusoidal_features",
     "apply_sigma_band_mask",
+    "fei_temperature",
 ]

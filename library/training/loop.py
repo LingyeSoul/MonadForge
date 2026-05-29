@@ -227,6 +227,15 @@ def build_loop_state(
             initial_step -= len(train_dataloader)
 
     logger.info(f"unet dtype: {unet_weight_dtype}, device: {unet.device}")
+    _ts_parts = [f"timestep_sampling={args.timestep_sampling}"]
+    if args.timestep_sampling in ("sigmoid", "shift", "flux_shift"):
+        _ts_parts.append(f"sigmoid_scale={args.sigmoid_scale}")
+        _ts_parts.append(f"sigmoid_bias={getattr(args, 'sigmoid_bias', 0.0)}")
+    if args.timestep_sampling in ("shift", "flux_shift"):
+        _ts_parts.append(f"discrete_flow_shift={args.discrete_flow_shift}")
+    if getattr(args, "t_min", None) is not None or getattr(args, "t_max", None) is not None:
+        _ts_parts.append(f"σ∈[{getattr(args, 't_min', None)}, {getattr(args, 't_max', None)}]")
+    logger.info("sigma sampling: " + ", ".join(_ts_parts))
     for i, t_enc in enumerate(text_encoders):
         params_itr = t_enc.parameters()
         params_itr.__next__()  # skip the first parameter

@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Turbo (Decoupled DMD2)</h2>
+<p>Decoupled-Hybrid DMD2를 통한 소수 스텝 증류 (Liu et al., arXiv:2511.22677). 28스텝 CFG=4 Anima 교사를 <b>4스텝 학생</b>으로 증류하며, 학생 / 가짜 스코어 / 교사 세 역할이 하나의 동결된 DiT를 공유합니다. CFG는 증류 과정에서 학생에 베이킹됩니다.</p>
+<p>출력은 <b>일반 표준 LoRA</b>입니다. 추론 측 turbo 코드는 없습니다: 일반 LoRA 어댑터 경로로 로드하고 <code>--infer_steps 4 --cfg 1.0</code>으로 실행합니다 (<code>make exp-test-turbo</code>). LCM-LoRA가 스타일 LoRA와 조합되듯 컨셉 LoRA와도 조합되며(선형 조합, 랭크가 합산됨), DiT에 완전히 베이킹 가능합니다.</p>
+<p><b>학습</b>은 <code>scripts/distill_turbo.py</code>를 통해 실행됩니다 &mdash; <code>train.py</code>가 아니라 (<code>distill-mod</code> / <code>distill-spd</code>처럼) 전용 단일 GPU 루프입니다. <code>make exp-turbo</code>로 실행하세요 (<code>PRESET</code>을 따르며, <code>ARGS=&hellip;</code>로 오버라이드 추가).</p>
+<p><b>설정은 예외적입니다.</b> <code>configs/methods/turbo.toml</code>은 스크립트만 읽는 전용 섹션 스키마입니다 &mdash; 평면 method+preset 병합이 적용되지 않으므로 <code>print-config METHOD=turbo</code>를 <b>하지 마세요</b>. CLI 플래그가 TOML 값을 오버라이드합니다. <code>docs/experimental/dmd2-decoupled.md</code>(운영) 및 <code>docs/structure/dmd2-decoupled.md</code>(수학) 참조.</p>

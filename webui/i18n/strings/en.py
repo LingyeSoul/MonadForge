@@ -9,6 +9,7 @@ STRINGS: dict[str, str] = {
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
+    "tab_turbo": "Turbo",
     "tab_methods": "Methods",
     "tab_images": "Dataset",
     "tab_merge": "Merge",
@@ -42,6 +43,27 @@ STRINGS: dict[str, str] = {
     "preprocess_sam_prompts_tip": (
         "Text prompts SAM3 looks for. One per line. Defaults to 'speech bubble' "
         "and 'text bubble'."
+    ),
+    "preprocess_sam_focus_prompts": "SAM focus prompts (one per line):",
+    "preprocess_sam_focus_prompts_tip": (
+        "Reversed polarity: subjects to KEEP. When set, the mask trains ONLY on "
+        "these subjects and ignores everything else (e.g. 'girl' masks all "
+        "background). Composes with the prompts above — final trainable region "
+        "is the focus subject minus those ignore regions. Leave empty for the "
+        "default ignore-only behaviour."
+    ),
+    "preprocess_sam_rule": "Mask rule",
+    "preprocess_sam_add_rule": "+ Add rule",
+    "preprocess_sam_add_rule_tip": (
+        "Add another mask rule. Each rule targets a subset of images by path "
+        "pattern; rules whose pattern matches an image compose together."
+    ),
+    "preprocess_sam_remove_rule": "Remove rule",
+    "preprocess_sam_rule_path_pattern": "Path pattern (this rule):",
+    "preprocess_sam_rule_path_pattern_tip": (
+        "Which images this rule applies to — an fnmatch glob ('|'-OR-combined) "
+        "on each image's path relative to the dataset root, e.g. 'character_a/*'. "
+        "Empty or '*' matches every image (a catch-all default rule)."
     ),
     "preprocess_sam_threshold": "SAM threshold (0.0–1.0):",
     "preprocess_sam_threshold_tip": (
@@ -102,6 +124,10 @@ STRINGS: dict[str, str] = {
     "saved": "Saved",
     "saved_file": "Saved {name}",
     "invalid_toml": "Invalid TOML",
+    "config_bad_keys_header": "Unknown dataset keys — training will fail until these are removed:",
+    "config_remove_keys_btn": "Remove",
+    "config_remove_keys_confirm": "Delete these {n} stale key(s) from their config files?\n\n{keys}",
+    "config_remove_keys_none": "No keys were removed (the flagged lines may have changed on disk).",
     "error": "Error",
     "accelerate_not_found": "accelerate not found on PATH",
     "preprocess": "Preprocess",
@@ -210,6 +236,10 @@ STRINGS: dict[str, str] = {
     "adapter_preprocess_pe": "Preprocess (resize + VAE + text + PE)",
     "adapter_train": "Train",
     "adapter_stop": "Stop",
+    # SPD / Turbo distillation config tabs (gui/tabs/distill_tab.py)
+    "distill_general_section": "general",
+    "distill_job_running": "A job is already running on this tab.",
+    "distill_config_missing": "Could not read the config file: {err}",
     "adapter_log_placeholder": "Run output will appear here...",
     "adapter_no_dataset": "Source dataset directory does not exist. Create it and drop in image+caption pairs.",
     "adapter_open_dir": "Open directory",

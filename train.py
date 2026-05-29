@@ -1235,6 +1235,7 @@ class AnimaTrainer:
         metadata["ss_mode_scale"] = args.mode_scale
         metadata["ss_timestep_sampling"] = args.timestep_sampling
         metadata["ss_sigmoid_scale"] = args.sigmoid_scale
+        metadata["ss_sigmoid_bias"] = getattr(args, "sigmoid_bias", 0.0)
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
 
     def is_text_encoder_not_needed_for_training(self, args):

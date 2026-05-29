@@ -23,12 +23,14 @@ def get_timesteps_sigmas(
         device: Target device for tensors.
 
     Returns:
-        Tuple of (timesteps, sigmas) tensors.
+        Tuple of (timesteps, sigmas) tensors. ``timesteps`` is the DiT's time
+        argument on the σ∈[0,1] scale (== ``sigmas[:-1]``); the model rescales
+        nothing further, so callers feed it directly (no /1000).
     """
     sigmas = torch.linspace(1, 0, sampling_steps + 1)
     sigmas = (shift * sigmas) / (1 + (shift - 1) * sigmas)
     sigmas = sigmas.to(torch.float32)
-    timesteps = (sigmas[:-1] * 1000).to(dtype=torch.float32, device=device)
+    timesteps = sigmas[:-1].to(dtype=torch.float32, device=device)
     return timesteps, sigmas
 
 

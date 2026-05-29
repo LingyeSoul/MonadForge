@@ -183,11 +183,15 @@ import torch
 def get_timesteps_sigmas(
     sampling_steps: int, shift: float, device: torch.device
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Generate flow-matching timesteps + sigmas for ``sampling_steps`` Euler steps."""
+    """Generate flow-matching timesteps + sigmas for ``sampling_steps`` Euler steps.
+
+    ``timesteps`` is the DiT time arg on the σ∈[0,1] scale (== ``sigmas[:-1]``);
+    the model rescales nothing, so callers feed it directly (no /1000).
+    """
     sigmas = torch.linspace(1, 0, sampling_steps + 1)
     sigmas = (shift * sigmas) / (1 + (shift - 1) * sigmas)
     sigmas = sigmas.to(torch.float32)
-    timesteps = (sigmas[:-1] * 1000).to(dtype=torch.float32, device=device)
+    timesteps = sigmas[:-1].to(dtype=torch.float32, device=device)
     return timesteps, sigmas
 '''
 

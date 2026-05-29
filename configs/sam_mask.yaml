@@ -1,13 +1,34 @@
+# SAM3 masking config. Two schemas are accepted:
+#
+#  1. Flat (this file's default) — one prompt set for every matched image.
+#  2. Rules array (see the commented `rules:` example below) — several mask
+#     types routed to different images by `path_pattern`. Every rule whose
+#     pattern matches an image COMPOSES (ignore-regions union, focus-regions
+#     union). A `rules:` key, when present, replaces the flat fields.
+#
+# Within either schema:
+#   prompts        subjects to mask OUT (ignored in the loss; train on the rest)
+#   focus_prompts  reversed polarity — keep ONLY these, ignore everything else
+#                  (e.g. `girl` masks all background). Composes with `prompts`:
+#                  trainable = focus subject MINUS the ignore regions.
+# focus_prompts is SAM-only; MIT text masking always stays ignore-mode.
+
 prompts:
   - speech bubble
   - text bubble
+focus_prompts: []
 
 threshold: 0.5
 dilate: 5
+# Global scope: which images get masked at all (also forwarded to MIT).
+path_pattern: '*'
 
-# fnmatch glob on each image's path relative to the mask --image-dir
-# (post_image_dataset/resized for `make mask`), restricting which images get
-# masked. Same semantics as base.toml's training path_pattern; `make mask`
-# forwards it to both SAM and MIT backends. `*` (or unset) masks everything.
-# Use `|` to OR-combine: `char_a/*|char_b/*`.
-path_pattern: "*"
+# ── Rules form (uncomment to route different mask types per image) ───────────
+# rules:
+#   - path_pattern: 'character_a/*'   # train only the character here
+#     focus_prompts: [girl]
+#     dilate: 8
+#   - path_pattern: 'manga/*'         # strip speech bubbles here
+#     prompts: [speech bubble, text bubble]
+#   - path_pattern: '*'               # catch-all default (per-rule threshold/
+#     prompts: [speech bubble]        # dilate fall back to the top-level values)

@@ -297,7 +297,7 @@ def main() -> None:
     if device.type == "cuda":
         torch.cuda.empty_cache()
 
-    timesteps, sigmas = inference_utils.get_timesteps_sigmas(
+    _, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps, args.flow_shift, device
     )
     sigmas = sigmas.to(device)

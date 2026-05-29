@@ -59,7 +59,7 @@ def denoise_one(
     timesteps, sigmas = inference_utils.get_timesteps_sigmas(
         num_steps, flow_shift, device
     )
-    timesteps = (timesteps / 1000.0).to(device, dtype=dtype)
+    timesteps = timesteps.to(device, dtype=dtype)  # σ∈[0,1] — DiT time arg
 
     sampler = inference_utils.ERSDESampler(sigmas, seed=seed, device=device)
 

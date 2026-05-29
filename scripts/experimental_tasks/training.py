@@ -14,7 +14,7 @@ from scripts.tasks._common import PY, _preset, bespoke_preset_flags, run, train
 
 
 def cmd_turbo(extra):
-    """Turbo Anima — Decoupled DMD2 distillation (proposal: docs/proposal/turbo_anima_dmd_lora.md).
+    """Turbo Anima — Decoupled DMD2 distillation (docs: docs/experimental/dmd2-decoupled.md).
 
     Bypasses train.py / accelerate (single-GPU bespoke loop, like distill-mod).
     Reads ``configs/methods/turbo.toml``; trailing args are forwarded so user
@@ -31,7 +31,26 @@ def cmd_turbo(extra):
     ``extra`` is appended last, so user CLI overrides win.
     """
     preset_flags = bespoke_preset_flags(_preset())
-    run([PY, "scripts/distill_turbo.py", *preset_flags, *extra])
+    run([PY, "-m", "scripts.distill_turbo.distill", *preset_flags, *extra])
+
+
+def cmd_turbo_prep(extra):
+    """Turbo dataset curation — score every cached stem, emit keep_list.json (item 5).
+
+    Walks ``post_image_dataset/lora`` + the resized PNGs, computes per-stem
+    ``hf_ratio`` (latent HF band energy) + ``noise_sigma`` (Immerkær grain
+    detector on the resized image), then cuts to ``--target`` (default 500) with
+    stratified coverage repair. Writes only
+    ``post_image_dataset/turbo_prep/keep_list.json`` — consumed by
+    ``make exp-turbo`` when ``use_prep_list = true`` in ``configs/methods/turbo.toml``.
+
+    No GPU, ~1 min. Trailing args forward to the script, e.g.::
+
+        make exp-turbo-prep                              # default target 500
+        make exp-turbo-prep ARGS="--target 1000 --alpha 0.5"
+        make exp-turbo-prep ARGS="--dry_run"             # log the cut, write nothing
+    """
+    run([PY, "-m", "scripts.distill_turbo.prep", *extra])
 
 
 def cmd_spd(extra):

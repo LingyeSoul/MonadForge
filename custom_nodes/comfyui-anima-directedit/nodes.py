@@ -395,7 +395,7 @@ class AnimaDirectEdit:
         z_clean = z_clean.to(device, dtype=dtype)
         logger.info("DirectEdit: encoded source latent %s", tuple(z_clean.shape))
 
-        timesteps, sigmas = inference_utils.get_timesteps_sigmas(
+        _, sigmas = inference_utils.get_timesteps_sigmas(
             infer_steps, flow_shift, device
         )
         sigmas = sigmas.to(device)

@@ -16,7 +16,7 @@ Full user-facing docs and changelog live in `README.md`. This file is for code-l
 
 | File | Role |
 |------|------|
-| `adapter.py` | LoRA / Hydra / ReFT key parsing, classification, hook install + the `load_adapter` / `apply_adapter` top-level dispatch. Owns the live-or-vendor resolver for `library.inference.router_compute` and re-exports the kernel names (`gaussian_blur_2d`, `compute_fei_2band`, `compute_fei_nband_high_to_low`, `fei_sigma_low`, `sigma_sinusoidal_features`, `apply_sigma_band_mask`) so `chimera.py` / `fera.py` and the Hydra hooks share one source of truth. Single-A chimera apply still lives here (inside `_apply_hydra_live_to_model`'s chimera branch — single-A and plain Hydra share the same `lora_down` + per-expert `lora_ups.{i}` shape and the same dispatch loop, so they're co-located). |
+| `adapter.py` | LoRA / Hydra / ReFT key parsing, classification, hook install + the `load_adapter` / `apply_adapter` top-level dispatch. Owns the live-or-vendor resolver for `library.inference.router_compute` and re-exports the kernel names (`gaussian_blur_2d`, `compute_fei_2band`, `compute_fei_nband_high_to_low`, `fei_sigma_low`, `sigma_sinusoidal_features`, `apply_sigma_band_mask`, `fei_temperature`) so `chimera.py` / `fera.py` and the Hydra hooks share one source of truth. Single-A chimera apply still lives here (inside `_apply_hydra_live_to_model`'s chimera branch — single-A and plain Hydra share the same `lora_down` + per-expert `lora_ups.{i}` shape and the same dispatch loop, so they're co-located). |
 | `chimera.py` | ChimeraHydra parse + hook factories + dual-A apply: `_parse_chimera_content_router`, `_parse_chimera_dual_a`, `_attach_single_a_chimera_metadata` / `_finalize_dual_a_chimera` (the two metadata-validation helpers called from `load_adapter`), `_make_content_router_llm_adapter_hook`, `_make_chimera_pre_hook`, `_make_chimera_hook`, `_make_chimera_dual_a_hook`, `_apply_chimera_dual_a_to_model`. Imports kernel re-exports + `_T5_PAD_LEN` + `_resolve_module` from `adapter.py`; `adapter.py` re-imports the public hook factories and apply entry so calling sites in `_apply_hydra_live_to_model` (single-A chimera branch) and `apply_adapter` look unchanged. |
 | `fera.py` | Author-faithful FeRA + plan2 `stacked_experts_global_fei` parsing + apply. Imports the FEI kernels from `adapter.py` — the ordering split (high→low for author-faithful, low→high for plan2) lives on the kernel names, not duplicated implementations. |
 | `soft_tokens.py` | SoftREPA soft-token bank loading (`load_soft_tokens`) + per-block splice via `forward_pre_hook`. Standalone — no ComfyUI imports at module scope (only `apply_soft_tokens` touches the ModelPatcher), and no router-compute dependency, so it isn't part of the `_vendor` surface. |
@@ -85,9 +85,16 @@ Shape contract is per-pool: `lora_down_c.weight` + `lora_down_f.weight` (each `(
 
 Detection / dispatch: `load_adapter` writes `bundle["chimera_dual_a"]` (a top-level sibling of `bundle["hydra"]` — distinct from the legacy `bundle["hydra"]["chimera"]`); `_apply_chimera_dual_a_to_model` installs the dual-A hooks. The two paths are mutually exclusive by key shape — a single checkpoint cannot mix legacy and dual-A on the same prefix.
 
+### Freq routing mode: learned vs hardwired FEI (`ss_chimera_freq_router_mode`)
+
+The freq pool's gate `π_f` comes from one of two paths, selected by `ss_chimera_freq_router_mode` (absent ⇒ `"learned"`, so all pre-2026-05-27 checkpoints are unaffected):
+
+- **`"learned"`** — the network-level FreqRouter MLP described under Shared invariants below.
+- **`"fei"`** — no FreqRouter weights on disk. `_parse_freq_router_mode` reads the stamp + `ss_chimera_freq_router_tau`; `_attach_single_a_chimera_metadata` / `_finalize_dual_a_chimera` set `freq_router_sd=None` and require `fei_feature_dim == K_f` (the FEI band-simplex IS the gate). `_make_chimera_pre_hook` then emits `π_f = fei_temperature(FEI[:, :K_f], τ) = normalize(FEI**(1/τ))` — no MLP, no σ-features. Mirrors the training-side `set_fei` chimera branch under `freq_router_mode="fei"`. Both single-A and dual-A formats share this one pre-hook. See repo `docs/experimental/chimera-hydra.md` §Freq routing mode for why this is the default.
+
 ### Shared invariants
 
-- The network-level FreqRouter MLP (`Linear → SiLU → Linear → softmax/τ`, weights `freq_router.net.{0,2}.weight/bias`) runs once per denoising step on `concat(FEI(z_t), sinusoidal(σ))` and emits `π_f ∈ (B, K_f)`. Concat order matches `networks/lora_anima/network.py::set_fei` chimera branch (`[FEI, σ]`).
+- The network-level FreqRouter MLP (`Linear → SiLU → Linear → softmax/τ`, weights `freq_router.net.{0,2}.weight/bias`, **learned mode only**) runs once per denoising step on `concat(FEI(z_t), sinusoidal(σ))` and emits `π_f ∈ (B, K_f)`. Concat order matches `networks/lora_anima/network.py::set_fei` chimera branch (`[FEI, σ]`).
 - σ-band partition is unsupported (the FreqRouter owns the σ axis) and force-skipped even if metadata claims it.
 - T-LoRA's content-branch rank mask is training-only and intentionally not applied at inference — same rationale as plain T-LoRA (`[[project_tlora_inference_full_rank]]`).
 - Old `sigma_mlp.*` checkpoints are not supported (see README §2.1.0).

@@ -86,6 +86,7 @@ compute_fei_nband_high_to_low = _rc.compute_fei_nband_high_to_low
 fei_sigma_low = _rc.fei_sigma_low
 sigma_sinusoidal_features = _rc.sigma_sinusoidal_features
 apply_sigma_band_mask = _rc.apply_sigma_band_mask
+fei_temperature = _rc.fei_temperature
 
 
 def _resolve_module(model, dotted_path: str):
@@ -355,6 +356,13 @@ def load_adapter(file_path: str) -> dict:
         hydra["num_sigma_buckets"] = num_buckets
         hydra["sigma_bucket_boundaries"] = boundaries
 
+        # OrthoHydra centered-gate: distilled with (g_e - 1/E) combine. Stamped
+        # only when on; absent → standard softmax combine. Single-pool only —
+        # ignored for chimera dual-pool (handled by its own hook).
+        hydra["ortho_centered_gate"] = (
+            str(file_metadata.get("ss_ortho_centered_gate", "")).lower() == "true"
+        )
+
         # FeRA-style FEI router (content-aware routing). Trained when
         # `use_fei_router=true`; the router's input dim then has
         # `fei_feature_dim` columns past the σ-feature slice, fed per-step
@@ -433,11 +441,14 @@ def load_adapter(file_path: str) -> dict:
                 if chimera.get("content_router") is not None
                 else ""
             )
+            freq_tag = (
+                f"freq=hardwired-FEI(τ={chimera.get('freq_router_fei_tau', 1.0):g})"
+                if str(chimera.get("freq_router_mode", "learned")) == "fei"
+                else f"FreqRouter in={chimera['fei_feature_dim']}+{chimera['sigma_feature_dim']}"
+            )
             routing.append(
                 f"chimera K_c={chimera['num_experts_content']}+"
-                f"K_f={chimera['num_experts_freq']}, "
-                f"FreqRouter in={chimera['fei_feature_dim']}+"
-                f"{chimera['sigma_feature_dim']}{cr_tag}"
+                f"K_f={chimera['num_experts_freq']}, {freq_tag}{cr_tag}"
             )
         elif bundle["hydra"].get("use_fei_router"):
             routing.append(f"FEI={bundle['hydra']['fei_feature_dim']}d")
@@ -502,6 +513,11 @@ def _make_hydra_hook(params: dict, strength: float, sigma_state: dict):
         "num_sigma_buckets": int(params.get("num_sigma_buckets", 0)),
         "expert_band": params.get("expert_band"),  # (E,) long, or None
         "sigma_edges": params.get("sigma_edges"),  # (B-1,) fp32, or None
+        # OrthoHydra centered-gate parity: combine with (g_e - 1/E) instead of
+        # the raw softmax. λ is folded symmetrically into the saved ups, so
+        # this exactly reproduces the trained ``ortho_centered_gate`` forward.
+        "centered_gate": bool(params.get("ortho_centered_gate", False)),
+        "num_experts": int(params["lora_ups"].shape[0]),
         "device": None,
     }
 
@@ -589,6 +605,8 @@ def _make_hydra_hook(params: dict, strength: float, sigma_state: dict):
                 state["sigma_edges"],
             )
         gate = torch.softmax(logits, dim=-1)
+        if state["centered_gate"]:
+            gate = gate - (1.0 / state["num_experts"])
 
         # gate-weighted combined ups (B, out, rank)
         combined = torch.einsum("be,eor->bor", gate, state["lora_ups"])
@@ -735,6 +753,8 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
             fei_sigma_low_div=float(chimera_data["fei_sigma_low_div"]),
             router_tau=float(chimera_data["router_tau"]),
             K_f=int(chimera_data["num_experts_freq"]),
+            freq_router_mode=str(chimera_data.get("freq_router_mode", "learned")),
+            freq_router_fei_tau=float(chimera_data.get("freq_router_fei_tau", 1.0)),
         )
     else:
         router_pre_hook = _make_router_pre_hook(sigma_state, fei_on, fei_sigma_low_div)
@@ -864,6 +884,9 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
                 "num_sigma_buckets": num_sigma_buckets,
                 "expert_band": expert_band,
                 "sigma_edges": sigma_edges,
+                "ortho_centered_gate": bool(
+                    hydra_data.get("ortho_centered_gate", False)
+                ),
             }
             hook = _make_hydra_hook(params, strength, sigma_state)
 
@@ -884,14 +907,21 @@ def _apply_hydra_live_to_model(model, hydra_data: dict, strength: float) -> int:
             if global_cr_on
             else ""
         )
+        if str(chimera_data.get("freq_router_mode", "learned")) == "fei":
+            freq_desc = (
+                f"freq=hardwired-FEI(τ={chimera_data.get('freq_router_fei_tau', 1.0):g})"
+            )
+        else:
+            freq_desc = (
+                f"FreqRouter input=FEI({chimera_data['fei_feature_dim']}) + "
+                f"σ({chimera_data['sigma_feature_dim']}), "
+                f"τ={chimera_data['router_tau']:g}"
+            )
         logger.info(
             f"ChimeraHydra live-routing installed {patched} hooks "
             f"(strength={strength}, K_c={chimera_data['num_experts_content']} + "
-            f"K_f={chimera_data['num_experts_freq']}, FreqRouter input="
-            f"FEI({chimera_data['fei_feature_dim']}) + "
-            f"σ({chimera_data['sigma_feature_dim']}), "
-            f"σ_low_div={chimera_data['fei_sigma_low_div']:g}, "
-            f"τ={chimera_data['router_tau']:g}{cr_tag})"
+            f"K_f={chimera_data['num_experts_freq']}, {freq_desc}, "
+            f"σ_low_div={chimera_data['fei_sigma_low_div']:g}{cr_tag})"
         )
         return patched
     # Decide what's actually being routed on by checking the router-input

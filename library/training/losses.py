@@ -96,7 +96,14 @@ def get_huber_threshold_if_needed(
 
     b_size = timesteps.shape[0]
     if args.huber_schedule == "exponential":
-        alpha = -math.log(args.huber_c) / noise_scheduler.config.num_train_timesteps
+        # `timesteps` is σ∈[0,1] — Anima feeds the DiT time arg directly (see
+        # runtime/noise.py). The original sd-scripts formula divided alpha by
+        # num_train_timesteps because it expected timesteps∈[0,1000]; on the σ
+        # scale that 1000× shrinks the exponent to ~0, pinning the threshold
+        # flat at huber_scale. Drop the divisor so the schedule decays as
+        # intended: huber_c**σ · huber_scale, i.e. huber_scale at σ=0 (clean)
+        # down to huber_c·huber_scale at σ=1 (noise).
+        alpha = -math.log(args.huber_c)
         result = torch.exp(-alpha * timesteps) * args.huber_scale
     elif args.huber_schedule == "snr":
         if not hasattr(noise_scheduler, "alphas_cumprod"):

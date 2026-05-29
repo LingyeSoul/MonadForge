@@ -11,11 +11,11 @@ Each LoRA module short-circuits at ``not self.enabled`` (see
 ``set_enabled(bool)`` on each network — O(num_modules) Python loop, negligible
 vs a DiT forward.
 
-Used by ``scripts/distill_turbo.py``. Inference loads the saved
+Used by ``scripts/distill_turbo/distill.py``. Inference loads the saved
 ``anima_turbo.safetensors`` through the standard LoRA path (no inference-side
 turbo code) — the student LoRA is just a normal LoRA with CFG=4 baked in.
 
-Proposal: ``docs/proposal/turbo_anima_dmd_lora.md``.
+Docs: ``docs/structure/dmd2-decoupled.md`` (math), ``docs/experimental/dmd2-decoupled.md`` (ops).
 Paper: Liu et al., "CFG Augmentation as the Spear, Distribution Matching as
 the Shield" (arXiv:2511.22677).
 """
@@ -113,8 +113,17 @@ class TurboDMDNetwork:
         )
 
         # Start in teacher view — both off, base DiT is exactly itself.
+        # LoRAModule defaults `enabled=True` (base.py:90), so we MUST explicitly
+        # disable both stacks here. The diff-only `set_view` short-circuits when
+        # `view == self._view`, so writing `self._view = "teacher"; set_view("teacher")`
+        # leaves both stacks at their default `enabled=True`. zero-init `lora_up`
+        # masks the bug at step 0 (no contribution from either stack), but the
+        # invariant set_view depends on — cur state matches _VIEW_FLAGS[_view] —
+        # would silently break the moment either stack carries nonzero weights
+        # before its first explicit transition.
+        self.student.set_enabled(False)
+        self.fake.set_enabled(False)
         self._view: View = "teacher"
-        self.set_view("teacher")
 
     # ----------------- view toggle -----------------
 

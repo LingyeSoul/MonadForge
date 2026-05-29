@@ -433,8 +433,8 @@ def spd_denoise(
     def velocity(
         x: torch.Tensor, sigma_scalar: float, pad_mask: torch.Tensor
     ) -> torch.Tensor:
-        # timestep == σ in [0,1] for Anima flow-matching (matches generation.py
-        # after its `timesteps /= 1000`).
+        # timestep == σ in [0,1] for Anima flow-matching (the DiT's time arg is
+        # σ directly — get_timesteps_sigmas / generation.py feed it unscaled).
         t = x.new_full((x.shape[0],), float(sigma_scalar))
         set_hydra_sigma(anima, t)
         compute_and_set_hydra_fei(anima, x)

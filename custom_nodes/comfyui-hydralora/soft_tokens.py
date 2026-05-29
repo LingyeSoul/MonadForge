@@ -30,6 +30,13 @@ Bank format (``ss_*`` metadata + two tensors, see
   - ``tokens``           : ``(n_layers, K, D)`` base per-layer tokens.
   - ``t_offsets.weight`` : ``(n_t_buckets, n_layers * D)`` per-(bucket, layer)
     D-vector offset, broadcast across the K-token axis at lookup.
+
+Dual-bank (AGSM Phase 3a) checkpoints carry a leading branch axis —
+``tokens`` ``(n_banks, n_layers, K, D)`` and ``t_offsets`` bank-major
+``(n_t_buckets, n_banks * n_layers * D)`` ([ψ⁺ | ψ⁻]). Inference uses ψ⁺
+(branch 0) only, matching anima_lora's ``load_weights``; ``load_soft_tokens``
+slices the positive bank at parse time and the rest of this module is
+branch-agnostic.
 """
 
 import logging
@@ -97,9 +104,21 @@ def load_soft_tokens(file_path: str) -> _SoftTokenBank:
             f"soft_tokens file must contain 'tokens' and 't_offsets.weight' "
             f"(got keys: {list(weights_sd.keys())[:8]})"
         )
+    # Dual-bank (AGSM Phase 3a) checkpoints carry a leading branch axis on
+    # ``tokens`` (n_banks, n_layers, K, D) and stack the branches column-major in
+    # ``t_offsets`` (n_t_buckets, n_banks*n_layers*D, bank-major: [ψ⁺ | ψ⁻]).
+    # Inference uses ψ⁺ only (branch 0) — same as anima_lora's load_weights — so
+    # slice the positive bank out here and fall through to the single-bank path.
+    if tokens.dim() == 4:
+        n_banks, n_layers, _, embed_dim = tokens.shape
+        tokens = tokens[0]  # ψ⁺ base tokens → (n_layers, K, D)
+        if t_offsets.dim() == 2 and t_offsets.shape[1] == n_banks * n_layers * embed_dim:
+            # ψ⁺ slice: first n_layers·D columns (bank-major layout).
+            t_offsets = t_offsets[:, : n_layers * embed_dim]
     if tokens.dim() != 3:
         raise ValueError(
-            f"soft_tokens 'tokens' must be (n_layers, K, D); got {tuple(tokens.shape)}"
+            f"soft_tokens 'tokens' must be (n_layers, K, D) or (n_banks, n_layers, "
+            f"K, D); got {tuple(tokens.shape)}"
         )
     n_layers, _, embed_dim = tokens.shape
     if t_offsets.dim() != 2 or t_offsets.shape[1] != n_layers * embed_dim:

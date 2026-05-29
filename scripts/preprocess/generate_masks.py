@@ -16,6 +16,7 @@ import yaml
 from PIL import Image
 from tqdm import tqdm
 
+from library.datasets.subsets import filter_paths_by_glob
 from library.preprocess import walk_images
 
 
@@ -25,6 +26,65 @@ def load_image(path: Path) -> Image.Image:
 
 def save_mask(path: Path, alpha_mask: np.ndarray) -> None:
     Image.fromarray(alpha_mask, mode="L").save(path)
+
+
+def build_rules(config: dict) -> list[dict]:
+    """Normalize the config into an ordered list of mask rules.
+
+    Each rule routes a subset of images (by ``path_pattern``) to its own
+    prompt set: ``prompts`` are masked OUT (ignored in the loss) and
+    ``focus_prompts`` keep ONLY that subject (the reversed polarity — e.g.
+    ``girl`` masks all background). ``threshold`` / ``dilate`` fall back to the
+    top-level defaults when a rule omits them.
+
+    Two schemas, both accepted (the "keep both" contract):
+
+    * **rules** — a top-level ``rules:`` list; every rule whose ``path_pattern``
+      matches an image *composes* (ignore-regions unioned, focus-regions
+      unioned across all matches).
+    * **flat (legacy)** — top-level ``prompts`` / ``focus_prompts`` with no
+      ``rules:`` key, wrapped here as a single catch-all rule (its own
+      path_pattern is left unset; the global walk filter handles scoping).
+    """
+    default_threshold = config.get("threshold", 0.5)
+    default_dilate = config.get("dilate", 5)
+
+    raw_rules = config.get("rules")
+    if raw_rules is None:
+        raw_rules = [
+            {
+                "prompts": config.get("prompts") or [],
+                "focus_prompts": config.get("focus_prompts") or [],
+            }
+        ]
+
+    rules: list[dict] = []
+    for raw in raw_rules:
+        dilate = int(raw.get("dilate", default_dilate))
+        rules.append(
+            {
+                "prompts": raw.get("prompts") or [],
+                "focus_prompts": raw.get("focus_prompts") or [],
+                "threshold": float(raw.get("threshold", default_threshold)),
+                "path_pattern": raw.get("path_pattern"),
+                "kernel": (
+                    np.ones((dilate, dilate), dtype=np.uint8) if dilate > 0 else None
+                ),
+            }
+        )
+    return rules
+
+
+def rule_matches(rule: dict, image_path: Path, image_dir: Path) -> bool:
+    """True if ``image_path`` falls under this rule's path_pattern.
+
+    Reuses the training subset glob (fnmatch, ``|``-OR-combined, matched on the
+    path relative to ``image_dir``). An unset / ``"*"`` pattern matches all.
+    """
+    pattern = rule["path_pattern"]
+    if not pattern or pattern == "*":
+        return True
+    return filter_paths_by_glob([str(image_path)], str(image_dir), pattern)[0]
 
 
 def main() -> None:
@@ -81,11 +141,10 @@ def main() -> None:
     with open(args.config) as f:
         config = yaml.safe_load(f)
 
-    prompts = config["prompts"]
-    threshold = config.get("threshold", 0.5)
-    dilate = config.get("dilate", 5)
+    rules = build_rules(config)
+    # Global walk filter: scopes which images are masked at all (also forwarded
+    # to MIT by masking.py). Per-rule path_pattern routes *within* this set.
     path_pattern = args.path_pattern or config.get("path_pattern")
-    dilate_kernel = np.ones((dilate, dilate), dtype=np.uint8) if dilate > 0 else None
 
     import torch
     from sam3.model_builder import build_sam3_image_model
@@ -103,6 +162,23 @@ def main() -> None:
     print("Loading SAM3 model...")
     model = build_sam3_image_model(**build_kwargs)
     processor = Sam3Processor(model)
+
+    def detect_union(inference_state, prompt_list, shape, threshold) -> np.ndarray:
+        """OR-combine SAM3 detections for every prompt into one binary mask."""
+        h, w = shape
+        out = np.zeros((h, w), dtype=np.uint8)
+        for prompt in prompt_list:
+            output = processor.set_text_prompt(state=inference_state, prompt=prompt)
+            for mask, score in zip(output["masks"], output["scores"]):
+                if score < threshold:
+                    continue
+                mask_np = (
+                    mask.cpu().numpy() if torch.is_tensor(mask) else np.asarray(mask)
+                )
+                if mask_np.ndim == 3:
+                    mask_np = mask_np[0]
+                out = np.maximum(out, (mask_np > 0.5).astype(np.uint8))
+        return out
 
     # Per-subdir uniqueness check (the same stem may legitimately appear in
     # multiple subfolders — the nested output layout disambiguates by folder —
@@ -164,43 +240,60 @@ def main() -> None:
             # Phase 2: run prompts on each encoded image
             for image_path, mask_path, image, inference_state in states:
                 w, h = image.size
-                combined_mask = np.zeros((h, w), dtype=np.uint8)
-
-                for prompt in prompts:
-                    output = processor.set_text_prompt(
-                        state=inference_state, prompt=prompt
-                    )
-                    for mask, score in zip(output["masks"], output["scores"]):
-                        if score < threshold:
-                            continue
-                        mask_np = (
-                            mask.cpu().numpy()
-                            if torch.is_tensor(mask)
-                            else np.asarray(mask)
-                        )
-                        if mask_np.ndim == 3:
-                            mask_np = mask_np[0]
-                        combined_mask = np.maximum(
-                            combined_mask, (mask_np > 0.5).astype(np.uint8)
-                        )
-
                 pbar.update(1)
 
-                if not combined_mask.any():
+                # Compose every rule whose path_pattern matches: ignore-regions
+                # union together, focus-regions union together.
+                matched = [r for r in rules if rule_matches(r, image_path, image_dir)]
+                if not matched:
+                    pbar.set_postfix_str(f"{image_path.name}: no matching rule")
+                    continue
+
+                ignore_mask = np.zeros((h, w), dtype=np.uint8)
+                focus_mask = np.zeros((h, w), dtype=np.uint8)
+                has_focus = False
+                for rule in matched:
+                    if rule["prompts"]:
+                        ig = detect_union(
+                            inference_state, rule["prompts"], (h, w), rule["threshold"]
+                        )
+                        if rule["kernel"] is not None and ig.any():
+                            ig = cv2.dilate(ig, rule["kernel"], iterations=1)
+                        ignore_mask = np.maximum(ignore_mask, ig)
+                    if rule["focus_prompts"]:
+                        has_focus = True
+                        fc = detect_union(
+                            inference_state,
+                            rule["focus_prompts"],
+                            (h, w),
+                            rule["threshold"],
+                        )
+                        if rule["kernel"] is not None and fc.any():
+                            fc = cv2.dilate(fc, rule["kernel"], iterations=1)
+                        focus_mask = np.maximum(focus_mask, fc)
+
+                if has_focus:
+                    if not focus_mask.any():
+                        # Subject not found — leave the image unmasked (trains
+                        # fully) rather than zeroing out its whole loss.
+                        pbar.set_postfix_str(f"{image_path.name}: focus not found")
+                        continue
+                    # Keep ONLY the focus subject, minus any ignore-prompt regions.
+                    trainable = focus_mask * (1 - ignore_mask)
+                    alpha_mask = (trainable * 255).astype(np.uint8)
+                    save_futures.append(pool.submit(save_mask, mask_path, alpha_mask))
+                    train_pct = 100 * np.count_nonzero(trainable) / (w * h)
+                    pbar.set_postfix_str(f"{image_path.name}: train {train_pct:.1f}%")
+                    continue
+
+                if not ignore_mask.any():
                     pbar.set_postfix_str(f"{image_path.name}: skipped")
                     continue
 
-                if dilate_kernel is not None:
-                    combined_mask = cv2.dilate(
-                        combined_mask, dilate_kernel, iterations=1
-                    )
-
                 # Invert: detected=1 → alpha=0 (ignore), no detection → alpha=255 (train)
-                alpha_mask = ((1 - combined_mask) * 255).astype(np.uint8)
-
+                alpha_mask = ((1 - ignore_mask) * 255).astype(np.uint8)
                 save_futures.append(pool.submit(save_mask, mask_path, alpha_mask))
-
-                masked_pct = 100 * np.count_nonzero(combined_mask) / (w * h)
+                masked_pct = 100 * np.count_nonzero(ignore_mask) / (w * h)
                 pbar.set_postfix_str(f"{image_path.name}: {masked_pct:.1f}%")
 
     pbar.close()

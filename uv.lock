@@ -595,27 +595,6 @@ wheels = [
 
 [[package]]
 name = "flash-attn"
-version = "2.8.3+cu130torch2.11"
-source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl" }
-resolution-markers = [
-    "sys_platform == 'win32'",
-]
-dependencies = [
-    { name = "einops", marker = "sys_platform == 'win32'" },
-    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform == 'win32'" },
-]
-wheels = [
-    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl", hash = "sha256:5946f2f731572df89c1dba4429e504b9f3d20a6275a67182dc0d738f0a16aa9d" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "einops" },
-    { name = "torch" },
-]
-
-[[package]]
-name = "flash-attn"
 version = "2.8.3+cu132torch2.12"
 source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl" }
 resolution-markers = [
@@ -628,6 +607,27 @@ dependencies = [
 ]
 wheels = [
     { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl", hash = "sha256:f42938baa6928477426435bd479fe62b27b12b9fe0cc54019e43a3637c1a5cf6" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "einops" },
+    { name = "torch" },
+]
+
+[[package]]
+name = "flash-attn"
+version = "2.8.3+cu132torch2.12"
+source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.25/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-win_amd64.whl" }
+resolution-markers = [
+    "sys_platform == 'win32'",
+]
+dependencies = [
+    { name = "einops", marker = "sys_platform == 'win32'" },
+    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.25/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-win_amd64.whl", hash = "sha256:b8acd82e3a0c846e4993a47196500e5d0c8462b21703c442a214a2687731d555" },
 ]
 
 [package.metadata]
@@ -1153,8 +1153,8 @@ dependencies = [
     { name = "diffusers" },
     { name = "einops" },
     { name = "fastapi" },
-    { name = "flash-attn", version = "2.8.3+cu130torch2.11", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl" }, marker = "sys_platform == 'win32'" },
     { name = "flash-attn", version = "2.8.3+cu132torch2.12", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl" }, marker = "sys_platform == 'linux'" },
+    { name = "flash-attn", version = "2.8.3+cu132torch2.12", source = { url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.25/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-win_amd64.whl" }, marker = "sys_platform == 'win32'" },
     { name = "huggingface-hub" },
     { name = "imagesize" },
     { name = "kornia" },
@@ -1185,6 +1185,7 @@ dependencies = [
     { name = "tensorboard" },
     { name = "timm" },
     { name = "toml" },
+    { name = "tomlkit" },
     { name = "torch", version = "2.12.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
     { name = "torchsde" },
@@ -1228,7 +1229,7 @@ requires-dist = [
     { name = "einops", specifier = ">=0.7.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "flash-attn", marker = "sys_platform == 'linux'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.17/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-linux_x86_64.whl" },
-    { name = "flash-attn", marker = "sys_platform == 'win32'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.6/flash_attn-2.8.3+cu130torch2.11-cp313-cp313-win_amd64.whl" },
+    { name = "flash-attn", marker = "sys_platform == 'win32'", url = "https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.25/flash_attn-2.8.3+cu132torch2.12-cp313-cp313-win_amd64.whl" },
     { name = "huggingface-hub", specifier = ">=1.9.0" },
     { name = "imagesize", specifier = ">=1.4.1" },
     { name = "kornia", specifier = ">=0.8.2" },
@@ -1262,6 +1263,7 @@ requires-dist = [
     { name = "tensorboard" },
     { name = "timm", specifier = ">=1.0.0" },
     { name = "toml", specifier = ">=0.10.2" },
+    { name = "tomlkit", specifier = ">=0.13" },
     { name = "torch", specifier = ">=2.12.0,<2.13" },
     { name = "torchsde", specifier = ">=0.2.6" },
     { name = "torchvision", specifier = ">=0.27.0,<0.28" },

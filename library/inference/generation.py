@@ -293,8 +293,7 @@ def generate_body_tiled(
     timesteps, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps, args.flow_shift, device
     )
-    timesteps /= 1000
-    timesteps = timesteps.to(device, dtype=torch.bfloat16)
+    timesteps = timesteps.to(device, dtype=torch.bfloat16)  # σ∈[0,1] — DiT time arg
 
     # Create sampler. Variable kept named `er_sde` for historic minimum-diff
     # reasons; both ERSDESampler and LCMSampler share the same .step interface.
@@ -572,8 +571,7 @@ def generate_body(
     timesteps, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps, args.flow_shift, device
     )
-    timesteps /= 1000  # scale to [0,1] range
-    timesteps = timesteps.to(device, dtype=torch.bfloat16)
+    timesteps = timesteps.to(device, dtype=torch.bfloat16)  # σ∈[0,1] — DiT time arg
 
     # DCW: load + setup the learnable calibrator if requested.
     dcw_calibrator = None

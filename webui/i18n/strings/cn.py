@@ -13,6 +13,7 @@ STRINGS: dict[str, str] = {
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
+    "tab_turbo": "Turbo",
     "tab_methods": "方法",
     "tab_images": "数据集",
     "tab_merge": "合并",
@@ -45,6 +46,26 @@ STRINGS: dict[str, str] = {
     "preprocess_sam_prompts_tip": (
         "SAM3 要查找的文本提示词,每行一个。"
         "默认值: 'speech bubble' 和 'text bubble'。"
+    ),
+    "preprocess_sam_focus_prompts": "SAM 焦点提示词 (每行一个):",
+    "preprocess_sam_focus_prompts_tip": (
+        "反转极性: 指定要保留的主体。设置后,蒙版将仅对该主体进行训练,"
+        "其余全部忽略 (例如 'girl' 会使背景全部被忽略)。"
+        "与上方提示词合成 —— 最终可训练区域为焦点主体去除忽略区域后的部分。"
+        "留空则使用默认的仅忽略模式。"
+    ),
+    "preprocess_sam_rule": "蒙版规则",
+    "preprocess_sam_add_rule": "+ 添加规则",
+    "preprocess_sam_add_rule_tip": (
+        "再添加一条蒙版规则。每条规则通过路径模式定位图像子集,"
+        "模式匹配同一图像的多条规则将相互合成。"
+    ),
+    "preprocess_sam_remove_rule": "删除规则",
+    "preprocess_sam_rule_path_pattern": "路径模式 (此规则):",
+    "preprocess_sam_rule_path_pattern_tip": (
+        "指定此规则适用的图像 —— 以数据集根目录为基准对各图像路径进行"
+        "fnmatch 匹配 ('|' 作 OR 组合)。例: 'character_a/*'。"
+        "留空或 '*' 可匹配所有图像 (通配默认规则)。"
     ),
     "preprocess_sam_threshold": "SAM 阈值 (0.0–1.0):",
     "preprocess_sam_threshold_tip": (
@@ -104,6 +125,10 @@ STRINGS: dict[str, str] = {
     "saved": "已保存",
     "saved_file": "已保存 {name}",
     "invalid_toml": "无效的 TOML",
+    "config_bad_keys_header": "未知的数据集键 — 删除这些键之前训练将会失败:",
+    "config_remove_keys_btn": "删除",
+    "config_remove_keys_confirm": "从配置文件中删除这 {n} 个过时的键?\n\n{keys}",
+    "config_remove_keys_none": "未删除任何键(磁盘上对应的行可能已更改)。",
     "error": "错误",
     "accelerate_not_found": "在 PATH 中找不到 accelerate",
     "preprocess": "预处理",
@@ -200,6 +225,10 @@ STRINGS: dict[str, str] = {
     "adapter_preprocess_pe": "预处理 (调整大小 + VAE + 文本 + PE)",
     "adapter_train": "训练",
     "adapter_stop": "停止",
+    # SPD / Turbo 蒸馏配置标签页 (gui/tabs/distill_tab.py)
+    "distill_general_section": "通用",
+    "distill_job_running": "此标签页已有任务正在运行。",
+    "distill_config_missing": "无法读取配置文件: {err}",
     "adapter_log_placeholder": "运行输出将显示在此处……",
     "adapter_no_dataset": "源数据集目录不存在。请创建该目录并放入图像 + 标注配对。",
     "adapter_open_dir": "打开目录",

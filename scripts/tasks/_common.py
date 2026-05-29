@@ -84,7 +84,7 @@ def _path(key: str, default: str) -> str:
 
 def bespoke_preset_flags(preset: str) -> list[str]:
     """Translate ``configs/presets.toml[<preset>]`` into CLI flags for the
-    bespoke distillation loops (``scripts/distill_mod/distill.py`` / ``distill_turbo.py``)
+    bespoke distillation loops (``scripts/distill_mod/distill.py`` / ``scripts/distill_turbo/distill.py``)
     that bypass ``train.py``'s config merge chain.
 
     Honored keys:
@@ -612,7 +612,7 @@ INFERENCE_BASE = [
     "--flow_shift",
     "1.0",
     "--sampler",
-    "er_sde",
+    "euler",
     "--guidance_scale",
     "4.0",
     "--seed",

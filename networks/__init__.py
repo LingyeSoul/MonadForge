@@ -156,7 +156,14 @@ def _post_init_hydra(network: Any, kwargs: Mapping[str, Any]) -> None:
         w_c = cfg.balance_w_content if cfg.balance_w_content is not None else target
         w_f = cfg.balance_w_freq if cfg.balance_w_freq is not None else target
         network._balance_w_content = float(w_c)
-        network._balance_w_freq = float(w_f)
+        # Hardwired-FEI freq gate has no router params and is a fixed function
+        # of z_t, so a Switch balance penalty on it is a constant w.r.t. the
+        # trained params (zero gradient) — force w_f=0 to keep the loss scalar
+        # honest and the logs clean.
+        if str(getattr(cfg, "freq_router_mode", "learned")).lower() == "fei":
+            network._balance_w_freq = 0.0
+        else:
+            network._balance_w_freq = float(w_f)
     else:
         network._use_chimera_hydra = False
 
@@ -166,6 +173,11 @@ _HYDRA_KWARG_FLAGS: Tuple[str, ...] = (
     "balance_loss_weight",
     "balance_loss_warmup_ratio",
     "expert_init_std",
+    # OrthoHydra centered-gate init: recenter gate to (g_e - 1/E) + zero-init
+    # router + start λ at ortho_lambda_init so the router gets a step-0 gradient
+    # while ΔW stays 0. Consumed by LoRANetworkCfg.from_kwargs.
+    "ortho_centered_gate",
+    "ortho_lambda_init",
     # Unified layer filter — scopes which Linears participate in routed
     # adaptation (Hydra MoE leaves + σ / FEI feature concatenation).
     "router_targets",
@@ -194,18 +206,23 @@ _CHIMERA_KWARG_FLAGS: Tuple[str, ...] = (
     # FEI and σ feature blocks are enabled — equalizes the variance budget
     # so the higher-dim σ block doesn't fan-in-overpower the 2-D FEI simplex.
     "freq_router_layer_norm",
+    # Freq-pool routing mode: "learned" (FreqRouter MLP) or "fei" (hardwire
+    # π_f = normalize(FEI ** (1/τ)), no params / no σ-features / no freq
+    # balance loss; requires num_experts_freq == fei_feature_dim).
+    "freq_router_mode",
+    "freq_router_tau",
     # Per-pool router LR multipliers — stack on top of network_router_lr_scale.
     # Defaults to 1.0 (no-op). Bump content when the per-layer router stays
     # near-uniform too long (std=0.01 init is slow to break symmetry).
     "network_content_router_lr_scale",
     "network_freq_router_lr_scale",
-    # Optional global content router (replaces the per-Linear lx-router with
-    # a single network-level ContentRouter fed by pooled crossattn_emb).
-    # Consumed by ``LoRANetworkCfg.from_kwargs`` — see chimera.toml's "Optional:
-    # global content router" block.
-    "content_router_source",
-    "content_router_init_std",
+    # Parameterless LN on the network-level ContentRouter's pooled crossattn_emb
+    # input. Consumed by ``LoRANetworkCfg.from_kwargs``.
     "content_router_layer_norm",
+    # Centered-gate λ init for BOTH pools (always-on): recenter each pool's gate
+    # to (π - 1/K) + zero-init the content/freq routers + start λ_c/λ_f at
+    # chimera_lambda_init. LoRANetworkCfg.from_kwargs.
+    "chimera_lambda_init",
 )
 
 

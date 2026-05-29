@@ -9,6 +9,7 @@ STRINGS: dict[str, str] = {
     "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
+    "tab_turbo": "Turbo",
     "tab_methods": "手法",
     "tab_images": "データセット",
     "tab_merge": "マージ",
@@ -43,6 +44,27 @@ STRINGS: dict[str, str] = {
     "preprocess_sam_prompts_tip": (
         "SAM3 が検索するテキストプロンプト。1行1件。"
         "デフォルトは 'speech bubble' と 'text bubble'。"
+    ),
+    "preprocess_sam_focus_prompts": "SAM フォーカスプロンプト (1行1件):",
+    "preprocess_sam_focus_prompts_tip": (
+        "逆極性: 残したい被写体を指定します。設定すると、マスクはその被写体のみを"
+        "学習対象とし、それ以外はすべて無視されます (例: 'girl' を指定すると背景全体が"
+        "無視されます)。上のプロンプトと合成され、最終的な学習領域はフォーカスした"
+        "被写体から無視領域を除いた部分になります。空欄にするとデフォルトの"
+        "無視専用の動作になります。"
+    ),
+    "preprocess_sam_rule": "マスクルール",
+    "preprocess_sam_add_rule": "+ ルール追加",
+    "preprocess_sam_add_rule_tip": (
+        "マスクルールをもう一つ追加します。各ルールはパスパターンで画像の"
+        "サブセットを対象とし、パターンが一致するルールは互いに合成されます。"
+    ),
+    "preprocess_sam_remove_rule": "ルール削除",
+    "preprocess_sam_rule_path_pattern": "パスパターン (このルール):",
+    "preprocess_sam_rule_path_pattern_tip": (
+        "このルールを適用する画像を指定します — データセットルート基準の各画像"
+        "パスに対する fnmatch グロブ ('|' で OR 結合)。例: 'character_a/*'。"
+        "空欄または '*' はすべての画像にマッチするキャッチオール規則です。"
     ),
     "preprocess_sam_threshold": "SAM しきい値 (0.0–1.0):",
     "preprocess_sam_threshold_tip": (
@@ -105,6 +127,10 @@ STRINGS: dict[str, str] = {
     "saved": "保存済み",
     "saved_file": "{name} を保存しました",
     "invalid_toml": "TOML が不正です",
+    "config_bad_keys_header": "不明なデータセットキー — これらを削除するまで学習は失敗します:",
+    "config_remove_keys_btn": "削除",
+    "config_remove_keys_confirm": "これら {n} 個の古いキーを設定ファイルから削除しますか?\n\n{keys}",
+    "config_remove_keys_none": "削除されたキーはありません (ディスク上の該当行が変更された可能性があります)。",
     "error": "エラー",
     "accelerate_not_found": "PATH に accelerate が見つかりません",
     "preprocess": "前処理",
@@ -202,6 +228,10 @@ STRINGS: dict[str, str] = {
     "adapter_preprocess_pe": "前処理 (リサイズ + VAE + テキスト + PE)",
     "adapter_train": "学習",
     "adapter_stop": "停止",
+    # SPD / Turbo 蒸留設定タブ (gui/tabs/distill_tab.py)
+    "distill_general_section": "全般",
+    "distill_job_running": "このタブでは既にジョブが実行中です。",
+    "distill_config_missing": "設定ファイルを読み込めませんでした: {err}",
     "adapter_log_placeholder": "実行出力がここに表示されます...",
     "adapter_no_dataset": "ソースデータセットのディレクトリが存在しません。ディレクトリを作成して画像とキャプションのペアを配置してください。",
     "adapter_open_dir": "ディレクトリを開く",

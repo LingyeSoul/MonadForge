@@ -1,0 +1,5 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>SPD</h2>
+<p>Spectral Progressive Diffusion &mdash; 学習不要の多解像度推論 (Xiao et al., arXiv:2605.18736)。ノイズ除去の軌跡に沿って空間解像度を拡大します: ノイズが支配的な初期ステップを<b>低解像度</b>で実行し、ノイズから細かい周波数が現れたら<b>スペクトルノイズ拡張</b>で高周波ディテールを注入します。潜在パワースペクトルは冪乗則(<code>P_&omega; &prop; |&omega;|^&minus;&beta;</code>、Anima では &beta; &asymp; 2.26)で減衰するため、高周波は信号が少なく、後回しにしても安価です。</p>
+<p>これは重みアダプタではなく<b>サンプラーレベルの推論モード</b>です &mdash; <code>--spd</code> (または <code>make test SPD=1</code>) で有効化します。素の DiT でも既存の LoRA チェックポイントでも動作します。スケジュールは <code>--spd_stages</code> (昇順の解像度スケール、例: <code>0.5 1.0</code>) と <code>--spd_transition_sigmas</code> (次のステージへ拡張する &sigma; 閾値) で設定します。</p>
+<p><b>2 つの経路。</b> <b>Case A</b> は完全に学習不要です &mdash; ここでは何も学習しません。<b>Case B</b> は任意の軌跡アダプタのファインチューン (<code>make exp-spd</code>) で、モデルが多解像度の軌跡を<i>直接見る</i>ように SPD 速度ターゲットで学習した通常の LoRA です。出力はベイク可能な通常の LoRA です。</p>
+<p><b>v0 の制限。</b> Euler のみ (確率的サンプラーは警告付きでフォールバック)、かつ Spectrum / DCW / SMC-CFG とは<b>組み合わせられません</b> &mdash; <code>SPECTRUM=1 SPD=1</code> はエラーになります (どちらもノイズ除去ループを置き換えるため)。<code>docs/experimental/spd.md</code> を参照。</p>

@@ -214,6 +214,116 @@ def test_chimera_pre_hook_emits_pi_f(tmp_path):
     assert (pi_f > 0).all()
 
 
+def _write_chimera_fei_checkpoint(
+    path: Path,
+    *,
+    K_c: int,
+    K_f: int,
+    rank: int,
+    in_dim: int,
+    out_dim: int,
+    tau: float = 1.0,
+    prefix: str = "lora_unet_blocks_0_mlp_layer1",
+) -> None:
+    """Synth a hardwired-FEI chimera checkpoint — NO ``freq_router.*`` keys,
+    ``ss_chimera_freq_router_mode="fei"``, K_f == fei_dim."""
+    E = K_c + K_f
+    torch.manual_seed(7)
+    sd = {
+        f"{prefix}.lora_down.weight": torch.randn(rank, in_dim),
+        f"{prefix}.alpha": torch.tensor(float(rank)),
+        f"{prefix}.router.weight": torch.randn(K_c, rank) * 0.01,
+        f"{prefix}.router.bias": torch.zeros(K_c),
+    }
+    for i in range(E):
+        sd[f"{prefix}.lora_ups.{i}.weight"] = torch.randn(out_dim, rank)
+    metadata = {
+        "ss_use_chimera_hydra": "true",
+        "ss_num_experts_content": str(K_c),
+        "ss_num_experts_freq": str(K_f),
+        "ss_chimera_fei_feature_dim": str(K_f),  # fei mode: bands == experts
+        "ss_chimera_sigma_feature_dim": "0",
+        "ss_chimera_fei_sigma_low_div": "8.0",
+        "ss_chimera_freq_router_mode": "fei",
+        "ss_chimera_freq_router_tau": str(tau),
+        "ss_use_moe_style": "shared_A",
+        "ss_route_per_layer": "true",
+        "ss_router_source": "input",
+    }
+    save_file(sd, str(path), metadata=metadata)
+
+
+def test_load_adapter_recognizes_fei_mode(tmp_path):
+    """Hardwired-FEI chimera loads with no FreqRouter weights — the bundle
+    records ``freq_router_mode="fei"`` and ``freq_router_sd is None``."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+    path = tmp_path / "anima_chimera_fei_chimera.safetensors"
+    _write_chimera_fei_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8, tau=0.5
+    )
+    chimera = adapter.load_adapter(str(path))["hydra"]["chimera"]
+    assert chimera["freq_router_mode"] == "fei"
+    assert chimera["freq_router_fei_tau"] == 0.5
+    assert chimera["freq_router_sd"] is None
+
+
+def test_load_adapter_fei_mode_rejects_kf_neq_fei_dim(tmp_path):
+    """fei mode with fei_dim != K_f is a malformed checkpoint."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+    path = tmp_path / "bad_fei_chimera.safetensors"
+    # K_f=2 but stamp fei_dim=3 — the bands-must-equal-experts contract breaks.
+    _write_chimera_fei_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8
+    )
+    from safetensors.torch import load_file
+    from safetensors import safe_open
+
+    sd = load_file(str(path))
+    with safe_open(str(path), framework="pt") as f:
+        meta = dict(f.metadata())
+    meta["ss_chimera_fei_feature_dim"] = "3"
+    save_file(sd, str(path), metadata=meta)
+    adapter._adapter_cache.clear()
+    with pytest.raises(ValueError, match="fei_feature_dim == K_f"):
+        adapter.load_adapter(str(path))
+
+
+def test_chimera_pre_hook_fei_mode_emits_raw_fei(tmp_path):
+    """In fei mode the pre-hook stores ``π_f = normalize(FEI**(1/τ))`` — at
+    τ=1 that's the FEI simplex itself, no FreqRouter MLP involved."""
+    adapter = _load_adapter_module()
+    adapter._adapter_cache.clear()
+    path = tmp_path / "anima_chimera_fei.safetensors"
+    _write_chimera_fei_checkpoint(
+        path, K_c=4, K_f=2, rank=4, in_dim=8, out_dim=8, tau=1.0
+    )
+    chimera = adapter.load_adapter(str(path))["hydra"]["chimera"]
+
+    state: dict = {}
+    pre_hook = adapter._make_chimera_pre_hook(
+        state,
+        chimera["freq_router_sd"],  # None
+        fei_feature_dim=chimera["fei_feature_dim"],
+        sigma_feature_dim=chimera["sigma_feature_dim"],
+        fei_sigma_low_div=chimera["fei_sigma_low_div"],
+        router_tau=chimera["router_tau"],
+        K_f=chimera["num_experts_freq"],
+        freq_router_mode=chimera["freq_router_mode"],
+        freq_router_fei_tau=chimera["freq_router_fei_tau"],
+    )
+    B = 2
+    latent = torch.randn(B, 4, 1, 16, 16)
+    pre_hook(None, (latent, torch.tensor([0.1, 0.9])))
+
+    fei = state["fei"]
+    pi_f = state["pi_f"]
+    assert pi_f.shape == (B, 2)
+    # τ=1 ⇒ π_f is exactly the FEI simplex (first K_f bands).
+    assert torch.allclose(pi_f, fei[:, :2], atol=1e-6)
+
+
 def test_chimera_hook_dispatches_dual_pool(tmp_path):
     """Per-Linear hook concatenates ``[π_c, π_f]`` and dispatches the full
     E = K_c + K_f einsum: the delta depends on both the FreqRouter's π_f

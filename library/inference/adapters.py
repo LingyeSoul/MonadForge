@@ -111,8 +111,7 @@ def set_hydra_content(model: Any, crossattn_emb: torch.Tensor) -> None:
 
     Mirrors :func:`set_hydra_fei`. ``crossattn_emb`` is the post-LLM-adapter
     text feature tensor (B, L, D) — the same one fed into the DiT's
-    cross-attention. No-op on networks without a ContentRouter (chimera
-    off, or ``content_router_source="input"``).
+    cross-attention. No-op on networks without a ContentRouter (chimera off).
 
     Call BEFORE each forward in the denoising loop, separately for cond
     and uncond branches — the two have different captions and therefore

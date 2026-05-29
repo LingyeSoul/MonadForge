@@ -354,6 +354,14 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Scale factor for sigmoid (logit_normal) timestep sampling (default: 1.0)",
     )
     parser.add_argument(
+        "--sigmoid_bias",
+        type=float,
+        default=0.0,
+        help="Logit-space mean shift for sigmoid/shift/flux_shift sampling: "
+        "sigmoid(sigmoid_scale*randn + sigmoid_bias). >0 skews mass toward high σ "
+        "(structure regime), <0 toward low σ. 0.0 (default) = unbiased logit-normal.",
+    )
+    parser.add_argument(
         "--lora_fp32_accumulation",
         action="store_true",
         help="[DEPRECATED, no-op] fp32 accumulation is now unconditional in "

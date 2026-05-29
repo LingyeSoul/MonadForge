@@ -68,6 +68,10 @@ The pure-compute router math (FEI 2-band / FEI n-band high-to-low, σ sinusoidal
 
 ## Changelog
 
+### 3.8.0 — 2026-05-27 — ChimeraHydra hardwired-FEI freq routing
+
+`AnimaAdapterLoader` now loads ChimeraHydra checkpoints trained with `freq_router_mode="fei"` — the freq pool's gate is the FEI band-simplex itself (`π_f = normalize(FEI**(1/τ))`) rather than a learned FreqRouter MLP. These checkpoints carry **no** `freq_router.net.*` weights; the node reads `ss_chimera_freq_router_mode` / `ss_chimera_freq_router_tau` and computes the gate in the per-step pre-hook (no σ-features, K_f == FEI band count). Both the legacy single-A and dual-A on-disk formats are supported. Checkpoints without the stamp load as `"learned"` exactly as before — fully backward compatible. New router kernel `fei_temperature` is part of the shared router-compute source-of-truth (vendored).
+
 ### 3.7.0 — 2026-05-20 — Retire the Anima Postfix Loader
 
 The postfix training method was archived (soft tokens superseded it — see the repo's `_archive/postfix/`), so `AnimaPostfixLoader` and `postfix.py` were removed. The node package now ships three loaders: `AnimaAdapterLoader`, `AnimaFeraLoader`, `AnimaSoftTokensLoader`. Existing workflows that referenced the postfix loader will need to drop that node. Soft tokens (`AnimaSoftTokensLoader`) cover the per-block crossattn-splice use case going forward. No change to the other loaders.

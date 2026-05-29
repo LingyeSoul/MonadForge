@@ -16,13 +16,13 @@
 # the denoise loss + per-pool balance loss. T-LoRA's mask is applied to
 # the content branch only (the freq branch keeps full rank at every t).
 
-network_alpha = 64
-network_dim = 64
+network_alpha = 48
+network_dim = 48
 
 learning_rate = 2e-5
-max_train_epochs = 10
-save_every_n_epochs = 2
-checkpointing_epochs = 2
+max_train_epochs = 12
+save_every_n_epochs = 4
+checkpointing_epochs = 4
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -34,15 +34,14 @@ caption_dropout_rate = 0.1
 logging_dir = "output/logs"
 log_with = "tensorboard"
 
-output_name = "anima_chimera"
+output_name = "anima_chimera2"
 # path_pattern = "ama_mitsuki/*|channel_(caststation)/*|sweetonedollar/*"
 
 use_ortho = true
 use_timestep_mask = true
 min_rank = 16
 alpha_rank_scale = 1.0
-channel_scaling_alpha = 0.5
-blocks_to_swap=8
+blocks_to_swap=4
 
 # -------------
 # ChimeraHydra activation. The three-axis routing fields
@@ -61,33 +60,44 @@ num_experts_freq = 2
 # OrthoHydra production value (~2e-5, see
 # [[project_hydra_balance_weight_ceiling]]).
 #
-# Warmup is asymmetric on the chimera path: only the per-Linear CONTENT
-# router gates through ``balance_loss_warmup_ratio``. The FREQ router
-# bypasses warmup entirely — its FEI input + ``freq_router_init_std``
-# break symmetry from step 0, so its load-balance pressure can fire
-# immediately without pinning the router to uniform.
+# Warmup is asymmetric on the chimera path: only the CONTENT router gates
+# through ``balance_loss_warmup_ratio``. The FREQ router bypasses warmup
+# entirely — its FEI input breaks symmetry from step 0, so its load-balance
+# pressure can fire immediately without pinning the router to uniform.
 
 balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
 balance_w_content = 1e-6
-balance_w_freq = 1e-6
 network_content_router_lr_scale = 10.0
-network_freq_router_lr_scale = 2.0
 
-content_router_source = "crossattn_emb"
-content_router_init_std = 0.001      # non-zero (uniform would be a fixed point)
+# Content routing is always the network-level ContentRouter fed the pooled
+# crossattn_emb (the per-Linear lx_c router was removed). Only the LN toggle
+# remains configurable.
 content_router_layer_norm = true   # parameterless LN on the pooled input
 
-# FreqRouter input. FEI = 2-band simplex (e_low, e_high). σ-features
-# disabled by default (sigma_feature_dim = 0), so the FreqRouter input
-# dim = 2. Flip sigma_feature_dim > 0 to add sinusoidal σ features (same
-# functional form as the DiT t_embedder); the proposal targets "F ≈ 32".
+# Freq-pool routing mode.
+#   "fei"     — hardwire π_f = normalize(FEI ** (1/freq_router_tau)) directly.
+#               No learned router, no σ-features, no freq balance loss. The
+#               FEI 2-band simplex (e_low, e_high) IS the gate, so K_f
+#               (num_experts_freq) MUST equal fei_feature_dim. Motivation: the
+#               archived FEI trace (_archive/bench/fera/.../fei_traces.png)
+#               shows FEI already carries the load-bearing per-prompt routing
+#               signal at low σ; the learned MLP only reshaped inputs no richer
+#               than FEI itself, and σ is the non-discriminating half.
+#   "learned" — paper-faithful FreqRouter MLP over concat(FEI, σ-features).
+freq_router_mode = "fei"
+freq_router_tau = 1.0   # 1.0 = raw FEI passthrough; <1 sharpens, >1 flattens
 
+# FEI = 2-band simplex (e_low, e_high). fei_sigma_low_div=4.0 places the
+# low/high crossover near σ≈0.3 (mid-denoising) on this dataset.
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
+# Inert under freq_router_mode="fei" (kept for the "learned" fallback):
+# sigma_feature_dim feeds the FreqRouter MLP's σ block; freq_router_layer_norm
+# balances FEI vs σ variance at its input. Neither fires when the gate is
+# hardwired to FEI.
 sigma_feature_dim = 16
 freq_router_layer_norm = true
-freq_router_init_std = 0.1
 max_data_loader_n_workers=1
 # Routing scope. Every Linear matched by this regex becomes a chimera
 # leaf; non-matching layers fall back to OrthoLoRA (single-pool Cayley,
