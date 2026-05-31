@@ -39,9 +39,36 @@ REM 2. Sync project dependencies (torch, triton, flash-attn, etc.)
 REM ---------------------------------------------------------------
 echo.
 echo [STEP 2/4] Syncing project dependencies via uv ...
-uv sync
-if errorlevel 1 (
-    echo [ERROR] uv sync failed.
+
+REM Best-effort Defender exclusions so the install dir + uv cache are skipped by
+REM real-time scanning. uv populates .venv\Scripts\ with unsigned trampoline
+REM .exe launchers that Defender may quarantine mid-write.
+set "UV_CACHE=%LOCALAPPDATA%\uv"
+powershell -NoProfile -Command ^
+    "try { Add-MpPreference -ExclusionPath '%~dp0','%UV_CACHE%' -ErrorAction Stop; Write-Host '  [INFO] Added Windows Defender exclusions.' } catch { Write-Host '  [INFO] Defender exclusion skipped (not elevated or Defender inactive).' }"
+
+set "SYNC_OK=0"
+for /L %%i in (1,1,3) do (
+    if "!SYNC_OK!"=="0" (
+        uv sync
+        if not errorlevel 1 (
+            set "SYNC_OK=1"
+        ) else (
+            if %%i lss 3 (
+                echo [WARN] uv sync failed. Retrying (attempt %%i/2) in 3s ...
+                timeout /t 3 /nobreak >nul
+            )
+        )
+    )
+)
+if "!SYNC_OK!"=="0" (
+    echo.
+    echo [ERROR] uv sync did not complete after 3 attempts.
+    echo         This is often caused by Windows Defender blocking uv's trampoline .exe files.
+    echo         Add folder exclusions in Windows Security for:
+    echo           %~dp0
+    echo           %UV_CACHE%
+    echo         Then re-run this script.
     pause
     exit /b 1
 )
@@ -129,10 +156,10 @@ echo ============================================================
 echo   Setup complete!
 echo.
 echo   Quick start:
-echo     python tasks.py lora          - train LoRA
-echo     python tasks.py test          - inference test
-echo     python tasks.py gui           - launch GUI
-echo     python tasks.py --help        - all commands
+echo     start-webui-win.bat          - launch WebUI (browser)
+echo     python tasks.py lora         - train LoRA
+echo     python tasks.py test         - inference test
+echo     python tasks.py --help       - all commands
 echo.
 echo   Model downloads:
 echo     python tasks.py download-models
