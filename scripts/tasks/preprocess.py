@@ -261,10 +261,13 @@ def cmd_caption_index(extra):
     )
 
 
-# Same default the build_caption_index.py CLI uses; the index step is skipped
-# (not fatal) when this vocab is absent. `make download-models` fetches it (via
-# `download-tagger`), so a fresh checkout that ran the standard download will
-# have it; only a partial/offline setup hits the skip path.
+# Same default the build_caption_index.py CLI uses. `cmd_preprocess` auto-fetches
+# this (~0.7 MB) vocab on demand when it's absent: GUI users reach preprocess
+# without ever running `make download-models` (via `download-tagger`), and the
+# caption index it gates is a hard requirement for soft-tokens contrastive
+# training (train.py raises FileNotFoundError without it). The fetch is
+# best-effort — a partial/offline setup that can't pull it falls through to the
+# skip path rather than aborting the already-done GPU work.
 _CAPTION_INDEX_VOCAB = "models/captioners/anima-tagger-v2/vocab.json"
 
 
@@ -282,16 +285,31 @@ def cmd_preprocess(extra):
     cmd_preprocess_te(extra)
     # Build the method-agnostic caption index (pure data, no GPU, ~seconds) as a
     # free by-product — it's consumed by the IP-Adapter pair sampler, artist
-    # balancing, and dataset analytics. Best-effort: the lowres/resize flags in
-    # `extra` aren't part of its argparse, so pass none; skip cleanly when the
-    # tagger vocab is missing rather than aborting the (already-done) GPU work.
-    if os.path.exists(_path("caption_index_vocab", _CAPTION_INDEX_VOCAB)):
+    # balancing, dataset analytics, AND soft-tokens contrastive training (which
+    # hard-errors without it). Best-effort: the lowres/resize flags in `extra`
+    # aren't part of its argparse, so pass none.
+    vocab = _path("caption_index_vocab", _CAPTION_INDEX_VOCAB)
+    if not os.path.exists(vocab):
+        # GUI users reach preprocess without running `make download-models`, so
+        # fetch the tiny tagger vocab on demand. Catch broadly: run() exits via
+        # SystemExit on a non-zero `hf`, and a missing `hf` binary raises OSError
+        # — either way fall through to the skip below instead of aborting the
+        # already-done GPU work.
+        print("  [preprocess] tagger vocab missing; fetching it for caption-index")
+        try:
+            from .downloads import cmd_download_tagger
+
+            cmd_download_tagger([])
+        except (SystemExit, OSError) as e:
+            print(f"  [preprocess] tagger vocab auto-download failed: {e}")
+    if os.path.exists(vocab):
         cmd_caption_index([])
     else:
         print(
             f"  [preprocess] skipping caption-index: tagger vocab not found at "
-            f"{_CAPTION_INDEX_VOCAB}. Run `make download-tagger`, then "
-            f"`make caption-index`."
+            f"{_CAPTION_INDEX_VOCAB} and auto-download failed. Run "
+            f"`make download-tagger`, then `make caption-index` "
+            f"(soft-tokens contrastive training needs it)."
         )
 
 

@@ -44,3 +44,38 @@ you obtained the weights from).
 The full text of the CircleStone Labs Non-Commercial License v1.0 ships with
 the model weights; it is not redistributed here to avoid staleness if
 CircleStone updates it.
+
+--------------------------------------------------------------------------------
+Third-party source code (Apache License 2.0)
+--------------------------------------------------------------------------------
+
+This repository was originally adapted from kohya-ss/sd-scripts
+(https://github.com/kohya-ss/sd-scripts) and continues to contain code derived
+from it. sd-scripts is licensed under the Apache License, Version 2.0:
+
+    Copyright (c) kohya-ss and the sd-scripts contributors
+
+A copy of the Apache License, Version 2.0 is included in this repository as the
+file LICENSE-APACHE. You may also obtain it at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Code derived from sd-scripts remains governed by the Apache License 2.0. The MIT
+license on the rest of the toolkit does not relicense those portions.
+
+Statement of modifications (Apache License 2.0, Section 4(b)):
+
+The Anima toolkit has been substantially modified and extended from
+kohya-ss/sd-scripts. The changes are significant and ongoing; they include, but
+are not limited to:
+
+  * Re-targeting the training/inference pipeline from Stable Diffusion to the
+    Anima diffusion model (a DiT-based, flow-matching architecture with a
+    Qwen3-1.7B text encoder).
+  * Replacing the dataset/caching, strategy, and model-loading layers with new
+    Anima-specific implementations.
+  * Adding new adapter families (OrthoLoRA, T-LoRA, HydraLoRA, FeRA, ReFT,
+    ChimeraHydra, IP-Adapter, EasyControl, Soft Tokens) and inference
+    accelerators (Spectrum, SPD, DCW, SMC-CFG, modulation guidance).
+  * Restructuring the codebase into the library/, networks/, and anima_lora/
+    packages with a new configuration system and task runner.

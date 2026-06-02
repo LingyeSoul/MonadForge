@@ -1,0 +1,598 @@
+"""Anima inference argument parser — the single source of truth for every
+generation knob ``generate()`` reads off an ``argparse.Namespace``.
+
+Extracted from the top-level ``inference.py`` CLI script so programmatic callers
+(``GenerationRequest.to_args()``, ``bench/`` probes, embedders) can build a
+fully-defaulted namespace without importing the entry-point module. ``inference``
+now delegates its own ``parse_args`` here, so the CLI and every library caller
+share one parser definition.
+
+    from library.inference.args import build_default_args
+    args = build_default_args(["--prompt", "a fox", "--text_encoder", te, "--save_path", out])
+
+``build_parser()`` exposes the raw ``ArgumentParser`` for callers that want to
+add flags or inspect defaults; ``build_default_args(argv)`` parses + runs the
+post-parse validation/normalization the CLI relied on.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the Anima inference ``ArgumentParser`` (no parsing).
+
+    Every default here is authoritative — ``generate()`` reads ~40 fields via
+    ``getattr``, so this parser is what populates them. Exposed separately from
+    :func:`build_default_args` so a caller can append its own flags before
+    parsing.
+    """
+    parser = argparse.ArgumentParser(description="HunyuanImage inference script")
+
+    parser.add_argument("--dit", type=str, default=None, help="DiT directory or path")
+    parser.add_argument("--vae", type=str, default=None, help="VAE directory or path")
+    parser.add_argument(
+        "--vae_chunk_size",
+        type=int,
+        default=None,
+        help="Spatial chunk size for VAE encoding/decoding to reduce memory usage. Must be even number. If not specified, chunking is disabled (official behavior)."
+        + "",
+    )
+    parser.add_argument(
+        "--vae_disable_cache",
+        action="store_true",
+        help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
+        + "",
+    )
+    parser.add_argument(
+        "--text_encoder",
+        type=str,
+        required=True,
+        help="Text Encoder 1 (Qwen2.5-VL) directory or path",
+    )
+
+    # LoRA
+    parser.add_argument(
+        "--lora_weight",
+        type=str,
+        nargs="*",
+        required=False,
+        default=None,
+        help="LoRA weight path",
+    )
+    parser.add_argument(
+        "--lora_multiplier", type=float, nargs="*", default=1.0, help="LoRA multiplier"
+    )
+    parser.add_argument(
+        "--soft_tokens_weight",
+        type=str,
+        default=None,
+        help="Soft tokens weight path (networks.methods.soft_tokens .safetensors). "
+        "SoftREPA-style per-layer × per-t bank; spliced into the cross-attn input "
+        "of the first n_layers DiT blocks via monkey-patched Block.forward.",
+    )
+    parser.add_argument(
+        "--ip_adapter_weight",
+        type=str,
+        default=None,
+        help="IP-Adapter weight path (networks.methods.ip_adapter .safetensors). "
+        "Requires --ip_image. Modifies DiT cross-attention via parallel image KV.",
+    )
+    parser.add_argument(
+        "--ip_image",
+        type=str,
+        default=None,
+        help="Reference image path for IP-Adapter conditioning. "
+        "Encoded by the encoder named in the IP-Adapter checkpoint metadata (PE-Core by default).",
+    )
+    parser.add_argument(
+        "--ip_scale",
+        type=float,
+        default=None,
+        help="Override IP-Adapter scale (default: use ss_ip_scale from the checkpoint, typically 1.0).",
+    )
+    parser.add_argument(
+        "--ip_image_match_size",
+        action="store_true",
+        help="Auto-pick --image_size from the closest CONSTANT_TOKEN_BUCKETS entry to the "
+        "reference image's aspect ratio (overrides --image_size). Only effective with --ip_image.",
+    )
+    parser.add_argument(
+        "--easycontrol_weight",
+        type=str,
+        default=None,
+        help="EasyControl weight path (networks.methods.easycontrol .safetensors). "
+        "Requires --easycontrol_image. Extends DiT self-attention with VAE-encoded reference "
+        "K/V plus a per-block additive logit bias.",
+    )
+    parser.add_argument(
+        "--easycontrol_image",
+        type=str,
+        default=None,
+        help="Reference image path for EasyControl conditioning. Encoded by the Anima VAE "
+        "and patch-embedded into condition tokens.",
+    )
+    parser.add_argument(
+        "--easycontrol_scale",
+        type=float,
+        default=None,
+        help="Override EasyControl scale (default: ss_cond_scale from the checkpoint, typically 1.0).",
+    )
+    parser.add_argument(
+        "--easycontrol_image_match_size",
+        action="store_true",
+        help="Auto-pick --image_size from the closest CONSTANT_TOKEN_BUCKETS entry to the "
+        "reference image's aspect ratio (overrides --image_size). Only effective with --easycontrol_image.",
+    )
+    parser.add_argument(
+        "--include_patterns",
+        type=str,
+        nargs="*",
+        default=None,
+        help="LoRA module include patterns",
+    )
+    parser.add_argument(
+        "--exclude_patterns",
+        type=str,
+        nargs="*",
+        default=None,
+        help="LoRA module exclude patterns",
+    )
+
+    # inference
+    parser.add_argument(
+        "--guidance_scale",
+        type=float,
+        default=3.5,
+        help="Guidance scale for classifier free guidance. Default is 3.5.",
+    )
+    parser.add_argument(
+        "--prompt", type=str, default=None, help="prompt for generation"
+    )
+    parser.add_argument(
+        "--negative_prompt",
+        type=str,
+        default="",
+        help="negative prompt for generation, default is empty string",
+    )
+    parser.add_argument(
+        "--image_size",
+        type=int,
+        nargs=2,
+        default=[1024, 1024],
+        help="image size, height and width",
+    )
+    parser.add_argument(
+        "--infer_steps",
+        type=int,
+        default=50,
+        help="number of inference steps, default is 50",
+    )
+    parser.add_argument(
+        "--save_path", type=str, required=True, help="path to save generated video"
+    )
+    parser.add_argument("--seed", type=int, default=None, help="Seed for evaluation.")
+
+    # Flow Matching
+    parser.add_argument(
+        "--flow_shift",
+        type=float,
+        default=3.0,
+        help="Shift factor for flow matching schedulers. Default is 3.0 (matches the official Anima scheduler config).",
+    )
+    parser.add_argument(
+        "--sampler",
+        type=str,
+        default="euler",
+        choices=["euler", "er_sde", "lcm"],
+        help="Sampler to use: 'euler' (deterministic ODE), 'er_sde' (Extended Reverse-Time SDE), or 'lcm' (x0 re-noise — for distilled few-step models). Default is euler.",
+    )
+
+    parser.add_argument(
+        "--text_encoder_cpu",
+        action="store_true",
+        help="Inference on CPU for Text Encoders",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        help="device to use for inference. If None, use CUDA if available, otherwise use CPU",
+    )
+    parser.add_argument(
+        "--attn_mode",
+        type=str,
+        default="torch",
+        choices=[
+            "flash",
+            # "flash4",  # not supported yet (flash-attention-sm120 disabled)
+            "torch",
+            "sageattn",
+            "flex",
+            "xformers",
+            "sdpa",
+        ],  #  "sdpa" for backward compatibility
+        help="attention mode",
+    )
+    parser.add_argument(
+        "--output_type",
+        type=str,
+        default="images",
+        choices=["images", "latent", "latent_images"],
+        help="output type",
+    )
+    parser.add_argument(
+        "--no_metadata", action="store_true", help="do not save metadata"
+    )
+    parser.add_argument(
+        "--latent_path",
+        type=str,
+        nargs="*",
+        default=None,
+        help="path to latent for decode. no inference",
+    )
+    # Modulation guidance
+    parser.add_argument(
+        "--pooled_text_proj",
+        type=str,
+        default=None,
+        help="Path to trained pooled_text_proj weights (.safetensors) for modulation guidance",
+    )
+    parser.add_argument(
+        "--mod_w",
+        type=float,
+        default=3.0,
+        help="Modulation guidance strength (default 3.0). "
+        "Controls w in: emb = t_emb + proj(main) + w * (proj(pos) - proj(neg))",
+    )
+    parser.add_argument(
+        "--mod_pos_prompt",
+        type=str,
+        default="absurdres, score_9, score_8",
+        help="Positive quality prompt for modulation guidance direction",
+    )
+    parser.add_argument(
+        "--mod_neg_prompt",
+        type=str,
+        default="worst quality, low quality, score_1, score_2, score_3",
+        help="Negative quality prompt for modulation guidance direction",
+    )
+    parser.add_argument(
+        "--mod_start_layer",
+        type=int,
+        default=8,
+        help="First block (inclusive) that receives the steering delta. "
+        "Default 8 protects tonal-DC blocks 0–7 (matches ComfyUI 'step_i8_skip27'). "
+        "Use 14 for the safer preset that avoids drift on anatomy-heavy prompts. "
+        "Set 0 to recover pre-0413 uniform behavior.",
+    )
+    parser.add_argument(
+        "--mod_end_layer",
+        type=int,
+        default=27,
+        help="Last block + 1 (exclusive) that receives the steering delta. "
+        "Default 27 skips the final compensation block on Anima's 28-block DiT. "
+        "Use -1 to apply through the final block.",
+    )
+    parser.add_argument(
+        "--mod_taper",
+        type=int,
+        default=0,
+        help="Number of late slots inside [start, end) to scale by --mod_taper_scale. "
+        "0 disables taper (default).",
+    )
+    parser.add_argument(
+        "--mod_taper_scale",
+        type=float,
+        default=0.25,
+        help="Multiplier applied to tapered slots (default 0.25).",
+    )
+    parser.add_argument(
+        "--mod_final_w",
+        type=float,
+        default=0.0,
+        help="w applied at final_layer. 0.0 = don't disturb the output head (default).",
+    )
+
+    # P-GRAFT
+    parser.add_argument(
+        "--pgraft",
+        action="store_true",
+        help="Enable P-GRAFT: load LoRA as dynamic hooks instead of static merge, allowing mid-denoising cutoff",
+    )
+    parser.add_argument(
+        "--lora_cutoff_step",
+        type=int,
+        default=None,
+        help="Step at which to disable LoRA during inference (for P-GRAFT). "
+        "LoRA is active for steps 0..cutoff_step-1, disabled for cutoff_step..end.",
+    )
+
+    # Tiled diffusion
+    parser.add_argument(
+        "--tiled_diffusion",
+        action="store_true",
+        help="Enable MultiDiffusion-style tiled generation for VRAM reduction at high resolutions",
+    )
+    parser.add_argument(
+        "--tile_size",
+        type=int,
+        default=128,
+        help="Tile size in latent space (default 128 = 1024px). Must be even.",
+    )
+    parser.add_argument(
+        "--tile_overlap",
+        type=int,
+        default=16,
+        help="Overlap between tiles in latent space (default 16 = 128px). Must be even and < tile_size.",
+    )
+
+    # Spectrum acceleration
+    parser.add_argument(
+        "--spectrum",
+        action="store_true",
+        help="Enable Spectrum inference acceleration (Chebyshev polynomial feature forecasting). "
+        "Skips transformer blocks on predicted steps, running only final_layer + unpatchify.",
+    )
+    parser.add_argument(
+        "--spectrum_window_size",
+        type=float,
+        default=2.0,
+        help="Spectrum initial window size N (default 2.0)",
+    )
+    parser.add_argument(
+        "--spectrum_flex_window",
+        type=float,
+        default=0.25,
+        help="Spectrum flex parameter alpha -- N grows by this after each actual forward (default 0.25)",
+    )
+    parser.add_argument(
+        "--spectrum_warmup",
+        type=int,
+        default=6,
+        help="Spectrum warmup steps (always run full forward) (default 6)",
+    )
+    parser.add_argument(
+        "--spectrum_w",
+        type=float,
+        default=0.3,
+        help="Spectrum Chebyshev/Taylor blend weight (1.0=pure Chebyshev, default 0.3)",
+    )
+    parser.add_argument(
+        "--spectrum_m",
+        type=int,
+        default=3,
+        help="Spectrum number of Chebyshev basis functions (default 3)",
+    )
+    parser.add_argument(
+        "--spectrum_lam",
+        type=float,
+        default=0.1,
+        help="Spectrum ridge regression regularization (default 0.1)",
+    )
+    parser.add_argument(
+        "--spectrum_stop_caching_step",
+        type=int,
+        default=-1,
+        help="Force actual forwards from this step onward (-1 = auto: total_steps - 3)",
+    )
+    parser.add_argument(
+        "--spectrum_calibration",
+        type=float,
+        default=0.0,
+        help="Spectrum residual calibration strength (0.0=disabled, default 0.0). "
+        "Adds residual bias correction from last actual forward to cached predictions.",
+    )
+
+    # SPD: Spectral Progressive Diffusion (arXiv:2605.18736) — training-free
+    # multi-resolution inference. Early steps run at low resolution; HF detail is
+    # injected via spectral noise expansion at the σ handoff. Forces Euler;
+    # mutually exclusive with --spectrum. See networks/spd.py + bench/spd/.
+    parser.add_argument(
+        "--spd",
+        action="store_true",
+        help="Enable Spectral Progressive Diffusion: run early steps at low "
+        "resolution, spectral-expand to full res at the σ handoff. Training-free.",
+    )
+    parser.add_argument(
+        "--spd_stages",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Ascending resolution scales, e.g. '0.5 1.0' or '0.5 0.75 1.0'. A "
+        "trailing 1.0 is appended if missing. Default: 0.5 1.0 (single handoff).",
+    )
+    parser.add_argument(
+        "--spd_transition_sigmas",
+        type=float,
+        nargs="+",
+        default=None,
+        help="σ thresholds (in [0,1]) at which to expand to each next stage; "
+        "len = len(stages)-1. Default: 0.7 per handoff (single-late knee).",
+    )
+
+    # DCW: SNR-t bias correction (arXiv:2604.16044). Opposite-sign on Anima -- see
+    # bench/dcw/findings.md.
+    parser.add_argument(
+        "--dcw",
+        action="store_true",
+        help="Enable post-step DCW correction (pixel mode). Composes with --spectrum, "
+        "--sampler, --tiled_diffusion. Negligible overhead.",
+    )
+    parser.add_argument(
+        "--dcw_lambda",
+        type=float,
+        default=-0.015,
+        help="DCW scaler λ. Default -0.015 (negative -- see docs/methods/dcw.md). "
+        "Paper-positive values widen |gap| on Anima. Use λ ≈ -0.010 if you "
+        "switch --dcw_band_mask to 'all'.",
+    )
+    parser.add_argument(
+        "--dcw_schedule",
+        type=str,
+        default="one_minus_sigma",
+        choices=["one_minus_sigma", "sigma_i", "const", "none"],
+        help="Per-step schedule: scaler(i) = λ · sched(σ_i). Default "
+        "one_minus_sigma -- matches Anima's late-σ bias envelope.",
+    )
+    parser.add_argument(
+        "--dcw_band_mask",
+        type=str,
+        default="LL",
+        help="Restrict DCW correction to a subset of Haar subbands. Default 'LL' "
+        "(LL-only is strictly better than broadband on Anima -- see "
+        "docs/methods/dcw.md §LL-only correction). Format: 'LL', 'HH', "
+        "'LH+HL+HH', or 'all'.",
+    )
+
+    # DCW learnable calibrator (online observation + prompt fusion).
+    # See docs/proposal/dcw-learnable-calibrator-v4.md.
+    parser.add_argument(
+        "--dcw_calibrator",
+        "--dcw_v4",  # legacy alias -- drop after one release
+        type=str,
+        default=None,
+        dest="dcw_calibrator",
+        help="Path to a fusion_head.safetensors artifact (or a directory "
+        "containing one). When set, overrides --dcw_lambda with a per-step λ "
+        "from the calibrator. LL-only by default.",
+    )
+    parser.add_argument(
+        "--dcw_calibrator_gain",
+        "--dcw_v4_alpha_gain",  # legacy alias -- drop after one release
+        type=float,
+        default=1.0,
+        dest="dcw_calibrator_gain",
+        help="Multiplier on top of the head's α̂. α̂ is in λ-units "
+        "(median |α̂| ≈ lambda_anchor from training, default 0.015) so 1.0 is "
+        "identity -- use 2.0 to double the per-prompt magnitude, or a negative "
+        "value to flip sign. The per-step λ is clamped to ±0.05.",
+    )
+
+    # SMC-CFG: Sliding-Mode Control CFG (α-adaptive variant; arXiv:2603.03281).
+    # Drop-in CFG modification: replaces w·e with w·(e + Δe) where
+    # Δe = -k_t·sign(s), s = (e - e_prev) + λ·e_prev, k_t = α·mean(|e_t|).
+    # No extra DiT forwards; one prev-step velocity-residual buffer. Composes
+    # with --dcw / --spectrum / --mod_guidance (operates strictly on the
+    # velocity-space CFG combine). See docs/methods/smc_cfg.md.
+    parser.add_argument(
+        "--smc_cfg",
+        action="store_true",
+        help="Enable Sliding-Mode Control CFG (defaults λ=5, α=0.2). "
+        "Modifies the cond/uncond combine; no extra forwards.",
+    )
+    parser.add_argument(
+        "--smc_cfg_lambda",
+        type=float,
+        default=5.0,
+        help="SMC-CFG sliding-manifold slope λ. Paper sweeps {3,4,5,6}; 5 was best.",
+    )
+    parser.add_argument(
+        "--smc_cfg_alpha",
+        type=float,
+        default=0.2,
+        help="SMC-CFG adaptive gain α ∈ (0, 1]. k_t := α·|e_t|.mean() per "
+        "step — self-scales across model / CFG / σ / sample. Paper's fixed "
+        "k=0.1 was off by ~14× on Anima (bench/smc_cfg/analysis_and_proposal.md), "
+        "so the α path is the only mode now. α=0.2 is the production default.",
+    )
+
+    # CNS: Colored Noise Sampling (arXiv:2605.30332). Recolors the er_sde
+    # injected noise by sqrt(1-γ) from a precomputed completion matrix so the
+    # fixed stochastic budget lands in unresolved frequency bands. Training-free,
+    # er_sde-only (no-op on euler). γ is calibrated per (cfg×aspect) by
+    # bench/cns/calibrate.py. See docs/methods (bench/cns/plan.md).
+    parser.add_argument(
+        "--cns",
+        type=str,
+        default=None,
+        help="Enable CNS noise recoloring on the er_sde path. Pass a path to a "
+        "cns_gamma.npz completion matrix, or 'auto' for the shipped default "
+        "(networks/calibration/cns_gamma.npz). No-op on --sampler euler/lcm.",
+    )
+    parser.add_argument(
+        "--cns_strength",
+        type=float,
+        default=1.0,
+        help="Blend white↔recolored noise (then RMS-renormalize). 1.0 = full "
+        "CNS, 0.0 = pass-through. Safety knob for over-injection off-manifold.",
+    )
+
+    # arguments for batch and interactive modes
+    parser.add_argument(
+        "--from_file", type=str, default=None, help="Read prompts from a file"
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Interactive mode: read prompts from console",
+    )
+    parser.add_argument(
+        "--infer_batch_size",
+        type=int,
+        default=1,
+        help="Batch size for denoising. Prompts sharing the same text are batched together. Higher values use more VRAM.",
+    )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Compile the DiT model with torch.compile for faster inference. First run incurs compilation overhead.",
+    )
+    parser.add_argument(
+        "--compile_blocks",
+        action="store_true",
+        help="Compile each DiT block's _forward individually (battle-tested in "
+        "training). Sidesteps the checkpointing-wrapper trap that bites "
+        "whole-model --compile. Inductor cache persists across runs.",
+    )
+    parser.add_argument(
+        "--compile_inductor_mode",
+        type=str,
+        default=None,
+        help="Inductor preset for --compile_blocks (e.g. 'default', "
+        "'reduce-overhead'). None = inductor default.",
+    )
+    return parser
+
+
+def build_default_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse ``argv`` (``None`` reads ``sys.argv``) into a fully-defaulted namespace.
+
+    Builds the parser via :func:`build_parser`, parses, then applies the
+    post-parse validation/normalization (mutually-exclusive mode checks,
+    ``sdpa`` -> ``torch`` alias, tiled-diffusion geometry guards) the CLI relied on.
+    """
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # Validate arguments
+    if args.from_file and args.interactive:
+        raise ValueError(
+            "Cannot use both --from_file and --interactive at the same time"
+        )
+
+    if args.latent_path is None or len(args.latent_path) == 0:
+        if args.prompt is None and not args.from_file and not args.interactive:
+            raise ValueError(
+                "Either --prompt, --from_file or --interactive must be specified"
+            )
+
+    if args.attn_mode == "sdpa":
+        args.attn_mode = "torch"  # backward compatibility
+
+    if args.tiled_diffusion:
+        if args.tile_size % 2 != 0:
+            raise ValueError(
+                f"--tile_size must be even (patch_spatial=2 requires it), got {args.tile_size}"
+            )
+        if args.tile_overlap % 2 != 0:
+            raise ValueError(
+                f"--tile_overlap must be even (patch_spatial=2 requires it), got {args.tile_overlap}"
+            )
+        if args.tile_overlap >= args.tile_size:
+            raise ValueError(
+                f"--tile_overlap ({args.tile_overlap}) must be less than --tile_size ({args.tile_size})"
+            )
+
+    return args

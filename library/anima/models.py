@@ -1100,7 +1100,7 @@ class Block(nn.Module):
         rope_cos_sin: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
         adaln_lora_B_T_3D: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.training and self.gradient_checkpointing:
+        if torch.is_grad_enabled() and self.training and self.gradient_checkpointing:
             if self.unsloth_offload_checkpointing:
                 # Unsloth: async non-blocking CPU RAM offload (fastest offload method)
                 return unsloth_checkpoint(

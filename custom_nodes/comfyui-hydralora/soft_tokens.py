@@ -31,7 +31,7 @@ Bank format (``ss_*`` metadata + two tensors, see
   - ``t_offsets.weight`` : ``(n_t_buckets, n_layers * D)`` per-(bucket, layer)
     D-vector offset, broadcast across the K-token axis at lookup.
 
-Dual-bank (AGSM Phase 3a) checkpoints carry a leading branch axis —
+Dual-bank checkpoints carry a leading branch axis —
 ``tokens`` ``(n_banks, n_layers, K, D)`` and ``t_offsets`` bank-major
 ``(n_t_buckets, n_banks * n_layers * D)`` ([ψ⁺ | ψ⁻]). Inference uses ψ⁺
 (branch 0) only, matching anima_lora's ``load_weights``; ``load_soft_tokens``
@@ -104,7 +104,7 @@ def load_soft_tokens(file_path: str) -> _SoftTokenBank:
             f"soft_tokens file must contain 'tokens' and 't_offsets.weight' "
             f"(got keys: {list(weights_sd.keys())[:8]})"
         )
-    # Dual-bank (AGSM Phase 3a) checkpoints carry a leading branch axis on
+    # Dual-bank checkpoints carry a leading branch axis on
     # ``tokens`` (n_banks, n_layers, K, D) and stack the branches column-major in
     # ``t_offsets`` (n_t_buckets, n_banks*n_layers*D, bank-major: [ψ⁺ | ψ⁻]).
     # Inference uses ψ⁺ only (branch 0) — same as anima_lora's load_weights — so

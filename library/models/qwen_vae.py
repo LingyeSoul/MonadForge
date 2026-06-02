@@ -26,6 +26,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as torch_checkpoint
 import numpy as np
 
 from library.env import resolve_under_home
@@ -968,8 +969,24 @@ class QwenImageDecoder3d(nn.Module):
         x = self.mid_block(x, feat_cache, feat_idx)
 
         ## upsamples
+        # Gradient checkpointing trades compute for activation memory on the
+        # backward pass (the up_blocks at high spatial resolution dominate VAE
+        # decode memory). It is only correct when the causal-conv feat_cache is
+        # disabled (feat_cache=None) — otherwise the recompute would re-mutate
+        # the stateful cache. Cache-free decode is exactly the standard path for
+        # a complete (non-streaming) input, so callers needing decode gradients
+        # should disable_cache() first; see enable_gradient_checkpointing().
+        use_ckpt = (
+            self.gradient_checkpointing
+            and feat_cache is None
+            and torch.is_grad_enabled()
+            and x.requires_grad
+        )
         for up_block in self.up_blocks:
-            x = up_block(x, feat_cache, feat_idx)
+            if use_ckpt:
+                x = torch_checkpoint.checkpoint(up_block, x, use_reentrant=False)
+            else:
+                x = up_block(x, feat_cache, feat_idx)
 
         ## head
         x = self.norm_out(x)
@@ -1219,6 +1236,24 @@ class AutoencoderKLQwenImage(
                 module.spatial_chunk_size = None
             elif isinstance(module, ChunkedConv2d):
                 module.spatial_chunk_size = None
+
+    def enable_gradient_checkpointing(self) -> None:
+        r"""Checkpoint the decoder up-blocks to cut backward activation memory.
+
+        Lets the otherwise memory-heavy ``decode`` gradient (e.g. an fp32 VJP
+        back through the decoder for feature-space probes / distillation) fit at
+        full resolution. **Requires cache-free decode** — call ``disable_cache()``
+        too — because checkpoint recompute would otherwise corrupt the stateful
+        causal-conv ``feat_cache``. Cache-free decode is equivalent to the cached
+        path for a complete (single-frame / non-streaming) input.
+        """
+        self.decoder.gradient_checkpointing = True
+        if not self.cache_disabled:
+            self.disable_cache()
+
+    def disable_gradient_checkpointing(self) -> None:
+        r"""Undo :meth:`enable_gradient_checkpointing` (cache stays as-is)."""
+        self.decoder.gradient_checkpointing = False
 
     def disable_cache(self) -> None:
         r"""

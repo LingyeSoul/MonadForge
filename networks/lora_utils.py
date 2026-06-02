@@ -180,6 +180,11 @@ def load_safetensors_with_lora(
 
         if lora_multipliers is None:
             lora_multipliers = [1.0] * len(lora_weights_list)
+        # A scalar multiplier (e.g. the `--lora_multiplier` argparse default of
+        # 1.0, which is a bare float under nargs="*") broadcasts to all adapters.
+        # Coerce to a list so the length checks below don't len() a float.
+        if isinstance(lora_multipliers, (int, float)):
+            lora_multipliers = [float(lora_multipliers)] * len(lora_weights_list)
         while len(lora_multipliers) < len(lora_weights_list):
             lora_multipliers.append(1.0)
         if len(lora_multipliers) > len(lora_weights_list):

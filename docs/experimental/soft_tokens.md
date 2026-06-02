@@ -66,9 +66,9 @@ Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params
 | `apply_to(text_encoders, unet)` | Walks `unet.blocks[:n_layers]`, replaces each `block.forward` with a wrapper that splices `s^(k, t)` into `crossattn_emb` before calling the original (ReFT-pattern monkey-patch). |
 | `append_postfix(crossattn_emb, seqlens, timesteps)` | Receives `timesteps` from `train.py`'s existing per-step hook; computes `(n_layers, B, K, D)` step-scoped tokens and caches them on the network. **Returns `crossattn_emb` unchanged** — splicing happens inside the block hooks. |
 | `_make_block_hook(layer_idx, org_forward)` | Closure that reads the cached step tokens at `layer_idx`, splices into `crossattn_emb`, calls the original block forward. |
-| `SoftTokensMethodAdapter` (same file) | Contrastive extra-forward driver: stashes `neg_crossattn_emb` in `prime_for_forward`, runs the negative forwards + the active objective in `extra_forwards`, replays the deferred ∂L/∂v_neg + refreshes the AGSM bank-EMA in `after_backward`, surfaces metrics. Auto-resolved by `resolve_adapters` when `_contrastive_target_weight > 0`. |
+| `SoftTokensMethodAdapter` (same file) | Contrastive extra-forward driver: stashes `neg_crossattn_emb` in `prime_for_forward`, runs the negative forwards + the active objective in `extra_forwards`, replays the deferred ∂L/∂v_neg in `after_backward`, surfaces metrics. Auto-resolved by `resolve_adapters` when `_contrastive_target_weight > 0`. |
 | `contrastive_loss(...)` / `step_contrastive_warmup(...)` | InfoNCE over the negatives (with optional jaccard penalty) + the warmup gate. |
-| `_agsm_pl_weights(...)` / `agsm_targets(...)` / `agsm_losses(...)` / `update_bank_ema()` | AGSM target-shift objective: Plackett–Luce candidate weights + per-candidate Δ off the bank-EMA shadow + the bounded `±γ_z·Δ` losses + the EMA refresh (`contrastive_objective=agsm`). Dual ψ⁺/ψ⁻ banks (Phase 3a) ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See `docs/proposal/soft_tokens_agsm.md`. |
+| `softrank_loss(...)` / `softrank_diagnostics(...)` / `_soft_rank(...)` | Soft-rank objective: differentiable listwise rank of the matched caption among candidates via `softtorch` (`contrastive_objective=softrank`). Dual ψ⁺/ψ⁻ banks ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See `docs/proposal/soft_tokens_softrank.md`. |
 | `library/datasets/base.py` | `setup_contrastive_negatives` / `_load_te_for_stem` — negative TE sourcing + `neg_crossattn_emb` / `neg_jaccard` on the example. |
 | `library/datasets/identity_pairs.py` | `IdentityPairSampler.hard_negative` / `shuffled` / `tag_jaccard` — negative policy. |
 | `library/training/losses.py::_soft_tokens_contrastive_loss` | Applies the warmup-gated `λ_con` to the adapter's InfoNCE scalar. |
@@ -83,10 +83,12 @@ Two options, mirroring postfix:
 
 | Mode | Where | Trade-off |
 |---|---|---|
-| `end_of_sequence` (default) | overwrite the K tail slots `[S-K, S)` of the zero-padding region | Static splice index → maximally compile-friendly. Caption-position-agnostic. Preserves the strongest front-of-padding attention sinks intact. |
-| `front_of_padding` | place K tokens at `[seqlens[i], seqlens[i]+K)` per sample (`scatter`) | Caption-position-aware. Displaces the strongest sinks. Per-sample variable indices via the cached `crossattn_seqlens`. |
+| `front_of_padding` (shipped config default) | place K tokens at `[seqlens[i], seqlens[i]+K)` per sample (`scatter`) | **Algorithm-faithful** — SoftREPA concatenates the soft tokens onto the *text* sequence, so the position immediately after the real caption is the direct analogue. Caption-position-aware. Displaces the strongest sinks. Per-sample variable indices via the cached `crossattn_seqlens`. |
+| `end_of_sequence` (code-level fallback default) | overwrite the K tail slots `[S-K, S)` of the zero-padding region | Anima-specific shortcut: static splice index → maximally compile-friendly, and gets attention mass only because Anima's deep-padding slots are attention sinks. Caption-position-agnostic. Preserves the strongest front-of-padding sinks intact. Not what the paper does. |
 
-Toggle via `network_args = ["splice_position=front_of_padding"]`. The choice is metadata-tagged (`ss_splice_position`) so checkpoints round-trip with the right splice mode.
+Both `configs/methods/soft_tokens.toml` and `configs/gui-methods/soft_tokens.toml` ship `splice_position=front_of_padding`. The `SoftTokensNetwork` constructor default is `end_of_sequence` (the compile-friendly fallback used when no config overrides it). The choice is metadata-tagged (`ss_splice_position`) so checkpoints round-trip with the right splice mode; toggle via `network_args = ["splice_position=end_of_sequence"]`.
+
+**Not benched.** The fop-vs-eos choice is principled (paper-faithfulness) but never measured on Anima — see the open A/B item in §"What this does *not* do / open knobs" below. `end_of_sequence` could plausibly compete: fop displaces the strongest sinks (perturbing what the frozen model relies on), eos rides the tail sinks while leaving them intact.
 
 Anima's text-encoder padding invariant (zero-padded positions act as cross-attention sinks) means writing into the padded tail is *not* a no-op — those slots receive attention mass and the soft tokens get exposure to every spatial query. See the "Text encoder padding" note in the root CLAUDE.md.
 
@@ -152,86 +154,74 @@ Negative grouping comes from the shared caption index (`make caption-index` → 
 
 TensorBoard signals: `reg/soft_tokens_contrastive` (raw InfoNCE), `_weighted`, `_lambda_live` (warmup gate), `soft_tokens/contrastive_acc` (positive beats every negative) and `soft_tokens/contrastive_logit_gap`.
 
-### AGSM objective (bounded target-shift, optional)
+### Soft-rank objective (differentiable listwise rank, default)
 
 A second objective on the **same** extra-forward plumbing (negatives, warmup,
 `contrastive_every_n`, compose seam, `after_backward` grad-cache), selected with
-`contrastive_objective=agsm`. Full design + phasing: `docs/proposal/soft_tokens_agsm.md`.
-It diagnoses SoftREPA's contrastive instability (val reward degrades while loss
-drops) as **unbounded negative divergence** — maximizing negative error has no
-fixed point — and replaces the InfoNCE softmax with regression toward fixed,
-shifted targets. Per candidate `j ∈ {matched, neg₁…neg_k}`, with the implicit
-reward `r_j = −‖v̂_ema_j − v_target‖²` and Plackett–Luce weights `w = softmax(r/τ)`:
+`contrastive_objective=softrank` (the shipped config default). Full design:
+`docs/proposal/soft_tokens_softrank.md`. Where InfoNCE's negative branch is
+*unbounded* (maximizing negative error has no fixed point — the SoftREPA
+degrade-while-loss-drops failure), soft-rank replaces the softmax with a
+**differentiable listwise rank** of the matched caption among the candidates. With
+per-candidate reward `r_j = −‖v_j − v_target‖²` over `j ∈ {matched, neg₁…neg_k}`:
 
 ```
-baseline = Σ_j w_j · v̂_ema_j               (PL-weighted over ALL candidates)
-Δ_j      = v̂_ema_j − baseline              (per-candidate, detached)
-positives → v_target + γ⁺·Δ⁺               L⁺ = ‖ v_θ^ψ⁺ − (v_target + γ⁺·Δ⁺) ‖²
-negatives → v_target − γ⁻·Δ⁻_j             L⁻ = mean_j ‖ v_θ^ψ⁻ − (v_target − γ⁻·Δ⁻_j) ‖²
+L_softrank = softtorch.rank(r, method)[matched] − 1      (rank ∈ [1, m]; 1 = matched wins)
 ```
 
-`Δ` is read off an **EMA shadow of the bank's own predictions** — reward-free
-self-distillation, no external scorer. The PL weighting is the load-bearing
-**self-annealing** (paper §3.3): as the matched caption wins (`w_matched → 1`) the
-baseline → v̂⁺ so `Δ → 0` and the target relaxes to plain FM — a normalized
-correction that *bounds* the negative branch (the InfoNCE failure AGSM removes).
-Because Anima is velocity flow-matching (`v = ε − x₀`, fixed `x₀`), shifting the
-ε-target by `δ` is exactly shifting the v-target by `δ`, so the paper's
-ε-prediction math maps across with no reparameterization. Both targets are
-constants each step (`v_target` and the `Δ_j` detached), so each term has a bounded
-fixed point — the fix.
+`softtorch.rank` (SoftSort / NeuralSort relaxation, Prillo & Eisenschlos 2020)
+standardizes the candidate axis and returns a smooth, 1-indexed rank. Gradient
+flows **through the ordering** (no detach on the ranking — `v_target` is the only
+constant), so it pushes the bank to make the matched caption win outright, and it
+stays **bounded** by the SoftSort relaxation (`L → 0` as `rank → 1`, self-annealing
+at the win). No EMA shadow, no external scorer — it costs `k` extra forwards per
+firing step, the **same as InfoNCE**.
 
-This was reconstructed against the paper's Algorithm 1 / Eq. 17 (PL-weighted,
-per-candidate Δ; separate γ⁺/γ⁻ — the paper's SD3/flow run used `(1, 0.1)`). It is
-**single-bank Phase 2** by default: ψ⁺ = ψ⁻ = the one bank (only `crossattn_emb`
-differs across forwards) and a constant time-weight `Ã(t)=1`.
+This is the chosen objective. AGSM (the paper-faithful bounded target-shift with a
+PL-weighted EMA bank) was the third option and was **removed 2026-05-30**: in the
+live A/B its `w_matched` stayed pinned at chance (`1/(k+1)` for every epoch — "Δ
+rotates but w stays at chance"), while soft-rank's `matched_rank` descended
+monotonically toward 1 and won on eyeballed image quality. This matches the
+offline Tier-A gradient probe ([[project_softrank_agsm_gradient_probe]]): soft-rank's
+`cos(∂L/∂V, ∂margin/∂V)` ≈ 0.86 vs AGSM's ≈ 0.25, at the same boundedness. The same
+chance-pin sank the mod-guidance AGSM probe, which was removed with it.
 
-**Dual banks ψ⁺/ψ⁻ (Phase 3a, opt-in `agsm_dual_bank=true`).** A branch axis on
-the bank: `tokens (2,n_layers,K,D)` + bank-major `t_offsets` + a doubled EMA
-shadow. ψ⁺ is spliced on the anchor + matched-EMA passes, ψ⁻ on the negative
-value/EMA/replay passes — the negative push refines ψ⁻ without spending generative
-fidelity on the bank kept at inference. **Inference uses ψ⁺ only** (Appendix H: ψ⁻
-in the uncond branch over-suppresses detail), so the checkpoint stamps `ss_n_banks`
-and `load_weights` slices the ψ⁺ branch when an inference net reads a dual file;
-single-bank checkpoints stay loadable and `agsm_dual_bank=false` (default) is
-bit-identical to Phase 2. Whether dual beats single at equal ψ⁺ budget is an open
-A/B — see the proposal's Phase 3a.
+**Dual banks ψ⁺/ψ⁻ (opt-in `dual_bank=true`, default in the shipped config).** A
+branch axis on the bank: `tokens (2,n_layers,K,D)` + bank-major `t_offsets`. ψ⁺ is
+spliced on the anchor + positive passes, ψ⁻ on the negative value/replay passes —
+the negative push refines ψ⁻ without spending generative fidelity on the bank kept
+at inference. **Inference uses ψ⁺ only** (injecting ψ⁻ in the uncond branch
+over-suppresses detail). The load side keys off the on-disk tensor rank (4D ⇒
+dual), so `load_weights` slices the ψ⁺ branch when an inference net reads a dual
+file; single-bank checkpoints stay loadable and `dual_bank=false` is bit-identical
+to the single-bank path. The flag accepts the old name `agsm_dual_bank` as a
+deprecated alias. (Dual-bank is orthogonal to the objective — it works under
+InfoNCE too; the live softrank run shows ψ⁻ training via `tokens_neg_mean_norm`.)
 
-Gradient flow mirrors InfoNCE exactly — `L⁺` rides the anchor's FM backward (grad
-via the live `v_pos`), `L⁻`'s gradient is deferred to `after_backward` (the
-block-swap-safe grad-cache split, [[project_blockswap_extra_forwards_gradcache]]).
-The EMA shadow is refreshed once per optimizer step in `after_backward` (gated on
-`sync_gradients`); it is a plain tensor attribute, so it never enters the saved
-checkpoint — a trained `.safetensors` carries only the bank(s), and inference
-ignores the AGSM machinery entirely, same as InfoNCE.
-
-**Cost.** AGSM adds the EMA value passes (matched + each mismatched caption through
-the shadow bank) on top of the live negative passes: ~`(2k+1)` extra forwards per
-firing step vs InfoNCE's `k`, all `no_grad` except the deferred replay. Keep
-`contrastive_k ∈ {1, 2}` and lean on `contrastive_every_n` to amortize. Dual banks
-add no forwards (just a branch index on the same passes).
+Gradient flow mirrors InfoNCE exactly — `L` rides the anchor's FM backward (grad
+via the live `v_pos`, negatives detached), and `∂L/∂v_neg` is deferred to
+`after_backward` (the block-swap-safe grad-cache split,
+[[project_blockswap_extra_forwards_gradcache]]). The objective leaves **no learned
+parameters** beyond the bank(s) — inference ignores it entirely, same as InfoNCE.
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `contrastive_objective` | `infonce` | `infonce` \| `agsm`. |
-| `agsm_gamma` | `0.5` | γ⁺, positive-branch target-shift magnitude. Sweep ~0.25–1.0 (paper SD3 γ⁺=1; the toml sets 1.0). |
-| `agsm_gamma_neg` | = γ⁺ | γ⁻, negative-branch magnitude. Unset ⇒ symmetric; the paper's flow model used a deliberately weaker `0.1` (the toml sets 0.1). |
-| `agsm_ema_decay` | `0.99` | EMA decay for the bank shadow Δ is read off; must be in `(0,1)`. |
-| `agsm_dual_bank` | `false` | dual ψ⁺/ψ⁻ banks (Phase 3a); inference keeps ψ⁺ only. |
-| `contrastive_tau` | `0.5` | doubles as the Plackett–Luce temperature for the candidate weights `w_j` (lower = sharper matched preference → faster Δ self-anneal). |
+| `contrastive_objective` | `infonce` | `infonce` \| `softrank`. |
+| `softrank_method` | `neuralsort` | SoftSort relaxation: `neuralsort` (smooth gradient through ties — the near-miss regime) or `softsort` (faster, flat at exact ties). |
+| `softrank_softness` | `0.1` | SoftSort softness (its temperature). `standardize=True` puts the candidate axis at unit scale, so ~0.1 is right; lower = sharper rank / stronger pull (sweep 0.05–0.3). Ignored by InfoNCE. |
+| `dual_bank` | `false` | dual ψ⁺/ψ⁻ banks; inference keeps ψ⁺ only. Accepts `agsm_dual_bank` as an alias. |
 
-TensorBoard signals (AGSM): `reg/soft_tokens_contrastive` (= L⁺ + L⁻), `_weighted`,
-`_lambda_live`, `soft_tokens/agsm_l_pos`, `soft_tokens/agsm_l_neg` (both should sit
-at a bounded steady state, not `l_neg` diverging), `soft_tokens/agsm_delta_norm`
-(near 0 ⇒ matched/mismatched preds collapsed → no alignment signal),
-`soft_tokens/agsm_w_matched` (the PL self-anneal scalar; rising toward 1 with
-bounded losses is the healthy signature), and under dual bank
+**Requires `contrastive_k ≥ 2`** — `softtorch` standardizes the candidate axis,
+which is degenerate (gap-independent) with a single negative. Needs the `softtorch`
+dependency (pot/torchopt/numba). Does **not** use `contrastive_tau`.
+
+TensorBoard signals (soft-rank): `reg/soft_tokens_contrastive` (= the rank loss),
+`_weighted`, `_lambda_live`, `soft_tokens/softrank_matched_rank` (the headline:
+→ 1 as the matched caption wins outright, → m when it loses; it descended
+monotonically in the live run), plus `soft_tokens/contrastive_acc` /
+`contrastive_logit_gap` (reward-gap mirrors of the InfoNCE diagnostics for
+cross-objective comparability) and, under dual bank,
 `soft_tokens/tokens_neg_mean_norm` (ψ⁻ magnitude).
-
-> **Gating.** AGSM is only justified if the plain-InfoNCE A/B exhibits the
-> SoftREPA degrade-while-loss-drops pattern on Anima, and after the Phase 0
-> reward-premise probe passes (matched caption out-ranks `shuffled` negatives).
-> See the proposal's phasing.
 
 ## Compatibility
 
@@ -254,7 +244,7 @@ What to measure to know if this is doing anything:
 2. **Per-layer token norm**: `‖tokens[k]‖` should differ across `k`. If they converge to a single shared bank, we're effectively running a single-layer postfix and the per-layer parameterization is dead weight.
 3. **Held-out prompt-following**: this is the load-bearing question. The existing DCW v4 calibrator targets the same axis (text-image alignment, prompt-following) but at inference time. If soft tokens move the same metrics, they're a training-time alternative. If not, they're parameter overhead.
 4. **Anatomy / style breakdown**: REPA helped anatomy on Anima but broke anime style (vision-encoder photo-prior leak). Soft tokens have no external visual prior, so the failure mode shouldn't recur — but they also can't reproduce the anatomy gain. The plausible win is text alignment, not structural quality. If anatomy *also* improves, that's a surprise worth tracking.
-5. **Splice position A/B**: `end_of_sequence` vs `front_of_padding`. Front-of-padding displaces the strongest sinks and might give the tokens more attention mass at the cost of disturbing what the pretrained model relies on. Worth a short bench before committing to a default.
+5. **Splice position A/B**: `front_of_padding` (shipped default, algorithm-faithful) vs `end_of_sequence` (compile-friendly Anima shortcut). Front-of-padding displaces the strongest sinks and might give the tokens more attention mass at the cost of disturbing what the pretrained model relies on; end-of-sequence leaves the front sinks intact and rides the tail sinks. Faithfulness picked the default — still worth a short bench to confirm it on Anima samples.
 
 ## Hyperparameters worth sweeping
 
@@ -264,5 +254,5 @@ What to measure to know if this is doing anything:
 | `network_dim` (K) | 4 | 1, 4, 8, 16 | SoftREPA used m=4 on SD3. K=1 collapses to "per-layer prefix vector" — clean ablation. |
 | `n_t_buckets` | 100 | 0 (disable t-cond), 20, 100 | Setting `t_offsets.weight.requires_grad_(False)` is a clean ablation for whether time conditioning is load-bearing. |
 | `init_std` | 0.02 | 0.0, 0.02, 0.1 | Zero-init = strict identity at step 0 (block sees zeroed padding tail). 0.02 = small perturbation. 0.1 = aggressive. |
-| `splice_position` | `end_of_sequence` | both | See §"Splice position" above. |
+| `splice_position` | `front_of_padding` (shipped) | both | Config ships fop (algorithm-faithful); constructor fallback is eos. See §"Splice position" above. |
 | `learning_rate` | 1e-3 | 1e-4 to 5e-3 | Soft tokens are tiny + zero-inited offsets; high LR is fine. |

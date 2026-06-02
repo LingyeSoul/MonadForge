@@ -25,9 +25,9 @@ network_alpha = 48
 network_dim = 48
 
 learning_rate = 2e-5
-max_train_epochs = 24
-save_every_n_epochs = 24
-checkpointing_epochs = 24
+max_train_epochs = 6
+save_every_n_epochs = 6
+checkpointing_epochs = 6
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -38,12 +38,12 @@ log_with = "tensorboard"
 
 output_name = "anima_channel"
 # sigmoid_bias = 0.5
-path_pattern = "channel_(caststation)/*"
+# path_pattern = "channel_(caststation)/*"
 
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
 
-compile_inductor_mode = "reduce-overhead"
+# compile_inductor_mode = "reduce-overhead"
 
 # -------------
 # Ortho-lora
@@ -57,6 +57,10 @@ use_timestep_mask = true
 min_rank = 16
 alpha_rank_scale = 1.0
 
+
+# ---
+sample_every_n_epochs = 1
+sample_prompts= "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top and denim shorts is standing outdoors. She's holding a rectangular sign out in front of her that reads \"ANIMA\". She 's looking at the viewer with a smile. The background features some trees and blue sky with clouds."
 # -------------
 # "shared_A" and route_per_layer=false -> hydralora
 

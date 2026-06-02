@@ -170,6 +170,47 @@ def cmd_download_anima(_extra):
         shutil.rmtree(split)
 
 
+def cmd_download_sketch2manga(_extra):
+    """Sketch2Manga screening weights for the colorization EasyControl adapter.
+
+    The learned (Phase B) condition synthesizer in
+    ``easycontrol_adapters/colorization/screentone_sd.py`` — finetuned SD1.5
+    ``mangatone.ckpt`` + no-LPIPS VAE + the SD1.5 lineart ControlNet. Optional /
+    experimental, so it's NOT in ``download-models``; fetch on demand via
+    ``make exp-easycontrol-download EASYADAPTER=colorize``. ~5.7GB total.
+    """
+    dst = ROOT / "models" / "sketch2manga"
+    finals = [
+        dst / "mangatone.ckpt",
+        dst / "vae" / "mangatone_default.ckpt",
+        dst / "control_v11p_sd15_lineart.pth",
+    ]
+    if _skip("Sketch2Manga screening weights (~5.7GB)", finals, _extra):
+        return
+    dst.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "hf",
+            "download",
+            "dreMaz/sketch2manga",
+            "mangatone.ckpt",
+            "vae/mangatone_default.ckpt",
+            "--local-dir",
+            "models/sketch2manga",
+        ]
+    )
+    run(
+        [
+            "hf",
+            "download",
+            "lllyasviel/ControlNet-v1-1",
+            "control_v11p_sd15_lineart.pth",
+            "--local-dir",
+            "models/sketch2manga",
+        ]
+    )
+
+
 def cmd_download_models(_extra):
     # Continue-on-failure: a gated component the user hasn't been granted
     # (SAM3) or hasn't authed for must not abort the rest, and — crucially —

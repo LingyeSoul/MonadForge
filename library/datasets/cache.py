@@ -100,9 +100,9 @@ class CachedDataset(torch.utils.data.Dataset):
         self.mask_dir = mask_dir
         cached = discover_cached_pairs(data_dir)
 
-        # Curation gate (turbo item 5): when a keep_list of stems is supplied,
-        # drop every cached pair whose stem isn't in it BEFORE bucketing/split,
-        # so the cut narrows the actual train pool. None → no filter (legacy).
+        # Optional stem allow-list: when a keep_list of stems is supplied, drop
+        # every cached pair whose stem isn't in it BEFORE bucketing/split, so the
+        # cut narrows the actual train pool. None → no filter (the default).
         if keep_list is not None:
             n_before = len(cached)
             cached = [img for img in cached if img.stem in keep_list]

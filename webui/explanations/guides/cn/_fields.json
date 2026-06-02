@@ -67,5 +67,8 @@
   "min_pixels": "`drop_lowres_images`使用的像素数阈值（默认500_000 = 0.5MP）。原样传递给preprocess/resize_images.py和cache_text_embeddings.py作为`--min_pixels`。`drop_lowres_images = false`时忽略。若在不关闭复选框的情况下禁用过滤，设为0。",
   "batch_size": "每步从同一个宽高比桶中取多少张图片训练。增大批大小可加速训练但增加显存占用；8GB显存建议1~4。在变体的[[datasets]]块上写入/删除{batch_size=N}覆盖；与base.toml的值相同时删除覆盖，由base优先。",
   "num_repeats": "每张图片在一个epoch内重复训练的次数。1=每张只训练一次；增大可等效扩增小数据集，但会线性增加每epoch步数。在变体的[[datasets.subsets]]块上写入/删除{num_repeats=N}覆盖；与base.toml的值相同时删除覆盖，由base优先。",
-  "sample_ratio": "训练集子采样比例（0.0~1.0）。1.0=全量，0.5=半数，0.1=10%。预设half/quarter/tenth/debug会设为<1.0用于快速调试——正式训练务必恢复为1.0。写入/删除[[datasets.subsets]]中的sample_ratio覆盖；与base.toml的值相同时删除覆盖，由base优先。"
+  "sample_ratio": "训练集子采样比例（0.0~1.0）。1.0=全量，0.5=半数，0.1=10%。预设half/quarter/tenth/debug会设为<1.0用于快速调试——正式训练务必恢复为1.0。写入/删除[[datasets.subsets]]中的sample_ratio覆盖；与base.toml的值相同时删除覆盖，由base优先。",
+  "sample_prompts": "训练过程中渲染图像以便目视检查过拟合的预览提示词 — 与验证/CMMD相互独立。每行填写一条提示词。训练期间仅计算潜变量（为避免OOM，运行途中不会将VAE加载至GPU）；图像将在训练结束时解码至output_dir/sample/。未指定种子的提示词使用每提示词固定种子，确保每轮从相同噪声渲染（便于对比的画廊）。留空则禁用。支持行内修饰符，例如：'1girl, solo --w 832 --h 1216 --s 28 --d 42 --l 4.0'（w/h = 尺寸，s = 步数，d = 种子，l = CFG缩放，n = 负面提示词）。",
+  "sample_every_n_epochs": "每N轮捕获一次样本提示词（潜变量每次均会保存；所有图像在训练结束时解码为PNG）。0 = 禁用。与'sample_prompts'配合使用。使用适合数据集的较小值（如1–4）可获得逐轮画廊，便于判断品质在何处达到峰值而尚未过拟合。遵循'use_valid'开关 — 验证关闭时采样也将强制关闭。",
+  "sample_at_first": "在训练开始前（第0轮）也渲染一次样本提示词 — 作为未微调模型的基线，供后续各轮进行比较。"
 }

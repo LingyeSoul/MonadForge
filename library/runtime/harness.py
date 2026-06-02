@@ -197,6 +197,132 @@ def build_anima(
     return AnimaBundle(anima=anima, network=network, device=device, dtype=dtype)
 
 
+@dataclass
+class InferenceBundle:
+    """Everything a probe needs to drive (and hook) a real ``generate()`` call.
+
+    Where :class:`AnimaBundle` stops at *DiT + adapter*, this carries the full
+    inference set — text encoder, VAE, the resolved ``GenerationSettings`` — plus
+    the ``shared_models`` dict already primed with ``model`` / ``text_encoder`` /
+    ``conds_cache``. Hand ``shared_models`` straight to
+    ``library.inference.generate(args, gen_settings, shared_models)``; because the
+    DiT is pre-loaded into ``shared_models["model"]``, ``generate()`` reuses *this*
+    instance — so any forward-hook / monkeypatch you install on ``bundle.model``
+    before generating is live during sampling (the trick batch inference uses, now
+    a first-class seam). ``vae`` is ``None`` when the bundle was built with
+    ``with_vae=False`` or no ``--vae`` path.
+    """
+
+    model: object  # the loaded DiT (also stashed in shared_models["model"])
+    vae: Optional[object]  # AutoencoderKLQwenImage, or None
+    text_encoder: object  # on CPU; generate()/prepare_text_inputs moves it
+    gen_settings: object  # library.inference.GenerationSettings
+    shared_models: dict  # {"model", "text_encoder", "conds_cache"} -> generate()
+    args: argparse.Namespace  # the namespace the bundle was built from
+    device: torch.device
+
+    def generate(self, args: Optional[argparse.Namespace] = None):
+        """Run ``library.inference.generate`` reusing this bundle's loaded models.
+
+        Defaults to the namespace the bundle was built from; pass a per-call
+        ``args`` (e.g. a different prompt/seed) to override. Returns the latent
+        tensor ``generate()`` produces.
+        """
+        from library.inference import generate as _generate
+
+        return _generate(args or self.args, self.gen_settings, self.shared_models)
+
+
+def build_inference_bundle(
+    args: argparse.Namespace,
+    device: torch.device | str | None = None,
+    *,
+    with_vae: bool = True,
+) -> InferenceBundle:
+    """Assemble the text-encoder + DiT (+ optional VAE) set for a generation.
+
+    The inference-side counterpart to :func:`build_anima`. ``inference.main()``
+    open-codes this sequence (load text encoder, load DiT, stash it in
+    ``shared_models["model"]`` so ``generate()`` reuses the instance, load the
+    VAE); a bench/probe that observes or perturbs a *real* generation had to
+    reverse-engineer it. This bundles it once.
+
+    Sequence:
+        1. ``get_generation_settings(args)`` → resolved device (cuda-else-cpu).
+        2. ``load_shared_models(args)`` → text encoder on CPU; add ``conds_cache``.
+        3. ``load_dit_model(args, device, bf16)`` → DiT, stashed in
+           ``shared_models["model"]`` so ``generate()`` reuses it (the hook seam).
+        4. If ``with_vae`` and ``args.vae`` is set: ``load_vae(..., bf16, eval)``.
+
+    Args:
+        args: a fully-defaulted namespace (``inference.parse_args`` /
+            ``GenerationRequest.to_args()`` / ``build_default_args``). Reads
+            ``vae`` / ``text_encoder`` / ``dit`` / adapter + sampler knobs.
+        device: optional explicit device; when given it's written back to
+            ``args.device`` so every downstream loader agrees. ``None`` resolves
+            cuda-else-cpu via ``get_generation_settings``.
+        with_vae: load the VAE (needed only to decode latents → pixels). A
+            latent-space probe can pass ``False`` to skip the load.
+
+    Returns:
+        :class:`InferenceBundle` — pass ``.shared_models`` to ``generate()`` or
+        call ``.generate()``.
+    """
+    # Late imports — keep this module import-cheap on CPU-only smoke runs, and
+    # avoid an import-time edge into the inference engine.
+    from library.inference import (
+        get_generation_settings,
+        load_dit_model,
+        load_shared_models,
+    )
+
+    if device is not None:
+        # Pin it on the namespace so get_generation_settings + load_dit_model all
+        # resolve to the same device (mirrors inference.main()).
+        args.device = str(device) if not isinstance(device, str) else device
+
+    gen_settings = get_generation_settings(args)
+    resolved_device = gen_settings.device
+
+    shared_models = load_shared_models(args)  # text encoder on CPU
+    shared_models["conds_cache"] = {}
+
+    anima = load_dit_model(args, resolved_device, torch.bfloat16)
+    # Stash so generate() reuses *this* instance — the only seam for hooking the
+    # DiT before the sampler loop runs.
+    shared_models["model"] = anima
+
+    vae = None
+    vae_path = getattr(args, "vae", None)
+    if with_vae and vae_path:
+        from library.models.qwen_vae import load_vae
+
+        vae = load_vae(
+            vae_path,
+            device="cpu",
+            disable_mmap=True,
+            spatial_chunk_size=getattr(args, "vae_chunk_size", None),
+            disable_cache=getattr(args, "vae_disable_cache", False),
+            dtype=torch.bfloat16,
+            eval=True,
+        )
+    elif with_vae:
+        log.warning(
+            "build_inference_bundle(with_vae=True) but args.vae is unset; "
+            "bundle.vae is None (latent decode will be unavailable)."
+        )
+
+    return InferenceBundle(
+        model=anima,
+        vae=vae,
+        text_encoder=shared_models["text_encoder"],
+        gen_settings=gen_settings,
+        shared_models=shared_models,
+        args=args,
+        device=resolved_device,
+    )
+
+
 # --- Training-side build helpers -------------------------------------------
 #
 # ``build_anima`` above owns the *inference / existing-adapter* path: it loads a

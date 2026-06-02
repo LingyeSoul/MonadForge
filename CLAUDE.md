@@ -57,7 +57,7 @@ make update                # update from a GitHub release (--dry-run / --version
 ruff check . --fix && ruff format .
 ```
 
-Gotchas: `merge` refuses ReFT / Hydra moe / postfix (not foldable) unless `--allow-partial`. `turbo` output is a normal LoRA — infer with `--infer_steps 4 --cfg 1.0`.
+Gotchas: `merge` refuses ReFT / Hydra moe / postfix (not foldable) unless `--allow-partial`. `turbo` output is a normal LoRA — infer with `--infer_steps 2 --cfg 1.0` (matched to the DP-DMD `student_steps=2` rollout).
 
 ## Key entry points
 
@@ -102,13 +102,16 @@ Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with s
 The pretrained model expects max-padded text encoder outputs — zero-padded positions act as attention sinks in cross-attention softmax. Trimming to actual text length produces **black images**. Both training and inference must pad to `max_length` and must NOT mask out padding via `crossattn_seqlens`. Regenerate disk-cached `.npz` after any tokenizer/padding change.
 
 ### Constant-token bucketing — native shapes are the only mode
-`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 and 4200** — each entry *exactly* filling its count (zero intra-bucket padding by construction), tuples in `(W, H)` order. Each forward runs at its real token count. `compile_blocks()` is the single switch: when `torch_compile` is on it sets `_native_flatten` so the forward flattens each bucket's patch grid to a fake-5D `(B, 1, seq_len, 1, D)` shape, keying the block graph on **token count alone (2 graphs)** instead of per-resolution (24). No padding → no flash static-pad leak; bit-exact to the eager 5D path (eager forwards skip the flatten). The legacy pad-to-static path (`set_static_token_count(pad=True)` / `compile_core` / `--compile_mode full` / `static_token_count` / `static_pad`) was **removed 2026-05-24** — it leaked padding into flash self-attn and couldn't run this table (4200 > 4096). Note this diverges from `DCW_ASPECT_BUCKETS` (the 4056 HD pair is no longer a training bucket). Regenerate disk caches after changing the table.
+`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 and 4200** — each entry *exactly* filling its count (zero intra-bucket padding by construction), tuples in `(W, H)` order. Each forward runs at its real token count. `compile_blocks()` is the single switch: when `torch_compile` is on it sets `_native_flatten` so the forward flattens each bucket's patch grid to a fake-5D `(B, 1, seq_len, 1, D)` shape, keying the block graph on **token count alone (2 graphs)** instead of per-resolution (24). No padding → no flash static-pad leak; bit-exact to the eager 5D path (eager forwards skip the flatten). The legacy pad-to-static path (`set_static_token_count(pad=True)` / `compile_core` / `--compile_mode full` / `static_token_count` / `static_pad`) was **removed 2026-05-24** — it leaked padding into flash self-attn and couldn't run this table (4200 > 4096).
 
 ### Lazy model loading
 DiT loads AFTER text-encoder/VAE caching and unloading, to avoid OOM: text encoder → cache → free → VAE → cache → free → load DiT → attach adapter → train.
 
 ### compile-after-apply (`build_anima`)
 `torch.compile` traces the adapter's monkey-patched forward, so `compile_blocks()` MUST run **after** `network.apply_to` + `load_weights`. `library/runtime/harness.py::build_anima` is the shared harness encoding this ordering (promoted from `bench/_anima.py`); use it from `bench`/`scripts`/`preprocess` rather than open-coding load→apply→compile.
+
+### The DiT operates on 5D latents `(B, C, T=1, H, W)` — the singleton is **dim 2**
+The DiT forward (and `PatchEmbed`, which `assert x.dim() == 5`) takes a **5D** latent with a singleton temporal/frame axis at **dim 2** (`T=1` for images — Anima reuses a video-shaped layout). Everything *around* the DiT is 4D `(B, C, H, W)`: VAE `encode_pixels_to_latents` returns 4D, cached `.npz` latents are 4D, the training inner loop works in 4D, FFT/spectral helpers (Spectrum, CNS γ, Log-Gabor) want 3D/4D `(C,H,W)`/`(B,C,H,W)`, and the vision tower (PE-Core `encode_pe_from_imageminus1to1`) wants 4D `(B,3,H,W)`. So the boundary dance is **always `unsqueeze(2)` going into the DiT and `squeeze(2)` coming out** — target **dim 2 explicitly**, never `squeeze()`/`squeeze(0)` (which silently hits batch when B=1 and corrupts the layout). Two recurring bite points: **`vae.decode_to_pixels` returns 5D `(B,3,1,H,W)` when fed a 5D latent** (squeeze dim 2 before handing RGB to a vision tower / `F.interpolate`), and **sampler-boundary plug-ins (DCW/SMC/CNS/SGMI/etc.) receive 5D** while any reference latent they blend against is often 4D (match ndim first — see the archived FreeText `_match_latent_ndim`). Mishandling dim 2 was a repeated source of subtle freetext bugs.
 
 ## Methods
 
@@ -120,13 +123,14 @@ Each method has a deep-dive doc; the prose below is one-line orientation plus th
 | **SPD** | Training-free multi-resolution inference (`--spd`): early steps at low res, spectral noise-expansion handoff to full res. Sampler-level runner in `networks/spd.py`, registered like Spectrum. | v0 = Euler-only, no DCW/SMC/Spectrum compose, single-late `0.5→1.0 @ σ0.7` default. `docs/experimental/spd.md`; `bench/spd/plan.md` Phase 3, `docs/proposal/spd_finetune_lora.md` (Case B). |
 | **DCW** | Training-free SNR-t bias correction at the sampler boundary; composes with everything. Scalar (`--dcw`) or v4 learnable (`--dcw_v4 auto`). | **Bias direction is (CFG × aspect)-dependent** — shipped scalar `−0.015` is CFG=1-only and wrong-sign on CFG=4 non-square. `docs/methods/dcw.md` |
 | **SMC-CFG** | Training-free α-adaptive sliding-mode CFG correction in velocity space (λ=5, α=0.2). | Paper's fixed k was ~14× off; ships `sign()` only (tanh ε removed). `docs/methods/smc_cfg.md` |
+| **CNS** | Training-free SDE noise recolorer (`--sampler er_sde --cns auto`): per-step injected noise is `sqrt(1−γ)`-shaped toward unresolved freq bands, RMS-renormalized (zero-sum). | **er_sde-only** (no-op on euler/lcm); faithful to paper Alg. 1 — repo's divider/tilt/energy knobs are FID-chasing the paper ablates against. `docs/methods/cns.md` |
 | **Mod guidance** | Text-conditioned AdaLN via learned `pooled_text_proj` MLP, distilled with `make distill-mod`. | `docs/methods/mod-guidance.md` |
 | **DirectEdit + Anima Tagger** | Inversion + edit-conditioning swap; Tagger (`library/captioning/`) maps image → Anima-format tags for ψ_src. | Edit leverage collapses if ψ_src is off-manifold — verify with `exp-test-directedit-dry`. `docs/experimental/directedit_editing_v3.md`, `anima_tagger.md` |
 | **IP-Adapter** | Decoupled image cross-attention; frozen DiT, trains resampler + per-block `to_k_ip`/`to_v_ip`. Defaults to pre-cached PE features. | `docs/experimental/ip-adapter.md` |
 | **EasyControl** | Extended self-attn image conditioning; frozen DiT, per-block cond LoRA + scalar `b_cond` gate. Source `easycontrol-dataset/`. | `docs/experimental/easycontrol.md` |
 | **Soft Tokens** | SoftREPA per-layer × per-t soft text tokens (~1M params); frozen DiT, per-block `Block.forward` splice into `crossattn_emb`. | InfoNCE objective intentionally skipped. `configs/methods/soft_tokens.toml` |
 | **ChimeraHydra** | Dual-pool additive MoE: content pool (network ContentRouter on pooled `crossattn_emb`) + freq pool (network FreqRouter on FEI+σ), two A's per Linear off disjoint SVD subspaces. Both pools always centered-gate; the per-Linear `lx_c` content router + non-centered path were removed. | T-LoRA mask hits content branch only. `docs/experimental/chimera-hydra.md`, `networks/lora_modules/chimera.py` |
-| **Turbo** | Decoupled-Hybrid DMD2 distillation; output is a normal LoRA. | Bespoke schema read by `scripts/distill_turbo/` — don't `print-config`. `docs/experimental/dmd2-decoupled.md` (ops) + `docs/structure/dmd2-decoupled.md` (math). |
+| **Turbo** | DP-DMD (diversity-preserved DMD) distillation; output is a normal LoRA. | Bespoke schema read by `scripts/distill_turbo/` — don't `print-config`. `docs/experimental/dpdmd.md` (ops), `docs/structure/dpdmd.md` (structure); CA-era history in `docs/proposal/dmd2_decoupled_improvements.md`. |
 | **Postfix-tail inversion** | Per-image inversion *probe* (training method archived 2026-05-20). | Observation tool, not a deployable adapter. `library/inference/postfix_inversion.py` |
 
 ## Preprocessing & scripts

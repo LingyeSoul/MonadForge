@@ -31,6 +31,33 @@ from library.inference.sampler_context import SamplerSideChannels
 
 logger = logging.getLogger(__name__)
 
+
+def _build_cns_recolorer(args):
+    """Build a CNS noise recolorer from ``--cns`` (path or "auto"), or None.
+
+    Only meaningful on the stochastic ``er_sde`` path — on euler/lcm there is no
+    injected noise to recolor, so the recolorer (even if loaded) is a no-op. We
+    still gate on the flag here and let the sampler ignore it otherwise.
+    """
+    spec = getattr(args, "cns", None)
+    if not spec:
+        return None
+    if getattr(args, "sampler", "euler") != "er_sde":
+        logger.warning(
+            "--cns is set but --sampler=%s injects no noise; CNS is a no-op "
+            "(use --sampler er_sde).",
+            getattr(args, "sampler", "euler"),
+        )
+        return None
+    from library.inference.corrections.cns import CNSRecolorer
+
+    recolorer = CNSRecolorer.from_path(
+        spec, strength=getattr(args, "cns_strength", 1.0)
+    )
+    logger.info("CNS noise recoloring enabled (strength=%.2f).", recolorer.strength)
+    return recolorer
+
+
 # Spectrum runner registry. The spectrum implementation lives in
 # networks/spectrum.py (or a downstream package); it self-registers on import.
 # generation.py never imports it directly so the dep edge can point inward
@@ -145,7 +172,14 @@ class GenerationSettings:
 
 
 def get_generation_settings(args: argparse.Namespace) -> GenerationSettings:
-    device = torch.device(args.device)
+    # ``inference.parse_args`` defaults ``--device`` to None and resolves it in
+    # main()'s body, but programmatic callers (GenerationRequest.to_args(), bench
+    # probes) skip that block. Resolve the cuda-else-cpu default here so the one
+    # chokepoint every caller funnels through can't see ``args.device is None``.
+    dev = getattr(args, "device", None) or (
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    device = torch.device(dev)
     logger.info(f"Using device: {device}, DiT weight precision: bfloat16")
     return GenerationSettings(device=device)
 
@@ -297,9 +331,12 @@ def generate_body_tiled(
 
     # Create sampler. Variable kept named `er_sde` for historic minimum-diff
     # reasons; both ERSDESampler and LCMSampler share the same .step interface.
+    cns = _build_cns_recolorer(args)
     er_sde = None
     if args.sampler == "er_sde":
-        er_sde = inference_utils.ERSDESampler(sigmas, seed=args.seed, device=device)
+        er_sde = inference_utils.ERSDESampler(
+            sigmas, seed=args.seed, device=device, cns=cns
+        )
     elif args.sampler == "lcm":
         er_sde = inference_utils.LCMSampler(sigmas, seed=args.seed, device=device)
 
@@ -610,9 +647,12 @@ def generate_body(
 
     # Create sampler. Variable kept named `er_sde` for historic minimum-diff
     # reasons; both ERSDESampler and LCMSampler share the same .step interface.
+    cns = _build_cns_recolorer(args)
     er_sde = None
     if args.sampler == "er_sde":
-        er_sde = inference_utils.ERSDESampler(sigmas, seed=args.seed, device=device)
+        er_sde = inference_utils.ERSDESampler(
+            sigmas, seed=args.seed, device=device, cns=cns
+        )
     elif args.sampler == "lcm":
         er_sde = inference_utils.LCMSampler(sigmas, seed=args.seed, device=device)
 

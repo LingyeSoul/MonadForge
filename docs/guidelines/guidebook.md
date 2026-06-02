@@ -166,6 +166,8 @@ make download-models
 
 > **下载中断时**：可以使用 `make download-anima`、`make download-sam3`、`make download-mit` 等单独的命令分批重新下载。
 
+> **SAM3 是受限模型。** 其权重存放在受限的 Hugging Face 仓库中，因此在下载成功之前，您必须访问 <https://huggingface.co/facebook/sam3>，点击 **Request access**，并**等待批准**（由仓库所有者授予——这可能需要几分钟到几天不等）。在获得访问权限之前，SAM3 下载将因 403/gated 错误而失败。上述三个核心模型（DiT、文本编码器、VAE）*不受限制*，`make download-models` 会在 SAM3 被阻止时继续执行——因此待批准的 SAM3 请求不会阻止您在不使用遮罩损失的情况下进行训练。获得批准后，运行 `make download-sam3` 来获取它。
+
 ---
 
 ## 5. 数据集准备

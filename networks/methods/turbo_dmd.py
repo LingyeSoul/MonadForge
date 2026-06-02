@@ -1,4 +1,4 @@
-"""Turbo Anima — Decoupled DMD distillation harness.
+"""Turbo Anima — DP-DMD distillation harness.
 
 Owns two plain ``LoRANetwork`` instances (student + fake) on one frozen Anima
 DiT. Both call ``apply_to(unet)`` which chains them onto every targeted
@@ -15,9 +15,12 @@ Used by ``scripts/distill_turbo/distill.py``. Inference loads the saved
 ``anima_turbo.safetensors`` through the standard LoRA path (no inference-side
 turbo code) — the student LoRA is just a normal LoRA with CFG=4 baked in.
 
-Docs: ``docs/structure/dmd2-decoupled.md`` (math), ``docs/experimental/dmd2-decoupled.md`` (ops).
-Paper: Liu et al., "CFG Augmentation as the Spear, Distribution Matching as
-the Shield" (arXiv:2511.22677).
+This harness is method-agnostic (two view-toggled LoRA stacks); the shipped
+objective driving it is DP-DMD.
+
+Docs: ``docs/structure/dpdmd.md`` (structure), ``docs/experimental/dpdmd.md`` (ops).
+Paper: Wu, Li, Zhang, Ma, "Diversity-Preserved Distribution Matching
+Distillation" (arXiv:2602.03139).
 """
 
 from __future__ import annotations

@@ -105,7 +105,7 @@ def main():
         default="output/ckpt/pooled_text_proj.safetensors",
         help="Where to save the trained projection weights",
     )
-    parser.add_argument("--iterations", type=int, default=7500)
+    parser.add_argument("--iterations", type=int, default=15000)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
     parser.add_argument(
@@ -115,7 +115,10 @@ def main():
         help="Number of transformer blocks to offload to CPU",
     )
     parser.add_argument(
-        "--save_every", type=int, default=750, help="Save checkpoint every N iterations"
+        "--save_every",
+        type=int,
+        default=1000,
+        help="Save checkpoint every N iterations",
     )
     parser.add_argument(
         "--attn_mode",
@@ -160,7 +163,6 @@ def main():
     parser.add_argument(
         "--grad_ckpt",
         action="store_true",
-        default=True,
         help="Enable gradient checkpointing with CPU offload (default on)",
     )
     parser.add_argument(
@@ -179,7 +181,6 @@ def main():
         "--no_shuffle",
         dest="shuffle",
         action="store_false",
-        default=True,
         help="Disable per-epoch shuffling of the (bucket-grouped) batch order. "
         "Default shuffles batch order each epoch while keeping every batch "
         "single-resolution and pinning the largest-token bucket to step 0.",
@@ -229,7 +230,7 @@ def main():
     parser.add_argument(
         "--validate_every_n_steps",
         type=int,
-        default=750,
+        default=1000,
         help="Run validation every N optimizer steps (only if validation_split>0)",
     )
     parser.add_argument(

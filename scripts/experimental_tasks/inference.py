@@ -121,18 +121,18 @@ def cmd_test_soft(extra):
 
 
 def cmd_test_turbo(extra):
-    """Inference with the latest turbo student LoRA at 4 steps, cfg=1.0.
+    """Inference with the latest turbo student LoRA at 2 steps, cfg=1.0.
 
     CFG is baked into the student during distillation, so production inference
-    runs cfg=1.0 (no double-CFG). Step count defaults to 4 — the value the
-    student was distilled at — but extra args can override.
+    runs cfg=1.0 (no double-CFG). Step count defaults to 2 — matching the
+    DP-DMD student's `student_steps=2` rollout — but extra args can override.
     """
     weight = latest_output("anima_turbo")
     base = list(INFERENCE_BASE)
     # Replace defaults so `--infer_steps`/`--guidance_scale` reflect the turbo
-    # contract (4 steps, cfg=1.0). User extra args still win since they come last.
+    # contract (2 steps, cfg=1.0). User extra args still win since they come last.
     base = _override_arg(base, "--sampler", "euler")
-    base = _override_arg(base, "--infer_steps", "4")
+    base = _override_arg(base, "--infer_steps", "2")
     base = _override_arg(base, "--guidance_scale", "1.0")
     run(
         [
@@ -147,7 +147,7 @@ def cmd_test_turbo(extra):
 def _override_arg(argv: list[str], flag: str, value: str) -> list[str]:
     """Replace a ``--flag VALUE`` (or ``--flag V1 V2``) pair in argv with a
     fresh ``--flag value`` pair. Used to retarget INFERENCE_BASE defaults
-    for the turbo contract (4 steps, cfg=1.0) without rewriting the whole list.
+    for the turbo contract (2 steps, cfg=1.0) without rewriting the whole list.
     """
     if flag not in argv:
         return argv + [flag, value]
@@ -792,27 +792,43 @@ def cmd_test_easycontrol(extra):
     output/tests/easycontrol/ and copies the ref image alongside the generated
     output as ``<name>_ref.png``.
 
+    ``EASYADAPTER=colorize`` targets the colorization checkpoint
+    (``anima_colorize``), saves to output/tests/colorize/, defaults the ref to a
+    random image under ``post_image_dataset/resized/`` (feed a real B&W manga page
+    via REF_IMAGE), and defaults to an EMPTY prompt (caption-free colorization).
+
     Examples:
       python tasks.py exp-test-easycontrol ref.png --prompt "a girl in a coffee shop"
       REF_IMAGE=ref.png EC_SCALE=0.8 python tasks.py exp-test-easycontrol
       python tasks.py exp-test-easycontrol         # random ref from easycontrol-dataset/
+      REF_IMAGE=manga.png EASYADAPTER=colorize python tasks.py exp-test-easycontrol
     """
+    adapter = (os.environ.get("EASYADAPTER") or "").strip()
+    is_colorize = adapter == "colorize"
+    weight_name = "anima_colorize" if is_colorize else "anima_easycontrol"
+    out_sub = "colorize" if is_colorize else "easycontrol"
+    ref_fallback_dir = (
+        ROOT / "post_image_dataset" / "resized"
+        if is_colorize
+        else ROOT / "easycontrol-dataset"
+    )
+
     ref_image = os.environ.get("REF_IMAGE", "").strip()
     if not ref_image and extra and not extra[0].startswith("-"):
         ref_image = extra[0]
         extra = extra[1:]
     if not ref_image:
-        ref_image = _random_ref_image(ROOT / "easycontrol-dataset") or ""
+        ref_image = _random_ref_image(ref_fallback_dir) or ""
     if not ref_image:
         print(
             "Usage: python tasks.py exp-test-easycontrol <ref_image> [extra...]\n"
             "   or: REF_IMAGE=path/to/ref.png python tasks.py exp-test-easycontrol [extra...]\n"
-            "   (no ref given and easycontrol-dataset/ is empty)",
+            f"   (no ref given and {ref_fallback_dir.name}/ is empty)",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    save_dir = ROOT / "output" / "tests" / "easycontrol"
+    save_dir = ROOT / "output" / "tests" / out_sub
     save_dir.mkdir(parents=True, exist_ok=True)
 
     args = [
@@ -820,7 +836,7 @@ def cmd_test_easycontrol(extra):
         "--save_path",
         str(save_dir),
         "--easycontrol_weight",
-        str(latest_output("anima_easycontrol")),
+        str(latest_output(weight_name)),
         "--easycontrol_image",
         ref_image,
         "--easycontrol_image_match_size",
@@ -829,6 +845,9 @@ def cmd_test_easycontrol(extra):
         args += ["--easycontrol_scale", scale]
     if prompt := os.environ.get("PROMPT"):
         args += ["--prompt", prompt]
+    elif is_colorize and not any(a == "--prompt" for a in extra):
+        # caption-free default for colorization (empty prompt → uncond text path)
+        args += ["--prompt", ""]
     if neg := os.environ.get("NEG"):
         args += ["--negative_prompt", neg]
     args += list(extra)

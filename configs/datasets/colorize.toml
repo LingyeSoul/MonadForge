@@ -1,0 +1,29 @@
+# Colorization (EasyControl) dataset blueprint.  See easycontrol_adapters/colorization/.
+#
+#   target = the existing COLOR illustrations — latents + text-encoder outputs
+#            already cached under post_image_dataset/lora/ by `make preprocess`.
+#   cond   = synthetic mangafied B&W latents (XDoG lineart + screentone), cached
+#            under post_image_dataset/colorize_cond/ by
+#            `make exp-easycontrol-preprocess EASYADAPTER=colorize`
+#            (easycontrol_adapters/colorization/prep.py).
+#
+# Mirrors configs/base.toml's LoRA blueprint (resized source + lora cache) with
+# literal paths, plus the cond_cache_dir pairing. flip_aug is OFF: latents can't
+# be flipped post-hoc, and the cond cache has no flipped variant.
+
+[general]
+caption_extension = '.txt'
+keep_tokens = 3
+
+[[datasets]]
+batch_size = 1
+validation_split = 0.025
+validation_seed = 42
+
+  [[datasets.subsets]]
+  image_dir = 'post_image_dataset/resized'
+  cache_dir = 'post_image_dataset/lora'
+  cond_cache_dir = 'post_image_dataset/colorize_cond'
+  recursive = true
+  flip_aug = false
+  num_repeats = 1

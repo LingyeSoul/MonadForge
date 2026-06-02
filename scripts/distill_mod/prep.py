@@ -132,16 +132,16 @@ def main() -> None:
     parser.add_argument(
         "--cfg_scale",
         type=float,
-        default=2.5,
+        default=4.0,
         help="CFG scale for synthesis (default 4.0 = Anima production).",
     )
     parser.add_argument(
         "--flow_shift",
         type=float,
-        default=1.0,
+        default=3.0,
         help=(
-            "Flow-matching sigma shift. Default 1.0 = Anima production env "
-            "(configs/base.toml `discrete_flow_shift=1.0`; every DCW/FeRA bench "
+            "Flow-matching sigma shift. Default 3.0 = Anima production env "
+            "(configs/base.toml `discrete_flow_shift=3.0`; every DCW/FeRA bench "
             "and `scripts/dcw/measure_bias_args.py`). `inference.py`'s 5.0 default "
             "is upstream cruft that production callers override."
         ),
@@ -181,7 +181,7 @@ def main() -> None:
     parser.add_argument(
         "--n_per_bucket",
         type=int,
-        default=1000,
+        default=1100,
         help=(
             "Cap synthesized stems per bucket (None = use every stem in the "
             "allowlist's buckets). With --shuffle_seed, picks deterministically "

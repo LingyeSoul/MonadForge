@@ -219,13 +219,6 @@ COMMANDS = {
         "into a 4-step LoRA student (configs/methods/turbo.toml). "
         "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod).",
     ),
-    "exp-turbo-prep": (
-        exp_training.cmd_turbo_prep,
-        "[experimental] Turbo dataset curation (item 5) — score every cached stem "
-        "(latent HF energy + Immerkær grain detector on resized px) and emit "
-        "post_image_dataset/turbo_prep/keep_list.json. No GPU. Consumed by exp-turbo "
-        "when use_prep_list=true in configs/methods/turbo.toml.",
-    ),
     "exp-spd": (
         exp_training.cmd_spd,
         "[experimental] SPD fine-tuning LoRA — §4.3 trajectory adapter that teaches a "
@@ -259,6 +252,11 @@ COMMANDS = {
         exp_training.cmd_easycontrol_preprocess,
         "[experimental] Full EasyControl preprocess: latents + text emb. "
         "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
+    ),
+    "exp-easycontrol-download": (
+        exp_training.cmd_easycontrol_download,
+        "[experimental] Download an EasyControl adapter's extra weights. "
+        "EASYADAPTER=colorize → Sketch2Manga screening weights (~5.7GB).",
     ),
     "exp-test-soft": (
         exp_inference.cmd_test_soft,

@@ -1,0 +1,54 @@
+# Colorization — EasyControl control task (manga/lineart → color).
+#
+# A control-task project under easycontrol_adapters/colorization/. Same frozen-DiT
+# EasyControl network as easycontrol.toml; the ONLY differences are:
+#   • cond ≠ target — the condition is a synthetic mangafied B&W latent (cached in
+#     a parallel cond_cache_dir; see configs/datasets/colorize.toml), the target
+#     is the original color image.
+#   • caption-free by default — high caption_dropout_rate so the model colorizes
+#     from manga structure alone and never needs a precise caption at inference
+#     (an optional short prompt still steers specific colors).
+#
+# Run via:  make exp-easycontrol EASYADAPTER=colorize
+# Prep via: make exp-easycontrol-preprocess EASYADAPTER=colorize
+
+dataset_config = "configs/datasets/colorize.toml"
+
+network_module = "networks.methods.easycontrol"
+
+network_dim = 32
+network_alpha = 32
+
+network_args = [
+    "b_cond_init=-10.0",
+    "cond_scale=1.0",
+    "apply_ffn_lora=1",
+    "cond_token_count=4096",
+]
+
+output_name = "anima_colorize"
+
+logging_dir = "output/logs"
+log_with = "tensorboard"
+
+learning_rate = 5e-5
+max_train_epochs = 6
+save_every_n_epochs = 3
+checkpointing_epochs = 3
+
+use_easycontrol = true
+easycontrol_drop_p = 0.1
+
+# Caption-free default: drop the caption ~80% of training steps (→ uncond T5("")
+# embedding) so colorization is driven by the manga STRUCTURE, not text. Inference
+# works with an empty prompt; an optional short prompt ("pink hair") still steers.
+caption_dropout_rate = 0.8
+
+# The manga cond is already a lossy hint (lineart + screentone), so keep the
+# training-time cond perturbation small — high noise would erase the line
+# structure we want the model to follow.
+easycontrol_cond_noise_max = 0.05
+
+blocks_to_swap = 0
+gradient_checkpointing = true
+unsloth_offload_checkpointing = true

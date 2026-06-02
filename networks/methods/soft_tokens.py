@@ -4,10 +4,15 @@
 # block independently. Anima's DiT is cross-attention (not MM-DiT), so
 # crossattn_emb doesn't evolve through blocks — no strip/re-prepend needed.
 #
-# Splice: end-of-sequence overwrite of the K zero-padding tail slots, keeping
-# crossattn_emb shape static for torch.compile. Zero-padded positions are
-# cross-attention sinks (Anima text-encoder padding invariant), so writing into
-# them gives the tokens attention mass without changing seqlen.
+# Splice (two modes, see SoftTokensNetwork.splice_position):
+#   front_of_padding (shipped config default) — scatter the K tokens at
+#     [seqlens[i], seqlens[i]+K) per sample, immediately after the real caption.
+#     Algorithm-faithful: SoftREPA concatenates soft tokens onto the text
+#     sequence, and this is the direct analogue in Anima's max-padded layout.
+#   end_of_sequence (constructor fallback) — overwrite the K zero-padding tail
+#     slots, keeping crossattn_emb shape static for torch.compile. Gets attention
+#     mass only because Anima's deep-padding slots are cross-attention sinks
+#     (text-encoder padding invariant); an Anima-specific compile shortcut.
 #
 # vs postfix.py: postfix splices once at the cached adapter output; soft tokens
 # splice per-block via monkey-patched Block.forward (ReFT-pattern).
@@ -47,12 +52,58 @@ DEFAULT_EMBED_DIM = 1024
 CONTRASTIVE_MODES = ("shuffled", "jaccard", "hard", "hard_backoff")
 
 # Contrastive objective, sharing the extra-forward plumbing:
-#   ``infonce`` — SoftREPA InfoNCE over cached-TE negatives (default).
-#   ``agsm``    — Alignment-Guided Score Matching: bounded target-shift
-#                 ``v_target ± γ_z·Ã(t)·Δ_j`` with per-candidate Plackett–Luce
-#                 guidance ``Δ_j = v̂_ema_j − Σ_k w_k v̂_ema_k`` read off an EMA of
-#                 the bank's own preds (docs/proposal/soft_tokens_agsm.md, Phase 2).
-CONTRASTIVE_OBJECTIVES = ("infonce", "agsm")
+#   ``infonce``  — SoftREPA InfoNCE over cached-TE negatives (default).
+#   ``softrank`` — differentiable listwise rank of the matched caption among the
+#                  candidates (``L = softtorch.rank(r)[matched] − 1``). Gradient
+#                  flows *through* the ordering yet stays bounded by the SoftSort
+#                  relaxation (unlike InfoNCE's unbounded negative push). Needs k
+#                  live negative forwards only (docs/proposal/soft_tokens_softrank.md).
+# (AGSM was removed 2026-05-30 — its w_matched stayed pinned at chance in both the
+# soft-tokens A/B and the mod-guidance probe; softrank won on eyeball + curves.)
+CONTRASTIVE_OBJECTIVES = ("infonce", "softrank")
+
+
+# GPU-resident, pure-torch softtorch.rank methods suitable for the per-step
+# training loop. ``ot`` (Sinkhorn) and ``fast_soft_sort`` (Numba JIT, CPU-only →
+# GPU↔CPU sync every step) are deliberately excluded — fine offline, perf sinks
+# in the loop.
+SOFTRANK_METHODS = ("neuralsort", "softsort")
+
+
+def _soft_rank(
+    scores: torch.Tensor, softness: float, method: str = "neuralsort"
+) -> torch.Tensor:
+    """softtorch differentiable rank along the last dim (1 = best score).
+
+    Thin wrapper over ``softtorch.rank`` (a-paulus/softtorch, Apache-2.0,
+    arXiv:2603.08824). ``descending=True`` so a higher reward earns a lower
+    (better) rank; ``standardize=True`` (softtorch's default) z-scores the
+    candidate axis so the tiny FM-error reward gaps are well-conditioned — that
+    standardization is *why* the objective needs ``contrastive_k ≥ 2`` (with a
+    single negative the 2-value z-score is gap-independent regardless of method;
+    enforced in ``SoftTokensNetwork.__init__``). Returns ranks in ``[1, n]``.
+
+    ``method`` ∈ ``SOFTRANK_METHODS``:
+      - ``neuralsort`` (default) — NeuralSort relaxation (Grover et al. 2019).
+        Smooth gradient *through ties*; the right pick for the near-miss regime
+        where the matched caption and the best negative are neck-and-neck.
+      - ``softsort`` — SoftSort column projection (Prillo & Eisenschlos, ICML
+        2020). Faster but its gradient goes ~flat at exact ties (softtorch's
+        documented discontinuity-at-non-unique-values).
+
+    softtorch is imported lazily so its numba / POT import cost is only paid when
+    the softrank objective actually fires.
+    """
+    import softtorch as st
+
+    return st.rank(
+        scores,
+        dim=-1,
+        method=method,
+        descending=True,
+        softness=max(float(softness), 1e-6),
+        standardize=True,
+    )
 
 
 def create_network(
@@ -79,15 +130,12 @@ def create_network(
     contrastive_jaccard_alpha = float(kwargs.get("contrastive_jaccard_alpha", 1.0))
     contrastive_every_n = int(kwargs.get("contrastive_every_n", 1))
     contrastive_objective = str(kwargs.get("contrastive_objective", "infonce"))
-    agsm_gamma = float(kwargs.get("agsm_gamma", 0.5))
-    _agsm_gamma_neg = kwargs.get("agsm_gamma_neg")
-    agsm_gamma_neg = None if _agsm_gamma_neg is None else float(_agsm_gamma_neg)
-    agsm_ema_decay = float(kwargs.get("agsm_ema_decay", 0.99))
-    agsm_dual_bank = str(kwargs.get("agsm_dual_bank", "false")).lower() in (
-        "true",
-        "1",
-        "yes",
-    )
+    softrank_softness = float(kwargs.get("softrank_softness", 0.1))
+    softrank_method = str(kwargs.get("softrank_method", "neuralsort"))
+    # ``dual_bank`` (ψ⁺/ψ⁻ token banks). ``agsm_dual_bank`` kept as a deprecated
+    # alias so pre-2026-05-30 configs/snapshots don't silently drop the flag.
+    _dual_bank = kwargs.get("dual_bank", kwargs.get("agsm_dual_bank", "false"))
+    dual_bank = str(_dual_bank).lower() in ("true", "1", "yes")
     network = SoftTokensNetwork(
         num_tokens=num_tokens,
         embed_dim=embed_dim,
@@ -103,10 +151,9 @@ def create_network(
         contrastive_jaccard_alpha=contrastive_jaccard_alpha,
         contrastive_every_n=contrastive_every_n,
         contrastive_objective=contrastive_objective,
-        agsm_gamma=agsm_gamma,
-        agsm_gamma_neg=agsm_gamma_neg,
-        agsm_ema_decay=agsm_ema_decay,
-        agsm_dual_bank=agsm_dual_bank,
+        softrank_softness=softrank_softness,
+        softrank_method=softrank_method,
+        dual_bank=dual_bank,
         multiplier=multiplier,
     )
     return network
@@ -137,11 +184,11 @@ def create_network_from_weights(
             f"soft_tokens weight file must contain 'tokens' and 't_offsets.weight' "
             f"(got keys: {list(weights_sd.keys())[:8]})"
         )
-    # Dual-bank (AGSM Phase 3a) checkpoints carry a leading branch axis on
-    # ``tokens`` (n_banks, n_layers, K, D); single-bank stay 3D. Inference uses
-    # ONLY ψ⁺ (branch 0) — Appendix H: injecting ψ⁻ at inference over-suppresses
-    # detail — so build a single-bank net and let ``load_weights`` slice the
-    # branch-0 weights. Resume (for_inference=False) keeps both banks.
+    # Dual-bank checkpoints carry a leading branch axis on ``tokens``
+    # (n_banks, n_layers, K, D); single-bank stay 3D. Inference uses ONLY ψ⁺
+    # (branch 0) — injecting ψ⁻ at inference over-suppresses detail — so build a
+    # single-bank net and let ``load_weights`` slice the branch-0 weights. Resume
+    # (for_inference=False) keeps both banks.
     if tokens.dim() == 4:
         file_n_banks, n_layers, num_tokens, embed_dim = tokens.shape
     else:
@@ -171,7 +218,7 @@ def create_network_from_weights(
         # Contrastive is training-only (extra forwards, no learned params) — off
         # on the inference path.
         contrastive_weight=0.0,
-        agsm_dual_bank=build_dual,
+        dual_bank=build_dual,
         multiplier=multiplier,
     )
     return network, weights_sd
@@ -209,10 +256,9 @@ class SoftTokensNetwork(AdapterNetworkBase):
         contrastive_jaccard_alpha: float = 1.0,
         contrastive_every_n: int = 1,
         contrastive_objective: str = "infonce",
-        agsm_gamma: float = 0.5,
-        agsm_gamma_neg: Optional[float] = None,
-        agsm_ema_decay: float = 0.99,
-        agsm_dual_bank: bool = False,
+        softrank_softness: float = 0.1,
+        softrank_method: str = "neuralsort",
+        dual_bank: bool = False,
         multiplier: float = 1.0,
     ):
         super().__init__()
@@ -245,16 +291,35 @@ class SoftTokensNetwork(AdapterNetworkBase):
                 raise ValueError(
                     f"contrastive_tau must be positive, got {contrastive_tau}"
                 )
-            if contrastive_objective == "agsm" and not (0.0 < agsm_ema_decay < 1.0):
-                raise ValueError(
-                    f"agsm_ema_decay must be in (0, 1), got {agsm_ema_decay}"
-                )
+            if contrastive_objective == "softrank":
+                if contrastive_k < 2:
+                    raise ValueError(
+                        "softrank requires contrastive_k >= 2: softtorch's softsort "
+                        "standardizes the candidate axis, which is gap-independent "
+                        f"(degenerate) with a single negative (got "
+                        f"contrastive_k={contrastive_k})"
+                    )
+                if softrank_softness <= 0.0:
+                    raise ValueError(
+                        f"softrank_softness must be positive, got {softrank_softness}"
+                    )
+                if softrank_method not in SOFTRANK_METHODS:
+                    raise ValueError(
+                        f"softrank_method must be one of {SOFTRANK_METHODS}, "
+                        f"got {softrank_method!r}"
+                    )
 
         self.num_tokens = num_tokens
         self.embed_dim = embed_dim
         self.n_layers = n_layers
         self.n_t_buckets = n_t_buckets
         self.splice_position = splice_position
+        # Stored for AdapterNetworkBase API compatibility (set_multiplier), but
+        # NOT applied to the injected tokens: soft tokens splice in at full
+        # magnitude regardless of multiplier (see _make_block_hook). Unlike
+        # LoRA, there is no `* multiplier` scale on the delta — the tokens enter
+        # cross-attention directly, so `set_multiplier(0)` does NOT disable them.
+        # Gate the whole adapter at the trainer/loader level to turn them off.
         self.multiplier = multiplier
 
         # Contrastive objective (training-only; extra forwards live in
@@ -280,31 +345,25 @@ class SoftTokensNetwork(AdapterNetworkBase):
         self._contrastive_every_n = max(1, int(contrastive_every_n))
         self._contrastive_fire_this_step = True
 
-        # AGSM target-shift objective (docs/proposal/soft_tokens_agsm.md, Phase 2).
-        # ``contrastive_objective`` selects the loss math in the adapter. Phase 2
-        # is single-bank (ψ⁺=ψ⁻=this bank, only crossattn_emb differs), Ã(t)=1;
-        # Δ is read off an EMA shadow of the bank's own preds (self-distillation).
+        # ``contrastive_objective`` selects the loss math in the adapter
+        # (infonce | softrank).
         self.contrastive_objective = str(contrastive_objective)
-        # Dual token banks (AGSM Phase 3a, paper §3.3): branch 0 = ψ⁺ (spliced on
-        # the anchor + positive value passes + ALL inference), branch 1 = ψ⁻
-        # (negative value passes, training-only). Single bank (n_banks=1) is
-        # bit-identical to Phase 2 and keeps the 3D on-disk format. Only meaningful
-        # under the agsm objective, but the param layout is set here at construction.
-        self.agsm_dual_bank = bool(agsm_dual_bank)
-        self.n_banks = 2 if self.agsm_dual_bank else 1
-        self._agsm_gamma = float(agsm_gamma)
-        # γ⁻ — the negative-branch guidance scale (paper's γ⁻; SD3/flow used
-        # (γ⁺, γ⁻) = (1, 0.1), a deliberately weaker negative push). Falls back
-        # to the symmetric γ⁺ when unset for back-compat.
-        self._agsm_gamma_neg = (
-            float(agsm_gamma) if agsm_gamma_neg is None else float(agsm_gamma_neg)
-        )
-        self._agsm_ema_decay = float(agsm_ema_decay)
-        # EMA shadow of the bank, lazily cloned from the live params and refreshed
-        # per optimizer step. Plain attributes (not buffers/params) so they stay
-        # out of state_dict and carry no gradient.
-        self._tokens_ema: Optional[torch.Tensor] = None
-        self._t_offsets_ema: Optional[torch.Tensor] = None
+        # softrank: SoftSort softness (softtorch's temperature). NOT contrastive_tau
+        # — softtorch's standardize=True puts the candidate axis at unit scale, so
+        # the right softness is ~0.1 (its default), not the sigmoid τ=0.5 the
+        # proposal floated reusing. Separate knob (the τ-reuse was the wrong scale).
+        self._softrank_softness = float(softrank_softness)
+        # SoftSort vs NeuralSort relaxation for softrank. neuralsort (default) has
+        # a smooth gradient through ties (the near-miss regime); softsort goes flat
+        # at exact ties. Both pure-torch / GPU-resident.
+        self._softrank_method = str(softrank_method)
+        # Dual token banks: branch 0 = ψ⁺ (spliced on the anchor + positive value
+        # passes + ALL inference), branch 1 = ψ⁻ (negative value passes, training-
+        # only) — lets the negative push refine ψ⁻ without spending generative
+        # fidelity on the kept bank. Single bank (n_banks=1) keeps the 3D on-disk
+        # format. Inference is ψ⁺-only (injecting ψ⁻ over-suppresses detail).
+        self.dual_bank = bool(dual_bank)
+        self.n_banks = 2 if self.dual_bank else 1
 
         # Single bank: (n_layers, K, D) — unchanged 3D shape + on-disk format.
         # Dual bank: (2, n_layers, K, D) with a leading branch axis (ψ⁺, ψ⁻),
@@ -322,9 +381,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
         # Zero-init = identity perturbation at step 0. Dual stacks the branches in
         # the column axis (bank-major: [ψ⁺ layers | ψ⁻ layers]) so the ψ⁺ slice is
         # the first n_layers·D columns.
-        self.t_offsets = nn.Embedding(
-            n_t_buckets, self.n_banks * n_layers * embed_dim
-        )
+        self.t_offsets = nn.Embedding(n_t_buckets, self.n_banks * n_layers * embed_dim)
         nn.init.zeros_(self.t_offsets.weight)
 
         # Step-scoped state set by append_postfix() per forward and consumed by
@@ -388,7 +445,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
             )
         # Anchor / inference forward always splices ψ⁺ (branch 0). The negative
         # ψ⁻ branch is only ever spliced from the training adapter's value passes.
-        self._set_step_tokens(timesteps, crossattn_seqlens, use_ema=False, branch=0)
+        self._set_step_tokens(timesteps, crossattn_seqlens, branch=0)
         return crossattn_emb
 
     def _layer_tokens_from(
@@ -399,8 +456,8 @@ class SoftTokensNetwork(AdapterNetworkBase):
         branch: int = 0,
     ) -> torch.Tensor:
         """Per-step (n_layers, B, K, D) tokens for a given (tokens, t_offsets)
-        pair. Factored out of ``append_postfix`` so the same math runs against
-        either the live bank or its EMA shadow (AGSM Δ forwards).
+        pair. Factored out of ``append_postfix`` so the ψ⁺ and ψ⁻ branches run
+        the same math.
 
         ``branch`` selects the bank (0=ψ⁺, 1=ψ⁻) for dual-bank nets; ignored
         (always ψ⁺) when ``n_banks == 1`` so the single-bank path is unchanged."""
@@ -413,9 +470,9 @@ class SoftTokensNetwork(AdapterNetworkBase):
             base = tokens  # (n_layers, K, D)
         else:
             # (B, n_banks * n_layers * D) → pick this branch → (B, n_layers, D)
-            offsets = offsets_full.view(
-                B, self.n_banks, self.n_layers, self.embed_dim
-            )[:, branch]
+            offsets = offsets_full.view(B, self.n_banks, self.n_layers, self.embed_dim)[
+                :, branch
+            ]
             base = tokens[branch]  # (n_layers, K, D)
         # (n_layers, K, D) → (1, n_layers, K, D), broadcast over batch + over K.
         per_step = base.unsqueeze(0) + offsets.unsqueeze(2)  # (B, n_layers, K, D)
@@ -427,22 +484,14 @@ class SoftTokensNetwork(AdapterNetworkBase):
         self,
         timesteps: torch.Tensor,
         crossattn_seqlens: Optional[torch.Tensor],
-        use_ema: bool = False,
         branch: int = 0,
     ) -> None:
         """Compute + cache the per-step layer tokens read by the block hooks.
 
-        ``use_ema=True`` primes the splice from the EMA shadow bank instead of
-        the live params (no grad — the AGSM guidance direction Δ is detached).
         ``branch`` selects ψ⁺ (0) / ψ⁻ (1) for dual-bank nets.
         """
-        if use_ema:
-            self._ensure_bank_ema()
-            tokens, t_offsets_weight = self._tokens_ema, self._t_offsets_ema
-        else:
-            tokens, t_offsets_weight = self.tokens, self.t_offsets.weight
         self._step_layer_tokens = self._layer_tokens_from(
-            tokens, t_offsets_weight, timesteps, branch=branch
+            self.tokens, self.t_offsets.weight, timesteps, branch=branch
         )
         # front_of_padding needs per-sample seqlens at hook time; end_of_sequence
         # ignores them. Cache regardless so the hook doesn't have to know which
@@ -475,6 +524,10 @@ class SoftTokensNetwork(AdapterNetworkBase):
             step_tokens = net._step_layer_tokens
             if step_tokens is not None:
                 # (B, K, D) for this layer. Cast to crossattn dtype/device.
+                # net.multiplier is intentionally NOT applied here — soft tokens
+                # splice in at full magnitude (no LoRA-style `* multiplier`
+                # scale), so set_multiplier(0) does not disable them. See the
+                # note at the `self.multiplier` assignment in __init__.
                 layer_tok = step_tokens[layer_idx].to(
                     dtype=crossattn_emb.dtype, device=crossattn_emb.device
                 )
@@ -541,7 +594,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
             self._original_forwards.append(org_forward)
         logger.info(
             f"soft_tokens: monkey-patched first {self.n_layers} of {len(blocks)} "
-            f"DiT blocks (end-of-sequence splice, K={self.num_tokens})"
+            f"DiT blocks ({self.splice_position} splice, K={self.num_tokens})"
         )
 
     # ── Standard adapter API ────────────────────────────────────────────
@@ -580,13 +633,11 @@ class SoftTokensNetwork(AdapterNetworkBase):
             "ss_contrastive_warmup_ratio": str(self._contrastive_warmup_ratio),
             "ss_contrastive_every_n": str(self._contrastive_every_n),
             "ss_contrastive_objective": self.contrastive_objective,
-            "ss_agsm_gamma": str(self._agsm_gamma),
-            "ss_agsm_gamma_neg": str(self._agsm_gamma_neg),
-            "ss_agsm_ema_decay": str(self._agsm_ema_decay),
-            # Dual-bank (Phase 3a) provenance. ``ss_n_banks`` is also the load-side
-            # signal: inference reads only the ψ⁺ slice regardless, but a 2-bank
-            # stamp tells a resume to rebuild both branches.
-            "ss_agsm_dual_bank": "true" if self.agsm_dual_bank else "false",
+            "ss_softrank_softness": str(self._softrank_softness),
+            "ss_softrank_method": self._softrank_method,
+            # Dual-bank provenance. The load side keys off the on-disk tensor rank
+            # (4D ⇒ dual), so ``ss_n_banks`` / ``ss_dual_bank`` are informational.
+            "ss_dual_bank": "true" if self.dual_bank else "false",
             "ss_n_banks": str(self.n_banks),
         }
 
@@ -634,7 +685,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
         # dual net
         if not file_dual:
             raise ValueError(
-                "agsm_dual_bank=True but the checkpoint has a single (3D) bank — "
+                "dual_bank=True but the checkpoint has a single (3D) bank — "
                 "a single-bank checkpoint cannot initialize both ψ⁺/ψ⁻ branches; "
                 "train dual from scratch or resume a dual checkpoint."
             )
@@ -677,7 +728,9 @@ class SoftTokensNetwork(AdapterNetworkBase):
             # Squared pairwise distances ‖a‖²+‖b‖²−2a·b; clamp subtraction round-off.
             sq = tokens.pow(2).sum(-1)  # (L, K)
             d_sq = (
-                sq.unsqueeze(2) + sq.unsqueeze(1) - 2.0 * (tokens @ tokens.transpose(1, 2))
+                sq.unsqueeze(2)
+                + sq.unsqueeze(1)
+                - 2.0 * (tokens @ tokens.transpose(1, 2))
             ).clamp_min(0.0)  # (L, K, K)
             out["soft_tokens/tokens_min_d_sq"] = float(
                 d_sq[:, iu[0], iu[1]].min().item()
@@ -714,9 +767,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
         every_n = int(self._contrastive_every_n)
         accum = max(1, int(accum))
         optimizer_step = int(global_step) // accum
-        self._contrastive_fire_this_step = (
-            every_n <= 1 or optimizer_step % every_n == 0
-        )
+        self._contrastive_fire_this_step = every_n <= 1 or optimizer_step % every_n == 0
 
         target = float(self._contrastive_target_weight)
         ratio = float(self._contrastive_warmup_ratio)
@@ -824,121 +875,76 @@ class SoftTokensNetwork(AdapterNetworkBase):
             "contrastive_logit_gap": float(gap.item()),
         }
 
-    # ── AGSM target-shift objective (docs/proposal/soft_tokens_agsm.md) ──────
+    # ── soft-rank listwise objective (docs/proposal/soft_tokens_softrank.md) ──
 
-    def _ensure_bank_ema(self) -> None:
-        """Lazily clone the EMA shadow off the live bank (device/dtype-matched)."""
-        if self._tokens_ema is None:
-            self._tokens_ema = self.tokens.detach().clone()
-            self._t_offsets_ema = self.t_offsets.weight.detach().clone()
-
-    def update_bank_ema(self) -> None:
-        """``ema ← decay·ema + (1−decay)·live`` for both bank tensors.
-
-        Called once per optimizer step (adapter gates on ``sync_gradients``);
-        no-op unless AGSM is active. The shadow lags the live bank by one step,
-        which keeps Δ off the bank's instantaneous output — the decoupling that
-        makes the target a bounded fixed point.
-        """
-        if self.contrastive_objective != "agsm":
-            return
-        self._ensure_bank_ema()
-        d = float(self._agsm_ema_decay)
-        self._tokens_ema.mul_(d).add_(self.tokens.detach(), alpha=1.0 - d)
-        self._t_offsets_ema.mul_(d).add_(
-            self.t_offsets.weight.detach(), alpha=1.0 - d
-        )
-
-    @staticmethod
-    def _agsm_pl_weights(
-        ema_all: torch.Tensor, v_target: torch.Tensor, tau: float
-    ) -> torch.Tensor:
-        """Plackett–Luce candidate weights (Algorithm 1 line 10 / Eq. 13, 40).
-
-        ``ema_all`` is the EMA-bank velocity for every candidate caption stacked
-        on dim 1 (index 0 = matched, 1..k = mismatched), ``(B, m, C, H, W)``. The
-        implicit reward is the negative mean-squared FM error per candidate (same
-        scale/reduction as the InfoNCE logit), and ``w = softmax_j(r_j / τ)``.
-        When the matched caption explains the latent best, ``w_matched → 1`` which
-        drives the guidance Δ → 0 — the self-annealing normalized correction that
-        *bounds* AGSM (paper §3.3). Returns ``(B, m)``, detached.
-        """
-        B, m = ema_all.shape[0], ema_all.shape[1]
-        vt = v_target.float().unsqueeze(1)  # (B, 1, C, H, W)
-        reward = -(ema_all.float() - vt).pow(2).reshape(B, m, -1).mean(dim=2)  # (B, m)
-        return torch.softmax(reward / max(float(tau), 1e-6), dim=1).detach()
-
-    def agsm_targets(
+    def _candidate_rewards(
         self,
-        v_pos_ema: torch.Tensor,
-        v_neg_ema: torch.Tensor,
-        v_target: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-        """Bounded PL-weighted target velocities (Algorithm 1 lines 10–12, Eq. 17).
-
-        Single-bank Phase 2: the matched + mismatched EMA preds all come off the
-        one shadow bank (only the spliced caption differs), so a single
-        PL-weighted baseline ``Σ_j w_j v̂_ema_j`` (over **all** candidates incl.
-        the matched one) serves both branches. Per-candidate guidance
-        ``Δ_j = v̂_ema_j − baseline`` then shifts each target by its own sign/scale::
-
-            tgt⁺   = v_target + γ⁺·(v̂⁺_ema   − baseline)
-            tgt⁻_j = v_target − γ⁻·(v̂⁻_ema_j − baseline)
-
-        All outputs are detached (constants for the regression in ``agsm_losses``).
-        Mirrors Eq. 17 with Ã(t)=1; the ``v = ε − x₀`` mapping makes the ε-target
-        shift an exact v-target shift (proposal §"flow-matching mapping").
-
-        Shapes: v_pos_ema, v_target ``(B, C, H, W)``; v_neg_ema ``(B, k, C, H, W)``.
-        Returns ``(tgt_pos (B,C,H,W), tgt_neg (B,k,C,H,W), diag)``.
-        """
-        vp = v_pos_ema.float()
-        vn = v_neg_ema.float()
-        vt = v_target.float()
-        ema_all = torch.cat([vp.unsqueeze(1), vn], dim=1)  # (B, m=k+1, C, H, W)
-        w = self._agsm_pl_weights(ema_all, vt, self._contrastive_tau)  # (B, m)
-        baseline = (w.view(*w.shape, 1, 1, 1) * ema_all).sum(dim=1)  # (B, C, H, W)
-        gp = float(self._agsm_gamma)
-        gn = float(self._agsm_gamma_neg)
-        delta_pos = vp - baseline  # (B, C, H, W)
-        delta_neg = vn - baseline.unsqueeze(1)  # (B, k, C, H, W)
-        tgt_pos = (vt + gp * delta_pos).detach()
-        tgt_neg = (vt.unsqueeze(1) - gn * delta_neg).detach()
-        with torch.no_grad():
-            all_delta = torch.cat([delta_pos.unsqueeze(1), delta_neg], dim=1)
-            diag = {
-                "w_matched": float(w[:, 0].mean().item()),
-                "delta_norm": float(all_delta.flatten(2).norm(dim=-1).mean().item()),
-            }
-        return tgt_pos, tgt_neg, diag
-
-    @staticmethod
-    def agsm_losses(
         v_pos: torch.Tensor,
         v_neg: torch.Tensor,
-        tgt_pos: torch.Tensor,
-        tgt_neg: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Bounded target-shift MSE losses against precomputed (detached) targets.
+        v_target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Per-candidate FM reward ``r_j = −mean((v̂_j − v_target)²)`` over C·H·W.
 
-            L⁺ = ‖ v_pos   − tgt_pos   ‖²
-            L⁻ = mean_j ‖ v_neg_j − tgt_neg_j ‖²
+        Returns ``(B, m=k+1)`` with index 0 = matched, 1..k = mismatched (higher =
+        better, same reduction as the InfoNCE logit pre-τ). Differentiable in both
+        ``v_pos`` and ``v_neg``, so the caller can ``.detach()`` whichever branch it
+        drops to split the grad-cache (exactly as ``_velocities_to_logits`` does).
 
-        ``tgt_pos`` / ``tgt_neg`` are constants (from ``agsm_targets``), so each
-        term has a fixed point — the AGSM fix for InfoNCE's unbounded negative
-        divergence. Gradient flows through whichever of ``v_pos`` / ``v_neg`` the
-        caller leaves live (the grad-cache split in ``after_backward``).
-
-        Shapes: v_pos, tgt_pos ``(B, C, H, W)``; v_neg, tgt_neg ``(B, k, C, H, W)``.
-        Returns ``(l_pos, l_neg)`` scalars; the caller sums them.
+        Shapes: ``v_pos, v_target (B, C, H, W)``; ``v_neg (B, k, C, H, W)``.
         """
-        B = v_pos.shape[0]
-        k = v_neg.shape[1]
-        l_pos = (v_pos.float() - tgt_pos).pow(2).reshape(B, -1).mean(dim=1).mean()
-        l_neg = (
-            (v_neg.float() - tgt_neg).pow(2).reshape(B, k, -1).mean(dim=2).mean()
-        )
-        return l_pos, l_neg
+        vp = v_pos.float()
+        vt = v_target.float()
+        vn = v_neg.float()
+        B = vp.shape[0]
+        k = vn.shape[1]
+        r_pos = -(vp - vt).pow(2).reshape(B, -1).mean(dim=1)  # (B,)
+        r_neg = -(vn - vt.unsqueeze(1)).pow(2).reshape(B, k, -1).mean(dim=2)  # (B, k)
+        return torch.cat([r_pos.unsqueeze(1), r_neg], dim=1)  # (B, m)
+
+    def softrank_loss(
+        self,
+        v_pos: torch.Tensor,
+        v_neg: torch.Tensor,
+        v_target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Differentiable SoftSort rank of the matched caption, pushed toward best.
+
+            r_j  = −‖v̂_j − v_target‖²                       (per-candidate reward)
+            L    = softtorch.rank(r, softsort)[matched] − 1   (rank ∈ [1, m]; 1=win)
+
+        Gradient flows through every ``r_j`` — i.e. through the soft ordering (no
+        detach anywhere on the ranking; ``v_target`` is the only constant). Bounded
+        by the SoftSort relaxation and self-annealing (``L → 0`` as the matched
+        caption wins, ``rank → 1``). Subtracting 1 makes the fixed point a clean 0
+        (softtorch ranks are 1-indexed).
+
+        The grad-cache split rides the same disjoint-partials trick as InfoNCE:
+        detach ``v_neg`` here for the anchor's ∂L/∂v⁺, and detach ``v_pos`` in the
+        deferred pass for ∂L/∂v⁻ (the two partials are exact).
+        """
+        r = self._candidate_rewards(v_pos, v_neg, v_target)  # (B, m)
+        ranks = _soft_rank(r, self._softrank_softness, self._softrank_method)
+        return (ranks[:, 0] - 1.0).mean()  # ranks ∈ [1, m]
+
+    def softrank_diagnostics(
+        self,
+        v_pos: torch.Tensor,
+        v_neg: torch.Tensor,
+        v_target: torch.Tensor,
+    ) -> dict[str, float]:
+        """Acc / reward-gap (shared with InfoNCE) + the mean matched soft-rank.
+
+        ``softrank_matched_rank`` is the headline health signal (softtorch's
+        1-indexed rank): → 1 as the matched caption wins outright, → m when it
+        loses. Inputs should be detached values (diagnostics only)."""
+        with torch.no_grad():
+            r = self._candidate_rewards(v_pos, v_neg, v_target)  # (B, m)
+            diag = self._contrastive_diagnostics(r[:, 0], r[:, 1:])
+            matched_rank = _soft_rank(
+                r, self._softrank_softness, self._softrank_method
+            )[:, 0].mean()
+        diag["softrank_matched_rank"] = float(matched_rank.item())
+        return diag
 
 
 class SoftTokensMethodAdapter(MethodAdapter):
@@ -946,20 +952,17 @@ class SoftTokensMethodAdapter(MethodAdapter):
 
     Each negative is one extra DiT forward sharing the anchor's ``(x_t, ε, t)``
     and spliced tokens, swapping only ``crossattn_emb`` — the ``extra_forwards``
-    contract. Two objectives share the plumbing, selected by the network's
-    ``contrastive_objective``:
+    contract. Two objectives share the plumbing (k forwards each), selected by the
+    network's ``contrastive_objective``:
 
-      - ``infonce`` — SoftREPA InfoNCE over the negatives (k forwards).
-      - ``agsm`` — bounded target-shift ``v_target ± γ_z·Δ_j`` with per-candidate
-        Plackett–Luce guidance off the bank's EMA shadow. Adds EMA value passes
-        (matched + each mismatched) → ~(2k+1) forwards. Same grad-cache split;
-        only the loss math differs.
+      - ``infonce`` — SoftREPA InfoNCE over the negatives.
+      - ``softrank`` — differentiable listwise rank of the matched caption.
 
     Wiring: ``prime_for_forward`` stashes ``batch["neg_crossattn_emb"]`` (train
     only); ``extra_forwards`` returns the scalar under ``"soft_tokens_contrastive"``
     (composer applies warmup-gated weight); ``after_backward`` replays the
-    deferred ∂L/∂v_neg + refreshes the AGSM EMA. Negatives absent outside training
-    → forwards skipped, so val FM-MSE stays clean.
+    deferred ∂L/∂v_neg. Negatives absent outside training → forwards skipped, so
+    val FM-MSE stays clean.
     """
 
     name = "soft_tokens_contrastive"
@@ -1046,70 +1049,55 @@ class SoftTokensMethodAdapter(MethodAdapter):
         # ``prepare_block_swap_before_forward`` is a no-op at blocks_to_swap=0, so
         # one path serves swap and no-swap (no-swap still peaks at one graph).
 
-        agsm = getattr(net, "contrastive_objective", "infonce") == "agsm"
-
         # Negative velocity values under no_grad (no graph retained). Each forward
         # is bracketed by a block-swap reset (no-op when not swapping) so the
-        # offloader stays in the anchor's end-of-forward state. AGSM also forwards
-        # the EMA shadow bank (matched + each mismatched) for the detached Δ.
+        # offloader stays in the anchor's end-of-forward state.
         v_neg_vals = []
-        v_pos_ema = None
-        v_neg_ema_vals = []
         with torch.no_grad():
-            if agsm:
-                dit.prepare_block_swap_before_forward(free_cache=False)
-                v_pos_ema = self._bank_forward(
-                    net, primary.anima_call,
-                    primary.noisy_model_input, primary.padding_mask,
-                    base_kw, timesteps, ce_dtype, primary.crossattn_emb,
-                    use_ema=True,
-                )
             for j in range(k):
                 dit.prepare_block_swap_before_forward(free_cache=False)
                 v_neg_vals.append(
                     self._bank_forward(
-                        net, primary.anima_call,
-                        primary.noisy_model_input, primary.padding_mask,
-                        base_kw, timesteps, ce_dtype, neg[:, j],
+                        net,
+                        primary.anima_call,
+                        primary.noisy_model_input,
+                        primary.padding_mask,
+                        base_kw,
+                        timesteps,
+                        ce_dtype,
+                        neg[:, j],
                         branch=neg_branch,
                     )
                 )
-                if agsm:
-                    dit.prepare_block_swap_before_forward(free_cache=False)
-                    v_neg_ema_vals.append(
-                        self._bank_forward(
-                            net, primary.anima_call,
-                            primary.noisy_model_input, primary.padding_mask,
-                            base_kw, timesteps, ce_dtype, neg[:, j],
-                            use_ema=True, branch=neg_branch,
-                        )
-                    )
         net._step_layer_tokens = anchor_tokens
         net._step_seqlens = anchor_seqlens
         v_neg = torch.stack(v_neg_vals, dim=1)  # (B, k, C, H, W), detached values
 
         live = float(getattr(net, "_contrastive_weight", 0.0) or 0.0)
 
-        if agsm:
-            # PL-weighted bounded targets from the EMA shadow's own preds (all
-            # detached). L⁺ rides the anchor's FM backward (grad via live v_pos);
-            # L⁻'s grad is deferred against the per-candidate tgt_neg constants.
-            v_neg_ema = torch.stack(v_neg_ema_vals, dim=1)  # (B, k, C, H, W)
-            tgt_pos, tgt_neg, agsm_diag = net.agsm_targets(
-                v_pos_ema, v_neg_ema, v_target
-            )
-            l_pos, l_neg_val = net.agsm_losses(v_pos, v_neg, tgt_pos, tgt_neg)
-            loss = l_pos + l_neg_val
-            self._record_agsm_metrics(net, loss, l_pos, l_neg_val, agsm_diag)
+        if getattr(net, "contrastive_objective", "infonce") == "softrank":
+            # Differentiable listwise rank of the matched caption. L⁺ rides the
+            # anchor's FM backward (grad via live v_pos, negatives detached);
+            # ∂L/∂v_neg is grad-cached + replayed exactly like InfoNCE.
+            loss = net.softrank_loss(v_pos, v_neg, v_target)
+            diag = net.softrank_diagnostics(v_pos.detach(), v_neg, v_target)
+            self._record_softrank_metrics(net, loss, diag)
             if live > 0.0:
                 v_neg_leaf = v_neg.detach().requires_grad_(True)
-                _, l_neg_leaf = net.agsm_losses(
-                    v_pos.detach(), v_neg_leaf, tgt_pos, tgt_neg
-                )
-                (g_neg,) = torch.autograd.grad(l_neg_leaf, v_neg_leaf)
+                g_loss = net.softrank_loss(v_pos.detach(), v_neg_leaf, v_target)
+                (g_neg,) = torch.autograd.grad(g_loss, v_neg_leaf)
                 self._pending_gradcache = self._build_gradcache(
-                    net, dit, primary, base_kw, timesteps, neg, ce_dtype,
-                    g_neg.detach(), live, anchor_tokens, anchor_seqlens,
+                    net,
+                    dit,
+                    primary,
+                    base_kw,
+                    timesteps,
+                    neg,
+                    ce_dtype,
+                    g_neg.detach(),
+                    live,
+                    anchor_tokens,
+                    anchor_seqlens,
                     neg_branch,
                 )
             else:
@@ -1133,8 +1121,17 @@ class SoftTokensMethodAdapter(MethodAdapter):
             g_loss = net._infonce_from_logits(lp_d, ln_leaf)
             (g_neg,) = torch.autograd.grad(g_loss, v_neg_leaf)
             self._pending_gradcache = self._build_gradcache(
-                net, dit, primary, base_kw, timesteps, neg, ce_dtype,
-                g_neg.detach(), live, anchor_tokens, anchor_seqlens,
+                net,
+                dit,
+                primary,
+                base_kw,
+                timesteps,
+                neg,
+                ce_dtype,
+                g_neg.detach(),
+                live,
+                anchor_tokens,
+                anchor_seqlens,
                 neg_branch,
             )
         else:
@@ -1143,12 +1140,22 @@ class SoftTokensMethodAdapter(MethodAdapter):
 
     @staticmethod
     def _build_gradcache(
-        net, dit, primary, base_kw, timesteps, neg, ce_dtype,
-        g_neg, weight, anchor_tokens, anchor_seqlens, neg_branch,
+        net,
+        dit,
+        primary,
+        base_kw,
+        timesteps,
+        neg,
+        ce_dtype,
+        g_neg,
+        weight,
+        anchor_tokens,
+        anchor_seqlens,
+        neg_branch,
     ) -> dict:
         """Pack the deferred ∂L/∂v_neg replay state. Objective-agnostic — the
         replay in ``after_backward`` just pushes the cached ``g_neg`` back through
-        each negative's (live-bank) forward, so InfoNCE and AGSM share it.
+        each negative's (live-bank) forward, so InfoNCE and softrank share it.
         ``neg_branch`` is the bank the negative spliced on (ψ⁻ under dual bank) so
         the replay forward routes grad to the same params."""
         return {
@@ -1177,18 +1184,7 @@ class SoftTokensMethodAdapter(MethodAdapter):
         ``zero_grad`` between here and the optimizer step). Single-process only —
         a manual backward inside ``accelerator.accumulate`` would need DDP no-sync
         handling under multi-GPU.
-
-        Also refreshes the AGSM bank-EMA shadow once per optimizer step (gated on
-        ``sync_gradients``), regardless of the cadence gate — the bank moves under
-        FM every step, so its slow shadow must track it.
         """
-        net_for_ema = ctx.accelerator.unwrap_model(ctx.network)
-        if (
-            getattr(net_for_ema, "contrastive_objective", "infonce") == "agsm"
-            and getattr(ctx.accelerator, "sync_gradients", True)
-        ):
-            net_for_ema.update_bank_ema()
-
         pend = self._pending_gradcache
         if pend is None:
             return
@@ -1212,9 +1208,14 @@ class SoftTokensMethodAdapter(MethodAdapter):
             for j in range(k):
                 dit.prepare_block_swap_before_forward(free_cache=False)
                 v_neg_j = self._bank_forward(
-                    net, pend["anima_call"],
-                    pend["noisy_model_input"], pend["padding_mask"],
-                    pend["base_kw"], ts, ce_dtype, neg[:, j],
+                    net,
+                    pend["anima_call"],
+                    pend["noisy_model_input"],
+                    pend["padding_mask"],
+                    pend["base_kw"],
+                    ts,
+                    ce_dtype,
+                    neg[:, j],
                     branch=neg_branch,
                 )
                 grad_j = (scale * g_neg[:, j]).to(v_neg_j.dtype)
@@ -1224,17 +1225,22 @@ class SoftTokensMethodAdapter(MethodAdapter):
 
     @staticmethod
     def _bank_forward(
-        net, anima_call, noisy_model_input, padding_mask,
-        base_kw, timesteps, ce_dtype, text_emb, use_ema: bool = False,
+        net,
+        anima_call,
+        noisy_model_input,
+        padding_mask,
+        base_kw,
+        timesteps,
+        ce_dtype,
+        text_emb,
         branch: int = 0,
     ) -> torch.Tensor:
         """One DiT forward conditioned on ``text_emb`` → velocity (B, C, H, W).
 
         Re-primes the per-block soft-token splice for this text and runs the
-        frozen DiT with the anchor's (x_t, ε, t). ``use_ema=True`` splices the
-        EMA shadow bank instead of the live params (AGSM Δ value passes — no
-        grad). ``branch`` picks ψ⁺ (0) / ψ⁻ (1) for dual-bank nets (no-op when
-        single bank). Returns the squeezed 4D velocity.
+        frozen DiT with the anchor's (x_t, ε, t). ``branch`` picks ψ⁺ (0) / ψ⁻ (1)
+        for dual-bank nets (no-op when single bank). Returns the squeezed 4D
+        velocity.
         """
         text_emb = text_emb.to(dtype=ce_dtype)
         # front_of_padding needs per-sample seqlens (non-zero rows of the
@@ -1244,7 +1250,7 @@ class SoftTokensMethodAdapter(MethodAdapter):
             seqlens = (text_emb.abs().sum(dim=-1) > 0).sum(dim=-1).to(torch.int32)
         else:
             seqlens = None
-        net._set_step_tokens(timesteps, seqlens, use_ema=use_ema, branch=branch)
+        net._set_step_tokens(timesteps, seqlens, branch=branch)
         kw_j = dict(base_kw)
         if "pooled_text_override" in kw_j:
             kw_j["pooled_text_override"] = text_emb.max(dim=1).values
@@ -1274,25 +1280,21 @@ class SoftTokensMethodAdapter(MethodAdapter):
             "soft_tokens/contrastive_logit_gap": diag["contrastive_logit_gap"],
         }
 
-    def _record_agsm_metrics(self, net, loss, l_pos, l_neg, diag) -> None:
-        """AGSM term diagnostics. ``agsm_delta_norm`` is the mean per-sample L2 of
-        the (per-candidate) guidance direction — near 0 ⇒ matched/mismatched preds
-        collapsed (no signal); growing ⇒ the EMA bank distinguishes them.
-        ``agsm_w_matched`` is the Plackett–Luce weight on the matched caption — as
-        it → 1 the normalized correction self-anneals (Δ → 0, paper §3.3), so a
-        rising ``w_matched`` with bounded losses is the healthy AGSM signature.
-        ``agsm_l_pos`` / ``agsm_l_neg`` should both sit at a bounded steady state
-        rather than ``l_neg`` diverging (the SoftREPA failure AGSM removes)."""
+    def _record_softrank_metrics(self, net, loss, diag) -> None:
+        """soft-rank diagnostics. ``softrank_matched_rank`` is the headline (1-
+        indexed SoftSort rank): → 1 as the matched caption wins outright among the
+        candidates, → m when it loses; ``contrastive_acc`` / ``contrastive_logit_gap``
+        (here a reward gap) mirror the InfoNCE diagnostics for cross-objective
+        comparability in the A/B."""
         live = float(getattr(net, "_contrastive_weight", 0.0) or 0.0)
         loss_val = float(loss.detach().item())
         self._last_metrics = {
             "reg/soft_tokens_contrastive": loss_val,
             "reg/soft_tokens_contrastive_weighted": live * loss_val,
             "reg/soft_tokens_contrastive_lambda_live": live,
-            "soft_tokens/agsm_l_pos": float(l_pos.detach().item()),
-            "soft_tokens/agsm_l_neg": float(l_neg.detach().item()),
-            "soft_tokens/agsm_delta_norm": diag["delta_norm"],
-            "soft_tokens/agsm_w_matched": diag["w_matched"],
+            "soft_tokens/contrastive_acc": diag["contrastive_acc"],
+            "soft_tokens/contrastive_logit_gap": diag["contrastive_logit_gap"],
+            "soft_tokens/softrank_matched_rank": diag["softrank_matched_rank"],
         }
 
     def metrics(self, ctx) -> dict:

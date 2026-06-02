@@ -19,8 +19,9 @@ the only one::
     args.device = "cuda"
     latent = generate(args, get_generation_settings(args))
 
-``to_args()`` feeds ``to_argv()`` through ``inference.parse_args`` rather than
-hand-building a namespace, so the **CLI parser stays the single source of truth
+``to_args()`` feeds ``to_argv()`` through ``library.inference.args.build_default_args``
+(the parser ``inference.parse_args`` itself delegates to) rather than
+hand-building a namespace, so the **parser stays the single source of truth
 for every default** the generation code reads via ``getattr`` — this dataclass
 only carries the knobs an embedder commonly sets, and the long tail
 (spectrum / dcw / ip-adapter / … sub-knobs) rides through ``extra_argv``.
@@ -176,15 +177,16 @@ class GenerationRequest:
     ) -> argparse.Namespace:
         """Build a fully-defaulted ``argparse.Namespace`` for ``generate()``.
 
-        Routes ``to_argv()`` through ``inference.parse_args`` (lazy-imported so
-        ``library`` carries no import-time edge into the root ``inference``
-        module). Pass an explicit ``parse_args`` to inject a different parser
-        (the test suite does this). The parser fills every knob this dataclass
-        doesn't model, and validates choices/requireds — so a request with no
-        ``prompt`` raises here, the same as the CLI.
+        Routes ``to_argv()`` through ``library.inference.args.build_default_args``
+        (lazy-imported) — the same parser ``inference.parse_args`` now delegates
+        to, so the request stays entirely inside ``library`` with no edge into
+        the root ``inference`` entry-point script. Pass an explicit ``parse_args``
+        to inject a different parser (the test suite does this). The parser fills
+        every knob this dataclass doesn't model, and validates choices/requireds —
+        so a request with no ``prompt`` raises here, the same as the CLI.
         """
         if parse_args is None:
-            import inference
+            from library.inference.args import build_default_args
 
-            parse_args = inference.parse_args
+            parse_args = build_default_args
         return parse_args(self.to_argv())

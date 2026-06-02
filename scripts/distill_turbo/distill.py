@@ -1,11 +1,11 @@
-"""Turbo distillation main loop — single-call DMD2.
+"""Turbo distillation main loop — DP-DMD (diversity-preserved DMD).
 
 Usage:
     python -m scripts.distill_turbo.distill [--config configs/methods/turbo.toml] ...
 
 The math walkthrough lives in :mod:`scripts.distill_turbo`; this file is the
-per-step orchestrator (sample t, student/CA/DM/fake forwards, optimizer steps,
-save).
+per-step orchestrator (teacher K-step anchor → diversity-supervised first step →
+DMD-refined N-step student rollout → fake/critic update → save).
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from tqdm import tqdm
 from library.anima import weights as anima_utils
 from library.anima.models import Anima
 from library.datasets.distill import CachedDataset
+from library.inference.sampling import get_timesteps_sigmas
 from library.inference.uncond import (
     default_uncond_path,
     load_uncond_crossattn,
@@ -35,7 +36,6 @@ from library.runtime.harness import (
 )
 from networks.methods.turbo_dmd import TurboDMDNetwork
 
-from .ca_band import apply_ca_band_deficit
 from .config import (
     build_argparser,
     load_turbo_config,
@@ -50,7 +50,6 @@ from .primitives import (
     make_scheduler,
     renoise,
     sample_t,
-    sample_t_above,
 )
 from .warmup import run_fake_warmup
 
@@ -58,6 +57,86 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+
+def _step_tag(step: int) -> str:
+    """Human checkpoint suffix: 1000 -> ``1k``, 8000 -> ``8k``, else raw count.
+
+    Matches the hand-rolled ``_1k`` / ``_500`` naming the runs already use.
+    """
+    return f"{step // 1000}k" if step % 1000 == 0 else str(step)
+
+
+def mean_var_kl(
+    x: torch.Tensor, mu_t: torch.Tensor | float, sigma2_t: torch.Tensor | float
+) -> torch.Tensor:
+    """Mean-variance regularizer (lever B / paper Eq. 7, arXiv:2511.22677).
+
+    KL of each generated image's per-image Gaussian ``N(μ_i, σ²_i)`` toward the
+    real-latent target ``N(μ_t, σ²_t)``, averaged over the batch:
+
+        L_mv = (1/B) Σ_i ½[ (σ_i² + (μ_i − μ_t)²)/σ_t² − 1 − log(σ_i²/σ_t²) ]
+
+    Differentiable in ``x`` (= ``x_pred``), so it backprops into the student and
+    directly clamps the **variance inflation** that *is* the over-bake's
+    oversaturation (§3.2). Stats are per-image over (C, H, W); full-frame even
+    under masked loss (paper-faithful — the reg is a global distribution clamp).
+    """
+    B = x.shape[0]
+    flat = x.reshape(B, -1)
+    mu_i = flat.mean(dim=1)
+    var_i = flat.var(dim=1, unbiased=False)
+    kl = 0.5 * (
+        (var_i + (mu_i - mu_t) ** 2) / sigma2_t
+        - 1.0
+        - torch.log((var_i / sigma2_t).clamp_min(1e-8))
+    )
+    return kl.mean()
+
+
+def calibrate_mean_var(
+    dataloader: torch.utils.data.DataLoader,
+    *,
+    max_batches: int = 0,
+    norm_floor: float = 0.05,
+) -> tuple[float, float]:
+    """Exact one-pass global mean/variance of the real cached latents.
+
+    The Eq.7 reg target is a static dataset statistic — a single scalar
+    ``(μ, σ²)`` over every latent element — so we measure it directly rather
+    than EMA-tracking it during training. Accumulates count / sum / sum-of-
+    squares in fp64 (population variance, ``unbiased=False`` — matching the
+    per-image stats in :func:`mean_var_kl`) for numerical stability across the
+    whole pool. ``max_batches <= 0`` scans the full dataset; a positive cap
+    trades a little exactness for I/O (the global scalar converges fast).
+    Returns ``(μ_t, σ²_t)`` with σ²_t floored at ``norm_floor²``.
+    """
+    n = 0
+    s = 0.0
+    s2 = 0.0
+    seen = 0
+    for batch in dataloader:
+        # Batch layout mirrors the training loop: masked adds a trailing mask.
+        latents = batch[1].double()
+        flat = latents.reshape(-1)
+        n += flat.numel()
+        s += float(flat.sum())
+        s2 += float((flat * flat).sum())
+        seen += 1
+        if max_batches > 0 and seen >= max_batches:
+            break
+    if n == 0:
+        raise RuntimeError(
+            "mean-variance calibration scanned 0 latents — empty dataloader "
+            "(check data_dir / curation keep_list / drop_last vs batch_size)."
+        )
+    mu = s / n
+    var = max(s2 / n - mu * mu, norm_floor**2)
+    logger.info(
+        f"mean-variance calibration: scanned {seen} batches / {n:,} latent "
+        f"elements → μ_t={mu:.6g}, σ²_t={var:.6g}"
+    )
+    return mu, var
 
 
 def main():
@@ -82,7 +161,7 @@ def main():
     # compile each block._forward (native-shape flatten, one graph per token count;
     # the pool spans more than the 2 CONSTANT_TOKEN_BUCKETS families).
     place_dit_for_training(model, device, blocks_to_swap=cfg.blocks_to_swap)
-    compile_dit_blocks(model, enabled=cfg.torch_compile, mode="reduce-overhead")
+    compile_dit_blocks(model, enabled=cfg.torch_compile, mode="")
     enable_training_grad_ckpt(model, enabled=cfg.grad_ckpt)
 
     # ---------------- LoRA stacks ----------------
@@ -120,42 +199,27 @@ def main():
     )
 
     student_sched = make_scheduler(student_opt, cfg.iterations, cfg.student_lr)
-    # Fake gets ``fake_steps_per_student_step`` updates per outer iteration, plus
-    # ``fake_warmup_steps`` head-start iterations BEFORE the main loop. The fake
-    # scheduler is stepped through both phases, so its total update count — and
-    # hence the ``0.02·total`` LR warmup span — is computed over
-    # ``iterations + fake_warmup_steps``. The fake LR warmup therefore overlaps
-    # the head-start (the fake enters the main loop already calibrated AND at
-    # full LR), and the cosine still lands at the end of the main loop. The
-    # student schedule is independent: ``0.02·iterations``, no head-start offset.
+    # The fake optimizer takes ``iterations · fake_steps_per_student_step``
+    # updates in the main loop plus ``fake_warmup_steps`` head-start updates
+    # BEFORE it (the head-start is now counted in fake updates directly, NOT
+    # scaled by the cadence — see warmup.py). The fake scheduler is stepped
+    # through both phases, so its total update count — and hence the ``0.02·total``
+    # LR warmup span — is sized over the same total. The fake LR warmup therefore
+    # overlaps the head-start (the fake enters the main loop already calibrated
+    # AND at full LR), and the cosine still lands at the end of the main loop.
+    # The student schedule is independent: ``0.02·iterations``, no head-start offset.
     fake_sched = make_scheduler(
         fake_opt,
-        (cfg.iterations + cfg.fake_warmup_steps) * cfg.fake_steps_per_student_step,
+        cfg.iterations * cfg.fake_steps_per_student_step + cfg.fake_warmup_steps,
         cfg.fake_lr,
     )
 
     # ---------------- Dataset ----------------
-    # Curation gate (item 5): load the keep_list stems from `make exp-turbo-prep`
-    # and pass them to the reader, which drops every stem not in the cut.
-    keep_list: set[str] | None = None
-    if cfg.use_prep_list:
-        prep_path = Path(cfg.prep_list_path)
-        if not prep_path.exists():
-            raise FileNotFoundError(
-                f"use_prep_list=true but keep_list missing: {prep_path}. "
-                f"Run `make exp-turbo-prep` first (or set use_prep_list=false)."
-            )
-        import json
-
-        keep_list = set(json.loads(prep_path.read_text())["kept"])
-        logger.info(f"curation gate ON: {len(keep_list)} stems from {prep_path}")
-
     dataset = CachedDataset(
         cfg.data_dir,
         batch_size=cfg.batch_size,
         sample_ratio=cfg.sample_ratio,
         mask_dir=cfg.mask_dir if cfg.use_masked_loss else None,
-        keep_list=keep_list,
     )
     if cfg.single_prompt_idx is not None:
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
@@ -230,11 +294,15 @@ def main():
         ``TurboDMDNetwork.set_view``), and the cudagraph step-begin marker
         is hoisted to once per outer step in the loop below.
 
-        The DiT is frozen (``freeze_dit`` in ``__init__``) and grad-ckpt is
-        off in this script's default path, so ``model.training`` is left at
-        whatever it was post-construction — toggling it per forward only
-        gated grad-ckpt setup that isn't active here, and the recursive
-        submodule walk it triggered was the dominant per-forward CPU stall.
+        The DiT is frozen (``freeze_dit`` in ``__init__``), so ``model.training``
+        is left at its post-construction value (``True``) for the whole run —
+        grad-ckpt (``cfg.grad_ckpt``, default on) is gated on ``self.training``
+        inside ``Block.forward``, so it stays armed without a per-forward toggle.
+        We deliberately do NOT flip train/eval per forward: the no_grad teacher/
+        fake forwards build no backward graph regardless, and the recursive
+        submodule walk a per-forward toggle triggered was the dominant
+        per-forward CPU stall. Grad-ckpt's recompute only bites on the grad-
+        bearing student/fake-update forwards.
         """
         turbo.set_view(view)
         if model.blocks_to_swap:
@@ -252,6 +320,74 @@ def main():
                 x_in, t_b, c, padding_mask=pad, skip_pooled_text_proj=True
             )
 
+    # ---------------- DP-DMD setup ----------------
+    # The student/teacher Euler grids are static (token-count-invariant flow-
+    # matching σ schedule), so build them once. Both span σ: 1 → 0; the student
+    # has `student_steps + 1` points, the teacher anchor grid `teacher_anchor_steps
+    # + 1`. `sigmas[i] - sigmas[i+1]` is the Euler dt for step i.
+    student_sigmas = (
+        get_timesteps_sigmas(cfg.student_steps, cfg.flow_shift, "cpu")[1].tolist()
+    )
+    teacher_anchor_sigmas = (
+        get_timesteps_sigmas(cfg.teacher_anchor_steps, cfg.flow_shift, "cpu")[1]
+        .tolist()
+    )
+    # Continuous time at the anchor (incoming σ after k_anchor teacher steps).
+    # `v_target = (ε − z_tk)/(1 − t_k)` — a σ mismatch here silently mis-scales
+    # the diversity target (proposal §6.3), so it's read from the teacher grid,
+    # not the student grid.
+    t_k_anchor = float(teacher_anchor_sigmas[cfg.k_anchor])
+    logger.info(
+        f"DP-DMD grids: student σ={['%.3f' % s for s in student_sigmas]}, "
+        f"anchor t_k={t_k_anchor:.4f} (teacher step {cfg.k_anchor}/"
+        f"{cfg.teacher_anchor_steps})"
+    )
+
+    def _teacher_cfg_velocity(x, t_b, c_cond, c_null):
+        """CFG-guided teacher velocity ``v_u + α·(v_c − v_u)`` (no grad, fp32).
+
+        Used by the DP-DMD K-step anchor rollout. At ``teacher_cfg == 1`` the
+        uncond forward is skipped (single forward).
+        """
+        v_c = _forward("teacher", x, t_b, c_cond, no_grad=True).squeeze(2)
+        if cfg.teacher_cfg == 1.0:
+            return v_c.float()
+        v_u = _forward("teacher", x, t_b, c_null, no_grad=True).squeeze(2)
+        return v_u.float() + cfg.teacher_cfg * (v_c.float() - v_u.float())
+
+    # ---------------- Mean-variance reg target (lever B / S2) ----------------
+    # Real-data stats the Eq.7 KL pulls each generated image toward. Either
+    # pinned (cfg.mv_sigma2_t > 0) or measured EXACTLY in a one-pass scan over
+    # the real latents (cfg.mv_sigma2_t <= 0). The target is a static dataset
+    # statistic — a single global (μ, σ²) over all latent elements — so an exact
+    # pre-pass strictly beats a running EMA: no decay lag, no batch-to-batch
+    # wobble, deterministic, and free in the hot loop. Computed in fp64 via the
+    # numerically-stable count/sum/sumsq route over the same `latents` the
+    # dataloader yields (the REAL training latents — NOT teacher-synthetic, since
+    # the reg is a shield against the teacher's variance inflation). Runs BEFORE
+    # the fake head-start: it's model-independent, so doing it first fails fast on
+    # an empty/misconfigured pool instead of after burning warmup compute.
+    mv_auto = cfg.mean_var_weight > 0.0 and cfg.mv_sigma2_t <= 0.0
+    mv_tgt_mu = cfg.mv_mu_t
+    mv_tgt_var = cfg.mv_sigma2_t
+    if cfg.mean_var_weight > 0.0:
+        if mv_auto:
+            mv_tgt_mu, mv_tgt_var = calibrate_mean_var(
+                dataloader,
+                max_batches=cfg.mv_calib_batches,
+                norm_floor=cfg.norm_floor,
+            )
+        logger.info(
+            "mean-variance reg ON (lever B / Eq.7): weight="
+            f"{cfg.mean_var_weight}, target="
+            + (
+                f"measured μ_t={mv_tgt_mu:.6g}, σ²_t={mv_tgt_var:.6g} "
+                f"(exact, over real latents)"
+                if mv_auto
+                else f"fixed μ_t={mv_tgt_mu}, σ²_t={mv_tgt_var}"
+            )
+        )
+
     # ---------------- Fake (critic) head-start ----------------
     data_iter = iter(dataloader)
     data_iter = run_fake_warmup(
@@ -262,7 +398,6 @@ def main():
         dataloader=dataloader,
         fake_opt=fake_opt,
         fake_sched=fake_sched,
-        fake_steps_per_student_step=cfg.fake_steps_per_student_step,
         grad_clip=cfg.grad_clip,
         t_distribution=cfg.t_distribution,
         sigmoid_scale=cfg.sigmoid_scale,
@@ -273,7 +408,7 @@ def main():
     )
 
     # ---------------- Training loop ----------------
-    logger.info(f"starting DMD2 training: {cfg.iterations} iterations")
+    logger.info(f"starting DP-DMD training: {cfg.iterations} iterations")
     progress = tqdm(range(cfg.iterations), desc="turbo")
     metrics = TurboMetrics(device)
 
@@ -302,102 +437,90 @@ def main():
         # the script switches to ``mode="reduce-overhead"``.
         torch.compiler.cudagraph_mark_step_begin()
 
-        # Sample generator-t on CPU so the do_ca skip-check below stays sync-free
-        # (proposal R5: skip CA when t is very late — collapsed interval → noisy
-        # grad). Mid-step .item() on a device tensor would drain the CUDA
-        # pipeline between the student forward and CA branch.
-        if cfg.t_distribution == "uniform":
-            t_cpu = torch.rand(B, dtype=torch.float32)
-        else:
-            t_cpu = torch.sigmoid(cfg.sigmoid_scale * torch.randn(B, dtype=torch.float32))
-        do_ca = bool((t_cpu < cfg.tau_ca_skip_above_t).any().item())  # CPU op
-        t = t_cpu.to(device=device, dtype=dtype, non_blocking=True)
+        # ============ DP-DMD student update ============
+        # No single t / x_t: the student rolls the full N-step Euler grid from
+        # pure noise ε. Step 1 is supervised toward a teacher K-step anchor
+        # (diversity) and detached, then DMD refines x_θ over steps 2..N
+        # (quality). See dpdmd.md §3.2.
+        eps = torch.randn_like(latents)  # shared start for anchor + student
 
-        # Build x_t = (1-t)·x_0 + t·ε.
-        eps = torch.randn_like(latents)
-        t_e = t.view(B, 1, 1, 1)
-        x_t = (
-            (1.0 - t_e) * latents + t_e * eps
-        ).requires_grad_()  # requires_grad for grad-ckpt
+        # --- teacher K-step CFG anchor (no grad) → v_target ---
+        c_null = uncond_for_batch(uncond_base, crossattn_emb)
+        z = eps
+        for i in range(cfg.k_anchor):
+            s_i = teacher_anchor_sigmas[i]
+            s_next = teacher_anchor_sigmas[i + 1]
+            t_b = torch.full((B,), s_i, device=device, dtype=dtype)
+            v = _teacher_cfg_velocity(z, t_b, crossattn_emb, c_null)
+            z = (z.float() - (s_i - s_next) * v).to(dtype)
+        # Average velocity ε→z_tk over [t_k, 1]; this is exactly the target
+        # for the student's t=1 first step (Euler x_next = x − dt·v_first).
+        v_target = ((eps.float() - z.float()) / (1.0 - t_k_anchor)).detach()
 
-        # --- 1. STUDENT FORWARD (grad to student) ---
-        v_student = _forward("student", x_t, t, crossattn_emb, no_grad=False)
-        # v_student: (B, 16, 1, H, W). Drop temporal dim for arithmetic.
-        v_student = v_student.squeeze(2)
-        x_pred = x_t.squeeze(2) - t_e * v_student  # (B, 16, H, W), grad-bearing
+        # --- student N-step rollout; step-0 div-supervised + (optionally) detached ---
+        # Split forward/backward: under `detach_after_first` the step-0 forward
+        # graph is severed from the steps 2..N DMD chain, so we backward the
+        # diversity term IMMEDIATELY and free step-0's activations BEFORE the DMD
+        # chain builds its own graph. Peak student-forward activations then stay at
+        # ONE forward (the longer of {step-0, the N-1 DMD chain}) instead of holding
+        # both concurrently — the two losses share no graph, so a single combined
+        # backward was only ever paying 2× activation memory for nothing. This is
+        # what lets grad-ckpt be optional at small N: the "unroll" it tames is N-1
+        # steps deep on the DMD chain, NOT the (now-freed) step-0 graph. With the
+        # detach OFF (A/B), the graphs are entangled and we MUST keep one combined
+        # backward (the diversity term is folded in at assembly below).
+        split_bwd = cfg.detach_after_first
 
-        # --- 2. CA BRANCH (no grad, teacher × 2) ---
-        band_diag = None
-        if do_ca:
-            tau_ca = sample_t_above(t.float(), min_gap=cfg.tau_ca_min_gap).to(dtype)
-            eps_ca = torch.randn_like(x_pred)
-            x_renoised_ca = renoise(x_pred.detach(), tau_ca, eps_ca)
-            v_real_cond_ca = _forward(
-                "teacher", x_renoised_ca, tau_ca, crossattn_emb, no_grad=True
+        x = eps
+        x.requires_grad_()  # grad-ckpt needs a grad-requiring forward input
+        # Step 0: the diversity-supervised first step (grad → v_first).
+        s0, s0_next = student_sigmas[0], student_sigmas[1]
+        t_b = torch.full((B,), s0, device=device, dtype=dtype)
+        v_first = _forward("student", x, t_b, crossattn_emb, no_grad=False).squeeze(2)
+        x = x - (s0 - s0_next) * v_first
+        div_loss_t = nn.functional.mse_loss(v_first.float(), v_target)
+        if split_bwd:
+            # Load-bearing stop-grad: the DMD reverse-KL from steps 2..N must NOT
+            # flow back into the diversity mapping (their Fig 5). Backward the
+            # diversity term against the step-0 graph now (accumulates into the
+            # student .grad buffers), then re-leaf so the DMD chain gets a fresh
+            # grad-ckpt root. The optimizer step waits for the DMD backward below.
+            (cfg.div_weight * div_loss_t).backward()
+            x = x.detach().requires_grad_()
+
+        # Steps 2..N: the DMD-refined rollout (grad flows to x_pred).
+        for i in range(1, cfg.student_steps):
+            s_i = student_sigmas[i]
+            s_next = student_sigmas[i + 1]
+            t_b = torch.full((B,), s_i, device=device, dtype=dtype)
+            v = _forward(
+                "student", x, t_b, crossattn_emb, no_grad=False
             ).squeeze(2)
-            c_null = uncond_for_batch(uncond_base, crossattn_emb)
-            v_real_uncond_ca = _forward(
-                "teacher", x_renoised_ca, tau_ca, c_null, no_grad=True
-            ).squeeze(2)
-            delta_cfg = v_real_cond_ca - v_real_uncond_ca
+            x = x - (s_i - s_next) * v
+        x_pred = x  # = x_θ (B,16,H,W); v_student aliases v_first for metrics
+        v_student = v_first
 
-            if cfg.ca_band_weight_enabled:
-                # Item 2 measurement fix (see item2_diagnosis.md): one extra
-                # no-grad teacher forward at the student's (x_t, t, c) so the
-                # FEI gap is computed at the same sampler time as x_pred.
-                # No uncond view needed — we only need x0 at t for FEI, not
-                # the CFG direction.
-                v_teacher_at_t = _forward(
-                    "teacher", x_t.detach(), t, crossattn_emb, no_grad=True
-                ).squeeze(2)
-                delta_cfg, band_diag = apply_ca_band_deficit(
-                    delta_cfg,
-                    x_t=x_t.detach(),
-                    v_teacher_at_t=v_teacher_at_t,
-                    t=t,
-                    x_pred=x_pred,
-                    tau_ca=tau_ca,
-                    beta=cfg.ca_band_beta,
-                    divisor=cfg.ca_band_divisor,
-                    window_lo=cfg.ca_band_window_lo,
-                    window_hi=cfg.ca_band_window_hi,
-                )
-        else:
-            delta_cfg = torch.zeros_like(x_pred)
-
-        # --- 3. DM BRANCH (no grad teacher + no grad fake) ---
+        # --- DMD on x_θ (steps 2..N), against teacher + fake ---
+        # The real score is CFG-GUIDED (v_u + α·(v_c − v_u)), NOT cond-only.
+        # Guidance rides the single DMD real score — exactly like the reference
+        # `compute_dmd_loss` (dpdmd/train_sd35_dpdmd.py:118-129, teacher cat
+        # cond+uncond → v_u + scale·(v_c−v_u)). Without it v_real≈v_fake (both
+        # unguided cond preds collapse, dm_cos≈0.9999) and the quality gradient
+        # is noise. The fake stays cond-only, matching the reference.
         tau_dm = torch.rand(B, device=device, dtype=dtype)
         eps_dm = torch.randn_like(x_pred)
         x_renoised_dm = renoise(x_pred.detach(), tau_dm, eps_dm)
-        v_real_cond_dm = _forward(
-            "teacher", x_renoised_dm, tau_dm, crossattn_emb, no_grad=True
-        ).squeeze(2)
+        v_real_cond_dm = _teacher_cfg_velocity(
+            x_renoised_dm, tau_dm, crossattn_emb, c_null
+        )
         v_fake_cond_dm = _forward(
             "fake", x_renoised_dm, tau_dm, crossattn_emb, no_grad=True
         ).squeeze(2)
         delta_dm = v_real_cond_dm - v_fake_cond_dm
 
-        # --- 4. ASSEMBLE + BACKWARD into student ---
-        warmup_frac = min(1.0, (step + 1) / max(1, cfg.alpha_warmup_steps))
-        alpha_eff = cfg.teacher_cfg * warmup_frac + 1.0 * (1.0 - warmup_frac)
-
-        # DMD2 gradient in x0 space. The DiT predicts velocity (v = ε − x0), so
-        # the teacher/fake x0-prediction gap converts to velocity with a +τ
-        # factor: x0_real − x0_fake = −τ·Δ_dm. We want x_pred to move toward
-        # x0_real (and the CFG-baked endpoint), so the surrogate-loss gradient
-        # on x_pred is +τ·grad_signal — descent then steps x_pred by −τ·grad,
-        # the desired direction. Each branch carries its OWN renoise level τ.
         tau_dm_e = tau_dm.view(B, 1, 1, 1).float()
         grad_dm = tau_dm_e * delta_dm.float()
         if cfg.dm_x0_norm:
-            # Policy (b): DMD per-sample x0-space magnitude normalization. The DM
-            # x0-gap is x0_real − x_renoised = −τ·v_real_cond_dm, so its
-            # magnitude is denom = τ·mean|v_real|. Dividing by it cancels τ
-            # across the bulk (only the clamp_min bites, for τ < norm_floor /
-            # mean|v_real|) → ≈ Δ_dm / mean|v_real|. This REPLACES the τ-damping
-            # in grad_dm; stacking the two is policy (c) and is NOT what this
-            # does. DM term only — the CA engine below keeps its own τ_ca
-            # weighting.
             denom = (
                 (tau_dm_e * v_real_cond_dm.float())
                 .abs()
@@ -405,27 +528,26 @@ def main():
                 .clamp_min(cfg.norm_floor)
             )
             grad_dm = grad_dm / denom
-        grad_signal = grad_dm
-        tau_ca_e = None
-        if do_ca:
-            tau_ca_e = tau_ca.view(B, 1, 1, 1).float()
-            grad_signal = (
-                grad_signal + tau_ca_e * (alpha_eff - 1.0) * delta_cfg.float()
-            )
-        grad_signal = grad_signal.detach()
+        grad_signal = grad_dm.detach()
 
-        # DMD2 grad trick: a dummy scalar whose ∂/∂x_pred equals grad_signal.
-        # Backward walks x_pred -> v_student -> student params; the optimizer's
-        # descent step then moves x_pred along −τ·grad_signal toward x0_real.
-        # Masked loss (student-only): zeroing the surrogate in background latents
-        # zeroes the student push there, focusing distribution-matching on the
-        # foreground. Normalization stays /numel (no renorm by mask area),
-        # matching apply_masked_loss — so a masked run sees a lower effective
-        # gradient.
+        # --- assemble: DMD surrogate on x_θ (+ optional mean-var) ---
+        # The diversity term was already backwarded above when split_bwd; otherwise
+        # it rides this combined backward (graphs still entangled). grad_clip below
+        # runs once on the ACCUMULATED .grad (div + DMD), so the clipped norm is the
+        # full student gradient either way.
         if mask is not None:
-            loss_student = (grad_signal * x_pred.float() * mask).mean()
+            loss_dmd = (grad_signal * x_pred.float() * mask).mean()
         else:
-            loss_student = (grad_signal * x_pred.float()).mean()
+            loss_dmd = (grad_signal * x_pred.float()).mean()
+        loss_student = loss_dmd
+
+        mv_loss = torch.zeros((), device=device)
+        if cfg.mean_var_weight > 0.0:
+            mv_loss = mean_var_kl(x_pred.float(), mv_tgt_mu, mv_tgt_var)
+            loss_student = loss_student + cfg.mean_var_weight * mv_loss
+
+        if not split_bwd:
+            loss_student = loss_student + cfg.div_weight * div_loss_t
 
         loss_student.backward()
         if cfg.grad_clip > 0:
@@ -473,24 +595,14 @@ def main():
             fake_loss_mean_t=fake_loss_mean_t,
             grad_signal=grad_signal,
             delta_dm=delta_dm,
-            delta_cfg=delta_cfg,
             x_pred=x_pred,
             v_student=v_student,
             tau_dm_e=tau_dm_e,
             v_real_cond_dm=v_real_cond_dm,
             v_fake_cond_dm=v_fake_cond_dm,
+            mv_loss=mv_loss,
         )
-        if do_ca:
-            metrics.accumulate_dm_to_ca(
-                tau_ca_e=tau_ca_e,
-                alpha_eff=alpha_eff,
-                delta_cfg=delta_cfg,
-                delta_dm=delta_dm,
-                tau_dm_e=tau_dm_e,
-            )
-        if band_diag is not None:
-            metrics.accumulate_band(band_diag)
-        metrics.add_alpha(alpha_eff)
+        metrics.add_div(div_loss_t)
 
         if (step + 1) % cfg.log_interval == 0:
             m = metrics.flush(cfg.log_interval)
@@ -507,18 +619,29 @@ def main():
             metrics.reset()
 
         # --- save ---
+        # Every save_every checkpoint is kept under a step-tagged name (no
+        # overwrite, so the whole training trajectory survives for eyeballing);
+        # the final step also writes the canonical bare `{output_name}` that
+        # inference / merge / `make test` look for.
         if (step + 1) % cfg.save_every == 0 or (step + 1) == cfg.iterations:
-            save_path = str(Path(cfg.output_dir) / f"{cfg.output_name}.safetensors")
-            turbo.save_student(
-                save_path,
-                dtype=torch.bfloat16,
-                metadata={
-                    "ss_turbo_student_rank": str(cfg.student_rank),
-                    "ss_turbo_student_steps": str(cfg.student_steps),
-                    "ss_turbo_teacher_cfg": str(cfg.teacher_cfg),
-                    "ss_turbo_step": str(step + 1),
-                },
-            )
+            n = step + 1
+            is_final = n == cfg.iterations
+            metadata = {
+                "ss_turbo_objective": "dpdmd",
+                "ss_turbo_student_rank": str(cfg.student_rank),
+                "ss_turbo_student_steps": str(cfg.student_steps),
+                "ss_turbo_teacher_cfg": str(cfg.teacher_cfg),
+                "ss_turbo_step": str(n),
+                "ss_turbo_k_anchor": str(cfg.k_anchor),
+                "ss_turbo_div_weight": str(cfg.div_weight),
+            }
+            save_names = [f"{cfg.output_name}_{_step_tag(n)}"]
+            if is_final:
+                save_names.append(cfg.output_name)  # canonical bare name
+            for name in save_names:
+                save_path = str(Path(cfg.output_dir) / f"{name}.safetensors")
+                turbo.save_student(save_path, dtype=torch.bfloat16, metadata=metadata)
+                logger.info(f"saved checkpoint: {save_path}")
 
     if writer is not None:
         writer.close()

@@ -14,7 +14,7 @@ Training and inference algorithms.
 | [methods/mod-guidance.md](methods/mod-guidance.md) | Modulation guidance — text-conditioned AdaLN steering via distilled MLP |
 | [methods/invert.md](methods/invert.md) | Embedding inversion — optimize text embeddings (full and K-slot reference) |
 | [methods/spectrum.md](methods/spectrum.md) | Spectrum — training-free inference acceleration via Chebyshev forecasting |
-| [experimental/dmd2-decoupled.md](experimental/dmd2-decoupled.md) | Decoupled DMD2 (Turbo) — few-step distillation of the 28-step teacher into a 4-step LoRA student (CA spear + DM shield); structural walkthrough in `structure/dmd2-decoupled.md` |
+| [experimental/dpdmd.md](experimental/dpdmd.md) | DP-DMD (Turbo) — diversity-preserved few-step distillation of the CFG=4 teacher into an N-step LoRA student (teacher K-step anchor + DMD); structural walkthrough in `structure/dpdmd.md`; CA-era history in `proposal/dmd2_decoupled_improvements.md` |
 
 ## Findings
 

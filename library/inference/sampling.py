@@ -56,10 +56,15 @@ class ERSDESampler:
         s_noise: float = 1.0,
         max_stage: int = 3,
         device: torch.device = torch.device("cpu"),
+        cns=None,
     ):
         self.s_noise = s_noise
         self.max_stage = max_stage
         self.num_integration_points = 200.0
+        # Optional CNS recolorer (library.inference.corrections.cns.CNSRecolorer).
+        # When set, the per-step injected noise is frequency-recolored by
+        # sqrt(1-γ) so the fixed stochastic budget lands in unresolved bands.
+        self.cns = cns
 
         # Offset first sigma away from 1.0 to avoid logit(1)=inf
         sigmas = sigmas.clone().float()
@@ -89,10 +94,13 @@ class ERSDESampler:
     def _noise_scaler(x: torch.Tensor) -> torch.Tensor:
         return x * ((x**0.3).exp() + 10.0)
 
-    def _sample_noise(self, shape, dtype):
-        return torch.randn(
+    def _sample_noise(self, shape, dtype, sigma_s=None):
+        white = torch.randn(
             shape, dtype=dtype, device=self._noise_device, generator=self._generator
         )
+        if self.cns is not None and sigma_s is not None:
+            return self.cns.recolor(white, sigma_s)
+        return white
 
     def step(
         self, latents: torch.Tensor, denoised: torch.Tensor, step_i: int
@@ -167,7 +175,7 @@ class ERSDESampler:
             x = (
                 x
                 + alpha_t
-                * self._sample_noise(x.shape, x.dtype)
+                * self._sample_noise(x.shape, x.dtype, sigma_s=float(sigmas[step_i]))
                 * self.s_noise
                 * noise_coeff
             )

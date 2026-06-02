@@ -9,18 +9,37 @@ vars + extra argv into the right ``train.py`` (via ``accelerate launch``) or
 
 from __future__ import annotations
 
+import os
+
 from scripts.tasks import preprocess as _preprocess
 from scripts.tasks._common import PY, _preset, bespoke_preset_flags, run, train
 
+# EasyControl control-task projects under easycontrol_adapters/. Each maps to a
+# configs/methods/<name>.toml that swaps the cond source / caption policy and an
+# easycontrol_adapters/<name>/ project (mangafy/prep etc.). Selected at runtime
+# via the EASYADAPTER env var (exported by the Makefile), e.g.
+# ``make exp-easycontrol EASYADAPTER=colorize``.
+_EASYADAPTERS = {"colorize"}
+
+
+def _easyadapter() -> str:
+    """Resolve the EASYADAPTER env var (validated). "" → default easycontrol."""
+    adapter = (os.environ.get("EASYADAPTER") or "").strip()
+    if adapter and adapter not in _EASYADAPTERS:
+        raise SystemExit(
+            f"Unknown EASYADAPTER={adapter!r}. Known: {sorted(_EASYADAPTERS)}."
+        )
+    return adapter
+
 
 def cmd_turbo(extra):
-    """Turbo Anima — Decoupled DMD2 distillation (docs: docs/experimental/dmd2-decoupled.md).
+    """Turbo Anima — DP-DMD distillation (docs: docs/experimental/dpdmd.md).
 
     Bypasses train.py / accelerate (single-GPU bespoke loop, like distill-mod).
     Reads ``configs/methods/turbo.toml``; trailing args are forwarded so user
     CLI flags override TOML values, e.g.::
 
-        make exp-turbo                                  # defaults: rank=48, 4-step
+        make exp-turbo                                  # defaults: rank=64, 2-step
         make exp-turbo ARGS="--student_rank 64 --iterations 5000"
         make exp-turbo ARGS="--single_prompt_idx 0"     # Phase 0 single-prompt overfit
 
@@ -32,25 +51,6 @@ def cmd_turbo(extra):
     """
     preset_flags = bespoke_preset_flags(_preset())
     run([PY, "-m", "scripts.distill_turbo.distill", *preset_flags, *extra])
-
-
-def cmd_turbo_prep(extra):
-    """Turbo dataset curation — score every cached stem, emit keep_list.json (item 5).
-
-    Walks ``post_image_dataset/lora`` + the resized PNGs, computes per-stem
-    ``hf_ratio`` (latent HF band energy) + ``noise_sigma`` (Immerkær grain
-    detector on the resized image), then cuts to ``--target`` (default 500) with
-    stratified coverage repair. Writes only
-    ``post_image_dataset/turbo_prep/keep_list.json`` — consumed by
-    ``make exp-turbo`` when ``use_prep_list = true`` in ``configs/methods/turbo.toml``.
-
-    No GPU, ~1 min. Trailing args forward to the script, e.g.::
-
-        make exp-turbo-prep                              # default target 500
-        make exp-turbo-prep ARGS="--target 1000 --alpha 0.5"
-        make exp-turbo-prep ARGS="--dry_run"             # log the cut, write nothing
-    """
-    run([PY, "-m", "scripts.distill_turbo.prep", *extra])
 
 
 def cmd_spd(extra):
@@ -112,14 +112,49 @@ def cmd_ip_adapter_preprocess(extra):
 
 
 def cmd_easycontrol(extra):
-    train("easycontrol", extra)
+    """EasyControl. ``EASYADAPTER=<name>`` selects a control-task project under
+    easycontrol_adapters/ (e.g. ``colorize``) → runs configs/methods/<name>.toml;
+    unset → the default ref==target easycontrol.toml."""
+    train(_easyadapter() or "easycontrol", extra)
+
+
+def cmd_easycontrol_download(extra):
+    """Download an EasyControl control-task project's extra weights.
+
+    ``EASYADAPTER=colorize`` fetches the Sketch2Manga screening weights
+    (``models/sketch2manga/``) used by the learned Phase B condition synthesizer
+    (``easycontrol_adapters/colorization/prep.py --engine sd``). The default
+    EasyControl (no adapter) needs no extra weights beyond the Anima base.
+    """
+    from scripts.tasks import downloads as _downloads
+
+    adapter = _easyadapter()
+    if adapter == "colorize":
+        _downloads.cmd_download_sketch2manga(extra)
+        return
+    print(
+        "Default EasyControl needs no extra weights (uses the Anima base from "
+        "`make download-models`). Set EASYADAPTER=colorize for the Sketch2Manga "
+        "screening weights."
+    )
 
 
 def cmd_easycontrol_preprocess(extra):
     """Full EasyControl preprocess: VAE latents + text-encoder outputs.
 
     Source: ``easycontrol-dataset/``  Caches: ``post_image_dataset/easycontrol/``.
+
+    ``EASYADAPTER=colorize`` instead builds the colorization *condition* cache
+    (mangafy the existing color images → VAE-encode into
+    ``post_image_dataset/colorize_cond/``); the color target latents + TE are
+    reused from the LoRA cache, so no target re-encode is needed. See
+    ``easycontrol_adapters/colorization/prep.py``.
     """
+    adapter = _easyadapter()
+    if adapter == "colorize":
+        run([PY, "easycontrol_adapters/colorization/prep.py", *extra])
+        return
+
     src = "easycontrol-dataset"
     dst = "post_image_dataset/easycontrol"
     run(

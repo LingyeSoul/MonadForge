@@ -7,10 +7,18 @@ early grad_signal_rms / v_student_rms spike (~step 50). Pre-train the fake net
 for ``warmup_steps`` fake-only updates against the student's (init ≈ teacher)
 x_pred distribution so the critic is calibrated before the student moves.
 
+``warmup_steps`` counts **fake gradient updates directly** — one per iteration,
+each on a fresh batch (and a fresh no-grad student x_pred). It is intentionally
+*decoupled* from ``fake_steps_per_student_step`` (the main-loop critic cadence):
+the head-start is fake-only, so there is no student step to pair with, and a
+critic-cadence knob shouldn't silently rescale the calibration budget. Size the
+head-start in updates (e.g. 400), not in main-loop steps.
+
 The student is left untouched (no-grad forward, no student optimizer step). The
 fake scheduler IS stepped through this phase (caller sizes it over ``iterations
-+ warmup_steps``), so the fake's 0.02 LR warmup overlaps the head-start and the
-fake enters the main loop at full LR with a calibrated critic.
+· fake_steps_per_student_step + warmup_steps``), so the fake's 0.02 LR warmup
+overlaps the head-start and the fake enters the main loop at full LR with a
+calibrated critic.
 """
 
 from __future__ import annotations
@@ -36,7 +44,6 @@ def run_fake_warmup(
     dataloader: torch.utils.data.DataLoader,
     fake_opt: torch.optim.Optimizer,
     fake_sched: torch.optim.lr_scheduler.LRScheduler,
-    fake_steps_per_student_step: int,
     grad_clip: float,
     t_distribution: str,
     sigmoid_scale: float,
@@ -45,7 +52,10 @@ def run_fake_warmup(
     log_interval: int,
     writer,
 ) -> Iterator:
-    """Run the critic head-start; returns the (possibly advanced) data_iter."""
+    """Run the critic head-start; returns the (possibly advanced) data_iter.
+
+    ``warmup_steps`` = number of fake gradient updates (one per iteration).
+    """
     if warmup_steps <= 0:
         return data_iter
 
@@ -76,35 +86,26 @@ def run_fake_warmup(
             ).squeeze(2)
             x_pred_d = (x_t.squeeze(2) - t_e * v_student).detach()
 
-        cw_loss = torch.zeros((), device=device)
-        for _ in range(fake_steps_per_student_step):
-            tau_fake = sample_t(
-                B, distribution=t_distribution, sigmoid_scale=sigmoid_scale,
-                device=device, dtype=dtype,
-            )
-            eps_fake = torch.randn_like(x_pred_d)
-            x_t_fake = renoise(x_pred_d, tau_fake, eps_fake).requires_grad_()
-            v_fake = forward_fn(
-                "fake", x_t_fake, tau_fake, crossattn_emb, no_grad=False
-            ).squeeze(2)
-            target_v_fake = eps_fake - x_pred_d
-            fake_loss = nn.functional.mse_loss(
-                v_fake.float(), target_v_fake.float()
-            )
-            fake_loss.backward()
-            if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(
-                    turbo.fake_params(), max_norm=grad_clip
-                )
-            fake_opt.step()
-            fake_opt.zero_grad(set_to_none=True)
-            fake_sched.step()
-            cw_loss = cw_loss + fake_loss.detach()
+        # One fake update per iteration (decoupled from the main-loop cadence —
+        # see module docstring). Resampled (τ_fake, ε_fake) on a fresh batch.
+        tau_fake = sample_t(
+            B, distribution=t_distribution, sigmoid_scale=sigmoid_scale,
+            device=device, dtype=dtype,
+        )
+        eps_fake = torch.randn_like(x_pred_d)
+        x_t_fake = renoise(x_pred_d, tau_fake, eps_fake).requires_grad_()
+        v_fake = forward_fn(
+            "fake", x_t_fake, tau_fake, crossattn_emb, no_grad=False
+        ).squeeze(2)
+        target_v_fake = eps_fake - x_pred_d
+        fake_loss = nn.functional.mse_loss(v_fake.float(), target_v_fake.float())
+        fake_loss.backward()
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(turbo.fake_params(), max_norm=grad_clip)
+        fake_opt.step()
+        fake_opt.zero_grad(set_to_none=True)
+        fake_sched.step()
         if writer is not None and (cw + 1) % log_interval == 0:
-            writer.add_scalar(
-                "warmup/fake_loss",
-                (cw_loss / fake_steps_per_student_step).item(),
-                cw + 1,
-            )
+            writer.add_scalar("warmup/fake_loss", fake_loss.item(), cw + 1)
 
     return data_iter

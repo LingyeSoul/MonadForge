@@ -869,10 +869,18 @@ def sample_images(
     text_encoding_strategy,
     sample_prompts_te_outputs=None,
     prompt_replacement=None,
+    network=None,
 ):
     """Generate sample images during training.
 
     This is a simplified sampler for Anima - it generates images using the current model state.
+
+    Mirrors the validation phase's model handling (see
+    ``library/training/validation.py::run_validation``): the adapter ``network``
+    is put in ``eval()`` for the duration (so dropout / rank-dropout match how
+    samples would be generated at inference) and restored to ``train()``
+    afterward, reusing the live in-GPU model rather than reloading anything. The
+    optimizer eval/train swap is handled by the caller in ``loop.py``.
     """
     if steps == 0:
         if not args.sample_at_first:
@@ -896,6 +904,11 @@ def sample_images(
     dit = accelerator.unwrap_model(dit)
     if text_encoder is not None:
         text_encoder = accelerator.unwrap_model(text_encoder)
+    # Adapter to eval for the duration — same as the validation phase, so
+    # dropout / rank-dropout don't perturb the previews. Restored in finally.
+    net = accelerator.unwrap_model(network) if network is not None else None
+    if net is not None:
+        net.eval()
 
     dit.switch_block_swap_for_inference()
 
@@ -913,32 +926,39 @@ def sample_images(
     except Exception:
         pass
 
-    with torch.no_grad(), accelerator.autocast():
-        for prompt_dict in prompts:
-            dit.prepare_block_swap_before_forward()
-            _sample_image_inference(
-                accelerator,
-                args,
-                dit,
-                text_encoder,
-                vae,
-                tokenize_strategy,
-                text_encoding_strategy,
-                save_dir,
-                prompt_dict,
-                epoch,
-                steps,
-                sample_prompts_te_outputs,
-                prompt_replacement,
-            )
+    try:
+        with torch.no_grad(), accelerator.autocast():
+            for prompt_dict in prompts:
+                dit.prepare_block_swap_before_forward()
+                _sample_image_inference(
+                    accelerator,
+                    args,
+                    dit,
+                    text_encoder,
+                    vae,
+                    tokenize_strategy,
+                    text_encoding_strategy,
+                    save_dir,
+                    prompt_dict,
+                    epoch,
+                    steps,
+                    sample_prompts_te_outputs,
+                    prompt_replacement,
+                )
+    finally:
+        # Restore RNG + model state even if a prompt errors, so training
+        # resumes exactly where it left off (mirrors run_validation's finally).
+        torch.set_rng_state(rng_state)
+        if cuda_rng_state is not None:
+            torch.cuda.set_rng_state(cuda_rng_state)
 
-    # Restore RNG state
-    torch.set_rng_state(rng_state)
-    if cuda_rng_state is not None:
-        torch.cuda.set_rng_state(cuda_rng_state)
-
-    dit.switch_block_swap_for_training()
-    clean_memory_on_device(accelerator.device)
+        dit.switch_block_swap_for_training()
+        if net is not None:
+            net.train()
+        # No clean_memory_on_device() here on purpose: emptying the CUDA cache
+        # at the sample<->train boundary is what made VRAM visibly fluctuate.
+        # Letting the caching allocator hold its blocks keeps usage flat (peak
+        # settles at max(training, sampling) and stays there).
 
 
 def _sample_image_inference(
@@ -964,7 +984,17 @@ def _sample_image_inference(
     width = prompt_dict.get("width", _img_size[1])
     height = prompt_dict.get("height", _img_size[0])
     scale = prompt_dict.get("scale", getattr(args, "sample_guidance_scale", 3.5))
-    seed = prompt_dict.get("seed", getattr(args, "sample_seed", None))
+    seed = prompt_dict.get("seed")
+    if seed is None:
+        # No explicit --d on this prompt: pin to a stable per-prompt seed so
+        # the same prompt renders from identical noise at every epoch — that's
+        # what makes the per-epoch gallery comparable for spotting overfitting.
+        # Offset by the prompt's index so different prompts still get distinct
+        # noise. Falls back to 0 if the run somehow has no seed.
+        base_seed = getattr(args, "seed", None)
+        seed = (base_seed if base_seed is not None else 0) + int(
+            prompt_dict.get("enum", 0)
+        )
     flow_shift = prompt_dict.get("flow_shift", getattr(args, "sample_flow_shift", 5.0))
     sampler = prompt_dict.get(
         "sample_sampler", getattr(args, "sample_sampler", "euler")
@@ -1069,7 +1099,7 @@ def _sample_image_inference(
             else:
                 neg_crossattn_emb = neg_pe
 
-    # Generate sample
+    # Generate sample.
     # ControlNet-LLLite: if "controlnet_image" was specified in the prompt, load and encode
     # the conditioning image, then prime the network before do_sample().
     controlnet_net = (
@@ -1112,7 +1142,10 @@ def _sample_image_inference(
             logger.warning(f"  failed to load controlnet image: {e}")
             controlnet_net.clear_cond_latent()
 
-    clean_memory_on_device(accelerator.device)
+    # Deliberately no empty_cache here: freed tensors return to the caching
+    # allocator and get reused on the next prompt / when training resumes, so
+    # VRAM stays flat across the train<->sample transition instead of the
+    # shrink-then-regrow churn that torch.cuda.empty_cache() causes.
     latents = do_sample(
         height,
         width,
@@ -1132,42 +1165,97 @@ def _sample_image_inference(
     if controlnet_net is not None:
         controlnet_net.clear_cond_latent()
 
-    # Decode latents
-    gc.collect()
-    synchronize_device(accelerator.device)
-    clean_memory_on_device(accelerator.device)
-    org_vae_device = vae.device
-    vae.to(accelerator.device)
-    decoded = vae.decode_to_pixels(latents)
-    vae.to(org_vae_device)
-    clean_memory_on_device(accelerator.device)
-
-    # Convert to image
-    image = decoded.float()
-    image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)[0]
-    # Remove temporal dim if present
-    if image.ndim == 4:
-        image = image[:, 0, :, :]
-    decoded_np = 255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
-    decoded_np = decoded_np.astype(np.uint8)
-
-    image = Image.fromarray(decoded_np)
+    # Stash the latent instead of decoding now. Loading the VAE to GPU mid-run
+    # (on top of the resident DiT + block-swap buffers + the heavy VAE decode
+    # activations) is a real OOM risk on tight cards, so the actual decode is
+    # deferred to the end of training — see decode_pending_samples(), called
+    # from train.py once the training loop has torn down and freed the GPU.
+    # (No empty_cache here either — keep VRAM flat; see do_sample call above.)
 
     ts_str = time.strftime("%Y%m%d%H%M%S", time.localtime())
     num_suffix = f"e{epoch:06d}" if epoch is not None else f"{steps:06d}"
     seed_suffix = "" if seed is None else f"_{seed}"
     i = prompt_dict.get("enum", 0)
-    img_filename = f"{'' if args.output_name is None else args.output_name + '_'}{num_suffix}_{i:02d}_{ts_str}{seed_suffix}.png"
-    image.save(os.path.join(save_dir, img_filename))
+    stem = (
+        f"{'' if args.output_name is None else args.output_name + '_'}"
+        f"{num_suffix}_{i:02d}_{ts_str}{seed_suffix}"
+    )
+    latents_dir = os.path.join(save_dir, "latents")
+    os.makedirs(latents_dir, exist_ok=True)
+    torch.save(
+        {"latents": latents.detach().to("cpu"), "prompt": prompt, "enum": i},
+        os.path.join(latents_dir, stem + ".pt"),
+    )
 
-    # Log to wandb if enabled
+
+def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
+    """Decode the sample latents stashed during training into PNGs.
+
+    Called once from train.py after the training loop tears down (optimizer /
+    gradient / block-swap buffers freed → max GPU headroom). Loads the VAE to
+    GPU a single time, decodes every ``output_dir/sample/latents/*.pt`` into a
+    PNG in ``output_dir/sample/``, then parks the VAE back. Each latent file is
+    removed after a successful decode; a failed one is left on disk so it can be
+    recovered. No-op when sampling was disabled or the VAE isn't available.
+    """
+    if vae is None:
+        return
+    save_dir = os.path.join(args.output_dir, "sample")
+    latents_dir = os.path.join(save_dir, "latents")
+    if not os.path.isdir(latents_dir):
+        return
+    files = sorted(f for f in os.listdir(latents_dir) if f.endswith(".pt"))
+    if not files:
+        return
+
+    logger.info(f"Decoding {len(files)} deferred sample image(s) to {save_dir}")
+    wandb_tracker = None
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
         import wandb
 
-        wandb_tracker.log(
-            {f"sample_{i}": wandb.Image(image, caption=prompt)}, commit=False
-        )
+    org_vae_device = vae.device
+    vae.to(accelerator.device)
+    try:
+        for fn in files:
+            path = os.path.join(latents_dir, fn)
+            try:
+                rec = torch.load(path, map_location="cpu")
+                latents = rec["latents"].to(accelerator.device)
+                with torch.no_grad():
+                    decoded = vae.decode_to_pixels(latents)
+                image = decoded.float()
+                image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)[0]
+                if image.ndim == 4:  # drop temporal dim if present
+                    image = image[:, 0, :, :]
+                decoded_np = (
+                    255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
+                ).astype(np.uint8)
+                pil = Image.fromarray(decoded_np)
+                stem = os.path.splitext(fn)[0]
+                pil.save(os.path.join(save_dir, stem + ".png"))
+                if wandb_tracker is not None:
+                    wandb_tracker.log(
+                        {
+                            f"sample_{rec.get('enum', 0)}": wandb.Image(
+                                pil, caption=rec.get("prompt", "")
+                            )
+                        },
+                        commit=False,
+                    )
+                os.remove(path)
+            except Exception as exc:  # never let one bad latent abort the rest
+                logger.error(f"Failed to decode sample latent {fn}: {exc}")
+            clean_memory_on_device(accelerator.device)
+    finally:
+        vae.to(org_vae_device)
+        clean_memory_on_device(accelerator.device)
+
+    # Drop the staging dir if everything decoded cleanly.
+    try:
+        os.rmdir(latents_dir)
+    except OSError:
+        pass
 
 
 def sample_image_to_tensor(

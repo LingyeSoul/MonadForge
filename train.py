@@ -111,6 +111,59 @@ import logging  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def _normalize_sample_args(args):
+    """Normalize the sample-image knobs so the GUI can drive them naturally.
+
+    Two concerns:
+
+    1. ``sample_prompts`` may be given inline (a TOML list / multi-line string)
+       instead of a file path — the GUI writes the user's prompts straight into
+       the config rather than asking them to manage a separate file. The rest of
+       the sampling path (``train_util.load_prompts`` etc.) expects a ``.txt``
+       path, so a list/multi-line value is written to
+       ``output_dir/sample_prompts.txt`` (one prompt per line) and
+       ``args.sample_prompts`` is repointed at it. A plain existing-file path
+       (the CLI case) is left untouched.
+
+    2. Cadence knobs use ``0`` as the GUI's "disabled" sentinel. ``sample_images``
+       does ``epoch % args.sample_every_n_epochs`` once the value ``is not None``,
+       so a literal ``0`` would raise ``ZeroDivisionError``. Coerce any
+       non-positive cadence to ``None`` (= disabled).
+    """
+    for knob in ("sample_every_n_epochs", "sample_every_n_steps"):
+        v = getattr(args, knob, None)
+        if v is not None and v <= 0:
+            setattr(args, knob, None)
+
+    val = getattr(args, "sample_prompts", None)
+    if val is None:
+        return
+
+    if isinstance(val, (list, tuple)):
+        lines = [str(p).strip() for p in val]
+    elif isinstance(val, str):
+        # A real file path stays as-is; only treat it as inline text when it's
+        # not an existing file and actually contains prompt content.
+        if os.path.isfile(val):
+            return
+        lines = [ln.strip() for ln in val.splitlines()]
+    else:
+        return
+
+    lines = [ln for ln in lines if ln and not ln.startswith("#")]
+    if not lines:
+        # Nothing usable — disable sampling rather than point at a phantom file.
+        args.sample_prompts = None
+        return
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    prompt_path = os.path.join(args.output_dir, "sample_prompts.txt")
+    with open(prompt_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    logger.info(f"Wrote {len(lines)} inline sample prompt(s) to {prompt_path}")
+    args.sample_prompts = prompt_path
+
+
 class AnimaTrainer:
     def __init__(self):
         self.sample_prompts_te_outputs = None
@@ -946,6 +999,7 @@ class AnimaTrainer:
         tokenizer,
         text_encoder,
         unet,
+        network=None,
     ):
         text_encoders = (
             text_encoder if isinstance(text_encoder, list) else [text_encoder]
@@ -966,6 +1020,7 @@ class AnimaTrainer:
             tokenize_strategy,
             text_encoding_strategy,
             self.sample_prompts_te_outputs,
+            network=network,
         )
 
     def prepare_unet_with_accelerator(
@@ -1889,6 +1944,7 @@ class AnimaTrainer:
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
+        _normalize_sample_args(args)
         verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
         setup_logging(args, reset=True)
@@ -2373,6 +2429,18 @@ class AnimaTrainer:
 
             accelerator.end_training()
             optimizer_eval_fn()
+
+            # Deferred sample decode: sample latents were stashed per epoch (the
+            # VAE was never brought to GPU mid-run, to avoid OOM). Decode them
+            # now that the loop has freed its activation / block-swap memory.
+            # Park the DiT on CPU first so the VAE decode gets the full budget.
+            if is_main_process and args.sample_prompts:
+                try:
+                    accelerator.unwrap_model(loop_state.unet).to("cpu")
+                except Exception:
+                    pass
+                clean_memory_on_device(accelerator.device)
+                anima_train_utils.decode_pending_samples(accelerator, args, vae)
 
             if is_main_process and (args.save_state or args.save_state_on_train_end):
                 save_state_on_train_end(args, accelerator)

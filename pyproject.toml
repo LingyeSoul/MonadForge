@@ -52,8 +52,8 @@ dependencies = [
     "spandrel>=0.4.2",
     "sqlalchemy>=2.1.0b2",
     "aiohttp>=3.13.5",
-    "comfy-cli>=1.7.3",
-    "comfy-aimdo>=0.2.14",
+    "comfy-cli>=1.10.3",
+    "comfy-aimdo>=0.3.0",
     "av>=17.0.1",
     "alembic>=1.18.4",
     "pydantic-settings>=2.14.0",
@@ -70,6 +70,10 @@ dependencies = [
     "timm>=1.0.0",
     # Experiment tracking
     "wandb>=0.19.0",
+    "softtorch>=0.1.1",
+    "torchaudio>=2.11.0",
+    "controlnet-aux>=0.0.10",
+    "scikit-learn>=1.9.0rc1",
 ]
 
 [project.optional-dependencies]

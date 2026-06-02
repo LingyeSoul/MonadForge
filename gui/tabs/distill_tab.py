@@ -520,13 +520,13 @@ class SPDTrainTab(_DistillConfigTab):
 
 
 class TurboTrainTab(_DistillConfigTab):
-    # Turbo Anima: a 4-step LoRA student distilled from the 28-step CFG=4 teacher
-    # via Decoupled-Hybrid DMD2. Like SPD it trains on the SAME data + cache as
-    # ordinary LoRA training, through the bespoke loop `make exp-turbo`
+    # Turbo Anima: a few-step LoRA student distilled from the CFG=4 teacher
+    # via DP-DMD (diversity-preserved DMD). Like SPD it trains on the SAME data +
+    # cache as ordinary LoRA training, through the bespoke loop `make exp-turbo`
     # (scripts/distill_turbo/distill.py, NOT train.py). Output anima_turbo.safetensors is
-    # a normal LoRA — infer at 4 steps cfg=1.0 (`make exp-test-turbo`). The
+    # a normal LoRA — infer at 2 steps cfg=1.0 (`make exp-test-turbo`). The
     # turbo.toml schema is bespoke/sectioned. See
-    # docs/experimental/dmd2-decoupled.md.
+    # docs/experimental/dpdmd.md.
     CONFIG_PATH = "configs/methods/turbo.toml"
     TRAIN_TASK = "exp-turbo"
     METHOD_LABEL = "Turbo"

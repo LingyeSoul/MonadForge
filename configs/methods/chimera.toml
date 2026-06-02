@@ -16,10 +16,10 @@
 # the denoise loss + per-pool balance loss. T-LoRA's mask is applied to
 # the content branch only (the freq branch keeps full rank at every t).
 
-network_alpha = 48
-network_dim = 48
+network_alpha = 64
+network_dim = 64
 
-learning_rate = 2e-5
+learning_rate = 1e-5
 max_train_epochs = 12
 save_every_n_epochs = 4
 checkpointing_epochs = 4
@@ -34,14 +34,14 @@ caption_dropout_rate = 0.1
 logging_dir = "output/logs"
 log_with = "tensorboard"
 
-output_name = "anima_chimera2"
+output_name = "anima_chimera-0531-64"
 # path_pattern = "ama_mitsuki/*|channel_(caststation)/*|sweetonedollar/*"
 
 use_ortho = true
 use_timestep_mask = true
 min_rank = 16
 alpha_rank_scale = 1.0
-blocks_to_swap=4
+blocks_to_swap=0
 
 # -------------
 # ChimeraHydra activation. The three-axis routing fields
@@ -52,18 +52,8 @@ blocks_to_swap=4
 # path.
 
 use_chimera_hydra = true
-num_experts_content = 6
+num_experts_content = 8
 num_experts_freq = 2
-
-# Outer balance multiplier is 1.0 so the per-pool weights below are the
-# only scalars on the balance loss. Default per-pool weights match the
-# OrthoHydra production value (~2e-5, see
-# [[project_hydra_balance_weight_ceiling]]).
-#
-# Warmup is asymmetric on the chimera path: only the CONTENT router gates
-# through ``balance_loss_warmup_ratio``. The FREQ router bypasses warmup
-# entirely — its FEI input breaks symmetry from step 0, so its load-balance
-# pressure can fire immediately without pinning the router to uniform.
 
 balance_loss_warmup_ratio = 0.1
 balance_loss_weight = 1.0
@@ -92,18 +82,12 @@ freq_router_tau = 1.0   # 1.0 = raw FEI passthrough; <1 sharpens, >1 flattens
 # low/high crossover near σ≈0.3 (mid-denoising) on this dataset.
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
-# Inert under freq_router_mode="fei" (kept for the "learned" fallback):
-# sigma_feature_dim feeds the FreqRouter MLP's σ block; freq_router_layer_norm
-# balances FEI vs σ variance at its input. Neither fires when the gate is
-# hardwired to FEI.
-sigma_feature_dim = 16
-freq_router_layer_norm = true
 max_data_loader_n_workers=1
 # Routing scope. Every Linear matched by this regex becomes a chimera
 # leaf; non-matching layers fall back to OrthoLoRA (single-pool Cayley,
 # no router). Same default as the other hydra variants.
-# router_targets = ".*(output_proj|mlp\\.layer[12])$"
-router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
+router_targets = ".*(output_proj|mlp\\.layer[12])$"
+# router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
 # output_name = "anima_chimera-0521"
 [[datasets]]
 validation_split_num = 8

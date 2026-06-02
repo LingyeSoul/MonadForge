@@ -1,11 +1,5 @@
 # Soft Tokens — per-layer time-indexed soft text tokens (SoftREPA-style
 # parameterization, plain FM loss).
-#
-# Reference: Lee et al., "Aligning Text to Image in Diffusion Models is Easier
-# Than You Think" (NeurIPS 2025) — arXiv:2503.08250. We adopt only the
-# parameterization (per-layer × per-t soft tokens) and skip the contrastive
-# InfoNCE objective; trained under standard flow-matching loss.
-#
 
 network_module = "networks.methods.soft_tokens"
 
@@ -21,81 +15,12 @@ network_dim = 4
 #                      since base tokens still train normally). Drop to ~20 if
 #                      that becomes the bottleneck.
 # init_std           — base-tokens init std. t_offsets is zero-init.
-# splice_position    — "end_of_sequence" (default) overwrites the K tail
-#                      zero-padding slots; preserves the strongest sinks.
-#                      "front_of_padding" scatters at [seqlens[i], +K) per
-#                      sample (caption-position-aware).
-#
-# ── Contrastive objective (SoftREPA InfoNCE via cached-TE negatives) ──────────
-# A training-only objective that sharpens prompt-following (data-conditioned) by
-# making the matched text explain the anchor's latent better than mismatched
-# text. Each negative costs one extra full DiT forward, so keep contrastive_k
-# small. Off by default (weight 0.0 = plain-FM behavior, bit-identical).
-# See docs/proposal/soft_tokens_contrastive.md.
-# contrastive_weight            — λ_con. 0.0 disables (and the dataset stops
-#                                 producing negatives, so no extra forwards).
-# contrastive_k                 — negatives per step → (k+1)× step time. Keep 1–2.
-# contrastive_every_n           — run the negative forwards only every Nth
-#                                 optimizer step (1 = every step). Manual
-#                                 frequency knob, NOT auto-scaled: effective
-#                                 strength ≈ weight × 1/N, so bump
-#                                 contrastive_weight if you want to hold the
-#                                 average pull constant. Costs no extra memory
-#                                 (firing-step peak unchanged, off-steps cheaper).
-# contrastive_negative_mode     — negative sourcing: "shuffled" (unrelated),
-#                                 "jaccard" (shuffled + tag-overlap logit
-#                                 down-weight), "hard" (same-artist/diff-char),
-#                                 or "hard_backoff" (tiered same-artist → same-
-#                                 copyright → same-artist-`original` → shuffled).
-#                                 Setup log prints the level mix; genuine-negative
-#                                 rate tracks caption_index.json char coverage —
-#                                 regen with `make caption-index` if stale.
-# contrastive_jaccard_alpha     — logit penalty for "jaccard" mode (ℓ_neg −= α·s,
-#                                 sweep 0.5–2.0). Unused by other modes.
-# contrastive_tau               — temperature on the −FM-error logit. InfoNCE: the
-#                                 softmax temperature. AGSM: the Plackett–Luce
-#                                 temperature for the candidate weights w_j (lower
-#                                 = sharper preference for the best-matching
-#                                 caption → faster Δ self-annealing).
-# contrastive_warmup_ratio      — hold λ_con at 0 for the first fraction of
-#                                 steps (lets plain FM shape the bank first).
-#
-# ── AGSM objective (bounded target-shift) — docs/proposal/soft_tokens_agsm.md ──
-# Alternative to InfoNCE on the SAME extra-forward plumbing (negatives, warmup,
-# every_n, compose seam). Diagnoses SoftREPA's instability as unbounded negative
-# divergence and fixes it by regressing toward fixed shifted targets instead of
-# maximizing negative error (paper Algorithm 1 / Eq. 17, single-bank Phase 2):
-#   positives → v_target + γ⁺·Δ⁺,   negatives → v_target − γ⁻·Δ⁻_j
-# with per-candidate Plackett–Luce guidance off an EMA shadow of the bank's own
-# predictions (reward-free self-distillation; no external scorer):
-#   w_j   = softmax_j( −‖v̂_ema_j − v_target‖² / τ )   over {matched, neg₁…neg_k}
-#   Δ_j   = v̂_ema_j − Σ_k w_k·v̂_ema_k
-# As the matched caption wins (w_matched→1) the baseline → v̂⁺_ema so Δ→0 and the
-# target relaxes to plain FM — the normalized self-annealing that bounds it.
-# τ is contrastive_tau (above). Phase 2 = single bank, constant Ã(t)=1. Costs
-# ~(2k+1) extra forwards/firing-step vs InfoNCE's k (the EMA value passes), all
-# no_grad except the deferred negative replay — keep contrastive_k ∈ {1,2}.
-# contrastive_objective         — "infonce" (default) | "agsm".
-# agsm_gamma                    — γ⁺, positive-branch target-shift magnitude.
-#                                 Sweep ~0.25–1.0 (paper SD3 γ⁺=1).
-# agsm_gamma_neg                — γ⁻, negative-branch magnitude. Unset ⇒ = γ⁺
-#                                 (symmetric). Paper's flow model (SD3) used a
-#                                 deliberately weaker γ⁻=0.1 for stability.
-# agsm_ema_decay                — EMA decay for the bank shadow that Δ is read
-#                                 off (must be in (0,1); slower = steadier Δ).
-# agsm_dual_bank                — dual token banks ψ⁺/ψ⁻ (Phase 3a, paper §3.3).
-#                                 false (default) = single shared bank (Phase 2,
-#                                 bit-identical, 3D on-disk). true = a branch axis
-#                                 on the bank: ψ⁺ is spliced on the anchor +
-#                                 positive value passes (and is the ONLY bank used
-#                                 at inference — Appendix H found injecting ψ⁻ at
-#                                 inference over-suppresses detail), ψ⁻ on the
-#                                 negative value passes (training-only). Lets the
-#                                 negative push refine ψ⁻ without spending
-#                                 generative fidelity on the kept bank. Doubles the
-#                                 bank params + EMA shadow; ψ⁻ is free at inference.
-#                                 Checkpoints stamp ss_n_banks; single-bank
-#                                 checkpoints stay loadable.
+# splice_position    — "front_of_padding" (shipped below; algorithm-faithful —
+#                      SoftREPA appends soft tokens to the text sequence) scatters
+#                      at [seqlens[i], +K) per sample, caption-position-aware.
+#                      "end_of_sequence" (constructor fallback) overwrites the K
+#                      tail zero-padding slots; compile-friendly, preserves the
+#                      strongest front sinks, but an Anima-specific shortcut.
 
 network_args = [
     "n_layers=6",
@@ -104,21 +29,17 @@ network_args = [
     "splice_position=front_of_padding",
     "contrastive_weight=0.15",
     "contrastive_every_n=3",
-    "contrastive_k=1",
+    "contrastive_k=2",
     "contrastive_negative_mode=hard_backoff",
 
-    "contrastive_objective=agsm",
-    "agsm_gamma=1.0",
-    "agsm_gamma_neg=0.1",
-    "agsm_ema_decay=0.99",
-    # Phase 3a A/B: flip on for dual ψ⁺/ψ⁻ banks (inference keeps ψ⁺ only).
-    "agsm_dual_bank=true",
+    "contrastive_objective=softrank",
+    "dual_bank=true",
 
     "contrastive_jaccard_alpha=1.0",
     "contrastive_tau=0.5",
-    "contrastive_warmup_ratio=0.1",
+    "contrastive_warmup_ratio=0.0",
 ]
-output_name = "anima_soft_tokens_tenth2"
+output_name = "anima_soft_tokens_softrank"
 weight_decay=1e-4
 # Soft tokens are independent of the cached crossattn (they overwrite zero-
 # padding tail), so cache_llm_adapter_outputs is the right default.
@@ -130,7 +51,6 @@ learning_rate = 1e-3
 max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
-# compile_inductor_mode = "reduce-overhead"
 
 # gradient_accumulation_steps = 2
 blocks_to_swap = 0
@@ -139,4 +59,4 @@ logging_dir = "output/logs"
 log_with = "tensorboard"
 
 max_data_loader_n_workers=1
-validation_split_num = 8
+validation_split_num = 0
