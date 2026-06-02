@@ -240,6 +240,8 @@ STRINGS: dict[str, str] = {
     "distill_general_section": "general",
     "distill_job_running": "A job is already running on this tab.",
     "distill_config_missing": "Could not read the config file: {err}",
+    "distill_saved": "Distill config saved.",
+    "distill_save_failed": "Failed to save distill config.",
     "adapter_log_placeholder": "Run output will appear here...",
     "adapter_no_dataset": "Source dataset directory does not exist. Create it and drop in image+caption pairs.",
     "adapter_open_dir": "Open directory",

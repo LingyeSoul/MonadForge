@@ -5,6 +5,7 @@ export default {
   navDataset: 'Dataset',
   navPreprocess: 'Preprocess',
   navAdapter: 'Adapter',
+  navDistill: 'Distill',
   navMerge: 'Merge',
   navSystem: 'System',
   navTasks: 'Tasks',
@@ -255,6 +256,25 @@ export default {
   adNoTasks: 'No adapter tasks running',
   adDatasetPreview: 'Dataset Preview',
   adBrowseDataset: 'Browse',
+
+  // Distill View
+  distTitle: 'Distillation',
+  distSubtitle: 'Configure and run SPD / Turbo distillation training',
+  distMethod: 'Method',
+  distGeneral: 'General',
+  distSave: 'Save',
+  distTrain: 'Train',
+  distStop: 'Stop',
+  distGuide: 'Guide',
+  distSaved: 'Config saved',
+  distSaveFailed: 'Failed to save config',
+
+  // Adapter Stats
+  adSourceImages: 'Images',
+  adCaptions: 'Captions',
+  adCacheLatents: 'Latents',
+  adCacheTE: 'Text Enc',
+  adCachePE: 'PE',
 
   // Merge View
   mgTitle: 'LoRA Merge',

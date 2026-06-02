@@ -229,6 +229,8 @@ STRINGS: dict[str, str] = {
     "distill_general_section": "通用",
     "distill_job_running": "此标签页已有任务正在运行。",
     "distill_config_missing": "无法读取配置文件: {err}",
+    "distill_saved": "蒸馏配置已保存。",
+    "distill_save_failed": "蒸馏配置保存失败。",
     "adapter_log_placeholder": "运行输出将显示在此处……",
     "adapter_no_dataset": "源数据集目录不存在。请创建该目录并放入图像 + 标注配对。",
     "adapter_open_dir": "打开目录",

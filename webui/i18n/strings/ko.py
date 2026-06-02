@@ -229,6 +229,8 @@ STRINGS: dict[str, str] = {
     "distill_general_section": "일반",
     "distill_job_running": "이 탭에서 이미 작업이 실행 중입니다.",
     "distill_config_missing": "설정 파일을 읽을 수 없습니다: {err}",
+    "distill_saved": "증류 설정이 저장되었습니다.",
+    "distill_save_failed": "증류 설정 저장에 실패했습니다.",
     "adapter_log_placeholder": "실행 출력이 여기에 표시됩니다...",
     "adapter_no_dataset": "소스 데이터셋 디렉토리가 없습니다. 디렉토리를 만들고 이미지+캡션 쌍을 넣어주세요.",
     "adapter_open_dir": "디렉토리 열기",

@@ -51,6 +51,18 @@ class DatasetPaths(BaseModel):
     conditioning_resized_dir: str = ""
 
 
+class AdapterCacheStats(BaseModel):
+    latents: int = 0
+    te: int = 0
+    pe: int = 0
+
+
+class AdapterStats(BaseModel):
+    source_count: int = 0
+    caption_count: int = 0
+    cache: AdapterCacheStats = AdapterCacheStats()
+
+
 class SavePathsRequest(BaseModel):
     source_image_dir: str | None = None
     resized_image_dir: str | None = None
@@ -101,3 +113,9 @@ def save_paths(
     if not variant:
         raise HTTPException(status_code=400, detail="variant query parameter is required")
     return svc.save_path_overrides(variant, body.model_dump(exclude_none=True))
+
+
+@router.get("/adapter-stats", response_model=AdapterStats)
+def get_adapter_stats(dir: str = Query(...)):
+    """Return dataset statistics for an adapter's source directory."""
+    return svc.adapter_stats(dir)

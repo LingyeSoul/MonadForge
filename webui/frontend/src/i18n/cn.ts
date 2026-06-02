@@ -5,6 +5,7 @@ export default {
   navDataset: '数据集',
   navPreprocess: '预处理',
   navAdapter: '适配器',
+  navDistill: '蒸馏',
   navMerge: '合并',
   navSystem: '系统',
   navTasks: '任务',
@@ -255,6 +256,25 @@ export default {
   adNoTasks: '暂无适配器任务运行',
   adDatasetPreview: '数据集预览',
   adBrowseDataset: '浏览',
+
+  // Distill View
+  distTitle: '蒸馏',
+  distSubtitle: '配置并运行 SPD / Turbo 蒸馏训练',
+  distMethod: '方法',
+  distGeneral: '通用',
+  distSave: '保存',
+  distTrain: '训练',
+  distStop: '停止',
+  distGuide: '指南',
+  distSaved: '配置已保存',
+  distSaveFailed: '配置保存失败',
+
+  // Adapter Stats
+  adSourceImages: '图片',
+  adCaptions: '字幕',
+  adCacheLatents: '潜变量',
+  adCacheTE: '文本编码',
+  adCachePE: 'PE特征',
 
   // Merge View
   mgTitle: 'LoRA 合并',

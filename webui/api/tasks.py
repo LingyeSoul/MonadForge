@@ -58,6 +58,7 @@ _COMMAND_DESCRIPTIONS = {
     "print-config": "Dump merged config",
     "exp-postfix": "Postfix tuning",
     "exp-turbo": "DMD2 turbo distillation",
+    "exp-spd": "SPD distillation training",
     "exp-chimera": "ChimeraHydra training",
     "exp-ip-adapter": "IP-Adapter training",
     "exp-ip-adapter-preprocess": "IP-Adapter preprocess",

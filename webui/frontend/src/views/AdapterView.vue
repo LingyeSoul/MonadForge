@@ -15,6 +15,39 @@
             <v-alert type="info" variant="tonal" density="compact" class="mb-2">
               <span v-html="t('adIpHint')" />
             </v-alert>
+            <!-- Dataset stats -->
+            <v-row dense class="mt-2" v-if="adapterStats['ip']">
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-image" variant="tonal"
+                        :color="adapterStats['ip'].source_count > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adSourceImages') }}: {{ adapterStats['ip'].source_count }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-text-box" variant="tonal"
+                        :color="adapterStats['ip'].caption_count > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCaptions') }}: {{ adapterStats['ip'].caption_count }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-database" variant="tonal"
+                        :color="adapterStats['ip'].cache.latents > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCacheLatents') }}: {{ adapterStats['ip'].cache.latents }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-brain" variant="tonal"
+                        :color="adapterStats['ip'].cache.te > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCacheTE') }}: {{ adapterStats['ip'].cache.te }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-vector-square" variant="tonal"
+                        :color="adapterStats['ip'].cache.pe > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCachePE') }}: {{ adapterStats['ip'].cache.pe }}
+                </v-chip>
+              </v-col>
+            </v-row>
             <!-- Dataset preview -->
             <div v-if="ipPreviewImages.length" class="dataset-preview mt-3">
               <div class="d-flex align-center mb-1">
@@ -63,6 +96,39 @@
             <v-alert type="info" variant="tonal" density="compact" class="mb-2">
               <span v-html="t('adEasyHint')" />
             </v-alert>
+            <!-- Dataset stats -->
+            <v-row dense class="mt-2" v-if="adapterStats['ec']">
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-image" variant="tonal"
+                        :color="adapterStats['ec'].source_count > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adSourceImages') }}: {{ adapterStats['ec'].source_count }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-text-box" variant="tonal"
+                        :color="adapterStats['ec'].caption_count > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCaptions') }}: {{ adapterStats['ec'].caption_count }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-database" variant="tonal"
+                        :color="adapterStats['ec'].cache.latents > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCacheLatents') }}: {{ adapterStats['ec'].cache.latents }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-brain" variant="tonal"
+                        :color="adapterStats['ec'].cache.te > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCacheTE') }}: {{ adapterStats['ec'].cache.te }}
+                </v-chip>
+              </v-col>
+              <v-col cols="auto">
+                <v-chip prepend-icon="mdi-vector-square" variant="tonal"
+                        :color="adapterStats['ec'].cache.pe > 0 ? 'success' : 'default'" size="small">
+                  {{ t('adCachePE') }}: {{ adapterStats['ec'].cache.pe }}
+                </v-chip>
+              </v-col>
+            </v-row>
             <!-- Dataset preview -->
             <div v-if="ecPreviewImages.length" class="dataset-preview mt-3">
               <div class="d-flex align-center mb-1">
@@ -122,7 +188,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
@@ -164,10 +230,19 @@ async function runTask(command: string) {
 // ── Dataset preview ──────────────────────────────────────────
 
 interface PreviewImage { path: string; filename: string }
+interface AdapterCacheStats { latents: number; te: number; pe: number }
+interface AdapterStatsData { source_count: number; caption_count: number; cache: AdapterCacheStats }
 
 const ipPreviewImages = ref<PreviewImage[]>([])
 const ecPreviewImages = ref<PreviewImage[]>([])
+const adapterStats = reactive<Record<string, AdapterStatsData>>({})
 
+async function fetchStats(dir: string, key: string) {
+  try {
+    const res = await fetch(`/api/preprocess/adapter-stats?dir=${encodeURIComponent(dir)}`)
+    if (res.ok) adapterStats[key] = await res.json()
+  } catch { /* silent */ }
+}
 async function fetchPreview(dir: string): Promise<PreviewImage[]> {
   try {
     const res = await fetch(`/api/images?directory=${encodeURIComponent(dir)}&page=1&page_size=8`)
@@ -186,6 +261,8 @@ onMounted(async () => {
   ])
   ipPreviewImages.value = ip
   ecPreviewImages.value = ec
+  fetchStats('image_dataset', 'ip')
+  fetchStats('easycontrol-dataset', 'ec')
 })
 </script>
 

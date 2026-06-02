@@ -166,6 +166,7 @@ const navItems = [
   { icon: 'mdi-image-multiple-outline', titleKey: 'navDataset', to: '/dataset' },
   { icon: 'mdi-cogs', titleKey: 'navPreprocess', to: '/preprocess' },
   { icon: 'mdi-puzzle-outline', titleKey: 'navAdapter', to: '/adapter' },
+  { icon: 'mdi-flask', titleKey: 'navDistill', to: '/distill' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },
   { icon: 'mdi-console-line', titleKey: 'navTasks', to: '/tasks' },
   { icon: 'mdi-chart-line', titleKey: 'navDashboard', to: '/dashboard' },

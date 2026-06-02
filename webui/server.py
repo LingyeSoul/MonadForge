@@ -13,6 +13,7 @@ from starlette.requests import Request
 from starlette.routing import Route
 
 from webui.api import config as config_api
+from webui.api import distill as distill_api
 from webui.api import docs as docs_api
 from webui.api import files as files_api
 from webui.api import i18n as i18n_api
@@ -65,6 +66,7 @@ def create_app(dev: bool = False) -> FastAPI:
 
     # API routers
     app.include_router(config_api.router, prefix="/api/config")
+    app.include_router(distill_api.router, prefix="/api/distill")
     app.include_router(docs_api.router, prefix="/api/docs")
     app.include_router(files_api.router, prefix="/api/files")
     app.include_router(i18n_api.router, prefix="/api/i18n")

@@ -232,6 +232,8 @@ STRINGS: dict[str, str] = {
     "distill_general_section": "全般",
     "distill_job_running": "このタブでは既にジョブが実行中です。",
     "distill_config_missing": "設定ファイルを読み込めませんでした: {err}",
+    "distill_saved": "蒸留設定を保存しました。",
+    "distill_save_failed": "蒸留設定の保存に失敗しました。",
     "adapter_log_placeholder": "実行出力がここに表示されます...",
     "adapter_no_dataset": "ソースデータセットのディレクトリが存在しません。ディレクトリを作成して画像とキャプションのペアを配置してください。",
     "adapter_open_dir": "ディレクトリを開く",

@@ -220,6 +220,56 @@ def count_caches(cache_dir: Path | None = None) -> dict[str, int]:
     return _count_cache_files(d)
 
 
+def adapter_stats(source_dir: str) -> dict:
+    """Return dataset statistics for an adapter's source directory.
+
+    Counts source images, .txt captions, and cache coverage in the default
+    lora cache directory matching the source stems.
+    """
+    src = _resolve(source_dir)
+    cache_dir = _resolve(get_path_overrides().get("lora_cache_dir", "post_image_dataset/lora"))
+
+    source_count = 0
+    caption_count = 0
+    stems: set[str] = set()
+    if src.is_dir():
+        for p in src.iterdir():
+            if not p.is_file():
+                continue
+            if p.suffix.lower() in IMAGE_EXTS:
+                source_count += 1
+                stems.add(p.stem)
+            elif p.suffix == ".txt":
+                caption_count += 1
+
+    cache = {"latents": 0, "te": 0, "pe": 0}
+    if cache_dir.is_dir() and stems:
+        for p in cache_dir.iterdir():
+            if not p.is_file():
+                continue
+            n = p.name
+            # Check if this cache file belongs to any source stem
+            matched = False
+            for stem in stems:
+                if n.startswith(stem + "_") or n.startswith(stem + "."):
+                    matched = True
+                    break
+            if not matched:
+                continue
+            if n.endswith(_TE_SUFFIX):
+                cache["te"] += 1
+            elif n.endswith(_PE_SUFFIX):
+                cache["pe"] += 1
+            elif n.endswith(_LATENT_SUFFIX):
+                cache["latents"] += 1
+
+    return {
+        "source_count": source_count,
+        "caption_count": caption_count,
+        "cache": cache,
+    }
+
+
 def _count_images(d: Path) -> int:
     """Count image files under *d*."""
     if not d.is_dir():

@@ -98,6 +98,7 @@ _METHOD_ORDER = (
     "postfix",
     "fera",
     "chimera",
+    "soft_tokens",
     "ip_adapter",
     "easycontrol",
     "controlnet",

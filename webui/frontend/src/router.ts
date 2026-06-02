@@ -25,6 +25,11 @@ const router = createRouter({
       component: () => import('./views/AdapterView.vue'),
     },
     {
+      path: '/distill',
+      name: 'distill',
+      component: () => import('./views/DistillView.vue'),
+    },
+    {
       path: '/merge',
       name: 'merge',
       component: () => import('./views/MergeView.vue'),
