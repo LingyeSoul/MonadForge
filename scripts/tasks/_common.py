@@ -234,14 +234,13 @@ def run(cmd: list[str], **kwargs):
             cmd[0] = resolved
     if sys.platform == "win32" and not _has_console():
         kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
-        # Explicit stdio inheritance: when this process runs under pythonw.exe
-        # (e.g. GUI shortcut), pythonw's fd 1/2 aren't exposed to children the
-        # standard way — subprocess.run's default inheritance silently drops
-        # the grandchild's output. Passing sys.stdout/sys.stderr directly hands
-        # over Python's wrapped file objects, which DO route to the pipes our
-        # parent (QProcess) set up. Only set when the caller hasn't.
-        if sys.stdout is not None:
-            kwargs.setdefault("stdout", sys.stdout)
+        # Stdout is a pipe to the parent (WebUI / QProcess / GUI) — no
+        # one is actively draining the read end at terminal speed.  High-
+        # volume tqdm output fills the OS pipe buffer and stalls the
+        # training loop.  Redirect the grandchild's stdout to DEVNULL;
+        # the caller already reads structured progress from the JSONL
+        # sink.  stderr stays live for low-volume diagnostic output.
+        kwargs.setdefault("stdout", subprocess.DEVNULL)
         if sys.stderr is not None:
             kwargs.setdefault("stderr", sys.stderr)
     result = subprocess.run(cmd, cwd=kwargs.pop("cwd", ROOT), env=env, **kwargs)

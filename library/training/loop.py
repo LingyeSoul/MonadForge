@@ -737,21 +737,6 @@ def _log_step(
                 extras = grad_collector.collect(_unwrapped_net)
                 dispatch_wandb_extras(state.accelerator, extras, state.global_step)
 
-    # Write a lightweight step event to the JSONL progress sink on
-    # log cadence (matching tensorboard write frequency) so the WebUI
-    # can tail structured metrics.  Writing every sync_gradients step
-    # adds synchronous disk I/O that stalls the GPU pipeline — the
-    # WebUI polls at ~300ms intervals so log_every_n_steps cadence is
-    # sufficient for a responsive UI.
-    if should_log_step:
-        _sink = getattr(trainer, "progress_sink", None)
-        if _sink is not None:
-            _sink.log(
-                {"avr_loss": _cached_avr, "lr": logs.get("lr", 0.0)},
-                global_step=state.global_step,
-                epoch=epoch,
-            )
-
     return _cached_avr
 
 
