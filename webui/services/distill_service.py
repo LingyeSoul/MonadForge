@@ -10,23 +10,25 @@ import tomlkit
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _GUIDES_DIR = Path(__file__).resolve().parent.parent / "explanations" / "guides"
 
-_DISTILL_METHODS: dict[str, dict[str, str]] = {
+_DISTILL_METHODS: dict[str, dict[str, str | bool]] = {
     "spd": {
         "path": "configs/methods/spd.toml",
         "task": "exp-spd",
         "label": "SPD",
+        "experimental": True,
     },
     "turbo": {
         "path": "configs/methods/turbo.toml",
         "task": "exp-turbo",
         "label": "Turbo",
+        "experimental": True,
     },
 }
 
 
-def list_distill_methods() -> list[dict[str, str]]:
+def list_distill_methods() -> list[dict[str, Any]]:
     """Return available distill methods with metadata."""
-    out: list[dict[str, str]] = []
+    out: list[dict[str, Any]] = []
     for key, meta in _DISTILL_METHODS.items():
         p = _ROOT / meta["path"]
         if p.is_file():
@@ -35,6 +37,7 @@ def list_distill_methods() -> list[dict[str, str]]:
                 "label": meta["label"],
                 "config_path": meta["path"],
                 "task_command": meta["task"],
+                "experimental": bool(meta.get("experimental", False)),
             })
     return out
 
