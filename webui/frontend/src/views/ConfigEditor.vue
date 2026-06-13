@@ -908,7 +908,8 @@ function waitForTask(taskId: string): Promise<void> {
 
 <style scoped>
 .config-editor {
-  min-height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
 }
 

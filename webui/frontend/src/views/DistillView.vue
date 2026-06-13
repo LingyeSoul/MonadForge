@@ -1,5 +1,5 @@
 <template>
-  <v-container fluid class="pa-4">
+  <v-container fluid class="pa-4 distill-page">
     <div class="text-h5 mb-1">{{ t('distTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('distSubtitle') }}</div>
 
@@ -276,6 +276,14 @@ onMounted(loadMethods)
 </script>
 
 <style scoped>
+/* Flex scroll container — mirrors PreprocessView so the page scrolls within
+   the fixed-height v-main when the config sections overflow the viewport. */
+.distill-page {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .guide-card {
   position: sticky;
   top: 16px;
