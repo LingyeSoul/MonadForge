@@ -9,7 +9,6 @@ Supported: plain LoRA, OrthoLoRA, T-LoRA. (T-LoRA's timestep mask is
 training-only — inference already runs full rank, so baking is bit-equivalent.)
 
 Not supported (refuse by default; --allow-partial to drop and proceed):
-  - ReFT              (block-level hook, not a Linear weight delta)
   - HydraLoRA moe     (layer-local router can't be baked under static weights)
   - postfix / prefix  (cross-attn KV splice, not a weight delta)
 
@@ -36,9 +35,8 @@ logger = logging.getLogger(__name__)
 
 # Marker → human-readable kind. Substring match on safetensors keys.
 _NON_BAKEABLE_MARKERS: dict[str, str] = {
-    "reft_": "ReFT (block-level hook)",
     ".lora_up_weight": "HydraLoRA stacked (per-layer router)",
-    ".lora_ups.": "HydraLoRA split (per-layer router)",
+    ".lora_ups.": "HydraLoRA split (per-layer router) / step-expert turbo (per-step heads)",
     "postfix_": "postfix (cross-attn KV splice)",
     "prefix_": "prefix (cross-attn KV splice)",
 }
@@ -132,7 +130,7 @@ def main() -> int:
     parser.add_argument(
         "--allow-partial",
         action="store_true",
-        help="Drop unsupported keys (ReFT / Hydra moe / postfix / prefix) and bake the rest. "
+        help="Drop unsupported keys (Hydra moe / postfix / prefix) and bake the rest. "
         "The merged DiT will not reproduce those components.",
     )
     parser.add_argument(

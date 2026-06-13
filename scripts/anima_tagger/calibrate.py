@@ -23,11 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 def calibrate_thresholds(
-    scores: torch.Tensor,        # [N, n_tags] sigmoid probabilities
-    targets: torch.Tensor,       # [N, n_tags] multi-hot
-    sweep: torch.Tensor,         # [K] candidate thresholds
+    scores: torch.Tensor,  # [N, n_tags] sigmoid probabilities
+    targets: torch.Tensor,  # [N, n_tags] multi-hot
+    sweep: torch.Tensor,  # [K] candidate thresholds
     default: float = 0.5,
-    skip_indices: Optional[torch.Tensor] = None,  # LongTensor of tag indices to leave at default
+    skip_indices: Optional[
+        torch.Tensor
+    ] = None,  # LongTensor of tag indices to leave at default
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Per-tag F1-optimal threshold sweep.
 
@@ -45,7 +47,7 @@ def calibrate_thresholds(
     K = sweep.shape[0]
     best_thresh = torch.full((n_tags,), default)
     best_f1 = torch.zeros(n_tags)
-    pos_count = targets.sum(dim=0)                              # [n_tags]
+    pos_count = targets.sum(dim=0)  # [n_tags]
     has_pos = pos_count > 0
     if skip_indices is not None and skip_indices.numel() > 0:
         skip_mask = torch.zeros(n_tags, dtype=torch.bool)
@@ -56,27 +58,23 @@ def calibrate_thresholds(
     block_size = 256
     for start in range(0, n_tags, block_size):
         end = min(start + block_size, n_tags)
-        s = scores[:, start:end]                                 # [N, b]
+        s = scores[:, start:end]  # [N, b]
         t = targets[:, start:end]
         # [N, b, K] boolean
         pred = s.unsqueeze(-1) > sweep.view(1, 1, K)
         pred_f = pred.float()
-        tp = (pred_f * t.unsqueeze(-1)).sum(dim=0)               # [b, K]
+        tp = (pred_f * t.unsqueeze(-1)).sum(dim=0)  # [b, K]
         fp = (pred_f * (1 - t).unsqueeze(-1)).sum(dim=0)
         fn = ((1 - pred_f) * t.unsqueeze(-1)).sum(dim=0)
         prec = tp / (tp + fp).clamp_min(1e-8)
         rec = tp / (tp + fn).clamp_min(1e-8)
-        f1 = 2 * prec * rec / (prec + rec).clamp_min(1e-8)       # [b, K]
-        f1_best, k_best = f1.max(dim=-1)                          # [b]
-        thresh_best = sweep[k_best]                               # [b]
+        f1 = 2 * prec * rec / (prec + rec).clamp_min(1e-8)  # [b, K]
+        f1_best, k_best = f1.max(dim=-1)  # [b]
+        thresh_best = sweep[k_best]  # [b]
         local_has_pos = has_pos[start:end]
         keep = local_has_pos & (f1_best > 0)
-        best_f1[start:end] = torch.where(
-            keep, f1_best, best_f1[start:end]
-        )
-        best_thresh[start:end] = torch.where(
-            keep, thresh_best, best_thresh[start:end]
-        )
+        best_f1[start:end] = torch.where(keep, f1_best, best_f1[start:end])
+        best_thresh[start:end] = torch.where(keep, thresh_best, best_thresh[start:end])
     return best_thresh, best_f1
 
 
@@ -99,7 +97,9 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     model = AnimaTaggerHead(cfg)
     state = st_load(str(out_dir / "model.safetensors"))
     model.load_state_dict(state)
-    device = torch.device(args.device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(
+        args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    )
     model.to(device).eval()
 
     # Pool kind + encoder drive the cache layout + eval iteration shape.
@@ -120,102 +120,85 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         )
 
     from library.captioning.anima_tagger_data import TaggerManifest
+
     manifest = TaggerManifest.from_path(out_dir / "dataset.json")
 
-    # Dual-encoder models always go through the bucket-loader path
-    # (CachedDualDataset handles the mean / map combos per side); the
-    # in-VRAM-tensor shortcut only fires for true single-encoder mean models.
-    if pool_kind == "mean" and not cfg.has_aux:
-        from library.captioning.anima_tagger_data import CachedFeatureDataset
+    # Dual-encoder models go through the bucket-loader path; CachedDualDataset
+    # handles the mean / map combos per side.
+    from torch.utils.data import DataLoader
 
-        val_ds = CachedFeatureDataset(manifest, cache_dir, stems_subset=manifest.val_stems)
-        val_feats = val_ds.features.to(device)
-        val_mh = val_ds.multi_hot.to(device)
-        with torch.no_grad():
-            tag_logits, _rating_logits, _people_logits = model(val_feats)
-    else:
-        from torch.utils.data import DataLoader
+    from library.captioning.anima_tagger_data import (
+        BucketBatchSampler,
+        CachedDualDataset,
+        collate_dual_token_batch,
+    )
+    from library.vision.encoders import get_encoder_info
 
-        from library.captioning.anima_tagger_data import (
-            BucketBatchSampler,
-            CachedDualDataset,
-            CachedTokenDataset,
-            collate_dual_token_batch,
-            collate_token_batch,
+    spec = get_encoder_info(encoder).bucket_spec if pool_kind == "map" else None
+    # Mirror the training-time aux choice from the saved config so the user
+    # doesn't have to re-pass --aux_encoder / --pool_kind_aux. CLI flags still
+    # win (lets you calibrate against an alternate cache).
+    aux_encoder = args.aux_encoder or cfg_d.get("aux_encoder")
+    if not aux_encoder:
+        raise SystemExit(
+            "config has no recorded aux_encoder and --aux_encoder wasn't given. "
+            "Re-pass --aux_encoder pe_spatial."
         )
-        from library.vision.encoders import get_encoder_info
-
-        spec = get_encoder_info(encoder).bucket_spec if pool_kind == "map" else None
-        # Mirror the training-time aux choice from the saved config so the
-        # user doesn't have to re-pass --aux_encoder / --pool_kind_aux.
-        # CLI flags still win (lets you calibrate against an alternate cache).
-        aux_encoder = args.aux_encoder or cfg_d.get("aux_encoder")
-        dual = bool(aux_encoder) and cfg.has_aux
-        if cfg.has_aux and not aux_encoder:
-            raise SystemExit(
-                "config has aux encoder (d_in_aux set) but --aux_encoder wasn't "
-                "given and the saved config.json doesn't record an aux_encoder "
-                "name. Re-pass --aux_encoder pe_spatial."
-            )
-        if dual:
-            from .caches import cache_dir_for as _cache_dir_for
-            pool_kind_aux = args.pool_kind_aux or cfg.effective_pool_kind_aux
-            spec_aux = (
-                get_encoder_info(aux_encoder).bucket_spec
-                if pool_kind_aux == "map" else None
-            )
-            cache_dir_aux = _cache_dir_for(out_dir, pool_kind_aux, aux_encoder)
-            if not cache_dir_aux.exists():
-                raise SystemExit(
-                    f"missing aux cache {cache_dir_aux} — calibrate needs the "
-                    f"same cache the trainer used (pool_kind_aux={pool_kind_aux})."
-                )
-            val_ds = CachedDualDataset(
-                manifest, cache_dir, pool_kind, spec,
-                cache_dir_aux, pool_kind_aux, spec_aux,
-                stems_subset=manifest.val_stems,
-            )
-        else:
-            val_ds = CachedTokenDataset(
-                manifest, cache_dir, spec, stems_subset=manifest.val_stems
-            )
-        val_mh = val_ds.multi_hot.to(device)
-        sampler = BucketBatchSampler(
-            val_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=False
+    pool_kind_aux = args.pool_kind_aux or str(
+        cfg_d.get("pool_kind_aux", cfg.pool_kind_aux)
+    )
+    spec_aux = (
+        get_encoder_info(aux_encoder).bucket_spec if pool_kind_aux == "map" else None
+    )
+    cache_dir_aux = cache_dir_for(out_dir, pool_kind_aux, aux_encoder)
+    if not cache_dir_aux.exists():
+        raise SystemExit(
+            f"missing aux cache {cache_dir_aux} — calibrate needs the same "
+            f"cache the trainer used (pool_kind_aux={pool_kind_aux})."
         )
-        loader = DataLoader(
-            val_ds,
-            batch_sampler=sampler,
-            num_workers=args.feature_cache_workers,
-            collate_fn=collate_dual_token_batch if dual else collate_token_batch,
-            pin_memory=True,
-        )
-        chunks: list[torch.Tensor] = []
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            for batch in loader:
-                if dual:
-                    tokens, tokens_aux, _mh, _rate, _people, _bucket = batch
-                    tokens_aux = tokens_aux.to(device, non_blocking=True)
-                else:
-                    tokens, _mh, _rate, _people, _bucket = batch
-                    tokens_aux = None
-                tokens = tokens.to(device, non_blocking=True)
-                tl, _rl, _pl = (
-                    model(tokens, tokens_aux) if dual else model(tokens)
-                )
-                chunks.append(tl.float())
-        tag_logits = torch.cat(chunks, dim=0)
-        # CachedTokenDataset's multi_hot is already aligned with iter order
-        # (BucketBatchSampler shuffles within bucket only when shuffle=True;
-        # we set shuffle=False above so iter order == dataset index order).
-        # But sampler reshuffles batches across buckets even when shuffle=False:
-        # check the source — actually it only reshuffles when self.shuffle.
-        # With shuffle=False, batches are emitted in sorted-bucket order,
-        # within-bucket in dataset order. Reorder val_mh to match.
-        order_indices: list[int] = []
-        for batch_idx_list in sampler:
-            order_indices.extend(batch_idx_list)
-        val_mh = val_mh[torch.as_tensor(order_indices, device=val_mh.device)]
+    # Read from the same per-bucket mmap shards the trainer built (keyed by a
+    # hash of the kept-stem list, so this val split reuses the trainer's val
+    # shard rather than re-opening ~thousands of tiny per-stem sidecars). Built
+    # on demand if .cache/packed was cleared. Calibrate only materializes val,
+    # so it never prunes the trainer's train shards.
+    pack_root = out_dir / ".cache" / "packed"
+    val_ds = CachedDualDataset(
+        manifest,
+        cache_dir,
+        pool_kind,
+        spec,
+        cache_dir_aux,
+        pool_kind_aux,
+        spec_aux,
+        stems_subset=manifest.val_stems,
+        pack_root=pack_root,
+    )
+    val_mh = val_ds.multi_hot.to(device)
+    sampler = BucketBatchSampler(
+        val_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=False
+    )
+    loader = DataLoader(
+        val_ds,
+        batch_sampler=sampler,
+        num_workers=args.feature_cache_workers,
+        collate_fn=collate_dual_token_batch,
+        pin_memory=True,
+    )
+    chunks: list[torch.Tensor] = []
+    with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        for batch in loader:
+            tokens, tokens_aux, _mh, _rate, _people, _bucket = batch
+            tokens = tokens.to(device, non_blocking=True)
+            tokens_aux = tokens_aux.to(device, non_blocking=True)
+            tl, _rl, _pl = model(tokens, tokens_aux)
+            chunks.append(tl.float())
+    tag_logits = torch.cat(chunks, dim=0)
+    # Reorder val_mh to match loader emission order: BucketBatchSampler with
+    # shuffle=False emits sorted-bucket order, within-bucket in dataset order.
+    order_indices: list[int] = []
+    for batch_idx_list in sampler:
+        order_indices.extend(batch_idx_list)
+    val_mh = val_mh[torch.as_tensor(order_indices, device=val_mh.device)]
 
     scores = tag_logits.sigmoid().cpu()
     val_mh_cpu = val_mh.cpu()
@@ -231,7 +214,9 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         all_softmax_idx = torch.empty(0, dtype=torch.long)
     sweep = torch.linspace(0.05, 0.95, 19)
     thresh, f1 = calibrate_thresholds(
-        scores, val_mh_cpu, sweep,
+        scores,
+        val_mh_cpu,
+        sweep,
         default=0.5,
         skip_indices=all_softmax_idx,
     )

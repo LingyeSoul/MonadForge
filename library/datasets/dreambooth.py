@@ -18,10 +18,56 @@ from library.datasets.subsets import (
     DreamBoothSubset,
     ImageInfo,
     filter_paths_by_glob,
+    folder_repeat_count,
     split_train_val,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Colorization (and other cond≠target tasks) pair a synthetic *condition* latent
+# with each target. Staging (easycontrol_adapters/colorization/prep.py) decides
+# which targets get a condition synthesized via the descriptor's
+# `[staging].only_data_includes` / `exclude_data_includes` tag filters (net set =
+# only − exclude). The tag scan below backs that staging-time selection (the colorize
+# targets live under post_image_dataset/resized/ with no .txt sidecar, so tags are
+# read from the caption master in image_dataset/). At *train* time the loader does
+# NOT re-scan tags — it simply keeps the targets that actually have a cached cond
+# latent (see the cond_cache_dir branch below), so whatever staging selected is
+# paired out automatically.
+_tag_stems_cache: dict = {}
+
+
+def stems_with_any_tag(caption_master_dir: str, tags) -> frozenset:
+    """Stems whose caption sidecar under ``caption_master_dir`` carries any of the
+    standalone comma-separated ``tags`` (case-insensitive). Scanned once per
+    (dir, tags) via ``os.walk`` (follows the symlinked master) and memoized; returns
+    an empty set when the dir is absent or ``tags`` is empty."""
+    wanted = frozenset(t.strip().lower() for t in (tags or ()) if t and t.strip())
+    if not wanted:
+        return frozenset()
+    key = (caption_master_dir, wanted)
+    cached = _tag_stems_cache.get(key)
+    if cached is not None:
+        return cached
+    stems: set = set()
+    if os.path.isdir(caption_master_dir):
+        for dirpath, _dirnames, filenames in os.walk(
+            caption_master_dir, followlinks=True
+        ):
+            for name in filenames:
+                if not name.endswith(".txt"):
+                    continue
+                try:
+                    with open(os.path.join(dirpath, name), encoding="utf-8") as f:
+                        line = f.readline()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                if any(t.strip().lower() in wanted for t in line.split(",")):
+                    stems.add(os.path.splitext(name)[0])
+    result = frozenset(stems)
+    _tag_stems_cache[key] = result
+    return result
 
 
 def read_caption(img_path, caption_extension, enable_wildcard):
@@ -109,12 +155,8 @@ class DreamBoothDataset(BaseDataset):
                 pattern = getattr(subset, "path_pattern", "*") or "*"
                 if pattern != "*":
                     meta_paths = list(metas.keys())
-                    keep = filter_paths_by_glob(
-                        meta_paths, subset.image_dir, pattern
-                    )
-                    metas = {
-                        p: metas[p] for p, k in zip(meta_paths, keep) if k
-                    }
+                    keep = filter_paths_by_glob(meta_paths, subset.image_dir, pattern)
+                    metas = {p: metas[p] for p, k in zip(meta_paths, keep) if k}
                     logger.info(
                         f"path_pattern={pattern!r} kept {len(metas)}/"
                         f"{len(meta_paths)} cached entries from "
@@ -131,9 +173,7 @@ class DreamBoothDataset(BaseDataset):
                     _assert_unique_stems(img_paths, source_label=subset.image_dir)
                 pattern = getattr(subset, "path_pattern", "*") or "*"
                 if pattern != "*":
-                    keep = filter_paths_by_glob(
-                        img_paths, subset.image_dir, pattern
-                    )
+                    keep = filter_paths_by_glob(img_paths, subset.image_dir, pattern)
                     pre_n = len(img_paths)
                     img_paths = [p for p, k in zip(img_paths, keep) if k]
                     logger.info(
@@ -251,7 +291,11 @@ class DreamBoothDataset(BaseDataset):
                 # not an error — training reads the cached prompt embeddings.
                 # Key by (rel_subdir, stem) to support nested cache layouts
                 # where two images can share a stem in different subdirs.
-                cache_dir = getattr(subset, "cache_dir", None)
+                # text_cache_dir (when set) holds the TE caches instead of
+                # cache_dir, so scan there to suppress missing-.txt warnings.
+                cache_dir = getattr(subset, "text_cache_dir", None) or getattr(
+                    subset, "cache_dir", None
+                )
                 te_suffix = "_anima_te.safetensors"
                 te_cached_keys: set[tuple[str, str]] = set()
                 if cache_dir and os.path.isdir(cache_dir):
@@ -356,6 +400,39 @@ class DreamBoothDataset(BaseDataset):
                     f"images from {subset.image_dir}"
                 )
 
+            # cond≠target task (cond_cache_dir set): keep only the targets that
+            # actually have a cached condition latent. Staging's tag filters
+            # ([staging].only_data_includes / exclude_data_includes) leave some targets
+            # without a synthesized cond; rather than re-scanning the caption master
+            # here, we pair against what exists on disk — a target with no cond latent
+            # would otherwise crash at load time (_load_cond_latent raises).
+            if getattr(subset, "cond_cache_dir", None):
+                from library.io.cache import discover_latents_by_stem
+
+                cond_stems = set(discover_latents_by_stem(subset.cond_cache_dir))
+                if not cond_stems:
+                    raise FileNotFoundError(
+                        f"No condition latents under {subset.cond_cache_dir!r} — run "
+                        f"the cond prep step first (e.g. `make easycontrol-preprocess "
+                        f"EASYADAPTER=colorize`)."
+                    )
+                pre = len(img_paths)
+                kept = [
+                    (p, c, s)
+                    for p, c, s in zip(img_paths, captions, sizes)
+                    if os.path.splitext(os.path.basename(p))[0] in cond_stems
+                ]
+                if kept:
+                    img_paths, captions, sizes = (list(t) for t in zip(*kept))
+                else:
+                    img_paths, captions, sizes = [], [], []
+                if len(img_paths) != pre:
+                    logger.info(
+                        f"colorize: kept {len(img_paths)}/{pre} targets with a cached "
+                        f"condition latent (dropped {pre - len(img_paths)} unpaired) "
+                        f"from {subset.image_dir}"
+                    )
+
             return img_paths, captions, sizes
 
         logger.info("prepare images.")
@@ -383,15 +460,58 @@ class DreamBoothDataset(BaseDataset):
                 )
                 continue
 
-            if subset.is_reg:
-                num_reg_images += num_repeats * len(img_paths)
-            else:
-                num_train_images += num_repeats * len(img_paths)
+            # Kohya-style folder repeats: a `{n}_...` directory component
+            # under image_dir overrides num_repeats with n for the images
+            # inside it; `0_...` drops them from the training pool. Training
+            # only — the validation pool stays at 1 repeat (num_repeats above).
+            repeats = [num_repeats] * len(img_paths)
+            if self.is_training_dataset and getattr(
+                subset, "repeat_by_folder_name", False
+            ):
+                repeats = [
+                    n
+                    if (n := folder_repeat_count(p, subset.image_dir)) is not None
+                    else num_repeats
+                    for p in img_paths
+                ]
+                n_overridden = sum(1 for r in repeats if r != num_repeats)
+                n_dropped = sum(1 for r in repeats if r == 0)
+                if n_overridden:
+                    logger.info(
+                        f"repeat_by_folder_name: {n_overridden}/{len(img_paths)} images "
+                        f"take their repeat count from a {{n}}_* folder under "
+                        f"{subset.image_dir}"
+                        + (
+                            f" ({n_dropped} in 0_* folders dropped)"
+                            if n_dropped
+                            else ""
+                        )
+                    )
+                if n_dropped:
+                    kept = [
+                        (p, c, s, r)
+                        for p, c, s, r in zip(img_paths, captions, sizes, repeats)
+                        if r > 0
+                    ]
+                    if not kept:
+                        logger.warning(
+                            f"ignore subset with image_dir='{subset.image_dir}': "
+                            f"all images sit in 0_* folders"
+                        )
+                        continue
+                    img_paths, captions, sizes, repeats = (list(t) for t in zip(*kept))
 
-            for img_path, caption, size in zip(img_paths, captions, sizes):
+            if subset.is_reg:
+                num_reg_images += sum(repeats)
+            else:
+                num_train_images += sum(repeats)
+
+            for img_path, caption, size, image_repeats in zip(
+                img_paths, captions, sizes, repeats
+            ):
                 info = ImageInfo(
                     img_path,
-                    num_repeats,
+                    image_repeats,
                     caption,
                     subset.is_reg,
                     img_path,

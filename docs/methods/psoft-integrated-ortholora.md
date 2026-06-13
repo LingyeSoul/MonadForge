@@ -8,7 +8,7 @@ Inspired by PSOFT (Wu et al., "Efficient Orthogonal Fine-Tuning with Principal S
 
 ## Usage
 
-In any method config (e.g. `configs/methods/lora.toml` or `configs/gui-methods/ortholora.toml`):
+In any method config (e.g. `configs/methods/lora.toml`):
 
 ```toml
 use_ortho = true

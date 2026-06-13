@@ -1,4 +1,4 @@
-"""Smoke tests for the Anima Tagger dual-encoder path (PE-Core + PE-Spatial).
+"""Smoke tests for the Anima Tagger dual-encoder, hard-routed head.
 
 Doesn't touch real PE checkpoints — exercises only the config / head /
 encoder-registry / bucket-spec wiring with synthetic tensors. The
@@ -16,85 +16,202 @@ from library.captioning.anima_tagger_model import (
 )
 
 
-def test_config_legacy_single_encoder_keys_unchanged():
-    """v1 config.json layout must be byte-identical for non-aux configs.
-
-    Old anima-tagger-v1 checkpoints don't carry the aux fields; their
-    config.json mustn't grow phantom keys after this change.
-    """
-    cfg = AnimaTaggerConfig(d_in=1024, n_tags=100, pool_kind="map")
-    d = cfg.to_dict()
-    # No aux-prefixed fields when has_aux is False.
-    assert all("_aux" not in k for k in d.keys()), sorted(d.keys())
-    # Round-trips back to the same trunk_in_dim.
-    cfg2 = AnimaTaggerConfig.from_dict(d)
-    assert cfg2.trunk_in_dim == cfg.trunk_in_dim
-    assert not cfg2.has_aux
+def _routing(n_tags: int, n_core: int | None = None):
+    """A valid (core, spatial) partition of ``[0, n_tags)`` for tests."""
+    n_core = n_tags // 2 if n_core is None else n_core
+    return list(range(n_core)), list(range(n_core, n_tags))
 
 
-def test_config_dual_encoder_roundtrip():
-    cfg = AnimaTaggerConfig(
+def _cfg(n_tags: int = 50, n_core: int | None = None, **kw) -> AnimaTaggerConfig:
+    core, spatial = _routing(n_tags, n_core)
+    base = dict(
         d_in=1024,
-        n_tags=100,
-        pool_kind="map",
+        n_tags=n_tags,
         d_in_aux=768,
-        n_people_counts=8,
+        tag_indices_core=core,
+        tag_indices_spatial=spatial,
     )
+    base.update(kw)
+    return AnimaTaggerConfig(**base)
+
+
+# ── Config validation ─────────────────────────────────────────────────────
+
+
+def test_config_requires_d_in_aux():
+    """Dual encoder is mandatory — from_dict rejects a missing d_in_aux."""
+    try:
+        AnimaTaggerConfig.from_dict(
+            {
+                "d_in": 1024,
+                "n_tags": 4,
+                "tag_indices_core": [0, 1],
+                "tag_indices_spatial": [2, 3],
+            }
+        )
+    except ValueError as e:
+        assert "d_in_aux" in str(e)
+    else:
+        raise AssertionError("expected ValueError for missing d_in_aux")
+
+
+def test_config_requires_routing_partition():
+    """tag_indices_core ∪ tag_indices_spatial must partition [0, n_tags)."""
+    # Gap: index 2 missing.
+    try:
+        AnimaTaggerConfig(
+            d_in=1024,
+            n_tags=4,
+            d_in_aux=768,
+            tag_indices_core=[0, 1],
+            tag_indices_spatial=[3],
+        )
+    except ValueError as e:
+        assert "partition" in str(e)
+    else:
+        raise AssertionError("expected ValueError for malformed partition")
+    # Duplicate: index 1 in both.
+    try:
+        AnimaTaggerConfig(
+            d_in=1024,
+            n_tags=4,
+            d_in_aux=768,
+            tag_indices_core=[0, 1],
+            tag_indices_spatial=[1, 2, 3],
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for duplicate index")
+
+
+def test_config_roundtrip_flat():
+    """to_dict / from_dict round-trip emits every field flat and preserves it."""
+    cfg = _cfg(n_tags=100, n_people_counts=8, pool_kind="mean", pool_kind_aux="map")
     d = cfg.to_dict()
-    assert "d_in_aux" in d and d["d_in_aux"] == 768
+    # Flat — both pool kinds + the routing partition are always present.
+    assert d["pool_kind"] == "mean" and d["pool_kind_aux"] == "map"
+    assert d["tag_indices_core"] == list(range(50))
+    assert d["tag_indices_spatial"] == list(range(50, 100))
     cfg2 = AnimaTaggerConfig.from_dict(d)
-    assert cfg2.has_aux
-    # 1024*(4+1+1) + 768*(4+1+1) = 6144 + 4608 = 10752
-    assert cfg2.trunk_in_dim == 10752
+    assert cfg2.d_in_aux == 768
+    assert cfg2.core_trunk_in_dim == cfg.core_trunk_in_dim
+    assert cfg2.spatial_trunk_in_dim == cfg.spatial_trunk_in_dim
 
 
-def test_head_single_encoder_forward_shapes():
-    cfg = AnimaTaggerConfig(d_in=1024, n_tags=50, n_people_counts=8, pool_kind="map")
-    head = AnimaTaggerHead(cfg)
-    tag, rate, people = head(torch.randn(2, 577, 1024))
-    assert tag.shape == (2, 50)
-    assert rate.shape == (2, 3)
-    assert people.shape == (2, 8)
+def test_trunk_widths():
+    """Per-side trunk widths follow each side's pool channels independently."""
+    cfg = _cfg(pool_kind="mean", pool_kind_aux="map")
+    # core mean → d_in; spatial map → 768 * (4 queries + cls + mean) = 4608.
+    assert cfg.core_trunk_in_dim == 1024
+    assert cfg.spatial_trunk_in_dim == 768 * (4 + 1 + 1)
 
 
-def test_head_dual_encoder_forward_shapes():
-    cfg = AnimaTaggerConfig(
-        d_in=1024,
-        n_tags=50,
-        n_people_counts=8,
-        pool_kind="map",
-        d_in_aux=768,
-    )
+# ── Forward ───────────────────────────────────────────────────────────────
+
+
+def test_hard_routed_forward_shapes():
+    cfg = _cfg(n_tags=50, n_people_counts=8, pool_kind="map", pool_kind_aux="map")
     head = AnimaTaggerHead(cfg)
     tag, rate, people = head(
-        torch.randn(2, 577, 1024),
-        torch.randn(2, 1025, 768),
+        torch.randn(2, 577, 1024),  # PE-Core tokens
+        torch.randn(2, 1025, 768),  # PE-Spatial tokens
     )
     assert tag.shape == (2, 50)
     assert rate.shape == (2, 3)
     assert people.shape == (2, 8)
 
 
-def test_head_dual_requires_aux_tensor():
-    cfg = AnimaTaggerConfig(d_in=1024, n_tags=10, pool_kind="map", d_in_aux=768)
+def test_core_mean_spatial_map_forward_shapes():
+    """Production target: PE-Core mean + PE-Spatial map."""
+    cfg = _cfg(n_tags=50, n_people_counts=8, pool_kind="mean", pool_kind_aux="map")
     head = AnimaTaggerHead(cfg)
-    try:
-        head(torch.randn(1, 577, 1024))
-    except ValueError as e:
-        assert "feat_aux" in str(e)
-    else:
-        raise AssertionError("expected ValueError for missing feat_aux")
+    tag, rate, people = head(
+        torch.randn(2, 1024),  # core: pre-pooled [B, D]
+        torch.randn(2, 1025, 768),  # spatial: [B, T_a, D_a]
+    )
+    assert tag.shape == (2, 50)
+    assert people.shape == (2, 8)
 
 
-def test_head_single_refuses_aux_tensor():
-    cfg = AnimaTaggerConfig(d_in=1024, n_tags=10, pool_kind="map")
+def test_routing_is_structural():
+    """Spatial tag logits come ONLY from the spatial head; zeroing it zeros
+    exactly the spatial-routed slice and leaves the core slice intact."""
+    cfg = _cfg(n_tags=20, n_core=12, pool_kind="map", pool_kind_aux="map")
+    head = AnimaTaggerHead(cfg).eval()
+    with torch.no_grad():
+        head.tag_head_spatial.weight.zero_()
+        head.tag_head_spatial.bias.zero_()
+        tag, _, _ = head(torch.randn(2, 577, 1024), torch.randn(2, 1025, 768))
+    spatial_idx = cfg.tag_indices_spatial
+    core_idx = cfg.tag_indices_core
+    assert torch.all(tag[:, spatial_idx] == 0), "spatial slice must be all zero"
+    assert not torch.all(tag[:, core_idx] == 0), (
+        "core slice must be driven by core head"
+    )
+
+
+def test_forward_requires_both_inputs():
+    cfg = _cfg(n_tags=10, pool_kind="map", pool_kind_aux="map")
     head = AnimaTaggerHead(cfg)
     try:
-        head(torch.randn(1, 577, 1024), torch.randn(1, 1025, 768))
-    except ValueError as e:
-        assert "no aux encoder" in str(e)
+        head(torch.randn(1, 577, 1024))  # missing feat_spatial
+    except TypeError:
+        pass
     else:
-        raise AssertionError("expected ValueError for unexpected feat_aux")
+        raise AssertionError("expected TypeError for missing feat_spatial")
+
+
+def test_core_mean_rejects_map_input():
+    """Helpful error when caller passes [B, T, D] to a mean-pool core side."""
+    cfg = _cfg(n_tags=10, pool_kind="mean", pool_kind_aux="map")
+    head = AnimaTaggerHead(cfg)
+    try:
+        head(torch.randn(2, 577, 1024), torch.randn(2, 1025, 768))
+    except ValueError as e:
+        assert "core side" in str(e) and "pre-pooled" in str(e)
+    else:
+        raise AssertionError("expected ValueError on rank-3 core input with mean pool")
+
+
+# ── State dict layout ─────────────────────────────────────────────────────
+
+
+def test_state_dict_layout():
+    """Dual hard-routed head has the new keys and none of the legacy ones."""
+    cfg = _cfg(n_tags=10, pool_kind="map", pool_kind_aux="map")
+    sd = AnimaTaggerHead(cfg).state_dict()
+    keys = list(sd.keys())
+    for prefix in (
+        "trunk_core.",
+        "trunk_spatial.",
+        "tag_head_core.",
+        "tag_head_spatial.",
+        "pool_core.",
+        "pool_spatial.",
+    ):
+        assert any(k.startswith(prefix) for k in keys), f"missing {prefix}* keys"
+    assert "tag_idx_core" in keys and "tag_idx_spatial" in keys
+    # Legacy artifacts must be gone.
+    assert not any(k.startswith("trunk.") for k in keys), "legacy concat trunk"
+    assert not any(k.startswith("tag_head.") for k in keys), "legacy single tag_head"
+    assert not any("gate" in k for k in keys), "legacy soft-gate params"
+    assert not any(k.startswith("pool.") or k.startswith("pool_aux.") for k in keys)
+
+
+def test_state_dict_core_mean_has_no_core_pool():
+    """When core is mean-pool, no pool_core MAPHead is built."""
+    cfg = _cfg(n_tags=10, pool_kind="mean", pool_kind_aux="map")
+    sd = AnimaTaggerHead(cfg).state_dict()
+    assert not any(k.startswith("pool_core.") for k in sd.keys()), (
+        "core side is mean — no core MAPHead expected"
+    )
+    assert any(k.startswith("pool_spatial.") for k in sd.keys()), (
+        "spatial side is map — pool_spatial MAPHead expected"
+    )
+
+
+# ── Encoder registry / bucket spec (unchanged invariants) ─────────────────
 
 
 def test_pe_spatial_config_present_in_registry():
@@ -110,8 +227,6 @@ def test_pe_spatial_config_present_in_registry():
     assert cfg.use_ln_post is False
     assert cfg.output_dim is None
 
-    # Shape check on an uninitialized model (skip checkpoint load — too
-    # heavy for a smoke test).
     m = build_pe_vision("PE-Spatial-B16-512").eval()
     with torch.no_grad():
         feats, _pooled = m.encode(torch.randn(1, 3, 512, 512))
@@ -120,8 +235,7 @@ def test_pe_spatial_config_present_in_registry():
 
 def test_pe_spatial_bucket_spec_aspect_aligned():
     """PE-Spatial buckets mirror PE-Core aspects so dual-cache batching is
-    1:1 across encoders. Verify that pick_bucket on a sweep of source
-    aspects produces matching bucket ranks for both specs."""
+    1:1 across encoders."""
     import math
 
     from library.vision.buckets import get_bucket_spec, pick_bucket
@@ -130,20 +244,26 @@ def test_pe_spatial_bucket_spec_aspect_aligned():
     spec_spatial = get_bucket_spec("pe_spatial")
     assert len(spec_core.buckets) == len(spec_spatial.buckets)
 
-    # Sort bucket aspects for both — they should align at equal indices.
     aspects_core = sorted(h / w for h, w in spec_core.buckets)
     aspects_spatial = sorted(h / w for h, w in spec_spatial.buckets)
     for ac, asp in zip(aspects_core, aspects_spatial):
         assert abs(math.log(ac) - math.log(asp)) < 0.05, (ac, asp)
 
-    # Spot-check: same source aspect → same bucket *rank* in both specs.
-    for src_h, src_w in [(1024, 1024), (1024, 768), (768, 1024), (1024, 512), (512, 1024)]:
+    for src_h, src_w in [
+        (1024, 1024),
+        (1024, 768),
+        (768, 1024),
+        (1024, 512),
+        (512, 1024),
+    ]:
         b_core = pick_bucket(src_h, src_w, spec_core)
         b_spat = pick_bucket(src_h, src_w, spec_spatial)
-        rank_core = sorted(spec_core.buckets, key=lambda hw: hw[0] / hw[1]).index(b_core)
-        rank_spat = sorted(
-            spec_spatial.buckets, key=lambda hw: hw[0] / hw[1]
-        ).index(b_spat)
+        rank_core = sorted(spec_core.buckets, key=lambda hw: hw[0] / hw[1]).index(
+            b_core
+        )
+        rank_spat = sorted(spec_spatial.buckets, key=lambda hw: hw[0] / hw[1]).index(
+            b_spat
+        )
         assert rank_core == rank_spat, (src_h, src_w, b_core, b_spat)
 
 
@@ -153,149 +273,39 @@ def test_pe_spatial_encoder_registry_entry():
     info = get_encoder_info("pe_spatial")
     assert info.d_enc == 768
     assert info.bucket_spec.patch == 16
-    # Native bucket count = 32*32 + 1 CLS.
     assert info.t_max_tokens() >= 1024
 
 
-def test_state_dict_aux_keys_present_only_when_dual():
-    """Sanity: dual-encoder head's state_dict has pool_aux.* keys; single doesn't."""
-    cfg_single = AnimaTaggerConfig(d_in=1024, n_tags=10, pool_kind="map")
-    cfg_dual = AnimaTaggerConfig(d_in=1024, n_tags=10, pool_kind="map", d_in_aux=768)
-    sd_single = AnimaTaggerHead(cfg_single).state_dict()
-    sd_dual = AnimaTaggerHead(cfg_dual).state_dict()
-    assert not any(k.startswith("pool_aux.") for k in sd_single.keys())
-    assert any(k.startswith("pool_aux.") for k in sd_dual.keys())
-
-
-# ── Mixed pool kinds (per-encoder) ────────────────────────────────────────
-
-
-def test_mixed_main_mean_aux_map_forward_shapes():
-    """Production target: PE-Core mean + PE-Spatial MAP."""
-    cfg = AnimaTaggerConfig(
-        d_in=1024,
-        n_tags=50,
-        n_people_counts=8,
-        pool_kind="mean",
-        d_in_aux=768,
-        pool_kind_aux="map",
-    )
-    # 1024 (main mean) + 768 * (4 + 1 + 1) = 1024 + 4608 = 5632
-    assert cfg.trunk_in_dim == 5632
-    head = AnimaTaggerHead(cfg)
-    tag, rate, people = head(
-        torch.randn(2, 1024),                  # main: pre-pooled [B, D]
-        torch.randn(2, 1025, 768),             # aux: [B, T_a, D_a]
-    )
-    assert tag.shape == (2, 50)
-    assert rate.shape == (2, 3)
-    assert people.shape == (2, 8)
-
-
-def test_mixed_main_mean_aux_map_state_dict_layout():
-    """Mixed config: only pool_aux exists; no main pool buffers."""
-    cfg = AnimaTaggerConfig(
-        d_in=1024, n_tags=10,
-        pool_kind="mean",
-        d_in_aux=768, pool_kind_aux="map",
-    )
-    sd = AnimaTaggerHead(cfg).state_dict()
-    assert not any(k.startswith("pool.") for k in sd.keys()), \
-        "main side is mean — no main MAPHead expected"
-    assert any(k.startswith("pool_aux.") for k in sd.keys()), \
-        "aux side is map — pool_aux MAPHead expected"
-
-
-def test_mixed_main_map_aux_mean_forward_shapes():
-    """Symmetric inverse — map main, mean aux. Mostly for completeness."""
-    cfg = AnimaTaggerConfig(
-        d_in=1024, n_tags=10,
-        pool_kind="map",
-        d_in_aux=768, pool_kind_aux="mean",
-    )
-    # 1024*6 (main map) + 768 (aux mean) = 6144 + 768 = 6912
-    assert cfg.trunk_in_dim == 6912
-    head = AnimaTaggerHead(cfg)
-    tag, _, _ = head(
-        torch.randn(2, 577, 1024),
-        torch.randn(2, 768),                   # aux: pre-pooled [B, D_aux]
-    )
-    assert tag.shape == (2, 10)
-
-
-def test_mixed_pool_kind_aux_omitted_when_inheriting():
-    """Round-trip: pool_kind_aux only appears in to_dict() when it differs from main.
-
-    Dual-MAP from default pool_kind=map should produce a config.json that's
-    byte-identical to what the prior dual-MAP-only code emitted (no spurious
-    pool_kind_aux key).
-    """
-    cfg = AnimaTaggerConfig(d_in=1024, n_tags=10, pool_kind="map", d_in_aux=768)
-    d = cfg.to_dict()
-    assert "pool_kind_aux" not in d, (
-        "pool_kind_aux should be omitted when inheriting pool_kind"
-    )
-    # Round-trip preserves effective_pool_kind_aux="map".
-    cfg2 = AnimaTaggerConfig.from_dict(d)
-    assert cfg2.effective_pool_kind_aux == "map"
-
-
-def test_mixed_pool_kind_aux_emitted_when_differs():
-    cfg = AnimaTaggerConfig(
-        d_in=1024, n_tags=10,
-        pool_kind="mean",
-        d_in_aux=768, pool_kind_aux="map",
-    )
-    d = cfg.to_dict()
-    assert d.get("pool_kind_aux") == "map"
-    cfg2 = AnimaTaggerConfig.from_dict(d)
-    assert cfg2.pool_kind == "mean"
-    assert cfg2.pool_kind_aux == "map"
-    assert cfg2.effective_pool_kind_aux == "map"
-    assert cfg2.trunk_in_dim == cfg.trunk_in_dim
-
-
-def test_mixed_main_mean_rejects_map_input_to_main():
-    """Helpful error when caller passes [B, T, D] to a mean-pool side."""
-    cfg = AnimaTaggerConfig(
-        d_in=1024, n_tags=10,
-        pool_kind="mean",
-        d_in_aux=768, pool_kind_aux="map",
-    )
-    head = AnimaTaggerHead(cfg)
-    try:
-        head(torch.randn(2, 577, 1024), torch.randn(2, 1025, 768))
-    except ValueError as e:
-        assert "main side" in str(e) and "pre-pooled" in str(e)
-    else:
-        raise AssertionError("expected ValueError on rank-3 main input with mean pool")
-
-
 def test_dual_dataset_class_supports_per_side_pool_kind():
-    """Quick API check on CachedDualDataset — verifies it accepts the per-side
-    pool_kind args and rejects bad combinations without needing a real cache."""
-    from library.captioning.anima_tagger_data import CachedDualDataset
-
-    # Bad pool_kind value should raise immediately (before any disk access).
-    try:
-        CachedDualDataset.__init__.__annotations__  # touch to ensure import works
-    except Exception as e:
-        raise AssertionError(f"import failed: {e}")
-    # Manually invoke the validation by constructing with empty-ish args.
-    # We don't have a real manifest so this would error on disk if validation
-    # didn't fire first — exact error type is what we're checking.
-    from library.captioning.anima_tagger_data import TaggerManifest
-    fake_manifest = TaggerManifest(
-        stems=[], image_paths=[], tag_indices=[], rating_indices=[],
-        people_count_indices=[], train_stems=[], val_stems=[],
-        n_tags=0, n_ratings=0, n_people_counts=0,
-    )
+    """CachedDualDataset rejects a bad pool_kind before any disk access."""
     from pathlib import Path
+
+    from library.captioning.anima_tagger_data import (
+        CachedDualDataset,
+        TaggerManifest,
+    )
+
+    fake_manifest = TaggerManifest(
+        stems=[],
+        image_paths=[],
+        tag_indices=[],
+        rating_indices=[],
+        people_count_indices=[],
+        train_stems=[],
+        val_stems=[],
+        n_tags=0,
+        n_ratings=0,
+        n_people_counts=0,
+    )
     try:
         CachedDualDataset(
             fake_manifest,
-            Path("/nonexistent/main"), "weird", None,
-            Path("/nonexistent/aux"), "map", None,
+            Path("/nonexistent/main"),
+            "weird",
+            None,
+            Path("/nonexistent/aux"),
+            "map",
+            None,
         )
     except ValueError as e:
         assert "pool_kind" in str(e)

@@ -34,9 +34,11 @@ DP-DMD diversity loss:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 import torch
+
+from library.training.accumulator import ScalarAccumulator
 
 
 @dataclass
@@ -51,27 +53,32 @@ class FlushedMetrics:
     cos: float
     mv: float
     div: float
+    gan_gen: float
+    gan_disc: float
+    repa: float
+    repa_active: float
+
+
+# Single source of truth for the accumulator key set — adding a logged scalar is
+# one field on FlushedMetrics (+ its accumulate call + a write_scalars line),
+# never a fourth edit to a parallel stack/reset list.
+_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(FlushedMetrics))
 
 
 class TurboMetrics:
-    """GPU-resident accumulators with a single-sync stacked flush."""
+    """GPU-resident accumulators with a single-sync flush.
+
+    Thin wrapper over :class:`library.training.accumulator.ScalarAccumulator`
+    that keeps the typed :class:`FlushedMetrics` public surface (consumed by
+    :func:`write_scalars` / :func:`tqdm_postfix`). Every field is pre-touched so
+    a disabled path (``div`` without DP-DMD, ``gan_*`` without the GAN) still
+    flushes a complete record.
+    """
 
     def __init__(self, device: torch.device):
-        z = lambda: torch.zeros((), device=device)  # noqa: E731
-        # Always-on rms scalars.
-        self.fake = z()
-        self.grad = z()
-        self.dm = z()
-        self.xpred = z()
-        self.v_student = z()
-        # Fake-tracking.
-        self.rel_gap = z()
-        self.mag_ratio = z()
-        self.cos = z()
-        # Mean-variance reg (lever B / Eq.7); 0 when disabled.
-        self.mv = z()
-        # DP-DMD first-step diversity loss.
-        self.div = z()
+        self._acc = ScalarAccumulator(device)
+        for name in _FIELDS:
+            self._acc.add(name, 0.0)
 
     @torch.no_grad()
     def accumulate_per_step(
@@ -88,65 +95,53 @@ class TurboMetrics:
         mv_loss: torch.Tensor,
     ) -> None:
         eps_r = 1e-8
-        self.fake.add_(fake_loss_mean_t.float())
-        self.mv.add_(mv_loss.detach().float())
-        self.grad.add_(grad_signal.float().pow(2).mean().sqrt())
-        self.dm.add_(delta_dm.float().pow(2).mean().sqrt())
-        self.xpred.add_(x_pred.detach().float().std())
-        self.v_student.add_(v_student.detach().float().pow(2).mean().sqrt())
+        self._acc.add("fake", fake_loss_mean_t.float())
+        self._acc.add("mv", mv_loss.detach().float())
+        self._acc.add("grad", grad_signal.float().pow(2).mean().sqrt())
+        self._acc.add("dm", delta_dm.float().pow(2).mean().sqrt())
+        self._acc.add("xpred", x_pred.detach().float().std())
+        self._acc.add("v_student", v_student.detach().float().pow(2).mean().sqrt())
         # Fake-tracking diagnostics at the DM eval point.
         vr = v_real_cond_dm.float()
         vf = v_fake_cond_dm.float()
         dm_w = (tau_dm_e * delta_dm.float()).pow(2).mean().sqrt()
-        self.rel_gap.add_(dm_w / ((tau_dm_e * vr).pow(2).mean().sqrt() + eps_r))
-        self.mag_ratio.add_(
-            vf.pow(2).mean().sqrt() / (vr.pow(2).mean().sqrt() + eps_r)
+        self._acc.add("rel_gap", dm_w / ((tau_dm_e * vr).pow(2).mean().sqrt() + eps_r))
+        self._acc.add(
+            "mag_ratio", vf.pow(2).mean().sqrt() / (vr.pow(2).mean().sqrt() + eps_r)
         )
-        self.cos.add_((vf * vr).sum() / (vf.norm() * vr.norm() + eps_r))
+        self._acc.add("cos", (vf * vr).sum() / (vf.norm() * vr.norm() + eps_r))
 
     @torch.no_grad()
     def add_div(self, div_loss_t: torch.Tensor) -> None:
         """Accumulate the DP-DMD first-step diversity loss (pre-weight)."""
-        self.div.add_(div_loss_t.detach().float())
+        self._acc.add("div", div_loss_t.detach().float())
+
+    @torch.no_grad()
+    def add_gan(
+        self, gan_gen_loss: torch.Tensor, gan_disc_mean_t: torch.Tensor
+    ) -> None:
+        """Accumulate the GAN generator/discriminator losses (pre-weight)."""
+        self._acc.add("gan_gen", gan_gen_loss.detach().float())
+        self._acc.add("gan_disc", gan_disc_mean_t.detach().float())
+
+    @torch.no_grad()
+    def add_repa(self, repa_loss: torch.Tensor, *, active: bool) -> None:
+        """Accumulate the REPA align loss (pre-weight) + its run indicator.
+
+        The term is amortized (``repa.every_n``), so the flushed ``repa`` mean
+        is diluted by skipped steps; consumers normalize by ``repa_active``
+        (the active fraction) to recover the per-run align loss.
+        """
+        self._acc.add("repa", repa_loss.detach().float())
+        self._acc.add("repa_active", 1.0 if active else 0.0)
 
     def flush(self, log_interval: int) -> FlushedMetrics:
-        """One CUDA sync per log boundary: stack everything, read once."""
-        packed = (
-            torch.stack(
-                [
-                    self.fake,
-                    self.grad,
-                    self.dm,
-                    self.xpred,
-                    self.v_student,
-                    self.rel_gap,
-                    self.mag_ratio,
-                    self.cos,
-                    self.mv,
-                    self.div,
-                ]
-            )
-            / log_interval
-        ).tolist()
-        return FlushedMetrics(
-            fake=packed[0],
-            grad=packed[1],
-            dm=packed[2],
-            xpred=packed[3],
-            v_student=packed[4],
-            rel_gap=packed[5],
-            mag_ratio=packed[6],
-            cos=packed[7],
-            mv=packed[8],
-            div=packed[9],
-        )
+        """One CUDA sync per log boundary: read every accumulator, mean it."""
+        m = self._acc.flush()
+        return FlushedMetrics(**{k: m[k] / log_interval for k in _FIELDS})
 
     def reset(self) -> None:
-        for t in (
-            self.fake, self.grad, self.dm, self.xpred, self.v_student,
-            self.rel_gap, self.mag_ratio, self.cos, self.mv, self.div,
-        ):
-            t.zero_()
+        self._acc.reset()
 
 
 def write_scalars(writer, m: FlushedMetrics, step: int) -> None:
@@ -161,6 +156,13 @@ def write_scalars(writer, m: FlushedMetrics, step: int) -> None:
     writer.add_scalar("train/dm_cos", m.cos, step)
     writer.add_scalar("train/mean_var_kl", m.mv, step)
     writer.add_scalar("train/div_loss", m.div, step)
+    writer.add_scalar("train/gan_gen_loss", m.gan_gen, step)
+    writer.add_scalar("train/gan_disc_loss", m.gan_disc, step)
+    writer.add_scalar("train/repa_active", m.repa_active, step)
+    if m.repa_active > 0:
+        # Normalize the interval mean to active steps so the curve reads as the
+        # per-run align loss regardless of the every_n amortization.
+        writer.add_scalar("train/repa_align_loss", m.repa / m.repa_active, step)
 
 
 def tqdm_postfix(m: FlushedMetrics) -> dict:
@@ -176,4 +178,9 @@ def tqdm_postfix(m: FlushedMetrics) -> dict:
         postfix["mv"] = f"{m.mv:.3f}"
     if m.div > 0:
         postfix["div"] = f"{m.div:.3f}"
+    if m.gan_gen != 0 or m.gan_disc != 0:
+        postfix["gen"] = f"{m.gan_gen:.3f}"
+        postfix["dsc"] = f"{m.gan_disc:.3f}"
+    if m.repa_active > 0:
+        postfix["repa"] = f"{m.repa / m.repa_active:.4f}"
     return postfix

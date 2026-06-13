@@ -2,13 +2,15 @@
 #
 #   irm https://raw.githubusercontent.com/sorryhyun/anima_lora/main/install.ps1 | iex
 #
-# Installs uv if missing, downloads the latest release tarball (no git
-# required), seeds the update baseline so the first `make update` is clean,
-# and runs `uv sync`. Mirrors scripts/update.py — keep the two in sync.
+# Installs uv if missing, guides the CUDA 13.2 toolkit install if missing,
+# downloads the latest release tarball (no git required), seeds the update
+# baseline so the first `make update` is clean, and runs `uv sync`. Mirrors
+# scripts/update.py — keep the two in sync.
 #
 # Options (env vars, since args don't pass through `irm | iex`):
-#   $env:ANIMA_VERSION = 'v1.4.0'   install a specific tag   (default: latest)
-#   $env:ANIMA_DIR     = 'C:\path'  target directory         (default: .\anima_lora)
+#   $env:ANIMA_VERSION    = 'v1.4.0'   install a specific tag   (default: latest)
+#   $env:ANIMA_DIR        = 'C:\path'  target directory         (default: .\anima_lora)
+#   $env:ANIMA_SKIP_CUDA  = '1'        skip the CUDA 13.2 toolkit install/check
 
 $ErrorActionPreference = 'Stop'
 $Repo    = 'sorryhyun/anima_lora'
@@ -51,6 +53,48 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
   Die 'uv install failed; open a new PowerShell and re-run'
+}
+
+# 1.5 CUDA 13.2 toolkit (required for torch.compile / Triton ptxas) ----------
+# The bundled torch wheels carry the CUDA *runtime*, but this repo's compile
+# path (Triton -> ptxas) needs the system toolkit. Done HERE, before the repo
+# is downloaded, so that if the CUDA installer demands a reboot you can simply
+# re-run this one-liner: CUDA is detected + skipped and the install continues
+# (re-running after the repo dir exists would abort at the not-empty check).
+function Test-Cuda132 {
+  $nvcc = (Get-Command nvcc.exe -ErrorAction SilentlyContinue).Source
+  if (-not $nvcc) {
+    $p = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.2\bin\nvcc.exe'
+    if (Test-Path $p) { $nvcc = $p } else { return $false }
+  }
+  try { return [bool]((& $nvcc --version 2>$null) -match 'release 13\.2([^0-9]|$)') } catch { return $false }
+}
+if ($env:ANIMA_SKIP_CUDA) {
+  Say 'ANIMA_SKIP_CUDA set — skipping the CUDA 13.2 toolkit check'
+} elseif (Test-Cuda132) {
+  Say 'CUDA 13.2 toolkit detected'
+} else {
+  Warn 'CUDA 13.2 toolkit not found — required for torch.compile / Triton (ptxas)'
+  $cudaUrl = 'https://developer.download.nvidia.com/compute/cuda/13.2.0/local_installers/cuda_13.2.0_windows.exe'
+  $cudaExe = Join-Path ([System.IO.Path]::GetTempPath()) 'cuda_13.2.0_windows.exe'
+  Say "downloading the CUDA 13.2 installer (~4 GB) -> $cudaExe"
+  $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+  if ($curl) {
+    & $curl.Source -L --fail --retry 5 --retry-all-errors --retry-delay 2 -o $cudaExe $cudaUrl
+    if ($LASTEXITCODE -ne 0) { Die "CUDA installer download failed (curl exit $LASTEXITCODE)" }
+  } else {
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $cudaUrl -OutFile $cudaExe -UseBasicParsing
+  }
+  Say 'launching the CUDA installer — choose "Express (Recommended)"'
+  Start-Process -FilePath $cudaExe   # the installer's manifest triggers UAC elevation
+  Warn 'If the installer asks to REBOOT, do so, then re-run this one-liner — CUDA will be detected and skipped.'
+  Read-Host 'Press Enter once the CUDA installer has finished' | Out-Null
+  Remove-Item $cudaExe -ErrorAction SilentlyContinue
+  if (-not (Test-Cuda132)) {
+    Die 'CUDA 13.2 still not detected. Install from https://developer.nvidia.com/cuda-13-2-0-download-archive then re-run.'
+  }
+  Say 'CUDA 13.2 toolkit detected'
 }
 
 # 2. resolve the release tag -------------------------------------------------
@@ -157,13 +201,15 @@ trampoline .exe files. To fix:
   Die 'dependency install incomplete'
 }
 
-# 6. desktop shortcut (best-effort — never abort the install over this) ------
-Say 'creating desktop shortcut (Anima LoRA GUI)'
+# 6. shortcuts (best-effort — never abort the install over this) -------------
+# Always lands an 'Anima LoRA GUI.lnk' in the install dir (policy-proof), and a
+# desktop copy when login/OneDrive policy allows it.
+Say 'creating shortcuts (Anima LoRA GUI)'
 try {
   uv run python tasks.py gui-shortcut
   if ($LASTEXITCODE -ne 0) { throw "gui-shortcut exited $LASTEXITCODE" }
 } catch {
-  Say 'desktop shortcut skipped; create it later with: uv run python tasks.py gui-shortcut'
+  Say "shortcut skipped; find 'Anima LoRA GUI.lnk' in $Dir or run: uv run python tasks.py gui-shortcut"
 }
 
 Write-Host ""
@@ -171,7 +217,7 @@ Write-Host "[OK] installed to $Dir\" -ForegroundColor Green
 Write-Host @"
 
 The GUI is opening now. To finish setup from inside it:
-  - authenticate for gated downloads (run 'hf auth login' in a terminal once)
+  - sign in to Hugging Face (built into the GUI now — no terminal step)
   - use the Models dialog to fetch the DiT + Qwen3 text encoder + VAE
 
 Re-launch later from the "Anima LoRA GUI" desktop shortcut,

@@ -2,19 +2,20 @@
 
 All variants share ``INFERENCE_BASE`` from ``_common`` and add method-specific
 flags. Experimental inference commands (exp-test-postfix*, exp-test-prefix,
-exp-test-ref, exp-test-ip, exp-test-easycontrol) live in
-``scripts/experimental_tasks/inference.py``.
+exp-test-ref) live in ``scripts/experimental_tasks/inference.py``.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from ._common import (
     INFERENCE_BASE,
     ROOT,
+    _random_ref_image,
     latest_hydra,
     latest_lora,
     latest_output,
@@ -44,6 +45,8 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
     - ``SPD=1`` appends SPD (Spectral Progressive Diffusion) flags. Mutually
       exclusive with ``SPECTRUM=1`` (both replace the denoise loop).
     - ``MOD=1`` appends ``--pooled_text_proj <latest>``.
+    - ``DAVE=1`` appends the DAVE DC-attenuation flags (``--dave auto``); tune via
+      ``DAVE_STRENGTH=``, ``DAVE_SIGMA='lo,hi'`` and ``DAVE_TAU=`` (early-step cutoff).
     """
     args = list(INFERENCE_BASE)
     nolora_env = os.environ.get("NOLORA")
@@ -54,14 +57,36 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
     if include_lora:
         args += ["--lora_weight", str(latest_lora())]
     if _env_truthy("SPECTRUM") and _env_truthy("SPD"):
-        raise SystemExit("SPECTRUM=1 and SPD=1 are mutually exclusive (both replace the denoise loop).")
+        raise SystemExit(
+            "SPECTRUM=1 and SPD=1 are mutually exclusive (both replace the denoise loop)."
+        )
     if _env_truthy("SPECTRUM"):
         args += _spectrum_flags()
     if _env_truthy("SPD"):
         args += _spd_flags()
     if _env_truthy("MOD"):
         args += _mod_flags()
+    if _env_truthy("DAVE"):
+        args += _dave_flags()
     return args
+
+
+def _dave_flags() -> list[str]:
+    """DAVE DC-attenuation (training-free diversity). ``DAVE_STRENGTH``,
+    ``DAVE_SIGMA='lo,hi'`` and ``DAVE_TAU`` tune the live knobs; all optional.
+    ``DAVE_TAU`` (the paper's early-step cutoff, e.g. 0.15) overrides ``DAVE_SIGMA``."""
+    flags = ["--dave", "auto"]
+    if s := os.environ.get("DAVE_STRENGTH", "").strip():
+        flags += ["--dave_strength", s]
+    if win := os.environ.get("DAVE_SIGMA", "").strip():
+        lo, hi = (x.strip() for x in win.split(","))
+        flags += ["--dave_sigma_lo", lo, "--dave_sigma_hi", hi]
+    if tau := os.environ.get("DAVE_TAU", "").strip():
+        flags += ["--dave_tau", tau]
+    if blk := os.environ.get("DAVE_BLOCKS", "").strip():
+        lo, hi = (x.strip() for x in blk.split(","))
+        flags += ["--dave_block_lo", lo, "--dave_block_hi", hi]
+    return flags
 
 
 def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
@@ -195,9 +220,7 @@ def cmd_test_dcw_v4(extra):
     Defaults to NOLORA semantics; set ``NOLORA=0`` to attach the latest LoRA,
     or pass ``--lora_weight <path>`` in extra to attach a specific one.
     """
-    extra_has_calib = any(
-        a == "--dcw_calibrator" or a == "--dcw_v4" for a in extra
-    )
+    extra_has_calib = any(a == "--dcw_calibrator" or a == "--dcw_v4" for a in extra)
     calib_args = [] if extra_has_calib else ["--dcw_calibrator", _latest_fusion_head()]
     run([*_base_test_args(lora_default=False), *calib_args, *extra])
 
@@ -223,9 +246,7 @@ def cmd_test_dcw_v4_spectrum(extra):
     DCW's 28-step contract, plus DCW calibrator (auto-resolves the most recent
     fusion_head.safetensors). Pass --dcw_calibrator <path> in extra to override.
     """
-    extra_has_calib = any(
-        a == "--dcw_calibrator" or a == "--dcw_v4" for a in extra
-    )
+    extra_has_calib = any(a == "--dcw_calibrator" or a == "--dcw_v4" for a in extra)
     calib_args = [] if extra_has_calib else ["--dcw_calibrator", _latest_fusion_head()]
     run(
         [
@@ -239,3 +260,85 @@ def cmd_test_dcw_v4_spectrum(extra):
             *extra,
         ]
     )
+
+
+def cmd_test_easycontrol(extra):
+    """Inference with latest EasyControl weight.
+
+    Reference image is taken from REF_IMAGE env or the first positional arg.
+    Falls back to a random image from ``easycontrol-dataset/`` (the EasyControl
+    source layout) when neither is supplied.
+    PROMPT, NEG, EC_SCALE env vars override defaults. Saves to
+    output/tests/easycontrol/ and copies the ref image alongside the generated
+    output as ``<name>_ref.png``.
+
+    ``EASYADAPTER=colorize`` targets the colorization checkpoint
+    (``anima_colorize``), saves to output/tests/colorize/, defaults the ref to a
+    random image under ``post_image_dataset/resized/`` (feed a real B&W manga page
+    via REF_IMAGE), and defaults to an EMPTY prompt (caption-free colorization).
+
+    Examples:
+      python tasks.py test-easycontrol ref.png --prompt "a girl in a coffee shop"
+      REF_IMAGE=ref.png EC_SCALE=0.8 python tasks.py test-easycontrol
+      python tasks.py test-easycontrol         # random ref from easycontrol-dataset/
+      REF_IMAGE=manga.png EASYADAPTER=colorize python tasks.py test-easycontrol
+    """
+    adapter = (os.environ.get("EASYADAPTER") or "").strip()
+    is_colorize = adapter == "colorize"
+    weight_name = "anima_colorize" if is_colorize else "anima_easycontrol"
+    out_sub = "colorize" if is_colorize else "easycontrol"
+    ref_fallback_dir = (
+        ROOT / "post_image_dataset" / "resized"
+        if is_colorize
+        else ROOT / "easycontrol-dataset"
+    )
+
+    ref_image = os.environ.get("REF_IMAGE", "").strip()
+    if not ref_image and extra and not extra[0].startswith("-"):
+        ref_image = extra[0]
+        extra = extra[1:]
+    if not ref_image:
+        ref_image = _random_ref_image(ref_fallback_dir) or ""
+    if not ref_image:
+        print(
+            "Usage: python tasks.py test-easycontrol <ref_image> [extra...]\n"
+            "   or: REF_IMAGE=path/to/ref.png python tasks.py test-easycontrol [extra...]\n"
+            f"   (no ref given and {ref_fallback_dir.name}/ is empty)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    save_dir = ROOT / "output" / "tests" / out_sub
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        *INFERENCE_BASE,
+        "--save_path",
+        str(save_dir),
+        "--easycontrol_weight",
+        str(latest_output(weight_name)),
+        "--easycontrol_image",
+        ref_image,
+        "--easycontrol_image_match_size",
+    ]
+    if scale := os.environ.get("EC_SCALE"):
+        args += ["--easycontrol_scale", scale]
+    if prompt := os.environ.get("PROMPT"):
+        args += ["--prompt", prompt]
+    elif is_colorize and not any(a == "--prompt" for a in extra):
+        # caption-free default for colorization (empty prompt → uncond text path)
+        args += ["--prompt", ""]
+    if neg := os.environ.get("NEG"):
+        args += ["--negative_prompt", neg]
+    args += list(extra)
+    run(args)
+
+    pngs = sorted(
+        (p for p in save_dir.glob("*.png") if not p.name.endswith("_ref.png")),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if pngs:
+        ref_dst = pngs[0].with_name(pngs[0].stem + "_ref.png")
+        shutil.copy(ref_image, ref_dst)
+        print(f"  > Ref pasted: {ref_dst}")

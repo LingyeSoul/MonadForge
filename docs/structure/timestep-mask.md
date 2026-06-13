@@ -83,23 +83,11 @@ so the full rank-$r(t)$ delta still composes cleanly with the frozen weight. `or
 
 `if self.training` is the whole story for inference. At test time the mask pointer is cleared (`clear_timestep_mask`, `network.py:602–608`) and the full rank is always live. Why: the trained `A` and `B` absorb the schedule into their columns — high-index columns are trained against fewer steps (only high-noise ones) but they still learn something, and the inference forward runs unmasked on purpose. Baking the mask into inference would erase that signal.
 
-A call site in `train.py` hits `set_timestep_mask(timesteps)` and `set_reft_timestep_mask(timesteps)` right after noise sampling, per step.
+A call site in `train.py` hits `set_timestep_mask(timesteps)` right after noise sampling, per step.
 
 ---
 
-## 4. ReFT gets its own mask
-
-ReFT (`reft.md`) is a separate adapter on the DiT block's output — its own `reft_dim`-wide bottleneck, unrelated to `network_dim`. When T-LoRA is on, ReFT receives a second, independently computed mask:
-
-$$
-r_\text{reft}(t)\ =\ \big\lfloor (1-t)^{\alpha}\,(d_\text{reft} - 1)\big\rfloor + 1
-$$
-
-`network.py:577–600`. Same power-law curve, different dimension, floor of 1. The ReFT `learned_source` output is masked exactly the same way as the LoRA `lora_down` output, before projection back through `rotate_layer.T`.
-
----
-
-## 5. Composition
+## 4. Composition
 
 T-LoRA touches only the `r`-dim bottleneck. Every adapter in the stack has one:
 
@@ -108,13 +96,12 @@ T-LoRA touches only the `r`-dim bottleneck. Every adapter in the stack has one:
 | **LoRA**               | After `lora_down`, before dropout / `lora_up`            |
 | **OrthoLoRA (Cayley)** | After `Q_eff` projection, multiplied into `lambda_layer` |
 | **HydraLoRA**          | After shared `lora_down`; per-expert heads unaffected    |
-| **ReFT**               | On `delta`, with its own `reft_dim` mask                 |
 
-So the default stack in `configs/methods/lora.toml` — classic LoRA + OrthoLoRA + T-LoRA + ReFT — is coherent: everyone's bottleneck gets masked by the same $t$, with adapter-appropriate dimensions.
+So the default stack in `configs/methods/lora.toml` — classic LoRA + OrthoLoRA + T-LoRA — is coherent: everyone's bottleneck gets masked by the same $t$, with adapter-appropriate dimensions.
 
 ---
 
-## 6. Parameters
+## 5. Parameters
 
 | Parameter           | Default | Role                                                            |
 | ------------------- | ------- | --------------------------------------------------------------- |
@@ -125,9 +112,9 @@ So the default stack in `configs/methods/lora.toml` — classic LoRA + OrthoLoRA
 
 ---
 
-## 7. Minimal mental model
+## 6. Minimal mental model
 
 1. One binary row vector per step, shared by reference across every adapter.
 2. Applied in the $r$-dim bottleneck — after `lora_down`, before `lora_up`.
 3. Training-only: inference uses the full rank, and the trained weights absorb the schedule into their columns.
-4. Because the mask only lives in the bottleneck, every LoRA-family adapter (plain, ortho, hydra, reft) composes with T-LoRA without extra plumbing.
+4. Because the mask only lives in the bottleneck, every LoRA-family adapter (plain, ortho, hydra) composes with T-LoRA without extra plumbing.

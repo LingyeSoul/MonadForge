@@ -4,7 +4,7 @@ An **inference-only** acceleration. No LoRA-like network, no trained weights, no
 
 Reference: Han et al., *Adaptive Spectral Feature Forecasting for Diffusion Sampling Acceleration*, CVPR 2026. Upstream repo: https://github.com/yangheng95/Spectrum. Anima's integration lives in `networks/spectrum.py`.
 
-This sits one layer above the LoRA family (`lora.md`, `ortholora.md`, `hydralora.md`, `reft.md`, `timestep-mask.md`). Those all modify *what* the DiT computes at each step; Spectrum modifies *whether* the DiT runs at this step at all.
+This sits one layer above the LoRA family (`lora.md`, `ortholora.md`, `hydralora.md`, `timestep-mask.md`). Those all modify *what* the DiT computes at each step; Spectrum modifies *whether* the DiT runs at this step at all.
 
 ![Spectrum Chebyshev feature forecasting](../structure_images/spectrum.png)
 
@@ -34,7 +34,7 @@ hook = anima.final_layer.register_forward_pre_hook(_capture_pre_hook)
 Two reasons to hook rather than patch:
 
 - **Reversible.** The hook returns in a `finally` block via `hook.remove()` — inference can flip Spectrum on and off with no state left behind on the model object.
-- **Composable.** Forward pre-hooks coexist with whatever `forward`-replacing LoRA / HydraLoRA / ReFT have already patched into the DiT's submodules. Spectrum does not care that those patches exist — it sees only the post-block feature, which is downstream of all adapter effects.
+- **Composable.** Forward pre-hooks coexist with whatever `forward`-replacing LoRA / HydraLoRA have already patched into the DiT's submodules. Spectrum does not care that those patches exist — it sees only the post-block feature, which is downstream of all adapter effects.
 
 The skip logic happens outside `Anima.forward`: the denoise loop in `spectrum_denoise()` (`spectrum.py:220–448`) calls `anima(...)` on actual steps and `_spectrum_fast_forward(...)` on cached steps. The DiT class itself has no Spectrum-awareness.
 
@@ -52,7 +52,7 @@ def _spectrum_fast_forward(model, timesteps_B_T, predicted_feature):
     return model.unpatchify(x)
 ```
 
-That's it — `t_embedder` (a tiny MLP on the scalar timestep), `t_embedding_norm`, optional mod-guidance delta (`mod-guidance.md`), `final_layer` (LayerNorm + AdaLN + linear projection back to patch space), `unpatchify`. The 28 × `self_attn + cross_attn + MLP` stack — which is 99% of the model's FLOPs — is entirely bypassed. The predicted $h^\star$ goes straight into `final_layer` as if it had come from the block stack.
+That's it — `t_embedder` (a tiny MLP on the scalar timestep), `t_embedding_norm`, optional mod-guidance delta (`../inference/mod-guidance.md`), `final_layer` (LayerNorm + AdaLN + linear projection back to patch space), `unpatchify`. The 28 × `self_attn + cross_attn + MLP` stack — which is 99% of the model's FLOPs — is entirely bypassed. The predicted $h^\star$ goes straight into `final_layer` as if it had come from the block stack.
 
 ---
 
@@ -186,7 +186,7 @@ Spectrum is applied at inference only, *after* everything else has already attac
 
 | Component                | Interaction                                                                                         |
 | ------------------------ | --------------------------------------------------------------------------------------------------- |
-| **LoRA / OrthoLoRA / T-LoRA / ReFT** | Cached steps skip *all* block code, including the patched `forward`s these adapters wrap. The LoRA math runs only on actual steps, and the cached prediction inherits whatever effect the LoRA had on the most recent actual steps. No interface. |
+| **LoRA / OrthoLoRA / T-LoRA** | Cached steps skip *all* block code, including the patched `forward`s these adapters wrap. The LoRA math runs only on actual steps, and the cached prediction inherits whatever effect the LoRA had on the most recent actual steps. No interface. |
 | **HydraLoRA router**     | Same: router runs only on actual forwards. The polynomial fit implicitly memoizes the (sample × layer) routing decisions through the features they produced.  |
 | **Postfix (σ-conditional)** | `append_postfix` is recomputed per step with the current $\sigma$ on **actual** steps only (`spectrum.py:316–326`). Cached steps skip cross-attention entirely, so postfix tokens are not consumed there — nothing to plumb on that branch. |
 | **Modulation guidance**  | Its delta is applied inside the fast path (`spectrum.py:214–215`), so cached steps still see modulation steering.                                                                       |

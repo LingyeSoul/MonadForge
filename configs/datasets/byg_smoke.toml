@@ -1,0 +1,16 @@
+# BYG smoke dataset — a single artist subdir (aak) whose images all have BYG
+# edit-tuple sidecars (post_image_dataset/byg/<stem>_byg.safetensors) and cached
+# VAE/TE features. Used by the end-to-end smoke run; not a production config.
+
+[general]
+caption_extension = '.txt'
+
+[[datasets]]
+batch_size = 1
+validation_split_num = 0
+
+  [[datasets.subsets]]
+  image_dir = 'post_image_dataset/resized/aak'
+  cache_dir = 'post_image_dataset/lora/aak'
+  num_repeats = 1
+  recursive = false

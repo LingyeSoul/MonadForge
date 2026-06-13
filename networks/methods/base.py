@@ -1,7 +1,7 @@
 """Shared lifecycle base for non-LoRA adapter networks.
 
-The method networks under ``networks/methods/`` (ip_adapter, easycontrol,
-soft_tokens) all expose the same trainer-facing protocol:
+The method networks under ``networks/methods/`` (easycontrol, soft_tokens)
+all expose the same trainer-facing protocol:
 
   - ``set_multiplier`` / ``is_mergeable`` / ``enable_gradient_checkpointing``
   - ``prepare_grad_etc`` / ``on_epoch_start`` / ``get_trainable_params``
@@ -73,7 +73,7 @@ class AdapterNetworkBase(nn.Module):
       - ``prepare_optimizer_params_with_multiple_te_lrs(...)`` — only when
         more than one param group is needed.
       - ``load_weights(file)`` — only when the default strict-ish load can't
-        do the validation the method needs (ip_adapter is one such case).
+        do the validation the method needs.
     """
 
     network_module: ClassVar[str] = ""
@@ -131,9 +131,7 @@ class AdapterNetworkBase(nn.Module):
 
     def state_dict_for_save(self, dtype: torch.dtype) -> dict[str, torch.Tensor]:
         """State dict actually written to disk (CPU-side, cast to ``dtype``)."""
-        return {
-            k: v.detach().cpu().to(dtype) for k, v in self.state_dict().items()
-        }
+        return {k: v.detach().cpu().to(dtype) for k, v in self.state_dict().items()}
 
     def save_weights(self, file, dtype, metadata) -> None:
         dtype = dtype or torch.bfloat16

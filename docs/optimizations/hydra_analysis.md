@@ -1,4 +1,4 @@
-# HydraLoRA + ReFT — nsys-driven optimization, 2026-05-03
+# HydraLoRA — nsys-driven optimization, 2026-05-03
 
 Source artifacts: `output/nsys/`
 - `profile.nsys-rep` — open with Nsight Systems GUI for the full timeline
@@ -9,9 +9,9 @@ Source artifacts: `output/nsys/`
 
 ## What was profiled
 
-`make lora` default stack (HydraLoRA + OrthoLoRA + T-LoRA + ReFT) under
+`make lora` default stack (HydraLoRA + OrthoLoRA + T-LoRA) under
 `PROFILE_STEPS=...`, captured 31 training steps. Config in effect:
-`network_dim=48`, `num_experts=12`, `reft_dim=48`, `reft_layers=last_8`.
+`network_dim=48`, `num_experts=12`.
 
 Total GPU kernel time across the capture: **33.7 s** (~1.09 s/step).
 
@@ -19,7 +19,7 @@ Total GPU kernel time across the capture: **33.7 s** (~1.09 s/step).
 
 | Bucket | GPU time | % | Source |
 |---|---|---|---|
-| Small bf16 GEMMs (`64×64×32` cutlass `_relu_bf16`, nn/tn/nt) | 16.5 s | **49 %** | LoRA / Ortho / Hydra / ReFT projections |
+| Small bf16 GEMMs (`64×64×32` cutlass `_relu_bf16`, nn/tn/nt) | 16.5 s | **49 %** | LoRA / Ortho / Hydra projections |
 | Flash-attn fwd+bwd (incl. `dot_do_o`, `convert_dq`) | 10.0 s | 30 % | base DiT — expected |
 | Triton fused layer-norm + GELU | 2.7 s | 8 % | base DiT epilogues |
 | LU + TRSM (Cayley `solve`) | 1.0 s | 3 % | also breaks the bf16 path |
@@ -168,19 +168,7 @@ network walk inside the compiled DiT forward) or moving Cayley
 computation off the autograd graph. Re-evaluate after the within-module
 fix is benched.
 
-### C. ReFT output-projection layout — `networks/lora_modules/reft.py:120`
-
-```python
-edit = torch.nn.functional.linear(delta, self.rotate_layer.weight.T)
-```
-
-`weight.T` is a non-contiguous view; cublas picks a transposed-input
-variant. Replacing with `delta @ self.rotate_layer.weight` is
-bit-equivalent (`F.linear(x, w) = x @ w.T`, so
-`F.linear(δ, R.T) = δ @ R`). × 8 ReFT blocks × every step. Drop-in;
-not yet applied.
-
-### D. Small-tile cutlass dominance — structural
+### C. Small-tile cutlass dominance — structural
 
 49 % of GPU time is `64×64×32` bf16 tiles. Each `K=48` GEMM has low
 arithmetic intensity. Two avenues:
@@ -194,9 +182,9 @@ arithmetic intensity. Two avenues:
   cached `R_p`.
 - Stop stacking everything by default — bench each adapter family's
   marginal win and drop the ones that don't pull weight. The current
-  default composes LoRA + OrthoLoRA + T-LoRA + ReFT on every block.
+  default composes LoRA + OrthoLoRA + T-LoRA on every block.
 
-### E. cudaStreamSynchronize — 17 s in 489 calls
+### D. cudaStreamSynchronize — 17 s in 489 calls
 
 Median 3.4 µs, max 632 ms, stddev 136 ms — a few huge syncs dominate.
 Likely the warm-up `torch.cuda.synchronize()` in `_profiler_step_begin`
@@ -215,8 +203,7 @@ inside `:step=N` ranges and correlate with the Python-sampling track
 | Within-module batched Cayley (§Impl 3) | done |
 | `matrix_exp(-2A)` swap (§A) | deferred — parameterisation change |
 | Cross-module Cayley (§B) | deferred — autograd vs. cudagraph |
-| ReFT `weight.T` (§C) | deferred — drop-in, not yet applied |
-| Adapter stack pruning (§D) | deferred — bench-driven |
-| cudaStreamSynchronize hunt (§E) | deferred — needs GUI dive |
+| Adapter stack pruning (§C) | deferred — bench-driven |
+| cudaStreamSynchronize hunt (§D) | deferred — needs GUI dive |
 
 Re-profile after the implemented fixes to refresh the bucket table.

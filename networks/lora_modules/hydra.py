@@ -7,19 +7,10 @@ import torch
 
 from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
-from networks.lora_modules.custom_autograd import lora_down_project
 from networks.lora_modules.router_state import (
+    RouterStateMixin,
     _apply_sigma_band_mask,
-    _clear_fei_feature_cache,
-    _clear_routing_weights,
-    _clear_sigma_feature_cache,
-    _register_fei_feature_cache,
-    _register_routing_weights_buffer,
     _register_sigma_band_partition,
-    _register_sigma_feature_cache,
-    _set_fei_feature_cache,
-    _set_routing_weights,
-    _set_sigma_feature_cache,
     _sigma_sinusoidal_features,
 )
 
@@ -32,7 +23,7 @@ __all__ = [
 ]
 
 
-class HydraLoRAModule(BaseLoRAModule):
+class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
     """HydraLoRA: shared lora_down + per-expert lora_up, layer-local routing.
 
     See docs/methods/hydra-lora.md.
@@ -133,7 +124,9 @@ class HydraLoRAModule(BaseLoRAModule):
         #   * σ/FEI feature dims must be 0 (FreqRouter takes those axes).
         self.num_experts_content = int(num_experts_content)
         self.num_experts_freq = (
-            num_experts - self.num_experts_content if self.num_experts_content > 0 else 0
+            num_experts - self.num_experts_content
+            if self.num_experts_content > 0
+            else 0
         )
         self.use_global_content_router = bool(use_global_content_router)
         if self.num_experts_content > 0:
@@ -184,7 +177,9 @@ class HydraLoRAModule(BaseLoRAModule):
             # Chimera narrows the router to K_c outputs (its forward output IS
             # π_c); plain Hydra keeps the standard E-output router.
             router_out_dim = (
-                self.num_experts_content if self.num_experts_content > 0 else num_experts
+                self.num_experts_content
+                if self.num_experts_content > 0
+                else num_experts
             )
             self.router = torch.nn.Linear(router_in_dim, router_out_dim, bias=True)
             # Split init: small-std on rank-R columns, zeros on σ/FEI columns.
@@ -197,19 +192,12 @@ class HydraLoRAModule(BaseLoRAModule):
 
         self._register_channel_scale(self.lora_down.weight.data, channel_scale)
 
-        # Opt-in (shared down projection only): save bf16 x instead of fp32
-        # x_lora for backward. Set by the network factory.
-        self.use_custom_down_autograd = False
-
         self._last_gate = None  # (B, E), cached each forward for balance loss
         # σ / FEI / routing-weights placeholders: always-a-Tensor invariant +
         # pointer-stable buffers (see router_state.py). Routes through the
-        # registration helpers so the cat / branch in ``_compute_gate`` runs
+        # registration helper so the cat / branch in ``_compute_gate`` runs
         # unconditionally — no None-vs-Tensor guard under torch.compile.
-        _register_sigma_feature_cache(self, self.sigma_feature_dim)
-        _register_fei_feature_cache(self, self.fei_feature_dim)
-        if self.use_global_router:
-            _register_routing_weights_buffer(self, num_experts)
+        self._register_router_io_buffers(num_experts)
         # ChimeraHydra freq-pool gate buffer. Uniform 1/K_f placeholder; the
         # network-level FreqRouter overwrites via direct slot assignment
         # (``set_freq_routing_weights`` — no .detach()/.copy_(), grad_fn
@@ -220,9 +208,7 @@ class HydraLoRAModule(BaseLoRAModule):
                 1.0 / max(self.num_experts_freq, 1),
                 dtype=torch.float32,
             )
-            self.register_buffer(
-                "_freq_routing_weights", placeholder, persistent=False
-            )
+            self.register_buffer("_freq_routing_weights", placeholder, persistent=False)
             # Content-pool gate buffer for the global-router path. Same
             # contract; placeholder uniform 1/K_c. Registered unconditionally
             # on chimera modules so ``_wire_shared_content_buffers`` can
@@ -295,7 +281,8 @@ class HydraLoRAModule(BaseLoRAModule):
             pooled = lx.reshape(B, -1, lx.shape[-1]).pow(2).mean(dim=1).sqrt()
         else:
             pooled = lx
-        # lx is fp32 (bottleneck policy); router weights are in storage dtype.
+        # lx is in the compute dtype (activation dtype at training, fp32 at
+        # inference); router weights are in storage dtype.
         pooled = pooled.to(self.router.weight.dtype)
         parts = [pooled]
         if self.sigma_feature_dim > 0:
@@ -368,35 +355,20 @@ class HydraLoRAModule(BaseLoRAModule):
         K_c = int(self._content_routing_weights.shape[-1])
         self._content_routing_weights.fill_(1.0 / max(K_c, 1))
 
-    def set_sigma(
-        self, sigmas: torch.Tensor, sigma_features: torch.Tensor | None = None
-    ) -> None:
-        _set_sigma_feature_cache(self, sigmas, sigma_features)
-
-    def clear_sigma(self) -> None:
-        _clear_sigma_feature_cache(self)
-
-    def set_fei(self, fei: torch.Tensor) -> None:
-        _set_fei_feature_cache(self, fei)
-
-    def clear_fei(self) -> None:
-        _clear_fei_feature_cache(self)
-
-    def set_routing_weights(self, weights: torch.Tensor) -> None:
-        # Shared helper preserves grad_fn — see router_state._set_routing_weights.
-        if not getattr(self, "use_global_router", False):
-            return
-        _set_routing_weights(self, weights)
-
-    def clear_routing_weights(self) -> None:
-        if not getattr(self, "use_global_router", False):
-            return
-        _clear_routing_weights(self)
+    # σ / FEI / routing-weights method surface (set_sigma / clear_sigma /
+    # set_fei / clear_fei / set_routing_weights / clear_routing_weights) is
+    # inherited from RouterStateMixin. The chimera dual-pool freq/content
+    # setters above stay local — they wrap two extra buffers the mixin
+    # doesn't know about.
 
     def forward(self, x):
-        # bf16 storage, fp32 bottleneck matmuls (see LoRAModule.forward).
-        # Gate/router stays in autocast dtype — softmax over E is fine in bf16
-        # given the small-std router init.
+        # Training computes the rank GEMMs in the activation dtype — under the
+        # trainer's autocast(bf16) that is bit-identical to the retired
+        # fp32-bottleneck path (autocast re-cast its ``.float()`` inputs back
+        # to bf16 before every GEMM; see bench/lora_fp32_bottleneck), minus
+        # the dead cast traffic. Inference (no autocast anywhere in the
+        # engine) keeps the historical fp32 compute so router-live
+        # checkpoints produce unchanged outputs.
         org_forwarded = self.org_forward(x)
 
         if not self.enabled:
@@ -405,14 +377,17 @@ class HydraLoRAModule(BaseLoRAModule):
         if self._skip_module():
             return org_forwarded
 
-        if self.use_custom_down_autograd and self.training:
-            inv_scale = self.inv_scale if self._has_channel_scale else None
-            lx = lora_down_project(x, self.lora_down.weight, inv_scale)
-        else:
-            x_lora = self._rebalance(x)
-            lx = torch.nn.functional.linear(
-                x_lora.float(), self.lora_down.weight.float()
-            )
+        # Training: compute in the model COMPUTE dtype (``org_forwarded.dtype`` =
+        # the frozen base's output = the autocast/model dtype), not x.dtype.
+        # ``x`` arrives fp32 from the AdaLN LayerNorm under autocast(bf16), so
+        # ``comp = x.dtype`` left the rank path fp32 and let ``_rebalance``
+        # allocate a fp32 activation (``inv_scale``) — OOM for no numeric gain
+        # (autocast re-casts the GEMM to bf16 anyway). LoRA params are fp32
+        # master, so cast x + weights DOWN to the base dtype. Inference keeps
+        # fp32. See bench/lora_fp32_bottleneck.
+        comp = org_forwarded.dtype if self.training else torch.float32
+        x_lora = self._rebalance(x.to(comp))
+        lx = torch.nn.functional.linear(x_lora, self.lora_down.weight.to(comp))
 
         # Gate from rank-R signal pre-mask/dropout — those are training-time
         # perturbations and the gate must behave identically at inference.
@@ -440,11 +415,11 @@ class HydraLoRAModule(BaseLoRAModule):
 
         # Gate-weighted up projection: (B, out, r) per batch element.
         combined = torch.einsum(
-            "be,eod->bod", gate_eff.float(), self.lora_up_weight.float()
+            "be,eod->bod", gate_eff.to(comp), self.lora_up_weight.to(comp)
         )
         orig_shape = lx.shape
         B = orig_shape[0]
-        lx_3d = lx.reshape(B, -1, orig_shape[-1])
+        lx_3d = lx.reshape(B, -1, orig_shape[-1]).to(comp)
         out = torch.bmm(lx_3d, combined.transpose(1, 2))
         out = out.reshape(*orig_shape[:-1], -1)
 
@@ -507,9 +482,7 @@ class HydraLoRAModule(BaseLoRAModule):
             router_b = hydra_sd.pop(f"{prefix}.router.bias", None)
             inv_scale = hydra_sd.pop(f"{prefix}.inv_scale", None)
             sigma_mlp_keys = [
-                k
-                for k in list(hydra_sd.keys())
-                if k.startswith(f"{prefix}.sigma_mlp.")
+                k for k in list(hydra_sd.keys()) if k.startswith(f"{prefix}.sigma_mlp.")
             ]
             sigma_mlp_state = {k: hydra_sd.pop(k) for k in sigma_mlp_keys}
 
@@ -517,8 +490,7 @@ class HydraLoRAModule(BaseLoRAModule):
                 (
                     k
                     for k in list(hydra_sd.keys())
-                    if k.startswith(f"{prefix}.lora_ups.")
-                    and k.endswith(".weight")
+                    if k.startswith(f"{prefix}.lora_ups.") and k.endswith(".weight")
                 ),
                 key=lambda k: int(
                     k.removeprefix(f"{prefix}.lora_ups.").removesuffix(".weight")
@@ -531,9 +503,7 @@ class HydraLoRAModule(BaseLoRAModule):
             # module). Split these per-component so q/k/v keys are
             # consistent with the already-split ``.lora_down.weight`` above.
             plain_up = hydra_sd.pop(f"{prefix}.lora_up.weight", None)
-            plain_up_chunks = (
-                plain_up.chunk(n, dim=0) if plain_up is not None else None
-            )
+            plain_up_chunks = plain_up.chunk(n, dim=0) if plain_up is not None else None
 
             base_prefix = prefix.removesuffix(spec.fused_frag)
             for ci, letter in enumerate(suffixes):

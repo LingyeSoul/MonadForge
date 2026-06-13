@@ -11,7 +11,7 @@ The two pools' outputs are **added**. No multiplicative gate, no σ-band overlap
 
 Recap from `hydralora.md`: a HydraLoRA module replaces a single $B$ with $E$ stacked heads + a layer-local router that emits a per-sample softmax over them. ChimeraHydra keeps the exact same einsum kernel but constructs the gate from **two disjoint sources** stitched together: `gate = cat([π_c, π_f], dim=-1)`. The forward pass is mathematically identical to single-pool routing with a partitioned $E = K_c + K_f$ gate vector.
 
-> Currently experimental — see `docs/proposal/chimera_hydra.md` for the bench plan and `docs/experimental/chimera-hydra.md` for the user-facing entry points (`make exp-chimera`, `make lora-gui GUI_PRESETS=chimera_hydra`).
+> Currently experimental — see `_archive/proposals/chimera_hydra.md` for the bench plan and `docs/experimental/chimera-hydra.md` for the user-facing entry points (`make exp-chimera`, `make lora-gui GUI_PRESETS=chimera_hydra`).
 
 ---
 
@@ -178,7 +178,6 @@ Two einsum folds + a single `bmm` per Linear. T-LoRA's mask is folded into `P_co
 | ----------------------- | -------------------------------------------------------------------------------------------------------------- |
 | **T-LoRA**              | Per-branch — mask on content, full rank on freq. Built-in (§4).                                                |
 | **OrthoLoRA**           | `use_ortho = true` is the chimera default. Both pools share the Cayley parameterization on the OrthoHydra basis. |
-| **ReFT**                | Designed against shared-A / plain-LoRA layouts. Verify on small bench before stacking.                          |
 | **Spectrum**            | Cached steps skip transformer blocks → the FreqRouter doesn't fire on those steps. Same caveat as FeRA.        |
 | **Modulation guidance** | Orthogonal. Touches AdaLN only.                                                                                |
 | **DCW (scalar / v4)**   | Orthogonal. Sampler-level correction.                                                                          |

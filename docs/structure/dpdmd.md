@@ -1,14 +1,14 @@
 # DP-DMD: diversity-preserved few-step distillation
 
 A few-step distillation that compresses the 28-step, CFG=4 Anima teacher into an
-**N-step student LoRA** (`student_steps=2` ships). Both the student *and* the
+**N-step student LoRA** (`student_steps=4` ships; was 2 until `5ef128d`). Both the student *and* the
 auxiliary "fake" score model are plain LoRAs on **one frozen DiT** — the base
 weights do the heavy lifting for all three roles (teacher / student / fake), and
 only the rank-$r$ adapters train.
 
 This is a port of Wu, Li, Zhang, Ma — *"Diversity-Preserved Distribution Matching
 Distillation"* (arXiv:2602.03139). The output is a normal LoRA file: no
-inference-side code, you just run it at `--infer_steps 2 --cfg 1.0`.
+inference-side code, you just run it at `--infer_steps <student_steps> --cfg 1.0`.
 
 > This doc is the **structural walkthrough** — the diversity-anchor / DMD gradient
 > split, the velocity↔x0 conversion that makes it work on a flow-matching DiT, the
@@ -22,7 +22,7 @@ inference-side code, you just run it at `--infer_steps 2 --cfg 1.0`.
 > spent managing its standing CFG bias — and every CA-side lever came back inert or
 > harmful. DP-DMD removes the CA branch entirely and recovers diversity with an
 > explicit anchor instead. The CA-era decision log survives at
-> `docs/proposal/dmd2_decoupled_improvements.md`; the migration proposal at
+> `_archive/proposals/dmd2_decoupled_improvements.md`; the migration proposal at
 > `_archive/proposals/dpdmd.md`.
 
 ---
@@ -373,15 +373,16 @@ clamp). Normalization stays `/numel` (no renorm by mask area, matching
 `TurboDMDNetwork.save_student` serializes **only the student** in the standard
 plain-LoRA layout (`save_variant="standard"`); the fake is training scaffolding and
 never shipped. The student is an ordinary rank-$r$ LoRA with **CFG=4 baked in** — load
-it through the normal inference path and run `--infer_steps 2 --cfg 1.0`. No turbo
-code runs at inference.
+it through the normal inference path and run `--infer_steps <student_steps> --cfg 1.0`
+(currently 4). No turbo code runs at inference.
 
-Step count: the student is trained at `student_steps=2`, so 2 steps is the matched
-schedule. But an under-trained student behaves like a continuous velocity field (the
-DMD quality loss is trained at *random* $\tau$; only step 0 is grid-anchored), so it
-can integrate **better** at more Euler steps. If a checkpoint looks better at 4 steps
-than 2, that's the tell that distillation hasn't reached a true 2-step map yet — train
-longer or raise `student_steps`. Always keep `--cfg 1.0` (CFG is baked; don't
+Step count: the student is trained at `student_steps` (currently 4), so that step
+count is the matched schedule. But an under-trained student behaves like a continuous
+velocity field (the DMD quality loss is trained at *random* $\tau$; only step 0 is
+grid-anchored), so it can integrate **better** at more Euler steps than its trained
+grid. If a checkpoint looks better at more steps than it was trained for, that's the
+tell that distillation hasn't reached a true N-step map yet — train longer or raise
+`student_steps`. Always keep `--cfg 1.0` (CFG is baked; don't
 double-guide). See [[project_sigma_signal_resolves_by_045]] for why the σ≈0.5 band is
 where the extra evaluation matters.
 
@@ -422,4 +423,4 @@ Consequences of the plain-LoRA bake (the load-bearing constraint):
 *(A schematic for `docs/structure_images/dpdmd.png` — the three-role frozen-DiT
 diagram plus the diversity-anchor / DMD step split — is still to be drawn; the ASCII
 diagram in §3 is the interim reference. The retired CA-era schematic lives at
-`docs/structure_images/dmd2_decoupled.png`.)*
+`docs/structure_images/dpdmd.png`.)*

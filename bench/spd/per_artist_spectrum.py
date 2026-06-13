@@ -22,6 +22,8 @@ import numpy as np
 import torch
 from PIL import Image
 
+from anima_lora import load_vae
+from bench._anima import DEFAULT_VAE
 from bench._common import make_run_dir, write_result
 from bench.spd.measure_latent_spectrum import (
     fit_slope,
@@ -29,7 +31,6 @@ from bench.spd.measure_latent_spectrum import (
     vae_dims,
 )
 from library.datasets.image_utils import IMAGE_EXTENSIONS, IMAGE_TRANSFORMS
-from library.models import qwen_vae
 
 log = logging.getLogger("bench.spd.per_artist")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -38,11 +39,15 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image_dir", default="image_dataset")
-    ap.add_argument("--vae", default="models/vae/qwen_image_vae.safetensors")
+    ap.add_argument("--vae", default=DEFAULT_VAE)
     ap.add_argument("--n_artists", type=int, default=30)
     ap.add_argument("--per_artist", type=int, default=12)
-    ap.add_argument("--min_images", type=int, default=6,
-                    help="Skip folders with fewer than this many images.")
+    ap.add_argument(
+        "--min_images",
+        type=int,
+        default=6,
+        help="Skip folders with fewer than this many images.",
+    )
     ap.add_argument("--max_side", type=int, default=1280)
     ap.add_argument("--n_bins", type=int, default=96)
     ap.add_argument("--band", type=float, nargs=2, default=(0.06, 0.5))
@@ -52,7 +57,9 @@ def main() -> None:
     ap.add_argument("--label", default="per-artist")
     args = ap.parse_args()
 
-    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.dtype]
+    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[
+        args.dtype
+    ]
     exts = {e.lower() for e in IMAGE_EXTENSIONS}
     root = Path(args.image_dir)
     rng = random.Random(args.seed)
@@ -65,11 +72,15 @@ def main() -> None:
     rng.shuffle(folders)
     folders = folders[: args.n_artists]
     if not folders:
-        raise SystemExit(f"No artist folders with >= {args.min_images} images under {root}/")
-    log.info(f"Fitting beta within {len(folders)} artist folders "
-             f"({args.per_artist} imgs each, max_side={args.max_side}) ...")
+        raise SystemExit(
+            f"No artist folders with >= {args.min_images} images under {root}/"
+        )
+    log.info(
+        f"Fitting beta within {len(folders)} artist folders "
+        f"({args.per_artist} imgs each, max_side={args.max_side}) ..."
+    )
 
-    vae = qwen_vae.load_vae(args.vae, device=args.device)
+    vae = load_vae(args.vae, device=args.device)
     vae.eval()
     n_ch = 16
     lo, hi = args.band
@@ -96,7 +107,7 @@ def main() -> None:
             lat = lat.reshape(n_ch, lat.shape[-2], lat.shape[-1])
             for c in range(n_ch):
                 f = np.fft.fftshift(np.fft.fft2(lat[c]))
-                prof = radial_profile(f.real ** 2 + f.imag ** 2, args.n_bins)
+                prof = radial_profile(f.real**2 + f.imag**2, args.n_bins)
                 good = np.isfinite(prof) & (prof > 0)
                 sum_logp[c, good] += np.log10(prof[good])
                 cnt[c, good] += 1
@@ -128,38 +139,57 @@ def main() -> None:
 
     run_dir = make_run_dir("spd", label=args.label)
     csv = run_dir / "per_artist_beta.csv"
-    csv.write_text("artist,n_images,beta,r2\n" +
-                   "\n".join(f"{a},{n},{b:.4f},{r:.4f}" for (a, n, b, r) in
-                            sorted(rows, key=lambda x: x[2])) + "\n")
+    csv.write_text(
+        "artist,n_images,beta,r2\n"
+        + "\n".join(
+            f"{a},{n},{b:.4f},{r:.4f}"
+            for (a, n, b, r) in sorted(rows, key=lambda x: x[2])
+        )
+        + "\n"
+    )
     artifacts = ["per_artist_beta.csv"]
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4.5))
         for name, (k, logp) in curves.items():
             a1.plot(k, logp, "-", lw=0.7, alpha=0.5)
-        a1.set_xscale("log"); a1.set_xlabel("k / k_Nyquist"); a1.set_ylabel("log10 P(k)")
+        a1.set_xscale("log")
+        a1.set_xlabel("k / k_Nyquist")
+        a1.set_ylabel("log10 P(k)")
         a1.axvspan(lo, hi, color="0.88", zorder=0)
         a1.set_title(f"per-artist spectra (n={len(rows)})")
         a2.hist(betas, bins=12, color="#1f4e8c", alpha=0.85)
         a2.axvspan(2.0, 3.0, color="#2ecc71", alpha=0.18, label="paper [2,3]")
-        a2.axvline(betas.mean(), color="#c0392b", ls="--", label=f"mean {betas.mean():.2f}")
-        a2.set_xlabel("beta"); a2.set_ylabel("# artists"); a2.legend(fontsize=8)
+        a2.axvline(
+            betas.mean(), color="#c0392b", ls="--", label=f"mean {betas.mean():.2f}"
+        )
+        a2.set_xlabel("beta")
+        a2.set_ylabel("# artists")
+        a2.legend(fontsize=8)
         a2.set_title("beta distribution across artists")
-        fig.tight_layout(); fig.savefig(run_dir / "per_artist.png", dpi=130)
+        fig.tight_layout()
+        fig.savefig(run_dir / "per_artist.png", dpi=130)
         artifacts.append("per_artist.png")
     except Exception as e:
         log.warning(f"plot skipped: {e}")
 
-    write_result(run_dir, script=__file__, args=args, metrics=summary, artifacts=artifacts)
+    write_result(
+        run_dir, script=__file__, args=args, metrics=summary, artifacts=artifacts
+    )
     log.info("\n" + "=" * 64)
-    log.info(f"  beta across {len(rows)} artists: {betas.mean():.3f} ± {betas.std():.3f}  "
-             f"[{betas.min():.2f}, {betas.max():.2f}]")
-    log.info(f"  in paper's [2,3]: {in_range}/{len(rows)}  "
-             f"({100 * in_range / len(rows):.0f}%);  all decay (beta≥1): {summary['decays_all']}")
+    log.info(
+        f"  beta across {len(rows)} artists: {betas.mean():.3f} ± {betas.std():.3f}  "
+        f"[{betas.min():.2f}, {betas.max():.2f}]"
+    )
+    log.info(
+        f"  in paper's [2,3]: {in_range}/{len(rows)}  "
+        f"({100 * in_range / len(rows):.0f}%);  all decay (beta≥1): {summary['decays_all']}"
+    )
     log.info(f"  → {run_dir}")
     log.info("=" * 64)
 

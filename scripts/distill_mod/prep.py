@@ -181,7 +181,7 @@ def main() -> None:
     parser.add_argument(
         "--n_per_bucket",
         type=int,
-        default=1100,
+        default=1500,
         help=(
             "Cap synthesized stems per bucket (None = use every stem in the "
             "allowlist's buckets). With --shuffle_seed, picks deterministically "

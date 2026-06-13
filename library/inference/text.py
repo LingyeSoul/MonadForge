@@ -29,9 +29,7 @@ def process_escape(text: str) -> str:
 def ensure_text_strategies(
     text_encoder_path: Optional[str],
     max_length: int = MAX_CROSSATTN_TOKENS,
-) -> Tuple[
-    "text_strategies.TokenizeStrategy", "text_strategies.TextEncodingStrategy"
-]:
+) -> Tuple["text_strategies.TokenizeStrategy", "text_strategies.TextEncodingStrategy"]:
     """Idempotently install (and return) the tokenize/encode strategy singletons.
 
     Anima encodes prompts through two *process-global* singletons —
@@ -111,6 +109,12 @@ def prepare_text_inputs(
     ``anima`` are always required — they keep ``None`` defaults only so ``args`` can
     be omitted entirely without reordering positional callers.
 
+    Text-encoder resolution: ``shared_models["text_encoder"]`` is reused when
+    present (and parked back on its original device afterwards); otherwise — no
+    shared dict, or a shared dict without one — the encoder is loaded locally
+    and freed after encoding. A shared dict is never an obligation to carry the
+    encoder; pass one holding only ``conds_cache`` and loading still just works.
+
     The tokenize/encode strategy singletons are lazily installed from the
     text-encoder path via ``ensure_text_strategies`` if a caller (an embedder
     driving ``generate()`` directly) hasn't set them — a no-op on the CLI path,
@@ -148,14 +152,15 @@ def prepare_text_inputs(
     # load text encoder: conds_cache holds cached encodings for prompts without padding
     conds_cache = {}
     text_encoder_device = torch.device("cpu") if te_cpu else device
+    text_encoder = None
     if shared_models is not None:
+        # text_encoder is on device (batched inference) or CPU (interactive inference)
         text_encoder = shared_models.get("text_encoder")
-
         if "conds_cache" in shared_models:  # Use shared cache if available
             conds_cache = shared_models["conds_cache"]
 
-        # text_encoder is on device (batched inference) or CPU (interactive inference)
-    else:  # Load if not in shared_models
+    loaded_locally = text_encoder is None
+    if loaded_locally:  # no shared dict, or a shared dict without a text encoder
         text_encoder_dtype = torch.bfloat16  # Default dtype for Text Encoder
         # Pass the namespace through when we have one so TE-side LoRA
         # (lora_weight/lora_multiplier) still folds in; otherwise load from path.
@@ -171,11 +176,8 @@ def prepare_text_inputs(
             )
         text_encoder.eval()
 
-    # Store original devices to move back later if they were shared.
-    text_encoder_original_device = text_encoder.device if text_encoder else None
-
-    if not text_encoder:
-        raise ValueError("Text encoder is not loaded properly.")
+    # Store original device to move back later if it was shared.
+    text_encoder_original_device = text_encoder.device
 
     model_is_moved = False
 
@@ -256,12 +258,11 @@ def prepare_text_inputs(
 
         conds_cache[cache_key] = negative_embed
 
-    if not (shared_models and "text_encoder" in shared_models):  # if loaded locally
+    if loaded_locally:
         del text_encoder
         gc.collect()
     else:  # if shared, move back to original device (likely CPU)
-        if text_encoder:
-            text_encoder.to(text_encoder_original_device)
+        text_encoder.to(text_encoder_original_device)
 
     clean_memory_on_device(device)
 

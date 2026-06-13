@@ -16,6 +16,8 @@ up from this file (``anima_lora/``).
 from __future__ import annotations
 
 import os
+import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -81,3 +83,73 @@ def load_dotenv(path: Optional[Path] = None) -> dict[str, str]:
             os.environ[key] = val
             added[key] = val
     return added
+
+
+# Default checkpoint paths — single source of truth for the DiT / VAE / text
+# encoder a bench script or example needs. Resolution order, highest first:
+#   1. env vars ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER (incl. anything
+#      promoted from .env by load_dotenv)
+#   2. configs/base.toml (the real source of truth shared with training)
+#   3. the literals below (only if base.toml is missing/unreadable)
+_CKPT_ENV = {
+    "dit": "ANIMA_DIT",
+    "vae": "ANIMA_VAE",
+    "text_encoder": "ANIMA_TEXT_ENCODER",
+}
+_CKPT_BASE_TOML_KEY = {
+    "dit": "pretrained_model_name_or_path",
+    "vae": "vae",
+    "text_encoder": "qwen3",
+}
+_CKPT_FALLBACK = {
+    "dit": "models/diffusion_models/anima-base-v1.0.safetensors",
+    "vae": "models/vae/qwen_image_vae.safetensors",
+    "text_encoder": "models/text_encoders/qwen_3_06b_base.safetensors",
+}
+
+
+@dataclass(frozen=True)
+class DefaultCheckpoints:
+    """The repo's default DiT / VAE / text-encoder paths (repo-relative).
+
+    Paths are returned as-is (relative or absolute); the model loaders anchor
+    relative paths under :func:`anima_home` via :func:`resolve_under_home`.
+    """
+
+    dit: str
+    vae: str
+    text_encoder: str
+
+
+def default_checkpoints() -> DefaultCheckpoints:
+    """Resolve the default DiT / VAE / text-encoder paths.
+
+    Env (``ANIMA_DIT`` / ``ANIMA_VAE`` / ``ANIMA_TEXT_ENCODER``) wins over
+    ``configs/base.toml``, which wins over hardcoded fallbacks. ``.env`` is
+    consulted (via :func:`load_dotenv`, which never clobbers real env vars), so
+    callers need not load it themselves. This is the one place bench scripts and
+    examples should reach for these paths instead of re-deriving the
+    ``os.environ.get("ANIMA_DIT", "models/…")`` pattern.
+    """
+    load_dotenv()
+
+    base: dict[str, str] = {}
+    base_path = anima_home() / "configs" / "base.toml"
+    if base_path.exists():
+        try:
+            with base_path.open("rb") as fh:
+                data = tomllib.load(fh)
+            base = {
+                k: data[toml_key]
+                for k, toml_key in _CKPT_BASE_TOML_KEY.items()
+                if isinstance(data.get(toml_key), str)
+            }
+        except (OSError, tomllib.TOMLDecodeError):
+            base = {}
+
+    def pick(kind: str) -> str:
+        return os.environ.get(_CKPT_ENV[kind]) or base.get(kind) or _CKPT_FALLBACK[kind]
+
+    return DefaultCheckpoints(
+        dit=pick("dit"), vae=pick("vae"), text_encoder=pick("text_encoder")
+    )

@@ -31,11 +31,6 @@ except ImportError:
     sageattn = None
 
 try:
-    import xformers.ops as xops
-except ImportError:
-    xops = None
-
-try:
     from torch.nn.attention.flex_attention import (
         flex_attention as _flex_attention,
         create_block_mask,
@@ -80,10 +75,6 @@ class AttentionParams:
         # flash4 is not supported yet, but keep it in the exclusion list for parity.
         return self.attn_mode not in ["flash", "flash4"]
 
-    @property
-    def requires_same_dtype(self) -> bool:
-        return self.attn_mode in ["xformers"]
-
     @staticmethod
     def create_attention_params(
         attn_mode: Optional[str],
@@ -124,12 +115,7 @@ class AttentionParams:
                 attention_mask, (img_len, 0), value=1
             )  # [B, img_len + L]
 
-            if attn_mode == "xformers":
-                seqlens_list = seqlens.cpu().tolist()
-                attention_mask = xops.fmha.attn_bias.BlockDiagonalMask.from_seqlens(
-                    seqlens_list, seqlens_list, device=attention_mask.device
-                )
-            elif attn_mode in ("torch", "flex"):
+            if attn_mode in ("torch", "flex"):
                 attention_mask = attention_mask[:, None, None, :].to(
                     torch.bool
                 )  # [B, 1, 1, img_len + L]
@@ -273,12 +259,6 @@ def dispatch_attention(
         )
         del q, k, v
 
-    elif attn_params.attn_mode == "xformers":
-        x = xops.memory_efficient_attention(
-            q, k, v, attn_bias=attn_params.attention_mask, p=drop_rate, scale=scale
-        )
-        del q, k, v
-
     elif attn_params.attn_mode == "sageattn":
         if attn_params.cu_seqlens is None:  # all tokens are valid
             x = sageattn(q, k, v, sm_scale=scale)  # B, L, H, D. No dropout support
@@ -338,7 +318,7 @@ def dispatch_attention(
         raise NotImplementedError(
             "attn_mode='flash4' is disabled in this build "
             "(see docs/optimizations/fa4.md). "
-            "Use 'flash', 'torch', 'flex', 'sageattn', or 'xformers'."
+            "Use 'flash', 'torch', 'flex', or 'sageattn'."
         )
 
     else:

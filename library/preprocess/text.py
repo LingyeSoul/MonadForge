@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 import torch
@@ -24,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 def generate_caption_variants(
-    caption: str, num_variants: int, tag_dropout_rate: float
+    caption: str,
+    num_variants: int,
+    tag_dropout_rate: float,
+    protect_fn: Callable[[str], bool] | None = None,
 ) -> list[str]:
     """Generate ``num_variants`` caption variants for stochastic train-time sampling.
 
@@ -33,6 +37,11 @@ def generate_caption_variants(
     is independently dropped with probability ``tag_dropout_rate``. The
     ``@no-artist`` sentinel participates in the boundary but is stripped from
     every variant (including v0) before it is written.
+
+    ``protect_fn`` (when given) marks tags that must survive tag-dropout: a tag
+    for which it returns True is always kept even past the @artist prefix. It is
+    still subject to shuffling — only the dropout is suppressed. Used by the
+    colorize prep to keep copyright tags present in every partial-color variant.
     """
     from library.anima import training as anima_train_utils
 
@@ -54,7 +63,9 @@ def generate_caption_variants(
         if tag_dropout_rate > 0.0 and len(shuffled) > split_idx:
             kept = list(shuffled[:split_idx])
             for tag in shuffled[split_idx:]:
-                if random.random() >= tag_dropout_rate:
+                if (protect_fn is not None and protect_fn(tag)) or (
+                    random.random() >= tag_dropout_rate
+                ):
                     kept.append(tag)
             if not kept:
                 kept = shuffled[:1]
@@ -124,9 +135,13 @@ def cache_text_embeddings(
     device: torch.device,
     cache_dir: Path | None = None,
     recursive: bool = False,
+    path_pattern: str | None = None,
+    keep_stems: Collection[str] | None = None,
     batch_size: int = 16,
     caption_shuffle_variants: int = 0,
     caption_tag_dropout_rate: float = 0.0,
+    caption_transform: Callable[[str], str] | None = None,
+    caption_protect_fn: Callable[[str], bool] | None = None,
     min_pixels: int = 500_000,
     verbose: bool = True,
     progress: ProgressFn | None = None,
@@ -138,8 +153,31 @@ def cache_text_embeddings(
     filter). With ``caption_shuffle_variants > 0`` each cache holds N variants
     (v0 pristine, v1..v{N-1} shuffled + optionally tag-dropped). Returns counts;
     pass ``progress`` for a per-image bar.
+
+    ``caption_transform`` (when given) is applied to each raw caption before
+    tokenization / variant generation — used by task-specific re-encodes such
+    as colorization's color-only caption filter. It runs *before* shuffle so
+    the kept tags are what gets shuffled/dropped.
+
+    ``caption_protect_fn`` (when given) is forwarded to
+    :func:`generate_caption_variants` to exempt matching tags from tag-dropout
+    (e.g. colorize copyright tags). No-op unless ``caption_shuffle_variants > 0``.
+
+    ``keep_stems`` (when given) restricts encoding to images whose filename stem
+    is in the set — the matched subset the VAE/cond stage already materialized,
+    so the TE cache mirrors that set rather than re-encoding the whole caption
+    master.
     """
-    candidates = walk_images(data_dir, recursive=recursive)
+    candidates = walk_images(data_dir, recursive=recursive, pattern=path_pattern)
+    if keep_stems is not None:
+        keep = frozenset(keep_stems)
+        pre = len(candidates)
+        candidates = [p for p in candidates if p.stem in keep]
+        if verbose and len(candidates) != pre:
+            print(
+                f"Stem filter: keeping {len(candidates)}/{pre} captions "
+                "(matched-subset only)."
+            )
 
     entries: list[tuple[Path, str]] = []
     skipped_small = 0
@@ -161,6 +199,8 @@ def cache_text_embeddings(
         # (unconditional / style-LoRA training) — encode "" rather than
         # dropping the image, so the cached set matches the training dataset.
         caption = caption_path.read_text(encoding="utf-8").strip().split("\n")[0]
+        if caption_transform is not None:
+            caption = caption_transform(caption)
         entries.append((p, caption))
 
     if skipped_small and verbose:
@@ -227,7 +267,9 @@ def cache_text_embeddings(
             all_captions: list[str] = []
             for _, caption, _ in to_encode:
                 all_captions.extend(
-                    generate_caption_variants(caption, n_variants, tag_dropout_rate)
+                    generate_caption_variants(
+                        caption, n_variants, tag_dropout_rate, caption_protect_fn
+                    )
                 )
 
             prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, crossattn_emb = (

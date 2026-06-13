@@ -1,0 +1,147 @@
+# Colorization — EasyControl control task (manga/lineart → color).
+#
+# Self-contained adapter descriptor (same shape as near_twins.toml): top-level
+# `name` slug + [staging] / [preprocess] / [training] knob tables + the
+# [general]/[[datasets]] blueprint tail. The shared machinery in
+# scripts/tasks/training.py consumes it — colorize trains the base `easycontrol`
+# method with the [training] table folded in as CLI overrides. Run the pipeline:
+#   make easycontrol-staging    EASYADAPTER=colorize   # [staging] → mangafy cond tree
+#   make easycontrol-preprocess EASYADAPTER=colorize   # [preprocess] → cond+text caches
+#   make easycontrol            EASYADAPTER=colorize   # [training]  → train
+# CLI flags (ARGS="…") override any table value.
+#
+# What makes colorize differ from plain EasyControl (same frozen-DiT network):
+#   • cond ≠ target — the condition is a synthetic mangafied B&W latent (cached in
+#     a parallel cond_cache_dir), the target is the original color image.
+#   • color-only captions — the TE cache (text_cache_dir) holds captions filtered
+#     to color tags only (hair/eye/clothing colors, + copyright). The manga cond
+#     already encodes structure; text carries only the ambiguous variable (hue),
+#     so a moderate caption_dropout still leaves a strong prompt→color binding. At
+#     inference an empty prompt auto-colorizes; "pink hair, blue eyes" steers.
+
+# Output slug — single source of truth for the derived trees. The staging /
+# cond / text caches live under post_image_dataset/easycontrol/<name>/ and the
+# blueprint's cond_cache_dir/text_cache_dir reference {name} (interpolated at
+# train time). Targets stay the shared color corpus (post_image_dataset/resized
+# + lora cache), so only the synthetic trees ride this slug.
+name = "colorize"
+
+# Mangafy condition-synthesis knobs (read by easycontrol_adapters/colorization/
+# prep.py; any --flag dest works as a key here). The staging step runs prep.py's
+# mangafy stage only (--skip_encode --skip_text) over the color corpus.
+[staging]
+# engine: gpu = XDoG+halftone on CUDA (fast, no downloads, default); cv2 = same
+# math on a CPU ProcessPool; sd = learned sketch2manga screening (on-manifold
+# tones, needs `make easycontrol-download EASYADAPTER=colorize`).
+engine = "gpu"
+# Tag selection for the colorize set, matched against captions in image_dataset/.
+# Net set = only_data_includes − exclude_data_includes. Pages filtered out get no
+# condition synthesized, and the train-time loader pairs only against cached
+# conditions, so the selection carries end-to-end with no second scan. Edit then
+# re-run `make easycontrol-staging EASYADAPTER=colorize`.
+#   only_data_includes    — restrict to pages carrying one of these tags ([] = all).
+#   exclude_data_includes — then drop pages carrying one of these (e.g. monochrome
+#                           pure-B&W pages with nothing to colorize, or comic/4koma
+#                           panel pages whose tone the manga cond can't convey).
+only_data_includes = ["comic", "white border", "thick border", "2koma", "multiple views", "speech bubble"]
+exclude_data_includes = ["monochrome"]
+# sd-engine-only knobs (uncomment when engine = "sd"):
+# steps = 40
+# cfg = 9.0
+# strength = 0.6
+# sd_match = ""        # comma-sep rel-path substrings to route to SD per-page
+
+# Cond-latent + color-only-text caching knobs (read by the same prep.py; the
+# preprocess step runs its encode + text stages only, --skip_mangafy). The color
+# *target* latents + TE are reused from the shared LoRA cache — no target re-encode.
+[preprocess]
+# Color-caption variants per image: v0 = full color set, v1+ = shuffled with
+# text_tag_dropout_rate of the color tags dropped (teaches partial-palette colorize).
+text_shuffle_variants = 3
+text_tag_dropout_rate = 0.8
+# Keep the copyright/series tag alongside the colors (placed first, protected from
+# dropout) — the manga cond can't encode which series a page is from.
+text_keep_copyright = true
+# Keep comic/panel-format tags (comic, 4koma, …) too, in the protected prefix and
+# immune to dropout — the mangafied cond doesn't reliably signal "multi-panel comic
+# page", so binding the tag lets a "comic" prompt steer toward panelled output.
+text_keep_comic = true
+
+# Training overrides folded onto configs/easycontrol/easycontrol.toml (CLI wins the
+# merge chain). Only the colorize-specific deltas live here; infra knobs
+# (network_module, use_easycontrol, blocks_to_swap, gradient/offload checkpointing)
+# are inherited from the base easycontrol method.
+[training]
+network_dim = 32
+network_alpha = 32
+target_res = [896, 1024]
+network_args = [
+    "b_cond_init=-4.0",
+    "cond_scale=1.0",
+    "apply_ffn_lora=1",
+    "cond_res_scale=1.0",
+    "use_repa=true",
+    "repa_weight=0.05",
+    "repa_layer=8",
+    "repa_spatial_norm=true",
+    "repa_global_weight = 0.001",
+    'repa_global_norm = "zscore"',
+    'repa_global_calib = "networks/calibration/pe_patchmean_stats.safetensors"'
+]
+blocks_to_swap = 0
+output_name = "anima_colorize_comic"
+sigmoid_bias = 0
+masked_loss=false
+
+learning_rate = 2e-5
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
+
+# The manga cond is already a lossy hint (lineart + screentone), so keep the
+# training-time cond perturbation at zero — high noise would erase the line
+# structure we want the model to follow.
+easycontrol_cond_noise_max = 0.0
+easycontrol_drop_p = 0.0
+
+caption_dropout_rate = 1.0
+use_shuffled_caption_variants = true
+use_shuffled_caption_variants_only = true
+
+# === dataset blueprint =======================================================
+# target = the existing COLOR illustrations — latents + TE already cached under
+#          post_image_dataset/lora/ by `make preprocess`.
+# cond   = synthetic mangafied B&W latents, cached under
+#          post_image_dataset/easycontrol/{name}/cond/ by the preprocess step.
+# text   = color-only TE cache (redirects ONLY the text-encoder cache; latents
+#          still come from cache_dir), under .../{name}/text/.
+# flip_aug is OFF: latents can't be flipped post-hoc, and the cond/text caches
+# have no flipped variant. {name} interpolates from the top-level slug at train time.
+
+[general]
+caption_extension = '.txt'
+
+[[datasets]]
+batch_size = 1
+validation_split_num=0
+validation_seed = 42
+
+  [[datasets.subsets]]
+  image_dir = 'post_image_dataset/resized'
+  cache_dir = 'post_image_dataset/lora'
+  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'
+  text_cache_dir = 'post_image_dataset/easycontrol/{name}/text'
+  recursive = true
+  flip_aug = false
+  num_repeats = 1
+
+# GUI dropdown metadata (ignored by the CLI descriptor machinery — train.py only
+# ever sees the extracted blueprint sidecar). The EasyControl tab lists this as a
+# descriptor variant: a file-edited launcher (edit this file directly, like
+# near_twins.toml — no in-GUI form), with Preprocess + Train buttons driving the
+# staging → preprocess → descriptor-folded train flow.
+[variant]
+family = "easycontrol"
+label = "Colorize (B&W manga → color)"
+description = "Colorize a B&W screentoned manga page. Cond = synthetic mangafied B&W (XDoG + screentone); text = color-only captions (hue). Empty prompt auto-colorizes; a color prompt steers. Configured in configs/easycontrol/colorize.toml (edit the file directly)."
+order = 20

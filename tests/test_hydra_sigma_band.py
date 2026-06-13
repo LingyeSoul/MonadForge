@@ -65,11 +65,17 @@ def test_apply_sigma_band_mask_custom_edges():
         _apply_sigma_band_mask(logits, sigma, expert_band, edges), dim=-1
     )
     # σ=0.4: mass at {0, 3}
-    assert torch.allclose(gate[0, torch.tensor([0, 3])].sum(), torch.tensor(1.0), atol=1e-6)
+    assert torch.allclose(
+        gate[0, torch.tensor([0, 3])].sum(), torch.tensor(1.0), atol=1e-6
+    )
     # σ=0.6: mass at {1, 4}
-    assert torch.allclose(gate[1, torch.tensor([1, 4])].sum(), torch.tensor(1.0), atol=1e-6)
+    assert torch.allclose(
+        gate[1, torch.tensor([1, 4])].sum(), torch.tensor(1.0), atol=1e-6
+    )
     # σ=0.9: mass at {2, 5}
-    assert torch.allclose(gate[2, torch.tensor([2, 5])].sum(), torch.tensor(1.0), atol=1e-6)
+    assert torch.allclose(
+        gate[2, torch.tensor([2, 5])].sum(), torch.tensor(1.0), atol=1e-6
+    )
 
 
 def test_hydra_module_with_band_partition_masks_gate():
@@ -178,8 +184,6 @@ def _make_minimal_hydra_network(num_experts: int = 6, num_buckets: int = 3):
     net.cfg = cfg
     net.unet_loras = []
     net.text_encoder_loras = []
-    net.text_encoder_refts = []
-    net.unet_refts = []
     net._last_sigma = None
     net._router_stats_cache = None
     net._sigma_router_hits = 0

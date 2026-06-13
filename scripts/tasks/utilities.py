@@ -26,8 +26,24 @@ def cmd_merge(extra):
 
 
 def cmd_comfy_batch(extra):
-    workflow = extra[0] if extra else "workflows/modhydra.json"
-    remaining = extra[1:] if extra else []
+    """Run a ComfyUI workflow as a batch.
+
+    Workflow via ``W=`` (bare names resolve under ``workflows/``) or positional
+    ``ARGS``. For workflows with a ``LoadImage`` node, ``IMAGES=<dir>`` switches
+    on per-image sequential mode (default ``../comfy/input/to_colorize``):
+
+        make comfy-batch W=colorize.json
+        make comfy-batch W=colorize.json IMAGES=/path/to/imgs
+    """
+    workflow = os.environ.get("W") or (extra[0] if extra else "workflows/modhydra-simple.json")
+    if os.sep not in workflow and "/" not in workflow:
+        workflow = f"workflows/{workflow}"
+    remaining = extra[1:] if (extra and not os.environ.get("W")) else list(extra)
+
+    images_dir = os.environ.get("IMAGES", "../comfy/input/to_colorize")
+    if images_dir and "--images_dir" not in remaining:
+        remaining = ["--images_dir", images_dir, *remaining]
+
     run([PY, "scripts/comfy_batch.py", workflow, *remaining])
 
 

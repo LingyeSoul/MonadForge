@@ -61,9 +61,9 @@ import subprocess
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-
 from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+
+ROOT = Path(__file__).resolve().parents[2]
 
 # Bucket presets. ``CONSTANT_TOKEN_BUCKETS`` is the canonical 24-entry list
 # from ``library/datasets/buckets.py`` — two token-count families (4032 and

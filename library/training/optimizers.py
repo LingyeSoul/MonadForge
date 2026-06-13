@@ -15,21 +15,6 @@ logger = logging.getLogger(__name__)
 
 def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
     optimizer_type = args.optimizer_type
-    if args.use_8bit_adam:
-        assert not args.use_lion_optimizer, (
-            "both option use_8bit_adam and use_lion_optimizer are specified"
-        )
-        assert optimizer_type is None or optimizer_type == "", (
-            "both option use_8bit_adam and optimizer_type are specified"
-        )
-        optimizer_type = "AdamW8bit"
-
-    elif args.use_lion_optimizer:
-        assert optimizer_type is None or optimizer_type == "", (
-            "both option use_lion_optimizer and optimizer_type are specified"
-        )
-        optimizer_type = "Lion"
-
     if optimizer_type is None or optimizer_type == "":
         optimizer_type = "AdamW"
     optimizer_type = optimizer_type.lower()

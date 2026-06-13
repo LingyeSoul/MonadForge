@@ -221,51 +221,53 @@ def load_state_dict(self, state_dict, strict=True, **kwargs):
 
 **sd-scripts**: Zero `_orig_mod_` awareness — loading a checkpoint trained with `torch.compile` would fail.
 
-### 5.2 Memory-saving down-projection autograd (`networks/lora_modules/custom_autograd.py`)
+### 5.2 ~~Memory-saving down-projection autograd~~ (REMOVED 2026-06-10)
 
-The LoRA down projection runs its matmul in fp32 for accumulation precision:
+The custom down-projection `autograd.Function` (`custom_autograd.py`) and the
+fp32-bottleneck matmul policy it serviced were removed. The training forward
+ran under `accelerator.autocast()` (default `mixed_precision="bf16"`), and
+autocast re-casts fp32 `F.linear` inputs back to bf16 — so the fp32 matmuls
+never actually executed, the "fp32 activation retained for backward" the
+Function was built to avoid was never retained, and the whole mechanism was
+dead weight plus cast traffic (`x.float()` materialized a fp32 copy of every
+adapted Linear's input that autocast immediately re-rounded — up to ~24%
+module overhead on wide-input Linears). Measured in the `lora_fp32_bottleneck` bench (since removed):
 
-```python
-lx = F.linear(x_lora.float(), self.lora_down.weight.float())
-```
+* live-autocast path vs explicit bf16 GEMMs: **bit-identical forward** (max abs diff 0.0);
+* cuBLAS bf16 GEMMs accumulate in fp32 internally, so the bf16 output sits at
+  the rounding floor (one caveat: `allow_bf16_reduced_precision_reduction`,
+  default True, costs ~1.4× error at k=8192);
+* 200-step Adam probe: final ΔW deviation vs an fp64 run indistinguishable
+  across fp32-bottleneck / bf16 / live-autocast regimes.
 
-`F.linear`'s backward saves the exact forward input, so the `.float()` upcast of `x` is retained across the fwd→bwd window as an fp32 tensor (4 B / elem). At a ~4096-token bucket this is 32 MiB per 2048-wide Linear and 128 MiB for the 8192-wide MLP `layer2` input; accumulated across 28 DiT blocks × ~5–6 adapted Linears per block this was the largest single source of LoRA-side activation VRAM.
+The training forwards now compute the rank GEMMs directly in the activation
+dtype (`weight.to(x.dtype)` at the matmul boundary — the same cast autocast
+performed, now explicit and autocast-independent). Inference paths
+(HydraLoRAModule at eval, `ChimeraHydraInferenceModule`, EasyControl KV
+prefill) kept their historical fp32 compute since the inference engine runs
+without autocast. Regression tests: `tests/test_lora_dtype_policy.py`
+(bitwise legacy parity under autocast + dtype honesty).
 
-The fix is a targeted activation-recompute trick: a custom `torch.autograd.Function` that saves the low-precision `x` (bf16, 2 B / elem) and recomputes `x.float()` (or `(x * inv_scale).float()`) in backward. The fp32 bottleneck matmul is preserved in both directions, so gradients are bitwise-identical to the legacy path for deterministic kernels.
+`use_custom_down_autograd` is still **accepted** everywhere it used to be (TOML
+allowlist, factory, EasyControl, turbo CLI) but is a logged no-op, so old
+snapshot TOMLs replay cleanly.
 
-**Relevant to compile:** the feature uses **two separate `autograd.Function` subclasses** (scaled and unscaled), not one with an optional tensor. This keeps the graph shape fixed — no shape-dependent Python branches, no optional-tensor sentinels that could cause guard churn:
-
-```python
-class LoRADownProjectFn(torch.autograd.Function):       # no channel-scale
-    @staticmethod
-    def forward(ctx, x, weight):
-        out = F.linear(x.float(), weight.float())
-        ctx.save_for_backward(x, weight)                # bf16 x saved, not x.float()
-        return out
-
-class ScaledLoRADownProjectFn(torch.autograd.Function): # with channel-scale
-    @staticmethod
-    def forward(ctx, x, weight, inv_scale):
-        x_work = x * inv_scale
-        out = F.linear(x_work.float(), weight.float())
-        ctx.save_for_backward(x, weight, inv_scale)
-        return out
-
-def lora_down_project(x, weight, inv_scale):            # dispatch at module init
-    if inv_scale is None:
-        return LoRADownProjectFn.apply(x, weight)
-    return ScaledLoRADownProjectFn.apply(x, weight, inv_scale)
-```
-
-Each adapted LoRA module carries a boolean attribute `use_custom_down_autograd` set once by the network factory — Dynamo sees a static Python branch inside `forward`, not a runtime dispatch.
-
-Wired through `LoRAModule`, `HydraLoRAModule`, `OrthoLoRAModule`, `OrthoHydraLoRAModule`, and `ChimeraHydraLoRAModule`. The Ortho/Chimera variants pass `Q_eff = R_q @ Q_basis` as the "weight" argument — autograd returns `grad_Q_eff`, which the existing graph propagates into `S_q` unchanged; Chimera issues two such calls (one per pool) on a shared rebalanced `x_in`, deduping the saved-for-backward input. ReFT (block-level intervention) and Conv2d LoRA are intentionally out of scope and take the legacy path.
-
-**Measured (60-step A/B under `torch.compile`, default stack):** loss/average matched within 0.7 % (run-to-run noise), per-step loss statistically indistinguishable at z = +1.84, wall/step matched within 0.4 %, peak VRAM dropped ~4 GiB. The wall-clock parity is the compile-relevant signal: if Dynamo had broken the graph at each LoRA-patched Linear (once per `autograd.Function.apply`), kernel-launch overhead across 28 × ~5–6 sites would have erased the memory win. It didn't.
-
-**sd-scripts**: No equivalent — plain `F.linear(x.float(), ...)` retains the fp32 cast unconditionally.
-
-**Default-on:** `use_custom_down_autograd = true` lives in `configs/base.toml` and is on for every method. Opt out per run with `--network_args use_custom_down_autograd=false` if the legacy path is needed for debugging.
+**Post-removal addendum (2026-06-10, same day):** the Function was numerically
+dead weight but NOT memory-dead. Under `torch.compile` an `autograd.Function`
+is traced as a HOP that pins the saved-for-backward set to its
+`ctx.save_for_backward` choice ({x, weight}, casts recomputed in backward).
+With plain traceable ops, AOT's min-cut partitioner chose to save ~0.8 GB more
+intermediates per step — first-step OOM on a 16 GB card at 4200 tokens without
+gradient checkpointing. The generic replacement is
+`activation_memory_budget = 0.85` (base.toml → `torch._functorch.config.
+activation_memory_budget`, set in `train.py` before `compile_blocks`):
+measured identical step time (1.02 vs 1.01 s/it) and identical peak (~15.2 GB
+total) to the custom-Function era on the 26-step probe. It is auto-skipped
+under `gradient_checkpointing` — repartitioning makes checkpoint's recompute
+pass select a different graph than forward (`CheckpointError`, torch #166926),
+and ckpt already minimizes saved activations. Lesson: *numerically-inert ≠
+memory-inert* — removing a custom Function changes partitioning even when its
+math traces identically.
 
 ---
 

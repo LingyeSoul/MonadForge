@@ -1,0 +1,90 @@
+# EasyControl — extended self-attention image conditioning (Phase 1).
+#
+# Self-contained method config: the method settings AND the dataset blueprint
+# (`[general]` / `[[datasets]]` below) live in this one file. Auto-discovered by
+# `--method easycontrol` (the per-method-dir layout takes precedence over the
+# flat configs/methods/ folder). No `dataset_config` reference needed — the
+# inline blueprint fully replaces base.toml's default LoRA blueprint.
+#
+# Adapter-only: DiT is frozen, training updates only per-block cond LoRA on
+# self-attn (q/k/v/o) + FFN (layer1/layer2) + a per-block scalar logit bias
+# `b_cond` (init -10) that gates cond-position softmax mass.
+#
+# Source data: easycontrol-dataset/  (user puts {stem}.png/.jpg/.webp + {stem}.txt here)
+# Caches:      post_image_dataset/easycontrol/  ({stem}_anima_te.safetensors,
+#              {stem}_{WxH}_anima.npz) — redirected via the subset `cache_dir`
+#              below so the source directory stays clean.
+#
+# Reference image and VAE target come from the SAME image, matching IP-Adapter
+# v1's setup. The cond pre-pass is run every step (no KV cache yet — that's
+# Phase 2). CFG dropout zeros image conditioning with probability
+# `easycontrol_drop_p` so inference can do image-CFG independently of text-CFG.
+#
+# Feature source: cached VAE latents on disk. EasyControl's cond input is the
+# clean VAE latent of the reference, which is identical to the existing
+# {stem}_anima_latent.safetensors when ref==target. No new sidecar needed for
+# Phase 1; reuses the VAE-cache output directly.
+#
+# NB: configs/gui-methods/easycontrol.toml still references the standalone
+# configs/datasets/easycontrol.toml blueprint (the gui-methods tree is a
+# separate flat folder, not part of the per-method-dir consolidation). Keep the
+# subset definition below in sync with that file until gui-methods is migrated.
+
+network_module = "networks.methods.easycontrol"
+
+# r = condition LoRA rank (per-projection rank). 16 is a reasonable default.
+network_dim = 32
+network_alpha = 32
+
+network_args = [
+    "b_cond_init=-10.0",     # logit bias init: exp(-10) ≈ 4.5e-5 → α ≈ 1 → step 0 = baseline DiT
+    "cond_scale=1.0",
+    "apply_ffn_lora=1",      # set to 0 to skip FFN LoRA (~halves trainable params)
+    "cond_res_scale=1.0",
+]
+
+output_name = "anima_easycontrol"
+
+learning_rate = 5e-5
+max_train_epochs = 6
+save_every_n_epochs = 3
+checkpointing_epochs = 3
+
+# Cached-feature path: VAE latents and text encoder outputs live on disk as
+# sibling sidecars. EasyControl reuses the existing VAE-cache output as the
+# cond source — no separate sidecar.
+# (use_vae_cache and use_text_cache default to true in configs/base.toml.)
+
+# CFG dropout for image conditioning (independent of text dropout).
+# Read by train.py when use_easycontrol is on.
+use_easycontrol = true
+easycontrol_drop_p = 0.1
+caption_dropout_rate = 0.1
+
+# Per-step training-only Gaussian noise on cond latent before set_cond.
+# Sampled per-sample as sigma ~ U(0, easycontrol_cond_noise_max) and applied as
+# cond + sigma * eps. 0.0 = ref==target identity (current behavior). A positive
+# value (e.g. 0.5) degrades cond from "perfect blueprint" to "lossy hint",
+# forcing text to carry the residual high-frequency detail. sigma=0 stays in
+# the training distribution, so clean-cond inference still works unchanged.
+easycontrol_cond_noise_max = 0.3
+
+activation_memory_budget = 0.4
+
+# --- Dataset blueprint (inline; fully replaces base.toml's default) ---------
+# Source images + .txt captions live in `easycontrol-dataset/` (user-facing).
+# Preprocessed caches (VAE latents, text encoder outputs) are redirected to
+# `post_image_dataset/easycontrol/` via the subset-level `cache_dir` knob,
+# so the source directory stays clean.
+
+[general]
+caption_extension = '.txt'
+
+[[datasets]]
+batch_size = 1
+validation_seed = 42
+
+  [[datasets.subsets]]
+  image_dir = 'easycontrol-dataset'
+  cache_dir = 'post_image_dataset/easycontrol'
+  num_repeats = 1

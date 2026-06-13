@@ -1,7 +1,7 @@
 """Save/load round-trip + lifecycle defaults for AdapterNetworkBase subclasses.
 
-Track 3 of refactoring_proposal.md: networks/methods/{ip_adapter, easycontrol,
-soft_tokens} all subclass AdapterNetworkBase. These tests pin the protocol
+Track 3 of refactoring_proposal.md: networks/methods/{easycontrol, soft_tokens}
+all subclass AdapterNetworkBase. These tests pin the protocol
 invariants that the trainer relies on:
 
   - is_mergeable() == False
@@ -21,6 +21,7 @@ import pytest
 import torch
 from safetensors import safe_open
 
+
 # Each entry: (label, factory, must_have_metadata_keys)
 #  - factory() returns a freshly constructed adapter network.
 #  - must_have_metadata_keys are method-specific ss_* stamps that should
@@ -33,25 +34,6 @@ def _make_soft_tokens():
         embed_dim=16,
         n_layers=3,
         n_t_buckets=8,
-    )
-
-
-def _make_ip_adapter():
-    from networks.methods.ip_adapter import IPAdapterNetwork
-
-    return IPAdapterNetwork(
-        num_ip_tokens=4,
-        encoder_name="test",
-        encoder_dim=32,
-        context_dim=16,
-        num_blocks=2,
-        hidden_size=16,
-        num_heads=4,
-        resampler_layers=1,
-        resampler_heads=2,
-        ip_init_std=1e-3,
-        ip_scale=1.0,
-        pe_lora_enabled=False,
     )
 
 
@@ -68,7 +50,6 @@ def _make_easycontrol():
         b_cond_init=-10.0,
         cond_scale=1.0,
         apply_ffn_lora=True,
-        cond_token_count=8,
     )
 
 
@@ -80,14 +61,6 @@ CASES = [
         "soft_tokens",
         {"ss_num_tokens": "2", "ss_n_layers": "3", "ss_n_t_buckets": "8"},
         id="soft_tokens",
-    ),
-    pytest.param(
-        "ip_adapter",
-        _make_ip_adapter,
-        "networks.methods.ip_adapter",
-        "ip_adapter",
-        {"ss_num_ip_tokens": "4", "ss_num_blocks": "2", "ss_pe_lora_enabled": "False"},
-        id="ip_adapter",
     ),
     pytest.param(
         "easycontrol",
@@ -144,9 +117,7 @@ def test_save_metadata(label, factory, module, spec, extra_meta, tmp_path: Path)
 
 
 @pytest.mark.parametrize("label,factory,module,spec,extra_meta", CASES)
-def test_save_load_roundtrip(
-    label, factory, module, spec, extra_meta, tmp_path: Path
-):
+def test_save_load_roundtrip(label, factory, module, spec, extra_meta, tmp_path: Path):
     """Saving and reloading yields the same trainable tensors."""
     del module, spec, extra_meta
     net = factory()
@@ -165,9 +136,6 @@ def test_save_load_roundtrip(
     # Compare every persistent tensor that's present in both state dicts.
     a = {k: v for k, v in net.state_dict().items()}
     b = {k: v for k, v in fresh.state_dict().items()}
-    # ip_adapter drops _pe_inner.* from the file; that's intentional and
-    # the fresh instance starts with pe_lora_enabled=False so it has no such
-    # keys either.
     shared = set(a.keys()) & set(b.keys())
     assert shared, "no shared state_dict keys after round-trip"
     for k in shared:

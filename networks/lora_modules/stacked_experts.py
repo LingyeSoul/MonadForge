@@ -31,13 +31,12 @@ import torch
 from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
 from networks.lora_modules.router_state import (
-    _clear_routing_weights,
+    RouterStateMixin,
     _register_routing_weights_buffer,
-    _set_routing_weights,
 )
 
 
-class StackedExpertsLoRAModule(BaseLoRAModule):
+class StackedExpertsLoRAModule(RouterStateMixin, BaseLoRAModule):
     """Independent-A multi-expert LoRA, gated from a broadcast buffer.
 
     Free mode params: lora_down_weight (E, r, in), lora_up_weight (E, out, r).
@@ -150,11 +149,10 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
 
         _register_routing_weights_buffer(self, self.num_experts)
 
-    def set_routing_weights(self, weights: torch.Tensor) -> None:
-        _set_routing_weights(self, weights)
-
-    def clear_routing_weights(self) -> None:
-        _clear_routing_weights(self)
+    # set_routing_weights / clear_routing_weights inherited from
+    # RouterStateMixin (always-on here — ``_routing_weights`` is registered
+    # unconditionally above, so the mixin's ``hasattr`` guard never trips).
+    # set_sigma / set_fei are inherited too but no-op (no σ/FEI buffers).
 
     def _cayley_rotations(self):
         """Stacked S_q + S_p → one (2E, r, r) solve. Returns R_q, R_p (E, r, r)."""
@@ -204,15 +202,21 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
             mid = torch.einsum("ejr,...er->...j", R_p, lx)
             adapter = torch.nn.functional.linear(mid, self.P_basis)
         else:
-            # bf16 storage, fp32 bottleneck — matches Hydra free-mode.
-            x_lora = self._rebalance(x)
+            # Compute in the model dtype (``org_forwarded.dtype`` = the frozen
+            # base's output = the autocast/model dtype), not fp32. ``x`` arrives
+            # fp32 from the AdaLN LayerNorm under autocast(bf16); the old
+            # ``.float()`` operands materialized a full fp32 activation + weight
+            # copies (autocast re-cast the einsum to bf16 anyway) and OOMed. The
+            # expert weights are fp32 master, so cast x + weights DOWN here.
+            compute_dtype = org_forwarded.dtype
+            x_lora = self._rebalance(x.to(compute_dtype))
 
             # Batched down: (..., in) @ (E, r, in)^T → (..., E, r). Saves ONE
             # (..., E, r) activation vs E × (..., out) from a per-expert loop.
             lx = torch.einsum(
                 "...i,eri->...er",
-                x_lora.float(),
-                self.lora_down_weight.float(),
+                x_lora,
+                self.lora_down_weight.to(compute_dtype),
             )
 
             lx = lx * self._timestep_mask
@@ -222,10 +226,14 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
             B = w.shape[0]
             n_mid = lx.ndim - 3
             view_shape = (B,) + (1,) * n_mid + (self.num_experts, 1)
-            lx = lx * w.view(view_shape).float()
+            lx = lx * w.view(view_shape).to(compute_dtype)
 
             # Batched up: (..., E, r) @ (E, out, r)^T → (..., out).
-            adapter = torch.einsum("...er,eor->...o", lx, self.lora_up_weight.float())
+            adapter = torch.einsum(
+                "...er,eor->...o",
+                lx.to(compute_dtype),
+                self.lora_up_weight.to(compute_dtype),
+            )
 
         lora_out = adapter * self.multiplier * self.scale
         return org_forwarded + lora_out.to(org_forwarded.dtype)
@@ -301,10 +309,7 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
             lam_sqrt = lam_abs.sqrt()
 
             lora_down_weight = (
-                (Q_eff * lam_sqrt.unsqueeze(-1))
-                .to(save_dtype)
-                .cpu()
-                .contiguous()
+                (Q_eff * lam_sqrt.unsqueeze(-1)).to(save_dtype).cpu().contiguous()
             )
             lora_up_weight = (
                 (P_eff * (lam_sqrt * lam_sign).unsqueeze(1))
@@ -377,8 +382,7 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
                 (
                     k
                     for k in list(sd.keys())
-                    if k.startswith(f"{prefix}.lora_ups.")
-                    and k.endswith(".weight")
+                    if k.startswith(f"{prefix}.lora_ups.") and k.endswith(".weight")
                 ),
                 key=lambda k: int(
                     k.removeprefix(f"{prefix}.lora_ups.").removesuffix(".weight")
@@ -388,8 +392,7 @@ class StackedExpertsLoRAModule(BaseLoRAModule):
                 (
                     k
                     for k in list(sd.keys())
-                    if k.startswith(f"{prefix}.lora_downs.")
-                    and k.endswith(".weight")
+                    if k.startswith(f"{prefix}.lora_downs.") and k.endswith(".weight")
                 ),
                 key=lambda k: int(
                     k.removeprefix(f"{prefix}.lora_downs.").removesuffix(".weight")

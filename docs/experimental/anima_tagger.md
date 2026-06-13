@@ -88,7 +88,7 @@ ground — softens the long-tail without overshoot.
 
 | File | Role |
 |---|---|
-| `cli.py` | Argparse + 7-mode dispatcher (`build_vocab`, `build_features`, `build_resized`, `train`, `calibrate`, `predict`, `scan_role_markers`). Loads `anima_lora/.env` so `CAPTION_CORPUS_DIR` resolves before defaults are computed. |
+| `cli.py` | Argparse + 7-mode dispatcher (`build_vocab`, `build_features`, `build_resized`, `train`, `calibrate`, `predict`, `scan_role_markers`). Loads `.env` so `CAPTION_CORPUS_DIR` resolves before defaults are computed. |
 | `vocab.py` | Caption discovery, tag categorization (rating literal → `@` artist → count regex → `category_overrides` → tag cache → `general` fallback), `min_freq` cut, train/val split, manifest build, group resolution against the kept vocab, coverage scan. |
 | `caches.py` | `cmd_build_features` (pooled PE features → `.cache/pooled-pe/`) and `cmd_build_resized` (LANCZOS-resized uint8 images → `.cache/resized-pe/`). |
 | `train_cached.py` | Frozen-encoder fast path: full train/val features pushed to VRAM once, sliced by index — no DataLoader. |
@@ -102,7 +102,7 @@ ground — softens the long-tail without overshoot.
 ## Configuration via `.env`
 
 External corpus paths are routed via `CAPTION_CORPUS_DIR`. Add to
-`anima_lora/.env`:
+`.env`:
 
 ```
 CAPTION_CORPUS_DIR=/path/to/external/caption/corpus
@@ -359,7 +359,7 @@ scaffolding, or `Save Text File` for LoRA dataset pre-fill.
    each long-tail tag has 5–20 positives; calibrated thresholds for those
    tags are noisier than for high-frequency ones. `--min_freq 10` is a
    knob to revisit if F1 disappoints.
-3. **No bench harness yet.** `bench/anima_tagger/` per the standard
+3. **No bench harness yet.** An `anima_tagger` bench per the standard
    envelope (cf. `bench/_common.py::write_result`) is the next thing to
    add — should report F1 on a held-out set plus a downstream
    "edit-success-rate" metric on a small DirectEdit set.
@@ -378,5 +378,5 @@ scaffolding, or `Save Text File` for LoRA dataset pre-fill.
 2. **Embedding output instead of tag string.** `predict_caption` emits a
    string that gets re-tokenized by T5. We could add a head producing
    `[K, D_t5]` continuous tokens directly — but that's the img2emb design
-   (`docs/proposal/img2emb_plan.md`) and hits the same structural
+   (`_archive/proposals/img2emb_plan.md`) and hits the same structural
    challenges. Stick with tag-string output for now.

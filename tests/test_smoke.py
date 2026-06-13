@@ -34,9 +34,9 @@ def test_load_method_preset_resolves(method: str):
 
 
 def test_method_config_coverage():
-    # lora/tlora/tlora_rf/hydralora collapsed into lora.toml. (postfix was
+    # lora/tlora/hydralora collapsed into lora.toml. (postfix was
     # archived — see _archive/postfix/.)
-    expected = {"lora", "ip_adapter", "easycontrol"}
+    expected = {"lora", "easycontrol"}
     assert expected.issubset(set(METHOD_NAMES)), (
         f"expected {expected} in method configs, got {METHOD_NAMES}"
     )

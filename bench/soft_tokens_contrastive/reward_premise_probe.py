@@ -67,28 +67,29 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import re
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from bench._anima import add_common_args, build_anima
+from bench._anima import (
+    DEFAULT_DIT,
+    add_common_args,
+    build_anima,
+    discover_cached_pairs,
+)
 from bench._common import make_run_dir, write_result
 from library.io.cache import load_cached_crossattn_emb, load_cached_latents
 
 log = logging.getLogger("bench.soft_tokens_contrastive.reward_premise")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-DEFAULT_DIT = "models/diffusion_models/anima-base-v1.0.safetensors"
 DEFAULT_DATA = "post_image_dataset/lora"
 DEFAULT_INDEX = "post_image_dataset/captions/caption_index.json"
 # Mid-band σ where Anima still has caption-discriminable signal: x0 resolves by
 # σ≈0.45 (project_sigma_signal_resolves_by_045), and at σ→1 the latent is ~pure
 # noise so no caption can explain it — ranking there is expected to be chance.
 DEFAULT_SIGMAS = [0.15, 0.30, 0.45, 0.60, 0.75, 0.90]
-
-_RES_RE = re.compile(r"_(\d+)x(\d+)_anima\.npz$")
 
 
 # ── cached-pair discovery (recursive — caches are nested per-artist) ──────────
@@ -97,19 +98,14 @@ _RES_RE = re.compile(r"_(\d+)x(\d+)_anima\.npz$")
 def discover_pairs(data_dir: str) -> dict[str, tuple[str, str]]:
     """Map ``stem → (latent_npz, te_safetensors)`` for every paired cache.
 
-    ``discover_bucketed_samples`` is non-recursive and the lora cache is nested
-    by artist, so we rglob (mirrors probe_sigma_signal.discover_pairs). Returns
-    the *whole* pool so negatives can be drawn from stems that aren't anchors.
+    Thin wrapper over :func:`discover_cached_pairs` (recursive, TE-gated) — kept
+    as a named function so the *whole* pool is returned for negative sourcing.
     """
-    pairs: dict[str, tuple[str, str]] = {}
-    for p in sorted(Path(data_dir).rglob("*_anima.npz")):
-        m = _RES_RE.search(p.name)
-        if not m:
-            continue
-        stem = p.name[: m.start()]
-        te = p.parent / f"{stem}_anima_te.safetensors"
-        if te.exists():
-            pairs[stem] = (str(p), str(te))
+    pairs = {
+        c.stem: (c.npz_path, c.te_path)
+        for c in discover_cached_pairs(data_dir)
+        if c.te_path is not None
+    }
     if not pairs:
         raise SystemExit(f"no paired (latent, TE) caches under {data_dir}")
     return pairs

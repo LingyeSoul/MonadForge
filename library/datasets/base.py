@@ -4,7 +4,8 @@ import os
 import random
 import re
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import imagesize
 import numpy as np
@@ -67,6 +68,101 @@ def enable_high_vram():
     HIGH_VRAM = True
 
 
+def none_or_stack_elements(tensors_list, converter):
+    """Stack a list of per-sample tuples element-wise, or return None.
+
+    Each entry of ``tensors_list`` is a per-sample tuple/list of tensors (e.g.
+    the multi-output of a text encoder). Returns a list whose i-th entry stacks
+    the i-th element across all samples (right-padding ragged lengths with
+    zeros), or None when the batch carries no such outputs. Pure helper — closes
+    over nothing, hoisted out of ``BaseDataset.__getitem__``.
+    """
+    if (
+        len(tensors_list) == 0
+        or tensors_list[0] is None
+        or len(tensors_list[0]) == 0
+        or tensors_list[0][0] is None
+    ):
+        return None
+
+    result = []
+    for i in range(len(tensors_list[0])):
+        tensors = [x[i] for x in tensors_list]
+        if tensors[0] is None:
+            result.append(None)
+            continue
+        if tensors[0].ndim == 0:
+            result.append(torch.stack([converter(x[i]) for x in tensors_list]))
+            continue
+
+        min_len = min([len(x) for x in tensors])
+        max_len = max([len(x) for x in tensors])
+
+        if min_len == max_len:
+            result.append(torch.stack([converter(x) for x in tensors]))
+        else:
+            tensors = [converter(x) for x in tensors]
+            if tensors[0].ndim == 1:
+                result.append(
+                    torch.stack(
+                        [
+                            (torch.nn.functional.pad(x, (0, max_len - x.shape[0])))
+                            for x in tensors
+                        ]
+                    )
+                )
+            else:
+                result.append(
+                    torch.stack(
+                        [
+                            (
+                                torch.nn.functional.pad(
+                                    x, (0, 0, 0, max_len - x.shape[0])
+                                )
+                            )
+                            for x in tensors
+                        ]
+                    )
+                )
+    return result
+
+
+@dataclass
+class SidecarSpec:
+    """One per-image sidecar channel: a loader plus its batch collation policy.
+
+    Generalizes the load/append/stack/None dance that used to be hand-copied
+    per feature (inversion runs, BYG tuples, REPA PE). Register via
+    ``BaseDataset.register_sidecar``; ``__getitem__`` then owns the per-sample
+    loop and collation for every registered spec.
+
+    Policies:
+      - ``"all_or_nothing"``: ``example[out_key]`` is the stacked ``[B, ...]``
+        tensor when every sample in the batch loaded (and, with
+        ``uniform_shape``, all shapes match); ``None`` otherwise.
+      - ``"masked"``: missing samples get zero placeholders and
+        ``example[mask_key]`` carries a ``[B]`` bool validity mask; both keys
+        are ``None`` when no sample loaded.
+      - ``"dict"``: the loader returns a ``dict[str, Tensor]`` per sample;
+        every key present in *all* samples' dicts is stacked into
+        ``example[f"{out_key}{key}"]``. Nothing is emitted (keys absent, not
+        ``None``) unless all samples loaded.
+    """
+
+    name: str
+    loader: Callable[[ImageInfo], Optional[Any]]
+    out_key: str
+    policy: str = "all_or_nothing"
+    # Name of the dataset attribute gating this channel: truthy → active,
+    # ``None`` → always on. A plain attribute name (not a closure) keeps the
+    # spec picklable so the dataset can be shipped to DataLoader workers under
+    # Windows/`spawn` (a stored lambda raised "Can't get local object
+    # ...<locals>.<lambda>" at first iteration).
+    enabled_attr: Optional[str] = None
+    mask_key: Optional[str] = None
+    uniform_shape: bool = False
+
+
 class BaseDataset(torch.utils.data.Dataset):
     def __init__(
         self,
@@ -116,47 +212,83 @@ class BaseDataset(torch.utils.data.Dataset):
         self.inversion_dir: Optional[str] = None
         self.inversion_num_runs: int = 3
 
-        # IP-Adapter cached PE/vision features (sibling sidecars). Set via
-        # `dataset.ip_features_cache_to_disk = True; dataset.ip_features_encoder = "pe"`
-        # after construction. When enabled, __getitem__ loads
-        # ``{stem}_anima_{encoder}.safetensors`` for every image and exposes
-        # the stacked features as ``example["ip_features"]`` so train.py can
-        # skip live PE encoding (and the dataset can keep cache_latents=true).
-        self.ip_features_cache_to_disk: bool = False
-        self.ip_features_encoder: str = "pe"
-        # Force the cached-latent branches to ALSO load the source image into
-        # ``example["images"]`` (in addition to ``example["latents"]``). Used
-        # by IP-Adapter live PE encoding (PE-LoRA, or `cache_latents=true`
-        # alongside non-cached PE features) so VAE latents stay cached while
-        # the PE encoder gets a fresh image every step. Caller is responsible
-        # for ensuring `subset.random_crop=False` so the live image matches
-        # the deterministic crop baked into the cached latent.
-        self.force_load_images_for_ip: bool = False
+        # BYG unpaired-editing per-image text conditionings. Set via
+        # `dataset.byg_text_dir = ...` after construction; None disables. Loads
+        # <stem>_byg.safetensors holding the 4 role embeddings + masks (built by
+        # scripts/byg/build_edit_tuples.py).
+        self.byg_text_dir: Optional[str] = None
+        self._byg_roles = (
+            "src_caption",
+            "tgt_caption",
+            "instruction",
+            "reverse_instruction",
+        )
 
-        # IP-Adapter distinct-pair (identity) training. When an
-        # IdentityPairSampler is attached via ``setup_identity_pairs`` the
-        # reference fed to the IP path (``example["ip_features"]``) is decoupled
-        # from the VAE target: with probability ``ip_pair_prob`` a *different*
-        # image of the target's identity supplies the PE features, removing the
-        # self-pair copy shortcut. ``self`` (no sampler) = bit-identical legacy
-        # behavior. See docs/proposal/ip-adapter-identity-pairs.md.
-        self.identity_pair_sampler = None  # IdentityPairSampler | None
-        self.ip_pair_prob: float = 0.8
-        self.ip_pair_caption_strip_p: float = 0.0
-        self.ip_pair_is_validation: bool = False
-        self._ip_pair_strip_warned: bool = False
+        # REPA v2 PE feature loading. Set via `dataset.load_repa_pe = True`
+        # (+ `repa_pe_encoder`) after construction; off disables. Loads the
+        # cached {stem}_anima_{encoder}.safetensors patch tokens into
+        # batch["repa_pe_features"] for REPAMethodAdapter. Sidecar resolution
+        # walks a fallback chain (TE-cache dir → subset latent-cache dir →
+        # image dir) — see _repa_pe_sidecar_candidates.
+        self.load_repa_pe: bool = False
+        self.repa_pe_encoder: str = "pe_spatial"
 
         # Soft-tokens contrastive negatives. When a sampler is attached via
         # ``setup_contrastive_negatives`` each example carries
         # ``neg_crossattn_emb`` of shape (B, k, S, D): k cached text embeddings
         # of *unrelated* images, used as InfoNCE negatives. Reuses the
         # IdentityPairSampler's ``shuffled`` policy (Phase 1). Decoupled from the
-        # VAE target — same cached-feature-swap trick as IP-Adapter pairs, but
-        # the swapped feature is the text embedding, not the PE feature. See
+        # VAE target — an unrelated stem's cached feature replaces the target's,
+        # but the swapped feature is the text embedding, not a vision feature. See
         # docs/proposal/soft_tokens_contrastive.md.
         self.contrastive_neg_sampler = None  # IdentityPairSampler | None
         self.contrastive_neg_k: int = 1
         self.contrastive_neg_mode: str = "shuffled"
+
+        # Per-image sidecar registry: each spec bundles a loader with its batch
+        # collation policy, so a new sidecar channel is one register_sidecar()
+        # call instead of a hand-copied loop/stack/None dance in __getitem__.
+        # The toggles above (inversion_dir / byg_text_dir / load_repa_pe) stay
+        # the public enable surface; `enabled` closures read them live. The
+        # soft-tokens contrastive negatives stay bespoke — they are drawn by a
+        # sampler from *other* stems, not loaded from a per-image file.
+        self._sidecar_specs: List[SidecarSpec] = []
+        # Loaders are bound methods (not lambdas) and `enabled_attr` names a
+        # dataset attribute rather than capturing one in a closure, so every
+        # spec pickles cleanly for Windows/`spawn` DataLoader workers.
+        self.register_sidecar(
+            SidecarSpec(
+                name="inversion_runs",
+                loader=self._try_load_inversion_runs,
+                out_key="inversion_runs",
+                policy="masked",
+                mask_key="inversion_mask",
+                enabled_attr="inversion_dir",
+            )
+        )
+        self.register_sidecar(
+            SidecarSpec(
+                name="byg",
+                loader=self._try_load_byg_tuple,
+                out_key="byg_",
+                policy="dict",
+                enabled_attr="byg_text_dir",
+            )
+        )
+        self.register_sidecar(
+            SidecarSpec(
+                name="repa_pe",
+                loader=self._try_load_repa_pe,
+                out_key="repa_pe_features",
+                policy="all_or_nothing",
+                # All samples in a bucket share the latent resolution → same
+                # aspect → same encoder bucket, so equal token counts are the
+                # norm; the shape guard skips the term on the rare
+                # aspect-rounding edge instead of crashing the epoch.
+                uniform_shape=True,
+                enabled_attr="load_repa_pe",
+            )
+        )
 
         # caching
         self.caching_mode = None  # None, 'latents', 'text'
@@ -310,9 +442,6 @@ class BaseDataset(torch.utils.data.Dataset):
                         for t in caption.strip().split(subset.caption_separator)
                     ]
                     flex_tokens = tokens[:]
-                    if subset.keep_tokens > 0:
-                        fixed_tokens = flex_tokens[: subset.keep_tokens]
-                        flex_tokens = tokens[subset.keep_tokens :]
 
                 if subset.token_warmup_step < 1:
                     subset.token_warmup_step = math.floor(
@@ -425,12 +554,15 @@ class BaseDataset(torch.utils.data.Dataset):
         self.image_data[info.image_key] = info
         self.image_to_subset[info.image_key] = subset
 
-    def make_buckets(self, constant_token_buckets: bool = False):
+    def make_buckets(self, constant_token_buckets: bool = False, target_res=None):
         """Assign every image to its nearest bucket resolution.
 
         With ``constant_token_buckets`` (the only training mode) buckets come
-        from the fixed ``CONSTANT_TOKEN_BUCKETS`` table — native shapes, no
-        padding.
+        from the full native-shape catalog (``all_constant_token_buckets`` — every
+        tier), so every cached latent exact-matches its true (W, H) and nothing
+        AR-snaps. ``target_res`` is preprocess-only and inert here: the on-disk
+        caches decide which tiers are present, and the compile token-family budget
+        is derived from the populated buckets (train.py), not from this arg.
         """
         logger.info("loading image sizes.")
         for info in tqdm(self.image_data.values()):
@@ -439,10 +571,16 @@ class BaseDataset(torch.utils.data.Dataset):
 
         logger.info("make buckets")
 
+        # Remember the mode + tier set so a later rebuild (e.g.
+        # restrict_to_byg_tuples) re-buckets identically.
+        self._constant_token_buckets = constant_token_buckets
+        self._target_res = target_res
+
         if self.bucket_manager is None:
             self.bucket_manager = BucketManager()
             self.bucket_manager.make_buckets(
-                constant_token_buckets=constant_token_buckets
+                constant_token_buckets=constant_token_buckets,
+                target_res=target_res,
             )
 
         img_ar_errors = []
@@ -548,31 +686,47 @@ class BaseDataset(torch.utils.data.Dataset):
         self._largest_bucket_first()
 
     def _largest_bucket_first(self):
-        """Pin one batch of the highest-token-count bucket to the front of the
-        epoch order.
+        """Pin one batch of EACH token-count family to the front of the epoch
+        order, largest-token-first.
 
-        With native-shape buckets each distinct token count traces its own
-        ``torch.compile`` block graph, and the largest
-        bucket also carries the biggest activations. Front-loading it forces
-        that worst-case graph compile + peak allocation onto step 0, so a
-        too-tight VRAM budget fails fast at start instead of OOMing mid-epoch
-        when the big bucket happens to come up in the shuffle. Only the first
-        batch is reordered; the rest of the epoch stays randomly shuffled.
+        Under native-shape bucketing each distinct token count traces its own
+        ``torch.compile`` block graph. The first time a graph runs it both peaks
+        the caching-allocator activations AND loads its inductor kernel module +
+        cuBLAS/cuDNN/flash workspaces into the CUDA context (the latter is
+        ``nvidia-smi``-visible but invisible to ``torch.cuda.memory_reserved``).
+        Front-loading only the single biggest bucket warms one graph; the others
+        compile lazily as the shuffle reaches them, so context VRAM ramps up
+        ~mid-epoch then plateaus. Warming one batch of every family up front
+        forces all graphs to compile in the first few steps — peak (allocator +
+        context) lands at start, so a too-tight budget fails fast instead of
+        creeping up mid-run. See [[project_compile_context_vram_climb]].
+
+        Equal token count ⟺ equal pixel area (each native bucket exactly fills
+        its count), so distinct areas == distinct graph families. Only the
+        leading batches are reordered; the rest of the epoch stays shuffled.
         """
         if not self.buckets_indices:
             return
-        # resos are (W, H); pixel area is the token-count proxy.
-        if getattr(self, "_largest_bucket_index", None) is None:
+        # resos are (W, H); pixel area uniquely keys each token-count family.
+        if getattr(self, "_warmup_bucket_indices", None) is None:
             resos = self.bucket_manager.resos
-            present = {bbi.bucket_index for bbi in self.buckets_indices}
-            self._largest_bucket_index = max(
-                present, key=lambda bi: resos[bi][0] * resos[bi][1]
-            )
-        for i, bbi in enumerate(self.buckets_indices):
-            if bbi.bucket_index == self._largest_bucket_index:
-                if i:
-                    self.buckets_indices.insert(0, self.buckets_indices.pop(i))
-                return
+            by_area: dict[int, int] = {}
+            for bbi in self.buckets_indices:
+                bi = bbi.bucket_index
+                area = resos[bi][0] * resos[bi][1]
+                by_area.setdefault(area, bi)  # one representative per family
+            # Largest-token (largest-area) family first.
+            self._warmup_bucket_indices = [
+                by_area[a] for a in sorted(by_area, reverse=True)
+            ]
+        # Move one batch of each family to the front. Iterate smallest-first and
+        # insert at 0 so the largest family ends up at index 0 (worst case first).
+        for target in reversed(self._warmup_bucket_indices):
+            for i, bbi in enumerate(self.buckets_indices):
+                if bbi.bucket_index == target:
+                    if i:
+                        self.buckets_indices.insert(0, self.buckets_indices.pop(i))
+                    break
 
     def is_latent_cacheable(self):
         return all(
@@ -888,9 +1042,15 @@ class BaseDataset(torch.utils.data.Dataset):
             subset = self.image_to_subset.get(info.image_key)
             # check disk cache exists and size of text encoder outputs
             if caching_strategy.cache_to_disk:
+                # text_cache_dir (when set) redirects only the TE cache —
+                # latents still resolve under cache_dir. Lets colorization read
+                # re-encoded color-only captions without re-caching latents.
                 te_out_npz = caching_strategy.get_outputs_npz_path(
                     info.absolute_path,
-                    cache_dir=getattr(subset, "cache_dir", None),
+                    cache_dir=(
+                        getattr(subset, "text_cache_dir", None)
+                        or getattr(subset, "cache_dir", None)
+                    ),
                     image_dir=getattr(subset, "image_dir", None),
                 )
                 info.text_encoder_outputs_npz = te_out_npz
@@ -1290,10 +1450,12 @@ class BaseDataset(torch.utils.data.Dataset):
             raise FileNotFoundError(
                 f"Condition latent cache missing for {image_info.absolute_path!r}: "
                 f"{npz_path}. Run the cond prep step first "
-                f"(e.g. `make exp-easycontrol-preprocess EASYADAPTER=colorize`)."
+                f"(e.g. `make easycontrol-preprocess EASYADAPTER=colorize`)."
             )
-        cond, _, _, cond_flipped, _ = self.latents_caching_strategy.load_latents_from_disk(
-            npz_path, image_info.bucket_reso
+        cond, _, _, cond_flipped, _ = (
+            self.latents_caching_strategy.load_latents_from_disk(
+                npz_path, image_info.bucket_reso
+            )
         )
         if flipped:
             if cond_flipped is None:
@@ -1386,9 +1548,9 @@ class BaseDataset(torch.utils.data.Dataset):
         self, stem: str, subset, rel_dir: str
     ) -> Optional[torch.Tensor]:
         """Load a *negative* stem's cached text embedding (post-LLM-adapter
-        ``crossattn_emb``) by reconstructing its nested cache path. Mirrors
-        ``_load_ip_features_for_stem`` but swaps the PE feature for the TE
-        feature (``{stem}_anima_te.safetensors``). Returns ``(S, D)`` or None."""
+        ``crossattn_emb``) by reconstructing its nested cache path
+        (``cache_dir/<rel_dir>/<stem>_anima_te.safetensors``, with a flat
+        fallback). Returns ``(S, D)`` or None."""
         from safetensors import safe_open
 
         suffix = "_anima_te.safetensors"
@@ -1416,24 +1578,48 @@ class BaseDataset(torch.utils.data.Dataset):
             f"requires cache_llm_adapter_outputs=true. Re-run `make preprocess-te`."
         )
 
-    @staticmethod
-    def _strip_identity_tags(caption: str, meta: dict) -> str:
-        """Drop the target's character/copyright tags from a comma-separated
-        caption (case-insensitive), so identity must flow through the IP image
-        path rather than the text. Leaves all other tags (incl. artist) intact.
-        No-op when ``caption`` carries no comma structure or no identity tag
-        matches."""
-        drop = {
-            t.strip().lower()
-            for t in (meta.get("character", []) + meta.get("copyright", []))
-            if t.strip()
-        }
-        if not drop or "," not in caption:
-            return caption
-        kept = [tok for tok in caption.split(",") if tok.strip().lower() not in drop]
-        return ",".join(kept)
+    def register_sidecar(self, spec: SidecarSpec) -> None:
+        """Attach a per-image sidecar channel (see ``SidecarSpec``)."""
+        self._sidecar_specs.append(spec)
 
-    def _try_load_inversion_runs(self, image_abs_path: str) -> Optional[torch.Tensor]:
+    @staticmethod
+    def _collate_sidecar(
+        spec: SidecarSpec, values: List[Optional[Any]], example: dict
+    ) -> None:
+        loaded = bool(values) and all(v is not None for v in values)
+        if spec.policy == "masked":
+            valid = [v for v in values if v is not None]
+            if valid:
+                ref_shape = valid[0].shape
+                example[spec.out_key] = torch.stack(
+                    [
+                        v
+                        if v is not None
+                        else torch.zeros(ref_shape, dtype=torch.float32)
+                        for v in values
+                    ],
+                    dim=0,
+                )
+                example[spec.mask_key] = torch.tensor(
+                    [v is not None for v in values], dtype=torch.bool
+                )
+            else:
+                example[spec.out_key] = None
+                example[spec.mask_key] = None
+        elif spec.policy == "dict":
+            if loaded:
+                for key in values[0]:
+                    if all(key in v for v in values):
+                        example[f"{spec.out_key}{key}"] = torch.stack(
+                            [v[key] for v in values], dim=0
+                        )
+        else:  # "all_or_nothing"
+            ok = loaded
+            if ok and spec.uniform_shape:
+                ok = len({tuple(v.shape) for v in values}) == 1
+            example[spec.out_key] = torch.stack(values, dim=0) if ok else None
+
+    def _try_load_inversion_runs(self, info: ImageInfo) -> Optional[torch.Tensor]:
         """Load <stem>_inverted_run{0..N-1}.safetensors from self.inversion_dir.
 
         Returns a [N_runs, S, D] tensor, or None if any of the expected runs is missing
@@ -1441,7 +1627,7 @@ class BaseDataset(torch.utils.data.Dataset):
         """
         if not self.inversion_dir:
             return None
-        stem = os.path.splitext(os.path.basename(image_abs_path))[0]
+        stem = os.path.splitext(os.path.basename(info.absolute_path))[0]
         from safetensors.torch import load_file
 
         runs = []
@@ -1456,32 +1642,280 @@ class BaseDataset(torch.utils.data.Dataset):
             runs.append(t.float())
         return torch.stack(runs, dim=0)  # [N_runs, S, D]
 
-    def _load_image_at_bucket(self, subset, image_info, flipped: bool) -> torch.Tensor:
-        """Reload the source image at bucket resolution for IP-Adapter live
-        PE encoding alongside cached latents.
+    def _repa_pe_sidecar_candidates(self, info: ImageInfo) -> List[str]:
+        """Candidate paths for the ``{stem}_anima_{encoder}.safetensors``
+        sidecar, in resolution order (issues.md P2.2):
 
-        Skips augmentation, alpha-mask, and face-crop logic — those are
-        already baked into the cached latent. PE will resize to its own
-        bucket on the GPU side, so we only need a tensor that matches the
-        latent's spatial alignment (resize to bucket + flip if the latent
-        is its flipped variant).
+        1. next to the TE cache (the common case — TE and PE caches share
+           ``subset.cache_dir``, and the TE npz path already encodes any
+           nested-subdir mirroring),
+        2. the subset latent-cache dir, replicating the writer's nesting rule
+           (``make preprocess-pe`` resolves via ``resolve_cache_path`` with
+           ``cache_dir``+``image_dir``) — needed when ``text_cache_dir``
+           redirects only the TE cache (colorize) so candidate 1 lands in a
+           directory with no sidecars,
+        3. next to the image (legacy no-cache_dir layout).
         """
-        from library.datasets.image_utils import trim_and_resize_if_required
+        stem = os.path.splitext(os.path.basename(info.absolute_path))[0]
+        name = f"{stem}_anima_{self.repa_pe_encoder}.safetensors"
+        candidates: List[str] = []
+        if info.text_encoder_outputs_npz:
+            candidates.append(
+                os.path.join(os.path.dirname(info.text_encoder_outputs_npz), name)
+            )
+        subset = self.image_to_subset.get(info.image_key)
+        cache_dir = getattr(subset, "cache_dir", None) if subset is not None else None
+        if cache_dir:
+            from library.io.cache import resolve_cache_path
 
-        img, _, _, _, _ = self.load_image_with_face_info(
-            subset, image_info.absolute_path, subset.alpha_mask
+            candidates.append(
+                resolve_cache_path(
+                    info.absolute_path,
+                    f"_anima_{self.repa_pe_encoder}.safetensors",
+                    cache_dir=cache_dir,
+                    image_dir=getattr(subset, "image_dir", None),
+                )
+            )
+        candidates.append(os.path.join(os.path.dirname(info.absolute_path), name))
+        return list(dict.fromkeys(candidates))
+
+    def _try_load_repa_pe(self, info: ImageInfo) -> Optional[torch.Tensor]:
+        """Load cached ``{stem}_anima_{encoder}.safetensors`` patch tokens.
+
+        Returns the ``[T, d_enc]`` feature tensor (CLS still at index 0), or
+        None when loading is off / the sidecar is missing (the adapter then
+        skips the REPA term for that batch). Resolution walks the fallback
+        chain in ``_repa_pe_sidecar_candidates`` because the TE cache can be
+        redirected away from where ``make preprocess-pe`` wrote the sidecar
+        (``text_cache_dir`` — colorize). Mirrors
+        ``library.training.cmmd.resolve_pe_sidecar`` for candidate 1.
+        """
+        if not self.load_repa_pe:
+            return None
+        for p in self._repa_pe_sidecar_candidates(info):
+            if not os.path.exists(p):
+                continue
+            from safetensors.torch import load_file
+
+            sd = load_file(p)
+            feats = sd.get("image_features")
+            return feats.float() if feats is not None else None
+        return None
+
+    def restrict_to_byg_tuples(self) -> tuple[int, int]:
+        """Drop images lacking a BYG edit-tuple sidecar, then rebuild buckets.
+
+        ``build_edit_tuples`` only emits a ``<stem>_byg.safetensors`` for captions
+        containing a swappable tag (v1: a color word); images without one carry no
+        BYG training signal. Collation silently omits ``byg_*_emb`` whenever *any*
+        sample in a bucket-batch lacks a tuple (see ``__getitem__``), so the
+        adapter raises mid-epoch the first time such a batch is drawn. Filtering
+        the registry up front guarantees every batch is fully-tupled.
+
+        Returns ``(kept, dropped)`` image counts.
+        """
+        if not self.byg_text_dir:
+            return (0, 0)
+        kept: Dict[str, ImageInfo] = {}
+        dropped = 0
+        for key, info in self.image_data.items():
+            stem = os.path.splitext(os.path.basename(info.absolute_path))[0]
+            p = os.path.join(self.byg_text_dir, f"{stem}_byg.safetensors")
+            if os.path.exists(p):
+                kept[key] = info
+            else:
+                dropped += 1
+        if dropped == 0:
+            return (len(kept), 0)
+        self.image_data = kept
+        # Keep the repeat-weighted train-image count in sync (matches the
+        # num_repeats * num_images definition in DreamBoothDataset).
+        self.num_train_images = sum(info.num_repeats for info in kept.values())
+        # bucket_manager.add_image accumulates, so reset before re-bucketing.
+        self.bucket_manager = None
+        self.make_buckets(
+            constant_token_buckets=getattr(self, "_constant_token_buckets", True),
+            target_res=getattr(self, "_target_res", None),
         )
-        img, _, _ = trim_and_resize_if_required(
-            False,  # force deterministic crop — must match the cached latent
-            img,
-            image_info.bucket_reso,
-            image_info.resized_size,
-            resize_interpolation=image_info.resize_interpolation,
+        return (len(kept), dropped)
+
+    def _try_load_byg_tuple(self, info: ImageInfo) -> Optional[dict]:
+        """Load <stem>_byg.safetensors from self.byg_text_dir.
+
+        Returns ``{f"{role}_emb": Tensor[S,D], f"{role}_mask": Tensor[S]}`` for
+        the four edit-tuple roles, or None if the sidecar is missing / malformed
+        (the BYG adapter raises a clear error if a sample lacks its tuple).
+        """
+        if not self.byg_text_dir:
+            return None
+        stem = os.path.splitext(os.path.basename(info.absolute_path))[0]
+        from safetensors.torch import load_file
+
+        p = os.path.join(self.byg_text_dir, f"{stem}_byg.safetensors")
+        if not os.path.exists(p):
+            return None
+        sd = load_file(p)
+        out = {}
+        for role in self._byg_roles:
+            emb = sd.get(f"{role}_emb")
+            if emb is None:
+                return None
+            out[f"{role}_emb"] = emb.float()
+            mask = sd.get(f"{role}_mask")
+            if mask is not None:
+                out[f"{role}_mask"] = mask
+        return out
+
+    def _load_sample(self, subset, image_info, flipped):
+        """Load one sample's pixels-or-latents plus its alpha mask.
+
+        Serves from the in-memory or npz latent cache when present, otherwise
+        decodes the image from disk (with crop/resize, color aug, and mask
+        resolution). Honors ``flipped`` throughout and applies the
+        ``preloaded_alpha_mask`` override (mask_dir is the source of truth).
+
+        Returns ``(image, latents, alpha_mask, original_size, crop_ltrb)``;
+        exactly one of ``image`` / ``latents`` is non-None.
+        """
+        if image_info.latents is not None:
+            original_size = image_info.latents_original_size
+            crop_ltrb = image_info.latents_crop_ltrb
+            if not flipped:
+                latents = image_info.latents
+                alpha_mask = image_info.alpha_mask
+            else:
+                latents = image_info.latents_flipped
+                alpha_mask = (
+                    None
+                    if image_info.alpha_mask is None
+                    else torch.flip(image_info.alpha_mask, [1])
+                )
+
+            image = None
+        elif image_info.latents_npz is not None:
+            latents, original_size, crop_ltrb, flipped_latents, alpha_mask = (
+                self.latents_caching_strategy.load_latents_from_disk(
+                    image_info.latents_npz, image_info.bucket_reso
+                )
+            )
+            if flipped:
+                latents = flipped_latents
+                alpha_mask = None if alpha_mask is None else alpha_mask[:, ::-1].copy()
+                del flipped_latents
+            latents = torch.FloatTensor(latents)
+            if alpha_mask is not None:
+                alpha_mask = torch.FloatTensor(alpha_mask)
+
+            image = None
+        else:
+            img, _, _, _, _ = self.load_image_with_face_info(
+                subset, image_info.absolute_path, subset.alpha_mask
+            )
+
+            img, original_size, crop_ltrb = trim_and_resize_if_required(
+                subset.random_crop,
+                img,
+                image_info.bucket_reso,
+                image_info.resized_size,
+                resize_interpolation=image_info.resize_interpolation,
+            )
+
+            aug = self.aug_helper.get_augmentor(subset.color_aug)
+            if aug is not None:
+                img_rgb = img[:, :, :3]
+                img_rgb = aug(image=img_rgb)["image"]
+                img[:, :, :3] = img_rgb
+
+            if flipped:
+                img = img[:, ::-1, :].copy()
+
+            if image_info.mask_path is not None:
+                if image_info.preloaded_alpha_mask is not None:
+                    # Will be filled in by the post-branch override below.
+                    alpha_mask = None
+                else:
+                    from library.datasets.image_utils import load_mask_from_dir
+
+                    alpha_mask = load_mask_from_dir(
+                        os.path.dirname(image_info.mask_path),
+                        image_info.absolute_path,
+                        (img.shape[1], img.shape[0]),
+                    )
+                    if alpha_mask is None:
+                        alpha_mask = torch.ones(
+                            (img.shape[0], img.shape[1]), dtype=torch.float32
+                        )
+                    if flipped:
+                        alpha_mask = torch.flip(alpha_mask, [1])
+            elif subset.alpha_mask:
+                if img.shape[2] == 4:
+                    alpha_mask = img[:, :, 3]
+                    alpha_mask = alpha_mask.astype(np.float32) / 255.0
+                    alpha_mask = torch.FloatTensor(alpha_mask)
+                else:
+                    alpha_mask = torch.ones(
+                        (img.shape[0], img.shape[1]), dtype=torch.float32
+                    )
+            else:
+                alpha_mask = None
+
+            img = img[:, :, :3]
+
+            latents = None
+            image = self.image_transforms(img)
+            del img
+
+        if image_info.preloaded_alpha_mask is not None:
+            # mask_dir is the source of truth: override any alpha_mask coming
+            # from the latent cache (npz / in-memory) or the raw-image branch.
+            alpha_mask = image_info.preloaded_alpha_mask.float() / 255.0
+            if flipped:
+                alpha_mask = torch.flip(alpha_mask, [1])
+
+        return image, latents, alpha_mask, original_size, crop_ltrb
+
+    def _draw_contrastive_negatives(self, target_stem, subset):
+        """Draw k soft-tokens contrastive negatives for one target, or (None, None).
+
+        Draws k unrelated stems and loads their cached text embeddings.
+        Deterministic per target on the rare chance this dataset is used for
+        validation; random in training. Returns ``(neg_crossattn, neg_jaccard)``
+        — a (k, S, D) stack of negative embeddings and, in jaccard mode, a (k,)
+        tag-overlap weight vector. Either is None when no sampler is attached,
+        the target is absent from the index, or k distinct negatives couldn't be
+        reached (the adapter then skips the contrastive forward).
+        """
+        neg_sampler = self.contrastive_neg_sampler
+        if neg_sampler is None or not neg_sampler.has(target_stem):
+            return None, None
+
+        k = self.contrastive_neg_k
+        mode = self.contrastive_neg_mode
+        nrng = random.Random(self.seed ^ (hash(target_stem) & 0xFFFFFFFF))
+        neg_feats: List[torch.Tensor] = []
+        neg_jacc: List[float] = []
+        for _ in range(k):
+            neg_stem, _lvl = neg_sampler.draw(target_stem, mode, nrng)
+            if neg_stem == target_stem:
+                continue  # no distinct negative reachable
+            feat = self._load_te_for_stem(
+                neg_stem, subset, neg_sampler.rel_dir(neg_stem)
+            )
+            if feat is not None:
+                neg_feats.append(feat)
+                neg_jacc.append(
+                    neg_sampler.tag_jaccard(target_stem, neg_stem)
+                    if mode == "jaccard"
+                    else 0.0
+                )
+        ok = len(neg_feats) == k
+        neg_crossattn = torch.stack(neg_feats, dim=0) if ok else None
+        neg_jaccard = (
+            torch.tensor(neg_jacc, dtype=torch.float32)
+            if (ok and mode == "jaccard")
+            else None
         )
-        if flipped:
-            img = img[:, ::-1, :].copy()
-        img = img[:, :, :3]
-        return self.image_transforms(img)
+        return neg_crossattn, neg_jaccard
 
     def __getitem__(self, index):
         bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
@@ -1517,6 +1951,10 @@ class BaseDataset(torch.utils.data.Dataset):
         neg_crossattn_list: List[Optional[torch.Tensor]] = []
         # Per-image (k,) tag-overlap weights for jaccard mode; None otherwise.
         neg_jaccard_list: List[Optional[torch.Tensor]] = []
+        # Registered per-image sidecars (inversion runs, BYG tuples, REPA PE…).
+        sidecar_values: Dict[str, List[Optional[Any]]] = {
+            spec.name: [] for spec in self._sidecar_specs
+        }
 
         for image_key in bucket[image_index : image_index + bucket_batch_size]:
             image_info = self.image_data[image_key]
@@ -1529,112 +1967,15 @@ class BaseDataset(torch.utils.data.Dataset):
 
             flipped = subset.flip_aug and random.random() < 0.5
 
-            if image_info.latents is not None:
-                original_size = image_info.latents_original_size
-                crop_ltrb = image_info.latents_crop_ltrb
-                if not flipped:
-                    latents = image_info.latents
-                    alpha_mask = image_info.alpha_mask
-                else:
-                    latents = image_info.latents_flipped
-                    alpha_mask = (
-                        None
-                        if image_info.alpha_mask is None
-                        else torch.flip(image_info.alpha_mask, [1])
-                    )
-
-                if self.force_load_images_for_ip:
-                    image = self._load_image_at_bucket(subset, image_info, flipped)
-                else:
-                    image = None
-            elif image_info.latents_npz is not None:
-                latents, original_size, crop_ltrb, flipped_latents, alpha_mask = (
-                    self.latents_caching_strategy.load_latents_from_disk(
-                        image_info.latents_npz, image_info.bucket_reso
-                    )
-                )
-                if flipped:
-                    latents = flipped_latents
-                    alpha_mask = (
-                        None if alpha_mask is None else alpha_mask[:, ::-1].copy()
-                    )
-                    del flipped_latents
-                latents = torch.FloatTensor(latents)
-                if alpha_mask is not None:
-                    alpha_mask = torch.FloatTensor(alpha_mask)
-
-                if self.force_load_images_for_ip:
-                    image = self._load_image_at_bucket(subset, image_info, flipped)
-                else:
-                    image = None
-            else:
-                img, _, _, _, _ = self.load_image_with_face_info(
-                    subset, image_info.absolute_path, subset.alpha_mask
-                )
-
-                img, original_size, crop_ltrb = trim_and_resize_if_required(
-                    subset.random_crop,
-                    img,
-                    image_info.bucket_reso,
-                    image_info.resized_size,
-                    resize_interpolation=image_info.resize_interpolation,
-                )
-
-                aug = self.aug_helper.get_augmentor(subset.color_aug)
-                if aug is not None:
-                    img_rgb = img[:, :, :3]
-                    img_rgb = aug(image=img_rgb)["image"]
-                    img[:, :, :3] = img_rgb
-
-                if flipped:
-                    img = img[:, ::-1, :].copy()
-
-                if image_info.mask_path is not None:
-                    if image_info.preloaded_alpha_mask is not None:
-                        # Will be filled in by the post-branch override below.
-                        alpha_mask = None
-                    else:
-                        from library.datasets.image_utils import load_mask_from_dir
-
-                        alpha_mask = load_mask_from_dir(
-                            os.path.dirname(image_info.mask_path),
-                            image_info.absolute_path,
-                            (img.shape[1], img.shape[0]),
-                        )
-                        if alpha_mask is None:
-                            alpha_mask = torch.ones(
-                                (img.shape[0], img.shape[1]), dtype=torch.float32
-                            )
-                        if flipped:
-                            alpha_mask = torch.flip(alpha_mask, [1])
-                elif subset.alpha_mask:
-                    if img.shape[2] == 4:
-                        alpha_mask = img[:, :, 3]
-                        alpha_mask = alpha_mask.astype(np.float32) / 255.0
-                        alpha_mask = torch.FloatTensor(alpha_mask)
-                    else:
-                        alpha_mask = torch.ones(
-                            (img.shape[0], img.shape[1]), dtype=torch.float32
-                        )
-                else:
-                    alpha_mask = None
-
-                img = img[:, :, :3]
-
-                latents = None
-                image = self.image_transforms(img)
-                del img
-
-            if image_info.preloaded_alpha_mask is not None:
-                # mask_dir is the source of truth: override any alpha_mask coming
-                # from the latent cache (npz / in-memory) or the raw-image branch.
-                alpha_mask = image_info.preloaded_alpha_mask.float() / 255.0
-                if flipped:
-                    alpha_mask = torch.flip(alpha_mask, [1])
+            image, latents, alpha_mask, original_size, crop_ltrb = self._load_sample(
+                subset, image_info, flipped
+            )
 
             images.append(image)
             latents_list.append(latents)
-            cond_latents_list.append(self._load_cond_latent(subset, image_info, flipped))
+            cond_latents_list.append(
+                self._load_cond_latent(subset, image_info, flipped)
+            )
             alpha_mask_list.append(alpha_mask)
 
             target_size = (
@@ -1653,73 +1994,16 @@ class BaseDataset(torch.utils.data.Dataset):
             target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
             flippeds.append(flipped)
 
-            # IP-Adapter distinct-pair resolution. Decide which stem's PE
-            # features feed the IP path (decoupled from this VAE target), and
-            # whether to strip the target's identity tokens from the caption so
-            # the identity has to flow through the image path, not the text.
-            ip_ref_stem, ip_ref_subset, ip_ref_reldir = (
-                None,
-                subset,
-                "",
-            )
-            ip_shuffled_stem = None
-            strip_identity = False
-            sampler = self.identity_pair_sampler
             target_stem = os.path.splitext(os.path.basename(image_info.absolute_path))[
                 0
             ]
-            if (
-                sampler is not None
-                and self.ip_features_cache_to_disk
-                and sampler.has(target_stem)
-            ):
-                if self.ip_pair_is_validation:
-                    # Deterministic per target so the matched/shuffled deltas
-                    # are stable across epochs (the held-out gate).
-                    drng = random.Random(self.seed ^ (hash(target_stem) & 0xFFFFFFFF))
-                    ip_ref_stem, _ = sampler.resolve(target_stem, drng)
-                    ip_shuffled_stem, _ = sampler.shuffled(target_stem, drng)
-                else:
-                    if random.random() < self.ip_pair_prob:
-                        ip_ref_stem, _ = sampler.resolve(target_stem, random)
-                    else:
-                        ip_ref_stem = target_stem  # self-pair in the mix
-                    strip_identity = (
-                        ip_ref_stem != target_stem
-                        and self.ip_pair_caption_strip_p > 0.0
-                        and random.random() < self.ip_pair_caption_strip_p
-                    )
-                if ip_ref_stem and ip_ref_stem != target_stem:
-                    ip_ref_reldir = sampler.rel_dir(ip_ref_stem)
 
             caption = image_info.caption
-            if strip_identity:
-                caption = self._strip_identity_tags(
-                    caption, sampler.image_meta.get(target_stem, {})
-                )
 
             tokenization_required = (
                 self.text_encoder_output_caching_strategy is None
                 or self.text_encoder_output_caching_strategy.is_partial
             )
-            # The caption-leakage strip only reaches the model when captions
-            # are tokenized live. With cached TE outputs the model reads the
-            # full (identity-bearing) embedding regardless, so the strip is
-            # inert — warn once instead of silently doing nothing.
-            if (
-                sampler is not None
-                and not self.ip_pair_is_validation
-                and self.ip_pair_caption_strip_p > 0.0
-                and not tokenization_required
-                and image_info.text_encoder_outputs_npz is not None
-                and not self._ip_pair_strip_warned
-            ):
-                self._ip_pair_strip_warned = True
-                logger.warning(
-                    "[ip-pair] ip_pair_caption_strip_p>0 but text-encoder "
-                    "outputs are cached — the strip is inert. Set "
-                    "cache_text_encoder_outputs=false for the guard to take effect."
-                )
             text_encoder_outputs = None
             input_ids = None
 
@@ -1742,127 +2026,71 @@ class BaseDataset(torch.utils.data.Dataset):
             input_ids_list.append(input_ids)
             captions.append(caption)
 
-            if self.inversion_dir:
-                inversion_runs_list.append(
-                    self._try_load_inversion_runs(image_info.absolute_path)
+            for spec in self._sidecar_specs:
+                enabled = spec.enabled_attr is None or bool(
+                    getattr(self, spec.enabled_attr)
                 )
-            else:
-                inversion_runs_list.append(None)
-
-            if ip_ref_stem is None or ip_ref_stem == target_stem:
-                ip_features_list.append(
-                    self._try_load_ip_features(image_info.absolute_path)
-                )
-            else:
-                ip_features_list.append(
-                    self._load_ip_features_for_stem(
-                        ip_ref_stem, ip_ref_subset, ip_ref_reldir
-                    )
-                )
-            if ip_shuffled_stem is not None and ip_shuffled_stem != target_stem:
-                ip_features_shuffled_list.append(
-                    self._load_ip_features_for_stem(
-                        ip_shuffled_stem, subset, sampler.rel_dir(ip_shuffled_stem)
-                    )
-                )
-            else:
-                ip_features_shuffled_list.append(
-                    self._try_load_ip_features(image_info.absolute_path)
-                    if ip_shuffled_stem is not None
-                    else None
+                sidecar_values[spec.name].append(
+                    spec.loader(image_info) if enabled else None
                 )
 
-            # Soft-tokens contrastive negatives: draw k unrelated stems and load
-            # their cached text embeddings. Deterministic per target on the
-            # rare chance this dataset is used for validation; random in
-            # training. None when no sampler is attached or the target is absent
-            # from the index (the adapter then skips the contrastive forward).
-            neg_sampler = self.contrastive_neg_sampler
-            if neg_sampler is not None and neg_sampler.has(target_stem):
-                k = self.contrastive_neg_k
-                mode = self.contrastive_neg_mode
-                nrng = random.Random(self.seed ^ (hash(target_stem) & 0xFFFFFFFF))
-                neg_feats: List[torch.Tensor] = []
-                neg_jacc: List[float] = []
-                for _ in range(k):
-                    neg_stem, _lvl = neg_sampler.draw(target_stem, mode, nrng)
-                    if neg_stem == target_stem:
-                        continue  # no distinct negative reachable
-                    feat = self._load_te_for_stem(
-                        neg_stem, subset, neg_sampler.rel_dir(neg_stem)
-                    )
-                    if feat is not None:
-                        neg_feats.append(feat)
-                        neg_jacc.append(
-                            neg_sampler.tag_jaccard(target_stem, neg_stem)
-                            if mode == "jaccard"
-                            else 0.0
-                        )
-                ok = len(neg_feats) == k
-                neg_crossattn_list.append(torch.stack(neg_feats, dim=0) if ok else None)
-                neg_jaccard_list.append(
-                    torch.tensor(neg_jacc, dtype=torch.float32)
-                    if (ok and mode == "jaccard")
-                    else None
-                )
-            else:
-                neg_crossattn_list.append(None)
-                neg_jaccard_list.append(None)
+            neg_crossattn, neg_jaccard = self._draw_contrastive_negatives(
+                target_stem, subset
+            )
+            neg_crossattn_list.append(neg_crossattn)
+            neg_jaccard_list.append(neg_jaccard)
 
-        def none_or_stack_elements(tensors_list, converter):
-            if (
-                len(tensors_list) == 0
-                or tensors_list[0] is None
-                or len(tensors_list[0]) == 0
-                or tensors_list[0][0] is None
-            ):
-                return None
+        return self._collate_examples(
+            bucket=bucket,
+            image_index=image_index,
+            custom_attributes=custom_attributes,
+            loss_weights=loss_weights,
+            text_encoder_outputs_list=text_encoder_outputs_list,
+            input_ids_list=input_ids_list,
+            alpha_mask_list=alpha_mask_list,
+            images=images,
+            latents_list=latents_list,
+            cond_latents_list=cond_latents_list,
+            captions=captions,
+            original_sizes_hw=original_sizes_hw,
+            crop_top_lefts=crop_top_lefts,
+            target_sizes_hw=target_sizes_hw,
+            flippeds=flippeds,
+            sidecar_values=sidecar_values,
+            neg_crossattn_list=neg_crossattn_list,
+            neg_jaccard_list=neg_jaccard_list,
+        )
 
-            result = []
-            for i in range(len(tensors_list[0])):
-                tensors = [x[i] for x in tensors_list]
-                if tensors[0] is None:
-                    result.append(None)
-                    continue
-                if tensors[0].ndim == 0:
-                    result.append(torch.stack([converter(x[i]) for x in tensors_list]))
-                    continue
+    def _collate_examples(
+        self,
+        *,
+        bucket,
+        image_index,
+        custom_attributes,
+        loss_weights,
+        text_encoder_outputs_list,
+        input_ids_list,
+        alpha_mask_list,
+        images,
+        latents_list,
+        cond_latents_list,
+        captions,
+        original_sizes_hw,
+        crop_top_lefts,
+        target_sizes_hw,
+        flippeds,
+        sidecar_values,
+        neg_crossattn_list,
+        neg_jaccard_list,
+    ):
+        """Stack the per-sample lists gathered in ``__getitem__`` into one batch.
 
-                min_len = min([len(x) for x in tensors])
-                max_len = max([len(x) for x in tensors])
-
-                if min_len == max_len:
-                    result.append(torch.stack([converter(x) for x in tensors]))
-                else:
-                    tensors = [converter(x) for x in tensors]
-                    if tensors[0].ndim == 1:
-                        result.append(
-                            torch.stack(
-                                [
-                                    (
-                                        torch.nn.functional.pad(
-                                            x, (0, max_len - x.shape[0])
-                                        )
-                                    )
-                                    for x in tensors
-                                ]
-                            )
-                        )
-                    else:
-                        result.append(
-                            torch.stack(
-                                [
-                                    (
-                                        torch.nn.functional.pad(
-                                            x, (0, 0, 0, max_len - x.shape[0])
-                                        )
-                                    )
-                                    for x in tensors
-                                ]
-                            )
-                        )
-            return result
-
+        Owns the tensor-stacking / None-handling for every channel: pixels,
+        latents, cond latents, alpha masks (ragged-fill), text encoder outputs
+        and input ids (via :func:`none_or_stack_elements`), size/crop metadata,
+        registered sidecars, and soft-tokens contrastive negatives. Returns the
+        ``example`` dict consumed by the collator.
+        """
         example = {}
         example["custom_attributes"] = custom_attributes
         example["loss_weights"] = torch.FloatTensor(loss_weights)
@@ -1934,43 +2162,12 @@ class BaseDataset(torch.utils.data.Dataset):
             [self.network_multiplier] * len(captions)
         )
 
-        # Inversion runs for functional-loss supervision (postfix-func).
-        # If any sample in the batch has inversions loaded, stack them; samples
-        # without matching inversions get zero-tensor placeholders and mask=False.
-        valid_inversions = [t for t in inversion_runs_list if t is not None]
-        if valid_inversions:
-            ref_shape = valid_inversions[0].shape  # [N_runs, S, D]
-            stacked = torch.stack(
-                [
-                    t if t is not None else torch.zeros(ref_shape, dtype=torch.float32)
-                    for t in inversion_runs_list
-                ],
-                dim=0,
-            )
-            mask = torch.tensor(
-                [t is not None for t in inversion_runs_list], dtype=torch.bool
-            )
-            example["inversion_runs"] = stacked  # [B, N_runs, S, D]
-            example["inversion_mask"] = mask  # [B]
-        else:
-            example["inversion_runs"] = None
-            example["inversion_mask"] = None
-
-        # IP-Adapter cached PE features. All samples in a bucket share the
-        # training resolution and therefore the same PE bucket -> same T_pe,
-        # so a plain stack works.
-        if ip_features_list and ip_features_list[0] is not None:
-            example["ip_features"] = torch.stack(ip_features_list, dim=0)
-        else:
-            example["ip_features"] = None
-        # Validation-only shuffled (unrelated) reference for the
-        # IPAdapterMethodAdapter shuffled_ref baseline. None outside validation.
-        if ip_features_shuffled_list and ip_features_shuffled_list[0] is not None:
-            example["ip_features_shuffled"] = torch.stack(
-                ip_features_shuffled_list, dim=0
-            )
-        else:
-            example["ip_features_shuffled"] = None
+        # Registered sidecars: inversion_runs/_mask (masked — placeholder zeros
+        # for absent samples), byg_{role}_emb/_mask (dict — keys absent unless
+        # every sample carries a tuple, so the BYG adapter fails loudly),
+        # repa_pe_features (all-or-nothing + shape guard). See SidecarSpec.
+        for spec in self._sidecar_specs:
+            self._collate_sidecar(spec, sidecar_values[spec.name], example)
 
         # Soft-tokens contrastive negatives: (B, k, S, D) cached text embeddings.
         # All cached crossattn_emb share the padded sequence length, so a plain

@@ -6,14 +6,15 @@ STRINGS: dict[str, str] = {
     # Window / tabs
     "window_title": "Anima LoRA",
     "tab_config": "Training Config",
-    "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
     "tab_turbo": "Turbo",
-    "tab_methods": "Methods",
-    "tab_images": "Dataset",
+    "tab_experimental": "Experimental",
+    "tab_images": "Dataset Viewer",
     "tab_merge": "Merge",
+    "tab_queue": "Queue",
     "tab_preprocess": "Preprocessing",
+    "tab_tensorboard": "TensorBoard",
     # PreprocessingTab
     "preprocess_intro": (
         "Configure caption shuffling and text-bubble masking, then run each "
@@ -21,6 +22,35 @@ STRINGS: dict[str, str] = {
         "preprocess with default settings when no cache exists — this tab "
         "is for tuning and for re-running individual steps."
     ),
+    "preprocess_image_prep": "Image preprocessing (resize / filter)",
+    "preprocess_source_image_dir": "Source image dir:",
+    "preprocess_source_image_dir_tip": (
+        "Base raw-image root for the selected GUI method (defaults to "
+        "configs/preprocess.toml; edits save onto the variant). path_scope is "
+        "appended on top at run time, so this is the unscoped root, not the final "
+        "scoped path. Use the preprocess path filter below to run only part of "
+        "this tree without changing where files are stored."
+    ),
+    "preprocess_path_pattern": "Preprocess path filter:",
+    "preprocess_path_pattern_tip": (
+        "path_scope is applied first to choose the effective source image root. "
+        "For example, path_scope=data_group1 makes the preprocess root "
+        "image_dataset/data_group1. This filter is then matched relative to "
+        "that root. '*' (or blank) processes everything, '1/*' processes only "
+        "data_group1/1, and '1/*|2/*' processes both subfolders."
+    ),
+    "preprocess_drop_lowres": "Drop low-resolution images",
+    "preprocess_drop_lowres_tip": (
+        "Skip source images smaller than the pixel threshold below so they "
+        "never enter the resize / VAE / text caches. Uncheck to keep every "
+        "image regardless of size."
+    ),
+    "preprocess_min_pixels": "Min pixels (filter threshold):",
+    "preprocess_min_pixels_tip": (
+        "Pixel-count threshold for the low-res filter. 500000 = 0.5MP. "
+        "Ignored when 'Drop low-resolution images' is unchecked."
+    ),
+    "preprocess_target_res": "Resolution tiers (target_res):",
     "preprocess_text_caching": "Caching (VAE + text)",
     "preprocess_caption_shuffle_variants": "Shuffle variants per caption (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -37,6 +67,9 @@ STRINGS: dict[str, str] = {
         "shuffle variants ≤ 0."
     ),
     "preprocess_run_te": "Run caching (VAE + text)",
+    "preprocess_run_pe": "Run PE caching",
+    "preprocess_add_to_queue": "Add to queue",
+    "preprocess_queued": "Queued {label} (job {job_id}) — watch it in the Queue tab.",
     "preprocess_masking_sam": "SAM3 masking (text bubbles)",
     "preprocess_masking_mit": "MIT masking (manga text)",
     "preprocess_sam_prompts": "SAM prompts (one per line):",
@@ -105,10 +138,12 @@ STRINGS: dict[str, str] = {
     "preprocess_status_resized": "Resized images: {n}",
     "preprocess_status_caches": "Caches — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "Masks: {masks}",
-    "preprocess_status_no_resized": "No resized images yet — run Preprocess in the Training Config tab first.",
+    "preprocess_status_no_resized": "No resized images yet.",
+    "preprocess_open_dataset_dir": "Open cache folder",
+    "preprocess_open_dataset_dir_tooltip": "Open the post_image_dataset/ folder (resized images + caches) in your file manager.",
     "preprocess_log_placeholder": "Preprocessing output will appear here...",
     "preprocess_save_settings": "Save",
-    "preprocess_save_settings_tip": "Persist these settings (writes configs/sam_mask.yaml + GUI settings).",
+    "preprocess_save_settings_tip": "Persist these settings to the selected GUI method profile. Mask runs receive the current profile's mask settings with the job.",
     "preprocess_settings_saved": "Preprocessing settings saved.",
     "preprocess_invalid_float": "Invalid number for {field}: {value}",
     "preprocess_already_running": "A preprocessing step is already running.",
@@ -117,9 +152,19 @@ STRINGS: dict[str, str] = {
     "save": "Save",
     "save_dirty_tooltip": "Form has unsaved edits. Click Save to write them to the variant file (Train/Preprocess auto-saves first if you skip this).",
     "train": "Train",
+    "train_tooltip": "Train the current variant now. Open the dropdown to queue it on the daemon instead (don't start now — add to the queue).",
+    "train_busy_use_queue": "A job is already attached to this tab. Use the Train dropdown to queue another behind it, or Stop the current one first.",
+    "queue": "Queue",
+    "queue_tooltip": "Add the current variant to the daemon queue. Open the menu to choose train-after-preprocess or preprocess only.",
+    "queue_train_preprocess": "Queue: Train + Preprocess",
+    "queue_train_only": "Queue: Train only",
+    "queue_preprocess_only": "Queue: Preprocess only",
     "test": "Test",
     "stop": "Stop",
     "log_placeholder": "Training output will appear here...",
+    "copy_log": "Copy",
+    "copy_log_tooltip": "Copy the full training log to the clipboard",
+    "copy_log_done": "Copied",
     "from_base": "From base.toml",
     "saved": "Saved",
     "saved_file": "Saved {name}",
@@ -131,7 +176,8 @@ STRINGS: dict[str, str] = {
     "error": "Error",
     "accelerate_not_found": "accelerate not found on PATH",
     "preprocess": "Preprocess",
-    "preprocess_required": "Please run Preprocess before training.",
+    "preprocess_current_tooltip": "Run preprocessing for the current variant using its GUI path scope.",
+    "preprocess_required": "Preprocess will run before training starts.",
     "preprocess_existing_caches_title": "Existing caches will be reused",
     "preprocess_existing_caches_body": (
         "Cache files already exist in:\n  {cache_dir}\n\n"
@@ -154,30 +200,98 @@ STRINGS: dict[str, str] = {
         "Preprocess first.\n\n"
         "Proceed with the existing cache?"
     ),
-    "stale_cache_title": "Stale dataset cache",
-    "stale_cache_body": (
-        "{n} VAE latent cache(s) under:\n  {cache_dir}\n\n"
-        "are at resolutions no longer in the current bucket table "
-        "(the 4032 / 4200 token-count families):\n\n{examples}\n\n"
-        "These were cached under an older bucket layout — training will skip "
-        "or mis-bucket them. Cancel and re-run Preprocess (with Overwrite) to "
-        "regenerate the cache.\n\n"
-        "Train anyway with the stale caches?"
-    ),
     "train_autopreprocess_log": (
-        "No preprocessed cache found — running preprocess first, "
-        "then training automatically.\n"
+        "No preprocessed cache found — running preprocess before training starts.\n"
     ),
     "train_preprocessing": "Preprocessing…",
     "no_lora_for_test": "No LoRA in output/ckpt/ to test. Run training first.",
     "test_output_title": "Latest test output",
     "test_output_empty": "output/tests/ is empty.",
+    "sample_output_title": "Latest training samples",
+    "sample_output_empty": "No samples yet — they appear under the output dir's sample/ folder as training generates them.",
+    "sample_prompt_col_prompt": "Prompt",
+    "sample_prompt_col_width": "W",
+    "sample_prompt_col_height": "H",
+    "sample_prompt_col_steps": "Steps",
+    "sample_prompt_col_seed": "Seed",
+    "sample_prompt_col_cfg": "CFG",
+    "sample_prompt_col_guidance": "Guidance",
+    "sample_prompt_col_shift": "Shift",
+    "sample_prompt_col_negative": "Negative",
+    "sample_prompt_col_extra": "Extra",
+    "sample_prompt_add": "Add prompt",
+    "sample_prompt_select_all": "Select all",
+    "sample_prompt_remove": "Remove selected",
+    "sample_prompt_remove_confirm_title": "Remove sample prompts",
+    "sample_prompt_remove_confirm_body": "Remove {n} selected sample prompt(s)?",
+    "sample_prompt_expand": "Expand editor",
+    "sample_prompt_collapse": "Collapse editor",
+    "sample_prompt_edit_button": "Edit sample prompts…",
+    "sample_prompt_dialog_title": "Sample prompts",
+    "sample_prompt_summary_none": "No sample prompts",
+    "sample_prompt_summary_count": "{n} prompt(s) · {first}",
+    "sample_prompt_select": "Select",
+    "sample_prompt_prompt_placeholder": "Prompt text. Line breaks are shown here and saved as spaces.",
+    "sample_prompt_hint": "Blank/default values are not written to the prompt line.",
+    "sample_prompt_default_width": "default 512",
+    "sample_prompt_default_height": "default 512",
+    "sample_prompt_default_steps": "default 30",
+    "sample_prompt_default_seed": "auto seed",
+    "sample_prompt_default_cfg": "default 7.5",
+    "sample_prompt_default_guidance": "default 1.0",
+    "sample_prompt_default_shift": "default 3.0",
+    "sample_prompt_default_negative": "default: none",
+    "sample_prompt_tip_width": "Image width (`--w`). Blank uses train.py default 512.",
+    "sample_prompt_tip_height": "Image height (`--h`). Blank uses train.py default 512.",
+    "sample_prompt_tip_steps": "Sampling steps (`--s`). Blank uses train.py default 30.",
+    "sample_prompt_tip_seed": "Seed (`--d`). Auto seed keeps each prompt comparable across epochs.",
+    "sample_prompt_tip_cfg": "CFG scale (`--l`). Blank uses train.py default 7.5.",
+    "sample_prompt_tip_guidance": "Guidance scale (`--g`). Blank uses train.py default 1.0.",
+    "sample_prompt_tip_shift": "Flow shift (`--fs`) for the sampling sigma schedule. Blank uses train.py default 3.0.",
+    "sample_prompt_tip_negative": "Negative prompt (`--n`) for this sample only.",
+    "sample_prompt_tip_extra": "Additional raw sample arguments, preserved as typed.",
     "finished": "--- Finished (exit code {code}) ---",
     "starting": "Starting… (loading torch / accelerate)",
     # Daemon-backed training (Phase 2 — training survives GUI close)
     "daemon_submitting": "Submitting job to the training daemon…",
     "daemon_submit_failed": "Could not reach the training daemon: {err}",
     "daemon_queued": "Queued job {job_id} on the training daemon.\n",
+    "queue_submitting": "Queueing {variant} on the training daemon…",
+    "queue_submitting_train_preprocess": "Queueing preprocess + training for {variant} on the training daemon…",
+    "queue_submitting_preprocess": "Queueing preprocess for {variant} on the training daemon…",
+    "queue_added_train": "Queued {variant} as training job {job_id}.\n",
+    "queue_added_preprocess": "Queued {variant} as preprocess job {job_id}; training will chain after it.\n",
+    "queue_added_preprocess_only": "Queued {variant} as preprocess job {job_id}.\n",
+    "queue_refresh": "Refresh",
+    "queue_start": "Start Queue",
+    "queue_pause": "Pause Queue",
+    "queue_start_tooltip": "Start running the queued jobs (added via the queue dropdowns). Runs them one at a time.",
+    "queue_pause_tooltip": "Hold the queue — the running job continues, but no further queued job starts until you press Start Queue.",
+    "queue_stop_selected": "Stop selected",
+    "queue_copy_output": "Copy output",
+    "queue_status": "{live} live / {total} total jobs",
+    "queue_status_paused": "{live} live / {total} total jobs — queue paused",
+    "queue_daemon_unavailable": "Daemon unavailable",
+    "queue_detail_placeholder": "Select a queue item to inspect its details.",
+    "queue_log_placeholder": "Selected job output will appear here...",
+    "queue_log_missing": "(No output log yet.)",
+    "queue_log_read_failed": "(Could not read output log: {err})",
+    "queue_log_truncated": "--- Showing the last {mb} MB of output ---\n",
+    "queue_detail_id": "id: {job_id}",
+    "queue_detail_state": "state: {state}",
+    "queue_detail_kind": "kind: {kind}",
+    "queue_detail_method": "method: {method}",
+    "queue_detail_submitted": "submitted: {time}",
+    "queue_detail_started": "started: {time}",
+    "queue_detail_ended": "ended: {time}",
+    "queue_detail_from_chain": "from_chain: true",
+    "queue_detail_chain": "chains to train: {method}",
+    "queue_detail_chained_id": "chained job: {job_id}",
+    "queue_detail_pid": "pid: {pid}",
+    "queue_detail_error": "error: {error}",
+    "queue_detail_status_detail": "detail: {detail}",
+    "queue_detail_config": "config: {path}",
+    "queue_detail_stdout": "stdout: {path}",
     "daemon_reattached": "Re-attached to running job {job_id} (started in a previous session).\n",
     "daemon_job_finished": "--- Job {job_id} {state} ---",
     "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
@@ -227,15 +341,6 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "Variant '{name}' already exists.",
     "basic_section": "Basic",
     "advanced_section": "Advanced (click to expand)",
-    # AdapterTab (IP-Adapter / EasyControl)
-    "adapter_source_dir": "Source dataset:",
-    "adapter_cache_dir": "Cache directory:",
-    "adapter_n_pairs": "{n} image / {c} caption pairs",
-    "adapter_n_caches": "{n} cached",
-    "adapter_preprocess": "Preprocess (resize + VAE + text)",
-    "adapter_preprocess_pe": "Preprocess (resize + VAE + text + PE)",
-    "adapter_train": "Train",
-    "adapter_stop": "Stop",
     # SPD / Turbo distillation config tabs (gui/tabs/distill_tab.py)
     "distill_general_section": "general",
     "distill_job_running": "A job is already running on this tab.",
@@ -294,24 +399,43 @@ STRINGS: dict[str, str] = {
     ),
     # Language
     "language": "Language:",
+    # Settings dialog
+    "settings_btn": "⚙ Settings",
+    "settings_btn_tooltip": "Application settings — language, MCP server registration",
+    "settings_title": "Settings",
+    "settings_mcp_header": "MCP server (agent access)",
+    "settings_mcp_desc": "Expose the local training daemon to MCP clients (Claude Code, "
+    "Claude Desktop, …). Run this in a terminal to register it with Claude Code:",
+    "settings_mcp_desc_json": "For other MCP clients (Claude Desktop, OpenClaw, …), "
+    "the equivalent JSON config:",
+    "settings_mcp_copy": "Copy",
+    "settings_mcp_copied": "Copied ✓",
+    "settings_close": "Close",
+    "settings_lang_apply_title": "Language",
+    "settings_lang_apply_question": "Reload the interface now to apply the language?\n\n"
+    "Unsaved edits in open tabs are lost. Queued/running training jobs live in "
+    "the daemon and are not affected.\n\nChoosing No applies it on next launch.",
     # Guidebook
     "guidebook": "📖 Guidebook",
     "guidebook_tooltip": "Open the end-to-end guide (docs/guidelines/guidebook.md)",
     "guidebook_missing": "Guide not found at {path}",
     "guidebook_open_external": "Open in system viewer",
     "guidebook_close": "Close",
+    # EasyControl adapter guide (build-your-own control task)
+    "adapter_guide": "📘 Adapter Guide",
+    "adapter_guide_tooltip": "How to build your own EasyControl adapter (easycontrol_adapters/ADAPTER_GUIDE.md)",
+    "easycontrol_descriptor_note": "This control task is a self-contained descriptor with a multi-table shape, edited as raw TOML on the left:<br><br>• <b>name</b> — output slug; reroutes every derived cache/output path.<br>• <code>[staging]</code> — data generation that materializes the condition tree.<br>• <code>[preprocess]</code> — VAE/TE caching knobs over the staged tree.<br>• <code>[training]</code> — overrides folded onto the base EasyControl method.<br>• <code>[general]</code> / <code>[[datasets]]</code> — the dataset blueprint train.py reads.<br>• <code>[variant]</code> — this dropdown entry's GUI metadata.<br><br>The <b>Preprocess</b> button synthesizes the condition tree + caches it; <b>Train</b> trains the base EasyControl method with this descriptor's <code>[training]</code> overrides folded in. Both survive the GUI closing.",
+    "easycontrol_descriptor_form_header": "Editing descriptor <b>{path}</b>. The knob tables below edit as a form; Save writes changed values back, preserving comments and the <code>[[datasets]]</code> blueprint. The blueprint and <code>[variant]</code> metadata aren't shown here — edit the file directly for those. Click a field name for help.",
+    "ec_desc_group_top": "descriptor",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "Models",
-    "models_btn_tooltip": "Download or re-download model checkpoints (Anima base, SAM3, MIT, IP-Adapter encoders)",
+    "models_btn_tooltip": "Download or re-download model checkpoints (Anima base, SAM3, MIT, PE vision encoder)",
     "update_btn": "Update",
     "update_btn_tooltip": "Pull the latest anima_lora release from GitHub and run uv sync",
     "update_btn_available": "Update ●",
     "update_btn_available_tooltip": "New release {v} available — click to view release notes",
     "report_issue": "Report Issue",
     "report_issue_tooltip": "Open the GitHub issue tracker in your browser",
-    "experimental_features": "🧪 Experimental",
-    "experimental_features_tooltip": "Open Postfix and IP-Adapter / EasyControl tabs (image-conditioning methods)",
-    "experimental_features_title": "Experimental Features",
     # Models dialog
     "models_title": "Download Models",
     "models_intro": "Pick a model group below or use 'Download all' for the standard set "
@@ -328,7 +452,20 @@ STRINGS: dict[str, str] = {
     "model_anima": "Anima — DiT + text encoder + VAE",
     "model_sam3": "SAM3 — text-bubble masking",
     "model_mit": "MIT — manga text masking",
-    "model_pe": "PE-Core-L14-336 — IP-Adapter vision encoder",
+    "model_pe": "PE-Core-L14-336 — vision encoder (CMMD validation / DCW)",
+    # HuggingFace authentication (Models dialog)
+    "models_hf_token_placeholder": "Paste your HuggingFace token (hf_…)",
+    "models_hf_authenticate": "Authenticate",
+    "models_hf_token_hint": "Needed for gated / rate-limited downloads (e.g. SAM3). "
+    'Create a token at <a href="https://huggingface.co/settings/tokens">'
+    "huggingface.co/settings/tokens</a> · request SAM3 access at "
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a>.',
+    "models_hf_token_present": "✓ A HuggingFace token is already saved.",
+    "models_hf_not_authenticated": "Not authenticated — paste a token to enable gated downloads.",
+    "models_hf_token_empty": "Paste a token first.",
+    "models_hf_authenticating": "Authenticating…",
+    "models_hf_logged_in": "✓ Logged in as {name}.",
+    "models_hf_login_failed": "Authentication failed: {err}",
     # Update dialog
     "update_title": "Update anima_lora",
     "update_warning": "Update will pull the latest release from GitHub and overwrite the working "
@@ -360,10 +497,8 @@ STRINGS: dict[str, str] = {
     "merge_no_adapter_msg": "No adapter selected or the file doesn't exist.",
     "merge_no_selection": "Select a checkpoint from the list to scan it.",
     "merge_verdict_ready": "✓ Ready to bake",
-    "merge_verdict_partial": "△ Partial — LoRA bakeable, ReFT will be dropped",
     "merge_verdict_hydra": "✗ HydraLoRA moe — layer-local router can't be baked",
     "merge_verdict_postfix_only": "✗ Postfix/prefix only — not a weight delta",
-    "merge_verdict_reft_only": "✗ ReFT only — block-level hook, no LoRA to bake",
     "merge_verdict_unknown": "? No recognized adapter keys",
     "merge_options": "Merge Options",
     "merge_base_dit": "Base DiT:",
@@ -372,7 +507,7 @@ STRINGS: dict[str, str] = {
     "merge_dtype": "Save dtype:",
     "merge_out": "Output:",
     "merge_out_placeholder": "(auto: <adapter>_merged.safetensors)",
-    "merge_allow_partial": "Allow partial merge (drop ReFT / Hydra / postfix keys)",
+    "merge_allow_partial": "Allow partial merge (drop Hydra / postfix keys)",
     "merge_allow_partial_tip": "Proceed even if the adapter contains non-bakeable components. Dropped components will be absent from the merged DiT.",
     "merge_button": "Merge into DiT",
     "merge_log_placeholder": "Merge output will appear here...",
@@ -381,4 +516,22 @@ STRINGS: dict[str, str] = {
     "merge_pick_dit": "Select base DiT .safetensors",
     "merge_pick_out": "Save merged DiT as...",
     "browse": "Browse…",
+    # Multi-scale target_res tiers
+    "target_res_danger_tooltip": "Heavy tier: {edge}px runs ~{tokens} tokens per image and adds an extra compiled block graph (slower compile, higher VRAM). Only enable if you actually need this resolution.",
+    # TensorBoard panel
+    "tb_panel_title": "TensorBoard Runs",
+    "tb_open": "Open TensorBoard",
+    "tb_stop": "Stop Server",
+    "tb_remove": "Remove",
+    "tb_view": "View",
+    "tb_view_tip": "Open TensorBoard scoped to this run only.",
+    "tb_no_runs": "No runs yet — start training to populate this list.",
+    "tb_status_running": "Running on port {port}",
+    "tb_status_stopped": "",
+    "tb_not_installed": "tensorboard is not installed. Run: pip install tensorboard",
+    "tb_current_run_label": " (current)",
+    "tb_open_current": "View Current Run",
+    "tb_open_current_tip": "Open TensorBoard scoped to the in-progress training run only.",
+    "tb_open_current_idle_tip": "Available while a training run is active.",
+    "tb_appear_hint": "If the run does not appear in the list, try pressing TensorBoard's reload (update) button.",
 }

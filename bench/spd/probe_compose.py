@@ -74,6 +74,7 @@ import random
 import re
 from pathlib import Path
 
+from bench._anima import add_model_args
 from bench._common import make_run_dir, write_result
 
 log = logging.getLogger("bench.spd.probe_compose")
@@ -197,9 +198,6 @@ def tally(
 # is visual (open compare_seed*.png).
 # ─────────────────────────────────────────────────────────────────────────────
 
-DEFAULT_DIT = "models/diffusion_models/anima-base-v1.0.safetensors"
-DEFAULT_TE = "models/text_encoders/qwen_3_06b_base.safetensors"
-DEFAULT_VAE = "models/vae/qwen_image_vae.safetensors"
 DEFAULT_PROMPT = (
     "masterpiece, best quality, score_7, safe. An anime girl with long silver hair"
     " in a red kimono standing under a maple tree, autumn leaves, detailed face."
@@ -587,7 +585,8 @@ def _setup_models(args, device, prompts: list[tuple[str, str]], *, need_vae: boo
         ensure_text_strategies,
         prepare_text_inputs,
     )
-    from library.models import qwen_vae
+
+    from anima_lora import load_vae
 
     infer_argv = [
         "--dit",
@@ -658,7 +657,7 @@ def _setup_models(args, device, prompts: list[tuple[str, str]], *, need_vae: boo
 
     vae = None
     if need_vae:
-        vae = qwen_vae.load_vae(args.vae, device="cpu", spatial_chunk_size=64)
+        vae = load_vae(args.vae, device="cpu", spatial_chunk_size=64)
         vae.to(torch.bfloat16).eval()
 
     _, sigmas = inference_utils.get_timesteps_sigmas(
@@ -1468,9 +1467,7 @@ def main() -> None:
         "--w", type=float, default=0.3, help="Chebyshev/Taylor blend (Spectrum)."
     )
     # GPU eyeball (--mode gpu) only:
-    ap.add_argument("--dit", default=DEFAULT_DIT)
-    ap.add_argument("--text_encoder", default=DEFAULT_TE)
-    ap.add_argument("--vae", default=DEFAULT_VAE)
+    add_model_args(ap)
     ap.add_argument("--prompt", default=DEFAULT_PROMPT)
     ap.add_argument("--negative_prompt", default=DEFAULT_NEG)
     ap.add_argument(

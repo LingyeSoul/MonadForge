@@ -33,7 +33,7 @@ target-latent shape per stem. Stages 1–2 run at ``long_side`` and the result i
 resized back to native resolution before returning.
 
 SD weights live under ``models/sketch2manga/``
-(``make exp-easycontrol-download EASYADAPTER=colorize``). The lineart annotator
+(``make easycontrol-download EASYADAPTER=colorize``). The lineart annotator
 (``lllyasviel/Annotators``) is fetched lazily by ``controlnet_aux`` on first use.
 """
 
@@ -44,7 +44,12 @@ import torch
 from PIL import Image
 
 from library.env import resolve_under_home
-from mangafy import _render_tone  # sibling: region-wise algorithmic screentone
+import mangafy as _mangafy  # shared _TONE_SS + band-plan constants
+from mangafy_gpu import _render_tone_t  # region-wise screentone, rendered on the GPU.
+# The numpy `mangafy._render_tone` dominated per-image cost (~15s on a large page: ss=4
+# supersample + an argsort-based uniformize over ~14M pixels) and starved the SD GPU
+# between images. The torch twin runs the same band plan (same rng draws) on-device,
+# so it's structurally identical — only the sub-pixel trig/argsort math differs.
 
 _MANGATONE = "models/sketch2manga/mangatone.ckpt"
 _VAE = "models/sketch2manga/vae/mangatone_default.ckpt"
@@ -53,7 +58,7 @@ _CONTROLNET = "models/sketch2manga/control_v11p_sd15_lineart.pth"
 _PROMPT = "greyscale, monochrome, screentone"
 _NEGATIVE = ""
 _STRENGTH = 0.6  # img2img denoise — lower = more faithful to the source structure
-_TONE_PERIOD = 4.5  # halftone dot period (px) at the SD long-side
+_TONE_PERIOD = 2.6  # fine halftone dot period (px) at the SD long-side
 _TONE_WHITE_CUT = 0.90  # sd-tone ≥ this → stays white (highlights/skin, no dots)
 _TONE_BLACK_CUT = 0.10  # sd-tone ≤ this → solid black
 
@@ -85,6 +90,12 @@ def _build_pipe():
     global _PIPE, _LINEART
     if _PIPE is not None:
         return _PIPE, _LINEART
+
+    # Autotune conv algorithms per input shape. Worth it only because prep groups
+    # images by SD-size (see ``stage_mangafy``): each distinct resolution then tunes
+    # once and every later same-size page reuses it. On an unsorted, all-distinct
+    # stream this would re-tune every image and lose — the sort is what makes it pay.
+    torch.backends.cudnn.benchmark = True
 
     from controlnet_aux import LineartDetector
     from diffusers import (
@@ -203,12 +214,21 @@ def screentone_array(
     rng = np.random.default_rng(seed)
     short = float(min(h, w))
     period = tone_period * max(0.5, short / 900.0)
-    tone = _render_tone(
-        tone_gray,
-        rng=rng,
-        period=period,
-        white_cut=_TONE_WHITE_CUT,
-        black_cut=_TONE_BLACK_CUT,
+    tone = (
+        _render_tone_t(
+            torch.from_numpy(tone_gray).to(device=device, dtype=torch.float32),
+            rng=rng,
+            period=period,
+            hatch_period=period * 1.25,  # line/cross only slightly coarser than dots
+            ss=_mangafy._TONE_SS,
+            white_cut=_TONE_WHITE_CUT,
+            black_cut=_TONE_BLACK_CUT,
+            kind=None,
+            angle=None,
+            n_bands=None,
+        )
+        .cpu()
+        .numpy()
     )
 
     # Stage 3 — composite the ink line (ink wherever tone OR line are dark).

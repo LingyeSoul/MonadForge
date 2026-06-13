@@ -11,51 +11,65 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_J"
+output_name = "anima_turbo_N_repa2"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 12000
+iterations = 1250
 batch_size = 1
 seed = 42
-use_custom_down_autograd = true
 use_masked_loss = true
 
-gradient_checkpointing = false
-unsloth_offload_checkpointing = false
+channel_scaling_alpha = 0.5
+
+# Dynamo per-_forward graph budget. The loop traces the compiled block under
+# grad_mode × token-family × num_threads combos that land at the default 8 and
+# spill to eager; 64 gives ample headroom. Logged at startup.
+dynamo_recompile_limit = 64
+compile_dynamic_seq = true
+
+# torch.compile partitioner saved-activation fraction (same lever as base.toml's
+# main-training knob). <1.0 makes the partitioner recompute cheap intermediates
+# in backward rather than save them — reclaims VRAM at ~equal step time, useful
+# when use_custom_down_autograd is off and torch_compile is on. Only applies when
+# torch_compile is on AND grad_ckpt is off (the two repartition the same joint
+# graph and conflict → CheckpointError). 1.0 = off (default; no behavior change).
+activation_memory_budget = 0.99
+
+# Diversity mechanism. "dpdmd" (default) runs the first-step teacher anchor below;
+# "dmd" is plain DMD2 — no anchor, so student_steps may be 1 (a true single-step
+# student, which dpdmd structurally can't produce).
+base_loss = "dpdmd"
 
 [network]
 student_rank = 96
 student_alpha = 96
-fake_rank = 128
-fake_alpha = 128
+fake_rank = 96
+fake_alpha = 96
 attn_mode = "flash"
+# Per-step expert: split the student into K = student_steps up-heads off a
+# shared down-proj, head k serving denoise step k. Removes the diversity↔quality
+# tug-of-war (step 0 vs steps 1..N) in shared up-weights. Default off — the
+# single-head student stays the shipped path. NOTE: output is NOT a plain LoRA
+# (kept-live only; `make merge` refuses it, stock ComfyUI LoRA loaders can't
+# drive per-step head selection — use AnimaTurboPerStepExpertLoader).
+per_step_expert = false
 
 # DMD schedule.
 [dmd]
-student_steps = 2               # N — student rolls N Euler steps; inference matches (--infer_steps 2)
+student_steps = 4               # N — student rolls N Euler steps; inference matches (--infer_steps 4)
 teacher_cfg = 4                 # CFG scale baked into the teacher anchor + DMD real score (Anima prod CFG=4)
 dm_x0_norm = true               # per-sample x0-space magnitude normalization of the DM gradient
 norm_floor = 0.05               # clamp_min for the dm_x0_norm denominator (latent scale)
+grad_step = "random"
 
 # Optimization.
 [optim]
 student_lr = 1e-5
 fake_lr = 1e-5
-fake_steps_per_student_step = 5
-fake_warmup_steps = 50          # fake (critic) head-start: number of fake-only gradient
-                                # updates BEFORE the main loop, so the critic is calibrated
-                                # against the student's (init ≈ teacher) x_pred before the
-                                # student LR warmup (~40 steps) ramps to full strength —
-                                # kills the early grad_signal_rms spike (~step 50). Counted
-                                # in fake updates DIRECTLY (decoupled from
-                                # fake_steps_per_student_step — bumping the cadence no longer
-                                # rescales the head-start). 400 ≈ the old 100×4 magnitude.
-                                # The fake LR scheduler is sized over
-                                # (iterations·fake_steps_per_student_step + fake_warmup_steps)
-                                # and stepped through this phase, so its 0.02 LR warmup
-                                # overlaps the head-start; student schedule untouched. 0 = off.
+fake_steps_per_student_step = 4
+fake_warmup_steps = 50
 weight_decay = 0.0
 grad_clip = 1.0                 # student grad-norm cap
 
@@ -64,14 +78,14 @@ grad_clip = 1.0                 # student grad-norm cap
 # DMD refines x_θ over steps 2..N. teacher_cfg (above) is the anchor's CFG scale;
 # student_steps is N.
 [dpdmd]
-k_anchor = 4                    # teacher steps rolled to the diversity anchor (their K)
-teacher_anchor_steps = 8        # teacher σ-grid the K is counted against
+k_anchor = 6                    # teacher steps rolled to the diversity anchor (their K)
+teacher_anchor_steps = 12        # teacher σ-grid the K is counted against
 div_weight = 0.05               # λ on the first-step diversity MSE
 detach_after_first = true       # load-bearing stop-grad after step 1 (A/B only)
 
 # τ sampling distribution for the fake/critic update (+ fake warmup).
 [sampling]
-t_distribution = "sigmoid"      # "uniform" or "sigmoid"
+t_distribution = "uniform"      # "uniform" or "sigmoid"
 sigmoid_scale = 1.0
 flow_shift = 3.0                # σ-schedule shift for the DP-DMD Euler grids (matches inference)
 
@@ -96,8 +110,71 @@ mu_t = 0.0                      # used only when sigma2_t > 0 (pinned target)
 sigma2_t = -1.0                 # <= 0 → measure μ_t/σ²_t exactly from real latents
 calib_batches = 0              # cap the calibration scan (0 = full pass)
 
+# DMD2 teacher-feature GAN (FastGen idea 1; docs/proposal/turbo_gan/plan.md).
+#
+# Adds the missing adversarial machinery to DP-DMD (which is "DMD2 with the GAN
+# amputated"). A tiny pooled-token discriminator reads the FROZEN teacher DiT's
+# intermediate block activations — no separate network, only the disc head is new
+# trainable weight, trained on the fake/critic cadence with its own optimizer.
+# The student output stays a plain LoRA (the disc is discarded at save, like the
+# fake). weight_gen = 0 keeps the whole path OFF → byte-identical DP-DMD.
+#
+# FastGen QwenImage (the closest net to Anima) uses gan_loss_weight_gen=0.03,
+# gan_use_same_t_noise=true, feature_indices=middle, disc_lr=1e-5. Cost: +1
+# grad-bearing teacher forward in the student step + 2 no_grad teacher forwards
+# per disc step. The grad-bearing one retains ~half the DiT's block activations
+# (~3 GB) only to backprop into x_pred; `grad_ckpt` below recomputes them in
+# backward instead, so the GAN term costs ~one half-depth forward, not ~3 GB.
+[gan]
+weight_gen = 0.03               # λ on the generator GAN term (softplus hinge). 0 = off. FastGen: 0.03
+feature_block_idx = -1          # DiT block whose tokens the disc taps. -1 = middle (num_blocks//2)
+disc_lr = 1e-5                  # discriminator AdamW LR
+disc_hidden = 0                 # disc MLP hidden width; 0 → inner_dim // 2
+r1_weight = 0.0                 # approximate-R1 (APT) disc regularizer weight. 0 = off
+r1_alpha = 0.1                  # perturbation scale for the R1 input
+use_same_t_noise = true         # real disc branch reuses the fake step's (τ, ε) (FastGen default)
+grad_ckpt = true                # checkpoint ONLY the grad-bearing GAN gen forward (reclaims ~3 GB;
+                                # frozen teacher → numerically exact). Independent of global --grad_ckpt.
+
+# f-distill reweighting (FastGen idea 2; stacks on the GAN, ~free).
+#
+# Reweights the DMD signal by an f-divergence weight h = f'(r), where the density
+# ratio r = exp(disc_logits) comes free from the GAN head above. f_div="rkl" ≡
+# uniform h ≡ plain DMD2 (the no-op default). Any other f_div REQUIRES
+# gan.weight_gen > 0. Targets mode-collapse — bench against the DP-DMD diversity
+# anchor (they may not be additive). Numerical care (ports of f_distill.py):
+# ±10 logit clamp, r∈[ratio_lower, ratio_upper], per-τ EMA histogram of r.
+[f_distill]
+f_div = "rkl"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
+ratio_lower = 0.1
+ratio_upper = 20.0
+ratio_ema_rate = 0.0            # per-τ histogram EMA decay (0 = instantaneous per-bin)
+bin_num = 10
+ratio_normalization = true      # per-τ histogram normalization of r
+
+# Turbo × REPA — relational (Gram) alignment on REAL data (docs/proposal/
+# turbo_repa.md; Phase 0 drift probe PASSED 2026-06-12 — the student's block-8
+# representation sits measurably off the base manifold, worst at mid-σ:
+# bench/turbo_repa/results/20260612-2244-alignment-drift/).
+#
+# Every `every_n`-th student step, ONE extra grad-bearing partial student
+# forward (feature tap, exits after `layer` ≈ 9/28 of a forward) on renoised
+# real latents; the unweighted Gram MSE vs the cached PE-Spatial sidecar
+# ({stem}_anima_pe_spatial.safetensors, staged by `make preprocess-pe`) joins
+# the student loss with `weight`. Direct per-sample pressure on REAL data —
+# complements the GAN above (adversarial, distribution-level, GENERATED data)
+# and soft-rank (text axis). No new trainable params (the Gram form is
+# head-free). weight = 0 keeps the whole path OFF → byte-identical DP-DMD.
+[repa]
+weight = 0.0                    # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
+layer = 8                       # DiT block tap (matches LoRA-family REPA)
+encoder = "pe_spatial"          # sidecar {stem}_anima_{encoder}.safetensors next to the TE cache
+every_n = 4                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
+spatial_norm = true             # iREPA target standardization (the validated LoRA operating point)
+
 # Logging / checkpoints.
 [io]
-save_every = 2000
+save_every = 625
 log_interval = 5
 log_dir = "output/logs/turbo"
+validate_every_n_steps = 625

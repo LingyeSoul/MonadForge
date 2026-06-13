@@ -48,6 +48,7 @@ import numpy as np
 import torch
 from PIL import Image
 
+from bench._anima import DEFAULT_NEG, add_model_args
 from bench._common import make_run_dir, write_result
 from bench.spd.measure_latent_spectrum import (
     discover_images,
@@ -58,11 +59,6 @@ from library.datasets.image_utils import IMAGE_TRANSFORMS
 
 log = logging.getLogger("bench.spd.autoreg")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-DEFAULT_DIT = "models/diffusion_models/anima-base-v1.0.safetensors"
-DEFAULT_TE = "models/text_encoders/qwen_3_06b_base.safetensors"
-DEFAULT_VAE = "models/vae/qwen_image_vae.safetensors"
-DEFAULT_NEG = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
 # A small, varied prompt set — flat-fill, detailed, and text-bearing so the
 # trajectory isn't dominated by one spectral regime.
 DEFAULT_PROMPTS = [
@@ -167,9 +163,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--dit", default=DEFAULT_DIT)
-    ap.add_argument("--text_encoder", default=DEFAULT_TE)
-    ap.add_argument("--vae", default=DEFAULT_VAE)
+    add_model_args(ap)
     ap.add_argument("--prompts", nargs="+", default=DEFAULT_PROMPTS)
     ap.add_argument("--negative_prompt", default=DEFAULT_NEG)
     ap.add_argument("--height", type=int, default=1024)
@@ -233,7 +227,8 @@ def main() -> None:
         ensure_text_strategies,
         prepare_text_inputs,
     )
-    from library.models import qwen_vae
+
+    from anima_lora import load_vae
 
     infer_argv = [
         "--dit",
@@ -376,7 +371,7 @@ def main() -> None:
 
     # ── HALF B: P_ω from real latents → t_ω → t*_i → budget ──
     log.info(f"Estimating P_ω from {args.n_pomega} real latents ...")
-    vae = qwen_vae.load_vae(args.vae, device=str(device), spatial_chunk_size=64)
+    vae = load_vae(args.vae, device=str(device), spatial_chunk_size=64)
     vae.eval()
     picks = discover_images(Path(args.image_dir), args.n_pomega, seed=0)
     pk_acc = np.zeros(args.pomega_bins)

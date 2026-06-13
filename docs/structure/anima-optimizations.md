@@ -245,7 +245,7 @@ Reading `_forward` (`models.py:1067+`) and `forward_mini_train_dit` (`1537+`), t
 
 - no `if x.shape[0] > 1: …` data-dependent branches inside the hot path;
 - no Python-side scalar extraction (`.item()`, `.tolist()`);
-- optional features (ReFT, mod-guidance, postfix) are gated by `is not None` checks at the top of the function, where dynamo can specialize the trace once based on the module's attribute state.
+- optional features (mod-guidance, postfix) are gated by `is not None` checks at the top of the function, where dynamo can specialize the trace once based on the module's attribute state.
 
 ---
 

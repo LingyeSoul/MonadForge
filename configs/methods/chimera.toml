@@ -16,13 +16,13 @@
 # the denoise loss + per-pool balance loss. T-LoRA's mask is applied to
 # the content branch only (the freq branch keeps full rank at every t).
 
-network_alpha = 64
-network_dim = 64
+network_alpha = 32
+network_dim = 32
 
-learning_rate = 1e-5
-max_train_epochs = 12
-save_every_n_epochs = 4
-checkpointing_epochs = 4
+learning_rate = 2e-5
+max_train_epochs = 18
+save_every_n_epochs = 6
+checkpointing_epochs = 6
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -31,15 +31,12 @@ caption_dropout_rate = 0.1
 # CMMD val (PE-Core MMD²) is the primary val signal.
 # use_cmmd = true
 
-logging_dir = "output/logs"
-log_with = "tensorboard"
-
-output_name = "anima_chimera-0531-64"
+output_name = "anima_chimera-0611-48"
 # path_pattern = "ama_mitsuki/*|channel_(caststation)/*|sweetonedollar/*"
 
-use_ortho = true
+use_ortho_init = true
 use_timestep_mask = true
-min_rank = 16
+min_rank = 8
 alpha_rank_scale = 1.0
 blocks_to_swap=0
 
@@ -52,18 +49,32 @@ blocks_to_swap=0
 # path.
 
 use_chimera_hydra = true
-num_experts_content = 8
+num_experts_content = 6
 num_experts_freq = 2
 
-balance_loss_warmup_ratio = 0.1
+balance_loss_warmup_ratio = 0.02
 balance_loss_weight = 1.0
-balance_w_content = 1e-6
+# EMA-usage load balance on the content pool (O(1) at uniform, → K_c at full
+# collapse). The old per-microbatch Switch at 1e-5 was negligible AND degenerate
+# at batch=1; this EMA term bites against the global dead-expert collapse without
+# punishing per-sample sharpness. Held gentle here (weighted ~1e-4–8e-4 vs
+# denoise ~0.1) so it shapes usage rather than forcing flat uniformity — the
+# symmetry-break now comes mainly from content_router_init_std below. Raise
+# toward 1e-3 if experts still die; lower if usage pins uniform with margin flat.
+balance_w_content = 1e-4
 network_content_router_lr_scale = 10.0
 
 # Content routing is always the network-level ContentRouter fed the pooled
-# crossattn_emb (the per-Linear lx_c router was removed). Only the LN toggle
-# remains configurable.
+# crossattn_emb (the per-Linear lx_c router was removed).
 content_router_layer_norm = true   # parameterless LN on the pooled input
+
+use_repa       = true
+repa_mode      = "relational"
+repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where style drifts
+repa_layer     = 8            # block to hook (of 28)
+repa_encoder   = "pe_spatial"
+repa_lr_scale  = 1.0          # head LR multiplier (absolute mode only)
+repa_spatial_norm = true
 
 # Freq-pool routing mode.
 #   "fei"     — hardwire π_f = normalize(FEI ** (1/freq_router_tau)) directly.
@@ -77,6 +88,7 @@ content_router_layer_norm = true   # parameterless LN on the pooled input
 #   "learned" — paper-faithful FreqRouter MLP over concat(FEI, σ-features).
 freq_router_mode = "fei"
 freq_router_tau = 1.0   # 1.0 = raw FEI passthrough; <1 sharpens, >1 flattens
+activation_memory_budget = 0.85
 
 # FEI = 2-band simplex (e_low, e_high). fei_sigma_low_div=4.0 places the
 # low/high crossover near σ≈0.3 (mid-denoising) on this dataset.

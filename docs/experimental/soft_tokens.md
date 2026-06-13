@@ -2,7 +2,7 @@
 
 Per-layer, time-indexed soft tokens in T5-compatible space. DiT is frozen. ~1M trainable params at default config (n_layers=10, K=4, D=1024, n_t_buckets=100). Each of the first `n_layers` DiT blocks gets its own learned (K, D) token bank plus a per-(t-bucket, layer) D-vector offset, spliced into `crossattn_emb` for that block alone. Trained with plain FM.
 
-Reference: Lee et al., *Aligning Text to Image in Diffusion Models is Easier Than You Think* (arXiv:2503.08250, NeurIPS 2025) — "SoftREPA". The base recipe adopts only the parameterization (per-layer × per-t soft tokens), trained under plain FM; the paper's InfoNCE contrastive objective was originally skipped because at Anima's training batch size (B=1) there are no in-batch negatives, and the paper itself reported SD3 FID regression at paper-strength contrastive. An **optional, B=1-adapted contrastive objective** is now available (off by default) — it builds negatives by swapping a cached text embedding off disk instead of using batch peers. See §"Contrastive objective" below and `docs/proposal/soft_tokens_contrastive.md`.
+Reference: Lee et al., *Aligning Text to Image in Diffusion Models is Easier Than You Think* (arXiv:2503.08250, NeurIPS 2025) — "SoftREPA". The base recipe adopts only the parameterization (per-layer × per-t soft tokens), trained under plain FM; the paper's InfoNCE contrastive objective was originally skipped because at Anima's training batch size (B=1) there are no in-batch negatives, and the paper itself reported SD3 FID regression at paper-strength contrastive. An **optional, B=1-adapted contrastive objective** is now available (off by default) — it builds negatives by swapping a cached text embedding off disk instead of using batch peers. See §"Contrastive objective" below and `_archive/proposals/soft_tokens_contrastive.md`.
 
 ## Quick start
 
@@ -63,12 +63,12 @@ Defaults: 10 · 4 · 1024 + 100 · 10 · 1024 ≈ 41k + 1.05M ≈ **1.05M params
 | File | Role |
 |------|------|
 | `networks/methods/soft_tokens.py` | `SoftTokensNetwork` — per-(layer, t) token bank, splice hook, save/load. |
-| `apply_to(text_encoders, unet)` | Walks `unet.blocks[:n_layers]`, replaces each `block.forward` with a wrapper that splices `s^(k, t)` into `crossattn_emb` before calling the original (ReFT-pattern monkey-patch). |
+| `apply_to(text_encoders, unet)` | Walks `unet.blocks[:n_layers]`, replaces each `block.forward` with a wrapper that splices `s^(k, t)` into `crossattn_emb` before calling the original (monkey-patch). |
 | `append_postfix(crossattn_emb, seqlens, timesteps)` | Receives `timesteps` from `train.py`'s existing per-step hook; computes `(n_layers, B, K, D)` step-scoped tokens and caches them on the network. **Returns `crossattn_emb` unchanged** — splicing happens inside the block hooks. |
 | `_make_block_hook(layer_idx, org_forward)` | Closure that reads the cached step tokens at `layer_idx`, splices into `crossattn_emb`, calls the original block forward. |
 | `SoftTokensMethodAdapter` (same file) | Contrastive extra-forward driver: stashes `neg_crossattn_emb` in `prime_for_forward`, runs the negative forwards + the active objective in `extra_forwards`, replays the deferred ∂L/∂v_neg in `after_backward`, surfaces metrics. Auto-resolved by `resolve_adapters` when `_contrastive_target_weight > 0`. |
 | `contrastive_loss(...)` / `step_contrastive_warmup(...)` | InfoNCE over the negatives (with optional jaccard penalty) + the warmup gate. |
-| `softrank_loss(...)` / `softrank_diagnostics(...)` / `_soft_rank(...)` | Soft-rank objective: differentiable listwise rank of the matched caption among candidates via `softtorch` (`contrastive_objective=softrank`). Dual ψ⁺/ψ⁻ banks ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See `docs/proposal/soft_tokens_softrank.md`. |
+| `softrank_loss(...)` / `softrank_diagnostics(...)` / `_soft_rank(...)` | Soft-rank objective: differentiable listwise rank of the matched caption among candidates via `softtorch` (`contrastive_objective=softrank`). Dual ψ⁺/ψ⁻ banks ride a `branch` selector through `_set_step_tokens`/`_bank_forward`. See `_archive/proposals/soft_tokens_softrank.md`. |
 | `library/datasets/base.py` | `setup_contrastive_negatives` / `_load_te_for_stem` — negative TE sourcing + `neg_crossattn_emb` / `neg_jaccard` on the example. |
 | `library/datasets/identity_pairs.py` | `IdentityPairSampler.hard_negative` / `shuffled` / `tag_jaccard` — negative policy. |
 | `library/training/losses.py::_soft_tokens_contrastive_loss` | Applies the warmup-gated `λ_con` to the adapter's InfoNCE scalar. |
@@ -114,7 +114,7 @@ The existing postfix module logs an aggressive guard against K-slot permutation 
 
 ## Contrastive objective (optional, B=1-adapted SoftREPA InfoNCE)
 
-A revival of SoftREPA's contrastive objective, off by default. It is **data-conditioned** and **needs negatives** — it sharpens prompt-following by making the *matched* text explain the anchor's latent better than *mismatched* text does. Full design + phasing: `docs/proposal/soft_tokens_contrastive.md`.
+A revival of SoftREPA's contrastive objective, off by default. It is **data-conditioned** and **needs negatives** — it sharpens prompt-following by making the *matched* text explain the anchor's latent better than *mismatched* text does. Full design + phasing: `_archive/proposals/soft_tokens_contrastive.md`.
 
 The B=1 trick (no batch peers): a negative is a **different stem's cached text embedding** (`{stem}_anima_te.safetensors`, the post-LLM-adapter `crossattn_emb`) swapped off disk — the same cached-feature-swap precedent the IP-Adapter identity pairs use, but swapping the TE feature instead of the PE feature. Each step runs the primary forward (matched text = the positive) plus `k` extra DiT forwards with the negative text spliced through the same soft tokens; the logit of a forward is its negative flow-matching error against the shared velocity target:
 
@@ -159,7 +159,7 @@ TensorBoard signals: `reg/soft_tokens_contrastive` (raw InfoNCE), `_weighted`, `
 A second objective on the **same** extra-forward plumbing (negatives, warmup,
 `contrastive_every_n`, compose seam, `after_backward` grad-cache), selected with
 `contrastive_objective=softrank` (the shipped config default). Full design:
-`docs/proposal/soft_tokens_softrank.md`. Where InfoNCE's negative branch is
+`_archive/proposals/soft_tokens_softrank.md`. Where InfoNCE's negative branch is
 *unbounded* (maximizing negative error has no fixed point — the SoftREPA
 degrade-while-loss-drops failure), soft-rank replaces the softmax with a
 **differentiable listwise rank** of the matched caption among the candidates. With
@@ -234,7 +234,7 @@ cross-objective comparability) and, under dual bank,
 | `blocks_to_swap` | ❌ method-forced 0 | The hook captures each `Block` by reference at `apply_to()` time; a swapped block is a different object instance, so the hook would fire on the wrong tensor. |
 | `gradient_checkpointing` | ✅ | The hook is the outermost wrapper; the original `forward` (which itself runs `checkpoint(_forward, ...)`) is called underneath, and the spliced `crossattn_emb` is part of the saved input graph. |
 | Modulation guidance | ✅ orthogonal | Modulation = per-block AdaLN path; soft tokens = K/V input path per block. |
-| T-LoRA / OrthoLoRA / ReFT | n/a | Soft tokens freeze the DiT; LoRA-family methods are not stacked in this config. |
+| T-LoRA / OrthoLoRA | n/a | Soft tokens freeze the DiT; LoRA-family methods are not stacked in this config. |
 
 ## Evaluation
 

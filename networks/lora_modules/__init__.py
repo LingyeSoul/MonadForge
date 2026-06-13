@@ -10,10 +10,11 @@ from networks.lora_modules.hydra import HydraLoRAModule, _sigma_sinusoidal_featu
 from networks.lora_modules.lora import LoRAModule
 from networks.lora_modules.ortho import (
     OrthoHydraLoRAModule,
+    OrthoInitLoRAModule,
     OrthoLoRAModule,
 )
-from networks.lora_modules.reft import ReFTModule
 from networks.lora_modules.stacked_experts import StackedExpertsLoRAModule
+from networks.lora_modules.step_expert import StepExpertLoRAModule
 
 __all__ = [
     "BaseLoRAModule",
@@ -22,9 +23,10 @@ __all__ = [
     "HydraLoRAModule",
     "LoRAModule",
     "OrthoHydraLoRAModule",
+    "OrthoInitLoRAModule",
     "OrthoLoRAModule",
-    "ReFTModule",
     "StackedExpertsLoRAModule",
+    "StepExpertLoRAModule",
     "_absorb_channel_scale",
     "_sigma_sinusoidal_features",
 ]

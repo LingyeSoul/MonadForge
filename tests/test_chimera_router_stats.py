@@ -47,8 +47,6 @@ def _make_minimal_chimera_network(
     net.cfg = cfg
     net.unet_loras = []
     net.text_encoder_loras = []
-    net.text_encoder_refts = []
-    net.unet_refts = []
     net._last_sigma = None
     net._router_stats_cache = None
     net._chimera_router_stats_cache = None

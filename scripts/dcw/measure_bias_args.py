@@ -53,7 +53,7 @@ def parse_args(description: str | None = None) -> argparse.Namespace:
         "--attn_mode",
         type=str,
         default="flash",
-        help="torch | sdpa | xformers | sage | flash",
+        help="torch | sdpa | sage | flash",
     )
     p.add_argument("--n_images", type=int, default=2, help="Cached samples to use")
     p.add_argument("--n_seeds", type=int, default=1, help="Seeds per sample")

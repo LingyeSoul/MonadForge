@@ -20,13 +20,9 @@ network_args = [
     "b_cond_init=-10.0",
     "cond_scale=1.0",
     "apply_ffn_lora=1",
-    "cond_token_count=4096",
 ]
 
 output_name = "anima_easycontrol"
-
-logging_dir = "output/logs"
-log_with = "tensorboard"
 
 learning_rate = 1e-4
 max_train_epochs = 12
@@ -44,6 +40,6 @@ use_cmmd = false
 
 [variant]
 family = "easycontrol"
-label = "EasyControl"
-description = "Extended self-attention image conditioning."
+label = "EasyControl (ref == target)"
+description = "Extended self-attention image conditioning (the condition is the reference image itself)."
 order = 10

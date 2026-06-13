@@ -6,20 +6,48 @@ STRINGS: dict[str, str] = {
     # Window / tabs
     "window_title": "Anima LoRA",
     "tab_config": "学習設定",
-    "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
     "tab_turbo": "Turbo",
-    "tab_methods": "手法",
-    "tab_images": "データセット",
+    "tab_experimental": "実験機能",
+    "tab_images": "データセットViewer",
     "tab_merge": "マージ",
+    "tab_queue": "キュー状況",
     "tab_preprocess": "前処理",
+    "tab_tensorboard": "TensorBoard",
     # PreprocessingTab
     "preprocess_intro": (
         "キャプションのシャッフルやテキストバブルのマスキングを設定し、"
         "各ステップを個別に実行できます。学習設定タブの「学習」ボタンは、"
         "キャッシュが存在しない場合にデフォルト設定で前処理を自動実行します。"
         "このタブは設定の調整や個別ステップの再実行に使用します。"
+    ),
+    "preprocess_image_prep": "画像前処理 (リサイズ / フィルター)",
+    "preprocess_source_image_dir": "ソース画像フォルダー:",
+    "preprocess_source_image_dir_tip": (
+        "選択中の GUI method のベース元画像ルートです (デフォルトは configs/preprocess.toml; "
+        "編集内容は該当 variant に保存されます)。実行時に path_scope がこの上に付加されるため、"
+        "ここに表示されるのはスコープ後の最終パスではなくスコープなしのルートです。"
+        "ファイルの保存先を変えずにツリーの一部だけ前処理する場合は、下の前処理パスフィルターを使用してください。"
+    ),
+    "preprocess_path_pattern": "前処理パスフィルター:",
+    "preprocess_path_pattern_tip": (
+        "path_scope が先に実効ソース画像ルートを決めます。"
+        "たとえば path_scope=data_group1 の場合、前処理ルートは "
+        "image_dataset/data_group1 になります。このフィルターはそのルートからの"
+        "相対パスに適用されます。'*'(または空欄) は全件、'1/*' は "
+        "data_group1/1 のみ、'1/*|2/*' は両方のサブフォルダーを処理します。"
+    ),
+    "preprocess_drop_lowres": "低解像度画像を除外",
+    "preprocess_drop_lowres_tip": (
+        "下のピクセル閾値を下回るソース画像をスキップし、"
+        "リサイズ / VAE / テキストキャッシュに含まれないようにします。"
+        "チェックを外すとサイズに関わらずすべての画像を保持します。"
+    ),
+    "preprocess_min_pixels": "最小ピクセル数 (フィルター閾値):",
+    "preprocess_min_pixels_tip": (
+        "低解像度フィルターのピクセル数閾値。500000 = 0.5MP。"
+        "「低解像度画像を除外」がオフの場合は無視されます。"
     ),
     "preprocess_text_caching": "キャッシュ (VAE + テキスト)",
     "preprocess_caption_shuffle_variants": "キャプションあたりのシャッフルバリアント数 (N):",
@@ -38,6 +66,9 @@ STRINGS: dict[str, str] = {
         "シャッフルバリアント ≤ 0 の場合は無視されます。"
     ),
     "preprocess_run_te": "キャッシュ実行 (VAE + テキスト)",
+    "preprocess_run_pe": "PE キャッシュ実行",
+    "preprocess_add_to_queue": "キューに追加",
+    "preprocess_queued": "{label} をキューに追加しました (ジョブ {job_id}) — キュータブで確認できます。",
     "preprocess_masking_sam": "SAM3 マスキング (テキストバブル)",
     "preprocess_masking_mit": "MIT マスキング (漫画テキスト)",
     "preprocess_sam_prompts": "SAM プロンプト (1行1件):",
@@ -80,8 +111,7 @@ STRINGS: dict[str, str] = {
     ),
     "preprocess_mit_threshold": "MIT テキストしきい値 (0.0–1.0):",
     "preprocess_mit_threshold_tip": (
-        "MIT/ComicTextDetector テキストセグメンタの信頼度しきい値。"
-        "デフォルト 0.8。"
+        "MIT/ComicTextDetector テキストセグメンタの信頼度しきい値。デフォルト 0.8。"
     ),
     "preprocess_mask_path_pattern": "マスクパスフィルター:",
     "preprocess_mask_path_pattern_tip": (
@@ -108,10 +138,12 @@ STRINGS: dict[str, str] = {
     "preprocess_status_resized": "リサイズ済み画像: {n}",
     "preprocess_status_caches": "キャッシュ — 潜在変数: {lat}, テキスト: {te}, PE: {pe}",
     "preprocess_status_masks": "マスク: {masks}",
-    "preprocess_status_no_resized": "リサイズ済み画像がありません — まず学習設定タブの前処理を実行してください。",
+    "preprocess_status_no_resized": "リサイズ済み画像がありません。",
+    "preprocess_open_dataset_dir": "cacheフォルダを開く",
+    "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ フォルダ（リサイズ済み画像 + キャッシュ）をファイルマネージャーで開きます。",
     "preprocess_log_placeholder": "前処理の出力がここに表示されます...",
     "preprocess_save_settings": "保存",
-    "preprocess_save_settings_tip": "設定を保存します (configs/sam_mask.yaml + GUI設定に書き込みます)。",
+    "preprocess_save_settings_tip": "設定を選択中の GUI method プロファイルに保存します。マスキング実行時は現在のプロファイルのマスク設定がジョブに渡されます。",
     "preprocess_settings_saved": "前処理設定を保存しました。",
     "preprocess_invalid_float": "{field} の値が不正です: {value}",
     "preprocess_already_running": "前処理ステップが既に実行中です。",
@@ -120,9 +152,19 @@ STRINGS: dict[str, str] = {
     "save": "保存",
     "save_dirty_tooltip": "未保存の編集があります。「保存」をクリックしてバリアントファイルに書き込んでください (学習/前処理実行時にスキップした場合は自動保存されます)。",
     "train": "学習",
+    "train_tooltip": "現在のバリアントを今すぐ学習します。ドロップダウンを開くと、今すぐ開始せずデーモンキューに追加できます。",
+    "train_busy_use_queue": "すでにこのタブにジョブが紐付いています。Train のドロップダウンで別のジョブをキューに追加するか、先に現在のジョブを停止してください。",
+    "queue": "キューに追加",
+    "queue_tooltip": "現在のバリアントをこのタブに紐付けずにデーモンキューに追加します。続けて別のバリアントをキューに追加できます。",
+    "queue_train_preprocess": "キューに追加: 学習 + 前処理",
+    "queue_train_only": "キューに追加: 学習のみ",
+    "queue_preprocess_only": "キューに追加: 前処理のみ",
     "test": "テスト",
     "stop": "停止",
     "log_placeholder": "学習の出力がここに表示されます...",
+    "copy_log": "コピー",
+    "copy_log_tooltip": "学習ログ全体をクリップボードにコピー",
+    "copy_log_done": "コピーしました",
     "from_base": "base.toml から",
     "saved": "保存済み",
     "saved_file": "{name} を保存しました",
@@ -134,7 +176,7 @@ STRINGS: dict[str, str] = {
     "error": "エラー",
     "accelerate_not_found": "PATH に accelerate が見つかりません",
     "preprocess": "前処理",
-    "preprocess_required": "学習前に前処理を実行してください。",
+    "preprocess_required": "学習開始前に前処理が先に実行されます。",
     "preprocess_existing_caches_title": "既存のキャッシュを再利用します",
     "preprocess_existing_caches_body": (
         "次のディレクトリにキャッシュファイルが既に存在します:\n  {cache_dir}\n\n"
@@ -155,25 +197,54 @@ STRINGS: dict[str, str] = {
         "キャプションを編集した場合は、キャンセルして前処理を実行してください。\n\n"
         "既存のキャッシュで続行しますか?"
     ),
-    "stale_cache_title": "古いデータセットキャッシュ",
-    "stale_cache_body": (
-        "次のディレクトリ以下に {n} 件の VAE 潜在変数キャッシュがあります:\n  {cache_dir}\n\n"
-        "これらは現在のバケットテーブル "
-        "(4032 / 4200 トークン数ファミリー) に含まれない解像度でキャッシュされています:\n\n{examples}\n\n"
-        "古いバケットレイアウトでキャッシュされたファイルです — 学習時にスキップされるか、"
-        "誤ったバケットに割り当てられる可能性があります。キャンセルして前処理を再実行し "
-        "(「上書き」オプションを使用)、キャッシュを再生成してください。\n\n"
-        "古いキャッシュのまま学習を続行しますか?"
-    ),
     "train_autopreprocess_log": (
-        "前処理済みキャッシュが見つかりません — 前処理を実行してから自動的に学習を開始します。\n"
+        "前処理済みキャッシュが見つかりません — 学習開始前に前処理を先に実行します。\n"
     ),
     "train_preprocessing": "前処理中…",
     "no_lora_for_test": "output/ckpt/ に LoRA が見つかりません。先に学習を実行してください。",
     "test_output_title": "最新のテスト出力",
     "test_output_empty": "output/tests/ が空です。",
+    "sample_output_title": "最新の学習サンプル",
+    "sample_output_empty": "サンプルはまだありません — 学習が生成するにつれて出力ディレクトリの sample/ フォルダに表示されます。",
+    "sample_prompt_edit_button": "サンプルプロンプトを編集…",
+    "sample_prompt_dialog_title": "サンプルプロンプト",
+    "sample_prompt_summary_none": "サンプルプロンプトなし",
+    "sample_prompt_summary_count": "{n} 件のプロンプト · {first}",
     "finished": "--- 完了 (終了コード {code}) ---",
     "starting": "起動中… (torch / accelerate を読み込んでいます)",
+    "queue_submitting": "{variant} を学習デーモンキューに追加中…",
+    "queue_added_train": "{variant} を学習ジョブ {job_id} としてキューに追加しました。\n",
+    "queue_added_preprocess": "{variant} を前処理ジョブ {job_id} としてキューに追加しました。完了後に学習が連続して実行されます。\n",
+    "queue_refresh": "更新",
+    "queue_start": "キューを開始",
+    "queue_pause": "キューを一時停止",
+    "queue_start_tooltip": "待機中のジョブ（キューのドロップダウンで追加したもの）を実行します。1 件ずつ処理します。",
+    "queue_pause_tooltip": "キューを保留します — 実行中のジョブは続行しますが、「キューを開始」を押すまで次の待機ジョブは始まりません。",
+    "queue_stop_selected": "選択項目を停止",
+    "queue_copy_output": "出力をコピー",
+    "queue_status": "実行中/待機中 {live} 件 / 合計 {total} 件",
+    "queue_status_paused": "実行中/待機中 {live} 件 / 合計 {total} 件 — キュー一時停止中",
+    "queue_daemon_unavailable": "デーモンに接続できません",
+    "queue_detail_placeholder": "キュー項目を選択すると詳細が表示されます。",
+    "queue_log_placeholder": "選択したジョブの出力がここに表示されます...",
+    "queue_log_missing": "(まだ出力ログがありません。)",
+    "queue_log_read_failed": "(出力ログを読み込めませんでした: {err})",
+    "queue_log_truncated": "--- 最後の {mb} MB の出力を表示中 ---\n",
+    "queue_detail_id": "id: {job_id}",
+    "queue_detail_state": "状態: {state}",
+    "queue_detail_kind": "種別: {kind}",
+    "queue_detail_method": "対象: {method}",
+    "queue_detail_submitted": "追加日時: {time}",
+    "queue_detail_started": "開始日時: {time}",
+    "queue_detail_ended": "終了日時: {time}",
+    "queue_detail_from_chain": "from_chain: true",
+    "queue_detail_chain": "連続学習: {method}",
+    "queue_detail_chained_id": "連結ジョブ: {job_id}",
+    "queue_detail_pid": "pid: {pid}",
+    "queue_detail_error": "エラー: {error}",
+    "queue_detail_status_detail": "詳細: {detail}",
+    "queue_detail_config": "設定スナップショット: {path}",
+    "queue_detail_stdout": "stdout: {path}",
     "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
     "daemon_error_cause": "↳ 推定される原因: {summary}",
     "update_success_title": "更新完了",
@@ -219,15 +290,6 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "バリアント '{name}' は既に存在します。",
     "basic_section": "基本",
     "advanced_section": "詳細 (クリックして展開)",
-    # AdapterTab (IP-Adapter / EasyControl)
-    "adapter_source_dir": "ソースデータセット:",
-    "adapter_cache_dir": "キャッシュディレクトリ:",
-    "adapter_n_pairs": "{n} 枚の画像 / {c} 件のキャプションペア",
-    "adapter_n_caches": "{n} 件キャッシュ済み",
-    "adapter_preprocess": "前処理 (リサイズ + VAE + テキスト)",
-    "adapter_preprocess_pe": "前処理 (リサイズ + VAE + テキスト + PE)",
-    "adapter_train": "学習",
-    "adapter_stop": "停止",
     # SPD / Turbo 蒸留設定タブ (gui/tabs/distill_tab.py)
     "distill_general_section": "全般",
     "distill_job_running": "このタブでは既にジョブが実行中です。",
@@ -285,24 +347,43 @@ STRINGS: dict[str, str] = {
     ),
     # Language
     "language": "言語:",
+    # Settings dialog
+    "settings_btn": "⚙ 設定",
+    "settings_btn_tooltip": "アプリ設定 — 言語、MCP サーバー登録",
+    "settings_title": "設定",
+    "settings_mcp_header": "MCP サーバー（エージェント連携）",
+    "settings_mcp_desc": "ローカル学習デーモンを MCP クライアント（Claude Code、Claude Desktop "
+    "など）に公開します。以下のコマンドをターミナルで実行すると Claude Code に登録されます:",
+    "settings_mcp_desc_json": "他の MCP クライアント（Claude Desktop、OpenClaw など）には、"
+    "同等の JSON 設定を使用します:",
+    "settings_mcp_copy": "コピー",
+    "settings_mcp_copied": "コピーしました ✓",
+    "settings_close": "閉じる",
+    "settings_lang_apply_title": "言語",
+    "settings_lang_apply_question": "今すぐインターフェースを再読み込みして言語を適用しますか？\n\n"
+    "タブの未保存の編集内容は失われます。待機中・実行中の学習ジョブはデーモンで"
+    "動いているため影響ありません。\n\n「いいえ」を選ぶと次回起動時に適用されます。",
     # Guidebook
     "guidebook": "📖 ガイドブック",
     "guidebook_tooltip": "日本語総合ガイドを開きます (docs/guidelines/ガイドブック.md)",
     "guidebook_missing": "{path} にガイドが見つかりません",
     "guidebook_open_external": "システムビューアで開く",
     "guidebook_close": "閉じる",
+    # EasyControl アダプターガイド (自作コントロールタスク)
+    "adapter_guide": "📘 アダプターガイド",
+    "adapter_guide_tooltip": "独自の EasyControl アダプターの作り方 (easycontrol_adapters/ADAPTER_GUIDE.md)",
+    "easycontrol_descriptor_note": "このコントロールタスクは、複数テーブル構造を持つ独立したディスクリプターで、左側で生の TOML として編集します:<br><br>• <b>name</b> — 出力スラッグ; 派生するすべてのキャッシュ/出力パスを再ルーティングします。<br>• <code>[staging]</code> — 条件ツリーを実体化するデータ生成ステップ。<br>• <code>[preprocess]</code> — ステージング済みツリーへの VAE/TE キャッシュ設定。<br>• <code>[training]</code> — ベース EasyControl 手法にマージされるオーバーライド。<br>• <code>[general]</code> / <code>[[datasets]]</code> — train.py が読み込むデータセット設計図。<br>• <code>[variant]</code> — このドロップダウン項目の GUI メタデータ。<br><br><b>前処理</b>ボタンは条件ツリーを合成してキャッシュします; <b>学習</b>はこのディスクリプターの <code>[training]</code> オーバーライドをマージしてベース EasyControl 手法を学習します。どちらも GUI を閉じても続行されます。",
+    "easycontrol_descriptor_form_header": "ディスクリプター <b>{path}</b> を編集中。以下の設定テーブルはフォームとして編集します; 保存時に変更された値を書き戻し、コメントと <code>[[datasets]]</code> 設計図は保持されます。設計図と <code>[variant]</code> メタデータはここには表示されません — それらはファイルを直接編集してください。フィールド名をクリックするとヘルプが表示されます。",
+    "ec_desc_group_top": "ディスクリプター",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "モデル",
-    "models_btn_tooltip": "モデルチェックポイントをダウンロードまたは再ダウンロードします (Anima ベース、SAM3、MIT、IP-Adapter エンコーダー)",
+    "models_btn_tooltip": "モデルチェックポイントをダウンロードまたは再ダウンロードします (Anima ベース、SAM3、MIT、PE ビジョンエンコーダー)",
     "update_btn": "更新",
     "update_btn_tooltip": "GitHub から最新の anima_lora リリースを取得して uv sync を実行します",
     "update_btn_available": "更新 ●",
     "update_btn_available_tooltip": "新しいリリース {v} があります — クリックしてリリースノートを確認",
     "report_issue": "問題を報告",
     "report_issue_tooltip": "ブラウザで GitHub Issue トラッカーを開きます",
-    "experimental_features": "🧪 実験的機能",
-    "experimental_features_tooltip": "Postfix および IP-Adapter / EasyControl タブを開きます (画像条件付け手法)",
-    "experimental_features_title": "実験的機能",
     # Models dialog
     "models_title": "モデルのダウンロード",
     "models_intro": "以下からモデルグループを選択するか、「すべてダウンロード」で標準セット "
@@ -315,7 +396,20 @@ STRINGS: dict[str, str] = {
     "model_anima": "Anima — DiT + テキストエンコーダー + VAE",
     "model_sam3": "SAM3 — テキストバブルマスキング",
     "model_mit": "MIT — 漫画テキストマスキング",
-    "model_pe": "PE-Core-L14-336 — IP-Adapter ビジョンエンコーダー",
+    "model_pe": "PE-Core-L14-336 — ビジョンエンコーダー (CMMD 検証 / DCW)",
+    # HuggingFace 認証 (モデルダイアログ)
+    "models_hf_token_placeholder": "HuggingFace トークンを貼り付けてください (hf_…)",
+    "models_hf_authenticate": "認証",
+    "models_hf_token_hint": "ゲート付き/レート制限のあるダウンロード(SAM3 など)に必要です。"
+    '<a href="https://huggingface.co/settings/tokens">'
+    "huggingface.co/settings/tokens</a> でトークンを作成し、"
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> で SAM3 のアクセスを申請してください。',
+    "models_hf_token_present": "✓ HuggingFace トークンは既に保存されています。",
+    "models_hf_not_authenticated": "未認証 — トークンを貼り付けてゲート付きダウンロードを有効にしてください。",
+    "models_hf_token_empty": "先にトークンを貼り付けてください。",
+    "models_hf_authenticating": "認証中…",
+    "models_hf_logged_in": "✓ {name} としてログインしました。",
+    "models_hf_login_failed": "認証に失敗しました: {err}",
     # Update dialog
     "update_title": "anima_lora の更新",
     "update_warning": "更新により GitHub から最新リリースが取得され、作業ツリーが上書きされます "
@@ -346,10 +440,8 @@ STRINGS: dict[str, str] = {
     "merge_no_adapter_msg": "アダプターが選択されていないか、ファイルが存在しません。",
     "merge_no_selection": "リストからチェックポイントを選択してスキャンしてください。",
     "merge_verdict_ready": "✓ ベイク可能",
-    "merge_verdict_partial": "△ 一部 — LoRA はベイク可能、ReFT はドロップされます",
     "merge_verdict_hydra": "✗ HydraLoRA moe — レイヤーローカルルーターはベイクできません",
     "merge_verdict_postfix_only": "✗ Postfix/prefix のみ — 重み差分ではありません",
-    "merge_verdict_reft_only": "✗ ReFT のみ — ブロックレベルフック、ベイクする LoRA がありません",
     "merge_verdict_unknown": "? 認識できるアダプターキーがありません",
     "merge_options": "マージオプション",
     "merge_base_dit": "ベース DiT:",
@@ -358,7 +450,7 @@ STRINGS: dict[str, str] = {
     "merge_dtype": "保存データ型:",
     "merge_out": "出力:",
     "merge_out_placeholder": "(自動: <adapter>_merged.safetensors)",
-    "merge_allow_partial": "部分マージを許可 (ReFT / Hydra / postfix キーをドロップ)",
+    "merge_allow_partial": "部分マージを許可 (Hydra / postfix キーをドロップ)",
     "merge_allow_partial_tip": "アダプターにベイクできないコンポーネントが含まれていても続行します。ドロップされたコンポーネントはマージ済み DiT には含まれません。",
     "merge_button": "DiT にマージ",
     "merge_log_placeholder": "マージの出力がここに表示されます...",
@@ -367,4 +459,22 @@ STRINGS: dict[str, str] = {
     "merge_pick_dit": "ベース DiT .safetensors を選択",
     "merge_pick_out": "マージ済み DiT を名前を付けて保存...",
     "browse": "参照…",
+    # Multi-scale target_res tiers
+    "target_res_danger_tooltip": "高コストなティア：{edge}px は画像あたり約 {tokens} トークンを使用し、コンパイル済みブロックグラフを 1 つ追加します（コンパイルが遅くなり、VRAM が増加）。この解像度が本当に必要な場合のみ有効にしてください。",
+    # TensorBoard panel
+    "tb_panel_title": "TensorBoard 実行一覧",
+    "tb_open": "TensorBoard を開く",
+    "tb_stop": "サーバーを停止",
+    "tb_remove": "削除",
+    "tb_view": "表示",
+    "tb_view_tip": "この実行のみを TensorBoard で開きます。",
+    "tb_no_runs": "まだ実行記録がありません。学習を開始するとリストが表示されます。",
+    "tb_status_running": "ポート {port} で実行中",
+    "tb_status_stopped": "",
+    "tb_not_installed": "tensorboard がインストールされていません。実行: pip install tensorboard",
+    "tb_current_run_label": "（現在）",
+    "tb_open_current": "現在の学習を表示",
+    "tb_open_current_tip": "進行中の学習実行のみを TensorBoard で開きます。",
+    "tb_open_current_idle_tip": "学習が進行中のときに使用できます。",
+    "tb_appear_hint": "実行がリストに表示されない場合は、TensorBoard の再読み込み（アップデート）ボタンを押してみてください。",
 }

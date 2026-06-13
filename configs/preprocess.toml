@@ -1,0 +1,36 @@
+# Preprocess settings — split out of base.toml so they survive `make update`
+# (base.toml is overwritten on update to ship new infra keys; this file is not).
+#
+# Most knobs here are read ONLY by the preprocess pipeline (resize → VAE/TE/PE
+# caching → masking) via library.config.io.load_path_overrides, layered as:
+#   preprocess.toml → base.toml → presets.toml[<preset>] → methods/<method>.toml
+# (preset/method still win per-run; a legacy copy of any key left in base.toml
+# also wins, so old checkouts keep working — backward compatible.)
+#
+# EXCEPTION: `target_res` below is dual-use — train.py reads it too (it builds
+# the bucket table + sizes the compile cache), so it MUST match between
+# preprocess and training. load_method_preset seeds it from this file for the
+# training side; keep it here, not in base.toml.
+
+source_image_dir = "image_dataset"
+
+# Multi-scale constant-token tiers. Each image is preprocessed into the tier that
+# resizes it the LEAST (nearest bucket by scale — see library/datasets/buckets.py
+# choose_edge), giving v1.0-style diverse-resolution training from a mixed
+# dataset. Allowed edges: 512 768 896 1024 1280 1536 (tokens 1024+1008 / 2160 /
+# 3024+3000 / 4032+4200 / 6300 / 8640). `[1024]` = single ~1MP tier. Training MUST use the same
+# tiers as preprocess — this one key feeds both. Override per-run:
+#   make preprocess ARGS="--target_res 1024 1536"
+target_res = [1024, 896]
+
+# Preprocess input filter. When true, scripts/tasks/preprocess.py forwards
+# `--min_pixels = min_pixels` to both preprocess/resize_images.py and
+# preprocess/cache_text_embeddings.py so under-sized source images never
+# enter the resize / VAE / TE caches. Default 500_000 = 0.5MP — matches the
+# scripts' own argparse defaults. Set drop_lowres_images = false to keep
+# every image regardless of size. Override per-run without editing this file:
+#   make preprocess ARGS="--min_pixels 0"        # explicit threshold (wins)
+#   make preprocess ARGS="--no_drop_lowres"      # keep every image
+#   make preprocess ARGS="--drop_lowres"         # force the configured threshold
+drop_lowres_images = true
+min_pixels = 500000

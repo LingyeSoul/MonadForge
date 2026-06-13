@@ -16,7 +16,12 @@ from pathlib import Path
 from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
-from library.datasets.buckets import BucketManager
+from library.datasets.buckets import (
+    DEFAULT_TARGET_RES,
+    BucketManager,
+    buckets_for_edges,
+    choose_edge,
+)
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 
@@ -61,29 +66,66 @@ def process_image(
     bucket_args: tuple,
     copy_captions: bool = True,
     rel_dir: str = "",
-) -> tuple[str, tuple[int, int]]:
+    overwrite: bool = False,
+) -> tuple[str, tuple[int, int], bool]:
     """Worker — receives bucket params (not a BucketManager) to stay picklable.
 
     ``rel_dir`` is the (possibly empty) relative subdir under the source root;
     the output mirrors it as ``out_dir / rel_dir / stem.png``. Empty ``rel_dir``
     collapses to the flat layout.
+
+    Returns ``(name, bucket_reso, skipped)``. Unless ``overwrite`` is set, an
+    image whose resized PNG already exists *at the correct bucket size* is
+    skipped (no re-decode/resize) — so a re-run is near-free, while a bucket
+    change (e.g. adding a ``--target_res`` tier) still re-resizes only the
+    images whose target bucket actually moved.
     """
-    max_reso, min_size, max_size, reso_steps, use_constant = bucket_args
+    # 6th element (target_res) is optional so pre-multiscale 5-tuple callers
+    # still work.
+    max_reso, min_size, max_size, reso_steps, use_constant, *rest = bucket_args
+    target_res = rest[0] if rest else None
     bucket_mgr = BucketManager(
         max_reso=max_reso,
         min_size=min_size,
         max_size=max_size,
         reso_steps=reso_steps,
     )
-    bucket_mgr.make_buckets(constant_token_buckets=use_constant)
 
     src_img = Image.open(image_path)
-    save_kwargs = _collect_metadata(src_img)
-    img = src_img.convert("RGB")
-    w, h = img.size
+    w, h = src_img.size  # header-only read; no pixel decode yet
+
+    if use_constant:
+        # Pick the tier that resizes this image the least (nearest bucket by
+        # cover-scale), then the nearest-aspect bucket within it. target_res is
+        # absent when no preprocess.toml / config value supplies it (or it's a
+        # bare [1024], which tasks.py strips); default to the canonical 1024
+        # tier rather than the full multi-tier catalog. NOT defaulting here lets
+        # make_buckets fall back to all_constant_token_buckets() (every tier),
+        # whose aspect-only select_bucket happily UPSCALES a 0.7MP portrait into
+        # a 1536-tier 1024x2160 bucket — the multi-tier resize regression.
+        tier = target_res or list(DEFAULT_TARGET_RES)
+        edge = choose_edge(w, h, tier)
+        bucket_mgr.set_predefined_resos(buckets_for_edges([edge]))
+    else:
+        bucket_mgr.make_buckets(constant_token_buckets=False)
 
     bucket_reso, _, _ = bucket_mgr.select_bucket(w, h)
     bw, bh = bucket_reso
+
+    target_dir = out_dir / rel_dir if rel_dir else out_dir
+    out_path = target_dir / f"{image_path.stem}.png"
+
+    # Idempotent skip: an existing PNG already at the target bucket is up to date.
+    if not overwrite and out_path.exists():
+        try:
+            with Image.open(out_path) as ex:
+                if ex.size == (bw, bh):
+                    return image_path.name, bucket_reso, True
+        except Exception:
+            pass  # unreadable existing output → fall through and re-resize
+
+    save_kwargs = _collect_metadata(src_img)
+    img = src_img.convert("RGB")
 
     # Resize preserving aspect ratio so the image covers the bucket.
     ar_img = w / h
@@ -102,10 +144,7 @@ def process_image(
     top = (new_h - bh) // 2
     img = img.crop((left, top, left + bw, top + bh))
 
-    target_dir = out_dir / rel_dir if rel_dir else out_dir
     target_dir.mkdir(parents=True, exist_ok=True)
-
-    out_path = target_dir / f"{image_path.stem}.png"
     img.save(out_path, format="PNG", **save_kwargs)
 
     if copy_captions:
@@ -114,7 +153,7 @@ def process_image(
             if cap.exists():
                 shutil.copy2(cap, target_dir / f"{image_path.stem}{ext}")
 
-    return image_path.name, bucket_reso
+    return image_path.name, bucket_reso, False
 
 
 def resize_to_buckets(
@@ -126,19 +165,26 @@ def resize_to_buckets(
     max_bucket_reso: int = 2048,
     bucket_reso_steps: int = 64,
     constant_token_buckets: bool = True,
+    target_res: list[int] | None = None,
     workers: int = 4,
     min_pixels: int = 500_000,
     copy_captions: bool = True,
     recursive: bool = False,
+    path_pattern: str | None = None,
     verbose: bool = True,
+    overwrite: bool = False,
     progress: ProgressFn | None = None,
 ) -> tuple[PreprocessStats, dict[tuple[int, int], int]]:
     """Resize+crop every image under ``src`` into bucket resolutions under ``dst``.
 
     Mirrors the source subdir layout, copies caption sidecars, and skips images
     below ``min_pixels``. Returns ``(stats, bucket_counts)`` where
-    ``bucket_counts`` maps each ``(W, H)`` bucket to its image count. Pass
-    ``progress`` for a per-image bar.
+    ``bucket_counts`` maps each ``(W, H)`` bucket to its image count (over the
+    full dataset, skipped + written). Pass ``progress`` for a per-image bar.
+
+    Unless ``overwrite`` is set, images whose resized PNG already exists at the
+    correct bucket are skipped — a re-run only touches images whose target
+    bucket changed (e.g. after adding a ``--target_res`` tier).
     """
     dst.mkdir(parents=True, exist_ok=True)
 
@@ -148,11 +194,12 @@ def resize_to_buckets(
         max_bucket_reso,
         bucket_reso_steps,
         constant_token_buckets,
+        target_res,
     )
 
     # walk_images enforces per-subfolder stem uniqueness (same-folder stem
     # collisions would collide the resized output).
-    image_files = walk_images(src, recursive=recursive)
+    image_files = walk_images(src, recursive=recursive, pattern=path_pattern)
     stats = PreprocessStats(seen=len(image_files))
 
     if min_pixels > 0:
@@ -181,10 +228,14 @@ def resize_to_buckets(
         image_files = kept
 
     if verbose:
-        print(
-            f"Resizing {len(image_files)} images to "
-            f"{'constant-token' if constant_token_buckets else 'standard'} buckets"
-        )
+        mode = "standard"
+        if constant_token_buckets:
+            mode = (
+                f"multi-scale constant-token (tiers {sorted(target_res)})"
+                if target_res
+                else "constant-token"
+            )
+        print(f"Resizing {len(image_files)} images to {mode} buckets")
 
     def _rel_for(p: Path) -> str:
         try:
@@ -198,6 +249,7 @@ def resize_to_buckets(
         progress(0, total=len(image_files))
 
     bucket_counts: dict[tuple[int, int], int] = {}
+    resize_skipped = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
@@ -207,15 +259,26 @@ def resize_to_buckets(
                 bucket_args,
                 copy_captions,
                 _rel_for(img_path),
+                overwrite,
             ): img_path
             for img_path in image_files
         }
         for future in as_completed(futures):
-            name, reso = future.result()
+            name, reso, skipped = future.result()
             bucket_counts[reso] = bucket_counts.get(reso, 0) + 1
-            stats.written += 1
+            if skipped:
+                resize_skipped += 1
+            else:
+                stats.written += 1
             if progress is not None:
-                progress(1, detail=f"{name} → {reso[0]}x{reso[1]}")
+                tag = "skip" if skipped else f"→ {reso[0]}x{reso[1]}"
+                progress(1, detail=f"{name} {tag}")
+    stats.skipped += resize_skipped
+    if verbose and resize_skipped:
+        print(
+            f"Skipped {resize_skipped} image(s) already at their target bucket "
+            f"(pass --overwrite to force re-resize); {stats.written} (re)written."
+        )
 
     if verbose:
         print("\nBucket distribution:")

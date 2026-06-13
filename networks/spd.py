@@ -268,6 +268,150 @@ def spd_stage_target(
     return x0_si, eps_si.to(x0_si.dtype)
 
 
+# ── SNR-gated velocity loss (information-aware fine-tune objective) ────────────
+# The paper's fine-tune (Eq. 14) is a plain per-sample velocity MSE. At the
+# post-expansion entry the HF block of x_t is *fresh noise* — zero mutual
+# information with this image's true HF — so the MSE-optimal prediction there is
+# the dataset-conditional-mean detail, i.e. blur. The paper never feeds its own
+# Prop. 1 machinery back into the loss; we do: per-frequency SNR (Eq. 15)
+#
+#     SNR_ω(t) = ((1−t)²/t²) · P_ω
+#
+# gives the per-band R² of the clean coefficient given x_t (the fraction of the
+# target the input actually determines — Eq. 23). Weighting the DCT-domain
+# velocity error by w_ω(t) = SNR/(1+SNR) (soft) or 1[t ≤ t_ω] (hard, Eq. 9)
+# zeroes exactly the demands-clairvoyance gradients whose minimizer is HF
+# attenuation, while keeping full supervision on the bands the input determines.
+# P_ω is measured from the training latents (orthonormal DCT ⇒ ε per-coefficient
+# variance is exactly 1, so no further normalization), not the power-law fit —
+# anime latents have line-art HF quirks a 2-parameter fit smooths over.
+
+
+def _radial_bin_index(
+    h: int, w: int, H_full: int, W_full: int, n_bins: int, device
+) -> torch.Tensor:
+    """(h, w) long tensor: radial-frequency bin of each DCT coefficient.
+
+    Normalized radius u = sqrt((ky/H_full)² + (kx/W_full)²) ∈ [0, √2), binned
+    uniformly over [0, √2]. Indices are taken relative to the FULL-res grid:
+    ``dct_lowpass_init`` truncation preserves coefficients, so index ky on a
+    stage-s grid is the same frequency as index ky at full res — one shared
+    binning serves every stage and the profile measurement.
+    """
+    ky = torch.arange(h, device=device, dtype=torch.float32) / float(H_full)
+    kx = torch.arange(w, device=device, dtype=torch.float32) / float(W_full)
+    u = torch.sqrt(ky[:, None] ** 2 + kx[None, :] ** 2)
+    return (u / math.sqrt(2.0) * n_bins).long().clamp_(max=n_bins - 1)
+
+
+@torch.no_grad()
+def measure_dct_power_profile(latents, n_bins: int = 128) -> torch.Tensor:
+    """Radially-binned per-coefficient orthonormal-DCT power of clean latents.
+
+    ``latents``: iterable of (C, H, W) float tensors (clean full-res VAE
+    latents, the same x0 the distill trains on). Returns a (n_bins,) float32
+    profile P_ω — mean squared DCT coefficient per normalized-radial-frequency
+    bin, averaged over channels and images. In the orthonormal DCT basis
+    ε ~ N(0, I) has per-coefficient variance exactly 1, so this P_ω plugs
+    straight into SNR_ω(t) = ((1−t)/t)² · P_ω with no unit conversion.
+    Empty bins (none on realistic grids) are forward-filled from the previous
+    non-empty bin.
+    """
+    sums = None
+    cnts = None
+    for lat in latents:
+        x = lat.float().unsqueeze(0)  # (1, C, H, W)
+        if sums is None:
+            sums = torch.zeros(n_bins, device=x.device)
+            cnts = torch.zeros(n_bins, device=x.device)
+        power = dct2(x).square().sum(dim=(0, 1))  # (H, W), summed over C
+        idx = _radial_bin_index(
+            x.shape[-2], x.shape[-1], x.shape[-2], x.shape[-1], n_bins, x.device
+        )
+        sums.scatter_add_(0, idx.reshape(-1), power.reshape(-1))
+        cnts.scatter_add_(
+            0,
+            idx.reshape(-1),
+            torch.full(
+                (idx.numel(),), float(x.shape[1]), device=x.device
+            ),  # C coeffs per cell
+        )
+    if sums is None:
+        raise ValueError("measure_dct_power_profile: empty latents iterable")
+    profile = sums / cnts.clamp(min=1.0)
+    # Forward-fill empty bins so lookups never hit a zero hole.
+    last = profile[0]
+    for i in range(n_bins):
+        if cnts[i] > 0:
+            last = profile[i]
+        else:
+            profile[i] = last
+    return profile.cpu()
+
+
+class SpdSnrGate:
+    """Per-frequency loss gate for the SPD fine-tune (see module note above).
+
+    ``mode='soft'``: w_ω(t) = SNR_ω(t) / (1 + SNR_ω(t)) — the per-band fraction
+    of clean-coefficient variance recoverable from x_t. ``mode='hard'``:
+    w_ω(t) = 1[t ≤ t_ω] with the Prop.-1 activation time
+    t_ω = 1 / (1 + sqrt(δ / (P_ω (1 + P_ω − δ)))).
+    """
+
+    def __init__(self, profile: torch.Tensor, mode: str = "soft", delta: float = 0.01):
+        if mode not in ("soft", "hard"):
+            raise ValueError(f"SpdSnrGate mode must be 'soft' or 'hard', got {mode!r}")
+        self.profile = profile.float()
+        self.n_bins = int(profile.numel())
+        self.mode = mode
+        self.delta = float(delta)
+        # (h, w, H_full, W_full, device) → per-coefficient P_ω grid (h, w).
+        self._p_grids: dict[tuple, torch.Tensor] = {}
+
+    def _p_grid(self, h: int, w: int, H_full: int, W_full: int, device):
+        key = (h, w, H_full, W_full, str(device))
+        p = self._p_grids.get(key)
+        if p is None:
+            idx = _radial_bin_index(h, w, H_full, W_full, self.n_bins, device)
+            p = self.profile.to(device)[idx]
+            self._p_grids[key] = p
+        return p
+
+    def weights(
+        self, t: torch.Tensor, h: int, w: int, H_full: int, W_full: int
+    ) -> torch.Tensor:
+        """(B, 1, h, w) float32 gate for query times ``t`` (B,)."""
+        p = self._p_grid(h, w, H_full, W_full, t.device)  # (h, w)
+        tt = t.float().clamp(min=1e-4, max=1.0).view(-1, 1, 1, 1)
+        if self.mode == "soft":
+            snr = ((1.0 - tt) / tt).square() * p
+            return snr / (1.0 + snr)
+        d = self.delta
+        t_act = 1.0 / (1.0 + torch.sqrt(d / (p * (1.0 + p - d)).clamp(min=1e-12)))
+        return (tt <= t_act).float()
+
+    def gated_mse(
+        self,
+        pred: torch.Tensor,  # (B, C, 1, h, w) velocity prediction
+        target: torch.Tensor,  # same shape, float
+        t: torch.Tensor,  # (B,) query σ
+        full_hw: tuple[int, int],  # full-res latent (H, W) of this bucket
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Weighted velocity MSE in the orthonormal DCT domain.
+
+        Normalized by Σw so the magnitude stays comparable to the plain MSE it
+        replaces (w ≡ 1 reproduces the spatial MSE exactly — Parseval).
+        Returns (loss, detached mean gate weight) — the latter is the effective
+        supervised fraction, worth logging per interval.
+        """
+        err = (pred.float() - target.float()).squeeze(2)  # (B, C, h, w)
+        e = dct2(err)
+        wgt = self.weights(t, e.shape[-2], e.shape[-1], *full_hw)
+        num = (wgt * e.square()).sum()
+        den = (wgt.sum() * e.shape[1]).clamp(min=1e-8)
+        return num / den, wgt.mean().detach()
+
+
 @torch.no_grad()
 def spd_rollout_to_stage(
     velocity_fn,

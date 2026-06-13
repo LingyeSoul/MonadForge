@@ -47,6 +47,7 @@ sys.path.insert(0, str(REPO_ROOT))
 import torch  # noqa: E402
 
 from anima_lora import GenerationRequest, load_vae  # noqa: E402
+from bench._anima import add_model_args  # noqa: E402
 from library.inference.models import load_shared_models  # noqa: E402
 from library.runtime.harness import build_anima  # noqa: E402
 from library.inference.text import prepare_text_inputs  # noqa: E402
@@ -163,18 +164,16 @@ def _diversity(feats: torch.Tensor) -> float:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--turbo", default="output/ckpt/anima_turbo_H_4k.safetensors")
-    p.add_argument("--dit", default="models/diffusion_models/anima-base-v1.0.safetensors")
-    p.add_argument("--vae", default="models/vae/qwen_image_vae.safetensors")
-    p.add_argument(
-        "--text_encoder", default="models/text_encoders/qwen_3_06b_base.safetensors"
-    )
+    add_model_args(p)
     p.add_argument("--n_seeds", type=int, default=6, help="R: samples per prompt")
     p.add_argument("--student_steps", type=int, default=4)
     p.add_argument("--teacher_steps", type=int, default=28)
     p.add_argument("--teacher_cfg", type=float, default=4.0)
     p.add_argument("--student_cfg", type=float, default=1.0)
     p.add_argument("--flow_shift", type=float, default=3.0)
-    p.add_argument("--size", type=int, nargs=2, default=[1024, 1024], metavar=("H", "W"))
+    p.add_argument(
+        "--size", type=int, nargs=2, default=[1024, 1024], metavar=("H", "W")
+    )
     p.add_argument(
         "--handoffs", default="1,2,3", help="student boundary indices to anchor at"
     )
@@ -267,7 +266,9 @@ def main() -> None:
         e_pos = embeds[pi][0].to(device, torch.bfloat16).expand(R, -1, -1)
         e_neg = embeds[pi][1].to(device, torch.bfloat16).expand(R, -1, -1)
 
-        gens = [torch.Generator(device="cpu").manual_seed(opts.seed + j) for j in range(R)]
+        gens = [
+            torch.Generator(device="cpu").manual_seed(opts.seed + j) for j in range(R)
+        ]
         z0 = torch.stack(
             [
                 torch.randn(16, 1, H // 8, W // 8, generator=g, dtype=torch.float32)
@@ -278,17 +279,37 @@ def main() -> None:
         # teacher rollout over the union grid → ceiling + all anchors
         snaps: dict[float, torch.Tensor] = {}
         teacher_final = _integrate(
-            anima, turbo_net, z0.clone(), union, 0, len(union) - 1,
-            enabled=False, cfg=opts.teacher_cfg, embed=e_pos, neg_embed=e_neg,
-            pad=pad, device=device, snapshot_sigmas=anchor_targets, snapshots=snaps,
+            anima,
+            turbo_net,
+            z0.clone(),
+            union,
+            0,
+            len(union) - 1,
+            enabled=False,
+            cfg=opts.teacher_cfg,
+            embed=e_pos,
+            neg_embed=e_neg,
+            pad=pad,
+            device=device,
+            snapshot_sigmas=anchor_targets,
+            snapshots=snaps,
         )
         latents_store[(pi, "teacher")] = teacher_final.cpu()
 
         # student full rollout → floor
         student_final = _integrate(
-            anima, turbo_net, z0.clone(), student_sigmas, 0, opts.student_steps,
-            enabled=True, cfg=opts.student_cfg, embed=e_pos, neg_embed=e_neg,
-            pad=pad, device=device,
+            anima,
+            turbo_net,
+            z0.clone(),
+            student_sigmas,
+            0,
+            opts.student_steps,
+            enabled=True,
+            cfg=opts.student_cfg,
+            embed=e_pos,
+            neg_embed=e_neg,
+            pad=pad,
+            device=device,
         )
         latents_store[(pi, "student")] = student_final.cpu()
 
@@ -296,16 +317,25 @@ def main() -> None:
         for b in handoffs:
             anchor = snaps[float(student_sigmas[b])]
             out_b = _integrate(
-                anima, turbo_net, anchor.clone(), student_sigmas, b, opts.student_steps,
-                enabled=True, cfg=opts.student_cfg, embed=e_pos, neg_embed=e_neg,
-                pad=pad, device=device,
+                anima,
+                turbo_net,
+                anchor.clone(),
+                student_sigmas,
+                b,
+                opts.student_steps,
+                enabled=True,
+                cfg=opts.student_cfg,
+                embed=e_pos,
+                neg_embed=e_neg,
+                pad=pad,
+                device=device,
             )
             latents_store[(pi, f"anchor{b}")] = out_b.cpu()
         print(f"[probe]   prompt {pi + 1}/{len(prompts)} rolled out")
 
     # free DiT (and its compiled graphs) before bringing up the VAE ------------
     if device.type == "cuda":
-        print(f"[mem] before free: {torch.cuda.memory_allocated()/1e9:.2f} GB alloc")
+        print(f"[mem] before free: {torch.cuda.memory_allocated() / 1e9:.2f} GB alloc")
     del anima, turbo_net, bundle, pad
     import torch._dynamo as _dynamo
 
@@ -313,7 +343,7 @@ def main() -> None:
     clean_memory_on_device(device)
     torch.cuda.empty_cache()
     if device.type == "cuda":
-        print(f"[mem] after free:  {torch.cuda.memory_allocated()/1e9:.2f} GB alloc")
+        print(f"[mem] after free:  {torch.cuda.memory_allocated() / 1e9:.2f} GB alloc")
 
     # 4. Decode + PE-Core features + diversity ---------------------------------
     print("[probe] decoding + PE-Core diversity …")
@@ -359,7 +389,9 @@ def main() -> None:
                 )
                 for i in range(R)
             ]
-            feats = pe(proc(pil)["pixel_values"].to(dec_dev, torch.bfloat16)).pooler_output
+            feats = pe(
+                proc(pil)["pixel_values"].to(dec_dev, torch.bfloat16)
+            ).pooler_output
             div[a].append(_diversity(feats))
             save_image(
                 make_grid(px01, nrow=R, padding=2),
@@ -371,10 +403,16 @@ def main() -> None:
     tea, stu = div_mean["teacher"], div_mean["student"]
     gap = tea - stu
     recovery = {
-        f"anchor{b}": (div_mean[f"anchor{b}"] - stu) / gap if gap > 1e-6 else float("nan")
+        f"anchor{b}": (div_mean[f"anchor{b}"] - stu) / gap
+        if gap > 1e-6
+        else float("nan")
         for b in handoffs
     }
-    verdict = "GO" if (gap > 1e-3 and recovery.get("anchor1", 0) >= 0.5) else "NO-GO/INCONCLUSIVE"
+    verdict = (
+        "GO"
+        if (gap > 1e-3 and recovery.get("anchor1", 0) >= 0.5)
+        else "NO-GO/INCONCLUSIVE"
+    )
 
     print("\n==== DP-DMD Phase 0 — first-step anchor diversity ====")
     print(f"  teacher (ceiling) : {tea:.4f}")
@@ -401,7 +439,11 @@ def main() -> None:
             "prompts": prompts,
             "anchor_sigmas": {str(b): float(student_sigmas[b]) for b in handoffs},
         },
-        extra={"R": R, "student_steps": opts.student_steps, "teacher_steps": opts.teacher_steps},
+        extra={
+            "R": R,
+            "student_steps": opts.student_steps,
+            "teacher_steps": opts.teacher_steps,
+        },
     )
     print(f"  result.json → {run_dir / 'result.json'}")
 

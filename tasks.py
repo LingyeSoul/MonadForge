@@ -13,7 +13,7 @@ Examples:
     python tasks.py test                     # add NOLORA=1 to run against the bare DiT
     python tasks.py download-models
     python tasks.py exp-chimera              # experimental method
-    python tasks.py exp-test-ip ref.png      # experimental inference
+    python tasks.py exp-test-turbo           # experimental inference
 
 Command implementations live under ``scripts/tasks/`` (shipped methods) and
 ``scripts/experimental_tasks/`` (unstable methods exposed under ``exp-*``).
@@ -39,12 +39,32 @@ COMMANDS = {
     # ── Training ──────────────────────────────────────────────────────
     "lora": (
         training.cmd_lora,
-        "LoRA family (lora|tlora|tlora_rf|hydralora via configs/methods/lora.toml)",
+        "LoRA family (lora|tlora|hydralora via configs/methods/lora.toml)",
     ),
     "lora-gui": (
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
-        "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora, reft).",
+        "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora).",
+    ),
+    "easycontrol": (
+        training.cmd_easycontrol,
+        "EasyControl training (extended self-attn KV with VAE-encoded reference). "
+        "EASYADAPTER=<task> (e.g. colorize) selects a control-task project.",
+    ),
+    "easycontrol-staging": (
+        training.cmd_easycontrol_staging,
+        "Generate an EasyControl adapter's staging dataset (no VAE/TE caching). "
+        "EASYADAPTER=near_twin → mine the in-artist near-twin pair tree.",
+    ),
+    "easycontrol-preprocess": (
+        training.cmd_easycontrol_preprocess,
+        "Full EasyControl preprocess: latents + text emb. "
+        "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
+    ),
+    "easycontrol-download": (
+        training.cmd_easycontrol_download,
+        "Download an EasyControl adapter's extra weights. "
+        "EASYADAPTER=colorize → Sketch2Manga screening weights (~5.7GB).",
     ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (
@@ -93,6 +113,10 @@ COMMANDS = {
         inference.cmd_test_dcw_v4_spectrum,
         "Spectrum-accelerated inference + DCW v4 learnable calibrator (auto-resolves fusion_head.safetensors)",
     ),
+    "test-easycontrol": (
+        inference.cmd_test_easycontrol,
+        "Inference with latest EasyControl weight. Usage: test-easycontrol <ref_image> [--prompt ... --easycontrol_scale ...]",
+    ),
     # ── Preprocess ────────────────────────────────────────────────────
     "preprocess": (
         preprocess.cmd_preprocess,
@@ -108,6 +132,11 @@ COMMANDS = {
         preprocess.cmd_preprocess_resize,
         "Resize images to bucket resolutions",
     ),
+    "preprocess-reconcile": (
+        preprocess.cmd_preprocess_reconcile,
+        "Remove resized/latent/PE/mask caches stale for the configured "
+        'target_res (dry-run; ARGS="--delete" to act). Run after changing tiers.',
+    ),
     "preprocess-vae": (preprocess.cmd_preprocess_vae, "Cache VAE latents"),
     "preprocess-te": (preprocess.cmd_preprocess_te, "Cache text encoder embeddings"),
     "preprocess-pooled": (
@@ -117,7 +146,12 @@ COMMANDS = {
     "preprocess-pe": (
         preprocess.cmd_preprocess_pe,
         "Cache PE-Core vision-encoder features into the LoRA cache dir. "
-        "Consumed by IP-Adapter live-disk mode and the DCW v4 fusion head.",
+        "Consumed by CMMD validation and the DCW v4 fusion head.",
+    ),
+    "preprocess-pe-spatial": (
+        preprocess.cmd_preprocess_pe_spatial,
+        "Cache PE-Spatial (dense, B16-512) patch tokens into the LoRA cache "
+        "dir as {stem}_anima_pe_spatial.safetensors. Consumed by REPA v2.",
     ),
     "preprocess-cond-resize": (
         preprocess.cmd_preprocess_cond_resize,
@@ -135,15 +169,14 @@ COMMANDS = {
     # ── Anima Tagger ──────────────────────────────────────────────────
     "preprocess-tagger": (
         tagger.cmd_preprocess_tagger,
-        "Build the Anima Tagger vocab/manifest + cache pooled PE features "
-        "+ cache resized images (build_vocab + build_features + "
-        "build_resized). Needs CAPTION_CORPUS_DIR in .env.",
+        "Build the Anima Tagger vocab/manifest + cache PE-Core & PE-Spatial "
+        "features (build_vocab + build_features). Needs CAPTION_CORPUS_DIR "
+        "in .env.",
     ),
     "tagger": (
         tagger.cmd_tagger,
-        "Two-stage train: Stage 1 head-only on cached pooled features, "
-        "then Stage 2 PE-LoRA warm-started from Stage 1. Requires "
-        "`make preprocess-tagger` first.",
+        "Train the dual-encoder hard-routed tagger head on cached PE-Core + "
+        "PE-Spatial features. Requires `make preprocess-tagger` first.",
     ),
     "test-tagger": (
         tagger.cmd_test_tagger,
@@ -235,28 +268,16 @@ COMMANDS = {
         "[experimental] ChimeraHydra dual-pool additive routing "
         "(content + freq pools on OrthoHydra; configs/methods/chimera.toml)",
     ),
-    "exp-ip-adapter": (
-        exp_training.cmd_ip_adapter,
-        "[experimental] IP-Adapter training (decoupled image cross-attention)",
+    "exp-byg": (
+        exp_training.cmd_byg,
+        "[experimental] BYG unpaired instruction-editing training (plain LoRA, "
+        "bootstrap + DDS prior + cycle + identity; configs/methods/byg.toml). "
+        "Run exp-byg-data first.",
     ),
-    "exp-ip-adapter-preprocess": (
-        exp_training.cmd_ip_adapter_preprocess,
-        "[experimental] Alias for `preprocess` + `preprocess-pe` (IP-Adapter "
-        "reuses the LoRA pipeline's caches under post_image_dataset/lora/).",
-    ),
-    "exp-easycontrol": (
-        exp_training.cmd_easycontrol,
-        "[experimental] EasyControl training (extended self-attn KV with VAE-encoded reference)",
-    ),
-    "exp-easycontrol-preprocess": (
-        exp_training.cmd_easycontrol_preprocess,
-        "[experimental] Full EasyControl preprocess: latents + text emb. "
-        "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
-    ),
-    "exp-easycontrol-download": (
-        exp_training.cmd_easycontrol_download,
-        "[experimental] Download an EasyControl adapter's extra weights. "
-        "EASYADAPTER=colorize → Sketch2Manga screening weights (~5.7GB).",
+    "exp-byg-data": (
+        exp_training.cmd_byg_data,
+        "[experimental] Build BYG edit-tuple sidecars (tag-swap) into "
+        "post_image_dataset/byg/. Usage: exp-byg-data [--limit N --overwrite].",
     ),
     "exp-test-soft": (
         exp_inference.cmd_test_soft,
@@ -274,13 +295,9 @@ COMMANDS = {
         "[experimental] Inference with latest SPD fine-tune LoRA on the SPD sampler "
         "at its trained schedule (read from safetensors metadata). cfg=4.0, Euler.",
     ),
-    "exp-test-ip": (
-        exp_inference.cmd_test_ip,
-        "[experimental] Inference with latest IP-Adapter weight. Usage: exp-test-ip <ref_image> [--prompt ... --ip_scale ...]",
-    ),
-    "exp-test-easycontrol": (
-        exp_inference.cmd_test_easycontrol,
-        "[experimental] Inference with latest EasyControl weight. Usage: exp-test-easycontrol <ref_image> [--prompt ... --easycontrol_scale ...]",
+    "exp-test-byg": (
+        exp_inference.cmd_test_byg,
+        "[experimental] Inference with latest BYG editing LoRA. Usage: exp-test-byg <ref_image> --prompt 'change background to a forest'",
     ),
     "exp-test-directedit": (
         exp_inference.cmd_test_directedit,

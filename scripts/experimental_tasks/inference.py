@@ -1,9 +1,10 @@
 """Experimental inference entry-points (exp-test-* commands).
 
-Covers the unstable methods kept under ``make exp-*``: soft tokens, IP-Adapter,
-EasyControl, plus the DirectEdit + postfix-tail inversion probes. Reference-image
-variants (exp-test-ip / exp-test-easycontrol) accept REF_IMAGE env or first
-positional arg, copy the ref alongside the generated output.
+Covers the unstable methods kept under ``make exp-*``: soft tokens, BYG, plus
+the DirectEdit + postfix-tail inversion probes. Reference-image variants accept
+REF_IMAGE env or first positional arg, copy the ref alongside the generated
+output. (EasyControl graduated to the shipped ``test-easycontrol`` — see
+``scripts/tasks/inference.py``; IP-Adapter was downgraded to ``bench/ip_adapter/``.)
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ from pathlib import Path
 from scripts.tasks._common import (
     INFERENCE_BASE,
     ROOT,
+    _random_ref_image,
+    _REF_IMAGE_EXTS,
     latest_output,
     run,
 )
 
-_REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 _TE_SUFFIX = "_anima_te.safetensors"
 
 
@@ -51,7 +53,11 @@ def _te_cache_candidates(ref_image: str | os.PathLike) -> list[Path]:
         )
     )
     # Deduplicate while preserving order (nested == flat when no subdir).
-    candidates = [nested, lora_root / f"{stem}{_TE_SUFFIX}", ref.parent / f"{stem}{_TE_SUFFIX}"]
+    candidates = [
+        nested,
+        lora_root / f"{stem}{_TE_SUFFIX}",
+        ref.parent / f"{stem}{_TE_SUFFIX}",
+    ]
     seen: set[Path] = set()
     return [p for p in candidates if not (p in seen or seen.add(p))]
 
@@ -84,19 +90,6 @@ def _resolve_ref_image(ref_image: str) -> str:
             if cand.is_file():
                 return str(cand)
     return ref_image
-
-
-def _random_ref_image(directory: Path) -> str | None:
-    if not directory.is_dir():
-        return None
-    # resized/ (and other source layouts) nest images under per-artist subdirs,
-    # so recurse rather than only scanning top-level files.
-    pool = [p for p in directory.rglob("*") if p.suffix.lower() in _REF_IMAGE_EXTS]
-    if not pool:
-        return None
-    pick = random.choice(pool)
-    print(f"  > Random ref: {pick}")
-    return str(pick)
 
 
 def cmd_test_soft(extra):
@@ -132,7 +125,27 @@ def cmd_test_turbo(extra):
     # Replace defaults so `--infer_steps`/`--guidance_scale` reflect the turbo
     # contract (2 steps, cfg=1.0). User extra args still win since they come last.
     base = _override_arg(base, "--sampler", "euler")
-    base = _override_arg(base, "--infer_steps", "2")
+    # Per-step-expert checkpoints bind head k to denoise step k, so infer_steps
+    # MUST equal the trained head count K (= student_steps). Read it from the
+    # metadata and pin infer_steps to K; overshoot would repeat the last head
+    # (the inference helper clamps) and undershoot would skip the quality head.
+    infer_steps = "2"
+    try:
+        from safetensors import safe_open
+
+        with safe_open(str(weight), framework="pt") as f:
+            md = f.metadata() or {}
+        if str(md.get("ss_turbo_per_step_expert", "")).strip() in ("1", "true", "True"):
+            K = int(md.get("ss_turbo_step_expert_K", "2") or "2")
+            infer_steps = str(K)
+            print(
+                f"[test-turbo] per-step-expert checkpoint: pinning "
+                f"--infer_steps {K} (= trained head count). Override at your own "
+                "risk — heads beyond K repeat the last (quality) head."
+            )
+    except Exception:
+        pass
+    base = _override_arg(base, "--infer_steps", infer_steps)
     base = _override_arg(base, "--guidance_scale", "1.0")
     run(
         [
@@ -199,76 +212,6 @@ def cmd_test_spd(extra):
     run([*cmd, *extra])
 
 
-def cmd_test_ip(extra):
-    """Inference with latest IP-Adapter weight.
-
-    Reference image is taken from REF_IMAGE env or the first positional arg.
-    Falls back to a random image from ``post_image_dataset/resized/`` (the
-    IP-Adapter source layout) when neither is supplied.
-    PROMPT, NEG, IP_SCALE env vars override defaults. Saves to output/tests/ip/
-    and copies the ref image alongside the generated output as ``<name>_ref.png``.
-
-    Examples:
-      python tasks.py exp-test-ip ref.png --prompt "a girl in a coffee shop"
-      REF_IMAGE=ref.png IP_SCALE=0.8 python tasks.py exp-test-ip
-      python tasks.py exp-test-ip                 # random ref from post_image_dataset/resized/
-    """
-    ref_image = os.environ.get("REF_IMAGE", "").strip()
-    if not ref_image and extra and not extra[0].startswith("-"):
-        ref_image = extra[0]
-        extra = extra[1:]
-    if not ref_image:
-        ref_image = _random_ref_image(ROOT / "post_image_dataset" / "resized") or ""
-    if not ref_image:
-        print(
-            "Usage: python tasks.py exp-test-ip <ref_image> [extra...]\n"
-            "   or: REF_IMAGE=path/to/ref.png python tasks.py exp-test-ip [extra...]\n"
-            "   (no ref given and post_image_dataset/resized/ is empty)",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    save_dir = ROOT / "output" / "tests" / "ip"
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    args = [
-        *INFERENCE_BASE,
-        "--save_path",
-        str(save_dir),
-        "--ip_adapter_weight",
-        str(latest_output("anima_ip_adapter")),
-        "--ip_image",
-        ref_image,
-        "--ip_image_match_size",
-    ]
-    if scale := os.environ.get("IP_SCALE"):
-        args += ["--ip_scale", scale]
-    # Default is a coherent *target*-scene prompt with NO character/copyright
-    # tag, so any identity match must come through the IP image rather than the
-    # text path. (Distinct-pair training pairs the target's own caption with the
-    # denoised latent; identity flows from a *different* ref image's PE features.
-    # A thin prompt like "double peace" under-constrains the scene -> garbage.)
-    default_prompt = (
-        "masterpiece, best quality, score_7, safe. 1girl, solo, standing in a "
-        "cafe, holding a coffee cup, looking at viewer, smile, soft lighting."
-    )
-    args += ["--prompt", os.environ.get("PROMPT") or default_prompt]
-    if neg := os.environ.get("NEG"):
-        args += ["--negative_prompt", neg]
-    args += list(extra)
-    run(args)
-
-    pngs = sorted(
-        (p for p in save_dir.glob("*.png") if not p.name.endswith("_ref.png")),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if pngs:
-        ref_dst = pngs[0].with_name(pngs[0].stem + "_ref.png")
-        shutil.copy(ref_image, ref_dst)
-        print(f"  > Ref pasted: {ref_dst}")
-
-
 def cmd_test_directedit(extra):
     """DirectEdit on a random source image, seeded by wd-swinv2-tagger-v3.
 
@@ -292,7 +235,7 @@ def cmd_test_directedit(extra):
       REF_IMAGE=foo.png make exp-test-directedit PROMPT='glasses'
       python tasks.py exp-test-directedit foo.png --prompt 'smile'
     """
-    # 1. Resolve source image — same logic as cmd_test_ip / cmd_test_easycontrol.
+    # 1. Resolve source image — same logic as the other reference-image tests.
     ref_image = os.environ.get("REF_IMAGE", "").strip()
     if not ref_image and extra and not extra[0].startswith("-"):
         ref_image = extra[0]
@@ -587,15 +530,15 @@ def cmd_invert_directedit(extra):
     # 2. Inversion knobs — env overrides for the common dials, defaults match
     #    the proposal (and the invert_postfix_tail.py CLI defaults).
     K = int(os.environ.get("K", "8"))
-    invert_steps = int(os.environ.get("INVERT_STEPS", "50"))
-    invert_lr = float(os.environ.get("INVERT_LR", "1e-2"))
+    invert_steps = int(os.environ.get("INVERT_STEPS", "100"))
+    invert_lr = float(os.environ.get("INVERT_LR", "1e-1"))
     lambda_zero = float(os.environ.get("LAMBDA_ZERO", "0.0"))
     sigma_min = float(os.environ.get("SIGMA_MIN", "0"))
     sigma_max = float(os.environ.get("SIGMA_MAX", "1.0"))
-    basis_kind = os.environ.get("BASIS", "svd_te").strip()
+    basis_kind = os.environ.get("BASIS", "random").strip()
     seed = int(os.environ.get("SEED", "0"))
     timesteps_per_step = int(os.environ.get("TIMESTEPS_PER_STEP", "1"))
-    grad_accum = int(os.environ.get("GRAD_ACCUM", "3"))
+    grad_accum = int(os.environ.get("GRAD_ACCUM", "2"))
 
     run_root = ROOT / "output" / "tests" / "invert_directedit"
     run_root.mkdir(parents=True, exist_ok=True)
@@ -653,6 +596,11 @@ def cmd_invert_directedit(extra):
             invert_cmd = [
                 py,
                 "scripts/inversion/invert_postfix_tail.py",
+                # directedit needs the ortho_tail s-vector (spliced via basis Q
+                # below); the probe script now defaults to soft_tokens, which
+                # writes a bank/ file instead — pin the mode explicitly.
+                "--parameterization",
+                "ortho_tail",
                 "--dit",
                 str(dit_path),
                 "--attn_mode",
@@ -782,83 +730,21 @@ def _filter_inference_base_for_edit(args: list[str]) -> list[str]:
     return out
 
 
-def cmd_test_easycontrol(extra):
-    """Inference with latest EasyControl weight.
+def cmd_test_byg(extra):
+    """Inference with the latest BYG editing LoRA (source image + instruction).
 
-    Reference image is taken from REF_IMAGE env or the first positional arg.
-    Falls back to a random image from ``easycontrol-dataset/`` (the EasyControl
-    source layout) when neither is supplied.
-    PROMPT, NEG, EC_SCALE env vars override defaults. Saves to
-    output/tests/easycontrol/ and copies the ref image alongside the generated
-    output as ``<name>_ref.png``.
-
-    ``EASYADAPTER=colorize`` targets the colorization checkpoint
-    (``anima_colorize``), saves to output/tests/colorize/, defaults the ref to a
-    random image under ``post_image_dataset/resized/`` (feed a real B&W manga page
-    via REF_IMAGE), and defaults to an EMPTY prompt (caption-free colorization).
-
-    Examples:
-      python tasks.py exp-test-easycontrol ref.png --prompt "a girl in a coffee shop"
-      REF_IMAGE=ref.png EC_SCALE=0.8 python tasks.py exp-test-easycontrol
-      python tasks.py exp-test-easycontrol         # random ref from easycontrol-dataset/
-      REF_IMAGE=manga.png EASYADAPTER=colorize python tasks.py exp-test-easycontrol
+    NOTE (v1): BYG ships as a *plain LoRA*, so the trained weights load via the
+    standard ``--lora_weight`` path; the only missing inference piece is the
+    parameter-free source-concat conditioning patch (``BYGConditioning`` in
+    ``networks/methods/byg.py``) being installed at generation time and primed
+    with the VAE-encoded reference. That wiring into ``library/inference/`` is
+    the next phase (mirrors the EasyControl KV-prefill node). Until then this
+    command is a placeholder so the collapse-watch validation can be run once
+    inference is wired.
     """
-    adapter = (os.environ.get("EASYADAPTER") or "").strip()
-    is_colorize = adapter == "colorize"
-    weight_name = "anima_colorize" if is_colorize else "anima_easycontrol"
-    out_sub = "colorize" if is_colorize else "easycontrol"
-    ref_fallback_dir = (
-        ROOT / "post_image_dataset" / "resized"
-        if is_colorize
-        else ROOT / "easycontrol-dataset"
+    raise SystemExit(
+        "exp-test-byg: BYG inference (source-concat patch install + ref encode) "
+        "is not wired yet — see the P2 inference step in "
+        "docs/proposal/byg_unpaired_editing.md. Training (exp-byg) is functional; "
+        "the trained checkpoint is a plain LoRA loadable via --lora_weight."
     )
-
-    ref_image = os.environ.get("REF_IMAGE", "").strip()
-    if not ref_image and extra and not extra[0].startswith("-"):
-        ref_image = extra[0]
-        extra = extra[1:]
-    if not ref_image:
-        ref_image = _random_ref_image(ref_fallback_dir) or ""
-    if not ref_image:
-        print(
-            "Usage: python tasks.py exp-test-easycontrol <ref_image> [extra...]\n"
-            "   or: REF_IMAGE=path/to/ref.png python tasks.py exp-test-easycontrol [extra...]\n"
-            f"   (no ref given and {ref_fallback_dir.name}/ is empty)",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    save_dir = ROOT / "output" / "tests" / out_sub
-    save_dir.mkdir(parents=True, exist_ok=True)
-
-    args = [
-        *INFERENCE_BASE,
-        "--save_path",
-        str(save_dir),
-        "--easycontrol_weight",
-        str(latest_output(weight_name)),
-        "--easycontrol_image",
-        ref_image,
-        "--easycontrol_image_match_size",
-    ]
-    if scale := os.environ.get("EC_SCALE"):
-        args += ["--easycontrol_scale", scale]
-    if prompt := os.environ.get("PROMPT"):
-        args += ["--prompt", prompt]
-    elif is_colorize and not any(a == "--prompt" for a in extra):
-        # caption-free default for colorization (empty prompt → uncond text path)
-        args += ["--prompt", ""]
-    if neg := os.environ.get("NEG"):
-        args += ["--negative_prompt", neg]
-    args += list(extra)
-    run(args)
-
-    pngs = sorted(
-        (p for p in save_dir.glob("*.png") if not p.name.endswith("_ref.png")),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
-    if pngs:
-        ref_dst = pngs[0].with_name(pngs[0].stem + "_ref.png")
-        shutil.copy(ref_image, ref_dst)
-        print(f"  > Ref pasted: {ref_dst}")

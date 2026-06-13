@@ -4,7 +4,8 @@ Distills the CFG=4 Anima teacher into a **few-step LoRA student** via
 **Diversity-Preserved Distribution Matching Distillation** (Wu, Li, Zhang, Ma —
 arXiv:2602.03139). The output is a **plain standard LoRA** — there is no
 inference-side turbo code; you load it through the normal LoRA path and run
-`--infer_steps 2 --cfg 1.0` (CFG is baked into the student during distillation).
+`--infer_steps` matched to `student_steps` (currently 4) with `--cfg 1.0` (CFG is
+baked into the student during distillation).
 
 > **History.** This replaced the CA-decoupled DMD2 ("CFG-as-Spear, Distribution-
 > Matching-as-Shield", Liu et al. arXiv:2511.22677) objective on **2026-05-30**.
@@ -15,7 +16,7 @@ inference-side turbo code; you load it through the normal LoRA path and run
 > entirely. The structural walkthrough (diversity-anchor / DMD gradient split,
 > flow-matching velocity↔x0 math, the per-step schedule) lives at
 > `docs/structure/dpdmd.md`; the CA-era decision log survives at
-> `docs/proposal/dmd2_decoupled_improvements.md`. The original migration proposal
+> `_archive/proposals/dmd2_decoupled_improvements.md`. The original migration proposal
 > is archived at `_archive/proposals/dpdmd.md`.
 
 - **Training:** `scripts/distill_turbo/distill.py` — bespoke single-GPU loop
@@ -76,7 +77,18 @@ Per training step:
    the diversity term is backwarded immediately and the step-0 graph is severed —
    the DMD reverse-KL from later steps must **not** flow back into the diversity
    mapping (their Fig 5: preference rises while diversity falls without it). Steps
-   2..N then roll on with grad to produce `x_θ`.
+   2..N then carry the DMD-refine grad, routed by `grad_step` (also honored under
+   the anchor — `[dmd].grad_step`): **`all`** rolls 2..N with grad (BPTT, holds the
+   N-graph) onto the true endpoint `x_θ`; **`last`** (default) backward-simulates
+   2..N−1 under no_grad and grads only the cleanest-σ final step onto `x_θ`
+   (memory-flat, but the noisy refinement steps train only indirectly — and under
+   `per_step_expert` only head N−1 trains); **`random`** samples one refinement step
+   `g~U{1..N−1}`, backward-simulates the `1..g−1` prefix under no_grad from the
+   post-anchor latent, and grads only step `g`'s **one-step x0-prediction**
+   `x_g − σ_g·v_g` (memory-flat; supervises every refinement grid point + trains
+   every head, at the cost of spreading the mode-seeking DMD grad across all
+   refinement σ rather than concentrating it on the tail — A/B vs `last` for pose
+   diversity; CMMD is blind to it).
 3. **DMD on `x_θ` (no-grad teacher + no-grad fake, τ_DM ∈ [0,1]).** The real score
    is **CFG-guided** (`v_u + α·(v_c − v_u)`) — *not* cond-only. This is the one
    un-decoupling vs the CA-era code: the old DM branch was deliberately unguided
@@ -114,11 +126,11 @@ Sectioned, bespoke. Every key has a matching CLI override flag (see
 |---|---|---|---|
 | top | `output_name` | `anima_turbo_I` | output stem under `output/ckpt/` |
 | top | `iterations` | `2000` | |
-| top | `use_custom_down_autograd` | `true` | keeps activation memory down so swap can stay 0 (see [[project_custom_down_autograd_distill_lever]]) |
 | top | `use_masked_loss` | `true` | **student-only** mask on the DMD grad; fake/critic stays full-frame |
 | `[network]` | `student_rank` / `fake_rank` | `64` / `64` | `fake_rank ≥ student_rank` (fake is a score *tracker*, capacity ceiling on DM strength) |
-| `[dmd]` | `student_steps` (N) | `2` | Euler steps the student rolls; inference matches (`--infer_steps 2`) |
+| `[dmd]` | `student_steps` (N) | `4` | Euler steps the student rolls; inference matches (`--infer_steps 4`) |
 | `[dmd]` | `teacher_cfg` (α) | `4` | CFG scale baked into the teacher anchor + DMD real score (Anima prod CFG=4) |
+| `[dmd]` | `grad_step` | `all` | which refinement step(s) carry the DMD grad: `all` (BPTT) / `last` (tail-only, memory-flat) / `random` (one-step x0-pred at `g~U{1..N−1}`, memory-flat, trains every head). Honored under **both** `base_loss`. |
 | `[dmd]` | `dm_x0_norm` | `true` | per-sample x0-space magnitude normalization of the DM grad ([[project_turbo_dmd_x0_norm_wins]]) |
 | `[dmd]` | `norm_floor` | `0.05` | clamp_min for the `dm_x0_norm` denominator (latent scale) |
 | `[dpdmd]` | `k_anchor` (K) | `4` | teacher steps rolled to the diversity anchor |
@@ -163,17 +175,59 @@ read pose diversity + saturation, not the scalars.
 
 ## Inference: step count
 
-The student is trained at `student_steps=2`, so `--infer_steps 2 --cfg 1.0` is the
-matched schedule. **However**, an under-trained / lightly-distilled student behaves
-like a continuous velocity field (the DMD quality loss is trained at *random* τ, not
-on the 2-step grid; only step 0 is grid-anchored), so it can integrate **better** at
-more Euler steps — at 2 steps the entire detail-forming band below σ≈0.5
-([[project_sigma_signal_resolves_by_045]]) is crossed by a single `0.75→0` Euler
-jump, while at 4 steps it gets a function evaluation at σ=0.5 *and* preserves the
-σ=0.75 anchor. If a checkpoint looks better at 4 steps than 2, that's the tell that
-distillation hasn't reached a true 2-step map yet — train longer or raise
+The student is trained at `student_steps` (currently 4 — was 2 until `5ef128d`), so
+`--infer_steps 4 --cfg 1.0` is the matched schedule. **However**, an under-trained /
+lightly-distilled student behaves like a continuous velocity field (the DMD quality
+loss is trained at *random* τ, not on the N-step grid; only step 0 is
+grid-anchored), so it can integrate **better** at more Euler steps than it was
+trained for — the 2-step era made this concrete: a single `0.75→0` Euler jump
+crosses the entire detail-forming band below σ≈0.5
+([[project_sigma_signal_resolves_by_045]]), while 4 steps get a function evaluation
+at σ=0.5 *and* preserve the σ=0.75 anchor (one motivation for the 2→4 move). If a
+checkpoint looks better at more steps than its trained grid, that's the tell that
+distillation hasn't reached a true N-step map yet — train longer or raise
 `student_steps`. Always keep `--cfg 1.0` regardless of step count (CFG is baked;
 don't double-guide).
+
+## Per-step expert (`per_step_expert`, default off)
+
+One rank-`student_rank` LoRA normally absorbs two conflicting gradients: the
+**diversity** loss on step 0 (`div_loss = MSE(v_first, v_target)`, then a detach)
+and the **DMD** reverse-KL on steps 1..N. The detach already severs the two
+backward graphs, so `per_step_expert=true` splits the student into one **shared
+`lora_down`** plus **K = `student_steps` up-heads** (`StepExpertLoRAModule`),
+selecting head `k` for denoise step `k` by the step counter — no router (the step
+index is known at call time, unlike FeRA's FEI/σ case). Head 0 then sees only the
+diversity gradient, head k only step-k's DMD gradient; only the shared down-proj is
+trained by both. Per-step inference compute is unchanged (one head active per step).
+
+Turn it on in `[network]` (`per_step_expert = true`) or `--per_step_expert`. Treat
+it as a **hypothesis test vs the single-head student**, not a presumed win: if the
+shared LoRA was never capacity/interference-bound it buys a heavier checkpoint +
+inference plumbing for nothing. Promote only if it beats baseline on the CMMD val
+signal ([[project_cmmd_val_signal]]) with visibly preserved step-0 diversity.
+
+### What it costs — the plain-LoRA property is gone
+
+This is the load-bearing trade. The shipped single-head turbo is a **normal LoRA**:
+it merges into the DiT (`make merge`), loads through any stock LoRA path, and that
+simplicity *is* the headline. A per-step-expert student is **not**:
+
+- **`make merge` refuses it** — K per-step heads can't fold into one static DiT
+  weight (it would need K baked copies). It's caught by the `.lora_ups.` non-bakeable
+  marker, same as Hydra moe.
+- **Kept-live only.** Inference rebuilds a router-free `StepExpertLoRAModule` network
+  on the (fused-qkv) DiT and selects the head per step — CLI via
+  `set_step_index(i)` in the denoise loop (the loader keys off the
+  `ss_turbo_per_step_expert` metadata stamp), ComfyUI via the dedicated
+  `AnimaTurboPerStepExpertLoader` node (stock LoRA / `AnimaAdapterLoader` raise,
+  since they can't drive step-indexed head selection).
+- **`make exp-test-turbo` pins `--infer_steps` to the trained head count K** (read from
+  metadata); head k binds to step k, so `infer_steps` must equal K. Overshoot repeats
+  the last (quality) head; undershoot skips it. Keep `--cfg 1.0`.
+
+Escape hatch if the shared down-proj becomes a compromise between the two
+objectives: per-head down (doubles params, removes sharing) — documented, not v0.
 
 ## Reading the metrics
 
@@ -190,6 +244,37 @@ the teacher anchor. The live TB scalars:
 | `dm_mag_ratio` | `rms(v_fake)/rms(v_real)` — ≈1 healthy. |
 | `x_pred_std` / `v_student_rms` | collapse → 0 or runaway up = student exploding (`v_student_rms` leads). |
 | `mean_var_kl` | Eq.7 KL (pre-weight); 0 when the reg is off. |
+| `gan_gen_loss` / `gan_disc_loss` | softplus-hinge generator / discriminator losses (pre-weight); 0 when the GAN is off. |
+
+## GAN + f-distill (FastGen levers, off by default)
+
+DP-DMD is structurally **DMD2 with the GAN amputated**. Two off-by-default levers
+port the missing adversarial machinery from NVlabs FastGen
+(`docs/proposal/turbo_gan.md`):
+
+- **Teacher-feature GAN** (`[gan] weight_gen > 0`, FastGen idea 1). A tiny pooled-
+  token discriminator (`networks/methods/turbo_dmd.py::PooledTokenDiscriminator`,
+  ~2M params) reads the **frozen teacher DiT's** mid-block activations — captured
+  with a compile-safe forward hook on `blocks[feature_block_idx]` (default middle).
+  The generator term `softplus(−disc(feat))` is added to the student loss; the disc
+  trains on the fake/critic cadence with its own AdamW (`disc_lr`, betas (0, 0.99)),
+  optional approximate-R1 (`r1_weight`). The student output stays a **plain LoRA**
+  (the disc is discarded at save, like the fake). FastGen QwenImage recipe:
+  `weight_gen=0.03`, `use_same_t_noise=true`, middle block, `disc_lr=1e-5`.
+- **f-distill reweighting** (`[f_distill] f_div != "rkl"`, FastGen idea 2). Scales
+  the DMD signal per-sample by `h = f'(r)`, `r = exp(disc logits)` (free from the
+  GAN head). Requires `weight_gen > 0`. `"rkl"` ≡ uniform h ≡ plain DMD2 (no-op).
+  Targets mode-collapse — **bench against the diversity anchor; they may not be
+  additive** (decision gate 2).
+
+**Cost (honest).** Without the idea-3.1 feature-tap API there is no early-exit, so
+the GAN adds **+1 grad-bearing teacher forward** in the student step (the generator
+term must flow grad through the teacher into `x_pred`) and **+2 no_grad teacher
+forwards** per disc step. Consider `--grad_ckpt` when the GAN is on. `weight_gen=0`
+keeps the entire path off → byte-identical DP-DMD (no disc, no hooks, no extra
+forwards). **Decision gate 1:** A/B `weight_gen` 0 vs 0.03 at fixed seed/data/steps,
+2-step `--cfg 1.0`, ship only on a CMMD/A-B win without diversity collapse (reuse
+`diversity.py`).
 
 ## Limitations & composition
 
@@ -208,7 +293,7 @@ the teacher anchor. The live TB scalars:
   forwards per step (multi-forward); the offloader desyncs on a 2nd DiT forward
   ([[project_blockswap_extra_forwards_gradcache]]). The loop calls
   `prepare_block_swap_before_forward(free_cache=False)` before each forward, but the
-  default path keeps `blocks_to_swap=0` (`use_custom_down_autograd=true` keeps
+  default path keeps `blocks_to_swap=0` (activation-dtype LoRA GEMMs keep
   activation memory low enough to run full-res on 16 GB without swap). Audit the
   multi-forward offloader path before turning swap on.
 
@@ -220,7 +305,7 @@ the teacher anchor. The live TB scalars:
   pose-vs-pooled-cosine metric caveat, the depth-m fallback).
 - `docs/structure/dpdmd.md` — structural walkthrough: the diversity-anchor / DMD
   gradient split, the flow-matching velocity↔x0 conversion, and the sign convention.
-- `docs/proposal/dmd2_decoupled_improvements.md` — CA-era decision log; the record
+- `_archive/proposals/dmd2_decoupled_improvements.md` — CA-era decision log; the record
   of why the CA branch was abandoned.
 - `docs/findings/asymflow_parameterization.md` — Anima's `u = ε − x0` velocity path
   (the conversion the renoise/grad-assembly relies on).

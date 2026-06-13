@@ -31,7 +31,6 @@ def test_defaults_when_all_kwargs_absent():
     assert cfg.alpha == 1.0
     assert cfg.module_class is LoRAModule
     assert cfg.train_llm_adapter is False
-    assert cfg.add_reft is False
     assert cfg.use_timestep_mask is False
     assert cfg.use_moe_style is False
     assert cfg.route_per_layer is False
@@ -54,7 +53,6 @@ def test_string_bool_parsing_matches_old_factory_path():
     """
     kwargs = {
         "train_llm_adapter": "true",
-        "add_reft": "True",  # case-insensitive
         "use_timestep_mask": "TRUE",
         "use_moe_style": "shared_A",
         "route_per_layer": "true",
@@ -69,7 +67,6 @@ def test_string_bool_parsing_matches_old_factory_path():
         module_class=LoRAModule,
     )
     assert cfg.train_llm_adapter is True
-    assert cfg.add_reft is True
     assert cfg.use_timestep_mask is True
     assert cfg.use_moe_style == "shared_A"
     assert cfg.route_per_layer is True
@@ -197,9 +194,6 @@ def test_from_weights_freq_router_mode_round_trip():
         modules_alpha={"m": 4.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        has_reft=False,
-        reft_dim=None,
-        reft_block_indices=[],
         is_hydra_or_ortho_hydra=False,
         hydra_num_experts=6,
         sigma_feature_dim_detected=None,
@@ -245,8 +239,6 @@ def test_numeric_string_parsing():
     kwargs = {
         "min_rank": "2",
         "alpha_rank_scale": "0.75",
-        "reft_dim": "16",
-        "reft_alpha": "8.0",
         "num_experts": "8",
         "network_router_lr_scale": "0.5",
         "sigma_feature_dim": "32",
@@ -266,8 +258,6 @@ def test_numeric_string_parsing():
     )
     assert cfg.min_rank == 2 and isinstance(cfg.min_rank, int)
     assert cfg.alpha_rank_scale == pytest.approx(0.75)
-    assert cfg.reft_dim == 16
-    assert cfg.reft_alpha == pytest.approx(8.0)
     assert cfg.num_experts == 8
     assert cfg.router_lr_scale == pytest.approx(0.5)
     assert cfg.sigma_feature_dim == 32
@@ -309,19 +299,6 @@ def test_reg_dims_and_reg_lrs_kv_pairs():
     assert cfg.reg_lrs == {"blocks\\.0.*": 1e-4, "blocks\\.1.*": 2e-4}
 
 
-def test_reft_dim_falls_back_to_network_dim():
-    """Old factory behavior: ``reft_dim`` defaults to ``network_dim`` when
-    not specified, not to the dataclass default of 4."""
-    cfg = LoRANetworkCfg.from_kwargs(
-        {},  # no reft_dim
-        network_dim=64,
-        network_alpha=32.0,
-        neuron_dropout=None,
-        module_class=LoRAModule,
-    )
-    assert cfg.reft_dim == 64
-
-
 def _moe_stamps(router_source: str = "sigma") -> dict:
     """Three-axis stamps mimicking ``LoRANetwork.save_weights`` for a Hydra
     checkpoint. plan2 task #6 retired the legacy ``ss_use_hydra`` /
@@ -340,9 +317,6 @@ def test_from_weights_warm_start_shape():
         modules_alpha={"foo": 1.0, "bar": 2.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=True,
-        has_reft=True,
-        reft_dim=8,
-        reft_block_indices=[0, 1, 2],
         is_hydra_or_ortho_hydra=True,
         hydra_num_experts=8,
         sigma_feature_dim_detected=16,
@@ -355,9 +329,6 @@ def test_from_weights_warm_start_shape():
     assert cfg.modules_alpha == {"foo": 1.0, "bar": 2.0}
     assert cfg.module_class is HydraLoRAModule
     assert cfg.train_llm_adapter is True
-    assert cfg.add_reft is True
-    assert cfg.reft_dim == 8
-    assert cfg.reft_layers == [0, 1, 2]
     assert cfg.num_experts == 8
     assert cfg.use_moe_style == "shared_A"
     assert cfg.route_per_layer is True
@@ -366,15 +337,12 @@ def test_from_weights_warm_start_shape():
     assert cfg.sigma_router_names == ["foo"]
 
 
-def test_from_weights_no_reft_no_sigma():
+def test_from_weights_no_sigma():
     cfg = LoRANetworkCfg.from_weights(
         modules_dim={"foo": 4},
         modules_alpha={"foo": 1.0},
         module_class=LoRAModule,
         train_llm_adapter=False,
-        has_reft=False,
-        reft_dim=None,
-        reft_block_indices=set(),
         is_hydra_or_ortho_hydra=False,
         hydra_num_experts=0,
         sigma_feature_dim_detected=None,
@@ -382,9 +350,6 @@ def test_from_weights_no_reft_no_sigma():
         hydra_router_names=None,
         channel_scales_dict=None,
     )
-    assert cfg.add_reft is False
-    assert cfg.reft_dim == 4  # default fallback
-    assert cfg.reft_layers == "all"
     assert cfg.num_experts == 4  # default fallback (not 0)
     assert cfg.use_moe_style is False
     assert cfg.router_source == "none"
@@ -399,9 +364,6 @@ def test_from_weights_moe_without_stamps_raises():
             modules_alpha={"foo": 1.0},
             module_class=HydraLoRAModule,
             train_llm_adapter=False,
-            has_reft=False,
-            reft_dim=None,
-            reft_block_indices=set(),
             is_hydra_or_ortho_hydra=True,
             hydra_num_experts=4,
             sigma_feature_dim_detected=16,
@@ -417,9 +379,6 @@ def test_from_weights_sigma_band_partition_off_by_default():
         modules_alpha={"foo": 1.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        has_reft=False,
-        reft_dim=None,
-        reft_block_indices=set(),
         is_hydra_or_ortho_hydra=True,
         hydra_num_experts=12,
         sigma_feature_dim_detected=16,
@@ -437,9 +396,6 @@ def test_from_weights_sigma_band_partition_round_trip():
         modules_alpha={"foo": 1.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        has_reft=False,
-        reft_dim=None,
-        reft_block_indices=set(),
         is_hydra_or_ortho_hydra=True,
         hydra_num_experts=12,
         sigma_feature_dim_detected=16,
@@ -461,9 +417,6 @@ def test_from_weights_sigma_band_partition_with_custom_boundaries():
         modules_alpha={"foo": 1.0},
         module_class=HydraLoRAModule,
         train_llm_adapter=False,
-        has_reft=False,
-        reft_dim=None,
-        reft_block_indices=set(),
         is_hydra_or_ortho_hydra=True,
         hydra_num_experts=6,
         sigma_feature_dim_detected=16,

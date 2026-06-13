@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import os
 import sys
 from pathlib import Path
 
@@ -50,7 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling gamma_probe
 import numpy as np
 import torch
 
-from anima_lora import GenerationRequest, get_generation_settings
+from anima_lora import GenerationRequest, default_checkpoints, get_generation_settings
 from bench._common import make_run_dir, write_result
 from library.datasets.buckets import DCW_ASPECT_BUCKETS
 from library.env import resolve_under_home
@@ -67,11 +66,8 @@ from gamma_probe import (  # noqa: E402  (sibling import after sys.path bootstra
     _sigma_at_gamma_half,
 )
 
-DIT = os.environ.get("ANIMA_DIT", "models/diffusion_models/anima-base-v1.0.safetensors")
-VAE = os.environ.get("ANIMA_VAE", "models/vae/qwen_image_vae.safetensors")
-TEXT_ENCODER = os.environ.get(
-    "ANIMA_TEXT_ENCODER", "models/text_encoders/qwen_3_06b_base.safetensors"
-)
+_ckpts = default_checkpoints()
+DIT, VAE, TEXT_ENCODER = _ckpts.dit, _ckpts.vae, _ckpts.text_encoder
 DEFAULT_OUT = "networks/calibration/cns_gamma.npz"
 
 # Real captions come from the actually-preprocessed training subset: cached TE

@@ -45,7 +45,9 @@ def test_add_device_args_defaults() -> None:
     # narrowed choices + custom default are honored
     p2 = argparse.ArgumentParser()
     add_device_args(
-        p2, include_device=False, dtype_default="bfloat16",
+        p2,
+        include_device=False,
+        dtype_default="bfloat16",
         dtype_choices=("bfloat16", "float16", "float32"),
     )
     a2 = p2.parse_args([])
@@ -92,11 +94,53 @@ def test_add_common_args_delegates_device_dtype() -> None:
     assert not hasattr(a2, "dtype")
 
 
+def test_compile_signature_normalizes_mode() -> None:
+    """train.py (mode=None) and distill_turbo (mode="") must serialize the same.
+
+    A formatting drift between the two entry points would thrash-wipe the
+    shared inductor cache on every lora <-> turbo switch.
+    """
+    from library.runtime.harness import compile_signature
+
+    kw = dict(n_token_families=4, seq_range=(3000, 4200), dynamic_seq=True)
+    assert compile_signature(**kw, mode="") == compile_signature(**kw, mode=None)
+    # and the pre-promotion train.py marker format is preserved verbatim, so
+    # markers written by older runs still compare equal (no spurious wipe)
+    assert compile_signature(**kw, mode=None) == (
+        "families=4;seq_range=(3000, 4200);dynamic_seq=True;backend=inductor;mode=None"
+    )
+
+
+def test_isolate_compile_cache(tmp_path: Path, monkeypatch) -> None:
+    """Per-signature TORCHINDUCTOR_CACHE_DIR subdirs off a stable base."""
+    import os
+
+    import library.runtime.harness as harness
+
+    monkeypatch.setattr(harness, "_compile_cache_base", None)
+    monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path))
+
+    dir_a = harness.isolate_compile_cache("sig-a")
+    assert os.environ["TORCHINDUCTOR_CACHE_DIR"] == dir_a
+    assert Path(dir_a).parent == tmp_path  # nested under the original base
+
+    # deterministic: same signature -> same dir (warm cache reuse across runs)
+    assert harness.isolate_compile_cache("sig-a") == dir_a
+
+    # different signature -> sibling dir off the SAME base (no nesting under
+    # the previous per-signature dir, even though the env var now points there)
+    dir_b = harness.isolate_compile_cache("sig-b")
+    assert dir_b != dir_a
+    assert Path(dir_b).parent == tmp_path
+
+
 def _make_sample(data_dir: Path, stem: str, bucket: str, *, with_te: bool) -> None:
     """Write a {stem}_{bucket}_anima.npz (+ optional TE sidecar) fixture."""
     w, h = bucket.split("x")
     npz = data_dir / f"{stem}_{int(w) * 8}x{int(h) * 8}_anima.npz"
-    np.savez(npz, **{f"latents_{bucket}": np.zeros((4, int(h), int(w)), dtype=np.float32)})
+    np.savez(
+        npz, **{f"latents_{bucket}": np.zeros((4, int(h), int(w)), dtype=np.float32)}
+    )
     if with_te:
         (data_dir / f"{stem}_anima_te.safetensors").write_bytes(b"")
 

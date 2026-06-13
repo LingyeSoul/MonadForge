@@ -364,6 +364,9 @@ def compile_dit_blocks(
     cache_size_limit: int = 64,
     backend: str = "inductor",
     mode: Optional[str] = None,
+    dynamic_seq: bool = False,
+    n_token_families: Optional[int] = None,
+    seq_range: Optional[tuple] = None,
 ) -> None:
     """``torch.compile`` each ``Block._forward`` for a distillation/training run.
 
@@ -375,18 +378,333 @@ def compile_dit_blocks(
     won't lower it) so each shape traces instead of falling back to eager
     mid-warmup. No-op when ``enabled`` is False.
 
+    ``dynamic_seq`` (mirrors the LoRA-training ``--compile_dynamic_seq`` path)
+    collapses the per-token-count block graphs to a single graph by marking only
+    the seq-length axis dynamic. ``seq_range`` bounds that symbolic axis and
+    ``n_token_families`` sizes the dynamo cache budget over the active tiers;
+    both default to the canonical 1024 table inside ``compile_blocks`` when
+    ``None``.
+
     COMPILE LAST — install the adapter / network monkey-patches first, or
     torch.compile traces the wrong forward (the invariant ``build_anima``
     encodes).
     """
     if not enabled:
         return
-    import torch._dynamo as _dynamo
+    from library.runtime.dynamo import pin_dynamo_limit
 
-    _dynamo.config.cache_size_limit = max(
-        _dynamo.config.cache_size_limit, cache_size_limit
+    # Pin the canonical .default (not a context-local override) so the wider
+    # distillation-pool budget survives into the backward compile context.
+    pin_dynamo_limit("recompile_limit", cache_size_limit)
+    anima.compile_blocks(
+        backend,
+        mode=mode,
+        n_token_families=n_token_families,
+        dynamic_seq=dynamic_seq,
+        seq_range=seq_range,
     )
-    anima.compile_blocks(backend, mode=mode)
+
+
+def compile_signature(
+    *,
+    n_token_families: Optional[int],
+    seq_range: Optional[tuple],
+    dynamic_seq: bool,
+    backend: str = "inductor",
+    mode: Optional[str] = None,
+) -> str:
+    """Canonical signature string for ``maybe_clear_stale_compile_cache``.
+
+    Every compile entry point (``train.py``, ``scripts/distill_turbo``) must
+    build the marker signature through this one formatter so equivalent compile
+    configs serialize identically — a formatting drift between callers would
+    thrash-wipe the shared inductor cache on every entry-point switch. ``mode``
+    is normalized so the two "inductor default" spellings (``None`` and ``""``)
+    don't read as a signature change.
+    """
+    return (
+        f"families={n_token_families};seq_range={seq_range};"
+        f"dynamic_seq={dynamic_seq};backend={backend};mode={mode or None}"
+    )
+
+
+# Original torch.compile cache base, captured on the first isolate_compile_cache
+# call so repeated calls (or a different signature later in the same process)
+# re-derive from the same root instead of nesting per-signature dirs.
+_compile_cache_base: Optional[str] = None
+
+
+def isolate_compile_cache(signature: str) -> str:
+    """Route this run's torch.compile caches to a per-signature directory.
+
+    The persistent compile caches (``FxGraphCache`` AND ``AOTAutogradCache``,
+    both rooted at ``TORCHINDUCTOR_CACHE_DIR``) key on the FX graph but NOT on
+    the ``mark_dynamic`` value range, so processes compiled with different
+    seq-range bounds poison each other through the shared default cache dir.
+    Concretely: inference/bench runs compile the block graph with the canonical
+    1024-table default range and deposit entries whose stored guards are floored
+    at ``seq >= 4032``; a later multi-tier training run marks ``[3000, 4200]``,
+    and if its first compile's example batch happens to be ≥4032 tokens, the
+    stale entry's guard evaluates TRUE at that hint — AOTAutogradCache accepts
+    the hit and re-asserts the narrow guard into the fresh ShapeEnv
+    (``autograd_cache.py::evaluate_guards``), which then contradicts the wider
+    mark constraint → ``ConstraintViolationError`` (instead of a cache miss).
+    Hint-dependent, which is why it strikes "sometimes": a sub-4032 first batch
+    evaluates the guard False and misses cleanly.
+
+    Wiping the shared dir (the previous approach) can't fix this: inference
+    re-deposits default-range entries between training runs. Instead, point
+    ``TORCHINDUCTOR_CACHE_DIR`` at a per-signature subdir of the original cache
+    root — every entry inside was compiled under the SAME seq bounds, so guard
+    replay is always consistent. Same-signature reruns keep their warm cache
+    (and unlike the wipe, switching tier sets back and forth no longer
+    re-compiles from scratch each time). Inference/bench keep the default dir.
+
+    Must run BEFORE the first ``torch.compile`` trace in the process (torch
+    reads the env var lazily per cache access). Build ``signature`` via
+    ``compile_signature``. Returns the directory used.
+    """
+    global _compile_cache_base
+    import hashlib
+    import os
+
+    if _compile_cache_base is None:
+        base = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+        if not base:
+            try:
+                from torch._inductor.runtime.cache_dir_utils import default_cache_dir
+
+                base = default_cache_dir()
+            except Exception:  # noqa: BLE001 — torch internals move across versions
+                import getpass
+                import tempfile
+
+                base = os.path.join(
+                    tempfile.gettempdir(), f"torchinductor_{getpass.getuser()}"
+                )
+        _compile_cache_base = base
+
+    digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:16]
+    target = os.path.join(_compile_cache_base, f"anima-sig-{digest}")
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = target
+    log.info(f"torch.compile cache isolated per compile signature: {target}")
+    log.info(f"compile signature: {signature}")
+    return target
+
+
+def _apply_activation_memory_budget(
+    budget: float, *, grad_ckpt: bool, logger: logging.Logger = log
+) -> None:
+    """Cap the AOT min-cut partitioner's saved-for-backward set.
+
+    The 2026-06-10 custom-autograd removal silently grew that set: the old
+    ``LoRADownProjectFn`` was an explicit autograd boundary (save bf16 x +
+    weight, recompute casts in backward), and once the rank path became plain
+    traceable ops the partitioner chose to save ~0.8 GB more intermediates per
+    step — first-step OOM on 16 GB at 4200 tokens without grad-ckpt.
+    ``budget < 1.0`` makes it recompute cheap intermediates instead; 0.85
+    reproduces the pre-removal footprint at identical step time (1.02 vs
+    1.01 s/it, bench 2026-06-10).
+
+    Must be set BEFORE the block compile — partitioning happens at
+    first-forward compile, and this is a plain module attr (no ContextVar
+    revert, unlike dynamo's recompile_limit). Skipped under gradient
+    checkpointing: the budget repartitions the joint graph, so checkpoint's
+    recompute pass can select a different graph than forward →
+    ``CheckpointError`` (saved-vs-recomputed metadata mismatch, torch
+    #166926). Ckpt already minimizes saved activations, so the cap buys
+    nothing there.
+    """
+    if budget < 1.0 and not grad_ckpt:
+        import torch._functorch.config as _functorch_config
+
+        _functorch_config.activation_memory_budget = budget
+        logger.info(
+            "torch.compile activation_memory_budget = %.3g "
+            "(partitioner recomputes cheap intermediates in backward)",
+            budget,
+        )
+    elif budget < 1.0:
+        logger.info(
+            "activation_memory_budget ignored: incompatible with "
+            "gradient_checkpointing (and redundant under it)"
+        )
+
+
+def compile_blocks_for_training(
+    unet: object,
+    network: object,
+    *,
+    backend: str,
+    mode: Optional[str] = None,
+    n_token_families: Optional[int] = None,
+    seq_range: Optional[tuple] = None,
+    dynamic_seq: bool = False,
+    activation_memory_budget: float = 1.0,
+    grad_ckpt: bool = False,
+    logger: logging.Logger = log,
+) -> None:
+    """The LoRA-training (``train.py``) compile sequence, post ``apply_to``.
+
+    Native-shape flattening + per-block torch.compile. COMPILE LAST — run only
+    after ``network.apply_to`` + ``load_weights`` so dynamo traces the
+    adapter's monkey-patched Linear forwards, not the bare DiT (the invariant
+    ``build_anima`` encodes). ``compile_blocks`` turns on the flatten (one
+    block graph per token-count family) and raises the dynamo cache-size
+    budget itself, so unlike :func:`compile_dit_blocks_for_pool` no explicit
+    ``recompile_limit`` pin is needed here.
+
+    Sequence:
+      1. :func:`_apply_activation_memory_budget` — partitioner cap, skipped
+         under grad-ckpt (see its docstring for the history + CheckpointError
+         interaction).
+      2. ``isolate_compile_cache(compile_signature(...))`` — per-signature
+         persistent-cache dir so a stale seq-range guard (e.g. an inference
+         run's canonical 4032-floored range) can't poison this run's wider
+         dynamic-seq marks with a ConstraintViolationError. Same signature →
+         warm cache reuse.
+      3. ``unet.compile_blocks(...)`` with the caller-derived token budget
+         (``train.py::_derive_token_budget`` — the buckets the dataset
+         actually populated, not ``args.target_res``).
+      4. ``network.compile_cond_stream(...)`` when the adapter exposes it:
+         EasyControl's patched ``Block.forward`` routes the active cond path
+         through ``_two_stream_inner``, bypassing the just-compiled
+         ``block._forward`` — so step 3 never reaches the cond stream (incl.
+         the cond LoRA projections). Same backend/mode, same
+         compile-after-apply ordering.
+    """
+    _apply_activation_memory_budget(
+        activation_memory_budget, grad_ckpt=grad_ckpt, logger=logger
+    )
+    isolate_compile_cache(
+        compile_signature(
+            n_token_families=n_token_families,
+            seq_range=seq_range,
+            dynamic_seq=dynamic_seq,
+            backend=backend,
+            mode=mode,
+        )
+    )
+    unet.compile_blocks(
+        backend,
+        mode=mode,
+        n_token_families=n_token_families,
+        dynamic_seq=dynamic_seq,
+        seq_range=seq_range,
+    )
+    if hasattr(network, "compile_cond_stream"):
+        network.compile_cond_stream(
+            backend,
+            mode=mode,
+            n_token_families=n_token_families,
+            dynamic_seq=dynamic_seq,
+            seq_range=seq_range,
+        )
+
+
+@dataclass
+class PoolCompileResult:
+    """What :func:`compile_dit_blocks_for_pool` derived, for caller-side logging.
+
+    ``n_token_families`` / ``seq_range`` are ``None`` on the static (per-shape)
+    path; ``n_shapes`` is always the distinct-token-count tally (≥1).
+    """
+
+    n_shapes: int
+    n_token_families: Optional[int]
+    seq_range: Optional[tuple]
+
+
+def compile_dit_blocks_for_pool(
+    anima: object,
+    token_counts,
+    *,
+    enabled: bool = True,
+    dynamic_seq: bool = True,
+    backend: str = "inductor",
+    mode: Optional[str] = None,
+    activation_memory_budget: float = 1.0,
+    grad_ckpt: bool = False,
+    cache_size_limit: Optional[int] = None,
+    logger: logging.Logger = log,
+) -> PoolCompileResult:
+    """Partitioner budget → per-signature cache isolation → block compile, for a
+    self-describing distillation pool.
+
+    The verbatim compile-setup sequence ``distill_spd`` / ``distill_mod`` shared —
+    and the home where the cross-cutting compile fixes belong (dynamo cache
+    sizing, the AOTAutogradCache guard-poisoning isolation, the ``_functorch``
+    partitioner budget). The caller derives ``token_counts`` — the distinct
+    ``(W//patch)*(H//patch)`` counts its cached pool populates, coupled to each
+    trainer's stage/synth pool logic, so it stays at the call site — and this
+    owns everything after:
+
+      1. ``n_shapes`` and, under ``dynamic_seq``, the symbolic-seq
+         ``n_token_families`` / ``seq_range`` (one graph bounded by the pool's
+         real token range; else ``None`` → per-shape static graphs).
+      2. the partitioner ``activation_memory_budget`` — skipped + logged under
+         ``grad_ckpt`` (repartitioning the joint graph trips CheckpointError,
+         torch #166926); ckpt already minimizes saved activations.
+      3. ``isolate_compile_cache(compile_signature(...))`` — a per-signature
+         cache dir so a stale seq-range guard can't poison this run
+         (ConstraintViolationError; see :func:`isolate_compile_cache`).
+      4. ``compile_dit_blocks`` with the dynamo cache sized to ``2*n_shapes + 8``
+         (override via ``cache_size_limit``).
+
+    Returns the derived :class:`PoolCompileResult` (computed even when ``enabled``
+    is False, so callers can still log it). Run AFTER the network ``apply_to`` —
+    the compile-after-monkey-patch invariant ``build_anima`` encodes.
+    """
+    counts = {int(c) for c in token_counts}
+    n_shapes = max(1, len(counts))
+    if dynamic_seq and counts:
+        # ONE symbolic-seq graph for every shape: mark_dynamic on the seq axis,
+        # bounded by the pool's real token range.
+        n_token_families: Optional[int] = n_shapes
+        seq_range: Optional[tuple] = (min(counts), max(counts))
+    else:
+        # Static path: one graph per distinct token count, each at its real
+        # token count (no padding). compile_blocks keys per token count.
+        n_token_families = None
+        seq_range = None
+    result = PoolCompileResult(n_shapes, n_token_families, seq_range)
+
+    if not enabled:
+        return result
+
+    # (2) Partitioner saved-activation cap — see _apply_activation_memory_budget
+    # for the ordering constraint and the grad-ckpt CheckpointError interaction.
+    _apply_activation_memory_budget(
+        activation_memory_budget, grad_ckpt=grad_ckpt, logger=logger
+    )
+
+    # (3) Isolate the persistent compile caches per signature — entries compiled
+    # under different seq-range bounds otherwise poison this run's dynamic-seq
+    # marks (AOTAutogradCache replays a stale narrow guard → ConstraintViolationError).
+    # Same signature → warm-cache reuse shared with the other training entry points.
+    isolate_compile_cache(
+        compile_signature(
+            n_token_families=n_token_families,
+            seq_range=seq_range,
+            dynamic_seq=dynamic_seq,
+            backend=backend,
+            mode=mode,
+        )
+    )
+    # (4) Compile each Block._forward (compile-after-apply invariant).
+    compile_dit_blocks(
+        anima,
+        enabled=True,
+        cache_size_limit=(
+            2 * n_shapes + 8 if cache_size_limit is None else cache_size_limit
+        ),
+        backend=backend,
+        mode=mode,
+        dynamic_seq=dynamic_seq,
+        n_token_families=n_token_families,
+        seq_range=seq_range,
+    )
+    return result
 
 
 def enable_training_grad_ckpt(anima: object, *, enabled: bool) -> None:

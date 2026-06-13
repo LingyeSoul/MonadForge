@@ -31,6 +31,41 @@ def get_dummy_scheduler(optimizer: Optimizer) -> Any:
     return DummyScheduler(optimizer)
 
 
+def make_warmup_cosine_scheduler(
+    optimizer: Optimizer,
+    total_steps: int,
+    lr: float,
+    *,
+    warmup_steps: int,
+    eta_min_ratio: float = 0.1,
+):
+    """Linear warmup → cosine anneal, the schedule the distillation loops share.
+
+    Warmup ramps ``1e-6·lr → lr`` over ``warmup_steps``; cosine then anneals to
+    ``eta_min_ratio·lr`` over the remaining ``total_steps − warmup_steps``.
+    ``warmup_steps <= 0`` skips warmup and returns a bare ``CosineAnnealingLR``
+    over all ``total_steps``.
+
+    Open-coded identically in ``scripts/distill_mod``, ``scripts/distill_turbo``
+    and ``scripts/distill_spd`` before being promoted here.
+    """
+    from torch.optim.lr_scheduler import (
+        CosineAnnealingLR,
+        LinearLR,
+        SequentialLR,
+    )
+
+    if warmup_steps and warmup_steps > 0:
+        warmup = LinearLR(optimizer, start_factor=1e-6 / lr, total_iters=warmup_steps)
+        cosine = CosineAnnealingLR(
+            optimizer, T_max=total_steps - warmup_steps, eta_min=lr * eta_min_ratio
+        )
+        return SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[warmup_steps]
+        )
+    return CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=lr * eta_min_ratio)
+
+
 def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     """
     Unified API to get any scheduler from its name.

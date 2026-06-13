@@ -28,7 +28,6 @@ Run from repo root (anima_lora/):
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -37,15 +36,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import numpy as np
 import torch
 
-from anima_lora import GenerationRequest, generate, get_generation_settings
+from anima_lora import (
+    GenerationRequest,
+    default_checkpoints,
+    generate,
+    get_generation_settings,
+)
 from bench._common import make_run_dir, write_result
 from library.inference import sampling as inference_utils
 
-DIT = os.environ.get("ANIMA_DIT", "models/diffusion_models/anima-base-v1.0.safetensors")
-VAE = os.environ.get("ANIMA_VAE", "models/vae/qwen_image_vae.safetensors")
-TEXT_ENCODER = os.environ.get(
-    "ANIMA_TEXT_ENCODER", "models/text_encoders/qwen_3_06b_base.safetensors"
-)
+_ckpts = default_checkpoints()
+DIT, VAE, TEXT_ENCODER = _ckpts.dit, _ckpts.vae, _ckpts.text_encoder
 
 # Varied content so γ reflects the model, not one prompt's spectrum.
 DEFAULT_PROMPTS = [

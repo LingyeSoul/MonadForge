@@ -1,6 +1,15 @@
 # AGSM reward premise holds on Anima — relative FM-ranking survives where absolute FM-MSE doesn't
 
-AGSM (`docs/proposal/soft_tokens_agsm.md`) builds its entire alignment signal from
+> **STATUS (AGSM landed 2026-05-29).** This Phase-0 gate passed *and* the method
+> shipped: bounded AGSM trained on the soft-tokens path
+> (`contrastive_objective=agsm`, paper-faithful Plackett–Luce Δ + dual-bank
+> ψ⁺/ψ⁻), and an A/B showed it **helps prompt-following and quality**. So the
+> "Phase 2 make-or-break" framing below is settled (positive), not open work. The
+> proposal is archived as LANDED at `_archive/proposals/soft_tokens_agsm.md`. This
+> note remains the standing Phase-0 premise record.
+> See [[project_soft_tokens_agsm_pl_correction]].
+
+AGSM (`_archive/proposals/soft_tokens_agsm.md`) builds its entire alignment signal from
 the model's **own denoising likelihood** — the per-candidate FM error
 `r(x_t, c) = −‖v_θ(x_t, c) − v_target‖²` that the Plackett–Luce weighting ranks
 across candidate captions. That collides head-on with a hard, repeatedly confirmed
@@ -123,5 +132,5 @@ uv run python -m bench.soft_tokens_contrastive.reward_premise_probe \
 ```
 
 Probe: `bench/soft_tokens_contrastive/reward_premise_probe.py`. Structural sibling
-(does a hard negative *exist*): `negative_audit.py`. Proposal:
-`docs/proposal/soft_tokens_agsm.md` §"premise risk to falsify first" + Phase 0.
+(does a hard negative *exist*): `negative_audit.py`. Proposal (archived as LANDED):
+`_archive/proposals/soft_tokens_agsm.md` §"premise risk to falsify first" + Phase 0.

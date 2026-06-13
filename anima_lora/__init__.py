@@ -24,6 +24,7 @@ The canonical homes are unchanged — this module only re-exports them:
 | ``load_dit_model`` | ``library.inference.models`` |
 | ``load_vae`` | ``library.models.qwen_vae`` |
 | ``str_to_dtype`` | ``library.runtime.device`` |
+| ``default_checkpoints`` / ``DefaultCheckpoints`` | ``library.env`` |
 
 ``ROOT`` is the repo root (the directory holding ``configs/``, ``output/`` …) as
 a ``pathlib.Path`` — the single source of truth for building repo-relative paths
@@ -71,6 +72,9 @@ _ATTR_TO_MODULE: dict[str, str] = {
     "load_vae": "library.models.qwen_vae",
     # device / dtype helpers (library.runtime.device)
     "str_to_dtype": "library.runtime.device",
+    # default checkpoint paths (library.env)
+    "default_checkpoints": "library.env",
+    "DefaultCheckpoints": "library.env",
 }
 
 

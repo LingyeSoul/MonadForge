@@ -88,7 +88,7 @@ Concrete details:
 
 ## Step-0 baseline equivalence
 
-The bench at `bench/easycontrol/step0_equivalence.py` settles which
+A step-0 equivalence bench (since removed) settled which
 init makes the extended self-attention match the no-cond baseline at step 0:
 
 | Strategy                             | rel_l2 max | mean α  | Verdict     |
@@ -106,9 +106,9 @@ the softmax — `b_cond` initialized to −10 makes cond contribute ~e⁻¹⁰ �
 of the total softmax mass, and is freely learnable.
 
 `b_cond` is a per-block scalar `nn.Parameter`. Init −10 is set via
-`network_args = ["b_cond_init=-10.0", ...]` in `configs/methods/easycontrol.toml`.
+`network_args = ["b_cond_init=-10.0", ...]` in `configs/easycontrol/easycontrol.toml`.
 
-The same script's **Section B** (`--skip_sweep`) verifies the equivalence
+The same (since-removed) bench's **Section B** verifies the equivalence
 holds under the live two-stream layout — separate cond Q/K/V, cond's own
 RoPE at smaller S_c, cond's own self-attention. Result: rel_l2_max = 2.6e-5
 in fp32 / 8.0e-4 in bf16, α ≈ 1.0 — same EXACT verdict.
@@ -129,56 +129,182 @@ For the default `r = 16`, `D = 2048`, `num_blocks = 28`, `mlp_ratio = 4.0`:
 Set `apply_ffn_lora=0` in `network_args` to drop the FFN LoRA — halves the
 trainable count.
 
-## `cond_token_count`: cond static-pad budget
+## Cond token count: native, no static padding
 
-Cond is static-padded to `cond_token_count` so block compute sees a single
-S_c across all batches and buckets (compile-friendly). This is EasyControl's
-own cond-stream padding, independent of the DiT's native-shape flatten. The
-default is **4096**; for the common ref==target setup (where cond is the SAME
-cached VAE latent used by target) cond's native tokens just pad up to it.
-(Note: the 4200-token bucket family exceeds 4096 — raise `cond_token_count`
-to 4200 if you train on those buckets.)
+The cond stream runs at the cond latent's **native** token count — there is no
+static-pad knob. Anima's native-shape bucketing already makes every forward run
+at its real token count (one bucket per batch → uniform S_c within a batch), and
+the DiT keys its compiled block graph on token count alone (two families: 4032 /
+4200). `encode_cond_latent` just flattens the patch-embedded cond latent and
+returns it at that count.
 
-| `cond_token_count` | What you get                                                 | Memory cost vs no-cond baseline |
-| -----------------: | ------------------------------------------------------------ | -------------------------------: |
-| 4096               | full target-resolution reference; ref==target lossless       | ~1.3 GiB                        |
-| 2048               | ~2× downsampled reference                                    | ~0.7 GiB                        |
-| 1024               | matches official EasyControl's 32×32 reference (cond_size=512) | ~0.4 GiB                      |
+For the common ref==target setup the cond is the SAME cached VAE latent the
+target uses, so its token count is identical to the target's and lands on one of
+the two bucket families automatically. Static-padding to a fixed budget (the
+removed `cond_token_count`, default 4096) was both unnecessary under native
+bucketing and broken for the 4200-token family (4200 > 4096), and it leaked zero
+tokens into the cond stream's self-attention and into target's LSE-extended
+attention — the same padding-leak the DiT's static-pad path was removed to avoid.
 
-If you set `cond_token_count` lower than the cond latent's native token
-count, `encode_cond_latent` raises — the caller must downsample explicitly
-(or we add automatic latent-space resize as a future enhancement).
+Memory scales with the cond latent's resolution: a lower-resolution reference
+produces fewer cond tokens and a smaller KV cache. To match the official
+EasyControl's small (e.g. 32×32) reference, set `cond_res_scale` (below) or
+downsample the cond image upstream.
+
+## Position-Aware Interpolation (`cond_res_scale`)
+
+The paper's **Position-Aware Training Paradigm** (§3.3) downsamples the *control
+condition* to a fixed low resolution (512²) for efficiency, then **Position-Aware
+Interpolation (PAI)** rescales the condition's position encodings back onto the
+full-resolution target grid so spatial alignment is preserved. Anima implements
+this as the `cond_res_scale` network arg (default `1.0` = off).
+
+**What it does.** With `cond_res_scale = s` (0 < s < 1), `encode_cond_latent`:
+1. downsamples the cond latent to ~`s×` per axis (`F.interpolate`, `area`
+   filter, rounded to a patch-size multiple) — **cond stream only**; the target
+   latent, the flow-matching loss, σ sampling, and cross-attn text are all
+   untouched and run at full native resolution;
+2. computes per-axis rescale factors `S_h = H_target/H_cond`, `S_w = W_target/W_cond`
+   from the pre/post patch grids (the target grid = cond's full-res grid, since
+   cond is the same spatial size as the target for both ref==target and
+   colorize — so no caller plumbing is needed);
+3. builds the cond RoPE at fractional positions `i·S_h` via
+   `VideoRopePosition3DEmb.generate_embeddings_scaled` instead of the integer
+   `seq[:H]`. Anima's RoPE is position-value-agnostic (frequencies are analytic,
+   not table-indexed — the same path already feeds fractional temporal positions
+   under FPS modulation), so fractional positions are exact.
+
+**Why it's cheap.** The cond stream's own self-attention is `O(S_c²)`, so
+quartering the token count (s ≈ 0.5) cuts it ~16×; the cond LoRA/MLP and the
+`S_t×S_c` cond tile of target's extended attention drop ~4×. Realistic
+end-to-end training speedup ≈ 25-30%, plus a smaller activation/KV footprint
+(the [memory envelope](#memory-envelope) full→low-res row). The inference KV
+cache shrinks by `1/s²` and inherits the scaled positions automatically — no
+inference-side change.
+
+**When to use it.**
+- **Subject / semantic control** (identity, object): low-res cond is essentially
+  free — the paper shows fidelity survives downscaling. Good `s` ≈ 0.5.
+- **Structure-critical tasks** (colorize lineart, edges): downscaling discards
+  high-frequency structure the cond is supposed to carry, and PAI realigns
+  *positions* but cannot restore lost *information*. Keep `cond_res_scale = 1.0`
+  (the shipped colorize default) or use a mild `s` ≥ 0.7 only if a bench shows
+  boundary fidelity holds.
+
+**Equivalence.** At `cond_res_scale = 1.0` the downscale block is skipped and
+the cond RoPE is the native-position table — bit-exact to the pre-PAI path, so
+existing checkpoints are unaffected. The `b_cond` step-0 baseline equivalence is
+undisturbed (PAI only moves cond positions, not the gate). Verified by a
+PAI-equivalence bench (since removed).
+
+## Variants
+
+EasyControl is a *family* of control tasks: they all share the shipped network
+(`networks/methods/easycontrol.py`) and the two-stream forward above, and differ
+only in **how the condition is built**. A variant is selected by the
+`EASYADAPTER` env var (unset → the default ref==target EasyControl); per-task
+projects live under `easycontrol_adapters/`.
+
+| Variant      | `EASYADAPTER` | Condition                                   | Config                                | Project                              |
+| ------------ | ------------- | ------------------------------------------- | ------------------------------------- | ------------------------------------ |
+| **default**  | *(unset)*     | the reference image itself (cond == target) | `configs/easycontrol/easycontrol.toml`    | —                                    |
+| **colorize** | `colorize`    | synthetic mangafied B&W (XDoG + screentone) | `configs/easycontrol/colorize.toml`†  | `easycontrol_adapters/colorization/` |
+
+† colorize is a self-contained **descriptor** (top-level `name` + `[staging]` /
+`[preprocess]` / `[training]` knob tables + a `[general]`/`[[datasets]]` blueprint,
+same shape as `near_twins.toml`). It trains the base `easycontrol` method with its
+`[training]` table folded in as CLI overrides — there's no standalone `colorize`
+method/dataset file anymore.
+
+### colorize — manga / lineart → color
+
+Trains the same extended-self-attention cond stream to **colorize** a B&W
+screentoned page. Real manga has no color ground truth, so the pair is inverted:
+the **target** is an existing color illustration (latents + captions reused from
+the shared `post_image_dataset/lora/` cache — nothing re-encoded) and the
+**condition** is a *synthetic* mangafied version of that same image (XDoG lineart
++ value-banded algorithmic screentone), cached to a parallel `cond_cache_dir`
+(`post_image_dataset/easycontrol/colorize/cond/`). The text channel is reduced to
+**color-only captions** (hair/eye/garment colors) in its own `text_cache_dir`
+(`post_image_dataset/easycontrol/colorize/text/`), so the prompt carries the one variable
+B&W can't — hue — giving a strong prompt→color binding. At inference an empty
+prompt auto-colorizes; a color prompt (`pink hair, blue eyes`) steers.
+
+```bash
+make easycontrol-staging    EASYADAPTER=colorize   # stage 1: mangafy cond tree
+make easycontrol-preprocess EASYADAPTER=colorize   # stages 2-3: VAE-encode cond + color text
+make easycontrol            EASYADAPTER=colorize   # train (frozen DiT, adapter-only)
+REF_IMAGE=page.png make test-easycontrol EASYADAPTER=colorize   # inference
+```
+
+In the GUI, the **EasyControl** experimental tab lists *Colorize* in its *Variant*
+dropdown as a **descriptor variant**: a file-edited launcher (no in-GUI form — the
+tab shows a pointer note to edit `configs/easycontrol/colorize.toml` directly, like
+near_twins). Its Preprocess button runs staging + preprocess in one shot
+(`--no-skip_mangafy`); its Train button trains the base `easycontrol` method with
+the descriptor's blueprint + `[training]` overrides folded in (via the daemon, so
+it survives the GUI closing).
+
+Full design notes (caption policy, screentone bands, inference settings, Phase B)
+live in `easycontrol_adapters/colorization/README.md`.
 
 ## Usage
 
 ### Training
 
 ```bash
-make exp-easycontrol                          # default preset
-python tasks.py exp-easycontrol               # cross-platform
-make exp-easycontrol PRESET=low_vram          # override hardware preset
+make easycontrol                          # default preset
+python tasks.py easycontrol               # cross-platform
+make easycontrol PRESET=low_vram          # override hardware preset
 ```
 
 Reuses the existing `cache_latents` output as the cond input — no separate
 sidecar cache. Run `make preprocess` once if VAE latents aren't already
-cached, then `make exp-easycontrol`.
+cached, then `make easycontrol`.
 
 CFG dropout for image conditioning (independent of text):
 - `easycontrol_drop_p = 0.1` (default) — per batch, drop the cond entirely.
   Patched `Block.forward` then falls through to the original baseline DiT
   behavior. Lets inference do image-CFG independently of text-CFG.
 
+REPA auxiliary loss (optional, `network_args = ["use_repa=true", ...]`):
+- Relational (Gram) alignment of mid-block target-stream hiddens to cached
+  PE-Spatial patch tokens of the clean target image — same machinery as the
+  LoRA family's REPA v2 (`library/training/repa.py`; knobs `repa_weight` /
+  `repa_layer` / `repa_encoder`, relational mode only). Because the DiT is
+  frozen, the alignment gradient reaches the cond LoRA solely through the
+  extended self-attention in blocks ≤ `repa_layer`, so the term acts as a
+  *conditioning-utilization* pressure: the only way to satisfy it is to pull
+  clean spatial structure from the reference. First wired for the sanitize
+  (near_twins) task, where the structural-consistency signal lands exactly on
+  the edit region (see `configs/easycontrol/near_twins.toml`); for ref==target
+  subject control it would instead reward layout copying — use with care.
+  Needs `{stem}_anima_pe_spatial.safetensors` sidecars next to the TE caches
+  (near_twins: `[preprocess] pe_encoder = "pe_spatial"` → re-run
+  `make easycontrol-preprocess EASYADAPTER=near_twin`). On cond-dropped steps
+  the term has no trainable path (frozen target stream) — keep `drop_p` low or
+  zero when using it.
+- **Launch sanity (load-bearing)**: confirm `repa/align_loss` appears in the
+  progress jsonl from the first logged step, alongside `repa/active = 1.0`.
+  Runs before the 2026-06-12 train.py dispatch fix trained as silent
+  baselines (the adapter `extra_forwards` dispatch only ran on the
+  cached-crossattn branch, which EasyControl doesn't use) — the
+  `anima_easycontrol_sanitize_repa{,_normed}` checkpoints are
+  baseline-equivalent. `active=1.0` *without* `align_loss` is exactly that
+  failure signature. Operating-point plan:
+  `docs/proposal/easycontrol_repa_operating_point.md`.
+
 ### Inference
 
 ```bash
-make exp-test-easycontrol REF_IMAGE=post_image_dataset/foo.png \
+make test-easycontrol REF_IMAGE=post_image_dataset/foo.png \
                           PROMPT="a girl drinking coffee at a cafe"
 ```
 
 Equivalents:
 
 ```bash
-python tasks.py exp-test-easycontrol post_image_dataset/foo.png \
+python tasks.py test-easycontrol post_image_dataset/foo.png \
                                      --prompt "a girl drinking coffee at a cafe"
 ```
 
@@ -186,18 +312,20 @@ Optional `EC_SCALE=0.8` to override the saved scale at test time.
 
 ## Memory envelope
 
-Measured peak GPU memory in the smoke bench (`bench/easycontrol/two_stream_smoke.py`,
+Measured peak GPU memory in the smoke bench (since removed;
 gradient checkpointing on, target latent 64×64, batch 1, bf16):
 
 | Configuration                            | Peak GPU memory |
 | ---------------------------------------- | --------------: |
 | Baseline DiT only (no cond)              | ~5.0 GiB        |
-| Two-stream, `cond_token_count=1024`      | ~5.4 GiB        |
-| Two-stream, `cond_token_count=4096`      | ~6.3 GiB        |
+| Two-stream, low-res cond (~1024 tokens)  | ~5.4 GiB        |
+| Two-stream, full-res cond (~4096 tokens) | ~6.3 GiB        |
 
 A real training step on 16 GiB GPUs (live observed) lands around **7.8 GiB**
-at `cond_token_count=4096`. The Phase 1.5 design pinned ~1.4 GiB more on
-top of this and did not fit on 16 GiB at constant-bucket S_c.
+for a full-resolution (ref==target) cond at constant-bucket S_c. The Phase 1.5
+design pinned ~1.4 GiB more on top of this and did not fit on 16 GiB.
+Cond memory now scales with the reference's native resolution — there is no
+fixed token budget.
 
 ## Inference KV cache
 
@@ -242,15 +370,16 @@ when CFG runs the DiT at `B>1` (cond/uncond batched), `K_c/V_c` are expanded
 on the batch dim automatically. CFG-via-two-separate-forwards (the current
 default at `B=1` per branch) just reuses the cache directly.
 
-**Memory.** At default `S_c = 4096`, `n_heads = 16`, `head_dim = 128`,
+**Memory.** At a full-resolution `S_c = 4096`, `n_heads = 16`, `head_dim = 128`,
 `num_blocks = 28`, bf16, batch 1:
 
 ```
 2 (K + V) × 28 blocks × 4096 × 16 × 128 × 2 bytes ≈ 896 MiB
 ```
 
-Lower `cond_token_count` scales the cache linearly (e.g. ~448 MiB at
-`cond_token_count = 2048`). The startup log reports the actual size:
+A lower-resolution reference scales the cache linearly with its native token
+count (e.g. ~448 MiB at ~2048 cond tokens). The startup log reports the actual
+size:
 
 ```
 EasyControl: precomputed cond KV cache (28 blocks × 2 tensors, ~939 MB)
@@ -263,7 +392,7 @@ cond LoRA (ffn1/ffn2), and the cond residual writes. Target-side cost
 collapses to `_extended_target_attention` (LSE-decomposed flash) + baseline
 cross-attn + baseline MLP. Practical end-to-end speedup vs the no-cache path
 scales with `S_c / S_t` and the FFN LoRA ratio; expect a meaningful drop in
-per-step wall time at `cond_token_count = 4096`.
+per-step wall time for a full-resolution cond.
 
 **Correctness.** The cache stores the exact tensors the two-stream path
 would have produced (same modules, same scale, same RoPE). Setting
@@ -282,16 +411,20 @@ cond_scale)` change; subsequent KSampler steps use the cache automatically.
 
 ## Limitations
 
-1. **`cond_token_count` is a manual budget.** If you pass a cond latent that
-   would produce more tokens than `cond_token_count`, `encode_cond_latent`
-   raises; the caller must downsample upstream. Automatic latent-space
-   downsample (preserving aspect ratio) is a candidate follow-up.
-2. **No spatial-control positional alignment.** Cond uses its own native
-   RoPE positions (matches the official's "subject" mode). The official's
-   `resize_position_encoding` interpolates cond positions into target's
-   coordinate system for spatial control (depth maps, edges); reproducing
-   that needs fractional positions, which Anima's `pos_embedder.seq[:H]`
-   integer indexing doesn't support out of the box.
+1. **Cond runs at the reference's native resolution by default.** Set
+   `cond_res_scale < 1.0` to downsample the cond stream in latent space for
+   faster/cheaper training (target + loss stay full-res) — see
+   [Position-Aware Interpolation](#position-aware-interpolation-cond_res_scale)
+   below. At the default `1.0` there is no token-count cap.
+2. **Spatial-control positional alignment is the PAI downscale, not arbitrary
+   remapping.** With `cond_res_scale < 1.0` the cond's RoPE positions are
+   interpolated back onto the target grid (paper §3.3 PAI, `Pᵢ = i·S_h`) so a
+   downsampled cond stays pixel-aligned with the target. This covers the
+   common case where cond and target share content/coordinates (ref==target,
+   colorize). Remapping a cond drawn in a *different* coordinate system onto
+   the target (the official's full spatial-control story for cropped/offset
+   conditions) uses the same `generate_embeddings_scaled` machinery but isn't
+   wired through a per-condition offset/crop API here.
 3. **`blocks_to_swap = 0` recommended.** The patched `Block.forward` does
    the cond compute inside the block's forward window, so block swap is
    structurally fine — but untested with EasyControl. Pinning to 0 for now;
@@ -300,7 +433,7 @@ cond_scale)` change; subsequent KSampler steps use the cache automatically.
    joint-softmax backward is implemented manually because FA2's stock
    backward drops the upstream gradient on `softmax_lse`. Verified against
    masked-SDPA reference within fp32 ulp on forward and all gradients
-   (`bench/easycontrol/step1p5_lse_equivalence.py`). Falls back to
+   (via an LSE-equivalence bench, since removed). Falls back to
    masked-SDPA when flash-attn is unavailable.
 
 ## History
@@ -325,8 +458,8 @@ training (vs Phase 1.5's >16 GiB OOM at the same bucket).
 | Path                                            | Purpose                                                |
 | ----------------------------------------------- | ------------------------------------------------------ |
 | `networks/methods/easycontrol.py`                 | `EasyControlNetwork` + patched `Block.forward` closure |
-| `configs/methods/easycontrol.toml`              | Method config                                          |
+| `configs/easycontrol/easycontrol.toml`              | Method config (default ref==target)                    |
 | `configs/gui-methods/easycontrol.toml`          | GUI-friendly self-contained variant                    |
-| `bench/easycontrol/step0_equivalence.py` | `b_cond=-10` init recipe + two-stream verification     |
-| `bench/easycontrol/step1p5_lse_equivalence.py` | LSE-decomposed Function vs masked-SDPA reference |
-| `bench/easycontrol/two_stream_smoke.py`  | End-to-end forward+backward smoke + peak memory        |
+| `configs/easycontrol/colorize.toml`             | Colorize **descriptor** — `name` + `[staging]`/`[preprocess]`/`[training]` tables + blueprint + `[variant]` GUI metadata (the single source of truth; folds onto the base easycontrol method) |
+| `configs/easycontrol/near_twins.toml`           | Near-twins descriptor (same shape; text-removal control task)          |
+| `easycontrol_adapters/colorization/`            | Colorize project — mangafy + `prep.py` + color-caption filter + README |

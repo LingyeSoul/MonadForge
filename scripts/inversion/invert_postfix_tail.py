@@ -170,7 +170,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--basis",
         type=str,
-        default="svd_te",
+        default="random",
         choices=["svd_te", "random"],
         help="Basis kind. 'svd_te' = top-K right singular vectors of cached "
         "T5 corpus; 'random' = QR of a Gaussian.",
@@ -207,9 +207,9 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="soft_tokens",
         choices=["ortho_tail", "soft_tokens"],
-        help="How to fill the K postfix slots. 'ortho_tail' (default) = K scalars "
+        help="How to fill the K postfix slots. 'ortho_tail' = K scalars "
         "over a frozen orthonormal Q, one tail shared across all blocks and all t. "
-        "'soft_tokens' = SoftREPA bank (per-block × per-t free tokens, no ortho, no "
+        "'soft_tokens' (default) = SoftREPA bank (per-block × per-t free tokens, no ortho, no "
         "caption-conditioning) to measure the per-image floor with that extra freedom. "
         "soft_tokens ignores --basis*/--K-vs-embed_dim and saves a {tokens, "
         "t_offsets.weight} bank instead of an s-vector.",
@@ -246,7 +246,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Optimization
-    p.add_argument("--steps", type=int, default=50, help="Optimization steps per image")
+    p.add_argument("--steps", type=int, default=100, help="Optimization steps per image")
     p.add_argument("--lr", type=float, default=0.01, help="Learning rate (AdamW)")
     p.add_argument(
         "--lr_schedule",

@@ -40,6 +40,16 @@ def main() -> None:
         default=True,
         help="Disable VAE internal cache (default: True)",
     )
+    parser.add_argument(
+        "--path_pattern",
+        "--path-pattern",
+        dest="path_pattern",
+        default="*",
+        help=(
+            "Only cache images whose path relative to --dir matches this "
+            "fnmatch glob. Use | to separate alternatives. Default: *"
+        ),
+    )
     args = parser.parse_args()
 
     from library.models import qwen_vae as qwen_image_autoencoder_kl
@@ -66,6 +76,7 @@ def main() -> None:
         vae,
         cache_dir=cache_dir,
         recursive=args.recursive,
+        path_pattern=args.path_pattern,
         batch_size=args.batch_size,
         progress=tqdm_progress("Caching latents"),
     )

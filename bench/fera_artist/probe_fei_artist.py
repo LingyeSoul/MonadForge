@@ -48,6 +48,10 @@ import torch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
+from bench._anima import (  # noqa: E402
+    discover_latents_by_stem,
+    parse_latent_cache_name,
+)
 from bench._common import make_run_dir, write_result  # noqa: E402
 from library.runtime.fei import compute_fei_2band  # noqa: E402
 
@@ -55,7 +59,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("fera-artist-probe")
 
 
-_FNAME_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d{3,5})x(?P<h>\d{3,5})_anima\.npz$")
 _LATKEY_RE = re.compile(r"^latents_(\d+)x(\d+)$")
 _UNTAGGED = "__untagged__"
 
@@ -65,20 +68,18 @@ def _scan_cache(cache_dir: Path) -> dict[str, list[Path]]:
 
     A stem can have multiple bucket files if it was re-cached at
     different aspect ratios, though in practice we see one per stem.
+    Filename parsing lives in :func:`discover_latents_by_stem`.
     """
-    out: dict[str, list[Path]] = defaultdict(list)
-    for f in sorted(cache_dir.rglob("*_anima.npz")):
-        m = _FNAME_RE.match(f.name)
-        if m is None:
-            continue
-        out[m.group("stem")].append(f)
-    return out
+    return {
+        stem: [f.path for f in files]
+        for stem, files in discover_latents_by_stem(cache_dir).items()
+    }
 
 
 def _bucket_of(p: Path) -> tuple[int, int]:
-    m = _FNAME_RE.match(p.name)
-    assert m is not None
-    return int(m.group("w")), int(m.group("h"))  # (W_lat, H_lat) — pixel-aligned
+    parsed = parse_latent_cache_name(p)
+    assert parsed is not None
+    return parsed.width, parsed.height  # (W_px, H_px) — pixel-aligned
 
 
 def _build_artist_groups(
@@ -173,15 +174,17 @@ def _load_latent(npz_path: Path) -> torch.Tensor:
     with np.load(npz_path) as d:
         keys = [k for k in d.keys() if _LATKEY_RE.match(k)]
         if not keys:
-            raise KeyError(f"{npz_path.name}: no ``latents_HxW`` key (keys={list(d.keys())})")
+            raise KeyError(
+                f"{npz_path.name}: no ``latents_HxW`` key (keys={list(d.keys())})"
+            )
         arr = d[keys[0]]  # (C, H, W)
     return torch.from_numpy(arr).float().unsqueeze(0)  # (1, C, H, W)
 
 
 def _stem_of(p: Path) -> str:
-    m = _FNAME_RE.match(p.name)
-    assert m is not None
-    return m.group("stem")
+    parsed = parse_latent_cache_name(p)
+    assert parsed is not None
+    return parsed.stem
 
 
 def _stem_to_artist(groups: dict[str, list[str]]) -> dict[str, str]:
@@ -214,9 +217,9 @@ def _run_sweep(
         except Exception as exc:
             log.warning(f"skip {path.name}: {exc}")
             continue
-        eps = torch.from_numpy(
-            rng.standard_normal(size=z0.shape, dtype=np.float32)
-        ).to(device)
+        eps = torch.from_numpy(rng.standard_normal(size=z0.shape, dtype=np.float32)).to(
+            device
+        )
         for t in ts:
             z_t = (1.0 - t) * z0 + t * eps
             min_d = float(min(z_t.shape[-2], z_t.shape[-1]))
@@ -284,9 +287,7 @@ def _argmax_divisor(
     best_div, best_score = divisors[0], -1.0
     for div in divisors:
         scores = [
-            pstdev(by_dt[(div, t)])
-            for t in ts
-            if lo <= t <= hi and by_dt.get((div, t))
+            pstdev(by_dt[(div, t)]) for t in ts if lo <= t <= hi and by_dt.get((div, t))
         ]
         score = mean(scores) if scores else 0.0
         if score > best_score:
@@ -399,7 +400,7 @@ def main() -> None:
     artist_sizes = sorted([len(v) for v in groups.values()], reverse=True)
     log.info(
         f"artists: n={len(groups)} (incl. untagged={_UNTAGGED in groups}), "
-        f"top={artist_sizes[:5]}, median={artist_sizes[len(artist_sizes)//2] if artist_sizes else 0}, "
+        f"top={artist_sizes[:5]}, median={artist_sizes[len(artist_sizes) // 2] if artist_sizes else 0}, "
         f"tail={artist_sizes[-3:] if len(artist_sizes) >= 3 else artist_sizes}"
     )
 
@@ -469,7 +470,9 @@ def main() -> None:
         import matplotlib.pyplot as plt
 
         n_panels = 2 if by_dt_c else 1
-        fig, axes = plt.subplots(1, 2 * n_panels, figsize=(6 * n_panels, 5), squeeze=False)
+        fig, axes = plt.subplots(
+            1, 2 * n_panels, figsize=(6 * n_panels, 5), squeeze=False
+        )
         cmap = plt.get_cmap("viridis")
         plots: list[tuple[str, dict]] = [("artist-balanced", by_dt_a)]
         if by_dt_c:
@@ -511,16 +514,25 @@ def main() -> None:
 
     _print_table(
         "std(e_low) — artist-balanced",
-        by_dt_a, divisors, ts, pstdev,
+        by_dt_a,
+        divisors,
+        ts,
+        pstdev,
     )
     _print_table(
         "mean(e_low) — artist-balanced (should ↓ in t)",
-        by_dt_a, divisors, ts, mean,
+        by_dt_a,
+        divisors,
+        ts,
+        mean,
     )
     if by_dt_c:
         _print_table(
             "std(e_low) — control (proportional)",
-            by_dt_c, divisors, ts, pstdev,
+            by_dt_c,
+            divisors,
+            ts,
+            pstdev,
         )
 
     print(

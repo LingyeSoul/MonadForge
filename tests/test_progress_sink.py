@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 
 from library.training.progress import ProgressSink, _find_cmmd, _flatten_logs
@@ -98,6 +99,51 @@ def test_tail_while_write(tmp_path):
     assert [e["ev"] for e in mid] == ["run_start", "step"]
     sink.run_end(status="ok", final_step=2)
     assert [e["ev"] for e in _read_events(path)][-1] == "run_end"
+
+
+def test_log_mirror_writes_log_events(tmp_path):
+    path = str(tmp_path / "run.progress.jsonl")
+    sink = ProgressSink(path, run="r", method=None, preset=None, t0=0.0)
+    sink.run_start(total_steps=1, total_epochs=1, pid=1)
+    sink.attach_log_mirror()
+    logging.getLogger("anima.test").warning("boom %d", 7)
+    logging.getLogger("anima.test").info("quiet")  # below WARNING → not mirrored
+    sink.run_end(status="ok", final_step=1)
+    # close() detached the handler: later records must not write (or raise)
+    logging.getLogger("anima.test").warning("after-close")
+
+    evs = _read_events(path)
+    logs = [e for e in evs if e["ev"] == "log"]
+    assert len(logs) == 1
+    assert logs[0]["level"] == "WARNING"
+    assert logs[0]["logger"] == "anima.test"
+    assert logs[0]["msg"] == "boom 7"
+    assert not any(e.get("msg") == "after-close" for e in evs)
+
+
+def test_log_mirror_cap(tmp_path):
+    path = str(tmp_path / "run.progress.jsonl")
+    sink = ProgressSink(path, run="r", method=None, preset=None, t0=0.0)
+    sink.run_start(total_steps=1, total_epochs=1, pid=1)
+    sink.attach_log_mirror(max_events=2)
+    for i in range(5):
+        logging.getLogger("anima.test").warning("w%d", i)
+    sink.run_end(status="ok", final_step=1)
+
+    logs = [e for e in _read_events(path) if e["ev"] == "log"]
+    # 2 mirrored records + the cap notice, nothing past the cap
+    assert len(logs) == 3
+    assert [e["msg"] for e in logs[:2]] == ["w0", "w1"]
+    assert "cap" in logs[2]["msg"]
+
+
+def test_log_mirror_before_run_start_is_noop(tmp_path):
+    path = str(tmp_path / "run.progress.jsonl")
+    sink = ProgressSink(path, run="r", method=None, preset=None)
+    sink.attach_log_mirror()  # stream not open yet → must not attach
+    logging.getLogger("anima.test").warning("early")
+    assert not os.path.exists(path)
+    sink.close()
 
 
 def test_flatten_logs_drops_nonscalar():

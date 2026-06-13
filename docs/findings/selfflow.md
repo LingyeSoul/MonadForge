@@ -6,7 +6,7 @@ exploits an information gap between clean-noised and heavy-noised views of a
 latent that a *pretraining-scale, still-learning* backbone hasn't closed yet.
 Anima's frozen DiT is a finished denoiser — it has already closed that gap, so
 the rep loss has nothing to transfer and exerts ~zero pressure on a rank-r
-adapter. The cheap pre-flight probe (`bench/selfflow/probe.py`) fails both of
+adapter. The cheap pre-flight probe (since removed from the tree) fails both of
 its necessary conditions with clear margin.
 
 Method reference: Chefer, Esser et al., *Self-Supervised Flow Matching for
@@ -50,7 +50,7 @@ forward hooks, and reports two necessary-condition metrics:
 
 ## Results
 
-Clean run `bench/selfflow/results/20260524-1642-imgsplit/` — 24 latents × 8
+Clean run — 24 latents × 8
 timestep pairs (192 pairs), bucket `150x112`, `layer_l=6`, `layer_k=18`,
 28-block backbone, `anima-base-v1.0`:
 
@@ -126,12 +126,6 @@ silently corrupted the verdict):
 
 ## Reproduce
 
-```bash
-python bench/selfflow/probe.py \
-    --dit models/diffusion_models/anima-base-v1.0.safetensors \
-    --num_samples 24 --num_timesteps 8 --layer_l 6 --layer_k 18 --label imgsplit
-# → bench/selfflow/results/<ts>-imgsplit/{result.json,per_pair.csv}
-```
-
-See `bench/selfflow/README.md` for the full probe rationale and the training
-A/B that would have followed a pass.
+The probe is no longer in-tree. It was run on the frozen base DiT over 24 samples
+× 8 timestep pairs at `layer_l=6` / `layer_k=18`, emitting `result.json` +
+`per_pair.csv`; the training A/B that a pass would have unlocked was never run.

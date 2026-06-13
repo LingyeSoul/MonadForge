@@ -26,6 +26,26 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
             self.num_train_images += dataset.num_train_images
             self.num_reg_images += dataset.num_reg_images
 
+    def refresh_concat_state(self):
+        """Recompute ConcatDataset cumulative sizes + aggregate image_data after a
+        member dataset's length changed.
+
+        ``ConcatDataset`` caches ``cumulative_sizes`` (and we cache ``image_data`` /
+        counts) at ``__init__``. A later per-dataset re-bucket — e.g.
+        ``BaseDataset.restrict_to_byg_tuples`` dropping images without an edit-tuple
+        sidecar — shrinks each member's ``buckets_indices`` but leaves these caches
+        stale, so a global index maps to a ``sample_idx`` past the shrunken member
+        and ``__getitem__`` raises ``IndexError``. Call this after any such rebuild.
+        """
+        self.cumulative_sizes = self.cumsum(self.datasets)
+        self.image_data = {}
+        self.num_train_images = 0
+        self.num_reg_images = 0
+        for dataset in self.datasets:
+            self.image_data.update(dataset.image_data)
+            self.num_train_images += dataset.num_train_images
+            self.num_reg_images += dataset.num_reg_images
+
     def add_replacement(self, str_from, str_to):
         for dataset in self.datasets:
             dataset.add_replacement(str_from, str_to)

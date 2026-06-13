@@ -16,3 +16,4 @@ family = "lora"
 label = "LoRA"
 description = "Plain classic LoRA — simplest baseline."
 order = 10
+target_res = [ 896, 1024,]

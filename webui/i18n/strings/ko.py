@@ -6,19 +6,46 @@ STRINGS: dict[str, str] = {
     # Window / tabs
     "window_title": "Anima LoRA",
     "tab_config": "학습 설정",
-    "tab_ip_adapter": "IP-Adapter",
     "tab_easycontrol": "EasyControl",
     "tab_spd": "SPD",
     "tab_turbo": "Turbo",
-    "tab_methods": "메소드",
-    "tab_images": "데이터셋",
+    "tab_experimental": "실험기능",
+    "tab_images": "데이터셋 뷰어",
     "tab_merge": "병합",
+    "tab_queue": "큐 현황",
     "tab_preprocess": "전처리",
+    "tab_tensorboard": "텐서보드",
     # PreprocessingTab
     "preprocess_intro": (
         "캡션 셔플과 말풍선 마스킹을 설정하고, 각 단계를 원할 때 실행합니다. "
         "학습 설정 탭의 학습 버튼은 캐시가 없을 때 기본값으로 전처리를 "
         "자동 실행합니다 — 이 탭은 세부 조정 및 단계별 재실행용입니다."
+    ),
+    "preprocess_image_prep": "이미지 전처리 (리사이즈 / 필터)",
+    "preprocess_source_image_dir": "소스 이미지 폴더:",
+    "preprocess_source_image_dir_tip": (
+        "선택한 GUI method의 베이스 원본 이미지 루트입니다 (기본값은 configs/preprocess.toml; "
+        "편집 내용은 해당 variant에 저장됩니다). 실행 시 path_scope가 이 위에 "
+        "덧붙여지므로, 여기서 표시되는 것은 최종 스코프 경로가 아닌 스코프 없는 루트입니다. "
+        "파일 저장 위치를 바꾸지 않고 트리의 일부만 전처리하려면 아래 전처리 경로 필터를 사용하세요."
+    ),
+    "preprocess_path_pattern": "전처리 경로 필터:",
+    "preprocess_path_pattern_tip": (
+        "path_scope가 먼저 소스 이미지 폴더를 정합니다. 예를 들어 path_scope=data_group1이면 "
+        "전처리 루트는 image_dataset/data_group1이 됩니다. 이 필터는 그 루트 기준 상대 경로에 "
+        "적용됩니다. '*'(또는 빈 값)은 전체, '1/*'는 data_group1/1 하위만, "
+        "'1/*|2/*'는 두 하위 폴더를 처리합니다."
+    ),
+    "preprocess_drop_lowres": "저해상도 이미지 제외",
+    "preprocess_drop_lowres_tip": (
+        "아래 픽셀 임계값보다 작은 소스 이미지를 건너뛰어 리사이즈 / VAE / "
+        "텍스트 캐시에 포함되지 않도록 합니다. "
+        "체크 해제 시 크기에 상관없이 모든 이미지를 유지합니다."
+    ),
+    "preprocess_min_pixels": "최소 픽셀 수 (필터 임계값):",
+    "preprocess_min_pixels_tip": (
+        "저해상도 필터의 픽셀 수 임계값. 500000 = 0.5MP. "
+        "'저해상도 이미지 제외'가 해제되면 무시됩니다."
     ),
     "preprocess_text_caching": "캐싱 (VAE + 텍스트)",
     "preprocess_caption_shuffle_variants": "캡션당 셔플 변형 수 (N):",
@@ -36,6 +63,9 @@ STRINGS: dict[str, str] = {
         "셔플 변형 수가 0 이하이면 무시됩니다."
     ),
     "preprocess_run_te": "캐싱 실행 (VAE + 텍스트)",
+    "preprocess_run_pe": "PE 캐싱 실행",
+    "preprocess_add_to_queue": "큐에 추가",
+    "preprocess_queued": "{label} 큐에 추가됨 (작업 {job_id}) — 큐 탭에서 확인하세요.",
     "preprocess_masking_sam": "SAM3 마스킹 (말풍선)",
     "preprocess_masking_mit": "MIT 마스킹 (만화 텍스트)",
     "preprocess_sam_prompts": "SAM 프롬프트 (한 줄에 하나):",
@@ -103,10 +133,12 @@ STRINGS: dict[str, str] = {
     "preprocess_status_resized": "리사이즈된 이미지: {n}장",
     "preprocess_status_caches": "캐시 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "마스크: {masks}장",
-    "preprocess_status_no_resized": "리사이즈된 이미지가 없습니다 — 학습 설정 탭에서 Preprocess를 먼저 실행하세요.",
+    "preprocess_status_no_resized": "리사이즈된 이미지가 없습니다.",
+    "preprocess_open_dataset_dir": "캐시 폴더 열기",
+    "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ 폴더(리사이즈된 이미지 + 캐시)를 파일 탐색기에서 엽니다.",
     "preprocess_log_placeholder": "전처리 출력이 여기에 표시됩니다...",
     "preprocess_save_settings": "저장",
-    "preprocess_save_settings_tip": "이 설정들을 디스크에 저장합니다 (configs/sam_mask.yaml + GUI 설정).",
+    "preprocess_save_settings_tip": "이 설정들을 선택한 GUI method 프로필에 저장합니다. 마스킹 실행 시에는 현재 프로필의 마스크 설정이 작업에 함께 전달됩니다.",
     "preprocess_settings_saved": "전처리 설정이 저장되었습니다.",
     "preprocess_invalid_float": "{field}에 잘못된 숫자: {value}",
     "preprocess_already_running": "이미 전처리 단계가 실행 중입니다.",
@@ -115,9 +147,19 @@ STRINGS: dict[str, str] = {
     "save": "저장",
     "save_dirty_tooltip": "저장되지 않은 편집이 있습니다. Save를 누르면 variant 파일에 기록됩니다 (학습/전처리 시작 시 자동 저장됨).",
     "train": "학습",
+    "train_tooltip": "현재 variant를 지금 학습합니다. 펼침 메뉴를 열면 지금 시작하지 않고 daemon 큐에 추가합니다.",
+    "train_busy_use_queue": "이미 이 탭에 작업이 연결되어 있습니다. Train 펼침 메뉴로 다른 작업을 큐에 추가하거나 먼저 현재 작업을 중지하세요.",
+    "queue": "큐 추가",
+    "queue_tooltip": "현재 variant를 daemon 큐에 추가합니다. 펼침 메뉴에서 학습+전처리 또는 전처리만 선택할 수 있습니다.",
+    "queue_train_preprocess": "큐 추가: 학습 + 전처리",
+    "queue_train_only": "큐 추가: 학습만",
+    "queue_preprocess_only": "큐 추가: 전처리만",
     "test": "테스트",
     "stop": "정지",
     "log_placeholder": "학습 출력이 여기에 표시됩니다...",
+    "copy_log": "복사",
+    "copy_log_tooltip": "전체 학습 로그를 클립보드에 복사",
+    "copy_log_done": "복사됨",
     "from_base": "base.toml에서 상속",
     "saved": "저장 완료",
     "saved_file": "{name} 저장됨",
@@ -129,7 +171,8 @@ STRINGS: dict[str, str] = {
     "error": "오류",
     "accelerate_not_found": "PATH에서 accelerate를 찾을 수 없습니다",
     "preprocess": "전처리",
-    "preprocess_required": "학습 전에 전처리를 먼저 실행해주세요.",
+    "preprocess_current_tooltip": "현재 variant의 GUI 경로 스코프를 적용해 전처리를 실행합니다.",
+    "preprocess_required": "학습을 시작하면 전처리가 먼저 실행됩니다.",
     "preprocess_existing_caches_title": "기존 캐시를 그대로 재사용합니다",
     "preprocess_existing_caches_body": (
         "다음 경로에 이미 캐시 파일이 있습니다:\n  {cache_dir}\n\n"
@@ -152,25 +195,94 @@ STRINGS: dict[str, str] = {
         "전처리를 실행하세요.\n\n"
         "기존 캐시로 학습을 진행할까요?"
     ),
-    "stale_cache_title": "오래된 데이터셋 캐시",
-    "stale_cache_body": (
-        "{n}개의 VAE 잠재변수 캐시가 다음 경로 아래에 있습니다:\n  {cache_dir}\n\n"
-        "이 파일들은 현재 버킷 테이블 "
-        "(4032 / 4200 토큰 수 계열)에 더 이상 포함되지 않는 해상도로 캐싱되었습니다:\n\n{examples}\n\n"
-        "예전 버킷 구성으로 캐싱된 파일들로, 학습 시 건너뛰거나 잘못된 버킷에 "
-        "배정될 수 있습니다. 취소를 누르고 전처리를 다시 실행하여 (덮어쓰기 옵션 사용) "
-        "캐시를 다시 만드세요.\n\n"
-        "오래된 캐시를 그대로 사용하여 학습을 진행할까요?"
-    ),
     "train_autopreprocess_log": (
-        "전처리 캐시가 없어 전처리를 먼저 실행한 뒤 자동으로 학습을 시작합니다.\n"
+        "전처리 캐시가 없어 학습 시작 전에 전처리를 먼저 실행합니다.\n"
     ),
     "train_preprocessing": "전처리 중…",
     "no_lora_for_test": "테스트할 LoRA가 output/ckpt/에 없습니다. 먼저 학습을 실행하세요.",
     "test_output_title": "최신 테스트 출력",
     "test_output_empty": "output/tests/가 비어 있습니다.",
+    "sample_output_title": "최신 학습 샘플",
+    "sample_output_empty": "아직 샘플이 없습니다 — 학습이 생성하면 출력 디렉터리의 sample/ 폴더에 나타납니다.",
+    "sample_prompt_col_prompt": "프롬프트",
+    "sample_prompt_col_width": "W",
+    "sample_prompt_col_height": "H",
+    "sample_prompt_col_steps": "스텝",
+    "sample_prompt_col_seed": "시드",
+    "sample_prompt_col_cfg": "CFG",
+    "sample_prompt_col_guidance": "Guidance",
+    "sample_prompt_col_shift": "Shift",
+    "sample_prompt_col_negative": "네거티브",
+    "sample_prompt_col_extra": "추가 옵션",
+    "sample_prompt_add": "프롬프트 추가",
+    "sample_prompt_select_all": "전체 선택",
+    "sample_prompt_remove": "선택 삭제",
+    "sample_prompt_remove_confirm_title": "샘플 프롬프트 삭제",
+    "sample_prompt_remove_confirm_body": "선택한 샘플 프롬프트 {n}개를 삭제할까요?",
+    "sample_prompt_expand": "입력창 키우기",
+    "sample_prompt_collapse": "입력창 줄이기",
+    "sample_prompt_edit_button": "샘플 프롬프트 편집…",
+    "sample_prompt_dialog_title": "샘플 프롬프트",
+    "sample_prompt_summary_none": "샘플 프롬프트 없음",
+    "sample_prompt_summary_count": "{n}개 프롬프트 · {first}",
+    "sample_prompt_select": "선택",
+    "sample_prompt_prompt_placeholder": "프롬프트 본문. 줄바꿈은 여기서 보이고 저장 시 공백으로 정리됩니다.",
+    "sample_prompt_hint": "기본값으로 표시된 항목은 프롬프트 줄에 저장하지 않습니다.",
+    "sample_prompt_default_width": "기본 512",
+    "sample_prompt_default_height": "기본 512",
+    "sample_prompt_default_steps": "기본 30",
+    "sample_prompt_default_seed": "자동 시드",
+    "sample_prompt_default_cfg": "기본 7.5",
+    "sample_prompt_default_guidance": "기본 1.0",
+    "sample_prompt_default_shift": "기본 3.0",
+    "sample_prompt_default_negative": "기본: 없음",
+    "sample_prompt_tip_width": "이미지 폭(`--w`)입니다. 비우면 train.py 기본값 512를 사용합니다.",
+    "sample_prompt_tip_height": "이미지 높이(`--h`)입니다. 비우면 train.py 기본값 512를 사용합니다.",
+    "sample_prompt_tip_steps": "샘플링 스텝(`--s`)입니다. 비우면 train.py 기본값 30을 사용합니다.",
+    "sample_prompt_tip_seed": "시드(`--d`)입니다. 자동 시드는 에폭 간 비교가 가능하도록 프롬프트별 기준을 유지합니다.",
+    "sample_prompt_tip_cfg": "CFG scale(`--l`)입니다. 비우면 train.py 기본값 7.5를 사용합니다.",
+    "sample_prompt_tip_guidance": "Guidance scale(`--g`)입니다. 비우면 train.py 기본값 1.0을 사용합니다.",
+    "sample_prompt_tip_shift": "샘플링 시그마 스케줄의 flow shift(`--fs`)입니다. 비우면 train.py 기본값 3.0을 사용합니다.",
+    "sample_prompt_tip_negative": "이 샘플에만 적용할 네거티브 프롬프트(`--n`)입니다.",
+    "sample_prompt_tip_extra": "추가 sample 인자입니다. 입력한 원문을 그대로 보존합니다.",
     "finished": "--- 완료 (종료 코드 {code}) ---",
     "starting": "시작 중… (torch / accelerate 로딩)",
+    "queue_submitting": "{variant}을(를) 학습 daemon 큐에 추가 중…",
+    "queue_submitting_train_preprocess": "{variant}의 전처리와 학습을 daemon 큐에 추가 중…",
+    "queue_submitting_preprocess": "{variant}의 전처리를 daemon 큐에 추가 중…",
+    "queue_added_train": "{variant}을(를) 학습 job {job_id}(으)로 큐에 추가했습니다.\n",
+    "queue_added_preprocess": "{variant}을(를) 전처리 job {job_id}(으)로 큐에 추가했습니다. 완료 후 학습이 이어집니다.\n",
+    "queue_added_preprocess_only": "{variant}을(를) 전처리 job {job_id}(으)로 큐에 추가했습니다.\n",
+    "queue_refresh": "새로고침",
+    "queue_start": "큐 시작",
+    "queue_pause": "큐 일시정지",
+    "queue_start_tooltip": "대기 중인 작업(큐 드롭다운으로 추가한 작업)을 실행합니다. 한 번에 하나씩 처리합니다.",
+    "queue_pause_tooltip": "큐를 멈춥니다 — 실행 중인 작업은 계속되지만, 큐 시작을 누를 때까지 다음 대기 작업은 시작되지 않습니다.",
+    "queue_stop_selected": "선택 항목 정지",
+    "queue_copy_output": "출력 복사",
+    "queue_status": "진행/대기 {live}개 / 전체 {total}개",
+    "queue_status_paused": "진행/대기 {live}개 / 전체 {total}개 — 큐 일시정지됨",
+    "queue_daemon_unavailable": "daemon 연결 불가",
+    "queue_detail_placeholder": "큐 항목을 선택하면 상세 정보가 표시됩니다.",
+    "queue_log_placeholder": "선택한 job 출력이 여기에 표시됩니다...",
+    "queue_log_missing": "(아직 출력 로그가 없습니다.)",
+    "queue_log_read_failed": "(출력 로그를 읽을 수 없습니다: {err})",
+    "queue_log_truncated": "--- 마지막 {mb} MB 출력만 표시 중 ---\n",
+    "queue_detail_id": "id: {job_id}",
+    "queue_detail_state": "상태: {state}",
+    "queue_detail_kind": "종류: {kind}",
+    "queue_detail_method": "대상: {method}",
+    "queue_detail_submitted": "추가됨: {time}",
+    "queue_detail_started": "시작됨: {time}",
+    "queue_detail_ended": "종료됨: {time}",
+    "queue_detail_from_chain": "전처리 chain에서 생성됨",
+    "queue_detail_chain": "완료 후 학습: {method}",
+    "queue_detail_chained_id": "연결된 job: {job_id}",
+    "queue_detail_pid": "pid: {pid}",
+    "queue_detail_error": "오류: {error}",
+    "queue_detail_status_detail": "상세: {detail}",
+    "queue_detail_config": "설정 스냅샷: {path}",
+    "queue_detail_stdout": "출력 로그: {path}",
     "daemon_job_failed": "--- Job {job_id} {state}: {error} ---",
     "daemon_error_cause": "↳ 추정 원인: {summary}",
     "update_success_title": "업데이트 완료",
@@ -216,15 +328,6 @@ STRINGS: dict[str, str] = {
     "new_variant_exists": "Variant '{name}'이(가) 이미 존재합니다.",
     "basic_section": "기본 설정",
     "advanced_section": "고급 설정 (클릭하여 펼치기)",
-    # AdapterTab (IP-Adapter / EasyControl)
-    "adapter_source_dir": "소스 데이터셋:",
-    "adapter_cache_dir": "캐시 디렉토리:",
-    "adapter_n_pairs": "이미지 {n}개 / 캡션 {c}개 쌍",
-    "adapter_n_caches": "캐시 {n}개",
-    "adapter_preprocess": "전처리 (리사이즈 + VAE + 텍스트)",
-    "adapter_preprocess_pe": "전처리 (리사이즈 + VAE + 텍스트 + PE)",
-    "adapter_train": "학습",
-    "adapter_stop": "정지",
     # SPD / Turbo 증류 설정 탭 (gui/tabs/distill_tab.py)
     "distill_general_section": "일반",
     "distill_job_running": "이 탭에서 이미 작업이 실행 중입니다.",
@@ -283,24 +386,43 @@ STRINGS: dict[str, str] = {
     ),
     # Language
     "language": "언어:",
+    # Settings dialog
+    "settings_btn": "⚙ 설정",
+    "settings_btn_tooltip": "앱 설정 — 언어, MCP 서버 등록",
+    "settings_title": "설정",
+    "settings_mcp_header": "MCP 서버 (에이전트 연동)",
+    "settings_mcp_desc": "로컬 학습 데몬을 MCP 클라이언트(Claude Code, Claude Desktop 등)에 "
+    "노출합니다. 아래 명령을 터미널에서 실행하면 Claude Code에 등록됩니다:",
+    "settings_mcp_desc_json": "다른 MCP 클라이언트(Claude Desktop, OpenClaw 등)에는 "
+    "동일한 내용의 JSON 설정을 사용하세요:",
+    "settings_mcp_copy": "복사",
+    "settings_mcp_copied": "복사됨 ✓",
+    "settings_close": "닫기",
+    "settings_lang_apply_title": "언어",
+    "settings_lang_apply_question": "지금 인터페이스를 다시 불러와 언어를 적용할까요?\n\n"
+    "탭에서 저장하지 않은 편집 내용은 사라집니다. 대기/실행 중인 학습 작업은 "
+    "데몬에서 돌아가므로 영향이 없습니다.\n\n'아니요'를 선택하면 다음 실행 시 적용됩니다.",
     # Guidebook
     "guidebook": "📖 가이드북",
     "guidebook_tooltip": "한국어 종합 가이드 열기 (docs/guidelines/가이드북.md)",
     "guidebook_missing": "가이드를 찾을 수 없습니다: {path}",
     "guidebook_open_external": "시스템 뷰어로 열기",
     "guidebook_close": "닫기",
+    # EasyControl 어댑터 가이드 (직접 컨트롤 태스크 만들기)
+    "adapter_guide": "📘 어댑터 가이드",
+    "adapter_guide_tooltip": "나만의 EasyControl 어댑터 만들기 (easycontrol_adapters/ADAPTER_GUIDE.md)",
+    "easycontrol_descriptor_note": "이 컨트롤 태스크는 다중 테이블 구조를 가진 독립형 디스크립터로, 왼쪽에서 원시 TOML로 편집합니다:<br><br>• <b>name</b> — 출력 슬러그; 파생되는 모든 캐시/출력 경로를 재지정합니다.<br>• <code>[staging]</code> — 조건 트리를 구체화하는 데이터 생성 단계.<br>• <code>[preprocess]</code> — 스테이징된 트리에 대한 VAE/TE 캐싱 설정.<br>• <code>[training]</code> — 기본 EasyControl 메소드에 병합될 오버라이드.<br>• <code>[general]</code> / <code>[[datasets]]</code> — train.py가 읽는 데이터셋 청사진.<br>• <code>[variant]</code> — 이 드롭다운 항목의 GUI 메타데이터.<br><br><b>전처리</b> 버튼은 조건 트리를 합성하고 캐싱합니다; <b>학습</b>은 이 디스크립터의 <code>[training]</code> 오버라이드를 병합하여 기본 EasyControl 메소드를 학습합니다. 두 작업 모두 GUI를 닫아도 계속 실행됩니다.",
+    "easycontrol_descriptor_form_header": "디스크립터 <b>{path}</b> 편집 중. 아래 설정 테이블은 폼으로 편집합니다; 저장 시 변경된 값을 기록하되 주석과 <code>[[datasets]]</code> 청사진은 유지됩니다. 청사진과 <code>[variant]</code> 메타데이터는 여기에 표시되지 않으므로 해당 항목은 파일을 직접 편집하세요. 필드 이름을 클릭하면 도움말이 표시됩니다.",
+    "ec_desc_group_top": "디스크립터",
     # Top-bar buttons (models / update / report issue)
     "models_btn": "모델",
-    "models_btn_tooltip": "모델 체크포인트 다운로드 / 재다운로드 (Anima 베이스, SAM3, MIT, IP-Adapter 인코더)",
+    "models_btn_tooltip": "모델 체크포인트 다운로드 / 재다운로드 (Anima 베이스, SAM3, MIT, PE 비전 인코더)",
     "update_btn": "업데이트",
     "update_btn_tooltip": "GitHub에서 최신 anima_lora 릴리스를 가져오고 uv sync를 실행합니다",
     "update_btn_available": "업데이트 ●",
     "update_btn_available_tooltip": "새 릴리스 {v} 가 있습니다 — 클릭하여 릴리스 노트 보기",
     "report_issue": "이슈 신고",
     "report_issue_tooltip": "브라우저에서 GitHub 이슈 트래커 열기",
-    "experimental_features": "🧪 실험 기능",
-    "experimental_features_tooltip": "Postfix 및 IP-Adapter / EasyControl 탭 열기 (이미지 조건부 방식)",
-    "experimental_features_title": "실험 기능",
     # Models dialog
     "models_title": "모델 다운로드",
     "models_intro": "아래에서 모델 그룹을 선택하거나 '전체 다운로드'로 표준 세트 "
@@ -313,7 +435,20 @@ STRINGS: dict[str, str] = {
     "model_anima": "Anima — DiT + 텍스트 인코더 + VAE",
     "model_sam3": "SAM3 — 말풍선 마스킹",
     "model_mit": "MIT — 만화 텍스트 마스킹",
-    "model_pe": "PE-Core-L14-336 — IP-Adapter 비전 인코더",
+    "model_pe": "PE-Core-L14-336 — 비전 인코더 (CMMD 검증 / DCW)",
+    # HuggingFace 인증 (모델 다이얼로그)
+    "models_hf_token_placeholder": "HuggingFace 토큰을 붙여넣으세요 (hf_…)",
+    "models_hf_authenticate": "인증",
+    "models_hf_token_hint": "게이트/속도 제한 다운로드(예: SAM3)에 필요합니다. "
+    '<a href="https://huggingface.co/settings/tokens">'
+    "huggingface.co/settings/tokens</a> 에서 토큰을 생성하고 "
+    '<a href="https://huggingface.co/facebook/sam3">huggingface.co/facebook/sam3</a> 에서 SAM3 접근을 요청하세요.',
+    "models_hf_token_present": "✓ HuggingFace 토큰이 이미 저장되어 있습니다.",
+    "models_hf_not_authenticated": "인증되지 않음 — 토큰을 붙여넣어 게이트 다운로드를 활성화하세요.",
+    "models_hf_token_empty": "먼저 토큰을 붙여넣으세요.",
+    "models_hf_authenticating": "인증 중…",
+    "models_hf_logged_in": "✓ {name} (으)로 로그인되었습니다.",
+    "models_hf_login_failed": "인증 실패: {err}",
     # Update dialog
     "update_title": "anima_lora 업데이트",
     "update_warning": "업데이트는 GitHub에서 최신 릴리스를 받아 작업 트리를 덮어씁니다 "
@@ -345,10 +480,8 @@ STRINGS: dict[str, str] = {
     "merge_no_adapter_msg": "어댑터가 선택되지 않았거나 파일이 존재하지 않습니다.",
     "merge_no_selection": "목록에서 체크포인트를 선택하여 스캔하세요.",
     "merge_verdict_ready": "✓ 병합 준비됨",
-    "merge_verdict_partial": "△ 부분 병합 — LoRA는 병합되고 ReFT는 제외됩니다",
     "merge_verdict_hydra": "✗ HydraLoRA moe — 레이어 로컬 라우터는 병합할 수 없습니다",
     "merge_verdict_postfix_only": "✗ postfix/prefix 전용 — 가중치 델타가 아닙니다",
-    "merge_verdict_reft_only": "✗ ReFT 전용 — 블록 후크만 있고 병합할 LoRA가 없습니다",
     "merge_verdict_unknown": "? 인식되는 어댑터 키가 없습니다",
     "merge_options": "병합 옵션",
     "merge_base_dit": "베이스 DiT:",
@@ -357,7 +490,7 @@ STRINGS: dict[str, str] = {
     "merge_dtype": "저장 dtype:",
     "merge_out": "출력:",
     "merge_out_placeholder": "(자동: <adapter>_merged.safetensors)",
-    "merge_allow_partial": "부분 병합 허용 (ReFT / Hydra / postfix 키 제외)",
+    "merge_allow_partial": "부분 병합 허용 (Hydra / postfix 키 제외)",
     "merge_allow_partial_tip": "병합 불가능한 컴포넌트가 있어도 진행합니다. 제외된 컴포넌트는 병합된 DiT에 반영되지 않습니다.",
     "merge_button": "DiT에 병합",
     "merge_log_placeholder": "병합 출력이 여기에 표시됩니다...",
@@ -366,4 +499,22 @@ STRINGS: dict[str, str] = {
     "merge_pick_dit": "베이스 DiT .safetensors 선택",
     "merge_pick_out": "병합된 DiT 저장 위치...",
     "browse": "찾아보기…",
+    # Multi-scale target_res tiers
+    "target_res_danger_tooltip": "고비용 티어: {edge}px는 이미지당 약 {tokens} 토큰을 사용하고 컴파일된 블록 그래프를 하나 더 추가합니다(컴파일 느려짐, VRAM 증가). 이 해상도가 정말 필요할 때만 켜세요.",
+    # TensorBoard panel
+    "tb_panel_title": "TensorBoard 실행 목록",
+    "tb_open": "TensorBoard 열기",
+    "tb_stop": "서버 중지",
+    "tb_remove": "삭제",
+    "tb_view": "조회",
+    "tb_view_tip": "이 실행만 TensorBoard로 엽니다.",
+    "tb_no_runs": "아직 실행 기록이 없습니다. 학습을 시작하면 목록이 채워집니다.",
+    "tb_status_running": "포트 {port}에서 실행 중",
+    "tb_status_stopped": "",
+    "tb_not_installed": "tensorboard가 설치되지 않았습니다. 실행: pip install tensorboard",
+    "tb_current_run_label": " (현재)",
+    "tb_open_current": "현재 학습 조회",
+    "tb_open_current_tip": "진행 중인 학습 실행만 TensorBoard로 엽니다.",
+    "tb_open_current_idle_tip": "학습이 진행 중일 때 사용할 수 있습니다.",
+    "tb_appear_hint": "실행이 목록에 보이지 않으면 TensorBoard의 새로고침(업데이트) 버튼을 눌러보세요.",
 }

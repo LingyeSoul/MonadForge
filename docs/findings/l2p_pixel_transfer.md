@@ -1,5 +1,7 @@
 # L2P latent→pixel transfer — shelved on the Anima budget
 
+<!-- check-docs: ignore-flags (historical record of shelved work; the flags below never shipped) -->
+
 This records why **L2P** (turn the frozen latent DiT into a pixel-space DiT by
 swapping the VAE for large-patch RGB tokenization) was not promoted past its
 Phase-0 probe on Anima. The short version: the paper's load-bearing premise —
@@ -17,9 +19,9 @@ frozen-core distill) work on **montages, not loss**. This is a sharp instance of
 [[project_fm_val_loss_uninformative]].
 
 Method reference: Chen et al., *Unlocking Latent Potential for Pixel Generation*,
-arXiv:2605.12013. Proposal + module-swap table: `docs/proposal/l2p_pixel_anima.md`.
-Staged plan + full go/no-go history: `bench/l2p/plan.md`. Reference-code delta
-backlog: `bench/l2p/further_wiring.md`.
+arXiv:2605.12013. Proposal + module-swap table: `_archive/proposals/l2p_pixel_anima.md`
+(the Phase-0 bench code, staged plan, and reference-code delta backlog are no longer
+in-tree).
 
 ## What L2P is (the part we tested)
 
@@ -34,12 +36,12 @@ is **native 4K without the VAE-decode memory wall** at flat transformer cost —
 
 The FM convention, the input-shell linear tokenizer, and (absence of) refiner
 blocks were all confirmed identical to the reference — those are *not* the gap
-(`further_wiring.md` "Confirmed NON-gaps").
+("Confirmed NON-gaps").
 
 ## What the probe does
 
-`bench/l2p/probe_shell_feasibility.py` is the cheapest falsifier: freeze the entire
-DiT, swap `x_embedder` → fresh RGB patch-embed and `final_layer`/`unpatchify` →
+The Phase-0 probe (since removed from the tree) was the cheapest falsifier: freeze the
+entire DiT, swap `x_embedder` → fresh RGB patch-embed and `final_layer`/`unpatchify` →
 fresh decoder, overfit ≤64 images at 1024²/bs=1 with the exact Anima FM objective,
 Euler-sample montages. Phase-0 gate: loss must drop >30% to <0.85 **and** montages
 must show recognizable colored structure. Decoder is selectable (`--dip_skip` =
@@ -105,15 +107,10 @@ pending a reason to pay for one of them.
 
 ## Reproduce
 
-```bash
-# the three configs above, in order
-python bench/l2p/probe_shell_feasibility.py --num_images 64 --steps 2000          # shells-only → WEAK
-python bench/l2p/probe_shell_feasibility.py --num_images 64 --steps 2000 --lora_blocks 2          # → plateau held
-python bench/l2p/probe_shell_feasibility.py --num_images 64 --steps 2000 --lora_blocks 2 --dip_skip --flow_shift 3   # → loss pass, gen fail
-# read sample_*.png montages, NOT loss, for the verdict
-```
-
-Montages land in `bench/l2p/results/<ts>-shell-feasibility/`. Open question never
+The Phase-0 probe is no longer in-tree. Three configs were run in order — shells-only
+(→ WEAK), `--lora_blocks 2` (→ plateau held), and `--lora_blocks 2 --dip_skip
+--flow_shift 3` (→ loss pass, gen fail) — each judged on the `sample_*.png` montages,
+NOT the loss. Open question never
 reached: whether existing mid-stack identity/style LoRAs carry over to a pixel
 model unchanged (the core is bit-frozen) — moot until a Phase-1 model exists.
 Related frozen-DiT + shallow-train shape: [[project_spd_finetune_lora_proposal]].

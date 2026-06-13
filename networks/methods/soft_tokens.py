@@ -15,7 +15,7 @@
 #     (text-encoder padding invariant); an Anima-specific compile shortcut.
 #
 # vs postfix.py: postfix splices once at the cached adapter output; soft tokens
-# splice per-block via monkey-patched Block.forward (ReFT-pattern).
+# splice per-block via monkey-patched Block.forward.
 #
 # Inference: library/inference/generation.py + networks/spectrum.py call
 # append_postfix(..., timesteps=t) per CFG branch before each forward. Spectrum

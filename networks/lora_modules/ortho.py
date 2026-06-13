@@ -1,24 +1,16 @@
-# OrthoLoRA variants: Cayley-parameterized orthogonal low-rank adapters,
-# plus the OrthoHydra MoE combination.
+# OrthoLoRA variants: Cayley-parameterized orthogonal low-rank adapters
+# (OrthoLoRA + OrthoHydra MoE), plus OrthoInit — top-r SVD of W0 as a
+# *trainable* init (no frozen-subspace cap; full LoRA expressivity).
 
 from typing import Dict, List, Optional
 
 import torch
 
 from networks.lora_modules.base import BaseLoRAModule
-from networks.lora_modules.custom_autograd import lora_down_project
 from networks.lora_modules.router_state import (
+    RouterStateMixin,
     _apply_sigma_band_mask,
-    _clear_fei_feature_cache,
-    _clear_routing_weights,
-    _clear_sigma_feature_cache,
-    _register_fei_feature_cache,
-    _register_routing_weights_buffer,
     _register_sigma_band_partition,
-    _register_sigma_feature_cache,
-    _set_fei_feature_cache,
-    _set_routing_weights,
-    _set_sigma_feature_cache,
 )
 
 
@@ -95,9 +87,6 @@ class OrthoLoRAModule(BaseLoRAModule):
         self.P_basis = self.P_basis.to(torch.bfloat16)
         self.Q_basis = self.Q_basis.to(torch.bfloat16)
 
-        # Q_eff projection only; P_eff input is already rank-sized.
-        self.use_custom_down_autograd = False
-
         # Pre-allocated identity for the batched Cayley solve (avoids ~2
         # small kernels per module per step from a fresh torch.eye).
         self.register_buffer(
@@ -136,15 +125,8 @@ class OrthoLoRAModule(BaseLoRAModule):
         R_p = R[1].to(work)
         Q_eff = R_q @ self.Q_basis  # bf16
 
-        if self.use_custom_down_autograd and self.training:
-            inv_scale = self.inv_scale if self._has_channel_scale else None
-            # ``lora_down_project`` runs its matmul in fp32 internally; cast
-            # the output back to ``work`` so the saved-for-backward ``lx``
-            # downstream is bf16.
-            lx = lora_down_project(x, Q_eff, inv_scale).to(work)
-        else:
-            x_lora = self._rebalance(x.to(work))
-            lx = torch.nn.functional.linear(x_lora, Q_eff)
+        x_lora = self._rebalance(x.to(work))
+        lx = torch.nn.functional.linear(x_lora, Q_eff)
         # λ stays a fp32 Parameter (Adam state precision); cast at multiply
         # so the chain remains bf16. Same for the timestep mask buffer.
         lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
@@ -227,7 +209,150 @@ class OrthoLoRAModule(BaseLoRAModule):
                 state_dict[f"{prefix}.alpha"] = alpha
 
 
-class OrthoHydraLoRAModule(BaseLoRAModule):
+class OrthoInitLoRAModule(BaseLoRAModule):
+    """OrthoInit: top-r SVD of W₀ as *initialization only* — trainable, uncapped.
+
+    OrthoLoRA freezes the top-r SVD basis and only Cayley-rotates *within* it,
+    so ``colspace(ΔW) ⊆ top-r(W₀)`` for the whole run — the rotation can never
+    leave the principal subspace, which is what makes T-LoRA+ortho / chimera-
+    ortho feel weak. OrthoInit keeps the same three-factor ``P diag(λ) Q`` shape
+    but makes ``P_init`` / ``Q_init`` **trainable Parameters** seeded from the
+    SVD (no frozen buffer, no Cayley). ΔW can then reach *any* rank-r subspace
+    (full LoRA expressivity) while still getting the W₀-aligned warm start.
+
+        out = x @ Q_init^T @ diag(λ) @ P_init^T
+
+    λ zero-init keeps ΔW=0 at step 0. Because ∂L/∂P, ∂L/∂Q ∝ λ, the magnitudes
+    fit first along the principal directions, then the bases rotate off-subspace
+    as the loss demands — SVD as a *starting point*, not a cage.
+
+    Saved as standard LoRA (sqrt-split λ into ``lora_down`` / ``lora_up``), so the
+    on-disk format, merge path, and inference loader are identical to a distilled
+    OrthoLoRA. The ``lambda_layer`` + ``_timestep_mask`` factor is preserved at
+    train time so T-LoRA's per-rank schedule still gates the singular values.
+    """
+
+    def __init__(
+        self,
+        lora_name,
+        org_module: torch.nn.Module,
+        multiplier=1.0,
+        lora_dim=4,
+        alpha=1,
+        dropout=None,
+        rank_dropout=None,
+        module_dropout=None,
+        channel_scale=None,
+    ):
+        super().__init__(
+            lora_name,
+            org_module,
+            multiplier=multiplier,
+            lora_dim=lora_dim,
+            alpha=alpha,
+            dropout=dropout,
+            rank_dropout=rank_dropout,
+            module_dropout=module_dropout,
+        )
+
+        # SVD-informed init (same randomized low-rank as OrthoLoRA), but the
+        # bases become trainable rather than frozen subspace buffers.
+        init_device = "cuda" if torch.cuda.is_available() else "cpu"
+        W = org_module.weight.data.float().to(init_device)
+        q = min(lora_dim + 6, min(W.shape))
+        U, _S_vals, V = torch.svd_lowrank(W, q=q, niter=2)
+        P_init = U[:, :lora_dim].clone().contiguous()  # (out, r)
+        Q_init = V[:, :lora_dim].T.clone().contiguous()  # (r, in)
+        del U, _S_vals, V, W
+
+        # Trainable factors. fp32 master (Adam state precision); cast to the
+        # activation dtype at the matmul boundary in forward — same convention
+        # as ``lambda_layer``. No Cayley, no frozen P_basis/Q_basis buffers.
+        self.P_init = torch.nn.Parameter(P_init.cpu())
+        self.Q_init = torch.nn.Parameter(Q_init.cpu())
+        # ΔW = 0 at init; also gates ∂L/∂P, ∂L/∂Q off until λ ramps.
+        self.lambda_layer = torch.nn.Parameter(torch.zeros(1, lora_dim))
+
+        # Absorb channel scale into the input-side Q_init while still fp32
+        # (mutates ``.data`` in place; output unchanged, gradient rebalanced).
+        self._register_channel_scale(self.Q_init.data, channel_scale)
+
+    # Forward is the shared BaseLoRAModule scaffold; this class supplies the
+    # trainable SVD-seeded down / up GEMMs and folds ``lambda_layer`` into the
+    # T-LoRA gate. The fp32-master → ``work`` cast dance + dtype-policy rationale
+    # (mirrors the lora.py 8c2005c fix) live in the base scaffold.
+
+    def _down(self, x_lora, work):
+        return torch.nn.functional.linear(x_lora, self.Q_init.to(work))
+
+    def _gate(self, lx, work):
+        # λ (fp32 master Parameter) + the T-LoRA mask gate the rank latent. lx
+        # is (B, L, r) here — tiny — so the fp32 promotion is negligible and the
+        # base scaffold casts back to ``work`` before the up GEMM.
+        return lx * self.lambda_layer.float() * self._timestep_mask
+
+    def _up(self, lx, work):
+        return torch.nn.functional.linear(lx, self.P_init.to(work))
+
+    def _eval_delta(self, x, org_forwarded):
+        # bf16 fast path (mirrors LoRAModule). Distilled checkpoints infer as
+        # plain LoRA; this branch only fires for sample-during-training.
+        x_lora = self._rebalance(x)
+        lx = torch.nn.functional.linear(x_lora, self.Q_init.to(x.dtype))
+        lx = lx * self.lambda_layer.to(x.dtype) * self._timestep_mask.to(x.dtype)
+        lx = torch.nn.functional.linear(lx, self.P_init.to(x.dtype))
+        return lx * self.multiplier * self.scale
+
+    @classmethod
+    def distill_save_state_dict(
+        cls,
+        state_dict: Dict[str, torch.Tensor],
+        dtype: Optional[torch.dtype],
+    ) -> None:
+        """OrthoInit → standard LoRA: ``P_init`` / ``Q_init`` / λ → down/up.
+
+        Mutates ``state_dict`` in place. Discriminator: ``.P_init`` keys (no
+        other variant uses that name). Sqrt-splits λ between the two factors so
+        the on-disk product ``ΔW = P_init @ diag(λ) @ Q_init`` is preserved
+        bit-exactly under the ``(lora_down, lora_up)`` factorization.
+        """
+        prefixes = set()
+        for key in state_dict.keys():
+            if key.endswith(".P_init"):
+                prefixes.add(key[: -len(".P_init")])
+
+        for prefix in prefixes:
+            P = state_dict[f"{prefix}.P_init"].float()  # (out, r)
+            Q = state_dict[f"{prefix}.Q_init"].float()  # (r, in)
+            lam = state_dict[f"{prefix}.lambda_layer"]  # (1, r)
+            alpha = state_dict.get(f"{prefix}.alpha")
+            save_dtype = (
+                dtype if dtype is not None else state_dict[f"{prefix}.P_init"].dtype
+            )
+
+            lam_1d = lam.squeeze(0).float()
+            lam_abs = lam_1d.abs()
+            lam_sign = lam_1d.sign()
+            lam_sqrt = lam_abs.sqrt()
+            lora_up = (
+                (P * (lam_sqrt * lam_sign).unsqueeze(0))
+                .to(save_dtype)
+                .cpu()
+                .contiguous()
+            )
+            lora_down = (Q * lam_sqrt.unsqueeze(1)).to(save_dtype).cpu().contiguous()
+
+            for suffix in ("P_init", "Q_init", "lambda_layer"):
+                state_dict.pop(f"{prefix}.{suffix}", None)
+            # inv_scale stays — shared buffer, not an orthoinit-only key.
+
+            state_dict[f"{prefix}.lora_up.weight"] = lora_up
+            state_dict[f"{prefix}.lora_down.weight"] = lora_down
+            if alpha is not None:
+                state_dict[f"{prefix}.alpha"] = alpha
+
+
+class OrthoHydraLoRAModule(RouterStateMixin, BaseLoRAModule):
     """OrthoLoRA + HydraLoRA: Cayley-rotated MoE with disjoint per-expert P-bases.
 
     Shared Q_basis + trainable S_q (down). Up takes the top E*r singular
@@ -362,16 +487,10 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         self.P_bases = self.P_bases.to(torch.bfloat16)
         self.Q_basis = self.Q_basis.to(torch.bfloat16)
 
-        # Q_eff projection only; router + P_eff paths are rank/expert-sized.
-        self.use_custom_down_autograd = False
-
         self._last_gate = None
         # See router_state.py + HydraLoRAModule for the always-a-Tensor +
         # pointer-stable buffer protocol that drops the compile guards.
-        _register_sigma_feature_cache(self, self.sigma_feature_dim)
-        _register_fei_feature_cache(self, self.fei_feature_dim)
-        if self.use_global_router:
-            _register_routing_weights_buffer(self, num_experts)
+        self._register_router_io_buffers(num_experts)
         if specialize_experts_by_sigma_buckets and self.use_global_router:
             raise ValueError(
                 "specialize_experts_by_sigma_buckets is incompatible with "
@@ -437,30 +556,9 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
             )
         return torch.softmax(logits, dim=-1)
 
-    def set_sigma(
-        self, sigmas: torch.Tensor, sigma_features: torch.Tensor | None = None
-    ) -> None:
-        _set_sigma_feature_cache(self, sigmas, sigma_features)
-
-    def clear_sigma(self) -> None:
-        _clear_sigma_feature_cache(self)
-
-    def set_fei(self, fei: torch.Tensor) -> None:
-        _set_fei_feature_cache(self, fei)
-
-    def clear_fei(self) -> None:
-        _clear_fei_feature_cache(self)
-
-    def set_routing_weights(self, weights: torch.Tensor) -> None:
-        # Shared helper preserves grad_fn (router_state._set_routing_weights).
-        if not getattr(self, "use_global_router", False):
-            return
-        _set_routing_weights(self, weights)
-
-    def clear_routing_weights(self) -> None:
-        if not getattr(self, "use_global_router", False):
-            return
-        _clear_routing_weights(self)
+    # σ / FEI / routing-weights method surface is inherited from
+    # RouterStateMixin (set_sigma / clear_sigma / set_fei / clear_fei /
+    # set_routing_weights / clear_routing_weights — each buffer-presence-guarded).
 
     def forward(self, x):
         org_forwarded = self.org_forward(x)
@@ -483,12 +581,8 @@ class OrthoHydraLoRAModule(BaseLoRAModule):
         R_p = R[1:].to(work)
         Q_eff = R_q @ self.Q_basis  # bf16
 
-        if self.use_custom_down_autograd and self.training:
-            inv_scale = self.inv_scale if self._has_channel_scale else None
-            lx = lora_down_project(x, Q_eff, inv_scale).to(work)
-        else:
-            x_lora = self._rebalance(x.to(work))
-            lx = torch.nn.functional.linear(x_lora, Q_eff)
+        x_lora = self._rebalance(x.to(work))
+        lx = torch.nn.functional.linear(x_lora, Q_eff)
 
         # Pool pre-λ (zero-init λ would zero the router input at step 0).
         gate = self._compute_gate(lx)  # (B, E) — fp32 from the router

@@ -47,7 +47,7 @@ Keeping it as a flag that everyone sets to `true` in configs, with an opaque cod
 ## What's left
 
 - **Default attention is FA2** (`attn_mode = "flash"`), via the upstream `flash-attn` 2.x wheel. This is what every provided config now uses.
-- **Other backends still work:** `torch` (SDPA), `flex` (PyTorch flex attention), `sageattn`, `xformers`. None of them use trimming; all run the full 512-length cross-attention KV with attention-sink padding intact.
+- **Other backends still work:** `torch` (SDPA), `flex` (PyTorch flex attention), `sageattn`. None of them use trimming; all run the full 512-length cross-attention KV with attention-sink padding intact.
 - **`trim_crossattn_kv` is gone.** The config flag, CLI arg, the caller plumbing (`max_crossattn_seqlen` / `crossattn_full_len` / `_KV_BUCKETS`), and the commented-out trim block in `library/anima/models.py` were all deleted (2026-05-20). `crossattn_seqlens` survives only as the per-sample text length consumed by the `attn_mode="flex"` BlockMask path — note that the flex mask *masks out* padding instead of treating it as a sink, which regresses quality, so it is not a substitute for the removed trim.
 
 ## If you want to bring FA4 back

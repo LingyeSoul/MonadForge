@@ -48,7 +48,6 @@ def test_schema_has_known_keys(populated_parser):
         "optimizer_type",
         "learning_rate",
         "max_train_epochs",
-        "mixed_precision",
         "attn_mode",
         "base_config",  # manual extra
         "use_moe_style",  # network-module allowlist (three-axis routing)
@@ -57,9 +56,9 @@ def test_schema_has_known_keys(populated_parser):
 
 
 def test_choices_preserved(populated_parser):
-    mp = config_schema.get_schema()["mixed_precision"]
-    assert "bf16" in mp.choices
-    assert "no" in mp.choices
+    lw = config_schema.get_schema()["log_with"]
+    assert "tensorboard" in lw.choices
+    assert "wandb" in lw.choices
 
 
 # ---------------------------------------------------------------------------
@@ -89,9 +88,9 @@ def test_unknown_key_strict_raises(populated_parser, tmp_path: Path):
 
 def test_off_list_choice_warns(populated_parser, caplog):
     with caplog.at_level(logging.WARNING):
-        _flatten_toml({"a": {"mixed_precision": "fp4"}}, source="x.toml")
+        _flatten_toml({"a": {"log_with": "carrierpigeon"}}, source="x.toml")
     assert any(
-        "mixed_precision" in rec.getMessage() and "not in choices" in rec.getMessage()
+        "log_with" in rec.getMessage() and "not in choices" in rec.getMessage()
         for rec in caplog.records
     )
 

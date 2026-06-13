@@ -36,6 +36,35 @@ logger = logging.getLogger(__name__)
 _BLOCK_ATTR_CANDIDATES = ("blocks", "transformer_blocks", "layers")
 
 
+def _cpp_compiler_available() -> bool:
+    """Is there a working C++ compiler for the inductor backend?
+
+    ``torch.compile(backend="inductor")`` codegen's and compiles C++/CUDA at the
+    first sample. On Windows that needs ``cl.exe`` from an activated MSVC
+    environment; users without MSVC (the common ComfyUI-portable case) otherwise
+    hit a hard ``RuntimeError("Compiler: cl is not found.")`` mid-generation.
+
+    ``torch._inductor.cpp_builder.get_cpp_compiler`` is the exact probe inductor
+    uses internally: on Windows it runs ``cl /help`` and raises if absent; on
+    POSIX it searches for g++/clang. We reuse it (rather than ``shutil.which``,
+    which misses the vcvars-activated case) and treat any failure as "no
+    compiler" so we can fall back to eager instead of crashing the sampler.
+    """
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+
+        get_cpp_compiler()
+        return True
+    except Exception as exc:  # noqa: BLE001 - any failure means "compile won't work"
+        logger.warning(
+            "AnimaBlockCompile: no working C++ compiler for the inductor backend "
+            "(%s); leaving the model in eager mode. Install MSVC Build Tools "
+            "(cl.exe) on Windows to enable compilation.",
+            exc,
+        )
+        return False
+
+
 def _skip_transformer_options_guards(guard_entries):
     """Drop ``transformer_options`` from dynamo's guard set.
 
@@ -77,6 +106,12 @@ class AnimaBlockCompile:
     EXPERIMENTAL = True
 
     def patch(self, model):
+        # No C++ compiler → inductor would crash at the first sample. Detect it
+        # up front and hand back the original MODEL untouched (eager) so the
+        # workflow still runs, just without the compile speedup.
+        if not _cpp_compiler_available():
+            return (model,)
+
         from comfy_api.torch_helpers import set_torch_compile_wrapper
 
         # disable_dynamic=True turns off ComfyUI's dynamic VRAM (lazy) weight

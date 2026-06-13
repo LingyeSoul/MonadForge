@@ -1,6 +1,6 @@
 # DirectEdit (v3) — flow-inversion image editing on Anima
 
-Successor to [`docs/proposal/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md).
+Successor to [`_archive/proposals/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md).
 v2 was the proposal; this doc covers what's actually wired and runnable
 in the tree. The Anima Tagger arm of v2 ("phase v3.0") is documented
 separately in [`anima_tagger.md`](./anima_tagger.md).
@@ -9,7 +9,7 @@ separately in [`anima_tagger.md`](./anima_tagger.md).
 
 | Component | State |
 |---|---|
-| `library/inference/directedit.py` — invert + edit_forward primitive | **wired** |
+| `library/inference/editing/directedit.py` — invert + edit_forward primitive | **wired** |
 | V-injection (paper Eq. 13) | **wired** in both CLI and ComfyUI node |
 | ψ_src tagger (Anima Tagger), CLI side | **wired** |
 | `scripts/edit.py` — standalone CLI | **wired** |
@@ -45,7 +45,7 @@ Anima conventions used:
   `anima(latents, t_expand, embed, padding_mask=...)` where `embed` is
   already-preprocessed crossattn (post-T5, 512-padded).
 
-## The primitive — `library/inference/directedit.py`
+## The primitive — `library/inference/editing/directedit.py`
 
 Self-contained module (~414 LoC). Two public entry points consumed by
 all three call sites (CLI, make-target driver, ComfyUI node):
@@ -273,7 +273,7 @@ only the tagger node's vendor needs them.
 `archive/inversion/invert_embedding.py` already does per-image gradient
 descent on ψ_src to minimize FM loss through the frozen DiT — ground-truth
 quality at the cost of minutes per image. Not yet wired into the edit
-pipeline. Intended use: a `--psi_src_mode invert` flag in
+pipeline. Intended use: a (not-yet-built) `psi_src_mode=invert` option in
 `scripts/edit.py` for users willing to wait for max fidelity.
 
 Move-out-of-archive needed; otherwise no new code.
@@ -282,7 +282,7 @@ Move-out-of-archive needed; otherwise no new code.
 
 Defers per the v2 plan to "only if the tagger arm + v2.1 don't cover the
 use cases." Has its own design doc in
-[`docs/proposal/img2emb_plan.md`](../proposal/img2emb_plan.md). The
+[`_archive/proposals/img2emb_plan.md`](../proposal/img2emb_plan.md). The
 tagger arm shipped first to avoid the failure mode the archived img2emb
 hit — solving the cheap problem (Anima-distribution vocabulary) before
 attempting the hard one (manifold-correct continuous embeddings).
@@ -299,7 +299,7 @@ upstream.
 
 ### Other gaps
 
-* **No bench harness.** `bench/directedit/` per the standard envelope
+* **No bench harness.** A directedit bench per the standard envelope
   (cf. `bench/_common.py::write_result`) is the next add. Should
   compare edit-success rate vs. ψ_src reconstruction fidelity across
   tagger arms (Anima vs wd) and `t_inj` settings.
@@ -335,4 +335,4 @@ result is on the editor, not the encoder.
   reference; source for the inversion / edit-forward step rules and the
   V-injection scheme.
 * **Tagger arm.** [`anima_tagger.md`](./anima_tagger.md).
-* **v2 design doc.** [`docs/proposal/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md).
+* **v2 design doc.** [`_archive/proposals/directedit_editing_v2.md`](../proposal/directedit_editing_v2.md).

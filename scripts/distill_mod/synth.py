@@ -237,12 +237,13 @@ def generate_synthetic_latents(
     # pre-raise the dynamo cache (compile_blocks' max() won't lower it) to trace
     # every distinct shape instead of falling back to eager mid-warmup.
     if do_compile and blocks_to_swap == 0:
-        import torch._dynamo as _dynamo
+        from library.runtime.dynamo import pin_dynamo_limit
 
         n_res = len({get_latent_resolution(p.npz_path) for p in pairs})
-        _dynamo.config.cache_size_limit = max(
-            _dynamo.config.cache_size_limit, 2 * n_res + 8
-        )
+        # Pin the canonical .default (ContextVar-safe) — compile_blocks' own
+        # raise defaults to the 2 CONSTANT_TOKEN_BUCKETS families; this pool is
+        # wider, so pre-raise to its real shape count.
+        pin_dynamo_limit("recompile_limit", 2 * n_res + 8)
         model.compile_blocks(mode="default")
     elif do_compile and blocks_to_swap > 0:
         logger.info(

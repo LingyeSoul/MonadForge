@@ -43,6 +43,7 @@ from library.config.loader import (
     BlueprintGenerator,
 )
 from library.training.method_adapter import (
+    ComputeLossCtx,
     ForwardArtifacts,
     MethodAdapter,
     SetupCtx,
@@ -62,28 +63,26 @@ from library.datasets import (
 )
 from library.datasets import base as _datasets_base
 from library.runtime.accelerator import (
-    patch_accelerator_for_fp16_training,
     prepare_accelerator,
     prepare_dtype,
+    resolve_run_log_dir,
     resume_from_local_or_hf_if_specified,
 )
 from library.training import (
+    AcceleratedBundle,
     CheckpointSaver,
+    DatasetBundle,
+    LivenessLedger,
     LossContext,
+    NetworkBundle,
+    OptimizerBundle,
     SAMPLER_REGISTRY,
     RuntimeState,
     SamplerContext,
     TrainCtx,
     add_custom_train_arguments,
-    add_dataset_arguments,
     add_dataset_metadata,
-    add_dit_training_arguments,
-    add_masked_loss_arguments,
     add_model_hash_metadata,
-    add_network_arguments,
-    add_optimizer_arguments,
-    add_sd_models_arguments,
-    add_training_arguments,
     build_loss_composer,
     build_training_metadata,
     finalize_metadata,
@@ -92,17 +91,34 @@ from library.training import (
     get_optimizer_train_eval_fn,
     get_scheduler_fix,
     save_state_on_train_end,
+)
+from library.config.cli_args import (
+    add_dataset_arguments,
+    add_dit_training_arguments,
+    add_masked_loss_arguments,
+    add_network_arguments,
+    add_optimizer_arguments,
+    add_sd_models_arguments,
+    add_train_misc_arguments,
+    add_training_arguments,
+    add_validation_arguments,
     verify_command_line_training_args,
     verify_training_args,
 )
 from library.training.loop import build_loop_state, run_training_loop
-from library.training.log_dispatch import dispatch_logs
+from library.training.log_dispatch import (
+    dispatch_logs,
+    generate_step_logs as _generate_step_logs,
+)
 from library.training.progress import ProgressSink, run_scope
-from library.training.router_conditioning import apply_router_conditioning
-from library.training.text_conds import prepare_text_conds
-from library.training.forward_kwargs import build_forward_kwargs
-from library.training.inversion_forward import compute_inversion_func_loss
-from library.training.vr_forward import run_vr_reference_forward
+from library.training.forward import (
+    ForwardConditioning,
+    apply_router_conditioning,
+    build_forward_conditioning,
+    compute_inversion_func_loss,
+    prepare_text_conds,
+    run_vr_reference_forward,
+)
 from library.log import setup_logging, add_logging_arguments
 
 setup_logging()
@@ -173,6 +189,10 @@ class AnimaTrainer:
         self._adapters: list[MethodAdapter] = []
         # Feature-specific per-run state — see ``RuntimeState``.
         self._state = RuntimeState()
+        # Liveness ledger (issues.md P1.1): counts aux consumption per
+        # skip-if-missing loss; the loop audits it (step-25 early check +
+        # run end) and flags configured-but-dead features with `LIVENESS:`.
+        self._liveness = LivenessLedger()
 
     # region logging helpers
 
@@ -190,85 +210,23 @@ class AnimaTrainer:
         mean_grad_norm=None,
         mean_combined_norm=None,
     ):
-        logs = {"loss/current": current_loss, "loss/average": avr_loss}
-
-        if keys_scaled is not None:
-            logs["max_norm/keys_scaled"] = keys_scaled
-            logs["max_norm/max_key_norm"] = maximum_norm
-        if mean_norm is not None:
-            logs["norm/avg_key_norm"] = mean_norm
-        if mean_grad_norm is not None:
-            logs["norm/avg_grad_norm"] = mean_grad_norm
-        if mean_combined_norm is not None:
-            logs["norm/avg_combined_norm"] = mean_combined_norm
-
-        if float(getattr(args, "vr_loss_weight", 0.0) or 0.0) > 0.0:
-            lambda_ema = self._state.vr.get("lambda_ema")
-            lambda_batch = self._state.vr.get("lambda_batch")
-            if isinstance(lambda_ema, float):
-                logs["vr/lambda_ema"] = lambda_ema
-            if isinstance(lambda_batch, float):
-                logs["vr/lambda_batch"] = lambda_batch
-
-        lrs = lr_scheduler.get_last_lr()
-        for i, lr in enumerate(lrs):
-            if lr_descriptions is not None:
-                lr_desc = lr_descriptions[i]
-            else:
-                idx = i - (0 if args.network_train_unet_only else -1)
-                if idx == -1:
-                    lr_desc = "textencoder"
-                else:
-                    if len(lrs) > 2:
-                        lr_desc = f"group{idx}"
-                    else:
-                        lr_desc = "unet"
-
-            logs[f"lr/{lr_desc}"] = lr
-
-            if (
-                args.optimizer_type.lower().startswith("DAdapt".lower())
-                or args.optimizer_type.lower() == "Prodigy".lower()
-            ):
-                # tracking d*lr value
-                logs[f"lr/d*lr/{lr_desc}"] = (
-                    lr_scheduler.optimizers[-1].param_groups[i]["d"]
-                    * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
-                )
-            if (
-                args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower())
-                and optimizer is not None
-            ):  # tracking d*lr value of unet.
-                logs["lr/d*lr"] = (
-                    optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
-                )
-        else:
-            idx = 0
-            if not args.network_train_unet_only:
-                logs["lr/textencoder"] = float(lrs[0])
-                idx = 1
-
-            for i in range(idx, len(lrs)):
-                logs[f"lr/group{i}"] = float(lrs[i])
-                if (
-                    args.optimizer_type.lower().startswith("DAdapt".lower())
-                    or args.optimizer_type.lower() == "Prodigy".lower()
-                ):
-                    logs[f"lr/d*lr/group{i}"] = (
-                        lr_scheduler.optimizers[-1].param_groups[i]["d"]
-                        * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
-                    )
-                if (
-                    args.optimizer_type.lower().endswith(
-                        "ProdigyPlusScheduleFree".lower()
-                    )
-                    and optimizer is not None
-                ):
-                    logs[f"lr/d*lr/group{i}"] = (
-                        optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
-                    )
-
-        return logs
+        # Thin wrapper (same shape as step_logging/epoch_logging below): the
+        # loop calls this on the trainer; the assembly lives in log_dispatch,
+        # with the trainer contributing only its VR λ state.
+        return _generate_step_logs(
+            args,
+            current_loss,
+            avr_loss,
+            lr_scheduler,
+            lr_descriptions,
+            optimizer,
+            keys_scaled,
+            mean_norm,
+            maximum_norm,
+            mean_grad_norm,
+            mean_combined_norm,
+            vr_state=self._state.vr,
+        )
 
     def step_logging(
         self, accelerator: Accelerator, logs: dict, global_step: int, epoch: int
@@ -339,10 +297,18 @@ class AnimaTrainer:
                     raise ValueError(
                         "--cache_llm_adapter_outputs is incompatible with --network_args train_llm_adapter=True"
                     )
-        else:
-            assert not getattr(args, "cache_llm_adapter_outputs", False), (
-                "--cache_llm_adapter_outputs requires --cache_text_encoder_outputs"
+        elif getattr(args, "cache_llm_adapter_outputs", False):
+            # Adapter-output caching writes into the TE cache; with text caching
+            # off there is nothing to write into (the caching strategy is None and
+            # adapter outputs are computed live), so the flag is a harmless no-op.
+            # Auto-disable it instead of crashing — this combination is easy to
+            # hit from the GUI, where use_text_cache and cache_llm_adapter_outputs
+            # are independent toggles while methods default the latter to true.
+            logger.warning(
+                "cache_llm_adapter_outputs=true has no effect without text-encoder "
+                "caching (use_text_cache=false / live text encoding); disabling it."
             )
+            args.cache_llm_adapter_outputs = False
 
         assert args.network_train_unet_only or not args.cache_text_encoder_outputs, (
             "network for Text Encoder cannot be trained with caching Text Encoder outputs"
@@ -379,94 +345,57 @@ class AnimaTrainer:
                     dataset.inversion_dir = inversion_dir
                     dataset.inversion_num_runs = num_runs
 
-        # Propagate IP-Adapter feature-cache flag so datasets load
-        # {stem}_anima_{encoder}.safetensors sidecars into batch["ip_features"].
-        if getattr(args, "ip_features_cache_to_disk", False):
-            ip_encoder = getattr(args, "ip_encoder", "pe")
-            for dataset in train_dataset_group.datasets:
-                dataset.ip_features_cache_to_disk = True
-                dataset.ip_features_encoder = ip_encoder
-            if val_dataset_group is not None:
-                for dataset in val_dataset_group.datasets:
-                    dataset.ip_features_cache_to_disk = True
-                    dataset.ip_features_encoder = ip_encoder
-
-        # IP-Adapter live PE encoding (PE-LoRA, or no cached features) needs
-        # batch["images"] every step. With cache_latents=true the dataset
-        # would normally skip image loading; this flag forces it to keep
-        # decoding the source image alongside the cached latent so the live
-        # PE forward has its input. VAE encoding still runs from cache.
-        if getattr(args, "use_ip_adapter", False) and not getattr(
-            args, "ip_features_cache_to_disk", False
-        ):
-            for dataset in train_dataset_group.datasets:
-                dataset.force_load_images_for_ip = True
-            if val_dataset_group is not None:
-                for dataset in val_dataset_group.datasets:
-                    dataset.force_load_images_for_ip = True
-
-        # IP-Adapter distinct-pair (identity) training. When opted in
-        # (ip_pair_mode != "self") each dataset draws the IP-path reference from
-        # a *different* image of the target's identity instead of the target
-        # itself, removing the self-pair copy shortcut. Requires cached PE
-        # features (the pairing is a stem swap on disk). See
-        # docs/proposal/ip-adapter-identity-pairs.md.
-        ip_pair_mode = str(getattr(args, "ip_pair_mode", "self") or "self")
-        if getattr(args, "use_ip_adapter", False) and ip_pair_mode != "self":
-            if not getattr(args, "ip_features_cache_to_disk", False):
-                raise ValueError(
-                    "ip_pair_mode requires ip_features_cache_to_disk=true "
-                    "(distinct-pair training swaps which stem's cached PE "
-                    "features feed the IP path). PE-LoRA's live encoder is "
-                    "incompatible — set pe_lora_enabled=false."
-                )
-            index_path = getattr(
-                args,
-                "ip_pair_index",
-                "post_image_dataset/captions/caption_index.json",
-            )
-            if not os.path.exists(index_path):
-                raise FileNotFoundError(
-                    f"ip_pair_index not found: {index_path}. Run `make caption-index`."
-                )
-            pair_kwargs = dict(
-                index_path=index_path,
-                mode=ip_pair_mode,
-                prob=float(getattr(args, "ip_pair_prob", 0.8)),
-                min_level=str(getattr(args, "ip_pair_min_level", "artist")),
-                caption_strip_p=float(getattr(args, "ip_pair_caption_strip_p", 0.0)),
+        # Propagate BYG per-image edit-tuple cache dir so datasets load
+        # {stem}_byg.safetensors into batch["byg_{role}_emb"]/["byg_{role}_mask"].
+        if getattr(args, "use_byg", False):
+            byg_text_dir = getattr(args, "byg_text_dir", None) or os.path.join(
+                "post_image_dataset", "byg"
             )
             for dataset in train_dataset_group.datasets:
-                dataset.setup_identity_pairs(is_validation=False, **pair_kwargs)
+                dataset.byg_text_dir = byg_text_dir
+                kept, dropped = dataset.restrict_to_byg_tuples()
+                if dropped:
+                    logger.info(
+                        f"BYG: kept {kept} images with edit-tuple sidecars, "
+                        f"dropped {dropped} without (no swappable tag in caption)."
+                    )
+            # restrict_to_byg_tuples re-buckets each member, shrinking its length;
+            # refresh the ConcatDataset cumulative_sizes or global indices overflow.
+            train_dataset_group.refresh_concat_state()
             if val_dataset_group is not None:
                 for dataset in val_dataset_group.datasets:
-                    dataset.setup_identity_pairs(is_validation=True, **pair_kwargs)
+                    dataset.byg_text_dir = byg_text_dir
+                    dataset.restrict_to_byg_tuples()
+                val_dataset_group.refresh_concat_state()
+
+        # REPA v2: load cached PE-Spatial patch tokens into batches when
+        # use_repa is set. The flag rides the network kwargs; read the resolved
+        # merged view (--network_args + top-level TOML keys) rather than
+        # re-scanning both intake paths.
+        net_kwargs = resolve_network_kwargs(args)
+        if net_kwargs.get("use_repa", "").lower() in ("true", "1", "yes"):
+            repa_encoder = net_kwargs.get("repa_encoder") or "pe_spatial"
+            for dataset in train_dataset_group.datasets:
+                dataset.load_repa_pe = True
+                dataset.repa_pe_encoder = repa_encoder
             logger.info(
-                f"IP-Adapter distinct pairs: mode={ip_pair_mode} "
-                f"prob={pair_kwargs['prob']} min_level={pair_kwargs['min_level']} "
-                f"caption_strip_p={pair_kwargs['caption_strip_p']} "
-                f"index={index_path}"
+                f"REPA: PE feature loading enabled (encoder={repa_encoder}); "
+                f"batches carry repa_pe_features. Run "
+                f"`make preprocess-pe ARGS='--encoder {repa_encoder}'` if absent."
             )
 
         # Soft-tokens contrastive negatives. The objective's knobs live in
         # ``network_args`` (see configs/methods/soft_tokens.toml); preview them
-        # here to decide whether
+        # via the resolved kwargs view to decide whether
         # the dataset should surface cached negative text embeddings. Off unless
         # contrastive_weight > 0. See docs/proposal/soft_tokens_contrastive.md.
         if str(getattr(args, "network_module", "") or "") == (
             "networks.methods.soft_tokens"
         ):
-            net_arg_preview: dict[str, str] = {}
-            for na in args.network_args or []:
-                if "=" in na:
-                    pk, pv = na.split("=", 1)
-                    net_arg_preview[pk] = pv
-            con_weight = float(net_arg_preview.get("contrastive_weight", 0.0) or 0.0)
+            con_weight = float(net_kwargs.get("contrastive_weight", 0.0) or 0.0)
             if con_weight > 0.0:
-                con_k = int(net_arg_preview.get("contrastive_k", 1) or 1)
-                con_mode = str(
-                    net_arg_preview.get("contrastive_negative_mode", "shuffled")
-                )
+                con_k = int(net_kwargs.get("contrastive_k", 1) or 1)
+                con_mode = str(net_kwargs.get("contrastive_negative_mode", "shuffled"))
                 # The negative grouping always comes from the shared caption
                 # index `make caption-index` writes — not a user knob.
                 con_index = "post_image_dataset/captions/caption_index.json"
@@ -542,8 +471,6 @@ class AnimaTrainer:
         loading_device = "cpu" if self.is_swapping_blocks else accelerator.device
 
         attn_mode = "torch"
-        if args.xformers:
-            attn_mode = "xformers"
         if args.attn_mode is not None:
             attn_mode = args.attn_mode
 
@@ -552,7 +479,7 @@ class AnimaTrainer:
             raise RuntimeError(
                 "attn_mode='flash4' is not supported yet -- the flash-attention-sm120 "
                 "kernel is disabled in this build. Use 'flash', 'torch', 'flex', "
-                "'sageattn', or 'xformers' instead."
+                "or 'sageattn' instead."
             )
         elif attn_mode == "flash":
             from networks.attention_dispatch import flash_attn, flash_attn_func
@@ -600,14 +527,14 @@ class AnimaTrainer:
             attn_softmax_scale=attn_softmax_scale,
         )
 
-        # Native-shape flattening + per-block torch.compile. compile_blocks turns
-        # on the flatten (one block graph per token-count family: 4032/4200) and
-        # raises the dynamo cache-size budget itself.
-        if args.torch_compile:
-            model.compile_blocks(
-                args.dynamo_backend,
-                mode=getattr(args, "compile_inductor_mode", None),
-            )
+        # NOTE: torch.compile (compile_blocks) is intentionally NOT done here.
+        # It must run AFTER the adapter's apply_to monkey-patches the targeted
+        # Linears, or dynamo traces the un-adapted forward — see the compile
+        # ordering in library/runtime/harness.py. compile is lazy, so the old
+        # compile-here-apply-later ordering happened to work as long as no DiT
+        # forward ran in the window; moved to _create_and_apply_network (after
+        # apply_to + load_weights + grad-ckpt) so the invariant holds by
+        # construction rather than by luck.
 
         # Store unsloth preference so that when the base trainer calls
         # dit.enable_gradient_checkpointing(cpu_offload=...), we can override to use unsloth.
@@ -634,41 +561,10 @@ class AnimaTrainer:
 
         return model, text_encoders
 
-    def get_tokenize_strategy(self, args):
-        tokenize_strategy = strategy_anima.AnimaTokenizeStrategy(
-            qwen3_path=args.qwen3,
-            t5_tokenizer_path=args.t5_tokenizer_path,
-            qwen3_max_length=args.qwen3_max_token_length,
-            t5_max_length=args.t5_max_token_length,
-        )
-        return tokenize_strategy
-
-    def get_tokenizers(self, tokenize_strategy: strategy_anima.AnimaTokenizeStrategy):
-        return [tokenize_strategy.qwen3_tokenizer]
-
-    def get_latents_caching_strategy(self, args):
-        return strategy_anima.AnimaLatentsCachingStrategy(
-            args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
-        )
-
-    def get_text_encoding_strategy(self, args):
-        return strategy_anima.AnimaTextEncodingStrategy()
-
-    def get_text_encoder_outputs_caching_strategy(self, args):
-        if args.cache_text_encoder_outputs:
-            return strategy_anima.AnimaTextEncoderOutputsCachingStrategy(
-                args.cache_text_encoder_outputs_to_disk,
-                args.text_encoder_batch_size,
-                args.skip_cache_check,
-                False,
-                cache_llm_adapter_outputs=getattr(
-                    args, "cache_llm_adapter_outputs", False
-                ),
-                use_shuffled_caption_variants=getattr(
-                    args, "use_shuffled_caption_variants", False
-                ),
-            )
-        return None
+    # Strategy construction + singleton installation lives in
+    # library/anima/strategy.py (setup_training_strategies /
+    # setup_text_encoder_outputs_caching_strategy) — the training-side
+    # counterpart of library/inference/text.py::ensure_text_strategies.
 
     def get_models_for_text_encoding(self, args, accelerator, text_encoders):
         if args.cache_text_encoder_outputs:
@@ -727,76 +623,59 @@ class AnimaTrainer:
         )
         return noise_scheduler
 
-    def encode_images_to_latents(self, args, vae, images):
-        vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage
-        return vae.encode_pixels_to_latents(images)  # Keep 4D for input/output
+    # ------------------------------------------------------------------
+    # Per-step forward phases (issues.md P2.1)
+    #
+    # ``get_noise_pred_and_target`` is a flat sequence of named phases; the
+    # conditional logic of each phase lives INSIDE it, never as lexical
+    # nesting around it. "Always per step" is therefore structurally evident
+    # at the call site — the silent-REPA dispatch bug was exactly an
+    # always-phase written inside a sometimes-branch.
+    # ------------------------------------------------------------------
 
-    def shift_scale_latents(self, args, latents):
-        # Latents already normalized by vae.encode with scale
-        return latents
+    def _step_ctx(self, ctx: TrainCtx) -> StepCtx:
+        return StepCtx(
+            args=ctx.args,
+            accelerator=ctx.accelerator,
+            network=ctx.network,
+            weight_dtype=ctx.weight_dtype,
+        )
 
-    def get_noise_pred_and_target(
-        self,
-        ctx: TrainCtx,
-        latents,
-        batch,
-        text_encoder_conds,
-        *,
-        is_train=True,
-    ):
+    def _prime_adapters(self, ctx: TrainCtx, batch, latents, *, is_train) -> None:
+        """ALWAYS per step. Method-adapter pre-forward priming.
+
+        IP-Adapter encodes the reference image and primes per-block K/V;
+        EasyControl runs the cond pre-pass and primes per-block (K_c, V_c).
+        Both run on the 4D latent layout the patched DiT forward expects. The
+        patched cross-attn / self-attn closures consume the primed tensors
+        during attention."""
+        if not self._adapters:
+            return
+        step_ctx = self._step_ctx(ctx)
+        for adapter in self._adapters:
+            adapter.prime_for_forward(step_ctx, batch, latents, is_train=is_train)
+
+    def _sample_noisy_input(self, ctx: TrainCtx, latents, noise, *, is_train):
+        """ALWAYS per step. Draw (noisy input, timesteps, sigmas) via the
+        sampler registry (M1) and run per-step network router conditioning
+        (timestep masks, σ/FEI routers, balance-loss warmup)."""
         args = ctx.args
-        accelerator = ctx.accelerator
-        noise_scheduler = ctx.noise_scheduler
-        unet = ctx.unet
-        network = ctx.network
-        weight_dtype = ctx.weight_dtype
-        anima: anima_models.Anima = unet
-
-        # Reset per-step adapter aux so stale tensors from a prior step can't
-        # leak into the loss composer.
-        self._state.extras_for_step = {}
-
-        # Sample noise
-        if latents.ndim == 5:  # Fallback for 5D latents (old cache)
-            latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
-
-        # Method-adapter pre-forward priming. IP-Adapter encodes the reference
-        # image and primes per-block K/V; EasyControl runs the cond pre-pass
-        # and primes per-block (K_c, V_c). Both run on the 4D latent layout
-        # the patched DiT forward expects. The patched cross-attn / self-attn
-        # closures consume the primed tensors during attention.
-        if self._adapters:
-            step_ctx = StepCtx(
-                args=args,
-                accelerator=accelerator,
-                network=network,
-                weight_dtype=weight_dtype,
-            )
-            for adapter in self._adapters:
-                adapter.prime_for_forward(step_ctx, batch, latents, is_train=is_train)
-        noise = torch.randn_like(latents)
-
-        # Draw noisy input + timesteps via the sampler registry (M1).
         sampler_fn = SAMPLER_REGISTRY[getattr(args, "sampler", "default") or "default"]
         sampler_out = sampler_fn(
             SamplerContext(
                 args=args,
-                noise_scheduler=noise_scheduler,
+                noise_scheduler=ctx.noise_scheduler,
                 latents=latents,
                 noise=noise,
-                device=accelerator.device,
-                weight_dtype=weight_dtype,
+                device=ctx.accelerator.device,
+                weight_dtype=ctx.weight_dtype,
             )
         )
-        noisy_model_input = sampler_out.noisy_input
-        timesteps = sampler_out.timesteps  # [0,1]-scaled, float32
-        sigmas = sampler_out.sigmas
-
-        # Per-step network conditioning: timestep masks, σ/FEI routers, balance-loss warmup.
+        # timesteps are [0,1]-scaled, float32.
         self._hydra_warmup_step = apply_router_conditioning(
-            network=network,
-            noisy_model_input=noisy_model_input,
-            timesteps=timesteps,
+            network=ctx.network,
+            noisy_model_input=sampler_out.noisy_input,
+            timesteps=sampler_out.timesteps,
             is_train=is_train,
             warmup_step=int(getattr(self, "_hydra_warmup_step", 0)),
             max_train_steps=int(getattr(args, "max_train_steps", 0) or 0),
@@ -804,6 +683,18 @@ class AnimaTrainer:
                 getattr(args, "gradient_accumulation_steps", 1) or 1
             ),
         )
+        return sampler_out.noisy_input, sampler_out.timesteps, sampler_out.sigmas
+
+    def _prepare_conditioning(
+        self, ctx: TrainCtx, batch, text_encoder_conds, noisy_model_input
+    ):
+        """ALWAYS per step. Returns the device-resident ``PreparedTextConds``
+        (both text-conditioning modes; normalized to one uniform
+        ``ForwardConditioning`` at the forward call site); fires the
+        text-conditioned routers (each gated internally on cached crossattn);
+        marks grad-checkpointing inputs."""
+        args = ctx.args
+        network = ctx.network
 
         # Gradient checkpointing support
         if args.gradient_checkpointing:
@@ -821,27 +712,22 @@ class AnimaTrainer:
             batch=batch,
             text_encoding_strategy=ctx.text_encoding_strategy,
             network=network,
-            device=accelerator.device,
-            weight_dtype=weight_dtype,
+            device=ctx.accelerator.device,
+            weight_dtype=ctx.weight_dtype,
             uncond_crossattn_emb=self._state.uncond_crossattn_1,
         )
-        crossattn_emb = tc.crossattn_emb
-        prompt_embeds = tc.prompt_embeds
-        attn_mask = tc.attn_mask
-        t5_input_ids = tc.t5_input_ids
-        t5_attn_mask = tc.t5_attn_mask
 
         # ChimeraHydra global content router (chimera with
         # ``content_router_source="crossattn"``): fire ONCE per step on the
-        # pooled crossattn_emb. apply_router_conditioning above ran before
-        # text conds were materialized, so the content router lives outside
-        # that helper. No-op on non-chimera networks or per-Linear chimera.
+        # pooled crossattn_emb. apply_router_conditioning ran before text
+        # conds were materialized, so the content router lives outside that
+        # helper. No-op on non-chimera networks or per-Linear chimera.
         if (
             getattr(network, "use_content_router", False)
-            and crossattn_emb is not None
+            and tc.crossattn_emb is not None
             and hasattr(network, "set_content")
         ):
-            network.set_content(crossattn_emb)
+            network.set_content(tc.crossattn_emb)
 
         # Network-level GlobalRouter routed on pooled text
         # (``router_source="crossattn_emb"``, route_per_layer=False). Same
@@ -849,130 +735,213 @@ class AnimaTrainer:
         # on the materialized cross-attn text features. No-op otherwise.
         if (
             getattr(network, "use_crossattn_router", False)
-            and crossattn_emb is not None
+            and tc.crossattn_emb is not None
             and hasattr(network, "set_crossattn_routing")
         ):
-            network.set_crossattn_routing(crossattn_emb)
+            network.set_crossattn_routing(tc.crossattn_emb)
 
-        # Create padding mask
+        return tc
+
+    def _get_padding_mask(self, latents, *, weight_dtype, device):
         bs = latents.shape[0]
         h_latent = latents.shape[-2]
         w_latent = latents.shape[-1]
-        padding_mask_key = (bs, h_latent, w_latent, weight_dtype, accelerator.device)
+        padding_mask_key = (bs, h_latent, w_latent, weight_dtype, device)
         padding_mask = self._padding_mask_cache.get(padding_mask_key)
         if padding_mask is None:
             padding_mask = torch.zeros(
-                bs, 1, h_latent, w_latent, dtype=weight_dtype, device=accelerator.device
+                bs, 1, h_latent, w_latent, dtype=weight_dtype, device=device
             )
             self._padding_mask_cache[padding_mask_key] = padding_mask
+        return padding_mask
 
-        # Call model
+    def _run_primary_forward(
+        self, ctx: TrainCtx, *, anima, noisy_model_input, timesteps, tc, padding_mask
+    ):
+        """ALWAYS per step. Single, branch-free forward call site (issues.md
+        P2.3): both text-conditioning modes normalize to ONE uniform
+        ``ForwardConditioning`` (cond, kw) bundle first — the mode split is
+        data prep in ``build_forward_conditioning``, not control flow around
+        the call. The normalization (postfix splice runs learned modules)
+        must happen inside the primary forward's autocast / grad scope, which
+        is why it lives here rather than in ``_prepare_conditioning``.
+        Returns ``(model_pred, cond)``; ``cond`` is also consumed by the
+        aux-loss and adapter-dispatch phases after the forward."""
+        cond = build_forward_conditioning(
+            network=ctx.network, tc=tc, timesteps=timesteps
+        )
+        model_pred = anima(
+            noisy_model_input,
+            timesteps,
+            cond.cond,
+            padding_mask=padding_mask,
+            **cond.kw,
+        )
+        return model_pred, cond
+
+    def _attach_aux_losses(
+        self,
+        ctx: TrainCtx,
+        *,
+        anima,
+        batch,
+        latents,
+        noise,
+        sigmas,
+        timesteps,
+        noisy_model_input,
+        cond: ForwardConditioning,
+        padding_mask,
+        is_train,
+    ) -> None:
+        """Trainer-owned aux-loss producers riding the primary forward (func
+        inversion loss, VR control variate). Every gate lives INSIDE this
+        phase — including the cached-text requirement (``cond.crossattn_emb
+        is not None``), which used to be implied by lexical position inside
+        the else-branch. Must run inside the primary forward's autocast /
+        grad scope (extra ``anima(...)`` calls)."""
+        args = ctx.args
+
+        # Functional MSE loss against a sampled stochastic inversion run.
+        # The captures dict is populated by trainer-owned forward hooks
+        # on cross_attn.output_proj at ``self._func_blocks``.
+        self._func_loss = None
+        if (
+            is_train
+            and getattr(self, "_func_blocks", None)
+            and cond.crossattn_emb is not None
+        ):
+            self._func_loss = compute_inversion_func_loss(
+                anima_call=anima,
+                captures=self._func_captures,
+                block_indices=self._func_blocks,
+                batch=batch,
+                noisy_model_input=noisy_model_input,
+                timesteps=timesteps,
+                padding_mask=padding_mask,
+                has_postfix=cond.has_postfix,
+                kw=cond.kw,
+                device=ctx.accelerator.device,
+                dtype=ctx.weight_dtype,
+            )
+
+        # Variance-reduced FM control variate (AsymFlow §5.2). Stash the
+        # residual `z` so the loss composer can blend `(y + λ·z)²`.
+        if (
+            is_train
+            and float(getattr(args, "vr_loss_weight", 0.0) or 0.0) > 0.0
+            and cond.crossattn_emb is not None
+        ):
+            z_residual = run_vr_reference_forward(
+                anima_call=anima,
+                network=ctx.network,
+                latents=latents,
+                noise=noise,
+                sigmas=sigmas,
+                timesteps=timesteps,
+                crossattn_emb=cond.crossattn_emb,
+                padding_mask=padding_mask,
+                forward_kwargs=cond.kw,
+                weight_dtype=ctx.weight_dtype,
+                fei_sigma_low_div=float(args.vr_fei_sigma_low_div),
+            )
+            self._state.extras_for_step["vr"] = {
+                "z": z_residual.detach(),
+                "state": self._state.vr,
+            }
+
+    def _dispatch_adapter_extras(
+        self, ctx: TrainCtx, primary: ForwardArtifacts
+    ) -> None:
+        """ALWAYS per step — both text-conditioning paths. Method-adapter
+        extra forwards (soft-tokens, REPA, …).
+
+        This dispatch used to live inside the cached-crossattn else-branch
+        only, which silently skipped every adapter's aux loss on the in-model
+        text path (crossattn_emb=None — EasyControl's default; REPA trained
+        as baseline). Each adapter sees the primary forward's inputs + 5D
+        output and may run additional anima(...) calls inside the same
+        autocast / grad scope, returning aux loss tensors keyed for the
+        LossComposer."""
+        if not self._adapters:
+            return
+        step_ctx = self._step_ctx(ctx)
+        for adapter in self._adapters:
+            out = adapter.extra_forwards(step_ctx, primary)
+            if out:
+                self._state.extras_for_step.update(out)
+
+    def get_noise_pred_and_target(
+        self,
+        ctx: TrainCtx,
+        latents,
+        batch,
+        text_encoder_conds,
+        *,
+        is_train=True,
+    ):
+        accelerator = ctx.accelerator
+        anima: anima_models.Anima = ctx.unet
+
+        # Reset per-step adapter aux so stale tensors from a prior step can't
+        # leak into the loss composer.
+        self._state.extras_for_step = {}
+
+        if latents.ndim == 5:  # Fallback for 5D latents (old cache)
+            latents = latents.squeeze(2)  # [B, C, 1, H, W] -> [B, C, H, W]
+
+        self._prime_adapters(ctx, batch, latents, is_train=is_train)
+        noise = torch.randn_like(latents)
+        noisy_model_input, timesteps, sigmas = self._sample_noisy_input(
+            ctx, latents, noise, is_train=is_train
+        )
+        tc = self._prepare_conditioning(
+            ctx, batch, text_encoder_conds, noisy_model_input
+        )
+        padding_mask = self._get_padding_mask(
+            latents, weight_dtype=ctx.weight_dtype, device=accelerator.device
+        )
         noisy_model_input = noisy_model_input.unsqueeze(
             2
         )  # 4D to 5D, [B, C, H, W] -> [B, C, 1, H, W]
 
         with torch.set_grad_enabled(is_train), accelerator.autocast():
-            if crossattn_emb is None:
-                model_pred = anima(
-                    noisy_model_input,
-                    timesteps,
-                    prompt_embeds,
-                    padding_mask=padding_mask,
-                    target_input_ids=t5_input_ids,
-                    target_attention_mask=t5_attn_mask,
-                    source_attention_mask=attn_mask,
-                )
-            else:
-                # crossattn_emb is already in target (T5-compatible) space.
-                # Postfix splice kwargs.
-                fk = build_forward_kwargs(
-                    network=network,
-                    crossattn_emb=crossattn_emb,
-                    t5_attn_mask=t5_attn_mask,
+            model_pred, cond = self._run_primary_forward(
+                ctx,
+                anima=anima,
+                noisy_model_input=noisy_model_input,
+                timesteps=timesteps,
+                tc=tc,
+                padding_mask=padding_mask,
+            )
+            self._attach_aux_losses(
+                ctx,
+                anima=anima,
+                batch=batch,
+                latents=latents,
+                noise=noise,
+                sigmas=sigmas,
+                timesteps=timesteps,
+                noisy_model_input=noisy_model_input,
+                cond=cond,
+                padding_mask=padding_mask,
+                is_train=is_train,
+            )
+            self._dispatch_adapter_extras(
+                ctx,
+                ForwardArtifacts(
+                    anima_call=anima,
+                    noisy_model_input=noisy_model_input,
                     timesteps=timesteps,
-                )
-                crossattn_emb = fk.crossattn_emb
-                kw = fk.kw
-                has_postfix = fk.has_postfix
-                model_pred = anima(
-                    noisy_model_input,
-                    timesteps,
-                    crossattn_emb,
+                    crossattn_emb=cond.crossattn_emb,
                     padding_mask=padding_mask,
-                    **kw,
-                )
-
-                # Method-adapter extra forwards (soft-tokens, …).
-                # Each adapter sees the primary forward's inputs + 5D output
-                # and may run additional anima(...) calls inside this same
-                # autocast / grad scope, returning aux loss tensors keyed for
-                # the LossComposer.
-                if self._adapters:
-                    primary = ForwardArtifacts(
-                        anima_call=anima,
-                        noisy_model_input=noisy_model_input,
-                        timesteps=timesteps,
-                        crossattn_emb=crossattn_emb,
-                        padding_mask=padding_mask,
-                        forward_kwargs=kw,
-                        model_pred=model_pred,
-                        noise=noise,
-                        latents=latents,
-                        is_train=is_train,
-                    )
-                    step_ctx = StepCtx(
-                        args=args,
-                        accelerator=accelerator,
-                        network=network,
-                        weight_dtype=weight_dtype,
-                    )
-                    for adapter in self._adapters:
-                        out = adapter.extra_forwards(step_ctx, primary)
-                        if out:
-                            self._state.extras_for_step.update(out)
-
-                # Functional MSE loss against a sampled stochastic inversion run.
-                # The captures dict is populated by trainer-owned forward hooks
-                # on cross_attn.output_proj at ``self._func_blocks``.
-                self._func_loss = None
-                if is_train and getattr(self, "_func_blocks", None):
-                    self._func_loss = compute_inversion_func_loss(
-                        anima_call=anima,
-                        captures=self._func_captures,
-                        block_indices=self._func_blocks,
-                        batch=batch,
-                        noisy_model_input=noisy_model_input,
-                        timesteps=timesteps,
-                        padding_mask=padding_mask,
-                        has_postfix=has_postfix,
-                        kw=kw,
-                        device=accelerator.device,
-                        dtype=weight_dtype,
-                    )
-
-                # Variance-reduced FM control variate (AsymFlow §5.2). Stash the
-                # residual `z` so the loss composer can blend `(y + λ·z)²`.
-                if (
-                    is_train
-                    and float(getattr(args, "vr_loss_weight", 0.0) or 0.0) > 0.0
-                ):
-                    z_residual = run_vr_reference_forward(
-                        anima_call=anima,
-                        network=network,
-                        latents=latents,
-                        noise=noise,
-                        sigmas=sigmas,
-                        timesteps=timesteps,
-                        crossattn_emb=crossattn_emb,
-                        padding_mask=padding_mask,
-                        forward_kwargs=kw,
-                        weight_dtype=weight_dtype,
-                        fei_sigma_low_div=float(args.vr_fei_sigma_low_div),
-                    )
-                    self._state.extras_for_step["vr"] = {
-                        "z": z_residual.detach(),
-                        "state": self._state.vr,
-                    }
+                    forward_kwargs=cond.kw,
+                    model_pred=model_pred,
+                    noise=noise,
+                    latents=latents,
+                    is_train=is_train,
+                ),
+            )
         model_pred = model_pred.squeeze(2)  # 5D to 4D, [B, C, 1, H, W] -> [B, C, H, W]
 
         # Note: do NOT clear timestep mask here -- gradient checkpointing recomputes the forward
@@ -983,7 +952,7 @@ class AnimaTrainer:
 
         # Loss weighting
         weighting = anima_train_utils.compute_loss_weighting_for_anima(
-            weighting_scheme=args.weighting_scheme, sigmas=sigmas
+            weighting_scheme=ctx.args.weighting_scheme, sigmas=sigmas
         )
 
         return model_pred, target, timesteps, weighting
@@ -1111,10 +1080,8 @@ class AnimaTrainer:
                     args.vae_batch_size is None
                     or len(batch["images"]) <= args.vae_batch_size
                 ):
-                    latents = self.encode_images_to_latents(
-                        args,
-                        vae,
-                        batch["images"].to(accelerator.device, dtype=vae_dtype),
+                    latents = vae.encode_pixels_to_latents(
+                        batch["images"].to(accelerator.device, dtype=vae_dtype)
                     )
                 else:
                     chunks = [
@@ -1124,8 +1091,8 @@ class AnimaTrainer:
                     list_latents = []
                     for chunk in chunks:
                         with torch.no_grad():
-                            chunk = self.encode_images_to_latents(
-                                args, vae, chunk.to(accelerator.device, dtype=vae_dtype)
+                            chunk = vae.encode_pixels_to_latents(
+                                chunk.to(accelerator.device, dtype=vae_dtype)
                             )
                             list_latents.append(chunk)
                     latents = torch.cat(list_latents, dim=0)
@@ -1135,8 +1102,6 @@ class AnimaTrainer:
                     latents = typing.cast(
                         torch.FloatTensor, torch.nan_to_num(latents, 0, out=latents)
                     )
-
-            latents = self.shift_scale_latents(args, latents)
 
         text_encoder_conds = []
         text_encoder_outputs_list = batch.get("text_encoder_outputs_list", None)
@@ -1179,10 +1144,6 @@ class AnimaTrainer:
                         ),
                         input_ids,
                     )
-                if args.full_fp16:
-                    encoded_text_encoder_conds = [
-                        c.to(weight_dtype) for c in encoded_text_encoder_conds
-                    ]
 
             if len(text_encoder_conds) == 0:
                 text_encoder_conds = encoded_text_encoder_conds
@@ -1190,6 +1151,30 @@ class AnimaTrainer:
                 for i in range(len(encoded_text_encoder_conds)):
                     if encoded_text_encoder_conds[i] is not None:
                         text_encoder_conds[i] = encoded_text_encoder_conds[i]
+
+        # Step-owning adapter override: a method with no `target = noise -
+        # latents` and its own multi-forward objective (BYG) computes the whole
+        # scalar loss here, bypassing get_noise_pred_and_target + LossComposer.
+        owners = [a for a in self._adapters if a.owns_training_step(args)]
+        if owners:
+            assert len(owners) == 1, (
+                f"at most one adapter may own the training step; got {len(owners)}: "
+                f"{[a.name for a in owners]}"
+            )
+            return owners[0].compute_loss(
+                ComputeLossCtx(
+                    args=args,
+                    accelerator=accelerator,
+                    network=getattr(self, "_network", network),
+                    unet=ctx.unet,
+                    noise_scheduler=noise_scheduler,
+                    weight_dtype=weight_dtype,
+                    batch=batch,
+                    latents=latents,
+                    text_encoder_conds=text_encoder_conds,
+                    is_train=is_train,
+                )
+            )
 
         # sample noise, call unet, get target
         noise_pred, target, timesteps, weighting = self.get_noise_pred_and_target(
@@ -1210,7 +1195,9 @@ class AnimaTrainer:
         if func_loss is not None:
             loss_aux["func_loss"] = func_loss
 
-        composer = build_loss_composer(args, getattr(self, "_network", network))
+        composer = build_loss_composer(
+            args, getattr(self, "_network", network), ledger=self._liveness
+        )
 
         def _build_loss_ctx(aux: dict) -> LossContext:
             return LossContext(
@@ -1236,6 +1223,12 @@ class AnimaTrainer:
     def post_process_network(self, args, accelerator, network, text_encoders, unet):
         self._network = (
             network  # composer reads _network for ortho / balance regularizers
+        )
+        # Aux-loss gating convention (library/training/losses.py docstring):
+        # handlers read network._<name>_weight. functional's weight is a
+        # top-level training arg, so the trainer stamps it here.
+        network._functional_loss_weight = float(
+            getattr(args, "functional_loss_weight", 0.0) or 0.0
         )
         self._func_loss = None
         self._func_hooks = []
@@ -1311,12 +1304,7 @@ class AnimaTrainer:
     def on_step_start(self, ctx: TrainCtx, batch, *, is_train: bool = True):
         if not self._adapters:
             return
-        step_ctx = StepCtx(
-            args=ctx.args,
-            accelerator=ctx.accelerator,
-            network=ctx.network,
-            weight_dtype=ctx.weight_dtype,
-        )
+        step_ctx = self._step_ctx(ctx)
         for adapter in self._adapters:
             adapter.on_step_start(step_ctx, batch, is_train=is_train)
 
@@ -1325,41 +1313,12 @@ class AnimaTrainer:
         ``accelerator.backward`` and gradient clipping)."""
         if not self._adapters:
             return
-        step_ctx = StepCtx(
-            args=ctx.args,
-            accelerator=ctx.accelerator,
-            network=ctx.network,
-            weight_dtype=ctx.weight_dtype,
-        )
+        step_ctx = self._step_ctx(ctx)
         for adapter in self._adapters:
             adapter.after_backward(step_ctx)
 
     def is_train_text_encoder(self, args):
         return not args.network_train_unet_only
-
-    def cast_text_encoder(self, args):
-        return True
-
-    def cast_vae(self, args):
-        return True
-
-    def cast_unet(self, args):
-        return True
-
-    def call_unet(
-        self,
-        args,
-        accelerator,
-        unet,
-        noisy_latents,
-        timesteps,
-        text_conds,
-        batch,
-        weight_dtype,
-        **kwargs,
-    ):
-        noise_pred = unet(noisy_latents, timesteps, text_conds[0]).sample
-        return noise_pred
 
     def cache_text_encoder_outputs_if_needed(
         self,
@@ -1465,7 +1424,7 @@ class AnimaTrainer:
         torch.cuda.set_rng_state(gpu_rng_state)
         random.setstate(python_rng_state)
 
-    def _prepare_dataset(self, args):
+    def _prepare_dataset(self, args) -> DatasetBundle:
         """Build train/val dataset groups and the collator shared by both loaders."""
         use_dreambooth_method = args.in_json is None
         use_user_config = args.dataset_config is not None
@@ -1489,9 +1448,19 @@ class AnimaTrainer:
                     overrides=vars(args),
                     method=getattr(args, "method", None),
                     methods_subdir=getattr(args, "methods_subdir", None) or "methods",
+                    config_file=(
+                        getattr(args, "config_file", None)
+                        if getattr(args, "method", None) is None
+                        else None
+                    ),
                 )
                 if base_ds is not None:
-                    logger.info("Loading dataset config from configs/base.toml")
+                    if getattr(args, "method", None) is None and getattr(
+                        args, "config_file", None
+                    ):
+                        logger.info("Loading dataset config from config_file")
+                    else:
+                        logger.info("Loading dataset config from configs/base.toml")
                     user_config = base_ds
                     use_user_config = True
                 elif use_dreambooth_method:
@@ -1533,9 +1502,13 @@ class AnimaTrainer:
                 config_util.generate_dataset_group_by_blueprint(
                     blueprint.dataset_group,
                     # Native constant-token bucketing is the only mode: the sampler
-                    # buckets into CONSTANT_TOKEN_BUCKETS (the 4032/4200 families)
-                    # so compile_blocks' flatten keys on token count, not resolution.
+                    # buckets into the full native-shape catalog so compile_blocks'
+                    # flatten keys on token count, not resolution. target_res is
+                    # inert here (passed only for signature compat) — every cached
+                    # latent exact-matches its true (W, H), so the on-disk caches
+                    # decide which tiers are present, not this list.
                     constant_token_buckets=True,
+                    target_res=getattr(args, "target_res", None),
                 )
             )
 
@@ -1565,15 +1538,76 @@ class AnimaTrainer:
         )
         collator = collator_class(current_epoch, current_step, ds_for_collator)
 
-        return (
-            train_dataset_group,
-            val_dataset_group,
-            current_epoch,
-            current_step,
-            collator,
-            use_user_config,
-            use_dreambooth_method,
+        return DatasetBundle(
+            train_group=train_dataset_group,
+            val_group=val_dataset_group,
+            current_epoch=current_epoch,
+            current_step=current_step,
+            collator=collator,
+            use_user_config=use_user_config,
+            use_dreambooth_method=use_dreambooth_method,
         )
+
+    def _derive_token_budget(self, args, train_group, val_group):
+        """(n_token_families, seq_range) from the buckets the datasets populate.
+
+        Reads each dataset's ``bucket_manager.resos`` (the buckets at least one
+        selected image landed in) and reduces to the set of distinct token counts,
+        unioned with the token counts the sample prompts will request (see
+        ``_sample_prompt_token_counts``). This sizes ``compile_blocks``' dynamo
+        cache to exactly the tiers on disk for this run — independent of
+        ``args.target_res``. Returns ``(None, None)`` when no bucketed resos are
+        available (e.g. a MinimalDataset), leaving compile_blocks on its own
+        defaults.
+        """
+        from library.datasets.buckets import token_counts_for_resos
+
+        resos: set = set()
+        for group in (train_group, val_group):
+            if group is None:
+                continue
+            for dataset in getattr(group, "datasets", []):
+                bm = getattr(dataset, "bucket_manager", None)
+                if bm is not None:
+                    resos.update(bm.resos)
+        if not resos:
+            return None, None
+        counts = token_counts_for_resos(resos) | self._sample_prompt_token_counts(args)
+        return len(counts), (min(counts), max(counts))
+
+    def _sample_prompt_token_counts(self, args) -> set:
+        """Token counts the sample prompts will request; empty when sampling is off.
+
+        Sample generation runs through the same compiled blocks as training, so a
+        sample resolution outside the training buckets (e.g. ``--w 1024 --h 1536``
+        over 1024-tier data) would land outside the dynamic-seq mark_dynamic range
+        and crash the run mid-training with a ConstraintViolationError (#42).
+        Folding the prompt resolutions into the budget compiles for them up front.
+        Prompts are re-read from disk at every sample event, so resolutions added
+        to the file mid-run are NOT covered here — those are skipped with a
+        warning at sample time instead (``_sample_image_inference``).
+        """
+        from library.datasets.buckets import token_counts_for_sample_prompts
+
+        if not getattr(args, "sample_prompts", None):
+            return set()
+        will_sample = (
+            getattr(args, "sample_at_first", False)
+            or getattr(args, "sample_every_n_steps", None)
+            or getattr(args, "sample_every_n_epochs", None)
+        )
+        if not will_sample:
+            return set()
+        try:
+            prompts = train_util.load_prompts(args.sample_prompts)
+        except Exception as e:
+            logger.warning(
+                f"Could not parse sample prompts ({args.sample_prompts}) for the "
+                f"compile token budget: {e}. Sample resolutions outside the "
+                "training buckets may be skipped under torch_compile."
+            )
+            return set()
+        return token_counts_for_sample_prompts(prompts)
 
     def _create_and_apply_network(
         self,
@@ -1584,7 +1618,7 @@ class AnimaTrainer:
         unet,
         text_encoders,
         weight_dtype,
-    ):
+    ) -> Optional[NetworkBundle]:
         """Import network module, merge base weights, build LoRA, apply to the model."""
         sys.path.append(os.path.dirname(__file__))
         accelerator.print("import network module:", args.network_module)
@@ -1617,26 +1651,11 @@ class AnimaTrainer:
 
             accelerator.print(f"all weights merged: {', '.join(args.base_weights)}")
 
-        # prepare network
-        net_kwargs = {}
-        if args.network_args is not None:
-            for net_arg in args.network_args:
-                key, value = net_arg.split("=", 1)
-                net_kwargs[key] = value
-
-        # Forward known network-arg keys from top-level config (TOML) to net_kwargs.
-        # CLI --network_args take precedence over top-level config keys.
-        # Source of truth: `networks.all_network_kwargs()` (union of
-        # `SHARED_KWARG_FLAGS` and each `NetworkSpec.kwarg_flags`), plus a
-        # small tail of top-level training args the network modules still
-        # want to read (e.g. postfix contrastive's step-boundary window).
-        for key in NETWORK_KWARG_ALLOWLIST + _EXTRA_FORWARDED_TOP_LEVEL_ARGS:
-            if (
-                key not in net_kwargs
-                and hasattr(args, key)
-                and getattr(args, key) is not None
-            ):
-                net_kwargs[key] = str(getattr(args, key))
+        # prepare network — one resolved view of both config-intake paths
+        # (--network_args + allowlisted top-level keys). Copied so the dropout
+        # default below stays a factory-call detail, not part of the cached
+        # ``args._network_kwargs`` view other consumers read.
+        net_kwargs = dict(resolve_network_kwargs(args))
 
         if args.dim_from_weights:
             network, _ = network_module.create_network_from_weights(
@@ -1696,7 +1715,43 @@ class AnimaTrainer:
                         t_enc.gradient_checkpointing_enable()
             network.enable_gradient_checkpointing()  # may have no effect
 
-        return network, net_kwargs, train_unet, train_text_encoder
+        # Native-shape flattening + per-block torch.compile. COMPILE LAST —
+        # after apply_to + load_weights (above) so dynamo traces the adapter's
+        # monkey-patched Linear forwards, not the bare DiT. The full sequence
+        # (partitioner activation-memory budget → per-signature cache
+        # isolation → compile_blocks → EasyControl cond-stream compile) lives
+        # in library/runtime/harness.py with the other compile entry points.
+        # Matches the harness order: block-swap → grad-ckpt → compile.
+        if args.torch_compile:
+            from library.runtime.harness import compile_blocks_for_training
+
+            # Token-family budget derived from the buckets the dataset actually
+            # populated (see _derive_token_budget) — not args.target_res, which is
+            # a preprocess-only knob and inert at train time.
+            n_token_families, seq_range = getattr(
+                self, "_compile_token_budget", (None, None)
+            )
+            compile_blocks_for_training(
+                unet,
+                network,
+                backend=args.dynamo_backend,
+                mode=getattr(args, "compile_inductor_mode", None),
+                n_token_families=n_token_families,
+                seq_range=seq_range,
+                dynamic_seq=bool(getattr(args, "compile_dynamic_seq", False)),
+                activation_memory_budget=float(
+                    getattr(args, "activation_memory_budget", 1.0) or 1.0
+                ),
+                grad_ckpt=bool(getattr(args, "gradient_checkpointing", False)),
+                logger=logger,
+            )
+
+        return NetworkBundle(
+            network=network,
+            net_kwargs=net_kwargs,
+            train_unet=train_unet,
+            train_text_encoder=train_text_encoder,
+        )
 
     def _setup_optimizer_and_dataloader(
         self,
@@ -1706,7 +1761,7 @@ class AnimaTrainer:
         train_dataset_group,
         val_dataset_group,
         collator,
-    ):
+    ) -> OptimizerBundle:
         """Build optimizer, dataloaders, and LR scheduler; finalize max_train_steps."""
         accelerator.print("prepare optimizer, data loader etc.")
 
@@ -1801,17 +1856,17 @@ class AnimaTrainer:
         # lr scheduler
         lr_scheduler = get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
-        return (
-            optimizer,
-            optimizer_name,
-            optimizer_args,
-            optimizer_train_fn,
-            optimizer_eval_fn,
-            text_encoder_lr,
-            lr_descriptions,
-            train_dataloader,
-            val_dataloader,
-            lr_scheduler,
+        return OptimizerBundle(
+            optimizer=optimizer,
+            optimizer_name=optimizer_name,
+            optimizer_args=optimizer_args,
+            optimizer_train_fn=optimizer_train_fn,
+            optimizer_eval_fn=optimizer_eval_fn,
+            text_encoder_lr=text_encoder_lr,
+            lr_descriptions=lr_descriptions,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+            lr_scheduler=lr_scheduler,
         )
 
     def _prepare_with_accelerator(
@@ -1832,27 +1887,12 @@ class AnimaTrainer:
         train_unet,
         train_text_encoder,
         cache_latents,
-    ):
+    ) -> AcceleratedBundle:
         """Cast model dtypes, run accelerator.prepare, flip train/eval, optional torch.compile."""
-        # full fp16/bf16 training
-        if args.full_fp16:
-            assert args.mixed_precision == "fp16", (
-                "full_fp16 requires mixed precision='fp16'"
-            )
-            accelerator.print("enable full fp16 training.")
-            network.to(weight_dtype)
-        elif args.full_bf16:
-            assert args.mixed_precision == "bf16", (
-                "full_bf16 requires mixed precision='bf16'"
-            )
-            accelerator.print("enable full bf16 training.")
-            network.to(weight_dtype)
-
         unet_weight_dtype = te_weight_dtype = weight_dtype
 
         unet.requires_grad_(False)
-        if self.cast_unet(args):
-            unet.to(dtype=unet_weight_dtype)
+        unet.to(dtype=unet_weight_dtype)
         for i, t_enc in enumerate(text_encoders):
             # None when the TE was never loaded (cache_text_encoder_outputs with
             # no sample prompts / val / TE-training -- qwen3_needed=False).
@@ -1861,7 +1901,7 @@ class AnimaTrainer:
             t_enc.requires_grad_(False)
 
             # in case of cpu, dtype is already set to fp32 because cpu does not support fp16/bf16
-            if t_enc.device.type != "cpu" and self.cast_text_encoder(args):
+            if t_enc.device.type != "cpu":
                 t_enc.to(dtype=te_weight_dtype)
 
         # accelerator preparation (no deepspeed)
@@ -1870,7 +1910,7 @@ class AnimaTrainer:
         else:
             unet.to(
                 accelerator.device,
-                dtype=unet_weight_dtype if self.cast_unet(args) else None,
+                dtype=unet_weight_dtype,
             )
         if train_text_encoder:
             text_encoders = [
@@ -1924,21 +1964,17 @@ class AnimaTrainer:
             vae.eval()
             vae.to(accelerator.device, dtype=vae_dtype)
 
-        # patch for fp16 grad scale
-        if args.full_fp16:
-            patch_accelerator_for_fp16_training(accelerator)
-
-        return (
-            network,
-            optimizer,
-            train_dataloader,
-            val_dataloader,
-            lr_scheduler,
-            training_model,
-            unet,
-            text_encoders,
-            text_encoder,
-            unet_weight_dtype,
+        return AcceleratedBundle(
+            network=network,
+            optimizer=optimizer,
+            train_dataloader=train_dataloader,
+            val_dataloader=val_dataloader,
+            lr_scheduler=lr_scheduler,
+            training_model=training_model,
+            unet=unet,
+            text_encoders=text_encoders,
+            text_encoder=text_encoder,
+            unet_weight_dtype=unet_weight_dtype,
         )
 
     def train(self, args):
@@ -1964,25 +2000,37 @@ class AnimaTrainer:
             in ("reduce-overhead", "max-autotune")
         )
 
-        tokenize_strategy = self.get_tokenize_strategy(args)
-        text_strategies.TokenizeStrategy.set_strategy(tokenize_strategy)
-        tokenizers = self.get_tokenizers(
-            tokenize_strategy
-        )  # will be removed after sample_image is refactored
+        # Build + install the strategy singletons (tokenize / latents-caching /
+        # text-encoding). Must run before _prepare_dataset — dataset init reads
+        # the tokenize + latents-caching strategies. The TE-OUTPUTS caching
+        # strategy is installed separately below, after assert_extra_args has
+        # had its chance to mutate cache_llm_adapter_outputs.
+        strategies = strategy_anima.setup_training_strategies(args)
+        tokenize_strategy = strategies.tokenize
+        text_encoding_strategy = strategies.text_encoding
+        tokenizers = [
+            tokenize_strategy.qwen3_tokenizer
+        ]  # will be removed after sample_image is refactored
 
-        # prepare caching strategy: this must be set before preparing dataset. because dataset may use this strategy for initialization.
-        latents_caching_strategy = self.get_latents_caching_strategy(args)
-        text_strategies.LatentsCachingStrategy.set_strategy(latents_caching_strategy)
+        ds = self._prepare_dataset(args)
+        train_dataset_group = ds.train_group
+        val_dataset_group = ds.val_group
+        current_epoch = ds.current_epoch
+        current_step = ds.current_step
+        collator = ds.collator
+        use_user_config = ds.use_user_config
+        use_dreambooth_method = ds.use_dreambooth_method
 
-        (
-            train_dataset_group,
-            val_dataset_group,
-            current_epoch,
-            current_step,
-            collator,
-            use_user_config,
-            use_dreambooth_method,
-        ) = self._prepare_dataset(args)
+        # Derive the torch.compile token-family budget from the buckets the
+        # selected (path_pattern-filtered) images actually populate — NOT from
+        # args.target_res. The on-disk caches are the source of truth for which
+        # tiers are present, so this can't drift from preprocess, and a filtered
+        # run sizes the dynamo cache to only the families it really uses. Sample
+        # prompt resolutions are folded in (when sampling is enabled) so sample
+        # generation outside the training buckets compiles instead of crashing.
+        self._compile_token_budget = self._derive_token_budget(
+            args, train_dataset_group, val_dataset_group
+        )
 
         if args.debug_dataset:
             train_dataset_group.set_current_strategies()  # dataset needs to know the strategies explicitly
@@ -2011,16 +2059,12 @@ class AnimaTrainer:
             args, train_dataset_group, val_dataset_group
         )  # may change some args
 
-        # Set the text-encoder-outputs caching strategy now (before the model
-        # load) so the cache-completeness probe below can use it to decide
-        # whether the Qwen3 text encoder needs loading at all.
-        text_encoder_outputs_caching_strategy = (
-            self.get_text_encoder_outputs_caching_strategy(args)
-        )
-        if text_encoder_outputs_caching_strategy is not None:
-            text_strategies.TextEncoderOutputsCachingStrategy.set_strategy(
-                text_encoder_outputs_caching_strategy
-            )
+        # Install the text-encoder-outputs caching strategy now: after
+        # assert_extra_args (which may flip cache_llm_adapter_outputs, read by
+        # the strategy ctor) and before the model load, so the
+        # cache-completeness probe below can use it to decide whether the
+        # Qwen3 text encoder needs loading at all.
+        strategy_anima.setup_text_encoder_outputs_caching_strategy(args)
 
         # Decide whether the heavy encoders are actually needed. When caching is
         # enabled the caches MUST already be complete on disk (run `make
@@ -2089,11 +2133,7 @@ class AnimaTrainer:
 
         # mixed precision dtype
         weight_dtype, save_dtype = prepare_dtype(args)
-        vae_dtype = (
-            (torch.float32 if args.no_half_vae else weight_dtype)
-            if self.cast_vae(args)
-            else None
-        )
+        vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
 
         # load target models: unet may be None for lazy loading
         model_version, text_encoder, vae, unet = self.load_target_model(
@@ -2134,10 +2174,8 @@ class AnimaTrainer:
 
             accelerator.wait_for_everyone()
 
-        # cache text encoder outputs if needed: Text Encoder is moved to cpu or gpu
-        text_encoding_strategy = self.get_text_encoding_strategy(args)
-        text_strategies.TextEncodingStrategy.set_strategy(text_encoding_strategy)
-
+        # cache text encoder outputs if needed: Text Encoder is moved to cpu or
+        # gpu (the encoding strategy was installed with the others up top).
         self.cache_text_encoder_outputs_if_needed(
             args,
             accelerator,
@@ -2164,12 +2202,15 @@ class AnimaTrainer:
         if self._state.caption_dropout_enabled:
             self._ensure_uncond_crossattn(args, accelerator, weight_dtype)
 
-        network_result = self._create_and_apply_network(
+        net = self._create_and_apply_network(
             args, accelerator, vae, text_encoder, unet, text_encoders, weight_dtype
         )
-        if network_result is None:
+        if net is None:
             return
-        network, net_kwargs, train_unet, train_text_encoder = network_result
+        network = net.network
+        net_kwargs = net.net_kwargs
+        train_unet = net.train_unet
+        train_text_encoder = net.train_text_encoder
 
         # Resolve and run on_network_built for each method adapter (EasyControl,
         # IP-Adapter, …). Each adapter validates its runtime contract and
@@ -2187,18 +2228,7 @@ class AnimaTrainer:
             for adapter in self._adapters:
                 adapter.on_network_built(setup_ctx)
 
-        (
-            optimizer,
-            optimizer_name,
-            optimizer_args,
-            optimizer_train_fn,
-            optimizer_eval_fn,
-            text_encoder_lr,
-            lr_descriptions,
-            train_dataloader,
-            val_dataloader,
-            lr_scheduler,
-        ) = self._setup_optimizer_and_dataloader(
+        opt = self._setup_optimizer_and_dataloader(
             args,
             accelerator,
             network,
@@ -2206,19 +2236,18 @@ class AnimaTrainer:
             val_dataset_group,
             collator,
         )
+        optimizer = opt.optimizer
+        optimizer_name = opt.optimizer_name
+        optimizer_args = opt.optimizer_args
+        optimizer_train_fn = opt.optimizer_train_fn
+        optimizer_eval_fn = opt.optimizer_eval_fn
+        text_encoder_lr = opt.text_encoder_lr
+        lr_descriptions = opt.lr_descriptions
+        train_dataloader = opt.train_dataloader
+        val_dataloader = opt.val_dataloader
+        lr_scheduler = opt.lr_scheduler
 
-        (
-            network,
-            optimizer,
-            train_dataloader,
-            val_dataloader,
-            lr_scheduler,
-            training_model,
-            unet,
-            text_encoders,
-            text_encoder,
-            unet_weight_dtype,
-        ) = self._prepare_with_accelerator(
+        acc = self._prepare_with_accelerator(
             args,
             accelerator,
             network,
@@ -2236,6 +2265,16 @@ class AnimaTrainer:
             train_text_encoder,
             cache_latents,
         )
+        network = acc.network
+        optimizer = acc.optimizer
+        train_dataloader = acc.train_dataloader
+        val_dataloader = acc.val_dataloader
+        lr_scheduler = acc.lr_scheduler
+        training_model = acc.training_model
+        unet = acc.unet
+        text_encoders = acc.text_encoders
+        text_encoder = acc.text_encoder
+        unet_weight_dtype = acc.unet_weight_dtype
 
         num_update_steps_per_epoch = math.ceil(
             len(train_dataloader) / args.gradient_accumulation_steps
@@ -2260,7 +2299,11 @@ class AnimaTrainer:
                     total_steps=args.max_train_steps,
                     total_epochs=num_train_epochs,
                     pid=os.getpid(),
+                    log_dir=resolve_run_log_dir(args),
                 )
+                # Mirror WARNING+ records into the stream so a reader debugging
+                # the run gets them structured instead of buried in tqdm stdout.
+                self.progress_sink.attach_log_mirror()
 
         if (args.save_n_epoch_ratio is not None) and (args.save_n_epoch_ratio > 0):
             args.save_every_n_epochs = (
@@ -2424,15 +2467,21 @@ class AnimaTrainer:
 
         # run_scope emits the matching run_end (ok / stopped / error) on exit;
         # run_start already fired when the sink was constructed above.
-        with run_scope(self.progress_sink, final_step=lambda: loop_state.global_step):
+        with run_scope(
+            self.progress_sink,
+            final_step=lambda: loop_state.global_step,
+            extra_fields=self._liveness.run_end_fields,
+        ):
             run_training_loop(self, loop_state)
 
             accelerator.end_training()
             optimizer_eval_fn()
 
-            # Deferred sample decode: sample latents were stashed per epoch (the
-            # VAE was never brought to GPU mid-run, to avoid OOM). Decode them
-            # now that the loop has freed its activation / block-swap memory.
+            # Catch-all sample decode for any latents not already decoded inline
+            # (block-swapping runs defer the whole batch to here, and a latent
+            # that failed an inline decode is left on disk for retry). The VAE
+            # gets the full budget now that the loop has freed its activation /
+            # block-swap memory; no-op when inline decode already drained them.
             # Park the DiT on CPU first so the VAE decode gets the full budget.
             if is_main_process and args.sample_prompts:
                 try:
@@ -2448,7 +2497,29 @@ class AnimaTrainer:
             saver.cleanup_resumable()
             saver.save_final(network, loop_state.global_step, num_train_epochs)
 
+        # Remove the TensorBoard log dir for runs shorter than 2 steps — they
+        # add noise to the runs list (e.g. aborted starts, dry-runs) and carry
+        # no useful loss curves.
+        if is_main_process and loop_state.global_step < 2:
+            _cleanup_short_log_dir(args)
+
     # endregion
+
+
+def _cleanup_short_log_dir(args) -> None:
+    """Delete the TensorBoard log dir when a run completed fewer than 2 steps."""
+    import shutil
+
+    log_dir = resolve_run_log_dir(args)
+    if log_dir is None:
+        return
+    try:
+        if os.path.isdir(log_dir):
+            shutil.rmtree(log_dir)
+    except Exception as e:
+        print(
+            f"warn: could not remove short-run log dir {log_dir}: {e}", file=sys.stderr
+        )
 
 
 def setup_parser() -> argparse.ArgumentParser:
@@ -2466,170 +2537,9 @@ def setup_parser() -> argparse.ArgumentParser:
     add_dit_training_arguments(parser)
     anima_train_utils.add_anima_training_arguments(parser)
 
-    parser.add_argument(
-        "--cpu_offload_checkpointing",
-        action="store_true",
-        help="[EXPERIMENTAL] enable offloading of tensors to CPU during checkpointing for U-Net or DiT, if supported"
-        "",
-    )
-    parser.add_argument(
-        "--no_metadata",
-        action="store_true",
-        help="do not save metadata in output model",
-    )
-    parser.add_argument(
-        "--save_model_as",
-        type=str,
-        default="safetensors",
-        choices=[None, "ckpt", "pt", "safetensors"],
-        help="format to save the model (default is .safetensors)",
-    )
-
-    parser.add_argument(
-        "--unet_lr",
-        type=float,
-        default=None,
-        help="learning rate for U-Net",
-    )
-    parser.add_argument(
-        "--text_encoder_lr",
-        type=float,
-        default=None,
-        nargs="*",
-        help="learning rate for Text Encoder, can be multiple",
-    )
-
     add_network_arguments(parser)
-    parser.add_argument(
-        "--no_half_vae",
-        action="store_true",
-        help="do not use fp16",
-    )
-    parser.add_argument(
-        "--skip_until_initial_step",
-        action="store_true",
-        help="skip training until initial_step is reached",
-    )
-    parser.add_argument(
-        "--initial_epoch",
-        type=int,
-        default=None,
-        help="initial epoch number, 1 means first epoch (same as not specifying). NOTE: initial_epoch/step doesn't affect to lr scheduler. Which means lr scheduler will start from 0 without `--resume`."
-        + "",
-    )
-    parser.add_argument(
-        "--initial_step",
-        type=int,
-        default=None,
-        help="initial step number including all epochs, 0 means first step (same as not specifying). overwrites initial_epoch."
-        + "",
-    )
-    parser.add_argument(
-        "--validation_seed",
-        type=int,
-        default=None,
-        help="Validation seed for shuffling validation dataset, training `--seed` used otherwise",
-    )
-    parser.add_argument(
-        "--validation_split",
-        type=float,
-        default=0.0,
-        help="Split for validation images out of the training dataset",
-    )
-    parser.add_argument(
-        "--validation_split_num",
-        type=int,
-        default=0,
-        help=(
-            "Count-based validation split (number of held-out images). When "
-            "set (>0), wins over the fractional `--validation_split`. Also "
-            "determines how many samples CMMD evaluation generates per pass."
-        ),
-    )
-    parser.add_argument(
-        "--validate_every_n_steps",
-        type=int,
-        default=None,
-        help="Run validation on validation dataset every N steps. By default, validation will only occur every epoch if a validation dataset is available",
-    )
-    parser.add_argument(
-        "--validate_every_n_epochs",
-        type=int,
-        default=None,
-        help="Run validation dataset every N epochs. By default, validation will run every epoch if a validation dataset is available",
-    )
-    parser.add_argument(
-        "--max_validation_steps",
-        type=int,
-        default=None,
-        help="Max number of validation dataset items processed. By default, validation will run the entire validation dataset",
-    )
-    parser.add_argument(
-        "--validation_sigmas",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Sigma values for validation loss (0.0~1.0). Low values = fine detail. Default: 0.1 0.4 0.7. (Legacy FM-val path — unused under the CMMD val replacement.)",
-    )
-    parser.add_argument(
-        "--validation_sample_steps",
-        type=int,
-        default=20,
-        help="Denoising steps used by CMMD validation when sampling each held-out item. Default 20.",
-    )
-    parser.add_argument(
-        "--validation_cfg_scale",
-        type=float,
-        default=1.0,
-        help="CFG scale used by CMMD validation. Default 1.0 (no CFG, fastest). Bump to 4.0 to match production sampling but generation cost ~2×.",
-    )
-    parser.add_argument(
-        "--use_cmmd",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use CMMD (PE-Core MMD²) as the validation signal. Set "
-        "`use_cmmd = false` in the method TOML (or pass `--no-use_cmmd`) to "
-        "skip CMMD and run only the legacy per-σ FM-MSE val pass — useful "
-        "on tight VRAM where the PE encoder + sampling path doesn't fit.",
-    )
-    parser.add_argument(
-        "--validation_baselines",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Run each method adapter's validation baselines (e.g. IP-Adapter "
-        "no_ip / shuffled_ref) as FM-MSE delta diagnostics during validation. "
-        "Set `validation_baselines = false` in the method TOML (or pass "
-        "`--no-validation_baselines`) to skip them — each baseline adds a full "
-        "extra val forward per (batch, σ), so this roughly halves IP-Adapter "
-        "validation time when you don't need the deltas.",
-    )
-    parser.add_argument(
-        "--unsloth_offload_checkpointing",
-        action="store_true",
-        help="offload activations to CPU RAM using async non-blocking transfers (faster than --cpu_offload_checkpointing). "
-        "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap.",
-    )
-    parser.add_argument(
-        "--print-config",
-        dest="print_config",
-        action="store_true",
-        help="Dump the fully merged config (base → preset → method → CLI) as TOML "
-        "with provenance comments, then exit 0. Does not start training.",
-    )
-    parser.add_argument(
-        "--config-snapshot",
-        dest="config_snapshot",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Write output/<output_name>.snapshot.toml next to the checkpoint on every real "
-        "run (provenance + git SHA). Pass --no-config-snapshot to disable.",
-    )
-    parser.add_argument(
-        "--config-strict",
-        dest="config_strict",
-        action="store_true",
-        help="Treat config-schema warnings (unknown keys, off-list choices) as errors.",
-    )
+    add_validation_arguments(parser)
+    add_train_misc_arguments(parser)
     return parser
 
 
@@ -2639,9 +2549,9 @@ from networks import all_network_kwargs as _all_network_kwargs  # noqa: E402
 
 # Network-module-consumed flags (networks.lora_anima / networks.methods.*).
 # These don't flow through argparse directly because `create_network` reads
-# them from ``kwargs``. Derived from the registry in ``networks/__init__.py``
-# (``SHARED_KWARG_FLAGS`` ∪ per-``NetworkSpec.kwarg_flags``) so adding a new
-# kwarg to a variant spec automatically registers it here.
+# them from ``kwargs``. Sourced from the flat ``NETWORK_KWARGS`` allowlist in
+# ``networks/__init__.py`` so adding a key there automatically registers it
+# here.
 NETWORK_KWARG_ALLOWLIST: tuple[str, ...] = _all_network_kwargs()
 
 # Top-level training args that aren't network kwargs but still flow through
@@ -2654,6 +2564,44 @@ _EXTRA_FORWARDED_TOP_LEVEL_ARGS: tuple[str, ...] = (
     # boundary, so it needs the grad-accum window.
     "gradient_accumulation_steps",
 )
+
+
+def resolve_network_kwargs(args) -> dict[str, str]:
+    """The single intake for network kwargs, merging both config paths.
+
+    A network kwarg can arrive as ``--network_args k=v`` (CLI / method TOML
+    ``network_args`` list) or as an allowlisted top-level config key landing
+    on ``args``; CLI ``--network_args`` win on overlap. Consumers outside the
+    network factory (e.g. the REPA dataset-sidecar enable in
+    ``assert_extra_args``) must see the same merged view the factory gets, so
+    the result is cached on ``args._network_kwargs`` — read a kwarg from here
+    rather than scanning ``args.network_args`` with a ``getattr(args, …)``
+    fallback. All values are strings, as ``create_network(**kwargs)`` expects.
+    """
+    cached = getattr(args, "_network_kwargs", None)
+    if cached is not None:
+        return cached
+
+    net_kwargs: dict[str, str] = {}
+    for net_arg in getattr(args, "network_args", None) or []:
+        key, value = net_arg.split("=", 1)
+        net_kwargs[key] = value
+
+    # Forward known network-arg keys from top-level config (TOML). Source of
+    # truth: `networks.all_network_kwargs()` (the flat `NETWORK_KWARGS`
+    # allowlist), plus a small tail of top-level training args the network
+    # modules still want to read (e.g. postfix contrastive's step-boundary
+    # window).
+    for key in NETWORK_KWARG_ALLOWLIST + _EXTRA_FORWARDED_TOP_LEVEL_ARGS:
+        if (
+            key not in net_kwargs
+            and hasattr(args, key)
+            and getattr(args, key) is not None
+        ):
+            net_kwargs[key] = str(getattr(args, key))
+
+    args._network_kwargs = net_kwargs
+    return net_kwargs
 
 
 def build_network_extras() -> dict[str, _config_schema.ConfigKey]:

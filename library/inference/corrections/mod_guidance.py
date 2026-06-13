@@ -50,7 +50,7 @@ def build_mod_schedule(args: argparse.Namespace, num_blocks: int) -> List[float]
 
     Default flags reproduce the 'step_i8_skip27' ComfyUI preset -- protects
     tonal-DC blocks 0-7 and the compensation block 27, applying full w to 8-26.
-    See docs/methods/mod-guidance.md for rationale.
+    See docs/inference/mod-guidance.md for rationale.
     """
     w = float(args.mod_w)
     start = int(getattr(args, "mod_start_layer", 8))
@@ -84,7 +84,7 @@ def setup_mod_guidance(
     final_w     = --mod_final_w (applied at the final_layer only)
 
     At inference each block l receives `t_emb + schedule[l] * delta_unit`;
-    `final_layer` receives `t_emb + final_w * delta_unit`. See docs/methods/mod-guidance.md.
+    `final_layer` receives `t_emb + final_w * delta_unit`. See docs/inference/mod-guidance.md.
     """
     mod_w = args.mod_w
     mod_pos = args.mod_pos_prompt
@@ -110,6 +110,16 @@ def setup_mod_guidance(
 
     # Pool and project through trained pooled_text_proj. Note: unit delta -- the
     # per-block weight comes from the schedule, not baked in here.
+    if getattr(anima, "enable_pooled_text_sigma_film", False):
+        # This head is σ-conditioned, but the single baked delta below is σ-flat
+        # (no timestep available at bake time). It falls back to the σ-flat proj
+        # path (t_embedding=None), so steering ignores the FiLM. Per-step steering
+        # is a follow-up; warn rather than silently mis-steer.
+        logger.warning(
+            "pooled_text_proj was trained with σ-FiLM, but inference steering bakes "
+            "a single σ-flat delta — the timestep conditioning is ignored. "
+            "Use bench/mod_guidance/text_jacobian.py to evaluate the σ-FiLM head."
+        )
     with torch.no_grad():
         pos_pooled = pos_crossattn.max(dim=1).values  # (1, 1024)
         neg_pooled = neg_crossattn.max(dim=1).values

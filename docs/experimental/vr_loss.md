@@ -9,8 +9,7 @@ adapter is additive, so we get the "frozen reference" by reusing the
 trainable DiT with `network.set_multiplier(0)` for the no-grad pass — no
 second model copy in VRAM. ~99.8% of the per-sample loss variance was found
 recoverable on Anima at the global-λ optimum in the headroom bench
-(`bench/fm_vr_headroom/results/20260514-1300-tlora-vs-base/`, verdict
-**HEADROOM**).
+(since removed; verdict **HEADROOM**).
 
 This is a **loss-level change**, not a new adapter — the trained checkpoint
 inferences identically to a standard FM-trained one. Composes with every
@@ -65,7 +64,7 @@ python tasks.py lora --vr_loss_weight 1.0
 
 VR is gated off by default (`vr_loss_weight = 0.0`). When `> 0`, the trainer
 runs one extra no-grad forward per step through the trainable DiT with
-`network.set_multiplier(0)` (zeros both LoRA and ReFT contributions). No
+`network.set_multiplier(0)` (zeros the LoRA contributions). No
 extra model is loaded into VRAM. The only cost is the extra forward
 (~+40% step time); low-VRAM presets can run this — they just pay the
 compute.
@@ -152,15 +151,15 @@ What makes FEI specifically right here:
    inherits the existing inductive bias instead of inventing a new one.
 3. *In-tree, kernel-cached.* `gaussian_blur_2d` is fp32-safe and the kernel
    is cached — no new module, no extra alloc.
-4. *Free diagnostic axis.* Per-FEI-band ρ² in
-   `bench/fm_vr_headroom/results/20260514-1300-tlora-vs-base/` confirms the
+4. *Free diagnostic axis.* Per-FEI-band ρ² in the headroom bench
+   (since removed) confirms the
    paper's mechanism transposes: the high-band ρ² (mid-t median **0.998**,
    λ_global **−0.996 ± 0.002**) is what carries the headroom, exactly as
    `Im(I − P)` residual carries the win against `Im(P)` deviation in
    AsymFlow.
 
 Default `vr_fei_sigma_low_div = 4.0` matches the live training default in
-`configs/gui-methods/fera.toml` and `configs/gui-methods/hydralora_fei.toml`.
+the FEI-routed Hydra variant in `configs/methods/lora.toml`.
 
 ### λ estimation
 
@@ -200,8 +199,7 @@ the cov/var bookkeeping can go and the loss becomes a one-liner.
 
 Per-element λ (v2) and per-FEI-band `λ_k` (v3) were considered as refinements
 and **bench-falsified on Anima** by the perband-headroom run
-(`bench/fm_vr_headroom/results/20260514-1637-perband-headroom-tlora/`, n=24
-mid-t pairs, T-LoRA-merged vs base):
+(since removed; n=24 mid-t pairs, T-LoRA-merged vs base):
 
 - v2 (per-element λ): `reduction_per_elem − reduction_global` mean **+7.9e-6**
   (= +0.00079% absolute).
@@ -222,7 +220,7 @@ LoRA network's multiplier temporarily set to 0:
 
 ```python
 _orig_mult = float(getattr(network, "multiplier", 1.0))
-network.set_multiplier(0.0)         # zeros LoRA + ReFT (network.py:860-865)
+network.set_multiplier(0.0)         # zeros LoRA (network.py:860-865)
 try:
     with torch.no_grad():
         ref_pred = anima(x_t_L_5d, timesteps, crossattn_emb, padding_mask=padding_mask, **kw)
@@ -236,8 +234,8 @@ are *additive residuals* on top — turning the multiplier to zero collapses
 the model to its base. No `--vr_frozen_ref_dit` flag, no second model copy
 in VRAM, no constant-token-bucket state mirroring to keep in sync.
 
-`set_multiplier(0)` covers both `LoRA` / `OrthoLoRA` / `HydraLoRA` /
-`StackedExperts` *and* `ReFT` (the network walks both lists in one call).
+`set_multiplier(0)` covers `LoRA` / `OrthoLoRA` / `HydraLoRA` /
+`StackedExperts`.
 Postfix's `network.append_postfix` modifies `crossattn_emb` *before* the
 DiT call, not the DiT itself, so the bypass forward receives the same
 postfix-appended tokens as the gradient forward — postfix is therefore
@@ -265,8 +263,7 @@ but they are consumed *before* the VR block runs — see the order in
 | Forward + stash | `train.py::get_noise_pred_and_target` | Builds `x_0^L`, `x_t^L`, calls `network.set_multiplier(0)` + no-grad `anima(...)` + restore, stashes `ctx.aux['vr'] = {'z': ..., 'state': ...}` |
 | Loss handler | `library/training/losses.py::_flow_matching_vr_loss` | Computes `(y + λ·z)²`, updates `state['lambda_ema']` in place |
 | Composer gate | `library/training/losses.py::build_loss_composer` | Replaces `flow_match` → `flow_matching_vr` when `vr_loss_weight > 0` |
-| Headroom bench | `bench/fm_vr_headroom/run_bench.py` | The Stage 0 ρ² probe (now in CI-style results) |
-| Plan | `bench/fm_vr_headroom/proposal.md` | The integration plan this doc summarizes |
+| Headroom bench | *(removed)* | The Stage 0 ρ² probe + integration plan this doc summarizes |
 
 The trainer↔loss-handler contract is the `ctx.aux['vr']` dict:
 
@@ -375,8 +372,7 @@ can run VR — they just pay the ~+40% compute.
 
 - AsymFlow paper (arXiv:2605.12964), Chen et al., 2026. §5.2 is the
   variance-reduction section; §6.1 covers the `σ_min` clamp.
-- `bench/fm_vr_headroom/README.md` — the diagnostic that gated v1.
-- `bench/fm_vr_headroom/proposal.md` — full integration plan.
+- The VR-loss headroom bench (no longer in-tree) — the diagnostic that gated v1 + the full integration plan.
 - `docs/methods/hydra-lora.md` — FEI routing background.
 - `[[project_fera_probe_2band_decision]]` — why we use 2 bands, not 3.
 - `[[project_fm_val_loss_uninformative]]` — why Stage 1 needs HPSv3/VQA,

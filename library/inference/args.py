@@ -73,32 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
         "of the first n_layers DiT blocks via monkey-patched Block.forward.",
     )
     parser.add_argument(
-        "--ip_adapter_weight",
-        type=str,
-        default=None,
-        help="IP-Adapter weight path (networks.methods.ip_adapter .safetensors). "
-        "Requires --ip_image. Modifies DiT cross-attention via parallel image KV.",
-    )
-    parser.add_argument(
-        "--ip_image",
-        type=str,
-        default=None,
-        help="Reference image path for IP-Adapter conditioning. "
-        "Encoded by the encoder named in the IP-Adapter checkpoint metadata (PE-Core by default).",
-    )
-    parser.add_argument(
-        "--ip_scale",
-        type=float,
-        default=None,
-        help="Override IP-Adapter scale (default: use ss_ip_scale from the checkpoint, typically 1.0).",
-    )
-    parser.add_argument(
-        "--ip_image_match_size",
-        action="store_true",
-        help="Auto-pick --image_size from the closest CONSTANT_TOKEN_BUCKETS entry to the "
-        "reference image's aspect ratio (overrides --image_size). Only effective with --ip_image.",
-    )
-    parser.add_argument(
         "--easycontrol_weight",
         type=str,
         default=None,
@@ -182,6 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Shift factor for flow matching schedulers. Default is 3.0 (matches the official Anima scheduler config).",
     )
     parser.add_argument(
+        "--sigma_tail_power",
+        type=float,
+        default=1.0,
+        help="σ-schedule reshape exponent (default 1.0 = canonical schedule). >1 packs "
+        "more steps into the low-σ resolve tail (σ<0.45); see bench/sigma_reshape.",
+    )
+    parser.add_argument(
         "--sampler",
         type=str,
         default="euler",
@@ -210,7 +191,6 @@ def build_parser() -> argparse.ArgumentParser:
             "torch",
             "sageattn",
             "flex",
-            "xformers",
             "sdpa",
         ],  #  "sdpa" for backward compatibility
         help="attention mode",
@@ -424,7 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dcw_lambda",
         type=float,
         default=-0.015,
-        help="DCW scaler λ. Default -0.015 (negative -- see docs/methods/dcw.md). "
+        help="DCW scaler λ. Default -0.015 (negative -- see docs/inference/dcw.md). "
         "Paper-positive values widen |gap| on Anima. Use λ ≈ -0.010 if you "
         "switch --dcw_band_mask to 'all'.",
     )
@@ -442,7 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="LL",
         help="Restrict DCW correction to a subset of Haar subbands. Default 'LL' "
         "(LL-only is strictly better than broadband on Anima -- see "
-        "docs/methods/dcw.md §LL-only correction). Format: 'LL', 'HH', "
+        "docs/inference/dcw.md §LL-only correction). Format: 'LL', 'HH', "
         "'LH+HL+HH', or 'all'.",
     )
 
@@ -475,7 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Δe = -k_t·sign(s), s = (e - e_prev) + λ·e_prev, k_t = α·mean(|e_t|).
     # No extra DiT forwards; one prev-step velocity-residual buffer. Composes
     # with --dcw / --spectrum / --mod_guidance (operates strictly on the
-    # velocity-space CFG combine). See docs/methods/smc_cfg.md.
+    # velocity-space CFG combine). See docs/inference/smc_cfg.md.
     parser.add_argument(
         "--smc_cfg",
         action="store_true",
@@ -517,6 +497,75 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Blend white↔recolored noise (then RMS-renormalize). 1.0 = full "
         "CNS, 0.0 = pass-through. Safety knob for over-injection off-manifold.",
+    )
+
+    # DAVE: DC Attenuation for diVersity Enhancement (training-free, ICML'26).
+    # Per-block representation edit ĥ = α·μ + (h−μ) that attenuates the cross-seed-
+    # shared DC component to recover same-prompt diversity. Hook-based; standard
+    # denoise loop only (no Spectrum/SPD compose). Mask from
+    # bench/dave/derive_alpha_mask.py. See library/inference/corrections/dave.py.
+    parser.add_argument(
+        "--dave",
+        type=str,
+        default=None,
+        help="Enable DAVE DC-attenuation. Pass a path to a dave_alpha.npz mask, "
+        "or 'auto' for the shipped default (networks/calibration/dave_alpha.npz).",
+    )
+    parser.add_argument(
+        "--dave_strength",
+        type=float,
+        default=0.3,
+        help="DC attenuation strength: per-block (1−α) = strength·w(ℓ). 0 = off, "
+        "1 = fully remove the pooled blocks' DC. Default 0.3 (α≈0.7), a conservative "
+        "dose that keeps text/hands clean. The shipped flat mask pools blocks 8–18 "
+        "only (final-stage 19–27 excluded, so the patch-grid dot artifact can't "
+        "appear). With the default --dave_tau 0.10 window the safe ceiling is high — "
+        "strength 0.8 still holds legible text + clean hands while diversifying "
+        "harder (incl. scene/season changes), so 0.3–0.8 are all usable; pick by how "
+        "much recomposition you want. (At the looser τ0.15, stay ≤0.3.)",
+    )
+    parser.add_argument(
+        "--dave_block_lo",
+        type=int,
+        default=0,
+        help="Lowest block index DAVE may touch (inclusive). Blocks below are "
+        "forced to no-op. Use with --dave_block_hi to sweep mid-only vs mid+late.",
+    )
+    parser.add_argument(
+        "--dave_block_hi",
+        type=int,
+        default=-1,
+        help="Highest block index DAVE may touch (inclusive; -1 = last block). "
+        "Lower it to spare the final content blocks (e.g. --dave_block_hi 18 to "
+        "attenuate only the mid blocks where the DC pins layout, not content).",
+    )
+    parser.add_argument(
+        "--dave_sigma_lo",
+        type=float,
+        default=0.0,
+        help="Low σ bound of the DAVE active window (σ∈[0,1]). Default 0 (all σ).",
+    )
+    parser.add_argument(
+        "--dave_sigma_hi",
+        type=float,
+        default=1.0,
+        help="High σ bound of the DAVE active window. Default 1 (all σ). Late-only "
+        "(σ<0.45, where DC energy grows) = --dave_sigma_hi 0.45; early-only = "
+        "--dave_sigma_lo 0.45.",
+    )
+    parser.add_argument(
+        "--dave_tau",
+        type=float,
+        default=0.10,
+        help="DAVE paper's temporal cutoff τ: attenuate ONLY the first τ fraction "
+        "of denoising steps (the early lock-in window). Default 0.10 — tighter than "
+        "the paper's 0.15 because on Anima the text/hand damage scales with how many "
+        "steps the dose touches, not the dose magnitude: at τ0.10 even strength 0.8 "
+        "holds legible text + clean hands, whereas at τ0.15 strength 0.5 already "
+        "garbles them. So τ0.10 strictly dominates τ0.15 at equal dose. Converted to "
+        "a σ_lo against the live --infer_steps/--flow_shift schedule, so it tracks "
+        "the actual step grid (not a hand-guessed σ). Overrides --dave_sigma_lo/hi "
+        "when >0. τ>~0.2 tips into posterization. 0 = off (use the σ window).",
     )
 
     # arguments for batch and interactive modes

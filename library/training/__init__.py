@@ -1,6 +1,67 @@
 # Training utilities for Anima LoRA training.
-# Re-exports all public names so `from library.training import X` works.
+#
+# This is a *curated* facade: it re-exports the public, stable surface of the
+# training package, grouped by concern below. Two things are deliberately NOT
+# re-exported here and must be imported by their submodule path:
+#   - The argparse / CLI surface, which now lives in `library.config.cli_args`
+#     (it is config, not training).
+#   - Loop-internal machinery only `train.py`/`loop.py` compose:
+#       library.training.loop          (build_loop_state, run_training_loop)
+#       library.training.validation    (run_validation)
+#       library.training.log_dispatch  (dispatch_logs)
+#       library.training.forward       (per-step forward helpers)
+# Everything below is part of the supported import-from-the-package surface.
 
+# === contexts ===
+from library.training.contexts import (
+    AcceleratedBundle,
+    DatasetBundle,
+    NetworkBundle,
+    OptimizerBundle,
+    RuntimeState,
+    TrainCtx,
+    ValCtx,
+)
+
+# === per-method extension protocol (public — used by networks/methods/*) ===
+from library.training.method_adapter import (
+    ComputeLossCtx,
+    ForwardArtifacts,
+    MethodAdapter,
+    SetupCtx,
+    StepCtx,
+    ValidationBaseline,
+    resolve_adapters,
+)
+
+# === registries: samplers ===
+from library.training.samplers import (
+    SamplerContext,
+    SamplerOut,
+    SAMPLER_REGISTRY,
+)
+
+# === registries: losses ===
+from library.training.losses import (
+    LivenessLedger,
+    LossContext,
+    LossComposer,
+    LOSS_REGISTRY,
+    build_loss_composer,
+    add_custom_train_arguments,
+    apply_masked_loss,
+    conditional_loss,
+    get_huber_threshold_if_needed,
+)
+
+# === registries: metrics ===
+from library.training.metrics import (
+    MetricContext,
+    MetricProducer,
+    collect_metrics,
+)
+
+# === optimization ===
 from library.training.optimizers import (
     get_optimizer,
     get_optimizer_train_eval_fn,
@@ -10,28 +71,8 @@ from library.training.schedulers import (
     get_scheduler_fix,
     get_dummy_scheduler,
 )
-from library.training.cli_args import (
-    add_sd_models_arguments,
-    add_optimizer_arguments,
-    add_training_arguments,
-    add_masked_loss_arguments,
-    add_dit_training_arguments,
-    add_network_arguments,
-    add_dataset_arguments,
-    add_sd_saving_arguments,
-    verify_command_line_training_args,
-    verify_training_args,
-    enable_high_vram,
-    get_sanitized_config_or_none,
-)
-from library.training.hashing import (
-    model_hash,
-    calculate_sha256,
-    addnet_hash_legacy,
-    addnet_hash_safetensors,
-    precalculate_safetensors_hashes,
-    get_git_revision_hash,
-)
+
+# === provenance: metadata ===
 from library.training.metadata import (
     SS_METADATA_KEY_V2,
     SS_METADATA_KEY_BASE_MODEL_VERSION,
@@ -46,32 +87,18 @@ from library.training.metadata import (
     add_model_hash_metadata,
     finalize_metadata,
 )
-from library.training.samplers import (
-    SamplerContext,
-    SamplerOut,
-    SAMPLER_REGISTRY,
+
+# === provenance: hashing ===
+from library.training.hashing import (
+    model_hash,
+    calculate_sha256,
+    addnet_hash_legacy,
+    addnet_hash_safetensors,
+    precalculate_safetensors_hashes,
+    get_git_revision_hash,
 )
-from library.training.losses import (
-    LossContext,
-    LossComposer,
-    LOSS_REGISTRY,
-    build_loss_composer,
-    add_custom_train_arguments,
-    apply_masked_loss,
-    conditional_loss,
-    get_huber_threshold_if_needed,
-)
-from library.training.metrics import (
-    MetricContext,
-    MetricProducer,
-    collect_metrics,
-)
-from library.training.contexts import (
-    RuntimeState,
-    TrainCtx,
-    ValCtx,
-)
-from library.training.loss_recorder import LossRecorder
+
+# === provenance: checkpoints ===
 from library.training.checkpoints import (
     EPOCH_STATE_NAME,
     EPOCH_FILE_NAME,
@@ -100,16 +127,38 @@ from library.training.checkpoints import (
     save_checkpoint_state,
 )
 
+# === progress sink ===
+from library.training.progress import (
+    ProgressSink,
+    run_scope,
+)
+
+# === loss recorder ===
+from library.training.loss_recorder import LossRecorder
+
 __all__ = [
     # contexts
+    "AcceleratedBundle",
+    "DatasetBundle",
+    "NetworkBundle",
+    "OptimizerBundle",
     "RuntimeState",
     "TrainCtx",
     "ValCtx",
+    # extension protocol
+    "ComputeLossCtx",
+    "ForwardArtifacts",
+    "MethodAdapter",
+    "SetupCtx",
+    "StepCtx",
+    "ValidationBaseline",
+    "resolve_adapters",
     # samplers
     "SamplerContext",
     "SamplerOut",
     "SAMPLER_REGISTRY",
     # losses
+    "LivenessLedger",
     "LossContext",
     "LossComposer",
     "LOSS_REGISTRY",
@@ -122,6 +171,12 @@ __all__ = [
     "MetricContext",
     "MetricProducer",
     "collect_metrics",
+    # optimization
+    "get_optimizer",
+    "get_optimizer_train_eval_fn",
+    "is_schedulefree_optimizer",
+    "get_scheduler_fix",
+    "get_dummy_scheduler",
     # metadata
     "SS_METADATA_KEY_V2",
     "SS_METADATA_KEY_BASE_MODEL_VERSION",
@@ -135,19 +190,6 @@ __all__ = [
     "add_dataset_metadata",
     "add_model_hash_metadata",
     "finalize_metadata",
-    # cli args
-    "add_sd_models_arguments",
-    "add_optimizer_arguments",
-    "add_training_arguments",
-    "add_masked_loss_arguments",
-    "add_dit_training_arguments",
-    "add_network_arguments",
-    "add_dataset_arguments",
-    "add_sd_saving_arguments",
-    "verify_command_line_training_args",
-    "verify_training_args",
-    "enable_high_vram",
-    "get_sanitized_config_or_none",
     # hashing
     "model_hash",
     "calculate_sha256",
@@ -155,15 +197,6 @@ __all__ = [
     "addnet_hash_safetensors",
     "precalculate_safetensors_hashes",
     "get_git_revision_hash",
-    # optimizers
-    "get_optimizer",
-    "get_optimizer_train_eval_fn",
-    "is_schedulefree_optimizer",
-    # schedulers
-    "get_scheduler_fix",
-    "get_dummy_scheduler",
-    # loss recorder
-    "LossRecorder",
     # checkpoints
     "EPOCH_STATE_NAME",
     "EPOCH_FILE_NAME",
@@ -190,4 +223,9 @@ __all__ = [
     "get_checkpoint_state_dir",
     "get_checkpoint_ckpt_name",
     "save_checkpoint_state",
+    # progress
+    "ProgressSink",
+    "run_scope",
+    # loss recorder
+    "LossRecorder",
 ]

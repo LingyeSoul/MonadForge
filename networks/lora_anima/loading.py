@@ -34,45 +34,6 @@ logger = logging.getLogger(__name__)
 # ``iter_split_groups``.
 
 
-def _parse_reft_layers(spec, num_blocks: int) -> List[int]:
-    """Resolve a ``reft_layers`` spec to a sorted list of block indices.
-
-    Accepted forms:
-      - None / "all" / ""  -> every block
-      - "last_N"           -> last N blocks
-      - "first_N"          -> first N blocks
-      - "stride_K"         -> every K-th block starting at 0
-      - "3,7,11" or [3,7]  -> explicit indices (string or list[int])
-    """
-    if spec is None or spec == "all" or spec == "":
-        return list(range(num_blocks))
-    if isinstance(spec, (list, tuple)):
-        indices = [int(i) for i in spec]
-    elif isinstance(spec, str):
-        s = spec.strip()
-        if s.startswith("last_"):
-            n = int(s.split("_", 1)[1])
-            return list(range(max(0, num_blocks - n), num_blocks))
-        if s.startswith("first_"):
-            n = int(s.split("_", 1)[1])
-            return list(range(min(n, num_blocks)))
-        if s.startswith("stride_"):
-            k = int(s.split("_", 1)[1])
-            if k <= 0:
-                raise ValueError(f"reft_layers stride must be positive: {spec!r}")
-            return list(range(0, num_blocks, k))
-        indices = [int(x) for x in s.split(",") if x.strip()]
-    else:
-        raise ValueError(f"unrecognized reft_layers spec: {spec!r}")
-
-    bad = [i for i in indices if i < 0 or i >= num_blocks]
-    if bad:
-        raise ValueError(
-            f"reft_layers out of range [0,{num_blocks}): {bad}"
-        )
-    return sorted(set(indices))
-
-
 def _stack_lora_ups(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Stack per-expert ``.lora_ups.N.weight`` / ``.lora_downs.N.weight`` keys
     into fused ``.lora_up_weight`` / ``.lora_down_weight`` parameters
@@ -277,9 +238,7 @@ def _refuse_split_hydra_keys(
             continue
 
         e0, _, r0 = ups[0].shape
-        if not all(
-            u.ndim == 3 and u.shape[0] == e0 and u.shape[2] == r0 for u in ups
-        ):
+        if not all(u.ndim == 3 and u.shape[0] == e0 and u.shape[2] == r0 for u in ups):
             logger.warning(
                 f"hydra attn fuse: inconsistent up shapes at {shared_prefix}*, skipping"
             )
@@ -308,7 +267,7 @@ def _refuse_split_hydra_keys(
         # component's copy and rehome under the fused prefix.
         for orig_key, v in sigma_mlp_groups[0].items():
             first_cp = f"{shared_prefix}{suffixes[0]}_proj."
-            state_dict[f"{fused_prefix}.{orig_key[len(first_cp):]}"] = v
+            state_dict[f"{fused_prefix}.{orig_key[len(first_cp) :]}"] = v
 
         for suf in suffixes:
             cp = f"{shared_prefix}{suf}_proj"
@@ -373,9 +332,7 @@ def _refuse_split_stacked_experts_keys(
             continue
 
         e0, _, r0 = ups[0].shape
-        if not all(
-            u.ndim == 3 and u.shape[0] == e0 and u.shape[2] == r0 for u in ups
-        ):
+        if not all(u.ndim == 3 and u.shape[0] == e0 and u.shape[2] == r0 for u in ups):
             logger.warning(
                 f"stacked-experts attn fuse: inconsistent up shapes at "
                 f"{shared_prefix}*, skipping"

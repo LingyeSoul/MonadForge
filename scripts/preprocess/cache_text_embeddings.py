@@ -81,6 +81,16 @@ def main() -> None:
             "resize time. Set to 0 to disable."
         ),
     )
+    parser.add_argument(
+        "--path_pattern",
+        "--path-pattern",
+        dest="path_pattern",
+        default="*",
+        help=(
+            "Only cache images whose path relative to --dir matches this "
+            "fnmatch glob. Use | to separate alternatives. Default: *"
+        ),
+    )
     args = parser.parse_args()
 
     from library.anima import weights as anima_utils
@@ -161,6 +171,7 @@ def main() -> None:
         device=device,
         cache_dir=cache_dir,
         recursive=args.recursive,
+        path_pattern=args.path_pattern,
         batch_size=args.batch_size,
         caption_shuffle_variants=N,
         caption_tag_dropout_rate=tag_dropout_rate,

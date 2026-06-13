@@ -13,16 +13,12 @@ Modes (selected by ``--mode``):
                        cache, snapshot ``tag_rules.yaml``, emit
                        ``vocab.json`` plus a fixed train/val split and a
                        per-stem ``dataset.json`` manifest.
-* ``build_features`` — encode every manifest image through frozen PE-Core
-                       and write per-stem cache. ``--pool_kind=map`` (default)
-                       writes the full token sequence (consumed by the MAP
-                       attention-pool head); ``--pool_kind=mean`` writes the
-                       legacy mean-pooled vector.
-* ``build_resized``  — LANCZOS-resize every manifest image to its PE bucket,
-                       cache as ``uint8 [C, H, W]`` for end-to-end PE-LoRA.
-* ``train``          — train the multi-label head + 3-class rating head + 8-class people-count head.
-                       Dispatches to the cached path or PE-LoRA path based
-                       on ``--pe_lora_rank``.
+* ``build_features`` — encode every manifest image through frozen PE-Core +
+                       PE-Spatial and write per-stem caches. Each side's
+                       layout follows ``--pool_kind`` / ``--pool_kind_aux``
+                       (``map`` = full token sequence, ``mean`` = pooled vector).
+* ``train``          — train the dual-encoder hard-routed head: multi-label
+                       tags + 3-class rating + 8-class people-count.
 * ``calibrate``      — sweep per-tag F1-optimal thresholds on the val split.
 * ``predict``        — single-image debug entry.
 """
@@ -64,7 +60,6 @@ def parse_args() -> argparse.Namespace:
         choices=[
             "build_vocab",
             "build_features",
-            "build_resized",
             "train",
             "calibrate",
             "predict",
@@ -81,11 +76,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--aux_encoder",
         default="pe_spatial",
-        help="Auxiliary vision encoder for dual-encoder training (default: "
+        help="Spatial vision encoder for the dual-encoder head (default: "
         "'pe_spatial' for PE-Spatial-B16-512). build_features builds a "
-        "parallel cache; train builds a dual-MAPHead model that concatenates "
-        "pool outputs from both encoders. Pass --aux_encoder '' (empty) for "
-        "the single-encoder path.",
+        "parallel cache; train routes localized tags through this encoder's "
+        "trunk. Dual encoder is mandatory — this must name a real encoder "
+        "different from --encoder.",
     )
     p.add_argument(
         "--device",
@@ -95,9 +90,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--feature_cache_workers",
         type=int,
-        default=6,
+        default=3,
         help="DataLoader workers for build_features CPU-side decode + LANCZOS "
         "resize (default: 4). Set to 0 to run inline on the main process.",
+    )
+    p.add_argument(
+        "--feature_cache_batch_size",
+        type=int,
+        default=8,
+        help="Images per encoder forward during build_features. Stems are "
+        "grouped by aspect bucket so each batch is shape-homogeneous; raise "
+        "for more GPU throughput / lower for less VRAM (default: 8).",
     )
 
     # Vocab-build inputs. All three default to subpaths of
@@ -163,6 +166,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--d_hidden", type=int, default=1024)
     p.add_argument("--dropout", type=float, default=0.1)
+    p.add_argument(
+        "--drop_sidecars_after_pack",
+        action="store_true",
+        help="After the per-bucket mmap shards are built (and verified), delete "
+        "the original per-stem token sidecars to reclaim disk (~the full "
+        "tokens-<encoder>/ trees). DESTRUCTIVE: repacking a different split "
+        "later then requires re-running `--mode build_features` (GPU "
+        "re-encode). Off by default. Only deletes once BOTH train and val "
+        "shards are present.",
+    )
 
     # Pool architecture. ``map`` = K learnable queries attend over PE patch
     # tokens (CLS + mean concatenated as auxiliary channels). ``mean`` =
@@ -172,8 +185,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_kind",
         choices=["map", "mean"],
-        default="mean",
-        help="Pool head over the main encoder's tokens. 'map' (default): "
+        default="map",
+        help="Pool head over the PE-Core encoder's tokens. 'map' (default): "
         "K-query attention pool + CLS + mean concat → trunk. 'mean': "
         "single-vector mean-pool. Selects cache subdir "
         "(.cache/tokens-<encoder>/ vs pooled-<encoder>/) and head arch.",
@@ -189,7 +202,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_n_queries",
         type=int,
-        default=0,
+        default=4,
         help="MAP pool: number of learnable queries (default 4). Each query "
         "produces one [d_enc] vector; trunk input is "
         "(K + use_cls + use_mean) * d_enc.",
@@ -197,7 +210,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_n_heads",
         type=int,
-        default=0,
+        default=8,
         help="MAP pool: number of attention heads (default 8). Must divide "
         "the encoder dim (d_enc=1024 for PE-Core).",
     )
@@ -222,14 +235,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_n_queries_aux",
         type=int,
-        default=4,
+        default=16,
         help="Aux MAP pool: number of learnable queries (default 4). Each "
         "query produces one [d_in_aux] vector.",
     )
     p.add_argument(
         "--pool_n_heads_aux",
         type=int,
-        default=8,
+        default=16,
         help="Aux MAP pool: attention heads (default 8). Must divide d_in_aux "
         "(768 for PE-Spatial-B16-512 — divisors include 8, 12, 16, 24).",
     )
@@ -246,18 +259,6 @@ def parse_args() -> argparse.Namespace:
         help="Aux MAP pool: concat the patch-token mean (default on).",
     )
     p.add_argument(
-        "--use_per_head_routing",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Replace the concat-trunk + single tag_head with two parallel "
-        "trunks (one per encoder) and per-head soft gates. tag_head is split "
-        "by vocab category into a main-lean sub-head "
-        "(character/copyright/artist/count) biased toward PE-Core and an "
-        "aux-lean sub-head (general/metadata/deprecated) biased toward "
-        "PE-Spatial; rating + people heads start main-leaning. Requires "
-        "--aux_encoder. Default off (legacy concat-trunk path).",
-    )
-    p.add_argument(
         "--lambda_rating",
         type=float,
         default=0.1,
@@ -270,67 +271,6 @@ def parse_args() -> argparse.Namespace:
         help="Weight on the people-count CE loss relative to multi-label BCE. "
         "0 disables the head's gradient contribution (still runs forward "
         "if the manifest carries labels).",
-    )
-
-    # PE-LoRA knobs (end-to-end PE-Core fine-tuning on the trailing N blocks).
-    # When --pe_lora_rank > 0, the trainer ignores the pre-pooled feature
-    # cache and reads pre-resized images from .cache/resized-<encoder>/
-    # (build via `--mode build_resized`). The frozen PE encoder runs each
-    # step with LoRA active on the last `--pe_lora_layers` resblocks.
-    p.add_argument(
-        "--pe_lora_rank",
-        type=int,
-        default=0,
-        help="LoRA rank on PE-Core's trailing blocks. 0 (default) → encoder "
-        "stays frozen and trainer reads pre-pooled features from cache. "
-        ">0 → end-to-end PE-LoRA training; reads pre-resized images from "
-        ".cache/resized-<encoder>/ (build via --mode build_resized).",
-    )
-    p.add_argument(
-        "--pe_lora_alpha",
-        type=float,
-        default=16.0,
-        help="LoRA scale = alpha / rank.",
-    )
-    p.add_argument(
-        "--pe_lora_layers",
-        type=int,
-        default=2,
-        help="Number of trailing PE resblocks to adapt with LoRA. Mapped to "
-        "inject_pe_lora's layer_from arg.",
-    )
-    p.add_argument(
-        "--pe_lora_lr",
-        type=float,
-        default=1e-4,
-        help="Learning rate for PE-LoRA params (head/trunk keeps --lr).",
-    )
-    p.add_argument(
-        "--pe_lora_qkv",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Adapt the QKV in_proj path (default: on).",
-    )
-    p.add_argument(
-        "--pe_lora_attn_out",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Adapt attn.out_proj (default: on).",
-    )
-    p.add_argument(
-        "--pe_lora_mlp",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Adapt MLP c_fc / c_proj (default: on).",
-    )
-    p.add_argument(
-        "--init_head_from",
-        default=None,
-        help="PE-LoRA training: warm-start the head from a Stage-1 "
-        "checkpoint (path to model.safetensors). The head state_dict layout "
-        "must match the new run's AnimaTaggerHead config (same n_tags, "
-        "n_ratings, n_people_counts, d_hidden, d_in). Optimizer state is NOT loaded — "
-        "Stage 2 re-builds Adam from scratch.",
     )
 
     # Predict mode: single-image debug entry.
@@ -429,37 +369,19 @@ def parse_args() -> argparse.Namespace:
                 "to anima_lora/.env, or pass the paths via CLI flags."
             )
 
-    # Empty-string opt-out: --aux_encoder "" disables the dual-encoder path.
-    # Both --aux_encoder and --pool_kind_aux now default to truthy values
-    # (pe_spatial / map), so opting out via empty string is the user-facing
-    # off switch. Normalize to None so downstream truthiness checks work.
-    if args.aux_encoder == "":
-        args.aux_encoder = None
-
-    if args.aux_encoder:
+    # Dual encoder is mandatory for the flag-driven modes. calibrate / predict
+    # read encoder + aux config from out_dir/config.json, so they don't apply
+    # this check.
+    if args.mode in ("train", "build_features"):
+        if not args.aux_encoder:
+            raise SystemExit(
+                "--aux_encoder is required (dual encoder is the only mode). "
+                "Pass e.g. --aux_encoder pe_spatial."
+            )
         if args.aux_encoder == args.encoder:
             raise SystemExit(
                 f"--aux_encoder={args.aux_encoder!r} matches --encoder; aux must "
                 f"be a different encoder (e.g. --encoder pe --aux_encoder pe_spatial)."
-            )
-        if args.mode == "train" and args.pe_lora_rank > 0:
-            raise SystemExit(
-                "--aux_encoder + --pe_lora_rank>0 is not supported. PE-LoRA "
-                "training reads pre-resized images and runs the encoder live; "
-                "the dual-encoder path consumes pre-encoded caches. "
-                "Use --pe_lora_rank=0 for v1 (or pass --aux_encoder '' "
-                "to disable the default aux encoder)."
-            )
-    # calibrate / predict load encoder + aux config from out_dir/config.json,
-    # so cross-arg validation only applies to modes that consume CLI flags
-    # as the source of truth.
-    if args.mode in ("train", "build_features", "build_resized"):
-        if args.use_per_head_routing and not args.aux_encoder:
-            raise SystemExit(
-                "--use_per_head_routing needs --aux_encoder (the per-head soft "
-                "gate mixes a main and an aux trunk — there's no aux trunk to "
-                "mix in single-encoder mode). Drop --aux_encoder '' or pass "
-                "an explicit aux encoder name."
             )
 
     return args
@@ -475,19 +397,10 @@ def main() -> None:
         from .caches import cmd_build_features
 
         cmd_build_features(args)
-    elif args.mode == "build_resized":
-        from .caches import cmd_build_resized
-
-        cmd_build_resized(args)
     elif args.mode == "train":
-        if args.pe_lora_rank > 0:
-            from .train_pe_lora import cmd_train_pe_lora
+        from .train_cached import cmd_train_cached
 
-            cmd_train_pe_lora(args)
-        else:
-            from .train_cached import cmd_train_cached
-
-            cmd_train_cached(args)
+        cmd_train_cached(args)
     elif args.mode == "calibrate":
         from .calibrate import cmd_calibrate
 

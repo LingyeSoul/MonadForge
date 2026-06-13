@@ -31,7 +31,7 @@ from library.datasets import (
     glob_images,
 )
 from library.datasets.subsets import filter_paths_by_glob
-from library.training import (
+from library.config.cli_args import (
     add_dataset_arguments,
     add_training_arguments,
 )
@@ -56,9 +56,12 @@ def add_config_arguments(parser: argparse.ArgumentParser):
 class BaseSubsetParams:
     image_dir: Optional[str] = None
     num_repeats: int = 1
+    # Kohya-style folder repeats: when true, a `{n}_...` directory component
+    # under image_dir overrides num_repeats with n for the images inside it
+    # (n=0 drops them). Training pool only — validation stays at 1 repeat.
+    repeat_by_folder_name: bool = False
     sample_ratio: float = 1.0
     caption_separator: str = (",",)
-    keep_tokens: int = 0
     keep_tokens_separator: str = (None,)
     secondary_separator: Optional[str] = None
     enable_wildcard: bool = False
@@ -98,6 +101,11 @@ class DreamBoothSubsetParams(BaseSubsetParams):
     # this subset's images). When set, the loader pairs each target latent with
     # the cond latent from here — used by cond≠target tasks like colorization.
     cond_cache_dir: Optional[str] = None
+    # Optional redirect for *text-encoder* caches only (latents/PE still come
+    # from cache_dir). When set, the subset's TE caches are read from here
+    # instead of cache_dir — lets a task swap in re-encoded captions (e.g.
+    # color-only captions for colorization) without re-caching the latents.
+    text_cache_dir: Optional[str] = None
 
 
 @dataclass
@@ -164,9 +172,9 @@ class ConfigSanitizer:
         ),
         "flip_aug": bool,
         "num_repeats": int,
+        "repeat_by_folder_name": bool,
         "sample_ratio": Any(float, int),
         "random_crop": bool,
-        "keep_tokens": int,
         "keep_tokens_separator": str,
         "secondary_separator": str,
         "caption_separator": str,
@@ -197,6 +205,7 @@ class ConfigSanitizer:
         "alpha_mask": bool,
         "cache_dir": str,
         "cond_cache_dir": str,
+        "text_cache_dir": str,
         "mask_dir": str,
         "conditioning_data_dir": str,
         "recursive": bool,
@@ -214,13 +223,10 @@ class ConfigSanitizer:
     # options handled by argparse but not handled by user config
     ARGPARSE_SPECIFIC_SCHEMA = {
         "debug_dataset": bool,
-        "max_token_length": Any(None, int),
         "prior_loss_weight": Any(float, int),
     }
     # for handling default None value of argparse
-    ARGPARSE_NULLABLE_OPTNAMES = [
-        "face_crop_aug_range",
-    ]
+    ARGPARSE_NULLABLE_OPTNAMES = []
     # prepare map because option name may differ among argparse and user config
     ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME = {
         "train_batch_size": "batch_size",
@@ -420,6 +426,7 @@ def _count_training_image_paths(dataset_blueprint: "DatasetBlueprint") -> int:
 def generate_dataset_group_by_blueprint(
     dataset_group_blueprint: DatasetGroupBlueprint,
     constant_token_buckets: bool = False,
+    target_res=None,
 ) -> Tuple[DatasetGroup, Optional[DatasetGroup]]:
     datasets: List[DreamBoothDataset] = []
 
@@ -512,8 +519,8 @@ def generate_dataset_group_by_blueprint(
                     image_dir: "{subset.image_dir}"
                     image_count: {subset.img_count}
                     num_repeats: {subset.num_repeats}
+                    repeat_by_folder_name: {subset.repeat_by_folder_name}
                     sample_ratio: {subset.sample_ratio}
-                    keep_tokens: {subset.keep_tokens}
                     caption_dropout_rate: {subset.caption_dropout_rate}
                     caption_dropout_every_n_epochs: {subset.caption_dropout_every_n_epochs}
                     caption_tag_dropout_rate: {subset.caption_tag_dropout_rate}
@@ -548,12 +555,16 @@ def generate_dataset_group_by_blueprint(
 
     for i, dataset in enumerate(datasets):
         logger.info(f"[Prepare dataset {i}]")
-        dataset.make_buckets(constant_token_buckets=constant_token_buckets)
+        dataset.make_buckets(
+            constant_token_buckets=constant_token_buckets, target_res=target_res
+        )
         dataset.set_seed(seed)
 
     for i, dataset in enumerate(val_datasets):
         logger.info(f"[Prepare validation dataset {i}]")
-        dataset.make_buckets(constant_token_buckets=constant_token_buckets)
+        dataset.make_buckets(
+            constant_token_buckets=constant_token_buckets, target_res=target_res
+        )
         dataset.set_seed(seed)
 
     return (

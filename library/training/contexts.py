@@ -62,6 +62,69 @@ class ValCtx:
     dataset_group: Any = None
 
 
+@dataclass(frozen=True)
+class DatasetBundle:
+    """Return of ``AnimaTrainer._prepare_dataset``: the train/val dataset groups
+    plus the shared collator and the ``multiprocessing.Value`` step/epoch
+    counters the collator and loop read."""
+
+    train_group: Any
+    val_group: Any
+    current_epoch: Any  # multiprocessing.Value("i", ...)
+    current_step: Any
+    collator: Any
+    use_user_config: bool
+    use_dreambooth_method: bool
+
+
+@dataclass(frozen=True)
+class NetworkBundle:
+    """Return of ``AnimaTrainer._create_and_apply_network``: the built+applied
+    adapter network and the train/eval flags derived while applying it."""
+
+    network: Any
+    net_kwargs: dict
+    train_unet: bool
+    train_text_encoder: bool
+
+
+@dataclass(frozen=True)
+class OptimizerBundle:
+    """Return of ``AnimaTrainer._setup_optimizer_and_dataloader``: optimizer (+
+    its name/args and train/eval fns), LR schedule, and the train/val
+    dataloaders, all pre-``accelerator.prepare``."""
+
+    optimizer: Any
+    optimizer_name: str
+    optimizer_args: Any
+    optimizer_train_fn: Callable
+    optimizer_eval_fn: Callable
+    text_encoder_lr: Any
+    lr_descriptions: Any
+    train_dataloader: Any
+    val_dataloader: Any
+    lr_scheduler: Any
+
+
+@dataclass(frozen=True)
+class AcceleratedBundle:
+    """Return of ``AnimaTrainer._prepare_with_accelerator``: the
+    ``accelerator.prepare``-wrapped network/optimizer/dataloaders/scheduler plus
+    the re-resolved model handles (the wrapped DiT, the cast/prepared text
+    encoders, and the chosen unet weight dtype)."""
+
+    network: Any
+    optimizer: Any
+    train_dataloader: Any
+    val_dataloader: Any
+    lr_scheduler: Any
+    training_model: Any
+    unet: Any
+    text_encoders: list
+    text_encoder: Any
+    unet_weight_dtype: torch.dtype
+
+
 @dataclass
 class RuntimeState:
     """Per-run mutable state that's threaded across trainer methods.

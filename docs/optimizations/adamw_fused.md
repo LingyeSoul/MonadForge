@@ -8,7 +8,7 @@ This doc records why `optimizer_type = "AdamW8bit"` was replaced with `"AdamW"` 
 
 ## Why it was removed
 
-A `--profile_steps` chrome trace under plain LoRA training, analyzed with `scripts/analyze_profile_gaps.py`, showed a clean 11–12 percentage-point GPU-utilization drop coinciding exactly with the optimizer phase of every step.
+A `--profile_steps` chrome trace under plain LoRA training, analyzed with a profile-gap analysis script (since removed), showed a clean 11–12 percentage-point GPU-utilization drop coinciding exactly with the optimizer phase of every step.
 
 | Phase | Duration | GPU util |
 |---|---|---|

@@ -85,7 +85,6 @@ Not all adapter families port equally. Rough triage:
 | Adapter | Portability to a new DiT | Why |
 |---------|--------------------------|-----|
 | LoRA / OrthoLoRA | High | Operates on any `nn.Linear`; only target list needs to change |
-| ReFT | High | Wraps block forwards; needs a block-naming pattern only |
 | HydraLoRA | High-medium | Same target story as LoRA + a router on the Linear's input |
 | T-LoRA | High | Timestep mask is model-agnostic |
 | Modulation guidance | Medium-low | Assumes AdaLN coefficients of a specific shape; needs `pooled_text_proj` slot |
@@ -93,7 +92,7 @@ Not all adapter families port equally. Rough triage:
 | IP-Adapter | Low | Per-block `to_k_ip` / `to_v_ip` parallel projections + Anima cross-attn patch |
 | EasyControl | Low | Two-stream block forward + per-block cond LoRA + scalar gate, all bound to Anima block internals |
 
-Day-one Z-Image with **LoRA + ReFT + HydraLoRA** is realistic. Porting IP-Adapter / EasyControl / postfix is a per-adapter project against the new model's attention layout.
+Day-one Z-Image with **LoRA + HydraLoRA** is realistic. Porting IP-Adapter / EasyControl / postfix is a per-adapter project against the new model's attention layout.
 
 ## Effort estimate
 

@@ -142,6 +142,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from bench._anima import add_model_args  # noqa: E402
 from bench._common import make_run_dir, write_result  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -262,7 +263,9 @@ def encode_prompts(model, prompts: list[str], args, device) -> dict[str, torch.T
     out: dict[str, torch.Tensor] = {}
     for p in prompts:
         if p not in out:
-            out[p] = _encode_prompt_for_mod(p, model, te, device).to("cpu", dtype=torch.bfloat16)
+            out[p] = _encode_prompt_for_mod(p, model, te, device).to(
+                "cpu", dtype=torch.bfloat16
+            )
             logger.info(f"  encoded: {p!r} -> {tuple(out[p].shape)}")
 
     del te
@@ -304,10 +307,16 @@ def _pool(crossattn: torch.Tensor) -> torch.Tensor:
 
 def _set_mod_buffers(model, delta_unit, schedule):
     model._mod_guidance_delta.copy_(
-        delta_unit.to(model._mod_guidance_delta.device, dtype=model._mod_guidance_delta.dtype)
+        delta_unit.to(
+            model._mod_guidance_delta.device, dtype=model._mod_guidance_delta.dtype
+        )
     )
     model._mod_guidance_schedule.copy_(
-        torch.tensor(schedule, device=model._mod_guidance_schedule.device, dtype=model._mod_guidance_schedule.dtype)
+        torch.tensor(
+            schedule,
+            device=model._mod_guidance_schedule.device,
+            dtype=model._mod_guidance_schedule.dtype,
+        )
     )
     model._mod_guidance_final_w.fill_(0.0)
 
@@ -347,14 +356,18 @@ def render_jobs(model, jobs, cross_cache, args, device) -> dict[str, torch.Tenso
             pos_c = cross_cache[job.mod_pos].to(device, dtype=dtype)
             negc = cross_cache[job.mod_neg].to(device, dtype=dtype)
             with torch.no_grad():
-                d = model.pooled_text_proj(_pool(pos_c).to(proj_dtype)) - model.pooled_text_proj(
-                    _pool(negc).to(proj_dtype)
-                )
+                d = model.pooled_text_proj(
+                    _pool(pos_c).to(proj_dtype)
+                ) - model.pooled_text_proj(_pool(negc).to(proj_dtype))
             sched_args = argparse.Namespace(
-                mod_w=job.mod_w, mod_start_layer=job.mod_start_layer,
-                mod_end_layer=job.mod_end_layer, mod_taper=0
+                mod_w=job.mod_w,
+                mod_start_layer=job.mod_start_layer,
+                mod_end_layer=job.mod_end_layer,
+                mod_taper=0,
             )
-            _set_mod_buffers(model, d, build_mod_schedule(sched_args, len(model.blocks)))
+            _set_mod_buffers(
+                model, d, build_mod_schedule(sched_args, len(model.blocks))
+            )
             # Keep the armed schedule + an all-zero schedule so we can toggle the
             # steering on/off per step (σ-gating) by copy_ into the live buffer --
             # a buffer write, not a recompile trigger.
@@ -365,7 +378,9 @@ def render_jobs(model, jobs, cross_cache, args, device) -> dict[str, torch.Tenso
 
         cross_pos = cross_cache[job.cross_prompt].to(device, dtype=dtype)
         pool_src = job.pool_prompt if job.pool_prompt is not None else job.cross_prompt
-        pool_override = _pool(cross_cache[pool_src].to(device, dtype=dtype)).to(proj_dtype)
+        pool_override = _pool(cross_cache[pool_src].to(device, dtype=dtype)).to(
+            proj_dtype
+        )
 
         sampler = inference_utils.ERSDESampler(sigmas, seed=job.seed, device=device)
         gen = torch.Generator(device=device).manual_seed(job.seed)
@@ -385,13 +400,19 @@ def render_jobs(model, jobs, cross_cache, args, device) -> dict[str, torch.Tenso
             t_exp = t.expand(latents.shape[0])
             with torch.no_grad(), torch.autocast(device_type=device.type, dtype=dtype):
                 noise_pred = model.forward_mini_train_dit(
-                    latents, t_exp, cross_pos,
-                    padding_mask=padding_mask, pooled_text_override=pool_override,
+                    latents,
+                    t_exp,
+                    cross_pos,
+                    padding_mask=padding_mask,
+                    pooled_text_override=pool_override,
                 )
                 if do_cfg:
                     uncond = model.forward_mini_train_dit(
-                        latents, t_exp, neg_cross,
-                        padding_mask=padding_mask, pooled_text_override=neg_pool,
+                        latents,
+                        t_exp,
+                        neg_cross,
+                        padding_mask=padding_mask,
+                        pooled_text_override=neg_pool,
                     )
                     noise_pred = uncond + args.guidance_scale * (noise_pred - uncond)
             denoised = latents.float() - sigmas[i] * noise_pred.float()
@@ -408,7 +429,7 @@ def render_jobs(model, jobs, cross_cache, args, device) -> dict[str, torch.Tenso
 # Stage 3+4: decode (VAE) + perceptual features (PE)
 # --------------------------------------------------------------------------- #
 def decode_and_featurize(latents: dict, args, device) -> dict[str, Rendered]:
-    from library.models.qwen_vae import load_vae
+    from anima_lora import load_vae
     from library.runtime.device import clean_memory_on_device
 
     vae = load_vae(args.vae, device=device, dtype=torch.bfloat16, eval=True)
@@ -418,7 +439,9 @@ def decode_and_featurize(latents: dict, args, device) -> dict[str, Rendered]:
     rendered: dict[str, Rendered] = {}
     with torch.no_grad():
         for key, lat in latents.items():
-            z = lat.unsqueeze(0).unsqueeze(2).to(device, dtype=vae.dtype)  # (1,16,1,H,W)
+            z = (
+                lat.unsqueeze(0).unsqueeze(2).to(device, dtype=vae.dtype)
+            )  # (1,16,1,H,W)
             px = vae.decode_to_pixels(z)
             if px.ndim == 5:
                 px = px.squeeze(2)
@@ -508,7 +531,9 @@ def _ssim(a: torch.Tensor, b: torch.Tensor, ws: int = _SSIM_WIN) -> float:
 _LF_CUTOFF = 0.25
 
 
-def _lf_hf_energy(delta_chw: torch.Tensor, cutoff: float = _LF_CUTOFF) -> tuple[float, float]:
+def _lf_hf_energy(
+    delta_chw: torch.Tensor, cutoff: float = _LF_CUTOFF
+) -> tuple[float, float]:
     """Split a (C, H, W) latent delta's spectral energy into low/high frequency
     bands by normalized radial frequency. Returns (lf_energy, hf_energy)."""
     d = delta_chw.float()
@@ -536,8 +561,10 @@ def exp_swap(prompts, tags, seeds, neg, tag_slot):
             for s in seeds:
                 kb = f"swap/p{pi}t{ti}s{s}"
                 conf = {
-                    "BB": (base, base), "TT": (tagged, tagged),
-                    "TB": (tagged, base), "BT": (base, tagged),
+                    "BB": (base, base),
+                    "TT": (tagged, tagged),
+                    "TB": (tagged, base),
+                    "BT": (base, tagged),
                 }
                 for name, (cp, pp) in conf.items():
                     jobs.append(RenderJob(f"{kb}/{name}", cp, pp, s))
@@ -548,20 +575,31 @@ def exp_swap(prompts, tags, seeds, neg, tag_slot):
 def _swap_rows(R, specs):
     rows = []
     for base, tag, s, kb in specs:
-        for space, get in (("latent", lambda r: _flat(r.latent)), ("pe", lambda r: r.pe.float())):
+        for space, get in (
+            ("latent", lambda r: _flat(r.latent)),
+            ("pe", lambda r: r.pe.float()),
+        ):
             bb, tt, tb, bt = (R[f"{kb}/{n}"] for n in ("BB", "TT", "TB", "BT"))
             d_full = get(tt) - get(bb)
             d_cross = get(tb) - get(bb)
             d_pool = get(bt) - get(bb)
             nf = _norm(d_full)
-            rows.append({
-                "experiment": "swap", "space": space, "base": base, "tag": tag, "seed": s,
-                "norm_full": nf, "norm_cross": _norm(d_cross), "norm_pool": _norm(d_pool),
-                "pool_share": _norm(d_pool) / (nf + EPS),
-                "cross_share": _norm(d_cross) / (nf + EPS),
-                "cos_cross_pool": _cos(d_cross, d_pool),
-                "additivity_resid": _norm(d_full - (d_cross + d_pool)) / (nf + EPS),
-            })
+            rows.append(
+                {
+                    "experiment": "swap",
+                    "space": space,
+                    "base": base,
+                    "tag": tag,
+                    "seed": s,
+                    "norm_full": nf,
+                    "norm_cross": _norm(d_cross),
+                    "norm_pool": _norm(d_pool),
+                    "pool_share": _norm(d_pool) / (nf + EPS),
+                    "cross_share": _norm(d_cross) / (nf + EPS),
+                    "cos_cross_pool": _cos(d_cross, d_pool),
+                    "additivity_resid": _norm(d_full - (d_cross + d_pool)) / (nf + EPS),
+                }
+            )
     return rows
 
 
@@ -596,19 +634,27 @@ def exp_order(prompts, seeds, neg, n_perm, rng):
 def _order_rows(R, specs):
     rows = []
     for base, canon, perms, s, pi in specs:
-        for space, get in (("latent", lambda r: _flat(r.latent)), ("pe", lambda r: r.pe.float())):
+        for space, get in (
+            ("latent", lambda r: _flat(r.latent)),
+            ("pe", lambda r: r.pe.float()),
+        ):
             c = get(R[f"order/p{pi}s{s}/canon"])
             seed_floor = _norm(get(R[f"order/p{pi}s{s}/canon2"]) - c)
             d_orders = [
                 _norm(get(R[f"order/p{pi}s{s}/perm{j}"]) - c) for j in range(len(perms))
             ]
-            rows.append({
-                "experiment": "order", "space": space, "base": base, "seed": s,
-                "order_dist_mean": float(np.mean(d_orders)),
-                "order_dist_max": float(np.max(d_orders)),
-                "seed_floor": seed_floor,
-                "order_vs_seed": float(np.mean(d_orders)) / (seed_floor + EPS),
-            })
+            rows.append(
+                {
+                    "experiment": "order",
+                    "space": space,
+                    "base": base,
+                    "seed": s,
+                    "order_dist_mean": float(np.mean(d_orders)),
+                    "order_dist_max": float(np.max(d_orders)),
+                    "seed_floor": seed_floor,
+                    "order_vs_seed": float(np.mean(d_orders)) / (seed_floor + EPS),
+                }
+            )
     return rows
 
 
@@ -618,10 +664,17 @@ def exp_intensity(prompts, seeds, neg, w_points, steer_pos, steer_neg):
     for pi, base in enumerate(prompts):
         for s in seeds:
             for w in w_points:
-                jobs.append(RenderJob(
-                    f"intensity/p{pi}s{s}/w{w}", base, base, s,
-                    mod_w=float(w), mod_pos=steer_pos, mod_neg=steer_neg,
-                ))
+                jobs.append(
+                    RenderJob(
+                        f"intensity/p{pi}s{s}/w{w}",
+                        base,
+                        base,
+                        s,
+                        mod_w=float(w),
+                        mod_pos=steer_pos,
+                        mod_neg=steer_neg,
+                    )
+                )
             specs.append((base, s, pi))
     return jobs, lambda R: _intensity_rows(R, specs, w_points)
 
@@ -633,12 +686,20 @@ def _intensity_rows(R, specs, w_points):
         base_pe = r0.pe.float()
         for w in w_points:
             r = R[f"intensity/p{pi}s{s}/w{w}"]
-            rows.append({
-                "experiment": "intensity", "space": "image", "base": base, "seed": s, "w": float(w),
-                "pe_move_from_w0": _norm(r.pe.float() - base_pe),
-                "pixel_std": r.pixel_std, "tone": r.tone,
-                "pixel_std_drop": (r0.pixel_std - r.pixel_std) / (r0.pixel_std + EPS),
-            })
+            rows.append(
+                {
+                    "experiment": "intensity",
+                    "space": "image",
+                    "base": base,
+                    "seed": s,
+                    "w": float(w),
+                    "pe_move_from_w0": _norm(r.pe.float() - base_pe),
+                    "pixel_std": r.pixel_std,
+                    "tone": r.tone,
+                    "pixel_std_drop": (r0.pixel_std - r.pixel_std)
+                    / (r0.pixel_std + EPS),
+                }
+            )
     return rows
 
 
@@ -675,7 +736,9 @@ def _sigwin_arms(w, thresholds, dose_mode, sigmas_active):
     return arms
 
 
-def exp_sigma_window(prompts, seeds, steer_pos, steer_neg, w, thresholds, dose_mode, sigmas_active):
+def exp_sigma_window(
+    prompts, seeds, steer_pos, steer_neg, w, thresholds, dose_mode, sigmas_active
+):
     """Render each prompt under unguided + a σ-band sweep of the shipped steering.
 
     Tests proposal claim C1 (docs/findings/mod_guidance_quality_tag_axis.md (§ Schedule axis)):
@@ -693,11 +756,19 @@ def exp_sigma_window(prompts, seeds, steer_pos, steer_neg, w, thresholds, dose_m
             kb = f"sigma_window/p{pi}s{s}"
             jobs.append(RenderJob(f"{kb}/off", base, base, s))
             for name, lo, hi, wv in arms:
-                jobs.append(RenderJob(
-                    f"{kb}/{name}", base, base, s,
-                    mod_w=float(wv), mod_pos=steer_pos, mod_neg=steer_neg,
-                    mod_sigma_lo=lo, mod_sigma_hi=hi,
-                ))
+                jobs.append(
+                    RenderJob(
+                        f"{kb}/{name}",
+                        base,
+                        base,
+                        s,
+                        mod_w=float(wv),
+                        mod_pos=steer_pos,
+                        mod_neg=steer_neg,
+                        mod_sigma_lo=lo,
+                        mod_sigma_hi=hi,
+                    )
+                )
             specs.append((base, s, pi, arm_names))
     return jobs, lambda R: _sigwin_rows(R, specs)
 
@@ -711,15 +782,26 @@ def _sigwin_rows(R, specs, lam: float = 1.0):
             delta = r.latent - off.latent  # (16, H, W) steering effect in latent space
             lf, hf = _lf_hf_energy(delta)
             tot = lf + hf + EPS
-            rows.append({
-                "experiment": "sigma_window", "space": "image", "base": base, "seed": s,
-                "mode": m,
-                "ssim_to_off": _ssim(r.pixel, off.pixel),  # structure PRESERVED (high=good)
-                "delta_norm": _norm(_flat(delta)),  # total steering effect magnitude
-                "lf_energy": lf, "hf_energy": hf,
-                "hf_frac": hf / tot,  # fraction of effect in the detail band
-                "J": hf - lam * lf,  # structural objective: HF on-target - λ·LF disturbance
-            })
+            rows.append(
+                {
+                    "experiment": "sigma_window",
+                    "space": "image",
+                    "base": base,
+                    "seed": s,
+                    "mode": m,
+                    "ssim_to_off": _ssim(
+                        r.pixel, off.pixel
+                    ),  # structure PRESERVED (high=good)
+                    "delta_norm": _norm(
+                        _flat(delta)
+                    ),  # total steering effect magnitude
+                    "lf_energy": lf,
+                    "hf_energy": hf,
+                    "hf_frac": hf / tot,  # fraction of effect in the detail band
+                    "J": hf
+                    - lam * lf,  # structural objective: HF on-target - λ·LF disturbance
+                }
+            )
     return rows
 
 
@@ -754,7 +836,9 @@ def _split_contiguous(blocks: list[int], n: int) -> list[list[int]]:
     return out
 
 
-def _layerwin_arms(blocks: list[int], mode: str, n_bands: int = 3) -> list[tuple[str, int, int]]:
+def _layerwin_arms(
+    blocks: list[int], mode: str, n_bands: int = 3
+) -> list[tuple[str, int, int]]:
     """Build the (name, start_layer, end_layer) arm table for the per-block map.
 
     single      one arm per block l, steering only [l, l+1) -> the direct per-block
@@ -809,11 +893,19 @@ def exp_layer_window(prompts, seeds, steer_pos, steer_neg, w, blocks, mode, n_ba
             kb = f"layer_window/p{pi}s{s}"
             jobs.append(RenderJob(f"{kb}/off", base, base, s))
             for name, start, end in arms:
-                jobs.append(RenderJob(
-                    f"{kb}/{name}", base, base, s,
-                    mod_w=float(w), mod_pos=steer_pos, mod_neg=steer_neg,
-                    mod_start_layer=start, mod_end_layer=end,
-                ))
+                jobs.append(
+                    RenderJob(
+                        f"{kb}/{name}",
+                        base,
+                        base,
+                        s,
+                        mod_w=float(w),
+                        mod_pos=steer_pos,
+                        mod_neg=steer_neg,
+                        mod_start_layer=start,
+                        mod_end_layer=end,
+                    )
+                )
             specs.append((base, s, pi, arm_names))
     return jobs, lambda R: _layerwin_rows(R, specs)
 
@@ -827,15 +919,26 @@ def _layerwin_rows(R, specs, lam: float = 1.0):
             delta = r.latent - off.latent  # (16, H, W) steering effect in latent space
             lf, hf = _lf_hf_energy(delta)
             tot = lf + hf + EPS
-            rows.append({
-                "experiment": "layer_window", "space": "image", "base": base, "seed": s,
-                "mode": m,
-                "ssim_to_off": _ssim(r.pixel, off.pixel),  # structure PRESERVED (high=grade)
-                "delta_norm": _norm(_flat(delta)),  # total steering effect magnitude
-                "lf_energy": lf, "hf_energy": hf,
-                "hf_frac": hf / tot,  # fraction of effect in the detail band
-                "J": hf - lam * lf,  # guide only (HF-noise trap) -- read SSIM + grids
-            })
+            rows.append(
+                {
+                    "experiment": "layer_window",
+                    "space": "image",
+                    "base": base,
+                    "seed": s,
+                    "mode": m,
+                    "ssim_to_off": _ssim(
+                        r.pixel, off.pixel
+                    ),  # structure PRESERVED (high=grade)
+                    "delta_norm": _norm(
+                        _flat(delta)
+                    ),  # total steering effect magnitude
+                    "lf_energy": lf,
+                    "hf_energy": hf,
+                    "hf_frac": hf / tot,  # fraction of effect in the detail band
+                    "J": hf
+                    - lam * lf,  # guide only (HF-noise trap) -- read SSIM + grids
+                }
+            )
     return rows
 
 
@@ -884,14 +987,19 @@ def compute_origin_rows(specs, cross_cache, model, device):
             d_proj = (yt - yb).reshape(-1).float()
             rel_dpool = float(d_pool.norm() / (pb.reshape(-1).float().norm() + EPS))
             rel_dproj = float(d_proj.norm() / (yb.reshape(-1).float().norm() + EPS))
-            rows.append({
-                "experiment": "origin", "space": "pooled", "base": base, "tag": tag,
-                "is_quality": bool(is_q),
-                "rel_dpool": rel_dpool,  # upstream base-model encoder movement
-                "rel_dproj": rel_dproj,  # after distilled proj
-                "proj_gain": rel_dproj / (rel_dpool + EPS),
-                "norm_dproj": float(d_proj.norm()),  # absolute AdaLN-space movement
-            })
+            rows.append(
+                {
+                    "experiment": "origin",
+                    "space": "pooled",
+                    "base": base,
+                    "tag": tag,
+                    "is_quality": bool(is_q),
+                    "rel_dpool": rel_dpool,  # upstream base-model encoder movement
+                    "rel_dproj": rel_dproj,  # after distilled proj
+                    "proj_gain": rel_dproj / (rel_dpool + EPS),
+                    "norm_dproj": float(d_proj.norm()),  # absolute AdaLN-space movement
+                }
+            )
     return rows
 
 
@@ -917,7 +1025,9 @@ def save_grids(pixels, run_dir, experiment, thumb=512, cols=0):
         x = ((px.clamp(-1, 1) + 1) * 127.5).to(torch.uint8).numpy().transpose(1, 2, 0)
         img = Image.fromarray(x)
         scale = thumb / max(img.width, img.height)
-        return img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))))
+        return img.resize(
+            (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
+        )
 
     header = max(16, thumb // 24)
     groups: dict[str, list[str]] = {}
@@ -934,7 +1044,9 @@ def save_grids(pixels, run_dir, experiment, thumb=512, cols=0):
         ncol = cols if cols and cols > 0 else (n if n <= 8 else math.ceil(math.sqrt(n)))
         ncol = max(1, min(ncol, n))
         nrow = math.ceil(n / ncol)
-        cw = max(t.width for t in thumbs)  # uniform cell size (one resolution per group)
+        cw = max(
+            t.width for t in thumbs
+        )  # uniform cell size (one resolution per group)
         ch = max(t.height for t in thumbs)
         cell_h = ch + header
         canvas = Image.new("RGB", (cw * ncol, cell_h * nrow), (16, 16, 16))
@@ -951,7 +1063,9 @@ def save_grids(pixels, run_dir, experiment, thumb=512, cols=0):
 
 
 # --------------------------------------------------------------------------- #
-def sample_dataset_prompts(dataset_dir: str, n: int, max_chars: int, min_chars: int = 0) -> list[str]:
+def sample_dataset_prompts(
+    dataset_dir: str, n: int, max_chars: int, min_chars: int = 0
+) -> list[str]:
     """Sample N real captions from `.txt` sidecars under dataset_dir.
 
     image_dataset/ is a symlink to nested artist dirs, so rglob (which follows the
@@ -964,7 +1078,9 @@ def sample_dataset_prompts(dataset_dir: str, n: int, max_chars: int, min_chars: 
     root = Path(dataset_dir)
     txts = sorted(str(p) for p in root.rglob("*.txt"))
     if not txts:
-        raise SystemExit(f"No .txt captions found under {root} (symlink? try --dataset_dir)")
+        raise SystemExit(
+            f"No .txt captions found under {root} (symlink? try --dataset_dir)"
+        )
     rng = np.random.default_rng(987)
     rng.shuffle(txts)
     out: list[str] = []
@@ -982,75 +1098,188 @@ def sample_dataset_prompts(dataset_dir: str, n: int, max_chars: int, min_chars: 
         if len(out) >= n:
             break
     if len(out) < n:
-        logger.warning(f"Only {len(out)}/{n} captions >= {min_chars} chars under {root}")
+        logger.warning(
+            f"Only {len(out)}/{n} captions >= {min_chars} chars under {root}"
+        )
     logger.info(f"Sampled {len(out)} real captions from {root} (min_chars={min_chars})")
     return out
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--dit", default="models/diffusion_models/anima-base-v1.0.safetensors")
-    p.add_argument("--vae", default="models/vae/qwen_image_vae.safetensors")
-    p.add_argument("--text_encoder", default="models/text_encoders/qwen_3_06b_base.safetensors")
-    p.add_argument("--pooled_text_proj", required=True, help="trained pooled_text_proj checkpoint")
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_model_args(p)
+    p.add_argument(
+        "--pooled_text_proj", required=True, help="trained pooled_text_proj checkpoint"
+    )
     p.add_argument(
         "--experiment",
-        choices=["swap", "order", "intensity", "origin", "sigma_window", "layer_window", "all"],
+        choices=[
+            "swap",
+            "order",
+            "intensity",
+            "origin",
+            "sigma_window",
+            "layer_window",
+            "all",
+        ],
         default="all",
         help="'all' runs swap/order/intensity/origin; 'sigma_window' (Phase-0 σ-schedule "
         "ablation) and 'layer_window' (Phase-0b per-block grade-vs-drift map) run on their own.",
     )
-    p.add_argument("--prompts", type=str, default=None, help="';'-separated base prompts (wins over --dataset_samples)")
-    p.add_argument("--dataset_samples", type=int, default=0, help="sample N real captions from --dataset_dir instead of the built-in defaults")
-    p.add_argument("--dataset_dir", type=str, default="image_dataset", help="caption (.txt) source for --dataset_samples")
-    p.add_argument("--max_prompt_chars", type=int, default=400, help="truncate sampled captions to this length")
-    p.add_argument("--prompt_min_chars", type=int, default=0, help="--dataset_samples: keep only captions at least this long (lengthy/dense scenes where the hand grade/drift fires)")
-    p.add_argument("--tags", type=str, default=None, help="','-separated tags to splice (swap)")
     p.add_argument(
-        "--tag_slot", choices=["auto", "after_rating", "append", "prepend"], default="auto",
+        "--prompts",
+        type=str,
+        default=None,
+        help="';'-separated base prompts (wins over --dataset_samples)",
+    )
+    p.add_argument(
+        "--dataset_samples",
+        type=int,
+        default=0,
+        help="sample N real captions from --dataset_dir instead of the built-in defaults",
+    )
+    p.add_argument(
+        "--dataset_dir",
+        type=str,
+        default="image_dataset",
+        help="caption (.txt) source for --dataset_samples",
+    )
+    p.add_argument(
+        "--max_prompt_chars",
+        type=int,
+        default=400,
+        help="truncate sampled captions to this length",
+    )
+    p.add_argument(
+        "--prompt_min_chars",
+        type=int,
+        default=0,
+        help="--dataset_samples: keep only captions at least this long (lengthy/dense scenes where the hand grade/drift fires)",
+    )
+    p.add_argument(
+        "--tags", type=str, default=None, help="','-separated tags to splice (swap)"
+    )
+    p.add_argument(
+        "--tag_slot",
+        choices=["auto", "after_rating", "append", "prepend"],
+        default="auto",
         help="where to insert a spliced tag (auto: quality->after rating, else append). "
         "Anima SLOT_ORDER puts quality/meta after the rating literal; appending is off-distribution.",
     )
     p.add_argument("--negative", type=str, default=DEFAULT_NEG)
     p.add_argument("--seeds", type=str, default="0", help="','-separated seeds")
-    p.add_argument("--n_perm", type=int, default=3, help="order: permutations per prompt")
-    p.add_argument("--w_points", type=str, default="0,2,3,5,8", help="intensity: steering w sweep")
-    p.add_argument("--steer_pos", type=str, default="score_9, absurdres", help="intensity steering p+")
+    p.add_argument(
+        "--n_perm", type=int, default=3, help="order: permutations per prompt"
+    )
+    p.add_argument(
+        "--w_points", type=str, default="0,2,3,5,8", help="intensity: steering w sweep"
+    )
+    p.add_argument(
+        "--steer_pos",
+        type=str,
+        default="score_9, absurdres",
+        help="intensity steering p+",
+    )
     p.add_argument("--steer_neg", type=str, default="", help="intensity steering p-")
     # sigma_window (Phase 0): faithful shipped steering pair + the σ split point.
-    p.add_argument("--sigwin_pos", type=str, default="absurdres, masterpiece, score_9", help="sigma_window steering p+ (shipped default)")
-    p.add_argument("--sigwin_neg", type=str, default="worst quality, low quality, score_1", help="sigma_window steering p- (shipped default)")
-    p.add_argument("--sigwin_w", type=float, default=3.0, help="sigma_window steering weight (shipped mod_w default)")
-    p.add_argument("--sigwin_thresholds", type=str, default="0.45", help="sigma_window: σ-window cutoff(s); each emits a σ<t 'low' arm. Default 0.45 (the structure-resolution boundary); comma-sep to sweep soft windows.")
     p.add_argument(
-        "--sigwin_dose", choices=["equal_w", "equal_dose", "both"], default="both",
+        "--sigwin_pos",
+        type=str,
+        default="absurdres, masterpiece, score_9",
+        help="sigma_window steering p+ (shipped default)",
+    )
+    p.add_argument(
+        "--sigwin_neg",
+        type=str,
+        default="worst quality, low quality, score_1",
+        help="sigma_window steering p- (shipped default)",
+    )
+    p.add_argument(
+        "--sigwin_w",
+        type=float,
+        default=3.0,
+        help="sigma_window steering weight (shipped mod_w default)",
+    )
+    p.add_argument(
+        "--sigwin_thresholds",
+        type=str,
+        default="0.45",
+        help="sigma_window: σ-window cutoff(s); each emits a σ<t 'low' arm. Default 0.45 (the structure-resolution boundary); comma-sep to sweep soft windows.",
+    )
+    p.add_argument(
+        "--sigwin_dose",
+        choices=["equal_w", "equal_dose", "both"],
+        default="both",
         help="sigma_window dose control: equal_w (fixed w -> per-step leverage), equal_dose "
         "(w boosted by uniform_steps/window_steps -> matched integrated dose), or both. "
         "Avoids falsely killing the σ axis by under-dosing a narrow tail window.",
     )
     # layer_window (Phase 0b): same shipped steering pair; the probe is WHICH blocks.
-    p.add_argument("--layerwin_pos", type=str, default="absurdres, masterpiece, score_9", help="layer_window steering p+ (shipped default)")
-    p.add_argument("--layerwin_neg", type=str, default="worst quality, low quality, score_1", help="layer_window steering p- (shipped default)")
-    p.add_argument("--layerwin_w", type=float, default=3.0, help="layer_window steering weight (shipped mod_w default)")
-    p.add_argument("--layerwin_blocks", type=str, default="8-26", help="layer_window: blocks to probe (range '8-26' / list '8,12,20' / mix). Default = the shipped step_i8_skip27 band.")
     p.add_argument(
-        "--layerwin_mode", choices=["single", "cumulative", "band", "both"], default="single",
+        "--layerwin_pos",
+        type=str,
+        default="absurdres, masterpiece, score_9",
+        help="layer_window steering p+ (shipped default)",
+    )
+    p.add_argument(
+        "--layerwin_neg",
+        type=str,
+        default="worst quality, low quality, score_1",
+        help="layer_window steering p- (shipped default)",
+    )
+    p.add_argument(
+        "--layerwin_w",
+        type=float,
+        default=3.0,
+        help="layer_window steering weight (shipped mod_w default)",
+    )
+    p.add_argument(
+        "--layerwin_blocks",
+        type=str,
+        default="8-26",
+        help="layer_window: blocks to probe (range '8-26' / list '8,12,20' / mix). Default = the shipped step_i8_skip27 band.",
+    )
+    p.add_argument(
+        "--layerwin_mode",
+        choices=["single", "cumulative", "band", "both"],
+        default="single",
         help="layer_window: 'single' steers one block at a time (the direct per-block "
         "grade-vs-drift map); 'cumulative' steers [b0..L] (marginal-per-block view); "
         "'band' steers contiguous thirds (early/mid/late -- localizes the full-stack "
         "hand damage before a finer probe); 'both' = single+cumulative.",
     )
-    p.add_argument("--layerwin_bands", type=int, default=3, help="layer_window band mode: number of contiguous bands to split the probed range into")
+    p.add_argument(
+        "--layerwin_bands",
+        type=int,
+        default=3,
+        help="layer_window band mode: number of contiguous bands to split the probed range into",
+    )
     p.add_argument("--height", type=int, default=DEFAULT_H)
     p.add_argument("--width", type=int, default=DEFAULT_W)
     p.add_argument("--infer_steps", type=int, default=20)
     p.add_argument("--guidance_scale", type=float, default=4.0)
     p.add_argument("--flow_shift", type=float, default=3.0)
     p.add_argument("--attn_mode", type=str, default="torch")
-    p.add_argument("--compile", action="store_true", help="torch.compile DiT blocks (amortises across the sweep)")
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="torch.compile DiT blocks (amortises across the sweep)",
+    )
     p.add_argument("--compile_mode", type=str, default="default")
-    p.add_argument("--grid_thumb", type=int, default=768, help="per-image grid thumbnail longer-side px")
-    p.add_argument("--grid_cols", type=int, default=0, help="grid columns (0=auto: single row if <=8 cells, else near-square 2D wrap)")
+    p.add_argument(
+        "--grid_thumb",
+        type=int,
+        default=768,
+        help="per-image grid thumbnail longer-side px",
+    )
+    p.add_argument(
+        "--grid_cols",
+        type=int,
+        default=0,
+        help="grid columns (0=auto: single row if <=8 cells, else near-square 2D wrap)",
+    )
     p.add_argument("--label", type=str, default=None)
     args = p.parse_args()
 
@@ -1059,19 +1288,27 @@ def main():
         prompts = [s.strip() for s in args.prompts.split(";") if s.strip()]
     elif args.dataset_samples > 0:
         prompts = sample_dataset_prompts(
-            args.dataset_dir, args.dataset_samples, args.max_prompt_chars, args.prompt_min_chars
+            args.dataset_dir,
+            args.dataset_samples,
+            args.max_prompt_chars,
+            args.prompt_min_chars,
         )
     else:
         prompts = DEFAULT_PROMPTS
     tags = (
         [s.strip() for s in args.tags.split(",") if s.strip()]
-        if args.tags else DEFAULT_TAGS
+        if args.tags
+        else DEFAULT_TAGS
     )
     seeds = [int(s) for s in args.seeds.split(",") if s.strip()]
     w_points = [float(w) for w in args.w_points.split(",") if w.strip()]
     rng = np.random.default_rng(1234)  # fixed seed -> reproducible permutations
 
-    exps = ["swap", "order", "intensity", "origin"] if args.experiment == "all" else [args.experiment]
+    exps = (
+        ["swap", "order", "intensity", "origin"]
+        if args.experiment == "all"
+        else [args.experiment]
+    )
 
     # Build all jobs + their row-extractors.
     jobs, extractors = [], []
@@ -1084,18 +1321,29 @@ def main():
         jobs += j
         extractors.append(f)
     if "intensity" in exps:
-        j, f = exp_intensity(prompts, seeds, args.negative, w_points, args.steer_pos, args.steer_neg)
+        j, f = exp_intensity(
+            prompts, seeds, args.negative, w_points, args.steer_pos, args.steer_neg
+        )
         jobs += j
         extractors.append(f)
     if "sigma_window" in exps:
         from library.inference import sampling as _inf
+
         thresholds = [float(t) for t in args.sigwin_thresholds.split(",") if t.strip()]
         # σ actually used at each model call (flow_shift-warped) -> dose accounting.
-        _, _sig = _inf.get_timesteps_sigmas(args.infer_steps, args.flow_shift, torch.device("cpu"))
+        _, _sig = _inf.get_timesteps_sigmas(
+            args.infer_steps, args.flow_shift, torch.device("cpu")
+        )
         sigmas_active = _sig.tolist()[: args.infer_steps]
         j, f = exp_sigma_window(
-            prompts, seeds, args.sigwin_pos, args.sigwin_neg, args.sigwin_w,
-            thresholds, args.sigwin_dose, sigmas_active,
+            prompts,
+            seeds,
+            args.sigwin_pos,
+            args.sigwin_neg,
+            args.sigwin_w,
+            thresholds,
+            args.sigwin_dose,
+            sigmas_active,
         )
         jobs += j
         extractors.append(f)
@@ -1104,8 +1352,14 @@ def main():
         if not blocks:
             raise SystemExit("--layerwin_blocks parsed to an empty block list")
         j, f = exp_layer_window(
-            prompts, seeds, args.layerwin_pos, args.layerwin_neg, args.layerwin_w,
-            blocks, args.layerwin_mode, args.layerwin_bands,
+            prompts,
+            seeds,
+            args.layerwin_pos,
+            args.layerwin_neg,
+            args.layerwin_w,
+            blocks,
+            args.layerwin_mode,
+            args.layerwin_bands,
         )
         jobs += j
         extractors.append(f)
@@ -1126,7 +1380,9 @@ def main():
         needed.add(base)
         needed.add(tagged)
 
-    logger.info(f"Channel-attribution bench: {len(jobs)} renders, {len(needed)} prompts, exps={exps}")
+    logger.info(
+        f"Channel-attribution bench: {len(jobs)} renders, {len(needed)} prompts, exps={exps}"
+    )
 
     # ---- staged pipeline. DiT carries the LLM adapter + pooled_text_proj, so it
     # must be resident to encode faithfully (TE coexists briefly, like the live
@@ -1140,7 +1396,11 @@ def main():
         _order_pooled_drift(jobs, cross_cache)
 
     # origin: render-free, but needs the live proj -> compute before freeing the DiT.
-    origin_rows = compute_origin_rows(orig_specs, cross_cache, model, device) if orig_specs else []
+    origin_rows = (
+        compute_origin_rows(orig_specs, cross_cache, model, device)
+        if orig_specs
+        else []
+    )
 
     logger.info("[2/4] denoising (DiT)")
     latents = render_jobs(model, jobs, cross_cache, args, device)
@@ -1165,14 +1425,19 @@ def main():
     artifacts = ["rows.csv"]
     _write_csv(run_dir / "rows.csv", rows)
     for e in exps:
-        artifacts += save_grids(pixels, run_dir, e, thumb=args.grid_thumb, cols=args.grid_cols)
+        artifacts += save_grids(
+            pixels, run_dir, e, thumb=args.grid_thumb, cols=args.grid_cols
+        )
 
     metrics = _summarize(rows)
     _log_summary(metrics)
 
     write_result(
-        run_dir, script=__file__, args=args,
-        metrics=metrics, artifacts=artifacts,
+        run_dir,
+        script=__file__,
+        args=args,
+        metrics=metrics,
+        artifacts=artifacts,
     )
     logger.info(f"\nDone. Results -> {run_dir}")
 
@@ -1231,10 +1496,14 @@ def _summarize(rows):
         out[f"swap.{space}.cross_share_mean"] = agg(sw, "cross_share")
         out[f"swap.{space}.cos_cross_pool_mean"] = agg(sw, "cos_cross_pool")
         out[f"swap.{space}.additivity_resid_mean"] = agg(sw, "additivity_resid")
-        out[f"order.{space}.order_vs_seed_mean"] = agg(is_exp("order", space), "order_vs_seed")
+        out[f"order.{space}.order_vs_seed_mean"] = agg(
+            is_exp("order", space), "order_vs_seed"
+        )
     intensity_rows = [r for r in rows if r["experiment"] == "intensity"]
     if intensity_rows:
-        out["intensity.max_pixel_std_drop"] = max(r["pixel_std_drop"] for r in intensity_rows)
+        out["intensity.max_pixel_std_drop"] = max(
+            r["pixel_std_drop"] for r in intensity_rows
+        )
         out["intensity.n_points"] = len({r["w"] for r in intensity_rows})
     sigwin_rows = [r for r in rows if r["experiment"] == "sigma_window"]
     if sigwin_rows:
@@ -1277,6 +1546,7 @@ def _summarize(rows):
         out["layer_window.n"] = len(layerwin_rows)
     origin_rows = [r for r in rows if r["experiment"] == "origin"]
     if origin_rows:
+
         def omean(field, q):
             vals = [r[field] for r in origin_rows if r["is_quality"] == q]
             return float(np.mean(vals)) if vals else None
@@ -1306,9 +1576,13 @@ def _log_summary(m):
         if ovs is not None:
             logger.info(f"order[{sp}]  order_dist / seed_floor = {ovs:.3f}")
     if "intensity.max_pixel_std_drop" in m:
-        logger.info(f"intensity   max pixel-std drop vs w0 = {m['intensity.max_pixel_std_drop']:+.3f}")
+        logger.info(
+            f"intensity   max pixel-std drop vs w0 = {m['intensity.max_pixel_std_drop']:+.3f}"
+        )
     if "sigma_window.n" in m:
-        logger.info("sigma_window (vs unguided; SSIM high=structure preserved, hf_frac high=effect in detail band):")
+        logger.info(
+            "sigma_window (vs unguided; SSIM high=structure preserved, hf_frac high=effect in detail band):"
+        )
         for mode in m["sigma_window.modes"].split(","):
             ss = m.get(f"sigma_window.{mode}.ssim_to_off_mean")
             hf = m.get(f"sigma_window.{mode}.hf_frac_mean")
@@ -1328,7 +1602,9 @@ def _log_summary(m):
             "  READ THE GRIDS (sigma_window_*.png, 768px) -- scalar J is a guide (HF-noise inflates it), not the verdict."
         )
     if "layer_window.n" in m:
-        logger.info("layer_window (Phase 0b; vs unguided -- per arm: ssim high=structure preserved=GRADE, low=DRIFT):")
+        logger.info(
+            "layer_window (Phase 0b; vs unguided -- per arm: ssim high=structure preserved=GRADE, low=DRIFT):"
+        )
         for mode in m["layer_window.modes"].split(","):
             ss = m.get(f"layer_window.{mode}.ssim_to_off_mean")
             dn = m.get(f"layer_window.{mode}.delta_norm_mean")
@@ -1342,7 +1618,9 @@ def _log_summary(m):
         sp_s = m.get("layer_window.single.ssim_spread")
         sp_d = m.get("layer_window.single.delta_spread")
         if sp_s is not None:
-            logger.info(f"  single-block spread: ssim={sp_s:.3f}  delta_norm={sp_d:.3f}")
+            logger.info(
+                f"  single-block spread: ssim={sp_s:.3f}  delta_norm={sp_d:.3f}"
+            )
         logger.info(
             "  arms: L## = steer block ## only (per-block map) | cum## = cumulative [b0..##] |"
             " full## = whole probed band (= shipped path at default blocks).\n"

@@ -1,9 +1,8 @@
 # Where Anima's denoising signal actually lives: a σ ≈ 0.75 → 0.45 → 0 staircase
 
-Two unrelated probes — `bench/timestep_sampling/probe_sigma_signal.py` (visual
-`x0_pred` reconstruction across σ) and `bench/fera_artist/probe_fei_trajectory.py`
-(low-frequency energy fraction along the live CFG=4 sampler) — agree on the same
-σ structure for `anima-base-v1.0`:
+Two unrelated probes — a σ-sweep `x0_pred` reconstruction probe (since removed) and
+`bench/fera_artist/probe_fei_trajectory.py` (low-frequency energy fraction along the
+live CFG=4 sampler) — agree on the same σ structure for `anima-base-v1.0`:
 
 - **σ ≈ 0.75**: `x0_pred` is already a recognizable picture (subject, layout,
   rough color blocks correct).
@@ -23,9 +22,9 @@ then σ=0.05 to σ=0.95)](assets/sigma_signal_x0_vs_sigma_grid.png)
 
 ## Evidence 1 — `x0_pred = x_σ − σ·v` reconstruction
 
-`bench/timestep_sampling/probe_sigma_signal.py` noises 16 real cached
-latents with `(1−σ)·x0 + σ·ε` at σ ∈ {0.05, 0.15, …, 0.95}, runs a single
-bare-DiT forward, and decodes `x0_pred`. Per-σ latent-MSE averaged across
+The σ-sweep probe (since removed) noised 16 real cached
+latents with `(1−σ)·x0 + σ·ε` at σ ∈ {0.05, 0.15, …, 0.95}, ran a single
+bare-DiT forward, and decoded `x0_pred`. Per-σ latent-MSE averaged across
 samples + seeds (n=16 stems × 3 seeds, `20260528-1544-grid3-1024`):
 
 | σ | mean lat-MSE | normalized |
@@ -90,7 +89,12 @@ then spends the σ<0.45 tail copying that answer into the latent itself.
    directly on the boundary where the base is already done. The probe
    reports 57.8% of sigmoid mass falls below σ=0.55 (the "no signal"
    region), versus 38.3% for a `μ=+0.5` logit-normal that biases toward
-   the σ>0.55 region where the base is uncertain.
+   the σ>0.55 region where the base is uncertain. **NB this is a
+   *training-time* capacity-allocation hypothesis and is still unconfirmed**
+   — the related *inference-time* idea (reshaping the sampler's σ schedule
+   to densify one end at fixed NFE) was later **refuted**; see
+   [[project_sigma_reshape_no_win]]. Different
+   axis, but don't read this as an endorsed lever.
 
 2. **Adapter training capacity has two regimes to choose between**:
    - σ > 0.55, where the base is genuinely uncertain about the answer
@@ -131,18 +135,16 @@ then spends the σ<0.45 tail copying that answer into the latent itself.
 
 ## Reproduce
 
-```bash
-# Visual x0_pred grid + per-σ latent-MSE (default uses 16 stems × 3 seeds)
-uv run python -m bench.timestep_sampling.probe_sigma_signal \
-  --num_samples 16 --strip_max_px 1024 --layout grid --label grid3-1024
+The visual `x0_pred` grid + per-σ latent-MSE probe is no longer in-tree (it ran on
+16 stems × 3 seeds at 1024). The FEI trajectory half survives:
 
+```bash
 # FEI along the live sampler trajectory (10 stems by default)
 uv run python bench/fera_artist/probe_fei_trajectory.py \
   --k_per_artist 2 --max_artists 10 --infer_steps 28 --guidance_scale 4.0 \
   --label trajectory
 ```
 
-Date: 2026-05-28. Runs:
-`bench/timestep_sampling/results/20260528-1544-grid3-1024/`,
+Date: 2026-05-28. Surviving runs:
 `bench/fera_artist/results/20260528-1523-trajectory/`,
 `bench/fera_artist/results/20260528-1456-smoke/`.

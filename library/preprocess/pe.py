@@ -118,7 +118,7 @@ def cache_pe_features(
 
     reso_groups = group_by_shape(pending)
 
-    metadata = {
+    base_metadata = {
         "encoder": bundle.name,
         "d_enc": str(bundle.d_enc),
         "patch": str(bundle.bucket_spec.patch),
@@ -130,34 +130,60 @@ def cache_pe_features(
 
     from safetensors.torch import save_file
 
+    from library.vision.buckets import pick_bucket
+
+    # Flatten every shape-group into ONE dataset + a homogeneous-shape batch plan
+    # so the DataLoader worker pool spawns exactly once for the whole run. On
+    # Windows workers use spawn() — a full re-import of torch + library per
+    # worker — and the previous per-group DataLoader paid that cost for every
+    # distinct (W, H) bucket (dozens of times under the multi-scale tiers), which
+    # dominated wall-clock. ``batch_sampler`` keeps each batch within a single
+    # shape group, preserving the one-bucket-per-forward invariant.
+    all_paths: list[Path] = []
+    all_out_paths: list[Path] = []
+    batches: list[list[int]] = []
     for paths in reso_groups.values():
-        out_paths = [
+        start = len(all_paths)
+        all_paths.extend(paths)
+        all_out_paths.extend(
             cache_path_for(p, bundle.name, cache_dir=cache_dir, image_dir=data_dir)
             for p in paths
-        ]
-        ds = _PEImageGroup(paths, out_paths)
-        loader = DataLoader(
-            ds,
-            batch_size=batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-            collate_fn=_collate,
-            pin_memory=pin_memory,
-            persistent_workers=(num_workers > 0 and len(paths) > batch_size),
         )
-        for batch_paths, batch_out_paths, img_batch in loader:
-            with torch.no_grad():
-                feats_list = encode_pe_from_imageminus1to1(
-                    bundle, img_batch, same_bucket=True
-                )
-            for src, dst, feats in zip(batch_paths, batch_out_paths, feats_list):
-                save_dict = {
-                    "image_features": feats.detach().to(save_dtype).cpu().contiguous()
-                }
-                save_file(save_dict, dst, metadata=metadata)
-                stats.written += 1
-                if progress is not None:
-                    progress(1, detail=f"{Path(src).name} → T={feats.shape[0]}")
+        idxs = range(start, len(all_paths))
+        batches.extend(
+            list(idxs[i : i + batch_size]) for i in range(0, len(paths), batch_size)
+        )
+
+    ds = _PEImageGroup(all_paths, all_out_paths)
+    loader = DataLoader(
+        ds,
+        batch_sampler=batches,
+        num_workers=num_workers,
+        collate_fn=_collate,
+        pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0),
+    )
+    for batch_paths, batch_out_paths, img_batch in loader:
+        # All images in a batch share one encoder bucket → one patch grid (the
+        # batch is shape-homogeneous by construction). Derive it from the tensor
+        # shape — IMAGE_TRANSFORMS doesn't resize, so (H, W) matches the source —
+        # and stamp it so consumers (REPA v2) can unflatten tokens → (grid_h,
+        # grid_w) without re-deriving the aspect bucket.
+        _h, _w = img_batch.shape[-2:]
+        _gh, _gw = pick_bucket(_h, _w, bundle.bucket_spec)
+        metadata = {**base_metadata, "grid_h": str(_gh), "grid_w": str(_gw)}
+        with torch.no_grad():
+            feats_list = encode_pe_from_imageminus1to1(
+                bundle, img_batch, same_bucket=True
+            )
+        for src, dst, feats in zip(batch_paths, batch_out_paths, feats_list):
+            save_dict = {
+                "image_features": feats.detach().to(save_dtype).cpu().contiguous()
+            }
+            save_file(save_dict, dst, metadata=metadata)
+            stats.written += 1
+            if progress is not None:
+                progress(1, detail=f"{Path(src).name} → T={feats.shape[0]}")
 
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

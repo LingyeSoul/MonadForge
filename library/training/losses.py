@@ -19,16 +19,32 @@ The composer does not own forward passes. Functional-loss forwards still
 happen inside the trainer (they need `anima()` and post_process_network
 hooks). Those forwards stash their aux tensors on `LossContext.aux`, and the
 composer consumes them.
+
+Aux-loss gating convention: a stage-2 handler gates on
+``ctx.network._<name>_weight`` (or a documented network attr), stamped at
+enable time by whoever owns the knob — the network factory
+(`networks/lora_anima/factory.py`) for network kwargs (ortho_reg,
+hydra_balance, repa), the network itself for live-updated weights
+(soft_tokens warmup), or the trainer for top-level training args
+(`train.py::post_process_network` stamps ``_functional_loss_weight``).
+Handlers must NOT read ``ctx.args.*`` for their weight — a knob readable from
+two places is how a feature works from TOML and silently no-ops from
+``--network_args`` (or vice versa). ``build_loss_composer`` below and the
+stage-3 multiscale blend in ``LossComposer.compose`` are the only spots that
+consult ``args``, and only to decide activation.
 """
 
 from __future__ import annotations
 
 import argparse
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 def add_custom_train_arguments(
@@ -39,17 +55,6 @@ def add_custom_train_arguments(
         type=float,
         default=None,
         help="gamma for reducing the weight of high loss timesteps. Lower numbers have stronger effect. 5 is recommended by paper.",
-    )
-    parser.add_argument(
-        "--scale_v_pred_loss_like_noise_pred",
-        action="store_true",
-        help="scale v-prediction loss like noise prediction loss",
-    )
-    parser.add_argument(
-        "--v_pred_like_loss",
-        type=float,
-        default=None,
-        help="add v-prediction like loss multiplied by this value",
     )
     parser.add_argument(
         "--debiased_estimation_loss",
@@ -83,6 +88,73 @@ def apply_masked_loss(loss, batch) -> torch.FloatTensor:
     )
     loss = loss * mask_image
     return loss
+
+
+def compute_cond_diff_weight(
+    latents: torch.Tensor,
+    cond_latents: torch.Tensor,
+    *,
+    floor: float = 0.2,
+    blur_sigma: float = 1.5,
+    quantile: float = 0.9,
+) -> torch.Tensor:
+    """Per-pixel loss weight from the cond↔target latent difference.
+
+    For paired cond≠target tasks (``cond_cache_dir`` subsets: sanitize /
+    near-twin pose / hair-color twins) the pair is near-identical except in
+    the edit region, so plain FM-MSE spends most of its gradient on the
+    copy-through behavior the extended attention already gives for free.
+    This map reallocates gradient toward the region that actually changes::
+
+        d = ‖z_cond − z_target‖₂  (channel)      # (B, 1, H, W)
+        d = gaussian_blur(d, blur_sigma)         # cover bubble interiors + halo
+        w = floor + (1 − floor) · min(d / q_quantile(d), 1)
+        w = w / mean(w)                          # per-image; effective LR unchanged
+
+    The floor keeps a "copy everything else faithfully" anchor — w=0 outside
+    the edit region would license drift there, the opposite of the intent.
+    A zero-diff pair (cond == target) degrades to a uniform all-ones map.
+    Both inputs are 4D ``(B, C, H, W)`` latents at the same bucket shape.
+    """
+    from library.runtime.fei import gaussian_blur_2d
+
+    eps = 1e-8
+    d = (cond_latents.float() - latents.float()).pow(2).sum(1, keepdim=True).sqrt()
+    d = gaussian_blur_2d(d, blur_sigma)
+    scale = torch.quantile(d.flatten(1), quantile, dim=1).view(-1, 1, 1, 1)
+    m = (d / scale.clamp_min(eps)).clamp(max=1.0)
+    w = floor + (1.0 - floor) * m
+    return w / w.flatten(1).mean(1).view(-1, 1, 1, 1).clamp_min(eps)
+
+
+def apply_cond_diff_loss(loss: torch.Tensor, ctx: "LossContext") -> torch.Tensor:
+    """Apply ``compute_cond_diff_weight`` to the per-element FM loss.
+
+    No-op unless ``--cond_diff_loss`` is set AND the batch carries paired
+    ``cond_latents`` (i.e. a ``cond_cache_dir`` subset). Mirrors the
+    ``apply_masked_loss`` slot — multiplies the unreduced ``(B, C, H, W)``
+    loss before the spatial mean.
+    """
+    if not bool(getattr(ctx.args, "cond_diff_loss", False)):
+        return loss
+    cond_latents = ctx.batch.get("cond_latents")
+    latents = ctx.batch.get("latents")
+    if cond_latents is None or latents is None:
+        return loss
+    if cond_latents.ndim == 5:
+        cond_latents = cond_latents.squeeze(2)
+    if latents.ndim == 5:
+        latents = latents.squeeze(2)
+    w = compute_cond_diff_weight(
+        latents.to(loss.device),
+        cond_latents.to(loss.device),
+        floor=float(getattr(ctx.args, "cond_diff_loss_floor", 0.2)),
+        blur_sigma=float(getattr(ctx.args, "cond_diff_loss_blur", 1.5)),
+        quantile=float(getattr(ctx.args, "cond_diff_loss_quantile", 0.9)),
+    )
+    if loss.ndim == 5:  # (B, C, 1, H, W) — singleton frame axis at dim 2
+        w = w.unsqueeze(2)
+    return loss * w.to(loss.dtype)
 
 
 def get_huber_threshold_if_needed(
@@ -223,6 +295,7 @@ def _flow_match_loss(ctx: LossContext) -> torch.Tensor:
         "alpha_masks" in ctx.batch and ctx.batch["alpha_masks"] is not None
     ):
         loss = apply_masked_loss(loss, ctx.batch)
+    loss = apply_cond_diff_loss(loss, ctx)
     loss = loss.mean(dim=list(range(1, loss.ndim)))
     loss = loss * ctx.loss_weights
     return loss
@@ -281,6 +354,7 @@ def _flow_matching_vr_loss(ctx: LossContext) -> torch.Tensor:
         "alpha_masks" in ctx.batch and ctx.batch["alpha_masks"] is not None
     ):
         loss = apply_masked_loss(loss, ctx.batch)
+    loss = apply_cond_diff_loss(loss, ctx)
     loss = loss.mean(dim=list(range(1, loss.ndim)))
     loss = loss * ctx.loss_weights
     return weight * loss
@@ -313,13 +387,58 @@ def _hydra_balance_loss(ctx: LossContext) -> torch.Tensor:
 
 
 def _functional_loss(ctx: LossContext) -> torch.Tensor:
-    weight = float(getattr(ctx.args, "functional_loss_weight", 0.0) or 0.0)
+    # Stamped by the trainer at hook-install time (the weight is a top-level
+    # training arg, so train.py::post_process_network owns the stamp) — see
+    # the gating convention in the module docstring.
+    weight = float(getattr(ctx.network, "_functional_loss_weight", 0.0) or 0.0)
     func_loss = ctx.aux.get("func_loss")
     if weight <= 0.0 or func_loss is None:
         return ctx.model_pred.new_zeros(())
     # Per-sample running loss is float32 (flow_match casts inputs via .float()).
     # Match the pre-refactor cast: `func_weight * func_loss.to(loss.dtype)`.
     return weight * func_loss.float()
+
+
+def _repa_loss(ctx: LossContext) -> torch.Tensor:
+    """REPA v2 alignment term (absolute patchwise / relational Gram).
+
+    The scalar alignment loss itself is computed by ``REPAMethodAdapter`` (it
+    pools the captured DiT block feature to the encoder grid; needs the cached
+    PE features) and stashed under ``aux["repa"]``; this handler applies
+    ``network._repa_weight``.
+
+    Training-only: the aux dict is only populated on train steps (the adapter
+    skips on validation), so the gate is implicit, but mirror the soft-tokens
+    handler and short-circuit on ``ctx.is_train`` for clarity.
+    """
+    if not ctx.is_train:
+        return ctx.model_pred.new_zeros(())
+    weight = float(getattr(ctx.network, "_repa_weight", 0.0) or 0.0)
+    if weight <= 0.0:
+        return ctx.model_pred.new_zeros(())
+    repa = ctx.aux.get("repa")
+    if repa is None:
+        return ctx.model_pred.new_zeros(())
+    return weight * repa.float()
+
+
+def _repa_global_loss(ctx: LossContext) -> torch.Tensor:
+    """REPA global-anchor term (docs/proposal/repa_global_anchor.md).
+
+    Complementary to the relational ``repa`` arm: the scalar ``1 − cos`` against
+    the patch-mean target is computed by ``REPAMethodAdapter`` and stashed under
+    ``aux["repa_global"]``; this handler applies ``network._repa_global_weight``
+    (independent of the relational ``repa_weight``). Training-only.
+    """
+    if not ctx.is_train:
+        return ctx.model_pred.new_zeros(())
+    weight = float(getattr(ctx.network, "_repa_global_weight", 0.0) or 0.0)
+    if weight <= 0.0:
+        return ctx.model_pred.new_zeros(())
+    g = ctx.aux.get("repa_global")
+    if g is None:
+        return ctx.model_pred.new_zeros(())
+    return weight * g.float()
 
 
 def _soft_tokens_contrastive_loss(ctx: LossContext) -> torch.Tensor:
@@ -474,7 +593,121 @@ LOSS_REGISTRY: dict[str, LossFn] = {
     "multiscale": _multiscale_loss,
     "fera_fecl": _fera_fecl_loss,
     "soft_tokens_contrastive": _soft_tokens_contrastive_loss,
+    "repa": _repa_loss,
+    "repa_global": _repa_global_loss,
 }
+
+
+# ---------------------------------------------------------------------------
+# Liveness ledger (issues.md P1.1)
+# ---------------------------------------------------------------------------
+#
+# Every handler that consumes a trainer/adapter-supplied aux key skips
+# silently when the key is missing — by design (partial sidecar coverage,
+# validation steps). The cost of that design is that "configured ON and 100%
+# skipped" is indistinguishable from "working" in the loss curve. The ledger
+# is the liveness counterpart of the repo's inertness tests: the composer
+# records, per active skip-if-missing loss, whether its aux input was
+# actually present on each train batch, and the loop audits the counts
+# (step-N early check + run end) with a greppable ``LIVENESS:`` prefix.
+#
+# Contract: every LOSS_REGISTRY entry that reads ``ctx.aux`` MUST have a
+# probe here mirroring its own aux gate (the weight gate is already implied
+# by composer activation). Losses computed purely from network attrs / the
+# prediction (flow_match, ortho_reg, hydra_balance, multiscale) cannot be
+# silently dead and stay out of the table.
+_LIVENESS_PROBES: dict[str, Callable[[dict], bool]] = {
+    "flow_matching_vr": lambda aux: (aux.get("vr") or {}).get("z") is not None,
+    "functional": lambda aux: aux.get("func_loss") is not None,
+    "fera_fecl": lambda aux: (aux.get("fera") or {}).get("z_base") is not None,
+    "soft_tokens_contrastive": lambda aux: (
+        aux.get("soft_tokens_contrastive") is not None
+    ),
+    "repa": lambda aux: aux.get("repa") is not None,
+    "repa_global": lambda aux: aux.get("repa_global") is not None,
+}
+
+
+@dataclass
+class LivenessLedger:
+    """Per-run consumption counts for skip-if-missing aux losses.
+
+    Owned by the trainer (one per run), threaded into each per-step
+    ``build_loss_composer`` call. ``seen[name]`` counts train batches composed
+    while ``name`` was configured ON; ``live[name]`` counts those where its
+    aux input was actually consumed. Also a ``MetricProducer`` — emits
+    ``liveness/<name>`` coverage fractions at log cadence.
+    """
+
+    seen: dict[str, int] = field(default_factory=dict)
+    live: dict[str, int] = field(default_factory=dict)
+
+    def record(self, name: str, is_live: bool) -> None:
+        self.seen[name] = self.seen.get(name, 0) + 1
+        if is_live:
+            self.live[name] = self.live.get(name, 0) + 1
+
+    def dead_features(self) -> list[str]:
+        """Names configured ON for at least one train batch that never fired."""
+        return [
+            name
+            for name, seen in self.seen.items()
+            if seen > 0 and self.live.get(name, 0) == 0
+        ]
+
+    def audit(self, *, where: str) -> list[str]:
+        """Log one ``LIVENESS:`` line per not-fully-live feature.
+
+        Dead (0 consumptions) → ERROR; partial coverage → WARNING with the
+        percentage. Returns the dead names so the caller can decide whether
+        to abort (``--liveness_strict``).
+        """
+        dead: list[str] = []
+        for name, seen in self.seen.items():
+            if seen <= 0:
+                continue
+            live = self.live.get(name, 0)
+            if live == 0:
+                dead.append(name)
+                logger.error(
+                    "LIVENESS: loss '%s' is configured ON but consumed its aux "
+                    "input on 0/%d train batches (%s) — the producing forward/"
+                    "dispatch never ran; the run is training as if the feature "
+                    "were off.",
+                    name,
+                    seen,
+                    where,
+                )
+            elif live < seen:
+                logger.warning(
+                    "LIVENESS: loss '%s' active on %d/%d train batches "
+                    "(%.1f%%, %s) — partial aux coverage.",
+                    name,
+                    live,
+                    seen,
+                    100.0 * live / seen,
+                    where,
+                )
+        return dead
+
+    def metrics(self, ctx) -> dict[str, float]:
+        del ctx
+        return {
+            f"liveness/{name}": self.live.get(name, 0) / seen
+            for name, seen in self.seen.items()
+            if seen > 0
+        }
+
+    def run_end_fields(self) -> dict:
+        """Compact summary for the ``run_end`` progress event ({} when empty)."""
+        if not self.seen:
+            return {}
+        return {
+            "liveness": {
+                name: {"seen": seen, "live": self.live.get(name, 0)}
+                for name, seen in self.seen.items()
+            }
+        }
 
 
 # Which stage each registered loss runs in (see module docstring).
@@ -487,17 +720,22 @@ _STAGE_SCALAR_BROADCAST = (
     "functional",
     "fera_fecl",
     "soft_tokens_contrastive",
+    "repa",
+    "repa_global",
 )
 _STAGE_SCALAR_POST = ("multiscale",)
 # _STAGE_SCALAR_POST is consulted by LossComposer.compose via the hard-coded
 # multiscale branch; kept as a named constant for documentation / future
 # extensibility.
 __all__ = [
+    "LivenessLedger",
     "LossContext",
     "LossComposer",
     "LossFn",
     "LOSS_REGISTRY",
+    "apply_cond_diff_loss",
     "build_loss_composer",
+    "compute_cond_diff_weight",
     "_STAGE_PER_SAMPLE",
     "_STAGE_SCALAR_BROADCAST",
     "_STAGE_SCALAR_POST",
@@ -519,8 +757,17 @@ class LossComposer:
     """
 
     active_losses: list[str]
+    # Liveness ledger (P1.1) — trainer-owned, survives across the per-step
+    # composer rebuilds. None (benches / tests) disables recording.
+    ledger: Optional[LivenessLedger] = None
 
     def compose(self, ctx: LossContext) -> torch.Tensor:
+        if self.ledger is not None and ctx.is_train:
+            for name in self.active_losses:
+                probe = _LIVENESS_PROBES.get(name)
+                if probe is not None:
+                    self.ledger.record(name, bool(probe(ctx.aux)))
+
         per_sample = ctx.model_pred.new_zeros(ctx.model_pred.shape[0])
 
         # Stage 1: per-sample losses.
@@ -566,7 +813,12 @@ class LossComposer:
         return scalar
 
 
-def build_loss_composer(args: argparse.Namespace, network: object) -> LossComposer:
+def build_loss_composer(
+    args: argparse.Namespace,
+    network: object,
+    *,
+    ledger: Optional[LivenessLedger] = None,
+) -> LossComposer:
     """Inspect args + network and return the active LossComposer.
 
     Rules:
@@ -618,5 +870,12 @@ def build_loss_composer(args: argparse.Namespace, network: object) -> LossCompos
     # SoftTokensMethodAdapter supplies the InfoNCE scalar via aux.
     if float(getattr(network, "_contrastive_target_weight", 0.0) or 0.0) > 0.0:
         active.append("soft_tokens_contrastive")
+    # REPA v2: active iff the factory stamped a positive weight (use_repa=true).
+    if float(getattr(network, "_repa_weight", 0.0) or 0.0) > 0.0:
+        active.append("repa")
+    # REPA global-anchor arm: independent weight, composes with the relational
+    # arm (or stands alone — both ride the same REPAMethodAdapter extra forward).
+    if float(getattr(network, "_repa_global_weight", 0.0) or 0.0) > 0.0:
+        active.append("repa_global")
 
-    return LossComposer(active_losses=active)
+    return LossComposer(active_losses=active, ledger=ledger)

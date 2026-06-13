@@ -12,7 +12,7 @@ from diffusers.schedulers.scheduling_euler_ancestral_discrete import (
 
 
 def get_timesteps_sigmas(
-    sampling_steps: int, shift: float, device: torch.device
+    sampling_steps: int, shift: float, device: torch.device, tail_power: float = 1.0
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Generate timesteps and sigmas for diffusion sampling.
@@ -21,6 +21,13 @@ def get_timesteps_sigmas(
         sampling_steps: Number of sampling steps.
         shift: Sigma shift parameter for schedule modification.
         device: Target device for tensors.
+        tail_power: σ-reshape exponent applied to the uniform grid *before* the
+            flow-shift map. ``1.0`` (default) is the canonical schedule, bit-for-bit.
+            ``>1`` warps the grid toward σ=0, packing more knots into the low-σ
+            resolve tail (σ<0.45) where local discretization error concentrates
+            (``bench/dynamic_spectrum`` Q1: ~60% of fattening-error mass, only 19%
+            of steps); ``<1`` does the opposite. The endpoints σ∈{0,1} are fixed,
+            so this redistributes steps without changing the integration range.
 
     Returns:
         Tuple of (timesteps, sigmas) tensors. ``timesteps`` is the DiT's time
@@ -28,6 +35,10 @@ def get_timesteps_sigmas(
         nothing further, so callers feed it directly (no /1000).
     """
     sigmas = torch.linspace(1, 0, sampling_steps + 1)
+    if tail_power != 1.0:
+        # u∈[0,1] uniform; u**p with p>1 pulls interior knots toward 0 (the σ tail).
+        # Endpoints (1→1, 0→0) are preserved, so only the spacing is reshaped.
+        sigmas = sigmas.clamp_min(0.0) ** tail_power
     sigmas = (shift * sigmas) / (1 + (shift - 1) * sigmas)
     sigmas = sigmas.to(torch.float32)
     timesteps = sigmas[:-1].to(dtype=torch.float32, device=device)

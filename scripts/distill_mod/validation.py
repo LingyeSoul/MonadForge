@@ -13,6 +13,12 @@ import torch
 import torch.nn as nn
 
 from library.inference.uncond import uncond_for_batch
+from library.training.forward import (
+    make_padding_mask,
+    renoise,
+    run_mini_train_forward,
+    to_dit_5d,
+)
 
 from .teacher_cache import ValTeacherCache
 
@@ -49,49 +55,40 @@ def run_validation(
         noise = torch.randn(
             latents.shape, device=device, dtype=latents.dtype, generator=gen
         )
-        padding_mask = torch.zeros(
-            B, 1, latents.shape[-2], latents.shape[-1], dtype=dtype, device=device
-        )
+        padding_mask = make_padding_mask(latents, dtype)
         uncond = uncond_for_batch(uncond_te_1, crossattn_emb)
 
         for s_idx, sigma in enumerate(sigmas):
             sig_b = torch.full((B,), float(sigma), device=device, dtype=latents.dtype)
-            sig_e = sig_b.view(B, 1, 1, 1)
-            noisy = (1.0 - sig_e) * latents + sig_e * noise
-            noisy = noisy.unsqueeze(2)
+            noisy = to_dit_5d(renoise(latents, sig_b, noise))
 
-            cached = (
-                teacher_cache.get(i, s_idx) if teacher_cache is not None else None
-            )
+            cached = teacher_cache.get(i, s_idx) if teacher_cache is not None else None
             if cached is not None:
                 teacher_pred = cached.to(device, dtype=dtype, non_blocking=True)
             else:
-                if model.blocks_to_swap:
-                    model.prepare_block_swap_before_forward()
-                torch.compiler.cudagraph_mark_step_begin()
-                with torch.autocast("cuda", dtype=dtype):
-                    teacher_pred = model.forward_mini_train_dit(
-                        noisy,
-                        sig_b,
-                        crossattn_emb,
-                        padding_mask=padding_mask,
-                        skip_pooled_text_proj=True,
-                    )
-                teacher_pred = teacher_pred.clone()
+                teacher_pred = run_mini_train_forward(
+                    model,
+                    noisy,
+                    sig_b,
+                    crossattn_emb,
+                    padding_mask=padding_mask,
+                    dtype=dtype,
+                    no_grad=True,
+                    clone=True,
+                    skip_pooled_text_proj=True,
+                )
                 if teacher_cache is not None:
                     teacher_cache.put(i, s_idx, teacher_pred)
 
-            if model.blocks_to_swap:
-                model.prepare_block_swap_before_forward()
-            torch.compiler.cudagraph_mark_step_begin()
-            with torch.autocast("cuda", dtype=dtype):
-                student_pred = model.forward_mini_train_dit(
-                    noisy,
-                    sig_b,
-                    uncond,
-                    padding_mask=padding_mask,
-                    pooled_text_override=pooled_text,
-                )
+            student_pred = run_mini_train_forward(
+                model,
+                noisy,
+                sig_b,
+                uncond,
+                padding_mask=padding_mask,
+                dtype=dtype,
+                pooled_text_override=pooled_text,
+            )
 
             loss = nn.functional.mse_loss(
                 student_pred.float(), teacher_pred.float()

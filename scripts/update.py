@@ -6,12 +6,15 @@ temp dir, then merges over the working tree using a 3-way reconciliation
 of (baseline / user / new) sha256 hashes:
 
   - Datasets, outputs, models, caches, .venv: never touched.
-  - Configs in configs/methods/, configs/gui-methods/, configs/base.toml,
-    configs/presets.toml, configs/sam_mask.yaml: prompt on conflict
+  - Configs in configs/methods/, configs/gui-methods/,
+    configs/preprocess.toml, configs/presets.toml, configs/sam_mask.yaml: prompt on conflict
     (keep yours / overwrite / backup-and-overwrite / show diff).
-  - Code files (library/, scripts/, train.py, etc.): overwritten silently
-    when unmodified; user-modified versions are copied to
-    .anima-update-backups/<timestamp>/ before being overwritten.
+  - Code files (library/, scripts/, train.py, etc.) AND configs/base.toml:
+    overwritten silently when unmodified; user-modified versions are copied to
+    .anima-update-backups/<timestamp>/ before being overwritten. base.toml is
+    deliberately treated as code — it's shared infrastructure, so new keys added
+    upstream must always reach the user (even under --keep-conflicts), with the
+    user's prior copy preserved in the backup dir.
 
 The baseline manifest lives at .anima_release.json. If it doesn't exist
 (first run after upgrading from a release that predates this script), every
@@ -60,30 +63,51 @@ BACKUP_ROOT = ROOT / ".anima-update-backups"
 # Match is by leading path segments (so "archive/graft/runtime" matches
 # anything under that prefix while leaving the rest of archive/ updatable).
 PRESERVE_DIRS: tuple[str, ...] = (
-    "image_dataset", "post_image_dataset",
-    "ip-adapter-dataset", "easycontrol-dataset",
-    "output", "models",
-    "masks", "masks_mit", "masks_sam",
-    "bench", "logs", "results",
-    ".venv", ".git", ".claude",
-    "test_output", "output_temp", "workflows",
+    "image_dataset",
+    "post_image_dataset",
+    "ip-adapter-dataset",
+    "easycontrol-dataset",
+    "output",
+    "models",
+    "masks",
+    "masks_mit",
+    "masks_sam",
+    "bench",
+    "logs",
+    "results",
+    ".venv",
+    ".git",
+    ".claude",
+    "test_output",
+    "output_temp",
+    "workflows",
     "archive/graft/runtime",
-    "__pycache__", "anima_lora.egg-info",
+    "__pycache__",
+    "anima_lora.egg-info",
     ".anima-update-backups",
 )
 PRESERVE_FILES: tuple[str, ...] = (
-    ".env", ".anima_release.json",
+    ".env",
+    ".anima_release.json",
 )
 
 # Files that prompt on conflict instead of silent overwrite. Globs match
 # the path relative to ROOT with forward slashes.
+# NB: configs/base.toml is intentionally NOT here. It's shared infrastructure
+# (model paths, the dataset blueprint, compile/cache contract) — new keys added
+# upstream must always be delivered, so it rides the code-file path (always
+# overwrite, backing up a user-modified copy) rather than honoring --keep-conflicts.
 CONFLICT_GLOBS: tuple[str, ...] = (
     "configs/methods/*.toml",
     "configs/gui-methods/*.toml",
-    "configs/base.toml",
+    "configs/preprocess.toml",
     "configs/presets.toml",
     "configs/sam_mask.yaml",
     "configs/datasets/*",
+    # Self-contained per-method dirs (configs/<method>/<method>.toml) — the
+    # EasyControl pilot. Shipped method config, same prompt-on-conflict policy
+    # as configs/methods/*.toml.
+    "configs/easycontrol/*.toml",
 )
 
 
@@ -223,9 +247,15 @@ def _print_diff(user: Path, new: Path, rel: str) -> None:
     except UnicodeDecodeError:
         print("    (binary file — diff skipped)")
         return
-    out = "\n".join(difflib.unified_diff(
-        a, b, fromfile=f"a/{rel} (yours)", tofile=f"b/{rel} (new)", lineterm="",
-    ))
+    out = "\n".join(
+        difflib.unified_diff(
+            a,
+            b,
+            fromfile=f"a/{rel} (yours)",
+            tofile=f"b/{rel} (new)",
+            lineterm="",
+        )
+    )
     print(out or "    (files differ but unified diff is empty)")
 
 
@@ -242,10 +272,14 @@ def _prompt_conflict(rel: str, user_path: Path, new_path: Path) -> str:
             "    --yes-overwrite    back up your configs, then overwrite with upstream"
         )
     while True:
-        choice = input(
-            f"\n  conflict: {rel} (you modified it AND upstream changed it)\n"
-            f"    [k]eep yours / [o]verwrite with new / [b]ackup yours then overwrite / [d]iff: "
-        ).strip().lower()
+        choice = (
+            input(
+                f"\n  conflict: {rel} (you modified it AND upstream changed it)\n"
+                f"    [k]eep yours / [o]verwrite with new / [b]ackup yours then overwrite / [d]iff: "
+            )
+            .strip()
+            .lower()
+        )
         if choice in ("k", "keep"):
             return "keep"
         if choice in ("o", "overwrite"):
@@ -321,7 +355,9 @@ def update(
         _download(tarball_url, tar_path)
         extracted_root = _extract_tarball(tar_path, tdir / "extracted")
         return _apply(
-            extracted_root, tag, baseline_hashes,
+            extracted_root,
+            tag,
+            baseline_hashes,
             dry_run=dry_run,
             yes_overwrite=yes_overwrite,
             keep_conflicts=keep_conflicts,
@@ -534,29 +570,36 @@ def main() -> int:
         help='Tag to install (e.g. "v1.0"). Default: latest release. Use "main" for the main branch tarball.',
     )
     ap.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Report what would change without touching files",
     )
     ap.add_argument(
-        "--yes-overwrite", action="store_true",
+        "--yes-overwrite",
+        action="store_true",
         help="Non-interactive: on config conflicts, back up user file and overwrite",
     )
     ap.add_argument(
-        "--keep-conflicts", action="store_true",
+        "--keep-conflicts",
+        action="store_true",
         help="Non-interactive: on config conflicts, keep the user's version",
     )
     ap.add_argument(
-        "--no-sync", action="store_true",
+        "--no-sync",
+        action="store_true",
         help="Skip the trailing `uv sync`",
     )
     ap.add_argument(
-        "-y", "--yes", action="store_true",
+        "-y",
+        "--yes",
+        action="store_true",
         help="Skip the changelog confirmation prompt (e.g. when invoked from a GUI)",
     )
     ap.add_argument(
-        "--seed-manifest", action="store_true",
+        "--seed-manifest",
+        action="store_true",
         help="Write .anima_release.json for the current tree (no download) and exit; "
-             "used by the bootstrap installer. Records --version, else resolves latest tag.",
+        "used by the bootstrap installer. Records --version, else resolves latest tag.",
     )
     args = ap.parse_args()
     if args.seed_manifest:

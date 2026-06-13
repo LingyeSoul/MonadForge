@@ -23,6 +23,13 @@ import logging
 import torch
 from tqdm import tqdm
 
+from library.training.forward import (
+    make_padding_mask,
+    renoise,
+    run_mini_train_forward,
+    to_dit_5d,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,8 +89,8 @@ class TeacherCache:
         return None
 
     def put(self, sample_idx: int, sigma_idx: int, teacher_pred):
-        self._store[(int(sample_idx), int(sigma_idx))] = (
-            teacher_pred.detach().to(dtype=torch.bfloat16, device="cpu")
+        self._store[(int(sample_idx), int(sigma_idx))] = teacher_pred.detach().to(
+            dtype=torch.bfloat16, device="cpu"
         )
 
     def __len__(self) -> int:
@@ -94,35 +101,29 @@ def prefill_teacher_cache(teacher_cache, dataset, model, device, dtype):
     """Eagerly compute teacher predictions for every (sample, sigma_idx) pair."""
     K = teacher_cache.K
     n = len(dataset)
-    logger.info(
-        f"Prefilling teacher cache: {n} samples × {K} sigmas = {n * K} entries"
-    )
+    logger.info(f"Prefilling teacher cache: {n} samples × {K} sigmas = {n * K} entries")
     for sample_idx in tqdm(range(n), desc="prefill teacher"):
         _idx, latents_cpu, crossattn_emb_cpu, _pooled = dataset[sample_idx]
         latents = latents_cpu.unsqueeze(0).to(device, dtype=dtype)
         crossattn_emb = crossattn_emb_cpu.unsqueeze(0).to(device, dtype=dtype)
-        padding_mask = torch.zeros(
-            1, 1, latents.shape[-2], latents.shape[-1], dtype=dtype, device=device
-        )
+        padding_mask = make_padding_mask(latents, dtype)
         for sigma_idx in range(K):
             sigma = teacher_cache.get_sigma(sigma_idx)
             sigma_t = torch.full((1,), float(sigma), device=device, dtype=latents.dtype)
             noise = teacher_cache.make_noise(
                 sample_idx, sigma_idx, latents.shape, device, latents.dtype
             )
-            sigma_e = sigma_t.view(1, 1, 1, 1)
-            noisy = (1.0 - sigma_e) * latents + sigma_e * noise
-            noisy = noisy.unsqueeze(2)
-            if model.blocks_to_swap:
-                model.prepare_block_swap_before_forward()
-            with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
-                teacher_pred = model.forward_mini_train_dit(
-                    noisy,
-                    sigma_t,
-                    crossattn_emb,
-                    padding_mask=padding_mask,
-                    skip_pooled_text_proj=True,
-                )
+            noisy = to_dit_5d(renoise(latents, sigma_t, noise))
+            teacher_pred = run_mini_train_forward(
+                model,
+                noisy,
+                sigma_t,
+                crossattn_emb,
+                padding_mask=padding_mask,
+                dtype=dtype,
+                no_grad=True,
+                skip_pooled_text_proj=True,
+            )
             teacher_cache.put(sample_idx, sigma_idx, teacher_pred)
     logger.info(f"Prefill complete: {len(teacher_cache)} entries cached")
 
@@ -158,8 +159,8 @@ class ValTeacherCache:
         return None
 
     def put(self, batch_idx: int, sigma_idx: int, teacher_pred):
-        self._store[(int(batch_idx), int(sigma_idx))] = (
-            teacher_pred.detach().to(dtype=torch.bfloat16, device="cpu")
+        self._store[(int(batch_idx), int(sigma_idx))] = teacher_pred.detach().to(
+            dtype=torch.bfloat16, device="cpu"
         )
 
     def __len__(self) -> int:

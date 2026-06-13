@@ -6,7 +6,6 @@
 import json
 import logging
 import os
-import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -43,9 +42,13 @@ def _load_channel_scales(
     """Load per-channel input pre-scaling stats, gated on ``channel_scaling_alpha``.
 
     SmoothQuant-style. ``channel_scaling_alpha`` is the sole user knob:
-    0.0 (default) disables; 0.5 = sqrt balance; 1.0 fully flattens. The
-    calibration file is vendored at ``networks/calibration/channel_stats.safetensors``;
+    0.0 disables (the kwarg fallback when unset); base.toml ships 0.5 = sqrt
+    balance, so it is ON by default; 1.0 fully flattens. The calibration file
+    is vendored at ``networks/calibration/channel_stats.safetensors``;
     regenerate it with ``bench/channel_stats/analyze_lora_input_channels.py``.
+    Only rebalances variants whose down-projection is trainable — exactly
+    inert on frozen-basis ortho variants (see
+    ``docs/optimizations/channel_scaling.md`` §Liveness).
     See ``bench/channel_stats/channel_dominance_analysis.md`` for motivation.
     """
     raw_alpha = kwargs.get("channel_scaling_alpha", 0.0)
@@ -87,14 +90,24 @@ def create_network(
 ):
     spec = resolve_network_spec(kwargs)
 
-    # Memory-saving down-projection autograd (classic LoRA only). Saves the
-    # low-precision x instead of the fp32-cast input; fp32 bottleneck matmul
-    # and gradients are preserved bitwise. See `networks/lora_modules/custom_autograd.py`.
-    use_custom_down_autograd = kwargs.get("use_custom_down_autograd", "false")
-    if isinstance(use_custom_down_autograd, str):
-        use_custom_down_autograd = use_custom_down_autograd.lower() == "true"
-    else:
-        use_custom_down_autograd = bool(use_custom_down_autograd)
+    # Deprecated 2026-06-10 (accepted so old snapshot TOMLs replay): the
+    # fp32-bottleneck down-projection autograd was removed. Training GEMMs now
+    # run in the model compute dtype (``org_forwarded.dtype`` = the frozen base's
+    # bf16 output) — bit-identical to what the trainer's autocast(bf16) already
+    # produced (autocast re-cast the custom Function's ``.float()`` inputs back to
+    # bf16 before every GEMM, so the fp32 path never executed and only cost cast
+    # traffic). Keying it off ``x.dtype`` was wrong: AdaLN hands these Linears
+    # fp32, which silently upcast the rank path + ``_rebalance`` and OOMed. See
+    # bench/lora_fp32_bottleneck.
+    if str(kwargs.get("use_custom_down_autograd", "false")).strip().lower() in (
+        "true",
+        "1",
+    ):
+        logger.info(
+            "use_custom_down_autograd is deprecated and ignored "
+            "(fp32-bottleneck path removed; compute-dtype GEMMs are "
+            "bit-identical under the trainer's autocast)"
+        )
 
     channel_scales_dict = _load_channel_scales(kwargs)
 
@@ -123,20 +136,56 @@ def create_network(
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
 
-    if use_custom_down_autograd:
-        _hits = 0
-        _skipped = 0
-        for mod in network.text_encoder_loras + network.unet_loras:
-            if hasattr(mod, "use_custom_down_autograd"):
-                mod.use_custom_down_autograd = True
-                _hits += 1
-            else:
-                _skipped += 1
-        logger.info(
-            f"use_custom_down_autograd: enabled on {_hits} LoRA-family modules"
-            + (f" ({_skipped} unsupported skipped)" if _skipped else "")
-            + " (saves ~32-128 MiB/Linear of fp32 activation per step)"
+    # REPA v2 auxiliary alignment loss. Off unless use_repa is set. Stash the
+    # config on the network so REPAMethodAdapter + losses._repa_loss read it
+    # without new args plumbing; build the projection head for absolute mode
+    # (relational/Gram has no head). See library/training/repa.py.
+    from networks.lora_anima.config import _as_bool
+
+    if _as_bool(kwargs.get("use_repa")):
+        network._repa_mode = str(kwargs.get("repa_mode", "relational")).lower()
+        network._repa_weight = float(kwargs.get("repa_weight", 0.05) or 0.0)
+        network._repa_layer = int(kwargs.get("repa_layer", 8))
+        network._repa_encoder = str(kwargs.get("repa_encoder", "pe_spatial"))
+        network._repa_lr_scale = float(kwargs.get("repa_lr_scale", 1.0) or 1.0)
+        network._repa_anneal_steps = float(kwargs.get("repa_anneal_steps", 0.0) or 0.0)
+        network._repa_spatial_norm = _as_bool(kwargs.get("repa_spatial_norm"))
+        network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
+        # Global-anchor arm (docs/proposal/repa_global_anchor.md): re-inject the
+        # global component via a patch-mean target + train-only projection head.
+        network._repa_global_weight = float(
+            kwargs.get("repa_global_weight", 0.0) or 0.0
         )
+        network._repa_global_norm = str(
+            kwargs.get("repa_global_norm", "zscore")
+        ).lower()
+        network._repa_global_calib = str(kwargs.get("repa_global_calib", "") or "")
+        from library.vision.encoders import get_encoder_info
+
+        enc_dim = get_encoder_info(network._repa_encoder).d_enc
+        dit_dim = int(unet.model_channels)
+        if network._repa_mode == "absolute":
+            from library.training.repa import REPAHead
+
+            network.repa_head = REPAHead(dit_dim, dit_dim, enc_dim)
+            # Training-only: save_weights strips registered prefixes from the
+            # checkpoint state_dict.
+            network._training_only_prefixes.add("repa_head.")
+        if network._repa_global_weight > 0.0:
+            from library.training.repa import REPAGlobalHead
+
+            network.repa_global_head = REPAGlobalHead(dit_dim, enc_dim)
+            network._training_only_prefixes.add("repa_global_head.")
+        logger.info(
+            f"REPA[{network._repa_mode}]: weight={network._repa_weight}, "
+            f"layer={network._repa_layer}, encoder={network._repa_encoder}, "
+            f"anneal_steps={network._repa_anneal_steps:g}, "
+            f"spatial_norm={network._repa_spatial_norm}, "
+            f"global_weight={network._repa_global_weight:g}"
+        )
+    else:
+        network._repa_weight = 0.0
+        network._repa_global_weight = 0.0
 
     if cfg.use_timestep_mask:
         logger.info(
@@ -235,16 +284,6 @@ def create_network(
                 "router_targets regex matched zero modules — no MoE routing "
                 "is active, every target became plain LoRA."
             )
-    if cfg.add_reft:
-        _reft_alpha_str = (
-            f"{cfg.reft_alpha}"
-            if cfg.reft_alpha is not None
-            else f"{cfg.alpha} (from network_alpha)"
-        )
-        logger.info(
-            f"ReFT: reft_dim={cfg.reft_dim}, reft_alpha={_reft_alpha_str}, "
-            f"layers={cfg.reft_layers!r}"
-        )
     if cfg.layer_start is not None or cfg.layer_end is not None:
         logger.info(
             f"Layer range: training blocks [{cfg.layer_start or 0}, {cfg.layer_end or '...'})"
@@ -350,17 +389,12 @@ def create_network_from_weights(
     # here is a fallback for unstamped or legacy artifacts.
     has_stacked_experts = False
     hydra_num_experts = 0
-    has_reft = False
-    reft_dim = None
-    reft_block_indices: set[int] = set()
     # Per-module hydra flag: which lora_names were trained as MoE (Hydra) vs
     # plain LoRA / OrthoLoRA. Populated below by key sniff, then passed
     # through as `hydra_router_names` so create_modules can pick the right
     # class per module in mixed checkpoints (result of router_targets).
     hydra_module_names: set[str] = set()
     plain_module_names: set[str] = set()
-    # Block-level ReFT key pattern: reft_unet_blocks_<idx>.<...>
-    _reft_block_re = re.compile(r"^reft_unet_blocks_(\d+)$")
     # Discriminator for chimera dual-A keys: any module with a
     # ``.lora_up_c_weight`` (post-stack form) is a chimera Linear and
     # should NOT be classified as plain Hydra. Collected in the loop below.
@@ -379,22 +413,6 @@ def create_network_from_weights(
                 "the old format cannot be loaded. Retrain the LoRA to get the new "
                 "per-module router weights."
             )
-
-        # ReFT keys use "reft_" prefix (block-level: reft_unet_blocks_<idx>.*)
-        if lora_name.startswith("reft_"):
-            has_reft = True
-            m = _reft_block_re.match(lora_name)
-            if m is None:
-                raise RuntimeError(
-                    f"ReFT key {key!r} does not match the block-level scheme "
-                    "'reft_unet_blocks_<idx>.*'. This checkpoint was likely trained "
-                    "with the old per-Linear ReFT wiring and cannot be loaded by the "
-                    "current block-level implementation."
-                )
-            reft_block_indices.add(int(m.group(1)))
-            if "rotate_layer" in key and "weight" in key:
-                reft_dim = value.size()[0]
-            continue
 
         if "alpha" in key:
             modules_alpha[lora_name] = value
@@ -838,9 +856,6 @@ def create_network_from_weights(
         modules_alpha=modules_alpha,
         module_class=module_class,
         train_llm_adapter=train_llm_adapter,
-        has_reft=has_reft,
-        reft_dim=reft_dim,
-        reft_block_indices=reft_block_indices,
         is_hydra_or_ortho_hydra=has_hydra or has_ortho_hydra,
         hydra_num_experts=hydra_num_experts,
         sigma_feature_dim_detected=sigma_feature_dim_detected,

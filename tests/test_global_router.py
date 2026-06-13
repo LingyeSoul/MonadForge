@@ -49,8 +49,6 @@ def _make_minimal_stacked_experts_network(
     net.cfg = cfg
     net.unet_loras = []
     net.text_encoder_loras = []
-    net.text_encoder_refts = []
-    net.unet_refts = []
     net._last_sigma = None
     net._router_stats_cache = None
     net._sigma_router_hits = 0
@@ -439,8 +437,6 @@ def _make_minimal_hydra_global_router_network(
     net.cfg = cfg
     net.unet_loras = []
     net.text_encoder_loras = []
-    net.text_encoder_refts = []
-    net.unet_refts = []
     net._last_sigma = None
     net._router_stats_cache = None
     net._sigma_router_hits = 0

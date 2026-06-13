@@ -57,6 +57,20 @@ def main() -> None:
         help="Disable constant-token buckets",
     )
     parser.add_argument(
+        "--target_res",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="EDGE",
+        help=(
+            "Multi-scale constant-token tiers (allowed: 512 768 896 1024 1280 1536). "
+            "Each image lands in the tier that resizes it the least (nearest). "
+            "Default (unset) = single 1024 tier (current behavior). "
+            "Each extra tier adds 1 compiled block graph (1024 contributes 2). "
+            "e.g. --target_res 1024 1536 for ~1MP + ~2.25MP training."
+        ),
+    )
+    parser.add_argument(
         "--workers", type=int, default=4, help="Number of parallel workers (default: 4)"
     )
     parser.add_argument(
@@ -85,11 +99,39 @@ def main() -> None:
             "within each subfolder; the same stem can repeat across folders."
         ),
     )
+    parser.add_argument(
+        "--path_pattern",
+        "--path-pattern",
+        dest="path_pattern",
+        default="*",
+        help=(
+            "Only preprocess images whose path relative to --src matches this "
+            "fnmatch glob. Use | to separate alternatives. Default: *"
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Re-resize every image even if a resized PNG already exists at the "
+            "correct bucket. Default skips up-to-date outputs; a bucket change "
+            "(e.g. adding a --target_res tier) still re-resizes affected images."
+        ),
+    )
     args = parser.parse_args()
 
     constant_token_buckets = (
         args.constant_token_buckets and not args.no_constant_token_buckets
     )
+
+    if args.target_res is not None:
+        from library.datasets.buckets import ALLOWED_TARGET_RES
+
+        bad = [e for e in args.target_res if e not in ALLOWED_TARGET_RES]
+        if bad:
+            parser.error(
+                f"--target_res {bad} not in allowed tiers {list(ALLOWED_TARGET_RES)}"
+            )
 
     resize_to_buckets(
         Path(args.src),
@@ -99,10 +141,13 @@ def main() -> None:
         max_bucket_reso=args.max_bucket_reso,
         bucket_reso_steps=args.bucket_reso_steps,
         constant_token_buckets=constant_token_buckets,
+        target_res=args.target_res,
         workers=args.workers,
         min_pixels=args.min_pixels,
         copy_captions=not args.no_copy_captions,
         recursive=args.recursive,
+        path_pattern=args.path_pattern,
+        overwrite=args.overwrite,
         progress=tqdm_progress("Resizing"),
     )
 

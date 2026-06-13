@@ -63,6 +63,7 @@ import torch
 from safetensors.torch import load_file, save_file
 
 
+from bench._anima import DEFAULT_DIT
 from library.anima import weights as anima_utils
 from library.log import setup_logging
 from networks import lora_anima
@@ -79,9 +80,7 @@ def parse_args():
         help="Optional LoRA adapter to attach before collecting stats. "
         "Omit to analyze the base DiT only.",
     )
-    p.add_argument(
-        "--dit", default="models/diffusion_models/anima-base-v1.0.safetensors"
-    )
+    p.add_argument("--dit", default=DEFAULT_DIT)
     p.add_argument(
         "--dataset_dir",
         default="post_image_dataset/lora",

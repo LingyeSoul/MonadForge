@@ -18,12 +18,17 @@ The compile-after-apply ordering is the load-bearing invariant:
 ``compile_blocks`` MUST run after ``network.apply_to`` + ``load_weights``.
 See ``library.runtime.harness`` for the full sequence.
 
+It also owns the canonical defaults — the DiT/VAE/text-encoder paths (resolved
+through ``default_checkpoints``) and the standard test prompt/neg — so benches
+reference one source of truth instead of re-hardcoding path strings.
+
 Usage::
 
-    from bench._anima import add_common_args, build_anima, discover_bucketed_samples
+    from bench._anima import add_common_args, add_model_args, build_anima
 
     p = argparse.ArgumentParser()
-    p.add_argument("--dit", required=True)
+    add_model_args(p)             # injects --dit/--vae/--text_encoder at the
+                                  # canonical default_checkpoints() paths
     p.add_argument("--adapter", default=None)
     add_common_args(p)            # injects --label/--seed/--device/--dtype/
                                   # --attn_mode/--gradient_checkpointing/
@@ -47,20 +52,64 @@ import argparse
 
 import torch
 
+from anima_lora import default_checkpoints
+
 # Re-exports — the harness moved into library/ (see module docstring). Imported
 # here so existing `from bench._anima import build_anima` call sites don't churn.
-from library.io.cache import discover_bucketed_samples  # noqa: F401
+# The cache-discovery family lives in library.io.cache; bench probes reach for it
+# through here rather than re-compiling their own `*_anima.npz` regexes.
+from library.io.cache import (  # noqa: F401
+    LatentCacheFile,
+    discover_bucketed_samples,
+    discover_cached_pairs,
+    discover_latents_by_stem,
+    parse_latent_cache_name,
+)
 from library.runtime.cli import add_device_args
 from library.runtime.device import str_to_dtype
 from library.runtime.harness import AnimaBundle, build_anima  # noqa: F401
 
 __all__ = [
     "add_common_args",
+    "add_model_args",
     "resolve_dtype",
     "build_anima",
     "AnimaBundle",
     "discover_bucketed_samples",
+    "discover_cached_pairs",
+    "discover_latents_by_stem",
+    "parse_latent_cache_name",
+    "LatentCacheFile",
+    "DEFAULT_DIT",
+    "DEFAULT_VAE",
+    "DEFAULT_TEXT_ENCODER",
+    "DEFAULT_PROMPT",
+    "DEFAULT_NEG",
 ]
+
+# ---------------------------------------------------------------------------
+# Canonical defaults — one source of truth for bench scripts.
+# ---------------------------------------------------------------------------
+
+# Default DiT / VAE / text-encoder paths, resolved through the façade so a bench
+# honors ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER + configs/base.toml + .env
+# instead of re-hardcoding the "models/…/anima-base-v1.0.safetensors" strings.
+# Reach for these (or `add_model_args`) rather than copy-pasting path literals.
+_CKPTS = default_checkpoints()
+DEFAULT_DIT = _CKPTS.dit
+DEFAULT_VAE = _CKPTS.vae
+DEFAULT_TEXT_ENCODER = _CKPTS.text_encoder
+
+# The canonical single-image test prompt/neg — mirrors
+# `scripts/tasks/_common.INFERENCE_BASE` so a bench's default sample matches what
+# `make test` renders. Scripts that need varied content define their own list.
+DEFAULT_PROMPT = (
+    "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top"
+    " and denim shorts is standing outdoors. She's holding a rectangular sign out in"
+    ' front of her that reads "ANIMA". She\'s looking at the viewer with a smile. The'
+    " background features some trees and blue sky with clouds."
+)
+DEFAULT_NEG = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
 
 
 # ---------------------------------------------------------------------------
@@ -111,9 +160,7 @@ def add_common_args(
             default=0,
             help="RNG seed for sample discovery and noise draws.",
         )
-    add_device_args(
-        parser, include_device=include_device, include_dtype=include_dtype
-    )
+    add_device_args(parser, include_device=include_device, include_dtype=include_dtype)
     if include_model:
         parser.add_argument(
             "--attn_mode",
@@ -151,6 +198,40 @@ def add_common_args(
             default=None,
             help="Optional inductor mode for compile_blocks (e.g. "
             "'reduce-overhead'). Leave unset for the default.",
+        )
+    return parser
+
+
+def add_model_args(
+    parser: argparse.ArgumentParser,
+    *,
+    dit: bool = True,
+    vae: bool = True,
+    text_encoder: bool = True,
+) -> argparse.ArgumentParser:
+    """Inject ``--dit`` / ``--vae`` / ``--text_encoder``, defaulted to the
+    repo's canonical checkpoints (:func:`default_checkpoints`, via the constants
+    above).
+
+    The one place to wire a bench's model paths — replaces the re-hardcoded
+    ``default="models/…/anima-base-v1.0.safetensors"`` strings so all benches
+    honor ``ANIMA_DIT`` / ``ANIMA_VAE`` / ``ANIMA_TEXT_ENCODER`` + ``.env``.
+    Each flag is opt-out for benches that only need a subset.
+    """
+    if dit:
+        parser.add_argument(
+            "--dit", type=str, default=DEFAULT_DIT, help="DiT checkpoint path."
+        )
+    if vae:
+        parser.add_argument(
+            "--vae", type=str, default=DEFAULT_VAE, help="VAE checkpoint path."
+        )
+    if text_encoder:
+        parser.add_argument(
+            "--text_encoder",
+            type=str,
+            default=DEFAULT_TEXT_ENCODER,
+            help="Text-encoder checkpoint path.",
         )
     return parser
 

@@ -55,8 +55,11 @@ def _load_node_defaults() -> dict:
         with open(path, "rb") as fh:
             return tomllib.load(fh)
     except (OSError, tomllib.TOMLDecodeError) as e:
-        print(f"[Anima Trainer] could not read node_defaults.toml ({e}); "
-              f"using base/preset defaults.", flush=True)
+        print(
+            f"[Anima Trainer] could not read node_defaults.toml ({e}); "
+            f"using base/preset defaults.",
+            flush=True,
+        )
         return {}
 
 
@@ -229,7 +232,11 @@ def _train_and_save(
         n_images,
         resolved_mask_dir,
     ) = prepare_dataset_dir(
-        image, prompt, dataset_dir, tmp_root=_trainer_tmp_root(), mask=mask,
+        image,
+        prompt,
+        dataset_dir,
+        tmp_root=_trainer_tmp_root(),
+        mask=mask,
         mask_dir=mask_dir,
     )
 
@@ -459,7 +466,7 @@ def _apply_lora_to_model(model, file_path: str, strength: float) -> None:
     T-LoRA rank mask is training-only (inference is full-rank). So ComfyUI's
     stock machinery — ``model_lora_keys_unet`` + ``convert_lora`` + ``load_lora``
     — maps and applies it directly, exactly as the built-in LoraLoader node would
-    on a natively-loaded Anima DiT. No Anima adapter loader (HydraLoRA / ReFT /
+    on a natively-loaded Anima DiT. No Anima adapter loader (HydraLoRA /
     Chimera live routing) is involved, so we don't pull in the comfyui-hydralora
     node here (which imports its chimera module at load time).
     """

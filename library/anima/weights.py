@@ -193,6 +193,7 @@ def load_anima_model(
                     "dim_temporal_range",
                     "inv_freq",
                     "pooled_text_proj",
+                    "pooled_text_sigma_film",
                 )
             )
         ]
@@ -228,6 +229,13 @@ def load_anima_model(
         # Zero-init output layer so the module is a no-op at init (same as init_weights)
         torch.nn.init.zeros_(model.pooled_text_proj[-1].weight)
         torch.nn.init.zeros_(model.pooled_text_proj[-1].bias)
+    if hasattr(model, "pooled_text_sigma_film"):
+        # σ-FiLM sibling: also absent from the base checkpoint → materialize and
+        # zero-init (identity FiLM). Stays inert until load_pooled_text_proj sees
+        # σ-FiLM weights and flips enable_pooled_text_sigma_film.
+        model.pooled_text_sigma_film.to_empty(device=loading_device)
+        torch.nn.init.zeros_(model.pooled_text_sigma_film.weight)
+        torch.nn.init.zeros_(model.pooled_text_sigma_film.bias)
 
     return model
 
@@ -241,9 +249,21 @@ def load_pooled_text_proj(
     from safetensors.torch import load_file
 
     state = load_file(path, device=str(device))
-    model.pooled_text_proj.load_state_dict(state, assign=True)
+    # σ-FiLM weights (if the checkpoint was trained with it) ride under a
+    # ``sigma_film.`` prefix; everything else is the plain pooled_text_proj.
+    film_state = {
+        k[len("sigma_film.") :]: v
+        for k, v in state.items()
+        if k.startswith("sigma_film.")
+    }
+    proj_state = {k: v for k, v in state.items() if not k.startswith("sigma_film.")}
+    model.pooled_text_proj.load_state_dict(proj_state, assign=True)
     # Trained weights are now live — arm the per-forward modulation path.
     model.enable_pooled_text_modulation = True
+    if film_state:
+        model.pooled_text_sigma_film.load_state_dict(film_state, assign=True)
+        model.enable_pooled_text_sigma_film = True
+        logger.info("  σ-FiLM weights present → timestep-conditioned mod head armed")
     logger.info(f"Loaded pooled_text_proj from {path}")
 
 

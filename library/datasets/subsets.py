@@ -1,50 +1,17 @@
-import fnmatch
 import logging
 import math
 import os
 import random
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import torch
 
+from library.datasets.path_filter import filter_paths_by_glob as filter_paths_by_glob
+
 logger = logging.getLogger(__name__)
-
-
-def filter_paths_by_glob(
-    img_paths: List[str],
-    image_dir: Optional[str],
-    pattern: Optional[str],
-) -> List[bool]:
-    """Return a per-path boolean mask: True keeps the file, False drops it.
-
-    The pattern is matched against each file's path relative to ``image_dir``
-    (with forward slashes, no leading "./") via ``fnmatch``. ``|`` separates
-    alternatives — ``char_a/*|char_b/*`` keeps anything under either folder.
-    Default ``*``, empty, or None all keep everything. Returns a mask rather
-    than a filtered list so callers can keep parallel arrays (sizes,
-    captions) aligned.
-    """
-    if not pattern:
-        return [True] * len(img_paths)
-    alternatives = [alt.strip() for alt in pattern.split("|")]
-    alternatives = [alt for alt in alternatives if alt]
-    if not alternatives or any(alt == "*" for alt in alternatives):
-        return [True] * len(img_paths)
-    base = os.path.abspath(image_dir) if image_dir else None
-    keep: List[bool] = []
-    for p in img_paths:
-        if base is not None:
-            try:
-                rel = os.path.relpath(p, base)
-            except ValueError:
-                rel = os.path.basename(p)
-        else:
-            rel = os.path.basename(p)
-        rel = rel.replace(os.sep, "/")
-        keep.append(any(fnmatch.fnmatchcase(rel, alt) for alt in alternatives))
-    return keep
 
 
 def _resolve_default_mask_dir() -> Optional[str]:
@@ -67,6 +34,33 @@ def _resolve_default_mask_dir() -> Optional[str]:
     for candidate in candidates:
         if os.path.isdir(candidate):
             return candidate
+    return None
+
+
+_FOLDER_REPEAT_RE = re.compile(r"^(\d+)_")
+
+
+def folder_repeat_count(image_path: str, image_dir: str) -> Optional[int]:
+    """Kohya-style per-folder repeat count for ``image_path``.
+
+    Walks the directory components between ``image_dir`` and the image
+    (deepest first) and returns ``n`` from the first component named
+    ``{n}_...`` — so ``image_dir/5_mychar/img.png`` → 5, and a nested
+    ``5_mychar/extra/img.png`` still resolves to 5. Returns ``None`` when no
+    component matches or the image sits directly in ``image_dir``. ``0_...``
+    is a valid result (0) — the loader drops such images from training.
+    """
+    try:
+        rel = os.path.relpath(os.path.dirname(image_path), image_dir)
+    except ValueError:
+        return None
+    if not rel or rel == "." or rel.startswith(".."):
+        return None
+    # glob can mix `/` and `\` on Windows — split on both.
+    for part in reversed(re.split(r"[\\/]", rel)):
+        m = _FOLDER_REPEAT_RE.match(part)
+        if m:
+            return int(m.group(1))
     return None
 
 
@@ -230,7 +224,6 @@ class BaseSubset:
         num_repeats: int,
         sample_ratio: float,
         caption_separator: str,
-        keep_tokens: int,
         keep_tokens_separator: str,
         secondary_separator: Optional[str],
         enable_wildcard: bool,
@@ -252,17 +245,20 @@ class BaseSubset:
         resize_interpolation: Optional[str] = None,
         recursive: bool = False,
         path_pattern: Optional[str] = None,
+        repeat_by_folder_name: bool = False,
     ) -> None:
         self.image_dir = image_dir
         self.alpha_mask = alpha_mask if alpha_mask is not None else False
         self.num_repeats = num_repeats
+        # Kohya-style folder repeats: a `{n}_...` directory component under
+        # image_dir overrides num_repeats with n for the images inside it.
+        self.repeat_by_folder_name = repeat_by_folder_name
         self.recursive = recursive
         # fnmatch glob applied to each image's path-relative-to-image_dir at
         # enumeration time; `*` / None / empty = no filtering.
         self.path_pattern = path_pattern or "*"
         self.sample_ratio = sample_ratio
         self.caption_separator = caption_separator
-        self.keep_tokens = keep_tokens
         self.keep_tokens_separator = keep_tokens_separator
         self.secondary_separator = secondary_separator
         self.enable_wildcard = enable_wildcard
@@ -304,7 +300,6 @@ class DreamBoothSubset(BaseSubset):
         num_repeats,
         sample_ratio,
         caption_separator: str,
-        keep_tokens,
         keep_tokens_separator,
         secondary_separator,
         enable_wildcard,
@@ -327,8 +322,10 @@ class DreamBoothSubset(BaseSubset):
         mask_dir: Optional[str] = None,
         cache_dir: Optional[str] = None,
         cond_cache_dir: Optional[str] = None,
+        text_cache_dir: Optional[str] = None,
         recursive: bool = False,
         path_pattern: Optional[str] = None,
+        repeat_by_folder_name: bool = False,
     ) -> None:
         assert image_dir is not None, "image_dir must be specified"
 
@@ -338,7 +335,6 @@ class DreamBoothSubset(BaseSubset):
             num_repeats,
             sample_ratio,
             caption_separator,
-            keep_tokens,
             keep_tokens_separator,
             secondary_separator,
             enable_wildcard,
@@ -360,6 +356,7 @@ class DreamBoothSubset(BaseSubset):
             resize_interpolation=resize_interpolation,
             recursive=recursive,
             path_pattern=path_pattern,
+            repeat_by_folder_name=repeat_by_folder_name,
         )
 
         self.is_reg = is_reg
@@ -387,6 +384,10 @@ class DreamBoothSubset(BaseSubset):
         # colorization). Read-only at train time — do NOT makedirs it; the prep
         # step populates it. None → cond falls back to the target latent.
         self.cond_cache_dir = cond_cache_dir
+        # Optional redirect for the *text-encoder* cache only (latents stay in
+        # cache_dir). Read-only at train time; the prep step populates it with
+        # re-encoded captions. None → TE caches come from cache_dir.
+        self.text_cache_dir = text_cache_dir
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, DreamBoothSubset):

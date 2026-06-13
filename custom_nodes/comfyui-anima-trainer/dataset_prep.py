@@ -81,7 +81,6 @@ def _write_dataset_config(
     cfg = (
         "[general]\n"
         "caption_extension = '.txt'\n"
-        "keep_tokens = 3\n"
         "\n"
         "[[datasets]]\n"
         "batch_size = 1\n"

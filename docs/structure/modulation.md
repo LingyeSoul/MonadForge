@@ -83,7 +83,7 @@ Training then learns what **caption-dependent bias** to add to the AdaLN gains, 
 
 ## 3. Hook point for modulation guidance
 
-This is the structural hook point for **modulation guidance** (Starodubcev et al., ICLR 2026; distilled via `make distill-mod`, see `docs/methods/mod-guidance.md`). The distillation trick:
+This is the structural hook point for **modulation guidance** (Starodubcev et al., ICLR 2026; distilled via `make distill-mod`, see `docs/inference/mod-guidance.md`). The distillation trick:
 
 - **Teacher forward**: standard cross-attention, unmodified.
 - **Student forward**: **zeroed cross-attention**, but receives pooled text through the modulation path shown above.

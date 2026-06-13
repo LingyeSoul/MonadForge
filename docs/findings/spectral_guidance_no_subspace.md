@@ -1,5 +1,7 @@
 # Spectral Guidance — no low-rank guidable subspace on Anima (Phase 0 NO-GO)
 
+<!-- check-docs: ignore-flags (historical record of a NO-GO probe; the flags below never shipped) -->
+
 This records why **Spectral Guidance** (Moreira et al., *Spectral Guidance for
 Flexible and Efficient Control of Diffusion Models*, arXiv:2605.28900) was not
 promoted past its Phase-0 falsification gate on Anima. The short version: the
@@ -16,10 +18,9 @@ The single most reusable lesson: **"the signal resolves by σ≈0.45" (accuracy)
 σ-axes, and on Anima they do not coincide.** The proposal assumed they would; they
 don't. See the reconciliation with [[project_sigma_signal_resolves_by_045]] below.
 
-Proposal: `docs/proposal/spectral_guidance_anima.md` (header flipped to SHELVED).
-Probe + runs: `bench/spectral_guidance/probe_spectrum.py`,
-`bench/spectral_guidance/results/20260530-2001-cond/`,
-`…-2010-quarter/`, `…-2034-uncond/`.
+Proposal: `_archive/proposals/spectral_guidance_anima.md` (header flipped to SHELVED).
+The Phase-0 probe and its runs (`-2001-cond`, `-2010-quarter`, `-2034-uncond`) are no
+longer in-tree.
 
 ## The property under test
 

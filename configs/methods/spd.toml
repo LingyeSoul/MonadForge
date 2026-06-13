@@ -12,26 +12,30 @@
 # shape-agnostic; only the learned behavior is coupled to the schedule below,
 # so it is snapshotted into the safetensors metadata (R2).
 
-output_name = "anima_spd_8k_policy"
+output_name = "anima_spd_snrgate128"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 8000
+iterations = 16000
 batch_size = 1
 seed = 42
 # compile_inductor_mode = "reduce-overhead"
 
+# torch.compile knobs (only active with --torch_compile, on by default).
+# compile_dynamic_seq: collapse the per-(stage x bucket) block graphs into ONE
+# symbolic-seq graph (mark_dynamic on the seq axis), bounded by the *downsampled*
+# stage token counts. Trades a handful of warmup recompiles for a single graph.
+compile_dynamic_seq = true
+# activation_memory_budget: partitioner saved-activation fraction (<1.0 recomputes
+# cheap intermediates in backward to cut peak VRAM). 1.0 = off. Ignored under
+# --grad_ckpt. 0.85 is the train.py default trade-off.
+activation_memory_budget = 0.99
+
 [network]
-rank = 96
-alpha = 96
+rank = 128
+alpha = 128
 attn_mode = "flash"
-# SmoothQuant-style per-channel input pre-scaling on the LoRA down projection
-# (vendored stats: networks/calibration/channel_stats.safetensors). 0.0 = off /
-# paper-faithful; 0.5 = sqrt balance; 1.0 = full flatten. inv_scale is baked into
-# the saved weights at write time, so inference needs no extra plumbing. Only ever
-# bench-validated on plain identity-LoRA — treat as experimental on a distill
-# objective and A/B against 0.0. CLI override: --channel_scaling_alpha.
 channel_scaling_alpha = 0.5
 
 # SPD schedule — the segment geometry this LoRA learns and MUST infer with.
@@ -41,32 +45,15 @@ channel_scaling_alpha = 0.5
 # run t∈(0.5,1] at half resolution, expand at σ≈0.5, finish full-res.
 [schedule]
 stages = [0.5, 1.0]
-transition_sigmas = [0.5]
-label = "single_0.5_sigma0.5"
+transition_sigmas = [0.7]
+label = "single_0.5_sigma0.7"
 # Per-stage sampling multiplier (len = len(stages)). The trainer samples a stage
 # each micro-step ∝ (band width × stage_weight): the band-width factor keeps σ
 # marginally-uniform *within* each stage (paper's U(0,1)); stage_weights then tilt
 # how much of the gradient budget lands on each stage WITHOUT disturbing in-band σ
 # density. All-ones (or omitted) = exact band-width-proportional baseline.
-#
-# The adapter's value concentrates *after* the σ transition — stage>0 is the
-# full-res, low-σ tail where (a) the off-manifold spectral-expansion handoff lands
-# and (b) Anima synthesises the high-freq detail (structure resolves by σ≈0.45;
-# e_low triples in the σ<0.45 tail). Stage 0 is low-res denoising the frozen base
-# already does well, and its errors get partly re-noised at the handoff — but DON'T
-# zero it: the on-policy stage>0 *entry* is rolled with the adapter on, so an
-# under-supervised stage 0 hands stage 1 a worse state to clean up. Tilt, don't
-# starve. Recommended opt-in tilt to A/B: [0.3, 0.7] (~70% of stage mass post-
-# transition). Shipped default is the identity band-width baseline — the analytic
-# val signal here doesn't track perceptual quality (see
-# memory/project_fm_val_loss_uninformative.md), so judge a tilt by CMMD/eyeball,
-# not val/loss. CLI: --stage_weights 0.3 0.7.
-stage_weights = [0.3, 0.7]
-# Optional R2 robustness: jitter the transition σ by ±this (absolute, uniform)
-# each step so the segment geometry is learned as a band, not a point. 0 = off.
+stage_weights = [0.4, 0.6]
 sigma_jitter = 0.0
-# flow_shift for the on-policy rollout σ schedule — MUST match the deployed SPD
-# sampler (the bench used 1.0). Only read when [onpolicy].enabled. CLI: --flow_shift.
 flow_shift = 3.0
 
 # On-policy (DAgger) stage entry. The analytic target trains each stage>0 entry
@@ -87,7 +74,24 @@ dagger_warmup = 0.25
 ratio = 1.0
 # Euler steps in the no-grad prefix rollout. Fewer than deploy is fine (only a
 # plausible on-policy state is needed) and keeps the extra forwards cheap.
-rollout_steps = 12
+rollout_steps = 18
+
+# SNR-gated (information-aware) velocity loss. Plain per-sample velocity MSE
+# supervises every DCT band at every σ — including bands whose clean coefficient
+# is statistically unrecoverable from x_t (the post-expansion HF block is fresh
+# noise). The MSE-optimal response there is dataset-mean detail = learned HF
+# attenuation: the "blurs instead of improving" failure of the ungated run.
+# The gate weights the DCT-domain error per band by the recoverable fraction
+# w_ω(t) = SNR_ω(t)/(1+SNR_ω(t)) (paper Prop. 1 / Eq. 15 fed back into the
+# loss), with P_ω measured from the training latents at startup. Validation
+# scores the same gated loss, so best-ckpt selection stops rewarding hedging.
+# CLI: --snr_gate / --snr_gate_mode / --snr_gate_delta / --snr_gate_profile_n.
+[snr_gate]
+enabled = true
+mode = "soft"        # "soft" = w=SNR/(1+SNR); "hard" = 1[t<=t_ω] at delta below
+delta = 0.01         # hard-mode activation-time tolerance (paper default)
+profile_n = 64       # latents sampled to measure P_ω
+n_bins = 128         # radial-frequency bins of the measured profile
 
 [optim]
 lr = 1e-5
@@ -105,7 +109,7 @@ warmup = 0.05           # ratio of iterations (int >=1 → absolute steps)
 ema_decay = 0.0
 
 [io]
-save_every = 2000
+save_every = 16000
 log_interval = 5
 log_dir = "output/logs/spd"
 # CMMD-free validation: held out per-bucket (never trained on), scored as the
@@ -114,5 +118,5 @@ log_dir = "output/logs/spd"
 # comparable step-to-step, so train↓/val↑ flags the trajectory-memorisation
 # overfit. 0 = off. CLI: --val_split / --val_interval / --n_val_sigmas.
 val_split = 0.01
-val_interval = 2000
+val_interval = 16000
 n_val_sigmas = 4

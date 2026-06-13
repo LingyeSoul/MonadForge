@@ -1,6 +1,6 @@
 # LoRA family — method selection via toggle blocks.
 #
-# Default (uncommented) = LoRA + OrthoLoRA + T-LoRA + Hydra (σ-routed) + ReFT.
+# Default (uncommented) = LoRA + OrthoLoRA + T-LoRA + Hydra (σ-routed).
 # Routing config is on the three-axis surface (plan2.md §three-axis-config):
 #
 #     use_moe_style    = False | "shared_A" | "independent_A"
@@ -21,22 +21,19 @@
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
 
-network_alpha = 48
-network_dim = 48
+network_alpha = 16
+network_dim = 16
 
-learning_rate = 2e-5
-max_train_epochs = 6
-save_every_n_epochs = 6
-checkpointing_epochs = 6
+learning_rate = 5e-5
+max_train_epochs = 3
+save_every_n_epochs = 3
+checkpointing_epochs = 3
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-logging_dir = "output/logs"
-log_with = "tensorboard"
-
-output_name = "anima_channel"
+output_name = "anima_repa1_annealed_tenth"
 # sigmoid_bias = 0.5
 # path_pattern = "channel_(caststation)/*"
 
@@ -48,19 +45,26 @@ output_name = "anima_channel"
 # -------------
 # Ortho-lora
 
-use_ortho = true
+# use_ortho_init = true
+
+# -------------
+# OrthoInit: top-r SVD of W0 as *trainable* init (no frozen-subspace cap).
+# Full LoRA expressivity with a W0-aligned warm start — drop-in replacement for
+# `use_ortho` when ortho/T-LoRA-ortho feels too weak. Mutually exclusive with
+# use_ortho; non-MoE / non-chimera only. To use: comment out `use_ortho` above.
+# use_ortho_init = true
 
 # -------------
 # Timestep mask
 
-use_timestep_mask = true
-min_rank = 16
-alpha_rank_scale = 1.0
+# use_timestep_mask = true
+# min_rank = 1
+# alpha_rank_scale = 1.0
 
 
 # ---
-sample_every_n_epochs = 1
-sample_prompts= "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top and denim shorts is standing outdoors. She's holding a rectangular sign out in front of her that reads \"ANIMA\". She 's looking at the viewer with a smile. The background features some trees and blue sky with clouds."
+# sample_every_n_epochs = 1
+# sample_prompts= "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top and denim shorts is standing outdoors. She's holding a rectangular sign out in front of her that reads \"ANIMA\". She 's looking at the viewer with a smile. The background features some trees and blue sky with clouds."
 # -------------
 # "shared_A" and route_per_layer=false -> hydralora
 
@@ -97,8 +101,6 @@ sample_prompts= "masterpiece, best quality, score_7, safe. An anime girl wearing
 # ortho_centered_gate = true
 # ortho_lambda_init = 1e-2     # auto-bumped from 0 when centered_gate is on
 
-[[datasets]]
-validation_split_num = 0
 
 # -------------
 # "independent_A" and route_per_layer=true -> fera
@@ -142,14 +144,6 @@ validation_split_num = 0
 # output_name = "anima_crossattn_routed"
 
 # -------------
-# reft
-
-# add_reft = true
-# reft_dim = 64
-# reft_alpha = 64
-# reft_layers = "last_8"
-
-# -------------
 # Variance-reduced FM loss (AsymFlow §5.2, arXiv:2605.12964). One extra
 # no-grad forward per step on the FEI-low-passed latent, with an online
 # control-variate λ. The control-variate forward reuses the trainable DiT
@@ -158,3 +152,50 @@ validation_split_num = 0
 # See bench/fm_vr_headroom/proposal.md.
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
+
+# -------------
+# REPA v2 — encoder-alignment aux loss (docs/experimental/repa.md).
+#
+# Aligns a mid-block DiT feature to cached PE-Spatial patch tokens — a training-
+# time regularizer, orthogonal to the routing axes above (composes with the
+# default stack). PREREQ: `make preprocess-pe-spatial` to cache
+# {stem}_anima_pe_spatial.safetensors sidecars first.
+#
+#   repa_mode = "relational"  → Gram / relational-KD form (no head, domain-offset
+#                               cancelled). Phase-0 WINNER (2026-06-12, ~6:4–7:3
+#                               over absolute on eyeballed grids; corroborated by
+#                               iREPA arXiv:2512.10794) — the default.
+#             = "absolute"     → paper-faithful per-token cosine + MLP head.
+#                               Reference only; don't spend runs on it.
+#
+# Phase-1 operating-point levers (anneal/cutoff, spatial norm, token-subset Gram):
+# docs/experimental/repa.md §"Annealing plan". spatial_norm is validated + ON
+# below; anneal stays off pending its A/B (candidate 0.25); lever 3 closed.
+use_repa       = true
+repa_mode      = "relational"
+repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where style drifts
+repa_layer     = 8            # block to hook (of 28)
+repa_encoder   = "pe_spatial"
+repa_lr_scale  = 1.0          # head LR multiplier (absolute mode only)
+repa_spatial_norm = true
+# repa_anneal_steps = 0.5
+
+# Lever 1 — hard cutoff (HASTE): (0,1] = fraction of the run, >1 = absolute
+# optimizer steps, 0 = off. Candidate: 0.25 — the quarter-run align_loss curve
+# plateaus by ~18% of the run (anima_repa_normed_quarter, 2026-06-12).
+# repa_anneal_steps = 0.25
+
+# Global-anchor arm (docs/proposal/repa_global_anchor.md) — complementary aux
+# term that RE-INJECTS the per-image global component spatial_norm deliberately
+# strips from the relational arm. Target = pooled PE patch-mean (NOT the dead
+# CLS — Phase-0 probe bench/pe_cls_probe found CLS collapsed, AUC 0.59), passed
+# through a fixed per-dim z-score affine; DiT side = block-8 grid pooled to one
+# vector, projected by a tiny train-only head, z-scored by the SAME calib,
+# cosine-matched. Off by default (weight 0 = byte-identical no-op). A/B candidate
+# 0.03 (≈ half the relational weight). When >0 the factory builds repa_global_head
+# and loads the calib (regen: `uv run python bench/pe_cls_probe/build_calib.py`).
+
+repa_global_weight = 0.001
+repa_global_norm   = "zscore"   # "zscore" (calib affine) | "none" (raw target)
+repa_global_calib  = "networks/calibration/pe_patchmean_stats.safetensors"
+

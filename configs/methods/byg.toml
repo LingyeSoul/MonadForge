@@ -1,0 +1,72 @@
+# BYG — Bootstrap Your Generator: unpaired instruction editing (v1).
+#
+# A plain rank-64 LoRA trained with a multi-forward unpaired objective (bootstrap
+# rollout + DDS prior + cycle + identity), conditioned on a parameter-free
+# token-concat source latent. NO paired (source, edited) data and NO reward model
+# — only unpaired images + (src/tgt caption, instruction, reverse) tuples.
+#
+# The trainable weights are an ordinary Anima LoRA (network_module below); all
+# BYG behaviour lives in BYGMethodAdapter (networks/methods/byg.py), which owns
+# the whole training step and installs the source-concat conditioning patch.
+# Output is a plain LoRA, loadable by the standard loader (inference installs the
+# same concat patch). See docs/proposal/byg_unpaired_editing.md and the paper
+# (arXiv 2606.03911, Alg. 1).
+#
+# Data: run scripts/byg/build_edit_tuples.py first to emit per-image
+#   post_image_dataset/byg/<stem>_byg.safetensors (4 encoded role conditionings).
+#   The image VAE/TE caches are the standard post_image_dataset/lora ones (the
+#   source image IS the training image — no separate cond cache needed).
+
+# Standard plain LoRA (no MoE, no routing). rank 64 per the paper (App. B.1).
+network_module = "networks.lora_anima"
+network_dim = 64
+network_alpha = 64
+
+output_name = "anima_byg"
+
+
+# Paper App. B.1: lr 3e-4, AdamW wd 1e-2. Epoch-based here (the repo trains by
+# epochs); ~30k steps in the paper at bs 8.
+learning_rate = 3e-4
+optimizer_args = ["weight_decay=1e-2"]
+max_train_epochs = 2
+save_every_n_epochs = 2
+checkpointing_epochs = 2
+
+# --- BYG objective (read by BYGMethodAdapter via args) ---
+use_byg = true
+byg_lambda_prior = 1.0
+byg_lambda_id = 0.2
+byg_lambda_cycle = 1.0
+byg_alpha = 0.1
+byg_rollout_steps = 10        # uniform fallback (used only if byg_rollout_sigmas unset)
+# Anima-warped n=5 rollout grid. Anima resolves x0 by σ≈0.45
+# (project_sigma_signal_resolves_by_045), so 4 fine steps cover the forming band
+# [0.40, 0.85] and one coarse step jumps the already-resolved σ<0.40 tail —
+# ~half the rollout NFE of uniform n=10 while keeping ỹ_0 sharp, and the training
+# timestep t lands in the editing band. Validate ỹ_0 with bench/byg/y0_fidelity.py
+# before a long run. Comment out this line to revert to uniform byg_rollout_steps.
+byg_rollout_sigmas = [1.0, 0.85, 0.70, 0.55, 0.40, 0.0]
+byg_snapshot_every = 200      # v1 snapshot bootstrap (EMA-free)
+byg_ema_decay = 0.999           # > 0 enables paper-faithful per-step EMA
+byg_identity_warmup_steps = 200   # paper App. B.1 = 200 (source-propagation warmup)
+byg_identity_prob = 0.15
+byg_prior_symmetric = true    # v2 default: symmetric prior (paper Eq. 5); false = v1 fwd-only
+byg_text_dir = "post_image_dataset/byg"
+
+# BYG drives many DiT forwards per step; the block-swap offloader desyncs on a
+# second forward, so it must stay off (BYGMethodAdapter asserts this).
+blocks_to_swap = 0
+gradient_checkpointing = true
+# MUST stay false. unsloth_offload_checkpointing routes blocks through a
+# REENTRANT checkpointer (library.anima.models.unsloth_checkpoint), which only
+# builds an autograd node when an explicit *input* tensor requires grad. BYG's
+# Forward (L_prior) and Identity (L_id) passes feed detached latents + a frozen
+# source — the only grad-requiring tensors are the closed-over LoRA params — so
+# the reentrant path SILENTLY drops their gradient (L_prior pins at chance,
+# L_id never trends; only L_cycle trains). use_reentrant=False (plain torch
+# checkpoint) handles closed-over params correctly. Proof: bench/byg/grad_parity.py.
+unsloth_offload_checkpointing = false
+
+# No caption dropout — the instruction/captions are the supervision signal.
+caption_dropout_rate = 0.0

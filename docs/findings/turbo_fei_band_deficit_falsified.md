@@ -41,7 +41,7 @@ records the gap between the two so we don't re-wire it the same way.
 
 ## How it was wired (Phase 1)
 
-`scripts/distill_turbo/ca_band.py` + call site `distill.py:296–330`.
+A `ca_band` distill module (since removed) + call site `distill.py:296–330`.
 `[ca_band_weight] enabled=true, beta=0.2, divisor=16, window=[0.30, 0.95]`.
 Trained into `anima_turbo_E_1k` and `anima_turbo_F`.
 

@@ -55,8 +55,6 @@ checkpointing_epochs = 4
 # gradient_accumulation_steps = 2
 blocks_to_swap = 0
 
-logging_dir = "output/logs"
-log_with = "tensorboard"
 
 max_data_loader_n_workers=1
 validation_split_num = 0

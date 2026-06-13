@@ -150,6 +150,8 @@ uv sync
 
 ### 4.2 下载模型
 
+In the GUI, the **Models** dialog downloads everything below with one button. The CLI equivalent is:
+
 ```bash
 make download-models
 ```
@@ -495,7 +497,7 @@ make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8  # 调整强度
 
 烘焙后的 `*_merged.safetensors` 可直接作为独立模型在 ComfyUI 的 `UNETLoader` 中加载。
 
-### 11.2 HydraLoRA / ReFT / Postfix
+### 11.2 HydraLoRA / Postfix
 
 这些变体无法通过 ComfyUI 默认的 LoraLoader 加载（因为不仅仅是权重增量，还涉及路由和 token 插入），需要专用节点：
 

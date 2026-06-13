@@ -120,21 +120,30 @@ class _NetworkMetricsMixin:
         return out
 
     def _get_chimera_balance_loss(self) -> torch.Tensor:
-        """Dual-pool switch loss for the chimera path.
+        """Dual-pool balance loss for the chimera path.
 
         Each module's gate is ``(B, K_c + K_f)``: ``[:K_c]`` is π_c, the rest
-        π_f. Compute Switch balance independently per slice, average across
-        modules, combine with ``_balance_w_content`` / ``_balance_w_freq``.
-        Warmup is asymmetric: the content pool rides ``_balance_loss_weight``
-        (held at 0 during warmup); the freq pool bypasses warmup since the
-        FreqRouter has its own symmetry-breaker (FEI input + init_std), so its
-        balance pressure fires from step 0. Trainer consumes this directly.
+        π_f. The two pools use DIFFERENT balance objectives:
+          * content — **EMA-usage** load balance (Switch with the routed
+            fraction replaced by a smoothed running usage estimate), robust at
+            ``train_batch_size=1`` where per-microbatch Switch collapses to a
+            per-sample uniformity penalty. See the inline note below.
+          * freq — per-module Switch balance (unchanged; FEI passthrough /
+            FreqRouter gates are already batch-meaningful).
+        Combined with ``_balance_w_content`` / ``_balance_w_freq``. Warmup is
+        asymmetric: the content pool rides ``_balance_loss_weight`` (held at 0
+        during warmup); the freq pool bypasses warmup since the FreqRouter has
+        its own symmetry-breaker (FEI input + init_std), so its balance pressure
+        fires from step 0. Trainer consumes this directly.
         """
         K_c_default = int(getattr(self.cfg, "num_experts_content", 0))
-        total_c = None
         total_f = None
-        count_c = 0
         count_f = 0
+        # All chimera modules share the single broadcast π_c from the
+        # ContentRouter, so one representative gate_c suffices for the content
+        # balance (no per-module average needed — they're identical, grad still
+        # traces to the one router). Freq keeps the per-module Switch sum.
+        content_gate = None
         for lora in self.unet_loras + self.text_encoder_loras:
             gate = getattr(lora, "_last_gate", None)
             if gate is None:
@@ -144,14 +153,39 @@ class _NetworkMetricsMixin:
                 continue
             gate_c = gate[..., :K_c]
             gate_f = gate[..., K_c:]
-            if gate_c.shape[-1] > 1:
-                term_c = self._switch_balance(gate_c)
-                total_c = term_c if total_c is None else total_c + term_c
-                count_c += 1
+            if content_gate is None and gate_c.shape[-1] > 1:
+                content_gate = gate_c
             if gate_f.shape[-1] > 1:
                 term_f = self._switch_balance(gate_f)
                 total_f = term_f if total_f is None else total_f + term_f
                 count_f += 1
+
+        # Content pool: EMA-usage load balance. At train_batch_size=1 the
+        # per-microbatch Switch loss degenerates into a per-sample uniformity
+        # penalty (B=1 → frac is one-hot, gate_mean is the sample's gate, so the
+        # term is minimized by a uniform gate — punishing the very per-content
+        # sharpness we want). Generalize Switch (K·Σ f_k·P_k) by replacing the
+        # noisy per-step routed fraction f_k with a smoothed running usage
+        # estimate ``_content_usage_ema`` (detached), keeping P_k = the current
+        # differentiable mean gate. Gradient w.r.t. the current gates is
+        # ∝ K_c·ema_k, pushing down historically over-used experts — so the
+        # global dead-expert collapse is penalized while per-sample sharpness is
+        # not, letting content-conditional routing emerge once usage is forced
+        # to spread across the dataset.
+        total_c = None
+        count_c = 0
+        if content_gate is not None:
+            K_c = int(content_gate.shape[-1])
+            pi_cur = content_gate.float().mean(dim=0)  # (K_c,), differentiable
+            cur_det = pi_cur.detach()
+            ema = getattr(self, "_content_usage_ema", None)
+            if ema is None or ema.shape != cur_det.shape:
+                self._content_usage_ema = cur_det.clone()
+            else:
+                beta = 0.99
+                self._content_usage_ema = ema.mul(beta).add(cur_det, alpha=1.0 - beta)
+            total_c = K_c * (self._content_usage_ema.detach() * pi_cur).sum()
+            count_c = 1
 
         if total_c is None and total_f is None:
             return torch.tensor(0.0)
@@ -544,7 +578,7 @@ class _NetworkMetricsMixin:
         return materialized
 
     def get_ortho_regularization(self) -> torch.Tensor:
-        """Sum orthogonality regularization from all OrthoLoRA and ReFT modules."""
+        """Sum orthogonality regularization from all OrthoLoRA modules."""
         total_reg = torch.tensor(0.0, device=next(self.parameters()).device)
         count = 0
         for lora in self.text_encoder_loras + self.unet_loras:
@@ -552,9 +586,6 @@ class _NetworkMetricsMixin:
                 p_reg, q_reg = lora.regularization()
                 total_reg = total_reg + p_reg + q_reg
                 count += 1
-        for reft in self.text_encoder_refts + self.unet_refts:
-            total_reg = total_reg + reft.regularization()
-            count += 1
         return total_reg / max(count, 1)
 
     def metrics(self, ctx: MetricContext) -> dict[str, float]:

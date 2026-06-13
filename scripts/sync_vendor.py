@@ -15,14 +15,18 @@ Four targets:
   dispatcher — its node consumes ``source_tag`` / ``target_tag`` STRINGs
   directly, with image-driven captioning handled externally by
   ``AnimaTaggerCaption``.
-* ``custom_nodes/comfyui-hydralora/_vendor/`` — the pure-compute router
-  kernels imported by ``adapter.py`` + ``fera.py`` (FEI 2-band / n-band,
-  σ sinusoidal features, σ-band partition mask). ``library/inference/
-  router_compute.py`` is the single import surface; it pulls
+* ``ComfyUI-Anima_lora-Adapter/_vendor/`` — the pure-compute router kernels
+  imported by ``adapter.py`` + ``fera.py`` (FEI 2-band / n-band, σ sinusoidal
+  features, σ-band partition mask). This node was **extracted to a standalone
+  published repo** (a sibling checkout, default ``../../ComfyUI-Anima_lora-Adapter``;
+  override with ``ANIMA_ADAPTER_NODE_REPO``); sync_vendor writes the vendor tree
+  *into that repo*, which is the authoritative copy the node imports at runtime.
+  ``library/inference/router_compute.py`` is the single import surface; it pulls
   ``library/runtime/fei.py`` and ``networks/lora_modules/router_state.py``
   transitively, so we vendor all three verbatim. Trained router weights are
   bit-sensitive to these kernels, so any drift between the live tree and
-  vendored copy produces silently corrupted gates at inference.
+  vendored copy produces silently corrupted gates at inference. Skipped (with a
+  warning) when the standalone repo isn't checked out beside anima_lora.
 * ``custom_nodes/comfyui-anima-trainer/_vendor/`` — the stdlib daemon *client*
   the trainer node submits jobs through. Lets the node be installed outside
   the anima_lora repo and still talk to a running daemon over localhost HTTP.
@@ -41,14 +45,26 @@ so the copied files' internal imports keep working unchanged.
 
 from __future__ import annotations
 
+import os
 import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TAGGER_VENDOR = ROOT / "custom_nodes" / "comfyui-anima-tagger" / "_vendor"
 DIRECTEDIT_VENDOR = ROOT / "custom_nodes" / "comfyui-anima-directedit" / "_vendor"
-HYDRALORA_VENDOR = ROOT / "custom_nodes" / "comfyui-hydralora" / "_vendor"
 TRAINER_VENDOR = ROOT / "custom_nodes" / "comfyui-anima-trainer" / "_vendor"
+
+# The hydralora node (Anima Adapter Loader) was extracted to a standalone
+# published repo; sync_vendor writes its router-kernel vendor tree *into that
+# repo* rather than an in-tree ``custom_nodes/`` subdir. Default location is a
+# sibling of the anima_lora checkout (``../../ComfyUI-Anima_lora-Adapter``);
+# override with ``ANIMA_ADAPTER_NODE_REPO`` for a relocated checkout.
+ADAPTER_NODE_REPO = Path(
+    os.environ.get(
+        "ANIMA_ADAPTER_NODE_REPO", ROOT.parents[1] / "ComfyUI-Anima_lora-Adapter"
+    )
+)
+HYDRALORA_VENDOR = ADAPTER_NODE_REPO / "_vendor"
 
 # ---------------------------------------------------------------------------
 # Tagger-only captioning + vision subset. After the directedit node was
@@ -322,9 +338,10 @@ def build_directedit_vendor() -> None:
 
 # ---------------------------------------------------------------------------
 # Hydralora vendor tree — the pure-compute kernels imported by
-# adapter.py + fera.py via the live-or-vendor resolver in adapter.py.
-# router_compute.py is the single import surface; it pulls in fei.py and
-# router_state.py transitively, so we vendor all three verbatim.
+# adapter.py + fera.py via the vendor-first resolver in the standalone
+# ComfyUI-Anima_lora-Adapter repo. router_compute.py is the single import
+# surface; it pulls in fei.py and router_state.py transitively, so we vendor
+# all three verbatim — written into the external repo's _vendor/ tree.
 # ---------------------------------------------------------------------------
 
 HYDRALORA_VERBATIM: list[tuple[str, str]] = [
@@ -343,7 +360,15 @@ HYDRALORA_PACKAGE_DIRS: list[str] = [
 
 
 def build_hydralora_vendor() -> None:
-    print(f"\n[hydralora] -> {HYDRALORA_VENDOR.relative_to(ROOT)}")
+    if not ADAPTER_NODE_REPO.is_dir():
+        print(
+            f"\n[hydralora] SKIPPED — standalone node repo not found at "
+            f"{ADAPTER_NODE_REPO}\n"
+            f"            clone it beside anima_lora, or set "
+            f"ANIMA_ADAPTER_NODE_REPO to its path."
+        )
+        return
+    print(f"\n[hydralora] -> {HYDRALORA_VENDOR}")
     if HYDRALORA_VENDOR.exists():
         shutil.rmtree(HYDRALORA_VENDOR)
     HYDRALORA_VENDOR.mkdir(parents=True)

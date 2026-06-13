@@ -9,34 +9,44 @@ test_negative_prompt = "worst quality, low quality, score_1, score_2, score_3, b
 output_dir = "output/ckpt"
 output_name = "anima_lora"
 save_model_as = "safetensors"
+logging_dir = "output/logs"
+log_with = "tensorboard"
+
 network_module = "networks.lora_anima"
 network_train_unet_only = true
-source_image_dir = "image_dataset"
+
+# ── Dataset paths (shared preprocess ↔ training contract) ──────────────────
+# Top-level scalars so any preset / method can override (the merge chain is
+# base.toml → presets.toml[<preset>] → methods/<method>.toml).
+# NOTE: preprocess-only knobs (source_image_dir, drop_lowres_images,
+# min_pixels, target_res) now live in configs/preprocess.toml.
 resized_image_dir = "post_image_dataset/resized"
 lora_cache_dir = "post_image_dataset/lora"
+
+# fnmatch glob applied to each image's path relative to its subset's image_dir.
+# `*` (or unset) trains on everything. Use `|` to OR-combine patterns:
+#   `char_a/*`           → one subfolder
+#   `char_a/*|char_b/*`  → two subfolders
+#   `*portrait*`         → any path containing "portrait"
+# Same blueprint applies to validation enumeration.
 path_pattern = "*"
 
-# Preprocess input filter. When true, scripts/tasks/preprocess.py forwards
-# `--min_pixels = min_pixels` to both preprocess/resize_images.py and
-# preprocess/cache_text_embeddings.py so under-sized source images never
-# enter the resize / VAE / TE caches. Default 500_000 = 0.5MP — matches the
-# scripts' own argparse defaults. Set drop_lowres_images = false to keep
-# every image regardless of size. Override per-run without editing this file:
-#   make preprocess ARGS="--min_pixels 0"        # explicit threshold (wins)
-#   make preprocess ARGS="--no_drop_lowres"      # keep every image
-#   make preprocess ARGS="--drop_lowres"         # force the configured threshold
-drop_lowres_images = true
-min_pixels = 500000
+# Multi-scale constant-token tiers (`target_res`) live in configs/preprocess.toml
+# (preserved across `make update`). Set your resolution tiers there.
+
 optimizer_type = "AdamW"
 lr_scheduler = "constant"
+
 timestep_sampling = "sigmoid"
 sigmoid_bias = 0.0
 discrete_flow_shift = 1.0
 mixed_precision = "bf16"
-cache_latents = true
-cache_latents_to_disk = true
-cache_text_encoder_outputs = true
-cache_text_encoder_outputs_to_disk = true
+
+gradient_checkpointing = false
+unsloth_offload_checkpointing = false
+
+use_vae_cache = true
+use_text_cache = true
 skip_cache_check = true
 vae_chunk_size = 64
 vae_disable_cache = true
@@ -44,12 +54,20 @@ masked_loss = true
 torch_compile = true
 attn_mode = "flash"
 save_precision = "bf16"
-use_custom_down_autograd = true
+compile_dynamic_seq = true
+# Partitioner recompute cap — restores the pre-2026-06-10 no-grad-ckpt VRAM
+# footprint after the custom-autograd removal (which had implicitly pinned the
+# saved-for-backward set). 0.85 ≈ old peak at identical step time. Auto-skipped
+# (logged) when gradient_checkpointing=true — incompatible and redundant there.
+activation_memory_budget = 0.99
 log_every_n_steps = 2
 dataloader_pin_memory = true
 persistent_data_loader_workers = false
 use_cmmd = false
 channel_scaling_alpha = 0.5
+gradient_accumulation_steps = 1
+
+use_repa = false
 
 # Preview sampling — generate sample images at checkpoint saves
 [preview]
@@ -70,7 +88,6 @@ image_dir = "{resized_image_dir}"
 cache_dir = "{lora_cache_dir}"
 num_repeats = 1
 recursive = true
-
 
 [general]
 caption_extension = ".txt"

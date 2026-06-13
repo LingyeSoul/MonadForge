@@ -36,7 +36,7 @@ Use `make test-hydra` (or `python tasks.py test-hydra`) to run inference against
 
 ### ComfyUI (live routing)
 
-Use the **Anima Adapter Loader** node (`custom_nodes/comfyui-hydralora/`), which installs per-Linear forward hooks that reproduce `HydraLoRAModule.forward` exactly — including σ-conditional routing when the checkpoint's router input is wider than `rank`. See `custom_nodes/comfyui-hydralora/README.md` for installation, hook mechanics, and changelog.
+Use the **Anima Adapter Loader** node (`https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter`), which installs per-Linear forward hooks that reproduce `HydraLoRAModule.forward` exactly — including σ-conditional routing when the checkpoint's router input is wider than `rank`. See `https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter` for installation, hook mechanics, and changelog.
 
 ## Orthogonalized experts — fallback behavior
 
@@ -94,6 +94,6 @@ Applied:
 3. **Balance-loss weight pre-cut** from 0.01 → 0.001 in `lora.toml`, `gui-methods/hydralora.toml`, `gui-methods/hydralora_sigma.toml`, since with real router gradient restored the old weight would dominate.
 4. **Old-shape router refused at load.** `create_network_from_weights` raises when `router.weight.shape[1] != rank`, with a retrain message — pre-fix routers never learned anything, so there's no salvage path.
 5. **OrthoHydraLoRAModule mirrored** with the same change. Pool runs on the post-`Q_eff` `lx` but *before* λ scaling — λ is zero-init, so pooling post-λ would zero the router input at step 0 and freeze gradient.
-6. **ComfyUI live-routing hook updated** to mirror the training-time forward exactly (rank-R RMS pool). See `custom_nodes/comfyui-hydralora/README.md` for node-side details.
+6. **ComfyUI live-routing hook updated** to mirror the training-time forward exactly (rank-R RMS pool). See `https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter` for node-side details.
 
 Exit criteria for the first retrain: `‖router.weight‖` at final step > 1.5× init (init for `(E=4, rank=32)` @ std=0.01 ≈ 0.113); median normalized entropy ∈ [0.6, 0.95]; mean dominant-top1 > 0.2; zero dead experts; `make test-hydra` quality ≥ non-hydra LoRA baseline; ComfyUI `Anima Adapter Loader` visually matches CLI at `strength_lora=1.0`.

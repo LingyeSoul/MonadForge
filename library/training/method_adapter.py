@@ -65,6 +65,40 @@ class ValidationBaseline:
 
 
 @dataclass(frozen=True)
+class ComputeLossCtx:
+    """Context for an adapter that *owns the whole training step*.
+
+    Most methods ride the standard path (one DiT forward → ``flow_match`` base
+    loss + additive aux from ``extra_forwards``). A method that has no
+    ``target = noise - latents`` and runs its own multi-forward objective
+    (e.g. BYG's bootstrap rollout + prior + cycle + identity) instead returns
+    ``True`` from ``owns_training_step`` and computes the entire scalar loss in
+    ``compute_loss``, bypassing ``get_noise_pred_and_target`` and the
+    ``LossComposer``.
+
+    Tensors are in the layout the trainer holds at the override point in
+    ``_process_batch_inner``: ``latents`` is the 4D ``(B,C,H,W)`` VAE latent
+    (post-shift-scale, post-squeeze); ``text_encoder_conds`` is the raw list of
+    cached/encoded text-encoder outputs for the batch's primary caption.
+    ``unet`` is the (adapter-patched) DiT; ``network`` is the trainable LoRA.
+    The owner may run any number of ``unet(...)`` forwards and stage its own
+    ``accelerator.backward`` calls (e.g. an independent identity graph) before
+    returning the coupled scalar the training loop backwards once.
+    """
+
+    args: Any
+    accelerator: Accelerator
+    network: Any
+    unet: Any
+    noise_scheduler: Any
+    weight_dtype: torch.dtype
+    batch: dict
+    latents: torch.Tensor
+    text_encoder_conds: list
+    is_train: bool
+
+
+@dataclass(frozen=True)
 class ForwardArtifacts:
     """Inputs and outputs of the primary DiT forward, handed to adapters
     that need to run additional forwards inside ``extra_forwards``.
@@ -106,6 +140,29 @@ class MethodAdapter:
     def on_network_built(self, ctx: SetupCtx) -> None:
         """Called once after ``network.apply_to``. Validate runtime contract,
         load auxiliary encoders, install forward hooks, assert preconditions."""
+
+    def owns_training_step(self, args) -> bool:
+        """Return True if this adapter computes the *entire* step loss itself.
+
+        An owning adapter replaces the standard ``get_noise_pred_and_target`` +
+        ``LossComposer`` path — the trainer delegates to ``compute_loss`` and
+        returns its scalar directly. At most one active adapter may own the
+        step (the trainer asserts this). Default: ride the standard path."""
+        return False
+
+    def compute_loss(self, ctx: "ComputeLossCtx") -> torch.Tensor:
+        """Compute and return the full step loss (owning adapters only).
+
+        Called from ``_process_batch_inner`` in place of the standard
+        forward+composer when ``owns_training_step`` is True. The returned
+        scalar is backwarded once by the training loop; the adapter may run
+        additional ``ctx.accelerator.backward(...)`` calls internally for
+        independent loss graphs (e.g. a separately-staged identity term).
+        Only invoked when this adapter owns the step, so the base raises."""
+        raise NotImplementedError(
+            f"{type(self).__name__}.owns_training_step is True but "
+            "compute_loss is not implemented"
+        )
 
     def on_step_start(self, ctx: StepCtx, batch, *, is_train: bool) -> None:
         """Called at the start of each train/val step (before forward)."""
@@ -169,10 +226,6 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
     Imports each adapter lazily so this module stays cheap to import.
     """
     adapters: list[MethodAdapter] = []
-    if getattr(args, "use_ip_adapter", False):
-        from networks.methods.ip_adapter import IPAdapterMethodAdapter
-
-        adapters.append(IPAdapterMethodAdapter())
     if getattr(args, "use_easycontrol", False):
         from networks.methods.easycontrol import EasyControlMethodAdapter
 
@@ -181,6 +234,10 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
         from networks.methods.controlnet_lllite import ControlNetMethodAdapter
 
         adapters.append(ControlNetMethodAdapter())
+    if getattr(args, "use_byg", False):
+        from networks.methods.byg import BYGMethodAdapter
+
+        adapters.append(BYGMethodAdapter())
     # Soft-tokens contrastive: opt-in via a positive contrastive weight on the
     # built network (the objective leaves no learned params, so it's detected
     # off the network's target weight rather than an args flag).
@@ -188,4 +245,14 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
         from networks.methods.soft_tokens import SoftTokensMethodAdapter
 
         adapters.append(SoftTokensMethodAdapter())
+    # REPA v2 auxiliary alignment: opt-in via a positive weight stamped on the
+    # network by the factory (use_repa=true). Detected off the network (the
+    # config rides the network kwargs, not args).
+    if (
+        float(getattr(network, "_repa_weight", 0.0) or 0.0) > 0.0
+        or float(getattr(network, "_repa_global_weight", 0.0) or 0.0) > 0.0
+    ):
+        from library.training.repa import REPAMethodAdapter
+
+        adapters.append(REPAMethodAdapter())
     return adapters

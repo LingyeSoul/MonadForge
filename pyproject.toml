@@ -8,13 +8,11 @@ dependencies = [
     "torch>=2.12.0,<2.13",
     "torchvision>=0.27.0,<0.28",
     "accelerate>=1.13.0",
-    "transformers>=5.3.0",
+    "transformers>=5.10.1",
     "diffusers>=0.37.0",
     "einops>=0.7.0",
     "bitsandbytes>=0.45.0",
     # Optimizers
-    "lion-pytorch>=0.2.3",
-    "schedulefree>=1.4",
     "pytorch-optimizer>=3.9.0",
     "prodigyopt>=1.1.2",
     # Data & Config
@@ -53,12 +51,12 @@ dependencies = [
     "sqlalchemy>=2.1.0b2",
     "aiohttp>=3.13.5",
     "comfy-cli>=1.10.3",
-    "comfy-aimdo>=0.3.0",
+    "comfy-aimdo>=0.4.9",
     "av>=17.0.1",
     "alembic>=1.18.4",
     "pydantic-settings>=2.14.0",
     "kornia>=0.8.2",
-    "comfy-kitchen>=0.2.8",
+    "comfy-kitchen>=0.2.10",
     "simpleeval>=1.0.7",
     "pytest>=9.0.3",
     "blake3>=1.0.8",
@@ -72,7 +70,6 @@ dependencies = [
     "wandb>=0.19.0",
     # Upstream additions
     "softtorch>=0.1.1",
-    "torchaudio>=2.11.0",
     "controlnet-aux>=0.0.10",
     "scikit-learn>=1.9.0rc1",
     "datasets>=4.8.5",
@@ -120,6 +117,16 @@ reportFunctionMemberAccess = "none"
 reportIncompatibleVariableOverride = "none"
 reportInvalidStringEscapeSequence = "none"
 reportUnsupportedDunderAll = "none"
+
+[tool.ruff.lint.per-file-ignores]
+# `train.py` / `inference.py` call `install_no_window_default()` at module scope
+# *before* `import torch` (Windows: suppress per-kernel ptxas/cl console flashes
+# from torch.compile + Triton — must run before any subprocess spawn). That lone
+# pre-import statement makes every following import trip E402; the ordering is
+# deliberate, so silence E402 for these two entry points rather than scattering
+# ~36 per-line `# noqa: E402` comments.
+"train.py" = ["E402"]
+"inference.py" = ["E402"]
 
 # Expose the importable package trees so `pip install` / `uv sync` makes
 # `import anima_lora` (the programmatic front door) + `import library` /

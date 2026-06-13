@@ -96,10 +96,15 @@ def resolve_run_log_dir(args: argparse.Namespace) -> Optional[str]:
     if args.log_prefix is not None:
         log_prefix = args.log_prefix
     else:
-        method = getattr(args, "method", None)
-        preset = getattr(args, "preset", None)
-        parts = [p for p in (method, preset) if p]
-        log_prefix = ("_".join(parts) + "_") if parts else ""
+        # Prefer output_name so TensorBoard run dirs match the GUI run title.
+        output_name = getattr(args, "output_name", None)
+        if output_name:
+            log_prefix = output_name + "_"
+        else:
+            method = getattr(args, "method", None)
+            preset = getattr(args, "preset", None)
+            parts = [p for p in (method, preset) if p]
+            log_prefix = ("_".join(parts) + "_") if parts else ""
     resolved = (
         args.logging_dir
         + "/"
@@ -227,22 +232,3 @@ def prepare_dtype(args: argparse.Namespace):
         save_dtype = torch.float32
 
     return weight_dtype, save_dtype
-
-
-def patch_accelerator_for_fp16_training(accelerator):
-    """Force ``allow_fp16=True`` inside ``GradScaler._unscale_grads_``.
-
-    Needed for full-fp16 training (as opposed to mixed-precision) where the
-    optimizer holds fp16 params that the default scaler refuses to touch.
-    """
-    from accelerate import DistributedType
-
-    if accelerator.distributed_type == DistributedType.DEEPSPEED:
-        return
-
-    org_unscale_grads = accelerator.scaler._unscale_grads_
-
-    def _unscale_grads_replacer(optimizer, inv_scale, found_inf, allow_fp16):
-        return org_unscale_grads(optimizer, inv_scale, found_inf, True)
-
-    accelerator.scaler._unscale_grads_ = _unscale_grads_replacer

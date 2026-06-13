@@ -23,6 +23,12 @@ from library.preprocess.pe import (
     compute_pe_centroid,
     write_pe_centroid,
 )
+from library.preprocess.reconcile import (
+    StaleCaches,
+    delete_stale,
+    find_stale_caches,
+    reconcile_caches,
+)
 from library.preprocess.text import (
     cache_pooled_text,
     cache_text_embeddings,
@@ -50,4 +56,9 @@ __all__ = [
     "pe_cache_path_for",
     "resize_to_buckets",
     "process_image",
+    # cache reconciliation
+    "find_stale_caches",
+    "delete_stale",
+    "reconcile_caches",
+    "StaleCaches",
 ]

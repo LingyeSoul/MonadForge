@@ -2,6 +2,7 @@
 
 import os
 import random
+from dataclasses import dataclass
 from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
@@ -168,7 +169,13 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
         device_tensor = next(
             (
                 t
-                for t in (prompt_embeds, crossattn_emb, t5_attn_mask, attn_mask, t5_input_ids)
+                for t in (
+                    prompt_embeds,
+                    crossattn_emb,
+                    t5_attn_mask,
+                    attn_mask,
+                    t5_input_ids,
+                )
                 if t is not None
             ),
             None,
@@ -222,12 +229,17 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         is_partial: bool = False,
         cache_llm_adapter_outputs: bool = False,
         use_shuffled_caption_variants: bool = False,
+        use_shuffled_caption_variants_only: bool = False,
     ) -> None:
         super().__init__(
             cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial
         )
         self.cache_llm_adapter_outputs = cache_llm_adapter_outputs
-        self.use_shuffled_caption_variants = use_shuffled_caption_variants
+        # "only" implies the base flag (it just changes which variants are eligible).
+        self.use_shuffled_caption_variants = (
+            use_shuffled_caption_variants or use_shuffled_caption_variants_only
+        )
+        self.use_shuffled_caption_variants_only = use_shuffled_caption_variants_only
 
     def get_outputs_npz_path(
         self,
@@ -296,7 +308,14 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             if has_variants and self.use_shuffled_caption_variants:
                 num_variants = int(f.get_tensor("num_variants"))
                 v0_intact = "v0_intact" in keys
-                if not v0_intact:
+                if num_variants <= 1:
+                    vi = 0
+                elif self.use_shuffled_caption_variants_only:
+                    # Exclude the pristine v0 entirely — uniform over the
+                    # shuffled+tag-dropped v1..v{N-1}. (Legacy caches have no
+                    # pristine v0 anyway, so v1.. is still the shuffled set.)
+                    vi = random.randint(1, num_variants - 1)
+                elif not v0_intact:
                     # Legacy cache: every variant is shuffled (no pristine v0).
                     # Fall back to uniform sampling and warn once so the user
                     # knows to re-cache for the 20%/80% weighted behavior.
@@ -313,8 +332,6 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                         )
                         _warned_legacy_variants_cache = True
                     vi = random.randint(0, num_variants - 1)
-                elif num_variants <= 1:
-                    vi = 0
                 else:
                     # 20% pristine v0, 80% uniform over v1..v{N-1}.
                     vi = (
@@ -516,6 +533,7 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                         caption_dropout_rate,
                     )
 
+
 class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
     """Latent caching strategy for Anima using WanVAE.
 
@@ -542,8 +560,7 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
         image_dir: Optional[str] = None,
     ) -> str:
         suffix = (
-            f"_{image_size[0]:04d}x{image_size[1]:04d}"
-            + self.ANIMA_LATENTS_NPZ_SUFFIX
+            f"_{image_size[0]:04d}x{image_size[1]:04d}" + self.ANIMA_LATENTS_NPZ_SUFFIX
         )
         return resolve_cache_path(
             absolute_path, suffix, cache_dir=cache_dir, image_dir=image_dir
@@ -613,3 +630,92 @@ class AnimaLatentsCachingStrategy(LatentsCachingStrategy):
 
         if not _datasets_base.HIGH_VRAM:
             clean_memory_on_device(vae_device)
+
+
+# --- Training-side strategy installation ------------------------------------
+#
+# Anima's tokenize / encode / cache strategies are *process-global* singletons
+# (``set_strategy`` / ``get_strategy`` on the base classes in
+# ``library.anima.text_strategies``). The inference side installs its pair via
+# ``library.inference.text.ensure_text_strategies``; these two functions are
+# the training-side counterpart, replacing the per-strategy ``get_*_strategy``
+# factory hooks ``train.py`` inherited from the sd-scripts subclass-override
+# design (one architecture now — the indirection bought nothing).
+
+
+@dataclass
+class TrainingStrategies:
+    """Handles for the strategies :func:`setup_training_strategies` installed.
+
+    The same objects the globals hold — returned so ``train()`` can use them
+    directly instead of fishing them back out with ``get_strategy()``.
+    """
+
+    tokenize: AnimaTokenizeStrategy
+    latents_caching: AnimaLatentsCachingStrategy
+    text_encoding: AnimaTextEncodingStrategy
+
+
+def setup_training_strategies(args) -> TrainingStrategies:
+    """Build + install the arg-stable strategy singletons for a training run.
+
+    Call BEFORE dataset construction — dataset init reads the tokenize and
+    latents-caching strategies. The text-encoding strategy is stateless, so
+    installing it here (earlier than its first use in the TE caching pass) is
+    free and keeps every install in one place.
+
+    The text-encoder-OUTPUTS caching strategy is deliberately NOT installed
+    here: it reads ``args.cache_llm_adapter_outputs``, which
+    ``assert_extra_args`` may still mutate (it auto-disables the flag when text
+    caching is off) — install it after that via
+    :func:`setup_text_encoder_outputs_caching_strategy`.
+    """
+    tokenize = AnimaTokenizeStrategy(
+        qwen3_path=args.qwen3,
+        t5_tokenizer_path=args.t5_tokenizer_path,
+        qwen3_max_length=args.qwen3_max_token_length,
+        t5_max_length=args.t5_max_token_length,
+    )
+    TokenizeStrategy.set_strategy(tokenize)
+
+    latents_caching = AnimaLatentsCachingStrategy(
+        args.cache_latents_to_disk, args.vae_batch_size, args.skip_cache_check
+    )
+    LatentsCachingStrategy.set_strategy(latents_caching)
+
+    text_encoding = AnimaTextEncodingStrategy()
+    TextEncodingStrategy.set_strategy(text_encoding)
+
+    return TrainingStrategies(
+        tokenize=tokenize,
+        latents_caching=latents_caching,
+        text_encoding=text_encoding,
+    )
+
+
+def setup_text_encoder_outputs_caching_strategy(
+    args,
+) -> Optional[AnimaTextEncoderOutputsCachingStrategy]:
+    """Build + install the TE-outputs caching strategy; ``None`` when caching is off.
+
+    Split from :func:`setup_training_strategies` because it reads args that
+    ``assert_extra_args`` may mutate (``cache_llm_adapter_outputs``) — call it
+    after that, and before anything probes the TE cache for completeness.
+    """
+    if not args.cache_text_encoder_outputs:
+        return None
+    strategy = AnimaTextEncoderOutputsCachingStrategy(
+        args.cache_text_encoder_outputs_to_disk,
+        args.text_encoder_batch_size,
+        args.skip_cache_check,
+        False,
+        cache_llm_adapter_outputs=getattr(args, "cache_llm_adapter_outputs", False),
+        use_shuffled_caption_variants=getattr(
+            args, "use_shuffled_caption_variants", False
+        ),
+        use_shuffled_caption_variants_only=getattr(
+            args, "use_shuffled_caption_variants_only", False
+        ),
+    )
+    TextEncoderOutputsCachingStrategy.set_strategy(strategy)
+    return strategy

@@ -88,7 +88,7 @@ metric is sensitive to.
 2. **The teacher synth pool is a dead end for calibration.** Clean teacher
    latents are redundant with real latents here. The pool's real ROI is
    prior-preservation regularization for identity/style LoRA — see
-   `docs/proposal/prior_preservation_from_synth_pool.md`.
+   `_archive/proposals/prior_preservation_from_synth_pool.md`.
 
 ## Reproduce
 

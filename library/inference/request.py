@@ -2,7 +2,7 @@
 
 ``generate(args, gen_settings)`` reads ~40 fields off an ``argparse.Namespace``
 via ``getattr``, so historically the only safe way to build one was to call the
-CLI parser (what ``examples/01``–``03`` all do). This dataclass makes the request
+CLI parser (what ``examples/01`` and ``03`` do). This dataclass makes the request
 the canonical constructor and turns the CLI parser into *one* consumer instead of
 the only one::
 
@@ -66,6 +66,7 @@ class GenerationRequest:
     infer_steps: int = 50
     guidance_scale: float = 3.5
     flow_shift: float = 3.0
+    sigma_tail_power: float = 1.0
     sampler: str = "euler"
     seed: Optional[int] = None
 
@@ -73,8 +74,6 @@ class GenerationRequest:
     lora_weight: Optional[Sequence[str]] = None
     lora_multiplier: Optional[Union[float, Sequence[float]]] = None
     soft_tokens_weight: Optional[str] = None
-    ip_adapter_weight: Optional[str] = None
-    ip_image: Optional[str] = None
     easycontrol_weight: Optional[str] = None
     easycontrol_image: Optional[str] = None
     pooled_text_proj: Optional[str] = None
@@ -119,6 +118,7 @@ class GenerationRequest:
         argv += ["--infer_steps", str(self.infer_steps)]
         argv += ["--guidance_scale", str(self.guidance_scale)]
         argv += ["--flow_shift", str(self.flow_shift)]
+        argv += ["--sigma_tail_power", str(self.sigma_tail_power)]
         argv += ["--sampler", self.sampler]
         argv += ["--attn_mode", self.attn_mode]
         argv += ["--output_type", self.output_type]
@@ -138,10 +138,6 @@ class GenerationRequest:
             argv += ["--vae_chunk_size", str(self.vae_chunk_size)]
         if self.soft_tokens_weight is not None:
             argv += ["--soft_tokens_weight", self.soft_tokens_weight]
-        if self.ip_adapter_weight is not None:
-            argv += ["--ip_adapter_weight", self.ip_adapter_weight]
-        if self.ip_image is not None:
-            argv += ["--ip_image", self.ip_image]
         if self.easycontrol_weight is not None:
             argv += ["--easycontrol_weight", self.easycontrol_weight]
         if self.easycontrol_image is not None:

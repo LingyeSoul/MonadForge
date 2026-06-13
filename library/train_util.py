@@ -17,7 +17,6 @@ import torch
 from accelerate import Accelerator
 
 from library.models import sai_spec as sai_model_spec
-from library.training import get_sanitized_config_or_none
 from library.log import setup_logging
 
 # Convenience re-export: the canonical home is library.config.io, but
@@ -63,13 +62,9 @@ def get_sai_model_spec_dataclass(
 
     title = args.metadata_title if args.metadata_title is not None else args.output_name
 
-    if args.min_timestep is not None or args.max_timestep is not None:
-        timesteps = (
-            args.min_timestep if args.min_timestep is not None else 0,
-            args.max_timestep if args.max_timestep is not None else 1000,
-        )
-    else:
-        timesteps = None
+    # Anima is a continuous-sigma flow model; the SAI-spec discrete timestep
+    # range (SD-era min/max_timestep) does not apply.
+    timesteps = None
 
     extracted_metadata = {}
     for attr_name in dir(args):
@@ -108,23 +103,6 @@ def prepare_dataset_args(args: argparse.Namespace, support_metadata: bool):
     if args.caption_extention is not None:
         args.caption_extension = args.caption_extention
         args.caption_extention = None
-
-    if args.face_crop_aug_range is not None:
-        args.face_crop_aug_range = tuple(
-            [float(r) for r in args.face_crop_aug_range.split(",")]
-        )
-        assert (
-            len(args.face_crop_aug_range) == 2
-            and args.face_crop_aug_range[0] <= args.face_crop_aug_range[1]
-        ), "face_crop_aug_range must be two floats"
-    else:
-        args.face_crop_aug_range = None
-
-    if support_metadata:
-        if args.in_json is not None and (args.color_aug or args.random_crop):
-            logger.warning(
-                "latents in npz is ignored when color_aug or random_crop is True"
-            )
 
 
 def get_timesteps(
@@ -302,7 +280,7 @@ def init_trackers(
             default_tracker_name
             if args.log_tracker_name is None
             else args.log_tracker_name,
-            config=get_sanitized_config_or_none(args),
+            config=None,
             init_kwargs=init_kwargs,
         )
 

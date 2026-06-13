@@ -26,9 +26,9 @@ AsymFlow is two separable contributions that we have historically blurred togeth
    Anima's VR-loss, with an FEI low-pass standing in for the paper's Procrustes lift).
 
 The VR-loss line (the §5.2 sub-component) was benched and is **MARGINAL on Anima** —
-see `bench/fm_vr_headroom/` and the corrected v1.0 run (`results/20260524-1716-
-v1.0-quarter-vs-base/`, verdict MARGINAL, high-band ρ²≈0.23, ~12% loss-variance
-reduction). **That result says nothing about §4.** The asymmetric parameterization has
+the corrected v1.0 run came back MARGINAL (high-band ρ²≈0.23, ~12% loss-variance
+reduction; the VR-loss headroom rig itself is no longer in-tree).
+**That result says nothing about §4.** The asymmetric parameterization has
 never been tested here. This doc evaluates *only* §4.
 
 ## What the asymmetric parameterization is
@@ -161,7 +161,7 @@ AsymFlow helps only if **both** hold:
   and measure the frozen base's `ε`-prediction error projected onto `Im(P)` vs `Im(I−P)`.
   Anima's low-rank spectrum suggests this would PASS — but C1 already fails, so C2 is moot.
 
-A probe at `bench/asymflow_param/` mirroring `bench/fm_vr_headroom/run_bench.py` (same
+A probe mirroring the (now-removed) VR-loss headroom rig (same
 cached-latent loader, frozen base, FEI-style banding swapped for PCA banding) would
 formalize C1+C2 in <100 lines. **Priority: low** — write it only if someone wants the
 empirical record rather than the dimensional argument.
@@ -180,7 +180,7 @@ on a future advocate to clear C1 above, not on us to keep it on the table.
 
 - AsymFlow paper — arXiv:2605.12964, §4 (parameterization), Fig 2–3 (decomposition),
   Fig 5 / Table 1 (rank + PCA ablation), §5–5.2 (latent→pixel + VR loss).
-- `bench/fm_vr_headroom/` — the §5.2 VR-loss headroom rig; `proposal.md` (lines 94–97)
+- The §5.2 VR-loss headroom rig (no longer in-tree) — its `proposal.md` (lines 94–97)
   is where the "not the AsymFlow parameterization" boundary was first drawn.
 - `[[project_vr_loss_status]]` — VR-loss (§5.2) status: v1.5 ships, v2/v3 falsified.
 - `[[project_spd_spectrum_precondition]]` — Anima latent power-law `β≈2.26` (relevant to C2).

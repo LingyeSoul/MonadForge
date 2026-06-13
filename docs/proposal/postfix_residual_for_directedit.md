@@ -44,7 +44,7 @@ classical inversion.
 
 ## What this is not
 
-- **Not img2emb.** img2emb (`docs/proposal/img2emb_plan.md`) trains an encoder
+- **Not img2emb.** img2emb (`_archive/proposals/img2emb_plan.md`) trains an encoder
   to produce K tokens that *replace* T5 cross-attention via FM loss from
   noise. That's a hard target (classical inversion in amortized form).
   postfix_residual trains a smaller bank of tokens to *augment* T5(tags) and
@@ -173,7 +173,7 @@ Keep:
    (uncomment-to-switch) for `postfix_residual` — mirrors the existing
    `cond-timestep` / `cond-func` blocks. Or, more cleanly, a fresh
    per-variant file under `configs/gui-methods/postfix_residual.toml`.
-4. **DirectEdit integration.** `library/inference/directedit.py` already
+4. **DirectEdit integration.** `library/inference/editing/directedit.py` already
    builds ψ from T5; add a path that asks an optional postfix module
    (`postfix_image_cond`) for residual tokens given the source image's PE
    features, then sums into ψ_src and ψ_tar identically (since postfix is

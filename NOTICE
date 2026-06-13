@@ -74,7 +74,7 @@ are not limited to:
     Qwen3-1.7B text encoder).
   * Replacing the dataset/caching, strategy, and model-loading layers with new
     Anima-specific implementations.
-  * Adding new adapter families (OrthoLoRA, T-LoRA, HydraLoRA, FeRA, ReFT,
+  * Adding new adapter families (OrthoLoRA, T-LoRA, HydraLoRA, FeRA,
     ChimeraHydra, IP-Adapter, EasyControl, Soft Tokens) and inference
     accelerators (Spectrum, SPD, DCW, SMC-CFG, modulation guidance).
   * Restructuring the codebase into the library/, networks/, and anima_lora/

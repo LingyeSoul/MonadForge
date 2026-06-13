@@ -88,7 +88,7 @@ def run_training(
     paths (e.g. the config-snapshot writer's ``_git_sha()`` call) are implicitly
     relative. The old CWD is restored unconditionally.
     """
-    from library.training import verify_command_line_training_args
+    from library.config.cli_args import verify_command_line_training_args
     from train import AnimaTrainer
 
     verify_command_line_training_args(args)

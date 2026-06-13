@@ -41,6 +41,8 @@ from pathlib import Path
 # artist ``@``-prefix rule, count-tag detection, and the raw-caption rating set,
 # kept in sync with the Anima Tagger vocab build (scripts/anima_tagger/vocab.py).
 from library.captioning.taxonomy import CAPTION_RATINGS, is_artist_tag, is_count_tag
+from library.datasets.image_utils import IMAGE_EXTENSIONS
+from library.datasets.subsets import filter_paths_by_glob
 
 
 DEFAULT_VOCAB = "models/captioners/anima-tagger-v2/vocab.json"
@@ -108,7 +110,7 @@ def _load_vocab_sets(vocab_path: str) -> dict[str, set[str]]:
     return sets
 
 
-def _iter_captions(src: Path):
+def _iter_captions(src: Path, path_pattern: str | None = None):
     """Yield ``(stem, rel_path, text)`` for every ``.txt`` under ``src``.
 
     ``image_dataset`` is a symlink to a tree of (possibly symlinked) artist
@@ -121,6 +123,21 @@ def _iter_captions(src: Path):
             if not name.endswith(".txt"):
                 continue
             abs_path = Path(dirpath) / name
+            if path_pattern and path_pattern != "*":
+                keep = filter_paths_by_glob(
+                    [str(abs_path)],
+                    str(root),
+                    path_pattern,
+                )[0]
+                if not keep:
+                    image_sidecars = [
+                        str(abs_path.with_suffix(ext)) for ext in IMAGE_EXTENSIONS
+                    ]
+                    keep = any(
+                        filter_paths_by_glob(image_sidecars, str(root), path_pattern)
+                    )
+                if not keep:
+                    continue
             try:
                 text = abs_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -210,6 +227,7 @@ def build_index(
     *,
     recover_paren: bool = True,
     recover_positional: bool = True,
+    path_pattern: str | None = None,
 ) -> dict:
     vsets = _load_vocab_sets(vocab_path)
     image_meta: dict[str, dict] = OrderedDict()
@@ -218,7 +236,7 @@ def build_index(
     }
 
     n_seen = 0
-    for stem, rel, text in sorted(_iter_captions(Path(src))):
+    for stem, rel, text in sorted(_iter_captions(Path(src), path_pattern)):
         n_seen += 1
         typed = _classify(
             text,
@@ -286,6 +304,16 @@ def main():
         "--out", default=DEFAULT_OUT, help=f"Output JSON (default: {DEFAULT_OUT})"
     )
     ap.add_argument(
+        "--path_pattern",
+        "--path-pattern",
+        dest="path_pattern",
+        default="*",
+        help=(
+            "Only index captions whose path relative to --src matches this "
+            "fnmatch glob. Use | to separate alternatives. Default: *"
+        ),
+    )
+    ap.add_argument(
         "--no-paren-recover",
         action="store_true",
         help="Disable the danbooru `name (series)` character-recovery heuristic "
@@ -304,6 +332,7 @@ def main():
         args.vocab,
         recover_paren=not args.no_paren_recover,
         recover_positional=not args.no_positional_recover,
+        path_pattern=args.path_pattern,
     )
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

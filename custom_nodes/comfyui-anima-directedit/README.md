@@ -117,4 +117,4 @@ make exp-test-directedit PROMPT='double peace'
 
 - **DirectEdit paper.** Yang & Ye, "Direct flow-inversion image editing for rectified flow models." [arXiv:2605.02417](https://arxiv.org/abs/2605.02417v1).
 - **Reference implementation.** [Tr1stesse/DirectEdit](https://github.com/Tr1stesse/DirectEdit) — original PyTorch reference, source for the inversion/edit-forward step rules ported here.
-- **Anima editing pipeline.** `scripts/edit.py` (CLI) and `library/inference/directedit.py` (primitives).
+- **Anima editing pipeline.** `scripts/edit.py` (CLI) and `library/inference/editing/directedit.py` (primitives).

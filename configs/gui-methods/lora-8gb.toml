@@ -2,7 +2,7 @@
 #
 # Self-contained variant config for the GUI / `make lora-gui GUI_PRESETS=lora`
 # path. No toggle blocks, no conditional comments — what you see is what runs.
-# For stacked variants (OrthoLoRA + T-LoRA + ReFT, HydraLoRA, …) pick the
+# For stacked variants (OrthoLoRA + T-LoRA, HydraLoRA, …) pick the
 # matching file in this directory instead.
 
 network_dim = 32

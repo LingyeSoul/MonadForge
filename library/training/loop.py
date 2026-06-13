@@ -44,6 +44,11 @@ from library.training.log_dispatch import dispatch_wandb_extras
 
 logger = logging.getLogger(__name__)
 
+# Liveness early check (issues.md P1.1): late enough that warmups / partial
+# sidecar coverage have had a chance to fire at least once, early enough that
+# a silently-dead feature aborts a strict run in minutes instead of hours.
+LIVENESS_EARLY_CHECK_STEP = 25
+
 
 @dataclass
 class LoopState:
@@ -234,8 +239,13 @@ def build_loop_state(
         _ts_parts.append(f"sigmoid_bias={getattr(args, 'sigmoid_bias', 0.0)}")
     if args.timestep_sampling in ("shift", "flux_shift"):
         _ts_parts.append(f"discrete_flow_shift={args.discrete_flow_shift}")
-    if getattr(args, "t_min", None) is not None or getattr(args, "t_max", None) is not None:
-        _ts_parts.append(f"σ∈[{getattr(args, 't_min', None)}, {getattr(args, 't_max', None)}]")
+    if (
+        getattr(args, "t_min", None) is not None
+        or getattr(args, "t_max", None) is not None
+    ):
+        _ts_parts.append(
+            f"σ∈[{getattr(args, 't_min', None)}, {getattr(args, 't_max', None)}]"
+        )
     logger.info("sigma sampling: " + ", ".join(_ts_parts))
     for i, t_enc in enumerate(text_encoders):
         params_itr = t_enc.parameters()
@@ -417,6 +427,8 @@ def run_training_loop(trainer, state: LoopState) -> None:
         )
         state.optimizer_train_fn()
 
+    _audit_liveness(trainer, state, where="run end")
+
     state.metadata["ss_training_finished_at"] = str(time.time())
 
 
@@ -450,6 +462,10 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         if accelerator.sync_gradients:
             state.progress_bar.update(1)
             state.global_step += 1
+            if state.global_step == LIVENESS_EARLY_CHECK_STEP:
+                _audit_liveness(
+                    trainer, state, where=f"step {state.global_step} early check"
+                )
             _sample_at_step(trainer, state)
             state.saver.maybe_save_step(state.network, state.global_step, epoch)
             _log_checkpoint_artifact(trainer, args, state, epoch)
@@ -712,6 +728,12 @@ def _log_step(
             None,  # mean_combined_norm — not tracked here
         )
         producers = [_unwrapped_net, *trainer._adapters]
+        # Liveness coverage fractions (liveness/<name>) — the ledger is a
+        # MetricProducer; a dropping curve is the live view of the run-end
+        # LIVENESS audit.
+        _ledger = getattr(trainer, "_liveness", None)
+        if _ledger is not None:
+            producers.append(_ledger)
         logs.update(
             collect_metrics(
                 producers,
@@ -796,6 +818,31 @@ def _log_epoch_average(trainer, state: LoopState, epoch: int) -> None:
         return
     logs = {"loss/epoch_average": state.loss_recorder.moving_average}
     trainer.epoch_logging(state.accelerator, logs, state.global_step, epoch + 1)
+
+
+def _audit_liveness(trainer, state: LoopState, *, where: str) -> None:
+    """Liveness audit (issues.md P1.1): a configured-ON aux loss that never
+    consumed its aux input is a silent baseline — flag it loudly.
+
+    Reads the trainer-owned ``LivenessLedger`` that the per-step composer
+    feeds (``train.py`` threads it through ``build_loss_composer``). Dead
+    features ERROR-log with the greppable ``LIVENESS:`` prefix (main process
+    only — counts are per-rank but a dead dispatch is dead on every rank);
+    ``--liveness_strict`` escalates to a hard abort, evaluated on each rank's
+    own ledger so distributed runs fail together instead of hanging.
+    """
+    ledger = getattr(trainer, "_liveness", None)
+    if ledger is None:
+        return
+    if state.accelerator.is_main_process:
+        dead = ledger.audit(where=where)
+    else:
+        dead = ledger.dead_features()
+    if dead and bool(getattr(state.args, "liveness_strict", False)):
+        raise RuntimeError(
+            f"LIVENESS: configured-but-dead feature(s) at {where}: "
+            f"{', '.join(dead)} — aborting (--liveness_strict)"
+        )
 
 
 def _run_adapter_epoch_hooks(trainer, state: LoopState) -> None:

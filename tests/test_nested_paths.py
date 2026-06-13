@@ -118,9 +118,7 @@ def test_load_mask_from_dir_nested_preferred(tmp_path: Path) -> None:
     _write_mask(mask_dir / "charA" / "img1_mask.png", 200)
     _write_mask(mask_dir / "img1_mask.png", 50)
 
-    mask = load_mask_from_dir(
-        str(mask_dir), str(img), (4, 4), image_dir=str(image_dir)
-    )
+    mask = load_mask_from_dir(str(mask_dir), str(img), (4, 4), image_dir=str(image_dir))
     assert mask is not None
     # Nested mask had value 200 → 200/255 in float form.
     assert abs(float(mask.mean()) - 200.0 / 255.0) < 1e-5
@@ -137,9 +135,7 @@ def test_load_mask_from_dir_flat_fallback(tmp_path: Path) -> None:
     mask_dir = tmp_path / "masks" / "merged"
     _write_mask(mask_dir / "img1_mask.png", 50)
 
-    mask = load_mask_from_dir(
-        str(mask_dir), str(img), (4, 4), image_dir=str(image_dir)
-    )
+    mask = load_mask_from_dir(str(mask_dir), str(img), (4, 4), image_dir=str(image_dir))
     assert mask is not None
     assert abs(float(mask.mean()) - 50.0 / 255.0) < 1e-5
 
@@ -154,9 +150,7 @@ def test_load_mask_from_dir_missing(tmp_path: Path) -> None:
     mask_dir = tmp_path / "post_image_dataset" / "masks"
     mask_dir.mkdir(parents=True)
 
-    mask = load_mask_from_dir(
-        str(mask_dir), str(img), (4, 4), image_dir=str(image_dir)
-    )
+    mask = load_mask_from_dir(str(mask_dir), str(img), (4, 4), image_dir=str(image_dir))
     assert mask is None
 
 
@@ -332,7 +326,7 @@ def test_resize_images_nested_output(tmp_path: Path) -> None:
         True,  # use_constant_token_buckets
     )
 
-    name, _reso = process_image(
+    name, _reso, _skipped = process_image(
         img_path, dst, bucket_args, copy_captions=True, rel_dir="charA"
     )
 

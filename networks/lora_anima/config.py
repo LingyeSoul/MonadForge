@@ -176,7 +176,7 @@ class LoRANetworkCfg:
     """Run-fixed configuration for a ``LoRANetwork``.
 
     Field groupings mirror the comment blocks in ``factory.create_network``:
-    core / targeting / dropouts / regex overrides / T-LoRA / ReFT / Hydra /
+    core / targeting / dropouts / regex overrides / T-LoRA / Hydra /
     σ-router / channel scaling / logging.
     """
 
@@ -208,12 +208,6 @@ class LoRANetworkCfg:
     use_timestep_mask: bool = False
     min_rank: int = 1
     alpha_rank_scale: float = 1.0
-
-    # ReFT
-    add_reft: bool = False
-    reft_dim: int = 4
-    reft_alpha: Optional[float] = None
-    reft_layers: object = "all"
 
     # Hydra (MoE)
     num_experts: int = 4
@@ -277,6 +271,10 @@ class LoRANetworkCfg:
     # (``OrthoLoRA`` / ``OrthoHydra``) and this field is informational.
     use_ortho: bool = False
     ortho_init_std: float = 0.02
+    # OrthoInit: top-r SVD of W0 as *trainable* init (no frozen-subspace cap).
+    # Selects ``OrthoInitLoRAModule`` via ``resolve_network_spec``; mutually
+    # exclusive with ``use_ortho`` (validated in the resolver). Non-MoE only.
+    use_ortho_init: bool = False
 
     # σ-conditional router parameters (consumed when ``router_source="sigma"``).
     # Layer scope is shared with Hydra and FEI via ``router_targets`` above.
@@ -376,6 +374,16 @@ class LoRANetworkCfg:
     # was removed). ``content_router_layer_norm`` toggles a parameterless LN on
     # the pooled input.
     content_router_layer_norm: bool = True
+    # ContentRouter output-layer init magnitude. Default 0.0 (zero-init →
+    # exactly-uniform π_c at step 0 → ΔW_c=0, base preserved). Unlike the
+    # FreqRouter, zero is NOT a fixed point here (the disjoint P_bases_c·λ_c
+    # residual + per-prompt input variation already break symmetry), so a
+    # non-zero value is purely a plateau-kick for the "usage uniform but
+    # content_margin≈0" regime — NOT needed to escape a fixed point. It tilts
+    # π_c off uniform at init, so via the live λ_c it makes ΔW_c≠0 at init
+    # (loses the exact-identity start) and seeds an initial usage skew the
+    # content balance loss then has to undo. Keep small (~0.02) and opt-in.
+    content_router_init_std: float = 0.0
 
     # ChimeraHydra centered-gate λ init (BOTH pools), always on. Each pool's
     # gate is recentered to ``π - 1/K`` in the forward, the content + freq
@@ -387,6 +395,12 @@ class LoRANetworkCfg:
     # simplex. ``chimera_lambda_init<=0`` is floored to 1e-2 in ``from_kwargs``
     # (centering with λ0=0 is a no-op).
     chimera_lambda_init: float = 1e-2
+
+    # Step-expert (turbo per-step head split). When > 1, each adapted Linear
+    # is a ``StepExpertLoRAModule``: one shared ``lora_down`` + K up-heads
+    # selected by the diffusion step index (no router). 0/1 = inactive. See
+    # ``networks/lora_modules/step_expert.py``.
+    step_expert_K: int = 0
 
     # SmoothQuant-style per-channel input pre-scaling
     channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None
@@ -434,13 +448,6 @@ class LoRANetworkCfg:
         alpha_rank_scale = (
             float(alpha_rank_scale) if alpha_rank_scale is not None else 1.0
         )
-
-        add_reft = _as_bool(kwargs.get("add_reft"))
-        reft_dim = kwargs.get("reft_dim")
-        reft_dim = int(reft_dim) if reft_dim is not None else network_dim
-        reft_alpha = kwargs.get("reft_alpha")
-        reft_alpha = float(reft_alpha) if reft_alpha is not None else None
-        reft_layers = kwargs.get("reft_layers", "all")
 
         num_experts = kwargs.get("num_experts")
         num_experts = int(num_experts) if num_experts is not None else 4
@@ -523,6 +530,7 @@ class LoRANetworkCfg:
 
         use_ortho = _as_bool(kwargs.get("use_ortho"))
         ortho_init_std = float(kwargs.get("ortho_init_std", 0.02))
+        use_ortho_init = _as_bool(kwargs.get("use_ortho_init"))
 
         # FECL knobs. Default off; turning it on requires `num_bands >= 3`
         # to be a meaningful objective (see compute_fecl docstring).
@@ -560,6 +568,7 @@ class LoRANetworkCfg:
         content_router_layer_norm = _as_bool(
             kwargs.get("content_router_layer_norm", True), default=True
         )
+        content_router_init_std = float(kwargs.get("content_router_init_std", 0.0))
         # Chimera is always centered-gate; centering with λ0=0 is a no-op (each
         # router's logit gradient ∝ (P_k - mean)·diag(λ0)·ℓ vanishes at λ0=0),
         # so floor to a small nonzero default.
@@ -672,6 +681,9 @@ class LoRANetworkCfg:
                 "per-Linear variant."
             )
 
+        step_expert_K_raw = kwargs.get("step_expert_K")
+        step_expert_K = int(step_expert_K_raw) if step_expert_K_raw is not None else 0
+
         reg_dims_str = kwargs.get("network_reg_dims")
         reg_dims = _parse_kv_pairs(reg_dims_str, is_int=True) if reg_dims_str else None
         reg_lrs_str = kwargs.get("network_reg_lrs")
@@ -696,10 +708,6 @@ class LoRANetworkCfg:
             use_timestep_mask=use_timestep_mask,
             min_rank=min_rank,
             alpha_rank_scale=alpha_rank_scale,
-            add_reft=add_reft,
-            reft_dim=reft_dim,
-            reft_alpha=reft_alpha,
-            reft_layers=reft_layers,
             num_experts=num_experts,
             expert_init_std=expert_init_std,
             ortho_centered_gate=ortho_centered_gate,
@@ -720,6 +728,7 @@ class LoRANetworkCfg:
             router_tau=router_tau,
             use_ortho=use_ortho,
             ortho_init_std=ortho_init_std,
+            use_ortho_init=use_ortho_init,
             fera_fecl_weight=fera_fecl_weight,
             fera_num_bands=fera_num_bands,
             use_chimera_hydra=use_chimera_hydra,
@@ -734,7 +743,9 @@ class LoRANetworkCfg:
             content_router_lr_scale=content_router_lr_scale,
             freq_router_lr_scale=freq_router_lr_scale,
             content_router_layer_norm=content_router_layer_norm,
+            content_router_init_std=content_router_init_std,
             chimera_lambda_init=chimera_lambda_init,
+            step_expert_K=step_expert_K,
             channel_scales_dict=channel_scales_dict,
             verbose=verbose,
         )
@@ -747,9 +758,6 @@ class LoRANetworkCfg:
         modules_alpha: Dict[str, float],
         module_class: Type,
         train_llm_adapter: bool,
-        has_reft: bool,
-        reft_dim: Optional[int],
-        reft_block_indices,
         is_hydra_or_ortho_hydra: bool,
         hydra_num_experts: int,
         sigma_feature_dim_detected: Optional[int],
@@ -779,6 +787,7 @@ class LoRANetworkCfg:
         freq_router_mode: str = "learned",
         freq_router_tau: float = 1.0,
         content_router_layer_norm: bool = True,
+        step_expert_K: int = 0,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -794,7 +803,7 @@ class LoRANetworkCfg:
         (``_expert_band`` / ``_sigma_edges`` are non-persistent) so it has to
         be reconstructed from those scalars at load time.
 
-        For non-MoE checkpoints (plain LoRA / OrthoLoRA / T-LoRA / ReFT) the
+        For non-MoE checkpoints (plain LoRA / OrthoLoRA / T-LoRA) the
         three-axis stamps are not stamped at save time; absence is taken as
         ``(False, False, "none")``. MoE checkpoints (Hydra / OrthoHydra /
         StackedExperts) must carry all three stamps — plan2 task #6 retired
@@ -849,9 +858,6 @@ class LoRANetworkCfg:
             modules_dim=modules_dim,
             modules_alpha=modules_alpha,
             train_llm_adapter=train_llm_adapter,
-            add_reft=has_reft,
-            reft_dim=reft_dim if reft_dim is not None else 4,
-            reft_layers=sorted(reft_block_indices) if has_reft else "all",
             num_experts=hydra_num_experts if is_hydra_or_ortho_hydra else 4,
             channel_scales_dict=channel_scales_dict,
             use_moe_style=use_moe_style,
@@ -886,4 +892,5 @@ class LoRANetworkCfg:
             ),
             freq_router_tau=float(freq_router_tau),
             content_router_layer_norm=bool(content_router_layer_norm),
+            step_expert_K=int(step_expert_K),
         )

@@ -153,7 +153,7 @@ Plain LoRA, by contrast, can set $\Delta W$ to point **anywhere** — $B$ and $A
 
 This is a well-motivated restriction for NLP fine-tuning, where the pretrained model already "knows" the task domain and you want to nudge it inside that domain. It is a more open question for **creative fine-tuning**: a new character or art style might need a $\Delta W$ component outside the top-$r$ singular directions of $W_0$. If that's the case, OrthoLoRA will plateau earlier than plain LoRA at the same rank. The Cayley guarantee is bought at the cost of basis freedom.
 
-The practical answer has been to stack it with T-LoRA and ReFT — T-LoRA gives the bottleneck rank room to specialize by noise level, ReFT provides an unconstrained residual-stream side-channel, and the OrthoLoRA weight delta handles what fits inside the principal subspace cleanly. `configs/methods/lora.toml` enables all three by default for exactly this reason.
+The practical answer has been to stack it with T-LoRA — T-LoRA gives the bottleneck rank room to specialize by noise level, and the OrthoLoRA weight delta handles what fits inside the principal subspace cleanly. `configs/methods/lora.toml` enables both by default for exactly this reason.
 
 ---
 

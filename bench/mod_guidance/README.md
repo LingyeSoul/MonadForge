@@ -66,3 +66,32 @@ Output: `results/<ts>[-label]/` with `result.json` (standard bench envelope),
 - `order_dist / seed_floor ≪ 1` → cross-attn is only weakly order-sensitive
   (reordering moves the image less than a seed change).
 - large `pixel_std` drop at high `w` → DC-blowout is real in pixels.
+
+## `text_jacobian.py` — does the mod head have a sensitivity GAD could repair?
+
+A cheap, generation-free probe (no text encoder, reuses the distill forwards) for
+the one question that decides whether GAD-for-mod-guidance is worth pursuing:
+**does the distilled `pooled_text_proj` reproduce the teacher's *local response*
+to a text change, not just its pointwise output?** That first-order response is
+exactly what inference steering (`emb + w·delta`) rides on.
+
+For held-out (latent, σ, noise) it perturbs text A→B by a factor `h` and compares
+output deltas across the two pathways:
+
+- teacher: `Δv` from perturbing the cross-attn input (`skip_pooled_text_proj=True`)
+- student: `Δv` from perturbing the pooled input (`pooled_text_override`, crossattn pinned at uncond)
+
+```bash
+uv run python -m bench.mod_guidance.text_jacobian \
+    --pooled_text_proj output/ckpt/pooled_text_proj.safetensors \
+    --n_pairs 96 --sigmas 0.1 0.4 0.7 0.9 --h 1.0
+# GAD-faithful local Jacobian: --h 0.1
+```
+
+Reading: `cos(ΔS, ΔT)` per σ is the verdict. **≈1** → the MSE-only head already
+matches the teacher's text geometry, GAD has nothing to fix (confirms the
+`docs/experimental/gad.md` skepticism). **Well below 1**, especially at high σ
+where modulation dominates → that's the deficiency GAD targets; train a GAD head
+and re-run to score the gain (Δcos). `ratio = ‖ΔS‖/‖ΔT‖` is cross-pathway so
+won't hit 1 exactly — read it for collapse (`≈0` = text-blind) / blowout. Set
+`--validation_seed` to the distill run's so the holdout is genuine.

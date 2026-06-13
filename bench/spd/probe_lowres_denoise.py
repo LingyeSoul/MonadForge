@@ -46,22 +46,12 @@ import numpy as np
 import torch
 from PIL import Image
 
+# Canonical model paths + test prompt (mirror scripts/tasks/_common.INFERENCE_BASE).
+from bench._anima import DEFAULT_NEG, DEFAULT_PROMPT, add_model_args
 from bench._common import make_run_dir, write_result
 
 log = logging.getLogger("bench.spd.probe")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-# Canonical model paths + test settings (mirror scripts/tasks/_common.INFERENCE_BASE).
-DEFAULT_DIT = "models/diffusion_models/anima-base-v1.0.safetensors"
-DEFAULT_TE = "models/text_encoders/qwen_3_06b_base.safetensors"
-DEFAULT_VAE = "models/vae/qwen_image_vae.safetensors"
-DEFAULT_PROMPT = (
-    "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top"
-    " and denim shorts is standing outdoors. She's holding a rectangular sign out in"
-    ' front of her that reads "ANIMA". She\'s looking at the viewer with a smile. The'
-    " background features some trees and blue sky with clouds."
-)
-DEFAULT_NEG = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
 
 
 # ── DCT helpers (2D separable, type-II, pure PyTorch — matches comfyui-speed) ──
@@ -269,9 +259,7 @@ def main() -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("--dit", default=DEFAULT_DIT)
-    ap.add_argument("--text_encoder", default=DEFAULT_TE)
-    ap.add_argument("--vae", default=DEFAULT_VAE)
+    add_model_args(ap)
     ap.add_argument("--prompt", default=DEFAULT_PROMPT)
     ap.add_argument("--negative_prompt", default=DEFAULT_NEG)
     ap.add_argument("--height", type=int, default=1024)
@@ -351,7 +339,7 @@ def main() -> None:
         ensure_text_strategies,
     )
     from library.inference.output import decode_latent
-    from library.models import qwen_vae
+    from anima_lora import load_vae
     from diffusers.utils.torch_utils import randn_tensor
     from library.inference import sampling as inference_utils
 
@@ -415,7 +403,7 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     log.info("Loading VAE ...")
-    vae = qwen_vae.load_vae(args.vae, device="cpu", spatial_chunk_size=64)
+    vae = load_vae(args.vae, device="cpu", spatial_chunk_size=64)
     vae.to(torch.bfloat16)
     vae.eval()
 

@@ -1,4 +1,4 @@
-"""Modulation guidance distillation (Phase 1).
+"""Modulation guidance distillation.
 
 Trains ``pooled_text_proj`` to inject pooled text embedding into the AdaLN
 modulation path. The entire DiT backbone is frozen; only the small projection
@@ -18,13 +18,21 @@ also re-stageable via ``make distill-prep``) at
 This forces pooled_text_proj to encode text information through modulation,
 complementing the cross-attention path.
 
+GAD (geometry-aware distillation; ``--gad_weight > 0``, off by default) adds a
+first-order term that also matches the teacher's *response to a text change* —
+see ``scripts/distill_mod/plan.md`` and
+``docs/findings/mod_guidance_text_derivative_orthogonal.md``.
+
+Config lives in ``scripts/distill_mod/config.py`` (argparser + resolved
+``ModConfig`` dataclass), mirroring the ``distill_turbo/`` precedent.
+
 Usage:
     python -m scripts.distill_mod.distill [--iterations 4000] [--lr 1e-4] [--batch_size 1]
 """
 
 from __future__ import annotations
 
-import argparse
+import dataclasses
 import logging
 import math
 import os
@@ -39,17 +47,32 @@ from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
-from library.datasets.distill import CachedDataset  # noqa: E402
+from library.datasets.cache import make_cached_collate  # noqa: E402
+from library.datasets.cache import CachedDataset  # noqa: E402
+from library.io.cache import (  # noqa: E402
+    LATENT_CACHE_SUFFIX,
+    discover_cached_pairs,
+    get_latent_resolution,
+)
 from library.runtime.harness import (  # noqa: E402
-    compile_dit_blocks,
+    compile_dit_blocks_for_pool,
     enable_training_grad_ckpt,
     place_dit_for_training,
 )
+from library.training.forward import (  # noqa: E402
+    PadCache,
+    renoise,
+    run_mini_train_forward,
+    sample_sigma,
+    to_dit_5d,
+)
+from library.training.schedulers import make_warmup_cosine_scheduler  # noqa: E402
 from library.inference.uncond import (  # noqa: E402
     default_uncond_path,
     load_uncond_crossattn,
     uncond_for_batch,
 )
+from scripts.distill_mod.config import build_argparser, resolve_config  # noqa: E402
 from scripts.distill_mod.teacher_cache import (  # noqa: E402
     TeacherCache,
     ValTeacherCache,
@@ -63,254 +86,99 @@ logging.basicConfig(
 )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Modulation guidance distillation")
-    parser.add_argument(
-        "--data_dir",
-        type=str,
-        default="post_image_dataset/lora",
-        help="Directory with cached latents and text encoder outputs",
-    )
-    parser.add_argument(
-        "--uncond_te_path",
-        type=str,
-        default=None,
-        help=(
-            'Path to the T5("") sidecar used as the student\'s unconditional '
-            "cross-attention input. Defaults to "
-            "``post_image_dataset/_anima_uncond_te.safetensors`` (staged by "
-            "``make distill-prep``)."
-        ),
-    )
-    parser.add_argument(
-        "--synth_data_dir",
-        type=str,
-        default=None,
-        help=(
-            "Optional dir of teacher-generated synthetic clean latents from "
-            "``make distill-prep`` (Phase 2). When set, training reads latents "
-            "from here (matched by stem + resolution) and TE caches from "
-            "``--data_dir`` — paper-faithful setup that removes the real-vs-"
-            "teacher distribution gap. Default: real-image latents only."
-        ),
-    )
-    parser.add_argument(
-        "--dit_path",
-        type=str,
-        default="models/diffusion_models/anima-base-v1.0.safetensors",
-    )
-    parser.add_argument(
-        "--output_path",
-        type=str,
-        default="output/ckpt/pooled_text_proj.safetensors",
-        help="Where to save the trained projection weights",
-    )
-    parser.add_argument("--iterations", type=int, default=15000)
-    parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
-    parser.add_argument(
-        "--blocks_to_swap",
-        type=int,
-        default=0,
-        help="Number of transformer blocks to offload to CPU",
-    )
-    parser.add_argument(
-        "--save_every",
-        type=int,
-        default=1000,
-        help="Save checkpoint every N iterations",
-    )
-    parser.add_argument(
-        "--attn_mode",
-        type=str,
-        default="flash",
-        help="Attention mode (torch, flash). flash4 not supported yet.",
-    )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument(
-        "--sigmoid_scale",
-        type=float,
-        default=1.0,
-        help="Scale for sigmoid timestep sampling",
-    )
-    parser.add_argument(
-        "--resume",
-        type=str,
-        default=None,
-        help="Resume from a saved pooled_text_proj checkpoint",
-    )
-    parser.add_argument(
-        "--grad_accum", type=int, default=1, help="Gradient accumulation steps"
-    )
-    parser.add_argument(
-        "--torch_compile",
-        action="store_true",
-        default=True,
-        help="Compile block._forward with torch.compile",
-    )
-    parser.add_argument(
-        "--no_compile",
-        dest="torch_compile",
-        action="store_false",
-        help="Disable torch.compile",
-    )
-    parser.add_argument(
-        "--compile_inductor_mode",
-        type=str,
-        default="",
-        help="Inductor preset, e.g. 'reduce-overhead' for CUDAGraphs",
-    )
-    parser.add_argument(
-        "--grad_ckpt",
-        action="store_true",
-        help="Enable gradient checkpointing with CPU offload (default on)",
-    )
-    parser.add_argument(
-        "--no_grad_ckpt",
-        dest="grad_ckpt",
-        action="store_false",
-        help="Disable gradient checkpointing (faster, more VRAM)",
-    )
-    parser.add_argument(
-        "--warmup",
-        type=float,
-        default=0.02,
-        help="Warmup steps: int >= 1 for absolute steps, float < 1 for ratio of iterations",
-    )
-    parser.add_argument(
-        "--no_shuffle",
-        dest="shuffle",
-        action="store_false",
-        help="Disable per-epoch shuffling of the (bucket-grouped) batch order. "
-        "Default shuffles batch order each epoch while keeping every batch "
-        "single-resolution and pinning the largest-token bucket to step 0.",
-    )
-    parser.add_argument(
-        "--dry_run",
-        action="store_true",
-        help="Iterate entire DataLoader without training to test collation",
-    )
-    parser.add_argument(
-        "--log_dir",
-        type=str,
-        default="output/logs/distill_mod",
-        help="TensorBoard log directory. A timestamped subdir is created per run.",
-    )
-    parser.add_argument(
-        "--no_log",
-        action="store_true",
-        help="Disable TensorBoard logging",
-    )
-    parser.add_argument(
-        "--log_interval",
-        type=int,
-        default=10,
-        help="Log scalars to TensorBoard every N optimizer steps",
-    )
-    parser.add_argument(
-        "--sample_ratio",
-        type=float,
-        default=1.0,
-        help="Fraction of (post-split) samples to keep per bucket. Mirrors the "
-        "LoRA per-subset sample_ratio; useful with PRESET=debug/half/quarter/tenth "
-        "for fast iteration on a small slice of the dataset.",
-    )
-    parser.add_argument(
-        "--validation_split",
-        type=float,
-        default=0.01,
-        help="Fraction of dataset held out for validation (e.g. 0.05 for 5 percent)",
-    )
-    parser.add_argument(
-        "--validation_seed",
-        type=int,
-        default=42,
-        help="Seed for deterministic train/val split + validation noise",
-    )
-    parser.add_argument(
-        "--validate_every_n_steps",
-        type=int,
-        default=1000,
-        help="Run validation every N optimizer steps (only if validation_split>0)",
-    )
-    parser.add_argument(
-        "--validation_sigmas",
-        type=float,
-        nargs="+",
-        default=[0.1, 0.4, 0.7],
-        help="Fixed sigma values for validation loss (mirrors train.py default)",
-    )
-    parser.add_argument(
-        "--max_validation_steps",
-        type=int,
-        default=None,
-        help="Cap on validation batches per pass. None = use the entire val set.",
-    )
-    parser.add_argument(
-        "--teacher_cache_K",
-        type=int,
-        default=6,
-        help="Number of pre-sampled sigma bins for the teacher prediction cache. "
-        "Each sample sees K distinct (sigma, noise) pairs over the run. "
-        "Higher K = more diversity but slower cache fill / larger RAM.",
-    )
-    parser.add_argument(
-        "--teacher_cache_seed",
-        type=int,
-        default=1234,
-        help="Seed for the K-sigma grid and per-(sample, sigma) deterministic noise. "
-        "Independent of --seed so cache contents are reproducible across training runs.",
-    )
-    parser.add_argument(
-        "--no_teacher_cache",
-        action="store_true",
-        help="Disable teacher prediction caching (re-runs the teacher forward every step). "
-        "Use to A/B against the cached path or to recover the original continuous-sigma sampler.",
-    )
-    parser.add_argument(
-        "--prefill_teacher_cache",
-        action="store_true",
-        help="Eagerly run teacher predictions for every (sample, sigma_idx) before training. "
-        "Adds ~K * N * t_teacher up front but eliminates teacher forwards during training.",
-    )
-    parser.add_argument(
-        "--no_val_teacher_cache",
-        action="store_true",
-        help="Disable validation-time teacher prediction caching (re-runs the teacher "
-        "forward on every val pass). Default is enabled — val is deterministic across "
-        "calls, so the first pass fills a (batch_idx, sigma_idx) cache and every "
-        "subsequent pass skips teacher forwards entirely.",
-    )
-    args = parser.parse_args()
+def _pool_token_counts(cfg, patch: int) -> set[int]:
+    """Distinct DiT token counts in the cached training pool.
 
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
+    Self-describing compile budget (mirrors ``train.py::_derive_token_budget`` /
+    ``distill_turbo``): the on-disk caches are the source of truth for which tiers
+    the pool spans. Unlike SPD, the mod head trains at each latent's *native*
+    resolution (no per-stage downsampling), so the token count is just
+    ``(h_lat // patch) * (w_lat // patch)``.
+
+    When ``--synth_data_dir`` is set the real latents are swapped for the synth
+    pool (``CachedDataset`` remap) and samples with no synth latent are DROPPED,
+    so the forward only ever sees synth shapes. Scan the synth dir alone in that
+    case — unioning ``data_dir`` injects phantom token counts (real-only tiers
+    that are never fed) that widen the symbolic seq axis to a range the traced
+    graphs don't satisfy → ``ConstraintViolationError``.
+    """
+    import glob
+
+    if cfg.synth_data_dir is not None:
+        res_strs: set[str] = {
+            get_latent_resolution(npz)
+            for npz in glob.glob(
+                os.path.join(cfg.synth_data_dir, "**", f"*{LATENT_CACHE_SUFFIX}"),
+                recursive=True,
+            )
+        }
+    else:
+        res_strs = {
+            get_latent_resolution(img.npz_path)
+            for img in discover_cached_pairs(cfg.data_dir)
+        }
+    counts: set[int] = set()
+    for res in res_strs:
+        a, b = (int(v) for v in res.split("x"))  # latent dims (order-agnostic)
+        counts.add((a // patch) * (b // patch))
+    return counts
+
+
+def _draw_gad_pair(
+    idx_list, crossattn_emb, pooled_text, source, rng, dataset, device, dtype
+):
+    """Return ``(crossattn_B, pooled_B)`` — another sample's text, used as the
+    GAD perturbation direction.
+
+    ``batch`` rolls within the batch (needs batch_size>1). ``dataset`` draws a
+    random *other* sample per batch element via random-access ``dataset[j]``
+    (reproducible through ``rng``); crossattn caches are max-padded to a uniform
+    seq length, so a cross-bucket pairing stacks cleanly.
+    """
+    if source == "batch":
+        return (
+            torch.roll(crossattn_emb, shifts=1, dims=0),
+            torch.roll(pooled_text, shifts=1, dims=0),
+        )
+    n = len(dataset)
+    cross_list, pool_list = [], []
+    for b in range(crossattn_emb.shape[0]):
+        cur = idx_list[b]
+        j = rng.randrange(n)
+        while n > 1 and j == cur:
+            j = rng.randrange(n)
+        _j, _lat, cross_j, pool_j = dataset[j]
+        cross_list.append(cross_j)
+        pool_list.append(pool_j)
+    cross_b = torch.stack(cross_list).to(device, dtype=dtype, non_blocking=True)
+    pool_b = torch.stack(pool_list).to(device, dtype=dtype, non_blocking=True)
+    return cross_b, pool_b
+
+
+def main():
+    args = build_argparser().parse_args()
+    cfg = resolve_config(args)
+
+    torch.manual_seed(cfg.seed)
+    random.seed(cfg.seed)
 
     # --- Dry run: test DataLoader collation without loading the model ---
-    if args.dry_run:
+    if cfg.dry_run:
         dataset = CachedDataset(
-            args.data_dir,
-            batch_size=args.batch_size,
-            sample_ratio=args.sample_ratio,
-            synth_data_dir=args.synth_data_dir,
+            cfg.data_dir,
+            batch_size=cfg.batch_size,
+            sample_ratio=cfg.sample_ratio,
+            synth_data_dir=cfg.synth_data_dir,
         )
-
-        def _collate_dry(batch):
-            return (
-                [b[0] for b in batch],
-                torch.stack([b[1] for b in batch]),
-                torch.stack([b[2] for b in batch]),
-                torch.stack([b[3] for b in batch]),
-            )
 
         dl = torch.utils.data.DataLoader(
             dataset,
-            batch_size=args.batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
             num_workers=2,
             pin_memory=True,
             drop_last=True,
-            collate_fn=_collate_dry,
+            collate_fn=make_cached_collate(),
         )
         total = len(dl)
         for i, (_idxs, lat, te, pooled) in enumerate(tqdm(dl, desc="dry-run")):
@@ -325,7 +193,7 @@ def main():
     dtype = torch.bfloat16
 
     # --- Load unconditional T5("") sidecar (staged by `make distill-prep`) ---
-    uncond_te_path = args.uncond_te_path or str(default_uncond_path())
+    uncond_te_path = cfg.uncond_te_path or str(default_uncond_path())
     uncond_te_1 = load_uncond_crossattn(uncond_te_path, device, dtype)
     logger.info(
         f"Loaded uncond crossattn from {uncond_te_path} "
@@ -336,9 +204,9 @@ def main():
     logger.info("Loading DiT model...")
     model: Anima = anima_utils.load_anima_model(
         device,
-        args.dit_path,
-        attn_mode=args.attn_mode,
-        loading_device="cpu" if args.blocks_to_swap > 0 else device,
+        cfg.dit_path,
+        attn_mode=cfg.attn_mode,
+        loading_device="cpu" if cfg.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
     )
 
@@ -350,35 +218,90 @@ def main():
     nn.init.zeros_(model.pooled_text_proj[0].bias)
     nn.init.zeros_(model.pooled_text_proj[-1].weight)
     nn.init.zeros_(model.pooled_text_proj[-1].bias)
+    if cfg.mod_sigma_film:
+        # Same meta→CPU materialization for the σ-FiLM sibling; zero-init ⇒
+        # identity FiLM, so the head starts equal to the plain σ-flat head.
+        model.pooled_text_sigma_film.to_empty(device="cpu")
+        nn.init.zeros_(model.pooled_text_sigma_film.weight)
+        nn.init.zeros_(model.pooled_text_sigma_film.bias)
 
     # Resume from checkpoint if provided
-    if args.resume:
-        logger.info(f"Resuming from {args.resume}")
+    if cfg.resume:
+        logger.info(f"Resuming from {cfg.resume}")
         from safetensors.torch import load_file
 
-        state = load_file(args.resume)
-        model.pooled_text_proj.load_state_dict(state)
+        state = load_file(cfg.resume)
+        film_state = {
+            k[len("sigma_film.") :]: v
+            for k, v in state.items()
+            if k.startswith("sigma_film.")
+        }
+        model.pooled_text_proj.load_state_dict(
+            {k: v for k, v in state.items() if not k.startswith("sigma_film.")}
+        )
+        if film_state:
+            model.pooled_text_sigma_film.load_state_dict(film_state)
 
     # Block swap for VRAM efficiency (two forwards per step), then compile each
     # block._forward (native-shape flatten → no flash pad-leak into the target).
-    # This pool's latents span more than the 2 CONSTANT_TOKEN_BUCKETS families,
-    # so bump the dynamo cache to trace every distinct token count.
-    place_dit_for_training(model, device, blocks_to_swap=args.blocks_to_swap)
-    compile_dit_blocks(
-        model, enabled=args.torch_compile, mode=args.compile_inductor_mode
-    )
+    # This pool's latents span more than the 2 CONSTANT_TOKEN_BUCKETS families.
+    place_dit_for_training(model, device, blocks_to_swap=cfg.blocks_to_swap)
+    if cfg.torch_compile:
+        # Self-describing compile budget: derive the distinct token counts from the
+        # cached pool (data_dir + synth_data_dir) rather than a fixed table. This
+        # derivation is coupled to mod's synth-pool logic, so it stays here; the
+        # budget → cache isolation → block-compile glue is the shared library helper.
+        token_counts = _pool_token_counts(cfg, model.patch_spatial)
+        pc = compile_dit_blocks_for_pool(
+            model,
+            token_counts,
+            enabled=True,
+            dynamic_seq=cfg.compile_dynamic_seq,
+            mode=cfg.compile_inductor_mode,
+            activation_memory_budget=cfg.activation_memory_budget,
+            grad_ckpt=cfg.grad_ckpt,
+            logger=logger,
+        )
+        logger.info(
+            "torch_compile: %d block._forward compiled (mode=%s, dynamic_seq=%s); "
+            "%d distinct token counts in pool, %s.",
+            len(model.blocks),
+            cfg.compile_inductor_mode,
+            cfg.compile_dynamic_seq,
+            pc.n_shapes,
+            (
+                f"seq_range={pc.seq_range} (one symbolic graph)"
+                if cfg.compile_dynamic_seq
+                else "static per-shape graphs"
+            ),
+        )
 
     # Gradient checkpointing recomputes block activations in backward (teacher
     # runs under no_grad, so only the student pass holds activations; peak ~12 GB
     # off, flat on). Keep the model in train() mode — Block.forward gates
     # checkpointing on self.training.
-    enable_training_grad_ckpt(model, enabled=args.grad_ckpt)
+    enable_training_grad_ckpt(model, enabled=cfg.grad_ckpt)
     model.train()
 
-    # Freeze everything, then unfreeze pooled_text_proj
+    # The trainable mod head: pooled_text_proj, plus the σ-FiLM generator when
+    # enabled. Used for unfreeze / fp32 cast / optimizer / grad-norm / save.
+    mod_modules = [model.pooled_text_proj]
+    if cfg.mod_sigma_film:
+        model.enable_pooled_text_sigma_film = True
+        mod_modules.append(model.pooled_text_sigma_film)
+        logger.info(
+            "σ-FiLM ON: mod head hidden is FiLM-modulated by the time embedding "
+            "(text push scales/re-aims per σ)"
+        )
+
+    def mod_parameters():
+        for m in mod_modules:
+            yield from m.parameters()
+
+    # Freeze everything, then unfreeze the mod head
     for param in model.parameters():
         param.requires_grad_(False)
-    for param in model.pooled_text_proj.parameters():
+    for param in mod_parameters():
         param.requires_grad_(True)
 
     # Arm the student forward's pooled_text_proj path. The output layer starts
@@ -386,10 +309,11 @@ def main():
     # gradient — the teacher forward still passes skip_pooled_text_proj=True.
     model.enable_pooled_text_modulation = True
 
-    # Train pooled_text_proj in float32 for precision
-    model.pooled_text_proj.to(dtype=torch.float32)
+    # Train the mod head in float32 for precision
+    for m in mod_modules:
+        m.to(dtype=torch.float32)
 
-    trainable_params = sum(p.numel() for p in model.pooled_text_proj.parameters())
+    trainable_params = sum(p.numel() for p in mod_parameters())
     total_params = sum(p.numel() for p in model.parameters())
     logger.info(
         f"Trainable: {trainable_params:,} / {total_params:,} params "
@@ -398,88 +322,66 @@ def main():
 
     # --- Optimizer ---
     optimizer = torch.optim.AdamW(
-        model.pooled_text_proj.parameters(),
-        lr=args.lr,
+        list(mod_parameters()),
+        lr=cfg.lr,
         fused=torch.cuda.is_available(),
     )
 
     # Warmup + cosine annealing
     warmup_steps = (
-        int(args.warmup) if args.warmup >= 1 else int(args.warmup * args.iterations)
+        int(cfg.warmup) if cfg.warmup >= 1 else int(cfg.warmup * cfg.iterations)
     )
-    if warmup_steps > 0:
-        warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-            optimizer, start_factor=1e-6 / args.lr, total_iters=warmup_steps
-        )
-        cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.iterations - warmup_steps, eta_min=args.lr * 0.1
-        )
-        scheduler = torch.optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_steps],
-        )
-    else:
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=args.iterations, eta_min=args.lr * 0.1
-        )
+    scheduler = make_warmup_cosine_scheduler(
+        optimizer, cfg.iterations, cfg.lr, warmup_steps=warmup_steps
+    )
 
     # --- Dataset (train + optional val split) ---
     dataset = CachedDataset(
-        args.data_dir,
-        batch_size=args.batch_size,
+        cfg.data_dir,
+        batch_size=cfg.batch_size,
         split="train",
-        validation_split=args.validation_split,
-        validation_seed=args.validation_seed,
-        sample_ratio=args.sample_ratio,
-        synth_data_dir=args.synth_data_dir,
+        validation_split=cfg.validation_split,
+        validation_seed=cfg.validation_seed,
+        sample_ratio=cfg.sample_ratio,
+        synth_data_dir=cfg.synth_data_dir,
     )
 
     val_dataset = None
     val_dataloader = None
-    if args.validation_split > 0.0:
+    if cfg.validation_split > 0.0:
         val_dataset = CachedDataset(
-            args.data_dir,
-            batch_size=args.batch_size,
+            cfg.data_dir,
+            batch_size=cfg.batch_size,
             split="val",
-            validation_split=args.validation_split,
-            validation_seed=args.validation_seed,
-            sample_ratio=args.sample_ratio,
-            synth_data_dir=args.synth_data_dir,
-        )
-
-    # Custom collate to bypass collate_tensor_fn's _new_shared_filename_cpu
-    # which creates non-resizable storage on some PyTorch/Python 3.13 builds.
-    def _collate(batch):
-        return (
-            [b[0] for b in batch],
-            torch.stack([b[1] for b in batch]),
-            torch.stack([b[2] for b in batch]),
-            torch.stack([b[3] for b in batch]),
+            validation_split=cfg.validation_split,
+            validation_seed=cfg.validation_seed,
+            sample_ratio=cfg.sample_ratio,
+            synth_data_dir=cfg.synth_data_dir,
         )
 
     # Bucket-grouped batch sampler: every batch is one resolution (so the
-    # stacking _collate works at batch_size>1) and, when shuffling, batch order
+    # stacking collate works at batch_size>1) and, when shuffling, batch order
     # is reshuffled per epoch with the largest-token bucket pinned first.
+    collate_fn = make_cached_collate()
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_sampler=dataset.make_batch_sampler(shuffle=args.shuffle, seed=args.seed),
+        batch_sampler=dataset.make_batch_sampler(shuffle=cfg.shuffle, seed=cfg.seed),
         num_workers=2,
         pin_memory=True,
-        collate_fn=_collate,
+        collate_fn=collate_fn,
     )
 
     if val_dataset is not None and len(val_dataset) > 0:
         val_dataloader = torch.utils.data.DataLoader(
             val_dataset,
-            batch_size=args.batch_size,
+            batch_size=cfg.batch_size,
             shuffle=False,
             num_workers=1,
             pin_memory=True,
             drop_last=True,
-            collate_fn=_collate,
+            collate_fn=collate_fn,
         )
-    elif args.validation_split > 0.0:
+    elif cfg.validation_split > 0.0:
         logger.warning(
             "validation_split>0 but val set is empty after bucket-remainder drop; "
             "skipping validation. Lower batch_size or raise validation_split."
@@ -490,61 +392,97 @@ def main():
     # forward entirely; sigmas are pre-sampled from the same sigmoid(scale * N(0,1))
     # distribution as the original sampler, noise is deterministic per pair) ---
     teacher_cache = None
-    if not args.no_teacher_cache:
+    if not cfg.no_teacher_cache:
         teacher_cache = TeacherCache(
-            K=args.teacher_cache_K,
-            sigmoid_scale=args.sigmoid_scale,
-            base_seed=args.teacher_cache_seed,
+            K=cfg.teacher_cache_K,
+            sigmoid_scale=cfg.sigmoid_scale,
+            base_seed=cfg.teacher_cache_seed,
         )
         # Per-entry size from the first sample's latent shape (16 ch * H * W * bf16).
         _peek = dataset[0][1]
         bytes_per_entry = _peek.numel() * 2
-        approx_gb = len(dataset) * args.teacher_cache_K * bytes_per_entry / 1e9
+        approx_gb = len(dataset) * cfg.teacher_cache_K * bytes_per_entry / 1e9
         logger.info(
-            f"Teacher cache enabled: K={args.teacher_cache_K} sigmas, "
-            f"{len(dataset)} samples → up to {len(dataset) * args.teacher_cache_K} entries, "
+            f"Teacher cache enabled: K={cfg.teacher_cache_K} sigmas, "
+            f"{len(dataset)} samples → up to {len(dataset) * cfg.teacher_cache_K} entries, "
             f"~{approx_gb:.2f} GB RAM at full fill (bf16)."
         )
-        if args.prefill_teacher_cache:
+        if cfg.prefill_teacher_cache:
             prefill_teacher_cache(teacher_cache, dataset, model, device, dtype)
 
-    os.makedirs(os.path.dirname(args.output_path) or ".", exist_ok=True)
+    os.makedirs(os.path.dirname(cfg.output_path) or ".", exist_ok=True)
 
     # --- TensorBoard ---
     writer = None
-    if not args.no_log:
+    if not cfg.no_log:
         from datetime import datetime
 
         run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run_log_dir = os.path.join(args.log_dir, run_name)
+        run_log_dir = os.path.join(cfg.log_dir, run_name)
         os.makedirs(run_log_dir, exist_ok=True)
         writer = SummaryWriter(log_dir=run_log_dir)
         writer.add_text(
-            "config", "  \n".join(f"{k}: {v}" for k, v in vars(args).items())
+            "config",
+            "  \n".join(f"{k}: {v}" for k, v in dataclasses.asdict(cfg).items()),
         )
         logger.info(f"TensorBoard logs -> {run_log_dir}")
 
+    # --- GAD (geometry-aware distillation) setup. gad_weight=0 → fully off (no
+    # extra forwards, bit-for-bit the MSE-only path). Resolve the perturbation-
+    # pair source against the actual batch_size here. ---
+    gad_enabled = cfg.gad_weight > 0.0
+    gad_source = None
+    gad_rng = None
+    if gad_enabled:
+        if cfg.gad_pair_source == "batch":
+            gad_source = "batch"
+        elif cfg.gad_pair_source == "dataset":
+            gad_source = "dataset"
+        else:  # auto
+            gad_source = "batch" if cfg.batch_size > 1 else "dataset"
+        if gad_source == "batch" and cfg.batch_size < 2:
+            logger.warning(
+                "gad_pair_source=batch needs batch_size>1 (a roll of a size-1 "
+                "batch pairs a sample with itself → ΔT=0). Falling back to "
+                "dataset-random pairing."
+            )
+            gad_source = "dataset"
+        gad_rng = random.Random(cfg.seed)
+        logger.info(
+            f"GAD ON: weight={cfg.gad_weight}, h={cfg.gad_h}, loss={cfg.gad_loss}, "
+            f"pair_source={gad_source} (+1 grad student forward, +1 no_grad teacher "
+            "forward per accum step; two-phase backward keeps peak VRAM at one "
+            "student graph — fits without --grad_ckpt)."
+        )
+
     # --- Training loop ---
-    grad_accum = args.grad_accum
+    grad_accum = cfg.grad_accum
     logger.info(
-        f"Starting distillation: {args.iterations} iterations, "
-        f"grad_accum={grad_accum} (effective batch={args.batch_size * grad_accum})"
+        f"Starting distillation: {cfg.iterations} iterations, "
+        f"grad_accum={grad_accum} (effective batch={cfg.batch_size * grad_accum})"
     )
 
     data_iter = iter(dataloader)
     running_loss = 0.0
     log_interval = 50
 
-    val_enabled = val_dataloader is not None and args.validate_every_n_steps > 0
+    val_enabled = val_dataloader is not None and cfg.validate_every_n_steps > 0
     best_val_loss = float("inf")
     val_teacher_cache = (
-        ValTeacherCache() if val_enabled and not args.no_val_teacher_cache else None
+        ValTeacherCache() if val_enabled and not cfg.no_val_teacher_cache else None
     )
 
-    progress = tqdm(range(args.iterations), desc="distill")
+    pad_cache = PadCache(dtype)
+    progress = tqdm(range(cfg.iterations), desc="distill")
     accum_loss_t = torch.zeros((), device=device)
+    accum_mse_t = torch.zeros((), device=device)
+    accum_gad_t = torch.zeros((), device=device)
+    accum_gad_cos_t = torch.zeros((), device=device)
     for step in progress:
         accum_loss_t.zero_()
+        accum_mse_t.zero_()
+        accum_gad_t.zero_()
+        accum_gad_cos_t.zero_()
 
         for accum_step in range(grad_accum):
             # Get batch (infinite cycling)
@@ -587,23 +525,20 @@ def main():
             else:
                 sigma_idx_list = None
                 noise = torch.randn_like(latents)
-                sigmas = torch.sigmoid(
-                    args.sigmoid_scale * torch.randn(B, device=device)
+                sigmas = sample_sigma(
+                    B,
+                    sigmoid_scale=cfg.sigmoid_scale,
+                    device=device,
+                    dtype=torch.float32,
                 )
 
             timesteps = sigmas  # [0, 1] range (model expects this)
 
-            # Noisy input: (1-σ) * latents + σ * noise
-            sigmas_expand = sigmas.view(B, 1, 1, 1)
-            noisy_input = (1.0 - sigmas_expand) * latents + sigmas_expand * noise
+            # Noisy input: (1-σ)·latents + σ·noise, then 5D (B,16,1,H,W) for the DiT.
+            noisy_input = to_dit_5d(renoise(latents, sigmas, noise))
 
-            # Add temporal dim: (B, 16, H, W) -> (B, 16, 1, H, W)
-            noisy_input = noisy_input.unsqueeze(2)
-
-            # Padding mask (all zeros = no padding)
-            padding_mask = torch.zeros(
-                B, 1, latents.shape[-2], latents.shape[-1], dtype=dtype, device=device
-            )
+            # Padding mask (all zeros = no padding); recycled per spatial shape.
+            padding_mask = pad_cache.get(latents)
 
             # --- Teacher forward: real crossattn, pooled_text_proj skipped ---
             # (skipped entirely on a full-batch cache hit).
@@ -621,21 +556,19 @@ def main():
                     [c.to(device, dtype=dtype) for c in cached_list], dim=0
                 )
             else:
-                if model.blocks_to_swap:
-                    model.prepare_block_swap_before_forward()
-                # Fresh CUDA-graph epoch so teacher_pred outlives the student call.
-                torch.compiler.cudagraph_mark_step_begin()
-                with torch.no_grad(), torch.autocast("cuda", dtype=dtype):
-                    teacher_pred = model.forward_mini_train_dit(
-                        noisy_input,
-                        timesteps,
-                        crossattn_emb,
-                        padding_mask=padding_mask,
-                        skip_pooled_text_proj=True,
-                    )
-                # Detach from the static buffer in case a future caller adds
-                # a third compiled-fn invocation in the same step.
-                teacher_pred = teacher_pred.clone()
+                # clone=True: teacher_pred must outlive the student call (and any
+                # third compiled-fn invocation) before it's read into the loss.
+                teacher_pred = run_mini_train_forward(
+                    model,
+                    noisy_input,
+                    timesteps,
+                    crossattn_emb,
+                    padding_mask=padding_mask,
+                    dtype=dtype,
+                    no_grad=True,
+                    clone=True,
+                    skip_pooled_text_proj=True,
+                )
                 if teacher_cache is not None:
                     for i in range(B):
                         if cached_list[i] is None:
@@ -646,30 +579,112 @@ def main():
             # --- Student forward: T5("") crossattn, real pooled text through proj ---
             # requires_grad_ needed for gradient checkpointing
             noisy_input = noisy_input.requires_grad_()
-            if model.blocks_to_swap:
-                model.prepare_block_swap_before_forward()
             uncond_crossattn = uncond_for_batch(uncond_te_1, crossattn_emb)
-            torch.compiler.cudagraph_mark_step_begin()
-            with torch.autocast("cuda", dtype=dtype):
-                student_pred = model.forward_mini_train_dit(
-                    noisy_input,
-                    timesteps,
-                    uncond_crossattn,
-                    padding_mask=padding_mask,
-                    pooled_text_override=pooled_text,
-                )
+            student_pred = run_mini_train_forward(
+                model,
+                noisy_input,
+                timesteps,
+                uncond_crossattn,
+                padding_mask=padding_mask,
+                dtype=dtype,
+                pooled_text_override=pooled_text,
+            )
+            # --- MSE loss (base pointwise term) ---
+            mse_loss = nn.functional.mse_loss(
+                student_pred.float(), teacher_pred.float()
+            )
 
-            # --- MSE loss (scaled for accumulation) ---
-            loss = nn.functional.mse_loss(student_pred.float(), teacher_pred.float())
-            loss = loss / grad_accum
-            loss.backward()
-            accum_loss_t += loss.detach()
+            if not gad_enabled:
+                (mse_loss / grad_accum).backward()
+                accum_loss_t += (mse_loss / grad_accum).detach()
+                accum_mse_t += mse_loss.detach()
+                continue
+
+            # --- GAD term: also match the teacher's finite-difference response
+            # to a text change. ΔT rides cross-attn (teacher, no_grad), ΔS rides
+            # the modulation MLP (student). Two-phase backward keeps peak VRAM at
+            # ONE student graph (same as the MSE-only run) instead of two: we
+            # back-prop the base term first — freeing student_pred's activations
+            # before the perturbed student graph is built — and treat student(A)
+            # as a detached constant in GAD. The target is then
+            # student(B) → student(A) + ΔT, i.e. the head's residual
+            # (student − teacher) must not depend on the text; since L_mse
+            # already drives the A-residual to ~0, GAD pulls the B-residual the
+            # same way (synergistic, not competing). Gradient flows through the
+            # perturbed (B) student only. ---
+            (mse_loss / grad_accum).backward()
+            # detach().clone() — backward only frees the graph; clone lifts the
+            # A-baseline VALUES off student_pred's (possibly reused) static
+            # output buffer before the perturbed forwards overwrite it.
+            student_a = student_pred.detach().clone()
+
+            cross_b, pool_b = _draw_gad_pair(
+                idx_list,
+                crossattn_emb,
+                pooled_text,
+                gad_source,
+                gad_rng,
+                dataset,
+                device,
+                dtype,
+            )
+            if cfg.gad_h == 1.0:
+                cross_pert, pool_pert = cross_b, pool_b
+            else:
+                cross_pert = crossattn_emb + cfg.gad_h * (cross_b - crossattn_emb)
+                pool_pert = pooled_text + cfg.gad_h * (pool_b - pooled_text)
+
+            # Perturbed teacher (frozen, no_grad): ΔT = v(cross_pert) − v(cross_A).
+            teacher_pert = run_mini_train_forward(
+                model,
+                noisy_input,
+                timesteps,
+                cross_pert,
+                padding_mask=padding_mask,
+                dtype=dtype,
+                no_grad=True,
+                clone=True,
+                skip_pooled_text_proj=True,
+            )
+            dT = (teacher_pert - teacher_pred).float()
+
+            # Perturbed student (grad → pooled_text_proj): ΔS = v(pool_pert) − v(pool_A).
+            student_pert = run_mini_train_forward(
+                model,
+                noisy_input,
+                timesteps,
+                uncond_crossattn,
+                padding_mask=padding_mask,
+                dtype=dtype,
+                pooled_text_override=pool_pert,
+            )
+            dS = student_pert.float() - student_a.float()
+
+            if cfg.gad_loss == "cosine":
+                gad_loss = 1.0 - nn.functional.cosine_similarity(
+                    dS.flatten(), dT.flatten(), dim=0
+                )
+            else:  # l2 (paper-faithful; also penalizes the magnitude gap)
+                gad_loss = nn.functional.mse_loss(dS, dT)
+
+            with torch.no_grad():
+                gad_cos = nn.functional.cosine_similarity(
+                    dS.flatten(), dT.flatten(), dim=0
+                )
+            (cfg.gad_weight * gad_loss / grad_accum).backward()
+
+            accum_loss_t += (
+                mse_loss.detach() + cfg.gad_weight * gad_loss.detach()
+            ) / grad_accum
+            accum_mse_t += mse_loss.detach()
+            accum_gad_t += gad_loss.detach()
+            accum_gad_cos_t += gad_cos
 
         # Grad-norm snapshot before stepping (cheap; ~8M params)
         grad_norm = None
-        if writer is not None and (step + 1) % args.log_interval == 0:
+        if writer is not None and (step + 1) % cfg.log_interval == 0:
             sq = 0.0
-            for p in model.pooled_text_proj.parameters():
+            for p in mod_parameters():
                 if p.grad is not None:
                     sq += p.grad.detach().float().pow(2).sum().item()
             grad_norm = sq**0.5
@@ -682,11 +697,21 @@ def main():
         running_loss += accum_loss
         lr = scheduler.get_last_lr()[0]
 
-        if writer is not None and (step + 1) % args.log_interval == 0:
+        if writer is not None and (step + 1) % cfg.log_interval == 0:
             writer.add_scalar("train/loss", accum_loss, step + 1)
+            writer.add_scalar(
+                "train/loss_mse", accum_mse_t.item() / grad_accum, step + 1
+            )
             writer.add_scalar("train/lr", lr, step + 1)
             if grad_norm is not None:
                 writer.add_scalar("train/grad_norm", grad_norm, step + 1)
+            if gad_enabled:
+                writer.add_scalar(
+                    "train/loss_gad", accum_gad_t.item() / grad_accum, step + 1
+                )
+                writer.add_scalar(
+                    "train/gad_cos", accum_gad_cos_t.item() / grad_accum, step + 1
+                )
             if teacher_cache is not None:
                 tc_total = teacher_cache.hits + teacher_cache.misses
                 hit_rate = teacher_cache.hits / tc_total if tc_total else 0.0
@@ -705,10 +730,10 @@ def main():
         # --- Validation pass ---
         do_validate = (
             val_dataloader is not None
-            and args.validate_every_n_steps > 0
+            and cfg.validate_every_n_steps > 0
             and (
-                (step + 1) % args.validate_every_n_steps == 0
-                or (step + 1) == args.iterations
+                (step + 1) % cfg.validate_every_n_steps == 0
+                or (step + 1) == cfg.iterations
             )
         )
         improved = False
@@ -719,9 +744,9 @@ def main():
                 val_dataloader,
                 device=device,
                 dtype=dtype,
-                sigmas=args.validation_sigmas,
-                max_steps=args.max_validation_steps,
-                seed=args.validation_seed,
+                sigmas=cfg.validation_sigmas,
+                max_steps=cfg.max_validation_steps,
+                seed=cfg.validation_seed,
                 uncond_te_1=uncond_te_1,
                 teacher_cache=val_teacher_cache,
             )
@@ -751,15 +776,20 @@ def main():
         if val_enabled:
             should_save = improved
         else:
-            should_save = (step + 1) % args.save_every == 0 or (
+            should_save = (step + 1) % cfg.save_every == 0 or (
                 step + 1
-            ) == args.iterations
+            ) == cfg.iterations
         if should_save:
-            save_path = args.output_path
+            save_path = cfg.output_path
             state = {
                 k: v.to(torch.bfloat16)
                 for k, v in model.pooled_text_proj.state_dict().items()
             }
+            if cfg.mod_sigma_film:
+                # σ-FiLM weights ride under a 'sigma_film.' prefix so load can
+                # route them back (and auto-arm enable_pooled_text_sigma_film).
+                for k, v in model.pooled_text_sigma_film.state_dict().items():
+                    state[f"sigma_film.{k}"] = v.to(torch.bfloat16)
             save_file(state, save_path)
             if val_enabled:
                 logger.info(

@@ -17,8 +17,8 @@ import torch
 from safetensors.torch import load_file
 
 from networks import (
+    NETWORK_KWARGS,
     NETWORK_REGISTRY,
-    SHARED_KWARG_FLAGS,
     NetworkSpec,
     all_network_kwargs,
     resolve_network_spec,
@@ -34,6 +34,7 @@ from networks import lora_save
 EXPECTED_VARIANTS = {
     "lora",
     "ortho",
+    "ortho_init",
     "hydra",
     "ortho_hydra",
 }
@@ -46,31 +47,24 @@ def test_registry_has_expected_variants():
         assert spec.name == name
 
 
-def test_all_network_kwargs_is_union_of_shared_and_specs():
-    """`all_network_kwargs()` must cover every kwarg any variant declares.
+def test_all_network_kwargs_matches_allowlist():
+    """`all_network_kwargs()` must be exactly the sorted ``NETWORK_KWARGS`` set.
 
-    Guards against the drift mode that previously silently dropped
-    `router_targets` (originally a trio of `hydra_router_layers` /
-    `sigma_router_layers` / `fei_router_layers` before they were
-    consolidated): a kwarg declared on a NetworkSpec but missing from the
-    forwarding list.
+    The two were unified (the per-variant ``kwarg_flags`` split was collapsed
+    into one flat allowlist); this pins them together so the forwarding list
+    and the schema-validation set never drift apart.
     """
-    all_kw = set(all_network_kwargs())
-    assert set(SHARED_KWARG_FLAGS).issubset(all_kw)
-    for spec in NETWORK_REGISTRY.values():
-        assert set(spec.kwarg_flags).issubset(all_kw), (
-            f"{spec.name}.kwarg_flags has keys missing from all_network_kwargs(): "
-            f"{set(spec.kwarg_flags) - all_kw}"
-        )
+    assert set(all_network_kwargs()) == set(NETWORK_KWARGS)
+    assert list(all_network_kwargs()) == sorted(NETWORK_KWARGS)
 
 
 def test_hydra_router_kwargs_registered():
     """Regression pin: the bug that motivated the M2 finish.
 
-    `router_targets` + σ-conditional router kwargs must be registered on
-    the hydra / ortho_hydra specs so they flow through argparse schema
-    and into `create_network`. If these drop off the spec, the router
-    silently defaults to uniform MoE over every target module.
+    `router_targets` + σ-conditional router kwargs must stay in the allowlist
+    so they flow through the argparse schema and into `create_network`. If any
+    drops off, the router silently defaults to uniform MoE over every target
+    module.
     """
     must_have = {
         "router_targets",
@@ -81,12 +75,23 @@ def test_hydra_router_kwargs_registered():
         "balance_loss_weight",
         "balance_loss_warmup_ratio",
     }
-    for variant in ("hydra", "ortho_hydra"):
-        flags = set(NETWORK_REGISTRY[variant].kwarg_flags)
-        missing = must_have - flags
-        assert not missing, f"{variant} spec missing kwarg_flags: {missing}"
-    # and the union exposes them
-    assert must_have.issubset(set(all_network_kwargs()))
+    missing = must_have - set(NETWORK_KWARGS)
+    assert not missing, f"allowlist missing hydra router kwargs: {missing}"
+
+
+def test_repa_kwargs_registered():
+    """REPA v2 kwargs must stay in the allowlist (else use_repa is silently
+    inert + the config test rejects the key). See library/training/repa.py."""
+    must_have = {
+        "use_repa",
+        "repa_mode",
+        "repa_weight",
+        "repa_layer",
+        "repa_encoder",
+        "repa_lr_scale",
+    }
+    missing = must_have - set(NETWORK_KWARGS)
+    assert not missing, f"allowlist missing repa kwargs: {missing}"
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +104,7 @@ def test_hydra_router_kwargs_registered():
     [
         ({}, "lora"),
         ({"use_ortho": "true"}, "ortho"),
+        ({"use_ortho_init": "true"}, "ortho_init"),
         ({"use_moe_style": "shared_A"}, "hydra"),
         ({"use_moe_style": "shared_A", "use_ortho": "true"}, "ortho_hydra"),
         ({"use_moe_style": "independent_A"}, "stacked_experts_global_fei"),
@@ -111,6 +117,30 @@ def test_hydra_router_kwargs_registered():
 def test_resolve_precedence(kwargs, expected):
     spec = resolve_network_spec(kwargs)
     assert spec.name == expected
+
+
+def test_ortho_and_ortho_init_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        resolve_network_spec({"use_ortho": "true", "use_ortho_init": "true"})
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"use_ortho_init": "true", "use_moe_style": "shared_A"},
+        {"use_ortho_init": "true", "use_moe_style": "independent_A"},
+    ],
+)
+def test_ortho_init_rejects_moe(kwargs):
+    with pytest.raises(NotImplementedError):
+        resolve_network_spec(kwargs)
+
+
+def test_ortho_init_composes_with_chimera():
+    """OrthoInit now rides the chimera_hydra spec (trainable bases threaded via
+    cfg.use_ortho_init); it resolves rather than raising."""
+    spec = resolve_network_spec({"use_ortho_init": "true", "use_chimera_hydra": "true"})
+    assert spec.name == "chimera_hydra"
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +230,91 @@ def test_save_ortho_roundtrip(tmp_path: Path):
         assert not k.endswith(".P_basis") and not k.endswith(".Q_basis")
 
 
+def test_save_ortho_init_roundtrip(tmp_path: Path):
+    r, in_dim, out_dim = 4, 8, 12
+    prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
+    # OrthoInit runtime keys: trainable P_init/Q_init + λ (no S_p/S_q, no
+    # frozen P_basis/Q_basis). Discriminated by ``.P_init``.
+    sd = {
+        f"{prefix}.P_init": torch.randn(3 * out_dim, r),
+        f"{prefix}.Q_init": torch.randn(r, in_dim),
+        f"{prefix}.lambda_layer": torch.randn(1, r),
+        f"{prefix}.alpha": _alpha(r),
+    }
+
+    loaded = _save_and_reload(sd, tmp_path, save_variant="ortho_to_lora")
+
+    base = "lora_unet_blocks_0_self_attn"
+    for suffix in ("q_proj", "k_proj", "v_proj"):
+        assert loaded[f"{base}_{suffix}.lora_down.weight"].shape == (r, in_dim)
+        assert loaded[f"{base}_{suffix}.lora_up.weight"].shape == (out_dim, r)
+    # runtime-only keys must be gone
+    for k in loaded:
+        assert not k.endswith(".P_init") and not k.endswith(".Q_init")
+        assert not k.endswith(".lambda_layer")
+
+
+def test_ortho_init_module_zero_delta_and_distill_fidelity():
+    """ΔW=0 at init (λ=0) and the sqrt-split distill reproduces P·diag(λ)·Q."""
+    from networks.lora_modules import OrthoInitLoRAModule
+
+    torch.manual_seed(0)
+    in_dim, out_dim, r = 16, 24, 4
+    lin = torch.nn.Linear(in_dim, out_dim, bias=False)
+    mod = OrthoInitLoRAModule("lora_test", lin, lora_dim=r, alpha=r)
+
+    # ΔW = 0 at init: adapter output equals the base Linear output.
+    mod.apply_to()
+    x = torch.randn(2, in_dim)
+    base_out = lin.weight @ x[0]  # org weight preserved (apply_to deletes ref)
+    with torch.no_grad():
+        y = mod.forward(x)
+    assert torch.allclose(y[0], base_out, atol=1e-5)
+
+    # Give λ a nonzero value, then check distill round-trips the product.
+    with torch.no_grad():
+        mod.lambda_layer.copy_(torch.randn(1, r))
+    P = mod.P_init.detach().float()
+    Q = mod.Q_init.detach().float()
+    lam = mod.lambda_layer.detach().squeeze(0).float()
+    expected_dW = P @ torch.diag(lam) @ Q  # (out, in)
+
+    sd = {
+        "m.P_init": mod.P_init.detach().clone(),
+        "m.Q_init": mod.Q_init.detach().clone(),
+        "m.lambda_layer": mod.lambda_layer.detach().clone(),
+        "m.alpha": torch.tensor(float(r)),
+    }
+    OrthoInitLoRAModule.distill_save_state_dict(sd, torch.float32)
+    up = sd["m.lora_up.weight"]
+    down = sd["m.lora_down.weight"]
+    assert torch.allclose(up @ down, expected_dW, atol=1e-5)
+
+
+def test_ortho_init_training_grads_flow():
+    """OrthoInit's training forward (activation-dtype GEMMs) must deliver
+    gradient to the trainable SVD bases, λ, and the input."""
+    from networks.lora_modules import OrthoInitLoRAModule
+
+    torch.manual_seed(1)
+    in_dim, out_dim, r = 16, 24, 4
+    lin = torch.nn.Linear(in_dim, out_dim, bias=False)
+    mod = OrthoInitLoRAModule("lora_test", lin, lora_dim=r, alpha=r)
+    with torch.no_grad():
+        mod.lambda_layer.copy_(torch.randn(1, r))
+    mod.apply_to()
+    mod.train()
+
+    x = torch.randn(2, 5, in_dim, requires_grad=True)
+    y = mod.forward(x)
+    y.sum().backward()
+
+    assert mod.Q_init.grad is not None and mod.Q_init.grad.abs().sum() > 0
+    assert mod.P_init.grad is not None and mod.P_init.grad.abs().sum() > 0
+    assert mod.lambda_layer.grad is not None
+    assert x.grad is not None
+
+
 def test_save_hydra_moe_roundtrip(tmp_path: Path):
     E, r, in_dim, out_dim = 4, 4, 8, 12
     prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
@@ -280,9 +395,7 @@ def test_save_hydra_moe_mixed_with_plain_lora_qkv_defuses_up(tmp_path: Path):
         assert f"{plain_base}_{suffix}.router.weight" not in loaded
     # fused prefix must be entirely purged
     for k in loaded:
-        assert not k.startswith(plain_prefix), (
-            f"fused plain-LoRA key survived: {k}"
-        )
+        assert not k.startswith(plain_prefix), f"fused plain-LoRA key survived: {k}"
 
 
 def test_save_ortho_hydra_roundtrip(tmp_path: Path):

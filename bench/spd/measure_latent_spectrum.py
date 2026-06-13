@@ -40,9 +40,10 @@ import numpy as np
 import torch
 from PIL import Image
 
+from anima_lora import load_vae
+from bench._anima import DEFAULT_VAE
 from bench._common import make_run_dir, write_result
 from library.datasets.image_utils import IMAGE_EXTENSIONS, IMAGE_TRANSFORMS
-from library.models import qwen_vae
 
 log = logging.getLogger("bench.spd.spectrum")
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -121,31 +122,49 @@ def fit_slope(k: np.ndarray, logp: np.ndarray, lo: float, hi: float):
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--image_dir", default="image_dataset")
-    ap.add_argument("--vae", default="models/vae/qwen_image_vae.safetensors")
+    ap.add_argument("--vae", default=DEFAULT_VAE)
     ap.add_argument("--num_images", type=int, default=200)
-    ap.add_argument("--max_side", type=int, default=1536,
-                    help="Resize longest side to <= this (px) before VAE encode.")
+    ap.add_argument(
+        "--max_side",
+        type=int,
+        default=1536,
+        help="Resize longest side to <= this (px) before VAE encode.",
+    )
     ap.add_argument("--n_bins", type=int, default=96)
-    ap.add_argument("--band", type=float, nargs=2, default=(0.06, 0.5),
-                    help="Mid-frequency fit band as fraction of Nyquist.")
+    ap.add_argument(
+        "--band",
+        type=float,
+        nargs=2,
+        default=(0.06, 0.5),
+        help="Mid-frequency fit band as fraction of Nyquist.",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dtype", default="bf16", choices=["bf16", "fp16", "fp32"])
-    ap.add_argument("--vae_chunk", type=int, default=0,
-                    help="VAE spatial_chunk_size (0=off); raise if OOM at hires.")
+    ap.add_argument(
+        "--vae_chunk",
+        type=int,
+        default=0,
+        help="VAE spatial_chunk_size (0=off); raise if OOM at hires.",
+    )
     ap.add_argument("--label", default="latent-spectrum")
     args = ap.parse_args()
 
-    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[args.dtype]
+    dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": torch.float32}[
+        args.dtype
+    ]
     root = Path(args.image_dir)
     picks = discover_images(root, args.num_images, args.seed)
     if not picks:
         raise SystemExit(f"No images found under {root}/")
-    log.info(f"Sampled {len(picks)} images across {len({p.parent for p in picks})} folders.")
+    log.info(
+        f"Sampled {len(picks)} images across {len({p.parent for p in picks})} folders."
+    )
 
     log.info(f"Loading VAE from {args.vae} on {args.device} ({args.dtype}) ...")
-    vae = qwen_vae.load_vae(
-        args.vae, device=args.device,
+    vae = load_vae(
+        args.vae,
+        device=args.device,
         spatial_chunk_size=(args.vae_chunk or None),
     )
     vae.eval()
@@ -171,7 +190,7 @@ def main() -> None:
         lat = lat.reshape(n_ch, lat.shape[-2], lat.shape[-1])
         for c in range(n_ch):
             f = np.fft.fftshift(np.fft.fft2(lat[c]))
-            power = (f.real ** 2 + f.imag ** 2)
+            power = f.real**2 + f.imag**2
             prof = radial_profile(power, args.n_bins)
             good = np.isfinite(prof) & (prof > 0)
             sum_logp[c, good] += np.log10(prof[good])
@@ -193,13 +212,19 @@ def main() -> None:
     in_paper_range = beta is not None and 2.0 <= beta <= 3.0
     decays = beta is not None and beta >= 1.0
     if in_paper_range:
-        verdict = "FITS: beta within paper's [2,3] — SPD premise holds for Anima latents."
+        verdict = (
+            "FITS: beta within paper's [2,3] — SPD premise holds for Anima latents."
+        )
     elif decays:
-        verdict = (f"PARTIAL: power-law decays (beta={beta:.2f}) but outside [2,3]; "
-                   "SPD schedule would need re-derivation, premise weakened.")
+        verdict = (
+            f"PARTIAL: power-law decays (beta={beta:.2f}) but outside [2,3]; "
+            "SPD schedule would need re-derivation, premise weakened."
+        )
     else:
-        verdict = ("FAILS: no clean power-law decay — SPD's signal/noise-by-frequency "
-                   "assumption does not hold for Anima latents.")
+        verdict = (
+            "FAILS: no clean power-law decay — SPD's signal/noise-by-frequency "
+            "assumption does not hold for Anima latents."
+        )
 
     run_dir = make_run_dir("spd", label=args.label)
     # radial profile CSV
@@ -214,21 +239,37 @@ def main() -> None:
 
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(6, 5))
-        ax.plot(k, logp_mean, "o-", ms=3, label="Anima latents (mean over 16 ch)", color="#1f4e8c")
+        ax.plot(
+            k,
+            logp_mean,
+            "o-",
+            ms=3,
+            label="Anima latents (mean over 16 ch)",
+            color="#1f4e8c",
+        )
         if beta is not None:
             band = (k >= lo) & (k <= hi)
             xb = np.log10(k[band])
             a = float(np.nanmean(logp_mean[band] + beta * xb))
-            ax.plot(k[band], a - beta * np.log10(k[band]), "--", color="#c0392b",
-                    label=f"fit  P∝k^-{beta:.2f}  (R²={r2:.3f})")
-        ax.set_xscale("log"); ax.set_xlabel("normalized radial frequency  k / k_Nyquist")
-        ax.set_ylabel("log10 P(k)"); ax.set_title("Anima VAE latent power spectrum")
+            ax.plot(
+                k[band],
+                a - beta * np.log10(k[band]),
+                "--",
+                color="#c0392b",
+                label=f"fit  P∝k^-{beta:.2f}  (R²={r2:.3f})",
+            )
+        ax.set_xscale("log")
+        ax.set_xlabel("normalized radial frequency  k / k_Nyquist")
+        ax.set_ylabel("log10 P(k)")
+        ax.set_title("Anima VAE latent power spectrum")
         ax.axvspan(lo, hi, color="0.85", zorder=0, label="fit band")
-        ax.legend(fontsize=8); fig.tight_layout()
+        ax.legend(fontsize=8)
+        fig.tight_layout()
         fig.savefig(run_dir / "spectrum.png", dpi=130)
         artifacts.append("spectrum.png")
     except Exception as e:
@@ -251,13 +292,19 @@ def main() -> None:
         "in_paper_range": bool(in_paper_range),
         "verdict": verdict,
     }
-    write_result(run_dir, script=__file__, args=args, metrics=metrics, artifacts=artifacts)
+    write_result(
+        run_dir, script=__file__, args=args, metrics=metrics, artifacts=artifacts
+    )
 
     log.info("\n" + "=" * 64)
-    log.info(f"  beta = {beta:.3f}   R² = {r2:.3f}   (fit over k∈[{lo},{hi}], {n_pts} bins)")
+    log.info(
+        f"  beta = {beta:.3f}   R² = {r2:.3f}   (fit over k∈[{lo},{hi}], {n_pts} bins)"
+    )
     if ch_betas:
-        log.info(f"  per-channel beta: {np.mean(ch_betas):.2f} ± {np.std(ch_betas):.2f}  "
-                 f"[{np.min(ch_betas):.2f}, {np.max(ch_betas):.2f}]")
+        log.info(
+            f"  per-channel beta: {np.mean(ch_betas):.2f} ± {np.std(ch_betas):.2f}  "
+            f"[{np.min(ch_betas):.2f}, {np.max(ch_betas):.2f}]"
+        )
     log.info("  paper: FLUX beta≈1.92, claimed range [2,3]")
     log.info(f"  {verdict}")
     log.info(f"  → {run_dir}")

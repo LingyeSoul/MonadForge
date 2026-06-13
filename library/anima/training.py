@@ -16,6 +16,7 @@ from PIL import Image
 
 from library.runtime.device import clean_memory_on_device, synchronize_device
 from library import train_util
+from library.datasets.buckets import snap_sample_size
 from library.training.checkpoints import (
     get_epoch_ckpt_name,
     get_remove_epoch_no,
@@ -193,87 +194,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "Requires --cache_text_encoder_outputs. Incompatible with LoRA training for the LLM adapter.",
     )
     parser.add_argument(
-        "--use_ip_adapter",
-        action="store_true",
-        help="Enable IP-Adapter image conditioning (decoupled cross-attention). "
-        "Requires the network module to expose set_ip_tokens (e.g. networks.methods.ip_adapter). "
-        "Live mode needs --no-use_vae_cache so batch['images'] carries the raw "
-        "reference; pre-cache mode (--ip_features_cache_to_disk) reads PE features "
-        "from sibling .safetensors and is compatible with --use_vae_cache.",
-    )
-    parser.add_argument(
-        "--ip_features_cache_to_disk",
-        action="store_true",
-        help="Read image features from sibling sidecars "
-        "({stem}_anima_{ip_encoder}.safetensors, produced by `make preprocess-pe`) "
-        "instead of running the vision encoder live. "
-        "Compatible with --use_vae_cache. Missing cache files raise FileNotFoundError.",
-    )
-    parser.add_argument(
-        "--ip_image_drop_p",
-        type=float,
-        default=0.1,
-        help="IP-Adapter image-conditioning dropout probability per batch (CFG dropout for image branch). "
-        "Independent of text-side caption_dropout_rate; default 0.1 matches the original IP-Adapter recipe.",
-    )
-    parser.add_argument(
-        "--ip_encoder",
-        type=str,
-        default="pe",
-        help="IP-Adapter vision encoder name (registered in library/vision/encoders.py). "
-        "Default 'pe' = PE-Core-L14-336 (dynamic resolution).",
-    )
-    parser.add_argument(
-        "--ip_diagnostics_epochs",
-        type=int,
-        default=1,
-        help="Number of epochs to keep IP-Adapter per-block diagnostics on for. "
-        "Each enabled epoch adds 56 fp32 norm reductions per step (2 per block × 28 blocks). "
-        "Default 1 logs the initial summary plus epoch-0 ratios, then auto-disables. "
-        "Set to 0 to skip even the warm-up logs, or a large number to keep them on.",
-    )
-    parser.add_argument(
-        "--ip_pair_mode",
-        type=str,
-        default="self",
-        choices=["self", "identity", "identity_cross_artist"],
-        help="IP-Adapter distinct-pair (identity) training mode. 'self' (default) "
-        "= reference == VAE target (legacy, bit-identical). 'identity' draws the "
-        "IP-path reference from a DIFFERENT image of the target's identity "
-        "(character → franchise → artist back-off via the caption index), "
-        "removing the self-pair copy shortcut. 'identity_cross_artist' additionally "
-        "requires character/franchise matches from a different artist (drops the "
-        "source style). Requires --ip_features_cache_to_disk. "
-        "See docs/proposal/ip-adapter-identity-pairs.md.",
-    )
-    parser.add_argument(
-        "--ip_pair_prob",
-        type=float,
-        default=0.8,
-        help="Fraction of steps that draw a distinct reference under "
-        "--ip_pair_mode!=self; the rest self-pair (keeps some self-pairs in the "
-        "mix — reference recipes warm up better that way). Default 0.8.",
-    )
-    parser.add_argument(
-        "--ip_pair_min_level",
-        type=str,
-        default="artist",
-        choices=["character", "copyright", "artist"],
-        help="Loosest tier the identity-pair sampler will back off to before "
-        "self-pairing. 'character' = same-character only; 'artist' (default) = "
-        "full character → franchise → artist back-off.",
-    )
-    parser.add_argument(
-        "--ip_pair_caption_strip_p",
-        type=float,
-        default=0.0,
-        help="Probability of dropping the target's character/copyright tokens "
-        "from the caption on distinct-pair steps, forcing identity through the IP "
-        "image path rather than the text. INERT while use_text_cache=true "
-        "(the cached embedding still carries identity) — set it false to enable. "
-        "Default 0.0 (off).",
-    )
-    parser.add_argument(
         "--use_easycontrol",
         action="store_true",
         help="Enable EasyControl image conditioning (extended self-attn KV with "
@@ -317,6 +237,147 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "for image branch). Independent of text-side caption_dropout_rate; default 0.1.",
     )
     parser.add_argument(
+        "--cond_diff_loss",
+        action="store_true",
+        help="Weight the per-pixel FM loss by the cond↔target latent difference "
+        "(library/training/losses.py::compute_cond_diff_weight). For paired "
+        "cond≠target tasks (cond_cache_dir subsets: sanitize / near-twin pose / "
+        "hair-color twins) where the pair differs only in a narrow edit region — "
+        "concentrates gradient there instead of on the copy-through behavior the "
+        "extended attention already provides. Per-image mean-normalized (pure "
+        "gradient reallocation, loss scale unchanged). No-op on batches without "
+        "cond_latents. NOT for colorize (gray→color differs everywhere; the map "
+        "degenerates to ~uniform).",
+    )
+    parser.add_argument(
+        "--cond_diff_loss_floor",
+        type=float,
+        default=0.2,
+        help="Minimum (pre-normalization) weight outside the edit region. Keeps "
+        "the copy-everything-else anchor; 0 would license drift outside the "
+        "bubble. Default 0.2.",
+    )
+    parser.add_argument(
+        "--cond_diff_loss_blur",
+        type=float,
+        default=1.5,
+        help="Gaussian sigma (latent px) applied to the diff map so the weight "
+        "covers bubble interiors plus a halo, not just strokes/outlines. "
+        "Default 1.5.",
+    )
+    parser.add_argument(
+        "--cond_diff_loss_quantile",
+        type=float,
+        default=0.9,
+        help="Per-image robust scale for the diff map: values at/above this "
+        "quantile saturate to full weight. Default 0.9.",
+    )
+    # --- BYG (Bootstrap Your Generator) unpaired editing ----------------------
+    # An owning-step method: a plain rank-64 LoRA trained with a multi-forward
+    # objective (bootstrap rollout + DDS prior + cycle + identity), conditioned
+    # on a token-concat source latent. No edited target ever exists. See
+    # docs/proposal/byg_unpaired_editing.md and networks/methods/byg.py.
+    parser.add_argument(
+        "--use_byg",
+        action="store_true",
+        help="Enable BYG unpaired-editing training (BYGMethodAdapter owns the "
+        "whole step). Requires a BYG dataset providing the source latent "
+        "(cond_cache_dir) plus four cached text conditionings per image "
+        "(src_caption / tgt_caption / instruction / reverse_instruction).",
+    )
+    parser.add_argument(
+        "--byg_lambda_prior",
+        type=float,
+        default=1.0,
+        help="Weight of the DDS-style prior loss L_prior (paper Eq. 5, default 1.0).",
+    )
+    parser.add_argument(
+        "--byg_lambda_id",
+        type=float,
+        default=0.2,
+        help="Weight of the anti-collapse identity loss L_id (paper Eq. 5, default 0.2). "
+        "Backwarded on an independent graph to keep peak VRAM down.",
+    )
+    parser.add_argument(
+        "--byg_lambda_cycle",
+        type=float,
+        default=1.0,
+        help="Weight of the cycle-consistency loss L_cycle (paper Eq. 5, default 1.0).",
+    )
+    parser.add_argument(
+        "--byg_alpha",
+        type=float,
+        default=0.1,
+        help="MSE magnitude-anchor weight inside the prior: L_prior = L_dir + alpha*L_MSE "
+        "(paper §4.2). Anchors edit velocity magnitude against the frozen base.",
+    )
+    parser.add_argument(
+        "--byg_rollout_steps",
+        type=int,
+        default=10,
+        help="Number of Euler integration steps n for the bootstrap rollout that "
+        "fabricates the pseudo-noisy-target y~_t and clean y~_0 (paper App. B.1 = 10). "
+        "Shorter = cheaper, lower-quality pseudo-targets. Ignored when "
+        "byg_rollout_sigmas is set (the explicit grid defines n).",
+    )
+    parser.add_argument(
+        "--byg_rollout_sigmas",
+        type=str,
+        default=None,
+        help="Explicit non-uniform rollout sigma grid, overriding the uniform "
+        "byg_rollout_steps schedule. A strictly-descending list from 1.0 to 0.0 "
+        "inclusive (n+1 nodes -> n Euler steps); the variable step size dsigma_j = "
+        "sigma_j - sigma_{j+1} is used and the training timestep t is sampled from the "
+        "interior nodes. Anima resolves x0 by sigma~=0.45 (project_sigma_signal_resolves"
+        "_by_045), so concentrating nodes in the forming band [0.4, 0.9] and taking one "
+        "coarse step through the resolved tail keeps y~_0 sharp at low NFE. TOML: a "
+        "float array (e.g. [1.0, 0.85, 0.70, 0.55, 0.40, 0.0]); CLI: comma-separated. "
+        "Default None = uniform (bit-identical to the byg_rollout_steps path).",
+    )
+    parser.add_argument(
+        "--byg_snapshot_every",
+        type=int,
+        default=200,
+        help="Hard-refresh the frozen weight snapshot used for the bootstrap rollout "
+        "every N optimizer steps (v1 EMA-free path). Ignored when byg_ema_decay > 0.",
+    )
+    parser.add_argument(
+        "--byg_ema_decay",
+        type=float,
+        default=0.0,
+        help="EMA decay for the bootstrap copy of the trainable LoRA weights. 0.0 (default) "
+        "uses periodic hard snapshots (byg_snapshot_every) instead; >0 enables the "
+        "paper-faithful per-step EMA moving average (paper Alg. 1 line 36).",
+    )
+    parser.add_argument(
+        "--byg_identity_warmup_steps",
+        type=int,
+        default=200,
+        help="Train identity-only for the first N steps so the model learns to use the "
+        "condition before editing (paper App. B.1 = 200). Anti-collapse, load-bearing.",
+    )
+    parser.add_argument(
+        "--byg_identity_prob",
+        type=float,
+        default=0.15,
+        help="Probability that a post-warmup step is a random identity step (paper "
+        "App. B.1 = 0.15 for images). Regularizer against identity collapse.",
+    )
+    parser.add_argument(
+        "--byg_text_dir",
+        type=str,
+        default=None,
+        help="Directory of per-image BYG edit-tuple sidecars "
+        "(<stem>_byg.safetensors). Default: post_image_dataset/byg.",
+    )
+    parser.add_argument(
+        "--byg_prior_symmetric",
+        action="store_true",
+        help="Apply the prior loss to the reverse pass as well (L_prior^fwd + L_prior^rev, "
+        "paper Eq. 5). On by default (v2); the byg.toml sets it. Disable for the v1 "
+        "fwd-only prior to save two frozen-base forwards per step.",
+    )
+    parser.add_argument(
         "--use_shuffled_caption_variants",
         action="store_true",
         help="Consume preprocessed caption-shuffle variants from the text-encoder cache "
@@ -325,6 +386,15 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "Falls back to single-variant silently if the cache has no variants. Inline "
         "multi-variant generation at training time is no longer supported — preprocess "
         "the variants first.",
+    )
+    parser.add_argument(
+        "--use_shuffled_caption_variants_only",
+        action="store_true",
+        help="Like --use_shuffled_caption_variants but never draw the pristine v0 "
+        "variant — sample uniformly over the shuffled+tag-dropped v1..v{N-1} only. "
+        "Use when v0 (the full, unshuffled caption) should be excluded from training, "
+        "e.g. colorize wants every step to see a partial color spec. Implies "
+        "--use_shuffled_caption_variants; no-op on single-variant caches.",
     )
     parser.add_argument(
         "--artist_filter",
@@ -365,14 +435,13 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "--lora_fp32_accumulation",
         action="store_true",
         help="[DEPRECATED, no-op] fp32 accumulation is now unconditional in "
-        "LoRA/Hydra/ReFT bottleneck matmuls. Flag accepted for one release "
+        "LoRA/Hydra bottleneck matmuls. Flag accepted for one release "
         "cycle; will be removed.",
     )
     parser.add_argument(
         "--attn_mode",
         choices=[
             "torch",
-            "xformers",
             "flash",
             # "flash4",  # not supported yet (flash-attention-sm120 disabled)
             "sageattn",
@@ -380,7 +449,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
             "sdpa",
         ],  # "sdpa" is for backward compatibility
         default=None,
-        help="Attention implementation to use. Default is None (torch). sageattn does not support training (inference only). This option overrides --xformers or --sdpa."
+        help="Attention implementation to use. Default is None (torch). sageattn does not support training (inference only). This option overrides --sdpa."
         "",
     )
     parser.add_argument(
@@ -503,6 +572,19 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         default="8,12,16,20",
         help="Comma-separated DiT block indices at which to capture cross_attn.output_proj "
         "outputs for functional MSE loss.",
+    )
+
+    # Liveness audit (issues.md P1.1). The audit itself is always on: a
+    # configured-ON aux loss (repa / functional / vr / fera_fecl /
+    # soft_tokens_contrastive) that never consumes its aux input ERROR-logs
+    # with a greppable `LIVENESS:` prefix at step 25 and at run end.
+    parser.add_argument(
+        "--liveness_strict",
+        action="store_true",
+        help="Escalate the LIVENESS audit from ERROR log to hard abort: if a "
+        "configured-ON aux loss has consumed its aux input on 0 train batches "
+        "by the step-25 early check (or by run end), raise instead of training "
+        "on as a silent baseline. Partial coverage only warns either way.",
     )
     parser.add_argument(
         "--functional_loss_num_runs",
@@ -960,6 +1042,57 @@ def sample_images(
         # Letting the caching allocator hold its blocks keeps usage flat (peak
         # settles at max(training, sampling) and stays there).
 
+    # Decode this round's stashed latents to PNG right away so each epoch's
+    # samples are viewable as soon as they're generated, rather than only after
+    # the whole run finishes. Deferred to the end-of-training
+    # decode_pending_samples in train.py for block-swapping runs (tight cards,
+    # where the repeated full-DiT CPU↔GPU transfer below isn't worth paying every
+    # sample event); see _should_decode_inline. Main process only, mirroring the
+    # end-of-training decode.
+    if accelerator.is_main_process and _should_decode_inline(args):
+        # VAE decode needs the VAE resident on the GPU. Rather than let the DiT
+        # and VAE be co-resident, fully evict the DiT to CPU first, decode, then
+        # bring it back and restore block-swap placement so training resumes
+        # unchanged — the same load/unload discipline the deferred path gets for
+        # free once the loop has torn the DiT down. Mirrors train.py's
+        # end-of-training teardown.
+        dit.to("cpu")
+        clean_memory_on_device(accelerator.device)
+        try:
+            decode_pending_samples(accelerator, args, vae)
+        finally:
+            dit.move_to_device_except_swap_blocks(accelerator.device)
+            dit.prepare_block_swap_before_forward()
+
+
+def _should_decode_inline(args) -> bool:
+    """Whether to decode sample latents to PNG right after each sampling event
+    (per-epoch visibility) vs. deferring the whole batch to end of training.
+
+    Explicit ``--sample_decode_inline`` wins; otherwise auto — inline when the
+    run isn't block-swapping (``blocks_to_swap == 0``), deferred when it is. The
+    inline path parks the DiT on CPU before the VAE decode (so the two are never
+    co-resident), so it's OOM-safe either way; the block-swap default still
+    defers because on a tight card the repeated full-DiT CPU↔GPU transfer per
+    sample event isn't worth paying when the end-of-training decode is free."""
+    explicit = getattr(args, "sample_decode_inline", None)
+    if isinstance(explicit, str):
+        s = explicit.strip().lower()
+        explicit = (
+            None
+            if s in ("", "auto", "none")
+            else s
+            in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+        )
+    if explicit is not None:
+        return bool(explicit)
+    return not getattr(args, "blocks_to_swap", 0)
+
 
 def _sample_image_inference(
     accelerator,
@@ -1011,8 +1144,29 @@ def _sample_image_inference(
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # seed all CUDA devices for multi-GPU
 
-    height = max(64, height - height % 16)
-    width = max(64, width - width % 16)
+    width, height = snap_sample_size(width, height)
+
+    # Train-time sampling runs through the same compiled blocks as training. The
+    # compile token budget already covers the prompts present at startup
+    # (train.py::_sample_prompt_token_counts), but prompts are re-read from disk
+    # at every sample event — a resolution added mid-run can fall outside the
+    # dynamic-seq mark_dynamic range and would crash the run with a
+    # ConstraintViolationError (#42). Skip it instead.
+    seq_len = (width // 16) * (height // 16)
+    seq_range = getattr(dit, "_dynamic_seq_range", None)
+    if (
+        getattr(dit, "_dynamic_seq", False)
+        and seq_range is not None
+        and not (seq_range[0] <= seq_len <= seq_range[1])
+    ):
+        logger.warning(
+            f"Skipping sample prompt at {width}x{height} ({seq_len} tokens): outside "
+            f"the compiled dynamic-seq token range {seq_range}. The compile budget "
+            "covers the training buckets plus the sample prompts present at startup; "
+            "to sample at this resolution, restart training with it in the prompt "
+            "file, lower --w/--h, or disable torch_compile."
+        )
+        return
 
     logger.info(
         f"  prompt: {prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, flow_shift: {flow_shift}, seed: {seed}, sampler: {sampler}"
@@ -1228,9 +1382,9 @@ def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
                 image = torch.clamp((image + 1.0) / 2.0, min=0.0, max=1.0)[0]
                 if image.ndim == 4:  # drop temporal dim if present
                     image = image[:, 0, :, :]
-                decoded_np = (
-                    255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)
-                ).astype(np.uint8)
+                decoded_np = (255.0 * np.moveaxis(image.cpu().numpy(), 0, 2)).astype(
+                    np.uint8
+                )
                 pil = Image.fromarray(decoded_np)
                 stem = os.path.splitext(fn)[0]
                 pil.save(os.path.join(save_dir, stem + ".png"))

@@ -1,10 +1,8 @@
 """Shared training helpers — loss weights, eval, history plot, group router.
 
-Used by both ``train_cached.py`` (frozen-encoder fast path) and
-``train_pe_lora.py`` (end-to-end PE-LoRA path). The two paths differ in
-how they get features — one reads pre-pooled tensors, one runs PE-Core
-each step — but they share loss formulation, per-epoch eval, and the
-group-routing logic.
+Used by ``train_cached.py`` (the dual-encoder frozen-encoder path): loss
+weighting (sqrt pos-weight BCE, class-weighted rating / people CE), the
+group-routing logic, and per-epoch eval helpers.
 """
 
 from __future__ import annotations
@@ -93,9 +91,9 @@ class _SoftmaxGroup:
     """One softmax group projected onto trainer-side tensor indices."""
 
     name: str
-    mode: str                    # "softmax_when_solo" | "softmax"
-    tag_indices: torch.Tensor    # LongTensor [K_g]
-    escape_indices: torch.Tensor # LongTensor [E_g]
+    mode: str  # "softmax_when_solo" | "softmax"
+    tag_indices: torch.Tensor  # LongTensor [K_g]
+    escape_indices: torch.Tensor  # LongTensor [E_g]
 
 
 @dataclass
@@ -123,11 +121,11 @@ class GroupRouter:
     """
 
     n_tags: int
-    bce_pos_weight: torch.Tensor           # FloatTensor [n_tags]
+    bce_pos_weight: torch.Tensor  # FloatTensor [n_tags]
     softmax_groups: List[_SoftmaxGroup] = field(default_factory=list)
     softmax_member_indices: Optional[torch.Tensor] = None  # LongTensor [Σ K_g]
-    solo_indices: Optional[torch.Tensor] = None    # LongTensor [s]
-    multi_indices: Optional[torch.Tensor] = None   # LongTensor [m]
+    solo_indices: Optional[torch.Tensor] = None  # LongTensor [s]
+    multi_indices: Optional[torch.Tensor] = None  # LongTensor [m]
 
     @classmethod
     def from_vocab(
@@ -165,7 +163,8 @@ class GroupRouter:
 
         softmax_member_indices = (
             torch.tensor(sorted(set(softmax_member)), dtype=torch.long, device=device)
-            if softmax_member else None
+            if softmax_member
+            else None
         )
 
         # Full-vocab pos-weight (matches pre-grouping trainer). BCE
@@ -191,11 +190,13 @@ class GroupRouter:
                 multi_idx_list.append(idx)
         solo_indices = (
             torch.tensor(solo_idx_list, dtype=torch.long, device=device)
-            if solo_idx_list else None
+            if solo_idx_list
+            else None
         )
         multi_indices = (
             torch.tensor(multi_idx_list, dtype=torch.long, device=device)
-            if multi_idx_list else None
+            if multi_idx_list
+            else None
         )
 
         return cls(
@@ -231,8 +232,8 @@ class GroupRouter:
 
 
 def compute_grouped_loss(
-    tag_logits: torch.Tensor,    # [B, n_tags]
-    multi_hot: torch.Tensor,     # [B, n_tags]
+    tag_logits: torch.Tensor,  # [B, n_tags]
+    multi_hot: torch.Tensor,  # [B, n_tags]
     router: GroupRouter,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """Return ``(total_tag_loss, per_group_metrics_for_logging)``.
@@ -261,9 +262,7 @@ def compute_grouped_loss(
 
     # Default: BCE applies to every position. CE-supervised positions
     # get masked off below.
-    bce_mask = torch.ones(
-        B, n_tags, dtype=torch.bool, device=tag_logits.device
-    )
+    bce_mask = torch.ones(B, n_tags, dtype=torch.bool, device=tag_logits.device)
 
     ce_total = tag_logits.new_zeros(())
     if router.softmax_groups:
@@ -275,19 +274,19 @@ def compute_grouped_loss(
                 has_escape = torch.zeros_like(solo_mask)
             if g.mode == "softmax_when_solo":
                 applicable = solo_mask & ~has_escape
-            else:                                                # "softmax"
+            else:  # "softmax"
                 applicable = ~has_escape
 
-            group_logits = tag_logits.index_select(1, g.tag_indices)     # [B, K_g]
-            group_target = multi_hot.index_select(1, g.tag_indices)      # [B, K_g]
+            group_logits = tag_logits.index_select(1, g.tag_indices)  # [B, K_g]
+            group_target = multi_hot.index_select(1, g.tag_indices)  # [B, K_g]
             has_label = group_target.sum(dim=1) > 0
             ce_samples = applicable & has_label
             n_keep = int(ce_samples.sum().item())
             if n_keep == 0:
                 metrics[f"ce_{g.name}"] = 0.0
                 continue
-            sel_logits = group_logits[ce_samples]                        # [n_keep, K_g]
-            sel_target = group_target[ce_samples].argmax(dim=1)          # [n_keep]
+            sel_logits = group_logits[ce_samples]  # [n_keep, K_g]
+            sel_target = group_target[ce_samples].argmax(dim=1)  # [n_keep]
             l_ce = F.cross_entropy(sel_logits, sel_target)
             ce_total = ce_total + l_ce
             metrics[f"ce_{g.name}"] = float(l_ce.detach().item())
@@ -337,11 +336,17 @@ def eval_split(
     model.eval()
     tag_logits, rating_logits, people_logits = model(feats)
 
-    if router is not None and router.is_active() and router.softmax_member_indices is not None:
+    if (
+        router is not None
+        and router.is_active()
+        and router.softmax_member_indices is not None
+    ):
         # Macro-F1 excludes softmax-group tags — those are argmax-only at
         # inference, so per-tag thresholds (and the F1 they induce) don't
         # apply. Per-group accuracy is reported separately below.
-        keep_mask = torch.ones(tag_logits.shape[1], dtype=torch.bool, device=tag_logits.device)
+        keep_mask = torch.ones(
+            tag_logits.shape[1], dtype=torch.bool, device=tag_logits.device
+        )
         keep_mask[router.softmax_member_indices] = False
         kept_idx = keep_mask.nonzero(as_tuple=False).squeeze(1)
         f1_logits = tag_logits.index_select(1, kept_idx)
@@ -376,7 +381,11 @@ def eval_split(
                 has_escape = multi_hot.index_select(1, g.escape_indices).any(dim=1)
             else:
                 has_escape = torch.zeros_like(solo_mask)
-            applicable = (solo_mask & ~has_escape) if g.mode == "softmax_when_solo" else ~has_escape
+            applicable = (
+                (solo_mask & ~has_escape)
+                if g.mode == "softmax_when_solo"
+                else ~has_escape
+            )
             group_logits = tag_logits.index_select(1, g.tag_indices)
             group_target = multi_hot.index_select(1, g.tag_indices)
             has_label = group_target.sum(dim=1) > 0
@@ -437,12 +446,20 @@ def save_history_plot(history: List[Dict[str, float]], path: Path) -> None:
     ax_loss.plot(epochs, [h["loss"] for h in history], label="train total", color="C0")
     if all("tag_loss" in h for h in history):
         ax_loss.plot(
-            epochs, [h["tag_loss"] for h in history],
-            label="train tag (BCE)", color="C0", alpha=0.4, linestyle=":",
+            epochs,
+            [h["tag_loss"] for h in history],
+            label="train tag (BCE)",
+            color="C0",
+            alpha=0.4,
+            linestyle=":",
         )
         ax_loss.plot(
-            epochs, [h["rate_loss"] for h in history],
-            label="train rate (CE)", color="C0", alpha=0.4, linestyle="--",
+            epochs,
+            [h["rate_loss"] for h in history],
+            label="train rate (CE)",
+            color="C0",
+            alpha=0.4,
+            linestyle="--",
         )
     if all("val_loss" in h for h in history):
         ax_loss.plot(
@@ -450,17 +467,29 @@ def save_history_plot(history: List[Dict[str, float]], path: Path) -> None:
         )
         if all("val_tag_loss" in h for h in history):
             ax_loss.plot(
-                epochs, [h["val_tag_loss"] for h in history],
-                label="val tag (BCE)", color="C1", alpha=0.4, linestyle=":",
+                epochs,
+                [h["val_tag_loss"] for h in history],
+                label="val tag (BCE)",
+                color="C1",
+                alpha=0.4,
+                linestyle=":",
             )
             ax_loss.plot(
-                epochs, [h["val_rate_loss"] for h in history],
-                label="val rate (CE)", color="C1", alpha=0.4, linestyle="--",
+                epochs,
+                [h["val_rate_loss"] for h in history],
+                label="val rate (CE)",
+                color="C1",
+                alpha=0.4,
+                linestyle="--",
             )
         if all("val_people_loss" in h for h in history):
             ax_loss.plot(
-                epochs, [h["val_people_loss"] for h in history],
-                label="val people (CE)", color="C4", alpha=0.4, linestyle="--",
+                epochs,
+                [h["val_people_loss"] for h in history],
+                label="val people (CE)",
+                color="C4",
+                alpha=0.4,
+                linestyle="--",
             )
     ax_loss.set_ylabel("loss")
     ax_loss.legend(loc="best", fontsize=8)
@@ -474,8 +503,10 @@ def save_history_plot(history: List[Dict[str, float]], path: Path) -> None:
     )
     if all("people_acc" in h for h in history):
         ax_acc.plot(
-            epochs, [h["people_acc"] for h in history],
-            label="val people acc", color="C4",
+            epochs,
+            [h["people_acc"] for h in history],
+            label="val people acc",
+            color="C4",
         )
     ax_acc.set_xlabel("epoch")
     ax_acc.set_ylabel("metric")

@@ -5,7 +5,7 @@ Anima form (pixel mode, opposite sign from paper, λ ≈ -0.015 for LL-only):
 
 where sched ∈ {one_minus_sigma, sigma_i, const, none}. Default
 schedule one_minus_sigma matches Anima's bias envelope (concentrates
-correction at low σ where |gap| is largest). See docs/methods/dcw.md.
+correction at low σ where |gap| is largest). See docs/inference/dcw.md.
 
 The correction can be restricted to a subset of single-level Haar
 subbands ({LL, LH, HL, HH}) via the ``bands`` argument. LL-only is the

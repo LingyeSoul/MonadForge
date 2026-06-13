@@ -47,6 +47,103 @@ def _config_min_pixels() -> int:
         return 500_000
 
 
+def _target_res_args(extra) -> list[str]:
+    """``--target_res E1 E2 …`` derived from the merged TOML's ``target_res`` key.
+
+    Returns ``[]`` when an explicit ``--target_res`` is already in ``extra`` (CLI
+    ARGS wins, no duplicate) or when the config value is absent / a bare
+    ``[1024]`` (the legacy single-tier default — leave it off so the resize
+    script's own default path runs). Invalid / unknown edges are dropped here so
+    a typo in the TOML doesn't abort preprocessing.
+    """
+    if "--target_res" in extra:
+        return []
+
+    from library.datasets.buckets import ALLOWED_TARGET_RES
+
+    from ._common import _path_overrides
+
+    raw = _path_overrides().get("target_res")
+    if not raw:
+        return []
+    edges = raw if isinstance(raw, (list, tuple)) else [raw]
+    try:
+        edges = [int(e) for e in edges]
+    except (TypeError, ValueError):
+        return []
+    edges = [e for e in edges if e in ALLOWED_TARGET_RES]
+    if not edges or edges == [1024]:
+        return []
+    return ["--target_res", *(str(e) for e in edges)]
+
+
+def _preprocess_path_pattern_args(extra) -> list[str]:
+    """``--path_pattern <glob>`` for GUI preprocess subset filtering.
+
+    CLI ARGS wins when it already carries a path-pattern flag. GUI submits pass
+    ``PREPROCESS_PATH_PATTERN`` so training can keep using the method's regular
+    ``path_pattern`` independently.
+    """
+    if "--path_pattern" in extra or "--path-pattern" in extra:
+        return []
+
+    from ._common import _path_overrides
+
+    raw = os.environ.get("PREPROCESS_PATH_PATTERN")
+    if raw is None:
+        raw = _path_overrides().get("preprocess_path_pattern")
+    pattern = str(raw or "").strip()
+    if not pattern or pattern == "*":
+        return []
+    return ["--path_pattern", pattern]
+
+
+def _repa_pe_encoder() -> str | None:
+    """The REPA vision encoder to cache, or ``None`` when REPA is off.
+
+    Reads ``use_repa`` / ``repa_encoder`` from the merged config chain (the same
+    ``_path_overrides`` the path knobs use — populated from ``METHOD`` /
+    ``METHODS_SUBDIR`` or a GUI ``CONFIG_FILE`` snapshot). This lets the ConfigTab
+    Train auto-chain — and any ``make preprocess METHOD=<repa-variant>`` — cache
+    the ``{stem}_anima_pe_spatial.safetensors`` (or ``_anima_pe``) sidecars in the
+    same pass, so a ``use_repa=true`` run doesn't bounce off train.py's
+    "PE features absent" error. Plain ``make preprocess`` (no variant config in
+    scope) sees no ``use_repa`` and returns ``None`` — the default stays fast.
+    """
+    from ._common import _path_overrides
+
+    overrides = _path_overrides()
+    raw = overrides.get("use_repa")
+    # TOML/snapshot bools arrive as real bools; tolerate a stringified value too.
+    enabled = raw is True or str(raw).strip().lower() in ("1", "true", "yes")
+    if not enabled:
+        return None
+    encoder = str(overrides.get("repa_encoder") or "pe_spatial").strip()
+    return encoder or "pe_spatial"
+
+
+def _pop_target_res(extra) -> list[str]:
+    """Strip ``--target_res E1 E2 …`` (a resize-only flag) from ``extra``.
+
+    The VAE/TE/PE stages read whatever latent shapes are already on disk, so
+    they must never see ``--target_res`` (their argparse doesn't define it).
+    Removes the flag and its following ``nargs='+'`` integer values up to the
+    next ``--option``.
+    """
+    cleaned: list[str] = []
+    it = iter(extra)
+    for tok in it:
+        if tok == "--target_res":
+            # drop the flag, then drop trailing int values until the next flag
+            for nxt in it:
+                if nxt.startswith("--"):
+                    cleaned.append(nxt)
+                    break
+            continue
+        cleaned.append(tok)
+    return cleaned
+
+
 def _resolve_lowres_filter(extra) -> tuple[list[str], list[str]]:
     """Reconcile the low-res input filter against CLI ``ARGS``.
 
@@ -79,6 +176,8 @@ def _resolve_lowres_filter(extra) -> tuple[list[str], list[str]]:
 
 def cmd_preprocess_resize(extra):
     mp_args, extra = _resolve_lowres_filter(extra)
+    tr_args = _target_res_args(extra)
+    pp_args = _preprocess_path_pattern_args(extra)
     run(
         [
             PY,
@@ -90,12 +189,47 @@ def cmd_preprocess_resize(extra):
             "--no_copy_captions",
             "--recursive",
             *mp_args,
+            *tr_args,
+            *pp_args,
+            *extra,
+        ]
+    )
+
+
+def cmd_preprocess_reconcile(extra):
+    """Remove caches stale for the configured ``target_res`` (dry-run by default).
+
+    Pass ``ARGS="--delete"`` to actually remove. ``target_res`` comes from the
+    merged config (same as resize); an explicit ``--target_res`` in ``ARGS``
+    wins. Useful after adding/dropping a tier so re-running preprocess + mask
+    regenerates only the images whose bucket moved.
+    """
+    # _target_res_args returns [] for a bare [1024]/absent config AND when ARGS
+    # already carries --target_res. Inject the 1024 default only in the former
+    # case (no explicit flag in ARGS) so we never duplicate it.
+    tr_args = _target_res_args(extra)
+    if not tr_args and "--target_res" not in extra:
+        tr_args = ["--target_res", "1024"]
+    run(
+        [
+            PY,
+            "scripts/preprocess/reconcile_caches.py",
+            "--image-dir",
+            _path("source_image_dir", "image_dataset"),
+            "--resized-dir",
+            _path("resized_image_dir", "post_image_dataset/resized"),
+            "--cache-dir",
+            _path("lora_cache_dir", "post_image_dataset/lora"),
+            "--mask-dir",
+            _path("mask_dir", "post_image_dataset/masks"),
+            *tr_args,
             *extra,
         ]
     )
 
 
 def cmd_preprocess_vae(extra):
+    pp_args = _preprocess_path_pattern_args(extra)
     run(
         [
             PY,
@@ -150,6 +284,7 @@ def cmd_preprocess_cond_vae(extra):
             "--chunk_size",
             "64",
             "--recursive",
+            *pp_args,
             *extra,
         ]
     )
@@ -163,6 +298,7 @@ def cmd_preprocess_te(extra):
     shuffle_variants = os.environ.get("CAPTION_SHUFFLE_VARIANTS", "4")
     tag_dropout_rate = os.environ.get("CAPTION_TAG_DROPOUT_RATE", "0.1")
     mp_args, extra = _resolve_lowres_filter(extra)
+    pp_args = _preprocess_path_pattern_args(extra)
     run(
         [
             PY,
@@ -181,6 +317,7 @@ def cmd_preprocess_te(extra):
             tag_dropout_rate,
             "--recursive",
             *mp_args,
+            *pp_args,
             *extra,
         ]
     )
@@ -240,6 +377,31 @@ def cmd_preprocess_pe(extra):
     )
 
 
+def cmd_preprocess_pe_spatial(extra):
+    """Cache PE-Spatial-B16-512 dense patch-token features for REPA v2.
+
+    Reads pre-resized images from ``post_image_dataset/resized/`` and writes
+    ``{stem}_anima_pe_spatial.safetensors`` sidecars into the LoRA cache dir
+    (disjoint from the PE-Core ``_anima_pe`` caches CMMD reads). No centroid —
+    REPA aligns per-patch, not against a dataset mean. Run before a
+    ``use_repa=true`` training arm.
+    """
+    run(
+        [
+            PY,
+            "scripts/preprocess/cache_pe_encoder.py",
+            "--dir",
+            _path("resized_image_dir", "post_image_dataset/resized"),
+            "--cache_dir",
+            _path("lora_cache_dir", "post_image_dataset/lora"),
+            "--encoder",
+            "pe_spatial",
+            "--recursive",
+            *extra,
+        ]
+    )
+
+
 def cmd_caption_index(extra):
     """Build the method-agnostic typed-tag caption index.
 
@@ -250,12 +412,14 @@ def cmd_caption_index(extra):
     distinct-pair sampler, artist balancing, and dataset analytics. Regenerate
     when the dataset or vocab changes.
     """
+    pp_args = _preprocess_path_pattern_args(extra)
     run(
         [
             PY,
             "scripts/preprocess/build_caption_index.py",
             "--src",
             _path("source_image_dir", "image_dataset"),
+            *pp_args,
             *extra,
         ]
     )
@@ -272,17 +436,20 @@ _CAPTION_INDEX_VOCAB = "models/captioners/anima-tagger-v2/vocab.json"
 
 
 def cmd_preprocess(extra):
-    # PE features are intentionally NOT cached here — only IP-Adapter / CMMD /
-    # DCW v4 need them, and those paths chain `preprocess-pe` explicitly (see
-    # `exp-ip-adapter-preprocess`). Leaving PE out keeps the default LoRA
-    # preprocess fast on machines that won't ever use the vision tower.
+    # PE features are NOT cached here by default — only CMMD validation / DCW v4
+    # need them, and those paths chain `preprocess-pe` explicitly. Leaving PE out
+    # keeps the default LoRA preprocess fast on machines that won't use the vision
+    # tower. The one exception is a `use_repa=true` variant in scope: REPA aligns
+    # against PE features every step, so they're chained in at the end (see the
+    # `_repa_pe_encoder()` block below).
     cmd_preprocess_resize(extra)
-    # The VAE step doesn't filter on size; strip the low-res convenience flags
-    # so its argparse never sees an arg it doesn't define. (resize/te pop them
-    # themselves via _resolve_lowres_filter.)
-    _, vae_extra = _resolve_lowres_filter(extra)
+    # The VAE/TE steps read on-disk shapes — strip the low-res convenience flags
+    # AND the resize-only --target_res so their argparse never sees an arg it
+    # doesn't define. (resize pops lowres itself via _resolve_lowres_filter.)
+    downstream = _pop_target_res(extra)
+    _, vae_extra = _resolve_lowres_filter(downstream)
     cmd_preprocess_vae(vae_extra)
-    cmd_preprocess_te(extra)
+    cmd_preprocess_te(downstream)
     # Build the method-agnostic caption index (pure data, no GPU, ~seconds) as a
     # free by-product — it's consumed by the IP-Adapter pair sampler, artist
     # balancing, dataset analytics, AND soft-tokens contrastive training (which
@@ -311,6 +478,20 @@ def cmd_preprocess(extra):
             f"`make download-tagger`, then `make caption-index` "
             f"(soft-tokens contrastive training needs it)."
         )
+
+    # REPA arm: when the variant config in scope has `use_repa=true`, cache the
+    # vision-encoder PE sidecars REPA aligns against in this same pass. train.py
+    # errors out asking for them otherwise; chaining here means the ConfigTab
+    # "Train" auto-preprocess (and `make preprocess METHOD=<repa-variant>`)
+    # builds them without a second manual step. Idempotent — cache_pe_encoder.py
+    # skips images already cached. PE-less variants never pay for the tower.
+    encoder = _repa_pe_encoder()
+    if encoder is not None:
+        print(f"  [preprocess] use_repa=true → caching REPA PE features ({encoder})")
+        if encoder == "pe_spatial":
+            cmd_preprocess_pe_spatial([])
+        else:
+            cmd_preprocess_pe([])
 
 
 def cmd_preprocess_config(extra):

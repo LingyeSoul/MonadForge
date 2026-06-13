@@ -128,6 +128,49 @@ def unsloth_checkpoint(function, *args):
     return UnslothOffloadedGradientCheckpointer.apply(function, *args)
 
 
+def _make_dynamic_seq_forward(compiled_inner, lo, hi):
+    """Wrap a compiled ``Block._forward`` in an eager ``mark_dynamic`` prologue.
+
+    compile_dynamic_seq collapses the per-token-count block graphs to one by
+    marking the seq axis dynamic. The marks MUST live inside the checkpointed
+    callable, not in a one-shot prologue before ``Block.forward`` dispatches:
+    under grad checkpointing the inner is recomputed in BACKWARD via
+    ``detach_variable``, which detaches the tensor args (``x``) into fresh
+    tensors that LOSE the dynamic mark — while the ``rope_cos_sin`` *tuple* is
+    passed through unchanged (``detach_variable`` skips non-tensors) and KEEPS
+    it. That asymmetry (rope hard-dynamic, x specialized to a constant token
+    count) is the ``ConstraintViolationError``. Marking inside the recomputed
+    callable re-applies the marks to the detached inputs every pass, so forward
+    and backward agree. Mirrors the EasyControl two-stream fix
+    (networks/methods/easycontrol.py). ``x`` is fake-5D ``(B,1,seq,1,D)`` under
+    native_flatten (guaranteed on when compile_blocks set dynamic_seq), so the
+    seq axis is dim 2; each RoPE table rides dim 0. Marking is idempotent.
+    """
+
+    def marked_forward(
+        x_B_T_H_W_D,
+        emb_B_T_D,
+        crossattn_emb,
+        attn_params,
+        rope_cos_sin=None,
+        adaln_lora_B_T_3D=None,
+    ):
+        torch._dynamo.mark_dynamic(x_B_T_H_W_D, 2, min=lo, max=hi)
+        if rope_cos_sin is not None:
+            torch._dynamo.mark_dynamic(rope_cos_sin[0], 0, min=lo, max=hi)
+            torch._dynamo.mark_dynamic(rope_cos_sin[1], 0, min=lo, max=hi)
+        return compiled_inner(
+            x_B_T_H_W_D,
+            emb_B_T_D,
+            crossattn_emb,
+            attn_params,
+            rope_cos_sin,
+            adaln_lora_B_T_3D,
+        )
+
+    return marked_forward
+
+
 @torch.compiler.disable(recursive=True)
 def _unflatten_native_shape(x, flatten_info):
     """Restore the fake-5D flattened sequence back to (B, T, H, W, D).
@@ -173,16 +216,17 @@ def apply_rotary_pos_emb_qk(
     rope_cos_sin: tuple[torch.Tensor, torch.Tensor],
     tensor_format: str = "sbhd",
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply RoPE to q and k using precomputed (cos, sin) tensors."""
-    cos_, sin_ = rope_cos_sin
-    max_seq_len = cos_.shape[0]
-    cur_seq_len = q.shape[1] if tensor_format == "bshd" else q.shape[0]
+    """Apply RoPE to q and k using precomputed (cos, sin) tensors.
 
-    assert cur_seq_len <= max_seq_len, (
-        f"Rotary Embeddings only supported up to {max_seq_len} sequence length!"
-    )
-    cos_ = cos_[:cur_seq_len]
-    sin_ = sin_[:cur_seq_len]
+    RoPE is always generated from the same shape as the ``q`` it is applied to
+    (``pos_embedder`` builds cos/sin at the exact ``T*H*W`` of the current latent;
+    the EasyControl cond path builds its cond rope at the cond's native shape),
+    so ``cos_.shape[0] == q``'s seq length in every path — no length trim needed.
+    Dropping the old ``cos_[:cur_seq_len]`` slice also keeps the seq axis a clean
+    single symbol under ``compile_dynamic_seq``'s ``mark_dynamic`` (no symbolic
+    indexing op in the compiled block).
+    """
+    cos_, sin_ = rope_cos_sin
 
     if tensor_format == "bshd":
         cos_ = cos_.transpose(0, 1)
@@ -201,13 +245,21 @@ def apply_rotary_pos_emb_qk(
     # torch.compile and never recompiles per bucket.
     q_rot = q[..., :rot_dim]
     q_emb = (q_rot * cos_q) + (_rotate_half(q_rot, False) * sin_q)
-    q = q_emb if rot_dim == q.shape[-1] else torch.cat((q_emb, q[..., rot_dim:]), dim=-1)
+    q = (
+        q_emb
+        if rot_dim == q.shape[-1]
+        else torch.cat((q_emb, q[..., rot_dim:]), dim=-1)
+    )
 
     cos_k = cos_q if k.dtype == q.dtype else cos_.to(k.dtype)
     sin_k = sin_q if k.dtype == q.dtype else sin_.to(k.dtype)
     k_rot = k[..., :rot_dim]
     k_emb = (k_rot * cos_k) + (_rotate_half(k_rot, False) * sin_k)
-    k = k_emb if rot_dim == k.shape[-1] else torch.cat((k_emb, k[..., rot_dim:]), dim=-1)
+    k = (
+        k_emb
+        if rot_dim == k.shape[-1]
+        else torch.cat((k_emb, k[..., rot_dim:]), dim=-1)
+    )
 
     return q, k
 
@@ -367,10 +419,8 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         q, k, v = self.compute_qkv(x, context, rope_cos_sin=rope_cos_sin)
         if q.dtype != v.dtype:
-            if (
-                not attn_params.supports_fp32 or attn_params.requires_same_dtype
-            ) and torch.is_autocast_enabled():
-                # FlashAttention requires fp16/bf16, xformers require same dtype; only cast when autocast is active.
+            if not attn_params.supports_fp32 and torch.is_autocast_enabled():
+                # FlashAttention requires fp16/bf16; only cast when autocast is active.
                 target_dtype = v.dtype  # v has fp16/bf16 dtype
                 q = q.to(target_dtype)
                 k = k.to(target_dtype)
@@ -651,6 +701,110 @@ class VideoRopePosition3DEmb(VideoPositionEmb):
             ):
                 key = self._cache_key(T, H, W, fps, h_offset, w_offset)
                 self._cos_sin_cache[key] = result
+
+        return result
+
+    def generate_embeddings_scaled(
+        self,
+        B_T_H_W_C: torch.Size,
+        h_scale: float = 1.0,
+        w_scale: float = 1.0,
+        fps: Optional[torch.Tensor] = None,
+        h_ntk_factor: Optional[float] = None,
+        w_ntk_factor: Optional[float] = None,
+        t_ntk_factor: Optional[float] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """RoPE (cos, sin) at *fractional* spatial positions (Position-Aware
+        Interpolation).
+
+        Identical to :meth:`generate_embeddings` except each spatial patch ``i``
+        sits at position ``i * h_scale`` (height) / ``i * w_scale`` (width)
+        instead of the integer index ``i``. Used by EasyControl to place a
+        *downscaled* condition's tokens back onto the full-resolution target's
+        coordinate grid: a cond grid of ``H_c`` patches representing a target
+        grid of ``H_t`` patches uses ``h_scale = H_t / H_c`` so cond patch ``i``
+        lands at ``i * H_t / H_c`` — spanning ``[0, H_t)`` aligned with target.
+
+        The frequencies are computed analytically (no table lookup on the
+        position value), so fractional positions are exact — this is the same
+        mechanism Anima already uses for fractional temporal positions under FPS
+        modulation. At ``h_scale == w_scale == 1.0`` this reduces bit-exactly to
+        :meth:`generate_embeddings` (``self.seq[:H] * 1.0 == self.seq[:H]``).
+
+        See EasyControl §3.3 (Position-Aware Interpolation), Eq. 11-12.
+        """
+        B, T, H, W, _ = B_T_H_W_C
+
+        _compiling = torch.compiler.is_compiling()
+        # Distinct cache key (scaled positions) so the integer-position cache is
+        # never aliased. Scales are floats → fold into the key tuple.
+        scaled_key = None
+        if not _compiling:
+            if h_ntk_factor is None and w_ntk_factor is None and t_ntk_factor is None:
+                fps_val = None if fps is None else fps[:1].item()
+                scaled_key = (
+                    "scaled",
+                    T,
+                    H,
+                    W,
+                    fps_val,
+                    float(h_scale),
+                    float(w_scale),
+                )
+                cached = self._cos_sin_cache.get(scaled_key)
+                if cached is not None:
+                    return cached
+
+        h_ntk_factor = h_ntk_factor if h_ntk_factor is not None else self.h_ntk_factor
+        w_ntk_factor = w_ntk_factor if w_ntk_factor is not None else self.w_ntk_factor
+        t_ntk_factor = t_ntk_factor if t_ntk_factor is not None else self.t_ntk_factor
+
+        h_theta = 10000.0 * h_ntk_factor
+        w_theta = 10000.0 * w_ntk_factor
+        t_theta = 10000.0 * t_ntk_factor
+
+        h_spatial_freqs = 1.0 / (h_theta**self.dim_spatial_range)
+        w_spatial_freqs = 1.0 / (w_theta**self.dim_spatial_range)
+        temporal_freqs = 1.0 / (t_theta**self.dim_temporal_range)
+
+        assert H <= self.max_h and W <= self.max_w, (
+            f"Input dimensions (H={H}, W={W}) exceed the maximum dimensions "
+            f"(max_h={self.max_h}, max_w={self.max_w})"
+        )
+        # Fractional spatial positions. The *value* range is bounded by the
+        # trained grid (max scaled position ≈ H_t-1 ≤ max_h), not by the slice.
+        h_pos = self.seq[:H] * float(h_scale)
+        w_pos = self.seq[:W] * float(w_scale)
+        half_emb_h = torch.outer(h_pos, h_spatial_freqs)
+        half_emb_w = torch.outer(w_pos, w_spatial_freqs)
+
+        # Temporal positions are unscaled (cond is a single frame, T=1).
+        if self.enable_fps_modulation and fps is not None:
+            half_emb_t = torch.outer(
+                self.seq[:T] / fps[:1] * self.base_fps, temporal_freqs
+            )
+        else:
+            half_emb_t = torch.outer(self.seq[:T], temporal_freqs)
+
+        em_T_H_W_D = torch.cat(
+            [
+                repeat(half_emb_t, "t d -> t h w d", h=H, w=W),
+                repeat(half_emb_h, "h d -> t h w d", t=T, w=W),
+                repeat(half_emb_w, "w d -> t h w d", t=T, h=H),
+            ]
+            * 2,
+            dim=-1,
+        )
+
+        freqs = em_T_H_W_D.flatten(0, 2).unsqueeze(1).unsqueeze(1).float()
+        result = (torch.cos(freqs), torch.sin(freqs))
+
+        if scaled_key is not None and (
+            h_ntk_factor == self.h_ntk_factor
+            and w_ntk_factor == self.w_ntk_factor
+            and t_ntk_factor == self.t_ntk_factor
+        ):
+            self._cos_sin_cache[scaled_key] = result
 
         return result
 
@@ -1234,6 +1388,14 @@ class Anima(nn.Module):
         # reshape — bit-exact to the flattened path, slightly cheaper.
         self._native_flatten: bool = False
 
+        # Dynamic-seq compile (compile_dynamic_seq): when True, compile_blocks
+        # keeps dynamic=False but _run_blocks marks the seq-length axis dynamic
+        # via torch._dynamo.mark_dynamic, collapsing the per-token-count graphs
+        # to one. _dynamic_seq_range is the (min, max) token-count bound passed to
+        # mark_dynamic. Both stay inert (False / None) on the static + eager paths.
+        self._dynamic_seq: bool = False
+        self._dynamic_seq_range: Optional[tuple] = None
+
         self.build_patch_embed()
         self.build_pos_embed()
         self.use_adaln_lora = use_adaln_lora
@@ -1287,6 +1449,20 @@ class Anima(nn.Module):
             nn.Linear(model_channels, model_channels),
         )
 
+        # σ-FiLM (experimental): timestep-condition the mod head's hidden
+        # activation. The plain head is σ-flat — its text push is added to the
+        # (linear) AdaLN time embedding, so the text-induced Δγ,Δβ are constant
+        # across σ and the magnitude ratio ‖ΔS‖/‖ΔT‖ collapses at high σ (the
+        # teacher leans on text ~9× harder there). This generator FiLMs the
+        # hidden between the two proj linears with the normed time embedding, so
+        # the push can scale/re-aim per σ. Kept as a sibling of pooled_text_proj
+        # (not folded into the Sequential) so the [...]-indexing elsewhere stays
+        # valid. Gated by enable_pooled_text_sigma_film — off ⇒ bit-exact to the
+        # plain head. Zero-init ⇒ identity FiLM (scale=shift=0) at start.
+        # See bench/mod_guidance + _archive/gad/gad.md (archived).
+        self.pooled_text_sigma_film = nn.Linear(model_channels, 2 * model_channels)
+        self.enable_pooled_text_sigma_film = False
+
         # Whether the per-forward pooled_text_proj path runs. Default off: the
         # base DiT checkpoint never carries these weights (re-zeroed on load), so
         # the proj is a no-op and the max-reduce + 2 linears are pure per-step
@@ -1317,13 +1493,62 @@ class Anima(nn.Module):
             persistent=False,
         )
 
+        # DAVE — DC Attenuation for diVersity Enhancement (training-free, ICML'26).
+        # Per-block representation edit `ĥ = α·μ + (h−μ)` applied via post-`forward`
+        # hooks (see library/inference/corrections/dave.py); these buffers carry the
+        # runtime state the hooks read. ``_dave_atten[l] = (1−α_l)`` is the per-block
+        # DC attenuation factor (zeros ⇒ exact no-op). The edit is gated to the σ
+        # window [lo, hi]; ``_dave_cur_sigma`` is restamped from the timestep on every
+        # forward (the per-step model buffer the README's design calls for) so the
+        # block hooks — which never see the timestep — can gate on σ. ``enable_dave``
+        # is a plain bool flipped only by ``setup_dave`` (guards the σ stash; no
+        # per-forward toggling, so no recompile churn — cf. enable_pooled_text_modulation).
+        self.enable_dave = False
+        self.register_buffer("_dave_atten", torch.zeros(num_blocks), persistent=False)
+        self.register_buffer("_dave_sigma_lo", torch.zeros(()), persistent=False)
+        self.register_buffer("_dave_sigma_hi", torch.ones(()), persistent=False)
+        self.register_buffer("_dave_cur_sigma", torch.zeros(()), persistent=False)
+
         self.init_weights()
+
+    def _pooled_text_delta(
+        self,
+        pooled_text: torch.Tensor,
+        t_embedding: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Mod-guidance delta (B, D) added to the AdaLN time embedding.
+
+        With σ-FiLM enabled, the head's hidden activation is FiLM-modulated by
+        the (normed) time embedding so the text push becomes σ-dependent — this
+        is what lets ΔS track the teacher's σ-growing text response instead of
+        staying σ-flat. ``t_embedding`` is required for that path; callers
+        without one (the legacy single-delta inference bake) fall back to the
+        σ-flat projection.
+        """
+        if not self.enable_pooled_text_sigma_film or t_embedding is None:
+            return self.pooled_text_proj(pooled_text)
+        lin_in, act, lin_out = self.pooled_text_proj
+        h = lin_in(pooled_text)
+        t = t_embedding[:, 0, :] if t_embedding.ndim == 3 else t_embedding
+        scale, shift = self.pooled_text_sigma_film(t).chunk(2, dim=-1)
+        h = act(h * (1.0 + scale) + shift)
+        return lin_out(h)
 
     def reset_mod_guidance(self) -> None:
         """Disable modulation guidance by zeroing the runtime buffers."""
         self._mod_guidance_delta.zero_()
         self._mod_guidance_schedule.zero_()
         self._mod_guidance_final_w.zero_()
+
+    def reset_dave(self) -> None:
+        """Disable DAVE: zero the attenuation factors and the enable flag.
+
+        Hooks are removed by their owner (``setup_dave`` returns a handle); this
+        just neutralizes the buffers so any still-attached hook is a no-op.
+        """
+        self.enable_dave = False
+        self._dave_atten.zero_()
+        self._dave_cur_sigma.zero_()
 
     def init_weights(self) -> None:
         self.x_embedder.init_weights()
@@ -1336,6 +1561,9 @@ class Anima(nn.Module):
         # Zero-init pooled_text_proj output layer so it's a no-op at init
         nn.init.zeros_(self.pooled_text_proj[-1].weight)
         nn.init.zeros_(self.pooled_text_proj[-1].bias)
+        # Zero-init σ-FiLM generator → identity (scale=shift=0) at init.
+        nn.init.zeros_(self.pooled_text_sigma_film.weight)
+        nn.init.zeros_(self.pooled_text_sigma_film.bias)
 
     def enable_gradient_checkpointing(
         self, cpu_offload: bool = False, unsloth_offload: bool = False
@@ -1349,7 +1577,14 @@ class Anima(nn.Module):
         for block in self.blocks:
             block.disable_gradient_checkpointing()
 
-    def compile_blocks(self, backend: str = "inductor", mode: Optional[str] = None):
+    def compile_blocks(
+        self,
+        backend: str = "inductor",
+        mode: Optional[str] = None,
+        n_token_families: Optional[int] = None,
+        dynamic_seq: bool = False,
+        seq_range: Optional[tuple] = None,
+    ):
         """Enable native-shape flattening and torch.compile each block's _forward.
 
         Two coupled effects, both owned by this one call:
@@ -1380,33 +1615,91 @@ class Anima(nn.Module):
 
         ``mode`` maps to torch.compile's inductor preset (e.g. ``reduce-overhead``
         to enable per-block CUDAGraphs). ``None`` leaves it unset (inductor default).
+
+        ``dynamic_seq`` collapses the N-graph compile cascade (each graph loads
+        its own inductor kernel module + flash/cuBLAS workspaces into the CUDA
+        context — the ``nvidia-smi``-visible cold-compile VRAM transient) down to
+        a single block graph. Mechanism: keep ``dynamic=False`` (force static
+        specialization by default) and let ``_run_blocks`` annotate *only* the
+        seq-length axis via ``torch._dynamo.mark_dynamic``. Under
+        ``native_flatten`` the in-block latent is ``(B, 1, seq_len, 1, D)`` (T=1,
+        W=1), so ``seq_len`` is the *only* varying axis; B / D / head-dim / text-len
+        stay statically specialized. This is deliberately tighter than blanket
+        ``dynamic=True`` (which marks every dim of every input symbolic and can
+        over-generalize into worse kernels). ``seq_range`` bounds the symbolic
+        axis (min/max token count over the active tiers) so inductor guards
+        against a real range, not ``[2, ∞)``; ``None`` derives it from the
+        canonical 1024 table (4032/4200). Off by default; the static path stays
+        the trusted one until benched (graph count via ``TORCH_LOGS=recompiles``,
+        peak via ``mem_get_info``, step time, bit-exactness vs eager). See
+        [[project_compile_context_vram_climb]].
         """
         self._native_flatten = True
 
         # Local import: library.datasets.buckets does not import models, so
         # importing it here (rather than at module top) avoids a circular import.
-        import torch._dynamo as _dynamo
-
         from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+        from library.runtime.dynamo import pin_dynamo_limit
 
-        n = len(
-            {
-                (h // self.patch_spatial) * (w // self.patch_spatial)
-                for h, w in CONSTANT_TOKEN_BUCKETS
-            }
-        )
-        _dynamo.config.cache_size_limit = max(
-            _dynamo.config.cache_size_limit, 2 * n + 8
-        )
+        # Number of distinct token-count families (== compiled block graphs).
+        # Defaults to the canonical single-scale 1024 table (2: 4032/4200); callers
+        # pass the count derived from the buckets the dataset actually populated
+        # (train.py::_derive_token_budget) so the dynamo cache budget grows with the
+        # tiers really on disk instead of recompile-storming.
+        if n_token_families is not None:
+            n = n_token_families
+        else:
+            n = len(
+                {
+                    (h // self.patch_spatial) * (w // self.patch_spatial)
+                    for h, w in CONSTANT_TOKEN_BUCKETS
+                }
+            )
+        # pin_dynamo_limit (not a plain ``config.recompile_limit = …``): the
+        # budget is a ContextVar override that reverts to the default 8 in the
+        # backward compile context where the grad-bearing block._forward is
+        # traced. Single-scale (n=2 → 12) sits under 8 either way, but a wide
+        # multi-scale run (n large → >8 graphs) would silently spill to eager
+        # without pinning the canonical .default.
+        limit = pin_dynamo_limit("recompile_limit", 2 * n + 8)
+
+        # dynamic_seq does NOT use torch.compile(dynamic=True). Compile static and
+        # let _run_blocks mark only the seq axis dynamic (see docstring). Derive the
+        # (min, max) seq bound for that mark: passed-in seq_range (multi-tier) or the
+        # canonical 1024 table's token counts.
+        self._dynamic_seq = dynamic_seq
+        if dynamic_seq:
+            if seq_range is not None:
+                self._dynamic_seq_range = (int(seq_range[0]), int(seq_range[1]))
+            else:
+                counts = {
+                    (h // self.patch_spatial) * (w // self.patch_spatial)
+                    for h, w in CONSTANT_TOKEN_BUCKETS
+                }
+                self._dynamic_seq_range = (min(counts), max(counts))
 
         compile_kwargs = {"backend": backend, "dynamic": False}
         if mode is not None:
             compile_kwargs["mode"] = mode
         for block in self.blocks:
-            block._forward = torch.compile(block._forward, **compile_kwargs)
+            compiled_inner = torch.compile(block._forward, **compile_kwargs)
+            if dynamic_seq:
+                # Mark the seq axis dynamic INSIDE the checkpointed callable (an
+                # eager wrapper around the compiled inner) so the marks re-apply
+                # on the grad-checkpoint backward recompute, not just the forward.
+                # _run_blocks no longer marks — see _make_dynamic_seq_forward.
+                lo, hi = self._dynamic_seq_range
+                block._forward = _make_dynamic_seq_forward(compiled_inner, lo, hi)
+            else:
+                block._forward = compiled_inner
+        graph_mode = (
+            f"dynamic-seq mark_dynamic seq∈{self._dynamic_seq_range} (1 graph)"
+            if dynamic_seq
+            else f"static ({n} graphs)"
+        )
         print(
-            f"Anima: native_flatten on, {n} token-count families "
-            f"(cache_size_limit={_dynamo.config.cache_size_limit}); compiled "
+            f"Anima: native_flatten on, {n} token-count families, {graph_mode} "
+            f"(recompile_limit={limit}); compiled "
             f"{len(self.blocks)} block._forward with backend={backend}, mode={mode}"
         )
 
@@ -1583,6 +1876,9 @@ class Anima(nn.Module):
         t_embedding_B_T_D: torch.Tensor,
         crossattn_emb: torch.Tensor,
         attn_params,
+        capture_blocks: Optional[set] = None,
+        feature_sink: Optional[dict] = None,
+        stop_after_block: Optional[int] = None,
         **block_kwargs,
     ) -> torch.Tensor:
         """The block loop — the per-block compiled hot path (see compile_blocks).
@@ -1598,6 +1894,16 @@ class Anima(nn.Module):
 
         Mod-guidance is applied via buffers on ``self`` (zero = off) so the
         per-block ``t_emb`` arithmetic is unconditional. No Python branches.
+
+        Feature tap (opt-in, all defaults off → bit-exact no-op): when
+        ``capture_blocks`` is given, each listed block's output is stored into
+        ``feature_sink`` (keyed by block index). ``stop_after_block`` breaks the
+        loop right after that index — so a feature-only forward that taps block
+        ``k`` only runs ``blocks[0..k]`` and retains just their activations for
+        backward (the memory win that makes the Turbo GAN gen-forward affordable;
+        see ``forward_mini_train_dit``'s ``return_features_early``). The capture
+        sits at block ``__call__`` granularity — eager, OUTSIDE the compiled
+        ``_forward`` — so it is compile-safe.
         """
         # Normalize requires_grad once at the stack entry. Block 0 receives
         # requires_grad=False (frozen patch_embed output) while blocks 1+
@@ -1605,6 +1911,15 @@ class Anima(nn.Module):
         # the loop were ever traced per-block. requires_grad_(True) is a no-op
         # under torch.no_grad().
         x = x_padded.requires_grad_()
+
+        # compile_dynamic_seq: the seq-length axis is marked dynamic INSIDE each
+        # compiled block._forward (the eager prologue installed by compile_blocks
+        # via _make_dynamic_seq_forward) — both x dim 2 and the RoPE cos/sin dim 0.
+        # It lives there, not here, so the marks re-apply on the grad-checkpoint
+        # backward RECOMPUTE (detach_variable strips x's mark but keeps the RoPE
+        # tuple's; marking only here once would leave them disagreeing → dynamo
+        # ConstraintViolationError). No-op on the static/eager paths.
+
         for block_idx, block in enumerate(self.blocks):
             if self.blocks_to_swap:
                 self.offloader.wait_for_block(block_idx)
@@ -1623,8 +1938,14 @@ class Anima(nn.Module):
                 **block_kwargs,
             )
 
+            if capture_blocks is not None and block_idx in capture_blocks:
+                feature_sink[block_idx] = x
+
             if self.blocks_to_swap:
                 self.offloader.submit_move_blocks(self.blocks, block_idx)
+
+            if stop_after_block is not None and block_idx == stop_after_block:
+                break
         return x
 
     def forward_mini_train_dit(
@@ -1642,6 +1963,8 @@ class Anima(nn.Module):
         w_offset: int = 0,
         pooled_text_override: Optional[torch.Tensor] = None,
         skip_pooled_text_proj: bool = False,
+        return_block_features: Optional[set] = None,
+        return_features_early: bool = False,
     ) -> torch.Tensor:
         """
         Args:
@@ -1658,7 +1981,33 @@ class Anima(nn.Module):
             w_offset: Width offset in patched space for tiled diffusion RoPE
             pooled_text_override: Optional pre-computed pooled text (B, 1024) for modulation guidance.
                 Use to decouple modulation from prefix/postfix tokens in crossattn_emb.
+            return_block_features: Optional set of block indices to tap. When given,
+                each listed block's raw output (the post-block hidden state, in the
+                native-flatten ``(B, 1, L, 1, D)`` layout under ``compile_blocks`` or
+                the eager ``(B, T, H, W, D)`` grid otherwise) is captured into a dict.
+            return_features_early: When True (requires ``return_block_features``),
+                the block loop stops right after the deepest tapped block and the
+                method returns the captured-feature dict directly — skipping the
+                remaining blocks, ``final_layer`` and ``unpatchify``. This is the
+                feature-tap fast path: a forward that only needs a mid-stack feature
+                runs (and, when grad-bearing, retains activations for) just the
+                blocks up to the tap. With ``return_block_features`` but NOT early,
+                the method returns ``(velocity, feature_dict)``. Both default off →
+                bit-exact no-op (plain velocity return). Unsupported with block swap.
         """
+        if return_features_early and not return_block_features:
+            raise ValueError(
+                "return_features_early=True requires a non-empty return_block_features"
+            )
+        if return_block_features is not None and self.blocks_to_swap:
+            # Early-exit would leave the tail blocks' offloader moves un-submitted,
+            # desyncing the swap state for the next forward. Turbo keeps the teacher
+            # resident (blocks_to_swap=0), so this guard never fires in practice; it
+            # fails loud rather than corrupting silently if that changes.
+            raise RuntimeError(
+                "feature tap (return_block_features) is unsupported with block swap "
+                f"(blocks_to_swap={self.blocks_to_swap}); keep the tapped DiT resident"
+            )
         if (
             t5_input_ids is not None
             and self.use_llm_adapter
@@ -1713,6 +2062,14 @@ class Anima(nn.Module):
 
         if timesteps_B_T.ndim == 1:
             timesteps_B_T = timesteps_B_T.unsqueeze(1)
+
+        # DAVE: restamp the current σ so the per-block hooks can gate the DC edit
+        # to a σ window. ``timesteps`` is the DiT time argument on the σ∈[0,1]
+        # scale (sampling.py::get_timesteps_sigmas). Eager region (only block._forward
+        # is compiled), so this scalar copy never enters the compiled graph.
+        if self.enable_dave:
+            self._dave_cur_sigma.copy_(timesteps_B_T.detach().float().reshape(-1)[0])
+
         t_embedding_B_T_D, adaln_lora_B_T_3D = self.t_embedder(timesteps_B_T)
         t_embedding_B_T_D = self.t_embedding_norm(t_embedding_B_T_D)
 
@@ -1731,8 +2088,8 @@ class Anima(nn.Module):
             else:
                 pooled_text = None
             if pooled_text is not None:
-                t_embedding_B_T_D = t_embedding_B_T_D + self.pooled_text_proj(
-                    pooled_text
+                t_embedding_B_T_D = t_embedding_B_T_D + self._pooled_text_delta(
+                    pooled_text, t_embedding_B_T_D
                 ).unsqueeze(1)
 
         # Phase 2: modulation guidance delta.
@@ -1741,7 +2098,7 @@ class Anima(nn.Module):
         # so early tonal-DC blocks and the final compensation layer can be skipped.
         # Buffers are zeros when guidance is off (see __init__), so the arithmetic
         # below is an unconditional identity in that case — no Python branch.
-        # See docs/methods/mod-guidance.md for the rationale.
+        # See docs/inference/mod-guidance.md for the rationale.
 
         block_kwargs = {
             "rope_cos_sin": rope_cos_sin,
@@ -1779,6 +2136,15 @@ class Anima(nn.Module):
         # positions, so attn_params.selfattn_block_mask stays None (the legacy
         # pad-to-static path masked padded positions; that path is gone).
 
+        # Feature tap (idea 3.1): when requested, capture listed block outputs and
+        # — if early — stop after the deepest tap so only blocks[0..k] run.
+        feature_sink = {} if return_block_features is not None else None
+        stop_after_block = (
+            max(return_block_features)
+            if (return_block_features and return_features_early)
+            else None
+        )
+
         # Block stack runs in _run_blocks — a split point kept so pre/post-block
         # regions stay eager while the block loop is the compiled hot path.
         x_B_T_H_W_D = self._run_blocks(
@@ -1786,8 +2152,18 @@ class Anima(nn.Module):
             t_embedding_B_T_D,
             crossattn_emb,
             attn_params,
+            capture_blocks=return_block_features,
+            feature_sink=feature_sink,
+            stop_after_block=stop_after_block,
             **block_kwargs,
         )
+
+        # Early feature-only return: skip the rest of the head entirely. The
+        # captured features stay in the block-output layout (native-flatten or
+        # eager grid) — consumers pool over the spatial/token axes (see the Turbo
+        # PooledTokenDiscriminator), which is shape-agnostic across both.
+        if return_features_early:
+            return feature_sink
 
         # --- Native flatten: restore the original 5D shape ---
         # Delegated to a @torch.compiler.disable'd helper so the bucket-
@@ -1804,6 +2180,8 @@ class Anima(nn.Module):
             x_B_T_H_W_D, t_emb_final, adaln_lora_B_T_3D=adaln_lora_B_T_3D
         )
         x_B_C_Tt_Hp_Wp = self.unpatchify(x_B_T_H_W_O)
+        if return_block_features is not None:
+            return x_B_C_Tt_Hp_Wp, feature_sink
         return x_B_C_Tt_Hp_Wp
 
     def forward(

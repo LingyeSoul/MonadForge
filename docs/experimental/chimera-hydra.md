@@ -114,6 +114,12 @@ This is **strictly stronger** than the previous 1-A version, which gave only out
 
 **Narrow-layer fallback.** When `min(out, in) < max(K_c+K_f, 2)·r` (rare on Anima's mlp.layer1/2 targets — `in≈3072`, `(K_c+K_f)·r = 192` at default), both pools fall back to replicating the top-r singular slice. Pool-orthogonality is lost; pools start identical and rely on Cayley divergence.
 
+### OrthoInit option (`use_ortho_init=true`)
+
+Cayley keeps `colspace(ΔW) ⊆ top-2r(W₀)` for the whole run — the "chimera-ortho feels weak" cap (see [[project_orthoinit_variant]]). Setting `use_ortho_init=true` alongside the chimera flag flips each pool's `Q_basis_{c,f}` / `P_bases_{c,f}` from **frozen buffers + Cayley skew** to **trainable fp32 Parameters** (no `S_*`, no `_eye_r`, fp32 master kept for Adam). ΔW can then leave the principal 2r-subspace — full LoRA expressivity per pool — while keeping the W₀-aligned warm start. Pool orthogonality holds *at init* (same SVD partition above) and is free to drift thereafter; this is the per-pool trainable-basis route, **not** a joint Stiefel on `[P_c|P_f]`.
+
+`ΔW=0` at init is unaffected — it comes from the centered uniform gate (`π − 1/K`), not the basis, so `λ_init > 0` is fine. Save distills with `R = I` to the **identical** `*_chimera.safetensors` free-form layout (the save discriminator keys on `.Q_basis_c`, covering both parameterizations), so inference / loading / merge / ComfyUI need no OrthoInit awareness. Implemented as a flag-branch inside `ChimeraHydraLoRAModule` (forward, `__init__`, `distill_save_state_dict`); threaded `resolver → chimera_hydra spec → cfg.use_ortho_init → network.py`. Tests: `tests/test_lora_dtype_policy.py::test_chimera_ortho_init_*`.
+
 ## T-LoRA per-half composition
 
 `use_timestep_mask = true` applies the rank mask `mask_t(σ)` to the **content half only**. The freq half keeps full rank at every t.
@@ -131,7 +137,7 @@ ChimeraHydra is a fourth dispatch cell on top of the shared-A row, opt-in via `u
 
 | Variant | `use_moe_style` | `route_per_layer` | `router_source` | Extra |
 |---|---|---|---|---|
-| Plain LoRA / OrthoLoRA / T-LoRA / ReFT | `False` | — | `"none"` | — |
+| Plain LoRA / OrthoLoRA / T-LoRA | `False` | — | `"none"` | — |
 | HydraLoRA (paper) | `"shared_A"` | `True` | `"input"` | — |
 | σ-router on Hydra | `"shared_A"` | `True` | `"sigma"` | — |
 | FEI-on-Hydra (`lora.toml` default) | `"shared_A"` | `True` | `"fei"` | — |
@@ -152,7 +158,7 @@ ChimeraHydra is a fourth dispatch cell on top of the shared-A row, opt-in via `u
 | `networks/lora_save.py` | `_convert_chimera_dual_a_to_hydra` distills both pools' Cayley layout to free-form (`lora_down_{c,f}.weight` + `lora_up_{c,f}_weight`); `_build_chimera_moe_state_dict` expands to per-expert `lora_ups_{c,f}.{i}.weight` + per-pool q/k/v defuse + writes `*_chimera.safetensors`. Top-level `freq_router.*` passes through both steps. |
 | `networks/__init__.py` | `NETWORK_REGISTRY["chimera_hydra"]` with `save_variant="chimera_hydra_moe"`. `_post_init_hydra` stamps `_use_chimera_hydra` + per-pool balance weights on the network. |
 | `library/inference/models.py` | `_is_chimera_moe(path)` peeks `ss_use_chimera_hydra` from safetensors metadata. Chimera files take the existing Hydra-mode dynamic-hook branch but skip the `lora_unet_*` filter (so top-level `freq_router.*` survives) and pass `file=path` to `create_network_from_weights`. |
-| `library/training/router_conditioning.py` | Routes `set_sigma` → `set_fei` once per step. Chimera force-enables `use_fei_router` so the FEI/σ pipeline fires every step regardless of `cfg.router_source`. |
+| `library/training/forward/router_conditioning.py` | Routes `set_sigma` → `set_fei` once per step. Chimera force-enables `use_fei_router` so the FEI/σ pipeline fires every step regardless of `cfg.router_source`. |
 | `configs/methods/chimera.toml` | Method config driving `make exp-chimera`. |
 | `configs/gui-methods/chimera_hydra.toml` | Self-contained variant config driving `make lora-gui GUI_PRESETS=chimera_hydra`. |
 | `scripts/experimental_tasks/training.py::cmd_chimera` | `exp-chimera` shim. |
@@ -279,9 +285,9 @@ ss_router_source               = "input"
 | `gradient_checkpointing` | ✅ | The adapter is a thin Linear-replacement; checkpointing at block granularity wraps it correctly. |
 | Modulation guidance | ✅ orthogonal | AdaLN path is untouched. |
 | T-LoRA | ✅ | Built-in (per-half asymmetric masking — content rank-modulated, freq full-rank). |
-| OrthoLoRA / ReFT | ⚠ partial | `use_ortho=true` is the chimera default. ReFT is designed against shared-A / plain-LoRA layouts; verify on a small bench before stacking. |
+| OrthoLoRA | ✅ | `use_ortho=true` is the chimera default. |
 | DCW (scalar / v4) | ✅ orthogonal | Sampler-level correction; composes with anything upstream of the Euler step. |
-| ComfyUI | ❌ | The 2-A on-disk layout (`lora_ups_c.{i}` + `lora_ups_f.{j}` + dual `lora_down_{c,f}` per Linear) is NOT what the `comfyui-hydralora` node currently understands (it expects the legacy 1-A Hydra-MoE shape). Existing tests under `tests/test_chimera_node_loader.py` exercise the legacy synthetic layout, not the new emitter. ComfyUI loader needs ~150 lines of new code to read the 2-A keys + broadcast `π_f` per step. |
+| ComfyUI | ❌ | The 2-A on-disk layout (`lora_ups_c.{i}` + `lora_ups_f.{j}` + dual `lora_down_{c,f}` per Linear) is NOT what the `comfyui-hydralora` node currently understands (it expects the legacy 1-A Hydra-MoE shape). The legacy chimera node-loader tests (removed with the extracted node) exercised the legacy synthetic layout, not the new emitter. ComfyUI loader needs ~150 lines of new code to read the 2-A keys + broadcast `π_f` per step. |
 | Static merge into DiT | ❌ | `scripts/merge_to_dit.py` refuses MoE methods by default (router is sample-dependent). `--allow-partial` would drop the chimera portion entirely. |
 | FeRA / hydra-moe loaded simultaneously | ❌ | One router scheme per checkpoint; `models.py` refuses two MoE files in one `--lora_weight` list. |
 
@@ -337,14 +343,14 @@ ChimeraHydra's bet: dual-A + structurally-enforced router-input separation makes
 - [`configs/methods/chimera.toml`](../../configs/methods/chimera.toml) — canonical method config (`make exp-chimera`).
 - [`configs/gui-methods/chimera_hydra.toml`](../../configs/gui-methods/chimera_hydra.toml) — GUI-friendly variant config.
 - [`scripts/experimental_tasks/training.py`](../../scripts/experimental_tasks/training.py) — `cmd_chimera` shim.
-- [`docs/proposal/chimera_hydra.md`](../proposal/chimera_hydra.md) — design rationale, bench plan, decision tree, risks.
+- [`_archive/proposals/chimera_hydra.md`](../proposal/chimera_hydra.md) — design rationale, bench plan, decision tree, risks.
 
 ## Status
 
 **Experimental.** Dual-A code lands and round-trip is verified (max abs diff ~9e-3 from bf16 vs fp32 precision in train/inference paths; structural orthogonality confirmed at 6e-4 / 8e-4 on both sides). No bench results yet. Existing 1-A chimera checkpoints **do not load** — retrain to produce the dual-A format.
 
-ComfyUI mirror needs ~150 lines of new node-side code to handle the 2-A on-disk layout + broadcast `π_f` per step. The synthetic-data tests under `tests/test_chimera_node_loader.py` cover the legacy 1-A loader path and need a parallel 2-A test set when the node is updated.
+ComfyUI mirror needs ~150 lines of new node-side code to handle the 2-A on-disk layout + broadcast `π_f` per step. The synthetic-data node-loader tests (since removed) covered the legacy 1-A loader path and need a parallel 2-A test set when the node is updated.
 
 The proposal's bench plan (cells A / B / C / C+T / C-split / C-fei) plus a new dual-A vs single-A A/B is the prerequisite before promoting chimera to a default LoRA-family variant.
 
-See [`docs/proposal/chimera_hydra.md`](../proposal/chimera_hydra.md) §"Decision tree" for the ship/archive criteria after bench results land.
+See [`_archive/proposals/chimera_hydra.md`](../proposal/chimera_hydra.md) §"Decision tree" for the ship/archive criteria after bench results land.

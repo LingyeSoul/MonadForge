@@ -52,10 +52,14 @@ from pathlib import Path
 
 import torch
 
+from bench._anima import DEFAULT_DIT as _DEFAULT_DIT
 from bench._common import make_run_dir, write_result
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DIT = REPO_ROOT / "models/diffusion_models/anima-base-v1.0.safetensors"
+# Anchor the (possibly repo-relative) canonical DiT path under the repo root so
+# the default resolves regardless of CWD. `Path / abspath` keeps an env-override
+# absolute path intact.
+DEFAULT_DIT = REPO_ROOT / _DEFAULT_DIT
 
 # Match networks/methods/soft_tokens.py + configs/methods/soft_tokens.toml.
 DEFAULT_N_LAYERS = 10
