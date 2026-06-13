@@ -53,6 +53,32 @@ def _python_type(v: Any) -> str:
     return "str"
 
 
+def _to_python(v: Any) -> Any:
+    """Coerce a tomlkit item to a plain JSON-native Python value.
+
+    tomlkit scalars subclass the builtins, but pydantic's ``Any`` serializer
+    rejects the subclasses on ``dump_json`` (and ``tomlkit.items.Bool`` isn't a
+    ``bool`` subclass at all), so the raw items can't travel through a FastAPI
+    ``response_model`` — they raise ``PydanticSerializationError`` at the
+    ``/config`` boundary. Recurse through ``Array``/inline-table too.
+    """
+    if isinstance(v, tomlkit.items.Bool):
+        return v.value
+    if isinstance(v, bool):
+        return bool(v)
+    if isinstance(v, int):  # tomlkit Integer subclasses int
+        return int(v)
+    if isinstance(v, float):  # tomlkit Float subclasses float
+        return float(v)
+    if isinstance(v, str):  # tomlkit String subclasses str
+        return str(v)
+    if isinstance(v, list):  # tomlkit Array subclasses list
+        return [_to_python(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _to_python(x) for k, x in v.items()}
+    return v
+
+
 def read_distill_config(method: str) -> dict:
     """Read a sectioned distill TOML and return its structure.
 
@@ -77,7 +103,7 @@ def read_distill_config(method: str) -> dict:
             for fkey, fval in item.value.body:
                 if fkey is None:
                     continue
-                val = fval
+                val = _to_python(fval)
                 comment = ""
                 if hasattr(fval, "trivia") and fval.trivia.comment:
                     comment = fval.trivia.comment.strip().lstrip("#").strip()
@@ -89,13 +115,14 @@ def read_distill_config(method: str) -> dict:
                 })
             sections.append({"name": str(key), "fields": fields})
         else:
+            val = _to_python(item)
             comment = ""
             if hasattr(item, "trivia") and item.trivia.comment:
                 comment = item.trivia.comment.strip().lstrip("#").strip()
             root_fields.append({
                 "key": str(key),
-                "value": item,
-                "type": _python_type(item),
+                "value": val,
+                "type": _python_type(val),
                 "comment": comment,
             })
 
