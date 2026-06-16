@@ -1,213 +1,336 @@
-# anima_lora
-
-📖 Guidebook: [English](docs/guidelines/guidebook.md) · [한국어](docs/guidelines/가이드북.md) · [日本語](docs/guidelines/ガイドブック.md) · [中文](docs/guidelines/指南书.md)
+# MonadForge
 
 <p align="center">
-  <img src="docs/gui.png" alt="Anima LoRA GUI — training-config editor with method/variant picker, inline method help, and live training monitor" width="900">
+  <img src="webui/frontend/public/logo.svg" alt="MonadForge" width="120">
 </p>
 
-One line — installs [uv](https://astral.sh/uv) and the **CUDA 13.2 toolkit** if missing, fetches the latest release, runs `uv sync` (Python 3.13 + torch), and on Windows opens the GUI (no git required). The installer is published as a signed-by-checksum release asset:
+<p align="center">
+  <strong>太初玄鼎 · 下一代 Anima 扩散模型训练工作台</strong>
+</p>
 
-```bash
-# Linux / macOS
-curl -LsSf https://github.com/sorryhyun/anima_lora/releases/latest/download/install.sh | sh
-```
+<p align="center">
+  <a href="https://github.com/LingyeSoul/MonadForge">GitHub</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#功能概览">功能概览</a> ·
+  <a href="#与上游版本的区别">与上游版本的区别</a>
+</p>
+
+---
+
+MonadForge 是 [anima_lora](https://github.com/sorryhyun/anima_lora) 的一个深度改进分支，将原有的 PySide6 桌面 GUI 全面重构为 **基于 FastAPI + Vue 3 的现代化 WebUI**，并在此基础上扩展了大量工程化改进与用户体验增强。
+
+> 🌐 **双语界面** — 内置中英文切换，代码注释与界面文案全面国际化  
+> ⚡ **实时训练监控** — WebSocket 流式传输训练指标、损失曲线、学习率变化与预览图  
+> 🎨 **Material Design 3 主题** — 琥珀色品牌系统、JetBrains Mono 等宽字体、精致的交互动效  
+> 🖥️ **跨平台一致体验** — Windows / Linux / macOS 统一的浏览器界面，告别 Qt 平台差异
+
+---
+
+## 快速开始
+
+### Windows 一键安装
+
 ```powershell
-# Windows (PowerShell)
-irm https://github.com/sorryhyun/anima_lora/releases/latest/download/install.ps1 | iex
+# 1. 克隆仓库
+git clone https://github.com/LingyeSoul/MonadForge.git
+cd MonadForge
+
+# 2. 运行安装脚本（自动安装 uv、依赖、构建前端）
+setup-win.bat
+
+# 3. 启动 WebUI
+start-webui-win.bat
 ```
 
-> **Requirements:** at least an Ampere GPU (RTX 3000-series / A100 or newer) + NVIDIA driver **≥595**. The installer sets up the **CUDA 13.2 toolkit, Python 3.13, and PyTorch 2.12** for you.
+安装脚本会自动完成：
+- 检测并安装 [uv](https://astral.sh/uv) 包管理器
+- 同步 Python 3.13 + PyTorch 2.12 + CUDA 13.2 环境
+- 自动下载便携版 Node.js（如系统未安装）
+- 构建 Vue 3 前端并输出到 `webui/frontend/dist/`
+- 自动打开浏览器访问 `http://127.0.0.1:8000`
 
-Installs into `./anima_lora/` (override with `ANIMA_DIR`). On Windows it also drops an **"Anima LoRA GUI"** shortcut on your desktop.
-
-<details>
-<summary><b>Safer install</b> — inspect &amp; verify the script before running</summary>
-
-Every release ships a `checksums.txt` (SHA-256 of the installers + source archives). Download, verify, then run:
+### Linux / macOS 一键安装
 
 ```bash
-# Linux / macOS
-curl -fLO https://github.com/sorryhyun/anima_lora/releases/latest/download/install.sh
-curl -fLO https://github.com/sorryhyun/anima_lora/releases/latest/download/checksums.txt
-grep install.sh checksums.txt | sha256sum -c -    # must print "install.sh: OK"
-less install.sh                                    # read it
-sh install.sh
-```
-```powershell
-# Windows (PowerShell)
-iwr https://github.com/sorryhyun/anima_lora/releases/latest/download/install.ps1 -OutFile install.ps1
-iwr https://github.com/sorryhyun/anima_lora/releases/latest/download/checksums.txt -OutFile checksums.txt
-(Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower()   # compare against checksums.txt
-notepad install.ps1                                            # read it
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-</details>
+# 1. 克隆仓库
+git clone https://github.com/LingyeSoul/MonadForge.git
+cd MonadForge
 
-**Reproducible / pinned install** — set `ANIMA_VERSION` to install a specific tag instead of latest (the recommended path when you need a known-good environment):
+# 2. 运行安装脚本
+chmod +x setup-linux.sh
+./setup-linux.sh
+
+# 3. 启动 WebUI
+chmod +x start-webui-linux.sh
+./start-webui-linux.sh
+```
+
+### 手动安装（开发者）
 
 ```bash
-ANIMA_VERSION=v1.4.0 sh install.sh       # or: $env:ANIMA_VERSION='v1.4.0'; irm ... | iex
+# 1. 环境准备
+uv sync                                    # Python 3.13 + 所有依赖
+
+# 2. 构建前端
+cd webui/frontend
+npm install
+npm run build
+cd ../..
+
+# 3. 下载模型
+python tasks.py download-models          # DiT + Qwen3 TE + QwenImage VAE
+
+# 4. 启动服务
+python -m webui                            # 或: uv run python -m webui
 ```
 
-On Windows the GUI opens automatically when the installer finishes. **Sign in to Hugging Face and download models right in the GUI** — Hugging Face auth is built in now, so there's no `hf auth login` terminal step. Prefer the CLI? After signing in once (the GUI stores your HF token):
+服务启动后访问 `http://127.0.0.1:8000`。
+
+---
+
+## 功能概览
+
+MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型合并一站式完成：
+
+| 页面 | 功能描述 |
+|------|---------|
+| **⚙️ Config** | 可视化配置编辑器 — 方法/变体/预设选择、TOML 字段级编辑、实时帮助提示、自定义变体与预设创建 |
+| **📁 Dataset** | 数据集浏览器 — 多目录管理、缩略图网格/列表视图、搜索筛选、排序、图片详情与标签编辑 |
+| **🔧 Preprocess** | 预处理流水线 — 状态仪表盘、数据集路径配置、一键执行 resize/VAE cache/TE cache/PE cache/mask |
+| **🧩 Adapter** | 适配器管理 — 查看已训练 LoRA/HydraLoRA 检查点、版本信息、元数据浏览 |
+| **🧪 Distill** | 蒸馏配置 — Modulation Guidance 蒸馏参数编辑、训练启动、状态监控 |
+| **🔀 Merge** | 模型合并 — 文件树浏览、合并策略选择、多检查点融合为独立 DiT |
+| **📊 Dashboard** | 训练仪表盘 — 实时进度环、损失曲线、学习率曲线、GPU/CPU/内存监控、训练预览图流 |
+| **📋 Tasks** | 任务监控 — 所有后台任务状态、实时日志流（彩色分级）、取消/重试操作 |
+| **🔧 System** | 系统管理 — 环境变量查看、硬件信息、模型路径配置、一键更新 |
+
+### 核心特性详解
+
+#### 🎯 实时训练监控（Training Dashboard）
+
+- **WebSocket 流式数据** — 训练过程中通过 `/api/ws` 实时推送 step/epoch/loss/lr/speed
+- **动态损失曲线** — 基于 Canvas 绘制的实时 Loss Curve，支持历史数据点回溯
+- **学习率可视化** — 独立的 LR Curve 面板，清晰展示 warmup / decay 过程
+- **GPU 监控** — 显存占用、利用率、温度实时条形图（基于 `nvidia-ml-py`）
+- **训练预览图** — 每 N 步生成的 sample 图片自动流式展示，支持点击放大查看
+
+#### 🌐 国际化（i18n）
+
+- 内置 **English / 简体中文** 双语支持
+- 界面语言一键切换，无需重启
+- 所有训练概念、字段帮助、错误提示均已翻译
+- 基于 Vue 组合式 API 的 `useI18n` 系统，易于扩展新语言
+
+#### 🎨 Material Design 3 品牌主题
+
+- **琥珀色（Amber）主色调** — 区别于上游的默认蓝紫，温暖而具有辨识度
+- **JetBrains Mono** 等宽字体用于所有数值输入与代码展示
+- **精致的交互动效** — 卡片悬浮抬升、焦点发光环、按钮按压反馈、骨架屏加载、抖动错误提示
+- **深色模式优先** — 专为长时间训练场景优化的暗色界面
+
+#### 📡 任务系统（Task Service）
+
+- 取代上游的独立守护进程设计，采用 **基于 Python asyncio 的轻量级任务调度**
+- 所有训练、预处理、合并操作均为后台任务，不阻塞 WebUI
+- 支持任务取消、日志实时流式查看、状态持久化
+- 多任务并行队列管理
+
+---
+
+## 与上游版本的区别
+
+### 架构层面
+
+| 特性 | MonadForge (本分支) | upstream (sorryhyun/anima_lora) |
+|------|---------------------|--------------------------------|
+| **GUI 框架** | FastAPI + Vue 3 + Vuetify 3 (WebUI) | PySide6 (Qt 桌面应用) |
+| **前端构建** | Vite + TypeScript + Sass | 无（纯 Python Qt） |
+| **通信方式** | HTTP REST + WebSocket | 本地进程间通信 / 文件系统轮询 |
+| **任务调度** | 内置 asyncio TaskService | 外部 Python daemon 进程 |
+| **更新机制** | `make update` 支持 + 内置更新器 | 仅 `make update` |
+| **跨平台** | 浏览器统一体验，完全一致 | Qt 平台差异（Linux 字体渲染等） |
+
+### 功能增强
+
+| 功能 | MonadForge | upstream |
+|------|-----------|----------|
+| **实时训练仪表盘** | ✅ 完整 — 损失曲线、LR 曲线、GPU 监控、预览图流 | ❌ 仅基础日志输出 |
+| **双语界面** | ✅ 内置 EN/CN 切换 | ❌ 仅英文 |
+| **训练预览图流** | ✅ WebSocket 实时推送 sample 图片 | ❌ 需手动查看输出目录 |
+| **WD Tagger 集成** | ✅ 内置 timm-based WD 标签器，WebUI 一键打标 | ❌ 仅命令行 |
+| **ControlNet 预处理** | ✅ 内置 canny/depth/pose 预处理与数据集生成 | ❌ 实验性 / 缺失 |
+| **蒸馏 UI** | ✅ 完整的 Modulation Guidance 蒸馏配置界面 | ❌ 仅命令行 |
+| **自定义数据集路径** | ✅ WebUI 配置多组 source/resized/cache 路径 | ❌ 手动编辑 TOML |
+| **自定义预设** | ✅ 图形化创建硬件预设（VRAM 档位） | ❌ 仅内置预设 |
+| **文件浏览器** | ✅ 内置目录树浏览、模型选择器 | ❌ 系统文件对话框 |
+| **WebSocket 日志** | ✅ 彩色分级实时日志流（INFO/WARN/ERROR） | ❌ 文件 tail |
+| **主题系统** | ✅ MD3 琥珀色品牌主题 + 动效系统 | ❌ 原生 Qt 样式 |
+
+### 工程改进
+
+| 改进项 | 说明 |
+|--------|------|
+| **移除 PySide6** | 完全移除 Qt 依赖，减少 ~200MB 安装体积，消除跨平台字体/渲染问题 |
+| **移除 GUI Daemon** | 训练守护进程与 WebUI TaskService 合并，简化架构，消除进程间通信复杂度 |
+| **Windows 原生优化** | 专用 `setup-win.bat` / `start-webui-win.bat`，自动处理 Defender 排除、Node 便携版、无窗口训练进程 |
+| **前端独立构建** | Vue SPA 独立构建输出到 `dist/`，支持 CDN 部署或内嵌到 FastAPI StaticFiles |
+| **SPA 路由回退** | 支持直接刷新 `/dashboard`、`/config` 等子路由，不会 404 |
+| **SVG 品牌标识** | 矢量 Logo 与 Favicon，任意缩放清晰 |
+| **WandB 集成** | 训练指标自动上报，WebUI 内嵌 WandB 看板链接 |
+| **JSONL 进度追踪** | 优化的训练日志格式，支持流式解析与历史回放 |
+
+### 保留的上游核心能力
+
+MonadForge 完整继承并同步上游的所有训练与推理能力：
+
+- ✅ **Fast LoRA Training** — 恒定 token 分桶 + 逐块 `torch.compile`，RTX 5060 Ti 上 13.4GB VRAM / 1.1s per step
+- ✅ **LoRA / OrthoLoRA / T-LoRA** — 三种变体可叠加，无损合并为独立 DiT 检查点
+- ✅ **Spectrum 推理加速** — 训练无关的 ~1.75× 加速，支持 ComfyUI 节点
+- ✅ **DCW / SMC-CFG** — 采样器级 SNR 校正与滑模 CFG 修正
+- ✅ **HydraLoRA / ChimeraHydra** — MoE 多专家路由与双池加法架构
+- ✅ **EasyControl** — 扩展自注意力图像条件控制
+- ✅ **Turbo (DP-DMD)** — 2 步蒸馏生成
+- ✅ **DirectEdit** — 流反演图像编辑
+- ✅ **Soft Tokens / SPD / Embedding Inversion** — 完整实验方法支持
+
+---
+
+## 项目结构
+
+```
+MonadForge/
+├── webui/                          # WebUI 主目录
+│   ├── server.py                   # FastAPI 应用工厂
+│   ├── api/                        # REST API 路由层
+│   │   ├── config.py               # 配置读写 API
+│   │   ├── tasks.py                # 任务管理 API
+│   │   ├── preview.py              # 训练预览图 API
+│   │   ├── system.py               # 系统信息 API
+│   │   ├── tagger.py               # WD 标签器 API
+│   │   ├── distill.py              # 蒸馏 API
+│   │   ├── files.py                # 文件浏览 API
+│   │   ├── images.py               # 图片服务 API
+│   │   ├── preprocess.py           # 预处理 API
+│   │   ├── merge.py                # 合并 API
+│   │   ├── ws.py                   # WebSocket 端点
+│   │   └── i18n.py                 # 国际化文案 API
+│   ├── services/                   # 业务逻辑层
+│   │   ├── task_service.py         # 异步任务调度核心
+│   │   ├── training_log_parser.py  # 训练日志流式解析
+│   │   ├── config_service.py       # TOML 配置管理服务
+│   │   ├── image_service.py        # 图片处理与缓存
+│   │   ├── wd_tagger_service.py    # WD 标签器封装
+│   │   ├── distill_service.py    # 蒸馏任务管理
+│   │   ├── file_service.py         # 文件系统操作
+│   │   ├── merge_service.py        # 模型合并逻辑
+│   │   └── preprocess_service.py   # 预处理流水线
+│   └── frontend/                   # Vue 3 前端
+│       ├── src/
+│       │   ├── App.vue              # 根组件（MD3 导航抽屉）
+│       │   ├── router.ts           # 路由定义
+│       │   ├── main.ts             # 入口（Pinia + Vuetify + i18n）
+│       │   ├── views/              # 页面级组件
+│       │   │   ├── ConfigEditor.vue
+│       │   │   ├── TrainingDashboard.vue
+│       │   │   ├── DatasetBrowser.vue
+│       │   │   ├── PreprocessView.vue
+│       │   │   ├── TaskMonitorView.vue
+│       │   │   ├── AdapterView.vue
+│       │   │   ├── DistillView.vue
+│       │   │   ├── MergeView.vue
+│       │   │   └── SystemView.vue
+│       │   ├── stores/             # Pinia 状态管理
+│       │   ├── composables/        # Vue 组合式函数
+│       │   ├── i18n/               # 中英文文案
+│       │   ├── plugins/            # Vuetify 主题配置
+│       │   └── styles/             # SCSS 全局样式
+│       └── public/
+│           └── logo.svg              # 品牌 Logo
+├── library/                        # 核心训练/推理库（与上游同步）
+├── networks/                         # 适配器网络实现（与上游同步）
+├── scripts/                          # 任务脚本（与上游同步）
+├── tasks.py                          # 跨平台任务入口
+├── setup-win.bat / setup-linux.sh    # 一键安装脚本
+├── start-webui-win.bat / start-webui-linux.sh  # 启动脚本
+├── build-webui-win.bat               # 前端构建脚本
+└── pyproject.toml                    # 项目配置（uv 锁定）
+```
+
+---
+
+## 常用命令
 
 ```bash
-cd anima_lora
-make download-models      # DiT + Qwen3 TE + QwenImage VAE (+ SAM3 / MIT / PE for masking & image conditioning) into models/
-make gui                  # config editor + dataset browser + training monitor
+# 训练
+python tasks.py lora                     # 标准 LoRA 训练
+python tasks.py lora-gui                 # 从 GUI 预设训练
+python tasks.py easycontrol              # EasyControl 训练
+
+# 推理测试
+python tasks.py test                     # 最新 LoRA 推理测试
+python tasks.py test SPECTRUM=1          # 启用 Spectrum 加速
+python tasks.py test MOD=1               # 启用 Modulation Guidance
+
+# 预处理
+python tasks.py preprocess               # 完整预处理流水线
+python tasks.py mask                     # 生成 SAM3 掩码
+
+# 工具
+python tasks.py merge                    # 合并 LoRA 到 DiT
+python tasks.py download-models          # 下载基础模型
+python tasks.py --help                   # 查看所有命令
 ```
 
-Update later in place with `make update` (release-tarball merge, no git needed). Prefer cloning the repo? See [Setup → Manual](#manual-from-a-clone).
+WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆命令行参数。
 
 ---
 
-LoRA / T-LoRA training and inference engine for the [Anima](https://huggingface.co/circlestone-labs/Anima) diffusion model (DiT-based, flow-matching).
+## 技术栈
 
-Four things this repo aims to do well:
-
-1. **Fast LoRA training** on consumer GPUs — per-block `torch.compile` over a tiny fixed shape set (one block graph per token-count family), end to end.
-2. **Solid conventional implementations** — LoRA, OrthoLoRA, and T-LoRA stack together and bake losslessly into a standalone DiT checkpoint.
-3. **Recent methods, engineered for Anima** — Spectrum inference, DCW & SMC-CFG samplers, OrthoHydraLoRA, and modulation guidance, each implemented end-to-end against Anima's compile contract rather than dropped in as a toy port.
-4. **A broad experimental surface** — SPD, ChimeraHydra, Soft Tokens, Turbo distillation, EasyControl, DirectEdit, embedding inversion.
-
-> **At-a-glance diagrams** for every method (DiT internals, LoRA, OrthoLoRA, T-LoRA, HydraLoRA, Spectrum, modulation, compile optimizations) live in [`docs/structure_images/`](docs/structure_images/) — paired with prose walkthroughs in [`docs/structure/`](docs/structure/).
-
----
-
-## 1. Fast training
-
-**13.4 GB peak VRAM · 1.1 s/step** on a single RTX 5060 Ti while **rank=32 1MP resolution lora training** — achieved by co-designing the data pipeline, attention, and compiler stack so Dynamo sees a tiny fixed set of shapes (one block graph per token-count family) for the whole run.
-
-| Lever | Summary |
-|---|---|
-| Constant-token bucketing | Buckets fall into two token-count families — 4032 and 4200 patches — each resolution *exactly* filling its count, so there is zero intra-bucket padding. Forwards run at native token counts, so `torch.compile` traces one block graph per distinct count (2). The legacy pad-to-static path was removed (it leaked padding into flash self-attn and couldn't run this table — 4200 > 4096). |
-| Max-padded text encoder | Text outputs padded to 512 and zero-filled — the pretrained DiT uses zero keys as cross-attn sinks, so trimming breaks it. Also gives the compiler another fixed dim. |
-| Per-block `torch.compile` | Each DiT block compiled independently with Inductor (`compile_blocks()`). Combined with native-token bucketing this pins the trace to 2 block graphs and eliminates guard recompilation. |
-| Compile-friendly hot path | Audited every forward for patterns dynamo can't trace cleanly — `einops.rearrange` replaced with explicit `.unflatten()/.permute()` chains, `torch.autocast` context managers replaced with direct `.to(dtype)` casts, dict `.items()` loops hoisted out of compiled regions, FA4 wrapped in `@torch.compiler.disable` for clean graph breaks. |
-| Flash Attention 2 | `flash_attn` 2.x with SDPA fallback. FA4 evaluated and removed — see [fa4.md](docs/optimizations/fa4.md). |
-
-Compile pipeline details in [docs/optimizations/for_compile.md](docs/optimizations/for_compile.md).
+| 层级 | 技术 |
+|------|------|
+| 后端 | Python 3.13, FastAPI, Uvicorn, WebSocket |
+| 前端 | Vue 3, Vuetify 3, Pinia, Vue Router, TypeScript |
+| 构建 | Vite, Sass, vue-tsc |
+| 包管理 | uv (Python), npm (Node.js) |
+| ML 框架 | PyTorch 2.12, Transformers, Diffusers, Flash Attention 2 |
+| 字体 | JetBrains Mono, Roboto |
 
 ---
 
-## 2. Solid conventional implementations
+## 系统要求
 
-The default training config stacks **LoRA + OrthoLoRA + T-LoRA** together. All three fold losslessly into a standalone DiT checkpoint via thin-SVD export at save time, so you can ship ComfyUI-compatible `*_merged.safetensors` with no adapter loader dependency.
-
-| Variant | Pitch | Details |
-|---|---|---|
-| **LoRA** | Classic low-rank, rank 16–32. | — |
-| **OrthoLoRA** | SVD-parameterized with orthogonality regularization; exports as plain LoRA. | [psoft-integrated-ortholora.md](docs/methods/psoft-integrated-ortholora.md) |
-| **T-LoRA** | Timestep-dependent rank masking — low rank at high noise, full rank at low noise. Training-only mask, so merge is bit-equivalent. | [timestep_mask.md](docs/methods/timestep_mask.md) |
-
-**Side-by-side** — same prompt, `er_sde` 30 steps, `cfg=4.0`, 1024². Each LoRA trained at rank 16 for 2 epochs on a 20% subset with training seed 42; inference seeds `{41, 42, 43}`. Reproduce with `python _archive/bench_methods.py`.
-
-|  | **LoRA** | **OrthoLoRA + T-LoRA** |
-|:---:|:---:|:---:|
-| seed 41 | <img src="docs/side_by_side/lora/20260423-154854-014_41_.png" width="320"> | <img src="docs/side_by_side/ortho_tlora/20260423-155545-258_41_.png" width="320"> |
-| seed 42 | <img src="docs/side_by_side/lora/20260423-154938-584_42_.png" width="320"> | <img src="docs/side_by_side/ortho_tlora/20260423-155631-762_42_.png" width="320"> |
-| seed 43 | <img src="docs/side_by_side/lora/20260423-155024-080_43_.png" width="320"> | <img src="docs/side_by_side/ortho_tlora/20260423-155718-280_43_.png" width="320"> |
-
-<details>
-<summary>Base model and individual variants (plain, OrthoLoRA, T-LoRA)</summary>
-
-|  | **plain (base)** | **OrthoLoRA** | **T-LoRA** |
-|:---:|:---:|:---:|:---:|
-| seed 41 | <img src="docs/side_by_side/plain/20260423-160513-382_41_.png" width="240"> | <img src="docs/side_by_side/ortholora/20260423-155109-338_41_.png" width="240"> | <img src="docs/side_by_side/tlora/20260423-155327-834_41_.png" width="240"> |
-| seed 42 | <img src="docs/side_by_side/plain/20260423-160556-697_42_.png" width="240"> | <img src="docs/side_by_side/ortholora/20260423-155155-526_42_.png" width="240"> | <img src="docs/side_by_side/tlora/20260423-155413-304_42_.png" width="240"> |
-| seed 43 | <img src="docs/side_by_side/plain/20260423-160640-759_43_.png" width="240"> | <img src="docs/side_by_side/ortholora/20260423-155241-905_43_.png" width="240"> | <img src="docs/side_by_side/tlora/20260423-155458-996_43_.png" width="240"> |
-
-</details>
-
-**Merging**:
-
-```bash
-make merge                                  # bake latest LoRA at multiplier 1.0
-make merge ADAPTER_DIR=output/ckpt MULTIPLIER=0.8
-```
-
-Refuses non-linear-delta variants (HydraLoRA `_moe`) by default; `--allow-partial` drops those and bakes only the LoRA portion.
+- **GPU**: NVIDIA Ampere 或更新架构（RTX 3000 系列 / A100 / RTX 5060 Ti 等）
+- **驱动**: NVIDIA Driver ≥ 595
+- **CUDA**: 13.2 Toolkit（用于 `torch.compile` / Triton）
+- **Python**: 3.13（由 uv 自动管理）
+- **OS**: Windows 10/11, Linux, macOS（Apple Silicon 需 Rosetta）
+- **内存**: 16GB+ 系统内存
+- **VRAM**: 8GB+（推荐 16GB+ 用于完整功能）
 
 ---
 
-## 3. Recent methods, engineered for Anima
+## 贡献
 
-Five recent papers picked up, implemented against Anima end-to-end, and shipped with the engineering they need to be actually usable — not toy reimplementations.
+欢迎提交 Issue 与 PR！本分支特别关注的改进方向：
 
-| Method | What it is | Engineering notes | Doc |
-|---|---|---|---|
-| **Spectrum inference** | Training-free speedup via Chebyshev polynomial feature forecasting (Han et al., CVPR 2026) — ≈1.75× at default settings, up to ~5× on more aggressive schedules (quality tradeoff). On cached steps every transformer block is skipped — only `t_embedder` + `final_layer` + `unpatchify` run. | `register_forward_pre_hook` on `final_layer` captures block outputs without monkey-patching the model; adaptive window schedule concentrates real forwards on early high-noise steps. Stable ComfyUI node in a separate repo: [ComfyUI-Spectrum-KSampler](https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler). | [spectrum.md](docs/inference/spectrum.md) |
-| **DCW calibrator** | Sampler-level SNR-t bias correction (Yu et al., CVPR 2026) — mixes each Euler step's `prev_sample` toward the model's `x0_pred` along the LL Haar band. Two modes: scalar `λ` (offline-tuned) and **v4 learnable** per-prompt calibrator with online observation. | v4 head conditions on `(aspect, prompt, observed prefix gap)` and fires after `k=7` warmup steps. Bias direction characterized as **(CFG × aspect)-dependent** on Anima — paper-direction at CFG=4 non-square, paper-opposite at CFG=1 / 1024². Trained per-checkpoint via `make dcw`. | [dcw.md](docs/inference/dcw.md) |
-| **SMC-CFG** | Training-free sliding-mode CFG correction in velocity space (Wang et al., CFG-Ctrl) — treats the cond/uncond combine as a control problem applied to the residual `e = v_cond − v_uncond`. No extra DiT forwards. | Ships the **α-adaptive variant**: the paper's fixed gain `k` (≈14× off on Anima at CFG=4, visibly chattering) is replaced with `k_t = α·mean(\|e_t\|)` per step. `make test-smc-cfg` (λ=5, α=0.2); composes with Spectrum and mod-guidance. | [smc_cfg.md](docs/inference/smc_cfg.md) |
-| **OrthoHydraLoRA** | MoE-style multi-head LoRA with orthogonalized experts and layer-local routing — shared `lora_down`, per-expert `lora_up_i`, learned per-sample router. Targets multi-style training without the cross-style bleed a single low-rank subspace produces. Original paper: [arXiv:2605.03252](https://arxiv.org/abs/2605.03252). | Saves two side-by-side files: `anima_hydra.safetensors` (baked-down LoRA, ComfyUI drop-in) and `anima_hydra_moe.safetensors` (full multi-head). Live routing in ComfyUI via the bundled **Anima Adapter Loader** node (`https://github.com/sorryhyun/ComfyUI-Anima_lora-Adapter`), which installs per-Linear forward hooks reproducing `HydraLoRAModule.forward`. | [hydra-lora.md](docs/methods/hydra-lora.md) |
-| **Modulation guidance** | Distill a `pooled_text_proj` MLP that steers AdaLN modulation coefficients toward quality-positive directions (Starodubcev et al., ICLR 2026). Teacher sees real cross-attention; student sees zeroed cross-attention but receives pooled text through modulation. | Trained with `make distill-mod` against the frozen DiT. Inference applies the projection at AdaLN time so it composes with any LoRA variant; `make test MOD=1` runs a sample with it enabled (composes with `SPECTRUM=1`). | [mod-guidance.md](docs/inference/mod-guidance.md) |
+- 🎨 **UI/UX 改进** — 新主题、动画、交互细节
+- 🌐 **更多语言** — 日语、韩语等社区翻译
+- 📱 **移动端适配** — 响应式布局优化
+- 🔌 **新功能页面** — 如模型对比、批量推理等
 
 ---
 
-## 4. Experimental surface
+## 致谢与许可
 
-Each ships with a doc — see the link for usage, flags, and caveats.
+MonadForge 基于 [sorryhyun/anima_lora](https://github.com/sorryhyun/anima_lora) 构建，感谢上游项目的卓越工作。
 
-| Feature | What it is | Doc |
-|---|---|---|
-| **SPD** | Spectral Progressive Diffusion (Xiao et al., 2026) — training-free multi-resolution inference (`--spd`): run early noise-dominated steps at low resolution, then inject high-frequency detail via spectral noise expansion. Optional trajectory-adapter fine-tune (`make exp-spd`). | [spd.md](docs/inference/spd.md) |
-| **ChimeraHydra** | Dual-pool additive MoE: a content pool (layer-local router) plus a frequency pool (network router on FEI + σ features), each an asymmetric HydraLoRA off a disjoint SVD subspace. Fuses HydraLoRA + TimeStep Master + FeRA. `make exp-chimera`. | [chimera-hydra.md](docs/experimental/chimera-hydra.md) |
-| **Soft Tokens** | SoftREPA (Lee et al., NeurIPS 2025) — per-layer × per-t learnable text tokens (~1M params) spliced into `crossattn_emb`; DiT frozen. `make exp-soft-tokens`. | [soft_tokens.md](docs/experimental/soft_tokens.md) |
-| **Turbo** | DP-DMD distillation (Wu et al., arXiv:2602.03139) of the CFG=4 teacher into a few-step generator. Output is a normal LoRA — infer with `--infer_steps 2 --cfg 1.0`. `make exp-turbo`. | [dpdmd.md](docs/experimental/dpdmd.md) |
-| **DirectEdit** | Flow-inversion image editing (Yang & Ye, 2026) — invert to noise, swap edit conditioning, re-denoise with V-injection. Source captions come from the **Anima Tagger** (image → Anima-format tags). `make exp-test-directedit`. | [directedit_editing_v3.md](docs/experimental/directedit_editing_v3.md) |
-| **EasyControl** | Extended self-attention image conditioning. DiT frozen; trains per-block cond LoRA on self-attn + FFN + scalar `b_cond` gate. | [easycontrol.md](docs/experimental/easycontrol.md) |
-| **Embedding inversion** | Optimize a text embedding to match a target image through the frozen DiT. | [invert.md](docs/inference/invert.md) |
-
-> **Want to contribute?** An area where outside help would have outsized impact: **EasyControl adapters** (canny / depth / pose / … — each control type is one self-contained PR). See [CONTRIBUTING.md → Priority areas](CONTRIBUTING.md#priority-areas).
+- **Toolkit 代码**: [MIT](LICENSE)
+- **上游衍生部分**: [Apache 2.0](LICENSE-APACHE)（源自 [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)）
+- **Anima 基础模型权重**: [CircleStone Labs Non-Commercial License v1.0](NOTICE)
 
 ---
 
-## Setup
-
-> Quick one-line install is up top in [How to start](#how-to-start). The manual clone path is below.
-
-### Manual (from a clone)
-
-```bash
-uv sync                   # Python 3.13 with pre-built flash attention 2
-hf auth login             # or just sign in from the GUI — auth is built in now
-make download-models      # DiT + Qwen3 TE + QwenImage VAE (+ SAM3 / MIT / PE for masking & image conditioning) into models/
-# place training images in image_dataset/ with .txt caption sidecars
-python -m webui            # recommended — config editor + dataset browser + training monitor
-```
-
-`uv sync` resolves to **torch 2.12 + CUDA 13.2** runtime. The manual clone path does **not** auto-install the CUDA 13.2 **toolkit** (needed for `torch.compile`/Triton) — install it per [guidebook §2](docs/guidelines/guidebook.md#2-cuda-132-handled-by-the-installer), or just run the one-line installer above, which does it for you.
-
-> **Anima ships as a uv-locked application environment, not a generic pip package.** `pyproject.toml` pins `python ==3.13.*`, specific torch / flash-attn wheel URLs, and `index-strategy = "unsafe-best-match"` — these are maintainer-chosen, known-good builds. Install with `uv sync` against the committed `uv.lock`; don't `pip install` from `pyproject.toml` (pip won't honor uv's index strategy or the prebuilt flash-attn wheels).
-
-CLI path:
-
-```bash
-make preprocess           # VAE-compatible resize & validation
-make lora                 # or: PRESET=fast_16gb make lora / PRESET=low_vram make lora / make exp-chimera
-make test                 # sample generation with the latest trained LoRA
-```
-
-Config chain: `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`. Override with `PRESET=low_vram make lora` or `--network_dim 32 --max_train_epochs 64`. Full flag reference in [docs/guidelines/training.md](docs/guidelines/training.md) and [docs/guidelines/inference.md](docs/guidelines/inference.md).
-
----
-
-## Documentation
-
-| Doc | Contents |
-|-----|----------|
-| [guidelines/training.md](docs/guidelines/training.md) | Training flags, LoRA variants, caption shuffle, masked loss, dataset config |
-| [guidelines/inference.md](docs/guidelines/inference.md) | Inference flags, P-GRAFT, prompt files, LoRA format conversion |
-| [optimizations/](docs/optimizations/) | Compile pipeline, FA4 post-mortem, CUDA 13.2 |
-| [methods/](docs/methods/) | One doc per method — HydraLoRA, Spectrum, inversion, mod guidance, T-LoRA, OrthoLoRA |
-
----
-
-## License
-
-Toolkit code: [MIT](LICENSE).
-
-Portions of this toolkit are **derived from [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)**, which is licensed under the **Apache License, Version 2.0**. Those portions remain governed by Apache 2.0 — the full license text is in [LICENSE-APACHE](LICENSE-APACHE), and attribution plus a statement of modifications is in [NOTICE](NOTICE). Thanks to kohya-ss and the sd-scripts contributors for their foundational work.
-
-Anima / CircleStone **base model weights** ship under the **CircleStone Labs Non-Commercial License v1.0** and are not relicensed by this repo. Any LoRA, fine-tune, or merged checkpoint trained from those weights is a Derivative and inherits the non-commercial terms. See [NOTICE](NOTICE).
+<p align="center">
+  <sub>太初玄鼎 · 以简驭繁</sub>
+</p>
