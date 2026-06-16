@@ -86,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         align = r.get("repa/align_loss")
         active = r.get("repa/active")
         # While active, loss/current includes the weighted term; back it out.
-        # align_loss is a last-active-step snapshot, so only trust it when
-        # active == 1 this step.
+        # align_loss is a last-active-step snapshot — only trust it when active.
         if active == 1.0 and align is not None:
             fm_only = total - w * align
         else:
@@ -109,7 +108,6 @@ def main(argv: list[str] | None = None) -> int:
     n_active = sum(1 for r in rows if r["active"] == 1.0)
     print(f"repa active on {n_active}/{n} steps ({n_active / n:.0%}); weight={w:g}\n")
 
-    # ------------------------------------------------------------- deciles
     print(
         f"{'decile':>6} {'gstep':>12} {'align':>8} {'total':>8} "
         f"{'fm_only':>8} {'repa share':>10}"
@@ -125,7 +123,6 @@ def main(argv: list[str] | None = None) -> int:
         span = f"{chunk[0]['gstep']}-{chunk[-1]['gstep']}"
         print(f"{d:>6} {span:>12} {a:>8.4f} {t:>8.4f} {f:>8.4f} {share:>9.1%}")
 
-    # ------------------------------------------------------------- plateau
     act_rows = [r for r in rows if r["align"] is not None]
     if len(act_rows) >= 50:
         aligns = _smooth([r["align"] for r in act_rows])
@@ -143,8 +140,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     break
 
-    # ------------------------------------------------------- anneal release
-    # Sustained 1→0: last active step followed only by inactive ones.
+    # Anneal release — sustained 1→0: last active step followed only by inactive.
     last_active_i = max(
         (i for i, r in enumerate(rows) if r["active"] == 1.0), default=None
     )

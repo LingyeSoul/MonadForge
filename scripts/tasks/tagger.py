@@ -54,7 +54,9 @@ def cmd_tagger(extra):
         "--batch_size",
         "64",
         "--lr",
-        "2e-5",
+        "1.5e-4",
+        "--label_smooth",
+        "0.05",
         "--pool_kind",
         "map",
         "--pool_kind_aux",
@@ -71,3 +73,16 @@ def cmd_test_tagger(extra):
     to also print rating distribution + top-K kept tags.
     """
     _tagger("predict", extra)
+
+
+def cmd_autotag(extra):
+    """Autotag a single image (CLI one-shot).
+
+    Thin wrapper over ``scripts.anima_tagger.autotag``: auto-downloads the
+    tagger checkpoint on first use, runs it on ``--image``, and prints the
+    predicted caption on one sentinel-prefixed stdout line. Handy for smoke-
+    testing the tagger without the GUI (which runs a resident worker —
+    ``scripts.anima_tagger.autotag_server`` — for fast consecutive tagging).
+    Extra args (``--image``, ``--tagger_dir``, ``--device``) forwarded verbatim.
+    """
+    run([PY, "-m", "scripts.anima_tagger.autotag", *extra])

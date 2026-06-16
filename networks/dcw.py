@@ -76,8 +76,11 @@ def _haar_idwt_2d(
     c = (LL - LH + HL - HH) * s
     d = (LL - LH - HL + HH) * s
     out = torch.empty(
-        *LL.shape[:-2], LL.shape[-2] * 2, LL.shape[-1] * 2,
-        dtype=LL.dtype, device=LL.device,
+        *LL.shape[:-2],
+        LL.shape[-2] * 2,
+        LL.shape[-1] * 2,
+        dtype=LL.dtype,
+        device=LL.device,
     )
     out[..., 0::2, 0::2] = a
     out[..., 0::2, 1::2] = b
@@ -189,11 +192,9 @@ class FusionHead(nn.Module):
         self.k = k
         self.fei_k = fei_k
         self.c_pool_dim = c_pool_dim
-        # c_proj_dim == 0 → identity passthrough (raw c_pool into concat).
-        # > 0 → LN + Linear(c_pool_dim → c_proj_dim) before concat. The
-        # 2026-05-05 sweep showed projection balances slot capacity but
-        # hurts CV metrics on Anima — supervision-side variance, not arch
-        # capacity, is the bottleneck. Kept as an ablation knob.
+        # c_proj_dim == 0 → identity passthrough; > 0 → LN + Linear before
+        # concat. Projection hurt CV metrics on Anima (supervision-side
+        # variance is the bottleneck, not arch capacity) — kept as an ablation knob.
         self.c_proj_dim = c_proj_dim
         if c_proj_dim > 0:
             self.c_proj = nn.Sequential(
@@ -206,10 +207,8 @@ class FusionHead(nn.Module):
             cat_dim = c_pool_dim
         in_dim = cat_dim + k + fei_k + aux_dim
 
-        # α̂ and log σ̂² use independent trunks. Sharing a single trunk turned
-        # the per-prompt seed-variance aux loss into a destructive interference
-        # term (any λ>0 collapsed α̂'s correlation), because aux gradients
-        # rewrote shared features the NLL needed for point prediction.
+        # α̂ and log σ̂² use independent trunks: a shared trunk let aux gradients
+        # rewrite features the NLL needed, so any λ>0 collapsed α̂'s correlation.
         alpha_layers: list[nn.Module] = [nn.LayerNorm(in_dim)]
         prev = in_dim
         for h in hidden:

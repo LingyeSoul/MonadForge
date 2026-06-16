@@ -210,7 +210,6 @@ class CachedDataset(torch.utils.data.Dataset):
                     f"latent under {synth_data_dir}; dropped."
                 )
 
-        # Group samples by latent resolution
         buckets: dict[str, list[tuple[str, str]]] = {}
         for img in cached:
             if img.te_path is None:

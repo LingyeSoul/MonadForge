@@ -54,11 +54,9 @@ TAGGER_VENDOR = ROOT / "custom_nodes" / "comfyui-anima-tagger" / "_vendor"
 DIRECTEDIT_VENDOR = ROOT / "custom_nodes" / "comfyui-anima-directedit" / "_vendor"
 TRAINER_VENDOR = ROOT / "custom_nodes" / "comfyui-anima-trainer" / "_vendor"
 
-# The hydralora node (Anima Adapter Loader) was extracted to a standalone
-# published repo; sync_vendor writes its router-kernel vendor tree *into that
-# repo* rather than an in-tree ``custom_nodes/`` subdir. Default location is a
-# sibling of the anima_lora checkout (``../../ComfyUI-Anima_lora-Adapter``);
-# override with ``ANIMA_ADAPTER_NODE_REPO`` for a relocated checkout.
+# The hydralora node (Anima Adapter Loader) is a standalone published repo;
+# sync_vendor writes its router-kernel vendor tree *into that repo*. Default is
+# a sibling checkout; override with ``ANIMA_ADAPTER_NODE_REPO``.
 ADAPTER_NODE_REPO = Path(
     os.environ.get(
         "ANIMA_ADAPTER_NODE_REPO", ROOT.parents[1] / "ComfyUI-Anima_lora-Adapter"
@@ -66,12 +64,9 @@ ADAPTER_NODE_REPO = Path(
 )
 HYDRALORA_VENDOR = ADAPTER_NODE_REPO / "_vendor"
 
-# ---------------------------------------------------------------------------
-# Tagger-only captioning + vision subset. After the directedit node was
-# refactored to take ``source_tag``/``target_tag`` STRINGs directly (no
-# embedded tagger), this whole tree is only needed by the tagger vendor.
-# ---------------------------------------------------------------------------
-
+# Tagger-only captioning + vision subset. Since the directedit node takes
+# ``source_tag``/``target_tag`` STRINGs directly (no embedded tagger), this
+# tree is only needed by the tagger vendor.
 TAGGER_VERBATIM: list[tuple[str, str]] = [
     ("library/captioning/anima_tagger.py", "library/captioning/anima_tagger.py"),
     (
@@ -149,10 +144,6 @@ TAGGER_TRIMMED: list[tuple[str, str]] = [
     ("library/captioning/anima_tagger_data.py", TRIMMED_ANIMA_TAGGER_DATA),
 ]
 
-# ---------------------------------------------------------------------------
-# DirectEdit vendor files.
-# ---------------------------------------------------------------------------
-
 DIRECTEDIT_VERBATIM: list[tuple[str, str]] = [
     (
         "library/inference/editing/directedit.py",
@@ -179,8 +170,6 @@ DIRECTEDIT_PACKAGE_DIRS: list[str] = [
     "library/datasets",
 ]
 
-# Trimmed extract: only ``get_timesteps_sigmas`` from the full sampling
-# module. Drops the diffusers dependency the rest of the file pulls in.
 TRIMMED_SAMPLING = '''"""Trimmed extract of library/inference/sampling.py for the vendored
 DirectEdit path. Contains only ``get_timesteps_sigmas`` — the only helper
 the DirectEdit ComfyUI node calls. Drops the diffusers-based samplers the
@@ -211,8 +200,6 @@ def get_timesteps_sigmas(
     return timesteps, sigmas
 '''
 
-# Trimmed extract: only the ``CONSTANT_TOKEN_BUCKETS`` constant. Full file
-# pulls in cv2, numpy bucket-manager classes, etc.
 TRIMMED_BUCKETS = '''"""Trimmed extract of library/datasets/buckets.py for the vendored
 DirectEdit path. Contains only ``CONSTANT_TOKEN_BUCKETS`` — the bucket-size
 table the DirectEdit ComfyUI node consults to pick a target resolution.
@@ -265,11 +252,6 @@ DIRECTEDIT_TRIMMED_TEMPLATES: list[tuple[str, str]] = [
     ("library/datasets/buckets.py", TRIMMED_BUCKETS),
     ("library/anima/models.py", STUB_ANIMA_MODELS),
 ]
-
-
-# ---------------------------------------------------------------------------
-# Generic build helpers.
-# ---------------------------------------------------------------------------
 
 
 def _write_pkg_markers(vendor_root: Path, package_dirs: list[str]) -> None:
@@ -336,14 +318,10 @@ def build_directedit_vendor() -> None:
     _write_trimmed(DIRECTEDIT_VENDOR, _resolve_directedit_trimmed())
 
 
-# ---------------------------------------------------------------------------
-# Hydralora vendor tree — the pure-compute kernels imported by
-# adapter.py + fera.py via the vendor-first resolver in the standalone
-# ComfyUI-Anima_lora-Adapter repo. router_compute.py is the single import
-# surface; it pulls in fei.py and router_state.py transitively, so we vendor
-# all three verbatim — written into the external repo's _vendor/ tree.
-# ---------------------------------------------------------------------------
-
+# Hydralora vendor tree — pure-compute kernels for adapter.py + fera.py in the
+# standalone ComfyUI-Anima_lora-Adapter repo. router_compute.py is the single
+# import surface; it pulls fei.py + router_state.py transitively, so all three
+# are vendored verbatim (router weights are bit-sensitive to these kernels).
 HYDRALORA_VERBATIM: list[tuple[str, str]] = [
     ("library/inference/router_compute.py", "library/inference/router_compute.py"),
     ("library/runtime/fei.py", "library/runtime/fei.py"),
@@ -381,17 +359,11 @@ def build_hydralora_vendor() -> None:
     _copy_verbatim(HYDRALORA_VENDOR, HYDRALORA_VERBATIM)
 
 
-# ---------------------------------------------------------------------------
 # Trainer vendor tree — the stdlib daemon *client* the trainer node submits
-# jobs through. config.py + client.py are copied verbatim (they're pure
-# stdlib); proc.py is trimmed to read_pidfile only. The live proc.py imports
-# psutil for spawn/kill, but client.py only touches proc.read_pidfile (via
-# _resolve_port). ensure_daemon's proc.spawn_detached reference is never
-# exercised — the trainer node errors if the daemon isn't already running
-# rather than auto-starting it — so the trimmed proc keeps the vendored client
-# importable without psutil on the ComfyUI host.
-# ---------------------------------------------------------------------------
-
+# jobs through. config.py + client.py copied verbatim (pure stdlib); proc.py
+# trimmed to read_pidfile only — dropping its psutil import keeps the vendored
+# client pure-stdlib (the node never auto-starts the daemon, so spawn/kill is
+# never exercised).
 TRAINER_VERBATIM: list[tuple[str, str]] = [
     ("scripts/daemon/config.py", "scripts/daemon/config.py"),
     ("scripts/daemon/client.py", "scripts/daemon/client.py"),

@@ -51,7 +51,7 @@ def _manifest(stems, n_tags):
     )
 
 
-def _build(manifest, cd, cda, spec, spec_aux, pack_root):
+def _build(manifest, cd, cda, spec, spec_aux, pack_root, ram_resident=False):
     return CachedDualDataset(
         manifest,
         cd,
@@ -62,6 +62,7 @@ def _build(manifest, cd, cda, spec, spec_aux, pack_root):
         spec_aux,
         stems_subset=manifest.stems,
         pack_root=pack_root,
+        ram_resident=ram_resident,
     )
 
 
@@ -232,6 +233,53 @@ def test_reconstruct_from_index_after_sidecar_drop(tmp_path: Path):
         pass
     else:
         raise AssertionError("expected failure when shards AND sidecars are gone")
+
+
+def test_ram_resident_bit_identical_and_disk_free(tmp_path: Path):
+    """RAM-resident serving matches the mmap path row-for-row, holds the shards
+    in memory (no lingering mmap handles), and a chunk_size=0 global-shuffle
+    loader at num_workers=0 covers every sample each epoch."""
+    from torch.utils.data import DataLoader
+
+    from library.captioning.anima_tagger_data import (
+        BucketBatchSampler,
+        collate_dual_token_batch,
+    )
+
+    stems = [f"s{i:03d}" for i in range(40)]
+    spec, spec_aux = _spec("pe"), _spec("pe_spatial")
+    cd, cda = tmp_path / "tokens-main", tmp_path / "tokens-aux"
+    hw = lambda s: (2, 3) if int(s[1:]) % 2 == 0 else (2, 4)  # noqa: E731
+    _write_caches(cd, stems, 16, hw, "tokens")
+    _write_caches(cda, stems, 8, hw, "tokens")
+    manifest = _manifest(stems, 6)
+
+    ref = _build(manifest, cd, cda, spec, spec_aux, tmp_path / "packed")
+    ram = _build(
+        manifest, cd, cda, spec, spec_aux, tmp_path / "packed", ram_resident=True
+    )
+    assert ram._ram_resident and not ram._handles
+    for i in range(len(ref)):
+        a, b = ref[i], ram[i]
+        assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1])
+        assert torch.equal(a[2], b[2]) and a[3] == b[3] and a[4] == b[4]
+
+    samp = BucketBatchSampler(
+        ram.buckets, batch_size=8, seed=0, shuffle=True, chunk_size=0
+    )
+    assert len(list(samp)) == len(samp)
+    dl = DataLoader(
+        ram,
+        batch_sampler=samp,
+        num_workers=0,
+        collate_fn=collate_dual_token_batch,
+    )
+    seen = 0
+    for _ in range(2):
+        for batch in dl:
+            assert batch[0].dim() == 3 and batch[1].dim() == 3
+            seen += batch[0].shape[0]
+    assert seen == 2 * len(stems)
 
 
 def test_packed_dataloader_workers(tmp_path: Path):

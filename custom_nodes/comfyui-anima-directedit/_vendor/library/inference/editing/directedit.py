@@ -40,7 +40,6 @@ import torch
 from tqdm import tqdm
 
 from library.anima import models as anima_models
-from library.inference.corrections.smc_cfg import SMCCFGState
 
 logger = logging.getLogger(__name__)
 
@@ -62,23 +61,13 @@ def _v_pred(
     embed_neg: Optional[torch.Tensor],
     guidance_scale: float,
     padding_mask: torch.Tensor,
-    smc_cfg_state: Optional[SMCCFGState] = None,
 ) -> torch.Tensor:
-    """One model forward (with optional CFG). Returns velocity prediction.
-
-    ``smc_cfg_state`` (optional) routes the cond/uncond combine through
-    α-adaptive Sliding-Mode Control. No-op when CFG is disabled (single
-    forward, no residual). Caller must reuse the same state across steps for
-    e_prev continuity; ``invert()`` deliberately does not pass it.
-    """
+    """One model forward (with optional CFG). Returns velocity prediction."""
     t_expand = sigma.expand(latents.shape[0]).to(latents.device, dtype=torch.bfloat16)
     noise_pred = anima(latents, t_expand, embed, padding_mask=padding_mask)
     if guidance_scale != 1.0 and embed_neg is not None:
         uncond = anima(latents, t_expand, embed_neg, padding_mask=padding_mask)
-        if smc_cfg_state is not None:
-            noise_pred = smc_cfg_state.combine(noise_pred, uncond, guidance_scale)
-        else:
-            noise_pred = uncond + guidance_scale * (noise_pred - uncond)
+        noise_pred = uncond + guidance_scale * (noise_pred - uncond)
     return noise_pred
 
 
@@ -329,7 +318,6 @@ def edit_forward(
     z_inv: Optional[List[torch.Tensor]] = None,
     mask: Optional[torch.Tensor] = None,  # noqa: ARG001 — Eq. 12 mask blend (v3)
     step_callback: Optional[Callable[[int, int], None]] = None,
-    smc_cfg_state: Optional[SMCCFGState] = None,
 ) -> torch.Tensor:
     """Forward (noise -> clean) edit pass anchored to the inversion residuals.
 
@@ -414,13 +402,6 @@ def edit_forward(
 
     block_indices = _resolve_t_inj_blocks(anima, t_inj_blocks) if t_inj > 0 else set()
     has_cfg = guidance_scale != 1.0 and embed_neg is not None
-    if smc_cfg_state is not None and not has_cfg:
-        logger.warning(
-            "smc_cfg_state passed but CFG is disabled (guidance_scale=%.2f, "
-            "embed_neg=%s) — SMC operates on the cond/uncond residual and "
-            "has nothing to clamp; ignored.",
-            guidance_scale, "set" if embed_neg is not None else "None",
-        )
     z_tar = z_init.to(torch.bfloat16)
 
     if t_inj > 0:
@@ -473,12 +454,7 @@ def edit_forward(
                 if has_cfg:
                     v_neg = noise_pred[0:1]
                     v_cond_tar = noise_pred[2:3]
-                    if smc_cfg_state is not None:
-                        v_tar = smc_cfg_state.combine(
-                            v_cond_tar, v_neg, guidance_scale
-                        )
-                    else:
-                        v_tar = v_neg + guidance_scale * (v_cond_tar - v_neg)
+                    v_tar = v_neg + guidance_scale * (v_cond_tar - v_neg)
                 else:
                     v_tar = noise_pred[1:2]
             else:
@@ -490,7 +466,6 @@ def edit_forward(
                 v_tar = _v_pred(
                     anima, z_hat_tar, sigma_in,
                     embed_tar, embed_neg, guidance_scale, pad,
-                    smc_cfg_state=smc_cfg_state,
                 )
 
             z_tar = (z_tar.float() - coeff * v_tar.float()).to(torch.bfloat16)

@@ -70,14 +70,11 @@ logger = logging.getLogger(__name__)
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="DirectEdit image editing for Anima")
 
-    # Model paths (mirror inference.py defaults so the make target passes the
-    # same trio it always does).
     p.add_argument("--dit", required=True)
     p.add_argument("--text_encoder", required=True)
     p.add_argument("--vae", required=True)
     p.add_argument("--attn_mode", default="flash")
 
-    # Editing inputs.
     p.add_argument("--image", required=True, help="Source image path")
     p.add_argument(
         "--prompt_src",
@@ -151,7 +148,6 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--negative_prompt",
-        # default="",
         default="",
         help="Negative prompt for CFG on the edit pass (default empty). In "
         "--cached_embed mode, an empty value is auto-replaced with 'worst "
@@ -189,7 +185,6 @@ def parse_args() -> argparse.Namespace:
         "Same seed across variants is what makes the ranking comparable.",
     )
 
-    # Sampling knobs.
     p.add_argument("--infer_steps", type=int, default=28)
     p.add_argument("--flow_shift", type=float, default=1.0)
     p.add_argument(
@@ -252,11 +247,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--seed", type=int, default=42)
 
-    # I/O.
     p.add_argument("--save_path", required=True)
 
-    # Plumbing flags inference.py exposes that downstream code reads — keep
-    # passthroughs so generation-side accessors don't trip.
+    # Passthroughs inference.py exposes that downstream code reads — keep so
+    # generation-side accessors don't trip.
     p.add_argument("--vae_chunk_size", type=int, default=64)
     p.add_argument("--vae_disable_cache", action="store_true", default=True)
     p.add_argument("--text_encoder_cpu", action="store_true")
@@ -412,8 +406,7 @@ def _load_cached_embed_variants(
                 crossattn_emb = f.get_tensor(crossattn_key).to(
                     device, dtype=torch.bfloat16
                 )
-                # Cache stores per-sample tensors unbatched, e.g. (512, 1024).
-                # The DiT expects (B, N, D) — add the batch dim.
+                # Cache stores unbatched (N, D); DiT expects (B, N, D).
                 if crossattn_emb.dim() == 2:
                     crossattn_emb = crossattn_emb.unsqueeze(0)
                 # Pre-baked from training preprocess — already adapter-projected.
@@ -423,8 +416,7 @@ def _load_cached_embed_variants(
                 attn_mask = f.get_tensor(f"attn_mask{suf}").to(device)
                 t5_input_ids = f.get_tensor(f"t5_input_ids{suf}").to(device)
                 t5_attn_mask = f.get_tensor(f"t5_attn_mask{suf}").to(device)
-                # Cached tensors are unbatched (shape [N, D] etc.); the
-                # adapter expects a batch dim — add it for everything.
+                # Cached tensors are unbatched; the adapter expects a batch dim.
                 if prompt_embeds.dim() == 2:
                     prompt_embeds = prompt_embeds.unsqueeze(0)
                 if attn_mask.dim() == 1:
@@ -535,12 +527,9 @@ def main() -> None:
     if args.mask:
         logger.warning("--mask ignored: background-lock blending is v3.")
     if args.t_inj > 0 and args.compile_blocks:
-        # The V-injection scope monkey-patches Attention.forward at runtime,
-        # which would invalidate dynamo's cached graph for every block on the
-        # first call. Recompile cost > the speedup compile would give us, so
-        # turn it off for editing. (Inversion would still benefit, but the
-        # compile state is per-process — flipping mid-run isn't worth the
-        # complexity.)
+        # V-injection monkey-patches Attention.forward at runtime, invalidating
+        # dynamo's per-block graph; recompile cost > compile's speedup, so off
+        # for editing (compile state is per-process — can't flip mid-run).
         logger.info(
             "--t_inj %d > 0: disabling --compile_blocks for V-injection "
             "(monkey-patch breaks dynamo graph cache).",
@@ -555,7 +544,6 @@ def main() -> None:
     )
     args.device = device
 
-    # 1. Load source image, pick bucket if --image_size unset.
     src_pil = Image.open(args.image).convert("RGB")
     if args.image_size is None:
         h_pix, w_pix = _pick_bucket(src_pil)
@@ -569,18 +557,16 @@ def main() -> None:
     h_pix, w_pix = args.image_size
     src_pil = src_pil.resize((w_pix, h_pix), Image.LANCZOS)
 
-    # 2. Tokenize strategies (matches inference.py main()).
     ensure_text_strategies(args.text_encoder, MAX_CROSSATTN_TOKENS)
 
-    # 3. Load DiT first (needed by prepare_text_inputs's _preprocess_text_embeds).
+    # Load DiT first — prepare_text_inputs's _preprocess_text_embeds needs it.
     logger.info("Loading DiT model...")
     anima = load_dit_model(args, device, dit_weight_dtype=torch.bfloat16)
     if args.compile_blocks:
         anima.compile_blocks(mode=args.compile_inductor_mode)
 
-    # 4. Encode source + target text — or, in --cached_embed mode, load
-    #    preprocessed crossattn variants from the TE cache file (one pass per
-    #    stored vN; ψ_tar == ψ_src so each pass reconstructs the source).
+    # Encode src + tar text — or in --cached_embed mode load preprocessed
+    # crossattn variants from the TE cache (ψ_tar == ψ_src reconstructs source).
     cached_variants: list[tuple[str, torch.Tensor]] | None = None
     if args.cached_embed is not None:
         cached_variants = _load_cached_embed_variants(
@@ -589,16 +575,14 @@ def main() -> None:
         embed_src = embed_tar = None  # filled per-variant below
 
         # Cache file has no neg slot — encode one on the fly so CFG can fire.
-        # Default to 'worst quality' when --negative_prompt is empty.
         neg_prompt = args.negative_prompt or ""
         if not args.negative_prompt:
             logger.info(
                 "DirectEdit dry: --negative_prompt empty; defaulting to '' for CFG."
             )
 
-        # Reuse prepare_text_inputs: set prompt == negative_prompt so the
-        # positive forward hits the conds_cache and only one TE pass actually
-        # runs. We discard the positive ctx and keep ctx_neg.
+        # Reuse prepare_text_inputs with prompt == negative_prompt so only one
+        # TE pass runs (positive hits the conds_cache); keep ctx_neg, drop pos.
         args_neg = SimpleNamespace(**vars(args))
         args_neg.prompt = neg_prompt
         args_neg.negative_prompt = neg_prompt
@@ -620,22 +604,21 @@ def main() -> None:
             neg_prompt,
         )
     else:
-        # Load TE first — the dispatcher (when --edit_instruction is set) needs
-        # Qwen3 hidden states before we can build the args for prepare_text_inputs.
+        # Load TE first — the dispatcher (--edit_instruction) needs Qwen3 hidden
+        # states before we can build the prepare_text_inputs args.
         logger.info("Loading text encoder...")
         te_dtype = torch.bfloat16
         te_device = torch.device("cpu") if args.text_encoder_cpu else device
         text_encoder = load_text_encoder(args, dtype=te_dtype, device=te_device)
         text_encoder.eval()
 
-        # Dispatcher: derive ψ_tar from (ψ_src + edit_instruction) if requested
-        # and --prompt_tar wasn't given. Explicit --prompt_tar always wins so
-        # users can override the dispatcher's choice without removing the flag.
+        # Derive ψ_tar from (ψ_src + edit_instruction) only when --prompt_tar
+        # wasn't given; explicit --prompt_tar always wins.
         if args.edit_instruction and not args.prompt_tar:
             tokenize_strategy = text_strategies.TokenizeStrategy.get_strategy()
             encoding_strategy = text_strategies.TextEncodingStrategy.get_strategy()
-            # Dispatcher needs TE on-device; move there if --text_encoder_cpu
-            # parked it on CPU, then restore.
+            # Dispatcher needs TE on-device; move it (--text_encoder_cpu parks
+            # it on CPU), then restore.
             te_was_on = text_encoder.device
             text_encoder.to(device)
             encode_fn = lambda phrases: encode_last_pooled_via_anima_strategy(  # noqa: E731
@@ -677,7 +660,7 @@ def main() -> None:
         args_tar.negative_prompt = args.negative_prompt
 
         logger.info("Encoding prompts...")
-        # Share the text-encoder instance across both prompt encodings.
+        # Share the TE instance across both prompt encodings.
         shared = {"text_encoder": text_encoder, "conds_cache": {}}
 
         ctx_src, ctx_neg = prepare_text_inputs(args_src, device, anima, shared)
@@ -688,9 +671,8 @@ def main() -> None:
         embed_neg = ctx_neg["embed"][0].to(device, dtype=torch.bfloat16)
 
         if args.use_slot_surgery:
-            # ctx["embed"] = [crossattn_emb_cpu, qwen3_attn_mask, t5_ids, t5_attn_mask].
-            # T5 IDs were never moved off CPU (encode_tokens only moves qwen3
-            # tensors), so a fresh `.tolist()` in splice_crossattn_emb is fine.
+            # ctx["embed"] = [crossattn_emb_cpu, qwen3_attn_mask, t5_ids, t5_attn_mask];
+            # T5 IDs stay on CPU (encode_tokens moves only qwen3 tensors).
             t5_ids_src = ctx_src["embed"][2]
             t5_ids_tar = ctx_tar["embed"][2]
             tokenize_strategy = text_strategies.TokenizeStrategy.get_strategy()
@@ -736,7 +718,7 @@ def main() -> None:
             tuple(embed_src.shape),
         )
 
-    # 5. VAE-encode the source image -> clean latent (5D, frame=1).
+    # VAE-encode the source image -> clean latent (5D, frame=1).
     logger.info("Loading VAE for source encode...")
     vae = qwen_image_autoencoder_kl.load_vae(
         args.vae,
@@ -764,24 +746,21 @@ def main() -> None:
     vae.to("cpu")
     clean_memory_on_device(device)
 
-    # 6. Sigma schedule. invert/edit_forward consume sigmas directly; the
-    #    timesteps return (σ∈[0,1]) is unused here.
+    # invert/edit_forward consume sigmas directly; the timesteps return is unused.
     _, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps, args.flow_shift, device
     )
     sigmas = sigmas.to(device)
 
-    # 7. Build variant pass list. Real-text mode: one pass with the encoded
-    #    src/tar pair. --cached_embed mode: one pass per stored variant in the
-    #    cache file, each using ψ_tar == ψ_src for the reconstruction check.
+    # Build the variant pass list: real-text mode = one src/tar pass;
+    # --cached_embed mode = one pass per stored variant, each ψ_tar == ψ_src.
     if cached_variants is not None:
         variant_passes = [(label, e, e) for label, e in cached_variants]
     else:
         variant_passes = [(None, embed_src, embed_tar)]
 
-    # 7b. AGSM-style ψ_src probe grid. Sample one fixed (σ, noise) batch and
-    #     reuse it for every variant so the FM-error ranking reflects only the
-    #     conditioning, not the noise/σ draw (relative-ranking contract).
+    # AGSM ψ_src probe grid: one fixed (σ, noise) batch reused for every variant
+    # so the FM-error ranking reflects only the conditioning (relative-ranking).
     fm_grid = None
     fm_rows: list[dict] = []
     if args.fm_score:
@@ -809,8 +788,8 @@ def main() -> None:
             len(variant_passes),
         )
 
-    # 8. Inversion -> editing per variant. Hold all z_edits before re-mounting
-    #    the VAE so we only do one DiT-off / VAE-on swap.
+    # Inversion -> editing per variant. Hold all z_edits before re-mounting the
+    # VAE so we do only one DiT-off / VAE-on swap.
     z_edits: list[tuple[Optional[str], torch.Tensor]] = []
     for variant, e_src, e_tar in variant_passes:
         tag = f"variant={variant}, " if variant else ""
@@ -869,9 +848,8 @@ def main() -> None:
             smc_cfg_state=smc_state,
         )
         z_edits.append((variant, z_edit))
-        # In cached_embed mode ψ_tar == ψ_src, so the edit pass is a pure
-        # reconstruction — its latent MSE against the source is the quality
-        # signal we correlate the FM-error ranking against.
+        # In cached_embed mode ψ_tar == ψ_src, so the edit pass is pure
+        # reconstruction — its latent MSE is what we correlate FM-error against.
         if fm_grid is not None and cached_variants is not None:
             with torch.no_grad():
                 recon = (
@@ -884,7 +862,7 @@ def main() -> None:
     if fm_rows:
         _log_fm_score_table(fm_rows)
 
-    # 9. Decode + save (one VAE re-mount for all variants).
+    # Decode + save (one VAE re-mount for all variants).
     del anima
     clean_memory_on_device(device)
     vae.to(device)

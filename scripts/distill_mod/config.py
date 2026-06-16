@@ -17,13 +17,8 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Argparser — moved verbatim from distill.py (same flag names/defaults so every
-# documented invocation and `make distill-mod` are unchanged), plus the GAD
-# block (Phase 2; off by default).
-# ---------------------------------------------------------------------------
-
-
+# Argparser — same flag names/defaults as the old distill.py inline parser, so
+# every documented invocation and `make distill-mod` are unchanged.
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Modulation guidance distillation")
     parser.add_argument(
@@ -266,13 +261,10 @@ def build_argparser() -> argparse.ArgumentParser:
         "subsequent pass skips teacher forwards entirely.",
     )
 
-    # ---- GAD (geometry-aware distillation; arXiv 2606.01651) — Phase 2 ----
-    # Output-matching (LADD-style) instantiation: also match the teacher's
-    # finite-difference response to a text change. gad_weight=0 (default) skips
-    # the two extra forwards entirely → bit-for-bit identical to the MSE-only
-    # path. Motivation: docs/findings/mod_guidance_text_derivative_orthogonal.md
-    # (the distilled head matches pointwise but its text-derivative is orthogonal
-    # to the teacher's). See _archive/gad/gad.md (archived).
+    # GAD (geometry-aware distillation; arXiv 2606.01651) — also match the
+    # teacher's finite-difference text response. gad_weight=0 (default) skips the
+    # two extra forwards → bit-for-bit the MSE-only path. Motivation:
+    # docs/findings/mod_guidance_text_derivative_orthogonal.md.
     parser.add_argument(
         "--gad_weight",
         type=float,
@@ -322,11 +314,6 @@ def build_argparser() -> argparse.ArgumentParser:
         "Saved under a 'sigma_film.' prefix; probe/inference auto-arm on load.",
     )
     return parser
-
-
-# ---------------------------------------------------------------------------
-# Resolved config
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)

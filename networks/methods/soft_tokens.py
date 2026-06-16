@@ -5,22 +5,17 @@
 # crossattn_emb doesn't evolve through blocks — no strip/re-prepend needed.
 #
 # Splice (two modes, see SoftTokensNetwork.splice_position):
-#   front_of_padding (shipped config default) — scatter the K tokens at
-#     [seqlens[i], seqlens[i]+K) per sample, immediately after the real caption.
-#     Algorithm-faithful: SoftREPA concatenates soft tokens onto the text
-#     sequence, and this is the direct analogue in Anima's max-padded layout.
-#   end_of_sequence (constructor fallback) — overwrite the K zero-padding tail
-#     slots, keeping crossattn_emb shape static for torch.compile. Gets attention
-#     mass only because Anima's deep-padding slots are cross-attention sinks
-#     (text-encoder padding invariant); an Anima-specific compile shortcut.
-#
-# vs postfix.py: postfix splices once at the cached adapter output; soft tokens
-# splice per-block via monkey-patched Block.forward.
+#   front_of_padding (shipped default) — scatter the K tokens at
+#     [seqlens[i], seqlens[i]+K), immediately after the real caption (the direct
+#     analogue of SoftREPA's text-sequence concat in Anima's max-padded layout).
+#   end_of_sequence (fallback) — overwrite the K zero-padding tail slots, keeping
+#     crossattn_emb shape static for torch.compile. Gets attention mass only
+#     because Anima's deep-padding slots are cross-attention sinks (text-encoder
+#     padding invariant); an Anima-specific compile shortcut.
 #
 # Inference: library/inference/generation.py + networks/spectrum.py call
 # append_postfix(..., timesteps=t) per CFG branch before each forward. Spectrum
-# cached steps skip the blocks, so soft tokens no-op there (composes with
-# --spectrum).
+# cached steps skip the blocks, so soft tokens no-op there (composes with --spectrum).
 
 import os
 from typing import Optional
@@ -511,7 +506,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
         """
         K = self.num_tokens
         splice_position = self.splice_position
-        net = self  # capture network for state lookup
+        net = self
 
         def hook(
             x_B_T_H_W_D,
@@ -523,11 +518,9 @@ class SoftTokensNetwork(AdapterNetworkBase):
         ):
             step_tokens = net._step_layer_tokens
             if step_tokens is not None:
-                # (B, K, D) for this layer. Cast to crossattn dtype/device.
-                # net.multiplier is intentionally NOT applied here — soft tokens
-                # splice in at full magnitude (no LoRA-style `* multiplier`
-                # scale), so set_multiplier(0) does not disable them. See the
-                # note at the `self.multiplier` assignment in __init__.
+                # net.multiplier is intentionally NOT applied — soft tokens splice
+                # at full magnitude (no `* multiplier`), so set_multiplier(0) does
+                # NOT disable them (see the self.multiplier note in __init__).
                 layer_tok = step_tokens[layer_idx].to(
                     dtype=crossattn_emb.dtype, device=crossattn_emb.device
                 )
@@ -537,15 +530,13 @@ class SoftTokensNetwork(AdapterNetworkBase):
                         f"crossattn_emb seqlen {S} < num_tokens {K}; cannot splice"
                     )
                 if splice_position == "end_of_sequence":
-                    # Overwrite the K tail (zero-padding) slots. torch.cat
-                    # preserves autograd through both branches.
+                    # Overwrite the K tail slots; torch.cat preserves autograd.
                     crossattn_emb = torch.cat(
                         [crossattn_emb[:, : S - K, :], layer_tok], dim=1
                     )
                 else:  # front_of_padding
                     # Place K tokens at [seqlens[i], seqlens[i]+K) per sample —
-                    # displaces the strongest sinks. scatter() preserves grad
-                    # on the written values.
+                    # displaces the strongest sinks. scatter() preserves grad.
                     seqlens = net._step_seqlens
                     if seqlens is None:
                         raise RuntimeError(
@@ -861,6 +852,7 @@ class SoftTokensNetwork(AdapterNetworkBase):
     ) -> torch.Tensor:
         # InfoNCE: -log softmax of the positive over {pos, neg_1..k}.
         all_logits = torch.cat([logit_pos.unsqueeze(1), logits_neg], dim=1)  # (B, 1+k)
+        # InfoNCE: -log softmax of the positive over {pos, neg_1..k}.
         return (-logit_pos + torch.logsumexp(all_logits, dim=1)).mean()
 
     @staticmethod
@@ -1015,14 +1007,12 @@ class SoftTokensMethodAdapter(MethodAdapter):
         ce_dtype = primary.crossattn_emb.dtype
         neg = neg.to(device)  # (B, k, S, D)
         k = neg.shape[1]
-        # Dual bank (Phase 3a): negatives splice ψ⁻ (branch 1); the anchor +
-        # matched EMA stay on ψ⁺ (branch 0). Single bank → branch 0 throughout
-        # (bit-identical to Phase 2).
+        # Dual bank: negatives splice ψ⁻ (branch 1); anchor + matched EMA stay on
+        # ψ⁺ (branch 0). Single bank → branch 0 throughout.
         neg_branch = 1 if getattr(net, "n_banks", 1) > 1 else 0
 
         v_pos = primary.model_pred.squeeze(2)  # (B, C, H, W) — live anchor graph
-        # Rectified-flow velocity target — same as train.py's primary target.
-        v_target = primary.noise - primary.latents  # (B, C, H, W)
+        v_target = primary.noise - primary.latents  # rectified-flow velocity target
         timesteps = primary.timesteps
         base_kw = dict(primary.forward_kwargs)
         neg_penalty = self._neg_penalty(net, device)

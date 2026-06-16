@@ -192,9 +192,7 @@ def parse_args(description: str | None = None) -> argparse.Namespace:
         "inference.py default).",
     )
 
-    # Modulation guidance (off by default — base-DiT calibration target).
-    # When --pooled_text_proj is set, mirrors inference.py's mod-guidance
-    # pipeline so v2 §A1 can run a production-mod-on cross-check.
+    # When --pooled_text_proj is set, mirrors inference.py's mod-guidance pipeline.
     g_mod = p.add_argument_group("modulation guidance (optional)")
     g_mod.add_argument(
         "--pooled_text_proj",

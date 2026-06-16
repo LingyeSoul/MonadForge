@@ -179,7 +179,6 @@ def build_loop_state(
         gc.collect()
         clean_memory_on_device(accelerator.device)
 
-    # --sample_at_first
     optimizer_eval_fn()
     trainer.sample_images(
         accelerator,
@@ -217,11 +216,9 @@ def build_loop_state(
         is_tracking=is_tracking,
     )
 
-    # Skip prelude: when resuming with skip_until_initial_step, fast-forward
-    # the global_step counter before tqdm so the bar total is sized correctly,
-    # and consume per-epoch skip credit so dataloader.skip_first_batches has
-    # the right offset on the first epoch only. Runs before the dtype log so
-    # the log order matches the original train() body.
+    # Resume skip prelude: fast-forward global_step before tqdm so the bar
+    # total is sized right, and consume per-epoch skip credit so
+    # skip_first_batches has the right first-epoch offset.
     global_step = 0
     if initial_step > 0:
         global_step = initial_step // args.gradient_accumulation_steps
@@ -249,8 +246,8 @@ def build_loop_state(
     logger.info("sigma sampling: " + ", ".join(_ts_parts))
     for i, t_enc in enumerate(text_encoders):
         params_itr = t_enc.parameters()
-        params_itr.__next__()  # skip the first parameter
-        params_itr.__next__()  # skip the second parameter (CLIP first two are embeddings)
+        params_itr.__next__()
+        params_itr.__next__()  # CLIP first two params are embeddings
         param_3rd = params_itr.__next__()
         logger.info(
             f"text_encoder [{i}] dtype: {param_3rd.dtype}, device: {t_enc.device}"
@@ -270,9 +267,8 @@ def build_loop_state(
         if args.max_validation_steps is not None
         else len(val_dataloader)
     )
-    # Validate at fixed sigma values across the schedule:
-    # 0.1 = near-clean / fine detail, 0.4 = mid / bulk structure,
-    # 0.7 = high noise / coarse denoising (early inference steps).
+    # Fixed sigma values across the schedule: 0.1 near-clean / fine detail,
+    # 0.4 mid / bulk structure, 0.7 high noise / coarse denoising.
     validation_sigmas = (
         args.validation_sigmas
         if args.validation_sigmas is not None
@@ -381,7 +377,6 @@ def run_training_loop(trainer, state: LoopState) -> None:
         state.current_epoch.value = epoch + 1
         state.metadata["ss_epoch"] = str(epoch + 1)
 
-        # network.train() is invoked here
         accelerator.unwrap_model(state.network).on_epoch_start(
             state.text_encoder, state.unet
         )
@@ -500,28 +495,20 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
     with accelerator.accumulate(state.training_model):
         state.on_step_start_for_network(state.text_encoder, state.unet)
 
-        # preprocess batch for each model
         trainer.on_step_start(state.train_ctx, batch, is_train=True)
 
-        # Clear last-step gate/σ tensor refs + memoized router-stats caches
-        # before the next forward. Called unconditionally — the cudagraph
-        # branch below also needs it (lingering refs into the cudagraph
-        # memory pool block pool reclamation, demoting the run to eager),
-        # and the eager path needs it so per-step memoized stats
-        # (``_router_stats_cache`` / ``_chimera_router_stats_cache``) get
-        # invalidated each step instead of freezing at their first computed
-        # values. Cost is ~60 Python attr writes; stats compute itself is
-        # already log-step-gated by callers.
+        # Clear last-step gate/σ refs + memoized router-stats caches before the
+        # next forward. Unconditional: cudagraph needs it (lingering refs into
+        # the cudagraph pool block reclamation → demotes to eager), and eager
+        # needs it so per-step memoized stats invalidate instead of freezing at
+        # their first values.
         net_unwrapped = accelerator.unwrap_model(network)
         if hasattr(net_unwrapped, "clear_step_caches"):
             net_unwrapped.clear_step_caches()
 
-        # CUDAGraphs (reduce-overhead / max-autotune) also need an explicit
-        # iteration boundary for inductor's cudagraph_trees. Without this
-        # call, the "pending, uninvoked backwards" fast-path check fails
-        # every step and cudagraphs silently fall back to the eager path —
-        # you pay compile latency and keep launch overhead. Must be called
-        # before the forward on every step.
+        # CUDAGraphs need an explicit iteration boundary before the forward
+        # every step; without it the "pending, uninvoked backwards" fast-path
+        # check fails and cudagraphs silently fall back to eager.
         if trainer._cudagraph_mark_step:
             torch.compiler.cudagraph_mark_step_begin()
 
@@ -544,14 +531,10 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
 
         if accelerator.sync_gradients:
             net_unwrapped = accelerator.unwrap_model(network)
-            # Snapshot Hydra up-weight grad norms before zero_grad wipes them.
-            # The metric ``hydra_up_grad`` reads this stash later in the step.
-            # Also runs pre-clip so absolute magnitudes aren't distorted by
-            # the global rescale (clipping preserves the below/above ratio).
-            # Skip on non-log steps — the metric only fires at log cadence,
-            # so capturing every step burns kernels whose output is never
-            # read. global_step increments below, so predict the
-            # post-increment value.
+            # Snapshot Hydra up-weight grad norms before zero_grad wipes them
+            # (metric ``hydra_up_grad`` reads it later). Pre-clip so magnitudes
+            # aren't distorted by the global rescale. Log-cadence only;
+            # global_step increments below so predict the post-increment value.
             _log_every = max(1, int(getattr(args, "log_every_n_steps", 1) or 1))
             _will_log_after = state.is_tracking and (
                 ((state.global_step + 1) % _log_every == 0)
@@ -593,7 +576,7 @@ def _profiler_step_begin(state: LoopState) -> None:
 
 def _profiler_step_end(state: LoopState) -> None:
     if state.profile_started:
-        torch.cuda.nvtx.range_pop()  # close per-step NVTX range
+        torch.cuda.nvtx.range_pop()
     if state.profile_started and state.global_step >= state.profile_range[1]:
         torch.cuda.synchronize()
         torch.cuda.profiler.stop()
@@ -603,12 +586,10 @@ def _profiler_step_end(state: LoopState) -> None:
         )
         state.profile_started = False
         state.profile_range = None  # don't re-trigger
-        # Hard-exit so the accelerate launcher exits and nsys finalizes the
-        # report. sys.exit(0) hangs in interpreter shutdown here (DataLoader
-        # workers + NCCL/CUDA atexit handlers all wait on futexes). os._exit
-        # skips that cleanup; the profile buffer is already flushed by the
-        # preceding cuda.synchronize() + cuProfilerStop, and the .nsys-rep is
-        # owned by nsys, not this process, so the hard exit is safe.
+        # Hard-exit so the launcher exits and nsys finalizes the report.
+        # sys.exit(0) hangs in interpreter shutdown (DataLoader workers +
+        # NCCL/CUDA atexit handlers wait on futexes); the profile buffer is
+        # already flushed by the preceding synchronize() + cuProfilerStop.
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)
@@ -660,12 +641,10 @@ def _log_step(
 ) -> float:
     args = state.args
     log_every = max(1, int(getattr(args, "log_every_n_steps", 1) or 1))
-    # Gate on sync_gradients: with gradient_accumulation_steps > 1 the
-    # dataloader fires this hook once per micro-batch but global_step only
-    # advances on sync. Without the gate, log_every_n_steps decides the same
-    # answer for every micro-batch in an accumulation cycle, producing bursts
-    # of N back-to-back tracker writes followed by N silent ones (exactly the
-    # "sometimes honored, sometimes ignored" pattern).
+    # Gate on sync_gradients: with gradient_accumulation_steps > 1 this hook
+    # fires per micro-batch but global_step advances only on sync; without the
+    # gate log_every_n_steps gives the same answer for every micro-batch,
+    # bursting N tracker writes then N silent ones.
     should_log_step = state.accelerator.sync_gradients and (
         (state.global_step % log_every == 0)
         or (state.global_step >= args.max_train_steps)
@@ -690,10 +669,9 @@ def _log_step(
 
     # Lightweight tqdm postfix update every step using cached values.
     logs = {"avr_loss": _cached_avr, "lr": _cached_lr}
-    # Refresh router_H only on log cadence — get_router_entropy → full
-    # get_router_stats compute (with D2H syncs) is wasted if the only
-    # consumer is the progress-bar postfix. Cache last value on trainer
-    # so tqdm shows a stale value harmlessly between log steps.
+    # Refresh router_H only on log cadence — get_router_entropy does a full
+    # get_router_stats compute (D2H syncs) wasted on the progress-bar postfix;
+    # tqdm shows a harmlessly-stale cached value between log steps.
     if getattr(_unwrapped_net, "_use_hydra", False) and should_log_step:
         _router_H = _unwrapped_net.get_router_entropy()
         if _router_H is not None:
@@ -728,9 +706,8 @@ def _log_step(
             None,  # mean_combined_norm — not tracked here
         )
         producers = [_unwrapped_net, *trainer._adapters]
-        # Liveness coverage fractions (liveness/<name>) — the ledger is a
-        # MetricProducer; a dropping curve is the live view of the run-end
-        # LIVENESS audit.
+        # Ledger is a MetricProducer — liveness/<name> coverage is the live
+        # view of the run-end LIVENESS audit.
         _ledger = getattr(trainer, "_liveness", None)
         if _ledger is not None:
             producers.append(_ledger)

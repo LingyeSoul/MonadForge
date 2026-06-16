@@ -30,11 +30,6 @@ logger = logging.getLogger(__name__)
 DTYPE = torch.bfloat16
 
 
-# ---------------------------------------------------------------------------
-# Chebyshev polynomial forecaster (adapted from Spectrum repo)
-# ---------------------------------------------------------------------------
-
-
 def _flatten(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size]:
     shape = x.shape
     return x.reshape(1, -1), shape
@@ -122,7 +117,7 @@ class ChebyshevForecaster:
                 self.t_buf = self.t_buf[-self.K :]
                 self._H_buf = self._H_buf[-self.K :]
 
-        self._coef = None  # invalidate cached coefficients
+        self._coef = None
 
     def _fit_if_needed(self) -> None:
         if self._coef is not None:
@@ -154,11 +149,6 @@ class ChebyshevForecaster:
         x_star = self._build_design(tau_star[None])  # (1, P)
         h_flat = x_star @ self._coef  # (1, F)
         return _unflatten(h_flat, self._shape)
-
-
-# ---------------------------------------------------------------------------
-# Spectrum predictor (Chebyshev + optional Taylor blending)
-# ---------------------------------------------------------------------------
 
 
 class SpectrumPredictor:
@@ -279,7 +269,6 @@ def spectrum_denoise(
     do_cfg = guidance_scale != 1.0
     num_steps = len(timesteps)
 
-    # Adaptive window schedule state
     curr_ws = window_size
     consec_cached = 0
     fwd_count = 0
@@ -289,7 +278,6 @@ def spectrum_denoise(
     cond_fc: Optional[SpectrumPredictor] = None
     uncond_fc: Optional[SpectrumPredictor] = None
 
-    # Residual calibration: bias correction from last actual forward
     cond_residual: Optional[torch.Tensor] = None
     uncond_residual: Optional[torch.Tensor] = None
 
@@ -330,7 +318,6 @@ def spectrum_denoise(
                     dcw_calibrator.record_latent_pre_forward(i, latents)
 
                 if actual:
-                    # --- Full forward pass ---
                     if soft_tokens_net is not None:
                         soft_tokens_net.append_postfix(
                             embed, soft_tokens_embed_seqlens, timesteps=t_exp
@@ -402,7 +389,7 @@ def spectrum_denoise(
                     pbar.set_postfix(mode="fwd", ws=f"{curr_ws:.1f}", n=fwd_count)
 
                 else:
-                    # --- Cached step: predict features, skip all blocks ---
+                    # Cached step: predict features, skip all blocks.
                     with torch.no_grad():
                         pred_feat = cond_fc.predict(float(i))
                         if cond_residual is not None:
@@ -430,7 +417,6 @@ def spectrum_denoise(
                     consec_cached += 1
                     pbar.set_postfix(mode="cached", n=fwd_count)
 
-                # Sampler step
                 denoised = latents.float() - sigmas[i] * noise_pred.float()
                 if sampler is not None:
                     new_latents = sampler.step(latents, denoised, i)
@@ -447,13 +433,13 @@ def spectrum_denoise(
 
                 # DCW: bias-correct against denoised x0_pred (carries Spectrum's
                 # cached-step prediction error, but correction is bias-agnostic).
-                if float(sigmas[i + 1]) > 0.0 and (
-                    dcw_calibrator is not None or dcw
-                ):
+                if float(sigmas[i + 1]) > 0.0 and (dcw_calibrator is not None or dcw):
                     from networks.dcw import apply_dcw, parse_band_mask
 
                     if dcw_calibrator is not None:
-                        lam_i_calib = dcw_calibrator.lambda_for_step(i, float(sigmas[i]))
+                        lam_i_calib = dcw_calibrator.lambda_for_step(
+                            i, float(sigmas[i])
+                        )
                         new_latents = apply_dcw(
                             new_latents.float(),
                             denoised,
@@ -485,7 +471,6 @@ def spectrum_denoise(
 
     finally:
         clear_hydra_sigma(anima)
-        # P-GRAFT restore
         if pgraft_network is not None and lora_cutoff_step is not None:
             pgraft_network.set_enabled(True)
         hook.remove()

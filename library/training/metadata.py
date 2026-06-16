@@ -8,10 +8,6 @@ import json
 import os
 from typing import Any, Optional
 
-# ---------------------------------------------------------------------------
-# Metadata key constants
-# ---------------------------------------------------------------------------
-
 SS_METADATA_KEY_V2 = "ss_v2"
 SS_METADATA_KEY_BASE_MODEL_VERSION = "ss_base_model_version"
 SS_METADATA_KEY_NETWORK_MODULE = "ss_network_module"
@@ -49,11 +45,6 @@ def build_minimum_network_metadata(
     if network_args is not None:
         metadata[SS_METADATA_KEY_NETWORK_ARGS] = json.dumps(network_args)
     return metadata
-
-
-# ---------------------------------------------------------------------------
-# Full training metadata
-# ---------------------------------------------------------------------------
 
 
 def build_training_metadata(
@@ -128,11 +119,6 @@ def build_training_metadata(
         "ss_validate_every_n_steps": args.validate_every_n_steps,
         "ss_resize_interpolation": args.resize_interpolation,
     }
-
-
-# ---------------------------------------------------------------------------
-# Dataset metadata
-# ---------------------------------------------------------------------------
 
 
 def _build_subset_metadata(subset) -> dict[str, Any]:
@@ -263,11 +249,6 @@ def add_dataset_metadata(
         )
 
 
-# ---------------------------------------------------------------------------
-# Model / VAE hash metadata
-# ---------------------------------------------------------------------------
-
-
 def add_model_hash_metadata(metadata: dict[str, Any], args) -> None:
     """Add model name/hash and VAE name/hash entries to *metadata* in place."""
     from library.training.hashing import model_hash, calculate_sha256
@@ -287,11 +268,6 @@ def add_model_hash_metadata(metadata: dict[str, Any], args) -> None:
             metadata["ss_new_vae_hash"] = calculate_sha256(vae_name)
             vae_name = os.path.basename(vae_name)
         metadata["ss_vae_name"] = vae_name
-
-
-# ---------------------------------------------------------------------------
-# Finalization
-# ---------------------------------------------------------------------------
 
 
 def finalize_metadata(

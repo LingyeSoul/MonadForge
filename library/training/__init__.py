@@ -12,7 +12,6 @@
 #       library.training.forward       (per-step forward helpers)
 # Everything below is part of the supported import-from-the-package surface.
 
-# === contexts ===
 from library.training.contexts import (
     AcceleratedBundle,
     DatasetBundle,
@@ -23,7 +22,7 @@ from library.training.contexts import (
     ValCtx,
 )
 
-# === per-method extension protocol (public — used by networks/methods/*) ===
+# Per-method extension protocol (public — used by networks/methods/*).
 from library.training.method_adapter import (
     ComputeLossCtx,
     ForwardArtifacts,
@@ -34,14 +33,12 @@ from library.training.method_adapter import (
     resolve_adapters,
 )
 
-# === registries: samplers ===
 from library.training.samplers import (
     SamplerContext,
     SamplerOut,
     SAMPLER_REGISTRY,
 )
 
-# === registries: losses ===
 from library.training.losses import (
     LivenessLedger,
     LossContext,
@@ -54,14 +51,12 @@ from library.training.losses import (
     get_huber_threshold_if_needed,
 )
 
-# === registries: metrics ===
 from library.training.metrics import (
     MetricContext,
     MetricProducer,
     collect_metrics,
 )
 
-# === optimization ===
 from library.training.optimizers import (
     get_optimizer,
     get_optimizer_train_eval_fn,
@@ -72,7 +67,6 @@ from library.training.schedulers import (
     get_dummy_scheduler,
 )
 
-# === provenance: metadata ===
 from library.training.metadata import (
     SS_METADATA_KEY_V2,
     SS_METADATA_KEY_BASE_MODEL_VERSION,
@@ -88,7 +82,6 @@ from library.training.metadata import (
     finalize_metadata,
 )
 
-# === provenance: hashing ===
 from library.training.hashing import (
     model_hash,
     calculate_sha256,
@@ -98,7 +91,6 @@ from library.training.hashing import (
     get_git_revision_hash,
 )
 
-# === provenance: checkpoints ===
 from library.training.checkpoints import (
     EPOCH_STATE_NAME,
     EPOCH_FILE_NAME,
@@ -127,17 +119,14 @@ from library.training.checkpoints import (
     save_checkpoint_state,
 )
 
-# === progress sink ===
 from library.training.progress import (
     ProgressSink,
     run_scope,
 )
 
-# === loss recorder ===
 from library.training.loss_recorder import LossRecorder
 
 __all__ = [
-    # contexts
     "AcceleratedBundle",
     "DatasetBundle",
     "NetworkBundle",
@@ -145,7 +134,6 @@ __all__ = [
     "RuntimeState",
     "TrainCtx",
     "ValCtx",
-    # extension protocol
     "ComputeLossCtx",
     "ForwardArtifacts",
     "MethodAdapter",
@@ -153,11 +141,9 @@ __all__ = [
     "StepCtx",
     "ValidationBaseline",
     "resolve_adapters",
-    # samplers
     "SamplerContext",
     "SamplerOut",
     "SAMPLER_REGISTRY",
-    # losses
     "LivenessLedger",
     "LossContext",
     "LossComposer",
@@ -167,17 +153,14 @@ __all__ = [
     "apply_masked_loss",
     "conditional_loss",
     "get_huber_threshold_if_needed",
-    # metrics
     "MetricContext",
     "MetricProducer",
     "collect_metrics",
-    # optimization
     "get_optimizer",
     "get_optimizer_train_eval_fn",
     "is_schedulefree_optimizer",
     "get_scheduler_fix",
     "get_dummy_scheduler",
-    # metadata
     "SS_METADATA_KEY_V2",
     "SS_METADATA_KEY_BASE_MODEL_VERSION",
     "SS_METADATA_KEY_NETWORK_MODULE",
@@ -190,14 +173,12 @@ __all__ = [
     "add_dataset_metadata",
     "add_model_hash_metadata",
     "finalize_metadata",
-    # hashing
     "model_hash",
     "calculate_sha256",
     "addnet_hash_legacy",
     "addnet_hash_safetensors",
     "precalculate_safetensors_hashes",
     "get_git_revision_hash",
-    # checkpoints
     "EPOCH_STATE_NAME",
     "EPOCH_FILE_NAME",
     "EPOCH_DIFFUSERS_DIR_NAME",
@@ -223,9 +204,7 @@ __all__ = [
     "get_checkpoint_state_dir",
     "get_checkpoint_ckpt_name",
     "save_checkpoint_state",
-    # progress
     "ProgressSink",
     "run_scope",
-    # loss recorder
     "LossRecorder",
 ]

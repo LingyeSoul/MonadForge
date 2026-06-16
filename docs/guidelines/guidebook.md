@@ -198,6 +198,7 @@ absurdres, safe, 1girl, chitanda eru, hyouka, @channel (caststation), full body,
 
 - 经过个人实验，absurdres、highres、masterpiece 等质量标签建议不写或尽量少写。或者使用后续正式发布的 mod guidance 后可以完全省略。
 - 原始图像放在 `image_dataset/` 中（命名不限，请使用此路径）。
+- **不想手动写标注？** 使用内置的 **Anima Tagger** 自动按 Anima 标签顺序生成标注。在 WebUI 的 **Dataset** 标签页选中图像后点击 **Autotag** 填充标注（见 [§7.4](#74-dataset-tab-autotag--grouping)）；命令行可用 `make autotag --image <path>` 输出单张图像的预测标注（标注模型在首次使用时自动下载）。请将结果作为起点——训练前请复核并修正标签。
 
 ### 5.2 `num_repeats` 是什么，什么时候需要调整？（总结：**不要动**）
 
@@ -273,7 +274,7 @@ GUI 主要标签页：
 
 - **训练配置（Training Config）**：从下拉菜单选择 LoRA 系列变体（推荐：`tlora` — Ortho + T-LoRA / 其他如 `lora`、`tlora-8gb`、`tlora_ortho_reft`、`hydralora`、`reft` 等），并直接修改 `presets.toml` 预设（default / low_vram 等）和所有训练参数，然后开始训练
 - **预处理（Preprocess）**：一键完成缩放 + VAE + 文本嵌入缓存
-- **数据集（Dataset）**：预览图像/标注并直接编辑标注
+- **数据集（Dataset）**：预览图像/标注并直接编辑标注。还可使用 Anima Tagger **自动生成标注**（*Autotag* 按钮），并**按视觉相似度对图像分组**，便于发现重复或同场景的图像——见 [§7.4](#74-dataset-tab-autotag--grouping)。
 - **合并（Merge）**：将训练好的 LoRA 烘焙到基础 DiT 中，保存为 ComfyUI 独立检查点（仅支持基础 LoRA / OrthoLoRA / T-LoRA）
 
 GUI 训练在内部也是调用 `train.py`，因此相同参数完全可以在 CLI 中复现。GUI 读取的是 `configs/gui-methods/<variant>.toml`（无切换块的单文件变体），因此 GUI 中暴露的变体列表与 CLI 的 `make lora-gui GUI_PRESETS=<variant>` 产生的结果一致。变体列表的当前状态可通过 `ls configs/gui-methods/` 查看。
@@ -299,6 +300,25 @@ GUI 中的使用方法：
 - **如果更改了数据集或核心配置（rank、LR、epoch 数等）**，想要重新训练，请手动删除 `output/ckpt/<output_name>-checkpoint-state/` 文件夹后再点击 `Train`。否则会在旧状态上继续训练。
 
 详细行为请参见 [§8.6 自动续训](#86-自动续训checkpointing_epochs)——其中也说明了与 `save_every_n_epochs` 的区别。
+
+### 7.4 Dataset Tab: Autotag & Grouping
+
+The **Dataset** tab is for getting your `image_dataset/` into shape before preprocessing — previewing images, writing captions, and tidying up the collection. Two helpers make this much faster.
+
+**Autotag — auto-generate captions.** Select an image and click **Autotag** to run the **Anima Tagger**, which predicts tags in the correct Anima order (`[meta] [character] [series] [artist] [general]`) and fills them into the caption box. The first click downloads the tagger model automatically and may take a moment; after that the model stays loaded in the background so subsequent images tag almost instantly. A small status line shows whether the tagger is loading or ready.
+
+- The tagger frees its GPU memory automatically before you start any other GPU work (grouping, preprocessing, or training), so you never have to unload it by hand.
+- Autotag is a **starting point, not a final answer** — review the tags and fix mistakes (especially character/series/artist names) before training. See the caption tips in [§5.1](#51-caption-writing-tips).
+- CLI equivalent for a single image: `make autotag --image <path>`.
+
+**Grouping — cluster similar images.** Click **Group** to scan the dataset and cluster images that look near-identical or show the same scene/character. When it finishes, the image list folds these into collapsible **green group headers**, so duplicates, alternate versions, and near-twins sit together — making it easy to thin out redundancy or balance how much of each concept you keep.
+
+- Grouping runs as a background job with its own progress bar; you can keep working while it runs.
+- It compares images by *visual content* (not filenames or captions), and groups are computed **per top-level folder** (artist/character bucket) so different folders never merge together.
+- Re-running is cheap — it reuses cached image features — so feel free to click **Group** again after adding images.
+- CLI equivalent: `make curate-group` (writes `post_image_dataset/groups/groups.json`, which the GUI reads). Tighten or loosen the clustering with `ARGS="--match-frac-min 0.4 --cell-match-min 0.9"` (higher = stricter, fewer images per group).
+
+> Both features operate on your **original** `image_dataset/` images and don't touch the preprocessing caches — run them before `make preprocess` to clean up captions and trim duplicates first.
 
 ---
 

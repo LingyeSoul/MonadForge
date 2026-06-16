@@ -44,10 +44,6 @@ CONFIG_SCHEMA: dict[str, ConfigKey] = {}
 ALIAS_MAP: dict[str, str] = {}
 
 
-# ---------------------------------------------------------------------------
-# Introspection helpers
-# ---------------------------------------------------------------------------
-
 _BOOL_ACTIONS = {"_StoreTrueAction", "_StoreFalseAction"}
 
 
@@ -260,11 +256,6 @@ def resolve_alias(key: str) -> str:
 
 def is_known_key(key: str) -> bool:
     return resolve_alias(key) in CONFIG_SCHEMA
-
-
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
 
 
 def _coerce_value(spec: ConfigKey, value: Any) -> Any:

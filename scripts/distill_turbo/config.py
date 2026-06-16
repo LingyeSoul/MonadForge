@@ -23,11 +23,6 @@ except ModuleNotFoundError:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# TOML helpers
-# ---------------------------------------------------------------------------
-
-
 def load_turbo_config(path: str) -> dict:
     with open(path, "rb") as f:
         return tomllib.load(f)
@@ -42,11 +37,6 @@ def _pick(cli_val: Any, cfg: dict, toml_key: str, default: Any) -> Any:
     if cli_val is not None and cli_val != -1 and cli_val != -1.0:
         return cli_val
     return _flatten(cfg, toml_key, default)
-
-
-# ---------------------------------------------------------------------------
-# Argparser
-# ---------------------------------------------------------------------------
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -281,10 +271,8 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sample_ratio", type=float, default=1.0)
 
-    # ---- DP-DMD (diversity-preserved DMD; arXiv 2602.03139) ----
-    # The student is a genuine N-step rollout: step 1 supervised toward a teacher
-    # K-step anchor (diversity), detached, then DMD on x_θ over steps 2..N
-    # (quality). See docs/experimental/dpdmd.md.
+    # DP-DMD (arXiv 2602.03139): step 1 supervised toward a teacher K-step anchor
+    # (diversity), detached, then DMD on x_θ over steps 2..N. See dpdmd.md.
     parser.add_argument(
         "--k_anchor",
         type=int,
@@ -329,7 +317,6 @@ def build_argparser() -> argparse.ArgumentParser:
         "(matches inference). Default: TOML (sampling.flow_shift, default 3.0).",
     )
 
-    # ---- Base objective ----
     parser.add_argument(
         "--base_loss",
         type=str,
@@ -340,7 +327,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "(base_loss, default 'dpdmd').",
     )
 
-    # ---- DMD2 teacher-feature GAN (FastGen idea 1; off by default) ----
+    # DMD2 teacher-feature GAN (FastGen idea 1; off by default).
     parser.add_argument(
         "--gan_loss_weight_gen",
         type=float,
@@ -373,7 +360,7 @@ def build_argparser() -> argparse.ArgumentParser:
         "Default: TOML (gan.r1_weight, default 0).",
     )
 
-    # ---- Turbo × REPA relational alignment (off by default) ----
+    # Turbo × REPA relational alignment (off by default).
     parser.add_argument(
         "--repa_weight",
         type=float,
@@ -412,8 +399,37 @@ def build_argparser() -> argparse.ArgumentParser:
         help="iREPA spatial standardization of the encoder target. Default: "
         "TOML (repa.spatial_norm, default true).",
     )
+    parser.add_argument(
+        "--repa_target_dog",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="REPA-DoG target band-pass (replaces spatial_norm's DC removal "
+        "with a broader low-band strip; the two are mutually exclusive and dog "
+        "wins). Default: TOML (repa.target_dog, default false).",
+    )
+    parser.add_argument(
+        "--repa_dog_sigma1_div",
+        type=float,
+        default=-1.0,
+        help="REPA-DoG low-pass σ₁ as min(gh,gw)/div (larger div = narrower "
+        "strip). Default: TOML (repa.dog_sigma1_div, default 16).",
+    )
+    parser.add_argument(
+        "--repa_dog_sigma2_div",
+        type=float,
+        default=-1.0,
+        help="REPA-DoG second σ₂ as min(gh,gw)/div (0 = single low-pass, σ₂ "
+        "off). Default: TOML (repa.dog_sigma2_div, default 0).",
+    )
+    parser.add_argument(
+        "--repa_dog_norm_std",
+        type=float,
+        default=-1.0,
+        help="REPA-DoG post band-pass std normalization (0 = empirical per-batch "
+        "std). Default: TOML (repa.dog_norm_std, default 0).",
+    )
 
-    # ---- f-distill reweighting (FastGen idea 2; needs the GAN disc) ----
+    # f-distill reweighting (FastGen idea 2; needs the GAN disc).
     parser.add_argument(
         "--f_div",
         type=str,
@@ -425,11 +441,6 @@ def build_argparser() -> argparse.ArgumentParser:
         "(f_distill.f_div, default 'rkl').",
     )
     return parser
-
-
-# ---------------------------------------------------------------------------
-# Resolved config
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -463,13 +474,11 @@ class TurboConfig:
     fake_alpha: float
     attn_mode: str
     use_custom_down_autograd: bool
-    # SmoothQuant-style per-input-channel rebalance on each lora_down (student +
-    # fake). 0.0 = off (default; preserves pre-2026-06-09 turbo runs), 0.5 =
-    # sqrt-balance. Bit-equivalent at init, merges out — a free gradient-
-    # conditioning lever, not an inference correction.
+    # Per-input-channel rebalance on each lora_down. Bit-equivalent at init,
+    # merges out — a gradient-conditioning lever, not an inference correction.
     channel_scaling_alpha: float
-    # Per-step expert (dual-B-head student). When on, step_expert_K is derived
-    # = student_steps; head k serves denoise step k. Off → single-head student.
+    # Per-step expert (dual-B-head student): step_expert_K = student_steps, head
+    # k serves denoise step k. Off → single-head student.
     per_step_expert: bool
     step_expert_K: int
 
@@ -516,6 +525,10 @@ class TurboConfig:
     repa_encoder: str
     repa_every_n: int
     repa_spatial_norm: bool
+    repa_target_dog: bool
+    repa_dog_sigma1_div: float
+    repa_dog_sigma2_div: float
+    repa_dog_norm_std: float
 
     # Mean-variance reg (lever B / Eq. 7)
     mean_var_weight: float
@@ -582,17 +595,14 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     student_alpha = float(_flatten(cfg, "network.student_alpha", student_rank))
     fake_alpha = float(_flatten(cfg, "network.fake_alpha", fake_rank))
     attn_mode = _pick(args.attn_mode, cfg, "network.attn_mode", "flash")
-    # use_custom_down_autograd lives at TOML top level (matches the LoRA family's
-    # config layout in methods/lora.toml). CLI flag wins when set explicitly.
+    # use_custom_down_autograd is a top-level TOML scalar; CLI flag wins when set.
     if args.use_custom_down_autograd is None:
         use_custom_down_autograd = bool(
             _flatten(cfg, "use_custom_down_autograd", False)
         )
     else:
         use_custom_down_autograd = bool(args.use_custom_down_autograd)
-    # channel_scaling_alpha — top-level TOML scalar (mirrors base.toml's LoRA
-    # family layout); CLI override wins. Defaults off so existing turbo
-    # snapshots reproduce bit-for-bit.
+    # Defaults off so existing turbo snapshots reproduce bit-for-bit.
     channel_scaling_alpha = float(
         _pick(args.channel_scaling_alpha, cfg, "channel_scaling_alpha", 0.0)
     )
@@ -607,23 +617,16 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     # DMD core
     student_steps = int(_pick(args.student_steps, cfg, "dmd.student_steps", 4))
     teacher_cfg = float(_flatten(cfg, "dmd.teacher_cfg", 4.0))
-    # DM-branch gradient policy: (a) τ-damping [default] vs (b) DMD per-sample
-    # x0-space magnitude normalization. Alternative policies, not additive;
-    # (b) ≈ "drop the τ-weight, magnitude-normalize."
+    # DM-branch gradient policy: (a) τ-damping [default] vs (b) x0-norm. Alternative
+    # policies, not additive; (b) ≈ "drop the τ-weight, magnitude-normalize."
     dm_x0_norm = bool(_pick(args.dm_x0_norm, cfg, "dmd.dm_x0_norm", False))
     norm_floor = float(_pick(args.norm_floor, cfg, "dmd.norm_floor", 0.05))
-    # Grad-step policy (all|last|random): which rollout step(s) carry gradient in
-    # plain DMD2. CLI --dmd_grad_step wins, else TOML dmd.grad_step, else 'all'
-    # (full-rollout BPTT).
     dmd_grad_step = str(_pick(args.dmd_grad_step, cfg, "dmd.grad_step", "all"))
 
-    # Base objective selector. 'dpdmd' keeps the first-step teacher anchor;
-    # 'dmd' is plain DMD2 (no anchor → student_steps >= 1 allowed).
     base_loss = _pick(args.base_loss, cfg, "base_loss", "dpdmd")
 
-    # DMD2 teacher-feature GAN (idea 1) + f-distill (idea 2). weight_gen=0 keeps
-    # the whole GAN/disc path off → byte-identical DP-DMD. feature_block_idx uses
-    # sentinel -2 (not -1) because -1 is a meaningful value (middle block).
+    # weight_gen=0 keeps the whole GAN/disc path off → byte-identical DP-DMD.
+    # feature_block_idx sentinel is -2 (not -1) because -1 means middle block.
     gan_loss_weight_gen = float(
         _pick(args.gan_loss_weight_gen, cfg, "gan.weight_gen", 0.0)
     )
@@ -636,13 +639,10 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     gan_r1_weight = float(_pick(args.gan_r1_weight, cfg, "gan.r1_weight", 0.0))
     gan_r1_alpha = float(_flatten(cfg, "gan.r1_alpha", 0.1))
     gan_use_same_t_noise = bool(_flatten(cfg, "gan.use_same_t_noise", True))
-    # Selectively checkpoint the single grad-bearing GAN gen teacher forward.
-    # Independent of the global ``--grad_ckpt`` (which arms unsloth offload for
-    # ALL grad-bearing forwards): the GAN gen forward retains ~half the DiT's
-    # block activations only to backprop into x_pred → student, so recomputing
-    # them in backward reclaims that peak VRAM (~one half-depth forward of extra
-    # compute) without paying the global recompute. Default on — numerically
-    # equivalent (frozen teacher, no dropout).
+    # Checkpoint only the grad-bearing GAN gen teacher forward (independent of the
+    # global --grad_ckpt): it retains ~half the DiT's activations purely to
+    # backprop into x_pred → student, so recompute reclaims that peak VRAM.
+    # Default on — numerically equivalent (frozen teacher, no dropout).
     gan_grad_ckpt = bool(_flatten(cfg, "gan.grad_ckpt", True))
     f_div = _pick(args.f_div, cfg, "f_distill.f_div", "rkl")
     f_ratio_lower = float(_flatten(cfg, "f_distill.ratio_lower", 0.1))
@@ -651,9 +651,8 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     f_bin_num = int(_flatten(cfg, "f_distill.bin_num", 10))
     f_ratio_normalization = bool(_flatten(cfg, "f_distill.ratio_normalization", True))
 
-    # Turbo × REPA relational alignment (turbo_repa.md Phase 1). weight=0 keeps
-    # the whole path off → byte-identical DP-DMD (no dataset PE loading, no
-    # extra RNG draws, no extra forward).
+    # weight=0 keeps the whole REPA path off → byte-identical DP-DMD (no PE
+    # loading, no extra RNG draws, no extra forward).
     repa_weight = float(_pick(args.repa_weight, cfg, "repa.weight", 0.0))
     repa_layer = int(_pick(args.repa_layer, cfg, "repa.layer", 8))
     repa_encoder = _pick(args.repa_encoder, cfg, "repa.encoder", "pe_spatial")
@@ -662,18 +661,30 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         repa_spatial_norm = bool(_flatten(cfg, "repa.spatial_norm", True))
     else:
         repa_spatial_norm = bool(args.repa_spatial_norm)
+    # REPA-DoG band-pass replaces the spatial_norm DC-removal block when on (dog
+    # wins; same family — DoG at σ₁→0 is DC removal). repa_dog_target.md.
+    if args.repa_target_dog is None:
+        repa_target_dog = bool(_flatten(cfg, "repa.target_dog", False))
+    else:
+        repa_target_dog = bool(args.repa_target_dog)
+    repa_dog_sigma1_div = float(
+        _pick(args.repa_dog_sigma1_div, cfg, "repa.dog_sigma1_div", 16.0)
+    )
+    repa_dog_sigma2_div = float(
+        _pick(args.repa_dog_sigma2_div, cfg, "repa.dog_sigma2_div", 0.0)
+    )
+    repa_dog_norm_std = float(
+        _pick(args.repa_dog_norm_std, cfg, "repa.dog_norm_std", 0.0)
+    )
 
-    # Per-step expert (dual-B-head student). step_expert_K is derived from
-    # student_steps so head k ↔ denoise step k by construction (the plan's
-    # K = student_steps invariant). K==1 (single step) would collapse to a
-    # plain LoRA, so the network factory ignores it there.
+    # step_expert_K = student_steps so head k ↔ denoise step k by construction.
+    # K==1 collapses to a plain LoRA, so the network factory ignores it there.
     if args.per_step_expert is None:
         per_step_expert = bool(_flatten(cfg, "network.per_step_expert", False))
     else:
         per_step_expert = bool(args.per_step_expert)
     step_expert_K = student_steps if per_step_expert else 0
 
-    # DP-DMD — diversity-anchor knobs.
     k_anchor = int(_pick(args.k_anchor, cfg, "dpdmd.k_anchor", 5))
     teacher_anchor_steps = int(
         _pick(args.teacher_anchor_steps, cfg, "dpdmd.teacher_anchor_steps", 28)
@@ -686,12 +697,8 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     flow_shift = float(_pick(args.flow_shift, cfg, "sampling.flow_shift", 3.0))
 
     # Mean-variance reg (lever B / Eq. 7). weight=0 disables. Target stats are
-    # pinned (sigma2_t > 0) or measured exactly in a one-pass scan over the real
-    # latents (sigma2_t <= 0). The target is a static dataset statistic — a global
-    # scalar (μ, σ²) over the cached training latents — so an exact pre-pass beats
-    # the old running EMA (no decay lag, no batch wobble, deterministic).
-    # `calib_batches` caps that scan (0 = full pass; the global scalar converges
-    # in a few hundred images, so a cap is a cheap-but-near-exact knob).
+    # pinned (sigma2_t > 0) or measured in a one-pass scan over the real latents
+    # (sigma2_t <= 0); calib_batches caps that scan (0 = full pass).
     mean_var_weight = float(_pick(args.mean_var_weight, cfg, "mean_var.weight", 0.0))
     mv_mu_t = float(_flatten(cfg, "mean_var.mu_t", 0.0))
     mv_sigma2_t = float(_flatten(cfg, "mean_var.sigma2_t", -1.0))
@@ -718,7 +725,6 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     t_distribution = _flatten(cfg, "sampling.t_distribution", "uniform")
     sigmoid_scale = float(_flatten(cfg, "sampling.sigmoid_scale", 1.0))
 
-    # ----- Validation -----
     if base_loss not in ("dpdmd", "dmd"):
         raise ValueError(f"base_loss={base_loss!r}: expected 'dpdmd' or 'dmd'")
     use_anchor = base_loss == "dpdmd"
@@ -814,17 +820,27 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
                 "head switch corrupts the rollout's checkpoint recompute. "
                 "Disable one of the three."
             )
+        if repa_target_dog and repa_dog_sigma1_div <= 0.0:
+            raise ValueError(
+                f"repa.dog_sigma1_div={repa_dog_sigma1_div}: must be > 0 "
+                "(σ₁ = min(gh,gw)/div)."
+            )
+        # dog replaces spatial_norm's DC removal — they're mutually exclusive
+        # (same family; dog wins). Surface the effective target preprocessing.
+        target_desc = (
+            f"dog(σ1=min/{repa_dog_sigma1_div:g}, "
+            f"σ2={'off' if repa_dog_sigma2_div <= 0 else f'min/{repa_dog_sigma2_div:g}'}, "
+            f"norm_std={'empirical' if repa_dog_norm_std <= 0 else repa_dog_norm_std})"
+            if repa_target_dog
+            else f"spatial_norm={repa_spatial_norm}"
+        )
         logger.info(
             f"REPA (turbo×REPA relational alignment) ON: weight={repa_weight}, "
             f"layer={repa_layer}, encoder={repa_encoder!r}, "
-            f"every_n={repa_every_n}, spatial_norm={repa_spatial_norm}."
+            f"every_n={repa_every_n}, {target_desc}."
         )
     if bool(args.grad_ckpt) and gan_loss_weight_gen > 0.0:
-        # Pre-existing member of the same hazard class (predates REPA): under
-        # global --grad_ckpt the rollout's student forwards are checkpointed,
-        # but the GAN gen forward switches the network view to 'teacher' before
-        # loss_student.backward() — the rollout recompute then runs WITHOUT the
-        # student LoRA enabled and the DMD gradient is silently corrupted.
+        # Same view × deferred-ckpt-recompute hazard class as the REPA guard above.
         logger.warning(
             "--grad_ckpt with gan.weight_gen > 0: the rollout's checkpointed "
             "student forwards recompute after the GAN gen forward flipped the "
@@ -1011,6 +1027,10 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         repa_encoder=repa_encoder,
         repa_every_n=repa_every_n,
         repa_spatial_norm=repa_spatial_norm,
+        repa_target_dog=repa_target_dog,
+        repa_dog_sigma1_div=repa_dog_sigma1_div,
+        repa_dog_sigma2_div=repa_dog_sigma2_div,
+        repa_dog_norm_std=repa_dog_norm_std,
         mean_var_weight=mean_var_weight,
         mv_mu_t=mv_mu_t,
         mv_sigma2_t=mv_sigma2_t,
@@ -1075,6 +1095,10 @@ def tb_config_text(c: TurboConfig) -> str:
         "base_loss": c.base_loss,
         "gan_loss_weight_gen": c.gan_loss_weight_gen,
         "repa_weight": c.repa_weight,
+        "repa_target_dog": c.repa_target_dog,
+        "repa_dog_sigma1_div": c.repa_dog_sigma1_div,
+        "repa_dog_sigma2_div": c.repa_dog_sigma2_div,
+        "repa_dog_norm_std": c.repa_dog_norm_std,
         "f_div": c.f_div,
         "k_anchor": c.k_anchor,
         "teacher_anchor_steps": c.teacher_anchor_steps,

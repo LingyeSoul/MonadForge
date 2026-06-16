@@ -188,15 +188,12 @@ class LoRAModule(BaseLoRAModule):
         self._fused = False
 
 
-# ---------------------------------------------------------------------------
 # Save-pipeline helpers (state_dict-level, no module instance required).
-#
 # Co-located with LoRAModule because they operate on the layout this class
 # writes (``.lora_down.weight`` / ``.lora_up.weight`` / ``.alpha`` /
 # optional ``.inv_scale``). The standard variant write fires these; the
 # Hydra and Chimera writers also defuse their plain-LoRA legs by calling
 # :func:`defuse_standard_qkv` directly.
-# ---------------------------------------------------------------------------
 
 
 def defuse_standard_qkv(state_dict: Dict[str, torch.Tensor]) -> None:

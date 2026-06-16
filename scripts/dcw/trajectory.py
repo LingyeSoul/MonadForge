@@ -134,8 +134,8 @@ def measure_forward_norms(
     bands_gpu = torch.zeros(B, n_steps, 4, dtype=torch.float32, device=device)
     for i in range(n_steps):
         sigma_i = float(sigmas[i])
-        # σ is shared across rows; pass shape (1,) to the Hydra router
-        # (state is a scalar) and shape (B,) to the model forward.
+        # σ shared across rows: (1,) to the Hydra router (scalar state), (B,) to
+        # the model forward.
         t_one = torch.full((1,), sigma_i, device=device, dtype=torch.bfloat16)
         t_b = torch.full((B,), sigma_i, device=device, dtype=torch.bfloat16)
         eps_rows = [torch.randn(x_0.shape, generator=g) for g in gens]
@@ -180,9 +180,7 @@ def run_reverse_batched(
     fei_sigma_low_div: float = 4.0,
 ) -> (
     list[tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]]
-    | tuple[
-        list[tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]], torch.Tensor
-    ]
+    | tuple[list[tuple[np.ndarray, dict[str, np.ndarray], np.ndarray]], torch.Tensor]
 ):
     """Run N reverse trajectories in parallel along batch, where each row
     is the (seed, λ) pair ``(noise_seeds[r], dcw_lams[r])``.
@@ -239,25 +237,22 @@ def run_reverse_batched(
     norms_gpu = torch.zeros(n_steps, n_rows, dtype=torch.float32, device=device)
     bands_gpu = torch.zeros(n_steps, n_rows, 4, dtype=torch.float32, device=device)
     fei_low_gpu = torch.zeros(n_steps, n_rows, dtype=torch.float32, device=device)
-    # σ_low depends only on latent (H_lat, W_lat); same across rows + steps
-    # because the spatial dims don't change during denoising. Match FeRA's
-    # production rule from library.runtime.fei.fei_sigma_low.
+    # σ_low depends only on latent (H_lat, W_lat) — constant across rows/steps.
+    # Matches FeRA's production rule (library.runtime.fei.fei_sigma_low).
     h_lat, w_lat = x_hat.shape[-2], x_hat.shape[-1]
     sigma_low = fei_sigma_low(h_lat, w_lat, fei_sigma_low_div)
 
     for i in range(n_steps):
         sigma_i = float(sigmas[i])
         sigma_next = float(sigmas[i + 1])
-        # σ is shared across rows; pass shape (1,) to the Hydra router
-        # (state is a scalar) and shape (n_rows,) to the model forward
-        # to match the batch.
+        # σ shared across rows: (1,) to the Hydra router (scalar state),
+        # (n_rows,) to the model forward.
         t_one = torch.full((1,), sigma_i, device=device, dtype=torch.bfloat16)
         t_b = torch.full((n_rows,), sigma_i, device=device, dtype=torch.bfloat16)
 
-        # FEI on the latent entering this step — timing matches the
-        # inference-side set_fei call in library/inference/generation.py
-        # (computed on the pre-forward z_t, before any update).
-        # x_hat is (n_rows, C, T=1, H, W); squeeze the T axis for compute_fei_2band.
+        # FEI on the pre-forward latent entering this step — timing matches the
+        # inference-side set_fei call (library/inference/generation.py). x_hat is
+        # 5D (n_rows, C, T=1, H, W); squeeze T for compute_fei_2band.
         z_in = x_hat[:, :, 0] if x_hat.ndim == 5 else x_hat
         fei = compute_fei_2band(z_in, sigma_low)  # (n_rows, 2), fp32
         fei_low_gpu[i] = fei[:, 0]

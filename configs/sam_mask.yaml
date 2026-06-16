@@ -18,8 +18,8 @@ prompts:
   - text bubble
 focus_prompts: []
 
-threshold: 0.5
-dilate: 5
+threshold: 0.7
+dilate: 3
 # Global scope: which images get masked at all (also forwarded to MIT).
 path_pattern: '*'
 

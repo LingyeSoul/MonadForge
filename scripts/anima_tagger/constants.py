@@ -14,9 +14,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
-# Count-tag detection now lives in the shared, torch-free tag-shape module so
-# the tagger vocab build and the caption-index builder can't drift. Re-exported
-# here (``_COUNT_RE`` is imported by ``train_common``) for back-compat.
+# Count-tag detection lives in the shared torch-free tag-shape module so the
+# vocab build and caption-index builder can't drift. Re-exported here
+# (``_COUNT_RE`` is imported by ``train_common``).
 from library.captioning.taxonomy import _COUNT_RE, _LEADING_INT_RE, is_count_tag
 
 __all__ = [
@@ -28,8 +28,7 @@ __all__ = [
     "classify_people",
 ]
 
-# Image extensions we look for next to each .txt caption file. Order is
-# preference; first hit wins.
+# Image extensions next to each .txt caption; order is preference, first hit wins.
 IMAGE_EXTS: Tuple[str, ...] = (".webp", ".jpg", ".jpeg", ".png")
 
 
@@ -80,38 +79,36 @@ def classify_people(tags: Iterable[str]) -> int:
                 saw_other = True
             continue
         m = _LEADING_INT_RE.match(t)
-        if m is None:                    # e.g. malformed; defensive
+        if m is None:  # e.g. malformed; defensive
             continue
         n = int(m.group(1))
         if "girl" in t:
             girls = max(girls, n)
         elif "boy" in t:
             boys = max(boys, n)
-        # "others" count tags are recorded as a "multi" indicator without
-        # changing girls/boys directly — they don't fit the 7 buckets.
+        # "others" counts go to the "multi" indicator (no 7-bucket fit).
         elif "other" in t:
             saw_other = True
-    # ``multiple_*`` only kicks in when the explicit numeric tag is missing
-    # (rare — booru attaches both). Treat it as ≥2, not ≥3, since that's
-    # what the booru auto-tag actually means.
+    # ``multiple_*`` only kicks in when the numeric tag is missing; treat as ≥2
+    # not ≥3, since that's what the booru auto-tag means.
     if saw_multi_g and girls == 0:
         girls = 2
     if saw_multi_b and boys == 0:
         boys = 2
     if saw_other or girls >= 3 or boys >= 3 or (boys >= 2 and girls >= 2):
-        return 7                          # multi: 3+girls / 3+boys / 2g+2b+ / lonely multiple_* / Nothers
+        return 7  # multi: 3+girls / 3+boys / 2g+2b+ / lonely multiple_* / Nothers
     if girls == 0 and boys == 0:
-        return 0                          # no_people (only when no count tag fired)
+        return 0  # no_people (only when no count tag fired)
     if girls == 1 and boys == 0:
-        return 1                          # 1girl
+        return 1  # 1girl
     if girls == 1 and boys == 1:
-        return 2                          # 1girl_1boy
+        return 2  # 1girl_1boy
     if girls == 2 and boys == 0:
-        return 3                          # 2girls
+        return 3  # 2girls
     if girls == 2 and boys == 1:
-        return 4                          # 2girls_1boy
+        return 4  # 2girls_1boy
     if girls == 1 and boys == 2:
-        return 5                          # 2boys_1girl
+        return 5  # 2boys_1girl
     if girls == 0 and boys == 1:
-        return 6                          # 1boy
-    return 7                              # fallback (e.g. 0g/2b without "others")
+        return 6  # 1boy
+    return 7  # fallback (e.g. 0g/2b without "others")

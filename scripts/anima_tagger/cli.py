@@ -33,8 +33,8 @@ from pathlib import Path
 from library.env import load_dotenv  # noqa: E402
 from library.log import setup_logging  # noqa: E402
 
-# Pull CAPTION_CORPUS_DIR (and any other overrides) from anima_lora/.env
-# before argparse builds defaults. CLI flags still win over env values.
+# Pull CAPTION_CORPUS_DIR from anima_lora/.env before argparse builds defaults;
+# CLI flags still win over env values.
 load_dotenv()
 
 setup_logging()
@@ -90,7 +90,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--feature_cache_workers",
         type=int,
-        default=3,
+        default=5,
         help="DataLoader workers for build_features CPU-side decode + LANCZOS "
         "resize (default: 4). Set to 0 to run inline on the main process.",
     )
@@ -103,9 +103,7 @@ def parse_args() -> argparse.Namespace:
         "for more GPU throughput / lower for less VRAM (default: 8).",
     )
 
-    # Vocab-build inputs. All three default to subpaths of
-    # ``$CAPTION_CORPUS_DIR``; pass --caption_roots / --tag_cache / --rules
-    # explicitly to override.
+    # Vocab-build inputs default to subpaths of ``$CAPTION_CORPUS_DIR``.
     raw_default = _corpus_default("retrieved")
     curated_default = _corpus_default("selected")
     p.add_argument(
@@ -138,13 +136,34 @@ def parse_args() -> argparse.Namespace:
         "Optional — pass empty / unset to build a flat-vocab checkpoint. "
         "Default: $CAPTION_CORPUS_DIR/tag_groups.yaml.",
     )
-    p.add_argument("--min_freq", type=int, default=20)
+    p.add_argument("--min_freq", type=int, default=50)
     p.add_argument("--val_frac", type=float, default=0.05)
     p.add_argument("--seed", type=int, default=42)
 
-    # Train-mode knobs.
     p.add_argument("--epochs", type=int, default=40)
     p.add_argument("--batch_size", type=int, default=96)
+    p.add_argument(
+        "--ram_resident",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Load the whole packed feature set into RAM once at startup and "
+        "serve batches from memory (no per-epoch disk IO; runs the loader inline "
+        "with a free global shuffle). Needs ~feature-set-sized RAM (~40 GB here). "
+        "Use --no-ram_resident to fall back to the mmap-shard path with chunked "
+        "shuffle + prefetch workers (default: on).",
+    )
+    p.add_argument(
+        "--shuffle_chunk_size",
+        type=int,
+        default=2048,
+        help="IO-locality knob for the cached-feature loader. Each epoch "
+        "shuffles within contiguous chunks of this many samples (snapped to a "
+        "multiple of --batch_size) and shuffles chunk order, instead of a global "
+        "shuffle — keeps packed-shard reads inside a cache-resident window so the "
+        "~40 GB token set doesn't thrash on a RAM-bound box. Larger = closer to a "
+        "full global shuffle (more random IO); smaller = more sequential IO, "
+        "slightly more correlated batch composition (default: 2048).",
+    )
     p.add_argument(
         "--postfix_every",
         type=int,
@@ -153,12 +172,12 @@ def parse_args() -> argparse.Namespace:
         "host-device sync) every N steps. Higher = fewer syncs / faster "
         "training; lower = more responsive progress bar (default: 10).",
     )
-    p.add_argument("--lr", type=float, default=2e-4)
+    p.add_argument("--lr", type=float, default=5e-4)
     p.add_argument("--weight_decay", type=float, default=0.01)
     p.add_argument(
         "--warmup_steps",
         type=int,
-        default=250,
+        default=50,
         help="Linear lr warmup over the first N optimizer steps before cosine "
         "decay takes over. 0 (default) disables warmup and runs pure cosine "
         "on a per-step schedule. Typical values: 200-1000 for fresh-head "
@@ -166,6 +185,16 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--d_hidden", type=int, default=1024)
     p.add_argument("--dropout", type=float, default=0.1)
+    p.add_argument(
+        "--label_smooth",
+        type=float,
+        default=0.0,
+        help="Label-smoothing ε for the tag head (train only). Softens the "
+        "multi-label BCE targets to [ε/2, 1−ε/2] and feeds the same ε to the "
+        "softmax-group cross-entropy, regularizing against the overconfidence "
+        "that drives the train/val tag-loss gap. 0.0 (default) is inert; "
+        "0.05–0.1 is the usual range. Val loss is always reported unsmoothed.",
+    )
     p.add_argument(
         "--drop_sidecars_after_pack",
         action="store_true",
@@ -177,11 +206,8 @@ def parse_args() -> argparse.Namespace:
         "shards are present.",
     )
 
-    # Pool architecture. ``map`` = K learnable queries attend over PE patch
-    # tokens (CLS + mean concatenated as auxiliary channels). ``mean`` =
-    # legacy mean-pool path (head consumes a pre-pooled [B, d_enc] feature).
-    # build_features / train / calibrate all read --pool_kind to pick the
-    # cache subdir and the head shape.
+    # build_features / train / calibrate all read --pool_kind to pick the cache
+    # subdir and head shape — they must agree.
     p.add_argument(
         "--pool_kind",
         choices=["map", "mean"],
@@ -189,7 +215,8 @@ def parse_args() -> argparse.Namespace:
         help="Pool head over the PE-Core encoder's tokens. 'map' (default): "
         "K-query attention pool + CLS + mean concat → trunk. 'mean': "
         "single-vector mean-pool. Selects cache subdir "
-        "(.cache/tokens-<encoder>/ vs pooled-<encoder>/) and head arch.",
+        "(tokens-<encoder>/ vs pooled-<encoder>/ under --feature_cache_dir) "
+        "and head arch.",
     )
     p.add_argument(
         "--pool_kind_aux",
@@ -228,10 +255,8 @@ def parse_args() -> argparse.Namespace:
         "(default on — gives the legacy baseline as a residual).",
     )
 
-    # Aux encoder MAP-pool knobs. Only consulted when --aux_encoder is set;
-    # otherwise inert. Defaults mirror the main pool — change per-encoder
-    # only when there's a reason (e.g. PE-Spatial's d=768 admits more head
-    # divisors so a bigger n_heads_aux is fine if it pays off in F1).
+    # Aux encoder MAP-pool knobs (PE-Spatial's d=768 admits more head divisors,
+    # so a bigger n_heads_aux is fine).
     p.add_argument(
         "--pool_n_queries_aux",
         type=int,
@@ -255,7 +280,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--pool_use_mean_aux",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Aux MAP pool: concat the patch-token mean (default on).",
     )
     p.add_argument(
@@ -273,7 +298,6 @@ def parse_args() -> argparse.Namespace:
         "if the manifest carries labels).",
     )
 
-    # Predict mode: single-image debug entry.
     p.add_argument(
         "--image",
         default=None,
@@ -291,8 +315,8 @@ def parse_args() -> argparse.Namespace:
         help="Predict mode: number of top kept tags to show with --show_scores.",
     )
 
-    # scan_role_markers mode: rank character-typed tags by solo co-occurrence
-    # (high ratio → likely a class/affiliation marker mis-typed as character).
+    # scan_role_markers: high solo co-occurrence ratio → likely a class marker
+    # mis-typed as character.
     p.add_argument(
         "--min_solo",
         type=int,
@@ -343,10 +367,21 @@ def parse_args() -> argparse.Namespace:
         "ready to paste into tag_rules.yaml.",
     )
 
-    # Output.
+    # --out_dir holds the checkpoint + vocab; bulky feature caches are decoupled
+    # into --feature_cache_dir under post_image_dataset/.
     p.add_argument(
         "--out_dir",
         default="models/captioners/anima-tagger-v1",
+    )
+    p.add_argument(
+        "--feature_cache_dir",
+        default=None,
+        help="Root dir for build_features caches (per-stem token sidecars + "
+        "packed mmap shards). Decoupled from --out_dir so these bulky "
+        "dataset-derived caches live under post_image_dataset/. Default "
+        "(unset): post_image_dataset/anima_tagger/. "
+        "Read by build_features / train / calibrate — they must all agree, "
+        "so pass the same value (or none) to every mode.",
     )
 
     args = p.parse_args()
@@ -369,9 +404,8 @@ def parse_args() -> argparse.Namespace:
                 "to anima_lora/.env, or pass the paths via CLI flags."
             )
 
-    # Dual encoder is mandatory for the flag-driven modes. calibrate / predict
-    # read encoder + aux config from out_dir/config.json, so they don't apply
-    # this check.
+    # Dual encoder is mandatory here; calibrate / predict read it from
+    # config.json so they skip this check.
     if args.mode in ("train", "build_features"):
         if not args.aux_encoder:
             raise SystemExit(

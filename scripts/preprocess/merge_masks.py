@@ -30,7 +30,6 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Collect (rel_dir, name) → list[abs_path] across all sources
     by_rel: dict[tuple[str, str], list[Path]] = {}
     for d in mask_dirs:
         if not d.exists():

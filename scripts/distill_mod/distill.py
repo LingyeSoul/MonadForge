@@ -162,7 +162,7 @@ def main():
     torch.manual_seed(cfg.seed)
     random.seed(cfg.seed)
 
-    # --- Dry run: test DataLoader collation without loading the model ---
+    # Dry run: test DataLoader collation without loading the model.
     if cfg.dry_run:
         dataset = CachedDataset(
             cfg.data_dir,
@@ -192,7 +192,7 @@ def main():
     device = torch.device("cuda")
     dtype = torch.bfloat16
 
-    # --- Load unconditional T5("") sidecar (staged by `make distill-prep`) ---
+    # Load the T5("") uncond sidecar (staged by `make distill-prep`).
     uncond_te_path = cfg.uncond_te_path or str(default_uncond_path())
     uncond_te_1 = load_uncond_crossattn(uncond_te_path, device, dtype)
     logger.info(
@@ -200,7 +200,6 @@ def main():
         f"(shape={tuple(uncond_te_1.shape)})"
     )
 
-    # --- Load model ---
     logger.info("Loading DiT model...")
     model: Anima = anima_utils.load_anima_model(
         device,
@@ -211,8 +210,7 @@ def main():
     )
 
     # pooled_text_proj isn't in the pretrained checkpoint, so its params are
-    # still meta tensors after load_state_dict(assign=True). Materialize on CPU
-    # before any .to(device) calls.
+    # meta tensors after load_state_dict — materialize on CPU before any .to().
     model.pooled_text_proj.to_empty(device="cpu")
     nn.init.kaiming_uniform_(model.pooled_text_proj[0].weight, a=math.sqrt(5))
     nn.init.zeros_(model.pooled_text_proj[0].bias)
@@ -225,7 +223,6 @@ def main():
         nn.init.zeros_(model.pooled_text_sigma_film.weight)
         nn.init.zeros_(model.pooled_text_sigma_film.bias)
 
-    # Resume from checkpoint if provided
     if cfg.resume:
         logger.info(f"Resuming from {cfg.resume}")
         from safetensors.torch import load_file
@@ -242,15 +239,13 @@ def main():
         if film_state:
             model.pooled_text_sigma_film.load_state_dict(film_state)
 
-    # Block swap for VRAM efficiency (two forwards per step), then compile each
-    # block._forward (native-shape flatten → no flash pad-leak into the target).
-    # This pool's latents span more than the 2 CONSTANT_TOKEN_BUCKETS families.
+    # Block swap (two forwards/step), then compile each block._forward
+    # (native-shape flatten → no flash pad-leak into the target).
     place_dit_for_training(model, device, blocks_to_swap=cfg.blocks_to_swap)
     if cfg.torch_compile:
-        # Self-describing compile budget: derive the distinct token counts from the
-        # cached pool (data_dir + synth_data_dir) rather than a fixed table. This
-        # derivation is coupled to mod's synth-pool logic, so it stays here; the
-        # budget → cache isolation → block-compile glue is the shared library helper.
+        # Self-describing compile budget: distinct token counts from the cached
+        # pool, not a fixed table. The derivation is coupled to mod's synth-pool
+        # logic so it stays here; the rest is the shared library helper.
         token_counts = _pool_token_counts(cfg, model.patch_spatial)
         pc = compile_dit_blocks_for_pool(
             model,
@@ -276,9 +271,8 @@ def main():
             ),
         )
 
-    # Gradient checkpointing recomputes block activations in backward (teacher
-    # runs under no_grad, so only the student pass holds activations; peak ~12 GB
-    # off, flat on). Keep the model in train() mode — Block.forward gates
+    # Grad-ckpt recomputes block activations in backward (only the student pass
+    # holds them — teacher is no_grad). Keep train() mode: Block.forward gates
     # checkpointing on self.training.
     enable_training_grad_ckpt(model, enabled=cfg.grad_ckpt)
     model.train()
@@ -298,18 +292,16 @@ def main():
         for m in mod_modules:
             yield from m.parameters()
 
-    # Freeze everything, then unfreeze the mod head
+    # Freeze everything, then unfreeze the mod head.
     for param in model.parameters():
         param.requires_grad_(False)
     for param in mod_parameters():
         param.requires_grad_(True)
 
-    # Arm the student forward's pooled_text_proj path. The output layer starts
-    # zero-init, so without this the gate would skip the proj and starve its
-    # gradient — the teacher forward still passes skip_pooled_text_proj=True.
+    # Arm the student's pooled_text_proj path; without it the zero-init gate
+    # skips the proj and starves its gradient (teacher stays skip_pooled_text_proj).
     model.enable_pooled_text_modulation = True
 
-    # Train the mod head in float32 for precision
     for m in mod_modules:
         m.to(dtype=torch.float32)
 
@@ -320,14 +312,12 @@ def main():
         f"({trainable_params / total_params * 100:.4f}%)"
     )
 
-    # --- Optimizer ---
     optimizer = torch.optim.AdamW(
         list(mod_parameters()),
         lr=cfg.lr,
         fused=torch.cuda.is_available(),
     )
 
-    # Warmup + cosine annealing
     warmup_steps = (
         int(cfg.warmup) if cfg.warmup >= 1 else int(cfg.warmup * cfg.iterations)
     )
@@ -335,7 +325,6 @@ def main():
         optimizer, cfg.iterations, cfg.lr, warmup_steps=warmup_steps
     )
 
-    # --- Dataset (train + optional val split) ---
     dataset = CachedDataset(
         cfg.data_dir,
         batch_size=cfg.batch_size,
@@ -360,8 +349,7 @@ def main():
         )
 
     # Bucket-grouped batch sampler: every batch is one resolution (so the
-    # stacking collate works at batch_size>1) and, when shuffling, batch order
-    # is reshuffled per epoch with the largest-token bucket pinned first.
+    # stacking collate works at batch_size>1); largest-token bucket pinned first.
     collate_fn = make_cached_collate()
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -387,10 +375,9 @@ def main():
             "skipping validation. Lower batch_size or raise validation_split."
         )
 
-    # --- Teacher prediction cache (item 1: caches teacher forward results
-    # keyed by (sample_idx, sigma_idx) so subsequent visits skip the teacher
-    # forward entirely; sigmas are pre-sampled from the same sigmoid(scale * N(0,1))
-    # distribution as the original sampler, noise is deterministic per pair) ---
+    # Teacher prediction cache: keyed by (sample_idx, sigma_idx) so revisits
+    # skip the teacher forward; sigmas pre-sampled from the original sampler's
+    # sigmoid(scale·N(0,1)) grid, noise deterministic per pair.
     teacher_cache = None
     if not cfg.no_teacher_cache:
         teacher_cache = TeacherCache(
@@ -398,7 +385,6 @@ def main():
             sigmoid_scale=cfg.sigmoid_scale,
             base_seed=cfg.teacher_cache_seed,
         )
-        # Per-entry size from the first sample's latent shape (16 ch * H * W * bf16).
         _peek = dataset[0][1]
         bytes_per_entry = _peek.numel() * 2
         approx_gb = len(dataset) * cfg.teacher_cache_K * bytes_per_entry / 1e9
@@ -412,7 +398,6 @@ def main():
 
     os.makedirs(os.path.dirname(cfg.output_path) or ".", exist_ok=True)
 
-    # --- TensorBoard ---
     writer = None
     if not cfg.no_log:
         from datetime import datetime
@@ -427,9 +412,8 @@ def main():
         )
         logger.info(f"TensorBoard logs -> {run_log_dir}")
 
-    # --- GAD (geometry-aware distillation) setup. gad_weight=0 → fully off (no
-    # extra forwards, bit-for-bit the MSE-only path). Resolve the perturbation-
-    # pair source against the actual batch_size here. ---
+    # GAD setup. gad_weight=0 → fully off (no extra forwards, bit-for-bit the
+    # MSE-only path). Resolve the perturbation-pair source against batch_size.
     gad_enabled = cfg.gad_weight > 0.0
     gad_source = None
     gad_rng = None
@@ -455,7 +439,6 @@ def main():
             "student graph — fits without --grad_ckpt)."
         )
 
-    # --- Training loop ---
     grad_accum = cfg.grad_accum
     logger.info(
         f"Starting distillation: {cfg.iterations} iterations, "
@@ -485,25 +468,22 @@ def main():
         accum_gad_cos_t.zero_()
 
         for accum_step in range(grad_accum):
-            # Get batch (infinite cycling)
             try:
                 idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
             except StopIteration:
                 data_iter = iter(dataloader)
                 idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
 
-            # latents: (B, 16, H, W), crossattn_emb: (B, seq, 1024), pooled_text: (B, 1024)
             latents = latents.to(device, dtype=dtype, non_blocking=True)
             crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
             pooled_text = pooled_text.to(device, dtype=dtype, non_blocking=True)
 
             B = latents.shape[0]
 
-            # Sigma + noise: with teacher cache, draw from the K-grid and use
-            # deterministic noise per (sample_idx, sigma_idx) so cache hits and
-            # misses produce identical (latents, noise, sigma) inputs to the
-            # student. Without the cache, fall back to the original
-            # continuous-sigmoid sampler + fresh noise per step.
+            # Sigma + noise: with the cache, draw from the K-grid + deterministic
+            # per-(sample, sigma) noise so hits and misses give identical
+            # (latents, noise, sigma) to the student; without it, the original
+            # continuous-sigmoid sampler + fresh noise.
             if teacher_cache is not None:
                 sigma_idx_list = teacher_cache.sample_sigma_idx(B)
                 sigmas = torch.tensor(
@@ -540,8 +520,8 @@ def main():
             # Padding mask (all zeros = no padding); recycled per spatial shape.
             padding_mask = pad_cache.get(latents)
 
-            # --- Teacher forward: real crossattn, pooled_text_proj skipped ---
-            # (skipped entirely on a full-batch cache hit).
+            # Teacher forward: real crossattn, pooled_text_proj skipped (skipped
+            # entirely on a full-batch cache hit).
             cached_list = None
             if teacher_cache is not None:
                 cached_list = [
@@ -576,8 +556,8 @@ def main():
                                 idx_list[i], sigma_idx_list[i], teacher_pred[i : i + 1]
                             )
 
-            # --- Student forward: T5("") crossattn, real pooled text through proj ---
-            # requires_grad_ needed for gradient checkpointing
+            # Student forward: T5("") crossattn, real pooled text through proj.
+            # requires_grad_ needed for gradient checkpointing.
             noisy_input = noisy_input.requires_grad_()
             uncond_crossattn = uncond_for_batch(uncond_te_1, crossattn_emb)
             student_pred = run_mini_train_forward(
@@ -589,7 +569,7 @@ def main():
                 dtype=dtype,
                 pooled_text_override=pooled_text,
             )
-            # --- MSE loss (base pointwise term) ---
+            # MSE loss (base pointwise term).
             mse_loss = nn.functional.mse_loss(
                 student_pred.float(), teacher_pred.float()
             )
@@ -600,22 +580,17 @@ def main():
                 accum_mse_t += mse_loss.detach()
                 continue
 
-            # --- GAD term: also match the teacher's finite-difference response
-            # to a text change. ΔT rides cross-attn (teacher, no_grad), ΔS rides
-            # the modulation MLP (student). Two-phase backward keeps peak VRAM at
-            # ONE student graph (same as the MSE-only run) instead of two: we
-            # back-prop the base term first — freeing student_pred's activations
-            # before the perturbed student graph is built — and treat student(A)
-            # as a detached constant in GAD. The target is then
-            # student(B) → student(A) + ΔT, i.e. the head's residual
-            # (student − teacher) must not depend on the text; since L_mse
-            # already drives the A-residual to ~0, GAD pulls the B-residual the
-            # same way (synergistic, not competing). Gradient flows through the
-            # perturbed (B) student only. ---
+            # GAD term: match the teacher's finite-difference text response. ΔT
+            # rides cross-attn (teacher, no_grad), ΔS rides the modulation MLP
+            # (student). Two-phase backward holds peak VRAM at ONE student graph:
+            # back-prop the base term first (frees student_pred's activations
+            # before the perturbed graph), then treat student(A) as detached.
+            # Target student(B) → student(A) + ΔT — since L_mse drives the
+            # A-residual to ~0, GAD pulls the B-residual the same way
+            # (synergistic). Grad flows through the perturbed (B) student only.
             (mse_loss / grad_accum).backward()
-            # detach().clone() — backward only frees the graph; clone lifts the
-            # A-baseline VALUES off student_pred's (possibly reused) static
-            # output buffer before the perturbed forwards overwrite it.
+            # clone lifts the A-baseline VALUES off student_pred's (possibly
+            # reused) static output buffer before the perturbed forwards overwrite it.
             student_a = student_pred.detach().clone()
 
             cross_b, pool_b = _draw_gad_pair(
@@ -680,7 +655,6 @@ def main():
             accum_gad_t += gad_loss.detach()
             accum_gad_cos_t += gad_cos
 
-        # Grad-norm snapshot before stepping (cheap; ~8M params)
         grad_norm = None
         if writer is not None and (step + 1) % cfg.log_interval == 0:
             sq = 0.0
@@ -727,7 +701,6 @@ def main():
         else:
             progress.set_postfix(loss=f"{accum_loss:.6f}", lr=f"{lr:.2e}")
 
-        # --- Validation pass ---
         do_validate = (
             val_dataloader is not None
             and cfg.validate_every_n_steps > 0

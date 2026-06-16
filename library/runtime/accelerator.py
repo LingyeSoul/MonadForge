@@ -17,7 +17,6 @@ from typing import Optional
 
 import torch
 from accelerate import Accelerator
-from huggingface_hub import hf_hub_download
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +48,11 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
     from huggingface_hub import list_repo_files
 
+    from library.runtime.hf_download import ensure_hf_timeouts, hf_download
+
+    # Pin socket timeouts so a stalled hub connection raises instead of wedging
+    # the run (the daemon stall watchdog is the backstop for a slow trickle).
+    ensure_hf_timeouts()
     list_files = list_repo_files(
         repo_id=repo_id,
         revision=revision,
@@ -59,7 +63,8 @@ def resume_from_local_or_hf_if_specified(accelerator, args):
 
     async def download(filename) -> str:
         def task():
-            return hf_hub_download(
+            return hf_download(
+                what=f"resume state {repo_id}/{filename}",
                 repo_id=repo_id,
                 filename=filename,
                 revision=revision,
@@ -199,10 +204,8 @@ def prepare_accelerator(args: argparse.Namespace):
             if args.wandb_api_key is not None:
                 wandb.login(key=args.wandb_api_key)
 
-    # Always "NO": torch.compile is applied per-block by DiT.compile_blocks (the
-    # block loop is the shape-stable hot path; pre/post-block regions vary per
-    # bucket). Letting Accelerate full-compile the model on top of that would
-    # double-compile and trigger graph-break / recompile storms.
+    # Always "NO": torch.compile is applied per-block by DiT.compile_blocks;
+    # letting Accelerate full-compile on top would double-compile and storm recompiles.
     dynamo_backend = "NO"
 
     accelerator = Accelerator(

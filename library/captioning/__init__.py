@@ -8,14 +8,7 @@ Exposes ``predict(pil_img)`` and ``predict_caption(pil_img)`` for a
 comma-separated tag string.
 """
 
-# ``AnimaTagger`` lives in ``anima_tagger``, whose import touches
-# torch/safetensors. Expose it lazily (PEP 562) so that
-# ``from library.captioning import AnimaTagger`` still works, while torch-free
-# siblings — notably ``library.captioning.taxonomy`` (pure-stdlib tag-shape
-# primitives, imported by the caption-index preprocessing script) — can be
-# imported without dragging torch in through this package ``__init__``.
-# Callers in environments without a built checkpoint still handle the
-# ``FileNotFoundError`` raised by ``AnimaTagger.__init__`` at construction time.
+# AnimaTagger's import touches torch/safetensors; expose it lazily (PEP 562) so torch-free siblings (notably library.captioning.taxonomy, used by the caption-index preprocess script) import without dragging torch through this __init__.
 
 __all__ = ["AnimaTagger"]
 

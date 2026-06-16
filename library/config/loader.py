@@ -146,13 +146,11 @@ class Blueprint:
 
 
 class ConfigSanitizer:
-    # @curry
     @staticmethod
     def __validate_and_convert_twodim(klass, value: Sequence) -> Tuple:
         Schema(ExactSequence([klass, klass]))(value)
         return tuple(value)
 
-    # @curry
     @staticmethod
     def __validate_and_convert_scalar_or_twodim(
         klass, value: Union[float, Sequence]
@@ -164,7 +162,6 @@ class ConfigSanitizer:
         except Exception:
             return ConfigSanitizer.__validate_and_convert_twodim(klass, value)
 
-    # subset schema
     SUBSET_ASCENDABLE_SCHEMA = {
         "color_aug": bool,
         "face_crop_aug_range": functools.partial(
@@ -210,7 +207,6 @@ class ConfigSanitizer:
         "conditioning_data_dir": str,
         "recursive": bool,
     }
-    # datasets schema
     DATASET_ASCENDABLE_SCHEMA = {
         "batch_size": int,
         "validation_seed": int,
@@ -303,7 +299,6 @@ class ConfigSanitizer:
     def __merge_dict(*dict_list: dict) -> dict:
         merged = {}
         for schema in dict_list:
-            # merged |= schema
             for k, v in schema.items():
                 merged[k] = v
         return merged
@@ -329,7 +324,6 @@ class BlueprintGenerator:
             argparse_namespace
         )
 
-        # convert argparse namespace to dict like config
         # NOTE: it is ok to have extra entries in dict
         optname_map = self.sanitizer.ARGPARSE_OPTNAME_TO_CONFIG_OPTNAME
         argparse_config = {

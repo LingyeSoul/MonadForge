@@ -106,7 +106,6 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
         logger.info(f"saving checkpoint: {ckpt_file}")
         sd_saver(ckpt_file, epoch_no, global_step)
 
-        # remove older checkpoints
         if remove_no is not None:
             if on_epoch_end:
                 remove_ckpt_name = get_epoch_ckpt_name(args, ext, remove_no)
@@ -132,7 +131,6 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
         logger.info(f"saving model: {out_dir}")
         diffusers_saver(out_dir)
 
-        # remove older checkpoints
         if remove_no is not None:
             if on_epoch_end:
                 remove_out_dir = os.path.join(

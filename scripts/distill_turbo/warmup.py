@@ -73,13 +73,15 @@ def run_fake_warmup(
         torch.compiler.cudagraph_mark_step_begin()
 
         t = sample_t(
-            B, distribution=t_distribution, sigmoid_scale=sigmoid_scale,
-            device=device, dtype=dtype,
+            B,
+            distribution=t_distribution,
+            sigmoid_scale=sigmoid_scale,
+            device=device,
+            dtype=dtype,
         )
         eps = torch.randn_like(latents)
         t_e = t.view(B, 1, 1, 1)
         x_t = (1.0 - t_e) * latents + t_e * eps
-        # Student (init) x_pred — no grad: the student is not trained here.
         with torch.no_grad():
             v_student = forward_fn(
                 "student", x_t, t, crossattn_emb, no_grad=True
@@ -89,8 +91,11 @@ def run_fake_warmup(
         # One fake update per iteration (decoupled from the main-loop cadence —
         # see module docstring). Resampled (τ_fake, ε_fake) on a fresh batch.
         tau_fake = sample_t(
-            B, distribution=t_distribution, sigmoid_scale=sigmoid_scale,
-            device=device, dtype=dtype,
+            B,
+            distribution=t_distribution,
+            sigmoid_scale=sigmoid_scale,
+            device=device,
+            dtype=dtype,
         )
         eps_fake = torch.randn_like(x_pred_d)
         x_t_fake = renoise(x_pred_d, tau_fake, eps_fake).requires_grad_()

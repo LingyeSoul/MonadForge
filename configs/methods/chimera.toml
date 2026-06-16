@@ -16,13 +16,13 @@
 # the denoise loss + per-pool balance loss. T-LoRA's mask is applied to
 # the content branch only (the freq branch keeps full rank at every t).
 
-network_alpha = 32
+network_alpha = 128
 network_dim = 32
 
 learning_rate = 2e-5
-max_train_epochs = 18
-save_every_n_epochs = 6
-checkpointing_epochs = 6
+max_train_epochs = 16
+save_every_n_epochs = 4
+checkpointing_epochs = 4
 
 use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
@@ -31,13 +31,31 @@ caption_dropout_rate = 0.1
 # CMMD val (PE-Core MMD²) is the primary val signal.
 # use_cmmd = true
 
-output_name = "anima_chimera-0611-48"
+output_name = "anima_chimera-0616"
 # path_pattern = "ama_mitsuki/*|channel_(caststation)/*|sweetonedollar/*"
 
-use_ortho_init = true
-use_timestep_mask = true
-min_rank = 8
-alpha_rank_scale = 1.0
+use_ortho = true
+
+# Per-expert capability levers — make each FROZEN ortho expert deeper instead
+# of adding experts. Orthogonality-preserving alternative to use_ortho_init
+# (which frees the bases and lets experts collapse to an averaged subspace);
+# require use_ortho_init=false. Both distill into the standard up-stack, so
+# inference / on-disk layout is unchanged.
+#   chimera_expert_basis_mult: m≥1. Each expert gets an over-complete (out, m·r)
+#     frozen pool from a DISJOINT U-slice + an m·r Cayley rotation; the forward
+#     selects an r-dim Stiefel subspace within it → the expert's colspace is
+#     trainable yet stays disjoint across experts (no collapse). Auto-downgrades
+#     per-layer when m·r overflows a Linear's width. m=1 = canonical r-slice.
+#   chimera_expert_diag: per-expert (K, r) trainable diagonal σ (the singular
+#     spectrum the orthogonal-only path lacks). ΔW=0 at init still holds.
+# bench/chimera_expert_capacity: subspace freedom (m=2) is the big lever
+# (×700 reach on an off-slice target); diag alone is a minor ×1.15.
+chimera_expert_basis_mult = 2
+chimera_expert_diag = true
+
+# use_timestep_mask = true
+# min_rank = 8
+# alpha_rank_scale = 1.0
 blocks_to_swap=0
 
 # -------------
@@ -52,17 +70,11 @@ use_chimera_hydra = true
 num_experts_content = 6
 num_experts_freq = 2
 
-balance_loss_warmup_ratio = 0.02
+balance_loss_warmup_ratio = 0.0
 balance_loss_weight = 1.0
-# EMA-usage load balance on the content pool (O(1) at uniform, → K_c at full
-# collapse). The old per-microbatch Switch at 1e-5 was negligible AND degenerate
-# at batch=1; this EMA term bites against the global dead-expert collapse without
-# punishing per-sample sharpness. Held gentle here (weighted ~1e-4–8e-4 vs
-# denoise ~0.1) so it shapes usage rather than forcing flat uniformity — the
-# symmetry-break now comes mainly from content_router_init_std below. Raise
-# toward 1e-3 if experts still die; lower if usage pins uniform with margin flat.
-balance_w_content = 1e-4
-network_content_router_lr_scale = 10.0
+# EMA-usage load balance on the content pool (O(1) at uniform, → K_c at full collapse). 
+balance_w_content = 1e-3
+network_content_router_lr_scale = 5.0
 
 # Content routing is always the network-level ContentRouter fed the pooled
 # crossattn_emb (the per-Linear lx_c router was removed).
@@ -74,7 +86,7 @@ repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where styl
 repa_layer     = 8            # block to hook (of 28)
 repa_encoder   = "pe_spatial"
 repa_lr_scale  = 1.0          # head LR multiplier (absolute mode only)
-repa_spatial_norm = true
+repa_target_dog= true
 
 # Freq-pool routing mode.
 #   "fei"     — hardwire π_f = normalize(FEI ** (1/freq_router_tau)) directly.
@@ -88,7 +100,7 @@ repa_spatial_norm = true
 #   "learned" — paper-faithful FreqRouter MLP over concat(FEI, σ-features).
 freq_router_mode = "fei"
 freq_router_tau = 1.0   # 1.0 = raw FEI passthrough; <1 sharpens, >1 flattens
-activation_memory_budget = 0.85
+activation_memory_budget = 0.99
 
 # FEI = 2-band simplex (e_low, e_high). fei_sigma_low_div=4.0 places the
 # low/high crossover near σ≈0.3 (mid-denoising) on this dataset.
@@ -99,6 +111,7 @@ max_data_loader_n_workers=1
 # leaf; non-matching layers fall back to OrthoLoRA (single-pool Cayley,
 # no router). Same default as the other hydra variants.
 router_targets = ".*(output_proj|mlp\\.layer[12])$"
+
 # router_targets = ".*(cross_attn\\.output_proj|mlp\\.layer[12])$"
 # output_name = "anima_chimera-0521"
 [[datasets]]

@@ -47,8 +47,6 @@ def mem_eff_save_file(
                 validated[key] = value
         return validated
 
-    # print(f"Using memory efficient save file: {filename}")
-
     header = {}
     offset = 0
     if metadata:
@@ -80,7 +78,6 @@ def mem_eff_save_file(
             if v.numel() == 0:
                 continue
             if v.is_cuda:
-                # Direct GPU to disk save
                 with torch.cuda.device(v.device):
                     if (
                         v.dim() == 0
@@ -89,7 +86,6 @@ def mem_eff_save_file(
                     tensor_bytes = v.contiguous().view(torch.uint8)
                     tensor_bytes.cpu().numpy().tofile(f)
             else:
-                # CPU tensor save
                 if v.dim() == 0:  # if scalar, need to add a dimension to work with view
                     v = v.unsqueeze(0)
                 v.contiguous().view(torch.uint8).numpy().tofile(f)
@@ -144,9 +140,8 @@ class MemoryEfficientSafeOpen:
         Returns:
             tuple: (header_dict, header_size) containing parsed header and its size.
         """
-        # Read header size (8 bytes, little-endian unsigned long long)
+        # Header size is 8 bytes, little-endian unsigned long long.
         header_size = struct.unpack("<Q", self.file.read(8))[0]
-        # Read and decode header JSON
         header_json = self.file.read(header_size).decode("utf-8")
         return json.loads(header_json), header_size
 
@@ -185,30 +180,22 @@ class MemoryEfficientSafeOpen:
         original_dtype = self._get_torch_dtype(metadata["dtype"])
         target_dtype = dtype if dtype is not None else original_dtype
 
-        # Handle empty tensors
         if num_bytes == 0:
             return torch.empty(metadata["shape"], dtype=target_dtype, device=device)
 
-        # Determine if we should use pinned memory for GPU transfer
         non_blocking = device is not None and device.type == "cuda"
 
-        # Calculate absolute file offset
-        tensor_offset = (
-            self.header_size + 8 + offset_start
-        )  # adjust offset by header size
+        tensor_offset = self.header_size + 8 + offset_start
 
-        # Memory mapping strategy for large tensors to GPU
-        # Use memmap for large tensors to avoid intermediate copies.
-        # If device is cpu, tensor is not copied to gpu, so using memmap locks the file, which is not desired.
-        # So we only use memmap if device is not cpu.
-        # If disable_numpy_memmap is True, skip numpy memory mapping to load with standard file read.
+        # memmap large tensors to avoid intermediate copies, but only for a
+        # non-cpu target: on cpu the tensor isn't copied to gpu, so the memmap
+        # would just lock the file. disable_numpy_memmap forces standard reads.
         if (
             not self.disable_numpy_memmap
             and num_bytes > 10 * 1024 * 1024
             and device is not None
             and device.type != "cpu"
         ):
-            # Create memory map for zero-copy reading
             mm = np.memmap(
                 self.filename,
                 mode="c",
@@ -219,33 +206,25 @@ class MemoryEfficientSafeOpen:
             byte_tensor = torch.from_numpy(mm)  # zero copy
             del mm
 
-            # Deserialize tensor (view and reshape)
-            cpu_tensor = self._deserialize_tensor(
-                byte_tensor, metadata
-            )  # view and reshape
+            cpu_tensor = self._deserialize_tensor(byte_tensor, metadata)
             del byte_tensor
 
-            # Transfer to target device and dtype
             gpu_tensor = cpu_tensor.to(
                 device=device, dtype=target_dtype, non_blocking=non_blocking
             )
             del cpu_tensor
             return gpu_tensor
 
-        # Standard file reading strategy for smaller tensors or CPU target
-        # seek to the specified position
+        # Standard read for smaller tensors or a CPU target.
         self.file.seek(tensor_offset)
 
-        # read directly into a numpy array by numpy.fromfile without intermediate copy
         numpy_array = np.fromfile(self.file, dtype=np.uint8, count=num_bytes)
         byte_tensor = torch.from_numpy(numpy_array)
         del numpy_array
 
-        # deserialize (view and reshape)
         deserialized_tensor = self._deserialize_tensor(byte_tensor, metadata)
         del byte_tensor
 
-        # cast to target dtype and move to device
         return deserialized_tensor.to(
             device=device, dtype=target_dtype, non_blocking=non_blocking
         )
@@ -348,7 +327,6 @@ def load_split_weights(
     """
     device = torch.device(device)
 
-    # if the file name ends with 00001-of-00004 etc, we need to load the files with the same prefix
     split_filenames = get_split_weight_filenames(file_path)
     if split_filenames is not None:
         state_dict = {}
@@ -429,7 +407,7 @@ class TensorWeightAdapter:
 
         for key in self.original_f.keys():
             if self.split_hook is not None:
-                converted_keys, _ = self.split_hook(key, None)  # get new keys only
+                converted_keys, _ = self.split_hook(key, None)
                 if converted_keys is not None:
                     for converted_key in converted_keys:
                         self.new_key_to_original_key_map[converted_key] = key
@@ -438,7 +416,7 @@ class TensorWeightAdapter:
                     continue  # skip concat_hook if split_hook is applied
 
             if self.concat_hook is not None:
-                converted_key, _ = self.concat_hook(key, None)  # get new key only
+                converted_key, _ = self.concat_hook(key, None)
                 if converted_key is not None:
                     if (
                         converted_key not in self.concat_key_set
@@ -481,9 +459,7 @@ class TensorWeightAdapter:
                 original_tensor = self.original_f.get_tensor(
                     original_key, device=device, dtype=dtype
                 )
-                new_keys, new_tensors = self.split_hook(
-                    original_key, original_tensor
-                )  # apply split hook
+                new_keys, new_tensors = self.split_hook(original_key, original_tensor)
                 for k, t in zip(new_keys, new_tensors):
                     self.tensor_cache[k] = t
             return self.tensor_cache.pop(new_key)  # return and remove from cache
@@ -498,7 +474,7 @@ class TensorWeightAdapter:
                 tensors[original_key] = tensor
             _, concatenated_tensors = self.concat_hook(
                 self.new_key_to_original_key_map[new_key][0], tensors
-            )  # apply concat hook
+            )
             return concatenated_tensors
 
         else:

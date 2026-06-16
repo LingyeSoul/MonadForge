@@ -20,9 +20,6 @@ from webui.i18n.loader import current_language
 _GUIDES_DIR = Path(__file__).parent / "guides"
 
 
-# ── HTML guide loader ──────────────────────────────────────────
-
-
 @functools.lru_cache(maxsize=None)
 def _read_guide(name: str, lang: str) -> str:
     path = _GUIDES_DIR / lang / f"{name}.html"
@@ -33,9 +30,6 @@ def _read_guide(name: str, lang: str) -> str:
 
 def _guide(name: str) -> str:
     return _read_guide(name, current_language())
-
-
-# ── JSON field-help loaders ────────────────────────────────────
 
 
 @functools.lru_cache(maxsize=None)
@@ -90,10 +84,8 @@ def preprocess_guide() -> str:
     return _guide("preprocess")
 
 
-# ── Method guide dispatch ──────────────────────────────────────
-# Methods that can't be baked into a plain DiT via scripts/merge_to_dit.py
-# (router is layer-local / hook-only / not a weight delta) — render the
-# "not mergeable" callout above their guide.
+# Methods that can't be baked into a plain DiT via scripts/merge_to_dit.py (router is
+# layer-local / hook-only / not a weight delta) — render the "not mergeable" callout.
 _NOT_MERGEABLE = frozenset({"hydralora", "fera", "chimera", "soft_tokens"})
 _KNOWN_METHODS = frozenset(
     {

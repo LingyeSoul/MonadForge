@@ -36,7 +36,7 @@ def setup_logging(args=None, log_level=None, reset=False):
         else:
             return
 
-    # log_level can be set by the caller or by the args, the caller has priority. If not set, use INFO
+    # caller log_level wins over args; default INFO
     if log_level is None and args is not None:
         log_level = args.console_log_level
     if log_level is None:

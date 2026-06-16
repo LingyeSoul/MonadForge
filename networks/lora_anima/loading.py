@@ -1,7 +1,5 @@
-# State-dict surgery: helpers that massage saved checkpoints into the shape
-# the training runtime expects (fused qkv/kv projections, stacked per-expert
-# hydra ups). Pulled out of lora_anima.py so the module-building code and
-# the factory don't both carry this load/save detail.
+# State-dict surgery: massage saved checkpoints into the training-runtime shape
+# (fused qkv/kv projections, stacked per-expert hydra ups).
 
 import logging
 from typing import Dict, List, Optional
@@ -113,8 +111,7 @@ def _refuse_split_chimera_keys(
 
     Must run AFTER :func:`_stack_chimera_lora_ups`.
     """
-    # Detect chimera fused groups by scanning for .lora_up_c_weight (every
-    # chimera Linear has exactly one). Same iteration helper as Hydra.
+    # Detect chimera fused groups via .lora_up_c_weight (one per chimera Linear).
     for shared_prefix, spec in iter_split_groups(state_dict, ".lora_up_c_weight"):
         suffixes = spec.component_letters
         ups_c: List[torch.Tensor] = []
@@ -419,14 +416,11 @@ def _refuse_unfused_attn_lora_keys(
         dtype = ups[0].dtype
         device = ups[0].device
 
-        # Pre-fused detection. When save_weights splits a previously-fused
-        # module it clones the *full* fused down into every per-component
-        # key (see "Split fused projections" in save_weights). If we ran
-        # the block-diagonal path on that, rank would inflate r -> n*r per
-        # round trip (and n^k*r after k cycles). Identical downs + equal
-        # alphas across components is the reliable signature of that case;
-        # independently-trained per-component LoRAs (e.g. tlora warm-start)
-        # never produce bit-identical down tensors.
+        # Pre-fused detection: save_weights splitting a previously-fused module
+        # clones the full fused down into every per-component key. Running the
+        # block-diagonal path on that would inflate rank r→n*r per round trip.
+        # Identical downs + equal alphas is the reliable signature (independently-
+        # trained per-component LoRAs never produce bit-identical downs).
         def _a(a):
             return a.item() if torch.is_tensor(a) else float(a)
 
@@ -465,11 +459,9 @@ def _refuse_unfused_attn_lora_keys(
         state_dict[f"{fused_prefix}.lora_up.weight"] = up_fused
         state_dict[f"{fused_prefix}.alpha"] = alpha_fused
 
-        # per_channel_scaling inv_scale: q/k/v all see the same Linear input
-        # so save cloned the [in_dim] vector across components. Picking the
-        # first is correct; warn if a partial set is present (likely a mix
-        # of channel-scaled and non-channel-scaled per-component training,
-        # which the fused-runtime path can't reconcile).
+        # inv_scale: q/k/v share the Linear input so save cloned the [in_dim]
+        # vector; pick the first. Warn on a partial set (mixed channel-scaled /
+        # non-scaled per-component training the fused path can't reconcile).
         if all(s is not None for s in inv_scales):
             state_dict[f"{fused_prefix}.inv_scale"] = inv_scales[0]
         elif any(s is not None for s in inv_scales):

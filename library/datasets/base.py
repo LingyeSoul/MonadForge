@@ -191,7 +191,6 @@ class BaseDataset(torch.utils.data.Dataset):
         self.max_train_steps: int = 0
         self.seed: int = 0
 
-        # augmentation
         self.aug_helper = AugHelper()
 
         self.image_transforms = IMAGE_TRANSFORMS
@@ -290,7 +289,6 @@ class BaseDataset(torch.utils.data.Dataset):
             )
         )
 
-        # caching
         self.caching_mode = None  # None, 'latents', 'text'
 
         self.tokenize_strategy = None
@@ -376,14 +374,11 @@ class BaseDataset(torch.utils.data.Dataset):
         if is_drop_out:
             caption = ""
         else:
-            # process wildcards
             if subset.enable_wildcard:
-                # if caption is multiline, random choice one line
                 if "\n" in caption:
                     caption = random.choice(caption.split("\n"))
 
-                # wildcard is like '{aaa|bbb|ccc...}'
-                # escape the curly braces like {{ or }}
+                # wildcard is like '{aaa|bbb|ccc...}'; escape literal {{ }}
                 replacer1 = "⦅"
                 replacer2 = "⦆"
                 while replacer1 in caption or replacer2 in caption:
@@ -392,16 +387,13 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 caption = caption.replace("{{", replacer1).replace("}}", replacer2)
 
-                # replace the wildcard
                 def replace_wildcard(match):
                     return random.choice(match.group(1).split("|"))
 
                 caption = re.sub(r"\{([^}]+)\}", replace_wildcard, caption)
 
-                # unescape the curly braces
                 caption = caption.replace(replacer1, "{").replace(replacer2, "}")
             else:
-                # if caption is multiline, use the first line
                 caption = caption.split("\n")[0]
 
             if subset.token_warmup_step > 0 or subset.caption_tag_dropout_rate > 0:
@@ -476,7 +468,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
                 caption = ", ".join(fixed_tokens + flex_tokens + fixed_suffix_tokens)
 
-            # process secondary separator
             if subset.secondary_separator:
                 caption = caption.replace(
                     subset.secondary_separator, subset.caption_separator
@@ -484,7 +475,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
             for str_from, str_to in self.replacements.items():
                 if str_from == "":
-                    # replace all
                     if isinstance(str_to, list):
                         caption = random.choice(str_to)
                     else:
@@ -678,7 +668,6 @@ class BaseDataset(torch.utils.data.Dataset):
             )
 
     def shuffle_buckets(self):
-        # set random seed for this epoch
         random.seed(self.seed + self.current_epoch)
 
         random.shuffle(self.buckets_indices)
@@ -797,6 +786,26 @@ class BaseDataset(torch.utils.data.Dataset):
                 return False
         return True
 
+    def count_repa_pe_sidecars(self) -> Tuple[int, int]:
+        """Return ``(present, total)`` REPA PE sidecars for this dataset.
+
+        Read-only probe (no model, no GPU). ``present`` counts images whose
+        ``{stem}_anima_{repa_pe_encoder}.safetensors`` resolves on disk via the
+        same fallback chain ``_try_load_repa_pe`` uses; ``total`` is the image
+        count. The trainer calls this when ``use_repa`` is on to catch a
+        fully-absent / partial PE cache before it silently disables the REPA
+        alignment term. Returns ``(0, 0)`` when PE loading is off.
+        """
+        if not self.load_repa_pe:
+            return (0, 0)
+        present = 0
+        total = 0
+        for info in self.image_data.values():
+            total += 1
+            if any(os.path.exists(p) for p in self._repa_pe_sidecar_candidates(info)):
+                present += 1
+        return (present, total)
+
     def new_cache_latents(self, model: Any, accelerator: Accelerator):
         r"""
         a brand new method to cache latents. This method caches latents with caching strategy.
@@ -806,10 +815,8 @@ class BaseDataset(torch.utils.data.Dataset):
         caching_strategy = LatentsCachingStrategy.get_strategy()
         image_infos = list(self.image_data.values())
 
-        # sort by resolution
         image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
 
-        # split by resolution and some conditions
         class Condition:
             def __init__(self, reso, flip_aug, alpha_mask, random_crop):
                 self.reso = reso
@@ -829,24 +836,20 @@ class BaseDataset(torch.utils.data.Dataset):
         batch: List[ImageInfo] = []
         current_condition = None
 
-        # support multiple-gpus
         num_processes = accelerator.num_processes
         process_index = accelerator.process_index
 
-        # define a function to submit a batch to cache
         def submit_batch(batch, cond):
             for info in batch:
                 if info.image is not None and isinstance(info.image, Future):
-                    info.image = info.image.result()  # future to image
+                    info.image = info.image.result()
             caching_strategy.cache_batch_latents(
                 model, batch, cond.flip_aug, cond.alpha_mask, cond.random_crop
             )
 
-            # remove image from memory
             for info in batch:
                 info.image = None
 
-        # define ThreadPoolExecutor to load images in parallel
         max_workers = min(os.cpu_count(), len(image_infos))
         max_workers = max(1, max_workers // num_processes)  # consider multi-gpu
         max_workers = min(
@@ -855,7 +858,6 @@ class BaseDataset(torch.utils.data.Dataset):
         executor = ThreadPoolExecutor(max_workers)
 
         try:
-            # iterate images
             logger.info("caching latents...")
             for i, info in enumerate(tqdm(image_infos)):
                 subset = self.image_to_subset[info.image_key]
@@ -863,7 +865,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 if info.latents_npz is not None:  # fine tuning dataset
                     continue
 
-                # check disk cache exists and size of latents
                 if caching_strategy.cache_to_disk:
                     info.latents_npz = caching_strategy.get_latents_npz_path(
                         info.absolute_path,
@@ -872,7 +873,7 @@ class BaseDataset(torch.utils.data.Dataset):
                         image_dir=getattr(subset, "image_dir", None),
                     )
 
-                    # if the modulo of num_processes is not equal to process_index, skip caching
+                    # multi-GPU: each rank caches only its modulo-strided shard
                     if i % num_processes != process_index:
                         continue
 
@@ -882,10 +883,9 @@ class BaseDataset(torch.utils.data.Dataset):
                         subset.flip_aug,
                         subset.alpha_mask,
                     )
-                    if cache_available:  # do not add to batch
+                    if cache_available:
                         continue
 
-                # if batch is not empty and condition is changed, flush the batch.
                 condition = Condition(
                     info.bucket_reso,
                     subset.flip_aug,
@@ -907,7 +907,6 @@ class BaseDataset(torch.utils.data.Dataset):
                 batch.append(info)
                 current_condition = condition
 
-                # if number of data in batch is enough, flush the batch
                 if len(batch) >= caching_strategy.batch_size:
                     submit_batch(batch, current_condition)
                     batch = []
@@ -930,10 +929,8 @@ class BaseDataset(torch.utils.data.Dataset):
 
         image_infos = list(self.image_data.values())
 
-        # sort by resolution
         image_infos.sort(key=lambda info: info.bucket_reso[0] * info.bucket_reso[1])
 
-        # split by resolution and some conditions
         class Condition:
             def __init__(self, reso, flip_aug, alpha_mask, random_crop):
                 self.reso = reso
@@ -960,7 +957,6 @@ class BaseDataset(torch.utils.data.Dataset):
             if info.latents_npz is not None:  # fine tuning dataset
                 continue
 
-            # check disk cache exists and size of latents
             if cache_to_disk:
                 info.latents_npz = os.path.splitext(info.absolute_path)[0] + file_suffix
                 if not is_main_process:  # store to info only
@@ -973,10 +969,9 @@ class BaseDataset(torch.utils.data.Dataset):
                     subset.alpha_mask,
                 )
 
-                if cache_available:  # do not add to batch
+                if cache_available:
                     continue
 
-            # if batch is not empty and condition is changed, flush the batch.
             condition = Condition(
                 info.bucket_reso, subset.flip_aug, subset.alpha_mask, subset.random_crop
             )
@@ -987,7 +982,6 @@ class BaseDataset(torch.utils.data.Dataset):
             batch.append(info)
             current_condition = condition
 
-            # if number of data in batch is enough, flush the batch
             if len(batch) >= vae_batch_size:
                 batches.append((current_condition, batch))
                 batch = []
@@ -1003,7 +997,6 @@ class BaseDataset(torch.utils.data.Dataset):
             cache_batch_latents as _cache_batch_latents,
         )
 
-        # iterate batches: batch doesn't have image, image will be loaded in cache_batch_latents and discarded
         logger.info("caching latents...")
         for condition, batch in tqdm(batches, smoothing=1, total=len(batches)):
             _cache_batch_latents(
@@ -1029,18 +1022,15 @@ class BaseDataset(torch.utils.data.Dataset):
         logger.info("caching Text Encoder outputs with caching strategy.")
         image_infos = list(self.image_data.values())
 
-        # split by resolution
         batches = []
         batch = []
 
-        # support multiple-gpus
         num_processes = accelerator.num_processes
         process_index = accelerator.process_index
 
         logger.info("checking cache validity...")
         for i, info in enumerate(tqdm(image_infos)):
             subset = self.image_to_subset.get(info.image_key)
-            # check disk cache exists and size of text encoder outputs
             if caching_strategy.cache_to_disk:
                 # text_cache_dir (when set) redirects only the TE cache —
                 # latents still resolve under cache_dir. Lets colorization read
@@ -1077,7 +1067,6 @@ class BaseDataset(torch.utils.data.Dataset):
             logger.info("no Text Encoder outputs to cache")
             return
 
-        # iterate batches
         logger.info("caching Text Encoder outputs...")
         for batch in tqdm(batches, smoothing=1, total=len(batches)):
             caching_strategy.cache_batch_outputs(
@@ -1173,13 +1162,11 @@ class BaseDataset(torch.utils.data.Dataset):
         if cache_to_disk and not is_main_process:
             return
 
-        # prepare tokenizers and text encoders
         for text_encoder, device, te_dtype in zip(text_encoders, devices, te_dtypes):
             text_encoder.to(device)
             if te_dtype is not None:
                 text_encoder.to(dtype=te_dtype)
 
-        # create batch
         is_sd3 = len(tokenizers) == 1
         batch = []
         batches = []
@@ -1199,7 +1186,6 @@ class BaseDataset(torch.utils.data.Dataset):
         if len(batch) > 0:
             batches.append(batch)
 
-        # iterate batches: call text encoder and cache outputs for memory or disk
         logger.info("caching text encoder outputs...")
         # Note: SD/SDXL/SD3 specific batch caching functions are not included in this stripped version.
         # Anima uses new_cache_text_encoder_outputs with caching strategy instead.

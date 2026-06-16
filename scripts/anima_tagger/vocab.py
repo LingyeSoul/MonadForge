@@ -44,9 +44,6 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-# ── Caption source discovery ──────────────────────────────────────────────
-
-
 def find_caption_files(roots: Sequence[Path]) -> List[Path]:
     """Discover all ``.txt`` caption files under the given roots.
 
@@ -97,9 +94,6 @@ def build_caption_index(
     return index
 
 
-# ── Categorization ────────────────────────────────────────────────────────
-
-
 def load_tag_cache(path: Path) -> Dict[str, str]:
     """Load the corpus tag-taxonomy cache and map tag → category name."""
     with open(path) as f:
@@ -108,18 +102,14 @@ def load_tag_cache(path: Path) -> Dict[str, str]:
     for tag, type_id in raw.items():
         cat = TAG_TYPE_NAMES.get(int(type_id))
         if cat is not None:
-            # Cache uses underscored tag names; the canonical caption format
-            # writes them with spaces. Normalize to space form so lookups
-            # against parsed captions hit.
+            # Cache uses underscored names; canonical caption format uses spaces.
             out[tag.replace("_", " ")] = cat
     return out
 
 
-# Categories the user is allowed to assign via ``category_overrides:`` in
-# tag_rules.yaml. ``rating`` and ``count`` are intentionally excluded:
-# rating is a separate field on the corpus and shouldn't be retrofitted
-# onto a tag, and count tags are matched by regex (overriding would just
-# create dead aliases).
+# Categories assignable via ``category_overrides:`` in tag_rules.yaml. ``rating``
+# (separate corpus field) and ``count`` (regex-matched) are excluded — overriding
+# them would only create dead aliases.
 _OVERRIDABLE_CATEGORIES = frozenset(TAG_TYPE_NAMES.values())
 
 
@@ -150,10 +140,8 @@ def categorize(
     5. Cache lookup.
     6. Fallback: ``general``.
     """
-    # Note: rating literals collide with the "general" category name. We
-    # treat them as their own slot regardless of cache typing — the cache
-    # doesn't actually carry rating values anyway (those come from a
-    # separate corpus field, not the tag system).
+    # Rating literals collide with the "general" category name — slot them
+    # separately regardless of cache typing (the cache carries no rating values).
     if tag in RATINGS:
         return "rating"
     if is_artist_tag(tag):
@@ -189,9 +177,6 @@ def validate_overrides(overrides: Dict[str, str]) -> List[str]:
     return errors
 
 
-# ── Vocab build ───────────────────────────────────────────────────────────
-
-
 def build_vocab(
     caption_index: Dict[str, Tuple[Path, Optional[Path], List[str]]],
     tag_cache: Dict[str, str],
@@ -208,9 +193,8 @@ def build_vocab(
     people_freq: Counter = Counter()
 
     for stem, (_, _, tags) in caption_index.items():
-        # Pull rating off the front if present; everything else feeds the
-        # multi-label vocab. Anima's format puts rating first, but be
-        # defensive — scan the first few tags.
+        # Pull rating off the front (Anima puts it first; scan the first few
+        # defensively); everything else feeds the multi-label vocab.
         rating_seen: Optional[str] = None
         for t in tags[:2]:
             if t in RATINGS:
@@ -220,10 +204,8 @@ def build_vocab(
             rating_freq[rating_seen] += 1
             n_with_rating += 1
 
-        # People-count bucket — derived from count tags. Distribution is
-        # informational; the per-stem label is recomputed at manifest-build
-        # time so it stays in sync with the labelling rule (don't read this
-        # at training).
+        # People-count distribution is informational; the per-stem label is
+        # recomputed at manifest-build time to stay in sync with the rule.
         people_freq[PEOPLE_COUNT_LABELS[classify_people(tags)]] += 1
 
         for i, tag in enumerate(tags):
@@ -296,9 +278,6 @@ def make_split(
         "seed": seed,
         "val_frac": val_frac,
     }
-
-
-# ── Training manifest ─────────────────────────────────────────────────────
 
 
 def build_manifest(
@@ -376,9 +355,6 @@ def build_manifest(
     }
 
 
-# ── Coverage scan ─────────────────────────────────────────────────────────
-
-
 def scan_cache_coverage(
     caption_index: Dict[str, Tuple[Path, Optional[Path], List[str]]],
     tag_cache: Dict[str, str],
@@ -429,9 +405,6 @@ def scan_cache_coverage(
     }
 
 
-# ── CLI entry ─────────────────────────────────────────────────────────────
-
-
 def cmd_build_vocab(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -439,8 +412,7 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     rules_src = Path(args.rules)
     rules = tr.load_rules(rules_src)
     logger.info(
-        "rules: %d replacements, %d remove, %d dedup base tags, "
-        "%d category overrides",
+        "rules: %d replacements, %d remove, %d dedup base tags, %d category overrides",
         len(rules.replacements),
         len(rules.remove),
         len(rules.dedup),
@@ -455,7 +427,6 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
             f"in {rules_src} — fix and re-run"
         )
     if rules.category_overrides:
-        # Distribution of override targets, useful as a sanity printout.
         target_counts: Counter = Counter(rules.category_overrides.values())
         logger.info(
             "category_overrides targets: %s",
@@ -481,8 +452,7 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
         coverage["n_total_tag_occurrences"], 1
     )
     logger.info(
-        "cache coverage: %d/%d unique tags categorized "
-        "(%.2f%% of occurrences missing)",
+        "cache coverage: %d/%d unique tags categorized (%.2f%% of occurrences missing)",
         coverage["n_unique_tags"] - coverage["n_unique_missing"],
         coverage["n_unique_tags"],
         100 * miss_rate,
@@ -503,10 +473,8 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     vocab["rules_source_path"] = str(rules_src.resolve())
     vocab["coverage"] = coverage
 
-    # Resolve typed groups (eye_color, hair_color, …) against the kept
-    # vocab and embed the index sets into vocab.json. Optional — when
-    # --groups isn't passed (or the file is missing) we build a flat-vocab
-    # checkpoint and the trainer falls back to pure BCE.
+    # Resolve typed groups against the kept vocab into vocab.json. Optional —
+    # without --groups we build a flat-vocab checkpoint (trainer falls to BCE).
     groups_src = Path(args.groups) if args.groups else None
     if groups_src is not None and groups_src.exists():
         groups = tg.load_groups(groups_src)
@@ -523,14 +491,19 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
             n_drop = len(g.tag_names) < sum(1 for _ in groups.by_name(g.name).tags)
             logger.info(
                 "  %-14s mode=%-18s n_tags=%3d n_escape=%2d%s",
-                g.name, g.mode, len(g.tag_indices), len(g.escape_indices),
+                g.name,
+                g.mode,
+                len(g.tag_indices),
+                len(g.escape_indices),
                 "  (some tags dropped)" if n_drop else "",
             )
         if dropped:
             sample = list(dropped)[:10]
             logger.info(
                 "first %d dropped: %s%s",
-                len(sample), sample, " …" if len(dropped) > len(sample) else "",
+                len(sample),
+                sample,
+                " …" if len(dropped) > len(sample) else "",
             )
     else:
         vocab["groups"] = []
@@ -553,13 +526,12 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     )
     vocab["split"] = split
 
-    # Write the vocab + split.
     vocab_path = out_dir / "vocab.json"
     with open(vocab_path, "w") as f:
         json.dump(vocab, f, indent=2, ensure_ascii=False)
     logger.info("wrote %s", vocab_path)
 
-    # Snapshot the groups YAML alongside rules.yaml so the inference wrapper
+    # Snapshot groups + rules into the checkpoint dir so the inference wrapper
     # has zero runtime dependency on the source corpus.
     if groups_src is not None and groups_src.exists():
         groups_snap = out_dir / "groups.yaml"
@@ -569,8 +541,6 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
             _yaml.safe_dump(groups.to_dict(), f, sort_keys=False)
         logger.info("wrote %s", groups_snap)
 
-    # Snapshot the rules into the checkpoint dir so the inference wrapper
-    # has zero runtime dependency on the source corpus.
     snap_path = out_dir / "rules.yaml"
     with open(snap_path, "w") as f:
         import yaml as _yaml
@@ -578,8 +548,7 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
         _yaml.safe_dump(rules.to_dict(), f, sort_keys=False)
     logger.info("wrote %s", snap_path)
 
-    # Build and persist the training manifest (drops captions without a
-    # sibling image, without a rating tag, or with no in-vocab tags).
+    # Manifest drops captions without a sibling image, rating tag, or in-vocab tag.
     manifest = build_manifest(index, vocab, split)
     manifest_path = out_dir / "dataset.json"
     with open(manifest_path, "w") as f:
@@ -594,7 +563,6 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
         manifest["dropped_no_invocab_tags"],
     )
 
-    # Compact summary printout.
     print()
     print(f"  caption stems indexed:  {vocab['n_captions_seen']}")
     print(f"  unique tags seen:       {vocab['n_unique_tags_seen']}")
@@ -607,7 +575,9 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     print(f"  rating coverage:        {vocab['rating_coverage']}")
     print(f"  rating distribution:    {vocab['rating_distribution']}")
     print(f"  people distribution:    {vocab['people_count_distribution']}")
-    print(f"  split:                  {len(split['train'])} train / {len(split['val'])} val")
+    print(
+        f"  split:                  {len(split['train'])} train / {len(split['val'])} val"
+    )
     print(f"  cache miss rate:        {miss_rate:.2%}")
     print(f"  trainable samples:      {len(manifest['stems'])}")
     print(

@@ -53,8 +53,8 @@ def calibrate_thresholds(
         skip_mask = torch.zeros(n_tags, dtype=torch.bool)
         skip_mask[skip_indices.cpu()] = True
         has_pos = has_pos & ~skip_mask
-    # Process tag-blocks to keep memory bounded — the dense [N, n_tags, K]
-    # tensor would be ~12k × 5k × 19 ≈ 1.1B floats which is too big.
+    # Block over tags to keep memory bounded — the dense [N, n_tags, K] tensor
+    # would be ~12k × 5k × 19 ≈ 1.1B floats.
     block_size = 256
     for start in range(0, n_tags, block_size):
         end = min(start + block_size, n_tags)
@@ -87,9 +87,10 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         AnimaTaggerHead,
     )
 
-    from .caches import cache_dir_for
+    from .caches import cache_dir_for, feature_cache_root
 
     out_dir = Path(args.out_dir)
+    feature_root = feature_cache_root(args)
 
     with open(out_dir / "config.json") as f:
         cfg_d = json.load(f)
@@ -102,15 +103,12 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     )
     model.to(device).eval()
 
-    # Pool kind + encoder drive the cache layout + eval iteration shape.
-    # Respect the saved config.json so calibrate matches what was actually
-    # trained — the user doesn't have to re-pass --pool_kind / --encoder
-    # / --aux_encoder. CLI args still win (lets you calibrate against an
-    # alternate cache if you really need to).
+    # Respect the saved config.json so calibrate matches what was trained (no
+    # need to re-pass --pool_kind / --encoder / --aux_encoder). CLI args still win.
     pool_kind = str(cfg_d.get("pool_kind", cfg.pool_kind))
     encoder = cfg_d.get("encoder") or args.encoder
 
-    cache_dir = cache_dir_for(out_dir, pool_kind, encoder)
+    cache_dir = cache_dir_for(feature_root, pool_kind, encoder)
     if not cache_dir.exists():
         raise SystemExit(
             f"missing {cache_dir} — calibrate needs the same cache the "
@@ -123,8 +121,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     manifest = TaggerManifest.from_path(out_dir / "dataset.json")
 
-    # Dual-encoder models go through the bucket-loader path; CachedDualDataset
-    # handles the mean / map combos per side.
+    # Dual-encoder models go through the bucket-loader path.
     from torch.utils.data import DataLoader
 
     from library.captioning.anima_tagger_data import (
@@ -135,9 +132,8 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     from library.vision.encoders import get_encoder_info
 
     spec = get_encoder_info(encoder).bucket_spec if pool_kind == "map" else None
-    # Mirror the training-time aux choice from the saved config so the user
-    # doesn't have to re-pass --aux_encoder / --pool_kind_aux. CLI flags still
-    # win (lets you calibrate against an alternate cache).
+    # Mirror the training-time aux choice from the saved config (no need to
+    # re-pass --aux_encoder / --pool_kind_aux). CLI flags still win.
     aux_encoder = args.aux_encoder or cfg_d.get("aux_encoder")
     if not aux_encoder:
         raise SystemExit(
@@ -150,18 +146,16 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     spec_aux = (
         get_encoder_info(aux_encoder).bucket_spec if pool_kind_aux == "map" else None
     )
-    cache_dir_aux = cache_dir_for(out_dir, pool_kind_aux, aux_encoder)
+    cache_dir_aux = cache_dir_for(feature_root, pool_kind_aux, aux_encoder)
     if not cache_dir_aux.exists():
         raise SystemExit(
             f"missing aux cache {cache_dir_aux} — calibrate needs the same "
             f"cache the trainer used (pool_kind_aux={pool_kind_aux})."
         )
-    # Read from the same per-bucket mmap shards the trainer built (keyed by a
-    # hash of the kept-stem list, so this val split reuses the trainer's val
-    # shard rather than re-opening ~thousands of tiny per-stem sidecars). Built
-    # on demand if .cache/packed was cleared. Calibrate only materializes val,
-    # so it never prunes the trainer's train shards.
-    pack_root = out_dir / ".cache" / "packed"
+    # Reuse the trainer's per-bucket mmap shards (keyed by kept-stem hash) under
+    # <feature_root>/packed rather than thousands of per-stem sidecars; rebuilt
+    # on demand. Calibrate only materializes val, never pruning train shards.
+    pack_root = feature_root / "packed"
     val_ds = CachedDualDataset(
         manifest,
         cache_dir,
@@ -193,8 +187,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
             tl, _rl, _pl = model(tokens, tokens_aux)
             chunks.append(tl.float())
     tag_logits = torch.cat(chunks, dim=0)
-    # Reorder val_mh to match loader emission order: BucketBatchSampler with
-    # shuffle=False emits sorted-bucket order, within-bucket in dataset order.
+    # Reorder val_mh to match loader emission (sorted-bucket, then dataset order).
     order_indices: list[int] = []
     for batch_idx_list in sampler:
         order_indices.extend(batch_idx_list)
@@ -202,9 +195,8 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
 
     scores = tag_logits.sigmoid().cpu()
     val_mh_cpu = val_mh.cpu()
-    # Build the router so we can:
-    #   (a) skip softmax-group tags from the per-tag F1 sweep, and
-    #   (b) report eval F1 over residual tags only (matching training).
+    # Router: skip softmax-group tags from the F1 sweep + report eval F1 over
+    # residual tags only (matching training).
     with open(out_dir / "vocab.json") as f:
         vocab_dict = json.load(f)
     router = GroupRouter.from_vocab(vocab_dict, val_mh, device=device)
@@ -231,10 +223,8 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         n_active,
         thresh.shape[0],
     )
-    # Baseline macro-F1 at the default 0.5 threshold (residual tags only
-    # when softmax groups are active) — derived directly from the
-    # already-collected logits rather than rerunning the model. Matches
-    # both the mean and map paths.
+    # Baseline macro-F1 at the default 0.5 threshold (residual tags only when
+    # softmax groups are active), from the already-collected logits.
     if all_softmax_idx.numel() > 0:
         keep_mask = torch.ones(scores.shape[1], dtype=torch.bool)
         keep_mask[all_softmax_idx.cpu()] = False
@@ -259,7 +249,6 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
     print(f"  thresholds: {out_dir / 'thresholds.safetensors'}")
     print(f"  active tags (F1>0): {n_active} / {thresh.shape[0]}")
     print(f"  calibrated macro-F1: {f1.mean().item():.4f}")
-    # Print a sample of low/mid/high thresholds for sanity.
     with open(out_dir / "vocab.json") as f:
         vocab = json.load(f)
     name_of = [t["name"] for t in vocab["tags"]]

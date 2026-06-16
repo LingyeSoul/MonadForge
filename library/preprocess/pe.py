@@ -18,6 +18,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
 from library.io.cache import resolve_cache_path
+from library.io.cache_names import pe_cache_suffix
 from library.datasets.image_utils import IMAGE_TRANSFORMS
 from library.preprocess._dataset import (
     PreprocessStats,
@@ -43,7 +44,7 @@ def cache_path_for(
     source subpath when ``image_dir`` is given); otherwise it lives next to
     the image (legacy layout).
     """
-    suffix = f"_anima_{encoder}.safetensors"
+    suffix = pe_cache_suffix(encoder)
     if cache_dir is None:
         return image_path.with_name(image_path.stem + suffix)
     return Path(
@@ -54,6 +55,27 @@ def cache_path_for(
             image_dir=str(image_dir) if image_dir is not None else None,
         )
     )
+
+
+def count_pending_pe(
+    data_dir: Path,
+    encoder: str,
+    *,
+    cache_dir: Path | None = None,
+    recursive: bool = False,
+) -> tuple[int, int]:
+    """Return ``(pending, total)`` PE sidecars **without loading the encoder**.
+
+    ``pending`` is the number of images whose ``{stem}_anima_{encoder}``
+    sidecar isn't on disk; ``total`` is every enumerated image. Mirrors the
+    pre-skip in :func:`cache_pe_features` (pure existence), so the entry point
+    can skip the (slow) vision-encoder load when ``pending == 0``."""
+    image_files = walk_images(data_dir, recursive=recursive)
+    pending, _ = partition_cached(
+        image_files,
+        lambda p: cache_path_for(p, encoder, cache_dir=cache_dir, image_dir=data_dir),
+    )
+    return len(pending), len(image_files)
 
 
 class _PEImageGroup(Dataset):
@@ -107,7 +129,6 @@ def cache_pe_features(
     image_files = walk_images(data_dir, recursive=recursive)
     stats = PreprocessStats(seen=len(image_files))
 
-    # Pre-skip cached files so workers never decode them.
     pending, skipped = partition_cached(
         image_files,
         lambda p: cache_path_for(
@@ -132,13 +153,10 @@ def cache_pe_features(
 
     from library.vision.buckets import pick_bucket
 
-    # Flatten every shape-group into ONE dataset + a homogeneous-shape batch plan
-    # so the DataLoader worker pool spawns exactly once for the whole run. On
-    # Windows workers use spawn() — a full re-import of torch + library per
-    # worker — and the previous per-group DataLoader paid that cost for every
-    # distinct (W, H) bucket (dozens of times under the multi-scale tiers), which
-    # dominated wall-clock. ``batch_sampler`` keeps each batch within a single
-    # shape group, preserving the one-bucket-per-forward invariant.
+    # Flatten every shape-group into ONE dataset + homogeneous-shape batch plan so the
+    # worker pool spawns once (Windows spawn() re-imports torch+library per worker, and
+    # per-group DataLoaders paid that for every (W,H) bucket). ``batch_sampler`` keeps
+    # each batch within one shape group, preserving one-bucket-per-forward.
     all_paths: list[Path] = []
     all_out_paths: list[Path] = []
     batches: list[list[int]] = []
@@ -164,11 +182,9 @@ def cache_pe_features(
         persistent_workers=(num_workers > 0),
     )
     for batch_paths, batch_out_paths, img_batch in loader:
-        # All images in a batch share one encoder bucket → one patch grid (the
-        # batch is shape-homogeneous by construction). Derive it from the tensor
-        # shape — IMAGE_TRANSFORMS doesn't resize, so (H, W) matches the source —
-        # and stamp it so consumers (REPA v2) can unflatten tokens → (grid_h,
-        # grid_w) without re-deriving the aspect bucket.
+        # Batch is shape-homogeneous → one patch grid. Derive it from the tensor shape
+        # (IMAGE_TRANSFORMS doesn't resize) and stamp grid_h/grid_w so consumers (REPA v2)
+        # can unflatten tokens without re-deriving the aspect bucket.
         _h, _w = img_batch.shape[-2:]
         _gh, _gw = pick_bucket(_h, _w, bundle.bucket_spec)
         metadata = {**base_metadata, "grid_h": str(_gh), "grid_w": str(_gw)}
@@ -209,7 +225,7 @@ def compute_pe_centroid(
     """
     from safetensors.torch import load_file
 
-    suffix = f"_anima_{encoder}.safetensors"
+    suffix = pe_cache_suffix(encoder)
     files = sorted(p for p in cache_dir.rglob(f"*{suffix}") if p.is_file())
     files = [p for p in files if not p.name.startswith("anima_pe_centroid")]
     if not files:

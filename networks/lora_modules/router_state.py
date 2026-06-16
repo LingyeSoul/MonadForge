@@ -23,11 +23,6 @@ from typing import List, Optional
 import torch
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Shared utility
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def _copy_or_rebind_buffer(
     module: torch.nn.Module, name: str, value: torch.Tensor
 ) -> None:
@@ -43,11 +38,7 @@ def _copy_or_rebind_buffer(
         setattr(module, name, value.to(buf.dtype).clone())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sinusoidal σ features (shared with postfix-sigma, which inlines its own copy)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
+# Sinusoidal σ features (shared with postfix-sigma, which inlines its own copy).
 # freqs depend only on (half_dim, device); cache to avoid emitting a fresh
 # arange+exp per module per step.
 _FREQS_CACHE: dict[tuple[int, torch.device], torch.Tensor] = {}
@@ -89,11 +80,6 @@ def _fei_temperature(fei: torch.Tensor, tau: float) -> torch.Tensor:
     return p / p.sum(dim=-1, keepdim=True).clamp_min(1e-12)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# σ feature cache
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def _register_sigma_feature_cache(
     module: torch.nn.Module, sigma_feature_dim: int
 ) -> None:
@@ -127,11 +113,6 @@ def _clear_sigma_feature_cache(module: torch.nn.Module) -> None:
         _copy_or_rebind_buffer(module, "_sigma_features", zero_feat)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# FEI feature cache
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 def _register_fei_feature_cache(module: torch.nn.Module, fei_feature_dim: int) -> None:
     """Register `_fei` placeholder. Width-1 zero when fei_feature_dim == 0
     keeps Module._apply parity with the σ side."""
@@ -148,11 +129,6 @@ def _set_fei_feature_cache(module: torch.nn.Module, fei: torch.Tensor) -> None:
 
 def _clear_fei_feature_cache(module: torch.nn.Module) -> None:
     module._fei.zero_()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# σ-band expert partition
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _register_sigma_band_partition(
@@ -201,9 +177,7 @@ def _apply_sigma_band_mask(
     return logits.masked_fill(~in_band, float("-inf"))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Routing-weights buffer (network-level ``GlobalRouter`` broadcast target)
-# ─────────────────────────────────────────────────────────────────────────────
+# Routing-weights buffer (network-level ``GlobalRouter`` broadcast target).
 
 
 def _register_routing_weights_buffer(module: torch.nn.Module, num_experts: int) -> None:
@@ -241,11 +215,6 @@ def _clear_routing_weights(module: torch.nn.Module) -> None:
     """Reset to uniform 1/E without rebinding the pointer."""
     E = int(module._routing_weights.shape[-1])
     module._routing_weights.fill_(1.0 / max(E, 1))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Per-module method surface
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class RouterStateMixin:

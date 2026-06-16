@@ -59,10 +59,8 @@ def apply_router_conditioning(
         network.set_fei(fei)
 
     # ChimeraHydra ContentRouter: fires once per step on pooled crossattn_emb.
-    # Caller is responsible for passing the post-LLM-adapter tensor; missing
-    # input is silently tolerated so the conditioning loop stays uniform
-    # across non-chimera networks and across timing situations where text
-    # conds aren't materialized yet.
+    # Missing input is silently tolerated so the loop stays uniform across
+    # non-chimera networks and steps where text conds aren't materialized yet.
     if (
         getattr(network, "use_content_router", False)
         and crossattn_emb is not None

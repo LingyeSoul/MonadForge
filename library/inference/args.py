@@ -52,7 +52,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Text Encoder 1 (Qwen2.5-VL) directory or path",
     )
 
-    # LoRA
     parser.add_argument(
         "--lora_weight",
         type=str,
@@ -114,7 +113,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="LoRA module exclude patterns",
     )
 
-    # inference
     parser.add_argument(
         "--guidance_scale",
         type=float,
@@ -148,7 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=None, help="Seed for evaluation.")
 
-    # Flow Matching
     parser.add_argument(
         "--flow_shift",
         type=float,
@@ -212,7 +209,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="path to latent for decode. no inference",
     )
-    # Modulation guidance
     parser.add_argument(
         "--pooled_text_proj",
         type=str,
@@ -275,7 +271,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="w applied at final_layer. 0.0 = don't disturb the output head (default).",
     )
 
-    # P-GRAFT
     parser.add_argument(
         "--pgraft",
         action="store_true",
@@ -289,7 +284,6 @@ def build_parser() -> argparse.ArgumentParser:
         "LoRA is active for steps 0..cutoff_step-1, disabled for cutoff_step..end.",
     )
 
-    # Tiled diffusion
     parser.add_argument(
         "--tiled_diffusion",
         action="store_true",
@@ -308,7 +302,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Overlap between tiles in latent space (default 16 = 128px). Must be even and < tile_size.",
     )
 
-    # Spectrum acceleration
     parser.add_argument(
         "--spectrum",
         action="store_true",
@@ -365,10 +358,8 @@ def build_parser() -> argparse.ArgumentParser:
         "Adds residual bias correction from last actual forward to cached predictions.",
     )
 
-    # SPD: Spectral Progressive Diffusion (arXiv:2605.18736) — training-free
-    # multi-resolution inference. Early steps run at low resolution; HF detail is
-    # injected via spectral noise expansion at the σ handoff. Forces Euler;
-    # mutually exclusive with --spectrum. See networks/spd.py + bench/spd/.
+    # SPD (arXiv:2605.18736): forces Euler, mutually exclusive with --spectrum.
+    # See networks/spd.py + bench/spd/.
     parser.add_argument(
         "--spd",
         action="store_true",
@@ -392,8 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
         "len = len(stages)-1. Default: 0.7 per handoff (single-late knee).",
     )
 
-    # DCW: SNR-t bias correction (arXiv:2604.16044). Opposite-sign on Anima -- see
-    # bench/dcw/findings.md.
+    # DCW (arXiv:2604.16044): opposite-sign on Anima -- see bench/dcw/findings.md.
     parser.add_argument(
         "--dcw",
         action="store_true",
@@ -568,7 +558,6 @@ def build_parser() -> argparse.ArgumentParser:
         "when >0. τ>~0.2 tips into posterization. 0 = off (use the σ window).",
     )
 
-    # arguments for batch and interactive modes
     parser.add_argument(
         "--from_file", type=str, default=None, help="Read prompts from a file"
     )
@@ -615,7 +604,6 @@ def build_default_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # Validate arguments
     if args.from_file and args.interactive:
         raise ValueError(
             "Cannot use both --from_file and --interactive at the same time"

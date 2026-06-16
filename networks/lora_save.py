@@ -55,13 +55,9 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Legacy: sig-type OrthoLoRA → standard LoRA via 2r-dim SVD.
-#
-# Kept here (not on a module class) because the live ``OrthoLoRAModule``
-# never emits these keys — they belong to the deprecated
-# ``lora_deprecated.OrthoLoRAModule``, which is gone from the runtime path.
-# ---------------------------------------------------------------------------
+# Legacy sig-type OrthoLoRA → standard LoRA via 2r-dim SVD. Kept here (not on a
+# module class) because the live ``OrthoLoRAModule`` never emits these keys —
+# they belong to the deprecated ``lora_deprecated.OrthoLoRAModule``.
 
 
 def _convert_legacy_ortho_to_lora(
@@ -132,10 +128,8 @@ def _convert_legacy_ortho_to_lora(
             state_dict[f"{prefix}.alpha"] = alpha
 
 
-# ---------------------------------------------------------------------------
 # Back-compat shim: tests/test_global_router.py imports this name directly
 # to exercise the StackedExperts MoE writer in isolation.
-# ---------------------------------------------------------------------------
 
 
 def _build_stacked_experts_state_dict(
@@ -144,11 +138,6 @@ def _build_stacked_experts_state_dict(
 ) -> Dict[str, torch.Tensor]:
     """Thin shim → :meth:`StackedExpertsLoRAModule.build_moe_state_dict`."""
     return StackedExpertsLoRAModule.build_moe_state_dict(state_dict, dtype)
-
-
-# ---------------------------------------------------------------------------
-# Public entry point.
-# ---------------------------------------------------------------------------
 
 
 def save_network_weights(
@@ -174,18 +163,13 @@ def save_network_weights(
     OrthoInitLoRAModule.distill_save_state_dict(state_dict, dtype)
     _convert_legacy_ortho_to_lora(state_dict, dtype)
 
-    # Variant dispatch.
-    #   * ``stacked_experts_global_fei``: independent-A per-expert
-    #     ``(lora_downs.{i}, lora_ups.{i})`` → ``*_moe.safetensors``.
-    #   * ``chimera_hydra_moe``: dual-A per-pool ``lora_{down,up}_{c,f}`` +
-    #     ``freq_router.*`` → ``*_chimera.safetensors``.
-    #   * ``hydra_moe`` / ``ortho_hydra_to_hydra``: shared-A Hydra
-    #     ``(lora_down, lora_ups.{i})`` → ``*_moe.safetensors``.
-    #   * standard: defuse qkv → ``*.safetensors``.
-    #
-    # Auto-fallback for hydra: any ``.lora_up_weight`` key surviving the
-    # distill chain implies a Hydra payload. Kept for callers that don't
-    # plumb ``save_variant`` through.
+    # Variant dispatch:
+    #   * stacked_experts_global_fei: independent-A → *_moe.safetensors
+    #   * chimera_hydra_moe: dual-A per-pool + freq_router.* → *_chimera.safetensors
+    #   * hydra_moe / ortho_hydra_to_hydra: shared-A Hydra → *_moe.safetensors
+    #   * standard: defuse qkv → *.safetensors
+    # Auto-fallback: any surviving ``.lora_up_weight`` key implies a Hydra
+    # payload — kept for callers that don't plumb ``save_variant`` through.
     is_stacked_experts_variant = save_variant == "stacked_experts_global_fei"
     is_chimera_variant = save_variant == "chimera_hydra_moe"
     is_hydra_variant = (

@@ -9,6 +9,20 @@ target self-attention attends to a key set extended with the cond stream's
 keys/values, and `b_cond` controls how much softmax mass the cond positions
 can claim.
 
+![EasyControl two-stream shared attention](assets/easycontrol_attention.png)
+
+Structurally this is the same shape as a unified multimodal transformer that
+shares one attention between a **clean** subsequence and a **noisy** one under a
+block-structured mask: the cond stream plays the clean/authoritative role
+(attends only to itself, never reads the noisy target — which is exactly why it
+is deterministic across timesteps and KV-cacheable at inference), and the target
+stream full-attends over `[K_t; K_c]`. Two differences from the canonical
+picture: the cond block is **full/bidirectional** (a clean image), not causal
+triangular; and the hard attend/mask boundary on the target→cond columns is
+replaced by a learnable scalar `b_cond` gate (init −10 → step-0 equivalence,
+then learned upward). Regenerate the figure with
+`uv run python docs/experimental/assets/easycontrol_attention.py`.
+
 ## Architecture
 
 **Training** runs a **two-stream block forward** — target and cond inside each
@@ -267,7 +281,9 @@ CFG dropout for image conditioning (independent of text):
   Patched `Block.forward` then falls through to the original baseline DiT
   behavior. Lets inference do image-CFG independently of text-CFG.
 
-REPA auxiliary loss (optional, `network_args = ["use_repa=true", ...]`):
+REPA auxiliary loss (optional, `network_args = ["use_repa=true", ...]`) —
+**validated and shipped as the default for cond ≠ target tasks** (sanitize /
+near-twins, colorize):
 - Relational (Gram) alignment of mid-block target-stream hiddens to cached
   PE-Spatial patch tokens of the clean target image — same machinery as the
   LoRA family's REPA v2 (`library/training/repa.py`; knobs `repa_weight` /
@@ -275,24 +291,25 @@ REPA auxiliary loss (optional, `network_args = ["use_repa=true", ...]`):
   frozen, the alignment gradient reaches the cond LoRA solely through the
   extended self-attention in blocks ≤ `repa_layer`, so the term acts as a
   *conditioning-utilization* pressure: the only way to satisfy it is to pull
-  clean spatial structure from the reference. First wired for the sanitize
-  (near_twins) task, where the structural-consistency signal lands exactly on
-  the edit region (see `configs/easycontrol/near_twins.toml`); for ref==target
-  subject control it would instead reward layout copying — use with care.
-  Needs `{stem}_anima_pe_spatial.safetensors` sidecars next to the TE caches
-  (near_twins: `[preprocess] pe_encoder = "pe_spatial"` → re-run
-  `make easycontrol-preprocess EASYADAPTER=near_twin`). On cond-dropped steps
-  the term has no trainable path (frozen target stream) — keep `drop_p` low or
-  zero when using it.
+  clean spatial structure from the reference. Wired for sanitize (near_twins),
+  where the structural-consistency signal lands exactly on the edit region
+  (see `configs/easycontrol/near_twins.toml`), and for colorize (region
+  coherence pulled from the manga cond, see `configs/easycontrol/colorize.toml`).
+  For ref==target subject control it would instead reward layout copying — use
+  with care. Needs `{stem}_anima_pe_spatial.safetensors` sidecars (near_twins:
+  `[preprocess] pe_encoder = "pe_spatial"` → re-run
+  `make easycontrol-preprocess EASYADAPTER=near_twin`); the loader walks a
+  fallback chain (`_repa_pe_sidecar_candidates`) so the colorize
+  `text_cache_dir` redirect still finds the sidecars in the shared latent cache.
+  On cond-dropped steps the term has no trainable path (frozen target stream) —
+  keep `drop_p` low or zero when using it.
 - **Launch sanity (load-bearing)**: confirm `repa/align_loss` appears in the
   progress jsonl from the first logged step, alongside `repa/active = 1.0`.
-  Runs before the 2026-06-12 train.py dispatch fix trained as silent
-  baselines (the adapter `extra_forwards` dispatch only ran on the
-  cached-crossattn branch, which EasyControl doesn't use) — the
-  `anima_easycontrol_sanitize_repa{,_normed}` checkpoints are
-  baseline-equivalent. `active=1.0` *without* `align_loss` is exactly that
-  failure signature. Operating-point plan:
-  `docs/proposal/easycontrol_repa_operating_point.md`.
+  `active=1.0` *without* `align_loss` is the silent-baseline failure signature
+  (the pre-2026-06-12 dispatch bug, since fixed — the aux-loss `extra_forwards`
+  dispatch ran only on the cached-crossattn branch, which EasyControl's
+  in-model text path doesn't use). The operating-point validation is closed;
+  the archived roadmap is `_archive/proposals/easycontrol_repa_operating_point.md`.
 
 ### Inference
 

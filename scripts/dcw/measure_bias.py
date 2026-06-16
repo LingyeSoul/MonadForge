@@ -161,26 +161,22 @@ def main() -> None:
         loading_device=device,
         dit_weight_dtype=dtype,
     )
-    # Mod-guidance: pooled_text_proj params are meta tensors when not in the
-    # base checkpoint, so load weights BEFORE .to() (matches
-    # library/inference/models.py:95-99). Bench-default is off → buffers stay
-    # at init zeros after reset, giving an identity per-block addition.
+    # pooled_text_proj params are meta tensors when not in the base checkpoint,
+    # so load weights BEFORE .to() (matches library/inference/models.py:95-99).
     if args.pooled_text_proj:
         anima_utils.load_pooled_text_proj(anima, args.pooled_text_proj, "cpu")
     anima.to(device, dtype=dtype)
     anima.eval().requires_grad_(False)
 
-    # Transient text-encoder block. Triggered when either mod-guidance is on
-    # (encodes pos/neg pooled deltas) or CFG > 1 (encodes uncond crossattn).
-    # Loads the Qwen3 text encoder once, runs both encodes, frees it.
+    # Transient text encoder: loaded when mod-guidance (pos/neg pooled deltas)
+    # or CFG > 1 (uncond crossattn) needs it, runs the encodes, then freed.
     embed_uncond: torch.Tensor | None = None
     needs_text_encoder = bool(args.pooled_text_proj) or args.guidance_scale != 1.0
     if needs_text_encoder:
         from library.inference.models import load_text_encoder
 
-        # Mirror inference.py:909-918 — mod_guidance.tokenize_strategy.tokenize()
-        # reads the module-level singletons, so they have to be primed before
-        # setup_mod_guidance encodes the pos/neg prompts.
+        # Prime the module-level tokenize/encode singletons before
+        # setup_mod_guidance reads them (mirrors inference.py:909-918).
         ensure_text_strategies(args.text_encoder, MAX_CROSSATTN_TOKENS)
 
         text_encoder = load_text_encoder(args, dtype=torch.bfloat16, device=device)
@@ -207,8 +203,8 @@ def main() -> None:
         else:
             anima.reset_mod_guidance()
 
-        # Free the text encoder — neither CFG nor mod-guidance needs it during
-        # the bench loop (uncond is one frozen tensor, mod delta is baked).
+        # Free the TE — the bench loop needs neither (uncond is one frozen
+        # tensor, mod delta is baked).
         del text_encoder
         gc.collect()
         if torch.cuda.is_available():
@@ -219,9 +215,9 @@ def main() -> None:
     if args.lora_weight:
         attach_loras(anima, args.lora_weight, list(args.lora_multiplier), device, dtype)
 
-    # Compile last: after LoRA + mod-guidance attach so the wrapped graph sees
-    # them. set_hydra_sigma already routes through ``_orig_mod`` so writes to
-    # router state work on the OptimizedModule wrapper.
+    # Compile last, after LoRA + mod-guidance attach, so the wrapped graph sees
+    # them; set_hydra_sigma routes through ``_orig_mod`` so router-state writes
+    # still land on the OptimizedModule wrapper.
     if args.compile:
         log.info("torch.compile(DiT)…")
         anima = torch.compile(anima)
@@ -282,10 +278,9 @@ def main() -> None:
     )
 
     # DCW configs: baseline + optional λ sweep (LL-only, one_minus_sigma).
-    # Under --dcw_sweep the baseline stays at λ=0 (sweep is the experiment).
-    # Outside sweep, --baseline_lambda lets the seed-batched reverse
-    # trajectory bake in a fixed scalar (e.g. 0.01) so the trained head
-    # learns a residual α̂ on top — eliminates the v4 dead-zone mismatch.
+    # Outside sweep, --baseline_lambda bakes a fixed scalar into the reverse
+    # trajectory so the trained head learns a residual α̂ on top (kills the v4
+    # dead-zone mismatch); under --dcw_sweep the baseline stays at λ=0.
     baseline_lam = 0.0 if args.dcw_sweep else float(args.baseline_lambda)
     configs: list[tuple[str, float]] = [("baseline", baseline_lam)]
     if args.dcw_sweep:
@@ -311,7 +306,6 @@ def main() -> None:
         f"(batch={rev_batch}, advances {rev_desc} per call)"
     )
 
-    # Preload cached data onto device.
     log.info("loading cached latents + text embeds…")
     encoded = []
     for stem, npz, te in samples:
@@ -343,17 +337,12 @@ def main() -> None:
         n_traj = len(encoded) * args.n_seeds
         per_sample_bands = {b: np.zeros((n_traj, n_steps)) for b in BANDS}
         per_sample_v_rev_bands = {b: np.zeros((n_traj, n_steps)) for b in BANDS}
-        # 2-band FEI low-band energy ∈ [0,1] per (row, step). e_high = 1 − e_low
-        # so we don't store it separately. Filled from run_reverse_batched's
-        # third return-tuple field; consumed downstream by the v6 trainer flag
-        # --fei_obs (in scripts/dcw/train_fusion_head.py).
+        # 2-band FEI low-band energy ∈ [0,1] per (row, step); e_high = 1 − e_low,
+        # not stored. Consumed downstream by the v6 trainer's --fei_obs flag.
         per_sample_fei_low = np.zeros((n_traj, n_steps), dtype=np.float64)
         per_sample_stems = [""] * n_traj
 
-    # Per-(stem, seed_int, config_name) final latent collected for VAE decode
-    # at end-of-run, when --save_images is set. Each entry is a single-row
-    # tensor shape (1, *x_0.shape[1:]) on CPU/float32 — typically ~520 KB at
-    # 832×1248 (16-channel latent, fp32).
+    # Per-row final latents stashed for end-of-run VAE decode under --save_images.
     finals_to_decode: list[tuple[str, int, str, torch.Tensor]] | None = (
         [] if args.save_images else None
     )
@@ -363,9 +352,9 @@ def main() -> None:
     def _seeds_for(img_idx: int) -> list[int]:
         return [args.seed_base + 1000 * img_idx + j for j in range(args.n_seeds)]
 
-    # Phase 1: forward-branch norms — always batched across seeds per image
-    # (bit-equivalent to the per-seed serial loop; per-row CPU generators
-    # produce the same RNG sequence). Cached per (img, seed) for phase 2.
+    # Phase 1: forward-branch norms, batched across seeds per image
+    # (bit-equivalent to the per-seed serial loop — per-row CPU generators give
+    # the same RNG sequence). Cached per (img, seed) for phase 2.
     fwd_cache: dict[tuple[int, int], tuple[np.ndarray, dict[str, np.ndarray]]] = {}
     pbar = tqdm(total=len(encoded), desc=f"fwd (×{args.n_seeds} seeds batched)")
     for img_idx, (stem, x_0, embed) in enumerate(encoded):
@@ -386,11 +375,9 @@ def main() -> None:
         pbar.set_postfix_str(stem)
     pbar.close()
 
-    # Phase 2: reverse trajectories.
-    # * --dcw_sweep: keep the per-seed outer loop; each call batches over λ
-    #   (sweep semantics — all rows share one initial-noise seed).
-    # * default (make dcw): batch all seeds per image; one row per seed at
-    #   λ=0. Mutually exclusive — outer-product (seed × λ) is out of scope.
+    # Phase 2: reverse trajectories. Two mutually-exclusive batching modes:
+    # --dcw_sweep keeps the per-seed outer loop and batches over λ (rows share
+    # one noise seed); default (make dcw) batches all seeds per image at λ=0.
     config_lams = [lam for _, lam in configs]
     if args.dcw_sweep:
         pbar = tqdm(total=n_fwd, desc=f"rev (×{len(configs)} λ batched)")
@@ -496,12 +483,10 @@ def main() -> None:
     clear_hydra_sigma(anima)
     log.info(f"done in {time.time() - t0:.0f}s")
 
-    # Optional: VAE decode of stashed final latents → PNGs under
-    # <out_dir>/images/. Loads VAE transiently; frees DiT first to
-    # maximise free VRAM. Each row decoded individually (memory-safe at
-    # any --n_images / config count). Filenames include the config name
-    # so a 3-config sweep produces an interleaved baseline / λ_a / λ_b
-    # set per (stem, seed) pair, suitable for direct visual A/B/C.
+    # Optional VAE decode of stashed final latents → PNGs. DiT freed first so
+    # peak VRAM is max(DiT, VAE); rows decoded one at a time. Filenames carry
+    # the config name so a sweep yields interleaved baseline/λ_a/λ_b per
+    # (stem, seed) for direct visual A/B/C.
     images_dir: Path | None = None
     if finals_to_decode is not None:
         from PIL import Image
@@ -512,8 +497,6 @@ def main() -> None:
         images_dir.mkdir(parents=True, exist_ok=True)
         log.info(f"decoding {len(finals_to_decode)} final latents → {images_dir}")
 
-        # Free the DiT (and the encoded latent / text cache) before
-        # loading the VAE — keeps peak VRAM bounded by max(DiT, VAE).
         del anima
         encoded.clear()
         fwd_cache.clear()
@@ -540,7 +523,7 @@ def main() -> None:
             for stem, seed_int, cfg_name, latent in finals_to_decode:
                 pixels = vae.decode_to_pixels(latent.to(device, dtype=vae.dtype))
                 if pixels.ndim == 5:
-                    pixels = pixels.squeeze(2)  # [1, 3, H, W]
+                    pixels = pixels.squeeze(2)
                 img_t = (
                     (pixels[0].clamp(-1.0, 1.0) * 0.5 + 0.5)
                     .to("cpu", dtype=torch.float32)
@@ -564,7 +547,7 @@ def main() -> None:
             torch.cuda.empty_cache()
         log.info(f"images → {images_dir}")
 
-    # Reduce: mean over (img × seed); std on the gap from running Σ gap².
+    # Mean over (img × seed); gap std from running Σ gap².
     for name in accum:
         n = accum[name]["n"]
         mean_g = accum[name]["gap"] / n
@@ -576,7 +559,6 @@ def main() -> None:
             for b in BANDS:
                 accum[name][k][b] = accum[name][k][b] / n
 
-    # Metrics envelope.
     ranked = sorted(
         (
             (
@@ -603,7 +585,6 @@ def main() -> None:
         },
     }
 
-    # Write artifacts.
     csv_path = write_per_step_csv(out_dir, accum, sigmas, n_steps)
     log.info(f"CSV → {csv_path}")
     band_csv_path = write_per_band_csv(out_dir, accum, sigmas, n_steps)
@@ -612,11 +593,9 @@ def main() -> None:
     per_sample_path: Path | None = None
     if per_sample_bands is not None:
         per_sample_path = out_dir / "gaps_per_sample.npz"
-        # Row layout in per_sample_* arrays is `row = img_idx * n_seeds + seed_idx`
-        # (see _accumulate_row in scripts/dcw/output.py); seed = seed_base +
-        # 1000*img_idx + seed_idx. Materialize the seed column so the npz is
-        # self-describing — downstream consumers don't need result.json to
-        # recover (stem, seed) pairs.
+        # Row layout: row = img_idx*n_seeds + seed_idx (see _accumulate_row in
+        # scripts/dcw/output.py); seed = seed_base + 1000*img_idx + seed_idx.
+        # Materialize the seed column so the npz is self-describing.
         per_sample_seeds = np.array(
             [
                 args.seed_base + 1000 * img_idx + seed_idx
@@ -638,10 +617,9 @@ def main() -> None:
 
     plot_written = make_plot(out_dir, accum, n_steps) if args.save_plot else False
 
-    # Manifest of (stem, seed) pairs actually sampled. Written after the bench
-    # loop succeeds so dedup-scanners can rely on its presence as a "this run
-    # completed" sentinel — partial / interrupted runs leave no manifest and
-    # are correctly re-eligible on the next gather.
+    # Manifest of sampled (stem, seed) pairs, written only after the loop
+    # succeeds so its presence is a "run completed" sentinel for dedup-scanners
+    # (partial runs leave none and stay re-eligible).
     manifest_path = out_dir / "manifest.json"
     manifest = {
         "bucket": (

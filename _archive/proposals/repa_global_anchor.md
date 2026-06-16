@@ -1,6 +1,27 @@
 # REPA global-anchor arm — re-inject the discarded global component
 
-Status: **WIRED (default-off) — A/B not yet run.** Phase 0 PASSED (target
+Status: **ARCHIVED — REFUTED by A/B (2026-06-13).** The Phase-0 *target* probe
+passed (patch-mean + z-score is the most discriminative global target), and the
+trainable arm was wired default-off, but the actual A/B closed the line:
+`--repa_global_weight` at both **0.01 and 0.001 degraded** the CMMD val signal,
+with no offsetting style gain. Re-injecting the global/DC component the
+relational arm deliberately strips makes things worse — the stripped band is a
+distractor, not lost signal.
+
+This is not a dead end so much as a **signpost**: read on the frequency axis,
+this arm is the −1 endpoint (add DC back → worse), the shipped `spatial_norm` is
+the 0 point (strip DC), and the live successor pushes to the +1 endpoint (strip
+a *broader* low band). That successor is **REPA-DoG**
+(`docs/proposal/repa_dog_target.md`), which inherits this result as its
+strongest local datapoint. The wired knobs (`repa_global_weight`,
+`REPAGlobalHead`, `global_anchor_loss`, the patch-mean calib) remain in tree,
+default-off and inert; leave them for now or strip in a later cleanup.
+
+---
+
+_Original proposal below (retained for the Phase-0 probe findings, which stand)._
+
+Status (original): **WIRED (default-off) — A/B not yet run.** Phase 0 PASSED (target
 validated) by a data-only probe that settled the open design question (which
 global target, which normalization) *before* any compute. The trainable arm is
 now implemented per the Design below: `repa_global_weight` (default 0.0 ⇒

@@ -52,9 +52,8 @@ class _NetworkMetricsMixin:
         (independent content/freq switch losses — a single combined term could
         flatten one pool while concentrating the other).
         """
-        # Chimera: dual-pool branch. Computed entirely separately from the
-        # legacy single-pool / σ-bucket aggregation since the weights and
-        # accumulation are independent per pool.
+        # Chimera dual-pool branch: separate from the single-pool/σ-bucket path
+        # since per-pool weights and accumulation are independent.
         if getattr(self, "_use_chimera_hydra", False):
             return self._get_chimera_balance_loss()
 
@@ -94,8 +93,7 @@ class _NetworkMetricsMixin:
                 for b in range(num_buckets):
                     mask = bucket_ids == b
                     if int(mask.sum()) < 2:
-                        # Not enough samples to meaningfully measure balance
-                        # in this bucket on this step; skip.
+                        # too few samples to measure balance in this bucket
                         continue
                     bterm = self._switch_balance(gate[mask])
                     module_bucket_sum = (
@@ -139,10 +137,9 @@ class _NetworkMetricsMixin:
         K_c_default = int(getattr(self.cfg, "num_experts_content", 0))
         total_f = None
         count_f = 0
-        # All chimera modules share the single broadcast π_c from the
-        # ContentRouter, so one representative gate_c suffices for the content
-        # balance (no per-module average needed — they're identical, grad still
-        # traces to the one router). Freq keeps the per-module Switch sum.
+        # All chimera modules share one broadcast π_c, so one representative
+        # gate_c suffices for content balance (grad still traces to the one
+        # router). Freq keeps the per-module Switch sum.
         content_gate = None
         for lora in self.unet_loras + self.text_encoder_loras:
             gate = getattr(lora, "_last_gate", None)
@@ -160,18 +157,11 @@ class _NetworkMetricsMixin:
                 total_f = term_f if total_f is None else total_f + term_f
                 count_f += 1
 
-        # Content pool: EMA-usage load balance. At train_batch_size=1 the
-        # per-microbatch Switch loss degenerates into a per-sample uniformity
-        # penalty (B=1 → frac is one-hot, gate_mean is the sample's gate, so the
-        # term is minimized by a uniform gate — punishing the very per-content
-        # sharpness we want). Generalize Switch (K·Σ f_k·P_k) by replacing the
-        # noisy per-step routed fraction f_k with a smoothed running usage
-        # estimate ``_content_usage_ema`` (detached), keeping P_k = the current
-        # differentiable mean gate. Gradient w.r.t. the current gates is
-        # ∝ K_c·ema_k, pushing down historically over-used experts — so the
-        # global dead-expert collapse is penalized while per-sample sharpness is
-        # not, letting content-conditional routing emerge once usage is forced
-        # to spread across the dataset.
+        # Content pool: EMA-usage load balance. At B=1 plain Switch degenerates
+        # to a per-sample uniformity penalty (punishing the per-content sharpness
+        # we want). Replace the noisy routed fraction f_k with a detached running
+        # usage EMA, keeping P_k = current differentiable mean gate → grad
+        # ∝ K_c·ema_k penalizes globally over-used experts, not per-sample sharpness.
         total_c = None
         count_c = 0
         if content_gate is not None:
@@ -239,9 +229,8 @@ class _NetworkMetricsMixin:
         if self._router_stats_cache is not None:
             return self._router_stats_cache
 
-        # Collect gates with matching expert count. Modules with mismatched E
-        # are skipped (aggregating usage vectors of different length isn't
-        # meaningful) — same policy as the previous per-module loop.
+        # Collect gates with matching E; mismatched-E modules are skipped
+        # (aggregating different-length usage vectors isn't meaningful).
         gates: List[torch.Tensor] = []
         E_ref: Optional[int] = None
         for lora in self.unet_loras + self.text_encoder_loras:
@@ -266,12 +255,10 @@ class _NetworkMetricsMixin:
         sigma = self._last_sigma  # (B,) or None
         num_buckets = int(self.cfg.num_sigma_buckets)
         want_per_bucket = sigma is not None and num_buckets > 1
-        # When ``specialize_experts_by_sigma_buckets`` is on, each sample can
-        # only route to its band's ``E / num_buckets`` experts (others masked
-        # to -inf pre-softmax). Normalizing entropy by ``log(E)`` then caps
-        # the achievable max at ``log(experts_per_band) / log(E)`` (e.g. 0.44
-        # for E=12, num_buckets=4) — making "uniform within band" look like
-        # collapse. Normalize by the actual reachable support instead.
+        # Under specialize_experts_by_sigma_buckets each sample only reaches its
+        # band's E/num_buckets experts. Normalizing entropy by log(E) would cap
+        # the max below 1 and make "uniform within band" look like collapse —
+        # normalize by the reachable support instead.
         band_partition_active = bool(
             self.cfg.specialize_experts_by_sigma_buckets and num_buckets > 1
         )
@@ -279,12 +266,9 @@ class _NetworkMetricsMixin:
         norm = math.log(effective_E) if effective_E > 1 else 1.0
 
         p = g.float().clamp_min(1e-12)
-        # (M,) per-module mean entropy, normalized to [0, 1] over reachable support
         H_per_module = -(p * p.log()).sum(dim=-1).mean(dim=-1) / norm
-        # (M, B, 2) top-2 in one batched topk → (M,) mean margin
         top2 = p.topk(2, dim=-1).values
         margin_per_module = (top2[..., 0] - top2[..., 1]).mean(dim=-1)
-        # Argmax usage: one_hot + sum → (M, E) histograms in one pass
         expert_idx = g.argmax(dim=-1)  # (M, B)
         usage_per_module = torch.nn.functional.one_hot(expert_idx, num_classes=E).to(
             g.dtype
@@ -295,7 +279,7 @@ class _NetworkMetricsMixin:
             [0.05, 0.5, 0.95], device=H_per_module.device, dtype=H_per_module.dtype
         )
         q = torch.quantile(H_per_module, q_probs)  # (3,)
-        # Single packed summary: [mean_H, p05, p50, p95, margin_mean]. One DtoH.
+        # Single packed summary → one DtoH.
         summary = torch.stack(
             [H_per_module.mean(), q[0], q[1], q[2], margin_per_module.detach().mean()]
         ).cpu()
@@ -322,9 +306,8 @@ class _NetworkMetricsMixin:
             bucket_counts_t.scatter_add_(
                 0, bucket_ids, torch.ones_like(bucket_ids, dtype=torch.long)
             )
-            # Per-bucket argmax frequency, normalized within each bucket so
-            # each row sums to ~1 (or 0 for empty buckets). Flat scatter_add
-            # over (M, num_buckets * E) avoids a per-module loop.
+            # Per-bucket argmax frequency, normalized within each bucket. Flat
+            # scatter_add over (M, num_buckets*E) avoids a per-module loop.
             bucket_ids_dev = bucket_ids.to(expert_idx.device)
             flat_idx = bucket_ids_dev[None, :] * E + expert_idx  # (M, B)
             bu = torch.zeros(M, num_buckets * E, device=g.device, dtype=g.dtype)
@@ -359,7 +342,7 @@ class _NetworkMetricsMixin:
         out: Dict[str, Union[float, List[float]]] = {}
         K_c_default = int(getattr(self.cfg, "num_experts_content", 0))
 
-        # --- Content pool: aggregate π_c across modules ----------------------
+        # Content pool: aggregate π_c across modules.
         pi_c_list: List[torch.Tensor] = []
         K_c_ref: Optional[int] = None
         for lora in self.unet_loras + self.text_encoder_loras:
@@ -389,7 +372,7 @@ class _NetworkMetricsMixin:
             out["content_margin"] = float(summary_c[1])
             out["content_usage"] = usage_c.detach().cpu().tolist()
 
-        # --- Freq pool: single broadcast tensor from FreqRouter --------------
+        # Freq pool: single broadcast tensor from FreqRouter.
         fr = getattr(self, "freq_router", None)
         pi_f = fr._last_gates if fr is not None else None
         if pi_f is not None and pi_f.dim() == 2 and pi_f.shape[-1] > 1:
@@ -427,21 +410,19 @@ class _NetworkMetricsMixin:
         use_tlora = bool(self.cfg.use_timestep_mask)
         min_rank = int(self.cfg.min_rank) if use_tlora else 0
         max_rank = int(self.cfg.lora_dim)
-        # Clamp min_rank: a misconfig like min_rank > lora_dim would make the
-        # "above" slice empty and the "below" slice full-rank, silently turning
-        # the diagnostic into a no-op. Pin to [0, R].
+        # Clamp min_rank to [0, R]: min_rank > lora_dim would empty the "above"
+        # slice and silently no-op the diagnostic.
         min_rank = max(0, min(min_rank, max_rank))
         has_tlora_split = use_tlora and 0 < min_rank < max_rank
 
-        # Collect grads first; reduce in a few fused passes at the end (the
-        # naive per-module loop stalled the post-backward boundary by hundreds
-        # of ms on log steps — see docs/optimizations/nsys_analysis_0503.md).
+        # Collect grads first; reduce in a few fused passes (the naive per-module
+        # loop stalled the post-backward boundary by 100s of ms on log steps —
+        # docs/optimizations/nsys_analysis_0503.md).
         up_grads: List[torch.Tensor] = []  # each (E, out_i, R)
         sp_grads: List[torch.Tensor] = []  # each (E, r, r)
         expert_band_ref: Optional[torch.Tensor] = None
-        # Per-layer router-weight grad sum-of-squares (centered-gate diagnostic:
-        # confirms router logits get nonzero gradient at step 0). Skipped under
-        # the network-level GlobalRouter — no per-Linear ``router`` then.
+        # Per-layer router-weight grad sum-of-squares (centered-gate diagnostic).
+        # Skipped under the network-level GlobalRouter — no per-Linear router then.
         router_grad_sq: Optional[torch.Tensor] = None
 
         for lora in self.unet_loras + self.text_encoder_loras:
@@ -456,10 +437,9 @@ class _NetworkMetricsMixin:
             if up_grad is not None:
                 up_grads.append(up_grad.detach())
             if sp_grad is not None and sp_grad.dim() == 3:
-                # (E, r, r) — OrthoHydra rotation generator. No clean rank-col
-                # split (Cayley couples all entries), so we report total only.
-                # Plain OrthoLoRA's S_p is (r, r) with no expert axis — skipped
-                # by the dim==3 check, since this diagnostic is per-expert.
+                # (E, r, r) OrthoHydra rotation generator — report total only
+                # (Cayley couples all entries, no clean rank-col split). Plain
+                # OrthoLoRA's (r, r) S_p has no expert axis and is skipped here.
                 sp_grads.append(sp_grad.detach())
             if expert_band_ref is None:
                 band = getattr(lora, "_expert_band", None)
@@ -477,33 +457,28 @@ class _NetworkMetricsMixin:
         device_ref: Optional[torch.device] = None
 
         if up_grads:
-            # All entries share E and R; only out_i varies. Cat along the out
-            # axis into one (E, sum_out, R) tensor and reduce in one pass.
+            # Entries share E and R (only out_i varies); cat along out into one
+            # (E, sum_out, R) tensor and reduce in one pass.
             big_up = torch.cat(up_grads, dim=1).float()
             sq_up = big_up.square()
             total_per_exp = sq_up.sum(dim=(1, 2))
             device_ref = total_per_exp.device
             if has_tlora_split:
-                # Slices are views into ``sq_up``; sum along (out, rank-slice).
                 below_per_exp = sq_up[:, :, :min_rank].sum(dim=(1, 2))
                 above_per_exp = sq_up[:, :, min_rank:].sum(dim=(1, 2))
 
         sp_coupling: Optional[torch.Tensor] = None
         if sp_grads:
-            # All entries share (E, r, r). Stack into (M, E, r, r) and reduce
-            # over modules + r×r in one pass.
             big_sp = torch.stack(sp_grads, dim=0).float()
             sp_total_per_exp = big_sp.square().sum(dim=(0, 2, 3))
             if device_ref is None:
                 device_ref = sp_total_per_exp.device
 
-            # Cross-expert coupling of the rotation-generator gradients. The
-            # P_e subspaces are Euclidean-orthogonal by construction (so the
-            # structural ``ortho/subspace_overlap`` is a constant), but the
-            # loss can still push two experts the same way — that shows up as
-            # aligned ∂L/∂S_p[e]. Mean |cosine| over expert pairs and modules:
-            # the loss-geometry coupling the gradient-Gram is after, read off
-            # parameter grads (no activation hooks / no pre-forward arming).
+            # Cross-expert coupling of the rotation-generator gradients. P_e
+            # subspaces are Euclidean-orthogonal by construction, but the loss
+            # can still push two experts the same way (aligned ∂L/∂S_p[e]). Mean
+            # |cosine| over expert pairs/modules — loss-geometry coupling read off
+            # param grads (no activation hooks).
             E_ = big_sp.shape[1]
             if E_ > 1:
                 flat = big_sp.reshape(big_sp.shape[0], E_, -1)  # (M, E, r*r)
@@ -513,9 +488,8 @@ class _NetworkMetricsMixin:
                 off = (cos.sum(dim=(1, 2)) - diag) / (E_ * (E_ - 1))  # (M,)
                 sp_coupling = off.mean().reshape(1)
 
-        # Stash on-device tensors only — the D2H happens in
-        # ``get_up_grad_stats`` so non-log steps avoid the
-        # ``cudaStreamSynchronize`` that .cpu().tolist() forces.
+        # Stash on-device only — D2H deferred to get_up_grad_stats so non-log
+        # steps avoid the cudaStreamSynchronize that .cpu().tolist() forces.
         out: Dict[str, object] = {
             "min_rank": [float(min_rank)],
             "num_buckets": [float(self.cfg.num_sigma_buckets)],
@@ -532,10 +506,9 @@ class _NetworkMetricsMixin:
         if router_grad_sq is not None:
             out["router_grad_sq"] = router_grad_sq.reshape(1)
 
-        # Per-band aggregation: scatter the per-expert sum-of-squares along
-        # _expert_band. Only meaningful when σ-bucket partition is active —
-        # otherwise the band assignment is undefined and per-band rows would
-        # be misleading.
+        # Per-band aggregation: scatter per-expert sum-of-squares along
+        # _expert_band. Only meaningful when σ-bucket partition is active
+        # (otherwise band assignment is undefined).
         if (
             expert_band_ref is not None
             and bool(self.cfg.specialize_experts_by_sigma_buckets)
@@ -598,7 +571,6 @@ class _NetworkMetricsMixin:
         """
         out: dict[str, float] = {}
 
-        # Ortho regularization magnitude.
         ortho_w = float(getattr(self, "_ortho_reg_weight", 0.0) or 0.0)
         if ortho_w > 0.0:
             v = self.get_ortho_regularization()
@@ -607,7 +579,6 @@ class _NetworkMetricsMixin:
             out["reg/ortho"] = float(v)
             out["reg/ortho_weighted"] = float(ortho_w * v)
 
-        # Hydra balance loss magnitude.
         bal_w = float(getattr(self, "_balance_loss_weight", 0.0) or 0.0)
         if bal_w > 0.0:
             v = self.get_balance_loss()
@@ -619,11 +590,9 @@ class _NetworkMetricsMixin:
         if not getattr(self, "_use_hydra", False):
             return out
 
-        # Router diagnostics. Chimera takes a different path because its
-        # ``_last_gate`` is a concat of two independent softmaxes, so the
-        # argmax-histogram aggregation under ``hydra/*`` is doubly misleading
-        # (sums to 1 instead of 2; biased toward whichever pool has higher
-        # init variance — see ``get_chimera_router_stats`` docstring).
+        # Router diagnostics. Chimera takes a different path — its _last_gate is
+        # a concat of two softmaxes, so the hydra/* argmax-histogram is doubly
+        # misleading (see get_chimera_router_stats).
         if getattr(self, "_use_chimera_hydra", False):
             cstats = self.get_chimera_router_stats()
             if cstats:
@@ -653,7 +622,6 @@ class _NetworkMetricsMixin:
                 for b, c in enumerate(stats.get("bucket_counts", [])):
                     out[f"hydra/bucket_count/{b}"] = float(c)
 
-        # Hydra up-weight grad norms by rank region and σ-band.
         up = self.get_up_grad_stats()
         if up:
             eps = 1e-12
@@ -694,10 +662,9 @@ class _NetworkMetricsMixin:
             if up.get("sp_coupling"):
                 out["ortho/grad_coupling"] = float(up["sp_coupling"][0])
 
-        # Structural guardrail: cross-expert column-space overlap of the
-        # OrthoHydra ``P_bases``. Constant by construction (~0 disjoint, ~1
-        # narrow-layer fallback); a drift off this baseline flags a basis/init
-        # regression. Cheap (cached per module) — see OrthoHydra.subspace_overlap.
+        # Structural guardrail: cross-expert column-space overlap of OrthoHydra
+        # ``P_bases``. Constant by construction; drift flags a basis/init
+        # regression. See OrthoHydra.subspace_overlap.
         ov_vals = [
             lora.subspace_overlap()
             for lora in self.unet_loras + self.text_encoder_loras
@@ -706,11 +673,9 @@ class _NetworkMetricsMixin:
         if ov_vals:
             out["ortho/subspace_overlap"] = float(sum(ov_vals) / len(ov_vals))
 
-        # GlobalRouter stats — for stacked-experts + per-network routing
-        # (plan2 §three-axis-config). Mirrors the per-Linear hydra keys but
-        # under the ``fera/`` namespace so dashboards can compare across
-        # variants. ``_last_gates`` is populated by ``GlobalRouter.forward``;
-        # absent (None) outside of a step that fired the router.
+        # GlobalRouter stats (stacked-experts + per-network routing). Mirrors the
+        # per-Linear hydra keys under the ``fera/`` namespace. ``_last_gates`` is
+        # None outside a step that fired the router.
         if (
             self.global_router is not None
             and self.global_router._last_gates is not None
@@ -719,16 +684,12 @@ class _NetworkMetricsMixin:
             if gates.dim() == 2 and gates.shape[1] > 1:
                 g = gates.float().clamp_min(1e-12)
                 E = int(g.shape[-1])
-                # Per-batch normalized entropy.
                 norm = math.log(E)
                 H = -(g * g.log()).sum(dim=-1).mean() / norm
-                # Top1-Top2 margin (confidence).
                 top2 = g.topk(2, dim=-1).values
                 margin = (top2[..., 0] - top2[..., 1]).mean()
-                # Per-expert mean gate weight. argmax-histogram breaks exact
-                # ties to index 0 and misreports a uniform router as
-                # "100% expert 0"; mean(gates) reflects the actual soft
-                # distribution and still sums to 1.
+                # mean(gates) not argmax-histogram: the latter breaks ties to
+                # index 0 and misreports a uniform router as "100% expert 0".
                 usage = g.mean(dim=0)
                 summary = torch.stack([H.detach(), margin.detach()]).cpu()
                 out["fera/router_entropy"] = float(summary[0])

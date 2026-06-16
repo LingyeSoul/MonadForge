@@ -136,14 +136,22 @@ def run_image_mode(workflow, images_dir, args):
         print(f"No images found in {images_dir}")
         return
     prefix = comfy_relative(images_dir)
-    print(f"Queuing {len(files)} images from {images_dir} (LoadImage prefix '{prefix}/')")
+    print(
+        f"Queuing {len(files)} images from {images_dir} (LoadImage prefix '{prefix}/')"
+    )
 
     for i, fname in enumerate(files, 1):
         wf = json.loads(json.dumps(workflow))
         rel = f"{prefix}/{fname}" if prefix else fname
         for inputs in load_image_nodes(wf):
             inputs["image"] = rel
-        submit(wf, args.server, args.randomize_seed, args.wait, f"[{i}/{len(files)}] {fname}")
+        submit(
+            wf,
+            args.server,
+            args.randomize_seed,
+            args.wait,
+            f"[{i}/{len(files)}] {fname}",
+        )
 
     print("All done.")
 
@@ -157,7 +165,13 @@ def run_artist_chara_mode(workflow, args):
 
     for i, (artist, chara) in enumerate(pairs, 1):
         wf = substitute(workflow, artist, chara)
-        submit(wf, args.server, args.randomize_seed, args.wait, f"[{i}/{len(pairs)}] {artist} x {chara}")
+        submit(
+            wf,
+            args.server,
+            args.randomize_seed,
+            args.wait,
+            f"[{i}/{len(pairs)}] {artist} x {chara}",
+        )
 
     print("All done.")
 

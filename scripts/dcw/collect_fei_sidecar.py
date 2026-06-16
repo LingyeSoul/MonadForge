@@ -152,10 +152,8 @@ def _setup_text_state(
 
     ensure_text_strategies(text_encoder_path, MAX_CROSSATTN_TOKENS)
 
-    # load_text_encoder also reads args.lora_weight and args.lora_multiplier
-    # to decide if any LoRA changes the TE-side strategy (none here — replay
-    # runs on the base DiT, just like the original bench). Pass explicit
-    # None / [1.0] defaults so the attribute lookups don't AttributeError.
+    # load_text_encoder reads args.lora_weight / lora_multiplier; pass explicit
+    # None / [1.0] (replay runs on the base DiT) so the lookups don't raise.
     te_args = _ArgsNS(
         text_encoder=text_encoder_path,
         attn_mode=args.get("attn_mode", "flash"),
@@ -213,7 +211,6 @@ def _replay_one_run(
     dataset_dir: Path,
 ) -> bool:
     """Replay one run's reverse trajectories; write fei_low.npz. Return True on success."""
-    # Required scalars
     image_h = args.get("image_h")
     image_w = args.get("image_w")
     if image_h is None or image_w is None:
@@ -247,10 +244,9 @@ def _replay_one_run(
 
     seed_base = int(args.get("seed_base", manifest.get("seed_base", 0)))
 
-    # Cache filenames are zero-padded ({H:04d}x{W:04d}_anima.npz), so we
-    # can't just format from (image_h, image_w). Reuse pick_cached_samples's
-    # regex-based discovery and build a stem→(npz, te) lookup over the full
-    # bucket-matched candidate pool, then index by manifest stem.
+    # Cache filenames are zero-padded ({H:04d}x{W:04d}), so reuse
+    # pick_cached_samples' regex discovery rather than formatting (H, W); build
+    # a stem→(npz, te) lookup over the bucket pool, then index by manifest stem.
     bucket_pool = pick_cached_samples(
         dataset_dir, n=10**9, image_h=image_h, image_w=image_w
     )
@@ -280,7 +276,6 @@ def _replay_one_run(
             cfg_scale=cfg_scale,
             return_final=False,
         )
-        # rev_out is a list of (norms, bands, fei_low) — only fei_low is needed.
         for seed_idx, (_, _, fei_low) in enumerate(rev_out):
             row = img_idx * n_seeds + seed_idx
             fei_low_arr[row] = fei_low[:n_steps]
@@ -373,7 +368,6 @@ def main() -> None:
     if not candidates:
         sys.exit("no run dirs found under the given roots")
 
-    # Pre-filter: drop runs missing artifacts or already done.
     eligible: list[tuple[Path, dict, dict]] = []
     for run_dir in candidates:
         if args.skip_existing and (run_dir / "fei_low.npz").exists():
@@ -382,9 +376,8 @@ def main() -> None:
         mf = _manifest(run_dir)
         if rj is None or mf is None:
             continue
-        # Sidecar is meaningless without an aligned gaps_per_sample.npz to
-        # join against in the trainer — the sidecar's whole point is to fill
-        # in the FEI column for an existing per-sample dump.
+        # Sidecar needs an aligned gaps_per_sample.npz to join against — its
+        # whole point is to fill the FEI column of an existing per-sample dump.
         if not (run_dir / "gaps_per_sample.npz").exists():
             log.info(f"{run_dir.name}: no gaps_per_sample.npz; skipping")
             continue
@@ -411,8 +404,6 @@ def main() -> None:
         loading_device=device,
         dit_weight_dtype=dtype,
     )
-    # Defer .to(device, dtype) + .eval() until after the first run's
-    # pooled_text_proj (if any) is loaded — matches measure_bias.py.
     anima.to(device, dtype=dtype)
     anima.eval().requires_grad_(False)
 
@@ -423,10 +414,8 @@ def main() -> None:
     for run_dir, rj_args, manifest in eligible:
         key = _key_for_text_state(rj_args)
         if key != cur_key:
-            # Reload pooled_text_proj if this group needs mod-guidance —
-            # has to happen before .to() per measure_bias's note, but the
-            # model is already on-device. anima_utils.load_pooled_text_proj
-            # handles the meta-tensor → real-tensor swap safely after .to().
+            # Reload pooled_text_proj for mod-guidance groups;
+            # load_pooled_text_proj does the meta→real swap safely post-.to().
             if rj_args.get("pooled_text_proj"):
                 anima_utils.load_pooled_text_proj(
                     anima, rj_args["pooled_text_proj"], "cpu"
@@ -439,11 +428,9 @@ def main() -> None:
             )
             cur_key = key
 
-        # Compile after the first run's setup (mod-guidance attach + uncond
-        # encode) so the OptimizedModule wraps the fully-prepared graph,
-        # mirroring measure_bias.py's "compile last" ordering. Skipping if
-        # already compiled — torch.compile is idempotent but the wrapping
-        # cost is non-trivial.
+        # Compile after the first run's setup so the OptimizedModule wraps the
+        # fully-prepared graph (measure_bias.py's "compile last" ordering); only
+        # once since the wrapping cost is non-trivial.
         if args.compile and not compiled:
             log.info("torch.compile(DiT)…")
             anima = torch.compile(anima)

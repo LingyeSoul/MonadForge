@@ -17,11 +17,9 @@ import torch
 import torch.nn.functional as F
 
 from library.training.repa import (
-    REPAGlobalHead,
     REPAHead,
     REPAMethodAdapter,
-    global_anchor_loss,
-    load_patchmean_calib,
+    dog_standardize,
 )
 from library.vision.buckets import get_bucket_spec
 
@@ -34,9 +32,12 @@ def _make_adapter(mode: str, *, patch: int = 2) -> REPAMethodAdapter:
     return a
 
 
-def _primary(latents: torch.Tensor, *, is_train: bool = True):
-    # extra_forwards only reads .is_train and .latents.
-    return types.SimpleNamespace(is_train=is_train, latents=latents)
+def _primary(latents: torch.Tensor, *, is_train: bool = True, timesteps=None):
+    # extra_forwards reads .is_train, .latents, and (only when timestep
+    # reweighting is on) .timesteps — per-sample σ∈[0,1].
+    return types.SimpleNamespace(
+        is_train=is_train, latents=latents, timesteps=timesteps
+    )
 
 
 def _ctx(network=None):
@@ -117,6 +118,44 @@ def test_metrics_surface_align_loss():
     # metrics() returns a copy — mutating it must not poison the adapter stash.
     m["repa/align_loss"] = -1.0
     assert a.metrics(_ctx())["repa/align_loss"] != -1.0
+
+
+def test_timestep_weighting_off_is_bit_identical():
+    """g=0 (default) never reads timesteps and is bit-exact to the legacy loss."""
+    a = _make_adapter("relational")
+    _spec, pe, latents = _square_inputs()
+    cap = torch.randn(2, 1, 32, 32, 64)
+    a._captured, a._pe_features, a._latent_hw = cap, pe, (64, 64)
+    base = a.extra_forwards(_ctx(), _primary(latents, timesteps=None))["repa"]
+
+    a._timestep_weighting = 0.0  # explicit
+    a._captured = cap
+    same = a.extra_forwards(_ctx(), _primary(latents, timesteps=None))["repa"]
+    assert torch.equal(base, same)
+    assert "repa/tsw_w_mean" not in a.metrics(_ctx())
+
+
+def test_timestep_weighting_high_noise_emphasis():
+    """g>0 up-weights high-σ samples; an all-high-σ batch loss > all-low-σ batch."""
+    _spec, pe, latents = _square_inputs(b=2)
+    cap = torch.randn(2, 1, 32, 32, 64)
+
+    def _loss(g, sigma):
+        a = _make_adapter("relational")
+        a._timestep_weighting = g
+        a._captured, a._pe_features, a._latent_hw = cap.clone(), pe, (64, 64)
+        t = torch.full((2,), sigma)
+        return a.extra_forwards(_ctx(), _primary(latents, timesteps=t))["repa"]
+
+    # Same Gram error per sample; only the σ weight differs. (g+1)·σ^g: high σ
+    # gets a larger multiplier → larger weighted mean.
+    hi = _loss(2.0, 0.9)
+    lo = _loss(2.0, 0.1)
+    assert hi > lo
+    # g<0 inverts the ordering (low-noise emphasis).
+    hi_n = _loss(-2.0, 0.9)
+    lo_n = _loss(-2.0, 0.1)
+    assert lo_n > hi_n
 
 
 def test_pe_grid_orientation_disambiguation():
@@ -444,136 +483,118 @@ def test_repa_loss_handler_weighting():
     assert _repa_loss(ctx0).item() == 0.0
 
 
-# --------------------------------------------------------------- global-anchor
+# ------------------------------------------------------------------- REPA-DoG
 
 
-def test_global_anchor_loss_bounds():
-    """1 − cos: identical → 0, antipodal → 2, with no calib affine."""
-    b, n, d = 3, 16, 768
+def test_dog_reduces_to_spatial_norm_at_small_sigma1():
+    """DoG at σ₁→0 (huge sigma1_div) is the DC-removal spatial_norm corner.
+
+    ``Z − LP(Z, σ₁)`` with σ₁→0 → ``Z − Z = 0``; but with norm by spatial std
+    the *direction field* matches spatial_norm's DC-removed field once the low
+    band collapses to the DC mean. We check the looser invariant the proposal
+    leans on: an aggressive low band-strip (small div) differs from DC-only.
+    """
+    b, n, d, gh, gw = 2, 1024, 768, 32, 32
     pe = torch.randn(b, n, d)
-    pe_global = pe.mean(dim=1)
-    assert global_anchor_loss(pe_global, pe, None, None).item() == pytest.approx(
-        0.0, abs=1e-6
-    )
-    assert global_anchor_loss(-pe_global, pe, None, None).item() == pytest.approx(
-        2.0, abs=1e-5
-    )
+    # spatial_norm = DC removal: subtract per-channel token mean, /std.
+    dc = (pe - pe.mean(dim=1, keepdim=True)) / (pe.std(dim=1, keepdim=True) + 1e-6)
+    dog = dog_standardize(pe, gh, gw, sigma1_div=16.0)
+    assert dog.shape == pe.shape
+    assert torch.isfinite(dog).all()
+    # A broad low-band strip removes more than DC alone → must differ.
+    assert not torch.allclose(dog, dc, atol=1e-3)
 
 
-def test_global_anchor_calib_affine_changes_loss_and_is_finite():
-    """The z-score affine reshapes the space → a non-degenerate, finite loss."""
-    b, n, d = 2, 16, 768
+def test_dog_bandpass_differs_from_highpass():
+    """σ₂ on (band-pass) ≠ σ₂ off (high-pass): the inner kernel rolls off the
+    very-high tail, so the two operators are distinct."""
+    b, n, d, gh, gw = 2, 1024, 768, 32, 32
     pe = torch.randn(b, n, d)
-    dit_global = torch.randn(b, d)
-    mean = torch.randn(d)
-    std = torch.rand(d) + 0.5
-    raw = global_anchor_loss(dit_global, pe, None, None)
-    zsc = global_anchor_loss(dit_global, pe, mean, std)
-    assert torch.isfinite(zsc) and 0.0 <= zsc.item() <= 2.0
-    assert not torch.allclose(raw, zsc)
+    hp = dog_standardize(pe, gh, gw, sigma1_div=16.0, sigma2_div=0.0)
+    bp = dog_standardize(pe, gh, gw, sigma1_div=16.0, sigma2_div=64.0)
+    assert torch.isfinite(bp).all()
+    assert not torch.allclose(hp, bp, atol=1e-3)
 
 
-def test_shipped_patchmean_calib_loads():
-    """The vendored calib is the shipped target affine (768-dim z-score)."""
-    mean, std = load_patchmean_calib(
-        "networks/calibration/pe_patchmean_stats.safetensors"
+def test_dog_norm_std_fixed_vs_empirical():
+    """norm_std>0 divides by a fixed constant (the paper's regime); norm_std=0
+    by the empirical spatial std (matches spatial_norm). The two scale the field
+    differently per-channel, so a fixed const changes the per-token directions."""
+    b, n, d, gh, gw = 2, 1024, 768, 32, 32
+    pe = torch.randn(b, n, d)
+    emp = dog_standardize(pe, gh, gw, sigma1_div=16.0, norm_std=0.0)
+    fixed = dog_standardize(pe, gh, gw, sigma1_div=16.0, norm_std=1.0)
+    assert torch.isfinite(fixed).all()
+    assert not torch.allclose(emp, fixed, atol=1e-3)
+
+
+def test_dog_replaces_spatial_norm_in_adapter():
+    """With _dog on the adapter band-passes the target then Gram-matches — it
+    must equal hand-computed dog_standardize + relational_gram_loss(spatial_norm
+    off), proving DoG slots in *instead of* the spatial_norm block."""
+    from library.training.repa import (
+        pool_dit_tokens_to_grid,
+        relational_gram_loss,
     )
-    assert mean.shape == (768,) and std.shape == (768,)
-    assert torch.isfinite(mean).all() and (std > 0).all()
 
-
-def _global_adapter(d_dit=64, d_enc=768):
-    a = _make_adapter("relational")
-    a._global_weight = 0.03
-    a._global_norm = "none"
-    head = REPAGlobalHead(d_dit, d_enc)
-    net = types.SimpleNamespace(repa_global_head=head)
-    return a, net
-
-
-def test_global_term_added_when_weight_on():
-    """extra_forwards returns both repa and repa_global when global is on."""
     _spec, pe, latents = _square_inputs()
-    a, net = _global_adapter()
-    a._captured, a._pe_features, a._latent_hw = (
-        torch.randn(2, 1, 32, 32, 64),
-        pe,
-        (64, 64),
-    )
-    out = a.extra_forwards(_ctx(net), _primary(latents))
-    assert "repa" in out and "repa_global" in out
-    assert torch.isfinite(out["repa_global"])
-    m = a.metrics(_ctx(net))
-    assert m["repa/global_loss"] == pytest.approx(float(out["repa_global"].detach()))
+    cap = torch.randn(2, 1, 32, 32, 64)
+
+    a_dog = _make_adapter("relational")
+    a_dog._dog = True
+    a_dog._dog_sigma1_div = 16.0
+    a_dog._captured, a_dog._pe_features, a_dog._latent_hw = cap, pe, (64, 64)
+    loss_dog = a_dog.extra_forwards(_ctx(), _primary(latents))["repa"]
+    assert torch.isfinite(loss_dog)
+
+    # Hand-built reference: pool DiT to the 32×32 grid, DoG the CLS-dropped PE.
+    dit_tok = pool_dit_tokens_to_grid(cap, (64, 64), 2, 32, 32)
+    pe_dog = dog_standardize(pe[:, 1:, :].float(), 32, 32, 16.0)
+    expected = relational_gram_loss(dit_tok, pe_dog, spatial_norm=False)
+    assert torch.equal(loss_dog, expected)
 
 
-def test_global_term_absent_when_off():
+def test_dog_off_is_bit_identical_to_relational():
+    """Default-off DoG must not perturb the existing relational loss."""
     _spec, pe, latents = _square_inputs()
-    a = _make_adapter("relational")  # _global_weight defaults to 0.0
-    a._captured, a._pe_features, a._latent_hw = (
-        torch.randn(2, 1, 32, 32, 64),
-        pe,
-        (64, 64),
-    )
-    out = a.extra_forwards(_ctx(), _primary(latents))
-    assert "repa_global" not in out
-    assert "repa/global_loss" not in a.metrics(_ctx())
-
-
-def test_global_grad_flows_to_head_and_capture():
-    _spec, pe, latents = _square_inputs()
-    a, net = _global_adapter()
-    cap = torch.randn(2, 1, 32, 32, 64, requires_grad=True)
+    cap = torch.randn(2, 1, 32, 32, 64)
+    a = _make_adapter("relational")  # _dog defaults to False
     a._captured, a._pe_features, a._latent_hw = cap, pe, (64, 64)
-    out = a.extra_forwards(_ctx(net), _primary(latents))
-    out["repa_global"].backward()
-    assert cap.grad is not None and cap.grad.abs().sum() > 0
-    assert all(p.grad is not None for p in net.repa_global_head.parameters())
+    loss_default = a.extra_forwards(_ctx(), _primary(latents))["repa"]
 
-
-def test_repa_global_loss_handler_weighting():
-    from library.training.losses import LossContext, _repa_global_loss
-
-    pred = torch.zeros(2, 16, 1, 8, 8)
-    base = dict(
-        model_pred=pred,
-        target=pred,
-        timesteps=None,
-        weighting=None,
-        huber_c=None,
-        loss_weights=None,
-        batch={},
-        args=None,
-        is_train=True,
+    tokens = cap.reshape(2, -1, 64)
+    dit_grid = tokens.reshape(2, 32, 32, 64).permute(0, 3, 1, 2)
+    dit_tok = (
+        F.adaptive_avg_pool2d(dit_grid.float(), (32, 32)).flatten(2).transpose(1, 2)
     )
-    net = types.SimpleNamespace(_repa_global_weight=0.03)
-    ctx = LossContext(network=net, aux={"repa_global": torch.tensor(2.0)}, **base)
-    assert _repa_global_loss(ctx).item() == pytest.approx(0.06)
-    net0 = types.SimpleNamespace(_repa_global_weight=0.0)
-    ctx0 = LossContext(network=net0, aux={"repa_global": torch.tensor(2.0)}, **base)
-    assert _repa_global_loss(ctx0).item() == 0.0
-    # Missing aux → zero (validation / partial coverage).
-    ctxm = LossContext(network=net, aux={}, **base)
-    assert _repa_global_loss(ctxm).item() == 0.0
+    dit_hat = F.normalize(dit_tok, dim=-1)
+    pe_hat = F.normalize(pe[:, 1:, :].float(), dim=-1)
+    g_dit = torch.bmm(dit_hat, dit_hat.transpose(1, 2))
+    g_pe = torch.bmm(pe_hat, pe_hat.transpose(1, 2))
+    expected = F.mse_loss(g_dit, g_pe)
+    assert torch.equal(loss_default, expected)
 
 
-def test_composer_gate_global():
-    from library.training.losses import build_loss_composer
+def test_dog_grad_flows_to_captured():
+    """The band-passed target is detached data, but grad still flows through the
+    DiT-side pooled tokens (into the LoRA blocks)."""
+    _spec, pe, latents = _square_inputs()
+    cap = torch.randn(2, 1, 32, 32, 64, requires_grad=True)
+    a = _make_adapter("relational")
+    a._dog = True
+    a._captured, a._pe_features, a._latent_hw = cap, pe, (64, 64)
+    loss = a.extra_forwards(_ctx(), _primary(latents))["repa"]
+    loss.backward()
+    assert cap.grad is not None and torch.isfinite(cap.grad).all()
+    assert cap.grad.abs().sum() > 0
 
-    args = types.SimpleNamespace(
-        vr_loss_weight=0.0, functional_loss_weight=0.0, multiscale_loss_weight=0.0
-    )
-    net = types.SimpleNamespace(_repa_global_weight=0.0)
-    assert "repa_global" not in build_loss_composer(args, net).active_losses
-    net._repa_global_weight = 0.03
-    assert "repa_global" in build_loss_composer(args, net).active_losses
 
-
-def test_lora_factory_builds_global_head():
-    """The LoRA factory stamps the config + builds repa_global_head when on."""
+def test_factory_stamps_dog_levers():
+    """Both factories stamp the DoG kwargs (default-off)."""
     import torch.nn as nn
 
-    from networks.lora_anima.factory import create_network
+    from networks.lora_anima.factory import create_network as lora_create
+    from networks.methods.easycontrol import create_network as ec_create
 
     class _Block(nn.Module):
         def __init__(self):
@@ -588,14 +609,25 @@ def test_lora_factory_builds_global_head():
             super().__init__()
             self.block = _Block()
 
-    common = dict(vae=None, text_encoders=[], unet=_DiT())
-    net = create_network(
-        1.0, 4, 4.0, **common, use_repa="true", repa_global_weight="0.03"
+    lora_common = dict(vae=None, text_encoders=[], unet=_DiT())
+    net = lora_create(
+        1.0,
+        4,
+        4.0,
+        **lora_common,
+        use_repa="true",
+        repa_target_dog="true",
+        repa_dog_sigma1_div="16",
     )
-    assert net._repa_global_weight == pytest.approx(0.03)
-    assert getattr(net, "repa_global_head", None) is not None
-    assert "repa_global_head." in net._training_only_prefixes
+    assert net._repa_target_dog is True
+    assert net._repa_dog_sigma1_div == pytest.approx(16.0)
+    assert net._repa_dog_sigma2_div == 0.0
 
-    net_off = create_network(1.0, 4, 4.0, **common, use_repa="true")
-    assert net_off._repa_global_weight == 0.0
-    assert getattr(net_off, "repa_global_head", None) is None
+    net_default = lora_create(1.0, 4, 4.0, **lora_common, use_repa="true")
+    assert net_default._repa_target_dog is False
+
+    ec_common = dict(vae=None, text_encoders=[], unet=None)
+    ec = ec_create(1.0, 8, 8.0, **ec_common, use_repa="true", repa_target_dog="true")
+    assert ec._repa_target_dog is True
+    ec_default = ec_create(1.0, 8, 8.0, **ec_common, use_repa="true")
+    assert ec_default._repa_target_dog is False

@@ -57,9 +57,7 @@ class EditPlan:
                 f"top1={self.detection_top1_sim:.3f} gap={self.detection_gap:.3f}"
             )
         if self.intent == "remove":
-            return (
-                f"[dispatcher] intent=REMOVE src_tag={self.detected_conflict_tag!r}"
-            )
+            return f"[dispatcher] intent=REMOVE src_tag={self.detected_conflict_tag!r}"
         if self.intent == "noop":
             return (
                 f"[dispatcher] intent=NOOP edit={self.parsed_edit_phrase!r} "
@@ -161,7 +159,6 @@ def derive_target_caption(
     src_tags = _split_tags(src_caption)
     phrase, removal_kind = _parse_remove_syntax(edit_instruction)
 
-    # --- REMOVE branch -------------------------------------------------------
     if removal_kind is not None:
         idx = _find_tag_case_insensitive(src_tags, phrase)
         if idx is not None:
@@ -185,7 +182,6 @@ def derive_target_caption(
         # detection branch with the *original* edit string.
         phrase = edit_instruction.strip()
 
-    # --- DEDUP branch --------------------------------------------------------
     # Edit phrase already literally present in ψ_src → NOOP. Skips the encoder
     # forward, prevents the "REPLACE its-own-tag" no-op outcome, and most
     # importantly stops the dispatcher from picking a *different* but
@@ -200,7 +196,6 @@ def derive_target_caption(
             parsed_edit_phrase=phrase,
         )
 
-    # --- DETECT branch -------------------------------------------------------
     # No tags to compare against → trivially APPEND.
     if not src_tags:
         return EditPlan(

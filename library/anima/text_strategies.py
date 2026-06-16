@@ -601,7 +601,6 @@ class LatentsCachingStrategy:
         else:
             flipped_latents = [None] * len(latents_tensors)
 
-        # for info, latents, flipped_latent, alpha_mask in zip(image_infos, latents_tensors, flipped_latents, alpha_masks):
         for i in range(len(image_infos)):
             info = image_infos[i]
             latents = latents_tensors[i]
@@ -740,7 +739,6 @@ class LatentsCachingStrategy:
         kwargs = {}
 
         if os.path.exists(npz_path):
-            # load existing npz and update it
             npz = np.load(npz_path)
             for key in npz.files:
                 kwargs[key] = npz[key]

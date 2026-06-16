@@ -226,16 +226,12 @@ def main():
         help="EMA decay on the LoRA params (e.g. 0.999). 0 = off. When on, the "
         "EMA weights are what gets validated AND saved. Overrides optim.ema_decay.",
     )
-    # --- On-policy (DAgger-style) stage entry ------------------------------------
-    # Default training builds each stage>0 entry *analytically* — a straight line
-    # from the true clean low-passed latent. At inference the prefix rolls from
-    # pure noise to an *imperfect* state that drifts off that line (exposure bias;
-    # see bench/spd/probe_onpolicy_handoff.py), so the LoRA is queried off the
-    # manifold it trained on. --onpolicy replaces the analytic entry with the
-    # state the adapter-on prefix actually rolls to (spd_rollout_to_stage), and
-    # supervises the velocity toward the *true* clean x0 from there — the
-    # self-target on-policy correction. Stage 0 is already on-policy (pure-noise
-    # entry), so only stage>0 micro-steps are affected.
+    # On-policy (DAgger) stage entry. Analytic entries are a straight line from
+    # the true clean low-passed latent, but inference rolls to an imperfect,
+    # off-manifold state (exposure bias; bench/spd/probe_onpolicy_handoff.py).
+    # --onpolicy instead supervises from the state the adapter-on prefix actually
+    # rolls to (spd_rollout_to_stage), targeting the true clean x0. Stage 0 is
+    # already on-policy (pure-noise entry), so only stage>0 micro-steps change.
     parser.add_argument(
         "--onpolicy",
         default=False,
@@ -274,13 +270,11 @@ def main():
         help="flow_shift for the rollout σ schedule — MUST match the deployed SPD "
         "sampler. Overrides schedule.flow_shift (default 1.0).",
     )
-    # --- SNR-gated (information-aware) loss ---------------------------------------
-    # Plain per-sample velocity MSE supervises every frequency band at every σ —
-    # including bands whose clean coefficient is statistically unrecoverable from
-    # x_t (post-expansion HF is fresh noise). The MSE-optimal response there is
-    # dataset-mean detail, i.e. learned HF attenuation ("looks fast, blurry").
-    # The gate weights the DCT-domain error by the per-band recoverable fraction
-    # (paper Prop. 1 / Eq. 15 fed back into the loss; see SpdSnrGate).
+    # SNR-gated (information-aware) loss. Plain velocity MSE supervises bands
+    # whose clean coefficient is unrecoverable from x_t (post-expansion HF is
+    # fresh noise); the MSE-optimal response there is dataset-mean detail, i.e.
+    # learned HF attenuation (blur). The gate weights DCT-domain error by the
+    # per-band recoverable fraction (paper Prop. 1 / Eq. 15; see SpdSnrGate).
     parser.add_argument(
         "--snr_gate",
         default=None,
@@ -467,13 +461,12 @@ def main():
 
     torch.manual_seed(seed)
 
-    # --- Schedule bands (data-independent; weights keep marginal-over-t uniform) ---
+    # Schedule bands (data-independent; weights keep marginal-over-t uniform).
     bands = spd_schedule_bands(stages, transition_sigmas)
     band_widths = torch.tensor([hi - lo for (lo, hi) in bands], dtype=torch.float64)
-    # Stage sampling weight = (band width) × (per-stage multiplier). The band-width
-    # factor keeps σ marginally-uniform *within* each sampled stage (paper's
-    # U(0,1)); stage_weights tilt mass across stages without touching in-band σ
-    # density. All-ones → exact band-width-proportional baseline.
+    # Stage sampling weight = band width × per-stage multiplier. The band-width
+    # factor keeps σ marginally-uniform within each sampled stage (paper U(0,1));
+    # stage_weights tilt mass across stages without touching in-band σ density.
     stage_w = torch.tensor(stage_weights, dtype=torch.float64)
     stage_sample_w = band_widths * stage_w
     stage_sample_w_f = stage_sample_w.float()  # hoisted for the per-step multinomial
@@ -499,9 +492,9 @@ def main():
     device = torch.device("cuda")
     dtype = torch.bfloat16
 
-    # --- Dataset (bucket-grouped; one resolution per batch) ---
-    # CachedDataset carves a deterministic per-bucket val slice (seeded by
-    # validation_seed) that never overlaps train, mirroring the LoRA pipeline.
+    # Dataset (bucket-grouped, one resolution per batch). CachedDataset carves a
+    # deterministic per-bucket val slice (seeded by validation_seed) that never
+    # overlaps train, mirroring the LoRA pipeline.
     dataset = CachedDataset(
         data_dir,
         batch_size=batch_size,
@@ -581,11 +574,9 @@ def main():
         logger.info("Dry run OK: stage-target construction + collation clean.")
         return
 
-    # --- SNR gate: measure P_w from the train latents, build the loss gate ---
-    # Orthonormal-DCT per-coefficient power, radially binned — measured rather
-    # than power-law-fitted (anime latents carry line-art HF a 2-param fit
-    # smooths over). Train split only; the profile is a dataset statistic, not
-    # a per-image quantity, so a small sample suffices.
+    # SNR gate: orthonormal-DCT per-coefficient power, radially binned — measured
+    # not power-law-fitted (anime latents carry line-art HF a 2-param fit smooths
+    # over). Train split only; a dataset statistic, so a small sample suffices.
     snr_gate = None
     if snr_gate_enabled:
         prof_rng = random.Random(seed + 31)
@@ -609,7 +600,6 @@ def main():
             float(profile[-1]),
         )
 
-    # --- Load DiT (frozen) ---
     logger.info("Loading DiT model...")
     model: Anima = anima_utils.load_anima_model(
         device,
@@ -620,7 +610,7 @@ def main():
     )
     patch = model.patch_spatial
 
-    # --- Plain LoRA adapter (paper-faithful: no MoE / ortho / T-LoRA) ---
+    # Plain LoRA adapter (paper-faithful: no MoE / ortho / T-LoRA).
     if channel_scaling_alpha:
         logger.info(
             "channel_scaling enabled (alpha=%.3g); inv_scale baked at save",
@@ -639,7 +629,6 @@ def main():
         text_encoders=[], unet=model, apply_text_encoder=False, apply_unet=True
     )
 
-    # Block swap / device placement.
     place_dit_for_training(model, device, blocks_to_swap=args.blocks_to_swap)
 
     enable_training_grad_ckpt(model, enabled=args.grad_ckpt)
@@ -661,12 +650,11 @@ def main():
         len(network.unet_loras),
     )
 
-    # --- Block compile ---
     # SPD runs each stage at a DOWNSAMPLED resolution not in CONSTANT_TOKEN_BUCKETS
-    # (dct_lowpass_init snaps each latent dim to _snap(dim*scale, patch)), so the
-    # real forward token counts span far more than the 2 full-res families and run
-    # *below* them. Enumerate every (stage × on-disk bucket) token count so both the
-    # static and the dynamic-seq paths size themselves to the true shape set.
+    # (dct_lowpass_init snaps each latent dim to _snap(dim*scale, patch)), so real
+    # forward token counts span more than the 2 full-res families and run *below*
+    # them. Enumerate every (stage × on-disk bucket) token count so both compile
+    # paths size to the true shape set.
     if args.torch_compile:
         # Distinct (stage × bucket) token counts in the cached pool — each image's
         # full-res latent downsampled per stage scale. This derivation is coupled
@@ -705,16 +693,13 @@ def main():
             ),
         )
 
-    # --- Optimizer + warmup→cosine ---
     optimizer = torch.optim.AdamW(
         trainable, lr=lr, weight_decay=weight_decay, fused=torch.cuda.is_available()
     )
 
-    # --- EMA of the LoRA params (optional) ---
-    # Smooths the "underfits early / overfits late" curve: the shadow tracks a
-    # decaying average, so the saved/validated weights sit near the sweet spot
-    # without hand-picking an iteration. Updates use copy_ into the live params
-    # (stable storage addresses) so it stays cudagraph-safe under reduce-overhead.
+    # EMA (optional): the shadow tracks a decaying average, so saved/validated
+    # weights sit near the sweet spot without hand-picking an iteration. copy_
+    # into live params (stable addresses) keeps it cudagraph-safe under reduce-overhead.
     ema_shadow = [p.detach().clone() for p in trainable] if ema_decay > 0.0 else None
     if ema_shadow is not None:
         logger.info(
@@ -743,7 +728,6 @@ def main():
         optimizer, iterations, lr, warmup_steps=warmup_steps
     )
 
-    # --- Logging ---
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     writer = None
     if not args.no_log:
@@ -815,12 +799,11 @@ def main():
 
     stage_rng = torch.Generator().manual_seed(seed + 1)  # CPU: stage / mode selection
 
-    # Per-(stage × bucket) zero pad mask, recycled across forwards — a fresh
-    # allocation each call would hand the compiled forward a new input address
-    # every step (hostile to reduce-overhead CUDA graphs); recycling keeps it
-    # stable. cudagraph step-marking stays decoupled (once per optimizer step /
-    # validation pass below), so _forward_dit is left hand-rolled rather than
-    # routed through run_mini_train_forward (which marks per forward).
+    # Pad mask recycled across forwards — a fresh allocation each call would hand
+    # the compiled forward a new input address (hostile to reduce-overhead CUDA
+    # graphs). cudagraph step-marking stays decoupled (once per optimizer step /
+    # val pass), so _forward_dit is hand-rolled, not run_mini_train_forward
+    # (which marks per forward).
     pad_cache = PadCache(dtype)
 
     def _forward_dit(x5, sig_vec, cattn):
@@ -902,7 +885,6 @@ def main():
         ramp = (step - dagger_warmup) / max(1, iterations - dagger_warmup)
         return onpolicy_ratio * min(1.0, ramp)
 
-    # --- Training loop ---
     logger.info("Starting SPD distillation: %d iterations", iterations)
     # Under reduce-overhead (CUDA graphs), grad_accum keeps the previous step's
     # autograd outputs alive when the next step's forward begins, so inductor
@@ -914,17 +896,12 @@ def main():
     )
     data_iter = [iter(dataloader)]  # boxed so _micro_step can refresh on exhaustion
     progress = tqdm(range(iterations), desc="spd")
-    # GPU-side logging accumulators — flushed in one stacked .tolist() at every
-    # log_interval, replacing the per-micro-step loss.item() (grad_accum CUDA
-    # syncs per optimizer step) and the per-parameter .item() walk in the
-    # LoRA-norm logging. Mirrors the accumulator pattern in scripts/distill_turbo/metrics.py.
     n_stages = len(stages)
-    # Named GPU-side accumulators flushed in a single CUDA sync per log boundary
-    # (library.training.accumulator). Scalar "loss" (Σ step-mean loss); vector
-    # "stage_loss"/"stage_cnt" (per-stage micro-loss sum + count, width n_stages);
-    # and — only when the SNR gate is on — scalar "gate_w"/"ungated". The
-    # per-boundary LoRA norms ("up_sq"/"down_sq") are added just before the flush
-    # so they ride the same sync. No magic slice offsets — read by name.
+    # Named GPU-side accumulators flushed in one CUDA sync per log boundary
+    # (library.training.accumulator), replacing per-micro-step loss.item() syncs
+    # and the per-parameter LoRA-norm .item() walk. Keys: "loss"; per-stage
+    # "stage_loss"/"stage_cnt" (width n_stages); "gate_w"/"ungated" (SNR gate on);
+    # "up_sq"/"down_sq" added just before flush so they ride the same sync.
     acc = ScalarAccumulator(device)
 
     # Fixed RNG for validation: reseeded each eval so the ε field (and hence the
@@ -1155,7 +1132,7 @@ def main():
                             f"train/loss_stage{si}", stage_vals[si], step + 1
                         )
 
-        # --- Held-out analytic-MSE validation (CMMD-free overfit signal) ---
+        # Held-out analytic-MSE validation (CMMD-free overfit signal).
         improved = False
         v_overall = None
         if val_loader is not None and (

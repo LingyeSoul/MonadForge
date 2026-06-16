@@ -17,9 +17,6 @@ from library.runtime.device import clean_memory_on_device
 logger = logging.getLogger(__name__)
 
 
-# region Image resize utilities
-
-
 def pil_resize(image, size, interpolation):
     has_alpha = image.shape[2] == 4 if len(image.shape) == 3 else False
 
@@ -122,9 +119,6 @@ def validate_interpolation_fn(interpolation_str: str) -> bool:
         "area",
         "box",
     ]
-
-
-# endregion
 
 
 IMAGE_EXTENSIONS = [

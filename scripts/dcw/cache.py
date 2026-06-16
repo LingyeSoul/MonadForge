@@ -42,8 +42,7 @@ def pick_cached_samples(
     remaining candidates' shuffle order is independent of pool size.
     """
     candidates: list[tuple[str, Path, Path]] = []
-    # rglob so nested caches are walked; the TE sidecar lives in the same
-    # subdir as its latent NPZ, so we resolve it relative to npz_path.parent.
+    # rglob to walk nested caches; the TE sidecar lives in the latent's subdir.
     for npz_path in sorted(dataset_dir.rglob("*_anima.npz")):
         m = _LATENT_RE.match(npz_path.name)
         if not m:

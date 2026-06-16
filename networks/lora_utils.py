@@ -148,7 +148,6 @@ def load_safetensors_with_lora(
         weight_transform_hooks (Optional[WeightTransformHooks]): Hooks for transforming weights during loading.
     """
 
-    # if the file name ends with 00001-of-00004 etc, we need to load the files with the same prefix
     if isinstance(model_files, str):
         model_files = [model_files]
 
@@ -208,16 +207,12 @@ def load_safetensors_with_lora(
 
             original_device = model_weight.device
             if original_device != calc_device:
-                model_weight = model_weight.to(
-                    calc_device
-                )  # to make calculation faster
+                model_weight = model_weight.to(calc_device)
 
             for lora_weight_keys, lora_sd, multiplier in zip(
                 list_of_lora_weight_keys, lora_weights_list, lora_multipliers
             ):
-                lora_name_without_prefix = model_weight_key.rsplit(".", 1)[
-                    0
-                ]  # remove trailing ".weight"
+                lora_name_without_prefix = model_weight_key.rsplit(".", 1)[0]
                 found = False
                 for prefix in ["lora_unet_", ""]:
                     lora_name = prefix + lora_name_without_prefix.replace(".", "_")
@@ -284,9 +279,7 @@ def load_safetensors_with_lora(
                     lora_weight_keys.remove(alpha_key)
 
             if not keep_on_calc_device and original_device != calc_device:
-                model_weight = model_weight.to(
-                    original_device
-                )  # move back to original device
+                model_weight = model_weight.to(original_device)
             return model_weight
 
         weight_hook = weight_hook_func
@@ -303,8 +296,6 @@ def load_safetensors_with_lora(
 
     for lora_weight_keys in list_of_lora_weight_keys:
         if len(lora_weight_keys) > 0:
-            # if there are still LoRA keys left, it means they are not used in the model
-            # this is a warning, not an error
             logger.warning(
                 f"Warning: not all LoRA keys are used: {', '.join(lora_weight_keys)}"
             )

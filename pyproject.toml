@@ -73,6 +73,7 @@ dependencies = [
     "controlnet-aux>=0.0.10",
     "scikit-learn>=1.9.0rc1",
     "datasets>=4.8.5",
+    "send2trash>=2.1.0",
 ]
 
 [project.optional-dependencies]

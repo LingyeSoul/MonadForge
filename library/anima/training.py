@@ -1,5 +1,3 @@
-# Anima Training Utilities
-
 import argparse
 import gc
 import math
@@ -120,9 +118,6 @@ def anima_smart_shuffle_caption(flex_tokens: List[str]) -> List[str]:
         random.shuffle(shuffled)
         result.extend(header + shuffled)
     return result
-
-
-# Anima-specific training arguments
 
 
 def add_anima_training_arguments(parser: argparse.ArgumentParser):
@@ -272,10 +267,9 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Per-image robust scale for the diff map: values at/above this "
         "quantile saturate to full weight. Default 0.9.",
     )
-    # --- BYG (Bootstrap Your Generator) unpaired editing ----------------------
-    # An owning-step method: a plain rank-64 LoRA trained with a multi-forward
-    # objective (bootstrap rollout + DDS prior + cycle + identity), conditioned
-    # on a token-concat source latent. No edited target ever exists. See
+    # BYG (Bootstrap Your Generator): owning-step rank-64 LoRA, multi-forward
+    # objective (bootstrap rollout + DDS prior + cycle + identity), conditioned on
+    # a token-concat source latent; no edited target exists. See
     # docs/proposal/byg_unpaired_editing.md and networks/methods/byg.py.
     parser.add_argument(
         "--use_byg",
@@ -473,7 +467,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         + "",
     )
 
-    # EMA arguments
     parser.add_argument(
         "--ema",
         action="store_true",
@@ -515,8 +508,8 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Path to EMA model safetensors file to resume EMA state from a previous run",
     )
 
-    # Variance-reduced flow-matching loss (AsymFlow §5.2, arXiv:2605.12964).
-    # See bench/fm_vr_headroom/proposal.md. Gated off by default.
+    # Variance-reduced flow-matching loss (AsymFlow §5.2, arXiv:2605.12964;
+    # bench/fm_vr_headroom/proposal.md). Gated off by default.
     parser.add_argument(
         "--vr_loss_weight",
         type=float,
@@ -550,7 +543,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "λ_ema ← (1−β)·λ_ema + β·λ_batch. Default 0.01 over typically B=4.",
     )
 
-    # Functional MSE loss against inversion runs (postfix-func)
     parser.add_argument(
         "--inversion_dir",
         type=str,
@@ -574,10 +566,9 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "outputs for functional MSE loss.",
     )
 
-    # Liveness audit (issues.md P1.1). The audit itself is always on: a
-    # configured-ON aux loss (repa / functional / vr / fera_fecl /
-    # soft_tokens_contrastive) that never consumes its aux input ERROR-logs
-    # with a greppable `LIVENESS:` prefix at step 25 and at run end.
+    # Liveness audit is always on: a configured-ON aux loss that never consumes
+    # its aux input ERROR-logs with a greppable `LIVENESS:` prefix at step 25 and
+    # run end. This flag escalates that to a hard abort.
     parser.add_argument(
         "--liveness_strict",
         action="store_true",
@@ -593,9 +584,6 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         help="Number of inversion runs expected per image (aggregate_by of make invert). "
         "Each training step samples one run stochastically. Default: 3.",
     )
-
-
-# Loss weighting
 
 
 def compute_loss_weighting_for_anima(
@@ -617,7 +605,6 @@ def compute_loss_weighting_for_anima(
     return weighting
 
 
-# Parameter groups (6 groups with separate LRs)
 def get_anima_param_groups(
     dit,
     base_lr: float,
@@ -660,7 +647,6 @@ def get_anima_param_groups(
     llm_adapter_params = []
 
     for name, p in dit.named_parameters():
-        # Store original name for debugging
         p.original_name = name
 
         if "llm_adapter" in name:
@@ -710,9 +696,6 @@ def get_anima_param_groups(
     return param_groups
 
 
-# EMA save helpers
-
-
 def _get_ema_filename(ckpt_file):
     """Get EMA filename by adding ema_ prefix to the basename of a checkpoint file."""
     dirpath = os.path.dirname(ckpt_file)
@@ -754,7 +737,6 @@ def _save_ema_model(ema, dit, ckpt_file, sai_metadata, save_dtype):
     del dit_sd
 
 
-# Save functions
 def save_anima_model_on_train_end(
     args: argparse.Namespace,
     save_dtype: torch.dtype,
@@ -867,12 +849,11 @@ def do_sample(
     """
     from library.inference import sampling as inference_utils
 
-    # Latent shape: (1, 16, 1, H/8, W/8) for single image
+    # 5D latent (1, 16, T=1, H/8, W/8) — singleton temporal axis at dim 2.
     latent_h = height // 8
     latent_w = width // 8
     latent = torch.zeros(1, 16, 1, latent_h, latent_w, device=device, dtype=dtype)
 
-    # Generate noise
     if seed is not None:
         generator = torch.manual_seed(seed)
     else:
@@ -885,13 +866,11 @@ def do_sample(
         .to(device)
     )
 
-    # Timestep schedule: linear from 1.0 to 0.0
     sigmas = torch.linspace(1.0, 0.0, steps + 1, device=device, dtype=dtype)
     flow_shift = float(flow_shift)
     if flow_shift != 1.0:
         sigmas = (sigmas * flow_shift) / (1 + (flow_shift - 1) * sigmas)
 
-    # Start from pure noise
     x = noise.clone()
 
     # Padding mask (zeros = no padding)
@@ -910,7 +889,7 @@ def do_sample(
 
     for i in tqdm(range(steps), desc="Sampling", disable=not show_progress):
         sigma = sigmas[i]
-        t = sigma.unsqueeze(0)  # (1,)
+        t = sigma.unsqueeze(0)
 
         if use_cfg:
             # CFG: two separate passes to reduce memory usage
@@ -983,7 +962,6 @@ def sample_images(
         logger.error(f"No prompt file: {args.sample_prompts}")
         return
 
-    # Unwrap models
     dit = accelerator.unwrap_model(dit)
     if text_encoder is not None:
         text_encoder = accelerator.unwrap_model(text_encoder)
@@ -999,7 +977,6 @@ def sample_images(
     save_dir = os.path.join(args.output_dir, "sample")
     os.makedirs(save_dir, exist_ok=True)
 
-    # Save RNG state
     rng_state = torch.get_rng_state()
     cuda_rng_state = None
     try:
@@ -1043,20 +1020,12 @@ def sample_images(
         # Letting the caching allocator hold its blocks keeps usage flat (peak
         # settles at max(training, sampling) and stays there).
 
-    # Decode this round's stashed latents to PNG right away so each epoch's
-    # samples are viewable as soon as they're generated, rather than only after
-    # the whole run finishes. Deferred to the end-of-training
-    # decode_pending_samples in train.py for block-swapping runs (tight cards,
-    # where the repeated full-DiT CPU↔GPU transfer below isn't worth paying every
-    # sample event); see _should_decode_inline. Main process only, mirroring the
-    # end-of-training decode.
+    # Decode this round's latents now for per-epoch visibility; block-swap runs
+    # defer to end-of-training decode_pending_samples (see _should_decode_inline).
+    # Main process only.
     if accelerator.is_main_process and _should_decode_inline(args):
-        # VAE decode needs the VAE resident on the GPU. Rather than let the DiT
-        # and VAE be co-resident, fully evict the DiT to CPU first, decode, then
-        # bring it back and restore block-swap placement so training resumes
-        # unchanged — the same load/unload discipline the deferred path gets for
-        # free once the loop has torn the DiT down. Mirrors train.py's
-        # end-of-training teardown.
+        # Evict the DiT to CPU before the VAE decode so the two are never
+        # co-resident, then restore block-swap placement. Mirrors train.py teardown.
         dit.to("cpu")
         clean_memory_on_device(accelerator.device)
         try:
@@ -1175,7 +1144,6 @@ def _sample_image_inference(
         f"  prompt: {prompt}, size: {width}x{height}, steps: {sample_steps}, scale: {scale}, flow_shift: {flow_shift}, seed: {seed}, sampler: {sampler}"
     )
 
-    # Encode prompt
     def encode_prompt(prpt):
         if sample_prompts_te_outputs and prpt in sample_prompts_te_outputs:
             return sample_prompts_te_outputs[prpt]
@@ -1194,7 +1162,6 @@ def _sample_image_inference(
 
     prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask = encoded
 
-    # Convert to tensors if numpy
     if isinstance(prompt_embeds, np.ndarray):
         prompt_embeds = torch.from_numpy(prompt_embeds).unsqueeze(0)
         attn_mask = torch.from_numpy(attn_mask).unsqueeze(0)
@@ -1206,7 +1173,6 @@ def _sample_image_inference(
     t5_input_ids = t5_input_ids.to(accelerator.device, dtype=torch.long)
     t5_attn_mask = t5_attn_mask.to(accelerator.device)
 
-    # Process through LLM adapter if available
     if dit.use_llm_adapter:
         crossattn_emb = dit.llm_adapter(
             source_hidden_states=prompt_embeds,
@@ -1223,7 +1189,6 @@ def _sample_image_inference(
     else:
         crossattn_emb = prompt_embeds
 
-    # Encode negative prompt for CFG
     neg_crossattn_emb = None
     if scale > 1.0 and negative_prompt is not None:
         neg_encoded = encode_prompt(negative_prompt)
@@ -1269,7 +1234,6 @@ def _sample_image_inference(
         logger.info(f"  loading controlnet image: {controlnet_image_path}")
         try:
             from library.datasets.image_utils import load_image
-            import numpy as np
 
             cn_img = load_image(controlnet_image_path)
             if cn_img is not None:

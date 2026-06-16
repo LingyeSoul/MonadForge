@@ -58,12 +58,10 @@ from library.inference.uncond import (  # noqa: E402
 )
 from scripts.distill_mod.synth import generate_synthetic_latents  # noqa: E402
 
-# Phase 2 default synthesis allowlist: DCW's top-5 (portrait-heavy) buckets plus
-# the next 3 most-frequent buckets in post_image_dataset/lora/ (recounted
-# 2026-05-23) — all CONSTANT_TOKEN_BUCKETS training shapes that add the
-# near-square/landscape aspects the DCW-5 set lacks. Not folded into
-# DCW_ASPECT_BUCKETS — that tuple's order is the canonical aspect_id index for
-# shipped fusion-head checkpoints (see library/datasets/buckets.py).
+# Phase 2 synthesis allowlist: DCW's top-5 buckets + the next 3 most-frequent
+# in post_image_dataset/lora/, adding the near-square/landscape aspects DCW-5
+# lacks. NOT folded into DCW_ASPECT_BUCKETS — that tuple's order is the
+# canonical aspect_id index for shipped fusion-head checkpoints.
 _DEFAULT_SYNTH_BUCKETS: tuple[str, ...] = DCW_ASPECT_NAMES + (
     "1120x960",  # near-square portrait
     "1024x1008",  # ~square
@@ -233,7 +231,7 @@ def main() -> None:
     synth_dir = Path(args.synth_dir)
     uncond_dir = Path(args.uncond_dir)
 
-    # ── Phase 1 ────────────────────────────────────────────────────────
+    # Phase 1 — uncond sidecar.
     uncond_path = uncond_dir / UNCOND_TE_FILENAME
     if not args.skip_uncond:
         uncond_path = stage_uncond_sidecar(
@@ -250,7 +248,7 @@ def main() -> None:
             f"Run without --skip_uncond first."
         )
 
-    # ── Phase 2 ────────────────────────────────────────────────────────
+    # Phase 2 — synthetic latents.
     if args.skip_synth:
         logger.info("--skip_synth set; not generating synthetic latents.")
         return

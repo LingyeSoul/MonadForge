@@ -323,19 +323,11 @@ def build_inference_bundle(
     )
 
 
-# --- Training-side build helpers -------------------------------------------
-#
-# ``build_anima`` above owns the *inference / existing-adapter* path: it loads a
-# checkpoint with ``create_network_from_weights`` + ``load_weights``. The
-# distillation trainers (``scripts/distill_{mod,spd,turbo}.py``) instead build a
-# *fresh, untrained* network (or train an in-model MLP), each with its own
-# ordering of freeze / optimizer / per-forward swap toggles — so they can't call
-# ``build_anima`` wholesale. These three composable helpers factor out the parts
-# that were copied verbatim across all three (the block-swap placement, the
-# dynamo-cache-bump + ``compile_blocks``, and the grad-checkpoint toggle) without
-# imposing a single ordering. Call them in whatever order your trainer needs;
-# the compile-after-monkey-patch invariant still applies — run
-# ``compile_dit_blocks`` only after the network's ``apply_to``.
+# Training-side build helpers: the distillation trainers build a fresh untrained
+# network with their own freeze/optimizer/swap ordering, so can't call build_anima
+# wholesale. These composable helpers factor out the copied parts without imposing
+# an order; the compile-after-apply invariant still applies (compile_dit_blocks
+# only after the network's apply_to).
 
 
 def place_dit_for_training(
@@ -658,13 +650,11 @@ def compile_dit_blocks_for_pool(
     counts = {int(c) for c in token_counts}
     n_shapes = max(1, len(counts))
     if dynamic_seq and counts:
-        # ONE symbolic-seq graph for every shape: mark_dynamic on the seq axis,
-        # bounded by the pool's real token range.
+        # one symbolic-seq graph for every shape, bounded by the pool's token range
         n_token_families: Optional[int] = n_shapes
         seq_range: Optional[tuple] = (min(counts), max(counts))
     else:
-        # Static path: one graph per distinct token count, each at its real
-        # token count (no padding). compile_blocks keys per token count.
+        # static path: one graph per distinct token count (no padding)
         n_token_families = None
         seq_range = None
     result = PoolCompileResult(n_shapes, n_token_families, seq_range)
@@ -672,16 +662,13 @@ def compile_dit_blocks_for_pool(
     if not enabled:
         return result
 
-    # (2) Partitioner saved-activation cap — see _apply_activation_memory_budget
-    # for the ordering constraint and the grad-ckpt CheckpointError interaction.
     _apply_activation_memory_budget(
         activation_memory_budget, grad_ckpt=grad_ckpt, logger=logger
     )
 
-    # (3) Isolate the persistent compile caches per signature — entries compiled
-    # under different seq-range bounds otherwise poison this run's dynamic-seq
-    # marks (AOTAutogradCache replays a stale narrow guard → ConstraintViolationError).
-    # Same signature → warm-cache reuse shared with the other training entry points.
+    # per-signature cache dir: entries compiled under different seq-range bounds
+    # otherwise poison this run's dynamic-seq marks (AOTAutogradCache replays a
+    # stale narrow guard → ConstraintViolationError).
     isolate_compile_cache(
         compile_signature(
             n_token_families=n_token_families,
@@ -691,7 +678,7 @@ def compile_dit_blocks_for_pool(
             mode=mode,
         )
     )
-    # (4) Compile each Block._forward (compile-after-apply invariant).
+    # compile-after-apply invariant
     compile_dit_blocks(
         anima,
         enabled=True,

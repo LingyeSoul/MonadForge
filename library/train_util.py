@@ -62,8 +62,7 @@ def get_sai_model_spec_dataclass(
 
     title = args.metadata_title if args.metadata_title is not None else args.output_name
 
-    # Anima is a continuous-sigma flow model; the SAI-spec discrete timestep
-    # range (SD-era min/max_timestep) does not apply.
+    # Anima is a continuous-sigma flow model; the SAI-spec discrete timestep range does not apply.
     timesteps = None
 
     extracted_metadata = {}
@@ -145,7 +144,6 @@ def append_lr_to_logs_with_names(logs, lr_scheduler, optimizer_type, names):
 
 
 def line_to_prompt_dict(line: str) -> dict:
-    # subset of gen_img_diffusers
     prompt_args = line.split(" --")
     prompt_dict = {}
     prompt_dict["prompt"] = prompt_args[0]
@@ -220,7 +218,6 @@ def line_to_prompt_dict(line: str) -> dict:
 
 
 def load_prompts(prompt_file: str) -> List[Dict]:
-    # read prompts
     if prompt_file.endswith(".txt"):
         with open(prompt_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -237,7 +234,6 @@ def load_prompts(prompt_file: str) -> List[Dict]:
         with open(prompt_file, "r", encoding="utf-8") as f:
             prompts = json.load(f)
 
-    # preprocess prompts
     for i in range(len(prompts)):
         prompt_dict = prompts[i]
         if isinstance(prompt_dict, str):
@@ -291,6 +287,3 @@ def init_trackers(
             wandb_tracker.define_metric("val_step", hidden=True)
 
             wandb_tracker.define_metric("global_step", hidden=True)
-
-
-# endregion

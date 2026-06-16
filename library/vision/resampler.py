@@ -75,9 +75,9 @@ class PerceiverResampler(nn.Module):
         """Materialize a writable (B, n_slots, d_model) copy of the learned
         queries — for callers that want to pre-fill specific slots before the
         backbone runs (e.g. anchor injection)."""
-        # clone() not contiguous(): when B==1, expand(1,-1,-1) is a contiguous
-        # view of the leaf Parameter, so .contiguous() is a no-op and in-place
-        # writes by the caller would hit "view of a leaf Variable" errors.
+        # clone() not contiguous(): at B==1, expand is a contiguous view of the leaf
+        # Parameter so .contiguous() is a no-op and caller in-place writes would hit
+        # "view of a leaf Variable" errors.
         return self.queries.expand(B, -1, -1).clone()
 
     def forward(

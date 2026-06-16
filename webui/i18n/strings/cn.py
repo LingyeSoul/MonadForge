@@ -134,6 +134,20 @@ STRINGS: dict[str, str] = {
     "preprocess_status_no_resized": "尚无已调整大小的图像。",
     "preprocess_open_dataset_dir": "打开cache文件夹",
     "preprocess_open_dataset_dir_tooltip": "在文件管理器中打开 post_image_dataset/ 文件夹（已调整大小的图像 + 缓存）。",
+    "preprocess_clear_scope_cache": "删除当前 scope 缓存",
+    "preprocess_clear_scope_cache_tooltip": "删除当前 path_scope 对应的已调整大小图像和 LoRA 缓存文件夹。",
+    "preprocess_clear_scope_cache_all_scope": "无 scope / 全部",
+    "preprocess_clear_scope_cache_empty": "没有可删除的已调整大小图像或 LoRA 缓存文件。",
+    "preprocess_clear_scope_cache_outside_root": "GUI 不会删除项目文件夹外的路径:\n{path}",
+    "preprocess_clear_scope_cache_confirm": (
+        "删除当前 scope 的预处理文件？\n\n"
+        "scope: {scope}\n"
+        "resize: {resized}\n  {resized_count} 个文件\n"
+        "lora: {lora}\n  {lora_count} 个文件\n\n"
+        "删除后需要重新运行预处理来重新生成。"
+    ),
+    "preprocess_clear_scope_cache_done": "已删除 {count} 个预处理文件。",
+    "preprocess_invalid_path_scope": "path_scope 值无效: {value}",
     "preprocess_log_placeholder": "预处理输出将显示在此处……",
     "preprocess_save_settings": "保存",
     "preprocess_save_settings_tip": "将这些设置保存到所选 GUI method 配置。运行遮罩时，当前配置的遮罩设置会随任务一起提交。",
@@ -301,14 +315,72 @@ STRINGS: dict[str, str] = {
     "dataset_search_placeholder": "搜索文件名……",
     "dataset_sort_asc_tooltip": "升序 A→Z (点击反转)",
     "dataset_sort_desc_tooltip": "降序 Z→A (点击反转)",
+    "dataset_group_first_tooltip": "分组优先排序：将已分组的图片跨文件夹汇总到最上方显示（未分组图片在下方以文件夹树显示）。",
+    "dataset_view_group": "分组",
+    "dataset_view_tree": "树形",
     "dataset_mask_overlay": "显示蒙版覆盖",
-    "dataset_view_list_tooltip": "平铺列表视图 (点击切换为树状视图)",
-    "dataset_view_tree_tooltip": "文件夹树视图 (点击切换为列表视图)",
+    "dataset_preprocess_use_short": "使用 (A)",
+    "dataset_preprocess_use_tooltip": "将当前图像标记为参与预处理。不会修改源文件。",
+    "dataset_preprocess_skip_short": "跳过 (S)",
+    "dataset_preprocess_skip_tooltip": "将当前图像标记为在预处理 resize 阶段跳过。不会修改源文件。",
+    "dataset_preprocess_clear_short": "清除 (F)",
+    "dataset_preprocess_clear_tooltip": "清除当前图像的使用/跳过/移动标记。可通过右侧菜单清除所有标记。",
+    "dataset_preprocess_clear_all": "清除所有标记",
+    "dataset_preprocess_save": "保存预处理决定",
+    "dataset_preprocess_save_tooltip": "将逐图像使用/跳过/移动/裁剪决定保存为预处理使用的 JSON。移动标记即使在文件实际移动前也会从预处理中排除。",
+    "dataset_preprocess_saved": "预处理决定已保存:\n{path}",
+    "dataset_preprocess_decision_none": "无预处理决定",
+    "dataset_preprocess_decision_use": "预处理决定: 使用",
+    "dataset_preprocess_decision_skip": "预处理决定: 跳过",
+    "dataset_preprocess_decision_crop": "预处理决定: 应用裁剪",
+    "dataset_preprocess_decision_use_crop": "预处理决定: 使用 + 应用裁剪",
+    "dataset_preprocess_decision_skip_crop": "预处理决定: 跳过（已保存裁剪，但跳过优先）",
+    "dataset_preprocess_decision_move": "当前状态: 已标记为移动",
+    "dataset_preprocess_decision_move_crop": "当前状态: 已标记为移动（裁剪范围也已保存）",
+    "dataset_crop_preview": "显示裁剪",
+    "dataset_crop_preview_tooltip": "预览预处理 resize 阶段将应用的裁剪范围。不会修改源文件。",
+    "dataset_crop_margin": "边距:",
+    "dataset_crop_margin_left": "左",
+    "dataset_crop_margin_top": "上",
+    "dataset_crop_margin_right": "右",
+    "dataset_crop_margin_bottom": "下",
+    "dataset_crop_margin_tooltip": "从源图像各边裁掉的百分比。",
+    "dataset_crop_margin_apply": "设置范围",
+    "dataset_crop_margin_apply_tooltip": "按当前边距百分比保存预处理裁剪范围。",
+    "dataset_crop_margin_apply_visible": "应用到当前列表",
+    "dataset_crop_margin_apply_all": "应用到全部图像",
+    "dataset_crop_clear": "清除裁剪",
+    "dataset_crop_clear_tooltip": "移除当前图像的预处理裁剪决定。",
+    "dataset_crop_rect": "范围 {bx},{by} {bw}x{bh} · 最终 {x},{y} {w}x{h}",
+    "dataset_image_meta_empty": "无图像",
+    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_delete": "移动 (D)",
+    "dataset_delete_tooltip": "将用 Delete 或 D 键标记的图像和 sidecar 移动到 post_image_dataset/moved/。",
+    "dataset_delete_confirm_title": "移动图像",
+    "dataset_delete_confirm_body": "将 {n} 张图像及 sidecar 移动到 post_image_dataset/moved/ 吗？",
+    "dataset_delete_failed": "部分图像无法移动:\n{err}",
+    "dataset_group_label": "分组 {n} — {size} 张",
+    "dataset_group_rebuild": "分组",
+    "dataset_group_rebuild_tooltip": "按 PE-Spatial 视觉相似度对图像分组 (按作者). 在任务队列中运行.",
+    "dataset_group_queued": "分组任务已加入队列 (任务 {job_id}). 完成后重新加载此目录即可看到分组.",
     "n_images_filtered": "{shown} / {total} 张图像",
     "caption": "标注:",
     "no_caption": "(无标注)",
     "caption_save": "保存",
     "caption_revert": "还原",
+    "caption_autotag": "自动标注",
+    "caption_autotag_tooltip": (
+        "对该图像运行 Anima Tagger，并将预测的标签追加到标注中。"
+        "模型在首次使用时自动下载；确认结果后保存即可写入 .txt 文件。"
+    ),
+    "caption_autotag_running": "自动标注中……",
+    "caption_autotag_loading": "正在加载标注器……",
+    "caption_autotag_ready": "标注器已加载 · 待命",
+    "caption_autotag_busy": (
+        "GPU 正被其他任务（训练 / 预处理 / 分组）占用。完成后再重试自动标注。"
+    ),
+    "caption_autotag_error": "自动标注失败：{err}",
+    "caption_autotag_empty": "标注器未为该图像返回任何标签。",
     "caption_versions": "历史……",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -337,8 +409,25 @@ STRINGS: dict[str, str] = {
     "language": "语言:",
     # Settings dialog
     "settings_btn": "⚙ 设置",
-    "settings_btn_tooltip": "应用设置 —— 语言、MCP 服务器注册",
+    "settings_btn_tooltip": "应用设置 —— 语言、偏好设置、MCP 服务器注册",
     "settings_title": "设置",
+    "settings_prefs_header": "偏好设置",
+    "settings_autotag_confidence": "自动打标置信度:",
+    "settings_autotag_confidence_tooltip": (
+        "在打标器各标签阈值之上额外应用的概率下限（0–1）。"
+        "数值越高，保留的标签越少但越可靠。默认 0.50。"
+    ),
+    "settings_theme": "主题:",
+    "settings_theme_tooltip": (
+        "界面整体配色主题，立即生效；关闭设置窗口时会重建窗口以完全重绘。"
+    ),
+    "settings_font_size": "字体大小:",
+    "settings_font_size_tooltip": (
+        "界面字体的磅值大小，立即生效；关闭设置窗口时会重建窗口以重新布局各面板。默认 10。"
+    ),
+    "settings_theme_dark": "深色",
+    "settings_theme_light": "浅色",
+    "settings_theme_sepia": "护眼棕",
     "settings_mcp_header": "MCP 服务器（智能体接入）",
     "settings_mcp_desc": "将本地训练守护进程暴露给 MCP 客户端（Claude Code、Claude Desktop 等）。"
     "在终端中运行以下命令即可注册到 Claude Code:",
@@ -372,6 +461,8 @@ STRINGS: dict[str, str] = {
     "update_btn_available_tooltip": "有新版本 {v} 可用 — 点击查看发布说明",
     "report_issue": "提交问题",
     "report_issue_tooltip": "在浏览器中打开 GitHub 问题追踪",
+    "visit_github": "访问 GitHub 页面",
+    "open_in_system_viewer": "在系统查看器中打开",
     # Models dialog
     "models_title": "下载模型",
     "models_intro": "在下方选择模型组,或使用「全部下载」获取标准套件 "

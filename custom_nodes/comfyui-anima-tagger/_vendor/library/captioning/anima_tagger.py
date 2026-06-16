@@ -587,13 +587,23 @@ class AnimaTagger:
         out["kept"] = kept
         return out
 
-    def predict_caption(self, pil_img: Image.Image) -> str:
-        """Image → canonical Anima caption string (rating + slotted tags)."""
+    def predict_caption(self, pil_img: Image.Image, min_confidence: float = 0.0) -> str:
+        """Image → canonical Anima caption string (rating + slotted tags).
+
+        ``min_confidence`` (0–1) is an extra probability floor applied on top
+        of the per-tag F1 thresholds the model was calibrated with: any kept
+        tag whose sigmoid probability is below it is dropped. 0.0 (default)
+        leaves the model's own threshold decisions untouched. The rating slot
+        is always emitted regardless of this floor.
+        """
         out = self.predict(pil_img)
+        kept = out["kept"]
+        if min_confidence > 0.0:
+            kept = {name: p for name, p in kept.items() if p >= min_confidence}
         kept_idxs = {
             self.tag_entries[i].index
             for i, name in enumerate([e.name for e in self.tag_entries])
-            if name in out["kept"]
+            if name in kept
         }
         # Slot tags by canonical category order, within-slot by median_pos.
         slotted: Dict[str, List[str]] = {cat: [] for cat in SLOT_ORDER}

@@ -47,31 +47,28 @@ def cmd_download_sam3(_extra):
 
 
 def cmd_download_pe(_extra):
-    # PE-Core-L14-336 — only the .pt checkpoint is needed; vision tower is
-    # vendored at library/models/pe.py (no perception_models clone required).
+    # Only the .pt is needed; vision tower is vendored at library/models/pe.py.
     dst = ROOT / "models" / "pe"
-    if _skip("PE-Core", [dst / "PE-Core-L14-336.pt"], _extra):
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "hf",
-            "download",
-            "facebook/PE-Core-L14-336",
-            "PE-Core-L14-336.pt",
-            "--local-dir",
-            "models/pe",
-        ]
-    )
-    # PE-Spatial-B16-512 is the default REPA alignment encoder, so fetch it
-    # alongside PE-Core whenever PE is downloaded.
+    # Skip only the PE-Core fetch — still fall through to PE-Spatial below, which
+    # may be missing even when PE-Core is on disk.
+    if not _skip("PE-Core", [dst / "PE-Core-L14-336.pt"], _extra):
+        dst.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                "hf",
+                "download",
+                "facebook/PE-Core-L14-336",
+                "PE-Core-L14-336.pt",
+                "--local-dir",
+                "models/pe",
+            ]
+        )
+    # PE-Spatial is the default REPA alignment encoder — fetch it alongside PE-Core.
     cmd_download_pe_spatial(_extra)
 
 
 def cmd_download_pe_spatial(_extra):
-    # PE-Spatial-B16-512 — auxiliary encoder for the Anima Tagger's
-    # dual-encoder configuration. Same vendored vision tower (different
-    # config entry); only the .pt is fetched here.
+    # Auxiliary encoder for the Anima Tagger's dual-encoder config; only the .pt.
     dst = ROOT / "models" / "pe"
     if _skip("PE-Spatial", [dst / "PE-Spatial-B16-512.pt"], _extra):
         return
@@ -89,10 +86,8 @@ def cmd_download_pe_spatial(_extra):
 
 
 def cmd_download_tagger(_extra):
-    # Just the Anima Tagger v2 ``vocab.json`` (~0.7 MB) — the only piece
-    # ``make caption-index`` / ``make preprocess`` need to classify tags. The
-    # full tagger model is not fetched here (train it locally or pull it
-    # separately); this deliberately won't clobber a local ``model.safetensors``.
+    # Just the Tagger ``vocab.json`` (~0.7 MB) that caption-index/preprocess need.
+    # The full model is not fetched here, so this won't clobber a local model.safetensors.
     dst = ROOT / "models" / "captioners" / "anima-tagger-v2"
     if _skip("Anima Tagger vocab", [dst / "vocab.json"], _extra):
         return
@@ -102,20 +97,11 @@ def cmd_download_tagger(_extra):
             "hf",
             "download",
             "sorryhyun/anima-tagger",
-            "v2/vocab.json",
+            "vocab.json",
             "--local-dir",
             "models/captioners/anima-tagger-v2",
         ]
     )
-    # The file lands under the repo's ``v2/`` prefix; flatten it up one level.
-    sub = dst / "v2"
-    if sub.exists():
-        for f in sub.iterdir():
-            target = dst / f.name
-            if target.exists():
-                target.unlink()
-            shutil.move(str(f), str(target))
-        sub.rmdir()
 
 
 def cmd_download_mit(_extra):
@@ -215,11 +201,9 @@ def cmd_download_sketch2manga(_extra):
 
 
 def cmd_download_models(_extra):
-    # Continue-on-failure: a gated component the user hasn't been granted
-    # (SAM3) or hasn't authed for must not abort the rest, and — crucially —
-    # must not force a re-download of the components that DID succeed on the
-    # retry (each is skip-if-present now). ``run`` calls ``sys.exit`` on a
-    # non-zero subprocess, so we catch ``SystemExit`` per component.
+    # Continue-on-failure: a gated/un-authed component (SAM3) must not abort the
+    # rest. ``run`` sys.exits on a non-zero subprocess, so catch SystemExit per
+    # component; each is skip-if-present so the retry doesn't re-download successes.
     components = [
         ("Anima base", cmd_download_anima),
         ("SAM3 (gated)", cmd_download_sam3),

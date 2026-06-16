@@ -196,9 +196,6 @@ def resolve_seed(args: argparse.Namespace) -> int:
     return args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
 
 
-# region Tiling helpers
-
-
 def compute_tile_positions(
     h_latent: int, w_latent: int, tile_size: int, overlap: int
 ) -> List[Tuple[int, int]]:
@@ -243,26 +240,16 @@ def create_tile_blend_weight(
     ramp = torch.linspace(0.0, 1.0, overlap, device=device, dtype=dtype)
     ramp = (1.0 - torch.cos(math.pi * ramp)) / 2.0
 
-    # Top edge
     if y > 0:
         weight[:, :, :, :overlap, :] *= ramp[None, None, None, :, None]
-    # Bottom edge
     if y + tile_h < h_latent:
         weight[:, :, :, -overlap:, :] *= ramp.flip(0)[None, None, None, :, None]
-    # Left edge
     if x > 0:
         weight[:, :, :, :, :overlap] *= ramp[None, None, None, None, :]
-    # Right edge
     if x + tile_w < w_latent:
         weight[:, :, :, :, -overlap:] *= ramp.flip(0)[None, None, None, None, :]
 
     return weight
-
-
-# endregion
-
-
-# region Tiled generation
 
 
 def generate_body_tiled(
@@ -308,7 +295,6 @@ def generate_body_tiled(
     shape = (1, num_channels_latents, 1, h_latent, w_latent)
     latents = randn_tensor(shape, generator=seed_g, device=device, dtype=torch.bfloat16)
 
-    # Compute tile positions and precompute blend weights
     positions = compute_tile_positions(h_latent, w_latent, tile_size, overlap)
     logger.info(
         f"Tiled diffusion: {len(positions)} tiles, tile_size={tile_size}, overlap={overlap}"
@@ -354,7 +340,6 @@ def generate_body_tiled(
         else None
     )
 
-    # P-GRAFT: get network reference for mid-denoising cutoff
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
 
@@ -404,7 +389,6 @@ def generate_body_tiled(
 
                     bw = blend_weights[(y, x)]
 
-                    # Conditional pass
                     if anima.blocks_to_swap:
                         anima.prepare_block_swap_before_forward()
                     # Caption-dependent routers (chimera ContentRouter and the
@@ -428,7 +412,6 @@ def generate_body_tiled(
                     noise_acc[:, :, :, y : y + tile_h, x : x + tile_w] += tile_pred * bw
                     weight_acc[:, :, :, y : y + tile_h, x : x + tile_w] += bw
 
-                    # Unconditional pass
                     if do_cfg:
                         if anima.blocks_to_swap:
                             anima.prepare_block_swap_before_forward()
@@ -496,12 +479,6 @@ def generate_body_tiled(
     return latents
 
 
-# endregion
-
-
-# region Core generation
-
-
 def generate_body(
     args: Union[argparse.Namespace, SimpleNamespace],
     anima: anima_models.Anima,
@@ -531,7 +508,6 @@ def generate_body(
 
     height, width = check_inputs(args)
 
-    # Dispatch to tiled diffusion if enabled and latent exceeds tile size
     h_latent = height // 8
     w_latent = width // 8
     if (
@@ -541,7 +517,6 @@ def generate_body(
     ):
         return generate_body_tiled(args, anima, context, context_null, device, seed)
 
-    # Create latents if not provided
     if latents is None:
         seed_g = torch.Generator(device="cpu")
         seed_g.manual_seed(seed if isinstance(seed, int) else seed[0])
@@ -563,8 +538,6 @@ def generate_body(
     logger.info(
         f"Image size: {height}x{width} (HxW), infer_steps: {args.infer_steps}, batch: {bs}"
     )
-
-    # image generation ######
 
     logger.info(f"Prompt: {context['prompt']}")
 
@@ -591,7 +564,6 @@ def generate_body(
         else None
     )
 
-    # Create padding mask
     padding_mask = torch.zeros(
         bs, 1, h_latent, w_latent, dtype=torch.bfloat16, device=device
     )
@@ -600,7 +572,6 @@ def generate_body(
         f"Embed: {embed.shape}, negative_embed: {negative_embed.shape}, latents: {latents.shape}"
     )
 
-    # Expand embeddings to batch size
     if embed.shape[0] < bs:
         embed = embed.expand(bs, -1, -1)
     if negative_embed.shape[0] < bs:
@@ -609,7 +580,6 @@ def generate_body(
     embed = embed.to(torch.bfloat16)
     negative_embed = negative_embed.to(torch.bfloat16)
 
-    # Prepare timesteps
     timesteps, sigmas = inference_utils.get_timesteps_sigmas(
         args.infer_steps,
         args.flow_shift,
@@ -664,7 +634,6 @@ def generate_body(
     elif args.sampler == "lcm":
         er_sde = inference_utils.LCMSampler(sigmas, seed=args.seed, device=device)
 
-    # Denoising loop
     do_cfg = args.guidance_scale != 1.0
     smc_cfg = (
         SMCCFGState(
@@ -675,7 +644,6 @@ def generate_body(
         else None
     )
 
-    # P-GRAFT: get network reference for mid-denoising cutoff
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
 
@@ -828,7 +796,6 @@ def generate_body(
                                 noise_pred - uncond_noise_pred
                             )
 
-                    # ensure latents dtype is consistent
                     denoised = latents.float() - sigmas[i] * noise_pred.float()
                     if er_sde is not None:
                         new_latents = er_sde.step(latents, denoised, i)
@@ -928,7 +895,6 @@ def generate(
         if shared_models is not None:
             shared_models["model"] = anima
     else:
-        # use shared model
         logger.info("Using shared DiT model.")
         anima: anima_models.Anima = shared_models["model"]
 
@@ -1075,6 +1041,3 @@ def _setup_easycontrol(args, anima, device, shared_models):
     )
     anima._easycontrol_network = network
     return network
-
-
-# endregion

@@ -136,6 +136,20 @@ STRINGS: dict[str, str] = {
     "preprocess_status_no_resized": "리사이즈된 이미지가 없습니다.",
     "preprocess_open_dataset_dir": "캐시 폴더 열기",
     "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ 폴더(리사이즈된 이미지 + 캐시)를 파일 탐색기에서 엽니다.",
+    "preprocess_clear_scope_cache": "현재 scope 캐시 삭제",
+    "preprocess_clear_scope_cache_tooltip": "현재 path_scope가 적용된 리사이즈 이미지와 LoRA 캐시 폴더를 삭제합니다.",
+    "preprocess_clear_scope_cache_all_scope": "전체 scope 없음",
+    "preprocess_clear_scope_cache_empty": "삭제할 리사이즈 이미지 또는 LoRA 캐시 파일이 없습니다.",
+    "preprocess_clear_scope_cache_outside_root": "프로젝트 폴더 밖의 경로는 GUI에서 삭제하지 않습니다:\n{path}",
+    "preprocess_clear_scope_cache_confirm": (
+        "현재 scope의 전처리 파일을 삭제합니다.\n\n"
+        "scope: {scope}\n"
+        "resize: {resized}\n  파일 {resized_count}개\n"
+        "lora: {lora}\n  파일 {lora_count}개\n\n"
+        "삭제 후 전처리를 다시 실행해 재생성해야 합니다."
+    ),
+    "preprocess_clear_scope_cache_done": "전처리 파일 {count}개를 삭제했습니다.",
+    "preprocess_invalid_path_scope": "path_scope 값이 올바르지 않습니다: {value}",
     "preprocess_log_placeholder": "전처리 출력이 여기에 표시됩니다...",
     "preprocess_save_settings": "저장",
     "preprocess_save_settings_tip": "이 설정들을 선택한 GUI method 프로필에 저장합니다. 마스킹 실행 시에는 현재 프로필의 마스크 설정이 작업에 함께 전달됩니다.",
@@ -351,14 +365,74 @@ STRINGS: dict[str, str] = {
     "dataset_search_placeholder": "파일 이름 검색…",
     "dataset_sort_asc_tooltip": "오름차순 정렬 (A→Z, 클릭하여 반전)",
     "dataset_sort_desc_tooltip": "내림차순 정렬 (Z→A, 클릭하여 반전)",
+    "dataset_group_first_tooltip": "그룹 우선 정렬: 묶인 이미지를 폴더 구분 없이 맨 위로 모아서 보여줍니다 (그룹 외 이미지는 아래에 폴더 트리로).",
+    "dataset_view_group": "그룹",
+    "dataset_view_tree": "트리",
     "dataset_mask_overlay": "마스크 오버레이 표시",
-    "dataset_view_list_tooltip": "리스트 뷰 (클릭하면 트리 뷰로 전환)",
-    "dataset_view_tree_tooltip": "폴더 트리 뷰 (클릭하면 리스트 뷰로 전환)",
+    "dataset_preprocess_use_short": "사용 (A)",
+    "dataset_preprocess_use_tooltip": "현재 이미지를 전처리 대상에 포함하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
+    "dataset_preprocess_skip_short": "생략 (S)",
+    "dataset_preprocess_skip_tooltip": "현재 이미지를 전처리 resize 단계에서 생략하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
+    "dataset_preprocess_clear_short": "해제 (F)",
+    "dataset_preprocess_clear_tooltip": "현재 이미지의 사용/생략/이동 표시를 해제합니다. 우측 메뉴에서 전체 표시를 해제할 수 있습니다.",
+    "dataset_preprocess_clear_all": "전체 표시 해제",
+    "dataset_preprocess_save": "전처리 결정 저장",
+    "dataset_preprocess_save_tooltip": "전처리에서 사용할 이미지별 사용/생략/이동/크롭 결정을 JSON으로 저장합니다. 이동 표시는 실제 이동 전에도 전처리에서 제외됩니다.",
+    "dataset_preprocess_saved": "전처리 결정이 저장되었습니다:\n{path}",
+    "dataset_preprocess_decision_none": "전처리 결정 없음",
+    "dataset_preprocess_decision_use": "전처리 결정: 사용",
+    "dataset_preprocess_decision_skip": "전처리 결정: 생략",
+    "dataset_preprocess_decision_crop": "전처리 결정: 크롭 적용",
+    "dataset_preprocess_decision_use_crop": "전처리 결정: 사용 + 크롭 적용",
+    "dataset_preprocess_decision_skip_crop": "전처리 결정: 생략 (크롭은 저장되지만 생략이 우선합니다)",
+    "dataset_preprocess_decision_move": "현재 상태: 이동 예정",
+    "dataset_preprocess_decision_move_crop": "현재 상태: 이동 예정 (크롭 범위도 저장됨)",
+    "dataset_crop_preview": "크롭 표시",
+    "dataset_crop_preview_tooltip": "전처리 resize 단계에서 적용될 크롭 범위를 미리 봅니다. 원본 파일은 변경하지 않습니다.",
+    "dataset_crop_margin": "여백:",
+    "dataset_crop_margin_left": "좌",
+    "dataset_crop_margin_top": "상",
+    "dataset_crop_margin_right": "우",
+    "dataset_crop_margin_bottom": "하",
+    "dataset_crop_margin_tooltip": "원본 이미지의 각 방향에서 잘라낼 비율입니다.",
+    "dataset_crop_margin_apply": "범위 지정",
+    "dataset_crop_margin_apply_tooltip": "현재 여백 비율로 전처리 크롭 범위를 저장합니다.",
+    "dataset_crop_margin_apply_visible": "현재 목록 전체에 적용",
+    "dataset_crop_margin_apply_all": "전체 이미지에 적용",
+    "dataset_crop_clear": "크롭 해제",
+    "dataset_crop_clear_tooltip": "현재 이미지의 전처리 크롭 결정을 제거합니다.",
+    "dataset_crop_rect": "범위 {bx},{by} {bw}x{bh} · 최종 {x},{y} {w}x{h}",
+    "dataset_image_meta_empty": "이미지 없음",
+    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_delete": "이동 (D)",
+    "dataset_delete_tooltip": "Delete 또는 D 키로 표시한 이미지를 사이드카와 함께 post_image_dataset/moved/로 이동합니다.",
+    "dataset_delete_confirm_title": "이미지 이동",
+    "dataset_delete_confirm_body": "이미지 {n}개와 사이드카를 post_image_dataset/moved/로 이동할까요?",
+    "dataset_delete_failed": "일부 이미지를 이동하지 못했습니다:\n{err}",
+    "dataset_group_label": "그룹 {n} — {size}장",
+    "dataset_group_rebuild": "그룹화",
+    "dataset_group_rebuild_tooltip": "PE-Spatial 시각적 유사도로 이미지 그룹화 (작가별). 작업 큐에서 실행됩니다.",
+    "dataset_group_queued": "그룹화 작업이 큐에 추가됨 (작업 {job_id}). 완료되면 이 디렉터리를 새로고침하면 그룹이 보입니다.",
     "n_images_filtered": "{shown} / {total} 이미지",
     "caption": "캡션:",
     "no_caption": "(캡션 없음)",
     "caption_save": "저장",
     "caption_revert": "되돌리기",
+    "caption_autotag": "자동 태깅",
+    "caption_autotag_tooltip": (
+        "Anima Tagger를 이 이미지에 실행해 예측된 태그를 캡션에 추가합니다. "
+        "모델은 최초 사용 시 자동으로 내려받습니다. 결과를 확인한 뒤 저장하면 "
+        ".txt 파일에 기록됩니다."
+    ),
+    "caption_autotag_running": "자동 태깅 중…",
+    "caption_autotag_loading": "태거 로딩 중…",
+    "caption_autotag_ready": "태거 로드됨 · 대기 중",
+    "caption_autotag_busy": (
+        "다른 작업(학습 / 전처리 / 그룹화)이 GPU를 사용 중입니다. "
+        "완료된 뒤 다시 자동 태깅하세요."
+    ),
+    "caption_autotag_error": "자동 태깅 실패: {err}",
+    "caption_autotag_empty": "태거가 이 이미지에서 태그를 찾지 못했습니다.",
     "caption_versions": "이력…",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -388,8 +462,27 @@ STRINGS: dict[str, str] = {
     "language": "언어:",
     # Settings dialog
     "settings_btn": "⚙ 설정",
-    "settings_btn_tooltip": "앱 설정 — 언어, MCP 서버 등록",
+    "settings_btn_tooltip": "앱 설정 — 언어, 환경설정, MCP 서버 등록",
     "settings_title": "설정",
+    "settings_prefs_header": "환경설정",
+    "settings_autotag_confidence": "자동 태그 신뢰도:",
+    "settings_autotag_confidence_tooltip": (
+        "태거의 태그별 임계값 위에 추가로 적용되는 확률 하한(0–1)입니다. "
+        "높을수록 더 확실한 태그만 적게 남습니다. 기본값 0.50."
+    ),
+    "settings_theme": "테마:",
+    "settings_theme_tooltip": (
+        "인터페이스 전체 색상 테마입니다. 즉시 적용되며, 설정 창을 닫으면 "
+        "창이 다시 그려져 완전히 반영됩니다."
+    ),
+    "settings_font_size": "글꼴 크기:",
+    "settings_font_size_tooltip": (
+        "인터페이스 글꼴의 포인트 크기입니다. 즉시 적용되며, 설정 창을 닫으면 "
+        "창이 다시 그려져 모든 패널이 다시 배치됩니다. 기본값 10."
+    ),
+    "settings_theme_dark": "다크",
+    "settings_theme_light": "라이트",
+    "settings_theme_sepia": "세피아",
     "settings_mcp_header": "MCP 서버 (에이전트 연동)",
     "settings_mcp_desc": "로컬 학습 데몬을 MCP 클라이언트(Claude Code, Claude Desktop 등)에 "
     "노출합니다. 아래 명령을 터미널에서 실행하면 Claude Code에 등록됩니다:",
@@ -423,6 +516,8 @@ STRINGS: dict[str, str] = {
     "update_btn_available_tooltip": "새 릴리스 {v} 가 있습니다 — 클릭하여 릴리스 노트 보기",
     "report_issue": "이슈 신고",
     "report_issue_tooltip": "브라우저에서 GitHub 이슈 트래커 열기",
+    "visit_github": "GitHub 페이지 방문",
+    "open_in_system_viewer": "시스템 뷰어로 열기",
     # Models dialog
     "models_title": "모델 다운로드",
     "models_intro": "아래에서 모델 그룹을 선택하거나 '전체 다운로드'로 표준 세트 "

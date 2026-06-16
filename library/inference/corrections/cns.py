@@ -73,9 +73,9 @@ class CNSRecolorer:
 
     def __init__(
         self,
-        gamma: np.ndarray,          # (A, T, F)
-        aspects: np.ndarray,        # (A, 2) pixel (H, W)
-        sigmas: np.ndarray,         # (T+1,) calibration σ schedule
+        gamma: np.ndarray,  # (A, T, F)
+        aspects: np.ndarray,  # (A, 2) pixel (H, W)
+        sigmas: np.ndarray,  # (T+1,) calibration σ schedule
         strength: float = 1.0,
     ) -> None:
         if gamma.ndim != 3:
@@ -93,10 +93,11 @@ class CNSRecolorer:
         self._sig_asc = sig_mid[self._order]
 
         self._bin_cache: dict[tuple[int, int], torch.Tensor] = {}
-        self._sel_gamma: Optional[np.ndarray] = None  # (T, F) ascending-σ, chosen aspect
+        self._sel_gamma: Optional[np.ndarray] = (
+            None  # (T, F) ascending-σ, chosen aspect
+        )
         self._sel_idx: Optional[int] = None
 
-    # -- construction --------------------------------------------------------
     @classmethod
     def from_path(cls, path: str, strength: float = 1.0) -> "CNSRecolorer":
         """Load from an npz path, or the literal ``"auto"`` (shipped default)."""
@@ -110,7 +111,6 @@ class CNSRecolorer:
         d = np.load(resolved)
         return cls(d["gamma"], d["aspects"], d["sigmas"], strength=strength)
 
-    # -- internals -----------------------------------------------------------
     def _select_aspect(self, h_lat: int, w_lat: int) -> None:
         """Lock onto the calibrated aspect closest in AR to this latent shape."""
         ar = w_lat / max(h_lat, 1)
@@ -135,7 +135,6 @@ class CNSRecolorer:
             self._bin_cache[key] = cached
         return cached
 
-    # -- the recolor ---------------------------------------------------------
     def recolor(self, white: torch.Tensor, sigma_s: float) -> torch.Tensor:
         """Return frequency-recolored noise of the same shape/dtype as ``white``.
 

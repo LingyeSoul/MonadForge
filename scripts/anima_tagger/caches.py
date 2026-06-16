@@ -5,10 +5,15 @@
 dispatches on its pool kind:
 
 * ``map`` → :class:`TokenCacheBuilder` writes per-stem ``[T, d_enc] bf16`` to
-  ``.cache/tokens-<encoder>/`` (consumed by the MAP-pool head).
+  ``<feature_cache_root>/tokens-<encoder>/`` (consumed by the MAP-pool head).
 * ``mean`` → :class:`FeatureCacheBuilder` writes per-stem ``[d_enc] fp32``
-  mean-pooled vectors to ``.cache/pooled-<encoder>/`` (consumed by a mean-pool
-  trunk side, e.g. production PE-Core).
+  mean-pooled vectors to ``<feature_cache_root>/pooled-<encoder>/`` (consumed
+  by a mean-pool trunk side, e.g. production PE-Core).
+
+The feature cache root is **decoupled from --out_dir** (which holds the model
+checkpoint + vocab): these bulky dataset-derived caches live alongside the
+other dataset caches under ``post_image_dataset/`` — see
+:func:`feature_cache_root`.
 
 Idempotent — re-runs only fill in missing entries.
 """
@@ -24,14 +29,34 @@ import torch
 logger = logging.getLogger(__name__)
 
 
-def cache_dir_for(out_dir: Path, pool_kind: str, encoder: str) -> Path:
+def feature_cache_root(args: argparse.Namespace) -> Path:
+    """Root dir for build_features caches (per-stem token sidecars + packed shards).
+
+    Decoupled from ``--out_dir`` (the model checkpoint + vocab home) so the
+    bulky dataset-derived feature caches live alongside the other dataset
+    caches under ``post_image_dataset/``. Honors ``--feature_cache_dir``; when
+    unset, defaults to ``post_image_dataset/anima_tagger/``. The cache is keyed
+    by ``(encoder, pool_kind)`` subdirs, not by checkpoint name, so re-encodes
+    are shared across checkpoints built from the same dataset.
+
+    Shared with the trainer / calibrator so they all resolve the same root —
+    change here, propagate everywhere.
+    """
+    explicit = getattr(args, "feature_cache_dir", None)
+    if explicit:
+        return Path(explicit)
+    return Path("post_image_dataset") / "anima_tagger"
+
+
+def cache_dir_for(feature_root: Path, pool_kind: str, encoder: str) -> Path:
     """Resolve the per-encoder cache subdir for the given pool kind.
 
-    Shared with the trainer / calibrator so they all agree on the file
-    layout — change here, propagate everywhere.
+    ``feature_root`` is the value returned by :func:`feature_cache_root` — NOT
+    ``--out_dir``. Shared with the trainer / calibrator so they all agree on the
+    file layout — change here, propagate everywhere.
     """
     sub = "tokens" if pool_kind == "map" else "pooled"
-    return out_dir / ".cache" / f"{sub}-{encoder}"
+    return feature_root / f"{sub}-{encoder}"
 
 
 def _build_one_encoder(
@@ -47,8 +72,7 @@ def _build_one_encoder(
         TokenCacheBuilder,
     )
 
-    out_dir = Path(args.out_dir)
-    cache_dir = cache_dir_for(out_dir, pool_kind, encoder_name)
+    cache_dir = cache_dir_for(feature_cache_root(args), pool_kind, encoder_name)
     logger.info(
         "build_features: pool_kind=%s  %d manifest entries → %s (device=%s, encoder=%s)",
         pool_kind,
@@ -84,8 +108,8 @@ def cmd_build_features(args: argparse.Namespace) -> None:
     Builds the PE-Core cache (``--encoder`` / ``--pool_kind``) and the
     PE-Spatial cache (``--aux_encoder`` / ``--pool_kind_aux``). Each
     ``(encoder, pool_kind)`` pair gets its own
-    ``.cache/{tokens,pooled}-<name>/`` subdir so they can be built / refreshed
-    independently.
+    ``<feature_root>/{tokens,pooled}-<name>/`` subdir so they can be built /
+    refreshed independently.
     """
     from library.captioning.anima_tagger_data import TaggerManifest
 

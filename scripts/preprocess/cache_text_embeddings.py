@@ -23,7 +23,11 @@ from pathlib import Path
 import torch
 
 
-from library.preprocess import cache_text_embeddings, tqdm_progress
+from library.preprocess import (
+    cache_text_embeddings,
+    count_pending_text,
+    tqdm_progress,
+)
 from library.runtime.cli import add_io_args
 
 
@@ -91,6 +95,17 @@ def main() -> None:
             "fnmatch glob. Use | to separate alternatives. Default: *"
         ),
     )
+    parser.add_argument(
+        "--match_images_from",
+        type=str,
+        default=None,
+        help=(
+            "Only cache text for source images whose relative stem also exists "
+            "under this image directory. Used by the preprocess chain to mirror "
+            "the already-resized/curated image set while still reading captions "
+            "from the original source directory."
+        ),
+    )
     args = parser.parse_args()
 
     from library.anima import weights as anima_utils
@@ -100,17 +115,53 @@ def main() -> None:
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
     if cache_dir is not None:
         cache_dir.mkdir(parents=True, exist_ok=True)
+    keep_rel_stems = None
+    if args.match_images_from:
+        match_dir = Path(args.match_images_from)
+        if match_dir.is_dir():
+            from library.preprocess import walk_images
+
+            keep_rel_stems = {
+                p.relative_to(match_dir).with_suffix("").as_posix()
+                for p in walk_images(
+                    match_dir,
+                    recursive=args.recursive,
+                    pattern=args.path_pattern,
+                )
+            }
+
+    # Pre-flight: skip the (slow) Qwen3 + LLM-adapter load when every TE cache
+    # already exists. When --dit is set the run also stages the one-time uncond
+    # sidecar (needs the loaded model), so a missing sidecar still forces a load.
+    from library.inference.uncond import default_uncond_path
+
+    pending, total = count_pending_text(
+        data_dir,
+        cache_dir=cache_dir,
+        recursive=args.recursive,
+        path_pattern=args.path_pattern,
+        keep_rel_stems=keep_rel_stems,
+        min_pixels=args.min_pixels,
+    )
+    uncond_needed = bool(args.dit) and not default_uncond_path().exists()
+    if pending == 0 and not uncond_needed:
+        print(
+            f"Text embedding caching: all {total} captions already cached "
+            "— skipping text-encoder load."
+        )
+        return
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     N = args.caption_shuffle_variants
 
-    # Load text encoder + tokenizers
+    if pending:
+        print(f"{pending}/{total} captions need encoding.")
     print(f"Loading Qwen3 text encoder from {args.qwen3} ...")
     text_encoder, qwen3_tokenizer = anima_utils.load_qwen3_text_encoder(
         args.qwen3, dtype=torch.bfloat16, device=str(device)
     )
     t5_tokenizer = anima_utils.load_t5_tokenizer(args.t5_tokenizer_path)
 
-    # Optionally load LLM adapter for crossattn_emb caching
     llm_adapter = None
     if args.dit:
         print(f"Loading LLM adapter from {args.dit} ...")
@@ -123,11 +174,9 @@ def main() -> None:
     )
     encoding_strategy = AnimaTextEncodingStrategy()
 
-    # Stage the T5("") sidecar while Qwen3 + LLM adapter are already on
-    # device. Every training/distill run reuses this one tiny file as the
-    # CFG-uncond crossattn input -- matches `library/inference/text.py`.
-    # Skipped when ``--dit`` is omitted (only TE outputs cached; no
-    # llm_adapter, so we can't produce crossattn embeddings here).
+    # Stage the T5("") CFG-uncond sidecar while the models are on device; every
+    # training/distill run reuses this file (matches library/inference/text.py).
+    # Skipped without --dit (no llm_adapter → can't produce crossattn here).
     if llm_adapter is not None:
         from library.inference.uncond import (
             DEFAULT_UNCOND_DIR,
@@ -172,6 +221,7 @@ def main() -> None:
         cache_dir=cache_dir,
         recursive=args.recursive,
         path_pattern=args.path_pattern,
+        keep_rel_stems=keep_rel_stems,
         batch_size=args.batch_size,
         caption_shuffle_variants=N,
         caption_tag_dropout_rate=tag_dropout_rate,

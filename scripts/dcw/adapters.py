@@ -42,12 +42,10 @@ def attach_loras(
         )
 
     for path, mult in zip(paths, mults):
-        # Read __metadata__ explicitly — load_file() drops it, and the three-
-        # axis routing stamps (ss_use_moe_style / ss_route_per_layer /
-        # ss_router_source) live there. Without them MoE checkpoints trip the
-        # "missing three-axis stamps" raise in LoRANetworkCfg.from_weights.
-        # Chimera files carry top-level freq_router.* outside lora_unet_*, so
-        # skip the filter for them.
+        # Read __metadata__ explicitly — load_file() drops it, and the
+        # three-axis routing stamps live there (MoE checkpoints raise without
+        # them). Chimera carries top-level freq_router.* outside lora_unet_*,
+        # so skip the key filter for them.
         from safetensors import safe_open
 
         with safe_open(path, framework="pt") as f:

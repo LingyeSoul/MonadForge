@@ -102,7 +102,7 @@ class _ResizeDataset(Dataset):
             with Image.open(path) as im:
                 im = pil_resize_to_bucket(im.convert("RGB"), self._spec)
                 arr = np.array(im)
-            tensor = IMAGE_TRANSFORMS(arr)  # [C, H, W]
+            tensor = IMAGE_TRANSFORMS(arr)
             return stem, tensor, ""
         except Exception as e:
             return stem, None, f"{type(e).__name__}: {e}"
@@ -236,10 +236,9 @@ class TaggerManifest:
     def from_path(cls, path: Path) -> "TaggerManifest":
         with open(path) as f:
             d = json.load(f)
-        # ``people_count_indices`` / ``n_people_counts`` were added late; old
-        # manifests rebuild on next ``build_vocab``. Until then, default to a
-        # zero-length head so the trainer can detect "no people supervision"
-        # cleanly (rather than crashing with a KeyError).
+        # ``people_count_indices`` / ``n_people_counts`` were added late; default
+        # to a zero-length head so old manifests signal "no people supervision"
+        # instead of KeyError-ing (they rebuild on next ``build_vocab``).
         people_idx = list(d.get("people_count_indices") or [])
         n_people = int(d.get("n_people_counts", 0))
         if people_idx and not n_people:
@@ -259,9 +258,6 @@ class TaggerManifest:
 
     def stem_index(self) -> Dict[str, int]:
         return {s: i for i, s in enumerate(self.stems)}
-
-
-# ── Feature cache ─────────────────────────────────────────────────────────
 
 
 def _cache_path(cache_dir: Path, stem: str) -> Path:
@@ -335,7 +331,7 @@ class FeatureCacheBuilder:
         d_enc = bundle.d_enc
 
         def save_one(stem: str, feats: torch.Tensor) -> None:
-            pooled = feats.mean(dim=0).to(torch.float32).cpu()  # [d_enc]
+            pooled = feats.mean(dim=0).to(torch.float32).cpu()
             assert pooled.shape == (d_enc,), pooled.shape
             st_save({"feature": pooled}, str(_cache_path(self.cache_dir, stem)))
 
@@ -351,9 +347,6 @@ class FeatureCacheBuilder:
         )
         logger.info("feature cache: wrote %d new entries", n_done)
         return n_done
-
-
-# ── Token cache (for MAP-pool / pool_kind="map" training) ────────────────
 
 
 def _token_cache_path(cache_dir: Path, stem: str) -> Path:
@@ -431,10 +424,8 @@ class TokenCacheBuilder:
 
         def save_one(stem: str, feats: torch.Tensor) -> None:
             assert feats.shape[-1] == d_enc, feats.shape
-            # Stash as bf16 — encoder's native dtype, halves cache size
-            # vs fp32 with no quality loss on the downstream pool (the
-            # MAP head's LayerNorm + Linear projects back into fp32 /
-            # autocast-bf16 anyway).
+            # bf16 = encoder's native dtype, halves cache size with no quality loss
+            # (MAP head's LayerNorm + Linear projects back into fp32/autocast-bf16).
             tokens = feats.to(torch.bfloat16).cpu().contiguous()
             st_save({"tokens": tokens}, str(_token_cache_path(self.cache_dir, stem)))
 
@@ -450,9 +441,6 @@ class TokenCacheBuilder:
         )
         logger.info("token cache: wrote %d new entries", n_done)
         return n_done
-
-
-# ── Dual-encoder cache (PE-Core + PE-Spatial; per-side pool kind) ────────
 
 
 class CachedDualDataset(Dataset):
@@ -493,7 +481,11 @@ class CachedDualDataset(Dataset):
         spec_aux: Optional[BucketSpec],
         stems_subset: Optional[Sequence[str]] = None,
         pack_root: Optional[Path] = None,
+        ram_resident: bool = False,
     ):
+        self._ram_resident_req = bool(ram_resident)
+        self._ram_resident = False
+        self._ram: Dict[tuple, torch.Tensor] = {}
         if pool_kind not in ("mean", "map"):
             raise ValueError(f"pool_kind must be 'mean' or 'map', got {pool_kind!r}")
         if pool_kind_aux not in ("mean", "map"):
@@ -513,11 +505,8 @@ class CachedDualDataset(Dataset):
         self._stems_requested = list(stems_subset)
 
         # Recovery path: once `--drop_sidecars_after_pack` removes the per-stem
-        # caches, the keep-loop below can't run (it stats each sidecar and peeks
-        # its token count to assign a bucket). If the mmap shards + their index
-        # survive, rebuild the dataset straight from the index instead. The
-        # index is keyed by the REQUESTED subset (known here, up front), unlike
-        # the shard dirs which key on the surviving KEPT stems.
+        # caches, rebuild from the mmap shards + index instead. The index is keyed
+        # by the REQUESTED subset, unlike shard dirs which key on the KEPT stems.
         if pack_root is not None:
             pack_index = self._try_load_pack_index(Path(pack_root), stems_subset)
             if pack_index is not None and not self._sidecars_present(
@@ -536,8 +525,7 @@ class CachedDualDataset(Dataset):
                 )
                 return
 
-        # Per-side T → bucket map (only used on map sides). For mean sides
-        # the dict is empty and the bucket key is fixed at None.
+        # Per-side T → bucket map (only used on map sides; empty for mean sides).
         def _bucket_map(spec: Optional[BucketSpec]) -> Dict[int, tuple[int, int]]:
             if spec is None:
                 return {}
@@ -564,9 +552,8 @@ class CachedDualDataset(Dataset):
             if i is None:
                 n_missing_main += 1
                 continue
-            # Both pooled and token caches use the same per-stem filename;
-            # the differentiator is the cache_dir (.cache/pooled-X/ vs
-            # .cache/tokens-X/) and the safetensors key inside.
+            # Pooled + token caches share the per-stem filename; differentiator is
+            # the cache_dir (.cache/pooled-X/ vs .cache/tokens-X/) + safetensors key.
             cache_file = cache_dir / f"{stem}.safetensors"
             cache_file_aux = cache_dir_aux / f"{stem}.safetensors"
             if not cache_file.exists():
@@ -637,19 +624,13 @@ class CachedDualDataset(Dataset):
         self.n_people_counts = manifest.n_people_counts
         self.spec = spec
         self.spec_aux = spec_aux
-        # Peek the first sidecar of each side to record d_in / d_in_aux.
-        # Key differs by pool_kind ("feature" for mean, "tokens" for map).
         self.d_in = self._peek_d(kept_paths[0], pool_kind)
         self.d_in_aux = self._peek_d(kept_paths_aux[0], pool_kind_aux)
 
-        # Optional packed-cache layer. The per-stem sidecars are tiny (~1.2 MB
-        # each) but loading two via load_file() per __getitem__ means ~30k file
-        # opens + header parses per epoch — the MAP head trains in microseconds
-        # so the loader, not the GPU, is the wall. When pack_root is given we
-        # consolidate each (side, bucket) into one [N, T, D] shard once, then
-        # serve rows as zero-copy slices off a single mmap handle (~6x faster
-        # per batch, one open handle per shard instead of per item, so 2-3
-        # DataLoader workers saturate). Bit-identical to the per-file path.
+        # Optional packed-cache layer: loading two sidecars per __getitem__ is ~30k
+        # file opens/epoch and the loader (not the GPU) is the wall. pack_root
+        # consolidates each (side, bucket) into one [N, T, D] mmap shard served as
+        # zero-copy slices (~6x faster/batch). Bit-identical to the per-file path.
         self._packed = False
         if pack_root is not None:
             self._init_packed(Path(pack_root))
@@ -698,6 +679,8 @@ class CachedDualDataset(Dataset):
         self._handles: Dict[tuple, object] = {}
         self._packed = True
         self._write_pack_index(pack_root)
+        if self._ram_resident_req:
+            self._load_ram_from_shards()
 
     @staticmethod
     def _subset_sig(stems: Sequence[str]) -> str:
@@ -842,6 +825,8 @@ class CachedDualDataset(Dataset):
             "(per-stem sidecars absent)",
             len(kept_stems),
         )
+        if self._ram_resident_req:
+            self._load_ram_from_shards()
 
     def _pack_side(self, side, paths, kind, buckets, pack_root):
         groups: Dict[str, List[int]] = defaultdict(list)
@@ -865,13 +850,42 @@ class CachedDualDataset(Dataset):
                 tqdm(idxs[1:], desc=f"pack {side} {bk}", leave=False), start=1
             ):
                 out[row] = self._load_one(paths[i], kind)
-            # tmp + rename so an interrupted build never leaves a shard that
-            # exists() would treat as complete.
+            # tmp + rename so an interrupted build never leaves a partial shard
+            # that exists() would treat as complete.
             tmp = shard.with_suffix(".safetensors.tmp")
             st_save({"data": out.contiguous()}, str(tmp))
             os.replace(tmp, shard)
             del out
         return row_of
+
+    def _load_ram_from_shards(self) -> None:
+        """Pull every per-(side, bucket) shard fully into a process-resident CPU
+        tensor, so ``__getitem__`` indexes RAM instead of mmap'ing the shard.
+
+        The on-disk shards are kept only as the load source (one big sequential
+        read per bucket beats 30k sidecar opens); once here, the training loop
+        touches zero disk. ``get_tensor`` copies into anonymous RAM (unlike
+        ``get_slice``, which stays lazily mmap-backed), so a shuffled epoch never
+        page-faults. Run single-process (``num_workers=0``) — the resident set is
+        large and there's no IO left for workers to hide.
+        """
+        keys = {("main", bk) for bk, _ in self._pack_main}
+        keys |= {("aux", bk) for bk, _ in self._pack_aux}
+        total = 0
+        for side, bk in sorted(keys):
+            shard = self._pack_dirs[side] / f"{bk}.safetensors"
+            with safe_open(str(shard), framework="pt") as h:
+                t = h.get_tensor("data")  # copied into RAM, not mmap-backed
+            self._ram[(side, bk)] = t
+            total += t.numel() * t.element_size()
+        self._handles = {}
+        self._ram_resident = True
+        logger.info(
+            "CachedDualDataset: %d shards resident in RAM (%.1f GB) — "
+            "loader is now disk-free",
+            len(keys),
+            total / 1024**3,
+        )
 
     def _handle(self, side: str, bucket_key: str):
         h = self._handles.get((side, bucket_key))
@@ -882,7 +896,12 @@ class CachedDualDataset(Dataset):
         return h
 
     def __getitem__(self, idx: int):
-        if self._packed:
+        if self._ram_resident:
+            bk_m, row_m = self._pack_main[idx]
+            bk_a, row_a = self._pack_aux[idx]
+            feat = self._ram[("main", bk_m)][row_m]
+            feat_aux = self._ram[("aux", bk_a)][row_a]
+        elif self._packed:
             bk_m, row_m = self._pack_main[idx]
             bk_a, row_a = self._pack_aux[idx]
             feat = self._handle("main", bk_m).get_slice("data")[row_m]
@@ -900,9 +919,8 @@ class CachedDualDataset(Dataset):
         )
 
 
-# Back-compat alias — earlier code (and the smoke tests) refer to the
-# original name. The new class generalizes the original; callers that
-# imported the old name keep working.
+# Back-compat alias — callers (and smoke tests) that imported the old name keep
+# working.
 CachedDualTokenDataset = CachedDualDataset
 
 
@@ -915,23 +933,38 @@ def collate_dual_token_batch(batch):
     key). torch.stack works whether each side is rank-2 (mean-pool) or
     rank-3 (token sequence).
     """
-    feat = torch.stack([b[0] for b in batch], dim=0)  # [B, ...] (rank depends on side)
-    feat_aux = torch.stack([b[1] for b in batch], dim=0)  # [B, ...]
-    multi_hot = torch.stack([b[2] for b in batch], dim=0)  # [B, n_tags]
-    rating_idx = torch.stack([b[3] for b in batch], dim=0)  # [B]
-    people_idx = torch.stack([b[4] for b in batch], dim=0)  # [B]
+    feat = torch.stack([b[0] for b in batch], dim=0)
+    feat_aux = torch.stack([b[1] for b in batch], dim=0)
+    multi_hot = torch.stack([b[2] for b in batch], dim=0)
+    rating_idx = torch.stack([b[3] for b in batch], dim=0)
+    people_idx = torch.stack([b[4] for b in batch], dim=0)
     bucket_pair = batch[0][5]
     return feat, feat_aux, multi_hot, rating_idx, people_idx, bucket_pair
 
 
 class BucketBatchSampler(Sampler[List[int]]):
-    """Yields batches of indices that share a single bucket.
+    """Yields batches of indices that share a single bucket — with IO-locality
+    via **chunked shuffle**.
 
-    Within each epoch: shuffle the per-bucket index pools, chunk into
-    batches of ``batch_size`` (drop_last=False — partial trailing batches
-    are kept since dataset sizes don't divide evenly), then shuffle the
-    batch order across buckets so the encoder doesn't see all of one
-    aspect ratio in a row.
+    A dataset index maps monotonically to a row in its packed shard (``_pack_*``
+    assigns rows in ascending-index order within each bucket), so a *globally*
+    shuffled epoch reads ~40 GB of token maps in random shard order — on a box
+    whose RAM ≈ the working-set size, that thrashes the page cache every epoch.
+
+    Chunked shuffle keeps reads local: within each bucket the (already ascending)
+    index pool is sliced into contiguous ``chunk_size``-sample **chunks** (each a
+    bounded, monotone row window on both shards — small enough to stay cache-
+    resident while it's the active chunk). We shuffle the *order of chunks*
+    (pooled across buckets, so aspect ratios still interleave and the order
+    varies per epoch) and shuffle *within* each chunk (full gradient mixing, but
+    the random access stays inside the resident window). Batches never straddle a
+    chunk, and we do **not** globally shuffle batches across chunks — that would
+    re-randomize the read order and defeat the locality.
+
+    ``chunk_size`` is snapped down to a multiple of ``batch_size`` so only the
+    final (partial) chunk of each bucket can yield a partial batch. A chunk large
+    enough to cover a whole bucket reduces to the old per-bucket full shuffle.
+    ``drop_last=False`` — partial trailing batches are kept.
     """
 
     def __init__(
@@ -940,13 +973,20 @@ class BucketBatchSampler(Sampler[List[int]]):
         batch_size: int,
         seed: int = 42,
         shuffle: bool = True,
+        chunk_size: int = 2048,
     ):
         self.buckets = list(buckets)
         self.batch_size = batch_size
         self.seed = seed
         self.shuffle = shuffle
+        # chunk_size <= 0 → global shuffle (no IO locality constraint, e.g. the
+        # RAM-resident loader); else snap to a whole number of batches (≥1).
+        self.chunk_size = (
+            0 if chunk_size <= 0 else max(1, chunk_size // batch_size) * batch_size
+        )
         self._epoch = 0
-        # Group sample indices by bucket key.
+        # Insertion order is ascending index == ascending shard row, which the
+        # chunking below relies on for locality.
         self._by_bucket: Dict[tuple[int, int], List[int]] = defaultdict(list)
         for i, b in enumerate(self.buckets):
             self._by_bucket[b].append(i)
@@ -954,23 +994,50 @@ class BucketBatchSampler(Sampler[List[int]]):
     def set_epoch(self, epoch: int) -> None:
         self._epoch = int(epoch)
 
+    def _chunks(self) -> List[List[int]]:
+        """Contiguous (monotone-row) ``chunk_size`` slices, pooled over buckets."""
+        chunks: List[List[int]] = []
+        for _, idxs in sorted(self._by_bucket.items()):
+            for s in range(0, len(idxs), self.chunk_size):
+                chunks.append(idxs[s : s + self.chunk_size])
+        return chunks
+
     def __iter__(self) -> Iterator[List[int]]:
         rng = torch.Generator().manual_seed(self.seed + self._epoch)
-        all_batches: List[List[int]] = []
-        for _, idxs in sorted(self._by_bucket.items()):
-            order = idxs[:]
+        if not self.chunk_size:
+            # Global shuffle: shuffle each bucket, batch, then shuffle batch order
+            # across buckets so aspect ratios interleave.
+            all_batches: List[List[int]] = []
+            for _, idxs in sorted(self._by_bucket.items()):
+                order = idxs[:]
+                if self.shuffle:
+                    perm = torch.randperm(len(order), generator=rng).tolist()
+                    order = [order[k] for k in perm]
+                for s in range(0, len(order), self.batch_size):
+                    all_batches.append(order[s : s + self.batch_size])
+            if self.shuffle:
+                perm = torch.randperm(len(all_batches), generator=rng).tolist()
+                all_batches = [all_batches[k] for k in perm]
+            yield from all_batches
+            return
+        chunks = self._chunks()
+        if self.shuffle:
+            cperm = torch.randperm(len(chunks), generator=rng).tolist()
+            chunks = [chunks[k] for k in cperm]
+        for chunk in chunks:
+            order = chunk
             if self.shuffle:
                 perm = torch.randperm(len(order), generator=rng).tolist()
                 order = [order[k] for k in perm]
             for s in range(0, len(order), self.batch_size):
-                all_batches.append(order[s : s + self.batch_size])
-        if self.shuffle:
-            perm = torch.randperm(len(all_batches), generator=rng).tolist()
-            all_batches = [all_batches[k] for k in perm]
-        yield from all_batches
+                yield order[s : s + self.batch_size]
 
     def __len__(self) -> int:
         n = 0
-        for idxs in self._by_bucket.values():
-            n += (len(idxs) + self.batch_size - 1) // self.batch_size
+        if not self.chunk_size:
+            for idxs in self._by_bucket.values():
+                n += (len(idxs) + self.batch_size - 1) // self.batch_size
+            return n
+        for chunk in self._chunks():
+            n += (len(chunk) + self.batch_size - 1) // self.batch_size
         return n

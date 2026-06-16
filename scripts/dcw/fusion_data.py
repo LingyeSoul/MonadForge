@@ -24,19 +24,16 @@ class Row:
     aspect_id: int
     stem: str
     seed_idx: int
-    gap_LL: np.ndarray  # (n_steps,) — used for target (residual on tail)
-    v_rev_LL: np.ndarray  # (n_steps,) — used for input g_obs
+    gap_LL: np.ndarray  # (n_steps,) — target (residual on tail)
+    v_rev_LL: np.ndarray  # (n_steps,) — input g_obs
     v_rev_source: str  # "native" | "synthetic" | "fallback"
-    sigma_i: np.ndarray  # (n_steps,) — σ schedule for the run; per-row for LSQ targets
-    # LL-only λ baked into the reverse trajectory at collection time
-    # (one_minus_sigma schedule). 0.0 = legacy no-DCW baseline; non-zero ⇒
-    # gap_LL / v_rev_LL are residuals on top of that scalar baseline, and the
-    # head's α̂ is the residual.
+    sigma_i: np.ndarray  # (n_steps,) — run σ schedule; per-row for LSQ targets
+    # LL-only λ baked into the reverse trajectory at collection (one_minus_sigma).
+    # Non-zero ⇒ gap_LL / v_rev_LL are residuals on top, and α̂ is the residual.
     baseline_lambda: float
-    # 2-band FEI low-band energy ∈ [0,1] captured on the latent entering each
-    # reverse step (matches inference set_fei timing). None for legacy pools
-    # collected before the FEI capture landed; downstream trainer code must
-    # filter rows when --fei_obs != off.
+    # 2-band FEI low-band energy ∈ [0,1] on the latent entering each reverse step
+    # (inference set_fei timing). None for pre-capture pools; trainer filters
+    # rows when --fei_obs != off.
     fei_low: np.ndarray | None = None
 
 
@@ -78,18 +75,14 @@ def load_bench_runs(
     set, ``results_roots`` is ignored entirely.
     """
     if fei_source not in ("z", "v_surrogate"):
-        raise ValueError(
-            f"fei_source must be 'z' or 'v_surrogate', got {fei_source!r}"
-        )
+        raise ValueError(f"fei_source must be 'z' or 'v_surrogate', got {fei_source!r}")
     if isinstance(results_roots, (str, Path)):
         results_roots = [Path(results_roots)]
     rows: list[Row] = []
     seen_run_names: set[str] = set()  # de-dup if same name appears in multiple roots
     candidate_dirs: list[Path] = []
     if run_dirs:
-        # Explicit targeting — skip the root walk; consume the given dirs
-        # in order. Caller is responsible for de-dup if they pass the same
-        # path twice (we still hit the seen_run_names guard below).
+        # Explicit targeting — skip the root walk (seen_run_names still de-dups).
         candidate_dirs.extend(Path(p) for p in run_dirs)
     else:
         for root in results_roots:
@@ -142,16 +135,12 @@ def load_bench_runs(
         aspect_id = DCW_ASPECT_TABLE[(H, W)]
         # Old runs predate --baseline_lambda; absent ⇒ 0.0 (legacy no-DCW).
         baseline_lambda = float(a.get("baseline_lambda", 0.0))
-        # Per-row fei_low resolution order:
-        #   1. v_surrogate mode: derive from existing v_rev_band norms.
-        #   2. z mode + fei_low.npz sidecar present: read sidecar (rev-replay
-        #      collector, scripts/dcw/collect_fei_sidecar.py).
-        #   3. z mode + main npz has fei_low key: read it (post-capture runs).
-        #   4. else: None (rows filtered out by trainer when --fei_obs != off).
+        # fei_low precedence: v_surrogate derive → z-mode fei_low.npz sidecar →
+        # z-mode main-npz fei_low key → None (trainer filters when --fei_obs != off).
         fei_low_arr: np.ndarray | None = None
         if fei_source == "v_surrogate":
             fei_low_arr = _derive_v_fei_surrogate(z)
-        else:  # z mode
+        else:
             sidecar = run_dir / "fei_low.npz"
             if sidecar.exists():
                 sc = np.load(sidecar, allow_pickle=True)

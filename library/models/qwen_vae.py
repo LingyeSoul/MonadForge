@@ -196,9 +196,7 @@ class ChunkedConv2d(nn.Conv2d):
                     chunk, (overlap, overlap), mode="constant", value=0
                 )
 
-            # print(f"Processing chunk: org_shape={org_shape}, si={si}, ei={ei}, chunk.shape={chunk.shape}, overlap={overlap}")
             chunk = super().forward(chunk)
-            # print(f"  -> chunk after conv shape: {chunk.shape}")
             y[:, :, yi : yi + chunk.shape[2], :] = chunk
             yi += chunk.shape[2]
             del chunk
@@ -1440,10 +1438,6 @@ class AutoencoderKLQwenImage(
         Returns:
             torch.Tensor: Normalized latents
         """
-        # # Convert from [0, 1] to [-1, 1] range
-        # pixels = (pixels * 2.0 - 1.0).clamp(-1.0, 1.0)
-
-        # Handle 2D input by adding temporal dimension
         is_4d = pixels.dim() == 4
         if is_4d:
             pixels = pixels.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
@@ -1452,12 +1446,8 @@ class AutoencoderKLQwenImage(
 
         # Encode to latent space
         posterior = self.encode(pixels, return_dict=False)[0]
-        latents = (
-            posterior.mode()
-        )  # Use mode instead of sampling for deterministic results
-        # latents = posterior.sample()
+        latents = posterior.mode()  # mode, not sample, for deterministic results
 
-        # Apply normalization using mean/std
         latents_mean = (
             torch.tensor(self.latents_mean)
             .view(1, self.z_dim, 1, 1, 1)
@@ -1954,7 +1944,6 @@ def load_vae(
 
 
 if __name__ == "__main__":
-    # Debugging / testing code
     import argparse
     import glob
     import os

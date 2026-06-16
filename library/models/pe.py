@@ -7,6 +7,7 @@ only — no xformers, no perception_models package, no `core.*` imports.
 
 License: see ``perception_models/LICENSE.PE`` (FAIR Noncommercial Research).
 """
+
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -27,9 +28,7 @@ from torch.utils.checkpoint import checkpoint
 logger = getLogger(__name__)
 
 
-# =============================================================================
 # RoPE-2D (vendored from core/vision_encoder/rope.py)
-# =============================================================================
 
 
 def _rotate_half(x):
@@ -108,9 +107,7 @@ class Rope2D:
         return q, k
 
 
-# =============================================================================
 # Vision tower (vendored from core/vision_encoder/pe.py)
-# =============================================================================
 
 
 class _LayerScale(nn.Module):
@@ -172,7 +169,7 @@ class _SelfAttention(nn.Module):
         self.in_proj_bias = Parameter(torch.empty(3 * embed_dim))
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
         self.rope = rope
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
     def init_tensors(self):
         xavier_uniform_(self.in_proj_weight)
@@ -219,10 +216,14 @@ class _ResidualAttentionBlock(nn.Module):
         else:
             self.attn = nn.MultiheadAttention(d_model, n_head, batch_first=True)
         self.ls_1 = (
-            _LayerScale(d_model, ls_init_value) if ls_init_value is not None else nn.Identity()
+            _LayerScale(d_model, ls_init_value)
+            if ls_init_value is not None
+            else nn.Identity()
         )
         self.ls_2 = (
-            _LayerScale(d_model, ls_init_value) if ls_init_value is not None else nn.Identity()
+            _LayerScale(d_model, ls_init_value)
+            if ls_init_value is not None
+            else nn.Identity()
         )
         self.ln_1 = norm_layer(d_model)
         self.ln_2 = norm_layer(d_model)
@@ -245,7 +246,9 @@ class _ResidualAttentionBlock(nn.Module):
         return self.attn(q_x, q_x, q_x, attn_mask=attn_mask, need_weights=False)[0]
 
     def forward(self, x, attn_mask=None):
-        x = x + self.drop_path1(self.ls_1(self._call_attn(self.ln_1(x), attn_mask=attn_mask)))
+        x = x + self.drop_path1(
+            self.ls_1(self._call_attn(self.ln_1(x), attn_mask=attn_mask))
+        )
         x = x + self.drop_path2(self.ls_2(self.mlp(self.ln_2(x))))
         return x
 
@@ -270,9 +273,14 @@ class _Transformer(nn.Module):
         self.resblocks = nn.ModuleList(
             [
                 _ResidualAttentionBlock(
-                    width, heads, mlp_ratio,
-                    ls_init_value=ls_init_value, act_layer=act_layer,
-                    norm_layer=norm_layer, drop_path=drop_path, rope=rope,
+                    width,
+                    heads,
+                    mlp_ratio,
+                    ls_init_value=ls_init_value,
+                    act_layer=act_layer,
+                    norm_layer=norm_layer,
+                    drop_path=drop_path,
+                    rope=rope,
                 )
                 for _ in range(layers)
             ]
@@ -330,19 +338,33 @@ class PEVisionTransformer(nn.Module):
         self.use_rope2d = use_rope2d
         self.image_size = image_size
 
-        self.conv1 = nn.Conv2d(3, width, kernel_size=patch_size, stride=patch_size, bias=False)
-        self.rope = Rope2D(dim=width // heads, use_cls_token=use_cls_token) if use_rope2d else None
+        self.conv1 = nn.Conv2d(
+            3, width, kernel_size=patch_size, stride=patch_size, bias=False
+        )
+        self.rope = (
+            Rope2D(dim=width // heads, use_cls_token=use_cls_token)
+            if use_rope2d
+            else None
+        )
         self.ln_pre = norm_layer(width) if use_ln_pre else nn.Identity()
         self.ln_post = norm_layer(width) if use_ln_post else nn.Identity()
         self.transformer = _Transformer(
-            width, layers, heads, mlp_ratio,
-            ls_init_value=ls_init_value, act_layer=act_layer,
-            norm_layer=norm_layer, drop_path=drop_path, rope=self.rope,
+            width,
+            layers,
+            heads,
+            mlp_ratio,
+            ls_init_value=ls_init_value,
+            act_layer=act_layer,
+            norm_layer=norm_layer,
+            drop_path=drop_path,
+            rope=self.rope,
         )
         self.attn_pool = (
             _AttentionPooling(
-                embed_dim=width, num_heads=attn_pooler_heads,
-                act_layer=act_layer, norm_layer=norm_layer,
+                embed_dim=width,
+                num_heads=attn_pooler_heads,
+                act_layer=act_layer,
+                norm_layer=norm_layer,
             )
             if pool_type == "attn"
             else None
@@ -359,17 +381,21 @@ class PEVisionTransformer(nn.Module):
         init_submodule_tensors(self)
         if self.rope is not None:
             self.rope.init_tensors()
-        init_scale = self.width ** -0.5
+        init_scale = self.width**-0.5
         if self.use_cls_token:
             self.class_embedding = nn.Parameter(init_scale * torch.randn(self.width))
         if self.use_abs_posemb:
             self.posemb_grid_size = self.image_size // self.patch_size
             self.positional_embedding = nn.Parameter(
                 init_scale
-                * torch.randn(int(self.use_cls_token) + self.posemb_grid_size ** 2, self.width)
+                * torch.randn(
+                    int(self.use_cls_token) + self.posemb_grid_size**2, self.width
+                )
             )
         if self.proj_dim is not None:
-            self.proj = nn.Parameter(init_scale * torch.randn(self.width, self.proj_dim))
+            self.proj = nn.Parameter(
+                init_scale * torch.randn(self.width, self.proj_dim)
+            )
 
     def _sample_abs_posemb(self, grid_h: int, grid_w: int) -> torch.Tensor:
         if self.posemb_grid_size == grid_h and self.posemb_grid_size == grid_w:
@@ -380,7 +406,8 @@ class PEVisionTransformer(nn.Module):
             cls_token_embed, pos_embed = pos_embed[:1], pos_embed[1:]
         pos_embed = (
             pos_embed.reshape(1, self.posemb_grid_size, self.posemb_grid_size, -1)
-            .permute(0, 3, 1, 2).contiguous()
+            .permute(0, 3, 1, 2)
+            .contiguous()
         )
         pos_embed = F.interpolate(
             pos_embed, size=(grid_h, grid_w), mode="bilinear", align_corners=False
@@ -397,7 +424,7 @@ class PEVisionTransformer(nn.Module):
             return x.mean(dim=1)
         if self.pool_type == "attn":
             return self.attn_pool(x).squeeze(1)
-        return x  # "none"
+        return x
 
     def forward_features(
         self,
@@ -412,7 +439,8 @@ class PEVisionTransformer(nn.Module):
         x = x.permute(0, 2, 3, 1).reshape(batch, -1, self.width)
         if self.use_cls_token:
             x = torch.cat(
-                [self.class_embedding.view(1, 1, -1).expand(batch, -1, -1), x], dim=1,
+                [self.class_embedding.view(1, 1, -1).expand(batch, -1, -1), x],
+                dim=1,
             )
         if self.use_abs_posemb:
             x = x + self._sample_abs_posemb(grid_h, grid_w)
@@ -459,7 +487,11 @@ class PEVisionTransformer(nn.Module):
             sd = sd["weights"]
         sd = {k.replace("module.", ""): v for k, v in sd.items()}
         if any(k.startswith("visual.") for k in sd):
-            sd = {k.replace("visual.", ""): v for k, v in sd.items() if k.startswith("visual.")}
+            sd = {
+                k.replace("visual.", ""): v
+                for k, v in sd.items()
+                if k.startswith("visual.")
+            }
         missing, unexpected = self.load_state_dict(sd, strict=False)
         if verbose and (missing or unexpected):
             logger.info(
@@ -468,9 +500,7 @@ class PEVisionTransformer(nn.Module):
             )
 
 
-# =============================================================================
 # Configs (only the ones we actually use — extend as needed)
-# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -495,17 +525,29 @@ class PEConfig:
 
 PE_CONFIGS: dict[str, PEConfig] = {
     "PE-Core-L14-336": PEConfig(
-        image_size=336, patch_size=14, width=1024, layers=24, heads=16,
-        mlp_ratio=4.0, output_dim=1024, use_cls_token=True, pool_type="attn",
+        image_size=336,
+        patch_size=14,
+        width=1024,
+        layers=24,
+        heads=16,
+        mlp_ratio=4.0,
+        output_dim=1024,
+        use_cls_token=True,
+        pool_type="attn",
     ),
-    # Spatial variant — 512px / patch 16 → 32×32=1024 patches + 1 CLS = 1025
-    # tokens. No CLIP projection (output_dim=None), no LN-post, no pool head
-    # (pool_type="none") — Meta's spatial-alignment fine-tune drops the
-    # global-alignment plumbing PE-Core uses. We only consume the patch
-    # token sequence (`last_hidden_state`), so the missing pool/proj is fine.
+    # Spatial variant: no CLIP projection / LN-post / pool head — Meta's
+    # spatial fine-tune drops PE-Core's global-alignment plumbing, and we only
+    # consume the patch token sequence (last_hidden_state).
     "PE-Spatial-B16-512": PEConfig(
-        image_size=512, patch_size=16, width=768, layers=12, heads=12,
-        mlp_ratio=4.0, output_dim=None, use_cls_token=True, pool_type="none",
+        image_size=512,
+        patch_size=16,
+        width=768,
+        layers=12,
+        heads=12,
+        mlp_ratio=4.0,
+        output_dim=None,
+        use_cls_token=True,
+        pool_type="none",
         use_ln_post=False,
     ),
 }
@@ -517,11 +559,20 @@ def build_pe_vision(name: str = "PE-Core-L14-336") -> PEVisionTransformer:
         raise KeyError(f"Unknown PE config {name!r} (have: {list(PE_CONFIGS)})")
     cfg = PE_CONFIGS[name]
     return PEVisionTransformer(
-        patch_size=cfg.patch_size, width=cfg.width, layers=cfg.layers,
-        heads=cfg.heads, mlp_ratio=cfg.mlp_ratio, output_dim=cfg.output_dim,
-        image_size=cfg.image_size, use_abs_posemb=cfg.use_abs_posemb,
-        use_cls_token=cfg.use_cls_token, use_rope2d=cfg.use_rope2d,
-        pool_type=cfg.pool_type, attn_pooler_heads=cfg.attn_pooler_heads,
-        use_ln_pre=cfg.use_ln_pre, use_ln_post=cfg.use_ln_post,
-        ls_init_value=cfg.ls_init_value, drop_path=cfg.drop_path,
+        patch_size=cfg.patch_size,
+        width=cfg.width,
+        layers=cfg.layers,
+        heads=cfg.heads,
+        mlp_ratio=cfg.mlp_ratio,
+        output_dim=cfg.output_dim,
+        image_size=cfg.image_size,
+        use_abs_posemb=cfg.use_abs_posemb,
+        use_cls_token=cfg.use_cls_token,
+        use_rope2d=cfg.use_rope2d,
+        pool_type=cfg.pool_type,
+        attn_pooler_heads=cfg.attn_pooler_heads,
+        use_ln_pre=cfg.use_ln_pre,
+        use_ln_post=cfg.use_ln_post,
+        ls_init_value=cfg.ls_init_value,
+        drop_path=cfg.drop_path,
     )

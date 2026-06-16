@@ -28,9 +28,8 @@ def iter_hydra_networks(model: Any) -> Iterable[Any]:
         candidates.extend(_as_iterable(getattr(container, "_hydra_networks", None)))
         candidates.extend(_as_iterable(getattr(container, "_hydra_network", None)))
 
-        # Hydra inference also aliases the same network into the P-GRAFT slot for
-        # cutoff support. Keep this fallback for older call sites, but only accept
-        # routing-aware networks (σ or FEI) so regular P-GRAFT LoRAs remain untouched.
+        # Accept the aliased P-GRAFT slot only for routing-aware nets (σ/FEI) so
+        # regular P-GRAFT LoRAs stay untouched.
         pgraft_network = getattr(container, "_pgraft_network", None)
         if getattr(pgraft_network, "use_sigma_router", False) or getattr(
             pgraft_network, "use_fei_router", False
@@ -211,5 +210,3 @@ def compute_and_set_hydra_fei(model: Any, z: torch.Tensor) -> None:
     sigma_low = fei_sigma_low(h_lat, w_lat, div)
     fei = compute_fei_2band(z, sigma_low)
     set_hydra_fei(model, fei)
-
-

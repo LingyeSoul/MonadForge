@@ -194,9 +194,7 @@ def generate_synthetic_latents(
     synth_dir.mkdir(parents=True, exist_ok=True)
 
     if buckets is not None or n_per_bucket is not None:
-        bucket_str = (
-            ", ".join(f"{h}x{w}" for h, w in buckets) if buckets else "(all)"
-        )
+        bucket_str = ", ".join(f"{h}x{w}" for h, w in buckets) if buckets else "(all)"
         logger.info(
             f"Phase 2 bucket filter: buckets=[{bucket_str}], "
             f"n_per_bucket={n_per_bucket}, shuffle_seed={shuffle_seed}"
@@ -230,19 +228,16 @@ def generate_synthetic_latents(
         model.to(device)
     model.eval()
 
-    # compile_blocks turns on native-shape flattening (each sample denoised at
-    # its real latent token count, no padding → no flash pad-leak baked into the
-    # teacher latents) and traces one block graph per distinct token count in
-    # `pairs`. The pool spans more than the 2 CONSTANT_TOKEN_BUCKETS families, so
-    # pre-raise the dynamo cache (compile_blocks' max() won't lower it) to trace
-    # every distinct shape instead of falling back to eager mid-warmup.
+    # compile_blocks does native-shape flattening (no padding → no flash pad-leak
+    # baked into the teacher latents) and traces one graph per distinct token
+    # count in `pairs`. The pool is wider than the 2 CONSTANT_TOKEN_BUCKETS
+    # families, so pre-raise the dynamo cache (compile_blocks' max() won't lower
+    # it) to avoid falling back to eager mid-warmup.
     if do_compile and blocks_to_swap == 0:
         from library.runtime.dynamo import pin_dynamo_limit
 
         n_res = len({get_latent_resolution(p.npz_path) for p in pairs})
-        # Pin the canonical .default (ContextVar-safe) — compile_blocks' own
-        # raise defaults to the 2 CONSTANT_TOKEN_BUCKETS families; this pool is
-        # wider, so pre-raise to its real shape count.
+        # Pin the canonical .default (ContextVar-safe) to this pool's shape count.
         pin_dynamo_limit("recompile_limit", 2 * n_res + 8)
         model.compile_blocks(mode="default")
     elif do_compile and blocks_to_swap > 0:
@@ -256,9 +251,8 @@ def generate_synthetic_latents(
     n_written = 0
     n_skipped = 0
     for sample_idx, pair in enumerate(pbar):
-        # Resolution from sibling real-image latent NPZ — keeps synthetic
-        # aspect distribution matched to the real dataset and guarantees
-        # the constant-token-bucketing invariant is satisfied.
+        # Resolution from the sibling real-image latent NPZ — keeps synthetic
+        # aspects matched to the real dataset and satisfies constant-token bucketing.
         try:
             res_str = get_latent_resolution(pair.npz_path)  # e.g. "64x64"
             H_lat, W_lat = (int(x) for x in res_str.split("x"))
@@ -266,8 +260,7 @@ def generate_synthetic_latents(
             logger.warning(f"  skip {pair.stem}: bad latent NPZ ({e})")
             continue
 
-        # Mirror cache_dir's subdir layout (post_image_dataset/lora/<artist>/…)
-        # under synth_dir so the synth pool stays browsable per artist.
+        # Mirror cache_dir's per-artist subdir layout under synth_dir.
         try:
             rel_parent = Path(pair.te_path).parent.relative_to(cache_dir)
         except ValueError:
@@ -288,8 +281,7 @@ def generate_synthetic_latents(
             continue
         crossattn_pos = crossattn_pos.to(device=device, dtype=dtype).unsqueeze(0)
 
-        # Per-sample seed deterministic-but-varied across samples — same noise
-        # for the same stem on re-runs makes the pool stable for ablations.
+        # Per-sample seed: deterministic per stem so re-runs are stable for ablations.
         per_seed = (int(seed) * 1_000_003 + sample_idx) & 0x7FFFFFFF
 
         clean = denoise_one(

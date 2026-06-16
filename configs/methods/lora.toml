@@ -20,8 +20,8 @@
 #
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
-
-network_alpha = 16
+# 90, 128, 152, 180 each for 16, 32, 48, 64
+network_alpha = 90
 network_dim = 16
 
 learning_rate = 5e-5
@@ -33,7 +33,7 @@ use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-output_name = "anima_repa1_annealed_tenth"
+output_name = "anima_repa_MA_tenth"
 # sigmoid_bias = 0.5
 # path_pattern = "channel_(caststation)/*"
 
@@ -177,7 +177,7 @@ repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where styl
 repa_layer     = 8            # block to hook (of 28)
 repa_encoder   = "pe_spatial"
 repa_lr_scale  = 1.0          # head LR multiplier (absolute mode only)
-repa_spatial_norm = true
+repa_spatial_norm = false
 # repa_anneal_steps = 0.5
 
 # Lever 1 — hard cutoff (HASTE): (0,1] = fraction of the run, >1 = absolute
@@ -185,17 +185,17 @@ repa_spatial_norm = true
 # plateaus by ~18% of the run (anima_repa_normed_quarter, 2026-06-12).
 # repa_anneal_steps = 0.25
 
-# Global-anchor arm (docs/proposal/repa_global_anchor.md) — complementary aux
-# term that RE-INJECTS the per-image global component spatial_norm deliberately
-# strips from the relational arm. Target = pooled PE patch-mean (NOT the dead
-# CLS — Phase-0 probe bench/pe_cls_probe found CLS collapsed, AUC 0.59), passed
-# through a fixed per-dim z-score affine; DiT side = block-8 grid pooled to one
-# vector, projected by a tiny train-only head, z-scored by the SAME calib,
-# cosine-matched. Off by default (weight 0 = byte-identical no-op). A/B candidate
-# 0.03 (≈ half the relational weight). When >0 the factory builds repa_global_head
-# and loads the calib (regen: `uv run python bench/pe_cls_probe/build_calib.py`).
-
-repa_global_weight = 0.001
-repa_global_norm   = "zscore"   # "zscore" (calib affine) | "none" (raw target)
-repa_global_calib  = "networks/calibration/pe_patchmean_stats.safetensors"
+# REPA-DoG (docs/proposal/repa_dog_target.md) — band-pass the alignment TARGET
+# before the Gram match, generalizing spatial_norm's DC removal to a broader
+# low-band strip (arXiv:2603.14645v1 §3.5). When on it REPLACES the spatial_norm
+# block (DoG at σ₁→0 *is* DC removal — same family, mutually exclusive). Pure
+# target-side preprocessing: byte-identical no-op when off, can't regress non-DoG
+# runs. Phase 0 PASSED (bench/repa/probe_dog_target.py, 2026-06-13): broad low-
+# band strip beats spatial_norm on all 3 content axes, character peaks at σ₁=min/16.
+# A/B (vs spatial_norm) still open — flip true with σ₂ off, HOLD norm_std=0 so the
+# only change vs baseline is the band-pass (the paper's std confound, Table 6).
+repa_target_dog     = true   # true ⇒ DoG band-pass the target (replaces spatial_norm)
+repa_dog_sigma1_div = 16      # σ₁ = min(gh,gw)/div; Phase-0 character winner = 16
+repa_dog_sigma2_div = 0       # 0 ⇒ σ₂ off (low-band strip only, +1a); >sigma1_div ⇒ band-pass
+repa_dog_norm_std   = 0       # 0 ⇒ empirical std (matches spatial_norm); >0 ⇒ fixed const
 

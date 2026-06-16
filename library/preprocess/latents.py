@@ -51,6 +51,46 @@ def get_latents_npz_path(
     )
 
 
+def _latent_cached(npz_path: Path, w: int, h: int) -> bool:
+    """True iff ``npz_path`` already holds the ``(w, h)`` latent.
+
+    A single NPZ can carry several resolutions (one ``latents_{H}x{W}`` key
+    each), so the check is per-resolution, not whole-file existence. A
+    truncated / unreadable NPZ counts as not-cached (it'll be re-encoded)."""
+    if not npz_path.exists():
+        return False
+    key = f"latents_{h // 8}x{w // 8}"
+    try:
+        return key in np.load(npz_path)
+    except Exception:
+        return False
+
+
+def count_pending_latents(
+    data_dir: Path,
+    *,
+    cache_dir: Path | None = None,
+    recursive: bool = False,
+    path_pattern: str | None = None,
+) -> tuple[int, int]:
+    """Return ``(pending, total)`` latent caches **without loading the VAE**.
+
+    ``pending`` is the number of images whose ``(W, H)`` latent isn't already
+    on disk; ``total`` is every enumerated image. Mirrors the per-resolution
+    skip in :func:`cache_latents`, so the entry point can skip the (slow) VAE
+    load entirely when ``pending == 0``. Reads only NPZ headers (no decode)."""
+    image_files = walk_images(data_dir, recursive=recursive, pattern=path_pattern)
+    pending = 0
+    for (w, h), paths in group_by_shape(image_files).items():
+        for p in paths:
+            npz_path = get_latents_npz_path(
+                p, (w, h), cache_dir=cache_dir, image_dir=data_dir
+            )
+            if not _latent_cached(npz_path, w, h):
+                pending += 1
+    return pending, len(image_files)
+
+
 def _decode_batch(
     batch_paths: list[Path],
     w: int,
@@ -76,16 +116,12 @@ def _decode_batch(
     kept: list[tuple[Path, tuple[int, int]]] = []
     tensors: list[torch.Tensor] = []
     for p in batch_paths:
-        npz_path = get_latents_npz_path(p, (w, h), cache_dir=cache_dir, image_dir=data_dir)
-        if npz_path.exists():
-            latents_size = (h // 8, w // 8)
-            key = f"latents_{latents_size[0]}x{latents_size[1]}"
-            try:
-                if key in np.load(npz_path):
-                    skipped.append(p)
-                    continue
-            except Exception:
-                pass
+        npz_path = get_latents_npz_path(
+            p, (w, h), cache_dir=cache_dir, image_dir=data_dir
+        )
+        if _latent_cached(npz_path, w, h):
+            skipped.append(p)
+            continue
         try:
             img_np = np.array(Image.open(p).convert("RGB"))
         except Exception as e:
@@ -143,7 +179,6 @@ def cache_latents(
     if progress is not None:
         progress(0, total=len(image_files))
 
-    # Flatten to (w, h, batch_paths) jobs so decode/encode/save pipeline uniformly.
     batches: list[tuple[int, int, list[Path]]] = []
     for (w, h), paths in reso_groups.items():
         for s in range(0, len(paths), batch_size):

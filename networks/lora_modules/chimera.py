@@ -63,9 +63,8 @@ class _ChimeraRoutingMixin:
     """
 
     def _register_routing_buffers(self, K_c: int, K_f: int) -> None:
-        # Uniform 1/K placeholders, overwritten per-step by the network-level
-        # routers via direct slot assignment. Non-persistent — re-derived on
-        # construction.
+        # Uniform 1/K placeholders, slot-assigned per-step by the network-level
+        # routers. Non-persistent — re-derived on construction.
         self.register_buffer(
             "_content_routing_weights",
             torch.full((1, K_c), 1.0 / max(K_c, 1), dtype=torch.float32),
@@ -207,6 +206,8 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
         channel_scale=None,
         lambda_init: float = 0.0,
         use_ortho_init: bool = False,
+        expert_basis_mult: int = 1,
+        expert_diag: bool = False,
     ):
         super().__init__(
             lora_name,
@@ -236,18 +237,53 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
         self.num_experts = K_c + K_f
         self.in_dim = in_dim
 
+        self.use_ortho_init = bool(use_ortho_init)
+
+        # Per-expert capability levers (frozen-Cayley path only — the
+        # orthogonality-preserving alternative to ``use_ortho_init``, which
+        # frees the bases entirely and lets experts drift into the same
+        # subspace = "averaged network"). Both distill into the standard
+        # ``(K, out, r)`` up-stack, so on-disk / inference layout is unchanged.
+        #   * ``expert_basis_mult`` (m ≥ 1): each expert gets an over-complete
+        #     ``(out, M=m·r)`` frozen pool carved from a DISJOINT U-slice plus
+        #     an ``M×M`` Cayley rotation; the forward selects the first r
+        #     columns (a Stiefel(M, r) point). The rotation now genuinely
+        #     moves the expert's r-dim colspace WITHIN its private m·r pool —
+        #     cross-expert orthogonality stays invariant (disjoint pools), so
+        #     experts gain depth without being able to collapse together.
+        #   * ``expert_diag``: a per-expert ``(K, r)`` trainable diagonal σ
+        #     (init 1) folded into the up-projection — the learnable singular
+        #     spectrum the orthogonal-only frozen path otherwise lacks.
+        # Neither is meaningful under ortho-init (bases already free), so they
+        # are forced off there.
+        m_mult = 1 if self.use_ortho_init else max(1, int(expert_basis_mult))
+        self._expert_diag = bool(expert_diag) and not self.use_ortho_init
+
         # SVD partition. Each pool wants:
         #   * its own r right-singular vectors → Q_basis_{c,f} (r, in)
-        #   * its own pool-size·r left-singular vectors → P_bases_{c,f}
-        #     (K_*, out, r)
+        #   * its own pool-size·M left-singular vectors → P_bases_{c,f}
+        #     (K_*, out, M)   [M = m·r; m=1 is the canonical r-slice]
         # Take a single low-rank SVD with q big enough to cover both pools.
         init_device = "cuda" if torch.cuda.is_available() else "cpu"
         W = org_module.weight.data.float().to(init_device)
-        target_left = (K_c + K_f) * r  # need this many U columns
+        M = r * m_mult
         target_right = 2 * r  # need this many V columns
         max_cols = min(W.shape)
-        target = max(target_left, target_right)
+        target = max((K_c + K_f) * M, target_right)
         disjoint = target <= max_cols
+        if not disjoint and M > r:
+            # Over-complete pool overflows this Linear's width — fall back to
+            # the canonical r-slice for this layer (still disjoint where it
+            # fits). The expander degrades per-layer, never globally.
+            logger.warning(
+                f"{lora_name}: expert_basis_mult={m_mult} needs "
+                f"(K_c+K_f)·m·r={(K_c + K_f) * M} > min(out, in)={max_cols}; "
+                "using M=r (no over-complete pool) for this layer."
+            )
+            M = r
+            target = max((K_c + K_f) * r, target_right)
+            disjoint = target <= max_cols
+        self._M = M
         q = min(target + 6, max_cols) if disjoint else min(r + 6, max_cols)
         U, _S_vals, V = torch.svd_lowrank(W, q=q, niter=2)
 
@@ -258,20 +294,23 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             Q_basis_c = V[:, :r].T.clone().contiguous()  # (r, in)
             Q_basis_f = V[:, r : 2 * r].T.clone().contiguous()  # (r, in)
 
-            # Left-singular split: U has shape (out, q). First K_c·r →
-            # content P stack, next K_f·r → freq P stack. Within each
+            # Left-singular split: U has shape (out, q). First K_c·M →
+            # content P stack, next K_f·M → freq P stack. Within each
             # stack columns are reshape-partitioned into pool-size disjoint
-            # slices — same trick OrthoHydra uses (see ortho.py docstring),
-            # giving B_c[k]^T B_c[k'] = 0 for k≠k' and B_f[j]^T B_f[j'] = 0
-            # for j≠j'. Across pools, B_c[k]^T B_f[j] = 0 by SVD ortho.
-            U_c = U[:, : K_c * r].reshape(out_dim, K_c, r)
+            # M-wide slices — same trick OrthoHydra uses (see ortho.py
+            # docstring), giving B_c[k].col_space ⊥ B_c[k'].col_space for k≠k'
+            # and B_f[j] ⊥ B_f[j']. Across pools, B_c[k] ⊥ B_f[j] by SVD ortho.
+            # With m>1 each slice is an m·r-dim *pool*; the Stiefel selector
+            # picks an r-dim subspace within it at forward time.
+            U_c = U[:, : K_c * M].reshape(out_dim, K_c, M)
             P_bases_c_init = U_c.permute(1, 0, 2).clone().contiguous()
-            U_f = U[:, K_c * r : (K_c + K_f) * r].reshape(out_dim, K_f, r)
+            U_f = U[:, K_c * M : (K_c + K_f) * M].reshape(out_dim, K_f, M)
             P_bases_f_init = U_f.permute(1, 0, 2).clone().contiguous()
         else:
-            # Narrow-layer fallback: replicate top-r slice into each pool.
-            # Pool-orthogonality is lost; both pools rely on the Cayley
-            # rotations diverging during training.
+            # Narrow-layer fallback: replicate top-r slice into each pool
+            # (M==r here — over-complete already downgraded above). Pool-
+            # orthogonality is lost; both pools rely on the Cayley rotations
+            # diverging during training.
             logger.warning(
                 f"{lora_name}: min(out={out_dim}, in={in_dim})={max_cols} < "
                 f"max(K_c+K_f, 2)·r = {target}; falling back to shared "
@@ -285,7 +324,6 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             P_bases_f_init = P_shared.unsqueeze(0).expand(K_f, -1, -1).contiguous()
         del U, _S_vals, V, W
         self._disjoint_basis = disjoint
-        self.use_ortho_init = bool(use_ortho_init)
 
         if self.use_ortho_init:
             # OrthoInit: the SVD bases become TRAINABLE fp32 parameters (no
@@ -300,18 +338,25 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             self.P_bases_c = torch.nn.Parameter(P_bases_c_init.cpu().float())
             self.P_bases_f = torch.nn.Parameter(P_bases_f_init.cpu().float())
         else:
-            # Frozen subspace bases (one per pool).
+            # Frozen subspace bases (one per pool). P bases are M=m·r wide.
             self.register_buffer("Q_basis_c", Q_basis_c.cpu())
             self.register_buffer("Q_basis_f", Q_basis_f.cpu())
-            self.register_buffer("P_bases_c", P_bases_c_init.cpu())  # (K_c, out, r)
-            self.register_buffer("P_bases_f", P_bases_f_init.cpu())  # (K_f, out, r)
+            self.register_buffer("P_bases_c", P_bases_c_init.cpu())  # (K_c, out, M)
+            self.register_buffer("P_bases_f", P_bases_f_init.cpu())  # (K_f, out, M)
 
             # Cayley(0) = I → at init each effective basis equals its frozen
-            # buffer. Per-pool S parameters are independent.
+            # buffer. Per-pool S parameters are independent. The P-side skew is
+            # M×M (rotates within each expert's m·r pool); the A-side stays r×r.
             self.S_q_c = torch.nn.Parameter(torch.zeros(r, r))
             self.S_q_f = torch.nn.Parameter(torch.zeros(r, r))
-            self.S_p_c = torch.nn.Parameter(torch.zeros(K_c, r, r))
-            self.S_p_f = torch.nn.Parameter(torch.zeros(K_f, r, r))
+            self.S_p_c = torch.nn.Parameter(torch.zeros(K_c, M, M))
+            self.S_p_f = torch.nn.Parameter(torch.zeros(K_f, M, M))
+
+            # Per-expert trainable diagonal (Lever 1). Init 1 → no-op at the
+            # basis level; ΔW=0 at init still holds via the centered gate.
+            if self._expert_diag:
+                self.sigma_c = torch.nn.Parameter(torch.ones(K_c, r))
+                self.sigma_f = torch.nn.Parameter(torch.ones(K_f, r))
 
         # Per-pool λ: independent magnitudes through training (no shared
         # scaling). Centered-gate starts λ at ``lambda_init`` (>0): the
@@ -346,13 +391,21 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
 
         # Pre-allocated identity for the batched Cayley solve. (E_c + E_f
         # + 2) skew-symmetric matrices share one fp32 LU+TRSM call. OrthoInit
-        # has no Cayley solve, so the buffer is skipped entirely.
+        # has no Cayley solve, so the buffer is skipped entirely. When the
+        # P-side is over-complete (M>r), the A's (size r) and the B-pools
+        # (size M) solve separately, so we keep a second M-sized identity.
         if not self.use_ortho_init:
             self.register_buffer(
                 "_eye_r",
                 torch.eye(r, dtype=torch.float32),
                 persistent=False,
             )
+            if self._M > r:
+                self.register_buffer(
+                    "_eye_p",
+                    torch.eye(self._M, dtype=torch.float32),
+                    persistent=False,
+                )
 
         self._register_routing_buffers(K_c, K_f)
 
@@ -385,13 +438,14 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
         # trainable bases are the fp32 master (mantissa-precise bottleneck,
         # mirroring OrthoInitLoRAModule).
         work = self.P_bases_c.dtype
+        r = self.lora_dim
 
         if self.use_ortho_init:
             # Trainable bases, no rotation: A_eff/B_eff ARE the parameters.
             Q_eff_c = self.Q_basis_c  # (r, in)
             Q_eff_f = self.Q_basis_f  # (r, in)
             R_p_c = R_p_f = None  # P_eff read straight from the bases below
-        else:
+        elif self._M == r:
             # One batched (2 + K_c + K_f, r, r) Cayley solve covers both A's
             # and both B-pools' rotations. Single LU+TRSM kernel launch.
             skew = torch.cat(
@@ -409,6 +463,25 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             R_q_f = R[1].to(work)
             R_p_c = R[2 : 2 + K_c].to(work)
             R_p_f = R[2 + K_c : 2 + K_c + K_f].to(work)
+
+            Q_eff_c = R_q_c @ self.Q_basis_c  # (r, in)
+            Q_eff_f = R_q_f @ self.Q_basis_f  # (r, in)
+        else:
+            # Over-complete (M>r): the A's rotate at size r, the B-pools at
+            # size M, so they can't share one solve. Two batched LU+TRSM calls.
+            skew_q = torch.cat(
+                [self.S_q_c.unsqueeze(0), self.S_q_f.unsqueeze(0)], dim=0
+            )
+            A_q = skew_q - skew_q.transpose(-2, -1)
+            R_q = torch.linalg.solve(self._eye_r + A_q, self._eye_r - A_q)
+            R_q_c = R_q[0].to(work)
+            R_q_f = R_q[1].to(work)
+
+            skew_p = torch.cat([self.S_p_c, self.S_p_f], dim=0)  # (K_c+K_f, M, M)
+            A_p = skew_p - skew_p.transpose(-2, -1)
+            R_p = torch.linalg.solve(self._eye_p + A_p, self._eye_p - A_p)
+            R_p_c = R_p[:K_c].to(work)  # (K_c, M, M)
+            R_p_f = R_p[K_c : K_c + K_f].to(work)
 
             Q_eff_c = R_q_c @ self.Q_basis_c  # (r, in)
             Q_eff_f = R_q_f @ self.Q_basis_f  # (r, in)
@@ -432,7 +505,6 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
         # path under autocast (see bench/lora_fp32_bottleneck); OrthoInit still
         # gets its intended fp32 bottleneck via ``work``.
         comp = work
-        r = self.lora_dim
         Q_eff_cat = torch.cat([Q_eff_c, Q_eff_f], dim=0)  # (2r, in)
         x_lora = self._rebalance(x.to(comp))
         lx_down_cat = torch.nn.functional.linear(x_lora, Q_eff_cat.to(comp))
@@ -471,8 +543,21 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             P_eff_c = self.P_bases_c  # (K_c, out, r)
             P_eff_f = self.P_bases_f  # (K_f, out, r)
         else:
-            P_eff_c = self.P_bases_c @ R_p_c  # (K_c, out, r)
-            P_eff_f = self.P_bases_f @ R_p_f  # (K_f, out, r)
+            P_eff_c = self.P_bases_c @ R_p_c  # (K_c, out, M)
+            P_eff_f = self.P_bases_f @ R_p_f  # (K_f, out, M)
+            if self._M != r:
+                # Stiefel(M, r) select: the first r columns of the rotated
+                # over-complete pool. Orthonormal r-dim colspace ⊆ the
+                # expert's private m·r slice — trainable subspace, still
+                # disjoint across experts.
+                P_eff_c = P_eff_c[..., :r]  # (K_c, out, r)
+                P_eff_f = P_eff_f[..., :r]  # (K_f, out, r)
+
+        if self._expert_diag:
+            # Per-expert learnable singular spectrum (the magnitude DOF the
+            # orthogonal-only frozen path lacks). Scales each expert's r cols.
+            P_eff_c = P_eff_c * self.sigma_c.to(P_eff_c.dtype).unsqueeze(1)
+            P_eff_f = P_eff_f * self.sigma_f.to(P_eff_f.dtype).unsqueeze(1)
 
         pi_c_w = pi_c.to(comp)
         pi_f_w = self._center(self._freq_gate_raw(lx_c.shape[0]), K_f).to(comp)
@@ -493,9 +578,7 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
         zero = torch.tensor(0.0, device=self.P_bases_c.device)
         return zero, zero
 
-    # ------------------------------------------------------------------
     # Save-pipeline hooks: dual-A distill + per-pool MoE writer.
-    # ------------------------------------------------------------------
 
     @classmethod
     def distill_save_state_dict(
@@ -543,6 +626,7 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             alpha = state_dict.get(f"{prefix}.alpha")
             save_dtype = dtype if dtype is not None else P_bases_c.dtype
 
+            r = lam_c.shape[-1]
             if ortho_init:
                 Q_eff_c = Q_basis_c.float()  # (r, in)
                 Q_eff_f = Q_basis_f.float()
@@ -551,16 +635,29 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             else:
                 S_q_c = state_dict[f"{prefix}.S_q_c"]
                 S_q_f = state_dict[f"{prefix}.S_q_f"]
-                S_p_c = state_dict[f"{prefix}.S_p_c"]  # (K_c, r, r)
-                S_p_f = state_dict[f"{prefix}.S_p_f"]  # (K_f, r, r)
+                S_p_c = state_dict[f"{prefix}.S_p_c"]  # (K_c, M, M)
+                S_p_f = state_dict[f"{prefix}.S_p_f"]  # (K_f, M, M)
                 R_q_c = cls._cayley(S_q_c.float())
                 R_q_f = cls._cayley(S_q_f.float())
                 R_p_c = cls._cayley(S_p_c.float())
                 R_p_f = cls._cayley(S_p_f.float())
                 Q_eff_c = R_q_c @ Q_basis_c.float()  # (r, in)
                 Q_eff_f = R_q_f @ Q_basis_f.float()
-                P_eff_c = P_bases_c.float() @ R_p_c  # (K_c, out, r)
+                P_eff_c = P_bases_c.float() @ R_p_c  # (K_c, out, M)
                 P_eff_f = P_bases_f.float() @ R_p_f
+                if P_eff_c.shape[-1] != r:
+                    # Over-complete Stiefel(M, r) select — mirror the forward.
+                    P_eff_c = P_eff_c[..., :r]  # (K_c, out, r)
+                    P_eff_f = P_eff_f[..., :r]
+
+            # Fold the per-expert diagonal (Lever 1) into the saved ups, so the
+            # distilled free-form reproduces the trained forward exactly.
+            sig_c = state_dict.get(f"{prefix}.sigma_c")
+            sig_f = state_dict.get(f"{prefix}.sigma_f")
+            if sig_c is not None:
+                P_eff_c = P_eff_c * sig_c.float().unsqueeze(1)
+            if sig_f is not None:
+                P_eff_f = P_eff_f * sig_f.float().unsqueeze(1)
 
             def _split(P_eff, Q_eff, lam):
                 lam_1d = lam.squeeze(0).float()
@@ -591,6 +688,8 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
                 "P_bases_f",
                 "lambda_c",
                 "lambda_f",
+                "sigma_c",
+                "sigma_f",
             ):
                 state_dict.pop(f"{prefix}.{suffix}", None)
 

@@ -13,6 +13,7 @@ import argparse
 from pathlib import Path
 
 
+from library.datasets.curation_actions import load_curation_decisions
 from library.preprocess import resize_to_buckets, tqdm_progress
 
 # Re-exported for callers/tests that import the picklable worker directly
@@ -118,6 +119,17 @@ def main() -> None:
             "(e.g. adding a --target_res tier) still re-resizes affected images."
         ),
     )
+    parser.add_argument(
+        "--curation_decisions",
+        "--curation-decisions",
+        dest="curation_decisions",
+        default=None,
+        help=(
+            "Optional GUI curation decision JSON. Images marked action=skip/move are "
+            "left out, and crop_bounds are applied only to generated resized "
+            "outputs. Source images are not modified."
+        ),
+    )
     args = parser.parse_args()
 
     constant_token_buckets = (
@@ -148,6 +160,10 @@ def main() -> None:
         recursive=args.recursive,
         path_pattern=args.path_pattern,
         overwrite=args.overwrite,
+        curation_decisions=load_curation_decisions(
+            args.curation_decisions,
+            source_dir=Path(args.src),
+        ),
         progress=tqdm_progress("Resizing"),
     )
 

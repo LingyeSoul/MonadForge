@@ -148,6 +148,15 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
             for dataset in self.datasets
         )
 
+    def count_repa_pe_sidecars(self) -> tuple[int, int]:
+        present = 0
+        total = 0
+        for dataset in self.datasets:
+            p, t = dataset.count_repa_pe_sidecars()
+            present += p
+            total += t
+        return (present, total)
+
     def is_text_encoder_output_cacheable(
         self, cache_supports_dropout: bool = False
     ) -> bool:

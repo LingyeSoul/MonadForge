@@ -83,9 +83,6 @@ def people_class_weights(people_idx: torch.Tensor, n_people: int) -> torch.Tenso
     return inv
 
 
-# ── Group routing ─────────────────────────────────────────────────────────
-
-
 @dataclass
 class _SoftmaxGroup:
     """One softmax group projected onto trainer-side tensor indices."""
@@ -138,7 +135,6 @@ class GroupRouter:
         n_tags = int(train_multi_hot.shape[1])
         groups_raw: List[Dict] = list(vocab_dict.get("groups") or [])
 
-        # Collect the union of softmax-group tag indices.
         softmax_member: List[int] = []
         softmax_groups: List[_SoftmaxGroup] = []
         for g in groups_raw:
@@ -167,15 +163,12 @@ class GroupRouter:
             else None
         )
 
-        # Full-vocab pos-weight (matches pre-grouping trainer). BCE
-        # applies to every tag by default; per-batch masking knocks out
-        # the (sample, group_tag) positions that CE supervises instead.
+        # Full-vocab pos-weight (matches pre-grouping trainer); per-batch
+        # masking knocks out the (sample, group_tag) positions CE supervises.
         bce_pos_weight = pos_weight_sqrt(train_multi_hot).to(device)
 
-        # Solo/multi vocab-index sets, derived from the tag names. Vocab
-        # tags use canonical space form; the regex in ``constants`` matches
-        # both. ``solo`` is a non-count membership tag — gelcrawl writes
-        # it alongside ``1girl``/``1boy`` when there's exactly one figure.
+        # ``solo`` is a non-count membership tag — gelcrawl writes it alongside
+        # ``1girl``/``1boy`` when there's exactly one figure.
         single_count_names = {"solo", "1girl", "1boy", "1other"}
         solo_idx_list: List[int] = []
         multi_idx_list: List[int] = []
@@ -185,8 +178,6 @@ class GroupRouter:
             if name in single_count_names:
                 solo_idx_list.append(idx)
             elif _COUNT_RE.match(name):
-                # Any count-tag name that isn't in the single-count set
-                # (e.g. 2girls, 3boys, multiple_girls).
                 multi_idx_list.append(idx)
         solo_indices = (
             torch.tensor(solo_idx_list, dtype=torch.long, device=device)
@@ -235,6 +226,7 @@ def compute_grouped_loss(
     tag_logits: torch.Tensor,  # [B, n_tags]
     multi_hot: torch.Tensor,  # [B, n_tags]
     router: GroupRouter,
+    label_smooth: float = 0.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """Return ``(total_tag_loss, per_group_metrics_for_logging)``.
 
@@ -245,6 +237,15 @@ def compute_grouped_loss(
     supervision. Samples without that gate (multi-subject, escape, no
     in-group label) keep BCE on the group's tags as a fallback.
 
+    ``label_smooth`` (ε ∈ [0, 1)) applies classic label smoothing as a
+    train-time regularizer against the overconfidence that blows up the
+    memorized-train / held-out gap on this head. The per-tag BCE targets
+    soften symmetrically to ``[ε/2, 1−ε/2]`` (the binary special case of
+    redistributing ε mass over the two classes), and the same ε feeds the
+    softmax-group ``cross_entropy`` so both tag objectives smooth
+    consistently. Pass ``0.0`` (default) on the val/metric path so reported
+    loss stays the true unsmoothed objective and is comparable across ε.
+
     Returned metrics: ``"bce"`` (mean of unmasked BCE entries) plus
     ``f"ce_{group_name}"`` for each softmax group; loss curves stay
     separable in TensorBoard.
@@ -252,16 +253,23 @@ def compute_grouped_loss(
     B, n_tags = tag_logits.shape
     metrics: Dict[str, float] = {}
 
+    # Label-smoothed BCE targets: 1 → 1−ε/2, 0 → ε/2 (ε=0 leaves multi_hot
+    # untouched — bit-identical to the un-smoothed path).
+    bce_target = (
+        multi_hot * (1.0 - label_smooth) + 0.5 * label_smooth
+        if label_smooth > 0.0
+        else multi_hot
+    )
+
     # Element-wise BCE-with-logits — we'll mask and reduce manually.
     bce_per_elem = F.binary_cross_entropy_with_logits(
         tag_logits,
-        multi_hot,
+        bce_target,
         pos_weight=router.bce_pos_weight,
         reduction="none",
     )
 
-    # Default: BCE applies to every position. CE-supervised positions
-    # get masked off below.
+    # BCE applies everywhere by default; CE-supervised positions get masked off below.
     bce_mask = torch.ones(B, n_tags, dtype=torch.bool, device=tag_logits.device)
 
     ce_total = tag_logits.new_zeros(())
@@ -287,13 +295,12 @@ def compute_grouped_loss(
                 continue
             sel_logits = group_logits[ce_samples]  # [n_keep, K_g]
             sel_target = group_target[ce_samples].argmax(dim=1)  # [n_keep]
-            l_ce = F.cross_entropy(sel_logits, sel_target)
+            l_ce = F.cross_entropy(sel_logits, sel_target, label_smoothing=label_smooth)
             ce_total = ce_total + l_ce
             metrics[f"ce_{g.name}"] = float(l_ce.detach().item())
 
-            # Mask BCE for the supervised (sample, group_tag) cells.
-            # Broadcasted indexing: ``mask[ce_idx[:, None], tag_idx[None, :]]``
-            # touches the cartesian product.
+            # Mask BCE for the supervised (sample, group_tag) cells; broadcast
+            # indexing touches the cartesian product.
             ce_idx = ce_samples.nonzero(as_tuple=False).squeeze(1)
             bce_mask[ce_idx[:, None], g.tag_indices[None, :]] = False
 
@@ -341,9 +348,8 @@ def eval_split(
         and router.is_active()
         and router.softmax_member_indices is not None
     ):
-        # Macro-F1 excludes softmax-group tags — those are argmax-only at
-        # inference, so per-tag thresholds (and the F1 they induce) don't
-        # apply. Per-group accuracy is reported separately below.
+        # Macro-F1 excludes softmax-group tags (argmax-only at inference, so
+        # per-tag thresholds don't apply); per-group accuracy reported below.
         keep_mask = torch.ones(
             tag_logits.shape[1], dtype=torch.bool, device=tag_logits.device
         )
@@ -372,8 +378,7 @@ def eval_split(
         "rating_acc": rating_acc,
     }
 
-    # Per-group argmax accuracy (only counts samples where the group's
-    # gating applies AND the label is present).
+    # Per-group argmax accuracy (only samples where gating applies AND a label fires).
     if router is not None and router.is_active():
         solo_mask = router.solo_mask(multi_hot)
         for g in router.softmax_groups:
@@ -401,7 +406,7 @@ def eval_split(
             out[f"acc_{g.name}"] = acc
             out[f"n_{g.name}"] = n_keep
 
-    # People-head accuracy (independent of the CE-loss reporting branch).
+    # People-head accuracy (independent of the CE-loss reporting branch below).
     if people_logits is not None and people_idx is not None:
         people_pred = people_logits.argmax(dim=-1)
         out["people_acc"] = (people_pred == people_idx).float().mean().item()
@@ -411,8 +416,7 @@ def eval_split(
         if router is not None:
             l_tag, _per_group = compute_grouped_loss(tag_logits, multi_hot, router)
         else:
-            # Backwards-compat path: caller didn't pass a router. Skip the
-            # tag-loss reporting since BCE alone wouldn't match training.
+            # No router: skip tag-loss reporting (BCE alone wouldn't match training).
             l_tag = tag_logits.new_zeros(())
         out["val_tag_loss"] = l_tag.item()
         out["val_rate_loss"] = l_rate.item()

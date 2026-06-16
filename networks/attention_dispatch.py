@@ -1,5 +1,3 @@
-# Unified attention function supporting various implementations
-
 from dataclasses import dataclass
 import torch
 from typing import Optional, Union
@@ -36,12 +34,9 @@ try:
         create_block_mask,
     )
 
-    # Do NOT pre-compile flex_attention here. When blocks are individually
-    # compiled (compile_blocks / native-flatten mode), the outer torch.compile
-    # already traces into _flex_attention and fuses it.
-    # Pre-compiling causes nested compilation which exhausts dynamo's
-    # recompile limit (grad_mode guard × mask variants) and falls back to
-    # the slow unfused path.
+    # Do NOT pre-compile flex_attention: under compile_blocks the outer
+    # torch.compile already traces+fuses _flex_attention; pre-compiling nests
+    # compilation, exhausts dynamo's recompile limit, falls back to slow path.
     compiled_flex_attention = _flex_attention
 
 except ImportError:
@@ -89,7 +84,6 @@ class AttentionParams:
         attention_mask: Optional[torch.Tensor],
     ) -> "AttentionParams":
         if attention_mask is None:
-            # No attention mask provided: assume all tokens are valid
             return AttentionParams(attn_mode, None, None, None, None, None)
         else:
             # Note: attention_mask is only for text tokens, not including image tokens

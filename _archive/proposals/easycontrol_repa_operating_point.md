@@ -1,21 +1,19 @@
 # EasyControl × REPA — from wired to validated operating point
 
-Status: **wiring landed (cd8bf64, 2026-06-12) — but every EasyControl REPA
-run before the 2026-06-12 dispatch fix was silently baseline; validation not
-started**. `networks/methods/easycontrol.py::create_network` stamps the full
-`_repa_*` surface (relational mode only; the network carries no head by
-design) and the mechanism is documented in `docs/experimental/easycontrol.md`
-§"REPA auxiliary loss". However: `train.py`'s method-adapter
-`extra_forwards` dispatch sat inside the `crossattn_emb is not None` branch,
-and EasyControl runs use the in-model text path (`crossattn_emb = None` — no
-`cache_llm_adapter_outputs`), so **no adapter aux loss was ever dispatched on
-that path**. The REPA term primed PE features (`repa/active = 1.0`),
-installed its hook, and then never computed — the `anima_easycontrol_
-sanitize_repa{,_normed}` checkpoints are baseline-equivalent. Fixed
-2026-06-12 (dispatch moved below the branch; the signature that caught it:
-`repa/active = 1.0` with `repa/align_loss` absent). This proposal is about
-running the *first real* A/B, unblocking colorize, and finding the operating
-point.
+Status: **IMPLEMENTED & VALIDATED — relational REPA on EasyControl is
+effective; archived on closure 2026-06-13.** Both blockers were fixed: the
+`train.py` `extra_forwards` dispatch was moved out of the `crossattn_emb is
+not None` branch (so the aux loss now dispatches on EasyControl's in-model
+text path; see the docstring in `train.py::_run_extra_forwards`), and the
+colorize PE-sidecar trap was repaired with a fallback chain in
+`library/datasets/base.py::_repa_pe_sidecar_candidates` (try the TE-cache dir
+first, then the subset latent-cache dir — repairs every `text_cache_dir` +
+REPA combination, not just colorize). The first real A/B confirmed the
+relational arm lands the structural-consistency signal as intended; REPA is
+now the shipped EasyControl default for cond ≠ target tasks (sanitize /
+near-twins, colorize). Live reference: `docs/experimental/easycontrol.md`
+§"REPA auxiliary loss" and `docs/experimental/repa.md`. The plan below is the
+historical operating-point roadmap, kept for the rationale.
 
 ## Why this is not just LoRA-REPA with a different config
 

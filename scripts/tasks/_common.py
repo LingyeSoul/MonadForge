@@ -20,9 +20,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Reference-image extensions probed by the test-* commands that take a REF_IMAGE
-# (EasyControl / IP-Adapter / DirectEdit). Shared so the shipped and experimental
-# inference modules agree on what counts as an image.
+# Shared so the shipped and experimental inference modules agree on what counts
+# as a REF_IMAGE for the test-* commands.
 _REF_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -167,9 +166,8 @@ def latest_output(prefix: str = "", exclude: str | None = None) -> Path:
 
 
 def latest_lora() -> Path:
-    # Exclude pooled_text_proj heads: they live in output/ckpt/ too but are
-    # not LoRAs — picking the newest `.safetensors` blindly grabs them right
-    # after `make distill-mod`. They're resolved separately by MOD=1.
+    # Exclude pooled_text_proj heads: not LoRAs (resolved separately by MOD=1),
+    # but a blind newest-`.safetensors` pick would grab them after `make distill-mod`.
     return latest_output(exclude="pooled_text_proj")
 
 
@@ -253,11 +251,14 @@ def run(cmd: list[str], **kwargs):
     venv_bin = str(Path(PY).parent)
     if venv_bin not in env.get("PATH", "").split(os.pathsep):
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
-    # Block-buffered stdio over pipes makes progress output (tqdm, training
-    # logs) appear in chunks instead of streaming live. PYTHONUNBUFFERED keeps
-    # children's Python stdio line-/un-buffered so the GUI sees output as it
-    # happens. Inherited by grandchildren too.
+    # Un-buffer children's stdio so the GUI sees tqdm/training output live
+    # instead of in pipe-buffered chunks. Inherited by grandchildren too.
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # Force UTF-8 stdio regardless of console locale: on non-UTF-8 consoles
+    # (e.g. Korean Windows cp949) a child printing an em-dash crashes with
+    # UnicodeEncodeError. PYTHONIOENCODING is the belt-and-suspenders fallback.
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     cmd = list(cmd)
     if cmd and not Path(cmd[0]).is_absolute():
         resolved = shutil.which(cmd[0], path=env["PATH"])
@@ -314,36 +315,11 @@ def _nsys_wrapper() -> tuple[list[str], Path] | tuple[None, None]:
         out_path = ROOT / out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"  > nsys report -> {out_path}")
-    # Profile config tuned for kernel optimization + bottleneck analysis.
-    #
-    # Bottleneck-analysis additions (none of these need symbol downloads):
-    #   --gpu-metrics-devices=cuda-visible  HW perf counters: SM occupancy,
-    #       tensor-core util, DRAM/L2 bandwidth, warp stall reasons. The single
-    #       most useful signal for "is this kernel compute- or memory-bound".
-    #       nsys auto-picks the metric set (gb20x for Blackwell, ad10x for Ada,
-    #       etc.); override with NSYS_GPU_METRICS_SET if needed.
-    #   --gpu-metrics-frequency=10000       10 kHz sampling — fine enough to
-    #       see per-step variation in a 3-step capture window.
-    #   --cuda-graph-trace=node             per-node timing inside CUDA graphs
-    #       (torch.compile emits these). Without it you only see the whole
-    #       graph as one opaque blob.
-    #   --cuda-memory-usage=true            tracks cudaMalloc/Free over time so
-    #       you can correlate VRAM spikes with NVTX step ranges. Marked
-    #       "significant runtime overhead" by nsys but fine inside a 3-step
-    #       window — and essential for catching allocator thrash.
-    #   --python-sampling=true @ 1 kHz      Python-side IP samples. Catches
-    #       "Python is the bottleneck" cases (data loader, cache misses,
-    #       config merging) that pure CUDA traces miss. Uses Python's own
-    #       frame metadata, no debug-symbol download.
-    #   --stats=true                        emit a sqlite next to the .nsys-rep
-    #       so you can grep/SQL kernel timings without opening the GUI.
-    #
-    # Symbol-resolution is still OFF (--resolve-symbols=false + the three
-    # *=none flags below). Without these, nsys finalize stalls for many
-    # minutes on "Press Ctrl-C to stop symbol files downloading" reaching
-    # out to NVIDIA's symbol servers — VRAM stays reserved, CPU sits at 0%.
-    # The additions above are perf-counter and Python-frame data; none of
-    # them need C++/CUDA-API symbol resolution.
+    # Profile config tuned for kernel + bottleneck analysis (GPU perf counters,
+    # CUDA-graph node timing, mem tracking, Python sampling, sqlite stats).
+    # Symbol-resolution is OFF (--resolve-symbols=false + the *=none flags):
+    # otherwise nsys finalize stalls for minutes reaching NVIDIA's symbol servers
+    # while VRAM stays reserved. None of the enabled data needs symbol resolution.
     metrics_set = os.environ.get("NSYS_GPU_METRICS_SET")
     cmd = [
         nsys,
@@ -410,21 +386,8 @@ def _nsys_gpu_metrics_available(nsys: str) -> bool:
     )
 
 
-# nsys stats reports auto-generated after profiling. Tuned for kernel
-# optimization + bottleneck analysis on a per-step NVTX trace:
-#   cuda_gpu_kern_sum     — top kernels by total GPU time (the "what to
-#                           optimize" list)
-#   nvtx_kern_sum         — kernels grouped under our `step=N` NVTX ranges
-#                           (which step is slow + which kernels caused it)
-#   cuda_gpu_mem_time_sum — host↔device mem ops by total time (catches
-#                           transfer-bound steps, e.g. uncached latents)
-#   cuda_gpu_mem_size_sum — same ops by bytes moved (cross-check time vs size
-#                           to spot small-but-frequent thrash)
-#   cuda_api_sum          — host-side CUDA API calls (cudaLaunchKernel,
-#                           cudaStreamSynchronize blocking, etc.)
-#   cuda_kern_exec_sum    — per-kernel queue/exec timings (launch overhead
-#                           vs. on-GPU runtime — small kernels dominated by
-#                           launch latency show up here)
+# nsys stats reports auto-generated after profiling, tuned for kernel +
+# bottleneck analysis on a per-step NVTX trace.
 _NSYS_STATS_REPORTS = (
     "cuda_gpu_kern_sum",
     "nvtx_kern_sum",
@@ -452,7 +415,7 @@ def _nsys_run_stats(rep_path: Path) -> None:
     nsys = shutil.which("nsys")
     if nsys is None:
         return
-    out_prefix = rep_path.with_suffix("")  # strip .nsys-rep
+    out_prefix = rep_path.with_suffix("")
     cmd = [
         nsys,
         "stats",
@@ -466,8 +429,7 @@ def _nsys_run_stats(rep_path: Path) -> None:
         cmd += ["--report", report]
     cmd.append(str(rep_path))
     print(f"  > nsys stats -> {out_prefix.parent}/")
-    # Don't sys.exit on failure — best-effort summary, the .nsys-rep is the
-    # canonical artifact and the GUI can always open it directly.
+    # Best-effort: the .nsys-rep is the canonical artifact, so don't sys.exit.
     try:
         subprocess.run(cmd, cwd=ROOT, check=False)
     except OSError as e:
@@ -521,8 +483,8 @@ def build_launch_cmd(*args: str, python_exe: str | None = None) -> list[str]:
     py = python_exe or PY
     if not os.environ.get("ANIMA_ACCELERATE_LAUNCH"):
         return [py, "train.py", *args]
-    # Forward the user's --mixed_precision to the launcher so it matches the
-    # Accelerator() train.py builds (defaults to bf16 when unset on the CLI).
+    # Forward --mixed_precision to the launcher so it matches the Accelerator()
+    # train.py builds (defaults to bf16 when unset on the CLI).
     mixed_precision = "bf16"
     for i, a in enumerate(args):
         if a == "--mixed_precision" and i + 1 < len(args):

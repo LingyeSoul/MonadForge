@@ -102,9 +102,8 @@ def iter_split_groups(
         for key in list(state_dict.keys()):
             if not key.endswith(first_suffix):
                 continue
-            # key == "{shared_prefix}{first_letter}_proj{sentinel_suffix}"
-            # — slice the component-projection suffix off so callers can
-            # rebuild any letter's key by appending "{letter}_proj{...}".
+            # Slice the component-projection suffix off so callers can rebuild
+            # any letter's key by appending "{letter}_proj{...}".
             shared_prefix = key[: -len(f"{first_letter}_proj{sentinel_suffix}")]
             seen.append(shared_prefix)
         for shared_prefix in seen:

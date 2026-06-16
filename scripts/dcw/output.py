@@ -55,11 +55,7 @@ def _accumulate_row(
             per_sample_bands[b][row] = gap_b
             per_sample_v_rev_bands[b][row] = rev_bands[b]
             per_sample_stems[row] = stem
-    if (
-        name == "baseline"
-        and per_sample_fei_low is not None
-        and fei_low is not None
-    ):
+    if name == "baseline" and per_sample_fei_low is not None and fei_low is not None:
         row = img_idx * n_seeds + seed_idx
         per_sample_fei_low[row] = fei_low
     accum[name]["n"] += 1
@@ -217,7 +213,7 @@ def _bucket_key_for(run_dir: Path) -> str:
     result_path = run_dir / "result.json"
     if result_path.exists():
         try:
-            args = (json.loads(result_path.read_text()).get("args") or {})
+            args = json.loads(result_path.read_text()).get("args") or {}
             h, w = args.get("image_h"), args.get("image_w")
             if h is not None and w is not None:
                 return f"{int(h)}x{int(w)}"
@@ -254,13 +250,17 @@ def aggregate_run_dirs(
         per_step_csv = run_dir / "per_step.csv"
         per_band_csv = run_dir / "per_step_bands.csv"
         result_json = run_dir / "result.json"
-        if not (per_step_csv.exists() and per_band_csv.exists() and result_json.exists()):
+        if not (
+            per_step_csv.exists() and per_band_csv.exists() and result_json.exists()
+        ):
             log.warning(f"aggregate: missing artifacts in {run_dir.name}; skipping")
             continue
         try:
             meta = json.loads(result_json.read_text())
         except (OSError, json.JSONDecodeError):
-            log.warning(f"aggregate: unreadable result.json in {run_dir.name}; skipping")
+            log.warning(
+                f"aggregate: unreadable result.json in {run_dir.name}; skipping"
+            )
             continue
         m = meta.get("metrics", {}) or {}
         n_b = int(m.get("n_samples", 0)) * int(m.get("n_seeds", 0))

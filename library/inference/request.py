@@ -57,11 +57,9 @@ class GenerationRequest:
     ``test_generation_request`` drift guard pins the ones that are).
     """
 
-    # --- prompt -------------------------------------------------------------
     prompt: Optional[str] = None
     negative_prompt: str = ""
 
-    # --- geometry / sampler (mirror parse_args defaults) --------------------
     image_size: Tuple[int, int] = (1024, 1024)  # (height, width), as --image_size
     infer_steps: int = 50
     guidance_scale: float = 3.5
@@ -70,7 +68,6 @@ class GenerationRequest:
     sampler: str = "euler"
     seed: Optional[int] = None
 
-    # --- adapters -----------------------------------------------------------
     lora_weight: Optional[Sequence[str]] = None
     lora_multiplier: Optional[Union[float, Sequence[float]]] = None
     soft_tokens_weight: Optional[str] = None
@@ -78,7 +75,6 @@ class GenerationRequest:
     easycontrol_image: Optional[str] = None
     pooled_text_proj: Optional[str] = None
 
-    # --- model paths / runtime ---------------------------------------------
     dit: Optional[str] = None
     vae: Optional[str] = None
     text_encoder: Optional[str] = None
@@ -88,12 +84,10 @@ class GenerationRequest:
     vae_disable_cache: bool = False
     text_encoder_cpu: bool = False
 
-    # --- output -------------------------------------------------------------
     save_path: Optional[str] = None
     output_type: str = "images"
     no_metadata: bool = False
 
-    # --- escape hatch -------------------------------------------------------
     # Verbatim CLI tokens appended after the structured fields, for the long
     # tail this dataclass doesn't model (e.g. ["--spectrum", "--dcw",
     # "--dcw_lambda", "0.01"]). Anything here overrides the same flag above.
@@ -112,7 +106,6 @@ class GenerationRequest:
         argv += ["--text_encoder", self.text_encoder or _PLACEHOLDER_TEXT_ENCODER]
         argv += ["--save_path", self.save_path or _PLACEHOLDER_SAVE_PATH]
 
-        # Always-emitted scalars (defaults mirror the parser).
         argv += ["--negative_prompt", self.negative_prompt]
         argv += ["--image_size", str(self.image_size[0]), str(self.image_size[1])]
         argv += ["--infer_steps", str(self.infer_steps)]
@@ -123,7 +116,6 @@ class GenerationRequest:
         argv += ["--attn_mode", self.attn_mode]
         argv += ["--output_type", self.output_type]
 
-        # Optional scalars — emit only when set.
         if self.prompt is not None:
             argv += ["--prompt", self.prompt]
         if self.seed is not None:
@@ -145,7 +137,6 @@ class GenerationRequest:
         if self.pooled_text_proj is not None:
             argv += ["--pooled_text_proj", self.pooled_text_proj]
 
-        # LoRA (nargs="*").
         if self.lora_weight is not None:
             argv += ["--lora_weight", *self.lora_weight]
         if self.lora_multiplier is not None:
@@ -156,7 +147,6 @@ class GenerationRequest:
             )
             argv += ["--lora_multiplier", *(str(m) for m in mults)]
 
-        # store_true flags.
         if self.no_metadata:
             argv += ["--no_metadata"]
         if self.vae_disable_cache:

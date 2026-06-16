@@ -18,6 +18,7 @@ the same socket without a code-level dependency on this package.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import shutil
 import sys
@@ -50,64 +51,76 @@ VENDOR = HERE / "_vendor"
 # custom-trained checkpoint.
 _HF_TAGGER_REPO = "sorryhyun/anima-tagger"
 _REQUIRED_FILES = ("config.json", "model.safetensors", "vocab.json", "rules.yaml")
-_OPTIONAL_FILES = ("thresholds.safetensors", "groups.yaml", "pe_lora.safetensors")
+_OPTIONAL_FILES = ("thresholds.safetensors", "groups.yaml")
 
-# Selectable checkpoint versions on the HF repo. ``v1`` lives at the repo root
-# (single-encoder PE-Core only, legacy default). ``v2`` lives under ``v2/``
-# (dual-encoder PE-Core + PE-Spatial). When adding a future version, list it
-# here and the loader dropdown picks it up automatically — the only assumption
-# is that v1 sits at the root while everything else is in a subfolder of the
-# same name.
-_HF_VERSIONS = ("v1", "v2")
-_DEFAULT_HF_VERSION = "v1"
-# Local-dir prefix used to scope downloads per version so v1 / v2 weights
-# don't clobber each other when the user leaves ``tagger_dir`` on the default.
-# Any explicit ``tagger_dir`` override skips the auto-rewrite.
-_DEFAULT_TAGGER_DIR_BASE = "models/captioners/anima-tagger"
+# The tagger is dual-encoder only (PE-Core + PE-Spatial, hard-routed). The
+# pre-dual single-encoder ``v1`` checkpoint no longer loads. The dual-encoder
+# checkpoint now lives at the repo root of ``sorryhyun/anima-tagger`` (it used
+# to sit under a ``v2/`` subfolder), so no subfolder prefix is needed.
+_HF_SUBFOLDER = ""
+_DEFAULT_TAGGER_DIR = "models/captioners/anima-tagger-v2"
 
-# Sentinel shown at the top of the pe_lora dropdown — empty string survives
-# the existing "if pe_lora_path.strip():" gate in load(), which falls back
-# to <tagger_dir>/pe_lora.safetensors. Kept readable as a label rather than
-# bare "" so the UI doesn't show a blank first row.
-_PE_LORA_DEFAULT_LABEL = "(default: <tagger_dir>/pe_lora.safetensors)"
+# Default vision-encoder checkpoints (auto-fetched if absent). Listed as the
+# first dropdown row so a fresh install resolves to the auto-download target
+# even before any ``.pt`` exists on disk.
+_DEFAULT_PE_CKPT = "models/pe/PE-Core-L14-336.pt"
+_DEFAULT_PE_AUX_CKPT = "models/pe/PE-Spatial-B16-512.pt"
 
 
-def _list_pe_lora_files() -> list[str]:
-    """Discoverable PE-LoRA safetensors candidates, as repo-relative paths.
+def _list_tagger_dirs() -> list[str]:
+    """Loadable tagger-checkpoint directories under ``models/captioners/``.
 
-    Globs the locations where PE-LoRA deltas naturally live:
-
-    * ``models/captioners/<ckpt>/pe_lora*.safetensors`` — colocated with
-      a tagger checkpoint, the train-pe-lora default. Most common case.
-    * ``models/pe_loras/*.safetensors`` — optional dedicated dir for
-      users who keep multiple deltas around without nesting them under
-      a tagger checkpoint.
-    * ``output/ckpt/*pe_lora*.safetensors`` — training output sweeps.
-
-    Returns paths relative to ``ANIMA_LORA`` so the load() resolver
-    (which already prepends ``ANIMA_LORA`` for non-absolute inputs)
-    accepts them unchanged.
-
-    Empty when running standalone (no anima_lora repo) — caller adds the
-    default sentinel so the dropdown is never empty.
+    A directory qualifies only when its ``config.json`` carries an
+    ``aux_encoder`` field — i.e. it's a dual-encoder (PE-Core + PE-Spatial)
+    checkpoint, the only architecture that still loads. Pre-dual / v1
+    single-encoder dirs are skipped so the dropdown never offers a checkpoint
+    that ``AnimaTagger`` would reject at load time. Returned as paths relative
+    to ``ANIMA_LORA`` so the load() resolver (which prepends ``ANIMA_LORA`` for
+    non-absolute inputs) accepts them unchanged. Empty when running standalone
+    — the caller seeds the default dir so the dropdown is never empty and
+    auto-fetch still works.
     """
     if not ANIMA_LORA.exists():
         return []
-    seen: set[str] = set()
+    base = ANIMA_LORA / "models" / "captioners"
+    if not base.is_dir():
+        return []
     out: list[str] = []
-    glob_patterns = (
-        "models/captioners/*/pe_lora*.safetensors",
-        "models/captioners/*/*pe_lora*.safetensors",
-        "models/pe_loras/*.safetensors",
-        "output/ckpt/*pe_lora*.safetensors",
-    )
-    for pattern in glob_patterns:
-        for p in sorted(ANIMA_LORA.glob(pattern)):
-            rel = str(p.relative_to(ANIMA_LORA))
-            if rel not in seen:
-                seen.add(rel)
-                out.append(rel)
+    for p in sorted(base.iterdir()):
+        cfg = p / "config.json"
+        if not cfg.exists():
+            continue
+        try:
+            with open(cfg) as f:
+                if not json.load(f).get("aux_encoder"):
+                    continue
+        except (OSError, ValueError):
+            continue
+        out.append(str(p.relative_to(ANIMA_LORA)))
     return out
+
+
+def _list_pe_ckpts() -> list[str]:
+    """Vision-encoder ``.pt`` checkpoints under ``models/pe/``, repo-relative.
+
+    Empty when standalone — the caller seeds the canonical default so the
+    dropdown is never empty and the auto-download target stays selectable.
+    """
+    if not ANIMA_LORA.exists():
+        return []
+    base = ANIMA_LORA / "models" / "pe"
+    if not base.is_dir():
+        return []
+    return [str(p.relative_to(ANIMA_LORA)) for p in sorted(base.glob("*.pt"))]
+
+
+def _dropdown(default: str, found: list[str]) -> list[str]:
+    """Build a dropdown list with ``default`` pinned first, deduped.
+
+    The default sits at the head even when absent from ``found`` (e.g. nothing
+    downloaded yet) so it stays selectable as the auto-fetch target.
+    """
+    return [default] + [p for p in found if p != default]
 
 
 def _ensure_tagger_dir(tdir: Path, hf_subfolder: str = "") -> None:
@@ -119,11 +132,10 @@ def _ensure_tagger_dir(tdir: Path, hf_subfolder: str = "") -> None:
     into ``tdir`` regardless of the source layout so the loader's directory
     contract (``tdir/config.json`` etc.) stays uniform across versions.
 
-    Optional files (``thresholds.safetensors``, ``groups.yaml``,
-    ``pe_lora.safetensors``) are best-effort - a 404 on the repo just means
-    the published checkpoint doesn't ship that file (e.g. ``pe_lora.safetensors``
-    when ``config.pe_lora=false``). The required-file gate already guarantees
-    the tagger can load.
+    Optional files (``thresholds.safetensors``, ``groups.yaml``) are
+    best-effort - a 404 on the repo just means the published checkpoint
+    doesn't ship that file. The required-file gate already guarantees the
+    tagger can load.
     """
     if all((tdir / f).exists() for f in _REQUIRED_FILES):
         return
@@ -131,8 +143,7 @@ def _ensure_tagger_dir(tdir: Path, hf_subfolder: str = "") -> None:
     from huggingface_hub.utils import EntryNotFoundError
 
     logger.info(
-        "AnimaTaggerLoader: %s is missing required files - fetching %s%s "
-        "(one-time).",
+        "AnimaTaggerLoader: %s is missing required files - fetching %s%s (one-time).",
         tdir,
         _HF_TAGGER_REPO,
         f"/{hf_subfolder}" if hf_subfolder else "",
@@ -212,100 +223,40 @@ class AnimaTaggerLoader:
         return {
             "required": {
                 "tagger_dir": (
-                    "STRING",
+                    _dropdown(_DEFAULT_TAGGER_DIR, _list_tagger_dirs()),
                     {
-                        "default": f"{_DEFAULT_TAGGER_DIR_BASE}-{_DEFAULT_HF_VERSION}",
                         "tooltip": (
-                            "AnimaTagger checkpoint directory. Relative paths "
-                            "are resolved against the anima_lora/ project root; "
-                            "absolute paths used as-is. If the directory is "
-                            "missing required files, the checkpoint is "
-                            f"auto-fetched from {_HF_TAGGER_REPO} on first use. "
-                            "When left at the default, the trailing version "
-                            "segment is auto-aligned with the `version` "
-                            "dropdown so v1 / v2 checkpoints don't collide "
-                            "locally."
-                        ),
-                    },
-                ),
-                "version": (
-                    list(_HF_VERSIONS),
-                    {
-                        "default": _DEFAULT_HF_VERSION,
-                        "tooltip": (
-                            "Which checkpoint version to fetch from "
-                            f"{_HF_TAGGER_REPO}. "
-                            "v1 = single-encoder (PE-Core only), files at the "
-                            "repo root. "
-                            "v2 = dual-encoder (PE-Core + PE-Spatial), files "
-                            "under v2/ on HF. The version is also used to "
-                            "auto-adjust the default tagger_dir so v1 and v2 "
-                            "weights don't share a local cache; any explicit "
-                            "tagger_dir override is honored verbatim."
+                            "AnimaTagger checkpoint directory, picked from "
+                            "the checkpoints discovered under "
+                            "models/captioners/ (any dir with a config.json). "
+                            "The first row is the default dual-encoder "
+                            "checkpoint; if it's missing required files it's "
+                            f"auto-fetched from {_HF_TAGGER_REPO} on first use."
                         ),
                     },
                 ),
                 "pe_ckpt": (
-                    "STRING",
+                    _dropdown(_DEFAULT_PE_CKPT, _list_pe_ckpts()),
                     {
-                        "default": "models/pe/PE-Core-L14-336.pt",
                         "tooltip": (
-                            "PE-Core-L14-336 vision-encoder checkpoint (.pt). "
-                            "Relative paths resolve against the anima_lora/ "
-                            "root; absolute paths used as-is. If the file is "
-                            "missing, it's auto-fetched from "
+                            "PE-Core-L14-336 vision-encoder checkpoint (.pt), "
+                            "picked from models/pe/. Drives rating / "
+                            "people-count / identity tags. If the default is "
+                            "missing it's auto-fetched from "
                             "facebook/PE-Core-L14-336 on first use (one-time "
                             "~1 GB download)."
                         ),
                     },
                 ),
                 "pe_aux_ckpt": (
-                    "STRING",
+                    _dropdown(_DEFAULT_PE_AUX_CKPT, _list_pe_ckpts()),
                     {
-                        "default": "models/pe/PE-Spatial-B16-512.pt",
                         "tooltip": (
-                            "Auxiliary vision-encoder checkpoint (.pt) for "
-                            "dual-encoder tagger checkpoints. Only used when "
-                            "config.json in tagger_dir has 'aux_encoder' set "
-                            "(typically 'pe_spatial' → PE-Spatial-B16-512); "
-                            "ignored on single-encoder v1 checkpoints. "
-                            "Relative paths resolve against the anima_lora/ "
-                            "root; absolute paths used as-is. If the file is "
-                            "missing, it's auto-fetched from "
+                            "Auxiliary PE-Spatial-B16-512 vision-encoder "
+                            "checkpoint (.pt), picked from models/pe/. Drives "
+                            "localized tags in the dual-encoder tagger. If the "
+                            "default is missing it's auto-fetched from "
                             "facebook/PE-Spatial-B16-512 on first use."
-                        ),
-                    },
-                ),
-                "use_pe_lora": (
-                    "BOOLEAN",
-                    {
-                        "default": True,
-                        "label_on": "on",
-                        "label_off": "off",
-                        "tooltip": (
-                            "Master on/off for PE-LoRA injection. When off, "
-                            "the encoder runs as the bare frozen PE-Core and "
-                            "pe_lora_path is ignored — useful when the "
-                            "selected sidecar is missing / renamed and "
-                            "ComfyUI would otherwise reject the empty "
-                            "dropdown selection."
-                        ),
-                    },
-                ),
-                "pe_lora_path": (
-                    [_PE_LORA_DEFAULT_LABEL] + _list_pe_lora_files(),
-                    {
-                        "tooltip": (
-                            "PE-LoRA sidecar override (safetensors). The "
-                            "default entry uses "
-                            "<tagger_dir>/pe_lora.safetensors (shipped or "
-                            "auto-fetched by train-pe-lora); the remaining "
-                            "rows are PE-LoRA files discovered under "
-                            "models/captioners/*/, models/pe_loras/, and "
-                            "output/ckpt/. Has no effect when use_pe_lora "
-                            "is off, or unless config.json in tagger_dir "
-                            "has 'pe_lora: true' (rank / alpha / target "
-                            "layers all come from that config)."
                         ),
                     },
                 ),
@@ -329,21 +280,9 @@ class AnimaTaggerLoader:
         self,
         tagger_dir: str,
         pe_ckpt: str,
-        version: str = _DEFAULT_HF_VERSION,
-        use_pe_lora: bool = True,
-        pe_lora_path: str = "",
         pe_aux_ckpt: str = "",
     ):
-        # Auto-align the default tagger_dir's trailing version segment with
-        # the selected ``version`` dropdown — only when the user left the
-        # path on the canonical "<base>-vN" default. Any custom path is
-        # passed through verbatim so power users can pin their own layout.
-        tagger_dir_raw = tagger_dir.strip()
-        for v in _HF_VERSIONS:
-            if tagger_dir_raw == f"{_DEFAULT_TAGGER_DIR_BASE}-{v}":
-                tagger_dir_raw = f"{_DEFAULT_TAGGER_DIR_BASE}-{version}"
-                break
-        tdir = Path(tagger_dir_raw)
+        tdir = Path(tagger_dir.strip())
         if not tdir.is_absolute():
             tdir = ANIMA_LORA / tdir
         pe_path = Path(pe_ckpt)
@@ -351,45 +290,27 @@ class AnimaTaggerLoader:
             pe_path = ANIMA_LORA / pe_path
         # Aux PE path is optional — empty string keeps the AnimaTagger
         # constructor default (None → encoder registry default → HF fallback).
-        # Single-encoder checkpoints ignore this entirely.
         pe_aux_resolved: Path | None = None
         pe_aux_str = pe_aux_ckpt.strip() if pe_aux_ckpt else ""
         if pe_aux_str:
             pe_aux_resolved = Path(pe_aux_str)
             if not pe_aux_resolved.is_absolute():
                 pe_aux_resolved = ANIMA_LORA / pe_aux_resolved
-        # Dropdown's "default" sentinel maps to the colocated fallback inside
-        # AnimaTagger (None override -> <ckpt_dir>/pe_lora.safetensors). When
-        # use_pe_lora is off, the dropdown is ignored entirely and the
-        # tagger is told to skip PE-LoRA injection.
-        pe_lora_resolved: Path | None = None
-        if use_pe_lora:
-            pl_str = pe_lora_path.strip()
-            if pl_str and pl_str != _PE_LORA_DEFAULT_LABEL:
-                pl = Path(pl_str)
-                if not pl.is_absolute():
-                    pl = ANIMA_LORA / pl
-                pe_lora_resolved = pl
-        # v1 is at the repo root (no subfolder); every other listed version
-        # lives under a subfolder of the same name on HF.
-        hf_subfolder = "" if version == "v1" else version
-        _ensure_tagger_dir(tdir, hf_subfolder=hf_subfolder)
+        # The only loadable architecture is the dual-encoder checkpoint, now at
+        # the root of the HF repo (_HF_SUBFOLDER == "").
+        _ensure_tagger_dir(tdir, hf_subfolder=_HF_SUBFOLDER)
         device = comfy.model_management.get_torch_device()
         logger.info(
-            "AnimaTaggerLoader: loading %s (version=%s) on %s (pe=%s, pe_lora=%s, pe_aux=%s)",
+            "AnimaTaggerLoader: loading %s on %s (pe=%s, pe_aux=%s)",
             tdir,
-            version,
             device,
             pe_path,
-            "<disabled>" if not use_pe_lora else pe_lora_resolved,
             pe_aux_resolved if pe_aux_resolved else "<registry default>",
         )
         tagger = AnimaTagger(
             ckpt_dir=tdir,
             device=device,
             pe_ckpt=pe_path,
-            pe_lora_path=pe_lora_resolved,
-            pe_lora_disabled=not use_pe_lora,
             pe_aux_ckpt=pe_aux_resolved,
         )
         return (tagger,)

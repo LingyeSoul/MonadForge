@@ -196,7 +196,6 @@ class AugHelper:
         # remove dependency to albumentations
         if random.random() <= 0.33:
             if random.random() > 0.5:
-                # hue shift
                 hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
                 hue_shift = random.uniform(-hue_shift_limit, hue_shift_limit)
                 if hue_shift < 0:
@@ -204,7 +203,6 @@ class AugHelper:
                 hsv_img[:, :, 0] = (hsv_img[:, :, 0] + hue_shift) % 180
                 image = cv2.cvtColor(hsv_img, cv2.COLOR_HSV2BGR)
             else:
-                # random gamma
                 gamma = random.uniform(0.95, 1.05)
                 image = np.clip(image**gamma, 0, 255).astype(np.uint8)
 

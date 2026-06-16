@@ -11,17 +11,17 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_N_repa2"
+output_name = "anima_turbo_N2_GAN"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 1250
+iterations = 1000
 batch_size = 1
 seed = 42
 use_masked_loss = true
 
-channel_scaling_alpha = 0.5
+channel_scaling_alpha = 0.0 # channel scaling alpha harmed training
 
 # Dynamo per-_forward graph budget. The loop traces the compiled block under
 # grad_mode × token-family × num_threads combos that land at the default 8 and
@@ -43,10 +43,10 @@ activation_memory_budget = 0.99
 base_loss = "dpdmd"
 
 [network]
-student_rank = 96
-student_alpha = 96
-fake_rank = 96
-fake_alpha = 96
+student_rank = 64
+student_alpha = 180
+fake_rank = 64
+fake_alpha = 180
 attn_mode = "flash"
 # Per-step expert: split the student into K = student_steps up-heads off a
 # shared down-proj, head k serving denoise step k. Removes the diversity↔quality
@@ -166,15 +166,23 @@ ratio_normalization = true      # per-τ histogram normalization of r
 # and soft-rank (text axis). No new trainable params (the Gram form is
 # head-free). weight = 0 keeps the whole path OFF → byte-identical DP-DMD.
 [repa]
-weight = 0.0                    # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
+weight = 0.0                   # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
 layer = 8                       # DiT block tap (matches LoRA-family REPA)
 encoder = "pe_spatial"          # sidecar {stem}_anima_{encoder}.safetensors next to the TE cache
 every_n = 4                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
-spatial_norm = true             # iREPA target standardization (the validated LoRA operating point)
+# spatial_norm = true           # iREPA target standardization (the validated LoRA operating point)
+# REPA-DoG target band-pass (docs/proposal/repa_dog_target.md; Phase 0 PASSED
+# on LoRA — broad low-band strip beats spatial_norm's DC-only removal). When
+# target_dog = true it REPLACES spatial_norm in the relational loss (mutually
+# exclusive; dog wins). σ as min(gh,gw)/div; σ2 = 0 → single low-pass.
+# target_dog = true             # turn the DoG band-pass on
+# dog_sigma1_div = 16.0         # low-pass σ1 = min(gh,gw)/16 (Phase-0 sweet spot min/16–32)
+# dog_sigma2_div = 0.0          # σ2 = min(gh,gw)/div; 0 = off (single low-pass)
+# dog_norm_std = 0.0            # post band-pass std; 0 = empirical per-batch std
 
 # Logging / checkpoints.
 [io]
-save_every = 625
+save_every = 500
 log_interval = 5
 log_dir = "output/logs/turbo"
-validate_every_n_steps = 625
+validate_every_n_steps = 500

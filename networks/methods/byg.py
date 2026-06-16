@@ -62,11 +62,6 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Loss helpers
-# ---------------------------------------------------------------------------
-
-
 def directional_prior_loss(
     v_fwd: torch.Tensor,
     v_src: torch.Tensor,
@@ -99,11 +94,6 @@ def directional_prior_loss(
     return l_dir + alpha * l_mse
 
 
-# ---------------------------------------------------------------------------
-# Parameter-free source-concat conditioning (gate-free, cond-LoRA-free)
-# ---------------------------------------------------------------------------
-
-
 def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
     """Stripped two-stream Block.forward for BYG.
 
@@ -116,7 +106,6 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
     original_forward = block.forward
     is_last = block_idx == byg.num_blocks - 1
 
-    from library.anima.models import apply_rotary_pos_emb_qk
     from networks import attention_dispatch as anima_attention
 
     def _two_stream_inner(
@@ -136,7 +125,7 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
         scale_attn = attn_params.softmax_scale
         b_param = byg.zero_b(x_B_T_H_W_D.device)
 
-        # ---- AdaLN modulation for both streams ----
+        # AdaLN modulation for both streams.
         if block.use_adaln_lora:
             fused_down = block.adaln_fused_down(emb_B_T_D)
             down_self, down_cross, down_mlp = fused_down.chunk(3, dim=-1)
@@ -151,7 +140,9 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
             ).chunk(3, dim=-1)
 
             src_fused_down = block.adaln_fused_down(src_emb_B_T_D)
-            src_down_self, _src_down_cross, src_down_mlp = src_fused_down.chunk(3, dim=-1)
+            src_down_self, _src_down_cross, src_down_mlp = src_fused_down.chunk(
+                3, dim=-1
+            )
             src_shift_self_attn, src_scale_self_attn, src_gate_self_attn = (
                 block.adaln_up_self_attn(src_down_self) + src_adaln_lora_B_T_3D
             ).chunk(3, dim=-1)
@@ -186,7 +177,7 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
         sc_mlp_5 = scale_mlp[:, :, None, None, :]
         ga_mlp_5 = gate_mlp[:, :, None, None, :]
 
-        # ============ 1. SELF-ATTENTION (extended target + source's own) ======
+        # SELF-ATTENTION (extended target + source's own).
         target_normed = (
             block.layer_norm_self_attn(x_B_T_H_W_D) * (1 + sc_self_5) + sh_self_5
         )
@@ -220,8 +211,7 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
         target_attn_5d = target_attn_proj.unflatten(1, (T_dim, H_dim, W_dim))
         x_B_T_H_W_D = x_B_T_H_W_D + ga_self_5 * target_attn_5d
 
-        # Source stream's own self-attention (feeds the next block only → dead
-        # on the last block).
+        # Source's own self-attn — feeds the next block only → dead on last block.
         if not is_last:
             src_q = src_q.to(target_v.dtype)
             src_k = src_k.to(target_v.dtype)
@@ -232,7 +222,7 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
             src_attn_proj = attn.output_dropout(attn.output_proj(src_attn_out))
             src_x_B_S_D = src_x_B_S_D + src_gate_self_attn * src_attn_proj
 
-        # ============ 2. CROSS-ATTENTION (target only) ============
+        # CROSS-ATTENTION (target only).
         target_cross_normed = (
             block.layer_norm_cross_attn(x_B_T_H_W_D) * (1 + sc_cross_5) + sh_cross_5
         )
@@ -244,7 +234,7 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
         ).unflatten(1, (T_dim, H_dim, W_dim))
         x_B_T_H_W_D = x_B_T_H_W_D + ga_cross_5 * target_cross_out
 
-        # ============ 3. MLP ============
+        # MLP.
         target_mlp_normed = (
             block.layer_norm_mlp(x_B_T_H_W_D) * (1 + sc_mlp_5) + sh_mlp_5
         )
@@ -253,8 +243,7 @@ def _make_byg_block_forward(block, block_idx, byg: "BYGConditioning"):
 
         if not is_last:
             src_mlp_normed = (
-                block.layer_norm_mlp(src_x_B_S_D) * (1 + src_scale_mlp)
-                + src_shift_mlp
+                block.layer_norm_mlp(src_x_B_S_D) * (1 + src_scale_mlp) + src_shift_mlp
             )
             src_mlp_out = block.mlp(src_mlp_normed)
             src_x_B_S_D = src_x_B_S_D + src_gate_mlp * src_mlp_out
@@ -420,9 +409,7 @@ class BYGConditioning:
         src_x, src_rope = self.encode_source(source_latent, padding_mask=padding_mask)
         self.set_source_precomputed(src_x, src_rope)
 
-    def set_source_precomputed(
-        self, src_x: torch.Tensor, src_rope
-    ) -> None:
+    def set_source_precomputed(self, src_x: torch.Tensor, src_rope) -> None:
         """Prime per-forward source state from an already-encoded source.
 
         Lets callers patch-embed an invariant source latent once and re-prime it
@@ -440,11 +427,6 @@ class BYGConditioning:
 
     def clear_source(self) -> None:
         self.source_state = None
-
-
-# ---------------------------------------------------------------------------
-# Trainer integration
-# ---------------------------------------------------------------------------
 
 
 def _crossattn_seqlens(mask: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
@@ -473,17 +455,13 @@ def _resolve_rollout_sigmas(args) -> Optional[list]:
     else:
         vals = [float(x) for x in raw]
     if len(vals) < 3:
-        raise ValueError(
-            f"byg_rollout_sigmas needs >=3 nodes (>=2 steps); got {vals}"
-        )
+        raise ValueError(f"byg_rollout_sigmas needs >=3 nodes (>=2 steps); got {vals}")
     if abs(vals[0] - 1.0) > 1e-6 or abs(vals[-1]) > 1e-6:
         raise ValueError(
             f"byg_rollout_sigmas must start at 1.0 and end at 0.0; got {vals}"
         )
     if any(a <= b for a, b in zip(vals, vals[1:])):
-        raise ValueError(
-            f"byg_rollout_sigmas must be strictly descending; got {vals}"
-        )
+        raise ValueError(f"byg_rollout_sigmas must be strictly descending; got {vals}")
     return vals
 
 
@@ -502,8 +480,6 @@ class BYGMethodAdapter(MethodAdapter):
         self._rollout_sigmas: Optional[list] = None  # explicit grid, or None=uniform
         self._step = 0
         self._metrics: dict = {}
-
-    # -- lifecycle ----------------------------------------------------------
 
     def owns_training_step(self, args) -> bool:
         return bool(getattr(args, "use_byg", False))
@@ -533,11 +509,12 @@ class BYGMethodAdapter(MethodAdapter):
         # params are guaranteed on-device) — cloning here would capture CPU
         # tensors before accelerate's device move and corrupt the rollout swap.
         self._shadow = {}
-        logger.info("BYG adapter ready (snapshot bootstrap, prior=%s)",
-                    "symmetric" if bool(getattr(args, "byg_prior_symmetric", False))
-                    else "fwd-only")
-
-    # -- snapshot / EMA of the trainable LoRA -------------------------------
+        logger.info(
+            "BYG adapter ready (snapshot bootstrap, prior=%s)",
+            "symmetric"
+            if bool(getattr(args, "byg_prior_symmetric", False))
+            else "fwd-only",
+        )
 
     def _lora_params(self):
         """Trainable LoRA tensors keyed by name (frozen DiT excluded).
@@ -549,9 +526,7 @@ class BYGMethodAdapter(MethodAdapter):
         """
         if self._lora_param_map is None:
             self._lora_param_map = {
-                n: p
-                for n, p in self._network.named_parameters()
-                if p.requires_grad
+                n: p for n, p in self._network.named_parameters() if p.requires_grad
             }
         return self._lora_param_map
 
@@ -614,8 +589,6 @@ class BYGMethodAdapter(MethodAdapter):
         def __exit__(self, *exc):
             self.a._network.set_multiplier(self._mult)
 
-    # -- DiT forward helper -------------------------------------------------
-
     def _dit_velocity(self, x_4d, t_B, crossattn_emb, attn_mask, padding_mask):
         """One DiT velocity forward in the 4D→5D→4D boundary layout."""
         x_5d = x_4d.unsqueeze(2)
@@ -628,8 +601,6 @@ class BYGMethodAdapter(MethodAdapter):
         )
         return v.squeeze(2)
 
-    # -- the step -----------------------------------------------------------
-
     def compute_loss(self, ctx: ComputeLossCtx) -> torch.Tensor:
         args = ctx.args
         self._step += 1
@@ -638,20 +609,16 @@ class BYGMethodAdapter(MethodAdapter):
         x = ctx.latents  # source image latent, 4D [B,C,H,W] (shift-scaled)
         B = x.shape[0]
         H, W = x.shape[-2], x.shape[-1]
-        padding_mask = torch.zeros(
-            B, 1, H, W, dtype=ctx.weight_dtype, device=device
-        )
+        padding_mask = torch.zeros(B, 1, H, W, dtype=ctx.weight_dtype, device=device)
 
-        # Text conditionings (cached, post-adapter crossattn_emb + mask).
         c_emb, c_mask = self._get_cond(ctx, "instruction")
         rc_emb, rc_mask = self._get_cond(ctx, "reverse_instruction")
 
         eps = torch.randn_like(x)
 
-        # --- t discretized to the rollout grid (exact ỹ_t capture) ----------
-        # sigmas[j] is the σ at rollout node j (sigmas[0]=1.0 .. sigmas[n]=0.0).
-        # Uniform path reproduces the legacy 1/n grid bit-for-bit; an explicit
-        # byg_rollout_sigmas grid warps the nodes (Anima-aware NFE allocation).
+        # t discretized to the rollout grid (exact ỹ_t capture). sigmas[j] is the σ
+        # at node j (1.0..0.0); uniform path reproduces the legacy 1/n grid, an
+        # explicit byg_rollout_sigmas grid warps the nodes (Anima-aware NFE).
         if self._rollout_sigmas is not None:
             sigmas = self._rollout_sigmas
             n = len(sigmas) - 1
@@ -663,7 +630,7 @@ class BYGMethodAdapter(MethodAdapter):
         t = sig_t[k]  # σ per sample at node k, in (0,1)
         t_5 = t.view(B, 1, 1, 1)
 
-        # --- identity-only schedule (warmup + random identity steps) --------
+        # Identity-only schedule (warmup + random identity steps).
         warmup = int(getattr(args, "byg_identity_warmup_steps", 200) or 0)
         id_prob = float(getattr(args, "byg_identity_prob", 0.0) or 0.0)
         identity_only = (self._step <= warmup) or (torch.rand(()).item() < id_prob)
@@ -680,7 +647,7 @@ class BYGMethodAdapter(MethodAdapter):
         with ctx.accelerator.autocast():
             src_x_cached, src_rope_cached = self._cond.encode_source(x)
 
-        # ---- Identity loss (independent graph → staged backward) -----------
+        # Identity loss (independent graph → staged backward):
         # x_t = (1-t)x + t·eps ; G(x_t, t, c̄, source=x) must predict (eps - x).
         x_t = (1.0 - t_5) * x + t_5 * eps
         target_src = eps - x
@@ -701,7 +668,7 @@ class BYGMethodAdapter(MethodAdapter):
         if lam_id > 0.0:
             ctx.accelerator.backward(lam_id * l_id)
 
-        # ---- Bootstrap rollout (no_grad, snapshot weights, source=x) -------
+        # Bootstrap rollout (no_grad, snapshot weights, source=x).
         with torch.no_grad(), self._SwapShadow(self), ctx.accelerator.autocast():
             self._cond.set_source_precomputed(src_x_cached, src_rope_cached)
             y = eps.clone()
@@ -725,12 +692,12 @@ class BYGMethodAdapter(MethodAdapter):
         y0 = y0.detach()
 
         with ctx.accelerator.autocast():
-            # ---- Forward pass (grad, source=x, instr=c) --------------------
+            # Forward pass (grad, source=x, instr=c).
             self._cond.set_source_precomputed(src_x_cached, src_rope_cached)
             v_fwd = self._dit_velocity(y_t, t, c_emb, c_mask, padding_mask)
             y_hat = y_t - t_5 * v_fwd  # one-step clean-edit prediction
 
-            # ---- Prior loss (no_grad base, multiplier=0, no source) --------
+            # Prior loss (no_grad base, multiplier=0, no source).
             l_prior = x.new_zeros(())
             if lam_prior > 0.0:
                 sp_emb, sp_mask = self._get_cond(ctx, "src_caption")
@@ -742,7 +709,7 @@ class BYGMethodAdapter(MethodAdapter):
                 l_prior = l_prior_fwd
                 self._metrics["byg/L_prior_fwd"] = float(l_prior_fwd.detach())
 
-            # ---- Cycle loss (grad, source=ŷ_hyb, instr=c̄) -----------------
+            # Cycle loss (grad, source=ŷ_hyb, instr=c̄).
             l_cycle = x.new_zeros(())
             if lam_cycle > 0.0:
                 y_hyb = ste_clean_blend(y0.unsqueeze(2), y_hat.unsqueeze(2)).squeeze(2)
@@ -759,8 +726,12 @@ class BYGMethodAdapter(MethodAdapter):
                     # p_src its "target"). sp_*/tp_* were already fetched in the
                     # forward-prior block above (symmetric ⇒ lam_prior > 0).
                     with torch.no_grad(), self._BaseMode(self):
-                        v_rsrc = self._dit_velocity(x_t, t, tp_emb, tp_mask, padding_mask)
-                        v_rtgt = self._dit_velocity(x_t, t, sp_emb, sp_mask, padding_mask)
+                        v_rsrc = self._dit_velocity(
+                            x_t, t, tp_emb, tp_mask, padding_mask
+                        )
+                        v_rtgt = self._dit_velocity(
+                            x_t, t, sp_emb, sp_mask, padding_mask
+                        )
                     l_prior_rev = directional_prior_loss(v_rev, v_rsrc, v_rtgt, alpha)
                     l_prior = l_prior + l_prior_rev
                     self._metrics["byg/L_prior_rev"] = float(l_prior_rev.detach())
@@ -769,12 +740,12 @@ class BYGMethodAdapter(MethodAdapter):
         self._update_shadow()
 
         if lam_prior > 0.0:
-            self._metrics["byg/L_prior"] = float(l_prior.detach())  # fwd (+ rev if symmetric)
+            self._metrics["byg/L_prior"] = float(
+                l_prior.detach()
+            )  # fwd (+ rev if symmetric)
 
         loss = lam_cycle * l_cycle + lam_prior * l_prior
         return loss
-
-    # -- helpers ------------------------------------------------------------
 
     def _get_cond(self, ctx: ComputeLossCtx, role: str):
         """Return (crossattn_emb [B,S,D], attn_mask [B,S]) for a role."""

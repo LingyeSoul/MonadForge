@@ -40,11 +40,6 @@ logger = logging.getLogger(__name__)
 View = Literal["teacher", "student", "fake"]
 
 
-# ---------------------------------------------------------------------------
-# DMD2 teacher-feature GAN (FastGen port — idea 1 of docs/proposal/turbo_gan)
-# ---------------------------------------------------------------------------
-
-
 class PooledTokenDiscriminator(nn.Module):
     """Pooled-token GAN head over frozen-teacher block features (FastGen v0).
 
@@ -214,22 +209,12 @@ class TurboDMDNetwork:
         # plain single-head LoRA. 0/1 = the shipped single-head student.
         self.student_step_expert_K = int(student_step_expert_K)
 
-        # Plain LoRA on both — defaults from LoRANetworkCfg give us
-        # use_moe_style=False / route_per_layer=False / router_source="none" /
-        # use_ortho=False / use_timestep_mask=False. No MoE, no ortho,
-        # no T-LoRA — keep slice 1 KISS.
-        # alpha = rank by default (scale = alpha/rank = 1.0) — matches the
-        # project's LoRA-family convention. Halving alpha would silently halve
-        # every student contribution per forward, making the 28→4 step trajectory
-        # remap harder to bake without buying any stability we don't already
-        # get from α-warmup + grad-clip + LR.
-        # ``use_custom_down_autograd`` is still forwarded for config compat but
-        # is a deprecated no-op in the factory (fp32-bottleneck path removed
-        # 2026-06-10 — see bench/lora_fp32_bottleneck).
-        # ``step_expert_K`` is forwarded as a ``**kwargs`` key; >1 flips
-        # ``resolve_network_spec`` to the step_expert variant so the student
-        # uses ``StepExpertLoRAModule``. Only the student gets heads — the
-        # fake never sees it.
+        # Plain LoRA on both (LoRANetworkCfg defaults: no MoE/ortho/T-LoRA).
+        # alpha = rank by default (scale 1.0) per the LoRA-family convention.
+        # use_custom_down_autograd is forwarded for config compat but a deprecated
+        # no-op in the factory (fp32-bottleneck path removed 2026-06-10).
+        # step_expert_K rides **kwargs; >1 flips resolve_network_spec to
+        # StepExpertLoRAModule for the student only (the fake never sees it).
         _student_kwargs: dict = {}
         if self.student_step_expert_K > 1:
             _student_kwargs["step_expert_K"] = self.student_step_expert_K
@@ -257,10 +242,8 @@ class TurboDMDNetwork:
             channel_scaling_alpha=self.channel_scaling_alpha,
         )
 
-        # Apply order matters for the forward chain. We pick student-first so
-        # the runtime chain is ``linear -> fake -> student -> original``. Both
-        # are functionally symmetric (additive contributions) but having a
-        # stable order makes debugging easier.
+        # Apply student-first so the runtime chain is
+        # ``linear -> fake -> student -> original`` (additive, but a stable order).
         self.student.apply_to(
             text_encoders=[],
             unet=unet,
@@ -281,30 +264,20 @@ class TurboDMDNetwork:
             f"({len(self.fake.unet_loras)} modules)"
         )
 
-        # Start in teacher view — both off, base DiT is exactly itself.
-        # LoRAModule defaults `enabled=True` (base.py:90), so we MUST explicitly
-        # disable both stacks here. The diff-only `set_view` short-circuits when
-        # `view == self._view`, so writing `self._view = "teacher"; set_view("teacher")`
-        # leaves both stacks at their default `enabled=True`. zero-init `lora_up`
-        # masks the bug at step 0 (no contribution from either stack), but the
-        # invariant set_view depends on — cur state matches _VIEW_FLAGS[_view] —
-        # would silently break the moment either stack carries nonzero weights
-        # before its first explicit transition.
+        # Start in teacher view. LoRAModule defaults enabled=True, and diff-only
+        # set_view short-circuits when view==self._view, so we MUST disable both
+        # stacks explicitly here — else the set_view invariant (cur state matches
+        # _VIEW_FLAGS[_view]) breaks once either stack carries nonzero weights.
         self.student.set_enabled(False)
         self.fake.set_enabled(False)
         self._view: View = "teacher"
 
-        # ----------------- GAN feature tap (idea 1 + 3.1) -----------------
-        # Off unless gan_feature_indices is given (gan_loss_weight_gen > 0). The
-        # discriminator reads frozen-teacher block activations captured by the
-        # DiT's first-class feature-tap path (models.py::forward_mini_train_dit's
-        # ``return_block_features`` / ``return_features_early``) — NOT an external
-        # forward hook. The caller runs the teacher forward with those kwargs and
-        # hands the resulting feature dict to ``self.disc`` via ``features_in_order``.
-        # The tap returns block outputs in the native-flatten ``(B, 1, L, 1, D)``
-        # layout under compile, which PooledTokenDiscriminator pools shape-agnostically.
-        # Early-exit means a feature-only teacher forward only runs blocks[0..k]
-        # (the memory win that makes the grad-bearing gen-side GAN term affordable).
+        # GAN feature tap: off unless gan_feature_indices is given. The disc reads
+        # frozen-teacher block activations via the DiT's first-class feature-tap
+        # (forward_mini_train_dit's return_block_features / return_features_early),
+        # NOT a forward hook; the caller hands the feature dict to self.disc through
+        # features_in_order. Taps arrive in native-flatten (B,1,L,1,D) under compile
+        # (pooled shape-agnostically); early-exit runs only blocks[0..k].
         self.disc: PooledTokenDiscriminator | None = None
         self.gan_feature_indices: list[int] = []
         if gan_feature_indices:
@@ -319,8 +292,6 @@ class TurboDMDNetwork:
                 f"inner_dim={unet.model_channels}, "
                 f"{sum(p.numel() for p in self.disc.parameters()):,} params)"
             )
-
-    # ----------------- GAN feature tap helpers -----------------
 
     @property
     def gan_feature_set(self) -> set[int] | None:
@@ -353,10 +324,8 @@ class TurboDMDNetwork:
         if self.disc is not None:
             self.disc.requires_grad_(flag)
 
-    # ----------------- view toggle -----------------
-
-    # Per-view (student_on, fake_on) target states. Lookup avoids the
-    # if/elif ladder and makes the "flip only what changed" diff explicit.
+    # Per-view (student_on, fake_on) target states; lookup makes the
+    # "flip only what changed" diff explicit.
     _VIEW_FLAGS: dict[str, tuple[bool, bool]] = {
         "teacher": (False, False),
         "student": (True, False),
@@ -395,8 +364,6 @@ class TurboDMDNetwork:
     def view(self) -> View:
         return self._view
 
-    # ----------------- per-step expert head selection -----------------
-
     def set_student_step(self, i: int) -> None:
         """Select the student's step-``i`` up-head before its forward.
 
@@ -410,8 +377,6 @@ class TurboDMDNetwork:
         """
         if self.student_step_expert_K > 1:
             self.student.set_step_index(i)
-
-    # ----------------- param accessors -----------------
 
     def student_params(self):
         """Trainable params for the student optimizer."""
@@ -443,8 +408,6 @@ class TurboDMDNetwork:
             n_frozen += 1
         logger.info(f"freeze_dit: {n_frozen} base params frozen")
 
-    # ----------------- save / load -----------------
-
     def save_student(
         self,
         file: str,
@@ -457,13 +420,9 @@ class TurboDMDNetwork:
         Output is loadable by ``inference.py --lora_weight <file>`` — the
         fake network is training scaffolding and never shipped.
         """
-        # Pull exactly the student's params, prefixed by LoRA-net key style
-        # (this is what LoRANetwork.state_dict() returns — naturally so
-        # because each LoRA was add_module'd onto the network).
         sd = self.student.state_dict()
-        # Strip any non-LoRA keys defensively (router params, etc. — plain
-        # LoRA shouldn't have any, but the LoRANetwork instance itself may
-        # carry buffers that aren't load-bearing for inference).
+        # Strip any non-LoRA keys defensively (plain LoRA shouldn't have any, but
+        # the LoRANetwork may carry non-load-bearing buffers).
         sd = {k: v for k, v in sd.items() if ".lora_" in k or ".alpha" in k}
 
         if self.student_step_expert_K > 1:

@@ -19,9 +19,7 @@ from typing import Optional
 import torch
 
 # Post-LLM-adapter crossattn_emb width, fixed by the Anima DiT
-# (``crossattn_emb_channels = 1024`` in ``library/anima/models.py``). If Anima
-# ever ships a model with a different cross-attn width, surface it through the
-# DiT config and update both call sites.
+# (``crossattn_emb_channels = 1024`` in ``library/anima/models.py``).
 CROSSATTN_EMB_DIM: int = 1024
 
 
@@ -73,8 +71,8 @@ class GlobalRouter(torch.nn.Module):
         torch.nn.init.zeros_(self.net[-1].weight)
         torch.nn.init.zeros_(self.net[-1].bias)
 
-        # Per-step diagnostics, overwritten + detached each forward.
-        # ``_last_fei`` aliases ``_last_input`` under the FEI source.
+        # Per-step diagnostics (overwritten + detached each forward); _last_fei
+        # aliases _last_input under the FEI source.
         self._last_gates: Optional[torch.Tensor] = None
         self._last_input: Optional[torch.Tensor] = None
         self._last_fei: Optional[torch.Tensor] = None
@@ -136,9 +134,8 @@ class FreqRouter(torch.nn.Module):
         self.tau = float(tau)
         self.fei_dim = int(fei_dim)
         self.sigma_dim = int(sigma_dim)
-        # LN only fires when both modalities are present (its job is variance
-        # balance across the concat) and the dims actually sum to input_dim
-        # (guards the rebuild path where fei_dim+sigma_dim wasn't threaded).
+        # LN only fires when both modalities are present (variance balance across
+        # the concat) and the dims sum to input_dim (guards the rebuild path).
         self.apply_layer_norm = bool(apply_layer_norm) and (
             self.fei_dim > 0
             and self.sigma_dim > 0

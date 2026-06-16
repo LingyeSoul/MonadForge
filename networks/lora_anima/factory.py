@@ -1,7 +1,6 @@
-# Build a LoRANetwork from either create_network kwargs (fresh training) or
-# from the tensors in a saved checkpoint (warm-start / inference). Centralises
-# all the kwarg parsing and checkpoint key-sniffing that used to live in
-# lora_anima.py alongside LoRANetwork itself.
+# Build a LoRANetwork from create_network kwargs (fresh training) or from a
+# saved checkpoint's tensors (warm-start / inference). Centralises the kwarg
+# parsing and checkpoint key-sniffing.
 
 import json
 import logging
@@ -91,13 +90,10 @@ def create_network(
     spec = resolve_network_spec(kwargs)
 
     # Deprecated 2026-06-10 (accepted so old snapshot TOMLs replay): the
-    # fp32-bottleneck down-projection autograd was removed. Training GEMMs now
-    # run in the model compute dtype (``org_forwarded.dtype`` = the frozen base's
-    # bf16 output) — bit-identical to what the trainer's autocast(bf16) already
-    # produced (autocast re-cast the custom Function's ``.float()`` inputs back to
-    # bf16 before every GEMM, so the fp32 path never executed and only cost cast
-    # traffic). Keying it off ``x.dtype`` was wrong: AdaLN hands these Linears
-    # fp32, which silently upcast the rank path + ``_rebalance`` and OOMed. See
+    # fp32-bottleneck down-projection autograd was removed. Training GEMMs run in
+    # ``org_forwarded.dtype`` (bf16) — bit-identical to the old autocast(bf16)
+    # path (autocast re-cast the Function's ``.float()`` inputs to bf16 anyway).
+    # Keying off ``x.dtype`` was wrong: AdaLN hands fp32, upcasting + OOMing. See
     # bench/lora_fp32_bottleneck.
     if str(kwargs.get("use_custom_down_autograd", "false")).strip().lower() in (
         "true",
@@ -131,15 +127,15 @@ def create_network(
     network._use_hydra = False
     network._balance_loss_weight = 0.0
 
-    # Stamp the resolved spec; save_weights keys off this to pick the save pipeline.
+    # save_weights keys off the resolved spec to pick the save pipeline.
     network._network_spec = spec
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
 
-    # REPA v2 auxiliary alignment loss. Off unless use_repa is set. Stash the
-    # config on the network so REPAMethodAdapter + losses._repa_loss read it
-    # without new args plumbing; build the projection head for absolute mode
-    # (relational/Gram has no head). See library/training/repa.py.
+    # REPA v2 aux alignment loss (off unless use_repa). Config stashed on the
+    # network so REPAMethodAdapter + losses._repa_loss read it without new args;
+    # head built for absolute mode only (relational/Gram has none). See
+    # library/training/repa.py.
     from networks.lora_anima.config import _as_bool
 
     if _as_bool(kwargs.get("use_repa")):
@@ -150,16 +146,20 @@ def create_network(
         network._repa_lr_scale = float(kwargs.get("repa_lr_scale", 1.0) or 1.0)
         network._repa_anneal_steps = float(kwargs.get("repa_anneal_steps", 0.0) or 0.0)
         network._repa_spatial_norm = _as_bool(kwargs.get("repa_spatial_norm"))
-        network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
-        # Global-anchor arm (docs/proposal/repa_global_anchor.md): re-inject the
-        # global component via a patch-mean target + train-only projection head.
-        network._repa_global_weight = float(
-            kwargs.get("repa_global_weight", 0.0) or 0.0
+        network._repa_timestep_weighting = float(
+            kwargs.get("repa_timestep_weighting", 0.0) or 0.0
         )
-        network._repa_global_norm = str(
-            kwargs.get("repa_global_norm", "zscore")
-        ).lower()
-        network._repa_global_calib = str(kwargs.get("repa_global_calib", "") or "")
+        network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
+        # REPA-DoG target band-pass (docs/proposal/repa_dog_target.md): when on
+        # replaces the spatial_norm block in relational target preprocess (no head).
+        network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
+        network._repa_dog_sigma1_div = float(
+            kwargs.get("repa_dog_sigma1_div", 16.0) or 16.0
+        )
+        network._repa_dog_sigma2_div = float(
+            kwargs.get("repa_dog_sigma2_div", 0.0) or 0.0
+        )
+        network._repa_dog_norm_std = float(kwargs.get("repa_dog_norm_std", 0.0) or 0.0)
         from library.vision.encoders import get_encoder_info
 
         enc_dim = get_encoder_info(network._repa_encoder).d_enc
@@ -168,24 +168,17 @@ def create_network(
             from library.training.repa import REPAHead
 
             network.repa_head = REPAHead(dit_dim, dit_dim, enc_dim)
-            # Training-only: save_weights strips registered prefixes from the
-            # checkpoint state_dict.
+            # Training-only: save_weights strips registered prefixes.
             network._training_only_prefixes.add("repa_head.")
-        if network._repa_global_weight > 0.0:
-            from library.training.repa import REPAGlobalHead
-
-            network.repa_global_head = REPAGlobalHead(dit_dim, enc_dim)
-            network._training_only_prefixes.add("repa_global_head.")
         logger.info(
             f"REPA[{network._repa_mode}]: weight={network._repa_weight}, "
             f"layer={network._repa_layer}, encoder={network._repa_encoder}, "
             f"anneal_steps={network._repa_anneal_steps:g}, "
             f"spatial_norm={network._repa_spatial_norm}, "
-            f"global_weight={network._repa_global_weight:g}"
+            f"target_dog={network._repa_target_dog}"
         )
     else:
         network._repa_weight = 0.0
-        network._repa_global_weight = 0.0
 
     if cfg.use_timestep_mask:
         logger.info(
@@ -326,16 +319,11 @@ def create_network_from_weights(
     metadata: Optional[Dict[str, str]] = None,
     **kwargs,
 ):
-    # Metadata flows independently of the tensor-loading path. ``load_file()``
-    # discards safetensors ``__metadata__``, so a caller that pre-loads tensors
-    # (e.g. to filter to ``lora_unet_*``) and passes ``weights_sd=`` would
-    # otherwise lose the three-axis routing stamps (ss_use_moe_style /
-    # ss_route_per_layer / ss_router_source) and trip the "missing three-axis
-    # stamps" raise in ``LoRANetworkCfg.from_weights`` — pointing at the
-    # checkpoint when the real fault is the call site. Precedence for
-    # ``file_metadata``: explicit ``metadata=`` wins; else read from ``file``
-    # when it's a ``.safetensors`` path (regardless of whether ``weights_sd``
-    # was also supplied); else ``{}``.
+    # Metadata flows independently of tensors: ``load_file()`` drops safetensors
+    # ``__metadata__``, so a caller passing ``weights_sd=`` would lose the
+    # three-axis stamps and trip from_weights' "missing stamps" raise (blaming the
+    # checkpoint, not the call site). Precedence: explicit ``metadata=`` wins;
+    # else read from ``file`` if .safetensors; else ``{}``.
     file_metadata: Dict[str, str] = dict(metadata) if metadata else {}
     if weights_sd is None:
         if os.path.splitext(file)[1] == ".safetensors":
@@ -361,12 +349,10 @@ def create_network_from_weights(
     # Strip torch.compile '_orig_mod_' from old checkpoint keys
     weights_sd = LoRANetwork._strip_orig_mod_keys(weights_sd)
 
-    # MoE files: stack per-expert ups (and downs, for StackedExperts) and
-    # fuse split q/k/v first so the fused training-runtime keys are what
-    # the regular attention refuser and the downstream detection loop see.
-    # Chimera dual-A files have their own per-pool ups (.lora_ups_c.{i} /
-    # .lora_ups_f.{i}) and stacked Parameters (.lora_up_c_weight /
-    # .lora_up_f_weight); a separate stack/refuse pair handles them.
+    # MoE files: stack per-expert ups (and downs, for StackedExperts) and fuse
+    # split q/k/v first so the attention refuser + detection loop see fused
+    # runtime keys. Chimera dual-A files have their own per-pool ups
+    # (.lora_ups_{c,f}.{i}) handled by a separate stack/refuse pair.
     weights_sd = _stack_lora_ups(weights_sd)
     weights_sd = _stack_chimera_lora_ups(weights_sd)
     weights_sd = _refuse_split_stacked_experts_keys(weights_sd)
@@ -382,22 +368,16 @@ def create_network_from_weights(
     has_ortho_hydra = False
     has_hydra = False
     # StackedExperts (independent-A): per-expert ``lora_down_weight`` (E, r, in)
-    # AND per-expert ``lora_up_weight`` (E, out, r) — discriminated from Hydra
-    # by the 3-D ``lora_down_weight`` (Hydra's down is the 2-D shared
-    # ``lora_down.weight``). Note that the plan-2 metadata stamps
-    # (ss_use_moe_style etc.) are the canonical discriminator; the key-sniff
-    # here is a fallback for unstamped or legacy artifacts.
+    # AND ``lora_up_weight`` (E, out, r) — discriminated from Hydra by the 3-D
+    # down (Hydra's is the 2-D shared ``lora_down.weight``). The plan-2 stamps
+    # are canonical; this key-sniff is a fallback for unstamped/legacy artifacts.
     has_stacked_experts = False
     hydra_num_experts = 0
-    # Per-module hydra flag: which lora_names were trained as MoE (Hydra) vs
-    # plain LoRA / OrthoLoRA. Populated below by key sniff, then passed
-    # through as `hydra_router_names` so create_modules can pick the right
-    # class per module in mixed checkpoints (result of router_targets).
+    # Which lora_names were MoE (Hydra) vs plain, passed as `hydra_router_names`
+    # so create_modules picks the right class per module in mixed checkpoints.
     hydra_module_names: set[str] = set()
     plain_module_names: set[str] = set()
-    # Discriminator for chimera dual-A keys: any module with a
-    # ``.lora_up_c_weight`` (post-stack form) is a chimera Linear and
-    # should NOT be classified as plain Hydra. Collected in the loop below.
+    # Any module with ``.lora_up_c_weight`` is a chimera Linear, NOT plain Hydra.
     chimera_dual_a_modules: set[str] = set()
     for key, value in weights_sd.items():
         if "." not in key:
@@ -405,7 +385,7 @@ def create_network_from_weights(
 
         lora_name = key.split(".")[0]
 
-        # Old-format global HydraLoRA router — incompatible with per-module routing.
+        # Old global HydraLoRA router — incompatible with per-module routing.
         if key.startswith("_hydra_router"):
             raise RuntimeError(
                 "This checkpoint uses the old global HydraLoRA router "
@@ -417,36 +397,29 @@ def create_network_from_weights(
         if "alpha" in key:
             modules_alpha[lora_name] = value
         elif key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
-            # Chimera dual-A per-pool stacked ups (post-stack form). r is
-            # the last dim; out_dim of this side is dim 1; pool size is
-            # dim 0. Track for the post-loop chimera detection — modules_dim
-            # is filled by the matching ``.lora_down_{c,f}.weight`` branch
-            # below (same r, same prefix).
+            # Chimera dual-A per-pool stacked ups; modules_dim filled by the
+            # matching ``.lora_down_{c,f}.weight`` branch below.
             chimera_dual_a_modules.add(lora_name)
         elif key.endswith(".lora_down_c.weight") or key.endswith(".lora_down_f.weight"):
-            # Chimera dual-A per-pool down. Same r as the matching ups; the
-            # pair (down_c, down_f) lives under one prefix. Both keys hit
-            # this branch and overwrite modules_dim with the same r → safe.
+            # Chimera dual-A per-pool down (both keys overwrite modules_dim with
+            # the same r → safe).
             chimera_dual_a_modules.add(lora_name)
             modules_dim[lora_name] = value.size(0)
         elif key.endswith(".lora_down_weight") and value.dim() == 3:
-            # StackedExperts (independent-A) per-expert lora_down.
-            # Shape: (E, r, in). Discriminator vs Hydra (whose down is the
-            # 2-D shared ``lora_down.weight``) — flips the spec resolver
-            # below to ``stacked_experts_global_fei``.
+            # StackedExperts (independent-A) per-expert down (E, r, in) —
+            # discriminator vs Hydra, flips the spec to stacked_experts_global_fei.
             has_stacked_experts = True
             hydra_num_experts = max(hydra_num_experts, value.size(0))
             modules_dim[lora_name] = value.size(1)
             hydra_module_names.add(lora_name)
         elif "lora_up_weight" in key:
-            # Stacked-3-D in both Hydra and StackedExperts; the
-            # discriminator is the down (handled above for SE, below for
-            # Hydra). Defer the has_hydra decision until after the loop.
+            # Stacked-3-D in both Hydra and SE; the down discriminates (above for
+            # SE, below for Hydra). Defer the has_hydra decision until after loop.
             hydra_num_experts = max(hydra_num_experts, value.size(0))
             hydra_module_names.add(lora_name)
         elif key.endswith(".lora_up.weight"):
-            # Plain (non-stacked) LoRA up — either vanilla LoRA or the
-            # plain-fallback leg of a mixed router_targets checkpoint.
+            # Plain LoRA up — vanilla, or the plain-fallback leg of a mixed
+            # router_targets checkpoint.
             plain_module_names.add(lora_name)
         elif "lora_down" in key:
             dim = value.size()[0]
@@ -459,25 +432,23 @@ def create_network_from_weights(
                 modules_dim[lora_name] = value.size(1)
                 hydra_module_names.add(lora_name)
             else:
-                # OrthoLoRA: S_p is (r, r) — either pure ortho or the
-                # plain-fallback leg of a mixed ortho_hydra checkpoint.
+                # OrthoLoRA: S_p is (r, r) — pure ortho or the plain-fallback
+                # leg of a mixed ortho_hydra checkpoint.
                 has_ortho = True
                 modules_dim[lora_name] = value.size(0)
                 plain_module_names.add(lora_name)
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
 
-    # Finalize the MoE shape now that the full scan is done. A module that
-    # has only ``lora_up_weight`` (3-D) but no matching ``lora_down_weight``
-    # (3-D) is Hydra (shared lora_down.weight); both 3-D means StackedExperts.
+    # Finalize the MoE shape post-scan: up_weight (3-D) with no matching
+    # down_weight (3-D) is Hydra (shared down); both 3-D means StackedExperts.
     if not has_stacked_experts and hydra_module_names and not has_ortho_hydra:
         has_hydra = True
 
-    # Early de-footgun: MoE keys present but no metadata almost always means a
-    # caller pre-loaded tensors via ``load_file()`` (which drops __metadata__)
-    # and passed ``weights_sd=`` without ``file=`` / ``metadata=``. The three-
-    # axis stamps live only in __metadata__, so ``from_weights`` is about to
-    # raise an error that blames the checkpoint. Surface the real cause here.
+    # De-footgun: MoE keys but no metadata usually means a caller pre-loaded via
+    # load_file() (drops __metadata__) and passed weights_sd= without file=/
+    # metadata=. The three-axis stamps live only there, so from_weights is about
+    # to raise an error blaming the checkpoint — surface the real cause here.
     if (has_hydra or has_ortho_hydra or has_stacked_experts) and not file_metadata:
         logger.warning(
             "MoE checkpoint keys detected but no safetensors metadata was "
@@ -488,9 +459,8 @@ def create_network_from_weights(
             "so the stamps survive; otherwise loading will fail."
         )
 
-    # has_hydra / has_ortho_hydra / has_stacked_experts win over for_inference:
-    # the router is sample-dependent and can't be folded into a static-merge
-    # path. The dynamic forward-hook path works in eval mode too.
+    # MoE wins over for_inference: the router is sample-dependent and can't fold
+    # into a static merge; the dynamic forward-hook path works in eval too.
     if has_stacked_experts:
         spec = NETWORK_REGISTRY["stacked_experts_global_fei"]
         module_class = spec.module_class
@@ -501,10 +471,8 @@ def create_network_from_weights(
         spec = NETWORK_REGISTRY["hydra"]
         module_class = spec.module_class
 
-    # Legacy σ-router refusal: the additive-bias sigma_mlp design is gone;
-    # σ is now a direct input to a wider router (router.weight columns
-    # [lora_dim:] take sinusoidal(σ) features). Old checkpoints carrying
-    # .sigma_mlp.* can't be reshaped into the new form.
+    # Legacy σ-router refusal: the additive-bias sigma_mlp design is gone (σ is
+    # now a direct concat into a wider router); .sigma_mlp.* can't be reshaped.
     _legacy_sigma_keys = [k for k in weights_sd if ".sigma_mlp." in k]
     if _legacy_sigma_keys:
         raise RuntimeError(
@@ -516,16 +484,11 @@ def create_network_from_weights(
             f"{_legacy_sigma_keys[0]!r}."
         )
 
-    # Old-format per-module router — was Linear(in_dim, E). Current router is
-    # Linear(lora_dim + sigma_feature_dim + fei_feature_dim, E); width >= lora_dim,
-    # with any excess split between σ + FEI features. The FEI slice width is
-    # stamped into safetensors metadata (``ss_fei_feature_dim``) when FEI
-    # routing was on at save time — subtract it from the excess to recover
-    # the σ slice. The old broken shape (width ≈ in_dim, often thousands)
-    # is caught by a sanity cap on excess width.
-    #
-    # plan2 task #6 retired the legacy ``ss_use_fei_router`` fallback;
-    # ``ss_router_source`` is now the sole discriminator.
+    # Current router is Linear(lora_dim + sigma_feature_dim + fei_feature_dim, E);
+    # excess over lora_dim splits between σ + FEI. The FEI slice is stamped
+    # (``ss_fei_feature_dim``); subtract it to recover the σ slice. Old broken
+    # shape (width ≈ in_dim) is caught by a sanity cap on excess width.
+    # ``ss_router_source`` is the sole discriminator (legacy fallback retired).
     new_router_source = str(file_metadata.get("ss_router_source", "")).strip()
     use_fei_router_meta = new_router_source == "fei"
     fei_feature_dim_detected: Optional[int] = (
@@ -582,9 +545,8 @@ def create_network_from_weights(
                     f"{sigma_feature_dim_detected}, found {extra} at {k!r}."
                 )
     elif for_inference:
-        # Force the plain LoRA spec even for ortho checkpoints — the
-        # merge_to / fuse_weight path expects flat down/up weights, and
-        # ortho checkpoints are distilled to LoRA shape at save time.
+        # Force plain LoRA spec even for ortho — merge_to/fuse_weight wants flat
+        # down/up, and ortho checkpoints are distilled to LoRA shape at save.
         spec = NETWORK_REGISTRY["lora"]
         module_class = spec.module_class
     elif has_ortho:
@@ -594,11 +556,9 @@ def create_network_from_weights(
         spec = NETWORK_REGISTRY["lora"]
         module_class = spec.module_class
 
-    # Detect baked-in per-channel input scaling. We pass a placeholder ones
-    # tensor so each affected module registers the `inv_scale` buffer at init;
-    # load_state_dict then overwrites it with the trained values. The absorption
-    # step in _absorb_channel_scale is a no-op with s=ones, and the subsequent
-    # weight load fully replaces the init values anyway.
+    # Detect baked-in per-channel input scaling. Pass a placeholder ones tensor
+    # so each module registers the `inv_scale` buffer at init; load_state_dict
+    # then overwrites it (absorption with s=ones is a no-op).
     channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None
     _scale_keys = [k for k in weights_sd.keys() if k.endswith(".inv_scale")]
     if _scale_keys:
@@ -611,10 +571,8 @@ def create_network_from_weights(
             f"{len(channel_scales_dict)} modules with baked-in inv_scale"
         )
 
-    # σ-conditional router names: derived from router.weight widths above.
-    # A module has σ routing iff its router.weight width > expected rank —
-    # the excess columns are the sinusoidal(σ) feature slice. List is empty
-    # when sigma_feature_dim_detected is None (no σ routing in this ckpt).
+    # σ-router names: a module has σ routing iff router.weight width > rank (the
+    # excess is the σ feature slice). Empty when sigma_feature_dim_detected is None.
     sigma_router_names: List[str] = []
     if (has_hydra or has_ortho_hydra) and sigma_feature_dim_detected is not None:
         for k, v in weights_sd.items():
@@ -627,14 +585,11 @@ def create_network_from_weights(
             if v.size(1) - expected_rank == sigma_feature_dim_detected:
                 sigma_router_names.append(lora_name)
 
-    # Per-module Hydra selection from the checkpoint: if the file contains
-    # *both* hydra-style and plain-LoRA-style leaves, we're reloading a mixed
-    # router_targets result and need to build each leaf with its original
-    # class. If every module is hydra, leave as None (= apply the nominal
-    # hydra class everywhere, legacy behaviour). For chimera dual-A files,
-    # use ``chimera_dual_a_modules`` as the routing-aware set so unrouted
-    # Linears (saved as OrthoLoRA fallback with ``.S_p`` keys) fall back to
-    # ``OrthoLoRAModule`` instead of being mis-typed as chimera.
+    # Per-module Hydra selection: if the file has BOTH hydra and plain leaves,
+    # it's a mixed router_targets result — build each leaf with its original
+    # class. All-hydra → None (apply hydra everywhere). For chimera dual-A, use
+    # ``chimera_dual_a_modules`` so unrouted (OrthoLoRA-fallback) Linears aren't
+    # mis-typed as chimera.
     _is_chimera_meta = (
         str(file_metadata.get("ss_use_chimera_hydra", "")).strip().lower() == "true"
     )
@@ -695,20 +650,15 @@ def create_network_from_weights(
             )
         band_boundaries = [float(v) for v in parsed]
 
-    # FEI router presence is metadata-stamped; the per-module activation list
-    # falls back to the same set as σ-router (or all hydra modules if σ off).
-    # Phase 1's hydralora_fei variant turns on FEI router on the same regex as
-    # σ, so this mirroring is correct in practice. StackedExperts uses a
-    # single network-level router instead, so no per-module activation list
-    # is needed there.
+    # FEI router presence is metadata-stamped; per-module activation list falls
+    # back to the σ-router set (or all hydra modules) — hydralora_fei uses the
+    # same regex as σ. StackedExperts uses a network-level router (no list).
     fei_router_names: Optional[List[str]] = None
     if use_fei_router_meta and (has_hydra or has_ortho_hydra):
         fei_router_names = sigma_router_names or sorted(hydra_module_names) or None
 
-    # Three-axis stamps stamped by ``LoRANetwork.save_weights``. All three
-    # must be present for MoE checkpoints (Hydra / OrthoHydra /
-    # StackedExperts); ``from_weights`` raises otherwise. plan2 task #6
-    # retired the legacy ``ss_use_hydra`` / ``ss_use_fei_router`` fallback.
+    # Three-axis stamps from save_weights. All three required for MoE checkpoints
+    # (Hydra/OrthoHydra/StackedExperts); from_weights raises otherwise.
     new_use_moe_style: Optional[str] = file_metadata.get("ss_use_moe_style") or None
     raw_route_per_layer = file_metadata.get("ss_route_per_layer")
     new_route_per_layer: Optional[bool] = (
@@ -719,20 +669,16 @@ def create_network_from_weights(
     new_router_source_stamp: Optional[str] = (
         new_router_source if new_router_source else None
     )
-    # OrthoHydra centered-gate: threaded into the runtime HydraLoRAModule
-    # combine so the distilled ``_moe`` form subtracts ``1/E`` like training.
+    # OrthoHydra centered-gate: threaded into the runtime combine so the
+    # distilled ``_moe`` form subtracts ``1/E`` like training.
     ortho_centered_gate: bool = (
         str(file_metadata.get("ss_ortho_centered_gate", "")).strip().lower() == "true"
     )
 
-    # ChimeraHydra stamps. Presence of ``ss_use_chimera_hydra="true"``
-    # flips the loader to the chimera spec. The chimera-native save format
-    # preserves the Cayley params (S_p / S_q / P_bases / Q_basis /
-    # lambda_layer) so the reload directly rebuilds a chimera network from
-    # the same kwargs the trainer used. The FreqRouter input dim depends
-    # on FEI + σ feature dims, both stamped via the chimera-specific keys
-    # (``router_source="input"`` for chimera, so the standard
-    # ``ss_fei_feature_dim`` stamp is not fired).
+    # ChimeraHydra stamps. ``ss_use_chimera_hydra="true"`` flips to the chimera
+    # spec. FreqRouter input dim needs the chimera-specific FEI/σ stamps —
+    # ``router_source="input"`` for chimera so the standard ss_fei_feature_dim
+    # stamp doesn't fire.
     is_chimera_hydra = (
         str(file_metadata.get("ss_use_chimera_hydra", "")).strip().lower() == "true"
     )
@@ -761,9 +707,8 @@ def create_network_from_weights(
         if is_chimera_hydra and "ss_chimera_fei_sigma_low_div" in file_metadata
         else None
     )
-    # Default false when the stamp is absent — pre-LN checkpoints were
-    # trained on raw concat(FEI, σ); rebuilding with LN on would feed the
-    # trained MLP a different-statistics input and silently shift outputs.
+    # Default false when absent — pre-LN checkpoints trained on raw concat(FEI,σ);
+    # rebuilding with LN on would feed the trained MLP different statistics.
     chimera_freq_router_layer_norm: bool = (
         is_chimera_hydra
         and str(file_metadata.get("ss_chimera_freq_router_layer_norm", ""))
@@ -771,9 +716,8 @@ def create_network_from_weights(
         .lower()
         == "true"
     )
-    # Freq routing mode. Absent stamp ⇒ "learned" (pre-2026-05-27 checkpoints,
-    # which carry FreqRouter weights). "fei" rebuilds the hardwired-FEI path:
-    # no FreqRouter module, the simplex is re-broadcast each inference step.
+    # Freq routing mode. Absent ⇒ "learned" (pre-2026-05-27 ckpts carry
+    # FreqRouter weights). "fei" rebuilds the hardwired path (no FreqRouter).
     chimera_freq_router_mode: str = (
         str(file_metadata.get("ss_chimera_freq_router_mode", "learned")).strip().lower()
         if is_chimera_hydra
@@ -784,12 +728,10 @@ def create_network_from_weights(
         if is_chimera_hydra
         else 1.0
     )
-    # Content routing is always the network-level ContentRouter fed pooled
-    # crossattn_emb (input dim fixed by the DiT = CROSSATTN_EMB_DIM). The
-    # retired per-Linear ("input") path no longer loads — reject it with a
-    # clear error rather than silently mis-loading. ``content_router_layer_norm``
-    # is the only ContentRouter stamp that still varies (parameterless LN, no
-    # tensor footprint).
+    # Content routing is always the network-level ContentRouter on pooled
+    # crossattn_emb; the retired per-Linear ("input") path is rejected rather
+    # than silently mis-loaded. content_router_layer_norm is the only varying
+    # stamp (parameterless LN, no tensor footprint).
     if is_chimera_hydra:
         _content_src = (
             str(file_metadata.get("ss_chimera_content_router_source", "input"))
@@ -811,10 +753,9 @@ def create_network_from_weights(
         == "true"
     )
     if is_chimera_hydra:
-        # On-disk format: per-pool distilled chimera (lora_down_{c,f} +
-        # stacked lora_up_{c,f}_weight + content router) with q/k/v defused
-        # on both pools, plus top-level freq_router.*. The 1-A chimera
-        # legacy fallback was removed — pre-2-A checkpoints stop loading.
+        # On-disk: per-pool distilled chimera (lora_down_{c,f} + stacked
+        # lora_up_{c,f}_weight + content router), q/k/v defused, top-level
+        # freq_router.*. The 1-A legacy fallback was removed.
         if not chimera_dual_a_modules:
             raise RuntimeError(
                 "Checkpoint is stamped ss_use_chimera_hydra=true but contains "
@@ -826,24 +767,19 @@ def create_network_from_weights(
         from networks.lora_modules import ChimeraHydraInferenceModule
 
         module_class = ChimeraHydraInferenceModule
-        # Chimera dual-A keys are NOT Hydra; clear the auto-set has_hydra
-        # flag from the key sniff above so cfg.from_weights doesn't demand
-        # the three-axis stamps via the MoE branch (the chimera path supplies
-        # them via its own pin in cfg.from_kwargs / from_weights).
+        # Chimera dual-A keys are NOT Hydra; clear the auto-set has_hydra so
+        # from_weights doesn't demand the three-axis stamps via the MoE branch.
         has_hydra = False
-        # hydra_num_experts is needed only for the chimera consistency
-        # check (K_c + K_f == E); derive from the stamped pool sizes.
+        # hydra_num_experts is only for the chimera K_c+K_f==E check.
         if (
             chimera_num_experts_content is not None
             and chimera_num_experts_freq is not None
         ):
             hydra_num_experts = chimera_num_experts_content + chimera_num_experts_freq
-        # Surface the chimera-specific σ/FEI dims into the cfg slots the
-        # FreqRouter reads (``cfg.fei_feature_dim`` / ``cfg.sigma_feature_dim``).
-        # Without these overrides the loader would fall back to the legacy
-        # auto-detected ``sigma_feature_dim_detected`` (default 128) and the
-        # FreqRouter would be built with the wrong input width — load_state_dict
-        # then fails with a Linear weight shape mismatch.
+        # Surface chimera σ/FEI dims into the cfg slots the FreqRouter reads;
+        # without these the loader falls back to sigma_feature_dim_detected
+        # (default 128) and the FreqRouter gets the wrong input width →
+        # load_state_dict shape mismatch.
         if chimera_sigma_feature_dim is not None:
             sigma_feature_dim_detected = chimera_sigma_feature_dim
         if chimera_fei_feature_dim is not None:
@@ -883,8 +819,7 @@ def create_network_from_weights(
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)
-    # Mirror create_network's variant-specific post-build attribute attachment.
-    # Defaults first, then spec.post_init overrides for the matching variant.
+    # Mirror create_network: defaults first, then spec.post_init overrides.
     network._use_hydra = False
     network._balance_loss_weight = 0.0
     network._network_spec = spec

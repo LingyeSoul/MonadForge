@@ -7,13 +7,11 @@ Uses PEP 562 lazy imports to avoid circular dependency chains
 import importlib as _importlib
 
 _ATTR_TO_MODULE = {
-    # sampling
     "get_timesteps_sigmas": "sampling",
     "step": "sampling",
     "ERSDESampler": "sampling",
     "GradualLatent": "sampling",
     "EulerAncestralDiscreteSchedulerGL": "sampling",
-    # output
     "check_inputs": "output",
     "decode_latent": "output",
     "decode_to_pil": "output",
@@ -22,12 +20,10 @@ _ATTR_TO_MODULE = {
     "save_latent": "output",
     "save_images": "output",
     "save_output": "output",
-    # models
     "load_dit_model": "models",
     "attach_adapters": "models",
     "load_text_encoder": "models",
     "load_shared_models": "models",
-    # text
     "process_escape": "text",
     "prepare_text_inputs": "text",
     "ensure_text_strategies": "text",
@@ -36,10 +32,8 @@ _ATTR_TO_MODULE = {
     # argument parser (single source of truth for generate()'s getattr knobs)
     "build_parser": "args",
     "build_default_args": "args",
-    # mod_guidance
     "build_mod_schedule": "corrections.mod_guidance",
     "setup_mod_guidance": "corrections.mod_guidance",
-    # generation
     "GenerationSettings": "generation",
     "get_generation_settings": "generation",
     "resolve_seed": "generation",

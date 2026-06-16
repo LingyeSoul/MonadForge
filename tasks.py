@@ -25,6 +25,7 @@ import sys
 from scripts.experimental_tasks import inference as exp_inference
 from scripts.experimental_tasks import training as exp_training
 from scripts.tasks import (
+    curate,
     dcw,
     downloads,
     inference,
@@ -166,6 +167,13 @@ COMMANDS = {
         "Build the typed-tag caption index (character/copyright/artist groups) "
         "at post_image_dataset/captions/caption_index.json. Pure data, no GPU.",
     ),
+    # ── Curation ──────────────────────────────────────────────────────
+    "curate-group": (
+        curate.cmd_curate_group,
+        "Group dataset images by PE-Spatial visual similarity (per-artist "
+        "connected-components) → post_image_dataset/groups/groups.json. The GUI "
+        'Dataset tab reads it to filter by group. ARGS="--threshold 0.95".',
+    ),
     # ── Anima Tagger ──────────────────────────────────────────────────
     "preprocess-tagger": (
         tagger.cmd_preprocess_tagger,
@@ -182,6 +190,12 @@ COMMANDS = {
         tagger.cmd_test_tagger,
         "Predict tags for a single image (--image <path>) or sample a random "
         "val-split stem. Pass --show_scores for rating + top-K kept tags.",
+    ),
+    "autotag": (
+        tagger.cmd_autotag,
+        "Autotag one image (--image <path>) with the Anima Tagger "
+        "(auto-downloaded on first use); prints the predicted caption. CLI "
+        "one-shot — the GUI Dataset tab uses a resident worker instead.",
     ),
     # ── Downloads ─────────────────────────────────────────────────────
     "download-models": (downloads.cmd_download_models, "Download all models"),
@@ -321,7 +335,26 @@ COMMANDS = {
 }
 
 
+def _force_utf8_stdio():
+    """Make stdout/stderr UTF-8 so non-UTF-8 consoles don't crash on glyphs.
+
+    Several commands print Unicode status glyphs (``✓``/``✗``). On a Windows
+    console whose code page isn't UTF-8 (e.g. cp949 on a Korean install)
+    ``print`` raises ``UnicodeEncodeError`` and aborts the whole task. Re-encode
+    stdio as UTF-8 with ``errors="replace"`` so output is never fatal — UTF-8
+    when the terminal can show it, a replacement char at worst when it can't.
+    Best-effort: some wrapped streams (pytest capture, certain pipes) lack
+    ``reconfigure``; skip them silently.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
 def main():
+    _force_utf8_stdio()
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print("Usage: python tasks.py <command> [extra args...]\n")
         print("Commands:")

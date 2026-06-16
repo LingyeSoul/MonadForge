@@ -15,7 +15,7 @@ from pathlib import Path
 import torch
 
 
-from library.preprocess import cache_latents, tqdm_progress
+from library.preprocess import cache_latents, count_pending_latents, tqdm_progress
 from library.runtime.cli import add_io_args
 
 
@@ -56,9 +56,22 @@ def main() -> None:
 
     data_dir = Path(args.dir)
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
+
+    # Pre-flight: a fully-cached dataset needs no VAE — skip the (slow) load.
+    pending, total = count_pending_latents(
+        data_dir,
+        cache_dir=cache_dir,
+        recursive=args.recursive,
+        path_pattern=args.path_pattern,
+    )
+    if pending == 0:
+        print(f"Latent caching: all {total} images already cached — skipping VAE load.")
+        return
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16
 
+    print(f"{pending}/{total} images need latents.")
     print(f"Loading VAE from {args.vae} ...")
     vae = qwen_image_autoencoder_kl.load_vae(
         args.vae,

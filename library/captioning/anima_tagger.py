@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -61,22 +62,80 @@ from library.vision.encoder import (
 
 logger = logging.getLogger(__name__)
 
-# Matches "1girl", "2girls", …, "6+girls" (digit-prefixed girls counts).
-# "multiple girls" is intentionally not matched — it carries no exact count
-# so we leave the character head's output untouched in that case.
+# Auto-fetch repo when ckpt_dir is missing required files. Mirrors the ComfyUI
+# loader's auto-download (custom_nodes/comfyui-anima-tagger/nodes.py); checkpoint
+# lives at the repo root (no version subfolder).
+TAGGER_HF_REPO = "sorryhyun/anima-tagger"
+TAGGER_REQUIRED_FILES = ("config.json", "model.safetensors", "vocab.json", "rules.yaml")
+TAGGER_OPTIONAL_FILES = ("thresholds.safetensors", "groups.yaml")
+DEFAULT_TAGGER_DIR = "models/captioners/anima-tagger-v2"
+
+
+def ensure_tagger_checkpoint(
+    ckpt_dir: str | Path,
+    repo: str = TAGGER_HF_REPO,
+    subfolder: str = "",
+) -> Path:
+    """Fetch the tagger checkpoint into ``ckpt_dir`` if any required file is missing.
+
+    One-time download from ``repo`` (default ``sorryhyun/anima-tagger``); files
+    are flattened into ``ckpt_dir`` regardless of the source layout so the
+    loader's directory contract (``ckpt_dir/config.json`` …) stays uniform.
+    Optional files (thresholds / groups) are best-effort — a 404 just means the
+    published checkpoint doesn't ship that file. Returns the resolved ``Path``.
+    """
+    ckpt_dir = Path(ckpt_dir)
+    if all((ckpt_dir / f).exists() for f in TAGGER_REQUIRED_FILES):
+        return ckpt_dir
+    from huggingface_hub.utils import EntryNotFoundError
+
+    from library.runtime.hf_download import hf_download
+
+    logger.info(
+        "AnimaTagger: %s missing required files — fetching %s%s (one-time).",
+        ckpt_dir,
+        repo,
+        f"/{subfolder}" if subfolder else "",
+    )
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    def _fetch_flat(fname: str) -> Path:
+        repo_path = f"{subfolder}/{fname}" if subfolder else fname
+        downloaded = Path(
+            hf_download(
+                what="AnimaTagger weights",
+                repo_id=repo,
+                filename=repo_path,
+                local_dir=str(ckpt_dir),
+            )
+        )
+        dest = ckpt_dir / fname
+        if downloaded.resolve() != dest.resolve():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(downloaded), str(dest))
+        return dest
+
+    for fname in TAGGER_REQUIRED_FILES:
+        _fetch_flat(fname)
+    for fname in TAGGER_OPTIONAL_FILES:
+        try:
+            _fetch_flat(fname)
+        except EntryNotFoundError:
+            logger.debug("optional tagger file %s not present on %s", fname, repo)
+    return ckpt_dir
+
+
+# Digit-prefixed girls counts ("1girl"…"6+girls"). "multiple girls" is
+# intentionally not matched — no exact count, so leave the character head alone.
 _GIRLS_COUNT_RE = re.compile(r"^(\d+)\+?girls?$")
 
-# Trailing parenthesized suffix on a tag name, e.g. "nejet (kawakami rokkaku)".
-# Booru OC naming convention: when the copyright is `original` (or a meta
-# imprint), the parens content is the artist's name.
+# Trailing parens suffix, e.g. "nejet (kawakami rokkaku)". Booru OC convention:
+# when copyright is `original`/meta, the parens content is the artist's name.
 _OC_SUFFIX_RE = re.compile(r"\(([^()]+)\)\s*$")
 
-# Copyrights that mean "no franchise" — `original` plus the meta-publisher /
-# store imprints that booru tags alongside `original` on store-bonus and
-# anthology art (melonbooks / toranoana store releases, comic kairakuten
-# anthology submissions). All three appear in the trained vocab; other
-# meta tags (comiket NN, dengeki <pub>, ...) are out-of-vocab and can't be
-# predicted. Membership is exact (no regex) — vocab is small and stable.
+# Copyrights that mean "no franchise" — `original` plus meta-publisher imprints
+# booru tags alongside it (melonbooks / toranoana / comic kairakuten). All three
+# are in-vocab; exact membership (no regex), vocab is small and stable.
 _META_COPYRIGHTS = frozenset(
     {"original", "melonbooks", "toranoana", "comic kairakuten"}
 )
@@ -92,9 +151,8 @@ SLOT_ORDER: Tuple[str, ...] = (
     "general",
 )
 
-# Booru-style tag-type integer → category name. Source of truth for the
-# trainer's view of the corpus; written into vocab.json and read back by the
-# inference wrapper, so changes here invalidate existing checkpoints.
+# Booru tag-type integer → category name. Written into vocab.json and read back
+# at inference, so changes here invalidate existing checkpoints.
 TAG_TYPE_NAMES: Dict[int, str] = {
     0: "general",
     1: "artist",
@@ -107,10 +165,9 @@ TAG_TYPE_NAMES: Dict[int, str] = {
 # 3-class rating set (post-``questionable→sensitive`` collapse).
 RATINGS: Tuple[str, ...] = ("general", "sensitive", "explicit")
 
-# 8-class people-count bucket. Derived from parsed count tags
-# (``scripts.anima_tagger.constants.classify_people``); trained as a dedicated
-# softmax head separate from the multi-label tag head. Order is the canonical
-# class index — do not reorder without rebuilding vocab.
+# 8-class people-count bucket from parsed count tags
+# (``scripts.anima_tagger.constants.classify_people``); dedicated softmax head.
+# Order is the canonical class index — do not reorder without rebuilding vocab.
 PEOPLE_COUNT_LABELS: Tuple[str, ...] = (
     "no_people",  # 0 — no count tag at all
     "1girl",  # 1 — 1girl, no boy
@@ -191,29 +248,25 @@ class AnimaTagger:
         self.device = torch.device(device)
         self.dtype = dtype
         self.pe_ckpt = Path(pe_ckpt) if pe_ckpt else None
-        # Optional override for the auxiliary (PE-Spatial) encoder's weights
-        # path. None → fall back to the encoder registry's default
-        # (PE-Spatial-B16-512 at ``models/pe/PE-Spatial-B16-512.pt``).
+        # Override for the aux (PE-Spatial) encoder weights path; None → registry
+        # default (PE-Spatial-B16-512 at ``models/pe/PE-Spatial-B16-512.pt``).
         self.pe_aux_ckpt = Path(pe_aux_ckpt) if pe_aux_ckpt else None
-        # ``pe_lora_path`` / ``pe_lora_disabled`` are accepted for ComfyUI-node
-        # call-site compatibility but are no-ops — PE-LoRA was removed when the
-        # tagger collapsed to the dual-encoder frozen-trunk architecture.
+        # pe_lora_path / pe_lora_disabled kept for ComfyUI-node call-site compat
+        # but are no-ops — PE-LoRA was removed when the tagger collapsed to the
+        # dual-encoder frozen-trunk architecture.
         del pe_lora_path, pe_lora_disabled
-        # Absolute confidence floor for character predictions. Sits *above*
-        # the per-tag F1-optimal threshold for the low-confidence end of the
-        # character vocab (some F1 thresholds are as low as 0.05 — chasing
-        # F1 there produces visible false positives on gender-ambiguous /
-        # stylized art). Below the floor → suppress and fall back to the
-        # `original` copyright tag.
+        # Absolute confidence floor for characters, *above* the per-tag F1
+        # threshold (some F1 thresholds are ~0.05 — chasing F1 there yields false
+        # positives on ambiguous/stylized art). Below floor → fall back to
+        # `original`.
         self._character_floor = float(character_floor)
 
-        with open(self.ckpt_dir / "config.json") as f:
+        with open(self.ckpt_dir / "config.json", encoding="utf-8") as f:
             cfg_d = json.load(f)
         self.encoder_name: str = cfg_d.get("encoder", "pe")
-        # Auxiliary (PE-Spatial) encoder — mandatory; the head is always
-        # dual-encoder. ``AnimaTaggerConfig.from_dict`` already rejects
-        # pre-dual / v1 configs (missing d_in_aux), so a clear failure there
-        # covers the head side; here we make sure we know which encoder to load.
+        # Aux (PE-Spatial) encoder — mandatory; the head is always dual-encoder.
+        # ``AnimaTaggerConfig.from_dict`` rejects pre-dual/v1 configs (missing
+        # d_in_aux); here we just need to know which encoder to load.
         self.aux_encoder_name: Optional[str] = cfg_d.get("aux_encoder")
         self.cfg = AnimaTaggerConfig.from_dict(cfg_d["model"])
         if not self.aux_encoder_name:
@@ -231,7 +284,7 @@ class AnimaTagger:
         for p in self.model.parameters():
             p.requires_grad_(False)
 
-        with open(self.ckpt_dir / "vocab.json") as f:
+        with open(self.ckpt_dir / "vocab.json", encoding="utf-8") as f:
             vocab = json.load(f)
         self.tag_entries: List[_TagEntry] = [
             _TagEntry(
@@ -243,16 +296,13 @@ class AnimaTagger:
             for t in vocab["tags"]
         ]
         self.ratings: List[str] = list(vocab["ratings"])
-        # Optional — older vocab.json builds didn't carry the people-count
-        # labels, in which case the people head is also absent on the
-        # checkpoint side (cfg.n_people_counts == 0). Empty list is the
-        # legacy / disabled signal.
+        # Empty list = legacy/disabled (older vocab.json had no people-count
+        # labels, and those checkpoints also lack the head: n_people_counts == 0).
         self.people_count_labels: List[str] = list(
             vocab.get("people_count_labels") or []
         )
-        # Vocab index of the canonical "original" copyright tag, or None
-        # when absent. Used by predict() as the uncertainty-fallback when
-        # a character was guessed but didn't clear `_character_floor`.
+        # Index of the canonical "original" copyright tag (None if absent); the
+        # uncertainty-fallback in predict() when a character misses _character_floor.
         self._original_idx: Optional[int] = next(
             (
                 e.index
@@ -261,7 +311,6 @@ class AnimaTagger:
             ),
             None,
         )
-        # Map category → list of (index, median_pos, name) sorted by median_pos.
         self._by_cat: Dict[str, List[Tuple[int, float, str]]] = {}
         for e in self.tag_entries:
             cat = e.category if e.category in SLOT_ORDER else "general"
@@ -276,18 +325,14 @@ class AnimaTagger:
 
         self.rules = tr.load_rules(self.ckpt_dir / "rules.yaml")
 
-        # Optional groups snapshot. Built per-group caches so predict()
-        # doesn't reparse names every call. When the snapshot is missing
-        # (older checkpoints / flat-vocab builds) self._groups is None.
+        # Optional groups snapshot, cached per-group so predict() doesn't reparse
+        # names every call. None when the snapshot is missing (older/flat-vocab).
         groups_path = self.ckpt_dir / "groups.yaml"
         self._groups: Optional[tg.TagGroups] = None
-        # Per-group: name → {mode, tag_idx_tensor[K], escape_idx_tensor[E],
-        #                    tag_names_set, escape_names_set}
         self._group_lookup: Dict[str, Dict] = {}
-        # Vocab indices used to detect "single-subject" at inference. We
-        # mirror the trainer's GroupRouter logic — `solo`/`1girl`/`1boy`/
-        # `1other` are single-count, anything else matching the count
-        # regex is multi-count.
+        # "single-subject" detection mirrors the trainer's GroupRouter:
+        # solo/1girl/1boy/1other are single-count, anything else matching the
+        # count regex is multi-count.
         self._single_count_names = {"solo", "1girl", "1boy", "1other"}
         self._multi_count_names: set = set()
         if groups_path.exists():
@@ -307,7 +352,6 @@ class AnimaTagger:
                     "tag_names": tuple(g.tags),
                     "escape_names": tuple(g.escape),
                 }
-            # Detect multi-count tags by regex over the vocab.
             from re import compile as _re_compile
 
             count_re = _re_compile(
@@ -320,8 +364,6 @@ class AnimaTagger:
                     self._multi_count_names.add(e.name)
         self._encoder: Optional[VisionEncoderBundle] = None
         self._encoder_aux: Optional[VisionEncoderBundle] = None
-
-    # ── Encoder lazy-load ──────────────────────────────────────────────
 
     def _bundle(self) -> VisionEncoderBundle:
         if self._encoder is None:
@@ -336,10 +378,8 @@ class AnimaTagger:
     def _bundle_aux(self) -> VisionEncoderBundle:
         """Lazy-load the auxiliary (PE-Spatial) encoder."""
         if self._encoder_aux is None:
-            # ``pe_aux_ckpt`` overrides the registry's default checkpoint
-            # location when set; otherwise None lets ``load_pe_encoder``
-            # resolve via the registry (e.g. ``models/pe/PE-Spatial-B16-512.pt``,
-            # auto-fetched from HF when absent).
+            # None lets load_pe_encoder resolve via the registry
+            # (models/pe/PE-Spatial-B16-512.pt, auto-fetched from HF when absent).
             self._encoder_aux = load_pe_encoder(
                 self.device,
                 name=self.aux_encoder_name,
@@ -388,12 +428,10 @@ class AnimaTagger:
         pil_resized = pil_resize_to_bucket(pil_img.convert("RGB"), bundle.bucket_spec)
         tensor = IMAGE_TRANSFORMS(np.array(pil_resized)).unsqueeze(0)
         feats_list = encode_pe_from_imageminus1to1(bundle, tensor, same_bucket=True)
-        feats = feats_list[0]  # [T, d_enc]
+        feats = feats_list[0]
         if pool_kind == "mean":
             return feats.mean(dim=0).to(torch.float32)
-        return feats.to(torch.float32)  # [T, d_enc]
-
-    # ── Public API ──────────────────────────────────────────────────────
+        return feats.to(torch.float32)
 
     @torch.no_grad()
     def predict(self, pil_img: Image.Image) -> Dict[str, object]:
@@ -417,9 +455,9 @@ class AnimaTagger:
         feat = self._encode_image(pil_img).unsqueeze(0).to(self.device)
         feat_aux = self._encode_image_aux(pil_img).unsqueeze(0).to(self.device)
         tag_logits, rating_logits, people_logits = self.model(feat, feat_aux)
-        tag_logits_row = tag_logits[0]  # [n_tags]
-        tag_probs = tag_logits_row.sigmoid()  # [n_tags]
-        rating_probs = rating_logits.softmax(dim=-1)[0]  # [n_ratings]
+        tag_logits_row = tag_logits[0]
+        tag_probs = tag_logits_row.sigmoid()
+        rating_probs = rating_logits.softmax(dim=-1)[0]
         kept_mask = (tag_probs >= self.thresholds_dev).cpu()
         tag_probs_cpu = tag_probs.cpu()
         scores = {
@@ -449,8 +487,8 @@ class AnimaTagger:
                 for i, lbl in enumerate(self.people_count_labels)
             }
 
-        # Group-aware refinement of `kept`. Replaces softmax-group sigmoid
-        # threshold output with one argmax winner per applicable group.
+        # Group-aware refinement: replace softmax-group sigmoid-threshold output
+        # with one argmax winner per applicable group.
         if self._group_lookup:
             kept_names = set(kept.keys())
             is_solo = bool(kept_names & self._single_count_names) and not (
@@ -465,9 +503,7 @@ class AnimaTagger:
                 else:  # "softmax"
                     applicable = not escape_fired
                 if not applicable:
-                    # Leave the group's tags exactly as the per-tag
-                    # threshold decided. predict_caption can pull whatever
-                    # set the sigmoid path admitted.
+                    # Leave the group's tags as the per-tag threshold decided.
                     group_preds[name] = None
                     continue
                 idx_t = info["tag_idx"]
@@ -475,9 +511,8 @@ class AnimaTagger:
                 winner_local = int(group_logits.argmax().item())
                 winner_idx = int(idx_t[winner_local].item())
                 winner_name = self.tag_entries[winner_idx].name
-                # Drop any sigmoid-admitted tags from this group, then add
-                # the argmax winner back with its sigmoid probability so
-                # downstream callers can still inspect a confidence.
+                # Drop sigmoid-admitted group tags, re-add the argmax winner with
+                # its sigmoid prob so callers can still inspect a confidence.
                 for t in info["tag_names"]:
                     kept.pop(t, None)
                 kept[winner_name] = float(tag_probs_cpu[winner_idx])
@@ -485,14 +520,10 @@ class AnimaTagger:
             out["kept"] = kept
             out["groups"] = group_preds
 
-        # Cap character-tag predictions by the largest digit-prefixed
-        # girls-count tag in `kept`. The character head emits an independent
-        # sigmoid per tag, so on gender-ambiguous art where both `1boy` and
-        # `1girl` fire it can still admit several borderline character
-        # matches for what is actually a single subject. Trim to top-N by
-        # score where N is parsed from `1girl`/`2girls`/`6+girls`/...; if no
-        # digit-prefixed girls tag is in `kept` (e.g. only `1boy`, or only
-        # `multiple girls`) leave the character set alone.
+        # Cap characters to the largest digit-prefixed girls-count in `kept`.
+        # The per-tag sigmoid can admit several borderline characters for what is
+        # one subject; trim to top-N by score (N = parsed count). No girls-count
+        # tag → leave the character set alone.
         girl_caps = [
             int(m.group(1)) for name in kept if (m := _GIRLS_COUNT_RE.match(name))
         ]
@@ -510,15 +541,9 @@ class AnimaTagger:
                 kept.pop(name, None)
             out["kept"] = kept
 
-        # Suppress uncertain character predictions and fall back to the
-        # `original` copyright tag. Any kept character whose score is below
-        # `_character_floor` is treated as a guess and dropped. When that
-        # empties the character slot AND no copyright tag is in `kept`,
-        # add "original" (using its raw sigmoid score) so the caption has
-        # a slot-filling copyright — booru convention for non-IP work.
-        # Confident characters are preserved; the floor only fires on
-        # borderline admits where the F1 threshold lets a noisy guess
-        # through.
+        # Drop characters below `_character_floor` as guesses. If that empties
+        # the character slot AND no copyright is kept, add "original" (raw
+        # sigmoid score) as a slot-filler — booru convention for non-IP work.
         dropped_any = False
         for e in self.tag_entries:
             if e.category != "character" or e.name not in kept:
@@ -536,10 +561,8 @@ class AnimaTagger:
             if not has_char and not has_copy:
                 kept["original"] = float(tag_probs_cpu[self._original_idx])
 
-        # Cap artist and copyright slots to top-1 by score. Both heads emit
-        # independent sigmoids, so multiple borderline tags can clear their
-        # F1 thresholds on a single image — booru convention is one artist
-        # / one copyright per work, and downstream callers expect that.
+        # Cap artist/copyright to top-1 by score — the independent sigmoids can
+        # clear several, but booru convention is one each per work.
         for cat in ("artist", "copyright"):
             cat_scored = sorted(
                 (
@@ -552,16 +575,11 @@ class AnimaTagger:
             for _, name in cat_scored[1:]:
                 kept.pop(name, None)
 
-        # When the surviving copyright is `original` (or a meta-publisher
-        # imprint that rides alongside it — see `_META_COPYRIGHTS`), keep a
-        # character only when its parens-suffix matches the surviving
-        # artist tag (sans `@`). Booru convention: `original` means no
-        # franchise, so the only legitimate co-tagged character is the
-        # artist's named OC `<name> (<artist>)`. Empirically on
-        # `image_dataset/` (n=148 vocab-character tags co-occurring with
-        # `original`), 145/148 (98%) match this pattern. No-paren names
-        # (`hatsune miku`, `frieren`) and franchise-suffixed names
-        # (`kisaki (blue archive)`) paired with `original` are misfires.
+        # With `original`/meta copyright (see `_META_COPYRIGHTS`), keep a
+        # character only when its parens-suffix matches the surviving artist
+        # (sans `@`) — the artist's named OC `<name> (<artist>)`. Empirically
+        # 145/148 (98%) of original-co-tagged characters on image_dataset/ fit
+        # this; no-paren or franchise-suffixed names are misfires.
         if any(c in kept for c in _META_COPYRIGHTS):
             artist_suffix = next(
                 (
@@ -587,25 +605,32 @@ class AnimaTagger:
         out["kept"] = kept
         return out
 
-    def predict_caption(self, pil_img: Image.Image) -> str:
-        """Image → canonical Anima caption string (rating + slotted tags)."""
+    def predict_caption(self, pil_img: Image.Image, min_confidence: float = 0.0) -> str:
+        """Image → canonical Anima caption string (rating + slotted tags).
+
+        ``min_confidence`` (0–1) is an extra probability floor applied on top
+        of the per-tag F1 thresholds the model was calibrated with: any kept
+        tag whose sigmoid probability is below it is dropped. 0.0 (default)
+        leaves the model's own threshold decisions untouched. The rating slot
+        is always emitted regardless of this floor.
+        """
         out = self.predict(pil_img)
+        kept = out["kept"]
+        if min_confidence > 0.0:
+            kept = {name: p for name, p in kept.items() if p >= min_confidence}
         kept_idxs = {
             self.tag_entries[i].index
             for i, name in enumerate([e.name for e in self.tag_entries])
-            if name in out["kept"]
+            if name in kept
         }
-        # Slot tags by canonical category order, within-slot by median_pos.
         slotted: Dict[str, List[str]] = {cat: [] for cat in SLOT_ORDER}
         slotted["rating"].append(out["rating"])
         for cat, entries in self._by_cat.items():
             for idx, _, name in entries:
                 if idx in kept_idxs:
                     slotted.setdefault(cat, []).append(name)
-        # Re-apply tag rules at emit time as a safety net (the dedup map
-        # already fired during training-data normalization, but the model
-        # could in principle predict both ``bra`` and ``black bra``;
-        # apply_rules drops ``bra`` in that case).
+        # Re-apply tag rules at emit time as a safety net: the model can predict
+        # both `bra` and `black bra`; apply_rules drops `bra` in that case.
         flat: List[str] = []
         for cat in SLOT_ORDER:
             flat.extend(slotted.get(cat, []))

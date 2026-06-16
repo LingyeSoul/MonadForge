@@ -298,36 +298,22 @@ def main():
     device = torch.device("cuda")
     dtype = torch.bfloat16
 
-    # ---------------- Dynamo / threading hardening (compile-storm guard) ----
-    # Pin BOTH the recompile budget and the intra-op thread count BEFORE any
-    # block._forward is traced — the turbo loop drives the one compiled block
-    # graph under many global states per step (grad_mode × requires_grad ×
-    # student/fake/teacher view × {4032, 4200} token families), so the stock
-    # per-frame limit of 8 spills to eager mid-run.
-    #
-    # The budget raise here is what guarantees the limit is up by construction:
-    # warmup (the first trace) and the main loop run after this point regardless
-    # of where compile first traces. The later, model-aware raise (after
-    # compile_dit_blocks) refines ``accumulated_recompile_limit`` with the exact
-    # block count and logs the final values; both are idempotent via ``max()``.
-    #
-    # The raise is context-pinned (``_pin_dynamo_limit`` sets the ContextVar's
-    # global default, not just the main-thread override) so it survives into the
-    # backward/AOTAutograd compile context where the grad-bearing forward first
-    # traces — a plain ``config.recompile_limit = 64`` does NOT, and the budget
-    # reverts to 8 at the first grad forward.
-    #
-    # ``set_num_threads`` force-initializes torch's intra-op pool NOW so
-    # ``torch.get_num_threads()`` is constant for the rest of the run. Left to
-    # itself the pool inits lazily on the first parallel op and the count flips
-    # mid-run — a GLOBAL_STATE guard that recompiles every {grad_mode, view}
-    # graph a second time AND is the documented CheckpointError trigger for the
-    # GAN grad-ckpt path (see ``selective_block_grad_ckpt``).
+    # Compile-storm guard: pin the recompile budget + intra-op thread count BEFORE
+    # any block._forward traces. The turbo loop drives one compiled graph under
+    # many global states per step (grad_mode × requires_grad × view × token
+    # families), so the stock per-frame limit of 8 spills to eager mid-run.
+    # _pin_dynamo_limit is CONTEXT-PINNED (sets the ContextVar's global default) so
+    # it survives into the backward/AOTAutograd compile context — a plain
+    # config.recompile_limit = 64 reverts to 8 at the first grad forward.
+    # set_num_threads force-inits torch's intra-op pool NOW so the count is
+    # constant: a lazy mid-run flip is a GLOBAL_STATE guard (recompiles every
+    # {grad_mode, view} graph again) AND the CheckpointError trigger for the GAN
+    # grad-ckpt path (see selective_block_grad_ckpt). The later model-aware raise
+    # refines accumulated_recompile_limit; both writes idempotent via max().
     if cfg.torch_compile:
         _pin_dynamo_limit("recompile_limit", cfg.dynamo_recompile_limit)
     torch.set_num_threads(torch.get_num_threads())
 
-    # ---------------- Model ----------------
     logger.info(f"loading DiT: {cfg.dit_path}")
     model: Anima = anima_utils.load_anima_model(
         device,
@@ -344,7 +330,6 @@ def main():
     place_dit_for_training(model, device, blocks_to_swap=cfg.blocks_to_swap)
     enable_training_grad_ckpt(model, enabled=cfg.grad_ckpt)
 
-    # ---------------- LoRA stacks ----------------
     # GAN feature tap (idea 1): resolve the tapped block (−1 → middle) and hand
     # the index set to TurboDMDNetwork so it builds the disc + block hooks. Off
     # when weight_gen == 0 (gan_indices=None → byte-identical DP-DMD).
@@ -381,19 +366,13 @@ def main():
     if turbo.disc is not None:
         turbo.disc.to(device=device)
 
-    # COMPILE LAST — both student.apply_to and fake.apply_to (inside
-    # TurboDMDNetwork above) have now monkey-patched the targeted Linears, so
-    # torch.compile traces the adapter forward chain rather than the bare DiT.
-    # compile is lazy (traces on first _forward call), but compiling here makes
-    # the ordering invariant hold by construction, not by the absence of a
-    # warmup forward. native-shape flatten, one graph per token count; the pool
-    # spans more than the 2 CONSTANT_TOKEN_BUCKETS families.
-    # compile_dynamic_seq (mirrors the LoRA-training path): when on, collapse the
-    # per-token-count block graphs to one symbolic-seq graph (mark_dynamic on the
-    # seq axis only). Size the seq bound + dynamo cache from the token-count
-    # families actually present in the cached pool (self-describing, like
-    # train.py) — target_res is preprocess-only and inert here. An explicit
-    # cfg.target_res (CLI/TOML) still overrides as an escape hatch.
+    # COMPILE LAST — student/fake apply_to (in TurboDMDNetwork above) have
+    # monkey-patched the targeted Linears, so torch.compile traces the adapter
+    # forward chain, not the bare DiT (the harness ordering invariant).
+    # compile_dynamic_seq (mirrors LoRA training): collapse per-token-count graphs
+    # to one symbolic-seq graph. Size the seq bound + dynamo cache from the token
+    # families actually in the cached pool (self-describing, like train.py;
+    # target_res is preprocess-only). Explicit cfg.target_res still overrides.
     n_token_families = None
     seq_range = None
     if cfg.target_res:
@@ -409,14 +388,12 @@ def main():
         if counts:
             n_token_families = len(counts)
             seq_range = (min(counts), max(counts))
-    # Partitioner saved-activation cap (mirrors train.py). Removing
-    # custom_down_autograd grows saved-for-backward intermediates; budget<1.0
-    # makes the partitioner recompute the cheap ones in backward instead. Must be
-    # set BEFORE compile_dit_blocks (partitioning happens at first-forward compile,
-    # and this is a plain module attr — no ContextVar revert). Skipped under
-    # grad_ckpt: the budget repartitions the joint graph, so checkpoint's recompute
-    # pass can pick a different graph than forward → CheckpointError (torch #166926);
-    # ckpt already minimizes saved activations, so the cap buys nothing there.
+    # Partitioner saved-activation cap (mirrors train.py): budget<1.0 recomputes
+    # cheap intermediates in backward. Must be set BEFORE compile_dit_blocks
+    # (partitioning happens at first-forward compile). Skipped under grad_ckpt: it
+    # repartitions the joint graph, so checkpoint's recompute can pick a different
+    # graph than forward → CheckpointError (torch #166926), and ckpt already
+    # minimizes saved activations.
     if cfg.torch_compile and cfg.activation_memory_budget < 1.0 and not cfg.grad_ckpt:
         import torch._functorch.config as _functorch_config
 
@@ -430,13 +407,11 @@ def main():
             "activation_memory_budget ignored: incompatible with grad_ckpt "
             "(and redundant under it)"
         )
-    # Isolate the persistent compile caches per compile signature — entries
-    # deposited by runs compiled under different seq-range bounds (e.g. an
-    # inference run's canonical 4032-floored default) otherwise poison this
-    # run's wider dynamic-seq marks: AOTAutogradCache replays the stale narrow
-    # guard into the fresh ShapeEnv and the first ≥4032-token trace dies with a
-    # ConstraintViolationError (see isolate_compile_cache). Same signature →
-    # warm cache reuse, shared with train.py runs of the same tier set.
+    # Isolate the persistent compile caches per compile signature: entries from
+    # runs under different seq-range bounds otherwise poison this run's wider
+    # dynamic-seq marks — AOTAutogradCache replays the stale narrow guard into the
+    # fresh ShapeEnv and the first ≥4032-token trace dies with a
+    # ConstraintViolationError. Same signature → warm reuse, shared with train.py.
     if cfg.torch_compile:
         isolate_compile_cache(
             compile_signature(
@@ -454,11 +429,9 @@ def main():
         n_token_families=n_token_families,
         seq_range=seq_range,
     )
-    # Refine the recompile budget now that the model exists: re-assert the
-    # per-frame limit (already raised at the top of main(), kept here so the
-    # runtime value is logged next to the compile) and size
-    # ``accumulated_recompile_limit`` over the exact block code-object count.
-    # Both writes are idempotent via ``max()`` — this never lowers the early raise.
+    # Refine the budget now the model exists: size accumulated_recompile_limit
+    # over the exact block count. Idempotent via max() (never lowers the early
+    # raise at the top of main()).
     if cfg.torch_compile:
         rl = _pin_dynamo_limit("recompile_limit", cfg.dynamo_recompile_limit)
         arl = _pin_dynamo_limit(
@@ -474,7 +447,6 @@ def main():
     n_fake = sum(p.numel() for p in turbo.fake_params())
     logger.info(f"trainable: student={n_student:,}  fake={n_fake:,}")
 
-    # ---------------- Optimizers ----------------
     student_opt = torch.optim.AdamW(
         turbo.student_params(),
         lr=cfg.student_lr,
@@ -504,11 +476,8 @@ def main():
         cfg.fake_lr,
     )
 
-    # ---------------- Discriminator optimizer (idea 1) ----------------
-    # Stepped once per fake inner step (co-located with the fake/critic update,
-    # the same cadence FastGen DMD2 ties the disc to the fake_score). No
-    # head-start (disc trains only in the main loop), so its scheduler is sized
-    # over iterations · fake_steps_per_student_step.
+    # Disc steps once per fake inner step (FastGen ties it to the fake_score
+    # cadence). No head-start, so its scheduler is sized over the main loop only.
     disc_opt = disc_sched = None
     if turbo.disc is not None:
         disc_opt = torch.optim.AdamW(
@@ -531,12 +500,9 @@ def main():
     if fdistill_on and cfg.f_ratio_normalization:
         fdistill_bins = torch.ones(cfg.f_bin_num, device=device)
 
-    # ---------------- Turbo × REPA (turbo_repa.md Phase 1) ----------------
-    # Relational (Gram) alignment of student block-`repa_layer` features to the
-    # cached PE-Spatial sidecars of the REAL latents, every `repa_every_n`-th
-    # student step. Phase 0 (bench/turbo_repa/) confirmed the student's mid-block
-    # representation drifts off the base manifold (worst at mid-σ). weight=0
-    # keeps the whole path off → byte-identical DP-DMD.
+    # Turbo × REPA (turbo_repa.md Phase 1): relational (Gram) alignment of student
+    # block-`repa_layer` features to the cached PE-Spatial sidecars of the REAL
+    # latents, every `repa_every_n`-th step. weight=0 → byte-identical DP-DMD.
     repa_on = cfg.repa_weight > 0.0
     repa_spec = None
     repa_feature_set: set | None = None
@@ -548,14 +514,20 @@ def main():
             )
         repa_spec = get_bucket_spec(cfg.repa_encoder)
         repa_feature_set = {cfg.repa_layer}
+        # dog replaces spatial_norm's DC removal when on (mutually exclusive).
+        repa_target_desc = (
+            f"dog(σ1=min/{cfg.repa_dog_sigma1_div:g}, "
+            f"σ2={'off' if cfg.repa_dog_sigma2_div <= 0 else f'min/{cfg.repa_dog_sigma2_div:g}'})"
+            if cfg.repa_target_dog
+            else f"spatial_norm={cfg.repa_spatial_norm}"
+        )
         logger.info(
             f"REPA: aligning student block {cfg.repa_layer}/{len(model.blocks)} "
             f"to {cfg.repa_encoder} (grid≤{repa_spec.t_max_patches}tok) on real "
             f"data, weight={cfg.repa_weight}, every_n={cfg.repa_every_n}, "
-            f"spatial_norm={cfg.repa_spatial_norm}"
+            f"{repa_target_desc}"
         )
 
-    # ---------------- Dataset ----------------
     dataset = CachedDataset(
         cfg.data_dir,
         batch_size=cfg.batch_size,
@@ -568,11 +540,9 @@ def main():
         # tuple element; collate must be built with the matching flag below.
         dataset.load_repa_pe = True
         dataset.repa_pe_encoder = cfg.repa_encoder
-    # Held-out conditioning for the DAVE diversity probe — captured from the
-    # FULL sample list before any single-prompt slice mutates it, and chosen
-    # distinct from the overfit sample so a collapsed run is visible. We only
-    # need the cached crossattn_emb + a latent shape; loaded once, reused every
-    # validation pass.
+    # Held-out conditioning for the DAVE diversity probe — captured from the FULL
+    # sample list before any single-prompt slice mutates it, chosen distinct from
+    # the overfit sample so a collapsed run is visible. Loaded once, reused.
     val_cond = None
     val_latent_shape = None
     val_clean = None
@@ -598,9 +568,7 @@ def main():
 
     if cfg.single_prompt_idx is not None:
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
-        # The "N samples from ..." line above is CachedDataset.__init__'s own
-        # log, fired BEFORE this slice; we re-log post-slice so the live
-        # dataset state is unambiguous in the run log.
+        # Re-log post-slice (CachedDataset's own "N samples" log fired pre-slice).
         pinned_idx = cfg.single_prompt_idx % len(dataset.samples)
         only = dataset.samples[pinned_idx]
         dataset.samples = [only]
@@ -620,14 +588,11 @@ def main():
         collate_fn=make_collate(cfg.use_masked_loss, load_repa_pe=repa_on),
     )
 
-    # ---------------- Logging ----------------
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
 
-    # Canonical config snapshot beside the checkpoint, matching train.py's
-    # convention (library/config/io.py writes the canonical copy to output_dir
-    # and *mirrors* it into the run log dir). This is the provenance record
-    # `inference` / `merge` / tooling looks for next to `{output_name}.safetensors`,
-    # so write it unconditionally — independent of TB logging (--no_log).
+    # Canonical config snapshot beside the checkpoint (train.py convention): the
+    # provenance record inference / merge / tooling look for next to
+    # {output_name}.safetensors. Written unconditionally, independent of --no_log.
     canonical_snapshot = Path(cfg.output_dir) / f"{cfg.output_name}.snapshot.toml"
     try:
         canonical_snapshot.write_text(
@@ -647,9 +612,8 @@ def main():
         writer.add_text("config", tb_config_text(cfg))
         logger.info(f"TB logs -> {run_log}")
 
-        # Mirror the canonical snapshot into the run log dir too, so the
-        # timestamped run is a self-contained record of "this run + the config
-        # that produced it" (the canonical copy lives next to the checkpoint).
+        # Mirror the snapshot into the run log dir so the timestamped run is a
+        # self-contained record of "this run + the config that produced it".
         snapshot_path = run_log / f"{cfg.output_name}.snapshot.toml"
         try:
             snapshot_path.write_text(
@@ -660,15 +624,11 @@ def main():
         except OSError as e:
             logger.warning(f"Could not write config snapshot to {snapshot_path}: {e}")
 
-    # ---------------- Forward helper ----------------
     pad_cache = PadCache(dtype)
-    # CFG-uncond cross-attention input. Anima's inference path uses the T5("")
-    # embedding (real BOS/EOS/sentinel tokens nonzero; only padding zeroed) —
-    # passing a fully-zero tensor here is fed-out-of-distribution and the
-    # resulting `v_real_uncond_ca` is a meaningless direction that, amplified
-    # at (α-1)=3×, drives the student off-manifold (saturated white output).
-    # Staged by `make preprocess-te` (or `make distill-prep`); shared with
-    # the mod-guidance distill (`library/inference/uncond.py`).
+    # CFG-uncond input must be the T5("") embedding (real BOS/EOS/sentinel tokens
+    # nonzero, only padding zeroed). A fully-zero tensor is off-distribution: the
+    # resulting uncond direction, amplified at (α-1)=3×, drives the student
+    # off-manifold (saturated white). Staged by `make preprocess-te`.
     uncond_path = str(default_uncond_path())
     uncond_base = load_uncond_crossattn(uncond_path, device=device, dtype=dtype)
     logger.info(
@@ -718,11 +678,9 @@ def main():
         """
         turbo.set_view(view)
         if model.blocks_to_swap:
-            # free_cache=False: base DiT is frozen, LoRA shapes are constant,
-            # block swap moves params at identical shape, and static 4096 tokens
-            # pins activation sizes — the allocator reaches a steady state within
-            # a few steps and per-forward empty_cache() is pure sync +
-            # refragmentation overhead.
+            # free_cache=False: frozen DiT + constant LoRA/activation shapes let
+            # the allocator reach steady state; per-forward empty_cache() would be
+            # pure sync + refragmentation overhead.
             model.prepare_block_swap_before_forward(free_cache=False)
         pad = pad_cache.get(x)
         x_in = x.unsqueeze(2)  # add temporal dim
@@ -738,11 +696,9 @@ def main():
                 return_features_early=return_features_early,
             )
 
-    # ---------------- DP-DMD setup ----------------
-    # The student/teacher Euler grids are static (token-count-invariant flow-
-    # matching σ schedule), so build them once. Both span σ: 1 → 0; the student
-    # has `student_steps + 1` points, the teacher anchor grid `teacher_anchor_steps
-    # + 1`. `sigmas[i] - sigmas[i+1]` is the Euler dt for step i.
+    # Static σ grids (token-count-invariant), built once. Both span σ: 1 → 0;
+    # student has student_steps+1 points, teacher anchor teacher_anchor_steps+1.
+    # sigmas[i] - sigmas[i+1] is the Euler dt for step i.
     student_sigmas = get_timesteps_sigmas(cfg.student_steps, cfg.flow_shift, "cpu")[
         1
     ].tolist()
@@ -772,18 +728,11 @@ def main():
         v_u = _forward("teacher", x, t_b, c_null, no_grad=True).squeeze(2)
         return v_u.float() + cfg.teacher_cfg * (v_c.float() - v_u.float())
 
-    # ---------------- Mean-variance reg target (lever B / S2) ----------------
-    # Real-data stats the Eq.7 KL pulls each generated image toward. Either
-    # pinned (cfg.mv_sigma2_t > 0) or measured EXACTLY in a one-pass scan over
-    # the real latents (cfg.mv_sigma2_t <= 0). The target is a static dataset
-    # statistic — a single global (μ, σ²) over all latent elements — so an exact
-    # pre-pass strictly beats a running EMA: no decay lag, no batch-to-batch
-    # wobble, deterministic, and free in the hot loop. Computed in fp64 via the
-    # numerically-stable count/sum/sumsq route over the same `latents` the
-    # dataloader yields (the REAL training latents — NOT teacher-synthetic, since
-    # the reg is a shield against the teacher's variance inflation). Runs BEFORE
-    # the fake head-start: it's model-independent, so doing it first fails fast on
-    # an empty/misconfigured pool instead of after burning warmup compute.
+    # Mean-variance reg target (lever B / Eq.7): real-data stats the KL pulls each
+    # generated image toward. Either pinned (mv_sigma2_t > 0) or measured exactly
+    # in a one-pass fp64 scan over the REAL latents (NOT teacher-synthetic — the
+    # reg shields against the teacher's variance inflation). Runs BEFORE the fake
+    # head-start (model-independent → fails fast on an empty pool).
     mv_auto = cfg.mean_var_weight > 0.0 and cfg.mv_sigma2_t <= 0.0
     mv_tgt_mu = cfg.mv_mu_t
     mv_tgt_var = cfg.mv_sigma2_t
@@ -805,7 +754,7 @@ def main():
             )
         )
 
-    # ---------------- Fake (critic) head-start ----------------
+    # Fake (critic) head-start.
     data_iter = iter(dataloader)
     data_iter = run_fake_warmup(
         warmup_steps=cfg.fake_warmup_steps,
@@ -824,7 +773,6 @@ def main():
         writer=writer,
     )
 
-    # ---------------- Training loop ----------------
     # base_loss='dpdmd' runs the first-step teacher anchor (diversity); 'dmd' is
     # plain DMD2 with no anchor (student_steps may be 1).
     use_anchor = cfg.base_loss == "dpdmd"
@@ -858,16 +806,12 @@ def main():
         crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
         B = latents.shape[0]
 
-        # One step-begin marker per training step (not per forward).
-        # ``compile_blocks(mode="default")`` doesn't enable cudagraphs, so this
-        # is semantically a no-op today, but it's the right cadence if/when
-        # the script switches to ``mode="reduce-overhead"``.
+        # No-op today (mode="default" doesn't enable cudagraphs), but the right
+        # cadence if/when the script switches to "reduce-overhead".
         torch.compiler.cudagraph_mark_step_begin()
 
-        # ============ student update ============
-        # No single t / x_t: the student rolls an N-step Euler grid from pure noise
-        # ε (dpdmd anchors step 1 to a teacher K-step target then refines; dmd is
-        # plain DMD2). See dpdmd.md §3.2.
+        # Student update: roll an N-step Euler grid from pure noise ε (dpdmd
+        # anchors step 1 to a teacher K-step target then refines; dmd is plain).
         eps = torch.randn_like(latents)  # shared start for anchor + student
         c_null = uncond_for_batch(uncond_base, crossattn_emb)  # anchor + DMD eval
 
@@ -913,14 +857,10 @@ def main():
                 x = x.detach().requires_grad_()
             if cfg.dmd_grad_step == "random":
                 # Memory-flat anchored DMD: sample ONE refinement step g~U{1..N-1},
-                # backward-simulate the 1..g-1 prefix under no_grad from the
-                # post-anchor latent, then grad only step g on its one-step
-                # x0-prediction (x_g − σ_g·v_g; the true endpoint would need BPTT
-                # through g+1..N-1). Unlike 'last' this supervises every refinement
-                # grid point over training and, under per_step_expert, trains head g
-                # (every head over time) instead of only head N-1. Step 0's diversity
-                # graph rides v_first and is untouched by the detach below, so
-                # div_loss_t still backprops correctly under either split_bwd.
+                # backward-simulate the prefix under no_grad, grad only step g's
+                # one-step x0-prediction (x_g − σ_g·v_g). Supervises every grid
+                # point over training (vs 'last') and trains head g under
+                # per_step_expert. Step 0's diversity graph rides v_first untouched.
                 g = int(torch.randint(1, cfg.student_steps, (1,)).item())
                 for i in range(1, g):  # backward simulation (no graph kept)
                     s_i = student_sigmas[i]
@@ -1015,12 +955,10 @@ def main():
                 v_student = v_g
 
         # --- DMD on x_θ (steps 2..N), against teacher + fake ---
-        # The real score is CFG-GUIDED (v_u + α·(v_c − v_u)), NOT cond-only.
-        # Guidance rides the single DMD real score — exactly like the reference
-        # `compute_dmd_loss` (dpdmd/train_sd35_dpdmd.py:118-129, teacher cat
-        # cond+uncond → v_u + scale·(v_c−v_u)). Without it v_real≈v_fake (both
-        # unguided cond preds collapse, dm_cos≈0.9999) and the quality gradient
-        # is noise. The fake stays cond-only, matching the reference.
+        # The real score MUST be CFG-GUIDED (v_u + α·(v_c − v_u)), not cond-only:
+        # without guidance v_real≈v_fake (both unguided cond preds collapse,
+        # dm_cos≈0.9999) and the quality gradient is noise. Fake stays cond-only
+        # (matches the reference compute_dmd_loss).
         tau_dm = torch.rand(B, device=device, dtype=dtype)
         eps_dm = torch.randn_like(x_pred)
         x_renoised_dm = renoise(x_pred.detach(), tau_dm, eps_dm)
@@ -1045,22 +983,16 @@ def main():
         grad_signal = grad_dm.detach()
 
         # --- REPA relational alignment on REAL data (turbo_repa.md Phase 1) ---
-        # One extra grad-bearing PARTIAL student forward (the feature tap exits
-        # after repa_layer ≈ 9/28 of the stack) on renoised real latents, every
-        # repa_every_n-th step, backwarded IMMEDIATELY (the div_loss split-bwd
-        # pattern; grads accumulate into the same optimizer step, grad_clip
-        # below still sees the full student gradient).
+        # One extra grad-bearing PARTIAL student forward on renoised real latents,
+        # every repa_every_n-th step, backwarded IMMEDIATELY (div_loss split-bwd
+        # pattern; grads accumulate into the same step, grad_clip sees the full).
         #
-        # PLACEMENT + IMMEDIATE BACKWARD ARE LOAD-BEARING. set_view flips
-        # global per-module enabled flags read at forward time, and checkpoint
-        # recompute is deferred to .backward() — so every checkpointed forward
-        # must be backwarded while its own view is still the live one. Running
-        # this block after the GAN gen forward and riding loss_student.backward()
-        # (the first wiring) left the view at "student" when the GAN's teacher
-        # checkpoint recomputed → student-contaminated teacher features →
-        # silently corrupted GAN generator grads for a whole run. Backward here
-        # (student view live ✓), then the GAN gen forward below is again the
-        # last view-switch before loss_student.backward() (teacher recompute ✓).
+        # PLACEMENT + IMMEDIATE BACKWARD ARE LOAD-BEARING: set_view flips global
+        # per-module enabled flags read at forward time, and checkpoint recompute
+        # is deferred to .backward(), so every checkpointed forward must backward
+        # while its own view is live. Riding loss_student.backward() instead left
+        # the view at "student" when the GAN's teacher checkpoint recomputed →
+        # student-contaminated teacher features → corrupted GAN grads for a run.
         repa_loss = torch.zeros((), device=device)
         repa_ran = False
         if repa_on and step % cfg.repa_every_n == 0:
@@ -1084,20 +1016,14 @@ def main():
                 )
                 tau_repa = torch.full((B,), tau_val, device=device, dtype=dtype)
                 x_tau = renoise(latents, tau_repa, torch.randn_like(latents))
-                # The grad-requiring input is load-bearing twice over: the
-                # unsloth checkpoint silently drops grads that reach only
-                # closed-over params ([[project_unsloth_reentrant_drops_grad]]),
-                # and a grad-requiring tensor input resurrects them (the
-                # EasyControl-under-unsloth precedent) — the student-LoRA grads
-                # here have no other input path.
+                # Grad-requiring input is load-bearing: unsloth checkpoint silently
+                # drops grads reaching only closed-over params
+                # ([[project_unsloth_reentrant_drops_grad]]); a grad-requiring tensor
+                # input resurrects them, and the student-LoRA grads have no other path.
                 x_tau.requires_grad_()
-                # Checkpoint this forward like the GAN gen forward below: it is
-                # otherwise the only grad-bearing forward in the loop that
-                # retains its activations (the rollout is memory-flat under
-                # grad_step='random', the GAN tap is ckpt'd) — ~repa_layer/28 of
-                # a full-depth graph held until backward, which alone tipped a
-                # 16 GB card over. Recompute cost: repa_layer eager blocks every
-                # every_n-th step. Numerically exact (no dropout).
+                # Checkpoint this forward: otherwise the only grad-bearing forward
+                # left retaining activations (~repa_layer/28 of a full-depth graph),
+                # which alone tipped a 16 GB card over. Numerically exact (no dropout).
                 with selective_block_grad_ckpt(model):
                     feats_repa = _forward(
                         "student",
@@ -1115,22 +1041,21 @@ def main():
                     int(model.patch_spatial),
                     repa_spec,
                     spatial_norm=cfg.repa_spatial_norm,
+                    dog=cfg.repa_target_dog,
+                    dog_sigma1_div=cfg.repa_dog_sigma1_div,
+                    dog_sigma2_div=cfg.repa_dog_sigma2_div,
+                    dog_norm_std=cfg.repa_dog_norm_std,
                 )
                 (cfg.repa_weight * repa_loss).backward()
                 repa_loss = repa_loss.detach()  # metrics-only from here
                 repa_ran = True
 
         # --- GAN generator term + f-distill reweighting (ideas 1 & 2) ---
-        # The discriminator scores the frozen TEACHER's block features of the
-        # student's (renoised) x_pred. The generator GAN loss must flow grad back
-        # into x_pred → student, so this renoise keeps x_pred attached (unlike the
-        # DMD path, which detaches) and the teacher forward runs grad-enabled. The
-        # disc is frozen here (set_disc_requires_grad(False)) — grad reaches x_pred
-        # through the differentiable teacher forward, not the disc weights. This is
-        # +1 teacher forward/step vs DP-DMD, but `return_features_early` (idea 3.1)
-        # stops it after the deepest tapped block, so only blocks[0..k] run and
-        # retain activations for backward — the half-depth grad forward that keeps
-        # this term inside the memory budget (was the OOM with the full-stack tap).
+        # The disc scores the frozen TEACHER's block features of the student's
+        # renoised x_pred. Grad must flow into x_pred → student, so this renoise
+        # keeps x_pred attached (unlike the DMD path) and the teacher forward is
+        # grad-enabled; the disc itself is frozen here. return_features_early stops
+        # after the deepest tapped block (half-depth grad forward — full-stack OOM'd).
         gan_gen_loss = torch.zeros((), device=device)
         if turbo.disc is not None:
             turbo.set_disc_requires_grad(False)
@@ -1201,12 +1126,9 @@ def main():
         student_opt.zero_grad(set_to_none=True)
         student_sched.step()
 
-        # --- 5. FAKE UPDATE ---
-        # Run ``fake_steps_per_student_step`` inner updates against the same
-        # x_pred.detach(), resampling (τ_fake, ε_fake) each iteration so each
-        # inner step sees a different rung of the flow-matching forward path.
-        # Standard DMD2 practice: keep the fake's regression target ahead of
-        # the student's moving x_pred distribution.
+        # Fake update: fake_steps_per_student_step inner updates against the same
+        # x_pred.detach(), resampling (τ_fake, ε_fake) each iteration. Standard
+        # DMD2 practice — keep the fake's target ahead of the moving x_pred dist.
         x_pred_d = x_pred.detach()
         fake_loss_sum = torch.zeros((), device=device)
         gan_disc_sum = torch.zeros((), device=device)
@@ -1235,12 +1157,10 @@ def main():
             fake_sched.step()
             fake_loss_sum = fake_loss_sum + fake_loss.detach()
 
-            # ============ discriminator update (idea 1) ============
-            # Co-located with the fake/critic update (FastGen ties the disc to the
-            # fake_score cadence). The disc scores frozen-TEACHER block features of
-            # renoised fake (x_pred) vs renoised real latents — no grad to the
-            # teacher (no_grad), grad only to the disc head. gan_use_same_t_noise
-            # reuses (τ_fake, ε_fake) for the real branch (FastGen default).
+            # Discriminator update (idea 1), co-located with the fake/critic update
+            # (FastGen cadence). The disc scores frozen-TEACHER block features of
+            # renoised fake (x_pred) vs renoised real latents — grad only to the disc
+            # head. gan_use_same_t_noise reuses (τ_fake, ε_fake) for the real branch.
             if turbo.disc is not None:
                 turbo.set_disc_requires_grad(True)
                 if cfg.gan_use_same_t_noise:
@@ -1342,9 +1262,8 @@ def main():
                     writer.add_scalar(
                         "train/disc_lr", disc_sched.get_last_lr()[0], step + 1
                     )
-            # tqdm postfix at log_interval cadence (per-step would re-introduce
-            # the syncs we just eliminated). First log_interval steps show no
-            # postfix — harmless.
+            # log_interval cadence (per-step would re-introduce the syncs we
+            # just eliminated).
             progress.set_postfix(**tqdm_postfix(m))
             metrics.reset()
 
@@ -1376,11 +1295,9 @@ def main():
                 f"(fidelity; not a quality score)"
             )
 
-        # --- save ---
-        # Every save_every checkpoint is kept under a step-tagged name (no
-        # overwrite, so the whole training trajectory survives for eyeballing);
-        # the final step also writes the canonical bare `{output_name}` that
-        # inference / merge / `make test` look for.
+        # Each checkpoint is kept under a step-tagged name (no overwrite, so the
+        # whole trajectory survives); the final step also writes the canonical
+        # bare `{output_name}` that inference / merge / `make test` look for.
         if (step + 1) % cfg.save_every == 0 or (step + 1) == cfg.iterations:
             n = step + 1
             is_final = n == cfg.iterations

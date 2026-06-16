@@ -159,13 +159,16 @@ REPA being silently inert is a logged condition, not a quiet no-op.
   `<output_name>_repa_grad_heatmap.npz` next to the checkpoint, and logs
   `repa/heatmap_conc`. This closed lever 3 (MaskAlign token-subset); it's a
   diagnostic, not a loss change.
-- **Aux-loss dispatch caveat**: `train.py` routes method-adapter
-  `extra_forwards` (where REPA attaches) through the cached-LLM-adapter path,
-  which only exists when `crossattn_emb is not None`. EasyControl uses the
-  in-model text path (`crossattn_emb=None`) so REPA was silently skipped
-  there pre-fix — **failure signature: `repa/active=1.0` in the progress
-  jsonl WITHOUT `repa/align_loss`.** Check both at launch on any non-default
-  method (see `docs/proposal/easycontrol_repa_operating_point.md`).
+- **Aux-loss dispatch caveat** (fixed 2026-06-12): `train.py` used to route
+  method-adapter `extra_forwards` (where REPA attaches) through the
+  cached-LLM-adapter path, which only exists when `crossattn_emb is not None`.
+  EasyControl uses the in-model text path (`crossattn_emb=None`) so REPA was
+  silently skipped there pre-fix — **failure signature: `repa/active=1.0` in
+  the progress jsonl WITHOUT `repa/align_loss`.** The dispatch now runs on both
+  text paths and relational REPA is validated + shipped as the EasyControl
+  default for cond ≠ target tasks; still check both metrics at launch on any
+  non-default method (closure: `_archive/proposals/easycontrol_repa_operating_point.md`,
+  mechanism in `docs/experimental/easycontrol.md`).
 
 ## Annealing plan (open A/B — next)
 

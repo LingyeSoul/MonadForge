@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from library.config.schema import find_line
 
-# ── Leaf key groups (mirror ConfigSanitizer class attributes) ──────────────
+# Leaf key groups mirror ConfigSanitizer's class attributes — keep in sync.
 _DATASET_ASCENDABLE_KEYS = frozenset(
     {
         "batch_size",
@@ -75,7 +75,6 @@ _DO_SUBSET_KEYS = frozenset(
     }
 )
 
-# ── Composite allow-lists per section level ────────────────────────────────
 GENERAL_KEYS = (
     _DATASET_ASCENDABLE_KEYS
     | _SUBSET_ASCENDABLE_KEYS

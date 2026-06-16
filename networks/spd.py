@@ -57,8 +57,8 @@ from library.inference.sampler_context import SamplerSideChannels
 log = logging.getLogger(__name__)
 
 
-# ── DCT helpers (2D separable, type-II, pure PyTorch — matches comfyui-speed) ──
-# Promoted verbatim from bench/spd/probe_lowres_denoise.py.
+# DCT helpers (2D separable, type-II, pure PyTorch — matches comfyui-speed),
+# promoted verbatim from bench/spd/probe_lowres_denoise.py.
 
 
 # The type-II DCT basis is constant for a given (n, device, dtype), and both the
@@ -109,7 +109,7 @@ def _snap(v: float, mult: int) -> int:
     return max(mult, int(round(v / mult)) * mult)
 
 
-# ── SPD spectral primitives (paper T_Φ + Eq. i–iii + Eq. 5–6) ──────────────────
+# SPD spectral primitives (paper T_Φ + Eq. i–iii + Eq. 5–6).
 
 
 def dct_lowpass_init(x5: torch.Tensor, scale: float, patch: int) -> torch.Tensor:
@@ -170,11 +170,10 @@ def spectral_expand(
     return x4_new.unsqueeze(2).to(x5.dtype), float(sigma_aligned)
 
 
-# ── SPD fine-tune target construction (paper §4.3, Eq. 11–14) ──────────────────
-# Shared with the training loop (``scripts/distill_spd.py``) so the train-time
-# stage-entry state is built by the *same* primitives the sampler runs — the
-# Phase-0 contract in ``docs/proposal/spd_finetune_lora.md`` ("diff the
-# train-time x̃ against the sampler's expanded state … bit-for-bit at t_{i-1}").
+# SPD fine-tune target construction (paper §4.3, Eq. 11–14). Shared with the
+# training loop (``scripts/distill_spd.py``) so the train-time stage-entry state
+# is built by the *same* primitives the sampler runs — the Phase-0 bit-for-bit
+# contract in ``docs/proposal/spd_finetune_lora.md``.
 
 
 def _aligned_sigma(scale_lo: float, scale_hi: float, sigma_val: float) -> float:
@@ -268,7 +267,7 @@ def spd_stage_target(
     return x0_si, eps_si.to(x0_si.dtype)
 
 
-# ── SNR-gated velocity loss (information-aware fine-tune objective) ────────────
+# SNR-gated velocity loss (information-aware fine-tune objective).
 # The paper's fine-tune (Eq. 14) is a plain per-sample velocity MSE. At the
 # post-expansion entry the HF block of x_t is *fresh noise* — zero mutual
 # information with this image's true HF — so the MSE-optimal prediction there is
@@ -495,9 +494,6 @@ def spd_rollout_to_stage(
     return x5, float(sigmas[-1]), cur_scale
 
 
-# ── SPD denoise loop (Euler, velocity form, CFG, multi-resolution) ─────────────
-
-
 @torch.no_grad()
 def spd_denoise(
     anima,
@@ -533,7 +529,6 @@ def spd_denoise(
     pooled-text but ignores DCW / SMC-CFG (they act on the re-spaced σ boundary,
     unvalidated against the mid-loop reshape).
     """
-    # Side-channels SPD v0 honors.
     pgraft_network = ctx.pgraft_network
     lora_cutoff_step = ctx.lora_cutoff_step
     pooled_text_pos = ctx.pooled_text_pos

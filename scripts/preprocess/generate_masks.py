@@ -142,8 +142,8 @@ def main() -> None:
         config = yaml.safe_load(f)
 
     rules = build_rules(config)
-    # Global walk filter: scopes which images are masked at all (also forwarded
-    # to MIT by masking.py). Per-rule path_pattern routes *within* this set.
+    # Global walk filter scopes which images are masked at all; per-rule
+    # path_pattern routes *within* this set.
     path_pattern = args.path_pattern or config.get("path_pattern")
 
     import torch
@@ -180,15 +180,10 @@ def main() -> None:
                 out = np.maximum(out, (mask_np > 0.5).astype(np.uint8))
         return out
 
-    # Per-subdir uniqueness check (the same stem may legitimately appear in
-    # multiple subfolders — the nested output layout disambiguates by folder —
-    # but two files with the same stem in the *same* folder would overwrite
-    # each other's mask). walk_images raises on that collision.
-    image_files = walk_images(
-        image_dir, recursive=args.recursive, pattern=path_pattern
-    )
+    # walk_images raises on same-stem collisions within one folder (cross-folder
+    # stems are fine — the nested output layout disambiguates by folder).
+    image_files = walk_images(image_dir, recursive=args.recursive, pattern=path_pattern)
 
-    # Filter to work items upfront
     work_items = []
     for image_path in image_files:
         try:
@@ -212,7 +207,7 @@ def main() -> None:
     autocast = torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     pool = ThreadPoolExecutor(max_workers=args.workers)
 
-    # Prefetch images ahead of GPU to keep it saturated
+    # Prefetch images ahead of GPU to keep it saturated.
     prefetch = min(args.workers, total)
     load_futures = [pool.submit(load_image, work_items[j][0]) for j in range(prefetch)]
     save_futures = []
@@ -230,14 +225,12 @@ def main() -> None:
             batch.append((work_items[i], image))
 
         with autocast:
-            # Phase 1: encode all images in the batch
             states = []
             for (image_path, mask_path), image in batch:
                 states.append(
                     (image_path, mask_path, image, processor.set_image(image))
                 )
 
-            # Phase 2: run prompts on each encoded image
             for image_path, mask_path, image, inference_state in states:
                 w, h = image.size
                 pbar.update(1)
@@ -274,8 +267,8 @@ def main() -> None:
 
                 if has_focus:
                     if not focus_mask.any():
-                        # Subject not found — leave the image unmasked (trains
-                        # fully) rather than zeroing out its whole loss.
+                        # Subject not found — leave unmasked (train fully) rather
+                        # than zeroing out the whole loss.
                         pbar.set_postfix_str(f"{image_path.name}: focus not found")
                         continue
                     # Keep ONLY the focus subject, minus any ignore-prompt regions.
@@ -298,7 +291,6 @@ def main() -> None:
 
     pbar.close()
 
-    # Wait for all saves to finish
     for f in save_futures:
         f.result()
     pool.shutdown()

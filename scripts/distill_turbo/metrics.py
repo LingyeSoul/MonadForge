@@ -101,7 +101,6 @@ class TurboMetrics:
         self._acc.add("dm", delta_dm.float().pow(2).mean().sqrt())
         self._acc.add("xpred", x_pred.detach().float().std())
         self._acc.add("v_student", v_student.detach().float().pow(2).mean().sqrt())
-        # Fake-tracking diagnostics at the DM eval point.
         vr = v_real_cond_dm.float()
         vf = v_fake_cond_dm.float()
         dm_w = (tau_dm_e * delta_dm.float()).pow(2).mean().sqrt()

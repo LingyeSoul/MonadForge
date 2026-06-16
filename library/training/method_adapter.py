@@ -248,10 +248,7 @@ def resolve_adapters(args, network) -> list[MethodAdapter]:
     # REPA v2 auxiliary alignment: opt-in via a positive weight stamped on the
     # network by the factory (use_repa=true). Detected off the network (the
     # config rides the network kwargs, not args).
-    if (
-        float(getattr(network, "_repa_weight", 0.0) or 0.0) > 0.0
-        or float(getattr(network, "_repa_global_weight", 0.0) or 0.0) > 0.0
-    ):
+    if float(getattr(network, "_repa_weight", 0.0) or 0.0) > 0.0:
         from library.training.repa import REPAMethodAdapter
 
         adapters.append(REPAMethodAdapter())

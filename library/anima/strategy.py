@@ -1,5 +1,3 @@
-# Anima Strategy Classes
-
 import os
 import random
 from dataclasses import dataclass
@@ -54,7 +52,6 @@ class AnimaTokenizeStrategy(TokenizeStrategy):
         qwen3_path: Optional[str] = None,
         t5_tokenizer_path: Optional[str] = None,
     ) -> None:
-        # Load tokenizers from paths if not provided directly
         if qwen3_tokenizer is None:
             if qwen3_path is None:
                 raise ValueError(
@@ -72,7 +69,6 @@ class AnimaTokenizeStrategy(TokenizeStrategy):
     def tokenize(self, text: Union[str, List[str]]) -> List[torch.Tensor]:
         text = [text] if isinstance(text, str) else text
 
-        # Tokenize with Qwen3
         qwen3_encoding = self.qwen3_tokenizer(
             text,
             return_tensors="pt",

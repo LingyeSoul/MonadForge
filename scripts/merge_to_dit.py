@@ -33,7 +33,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
-# Marker → human-readable kind. Substring match on safetensors keys.
+# Non-bakeable marker (substring of a safetensors key) → human-readable kind.
 _NON_BAKEABLE_MARKERS: dict[str, str] = {
     ".lora_up_weight": "HydraLoRA stacked (per-layer router)",
     ".lora_ups.": "HydraLoRA split (per-layer router) / step-expert turbo (per-step heads)",

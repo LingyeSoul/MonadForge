@@ -111,21 +111,16 @@ DEFAULT_B_COND_INIT = -10.0
 DEFAULT_COND_RES_SCALE = 1.0  # 1.0 = native cond res (bit-exact to pre-PAI path)
 
 
-# ---- cond-stream channel scaling (SmoothQuant-style per-input rebalance) ----
-# Absorbs a per-input-channel scale into each cond LoRA down-projection (rebalances
-# per-column gradient magnitudes; output-preserving). Uses a COND-SPECIFIC
-# calibration — the LoRA-family main-stream file does NOT transfer to the cond
-# stream (post-GELU mlp.layer2 inputs diverge; xfer_eff ~0.06). Measured by
-# bench/channel_stats/cond_stream_profile.py; keyed by the same lora_unet_*
-# convention as networks/calibration/channel_stats.safetensors.
+# Cond-stream channel scaling uses a COND-SPECIFIC calibration — the LoRA-family
+# main-stream file does NOT transfer to the cond stream (post-GELU mlp.layer2
+# inputs diverge; xfer_eff ~0.06). See bench/channel_stats/cond_stream_profile.py.
 _COND_CHANNEL_STATS_PATH = (
     Path(__file__).resolve().parent.parent
     / "calibration"
     / "cond_channel_stats.safetensors"
 )
 
-# kind -> (state_dict ModuleList attr, in_dim selector). The four cond LoRA
-# down-projections channel scaling rebalances.
+# kind -> (state_dict ModuleList attr, in_dim selector).
 _COND_LORA_KINDS = {
     "qkv": ("cond_lora_qkv", "hidden"),
     "o": ("cond_lora_o", "hidden"),
@@ -196,12 +191,10 @@ class _LoRAProj(nn.Module):
         # is exactly zero at step 0.
         nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_up.weight)
-        # Per-channel input scaling (SmoothQuant-style). Absorbs s into lora_down
-        # (W[:,c] *= s_norm[c]) and stores inv_scale = 1/s_norm; forward applies
-        # ``x * inv_scale`` so the output is unchanged but per-column gradients are
-        # rebalanced. Persistent buffer — the absorbed weight and inv_scale are
-        # saved/loaded together, so train/resume/inference stay self-consistent.
-        # See _absorb_channel_scale + bench/channel_stats/cond_stream_profile.py.
+        # SmoothQuant-style per-channel scaling: absorb s into lora_down and store
+        # inv_scale=1/s_norm (persistent so it saves/loads with the absorbed
+        # weight); forward applies x*inv_scale, output-preserving but rebalances
+        # per-column gradients. See bench/channel_stats/cond_stream_profile.py.
         self._has_channel_scale = False
         if channel_scale is not None:
             inv_scale = _absorb_channel_scale(self.lora_down.weight.data, channel_scale)
@@ -210,20 +203,15 @@ class _LoRAProj(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.training:
-            # Activation-dtype GEMMs: bit-identical under the trainer's
-            # autocast(bf16) to the retired fp32-bottleneck path (autocast
-            # re-cast its ``.float()`` inputs back to bf16 before every GEMM
-            # — see bench/lora_fp32_bottleneck), minus the dead cast traffic.
-            # Channel-scale rebalance follows the LoRA-family convention
-            # (``base._rebalance``): applied to x in the activation dtype.
+            # Activation-dtype GEMMs: bit-identical under autocast(bf16) to the
+            # retired fp32-bottleneck path (bench/lora_fp32_bottleneck).
             x_lora = x
             if self._has_channel_scale:
                 x_lora = x * self.inv_scale.to(device=x.device, dtype=x.dtype)
             h = F.linear(x_lora, self.lora_down.weight.to(x.dtype))
             h = F.linear(h, self.lora_up.weight.to(x.dtype))
             return (h * self.scale).to(x.dtype)
-        # Inference (the KV-cache prefill runs without autocast): keep the
-        # historical fp32 compute so cond-stream outputs are unchanged.
+        # Inference (KV-cache prefill runs without autocast): keep fp32 compute.
         x_lora = x.float()
         if self._has_channel_scale:
             x_lora = x_lora * self.inv_scale.to(device=x.device, dtype=torch.float32)
@@ -253,10 +241,8 @@ def create_network(
     apply_ffn_lora = bool(int(kwargs.get("apply_ffn_lora", 1)))
     cond_res_scale = float(kwargs.get("cond_res_scale", DEFAULT_COND_RES_SCALE))
 
-    # Deprecated 2026-06-10 (accepted so old snapshot TOMLs replay): the
-    # fp32-bottleneck down-projection autograd was removed — training GEMMs
-    # run in the activation dtype, which is what the trainer's autocast(bf16)
-    # already produced. See bench/lora_fp32_bottleneck.
+    # Deprecated 2026-06-10, accepted so old snapshot TOMLs replay: the
+    # fp32-bottleneck autograd was removed (bench/lora_fp32_bottleneck).
     if str(kwargs.get("use_custom_down_autograd", "false")).strip().lower() in (
         "true",
         "1",
@@ -267,11 +253,8 @@ def create_network(
             "bit-identical under the trainer's autocast)"
         )
 
-    # Cond-stream channel scaling. Honors the same `channel_scaling_alpha` knob as
-    # the LoRA family (inherited from base.toml), but loads the COND-SPECIFIC
-    # calibration — the main-stream file does not transfer (see helper). alpha<=0
-    # (or a missing knob) disables it. The cond-LoRA down-projections then absorb
-    # the per-channel rebalance at build time.
+    # Honors the LoRA-family `channel_scaling_alpha` knob but loads the
+    # COND-SPECIFIC calibration (see helper); alpha<=0 disables.
     channel_scaling_alpha = float(kwargs.get("channel_scaling_alpha", 0.0) or 0.0)
     channel_scales = _load_cond_channel_scales(channel_scaling_alpha)
 
@@ -308,15 +291,12 @@ def create_network(
         channel_scales=channel_scales,
     )
 
-    # REPA v2 auxiliary alignment loss, mirroring networks.lora_anima.factory.
-    # Stash the config on the network: REPAMethodAdapter / losses._repa_loss /
-    # build_method_adapters all key off network._repa_weight, so no args
-    # plumbing is needed. The DiT is frozen here, so the alignment gradient
-    # reaches the cond LoRA only through the extended self-attention in blocks
-    # <= repa_layer — a conditioning-utilization pressure rather than the LoRA
-    # family's representation shaping. The block hook captures patched_forward's
-    # return value, which is the target stream alone (cond_x rides side
-    # channels), so REPAMethodAdapter works unchanged.
+    # REPA v2 alignment, mirroring networks.lora_anima.factory. Config stashed on
+    # the network (REPAMethodAdapter / losses._repa_loss key off _repa_weight). DiT
+    # is frozen, so the alignment gradient reaches the cond LoRA only through the
+    # extended self-attention in blocks <= repa_layer (conditioning-utilization
+    # pressure, not representation shaping). The block hook captures the target
+    # stream alone (cond_x rides side channels), so REPAMethodAdapter is unchanged.
     from networks.lora_anima.config import _as_bool
 
     if _as_bool(kwargs.get("use_repa")):
@@ -332,12 +312,26 @@ def create_network(
         network._repa_encoder = str(kwargs.get("repa_encoder", "pe_spatial"))
         network._repa_anneal_steps = float(kwargs.get("repa_anneal_steps", 0.0) or 0.0)
         network._repa_spatial_norm = _as_bool(kwargs.get("repa_spatial_norm"))
+        network._repa_timestep_weighting = float(
+            kwargs.get("repa_timestep_weighting", 0.0) or 0.0
+        )
         network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
+        # REPA-DoG target band-pass (docs/proposal/repa_dog_target.md): when on,
+        # replaces the spatial_norm block in the relational target preprocess.
+        network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
+        network._repa_dog_sigma1_div = float(
+            kwargs.get("repa_dog_sigma1_div", 16.0) or 16.0
+        )
+        network._repa_dog_sigma2_div = float(
+            kwargs.get("repa_dog_sigma2_div", 0.0) or 0.0
+        )
+        network._repa_dog_norm_std = float(kwargs.get("repa_dog_norm_std", 0.0) or 0.0)
         logger.info(
             f"EasyControl REPA[{repa_mode}]: weight={network._repa_weight}, "
             f"layer={network._repa_layer}, encoder={network._repa_encoder}, "
             f"anneal_steps={network._repa_anneal_steps:g}, "
-            f"spatial_norm={network._repa_spatial_norm}"
+            f"spatial_norm={network._repa_spatial_norm}, "
+            f"target_dog={network._repa_target_dog}"
         )
     else:
         network._repa_weight = 0.0
@@ -386,14 +380,11 @@ def create_network_from_weights(
     )
     channel_scaling_alpha = float(metadata.get("ss_channel_scaling_alpha", 0.0))
 
-    # If the checkpoint was trained with channel scaling, every absorbed
-    # lora_down rides with a persistent ``inv_scale`` buffer. We must allocate a
-    # matching buffer on each such module BEFORE load (load is strict=False — an
-    # unallocated inv_scale would be silently dropped, leaving the absorbed
-    # W·s loaded without the 1/s rebalance → wrong output). We don't need the
-    # calibration file here: pass placeholder ones (identity absorb) for exactly
-    # the modules whose inv_scale is in the checkpoint; load overwrites both the
-    # absorbed weight and inv_scale with the real values.
+    # Channel-scaled checkpoints carry a persistent inv_scale per absorbed
+    # lora_down. The buffer MUST be allocated before load (strict=False would
+    # silently drop an unallocated inv_scale → absorbed W·s without the 1/s
+    # rebalance → wrong output). Pass placeholder ones for exactly the modules
+    # whose inv_scale is present; load overwrites weight and inv_scale.
     present_inv = {k for k in (weights_sd or {}) if k.endswith(".inv_scale")}
     channel_scales = None
     if present_inv:
@@ -524,12 +515,9 @@ class EasyControlNetwork(AdapterNetworkBase):
 
         # Per-block scalar additive logit bias on cond keys. Init -10 → cond
         # softmax mass ≈ 4.5e-5 at step 0 → α ≈ 1 → target_out ≈ baseline DiT.
-        # Stored as a ParameterList of 0-d Parameters (not a single
-        # [num_blocks] Parameter) so each block's patched forward closure can
-        # capture its bias as a *Parameter object*, not a Python int index —
-        # dynamo specializes on int closure cells (treating them as static
-        # nn.Module attributes), which used to cause one recompile per block.
-        # Capturing a Parameter is fine: dynamo lifts it as a graph input.
+        # 0-d Parameters (not one [num_blocks] Parameter) so each block's closure
+        # captures a Parameter object, not a Python int index — dynamo specializes
+        # on int closure cells (one recompile per block); a Parameter is a graph input.
         self.b_cond = nn.ParameterList(
             [
                 nn.Parameter(torch.tensor(b_cond_init, dtype=torch.float32))
@@ -537,9 +525,8 @@ class EasyControlNetwork(AdapterNetworkBase):
             ]
         )
 
-        # Populated by apply_to() — references to the DiT and its blocks. Plain
-        # lists (NOT nn.ModuleList) so PyTorch doesn't re-parent the DiT into
-        # this network's parameter tree.
+        # Populated by apply_to(). Plain lists (NOT nn.ModuleList) so PyTorch
+        # doesn't re-parent the frozen DiT into this network's parameter tree.
         self._dit: Optional[nn.Module] = None
         self._block_modules: list[nn.Module] = []
         self._original_block_forwards: list = []
@@ -557,19 +544,16 @@ class EasyControlNetwork(AdapterNetworkBase):
         # cond_x_init for block 0 lives on block_modules[0]._easycontrol_cond_x_in.
         self._cond_state: Optional[dict] = None
 
-        # Inference KV cache: per-block (cond_k, cond_v) post-RoPE-and-norm,
-        # i.e. the exact tensors `_extended_target_attention` consumes from the
-        # cond stream. Populated by `precompute_cond_kv()`. When non-None, the
-        # patched Block.forward bypasses the cond stream entirely and feeds
-        # these tensors into target's extended self-attention. Training keeps
-        # this None — every step needs the cond LoRA's gradient.
+        # Inference KV cache: per-block (cond_k, cond_v) post-RoPE-and-norm, the
+        # tensors _extended_target_attention consumes. Populated by
+        # precompute_cond_kv(); when non-None the patched Block.forward bypasses
+        # the cond stream. Training keeps it None (every step needs the LoRA grad).
         self._cond_kv_cache: Optional[list[tuple[torch.Tensor, torch.Tensor]]] = None
 
-        # compile_dynamic_seq: when True (set by compile_cond_stream), the patched
-        # block forward marks the target/cond seq axes dynamic via mark_dynamic so
-        # the two-stream inner compiles one graph instead of one per
-        # (target × cond) token-count pair. _dynamic_seq_range bounds the marks.
-        # Mirrors the DiT-side mechanism in library/anima/models.py::_run_blocks.
+        # compile_dynamic_seq: when set by compile_cond_stream, the patched block
+        # forward marks the target/cond seq axes dynamic so the two-stream inner
+        # compiles one graph instead of one per (target × cond) token-count pair
+        # (mirrors library/anima/models.py::_run_blocks). Range bounds the marks.
         self._dynamic_seq: bool = False
         self._dynamic_seq_range: Optional[tuple] = None
 
@@ -589,8 +573,6 @@ class EasyControlNetwork(AdapterNetworkBase):
             f"params={total / 1e6:.1f}M"
         )
 
-    # ------------------------------------------------------------ apply / hook
-
     def apply_to(self, text_encoders, unet, apply_text_encoder=True, apply_unet=True):
         del text_encoders, apply_text_encoder
         if not apply_unet:
@@ -606,9 +588,8 @@ class EasyControlNetwork(AdapterNetworkBase):
                 "Re-create the network with matching num_blocks."
             )
 
-        # Bypass nn.Module.__setattr__'s auto-registration — otherwise
-        # ``self._dit = unet`` would silently register the DiT as a submodule
-        # and inflate ``self.parameters()`` with the entire frozen DiT.
+        # Bypass nn.Module.__setattr__ auto-registration — a plain assignment
+        # would register the frozen DiT as a submodule, inflating parameters().
         object.__setattr__(self, "_dit", unet)
         for idx, block in enumerate(unet.blocks):
             attn = block.self_attn
@@ -675,35 +656,24 @@ class EasyControlNetwork(AdapterNetworkBase):
 
         from library.runtime.dynamo import pin_dynamo_limit
 
-        # The two-stream inner needs MANY more graphs than the target-only
-        # block._forward compile_blocks() handles:
-        #   - the (target × cond) token-count product (up to n² where the
-        #     target-only path is just n),
-        #   - times grad-on / grad-off GLOBAL_STATE (the inner is recompute'd
-        #     under non-reentrant checkpoint → dynamo guards on grad_mode),
-        #   - plus requires_grad/stride/num_threads specializations and the
-        #     flash graph-break segments around _ExtendedSelfAttnLSEFunc.
-        # That blows past the dynamo recompile_limit *default of 8* — and a
-        # plain `config.cache_size_limit = …` (== recompile_limit alias) is a
-        # context-local ContextVar override that REVERTS to 8 in the backward
-        # compile context where the grad-bearing inner is actually traced (see
-        # pin_dynamo_limit). So the budget was silently 8 here and the cond
-        # stream spilled to eager mid-warmup — the recompile storm. Pin the
-        # canonical `.default` so the raise survives every context. The
-        # target-only block._forward never hit this only because n full-res
-        # families (2) sits under 8; the cond product does not.
+        # The two-stream inner needs far more graphs than the target-only
+        # block._forward: the (target × cond) token-count product, × grad-on/off
+        # GLOBAL_STATE (recompute under non-reentrant checkpoint guards on
+        # grad_mode), plus the flash graph-break segments. This exceeds the dynamo
+        # recompile_limit default of 8 — and a plain config write is a ContextVar
+        # that REVERTS to 8 in the backward compile context where the grad-bearing
+        # inner is traced (see pin_dynamo_limit), so pin the canonical .default.
         n = n_token_families if n_token_families is not None else 2
         per_obj = 4 * n + 16
         pin_dynamo_limit("recompile_limit", per_obj)
-        # accumulated_recompile_limit is the cross-code-object ceiling; every
-        # block owns its own compiled inner, so budget for all of them.
+        # accumulated_recompile_limit is the cross-code-object ceiling; budget for
+        # every block's own compiled inner.
         pin_dynamo_limit(
             "accumulated_recompile_limit", len(self._block_modules) * per_obj
         )
 
         # dynamic_seq does NOT use torch.compile(dynamic=True); compile static and
-        # let the patched forward mark the target/cond seq axes (see the inner
-        # dispatch). Derive the (min, max) seq bound for those marks.
+        # let the patched forward mark the seq axes. Derive their (min, max) bound.
         self._dynamic_seq = dynamic_seq
         if dynamic_seq:
             if seq_range is not None:
@@ -739,8 +709,6 @@ class EasyControlNetwork(AdapterNetworkBase):
         object.__setattr__(self, "_dit", None)
         self._patched = False
         self._cond_kv_cache = None
-
-    # ------------------------------------------------------------ runtime API
 
     def encode_cond_latent(
         self,
@@ -781,15 +749,11 @@ class EasyControlNetwork(AdapterNetworkBase):
 
         B, _, _, H, W = cond_latent.shape
 
-        # ---- Position-Aware Interpolation (cond-only downscale) ----
-        # When cond_res_scale < 1, downsample the cond latent (fewer tokens →
-        # cheaper cond self-attn + smaller KV cache) and rescale its RoPE
-        # positions back onto the *target* grid so spatial alignment survives.
-        # The target grid equals cond's full-resolution grid (cond is the same
-        # spatial size as the target for both ref==target and colorize), so we
-        # derive the rescale from the pre/post patch-grid sizes — no caller
-        # plumbing. At cond_res_scale == 1 this whole block is skipped and the
-        # path is bit-exact to the native-resolution behavior.
+        # Position-Aware Interpolation (cond-only downscale): at cond_res_scale<1,
+        # downsample the cond latent and rescale its RoPE positions back onto the
+        # target grid so spatial alignment survives. The target grid equals cond's
+        # full-res grid, so the rescale comes from pre/post patch-grid sizes.
+        # cond_res_scale==1 skips this block → bit-exact to native resolution.
         h_scale = w_scale = 1.0
         if self.cond_res_scale < 1.0:
             p = self._dit.patch_spatial
@@ -797,8 +761,7 @@ class EasyControlNetwork(AdapterNetworkBase):
             new_H = max(p, int(round(H * self.cond_res_scale / p)) * p)
             new_W = max(p, int(round(W * self.cond_res_scale / p)) * p)
             if (new_H, new_W) != (H, W):
-                # area resampling = anti-aliased average pooling, the right
-                # filter for downsampling. Operate on the 4D spatial form.
+                # area resampling = anti-aliased avg pooling (correct for downscale).
                 cond_latent = F.interpolate(
                     cond_latent.squeeze(2), size=(new_H, new_W), mode="area"
                 ).unsqueeze(2)
@@ -812,17 +775,14 @@ class EasyControlNetwork(AdapterNetworkBase):
                 B, 1, H, W, device=cond_latent.device, dtype=cond_latent.dtype
             )
 
-        # prepare_embedded_sequence handles padding-mask concat + patch embed,
-        # AND returns the RoPE (cos, sin) for cond at its native (T_c, H_c, W_c)
-        # shape. We keep the RoPE this time (Phase 1.5 discarded it).
+        # prepare_embedded_sequence handles padding-mask concat + patch embed and
+        # returns the RoPE (cos, sin) for cond at its native (T_c, H_c, W_c) shape.
         cond_x_5d, cond_rope = self._dit.prepare_embedded_sequence(
             cond_latent,
             fps=None,
             padding_mask=padding_mask,
         )
-        # PAI: replace the native-position RoPE with positions rescaled onto the
-        # target grid (cond patch i → i * H_t/H_c). Reduces to the native rope
-        # at scale 1.0, but we only pay for it when actually downscaling.
+        # PAI: rescale cond RoPE positions onto the target grid (only when downscaling).
         if h_scale != 1.0 or w_scale != 1.0:
             cond_rope = self._dit.pos_embedder.generate_embeddings_scaled(
                 cond_x_5d.shape,
@@ -831,16 +791,11 @@ class EasyControlNetwork(AdapterNetworkBase):
                 fps=None,
             )
 
-        # Flatten cond_x to [B, S_c, D] at cond's (possibly reduced) token count.
-        # Pin to cond_latent's dtype (== weight_dtype, set by the trainer at
-        # prime time). The patch-embed runs in the prime hook *outside* the
-        # forward's autocast scope, so without this the dtype of cond_x tracks
-        # the surrounding context (fp32 in the train forward vs bf16 under the
-        # no_grad val/sample autocast) and flip-flops — which makes the compiled
-        # two-stream inner specialize a *second* copy of every (token-count ×
-        # is_last) graph keyed on cond_x's dtype. Pinning collapses that axis.
-        # Numerically safe: cond_q/k/v are re-cast to the target stream's dtype
-        # for flash downstream, and the whole forward runs under bf16 autocast.
+        # Flatten cond_x and pin to cond_latent's dtype (== weight_dtype). The
+        # patch-embed runs outside the forward's autocast scope, so without the pin
+        # cond_x's dtype flip-flops (fp32 train vs bf16 no_grad val/sample),
+        # doubling the compiled two-stream graphs keyed on dtype. Numerically safe:
+        # cond_q/k/v are re-cast to the target dtype for flash downstream.
         cond_x = cond_x_5d.flatten(1, 3).to(cond_latent.dtype)
 
         return cond_x, cond_rope
@@ -862,25 +817,19 @@ class EasyControlNetwork(AdapterNetworkBase):
             self.clear_cond()
             return
 
-        # New reference: any prior cache is stale until precompute_cond_kv runs
-        # again. The two-stream path is the safe default in the meantime.
+        # New reference invalidates any prior cache (two-stream path until reprimed).
         self._cond_kv_cache = None
 
         cond_x, cond_rope = self.encode_cond_latent(
             cond_latent, padding_mask=padding_mask
         )
 
-        # Build cond_temb at t=0 through the same t_embedder as target. The
-        # AdaLN-LoRA branch is mirrored: t_embedder returns
-        # (emb_B_T_D, adaln_lora_B_T_3D) when use_adaln_lora=True. We follow
-        # forward_mini_train_dit and apply t_embedding_norm on emb_B_T_D.
-        # Pooled-text projection is intentionally NOT applied: cond is the
-        # reference image at t=0, with no text channel.
+        # cond_temb at t=0 through the same t_embedder as target (mirrors the
+        # AdaLN-LoRA branch + t_embedding_norm, like forward_mini_train_dit).
+        # Pooled-text projection is intentionally NOT applied — cond is a reference
+        # image at t=0 with no text channel.
         B = cond_latent.shape[0]
         device = cond_x.device
-        # Match the dtype t_embedder expects — its Timesteps layer handles
-        # float32 internally and casts back to input dtype. Use the cond_x
-        # dtype to avoid a needless promotion on the AdaLN inputs downstream.
         zeros = torch.zeros(B, 1, device=device, dtype=cond_x.dtype)
         cond_emb_B_T_D, cond_adaln_lora_B_T_3D = self._dit.t_embedder(zeros)
         cond_emb_B_T_D = self._dit.t_embedding_norm(cond_emb_B_T_D)
@@ -890,15 +839,13 @@ class EasyControlNetwork(AdapterNetworkBase):
             "cond_adaln_lora": cond_adaln_lora_B_T_3D,
             "cond_rope": cond_rope,
         }
-        # Block 0's input. Subsequent blocks' slots are written by the
-        # previous block's patched forward.
+        # Block 0's input; later blocks' slots are written by the prior block's forward.
         self._block_modules[0]._easycontrol_cond_x_in = cond_x
 
     def clear_cond(self) -> None:
         self._cond_state = None
         for block in self._block_modules:
             block._easycontrol_cond_x_in = None
-        # Stale cache after clear: a different reference would need a re-prime.
         self._cond_kv_cache = None
 
     def clear_cond_kv_cache(self) -> None:
@@ -948,11 +895,9 @@ class EasyControlNetwork(AdapterNetworkBase):
         cond_rope = self._cond_state["cond_rope"]
         eff_scale = self.cond_scale * self.multiplier
 
-        # Run cond's own self-attention through the SAME dispatched backend the
-        # two-stream training path uses, so the cached cond stream matches what
-        # training built (bare SDPA here vs dispatched flash there would diverge
-        # at the bf16-ulp level over 28 blocks) AND honors a non-default
-        # attn_softmax_scale (which a bare SDPA call silently ignored).
+        # Run cond self-attn through the SAME dispatched backend training uses, so
+        # the cached cond stream matches (bare SDPA vs dispatched flash diverges at
+        # bf16-ulp over 28 blocks) and honors a non-default attn_softmax_scale.
         attn_params = anima_attention.AttentionParams.create_attention_params(
             self._dit.attn_mode, self._dit.attn_softmax_scale
         )
@@ -966,13 +911,12 @@ class EasyControlNetwork(AdapterNetworkBase):
             cond_lora_ffn1 = self.cond_lora_ffn1[idx] if self.apply_ffn_lora else None
             cond_lora_ffn2 = self.cond_lora_ffn2[idx] if self.apply_ffn_lora else None
 
-            # ---- AdaLN modulation (cond stream only — no cross-attn) ----
             (
                 (cond_shift_self, cond_scale_self, cond_gate_self),
                 (cond_shift_mlp, cond_scale_mlp, cond_gate_mlp),
             ) = _adaln_self_mlp(block, cond_emb, cond_adaln_lora)
 
-            # ---- cond Q/K/V with LoRA + RoPE — this is what we cache ----
+            # cond Q/K/V with LoRA + RoPE — this is what we cache.
             cond_normed = (
                 block.layer_norm_self_attn(cond_x) * (1 + cond_scale_self)
                 + cond_shift_self
@@ -992,16 +936,13 @@ class EasyControlNetwork(AdapterNetworkBase):
                 )
             cache.append((cond_k.detach(), cond_v.detach()))
 
-            # ---- evolve cond_x to feed the next block ----
-            # The last block's evolved cond_x is never consumed (only its cached
-            # K/V feed target's extended attention), so skip its dead self-attn
-            # + output proj + MLP — mirrors `is_last` in the two-stream path.
+            # Last block's evolved cond_x is never consumed (only its cached K/V),
+            # so skip its dead self-attn + output proj + MLP (mirrors is_last).
             if idx == last_idx:
                 continue
 
-            # cond_q/k/v are BLHD; cast to the cond compute dtype (flash rejects
-            # fp32, and the fp32 cond-LoRA delta + q/k/v norms can promote them).
-            # Mirrors _two_stream_inner's cast before dispatch_attention.
+            # Cast cond_q/k/v to the compute dtype — flash rejects fp32 and the
+            # fp32 cond-LoRA delta + q/k/v norms can promote them.
             compute_dtype = cond_x.dtype
             cond_attn_out = anima_attention.dispatch_attention(
                 [
@@ -1031,7 +972,7 @@ class EasyControlNetwork(AdapterNetworkBase):
 
         self._cond_kv_cache = cache
         # Cache replaces the side-channel — drop slots so a stale write can't
-        # confuse the patched forward if the user toggles cache off later.
+        # confuse the patched forward if cache is toggled off later.
         for block in self._block_modules:
             block._easycontrol_cond_x_in = None
 
@@ -1046,12 +987,8 @@ class EasyControlNetwork(AdapterNetworkBase):
     def get_effective_scale(self) -> float:
         return self.cond_scale * self.multiplier
 
-    # ------------------------------------------------------------ trainer hooks
-
     def get_trainable_params(self):
         return list(self.parameters())
-
-    # ------------------------------------------------------------ I/O
 
     def metadata_fields(self) -> dict[str, str]:
         return {
@@ -1068,6 +1005,9 @@ class EasyControlNetwork(AdapterNetworkBase):
             "ss_channel_scaling_alpha": str(self.channel_scaling_alpha),
         }
 
+    def state_dict_for_save(self, dtype: torch.dtype) -> dict[str, torch.Tensor]:
+        return {k: v.detach().cpu().to(dtype) for k, v in self.state_dict().items()}
+
     def load_weights(self, file):
         if os.path.splitext(file)[1] == ".safetensors":
             from safetensors.torch import load_file
@@ -1082,9 +1022,6 @@ class EasyControlNetwork(AdapterNetworkBase):
             )
         else:
             logger.info(f"Loaded EasyControl weights from {file} ({len(sd)} tensors)")
-
-
-# ----------------------------------------------------------------- AdaLN modulation helpers
 
 
 def _adaln_self_cross_mlp(block: nn.Module, emb, adaln_lora):
@@ -1122,9 +1059,6 @@ def _adaln_self_mlp(block: nn.Module, emb, adaln_lora):
         self_p = block.adaln_modulation_self_attn(emb).chunk(3, dim=-1)
         mlp_p = block.adaln_modulation_mlp(emb).chunk(3, dim=-1)
     return self_p, mlp_p
-
-
-# ----------------------------------------------------------------- target-only path (cached cond KV)
 
 
 def _target_only_with_cached_cond_kv(
@@ -1167,7 +1101,7 @@ def _target_only_with_cached_cond_kv(
     sc_mlp_5 = scale_mlp[:, :, None, None, :]
     ga_mlp_5 = gate_mlp[:, :, None, None, :]
 
-    # ---- Self-attention (extended over [target; cached cond]) ----
+    # Self-attention extended over [target; cached cond].
     target_normed = (
         block.layer_norm_self_attn(x_B_T_H_W_D) * (1 + sc_self_5) + sh_self_5
     )
@@ -1175,8 +1109,7 @@ def _target_only_with_cached_cond_kv(
     target_q, target_k, target_v = attn.compute_qkv(
         target_flat, target_flat, rope_cos_sin=rope_cos_sin
     )
-    # If the cache was primed at B=1 and we're running at a larger batch
-    # (e.g. CFG-batched), broadcast K_c/V_c on the batch dim.
+    # Broadcast a B=1-primed cache onto a larger (CFG-batched) target batch.
     B_t = target_q.shape[0]
     if cond_k_cached.shape[0] != B_t:
         if cond_k_cached.shape[0] == 1:
@@ -1202,7 +1135,7 @@ def _target_only_with_cached_cond_kv(
     target_attn_5d = target_attn_proj.unflatten(1, (T_dim, H_dim, W_dim))
     x_B_T_H_W_D = x_B_T_H_W_D + ga_self_5 * target_attn_5d
 
-    # ---- Cross-attention (baseline) ----
+    # Cross-attention (baseline).
     target_cross_normed = (
         block.layer_norm_cross_attn(x_B_T_H_W_D) * (1 + sc_cross_5) + sh_cross_5
     )
@@ -1214,15 +1147,12 @@ def _target_only_with_cached_cond_kv(
     ).unflatten(1, (T_dim, H_dim, W_dim))
     x_B_T_H_W_D = x_B_T_H_W_D + ga_cross_5 * target_cross_out
 
-    # ---- MLP (baseline) ----
+    # MLP (baseline).
     target_mlp_normed = block.layer_norm_mlp(x_B_T_H_W_D) * (1 + sc_mlp_5) + sh_mlp_5
     target_mlp_out = block.mlp(target_mlp_normed)
     x_B_T_H_W_D = x_B_T_H_W_D + ga_mlp_5 * target_mlp_out
 
     return x_B_T_H_W_D
-
-
-# ----------------------------------------------------------------- patched Block.forward
 
 
 def _make_patched_block_forward(
@@ -1243,7 +1173,6 @@ def _make_patched_block_forward(
         returns ``cond_x_out`` as an explicit return value, so the per-block
         checkpoint preserves the autograd connection across blocks.
     """
-    # Capture once.
     original_forward = block.forward
     b_param = ec_net.b_cond[block_idx]
     cond_lora_qkv = ec_net.cond_lora_qkv[block_idx]
@@ -1251,11 +1180,9 @@ def _make_patched_block_forward(
     cond_lora_ffn1 = ec_net.cond_lora_ffn1[block_idx] if ec_net.apply_ffn_lora else None
     cond_lora_ffn2 = ec_net.cond_lora_ffn2[block_idx] if ec_net.apply_ffn_lora else None
 
-    # The last block's cond_x_out is discarded (no block consumes it — see the
-    # next-block write below), so its cond self-attn output, output proj, and
-    # MLP are dead compute: cond_lora_o / cond_lora_ffn on the final block never
-    # reach the loss. Only its cond K/V (fed to the target's extended attention)
-    # are live. Skip the discarded cond-stream evolution on the last block.
+    # Last block's cond_x_out is discarded, so its cond self-attn/proj/MLP are
+    # dead compute (cond_lora_o/ffn never reach the loss); only its cond K/V are
+    # live. Skip that cond-stream evolution on the last block.
     is_last = block_idx == ec_net.num_blocks - 1
 
     # Lazy imports to avoid a circular at module load.
@@ -1279,9 +1206,7 @@ def _make_patched_block_forward(
         T_dim, H_dim, W_dim = x_B_T_H_W_D.shape[1:4]
         scale_attn = attn_params.softmax_scale
 
-        # ---- AdaLN modulation params for both streams ----
-        # Target gets the full self/cross/mlp triples; cond skips cross (it does
-        # no cross-attention).
+        # Target gets full self/cross/mlp triples; cond skips cross (no cross-attn).
         (
             (shift_self_attn, scale_self_attn, gate_self_attn),
             (shift_cross_attn, scale_cross_attn, gate_cross_attn),
@@ -1292,9 +1217,8 @@ def _make_patched_block_forward(
             (cond_shift_mlp, cond_scale_mlp, cond_gate_mlp),
         ) = _adaln_self_mlp(block, cond_emb_B_T_D, cond_adaln_lora_B_T_3D)
 
-        # Reshape target shifts/scales/gates for 5D broadcasting.
-        # Cond shifts/scales/gates are (B, 1, D); broadcast over (B, S_c, D)
-        # naturally — no reshape needed.
+        # Reshape target shifts/scales/gates for 5D broadcasting; cond's (B, 1, D)
+        # broadcast over (B, S_c, D) naturally.
         sh_self_5 = shift_self_attn[:, :, None, None, :]
         sc_self_5 = scale_self_attn[:, :, None, None, :]
         ga_self_5 = gate_self_attn[:, :, None, None, :]
@@ -1305,28 +1229,22 @@ def _make_patched_block_forward(
         sc_mlp_5 = scale_mlp[:, :, None, None, :]
         ga_mlp_5 = gate_mlp[:, :, None, None, :]
 
-        # ============ 1. SELF-ATTENTION (extended target + cond's own) ============
-        # Target normalized → flat sequence
+        # SELF-ATTENTION (extended target + cond's own).
         target_normed = (
             block.layer_norm_self_attn(x_B_T_H_W_D) * (1 + sc_self_5) + sh_self_5
         )
         target_flat = target_normed.flatten(1, 3)
-
-        # Target Q/K/V with target RoPE — reuse Attention.compute_qkv (it
-        # handles q_norm, k_norm, v_norm + apply_rotary_pos_emb_qk for us).
         target_q, target_k, target_v = attn.compute_qkv(
             target_flat, target_flat, rope_cos_sin=rope_cos_sin
         )
 
-        # Cond normalized
         cond_normed = (
             block.layer_norm_self_attn(cond_x_B_S_D) * (1 + cond_scale_self_attn)
             + cond_shift_self_attn
         )
 
-        # Cond Q/K/V — base + LoRA delta inserted between qkv_proj and the
-        # q/k/v norms. We re-implement compute_qkv inline so the LoRA delta
-        # lands at the same point in the projection chain that Phase 1.5 used.
+        # Cond Q/K/V — compute_qkv re-implemented inline so the LoRA delta lands
+        # between qkv_proj and the q/k/v norms.
         eff_scale = ec_net.cond_scale * ec_net.multiplier
         cond_qkv_base = attn.qkv_proj(cond_normed)
         cond_qkv_delta = cond_lora_qkv(cond_normed)
@@ -1354,26 +1272,16 @@ def _make_patched_block_forward(
             attn_params=attn_params,
         )
 
-        # Target output projection + gated residual (always runs).
         target_attn_proj = attn.output_dropout(attn.output_proj(target_attn_out))
         target_attn_5d = target_attn_proj.unflatten(1, (T_dim, H_dim, W_dim))
         x_B_T_H_W_D = x_B_T_H_W_D + ga_self_5 * target_attn_5d
 
-        # Cond stream's own self-attention + output proj + residual. Only feeds
-        # the next block, so it's dead on the last block (cond K/V already
-        # consumed by the target extended attention above).
+        # Cond's own self-attn + proj + residual — feeds the next block only, so
+        # dead on the last block (its K/V are already consumed above).
         if not is_last:
-            # Route through the same dispatched backend (flash when available)
-            # and softmax_scale as the target, instead of a bare SDPA. cond_q/k/v
-            # are already BLHD (B, S_c, n_h, d_h) — dispatch_attention's expected
-            # layout — and it returns [B, S_c, n_h*d_h].
-            #
-            # cond_q/k/v can be fp32 here: the trainable cond LoRA delta (fp32)
-            # promotes cond_qkv to fp32 and the q/k/v norms keep it there. Flash
-            # only accepts fp16/bf16, so cast all three to the target attention's
-            # compute dtype (bf16 under autocast; no-op in pure-fp32 training).
-            # Mirrors _extended_target_attention, which casts cond_k/cond_v to
-            # target_k.dtype before its own flash call.
+            # Cast cond_q/k/v to the target compute dtype: the fp32 cond LoRA delta
+            # + q/k/v norms promote them, but flash only accepts fp16/bf16 (no-op
+            # in pure-fp32 training). Mirrors _extended_target_attention.
             cond_q = cond_q.to(target_v.dtype)
             cond_k = cond_k.to(target_v.dtype)
             cond_v = cond_v.to(target_v.dtype)
@@ -1385,7 +1293,7 @@ def _make_patched_block_forward(
             )
             cond_x_B_S_D = cond_x_B_S_D + cond_gate_self_attn * cond_attn_proj
 
-        # ============ 2. CROSS-ATTENTION (target only) ============
+        # CROSS-ATTENTION (target only).
         target_cross_normed = (
             block.layer_norm_cross_attn(x_B_T_H_W_D) * (1 + sc_cross_5) + sh_cross_5
         )
@@ -1424,14 +1332,11 @@ def _make_patched_block_forward(
 
         return x_B_T_H_W_D, cond_x_B_S_D
 
-    # Expose the inner on the block so EasyControlNetwork.compile_cond_stream()
-    # can swap in a torch.compile'd version. compile_blocks() only reaches the
-    # DiT's own block._forward, which the active (cond-on) training path
-    # bypasses — patched_forward calls this inner directly. Without the swap the
-    # whole cond stream (incl. every cond LoRA projection) runs eager and
-    # torch_compile is a no-op for EasyControl training. patched_forward reads
-    # the attribute per call so the compiled version takes effect immediately
-    # once swapped.
+    # Expose the inner on the block so compile_cond_stream() can swap a compiled
+    # version in. compile_blocks() only reaches the DiT's own block._forward,
+    # which the cond-on path bypasses (patched_forward calls this inner directly),
+    # so without the swap the whole cond stream runs eager (torch_compile a no-op).
+    # patched_forward reads the attribute per call so the swap takes effect at once.
     block._easycontrol_two_stream_inner = _two_stream_inner
 
     def patched_forward(
@@ -1483,34 +1388,21 @@ def _make_patched_block_forward(
         cond_adaln_lora = cond_state["cond_adaln_lora"]
         cond_rope = cond_state["cond_rope"]
 
-        # Match cond's dtype to the target stream — under autocast the AdaLN
-        # outputs are bf16 while cond_emb / cond_adaln_lora landed in cond_x's
-        # dtype upstream. We let the multiplications cast naturally by relying
-        # on PyTorch's type promotion rules; nothing to do here.
-
-        # Dispatch the two-stream inner through the SAME checkpoint path that
-        # Block.forward uses, with the extra cond args appended to the arg
-        # tuple so the checkpoint preserves them as inputs. `inner` is the
-        # torch.compile'd two-stream forward once compile_cond_stream() ran
-        # (else the eager closure). The checkpoint dispatch itself stays eager —
-        # mirrors compile_blocks, which compiles _forward (the inner), never the
-        # checkpoint wrapper (unsloth_checkpoint is @torch._disable_dynamo).
+        # Dispatch the two-stream inner through the SAME checkpoint path Block.forward
+        # uses, with the cond args appended so the checkpoint preserves them as
+        # inputs. `inner` is the compiled forward once compile_cond_stream() ran. The
+        # checkpoint dispatch stays eager (mirrors compile_blocks, which compiles the
+        # inner, never the @torch._disable_dynamo unsloth_checkpoint wrapper).
         inner = block._easycontrol_two_stream_inner
 
-        # compile_dynamic_seq: mark the two varying seq axes dynamic. This MUST be
-        # the checkpointed callable itself (an eager wrapper around the compiled
-        # inner), not a one-shot mark before dispatch: the unsloth/torch
-        # checkpoint recomputes the inner in BACKWARD via detach_variable, which
-        # detaches the top-level tensor args (x / cond_x) into fresh tensors that
-        # LOSE the dynamic mark — while the RoPE *tuples* are passed through
-        # unchanged (detach_variable skips non-tensors) and KEEP it. That
-        # asymmetry (rope hard-dynamic, q specialized constant) is the
-        # ConstraintViolationError. Marking inside the recomputed callable
-        # re-applies the marks to the detached inputs each pass, so forward and
-        # backward agree. Two independent symbols: target self-attn seq (x dim 2,
-        # fake-5D (B,1,seq,1,D) under native_flatten — guaranteed on when
-        # _dynamic_seq is set) and the cond stream's own seq (cond_x dim 1); each
-        # RoPE table rides dim 0. Marking is idempotent across blocks.
+        # compile_dynamic_seq: mark the varying seq axes dynamic INSIDE the
+        # checkpointed callable. The checkpoint recomputes in BACKWARD via
+        # detach_variable, which detaches the tensor args (x / cond_x) into fresh
+        # tensors that LOSE the mark while the RoPE tuples are passed through and
+        # KEEP it — that asymmetry is the ConstraintViolationError. Marking inside
+        # re-applies on each recompute so forward and backward agree. Two symbols:
+        # target seq (x dim 2, fake-5D under native_flatten) and cond seq (cond_x
+        # dim 1); each RoPE table rides dim 0. Idempotent across blocks.
         if ec_net._dynamic_seq:
             _compiled_inner = inner
             _lo, _hi = ec_net._dynamic_seq_range
@@ -1622,9 +1514,8 @@ def _make_patched_block_forward(
                 cond_rope,
             )
 
-        # Pass cond_x_out to the next block via its side channel. The tensor
-        # carries its autograd connection to *this* block's checkpoint output,
-        # so backward through the next block flows back here correctly.
+        # Pass cond_x_out to the next block's side channel — it carries the
+        # autograd link to this block's checkpoint output so backward flows here.
         next_idx = block_idx + 1
         if next_idx < ec_net.num_blocks:
             ec_net._block_modules[next_idx]._easycontrol_cond_x_in = cond_x_out
@@ -1633,9 +1524,6 @@ def _make_patched_block_forward(
         return target_x_out
 
     return patched_forward
-
-
-# ----------------------------------------------------------------- trainer integration
 
 
 class EasyControlMethodAdapter(MethodAdapter):
@@ -1674,10 +1562,8 @@ class EasyControlMethodAdapter(MethodAdapter):
             network.set_cond(None)
             return
 
-        # Condition source: prefer a distinct cond latent from the batch
-        # (cond≠target tasks like colorization, where the manga-style latent is
-        # cached in a parallel cond_cache_dir). Falls back to the target latent
-        # for ref==target setups (default EasyControl) → unchanged behavior.
+        # Prefer a distinct cond latent from the batch (cond≠target tasks like
+        # colorization), else fall back to the target latent (ref==target default).
         cond_src = batch.get("cond_latents") if isinstance(batch, dict) else None
         if cond_src is None:
             cond_src = latents

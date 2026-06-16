@@ -82,11 +82,6 @@ def _v_pred(
     return noise_pred
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# V-injection (paper Eq. 13)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 class _VInjectionState:
     """Row-indexed self-attn V swap inside a single batched forward.
 
@@ -152,7 +147,9 @@ def _make_patched_self_attn_forward(attn, block_idx: int, state: _VInjectionStat
     if hasattr(attn, "compute_attention"):
         compute_attention = attn.compute_attention
 
-        def patched_comfy(x, context=None, rope_emb=None, transformer_options=None, **_kwargs):
+        def patched_comfy(
+            x, context=None, rope_emb=None, transformer_options=None, **_kwargs
+        ):
             q, k, v = compute_qkv(x, context, rope_emb=rope_emb)
             v = state.hook(block_idx, v)
             return compute_attention(
@@ -238,11 +235,6 @@ def _resolve_t_inj_blocks(
             f"(valid: 0..{n - 1})."
         )
     return out
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Inversion + edit forward
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 @torch.no_grad()
@@ -419,7 +411,8 @@ def edit_forward(
             "smc_cfg_state passed but CFG is disabled (guidance_scale=%.2f, "
             "embed_neg=%s) — SMC operates on the cond/uncond residual and "
             "has nothing to clamp; ignored.",
-            guidance_scale, "set" if embed_neg is not None else "None",
+            guidance_scale,
+            "set" if embed_neg is not None else "None",
         )
     z_tar = z_init.to(torch.bfloat16)
 
@@ -427,7 +420,10 @@ def edit_forward(
         logger.info(
             "DirectEdit V-injection: t_inj=%d / T=%d, injecting at %d / %d blocks "
             "(batched forward, %d rows)",
-            t_inj, T, len(block_indices), len(anima.blocks),
+            t_inj,
+            T,
+            len(block_indices),
+            len(anima.blocks),
             3 if has_cfg else 2,
         )
 
@@ -474,9 +470,7 @@ def edit_forward(
                     v_neg = noise_pred[0:1]
                     v_cond_tar = noise_pred[2:3]
                     if smc_cfg_state is not None:
-                        v_tar = smc_cfg_state.combine(
-                            v_cond_tar, v_neg, guidance_scale
-                        )
+                        v_tar = smc_cfg_state.combine(v_cond_tar, v_neg, guidance_scale)
                     else:
                         v_tar = v_neg + guidance_scale * (v_cond_tar - v_neg)
                 else:
@@ -488,8 +482,13 @@ def edit_forward(
                 # state.src_row/tar_row are None, so the hook is a pass-through.
                 pad = _padding_mask_for(z_hat_tar)
                 v_tar = _v_pred(
-                    anima, z_hat_tar, sigma_in,
-                    embed_tar, embed_neg, guidance_scale, pad,
+                    anima,
+                    z_hat_tar,
+                    sigma_in,
+                    embed_tar,
+                    embed_neg,
+                    guidance_scale,
+                    pad,
                     smc_cfg_state=smc_cfg_state,
                 )
 

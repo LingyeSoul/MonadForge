@@ -12,7 +12,7 @@ Pipeline mirrors ``scripts/edit.py``:
   IMAGE -> PIL                        (ComfyUI [B,H,W,C] in [0,1] -> PIL.RGB)
   psi_src = source_tag                (caller-supplied string)
   psi_tar = target_tag or psi_src     (empty target_tag -> reconstruction)
-  bucket pick from source aspect ratio
+  resize to native res (snapped to 16px grid, capped by max_megapixels)
   CLIP.tokenize / encode_from_tokens(return_dict=True) for psi_src/tar/neg
   diffusion_model.preprocess_text_embeds -> 512-padded crossattn embeds
   VAE.encode + process_latent_in       -> standardized z_clean (DiT input space)
@@ -59,11 +59,12 @@ def _resolve_anima_modules():
         sys.path.insert(0, str(ANIMA_LORA))
 
     def _imports():
-        buckets_mod = importlib.import_module("library.datasets.buckets")
         directedit_mod = importlib.import_module("library.inference.editing.directedit")
         sampling_mod = importlib.import_module("library.inference.sampling")
-        splice_mod = importlib.import_module("library.inference.editing.directedit_splice")
-        return (buckets_mod, directedit_mod, sampling_mod, splice_mod)
+        splice_mod = importlib.import_module(
+            "library.inference.editing.directedit_splice"
+        )
+        return (directedit_mod, sampling_mod, splice_mod)
 
     try:
         return _imports()
@@ -75,9 +76,9 @@ def _resolve_anima_modules():
         # Drop any partially-imported modules so the vendor tree's copies
         # actually load (the live attempt may have cached half a tree).
         for k in [
-            k for k in list(sys.modules)
-            if k.startswith(("library.", "networks."))
-            or k in ("library", "networks")
+            k
+            for k in list(sys.modules)
+            if k.startswith(("library.", "networks.")) or k in ("library", "networks")
         ]:
             del sys.modules[k]
         return _imports()
@@ -89,13 +90,17 @@ import comfy.model_management  # noqa: E402  ComfyUI module; only resolvable ins
 import comfy.utils  # noqa: E402  ComfyUI module; only resolvable inside ComfyUI
 
 (
-    _buckets_mod,
     directedit,
     inference_utils,
     _splice_mod,
 ) = _resolve_anima_modules()
-CONSTANT_TOKEN_BUCKETS = _buckets_mod.CONSTANT_TOKEN_BUCKETS
 splice_crossattn_emb = _splice_mod.splice_crossattn_emb
+
+# DiT pixel grid: VAE downscale (/8) × patch (/2) = 16px per latent-patch axis.
+# Every valid Anima resolution is a multiple of this on both axes.
+_DIT_GRID = 16
+# Rope per-axis cap is 256 patches = 256 * 16 = 4096px on either axis.
+_MAX_AXIS = 4096
 
 # T5 (T5xxl) PAD token id is 0 across the T5 family; vendor doesn't bundle the
 # T5 tokenizer config so we hardcode rather than `load_t5_tokenizer().pad_token_id`.
@@ -104,12 +109,28 @@ _T5_PAD_ID = 0
 logger = logging.getLogger(__name__)
 
 
-def _pick_bucket(pil_img: Image.Image) -> Tuple[int, int]:
-    """Closest CONSTANT_TOKEN_BUCKETS entry by aspect ratio. Returns (H, W)."""
-    rw, rh = pil_img.size
-    target = rw / rh
-    best = min(CONSTANT_TOKEN_BUCKETS, key=lambda wh: abs(wh[0] / wh[1] - target))
-    return best[1], best[0]  # bucket is (W, H); we return (H, W)
+def _snap_axis(n: int) -> int:
+    """Snap one axis down to the DiT 16px grid, clamped to [16, 4096px]."""
+    return max(_DIT_GRID, min(_MAX_AXIS, n - n % _DIT_GRID))
+
+
+def _edit_size(pil_img: Image.Image, max_megapixels: float) -> Tuple[int, int]:
+    """Target edit resolution from the source's native size. Returns (W, H).
+
+    Uses the image's own resolution and aspect ratio (no aspect-snapping to a
+    fixed bucket table). If ``max_megapixels > 0`` and the source exceeds that
+    pixel budget, it is scaled down (aspect preserved) to fit; smaller images
+    are never upscaled. Both axes are then snapped to the DiT's 16px grid and
+    capped at the rope per-axis limit (4096px).
+    """
+    w, h = pil_img.size
+    if max_megapixels and max_megapixels > 0:
+        budget = max_megapixels * 1_000_000
+        if w * h > budget:
+            scale = (budget / (w * h)) ** 0.5
+            w = max(1, round(w * scale))
+            h = max(1, round(h * scale))
+    return _snap_axis(w), _snap_axis(h)
 
 
 def _comfy_image_to_pil(image_tensor: torch.Tensor) -> Image.Image:
@@ -122,6 +143,34 @@ def _pil_to_comfy_image(pil_img: Image.Image) -> torch.Tensor:
     """PIL.RGB -> ComfyUI IMAGE [1, H, W, 3] in [0,1] (for VAE.encode input)."""
     arr = np.asarray(pil_img.convert("RGB"), dtype=np.float32) / 255.0
     return torch.from_numpy(arr).unsqueeze(0)
+
+
+def _norm_tag(tag: str) -> str:
+    """Canonical key for tag matching (case/underscore/whitespace-insensitive)."""
+    return " ".join(tag.strip().lower().replace("_", " ").split())
+
+
+def _split_tags(text: str) -> list[str]:
+    """Comma-separated tag string -> stripped, non-empty tag list."""
+    return [t.strip() for t in (text or "").split(",") if t.strip()]
+
+
+def _merge_tags(source_caption: str, tags_to_add: str, tags_to_remove: str) -> str:
+    """Build the target caption from an auto-derived source caption.
+
+    Drops any ``tags_to_remove`` from the source, then appends each
+    ``tags_to_add`` entry that isn't already present (dedup by
+    :func:`_norm_tag`). Appending keeps the added tags as a contiguous
+    suffix, which is exactly the clean diff-span slot-surgery wants.
+    """
+    remove_keys = {_norm_tag(t) for t in _split_tags(tags_to_remove)}
+    kept = [t for t in _split_tags(source_caption) if _norm_tag(t) not in remove_keys]
+    present = {_norm_tag(t) for t in kept}
+    for t in _split_tags(tags_to_add):
+        if _norm_tag(t) not in present:
+            kept.append(t)
+            present.add(_norm_tag(t))
+    return ", ".join(kept)
 
 
 def _encode_prompt_comfy(
@@ -172,9 +221,31 @@ class AnimaDirectEdit:
         return {
             "required": {
                 "model": ("MODEL", {"tooltip": "Anima DiT (e.g. UNETLoader)."}),
-                "clip": ("CLIP", {"tooltip": "Anima CLIP (Qwen3 06B + T5xxl tokenizer)."}),
+                "clip": (
+                    "CLIP",
+                    {"tooltip": "Anima CLIP (Qwen3 06B + T5xxl tokenizer)."},
+                ),
                 "vae": ("VAE", {"tooltip": "Qwen Image VAE."}),
                 "image": ("IMAGE",),
+                "max_megapixels": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.0,
+                        "max": 16.0,
+                        "step": 0.1,
+                        "tooltip": (
+                            "Megapixel budget for the edit resolution. The "
+                            "source is edited at its NATIVE resolution and "
+                            "aspect ratio (no bucket snapping); if it exceeds "
+                            "this many megapixels it is scaled down to fit "
+                            "(aspect preserved, never upscaled). Dims are "
+                            "snapped to the DiT 16px grid and capped at 4096px "
+                            "per axis. 0 = no cap (use native size as-is). "
+                            "Default 1.0 (~1024x1024)."
+                        ),
+                    },
+                ),
                 "source_tag": (
                     "STRING",
                     {
@@ -295,6 +366,7 @@ class AnimaDirectEdit:
         flow_shift: float,
         guidance_scale: float,
         invert_guidance: float,
+        max_megapixels: float = 1.0,
         t_inj: int = 0,
         use_slot_surgery: bool = False,
     ):
@@ -319,11 +391,18 @@ class AnimaDirectEdit:
         logger.info("DirectEdit: psi_src = %r", psi_src)
         logger.info("DirectEdit: psi_tar = %r", psi_tar)
 
-        h_pix, w_pix = _pick_bucket(pil_src)
-        pil_src_resized = pil_src.resize((w_pix, h_pix), Image.LANCZOS)
+        w_pix, h_pix = _edit_size(pil_src, max_megapixels)
+        if (w_pix, h_pix) == pil_src.size:
+            pil_src_resized = pil_src
+        else:
+            pil_src_resized = pil_src.resize((w_pix, h_pix), Image.LANCZOS)
         logger.info(
-            "DirectEdit: bucket %dx%d (HxW) for source aspect %.3f",
-            h_pix, w_pix, pil_src.size[0] / pil_src.size[1],
+            "DirectEdit: edit res %dx%d (WxH) from native %dx%d (max_megapixels=%.2f)",
+            w_pix,
+            h_pix,
+            pil_src.size[0],
+            pil_src.size[1],
+            max_megapixels,
         )
 
         # Bring DiT onto device so preprocess_text_embeds (LLMAdapter) and the
@@ -334,13 +413,25 @@ class AnimaDirectEdit:
 
         with torch.no_grad():
             embed_src, t5_ids_src = _encode_prompt_comfy(
-                clip, unet, psi_src, device, dtype,
+                clip,
+                unet,
+                psi_src,
+                device,
+                dtype,
             )
             embed_tar, t5_ids_tar = _encode_prompt_comfy(
-                clip, unet, psi_tar, device, dtype,
+                clip,
+                unet,
+                psi_tar,
+                device,
+                dtype,
             )
             embed_neg, _ = _encode_prompt_comfy(
-                clip, unet, negative_prompt, device, dtype,
+                clip,
+                unet,
+                negative_prompt,
+                device,
+                dtype,
             )
 
         if use_slot_surgery:
@@ -355,8 +446,13 @@ class AnimaDirectEdit:
             logger.info(
                 "DirectEdit slot surgery: diff span src[%d:%d] -> tar[%d:%d] "
                 "(src_len=%d tar_len=%d suffix_len=%d)",
-                span.start, span.src_end, span.start, span.tar_end,
-                span.src_len, span.tar_len, span.suffix_len,
+                span.start,
+                span.src_end,
+                span.start,
+                span.tar_end,
+                span.src_len,
+                span.tar_len,
+                span.suffix_len,
             )
 
         # Diagnostic: if psi_src and psi_tar collapse to the same embedding, the
@@ -371,7 +467,9 @@ class AnimaDirectEdit:
             "DirectEdit embed diffs (abs mean): "
             "|src-tar|=%.6f  |src-neg|=%.6f  |tar-neg|=%.6f  "
             "(src.norm=%.3f tar.norm=%.3f shape=%s)",
-            d_st, d_sn, d_tn,
+            d_st,
+            d_sn,
+            d_tn,
             embed_src.float().norm().item(),
             embed_tar.float().norm().item(),
             tuple(embed_src.shape),
@@ -403,7 +501,10 @@ class AnimaDirectEdit:
         logger.info(
             "DirectEdit: invert (T=%d, src_guidance=%.2f) -> edit "
             "(tar_guidance=%.2f, t_inj=%d)",
-            infer_steps, invert_guidance, guidance_scale, t_inj,
+            infer_steps,
+            invert_guidance,
+            guidance_scale,
+            t_inj,
         )
         # Two-phase progress bar: invert occupies [0, T), edit occupies [T, 2T).
         pbar = comfy.utils.ProgressBar(infer_steps * 2)
@@ -439,10 +540,149 @@ class AnimaDirectEdit:
         return ({"samples": z_edit_raw.cpu()},)
 
 
+class AnimaDirectEditAutoTag:
+    """DirectEdit with the source caption auto-derived by an AnimaTagger.
+
+    Convenience wrapper around :class:`AnimaDirectEdit`. Instead of hand-writing
+    both ``source_tag`` and ``target_tag``, you wire in an ``ANIMA_TAGGER``
+    (from ``Anima Tagger Loader``) and describe the edit as a small delta:
+
+      psi_src = tagger.predict_caption(image)        (auto)
+      psi_tar = psi_src - tags_to_remove + tags_to_add
+
+    The derived source/target captions are also returned as STRINGs so you can
+    inspect exactly what drove the edit.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        base = AnimaDirectEdit.INPUT_TYPES()
+        req = base["required"]
+        return {
+            "required": {
+                "model": req["model"],
+                "clip": req["clip"],
+                "vae": req["vae"],
+                "image": req["image"],
+                "max_megapixels": req["max_megapixels"],
+                "tagger": (
+                    "ANIMA_TAGGER",
+                    {"tooltip": "AnimaTagger from the Anima Tagger Loader node."},
+                ),
+                "min_confidence": (
+                    "FLOAT",
+                    {
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": (
+                            "Extra probability floor on the auto-tagged source "
+                            "caption, on top of the tagger's own per-tag "
+                            "thresholds. Only tags whose confidence is >= this "
+                            "are kept. 0.0 = use the tagger's defaults; raise "
+                            "(e.g. 0.4–0.6) to keep only confident tags."
+                        ),
+                    },
+                ),
+                "tags_to_add": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": (
+                            "Comma-separated tags to ADD on top of the "
+                            "auto-tagged source caption. These describe the "
+                            "edit (e.g. 'smile, red dress'). Already-present "
+                            "tags are skipped."
+                        ),
+                    },
+                ),
+                "tags_to_remove": (
+                    "STRING",
+                    {
+                        "multiline": True,
+                        "default": "",
+                        "tooltip": (
+                            "Optional comma-separated tags to REMOVE from the "
+                            "auto-tagged source caption before adding "
+                            "(case/underscore-insensitive). Leave empty to "
+                            "only add."
+                        ),
+                    },
+                ),
+                "negative_prompt": req["negative_prompt"],
+                "infer_steps": req["infer_steps"],
+                "guidance_scale": req["guidance_scale"],
+                "invert_guidance": req["invert_guidance"],
+                "t_inj": req["t_inj"],
+            },
+        }
+
+    RETURN_TYPES = ("LATENT", "STRING", "STRING")
+    RETURN_NAMES = ("latent", "source_tag", "target_tag")
+    FUNCTION = "edit_autotag"
+    CATEGORY = "anima"
+    DESCRIPTION = (
+        "DirectEdit driven by a delta over an auto-derived caption. Tags the "
+        "source image with the wired-in AnimaTagger to get psi_src, then "
+        "applies your add/remove tag deltas to form psi_tar and runs the same "
+        "invert + delta_z-anchored edit as Anima DirectEdit. Returns the "
+        "edited LATENT plus the derived source/target captions."
+    )
+
+    def edit_autotag(
+        self,
+        model,
+        clip,
+        vae,
+        image: torch.Tensor,
+        max_megapixels: float,
+        tagger,
+        min_confidence: float,
+        tags_to_add: str,
+        tags_to_remove: str,
+        negative_prompt: str,
+        infer_steps: int,
+        guidance_scale: float,
+        invert_guidance: float,
+        t_inj: int = 0,
+    ):
+        pil_src = _comfy_image_to_pil(image)
+        psi_src = (
+            tagger.predict_caption(pil_src, min_confidence=min_confidence) or ""
+        ).strip()
+        if not psi_src:
+            raise ValueError(
+                "AnimaDirectEditAutoTag: the tagger returned an empty caption "
+                "for this image — cannot derive a source tag."
+            )
+        psi_tar = _merge_tags(psi_src, tags_to_add, tags_to_remove)
+
+        (latent,) = AnimaDirectEdit().edit(
+            model=model,
+            clip=clip,
+            vae=vae,
+            image=image,
+            source_tag=psi_src,
+            target_tag=psi_tar,
+            negative_prompt=negative_prompt,
+            infer_steps=infer_steps,
+            flow_shift=1.0,  # DirectEdit standard (Anima base-v1.0); invert/edit share it.
+            guidance_scale=guidance_scale,
+            invert_guidance=invert_guidance,
+            max_megapixels=max_megapixels,
+            t_inj=t_inj,
+        )
+        return (latent, psi_src, psi_tar)
+
+
 NODE_CLASS_MAPPINGS = {
     "AnimaDirectEdit": AnimaDirectEdit,
+    "AnimaDirectEditAutoTag": AnimaDirectEditAutoTag,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "AnimaDirectEdit": "Anima DirectEdit",
+    "AnimaDirectEditAutoTag": "Anima DirectEdit (Auto-Tag Source)",
 }

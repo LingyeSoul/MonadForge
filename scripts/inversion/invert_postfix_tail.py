@@ -79,7 +79,6 @@ def parse_args() -> argparse.Namespace:
         "(probe — see docs/proposal/postfix_residual_per_image_inversion.md)"
     )
 
-    # Model
     p.add_argument("--dit", type=str, required=True, help="DiT checkpoint path")
     p.add_argument("--attn_mode", type=str, default="flash", help="Attention backend")
     p.add_argument(
@@ -118,7 +117,6 @@ def parse_args() -> argparse.Namespace:
         "e.g. 'reduce-overhead' for per-block CUDAGraphs. None = inductor default.",
     )
 
-    # Data
     p.add_argument(
         "--image_dir",
         type=str,
@@ -159,7 +157,6 @@ def parse_args() -> argparse.Namespace:
         "construction. Defaults to --image_dir.",
     )
 
-    # Basis
     p.add_argument(
         "--K",
         type=int,
@@ -201,7 +198,6 @@ def parse_args() -> argparse.Namespace:
         help="T5-compatible embedding dim (Qwen3 hidden size = 1024)",
     )
 
-    # Parameterization
     p.add_argument(
         "--parameterization",
         type=str,
@@ -245,8 +241,9 @@ def parse_args() -> argparse.Namespace:
         "the ortho_tail probe (apples-to-apples — only the parameterization differs).",
     )
 
-    # Optimization
-    p.add_argument("--steps", type=int, default=100, help="Optimization steps per image")
+    p.add_argument(
+        "--steps", type=int, default=100, help="Optimization steps per image"
+    )
     p.add_argument("--lr", type=float, default=0.01, help="Learning rate (AdamW)")
     p.add_argument(
         "--lr_schedule",
@@ -336,7 +333,6 @@ def parse_args() -> argparse.Namespace:
         "FeRA's bench-validated 8.0 default — aspect-invariant on Anima.",
     )
 
-    # Output
     p.add_argument(
         "--output_dir",
         type=str,
@@ -379,8 +375,8 @@ def _pick_images(args) -> list:
     """Discover cached image pairs in --image_dir; optionally filter / shuffle / slice."""
     images = discover_cached_images(args.image_dir)
     if not images:
-        # Fall back to cache-only discovery (the post_image_dataset/lora layout
-        # where the cache dir is decoupled from the source images).
+        # Cache-only discovery: the post_image_dataset/lora layout where the
+        # cache dir is decoupled from the source images.
         images = discover_cached_pairs(args.image_dir)
     if not images:
         raise FileNotFoundError(
@@ -439,8 +435,8 @@ def _load_anima(args, device: torch.device, apply_before_compile=None):
         anima.enable_block_swap(args.blocks_to_swap, device)
         anima.move_to_device_except_swap_blocks(device)
         anima.prepare_block_swap_before_forward()
-        # block_swap moves weights CPU↔GPU mid-forward; incompatible with any
-        # torch.compile mode — leave eager. Apply the splice hooks now anyway.
+        # block_swap moves weights CPU↔GPU mid-forward — incompatible with
+        # torch.compile, so leave eager; apply the splice hooks now anyway.
         if apply_before_compile is not None:
             apply_before_compile(anima)
     else:
@@ -453,14 +449,11 @@ def _load_anima(args, device: torch.device, apply_before_compile=None):
         if apply_before_compile is not None:
             apply_before_compile(anima)
         if args.compile_blocks:
-            # compile_blocks turns on native-shape flattening (each aspect bucket
-            # at its real token count, no padding → no flash pad-leak) and compiles
-            # block._forward (not .forward) so the unsloth_checkpoint
-            # @torch._disable_dynamo decorator doesn't blow the trace under
-            # grad_ckpt. Dynamo recompiles once per distinct token count (e.g.
-            # 720×1440 vs 1024×1024) — a one-time warmup, not per-step. These span
-            # more than the 2 CONSTANT_TOKEN_BUCKETS families, so pre-raise the
-            # dynamo cache (compile_blocks' max() won't lower it).
+            # Native-shape flatten (real token count per bucket, no flash
+            # pad-leak); compiles block._forward so unsloth_checkpoint's
+            # @torch._disable_dynamo survives the trace. Probe spans more than
+            # the 2 CONSTANT_TOKEN_BUCKETS families, so pre-raise the dynamo
+            # cache (compile_blocks' max() won't lower it).
             import torch._dynamo as _dynamo
 
             _dynamo.config.cache_size_limit = max(_dynamo.config.cache_size_limit, 64)
@@ -521,8 +514,7 @@ def main() -> None:
     # Basis is ortho_tail-only; soft_tokens needs no SVD corpus.
     Q = None
     if not soft_tokens:
-        # Pre-build / cache the basis BEFORE the DiT load so its VRAM cost is
-        # peaked first (SVD over a 256-file corpus is CPU-bound but allocates).
+        # Build the basis BEFORE the DiT load so its allocation peaks first.
         basis_te_dir = args.basis_te_dir or args.image_dir
         Q = load_or_build_basis(
             K=args.K,
@@ -534,8 +526,8 @@ def main() -> None:
             seed=args.basis_seed,
         )
 
-    # soft_tokens: build + apply the splice net before compile (build_anima
-    # compile-after-apply invariant). One net, reused across images.
+    # soft_tokens: apply the splice net before compile (compile-after-apply
+    # invariant). One net, reused across images.
     st_holder: dict = {}
 
     def _apply_st(_anima):
@@ -543,7 +535,9 @@ def main() -> None:
         net.apply_to(text_encoders=None, unet=_anima, apply_unet=True)
         st_holder["net"] = net
 
-    anima = _load_anima(args, device, apply_before_compile=_apply_st if soft_tokens else None)
+    anima = _load_anima(
+        args, device, apply_before_compile=_apply_st if soft_tokens else None
+    )
     soft_tokens_net = st_holder.get("net")
 
     cfg = TailInversionConfig(

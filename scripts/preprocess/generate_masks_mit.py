@@ -22,8 +22,6 @@ from tqdm import tqdm
 
 from library.preprocess import walk_images
 
-# --- Text segmentation model (Manga-Text-Segmentation-2025) ---
-
 _ENCODER = "tu-efficientnetv2_rw_m"
 _HF_REPO = "a-b-c-x-y-z/Manga-Text-Segmentation-2025"
 _HF_FILENAME = "model.pth"
@@ -143,7 +141,7 @@ def main() -> None:
         help="Text segmentation threshold (default: 0.7)",
     )
     parser.add_argument(
-        "--dilate", type=int, default=5, help="Mask dilation in pixels (default: 5)"
+        "--dilate", type=int, default=3, help="Mask dilation in pixels (default: 5)"
     )
     parser.add_argument(
         "--workers", type=int, default=4, help="I/O workers (default: 4)"
@@ -186,7 +184,6 @@ def main() -> None:
         image_dir, recursive=args.recursive, pattern=args.path_pattern
     )
 
-    # Filter to work items
     work_items = []
     for image_path in image_files:
         try:
@@ -210,11 +207,9 @@ def main() -> None:
 
     pbar = tqdm(total=total, desc="Generating masks", ascii=True)
     for image_path, mask_path in work_items:
-        # Load image as RGB numpy array
         pil_image = Image.open(image_path).convert("RGB")
         img_np = np.array(pil_image)
 
-        # Run detection — returns mask where higher values = more likely text
         mask = _detect_mask(
             model,
             img_np,
@@ -228,7 +223,6 @@ def main() -> None:
             pbar.set_postfix_str(f"{image_path.name}: skipped")
             continue
 
-        # Binarize
         combined_mask = (mask > 127).astype(np.uint8)
 
         if dilate_kernel is not None:

@@ -41,9 +41,8 @@ from scripts.dcw.fusion_data import (  # noqa: E402
 )
 
 
-# Clamp range needs to span the realistic σ²_pop on Anima (~3e5 → log ≈ 12.7).
-# A tighter [-10, 10] saturates at init and freezes the σ̂² head — discovered
-# 2026-05-05 when the aux loss couldn't move log σ̂² off its initialised bias.
+# Must span realistic σ²_pop on Anima (~3e5 → log ≈ 12.7); a tighter [-10, 10]
+# saturates at init and freezes the σ̂² head (the aux loss can't move it).
 _LOG_SIGMA2_CLAMP = (-20.0, 20.0)
 
 
@@ -120,9 +119,8 @@ def train_one_fold(
     lambda_sigma_aux: float,
     verbose: bool = False,
 ) -> tuple[FusionHead, dict]:
-    # Concat-mode adds a "fei" feature column; replace mode reuses the g_obs
-    # slot (head sees no architectural difference). off keeps the historical
-    # in_dim. fei_k > 0 only on concat.
+    # fei_k > 0 only on concat (adds a feature column); replace reuses the
+    # g_obs slot, off keeps the historical in_dim.
     fei_k = int(features["fei"].shape[1]) if "fei" in features else 0
     head = FusionHead(
         c_pool_dim=features["c_pool"].shape[1],
@@ -156,9 +154,8 @@ def train_one_fold(
     stem_groups_val = _build_stem_groups(stems, val_idx, device)
 
     best_val = float("inf")
-    # Snapshot init weights so a fold whose val score never becomes
-    # finite-and-improving still returns a coherent head (instead of whatever
-    # the patience-break epoch happened to produce).
+    # Snapshot init weights so a fold that never improves still returns a
+    # coherent head (not whatever the patience-break epoch produced).
     best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
     patience, since_best = 50, 0
     last_train_aux = float("nan")
@@ -179,21 +176,19 @@ def train_one_fold(
         with torch.no_grad():
             ah_v, ls_v = head(c_v, g_v, x_v, fei=fei_v)
             val_nll = gaussian_nll(ah_v, ls_v, r_v).item()
-            # 0.0 (not NaN) when no multi-seed val groups exist — matches
-            # sigma_aux_loss's own empty-group return. Using NaN here
-            # poisoned val_score for every single-seed fold and prevented
-            # best_state from ever updating.
+            # 0.0 (not NaN) with no multi-seed val groups — NaN poisoned
+            # val_score for single-seed folds and blocked best_state updates.
             val_aux = (
                 float(sigma_aux_loss(ls_v, r_v, stem_groups_val).item())
                 if stem_groups_val
                 else 0.0
             )
-        # Early-stop on the same composite loss the trainer is minimising,
-        # so the aux objective actually shapes the kept checkpoint.
+        # Early-stop on the composite loss being minimised, so the aux
+        # objective shapes the kept checkpoint.
         val_score = val_nll + (
             lambda_sigma_aux * val_aux if lambda_sigma_aux > 0.0 else 0.0
         )
-        # NaN-safe: any NaN/inf val_score is rejected (falls into else branch).
+        # NaN-safe: non-finite val_score is rejected (else branch).
         if np.isfinite(val_score) and val_score < best_val - 1e-4:
             best_val = val_score
             best_state = {k: v.detach().clone() for k, v in head.state_dict().items()}
@@ -399,13 +394,9 @@ def main():
         f"n_steps={n_steps}"
     )
 
-    # Defensive dedupe: drop later-loaded rows that share (stem, aspect_id,
-    # seed_idx) with an earlier row. Same stem + same aspect + same seed_idx
-    # ≈ the same underlying noise sample (seed_idx is encoded as
-    # img_idx*1000 + seed_offset_in_run), so re-running a bucket on top of
-    # an existing pool would otherwise double-count those measurements.
-    # Cross-aspect rows for the same (stem, seed_idx) are kept — different
-    # aspect = different bucket size = a genuinely different measurement.
+    # Dedupe rows sharing (stem, aspect_id, seed_idx) — same noise sample, so a
+    # re-run over an existing pool would double-count. Cross-aspect rows for the
+    # same (stem, seed_idx) are kept (different bucket = different measurement).
     seen: set[tuple[str, int, int]] = set()
     deduped: list = []
     for r in rows:
@@ -419,9 +410,8 @@ def main():
         print(f"  dedupe (stem, aspect_id, seed_idx): dropped {n_dropped} dup rows")
     rows = deduped
 
-    # baseline_lambda must be uniform across the pool. Mixing rows collected
-    # at different scalar baselines would mean the LSQ targets carry
-    # incompatible offsets and α̂ would average to nonsense at inference.
+    # baseline_lambda must be uniform: mixed baselines give LSQ targets with
+    # incompatible offsets, so α̂ would average to nonsense at inference.
     baselines = sorted({round(r.baseline_lambda, 8) for r in rows})
     if len(baselines) > 1:
         sys.exit(
@@ -444,9 +434,7 @@ def main():
     print(f"  {len(feat)} unique stems, {len(rows)} rows after te-cache filter")
 
     if args.fei_obs != "off":
-        # Drop rows whose pool predates the FEI capture (no `fei_low` key in
-        # gaps_per_sample.npz). Mixing FEI-present and FEI-absent rows would
-        # either crash on stack() or require zero-fill, which would alias FEI
+        # Drop rows predating the FEI capture; zero-filling them would alias FEI
         # with "no signal" and confound the ablation.
         n_before = len(rows)
         rows = [r for r in rows if r.fei_low is not None]
@@ -465,8 +453,6 @@ def main():
 
     print("[3/6] computing population μ_g ...")
     mu_g_pop = build_population_mu_g(rows, n_steps)  # (n_steps,)
-    mu_g = np.broadcast_to(mu_g_pop, (N_DCW_ASPECTS, n_steps)).copy()
-    s_pop = np.zeros_like(mu_g)
     lam_scalar = np.zeros(N_DCW_ASPECTS, dtype=np.float32)
     print(
         f"  integrated μ_g = {mu_g_pop.sum():+.2f} "
@@ -520,13 +506,10 @@ def main():
     aux_std = aux.std(axis=0).clip(min=1e-6)
     aux_n = (aux - aux_mean) / aux_std
 
-    # c_pool preprocessing — keeps `centroid` and `cos_centroid` (above) computed
-    # on RAW c_pool because cos is L2-invariant and the aux feature semantically
-    # requires raw-space angle. Only the head's c_pool input goes through l2 +
-    # standardize. 2026-05-05 covariance-ceiling bench
-    # (bench/dcw/results/20260505-*-cov-cpoolnorm-*) shows l2_then_standardize
-    # collapses the +c_pool block's grouped-CV r std from 0.169 → 0.016 vs raw,
-    # at near-equal mean (0.302 → 0.376).
+    # `centroid` / `cos_centroid` stay on RAW c_pool (cos is L2-invariant and
+    # the aux feature needs raw-space angle); only the head's c_pool input gets
+    # l2 + standardize. l2_then_standardize collapses the +c_pool block's
+    # grouped-CV r std 0.169 → 0.016 at near-equal mean (2026-05-05 cov bench).
     do_l2 = args.c_pool_norm in ("l2", "l2_then_standardize")
     do_stdz = args.c_pool_norm in ("standardize", "l2_then_standardize")
     if do_l2:
@@ -559,9 +542,8 @@ def main():
         g_obs_n = np.zeros_like(g_obs_n)
         print("  --zero_g_obs: g_obs features replaced with zeros")
 
-    # FEI feature column. Off ⇒ unused. Replace ⇒ overwrite the g_obs slot
-    # so the head architecture matches the pre-FEI v5 head exactly (clean A/B
-    # vs ||v_rev_LL||). Concat ⇒ keep both as parallel slots in the head.
+    # FEI feature column. replace ⇒ overwrite the g_obs slot (head matches the
+    # pre-FEI v5 head for a clean A/B); concat ⇒ keep both as parallel slots.
     fei_mean = np.zeros(args.k_warmup, dtype=np.float32)
     fei_std = np.ones(args.k_warmup, dtype=np.float32)
     fei_n: np.ndarray | None = None
@@ -570,9 +552,8 @@ def main():
             np.float32
         )
         fei_mean = fei_arr.mean(axis=0)
-        # std clip floor 1e-3 (vs g_obs's 1.0) — FEI lives on the [0,1]
-        # simplex so per-step std is naturally small. A floor of 1.0 would
-        # crush the channel to zero post-standardization.
+        # std clip floor 1e-3 (vs g_obs's 1.0): FEI is on the [0,1] simplex so
+        # per-step std is small — a 1.0 floor would crush the channel to zero.
         fei_std = fei_arr.std(axis=0).clip(min=1e-3)
         fei_n = (fei_arr - fei_mean) / fei_std
         print(
@@ -587,12 +568,9 @@ def main():
             )
         if args.fei_obs == "replace":
             g_obs_n = fei_n
-            # Mirror FEI stats into the g_obs slot so the artifact's
-            # g_obs_mean / g_obs_std fields describe whatever raw signal
-            # actually fills that slot. A Phase 3 calibrator that feeds FEI
-            # values into the head's g_obs slot must standardize against
-            # FEI stats — saving v_rev_LL stats here would silently bias
-            # the normalization at inference.
+            # Mirror FEI stats into the g_obs slot so g_obs_mean/std describe the
+            # signal actually filling it — a Phase 3 calibrator feeding FEI into
+            # the g_obs slot must standardize against FEI stats, not v_rev_LL's.
             g_obs_mean = fei_mean
             g_obs_std = fei_std
             fei_n = None  # head sees only one channel (in g_obs slot)
@@ -602,8 +580,7 @@ def main():
             )
 
     # Per-(stem, seed) LSQ fit: λ̂*_p = Σ gap·s / Σ s² over [s_start:s_end],
-    # where s_i = 1 − σ_i. Single scalar per row, in raw gap-norm-per-(1−σ)
-    # units (typical magnitude ~350). Then rescale targets to λ-units so
+    # s_i = 1 − σ_i. Raw gap-norm-per-(1−σ) units; rescaled to λ-units below so
     # the head emits directly-usable λ_scalars at inference.
     raw = np.empty(len(rows), dtype=np.float64)
     for i, r in enumerate(rows):
@@ -626,11 +603,9 @@ def main():
         )
     targets = (raw * target_scale).astype(np.float32)
     if args.seed_mean_targets:
-        # Group by (stem, aspect_id) — same prompt at different aspects has
-        # different gap shape (∂∫g/∂λ flips sign across aspects per the
-        # bucket-cosmetic memo's table), so pooling those rows would erase
-        # real per-aspect signal as if it were seed noise. Within one
-        # (stem, aspect) group, each row is one seed of the same setup.
+        # Group by (stem, aspect_id): gap shape differs across aspects
+        # (∂∫g/∂λ flips sign), so pooling them would erase per-aspect signal as
+        # seed noise. Within one group each row is one seed of the same setup.
         groups_by_idx = np.array([(r.stem, r.aspect_id) for r in rows], dtype=object)
         per_group_mean: dict[tuple, float] = {}
         per_group_n: dict[tuple, int] = {}
@@ -719,7 +694,6 @@ def main():
     cv_aspect = aspect_arr[valid]
     stem_arr = np.array([r.stem for r in rows])[valid]
 
-    # Per-prompt seed-mean correlations
     per_prompt_alpha, per_prompt_target = [], []
     per_prompt_sigma_hat, per_prompt_seed_std = [], []
     for s in np.unique(stem_arr):
@@ -740,10 +714,9 @@ def main():
         else float("nan")
     )
 
-    # NLL improvement vs the Bayes-optimal constant predictor
-    # N(mean(t), σ²_pop). Using 0 as the constant inflated the baseline by the
-    # population-mean squared (≈18% MSE on CFG=4 non-square data where target
-    # mean is +0.0035), so a head that just learned the bias looked +6%.
+    # NLL improvement vs the Bayes-optimal constant predictor N(mean(t), σ²_pop).
+    # Using 0 as the constant inflated the baseline by the population-mean
+    # squared, so a head that only learned the bias looked +6%.
     nll_baseline = float(
         ((cv_t - cv_t.mean()) ** 2 / (2 * sigma2_pop) + 0.5 * np.log(sigma2_pop)).mean()
     )
@@ -753,7 +726,6 @@ def main():
     )
     nll_improve = (nll_baseline - nll_head) / abs(nll_baseline)
 
-    # Per-aspect r
     per_aspect_metrics = {}
     for a in range(N_DCW_ASPECTS):
         m = cv_aspect == a
@@ -800,11 +772,8 @@ def main():
         "dcw", label=f"v4-fusion-head-{args.label}", root=args.out_root
     )
 
-    # Strip sigma_mlp from the artifact: σ̂² head fails Gate B at every target
-    # window so the inference controller no longer reads it. bucket_prior_* and
-    # sigma2_prior are dropped for the same reason — the post-cleanup controller
-    # is a single (1−σ) envelope keyed only off α̂. (aspect_emb is gone from
-    # FusionHead entirely as of the bucket-cosmetic removal.)
+    # Strip sigma_mlp: the σ̂² head fails Gate B at every window, so the
+    # post-cleanup controller is a single (1−σ) envelope keyed only off α̂.
     _DROP_PREFIXES = ("sigma_mlp.",)
     state = {
         f"head.{k}": v.cpu()
@@ -818,23 +787,18 @@ def main():
     state["g_obs_std"] = torch.tensor(g_obs_std, dtype=torch.float32)
     state["c_pool_mean"] = torch.tensor(c_pool_mean, dtype=torch.float32)
     state["c_pool_std"] = torch.tensor(c_pool_std, dtype=torch.float32)
-    # FEI stats always shipped (even in `off` mode they're zero/one no-ops),
-    # so the artifact carries a self-describing fei_mean/fei_std pair when
-    # the Phase 3 calibrator ships. `replace` overwrote g_obs with FEI,
-    # so g_obs_mean/std above already reflect FEI's distribution — fei_mean
-    # / fei_std here mirror that for clarity at load time.
+    # FEI stats always shipped (zero/one no-ops in `off` mode) so the artifact
+    # is self-describing for the Phase 3 calibrator. Under `replace`, g_obs_mean/
+    # std already hold FEI's distribution — mirror them here for clarity.
     if args.fei_obs == "replace":
         state["fei_mean"] = torch.tensor(g_obs_mean, dtype=torch.float32)
         state["fei_std"] = torch.tensor(g_obs_std, dtype=torch.float32)
     else:
         state["fei_mean"] = torch.tensor(fei_mean, dtype=torch.float32)
         state["fei_std"] = torch.tensor(fei_std, dtype=torch.float32)
-    # Schema selection: pre-FEI artifacts keep `dcw_v5_lambda_scalar` so the
-    # current calibrator continues to load them. Replace/concat get v6 names
-    # so the current calibrator's _VALID_SCHEMAS check refuses them (head
-    # shape is fine on `replace` but the inference path still feeds g_obs
-    # from haar_LL_norm, which would be wrong — schema gate forces a retrain
-    # or Phase 3 calibrator update before use).
+    # Schema gate: pre-FEI keeps `dcw_v5_lambda_scalar` (current calibrator
+    # loads it); replace/concat get v6 names so _VALID_SCHEMAS refuses them
+    # (the inference path still feeds g_obs from haar_LL_norm — wrong for FEI).
     schema = {
         "off": "dcw_v5_lambda_scalar",
         "replace": "dcw_v6_fei_replace",
@@ -854,12 +818,10 @@ def main():
         "text_variant": str(args.text_variant),
         "n_train_rows": str(len(rows)),
         "c_pool_norm": args.c_pool_norm,
-        # Scalar λ baked into the reverse trajectory at data collection
-        # (one_minus_sigma schedule). Calibrator adds it on every step so
-        # α̂ acts as a residual on top — kills the v4 dead-zone mismatch.
+        # Scalar λ baked into the reverse trajectory at collection; the
+        # calibrator re-adds it each step so α̂ rides as a residual.
         "baseline_lambda": f"{baseline_lambda:.6g}",
-        # FEI ablation knobs — present even in `off` mode so the metadata
-        # surface is uniform. Phase 3 calibrator will key off these.
+        # FEI ablation knobs, present even in `off` mode (Phase 3 keys off them).
         "fei_obs": args.fei_obs,
         "fei_k": str(fei_k_meta),
         "fei_source": args.fei_source,
@@ -894,10 +856,8 @@ def main():
                     ]
                 )
 
-    # Sanitise non-finite floats (NaN / ±inf) into None so result.json stays
-    # spec-conformant — bench/_common.py serialises with json.dumps' default
-    # which emits the non-spec literals NaN / Infinity that strict parsers
-    # reject. Only NaN / inf are touched; finite values pass through.
+    # Sanitise non-finite floats to None so result.json stays spec-conformant
+    # (json.dumps emits non-spec NaN / Infinity that strict parsers reject).
     def _safe(x):
         if isinstance(x, float) and not np.isfinite(x):
             return None

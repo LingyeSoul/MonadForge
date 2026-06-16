@@ -1,5 +1,4 @@
-# Noise utilities for flow-matching training
-# Extracted from sd3_train_utils.py and flux_train_utils.py
+# Noise utilities for flow-matching training (from sd3/flux_train_utils.py).
 
 import math
 from dataclasses import dataclass
@@ -12,9 +11,6 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.schedulers.scheduling_utils import SchedulerMixin
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.utils import BaseOutput
-
-
-# region Timestep sampling utilities (from flux_train_utils.py)
 
 
 def time_shift(mu: float, sigma: float, t: torch.Tensor):
@@ -47,9 +43,8 @@ def get_sigmas(noise_scheduler, timesteps, device, n_dim=4, dtype=torch.float32)
     sigmas = noise_scheduler.sigmas.to(device=device, dtype=dtype)
     schedule_timesteps = noise_scheduler.timesteps.to(device)
     timesteps = timesteps.to(device)
-    # Vectorized: timesteps are exact entries of schedule_timesteps (callers sample via
-    # noise_scheduler.timesteps[indices]), so a single broadcast-equality + argmax finds
-    # the right index per batch element without per-element .item() host syncs.
+    # timesteps are exact entries of schedule_timesteps, so broadcast-equality +
+    # argmax finds each index without per-element .item() host syncs.
     eq = schedule_timesteps.unsqueeze(0) == timesteps.unsqueeze(1)  # [B, N]
     step_indices = eq.to(torch.int8).argmax(dim=-1)  # [B]
     sigma = sigmas[step_indices].flatten()
@@ -98,8 +93,7 @@ def get_noisy_model_input_and_timesteps(
     bsz, h, w = latents.shape[0], latents.shape[-2], latents.shape[-1]
     assert bsz > 0, "Batch size not large enough"
     num_timesteps = noise_scheduler.config.num_train_timesteps
-    # Logit-space mean shift shared by every sigmoid-based branch; >0 skews σ
-    # toward the high-noise (structure) regime, 0.0 (default) = unbiased.
+    # logit-space mean shift; >0 skews σ toward high-noise, 0.0 (default) = unbiased
     sigmoid_bias = getattr(args, "sigmoid_bias", 0.0)
     if args.timestep_sampling == "uniform" or args.timestep_sampling == "sigmoid":
         if args.timestep_sampling == "sigmoid":
@@ -129,14 +123,13 @@ def get_noisy_model_input_and_timesteps(
             mode_scale=args.mode_scale,
         )
         indices = (u * num_timesteps).long()
-        # The weighting-scheme path recovers σ by indexing the scheduler's
-        # [0,1000] timestep grid; that scaled form stays local to this lookup.
+        # recover σ by indexing the scheduler's [0,1000] grid; scaled form stays local
         sched_timesteps = noise_scheduler.timesteps[indices].to(device=device)
         sigmas = get_sigmas(
             noise_scheduler, sched_timesteps, device, n_dim=latents.ndim, dtype=dtype
         )
 
-    # Restrict sigma range (P-GRAFT-inspired timestep restriction)
+    # restrict sigma range (P-GRAFT-inspired timestep restriction)
     t_min = getattr(args, "t_min", None)
     t_max = getattr(args, "t_max", None)
     if t_min is not None or t_max is not None:
@@ -144,18 +137,14 @@ def get_noisy_model_input_and_timesteps(
         hi = t_max if t_max is not None else 1.0
         sigmas = lo + sigmas * (hi - lo)
 
-    # σ∈[0,1] IS the DiT's time argument — nothing downstream rescales it (cf.
-    # inference's generation.py). Keep the flat per-sample σ as the returned
-    # `timesteps` before broadcasting a copy for the noising arithmetic; the
-    # old σ·num_timesteps→/1000 round trip through samplers.py is gone.
+    # σ∈[0,1] IS the DiT's time argument — nothing downstream rescales it. Keep the
+    # flat per-sample σ as the returned `timesteps`; broadcast a copy for noising.
     timesteps = sigmas
 
-    # Broadcast sigmas to latent shape
     sigmas = (
         sigmas.view(-1, 1, 1, 1) if latents.ndim == 4 else sigmas.view(-1, 1, 1, 1, 1)
     )
 
-    # Add noise to the latents according to the noise magnitude at each timestep
     if args.ip_noise_gamma:
         xi = torch.randn_like(latents, device=latents.device, dtype=dtype)
         if args.ip_noise_gamma_random_strength:
@@ -185,12 +174,6 @@ def apply_model_prediction_type(args, model_pred, noisy_model_input, sigmas):
             weighting_scheme=args.weighting_scheme, sigmas=sigmas
         )
     return model_pred, weighting
-
-
-# endregion
-
-
-# region FlowMatchEulerDiscreteScheduler (from sd3_train_utils.py)
 
 
 @dataclass
@@ -367,6 +350,3 @@ class FlowMatchEulerDiscreteScheduler(SchedulerMixin, ConfigMixin):
 
     def __len__(self):
         return self.config.num_train_timesteps
-
-
-# endregion

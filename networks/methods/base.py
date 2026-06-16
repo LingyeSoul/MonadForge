@@ -84,8 +84,6 @@ class AdapterNetworkBase(nn.Module):
         super().__init__()
         self.multiplier: float = 1.0
 
-    # ── trainer lifecycle ──────────────────────────────────────────────
-
     def set_multiplier(self, multiplier: float) -> None:
         self.multiplier = multiplier
 
@@ -93,8 +91,7 @@ class AdapterNetworkBase(nn.Module):
         return self.mergeable
 
     def enable_gradient_checkpointing(self) -> None:
-        # Method networks here don't run their own grad-checkpointed inner
-        # forward; the DiT handles its own block-level checkpointing.
+        # DiT handles its own block-level checkpointing; nothing to do here.
         pass
 
     def prepare_grad_etc(self, text_encoder, unet) -> None:
@@ -105,8 +102,6 @@ class AdapterNetworkBase(nn.Module):
 
     def get_trainable_params(self):
         return [p for p in self.parameters() if p.requires_grad]
-
-    # ── optimizer groups ───────────────────────────────────────────────
 
     def prepare_optimizer_params_with_multiple_te_lrs(
         self, text_encoder_lr, unet_lr, default_lr
@@ -122,8 +117,6 @@ class AdapterNetworkBase(nn.Module):
             text_encoder_lr, unet_lr, default_lr
         )
         return params
-
-    # ── save / load ────────────────────────────────────────────────────
 
     def metadata_fields(self) -> dict[str, str]:
         """Method-specific ``ss_*`` keys to stamp into the safetensors metadata."""

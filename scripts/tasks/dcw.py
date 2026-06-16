@@ -45,11 +45,9 @@ from pathlib import Path
 
 from ._common import run
 
-# NOTE: ``DCW_ASPECT_BUCKETS`` is imported lazily inside the one function that
-# uses it — importing ``library.datasets`` at module load drags in torch (the
-# package __init__ chain), and ``tasks.py`` imports every command module up
-# front to build its dispatch table, so a top-level import here makes *every*
-# `python tasks.py <anything>` (incl. `gui`) pay torch's ~2.7s startup.
+# ``DCW_ASPECT_BUCKETS`` is imported lazily: a top-level ``library.datasets``
+# import drags in torch, and tasks.py imports every command module up front — so
+# it would make *every* `python tasks.py <anything>` pay torch's ~2.7s startup.
 
 
 def _pop_kv(extra: list[str], key: str, default: str) -> tuple[str, list[str]]:
@@ -181,9 +179,8 @@ def cmd_dcw(extra):
     n_seeds, extra = _pop_kv(extra, "--n_seeds", "2")
     shuffle_seed, extra = _pop_kv(extra, "--shuffle_seed", "0")
     label, extra = _pop_kv(extra, "--label", "make-dcw")
-    # Match make-test-dcw's default scalar so the trained head learns
-    # the residual α̂ on top — kills the v4 dead-zone mismatch (head
-    # observes / acts on the same trajectory inference will).
+    # Match make-test-dcw's default scalar so the head learns the residual α̂ on
+    # top — kills the v4 dead-zone mismatch (head observes the trajectory inference uses).
     baseline_lambda, extra = _pop_kv(extra, "--baseline_lambda", "0.0")
 
     allow_repeats, extra = _pop_flag(extra, "--allow_repeats")

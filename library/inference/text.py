@@ -161,7 +161,7 @@ def prepare_text_inputs(
 
     loaded_locally = text_encoder is None
     if loaded_locally:  # no shared dict, or a shared dict without a text encoder
-        text_encoder_dtype = torch.bfloat16  # Default dtype for Text Encoder
+        text_encoder_dtype = torch.bfloat16
         # Pass the namespace through when we have one so TE-side LoRA
         # (lora_weight/lora_multiplier) still folds in; otherwise load from path.
         if args is not None:

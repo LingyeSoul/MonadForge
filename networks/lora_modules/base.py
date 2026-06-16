@@ -35,10 +35,9 @@ def _absorb_channel_scale(
     s = s / s.mean().clamp_min(eps)
     with torch.no_grad():
         weight.mul_(s.to(weight).unsqueeze(0))
-    # inv_scale must live on the same device as the weight it rebalances: ``s``
-    # is seeded from the calibration file (CPU), but the buffer has to track
-    # ``weight`` so the forward multiply and the save-time bake never straddle
-    # cuda/cpu. fp32 storage is intentional — only the device moves.
+    # inv_scale must track ``weight``'s device so the forward multiply and the
+    # save-time bake never straddle cuda/cpu (``s`` is seeded CPU from calib).
+    # fp32 storage is intentional — only the device moves.
     return (1.0 / s).to(weight.device).contiguous()
 
 
@@ -120,10 +119,8 @@ class BaseLoRAModule(torch.nn.Module):
         )
 
     def _rebalance(self, x: torch.Tensor) -> torch.Tensor:
-        # inv_scale stays fp32 in storage (calibration precision); cast at
-        # the multiply site so ``bf16 × fp32 → bf16`` instead of being
-        # promoted back to fp32. The total fp32 buffer is in_features × 4 B
-        # × N_modules — ~1 MiB on Anima, negligible vs activations.
+        # inv_scale stays fp32 in storage (calibration precision); cast at the
+        # multiply site so ``bf16 × fp32 → bf16`` instead of promoting to fp32.
         if not self._has_channel_scale:
             return x
         return x * self.inv_scale.to(device=x.device, dtype=x.dtype)
@@ -142,7 +139,6 @@ class BaseLoRAModule(torch.nn.Module):
             return lx, self.scale * (1.0 / (1.0 - self.rank_dropout))
         return lx, self.scale
 
-    # ------------------------------------------------------------------
     # Forward scaffold (template method). The invariant chain — enable/fuse
     # short-circuit, eval delegation, module dropout, dtype policy, T-LoRA
     # gate, dropout / rank-dropout, residual add — lives here ONCE; the
@@ -155,7 +151,6 @@ class BaseLoRAModule(torch.nn.Module):
     # modules (Hydra / StackedExperts / Chimera: the "gate" is a routing
     # tensor consumed inside the up-projection, not an elementwise ``lx``
     # multiply) — keep their own ``forward`` and do NOT call this scaffold.
-    # ------------------------------------------------------------------
 
     def forward(self, x):
         if not self.enabled or getattr(self, "_fused", False):

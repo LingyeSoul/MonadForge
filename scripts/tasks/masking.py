@@ -21,12 +21,47 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from ._common import PY, ROOT, run
+from ._common import PY, ROOT, _path, run
 
 MASK_OUTPUT_DIR = ROOT / "post_image_dataset" / "masks"
 RESIZED_IMAGE_DIR = ROOT / "post_image_dataset" / "resized"
 SAM_CONFIG = ROOT / "configs" / "sam_mask.yaml"
 _UNSET = object()
+
+
+def _resized_image_dir() -> Path:
+    """Scoped resized dir to mask, honoring GUI ``path_scope``.
+
+    Reads ``resized_image_dir`` from the merged config chain (the GUI passes a
+    config snapshot via ``CONFIG_FILE`` whose ``resized_image_dir`` is already
+    scoped to ``post_image_dataset/resized/<path_scope>``). Scoping the input
+    is what stops a scoped run from re-masking every other folder. Without a
+    snapshot (direct ``make mask``) this falls back to the unscoped default, so
+    CLI behavior is unchanged.
+    """
+    return ROOT / _path("resized_image_dir", "post_image_dataset/resized")
+
+
+def _scoped_mask_output_dir(resized_dir: Path) -> Path:
+    """Re-apply the ``path_scope`` offset onto the mask output root.
+
+    SAM/MIT emit masks with rel paths taken **relative to the scoped resized
+    dir** (``resized/<scope>``), so a scoped run drops the ``<scope>`` prefix.
+    But training resolves masks relative to the **unscoped** cache root
+    (``lora/<scope>/<rel>`` → ``masks/<scope>/<rel>``, see
+    ``CachedDataset._resolve_mask_path``), so masking must land them under
+    ``masks/<scope>`` — not flat in ``masks/`` — or the trainer won't find
+    them. Mirror whatever scope ``resized_dir`` carries over the unscoped
+    ``post_image_dataset/resized`` default. Unscoped (direct ``make mask``)
+    returns the bare output dir, so CLI behavior is unchanged.
+    """
+    try:
+        scope = resized_dir.resolve().relative_to(RESIZED_IMAGE_DIR.resolve())
+    except ValueError:
+        return MASK_OUTPUT_DIR
+    if str(scope) == ".":
+        return MASK_OUTPUT_DIR
+    return MASK_OUTPUT_DIR / scope
 
 
 def _runtime_sam_config() -> dict | None:
@@ -80,7 +115,9 @@ def _sam_config_path(cfg: dict, tmp_root: str, *, from_env: bool) -> str:
     return str(path)
 
 
-def _run_sam(image_dir: Path, out_dir: Path, extra: list[str], config_path: str) -> None:
+def _run_sam(
+    image_dir: Path, out_dir: Path, extra: list[str], config_path: str
+) -> None:
     run(
         [
             PY,
@@ -102,9 +139,8 @@ def _run_sam(image_dir: Path, out_dir: Path, extra: list[str], config_path: str)
 
 
 def _run_mit(image_dir: Path, out_dir: Path, extra: list[str]) -> None:
-    # MIT_TEXT_THRESHOLD / MIT_DILATE let the GUI's Preprocessing tab tune
-    # the MIT masker without editing this file. Defaults match the script's
-    # own argparse defaults so direct CLI use is unchanged.
+    # MIT_TEXT_THRESHOLD / MIT_DILATE let the GUI tune the MIT masker; defaults
+    # match the script's argparse so direct CLI use is unchanged.
     cmd = [
         PY,
         "scripts/preprocess/generate_masks_mit.py",
@@ -148,6 +184,8 @@ def cmd_mask(extra):
     sam_cfg = _load_sam_config(runtime_sam_cfg)
     pattern = _config_path_pattern(sam_cfg)
     pattern_args = ["--path-pattern", pattern] if pattern else []
+    resized_dir = _resized_image_dir()
+    mask_output_dir = _scoped_mask_output_dir(resized_dir)
     with tempfile.TemporaryDirectory(prefix="anima-masks-") as tmp_root:
         sam_config_path = _sam_config_path(
             sam_cfg,
@@ -157,20 +195,20 @@ def cmd_mask(extra):
         merge_sources: list[str] = []
         if run_sam:
             tmp_sam = Path(tmp_root) / "sam"
-            _run_sam(RESIZED_IMAGE_DIR, tmp_sam, [*pattern_args], sam_config_path)
+            _run_sam(resized_dir, tmp_sam, [*pattern_args], sam_config_path)
             merge_sources.append(str(tmp_sam))
         if run_mit:
             tmp_mit = Path(tmp_root) / "mit"
-            _run_mit(RESIZED_IMAGE_DIR, tmp_mit, [*pattern_args])
+            _run_mit(resized_dir, tmp_mit, [*pattern_args])
             merge_sources.append(str(tmp_mit))
-        MASK_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        mask_output_dir.mkdir(parents=True, exist_ok=True)
         run(
             [
                 PY,
                 "scripts/preprocess/merge_masks.py",
                 *merge_sources,
                 "--output-dir",
-                str(MASK_OUTPUT_DIR),
+                str(mask_output_dir),
                 *extra,
             ]
         )

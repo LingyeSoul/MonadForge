@@ -43,8 +43,6 @@ logger = logging.getLogger(__name__)
 MAX_SEQ_LEN = 512
 
 
-# region Orthonormal basis builders
-#
 # Lifted verbatim from the (now archived) postfix method
 # (``_archive/postfix/networks/methods/postfix.py``) so the inversion probe
 # stays self-contained — it is the only live consumer of the cond+ortho basis
@@ -100,7 +98,7 @@ def _build_svd_te_basis(
     for path in files:
         sd = _load_file(path)
         emb = sd["crossattn_emb_v0"].float()  # (S, D)
-        mask = sd["attn_mask_v0"].bool()       # (S,)
+        mask = sd["attn_mask_v0"].bool()  # (S,)
         if emb.shape[-1] != D:
             raise ValueError(
                 f"cached embed dim {emb.shape[-1]} != requested D={D} (file: {path})"
@@ -109,7 +107,9 @@ def _build_svd_te_basis(
             chunks.append(emb[mask])
 
     if not chunks:
-        raise RuntimeError(f"no non-padding tokens found across {len(files)} cached files")
+        raise RuntimeError(
+            f"no non-padding tokens found across {len(files)} cached files"
+        )
 
     A = torch.cat(chunks, dim=0)  # (M, D)
     # full_matrices=False → V_h: (min(M, D), D); top-K rows are the K right
@@ -170,12 +170,6 @@ def _make_orthonormal_basis(
     raise NotImplementedError(
         f"ortho_basis={kind!r}: only 'random' and 'svd_te' are implemented."
     )
-
-
-# endregion
-
-
-# region Basis
 
 
 def load_or_build_basis(
@@ -250,12 +244,6 @@ def load_or_build_basis(
     return Q.float().contiguous()
 
 
-# endregion
-
-
-# region Prefix
-
-
 def load_cached_prefix(te_path: str, *, device: torch.device) -> torch.Tensor:
     """Load ``T5(tags)`` prefix from ``{stem}_anima_te.safetensors``.
 
@@ -299,12 +287,6 @@ def assemble_emb(prefix_emb: torch.Tensor, tail: torch.Tensor) -> torch.Tensor:
         [prefix_emb[:, : S - K, :], tail.to(prefix_emb.dtype)],
         dim=1,
     )
-
-
-# endregion
-
-
-# region Optimization core
 
 
 def sample_sigmas(
@@ -360,12 +342,6 @@ def fm_loss_step(
     pred = anima(noisy_5d, timesteps, emb, padding_mask=pm).squeeze(2)
     target = noise - lat
     return F.mse_loss(pred.float(), target.float())
-
-
-# endregion
-
-
-# region VR (variance-reduced FM via AsymFlow §5.2 control variate)
 
 
 def _build_vr_pool(
@@ -428,9 +404,9 @@ def _build_vr_pool(
             x_t_L = (1.0 - sv) * x0_L + sv * noise
             x_t_L_5d = x_t_L.unsqueeze(2)
             ts = sig.to(torch.bfloat16)
-            ref_pred = anima(
-                x_t_L_5d, ts, emb_ref, padding_mask=padding_mask
-            ).squeeze(2)
+            ref_pred = anima(x_t_L_5d, ts, emb_ref, padding_mask=padding_mask).squeeze(
+                2
+            )
             z = ref_pred.float() - (noise.float() - x0_L.float())
             pool.append({"sigma": sig, "noise": noise, "z": z})
 
@@ -470,12 +446,6 @@ def _vr_loss_step(
     lam = lambda_batch if lambda_ema is None else lambda_ema
     diff = y + lam * z
     return diff.pow(2).mean(), lambda_batch
-
-
-# endregion
-
-
-# region Public entrypoint
 
 
 @dataclass
@@ -529,8 +499,6 @@ class TailInversionResult:
     bank: Optional[dict] = None
 
 
-# region Parameterizations
-#
 # Two ways to fill the K postfix slots, sharing one optimization loop. Each
 # object owns: its trainable leaves, how to turn the current state into the
 # crossattn embedding handed to the frozen DiT (``make_emb``), an optional ‖·‖²
@@ -638,8 +606,7 @@ class _SoftTokensParam:
     def reg(self, device: torch.device) -> torch.Tensor:
         if self.lambda_zero > 0.0:
             return self.lambda_zero * (
-                self.net.tokens.pow(2).sum()
-                + self.net.t_offsets.weight.pow(2).sum()
+                self.net.tokens.pow(2).sum() + self.net.t_offsets.weight.pow(2).sum()
             )
         return torch.zeros((), device=device, dtype=torch.float32)
 
@@ -654,7 +621,10 @@ class _SoftTokensParam:
     def snapshot_best(self) -> None:
         self._best = {
             "tokens": self.net.tokens.detach().clone().cpu().float(),
-            "t_offsets.weight": self.net.t_offsets.weight.detach().clone().cpu().float(),
+            "t_offsets.weight": self.net.t_offsets.weight.detach()
+            .clone()
+            .cpu()
+            .float(),
         }
 
     def result_fields(self) -> dict:
@@ -710,9 +680,6 @@ def _build_parameterization(
     raise ValueError(
         f"unknown parameterization {kind!r}: expected 'ortho_tail' or 'soft_tokens'"
     )
-
-
-# endregion
 
 
 def invert_tail(
@@ -811,9 +778,8 @@ def invert_tail(
         # the next forward mm's against a CPU-side weight ("mat2 is on cpu").
         # Switch to forward-only swap for the pool, then restore training-mode
         # swap before the optimization loop.
-        swap_active = (
-            getattr(anima, "offloader", None) is not None
-            and getattr(anima, "blocks_to_swap", 0)
+        swap_active = getattr(anima, "offloader", None) is not None and getattr(
+            anima, "blocks_to_swap", 0
         )
         if swap_active:
             anima.switch_block_swap_for_inference()
@@ -895,9 +861,7 @@ def invert_tail(
                     sigma_max=cfg.sigma_max,
                 )
                 emb_full = param.make_emb(sigmas)
-                fm_loss = fm_loss_step(
-                    anima, latents, emb_full, sigmas, padding_mask
-                )
+                fm_loss = fm_loss_step(anima, latents, emb_full, sigmas, padding_mask)
             reg = param.reg(device)
             loss = fm_loss + reg
             (loss / microsteps).backward()
@@ -977,12 +941,6 @@ def invert_tail(
         history=history,
         bank=fields["bank"],
     )
-
-
-# endregion
-
-
-# region IO
 
 
 def save_tail_s(
@@ -1109,8 +1067,7 @@ def splice_tail_into_te_cache(
             crossattn_key = "crossattn_emb"
         if crossattn_key not in keys:
             raise KeyError(
-                f"{te_in_path}: missing {crossattn_key!r} "
-                f"(keys: {sorted(keys)[:8]}...)"
+                f"{te_in_path}: missing {crossattn_key!r} (keys: {sorted(keys)[:8]}...)"
             )
         emb = f.get_tensor(crossattn_key).float()  # (S, D)
 
@@ -1122,7 +1079,7 @@ def splice_tail_into_te_cache(
     if S < K:
         raise ValueError(f"cached emb seq len {S} < K={K} (file: {te_in_path})")
 
-    tail = (Q.float().cpu() * s.float().cpu().unsqueeze(-1))  # (K, D)
+    tail = Q.float().cpu() * s.float().cpu().unsqueeze(-1)  # (K, D)
     spliced = emb.clone()
     spliced[S - K : S, :] = tail
     spliced_bf16 = spliced.to(torch.bfloat16).contiguous()
@@ -1140,6 +1097,3 @@ def splice_tail_into_te_cache(
             "ss_splice_position": "end_of_sequence",
         },
     )
-
-
-# endregion

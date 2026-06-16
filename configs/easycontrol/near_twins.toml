@@ -64,8 +64,8 @@ pe_encoder = "pe_spatial"
 # output_name defaults to anima_easycontrol_<name>; omit the table entirely to
 # train with the plain easycontrol method defaults.
 [training]
-network_dim = 48
-network_alpha = 48
+network_dim = 32
+network_alpha = 128
 masked_loss=false
 target_res = [896, 1024]
 
@@ -85,10 +85,10 @@ network_args = [
     "use_repa=true",
     "repa_weight=0.05",
     "repa_layer=8",
-    "repa_spatial_norm=true"
+    "repa_target_dog=true"
 ]
 # Keep the REPA arm from clobbering the baseline checkpoint during the A/B.
-output_name = "anima_easycontrol_sanitize_repa"
+output_name = "anima_easycontrol_sanitize_repa2"
 
 learning_rate = 5e-5
 max_train_epochs = 12

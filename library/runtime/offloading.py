@@ -189,7 +189,6 @@ class Offloader:
             )
 
 
-# Gradient tensors
 _grad_t = Union[tuple[torch.Tensor, ...], torch.Tensor]
 
 
@@ -214,7 +213,6 @@ class ModelOffloader(Offloader):
         )  # forward only offloading: can be changed to True for inference
 
         if self.supports_backward:
-            # register backward hooks
             self.remove_handles = []
             for i, block in enumerate(blocks):
                 hook = self.create_backward_hook(blocks, i)
@@ -246,7 +244,6 @@ class ModelOffloader(Offloader):
         if not swapping and not waiting:
             return None
 
-        # create  hook
         block_idx_to_cpu = self.num_blocks - num_blocks_propagated
         block_idx_to_cuda = self.blocks_to_swap - num_blocks_propagated
         block_idx_to_wait = block_index - 1
@@ -268,19 +265,15 @@ class ModelOffloader(Offloader):
         blocks: Union[list[nn.Module], nn.ModuleList],
         free_cache: bool = True,
     ):
-        # ``free_cache=False`` skips the trailing ``empty_cache`` so callers
-        # that re-enter another forward in the same step (e.g. the FECL
-        # no-grad base pass for the FeRA stacked-experts path) don't release
-        # the caching allocator's blocks just to have the next forward
-        # re-grow them — the visible nvidia-smi swing was ~1 GB per step on
-        # a 5060 Ti without changing peak allocated.
+        # free_cache=False skips the trailing empty_cache so callers re-entering
+        # another forward this step (e.g. FeRA stacked-experts base pass) don't
+        # release allocator blocks the next forward immediately re-grows (~1 GB swing).
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
         if self.debug:
             print("Prepare block devices before forward")
 
-        # wait for all pending transfers
         for block_idx in list(self.futures.keys()):
             self._wait_blocks_move(block_idx)
 
@@ -306,11 +299,10 @@ class ModelOffloader(Offloader):
     def submit_move_blocks(
         self, blocks: Union[list[nn.Module], nn.ModuleList], block_idx: int
     ):
-        # check if blocks_to_swap is enabled
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
-        # if backward is enabled, we do not swap blocks in forward pass more than blocks_to_swap, because it should be on GPU
+        # with backward enabled, don't swap forward blocks past blocks_to_swap — they must stay on GPU
         if not self.forward_only and block_idx >= self.blocks_to_swap:
             return
 

@@ -244,14 +244,12 @@ class StackedExpertsLoRAModule(RouterStateMixin, BaseLoRAModule):
         zero = torch.tensor(0.0, device=device)
         return zero, zero
 
-    # ------------------------------------------------------------------
     # Save-pipeline hooks. The ortho variant lives in the runtime as
     # ``S_p`` / ``S_q`` / ``P_basis`` / ``Q_basis`` / ``lambda_layer`` —
     # distilled to free per-expert ``lora_down_weight (E, r, in)`` +
     # ``lora_up_weight (E, out, r)`` here so the on-disk file matches
     # the free-StackedExperts shape and either runtime mode can load it.
     # The MoE writer then expands to per-expert ``.lora_{ups,downs}.{i}``.
-    # ------------------------------------------------------------------
 
     @classmethod
     def distill_save_state_dict(

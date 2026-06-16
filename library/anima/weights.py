@@ -1,5 +1,3 @@
-# Anima model loading/saving utilities
-
 import os
 import re
 from typing import Dict, List, Optional, Union
@@ -24,8 +22,7 @@ def _strip_net_prefix(key: str) -> str:
     return key[len("net.") :] if key.startswith("net.") else key
 
 
-# Regex patterns for fused projection key remapping (compiled once)
-# Only match DiT blocks (blocks.N.), not LLM adapter blocks (llm_adapter.blocks.N.)
+# Match DiT blocks (blocks.N.) only, NOT LLM adapter blocks (llm_adapter.blocks.N.)
 _SELF_ATTN_QKV_RE = re.compile(
     r"(blocks\.\d+\.self_attn)\.(q_proj|k_proj|v_proj)(\.weight)"
 )
@@ -163,7 +160,6 @@ def load_anima_model(
         if dit_weight_dtype is not None:
             model.to(dit_weight_dtype)
 
-    # load model weights with LoRA merging if needed
     logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
     rename_hooks = WeightTransformHooks(
         rename_hook=_dit_rename_hook,
@@ -198,13 +194,11 @@ def load_anima_model(
             )
         ]
         if unexpected_missing:
-            # Raise error to avoid silent failures
             raise RuntimeError(
                 f"Missing keys in checkpoint: {unexpected_missing[:10]}{'...' if len(unexpected_missing) > 10 else ''}"
             )
         missing = {}  # all missing keys were expected
     if unexpected:
-        # Raise error to avoid silent failures
         raise RuntimeError(
             f"Unexpected keys in checkpoint: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}"
         )
@@ -212,10 +206,9 @@ def load_anima_model(
         f"Loaded DiT model from {dit_path}, unexpected missing keys: {len(missing)}, unexpected keys: {len(unexpected)}"
     )
 
-    # Move non-checkpoint modules (RoPE embeddings, pooled_text_proj) to the correct device.
-    # These are created on CPU during __init__ and not present in the checkpoint,
-    # so load_state_dict(assign=True) doesn't move them — they remain as meta tensors.
-    # Use to_empty() + init to materialize meta tensors, then move to loading_device.
+    # Non-checkpoint modules (RoPE embeddings, pooled_text_proj) are absent from the
+    # checkpoint, so load_state_dict(assign=True) leaves them as meta tensors —
+    # to_empty() + re-init materializes them onto loading_device.
     if hasattr(model, "pos_embedder"):
         model.pos_embedder.to(loading_device)
     if hasattr(model, "pooled_text_proj"):
@@ -291,7 +284,6 @@ def load_llm_adapter(
             f"LLM adapter weights must be a .safetensors file, got: {weight_path}"
         )
 
-    # Detect prefix style
     with safe_open(weight_path, framework="pt", device="cpu") as f:
         keys = list(f.keys())
 
@@ -417,7 +409,6 @@ def load_qwen3_text_encoder(
     logger.info(f"Loading {model_label} text encoder from {qwen3_path}")
 
     if os.path.isdir(qwen3_path):
-        # Directory with full model
         tokenizer = AutoTokenizer.from_pretrained(qwen3_path, local_files_only=True)
         model = transformers.AutoModelForCausalLM.from_pretrained(
             qwen3_path, torch_dtype=dtype, local_files_only=True
@@ -439,7 +430,6 @@ def load_qwen3_text_encoder(
             )
             model = transformers.Qwen3ForCausalLM(qwen_config).model
 
-        # Load weights
         if qwen3_path.endswith(".safetensors"):
             if lora_weights is None:
                 state_dict = load_file(qwen3_path, device="cpu")
@@ -458,7 +448,6 @@ def load_qwen3_text_encoder(
             )
             state_dict = torch.load(qwen3_path, map_location="cpu", weights_only=True)
 
-        # Remove 'model.' prefix if present
         new_sd = {}
         for k, v in state_dict.items():
             if k.startswith("model."):
@@ -492,7 +481,6 @@ def load_t5_tokenizer(t5_tokenizer_path: Optional[str] = None):
     if t5_tokenizer_path is not None:
         return T5TokenizerFast.from_pretrained(t5_tokenizer_path, local_files_only=True)
 
-    # Use bundled config
     config_dir = os.path.join(os.path.dirname(__file__), "configs", "t5_old")
     if os.path.exists(config_dir):
         return T5TokenizerFast(
@@ -524,7 +512,6 @@ def save_anima_model(
     prefixed_sd = {}
     for k, v in dit_state_dict.items():
         if dtype is not None:
-            # v = v.to(dtype)
             v = (
                 v.detach().clone().to("cpu").to(dtype)
             )  # Reduce GPU memory usage during save

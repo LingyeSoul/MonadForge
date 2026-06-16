@@ -70,7 +70,6 @@ class _ExtendedSelfAttnLSEFunc(torch.autograd.Function):
             )
         fa_fwd = anima_attention._wrapped_flash_attn_forward
 
-        # Two FA forwards (no dropout, no causal, no window).
         out_t, lse_t, _, rng_state_t = fa_fwd(
             q,
             k_t,
@@ -106,7 +105,7 @@ class _ExtendedSelfAttnLSEFunc(torch.autograd.Function):
         alpha = (lse_t - joint_lse).exp()  # [B, H, S_q] fp32
         beta = (lse_c_adj - joint_lse).exp()  # [B, H, S_q] fp32
 
-        # out_t, out_c are [B, S_q, H, D] (BLHD). Broadcast α/β over D.
+        # out_t/out_c are [B, S_q, H, D] (BLHD); broadcast α/β over D.
         alpha_bd = alpha.transpose(1, 2).unsqueeze(-1).to(out_t.dtype)
         beta_bd = beta.transpose(1, 2).unsqueeze(-1).to(out_c.dtype)
         joint_out = alpha_bd * out_t + beta_bd * out_c

@@ -127,21 +127,15 @@ def classify(
     top_name, top_count = partners_full[0]
     top_share = top_count / n_co
 
-    # D — role marker: broad partner pool wins over A. A character with
-    # 5+ distinct co-partners is acting as an affiliation tag regardless
-    # of any incidental prefix overlap with one of them ("doodle sensei"
-    # has prefix-overlap with "sensei" but is also broad-pool — D wins so
-    # it lands under `remove:` instead of getting demoted to a dedup row).
+    # D — role marker: broad partner pool wins over A, regardless of any
+    # incidental prefix overlap, so it lands under `remove:` not a dedup row.
     if n_distinct >= min_role_partners:
         return "D_role", ""
 
-    # A — costume/version variant: prefix-before-paren matches a partner
-    # (tier 1, strong), OR drop-first-token matches (tier 2, catches
-    # "cool mita ↔ mita", "male rover ↔ rover", "the herta ↔ herta").
-    # Already past the D gate, so the pool is narrow enough to trust the
-    # prefix relationship. The matched partner becomes the *base* if the
-    # candidate is more specific; otherwise the candidate is the base
-    # and the row is informational only (A_base, suppressed in YAML out).
+    # A — costume/version variant: prefix-before-paren matches a partner,
+    # OR drop-first-token matches ("cool mita ↔ mita", "the herta ↔ herta").
+    # Matched partner is the *base* if the candidate is more specific; else
+    # the candidate is the base and the row is informational (A_base).
     cand_prefix = _name_prefix(name)
     cand_prefix_drop1 = _name_prefix_no_first_token(name)
     matched_partner = None
@@ -164,14 +158,12 @@ def classify(
             return "A_costume", matched_partner
         return "A_base", matched_partner
 
-    # C — couple/sibling pair: narrow pool dominated by top partner, but
-    # only when there are ≥2 distinct partners. The n_distinct==1 case is
-    # ambiguous (alias vs. always-paired-couple — both look identical in
-    # data) and gets pushed to B_review for an eyeball decision.
+    # C — couple/sibling pair: narrow pool dominated by top partner, but only
+    # at ≥2 distinct partners. n_distinct==1 is ambiguous (alias vs. couple)
+    # and gets pushed to B_review for an eyeball decision.
     if top_share >= pair_dominance and n_distinct >= 2:
         return "C_pair", top_name
 
-    # Everything else needs human review (likely B aliases / noisy).
     return "B_review", top_name
 
 
@@ -222,7 +214,6 @@ def scan(
     char_idx: Set[int] = {int(t["index"]) for t in tags if t["category"] == "character"}
     single_idx, multi_idx = _solo_index_sets(tags)
 
-    # Per-character tallies.
     n_solo: Dict[int, int] = {i: 0 for i in char_idx}
     n_co: Dict[int, int] = {i: 0 for i in char_idx}
     partner: Dict[int, Dict[int, int]] = {i: {} for i in char_idx}
@@ -352,14 +343,12 @@ def _emit_yaml_stub(rows: List[dict], min_solo: int, min_ratio: float) -> str:
     lines.append("# headers for the target location.")
     lines.append("")
 
-    # ── A_costume — dedup blocks ───────────────────────────────────────
     a_rows = by_bucket.get("A_costume", [])
     lines.append("# ╔══════════════════════════════════════════════════════════════╗")
     lines.append("# ║ A_costume — paste these as top-level dedup blocks in         ║")
     lines.append("# ║ tag_rules.yaml (when any variant fires, the base is dropped) ║")
     lines.append("# ╚══════════════════════════════════════════════════════════════╝")
     if a_rows:
-        # Group variants by base.
         base_to_variants: Dict[str, List[Tuple[str, dict]]] = {}
         for r in a_rows:
             base = r["base"]
@@ -377,7 +366,6 @@ def _emit_yaml_stub(rows: List[dict], min_solo: int, min_ratio: float) -> str:
         lines.append("# (no A_costume candidates)")
         lines.append("")
 
-    # ── D_role — under `remove:` ───────────────────────────────────────
     d_rows = by_bucket.get("D_role", [])
     lines.append("# ╔══════════════════════════════════════════════════════════════╗")
     lines.append("# ║ D_role — paste these under `remove:` in tag_rules.yaml.      ║")
@@ -397,7 +385,6 @@ def _emit_yaml_stub(rows: List[dict], min_solo: int, min_ratio: float) -> str:
         lines.append("  # (no D_role candidates)")
     lines.append("")
 
-    # ── B_review — needs eyeballing ────────────────────────────────────
     b_rows = by_bucket.get("B_review", [])
     lines.append("# ╔══════════════════════════════════════════════════════════════╗")
     lines.append("# ║ B_review — eyeball each. Likely aliases (use `replacements:`)║")
@@ -415,7 +402,6 @@ def _emit_yaml_stub(rows: List[dict], min_solo: int, min_ratio: float) -> str:
         lines.append("# (none)")
     lines.append("")
 
-    # ── C_pair — informational only ────────────────────────────────────
     c_rows = by_bucket.get("C_pair", [])
     lines.append("# ╔══════════════════════════════════════════════════════════════╗")
     lines.append("# ║ C_pair — leave these alone. Genuine couple/sibling tag pairs;║")

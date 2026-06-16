@@ -122,13 +122,9 @@ def cmd_test_turbo(extra):
     """
     weight = latest_output("anima_turbo")
     base = list(INFERENCE_BASE)
-    # Replace defaults so `--infer_steps`/`--guidance_scale` reflect the turbo
-    # contract (2 steps, cfg=1.0). User extra args still win since they come last.
     base = _override_arg(base, "--sampler", "euler")
     # Per-step-expert checkpoints bind head k to denoise step k, so infer_steps
-    # MUST equal the trained head count K (= student_steps). Read it from the
-    # metadata and pin infer_steps to K; overshoot would repeat the last head
-    # (the inference helper clamps) and undershoot would skip the quality head.
+    # MUST equal the trained head count K (= student_steps); pin it from metadata.
     infer_steps = "2"
     try:
         from safetensors import safe_open
@@ -165,8 +161,6 @@ def _override_arg(argv: list[str], flag: str, value: str) -> list[str]:
     if flag not in argv:
         return argv + [flag, value]
     i = argv.index(flag)
-    # Drop the flag and its single value; INFERENCE_BASE doesn't use multi-arg
-    # flags for these two keys.
     return argv[:i] + [flag, value] + argv[i + 2 :]
 
 
@@ -235,7 +229,6 @@ def cmd_test_directedit(extra):
       REF_IMAGE=foo.png make exp-test-directedit PROMPT='glasses'
       python tasks.py exp-test-directedit foo.png --prompt 'smile'
     """
-    # 1. Resolve source image — same logic as the other reference-image tests.
     ref_image = os.environ.get("REF_IMAGE", "").strip()
     if not ref_image and extra and not extra[0].startswith("-"):
         ref_image = extra[0]
@@ -252,8 +245,7 @@ def cmd_test_directedit(extra):
         sys.exit(1)
     ref_image = _resolve_ref_image(ref_image)
 
-    # 2. Pull the user-supplied edit instruction. PROMPT env wins; fall back
-    #    to a ``--prompt`` flag in extra; final default = "double peace".
+    # Edit instruction: PROMPT env wins, then a --prompt flag in extra, then default.
     edit_prompt = os.environ.get("PROMPT", "").strip()
     cleaned_extra: list[str] = []
     skip_next = False
@@ -271,7 +263,6 @@ def cmd_test_directedit(extra):
     if not edit_prompt:
         edit_prompt = "double peace, v v. She is showing double peace"
 
-    # 3. Run Anima Tagger on the source.
     from PIL import Image  # noqa: PLC0415
 
     anima_ckpt = (
@@ -299,16 +290,8 @@ def cmd_test_directedit(extra):
         f"  > src caption: {src_caption[:120]}{'...' if len(src_caption) > 120 else ''}"
     )
 
-    # 4. Save dir + edit.py invocation. Reuse INFERENCE_BASE for the model
-    #    path trio (--dit / --text_encoder / --vae) so this stays in sync with
-    #    the other test commands automatically.
-    #
-    #    Hand the edit instruction to edit.py via --edit_instruction so the
-    #    dispatcher (Qwen3 last-token cosine + threshold/gap gate; see
-    #    library/inference/edit_dispatcher.py and plan.md) runs in-process —
-    #    REPLACE on confident matches, REMOVE on explicit `-X` / `no X`,
-    #    APPEND otherwise. Running the dispatcher in this wrapper would load
-    #    Qwen3 a second time; we'd rather edit.py do it once.
+    # Hand the edit instruction to edit.py via --edit_instruction so its dispatcher
+    # runs in-process — running it in this wrapper would load Qwen3 a second time.
     save_dir = ROOT / "output" / "tests" / "directedit"
     save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -330,7 +313,6 @@ def cmd_test_directedit(extra):
     args += list(extra)
     run(args)
 
-    # 5. Copy the source alongside the edited output for side-by-side review.
     pngs = sorted(
         (p for p in save_dir.glob("*.png") if not p.name.endswith("_src.png")),
         key=lambda p: p.stat().st_mtime,
@@ -380,9 +362,6 @@ def cmd_test_directedit_dry(extra):
         sys.exit(1)
     ref_image = _resolve_ref_image(ref_image)
 
-    # Auto-resolve the matching TE cache file. Preprocessing mirrors the
-    # resized/ subdir layout under post_image_dataset/lora/, so probe the
-    # nested mirror first, then the flat lora/ root, then the legacy sidecar.
     candidates = _te_cache_candidates(ref_image)
     cache_path = _resolve_te_cache(ref_image)
     if cache_path is None:
@@ -416,7 +395,6 @@ def cmd_test_directedit_dry(extra):
     args += list(extra)
     run(args)
 
-    # Copy the source alongside the reconstruction for side-by-side review.
     pngs = sorted(
         (p for p in save_dir.glob("*.png") if not p.name.endswith("_src.png")),
         key=lambda p: p.stat().st_mtime,
@@ -496,7 +474,6 @@ def cmd_invert_directedit(extra):
       K=8 INVERT_STEPS=50 make exp-invert-directedit
     """
 
-    # 1. Resolve image pool.
     ref_image_override = os.environ.get("REF_IMAGE", "").strip()
     if not ref_image_override and extra and not extra[0].startswith("-"):
         ref_image_override = extra[0]
@@ -527,8 +504,7 @@ def cmd_invert_directedit(extra):
         )
         sys.exit(1)
 
-    # 2. Inversion knobs — env overrides for the common dials, defaults match
-    #    the proposal (and the invert_postfix_tail.py CLI defaults).
+    # Inversion knobs — env overrides; defaults match invert_postfix_tail.py.
     K = int(os.environ.get("K", "8"))
     invert_steps = int(os.environ.get("INVERT_STEPS", "100"))
     invert_lr = float(os.environ.get("INVERT_LR", "1e-1"))
@@ -544,8 +520,7 @@ def cmd_invert_directedit(extra):
     run_root.mkdir(parents=True, exist_ok=True)
     basis_path = run_root / f"svd_basis_K{K}.pt"
 
-    # 3. Resolve the shared --dit / etc. flags from INFERENCE_BASE so this
-    #    target follows the same model trio as the rest of the test family.
+    # Reuse INFERENCE_BASE's model trio so this target stays in sync.
     dit_path = _resolve_inference_base_flag("--dit")
     if dit_path is None:
         print("  ! INFERENCE_BASE has no --dit value", file=sys.stderr)
@@ -573,9 +548,7 @@ def cmd_invert_directedit(extra):
         stem = Path(ref_image).stem
         print(f"\n=== [{i + 1}/{len(images)}] {stem} ===")
 
-        # 4. Find the cached TE for this image (the baseline v0 prefix).
-        #    Caches mirror the resized/ subdir layout under lora/, so probe
-        #    the nested mirror before the flat root and the legacy sidecar.
+        # The cached TE is the baseline v0 prefix.
         te_path = _resolve_te_cache(ref_image)
         if te_path is None:
             looked = "\n".join(f"    {p}" for p in _te_cache_candidates(ref_image))
@@ -586,7 +559,7 @@ def cmd_invert_directedit(extra):
             )
             continue
 
-        # 5. Invert the postfix tail via the standalone CLI.
+        # Invert the postfix tail via the standalone CLI.
         img_dir = run_root / stem
         invert_out = img_dir / "inversion"
         s_path = invert_out / "s" / f"{stem}_s.safetensors"
@@ -642,10 +615,8 @@ def cmd_invert_directedit(extra):
                 )
                 continue
 
-        # 6. Build the spliced TE cache — load s + Q on CPU, splice, write.
-        #    D=1024 matches Qwen3's hidden size (the only one Anima ships
-        #    against); load_or_build_basis verifies cached shape and fails
-        #    loud if the on-disk basis doesn't match.
+        # Build the spliced TE cache. D=1024 = Qwen3's hidden size (the only one
+        # Anima ships against); load_or_build_basis fails loud on a shape mismatch.
         s, _ = load_tail_s(str(s_path))
         Q = load_or_build_basis(
             K=K,
@@ -666,7 +637,7 @@ def cmd_invert_directedit(extra):
         )
         print(f"  > Spliced TE cache: {spliced_te}")
 
-        # 7. Two dry-mode edit.py invocations: baseline + postfix.
+        # Two dry-mode edit.py invocations: baseline + postfix.
         for label, cache_for_run in (
             ("baseline", te_path),
             ("postfix", spliced_te),
@@ -687,7 +658,6 @@ def cmd_invert_directedit(extra):
             ]
             run(edit_cmd)
 
-            # Paste the source for side-by-side eyeballing.
             pngs = sorted(
                 (p for p in save_dir.glob("*.png") if not p.name.endswith("_src.png")),
                 key=lambda p: p.stat().st_mtime,

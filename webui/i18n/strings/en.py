@@ -141,6 +141,20 @@ STRINGS: dict[str, str] = {
     "preprocess_status_no_resized": "No resized images yet.",
     "preprocess_open_dataset_dir": "Open cache folder",
     "preprocess_open_dataset_dir_tooltip": "Open the post_image_dataset/ folder (resized images + caches) in your file manager.",
+    "preprocess_clear_scope_cache": "Delete current-scope cache",
+    "preprocess_clear_scope_cache_tooltip": "Delete resized images and LoRA cache folders for the current path_scope.",
+    "preprocess_clear_scope_cache_all_scope": "no scope / all",
+    "preprocess_clear_scope_cache_empty": "No resized image or LoRA cache files to delete.",
+    "preprocess_clear_scope_cache_outside_root": "The GUI will not delete paths outside the project folder:\n{path}",
+    "preprocess_clear_scope_cache_confirm": (
+        "Delete preprocess files for the current scope?\n\n"
+        "scope: {scope}\n"
+        "resize: {resized}\n  {resized_count} files\n"
+        "lora: {lora}\n  {lora_count} files\n\n"
+        "Run preprocessing again afterward to regenerate them."
+    ),
+    "preprocess_clear_scope_cache_done": "Deleted {count} preprocess files.",
+    "preprocess_invalid_path_scope": "Invalid path_scope value: {value}",
     "preprocess_log_placeholder": "Preprocessing output will appear here...",
     "preprocess_save_settings": "Save",
     "preprocess_save_settings_tip": "Persist these settings to the selected GUI method profile. Mask runs receive the current profile's mask settings with the job.",
@@ -364,14 +378,74 @@ STRINGS: dict[str, str] = {
     "dataset_search_placeholder": "Search filename…",
     "dataset_sort_asc_tooltip": "Sort A→Z (click to reverse)",
     "dataset_sort_desc_tooltip": "Sort Z→A (click to reverse)",
+    "dataset_group_first_tooltip": "Group-first ordering: float every group to the top, flattened across folders (ungrouped images follow below in the folder tree).",
+    "dataset_view_group": "Groups",
+    "dataset_view_tree": "Tree",
     "dataset_mask_overlay": "Show mask overlay",
-    "dataset_view_list_tooltip": "Flat list view (click to switch to tree view)",
-    "dataset_view_tree_tooltip": "Folder tree view (click to switch to list view)",
+    "dataset_preprocess_use_short": "Use (A)",
+    "dataset_preprocess_use_tooltip": "Mark the current image as included for preprocessing. Source files are not modified.",
+    "dataset_preprocess_skip_short": "Skip (S)",
+    "dataset_preprocess_skip_tooltip": "Mark the current image to be skipped by preprocess resize. Source files are not modified.",
+    "dataset_preprocess_clear_short": "Clear (F)",
+    "dataset_preprocess_clear_tooltip": "Clear the current image's use/skip/move mark. Use the right-side menu to clear all marks.",
+    "dataset_preprocess_clear_all": "Clear all marks",
+    "dataset_preprocess_save": "Save preprocess decisions",
+    "dataset_preprocess_save_tooltip": "Save per-image use/skip/move/crop decisions as JSON for preprocessing. Move marks are excluded from preprocessing even before files are moved.",
+    "dataset_preprocess_saved": "Preprocess decisions saved:\n{path}",
+    "dataset_preprocess_decision_none": "No preprocess decision",
+    "dataset_preprocess_decision_use": "Preprocess decision: use",
+    "dataset_preprocess_decision_skip": "Preprocess decision: skip",
+    "dataset_preprocess_decision_crop": "Preprocess decision: apply crop",
+    "dataset_preprocess_decision_use_crop": "Preprocess decision: use + apply crop",
+    "dataset_preprocess_decision_skip_crop": "Preprocess decision: skip (crop is saved, but skip wins)",
+    "dataset_preprocess_decision_move": "Current state: marked to move",
+    "dataset_preprocess_decision_move_crop": "Current state: marked to move (crop bounds also saved)",
+    "dataset_crop_preview": "Show crop",
+    "dataset_crop_preview_tooltip": "Preview the crop bounds that preprocess resize will apply. Source files are not modified.",
+    "dataset_crop_margin": "Margin:",
+    "dataset_crop_margin_left": "L",
+    "dataset_crop_margin_top": "T",
+    "dataset_crop_margin_right": "R",
+    "dataset_crop_margin_bottom": "B",
+    "dataset_crop_margin_tooltip": "Percentage trimmed from each side of the source image.",
+    "dataset_crop_margin_apply": "Set bounds",
+    "dataset_crop_margin_apply_tooltip": "Save preprocess crop bounds from the current margin percentages.",
+    "dataset_crop_margin_apply_visible": "Apply to current list",
+    "dataset_crop_margin_apply_all": "Apply to all images",
+    "dataset_crop_clear": "Clear crop",
+    "dataset_crop_clear_tooltip": "Remove the current image's preprocess crop decision.",
+    "dataset_crop_rect": "bounds {bx},{by} {bw}x{bh} · final {x},{y} {w}x{h}",
+    "dataset_image_meta_empty": "No image",
+    "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_delete": "Move (D)",
+    "dataset_delete_tooltip": "Move the images marked with the Delete or D key to post_image_dataset/moved/, along with sidecars.",
+    "dataset_delete_confirm_title": "Move images",
+    "dataset_delete_confirm_body": "Move {n} image(s) and sidecars to post_image_dataset/moved/?",
+    "dataset_delete_failed": "Some images could not be moved:\n{err}",
+    "dataset_group_label": "Group {n} — {size} imgs",
+    "dataset_group_rebuild": "Group",
+    "dataset_group_rebuild_tooltip": "Group images by PE-Spatial visual similarity (per-artist). Runs in the job queue.",
+    "dataset_group_queued": "Grouping queued (job {job_id}). Reload this directory when it finishes to see the groups.",
     "n_images_filtered": "{shown} / {total} images",
     "caption": "Caption:",
     "no_caption": "(no caption)",
     "caption_save": "Save",
     "caption_revert": "Revert",
+    "caption_autotag": "Autotag",
+    "caption_autotag_tooltip": (
+        "Run the Anima Tagger on this image and append its predicted tags to "
+        "the caption. The model is downloaded automatically on first use; "
+        "review the result, then Save to write the .txt."
+    ),
+    "caption_autotag_running": "Autotagging…",
+    "caption_autotag_loading": "Loading tagger…",
+    "caption_autotag_ready": "Tagger loaded · ready",
+    "caption_autotag_busy": (
+        "The GPU is busy with another job (training / preprocessing / "
+        "grouping). Try autotagging again once it finishes."
+    ),
+    "caption_autotag_error": "Autotag failed: {err}",
+    "caption_autotag_empty": "The tagger returned no tags for this image.",
     "caption_versions": "Versions…",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -401,8 +475,27 @@ STRINGS: dict[str, str] = {
     "language": "Language:",
     # Settings dialog
     "settings_btn": "⚙ Settings",
-    "settings_btn_tooltip": "Application settings — language, MCP server registration",
+    "settings_btn_tooltip": "Application settings — language, preferences, MCP server registration",
     "settings_title": "Settings",
+    "settings_prefs_header": "Preferences",
+    "settings_autotag_confidence": "Autotag confidence:",
+    "settings_autotag_confidence_tooltip": (
+        "Extra probability floor (0–1) applied on top of the tagger's per-tag "
+        "thresholds. Higher = fewer, more confident tags. Default 0.50."
+    ),
+    "settings_theme": "Theme:",
+    "settings_theme_tooltip": (
+        "Overall color theme for the interface. Applies immediately; the window "
+        "rebuilds when you close Settings to fully repaint."
+    ),
+    "settings_theme_dark": "Dark",
+    "settings_theme_light": "Light",
+    "settings_theme_sepia": "Sepia",
+    "settings_font_size": "Font size:",
+    "settings_font_size_tooltip": (
+        "Point size of the interface font. Applies immediately; the window "
+        "rebuilds when you close Settings so every panel relayouts. Default 10."
+    ),
     "settings_mcp_header": "MCP server (agent access)",
     "settings_mcp_desc": "Expose the local training daemon to MCP clients (Claude Code, "
     "Claude Desktop, …). Run this in a terminal to register it with Claude Code:",
@@ -436,6 +529,8 @@ STRINGS: dict[str, str] = {
     "update_btn_available_tooltip": "New release {v} available — click to view release notes",
     "report_issue": "Report Issue",
     "report_issue_tooltip": "Open the GitHub issue tracker in your browser",
+    "visit_github": "Visit GitHub page",
+    "open_in_system_viewer": "Open in system viewer",
     # Models dialog
     "models_title": "Download Models",
     "models_intro": "Pick a model group below or use 'Download all' for the standard set "

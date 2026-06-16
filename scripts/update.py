@@ -43,10 +43,8 @@ import urllib.request
 from pathlib import Path
 from typing import Iterable
 
-# Korean / non-UTF-8 Windows code pages (cp949, cp1252, …) can't encode the
-# em-dash, arrow, and ellipsis characters used below. Force UTF-8 on stdout
-# and stderr so this script works the same way under the GUI subprocess as
-# it does in a UTF-8 terminal.
+# Non-UTF-8 Windows code pages (cp949, cp1252, …) can't encode the em-dash /
+# arrow / ellipsis below — force UTF-8 so the GUI subprocess matches a terminal.
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:
@@ -59,9 +57,9 @@ REPO = "LingyeSoul/MonadForge"
 MANIFEST_FILE = ROOT / ".anima_release.json"
 BACKUP_ROOT = ROOT / ".anima-update-backups"
 
-# Directories never touched by update — user data, caches, env, downloads.
-# Match is by leading path segments (so "archive/graft/runtime" matches
-# anything under that prefix while leaving the rest of archive/ updatable).
+# Directories never touched by update (user data, caches, env, downloads).
+# Matched by leading path segments, so "archive/graft/runtime" matches that
+# prefix while leaving the rest of archive/ updatable.
 PRESERVE_DIRS: tuple[str, ...] = (
     "image_dataset",
     "post_image_dataset",
@@ -91,12 +89,10 @@ PRESERVE_FILES: tuple[str, ...] = (
     ".anima_release.json",
 )
 
-# Files that prompt on conflict instead of silent overwrite. Globs match
-# the path relative to ROOT with forward slashes.
-# NB: configs/base.toml is intentionally NOT here. It's shared infrastructure
-# (model paths, the dataset blueprint, compile/cache contract) — new keys added
-# upstream must always be delivered, so it rides the code-file path (always
-# overwrite, backing up a user-modified copy) rather than honoring --keep-conflicts.
+# Files that prompt on conflict instead of silent overwrite (globs relative to
+# ROOT). NB: configs/base.toml is intentionally NOT here — it's shared infra,
+# so new upstream keys must always be delivered; it rides the code-file path
+# (always overwrite, backing up a user copy) and ignores --keep-conflicts.
 CONFLICT_GLOBS: tuple[str, ...] = (
     "configs/methods/*.toml",
     "configs/gui-methods/*.toml",
@@ -104,9 +100,8 @@ CONFLICT_GLOBS: tuple[str, ...] = (
     "configs/presets.toml",
     "configs/sam_mask.yaml",
     "configs/datasets/*",
-    # Self-contained per-method dirs (configs/<method>/<method>.toml) — the
-    # EasyControl pilot. Shipped method config, same prompt-on-conflict policy
-    # as configs/methods/*.toml.
+    # Self-contained per-method dirs (EasyControl pilot) — same policy as
+    # configs/methods/*.toml.
     "configs/easycontrol/*.toml",
 )
 
@@ -261,9 +256,8 @@ def _print_diff(user: Path, new: Path, rel: str) -> None:
 
 def _prompt_conflict(rel: str, user_path: Path, new_path: Path) -> str:
     """Return action: 'keep' | 'overwrite' | 'backup'."""
-    # When launched without a real TTY (e.g. from the GUI's QProcess), input()
-    # would block forever waiting on stdin that nobody can write to. Bail
-    # immediately with an actionable message instead.
+    # Without a real TTY (e.g. the GUI's QProcess), input() would block forever
+    # on stdin nobody can write to — bail with an actionable message instead.
     if not sys.stdin.isatty():
         sys.exit(
             f"\nconflict: {rel} (you modified it AND upstream changed it)\n"
@@ -340,9 +334,8 @@ def update(
         print(f"already on {tag}; nothing to do")
         return 0
 
-    # Show the release notes so the user knows what they're pulling. Skip
-    # for branch tarballs (no body) and for the GUI path (--yes), which has
-    # already shown the notes in the update dialog.
+    # Show release notes. Skip for branch tarballs (no body) and the GUI path
+    # (--yes already showed them in the update dialog).
     if version != "main" and not assume_yes:
         _print_release_notes(tag, body)
 
@@ -546,9 +539,8 @@ def _apply(
             print(f"  uv sync failed (exit {e.returncode}); rerun manually")
             return e.returncode
 
-    # Code on disk changed → the running daemon supervisor is now stale. Only
-    # bother if something was actually written (a pure no-op update leaves the
-    # daemon correct as-is).
+    # Code on disk changed → the running daemon supervisor is now stale (skip
+    # if nothing was written — a no-op update leaves the daemon correct).
     changed = (
         summary["wrote_new"]
         + summary["overwrote_unchanged"]

@@ -32,11 +32,13 @@ class _StubDataset:
 
     _repa_pe_sidecar_candidates = BaseDataset._repa_pe_sidecar_candidates
     _try_load_repa_pe = BaseDataset._try_load_repa_pe
+    count_repa_pe_sidecars = BaseDataset.count_repa_pe_sidecars
 
     def __init__(self, image_to_subset):
         self.load_repa_pe = True
         self.repa_pe_encoder = ENCODER
         self.image_to_subset = image_to_subset
+        self.image_data = {}
 
 
 def _write_sidecar(directory: Path, stem: str, value: float) -> None:
@@ -139,3 +141,52 @@ def test_no_subset_entry_still_resolves_te_and_image_dirs(tmp_path):
     _write_sidecar(image_dir, "img1", 7.0)
     feats = _load(ds, info)
     assert feats is not None and feats[0, 0].item() == 7.0
+
+
+# ---------------------------------------------------------------------------
+# count_repa_pe_sidecars — the coverage probe train.py uses to fail fast on a
+# fully-absent PE cache (use_repa would otherwise be a silent no-op).
+# ---------------------------------------------------------------------------
+
+
+def _layout_multi(tmp_path: Path, stems: list[str]):
+    image_dir = tmp_path / "images"
+    cache_dir = tmp_path / "cache"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    subset = SimpleNamespace(cache_dir=str(cache_dir), image_dir=str(image_dir))
+    ds = _StubDataset({})
+    for stem in stems:
+        ds.image_to_subset[stem] = subset
+        ds.image_data[stem] = SimpleNamespace(
+            image_key=stem,
+            absolute_path=str(image_dir / f"{stem}.png"),
+            text_encoder_outputs_npz=str(cache_dir / f"{stem}_anima_te.safetensors"),
+        )
+    return ds, cache_dir
+
+
+def test_count_all_present(tmp_path):
+    ds, cache_dir = _layout_multi(tmp_path, ["a", "b", "c"])
+    for stem in ("a", "b", "c"):
+        _write_sidecar(cache_dir, stem, 1.0)
+    assert ds.count_repa_pe_sidecars() == (3, 3)
+
+
+def test_count_partial(tmp_path):
+    ds, cache_dir = _layout_multi(tmp_path, ["a", "b", "c"])
+    _write_sidecar(cache_dir, "a", 1.0)
+    assert ds.count_repa_pe_sidecars() == (1, 3)
+
+
+def test_count_none_present(tmp_path):
+    # The reported bug: PE preprocess never ran, so use_repa is a silent no-op.
+    ds, _ = _layout_multi(tmp_path, ["a", "b"])
+    assert ds.count_repa_pe_sidecars() == (0, 2)
+
+
+def test_count_off_when_loading_disabled(tmp_path):
+    ds, cache_dir = _layout_multi(tmp_path, ["a"])
+    _write_sidecar(cache_dir, "a", 1.0)
+    ds.load_repa_pe = False
+    assert ds.count_repa_pe_sidecars() == (0, 0)

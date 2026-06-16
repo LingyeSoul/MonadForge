@@ -6,8 +6,9 @@ within-batch T is constant per side and the :class:`AnimaTaggerHead` pools
 run inside the model forward. Each side's pool layout is selected
 independently: ``--pool_kind`` (PE-Core) and ``--pool_kind_aux``
 (PE-Spatial), each ``map`` (full token sequence ``[T, d_enc]`` under
-``out_dir/.cache/tokens-<encoder>/``) or ``mean`` (pre-pooled ``[d_enc]``
-under ``out_dir/.cache/pooled-<encoder>/``).
+``<feature_root>/tokens-<encoder>/``) or ``mean`` (pre-pooled ``[d_enc]``
+under ``<feature_root>/pooled-<encoder>/``) — see
+:func:`scripts.anima_tagger.caches.feature_cache_root`.
 
 Caches build via ``--mode build_features`` (which builds both the main and
 aux caches based on the same per-side pool kinds).
@@ -24,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 
 import torch
 
-from .caches import cache_dir_for
+from .caches import cache_dir_for, feature_cache_root
 from .train_common import (
     GroupRouter,
     build_warmup_cosine_scheduler,
@@ -120,6 +121,7 @@ def _save_cfg_dict(args, cfg, d_in, best_f1):
         "batch_size": args.batch_size,
         "lr": args.lr,
         "weight_decay": args.weight_decay,
+        "label_smooth": args.label_smooth,
         "lambda_rating": args.lambda_rating,
         "lambda_people": args.lambda_people,
         "seed": args.seed,
@@ -130,9 +132,6 @@ def _save_cfg_dict(args, cfg, d_in, best_f1):
     }
 
 
-# ── dual-encoder bucket-grouped DataLoader path ──────────────────────────
-
-
 def _drop_packed_sidecars(datasets, logger) -> None:
     """Delete the per-stem token sidecars now that the mmap shards hold the
     same data. Verifies every live shard exists + is non-empty FIRST, so a
@@ -140,7 +139,7 @@ def _drop_packed_sidecars(datasets, logger) -> None:
     redundant sidecars than lose both copies). DESTRUCTIVE — repacking a
     different split later needs `--mode build_features` to re-encode.
     """
-    # Guard: all shards referenced by either split must be present.
+    # Guard: every live shard must exist + be non-empty before any unlink.
     for ds in datasets:
         for side, dirpath in ds._pack_dirs.items():
             row_map = ds._pack_main if side == "main" else ds._pack_aux
@@ -151,8 +150,7 @@ def _drop_packed_sidecars(datasets, logger) -> None:
                         "skipping sidecar drop — shard missing/empty: %s", shard
                     )
                     return
-    # Sidecar Paths live on the dataset (self.paths / self.paths_aux). Both
-    # splits share the same cache dirs, so union + dedup before unlinking.
+    # Both splits share cache dirs, so union + dedup before unlinking.
     sidecars = set()
     for ds in datasets:
         sidecars.update(Path(p) for p in ds.paths)
@@ -319,7 +317,8 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
             "dual-encoder training requires --aux_encoder (e.g. "
             "--aux_encoder pe_spatial). The single-encoder path was removed."
         )
-    cache_dir = cache_dir_for(out_dir, args.pool_kind, args.encoder)
+    feature_root = feature_cache_root(args)
+    cache_dir = cache_dir_for(feature_root, args.pool_kind, args.encoder)
     if not manifest_path.exists():
         raise SystemExit(f"missing {manifest_path} — run --mode build_vocab first.")
     if not vocab_path.exists():
@@ -334,14 +333,13 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
         vocab_dict = json.load(f)
     spec = get_encoder_info(args.encoder).bucket_spec
 
-    # Per-side pool layout. Aux cache_dir is keyed on its own pool_kind so
-    # mixed configs (mean main + map aux) read from .cache/tokens-pe_spatial/
-    # while the main side reads from .cache/pooled-pe/ or .cache/tokens-pe/.
+    # Aux cache_dir is keyed on its own pool_kind so mixed configs read from
+    # tokens-pe_spatial/ while the main side reads pooled-pe/ or tokens-pe/.
     pool_kind_aux = args.pool_kind_aux
     spec_aux = (
         get_encoder_info(aux_encoder).bucket_spec if pool_kind_aux == "map" else None
     )
-    cache_dir_aux = cache_dir_for(out_dir, pool_kind_aux, aux_encoder)
+    cache_dir_aux = cache_dir_for(feature_root, pool_kind_aux, aux_encoder)
     if not cache_dir_aux.exists():
         raise SystemExit(
             f"missing aux cache {cache_dir_aux} — run "
@@ -349,11 +347,11 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
             f"--encoder {args.encoder} --aux_encoder {aux_encoder} "
             f"--pool_kind_aux {pool_kind_aux}` first."
         )
-    # Consolidate the per-stem sidecars into per-bucket mmap shards so the
-    # loader stops opening ~30k tiny files per epoch (see CachedDualDataset
-    # docstring). Built once under out_dir/.cache/packed; reused across runs
-    # while the split is unchanged.
-    pack_root = out_dir / ".cache" / "packed"
+    # Consolidate per-stem sidecars into per-bucket mmap shards so the loader
+    # stops opening ~30k tiny files per epoch. Built once under
+    # <feature_root>/packed; reused across runs while the split is unchanged.
+    pack_root = feature_root / "packed"
+    ram_resident = bool(getattr(args, "ram_resident", True))
     train_ds = CachedDualDataset(
         manifest,
         cache_dir,
@@ -364,6 +362,7 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
         spec_aux,
         stems_subset=manifest.train_stems,
         pack_root=pack_root,
+        ram_resident=ram_resident,
     )
     val_ds = CachedDualDataset(
         manifest,
@@ -375,12 +374,11 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
         spec_aux,
         stems_subset=manifest.val_stems,
         pack_root=pack_root,
+        ram_resident=ram_resident,
     )
-    # Shard dirs are keyed by a hash of their stem list, so a changed split
-    # (new images / different val_frac / seed) builds fresh dirs and orphans
-    # the old ~40 GB. train+val are the only live splits this run, so prune any
-    # other packed-shard dir to keep disk bounded to one split's worth. Only
-    # touches out_dir/.cache/packed/ — never the per-stem sidecars.
+    # Shard dirs are hash-keyed on the stem list, so a changed split orphans the
+    # old ~40 GB; prune any non-live packed-shard dir to bound disk to one
+    # split. Only touches <feature_root>/packed/ — never the per-stem sidecars.
     live_dirs = {d for ds in (train_ds, val_ds) for d in ds._pack_dirs.values()}
     if pack_root.exists():
         for child in pack_root.iterdir():
@@ -482,24 +480,33 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
     else:
         logger.info("no typed groups — pure BCE on every tag")
 
+    # RAM-resident reads hit no disk → full global shuffle is free (chunk_size=0);
+    # the on-disk mmap path wants chunked locality instead.
+    chunk_size = 0 if ram_resident else int(getattr(args, "shuffle_chunk_size", 2048))
     train_sampler = BucketBatchSampler(
-        train_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=True
+        train_ds.buckets,
+        batch_size=args.batch_size,
+        seed=args.seed,
+        shuffle=True,
+        chunk_size=chunk_size,
     )
+    # Val isn't shuffled, so chunking is moot — leave it at the default.
     val_sampler = BucketBatchSampler(
         val_ds.buckets, batch_size=args.batch_size, seed=args.seed, shuffle=False
     )
     collate_fn = collate_dual_token_batch
-    # Feature reads are now zero-copy row slices off per-bucket mmap shards, so
-    # a handful of workers saturate the tiny MAP head — no need to brute-force
-    # with one-per-core. Keep them alive across epochs (avoids respawn) and
-    # prefetch a couple batches ahead. num_workers=0 stays inline.
-    n_train_workers = min(args.feature_cache_workers, 3)
+    # RAM-resident serving has no disk IO to hide, so run inline (num_workers=0)
+    # to avoid forking the ~40 GB resident set; the mmap path keeps prefetch workers.
+    if ram_resident:
+        n_train_workers = 0
+    else:
+        n_train_workers = min(args.feature_cache_workers, 6)
     loader_kwargs = dict(collate_fn=collate_fn, pin_memory=True)
     if n_train_workers > 0:
         loader_kwargs.update(
             num_workers=n_train_workers,
             persistent_workers=True,
-            prefetch_factor=4,
+            prefetch_factor=12,
         )
     else:
         loader_kwargs["num_workers"] = 0
@@ -550,7 +557,9 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
             people = people_cpu.to(device, non_blocking=True)
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 tag_logits, rating_logits, people_logits = model(tokens, tokens_aux)
-                l_tag, _per_group = compute_grouped_loss(tag_logits, mh, router)
+                l_tag, _per_group = compute_grouped_loss(
+                    tag_logits, mh, router, label_smooth=args.label_smooth
+                )
                 l_rate = ce(rating_logits, rate)
                 loss = l_tag + args.lambda_rating * l_rate
                 if ce_people is not None and people_logits is not None:

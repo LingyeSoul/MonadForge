@@ -106,6 +106,7 @@ from library.config.cli_args import (
     verify_training_args,
 )
 from library.training.loop import build_loop_state, run_training_loop
+from library.training.sampling_config import normalize_sample_args
 from library.training.log_dispatch import (
     dispatch_logs,
     generate_step_logs as _generate_step_logs,
@@ -125,59 +126,6 @@ setup_logging()
 import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
-
-
-def _normalize_sample_args(args):
-    """Normalize the sample-image knobs so the GUI can drive them naturally.
-
-    Two concerns:
-
-    1. ``sample_prompts`` may be given inline (a TOML list / multi-line string)
-       instead of a file path — the GUI writes the user's prompts straight into
-       the config rather than asking them to manage a separate file. The rest of
-       the sampling path (``train_util.load_prompts`` etc.) expects a ``.txt``
-       path, so a list/multi-line value is written to
-       ``output_dir/sample_prompts.txt`` (one prompt per line) and
-       ``args.sample_prompts`` is repointed at it. A plain existing-file path
-       (the CLI case) is left untouched.
-
-    2. Cadence knobs use ``0`` as the GUI's "disabled" sentinel. ``sample_images``
-       does ``epoch % args.sample_every_n_epochs`` once the value ``is not None``,
-       so a literal ``0`` would raise ``ZeroDivisionError``. Coerce any
-       non-positive cadence to ``None`` (= disabled).
-    """
-    for knob in ("sample_every_n_epochs", "sample_every_n_steps"):
-        v = getattr(args, knob, None)
-        if v is not None and v <= 0:
-            setattr(args, knob, None)
-
-    val = getattr(args, "sample_prompts", None)
-    if val is None:
-        return
-
-    if isinstance(val, (list, tuple)):
-        lines = [str(p).strip() for p in val]
-    elif isinstance(val, str):
-        # A real file path stays as-is; only treat it as inline text when it's
-        # not an existing file and actually contains prompt content.
-        if os.path.isfile(val):
-            return
-        lines = [ln.strip() for ln in val.splitlines()]
-    else:
-        return
-
-    lines = [ln for ln in lines if ln and not ln.startswith("#")]
-    if not lines:
-        # Nothing usable — disable sampling rather than point at a phantom file.
-        args.sample_prompts = None
-        return
-
-    os.makedirs(args.output_dir, exist_ok=True)
-    prompt_path = os.path.join(args.output_dir, "sample_prompts.txt")
-    with open(prompt_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    logger.info(f"Wrote {len(lines)} inline sample prompt(s) to {prompt_path}")
-    args.sample_prompts = prompt_path
 
 
 class AnimaTrainer:
@@ -378,10 +326,32 @@ class AnimaTrainer:
             for dataset in train_dataset_group.datasets:
                 dataset.load_repa_pe = True
                 dataset.repa_pe_encoder = repa_encoder
+            # Probe PE sidecar coverage now. A missing PE cache makes the REPA
+            # alignment term a silent no-op — the loss skips any batch without
+            # repa_pe_features (library/training/repa.py) — so a run with
+            # use_repa but no `make preprocess-pe` would train as if REPA were
+            # off, with no error. Fail fast on a fully-absent cache; warn on a
+            # partial one (the all-or-nothing collate tolerates per-batch gaps).
+            present, total = train_dataset_group.count_repa_pe_sidecars()
+            if total > 0 and present == 0:
+                raise RuntimeError(
+                    f"use_repa is enabled but none of the {total} training "
+                    f"images have a {repa_encoder} PE feature cache "
+                    f"(*_anima_{repa_encoder}.safetensors) — the REPA "
+                    f"alignment loss would be a silent no-op. Run "
+                    f"`make preprocess-pe ARGS='--encoder {repa_encoder}'` "
+                    f"first, or disable use_repa."
+                )
+            if present < total:
+                logger.warning(
+                    f"REPA: only {present}/{total} training images have a "
+                    f"{repa_encoder} PE sidecar; the alignment term is skipped "
+                    f"for batches missing one. Run `make preprocess-pe "
+                    f"ARGS='--encoder {repa_encoder}'` to cover the rest."
+                )
             logger.info(
                 f"REPA: PE feature loading enabled (encoder={repa_encoder}); "
-                f"batches carry repa_pe_features. Run "
-                f"`make preprocess-pe ARGS='--encoder {repa_encoder}'` if absent."
+                f"batches carry repa_pe_features ({present}/{total} cached)."
             )
 
         # Soft-tokens contrastive negatives. The objective's knobs live in
@@ -1981,7 +1951,7 @@ class AnimaTrainer:
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
-        _normalize_sample_args(args)
+        normalize_sample_args(args)
         verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
         setup_logging(args, reset=True)

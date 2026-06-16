@@ -10,6 +10,7 @@ tokenize→encode→(LLM-adapter)→save loop, and the pooled reduction live her
 from __future__ import annotations
 
 import logging
+import os
 import random
 from collections.abc import Callable, Collection
 from pathlib import Path
@@ -50,9 +51,8 @@ def generate_caption_variants(
     tags = [t.strip() for t in caption.split(",")]
     split_idx = anima_train_utils.find_anima_prefix_end(tags)
 
-    # v0 stays byte-identical to the source caption unless the sentinel is
-    # actually present — re-joining would normalize whitespace around commas
-    # for every existing dataset otherwise.
+    # v0 stays byte-identical to the source caption unless the sentinel is present
+    # — re-joining would otherwise normalize whitespace around commas.
     if sentinel in tags:
         variants = [", ".join(anima_train_utils.strip_no_artist_sentinel(tags))]
     else:
@@ -125,6 +125,109 @@ def _te_cache_path(image_path: Path, cache_dir: Path | None, image_dir: Path) ->
     )
 
 
+def _walk_te_candidates(
+    data_dir: Path,
+    *,
+    recursive: bool,
+    path_pattern: str | None,
+    keep_stems: Collection[str] | None,
+    keep_rel_stems: Collection[str] | None,
+    min_pixels: int,
+    verbose: bool,
+) -> list[Path]:
+    """Enumerate the images a TE cache pass would encode (caption-agnostic).
+
+    Applies the same ``keep_stems`` + ``min_pixels`` filters as
+    :func:`cache_text_embeddings`; an absent or empty ``.txt`` is *not* a
+    filter (uncaptioned images are encoded with an empty caption). Shared by
+    the encode loop and :func:`count_pending_text` so they agree on the set.
+    """
+    candidates = walk_images(data_dir, recursive=recursive, pattern=path_pattern)
+    if keep_stems is not None:
+        keep = frozenset(keep_stems)
+        pre = len(candidates)
+        candidates = [p for p in candidates if p.stem in keep]
+        if verbose and len(candidates) != pre:
+            print(
+                f"Stem filter: keeping {len(candidates)}/{pre} captions "
+                "(matched-subset only)."
+            )
+
+    if keep_rel_stems is not None:
+        keep = frozenset(keep_rel_stems)
+        pre = len(candidates)
+        filtered: list[Path] = []
+        for p in candidates:
+            try:
+                key = p.relative_to(data_dir).with_suffix("").as_posix()
+            except ValueError:
+                rel_dir = os.path.relpath(p.parent, data_dir)
+                rel_dir = "" if rel_dir == "." else rel_dir
+                key = (Path(rel_dir) / p.stem).as_posix() if rel_dir else p.stem
+            if key in keep:
+                filtered.append(p)
+        candidates = filtered
+        if verbose and len(candidates) != pre:
+            print(
+                f"Matched-image filter: keeping {len(candidates)}/{pre} captions "
+                "(resized outputs only)."
+            )
+
+    kept: list[Path] = []
+    skipped_small = 0
+    for p in candidates:
+        if min_pixels > 0:
+            try:
+                with Image.open(p) as im:
+                    w, h = im.size
+            except Exception as e:
+                logger.warning("could not read %s: %s", p.name, e)
+                continue
+            if w * h < min_pixels:
+                skipped_small += 1
+                continue
+        kept.append(p)
+
+    if skipped_small and verbose:
+        print(
+            f"Skipping {skipped_small} images below {min_pixels:,} pixels "
+            f"({min_pixels / 1e6:.2f}MP) -- same filter as resize_images.py."
+        )
+    return kept
+
+
+def count_pending_text(
+    data_dir: Path,
+    *,
+    cache_dir: Path | None = None,
+    recursive: bool = False,
+    path_pattern: str | None = None,
+    keep_stems: Collection[str] | None = None,
+    keep_rel_stems: Collection[str] | None = None,
+    min_pixels: int = 500_000,
+) -> tuple[int, int]:
+    """Return ``(pending, total)`` TE caches **without loading the encoder**.
+
+    ``pending`` is the number of candidate images whose
+    ``{stem}_anima_te.safetensors`` isn't on disk; ``total`` is every candidate
+    (post ``keep_stems`` / ``min_pixels`` filtering). Mirrors the per-batch skip
+    in :func:`cache_text_embeddings`, so the entry point can skip the (slow)
+    Qwen3 + LLM-adapter load when ``pending == 0``."""
+    candidates = _walk_te_candidates(
+        data_dir,
+        recursive=recursive,
+        path_pattern=path_pattern,
+        keep_stems=keep_stems,
+        keep_rel_stems=keep_rel_stems,
+        min_pixels=min_pixels,
+        verbose=False,
+    )
+    pending = sum(
+        1 for p in candidates if not _te_cache_path(p, cache_dir, data_dir).exists()
+    )
+    return pending, len(candidates)
+
+
 def cache_text_embeddings(
     data_dir: Path,
     tokenize_strategy,
@@ -137,6 +240,7 @@ def cache_text_embeddings(
     recursive: bool = False,
     path_pattern: str | None = None,
     keep_stems: Collection[str] | None = None,
+    keep_rel_stems: Collection[str] | None = None,
     batch_size: int = 16,
     caption_shuffle_variants: int = 0,
     caption_tag_dropout_rate: float = 0.0,
@@ -146,7 +250,12 @@ def cache_text_embeddings(
     verbose: bool = True,
     progress: ProgressFn | None = None,
 ) -> PreprocessStats:
-    """Encode ``.txt`` captions for every captioned image under ``data_dir``.
+    """Encode ``.txt`` captions for every image under ``data_dir``.
+
+    Images with no ``.txt`` sidecar (or an empty one) are encoded with an empty
+    caption ``""`` rather than dropped, so the cached TE set mirrors the
+    training dataset — dreambooth loads uncaptioned images with an empty caption
+    and the trainer's cache-completeness probe expects a TE cache for each.
 
     Strategies + encoder + (optional) ``llm_adapter`` are supplied loaded + on
     ``device``. Images below ``min_pixels`` are skipped (mirrors the resize
@@ -167,47 +276,33 @@ def cache_text_embeddings(
     is in the set — the matched subset the VAE/cond stage already materialized,
     so the TE cache mirrors that set rather than re-encoding the whole caption
     master.
+
+    ``keep_rel_stems`` is the path-safe variant for nested datasets. Each key is
+    the image path relative to ``data_dir`` without its extension.
     """
-    candidates = walk_images(data_dir, recursive=recursive, pattern=path_pattern)
-    if keep_stems is not None:
-        keep = frozenset(keep_stems)
-        pre = len(candidates)
-        candidates = [p for p in candidates if p.stem in keep]
-        if verbose and len(candidates) != pre:
-            print(
-                f"Stem filter: keeping {len(candidates)}/{pre} captions "
-                "(matched-subset only)."
-            )
+    candidates = _walk_te_candidates(
+        data_dir,
+        recursive=recursive,
+        path_pattern=path_pattern,
+        keep_stems=keep_stems,
+        keep_rel_stems=keep_rel_stems,
+        min_pixels=min_pixels,
+        verbose=verbose,
+    )
 
     entries: list[tuple[Path, str]] = []
-    skipped_small = 0
     for p in candidates:
         caption_path = p.with_suffix(".txt")
-        if not caption_path.exists():
-            continue
-        if min_pixels > 0:
-            try:
-                with Image.open(p) as im:
-                    w, h = im.size
-            except Exception as e:
-                logger.warning("could not read %s: %s", p.name, e)
-                continue
-            if w * h < min_pixels:
-                skipped_small += 1
-                continue
-        # An empty caption file is a valid explicit empty caption
-        # (unconditional / style-LoRA training) — encode "" rather than
-        # dropping the image, so the cached set matches the training dataset.
-        caption = caption_path.read_text(encoding="utf-8").strip().split("\n")[0]
+        # Missing/empty caption → encode "" (not drop): dreambooth loads uncaptioned
+        # images with an empty caption and the cache-completeness probe expects a TE
+        # cache for each, so dropping here would leave the cache incomplete.
+        if caption_path.exists():
+            caption = caption_path.read_text(encoding="utf-8").strip().split("\n")[0]
+        else:
+            caption = ""
         if caption_transform is not None:
             caption = caption_transform(caption)
         entries.append((p, caption))
-
-    if skipped_small and verbose:
-        print(
-            f"Skipping {skipped_small} images below {min_pixels:,} pixels "
-            f"({min_pixels / 1e6:.2f}MP) -- same filter as resize_images.py."
-        )
 
     stats = PreprocessStats(seen=len(entries))
     caption_dropout_rate = torch.tensor(0.0, dtype=torch.float32)
@@ -222,7 +317,6 @@ def cache_text_embeddings(
     for batch_start in range(0, len(entries), batch_size):
         batch = entries[batch_start : batch_start + batch_size]
 
-        # Skip already-cached entries.
         to_encode: list[tuple[Path, str, Path]] = []
         for img_path, caption in batch:
             cache_path = _te_cache_path(img_path, cache_dir, data_dir)
@@ -286,9 +380,8 @@ def cache_text_embeddings(
             for i, (img_path, _, cache_path) in enumerate(to_encode):
                 save_dict = {
                     "num_variants": torch.tensor(n_variants, dtype=torch.int64),
-                    # Marker: v0 is the pristine original caption (no shuffle,
-                    # no tag dropout). Loaders use this to switch on weighted
-                    # 20%/80% sampling between v0 and v1..v{N-1}.
+                    # Marker: v0 is pristine; loaders switch on weighted 20%/80%
+                    # sampling between v0 and v1..v{N-1}.
                     "v0_intact": torch.tensor(1, dtype=torch.int8),
                     "caption_dropout_rate": caption_dropout_rate,
                 }

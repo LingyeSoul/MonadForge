@@ -358,7 +358,6 @@ def load_dit_model(
     logger.info(f"Move model to device: {device}")
     model.to(device, target_dtype)
 
-    # model.to(device)
     model.to(device, dtype=torch.bfloat16)  # ensure model is in bfloat16 for inference
 
     model.eval().requires_grad_(False)
@@ -407,7 +406,11 @@ def load_text_encoder(
     in unrelated required flags (``--save_path``) and reads nothing else here.
     """
     # Explicit keyword wins; otherwise fall back to the namespace; otherwise default.
-    te_path = text_encoder if text_encoder is not None else getattr(args, "text_encoder", None)
+    te_path = (
+        text_encoder
+        if text_encoder is not None
+        else getattr(args, "text_encoder", None)
+    )
     if te_path is None:
         raise ValueError(
             "load_text_encoder needs a text_encoder path "

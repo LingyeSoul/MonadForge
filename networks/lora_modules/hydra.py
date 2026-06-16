@@ -101,7 +101,6 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
         # the concat gate isn't a single E-simplex). See ortho.py distill note.
         self._centered_gate = bool(centered_gate)
 
-        # Shared down projection.
         self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
         torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
 
@@ -425,12 +424,10 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
 
         return org_forwarded + (out * self.multiplier * scale).to(org_forwarded.dtype)
 
-    # ------------------------------------------------------------------
     # Save-pipeline hook. The training runtime keeps experts stacked under
     # ``.lora_up_weight (E, out, r)`` — ComfyUI's HydraLoRA custom node
     # expects per-expert ``.lora_ups.{i}.weight`` keys, so save expands
     # them here. Fused-qkv prefixes are split per-expert per-component.
-    # ------------------------------------------------------------------
 
     @staticmethod
     def build_moe_state_dict(

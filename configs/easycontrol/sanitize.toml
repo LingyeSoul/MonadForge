@@ -1,0 +1,153 @@
+# sanitize (text/bubble removal) descriptor — a near-twin tag-gap miner project.
+# Pasted from near_twins.toml: mines in-artist pairs that differ only by a
+# text/bubble tag, then trains EasyControl to remove the text (cond = the _tags
+# member, target = the clean _no_tags twin). Edit the [staging] table, then run
+# the two pipeline steps (knobs for each live in their own table here):
+#   make easycontrol-staging    EASYADAPTER=sanitize   # [staging] → mine pair tree
+#   make easycontrol-preprocess EASYADAPTER=sanitize   # [preprocess] → VAE/TE caches
+#   make easycontrol            EASYADAPTER=sanitize   # train (folds [training] in)
+# CLI flags override these. Paths support {CAPTION_CORPUS_DIR}/$VARS/~ expansion
+# ({CAPTION_CORPUS_DIR} comes from anima_lora/.env).
+
+# Output slug — the single source of truth for every derived path. The whole
+# pipeline lives under post_image_dataset/easycontrol/<name>/{staging,resized,
+# cache,cond} and checkpoints save as anima_easycontrol_<name>. The blueprint
+# paths below reference {name} and are interpolated at train time, so changing
+# this (+ re-running preprocess → train) reroutes everything with no path edit.
+# Defaults to the file stem ("sanitize") if omitted.
+name = "sanitize"
+
+# Mining run knobs (read by `python -m easycontrol_adapters.tools.near_twins`;
+# legacy name [miner] still accepted). Any --flag dest works as a key here.
+[staging]
+# Discriminator — set exactly one of: tag_any / tag / region (bool) / signal.
+tag_any = ["speech bubble", "thought bubble", "blank speech bubble", "spoken text", "english text", "japanese text", "sound effects", "text focus"]
+
+# Source trees (<dir>/<artist>/<id>.<ext>).
+image_dirs = ["{CAPTION_CORPUS_DIR}/retrieved"]
+# Stage/threshold knobs (any --flag dest works here, e.g. grid, ratio, geom_check):
+sim_min = 0.85
+match_frac_min = 0.3
+cell_match_min = 0.9
+max_extra_diff = 25
+
+# Identity (cond==target) regularizer. Fills a fraction of the staged tree with
+# clean singles that carry NO tag_any tag, staged as cond==target so the adapter
+# learns the no-op — without it every training example is a change, so the model
+# acquires a standing bias to globally transform clean inputs (the desaturation /
+# wash-out failure mode). identity_saturation_min additionally biases those
+# singles vivid, injecting the saturated clean targets the mined twins under-
+# represent (94% are pale). Sized as a fraction of the FINAL tree. An A/B dial —
+# set add_identity_pairs = 0.0 to restore the pairs-only baseline.
+add_identity_pairs = 0.25
+identity_saturation_min = 0.4
+
+# Resize + VAE/TE caching pass over the mined pair tree (read by
+# `make easycontrol-preprocess EASYADAPTER=sanitize`). The native-res staging
+# tree is first resized into constant-token buckets under resized_dir (that
+# resized tree is the training image_dir below), then VAE/TE-encoded into
+# cache_dir. The tree is nested <artist>/<pair_id>_{tags,no_tags} so recursive =
+# true; caches mirror that <artist>/ nesting under cache_dir. The same pass then
+# pairs cond_dir: for each _no_tags target it symlinks the twin _tags latent in
+# under the _no_tags stem (the EasyControl condition; see the blueprint below).
+# image_dir/resized_dir/cache_dir/cond_dir default to easycontrol/<name>/{staging,
+# resized,cache,cond} (the `name` above) — only add a path key to point one
+# elsewhere.
+[preprocess]
+# Constant-token bucket tiers to resize into before VAE encoding (allowed edges:
+# 512 768 1024 1280 1536; see configs/base.toml target_res). Must match training.
+min_pixels = 0  # 0 = never drop a member (dropping one orphans its pair partner)
+recursive = true
+vae = 'models/vae/qwen_image_vae.safetensors'
+batch_size = 4
+chunk_size = 64
+qwen3 = 'models/text_encoders/qwen_3_06b_base.safetensors'
+dit = 'models/diffusion_models/anima-base-v1.0.safetensors'
+caption_shuffle_variants = 4
+caption_tag_dropout_rate = 0.1
+target_res = [896, 1024]
+# PE-Spatial sidecars for the REPA auxiliary loss (use_repa below). Re-run
+# `make easycontrol-preprocess EASYADAPTER=sanitize` after adding this —
+# idempotent, only encodes missing sidecars.
+pe_encoder = "pe_spatial"
+
+# Training overrides for `make easycontrol EASYADAPTER=sanitize` (optional).
+# Each key is folded in as a `--key value` CLI override on top of
+# configs/easycontrol/easycontrol.toml — CLI wins the merge chain, so anything here
+# beats the shipped method default; bools become bare flags, lists spread.
+# `--dataset_config` is injected automatically (points at this file's blueprint).
+# output_name defaults to anima_easycontrol_<name>; omit the table entirely to
+# train with the plain easycontrol method defaults.
+[training]
+network_dim = 32
+network_alpha = 128
+masked_loss=false
+target_res = [896, 1024]
+
+network_args = [
+    "b_cond_init=-4.0",
+    "cond_scale=1.0",
+    "apply_ffn_lora=1",
+    "cond_res_scale=1.0",
+    # REPA relational (Gram) alignment of mid-block target hiddens to cached
+    # PE-Spatial patch tokens of the clean _no_tags target. With the DiT
+    # frozen, the gradient reaches the cond LoRA only through the extended
+    # attention — pressure to pull clean structure from the reference, i.e. a
+    # structural-consistency signal in the edit region on top of the per-pixel
+    # cond_diff_loss. Needs the pe_encoder sidecars from [preprocess]. For the
+    # baseline A/B arm: drop the use_repa line and restore the plain
+    # output_name below.
+    "use_repa=true",
+    "repa_weight=0.05",
+    "repa_layer=8",
+    "repa_target_dog=true",
+    # Timestep reweighting A/B (signed; 0/absent = uniform = current shipped arm).
+    # >0 tilts REPA toward HIGH noise, where (DiT frozen) the alignment target is
+    # only reachable through the clean cond → pure cond-utilization pressure. <0
+    # tilts toward LOW noise, where REPA otherwise decouples from the cond. Mean-1
+    # under uniform σ, so this is a shape-not-scale A/B. Uncomment to test.
+    "repa_timestep_weighting=1.0",
+]
+# Keep the REPA arm from clobbering the baseline checkpoint during the A/B.
+output_name = "anima_easycontrol_sanitize_repaMA3"
+
+learning_rate = 2e-5
+max_train_epochs = 12
+save_every_n_epochs = 12
+checkpointing_epochs = 12
+
+easycontrol_cond_noise_max = 0.0
+caption_dropout_rate = 1.0
+easycontrol_drop_p=0.0
+
+# Diff-weighted FM loss: the twins are near-identical outside the text/bubble
+# regions, so weight the per-pixel loss by ‖z_cond − z_target‖ (blurred, robust-
+# scaled, floor outside the edit region, per-image mean-normalized). Concentrates
+# gradient on the edit instead of the copy-through the extended attention gives
+# for free. Knobs: cond_diff_loss_floor=0.2 / _blur=1.5 / _quantile=0.9.
+cond_diff_loss = true
+
+[general]
+caption_extension = '.txt'
+
+[[datasets]]
+batch_size = 1
+
+  [[datasets.subsets]]
+  image_dir = 'post_image_dataset/easycontrol/{name}/resized'
+  cache_dir = 'post_image_dataset/easycontrol/{name}/cache'        # denoising target: the clean _no_tags members
+  cond_cache_dir = 'post_image_dataset/easycontrol/{name}/cond'    # condition: the paired _tags latent (keyed by the _no_tags stem)
+  path_pattern = '*_no_tags.*'     # targets = clean members only (the _tags twin rides in as the cond)
+  recursive = true                 # tree is nested <artist>/<pair_id>_{tags,no_tags}; caches mirror the nesting
+  flip_aug = false                 # latents can't be flipped post-hoc; the cond cache has no flipped variant
+  num_repeats = 1
+
+# GUI dropdown metadata (EasyControl tab). Presence of this block is what surfaces
+# the descriptor in the GUI variant list (near_twins ships none → stays CLI-only).
+# This is a file-edited launcher: the tab renders the knob tables as a form and the
+# Preprocess / Train buttons drive staging → preprocess → descriptor-folded train.
+[variant]
+family = "easycontrol"
+label = "Sanitize (remove text / bubbles)"
+description = "Remove on-page text, speech/thought bubbles and SFX. Mines in-artist near-twin pairs that differ only by a text tag; cond = the texted member, target = the clean twin. Configured in configs/easycontrol/sanitize.toml (edit the file directly)."
+order = 30

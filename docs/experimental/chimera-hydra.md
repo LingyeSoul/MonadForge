@@ -120,6 +120,15 @@ Cayley keeps `colspace(ΔW) ⊆ top-2r(W₀)` for the whole run — the "chimera
 
 `ΔW=0` at init is unaffected — it comes from the centered uniform gate (`π − 1/K`), not the basis, so `λ_init > 0` is fine. Save distills with `R = I` to the **identical** `*_chimera.safetensors` free-form layout (the save discriminator keys on `.Q_basis_c`, covering both parameterizations), so inference / loading / merge / ComfyUI need no OrthoInit awareness. Implemented as a flag-branch inside `ChimeraHydraLoRAModule` (forward, `__init__`, `distill_save_state_dict`); threaded `resolver → chimera_hydra spec → cfg.use_ortho_init → network.py`. Tests: `tests/test_lora_dtype_policy.py::test_chimera_ortho_init_*`.
 
+### Per-expert capability levers (frozen-Cayley path)
+
+OrthoInit fixes "feels weak" by freeing the bases — but free bases let experts **drift into the same subspace** under the shared denoise loss ("averaged network", observed collapsing ~4k steps). These two knobs deepen each expert *while keeping the frozen-disjoint cage*, so cross-expert orthogonality stays structurally invariant and experts cannot collapse together. Both require `use_ortho_init=false` and **distill into the standard `(K, out, r)` up-stack** — inference / on-disk layout unchanged.
+
+- **`chimera_expert_basis_mult` (m ≥ 1)** — each expert gets an over-complete `(out, m·r)` frozen pool carved from a **disjoint** U-slice plus an `m·r` Cayley rotation; the forward selects the first `r` columns of the rotated pool, a Stiefel(m·r, r) point. Unlike the canonical case (where the `r×r` rotation is a no-op on the span), the rotation now genuinely **moves the expert's r-dim colspace within its private m·r pool** — the subspace itself trains, but only inside the disjoint slice. Per-layer auto-downgrade to `M=r` when `(K_c+K_f)·m·r` overflows a Linear's width (logged). `m=1` reproduces the canonical r-slice bit-for-bit. The A's solve at size `r`, the B-pools at size `M`, in two batched Cayley calls (one when `M=r`).
+- **`chimera_expert_diag`** — a per-expert `(K, r)` trainable diagonal σ (init 1) folded into the up-projection: the **learnable singular spectrum** the orthogonal-only frozen path lacks (its intrinsic singular values are pinned to 1). `ΔW=0` at init still holds via the centered gate regardless of σ.
+
+`bench/chimera_expert_capacity/run_bench.py` fits an off-r-slice target: subspace freedom (`m=2`) is the dominant lever (~×700 reach vs the r-slice baseline), the diagonal a minor ~×1.15, with cross-expert column cosine ≈ 0 throughout (no collapse). Invariants: `tests/test_chimera_expert_capacity.py` (ΔW=0 at init, distill round-trip faithful, cross-expert orthogonality preserved, default path unchanged).
+
 ## T-LoRA per-half composition
 
 `use_timestep_mask = true` applies the rank mask `mask_t(σ)` to the **content half only**. The freq half keeps full rank at every t.

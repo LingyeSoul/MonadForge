@@ -40,7 +40,9 @@ class DiversityMetrics:
     ac_sim: float  # cross-seed cosine of the AC residual (block feats); LOWER = more diverse
     dc_sim: float  # cross-seed cosine of the DC (block feats); reference, ~conditioning lock
     gap: float  # dc_sim − ac_sim; the DAVE separation (high = AC carries the diversity)
-    xpred_ac_sim: float  # same decomposition on the final x_pred latent; LOWER = more diverse
+    xpred_ac_sim: (
+        float  # same decomposition on the final x_pred latent; LOWER = more diverse
+    )
     fm_mse: float  # flow-matching reconstruction MSE on the held-out sample; the
     # fidelity half of the fidelity↔diversity tradeoff view. CAVEAT: FM val loss
     # has NOT tracked sample quality on Anima (CMMD replaced it as the quality
@@ -66,10 +68,9 @@ def _dc_ac(h: torch.Tensor, ac_tokens: int) -> tuple[torch.Tensor, torch.Tensor]
     adaptive-avg-pooled to ``ac_tokens`` so seeds at any resolution compare.
     """
     B, D = h.shape[0], h.shape[-1]
-    tok = h.reshape(B, -1, D)  # (B, N_tok, D)
-    dc = tok.mean(dim=1)  # (B, D) — the DC component
-    ac = tok - dc.unsqueeze(1)  # (B, N_tok, D), DC removed
-    # pool the token axis to a fixed count (transpose so pool runs over tokens)
+    tok = h.reshape(B, -1, D)
+    dc = tok.mean(dim=1)
+    ac = tok - dc.unsqueeze(1)
     ac = F.adaptive_avg_pool1d(ac.transpose(1, 2), ac_tokens).transpose(1, 2)
     return dc, ac.reshape(B, -1)
 
@@ -180,7 +181,9 @@ def run_diversity_validation(
                 s_i, s_next = student_sigmas[i], student_sigmas[i + 1]
                 t_b = torch.full((latent_shape[0],), s_i, device=device, dtype=dtype)
                 set_student_step(i)
-                v = forward_fn("student", x, t_b, crossattn_emb, no_grad=True).squeeze(2)
+                v = forward_fn("student", x, t_b, crossattn_emb, no_grad=True).squeeze(
+                    2
+                )
                 x = x - (s_i - s_next) * v
             probe.stop()
             x_preds.append(x.detach())
@@ -195,12 +198,10 @@ def run_diversity_validation(
     X = torch.cat([_dc_ac(x.float(), ac_tokens)[1] for x in x_preds], 0)
     xpred_ac_sim = _mean_pairwise_cos(X)
 
-    # --- Flow-matching reconstruction MSE (the fidelity half) ---
-    # Hooks are removed by now, so these forwards aren't captured. Rectified
-    # flow's velocity target is constant along the straight path: v* = ε − x0,
-    # independent of σ. We evaluate the student at its OWN grid sigmas (the only
-    # σ it's trained to act on), each through its matching per-step head, and
-    # average. Fixed disjoint seed so the number is comparable across passes.
+    # Flow-matching reconstruction MSE (fidelity half). Rectified flow's velocity
+    # target is constant along the straight path (v* = ε − x0, σ-independent), so
+    # evaluate the student at its OWN grid sigmas through each matching per-step
+    # head. Fixed disjoint seed so the number is comparable across passes.
     fm_mse = float("nan")
     if clean_latent is not None:
         x0 = clean_latent.to(device, dtype=dtype)

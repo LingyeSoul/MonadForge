@@ -78,10 +78,8 @@ _EXTS = (
     "npz",
 )
 
-# Long-options belonging to external tools that legitimately appear in shell
-# snippets inside docs. Extend as needed — these are suppressed from the flag
-# WARN pass so `uv run --no-project`, `ruff … --fix`, `gh release … --clobber`
-# don't read as drift.
+# External-tool long-options that legitimately appear in doc shell snippets;
+# suppressed from the flag WARN pass so they don't read as drift. Extend as needed.
 FOREIGN_FLAGS = {
     "--no-project",
     "--fix",
@@ -92,28 +90,24 @@ FOREIGN_FLAGS = {
     "--name-only",
 }
 
-# Bare placeholders that appear in example payloads (JSON ``"extra"`` arrays,
-# schema snippets) and are never meant to resolve to a real flag.
+# Bare placeholders in example payloads, never meant to resolve to a real flag.
 PLACEHOLDER_FLAGS = {
     "--some_flag",
 }
 
-# A flag named on a line whose prose explicitly documents its *removal* is not
-# drift — the doc is correctly telling readers the flag is gone. Skip flag
-# WARNs on any line matching this.
+# A flag named on a line whose prose documents its *removal* isn't drift — skip
+# flag WARNs on any line matching this.
 _REMOVAL_RE = re.compile(
     r"\b(removed|retired|gone|deprecated|no longer)\b", re.IGNORECASE
 )
 
-# Docs that are historical records of archived/shelved work opt out of the flag
-# check by carrying this marker anywhere in the file — their commands reference
-# flags that only ever existed in now-removed / gitignored-archive code.
+# Historical-record docs opt out of the flag check via this marker — their
+# commands reference flags that only ever existed in now-removed/archived code.
 _IGNORE_FLAGS_MARKER = "check-docs: ignore-flags"
 
-# A path token: either multi-segment (has a slash) or a bare file with a known
-# extension. The char class deliberately excludes ':' '#' '(' ')' so line/symbol
-# anchors (`models.py:1435`, `weights.py::foo`) and trailing punctuation fall
-# off naturally.
+# A path token: multi-segment (has a slash) or a bare file with a known
+# extension. The char class excludes ':' '#' '(' ')' so line/symbol anchors
+# (`models.py:1435`, `weights.py::foo`) and trailing punctuation fall off.
 _MULTI_RE = re.compile(r"[\w.\-]+(?:/[\w.\-]+)+/?")
 _SINGLE_RE = re.compile(r"\b[\w-]+\.(?:%s)\b" % "|".join(_EXTS))
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
@@ -124,14 +118,9 @@ _MAKE_RE = re.compile(r"\b(?:make|tasks\.py)\s+([a-z][a-z0-9-]*)")
 Issue = namedtuple("Issue", "level path line kind token message")
 
 
-# --------------------------------------------------------------------------- #
-# git-derived sources of truth
-# --------------------------------------------------------------------------- #
 def _git(*args: str) -> str:
-    # ``core.quotepath=false`` keeps non-ASCII paths (e.g. the translated
-    # guidebooks ``가이드북.md`` / ``ガイドブック.md`` / ``指南书.md``) as raw
-    # UTF-8 instead of C-style ``\343\202…`` escapes — otherwise those files
-    # are unopenable here and silently skipped from the scan.
+    # ``core.quotepath=false`` keeps non-ASCII paths (translated guidebooks)
+    # as raw UTF-8, not C-style escapes — else they're unopenable + skipped.
     return subprocess.run(
         ["git", "-C", str(REPO_ROOT), "-c", "core.quotepath=false", *args],
         capture_output=True,
@@ -146,10 +135,8 @@ def _tracked(*pathspec: str) -> list[Path]:
 
 
 def doc_files(include_scratch: bool = False) -> list[Path]:
-    # _archive/ is retired material (always skipped). bench/ docs and
-    # docs/proposal/ are forward-looking scratchpads that intentionally
-    # reference never-merged / to-be-built paths — skipped by default, opt in
-    # with --include-scratch.
+    # _archive/ always skipped; bench/ + docs/proposal/ are forward-looking
+    # scratchpads (reference to-be-built paths) — opt in with --include-scratch.
     exclude = [":!:_archive/*"]
     if not include_scratch:
         exclude += [":!:bench/*", ":!:docs/proposal/*"]
@@ -175,7 +162,7 @@ def known_flags() -> set[str]:
 def known_make_targets() -> set[str]:
     targets: set[str] = set()
 
-    # tasks.py COMMANDS dict keys (the canonical target list).
+    # tasks.py COMMANDS dict keys — the canonical target list.
     tree = ast.parse((REPO_ROOT / "tasks.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
@@ -190,7 +177,7 @@ def known_make_targets() -> set[str]:
                     targets.add(key.value)
 
     # Makefile explicit targets + .PHONY names (e.g. `help`, which forwards to
-    # `tasks.py --help` and is not a COMMANDS key).
+    # `tasks.py --help` and isn't a COMMANDS key).
     for line in (REPO_ROOT / "Makefile").read_text(encoding="utf-8").splitlines():
         if line.startswith(".PHONY:"):
             targets.update(line.split(":", 1)[1].split())
@@ -201,9 +188,6 @@ def known_make_targets() -> set[str]:
     return targets
 
 
-# --------------------------------------------------------------------------- #
-# per-reference checks
-# --------------------------------------------------------------------------- #
 def _check_path(tok: str, top: set[str]) -> str | None:
     """Return the token if it's a broken repo-rooted path, else None."""
     tok = tok.strip().rstrip(".")
@@ -216,8 +200,7 @@ def _check_path(tok: str, top: set[str]) -> str | None:
         return None
     if (REPO_ROOT / tok).exists():
         return None
-    # Docs often cite a module without its extension (`bench/_common`). Accept
-    # that as a hit rather than flagging it.
+    # Docs often cite a module without its extension (`bench/_common`) — accept.
     if (REPO_ROOT / f"{tok}.py").exists():
         return None
     return tok
@@ -327,9 +310,6 @@ def collect_issues(include_bench: bool = False) -> list[Issue]:
     return issues
 
 
-# --------------------------------------------------------------------------- #
-# CLI
-# --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Lint doc references against the live tree."
