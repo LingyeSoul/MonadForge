@@ -990,6 +990,7 @@ class AnimaTrainer:
             text_encoding_strategy,
             self.sample_prompts_te_outputs,
             network=network,
+            progress_sink=getattr(self, "progress_sink", None),
         )
 
     def prepare_unet_with_accelerator(
@@ -2489,7 +2490,12 @@ class AnimaTrainer:
                 except Exception:
                     pass
                 clean_memory_on_device(accelerator.device)
-                anima_train_utils.decode_pending_samples(accelerator, args, vae)
+                anima_train_utils.decode_pending_samples(
+                    accelerator,
+                    args,
+                    vae,
+                    progress_sink=getattr(self, "progress_sink", None),
+                )
 
             if is_main_process and (args.save_state or args.save_state_on_train_end):
                 save_state_on_train_end(args, accelerator)

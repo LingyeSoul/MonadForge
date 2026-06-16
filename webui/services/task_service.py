@@ -363,31 +363,49 @@ class TaskService:
                             ev = json.loads(raw_line)
                         except (json.JSONDecodeError, ValueError):
                             continue
-                        if ev.get("ev") != "step":
-                            continue
-                        metrics = task.parser.metrics
-                        if "global_step" in ev:
-                            metrics.step = ev["global_step"]
-                        if "epoch" in ev:
-                            metrics.epoch = ev["epoch"]
-                        if "avr_loss" in ev:
-                            loss = ev["avr_loss"]
-                            metrics.avr_loss = loss
-                            s = metrics.step
-                            if (
-                                not metrics.step_history
-                                or s != metrics.step_history[-1]
-                            ):
-                                metrics.loss_history.append(loss)
-                                metrics.step_history.append(s)
-                                metrics.lr_history.append(metrics.lr)
-                        if "lr" in ev:
-                            metrics.lr = ev["lr"]
-                        snapshot = metrics.snapshot()
-                        await self._notify_subscribers(
-                            task,
-                            {"type": "metrics", "data": snapshot},
-                        )
+                        ev_type = ev.get("ev")
+                        if ev_type == "step":
+                            metrics = task.parser.metrics
+                            if "global_step" in ev:
+                                metrics.step = ev["global_step"]
+                            if "epoch" in ev:
+                                metrics.epoch = ev["epoch"]
+                            if "avr_loss" in ev:
+                                loss = ev["avr_loss"]
+                                metrics.avr_loss = loss
+                                s = metrics.step
+                                if (
+                                    not metrics.step_history
+                                    or s != metrics.step_history[-1]
+                                ):
+                                    metrics.loss_history.append(loss)
+                                    metrics.step_history.append(s)
+                                    metrics.lr_history.append(metrics.lr)
+                            if "lr" in ev:
+                                metrics.lr = ev["lr"]
+                            snapshot = metrics.snapshot()
+                            await self._notify_subscribers(
+                                task,
+                                {"type": "metrics", "data": snapshot},
+                            )
+                        elif ev_type == "sample":
+                            # Training emitted a preview image; relay as a
+                            # dedicated ``sample`` message so the dashboard
+                            # can append it to its gallery in arrival order.
+                            sample_path = ev.get("path")
+                            if not sample_path:
+                                continue
+                            await self._notify_subscribers(
+                                task,
+                                {
+                                    "type": "sample",
+                                    "path": sample_path,
+                                    "step": ev.get("global_step"),
+                                    "epoch": ev.get("epoch"),
+                                    "prompt": ev.get("prompt"),
+                                    "ts": ev.get("ts"),
+                                },
+                            )
                 else:
                     # File may have been rotated; reset.
                     offset = 0

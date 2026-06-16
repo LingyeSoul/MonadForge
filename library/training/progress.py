@@ -10,6 +10,8 @@ line-buffered, main-process only. One event per line:
     {"ev": "step", "ts": ..., "global_step": ..., "epoch": ..., "loss": ..., ...}
     {"ev": "val",  "ts": ..., "global_step": ..., "epoch": ..., "cmmd": ...}
     {"ev": "ckpt", "ts": ..., "global_step": ..., "path": ...}
+    {"ev": "sample", "ts": ..., "global_step": ..., "epoch": ..., "path": ...,
+     "prompt": ...}
     {"ev": "log",  "ts": ..., "level": "WARNING|ERROR|...", "logger": ...,
      "msg": ...}
     {"ev": "run_end", "ts": ..., "status": "ok|error|stopped", "final_step": ...,
@@ -256,6 +258,29 @@ class ProgressSink:
 
     def ckpt(self, *, global_step: int, path: str) -> None:
         self._emit("ckpt", global_step=global_step, path=path)
+
+    def sample(
+        self,
+        *,
+        global_step: int,
+        epoch: Optional[int],
+        path: str,
+        prompt: Optional[str] = None,
+    ) -> None:
+        """Emit a ``sample`` event when a preview image has been written.
+
+        Called from the training loop right after the PNG is on disk so the
+        GUI can show the preview as soon as it's available. ``epoch`` is
+        ``None`` for step-triggered samples (per-``--sample_every_n_steps``)
+        and an integer for epoch-triggered samples.
+        """
+        self._emit(
+            "sample",
+            global_step=global_step,
+            epoch=epoch,
+            path=path,
+            prompt=prompt,
+        )
 
     def attach_log_mirror(self, *, max_events: int = 500) -> None:
         """Mirror WARNING+ records from the root logger as ``log`` events.

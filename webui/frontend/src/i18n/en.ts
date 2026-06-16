@@ -54,6 +54,14 @@ export default {
   dashEventEpoch: 'Epoch {epoch}/{total} started',
   dashEventCheckpoint: 'Checkpoint saved',
   dashLiveLog: 'Live Log',
+  dashSamples: 'Sample Previews',
+  dashSampleStepEpoch: 'Step {step} · Epoch {epoch}',
+  dashSampleStep: 'Step {step}',
+  dashSampleEpoch: 'Epoch {epoch}',
+  dashSamplePrompt: 'Prompt',
+  dashSampleEnlarge: 'Click to enlarge',
+  dashSampleDialogTitle: 'Sample Preview',
+  dashSampleHistoryCount: '{n} previews',
 
   // System Monitoring (dashboard)
   dashSysMon: 'System Monitoring',

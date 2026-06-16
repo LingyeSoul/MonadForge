@@ -952,6 +952,7 @@ def sample_images(
     sample_prompts_te_outputs=None,
     prompt_replacement=None,
     network=None,
+    progress_sink=None,
 ):
     """Generate sample images during training.
 
@@ -1059,7 +1060,9 @@ def sample_images(
         dit.to("cpu")
         clean_memory_on_device(accelerator.device)
         try:
-            decode_pending_samples(accelerator, args, vae)
+            decode_pending_samples(
+                accelerator, args, vae, progress_sink=progress_sink
+            )
         finally:
             dit.move_to_device_except_swap_blocks(accelerator.device)
             dit.prepare_block_swap_before_forward()
@@ -1336,13 +1339,29 @@ def _sample_image_inference(
     )
     latents_dir = os.path.join(save_dir, "latents")
     os.makedirs(latents_dir, exist_ok=True)
+    # ``epoch`` is None for step-triggered samples, int for epoch-triggered.
+    # Persist with the latent so ``decode_pending_samples`` can re-emit a
+    # ``sample`` progress event with the correct step/epoch metadata even
+    # when the actual PNG decode is deferred to end-of-training.
     torch.save(
-        {"latents": latents.detach().to("cpu"), "prompt": prompt, "enum": i},
+        {
+            "latents": latents.detach().to("cpu"),
+            "prompt": prompt,
+            "enum": i,
+            "global_step": steps,
+            "epoch": epoch,
+        },
         os.path.join(latents_dir, stem + ".pt"),
     )
 
 
-def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
+def decode_pending_samples(
+    accelerator: Accelerator,
+    args,
+    vae,
+    *,
+    progress_sink=None,
+) -> None:
     """Decode the sample latents stashed during training into PNGs.
 
     Called once from train.py after the training loop tears down (optimizer /
@@ -1351,6 +1370,11 @@ def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
     PNG in ``output_dir/sample/``, then parks the VAE back. Each latent file is
     removed after a successful decode; a failed one is left on disk so it can be
     recovered. No-op when sampling was disabled or the VAE isn't available.
+
+    When ``progress_sink`` is provided, every successfully decoded PNG emits a
+    ``sample`` event (with the originating ``global_step``/``epoch``/``prompt``
+    metadata saved alongside the latent), so the GUI dashboard can show the
+    preview as soon as it's on disk.
     """
     if vae is None:
         return
@@ -1387,7 +1411,8 @@ def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
                 )
                 pil = Image.fromarray(decoded_np)
                 stem = os.path.splitext(fn)[0]
-                pil.save(os.path.join(save_dir, stem + ".png"))
+                png_path = os.path.join(save_dir, stem + ".png")
+                pil.save(png_path)
                 if wandb_tracker is not None:
                     wandb_tracker.log(
                         {
@@ -1396,6 +1421,13 @@ def decode_pending_samples(accelerator: Accelerator, args, vae) -> None:
                             )
                         },
                         commit=False,
+                    )
+                if progress_sink is not None:
+                    progress_sink.sample(
+                        global_step=rec.get("global_step", 0) or 0,
+                        epoch=rec.get("epoch"),
+                        path=png_path,
+                        prompt=rec.get("prompt"),
                     )
                 os.remove(path)
             except Exception as exc:  # never let one bad latent abort the rest

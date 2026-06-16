@@ -3,7 +3,7 @@ import { useTrainingStore } from '../stores/training'
 import type { TrainingMetrics } from '../stores/training'
 
 interface WsMessage {
-  type: 'connected' | 'log' | 'done' | 'cancelled' | 'error' | 'metrics' | 'wandb_url'
+  type: 'connected' | 'log' | 'done' | 'cancelled' | 'error' | 'metrics' | 'wandb_url' | 'sample'
   line?: string
   task_id?: string
   exit_code?: number
@@ -11,6 +11,11 @@ interface WsMessage {
   message?: string
   data?: Partial<TrainingMetrics>
   url?: string
+  path?: string
+  step?: number | null
+  epoch?: number | null
+  prompt?: string | null
+  ts?: number | null
 }
 
 export function useTrainingStream(taskId: string) {
@@ -103,6 +108,16 @@ export function useTrainingStream(taskId: string) {
           enqueueLine(`[error] ${msg.message}`)
         } else if (msg.type === 'wandb_url' && msg.url) {
           store.updateFromWs({ wandb_run_url: msg.url })
+        } else if (msg.type === 'sample' && msg.path) {
+          // A new preview image landed in the training output dir. Append
+          // to the gallery (the store dedupes by path).
+          store.recordSample({
+            path: msg.path,
+            step: msg.step ?? null,
+            epoch: msg.epoch ?? null,
+            prompt: msg.prompt ?? null,
+            ts: msg.ts ?? null,
+          })
         }
       } catch {
         enqueueLine(event.data)

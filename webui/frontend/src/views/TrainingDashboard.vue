@@ -118,6 +118,13 @@
         </v-row>
       </v-card>
 
+      <!-- Row 1.7: Sample previews (only shown when sampling has produced images) -->
+      <SampleGallery
+        v-if="selectedTaskId && m.sample_history.length > 0"
+        :samples="m.sample_history"
+        :task-id="selectedTaskId"
+      />
+
       <!-- Row 2: Loss Curve + LR Curve -->
       <v-row dense style="flex: 0 0 auto;">
         <v-col cols="12" md="6">
@@ -209,6 +216,7 @@ import { useTrainingStream } from '../composables/useTrainingStream'
 import { useI18n } from '../composables/useI18n'
 import LossChart from '../components/LossChart.vue'
 import LogStream from '../components/LogStream.vue'
+import SampleGallery from '../components/SampleGallery.vue'
 
 const { t } = useI18n()
 const trainingStore = useTrainingStore()

@@ -54,6 +54,14 @@ export default {
   dashEventEpoch: '第 {epoch}/{total} 轮开始',
   dashEventCheckpoint: '检查点已保存',
   dashLiveLog: '实时日志',
+  dashSamples: '训练预览图',
+  dashSampleStepEpoch: '第 {step} 步 · 第 {epoch} 轮',
+  dashSampleStep: '第 {step} 步',
+  dashSampleEpoch: '第 {epoch} 轮',
+  dashSamplePrompt: '提示词',
+  dashSampleEnlarge: '点击放大',
+  dashSampleDialogTitle: '预览图详情',
+  dashSampleHistoryCount: '{n} 张预览',
 
   // System Monitoring (dashboard)
   dashSysMon: '系统监控',
