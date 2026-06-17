@@ -65,10 +65,10 @@ class TrayApp:
 
     # ── i18n ────────────────────────────────────────────────────────────
 
-    def _tr(self, label: str, **fmt) -> str:
+    def _tr(self, key: str, **fmt) -> str:
         from scripts.tray.i18n import tr
 
-        return tr(label, self._lang, **fmt)
+        return tr(key, self._lang, **fmt)
 
     def _brand(self, suffix_key: str, **fmt) -> str:
         """Build a ``"MonadForge — <translated suffix>"`` tooltip."""
@@ -225,9 +225,38 @@ class TrayApp:
             logger.exception("daemon restart failed")
 
     def _quit(self) -> None:
+        """Quit the tray AND the daemon it brought up.
+
+        Runs on pystray's message-loop thread. The HTTP shutdown request must
+        complete (or time out) BEFORE we force-exit, otherwise ``os._exit``
+        kills the request thread mid-flight and the daemon never gets the
+        shutdown — leaving it, the WebUI sidecar, and any running job
+        running. We block here with a short timeout (5s — the daemon
+        responds to ``/shutdown`` in well under that; the timeout just
+        prevents a wedged daemon from holding the icon thread open). Then
+        ``os._exit`` because pystray leaves a non-daemon setup thread behind
+        on quit that strands the pythonw.exe process if we just ``return``.
+        ``os._exit`` bypasses interpreter shutdown (no critical cleanup to
+        run) and is the only reliable way out.
+        """
         self._stop.set()
+        # Best-effort: ask the daemon to shut down. Blocking here with a
+        # short timeout — fire-and-forget loses the request when ``os._exit``
+        # kills the helper thread before the HTTP round-trip completes.
+        try:
+            from webui.services.daemon_client import DaemonError, daemon_client
+
+            daemon_client.shutdown_sync(kill_jobs=True, timeout=5.0)
+        except DaemonError:
+            pass  # daemon wasn't up — fine
+        except Exception:  # noqa: BLE001 — never let cleanup kill us
+            logger.exception("failed to shut down daemon from tray quit")
         if self._icon is not None:
             self._icon.stop()
+        # Force-exit: pystray leaves a non-daemon thread behind on quit, which
+        # would otherwise strand the pythonw.exe process in the background.
+        import os
+        os._exit(0)
 
     # ── menu ───────────────────────────────────────────────────────────
 

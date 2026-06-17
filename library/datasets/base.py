@@ -2029,6 +2029,7 @@ class BaseDataset(torch.utils.data.Dataset):
         return self._collate_examples(
             bucket=bucket,
             image_index=image_index,
+            image_infos=image_infos,
             custom_attributes=custom_attributes,
             loss_weights=loss_weights,
             text_encoder_outputs_list=text_encoder_outputs_list,
@@ -2052,6 +2053,7 @@ class BaseDataset(torch.utils.data.Dataset):
         *,
         bucket,
         image_index,
+        image_infos,
         custom_attributes,
         loss_weights,
         text_encoder_outputs_list,

@@ -92,4 +92,3 @@ recursive = true
 
 [general]
 caption_extension = ".txt"
-keep_tokens = 3

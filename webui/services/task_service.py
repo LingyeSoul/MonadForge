@@ -69,6 +69,20 @@ class Task:
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
     parser: TrainingLogParser = field(default_factory=TrainingLogParser, repr=False)
     wandb_run_url: Optional[str] = None
+    # Set when the JSONL progress watcher is started (training tasks only).
+    # The JSONL watcher is the canonical metrics emitter for training tasks —
+    # the stdout parser still updates ``parser.metrics`` (so loss_history /
+    # step_history stay consistent) but the stdout path must NOT also emit
+    # WS ``metrics`` messages, otherwise the frontend sees two streams racing
+    # and the loss chart gets a duplicate history append on every step.
+    is_training: bool = field(default=False, repr=False)
+    # Debounce bookkeeping for the JSONL metrics emit: the latest pending
+    # snapshot to send and the asyncio.Handle of the scheduled send task.
+    # Set on the first step event in a debounce window; cleared when the
+    # scheduled send fires. Keeps the WebSocket traffic bounded (one message
+    # per ~0.3 s of step events) instead of one per step.
+    _pending_metrics: Optional[dict] = field(default=None, repr=False)
+    _pending_metrics_handle: Optional[asyncio.Handle] = field(default=None, repr=False)
 
     def info(self) -> dict:
         return {
@@ -175,6 +189,10 @@ class TaskService:
         asyncio.create_task(self._poll_daemon_job(task))
         jsonl_path = self._derive_progress_jsonl_path(args or [])
         if jsonl_path:
+            # Mark as a training task — the JSONL watcher is the canonical
+            # metrics emitter and suppresses the parallel stdout emit (see
+            # ``_emit_line`` and ``_watch_progress_jsonl``).
+            task.is_training = True
             asyncio.create_task(self._watch_progress_jsonl(task, jsonl_path))
 
         return task
@@ -421,29 +439,74 @@ class TaskService:
         logs_dir = os.path.join(parent or output_dir, "logs")
         return os.path.join(ROOT, logs_dir, f"{output_name}.progress.jsonl")
 
+    # WebSocket ``metrics`` message debounce — see ``_watch_progress_jsonl``.
+    # Long runs emit thousands of step events; flushing each as a separate
+    # WS message both floods the socket on training end and lets the loss
+    # chart's ``loss_history`` array balloon to N×(message size) in
+    # transit. 0.3 s is short enough to feel live (frontend gets ~3
+    # updates/sec during steady state) and long enough to coalesce a
+    # burst of step events written within a single training step.
+    _METRICS_DEBOUNCE_SECONDS = 0.3
+
     async def _watch_progress_jsonl(self, task: Task, jsonl_path: str) -> None:
         """Tail the structured progress JSONL and push metrics to subscribers.
 
-        Runs alongside ``_read_output``.  The training subprocess writes
-        line-buffered JSONL events (``{"ev":"step", ...}``) that carry
-        structured scalars (loss, lr, …) at the ``log_every_n_steps``
-        cadence.  This coroutine polls the file for new data and emits
-        ``{"type":"metrics", "data":{...}}`` messages to WebSocket
-        subscribers — the same message format the stdout parser produces,
-        so the frontend code is unchanged.
+        The training subprocess writes line-buffered JSONL events
+        (``{"ev":"step", ...}``) that carry structured scalars (loss, lr, …)
+        at the ``log_every_n_steps`` cadence. This coroutine polls the file
+        for new data and emits ``{"type":"metrics", "data":{...}}`` messages
+        to WebSocket subscribers — the same message format the stdout parser
+        produces, so the frontend code is unchanged.
+
+        Updates are **debounced** (~0.3 s window) so a burst of step events
+        lands as a single WS message: the loss chart history grows by one
+        point per training step rather than one point per WS round-trip, and
+        the final ``done`` no longer triggers a flood of queued messages.
+
+        The ``run_start`` event carries ``total_steps`` / ``total_epochs`` —
+        captured here so the dashboard shows ``step / total`` from step 1
+        onward, instead of waiting for the first tqdm bar to leak through
+        the daemon's stdout file (which can lag training by the full
+        ``TQDM_MININTERVAL`` window).
         """
-        # Wait for the file to appear (training subprocess creates it on
-        # first run_start).  Give up after 60 s — if the file never
-        # appears the stdout fallback still works.
+        # Wait for the task to be picked up by the daemon (state flips
+        # PENDING → RUNNING inside ``_poll_daemon_job``). Under the old
+        # direct-subprocess design ``start_task`` set RUNNING itself, so
+        # this watcher entered its tail loop immediately. The daemon
+        # introduces a queueing delay (the job may sit in the daemon's
+        # serial queue behind another run); the watcher must wait for
+        # the daemon to launch the subprocess before tailing — otherwise
+        # the ``while state == RUNNING`` below exits on the first poll
+        # and the dashboard never sees any step events.
         for _ in range(120):
+            if task.state == TaskState.RUNNING:
+                break
+            if task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                return
+            await asyncio.sleep(0.5)
+        else:
             if task.state != TaskState.RUNNING:
+                logger.debug(
+                    "task %s never reached RUNNING; JSONL watcher exiting",
+                    task.id,
+                )
+                return
+
+        # Wait for the file to appear (training subprocess creates it on
+        # first ``run_start``).  Give up after 5 minutes — the first
+        # torch.compile / model-load trace on a long-running job can
+        # easily take that long before the trainer writes its first
+        # event, and a too-short timeout silently strands the
+        # dashboard with no progress info for the rest of the run.
+        for _ in range(600):
+            if task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
                 return
             if os.path.isfile(jsonl_path):
                 break
             await asyncio.sleep(0.5)
         else:
             logger.debug(
-                "progress JSONL not found after 60 s, skipping watcher: %s",
+                "progress JSONL not found after 5 min, skipping watcher: %s",
                 jsonl_path,
             )
             return
@@ -473,7 +536,25 @@ class TaskService:
                         except (json.JSONDecodeError, ValueError):
                             continue
                         ev_type = ev.get("ev")
-                        if ev_type == "step":
+                        if ev_type == "run_start":
+                            # Capture total_steps / total_epochs from the
+                            # trainer's opening event so the dashboard can
+                            # render "step / total" from the first step —
+                            # don't wait for the first tqdm bar (which the
+                            # daemon throttles via TQDM_MININTERVAL).
+                            metrics = task.parser.metrics
+                            if "total_steps" in ev:
+                                metrics.total_steps = int(ev["total_steps"])
+                            if "total_epochs" in ev:
+                                metrics.total_epochs = int(ev["total_epochs"])
+                            # Wake up any late-joining subscriber waiting
+                            # for total_steps — emit a snapshot now so the
+                            # UI sees the denominator as soon as the trainer
+                            # announces it.
+                            await self._schedule_metrics_emit(
+                                task, metrics.snapshot()
+                            )
+                        elif ev_type == "step":
                             metrics = task.parser.metrics
                             if "global_step" in ev:
                                 metrics.step = ev["global_step"]
@@ -492,10 +573,10 @@ class TaskService:
                                     metrics.lr_history.append(metrics.lr)
                             if "lr" in ev:
                                 metrics.lr = ev["lr"]
-                            snapshot = metrics.snapshot()
-                            await self._notify_subscribers(
-                                task,
-                                {"type": "metrics", "data": snapshot},
+                            # Debounce: the next WS emit coalesces all
+                            # step events that landed inside the window.
+                            await self._schedule_metrics_emit(
+                                task, metrics.snapshot()
                             )
                         elif ev_type == "sample":
                             # Training emitted a preview image; relay as a
@@ -515,6 +596,23 @@ class TaskService:
                                     "ts": ev.get("ts"),
                                 },
                             )
+                        elif ev_type == "run_end":
+                            # Trainer announced terminal state — keep its
+                            # ``final_step`` so the dashboard ends on the
+                            # exact step training reached.
+                            metrics = task.parser.metrics
+                            if "final_step" in ev:
+                                metrics.step = int(ev["final_step"])
+                            # Flush any pending debounced metrics so the
+                            # last step the trainer logged is on screen
+                            # before the ``done`` message lands — and
+                            # schedule a fresh snapshot so the final_step
+                            # value (which may differ from the last logged
+                            # step) is also visible to subscribers.
+                            await self._flush_metrics_emit(task)
+                            await self._schedule_metrics_emit(
+                                task, metrics.snapshot()
+                            )
                 else:
                     # File may have been rotated; reset.
                     offset = 0
@@ -523,6 +621,59 @@ class TaskService:
             pass
         except Exception:
             logger.exception("Progress JSONL watcher failed for task %s", task.id)
+        finally:
+            # Flush any pending debounced metrics so a fast-finishing run
+            # still surfaces its last step to subscribers (the loop exits
+            # when ``task.state`` flips terminal, which can race with the
+            # debounce window — e.g. a step event lands 50 ms before
+            # ``done`` and the scheduled send never fires).
+            await self._flush_metrics_emit(task)
+
+    async def _schedule_metrics_emit(self, task: Task, snapshot: dict) -> None:
+        """Coalesce a burst of step events into a single WS ``metrics`` send.
+
+        Stores the latest snapshot on the task and arms a timer that
+        publishes it. Subsequent calls in the same window replace the
+        pending snapshot and reset the timer. The result: regardless of
+        how many step events arrive inside ~0.3 s, exactly one WS
+        message goes out with the freshest data — the dashboard updates
+        smoothly and the socket doesn't drown in redundant messages.
+        """
+        task._pending_metrics = snapshot
+        if task._pending_metrics_handle is not None:
+            task._pending_metrics_handle.cancel()
+        loop = asyncio.get_event_loop()
+        task._pending_metrics_handle = loop.call_later(
+            self._METRICS_DEBOUNCE_SECONDS,
+            # call_later invokes synchronously; route through the loop so
+            # the actual notify happens in async-safe context.
+            lambda: asyncio.ensure_future(self._fire_pending_metrics(task)),
+        )
+
+    async def _fire_pending_metrics(self, task: Task) -> None:
+        snapshot = task._pending_metrics
+        task._pending_metrics = None
+        task._pending_metrics_handle = None
+        if snapshot is None:
+            return
+        await self._notify_subscribers(task, {"type": "metrics", "data": snapshot})
+
+    async def _flush_metrics_emit(self, task: Task) -> None:
+        """Cancel any pending debounce and send the latest snapshot now.
+
+        Called when the JSONL watcher sees a ``run_end`` event or exits
+        (task state terminal). Ensures subscribers always see the
+        last-known metrics before the ``done`` message.
+        """
+        if task._pending_metrics_handle is not None:
+            task._pending_metrics_handle.cancel()
+            task._pending_metrics_handle = None
+        if task._pending_metrics is not None:
+            snapshot = task._pending_metrics
+            task._pending_metrics = None
+            await self._notify_subscribers(
+                task, {"type": "metrics", "data": snapshot}
+            )
 
     @staticmethod
     def _read_jsonl_bytes(path: str, offset: int) -> Optional[tuple[list[str], int]]:
@@ -569,8 +720,12 @@ class TaskService:
             msg["replace"] = True
         await self._notify_subscribers(task, msg)
 
-        # Parse training metrics from the line
-        if task.parser.feed(line):
+        # Parse training metrics from the line. For training tasks the JSONL
+        # watcher is the canonical metrics emitter (avoids two streams racing
+        # and duplicating history appends). We still feed the parser so the
+        # snapshot stays consistent for late-joining subscribers — the JSONL
+        # watcher reads from the same ``task.parser.metrics`` object.
+        if task.parser.feed(line) and not task.is_training:
             snapshot = task.parser.metrics.snapshot()
             print(
                 f"[metrics] step={snapshot.get('step')}/{snapshot.get('total_steps')} "

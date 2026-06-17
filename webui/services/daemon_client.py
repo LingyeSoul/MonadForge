@@ -238,8 +238,8 @@ class DaemonClient:
     async def shutdown(self, *, kill_jobs: bool = True) -> dict:
         return await self._request("POST", "/shutdown", body={"kill_jobs": kill_jobs})
 
-    def shutdown_sync(self, *, kill_jobs: bool = True) -> dict:
-        return self._request_sync("POST", "/shutdown", body={"kill_jobs": kill_jobs})
+    def shutdown_sync(self, *, kill_jobs: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> dict:
+        return self._request_sync("POST", "/shutdown", body={"kill_jobs": kill_jobs}, timeout=timeout)
 
 
 # Module-level singleton — the WebUI process talks to one daemon.
