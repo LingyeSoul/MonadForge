@@ -37,7 +37,9 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -86,6 +88,10 @@ from gui.widgets import (
 )
 from library.datasets.buckets import DEFAULT_TARGET_RES as _LIB_DEFAULT_TARGET_RES
 from library.datasets.path_filter import filter_paths_by_glob
+from library.preprocess.resize_preview import (
+    DEFAULT_RESIZE_CROP_ANCHOR,
+    normalize_crop_margins,
+)
 
 SAM_YAML = ROOT / "configs" / "sam_mask.yaml"
 PREPROCESS_TOML = ROOT / "configs" / "preprocess.toml"
@@ -99,6 +105,8 @@ DEFAULT_PREPROCESS_PATH_PATTERN = "*"
 DEFAULT_DROP_LOWRES_IMAGES = True
 DEFAULT_MIN_PIXELS = 500000
 DEFAULT_TARGET_RES = list(_LIB_DEFAULT_TARGET_RES)
+DEFAULT_RESIZE_BUCKET_RESOS: list[str] = []
+DEFAULT_RESIZE_CROP_MARGINS = {"top": 0.0, "right": 0.0, "bottom": 0.0, "left": 0.0}
 DEFAULT_TE_SHUFFLE_VARIANTS = 4
 DEFAULT_TE_TAG_DROPOUT = 0.1
 DEFAULT_SAM_PROMPTS = ("speech bubble", "text bubble")
@@ -117,6 +125,9 @@ _GUI_PREPROCESS_KEYS = {
     "drop_lowres_images",
     "min_pixels",
     "target_res",
+    "resize_bucket_resos",
+    "resize_crop_anchor",
+    "resize_crop_margins",
     "caption_shuffle_variants",
     "caption_tag_dropout_rate",
     "run_sam_mask",
@@ -134,6 +145,62 @@ _GUI_PREPROCESS_KEYS = {
 RESIZED_DIR = default_resized_dir()
 LORA_CACHE_DIR = default_lora_cache_dir()
 MASK_DIR = default_mask_dir()
+
+
+class _ResizeCropAnchorWidget(QWidget):
+    changed = Signal()
+
+    _LAYOUT = (
+        ("top_left", "↖", 0, 0),
+        ("top", "↑", 0, 1),
+        ("top_right", "↗", 0, 2),
+        ("left", "←", 1, 0),
+        ("center", "●", 1, 1),
+        ("right", "→", 1, 2),
+        ("bottom_left", "↙", 2, 0),
+        ("bottom", "↓", 2, 1),
+        ("bottom_right", "↘", 2, 2),
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(2)
+        grid.setVerticalSpacing(2)
+        self._buttons: dict[str, QPushButton] = {}
+        for key, text, row, col in self._LAYOUT:
+            btn = QPushButton(text)
+            btn.setCheckable(True)
+            btn.setFixedSize(32, 28)
+            btn.setStyleSheet(
+                "QPushButton { padding:0; } "
+                f"QPushButton:checked {{ background:{tok('accent')}; color:#ffffff; "
+                "font-weight:bold; }"
+            )
+            btn.setToolTip(t(f"resize_crop_anchor_{key}"))
+            btn.clicked.connect(lambda _checked, value=key: self.set_value(value))
+            grid.addWidget(btn, row, col)
+            self._buttons[key] = btn
+        self.set_value(DEFAULT_RESIZE_CROP_ANCHOR, emit=False)
+        self.setFixedSize(32 * 3 + 2 * 2, 28 * 3 + 2 * 2)
+
+    def value(self) -> str:
+        for key, btn in self._buttons.items():
+            if btn.isChecked():
+                return key
+        return DEFAULT_RESIZE_CROP_ANCHOR
+
+    def set_value(self, value, *, emit: bool = True) -> None:
+        anchor = str(value or DEFAULT_RESIZE_CROP_ANCHOR)
+        if anchor not in self._buttons:
+            anchor = DEFAULT_RESIZE_CROP_ANCHOR
+        for key, btn in self._buttons.items():
+            btn.blockSignals(True)
+            btn.setChecked(key == anchor)
+            btn.blockSignals(False)
+        if emit:
+            self.changed.emit()
 
 
 def _load_settings() -> dict:
@@ -520,6 +587,36 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self._field_label("target_res", t("preprocess_target_res")),
             self.target_res_widget,
         )
+        self.resize_crop_anchor_widget = _ResizeCropAnchorWidget()
+        self.resize_crop_anchor_widget.setToolTip(t("resize_crop_anchor_tip"))
+        self.resize_crop_anchor_widget.changed.connect(self.persist_target_res)
+        img_form.addRow(
+            self._field_label("resize_crop_anchor", t("resize_crop_anchor")),
+            self.resize_crop_anchor_widget,
+        )
+        margins_row = QHBoxLayout()
+        margins_row.setContentsMargins(0, 0, 0, 0)
+        margins_row.setSpacing(6)
+        self.resize_margin_top_spin = self._margin_spin()
+        self.resize_margin_right_spin = self._margin_spin()
+        self.resize_margin_bottom_spin = self._margin_spin()
+        self.resize_margin_left_spin = self._margin_spin()
+        for label, spin in (
+            (t("resize_crop_margin_top"), self.resize_margin_top_spin),
+            (t("resize_crop_margin_right"), self.resize_margin_right_spin),
+            (t("resize_crop_margin_bottom"), self.resize_margin_bottom_spin),
+            (t("resize_crop_margin_left"), self.resize_margin_left_spin),
+        ):
+            lbl = QLabel(label)
+            lbl.setMinimumWidth(24)
+            lbl.setStyleSheet(f"QLabel {{ color:{tok('text')}; }}")
+            margins_row.addWidget(lbl)
+            margins_row.addWidget(spin)
+        margins_row.addStretch(1)
+        img_form.addRow(
+            self._field_label("resize_crop_margins", t("resize_crop_margins")),
+            margins_row,
+        )
         img_box.setLayout(img_form)
         form_layout.addWidget(img_box)
 
@@ -714,6 +811,18 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         target_res = meta.get(
             "target_res", pp_cfg.get("target_res", DEFAULT_TARGET_RES)
         )
+        resize_bucket_resos = meta.get(
+            "resize_bucket_resos",
+            pp_cfg.get("resize_bucket_resos", DEFAULT_RESIZE_BUCKET_RESOS),
+        )
+        resize_crop_anchor = meta.get(
+            "resize_crop_anchor",
+            pp_cfg.get("resize_crop_anchor", DEFAULT_RESIZE_CROP_ANCHOR),
+        )
+        resize_crop_margins = meta.get(
+            "resize_crop_margins",
+            pp_cfg.get("resize_crop_margins", DEFAULT_RESIZE_CROP_MARGINS),
+        )
         path_pattern = meta.get(
             "preprocess_path_pattern", DEFAULT_PREPROCESS_PATH_PATTERN
         )
@@ -765,6 +874,9 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self.min_pixels_spin.setValue(int(min_pixels))
             self.min_pixels_spin.setEnabled(self.drop_lowres_chk.isChecked())
             self._set_target_res_widget(target_res)
+            self.target_res_widget.set_bucket_resos(resize_bucket_resos)
+            self._set_resize_crop_anchor(resize_crop_anchor)
+            self._set_resize_crop_margins(resize_crop_margins)
             self.shuffle_spin.setValue(int(shuffle_variants))
             self.dropout_edit.setText(f"{float(tag_dropout):g}")
             self.run_sam_mask_chk.setChecked(bool(run_sam_mask))
@@ -801,6 +913,41 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             checkbox.blockSignals(True)
             checkbox.setChecked(edge in selected)
             checkbox.blockSignals(False)
+        self.target_res_widget.refresh_bucket_enabled()
+
+    def _set_resize_crop_anchor(self, value) -> None:
+        self.resize_crop_anchor_widget.set_value(value, emit=False)
+
+    def _margin_spin(self) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 95.0)
+        spin.setDecimals(1)
+        spin.setSingleStep(1.0)
+        spin.setSuffix("%")
+        spin.setMinimumWidth(128)
+        spin.wheelEvent = lambda e: e.ignore()
+        spin.valueChanged.connect(lambda _value: self.persist_target_res())
+        return spin
+
+    def _set_resize_crop_margins(self, value) -> None:
+        margins = normalize_crop_margins(value)
+        for key, spin in (
+            ("top", self.resize_margin_top_spin),
+            ("right", self.resize_margin_right_spin),
+            ("bottom", self.resize_margin_bottom_spin),
+            ("left", self.resize_margin_left_spin),
+        ):
+            spin.blockSignals(True)
+            spin.setValue(float(margins[key]))
+            spin.blockSignals(False)
+
+    def _resize_crop_margins(self) -> dict[str, float]:
+        return {
+            "top": float(self.resize_margin_top_spin.value()),
+            "right": float(self.resize_margin_right_spin.value()),
+            "bottom": float(self.resize_margin_bottom_spin.value()),
+            "left": float(self.resize_margin_left_spin.value()),
+        }
 
     def _set_rule_cards(self, rules: list[dict]) -> None:
         for card in list(self._rule_cards):
@@ -820,6 +967,11 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self.drop_lowres_chk,
             self.min_pixels_spin,
             self.target_res_widget,
+            self.resize_crop_anchor_widget,
+            self.resize_margin_top_spin,
+            self.resize_margin_right_spin,
+            self.resize_margin_bottom_spin,
+            self.resize_margin_left_spin,
             self.shuffle_spin,
             self.dropout_edit,
             self.run_sam_mask_chk,
@@ -1100,6 +1252,9 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             "drop_lowres_images": self.drop_lowres_chk.isChecked(),
             "min_pixels": int(self.min_pixels_spin.value()),
             "target_res": self.target_res_widget.value(),
+            "resize_bucket_resos": self.target_res_widget.bucket_resos(),
+            "resize_crop_anchor": self.resize_crop_anchor_widget.value(),
+            "resize_crop_margins": self._resize_crop_margins(),
         }
 
     def preprocess_config_snapshot(self) -> dict[str, object]:
@@ -1239,6 +1394,24 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         target_res = self.target_res_widget.value()
         # Kept explicit even when it matches the default: it also affects train-time compile-cache sizing, so the GUI profile must show the exact tiers it will use.
         meta["target_res"] = target_res
+
+        bucket_resos = self.target_res_widget.bucket_resos()
+        if bucket_resos:
+            meta["resize_bucket_resos"] = bucket_resos
+        else:
+            meta.pop("resize_bucket_resos", None)
+
+        crop_anchor = self.resize_crop_anchor_widget.value()
+        if crop_anchor == DEFAULT_RESIZE_CROP_ANCHOR:
+            meta.pop("resize_crop_anchor", None)
+        else:
+            meta["resize_crop_anchor"] = crop_anchor
+
+        crop_margins = normalize_crop_margins(self._resize_crop_margins())
+        if any(value > 0 for value in crop_margins.values()):
+            meta["resize_crop_margins"] = crop_margins
+        else:
+            meta.pop("resize_crop_margins", None)
 
         shuffle = int(self.shuffle_spin.value())
         if shuffle == DEFAULT_TE_SHUFFLE_VARIANTS:

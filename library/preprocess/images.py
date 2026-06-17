@@ -20,13 +20,24 @@ from PIL.PngImagePlugin import PngInfo
 from library.datasets.buckets import (
     DEFAULT_TARGET_RES,
     BucketManager,
-    buckets_for_edges,
-    choose_edge,
 )
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
+from library.preprocess.resize_preview import (
+    DEFAULT_RESIZE_CROP_ANCHOR,
+    RESIZE_CROP_ANCHORS,
+    format_bucket_resos,
+    margin_crop_rect,
+    normalize_crop_anchor,
+    normalize_crop_margins,
+    parse_bucket_resos,
+    select_resize_bucket,
+)
 
 CAPTION_EXTENSIONS = {".txt", ".caption"}
+_RESIZE_ANCHOR_KEY = "anima_resize_crop_anchor"
+_RESIZE_BUCKET_RESOS_KEY = "anima_resize_bucket_resos"
+_RESIZE_MARGINS_KEY = "anima_resize_crop_margins"
 
 
 def _collect_metadata(src: Image.Image) -> dict:
@@ -61,6 +72,44 @@ def _collect_metadata(src: Image.Image) -> dict:
     return save_kwargs
 
 
+def _format_margins(crop_margins) -> str:
+    margins = normalize_crop_margins(crop_margins)
+    return ",".join(f"{margins[key]:g}" for key in ("top", "right", "bottom", "left"))
+
+
+def _resize_metadata_signature(
+    crop_anchor: str, bucket_resos, crop_margins=None
+) -> dict[str, str]:
+    anchor = normalize_crop_anchor(crop_anchor)
+    buckets = format_bucket_resos(parse_bucket_resos(bucket_resos))
+    margins = _format_margins(crop_margins)
+    if anchor == DEFAULT_RESIZE_CROP_ANCHOR and not buckets and margins == "0,0,0,0":
+        return {}
+    return {
+        _RESIZE_ANCHOR_KEY: anchor,
+        _RESIZE_BUCKET_RESOS_KEY: "|".join(buckets),
+        _RESIZE_MARGINS_KEY: margins,
+    }
+
+
+def _add_resize_metadata(save_kwargs: dict, signature: dict[str, str]) -> None:
+    if not signature:
+        return
+    pnginfo = save_kwargs.get("pnginfo")
+    if pnginfo is None:
+        pnginfo = PngInfo()
+        save_kwargs["pnginfo"] = pnginfo
+    for key, value in signature.items():
+        pnginfo.add_text(key, value)
+
+
+def _resize_metadata_matches(image: Image.Image, signature: dict[str, str]) -> bool:
+    if not signature:
+        return True
+    text = getattr(image, "text", {}) or {}
+    return all(text.get(key) == value for key, value in signature.items())
+
+
 def process_image(
     image_path: Path,
     out_dir: Path,
@@ -81,9 +130,12 @@ def process_image(
     change (e.g. adding a ``--target_res`` tier) still re-resizes only the
     images whose target bucket actually moved.
     """
-    # 6th element (target_res) is optional so pre-multiscale 5-tuple callers still work.
+    # 6th+ elements are optional so pre-multiscale callers still work.
     max_reso, min_size, max_size, reso_steps, use_constant, *rest = bucket_args
     target_res = rest[0] if rest else None
+    crop_anchor = rest[1] if len(rest) > 1 else DEFAULT_RESIZE_CROP_ANCHOR
+    bucket_resos = rest[2] if len(rest) > 2 else None
+    crop_margins = rest[3] if len(rest) > 3 else None
     bucket_mgr = BucketManager(
         max_reso=max_reso,
         min_size=min_size,
@@ -95,19 +147,30 @@ def process_image(
     save_kwargs = _collect_metadata(src_img)
     img = ImageOps.exif_transpose(src_img)
     w, h = img.size
+    margin_rect = margin_crop_rect(w, h, crop_margins)
+    margin_box = (
+        round(margin_rect.left),
+        round(margin_rect.top),
+        round(margin_rect.left + margin_rect.width),
+        round(margin_rect.top + margin_rect.height),
+    )
+    work_w = max(1, margin_box[2] - margin_box[0])
+    work_h = max(1, margin_box[3] - margin_box[1])
 
     if use_constant:
         # Default to the canonical 1024 tier (not the full multi-tier catalog):
         # all_constant_token_buckets()'s aspect-only select_bucket would UPSCALE
         # a 0.7MP portrait into a 1536-tier bucket — the multi-tier resize regression.
         tier = target_res or list(DEFAULT_TARGET_RES)
-        edge = choose_edge(w, h, tier)
-        bucket_mgr.set_predefined_resos(buckets_for_edges([edge]))
+        _, bucket_reso = select_resize_bucket(work_w, work_h, tier, bucket_resos)
     else:
         bucket_mgr.make_buckets(constant_token_buckets=False)
+        bucket_reso, _, _ = bucket_mgr.select_bucket(w, h)
 
-    bucket_reso, _, _ = bucket_mgr.select_bucket(w, h)
     bw, bh = bucket_reso
+    crop_anchor = normalize_crop_anchor(crop_anchor)
+    anchor_x, anchor_y = RESIZE_CROP_ANCHORS[crop_anchor]
+    signature = _resize_metadata_signature(crop_anchor, bucket_resos, crop_margins)
 
     target_dir = out_dir / rel_dir if rel_dir else out_dir
     out_path = target_dir / f"{image_path.stem}.png"
@@ -115,14 +178,15 @@ def process_image(
     if not overwrite and out_path.exists():
         try:
             with Image.open(out_path) as ex:
-                if ex.size == (bw, bh):
+                if ex.size == (bw, bh) and _resize_metadata_matches(ex, signature):
                     return image_path.name, bucket_reso, True
         except Exception:
             pass
 
     img = img.convert("RGB")
+    img = img.crop(margin_box)
 
-    ar_img = w / h
+    ar_img = work_w / work_h
     ar_bucket = bw / bh
     if ar_img > ar_bucket:
         new_h = bh
@@ -133,11 +197,12 @@ def process_image(
 
     img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-    left = (new_w - bw) // 2
-    top = (new_h - bh) // 2
+    left = round((new_w - bw) * anchor_x)
+    top = round((new_h - bh) * anchor_y)
     img = img.crop((left, top, left + bw, top + bh))
 
     target_dir.mkdir(parents=True, exist_ok=True)
+    _add_resize_metadata(save_kwargs, signature)
     img.save(out_path, format="PNG", **save_kwargs)
 
     if copy_captions:
@@ -167,6 +232,9 @@ def resize_to_buckets(
     verbose: bool = True,
     overwrite: bool = False,
     curation_decisions: dict[str, dict] | None = None,
+    crop_anchor: str = DEFAULT_RESIZE_CROP_ANCHOR,
+    bucket_resos=None,
+    crop_margins=None,
     progress: ProgressFn | None = None,
 ) -> tuple[PreprocessStats, dict[tuple[int, int], int]]:
     """Resize+crop every image under ``src`` into bucket resolutions under ``dst``.
@@ -189,6 +257,9 @@ def resize_to_buckets(
         bucket_reso_steps,
         constant_token_buckets,
         target_res,
+        crop_anchor,
+        parse_bucket_resos(bucket_resos),
+        normalize_crop_margins(crop_margins),
     )
 
     # walk_images enforces per-subfolder stem uniqueness (collisions would collide the resized output).
@@ -244,7 +315,7 @@ def resize_to_buckets(
             )
             for p, w, h in skipped:
                 print(f"  {p.name}  {w}x{h}  ({w * h / 1e6:.3f}MP)")
-        stats.skipped = len(skipped)
+        stats.skipped += len(skipped)
         image_files = kept
 
     if verbose:

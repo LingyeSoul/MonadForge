@@ -97,6 +97,59 @@ def _preprocess_path_pattern_args(extra) -> list[str]:
     return ["--path_pattern", pattern]
 
 
+def _resize_crop_args(extra) -> list[str]:
+    """Preprocess-only resize crop controls from the merged config chain."""
+    if "--resize_crop_anchor" in extra or "--resize-crop-anchor" in extra:
+        anchor_args: list[str] = []
+    else:
+        from library.preprocess.resize_preview import (
+            DEFAULT_RESIZE_CROP_ANCHOR,
+            RESIZE_CROP_ANCHORS,
+        )
+
+        from ._common import _path_overrides
+
+        anchor = str(
+            _path_overrides().get("resize_crop_anchor")
+            or DEFAULT_RESIZE_CROP_ANCHOR
+        ).strip()
+        anchor_args = (
+            ["--resize_crop_anchor", anchor]
+            if anchor in RESIZE_CROP_ANCHORS and anchor != DEFAULT_RESIZE_CROP_ANCHOR
+            else []
+        )
+
+    if "--resize_bucket_resos" in extra or "--resize-bucket-resos" in extra:
+        bucket_args: list[str] = []
+    else:
+        from ._common import _path_overrides
+
+        raw = _path_overrides().get("resize_bucket_resos")
+        if isinstance(raw, str):
+            buckets = [part.strip() for part in raw.split(",") if part.strip()]
+        elif isinstance(raw, (list, tuple)):
+            buckets = [str(item).strip() for item in raw if str(item).strip()]
+        else:
+            buckets = []
+        bucket_args = ["--resize_bucket_resos", *buckets] if buckets else []
+
+    if "--resize_crop_margins" in extra or "--resize-crop-margins" in extra:
+        margin_args: list[str] = []
+    else:
+        from library.preprocess.resize_preview import normalize_crop_margins
+
+        from ._common import _path_overrides
+
+        margins = normalize_crop_margins(_path_overrides().get("resize_crop_margins"))
+        values = [margins[key] for key in ("top", "right", "bottom", "left")]
+        margin_args = (
+            ["--resize_crop_margins", *(f"{value:g}" for value in values)]
+            if any(value > 0 for value in values)
+            else []
+        )
+    return [*anchor_args, *bucket_args, *margin_args]
+
+
 def _curation_decisions_args() -> list[str]:
     """Optional GUI curation decisions consumed by resize only."""
 
@@ -175,22 +228,29 @@ def _require_repa_encoder_model(encoder: str) -> None:
     )
 
 
-def _pop_target_res(extra) -> list[str]:
-    """Strip ``--target_res E1 E2 …`` (a resize-only flag) from ``extra``.
+def _pop_resize_only_args(extra) -> list[str]:
+    """Strip resize-only flags from ``extra`` before cache stages run.
 
-    The VAE/TE/PE stages read whatever latent shapes are already on disk, so
-    they must never see ``--target_res`` (their argparse doesn't define it).
-    Removes the flag and its following ``nargs='+'`` integer values up to the
-    next ``--option``.
+    The VAE/TE/PE stages read whatever latent shapes are already on disk, so they
+    must never see resize-only argparse flags.
     """
     cleaned: list[str] = []
     it = iter(extra)
     for tok in it:
-        if tok == "--target_res":
+        if tok in {
+            "--target_res",
+            "--resize_bucket_resos",
+            "--resize-bucket-resos",
+            "--resize_crop_margins",
+            "--resize-crop-margins",
+        }:
             for nxt in it:
                 if nxt.startswith("--"):
                     cleaned.append(nxt)
                     break
+            continue
+        if tok in {"--resize_crop_anchor", "--resize-crop-anchor"}:
+            next(it, None)
             continue
         cleaned.append(tok)
     return cleaned
@@ -230,6 +290,7 @@ def cmd_preprocess_resize(extra):
     tr_args = _target_res_args(extra)
     pp_args = _preprocess_path_pattern_args(extra)
     cd_args = _curation_decisions_args()
+    rc_args = _resize_crop_args(extra)
     run(
         [
             PY,
@@ -242,6 +303,7 @@ def cmd_preprocess_resize(extra):
             "--recursive",
             *mp_args,
             *tr_args,
+            *rc_args,
             *pp_args,
             *cd_args,
             *extra,
@@ -456,7 +518,7 @@ def cmd_preprocess(extra):
     cmd_preprocess_resize(extra)
     # VAE/TE steps read on-disk shapes — strip the low-res convenience flags AND
     # the resize-only --target_res so their argparse never sees an undefined arg.
-    downstream = _pop_target_res(extra)
+    downstream = _pop_resize_only_args(extra)
     _, vae_extra = _resolve_lowres_filter(downstream)
     cmd_preprocess_vae(vae_extra)
     cmd_preprocess_te(downstream)

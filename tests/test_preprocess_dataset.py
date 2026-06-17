@@ -106,9 +106,7 @@ def test_walk_images_path_pattern_filters_relative_paths(tmp_path: Path) -> None
     _write_image(tmp_path / "charB" / "cover.png", (8, 8))
 
     paths = walk_images(tmp_path, recursive=True, pattern="charA/*")
-    assert [p.relative_to(tmp_path).as_posix() for p in paths] == [
-        "charA/cover.png"
-    ]
+    assert [p.relative_to(tmp_path).as_posix() for p in paths] == ["charA/cover.png"]
 
 
 def test_walk_images_collision_within_folder_raises(tmp_path: Path) -> None:
@@ -212,7 +210,9 @@ def test_count_pending_latents_per_resolution(tmp_path: Path) -> None:
     assert count_pending_latents(data, cache_dir=cache) == (2, 2)
 
     # Cache a's 64x64 latent (key latents_{H//8}x{W//8} = latents_8x8).
-    npz = get_latents_npz_path(data / "a.png", (64, 64), cache_dir=cache, image_dir=data)
+    npz = get_latents_npz_path(
+        data / "a.png", (64, 64), cache_dir=cache, image_dir=data
+    )
     npz.parent.mkdir(parents=True, exist_ok=True)
     np.savez(npz, **{"latents_8x8": np.zeros((16, 8, 8), dtype=np.float32)})
     assert count_pending_latents(data, cache_dir=cache) == (1, 2)
@@ -449,6 +449,35 @@ def test_resize_to_buckets_applies_curation_skip_decision(tmp_path: Path) -> Non
     assert not (dst / "move.png").exists()
     assert (src / "skip.png").exists()
     assert (src / "move.png").exists()
+
+
+def test_resize_to_buckets_accumulates_decision_and_min_pixel_skips(
+    tmp_path: Path,
+) -> None:
+    from library.preprocess import resize_to_buckets
+
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    _write_image(src / "keep.png", (900, 900))
+    _write_image(src / "decision_skip.png", (900, 900))
+    _write_image(src / "too_small.png", (64, 64))
+
+    stats, bucket_counts = resize_to_buckets(
+        src,
+        dst,
+        min_pixels=500_000,
+        workers=1,
+        verbose=False,
+        curation_decisions={"decision_skip.png": {"action": "skip"}},
+    )
+
+    assert stats.seen == 3
+    assert stats.skipped == 2
+    assert stats.written == 1
+    assert sum(bucket_counts.values()) == 1
+    assert (dst / "keep.png").exists()
+    assert not (dst / "decision_skip.png").exists()
+    assert not (dst / "too_small.png").exists()
 
 
 def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -35,6 +36,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QToolButton,
     QWidget,
+    QWidgetAction,
     QVBoxLayout,
 )
 
@@ -95,12 +97,39 @@ def _target_res_tiers() -> tuple[tuple[int, ...], dict[int, int]]:
     return tuple(ALLOWED_TARGET_RES), danger
 
 
+@functools.cache
+def _target_res_buckets() -> dict[int, tuple[tuple[int, int], ...]]:
+    from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS_BY_EDGE
+
+    return {
+        edge: tuple(
+            sorted(
+                CONSTANT_TOKEN_BUCKETS_BY_EDGE[edge], key=lambda size: size[0] / size[1]
+            )
+        )
+        for edge in sorted(CONSTANT_TOKEN_BUCKETS_BY_EDGE)
+    }
+
+
+class _BucketMenuPanel(QWidget):
+    """Keep a bucket popup open when the user misses a checkbox row slightly."""
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+
+
 class _TargetResWidget(QWidget):
     """Horizontal row of tier checkboxes for the multi-scale ``target_res`` knob.
 
     Reads/writes a list of edge ints (e.g. ``[1024, 1536]``). Never returns an
     empty list — unchecking everything falls back to ``[1024]`` (the legacy
     single ~1MP tier) so preprocess/train always have a valid tier.
+
+    The optional bucket checklist is a narrow preprocess-only filter. Empty
+    selection means "all buckets in the selected tiers".
 
     The 1280/1536 tiers are visually flagged as "dangerous" (high token count
     + extra compile graph / VRAM) via colour + an i18n tooltip.
@@ -115,10 +144,16 @@ class _TargetResWidget(QWidget):
         sel = {int(e) for e in selected} if selected else set()
         tiers, danger = _target_res_tiers()
         self._boxes: dict[int, QCheckBox] = {}
+        self._bucket_boxes: dict[tuple[int, int], QCheckBox] = {}
+        self._explicit_bucket_selection = False
         for edge in tiers:
-            cb = QCheckBox(str(edge))
+            edge_box = QWidget()
+            edge_lay = QHBoxLayout(edge_box)
+            edge_lay.setContentsMargins(0, 0, 0, 0)
+            edge_lay.setSpacing(2)
+            cb = QCheckBox()
             cb.setChecked(edge in sel)
-            cb.toggled.connect(self.changed)
+            cb.toggled.connect(self._on_tier_toggled)
             if edge in danger:
                 cb.setStyleSheet("QCheckBox { color: #d9822b; font-weight: bold; }")
                 cb.setToolTip(
@@ -128,13 +163,108 @@ class _TargetResWidget(QWidget):
                         tokens=danger[edge],
                     )
                 )
-            lay.addWidget(cb)
+            edge_lay.addWidget(cb)
+            toggle = QToolButton()
+            toggle.setText(str(edge))
+            toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+            toggle.setPopupMode(QToolButton.InstantPopup)
+            popup = QMenu(toggle)
+            panel = _BucketMenuPanel(popup)
+            panel_lay = QVBoxLayout(panel)
+            panel_lay.setContentsMargins(8, 4, 8, 4)
+            panel_lay.setSpacing(0)
+            for width, height in _target_res_buckets().get(edge, ()):
+                ratio = width / height
+                cb_bucket = QCheckBox(f"{width}x{height} ({ratio:.2f})")
+                cb_bucket.setMinimumHeight(22)
+                cb_bucket.setToolTip(t("target_res_bucket_tooltip", edge=edge))
+                cb_bucket.toggled.connect(self._on_bucket_toggled)
+                panel_lay.addWidget(cb_bucket)
+                self._bucket_boxes[(width, height)] = cb_bucket
+            action = QWidgetAction(popup)
+            action.setDefaultWidget(panel)
+            popup.addAction(action)
+            toggle.setMenu(popup)
+            if edge in danger:
+                toggle.setStyleSheet(
+                    "QToolButton { color: #d9822b; font-weight: bold; }"
+                )
+                toggle.setToolTip(
+                    t(
+                        "target_res_danger_tooltip",
+                        edge=edge,
+                        tokens=danger[edge],
+                    )
+                )
+            edge_lay.addWidget(toggle)
+            lay.addWidget(edge_box)
             self._boxes[edge] = cb
         lay.addStretch(1)
+        self.set_bucket_resos([])
 
     def value(self) -> list[int]:
         out = [e for e, cb in self._boxes.items() if cb.isChecked()]
         return out or [1024]
+
+    def bucket_resos(self) -> list[str]:
+        if not self._explicit_bucket_selection:
+            return []
+        selected_edges = set(self.value())
+        allowed = set()
+        for edge in selected_edges:
+            allowed.update(_target_res_buckets().get(edge, ()))
+        out = [
+            f"{width}x{height}"
+            for (width, height), cb in self._bucket_boxes.items()
+            if cb.isChecked() and (width, height) in allowed
+        ]
+        return out
+
+    def set_bucket_resos(self, values) -> None:
+        selected = set()
+        if isinstance(values, str):
+            selected = {
+                part.strip().lower().replace("×", "x")
+                for part in values.split(",")
+                if part.strip()
+            }
+        elif values:
+            selected = {
+                str(value).strip().lower().replace("×", "x") for value in values
+            }
+        self._explicit_bucket_selection = bool(selected)
+        for (width, height), cb in self._bucket_boxes.items():
+            cb.blockSignals(True)
+            cb.setChecked((not selected) or f"{width}x{height}" in selected)
+            cb.blockSignals(False)
+        self._refresh_bucket_enabled()
+
+    def _refresh_bucket_enabled(self) -> None:
+        selected_edges = set(self.value())
+        allowed = set()
+        for edge in selected_edges:
+            allowed.update(_target_res_buckets().get(edge, ()))
+        for bucket, cb in self._bucket_boxes.items():
+            cb.setEnabled(bucket in allowed)
+
+    def refresh_bucket_enabled(self) -> None:
+        self._refresh_bucket_enabled()
+
+    def _on_tier_toggled(self) -> None:
+        self._refresh_bucket_enabled()
+        self.changed.emit()
+
+    def _on_bucket_toggled(self) -> None:
+        checked = [cb.isChecked() for cb in self._bucket_boxes.values()]
+        if not any(checked):
+            sender = self.sender()
+            if isinstance(sender, QCheckBox):
+                sender.blockSignals(True)
+                sender.setChecked(True)
+                sender.blockSignals(False)
+            return
+        self._explicit_bucket_selection = not all(checked)
+        self.changed.emit()
 
 
 class _SamplePromptRow(QFrame):
@@ -872,6 +1002,8 @@ class DirtyTrackingMixin:
             w.currentTextChanged.connect(self._mark_dirty)
         elif isinstance(w, QCheckBox):
             w.toggled.connect(self._mark_dirty)
+        elif isinstance(w, QDoubleSpinBox):
+            w.valueChanged.connect(self._mark_dirty)
         elif isinstance(w, QSpinBox):
             w.valueChanged.connect(self._mark_dirty)
         elif isinstance(w, QLineEdit):

@@ -14,6 +14,7 @@ from pathlib import Path
 
 
 from library.datasets.curation_actions import load_curation_decisions
+from library.preprocess.resize_preview import RESIZE_CROP_ANCHORS
 from library.preprocess import resize_to_buckets, tqdm_progress
 
 # Re-exported for callers/tests that import the picklable worker directly
@@ -120,6 +121,42 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--resize_crop_anchor",
+        "--resize-crop-anchor",
+        dest="resize_crop_anchor",
+        choices=tuple(RESIZE_CROP_ANCHORS),
+        default="center",
+        help=(
+            "Anchor used when the cover-resize result needs cropping. "
+            "Default: center."
+        ),
+    )
+    parser.add_argument(
+        "--resize_bucket_resos",
+        "--resize-bucket-resos",
+        dest="resize_bucket_resos",
+        nargs="*",
+        default=None,
+        metavar="WxH",
+        help=(
+            "Optional allow-list of constant-token bucket resolutions, e.g. "
+            "1008x1024 1024x1008. Empty/unset uses every bucket in target_res."
+        ),
+    )
+    parser.add_argument(
+        "--resize_crop_margins",
+        "--resize-crop-margins",
+        dest="resize_crop_margins",
+        nargs=4,
+        type=float,
+        default=None,
+        metavar=("TOP", "RIGHT", "BOTTOM", "LEFT"),
+        help=(
+            "Percent margins cropped from source before bucket resize, in "
+            "top/right/bottom/left order. Default: 0 0 0 0."
+        ),
+    )
+    parser.add_argument(
         "--curation_decisions",
         "--curation-decisions",
         dest="curation_decisions",
@@ -163,6 +200,9 @@ def main() -> None:
             args.curation_decisions,
             source_dir=Path(args.src),
         ),
+        crop_anchor=args.resize_crop_anchor,
+        bucket_resos=args.resize_bucket_resos,
+        crop_margins=args.resize_crop_margins,
         progress=tqdm_progress("Resizing"),
     )
 
