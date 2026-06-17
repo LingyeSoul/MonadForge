@@ -924,9 +924,16 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
         spin.setSuffix("%")
-        # 0.0%–95.0% fits comfortably in ~72px incl. the step arrows; 128px left
-        # the four-up row needlessly wide. Cap so they don't stretch with the row.
-        spin.setMaximumWidth(72)
+        # Tighter arrow zone than the global theme so the compact field stays snug.
+        spin.setStyleSheet(
+            "QDoubleSpinBox { padding-right: 4px; }"
+            "QDoubleSpinBox::up-button { width: 16px; }"
+            "QDoubleSpinBox::down-button { width: 16px; margin-right: 16px; }"
+        )
+        # Right-align on the line-edit, after the stylesheet (setAlignment on the spinbox doesn't survive the styled rebuild).
+        line_edit = spin.lineEdit()
+        line_edit.setTextMargins(0, 0, 0, 0)
+        spin.setFixedWidth(84)
         spin.wheelEvent = lambda e: e.ignore()
         spin.valueChanged.connect(lambda _value: self.persist_target_res())
         return spin
