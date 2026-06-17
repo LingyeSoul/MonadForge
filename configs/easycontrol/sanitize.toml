@@ -21,7 +21,7 @@ name = "sanitize"
 # legacy name [miner] still accepted). Any --flag dest works as a key here.
 [staging]
 # Discriminator — set exactly one of: tag_any / tag / region (bool) / signal.
-tag_any = ["speech bubble", "thought bubble", "blank speech bubble", "spoken text", "english text", "japanese text", "sound effects", "text focus"]
+tag_any = ["speech bubble", "thought bubble", "blank speech bubble", "spoken text", "english text", "japanese text", "sound effects", "text focus", "zzz"]
 
 # Source trees (<dir>/<artist>/<id>.<ext>).
 image_dirs = ["{CAPTION_CORPUS_DIR}/retrieved"]

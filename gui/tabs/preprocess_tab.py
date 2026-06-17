@@ -924,7 +924,9 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         spin.setDecimals(1)
         spin.setSingleStep(1.0)
         spin.setSuffix("%")
-        spin.setMinimumWidth(128)
+        # 0.0%–95.0% fits comfortably in ~72px incl. the step arrows; 128px left
+        # the four-up row needlessly wide. Cap so they don't stretch with the row.
+        spin.setMaximumWidth(72)
         spin.wheelEvent = lambda e: e.ignore()
         spin.valueChanged.connect(lambda _value: self.persist_target_res())
         return spin
