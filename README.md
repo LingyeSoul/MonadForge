@@ -167,12 +167,12 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 - **精致的交互动效** — 卡片悬浮抬升、焦点发光环、按钮按压反馈、骨架屏加载、抖动错误提示
 - **深色模式优先** — 专为长时间训练场景优化的暗色界面
 
-#### 📡 任务系统（Task Service）
+#### 📡 任务系统（Daemon + Task Service）
 
-- 取代上游的独立守护进程设计，采用 **基于 Python asyncio 的轻量级任务调度**
-- 所有训练、预处理、合并操作均为后台任务，不阻塞 WebUI
-- 支持任务取消、日志实时流式查看、状态持久化
-- 多任务并行队列管理
+- WebUI 不再直接启动训练子进程，而是将训练、预处理、合并等操作提交给本地 **training daemon**
+- daemon 负责串行作业队列、GPU 守卫、进程树管理、任务取消与状态落盘，避免多个训练任务争抢显存
+- WebUI TaskService 作为适配层，尾随 daemon 的 `stdout.log` 与每个 job 独立的 `progress.jsonl`，再通过 WebSocket 推送日志、指标与预览图
+- 训练进度使用每任务隔离的 `output/daemon/jobs/<job_id>/progress.jsonl`，避免跨 run 复用 `output/logs/<output_name>.progress.jsonl` 导致旧数据串入
 
 ---
 
@@ -185,7 +185,7 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 | **GUI 框架** | FastAPI + Vue 3 + Vuetify 3 (WebUI) | PySide6 (Qt 桌面应用) |
 | **前端构建** | Vite + TypeScript + Sass | 无（纯 Python Qt） |
 | **通信方式** | HTTP REST + WebSocket | 本地进程间通信 / 文件系统轮询 |
-| **任务调度** | 内置 asyncio TaskService | 外部 Python daemon 进程 |
+| **任务调度** | 本地 training daemon 串行队列 + WebUI TaskService 适配层 | 外部 Python daemon 进程 |
 | **更新机制** | `make update` 支持 + 内置更新器 | 仅 `make update` |
 | **跨平台** | 浏览器统一体验，完全一致 | Qt 平台差异（Linux 字体渲染等） |
 
@@ -210,7 +210,7 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 | 改进项 | 说明 |
 |--------|------|
 | **移除 PySide6** | 完全移除 Qt 依赖，减少 ~200MB 安装体积，消除跨平台字体/渲染问题 |
-| **移除 GUI Daemon** | 训练守护进程与 WebUI TaskService 合并，简化架构，消除进程间通信复杂度 |
+| **Daemon 托管 WebUI** | 训练守护进程成为任务调度中心并可托管 WebUI sidecar；WebUI 只做提交、订阅与展示，训练任务即使浏览器关闭也会继续运行 |
 | **Windows 原生优化** | 专用 `setup-win.bat` / `start-webui-win.bat`，自动处理 Defender 排除、Node 便携版、无窗口训练进程 |
 | **前端独立构建** | Vue SPA 独立构建输出到 `dist/`，支持 CDN 部署或内嵌到 FastAPI StaticFiles |
 | **SPA 路由回退** | 支持直接刷新 `/dashboard`、`/config` 等子路由，不会 404 |
