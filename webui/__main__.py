@@ -16,7 +16,16 @@ def _ensure_daemon() -> None:
     GPU guard + persistence). If the daemon can't start the WebUI still serves
     config/dataset browsing, but starting a task will surface a clear error.
     Failures here are warnings only — never block the WebUI from booting.
+
+    Skipped when the WebUI was itself launched *by* the daemon as a sidecar
+    (the daemon sets ``ANIMA_DAEMON_HOST_WEBUI=1`` on the child) — re-attaching
+    would be a no-op that only adds boot latency.
     """
+    import os
+
+    if os.environ.get("ANIMA_DAEMON_HOST_WEBUI") == "1":
+        logger.info("launched by the daemon; skipping ensure_daemon")
+        return
     try:
         from scripts.daemon import client as _dclient
 

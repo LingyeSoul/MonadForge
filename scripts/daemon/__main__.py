@@ -92,11 +92,25 @@ def main() -> int:
         server.server_address[1],
         os.getpid(),
     )
+
+    # Host the WebUI as a supervised sidecar (env-toggleable, default on). It
+    # runs as a detached subprocess on its own monitor thread — NOT a job — so
+    # it never blocks the serial queue or trips the stall watchdog. Disabled
+    # for CLI/ComfyUI-only setups via ANIMA_DAEMON_HOST_WEBUI=0.
+    from . import webui_sidecar
+
+    webui = None
+    if webui_sidecar.is_enabled():
+        webui = webui_sidecar.WebUISidecar(port=webui_sidecar.resolve_port())
+        webui.start()
+
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         manager.shutdown(kill_jobs=False)
     finally:
+        if webui is not None:
+            webui.stop()
         for pid_path in (config.PIDFILE, config.global_pidfile()):
             try:
                 pid_path.unlink()

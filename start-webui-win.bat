@@ -1,12 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Starting MonadForge WebUI...
-echo Access at http://127.0.0.1:8000
-REM Launch the tray (daemon status indicator) in the background — it also
-REM ensures the training daemon is up. Non-fatal if it fails.
+echo Starting MonadForge (daemon + WebUI + tray)...
+echo WebUI at http://127.0.0.1:8000  (daemon brings it up)
+REM The tray also ensures the daemon is up; it can run alongside safely.
 start "" .venv\Scripts\pythonw.exe -m scripts.tray
-start /B "" .venv\Scripts\python.exe -m webui %*
-timeout /t 3 /nobreak >nul
+REM Launch the daemon in the foreground — it spawns the WebUI as a
+REM supervised sidecar and owns it until the daemon stops.
+.venv\Scripts\python.exe tasks.py daemon %*
+timeout /t 4 /nobreak >nul
 start http://127.0.0.1:8000
-pause

@@ -3,7 +3,10 @@
 A small ``pystray`` system-tray app that reflects the local training daemon's
 state (idle / running / error / down) and exposes the handful of control
 actions a user wants without opening the WebUI: open the WebUI, pause/resume
-the queue, stop the active job, restart the daemon, quit.
+the queue, stop the active job, restart the daemon, quit. The menu + tooltips
+are localized (Chinese/English) via the tray's own language choice
+(:mod:`scripts.tray.i18n` + :mod:`scripts.tray.prefs`) — independent of the
+WebUI's language.
 
 The tray is a *separate* process from the WebUI and the daemon — it is a
 localhost client like any other (it speaks the daemon's HTTP surface via
@@ -46,13 +49,43 @@ class TrayApp:
         self._icon: Optional[pystray.Icon] = None
         self._stop = threading.Event()
         self._poll_thread: Optional[threading.Thread] = None
+        # Tray language (own choice, persisted — does not follow the WebUI).
+        from scripts.tray.i18n import LANGUAGES, normalize_lang
+        from scripts.tray.prefs import load_language
+
+        self._lang = normalize_lang(load_language())
+        self._languages = LANGUAGES
         # Last known state for tooltip + flicker animation.
         self._state = "down"
-        self._tooltip = "MonadForge — daemon not running"
         self._active_job: Optional[dict] = None
         self._last_error: Optional[str] = None
         self._frame = 0
         self._paused = False
+        self._tooltip = self._brand("daemon not running")
+
+    # ── i18n ────────────────────────────────────────────────────────────
+
+    def _tr(self, label: str, **fmt) -> str:
+        from scripts.tray.i18n import tr
+
+        return tr(label, self._lang, **fmt)
+
+    def _brand(self, suffix_key: str, **fmt) -> str:
+        """Build a ``"MonadForge — <translated suffix>"`` tooltip."""
+        return f"MonadForge — {self._tr(suffix_key, **fmt)}"
+
+    def _set_language(self, lang: str) -> None:
+        """Switch language: persist, refresh menu (tooltips reflow next tick)."""
+        from scripts.tray.prefs import save_language
+
+        if lang == self._lang or lang not in self._languages:
+            return
+        self._lang = lang
+        save_language(lang)
+        # Rebuild the state suffix in the new language right away.
+        self._tick()
+        if self._icon is not None:
+            self._icon.update_menu()
 
     # ── icon / tooltip ─────────────────────────────────────────────────
 
@@ -92,7 +125,7 @@ class TrayApp:
             health = daemon_client.health_sync()
         except DaemonError:
             self._state = "down"
-            self._tooltip = "MonadForge — daemon not running"
+            self._tooltip = self._brand("daemon not running")
             self._active_job = None
             self._refresh_icon()
             return
@@ -109,27 +142,27 @@ class TrayApp:
             self._active_job = job
             self._state = "running"
             label = job.get("method") or job.get("label") or "job"
-            step_hint = ""
+            step = ""
             latest = (
                 (job.get("latest") or {}).get("data")
                 if isinstance(job.get("latest"), dict)
                 else None
             )
             if isinstance(latest, dict) and "global_step" in latest:
-                step_hint = f" (step {latest['global_step']})"
-            self._tooltip = f"MonadForge — running {label}{step_hint}"
+                step = self._tr("(step {n})", n=latest["global_step"])
+            self._tooltip = self._brand("running {label}{step}", label=label, step=step)
         else:
             self._active_job = None
             # Retain an error indicator briefly after a job fails, else idle.
             if self._last_error:
                 self._state = "error"
-                self._tooltip = (
-                    f"MonadForge — last job errored: {self._last_error[:48]}"
+                self._tooltip = self._brand(
+                    "last job errored: {err}", err=self._last_error[:48]
                 )
             else:
                 self._state = "idle"
-                suffix = " (paused)" if self._paused else ""
-                self._tooltip = f"MonadForge — idle{suffix}"
+                suffix = self._tr("(paused)") if self._paused else ""
+                self._tooltip = self._brand("idle") + suffix
         self._refresh_icon()
 
     # ── menu actions ───────────────────────────────────────────────────
@@ -195,24 +228,52 @@ class TrayApp:
             return self._tooltip
 
         def _queue_label(_item):
-            return "Resume queue" if self._paused else "Pause queue"
+            return self._tr("Resume queue" if self._paused else "Pause queue")
 
         def _stop_enabled(_item):
             return self._active_job is not None
 
+        def _lang_label(_item):
+            return self._tr("Language")
+
+        def _lang_radio(item, lang):
+            # pystray radio: the callback receives the currently-selected item.
+            self._set_language(lang)
+
+        # A submenu of one radio item per language. pystray renders a checked
+        # mark on the item whose `radio` group matches the current state; we
+        # approximate that with a per-item dynamic checked flag.
+        lang_items = [
+            MenuItem(
+                lambda _i, lng=lng: self._tr("English" if lng == "en" else "Chinese"),
+                lambda _i, lng=lng: self._set_language(lng),
+                checked=lambda _i, lng=lng: self._lang == lng,
+            )
+            for lng in self._languages
+        ]
+
         return self._pystray.Menu(
             MenuItem(_state_label, None, enabled=False),
             self._pystray.Menu.SEPARATOR,
-            MenuItem("Open WebUI", lambda: self._open_webui(), default=True),
+            MenuItem(
+                lambda _i: self._tr("Open WebUI"),
+                lambda: self._open_webui(),
+                default=True,
+            ),
             MenuItem(_queue_label, lambda: self._toggle_queue()),
             MenuItem(
-                "Stop active job",
+                lambda _i: self._tr("Stop active job"),
                 lambda: self._stop_active_job(),
                 enabled=_stop_enabled,
             ),
-            MenuItem("Restart daemon", lambda: self._restart_daemon()),
+            MenuItem(
+                lambda _i: self._tr("Restart daemon"),
+                lambda: self._restart_daemon(),
+            ),
             self._pystray.Menu.SEPARATOR,
-            MenuItem("Quit", lambda: self._quit()),
+            MenuItem(_lang_label, self._pystray.Menu(*lang_items)),
+            self._pystray.Menu.SEPARATOR,
+            MenuItem(lambda _i: self._tr("Quit"), lambda: self._quit()),
         )
 
     # ── lifecycle ──────────────────────────────────────────────────────

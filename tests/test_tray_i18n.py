@@ -1,0 +1,158 @@
+"""Tests for the tray's self-contained i18n + language prefs.
+
+No pystray / GUI needed — these cover the string table lookup, fallback,
+formatting, and the on-disk preference round-trip.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+from scripts.tray.i18n import (
+    DEFAULT_LANGUAGE,
+    LANGUAGES,
+    STRINGS,
+    language_label,
+    normalize_lang,
+    tr,
+)
+
+
+# ── tr() lookup / fallback / formatting ──────────────────────────────
+
+
+def test_tr_translates_known_key_to_chinese():
+    assert tr("Open WebUI", "cn") == "打开 WebUI"
+
+
+def test_tr_falls_back_to_english_key_for_missing_translation():
+    # "English" has no "cn" entry → falls back to the English key.
+    assert tr("English", "cn") == "English"
+
+
+def test_tr_falls_back_to_raw_label_for_unknown_key():
+    assert tr("Completely Unknown", "cn") == "Completely Unknown"
+
+
+def test_tr_formats_placeholders():
+    out = tr("running {label}{step}", "cn", label="lora", step="（步 450）")
+    assert out == "正在运行 lora（步 450）"
+
+
+def test_tr_leaves_unknown_placeholders_verbatim():
+    # A placeholder not in fmt stays as {name} rather than raising KeyError.
+    out = tr("running {label}{step}", "cn", label="lora")
+    assert "{step}" in out
+
+
+def test_tr_no_fmt_args_returns_plain_translation():
+    assert tr("Quit", "cn") == "退出"
+
+
+def test_every_menu_string_has_cn_translation():
+    """All user-facing menu keys must be localized for the default (cn) locale."""
+    menu_keys = [
+        "Open WebUI",
+        "Pause queue",
+        "Resume queue",
+        "Stop active job",
+        "Restart daemon",
+        "Quit",
+        "Language",
+        # "English" / "Chinese" are intentionally left as-is (language names).
+    ]
+    for key in menu_keys:
+        assert key in STRINGS, f"missing string key: {key!r}"
+        assert "cn" in STRINGS[key], f"missing cn translation for {key!r}"
+        assert STRINGS[key]["cn"], f"empty cn translation for {key!r}"
+
+
+# ── language helpers ─────────────────────────────────────────────────
+
+
+def test_default_language_is_chinese():
+    assert DEFAULT_LANGUAGE == "cn"
+
+
+def test_languages_are_en_and_cn():
+    assert set(LANGUAGES) == {"en", "cn"}
+
+
+def test_normalize_lang_accepts_supported():
+    assert normalize_lang("en") == "en"
+    assert normalize_lang("cn") == "cn"
+
+
+def test_normalize_lang_falls_back_for_unsupported():
+    assert normalize_lang("ja") == "en"
+    assert normalize_lang("xyz") == "en"
+
+
+def test_normalize_lang_uses_default_for_empty():
+    assert normalize_lang(None) == DEFAULT_LANGUAGE
+    assert normalize_lang("") == DEFAULT_LANGUAGE
+
+
+def test_language_label():
+    assert language_label("cn") == "中文"
+    assert language_label("en") == "English"
+    assert language_label("??") == "??"
+
+
+# ── prefs persistence (disk round-trip) ──────────────────────────────
+
+
+def test_prefs_save_and_load_roundtrip(tmp_path: Path, monkeypatch):
+    from scripts.tray import prefs
+
+    # Redirect the prefs file into the tmp dir so the test is hermetic.
+    prefs_file = tmp_path / "tray-prefs.json"
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+
+    prefs.save_language("cn")
+    assert prefs_file.is_file()
+    assert prefs.load_language() == "cn"
+
+    prefs.save_language("en")
+    assert prefs.load_language() == "en"
+
+
+def test_prefs_load_returns_default_when_missing(tmp_path: Path, monkeypatch):
+    from scripts.tray import prefs
+
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", tmp_path / "tray-prefs.json")
+    assert prefs.load_language() == DEFAULT_LANGUAGE
+
+
+def test_prefs_load_returns_default_when_corrupt(tmp_path: Path, monkeypatch):
+    from scripts.tray import prefs
+
+    prefs_file = tmp_path / "tray-prefs.json"
+    prefs_file.write_text("{not valid json", encoding="utf-8")
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+    assert prefs.load_language() == DEFAULT_LANGUAGE
+
+
+def test_prefs_ignores_unsupported_language_on_load(tmp_path: Path, monkeypatch):
+    from scripts.tray import prefs
+
+    prefs_file = tmp_path / "tray-prefs.json"
+    prefs_file.write_text(json.dumps({"language": "klingon"}), encoding="utf-8")
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+    assert prefs.load_language() == DEFAULT_LANGUAGE
+
+
+def test_prefs_save_ignores_unsupported_language(tmp_path: Path, monkeypatch):
+    from scripts.tray import prefs
+
+    prefs_file = tmp_path / "tray-prefs.json"
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+    prefs.save_language("klingon")  # no-op
+    assert not prefs_file.exists()
