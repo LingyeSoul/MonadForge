@@ -7,9 +7,9 @@ has *not yet resolved* at that step (per the precomputed completion matrix
 γ(f, t)). It is a zero-sum reallocation of a fixed variance budget — not a
 global noise scale-up — so RMS renormalization (paper §A) is load-bearing.
 
-The completion matrix is produced offline by ``bench/cns/calibrate.py`` (cfg=4.0,
+The completion matrix is produced offline by ``scripts/calibration/cns_calibrate.py`` (cfg=4.0,
 top-3 aspects) and shipped as ``networks/calibration/cns_gamma.npz``. This module
-only *consumes* it. Phase plan + premise: ``bench/cns/plan.md``; the γ premise is
+only *consumes* it. Phase plan + premise: ``_archive/bench/cns/plan.md``; the γ premise is
 independently corroborated by ``project_sigma_signal_resolves_by_045``.
 
 Seam: ``ERSDESampler._sample_noise`` (``library/inference/sampling.py``). CNS is a
@@ -38,7 +38,7 @@ DEFAULT_GAMMA_PATH = "networks/calibration/cns_gamma.npz"
 def radial_bins(h: int, w: int, n_bins: int) -> tuple[np.ndarray, np.ndarray]:
     """Radial-frequency bin index per FFT cell + bin centers in [0, 1].
 
-    Kept identical to ``bench/cns/gamma_probe.py::_radial_bins`` (library may not
+    Kept identical to ``scripts/calibration/gamma_probe.py::_radial_bins`` (library may not
     import from bench/). The normalization (r / r.max()) makes the bin *centers*
     independent of (h, w), so a γ matrix calibrated at one aspect's grid maps
     cleanly onto another shape's radial map by bin index.
@@ -106,7 +106,7 @@ class CNSRecolorer:
         if not Path(resolved).exists():
             raise FileNotFoundError(
                 f"CNS calibration not found: {resolved}. Generate it with "
-                "`python bench/cns/calibrate.py` (cfg=4.0, top-3 aspects)."
+                "`python scripts/calibration/cns_calibrate.py` (cfg=4.0, top-3 aspects)."
             )
         d = np.load(resolved)
         return cls(d["gamma"], d["aspects"], d["sigmas"], strength=strength)

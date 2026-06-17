@@ -472,7 +472,7 @@ def build_parser() -> argparse.ArgumentParser:
     # injected noise by sqrt(1-γ) from a precomputed completion matrix so the
     # fixed stochastic budget lands in unresolved frequency bands. Training-free,
     # er_sde-only (no-op on euler). γ is calibrated per (cfg×aspect) by
-    # bench/cns/calibrate.py. See docs/methods (bench/cns/plan.md).
+    # scripts/calibration/cns_calibrate.py. See docs/methods (_archive/bench/cns/plan.md).
     parser.add_argument(
         "--cns",
         type=str,

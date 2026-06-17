@@ -26,14 +26,14 @@ once. The three default aspects are all token-count 4200, so `--compile`'s
 `compile_blocks` builds ONE native-flatten graph reused across every aspect.
 
 Run from repo root (anima_lora/):
-    python bench/cns/calibrate.py --cfg 4.0 --n_aspects 3            # compiled (default)
-    python bench/cns/calibrate.py --cfg 4.0 --no-compile            # eager
+    python scripts/calibration/cns_calibrate.py --cfg 4.0 --n_aspects 3   # compiled (default)
+    python scripts/calibration/cns_calibrate.py --cfg 4.0 --no-compile    # eager
     # probe the adapter instead of base (γ is LoRA-transparent per Phase 0):
-    python bench/cns/calibrate.py --cfg 4.0 --extra --lora_weight output/ckpt/<x>.safetensors
+    python scripts/calibration/cns_calibrate.py --cfg 4.0 --extra --lora_weight output/ckpt/<x>.safetensors
 
 Output:
     networks/calibration/cns_gamma.npz   (the shipped artifact `--cns auto` loads)
-    bench/cns/results/<ts>-calib-cfg<c>/   (bench record: result.json + heatmaps)
+    (a per-aspect σ50 staircase summary prints to stdout — no report file)
 """
 
 from __future__ import annotations
@@ -50,7 +50,6 @@ import numpy as np
 import torch
 
 from anima_lora import GenerationRequest, default_checkpoints, get_generation_settings
-from bench._common import make_run_dir, write_result
 from library.datasets.buckets import DCW_ASPECT_BUCKETS
 from library.env import resolve_under_home
 from library.inference.generation import generate
@@ -90,7 +89,9 @@ def _sample_real_prompts(n: int) -> list[str]:
     cache_root = resolve_under_home(LORA_CACHE_DIR)
     cap_root = resolve_under_home(CAPTION_DIR)
     if not cache_root.exists() or not cap_root.exists():
-        print(f"  ! dataset not found ({cache_root} / {cap_root}); using DEFAULT_PROMPTS")
+        print(
+            f"  ! dataset not found ({cache_root} / {cap_root}); using DEFAULT_PROMPTS"
+        )
         return list(DEFAULT_PROMPTS)
 
     cands: list[tuple[int, str, str]] = []  # (n_tags, artist, caption)
@@ -129,10 +130,17 @@ def _sample_real_prompts(n: int) -> list[str]:
 def _make_args(args, prompt, hw, seed, extra, device):
     """Build a per-call inference namespace (euler ODE, latent out) at (H,W)=hw."""
     req = GenerationRequest(
-        dit=args.dit, vae=args.vae, text_encoder=args.text_encoder,
-        prompt=prompt, image_size=(hw[0], hw[1]), infer_steps=args.steps,
-        guidance_scale=args.cfg, flow_shift=args.flow_shift,
-        sampler="euler", seed=seed, output_type="latent",
+        dit=args.dit,
+        vae=args.vae,
+        text_encoder=args.text_encoder,
+        prompt=prompt,
+        image_size=(hw[0], hw[1]),
+        infer_steps=args.steps,
+        guidance_scale=args.cfg,
+        flow_shift=args.flow_shift,
+        sampler="euler",
+        seed=seed,
+        output_type="latent",
         extra_argv=tuple(extra),
     )
     ns = req.to_args()
@@ -148,35 +156,53 @@ def main() -> None:
     p.add_argument("--flow_shift", type=float, default=3.0)
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
     p.add_argument("--n_bins", type=int, default=32, help="Radial frequency bins (F).")
-    p.add_argument("--n_prompts", type=int, default=4,
-                   help="How many real captions to sample (distinct artists, most tags).")
-    p.add_argument("--prompts_file", type=str, default=None,
-                   help="One prompt per line; overrides real-caption sampling.")
-    p.add_argument("--out", type=str, default=DEFAULT_OUT, help="Calibration npz path.")
     p.add_argument(
-        "--average_aspects", action=argparse.BooleanOptionalAction, default=True,
-        help="Ship one aspect-averaged γ (shape (1,T,F)) — cross-aspect variation "
-        "is cosmetic (β MAD ~0.01), so a single γ serves any resolution. "
-        "--no-average-aspects keeps the per-aspect (A,T,F) table. The bench "
-        "record under results/ always keeps the full per-aspect γ for audit.",
+        "--n_prompts",
+        type=int,
+        default=4,
+        help="How many real captions to sample (distinct artists, most tags).",
     )
     p.add_argument(
-        "--compile", action=argparse.BooleanOptionalAction, default=True,
+        "--prompts_file",
+        type=str,
+        default=None,
+        help="One prompt per line; overrides real-caption sampling.",
+    )
+    p.add_argument("--out", type=str, default=DEFAULT_OUT, help="Calibration npz path.")
+    p.add_argument(
+        "--average_aspects",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Ship one aspect-averaged γ (shape (1,T,F)) — cross-aspect variation "
+        "is cosmetic (β MAD ~0.01), so a single γ serves any resolution. "
+        "--no-average-aspects keeps the full per-aspect (A,T,F) table instead.",
+    )
+    p.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
         help="Load the DiT once and compile_blocks it (1 graph for the default "
         "3×4200-token aspects). --no-compile runs eager. Compile-after-apply is "
         "respected (load_dit_model compiles post adapter-attach).",
     )
-    p.add_argument("--label", type=str, default=None)
     p.add_argument("--dit", type=str, default=DIT)
     p.add_argument("--vae", type=str, default=VAE)
     p.add_argument("--text_encoder", type=str, default=TEXT_ENCODER)
-    p.add_argument("--extra", nargs=argparse.REMAINDER, default=[],
-                   help="Verbatim extra inference flags (e.g. --lora_weight <path>). Last.")
+    p.add_argument(
+        "--extra",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="Verbatim extra inference flags (e.g. --lora_weight <path>). Last.",
+    )
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.prompts_file:
-        prompts = [ln.strip() for ln in Path(args.prompts_file).read_text().splitlines() if ln.strip()]
+        prompts = [
+            ln.strip()
+            for ln in Path(args.prompts_file).read_text().splitlines()
+            if ln.strip()
+        ]
     else:
         print(f"sampling {args.n_prompts} real captions from {LORA_CACHE_DIR} ...")
         prompts = _sample_real_prompts(args.n_prompts)
@@ -191,7 +217,9 @@ def main() -> None:
     # ---- load the DiT ONCE (and compile), reused across every trajectory -----
     base_args = _make_args(args, prompts[0], aspects[0], args.seeds[0], extra, device)
     settings = get_generation_settings(base_args)
-    print(f"loading DiT (compile={args.compile}) — one graph for {len(aspects)} aspects ...")
+    print(
+        f"loading DiT (compile={args.compile}) — one graph for {len(aspects)} aspects ..."
+    )
     anima = load_dit_model(base_args, device, torch.bfloat16)
     shared = {"model": anima}
 
@@ -223,24 +251,36 @@ def main() -> None:
                 ca = _make_args(args, prompt, hw, seed, extra, device)
                 with _StepCapture() as cap, torch.no_grad():
                     latent = generate(
-                        ca, settings, shared_models=shared,
+                        ca,
+                        settings,
+                        shared_models=shared,
                         precomputed_text_data=text_by_prompt[prompt],
                     )
                 if len(cap.x0_preds) != args.steps:
-                    print(f"    ! {hw[0]}x{hw[1]} seed={seed}: {len(cap.x0_preds)} steps; skip")
+                    print(
+                        f"    ! {hw[0]}x{hw[1]} seed={seed}: {len(cap.x0_preds)} steps; skip"
+                    )
                     continue
                 x0_final = latent.float().squeeze(0).squeeze(1).cpu().numpy()  # (C,H,W)
-                per_traj.append(_gamma_for_trajectory(cap.x0_preds, x0_final, bin_idx, args.n_bins))
+                per_traj.append(
+                    _gamma_for_trajectory(cap.x0_preds, x0_final, bin_idx, args.n_bins)
+                )
                 sigmas_ref = cap.sigmas if sigmas_ref is None else sigmas_ref
-                print(f"    ok: {hw[0]}x{hw[1]} seed={seed} '{prompt[:32]}...' ({len(per_traj)} traj)")
+                print(
+                    f"    ok: {hw[0]}x{hw[1]} seed={seed} '{prompt[:32]}...' ({len(per_traj)} traj)"
+                )
 
         if not per_traj:
-            raise SystemExit(f"No trajectories captured at {hw[0]}x{hw[1]} — check paths.")
+            raise SystemExit(
+                f"No trajectories captured at {hw[0]}x{hw[1]} — check paths."
+            )
         g = np.mean(np.stack(per_traj, 0), 0)  # (T, F)
         gammas.append(g)
         centers_ref = centers if centers_ref is None else centers_ref
         sig_mid = sigmas_ref[:-1]
-        s50 = np.array([_sigma_at_gamma_half(g[:, f], sig_mid) for f in range(args.n_bins)])
+        s50 = np.array(
+            [_sigma_at_gamma_half(g[:, f], sig_mid) for f in range(args.n_bins)]
+        )
         lo, hi = int(args.n_bins * 0.15), int(args.n_bins * 0.85)
         spread = float(np.nanmean(s50[: lo + 1]) - np.nanmean(s50[hi:]))
         agg = _sigma_at_gamma_half(g.mean(axis=1), sig_mid)
@@ -262,59 +302,28 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(
         out_path,
-        gamma=ship_gamma, aspects=ship_aspects, sigmas=sigmas_ref,
-        radial_centers=centers_ref, cfg=np.float32(args.cfg),
-        flow_shift=np.float32(args.flow_shift), steps=np.int32(args.steps),
-        source_aspects=aspects_arr, averaged=np.bool_(args.average_aspects),
+        gamma=ship_gamma,
+        aspects=ship_aspects,
+        sigmas=sigmas_ref,
+        radial_centers=centers_ref,
+        cfg=np.float32(args.cfg),
+        flow_shift=np.float32(args.flow_shift),
+        steps=np.int32(args.steps),
+        source_aspects=aspects_arr,
+        averaged=np.bool_(args.average_aspects),
     )
-    print(f"\nwrote calibration → {out_path}  (gamma {ship_gamma.shape}, "
-          f"averaged={args.average_aspects})")
-
-    # Bench record (heatmaps + envelope) under results/.
-    run_dir = make_run_dir("cns", label=args.label or f"calib-cfg{args.cfg:g}")
-    np.savez(run_dir / "cns_gamma.npz", gamma=gamma, aspects=aspects_arr,
-             sigmas=sigmas_ref, radial_centers=centers_ref)
-    artifacts = ["cns_gamma.npz"]
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-
-        sig_mid = sigmas_ref[:-1]
-        ext = [centers_ref[0], centers_ref[-1], sig_mid[-1], sig_mid[0]]
-        fig, ax = plt.subplots(1, len(aspects), figsize=(5 * len(aspects), 4.2), squeeze=False)
-        for j, hw in enumerate(aspects):
-            im = ax[0][j].imshow(gamma[j], aspect="auto", origin="lower", extent=ext,
-                                 vmin=0, vmax=1, cmap="viridis")
-            ax[0][j].set(title=f"γ {hw[0]}x{hw[1]} (spread {s50_spreads[j]:+.2f})",
-                         xlabel="radial freq f", ylabel="σ (→0 done)")
-            fig.colorbar(im, ax=ax[0][j])
-        fig.tight_layout()
-        fig.savefig(run_dir / "gamma_matrix.png", dpi=110)
-        artifacts.append("gamma_matrix.png")
-    except Exception as e:
-        print(f"  (plot skipped: {e})")
-
-    metrics = {
-        "cfg": args.cfg,
-        "compile": args.compile,
-        "n_aspects": len(aspects),
-        "aspects_hw": [list(hw) for hw in aspects],
-        "steps": args.steps,
-        "n_bins": args.n_bins,
-        "staircase_s50_spread": s50_spreads,
-        "aggregate_s50": agg_s50s,
-        "out_path": str(out_path),
-    }
-    write_result(run_dir, script=__file__, args=args, metrics=metrics,
-                 label=args.label, artifacts=artifacts, device=device)
+    print(
+        f"\nwrote calibration → {out_path}  (gamma {ship_gamma.shape}, "
+        f"averaged={args.average_aspects})"
+    )
 
     print("\n=== CNS calibration ===")
     for hw, sp, ag in zip(aspects, s50_spreads, agg_s50s):
         print(f"  {hw[0]}x{hw[1]}: σ50 spread {sp:+.3f}  aggregate {ag:.3f}")
     print(f"  artifact → {out_path}")
-    print(f"  record   → {run_dir}")
-    print("  next: A/B `--sampler er_sde --cns auto` vs er_sde white, CMMD + read grids.")
+    print(
+        "  next: A/B `--sampler er_sde --cns auto` vs er_sde white, CMMD + read grids."
+    )
 
 
 if __name__ == "__main__":

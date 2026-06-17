@@ -31,15 +31,16 @@ inputs (image patch tokens), and the remediation differs.
 Usage
 -----
     # Regenerate the vendored calibration consumed by channel_scaling_alpha > 0:
-    python bench/channel_stats/analyze_lora_input_channels.py --per_artist \\
+    python scripts/calibration/analyze_lora_input_channels.py --per_artist \\
         --dit models/diffusion_models/anima-base-v1.0.safetensors \\
-        --dump_channel_stats networks/calibration/channel_stats.safetensors \\
-        --out_json bench/channel_stats/results/channel_dominance_base.json
+        --dump_channel_stats networks/calibration/channel_stats.safetensors
 
     # With a trained adapter (channel stats from LoRA-wrapped linears' inputs):
-    python bench/channel_stats/analyze_lora_input_channels.py \\
+    python scripts/calibration/analyze_lora_input_channels.py \\
         --lora_weight output/anima-tlora-0415-12.safetensors \\
-        --out_json bench/channel_stats/results/channel_dominance_0415-12.json
+        --dump_channel_stats networks/calibration/channel_stats.safetensors
+
+The dominance analysis prints to stdout; the safetensors is the only file written.
 
 Separating sinks from DC bias
 -----------------------------
@@ -52,21 +53,24 @@ dominant channel. Interpretation:
 """
 
 import argparse
-import glob
-import json
 import logging
 import os
 from collections import defaultdict
 
 import numpy as np
 import torch
-from safetensors.torch import load_file, save_file
+from safetensors.torch import save_file
 
-
-from bench._anima import DEFAULT_DIT
-from library.anima import weights as anima_utils
+from anima_lora import default_checkpoints
+from library.io.cache import (
+    discover_cached_pairs,
+    load_cached_crossattn_emb,
+    load_cached_latents,
+)
 from library.log import setup_logging
-from networks import lora_anima
+from library.runtime.harness import build_anima
+
+DEFAULT_DIT = default_checkpoints().dit
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -109,7 +113,6 @@ def parse_args():
     p.add_argument("--attn_mode", default="flash")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--top_k_channels", type=int, default=8)
-    p.add_argument("--out_json", default=None)
     p.add_argument(
         "--dump_channel_stats",
         default=None,
@@ -179,30 +182,18 @@ def dump_channel_stats_safetensors(stats, out_path, prefix="lora_unet_"):
 
 
 def find_sample_stems(dataset_dir, n, seed, per_artist=False, per_artist_n=1):
-    # Walk recursively — post-2026-04 the dataset is nested by artist subdir.
-    te_files = sorted(
-        glob.glob(
-            os.path.join(dataset_dir, "**", "*_anima_te.safetensors"), recursive=True
-        )
-    )
-    if not te_files:
-        raise FileNotFoundError(f"no *_anima_te.safetensors found in {dataset_dir}")
-
-    stems = []
-    for te_path in te_files:
-        sub_dir = os.path.dirname(te_path)
-        base = os.path.basename(te_path).replace("_anima_te.safetensors", "")
-        npz_candidates = [
-            p
-            for p in glob.glob(os.path.join(sub_dir, f"{base}_*_anima.npz"))
-            if "flip" not in os.path.basename(p)
-        ]
-        if not npz_candidates:
-            continue
-        stems.append((base, npz_candidates[0], te_path))
-
-    if not stems:
+    # discover_cached_pairs walks recursively (post-2026-04 the dataset is nested
+    # by artist subdir) and pairs each TE sidecar with its latent NPZ; we only add
+    # the flip-variant skip the calibration wants (flip latents live in *_flip*.npz).
+    pairs = [
+        c
+        for c in discover_cached_pairs(dataset_dir)
+        if "flip" not in os.path.basename(c.npz_path)
+    ]
+    if not pairs:
         raise FileNotFoundError(f"no paired latent/TE samples in {dataset_dir}")
+    # Keep the historical (base, npz_path, te_path) tuple shape downstream relies on.
+    stems = [(c.stem, c.npz_path, c.te_path) for c in pairs]
 
     rng = np.random.default_rng(seed)
     if per_artist:
@@ -229,28 +220,6 @@ def find_sample_stems(dataset_dir, n, seed, per_artist=False, per_artist_n=1):
         idx = rng.choice(len(stems), size=n, replace=False)
         stems = [stems[i] for i in sorted(idx.tolist())]
     return stems
-
-
-def load_latent_npz(npz_path):
-    z = np.load(npz_path)
-    lat_key = next(
-        (k for k in z.files if k.startswith("latents_") and "flip" not in k), None
-    )
-    if lat_key is None:
-        raise KeyError(f"no latents_* key in {npz_path}")
-    lat = torch.from_numpy(z[lat_key]).float()  # [C, H, W]
-    return lat
-
-
-def load_cached_te(te_path):
-    sd = load_file(te_path)
-    key = "crossattn_emb_v0" if "crossattn_emb_v0" in sd else "crossattn_emb"
-    if key not in sd:
-        raise KeyError(f"no crossattn_emb* key in {te_path}: {list(sd.keys())[:5]}")
-    emb = sd[key].float()  # [L, D]
-    if emb.ndim == 2:
-        emb = emb.unsqueeze(0)  # [1, L, D]
-    return emb
 
 
 def install_channel_hooks(model: torch.nn.Module):
@@ -409,58 +378,20 @@ def main():
     sigmas = [float(s.strip()) for s in args.sigmas.split(",") if s.strip()]
     logger.info(f"sigmas: {sigmas}")
 
-    logger.info(f"loading DiT from {args.dit}")
-    anima = anima_utils.load_anima_model(
-        device=device,
-        dit_path=args.dit,
-        attn_mode=args.attn_mode,
-        loading_device=device,
-        dit_weight_dtype=torch.bfloat16,
-    )
-    anima.eval().requires_grad_(False)
-    # load_anima_model places state_dict tensors but not non-persistent
-    # buffers like _mod_guidance_*; nudge the whole module onto the device
-    # so the forward doesn't crash on cuda/cpu tensor mixing.
-    anima.to(device)
-
+    # build_anima encodes the load→apply→(compile) ordering and the device/dtype
+    # + reset_mod_guidance placement these probes used to open-code. We collect
+    # input stats in eval (for_inference=True): T-LoRA's mask is training-only, so
+    # the inference full-rank forward is the regime channel scaling is consumed in.
+    args.device = str(device)
+    args.dtype = "bf16"
     if args.lora_weight:
-        logger.info(f"loading LoRA adapter from {args.lora_weight}")
-        # Read __metadata__ explicitly (load_file() drops it) and forward via
-        # metadata= — harmless for the plain/ortho LoRA this bench targets, and
-        # keeps the three-axis routing stamps alive should it ever be pointed
-        # at a MoE checkpoint.
-        from safetensors import safe_open
-
-        with safe_open(args.lora_weight, framework="pt") as f:
-            lora_metadata = dict(f.metadata() or {})
-        lora_sd = load_file(args.lora_weight)
-        lora_sd = {k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")}
-        network, weights_sd = lora_anima.create_network_from_weights(
-            multiplier=1.0,
-            file=None,
-            ae=None,
-            text_encoders=[],
-            unet=anima,
-            weights_sd=lora_sd,
-            metadata=lora_metadata,
-            for_inference=False,  # keep OrthoLoRAExpModule for T-LoRA
-        )
-        network.apply_to([], anima, apply_text_encoder=False, apply_unet=True)
-        info = network.load_state_dict(weights_sd, strict=False)
-        if info.missing_keys:
-            logger.warning(
-                f"missing keys: {len(info.missing_keys)} (first: {info.missing_keys[:3]})"
-            )
-        if info.unexpected_keys:
-            logger.warning(
-                f"unexpected keys: {len(info.unexpected_keys)} (first: {info.unexpected_keys[:3]})"
-            )
-        network.to(device, dtype=torch.bfloat16)
-        network.eval()
-        for p in network.parameters():
-            p.requires_grad_(False)
+        logger.info(f"loading DiT + LoRA adapter from {args.lora_weight}")
     else:
-        logger.info("no LoRA adapter — analyzing base DiT activations")
+        logger.info(f"loading base DiT from {args.dit} — no LoRA adapter")
+    bundle = build_anima(
+        args, dit_path=args.dit, adapter=args.lora_weight, train_mode=False
+    )
+    anima = bundle.anima
 
     stats, _handles = install_channel_hooks(anima)
     if not stats:
@@ -470,9 +401,13 @@ def main():
     n_forward = 0
     with torch.no_grad():
         for stem, npz_path, te_path in stems:
-            lat = load_latent_npz(npz_path).to(device)  # [C, H, W]
+            lat = load_cached_latents(npz_path)[0].to(device)  # [C, H, W]
             lat_4d = lat.unsqueeze(0).float()  # [1, C, H, W]
-            emb = load_cached_te(te_path).to(device, dtype=torch.bfloat16)  # [1, L, D]
+            emb = (  # [1, L, D]
+                load_cached_crossattn_emb(te_path)
+                .unsqueeze(0)
+                .to(device, dtype=torch.bfloat16)
+            )
             h_lat, w_lat = lat_4d.shape[-2], lat_4d.shape[-1]
             padding_mask = torch.zeros(
                 1, 1, h_lat, w_lat, dtype=torch.bfloat16, device=device
@@ -540,43 +475,6 @@ def main():
 
     for group_name in sorted(groups.keys()):
         print_group_summary(group_name, groups[group_name], args.print_top_n_modules)
-
-    if args.out_json:
-        os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
-        payload = {
-            "lora_weight": args.lora_weight,
-            "dit": args.dit,
-            "num_samples": len(stems),
-            "per_artist": bool(args.per_artist),
-            "per_artist_n": args.per_artist_n,
-            "sample_stems": [s[0] for s in stems],
-            "sigmas": sigmas,
-            "n_forward_passes": n_forward,
-            "overall": {
-                "mean_dominance": float(all_dominances.mean()),
-                "median_dominance": float(np.median(all_dominances)),
-                "p90_dominance": float(np.percentile(all_dominances, 90)),
-                "p99_dominance": float(np.percentile(all_dominances, 99)),
-                "max_dominance": float(all_dominances.max()),
-            },
-            "groups": {
-                g: {
-                    "n": len(ms),
-                    "mean_dominance": float(
-                        np.mean([m["dominance_ratio"] for m in ms])
-                    ),
-                    "median_dominance": float(
-                        np.median([m["dominance_ratio"] for m in ms])
-                    ),
-                    "max_dominance": float(max(m["dominance_ratio"] for m in ms)),
-                }
-                for g, ms in groups.items()
-            },
-            "per_module": per_module,
-        }
-        with open(args.out_json, "w") as f:
-            json.dump(payload, f, indent=2)
-        print(f"\nwrote {args.out_json}")
 
     if args.dump_channel_stats:
         dump_channel_stats_safetensors(stats, args.dump_channel_stats)

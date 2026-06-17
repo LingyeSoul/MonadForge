@@ -2,7 +2,7 @@
 
 Per-channel input magnitude rebalancing for LoRA-family adapters — a **training-time optimizer-geometry feature**, not an inference plugin (it lived under `docs/inference/` until 2026-06-10; after `bake_inv_scale` at save time it is invisible to inference entirely). Absorbs a calibrated per-channel scale `s[c] = (mean|x[c]|)^α` into `lora_down` columns and applies `x / s` at forward, so the adapter output is unchanged at init but Adam's effective per-channel step no longer favors the DiT's DC-bias outlier channels.
 
-> **For the motivation** (DC-bias outlier channels in the frozen Anima DiT, decomposition into "register-token sinks" vs "stable outlier features", and the GraLoRA alternative weighed against), see **`bench/channel_stats/channel_dominance_analysis.md`**. This doc is the usage reference.
+> **For the motivation** (DC-bias outlier channels in the frozen Anima DiT, decomposition into "register-token sinks" vs "stable outlier features", and the GraLoRA alternative weighed against), see **`_archive/bench/channel_stats/channel_dominance_analysis.md`**. This doc is the usage reference.
 
 ## Quick start
 
@@ -72,7 +72,7 @@ The current shipped defaults (`lora.toml` `use_ortho_init = true`, `chimera.toml
 
 ## EasyControl cond stream (`cond_channel_stats.safetensors`)
 
-The EasyControl cond LoRA (`networks/methods/easycontrol.py::_LoRAProj`) sees clean reference latents, not the noisy main stream, so its activation profile diverges from the main calibration: cosine(main, cond) is median 0.93 but p10 0.71 / min 0.56, and `bench/channel_stats/results/cond_stream_profile.json` shows reusing the main file would make `mlp.layer2` dominance *worse* (negative transfer efficiency — block-7 layer2: 28× raw → 104× with the transferred scale). Hence the separate cond-specific calibration, wired 2026-06-09 and loaded by `_load_cond_channel_scales` with the same α from `channel_scaling_alpha`. Regenerate with `bench/channel_stats/cond_stream_profile.py`.
+The EasyControl cond LoRA (`networks/methods/easycontrol.py::_LoRAProj`) sees clean reference latents, not the noisy main stream, so its activation profile diverges from the main calibration: cosine(main, cond) is median 0.93 but p10 0.71 / min 0.56, and `output/calibration/cond_stream_profile.json` shows reusing the main file would make `mlp.layer2` dominance *worse* (negative transfer efficiency — block-7 layer2: 28× raw → 104× with the transferred scale). Hence the separate cond-specific calibration, wired 2026-06-09 and loaded by `_load_cond_channel_scales` with the same α from `channel_scaling_alpha`. Regenerate with `scripts/calibration/cond_stream_profile.py`.
 
 ## Save / load
 
@@ -85,10 +85,10 @@ Round-trip is covered by `tests/test_per_channel_scaling_roundtrip.py`.
 ## Regenerating the calibration
 
 ```bash
-python bench/channel_stats/analyze_lora_input_channels.py --per_artist \
+python scripts/calibration/analyze_lora_input_channels.py --per_artist \
     --dit models/diffusion_models/anima-base-v1.0.safetensors \
     --dump_channel_stats networks/calibration/channel_stats.safetensors \
-    --out_json bench/channel_stats/results/$(date -u +%Y%m%d-%H%M)-base.json
+    --out_json output/calibration/$(date -u +%Y%m%d-%H%M)-base.json
 ```
 
 The script registers `forward_pre_hook` on every `nn.Linear` in the DiT, accumulates per-input-channel `sum|x|` and token count over a small batch of cached samples at 5 flow-matching sigmas, then writes one `mean|x|` vector per LoRA-target Linear. 16 samples × 5 sigmas saturates the calibration in practice; `--per_artist` (71 samples on the current dataset) broadens coverage without changing per-group dominance numbers meaningfully. The σ grid and image content barely matter: calibration is σ-grid-insensitive and content-agnostic (`docs/findings/channel_stats_content_independence.md`) — the dominance structure is weight/architecture-driven.
@@ -98,7 +98,7 @@ Only regenerate when:
 - The base DiT weights change (different normalization → different DC-bias channels).
 - The set of adapted Linears widens (new attention/MLP layers exposed by the trainer).
 
-See `bench/channel_stats/README.md` for the script flags and the output JSON layout.
+See `scripts/calibration/README.md` for the script flags and the output JSON layout.
 
 ## When this helps more
 
@@ -122,4 +122,4 @@ The bench analysis confirms the precondition (20–100× per-channel dominance, 
 - `networks/methods/easycontrol.py::_load_cond_channel_scales` / `_LoRAProj` — cond-stream wiring.
 - `networks/lora_anima/loading.py` — q/k/v split/refuse handling for `inv_scale`.
 - `tests/test_per_channel_scaling_roundtrip.py` — save → load → rebuild forward-equality check.
-- `bench/channel_stats/` — calibration scripts (`analyze_lora_input_channels.py`, `cond_stream_profile.py`), README, dominance analysis, historical results.
+- `scripts/calibration/` — calibration scripts (`analyze_lora_input_channels.py`, `cond_stream_profile.py`), README and dominance analysis.

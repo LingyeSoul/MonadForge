@@ -5,7 +5,7 @@ Measures the *completion matrix* γ(f, t) for Anima: how resolved each radial
 frequency band is at each sampling step. CNS (Colored Noise Sampling) recolors
 the SDE-injected noise by sqrt(1−γ) so the fixed stochastic-energy budget lands
 in the bands the network has NOT yet built. Before wiring that into the sampler
-we need to know the staircase is sharp on Anima. See bench/cns/plan.md.
+we need to know the staircase is sharp on Anima. See _archive/bench/cns/plan.md.
 
 What it does (no engine edits):
   1. Drive deterministic ODE (euler) generations through the real pipeline via
@@ -19,15 +19,16 @@ What it does (no engine edits):
      scale CNS would apply (Eq. 11), so Phase-1 wiring is drop-in.
 
 Run from repo root (anima_lora/):
-    python bench/cns/gamma_probe.py --steps 28 --cfg 1.0 --label base-1024
-    python bench/cns/gamma_probe.py --cfg 4.0 --size 1248 832 --label base-cfg4-portrait
+    python scripts/calibration/gamma_probe.py --steps 28 --cfg 1.0
+    python scripts/calibration/gamma_probe.py --cfg 4.0 --size 1248 832
     # probe the adapter (does the LoRA flatten the bias?):
-    python bench/cns/gamma_probe.py --label lora --extra --lora_weight output/ckpt/<x>.safetensors
+    python scripts/calibration/gamma_probe.py --extra --lora_weight output/ckpt/<x>.safetensors
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -42,7 +43,6 @@ from anima_lora import (
     generate,
     get_generation_settings,
 )
-from bench._common import make_run_dir, write_result
 from library.inference import sampling as inference_utils
 
 _ckpts = default_checkpoints()
@@ -145,25 +145,48 @@ def _sigma_at_gamma_half(gamma_col: np.ndarray, sigma_mid: np.ndarray) -> float:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--steps", type=int, default=28, help="ODE sampling steps.")
-    p.add_argument("--cfg", type=float, default=1.0, help="Guidance scale (1.0 = clean single-forward ODE).")
+    p.add_argument(
+        "--cfg",
+        type=float,
+        default=1.0,
+        help="Guidance scale (1.0 = clean single-forward ODE).",
+    )
     p.add_argument("--flow_shift", type=float, default=3.0)
-    p.add_argument("--size", type=int, nargs=2, default=[1024, 1024], metavar=("H", "W"))
+    p.add_argument(
+        "--size", type=int, nargs=2, default=[1024, 1024], metavar=("H", "W")
+    )
     p.add_argument("--seeds", type=int, nargs="+", default=[0, 1])
-    p.add_argument("--prompts_file", type=str, default=None, help="One prompt per line; overrides defaults.")
+    p.add_argument(
+        "--prompts_file",
+        type=str,
+        default=None,
+        help="One prompt per line; overrides defaults.",
+    )
     p.add_argument("--n_bins", type=int, default=32, help="Radial frequency bins (F).")
-    p.add_argument("--label", type=str, default=None)
+    p.add_argument(
+        "--out_dir",
+        type=Path,
+        default=Path("output/calibration/cns_gamma_probe"),
+        help="Directory for the probe's gamma.npz + heatmaps + metrics.",
+    )
     p.add_argument("--dit", type=str, default=DIT)
     p.add_argument("--vae", type=str, default=VAE)
     p.add_argument("--text_encoder", type=str, default=TEXT_ENCODER)
     p.add_argument(
-        "--extra", nargs=argparse.REMAINDER, default=[],
+        "--extra",
+        nargs=argparse.REMAINDER,
+        default=[],
         help="Verbatim extra inference flags (e.g. --lora_weight <path>). Must be LAST.",
     )
     args = p.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     prompts = (
-        [ln.strip() for ln in Path(args.prompts_file).read_text().splitlines() if ln.strip()]
+        [
+            ln.strip()
+            for ln in Path(args.prompts_file).read_text().splitlines()
+            if ln.strip()
+        ]
         if args.prompts_file
         else DEFAULT_PROMPTS
     )
@@ -177,10 +200,17 @@ def main() -> None:
     for prompt in prompts:
         for seed in args.seeds:
             req = GenerationRequest(
-                dit=args.dit, vae=args.vae, text_encoder=args.text_encoder,
-                prompt=prompt, image_size=(H, W), infer_steps=args.steps,
-                guidance_scale=args.cfg, flow_shift=args.flow_shift,
-                sampler="euler", seed=seed, output_type="latent",
+                dit=args.dit,
+                vae=args.vae,
+                text_encoder=args.text_encoder,
+                prompt=prompt,
+                image_size=(H, W),
+                infer_steps=args.steps,
+                guidance_scale=args.cfg,
+                flow_shift=args.flow_shift,
+                sampler="euler",
+                seed=seed,
+                output_type="latent",
                 extra_argv=tuple(args.extra),
             )
             gen_args = req.to_args()
@@ -189,7 +219,9 @@ def main() -> None:
             with _StepCapture() as cap, torch.no_grad():
                 latent = generate(gen_args, settings)
             if len(cap.x0_preds) != args.steps:
-                print(f"  ! captured {len(cap.x0_preds)} steps (expected {args.steps}); skipping")
+                print(
+                    f"  ! captured {len(cap.x0_preds)} steps (expected {args.steps}); skipping"
+                )
                 continue
             x0_final = latent.float().squeeze(0).squeeze(1).cpu().numpy()  # (C, H, W)
             g = _gamma_for_trajectory(cap.x0_preds, x0_final, bin_idx, args.n_bins)
@@ -215,37 +247,65 @@ def main() -> None:
 
     # Staircase sharpness: σ at γ=0.5 per freq band; low-freq should cross at
     # HIGH σ (early), high-freq at LOW σ (late). Spread > 0 ⇒ staircase present.
-    s50 = np.array([_sigma_at_gamma_half(gamma[:, f], sigma_mid) for f in range(args.n_bins)])
+    s50 = np.array(
+        [_sigma_at_gamma_half(gamma[:, f], sigma_mid) for f in range(args.n_bins)]
+    )
     lo = int(args.n_bins * 0.15)
     hi = int(args.n_bins * 0.85)
-    s50_low = float(np.nanmean(s50[:lo + 1]))
+    s50_low = float(np.nanmean(s50[: lo + 1]))
     s50_high = float(np.nanmean(s50[hi:]))
     s50_spread = s50_low - s50_high
     aggregate_s50 = _sigma_at_gamma_half(gamma.mean(axis=1), sigma_mid)
 
-    run_dir = make_run_dir("cns", label=args.label)
+    run_dir = args.out_dir
+    run_dir.mkdir(parents=True, exist_ok=True)
     np.savez(
         run_dir / "gamma.npz",
-        gamma=gamma, beta_preview=beta_preview, sigmas=sigmas_ref,
-        timesteps=sigma_mid, radial_centers=centers, gamma_linear_target=gamma_linear,
+        gamma=gamma,
+        beta_preview=beta_preview,
+        sigmas=sigmas_ref,
+        timesteps=sigma_mid,
+        radial_centers=centers,
+        gamma_linear_target=gamma_linear,
     )
 
     artifacts = ["gamma.npz"]
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(1, 3, figsize=(16, 4.2))
         ext = [centers[0], centers[-1], sigma_mid[-1], sigma_mid[0]]
-        im0 = ax[0].imshow(gamma, aspect="auto", origin="lower", extent=ext, vmin=0, vmax=1, cmap="viridis")
-        ax[0].set(title="γ(f, t)  completion", xlabel="radial freq f", ylabel="σ (→0 = done)")
+        im0 = ax[0].imshow(
+            gamma,
+            aspect="auto",
+            origin="lower",
+            extent=ext,
+            vmin=0,
+            vmax=1,
+            cmap="viridis",
+        )
+        ax[0].set(
+            title="γ(f, t)  completion", xlabel="radial freq f", ylabel="σ (→0 = done)"
+        )
         fig.colorbar(im0, ax=ax[0])
-        im1 = ax[1].imshow(beta_preview, aspect="auto", origin="lower", extent=ext, cmap="magma")
-        ax[1].set(title="β preview = sqrt(1−γ), RMS-norm (CNS scale)", xlabel="radial freq f", ylabel="σ")
+        im1 = ax[1].imshow(
+            beta_preview, aspect="auto", origin="lower", extent=ext, cmap="magma"
+        )
+        ax[1].set(
+            title="β preview = sqrt(1−γ), RMS-norm (CNS scale)",
+            xlabel="radial freq f",
+            ylabel="σ",
+        )
         fig.colorbar(im1, ax=ax[1])
         ax[2].plot(centers, s50, ".-")
-        ax[2].set(title=f"σ@γ=0.5 vs freq  (spread={s50_spread:+.3f})", xlabel="radial freq f", ylabel="σ at γ=0.5")
+        ax[2].set(
+            title=f"σ@γ=0.5 vs freq  (spread={s50_spread:+.3f})",
+            xlabel="radial freq f",
+            ylabel="σ at γ=0.5",
+        )
         ax[2].invert_yaxis()
         ax[2].grid(alpha=0.3)
         fig.tight_layout()
@@ -260,22 +320,31 @@ def main() -> None:
         "cfg": args.cfg,
         "size_hw": [H, W],
         "n_bins": args.n_bins,
-        "staircase_s50_spread": s50_spread,   # >0 ⇒ low-freq resolves earlier (CNS premise)
+        "staircase_s50_spread": s50_spread,  # >0 ⇒ low-freq resolves earlier (CNS premise)
         "s50_lowfreq": s50_low,
         "s50_highfreq": s50_high,
-        "aggregate_s50": aggregate_s50,       # cross-check vs project_sigma_signal (~0.45)
-        "linear_target_mae": linear_mae,      # bigger ⇒ stronger spectral bias to exploit
+        "aggregate_s50": aggregate_s50,  # cross-check vs project_sigma_signal (~0.45)
+        "linear_target_mae": linear_mae,  # bigger ⇒ stronger spectral bias to exploit
     }
-    write_result(run_dir, script=__file__, args=args, metrics=metrics,
-                 label=args.label, artifacts=artifacts, device=device)
+    metrics["device"] = str(device)
+    metrics["artifacts"] = artifacts
+    (run_dir / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
 
     print("\n=== CNS γ-probe ===")
     print(f"  trajectories       : {n_ok}")
-    print(f"  staircase σ50 spread: {s50_spread:+.3f}  (low {s50_low:.3f} → high {s50_high:.3f})")
-    print(f"  aggregate σ50       : {aggregate_s50:.3f}   (cf. project_sigma_signal ≈ 0.45)")
+    print(
+        f"  staircase σ50 spread: {s50_spread:+.3f}  (low {s50_low:.3f} → high {s50_high:.3f})"
+    )
+    print(
+        f"  aggregate σ50       : {aggregate_s50:.3f}   (cf. project_sigma_signal ≈ 0.45)"
+    )
     print(f"  linear-target MAE   : {linear_mae:.3f}   (↑ = more bias to exploit)")
     print(f"  → {run_dir}")
-    verdict = "GO premise" if (s50_spread > 0.08 and linear_mae > 0.05) else "WEAK — staircase shallow"
+    verdict = (
+        "GO premise"
+        if (s50_spread > 0.08 and linear_mae > 0.05)
+        else "WEAK — staircase shallow"
+    )
     print(f"  Phase-0 read       : {verdict}")
 
 

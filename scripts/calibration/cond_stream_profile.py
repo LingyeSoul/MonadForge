@@ -48,9 +48,10 @@ What this does
 
 Usage
 -----
-    python bench/channel_stats/cond_stream_profile.py --per_artist \
-        --dump_cond_stats bench/channel_stats/results/cond_channel_stats.safetensors \
-        --out_json bench/channel_stats/results/cond_stream_profile.json
+    python scripts/calibration/cond_stream_profile.py --per_artist \
+        --dump_cond_stats networks/calibration/cond_channel_stats.safetensors
+
+The profile/decision rule prints to stdout; the safetensors is the only file written.
 
 Decision rule (printed at the end):
     cond dom_raw low                         → don't bother scaling the cond stream
@@ -59,30 +60,37 @@ Decision rule (printed at the end):
 """
 
 import argparse
-import json
 import logging
-import os
+import sys
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import torch
 from safetensors.torch import load_file
 
-from bench._anima import DEFAULT_DIT
-from library.anima import weights as anima_utils
-from library.log import setup_logging
-from networks.methods import easycontrol
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # sibling collector import
 
-# Reuse the base collector's dataset + dump helpers verbatim — same stems, same
+from anima_lora import default_checkpoints  # noqa: E402
+from library.io.cache import (  # noqa: E402
+    load_cached_crossattn_emb,
+    load_cached_latents,
+)
+from library.log import setup_logging  # noqa: E402
+from library.runtime.harness import build_anima  # noqa: E402
+from networks.methods import easycontrol  # noqa: E402
+
+# Reuse the base collector's selection + dump helpers — same stems, same
 # key/fused-mirror convention, so the cond dump is drop-in swappable with the
-# shipped main-stream file.
-from bench.channel_stats.analyze_lora_input_channels import (
+# shipped main-stream file. (Latent/TE loading uses the shared library.io.cache
+# helpers directly.)
+from analyze_lora_input_channels import (  # noqa: E402
     classify_module,
     dump_channel_stats_safetensors,
     find_sample_stems,
-    load_cached_te,
-    load_latent_npz,
 )
+
+DEFAULT_DIT = default_checkpoints().dit
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -135,7 +143,6 @@ def parse_args():
         help="Write the cond-stream per-channel mean|x| to a safetensors "
         "(same keys as the shipped file) — the bespoke cond calibration.",
     )
-    p.add_argument("--out_json", default=None)
     return p.parse_args()
 
 
@@ -221,16 +228,12 @@ def main():
         f"{len(stems)} samples; cond={'paired dir' if cond_stems else 'ref==target'}"
     )
 
-    logger.info(f"loading DiT from {args.dit}")
-    anima = anima_utils.load_anima_model(
-        device=device,
-        dit_path=args.dit,
-        attn_mode=args.attn_mode,
-        loading_device=device,
-        dit_weight_dtype=torch.bfloat16,
-    )
-    anima.eval().requires_grad_(False)
-    anima.to(device)
+    logger.info(f"loading base DiT from {args.dit}")
+    args.device = str(device)
+    args.dtype = "bf16"
+    # Base DiT via the shared harness (device/dtype + reset_mod_guidance placement);
+    # the fresh untrained EasyControlNetwork is built and applied separately below.
+    anima = build_anima(args, dit_path=args.dit, adapter=None, train_mode=False).anima
 
     net = easycontrol.create_network(
         1.0,
@@ -251,14 +254,23 @@ def main():
     sv = torch.tensor(args.sigma, device=device).view(1, 1, 1, 1)
     with torch.no_grad():
         for i, (stem, npz_path, te_path) in enumerate(stems):
-            lat = load_latent_npz(npz_path).to(device).unsqueeze(0).float()  # [1,C,H,W]
-            emb = load_cached_te(te_path).to(device, dtype=torch.bfloat16)
+            lat = (  # [1,C,H,W]
+                load_cached_latents(npz_path)[0].to(device).unsqueeze(0).float()
+            )
+            emb = (
+                load_cached_crossattn_emb(te_path)
+                .unsqueeze(0)
+                .to(device, dtype=torch.bfloat16)
+            )
             H, W = lat.shape[-2], lat.shape[-1]
             pad = torch.zeros(1, 1, H, W, dtype=torch.bfloat16, device=device)
 
             if cond_stems is not None:
                 cond_lat = (
-                    load_latent_npz(cond_stems[i][1]).to(device).unsqueeze(0).float()
+                    load_cached_latents(cond_stems[i][1])[0]
+                    .to(device)
+                    .unsqueeze(0)
+                    .float()
                 )
             else:
                 cond_lat = lat
@@ -382,39 +394,6 @@ def main():
     if args.dump_cond_stats:
         dump_channel_stats_safetensors(stats, args.dump_cond_stats)
         print(f"\n  cond-specific calibration written to {args.dump_cond_stats}")
-
-    if args.out_json:
-        os.makedirs(os.path.dirname(args.out_json) or ".", exist_ok=True)
-        payload = {
-            "dit": args.dit,
-            "alpha": args.alpha,
-            "num_samples": len(stems),
-            "cond_source": "paired_dir" if cond_stems else "ref==target",
-            "sample_stems": [s[0] for s in stems],
-            "shipped_stats": args.shipped_stats,
-            "overall": {
-                "dom_raw": o_dom,
-                "cosine_cond_main": o_cos,
-                "xfer_efficiency": o_eff,
-                "dom_xfer": _med(all_rows, "dom_xfer"),
-            },
-            "groups": {
-                g: {
-                    "n": len(rs),
-                    "cosine": _med(rs, "cosine_cond_main"),
-                    "dom_raw": _med(rs, "dom_raw"),
-                    "dom_self": _med(rs, "dom_self"),
-                    "dom_xfer": _med(rs, "dom_xfer"),
-                    "xfer_efficiency": _med(rs, "xfer_efficiency"),
-                }
-                for g, rs in groups.items()
-            },
-            "per_module": per_module,
-            "verdict": verdict,
-        }
-        with open(args.out_json, "w") as f:
-            json.dump(payload, f, indent=2)
-        print(f"  wrote {args.out_json}")
 
 
 if __name__ == "__main__":
