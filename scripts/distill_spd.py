@@ -40,6 +40,7 @@ from tqdm import tqdm  # noqa: E402
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
 from library.config.io import toml_get as _flatten  # noqa: E402
+from library.datasets.buckets import is_freefit_token_counts  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
 from library.runtime.harness import (  # noqa: E402
@@ -661,12 +662,27 @@ def main():
         # to SPD's multi-stage schedule, so it stays here; the budget → cache
         # isolation → block-compile glue is the shared library helper.
         stage_bucket_tokens: set[int] = set()
+        full_res_tokens: set[int] = set()
         for npz, _te in dataset.samples:
             w_lat, h_lat = (int(v) for v in get_latent_resolution(npz).split("x"))
+            full_res_tokens.add((w_lat // patch) * (h_lat // patch))
             for s in stages:
                 h = min(_snap(h_lat * s, patch), h_lat) if s < 1.0 else h_lat
                 w = min(_snap(w_lat * s, patch), w_lat) if s < 1.0 else w_lat
                 stage_bucket_tokens.add((h // patch) * (w // patch))
+        # Free-fit fail-safe (mirrors train.py's auto-enable, which never reaches
+        # this bespoke loop — project_daemon_wiring_pattern). NB: detect on the
+        # *full-res* on-disk latents, not stage_bucket_tokens — SPD's downsampling
+        # already produces off-table sub-band counts on a snapped dataset, so the
+        # native cached shapes are the only true free-fit signature here.
+        if not compile_dynamic_seq and is_freefit_token_counts(full_res_tokens):
+            logger.warning(
+                "freefit pool detected (cached latent token counts off the bucket "
+                "table); auto-enabling dynamic_seq — free-fit shapes need the "
+                "single-graph dynamic-seq path (static compile would explode the "
+                "graph cascade)"
+            )
+            compile_dynamic_seq = True
         pc = compile_dit_blocks_for_pool(
             model,
             stage_bucket_tokens,

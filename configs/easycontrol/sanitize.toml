@@ -54,8 +54,7 @@ identity_saturation_min = 0.4
 # resized,cache,cond} (the `name` above) — only add a path key to point one
 # elsewhere.
 [preprocess]
-# Constant-token bucket tiers to resize into before VAE encoding (allowed edges:
-# 512 768 1024 1280 1536; see configs/base.toml target_res). Must match training.
+freefit=true
 min_pixels = 0  # 0 = never drop a member (dropping one orphans its pair partner)
 recursive = true
 vae = 'models/vae/qwen_image_vae.safetensors'
@@ -83,6 +82,7 @@ network_dim = 32
 network_alpha = 128
 masked_loss=false
 target_res = [896, 1024]
+freefit=true
 
 network_args = [
     "b_cond_init=-4.0",
@@ -112,9 +112,9 @@ network_args = [
 output_name = "anima_easycontrol_sanitize_repaMA3"
 
 learning_rate = 2e-5
-max_train_epochs = 12
-save_every_n_epochs = 12
-checkpointing_epochs = 12
+max_train_epochs = 6
+save_every_n_epochs = 6
+checkpointing_epochs = 6
 
 easycontrol_cond_noise_max = 0.0
 caption_dropout_rate = 1.0

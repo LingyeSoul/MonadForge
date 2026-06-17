@@ -578,6 +578,15 @@ def load_method_preset(
         if "target_res" in pp_raw:
             merged["target_res"] = pp_raw["target_res"]
             provenance["target_res"] = _display_path(preprocess_path)
+        # `freefit` is dual-use AND load-bearing at train time (unlike target_res,
+        # which is inert): it switches the bucket mode to "predefined = on-disk
+        # sizes" and auto-enables compile_dynamic_seq. Seed it so preprocess and
+        # training stay in lockstep from the one preprocess.toml key (preset /
+        # method / CLI still override per run). `freefit_max_ratio` is NOT seeded
+        # — it's preprocess-only (training reads the resized shapes, not the clamp).
+        if "freefit" in pp_raw:
+            merged["freefit"] = bool(pp_raw["freefit"])
+            provenance["freefit"] = _display_path(preprocess_path)
 
     # preprocess.toml owns target_res; a stale copy in base.toml must not clobber
     # the seed above (preset / method / CLI may still override per run).

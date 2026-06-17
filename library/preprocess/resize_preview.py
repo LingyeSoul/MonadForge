@@ -11,9 +11,18 @@ import math
 from dataclasses import dataclass
 from typing import Iterable
 
-from library.datasets.buckets import DEFAULT_TARGET_RES, buckets_for_edges, choose_edge
+from library.datasets.buckets import (
+    DEFAULT_FREEFIT_MAX_RATIO,
+    DEFAULT_TARGET_RES,
+    buckets_for_edges,
+    choose_edge,
+    freefit_band_for_edge,
+    freefit_bucket,
+)
 
 DEFAULT_RESIZE_CROP_ANCHOR = "center"
+FIT_MODES = ("snap", "freefit")
+DEFAULT_FIT_MODE = "snap"
 RESIZE_CROP_ANCHORS = {
     "top_left": (0.0, 0.0),
     "top": (0.5, 0.0),
@@ -105,7 +114,9 @@ def margin_crop_rect(width: int, height: int, crop_margins=None) -> CropRect:
     top = height * margins["top"] / 100.0
     right = width - width * margins["right"] / 100.0
     bottom = height - height * margins["bottom"] / 100.0
-    return CropRect(left=left, top=top, width=max(1.0, right - left), height=max(1.0, bottom - top))
+    return CropRect(
+        left=left, top=top, width=max(1.0, right - left), height=max(1.0, bottom - top)
+    )
 
 
 def parse_bucket_resos(raw) -> list[tuple[int, int]]:
@@ -141,13 +152,29 @@ def format_bucket_resos(bucket_resos: Iterable[tuple[int, int]]) -> list[str]:
     return [f"{width}x{height}" for width, height in bucket_resos]
 
 
+def normalize_fit_mode(fit_mode: str | None) -> str:
+    value = str(fit_mode or DEFAULT_FIT_MODE).strip().lower()
+    return value if value in FIT_MODES else DEFAULT_FIT_MODE
+
+
 def select_resize_bucket(
     width: int,
     height: int,
     target_res: Iterable[int] | int | str | None = None,
     bucket_resos=None,
+    *,
+    fit_mode: str = DEFAULT_FIT_MODE,
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
 ) -> tuple[int, tuple[int, int]]:
     tiers = normalize_target_res(target_res)
+    if normalize_fit_mode(fit_mode) == "freefit":
+        # choose_edge still assigns the tier; free-fit lands the (W, H) anywhere
+        # in that tier's token band, preserving native aspect (no AR-snap).
+        # bucket_resos (the snap allow-list) does not apply in free-fit mode.
+        edge = choose_edge(width, height, tiers)
+        band = freefit_band_for_edge(edge)
+        return edge, freefit_bucket(width, height, band, max_ratio=max_ratio)
+
     allowed = set(parse_bucket_resos(bucket_resos))
     if not allowed:
         edge = choose_edge(width, height, tiers)
@@ -187,8 +214,15 @@ def compute_resize_preview(
     crop_anchor: str | None = None,
     bucket_resos=None,
     crop_margins=None,
+    fit_mode: str = DEFAULT_FIT_MODE,
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
 ) -> ResizePreview:
-    """Return the bucket and source-space crop rect used by preprocessing."""
+    """Return the bucket and source-space crop rect used by preprocessing.
+
+    ``fit_mode="freefit"`` runs the free-aspect token-band solver instead of
+    snapping to a discrete bucket; the same ``select_resize_bucket`` feeds both
+    this preview and ``process_image``, so the GUI/CLI preview is exact.
+    """
     if width <= 0 or height <= 0:
         raise ValueError("image dimensions must be positive")
 
@@ -199,7 +233,7 @@ def compute_resize_preview(
     work_w = max(1, round(margin_rect.width))
     work_h = max(1, round(margin_rect.height))
     edge, (bucket_w, bucket_h) = select_resize_bucket(
-        work_w, work_h, target_res, bucket_resos
+        work_w, work_h, target_res, bucket_resos, fit_mode=fit_mode, max_ratio=max_ratio
     )
 
     source_ar = work_w / work_h

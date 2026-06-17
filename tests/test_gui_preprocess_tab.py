@@ -171,6 +171,57 @@ def test_preprocess_tab_persists_masking_settings_to_variant():
             tab.deleteLater()
 
 
+def test_preprocess_tab_freefit_round_trips_to_variant():
+    """Toggling free-fit + a non-default max-ratio must persist and reload."""
+    from gui import _load
+
+    tab = None
+    with _temporary_custom_variant("__pytest_preprocess_freefit__") as (
+        variant,
+        path,
+    ):
+        tab = _make_tab()
+        tab.set_variant(variant, method="lora")
+        tab.freefit_chk.setChecked(True)
+        tab.freefit_max_ratio_spin.setValue(3.0)
+
+        assert tab.persist_preprocess_inputs()
+        meta = _load(path)["variant"]
+        assert meta["freefit"] is True
+        assert meta["freefit_max_ratio"] == 3.0
+
+        # Reload into a fresh widget and confirm the values come back.
+        tab.freefit_chk.setChecked(False)
+        tab.set_variant(variant, method="lora")
+        assert tab.freefit_chk.isChecked() is True
+        assert tab.freefit_max_ratio_spin.value() == 3.0
+        # Max-ratio is only enabled in free-fit mode.
+        assert tab.freefit_max_ratio_spin.isEnabled() is True
+
+        if tab is not None:
+            tab.deleteLater()
+
+
+def test_preprocess_overrides_carry_freefit():
+    """preprocess_overrides feeds both the resize CLI and the train snapshot."""
+    tab = None
+    with _temporary_custom_variant("__pytest_preprocess_freefit_ovr__") as (
+        variant,
+        _path,
+    ):
+        tab = _make_tab()
+        tab.set_variant(variant, method="lora")
+        tab.freefit_chk.setChecked(True)
+        tab.freefit_max_ratio_spin.setValue(3.5)
+
+        overrides = tab.preprocess_overrides()
+        assert overrides["freefit"] is True
+        assert overrides["freefit_max_ratio"] == 3.5
+
+        if tab is not None:
+            tab.deleteLater()
+
+
 def test_masking_task_reads_gui_sam_config_snapshot(monkeypatch):
     from scripts.tasks import masking
 

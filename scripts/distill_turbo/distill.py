@@ -388,6 +388,22 @@ def main():
         if counts:
             n_token_families = len(counts)
             seq_range = (min(counts), max(counts))
+    # Free-fit fail-safe (mirrors train.py's auto-enable, which never reaches this
+    # bespoke loop — project_daemon_wiring_pattern): a free-fit pool lands many
+    # distinct token counts inside one tier's band, so the static per-count compile
+    # cascade would explode + poison the compile cache. Detect it self-describing
+    # off the cache and force dynamic_seq (cfg is frozen → local override).
+    dynamic_seq = cfg.compile_dynamic_seq
+    if cfg.torch_compile and not dynamic_seq:
+        from library.datasets.buckets import is_freefit_token_counts
+
+        if is_freefit_token_counts(_cached_token_counts(cfg.data_dir)):
+            logger.warning(
+                "freefit pool detected (cached token counts off the bucket table); "
+                "auto-enabling dynamic_seq — free-fit shapes need the single-graph "
+                "dynamic-seq path (static compile would explode the graph cascade)"
+            )
+            dynamic_seq = True
     # Partitioner saved-activation cap (mirrors train.py): budget<1.0 recomputes
     # cheap intermediates in backward. Must be set BEFORE compile_dit_blocks
     # (partitioning happens at first-forward compile). Skipped under grad_ckpt: it
@@ -417,7 +433,7 @@ def main():
             compile_signature(
                 n_token_families=n_token_families,
                 seq_range=seq_range,
-                dynamic_seq=cfg.compile_dynamic_seq,
+                dynamic_seq=dynamic_seq,
                 mode="",
             )
         )
@@ -425,7 +441,7 @@ def main():
         model,
         enabled=cfg.torch_compile,
         mode="",
-        dynamic_seq=cfg.compile_dynamic_seq,
+        dynamic_seq=dynamic_seq,
         n_token_families=n_token_families,
         seq_range=seq_range,
     )

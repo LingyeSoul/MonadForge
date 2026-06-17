@@ -47,6 +47,26 @@ STRINGS: dict[str, str] = {
         "저해상도 필터의 픽셀 수 임계값. 500000 = 0.5MP. "
         "'저해상도 이미지 제외'가 해제되면 무시됩니다."
     ),
+    "preprocess_target_res": "해상도 티어 (target_res):",
+    "preprocess_freefit": "프리핏 (밴드):",
+    "preprocess_freefit_tip": (
+        "각 이미지의 원본 비율을 보존하면서 패치 그리드 토큰 수가 "
+        "티어의 토큰 밴드 안에 들어오도록 리사이즈합니다. "
+        "고정 버킷 스냅 대신 사용하며 크롭을 거의 없앱니다. "
+        "이중 용도: train.py도 이 설정을 읽어 dynamic-seq 컴파일 경로를 "
+        "자동 활성화합니다."
+    ),
+    "preprocess_freefit_max_ratio": "최대 종횡비:",
+    "preprocess_freefit_max_ratio_tip": (
+        "프리핏 클램프: 1:R / R:1을 초과하는 종횡비의 이미지는 "
+        "위에서 선택한 크롭 위치에 따라 커버 크롭됩니다. "
+        "기본값 4.0은 기존 버킷 테이블의 가장 긴 종횡비와 일치하며 "
+        "1:5 / 1:6 같은 극단적인 입력을 차단합니다. "
+        "프리핏 모드에서만 사용됩니다."
+    ),
+    "preprocess_freefit_note": (
+        "프리핏 ⇒ 학습 시 dynamic_seq 컴파일 경로가 자동 활성화됩니다."
+    ),
     "preprocess_text_caching": "캐싱 (VAE + 텍스트)",
     "preprocess_caption_shuffle_variants": "캡션당 셔플 변형 수 (N):",
     "preprocess_caption_shuffle_variants_tip": (

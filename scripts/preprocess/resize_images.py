@@ -127,8 +127,7 @@ def main() -> None:
         choices=tuple(RESIZE_CROP_ANCHORS),
         default="center",
         help=(
-            "Anchor used when the cover-resize result needs cropping. "
-            "Default: center."
+            "Anchor used when the cover-resize result needs cropping. Default: center."
         ),
     )
     parser.add_argument(
@@ -154,6 +153,29 @@ def main() -> None:
         help=(
             "Percent margins cropped from source before bucket resize, in "
             "top/right/bottom/left order. Default: 0 0 0 0."
+        ),
+    )
+    parser.add_argument(
+        "--freefit",
+        action="store_true",
+        help=(
+            "Free-aspect token-band resize: preserve native aspect ratio and land "
+            "the patch-grid token count anywhere in the tier's band (e.g. "
+            "[4032, 4200] for 1024) instead of snapping to a discrete bucket. "
+            "Drives crop to ~zero. Requires compile_dynamic_seq at train time "
+            "(train.py auto-enables it under --freefit)."
+        ),
+    )
+    parser.add_argument(
+        "--freefit_max_ratio",
+        "--freefit-max-ratio",
+        dest="freefit_max_ratio",
+        type=float,
+        default=4.0,
+        help=(
+            "Max aspect ratio clamp for --freefit (default 4.0 = 1:4 / 4:1, "
+            "matching the snap table's most-elongated reach). Beyond-clamp images "
+            "cover-crop to the limit; also keeps the token band solvable."
         ),
     )
     parser.add_argument(
@@ -203,6 +225,8 @@ def main() -> None:
         crop_anchor=args.resize_crop_anchor,
         bucket_resos=args.resize_bucket_resos,
         crop_margins=args.resize_crop_margins,
+        fit_mode="freefit" if args.freefit else "snap",
+        max_ratio=args.freefit_max_ratio,
         progress=tqdm_progress("Resizing"),
     )
 

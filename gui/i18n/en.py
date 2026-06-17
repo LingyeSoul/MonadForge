@@ -51,6 +51,23 @@ STRINGS: dict[str, str] = {
         "Ignored when 'Drop low-resolution images' is unchecked."
     ),
     "preprocess_target_res": "Resolution tiers (target_res):",
+    "preprocess_freefit": "Free-fit (band):",
+    "preprocess_freefit_tip": (
+        "Preserve each image's native aspect ratio and resize so its patch-grid "
+        "token count lands inside the tier's token band, instead of snapping to a "
+        "discrete bucket. Drives crop to ~zero. Dual-use: train.py reads this too "
+        "and auto-enables the dynamic-seq compile path."
+    ),
+    "preprocess_freefit_max_ratio": "Max aspect ratio:",
+    "preprocess_freefit_max_ratio_tip": (
+        "Clamp for free-fit: aspect ratios beyond 1:R / R:1 are cover-cropped to "
+        "the limit (honoring the crop position above). Default 4.0 matches the "
+        "old bucket table's most-elongated reach and blocks degenerate 1:5 / 1:6 "
+        "inputs. Only used in free-fit mode."
+    ),
+    "preprocess_freefit_note": (
+        "Free-fit ⇒ dynamic_seq compile path auto-enabled at train time."
+    ),
     "preprocess_text_caching": "Caching (VAE + text)",
     "preprocess_caption_shuffle_variants": "Shuffle variants per caption (N):",
     "preprocess_caption_shuffle_variants_tip": (

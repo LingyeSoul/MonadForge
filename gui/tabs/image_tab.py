@@ -86,6 +86,8 @@ from library.datasets.curation_actions import (
 )
 from library.datasets.buckets import buckets_for_edges
 from library.preprocess.resize_preview import (
+    DEFAULT_FIT_MODE,
+    DEFAULT_FREEFIT_MAX_RATIO,
     compute_resize_preview,
     format_bucket_resos,
     normalize_target_res,
@@ -228,15 +230,18 @@ def _compose_mask_overlay(source: QPixmap, mask_path: Path) -> QPixmap:
     return result
 
 
-def _load_resize_preview_target_res():
+def _load_preprocess_toml_data():
     path = ROOT / "configs" / "preprocess.toml"
     if not path.is_file():
-        return None
+        return {}
     try:
-        data = toml.loads(path.read_text(encoding="utf-8"))
+        return toml.loads(path.read_text(encoding="utf-8"))
     except (OSError, toml.TomlDecodeError):
-        return None
-    return data.get("target_res")
+        return {}
+
+
+def _load_resize_preview_target_res():
+    return _load_preprocess_toml_data().get("target_res")
 
 
 def _compose_resize_preview_overlay(
@@ -245,6 +250,8 @@ def _compose_resize_preview_overlay(
     crop_anchor=None,
     bucket_resos=None,
     crop_margins=None,
+    fit_mode=DEFAULT_FIT_MODE,
+    max_ratio=DEFAULT_FREEFIT_MAX_RATIO,
 ) -> QPixmap:
     try:
         preview = compute_resize_preview(
@@ -254,6 +261,8 @@ def _compose_resize_preview_overlay(
             crop_anchor=crop_anchor,
             bucket_resos=bucket_resos,
             crop_margins=crop_margins,
+            fit_mode=fit_mode,
+            max_ratio=max_ratio,
         )
     except (KeyError, TypeError, ValueError):
         return source
@@ -1791,7 +1800,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
                 )
             pm = self._overlay_pm
         if self.resize_preview_cb.isChecked():
-            target_res, crop_anchor, bucket_resos, crop_margins = (
+            target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio = (
                 self._resize_preview_config()
             )
             pm = _compose_resize_preview_overlay(
@@ -1800,6 +1809,8 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
                 crop_anchor=crop_anchor,
                 bucket_resos=bucket_resos,
                 crop_margins=crop_margins,
+                fit_mode=fit_mode,
+                max_ratio=max_ratio,
             )
         self.img.set_source(pm)
 
@@ -1835,10 +1846,27 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
                 bucket_resos = None
         if tab is not None and hasattr(tab, "_resize_crop_margins"):
             crop_margins = tab._resize_crop_margins()
+        fit_mode, max_ratio = self._resize_preview_fit_mode()
         selected = self.resize_preview_bucket_combo.currentData()
         if selected:
+            # Picking an explicit bucket forces snap-to-that-shape regardless of mode.
             bucket_resos = [selected]
-        return target_res, crop_anchor, bucket_resos, crop_margins
+            fit_mode = DEFAULT_FIT_MODE
+        return target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
+
+    def _resize_preview_fit_mode(self):
+        """(fit_mode, max_ratio) from the live preprocess-tab widgets, falling
+        back to configs/preprocess.toml when the tab isn't available."""
+        tab = self._preprocess_tab
+        chk = getattr(tab, "freefit_chk", None)
+        spin = getattr(tab, "freefit_max_ratio_spin", None)
+        if chk is not None and spin is not None:
+            fit_mode = "freefit" if chk.isChecked() else "snap"
+            return fit_mode, float(spin.value())
+        data = _load_preprocess_toml_data()
+        fit_mode = "freefit" if data.get("freefit") else "snap"
+        max_ratio = float(data.get("freefit_max_ratio", DEFAULT_FREEFIT_MAX_RATIO))
+        return fit_mode, max_ratio
 
     def _refresh_resize_preview_buckets(self) -> None:
         combo = self.resize_preview_bucket_combo
@@ -1916,7 +1944,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         if not self.resize_preview_cb.isChecked():
             return ""
         try:
-            target_res, crop_anchor, bucket_resos, crop_margins = (
+            target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio = (
                 self._resize_preview_config()
             )
             preview = compute_resize_preview(
@@ -1926,6 +1954,8 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
                 crop_anchor=crop_anchor,
                 bucket_resos=bucket_resos,
                 crop_margins=crop_margins,
+                fit_mode=fit_mode,
+                max_ratio=max_ratio,
             )
         except (KeyError, TypeError, ValueError):
             return ""

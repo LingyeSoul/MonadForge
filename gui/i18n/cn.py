@@ -50,6 +50,22 @@ STRINGS: dict[str, str] = {
         "低分辨率过滤器的像素数阈值。500000 = 0.5MP。"
         "当「丢弃低分辨率图像」未勾选时忽略。"
     ),
+    "preprocess_target_res": "分辨率档位 (target_res):",
+    "preprocess_freefit": "自由适配 (频段):",
+    "preprocess_freefit_tip": (
+        "保留每张图像的原始宽高比，并将其调整大小，使补丁网格的令牌数落在"
+        "所选档位的令牌频段内，而非对齐到固定桶。裁剪量趋近于零。"
+        "双重用途: train.py 也会读取此设置，并自动启用 dynamic-seq 编译路径。"
+    ),
+    "preprocess_freefit_max_ratio": "最大宽高比:",
+    "preprocess_freefit_max_ratio_tip": (
+        "自由适配的限制: 宽高比超过 1:R / R:1 的图像将按上方选择的裁剪位置"
+        "进行覆盖裁剪。默认 4.0 与旧桶表最极端的宽高比一致，"
+        "可阻止 1:5 / 1:6 等退化输入。仅在自由适配模式下使用。"
+    ),
+    "preprocess_freefit_note": (
+        "自由适配 ⇒ 训练时自动启用 dynamic_seq 编译路径。"
+    ),
     "preprocess_text_caching": "缓存 (VAE + 文本)",
     "preprocess_caption_shuffle_variants": "每条标注的随机变体数 (N):",
     "preprocess_caption_shuffle_variants_tip": (

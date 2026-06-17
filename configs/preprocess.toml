@@ -33,4 +33,26 @@ target_res = [1024, 896]
 #   make preprocess ARGS="--no_drop_lowres"      # keep every image
 #   make preprocess ARGS="--drop_lowres"         # force the configured threshold
 drop_lowres_images = true
-min_pixels = 500000
+min_pixels = 250000
+
+# Free-aspect token-band resize ("free-fit"). When true, images are NOT snapped
+# to one of the discrete per-tier buckets; instead the native aspect ratio is
+# preserved and the patch-grid token count is landed anywhere inside the tier's
+# token band ([4032, 4200] for 1024), driving crop loss to ~zero. choose_edge
+# still picks the tier (target_res above still applies); free-fit operates inside
+# it. This is DUAL-USE like target_res: train.py reads `freefit` too — it switches
+# the bucket mode to "predefined set = the on-disk resized sizes" (every cached
+# latent exact-matches its own W×H, nothing AR-snaps) and auto-enables
+# compile_dynamic_seq (the band is one block graph). So preprocess and training
+# MUST agree — this one key feeds both. Default false = discrete-bucket snapping
+# (unchanged behavior). Override per-run:
+#   make preprocess ARGS="--freefit"
+freefit = true
+
+# Max aspect-ratio clamp for free-fit (1:R / R:1). Beyond-clamp images cover-crop
+# to the limit (the only place crop survives under free-fit); also keeps the token
+# band solvable for elongated images. Default 4.0 matches the snap table's
+# most-elongated reach (2016×512 ≈ 3.94), so it crops nothing the old path didn't.
+# Preprocess-only (training reads the on-disk shapes, not this). Override per-run:
+#   make preprocess ARGS="--freefit --freefit_max_ratio 3.0"
+freefit_max_ratio = 4.0

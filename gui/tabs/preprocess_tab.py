@@ -89,6 +89,8 @@ from gui.widgets import (
 from library.datasets.buckets import DEFAULT_TARGET_RES as _LIB_DEFAULT_TARGET_RES
 from library.datasets.path_filter import filter_paths_by_glob
 from library.preprocess.resize_preview import (
+    DEFAULT_FIT_MODE,
+    DEFAULT_FREEFIT_MAX_RATIO,
     DEFAULT_RESIZE_CROP_ANCHOR,
     normalize_crop_margins,
 )
@@ -107,6 +109,9 @@ DEFAULT_MIN_PIXELS = 500000
 DEFAULT_TARGET_RES = list(_LIB_DEFAULT_TARGET_RES)
 DEFAULT_RESIZE_BUCKET_RESOS: list[str] = []
 DEFAULT_RESIZE_CROP_MARGINS = {"top": 0.0, "right": 0.0, "bottom": 0.0, "left": 0.0}
+# Free-fit (free-aspect token-band resize): snap is the canonical default, so the
+# checkbox is off unless preprocess.toml / the variant says otherwise.
+DEFAULT_FREEFIT = DEFAULT_FIT_MODE == "freefit"
 DEFAULT_TE_SHUFFLE_VARIANTS = 4
 DEFAULT_TE_TAG_DROPOUT = 0.1
 DEFAULT_SAM_PROMPTS = ("speech bubble", "text bubble")
@@ -128,6 +133,8 @@ _GUI_PREPROCESS_KEYS = {
     "resize_bucket_resos",
     "resize_crop_anchor",
     "resize_crop_margins",
+    "freefit",
+    "freefit_max_ratio",
     "caption_shuffle_variants",
     "caption_tag_dropout_rate",
     "run_sam_mask",
@@ -617,6 +624,44 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self._field_label("resize_crop_margins", t("resize_crop_margins")),
             margins_row,
         )
+
+        # Free-fit: preserve native aspect, resize so the patch-grid token count
+        # lands anywhere inside the tier's band instead of snapping to a discrete
+        # (W, H) bucket. Dual-use like target_res — train.py reads `freefit` too
+        # and auto-enables compile_dynamic_seq under it.
+        self.freefit_chk = QCheckBox()
+        self.freefit_chk.setToolTip(t("preprocess_freefit_tip"))
+        self.freefit_chk.setChecked(bool(pp_cfg.get("freefit", DEFAULT_FREEFIT)))
+        img_form.addRow(
+            self._field_label("freefit", t("preprocess_freefit")),
+            self.freefit_chk,
+        )
+        self.freefit_max_ratio_spin = QDoubleSpinBox()
+        self.freefit_max_ratio_spin.setRange(1.0, 4.0)
+        self.freefit_max_ratio_spin.setSingleStep(0.25)
+        self.freefit_max_ratio_spin.setDecimals(2)
+        self.freefit_max_ratio_spin.setValue(
+            float(pp_cfg.get("freefit_max_ratio", DEFAULT_FREEFIT_MAX_RATIO))
+        )
+        self.freefit_max_ratio_spin.wheelEvent = lambda e: e.ignore()
+        self.freefit_max_ratio_spin.setToolTip(t("preprocess_freefit_max_ratio_tip"))
+        img_form.addRow(
+            self._field_label("freefit_max_ratio", t("preprocess_freefit_max_ratio")),
+            self.freefit_max_ratio_spin,
+        )
+        # One-line reminder that free-fit forces the dynamic-seq compile path.
+        self.freefit_note = QLabel(t("preprocess_freefit_note"))
+        self.freefit_note.setWordWrap(True)
+        self.freefit_note.setStyleSheet(
+            f"QLabel {{ color:{tok('text_dim')}; font-style: italic; }}"
+        )
+        img_form.addRow("", self.freefit_note)
+        # Max-ratio + note only matter in free-fit mode (mirrors min_pixels ↔ drop_lowres).
+        self.freefit_max_ratio_spin.setEnabled(self.freefit_chk.isChecked())
+        self.freefit_note.setVisible(self.freefit_chk.isChecked())
+        self.freefit_chk.toggled.connect(self.freefit_max_ratio_spin.setEnabled)
+        self.freefit_chk.toggled.connect(self.freefit_note.setVisible)
+
         img_box.setLayout(img_form)
         form_layout.addWidget(img_box)
 
@@ -823,6 +868,11 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             "resize_crop_margins",
             pp_cfg.get("resize_crop_margins", DEFAULT_RESIZE_CROP_MARGINS),
         )
+        freefit = meta.get("freefit", pp_cfg.get("freefit", DEFAULT_FREEFIT))
+        freefit_max_ratio = meta.get(
+            "freefit_max_ratio",
+            pp_cfg.get("freefit_max_ratio", DEFAULT_FREEFIT_MAX_RATIO),
+        )
         path_pattern = meta.get(
             "preprocess_path_pattern", DEFAULT_PREPROCESS_PATH_PATTERN
         )
@@ -877,6 +927,10 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self.target_res_widget.set_bucket_resos(resize_bucket_resos)
             self._set_resize_crop_anchor(resize_crop_anchor)
             self._set_resize_crop_margins(resize_crop_margins)
+            self.freefit_chk.setChecked(bool(freefit))
+            self.freefit_max_ratio_spin.setValue(float(freefit_max_ratio))
+            self.freefit_max_ratio_spin.setEnabled(self.freefit_chk.isChecked())
+            self.freefit_note.setVisible(self.freefit_chk.isChecked())
             self.shuffle_spin.setValue(int(shuffle_variants))
             self.dropout_edit.setText(f"{float(tag_dropout):g}")
             self.run_sam_mask_chk.setChecked(bool(run_sam_mask))
@@ -981,6 +1035,8 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self.resize_margin_right_spin,
             self.resize_margin_bottom_spin,
             self.resize_margin_left_spin,
+            self.freefit_chk,
+            self.freefit_max_ratio_spin,
             self.shuffle_spin,
             self.dropout_edit,
             self.run_sam_mask_chk,
@@ -1264,6 +1320,10 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             "resize_bucket_resos": self.target_res_widget.bucket_resos(),
             "resize_crop_anchor": self.resize_crop_anchor_widget.value(),
             "resize_crop_margins": self._resize_crop_margins(),
+            # Dual-use: feeds the resize CLI (_freefit_args) AND the train snapshot
+            # (ConfigTab auto-enables dynamic_seq when freefit is on).
+            "freefit": self.freefit_chk.isChecked(),
+            "freefit_max_ratio": float(self.freefit_max_ratio_spin.value()),
         }
 
     def preprocess_config_snapshot(self) -> dict[str, object]:
@@ -1421,6 +1481,20 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             meta["resize_crop_margins"] = crop_margins
         else:
             meta.pop("resize_crop_margins", None)
+
+        # freefit is dual-use: train.py reads it to auto-enable dynamic_seq, so —
+        # like target_res — keep it explicit even at the default, so the GUI
+        # profile always shows the exact compile path the run will take.
+        freefit = self.freefit_chk.isChecked()
+        meta["freefit"] = freefit
+
+        # max_ratio is preprocess-only and only meaningful in free-fit mode;
+        # persist it when free-fit is on and the value isn't the default.
+        freefit_max_ratio = float(self.freefit_max_ratio_spin.value())
+        if freefit and freefit_max_ratio != float(DEFAULT_FREEFIT_MAX_RATIO):
+            meta["freefit_max_ratio"] = freefit_max_ratio
+        else:
+            meta.pop("freefit_max_ratio", None)
 
         shuffle = int(self.shuffle_spin.value())
         if shuffle == DEFAULT_TE_SHUFFLE_VARIANTS:

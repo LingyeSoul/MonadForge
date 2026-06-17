@@ -145,6 +145,21 @@ def apply_cond_diff_loss(loss: torch.Tensor, ctx: "LossContext") -> torch.Tensor
         cond_latents = cond_latents.squeeze(2)
     if latents.ndim == 5:
         latents = latents.squeeze(2)
+    # The per-pixel diff weight needs pixel-aligned cond and target. Under free-fit
+    # a paired cond can land at a different shape than the target (cond≠target is
+    # otherwise supported); the element-wise diff is undefined there, so skip the
+    # reallocation for those samples (the extended-attn copy-through still trains —
+    # only the gradient concentration is forgone). Warn once.
+    if cond_latents.shape[-2:] != latents.shape[-2:]:
+        if not getattr(apply_cond_diff_loss, "_warned_shape_mismatch", False):
+            logger.warning(
+                "cond_diff_loss: cond latent shape %s != target %s (free-fit "
+                "cross-shape pair) — skipping diff weighting for mismatched pairs.",
+                tuple(cond_latents.shape[-2:]),
+                tuple(latents.shape[-2:]),
+            )
+            apply_cond_diff_loss._warned_shape_mismatch = True
+        return loss
     w = compute_cond_diff_weight(
         latents.to(loss.device),
         cond_latents.to(loss.device),

@@ -23,13 +23,16 @@ from library.datasets.buckets import (
 )
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
+from library.datasets.buckets import DEFAULT_FREEFIT_MAX_RATIO
 from library.preprocess.resize_preview import (
+    DEFAULT_FIT_MODE,
     DEFAULT_RESIZE_CROP_ANCHOR,
     RESIZE_CROP_ANCHORS,
     format_bucket_resos,
     margin_crop_rect,
     normalize_crop_anchor,
     normalize_crop_margins,
+    normalize_fit_mode,
     parse_bucket_resos,
     select_resize_bucket,
 )
@@ -38,6 +41,8 @@ CAPTION_EXTENSIONS = {".txt", ".caption"}
 _RESIZE_ANCHOR_KEY = "anima_resize_crop_anchor"
 _RESIZE_BUCKET_RESOS_KEY = "anima_resize_bucket_resos"
 _RESIZE_MARGINS_KEY = "anima_resize_crop_margins"
+_RESIZE_FIT_MODE_KEY = "anima_resize_fit_mode"
+_RESIZE_MAX_RATIO_KEY = "anima_resize_max_ratio"
 
 
 def _collect_metadata(src: Image.Image) -> dict:
@@ -78,18 +83,36 @@ def _format_margins(crop_margins) -> str:
 
 
 def _resize_metadata_signature(
-    crop_anchor: str, bucket_resos, crop_margins=None
+    crop_anchor: str,
+    bucket_resos,
+    crop_margins=None,
+    fit_mode: str = DEFAULT_FIT_MODE,
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
 ) -> dict[str, str]:
     anchor = normalize_crop_anchor(crop_anchor)
     buckets = format_bucket_resos(parse_bucket_resos(bucket_resos))
     margins = _format_margins(crop_margins)
-    if anchor == DEFAULT_RESIZE_CROP_ANCHOR and not buckets and margins == "0,0,0,0":
+    fit = normalize_fit_mode(fit_mode)
+    # Default snap path keeps the empty (legacy-compatible) signature so existing
+    # resized PNGs are not invalidated. Free-fit folds fit_mode + max_ratio in so
+    # changing either re-resizes (the size-aware skip in process_image relies on
+    # the signature matching).
+    if (
+        fit == DEFAULT_FIT_MODE
+        and anchor == DEFAULT_RESIZE_CROP_ANCHOR
+        and not buckets
+        and margins == "0,0,0,0"
+    ):
         return {}
-    return {
+    sig = {
         _RESIZE_ANCHOR_KEY: anchor,
         _RESIZE_BUCKET_RESOS_KEY: "|".join(buckets),
         _RESIZE_MARGINS_KEY: margins,
     }
+    if fit != DEFAULT_FIT_MODE:
+        sig[_RESIZE_FIT_MODE_KEY] = fit
+        sig[_RESIZE_MAX_RATIO_KEY] = f"{float(max_ratio):g}"
+    return sig
 
 
 def _add_resize_metadata(save_kwargs: dict, signature: dict[str, str]) -> None:
@@ -136,6 +159,8 @@ def process_image(
     crop_anchor = rest[1] if len(rest) > 1 else DEFAULT_RESIZE_CROP_ANCHOR
     bucket_resos = rest[2] if len(rest) > 2 else None
     crop_margins = rest[3] if len(rest) > 3 else None
+    fit_mode = rest[4] if len(rest) > 4 else DEFAULT_FIT_MODE
+    max_ratio = rest[5] if len(rest) > 5 else DEFAULT_FREEFIT_MAX_RATIO
     bucket_mgr = BucketManager(
         max_reso=max_reso,
         min_size=min_size,
@@ -162,7 +187,9 @@ def process_image(
         # all_constant_token_buckets()'s aspect-only select_bucket would UPSCALE
         # a 0.7MP portrait into a 1536-tier bucket — the multi-tier resize regression.
         tier = target_res or list(DEFAULT_TARGET_RES)
-        _, bucket_reso = select_resize_bucket(work_w, work_h, tier, bucket_resos)
+        _, bucket_reso = select_resize_bucket(
+            work_w, work_h, tier, bucket_resos, fit_mode=fit_mode, max_ratio=max_ratio
+        )
     else:
         bucket_mgr.make_buckets(constant_token_buckets=False)
         bucket_reso, _, _ = bucket_mgr.select_bucket(w, h)
@@ -170,7 +197,9 @@ def process_image(
     bw, bh = bucket_reso
     crop_anchor = normalize_crop_anchor(crop_anchor)
     anchor_x, anchor_y = RESIZE_CROP_ANCHORS[crop_anchor]
-    signature = _resize_metadata_signature(crop_anchor, bucket_resos, crop_margins)
+    signature = _resize_metadata_signature(
+        crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
+    )
 
     target_dir = out_dir / rel_dir if rel_dir else out_dir
     out_path = target_dir / f"{image_path.stem}.png"
@@ -235,6 +264,8 @@ def resize_to_buckets(
     crop_anchor: str = DEFAULT_RESIZE_CROP_ANCHOR,
     bucket_resos=None,
     crop_margins=None,
+    fit_mode: str = DEFAULT_FIT_MODE,
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
     progress: ProgressFn | None = None,
 ) -> tuple[PreprocessStats, dict[tuple[int, int], int]]:
     """Resize+crop every image under ``src`` into bucket resolutions under ``dst``.
@@ -260,6 +291,8 @@ def resize_to_buckets(
         crop_anchor,
         parse_bucket_resos(bucket_resos),
         normalize_crop_margins(crop_margins),
+        normalize_fit_mode(fit_mode),
+        float(max_ratio),
     )
 
     # walk_images enforces per-subfolder stem uniqueness (collisions would collide the resized output).
@@ -326,6 +359,8 @@ def resize_to_buckets(
                 if target_res
                 else "constant-token"
             )
+            if normalize_fit_mode(fit_mode) == "freefit":
+                mode = f"free-fit (band, max_ratio {float(max_ratio):g}) over {mode}"
         print(f"Resizing {len(image_files)} images to {mode} buckets")
 
     def _rel_for(p: Path) -> str:

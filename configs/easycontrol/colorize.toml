@@ -66,6 +66,7 @@ text_keep_comic = true
 network_dim = 32
 network_alpha = 32
 target_res = [896, 1024]
+freefit=true
 network_args = [        # Do not use whitespace in each arg
     "b_cond_init=-4.0",
     "cond_scale=1.0",

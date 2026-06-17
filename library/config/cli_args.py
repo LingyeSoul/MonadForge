@@ -301,6 +301,19 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         ),
     )
     parser.add_argument(
+        "--freefit",
+        action="store_true",
+        help=(
+            "Train on a free-aspect token-band ('free-fit') preprocessed dataset: "
+            "the predefined bucket set is the union of the on-disk resized sizes "
+            "(every cached latent exact-matches its own (W, H), nothing AR-snaps) "
+            "instead of the discrete constant-token catalog. Auto-enables "
+            "--compile_dynamic_seq (free-fit shapes span one tier's token band, "
+            "which needs the single-graph dynamic-seq path). Preprocess the data "
+            "with `resize_images.py --freefit` first."
+        ),
+    )
+    parser.add_argument(
         "--dynamo_backend",
         type=str,
         default="inductor",

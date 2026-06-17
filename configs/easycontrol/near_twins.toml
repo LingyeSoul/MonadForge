@@ -51,6 +51,7 @@ dit = 'models/diffusion_models/anima-base-v1.0.safetensors'
 caption_shuffle_variants = 4
 caption_tag_dropout_rate = 0.1
 target_res = [896, 1024]
+freefit=true
 # PE-Spatial sidecars for the REPA auxiliary loss (use_repa below). Re-run
 # `make easycontrol-preprocess EASYADAPTER=near_twin` after adding this —
 # idempotent, only encodes missing sidecars.
@@ -68,6 +69,7 @@ network_dim = 32
 network_alpha = 128
 masked_loss=false
 target_res = [896, 1024]
+freefit=true
 
 network_args = [
     "b_cond_init=-4.0",

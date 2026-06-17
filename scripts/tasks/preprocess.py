@@ -110,8 +110,7 @@ def _resize_crop_args(extra) -> list[str]:
         from ._common import _path_overrides
 
         anchor = str(
-            _path_overrides().get("resize_crop_anchor")
-            or DEFAULT_RESIZE_CROP_ANCHOR
+            _path_overrides().get("resize_crop_anchor") or DEFAULT_RESIZE_CROP_ANCHOR
         ).strip()
         anchor_args = (
             ["--resize_crop_anchor", anchor]
@@ -150,10 +149,46 @@ def _resize_crop_args(extra) -> list[str]:
     return [*anchor_args, *bucket_args, *margin_args]
 
 
+def _freefit_args(extra) -> list[str]:
+    """``--freefit [--freefit_max_ratio R]`` from the merged config chain.
+
+    Reads the dual-use ``freefit`` + preprocess-only ``freefit_max_ratio`` keys
+    (preprocess.toml → base → preset → method). CLI ``ARGS`` wins: if either flag
+    is already in ``extra`` we emit nothing for it (no duplicate).
+    """
+    from ._common import _path_overrides
+
+    overrides = _path_overrides()
+    out: list[str] = []
+
+    if "--freefit" not in extra:
+        raw = overrides.get("freefit")
+        enabled = raw is True or str(raw).strip().lower() in ("1", "true", "yes")
+        if enabled:
+            out.append("--freefit")
+
+    # Only meaningful when free-fit is on (either from config or CLI).
+    freefit_on = "--freefit" in out or "--freefit" in extra
+    if (
+        freefit_on
+        and "--freefit_max_ratio" not in extra
+        and "--freefit-max-ratio" not in extra
+    ):
+        raw = overrides.get("freefit_max_ratio")
+        if raw is not None:
+            try:
+                out += ["--freefit_max_ratio", f"{float(raw):g}"]
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
 def _curation_decisions_args() -> list[str]:
     """Optional GUI curation decisions consumed by resize only."""
 
-    path = Path(_path("curation_decisions", "post_image_dataset/curation_decisions.json"))
+    path = Path(
+        _path("curation_decisions", "post_image_dataset/curation_decisions.json")
+    )
     if not path.is_absolute():
         path = ROOT / path
     if not path.is_file():
@@ -252,6 +287,11 @@ def _pop_resize_only_args(extra) -> list[str]:
         if tok in {"--resize_crop_anchor", "--resize-crop-anchor"}:
             next(it, None)
             continue
+        if tok in {"--freefit_max_ratio", "--freefit-max-ratio"}:
+            next(it, None)
+            continue
+        if tok == "--freefit":  # store_true — no value to consume
+            continue
         cleaned.append(tok)
     return cleaned
 
@@ -291,6 +331,7 @@ def cmd_preprocess_resize(extra):
     pp_args = _preprocess_path_pattern_args(extra)
     cd_args = _curation_decisions_args()
     rc_args = _resize_crop_args(extra)
+    ff_args = _freefit_args(extra)
     run(
         [
             PY,
@@ -304,6 +345,7 @@ def cmd_preprocess_resize(extra):
             *mp_args,
             *tr_args,
             *rc_args,
+            *ff_args,
             *pp_args,
             *cd_args,
             *extra,

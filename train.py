@@ -1471,7 +1471,7 @@ class AnimaTrainer:
             train_dataset_group, val_dataset_group = (
                 config_util.generate_dataset_group_by_blueprint(
                     blueprint.dataset_group,
-                    # Native constant-token bucketing is the only mode: the sampler
+                    # Native constant-token bucketing is the default mode: the sampler
                     # buckets into the full native-shape catalog so compile_blocks'
                     # flatten keys on token count, not resolution. target_res is
                     # inert here (passed only for signature compat) — every cached
@@ -1479,6 +1479,10 @@ class AnimaTrainer:
                     # decide which tiers are present, not this list.
                     constant_token_buckets=True,
                     target_res=getattr(args, "target_res", None),
+                    # Free-fit predefined buckets come from the on-disk resized
+                    # sizes (every latent exact-matches its own (W, H)); the band
+                    # stays within one tier so compile_dynamic_seq keeps 1 graph.
+                    freefit=bool(getattr(args, "freefit", False)),
                 )
             )
 
@@ -1954,6 +1958,18 @@ class AnimaTrainer:
         verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
         setup_logging(args, reset=True)
+
+        # Free-fit requires compile_dynamic_seq: it populates many distinct (W, H)
+        # within one tier's token band, which would explode the static N-graph
+        # compile cascade. dynamic_seq marks only the seq axis dynamic over the
+        # band → a single graph. Auto-enable it (no-op if torch_compile is off).
+        if getattr(args, "freefit", False) and getattr(args, "torch_compile", False):
+            if not getattr(args, "compile_dynamic_seq", False):
+                logger.info(
+                    "freefit: auto-enabling --compile_dynamic_seq "
+                    "(free-fit shapes need the single-graph dynamic-seq path)"
+                )
+                args.compile_dynamic_seq = True
 
         cache_latents = args.cache_latents
 

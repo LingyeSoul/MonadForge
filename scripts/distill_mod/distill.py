@@ -47,6 +47,7 @@ from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
+from library.datasets.buckets import is_freefit_token_counts  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
 from library.io.cache import (  # noqa: E402
@@ -247,11 +248,24 @@ def main():
         # pool, not a fixed table. The derivation is coupled to mod's synth-pool
         # logic so it stays here; the rest is the shared library helper.
         token_counts = _pool_token_counts(cfg, model.patch_spatial)
+        # Free-fit fail-safe (mirrors train.py's auto-enable, which never reaches
+        # this bespoke loop — project_daemon_wiring_pattern): a free-fit pool lands
+        # many distinct token counts inside one tier's band, so the static per-count
+        # compile cascade would explode + poison the compile cache. cfg is frozen →
+        # local override.
+        dynamic_seq = cfg.compile_dynamic_seq
+        if not dynamic_seq and is_freefit_token_counts(token_counts):
+            logger.warning(
+                "freefit pool detected (pool token counts off the bucket table); "
+                "auto-enabling dynamic_seq — free-fit shapes need the single-graph "
+                "dynamic-seq path (static compile would explode the graph cascade)"
+            )
+            dynamic_seq = True
         pc = compile_dit_blocks_for_pool(
             model,
             token_counts,
             enabled=True,
-            dynamic_seq=cfg.compile_dynamic_seq,
+            dynamic_seq=dynamic_seq,
             mode=cfg.compile_inductor_mode,
             activation_memory_budget=cfg.activation_memory_budget,
             grad_ckpt=cfg.grad_ckpt,
@@ -262,11 +276,11 @@ def main():
             "%d distinct token counts in pool, %s.",
             len(model.blocks),
             cfg.compile_inductor_mode,
-            cfg.compile_dynamic_seq,
+            dynamic_seq,
             pc.n_shapes,
             (
                 f"seq_range={pc.seq_range} (one symbolic graph)"
-                if cfg.compile_dynamic_seq
+                if dynamic_seq
                 else "static per-shape graphs"
             ),
         )
