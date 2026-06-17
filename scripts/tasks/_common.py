@@ -552,6 +552,80 @@ def build_method_args(
     return [*args, *extra]
 
 
+def _queue_submit(
+    method: str,
+    *,
+    preset: str,
+    methods_subdir: str | None,
+    extra: list[str],
+    artist: str | None,
+    profile_steps: str | None,
+) -> None:
+    """Enqueue a training job on the local daemon instead of running it inline.
+
+    The ``--queue`` path (``make lora --queue``, ``make lora-gui <v> --queue``)
+    turns the CLI into a job *producer*: it auto-starts the daemon if needed
+    and POSTs the same method/preset/methods_subdir the inline path would have
+    built, then returns immediately. Submit ×N to drain an overnight sweep
+    serially.
+
+    ARTIST / PROFILE_STEPS are folded into ``extra`` as explicit flags here
+    because the daemon's own ``build_method_args`` call doesn't read those env
+    vars — without folding, a queued artist run would silently train the full
+    dataset.
+    """
+    extra = list(extra)
+    if artist and "--artist_filter" not in extra:
+        extra += ["--artist_filter", artist]
+    if profile_steps and "--profile_steps" not in extra:
+        extra += ["--profile_steps", profile_steps]
+
+    from scripts.daemon import client as _daemon_client
+
+    cl = _daemon_client.ensure_daemon()
+    resp = cl.submit(
+        method=method,
+        preset=preset,
+        methods_subdir=methods_subdir,
+        extra=extra,
+    )
+    job_id = resp.get("job_id")
+    print(
+        f"queued job {job_id} (method={method}, preset={preset}). "
+        f"daemon: {cl.base}\n"
+        f"  python tasks.py daemon-attach JOB={job_id}   # follow this job's output\n"
+        f"  python tasks.py daemon-attach                # follow queue/lifecycle events\n"
+        f"  python tasks.py daemon-kill JOB={job_id}     # cancel it\n"
+        f"  python tasks.py daemon-terminate             # stop the daemon + discard queue"
+    )
+
+
+def queue_command(label: str, argv: list[str]) -> None:
+    """Enqueue a bespoke-loop distillation command on the local daemon.
+
+    The training daemon is generic over "run this argv" via its ``kind="command"``
+    job path (the same one preprocess/mask use). The bespoke loops
+    (``scripts/distill_turbo`` / ``scripts/distill_spd``) bypass ``train.py``, so
+    they can't ride the train-job ``_queue_submit`` path — they submit a plain
+    command job instead. ``argv`` is run by the daemon as
+    ``[venv_python, *argv]`` from the repo root, so pass the module form
+    (``["-m", "scripts.distill_turbo.distill", ...]``). Preset/CLI flags must be
+    baked into ``argv`` here: the command-job path does no config merging.
+    """
+    from scripts.daemon import client as _daemon_client
+
+    cl = _daemon_client.ensure_daemon()
+    resp = cl.submit_command(label=label, argv=list(argv))
+    job_id = resp.get("job_id")
+    print(
+        f"queued job {job_id} (label={label}). daemon: {cl.base}\n"
+        f"  python tasks.py daemon-attach JOB={job_id}   # follow this job's output\n"
+        f"  python tasks.py daemon-attach                # follow queue/lifecycle events\n"
+        f"  python tasks.py daemon-kill JOB={job_id}     # cancel it\n"
+        f"  python tasks.py daemon-terminate             # stop the daemon + discard queue"
+    )
+
+
 def train(
     method: str, extra, preset: str | None = None, methods_subdir: str | None = None
 ):
@@ -564,11 +638,27 @@ def train(
     ARTIST env var trains an artist-only LoRA — equivalent to passing
     `--artist_filter <name>` (filters dataset to `@<name>`-tagged captions and
     redirects output to `output/ckpt-artist/`).
+
+    ``--queue`` anywhere in ``extra`` enqueues the job on the local training
+    daemon and returns immediately instead of running it inline (the overnight
+    sweep path — see ``_queue_submit``).
     """
     preset = preset or _preset()
     extra = list(extra or [])
     artist = os.environ.get("ARTIST")
     profile_steps = os.environ.get("PROFILE_STEPS")
+
+    if "--queue" in extra:
+        extra.remove("--queue")
+        _queue_submit(
+            method,
+            preset=preset,
+            methods_subdir=methods_subdir,
+            extra=extra,
+            artist=artist,
+            profile_steps=profile_steps,
+        )
+        return
 
     args = build_method_args(
         method,

@@ -26,6 +26,7 @@ from scripts.experimental_tasks import inference as exp_inference
 from scripts.experimental_tasks import training as exp_training
 from scripts.tasks import (
     curate,
+    daemon,
     dcw,
     downloads,
     inference,
@@ -222,6 +223,31 @@ COMMANDS = {
     "mask-clean": (
         masking.cmd_mask_clean,
         "Remove post_image_dataset/masks/",
+    ),
+    # ── Daemon (serial job queue — the WebUI/CLI/MCP training runner) ──
+    "daemon": (
+        daemon.cmd_daemon,
+        "Start the training daemon (idempotent, detached). The daemon owns a "
+        "serial job queue + GPU guard; the WebUI submits training/preprocess "
+        "jobs here. Jobs survive a WebUI restart.",
+    ),
+    "daemon-status": (
+        daemon.cmd_daemon_status,
+        "One JSON status object: daemon health + base URL + job summaries "
+        "(--full for raw records). Passive, exit 1 when down.",
+    ),
+    "daemon-attach": (
+        daemon.cmd_daemon_attach,
+        "Non-owning viewer. JOB=<id> follows that job's stdout; otherwise "
+        "tails daemon lifecycle events. Ctrl-C detaches only.",
+    ),
+    "daemon-kill": (
+        daemon.cmd_daemon_kill,
+        "Abort the running (or JOB=<id>) job and free the GPU; daemon stays up.",
+    ),
+    "daemon-terminate": (
+        daemon.cmd_daemon_terminate,
+        "Shut the whole daemon down (active job dies, queue discarded).",
     ),
     # ── Utilities ─────────────────────────────────────────────────────
     "merge": (

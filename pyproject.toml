@@ -64,6 +64,11 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.34.0",
     "python-multipart>=0.0.20",
+    # System tray (Windows status indicator for the training daemon).
+    # pywin32 is the Win32 backend pystray's Win backend leans on; declaring it
+    # here keeps a future `uv sync` from pruning a transitive install.
+    "pystray>=0.19.5 ; sys_platform == 'win32'",
+    "pywin32>=308 ; sys_platform == 'win32'",
     # WD Tagger (timm + PyTorch, no ONNX Runtime)
     "timm>=1.0.0",
     # Experiment tracking
@@ -82,6 +87,12 @@ dev = [
     "pytest-xdist>=3.6",
     "pytest-timeout>=2.3",
 ]
+
+# Windows tray entry point. `gui-scripts` binds to pythonw.exe on Windows so
+# launching it pops no console (the tray runs its own message loop). Invoke as
+# `pythonw -m scripts.tray` directly if the installed script isn't on PATH.
+[project.gui-scripts]
+monadforge-tray = "scripts.tray.__main__:main"
 
 [tool.uv]
 index-strategy = "unsafe-best-match"

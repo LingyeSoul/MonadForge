@@ -1,0 +1,110 @@
+"""Daemon process entry point: ``python -m scripts.daemon``.
+
+This is the long-lived, console-detached process that ``make daemon`` spawns.
+It takes the single-daemon lock (pidfile ``(pid, create_time)``; a live sibling
+that already answers ``/health`` on the port also makes us stand down), binds
+the preferred port — falling back to an ephemeral one if a *stranger* holds it
+— reconciles ``jobs/`` from any previous run, then serves until
+``POST /shutdown``.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+
+from . import config, proc
+from .manager import JobManager
+from .server import serve_with_fallback
+
+
+def _setup_logging() -> None:
+    config.ensure_state_dirs()
+    # ANIMA_DEBUG (set by the GUI's "Debug mode" setting before it spawns us)
+    # turns on DEBUG-level logging so daemon.log captures the launch/queue
+    # decisions a bug report needs.
+    level = logging.DEBUG if os.environ.get("ANIMA_DEBUG") else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=[logging.StreamHandler(sys.stderr)],  # stderr → daemon.log file
+    )
+
+
+def main() -> int:
+    _setup_logging()
+    log = logging.getLogger("anima.daemon")
+
+    port = config.DEFAULT_PORT
+    if len(sys.argv) > 1:
+        try:
+            port = int(sys.argv[1])
+        except ValueError:
+            pass
+
+    # Refuse to start a second daemon over a live one.
+    existing = proc.daemon_alive(config.PIDFILE)
+    if existing is not None:
+        log.error(
+            "daemon already running (pid %s, port %s); refusing to start",
+            existing.get("pid"),
+            existing.get("port"),
+        )
+        return 3
+
+    manager = JobManager()
+    manager.start()
+
+    try:
+        # Falls back to an ephemeral port if a stranger holds the preferred one,
+        # but re-raises (→ exit 3) if a sibling anima daemon already owns it, so
+        # a startup race can't produce two daemons. The bound port is written to
+        # the pidfile below; clients re-resolve it from there.
+        server = serve_with_fallback(manager, port=port)
+    except OSError as exc:
+        log.error("could not bind 127.0.0.1:%s (%s); another anima daemon?", port, exc)
+        manager.shutdown(kill_jobs=False)
+        return 3
+
+    proc.write_pidfile(
+        config.PIDFILE,
+        pid=os.getpid(),
+        port=server.server_address[1],
+        root=config.ROOT,
+    )
+    # Mirror to a stable per-user path so a ComfyUI trainer node installed
+    # *outside* this checkout can discover us (and our bound port) without
+    # knowing the repo location. Best-effort: a read-only home dir shouldn't
+    # stop the daemon from serving in-repo clients.
+    try:
+        proc.write_pidfile(
+            config.global_pidfile(),
+            pid=os.getpid(),
+            port=server.server_address[1],
+            root=config.ROOT,
+        )
+    except OSError as exc:
+        log.warning("could not write global pidfile mirror (%s)", exc)
+    log.info(
+        "anima training daemon up on http://%s:%s (pid %s)",
+        config.HOST,
+        server.server_address[1],
+        os.getpid(),
+    )
+    try:
+        server.serve_forever(poll_interval=0.5)
+    except KeyboardInterrupt:
+        manager.shutdown(kill_jobs=False)
+    finally:
+        for pid_path in (config.PIDFILE, config.global_pidfile()):
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+        log.info("daemon stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

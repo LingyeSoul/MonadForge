@@ -62,9 +62,11 @@ Gotchas: `merge` refuses ReFT / Hydra moe / postfix (not foldable) unless `--all
 | `train.py` | `AnimaTrainer` — main training loop via HF Accelerate |
 | `inference.py` | Standalone image generation (`--help` for all flags) |
 | `networks/spectrum.py` | Spectrum inference acceleration |
-| `webui/` | FastAPI + Vue 3 WebUI (config editing, dataset browsing, training, system management) |
+| `webui/` | FastAPI + Vue 3 WebUI (config editing, dataset browsing, training, system management). Its `services/task_service.py` submits every task to the daemon (below) as a *command* job and tails the daemon-managed stdout + progress.jsonl. |
+| `scripts/daemon/` | **Training daemon** — localhost serial job queue (`127.0.0.1:8765`, no auth): one job at a time (GPU guard), state persists to `output/daemon/` (survives WebUI restart), `chain_train` (preprocess→train), REST + Python client (`scripts/daemon/client.py`) + stdio MCP bridge (`mcp.py`) so AI agents can submit/watch/stop jobs. CLI: `python tasks.py daemon[-status\|-attach\|-kill\|-terminate]`. `--queue` on any train target enqueues here. The WebUI auto-starts it on boot. |
+| `scripts/tray/` | **Windows system-tray app** (pystray) — status indicator (idle/running/error/down) + controller (open WebUI, pause/resume queue, stop job, restart daemon). Run `pythonw -m scripts.tray` or the `monadforge-tray` gui-script. Icons are procedural (Pillow) in `icons.py`. |
 | `tasks.py` | Cross-platform task runner — source of truth for every `make` target |
-| `scripts/tasks/` + `scripts/experimental_tasks/` | Where command bodies actually live (`_common.py` = shared helpers) |
+| `scripts/tasks/` + `scripts/experimental_tasks/` | Where command bodies actually live (`_common.py` = shared helpers, incl. `_queue_submit`/`queue_command` for the daemon `--queue` path) |
 
 Docs: shipped method deep-dives in `docs/methods/`, experimental in `docs/experimental/`, active proposals in `docs/proposal/`, retired material under `_archive/`.
 

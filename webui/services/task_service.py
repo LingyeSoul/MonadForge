@@ -1,4 +1,23 @@
-"""Async subprocess lifecycle manager for tasks.py commands."""
+"""Task lifecycle manager — submits jobs to the local training daemon.
+
+The WebUI no longer spawns ``python tasks.py …`` subprocesses directly. Every
+task (train / preprocess / mask / distill) is submitted as a daemon *command*
+job (``POST /jobs {kind:"command", argv:[…]}``); the daemon owns the
+subprocess, the serial queue (one job at a time → no GPU contention), the GPU
+guard, and on-disk persistence so a job survives a WebUI restart.
+
+This service is now a thin *adapter*: it maps the daemon's job model onto the
+in-memory ``Task``/WS surface the frontend already speaks, preserving the
+``{"type": "log|metrics|sample|done|…"}`` WS message shape — the frontend is
+unchanged. Progress metrics still come from the same two channels:
+
+- stdout: read from the daemon-managed ``<job_dir>/stdout.log`` (tailed here)
+- progress.jsonl: derived as before (train.py writes it; we tail it)
+
+The daemon assigns the ``job_id`` (sortable timestamp); we adopt it as the
+``task.id`` so the REST/WS surface (which the frontend addresses by task_id)
+lines up 1:1 with the daemon's job surface.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -14,7 +34,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-import re
+from webui.services.daemon_client import DaemonError, daemon_client
 from webui.services.training_log_parser import TrainingLogParser
 
 logger = logging.getLogger(__name__)
@@ -39,7 +59,12 @@ class Task:
     pid: Optional[int] = None
     exit_code: Optional[int] = None
     lines: list[str] = field(default_factory=list)
-    process: Optional[asyncio.subprocess.Process] = field(default=None, repr=False)
+    # The daemon owns the subprocess now; we keep no live process handle.
+    # `job_id` == `id` (the daemon's sortable job id is adopted as task_id);
+    # `stdout_path` is the daemon-managed <job_dir>/stdout.log we tail.
+    job_id: Optional[str] = field(default=None, repr=False)
+    stdout_path: Optional[str] = field(default=None, repr=False)
+    stdout_offset: int = field(default=0, repr=False)
     started_at: Optional[str] = field(default=None)
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
     parser: TrainingLogParser = field(default_factory=TrainingLogParser, repr=False)
@@ -59,7 +84,14 @@ class Task:
 
 
 class TaskService:
-    """Manages subprocess lifecycle for tasks.py commands."""
+    """Submits tasks to the local training daemon and mirrors them to the UI.
+
+    Each task becomes a daemon *command* job (``[python, tasks.py, <cmd>, …]``).
+    The daemon enforces a serial queue + GPU guard and persists state to disk;
+    this service tails each job's ``stdout.log`` + derived ``progress.jsonl``
+    and republishes them over the existing WS surface so the frontend is
+    unchanged from the old direct-subprocess design.
+    """
 
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
@@ -89,79 +121,81 @@ class TaskService:
         args: list[str] | None = None,
         env: dict[str, str] | None = None,
     ) -> Task:
-        """Launch ``python tasks.py <command> [args...]`` as a subprocess."""
-        task_id = uuid.uuid4().hex[:12]
-        task = Task(id=task_id, command=command, args=args or [])
-        self._tasks[task_id] = task
+        """Submit ``python tasks.py <command> [args...]`` as a daemon command job."""
+        # The daemon prepends its own venv interpreter (venv_python) to command
+        # jobs, so argv leads with the script — NOT the python executable.
+        # See scripts/daemon/manager.py::_build_cmd (job.kind == "command").
+        argv = ["tasks.py", command, *(args or [])]
+        # The daemon already sets PYTHONUNBUFFERED/PYTHONUTF8/PYTHONIOENCODING
+        # (manager._build_cmd), so we only forward caller-provided env (e.g.
+        # PRESET overrides).
+        extra_env = dict(env) if env else None
 
-        cmd = [self._python, "tasks.py", command, *(args or [])]
-        merged_env = {**os.environ, **(env or {})}
-        # Force unbuffered stdout/stderr so readline() sees output immediately.
-        # Without this, Python detects the pipe and uses full buffering (4-8 KB),
-        # causing the first N kilobytes of output to be silently lossy.
-        merged_env["PYTHONUNBUFFERED"] = "1"
-        # Force child Python processes to use UTF-8 for stdout/stderr.
-        # Without this, Windows uses the system locale encoding (e.g. GBK/CP936
-        # on Chinese Windows), causing non-ASCII characters to be garbled when
-        # decoded as UTF-8 on the receiving end.
-        merged_env["PYTHONIOENCODING"] = "utf-8"
-
-        logger.info("Starting task %s: %s (env override keys: %s)", task_id, " ".join(cmd), list((env or {}).keys()))
+        logger.info(
+            "Submitting task to daemon: tasks.py %s %s (env override keys: %s)",
+            command,
+            " ".join(args or []),
+            list((env or {}).keys()),
+        )
         if env and "PRESET" in env:
-            logger.info("Task %s PRESET env override: %r", task_id, env["PRESET"])
+            logger.info("Task PRESET env override: %r", env["PRESET"])
+
+        # Temporary task id; replaced with the daemon's job_id once enqueued so
+        # task_id == job_id (the frontend addresses jobs by task_id over WS).
+        temp_id = uuid.uuid4().hex[:12]
+        task = Task(id=temp_id, command=command, args=args or [])
+        self._tasks[temp_id] = task
 
         try:
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(ROOT),
-                env=merged_env,
+            resp = await daemon_client.submit_command(
+                argv,
+                label=command,
+                extra_env=extra_env,
+                start=True,
             )
-            task.process = process
-            task.pid = process.pid
-            task.state = TaskState.RUNNING
-            task.started_at = datetime.now(timezone.utc).isoformat()
-
-            # Fire-and-forget reader — updates task state when done
-            asyncio.create_task(self._read_output(task))
-
-            # Tail the structured progress JSONL for richer metrics.
-            # The training subprocess auto-derives the path from
-            # output_dir/output_name when --progress_jsonl is not passed.
-            jsonl_path = self._derive_progress_jsonl_path(args or [])
-            if jsonl_path:
-                asyncio.create_task(self._watch_progress_jsonl(task, jsonl_path))
-        except Exception as exc:
+        except DaemonError as exc:
             task.state = TaskState.FAILED
-            task.lines.append(f"[error] Failed to start: {exc}")
-            logger.exception("Failed to start task %s", task_id)
+            task.lines.append(f"[error] Failed to submit to daemon: {exc}")
+            logger.exception("Failed to submit task to daemon")
+            return task
+
+        job_id = resp.get("job_id") or temp_id
+        # Re-key the task under its daemon job_id so WS/REST addressing lines up.
+        task.id = job_id
+        task.job_id = job_id
+        self._tasks[job_id] = task
+        if temp_id != job_id:
+            del self._tasks[temp_id]
+
+        task.state = TaskState.PENDING  # queued; _poll_daemon_job flips to RUNNING
+        task.started_at = datetime.now(timezone.utc).isoformat()
+
+        # One poller drives state transitions + stdout tailing + terminal
+        # signaling. The progress-JSONL watcher runs alongside it.
+        asyncio.create_task(self._poll_daemon_job(task))
+        jsonl_path = self._derive_progress_jsonl_path(args or [])
+        if jsonl_path:
+            asyncio.create_task(self._watch_progress_jsonl(task, jsonl_path))
 
         return task
 
     async def cancel_task(self, task_id: str) -> bool:
-        """Terminate a running task (tree-kill on Windows)."""
+        """Stop a running/queued task via the daemon (tree-kill on its process)."""
         task = self._tasks.get(task_id)
-        if not task or task.state != TaskState.RUNNING:
+        if not task or task.job_id is None:
             return False
-        if task.process is None:
+        # Allow cancel from PENDING (queued) or RUNNING.
+        if task.state not in (TaskState.RUNNING, TaskState.PENDING):
             return False
-
         try:
-            if sys.platform == "win32":
-                # /T kills the process tree, /F forces
-                os.system(f"taskkill /PID {task.process.pid} /T /F")
-            else:
-                task.process.terminate()
-            task.state = TaskState.CANCELLED
-            task.lines.append(f"[cancelled] Task {task_id} terminated by user")
-            await self._notify_subscribers(
-                task, {"type": "cancelled", "task_id": task_id}
-            )
-            return True
-        except Exception:
-            logger.exception("Failed to cancel task %s", task_id)
+            await daemon_client.stop(task.job_id)
+        except DaemonError:
+            logger.exception("Failed to stop job %s", task.job_id)
             return False
+        task.state = TaskState.CANCELLED
+        task.lines.append(f"[cancelled] Task {task_id} terminated by user")
+        await self._notify_subscribers(task, {"type": "cancelled", "task_id": task_id})
+        return True
 
     def subscribe(self, task_id: str) -> asyncio.Queue:
         """Subscribe to log lines for a task. Returns an asyncio.Queue."""
@@ -189,99 +223,178 @@ class TaskService:
         if task and queue in task._subscribers:
             task._subscribers.remove(queue)
 
-    async def _read_output(self, task: Task) -> None:
-        """Read subprocess stdout and dispatch to subscribers.
+    async def _poll_daemon_job(self, task: Task) -> None:
+        """Drive a submitted daemon job: poll state, tail stdout.log, finalize.
 
-        Splits on both ``\\n`` and ``\\r`` so tqdm progress-bar updates
-        (which use bare ``\\r`` to overwrite the previous line) arrive as
-        individual messages instead of being concatenated into one giant line.
-
-        Lines ending with ``\\r`` (progress updates) are sent with
-        ``replace: true`` so the frontend can overwrite the previous line
-        instead of appending.  They also replace the last entry in
-        ``task.lines`` so that late-joining subscribers (REST replay) see
-        only the final progress-bar state.
+        Replaces the old ``_read_output`` (which read a live pipe). The daemon
+        writes the subprocess's combined stdout+stderr to
+        ``<job_dir>/stdout.log``; we tail it by offset and feed bytes through
+        the same ``\\n``/``\\r`` splitter → ``_emit_line`` so tqdm bars still
+        render as ``replace`` updates. State transitions come from
+        ``GET /jobs/{id}`` (queued/running/done/error/stopped); on a terminal
+        state we map to ``TaskState`` and emit the ``done`` message.
         """
-        assert task.process is not None
-        assert task.process.stdout is not None
-
-        _LF = ord("\n")
-        _CR = ord("\r")
-        buf = bytearray()
-        pending_cr = False  # \r at end of previous chunk; check next chunk for \n
+        assert task.job_id is not None
+        poll_interval = 0.5
         try:
-            while True:
-                chunk = await task.process.stdout.read(4096)
-                if not chunk:
-                    break
-                i = 0
-                end = len(chunk)
-                # Handle \r from previous chunk boundary
-                if pending_cr:
-                    pending_cr = False
-                    line = bytes(buf).decode("utf-8", errors="replace")
-                    buf.clear()
-                    if chunk[0] == _LF:
-                        # \r\n across chunk boundary → regular line
-                        i = 1
-                        await self._emit_line(task, line, replace=False)
-                    else:
-                        # bare \r → progress update
-                        await self._emit_line(task, line, replace=True)
-                while i < end:
-                    b = chunk[i]
-                    if b == _CR:
-                        line = bytes(buf).decode("utf-8", errors="replace")
-                        buf.clear()
-                        if i + 1 < end:
-                            # \r\n within same chunk → regular line ending
-                            if chunk[i + 1] == _LF:
-                                i += 2
-                                await self._emit_line(task, line, replace=False)
-                                continue
-                            # bare \r → tqdm progress update
-                            i += 1
-                            await self._emit_line(task, line, replace=True)
-                        else:
-                            # \r at chunk boundary — defer until next chunk
-                            pending_cr = True
-                            i += 1
-                    elif b == _LF:
-                        line = bytes(buf).decode("utf-8", errors="replace")
-                        buf.clear()
-                        i += 1
-                        await self._emit_line(task, line, replace=False)
-                    else:
-                        buf.append(b)
-                        i += 1
+            while task.state in (TaskState.PENDING, TaskState.RUNNING):
+                try:
+                    info = await daemon_client.get_job(task.job_id)
+                except DaemonError:
+                    logger.debug("daemon poll failed for %s; will retry", task.job_id)
+                    await asyncio.sleep(poll_interval)
+                    continue
 
-            # Flush remaining bytes (partial line without terminator)
-            if buf or pending_cr:
-                line = bytes(buf).decode("utf-8", errors="replace")
-                await self._emit_line(
-                    task, line, replace=pending_cr
-                )
+                # Resolve / learn the stdout path lazily (daemon sets it once
+                # the job is launched). Persisting it lets us tail even if a
+                # later poll transiently fails.
+                stdout_path = info.get("stdout_path")
+                if stdout_path:
+                    task.stdout_path = stdout_path
 
-            task.exit_code = await task.process.wait()
-            if task.state == TaskState.CANCELLED:
-                pass  # already set
-            elif task.exit_code == 0:
-                task.state = TaskState.SUCCESS
-            else:
-                task.state = TaskState.FAILED
+                # Map daemon state → TaskState. queued → PENDING, running →
+                # RUNNING; terminal states break the loop after a final drain.
+                dstate = info.get("state")
+                if dstate == "running" and task.state == TaskState.PENDING:
+                    task.state = TaskState.RUNNING
+                    task.pid = info.get("pid")
+                elif dstate in ("done", "error", "stopped"):
+                    # Drain any final stdout before signaling done.
+                    await self._drain_stdout(task)
+                    await self._finalize_from_daemon(task, info)
+                    return
 
-            msg = {
-                "type": "done",
-                "exit_code": task.exit_code,
-                "state": task.state.value,
-            }
-            await self._notify_subscribers(task, msg)
+                # Tail new stdout bytes each tick (no-op until path is known).
+                await self._drain_stdout(task)
+                await asyncio.sleep(poll_interval)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            logger.exception("Error reading output for task %s", task.id)
+            logger.exception("Error polling daemon job %s", task.job_id)
             task.state = TaskState.FAILED
             await self._notify_subscribers(
                 task, {"type": "done", "exit_code": -1, "state": "failed"}
             )
+
+    async def _finalize_from_daemon(self, task: Task, info: dict) -> None:
+        """Map a terminal daemon job record onto the Task + emit ``done``."""
+        dstate = info.get("state")
+        if task.state == TaskState.CANCELLED:
+            pass  # cancel_task already set it
+        elif dstate == "done":
+            task.state = TaskState.SUCCESS
+            task.exit_code = 0
+        elif dstate == "stopped":
+            task.state = TaskState.CANCELLED
+            task.exit_code = info.get("rc")
+        else:  # error
+            task.state = TaskState.FAILED
+            task.exit_code = info.get("rc") or -1
+            err = info.get("error") or info.get("status_detail")
+            if err:
+                task.lines.append(f"[error] {err}")
+                await self._notify_subscribers(
+                    task, {"type": "log", "line": f"[error] {err}"}
+                )
+
+        ckpt = info.get("ckpt_path")
+        msg = {
+            "type": "done",
+            "exit_code": task.exit_code,
+            "state": task.state.value,
+        }
+        if ckpt:
+            msg["ckpt_path"] = ckpt
+        await self._notify_subscribers(task, msg)
+
+    async def _drain_stdout(self, task: Task) -> None:
+        """Read new complete lines from the daemon-managed stdout.log.
+
+        Tracks ``task.stdout_offset`` across calls. A trailing partial line
+        (no ``\\n``) is left for the next poll — unless it's a tqdm ``\\r``
+        update, which we emit immediately with ``replace=True``. Mirrors the
+        old live-pipe splitter's semantics.
+        """
+        if not task.stdout_path:
+            return
+        try:
+            data: Optional[tuple[bytes, int]] = await asyncio.to_thread(
+                self._read_stdout_bytes, task.stdout_path, task.stdout_offset
+            )
+        except Exception:
+            return  # file may not exist yet (job launching) — skip this tick
+        if data is None:
+            return
+        new_bytes, new_offset = data
+        if not new_bytes:
+            return
+        task.stdout_offset = new_offset
+        await self._emit_stdout_bytes(task, new_bytes)
+
+    @staticmethod
+    def _read_stdout_bytes(path: str, offset: int) -> Optional[tuple[bytes, int]]:
+        """Read complete stdout lines from *offset* (blocking I/O).
+
+        Returns ``(b"", offset)`` when there's no complete line yet. A trailing
+        fragment without ``\\n`` is held back (offset unchanged) so the next
+        poll re-reads it once the ``\\n`` (or a ``\\r`` overwrite) lands.
+        """
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return None
+        if size <= offset:
+            return b"", offset
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(offset)
+                raw = fh.read()
+                end = fh.tell()
+        except OSError:
+            return None
+        if not raw:
+            return b"", offset
+        # Keep back a trailing partial line (no \n) for the next poll.
+        last_nl = raw.rfind(b"\n")
+        if last_nl == -1:
+            # No complete line yet. If it ends with \r it's a tqdm update we
+            # should emit now (replace); otherwise wait for more.
+            if raw.endswith(b"\r"):
+                consumed = end
+                return raw, consumed
+            return b"", offset
+        consumed = offset + last_nl + 1
+        return raw[: last_nl + 1], consumed
+
+    async def _emit_stdout_bytes(self, task: Task, data: bytes) -> None:
+        """Split stdout bytes on \\n / \\r and emit each line (tqdm-aware)."""
+        _LF = ord("\n")
+        _CR = ord("\r")
+        buf = bytearray()
+        i = 0
+        end = len(data)
+        while i < end:
+            b = data[i]
+            if b == _CR:
+                line = bytes(buf).decode("utf-8", errors="replace")
+                buf.clear()
+                if i + 1 < end and data[i + 1] == _LF:
+                    i += 2
+                    await self._emit_line(task, line, replace=False)
+                    continue
+                # bare \r → tqdm progress update
+                i += 1
+                await self._emit_line(task, line, replace=True)
+            elif b == _LF:
+                line = bytes(buf).decode("utf-8", errors="replace")
+                buf.clear()
+                i += 1
+                await self._emit_line(task, line, replace=False)
+            else:
+                buf.append(b)
+                i += 1
+        # A trailing partial line without a terminator is held back by the
+        # reader (offset not advanced past it), so nothing to flush here.
 
     # ── Progress JSONL tailing ────────────────────────────────────────
 
@@ -308,9 +421,7 @@ class TaskService:
         logs_dir = os.path.join(parent or output_dir, "logs")
         return os.path.join(ROOT, logs_dir, f"{output_name}.progress.jsonl")
 
-    async def _watch_progress_jsonl(
-        self, task: Task, jsonl_path: str
-    ) -> None:
+    async def _watch_progress_jsonl(self, task: Task, jsonl_path: str) -> None:
         """Tail the structured progress JSONL and push metrics to subscribers.
 
         Runs alongside ``_read_output``.  The training subprocess writes
@@ -350,10 +461,8 @@ class TaskService:
                     await asyncio.sleep(0.3)
                     continue
                 # Read new bytes in a thread so we don't block the event loop.
-                result: Optional[tuple[list[str], int]] = (
-                    await asyncio.to_thread(
-                        self._read_jsonl_bytes, jsonl_path, offset
-                    )
+                result: Optional[tuple[list[str], int]] = await asyncio.to_thread(
+                    self._read_jsonl_bytes, jsonl_path, offset
                 )
                 if result is not None:
                     new_lines, new_offset = result
@@ -413,14 +522,10 @@ class TaskService:
         except asyncio.CancelledError:
             pass
         except Exception:
-            logger.exception(
-                "Progress JSONL watcher failed for task %s", task.id
-            )
+            logger.exception("Progress JSONL watcher failed for task %s", task.id)
 
     @staticmethod
-    def _read_jsonl_bytes(
-        path: str, offset: int
-    ) -> Optional[tuple[list[str], int]]:
+    def _read_jsonl_bytes(path: str, offset: int) -> Optional[tuple[list[str], int]]:
         """Read complete JSONL lines starting at *offset* (blocking I/O).
 
         Returns ``(None, -)`` if the file is shorter than *offset* (rotation),
@@ -446,11 +551,9 @@ class TaskService:
             # Strip trailing empty string from split on final \n.
             if lines and lines[-1] == "":
                 lines.pop()
-        return [l for l in lines if l.strip()], end
+        return [ln for ln in lines if ln.strip()], end
 
-    async def _emit_line(
-        self, task: Task, line: str, *, replace: bool
-    ) -> None:
+    async def _emit_line(self, task: Task, line: str, *, replace: bool) -> None:
         """Append (or replace) a line and notify subscribers.
 
         When *replace* is ``True`` the line is a tqdm progress update that

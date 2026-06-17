@@ -82,9 +82,41 @@ python tasks.py download-models          # DiT + Qwen3 TE + QwenImage VAE
 
 # 4. 启动服务
 python -m webui                            # 或: uv run python -m webui
+#    Windows 双击 start-webui-win.bat 可同时启动 WebUI + 系统托盘（见下）
 ```
 
 服务启动后访问 `http://127.0.0.1:8000`。
+
+### 训练守护进程（Daemon）与系统托盘
+
+WebUI 不再直接派生训练子进程，而是把每个任务提交给**本地训练守护进程**
+（`scripts/daemon/`，`127.0.0.1:8765`）——一个串行作业队列：
+
+- **串行队列 + GPU 守卫** —— 同时只跑一个任务，避免多任务抢占显存导致 OOM
+- **持久化** —— 任务状态落盘到 `output/daemon/`，WebUI 关闭/重启后任务继续跑
+- **chain_train** —— "预处理 → 训练"可串联，提交者关闭终端后链路仍继续
+- **MCP 桥** —— AI agent（如 Claude Code）可直接提交/监控/停止训练任务
+
+WebUI 启动时会自动拉起 daemon（失败仅警告，不阻塞）。也可手动操作：
+
+```bash
+python tasks.py daemon              # 启动 daemon（幂等、后台常驻）
+python tasks.py daemon-status       # 查看状态 + 作业列表（JSON）
+python tasks.py daemon-attach       # 实时跟随当前作业输出
+python tasks.py daemon-kill         # 停止当前作业（daemon 继续运行）
+python tasks.py daemon-terminate    # 关闭整个 daemon
+# CLI 训练加 --queue 即提交到队列而非直接运行:
+python tasks.py lora --queue --network_dim 32
+```
+
+**Windows 系统托盘**（`scripts/tray/`）：状态指示器 + 控制器。
+
+```bash
+.venv\Scripts\pythonw.exe -m scripts.tray   # 或双击 start-tray-win.bat
+```
+
+托盘图标颜色反映 daemon 状态（🟢 空闲 / 🟡 运行中，含作业名+步数 / 🔴 出错 / ⚪ 未运行），
+右键菜单可：打开 WebUI、暂停/恢复队列、停止当前作业、重启 daemon。
 
 ---
 
