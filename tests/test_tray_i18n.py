@@ -156,3 +156,81 @@ def test_prefs_save_ignores_unsupported_language(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
     prefs.save_language("klingon")  # no-op
     assert not prefs_file.exists()
+
+
+
+# --- TrayApp: language switch reflows the menu + updates the icon ---
+
+
+def test_set_language_reflows_menu_and_updates_icon(tmp_path, monkeypatch):
+    """Switching language must swap the icon.menu + call update_menu() so
+    the next open shows the new language (Win32 caches the displayed menu —
+    update_menu rebuilds the HMENU for next-show, swapping the descriptor
+    forces a clean rebuild)."""
+    from scripts.tray import prefs
+    from scripts.tray.app import TrayApp
+
+    prefs_file = tmp_path / "tray-prefs.json"
+    prefs_file.write_text('{"language": "cn"}', encoding="utf-8")
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+
+    class _StubIcon:
+        def __init__(self):
+            self.menu = None
+            self.updates = 0
+
+        def update_menu(self):
+            self.updates += 1
+
+    t = TrayApp()
+    t._icon = _StubIcon()
+    t._icon.menu = t._build_menu()
+
+    initial_menu = t._icon.menu
+    t._set_language("en")
+    assert t._lang == "en"
+    assert t._icon.menu is not initial_menu, "icon.menu should be replaced"
+    assert t._icon.updates >= 1
+    labels = [it.text for it in t._icon.menu.items]
+    assert "Open WebUI" in labels
+    assert prefs.load_language() == "en"
+
+
+def test_set_language_is_idempotent(tmp_path, monkeypatch):
+    """Calling _set_language with the current lang is a no-op (no menu swap)."""
+    from scripts.tray import prefs
+    from scripts.tray.app import TrayApp
+
+    prefs_file = tmp_path / "tray-prefs.json"
+    prefs_file.write_text('{"language": "en"}', encoding="utf-8")
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+
+    class _StubIcon:
+        def __init__(self):
+            self.menu = "unchanged"
+            self.updates = 0
+
+        def update_menu(self):
+            self.updates += 1
+
+    t = TrayApp()
+    t._icon = _StubIcon()
+    t._set_language("en")
+    assert t._icon.menu == "unchanged"
+    assert t._icon.updates == 0
+
+
+def test_set_language_rejects_unsupported(tmp_path, monkeypatch):
+    from scripts.tray import prefs
+    from scripts.tray.app import TrayApp
+
+    prefs_file = tmp_path / "tray-prefs.json"
+    prefs_file.write_text('{"language": "cn"}', encoding="utf-8")
+    monkeypatch.setattr(prefs, "PREFS_DIR", tmp_path)
+    monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
+
+    t = TrayApp()
+    t._set_language("ja")  # not in LANGUAGES
+    assert t._lang == "cn"
