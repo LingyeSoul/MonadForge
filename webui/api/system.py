@@ -163,6 +163,8 @@ def get_hw_stats():
     try:
         import subprocess
 
+        from library.runtime.proc import no_window_kwargs
+
         result = subprocess.run(
             [
                 "nvidia-smi",
@@ -172,6 +174,7 @@ def get_hw_stats():
             capture_output=True,
             text=True,
             timeout=5,
+            **no_window_kwargs(),
         )
         if result.returncode == 0:
             parts = [p.strip() for p in result.stdout.strip().split(",")]
