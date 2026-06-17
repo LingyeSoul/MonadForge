@@ -59,8 +59,8 @@ from gui import daemon as gui_daemon
 from gui.explanations import field_help
 from gui.i18n import t
 from gui.tabs.config_tab import ConfigTab
-from gui.theme import tok
-from gui.widgets import make_field_label
+from gui.theme import action_button_qss, tok
+from gui.widgets import action_button, apply_variant, make_field_label
 
 _DESCRIPTOR_DIR = ROOT / "configs" / "easycontrol"
 
@@ -110,21 +110,19 @@ class EasyControlTab(ConfigTab):
         # test-easycontrol needs a REF_IMAGE the plain Test button can't supply.
         self.test_btn.setVisible(False)
 
-        self.adapter_guide_btn = QPushButton(t("adapter_guide"))
-        self.adapter_guide_btn.setToolTip(t("adapter_guide_tooltip"))
-        self.adapter_guide_btn.setStyleSheet(
-            "background:#16a085;color:white;font-weight:bold;padding:4px 12px;"
+        self.adapter_guide_btn = action_button(
+            t("adapter_guide"),
+            variant="success",
+            tooltip=t("adapter_guide_tooltip"),
+            on_click=self._open_adapter_guide,
         )
-        self.adapter_guide_btn.clicked.connect(self._open_adapter_guide)
         self._top_bar.insertWidget(
             self._top_bar.indexOf(self.train_btn), self.adapter_guide_btn
         )
 
         # EasyControl preprocessing is the bespoke easycontrol-preprocess, so it
         # gets an explicit button before Train rather than ConfigTab's auto-chain.
-        self.preprocess_btn.setStyleSheet(
-            "background:#2980b9;color:white;font-weight:bold;padding:4px 16px;"
-        )
+        apply_variant(self.preprocess_btn, "info")
         self.preprocess_btn.clicked.connect(self._ec_start_preprocess)
         self._top_bar.insertWidget(
             self._top_bar.indexOf(self.train_btn), self.preprocess_btn
@@ -446,7 +444,7 @@ class EasyControlTab(ConfigTab):
         if logging_dir and self._tb_panel is not None:
             self._tb_panel.set_log_dir(logging_dir)
         self.train_btn.setText(t("train") + " ...")
-        self.train_btn.setStyleSheet(self._train_busy_style)
+        self.train_btn.setStyleSheet(action_button_qss("busy"))
         self._ec_set_busy(True)
         self.log.clear()
         self._reset_progress()

@@ -28,6 +28,7 @@ from gui import daemon as gui_daemon
 from gui.i18n import t
 from gui.progress import TQDM_RE, make_progress_bar
 from gui.theme import tok
+from gui.widgets import action_button, apply_variant
 
 _LIVE_STATES = {"queued", "running"}
 _MAX_LOG_BYTES = 2 * 1024 * 1024
@@ -142,11 +143,9 @@ class QueueTab(LazyTabMixin, QWidget):
         self.queue_btn.setEnabled(False)
         top.addWidget(self.queue_btn)
 
-        self.stop_btn = QPushButton(t("queue_stop_selected"))
-        self.stop_btn.setStyleSheet(
-            "background:#c0392b;color:white;font-weight:bold;padding:4px 16px;"
+        self.stop_btn = action_button(
+            t("queue_stop_selected"), variant="danger", on_click=self._stop_selected
         )
-        self.stop_btn.clicked.connect(self._stop_selected)
         self.stop_btn.setEnabled(False)
         top.addWidget(self.stop_btn)
 
@@ -284,13 +283,11 @@ class QueueTab(LazyTabMixin, QWidget):
         if self._paused:
             self.queue_btn.setText(t("queue_start"))
             self.queue_btn.setToolTip(t("queue_start_tooltip"))
-            self.queue_btn.setStyleSheet(
-                "background:#27ae60;color:white;font-weight:bold;padding:4px 16px;"
-            )
+            apply_variant(self.queue_btn, "primary")
         else:
             self.queue_btn.setText(t("queue_pause"))
             self.queue_btn.setToolTip(t("queue_pause_tooltip"))
-            self.queue_btn.setStyleSheet("")
+            apply_variant(self.queue_btn, None)
 
     def _toggle_queue(self) -> None:
         try:

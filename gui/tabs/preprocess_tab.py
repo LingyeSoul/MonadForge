@@ -75,9 +75,15 @@ from gui._job_mixin import DaemonJobMixin
 from gui.explanations import preprocess_field_help, preprocess_guide
 from gui.i18n import t
 from gui.progress import TQDM_RE, TqdmProgressTracker, make_progress_bar
-from gui.theme import rich_text_pt as _explain_pt, tok
+from gui.theme import action_button_qss, rich_text_pt as _explain_pt, tok
 from gui.tabs.config_tab import ConfigTab, SplitButtonStyle
-from gui.widgets import ClickableLabel, DirtyTrackingMixin, make_field_label
+from gui.widgets import (
+    ClickableLabel,
+    DirtyTrackingMixin,
+    action_button,
+    apply_variant,
+    make_field_label,
+)
 from library.datasets.buckets import DEFAULT_TARGET_RES as _LIB_DEFAULT_TARGET_RES
 from library.datasets.path_filter import filter_paths_by_glob
 
@@ -359,10 +365,10 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
 
         top = QHBoxLayout()
 
-        run_step_style = (
-            "QToolButton{background:#2980b9;color:white;font-weight:bold;"
-            "padding:4px 16px;}"
-        )
+        # Split buttons keep a per-widget stylesheet (the global [variant] rule
+        # bypasses SplitButtonStyle and miscentres the label) — colour from the
+        # central ACTION_COLORS "info" via action_button_qss.
+        run_step_style = action_button_qss("info")
 
         self._method_label = QLabel("Method")
         top.addWidget(self._method_label)
@@ -385,10 +391,6 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         self._refresh_variant_row(self.method_combo.currentText())
 
         self.save_btn = QPushButton(t("preprocess_save_settings"))
-        self._save_btn_idle_style = ""
-        self._save_btn_dirty_style = (
-            "background:#f39c12;color:#1b1b1b;font-weight:bold;padding:4px 12px;"
-        )
         self.save_btn.setToolTip(t("preprocess_save_settings_tip"))
         self.save_btn.clicked.connect(self._save_all_clicked)
         top.addWidget(self.save_btn)
@@ -411,11 +413,7 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         top.addWidget(self.run_mask_btn)
 
         top.addStretch()
-        self.stop_btn = QPushButton(t("stop"))
-        self.stop_btn.setStyleSheet(
-            "background:#c0392b;color:white;font-weight:bold;padding:4px 16px;"
-        )
-        self.stop_btn.clicked.connect(self._stop)
+        self.stop_btn = action_button(t("stop"), variant="danger", on_click=self._stop)
         self.stop_btn.setEnabled(False)
         top.addWidget(self.stop_btn)
         outer.addLayout(top)
@@ -837,11 +835,11 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             return
         if self._dirty:
             self.save_btn.setText(t("preprocess_save_settings") + " *")
-            self.save_btn.setStyleSheet(self._save_btn_dirty_style)
+            apply_variant(self.save_btn, "warning")
             self.save_btn.setToolTip(t("save_dirty_tooltip"))
         else:
             self.save_btn.setText(t("preprocess_save_settings"))
-            self.save_btn.setStyleSheet(self._save_btn_idle_style)
+            apply_variant(self.save_btn, None)
             self.save_btn.setToolTip(t("preprocess_save_settings_tip"))
 
     def _field_label(self, key: str, text_str: str) -> ClickableLabel:

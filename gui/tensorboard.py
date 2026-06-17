@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from gui.i18n import t
-from gui.theme import tok
+from gui.theme import action_button_qss, tok
+from gui.widgets import apply_variant
 
 
 class TensorBoardManager:
@@ -184,9 +185,7 @@ class TensorBoardPanel(QGroupBox):
         btn_bar.addWidget(self._current_btn)
 
         self._open_btn = QPushButton(t("tb_open"))
-        self._open_btn.setStyleSheet(
-            "background:#2471a3;color:white;font-weight:bold;padding:4px 14px;"
-        )
+        apply_variant(self._open_btn, "info")
         self._open_btn.clicked.connect(self._open_tensorboard)
         btn_bar.addWidget(self._open_btn)
 
@@ -263,10 +262,9 @@ class TensorBoardPanel(QGroupBox):
         self._current_btn.setEnabled(live)
         self._hint_label.setVisible(live)
         if live:
-            # Pulsing-green primary look so it stands out during training.
-            self._current_btn.setStyleSheet(
-                "background:#27ae60;color:white;font-weight:bold;padding:4px 14px;"
-            )
+            # Green primary look so it stands out during training; idle is a
+            # dim "ghost" (no fill) — a non-variant state, so per-widget qss.
+            self._current_btn.setStyleSheet(action_button_qss("primary"))
             self._current_btn.setToolTip(t("tb_open_current_tip"))
         else:
             self._current_btn.setStyleSheet(

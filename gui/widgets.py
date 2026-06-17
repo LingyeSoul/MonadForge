@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSpinBox,
+    QToolButton,
     QWidget,
     QVBoxLayout,
 )
@@ -766,6 +767,66 @@ def make_field_label(
     return lbl
 
 
+def apply_variant(w: QWidget, variant: str | None) -> None:
+    """(Re)assign an action-button style ``variant`` and repolish so it repaints.
+
+    The saturated action colors live in the global stylesheet as
+    ``[variant="…"]`` rules (see :data:`gui.theme.ACTION_COLORS`). Setting the
+    dynamic property after a widget is realized does **not** restyle it until the
+    style is re-polished — hence the unpolish/polish dance. This is what a state
+    flip uses (idle→busy swaps the variant in one line instead of swapping a
+    whole stylesheet string). Pass ``None``/"" to clear back to the neutral
+    default button look.
+    """
+    w.setProperty("variant", variant or "")
+    style = w.style()
+    style.unpolish(w)
+    style.polish(w)
+
+
+def action_button(
+    text: str = "",
+    *,
+    variant: str = "primary",
+    tooltip: str | None = None,
+    on_click=None,
+    tool_button: bool = False,
+) -> QPushButton | QToolButton:
+    """Build a saturated action button styled by its global-stylesheet *variant*.
+
+    Folds the repeated ``QPushButton(text)/QToolButton()`` + ``setStyleSheet``
+    (hardcoded hex) + ``setToolTip`` + ``clicked.connect`` sequence into one
+    call. The color lives in :data:`gui.theme.ACTION_COLORS` (one source of
+    truth), not here, so it can't drift between call sites and flips correctly on
+    a state change via :func:`apply_variant`.
+
+    Variants: ``primary`` (green go), ``secondary`` (purple alt), ``info``
+    (blue), ``danger`` (red stop), ``warning`` (orange/dirty), ``busy`` (gray).
+    Pass ``tool_button=True`` for a :class:`QToolButton` (the action buttons that
+    flip busy state are tool buttons); default is a :class:`QPushButton`.
+    """
+    btn: QPushButton | QToolButton = QToolButton() if tool_button else QPushButton()
+    if text:
+        btn.setText(text)
+    apply_variant(btn, variant)
+    if tooltip:
+        btn.setToolTip(tooltip)
+    if on_click is not None:
+        btn.clicked.connect(on_click)
+    return btn
+
+
+def hint_label(text: str = "") -> QLabel:
+    """A secondary/hint :class:`QLabel` in the theme's dim text color.
+
+    Replaces the recurring ``QLabel(...)`` + ``setStyleSheet(f"color:{tok('text_dim')}")``
+    pair scattered across the tabs. Reads the token at build time, so it follows
+    the active theme (call sites are rebuilt on a theme switch)."""
+    lbl = QLabel(text)
+    lbl.setStyleSheet(f"color:{tok('text_dim')};")
+    return lbl
+
+
 class DirtyTrackingMixin:
     """Save-button dirty-state tracking shared by the config-style tabs.
 
@@ -776,9 +837,10 @@ class DirtyTrackingMixin:
 
     Host requirements:
       * ``self._dirty: bool`` initialised in ``__init__``;
-      * ``self._save_btn_idle_style`` / ``self._save_btn_dirty_style`` strings;
       * a Save button exposed as ``self._save_btn`` (override
         :meth:`_dirty_save_button` if it lives under a different name);
+      * optionally ``self._save_btn_dirty_variant`` — the action-button variant
+        flipped on while dirty (defaults to ``"warning"``, the orange look);
       * optionally ``self._loading_variant`` — when truthy ``_mark_dirty`` is a
         no-op so a bulk reload doesn't trip the flag.
 
@@ -827,18 +889,22 @@ class DirtyTrackingMixin:
         self._dirty = False
         self._update_save_button()
 
+    # The dirty look is the centralized "warning" action variant (orange),
+    # flipped on/off via apply_variant — no per-tab style strings.
+    _save_btn_dirty_variant: str = "warning"
+
     def _update_save_button(self) -> None:
         btn = self._dirty_save_button()
         if btn is None:
             return
         if self._dirty:
             btn.setText(t("save") + " *")
-            btn.setStyleSheet(self._save_btn_dirty_style)
             btn.setToolTip(t("save_dirty_tooltip"))
+            apply_variant(btn, self._save_btn_dirty_variant)
         else:
             btn.setText(t("save"))
-            btn.setStyleSheet(self._save_btn_idle_style)
             btn.setToolTip("")
+            apply_variant(btn, None)
 
 
 class ScaledImageLabel(QLabel):

@@ -48,7 +48,12 @@ from gui.i18n import t
 from gui._job_mixin import DaemonJobMixin
 from gui.progress import TqdmProgressTracker, make_progress_bar
 from gui.theme import rich_text_pt as _explain_pt, tok
-from gui.widgets import DirtyTrackingMixin, make_field_label
+from gui.widgets import (
+    DirtyTrackingMixin,
+    action_button,
+    apply_variant,
+    make_field_label,
+)
 
 
 class _DistillConfigTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget):
@@ -88,29 +93,15 @@ class _DistillConfigTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidge
         top.addStretch()
 
         self._save_btn = QPushButton(t("save"))
-        self._save_btn_idle_style = ""
-        self._save_btn_dirty_style = (
-            "background:#e67e22;color:white;font-weight:bold;padding:4px 16px;"
-        )
         self._save_btn.clicked.connect(lambda: self._save())
         top.addWidget(self._save_btn)
 
-        self.train_btn = QPushButton(t("train"))
-        self._train_idle_style = (
-            "background:#27ae60;color:white;font-weight:bold;padding:4px 16px;"
+        self.train_btn = action_button(
+            t("train"), variant="primary", on_click=self._start_train
         )
-        self._train_busy_style = (
-            "background:#7f8c8d;color:white;font-weight:bold;padding:4px 16px;"
-        )
-        self.train_btn.setStyleSheet(self._train_idle_style)
-        self.train_btn.clicked.connect(self._start_train)
         top.addWidget(self.train_btn)
 
-        self.stop_btn = QPushButton(t("stop"))
-        self.stop_btn.setStyleSheet(
-            "background:#c0392b;color:white;font-weight:bold;padding:4px 16px;"
-        )
-        self.stop_btn.clicked.connect(self._stop)
+        self.stop_btn = action_button(t("stop"), variant="danger", on_click=self._stop)
         self.stop_btn.setEnabled(False)
         top.addWidget(self.stop_btn)
         lay.addLayout(top)
@@ -416,14 +407,14 @@ class _DistillConfigTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidge
 
     def _set_busy(self):
         self.train_btn.setText(t("train") + " ...")
-        self.train_btn.setStyleSheet(self._train_busy_style)
+        apply_variant(self.train_btn, "busy")
         self.train_btn.setEnabled(False)
         self._save_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
 
     def _restore_idle(self):
         self.train_btn.setText(t("train"))
-        self.train_btn.setStyleSheet(self._train_idle_style)
+        apply_variant(self.train_btn, "primary")
         self.train_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)

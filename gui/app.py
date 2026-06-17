@@ -38,6 +38,7 @@ from gui import (
 )
 from gui import daemon as gui_daemon
 from gui import theme as gui_theme
+from gui.widgets import action_button
 from gui.i18n import (
     available_languages,
     current_language,
@@ -426,12 +427,12 @@ class MainWindow(QMainWindow):
                 )
             icon_label.setContentsMargins(4, 0, 6, 0)
             lang_bar.addWidget(icon_label)
-        self.guide_btn = QPushButton(t("guidebook"))
-        self.guide_btn.setToolTip(t("guidebook_tooltip"))
-        self.guide_btn.setStyleSheet(
-            "background:#16a085;color:white;font-weight:bold;padding:4px 12px;"
+        self.guide_btn = action_button(
+            t("guidebook"),
+            variant="success",
+            tooltip=t("guidebook_tooltip"),
+            on_click=self._open_guidebook,
         )
-        self.guide_btn.clicked.connect(self._open_guidebook)
         lang_bar.addWidget(self.guide_btn)
 
         self.models_btn = QPushButton(t("models_btn"))
@@ -461,36 +462,16 @@ class MainWindow(QMainWindow):
         # Top-bar toggle, not a tab: the daemon job queue is global (spans every method); overlays are mutually exclusive.
         self.queue_btn = QPushButton(t("tab_queue"))
         self.queue_btn.setCheckable(True)
-        self._queue_idle_style = (
-            "QPushButton { background:#5d6d7e; color:white; "
-            "font-weight:bold; padding:4px 12px; border:1px solid #5d6d7e; "
-            "border-radius:3px; }"
-            "QPushButton:hover { background:#6b7c8c; }"
-        )
-        self._queue_active_style = (
-            "QPushButton { background:#34495e; color:white; "
-            "font-weight:bold; padding:4px 12px; border:1px solid #34495e; "
-            "border-radius:3px; }"
-            "QPushButton:hover { background:#3d566e; }"
-        )
+        self._queue_idle_style = gui_theme.nav_button_qss("queue")
+        self._queue_active_style = gui_theme.nav_button_qss("queue_on")
         self.queue_btn.toggled.connect(self._toggle_queue_view)
         lang_bar.addWidget(self.queue_btn)
 
         # Top-bar toggle, not a tab: the run list is shared across every method (one global view).
         self.tensorboard_btn = QPushButton(t("tab_tensorboard"))
         self.tensorboard_btn.setCheckable(True)
-        self._tensorboard_idle_style = (
-            "QPushButton { background:#2471a3; color:white; "
-            "font-weight:bold; padding:4px 12px; border:1px solid #2471a3; "
-            "border-radius:3px; }"
-            "QPushButton:hover { background:#2e86c1; }"
-        )
-        self._tensorboard_active_style = (
-            "QPushButton { background:#117864; color:white; "
-            "font-weight:bold; padding:4px 12px; border:1px solid #117864; "
-            "border-radius:3px; }"
-            "QPushButton:hover { background:#148f77; }"
-        )
+        self._tensorboard_idle_style = gui_theme.nav_button_qss("tensorboard")
+        self._tensorboard_active_style = gui_theme.nav_button_qss("tensorboard_on")
         self.tensorboard_btn.toggled.connect(self._toggle_tensorboard)
         lang_bar.addWidget(self.tensorboard_btn)
 
@@ -558,11 +539,7 @@ class MainWindow(QMainWindow):
     def _show_update_available(self, latest_tag: str) -> None:
         self.update_btn.setText(t("update_btn_available"))
         self.update_btn.setToolTip(t("update_btn_available_tooltip", v=latest_tag))
-        self.update_btn.setStyleSheet(
-            "QPushButton { background:#b45309; color:white; font-weight:bold; "
-            "padding:4px 12px; border:1px solid #b45309; border-radius:3px; }"
-            "QPushButton:hover { background:#d97706; }"
-        )
+        self.update_btn.setStyleSheet(gui_theme.nav_button_qss("update"))
 
     def _clear_overlay_toggle(self, btn: QPushButton, style_fn) -> None:
         """Silently un-check an overlay toggle (TensorBoard / Queue) and repaint

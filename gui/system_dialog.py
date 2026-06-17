@@ -34,6 +34,7 @@ from gui import ROOT
 from gui.i18n import t
 from gui.process import kill_process_tree, setup_kill_safe
 from gui.theme import tok
+from gui.widgets import apply_variant
 
 # (task-key, display-label-i18n-key, [paths-relative-to-ROOT-that-must-all-exist])
 # Status is "installed" iff every path resolves; otherwise "missing".
@@ -227,9 +228,7 @@ class ModelsDialog(_StreamingDialog):
 
         all_row = QHBoxLayout()
         self.all_btn = QPushButton(t("models_download_all"))
-        self.all_btn.setStyleSheet(
-            "background:#16a085;color:white;font-weight:bold;padding:6px 18px;"
-        )
+        apply_variant(self.all_btn, "success")
         self.all_btn.clicked.connect(lambda: self._run(["download-models"]))
         all_row.addWidget(self.all_btn)
         all_row.addStretch()
@@ -539,18 +538,14 @@ class UpdateDialog(_StreamingDialog):
         # Two run buttons make the conflict policy explicit instead of an
         # invisible interactive prompt that the GUI can't service.
         self.run_keep_btn = QPushButton(t("update_run_keep"))
-        self.run_keep_btn.setStyleSheet(
-            "background:#0e7490;color:white;font-weight:bold;padding:6px 18px;"
-        )
+        apply_variant(self.run_keep_btn, "info")
         self.run_keep_btn.clicked.connect(
             lambda: self._confirm_and_run("--keep-conflicts")
         )
         row.addWidget(self.run_keep_btn)
 
         self.run_overwrite_btn = QPushButton(t("update_run_overwrite"))
-        self.run_overwrite_btn.setStyleSheet(
-            "background:#16a085;color:white;font-weight:bold;padding:6px 18px;"
-        )
+        apply_variant(self.run_overwrite_btn, "success")
         self.run_overwrite_btn.clicked.connect(
             lambda: self._confirm_and_run("--yes-overwrite")
         )

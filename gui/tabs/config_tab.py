@@ -66,7 +66,7 @@ from gui import (
 )
 from gui import daemon as gui_daemon
 from gui._job_mixin import DaemonJobMixin
-from gui.theme import rich_text_pt as _explain_pt, tok
+from gui.theme import action_button_qss, rich_text_pt as _explain_pt, tok
 from gui.explanations import field_help, method_guide
 from gui.i18n import t
 from gui.process import kill_process_tree, setup_kill_safe
@@ -74,6 +74,8 @@ from gui.widgets import (
     ClickableLabel,  # noqa: F401 — re-exported; sibling tabs import it from here
     DirtyTrackingMixin,
     ImageViewerDialog,
+    action_button,
+    apply_variant,
     make_field_label,
 )
 from gui.progress import (
@@ -209,10 +211,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         top.addWidget(self.new_variant_btn)
 
         self._save_btn = QPushButton(t("save"))
-        self._save_btn_idle_style = ""
-        self._save_btn_dirty_style = (
-            "background:#e67e22;color:white;font-weight:bold;padding:4px 16px;"
-        )
+        # Dirty look = the mixin's default "warning" variant (centralized).
         self._save_btn.clicked.connect(self._save_preset)
         top.addWidget(self._save_btn)
 
@@ -221,21 +220,17 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         self.train_btn = QToolButton()
         # SplitButtonStyle owns the arrow geometry (a ::menu-button stylesheet
         # rule would re-center the label across the whole button). Set the style
-        # before the stylesheet, and keep a ref (the widget doesn't own it).
+        # first, and keep a ref (the widget doesn't own it).
         self._split_style = SplitButtonStyle()
         self.train_btn.setStyle(self._split_style)
-        self._train_idle_style = (
-            "QToolButton{background:#27ae60;color:white;font-weight:bold;"
-            "padding:4px 16px;}"
-        )
-        self._train_busy_style = (
-            "QToolButton{background:#7f8c8d;color:white;font-weight:bold;"
-            "padding:4px 16px;}"
-        )
         self.train_btn.setText(t("train"))
         self.train_btn.setPopupMode(QToolButton.MenuButtonPopup)
         self.train_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        self.train_btn.setStyleSheet(self._train_idle_style)
+        # Split button keeps a per-widget stylesheet (the global [variant] rule
+        # bypasses the SplitButtonStyle proxy and miscentres the label) — but the
+        # color still comes from the one ACTION_COLORS table. Idle "primary",
+        # flipped to "busy" while a run is attached (see below).
+        self.train_btn.setStyleSheet(action_button_qss("primary"))
         self.train_btn.setToolTip(t("train_tooltip"))
         self.train_btn.clicked.connect(self._start_training)
         queue_menu = QMenu(self.train_btn)
@@ -252,23 +247,15 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         self.train_btn.setEnabled(True)
         top.addWidget(self.train_btn)
 
-        self.test_btn = QPushButton(t("test"))
-        self._test_idle_style = (
-            "background:#8e44ad;color:white;font-weight:bold;padding:4px 16px;"
+        self.test_btn = action_button(
+            t("test"), variant="secondary", on_click=self._start_test
         )
-        self._test_busy_style = (
-            "background:#7f8c8d;color:white;font-weight:bold;padding:4px 16px;"
-        )
-        self.test_btn.setStyleSheet(self._test_idle_style)
-        self.test_btn.clicked.connect(self._start_test)
         self.test_btn.setEnabled(self._has_lora_output())
         top.addWidget(self.test_btn)
 
-        self.stop_btn = QPushButton(t("stop"))
-        self.stop_btn.setStyleSheet(
-            "background:#c0392b;color:white;font-weight:bold;padding:4px 16px;"
+        self.stop_btn = action_button(
+            t("stop"), variant="danger", on_click=self._stop_training
         )
-        self.stop_btn.clicked.connect(self._stop_training)
         self.stop_btn.setEnabled(False)
         top.addWidget(self.stop_btn)
 
@@ -1012,7 +999,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         self._running_mode = "test"
         self._proc.start(python, args)
         self.test_btn.setText(t("test") + " ...")
-        self.test_btn.setStyleSheet(self._test_busy_style)
+        apply_variant(self.test_btn, "busy")
         self.test_btn.setEnabled(False)
         self.train_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
@@ -1166,7 +1153,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         chain_after = getattr(self, "_chain_train_after_preprocess", False)
         if chain_after:
             self.train_btn.setText(t("train_preprocessing"))
-            self.train_btn.setStyleSheet(self._train_busy_style)
+            self.train_btn.setStyleSheet(action_button_qss("busy"))
         self.train_btn.setEnabled(False)
         self.test_btn.setEnabled(False)
         self.method_combo.setEnabled(False)
@@ -1380,7 +1367,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         # Flip to busy + repaint before the submit (daemon auto-start + /health
         # wait can take a moment on cold start) so the UI feels responsive.
         self.train_btn.setText(t("train") + " ...")
-        self.train_btn.setStyleSheet(self._train_busy_style)
+        self.train_btn.setStyleSheet(action_button_qss("busy"))
         self.train_btn.setEnabled(False)
         self.test_btn.setEnabled(False)
         self.method_combo.setEnabled(False)
@@ -1475,7 +1462,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
             )
         else:
             self.train_btn.setText(t("train_running_daemon"))
-        self.train_btn.setStyleSheet(self._train_busy_style)
+        self.train_btn.setStyleSheet(action_button_qss("busy"))
         # Keep the Train split button + pickers live so the user can Queue
         # another variant behind the running one (foreground-train is guarded in
         # _start_training; only Test is blocked). The running job uses an
@@ -1585,10 +1572,10 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         """Return every control to its idle state (shared by the daemon-job and
         QProcess-error paths)."""
         self.train_btn.setText(t("train"))
-        self.train_btn.setStyleSheet(self._train_idle_style)
+        self.train_btn.setStyleSheet(action_button_qss("primary"))
         self.train_btn.setEnabled(True)
         self.test_btn.setText(t("test"))
-        self.test_btn.setStyleSheet(self._test_idle_style)
+        apply_variant(self.test_btn, "secondary")
         self.test_btn.setEnabled(self._has_lora_output())
         self.stop_btn.setEnabled(False)
         self.method_combo.setEnabled(True)

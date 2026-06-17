@@ -9,11 +9,19 @@ island on a light window.
 
 Design notes
 ------------
-* **Neutral surfaces/text route through tokens; saturated *action* buttons do
-  not.** A guide button (teal), update button (amber), or danger button (red)
-  is white-on-saturated-color and reads fine on any background, so those stay
-  hardcoded at their call sites. Only the neutral chrome (window/panel/input/
+* **Neutral surfaces/text vary by theme; saturated *action* buttons are
+  theme-independent but still centralized.** A guide button (teal), update
+  button (amber), or danger button (red) is white-on-saturated-color and reads
+  fine on any background, so its color does not vary by theme — but the hex no
+  longer lives at the call site. The saturated action palette is the single
+  ``ACTION_COLORS`` table, surfaced as global-stylesheet ``[variant="…"]`` rules
+  (see :func:`_action_button_rules`); a call site sets ``variant`` via
+  :func:`gui.widgets.action_button` / :func:`gui.widgets.apply_variant` instead
+  of an inline ``setStyleSheet``. Only the neutral chrome (window/panel/input/
   text/border) varies by theme.
+* **Spacing/padding are tokens too.** :class:`Pad` / :class:`Gap` name the
+  recurring layout magic numbers so a row gap or panel margin reads as intent
+  and a global re-space is one edit.
 * Widgets read tokens at *build* time. A theme switch re-applies the palette +
   global stylesheet live (instant for app-level styling) and the caller rebuilds
   the window so per-widget ``tok()`` lookups pick up the new values.
@@ -192,6 +200,99 @@ _SEPIA = Theme(
     scroll_handle="#c0ad88",
     scroll_handle_hover="#a89468",
 )
+
+# Saturated *action* button palette — theme-INDEPENDENT (white-on-color reads on
+# any background, so unlike the neutral chrome these don't vary per theme), but
+# centralized here instead of inline-hex'd at 60+ call sites. Each entry becomes
+# a global-stylesheet `[variant="<key>"]` rule (see _action_button_rules); a call
+# site picks one via gui.widgets.action_button(variant=…) / apply_variant().
+# Values are the historical call-site colors so the look is unchanged.
+ACTION_COLORS: dict[str, str] = {
+    "primary": "#27ae60",  # green — the main go/run action (Train, Run)
+    "secondary": "#8e44ad",  # purple — an alternate action (Test)
+    "info": "#2980b9",  # blue — neutral-ish action (Group, Preprocess, Delete)
+    "success": "#16a085",  # teal — affirmative/apply/download (Merge, Download, Guide)
+    "danger": "#c0392b",  # red — destructive/stop (Stop, Delete)
+    "warning": "#e67e22",  # orange — needs-attention (unsaved/dirty Save)
+    "busy": "#7f8c8d",  # gray — in-progress / temporarily inert
+}
+
+# Top-bar nav / overlay-toggle buttons — a *muted* toolbar family distinct from
+# the saturated action buttons (each toggle keeps its own colour identity, with
+# a hover shade). (base, hover) per role. Surfaced via nav_button_qss().
+NAV_COLORS: dict[str, tuple[str, str]] = {
+    "queue": ("#5d6d7e", "#6b7c8c"),  # Queue overlay toggle — idle (slate)
+    "queue_on": ("#34495e", "#3d566e"),  # Queue overlay toggle — active (navy)
+    "tensorboard": ("#2471a3", "#2e86c1"),  # TensorBoard toggle — idle (blue)
+    "tensorboard_on": ("#117864", "#148f77"),  # TensorBoard toggle — active (teal)
+    "update": ("#b45309", "#d97706"),  # "Update available" alert (amber)
+}
+
+
+def _blend(hex_a: str, hex_b: str, t: float) -> str:
+    """Linear blend of two hex colors — ``t`` of *a* mixed with ``1-t`` of *b*."""
+    a, b = QColor(hex_a), QColor(hex_b)
+    mix = lambda ca, cb: round(ca * t + cb * (1 - t))  # noqa: E731
+    return QColor(
+        mix(a.red(), b.red()), mix(a.green(), b.green()), mix(a.blue(), b.blue())
+    ).name()
+
+
+def action_button_qss(
+    variant: str, *, selector: str = "QPushButton, QToolButton"
+) -> str:
+    """Per-widget stylesheet string for an action *variant* — same colors as the
+    global ``[variant="…"]`` rules, for the rare widget that needs an inline
+    stylesheet instead.
+
+    A ``QToolButton`` with a custom split-button :class:`QProxyStyle` (the Train /
+    Preprocess split buttons) must keep a **per-widget** stylesheet: a global app
+    stylesheet wraps the *app* style and bypasses the widget's ``setStyle()``
+    proxy, snapping the menu label to the full-button centre instead of the
+    action segment. Driving the same :data:`ACTION_COLORS` through a per-widget
+    rule composes with the proxy and keeps the label centred. Also handy for a
+    button that flips between a variant and a non-variant look (the TensorBoard
+    current-run button). Don't add a ``::menu-button`` rule here — that re-breaks
+    the centring (see :class:`gui.tabs.config_tab.SplitButtonStyle`)."""
+    base = ACTION_COLORS[variant]
+    return f"{selector}{{background:{base};color:white;font-weight:bold;padding:4px 16px;}}"
+
+
+def nav_button_qss(role: str) -> str:
+    """Per-widget stylesheet for a top-bar nav/toggle button (see NAV_COLORS).
+
+    These carry idle/active states swapped at runtime via ``setStyleSheet`` (not
+    the global variant rules), so a per-widget string is the right surface."""
+    base, hover = NAV_COLORS[role]
+    return (
+        f"QPushButton {{ background:{base}; color:white; font-weight:bold; "
+        f"padding:4px 12px; border:1px solid {base}; border-radius:3px; }}"
+        f"QPushButton:hover {{ background:{hover}; }}"
+    )
+
+
+class Pad:
+    """Padding / contents-margin design tokens (px) — name the magic numbers.
+
+    Use instead of naked ``setContentsMargins(8, 12, 8, 8)``: the values read as
+    intent and a global re-space is a one-line edit. ``NONE`` is the layout-reset
+    every nested layout wants (``setContentsMargins(0, 0, 0, 0)``)."""
+
+    NONE = 0
+    XS = 4
+    SM = 8
+    MD = 12
+    LG = 16
+
+
+class Gap:
+    """Inter-widget spacing design tokens (px) for ``layout.setSpacing(...)``."""
+
+    NONE = 0
+    TIGHT = 4
+    ROW = 6
+    SECTION = 8
+
 
 THEMES: dict[str, Theme] = {t.name: t for t in (_DARK, _LIGHT, _SEPIA)}
 
@@ -387,6 +488,41 @@ def _arrow_icon(color: str, direction: str) -> str:
     return url
 
 
+def _action_button_rules() -> str:
+    """Global-stylesheet rules for the saturated action-button variants.
+
+    One ``[variant="…"]`` block per :data:`ACTION_COLORS` entry, covering both
+    ``QPushButton`` and ``QToolButton`` (action buttons are a mix of both).
+    Hover/pressed shades are derived from the base color so the table stays the
+    single source — no extra hover tokens to keep in sync. White text reads on
+    every saturated base across all three themes."""
+    blocks = []
+    for variant, base in ACTION_COLORS.items():
+        hover = QColor(base).lighter(115).name()
+        pressed = QColor(base).darker(112).name()
+        # Disabled: muted toward neutral gray + dim text, so a temporarily-inert
+        # action button (idle Stop, no-selection Delete) reads as off rather than
+        # staying solid-saturated (which looks enabled). Keeps a faint variant
+        # tint so the button's identity survives.
+        dis_bg = _blend(base, "#4a4a4a", 0.4)
+        dis_fg = "#c8c8c8"
+        blocks.append(f"""
+        QPushButton[variant="{variant}"], QToolButton[variant="{variant}"] {{
+            background: {base}; color: #ffffff; font-weight: bold;
+            padding: 4px 16px; border: 1px solid {base}; border-radius: 3px;
+        }}
+        QPushButton[variant="{variant}"]:hover, QToolButton[variant="{variant}"]:hover {{
+            background: {hover}; border-color: {hover};
+        }}
+        QPushButton[variant="{variant}"]:pressed, QToolButton[variant="{variant}"]:pressed {{
+            background: {pressed}; border-color: {pressed};
+        }}
+        QPushButton[variant="{variant}"]:disabled, QToolButton[variant="{variant}"]:disabled {{
+            background: {dis_bg}; border-color: {dis_bg}; color: {dis_fg};
+        }}""")
+    return "".join(blocks)
+
+
 def _build_stylesheet(
     t: Theme, font_family: str = "", font_size: int = DEFAULT_FONT_SIZE
 ) -> str:
@@ -464,6 +600,7 @@ def _build_stylesheet(
         QMenu::item:selected {{ background: {t.accent}; color: {t.accent_text}; }}
         QMenu::item:disabled {{ color: {t.text_dim}; }}
         QMenu::separator {{ height: 1px; background: {t.border_dim}; margin: 4px 8px; }}
+        {_action_button_rules()}
     """
 
 

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from gui import ROOT, LazyTabMixin, _adapter_dirs, _safetensors_in
 from gui.i18n import t
 from gui.theme import tok
+from gui.widgets import action_button, apply_variant
 from gui.process import kill_process_tree, setup_kill_safe
 
 _DEFAULT_DIT = "models/diffusion_models/anima-base-v1.0.safetensors"
@@ -251,15 +252,9 @@ class MergeTab(LazyTabMixin, QWidget):
         rlay.addWidget(opt_box)
 
         bar = QHBoxLayout()
-        self.merge_btn = QPushButton(t("merge_button"))
-        self._idle_style = (
-            "background:#16a085;color:white;font-weight:bold;padding:6px 18px;"
+        self.merge_btn = action_button(
+            t("merge_button"), variant="success", on_click=self._start_merge
         )
-        self._busy_style = (
-            "background:#7f8c8d;color:white;font-weight:bold;padding:6px 18px;"
-        )
-        self.merge_btn.setStyleSheet(self._idle_style)
-        self.merge_btn.clicked.connect(self._start_merge)
         bar.addWidget(self.merge_btn)
 
         self.stop_btn = QPushButton(t("stop"))
@@ -434,7 +429,7 @@ class MergeTab(LazyTabMixin, QWidget):
         self._log(f"> {_sys.executable} {' '.join(args)}\n")
 
         self.merge_btn.setEnabled(False)
-        self.merge_btn.setStyleSheet(self._busy_style)
+        apply_variant(self.merge_btn, "busy")
         self.merge_btn.setText(t("merge_button") + " ...")
         self.stop_btn.setEnabled(True)
         self.dir_combo.setEnabled(False)
@@ -458,7 +453,7 @@ class MergeTab(LazyTabMixin, QWidget):
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus):
         self._log(f"\n{t('finished', code=exit_code)}\n")
-        self.merge_btn.setStyleSheet(self._idle_style)
+        apply_variant(self.merge_btn, "success")
         self.merge_btn.setText(t("merge_button"))
         self.merge_btn.setEnabled(
             self._current_scan is not None

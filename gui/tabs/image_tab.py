@@ -76,6 +76,7 @@ from gui._job_mixin import DaemonJobMixin
 from gui.i18n import t
 from gui.progress import TqdmProgressTracker, make_progress_bar
 from gui.theme import tok
+from gui.widgets import apply_variant
 from library.datasets.curation_actions import (
     load_curation_decisions,
     move_linked_files,
@@ -626,10 +627,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         top.addWidget(self.open_dir_btn)
         self.group_btn = QPushButton(t("dataset_group_rebuild"))
         self.group_btn.setToolTip(t("dataset_group_rebuild_tooltip"))
-        self.group_btn.setStyleSheet(
-            "QPushButton{background:#2980b9;color:white;font-weight:bold;"
-            "padding:4px 16px;}"
-        )
+        apply_variant(self.group_btn, "info")
         self.group_btn.clicked.connect(self._rebuild_groups)
         top.addWidget(self.group_btn)
         self.add_dir_btn = QPushButton(t("dataset_add_dir"))
@@ -717,10 +715,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         # post_image_dataset/moved/. This replaces the old trash-delete action.
         self.delete_btn = QPushButton(t("dataset_delete"))
         self.delete_btn.setToolTip(t("dataset_delete_tooltip"))
-        self.delete_btn.setStyleSheet(
-            "QPushButton{background:#2980b9;color:white;font-weight:bold;"
-            "padding:4px 16px;}QPushButton:disabled{background:#2a4763;color:#aaa;}"
-        )
+        apply_variant(self.delete_btn, "info")
         self.delete_btn.clicked.connect(self._delete_marked)
         img_head.addWidget(self.delete_btn)
         img_head.addStretch()
@@ -764,10 +759,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.revert_btn.clicked.connect(self._revert)
         self.autotag_btn = QPushButton(t("caption_autotag"))
         self.autotag_btn.setToolTip(t("caption_autotag_tooltip"))
-        self.autotag_btn.setStyleSheet(
-            "QPushButton{background:#2980b9;color:white;font-weight:bold;}"
-            "QPushButton:disabled{background:#2a4763;color:#aaa;}"
-        )
+        apply_variant(self.autotag_btn, "info")
         self.autotag_btn.clicked.connect(self._run_autotag)
         self.versions_btn = QPushButton(t("caption_versions"))
         self.versions_btn.clicked.connect(self._open_versions)
@@ -837,7 +829,9 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         if self._dirs:
             self._load_dir(self.dc.currentText())
 
-    def _make_button_with_menu(self, text: str, tooltip: str, clicked_cb, actions) -> QWidget:
+    def _make_button_with_menu(
+        self, text: str, tooltip: str, clicked_cb, actions
+    ) -> QWidget:
         host = QWidget()
         row = QHBoxLayout(host)
         row.setContentsMargins(0, 0, 0, 0)
