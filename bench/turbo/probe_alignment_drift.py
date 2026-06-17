@@ -39,7 +39,7 @@ is reported because it picks between the primary (real-data PE) and fallback
 
 Run from anima_lora/::
 
-    uv run python bench/turbo_repa/probe_alignment_drift.py \
+    uv run python bench/turbo/probe_alignment_drift.py \
         --adapter output/ckpt/anima_turbo_N_1250.safetensors
 """
 

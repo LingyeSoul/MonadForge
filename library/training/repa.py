@@ -98,7 +98,7 @@ _HEATMAP_TOPK_FRAC = 0.10
 
 
 # Grid-match / pooling / Gram math factored out of the adapter so no-training
-# probes (bench/turbo_repa/) measure the identical quantity the training term
+# probes (bench/turbo/) measure the identical quantity the training term
 # optimizes instead of carrying a drifting copy.
 
 
@@ -215,7 +215,7 @@ def dog_standardize(
     """Difference-of-Gaussians band-pass of the target tokens (REPA-DoG).
 
     Generalizes ``spatial_norm``'s DC removal to a broader low-band strip
-    (arXiv:2603.14645v1 §3.5, ``docs/proposal/repa_dog_target.md``). Phase 0
+    (arXiv:2603.14645v1 §3.5, ``_archive/proposals/repa_dog_target.md``). Phase 0
     (``bench/repa/probe_dog_target.py``) found this lifts target
     discriminability on all 3 content axes (best ``σ₁ = min/16``). ``pe`` is
     ``(B, N, d)`` with ``N == gh*gw`` (CLS already dropped); reshaped to the
@@ -271,7 +271,7 @@ def relational_align_loss(
 
     ``captured`` is a raw block output (either layout), ``pe`` the cached
     encoder features ``(B, T, d_enc)`` with CLS still at index 0 when the spec
-    carries one. This is the probe entry point (``bench/turbo_repa/``); the
+    carries one. This is the probe entry point (``bench/turbo/``); the
     training adapter composes the same pieces itself because it also needs the
     pooled tokens (absolute arm head, grad-heatmap probe).
 

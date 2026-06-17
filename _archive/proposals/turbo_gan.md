@@ -1,5 +1,10 @@
 # Plan — porting FastGen learnings into Turbo (+ a network abstraction seam)
 
+Status: **ARCHIVED — SUCCESSFUL (2026-06-17).** The FastGen-style teacher-feature
+GAN head landed in the distill loop (`scripts/distill_turbo/`,
+`networks/methods/turbo_dmd.py` — discriminator + GAN losses) and proved out.
+Moved out of active proposals. Original status preserved below.
+
 Status: **proposal / not started**. Source of the ideas: NVlabs **FastGen** (`FastGen/`,
 Apache-2.0), specifically `fastgen/methods/distribution_matching/{dmd2,f_distill}.py`,
 `fastgen/networks/discriminators.py`, and `fastgen/networks/network.py`'s uniform net

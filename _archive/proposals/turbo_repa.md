@@ -1,5 +1,10 @@
 # Turbo × REPA — relational alignment for the DP-DMD student
 
+Status: **ARCHIVED — REFUTED (2026-06-17).** REPA on the DP-DMD student did not
+work: the post-fix retrain (`repa2`) showed REPA *amplifying* visual drift 5–10×
+rather than reducing it (`[[project_turbo_repa_phase0_drift]]`). Line closed.
+Original status preserved below.
+
 Status: **Phase 0 PASSED (DRIFT confirmed) — Phase 1 wired; first A/B arm
 INVALID (view bug, fixed 2026-06-13); post-fix retrain (`repa2`) FAILED — REPA
 *amplifies* visual drift 5–10× instead of reducing it, with a train-loss /
@@ -26,8 +31,8 @@ pattern) BEFORE the GAN forward, restoring the invariant that the GAN gen
 forward is the last view-switch before the main backward. Same-class guards
 added at config time (repa+per_step_expert+--grad_ckpt = error;
 --grad_ckpt+GAN = pre-existing broken combo, warned).
-Probe: `bench/turbo_repa/probe_alignment_drift.py` (run
-`bench/turbo_repa/results/20260612-2244-alignment-drift/`, N=200, paired
+Probe: `bench/turbo/probe_alignment_drift.py` (run
+`bench/turbo/results/20260612-2244-alignment-drift/`, N=200, paired
 arms). Student align loss worse than base at every σ except exactly 1.0:
 +21.8% @ σ=0.75 and +21.2% @ σ=0.50 (frac_worse 1.00 — all 200 images),
 +12.7% @ σ=0.97, +8.9% @ σ=0.25; at σ=1.00 (pure-ε input, no image content)
@@ -116,7 +121,7 @@ distill `CachedDataset`, extend the batch tuple, and log
 
 ## Phase 0 — drift probe (no training, the gate for everything else)
 
-`bench/turbo_repa/probe_alignment_drift.py`: measure the unweighted
+`bench/turbo/probe_alignment_drift.py`: measure the unweighted
 relational align loss (block 8 vs PE-Spatial, spatial_norm on) for **base**
 vs the **existing trained turbo student** checkpoint, over real renoised
 latents at σ ∈ {1.0, 0.97, 0.75, 0.5, 0.25} (matching the caption-probe σ
@@ -150,7 +155,7 @@ A/B at fixed seed/data/iterations, `--infer_steps 4 --cfg 1.0`,
 `weight = 0` vs `0.05` (one order-of-magnitude sweep only if directionally
 right). Pre-registered gates, in order:
 
-1. **Caption-ranking probe** (`bench/dpdmd/caption_ranking_probe.py`) —
+1. **Caption-ranking probe** (`bench/turbo/caption_ranking_probe.py`) —
    shuffled rank@1 at σ=0.97/1.0 must not regress; recovery toward base is
    the win condition (same metric contract as soft-rank Phase 1, so the two
    levers are directly comparable and their composition measurable).
@@ -170,7 +175,7 @@ Post-fix retrain `anima_turbo_N_repa2` (`repa_weight=0.05`, `layer=8`,
 **retrain after the view-bug fix**, so it should be a clean read of the arm.
 It is not — REPA made the very thing it optimizes worse.
 
-**Alignment-drift probe** (`bench/turbo_repa/probe_alignment_drift.py`, the
+**Alignment-drift probe** (`bench/turbo/probe_alignment_drift.py`, the
 unweighted relational Gram align loss to PE-Spatial — REPA's *own* objective;
 lower = better, "excess" = (student−base)/base):
 
@@ -186,7 +191,7 @@ REPA amplifies drift **5–10×** at every signal-bearing σ (0.25–0.97) vs th
 no-REPA baseline, and only improves alignment at pure noise (σ=1.0). The
 profile is **baked in by step 625 and flat through 1250** — same shape, same
 magnitude — so it is not a late-run blow-up that an earlier stop would dodge.
-(Runs: `bench/turbo_repa/results/20260613-1501` (1250), `…-1530` (625);
+(Runs: `bench/turbo/results/20260613-1501` (1250), `…-1530` (625);
 baseline `…20260612-2244`.)
 
 **The smoking gun — train loss ≠ checkpoint reality.** `train/repa_align_loss`
@@ -203,7 +208,7 @@ only the noise-end head gets a clean gradient, everywhere with image content
 drifts further off-manifold. **The 2026-06-13 view-bug "fix" did not resolve
 this** — either it was incomplete or the cause is elsewhere on the grad path.
 
-**Caption-ranking probe** (`bench/dpdmd/.../20260613-1517`, vs no-REPA
+**Caption-ranking probe** (`bench/turbo/.../20260613-1517`, vs no-REPA
 `…20260611-2020`) is a wash-to-worse: REPA nudged up the σ≈1 *shuffled* tail
 (0.750→0.792 @1.0, the originally-flagged hotspot) but made the **hard**
 (semantically-close contrastive) rank@1 worse at every σ (e.g. 0.75:

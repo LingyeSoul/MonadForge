@@ -52,7 +52,7 @@ PRE-REGISTERED READOUT (the gate for implementing the arm):
 
 Run from anima_lora/::
 
-    uv run python bench/pe_cls_probe/discriminability.py \
+    uv run python bench/repa/discriminability.py \
         --data_dir post_image_dataset/lora \
         --index post_image_dataset/captions/caption_index.json
 """

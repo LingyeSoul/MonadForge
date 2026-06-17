@@ -50,10 +50,10 @@ discriminability"); Phase 1 (soft-rank auxiliary in distill.py) never happens.
 
 Run from anima_lora/::
 
-    uv run python bench/dpdmd/caption_ranking_probe.py \
+    uv run python bench/turbo/caption_ranking_probe.py \
         --adapter output/ckpt/anima_turbo_N_1250.safetensors
     # over-distilled comparison arm:
-    uv run python bench/dpdmd/caption_ranking_probe.py \
+    uv run python bench/turbo/caption_ranking_probe.py \
         --adapter output/ckpt/<overbaked>.safetensors --label overdistill
 """
 
@@ -114,7 +114,7 @@ ARMS = ("base", "student")  # multiplier 0.0 / 1.0 on the same DiT
 def _set_arm(network, arm: str) -> None:
     """Teacher/student toggle via set_multiplier — zeroes the LoRA delta without
     changing control flow, so a compiled DiT keeps one graph family (the
-    bench/dpdmd/probe_first_step_anchor.py pattern)."""
+    bench/turbo/probe_first_step_anchor.py pattern)."""
     network.set_multiplier(0.0 if arm == "base" else 1.0)
 
 

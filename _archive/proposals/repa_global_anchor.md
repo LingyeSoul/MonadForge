@@ -27,13 +27,13 @@ global target, which normalization) *before* any compute. The trainable arm is
 now implemented per the Design below: `repa_global_weight` (default 0.0 ⇒
 byte-identical no-op) in `configs/methods/lora.toml`, the patch-mean z-score
 calib shipped at `networks/calibration/pe_patchmean_stats.safetensors`
-(regen: `uv run python bench/pe_cls_probe/build_calib.py`), `REPAGlobalHead` +
+(regen: `uv run python bench/repa/build_calib.py`), `REPAGlobalHead` +
 `global_anchor_loss` in `library/training/repa.py`, the `repa_global` loss
 handler in `library/training/losses.py`, and the kwarg allowlist in
 `networks/__init__.py`. Run the A/B with `--repa_global_weight 0.03` (below).
 
-Probe: `bench/pe_cls_probe/discriminability.py` (run
-`bench/pe_cls_probe/results/20260613-1249-discriminability/`, N=3058, no model
+Probe: `bench/repa/discriminability.py` (run
+`bench/repa/results/20260613-1249-discriminability/`, N=3058, no model
 forward). Memory: `[[project_pe_cls_collapse_patchmean]]`. Depends on REPA v2
 Phase 0 (closed 2026-06-12, relational/Gram arm won — `docs/experimental/repa.md`).
 

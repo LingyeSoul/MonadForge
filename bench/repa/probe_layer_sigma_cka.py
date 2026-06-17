@@ -46,7 +46,7 @@ return_features_early=True)`` — runs the full stack, skips final_layer +
 unpatchify), then for each layer pool the captured tokens to the encoder grid
 and score CKA / Gram-loss vs the image's own cached PE features. The image's
 matched caption conditions the forward (the training operating point), mirroring
-``bench/turbo_repa/probe_alignment_drift.py``.
+``bench/turbo/probe_alignment_drift.py``.
 
 READOUTS (all from the one layer×σ heatmap):
 

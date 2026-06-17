@@ -2,8 +2,8 @@
 
 Status: **Phase 0 COMPLETE 2026-06-11 — gate FIRED → Phase 1 unlocked, not started.**
 
-- Bench (now the standing regression probe): `bench/dpdmd/caption_ranking_probe.py`
-- Phase-0 run: `bench/dpdmd/results/20260611-2020-phase0-turboN1250/` (checkpoint
+- Bench (now the standing regression probe): `bench/turbo/caption_ranking_probe.py`
+- Phase-0 run: `bench/turbo/results/20260611-2020-phase0-turboN1250/` (checkpoint
   `anima_turbo_N_1250.safetensors` — the current 4-step DP-DMD student, 1250 iters)
 
 Premise sources: `docs/findings/agsm_reward_premise_holds.md` (the validated ranking
@@ -37,7 +37,7 @@ absolute threshold).
 
 ## Phase 0 — what was run and what it showed
 
-`bench/dpdmd/caption_ranking_probe.py` (defaults = the run): 24 anchors, k=2
+`bench/turbo/caption_ranking_probe.py` (defaults = the run): 24 anchors, k=2
 negatives/pool, 2 noise draws, one DiT with the turbo LoRA toggled via
 `set_multiplier` (base arm = multiplier 0, the teacher's backbone). Negative
 sourcing (shuffled + same-artist/diff-character hard pools) is imported from
@@ -98,7 +98,7 @@ no magnitude collapse, that gate arm correctly silent — but cos(ΔS, ΔT) ≈
 - **Over-distilled arm**: rerun the probe on an over-baked checkpoint
   ([[project_turbo_alpha4_overdistill]] predicts text response dies first there);
   degradation deepening with over-baking strengthens the causal story. One
-  command: `uv run python bench/dpdmd/caption_ranking_probe.py --adapter <ckpt>
+  command: `uv run python bench/turbo/caption_ranking_probe.py --adapter <ckpt>
   --label overdistill`.
 - **0c noise floor**: add a teacher-vs-teacher (different ε) contrast cosine to
   calibrate what cos ≈ 0.38 means.
@@ -204,7 +204,7 @@ byte-identical to current `distill.py`).
 
 ## References
 
-- `bench/dpdmd/caption_ranking_probe.py` + `results/20260611-2020-phase0-turboN1250/`
+- `bench/turbo/caption_ranking_probe.py` + `results/20260611-2020-phase0-turboN1250/`
   — the probe and the Phase-0 numbers above.
 - `docs/findings/agsm_reward_premise_holds.md` — the reward premise + σ-trend.
 - `bench/soft_tokens_contrastive/reward_premise_probe.py` — negative

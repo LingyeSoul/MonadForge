@@ -250,7 +250,7 @@ the teacher anchor. The live TB scalars:
 
 DP-DMD is structurally **DMD2 with the GAN amputated**. Two off-by-default levers
 port the missing adversarial machinery from NVlabs FastGen
-(`docs/proposal/turbo_gan.md`):
+(`_archive/proposals/turbo_gan.md`):
 
 - **Teacher-feature GAN** (`[gan] weight_gen > 0`, FastGen idea 1). A tiny pooled-
   token discriminator (`networks/methods/turbo_dmd.py::PooledTokenDiscriminator`,

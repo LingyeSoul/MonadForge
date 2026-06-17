@@ -1,5 +1,10 @@
 # REPA-DoG — band-pass the alignment target before the Gram match
 
+Status: **ARCHIVED — SUCCESSFUL (2026-06-17).** The band-pass alignment target
+won (Phase 0 passed; band-pass beats the shipped `spatial_norm` on all three
+axes; `[[project_repa_dog_phase0_passed]]`). Moved out of active proposals.
+Original status preserved below.
+
 Status: **PHASE 1 WIRED 2026-06-13.** Phase 0 (data-only σ-sweep probe,
 `bench/repa/probe_dog_target.py`, 3000 PE-Spatial sidecars) PASSED, so the
 training arm is now implemented: `dog_standardize` in `library/training/repa.py`
@@ -14,7 +19,7 @@ shipped relational arm + `repa_spatial_norm` (`docs/experimental/repa.md`, REPA 
 Phase 0 closed 2026-06-12, `[[project_repa_v2_relational_won]]`). Supersedes —
 and removes — the global-anchor line (`repa_global_weight`, **refuted**,
 `_archive/proposals/repa_global_anchor.md`); that arm's code, config, calib, and
-`bench/pe_cls_probe/build_calib.py` were deleted with this change. See Why now.
+`bench/repa/build_calib.py` were deleted with this change. See Why now.
 
 **Phase 0 result** (`bench/repa/results/20260613-*-dog-axis-full/`, stable over
 two 3000-sample runs). Best +1a (broad low-band strip, `σ_lp = min(gh,gw)/16–32`)
@@ -97,7 +102,7 @@ No DiT, no text encoder — load cached PE-Spatial sidecars, reshape each to its
 
 **Readout = target discriminability**, reusing the global-anchor probe's metric:
 AUC of `P(in-group cosine > out-group cosine)` over character/copyright/artist
-pairs from `caption_index.json` (`bench/pe_cls_probe/discriminability.py`,
+pairs from `caption_index.json` (`bench/repa/discriminability.py`,
 `[[project_pe_cls_collapse_patchmean]]`), computed on the **Gram affinity** the
 relational arm actually matches (per-token L2-norm → pairwise cosine), not on raw
 features. Sweep σ₁ as a bucket-invariant divisor `min(gh,gw)/div₁` (mirror FEI).

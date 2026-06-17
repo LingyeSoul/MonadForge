@@ -185,7 +185,7 @@ repa_spatial_norm = false
 # plateaus by ~18% of the run (anima_repa_normed_quarter, 2026-06-12).
 # repa_anneal_steps = 0.25
 
-# REPA-DoG (docs/proposal/repa_dog_target.md) — band-pass the alignment TARGET
+# REPA-DoG (_archive/proposals/repa_dog_target.md) — band-pass the alignment TARGET
 # before the Gram match, generalizing spatial_norm's DC removal to a broader
 # low-band strip (arXiv:2603.14645v1 §3.5). When on it REPLACES the spatial_norm
 # block (DoG at σ₁→0 *is* DC removal — same family, mutually exclusive). Pure

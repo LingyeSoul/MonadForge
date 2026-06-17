@@ -172,7 +172,7 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         # Lever-3 gate diagnostic: probe alignment-gradient heatmap every N
         # micro-steps (0 = off); dumps <output_name>_repa_grad_heatmap.npz.
         "repa_grad_heatmap",
-        # REPA-DoG target band-pass (docs/proposal/repa_dog_target.md): broader
+        # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): broader
         # low-band strip than spatial_norm's DC removal. Off by default.
         "repa_target_dog",  # false = off (no-op); true ⇒ DoG band-pass the target
         "repa_dog_sigma1_div",  # σ₁ = min(gh,gw)/div (outer, broad low band removed)

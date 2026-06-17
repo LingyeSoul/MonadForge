@@ -11,12 +11,12 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_N2_GAN"
+output_name = "anima_turbo_O"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 1000
+iterations = 4000
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -110,7 +110,7 @@ mu_t = 0.0                      # used only when sigma2_t > 0 (pinned target)
 sigma2_t = -1.0                 # <= 0 → measure μ_t/σ²_t exactly from real latents
 calib_batches = 0              # cap the calibration scan (0 = full pass)
 
-# DMD2 teacher-feature GAN (FastGen idea 1; docs/proposal/turbo_gan/plan.md).
+# DMD2 teacher-feature GAN (FastGen idea 1; _archive/proposals/turbo_gan.md).
 #
 # Adds the missing adversarial machinery to DP-DMD (which is "DMD2 with the GAN
 # amputated"). A tiny pooled-token discriminator reads the FROZEN teacher DiT's
@@ -155,7 +155,7 @@ ratio_normalization = true      # per-τ histogram normalization of r
 # Turbo × REPA — relational (Gram) alignment on REAL data (docs/proposal/
 # turbo_repa.md; Phase 0 drift probe PASSED 2026-06-12 — the student's block-8
 # representation sits measurably off the base manifold, worst at mid-σ:
-# bench/turbo_repa/results/20260612-2244-alignment-drift/).
+# bench/turbo/results/20260612-2244-alignment-drift/).
 #
 # Every `every_n`-th student step, ONE extra grad-bearing partial student
 # forward (feature tap, exits after `layer` ≈ 9/28 of a forward) on renoised
@@ -171,7 +171,7 @@ layer = 8                       # DiT block tap (matches LoRA-family REPA)
 encoder = "pe_spatial"          # sidecar {stem}_anima_{encoder}.safetensors next to the TE cache
 every_n = 4                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
 # spatial_norm = true           # iREPA target standardization (the validated LoRA operating point)
-# REPA-DoG target band-pass (docs/proposal/repa_dog_target.md; Phase 0 PASSED
+# REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md; Phase 0 PASSED
 # on LoRA — broad low-band strip beats spatial_norm's DC-only removal). When
 # target_dog = true it REPLACES spatial_norm in the relational loss (mutually
 # exclusive; dog wins). σ as min(gh,gw)/div; σ2 = 0 → single low-pass.
@@ -182,7 +182,7 @@ every_n = 4                     # run the term every N student steps (amortizati
 
 # Logging / checkpoints.
 [io]
-save_every = 500
+save_every = 2000
 log_interval = 5
 log_dir = "output/logs/turbo"
-validate_every_n_steps = 500
+validate_every_n_steps = 2000

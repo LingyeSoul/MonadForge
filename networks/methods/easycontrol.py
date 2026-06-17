@@ -316,7 +316,7 @@ def create_network(
             kwargs.get("repa_timestep_weighting", 0.0) or 0.0
         )
         network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
-        # REPA-DoG target band-pass (docs/proposal/repa_dog_target.md): when on,
+        # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): when on,
         # replaces the spatial_norm block in the relational target preprocess.
         network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
         network._repa_dog_sigma1_div = float(

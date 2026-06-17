@@ -31,7 +31,7 @@ re-collapses toward the student floor, the later DMD steps wash it out → NO-GO
 Diversity is Eq. 9 (1 − mean pairwise cosine) over PE-Core pooled features — the
 in-repo encoder behind CMMD; a relative-diversity signal across arms, not DINOv3.
 
-    python bench/dpdmd/probe_first_step_anchor.py \
+    python bench/turbo/probe_first_step_anchor.py \
         --turbo output/ckpt/anima_turbo_H_4k.safetensors --n_seeds 6
 """
 
