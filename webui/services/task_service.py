@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -69,20 +70,17 @@ class Task:
     _subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
     parser: TrainingLogParser = field(default_factory=TrainingLogParser, repr=False)
     wandb_run_url: Optional[str] = None
+    progress_started_at: Optional[float] = field(default=None, repr=False)
+    progress_last_step: int = field(default=0, repr=False)
+    progress_last_ts: Optional[float] = field(default=None, repr=False)
     # Set when the JSONL progress watcher is started (training tasks only).
-    # The JSONL watcher is the canonical metrics emitter for training tasks —
-    # the stdout parser still updates ``parser.metrics`` (so loss_history /
-    # step_history stay consistent) but the stdout path must NOT also emit
-    # WS ``metrics`` messages, otherwise the frontend sees two streams racing
-    # and the loss chart gets a duplicate history append on every step.
+    # Both the JSONL watcher and the stdout tqdm parser feed
+    # ``parser.metrics`` for training tasks — the JSONL carries the
+    # structured scalars (``avr_loss`` / ``lr`` / ``epoch``) and the
+    # stdout tqdm bar carries the rest (``speed`` / ``elapsed`` /
+    # ``eta`` / ``total_steps``). Disabling either channel makes
+    # half the dashboard go blank, so we keep both.
     is_training: bool = field(default=False, repr=False)
-    # Debounce bookkeeping for the JSONL metrics emit: the latest pending
-    # snapshot to send and the asyncio.Handle of the scheduled send task.
-    # Set on the first step event in a debounce window; cleared when the
-    # scheduled send fires. Keeps the WebSocket traffic bounded (one message
-    # per ~0.3 s of step events) instead of one per step.
-    _pending_metrics: Optional[dict] = field(default=None, repr=False)
-    _pending_metrics_handle: Optional[asyncio.Handle] = field(default=None, repr=False)
 
     def info(self) -> dict:
         return {
@@ -187,11 +185,11 @@ class TaskService:
         # One poller drives state transitions + stdout tailing + terminal
         # signaling. The progress-JSONL watcher runs alongside it.
         asyncio.create_task(self._poll_daemon_job(task))
-        jsonl_path = self._derive_progress_jsonl_path(args or [])
+        jsonl_path = self._derive_progress_jsonl_path(resp, command, args or [], env or {})
         if jsonl_path:
-            # Mark as a training task — the JSONL watcher is the canonical
-            # metrics emitter and suppresses the parallel stdout emit (see
-            # ``_emit_line`` and ``_watch_progress_jsonl``).
+            # Mark as a training task. Both the JSONL watcher and stdout tqdm
+            # parser feed the same metrics snapshot: JSONL supplies structured
+            # scalars, stdout supplies tqdm-only fields like speed / ETA.
             task.is_training = True
             asyncio.create_task(self._watch_progress_jsonl(task, jsonl_path))
 
@@ -427,26 +425,92 @@ class TaskService:
                 return args[i + 1]
         return None
 
-    def _derive_progress_jsonl_path(self, args: list[str]) -> Optional[str]:
-        """Mirror ``ProgressSink.resolve_path`` logic on the arg list.
+    def _derive_progress_jsonl_path(
+        self,
+        job_resp: dict | str | None,
+        command: str,
+        args: list[str],
+        env: dict[str, str] | None = None,
+    ) -> Optional[str]:
+        """Return the structured progress stream for this daemon job.
 
-        Returns the expected JSONL path so the watcher can tail it, or
-        ``None`` when the path cannot be determined (e.g. no output_dir).
+        WebUI command jobs run through ``tasks.py`` for compatibility, but the
+        daemon assigns every job a private ``output/daemon/jobs/<job_id>/progress.jsonl``.
+        Training command jobs are launched with ``--progress_jsonl`` pointing at
+        that private file, so the dashboard must tail the same per-job path. Never
+        fall back to ``output/logs/<output_name>.progress.jsonl`` here: that file is
+        shared across runs and replays stale metrics at task start.
         """
-        output_dir = self._arg_value(args, "--output_dir") or "output/ckpt"
-        output_name = self._arg_value(args, "--output_name") or "anima_lora"
-        parent = os.path.dirname(os.path.normpath(output_dir))
-        logs_dir = os.path.join(parent or output_dir, "logs")
-        return os.path.join(ROOT, logs_dir, f"{output_name}.progress.jsonl")
+        explicit = self._arg_value(args, "--progress_jsonl")
+        if explicit is not None:
+            explicit = explicit.strip()
+            if explicit.lower() in ("", "none", "off"):
+                return None
+            if not os.path.isabs(explicit):
+                return str((ROOT / explicit).resolve())
+            return explicit
 
-    # WebSocket ``metrics`` message debounce — see ``_watch_progress_jsonl``.
-    # Long runs emit thousands of step events; flushing each as a separate
-    # WS message both floods the socket on training end and lets the loss
-    # chart's ``loss_history`` array balloon to N×(message size) in
-    # transit. 0.3 s is short enough to feel live (frontend gets ~3
-    # updates/sec during steady state) and long enough to coalesce a
-    # burst of step events written within a single training step.
-    _METRICS_DEBOUNCE_SECONDS = 0.3
+        if not self._command_runs_training(command):
+            return None
+
+        if isinstance(job_resp, dict):
+            progress_path = job_resp.get("progress_path")
+            if progress_path:
+                return str(progress_path)
+            job_id = job_resp.get("job_id")
+        else:
+            job_id = job_resp
+        if not job_id:
+            return None
+        return str(ROOT / "output" / "daemon" / "jobs" / str(job_id) / "progress.jsonl")
+
+    @staticmethod
+    def _command_runs_training(command: str) -> bool:
+        return command in {"lora", "lora-gui", "easycontrol"}
+
+    def _config_path_overrides(
+        self,
+        command: str,
+        args: list[str],
+        env: dict[str, str],
+    ) -> dict:
+        """Load merged top-level path scalars for command-style training jobs."""
+        method: Optional[str] = None
+        methods_subdir = "methods"
+        preset = env.get("PRESET") or "default"
+
+        if command == "lora-gui":
+            variant = env.get("GUI_PRESETS")
+            if not variant and args and not args[0].startswith("-"):
+                variant = args[0]
+            method = variant or "lora"
+            methods_subdir = "gui-methods"
+        else:
+            method_by_command = {
+                "lora": "lora",
+                "easycontrol": "easycontrol",
+            }
+            method = method_by_command.get(command)
+
+        if method is None:
+            return {}
+
+        try:
+            from library.config.io import load_path_overrides
+
+            return load_path_overrides(
+                preset=preset,
+                method=method,
+                methods_subdir=methods_subdir,
+            )
+        except Exception as exc:  # noqa: BLE001 — fall back to safe defaults
+            logger.debug(
+                "Could not derive progress JSONL path from config for %s %s: %s",
+                command,
+                args,
+                exc,
+            )
+            return {}
 
     async def _watch_progress_jsonl(self, task: Task, jsonl_path: str) -> None:
         """Tail the structured progress JSONL and push metrics to subscribers.
@@ -458,10 +522,15 @@ class TaskService:
         to WebSocket subscribers — the same message format the stdout parser
         produces, so the frontend code is unchanged.
 
-        Updates are **debounced** (~0.3 s window) so a burst of step events
-        lands as a single WS message: the loss chart history grows by one
-        point per training step rather than one point per WS round-trip, and
-        the final ``done`` no longer triggers a flood of queued messages.
+        Each ``step`` event is forwarded as a single metrics message. The
+        earlier debounce (a 0.3 s coalescing window) stacked every emit on
+        the same window — and a subsequent event arriving just as the
+        timer was about to fire reset it, so the dashboard never saw a
+        metrics message until the ``finally`` flush at training end. The
+        trainer only emits one ``step`` event per ``log_every_n_steps``
+        (every 2 by default), so WS load is bounded; the loss / step
+        history is already deduped by ``global_step`` so direct emits
+        can't double-append.
 
         The ``run_start`` event carries ``total_steps`` / ``total_epochs`` —
         captured here so the dashboard shows ``step / total`` from step 1
@@ -540,9 +609,14 @@ class TaskService:
                             # Capture total_steps / total_epochs from the
                             # trainer's opening event so the dashboard can
                             # render "step / total" from the first step —
-                            # don't wait for the first tqdm bar (which the
-                            # daemon throttles via TQDM_MININTERVAL).
+                            # don't wait for the first tqdm bar.
                             metrics = task.parser.metrics
+                            ts = ev.get("ts")
+                            task.progress_started_at = (
+                                float(ts) if ts is not None else 0.0
+                            )
+                            task.progress_last_step = 0
+                            task.progress_last_ts = task.progress_started_at
                             if "total_steps" in ev:
                                 metrics.total_steps = int(ev["total_steps"])
                             if "total_epochs" in ev:
@@ -551,8 +625,9 @@ class TaskService:
                             # for total_steps — emit a snapshot now so the
                             # UI sees the denominator as soon as the trainer
                             # announces it.
-                            await self._schedule_metrics_emit(
-                                task, metrics.snapshot()
+                            await self._notify_subscribers(
+                                task,
+                                {"type": "metrics", "data": metrics.snapshot()},
                             )
                         elif ev_type == "step":
                             metrics = task.parser.metrics
@@ -560,23 +635,50 @@ class TaskService:
                                 metrics.step = ev["global_step"]
                             if "epoch" in ev:
                                 metrics.epoch = ev["epoch"]
-                            if "avr_loss" in ev:
-                                loss = ev["avr_loss"]
-                                metrics.avr_loss = loss
+                            # The trainer logs scalars under accelerate's
+                            # ``group/prefix`` keys (``loss/average``,
+                            # ``loss/current``, ``lr/unet``) — pull the
+                            # values the dashboard renders (``avr_loss``,
+                            # ``lr``) from those, with the legacy flat
+                            # names as a fallback for any future writer
+                            # that emits the older shape.
+                            loss = ev.get("loss/average")
+                            if loss is None:
+                                loss = ev.get("avr_loss")
+                            if loss is not None:
+                                metrics.avr_loss = float(loss)
                                 s = metrics.step
                                 if (
                                     not metrics.step_history
                                     or s != metrics.step_history[-1]
                                 ):
-                                    metrics.loss_history.append(loss)
+                                    metrics.loss_history.append(metrics.avr_loss)
                                     metrics.step_history.append(s)
                                     metrics.lr_history.append(metrics.lr)
-                            if "lr" in ev:
-                                metrics.lr = ev["lr"]
-                            # Debounce: the next WS emit coalesces all
-                            # step events that landed inside the window.
-                            await self._schedule_metrics_emit(
-                                task, metrics.snapshot()
+                            lr = ev.get("lr/unet")
+                            if lr is None:
+                                lr = ev.get("lr")
+                            if lr is not None:
+                                metrics.lr = float(lr)
+                            self._update_jsonl_timing_metrics(task, ev)
+                            # Emit a fresh snapshot per step event. The
+                            # earlier debounce was meant to coalesce a
+                            # burst of step events into one WS message,
+                            # but in practice it stacked every emit on
+                            # the same 0.3 s window — and a subsequent
+                            # event arrived just as the timer was about
+                            # to fire, so the dashboard never saw a
+                            # metrics message until the ``finally``
+                            # flush. Emit directly per event instead:
+                            # the loss / step history are already
+                            # deduped by ``global_step`` so duplicate
+                            # appends are impossible, and the trainer
+                            # only emits one ``step`` per
+                            # ``log_every_n_steps`` (every 2 by
+                            # default) so the WS load is bounded.
+                            await self._notify_subscribers(
+                                task,
+                                {"type": "metrics", "data": metrics.snapshot()},
                             )
                         elif ev_type == "sample":
                             # Training emitted a preview image; relay as a
@@ -610,8 +712,9 @@ class TaskService:
                             # value (which may differ from the last logged
                             # step) is also visible to subscribers.
                             await self._flush_metrics_emit(task)
-                            await self._schedule_metrics_emit(
-                                task, metrics.snapshot()
+                            await self._notify_subscribers(
+                                task,
+                                {"type": "metrics", "data": metrics.snapshot()},
                             )
                 else:
                     # File may have been rotated; reset.
@@ -629,51 +732,64 @@ class TaskService:
             # ``done`` and the scheduled send never fires).
             await self._flush_metrics_emit(task)
 
-    async def _schedule_metrics_emit(self, task: Task, snapshot: dict) -> None:
-        """Coalesce a burst of step events into a single WS ``metrics`` send.
-
-        Stores the latest snapshot on the task and arms a timer that
-        publishes it. Subsequent calls in the same window replace the
-        pending snapshot and reset the timer. The result: regardless of
-        how many step events arrive inside ~0.3 s, exactly one WS
-        message goes out with the freshest data — the dashboard updates
-        smoothly and the socket doesn't drown in redundant messages.
-        """
-        task._pending_metrics = snapshot
-        if task._pending_metrics_handle is not None:
-            task._pending_metrics_handle.cancel()
-        loop = asyncio.get_event_loop()
-        task._pending_metrics_handle = loop.call_later(
-            self._METRICS_DEBOUNCE_SECONDS,
-            # call_later invokes synchronously; route through the loop so
-            # the actual notify happens in async-safe context.
-            lambda: asyncio.ensure_future(self._fire_pending_metrics(task)),
-        )
-
-    async def _fire_pending_metrics(self, task: Task) -> None:
-        snapshot = task._pending_metrics
-        task._pending_metrics = None
-        task._pending_metrics_handle = None
-        if snapshot is None:
+    def _update_jsonl_timing_metrics(self, task: Task, ev: dict) -> None:
+        """Derive speed / elapsed / ETA from structured JSONL step timing."""
+        metrics = task.parser.metrics
+        try:
+            step = int(ev.get("global_step") or metrics.step or 0)
+        except (TypeError, ValueError):
             return
-        await self._notify_subscribers(task, {"type": "metrics", "data": snapshot})
+        ts_raw = ev.get("ts")
+        if ts_raw is None:
+            return
+        try:
+            ts = float(ts_raw)
+        except (TypeError, ValueError):
+            return
+
+        if task.progress_started_at is None:
+            task.progress_started_at = 0.0
+        elapsed = max(0.0, ts - task.progress_started_at)
+        metrics.elapsed = self._format_duration(elapsed)
+
+        last_ts = task.progress_last_ts
+        last_step = task.progress_last_step
+        delta_steps = step - last_step
+        delta_ts = ts - last_ts if last_ts is not None else 0.0
+        if delta_steps > 0 and delta_ts > 0:
+            steps_per_sec = delta_steps / delta_ts
+            if steps_per_sec >= 1.0:
+                metrics.speed = f"{steps_per_sec:.2f} it/s"
+            else:
+                metrics.speed = f"{(1.0 / steps_per_sec):.2f} s/it"
+            if metrics.total_steps > step:
+                remaining = metrics.total_steps - step
+                metrics.eta = self._format_duration(remaining / steps_per_sec)
+
+        if step >= task.progress_last_step:
+            task.progress_last_step = step
+            task.progress_last_ts = ts
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = max(0, int(round(seconds)))
+        hours, rem = divmod(seconds, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours:d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
 
     async def _flush_metrics_emit(self, task: Task) -> None:
-        """Cancel any pending debounce and send the latest snapshot now.
+        """No-op now that the watcher emits per step event directly.
 
-        Called when the JSONL watcher sees a ``run_end`` event or exits
-        (task state terminal). Ensures subscribers always see the
-        last-known metrics before the ``done`` message.
+        Kept for callers (the ``run_end`` handler and the watcher's
+        ``finally`` clause) that previously relied on the debounced
+        flush to surface the last step. Direct emits make it redundant
+        but harmless — both call sites still want a deterministic
+        "send whatever is pending" hook in case future code adds
+        async-side bookkeeping that must fire on terminal state.
         """
-        if task._pending_metrics_handle is not None:
-            task._pending_metrics_handle.cancel()
-            task._pending_metrics_handle = None
-        if task._pending_metrics is not None:
-            snapshot = task._pending_metrics
-            task._pending_metrics = None
-            await self._notify_subscribers(
-                task, {"type": "metrics", "data": snapshot}
-            )
+        return None
 
     @staticmethod
     def _read_jsonl_bytes(path: str, offset: int) -> Optional[tuple[list[str], int]]:
@@ -720,12 +836,16 @@ class TaskService:
             msg["replace"] = True
         await self._notify_subscribers(task, msg)
 
-        # Parse training metrics from the line. For training tasks the JSONL
-        # watcher is the canonical metrics emitter (avoids two streams racing
-        # and duplicating history appends). We still feed the parser so the
-        # snapshot stays consistent for late-joining subscribers — the JSONL
-        # watcher reads from the same ``task.parser.metrics`` object.
-        if task.parser.feed(line) and not task.is_training:
+        # Parse training metrics from the line. For training tasks both
+        # the stdout tqdm redraws and the JSONL ``step`` events feed
+        # ``task.parser.metrics``: the stdout path is the *only* source
+        # for tqdm-derived scalars (``speed``, ``elapsed``, ``eta``,
+        # ``total_steps``), the JSONL path carries the structured
+        # scalars (``avr_loss``, ``lr``, ``epoch``). They update the
+        # same parser object so the debounced JSONL emit and the
+        # stdout emit both carry the merged snapshot — no data race,
+        # just two channels covering two halves of the dashboard.
+        if task.parser.feed(line):
             snapshot = task.parser.metrics.snapshot()
             print(
                 f"[metrics] step={snapshot.get('step')}/{snapshot.get('total_steps')} "

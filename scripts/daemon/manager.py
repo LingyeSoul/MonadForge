@@ -700,6 +700,16 @@ class JobManager:
                 pass
             return
 
+    @staticmethod
+    def _command_runs_train(argv: list[str]) -> bool:
+        """True for command jobs that eventually invoke ``train.py`` via tasks.py."""
+        if len(argv) < 2:
+            return False
+        script = os.path.basename(str(argv[0])).lower()
+        if script != "tasks.py":
+            return False
+        return str(argv[1]) in {"lora", "lora-gui", "easycontrol"}
+
     def _build_cmd(self, job: Job) -> tuple[list[str], dict]:
         from .client import venv_python
 
@@ -715,16 +725,25 @@ class JobManager:
         # only the latest line, and training has its own progress.jsonl.
         env.setdefault("TQDM_MININTERVAL", "10")
 
-        # Command jobs (preprocess / mask): a plain task invocation under
-        # pythonw.exe (windowless). A uv-venv python.exe re-execs the real
-        # interpreter and CREATE_NO_WINDOW doesn't survive that, so it pops a
-        # console whose close kills the job with STATUS_CONTROL_C_EXIT
-        # (0xC000013A); pythonw never allocates one (stdout still lands via
-        # spawn_detached's file redirect). No --progress_jsonl — these emit tqdm
-        # to stdout and finalize on exit code (no run_end event).
+        # Command jobs: a plain task invocation under pythonw.exe (windowless).
+        # A uv-venv python.exe re-execs the real interpreter and CREATE_NO_WINDOW
+        # doesn't survive that, so it pops a console whose close kills the job
+        # with STATUS_CONTROL_C_EXIT (0xC000013A); pythonw never allocates one
+        # (stdout still lands via spawn_detached's file redirect).
         if job.kind == "command":
             env.update(job.extra_env or {})
-            return [venv_python(windowless=True), *job.argv], env
+            argv = list(job.argv)
+            # WebUI training commands are still submitted through the command
+            # surface for compatibility with tasks.py, but they must use the
+            # daemon's per-job progress stream. Otherwise train.py falls back to
+            # output/logs/<output_name>.progress.jsonl, a cross-run shared file
+            # that makes the dashboard replay stale metrics at task start.
+            if self._command_runs_train(argv):
+                env["TQDM_MININTERVAL"] = "0.5"
+                env["TQDM_MINITERS"] = "1"
+                if "--progress_jsonl" not in argv:
+                    argv += ["--progress_jsonl", job.progress_path or ""]
+            return [venv_python(windowless=True), *argv], env
 
         # Imported lazily so loading the daemon package never drags in the task
         # runner's transitive imports until a job actually launches.

@@ -81,6 +81,93 @@ def _drive(coro):
 
 
 # ---------------------------------------------------------------------------
+# 0. WebUI command jobs tail the daemon's per-job progress JSONL
+# ---------------------------------------------------------------------------
+
+
+def test_lora_gui_progress_jsonl_path_uses_daemon_job_file():
+    """``lora-gui`` progress must be isolated per daemon job.
+
+    The old fallback tailed ``output/logs/<output_name>.progress.jsonl``. That
+    file is shared across runs, so a new dashboard could replay stale metrics
+    immediately at task start. The daemon gives every job its own progress file;
+    command-style training jobs are launched with ``--progress_jsonl`` pointing
+    there, and the WebUI watcher tails the same per-job file.
+    """
+    svc, _, _ = _make_service()
+
+    path = Path(
+        svc._derive_progress_jsonl_path(
+            {"job_id": "20260617-163000-abcdef"},
+            "lora-gui",
+            ["lora-8gb"],
+            {"PRESET": "test"},
+        )
+    )
+
+    assert path.name == "progress.jsonl"
+    assert path.parent.name == "20260617-163000-abcdef"
+    assert path.parent.parent.name == "jobs"
+
+
+def test_non_training_command_has_no_progress_jsonl_watcher():
+    """Preprocess/mask command jobs should not start the training JSONL watcher."""
+    svc, _, _ = _make_service()
+
+    assert (
+        svc._derive_progress_jsonl_path(
+            {"job_id": "20260617-163000-abcdef"},
+            "preprocess",
+            [],
+            {},
+        )
+        is None
+    )
+
+
+def test_progress_jsonl_explicit_path_wins_for_command_job(tmp_path: Path):
+    """A caller-provided ``--progress_jsonl`` must match train.py semantics."""
+    svc, _, _ = _make_service()
+    custom = tmp_path / "job.progress.jsonl"
+
+    path = svc._derive_progress_jsonl_path(
+        {"job_id": "ignored"},
+        "lora-gui",
+        ["lora-8gb", "--progress_jsonl", str(custom)],
+        {"PRESET": "test"},
+    )
+
+    assert path == str(custom)
+
+
+# ---------------------------------------------------------------------------
+# 0b. JSONL step timing derives speed / elapsed / ETA
+# ---------------------------------------------------------------------------
+
+
+def test_jsonl_step_timing_derives_speed_elapsed_eta():
+    """Speed should not depend solely on stdout tqdm redraws.
+
+    The structured JSONL stream carries relative timestamps. Deriving timing
+    fields from consecutive step events lets the dashboard show speed even when
+    stdout tqdm is throttled or delayed.
+    """
+    svc, Task, TaskState = _make_service()
+    task = Task(id="tim", command="lora-gui", args=[], state=TaskState.RUNNING)
+    metrics = task.parser.metrics
+    metrics.total_steps = 22
+    task.progress_started_at = 0.0
+    task.progress_last_step = 0
+    task.progress_last_ts = 0.0
+
+    svc._update_jsonl_timing_metrics(task, {"global_step": 8, "ts": 24.0})
+
+    assert metrics.elapsed == "00:24"
+    assert metrics.speed == "3.00 s/it"
+    assert metrics.eta == "00:42"
+
+
+# ---------------------------------------------------------------------------
 # 1. run_start event populates total_steps / total_epochs
 # ---------------------------------------------------------------------------
 
@@ -142,13 +229,16 @@ def test_run_start_populates_total_steps(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_step_events_are_debounced(tmp_path: Path):
-    """A burst of step events should land as a single metrics message.
+def test_step_events_emit_metrics_immediately(tmp_path: Path):
+    """A burst of step events produces one metrics message per event.
 
-    Regression: without debouncing, every step event sent its own
-    ``metrics`` WS message. Over a long run the queue backed up and the
-    final pre-``done`` flood dumped the whole history on the UI at once.
-    The fix coalesces step events inside a ~0.3 s window.
+    The earlier debounce stacked every emit on the same 0.3 s window and
+    kept getting reset by the next event, so the dashboard never saw
+    a metrics message until the watcher's ``finally`` flush. We now
+    forward each ``step`` event directly — the trainer's
+    ``log_every_n_steps`` cadence (default 2) bounds the WS load, and
+    the loss / step history is deduped by ``global_step`` so the
+    direct emit can't double-append.
     """
     svc, Task, TaskState = _make_service()
     jsonl = tmp_path / "run.progress.jsonl"
@@ -178,9 +268,7 @@ def test_step_events_are_debounced(tmp_path: Path):
 
     async def _run():
         async def _stop():
-            # > debounce window so the scheduled send fires; long
-            # headroom for slow CI runners.
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.5)
             task.state = TaskState.SUCCESS
 
         stopper = asyncio.create_task(_stop())
@@ -191,42 +279,113 @@ def test_step_events_are_debounced(tmp_path: Path):
 
     _drive(_run())
 
-    # Drain everything (the finally: clause's _flush_metrics_emit
-    # guarantees the last pending snapshot reaches the queue).
     msgs = _drive(_drain_queue(sub, timeout=0.2))
     metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
 
-    # We expect ONE metrics message, not 50. The snapshot inside carries
-    # the *last* step the trainer wrote.
-    assert len(metrics_msgs) == 1, (
-        f"expected 1 debounced metrics message, got {len(metrics_msgs)}: "
-        "regression — step events aren't being coalesced"
+    # Each step event must produce its own metrics message — 50 events
+    # in the file means 50 messages to the frontend. The dashboard
+    # receives them as the watcher reads them, not all at the end.
+    assert len(metrics_msgs) == 50, (
+        f"expected 50 per-step metrics messages, got {len(metrics_msgs)}: "
+        "regression — step events aren't reaching the dashboard live"
     )
-    assert metrics_msgs[0]["data"]["step"] == 50
-    # History has all 50 points (we accumulate regardless of debounce —
-    # the debounce only controls WS traffic).
-    assert len(metrics_msgs[0]["data"]["step_history"]) == 50
-    assert len(metrics_msgs[0]["data"]["loss_history"]) == 50
+    # The last message carries the freshest step; the history grew
+    # monotonically across the batch.
+    assert metrics_msgs[-1]["data"]["step"] == 50
+    assert len(metrics_msgs[-1]["data"]["step_history"]) == 50
+    assert len(metrics_msgs[-1]["data"]["loss_history"]) == 50
 
 
 # ---------------------------------------------------------------------------
-# 3. Stdout parser does not emit metrics for training tasks
+# 2b. JSONL ``step`` events use accelerate's ``group/key`` field naming
 # ---------------------------------------------------------------------------
 
 
-def test_emit_line_skips_metrics_for_training_task():
-    """For training tasks, only the JSONL watcher owns the metrics channel.
+def test_jsonl_step_maps_loss_average_and_lr_unet(tmp_path: Path):
+    """The trainer writes scalars under ``loss/average`` and ``lr/unet``.
 
-    Regression: both the stdout parser and the JSONL watcher used to
-    emit metrics for the same step, racing on the same parser metrics
-    object. The stdout emit is now suppressed for training tasks so the
-    WebSocket traffic isn't doubled (and the loss_history append isn't
-    double-counted — the step-number dedup saved the data, but doubled
-    the WS load).
+    Regression: the watcher used to look for the legacy flat names
+    (``avr_loss``, ``lr``). Under the real trainer those keys never
+    appear in the JSONL — the dashboard rendered ``— / —`` for step
+    and loss even though the JSONL had fresh values on every line. The
+    watcher now translates the accelerate-style names into the
+    dashboard's expected field names.
+    """
+    svc, Task, TaskState = _make_service()
+    jsonl = tmp_path / "run.progress.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    task = Task(id="map", command="lora", args=[], state=TaskState.RUNNING)
+    task.is_training = True
+    sub: asyncio.Queue = asyncio.Queue()
+    task._subscribers.append(sub)
+    svc._tasks["map"] = task
+
+    # Real trainer JSONL output: accelerate keys, not the legacy names.
+    _write_jsonl(
+        jsonl,
+        [
+            {
+                "ev": "step",
+                "ts": 1.0,
+                "loss/current": 0.3,
+                "loss/average": 0.28,
+                "lr/unet": 9.5e-5,
+                "global_step": 4,
+                "epoch": 1,
+            }
+        ],
+    )
+
+    async def _run():
+        async def _stop():
+            await asyncio.sleep(0.6)
+            task.state = TaskState.SUCCESS
+
+        stopper = asyncio.create_task(_stop())
+        try:
+            await svc._watch_progress_jsonl(task, str(jsonl))
+        finally:
+            await stopper
+
+    _drive(_run())
+
+    msgs = _drive(_drain_queue(sub, timeout=0.2))
+    metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
+    assert metrics_msgs, "JSONL step event should have produced a metrics emit"
+    data = metrics_msgs[-1]["data"]
+    # Field name mapping: ``loss/average`` → ``avr_loss``,
+    # ``lr/unet`` → ``lr``. Without the mapping, these stay at 0 and
+    # the dashboard shows ``—`` for both.
+    assert data["avr_loss"] == pytest.approx(0.28)
+    assert data["lr"] == pytest.approx(9.5e-5)
+    assert data["step"] == 4
+    assert data["epoch"] == 1
+    # And the history was appended (one new point, deduped by step).
+    assert data["step_history"] == [4]
+    assert data["loss_history"] == [pytest.approx(0.28)]
+
+
+# ---------------------------------------------------------------------------
+# 3. Stdout parser IS the source of speed / total_steps / elapsed / eta
+#    (the JSONL doesn't carry these — only ``avr_loss`` / ``lr`` / ``epoch``)
+# ---------------------------------------------------------------------------
+
+
+def test_emit_line_emits_metrics_for_training_task():
+    """Training tasks still get metrics from stdout — it's the only source
+    of tqdm-derived scalars.
+
+    The JSONL ``step`` event carries ``avr_loss``, ``lr/unet``, ``epoch``,
+    and ``global_step``. The ``speed``, ``total_steps``, ``elapsed``, and
+    ``eta`` fields come from the stdout tqdm bar — they're never written
+    to the JSONL stream. Suppressing the stdout emit for training tasks
+    (an earlier over-aggressive fix) silently dropped those fields; the
+    dashboard's progress ring and speed/elapsed cards went blank. Both
+    paths must update the metrics stream.
     """
     svc, Task, TaskState = _make_service()
     task = Task(id="st", command="lora", args=[], state=TaskState.RUNNING)
-    task.is_training = True  # <-- the gate
+    task.is_training = True
     sub: asyncio.Queue = asyncio.Queue()
     task._subscribers.append(sub)
     svc._tasks["st"] = task
@@ -245,14 +404,17 @@ def test_emit_line_skips_metrics_for_training_task():
     _drive(_run())
     msgs = _drive(_drain_queue(sub, timeout=0.05))
     metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
-    assert metrics_msgs == [], (
-        "training task should not emit a metrics message from the stdout "
-        "path; the JSONL watcher owns that channel"
+    # The stdout path MUST still emit a metrics message for training
+    # tasks — that's where ``total_steps`` / ``speed`` / ``elapsed``
+    # come from.
+    assert metrics_msgs, (
+        "training task stdout tqdm redraw must still emit a metrics "
+        "message; the JSONL has no speed/elapsed/total_steps fields"
     )
-    # The parser did update the underlying metrics object (so a late
-    # REST /metrics request still sees step=100).
-    assert task.parser.metrics.step == 100
-    assert task.parser.metrics.total_steps == 1000
+    data = metrics_msgs[0]["data"]
+    assert data["step"] == 100
+    assert data["total_steps"] == 1000
+    assert data["speed"] == "1.50 it/s"
 
 
 def test_emit_line_emits_metrics_for_non_training_task():
@@ -282,71 +444,25 @@ def test_emit_line_emits_metrics_for_non_training_task():
 
 
 # ---------------------------------------------------------------------------
-# 4. Final flush guarantees the last step reaches subscribers
+# 4. (removed — flush was a debounce helper; direct emit replaced it)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 5. run_end emits a final-step metric so the dashboard ends on the
+#    trainer's authoritative final_step
 # ---------------------------------------------------------------------------
 
 
-def test_final_flush_emits_pending_metrics():
-    """A step event that lands just before ``done`` must reach the UI.
+def test_run_end_emits_final_step_metric(tmp_path: Path):
+    """The ``run_end`` event surfaces ``final_step`` to the dashboard.
 
-    Without the final flush, a step event scheduled for a debounce send
-    300 ms later could lose the race to the terminal ``done`` message —
-    the user would see the dashboard stuck on the second-to-last step.
-    The watcher's ``finally`` clause calls ``_flush_metrics_emit``, which
-    cancels the pending timer and sends the latest snapshot synchronously.
-    """
-    svc, Task, TaskState = _make_service()
-    task = Task(id="fl", command="lora", args=[], state=TaskState.RUNNING)
-    task.is_training = True
-    sub: asyncio.Queue = asyncio.Queue()
-    task._subscribers.append(sub)
-
-    async def _run():
-        # Schedule a pending snapshot directly (mimics what the JSONL
-        # watcher does when a step event arrives inside the debounce
-        # window).
-        snapshot = task.parser.metrics.snapshot()
-        snapshot["step"] = 999
-        await svc._schedule_metrics_emit(task, snapshot)
-        # Immediately flush — the debounce window hasn't elapsed yet,
-        # so without the flush the message would not be in the queue.
-        await svc._flush_metrics_emit(task)
-        # The pending handle is cleared — a second flush is a no-op.
-        assert task._pending_metrics is None
-        assert task._pending_metrics_handle is None
-        await svc._flush_metrics_emit(task)
-        # Drain here in the same event loop so the queue stays bound
-        # to this loop (``asyncio.run`` finalizes the loop on return,
-        # so a second ``asyncio.run`` from the test body would see a
-        # "bound to a different event loop" error on the queue).
-        return await _drain_queue(sub, timeout=0.05)
-
-    msgs = _drive(_run())
-    metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
-    assert len(metrics_msgs) == 1, (
-        f"expected 1 metrics message (the one we just flushed), got "
-        f"{len(metrics_msgs)}"
-    )
-    assert metrics_msgs[0]["data"]["step"] == 999
-
-
-# ---------------------------------------------------------------------------
-# 5. run_end flushes pending metrics so the last step lands before done
-# ---------------------------------------------------------------------------
-
-
-def test_run_end_flushes_pending_metrics(tmp_path: Path):
-    """A pending debounced metrics emit is flushed on the run_end event.
-
-    Regression: the trainer writes the final step event, then writes
-    ``run_end`` ~microseconds later. The debounced send of the final
-    step's snapshot is still 0.3 s away when ``run_end`` lands. The
-    handler must flush immediately so the last step reaches the UI
-    *before* the WebUI processes the terminal ``done`` message — not
-    after, which would briefly leave the dashboard on the prior step.
-    The handler also schedules a fresh snapshot carrying the run_end
-    ``final_step`` (which can be a few steps past the last logged one)
-    so the dashboard ends on the exact value training reported.
+    The trainer's ``run_end`` event carries the authoritative
+    ``final_step`` — the exact step training reached, which can be a
+    few steps past the last logged ``step`` event (the loss / sample
+    logs are at ``log_every_n_steps`` cadence, not every step). The
+    watcher updates ``metrics.step`` and emits a fresh metrics
+    message so the dashboard ends on the trainer's reported value,
+    not the last logged one.
     """
     svc, Task, TaskState = _make_service()
     jsonl = tmp_path / "run.progress.jsonl"
@@ -356,9 +472,9 @@ def test_run_end_flushes_pending_metrics(tmp_path: Path):
     task._subscribers.append(sub)
     svc._tasks["re"] = task
 
-    # Write step event first, then run_end — both before the watcher's
-    # first poll. The debounced emit for the step is still pending when
-    # run_end arrives; the handler must flush it.
+    # Write the last ``step`` event first, then ``run_end`` — both
+    # before the watcher's first poll. Both messages are forwarded
+    # directly to subscribers; the final one carries ``final_step``.
     jsonl.write_text("", encoding="utf-8")
     _write_jsonl(
         jsonl,
@@ -370,8 +486,7 @@ def test_run_end_flushes_pending_metrics(tmp_path: Path):
 
     async def _run():
         async def _stop():
-            # > debounce window so any pending scheduled send fires.
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.5)
             task.state = TaskState.SUCCESS
 
         stopper = asyncio.create_task(_stop())
@@ -379,26 +494,24 @@ def test_run_end_flushes_pending_metrics(tmp_path: Path):
             await svc._watch_progress_jsonl(task, str(jsonl))
         finally:
             await stopper
-        # Final flush in the watcher's `finally:` clause has already
-        # run; no extra cleanup needed here.
 
     _drive(_run())
 
     msgs = _drive(_drain_queue(sub, timeout=0.2))
     metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
     assert metrics_msgs, "expected at least one metrics message"
-    # The final metrics message should reflect the run_end final_step
+    # The final metrics message must reflect the run_end final_step
     # (the trainer's authoritative "we stopped at step 1000" signal —
     # not the last ``step`` event, which logged 999).
     assert metrics_msgs[-1]["data"]["step"] == 1000
-    # And we should NOT have flooded the queue: at most a handful of
-    # messages (one for the last step's pending flush, one for the
-    # run_end's fresh snapshot). The old behavior queued one per
-    # step event, which is what we explicitly do NOT want.
-    assert len(metrics_msgs) <= 2, (
-        f"expected at most 2 debounced metrics messages, got "
-        f"{len(metrics_msgs)}: regression — run_end isn't flushing / "
-        "step events aren't being coalesced"
+    # Two messages expected: one for the step event, one for the
+    # run_end event. (Previously the debounce collapsed them into one
+    # — the dashboard's loss curve still rendered correctly because
+    # both shared the same history, but the run_end's final_step
+    # update was being lost in the debounce window.)
+    assert len(metrics_msgs) == 2, (
+        f"expected 2 metrics messages (step + run_end), got "
+        f"{len(metrics_msgs)}"
     )
 
 

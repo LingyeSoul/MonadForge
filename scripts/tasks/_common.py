@@ -226,6 +226,27 @@ def _has_console() -> bool:
         return True
 
 
+def _stdout_is_regular_file() -> bool:
+    """True iff ``sys.stdout`` is a regular file (not a pipe / TTY / DEVNULL).
+
+    The training daemon launches this process with stdout redirected to
+    ``<job_dir>/stdout.log`` (``spawn_detached``). In that case the
+    grandchild's stdout is a regular file, not a pipe — so tqdm's
+    high-volume redraws won't fill an OS pipe buffer and stall the
+    trainer. The legacy pipe-based callers (QProcess / WebUI direct
+    subprocess) keep their stdout as a pipe; for those we still want
+    to swallow the grandchild's stdout to avoid the stall.
+    """
+    import os
+    import stat
+
+    try:
+        st = os.fstat(sys.stdout.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return stat.S_ISREG(st.st_mode)
+
+
 def run(cmd: list[str], **kwargs):
     """Run a subprocess, exit on failure.
 
@@ -272,7 +293,20 @@ def run(cmd: list[str], **kwargs):
         # training loop.  Redirect the grandchild's stdout to DEVNULL;
         # the caller already reads structured progress from the JSONL
         # sink.  stderr stays live for low-volume diagnostic output.
-        kwargs.setdefault("stdout", subprocess.DEVNULL)
+        #
+        # Skip the redirect when our own stdout is already a regular file
+        # — that's the case under the training daemon, which redirects
+        # the subprocess's stdout to ``<job_dir>/stdout.log`` via
+        # ``spawn_detached``. Throwing the grandchild's tqdm output to
+        # DEVNULL there silently strands the WebUI's live-log view: the
+        # daemon keeps reading the file, but only stderr (Python
+        # ``logging``) lands in it, and the dashboard shows a frozen
+        # single log line instead of the streaming tqdm redraws.
+        # ``fileno()`` raises if ``sys.stdout`` was replaced (e.g. by
+        # ``contextlib.redirect_stdout``) — treat that as "not a regular
+        # file" and fall back to the pipe-safe behavior.
+        if not _stdout_is_regular_file():
+            kwargs.setdefault("stdout", subprocess.DEVNULL)
         if sys.stderr is not None:
             kwargs.setdefault("stderr", sys.stderr)
     result = subprocess.run(cmd, cwd=kwargs.pop("cwd", ROOT), env=env, **kwargs)
