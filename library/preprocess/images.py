@@ -23,7 +23,7 @@ from library.datasets.buckets import (
 )
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
-from library.datasets.buckets import DEFAULT_FREEFIT_MAX_RATIO
+from library.datasets.buckets import DEFAULT_FREEFIT_MAX_RATIO, FREEFIT_BAND_VERSION
 from library.preprocess.resize_preview import (
     DEFAULT_FIT_MODE,
     DEFAULT_RESIZE_CROP_ANCHOR,
@@ -43,6 +43,7 @@ _RESIZE_BUCKET_RESOS_KEY = "anima_resize_bucket_resos"
 _RESIZE_MARGINS_KEY = "anima_resize_crop_margins"
 _RESIZE_FIT_MODE_KEY = "anima_resize_fit_mode"
 _RESIZE_MAX_RATIO_KEY = "anima_resize_max_ratio"
+_RESIZE_BAND_VERSION_KEY = "anima_resize_band_version"
 
 
 def _collect_metadata(src: Image.Image) -> dict:
@@ -112,6 +113,9 @@ def _resize_metadata_signature(
     if fit != DEFAULT_FIT_MODE:
         sig[_RESIZE_FIT_MODE_KEY] = fit
         sig[_RESIZE_MAX_RATIO_KEY] = f"{float(max_ratio):g}"
+        # The free-fit band derivation (freefit_band_for_edge) decides the resized
+        # (W, H); fold its version in so widening the band re-resizes stale PNGs.
+        sig[_RESIZE_BAND_VERSION_KEY] = str(FREEFIT_BAND_VERSION)
     return sig
 
 

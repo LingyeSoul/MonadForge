@@ -17,6 +17,7 @@ from library.datasets.buckets import (
     BucketManager,
     freefit_band_for_edge,
     freefit_bucket,
+    token_count_range,
 )
 from library.preprocess.resize_preview import (
     compute_resize_preview,
@@ -64,11 +65,57 @@ def _grids(edge):
     return band, [freefit_bucket(round(a * 1000), 1000, band) for a in _ASPECTS]
 
 
-def test_band_matches_token_count_range():
-    # 1024 → (4032, 4200); 512 → (1008, 1024); 768 single-family → (2160, 2160).
+def test_band_derivation():
+    # 1024 is frozen at its natural 2-family band (DCW keys off the 1024 table).
     assert freefit_band_for_edge(1024) == (4032, 4200)
-    assert freefit_band_for_edge(512) == (1008, 1024)
-    assert freefit_band_for_edge(768) == (2160, 2160)
+    # Every other tier is widened symmetrically by ±2.5% around its nominal so
+    # free-fit has aspect freedom even on the single-family tiers — without it,
+    # 768 (2160), 1280 (6300), 1536 (8640) and the 16-wide 512 leave no room and
+    # free-fit crops like Snap (regression guarded by the sub-patch-crop test).
+    assert freefit_band_for_edge(512) == (983, 1050)
+    assert freefit_band_for_edge(768) == (2106, 2214)
+    assert freefit_band_for_edge(896) == (2925, 3100)
+    assert freefit_band_for_edge(1280) == (6142, 6457)
+    assert freefit_band_for_edge(1536) == (8424, 8856)
+
+
+def _crop_residual(sw, sh, bw, bh):
+    scale = max(bw / sw, bh / sh)
+    return max(sw * scale - bw, sh * scale - bh)
+
+
+# Common aspect ratios (real photos / art) — never elongated enough to hit the
+# low-token grid-granularity floor on the small tiers.
+_COMMON_ASPECTS = [0.5, 0.667, 0.75, 0.8, 0.866, 1.0, 1.25, 1.33, 1.5, 2.0]
+
+
+@pytest.mark.parametrize("edge", ALLOWED_TARGET_RES)
+def test_widened_band_never_crops_more(edge):
+    """The widened band contains the tier's natural ``(min, max)`` band, so the
+    solver can only find an equal-or-better aspect match → it never crops *more*
+    than the pre-fix degenerate band. The strong invariant behind #53's free-fit
+    Phase 0 crop bug (768 @ ar 0.866 went 63px → 5px)."""
+    new = freefit_band_for_edge(edge)
+    old = token_count_range((edge,))
+    for a in _ASPECTS:
+        sw, sh = round(a * 1000), 1000
+        new_res = _crop_residual(sw, sh, *freefit_bucket(sw, sh, new))
+        old_res = _crop_residual(sw, sh, *freefit_bucket(sw, sh, old))
+        assert new_res <= old_res + 1e-6, (edge, a, new_res, old_res)
+
+
+@pytest.mark.parametrize("edge", ALLOWED_TARGET_RES)
+def test_common_aspects_crop_subpatch_on_every_tier(edge):
+    """The fix's payoff: common aspect ratios crop ≤ 1 patch on *every* tier,
+    including the single-family 768/1280/1536 whose degenerate natural band used
+    to force a Snap-sized crop. (Exactly one patch can remain on the smallest 512
+    tier's ~32-patch grid; extreme aspects, e.g. 1:2.7, can exceed a patch there —
+    inherent to coarse low-token grids, design §4. Pre-fix these were 48–96px.)"""
+    band = freefit_band_for_edge(edge)
+    for a in _COMMON_ASPECTS:
+        sw, sh = round(a * 1000), 1000
+        bw, bh = freefit_bucket(sw, sh, band)
+        assert _crop_residual(sw, sh, bw, bh) <= PATCH, (edge, a, bw, bh)
 
 
 @pytest.mark.parametrize("edge", ALLOWED_TARGET_RES)

@@ -333,18 +333,51 @@ def choose_edge(width: int, height: int, target_res) -> int:
 
 DEFAULT_FREEFIT_MAX_RATIO = 4.0
 
+# Free-fit's aspect freedom comes entirely from the token-count band width: the
+# solver can only match a native aspect to sub-patch if the band admits an
+# integer grid near it. The discrete bucket table makes some tiers single-family
+# (768/1280/1536 → one token count) or near-degenerate (512 → 16-wide), so their
+# *natural* band (min..max bucket count) leaves free-fit no room — it falls back
+# to the coarse divisor grids of that one count and crops just like Snap (the bug
+# in #53's Phase 0: a 0.866-aspect image on the 768 tier snapped to 0.9375, a
+# ~7.7% crop). Widening the band symmetrically by this tolerance restores the
+# "preserve aspect, crop → 0" promise. It is free at compile time: under
+# ``compile_dynamic_seq`` the whole [lo, hi] is one graph regardless of width
+# (the band only changes *which* counts appear, never the graph count), and the
+# train-side seq_range auto-derives from the on-disk caches.
+FREEFIT_BAND_TOLERANCE = 0.025  # ±2.5% → ~5% interval around the tier's nominal
 
-def freefit_band_for_edge(edge: int) -> tuple[int, int]:
+# The 1024 tier stays frozen at its natural (4032, 4200): DCW calibration keys off
+# the exact 1024 bucket table (``DCW_ASPECT_BUCKETS``), and its 2-family band is
+# already the reference width. Bump this set only with the DCW story in mind.
+FREEFIT_FROZEN_EDGES: Tuple[int, ...] = (1024,)
+
+# Bumped whenever the band derivation changes, so free-fit resized PNGs cached
+# under an older band re-resize (folded into the resize metadata signature).
+FREEFIT_BAND_VERSION = 2
+
+
+def freefit_band_for_edge(
+    edge: int, tol: float = FREEFIT_BAND_TOLERANCE
+) -> tuple[int, int]:
     """Token-count band ``(lo, hi)`` for a single tier — the free-fit search range.
 
-    Equals the ``(min, max)`` token count of the tier's discrete buckets (1024 →
-    ``(4032, 4200)``; 512 → ``(1008, 1024)``). Free-fit lands the patch-grid
-    token count anywhere in this closed interval, so the entire band collapses to
-    one ``compile_dynamic_seq`` graph at train time. A single-family tier (e.g.
-    768 → ``(2160, 2160)``) has no band freedom and free-fit degrades to the
-    snap table's divisor grids for it.
+    Free-fit lands the patch-grid token count anywhere in this closed interval and
+    picks the grid closest to the image's native aspect, so a *wider* band lets it
+    preserve aspect more exactly (less crop). The whole band collapses to one
+    ``compile_dynamic_seq`` graph at train time, so width is free.
+
+    Starts from the tier's natural ``(min, max)`` discrete-bucket token count, then
+    widens it symmetrically by ``tol`` for every tier **except** the frozen ones
+    (``FREEFIT_FROZEN_EDGES`` — currently 1024, kept at ``(4032, 4200)`` for DCW).
+    Without the widening the single-family tiers (768 → 2160, 1280 → 6300,
+    1536 → 8640) and the near-degenerate 512 (16-wide) leave the solver no aspect
+    freedom and free-fit crops like Snap.
     """
-    return token_count_range((edge,))
+    lo, hi = token_count_range((edge,))
+    if edge in FREEFIT_FROZEN_EDGES:
+        return lo, hi
+    return round(lo * (1.0 - tol)), round(hi * (1.0 + tol))
 
 
 def freefit_bucket(
