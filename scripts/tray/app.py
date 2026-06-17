@@ -246,18 +246,20 @@ class TrayApp:
         def _lang_label(_item):
             return self._tr("Language")
 
-        def _lang_radio(item, lang):
-            # pystray radio: the callback receives the currently-selected item.
-            self._set_language(lang)
-
         # A submenu of one radio item per language. pystray renders a checked
         # mark on the item whose `radio` group matches the current state; we
         # approximate that with a per-item dynamic checked flag.
+        def _make_lang_action(lng):
+            def _action(_icon, _item):
+                self._set_language(lng)
+            return _action
+
         lang_items = [
             MenuItem(
                 lambda _i, lng=lng: self._tr("English" if lng == "en" else "Chinese"),
-                lambda _i, lng=lng: self._set_language(lng),
+                _make_lang_action(lng),
                 checked=lambda _i, lng=lng: self._lang == lng,
+                radio=True,
             )
             for lng in self._languages
         ]
