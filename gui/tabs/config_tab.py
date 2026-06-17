@@ -55,6 +55,7 @@ from gui import (
     confirm_existing_caches,
     confirm_resumable_checkpoint,
     confirm_train_using_cache,
+    default_lora_cache_dir,
     is_basic_field,
     lint_variant_configs,
     list_gui_variants,
@@ -1024,7 +1025,9 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         the Train cache-exists branch and the auto-chain preprocess path."""
         merged, _ = merged_gui_variant_preset(variant, self._IMPLICIT_PRESET)
         merged = self._gui_scoped_paths(merged)
-        cache_rel = merged.get("lora_cache_dir") or "post_image_dataset/lora"
+        cache_rel = merged.get("lora_cache_dir")
+        if not cache_rel:
+            return default_lora_cache_dir()
         cache_dir = Path(cache_rel)
         if not cache_dir.is_absolute():
             cache_dir = ROOT / cache_dir

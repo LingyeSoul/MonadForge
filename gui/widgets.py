@@ -8,6 +8,7 @@ widget code lives apart from the Qt-free config logic.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 from typing import Any
@@ -68,13 +69,29 @@ class LazyTabMixin:
         """Run the tab's first directory scan / classification. Override."""
 
 
-# Allowed multi-scale tiers — mirrors library.datasets.buckets.ALLOWED_TARGET_RES
-# (hardcoded so the GUI import stays light / library-free).
-_TARGET_RES_TIERS = (512, 768, 896, 1024, 1280, 1536)
+@functools.cache
+def _target_res_tiers() -> tuple[tuple[int, ...], dict[int, int]]:
+    """``(allowed tiers, {edge: max token count})`` sourced from
+    ``library.datasets.buckets`` (the single source of truth) instead of a
+    hardcoded mirror. Lazy + cached so importing ``widgets`` stays cheap; the
+    bucket module is torch-free so this never drags the training stack in.
 
-# High-cost tiers: large per-image token counts + an extra compiled block
-# graph each. Flagged in the GUI so users don't casually enable them.
-_TARGET_RES_DANGER = {1280: 6300, 1536: 8640}
+    A tier is "dangerous" (extra compiled block graph + VRAM) when its per-image
+    token count exceeds the canonical 1024 tier — which reproduces the previous
+    ``{1280: 6300, 1536: 8640}`` flag set, but recomputed from the tables.
+    """
+    from library.datasets.buckets import (
+        ALLOWED_TARGET_RES,
+        CONSTANT_TOKEN_BUCKETS_BY_EDGE,
+    )
+
+    max_tok = {
+        edge: max((w // 16) * (h // 16) for w, h in buckets)
+        for edge, buckets in CONSTANT_TOKEN_BUCKETS_BY_EDGE.items()
+    }
+    canonical = max_tok.get(1024, 4200)
+    danger = {edge: tok for edge, tok in max_tok.items() if tok > canonical}
+    return tuple(ALLOWED_TARGET_RES), danger
 
 
 class _TargetResWidget(QWidget):
@@ -95,18 +112,19 @@ class _TargetResWidget(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         sel = {int(e) for e in selected} if selected else set()
+        tiers, danger = _target_res_tiers()
         self._boxes: dict[int, QCheckBox] = {}
-        for edge in _TARGET_RES_TIERS:
+        for edge in tiers:
             cb = QCheckBox(str(edge))
             cb.setChecked(edge in sel)
             cb.toggled.connect(self.changed)
-            if edge in _TARGET_RES_DANGER:
+            if edge in danger:
                 cb.setStyleSheet("QCheckBox { color: #d9822b; font-weight: bold; }")
                 cb.setToolTip(
                     t(
                         "target_res_danger_tooltip",
                         edge=edge,
-                        tokens=_TARGET_RES_DANGER[edge],
+                        tokens=danger[edge],
                     )
                 )
             lay.addWidget(cb)

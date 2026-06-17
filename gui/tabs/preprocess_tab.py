@@ -63,6 +63,9 @@ from gui import (
     _load,
     _save,
     count_preprocess_caches,
+    default_lora_cache_dir,
+    default_mask_dir,
+    default_resized_dir,
     list_gui_variants,
     merged_gui_variant_preset,
     variant_path,
@@ -75,6 +78,7 @@ from gui.progress import TQDM_RE, TqdmProgressTracker, make_progress_bar
 from gui.theme import rich_text_pt as _explain_pt, tok
 from gui.tabs.config_tab import ConfigTab, SplitButtonStyle
 from gui.widgets import ClickableLabel, DirtyTrackingMixin, make_field_label
+from library.datasets.buckets import DEFAULT_TARGET_RES as _LIB_DEFAULT_TARGET_RES
 from library.datasets.path_filter import filter_paths_by_glob
 
 SAM_YAML = ROOT / "configs" / "sam_mask.yaml"
@@ -88,7 +92,7 @@ DEFAULT_SOURCE_IMAGE_DIR = "image_dataset"
 DEFAULT_PREPROCESS_PATH_PATTERN = "*"
 DEFAULT_DROP_LOWRES_IMAGES = True
 DEFAULT_MIN_PIXELS = 500000
-DEFAULT_TARGET_RES = [1024]
+DEFAULT_TARGET_RES = list(_LIB_DEFAULT_TARGET_RES)
 DEFAULT_TE_SHUFFLE_VARIANTS = 4
 DEFAULT_TE_TAG_DROPOUT = 0.1
 DEFAULT_SAM_PROMPTS = ("speech bubble", "text bubble")
@@ -117,9 +121,13 @@ _GUI_PREPROCESS_KEYS = {
     "mit_dilate",
 }
 
-RESIZED_DIR = ROOT / "post_image_dataset" / "resized"
-LORA_CACHE_DIR = ROOT / "post_image_dataset" / "lora"
-MASK_DIR = ROOT / "post_image_dataset" / "masks"
+# Default cache/output dirs — sourced from base.toml (the canonical path keys
+# the trainer reads) via gui.config_io so the Preprocess tab can't drift from
+# the Config/EasyControl tabs or training. Used only as the fallback when the
+# active variant's merged config doesn't override the path.
+RESIZED_DIR = default_resized_dir()
+LORA_CACHE_DIR = default_lora_cache_dir()
+MASK_DIR = default_mask_dir()
 
 
 def _load_settings() -> dict:
@@ -927,7 +935,9 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             target = ROOT
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
 
-    def _snapshot_path(self, snapshot: dict[str, object], key: str, default: Path) -> Path:
+    def _snapshot_path(
+        self, snapshot: dict[str, object], key: str, default: Path
+    ) -> Path:
         raw = snapshot.get(key)
         if not raw:
             return default

@@ -463,6 +463,26 @@ def load_preset_section(preset: str, configs_dir: str = "configs") -> dict:
     return section
 
 
+def list_presets(configs_dir: str = "configs") -> list[str]:
+    """Every resolvable preset name, sorted.
+
+    The union of ``[<name>]`` table sections in ``configs/presets.toml`` and the
+    one-file-per-preset stems under ``configs/custom/*.toml`` — i.e. exactly the
+    set :func:`_resolve_preset` can resolve. Shared with the GUI so it doesn't
+    re-derive the preset discovery rule.
+    """
+    configs_dir = str(resolve_under_home(configs_dir))
+    names: set[str] = set()
+    presets_path = os.path.join(configs_dir, "presets.toml")
+    if os.path.exists(presets_path):
+        with open(presets_path, "r", encoding="utf-8") as f:
+            names.update(k for k, v in toml.load(f).items() if isinstance(v, dict))
+    custom_dir = os.path.join(configs_dir, "custom")
+    if os.path.isdir(custom_dir):
+        names.update(n[:-5] for n in os.listdir(custom_dir) if n.endswith(".toml"))
+    return sorted(names)
+
+
 def _iter_method_preset_layers(
     preset: str,
     configs_dir: str,

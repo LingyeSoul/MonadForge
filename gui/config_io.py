@@ -9,6 +9,7 @@ so the cheap config queries don't pull the widget stack in.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import toml
 
@@ -17,8 +18,8 @@ from gui._paths import (
     CUSTOM_DIR,
     CUSTOM_VARIANTS_DIR,
     GUI_METHODS_DIR,
-    METHODS_DIR,
     PRESETS_FILE,
+    ROOT,
     _METHOD_ORDER,
 )
 from gui.validation import (
@@ -88,8 +89,15 @@ def variant_metadata(variant: str) -> dict:
 
 
 def list_methods() -> list[str]:
-    """Method families, in a user-friendly order (lora first)."""
-    return list(_METHOD_ORDER)
+    """Method families to show in the combo, in curated order (lora first).
+
+    The curated order lives in ``_METHOD_ORDER`` (a family omitted from it stays
+    hidden), but a family is only listed when it actually has built-in variant
+    files on disk — so a name left in ``_METHOD_ORDER`` without any
+    ``configs/gui-methods/*.toml`` no longer shows an empty variant combo.
+    """
+    available = set(_builtin_variants_by_family())
+    return [m for m in _METHOD_ORDER if m in available]
 
 
 def list_gui_variants(method: str) -> list[str]:
@@ -141,7 +149,11 @@ def _load_all_presets() -> dict:
 
 
 def list_presets() -> list[str]:
-    return sorted(_load_all_presets())
+    """All preset names — delegated to the library so the GUI and the trainer
+    agree on the discovery rule (presets.toml sections + custom/*.toml stems)."""
+    from library.config.io import list_presets as _lib_list_presets
+
+    return _lib_list_presets()
 
 
 def is_custom_preset(name: str) -> bool:
@@ -301,6 +313,39 @@ def _load_base() -> dict:
     return merged
 
 
+def _abs_under_root(rel) -> Path:
+    """Resolve a (possibly relative) config path string against the repo root."""
+    p = Path(str(rel))
+    return p if p.is_absolute() else ROOT / p
+
+
+def default_lora_cache_dir() -> Path:
+    """Absolute VAE/TE/PE cache dir — ``lora_cache_dir`` from base.toml, the
+    single source the trainer reads, with the legacy fallback. Centralized here
+    so the Preprocess/Config/EasyControl tabs don't each hardcode it."""
+    return _abs_under_root(
+        _load_base().get("lora_cache_dir") or "post_image_dataset/lora"
+    )
+
+
+def default_resized_dir() -> Path:
+    """Absolute resized-image dir — ``resized_image_dir`` from base.toml."""
+    return _abs_under_root(
+        _load_base().get("resized_image_dir") or "post_image_dataset/resized"
+    )
+
+
+def dataset_cache_root() -> Path:
+    """The ``post_image_dataset/`` root that masks + per-method caches hang off
+    (parent of the lora cache dir)."""
+    return default_lora_cache_dir().parent
+
+
+def default_mask_dir() -> Path:
+    """Absolute mask cache dir (no base.toml key — derived under the cache root)."""
+    return dataset_cache_root() / "masks"
+
+
 def _save(p, d: dict):
     p.write_text(toml.dumps(d), encoding="utf-8")
 
@@ -386,23 +431,52 @@ def remove_unknown_dataset_keys(variant: str) -> list[str]:
     return removed
 
 
+def _origin_from_tag(tag: str) -> str:
+    """Map a ``library.config.io`` provenance tag to the GUI's coarse
+    base/preset/method bucket (the keys ``ConfigTab`` styles fields by)."""
+    if "presets.toml" in tag or "/custom/" in tag:
+        return "preset"
+    if tag.endswith("base.toml") or tag.endswith("preprocess.toml"):
+        return "base"
+    # The method/variant file (configs/<methods_subdir>/<name>.toml or a
+    # self-contained per-method dir).
+    return "method"
+
+
+def _merged_via_library(
+    method: str, preset: str, methods_subdir: str
+) -> tuple[dict, dict[str, str]]:
+    """Shared base→preset→method merge, delegated to the trainer's own loader.
+
+    Returns ``(merged, origin)``. The base/preset/method spine — file
+    resolution, merge order (method wins over preset), custom-preset handling —
+    comes from :func:`library.config.io.load_method_preset` so the GUI never
+    re-derives it and can't drift from what `train.py` actually runs. We seed
+    the form baseline with ``_load_base()`` first because the preprocess-only
+    scalars (e.g. ``source_image_dir``) live in preprocess.toml, which the
+    library layer intentionally doesn't fold into the training merge.
+    """
+    from library.config.io import load_method_preset
+
+    merged: dict = dict(_load_base())
+    origin: dict[str, str] = {k: "base" for k in merged}
+    try:
+        lib_merged, provenance = load_method_preset(
+            method, preset, methods_subdir=methods_subdir, return_provenance=True
+        )
+    except (FileNotFoundError, KeyError, ValueError):
+        # Missing method/preset file — degrade to the base baseline rather than
+        # crashing the form (the old hand-rolled merge silently no-op'd too).
+        return merged, origin
+    for k, v in lib_merged.items():
+        merged[k] = v
+        origin[k] = _origin_from_tag(provenance.get(k, ""))
+    return merged, origin
+
+
 def merged_method_preset(method: str, preset: str) -> tuple[dict, dict[str, str]]:
     """Return (merged_dict, origin_map). origin_map[key] is 'base' | 'preset' | 'method'."""
-    base = _load_base()
-    pset = _load_all_presets().get(preset, {})
-    meth = _load(METHODS_DIR / f"{method}.toml")
-    merged: dict = {}
-    origin: dict[str, str] = {}
-    for k, v in base.items():
-        merged[k] = v
-        origin[k] = "base"
-    for k, v in pset.items():
-        merged[k] = v
-        origin[k] = "preset"
-    for k, v in meth.items():
-        merged[k] = v
-        origin[k] = "method"
-    return merged, origin
+    return _merged_via_library(method, preset, methods_subdir="methods")
 
 
 def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str, str]]:
@@ -410,19 +484,8 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     instead of `merged_method_preset` so edits/training target the clean
     per-variant file, not the toggle-block methods/ tree."""
     base = _load_base()
-    pset = _load_all_presets().get(preset, {})
     meth = _load(GUI_METHODS_DIR / f"{variant}.toml")
-    merged: dict = {}
-    origin: dict[str, str] = {}
-    for k, v in base.items():
-        merged[k] = v
-        origin[k] = "base"
-    for k, v in pset.items():
-        merged[k] = v
-        origin[k] = "preset"
-    for k, v in meth.items():
-        merged[k] = v
-        origin[k] = "method"
+    merged, origin = _merged_via_library(variant, preset, methods_subdir="gui-methods")
 
     # GUI-only path scope is stored under [variant] so CLI config loading strips it as metadata;
     # the Config tab surfaces it as a normal field and expands it into concrete paths at submit time.
