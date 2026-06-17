@@ -75,7 +75,13 @@ class TrayApp:
         return f"MonadForge — {self._tr(suffix_key, **fmt)}"
 
     def _set_language(self, lang: str) -> None:
-        """Switch language: persist, refresh menu (tooltips reflow next tick)."""
+        """Switch language: persist, refresh menu (tooltips reflow next tick).
+
+        On the Win32 backend ``update_menu()`` rebuilds the native HMENU, but a
+        menu already on screen isn't repainted — the new language shows the next
+        time the menu is opened. We also swap ``icon.menu`` for a freshly-built
+        descriptor so the rebuild is guaranteed to pick up the new state.
+        """
         from scripts.tray.prefs import save_language
 
         if lang == self._lang or lang not in self._languages:
@@ -85,6 +91,10 @@ class TrayApp:
         # Rebuild the state suffix in the new language right away.
         self._tick()
         if self._icon is not None:
+            # Replace the menu descriptor (its label callables read self._lang
+            # live, but rebuilding the descriptor forces a clean re-evaluation)
+            # then refresh the native menu.
+            self._icon.menu = self._build_menu()
             self._icon.update_menu()
 
     # ── icon / tooltip ─────────────────────────────────────────────────
