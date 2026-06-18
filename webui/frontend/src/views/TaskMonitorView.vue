@@ -16,7 +16,11 @@
       </div>
     </div>
 
-    <div v-else class="d-flex flex-column flex-grow-1" style="min-height: 0;">
+    <div
+      v-else
+      class="d-flex flex-column flex-grow-1"
+      :style="selectedTask ? 'min-height: 0;' : 'min-height: 0; overflow-y: auto;'"
+    >
       <template v-for="task in taskStore.tasks" :key="task.task_id">
         <!-- Compact card for non-selected tasks -->
         <v-card
