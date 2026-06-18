@@ -137,6 +137,37 @@ def _resize_metadata_matches(image: Image.Image, signature: dict[str, str]) -> b
     return all(text.get(key) == value for key, value in signature.items())
 
 
+def resize_to_bucket(
+    img: Image.Image,
+    bucket: tuple[int, int],
+    *,
+    crop_anchor: str = DEFAULT_RESIZE_CROP_ANCHOR,
+) -> Image.Image:
+    """Cover-scale ``img`` to ``bucket`` (LANCZOS) then anchor-crop to it.
+
+    The exact pixel geometry preprocessing caches, factored out of
+    ``process_image`` so embedders/previews resize identically (pair with
+    ``resize_preview.select_resize_bucket`` to pick ``bucket``). ``img`` is taken
+    as the already-EXIF-transposed, margin-cropped working region — pass what you
+    want kept; aspect is read from ``img.size``.
+    """
+    bw, bh = bucket
+    anchor_x, anchor_y = RESIZE_CROP_ANCHORS[normalize_crop_anchor(crop_anchor)]
+    w, h = img.size
+    ar_img = w / h
+    ar_bucket = bw / bh
+    if ar_img > ar_bucket:
+        new_h = bh
+        new_w = round(bh * ar_img)
+    else:
+        new_w = bw
+        new_h = round(bw / ar_img)
+    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    left = round((new_w - bw) * anchor_x)
+    top = round((new_h - bh) * anchor_y)
+    return img.crop((left, top, left + bw, top + bh))
+
+
 def process_image(
     image_path: Path,
     out_dir: Path,
@@ -200,7 +231,6 @@ def process_image(
 
     bw, bh = bucket_reso
     crop_anchor = normalize_crop_anchor(crop_anchor)
-    anchor_x, anchor_y = RESIZE_CROP_ANCHORS[crop_anchor]
     signature = _resize_metadata_signature(
         crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
     )
@@ -218,21 +248,7 @@ def process_image(
 
     img = img.convert("RGB")
     img = img.crop(margin_box)
-
-    ar_img = work_w / work_h
-    ar_bucket = bw / bh
-    if ar_img > ar_bucket:
-        new_h = bh
-        new_w = round(bh * ar_img)
-    else:
-        new_w = bw
-        new_h = round(bw / ar_img)
-
-    img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-
-    left = round((new_w - bw) * anchor_x)
-    top = round((new_h - bh) * anchor_y)
-    img = img.crop((left, top, left + bw, top + bh))
+    img = resize_to_bucket(img, bucket_reso, crop_anchor=crop_anchor)
 
     target_dir.mkdir(parents=True, exist_ok=True)
     _add_resize_metadata(save_kwargs, signature)

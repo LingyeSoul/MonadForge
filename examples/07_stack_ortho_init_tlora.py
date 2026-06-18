@@ -174,10 +174,25 @@ def main() -> None:
     warmup_step = 0
     for step in range(opts.steps):
         t = timestep_grid[step]
-        noisy_latents = torch.randn(
+        sigma = t.to(device=device, dtype=dtype)
+        timesteps = t.to(device).reshape(1)  # flow t ∈ [0, 1] == σ on Anima's scale
+
+        # No dataset, so the "clean" latent x0 and the noise ε are both synthetic —
+        # but we still MIX them the way real training does (rectified flow), so the
+        # forward sees an on-distribution noisy latent and the target is the true
+        # flow-matching velocity, not an unrelated random tensor:
+        #   noisy = (1-σ)·x0 + σ·ε ;  target = ε - x0   (library/runtime/noise.py:90,
+        #   train.py:921). The real trainer also SAMPLES σ (sigmoid/logit-normal via
+        #   SAMPLER_REGISTRY); we instead drive σ on a fixed descending grid purely so
+        #   the T-LoRA mask's effect on effective rank is legible step-by-step.
+        x0 = torch.randn(
             1, LATENT_CHANNELS, 1, H, W, generator=gen, device=device, dtype=dtype
         )
-        timesteps = t.to(device).reshape(1)  # flow t ∈ [0, 1]
+        noise = torch.randn(
+            1, LATENT_CHANNELS, 1, H, W, generator=gen, device=device, dtype=dtype
+        )
+        noisy_latents = (1.0 - sigma) * x0 + sigma * noise
+        target = noise - x0
         context = torch.randn(
             1,
             opts.text_len,
@@ -187,9 +202,6 @@ def main() -> None:
             dtype=dtype,
         )
         padding_mask = torch.ones(1, 1, H, W, device=device, dtype=dtype)
-        target = torch.randn(
-            1, LATENT_CHANNELS, 1, H, W, generator=gen, device=device, dtype=dtype
-        )
 
         # THE per-step hook — drives set_timestep_mask (+ set_sigma/set_fei, which
         # no-op for this stack). Returns the next warmup_step.
