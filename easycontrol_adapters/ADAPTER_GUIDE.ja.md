@@ -206,9 +206,6 @@ unsloth_offload_checkpointing = true
    ```
 
 3. 学習自体は **編集不要です** — `cmd_easycontrol` はすでに `train(_easyadapter() or "easycontrol", extra)` を呼んでいるので、名前が許可リストに入りさえすれば `EASYADAPTER=<task>` が自動的に `configs/methods/<task>.toml` を実行します。
-
-4. (ビルダーがダウンロードを必要とする場合のみ) `cmd_easycontrol_download` に自分の重みフェッチタスクを指す分岐を追加します。
-
 **`scripts/tasks/inference.py`** (`cmd_test_easycontrol`) で: セレクターは現在 colorize をハードコードしています。自分のタスク向けにいくつかの colorize 専用の値を汎用化してください — チェックポイント名、出力フォルダ、フォールバック参照フォルダ、空プロンプトのデフォルト:
 
 ```python

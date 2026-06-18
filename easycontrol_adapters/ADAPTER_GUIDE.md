@@ -329,9 +329,6 @@ checkpoint.
    `train(_easyadapter() or "easycontrol", extra)`, so once your name is in the
    allowlist, `EASYADAPTER=<task>` runs `configs/methods/<task>.toml` on its own.
 
-4. (Only if your builder needs downloads) add a branch in
-   `cmd_easycontrol_download` for your weight-fetch task.
-
 **In `scripts/tasks/inference.py`** (`cmd_test_easycontrol`): the
 selector currently hard-codes colorize. Generalize the few colorize-specific
 values for your task — the checkpoint name, the output folder, the fallback

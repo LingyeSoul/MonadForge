@@ -64,11 +64,6 @@ COMMANDS = {
         "Full EasyControl preprocess: latents + text emb. "
         "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
     ),
-    "easycontrol-download": (
-        training.cmd_easycontrol_download,
-        "Download an EasyControl adapter's extra weights. "
-        "EASYADAPTER=colorize → Sketch2Manga screening weights (~5.7GB).",
-    ),
     # ── Training daemon ───────────────────────────────────────────────
     "daemon": (
         daemon.cmd_daemon,

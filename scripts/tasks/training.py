@@ -208,27 +208,6 @@ def cmd_easycontrol(extra):
     train("easycontrol", extra)
 
 
-def cmd_easycontrol_download(extra):
-    """Download an EasyControl control-task project's extra weights.
-
-    ``EASYADAPTER=colorize`` fetches the Sketch2Manga screening weights
-    (``models/sketch2manga/``) used by the learned Phase B condition synthesizer
-    (``easycontrol_adapters/colorization/prep.py --engine sd``). The default
-    EasyControl (no adapter) needs no extra weights beyond the Anima base.
-    """
-    from scripts.tasks import downloads as _downloads
-
-    adapter = _easyadapter()
-    if adapter == "colorize":
-        _downloads.cmd_download_sketch2manga(extra)
-        return
-    print(
-        "Default EasyControl needs no extra weights (uses the Anima base from "
-        "`make download-models`). Set EASYADAPTER=colorize for the Sketch2Manga "
-        "screening weights."
-    )
-
-
 def _near_twins_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     """Resize + VAE/TE caching for the mined near-twin pair tree.
 

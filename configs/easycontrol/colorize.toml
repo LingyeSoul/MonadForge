@@ -22,8 +22,7 @@ name = "colorize"
 # mangafy stage only (--skip_encode --skip_text) over the color corpus.
 [staging]
 # engine: gpu = XDoG+halftone on CUDA (fast, no downloads, default); cv2 = same
-# math on a CPU ProcessPool; sd = learned sketch2manga screening (on-manifold
-# tones, needs `make easycontrol-download EASYADAPTER=colorize`).
+# math on a CPU ProcessPool.
 engine = "gpu"
 # Tag selection for the colorize set, matched against captions in image_dataset/.
 # Net set = only_data_includes − exclude_data_includes. Pages filtered out get no
@@ -36,11 +35,6 @@ engine = "gpu"
 #                           panel pages whose tone the manga cond can't convey).
 # only_data_includes = ["comic", "white border", "thick border", "2koma", "multiple views", "speech bubble"]
 exclude_data_includes = ["monochrome", "greyscale"]
-# sd-engine-only knobs (uncomment when engine = "sd"):
-# steps = 40
-# cfg = 9.0
-# strength = 0.6
-# sd_match = ""        # comma-sep rel-path substrings to route to SD per-page
 
 # Cond-latent + color-only-text caching knobs (read by the same prep.py; the
 # preprocess step runs its encode + text stages only, --skip_mangafy). The color
