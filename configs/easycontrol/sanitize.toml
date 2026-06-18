@@ -109,7 +109,7 @@ network_args = [
     "repa_timestep_weighting=1.0",
 ]
 # Keep the REPA arm from clobbering the baseline checkpoint during the A/B.
-output_name = "anima_easycontrol_sanitize_repaMA3"
+output_name = "anima_easycontrol_sanitize"
 
 learning_rate = 2e-5
 max_train_epochs = 6

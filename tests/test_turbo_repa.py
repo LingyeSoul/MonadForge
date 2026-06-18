@@ -2,15 +2,15 @@
 
 Covers the load-bearing invariants:
   - ``repa.weight = 0`` default ⇒ the whole path is off: config gate false,
-    dataset keeps the legacy tuple, collate keeps the legacy shape (the
-    byte-identical guarantee is structural — no PE loading, no extra RNG
+    the dataset emits no ``repa_pe`` key, the batch dict carries no ``repa_pe``
+    (the byte-identical guarantee is structural — no PE loading, no extra RNG
     draws, no extra forward ever runs).
   - TOML / CLI precedence for the ``[repa]`` keys.
   - Config validation: negative weight, bad every_n, block-swap conflict.
-  - ``CachedDataset.load_repa_pe`` appends the PE sidecar as the LAST tuple
-    element (None when missing) without touching existing consumers.
+  - ``CachedDataset(load_repa_pe=True)`` adds a ``repa_pe`` key to each sample
+    dict (None when the sidecar is missing) without touching the other keys.
   - Collate all-or-nothing: any missing sidecar (or a cross-batch token-count
-    mismatch) collapses the batch's PE element to None instead of crashing.
+    mismatch) collapses the batch's ``repa_pe`` value to None instead of crashing.
   - Per-step-expert head routing: nearest student-grid σ for the sampled τ.
 
 The alignment-loss math itself is covered by tests/test_repa.py (the distill
@@ -141,23 +141,29 @@ def _write_pair(d, stem: str, *, with_pe: bool, n_tok: int = 17):
         )
 
 
-def test_dataset_legacy_tuple_unchanged(tmp_path):
+def test_dataset_default_keys(tmp_path):
     _write_pair(tmp_path, "a", with_pe=True)
     ds = CachedDataset(str(tmp_path), batch_size=1)
     assert ds.load_repa_pe is False  # off by default
-    assert len(ds[0]) == 4  # (idx, latents, crossattn, pooled)
+    # Default keys: no repa_pe (gate off), pooled_text present (need_pooled).
+    assert set(ds[0]) == {"idx", "latents", "crossattn_emb", "pooled_text"}
 
 
-def test_dataset_appends_pe_when_enabled(tmp_path):
+def test_dataset_need_pooled_false_drops_key(tmp_path):
+    _write_pair(tmp_path, "a", with_pe=True)
+    ds = CachedDataset(str(tmp_path), batch_size=1, need_pooled=False)
+    assert "pooled_text" not in ds[0]
+
+
+def test_dataset_adds_pe_key_when_enabled(tmp_path):
     _write_pair(tmp_path, "a", with_pe=True)
     _write_pair(tmp_path, "b", with_pe=False)
-    ds = CachedDataset(str(tmp_path), batch_size=1)
-    ds.load_repa_pe = True
-    items = {ds[i][0]: ds[i] for i in range(2)}
+    ds = CachedDataset(str(tmp_path), batch_size=1, load_repa_pe=True)
+    items = {ds[i]["idx"]: ds[i] for i in range(2)}
     # Stems sort a < b; samples order follows discovery, so key by content.
-    pes = [it[-1] for it in items.values()]
+    assert "repa_pe" in items[0]
+    pes = [it["repa_pe"] for it in items.values()]
     with_pe = [p for p in pes if p is not None]
-    assert len(items[0]) == 5
     assert len(with_pe) == 1  # 'a' has a sidecar, 'b' yields None
     assert with_pe[0].shape == (17, 24)
     assert with_pe[0].dtype == torch.float32
@@ -166,44 +172,52 @@ def test_dataset_appends_pe_when_enabled(tmp_path):
 # ── collate ───────────────────────────────────────────────────────────────────
 
 
-def _sample(pe):
-    return (0, torch.zeros(16, 4, 4), torch.zeros(8, 32), torch.zeros(32), pe)
+_PE_OMIT = "__omit__"  # marker: emit no repa_pe key (gate off)
 
 
-def test_collate_legacy_shape():
-    legacy = [s[:4] for s in (_sample(None), _sample(None))]
-    out = make_cached_collate()(legacy)
-    assert len(out) == 4
+def _sample(*, pe=_PE_OMIT, mask=None):
+    s = {
+        "idx": 0,
+        "latents": torch.zeros(16, 4, 4),
+        "crossattn_emb": torch.zeros(8, 32),
+        "pooled_text": torch.zeros(32),
+    }
+    if mask is not None:
+        s["mask"] = mask
+    if pe is not _PE_OMIT:  # may be a tensor or None (enabled-but-missing)
+        s["repa_pe"] = pe
+    return s
+
+
+def test_collate_default_keys():
+    out = make_cached_collate()([_sample(), _sample()])
+    assert set(out) == {"idx", "latents", "crossattn_emb", "pooled_text"}
 
 
 def test_collate_stacks_pe():
-    out = make_cached_collate(load_repa_pe=True)(
-        [_sample(torch.randn(17, 24)), _sample(torch.randn(17, 24))]
+    out = make_cached_collate()(
+        [_sample(pe=torch.randn(17, 24)), _sample(pe=torch.randn(17, 24))]
     )
-    assert len(out) == 5
-    assert out[-1].shape == (2, 17, 24)
+    assert out["repa_pe"].shape == (2, 17, 24)
 
 
 def test_collate_all_or_nothing():
     # Any missing sidecar → None for the whole batch.
-    out = make_cached_collate(load_repa_pe=True)(
-        [_sample(torch.randn(17, 24)), _sample(None)]
-    )
-    assert out[-1] is None
+    out = make_cached_collate()([_sample(pe=torch.randn(17, 24)), _sample(pe=None)])
+    assert out["repa_pe"] is None
     # Token-count mismatch across the batch (different encoder aspect buckets)
     # → None rather than a stack crash.
-    out = make_cached_collate(load_repa_pe=True)(
-        [_sample(torch.randn(17, 24)), _sample(torch.randn(13, 24))]
+    out = make_cached_collate()(
+        [_sample(pe=torch.randn(17, 24)), _sample(pe=torch.randn(13, 24))]
     )
-    assert out[-1] is None
+    assert out["repa_pe"] is None
 
 
-def test_collate_mask_and_pe_order():
-    s = (*_sample(None)[:4], torch.ones(1, 4, 4), torch.randn(17, 24))
-    out = make_cached_collate(use_masked_loss=True, load_repa_pe=True)([s, s])
-    assert len(out) == 6
-    assert out[4].shape == (2, 1, 4, 4)  # mask
-    assert out[5].shape == (2, 17, 24)  # PE rides last
+def test_collate_mask_and_pe():
+    s = _sample(pe=torch.randn(17, 24), mask=torch.ones(1, 4, 4))
+    out = make_cached_collate()([s, s])
+    assert out["mask"].shape == (2, 1, 4, 4)
+    assert out["repa_pe"].shape == (2, 17, 24)
 
 
 # ── unsloth-ckpt grad flow ────────────────────────────────────────────────────

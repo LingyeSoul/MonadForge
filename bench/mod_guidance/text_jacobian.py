@@ -251,10 +251,10 @@ def main():
         )
     latents, crossattns, pooleds = [], [], []
     for k in range(n):
-        _idx, lat, cross, pooled = val[k]
-        latents.append(lat)  # (16, H, W)
-        crossattns.append(cross)  # (seq, 1024) — max-padded, uniform seq
-        pooleds.append(pooled)  # (1024,)
+        s = val[k]
+        latents.append(s["latents"])  # (16, H, W)
+        crossattns.append(s["crossattn_emb"])  # (seq, 1024) — max-padded, uniform seq
+        pooleds.append(s["pooled_text"])  # (1024,)
     logger.info(f"Loaded {n} held-out samples.")
 
     def fwd(noisy, sigma, crossattn_emb, *, skip_pooled, pooled_override=None):

@@ -151,9 +151,9 @@ def _draw_gad_pair(
         j = rng.randrange(n)
         while n > 1 and j == cur:
             j = rng.randrange(n)
-        _j, _lat, cross_j, pool_j = dataset[j]
-        cross_list.append(cross_j)
-        pool_list.append(pool_j)
+        s_j = dataset[j]
+        cross_list.append(s_j["crossattn_emb"])
+        pool_list.append(s_j["pooled_text"])
     cross_b = torch.stack(cross_list).to(device, dtype=dtype, non_blocking=True)
     pool_b = torch.stack(pool_list).to(device, dtype=dtype, non_blocking=True)
     return cross_b, pool_b
@@ -394,7 +394,7 @@ def main():
             sigmoid_scale=cfg.sigmoid_scale,
             base_seed=cfg.teacher_cache_seed,
         )
-        _peek = dataset[0][1]
+        _peek = dataset[0]["latents"]
         bytes_per_entry = _peek.numel() * 2
         approx_gb = len(dataset) * cfg.teacher_cache_K * bytes_per_entry / 1e9
         logger.info(
@@ -468,10 +468,14 @@ def main():
 
         for accum_step in range(grad_accum):
             try:
-                idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
+                batch = next(data_iter)
             except StopIteration:
                 data_iter = iter(dataloader)
-                idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
+                batch = next(data_iter)
+            idx_list = batch["idx"]
+            latents = batch["latents"]
+            crossattn_emb = batch["crossattn_emb"]
+            pooled_text = batch["pooled_text"]
 
             latents = latents.to(device, dtype=dtype, non_blocking=True)
             crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)

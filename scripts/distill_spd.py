@@ -170,12 +170,14 @@ def main():
         split="train",
         validation_split=val_split,
         validation_seed=seed,
+        need_pooled=False,  # SPD conditions on crossattn only
     )
     if args.single_prompt_idx is not None:
         apply_single_prompt_slice(dataset, args.single_prompt_idx, logger=logger)
 
-    # Stacking collate (pooled-text slot returned but unused by SPD). Shared with
-    # the val loader; pickle-safe under the Windows/spawn DataLoader start method.
+    # Stacking collate → batch dict (no pooled_text key: need_pooled=False).
+    # Shared with the val loader; pickle-safe under the Windows/spawn DataLoader
+    # start method.
     collate_fn = make_cached_collate()
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -199,6 +201,7 @@ def main():
             split="val",
             validation_split=val_split,
             validation_seed=seed,
+            need_pooled=False,  # SPD conditions on crossattn only
         )
         if len(val_dataset) == 0:
             logger.warning(
@@ -222,8 +225,8 @@ def main():
     gen = torch.Generator(device=device).manual_seed(seed + 7919)
 
     if args.dry_run:
-        for i, (_idx, lat, te, _pooled) in enumerate(tqdm(dataloader, desc="dry-run")):
-            lat = lat.to(device, dtype=dtype)
+        for i, batch in enumerate(tqdm(dataloader, desc="dry-run")):
+            lat = batch["latents"].to(device, dtype=dtype)
             x0_full = to_dit_5d(lat)
             for s in range(len(stages)):
                 x0_si, eps_si = spd_stage_target(
@@ -592,9 +595,11 @@ def main():
         if cudagraph_step:
             torch.compiler.cudagraph_mark_step_begin()
         with _ema_weights():
-            for _idx, latents, crossattn_emb, _pooled in val_loader:
-                latents = latents.to(device, dtype=dtype, non_blocking=True)
-                crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
+            for batch in val_loader:
+                latents = batch["latents"].to(device, dtype=dtype, non_blocking=True)
+                crossattn_emb = batch["crossattn_emb"].to(
+                    device, dtype=dtype, non_blocking=True
+                )
                 B = latents.shape[0]
                 x0_full = to_dit_5d(latents)
                 for stage_idx in range(n_stages):
@@ -647,10 +652,12 @@ def main():
         stage losses is regime-switching noise, which accumulation cancels.
         """
         try:
-            _idx, latents, crossattn_emb, _pooled = next(data_iter[0])
+            batch = next(data_iter[0])
         except StopIteration:
             data_iter[0] = iter(dataloader)
-            _idx, latents, crossattn_emb, _pooled = next(data_iter[0])
+            batch = next(data_iter[0])
+        latents = batch["latents"]
+        crossattn_emb = batch["crossattn_emb"]
 
         latents = latents.to(device, dtype=dtype, non_blocking=True)
         crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)

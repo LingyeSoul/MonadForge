@@ -234,9 +234,11 @@ def main() -> None:
     any_nan = False
 
     for si in range(n):
-        _idx, latents, crossattn_emb, _pooled = dataset[si]
-        x0_full = to_dit_5d(latents.to(device, dtype).unsqueeze(0))  # (1,16,1,H,W)
-        c = crossattn_emb.to(device, dtype).unsqueeze(0)
+        sample = dataset[si]
+        x0_full = to_dit_5d(
+            sample["latents"].to(device, dtype).unsqueeze(0)
+        )  # (1,16,1,H,W)
+        c = sample["crossattn_emb"].to(device, dtype).unsqueeze(0)
         H_full, W_full = int(x0_full.shape[-2]), int(x0_full.shape[-1])
         x0_lo = dct_lowpass_init(x0_full, args.s0, patch).float()  # true clean LL
 

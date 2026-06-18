@@ -167,8 +167,7 @@ def calibrate_mean_var(
     s2 = 0.0
     seen = 0
     for batch in dataloader:
-        # Batch layout mirrors the training loop: masked adds a trailing mask.
-        latents = batch[1].double()
+        latents = batch["latents"].double()
         flat = latents.reshape(-1)
         n += flat.numel()
         s += float(flat.sum())
@@ -549,13 +548,12 @@ def main():
         batch_size=cfg.batch_size,
         sample_ratio=cfg.sample_ratio,
         mask_dir=cfg.mask_dir if cfg.use_masked_loss else None,
+        need_pooled=False,  # DP-DMD conditions on crossattn only
+        # PE gate: when on, each batch carries a ``repa_pe`` key (None when any
+        # sample lacked its sidecar → the REPA term is skipped that step).
+        load_repa_pe=repa_on,
+        repa_pe_encoder=cfg.repa_encoder,
     )
-    if repa_on:
-        # Post-construction PE gate (the bespoke-loop mirror of train.py's
-        # dataset.load_repa_pe): appends each sample's PE sidecar as the LAST
-        # tuple element; collate must be built with the matching flag below.
-        dataset.load_repa_pe = True
-        dataset.repa_pe_encoder = cfg.repa_encoder
     # Held-out conditioning for the DAVE diversity probe — captured from the FULL
     # sample list before any single-prompt slice mutates it, chosen distinct from
     # the overfit sample so a collapsed run is visible. Loaded once, reused.
@@ -570,7 +568,8 @@ def main():
             v_idx = n - 1  # auto: last sample
             if cfg.single_prompt_idx is not None and v_idx == cfg.single_prompt_idx % n:
                 v_idx = (v_idx - 1) % n  # avoid the overfit sample when possible
-        _, v_lat, v_ca, _v_pool = dataset[v_idx][:4]
+        v_sample = dataset[v_idx]
+        v_lat, v_ca = v_sample["latents"], v_sample["crossattn_emb"]
         val_cond = v_ca.unsqueeze(0).to(device, dtype=dtype)  # (1, seq, D)
         val_latent_shape = (1, *tuple(v_lat.shape))  # (1, C, H, W)
         val_clean = v_lat.unsqueeze(0).to(
@@ -593,7 +592,7 @@ def main():
         num_workers=2,
         pin_memory=True,
         drop_last=True,
-        collate_fn=make_collate(cfg.use_masked_loss, load_repa_pe=repa_on),
+        collate_fn=make_collate(),
     )
 
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
@@ -785,17 +784,16 @@ def main():
         except StopIteration:
             data_iter = iter(dataloader)
             batch = next(data_iter)
-        batch = list(batch)
-        # PE features ride LAST when the REPA gate is on (None when any sample
-        # in the batch lacked its sidecar → the term is skipped this step).
-        repa_pe = batch.pop() if repa_on else None
+        # ``repa_pe`` is None when the gate is off or any sample in the batch
+        # lacked its sidecar → the term is skipped this step.
+        repa_pe = batch.get("repa_pe")
+        latents = batch["latents"]
+        crossattn_emb = batch["crossattn_emb"]
         if cfg.use_masked_loss:
-            _idx, latents, crossattn_emb, _pooled, mask = batch
             # float (not bf16): the student loss is assembled in fp32. [B,1,H,W]
             # broadcasts over the [B,16,H,W] grad signal.
-            mask = mask.to(device, dtype=torch.float32, non_blocking=True)
+            mask = batch["mask"].to(device, dtype=torch.float32, non_blocking=True)
         else:
-            _idx, latents, crossattn_emb, _pooled = batch
             mask = None
 
         latents = latents.to(device, dtype=dtype, non_blocking=True)
