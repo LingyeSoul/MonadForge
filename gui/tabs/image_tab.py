@@ -65,6 +65,8 @@ from PySide6.QtWidgets import (
 
 from gui import (
     DEFAULT_AUTOTAG_CONFIDENCE,
+    DEFAULT_GROUP_CELL_MATCH_MIN,
+    DEFAULT_GROUP_MATCH_FRAC_MIN,
     ROOT,
     LazyTabMixin,
     ScaledImageLabel,
@@ -1052,9 +1054,21 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.group_btn.setEnabled(False)
         self._progress_tracker.reset()
         self._progress_tracker.mark_starting(t("dataset_group_rebuild"))
+        # Grouping tightness is tuned from Settings (higher = tighter); pass the
+        # persisted thresholds through to `tasks.py curate-group`.
+        frac = float(get_setting("group_match_frac_min", DEFAULT_GROUP_MATCH_FRAC_MIN))
+        cell = float(get_setting("group_cell_match_min", DEFAULT_GROUP_CELL_MATCH_MIN))
+        argv = [
+            "tasks.py",
+            "curate-group",
+            "--match-frac-min",
+            f"{frac:g}",
+            "--cell-match-min",
+            f"{cell:g}",
+        ]
         job_id = self._submit_job(
             lambda: gui_daemon.submit_command(
-                label="curate-group", argv=["tasks.py", "curate-group"], start=True
+                label="curate-group", argv=argv, start=True
             ),
             on_fail=self._restore_group_idle_ui,
         )

@@ -67,9 +67,9 @@ grad_step = "random"
 
 # Optimization.
 [optim]
-student_lr = 2e-5
+student_lr = 1e-5
 fake_lr = 2e-5
-fake_steps_per_student_step = 4
+fake_steps_per_student_step = 3
 fake_warmup_steps = 50
 weight_decay = 0.0
 grad_clip = 1.0                 # student grad-norm cap
@@ -153,29 +153,13 @@ ratio_ema_rate = 0.0            # per-τ histogram EMA decay (0 = instantaneous 
 bin_num = 10
 ratio_normalization = true      # per-τ histogram normalization of r
 
-# Turbo × REPA — relational (Gram) alignment on REAL data (docs/proposal/
-# turbo_repa.md; Phase 0 drift probe PASSED 2026-06-12 — the student's block-8
-# representation sits measurably off the base manifold, worst at mid-σ:
-# bench/turbo/results/20260612-2244-alignment-drift/).
-#
-# Every `every_n`-th student step, ONE extra grad-bearing partial student
-# forward (feature tap, exits after `layer` ≈ 9/28 of a forward) on renoised
-# real latents; the unweighted Gram MSE vs the cached PE-Spatial sidecar
-# ({stem}_anima_pe_spatial.safetensors, staged by `make preprocess-pe`) joins
-# the student loss with `weight`. Direct per-sample pressure on REAL data —
-# complements the GAN above (adversarial, distribution-level, GENERATED data)
-# and soft-rank (text axis). No new trainable params (the Gram form is
-# head-free). weight = 0 keeps the whole path OFF → byte-identical DP-DMD.
+# Turbo × REPA — relational (Gram) alignment on REAL data 
 [repa]
 weight = 0.0                   # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
 layer = 8                       # DiT block tap (matches LoRA-family REPA)
 encoder = "pe_spatial"          # sidecar {stem}_anima_{encoder}.safetensors next to the TE cache
 every_n = 4                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
 # spatial_norm = true           # iREPA target standardization (the validated LoRA operating point)
-# REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md; Phase 0 PASSED
-# on LoRA — broad low-band strip beats spatial_norm's DC-only removal). When
-# target_dog = true it REPLACES spatial_norm in the relational loss (mutually
-# exclusive; dog wins). σ as min(gh,gw)/div; σ2 = 0 → single low-pass.
 # target_dog = true             # turn the DoG band-pass on
 # dog_sigma1_div = 16.0         # low-pass σ1 = min(gh,gw)/16 (Phase-0 sweet spot min/16–32)
 # dog_sigma2_div = 0.0          # σ2 = min(gh,gw)/div; 0 = off (single low-pass)

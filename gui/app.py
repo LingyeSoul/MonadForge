@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
 
 from gui import (
     DEFAULT_AUTOTAG_CONFIDENCE,
+    DEFAULT_GROUP_CELL_MATCH_MIN,
+    DEFAULT_GROUP_MATCH_FRAC_MIN,
     get_setting,
     set_setting,
 )
@@ -226,6 +228,49 @@ class SettingsDialog(QDialog):
         conf_row.addWidget(self.conf_spin)
         conf_row.addStretch()
         prefs_lay.addLayout(conf_row)
+
+        # Dataset-tab grouping (`curate-group`) tightness. Higher = tighter,
+        # cleaner groups. Read at grouping time by ImageViewerTab._rebuild_groups
+        # and passed as --match-frac-min / --cell-match-min.
+        frac_row = QHBoxLayout()
+        frac_label = QLabel(t("settings_group_match_frac"))
+        frac_label.setToolTip(t("settings_group_match_frac_tooltip"))
+        frac_row.addWidget(frac_label)
+        self.group_frac_spin = QDoubleSpinBox()
+        self.group_frac_spin.setRange(0.0, 1.0)
+        self.group_frac_spin.setSingleStep(0.05)
+        self.group_frac_spin.setDecimals(2)
+        self.group_frac_spin.setToolTip(t("settings_group_match_frac_tooltip"))
+        self.group_frac_spin.setValue(
+            float(get_setting("group_match_frac_min", DEFAULT_GROUP_MATCH_FRAC_MIN))
+        )
+        self.group_frac_spin.valueChanged.connect(
+            lambda v: set_setting("group_match_frac_min", round(float(v), 2))
+        )
+        self.group_frac_spin.setFixedWidth(125)
+        frac_row.addWidget(self.group_frac_spin)
+        frac_row.addStretch()
+        prefs_lay.addLayout(frac_row)
+
+        cell_row = QHBoxLayout()
+        cell_label = QLabel(t("settings_group_cell_match"))
+        cell_label.setToolTip(t("settings_group_cell_match_tooltip"))
+        cell_row.addWidget(cell_label)
+        self.group_cell_spin = QDoubleSpinBox()
+        self.group_cell_spin.setRange(0.0, 1.0)
+        self.group_cell_spin.setSingleStep(0.01)
+        self.group_cell_spin.setDecimals(2)
+        self.group_cell_spin.setToolTip(t("settings_group_cell_match_tooltip"))
+        self.group_cell_spin.setValue(
+            float(get_setting("group_cell_match_min", DEFAULT_GROUP_CELL_MATCH_MIN))
+        )
+        self.group_cell_spin.valueChanged.connect(
+            lambda v: set_setting("group_cell_match_min", round(float(v), 2))
+        )
+        self.group_cell_spin.setFixedWidth(125)
+        cell_row.addWidget(self.group_cell_spin)
+        cell_row.addStretch()
+        prefs_lay.addLayout(cell_row)
 
         # Closing the dialog rebuilds the window so each tab's per-widget tokens (gui.theme.tok) repaint.
         theme_row = QHBoxLayout()

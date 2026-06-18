@@ -479,6 +479,16 @@ STRINGS: dict[str, str] = {
         "태거의 태그별 임계값 위에 추가로 적용되는 확률 하한(0–1)입니다. "
         "높을수록 더 확실한 태그만 적게 남습니다. 기본값 0.50."
     ),
+    "settings_group_match_frac": "그룹화 엄격도:",
+    "settings_group_match_frac_tooltip": (
+        "데이터셋 탭에서 그룹화를 누를 때 두 이미지를 묶는 데 필요한 일치 "
+        "비율(0–1)입니다. 높을수록 더 엄격하고 깔끔한 그룹이 됩니다. 기본값 0.25."
+    ),
+    "settings_group_cell_match": "그룹화 셀 일치도:",
+    "settings_group_cell_match_tooltip": (
+        "데이터셋 그룹화 시 셀 단위 일치로 인정하는 코사인 하한(0–1)입니다. "
+        "높을수록 셀 일치 기준이 엄격해집니다. 기본값 0.93."
+    ),
     "settings_theme": "테마:",
     "settings_theme_tooltip": (
         "인터페이스 전체 색상 테마입니다. 즉시 적용되며, 설정 창을 닫으면 "

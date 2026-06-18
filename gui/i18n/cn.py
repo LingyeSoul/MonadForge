@@ -63,9 +63,7 @@ STRINGS: dict[str, str] = {
         "进行覆盖裁剪。默认 4.0 与旧桶表最极端的宽高比一致，"
         "可阻止 1:5 / 1:6 等退化输入。仅在自由适配模式下使用。"
     ),
-    "preprocess_freefit_note": (
-        "自由适配 ⇒ 训练时自动启用 dynamic_seq 编译路径。"
-    ),
+    "preprocess_freefit_note": ("自由适配 ⇒ 训练时自动启用 dynamic_seq 编译路径。"),
     "preprocess_text_caching": "缓存 (VAE + 文本)",
     "preprocess_caption_shuffle_variants": "每条标注的随机变体数 (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -421,6 +419,16 @@ STRINGS: dict[str, str] = {
     "settings_autotag_confidence_tooltip": (
         "在打标器各标签阈值之上额外应用的概率下限（0–1）。"
         "数值越高，保留的标签越少但越可靠。默认 0.50。"
+    ),
+    "settings_group_match_frac": "分组严格度:",
+    "settings_group_match_frac_tooltip": (
+        "在数据集标签页点击分组时，将两张图片归为一组所需的匹配比例（0–1）。"
+        "数值越高，分组越严格、越干净。默认 0.25。"
+    ),
+    "settings_group_cell_match": "分组单元匹配:",
+    "settings_group_cell_match_tooltip": (
+        "数据集分组时判定单元匹配的余弦下限（0–1）。数值越高，单元匹配越严格。"
+        "默认 0.93。"
     ),
     "settings_theme": "主题:",
     "settings_theme_tooltip": (

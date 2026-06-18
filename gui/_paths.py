@@ -22,6 +22,11 @@ GUI_SETTINGS_FILE = Path(__file__).resolve().parent / "gui_settings.json"
 # Default autotagger probability floor applied on top of the model's per-tag
 # F1 thresholds (see AnimaTagger.predict_caption min_confidence).
 DEFAULT_AUTOTAG_CONFIDENCE = 0.5
+# Defaults for the Dataset-tab grouping run (`curate-group`). Mirror the
+# library values (library.datasets.grouping.DEFAULT_*) so the GUI stays
+# torch-free; higher = tighter groups. See SettingsDialog + ImageViewerTab.
+DEFAULT_GROUP_MATCH_FRAC_MIN = 0.25
+DEFAULT_GROUP_CELL_MATCH_MIN = 0.93
 # Kept for backward compat; the live accent now comes from the active theme (gui/theme.py).
 DEFAULT_THEME_COLOR = "#3c78c8"
 # Default named theme (see gui/theme.py THEMES). One of "dark" / "light" / "sepia".

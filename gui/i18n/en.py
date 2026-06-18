@@ -489,6 +489,16 @@ STRINGS: dict[str, str] = {
         "Extra probability floor (0–1) applied on top of the tagger's per-tag "
         "thresholds. Higher = fewer, more confident tags. Default 0.50."
     ),
+    "settings_group_match_frac": "Grouping tightness:",
+    "settings_group_match_frac_tooltip": (
+        "Inlier fraction (0–1) needed to group two Dataset images when you press "
+        "Group. Higher = tighter, cleaner groups. Default 0.25."
+    ),
+    "settings_group_cell_match": "Grouping cell match:",
+    "settings_group_cell_match_tooltip": (
+        "Per-cell cosine floor (0–1) for an inlier match during Dataset grouping. "
+        "Higher = stricter cell agreement. Default 0.93."
+    ),
     "settings_theme": "Theme:",
     "settings_theme_tooltip": (
         "Overall color theme for the interface. Applies immediately; the window "
