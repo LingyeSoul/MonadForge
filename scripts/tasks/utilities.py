@@ -119,7 +119,7 @@ def cmd_vendor_sync(extra):
     vendor copies (tagger + directedit) are how the ComfyUI nodes import
     their inference subset when not running inside the anima_lora repo.
     """
-    run([PY, "scripts/sync_vendor.py", *extra])
+    run([PY, "scripts/release/sync_vendor.py", *extra])
 
 
 def cmd_export_logs(extra):

@@ -62,14 +62,14 @@ from typing import Dict, FrozenSet, List, Mapping, Optional, Tuple
 
 import yaml
 
-# Allowed values for a group's ``mode`` field. Lives at module top so the
-# loader can reject typos at parse time rather than letting them flow into
-# the trainer.
-GROUP_MODES: FrozenSet[str] = frozenset({
-    "softmax_when_solo",
-    "softmax",
-    "multilabel",
-})
+# Allowed values for a group's ``mode`` field — loader rejects typos at parse time.
+GROUP_MODES: FrozenSet[str] = frozenset(
+    {
+        "softmax_when_solo",
+        "softmax",
+        "multilabel",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ class TagGroups:
 
     version: int
     groups: Tuple[TagGroup, ...]
-    tag_to_group: Mapping[str, str]   # tag_name → group_name
+    tag_to_group: Mapping[str, str]
 
     def by_name(self, name: str) -> Optional[TagGroup]:
         for g in self.groups:
@@ -122,7 +122,7 @@ def load_groups(path: str | Path) -> TagGroups:
     ``tags:`` lists are allowed (group exists but has no current members)
     so the YAML can be checked in before the corpus catches up.
     """
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     version = int(raw.pop("version", 1))
@@ -145,7 +145,6 @@ def load_groups(path: str | Path) -> TagGroups:
         escape = tuple(str(t) for t in (body.get("escape") or []))
         tags = tuple(str(t) for t in (body.get("tags") or []))
 
-        # Cross-group uniqueness.
         for t in tags:
             existing = tag_to_group.get(t)
             if existing is not None:
@@ -194,14 +193,14 @@ def from_dict(d: dict) -> TagGroups:
             tag_to_group[t] = name
         groups.append(
             TagGroup(
-                name=name, mode=mode, description=description,
-                escape=escape, tags=tags,
+                name=name,
+                mode=mode,
+                description=description,
+                escape=escape,
+                tags=tags,
             )
         )
     return TagGroups(version=version, groups=tuple(groups), tag_to_group=tag_to_group)
-
-
-# ── Resolution against a built vocab ──────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -219,7 +218,7 @@ class ResolvedGroup:
     description: str
     tag_indices: Tuple[int, ...]
     escape_indices: Tuple[int, ...]
-    # Names kept for snapshot/debug. resolve_groups omits dropped names.
+    # Names kept for snapshot/debug; dropped names are omitted.
     tag_names: Tuple[str, ...]
     escape_names: Tuple[str, ...]
 

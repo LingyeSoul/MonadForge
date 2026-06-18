@@ -34,7 +34,7 @@ Both checkpoints auto-download on first use:
 The `_vendor/` tree is generated from the live anima_lora source. Regenerate it before bumping the node version:
 
 ```bash
-python scripts/sync_vendor.py     # from the anima_lora repo root (refreshes both tagger + directedit vendor trees)
+python scripts/release/sync_vendor.py     # from the anima_lora repo root (refreshes both tagger + directedit vendor trees)
 ```
 
 ## Checkpoint layout

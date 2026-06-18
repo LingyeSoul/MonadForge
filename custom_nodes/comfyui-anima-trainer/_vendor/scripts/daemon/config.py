@@ -32,17 +32,27 @@ DAEMON_LOG = STATE_DIR / "daemon.log"
 DEFAULT_PORT = int(os.environ.get("ANIMA_DAEMON_PORT", "8765"))
 HOST = "127.0.0.1"
 
-# Pre-launch GPU guard (see manager._gpu_guard). Loose by default: this is a
-# single-GPU *serial* queue, so the only thing the guard must catch is VRAM
-# leaked by our own dead jobs (reaped by pid, independent of the threshold).
-# The total-VRAM fraction is just a heuristic for "some *other* process owns the
-# card"; keep it high so a loaded ComfyUI / browser / idle desktop doesn't trip
-# it and stall every launch. All three are env-tunable for odd setups.
-#   busy_frac: treat the card as busy only above this used/total fraction.
-#   retries/delay: how long to wait for it to free up before launching anyway.
+# Pre-launch GPU guard (see manager._gpu_guard). Loose by default: on a serial
+# single-GPU queue the guard only must catch VRAM leaked by our own dead jobs
+# (reaped by pid, threshold-independent); busy_frac is just a heuristic for "some
+# *other* process owns the card", kept high so a loaded ComfyUI/browser/desktop
+# doesn't stall every launch. busy_frac = used/total above which the card is busy;
+# retries/delay = how long to wait for it to free before launching anyway.
 GPU_GUARD_BUSY_FRAC = float(os.environ.get("ANIMA_DAEMON_GPU_BUSY_FRAC", "0.85"))
 GPU_GUARD_RETRIES = int(os.environ.get("ANIMA_DAEMON_GPU_RETRIES", "1"))
 GPU_GUARD_DELAY = float(os.environ.get("ANIMA_DAEMON_GPU_DELAY", "2.0"))
+
+# Stall watchdog: kill a *running* job whose output (stdout.log + progress.jsonl)
+# hasn't advanced for this many seconds, finalizing as an error naming its last
+# line — turns a wedged download / symlink-cycle walk / deadlock into a loud,
+# queue-freeing failure instead of a hang. 0 disables (see manager._stall_reason).
+# Only command jobs (preprocess/mask) are watched by default (post-load tqdm
+# every ~10s → 120s silence = wedged). Training is unwatched (budget 0): its
+# first step is legitimately silent for the whole torch.compile trace (can reach
+# minutes), and a false kill mid-compile costs more than the rare hung run. Opt
+# training in via ANIMA_DAEMON_JOB_STALL_TIMEOUT.
+CMD_STALL_TIMEOUT = float(os.environ.get("ANIMA_DAEMON_CMD_STALL_TIMEOUT", "120"))
+JOB_STALL_TIMEOUT = float(os.environ.get("ANIMA_DAEMON_JOB_STALL_TIMEOUT", "0"))
 
 
 def ensure_state_dirs() -> None:

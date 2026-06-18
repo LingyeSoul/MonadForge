@@ -42,9 +42,9 @@ drift, since that's why flags are WARN, not ERROR:
 Promote with ``--strict`` once the docs are clean.
 
 Usage:
-    python scripts/check_docs.py            # human report, exit 1 on any ERROR
-    python scripts/check_docs.py --strict   # WARNs count as failures too
-    python scripts/check_docs.py --json     # machine-readable
+    python scripts/release/check_docs.py            # human report, exit 1 on any ERROR
+    python scripts/release/check_docs.py --strict   # WARNs count as failures too
+    python scripts/release/check_docs.py --json     # machine-readable
 
 ``collect_issues()`` returns the structured list for ``tests/test_doc_refs.py``.
 """
@@ -60,7 +60,7 @@ import sys
 from collections import namedtuple
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # File extensions we treat as "a reference to a tracked file".
 _EXTS = (

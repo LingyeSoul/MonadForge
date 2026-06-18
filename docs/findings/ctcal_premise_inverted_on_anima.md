@@ -24,8 +24,8 @@ requires the opposite slope.](assets/ctcal_inverted_premise.png)
 
 ## How it was tested
 
-`bench/ctcal/probe_teacher_signal.py` (now archived at
-`_archive/bench/ctcal/`) — a no-grad property probe over cached
+`_archive/bench/ctcal/probe_teacher_signal.py` (archived) — a no-grad
+property probe over cached
 `(latent, caption)` pairs on the **base DiT**, in the spirit of the REPA Phase-0
 probes. For each image it noises the real cached latent to a σ grid, runs one
 eager forward, and recovers each cross-attention block's `softmax(QK^T)` over the

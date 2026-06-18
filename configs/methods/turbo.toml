@@ -16,7 +16,7 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 4000
+iterations = 6000
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -67,8 +67,8 @@ grad_step = "random"
 
 # Optimization.
 [optim]
-student_lr = 1e-5
-fake_lr = 1e-5
+student_lr = 2e-5
+fake_lr = 2e-5
 fake_steps_per_student_step = 4
 fake_warmup_steps = 50
 weight_decay = 0.0
@@ -183,7 +183,7 @@ every_n = 4                     # run the term every N student steps (amortizati
 
 # Logging / checkpoints.
 [io]
-save_every = 2000
+save_every = 1000
 log_interval = 5
 log_dir = "output/logs/turbo"
-validate_every_n_steps = 2000
+validate_every_n_steps = 1000

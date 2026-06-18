@@ -40,6 +40,7 @@ import torch
 from tqdm import tqdm
 
 from library.anima import models as anima_models
+from library.inference.corrections.smc_cfg import SMCCFGState
 
 logger = logging.getLogger(__name__)
 
@@ -61,19 +62,24 @@ def _v_pred(
     embed_neg: Optional[torch.Tensor],
     guidance_scale: float,
     padding_mask: torch.Tensor,
+    smc_cfg_state: Optional[SMCCFGState] = None,
 ) -> torch.Tensor:
-    """One model forward (with optional CFG). Returns velocity prediction."""
+    """One model forward (with optional CFG). Returns velocity prediction.
+
+    ``smc_cfg_state`` (optional) routes the cond/uncond combine through
+    α-adaptive Sliding-Mode Control. No-op when CFG is disabled (single
+    forward, no residual). Caller must reuse the same state across steps for
+    e_prev continuity; ``invert()`` deliberately does not pass it.
+    """
     t_expand = sigma.expand(latents.shape[0]).to(latents.device, dtype=torch.bfloat16)
     noise_pred = anima(latents, t_expand, embed, padding_mask=padding_mask)
     if guidance_scale != 1.0 and embed_neg is not None:
         uncond = anima(latents, t_expand, embed_neg, padding_mask=padding_mask)
-        noise_pred = uncond + guidance_scale * (noise_pred - uncond)
+        if smc_cfg_state is not None:
+            noise_pred = smc_cfg_state.combine(noise_pred, uncond, guidance_scale)
+        else:
+            noise_pred = uncond + guidance_scale * (noise_pred - uncond)
     return noise_pred
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# V-injection (paper Eq. 13)
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class _VInjectionState:
@@ -141,7 +147,9 @@ def _make_patched_self_attn_forward(attn, block_idx: int, state: _VInjectionStat
     if hasattr(attn, "compute_attention"):
         compute_attention = attn.compute_attention
 
-        def patched_comfy(x, context=None, rope_emb=None, transformer_options=None, **_kwargs):
+        def patched_comfy(
+            x, context=None, rope_emb=None, transformer_options=None, **_kwargs
+        ):
             q, k, v = compute_qkv(x, context, rope_emb=rope_emb)
             v = state.hook(block_idx, v)
             return compute_attention(
@@ -229,11 +237,6 @@ def _resolve_t_inj_blocks(
     return out
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Inversion + edit forward
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 @torch.no_grad()
 def invert(
     anima: anima_models.Anima,
@@ -318,6 +321,7 @@ def edit_forward(
     z_inv: Optional[List[torch.Tensor]] = None,
     mask: Optional[torch.Tensor] = None,  # noqa: ARG001 — Eq. 12 mask blend (v3)
     step_callback: Optional[Callable[[int, int], None]] = None,
+    smc_cfg_state: Optional[SMCCFGState] = None,
 ) -> torch.Tensor:
     """Forward (noise -> clean) edit pass anchored to the inversion residuals.
 
@@ -402,13 +406,24 @@ def edit_forward(
 
     block_indices = _resolve_t_inj_blocks(anima, t_inj_blocks) if t_inj > 0 else set()
     has_cfg = guidance_scale != 1.0 and embed_neg is not None
+    if smc_cfg_state is not None and not has_cfg:
+        logger.warning(
+            "smc_cfg_state passed but CFG is disabled (guidance_scale=%.2f, "
+            "embed_neg=%s) — SMC operates on the cond/uncond residual and "
+            "has nothing to clamp; ignored.",
+            guidance_scale,
+            "set" if embed_neg is not None else "None",
+        )
     z_tar = z_init.to(torch.bfloat16)
 
     if t_inj > 0:
         logger.info(
             "DirectEdit V-injection: t_inj=%d / T=%d, injecting at %d / %d blocks "
             "(batched forward, %d rows)",
-            t_inj, T, len(block_indices), len(anima.blocks),
+            t_inj,
+            T,
+            len(block_indices),
+            len(anima.blocks),
             3 if has_cfg else 2,
         )
 
@@ -454,7 +469,10 @@ def edit_forward(
                 if has_cfg:
                     v_neg = noise_pred[0:1]
                     v_cond_tar = noise_pred[2:3]
-                    v_tar = v_neg + guidance_scale * (v_cond_tar - v_neg)
+                    if smc_cfg_state is not None:
+                        v_tar = smc_cfg_state.combine(v_cond_tar, v_neg, guidance_scale)
+                    else:
+                        v_tar = v_neg + guidance_scale * (v_cond_tar - v_neg)
                 else:
                     v_tar = noise_pred[1:2]
             else:
@@ -464,8 +482,14 @@ def edit_forward(
                 # state.src_row/tar_row are None, so the hook is a pass-through.
                 pad = _padding_mask_for(z_hat_tar)
                 v_tar = _v_pred(
-                    anima, z_hat_tar, sigma_in,
-                    embed_tar, embed_neg, guidance_scale, pad,
+                    anima,
+                    z_hat_tar,
+                    sigma_in,
+                    embed_tar,
+                    embed_neg,
+                    guidance_scale,
+                    pad,
+                    smc_cfg_state=smc_cfg_state,
                 )
 
             z_tar = (z_tar.float() - coeff * v_tar.float()).to(torch.bfloat16)

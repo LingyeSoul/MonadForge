@@ -34,14 +34,9 @@ from library.vision.buckets import BucketSpec, get_bucket_spec
 
 logger = logging.getLogger(__name__)
 
-# Repo root, used by the ``_default_*_model_id`` helpers to point at vendored
-# checkpoints under ``models/``. encoders.py lives at
-# ``library/vision/encoders.py`` so two ``parents`` jumps land on the repo
-# root regardless of cwd.
+# Repo root for the ``_default_*_model_id`` helpers (vendored checkpoints under
+# ``models/``); two ``parents`` jumps from library/vision/ regardless of cwd.
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-
-# --------------------------------------------------------------------------- shared output shim
 
 
 class _EncoderOutput:
@@ -52,9 +47,6 @@ class _EncoderOutput:
     def __init__(self, last_hidden_state: torch.Tensor, pooler_output: torch.Tensor):
         self.last_hidden_state = last_hidden_state
         self.pooler_output = pooler_output
-
-
-# --------------------------------------------------------------------------- PE family
 
 
 def _default_pe_model_id() -> str:
@@ -75,13 +67,17 @@ class _PEProcessor:
     def __init__(self, image_size):
         from torchvision import transforms
 
-        size_hw = (image_size, image_size) if isinstance(image_size, int) else (
-            int(image_size[0]), int(image_size[1])
+        size_hw = (
+            (image_size, image_size)
+            if isinstance(image_size, int)
+            else (int(image_size[0]), int(image_size[1]))
         )
         self.image_size = size_hw
         self.transform = transforms.Compose(
             [
-                transforms.Resize(size_hw, interpolation=transforms.InterpolationMode.BILINEAR),
+                transforms.Resize(
+                    size_hw, interpolation=transforms.InterpolationMode.BILINEAR
+                ),
                 transforms.ToTensor(),
                 transforms.Normalize(self._MEAN, self._STD),
             ]
@@ -129,7 +125,7 @@ def _load_pe_variant(
     ckpt_path = Path(model_id)
     if not ckpt_path.is_file():
         try:
-            from huggingface_hub import hf_hub_download
+            from library.runtime.hf_download import hf_download
         except ImportError as e:
             raise FileNotFoundError(
                 f"{config_name} checkpoint not found at {ckpt_path} and "
@@ -142,7 +138,9 @@ def _load_pe_variant(
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         downloaded = Path(
-            hf_hub_download(
+            hf_download(
+                what=f"{config_name} checkpoint",
+                hint=f"make {download_make_target}",
                 repo_id=repo_id,
                 filename=filename,
                 local_dir=str(ckpt_path.parent),
@@ -186,9 +184,6 @@ def _load_pe_spatial_encoder(device: torch.device, model_id: str) -> _PEEncoder:
     )
 
 
-# --------------------------------------------------------------------------- registry
-
-
 @dataclass(frozen=True)
 class EncoderInfo:
     name: str
@@ -213,9 +208,8 @@ _REGISTRY: dict[str, EncoderInfo] = {
         processor_factory=_PEProcessor,
         loader=_load_pe_encoder,
     ),
-    # PE-Spatial-B16-512 — spatial-fine-tuned PE, base width. d_pool=d_enc
-    # because pool_type="none" (no separate pooled output exists; downstream
-    # consumers use the token sequence directly).
+    # PE-Spatial-B16-512: d_pool=d_enc because pool_type="none" (no separate pooled
+    # output; consumers use the token sequence directly).
     "pe_spatial": EncoderInfo(
         name="pe_spatial",
         bucket_spec=get_bucket_spec("pe_spatial"),
@@ -230,9 +224,7 @@ _REGISTRY: dict[str, EncoderInfo] = {
 
 def get_encoder_info(name: str) -> EncoderInfo:
     if name not in _REGISTRY:
-        raise KeyError(
-            f"Unknown encoder {name!r}; available: {sorted(_REGISTRY)}"
-        )
+        raise KeyError(f"Unknown encoder {name!r}; available: {sorted(_REGISTRY)}")
     return _REGISTRY[name]
 
 

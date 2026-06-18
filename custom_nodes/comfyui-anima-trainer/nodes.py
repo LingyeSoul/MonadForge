@@ -141,7 +141,7 @@ def _resolve_daemon_client():
     The trainer node is self-contained: it talks to a running Anima daemon over
     localhost HTTP through the pure-stdlib client vendored under ``_vendor/``
     (kept verbatim-in-sync with the live ``scripts/daemon/client.py`` by
-    ``scripts/sync_vendor.py``). We import it via a *relative* import so we
+    ``scripts/release/sync_vendor.py``). We import it via a *relative* import so we
     never bind the generic top-level ``scripts`` name — the old live-first probe
     did ``import scripts.daemon.client`` against a ``../..`` it assumed was the
     repo, which is ComfyUI's root in a standalone install; that poisoned

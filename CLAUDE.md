@@ -114,7 +114,7 @@ Caches live under `post_image_dataset/lora/`: `{stem}_{WxH}_anima.npz` (VAE), `{
 
 Spectrum KSampler + mod-guidance nodes live in a separate repo (https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler; ships DCW scalar default `+0.01` + `auto` mode). The PiD decode node ships from its own repo too (https://github.com/sorryhyun/ComfyUI-Anima-PiD — full handoff 2026-06-04; symlinked into `../comfy/custom_nodes/comfyui-anima-pid`), as does the EasyControl KSampler node (`~/ComfyUI-EasyControl-KSamplerCompat`). In-tree under `custom_nodes/`: `comfyui-hydralora/` (Adapter / FeRA / Soft Tokens loaders — see its `CLAUDE.md` for the `forward_hook`-not-override invariant), `comfyui-anima-directedit/`, `comfyui-anima-tagger/`, `comfyui-anima-trainer/` (daemon-backed one-shot trainer), `comfyui-anima-blockcompile/`.
 
-Several nodes carry a `_vendor/` subset of the live tree. **Regenerate vendor trees with `make vendor-sync` (`scripts/sync_vendor.py`), never `cp` by hand** — re-run before every node publish. See [[feedback_vendor_sync]]. Note `../comfy/custom_nodes/` is symlinked into this repo — edit the source here, not the symlink.
+Several nodes carry a `_vendor/` subset of the live tree. **Regenerate vendor trees with `make vendor-sync` (`scripts/release/sync_vendor.py`), never `cp` by hand** — re-run before every node publish. See [[feedback_vendor_sync]]. Note `../comfy/custom_nodes/` is symlinked into this repo — edit the source here, not the symlink.
 
 ## External tools
 

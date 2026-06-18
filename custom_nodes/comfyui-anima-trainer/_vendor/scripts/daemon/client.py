@@ -115,8 +115,6 @@ class DaemonClient:
     def base(self) -> str:
         return f"http://{config.HOST}:{self.port}"
 
-    # ----- request plumbing -----
-
     def _request(
         self,
         method: str,
@@ -136,17 +134,11 @@ class DaemonClient:
             raw = resp.read()
         return json.loads(raw) if raw else None
 
-    # ----- typed endpoints -----
-
     def health(self, *, timeout: float = 3.0) -> Optional[dict]:
-        # Fast-fail when nothing is listening. On Windows, a TCP connect to a
-        # closed port isn't refused immediately — the stack retransmits SYN
-        # for ~2s before erroring — so a bare urlopen turns every "is the
-        # daemon up?" probe into a 2s stall (the GUI makes several at launch
-        # and on poll timers, on the UI thread). A raw connect with a short
-        # timeout bounds the daemon-down answer at 0.25s; when the daemon is
-        # up, loopback connects in microseconds and we proceed to the real
-        # request with the caller's (generous) timeout.
+        # Fast-fail when nothing is listening: on Windows a connect to a closed
+        # port isn't refused for ~2s (SYN retransmit), so a bare urlopen stalls
+        # every "is the daemon up?" probe (the GUI makes many, on the UI thread).
+        # A short raw connect bounds the daemon-down answer at 0.25s.
         try:
             with socket.create_connection((config.HOST, self.port), timeout=0.25):
                 pass
@@ -240,8 +232,6 @@ class DaemonClient:
         except (urllib.error.URLError, OSError, ValueError):
             return None
 
-    # ----- SSE streams -----
-
     def stream(self, path: str) -> Iterator[str]:
         """Yield ``data:`` payloads from an SSE endpoint until the socket drops."""
         req = urllib.request.Request(self.base + path, method="GET")
@@ -302,10 +292,8 @@ def ensure_daemon(
 
     config.ensure_state_dirs()
     proc.spawn_detached(
-        # pythonw.exe → no console at all: nothing to clutter the screen, and
-        # (the real fix) no window whose close button kills the daemon and
-        # strands the pidfile, which made every later `make gui` spawn a fresh
-        # one. Logs still go to daemon.log via the stdout redirect below.
+        # pythonw.exe → no console window whose close button would kill the
+        # daemon and strand the pidfile. Logs still go to daemon.log below.
         [venv_python(windowless=True), "-m", "scripts.daemon", str(requested)],
         cwd=config.ROOT,
         stdout_path=config.DAEMON_LOG,
