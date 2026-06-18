@@ -195,11 +195,19 @@ def test_variants_multi_artist_protected_from_dropout():
 # ----- identity randomization (lexinvariant tag regularization) -----------
 
 
+# Stub erasure pool — stands in for build_erasure_token_pool()'s dual-single words.
+_POOL = ["swing", "sodium", "awards", "covering", "largest", "album"]
+
+
 def test_randomize_keeps_v0_pristine():
     random.seed(0)
     raw = "@sincos, 1girl, blue hair"
     out = _gen_variants(
-        raw, num_variants=4, tag_dropout_rate=0.0, tag_randomize_rate=1.0
+        raw,
+        num_variants=4,
+        tag_dropout_rate=0.0,
+        tag_randomize_rate=1.0,
+        erasure_pool=_POOL,
     )
     # v0 is never randomized.
     assert out[0] == raw
@@ -207,19 +215,26 @@ def test_randomize_keeps_v0_pristine():
 
 def test_randomize_preserves_slot_count_and_erases_identity():
     random.seed(0)
-    # rate=1.0 with no dropout: every tag slot survives but every identity is
-    # replaced — the defining property vs dropout (which removes slots).
+    # rate=1.0 with no dropout: every tag slot survives but every post-prefix
+    # identity is replaced — the defining property vs dropout (removes slots).
     raw = "@artist, 1girl, blue hair, smile"
     out = _gen_variants(
-        raw, num_variants=8, tag_dropout_rate=0.0, tag_randomize_rate=1.0
+        raw,
+        num_variants=8,
+        tag_dropout_rate=0.0,
+        tag_randomize_rate=1.0,
+        erasure_pool=_POOL,
     )
-    original = {"@artist", "1girl", "blue hair", "smile"}
+    post_prefix = {"1girl", "blue hair", "smile"}
     for v in out[1:]:
         toks = [t.strip() for t in v.split(",")]
         assert len(toks) == 4  # slot count preserved (nothing dropped)
-        # Identity erased — including the @artist prefix (the trigger is the target).
-        assert not (set(toks) & original)
-        assert all(t.isalpha() and t.islower() for t in toks)
+        # The @artist prefix (the trigger) is now protected, not erased.
+        assert "@artist" in toks
+        # Every post-prefix identity is erased — replaced by a pool token.
+        assert not (set(toks) & post_prefix)
+        erased = [t for t in toks if t != "@artist"]
+        assert all(t in _POOL for t in erased)
 
 
 def test_randomize_respects_protect_fn_and_sentinel():
@@ -230,11 +245,61 @@ def test_randomize_respects_protect_fn_and_sentinel():
         tag_dropout_rate=0.0,
         tag_randomize_rate=1.0,
         protect_fn=lambda t: t == "keepme",
+        erasure_pool=_POOL,
     )
     for v in out[1:]:
         toks = [t.strip() for t in v.split(",")]
         assert NO_ARTIST_SENTINEL not in toks  # sentinel stripped, never emitted
         assert "keepme" in toks  # protected tag kept verbatim
+
+
+def test_randomize_without_pool_raises():
+    # No random-ASCII fallback: randomizing without a pool is a hard error.
+    import pytest
+
+    with pytest.raises(ValueError, match="erasure_pool"):
+        _gen_variants(
+            "@artist, 1girl, blue hair",
+            num_variants=4,
+            tag_dropout_rate=0.0,
+            tag_randomize_rate=1.0,
+        )
+
+
+def test_build_erasure_token_pool_dual_single_and_exclude():
+    from library.preprocess.text import build_erasure_token_pool
+
+    class _Qwen:
+        # Leading-space ("Ġ") lowercase-ascii alpha words are the Qwen3-single
+        # candidates; everything else is filtered before T5 is consulted.
+        def get_vocab(self):
+            return {
+                "Ġswing": 500,  # dual-single, kept
+                "Ġsodium": 501,  # dual-single, kept
+                "Ġsword": 502,  # dual-single but a REAL tag → excluded
+                "Ġcat": 503,  # too short (<4) → dropped
+                "ĠSwing": 504,  # not lowercase → dropped
+                "swing": 505,  # no leading space → dropped
+                "Ġxyzzy": 506,  # T5 fragments it → dropped
+            }
+
+    class _T5:
+        # Simulate sentencepiece: ", " is one token; a word is "single" iff in
+        # T5_SINGLE, else it fragments into 2.
+        T5_SINGLE = {"swing", "sodium", "sword"}
+
+        def __call__(self, text, add_special_tokens=False):
+            if text == ", ":
+                ids = [1]
+            else:
+                word = text[2:]  # strip ", "
+                ids = [1, 9] if word in self.T5_SINGLE else [1, 9, 9]
+            return {"input_ids": ids}
+
+    pool = build_erasure_token_pool(_Qwen(), _T5(), exclude={"sword"})
+    assert sorted(pool) == ["sodium", "swing"]  # xyzzy (T5-frag) + sword (tag) gone
+    # Missing tokenizer API → empty (caller treats as hard error upstream).
+    assert build_erasure_token_pool(object(), _T5()) == []
 
 
 # ----- r-family loader contract (use_randomized_caption_variants) ---------

@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 import os
 import random
-import string
 from collections.abc import Callable, Collection
 from pathlib import Path
 
@@ -25,20 +24,67 @@ from library.preprocess._progress import ProgressFn
 logger = logging.getLogger(__name__)
 
 
-def _random_nonsense_tag(min_len: int = 4, max_len: int = 9) -> str:
-    """A meaningless lowercase token used to *erase a tag's identity* while
-    keeping its slot (lexinvariant tag regularization, arXiv:2305.16349).
+def build_erasure_token_pool(
+    qwen3_tokenizer,
+    t5_tokenizer,
+    *,
+    exclude: Collection[str] | None = None,
+    min_len: int = 4,
+    max_len: int = 9,
+) -> list[str]:
+    """Pool of tokens used to *erase a tag's identity* while keeping its slot
+    (lexinvariant tag regularization, arXiv:2305.16349).
 
-    Drawn fresh on every call, so a given concept's slot is filled by a
-    *different* unreliable symbol across variants/sequences. With the literal
-    token unreliable, the adapter is pushed to ground the concept in the
-    surrounding structure (image content + co-occurring tags) rather than in the
-    exact trigger vector — i.e. role-based, not vector-based, binding. Distinct
-    from tag-dropout (which removes the slot) and from swapping in a *real* tag
-    (which would condition on a competing concept); see the proposal's §5 table.
+    A randomized slot is filled by a *different* pool token each draw, so the
+    literal symbol stays unreliable — pushing the adapter to ground the concept
+    in surrounding structure (image content + co-occurring tags) rather than the
+    exact trigger vector (role-based, not vector-based, binding). Per the cited
+    method the filler is a *real* vocab token, not gibberish: unreliability comes
+    from the per-draw variation, not from the symbol being intrinsically
+    meaningless. Distinct from tag-dropout (which removes the slot).
+
+    **Dual-single** is the load-bearing constraint. Anima tokenizes captions
+    twice — Qwen3 for the text encoder (``prompt_embeds``) *and* T5 for the LLM
+    adapter's target ids (``crossattn_emb``). A filler must therefore be exactly
+    one token in *both* vocabularies; otherwise it shreds into junk subword
+    pieces on whichever side fragments it (random ASCII fragments in Qwen3; rare
+    foreign tokens are clean in Qwen3 but explode in T5's English-centric
+    sentencepiece). We pick lowercase ascii alphabetic words and keep only those
+    that survive as a single token in both. ``exclude`` (the dataset's real tags)
+    drops any word that is itself a genuine tag, so a filler is never mistakable
+    for a true concept. Returns bare words (no leading space).
+
+    Selection keys off the ``Ġ`` (leading-space) Qwen3 vocab form — exact for
+    this token class (verified: heuristic == round-trip), so no Qwen3 re-encode
+    is needed; only the T5 single-token property is checked at runtime.
     """
-    n = random.randint(min_len, max_len)
-    return "".join(random.choices(string.ascii_lowercase, k=n))
+    excl = {t.lower() for t in exclude} if exclude else set()
+    try:
+        vocab = qwen3_tokenizer.get_vocab()
+    except Exception:
+        return []
+    # Qwen3-single candidates (cheap, pure vocab): leading-space lowercase ascii.
+    candidates = sorted(
+        sym[1:]
+        for sym in vocab
+        if sym.startswith("Ġ")
+        and (core := sym[1:]).isascii()
+        and core.isalpha()
+        and core.islower()
+        and min_len <= len(core) <= max_len
+        and core not in excl
+    )
+    # Keep only those that are also a single T5 token in a ``", "``-joined caption.
+    try:
+        t5_base = len(t5_tokenizer(", ", add_special_tokens=False)["input_ids"])
+    except Exception:
+        return []
+    pool: list[str] = []
+    for word in candidates:
+        ids = t5_tokenizer(", " + word, add_special_tokens=False)["input_ids"]
+        if len(ids) - t5_base == 1:
+            pool.append(word)
+    return pool
 
 
 def generate_caption_variants(
@@ -47,31 +93,44 @@ def generate_caption_variants(
     tag_dropout_rate: float,
     protect_fn: Callable[[str], bool] | None = None,
     tag_randomize_rate: float = 0.0,
+    erasure_pool: Collection[str] | None = None,
 ) -> list[str]:
     """Generate ``num_variants`` caption variants for stochastic train-time sampling.
 
     v0 = pristine original caption. v1..v{N-1} are smart-shuffled (preserving
     the @artist prefix and section anchors), then every tag *after* the prefix
     is independently dropped with probability ``tag_dropout_rate``, then every
-    surviving tag has its identity erased (replaced by a fresh meaningless token)
-    with probability ``tag_randomize_rate``. The ``@no-artist`` sentinel
-    participates in the boundary but is stripped from every variant (including
-    v0) before it is written.
+    surviving tag *after the prefix* has its identity erased (replaced by a fresh
+    vocab token drawn from ``erasure_pool``) with probability
+    ``tag_randomize_rate``. The ``@no-artist`` sentinel participates in the
+    boundary but is stripped from every variant (including v0) before it is
+    written.
 
     ``protect_fn`` (when given) marks tags that must survive tag-dropout *and*
     tag-randomization: a tag for which it returns True is always kept verbatim
     even past the @artist prefix. It is still subject to shuffling. Used by the
     colorize prep to keep copyright tags present/intact in every variant.
 
-    Tag-dropout is *presence*-axis (and prefix-protected); tag-randomize is the
-    *identity* axis and **intentionally includes the @artist prefix**, because
-    the concept/trigger tag (artist handle or character tag) is precisely the
-    symbol whose over-binding this regularizer targets. Section headers
-    (``On the …`` / ``In the …``) and the sentinel are never randomized.
+    Both axes are **prefix-protected**: tag-dropout is the *presence* axis and
+    tag-randomize is the *identity* axis, and neither touches the @artist prefix
+    (the trigger tag stays intact, only tags *after* ``split_idx`` are
+    randomized). Section headers (``On the …`` / ``In the …``) and the sentinel
+    are never randomized either.
+
+    ``erasure_pool`` (see :func:`build_erasure_token_pool`) is the source of
+    erasure symbols: each randomized slot draws a fresh dual-single vocab token
+    (clean one-token in both Qwen3 and T5). It is **required** whenever
+    ``tag_randomize_rate > 0`` (no random-ASCII fallback); ignored otherwise.
     """
     from library.anima import training as anima_train_utils
 
     sentinel = anima_train_utils.NO_ARTIST_SENTINEL
+    if tag_randomize_rate > 0.0 and not erasure_pool:
+        raise ValueError(
+            "tag_randomize_rate > 0 requires a non-empty erasure_pool "
+            "(build_erasure_token_pool); there is no random-ASCII fallback."
+        )
+    pool = list(erasure_pool) if erasure_pool else None
 
     tags = [t.strip() for t in caption.split(",")]
     split_idx = anima_train_utils.find_anima_prefix_end(tags)
@@ -97,15 +156,16 @@ def generate_caption_variants(
             shuffled = kept
         if tag_randomize_rate > 0.0:
             shuffled = [
-                _random_nonsense_tag()
+                random.choice(pool)
                 if (
-                    tag != sentinel
+                    i >= split_idx
+                    and tag != sentinel
                     and not tag.startswith(("On the ", "In the "))
                     and not (protect_fn is not None and protect_fn(tag))
                     and random.random() < tag_randomize_rate
                 )
                 else tag
-                for tag in shuffled
+                for i, tag in enumerate(shuffled)
             ]
         shuffled = anima_train_utils.strip_no_artist_sentinel(shuffled)
         variants.append(", ".join(shuffled))
@@ -380,6 +440,31 @@ def cache_text_embeddings(
     # use_randomized_caption_variants. Needs >=2 variants (r1..r{N-1}).
     want_randomized = tag_randomize_rate > 0.0 and n_variants >= 2
     n_rand = (n_variants - 1) if want_randomized else 0
+    # Dual-single erasure pool, built once: words that are exactly one token in
+    # *both* Qwen3 and T5, minus this dataset's real tags (so a filler is never a
+    # genuine tag). Built from the loaded strategy's two tokenizers.
+    erasure_pool = None
+    if want_randomized:
+        real_tags = {
+            t.strip().lower() for _, cap in entries for t in cap.split(",") if t.strip()
+        }
+        erasure_pool = build_erasure_token_pool(
+            getattr(tokenize_strategy, "qwen3_tokenizer", None),
+            getattr(tokenize_strategy, "t5_tokenizer", None),
+            exclude=real_tags,
+        )
+        if not erasure_pool:
+            raise ValueError(
+                "Identity-randomize requested but the erasure-token pool is empty "
+                "(strategy lacks qwen3_tokenizer/t5_tokenizer or no qualifying "
+                "tokens) -- cannot erase tag identity without it."
+            )
+        if verbose:
+            print(
+                f"Identity-randomize: erasure pool of {len(erasure_pool)} "
+                "dual-single tokens "
+                f"(excluded {len(real_tags)} real tags)"
+            )
 
     from safetensors.torch import save_file
 
@@ -456,6 +541,7 @@ def cache_text_embeddings(
                         tag_dropout_rate,
                         caption_protect_fn,
                         tag_randomize_rate=tag_randomize_rate,
+                        erasure_pool=erasure_pool,
                     )
                     all_captions.extend(r_list[1:])  # share v0 as the anchor
 

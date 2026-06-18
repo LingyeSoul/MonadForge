@@ -36,7 +36,7 @@ def cmd_comfy_batch(extra):
         make comfy-batch W=colorize.json IMAGES=/path/to/imgs
     """
     workflow = os.environ.get("W") or (
-        extra[0] if extra else "workflows/modhydra-simple.json"
+        extra[0] if extra else "workflows/modhydra.json"
     )
     if os.sep not in workflow and "/" not in workflow:
         workflow = f"workflows/{workflow}"
