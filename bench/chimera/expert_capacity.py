@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Per-expert capability of the frozen-Cayley chimera levers.
 
 Question: do ``expert_basis_mult`` (over-complete pool + Stiefel select) and
@@ -16,12 +15,11 @@ residual = a richer reachable ΔW per expert. We report the fit residual for:
 Cross-expert orthogonality of the fitted ups is reported alongside, to confirm
 the expander does not buy expressivity by collapsing experts together.
 
-CPU, a few hundred Adam steps — runs in seconds. Drops the standard envelope.
+CPU, a few hundred Adam steps — runs in seconds.
 """
 
 from __future__ import annotations
 
-import argparse
 from unittest import mock
 
 import torch
@@ -29,16 +27,15 @@ import torch
 from bench._common import make_run_dir, write_result
 from networks.lora_modules.chimera import ChimeraHydraLoRAModule
 
+NAME = "expert_capacity"
 OUT_F, IN_F, R, K_C, K_F = 128, 64, 4, 2, 2
 
 
-def parse_args():
-    p = argparse.ArgumentParser()
+def add_args(p):
     p.add_argument("--steps", type=int, default=400)
     p.add_argument("--lr", type=float, default=5e-2)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--label", default=None)
-    return p.parse_args()
 
 
 def _build(basis_mult, diag, seed):
@@ -76,7 +73,6 @@ def _cross_cos(m):
     with torch.no_grad():
         eye = torch.eye(IN_F, dtype=torch.bfloat16)
         _ = _delta_pred(m, eye)  # warm the rotation
-    # Reconstruct effective content ups from the live params.
     r = R
     skew = m.S_p_c
     A = skew - skew.transpose(-2, -1)
@@ -107,18 +103,16 @@ def _fit(m, target, steps, lr):
     return t0, loss.item()
 
 
-def main():
-    args = parse_args()
+def run(args):
     torch.manual_seed(args.seed)
     # Target: the effective ΔW of a randomly-rotated over-complete (m=2, diag)
     # teacher. By construction it lives in the experts' 2r pools using directions
     # OUTSIDE the canonical r-slice — representable by an m=2 student, only
     # partially by an m=1 student. This isolates the subspace+magnitude DOF the
     # levers add (a full-rank random target is unreachable by any rank-K·r
-    # adapter, so it can't separate the configs).
-    # Same seed as the students ⇒ identical frozen U/V bases, so the m=2
-    # student shares the teacher's pools and the contrast is purely the
-    # parameterization's reach, not a different base weight.
+    # adapter, so it can't separate the configs). Same seed as the students ⇒
+    # identical frozen U/V bases, so the m=2 student shares the teacher's pools
+    # and the contrast is purely the parameterization's reach.
     teacher = _build(2, True, args.seed)
     with torch.no_grad():
         for p in (teacher.S_p_c, teacher.S_p_f, teacher.S_q_c, teacher.S_q_f):
@@ -157,20 +151,11 @@ def main():
         "overcomplete_gain": base_mse / results["m2_diag"]["final_mse"],
         "steps": args.steps,
     }
-    run_dir = make_run_dir("chimera_expert_capacity", label=args.label)
-    write_result(
-        run_dir,
-        script=__file__,
-        args=vars(args),
-        metrics=metrics,
-        device="cpu",
-    )
+    label = f"{NAME}-{args.label}" if args.label else NAME
+    run_dir = make_run_dir("chimera", label=label)
+    write_result(run_dir, script=__file__, args=vars(args), metrics=metrics, device="cpu")
     print(
         f"\ndiag gain × {metrics['diag_gain']:.2f}, "
         f"overcomplete+diag gain × {metrics['overcomplete_gain']:.2f}"
     )
     print(f"wrote {run_dir / 'result.json'}")
-
-
-if __name__ == "__main__":
-    main()
