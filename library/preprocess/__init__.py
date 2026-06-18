@@ -38,7 +38,6 @@ _LAZY = {
     "delete_stale": ("reconcile", "delete_stale"),
     "reconcile_caches": ("reconcile", "reconcile_caches"),
     "StaleCaches": ("reconcile", "StaleCaches"),
-    "cache_pooled_text": ("text", "cache_pooled_text"),
     "cache_text_embeddings": ("text", "cache_text_embeddings"),
     "count_pending_text": ("text", "count_pending_text"),
     "generate_caption_variants": ("text", "generate_caption_variants"),

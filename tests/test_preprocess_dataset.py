@@ -304,13 +304,6 @@ def test_count_pending_text_keep_rel_stems_filters_nested_paths(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def _write_te_cache(path: Path, crossattn: "object") -> None:
-    from safetensors.torch import save_file
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    save_file({"crossattn_emb": crossattn}, str(path))
-
-
 def test_count_preprocess_caches_is_pe_encoder_aware(tmp_path: Path) -> None:
     # Regression: the PE sidecar suffix is ``_anima_{encoder}.safetensors`` and
     # the default REPA encoder is ``pe_spatial`` — counting must default to that,
@@ -333,37 +326,6 @@ def test_count_preprocess_caches_is_pe_encoder_aware(tmp_path: Path) -> None:
 
     # Asking for the PE-Core encoder finds no matching sidecar.
     assert count_preprocess_caches(tmp_path, pe_encoder="pe")["pe"] == 0
-
-
-def test_cache_pooled_text_pools_and_is_idempotent(tmp_path: Path) -> None:
-    import torch
-    from safetensors.torch import load_file
-
-    from library.io.cache import POOLED_CACHE_SUFFIX, TE_CACHE_SUFFIX
-    from library.preprocess import cache_pooled_text
-
-    crossattn = torch.randn(5, 4)
-    te_path = tmp_path / f"img1{TE_CACHE_SUFFIX}"
-    _write_te_cache(te_path, crossattn)
-    # A TE cache with no crossattn key -> counted as failed.
-    from safetensors.torch import save_file
-
-    bad = tmp_path / f"img2{TE_CACHE_SUFFIX}"
-    save_file({"prompt_embeds": torch.zeros(2, 2)}, str(bad))
-
-    stats = cache_pooled_text(tmp_path)
-    assert stats.seen == 2
-    assert stats.written == 1
-    assert stats.failed == 1
-
-    pooled_path = tmp_path / f"img1{POOLED_CACHE_SUFFIX}"
-    pooled = load_file(str(pooled_path))["pooled"]
-    assert torch.allclose(pooled, crossattn.amax(dim=0))
-
-    # Re-run: the written sidecar is skipped (idempotent).
-    stats2 = cache_pooled_text(tmp_path)
-    assert stats2.written == 0
-    assert stats2.skipped == 1
 
 
 def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:

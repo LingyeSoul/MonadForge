@@ -1,10 +1,9 @@
-"""Cache text-encoder (Qwen3) outputs and the pooled-text sidecar.
+"""Cache text-encoder (Qwen3) outputs.
 
-Orchestration extracted from ``preprocess/cache_text_embeddings.py`` and
-``preprocess/cache_pooled_text.py`` (see
-``docs/proposal/tooling_architecture.md`` §A). The scripts keep argparse + model
-load + uncond staging; the caption-variant generation, the batched
-tokenize→encode→(LLM-adapter)→save loop, and the pooled reduction live here.
+Orchestration extracted from ``preprocess/cache_text_embeddings.py`` (see
+``docs/proposal/tooling_architecture.md`` §A). The script keeps argparse + model
+load + uncond staging; the caption-variant generation and the batched
+tokenize→encode→(LLM-adapter)→save loop live here.
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 
-from library.io.cache import POOLED_CACHE_SUFFIX, TE_CACHE_SUFFIX, resolve_cache_path
+from library.io.cache import TE_CACHE_SUFFIX, resolve_cache_path
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 
@@ -173,10 +172,19 @@ def _walk_te_candidates(
                 "(resized outputs only)."
             )
 
+    # The per-image header open below exists only to mirror the resize-time
+    # min_pixels drop. When a ``keep_*`` filter is active the candidate set is
+    # already the resized/curated outputs — every survivor passed min_pixels at
+    # resize — so re-opening each (large, original) source image just to re-derive
+    # that fact is pure I/O waste. Skip it; the matched set is the authority.
+    # (TE only needs the caption ``.txt``, never the image pixels.)
+    already_filtered = keep_stems is not None or keep_rel_stems is not None
+    check_pixels = min_pixels > 0 and not already_filtered
+
     kept: list[Path] = []
     skipped_small = 0
     for p in candidates:
-        if min_pixels > 0:
+        if check_pixels:
             try:
                 with Image.open(p) as im:
                     w, h = im.size
@@ -397,65 +405,5 @@ def cache_text_embeddings(
                 stats.written += 1
                 if progress is not None:
                     progress(1, detail=f"{img_path.name} ({n_variants}v)")
-
-    return stats
-
-
-def _emit_pooled(te_path: Path, pooled_path: Path) -> bool:
-    from safetensors.torch import load_file, save_file
-
-    sd = load_file(str(te_path))
-    out: dict = {}
-
-    if "num_variants" in sd:
-        n = int(sd["num_variants"])
-        out["num_variants"] = sd["num_variants"]
-        for vi in range(n):
-            key = f"crossattn_emb_v{vi}"
-            if key in sd:
-                out[f"pooled_v{vi}"] = sd[key].amax(dim=0).contiguous()
-        if not any(k.startswith("pooled_v") for k in out):
-            return False
-    elif "crossattn_emb_v0" in sd:
-        out["pooled_v0"] = sd["crossattn_emb_v0"].amax(dim=0).contiguous()
-    elif "crossattn_emb" in sd:
-        out["pooled"] = sd["crossattn_emb"].amax(dim=0).contiguous()
-    else:
-        return False
-
-    save_file(out, str(pooled_path))
-    return True
-
-
-def cache_pooled_text(
-    cache_dir: Path,
-    *,
-    overwrite: bool = False,
-    progress: ProgressFn | None = None,
-) -> PreprocessStats:
-    """Write ``{stem}_anima_pooled.safetensors`` next to each TE cache.
-
-    ``pooled_v{i} = crossattn_emb_v{i}.amax(dim=0)`` for every variant present.
-    Walks ``cache_dir`` recursively (nested caches mirror the source tree). Pure
-    tensor reduction — no GPU / text encoder. ``failed`` counts TE files that
-    carry no ``crossattn`` key. Returns counts; pass ``progress`` for a bar.
-    """
-    te_files = sorted(cache_dir.rglob(f"*{TE_CACHE_SUFFIX}"))
-    stats = PreprocessStats(seen=len(te_files))
-
-    if progress is not None:
-        progress(0, total=len(te_files))
-
-    for te_path in te_files:
-        stem = te_path.name.removesuffix(TE_CACHE_SUFFIX)
-        pooled_path = te_path.parent / (stem + POOLED_CACHE_SUFFIX)
-        if pooled_path.exists() and not overwrite:
-            stats.skipped += 1
-        elif _emit_pooled(te_path, pooled_path):
-            stats.written += 1
-        else:
-            stats.failed += 1
-        if progress is not None:
-            progress(1, detail=stem)
 
     return stats
