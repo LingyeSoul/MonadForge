@@ -32,7 +32,6 @@ Usage:
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import math
 import os
@@ -42,12 +41,11 @@ import random
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
-from torch.utils.tensorboard import SummaryWriter  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
-from library.datasets.buckets import is_freefit_token_counts  # noqa: E402
+from library.config.resolved import dataclass_tb_text  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
 from library.io.cache import (  # noqa: E402
@@ -59,6 +57,11 @@ from library.runtime.harness import (  # noqa: E402
     compile_dit_blocks_for_pool,
     enable_training_grad_ckpt,
     place_dit_for_training,
+)
+from library.training.distill_runtime import (  # noqa: E402
+    create_tb_writer,
+    ensure_dynamic_seq_for_freefit,
+    resolve_device_dtype,
 )
 from library.training.forward import (  # noqa: E402
     PadCache,
@@ -190,8 +193,7 @@ def main():
         logger.info(f"Dry run OK: {total} batches, no collation errors.")
         return
 
-    device = torch.device("cuda")
-    dtype = torch.bfloat16
+    device, dtype = resolve_device_dtype()
 
     # Load the T5("") uncond sidecar (staged by `make distill-prep`).
     uncond_te_path = cfg.uncond_te_path or str(default_uncond_path())
@@ -249,18 +251,11 @@ def main():
         # logic so it stays here; the rest is the shared library helper.
         token_counts = _pool_token_counts(cfg, model.patch_spatial)
         # Free-fit fail-safe (mirrors train.py's auto-enable, which never reaches
-        # this bespoke loop — project_daemon_wiring_pattern): a free-fit pool lands
-        # many distinct token counts inside one tier's band, so the static per-count
-        # compile cascade would explode + poison the compile cache. cfg is frozen →
-        # local override.
-        dynamic_seq = cfg.compile_dynamic_seq
-        if not dynamic_seq and is_freefit_token_counts(token_counts):
-            logger.warning(
-                "freefit pool detected (pool token counts off the bucket table); "
-                "auto-enabling dynamic_seq — free-fit shapes need the single-graph "
-                "dynamic-seq path (static compile would explode the graph cascade)"
-            )
-            dynamic_seq = True
+        # this bespoke loop — project_daemon_wiring_pattern). cfg is frozen → local
+        # override.
+        dynamic_seq = ensure_dynamic_seq_for_freefit(
+            token_counts, cfg.compile_dynamic_seq, logger=logger
+        )
         pc = compile_dit_blocks_for_pool(
             model,
             token_counts,
@@ -412,19 +407,9 @@ def main():
 
     os.makedirs(os.path.dirname(cfg.output_path) or ".", exist_ok=True)
 
-    writer = None
-    if not cfg.no_log:
-        from datetime import datetime
-
-        run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run_log_dir = os.path.join(cfg.log_dir, run_name)
-        os.makedirs(run_log_dir, exist_ok=True)
-        writer = SummaryWriter(log_dir=run_log_dir)
-        writer.add_text(
-            "config",
-            "  \n".join(f"{k}: {v}" for k, v in dataclasses.asdict(cfg).items()),
-        )
-        logger.info(f"TensorBoard logs -> {run_log_dir}")
+    writer, _run_log = create_tb_writer(
+        cfg.log_dir, dataclass_tb_text(cfg), enabled=not cfg.no_log, logger=logger
+    )
 
     # GAD setup. gad_weight=0 → fully off (no extra forwards, bit-for-bit the
     # MSE-only path). Resolve the perturbation-pair source against batch_size.

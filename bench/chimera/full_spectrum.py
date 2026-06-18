@@ -24,16 +24,34 @@ capture and top-slice cannot? Two parts, both on the REAL Anima DiT weights:
   * Part B — the decisive real signal (auto, needs DiT + a freely-trained LoRA).
     A free LoRA's ΔW is NOT caged, so where its energy lands in the base
     weight's singular spectrum tells us where unconstrained training *wants* to
-    put mass. For every matched Linear: SVD the base ``W``, project ``ΔW`` onto
-    ``W``'s left/right singular directions, report the fraction of ΔW energy
-    whose singular index sits **beyond the top slice**. High ⇒ full-spectrum
-    has headroom ⇒ run the training A/B. Near zero ⇒ top-slice already captures
-    it ⇒ don't bother.
+    put mass. For every matched Linear we SVD the base ``W`` and ask the only
+    decision-relevant question with the SAME analytic cage Part A uses: of the
+    real ΔW, what fraction would each seeding actually *reconstruct*?
+
+      cap_seed = ‖P_seedᵀ ΔW Q_seed‖² / ‖ΔW‖²
+
+    Three cages — ``top`` (chimera today), ``spectrum`` (MedQwen relocation),
+    and a sampled ``random`` index set of the same widths (the null). The
+    verdict is **relative**: full-spectrum has headroom only if it both beats
+    the top-slice (``cap_spectrum − cap_top``) *and* beats the random cage —
+    otherwise the energy is just diffuse and any equal-width band set catches
+    the same amount (⇒ needs **rank**, not relocated bands).
+
+    Why the old "fraction beyond the top slice" marginal was not enough: it is
+    one-sided and rewards *any* tail energy, including energy spread uniformly
+    across the tail that no narrow strided band can capture. We keep it as
+    context but add a **band-concentration enrichment** per axis: of the
+    beyond-top energy, the fraction landing inside the strided spectrum bands
+    divided by the fraction of the tail those bands cover. ``enrichment ≫ 1`` ⇒
+    band-concentrated, full-spectrum-capturable; ``≈ 1`` ⇒ diffuse, needs rank.
 
 Caveat (Part B): the free LoRA was trained on its own task; it is the best
 offline proxy for "where free training puts ΔW", not chimera's exact target.
-Runs end-to-end on GPU when available (the per-layer SVD + projection matmuls
-are the expensive part); falls back to CPU.
+Control it — point ``--lora`` at a converged, full-data, **plain** (no
+ortho / ortho_init) LoRA over the same Linears; an ``use_ortho_init`` ckpt is
+top-32-seeded and structurally invalid here. Runs end-to-end on GPU when
+available (the per-layer SVD + projection matmuls are the expensive part);
+falls back to CPU.
 """
 
 from __future__ import annotations
@@ -156,12 +174,22 @@ def _part_a(args, W):
     deep_left = next(s for s in reversed(p_bands) if s + R <= U.shape[1])
     targets = {
         "easy_band": (torch.arange(0, R), torch.arange(0, R)),
-        "deep_band": (torch.arange(deep_left, deep_left + R), torch.arange(segR, segR + R)),
+        "deep_band": (
+            torch.arange(deep_left, deep_left + R),
+            torch.arange(segR, segR + R),
+        ),
     }
     results = {}
     for seeding, bands in (("top", top), ("spectrum", spectrum)):
         for tname, (li, ri) in targets.items():
-            cap = _capture(U, V, bands["P"].to(U.device), bands["Q"].to(U.device), li.to(U.device), ri.to(U.device))
+            cap = _capture(
+                U,
+                V,
+                bands["P"].to(U.device),
+                bands["Q"].to(U.device),
+                li.to(U.device),
+                ri.to(U.device),
+            )
             results[f"{seeding}/{tname}"] = cap
             print(f"  {seeding:8s} {tname:10s} frac_captured={cap:.3f}")
     out["captured"] = results
@@ -177,6 +205,60 @@ def _part_a(args, W):
 # ---------------------------------------------------------------------------
 
 
+def _cage_capture(dW, U, V, P_idx, Q_idx):
+    """Fraction of the REAL ΔW a frozen-Cayley cage (``col ⊆ span(U[:,P]))``,
+    ``row ⊆ span(V[:,Q])``) can reconstruct: ``‖PᵀΔW Q‖²/‖ΔW‖²``. Same analytic
+    projection as Part A's ``_capture`` but with the trained ΔW as the target —
+    no fit, no gate confounds."""
+    P, Q = U[:, P_idx], V[:, Q_idx]
+    num = (P.T @ dW @ Q).pow(2).sum()
+    return float(num / dW.pow(2).sum().clamp_min(1e-30))
+
+
+def _rand_cage_capture(dW, U, V, n_p, n_q, seed, trials=4):
+    """Null: mean capture of a random index set of the same widths. If the
+    spectrum cage can't beat this, ΔW is diffuse and relocating bands buys
+    nothing over any equal-width set (the energy needs rank, not a new basis)."""
+    k = U.shape[1]
+    g = torch.Generator(device=U.device).manual_seed(seed)
+    vals = [
+        _cage_capture(
+            dW,
+            U,
+            V,
+            torch.randperm(k, generator=g, device=U.device)[:n_p],
+            torch.randperm(k, generator=g, device=U.device)[:n_q],
+        )
+        for _ in range(trials)
+    ]
+    return float(torch.tensor(vals).mean())
+
+
+def _band_enrichment(energy, band_idx, top_boundary, k):
+    """Of the beyond-top energy on one axis, how concentrated is it in the
+    strided spectrum bands vs spread uniformly across the tail?
+
+    ``enrichment = (in-band fraction of beyond-top energy) / (fraction of the
+    tail the bands cover)``. ``≫ 1`` ⇒ band-concentrated (full-spectrum can
+    grab it); ``≈ 1`` ⇒ diffuse (only rank helps)."""
+    top = min(top_boundary, k)
+    tail_n = k - top
+    if tail_n <= 0:
+        return None
+    beyond = energy[top:].sum().clamp_min(1e-30)
+    band_in_tail = band_idx[band_idx >= top]
+    in_band = (
+        energy[band_in_tail].sum() if band_in_tail.numel() else energy.new_zeros(())
+    )
+    coverage = band_in_tail.numel() / tail_n  # uniform-null in-band fraction
+    in_band_frac = float(in_band / beyond)
+    return {
+        "in_band_frac": in_band_frac,
+        "band_coverage": coverage,
+        "enrichment": (in_band_frac / coverage) if coverage > 0 else None,
+    }
+
+
 def _lora_to_dit_key(prefix: str) -> str | None:
     """``lora_unet_blocks_0_mlp_layer1`` → ``net.blocks.0.mlp.layer1.weight``.
 
@@ -185,7 +267,7 @@ def _lora_to_dit_key(prefix: str) -> str | None:
     for the leaf names we care about (mlp + the split attn projections)."""
     if not prefix.startswith("lora_unet_"):
         return None
-    return f"net.{prefix[len('lora_unet_'):].replace('_', '.')}.weight"
+    return f"net.{prefix[len('lora_unet_') :].replace('_', '.')}.weight"
 
 
 def _part_b(args):
@@ -202,7 +284,20 @@ def _part_b(args):
     df = safe_open(str(dit_path), "pt")
     dit_keys = set(df.keys())
 
-    per_layer, mlp_left, all_left, all_right = [], [], [], []
+    per_layer = []
+    agg = {
+        k: []
+        for k in (
+            "cap_top",
+            "cap_spectrum",
+            "cap_random",
+            "headroom",
+            "lb",
+            "rb",
+            "enr_left",
+            "enr_right",
+        )
+    }
     n = 0
     for prefix in prefixes:
         if n >= args.max_layers:
@@ -223,13 +318,27 @@ def _part_b(args):
             continue
         U, S, Vh = torch.linalg.svd(W, full_matrices=False)
         V = Vh.T
+        k = S.shape[0]
         left = (U.T @ dW).pow(2).sum(dim=1)  # (k,) energy per left-singular idx
         right = (dW @ V).pow(2).sum(dim=0)  # (k,) energy per right-singular idx
         lt, rt = left.sum().clamp_min(1e-30), right.sum().clamp_min(1e-30)
-        k = S.shape[0]
         idx = torch.arange(k, device=DEVICE, dtype=torch.float32)
         lb = float(left[min(N_LEFT, k) :].sum() / lt)
         rb = float(right[min(N_RIGHT, k) :].sum() / rt)
+
+        # Sharpened, decision-relevant signal: two-sided cage capture of the
+        # real ΔW under each seeding, vs a same-width random null.
+        top, spectrum, _, _ = _seed_bands(U, V)
+        p_top, q_top = top["P"].to(DEVICE), top["Q"].to(DEVICE)
+        p_spec, q_spec = spectrum["P"].to(DEVICE), spectrum["Q"].to(DEVICE)
+        cap_top = _cage_capture(dW, U, V, p_top, q_top)
+        cap_spec = _cage_capture(dW, U, V, p_spec, q_spec)
+        cap_rand = _rand_cage_capture(
+            dW, U, V, p_spec.numel(), q_spec.numel(), args.seed + n
+        )
+        enr_l = _band_enrichment(left, spectrum["P"].to(DEVICE), N_LEFT, k)
+        enr_r = _band_enrichment(right, spectrum["Q"].to(DEVICE), N_RIGHT, k)
+
         per_layer.append(
             {
                 "key": dkey,
@@ -237,12 +346,24 @@ def _part_b(args):
                 "right_energy_beyond_top_slice": rb,
                 "left_centroid_frac": float((left * idx).sum() / lt / k),
                 "right_centroid_frac": float((right * idx).sum() / rt / k),
+                "cap_top": cap_top,
+                "cap_spectrum": cap_spec,
+                "cap_random": cap_rand,
+                "headroom_spectrum_over_top": cap_spec - cap_top,
+                "left_band_enrichment": enr_l,
+                "right_band_enrichment": enr_r,
             }
         )
-        all_left.append(lb)
-        all_right.append(rb)
-        if "mlp" in dkey:
-            mlp_left.append(lb)
+        agg["cap_top"].append(cap_top)
+        agg["cap_spectrum"].append(cap_spec)
+        agg["cap_random"].append(cap_rand)
+        agg["headroom"].append(cap_spec - cap_top)
+        agg["lb"].append(lb)
+        agg["rb"].append(rb)
+        if enr_l and enr_l["enrichment"] is not None:
+            agg["enr_left"].append(enr_l["enrichment"])
+        if enr_r and enr_r["enrichment"] is not None:
+            agg["enr_right"].append(enr_r["enrichment"])
         n += 1
 
     def _med(xs):
@@ -253,9 +374,17 @@ def _part_b(args):
         "n_layers": len(per_layer),
         "N_left_boundary": N_LEFT,
         "N_right_boundary": N_RIGHT,
-        "median_left_energy_beyond_top_slice": _med(all_left),
-        "median_right_energy_beyond_top_slice": _med(all_right),
-        "median_mlp_left_energy_beyond_top_slice": _med(mlp_left),
+        # legacy one-sided marginals (context only — see docstring)
+        "median_left_energy_beyond_top_slice": _med(agg["lb"]),
+        "median_right_energy_beyond_top_slice": _med(agg["rb"]),
+        # sharpened decision metric: cage capture of the real ΔW
+        "median_cap_top": _med(agg["cap_top"]),
+        "median_cap_spectrum": _med(agg["cap_spectrum"]),
+        "median_cap_random": _med(agg["cap_random"]),
+        "median_headroom_spectrum_over_top": _med(agg["headroom"]),
+        # band-concentration enrichment (≫1 band-concentrated, ≈1 diffuse)
+        "median_left_band_enrichment": _med(agg["enr_left"]),
+        "median_right_band_enrichment": _med(agg["enr_right"]),
         "per_layer": per_layer,
     }
 
@@ -277,25 +406,49 @@ def run(args):
     if "skipped" in b:
         print(f"  SKIPPED: {b['skipped']}")
     else:
+        ct, cs, cr = (
+            b["median_cap_top"],
+            b["median_cap_spectrum"],
+            b["median_cap_random"],
+        )
+        head = b["median_headroom_spectrum_over_top"]
+        enr = max(
+            b["median_left_band_enrichment"] or 0.0,
+            b["median_right_band_enrichment"] or 0.0,
+        )
+        print(f"  proxy={b['lora']}  layers={b['n_layers']}")
         print(
-            f"  layers={b['n_layers']}  median ΔW energy beyond top-slice: "
+            f"  cage capture of real ΔW: top={ct:.4f}  spectrum={cs:.4f}  "
+            f"random-null={cr:.4f}  (headroom spectrum−top={head:+.4f})"
+        )
+        print(
+            f"  band enrichment (≫1 concentrated / ≈1 diffuse): "
+            f"left={b['median_left_band_enrichment']} "
+            f"right={b['median_right_band_enrichment']}"
+        )
+        print(
+            f"  [context] one-sided energy beyond top-slice: "
             f"left={b['median_left_energy_beyond_top_slice']:.3f} "
-            f"right={b['median_right_energy_beyond_top_slice']:.3f} "
-            f"(mlp left={b['median_mlp_left_energy_beyond_top_slice']})"
+            f"right={b['median_right_energy_beyond_top_slice']:.3f}"
         )
-        hi = max(
-            b["median_left_energy_beyond_top_slice"] or 0.0,
-            b["median_right_energy_beyond_top_slice"] or 0.0,
-        )
-        print(
-            "verdict:",
-            "HEADROOM — ship the training A/B"
-            if hi > 0.3
-            else "top-slice already captures ΔW — full-spectrum unlikely to help",
-        )
+        # Relative verdict — full-spectrum earns the A/B only if it reconstructs
+        # meaningfully more of the real ΔW than BOTH the top-slice AND a random
+        # equal-width cage, and the tail energy is band-concentrated (not diffuse).
+        beats_top = head > 0.02
+        beats_null = (cs - cr) > 0.02
+        concentrated = enr > 1.3
+        if beats_top and beats_null and concentrated:
+            verdict = "HEADROOM — full-spectrum beats top-slice & random null and ΔW is band-concentrated ⇒ ship the training A/B"
+        elif not concentrated and not beats_null:
+            verdict = "DIFFUSE — spectrum ≈ random null & no band concentration ⇒ needs RANK, not relocated bands; do NOT ship full-spectrum"
+        else:
+            verdict = "TOP-SUFFICIENT/PROXY-WEAK — top-slice already captures ΔW (or signal too weak to gate); do NOT ship on this proxy"
+        print("verdict:", verdict)
 
     metrics = {"part_a_reach": a, "part_b_free_lora_localization": b}
     label = f"{NAME}-{args.label}" if args.label else NAME
     run_dir = make_run_dir("chimera", label=label)
-    write_result(run_dir, script=__file__, args=vars(args), metrics=metrics, device=DEVICE)
+    write_result(
+        run_dir, script=__file__, args=vars(args), metrics=metrics, device=DEVICE
+    )
     print(f"\nwrote {run_dir / 'result.json'}")

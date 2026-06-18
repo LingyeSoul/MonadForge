@@ -9,34 +9,20 @@ from __future__ import annotations
 import argparse
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 from library.config.io import toml_get as _flatten
-
-# Python 3.11+; fall back to ``tomli`` if needed.
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]
-
+from library.config.resolved import (
+    dataclass_snapshot_toml,
+    dataclass_tb_text,
+    load_toml,
+)
+from library.config.resolved import pick as _pick
 
 logger = logging.getLogger(__name__)
 
 
 def load_turbo_config(path: str) -> dict:
-    with open(path, "rb") as f:
-        return tomllib.load(f)
-
-
-def _pick(cli_val: Any, cfg: dict, toml_key: str, default: Any) -> Any:
-    """CLI override (non-sentinel) wins, else TOML, else default.
-
-    Sentinels are: ``None`` (explicitly unset), ``-1`` (int default), ``-1.0``
-    (float default). They mean "use the TOML/default value".
-    """
-    if cli_val is not None and cli_val != -1 and cli_val != -1.0:
-        return cli_val
-    return _flatten(cfg, toml_key, default)
+    return load_toml(path)
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -1071,55 +1057,47 @@ def snapshot_toml_text(c: TurboConfig, *, source_config: str | None = None) -> s
     ``train.py`` writes for the LoRA family (the bespoke turbo config never went
     through that path).
     """
-    import dataclasses
+    return dataclass_snapshot_toml(
+        c,
+        title="Anima turbo distillation — resolved config snapshot",
+        source_config=source_config,
+    )
 
-    import tomlkit
 
-    doc = tomlkit.document()
-    doc.add(tomlkit.comment("Anima turbo distillation — resolved config snapshot"))
-    if source_config:
-        doc.add(tomlkit.comment(f"source config: {source_config}"))
-    doc.add(tomlkit.nl())
-    for k, v in dataclasses.asdict(c).items():
-        if v is None:
-            # tomlkit has no null; record the field as unset rather than drop it.
-            doc.add(tomlkit.comment(f"{k} = (unset)"))
-        else:
-            doc[k] = v
-    return tomlkit.dumps(doc)
+# TensorBoard config summary — the hand-picked subset (same key set/order as v1).
+_TB_KEYS = (
+    "base_loss",
+    "gan_loss_weight_gen",
+    "repa_weight",
+    "repa_target_dog",
+    "repa_dog_sigma1_div",
+    "repa_dog_sigma2_div",
+    "repa_dog_norm_std",
+    "f_div",
+    "k_anchor",
+    "teacher_anchor_steps",
+    "div_weight",
+    "detach_after_first",
+    "flow_shift",
+    "student_rank",
+    "fake_rank",
+    "channel_scaling_alpha",
+    "student_steps",
+    "teacher_cfg",
+    "fake_warmup_steps",
+    "student_lr",
+    "fake_lr",
+    "fake_steps_per_student_step",
+    "iterations",
+    "batch_size",
+    "t_distribution",
+    "mean_var_weight",
+    "use_masked_loss",
+    "data_dir",
+    "dit_path",
+)
 
 
 def tb_config_text(c: TurboConfig) -> str:
     """Formatted TensorBoard config summary (same key set as v1)."""
-    pairs = {
-        "base_loss": c.base_loss,
-        "gan_loss_weight_gen": c.gan_loss_weight_gen,
-        "repa_weight": c.repa_weight,
-        "repa_target_dog": c.repa_target_dog,
-        "repa_dog_sigma1_div": c.repa_dog_sigma1_div,
-        "repa_dog_sigma2_div": c.repa_dog_sigma2_div,
-        "repa_dog_norm_std": c.repa_dog_norm_std,
-        "f_div": c.f_div,
-        "k_anchor": c.k_anchor,
-        "teacher_anchor_steps": c.teacher_anchor_steps,
-        "div_weight": c.div_weight,
-        "detach_after_first": c.detach_after_first,
-        "flow_shift": c.flow_shift,
-        "student_rank": c.student_rank,
-        "fake_rank": c.fake_rank,
-        "channel_scaling_alpha": c.channel_scaling_alpha,
-        "student_steps": c.student_steps,
-        "teacher_cfg": c.teacher_cfg,
-        "fake_warmup_steps": c.fake_warmup_steps,
-        "student_lr": c.student_lr,
-        "fake_lr": c.fake_lr,
-        "fake_steps_per_student_step": c.fake_steps_per_student_step,
-        "iterations": c.iterations,
-        "batch_size": c.batch_size,
-        "t_distribution": c.t_distribution,
-        "mean_var_weight": c.mean_var_weight,
-        "use_masked_loss": c.use_masked_loss,
-        "data_dir": c.data_dir,
-        "dit_path": c.dit_path,
-    }
-    return "  \n".join(f"{k}: {v}" for k, v in pairs.items())
+    return dataclass_tb_text(c, include=_TB_KEYS)

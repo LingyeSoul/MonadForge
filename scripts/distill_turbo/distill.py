@@ -14,12 +14,10 @@ import logging
 import os
 import re
 from contextlib import contextmanager, nullcontext
-from datetime import datetime
 from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from library.anima import weights as anima_utils
@@ -38,6 +36,13 @@ from library.runtime.harness import (
     enable_training_grad_ckpt,
     isolate_compile_cache,
     place_dit_for_training,
+)
+from library.training.distill_runtime import (
+    apply_single_prompt_slice,
+    create_tb_writer,
+    ensure_dynamic_seq_for_freefit,
+    resolve_device_dtype,
+    write_config_snapshot,
 )
 from library.training.repa import relational_align_loss
 from library.vision.buckets import get_bucket_spec
@@ -295,8 +300,7 @@ def main():
     cfg = resolve_config(args, load_turbo_config(args.config))
 
     torch.manual_seed(cfg.seed)
-    device = torch.device("cuda")
-    dtype = torch.bfloat16
+    device, dtype = resolve_device_dtype()
 
     # Compile-storm guard: pin the recompile budget + intra-op thread count BEFORE
     # any block._forward traces. The turbo loop drives one compiled graph under
@@ -395,15 +399,11 @@ def main():
     # off the cache and force dynamic_seq (cfg is frozen → local override).
     dynamic_seq = cfg.compile_dynamic_seq
     if cfg.torch_compile and not dynamic_seq:
-        from library.datasets.buckets import is_freefit_token_counts
-
-        if is_freefit_token_counts(_cached_token_counts(cfg.data_dir)):
-            logger.warning(
-                "freefit pool detected (cached token counts off the bucket table); "
-                "auto-enabling dynamic_seq — free-fit shapes need the single-graph "
-                "dynamic-seq path (static compile would explode the graph cascade)"
-            )
-            dynamic_seq = True
+        # Scan the cache only on the static path (the helper short-circuits when
+        # dynamic_seq is already on, but the arg is eager — keep the guard cheap).
+        dynamic_seq = ensure_dynamic_seq_for_freefit(
+            _cached_token_counts(cfg.data_dir), dynamic_seq, logger=logger
+        )
     # Partitioner saved-activation cap (mirrors train.py): budget<1.0 recomputes
     # cheap intermediates in backward. Must be set BEFORE compile_dit_blocks
     # (partitioning happens at first-forward compile). Skipped under grad_ckpt: it
@@ -584,15 +584,7 @@ def main():
 
     if cfg.single_prompt_idx is not None:
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
-        # Re-log post-slice (CachedDataset's own "N samples" log fired pre-slice).
-        pinned_idx = cfg.single_prompt_idx % len(dataset.samples)
-        only = dataset.samples[pinned_idx]
-        dataset.samples = [only]
-        latent_stem = os.path.basename(only[0])
-        logger.info(
-            f"single-prompt overfit mode: pinned to idx={cfg.single_prompt_idx} "
-            f"(post-slice len(dataset)={len(dataset)}, latent={latent_stem})"
-        )
+        apply_single_prompt_slice(dataset, cfg.single_prompt_idx, logger=logger)
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -606,39 +598,27 @@ def main():
 
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
 
+    snapshot_text = snapshot_toml_text(cfg, source_config=args.config)
     # Canonical config snapshot beside the checkpoint (train.py convention): the
     # provenance record inference / merge / tooling look for next to
     # {output_name}.safetensors. Written unconditionally, independent of --no_log.
-    canonical_snapshot = Path(cfg.output_dir) / f"{cfg.output_name}.snapshot.toml"
-    try:
-        canonical_snapshot.write_text(
-            snapshot_toml_text(cfg, source_config=args.config),
-            encoding="utf-8",
-        )
-        logger.info(f"Config snapshot written: {canonical_snapshot}")
-    except OSError as e:
-        logger.warning(f"Could not write config snapshot to {canonical_snapshot}: {e}")
+    write_config_snapshot(
+        Path(cfg.output_dir) / f"{cfg.output_name}.snapshot.toml",
+        snapshot_text,
+        logger=logger,
+    )
 
-    writer = None
-    if not cfg.no_log:
-        run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run_log = Path(cfg.log_dir) / run_name
-        run_log.mkdir(parents=True, exist_ok=True)
-        writer = SummaryWriter(log_dir=str(run_log))
-        writer.add_text("config", tb_config_text(cfg))
-        logger.info(f"TB logs -> {run_log}")
-
+    writer, run_log = create_tb_writer(
+        cfg.log_dir, tb_config_text(cfg), enabled=not cfg.no_log, logger=logger
+    )
+    if run_log is not None:
         # Mirror the snapshot into the run log dir so the timestamped run is a
         # self-contained record of "this run + the config that produced it".
-        snapshot_path = run_log / f"{cfg.output_name}.snapshot.toml"
-        try:
-            snapshot_path.write_text(
-                snapshot_toml_text(cfg, source_config=args.config),
-                encoding="utf-8",
-            )
-            logger.info(f"Config snapshot written: {snapshot_path}")
-        except OSError as e:
-            logger.warning(f"Could not write config snapshot to {snapshot_path}: {e}")
+        write_config_snapshot(
+            run_log / f"{cfg.output_name}.snapshot.toml",
+            snapshot_text,
+            logger=logger,
+        )
 
     pad_cache = PadCache(dtype)
     # CFG-uncond input must be the T5("") embedding (real BOS/EOS/sentinel tokens
