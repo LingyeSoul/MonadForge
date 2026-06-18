@@ -62,6 +62,7 @@ export default {
   dashSampleEnlarge: '点击放大',
   dashSampleDialogTitle: '预览图详情',
   dashSampleHistoryCount: '{n} 张预览',
+  dashWaitingSample: '等待预览样本...',
 
   // System Monitoring (dashboard)
   dashSysMon: '系统监控',

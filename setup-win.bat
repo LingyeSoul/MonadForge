@@ -53,11 +53,12 @@ for /L %%i in (1,1,3) do (
         uv sync
         if not errorlevel 1 (
             set "SYNC_OK=1"
-        ) else (
-            if %%i lss 3 (
-                echo [WARN] uv sync failed. Retrying (attempt %%i/2) in 3s ...
-                timeout /t 3 /nobreak >nul
-            )
+        ) else if %%i lss 3 (
+            echo [WARN] uv sync failed, retrying attempt %%i/3 in 3s ...
+            REM ping is used instead of `timeout` because timeout.exe calls
+            REM ExitProcess() and kills the host cmd window when stdin is
+            REM redirected (IDE/terminal wrappers), causing a silent crash.
+            ping -n 4 127.0.0.1 >nul
         )
     )
 )

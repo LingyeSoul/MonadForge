@@ -10,7 +10,7 @@
     </div>
 
     <div v-if="samples.length === 0" class="text-body-2 text-medium-emphasis">
-      {{ t('dashWaitingSample', 'Waiting for samples...') }}
+      {{ t('dashWaitingSample') }}
     </div>
 
     <div v-else class="sample-grid">

@@ -62,6 +62,7 @@ export default {
   dashSampleEnlarge: 'Click to enlarge',
   dashSampleDialogTitle: 'Sample Preview',
   dashSampleHistoryCount: '{n} previews',
+  dashWaitingSample: 'Waiting for samples...',
 
   // System Monitoring (dashboard)
   dashSysMon: 'System Monitoring',
