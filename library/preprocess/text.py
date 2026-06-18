@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import string
 from collections.abc import Callable, Collection
 from pathlib import Path
 
@@ -24,24 +25,49 @@ from library.preprocess._progress import ProgressFn
 logger = logging.getLogger(__name__)
 
 
+def _random_nonsense_tag(min_len: int = 4, max_len: int = 9) -> str:
+    """A meaningless lowercase token used to *erase a tag's identity* while
+    keeping its slot (lexinvariant tag regularization, arXiv:2305.16349).
+
+    Drawn fresh on every call, so a given concept's slot is filled by a
+    *different* unreliable symbol across variants/sequences. With the literal
+    token unreliable, the adapter is pushed to ground the concept in the
+    surrounding structure (image content + co-occurring tags) rather than in the
+    exact trigger vector — i.e. role-based, not vector-based, binding. Distinct
+    from tag-dropout (which removes the slot) and from swapping in a *real* tag
+    (which would condition on a competing concept); see the proposal's §5 table.
+    """
+    n = random.randint(min_len, max_len)
+    return "".join(random.choices(string.ascii_lowercase, k=n))
+
+
 def generate_caption_variants(
     caption: str,
     num_variants: int,
     tag_dropout_rate: float,
     protect_fn: Callable[[str], bool] | None = None,
+    tag_randomize_rate: float = 0.0,
 ) -> list[str]:
     """Generate ``num_variants`` caption variants for stochastic train-time sampling.
 
     v0 = pristine original caption. v1..v{N-1} are smart-shuffled (preserving
     the @artist prefix and section anchors), then every tag *after* the prefix
-    is independently dropped with probability ``tag_dropout_rate``. The
-    ``@no-artist`` sentinel participates in the boundary but is stripped from
-    every variant (including v0) before it is written.
+    is independently dropped with probability ``tag_dropout_rate``, then every
+    surviving tag has its identity erased (replaced by a fresh meaningless token)
+    with probability ``tag_randomize_rate``. The ``@no-artist`` sentinel
+    participates in the boundary but is stripped from every variant (including
+    v0) before it is written.
 
-    ``protect_fn`` (when given) marks tags that must survive tag-dropout: a tag
-    for which it returns True is always kept even past the @artist prefix. It is
-    still subject to shuffling — only the dropout is suppressed. Used by the
-    colorize prep to keep copyright tags present in every partial-color variant.
+    ``protect_fn`` (when given) marks tags that must survive tag-dropout *and*
+    tag-randomization: a tag for which it returns True is always kept verbatim
+    even past the @artist prefix. It is still subject to shuffling. Used by the
+    colorize prep to keep copyright tags present/intact in every variant.
+
+    Tag-dropout is *presence*-axis (and prefix-protected); tag-randomize is the
+    *identity* axis and **intentionally includes the @artist prefix**, because
+    the concept/trigger tag (artist handle or character tag) is precisely the
+    symbol whose over-binding this regularizer targets. Section headers
+    (``On the …`` / ``In the …``) and the sentinel are never randomized.
     """
     from library.anima import training as anima_train_utils
 
@@ -69,6 +95,18 @@ def generate_caption_variants(
             if not kept:
                 kept = shuffled[:1]
             shuffled = kept
+        if tag_randomize_rate > 0.0:
+            shuffled = [
+                _random_nonsense_tag()
+                if (
+                    tag != sentinel
+                    and not tag.startswith(("On the ", "In the "))
+                    and not (protect_fn is not None and protect_fn(tag))
+                    and random.random() < tag_randomize_rate
+                )
+                else tag
+                for tag in shuffled
+            ]
         shuffled = anima_train_utils.strip_no_artist_sentinel(shuffled)
         variants.append(", ".join(shuffled))
     return variants
@@ -122,6 +160,23 @@ def _te_cache_path(image_path: Path, cache_dir: Path | None, image_dir: Path) ->
             image_dir=str(image_dir),
         )
     )
+
+
+def _cache_has_randomized(cache_path: Path) -> bool:
+    """True iff an existing TE cache already carries the identity-randomized
+    ``r``-family (``num_randomized`` marker). Reads only the safetensors header.
+
+    Lets a re-run with ``--caption_tag_randomize_rate`` *upgrade in place* a cache
+    written before randomization existed, instead of being skipped by the
+    existence check (the writer otherwise never reopens a present cache)."""
+    from safetensors import safe_open
+
+    try:
+        with safe_open(str(cache_path), framework="pt") as f:
+            return "num_randomized" in f.keys()
+    except Exception:
+        # Unreadable/partial cache → treat as missing the family so it re-encodes.
+        return False
 
 
 def _walk_te_candidates(
@@ -252,6 +307,7 @@ def cache_text_embeddings(
     batch_size: int = 16,
     caption_shuffle_variants: int = 0,
     caption_tag_dropout_rate: float = 0.0,
+    caption_tag_randomize_rate: float = 0.0,
     caption_transform: Callable[[str], str] | None = None,
     caption_protect_fn: Callable[[str], bool] | None = None,
     min_pixels: int = 500_000,
@@ -268,7 +324,8 @@ def cache_text_embeddings(
     Strategies + encoder + (optional) ``llm_adapter`` are supplied loaded + on
     ``device``. Images below ``min_pixels`` are skipped (mirrors the resize
     filter). With ``caption_shuffle_variants > 0`` each cache holds N variants
-    (v0 pristine, v1..v{N-1} shuffled + optionally tag-dropped). Returns counts;
+    (v0 pristine, v1..v{N-1} shuffled + optionally tag-dropped + optionally
+    identity-randomized via ``caption_tag_randomize_rate``). Returns counts;
     pass ``progress`` for a per-image bar.
 
     ``caption_transform`` (when given) is applied to each raw caption before
@@ -316,6 +373,13 @@ def cache_text_embeddings(
     caption_dropout_rate = torch.tensor(0.0, dtype=torch.float32)
     n_variants = caption_shuffle_variants
     tag_dropout_rate = float(caption_tag_dropout_rate)
+    tag_randomize_rate = float(caption_tag_randomize_rate)
+    # The identity-randomized r-family rides alongside v0..v{N-1} (sharing the
+    # pristine v0 as anchor), so one cache serves both the baseline-shuffle and
+    # the lexinvariant arm — the consumer picks the family via
+    # use_randomized_caption_variants. Needs >=2 variants (r1..r{N-1}).
+    want_randomized = tag_randomize_rate > 0.0 and n_variants >= 2
+    n_rand = (n_variants - 1) if want_randomized else 0
 
     from safetensors.torch import save_file
 
@@ -328,7 +392,11 @@ def cache_text_embeddings(
         to_encode: list[tuple[Path, str, Path]] = []
         for img_path, caption in batch:
             cache_path = _te_cache_path(img_path, cache_dir, data_dir)
-            if cache_path.exists():
+            # Re-encode an existing cache only to add a newly-requested r-family
+            # (in-place upgrade); otherwise the existence check skips it.
+            if cache_path.exists() and not (
+                want_randomized and not _cache_has_randomized(cache_path)
+            ):
                 stats.skipped += 1
                 if progress is not None:
                     progress(1, detail=f"skip {img_path.name}")
@@ -366,13 +434,30 @@ def cache_text_embeddings(
                 if progress is not None:
                     progress(1, detail=f"{img_path.name}")
         else:
+            # Per image: N v-variants (v0 pristine + v1..v{N-1} shuffled/dropped)
+            # then, when randomizing, N-1 r-variants (shuffled/dropped + identity
+            # erasure; their own pristine v0 is dropped since it equals the
+            # shared v0). Block size is uniform, so flat indexing stays simple.
+            block = n_variants + n_rand
             all_captions: list[str] = []
             for _, caption, _ in to_encode:
                 all_captions.extend(
                     generate_caption_variants(
-                        caption, n_variants, tag_dropout_rate, caption_protect_fn
+                        caption,
+                        n_variants,
+                        tag_dropout_rate,
+                        caption_protect_fn,
                     )
                 )
+                if n_rand:
+                    r_list = generate_caption_variants(
+                        caption,
+                        n_variants,
+                        tag_dropout_rate,
+                        caption_protect_fn,
+                        tag_randomize_rate=tag_randomize_rate,
+                    )
+                    all_captions.extend(r_list[1:])  # share v0 as the anchor
 
             prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, crossattn_emb = (
                 _encode_batch(
@@ -386,6 +471,7 @@ def cache_text_embeddings(
             )
 
             for i, (img_path, _, cache_path) in enumerate(to_encode):
+                base = i * block
                 save_dict = {
                     "num_variants": torch.tensor(n_variants, dtype=torch.int64),
                     # Marker: v0 is pristine; loaders switch on weighted 20%/80%
@@ -393,17 +479,32 @@ def cache_text_embeddings(
                     "v0_intact": torch.tensor(1, dtype=torch.int8),
                     "caption_dropout_rate": caption_dropout_rate,
                 }
+                if n_rand:
+                    save_dict["num_randomized"] = torch.tensor(
+                        n_rand, dtype=torch.int64
+                    )
                 for vi in range(n_variants):
-                    flat_idx = i * n_variants + vi
+                    flat_idx = base + vi
                     save_dict[f"prompt_embeds_v{vi}"] = prompt_embeds[flat_idx]
                     save_dict[f"attn_mask_v{vi}"] = attn_mask[flat_idx]
                     save_dict[f"t5_input_ids_v{vi}"] = t5_input_ids[flat_idx]
                     save_dict[f"t5_attn_mask_v{vi}"] = t5_attn_mask[flat_idx]
                     if crossattn_emb is not None:
                         save_dict[f"crossattn_emb_v{vi}"] = crossattn_emb[flat_idx]
+                for rj in range(n_rand):
+                    ri = rj + 1  # r1..r{n_rand}; v0 is the shared pristine anchor
+                    flat_idx = base + n_variants + rj
+                    save_dict[f"prompt_embeds_r{ri}"] = prompt_embeds[flat_idx]
+                    save_dict[f"attn_mask_r{ri}"] = attn_mask[flat_idx]
+                    save_dict[f"t5_input_ids_r{ri}"] = t5_input_ids[flat_idx]
+                    save_dict[f"t5_attn_mask_r{ri}"] = t5_attn_mask[flat_idx]
+                    if crossattn_emb is not None:
+                        save_dict[f"crossattn_emb_r{ri}"] = crossattn_emb[flat_idx]
                 save_file(save_dict, str(cache_path))
                 stats.written += 1
                 if progress is not None:
-                    progress(1, detail=f"{img_path.name} ({n_variants}v)")
+                    detail = f"{img_path.name} ({n_variants}v"
+                    detail += f"+{n_rand}r)" if n_rand else ")"
+                    progress(1, detail=detail)
 
     return stats

@@ -409,9 +409,21 @@ def cmd_preprocess_vae(extra):
 
 def cmd_preprocess_te(extra):
     # CAPTION_SHUFFLE_VARIANTS / CAPTION_TAG_DROPOUT_RATE let the GUI tune these;
-    # defaults match the historical values so non-GUI invocations are unchanged.
-    shuffle_variants = os.environ.get("CAPTION_SHUFFLE_VARIANTS", "4")
-    tag_dropout_rate = os.environ.get("CAPTION_TAG_DROPOUT_RATE", "0.1")
+    # env override → preprocess.toml → historical default (so non-GUI/non-config
+    # invocations are unchanged).
+    shuffle_variants = os.environ.get("CAPTION_SHUFFLE_VARIANTS") or _path(
+        "caption_shuffle_variants", "4"
+    )
+    tag_dropout_rate = os.environ.get("CAPTION_TAG_DROPOUT_RATE") or _path(
+        "caption_tag_dropout_rate", "0.1"
+    )
+    # Lexinvariant tag regularization: identity-randomized r-family. Read from
+    # preprocess.toml (caption_tag_randomize_rate) with an env override; 0.0 =
+    # off (no r-family written, fully backward compatible). When > 0 a re-run
+    # upgrades existing caches in place (adds the r-family without a full delete).
+    randomize_rate = os.environ.get("CAPTION_TAG_RANDOMIZE_RATE") or _path(
+        "caption_tag_randomize_rate", "0.0"
+    )
     mp_args, extra = _resolve_lowres_filter(extra)
     pp_args = _preprocess_path_pattern_args(extra)
     run(
@@ -432,6 +444,8 @@ def cmd_preprocess_te(extra):
             shuffle_variants,
             "--caption_tag_dropout_rate",
             tag_dropout_rate,
+            "--caption_tag_randomize_rate",
+            str(randomize_rate),
             "--recursive",
             *mp_args,
             *pp_args,

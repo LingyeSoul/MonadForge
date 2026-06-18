@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # Module-level latch so the legacy-cache warning fires once per process,
 # not once per cache file.
 _warned_legacy_variants_cache = False
+_warned_missing_randomized_cache = False
 
 
 class AnimaTokenizeStrategy(TokenizeStrategy):
@@ -226,14 +227,25 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
         cache_llm_adapter_outputs: bool = False,
         use_shuffled_caption_variants: bool = False,
         use_shuffled_caption_variants_only: bool = False,
+        use_randomized_caption_variants: bool = False,
+        use_randomized_caption_variants_only: bool = False,
     ) -> None:
         super().__init__(
             cache_to_disk, batch_size, skip_disk_cache_validity_check, is_partial
         )
         self.cache_llm_adapter_outputs = cache_llm_adapter_outputs
         # "only" implies the base flag (it just changes which variants are eligible).
+        self.use_randomized_caption_variants = (
+            use_randomized_caption_variants or use_randomized_caption_variants_only
+        )
+        self.use_randomized_caption_variants_only = use_randomized_caption_variants_only
+        # Randomized is a sampling MODE inside the variant-consuming branch, so it
+        # implies the shuffled gate (and falls back to the v-family if a cache has
+        # no r-family on disk — e.g. one preprocessed without a randomize rate).
         self.use_shuffled_caption_variants = (
-            use_shuffled_caption_variants or use_shuffled_caption_variants_only
+            use_shuffled_caption_variants
+            or use_shuffled_caption_variants_only
+            or self.use_randomized_caption_variants
         )
         self.use_shuffled_caption_variants_only = use_shuffled_caption_variants_only
 
@@ -304,13 +316,50 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             if has_variants and self.use_shuffled_caption_variants:
                 num_variants = int(f.get_tensor("num_variants"))
                 v0_intact = "v0_intact" in keys
-                if num_variants <= 1:
-                    vi = 0
+                has_randomized = "num_randomized" in keys
+                # Randomized mode draws the identity-erased r-family when the cache
+                # carries one; otherwise it silently degrades to the shuffled
+                # v-family (warned once) so a knob flip never forces a re-cache.
+                use_r = self.use_randomized_caption_variants and has_randomized
+                if self.use_randomized_caption_variants and not has_randomized:
+                    global _warned_missing_randomized_cache
+                    if not _warned_missing_randomized_cache:
+                        logger.warning(
+                            "use_randomized_caption_variants is on but the TE cache "
+                            "(e.g. %s) has no identity-randomized r-family. Falling "
+                            "back to the shuffled v-family. Re-run preprocess with "
+                            "--caption_tag_randomize_rate (or set "
+                            "caption_tag_randomize_rate in preprocess.toml) to build "
+                            "it.",
+                            cache_path,
+                        )
+                        _warned_missing_randomized_cache = True
+
+                if use_r:
+                    num_randomized = int(f.get_tensor("num_randomized"))
+                    # "only" (either axis) excludes the pristine v0 entirely.
+                    only = (
+                        self.use_randomized_caption_variants_only
+                        or self.use_shuffled_caption_variants_only
+                    )
+                    if num_randomized < 1:
+                        suffix = "v0"
+                    elif only:
+                        suffix = f"r{random.randint(1, num_randomized)}"
+                    else:
+                        # 20% pristine v0, 80% uniform over r1..r{num_randomized}.
+                        suffix = (
+                            "v0"
+                            if random.random() < 0.2
+                            else f"r{random.randint(1, num_randomized)}"
+                        )
+                elif num_variants <= 1:
+                    suffix = "v0"
                 elif self.use_shuffled_caption_variants_only:
                     # Exclude the pristine v0 entirely — uniform over the
                     # shuffled+tag-dropped v1..v{N-1}. (Legacy caches have no
                     # pristine v0 anyway, so v1.. is still the shuffled set.)
-                    vi = random.randint(1, num_variants - 1)
+                    suffix = f"v{random.randint(1, num_variants - 1)}"
                 elif not v0_intact:
                     # Legacy cache: every variant is shuffled (no pristine v0).
                     # Fall back to uniform sampling and warn once so the user
@@ -327,19 +376,19 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                             num_variants - 1,
                         )
                         _warned_legacy_variants_cache = True
-                    vi = random.randint(0, num_variants - 1)
+                    suffix = f"v{random.randint(0, num_variants - 1)}"
                 else:
                     # 20% pristine v0, 80% uniform over v1..v{N-1}.
-                    vi = (
-                        0
+                    suffix = (
+                        "v0"
                         if random.random() < 0.2
-                        else random.randint(1, num_variants - 1)
+                        else f"v{random.randint(1, num_variants - 1)}"
                     )
-                prompt_embeds = f.get_tensor(f"prompt_embeds_v{vi}")
-                attn_mask = f.get_tensor(f"attn_mask_v{vi}")
-                t5_input_ids = f.get_tensor(f"t5_input_ids_v{vi}")
-                t5_attn_mask = f.get_tensor(f"t5_attn_mask_v{vi}")
-                crossattn_key = f"crossattn_emb_v{vi}"
+                prompt_embeds = f.get_tensor(f"prompt_embeds_{suffix}")
+                attn_mask = f.get_tensor(f"attn_mask_{suffix}")
+                t5_input_ids = f.get_tensor(f"t5_input_ids_{suffix}")
+                t5_attn_mask = f.get_tensor(f"t5_attn_mask_{suffix}")
+                crossattn_key = f"crossattn_emb_{suffix}"
                 crossattn_emb = (
                     f.get_tensor(crossattn_key)
                     if self.cache_llm_adapter_outputs and crossattn_key in keys
@@ -711,6 +760,12 @@ def setup_text_encoder_outputs_caching_strategy(
         ),
         use_shuffled_caption_variants_only=getattr(
             args, "use_shuffled_caption_variants_only", False
+        ),
+        use_randomized_caption_variants=getattr(
+            args, "use_randomized_caption_variants", False
+        ),
+        use_randomized_caption_variants_only=getattr(
+            args, "use_randomized_caption_variants_only", False
         ),
     )
     TextEncoderOutputsCachingStrategy.set_strategy(strategy)

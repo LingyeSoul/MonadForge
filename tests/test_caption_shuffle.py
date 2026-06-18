@@ -190,3 +190,133 @@ def test_variants_multi_artist_protected_from_dropout():
         assert "@artist1" in toks
         assert "@artist2" in toks
         assert "@artist3" in toks
+
+
+# ----- identity randomization (lexinvariant tag regularization) -----------
+
+
+def test_randomize_keeps_v0_pristine():
+    random.seed(0)
+    raw = "@sincos, 1girl, blue hair"
+    out = _gen_variants(
+        raw, num_variants=4, tag_dropout_rate=0.0, tag_randomize_rate=1.0
+    )
+    # v0 is never randomized.
+    assert out[0] == raw
+
+
+def test_randomize_preserves_slot_count_and_erases_identity():
+    random.seed(0)
+    # rate=1.0 with no dropout: every tag slot survives but every identity is
+    # replaced — the defining property vs dropout (which removes slots).
+    raw = "@artist, 1girl, blue hair, smile"
+    out = _gen_variants(
+        raw, num_variants=8, tag_dropout_rate=0.0, tag_randomize_rate=1.0
+    )
+    original = {"@artist", "1girl", "blue hair", "smile"}
+    for v in out[1:]:
+        toks = [t.strip() for t in v.split(",")]
+        assert len(toks) == 4  # slot count preserved (nothing dropped)
+        # Identity erased — including the @artist prefix (the trigger is the target).
+        assert not (set(toks) & original)
+        assert all(t.isalpha() and t.islower() for t in toks)
+
+
+def test_randomize_respects_protect_fn_and_sentinel():
+    random.seed(0)
+    out = _gen_variants(
+        f"{NO_ARTIST_SENTINEL}, keepme, a, b",
+        num_variants=8,
+        tag_dropout_rate=0.0,
+        tag_randomize_rate=1.0,
+        protect_fn=lambda t: t == "keepme",
+    )
+    for v in out[1:]:
+        toks = [t.strip() for t in v.split(",")]
+        assert NO_ARTIST_SENTINEL not in toks  # sentinel stripped, never emitted
+        assert "keepme" in toks  # protected tag kept verbatim
+
+
+# ----- r-family loader contract (use_randomized_caption_variants) ---------
+
+
+def _write_variant_cache(path, *, n_variants, n_randomized):
+    """Synthetic TE cache mirroring the writer's key layout. Each variant's
+    prompt_embeds is a constant tile encoding its own name so the draw is
+    identifiable."""
+    import torch
+    from safetensors.torch import save_file
+
+    names = [f"v{i}" for i in range(n_variants)] + [
+        f"r{j}" for j in range(1, n_randomized + 1)
+    ]
+
+    def emb(name):
+        return torch.full((2, 4), float(abs(hash(name)) % 1000))
+
+    sd = {
+        "num_variants": torch.tensor(n_variants),
+        "v0_intact": torch.tensor(1, dtype=torch.int8),
+        "caption_dropout_rate": torch.tensor(0.0),
+    }
+    if n_randomized:
+        sd["num_randomized"] = torch.tensor(n_randomized)
+    for name in names:
+        sd[f"prompt_embeds_{name}"] = emb(name)
+        sd[f"attn_mask_{name}"] = torch.ones(2, dtype=torch.int32)
+        sd[f"t5_input_ids_{name}"] = torch.zeros(2, dtype=torch.long)
+        sd[f"t5_attn_mask_{name}"] = torch.ones(2, dtype=torch.int32)
+    save_file(sd, str(path))
+    return {name: emb(name) for name in names}
+
+
+def _draw_names(strat, path, embs, n=3000):
+    import torch
+
+    random.seed(0)
+    seen = set()
+    for _ in range(n):
+        out = strat.load_outputs_npz(str(path))[0]
+        for name, e in embs.items():
+            if torch.equal(out, e):
+                seen.add(name)
+                break
+    return seen
+
+
+def test_loader_randomized_draws_r_family_and_v0(tmp_path):
+    from library.anima.strategy import AnimaTextEncoderOutputsCachingStrategy
+
+    p = tmp_path / "x_anima_te.safetensors"
+    embs = _write_variant_cache(p, n_variants=4, n_randomized=3)
+    strat = AnimaTextEncoderOutputsCachingStrategy(
+        True, 1, True, use_randomized_caption_variants=True
+    )
+    drawn = _draw_names(strat, p, embs)
+    # v0 (pristine anchor) + r-family only — never the shuffled v1..v3.
+    assert drawn == {"v0", "r1", "r2", "r3"}
+
+
+def test_loader_randomized_only_excludes_v0(tmp_path):
+    from library.anima.strategy import AnimaTextEncoderOutputsCachingStrategy
+
+    p = tmp_path / "x_anima_te.safetensors"
+    embs = _write_variant_cache(p, n_variants=4, n_randomized=3)
+    strat = AnimaTextEncoderOutputsCachingStrategy(
+        True, 1, True, use_randomized_caption_variants_only=True
+    )
+    drawn = _draw_names(strat, p, embs)
+    assert drawn == {"r1", "r2", "r3"}
+
+
+def test_loader_randomized_falls_back_to_v_family_without_r(tmp_path):
+    from library.anima.strategy import AnimaTextEncoderOutputsCachingStrategy
+
+    p = tmp_path / "x_anima_te.safetensors"
+    embs = _write_variant_cache(p, n_variants=3, n_randomized=0)
+    strat = AnimaTextEncoderOutputsCachingStrategy(
+        True, 1, True, use_randomized_caption_variants=True
+    )
+    drawn = _draw_names(strat, p, embs)
+    # No r-family on disk → graceful fallback to the shuffled v-family.
+    assert drawn == {"v0", "v1", "v2"}
