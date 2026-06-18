@@ -17,7 +17,15 @@ from pathlib import Path
 
 import toml
 
-from ._common import PY, ROOT, run, train
+from ._common import (
+    PY,
+    ROOT,
+    _preset,
+    bespoke_preset_flags,
+    queue_command,
+    run,
+    train,
+)
 
 # EasyControl control-task projects are descriptor-driven: a self-contained
 # ``configs/easycontrol/<EASYADAPTER>.toml`` (``name`` slug + [staging]/[preprocess]/
@@ -39,6 +47,45 @@ def _easyadapter() -> str:
 
 def cmd_lora(extra):
     train("lora", extra)
+
+
+def cmd_turbo(extra):
+    """Turbo Anima — DP-DMD distillation (docs: docs/methods/turbo.md).
+
+    Bypasses train.py / accelerate (single-GPU bespoke loop, like distill-mod).
+    Reads ``configs/methods/turbo.toml``; trailing args are forwarded so user
+    CLI flags override TOML values, e.g.::
+
+        make turbo                                  # defaults: rank=64, 4-step
+        make turbo ARGS="--student_rank 64 --iterations 5000"
+        make turbo ARGS="--single_prompt_idx 0"     # Phase 0 single-prompt overfit
+        make turbo --queue                          # enqueue on the daemon
+
+    The output is a normal LoRA — a distilled student ships at
+    https://huggingface.co/sorryhyun/anima-turbo-4step (infer with
+    ``make test-turbo`` / ``--infer_steps 4 --cfg 1.0``).
+
+    Honors ``PRESET`` (default ``default``) — translates ``blocks_to_swap`` and
+    ``gradient_checkpointing`` from ``configs/presets.toml`` into CLI flags so
+    ``make turbo PRESET=low_vram`` enables grad ckpt + unsloth offload, and
+    ``PRESET=half/quarter/tenth`` shrinks the dataset via ``--sample_ratio``.
+    ``extra`` is appended last, so user CLI overrides win.
+
+    ``--queue`` anywhere in ``extra`` enqueues the distillation as a daemon
+    command-job (run serially behind any other queued work) and returns
+    immediately, instead of running it inline — the bespoke-loop analogue of
+    ``make lora --queue``. The job is labeled ``turbo`` so the GUI's Turbo
+    tab can re-attach to it. Preset flags are baked into the queued argv since the
+    daemon's command path does no config merging.
+    """
+    extra = list(extra or [])
+    preset_flags = bespoke_preset_flags(_preset())
+    argv = ["-m", "scripts.distill_turbo.distill", *preset_flags, *extra]
+    if "--queue" in argv:
+        argv.remove("--queue")
+        queue_command("turbo", argv)
+        return
+    run([PY, *argv])
 
 
 def cmd_lora_gui(extra):

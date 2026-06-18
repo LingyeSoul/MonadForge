@@ -15,7 +15,7 @@ baked into the student during distillation).
 > ([[project_turbo_fei_gap_phase0]], `ca_band`). DP-DMD removes the CA branch
 > entirely. The structural walkthrough (diversity-anchor / DMD gradient split,
 > flow-matching velocity↔x0 math, the per-step schedule) lives at
-> `docs/structure/dpdmd.md`; the CA-era decision log survives at
+> `docs/structure/turbo.md`; the CA-era decision log survives at
 > `_archive/proposals/dmd2_decoupled_improvements.md`. The original migration proposal
 > is archived at `_archive/proposals/dpdmd.md`.
 
@@ -30,15 +30,20 @@ baked into the student during distillation).
 ## Quick start
 
 ```bash
-make exp-turbo                                       # configs/methods/turbo.toml defaults
-make exp-turbo ARGS="--student_rank 128 --iterations 5000"
-make exp-turbo ARGS="--single_prompt_idx 0"          # Phase 0 single-prompt overfit
-make exp-turbo PRESET=low_vram                        # grad ckpt + offload + sample_ratio
+make turbo                                       # configs/methods/turbo.toml defaults
+make turbo ARGS="--student_rank 128 --iterations 5000"
+make turbo ARGS="--single_prompt_idx 0"          # Phase 0 single-prompt overfit
+make turbo PRESET=low_vram                        # grad ckpt + offload + sample_ratio
 
-make exp-test-turbo                                   # infer latest student LoRA @ 2 steps, cfg=1.0
+make test-turbo                                   # infer latest student LoRA @ 4 steps, cfg=1.0
 ```
 
-`make exp-turbo` honors `PRESET` (translates `blocks_to_swap` /
+A ready-made 4-step student is published at
+**[huggingface.co/sorryhyun/anima-turbo-4step](https://huggingface.co/sorryhyun/anima-turbo-4step)**
+— download the `.safetensors` and point `--lora_weight` (or `make test-turbo`'s
+`output/ckpt/`) at it to run few-step inference without distilling your own.
+
+`make turbo` honors `PRESET` (translates `blocks_to_swap` /
 `gradient_checkpointing` / `sample_ratio` from `configs/presets.toml` into CLI
 flags) and appends `ARGS` last so user overrides win. The output is
 `output/ckpt/<output_name>.safetensors` — a normal LoRA — plus the standard
@@ -222,7 +227,7 @@ simplicity *is* the headline. A per-step-expert student is **not**:
   `ss_turbo_per_step_expert` metadata stamp), ComfyUI via the dedicated
   `AnimaTurboPerStepExpertLoader` node (stock LoRA / `AnimaAdapterLoader` raise,
   since they can't drive step-indexed head selection).
-- **`make exp-test-turbo` pins `--infer_steps` to the trained head count K** (read from
+- **`make test-turbo` pins `--infer_steps` to the trained head count K** (read from
   metadata); head k binds to step k, so `infer_steps` must equal K. Overshoot repeats
   the last (quality) head; undershoot skips it. Keep `--cfg 1.0`.
 
@@ -303,7 +308,7 @@ forwards). **Decision gate 1:** A/B `weight_gen` 0 vs 0.03 at fixed seed/data/st
   Distillation*. Reference impl: `dpdmd/train_sd35_dpdmd.py` (SD3.5-M, flow-matching).
 - `_archive/proposals/dpdmd.md` — the migration proposal (Phase 0 GO, the
   pose-vs-pooled-cosine metric caveat, the depth-m fallback).
-- `docs/structure/dpdmd.md` — structural walkthrough: the diversity-anchor / DMD
+- `docs/structure/turbo.md` — structural walkthrough: the diversity-anchor / DMD
   gradient split, the flow-matching velocity↔x0 conversion, and the sign convention.
 - `_archive/proposals/dmd2_decoupled_improvements.md` — CA-era decision log; the record
   of why the CA branch was abandoned.

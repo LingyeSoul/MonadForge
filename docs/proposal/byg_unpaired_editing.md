@@ -501,6 +501,6 @@ Either way the node is "EasyControl-alike." Decide this before writing
   edit signal and source on the same stream so instructions can shift attention
   off the source where the edit demands it (the same argument
   `postfix_residual_for_directedit.md` makes against IP-Adapter's decoupling).
-- **Turbo** (`docs/experimental/dpdmd.md`) — shares the "trains a thing, ships a
+- **Turbo** (`docs/methods/turbo.md`) — shares the "trains a thing, ships a
   plain LoRA, zero inference overhead" property. Good precedent that a heavy
   bespoke training method can land as a normal adapter here.

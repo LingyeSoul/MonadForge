@@ -46,7 +46,6 @@ from gui.i18n import (
     save_language,
     t,
 )
-from gui.tabs.config_tab import ConfigTab
 from gui.tabs.easycontrol_tab import EasyControlTab
 from gui.tabs.image_tab import ImageViewerTab
 from gui.tabs.merge_tab import MergeTab
@@ -492,10 +491,14 @@ class MainWindow(QMainWindow):
         self._preprocess_tab = PreprocessingTab()
 
         self.tabs = QTabWidget()
+        # The Config tab is a MethodsTab picker over the shipped LoRA family plus
+        # the (now promoted) Turbo distiller; the Experimental tab is the same
+        # wrapper over the research methods + the SPD distiller.
         self.tabs.addTab(
-            ConfigTab(
-                methods=["lora", "tlora", "hydralora"],
+            MethodsTab(
                 tb_panel=self._tb_tab.panel,
+                flat_methods=("lora", "tlora", "hydralora"),
+                distill_methods=("turbo",),
                 preprocess_tab=self._preprocess_tab,
             ),
             t("tab_config"),
@@ -507,7 +510,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(MergeTab(), t("tab_merge"))
         # MethodsTab folds every trainable experimental method behind one dropdown; EasyControl keeps
         # a dedicated tab because it has its own preprocess/dataset lifecycle.
-        self.tabs.addTab(MethodsTab(tb_panel=self._tb_tab.panel), t("tab_experimental"))
+        self.tabs.addTab(
+            MethodsTab(
+                tb_panel=self._tb_tab.panel,
+                flat_methods=("chimera", "soft_tokens"),
+                distill_methods=("spd",),
+            ),
+            t("tab_experimental"),
+        )
         self.tabs.addTab(EasyControlTab(), t("tab_easycontrol"))
 
         self._queue_tab = QueueTab()

@@ -5,8 +5,8 @@ zero extra forwards) and is designed to be able to **close this line permanently
 — that outcome is as valuable as the lever.
 
 Premise sources: `docs/findings/turbo_fei_band_deficit_falsified.md` (the
-falsification this revives *on its own stated terms*), `docs/experimental/dpdmd.md`
-+ `docs/structure/dpdmd.md` (the loop that changed the premises).
+falsification this revives *on its own stated terms*), `docs/methods/turbo.md`
++ `docs/structure/turbo.md` (the loop that changed the premises).
 
 ## Why this is worth reopening — the falsification's precondition flipped
 

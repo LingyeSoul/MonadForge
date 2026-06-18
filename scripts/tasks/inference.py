@@ -19,6 +19,7 @@ from ._common import (
     latest_hydra,
     latest_lora,
     latest_output,
+    override_arg,
     run,
 )
 
@@ -342,3 +343,45 @@ def cmd_test_easycontrol(extra):
         ref_dst = pngs[0].with_name(pngs[0].stem + "_ref.png")
         shutil.copy(ref_image, ref_dst)
         print(f"  > Ref pasted: {ref_dst}")
+
+
+def cmd_test_turbo(extra):
+    """Inference with the latest Turbo student LoRA at 4 steps, cfg=1.0.
+
+    CFG is baked into the student during distillation, so production inference
+    runs cfg=1.0 (no double-CFG). Step count defaults to 4 — matching the
+    DP-DMD student's ``student_steps=4`` rollout — but extra args can override.
+    A ready-made student ships at https://huggingface.co/sorryhyun/anima-turbo-4step
+    — point ``--lora_weight`` at a download to try it without distilling.
+    """
+    weight = latest_output("anima_turbo")
+    base = list(INFERENCE_BASE)
+    base = override_arg(base, "--sampler", "euler")
+    # Per-step-expert checkpoints bind head k to denoise step k, so infer_steps
+    # MUST equal the trained head count K (= student_steps); pin it from metadata.
+    infer_steps = "4"
+    try:
+        from safetensors import safe_open
+
+        with safe_open(str(weight), framework="pt") as f:
+            md = f.metadata() or {}
+        if str(md.get("ss_turbo_per_step_expert", "")).strip() in ("1", "true", "True"):
+            K = int(md.get("ss_turbo_step_expert_K", "4") or "4")
+            infer_steps = str(K)
+            print(
+                f"[test-turbo] per-step-expert checkpoint: pinning "
+                f"--infer_steps {K} (= trained head count). Override at your own "
+                "risk — heads beyond K repeat the last (quality) head."
+            )
+    except Exception:
+        pass
+    base = override_arg(base, "--infer_steps", infer_steps)
+    base = override_arg(base, "--guidance_scale", "1.0")
+    run(
+        [
+            *base,
+            "--lora_weight",
+            str(weight),
+            *extra,
+        ]
+    )

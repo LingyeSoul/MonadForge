@@ -720,3 +720,14 @@ INFERENCE_BASE = [
     "--save_path",
     "output/tests",
 ]
+
+
+def override_arg(argv: list[str], flag: str, value: str) -> list[str]:
+    """Replace a ``--flag VALUE`` (or ``--flag V1 V2``) pair in argv with a
+    fresh ``--flag value`` pair. Used to retarget ``INFERENCE_BASE`` defaults
+    (e.g. the turbo contract: 4 steps, cfg=1.0) without rewriting the whole list.
+    """
+    if flag not in argv:
+        return argv + [flag, value]
+    i = argv.index(flag)
+    return argv[:i] + [flag, value] + argv[i + 2 :]

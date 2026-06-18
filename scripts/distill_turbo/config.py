@@ -272,7 +272,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--sample_ratio", type=float, default=1.0)
 
     # DP-DMD (arXiv 2602.03139): step 1 supervised toward a teacher K-step anchor
-    # (diversity), detached, then DMD on x_θ over steps 2..N. See dpdmd.md.
+    # (diversity), detached, then DMD on x_θ over steps 2..N. See docs/methods/turbo.md.
     parser.add_argument(
         "--k_anchor",
         type=int,

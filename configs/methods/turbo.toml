@@ -1,4 +1,4 @@
-# Turbo Anima — DP-DMD distillation (docs: docs/experimental/dpdmd.md).
+# Turbo Anima — DP-DMD distillation (docs: docs/methods/turbo.md).
 #
 # Read by scripts/distill_turbo/ — NOT by train.py. Schema is bespoke
 # (sections instead of flat kwargs). Don't `python tasks.py print-config METHOD=turbo`.

@@ -3,8 +3,9 @@
 Covers the unstable methods kept under ``make exp-*``: soft tokens, BYG, plus
 the DirectEdit + postfix-tail inversion probes. Reference-image variants accept
 REF_IMAGE env or first positional arg, copy the ref alongside the generated
-output. (EasyControl graduated to the shipped ``test-easycontrol`` — see
-``scripts/tasks/inference.py``; IP-Adapter was downgraded to ``bench/ip_adapter/``.)
+output. (EasyControl and Turbo graduated to the shipped ``test-easycontrol`` /
+``test-turbo`` — see ``scripts/tasks/inference.py``; IP-Adapter was downgraded
+to ``bench/ip_adapter/``.)
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from scripts.tasks._common import (
     _random_ref_image,
     _REF_IMAGE_EXTS,
     latest_output,
+    override_arg,
     run,
 )
 
@@ -113,57 +115,6 @@ def cmd_test_soft(extra):
     )
 
 
-def cmd_test_turbo(extra):
-    """Inference with the latest turbo student LoRA at 2 steps, cfg=1.0.
-
-    CFG is baked into the student during distillation, so production inference
-    runs cfg=1.0 (no double-CFG). Step count defaults to 2 — matching the
-    DP-DMD student's `student_steps=2` rollout — but extra args can override.
-    """
-    weight = latest_output("anima_turbo")
-    base = list(INFERENCE_BASE)
-    base = _override_arg(base, "--sampler", "euler")
-    # Per-step-expert checkpoints bind head k to denoise step k, so infer_steps
-    # MUST equal the trained head count K (= student_steps); pin it from metadata.
-    infer_steps = "2"
-    try:
-        from safetensors import safe_open
-
-        with safe_open(str(weight), framework="pt") as f:
-            md = f.metadata() or {}
-        if str(md.get("ss_turbo_per_step_expert", "")).strip() in ("1", "true", "True"):
-            K = int(md.get("ss_turbo_step_expert_K", "2") or "2")
-            infer_steps = str(K)
-            print(
-                f"[test-turbo] per-step-expert checkpoint: pinning "
-                f"--infer_steps {K} (= trained head count). Override at your own "
-                "risk — heads beyond K repeat the last (quality) head."
-            )
-    except Exception:
-        pass
-    base = _override_arg(base, "--infer_steps", infer_steps)
-    base = _override_arg(base, "--guidance_scale", "1.0")
-    run(
-        [
-            *base,
-            "--lora_weight",
-            str(weight),
-            *extra,
-        ]
-    )
-
-
-def _override_arg(argv: list[str], flag: str, value: str) -> list[str]:
-    """Replace a ``--flag VALUE`` (or ``--flag V1 V2``) pair in argv with a
-    fresh ``--flag value`` pair. Used to retarget INFERENCE_BASE defaults
-    for the turbo contract (2 steps, cfg=1.0) without rewriting the whole list.
-    """
-    if flag not in argv:
-        return argv + [flag, value]
-    i = argv.index(flag)
-    return argv[:i] + [flag, value] + argv[i + 2 :]
-
-
 def cmd_test_spd(extra):
     """Inference with the latest SPD fine-tune LoRA on the SPD sampler.
 
@@ -192,7 +143,7 @@ def cmd_test_spd(extra):
     except Exception as e:  # noqa: BLE001
         print(f"  warn: could not read SPD schedule from {weight}: {e}")
 
-    base = _override_arg(list(INFERENCE_BASE), "--sampler", "euler")  # SPD forces Euler
+    base = override_arg(list(INFERENCE_BASE), "--sampler", "euler")  # SPD forces Euler
     cmd = [*base, "--lora_weight", str(weight), "--spd"]
 
     stages = md.get("ss_spd_stages")

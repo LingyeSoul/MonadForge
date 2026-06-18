@@ -12,8 +12,9 @@ Examples:
     python tasks.py test                     # add MOD=1 to enable modulation guidance
     python tasks.py test                     # add NOLORA=1 to run against the bare DiT
     python tasks.py download-models
+    python tasks.py turbo                    # DP-DMD 4-step distillation
     python tasks.py exp-chimera              # experimental method
-    python tasks.py exp-test-turbo           # experimental inference
+    python tasks.py exp-test-spd             # experimental inference
 
 Command implementations live under ``scripts/tasks/`` (shipped methods) and
 ``scripts/experimental_tasks/`` (unstable methods exposed under ``exp-*``).
@@ -48,6 +49,13 @@ COMMANDS = {
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
         "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora).",
+    ),
+    "turbo": (
+        training.cmd_turbo,
+        "Turbo (DP-DMD) distillation — bakes CFG=4 / 28-step Anima into a 4-step "
+        "LoRA student (configs/methods/turbo.toml). Single-GPU bespoke loop "
+        "(bypasses train.py/accelerate, like distill-mod). Output is a normal LoRA "
+        "(https://huggingface.co/sorryhyun/anima-turbo-4step).",
     ),
     "easycontrol": (
         training.cmd_easycontrol,
@@ -139,6 +147,11 @@ COMMANDS = {
     "test-easycontrol": (
         inference.cmd_test_easycontrol,
         "Inference with latest EasyControl weight. Usage: test-easycontrol <ref_image> [--prompt ... --easycontrol_scale ...]",
+    ),
+    "test-turbo": (
+        inference.cmd_test_turbo,
+        "Inference with latest Turbo student LoRA at 4 steps, cfg=1.0 "
+        "(CFG is baked into the student).",
     ),
     # ── Preprocess ────────────────────────────────────────────────────
     "preprocess": (
@@ -276,12 +289,6 @@ COMMANDS = {
     # ── Experimental ──────────────────────────────────────────────────
     # Unstable methods kept under exp-* so they don't pollute the main command
     # surface. May produce broken output, change without notice, or be removed.
-    "exp-turbo": (
-        exp_training.cmd_turbo,
-        "[experimental] Decoupled DMD2 distillation — bakes CFG=4 / 28-step Anima "
-        "into a 4-step LoRA student (configs/methods/turbo.toml). "
-        "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod).",
-    ),
     "exp-spd": (
         exp_training.cmd_spd,
         "[experimental] SPD fine-tuning LoRA — §4.3 trajectory adapter that teaches a "
@@ -314,11 +321,6 @@ COMMANDS = {
         "[experimental] Inference with latest soft_tokens weight "
         "(SoftREPA-style per-layer × per-t bank, spliced into cross-attn via "
         "monkey-patched Block.forward). Composes freely with --spectrum.",
-    ),
-    "exp-test-turbo": (
-        exp_inference.cmd_test_turbo,
-        "[experimental] Inference with latest turbo student LoRA at 4 steps, cfg=1.0 "
-        "(CFG is baked into the student).",
     ),
     "exp-test-spd": (
         exp_inference.cmd_test_spd,

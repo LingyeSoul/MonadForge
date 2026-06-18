@@ -8,7 +8,7 @@ Status: **Phase 0 COMPLETE 2026-06-11 — gate FIRED → Phase 1 unlocked, not s
 
 Premise sources: `docs/findings/agsm_reward_premise_holds.md` (the validated ranking
 reward), `docs/findings/turbo_fei_band_deficit_falsified.md` (the "measure at the
-distribution the loss sees" lesson the probe obeys), `docs/experimental/dpdmd.md` +
+distribution the loss sees" lesson the probe obeys), `docs/methods/turbo.md` +
 `docs/experimental/soft_tokens.md` (the two implementations being crossed).
 
 ## The question — now answered

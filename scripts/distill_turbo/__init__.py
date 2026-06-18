@@ -6,7 +6,7 @@ score model. The student's first step is supervised toward a teacher K-step CFG
 anchor (diversity) then detached; the remaining steps are refined by a standard
 DMD loss (quality).
 
-Docs:     ``docs/experimental/dpdmd.md``.
+Docs:     ``docs/methods/turbo.md``.
 Config:   ``configs/methods/turbo.toml`` (CLI flags override TOML values).
 
 Entry point:

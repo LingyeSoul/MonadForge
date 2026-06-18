@@ -1,19 +1,19 @@
-"""MethodsTab — one Method dropdown over every trainable method.
+"""MethodsTab — one Method dropdown over a mix of flat-config + distill methods.
 
-The experimental section used to spread trainable methods across several tabs:
-a ConfigTab for the LoRA-family research variants (FeRA / ChimeraHydra) plus
-dedicated SPD and Turbo tabs. They split apart only because the editors differ
-under the hood — the LoRA family edits a *flat* ``gui-methods/<variant>.toml``
-and submits a ``train.py --method`` training job, while SPD / Turbo edit a
-*sectioned* ``configs/methods/{spd,turbo}.toml`` and submit a bespoke
-``tasks.py exp-*`` distill command job (no ``train.py`` path).
+Trainable methods come in two editor flavours: the LoRA family edits a *flat*
+``gui-methods/<variant>.toml`` and submits a ``train.py --method`` training job,
+while the distill methods (SPD / Turbo) edit a *sectioned*
+``configs/methods/{spd,turbo}.toml`` and submit a bespoke ``tasks.py`` distill
+command job (no ``train.py`` path).
 
 This wrapper hides that split behind a single Method picker. A ``QStackedWidget``
 holds the two editor kinds; selecting a flat method drives the embedded
 ConfigTab (its own method picker is hidden so the two don't compete), while
-selecting a distill method swaps in its editor. soft_tokens — a normal flat
-``train.py --method`` method that was previously only reachable from the CLI —
-rides the same ConfigTab page.
+selecting a distill method swaps in its editor.
+
+The same wrapper backs two tabs (see ``gui/app.py``): the **main Config tab**
+(``lora`` / ``tlora`` / ``hydralora`` + the promoted ``turbo`` distiller) and the
+**Experimental tab** (``chimera`` / ``soft_tokens`` + the ``spd`` distiller).
 """
 
 from __future__ import annotations
@@ -32,28 +32,38 @@ from gui.tabs.distill_tab import SPDTrainTab, TurboTrainTab
 
 
 class MethodsTab(QWidget):
-    """Unified experimental method picker (flat-config + distill editors)."""
+    """Unified method picker (flat-config + distill editors)."""
 
-    # Flat methods routed through the embedded ConfigTab (train.py --method).
-    # FeRA was retired from the picker (superseded by ChimeraHydra) but its
-    # fera.toml / network module still exist for the CLI.
-    _FLAT_METHODS = ("chimera", "soft_tokens")
+    # Distill methods → their bespoke sectioned-config editor class.
+    _DISTILL_EDITORS = {"spd": SPDTrainTab, "turbo": TurboTrainTab}
 
-    def __init__(self, tb_panel=None):
+    def __init__(
+        self,
+        tb_panel=None,
+        *,
+        flat_methods=("chimera", "soft_tokens"),
+        distill_methods=("spd",),
+        preprocess_tab=None,
+    ):
         super().__init__()
+        self._flat_methods = tuple(flat_methods)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
 
-        # Distill tabs are LazyTabMixin — their TOML scan is deferred until picked.
-        self._config = ConfigTab(methods=list(self._FLAT_METHODS), tb_panel=tb_panel)
+        self._config = ConfigTab(
+            methods=list(self._flat_methods),
+            tb_panel=tb_panel,
+            preprocess_tab=preprocess_tab,
+        )
         # The wrapper owns method selection, so hide ConfigTab's own method picker
         # (its inline variant picker stays).
         self._config._method_label.setVisible(False)
         self._config.method_combo.setVisible(False)
-        self._spd = SPDTrainTab()
-        self._turbo = TurboTrainTab()
-        self._distill: dict[str, QWidget] = {"spd": self._spd, "turbo": self._turbo}
+        # Distill tabs are LazyTabMixin — their TOML scan is deferred until picked.
+        self._distill: dict[str, QWidget] = {
+            name: self._DISTILL_EDITORS[name]() for name in distill_methods
+        }
 
         # The Method picker rides inside whichever editor page is active, mounted at
         # the front of that page's _top_bar; insertWidget reparents it on page switch.
@@ -65,9 +75,9 @@ class MethodsTab(QWidget):
         self._combo = QComboBox()
         self._combo.setSizeAdjustPolicy(QComboBox.AdjustToContents)
         self._combo.setMinimumContentsLength(
-            max(len(m) for m in (*self._FLAT_METHODS, *self._distill))
+            max(len(m) for m in (*self._flat_methods, *self._distill))
         )
-        self._combo.addItems([*self._FLAT_METHODS, *self._distill])
+        self._combo.addItems([*self._flat_methods, *self._distill])
         self._combo.currentTextChanged.connect(self._on_method)
         picker_row.addWidget(self._combo)
 
@@ -93,7 +103,7 @@ class MethodsTab(QWidget):
     def cleanup_subprocess(self) -> None:
         """App-shutdown hook — forward to every embedded editor (each leaves its
         detached daemon job alive; this only stops the observers)."""
-        for w in (self._config, self._spd, self._turbo):
+        for w in (self._config, *self._distill.values()):
             cleanup = getattr(w, "cleanup_subprocess", None)
             if callable(cleanup):
                 cleanup()

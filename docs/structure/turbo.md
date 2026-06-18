@@ -14,7 +14,7 @@ inference-side code, you just run it at `--infer_steps <student_steps> --cfg 1.0
 > split, the velocity↔x0 conversion that makes it work on a flow-matching DiT, the
 > per-step schedule, and the co-LoRA capacity argument. For the **usage / ops /
 > decision-log** reference (config knobs, `make` targets, metrics to watch,
-> current status), see **`docs/experimental/dpdmd.md`**.
+> current status), see **`docs/methods/turbo.md`**.
 >
 > **History.** This replaced the CA-decoupled DMD2 objective ("CFG-as-Spear,
 > Distribution-Matching-as-Shield", Liu et al. arXiv:2511.22677) on **2026-05-30**.

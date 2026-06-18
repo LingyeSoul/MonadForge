@@ -1,7 +1,7 @@
 """SPD / Turbo distillation config tabs.
 
 SPD and Turbo train through bespoke distill loops (``make exp-spd`` /
-``make exp-turbo`` → ``scripts/distill_{spd,turbo}.py``), NOT ``train.py``, and
+``make turbo`` → ``scripts/distill_{spd,turbo}.py``), NOT ``train.py``, and
 read a *sectioned* TOML (``configs/methods/{spd,turbo}.toml``) — nested
 ``[network]`` / ``[schedule]`` / ``[optim]`` / … tables — instead of the flat
 method+preset config the ConfigTab edits. They also have no dataset of their
@@ -354,6 +354,7 @@ class _DistillConfigTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidge
         self._log(t("daemon_queued", job_id=job_id))
         self._attach(job_id, replay=False)
 
+    def _try_reattach(self) -> None:
         """Re-bind to our own train job still running from a previous session.
 
         Only re-claims a *command* job whose label matches this tab's train
@@ -433,7 +434,7 @@ class SPDTrainTab(_DistillConfigTab):
 
 
 class TurboTrainTab(_DistillConfigTab):
-    # Turbo few-step LoRA student via DP-DMD through the bespoke loop `make exp-turbo` (NOT train.py). See docs/experimental/dpdmd.md.
+    # Turbo few-step LoRA student via DP-DMD through the bespoke loop `make turbo` (NOT train.py). See docs/methods/turbo.md.
     CONFIG_PATH = "configs/methods/turbo.toml"
-    TRAIN_TASK = "exp-turbo"
+    TRAIN_TASK = "turbo"
     METHOD_LABEL = "Turbo"

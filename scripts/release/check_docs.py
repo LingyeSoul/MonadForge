@@ -6,7 +6,7 @@ machine-checkable reference against the live tree:
 
   * file paths   — ``library/config/io.py``, ``configs/methods/lora.toml``,
                    ``scripts/preprocess/`` … must exist on disk.        (ERROR)
-  * make targets — ``make test-hydra``, ``python tasks.py exp-turbo`` … must be
+  * make targets — ``make test-hydra``, ``python tasks.py turbo`` … must be
                    a real ``tasks.py`` COMMANDS key or a Makefile target. (ERROR)
   * CLI flags    — ``--infer_steps``, ``--dave_tau`` … should be a flag the code
                    actually declares.                  (WARN — see caveat below)
