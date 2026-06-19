@@ -12,12 +12,34 @@ and are also loaded lazily. Shared snippets (``_apply_note``,
 from __future__ import annotations
 
 import functools
+import html
 import json
+import re
 from pathlib import Path
 
 from gui.i18n import current_language
 
 _GUIDES_DIR = Path(__file__).parent / "guides"
+
+# Inline markdown used in the field-help strings: `code` spans and **bold**.
+# The method guides are authored as real HTML, so the help panel renders rich
+# text; the per-field JSON strings instead lean on these markers (e.g.
+# "run `make mask`"). Convert them to the same bare <code>/<b> tags the guides
+# use so both surfaces render identically.
+_MD_CODE = re.compile(r"`([^`]+)`")
+_MD_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+
+
+def field_help_html(text: str) -> str:
+    """HTML-escape *text*, then render its inline markdown (`code`, **bold**).
+
+    Returns a fragment safe to drop straight into the help panel — escaping
+    happens before marker conversion, so literal ``<``/``&`` in the prose stay
+    literal while the markdown markers become tags."""
+    escaped = html.escape(text)
+    escaped = _MD_CODE.sub(r"<code>\1</code>", escaped)
+    escaped = _MD_BOLD.sub(r"<b>\1</b>", escaped)
+    return escaped
 
 
 @functools.lru_cache(maxsize=None)

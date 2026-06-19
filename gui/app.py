@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QTabWidget,
     QTextBrowser,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -45,7 +46,7 @@ from gui._paths import (
     DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS,
 )
 from gui.gpu_status import GpuStatusBar
-from gui.widgets import action_button
+from gui.widgets import action_button, wrap_tooltip
 from gui.i18n import (
     available_languages,
     current_language,
@@ -688,10 +689,19 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj, event):  # noqa: N802 — Qt event handler name
         """Intercept every right-click in the app and show our menu instead of
         the target widget's default one (text widgets ship a copy/select-all
-        menu we want to override). Returning True consumes the event."""
+        menu we want to override). Returning True consumes the event.
+
+        Also re-shows long plain tooltips wrapped to a bounded width so they
+        render as a readable multi-line box instead of one screen-wide strip."""
         if event.type() == QEvent.ContextMenu:
             self._show_context_menu(event.globalPos())
             return True
+        if event.type() == QEvent.ToolTip:
+            tip = obj.toolTip() if hasattr(obj, "toolTip") else ""
+            wrapped = wrap_tooltip(tip)
+            if wrapped is not None and wrapped != tip:
+                QToolTip.showText(event.globalPos(), wrapped, obj)
+                return True
         return super().eventFilter(obj, event)
 
     def _show_context_menu(self, global_pos):

@@ -74,7 +74,11 @@ from gui import (
 )
 from gui import daemon as gui_daemon
 from gui._job_mixin import DaemonJobMixin
-from gui.explanations import preprocess_field_help, preprocess_guide
+from gui.explanations import (
+    field_help_html,
+    preprocess_field_help,
+    preprocess_guide,
+)
 from gui.i18n import t
 from gui.progress import TQDM_RE, TqdmProgressTracker, make_progress_bar
 from gui.theme import action_button_qss, rich_text_pt as _explain_pt, tok
@@ -676,8 +680,12 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self.dropout_edit,
         )
 
-        self.caption_correct_order_chk = QCheckBox(t("preprocess_caption_correct_order"))
-        self.caption_correct_order_chk.setToolTip(t("preprocess_caption_correct_order_tip"))
+        self.caption_correct_order_chk = QCheckBox(
+            t("preprocess_caption_correct_order")
+        )
+        self.caption_correct_order_chk.setToolTip(
+            t("preprocess_caption_correct_order_tip")
+        )
         self.caption_correct_order_chk.setChecked(DEFAULT_CAPTION_CORRECT_ORDER)
         text_form.addRow(
             self._field_label(
@@ -704,7 +712,9 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
 
         self.caption_trigger_word_edit = QLineEdit(DEFAULT_CAPTION_TRIGGER_WORD)
         self.caption_trigger_word_edit.setPlaceholderText("@trigger")
-        self.caption_trigger_word_edit.setToolTip(t("preprocess_caption_trigger_word_tip"))
+        self.caption_trigger_word_edit.setToolTip(
+            t("preprocess_caption_trigger_word_tip")
+        )
         text_form.addRow(
             self._field_label(
                 "caption_trigger_word",
@@ -1131,7 +1141,7 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         if help_text:
             parts.append(
                 f"<p style='font-size:{_explain_pt(15)}; line-height:1.6;'>"
-                f"{html.escape(help_text)}</p>"
+                f"{field_help_html(help_text)}</p>"
             )
         else:
             parts.append(
@@ -1720,9 +1730,7 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
         # with an opaque "no images to mask". Surface the real cause first.
         resized_dir = self._snapshot_path(snapshot, "resized_image_dir", RESIZED_DIR)
         if _count_resized(resized_dir, mask_path_pattern) == 0:
-            QMessageBox.warning(
-                self, t("error"), t("preprocess_no_resized_to_process")
-            )
+            QMessageBox.warning(self, t("error"), t("preprocess_no_resized_to_process"))
             return
         self._submit(
             label="mask",

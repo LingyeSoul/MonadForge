@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import json
 import re
+import unicodedata
 from typing import Any
 
 from PySide6.QtCore import QPointF, QSize, Qt, Signal
@@ -870,6 +871,67 @@ class ClickableLabel(QLabel):
         if ev.button() == Qt.LeftButton:
             self.clicked.emit()
         super().mousePressEvent(ev)
+
+
+# Long single-line tooltips render as one screen-wide strip because Qt only
+# word-wraps tooltip text it recognizes as rich text — and the rich-text paths
+# (a width-bound table / a wrapping <div>) clip CJK at the right edge instead
+# of reflowing. So we wrap to *plain* text with explicit newlines, measuring
+# each line in display columns (CJK glyphs count as 2) so ko/ja/cn lines stay
+# bounded and nothing is ever clipped.
+TOOLTIP_WRAP_COLS = 56
+_TOOLTIP_WRAP_MIN_LEN = 80
+# Cheap "is this already HTML?" probe (PySide6 doesn't expose Qt.mightBeRichText).
+_LOOKS_RICH = re.compile(r"<[a-zA-Z!/]")
+
+
+def _display_width(s: str) -> int:
+    """Terminal-style display width: East-Asian wide/fullwidth glyphs = 2."""
+    return sum(2 if unicodedata.east_asian_width(c) in ("W", "F") else 1 for c in s)
+
+
+def _wrap_plain(text: str, cols: int) -> str:
+    """Greedy word-wrap to *cols* display columns; hard-break runs with no
+    spaces (CJK / long paths) so a single token can't overflow."""
+    lines: list[str] = []
+    cur = ""
+    for word in text.split(" "):
+        while _display_width(word) > cols:  # token alone exceeds the line
+            head = ""
+            for ch in word:
+                if _display_width(head + ch) > cols:
+                    break
+                head += ch
+            if cur:
+                lines.append(cur)
+                cur = ""
+            lines.append(head)
+            word = word[len(head) :]
+        if not cur:
+            cur = word
+        elif _display_width(cur) + 1 + _display_width(word) <= cols:
+            cur += " " + word
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return "\n".join(lines)
+
+
+def wrap_tooltip(text: str | None) -> str | None:
+    """Wrap a long, plain tooltip to multiple display-bounded lines.
+
+    Returns *text* unchanged when it is empty, already short, already
+    multi-line, or already rich text (an author-formatted tooltip is left
+    alone). Otherwise returns plain text with explicit newlines wrapped at
+    :data:`TOOLTIP_WRAP_COLS` display columns — Qt shows it as a multi-line
+    box with no right-edge clipping."""
+    if not text or "\n" in text or len(text) <= _TOOLTIP_WRAP_MIN_LEN:
+        return text
+    if _LOOKS_RICH.search(text):  # author-formatted tooltip — leave it alone
+        return text
+    return _wrap_plain(text, TOOLTIP_WRAP_COLS)
 
 
 def make_field_label(

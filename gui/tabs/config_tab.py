@@ -67,7 +67,7 @@ from gui import (
 from gui import daemon as gui_daemon
 from gui._job_mixin import DaemonJobMixin
 from gui.theme import action_button_qss, rich_text_pt as _explain_pt, tok
-from gui.explanations import field_help, method_guide
+from gui.explanations import field_help, field_help_html, method_guide
 from gui.i18n import t
 from gui.process import kill_process_tree, setup_kill_safe
 from gui.widgets import (
@@ -809,7 +809,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         ]
         if help_text:
             parts.append(
-                f"<p style='font-size:{_explain_pt(15)}; line-height:1.6;'>{help_text}</p>"
+                f"<p style='font-size:{_explain_pt(15)}; line-height:1.6;'>{field_help_html(help_text)}</p>"
             )
         else:
             parts.append(
