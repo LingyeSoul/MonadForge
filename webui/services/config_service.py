@@ -248,10 +248,27 @@ _GROUPS = {
         "sample_image_size",
         "sample_seed",
     },
+    "Resume & Warm-start": {
+        "network_weights",
+        "dim_from_weights",
+        "save_state_on_train_end",
+    },
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
 _VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats", "sample_ratio"}
+
+# Resume & Warm-start defaults. These keys are NOT in base.toml (which is
+# overwritten by `make update`), so merged_gui_variant_preset injects them with
+# these neutral defaults so the group always renders in the WebUI form. Values
+# written to the variant TOML still win over these (checked before inject).
+# ``network_weights = ""`` means "no warm-start" and is stripped on save
+# (empty string would be passed to train.py as a literal arg otherwise).
+_RESUME_DEFAULTS = {
+    "network_weights": "",
+    "dim_from_weights": False,
+    "save_state_on_train_end": False,
+}
 
 _BASIC = {
     "learning_rate",
@@ -259,7 +276,6 @@ _BASIC = {
     "save_every_n_epochs",
     "network_dim",
     "network_alpha",
-    "network_weights",
     "num_experts",
     "output_name",
     "batch_size",
@@ -651,6 +667,14 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
         merged["sample_ratio"] = _base_sample_ratio(base)
         origin["sample_ratio"] = "base"
 
+    # Resume & Warm-start keys are not in base.toml (base.toml is overwritten by
+    # `make update`), so inject them with neutral defaults so the group always
+    # renders in the form. A value already present at the method layer wins.
+    for key, default in _RESUME_DEFAULTS.items():
+        if key not in merged:
+            merged[key] = default
+            origin[key] = "method"  # editable on built-in presets
+
     return merged, origin
 
 
@@ -710,6 +734,11 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
                 "value": value,
                 "origin": orig,
                 "field_type": ftype,
+                # Keep the named group (_K2G) so fields land in their section
+                # (Training / Architecture / ...). The frontend's "basic" group
+                # is reserved for a compact card driven by is_basic; mapping
+                # _BASIC keys to group="basic" here would pull them OUT of their
+                # named section, so don't do that.
                 "group": _K2G.get(key),
                 "is_basic": key in _BASIC,
                 "is_virtual": key in _VIRTUAL_KEYS,
@@ -1030,9 +1059,14 @@ def save_variant_config(variant: str, data: dict) -> None:
         base_sr = _base_sample_ratio(base)
         _apply_sample_ratio(current, float(sr), base_sr)
 
-    # Write flat keys
+    # Write flat keys. Strip Resume & Warm-start keys left at their neutral
+    # default (empty path / False) so the variant TOML stays clean and the
+    # flag isn't forwarded to train.py as a literal empty/false arg.
     for key, value in data.items():
         if key in _SKIP:
+            continue
+        if key in _RESUME_DEFAULTS and value == _RESUME_DEFAULTS[key]:
+            current.pop(key, None)
             continue
         current[key] = value
 
@@ -1075,24 +1109,37 @@ def count_preprocess_caches(cache_dir: Path) -> dict[str, int]:
 def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
     """Check for a resumable checkpoint state directory.
 
-    Returns ``(state_dir, current_step)`` or ``None``.
+    Returns ``(state_dir, current_step)`` or ``None``. Checks two candidate
+    dirs (newest first):
+      1. ``<output_name>-checkpoint-state`` — mid-training snapshot written by
+         ``checkpointing_epochs`` (only consulted when it is set).
+      2. ``<output_name>-state`` — end-of-training snapshot written by
+         ``save_state_on_train_end`` (consulted when it is set), so a finished
+         run can be continued.
     """
-    if not merged.get("checkpointing_epochs"):
-        return None
     output_dir = merged.get("output_dir")
     output_name = merged.get("output_name") or "last"
     if not output_dir:
         return None
-    state_dir = ROOT / output_dir / f"{output_name}-checkpoint-state"
-    train_state_file = state_dir / "train_state.json"
-    if not train_state_file.is_file():
-        return None
-    try:
-        data = json.loads(train_state_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    step = int(data.get("current_step", 0))
-    return state_dir, step
+    base_path = ROOT / output_dir
+
+    candidates: list[Path] = []
+    if merged.get("checkpointing_epochs"):
+        candidates.append(base_path / f"{output_name}-checkpoint-state")
+    if merged.get("save_state_on_train_end"):
+        candidates.append(base_path / f"{output_name}-state")
+
+    for state_dir in candidates:
+        train_state_file = state_dir / "train_state.json"
+        if not train_state_file.is_file():
+            continue
+        try:
+            data = json.loads(train_state_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        step = int(data.get("current_step", 0))
+        return state_dir, step
+    return None
 
 
 def prelaunch_check(variant: str, preset: str) -> dict:
@@ -1138,17 +1185,29 @@ def prelaunch_check(variant: str, preset: str) -> dict:
 
 
 def wipe_checkpoint(output_dir: str, output_name: str) -> None:
-    """Delete a checkpoint state directory and its sidecar adapter file.
+    """Delete resumable checkpoint state dirs and their sidecar adapter file.
+
+    Clears both candidate resume dirs so the "Wipe & train" button fully resets
+    the run regardless of which flag (``checkpointing_epochs`` →
+    ``<name>-checkpoint-state``, or ``save_state_on_train_end`` →
+    ``<name>-state``) produced the snapshot.
 
     Raises ``OSError`` if deletion fails.
     """
     name = output_name or "last"
-    state_dir = ROOT / output_dir / f"{name}-checkpoint-state"
-    sidecar = state_dir.parent / f"{name}-checkpoint.safetensors"
+    parent = ROOT / output_dir
+    # checkpoint-state dir + its resumable sidecar adapter
+    state_dir = parent / f"{name}-checkpoint-state"
+    sidecar = parent / f"{name}-checkpoint.safetensors"
+    # last-state dir written by save_state_on_train_end (no sidecar — the final
+    # <name>.safetensors is a separate, intentional product and is NOT touched)
+    last_state_dir = parent / f"{name}-state"
     if state_dir.is_dir():
         shutil.rmtree(state_dir)
     if sidecar.is_file():
         sidecar.unlink()
+    if last_state_dir.is_dir():
+        shutil.rmtree(last_state_dir)
 
 
 # ── Sample prompts file I/O ────────────────────────────────────

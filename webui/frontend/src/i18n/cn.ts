@@ -398,6 +398,7 @@ export default {
   cfgErrSaveDetail: '保存失败',
   cfgErrSave: '保存失败：{error}',
   cfgGroupOther: '其他',
+  cfgGroupResume: '续训与热启动',
 
   // Notifications
   notifyConfigSaved: '配置已保存',

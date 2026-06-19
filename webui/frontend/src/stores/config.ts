@@ -32,6 +32,29 @@ const _GROUP_LABELS: Record<string, Record<string, string>> = {
     Paths: '路径配置',
     'Preview Sampling': '预览采样',
   },
+  ja: {
+    Architecture: 'アーキテクチャ',
+    Training: '学習パラメータ',
+    Performance: 'パフォーマンス',
+    Paths: 'パス設定',
+    'Preview Sampling': 'プレビュー采样',
+  },
+  ko: {
+    Architecture: '아키텍처',
+    Training: '학습 매개변수',
+    Performance: '성능 최적화',
+    Paths: '경로 설정',
+    'Preview Sampling': '미리보기 샘플링',
+  },
+}
+
+// Groups localized via the i18n message catalog (cfgGroup* keys) rather than the
+// _GROUP_LABELS table. 'Other' is the fallback for ungrouped fields; 'Resume &
+// Warm-start' is the new resume/warm-start group. Routing them through
+// getFrontendTranslations lets the active language (incl. en/cn) drive the label.
+const _GROUP_I18N_KEYS: Record<string, string> = {
+  Other: 'cfgGroupOther',
+  'Resume & Warm-start': 'cfgGroupResume',
 }
 
 function _t(key: string, lang: string): string {
@@ -64,7 +87,11 @@ export const useConfigStore = defineStore('config', () => {
     const groups: Record<string, FieldMeta[]> = {}
     for (const f of advancedFields.value) {
       const raw = f.group || 'Other'
-      const g = labels[raw] ?? raw
+      // Prefer the i18n catalog (cfgGroup*) for groups that have a message key
+      // (Other, Resume & Warm-start); fall back to the language label table,
+      // then the raw backend group name.
+      const i18nKey = _GROUP_I18N_KEYS[raw]
+      const g = i18nKey ? _t(i18nKey, lang) : (labels[raw] ?? raw)
       if (!groups[g]) groups[g] = []
       groups[g].push(f)
     }

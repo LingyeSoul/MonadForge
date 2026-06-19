@@ -216,6 +216,19 @@ def get_checkpoint_state_dir(args: argparse.Namespace):
     return os.path.join(args.output_dir, CHECKPOINT_STATE_NAME.format(model_name))
 
 
+def get_last_state_dir(args: argparse.Namespace):
+    """Directory written by ``save_state_on_train_end`` (``<output_name>-state``).
+
+    Distinct from ``get_checkpoint_state_dir`` (``<output_name>-checkpoint-state``)
+    which is written mid-training by ``checkpointing_epochs``. Both carry a
+    ``train_state.json`` and can be used to resume — ``auto_resume`` checks the
+    checkpoint-state dir first, then falls back to this last-state dir so a run
+    that finished with ``--save_state_on_train_end`` can be continued.
+    """
+    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+    return os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name))
+
+
 def get_checkpoint_ckpt_name(args: argparse.Namespace, ext: str):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
     return CHECKPOINT_FILE_NAME.format(model_name) + ext
@@ -363,33 +376,48 @@ class CheckpointSaver:
         accelerator.register_load_state_pre_hook(load_model_hook)
 
     def auto_resume(self) -> None:
-        """If ``checkpointing_epochs`` is enabled and a resumable checkpoint
-        exists below ``max_train_steps``, point ``args.resume`` at it and
-        force ``skip_until_initial_step``. No-op when ``args.resume`` is
-        already set or no checkpoint exists."""
+        """Point ``args.resume`` at a resumable state dir + force
+        ``skip_until_initial_step`` when one exists below ``max_train_steps``.
+
+        Checks two candidate dirs (in priority order):
+          1. ``<output_name>-checkpoint-state`` — the mid-training resumable
+             snapshot written by ``checkpointing_epochs`` (preferred; newest).
+          2. ``<output_name>-state`` — the end-of-training snapshot written by
+             ``--save_state_on_train_end``. Lets a finished run be continued.
+
+        Both carry a ``train_state.json``. Candidate 1 is only consulted when
+        ``checkpointing_epochs`` is set (its writer); candidate 2 whenever
+        ``save_state_on_train_end`` is set. No-op when ``args.resume`` is
+        already set or no eligible dir exists."""
         args = self.args
-        if not getattr(args, "checkpointing_epochs", None) or args.resume:
+        if args.resume:
             return
-        checkpoint_state_dir = get_checkpoint_state_dir(args)
-        if not os.path.exists(checkpoint_state_dir):
-            return
-        train_state_file = os.path.join(checkpoint_state_dir, "train_state.json")
-        if not os.path.exists(train_state_file):
-            return
-        with open(train_state_file, "r", encoding="utf-8") as f:
-            ckpt_data = json.load(f)
-        ckpt_step = ckpt_data.get("current_step", 0)
-        if ckpt_step < args.max_train_steps:
-            args.resume = checkpoint_state_dir
-            args.skip_until_initial_step = True
+
+        candidates: list[str] = []
+        if getattr(args, "checkpointing_epochs", None):
+            candidates.append(get_checkpoint_state_dir(args))
+        if getattr(args, "save_state_on_train_end", None):
+            candidates.append(get_last_state_dir(args))
+
+        for state_dir in candidates:
+            train_state_file = os.path.join(state_dir, "train_state.json")
+            if not os.path.exists(train_state_file):
+                continue
+            with open(train_state_file, "r", encoding="utf-8") as f:
+                ckpt_data = json.load(f)
+            ckpt_step = ckpt_data.get("current_step", 0)
+            if ckpt_step < args.max_train_steps:
+                args.resume = state_dir
+                args.skip_until_initial_step = True
+                logger.info(
+                    f"auto-resuming from state at step {ckpt_step}: {state_dir}"
+                )
+                return
             logger.info(
-                f"auto-resuming from checkpoint at step {ckpt_step}: {checkpoint_state_dir}"
+                f"state already reached max_train_steps "
+                f"({ckpt_step} >= {args.max_train_steps}), starting fresh: {state_dir}"
             )
-        else:
-            logger.info(
-                f"checkpoint already reached max_train_steps "
-                f"({ckpt_step} >= {args.max_train_steps}), starting fresh"
-            )
+            return
 
     def save(self, ckpt_name: str, network: Any, steps: int, epoch_no: int) -> None:
         """Write a network checkpoint with up-to-date training metadata."""

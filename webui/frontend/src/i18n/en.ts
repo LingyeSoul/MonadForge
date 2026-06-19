@@ -398,6 +398,7 @@ export default {
   cfgErrSaveDetail: 'Save failed',
   cfgErrSave: 'Save failed: {error}',
   cfgGroupOther: 'Other',
+  cfgGroupResume: 'Resume & Warm-start',
 
   // Notifications
   notifyConfigSaved: 'Config saved',
