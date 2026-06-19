@@ -74,69 +74,13 @@ def _uniformize_t(field: torch.Tensor) -> torch.Tensor:
     return ranks.reshape(field.shape)
 
 
-# --- screen-field memoization ---------------------------------------------------
-# A screen field depends ONLY on (h, w, period, angle, kind, device, dtype) — never
-# the image — so for a fixed mangafy seed + resolution it is identical every call.
-# Recomputing it (meshgrid + sin + the O(n log n) argsort in _uniformize_t) every
-# step is pure waste in FlowBender's per-step re-mangafy. The cache is OFF by
-# default — one-shot staging mangafies each image at a unique resolution exactly
-# once, so caching there only burns VRAM with no reuse. The FlowBender operator
-# turns it on (set_screen_field_cache(True)), where the same handful of tier
-# resolutions recur across steps. Bounded FIFO so VRAM stays capped (each field is
-# a supersampled HxW float tensor — non-trivial at ss>1).
-_SCREEN_CACHE: dict = {}
-_SCREEN_CACHE_ENABLED = False
-_SCREEN_CACHE_MAX = 32
-
-
-def set_screen_field_cache(enabled: bool, *, max_entries: int = 32) -> None:
-    """Enable/disable the per-resolution screen-field cache (see above). Disabling
-    clears it. Callers that re-mangafy the same resolutions repeatedly (FlowBender)
-    enable it; one-shot batch staging leaves it off."""
-    global _SCREEN_CACHE_ENABLED, _SCREEN_CACHE_MAX
-    _SCREEN_CACHE_ENABLED = bool(enabled)
-    _SCREEN_CACHE_MAX = int(max_entries)
-    if not enabled:
-        _SCREEN_CACHE.clear()
-
-
 def _screen_field_t(
     h: int, w: int, *, period: float, angle: float, kind: str, device, dtype
 ) -> torch.Tensor:
     """Periodic screen field in [0, 1] — torch port of :func:`mangafy._screen_field`.
 
     Rank-normalized to a uniform CDF (:func:`_uniformize_t`) so ink coverage equals
-    ``1 - luminance`` for every pattern, matching the NumPy backend. Memoized by
-    shape/screen params when the cache is enabled (read-only downstream, so the
-    cached tensor is safe to share)."""
-    if _SCREEN_CACHE_ENABLED:
-        key = (
-            int(h),
-            int(w),
-            round(float(period), 6),
-            round(float(angle), 6),
-            str(kind),
-            str(device),
-            str(dtype),
-        )
-        hit = _SCREEN_CACHE.get(key)
-        if hit is not None:
-            return hit
-        field = _compute_screen_field_t(
-            h, w, period=period, angle=angle, kind=kind, device=device, dtype=dtype
-        )
-        if len(_SCREEN_CACHE) >= _SCREEN_CACHE_MAX:
-            _SCREEN_CACHE.pop(next(iter(_SCREEN_CACHE)))  # FIFO evict oldest
-        _SCREEN_CACHE[key] = field
-        return field
-    return _compute_screen_field_t(
-        h, w, period=period, angle=angle, kind=kind, device=device, dtype=dtype
-    )
-
-
-def _compute_screen_field_t(
-    h: int, w: int, *, period: float, angle: float, kind: str, device, dtype
-) -> torch.Tensor:
+    ``1 - luminance`` for every pattern, matching the NumPy backend."""
     ys, xs = torch.meshgrid(
         torch.arange(h, device=device, dtype=dtype),
         torch.arange(w, device=device, dtype=dtype),
@@ -264,38 +208,14 @@ def mangafy_array_gpu(
         )
         / 255.0
     )
-    manga = _mangafy_core_t(rgb, p, rng)  # (H, W) float [0, 1]
-    # truncate to uint8 (matches NumPy backend), broadcast gray → RGB
-    out = (manga * 255.0).to(torch.uint8).cpu().numpy()
-    return np.stack([out] * 3, axis=-1)
-
-
-class _ShapeProxy:
-    """Lightweight stand-in exposing only ``.shape`` — ``resolve_params`` reads
-    ``img_rgb.shape[:2]`` and nothing else, so the tensor path can resolve all
-    seeded knobs without materializing/copying a pixel array."""
-
-    __slots__ = ("shape",)
-
-    def __init__(self, shape):
-        self.shape = shape
-
-
-def _mangafy_core_t(rgb_hwc01: torch.Tensor, p: dict, rng: np.random.Generator):
-    """Shared GPU pixel math: ``(H, W, 3)`` float [0, 1] → ``(H, W)`` manga
-    float [0, 1] (line ∧ screentone). Both the numpy-array and the on-device
-    entry points funnel through here so they stay in lockstep."""
-    wts = torch.tensor(
-        p["luma_weights"], device=rgb_hwc01.device, dtype=rgb_hwc01.dtype
-    )
-    gray = (rgb_hwc01 @ (wts / wts.sum())).clamp_(0.0, 1.0)  # (H, W)
+    wts = torch.tensor(p["luma_weights"], device=device, dtype=torch.float32)
+    gray = (rgb @ (wts / wts.sum())).clamp_(0.0, 1.0)  # (H, W)
 
     line = _xdog_t(
         gray, sigma=p["sigma"], k=p["k"], sharp=p["sharp"], eps=p["eps"], phi=p["phi"]
     )
     # Shadow-detail lift runs on the native-res luminance via the shared cv2 helper
-    # (host-side op, not supersampled) — bit-identical to the CPU backend, but it IS
-    # the one remaining GPU↔CPU hop; it only fires when detail_amount > 0.
+    # (cheap host-side op, not supersampled), so it's bit-identical to the CPU backend.
     tone_gray = gray
     if p["detail_amount"] > 0:
         enhanced = _enhance_shadow_detail(
@@ -318,28 +238,7 @@ def _mangafy_core_t(rgb_hwc01: torch.Tensor, p: dict, rng: np.random.Generator):
         angle=p["angle"],
         n_bands=p["n_bands"],
     )
-    # ink wherever either the line or the screen is dark
-    return torch.minimum(line, tone).clamp_(0.0, 1.0)
-
-
-def mangafy_tensor_gpu(
-    rgb_chw01: torch.Tensor,
-    *,
-    seed: int | None = None,
-    **overrides,
-) -> torch.Tensor:
-    """On-device twin of :func:`mangafy_array_gpu` — **Tensor in, Tensor out, no
-    numpy boundary**. Takes a ``(3, H, W)`` float image in [0, 1] on any device and
-    returns the mangafied ``(3, H, W)`` float result in [0, 1] on the same
-    device/dtype. For FlowBender's per-step re-mangafy this avoids the two PCIe
-    round-trips the uint8/numpy ``mangafy_array_gpu`` contract forces (decode pixels
-    → CPU → GPU and manga → CPU → GPU). ``resolve_params`` needs only the shape, so
-    no pixel copy happens. Drops the uint8 quantization (sub-1/255, irrelevant to a
-    VAE-encoded feedback signal); the operator stays internally consistent."""
-    h, w = int(rgb_chw01.shape[-2]), int(rgb_chw01.shape[-1])
-    rng = np.random.default_rng(seed)
-    p = resolve_params(_ShapeProxy((h, w, 3)), rng, overrides)
-
-    rgb_hwc = rgb_chw01.permute(1, 2, 0).to(torch.float32).clamp(0.0, 1.0)
-    manga = _mangafy_core_t(rgb_hwc, p, rng)  # (H, W) float [0, 1]
-    return manga.unsqueeze(0).expand(3, h, w).to(dtype=rgb_chw01.dtype)
+    # ink wherever either the line or the screen is dark; truncate to uint8 (matches NumPy)
+    manga = torch.minimum(line, tone).clamp_(0.0, 1.0)
+    out = (manga * 255.0).to(torch.uint8).cpu().numpy()
+    return np.stack([out] * 3, axis=-1)

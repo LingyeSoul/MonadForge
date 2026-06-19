@@ -841,91 +841,6 @@ class AnimaTrainer:
             if out:
                 self._state.extras_for_step.update(out)
 
-    def _flowbender_operator(self, ctx: TrainCtx):
-        """Lazily build (and cache) the FlowBender forward operator H.
-
-        H re-extracts the condition from the model's clean estimate via the
-        VAE (decode → mangafy → encode). Built once from the resident VAE; the
-        VAE is force-loaded for FlowBender runs (see ``vae_needed``)."""
-        op = getattr(self, "_fb_operator", None)
-        if op is None:
-            from library.inference.forward_operators import build_forward_operator
-
-            if ctx.vae is None:
-                raise RuntimeError(
-                    "FlowBender requires the VAE resident during training "
-                    "(decode/encode for H = mangafy), but vae is None. This is a "
-                    "wiring bug — use_flowbender should force vae_needed."
-                )
-            name = str(getattr(ctx.args, "flowbender_operator", "mangafy") or "mangafy")
-            seed = int(getattr(ctx.args, "flowbender_mangafy_seed", 0) or 0)
-            op = build_forward_operator(name, ctx.vae, mangafy_seed=seed)
-            if op is None:
-                raise ValueError(f"Unknown flowbender_operator={name!r}")
-            self._fb_operator = op
-        return self._fb_operator
-
-    def _flowbender_lookahead(
-        self,
-        ctx: TrainCtx,
-        *,
-        anima,
-        noisy_model_input,
-        timesteps,
-        tc,
-        padding_mask,
-        sigmas,
-    ) -> None:
-        """FlowBender pass 1: prime the feedback stream for the primary forward.
-
-        Runs an unguided (feedback-OFF, cond-ON) no_grad DiT forward, forms the
-        Euler clean estimate x̂₁ = x_t − σ·v, re-extracts the manga condition via
-        H, encodes it into cond-latent space, and ``set_feedback`` for pass 2.
-
-        Null-feedback dropout (``p_un``): with that probability, skip the
-        look-ahead and clear feedback so pass 2 runs open-loop (keeps the
-        unguided look-ahead reliable — paper's p_un, best at 0.1)."""
-        network = ctx.network
-        p_un = float(getattr(network, "_flowbender_p_un", 0.0) or 0.0)
-        if p_un > 0.0 and random.random() < p_un:
-            network.clear_feedback()
-            return
-
-        op = self._flowbender_operator(ctx)
-        # Run the look-ahead through the EXISTING compiled blocks but force them
-        # EAGER (torch.compiler stance, restored on exit). The look-ahead is
-        # no_grad and its output is detached (x_clean.detach() below), so it
-        # gains nothing from the training-compiled kernels — but routing it
-        # through them under no_grad makes dynamo trace a SECOND grad-state copy
-        # of every DiT block._forward AND the two-stream cond inner (grad-mode is
-        # part of the GLOBAL_STATE guard), ~doubling the resident compile-context
-        # VRAM (see project_compile_context_vram_climb). force_eager runs the
-        # already-installed compiled callables eagerly so no second graph set is
-        # built. No-op when torch_compile is off (nothing is compiled).
-        with (
-            torch.compiler.set_stance("force_eager"),
-            torch.no_grad(),
-            ctx.accelerator.autocast(),
-        ):
-            cond_la = build_forward_conditioning(
-                network=network, tc=tc, timesteps=timesteps
-            )
-            v_la = anima(
-                noisy_model_input,
-                timesteps,
-                cond_la.cond,
-                padding_mask=padding_mask,
-                **cond_la.kw,
-            )
-        # Euler clean estimate (5D boundary): σ broadcasts as [B,1,1,1,1].
-        sig5 = sigmas.reshape(sigmas.shape[0], 1, 1, 1, 1)
-        x_clean = noisy_model_input - sig5 * v_la
-        # H = decode → mangafy → encode (zero-order, stop-grad). Returns a 4D
-        # cond-space latent feedable to set_feedback (encode_cond_latent
-        # unsqueezes dim 2 itself).
-        feedback_latent = op(x_clean.detach())
-        network.set_feedback(feedback_latent.to(ctx.weight_dtype))
-
     def get_noise_pred_and_target(
         self,
         ctx: TrainCtx,
@@ -956,24 +871,9 @@ class AnimaTrainer:
         padding_mask = self._get_padding_mask(
             latents, weight_dtype=ctx.weight_dtype, device=accelerator.device
         )
-        noisy_model_input = noisy_model_input.unsqueeze(2)  # 4D to 5D, [B, C, 1, H, W]
-
-        # FlowBender (arXiv:2606.20404): closed-loop pass 1 (look-ahead, no_grad,
-        # feedback OFF) → x̂₁ = x_t − σ·v → H = mangafy(decode(x̂₁)) → encode →
-        # set_feedback. The grad-bearing primary forward below is pass 2, which
-        # then attends [target_k; cond_k; feedback_k]. No-op unless the network
-        # was built with use_flowbender. clear_feedback on the open-loop branch
-        # (null-feedback dropout p_un) is handled inside the helper.
-        if is_train and getattr(ctx.network, "_use_flowbender", False):
-            self._flowbender_lookahead(
-                ctx,
-                anima=anima,
-                noisy_model_input=noisy_model_input,
-                timesteps=timesteps,
-                tc=tc,
-                padding_mask=padding_mask,
-                sigmas=sigmas,
-            )
+        noisy_model_input = noisy_model_input.unsqueeze(
+            2
+        )  # 4D to 5D, [B, C, H, W] -> [B, C, 1, H, W]
 
         with torch.set_grad_enabled(is_train), accelerator.autocast():
             model_pred, cond = self._run_primary_forward(
@@ -2194,19 +2094,10 @@ class AnimaTrainer:
         cmmd_validation = val_dataset_group is not None and getattr(
             args, "use_cmmd", True
         )
-        # FlowBender's per-step look-ahead decodes x̂₁ and re-encodes H(x̂₁), so
-        # the VAE must stay resident even when all latents are cached.
-        flowbender_on = str(
-            resolve_network_kwargs(args).get("use_flowbender", "")
-        ).strip().lower() in ("true", "1", "yes")
-
         # VAE: needed only to live-encode (caching off), to decode training
-        # samples, to decode CMMD validation samples, or for FlowBender's
-        # decode→H→encode feedback. With caching on the cache is guaranteed
-        # complete above, so no encode pass is required.
-        vae_needed = (
-            (not cache_latents) or sampling_enabled or cmmd_validation or flowbender_on
-        )
+        # samples, or to decode CMMD validation samples. With caching on the
+        # cache is guaranteed complete above, so no encode pass is required.
+        vae_needed = (not cache_latents) or sampling_enabled or cmmd_validation
 
         # Qwen3 TE: needed only to live-encode (caching off), to encode sample
         # prompts, or when the text encoder itself is being trained.
@@ -2258,18 +2149,9 @@ class AnimaTrainer:
             if val_dataset_group is not None:
                 val_dataset_group.new_cache_latents(vae, accelerator)
 
-            # FlowBender decodes/re-encodes every step, so the VAE must stay
-            # GPU-resident (eval, frozen) rather than offload to CPU after
-            # caching — otherwise the per-step look-ahead hits a CPU-weight /
-            # CUDA-input conv mismatch. colorize is blocks_to_swap=0, so the
-            # resident VAE (2D-fold, ~0.68x peak) fits.
-            if vae is not None and not flowbender_on:
+            if vae is not None:
                 vae.to("cpu")
                 clean_memory_on_device(accelerator.device)
-            elif vae is not None:
-                vae.to(accelerator.device, dtype=vae_dtype)
-                vae.requires_grad_(False)
-                vae.eval()
 
             accelerator.wait_for_everyone()
 

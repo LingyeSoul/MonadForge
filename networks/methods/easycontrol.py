@@ -109,10 +109,6 @@ DEFAULT_LORA_DIM = 16
 DEFAULT_LORA_ALPHA = 16
 DEFAULT_B_COND_INIT = -10.0
 DEFAULT_COND_RES_SCALE = 1.0  # 1.0 = native cond res (bit-exact to pre-PAI path)
-# FlowBender feedback gate init: like b_cond, a large negative logit so the
-# feedback rows contribute ≈0 mass at init → step-0 ≈ plain EasyControl.
-DEFAULT_B_FEEDBACK_INIT = -10.0
-DEFAULT_FLOWBENDER_P_UN = 0.1  # paper's p_un — fraction of steps run feedback-off
 
 
 # Cond-stream channel scaling uses a COND-SPECIFIC calibration — the LoRA-family
@@ -245,16 +241,6 @@ def create_network(
     apply_ffn_lora = bool(int(kwargs.get("apply_ffn_lora", 1)))
     cond_res_scale = float(kwargs.get("cond_res_scale", DEFAULT_COND_RES_SCALE))
 
-    # FlowBender (arXiv:2606.20404): closed-loop feedback stream. When on, the
-    # network grows a SECOND reference cond-LoRA pool + b_feedback gate; the
-    # trainer's two-pass loop primes it each step via set_feedback. Off by
-    # default → bit-identical to plain EasyControl.
-    from networks.lora_anima.config import _as_bool
-
-    use_flowbender = _as_bool(kwargs.get("use_flowbender"))
-    b_feedback_init = float(kwargs.get("b_feedback_init", DEFAULT_B_FEEDBACK_INIT))
-    flowbender_p_un = float(kwargs.get("flowbender_p_un", DEFAULT_FLOWBENDER_P_UN))
-
     # Deprecated 2026-06-10, accepted so old snapshot TOMLs replay: the
     # fp32-bottleneck autograd was removed (bench/lora_fp32_bottleneck).
     if str(kwargs.get("use_custom_down_autograd", "false")).strip().lower() in (
@@ -303,9 +289,6 @@ def create_network(
         multiplier=multiplier,
         channel_scaling_alpha=channel_scaling_alpha,
         channel_scales=channel_scales,
-        use_flowbender=use_flowbender,
-        b_feedback_init=b_feedback_init,
-        flowbender_p_un=flowbender_p_un,
     )
 
     # REPA v2 alignment, mirroring networks.lora_anima.factory. Config stashed on
@@ -396,9 +379,6 @@ def create_network_from_weights(
         or metadata.get("ss_cond_res_scale", DEFAULT_COND_RES_SCALE)
     )
     channel_scaling_alpha = float(metadata.get("ss_channel_scaling_alpha", 0.0))
-    use_flowbender = bool(int(metadata.get("ss_use_flowbender", 0)))
-    b_feedback_init = float(metadata.get("ss_b_feedback_init", DEFAULT_B_FEEDBACK_INIT))
-    flowbender_p_un = float(metadata.get("ss_flowbender_p_un", DEFAULT_FLOWBENDER_P_UN))
 
     # Channel-scaled checkpoints carry a persistent inv_scale per absorbed
     # lora_down. The buffer MUST be allocated before load (strict=False would
@@ -430,9 +410,6 @@ def create_network_from_weights(
         multiplier=multiplier,
         channel_scaling_alpha=channel_scaling_alpha,
         channel_scales=channel_scales,
-        use_flowbender=use_flowbender,
-        b_feedback_init=b_feedback_init,
-        flowbender_p_un=flowbender_p_un,
     )
     return network, weights_sd
 
@@ -457,9 +434,6 @@ class EasyControlNetwork(AdapterNetworkBase):
         multiplier: float = 1.0,
         channel_scaling_alpha: float = 0.0,
         channel_scales: Optional[dict] = None,
-        use_flowbender: bool = False,
-        b_feedback_init: float = DEFAULT_B_FEEDBACK_INIT,
-        flowbender_p_un: float = DEFAULT_FLOWBENDER_P_UN,
     ):
         super().__init__()
         if hidden_size % num_heads != 0:
@@ -551,71 +525,6 @@ class EasyControlNetwork(AdapterNetworkBase):
             ]
         )
 
-        # ---- FlowBender feedback stream (arXiv:2606.20404) -------------------
-        # A SECOND reference cond-LoRA pool fed the re-extracted measurement
-        # H(x̂₁) (manga domain) — structurally identical to the cond stream:
-        # own q/k/v/o (+ffn) LoRA, own AdaLN at t=0, own RoPE, own self-attn,
-        # evolves block-by-block. Target self-attn extends to a third key tile
-        # [target_k; cond_k; feedback_k] with the per-block b_feedback gate.
-        # Built ONLY when use_flowbender — off by default keeps the network
-        # bit-identical to plain EasyControl (no extra params, two-stream path).
-        self.use_flowbender = bool(use_flowbender)
-        self.b_feedback_init = b_feedback_init
-        self.flowbender_p_un = float(flowbender_p_un)
-        if self.use_flowbender:
-            # Feedback LoRA reuses the cond-stream channel calibration (the
-            # feedback signal is a manga-domain reference, same as cond); profile
-            # transfer before adding a third calib (project memory note).
-            self.feedback_lora_qkv = nn.ModuleList(
-                [
-                    _LoRAProj(D, 3 * D, r, a, channel_scale=_cs("qkv", i))
-                    for i in range(num_blocks)
-                ]
-            )
-            self.feedback_lora_o = nn.ModuleList(
-                [
-                    _LoRAProj(D, D, r, a, channel_scale=_cs("o", i))
-                    for i in range(num_blocks)
-                ]
-            )
-            if apply_ffn_lora:
-                self.feedback_lora_ffn1 = nn.ModuleList(
-                    [
-                        _LoRAProj(D, self.ffn_dim, r, a, channel_scale=_cs("ffn1", i))
-                        for i in range(num_blocks)
-                    ]
-                )
-                self.feedback_lora_ffn2 = nn.ModuleList(
-                    [
-                        _LoRAProj(self.ffn_dim, D, r, a, channel_scale=_cs("ffn2", i))
-                        for i in range(num_blocks)
-                    ]
-                )
-            else:
-                self.feedback_lora_ffn1 = None
-                self.feedback_lora_ffn2 = None
-            self.b_feedback = nn.ParameterList(
-                [
-                    nn.Parameter(torch.tensor(b_feedback_init, dtype=torch.float32))
-                    for _ in range(num_blocks)
-                ]
-            )
-        else:
-            self.feedback_lora_qkv = None
-            self.feedback_lora_o = None
-            self.feedback_lora_ffn1 = None
-            self.feedback_lora_ffn2 = None
-            self.b_feedback = None
-
-        # Per-step feedback state, mirroring _cond_state. None = open-loop
-        # (feedback off) → patched forward uses the two-stream cond-only path.
-        self._feedback_state: Optional[dict] = None
-
-        # Adapter-detection stamps (mirror REPA's network-level flags): the
-        # trainer keys its two-pass loop off these rather than an args flag.
-        self._use_flowbender = self.use_flowbender
-        self._flowbender_p_un = self.flowbender_p_un
-
         # Populated by apply_to(). Plain lists (NOT nn.ModuleList) so PyTorch
         # doesn't re-parent the frozen DiT into this network's parameter tree.
         self._dit: Optional[nn.Module] = None
@@ -661,8 +570,6 @@ class EasyControlNetwork(AdapterNetworkBase):
             f"cond_res_scale={self.cond_res_scale}, "
             f"channel_scaling_alpha={self.channel_scaling_alpha} "
             f"({n_scaled} cond projections rebalanced), "
-            f"use_flowbender={self.use_flowbender} "
-            f"(b_feedback_init={b_feedback_init}, p_un={self.flowbender_p_un}), "
             f"params={total / 1e6:.1f}M"
         )
 
@@ -698,7 +605,6 @@ class EasyControlNetwork(AdapterNetworkBase):
             self._block_modules.append(block)
             self._original_block_forwards.append(block.forward)
             block._easycontrol_cond_x_in = None
-            block._easycontrol_feedback_x_in = None
             block.forward = _make_patched_block_forward(block, idx, self)
 
         self._patched = True
@@ -758,23 +664,12 @@ class EasyControlNetwork(AdapterNetworkBase):
         # that REVERTS to 8 in the backward compile context where the grad-bearing
         # inner is traced (see pin_dynamo_limit), so pin the canonical .default.
         n = n_token_families if n_token_families is not None else 2
-        # The three-stream (FlowBender) inner adds a parallel feedback self-attn,
-        # so it has an extra flash graph-break segment and a third co-varying seq
-        # symbol → wider per-object graph spread than two-stream. Budget more, and
-        # count BOTH compiled inners per block in the accumulated ceiling: the
-        # two-stream inner still runs (grad-on) for the p_un-dropout pass — pass 2
-        # with the feedback gate off — so it must stay compiled. (The look-ahead
-        # pass runs the two-stream inner EAGER via force_eager — see train.py's
-        # _flowbender_lookahead — so it no longer adds a no-grad graph variant.)
-        flowbender = bool(getattr(self, "_use_flowbender", False))
-        per_obj = (6 * n + 24) if flowbender else (4 * n + 16)
+        per_obj = 4 * n + 16
         pin_dynamo_limit("recompile_limit", per_obj)
         # accumulated_recompile_limit is the cross-code-object ceiling; budget for
-        # every block's own compiled inner(s).
-        inners_per_block = 2 if flowbender else 1
+        # every block's own compiled inner.
         pin_dynamo_limit(
-            "accumulated_recompile_limit",
-            len(self._block_modules) * per_obj * inners_per_block,
+            "accumulated_recompile_limit", len(self._block_modules) * per_obj
         )
 
         # dynamic_seq does NOT use torch.compile(dynamic=True); compile static and
@@ -795,20 +690,11 @@ class EasyControlNetwork(AdapterNetworkBase):
             block._easycontrol_two_stream_inner = torch.compile(
                 block._easycontrol_two_stream_inner, **compile_kwargs
             )
-            # FlowBender: the active (feedback-on) pass routes through the
-            # three-stream inner, so it must be compiled too — else the feedback
-            # cond-LoRA projections run eager and torch_compile is a no-op for the
-            # refine pass. The patched forward marks its seq axes the same way
-            # (mark_dynamic prologue, see _make_patched_block_forward).
-            if flowbender:
-                block._easycontrol_three_stream_inner = torch.compile(
-                    block._easycontrol_three_stream_inner, **compile_kwargs
-                )
         logger.info(
-            f"EasyControl: compiled {'two+three' if flowbender else 'two'}-stream "
-            f"cond forward on {len(self._block_modules)} blocks "
-            f"(backend={backend}, mode={mode}, dynamic_seq={dynamic_seq} "
-            f"seq∈{self._dynamic_seq_range}, recompile_limit pinned to {per_obj})"
+            f"EasyControl: compiled two-stream cond forward on "
+            f"{len(self._block_modules)} blocks (backend={backend}, mode={mode}, "
+            f"dynamic_seq={dynamic_seq} seq∈{self._dynamic_seq_range}, "
+            f"recompile_limit pinned to {per_obj})"
         )
 
     def remove_from(self):
@@ -816,12 +702,8 @@ class EasyControlNetwork(AdapterNetworkBase):
             block.forward = orig
             if hasattr(block, "_easycontrol_cond_x_in"):
                 del block._easycontrol_cond_x_in
-            if hasattr(block, "_easycontrol_feedback_x_in"):
-                del block._easycontrol_feedback_x_in
             if hasattr(block, "_easycontrol_two_stream_inner"):
                 del block._easycontrol_two_stream_inner
-            if hasattr(block, "_easycontrol_three_stream_inner"):
-                del block._easycontrol_three_stream_inner
         self._block_modules.clear()
         self._original_block_forwards.clear()
         object.__setattr__(self, "_dit", None)
@@ -937,10 +819,6 @@ class EasyControlNetwork(AdapterNetworkBase):
 
         # New reference invalidates any prior cache (two-stream path until reprimed).
         self._cond_kv_cache = None
-        # A new step's cond invalidates the previous step's FlowBender feedback —
-        # otherwise the look-ahead pass (pass 1) would attend to a stale feedback
-        # stream. The trainer re-primes feedback (set_feedback) for pass 2.
-        self.clear_feedback()
 
         cond_x, cond_rope = self.encode_cond_latent(
             cond_latent, padding_mask=padding_mask
@@ -969,59 +847,6 @@ class EasyControlNetwork(AdapterNetworkBase):
         for block in self._block_modules:
             block._easycontrol_cond_x_in = None
         self._cond_kv_cache = None
-        # Feedback is meaningless without cond (three-stream requires both) —
-        # a dropped cond drops feedback too.
-        self.clear_feedback()
-
-    def set_feedback(
-        self,
-        feedback_latent: Optional[torch.Tensor],
-        padding_mask: Optional[torch.Tensor] = None,
-    ) -> None:
-        """Prime the per-step FlowBender feedback stream (the re-extracted
-        measurement H(x̂₁), encoded into cond latent space).
-
-        Mirrors ``set_cond`` exactly but writes the parallel feedback slots.
-        Pass ``None`` (or call ``clear_feedback``) for open-loop steps —
-        patched ``Block.forward`` then uses the two-stream cond-only path.
-        Caller contract: ``set_cond`` must have run first (the three-stream
-        path needs both streams)."""
-        if not self.use_flowbender:
-            raise RuntimeError(
-                "set_feedback called on a network built without use_flowbender=true"
-            )
-        if not self._patched:
-            raise RuntimeError("set_feedback called before apply_to")
-        if feedback_latent is None:
-            self.clear_feedback()
-            return
-        if self._cond_state is None:
-            raise RuntimeError(
-                "set_feedback requires set_cond to have run first (the "
-                "three-stream path needs the cond stream active)"
-            )
-
-        feedback_x, feedback_rope = self.encode_cond_latent(
-            feedback_latent, padding_mask=padding_mask
-        )
-        B = feedback_latent.shape[0]
-        device = feedback_x.device
-        zeros = torch.zeros(B, 1, device=device, dtype=feedback_x.dtype)
-        feedback_emb_B_T_D, feedback_adaln_lora = self._dit.t_embedder(zeros)
-        feedback_emb_B_T_D = self._dit.t_embedding_norm(feedback_emb_B_T_D)
-
-        self._feedback_state = {
-            "feedback_emb": feedback_emb_B_T_D,
-            "feedback_adaln_lora": feedback_adaln_lora,
-            "feedback_rope": feedback_rope,
-        }
-        self._block_modules[0]._easycontrol_feedback_x_in = feedback_x
-
-    def clear_feedback(self) -> None:
-        self._feedback_state = None
-        for block in self._block_modules:
-            if hasattr(block, "_easycontrol_feedback_x_in"):
-                block._easycontrol_feedback_x_in = None
 
     def clear_cond_kv_cache(self) -> None:
         """Drop the per-block KV cache. Cond stream will be recomputed on the
@@ -1178,9 +1003,6 @@ class EasyControlNetwork(AdapterNetworkBase):
             "ss_apply_ffn_lora": str(int(self.apply_ffn_lora)),
             "ss_cond_res_scale": str(self.cond_res_scale),
             "ss_channel_scaling_alpha": str(self.channel_scaling_alpha),
-            "ss_use_flowbender": str(int(self.use_flowbender)),
-            "ss_b_feedback_init": str(self.b_feedback_init),
-            "ss_flowbender_p_un": str(self.flowbender_p_un),
         }
 
     def state_dict_for_save(self, dtype: torch.dtype) -> dict[str, torch.Tensor]:
@@ -1358,21 +1180,6 @@ def _make_patched_block_forward(
     cond_lora_ffn1 = ec_net.cond_lora_ffn1[block_idx] if ec_net.apply_ffn_lora else None
     cond_lora_ffn2 = ec_net.cond_lora_ffn2[block_idx] if ec_net.apply_ffn_lora else None
 
-    # FlowBender feedback-stream module refs (None when use_flowbender is off).
-    if ec_net.use_flowbender:
-        b_feedback_param = ec_net.b_feedback[block_idx]
-        fb_lora_qkv = ec_net.feedback_lora_qkv[block_idx]
-        fb_lora_o = ec_net.feedback_lora_o[block_idx]
-        fb_lora_ffn1 = (
-            ec_net.feedback_lora_ffn1[block_idx] if ec_net.apply_ffn_lora else None
-        )
-        fb_lora_ffn2 = (
-            ec_net.feedback_lora_ffn2[block_idx] if ec_net.apply_ffn_lora else None
-        )
-    else:
-        b_feedback_param = None
-        fb_lora_qkv = fb_lora_o = fb_lora_ffn1 = fb_lora_ffn2 = None
-
     # Last block's cond_x_out is discarded, so its cond self-attn/proj/MLP are
     # dead compute (cond_lora_o/ffn never reach the loss); only its cond K/V are
     # live. Skip that cond-stream evolution on the last block.
@@ -1532,193 +1339,6 @@ def _make_patched_block_forward(
     # patched_forward reads the attribute per call so the swap takes effect at once.
     block._easycontrol_two_stream_inner = _two_stream_inner
 
-    def _three_stream_inner(
-        x_B_T_H_W_D,
-        emb_B_T_D,
-        crossattn_emb,
-        attn_params,
-        rope_cos_sin,
-        adaln_lora_B_T_3D,
-        cond_x_B_S_D,
-        cond_emb_B_T_D,
-        cond_adaln_lora_B_T_3D,
-        cond_rope_cos_sin,
-        feedback_x_B_S_D,
-        feedback_emb_B_T_D,
-        feedback_adaln_lora_B_T_3D,
-        feedback_rope_cos_sin,
-    ):
-        """FlowBender three-stream block: (target, cond, feedback) → three outs.
-
-        Identical to ``_two_stream_inner`` except (a) a parallel feedback stream
-        (own AdaLN at t=0, own LoRA, own RoPE, own self-attn) produces
-        feedback_k/feedback_v alongside cond, and (b) the target self-attention
-        extends over [target_k; cond_k; feedback_k] with both b_cond and
-        b_feedback gates. The feedback stream evolves block-by-block exactly like
-        cond (dead on the last block — only its K/V are consumed)."""
-        attn = block.self_attn
-        T_dim, H_dim, W_dim = x_B_T_H_W_D.shape[1:4]
-        scale_attn = attn_params.softmax_scale
-        eff_scale = ec_net.cond_scale * ec_net.multiplier
-
-        (
-            (shift_self_attn, scale_self_attn, gate_self_attn),
-            (shift_cross_attn, scale_cross_attn, gate_cross_attn),
-            (shift_mlp, scale_mlp, gate_mlp),
-        ) = _adaln_self_cross_mlp(block, emb_B_T_D, adaln_lora_B_T_3D)
-        (
-            (cond_shift_self, cond_scale_self, cond_gate_self),
-            (cond_shift_mlp, cond_scale_mlp, cond_gate_mlp),
-        ) = _adaln_self_mlp(block, cond_emb_B_T_D, cond_adaln_lora_B_T_3D)
-        (
-            (fb_shift_self, fb_scale_self, fb_gate_self),
-            (fb_shift_mlp, fb_scale_mlp, fb_gate_mlp),
-        ) = _adaln_self_mlp(block, feedback_emb_B_T_D, feedback_adaln_lora_B_T_3D)
-
-        sh_self_5 = shift_self_attn[:, :, None, None, :]
-        sc_self_5 = scale_self_attn[:, :, None, None, :]
-        ga_self_5 = gate_self_attn[:, :, None, None, :]
-        sh_cross_5 = shift_cross_attn[:, :, None, None, :]
-        sc_cross_5 = scale_cross_attn[:, :, None, None, :]
-        ga_cross_5 = gate_cross_attn[:, :, None, None, :]
-        sh_mlp_5 = shift_mlp[:, :, None, None, :]
-        sc_mlp_5 = scale_mlp[:, :, None, None, :]
-        ga_mlp_5 = gate_mlp[:, :, None, None, :]
-
-        # --- target Q/K/V ---
-        target_normed = (
-            block.layer_norm_self_attn(x_B_T_H_W_D) * (1 + sc_self_5) + sh_self_5
-        )
-        target_flat = target_normed.flatten(1, 3)
-        target_q, target_k, target_v = attn.compute_qkv(
-            target_flat, target_flat, rope_cos_sin=rope_cos_sin
-        )
-
-        # --- cond Q/K/V (+ cond LoRA, own RoPE) ---
-        cond_normed = (
-            block.layer_norm_self_attn(cond_x_B_S_D) * (1 + cond_scale_self)
-            + cond_shift_self
-        )
-        cond_qkv = attn.qkv_proj(cond_normed) + eff_scale * cond_lora_qkv(cond_normed)
-        cond_q, cond_k, cond_v = cond_qkv.unflatten(
-            -1, (3, attn.n_heads, attn.head_dim)
-        ).unbind(dim=-3)
-        cond_q = attn.q_norm(cond_q)
-        cond_k = attn.k_norm(cond_k)
-        cond_v = attn.v_norm(cond_v)
-        if cond_rope_cos_sin is not None:
-            cond_q, cond_k = apply_rotary_pos_emb_qk(
-                cond_q, cond_k, cond_rope_cos_sin, tensor_format=attn.qkv_format
-            )
-
-        # --- feedback Q/K/V (+ feedback LoRA, own RoPE) ---
-        fb_normed = (
-            block.layer_norm_self_attn(feedback_x_B_S_D) * (1 + fb_scale_self)
-            + fb_shift_self
-        )
-        fb_qkv = attn.qkv_proj(fb_normed) + eff_scale * fb_lora_qkv(fb_normed)
-        fb_q, fb_k, fb_v = fb_qkv.unflatten(
-            -1, (3, attn.n_heads, attn.head_dim)
-        ).unbind(dim=-3)
-        fb_q = attn.q_norm(fb_q)
-        fb_k = attn.k_norm(fb_k)
-        fb_v = attn.v_norm(fb_v)
-        if feedback_rope_cos_sin is not None:
-            fb_q, fb_k = apply_rotary_pos_emb_qk(
-                fb_q, fb_k, feedback_rope_cos_sin, tensor_format=attn.qkv_format
-            )
-
-        # --- target extended attention over [target_k; cond_k; feedback_k] ---
-        target_attn_out = _extended_target_attention(
-            target_q,
-            target_k,
-            target_v,
-            cond_k,
-            cond_v,
-            b_param=b_param,
-            scale=scale_attn,
-            attn_params=attn_params,
-            feedback_k=fb_k,
-            feedback_v=fb_v,
-            b_feedback_param=b_feedback_param,
-        )
-        target_attn_proj = attn.output_dropout(attn.output_proj(target_attn_out))
-        target_attn_5d = target_attn_proj.unflatten(1, (T_dim, H_dim, W_dim))
-        x_B_T_H_W_D = x_B_T_H_W_D + ga_self_5 * target_attn_5d
-
-        # --- cond / feedback own self-attn + residual (dead on last block) ---
-        if not is_last:
-            cond_q = cond_q.to(target_v.dtype)
-            cond_k = cond_k.to(target_v.dtype)
-            cond_v = cond_v.to(target_v.dtype)
-            cond_attn_out = anima_attention.dispatch_attention(
-                [cond_q, cond_k, cond_v], attn_params=attn_params
-            )
-            cond_attn_proj = attn.output_dropout(
-                attn.output_proj(cond_attn_out) + eff_scale * cond_lora_o(cond_attn_out)
-            )
-            cond_x_B_S_D = cond_x_B_S_D + cond_gate_self * cond_attn_proj
-
-            fb_q = fb_q.to(target_v.dtype)
-            fb_k = fb_k.to(target_v.dtype)
-            fb_v = fb_v.to(target_v.dtype)
-            fb_attn_out = anima_attention.dispatch_attention(
-                [fb_q, fb_k, fb_v], attn_params=attn_params
-            )
-            fb_attn_proj = attn.output_dropout(
-                attn.output_proj(fb_attn_out) + eff_scale * fb_lora_o(fb_attn_out)
-            )
-            feedback_x_B_S_D = feedback_x_B_S_D + fb_gate_self * fb_attn_proj
-
-        # --- cross-attention (target only) ---
-        target_cross_normed = (
-            block.layer_norm_cross_attn(x_B_T_H_W_D) * (1 + sc_cross_5) + sh_cross_5
-        )
-        target_cross_out = block.cross_attn(
-            target_cross_normed.flatten(1, 3),
-            attn_params,
-            crossattn_emb,
-            rope_cos_sin=rope_cos_sin,
-        ).unflatten(1, (T_dim, H_dim, W_dim))
-        x_B_T_H_W_D = x_B_T_H_W_D + ga_cross_5 * target_cross_out
-
-        # --- MLP (target + cond + feedback) ---
-        target_mlp_normed = (
-            block.layer_norm_mlp(x_B_T_H_W_D) * (1 + sc_mlp_5) + sh_mlp_5
-        )
-        x_B_T_H_W_D = x_B_T_H_W_D + ga_mlp_5 * block.mlp(target_mlp_normed)
-
-        if not is_last:
-            cond_mlp_normed = (
-                block.layer_norm_mlp(cond_x_B_S_D) * (1 + cond_scale_mlp)
-                + cond_shift_mlp
-            )
-            cond_mlp_h = block.mlp.layer1(cond_mlp_normed)
-            if cond_lora_ffn1 is not None:
-                cond_mlp_h = cond_mlp_h + eff_scale * cond_lora_ffn1(cond_mlp_normed)
-            cond_mlp_h = block.mlp.activation(cond_mlp_h)
-            cond_mlp_out = block.mlp.layer2(cond_mlp_h)
-            if cond_lora_ffn2 is not None:
-                cond_mlp_out = cond_mlp_out + eff_scale * cond_lora_ffn2(cond_mlp_h)
-            cond_x_B_S_D = cond_x_B_S_D + cond_gate_mlp * cond_mlp_out
-
-            fb_mlp_normed = (
-                block.layer_norm_mlp(feedback_x_B_S_D) * (1 + fb_scale_mlp)
-                + fb_shift_mlp
-            )
-            fb_mlp_h = block.mlp.layer1(fb_mlp_normed)
-            if fb_lora_ffn1 is not None:
-                fb_mlp_h = fb_mlp_h + eff_scale * fb_lora_ffn1(fb_mlp_normed)
-            fb_mlp_h = block.mlp.activation(fb_mlp_h)
-            fb_mlp_out = block.mlp.layer2(fb_mlp_h)
-            if fb_lora_ffn2 is not None:
-                fb_mlp_out = fb_mlp_out + eff_scale * fb_lora_ffn2(fb_mlp_h)
-            feedback_x_B_S_D = feedback_x_B_S_D + fb_gate_mlp * fb_mlp_out
-
-        return x_B_T_H_W_D, cond_x_B_S_D, feedback_x_B_S_D
-
-    block._easycontrol_three_stream_inner = _three_stream_inner
-
     def patched_forward(
         x_B_T_H_W_D,
         emb_B_T_D,
@@ -1728,11 +1348,8 @@ def _make_patched_block_forward(
         adaln_lora_B_T_3D=None,
     ):
         # Inference fast path: cond KV cached → skip the cond stream entirely.
-        # Disabled while a FlowBender feedback stream is active: the cached path
-        # only carries cond K/V (the feedback K/V are recomputed per step from
-        # the evolving x̂₁), so feedback must take the three-stream branch below.
         kv_cache = ec_net._cond_kv_cache
-        if kv_cache is not None and ec_net._feedback_state is None:
+        if kv_cache is not None:
             cond_k_cached, cond_v_cached = kv_cache[block_idx]
             return _target_only_with_cached_cond_kv(
                 block,
@@ -1770,116 +1387,6 @@ def _make_patched_block_forward(
         cond_emb = cond_state["cond_emb"]
         cond_adaln_lora = cond_state["cond_adaln_lora"]
         cond_rope = cond_state["cond_rope"]
-
-        # FlowBender three-stream path: feedback primed for this step → run the
-        # (target, cond, feedback) inner. blocks_to_swap>0 is refused, so
-        # unsloth/cpu_offload checkpointing never co-occurs; we mirror the same
-        # checkpoint dispatch for parity and raise if they somehow appear.
-        feedback_state = ec_net._feedback_state
-        if feedback_state is not None:
-            fb_x_in = block._easycontrol_feedback_x_in
-            if fb_x_in is None:
-                raise RuntimeError(
-                    f"EasyControl FlowBender: block[{block_idx}] has feedback_state "
-                    f"set but no _easycontrol_feedback_x_in. Did set_feedback run "
-                    f"after set_cond, before the DiT forward?"
-                )
-            fb_emb = feedback_state["feedback_emb"]
-            fb_adaln = feedback_state["feedback_adaln_lora"]
-            fb_rope = feedback_state["feedback_rope"]
-            three_inner = block._easycontrol_three_stream_inner
-            # compile_dynamic_seq: mark the three co-varying seq axes dynamic INSIDE
-            # the checkpointed callable (same reasoning as the two-stream path —
-            # detach_variable strips tensor-arg marks on the backward recompute but
-            # passes RoPE-tuple marks through, so re-apply both on each call). Three
-            # symbols: target seq (x dim 2, fake-5D under native_flatten), cond seq
-            # (cond_x dim 1) and feedback seq (fb_x dim 1); each RoPE table rides
-            # dim 0. All share the tier band, so one (lo, hi) bound covers them.
-            if ec_net._dynamic_seq:
-                _compiled_three = three_inner
-                _lo3, _hi3 = ec_net._dynamic_seq_range
-
-                def three_inner(
-                    x_,
-                    emb_,
-                    crossattn_,
-                    attn_params_,
-                    rope_,
-                    adaln_,
-                    cond_x_,
-                    cond_emb_,
-                    cond_adaln_,
-                    cond_rope_,
-                    fb_x_,
-                    fb_emb_,
-                    fb_adaln_,
-                    fb_rope_,
-                    _ci=_compiled_three,
-                    _lo=_lo3,
-                    _hi=_hi3,
-                ):
-                    torch._dynamo.mark_dynamic(x_, 2, min=_lo, max=_hi)
-                    torch._dynamo.mark_dynamic(cond_x_, 1, min=_lo, max=_hi)
-                    torch._dynamo.mark_dynamic(fb_x_, 1, min=_lo, max=_hi)
-                    for _r in (rope_, cond_rope_, fb_rope_):
-                        if _r is not None:
-                            torch._dynamo.mark_dynamic(_r[0], 0, min=_lo, max=_hi)
-                            torch._dynamo.mark_dynamic(_r[1], 0, min=_lo, max=_hi)
-                    return _ci(
-                        x_,
-                        emb_,
-                        crossattn_,
-                        attn_params_,
-                        rope_,
-                        adaln_,
-                        cond_x_,
-                        cond_emb_,
-                        cond_adaln_,
-                        cond_rope_,
-                        fb_x_,
-                        fb_emb_,
-                        fb_adaln_,
-                        fb_rope_,
-                    )
-
-            three_args = (
-                x_B_T_H_W_D,
-                emb_B_T_D,
-                crossattn_emb,
-                attn_params,
-                rope_cos_sin,
-                adaln_lora_B_T_3D,
-                cond_x_in,
-                cond_emb,
-                cond_adaln_lora,
-                cond_rope,
-                fb_x_in,
-                fb_emb,
-                fb_adaln,
-                fb_rope,
-            )
-            if block.training and block.gradient_checkpointing:
-                if (
-                    block.unsloth_offload_checkpointing
-                    or block.cpu_offload_checkpointing
-                ):
-                    raise RuntimeError(
-                        "FlowBender does not support offload/block-swap gradient "
-                        "checkpointing (blocks_to_swap must be 0); use plain "
-                        "gradient_checkpointing or none."
-                    )
-                target_x_out, cond_x_out, fb_x_out = torch_checkpoint(
-                    three_inner, *three_args, use_reentrant=False
-                )
-            else:
-                target_x_out, cond_x_out, fb_x_out = three_inner(*three_args)
-
-            next_idx = block_idx + 1
-            if next_idx < ec_net.num_blocks:
-                nxt = ec_net._block_modules[next_idx]
-                nxt._easycontrol_cond_x_in = cond_x_out
-                nxt._easycontrol_feedback_x_in = fb_x_out
-            return target_x_out
 
         # Dispatch the two-stream inner through the SAME checkpoint path Block.forward
         # uses, with the cond args appended so the checkpoint preserves them as
@@ -2041,25 +1548,6 @@ class EasyControlMethodAdapter(MethodAdapter):
             f"(drop_p={getattr(ctx.args, 'easycontrol_drop_p', 0.1)}, "
             f"cond_noise_max={getattr(ctx.args, 'easycontrol_cond_noise_max', 0.0)})"
         )
-
-        # FlowBender preconditions. The look-ahead pass is a 2nd DiT forward per
-        # step → the block-swap offloader desyncs on any 2nd forward
-        # ([[project_blockswap_extra_forwards_gradcache]]). Refuse loudly rather
-        # than silently corrupt grads. torch_compile IS supported now: the
-        # three-stream inner is compiled with its own dynamic_seq mark prologue
-        # (compile_cond_stream / _make_patched_block_forward).
-        if getattr(net, "_use_flowbender", False):
-            if int(getattr(ctx.args, "blocks_to_swap", 0) or 0) > 0:
-                raise ValueError(
-                    "use_flowbender requires blocks_to_swap=0 (the look-ahead "
-                    "pass is a 2nd DiT forward per step and the block-swap "
-                    "offloader desyncs on it). Set blocks_to_swap=0."
-                )
-            ctx.accelerator.print(
-                f"EasyControl FlowBender: closed-loop feedback ON "
-                f"(p_un={getattr(net, '_flowbender_p_un', 0.1)}, "
-                f"b_feedback_init={getattr(net, 'b_feedback_init', None)})"
-            )
 
     def prime_for_forward(
         self, ctx: StepCtx, batch, latents: torch.Tensor, *, is_train: bool

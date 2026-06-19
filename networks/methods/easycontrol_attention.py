@@ -232,186 +232,6 @@ class _ExtendedSelfAttnLSEFunc(torch.autograd.Function):
         return dq, dk_t, dv_t, dk_c, dv_c, db_cond, None
 
 
-class _ExtendedSelfAttnLSEFunc3(torch.autograd.Function):
-    """Three-tile LSE-decomposed extended self-attention (FlowBender).
-
-    Generalizes :class:`_ExtendedSelfAttnLSEFunc` to a SECOND extra key tile —
-    the FlowBender feedback stream — so the target attends over
-    ``[target_k ; cond_k ; feedback_k]`` with two independent per-block scalar
-    logit biases (``b_cond`` on the cond rows, ``b_feedback`` on the feedback
-    rows). Equivalent to::
-
-        softmax([Q@K_t^T·s ; Q@K_c^T·s + b_c ; Q@K_f^T·s + b_f]) @ [V_t;V_c;V_f]
-
-    Three memory-efficient FA2 forwards on the disjoint key tiles, then the
-    LSE-arithmetic combine with three weights α/β/γ that sum to 1::
-
-        joint_lse = logaddexp(logaddexp(lse_t, lse_c+b_c), lse_f+b_f)
-        α,β,γ     = exp(lse_t-J), exp(lse_c+b_c-J), exp(lse_f+b_f-J)
-        joint_out = α·out_t + β·out_c + γ·out_f
-
-    Backward mirrors the two-tile derivation. Each tile's FA backward is fed the
-    JOINT lse minus that tile's bias so FA computes the joint-softmax mass on
-    that tile's keys; per-tile dq sum to the joint dq. The bias gradients use
-    the general softmax-Jacobian form (which reduces to the two-tile
-    ``α·β·(out_c−out_t)`` when γ→0)::
-
-        ∂L/∂b_i = Σ w_i · ⟨out_i − joint_out, dout⟩    (w_t=α, w_c=β, w_f=γ)
-    """
-
-    @staticmethod
-    def forward(
-        ctx, q, k_t, v_t, k_c, v_c, k_f, v_f, b_cond, b_feedback, softmax_scale
-    ):
-        from networks import attention_dispatch as anima_attention
-
-        if anima_attention._wrapped_flash_attn_forward is None:
-            raise RuntimeError(
-                "_ExtendedSelfAttnLSEFunc3 requires flash-attn to be installed"
-            )
-        fa_fwd = anima_attention._wrapped_flash_attn_forward
-
-        def _fa(k, v):
-            return fa_fwd(
-                q,
-                k,
-                v,
-                0.0,
-                softmax_scale,
-                causal=False,
-                window_size_left=-1,
-                window_size_right=-1,
-                softcap=0.0,
-                alibi_slopes=None,
-                return_softmax=False,
-            )
-
-        out_t, lse_t, _, rng_t = _fa(k_t, v_t)
-        out_c, lse_c, _, rng_c = _fa(k_c, v_c)
-        out_f, lse_f, _, rng_f = _fa(k_f, v_f)
-
-        bc = b_cond.to(lse_c.dtype)
-        bf = b_feedback.to(lse_f.dtype)
-        lse_c_adj = lse_c + bc
-        lse_f_adj = lse_f + bf
-        joint_lse = torch.logaddexp(torch.logaddexp(lse_t, lse_c_adj), lse_f_adj)
-        alpha = (lse_t - joint_lse).exp()  # [B, H, S_q] fp32
-        beta = (lse_c_adj - joint_lse).exp()
-        gamma = (lse_f_adj - joint_lse).exp()
-
-        a_bd = alpha.transpose(1, 2).unsqueeze(-1).to(out_t.dtype)
-        b_bd = beta.transpose(1, 2).unsqueeze(-1).to(out_c.dtype)
-        g_bd = gamma.transpose(1, 2).unsqueeze(-1).to(out_f.dtype)
-        joint_out = a_bd * out_t + b_bd * out_c + g_bd * out_f
-
-        ctx.save_for_backward(
-            q,
-            k_t,
-            v_t,
-            k_c,
-            v_c,
-            k_f,
-            v_f,
-            joint_out,
-            joint_lse,
-            alpha,
-            beta,
-            gamma,
-            out_t,
-            out_c,
-            out_f,
-            bc,
-            bf,
-            rng_t,
-            rng_c,
-            rng_f,
-        )
-        ctx.softmax_scale = softmax_scale
-        ctx.b_cond_orig_dtype = b_cond.dtype
-        ctx.b_feedback_orig_dtype = b_feedback.dtype
-        ctx.b_cond_is_0d = b_cond.dim() == 0
-        ctx.b_feedback_is_0d = b_feedback.dim() == 0
-        return joint_out
-
-    @staticmethod
-    def backward(ctx, dout):
-        from networks import attention_dispatch as anima_attention
-
-        fa_bwd = anima_attention._wrapped_flash_attn_backward
-        (
-            q,
-            k_t,
-            v_t,
-            k_c,
-            v_c,
-            k_f,
-            v_f,
-            joint_out,
-            joint_lse,
-            alpha,
-            beta,
-            gamma,
-            out_t,
-            out_c,
-            out_f,
-            bc,
-            bf,
-            rng_t,
-            rng_c,
-            rng_f,
-        ) = ctx.saved_tensors
-        softmax_scale = ctx.softmax_scale
-        dout = dout.contiguous()
-
-        def _bwd(k, v, eff_lse, rng):
-            dq = torch.empty_like(q)
-            dk = torch.empty_like(k)
-            dv = torch.empty_like(v)
-            fa_bwd(
-                dout,
-                q,
-                k,
-                v,
-                joint_out,
-                eff_lse,
-                dq,
-                dk,
-                dv,
-                0.0,
-                softmax_scale,
-                False,
-                -1,
-                -1,
-                0.0,
-                None,
-                False,
-                rng_state=rng,
-            )
-            return dq, dk, dv
-
-        # Each tile feeds joint_lse - b_tile so FA's per-key mass is the joint
-        # softmax probability on that tile (b_target = 0).
-        dq_t, dk_t, dv_t = _bwd(k_t, v_t, joint_lse, rng_t)
-        dq_c, dk_c, dv_c = _bwd(k_c, v_c, joint_lse - bc, rng_c)
-        dq_f, dk_f, dv_f = _bwd(k_f, v_f, joint_lse - bf, rng_f)
-        dq = dq_t + dq_c + dq_f
-
-        # Bias gradients (general softmax-Jacobian form, fp32 reduction).
-        #   ∂L/∂b_i = Σ w_i · ⟨out_i − joint_out, dout⟩
-        jo = joint_out.float()
-        do = dout.float()
-
-        def _db(w_bhq, out_i, orig_dtype, is_0d):
-            inner_bsh = ((out_i.float() - jo) * do).sum(dim=-1)  # [B, S_q, H]
-            db = (w_bhq * inner_bsh.transpose(1, 2)).sum().to(orig_dtype)
-            return db.reshape(()) if is_0d else db
-
-        db_cond = _db(beta, out_c, ctx.b_cond_orig_dtype, ctx.b_cond_is_0d)
-        db_feedback = _db(gamma, out_f, ctx.b_feedback_orig_dtype, ctx.b_feedback_is_0d)
-
-        return dq, dk_t, dv_t, dk_c, dv_c, dk_f, dv_f, db_cond, db_feedback, None
-
-
 _LSE_FALLBACK_WARNED = False
 
 
@@ -440,18 +260,14 @@ def _extended_target_attention(
     b_param,
     scale,
     attn_params,
-    feedback_k=None,
-    feedback_v=None,
-    b_feedback_param=None,
 ):
-    """Run target's extended self-attention over [target_k; cond_k] — or, when
-    a FlowBender feedback tile is supplied, over [target_k; cond_k; feedback_k].
+    """Run target's extended self-attention over [target_k; cond_k].
 
-    Inputs are BSHD: target_q/k/v ``[B, S_t, H, D]``, cond_k/v ``[B, S_c, H, D]``,
-    optional feedback_k/v ``[B, S_f, H, D]``. Returns ``[B, S_t, H*D]`` ready for
-    output_proj. Uses ``_ExtendedSelfAttnLSEFunc`` (2-tile) or
-    ``_ExtendedSelfAttnLSEFunc3`` (3-tile) when flash-attn + flash mode is
-    available; falls back to masked-SDPA (math kernel; OOM risk) otherwise.
+    Inputs are BSHD: target_q/k/v ``[B, S_t, H, D]``, cond_k/v ``[B, S_c, H, D]``.
+    Returns ``[B, S_t, H*D]`` ready for output_proj. Uses
+    ``_ExtendedSelfAttnLSEFunc`` (memory-efficient) when flash-attn + flash
+    mode is available; falls back to masked-SDPA (math kernel; OOM risk) with
+    a one-shot warning otherwise.
     """
     from networks import attention_dispatch as anima_attention
 
@@ -464,10 +280,6 @@ def _extended_target_attention(
             target_k = target_k.to(target_v.dtype)
     cond_k = cond_k.to(target_k.dtype)
     cond_v = cond_v.to(target_v.dtype)
-    has_feedback = feedback_k is not None
-    if has_feedback:
-        feedback_k = feedback_k.to(target_k.dtype)
-        feedback_v = feedback_v.to(target_v.dtype)
 
     if scale is None:
         scale = target_q.shape[-1] ** -0.5
@@ -477,29 +289,15 @@ def _extended_target_attention(
         and attn_params.attn_mode == "flash"
     )
     if use_lse:
-        if has_feedback:
-            out = _ExtendedSelfAttnLSEFunc3.apply(
-                target_q.contiguous(),
-                target_k.contiguous(),
-                target_v.contiguous(),
-                cond_k.contiguous(),
-                cond_v.contiguous(),
-                feedback_k.contiguous(),
-                feedback_v.contiguous(),
-                b_param,
-                b_feedback_param,
-                scale,
-            )
-        else:
-            out = _ExtendedSelfAttnLSEFunc.apply(
-                target_q.contiguous(),
-                target_k.contiguous(),
-                target_v.contiguous(),
-                cond_k.contiguous(),
-                cond_v.contiguous(),
-                b_param,
-                scale,
-            )
+        out = _ExtendedSelfAttnLSEFunc.apply(
+            target_q.contiguous(),
+            target_k.contiguous(),
+            target_v.contiguous(),
+            cond_k.contiguous(),
+            cond_v.contiguous(),
+            b_param,
+            scale,
+        )
         # out: [B, S_t, H, D] → [B, S_t, H*D]
         B, S_t = out.shape[0], out.shape[1]
         return out.reshape(B, S_t, -1)
@@ -515,22 +313,15 @@ def _extended_target_attention(
 
     B, S_t = target_q.shape[0], target_q.shape[1]
     S_c = cond_k.shape[1]
-    k_tiles = [target_k, cond_k]
-    v_tiles = [target_v, cond_v]
-    b = b_param.to(target_q.dtype)
-    bias_tiles = [
-        torch.zeros(S_t, device=target_q.device, dtype=target_q.dtype),
-        b.expand(S_c),
-    ]
-    if has_feedback:
-        S_f = feedback_k.shape[1]
-        k_tiles.append(feedback_k)
-        v_tiles.append(feedback_v)
-        bias_tiles.append(b_feedback_param.to(target_q.dtype).expand(S_f))
-    k_s = torch.cat(k_tiles, dim=1).transpose(1, 2)
-    v_s = torch.cat(v_tiles, dim=1).transpose(1, 2)
+    k_ext = torch.cat([target_k, cond_k], dim=1)
+    v_ext = torch.cat([target_v, cond_v], dim=1)
     q_s = target_q.transpose(1, 2)
-    attn_bias = torch.cat(bias_tiles, dim=0).view(1, 1, 1, -1)
+    k_s = k_ext.transpose(1, 2)
+    v_s = v_ext.transpose(1, 2)
+    b = b_param.to(q_s.dtype)
+    target_zeros = torch.zeros(S_t, device=target_q.device, dtype=q_s.dtype)
+    cond_b = b.expand(S_c)
+    attn_bias = torch.cat([target_zeros, cond_b], dim=0).view(1, 1, 1, S_t + S_c)
     out = F.scaled_dot_product_attention(
         q_s, k_s, v_s, attn_mask=attn_bias, scale=scale
     )

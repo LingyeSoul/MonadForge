@@ -68,12 +68,7 @@ network_args = [        # Do not use whitespace in each arg
     "use_repa=true",
     "repa_weight=0.05",
     "repa_layer=8",
-    "repa_target_dog=true",
-
-    "use_flowbender=true",      # grow the feedback cond-LoRA pool + b_feedback gate
-    "b_feedback_init=-10.0",    # large negative → step-0 ≈ plain EasyControl colorize
-    "flowbender_p_un=0.1"       # null-feedback dropout (paper's p_un); keeps the
-                                # unguided look-ahead reliable
+    "repa_target_dog=true"
 ]
 blocks_to_swap = 0
 output_name = "anima_colorize_comic"
@@ -84,7 +79,6 @@ learning_rate = 2e-5
 max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
-activation_memory_budget = 0.2
 
 # The manga cond is already a lossy hint (lineart + screentone), so keep the
 # training-time cond perturbation at zero — high noise would erase the line
