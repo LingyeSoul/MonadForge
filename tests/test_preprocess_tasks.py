@@ -56,6 +56,64 @@ def test_preprocess_te_uses_corrected_resized_captions(monkeypatch):
     assert te_cmd[te_cmd.index("--min_pixels") + 1] == "0"
 
 
+def test_caption_correction_enabled_when_only_trigger_or_no_artist_set():
+    from scripts.tasks.preprocess import _caption_correction_enabled
+
+    base = {
+        "correct_order": False,
+        "insert_no_artist": False,
+        "trigger_word": "",
+        "trigger_at_front": False,
+    }
+    # Nothing set → no rewrite pass.
+    assert not _caption_correction_enabled(base)
+    # Trigger word alone must still run the pass (the bug: it was being dropped).
+    assert _caption_correction_enabled({**base, "trigger_word": "@trig"})
+    # Whitespace-only trigger does not count.
+    assert not _caption_correction_enabled({**base, "trigger_word": "   "})
+    # Insert-no-artist alone also requires the pass.
+    assert _caption_correction_enabled({**base, "insert_no_artist": True})
+
+
+def test_preprocess_te_runs_correction_for_trigger_word_without_correct_order(
+    monkeypatch,
+):
+    from scripts.tasks import preprocess
+
+    calls: list[list[str]] = []
+
+    def fake_path(key: str, default: str) -> str:
+        values = {
+            "source_image_dir": "image_dataset",
+            "resized_image_dir": "post_image_dataset/resized",
+            "lora_cache_dir": "post_image_dataset/lora",
+        }
+        return values.get(key, default)
+
+    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    monkeypatch.setattr(preprocess, "_path", fake_path)
+
+    preprocess.cmd_preprocess_te(
+        [],
+        caption_config={
+            "correct_order": False,
+            "insert_no_artist": False,
+            "trigger_word": "@dataset-trigger",
+            "trigger_at_front": False,
+        },
+    )
+
+    # Correction pass runs (trigger injected) even though correct_order is off,
+    # and the TE cache then reads the corrected captions from the resized dir.
+    assert len(calls) == 2
+    caption_cmd, te_cmd = calls
+    assert caption_cmd[1] == "scripts/preprocess/correct_captions.py"
+    assert caption_cmd[caption_cmd.index("--caption_trigger_word") + 1] == (
+        "@dataset-trigger"
+    )
+    assert te_cmd[te_cmd.index("--dir") + 1] == "post_image_dataset/resized"
+
+
 def test_caption_correction_config_parses_trigger_cli_args():
     from scripts.tasks.preprocess import _caption_correction_config
 

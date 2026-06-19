@@ -1128,7 +1128,12 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
 
         sp.addWidget(right)
         sp.setSizes([340, 700])
-        lay.addWidget(sp)
+        # On window-resize, the file-tree pane keeps its width and the extra
+        # space flows to the image/caption pane (where the image is the
+        # Expanding element) rather than growing both proportionally.
+        sp.setStretchFactor(0, 0)
+        sp.setStretchFactor(1, 1)
+        lay.addWidget(sp, 1)
 
         QShortcut(QKeySequence("Right"), self, lambda: self._nav(1))
         QShortcut(QKeySequence("Left"), self, lambda: self._nav(-1))

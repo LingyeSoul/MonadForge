@@ -190,7 +190,20 @@ def _caption_correction_config(extra) -> tuple[dict[str, object], list[str]]:
 
 
 def _caption_correction_enabled(config: dict[str, object]) -> bool:
-    return bool(config.get("correct_order"))
+    """Run the caption-rewrite pass when ANY caption-rewriting knob is set.
+
+    ``correct_captions.py`` (→ ``correct_caption``) is the only path that
+    injects the trigger word / ``@no-artist``, and it slots them by reordering
+    into category buckets. So a trigger word or insert-no-artist with order
+    correction *off* still has to run it — otherwise the GUI's trigger-word
+    field is silently ignored at TE-cache time. Reordering is inherent to
+    placing the trigger at the artist slot, so it rides along.
+    """
+    return bool(
+        config.get("correct_order")
+        or str(config.get("trigger_word") or "").strip()
+        or config.get("insert_no_artist")
+    )
 
 
 def _caption_correction_args(config: dict[str, object]) -> list[str]:

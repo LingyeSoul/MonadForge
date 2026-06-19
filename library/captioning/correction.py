@@ -31,6 +31,31 @@ _DANBOORU_NUMERIC_CATEGORIES = {
     "5": "meta",
 }
 
+# Injected aesthetic/quality-conditioning tags. These are NOT real booru tags
+# (absent from danbooru_tags_classified.csv) so the KB can't type them — they
+# would otherwise fall through to the general tail. Two families: human-score
+# words and PonyV7 ``score_N`` buckets. Stored space-form because
+# ``normalize_tag`` turns ``_``→`` `` before classification (``score_9`` →
+# ``score 9``). Emitted at the very front of the caption.
+#
+# The ``score_N`` buckets keep their underscore on emit (Pony aesthetic
+# convention) — see ``_quality_emit_form`` — while human-score words stay
+# space-form like every other tag.
+_SCORE_QUALITY_TAGS = frozenset(f"score {n}" for n in range(1, 10))
+_QUALITY_TAGS = (
+    frozenset(
+        {
+            "masterpiece",
+            "best quality",
+            "good quality",
+            "normal quality",
+            "low quality",
+            "worst quality",
+        }
+    )
+    | _SCORE_QUALITY_TAGS
+)
+
 
 @dataclass(frozen=True)
 class CaptionCorrectionOptions:
@@ -196,7 +221,10 @@ def correct_caption(
 
     buckets: dict[str, list[str]] = {
         "front": [],
+        "quality": [],
         "meta": [],
+        "year": [],
+        "safety": [],
         "count": [],
         "character": [],
         "copyright": [],
@@ -231,14 +259,17 @@ def correct_caption(
 
     ordered = [
         *buckets["front"],
+        *buckets["quality"],
         *buckets["meta"],
+        *buckets["year"],
+        *buckets["safety"],
         *buckets["count"],
         *buckets["character"],
         *buckets["copyright"],
         *buckets["artist"],
         *buckets["general"],
     ]
-    corrected = ", ".join(ordered)
+    corrected = ", ".join(_quality_emit_form(tag) for tag in ordered)
     return CaptionCorrectionResult(
         text=corrected,
         changed=corrected != text.strip(),
@@ -261,10 +292,21 @@ def _classify_tag(
         if not options.validate_artist_tags or kb.has_artist(tag):
             return "artist"
         return "general"
-    if tag in CAPTION_RATINGS or _is_year_tag(tag):
-        return "meta"
+    # Front region, in emit order: quality → meta → year → safety.
+    if tag in _QUALITY_TAGS:
+        return "quality"
+    if tag in CAPTION_RATINGS:
+        return "safety"
+    if _is_year_tag(tag):
+        return "year"
     if is_count_tag(tag):
         return "count"
+    # Commentary metadata (commentary, commentary request, <lang> commentary, …)
+    # is demoted to the general tail rather than the early meta slot.
+    if _is_commentary_tag(tag):
+        return "general"
+    # Remaining Danbooru metadata-category tags (highres, absurdres, translated,
+    # …) keep their own "meta" slot ahead of year/safety.
     return kb.classify(tag)
 
 
@@ -298,6 +340,22 @@ def _kind_from_category(category_path: str, numeric_category: str) -> str:
 
 def _is_year_tag(tag: str) -> bool:
     return len(tag) == 4 and tag.isdigit() and 1900 <= int(tag) <= 2100
+
+
+def _quality_emit_form(tag: str) -> str:
+    """Emit form for a normalized tag. ``score_N`` quality tags are restored to
+    their underscore spelling (Pony aesthetic convention); every other tag keeps
+    the space-form ``normalize_tag`` produced.
+    """
+    return tag.replace(" ", "_") if tag in _SCORE_QUALITY_TAGS else tag
+
+
+def _is_commentary_tag(tag: str) -> bool:
+    """Danbooru commentary metadata tags — ``commentary``, ``commentary
+    request``, ``<language> commentary``, ``commentary typo`` … — all carry the
+    ``commentary`` substring. Demoted to the general tail per dataset convention.
+    """
+    return "commentary" in tag
 
 
 def correct_many(

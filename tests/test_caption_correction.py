@@ -22,6 +22,8 @@ def _csv(path: Path) -> Path:
                 'vocaloid,3,10,"[작품 > series] copyright"',
                 'sincos,1,10,"[작가 > illustrator] artist"',
                 'best_quality,5,10,"[메타 > 화질] quality"',
+                'highres,5,10,"[메타 > 화질] resolution meta"',
+                'commentary,5,10,"[메타 > 정보_요청] artist commentary"',
                 'long_hair,0,10,"[머리카락 > 머리 길이] general"',
                 'copyright_notice,0,10,"[메타 > 정보_요청] misleading description"',
             ]
@@ -39,11 +41,29 @@ def test_correct_caption_orders_known_sections_and_preserves_general_order(tmp_p
         options=CaptionCorrectionOptions(insert_no_artist=True),
     )
 
+    # "best quality" is a quality-conditioning tag — emitted at the very front.
     assert result.text == (
         "best quality, 1girl, hatsune miku, vocaloid, @sincos, long hair"
     )
     assert result.changed
     assert not result.inserted_no_artist
+
+
+def test_front_region_orders_quality_meta_year_safety_and_demotes_commentary(tmp_path):
+    kb = load_tag_knowledge_base(_csv(tmp_path / "tags.csv"))
+    result = correct_caption(
+        "long hair, commentary, highres, best quality, score_9, 1girl, sensitive, 2008",
+        kb,
+        options=CaptionCorrectionOptions(insert_no_artist=False),
+    )
+
+    # Front region: quality (best quality, score_9) → meta (highres) →
+    # year (2008) → safety (sensitive). Commentary is demoted to the general
+    # tail; quality `score_N` tags are recognized despite being absent from KB
+    # and keep their underscore spelling on emit.
+    assert result.text == (
+        "best quality, score_9, highres, 2008, sensitive, 1girl, long hair, commentary"
+    )
 
 
 def test_correct_caption_inserts_no_artist_at_artist_position(tmp_path):
@@ -83,8 +103,7 @@ def test_existing_trigger_is_not_removed_by_trigger_insertion(tmp_path):
     )
 
     assert result.text == (
-        "1girl, hatsune miku, vocaloid, "
-        "@dataset-trigger, @dataset-trigger, long hair"
+        "1girl, hatsune miku, vocaloid, @dataset-trigger, @dataset-trigger, long hair"
     )
 
 
@@ -100,8 +119,7 @@ def test_trigger_preserves_underscores_in_output(tmp_path):
     )
 
     assert result.text == (
-        "1girl, hatsune miku, vocaloid, @dataset_trigger, "
-        "@dataset trigger, long hair"
+        "1girl, hatsune miku, vocaloid, @dataset_trigger, @dataset trigger, long hair"
     )
 
 
@@ -117,8 +135,7 @@ def test_artist_trigger_does_not_remove_same_named_general_tag(tmp_path):
     )
 
     assert result.text == (
-        "1girl, hatsune miku, vocaloid, @dataset_trigger, "
-        "long hair, dataset trigger"
+        "1girl, hatsune miku, vocaloid, @dataset_trigger, long hair, dataset trigger"
     )
 
 
