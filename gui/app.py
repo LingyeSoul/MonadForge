@@ -796,9 +796,13 @@ def main():
     # scripts/daemon/__main__._setup_logging).
     if get_setting("debug_mode", False):
         os.environ["ANIMA_DEBUG"] = "1"
-    # Bring the local training daemon up at launch (idempotent). Best-effort: a failure never blocks the GUI.
-    gui_daemon.ensure_daemon_quietly()
     global _WINDOW
     _WINDOW = MainWindow()
     _WINDOW.show()
+    # Bring the local training daemon up at launch (idempotent). Deferred to after
+    # the first paint via singleShot(0) so a cold-start daemon boot (process spawn
+    # + /health poll) runs in the background instead of blocking the window from
+    # appearing. Best-effort: a failure never surfaces here — the Train button's
+    # own ensure_daemon() does the real wait-for-health when a job is submitted.
+    QTimer.singleShot(0, gui_daemon.ensure_daemon_quietly)
     sys.exit(app.exec())

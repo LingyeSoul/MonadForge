@@ -2,7 +2,10 @@ import math
 import random
 from typing import NamedTuple, Tuple
 
-import numpy as np
+# NB: numpy is imported lazily inside BucketManager (its only consumer) so that
+# the free-fit helpers below stay numpy-free. The GUI imports this module for
+# those helpers via library.preprocess.resize_preview; pulling in numpy at module
+# top added ~110ms to GUI startup for a class the GUI never instantiates.
 
 # ---------------------------------------------------------------------------
 # Per-tier token-count bands — the free-fit search range for each tier edge.
@@ -373,6 +376,8 @@ class BucketManager:
         self.set_predefined_resos(resos)
 
     def set_predefined_resos(self, resos):
+        import numpy as np
+
         self.predefined_resos = resos.copy()
         self.predefined_resos_set = set(resos)
         self.predefined_aspect_ratios = np.array([w / h for w, h in resos])
@@ -390,6 +395,8 @@ class BucketManager:
         if reso in self.predefined_resos_set:
             pass
         else:
+            import numpy as np
+
             ar_errors = self.predefined_aspect_ratios - aspect_ratio
             predefined_bucket_id = np.abs(ar_errors).argmin()
             reso = self.predefined_resos[predefined_bucket_id]

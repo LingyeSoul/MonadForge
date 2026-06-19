@@ -21,23 +21,55 @@ Command implementations live under ``scripts/tasks/`` (shipped methods) and
 This file is just a name → callable dispatch table.
 """
 
+import importlib
 import sys
 
-from scripts.experimental_tasks import inference as exp_inference
-from scripts.experimental_tasks import training as exp_training
-from scripts.tasks import (
-    curate,
-    daemon,
-    dcw,
-    downloads,
-    gui,
-    inference,
-    masking,
-    preprocess,
-    tagger,
-    training,
-    utilities,
-)
+
+class _LazyCmd:
+    """A command callable that imports its module only when first invoked.
+
+    tasks.py is a pure dispatch table: a single ``python tasks.py <cmd>`` needs
+    exactly one command module, but importing all of them up front to build
+    ``COMMANDS`` cost ~100ms (the daemon client's urllib/http chain dominates) —
+    wasted for the common case (``make gui`` immediately spawns a child for the
+    real work). Wrapping each entry defers the import to dispatch time, so every
+    target stops paying for modules it won't run.
+    """
+
+    def __init__(self, modpath: str, name: str):
+        self._modpath = modpath
+        self._name = name
+
+    def resolve(self):
+        return getattr(importlib.import_module(self._modpath), self._name)
+
+    def __call__(self, extra):
+        return self.resolve()(extra)
+
+
+class _LazyModule:
+    """``<alias>.cmd_x`` in the COMMANDS table → a _LazyCmd, with no import yet."""
+
+    def __init__(self, modpath: str):
+        self._modpath = modpath
+
+    def __getattr__(self, name: str) -> _LazyCmd:
+        return _LazyCmd(self._modpath, name)
+
+
+curate = _LazyModule("scripts.tasks.curate")
+daemon = _LazyModule("scripts.tasks.daemon")
+dcw = _LazyModule("scripts.tasks.dcw")
+downloads = _LazyModule("scripts.tasks.downloads")
+gui = _LazyModule("scripts.tasks.gui")
+inference = _LazyModule("scripts.tasks.inference")
+masking = _LazyModule("scripts.tasks.masking")
+preprocess = _LazyModule("scripts.tasks.preprocess")
+tagger = _LazyModule("scripts.tasks.tagger")
+training = _LazyModule("scripts.tasks.training")
+utilities = _LazyModule("scripts.tasks.utilities")
+exp_inference = _LazyModule("scripts.experimental_tasks.inference")
+exp_training = _LazyModule("scripts.experimental_tasks.training")
 
 COMMANDS = {
     # ── Training ──────────────────────────────────────────────────────
@@ -392,8 +424,9 @@ def main():
     fn, desc = COMMANDS[command]
     if extra and extra[0] in ("-h", "--help"):
         print(f"python tasks.py {command} -- {desc}\n")
-        if fn.__doc__:
-            print(fn.__doc__.strip())
+        doc = fn.resolve().__doc__ if isinstance(fn, _LazyCmd) else fn.__doc__
+        if doc:
+            print(doc.strip())
         else:
             print("(no detailed help available)")
         print(
