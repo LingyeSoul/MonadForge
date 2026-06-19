@@ -11,12 +11,12 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_O"
+output_name = "anima_turbo_O_JS"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 6000
+iterations = 750
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -69,7 +69,7 @@ grad_step = "random"
 [optim]
 student_lr = 1e-5
 fake_lr = 2e-5
-fake_steps_per_student_step = 3
+fake_steps_per_student_step = 4
 fake_warmup_steps = 50
 weight_decay = 0.0
 grad_clip = 1.0                 # student grad-norm cap
@@ -146,7 +146,7 @@ grad_ckpt = true                # checkpoint ONLY the grad-bearing GAN gen forwa
 # anchor (they may not be additive). Numerical care (ports of f_distill.py):
 # ±10 logit clamp, r∈[ratio_lower, ratio_upper], per-τ EMA histogram of r.
 [f_distill]
-f_div = "rkl"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
+f_div = "js"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
 ratio_lower = 0.1
 ratio_upper = 20.0
 ratio_ema_rate = 0.0            # per-τ histogram EMA decay (0 = instantaneous per-bin)
@@ -167,7 +167,7 @@ every_n = 4                     # run the term every N student steps (amortizati
 
 # Logging / checkpoints.
 [io]
-save_every = 1000
+save_every = 750
 log_interval = 5
 log_dir = "output/logs/turbo"
-validate_every_n_steps = 1000
+validate_every_n_steps = 750

@@ -57,6 +57,7 @@
   "vae": "이미지 인코딩/디코딩용 VAE 모델 경로.",
   "output_dir": "학습된 LoRA 체크포인트를 저장할 기본 디렉토리입니다. path_scope가 있으면 GUI가 실행 시 같은 스코프를 붙입니다. 예: output/ckpt + data_group1 → output/ckpt/data_group1.",
   "output_name": "output_dir 안에 저장되는 체크포인트의 기본 파일명입니다. 에폭/버전 접미사는 자동으로 붙습니다.",
+  "training_comment": "체크포인트 메타데이터(ss_training_comment)에 그대로 저장되는 자유 텍스트 메모입니다. 학습 메모, 데이터셋 출처, 기법 변형 등을 기록하세요. 비워 두면 저장되지 않습니다.",
   "save_model_as": "체크포인트 형식. safetensors: 권장 (빠르고 안전).",
   "source_image_dir": "원본 이미지와 .txt 캡션이 있는 기본 디렉토리입니다. path_scope가 있으면 GUI가 전처리 실행 전에 같은 스코프를 붙입니다. 예: image_dataset + data_group1 → image_dataset/data_group1.",
   "resized_image_dir": "전처리가 리사이즈된 PNG를 저장할 기본 디렉토리입니다. path_scope가 있으면 source_image_dir와 같은 스코프가 붙어 원본 데이터셋과 리사이즈 결과가 같은 그룹으로 정리됩니다.",

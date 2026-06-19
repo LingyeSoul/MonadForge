@@ -21,20 +21,16 @@
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
 # 90, 128, 152, 180 each for 16, 32, 48, 64
-network_alpha = 90
-network_dim = 16
+network_alpha = 128
+network_dim = 32
 freefit = true
 
-learning_rate = 5e-5
-max_train_epochs = 3
-save_every_n_epochs = 3
-checkpointing_epochs = 3
+learning_rate = 2e-5
+max_train_epochs = 10
+save_every_n_epochs = 10
+checkpointing_epochs = 10
 
 use_shuffled_caption_variants = true
-# Lexinvariant tag regularization (arXiv:2305.16349): consume the identity-erased
-# r-family instead of the shuffled v-family (v0 20% / r1..r{N-1} 80%). Requires a
-# cache built with preprocess.toml `caption_tag_randomize_rate > 0`; falls back to
-# the v-family (warns once) otherwise. Flip this to A/B the same cache.
 # use_randomized_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
@@ -51,7 +47,7 @@ output_name = "anima_tenth"
 # -------------
 # Ortho-lora
 
-# use_ortho_init = true
+use_ortho_init = true
 
 # -------------
 # OrthoInit: top-r SVD of W0 as *trainable* init (no frozen-subspace cap).
@@ -63,9 +59,9 @@ output_name = "anima_tenth"
 # -------------
 # Timestep mask
 
-# use_timestep_mask = true
-# min_rank = 1
-# alpha_rank_scale = 1.0
+use_timestep_mask = true
+min_rank = 1
+alpha_rank_scale = 1.0
 
 
 # ---

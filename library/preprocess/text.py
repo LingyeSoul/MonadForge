@@ -328,6 +328,7 @@ def count_pending_text(
     keep_stems: Collection[str] | None = None,
     keep_rel_stems: Collection[str] | None = None,
     min_pixels: int = 500_000,
+    overwrite: bool = False,
 ) -> tuple[int, int]:
     """Return ``(pending, total)`` TE caches **without loading the encoder**.
 
@@ -335,7 +336,8 @@ def count_pending_text(
     ``{stem}_anima_te.safetensors`` isn't on disk; ``total`` is every candidate
     (post ``keep_stems`` / ``min_pixels`` filtering). Mirrors the per-batch skip
     in :func:`cache_text_embeddings`, so the entry point can skip the (slow)
-    Qwen3 + LLM-adapter load when ``pending == 0``."""
+    Qwen3 + LLM-adapter load when ``pending == 0``. With ``overwrite`` every
+    candidate counts as pending (the encoder always loads)."""
     candidates = _walk_te_candidates(
         data_dir,
         recursive=recursive,
@@ -345,6 +347,8 @@ def count_pending_text(
         min_pixels=min_pixels,
         verbose=False,
     )
+    if overwrite:
+        return len(candidates), len(candidates)
     pending = sum(
         1 for p in candidates if not _te_cache_path(p, cache_dir, data_dir).exists()
     )
@@ -371,6 +375,7 @@ def cache_text_embeddings(
     caption_transform: Callable[[str], str] | None = None,
     caption_protect_fn: Callable[[str], bool] | None = None,
     min_pixels: int = 500_000,
+    overwrite: bool = False,
     verbose: bool = True,
     progress: ProgressFn | None = None,
 ) -> PreprocessStats:
@@ -479,8 +484,12 @@ def cache_text_embeddings(
             cache_path = _te_cache_path(img_path, cache_dir, data_dir)
             # Re-encode an existing cache only to add a newly-requested r-family
             # (in-place upgrade); otherwise the existence check skips it.
-            if cache_path.exists() and not (
-                want_randomized and not _cache_has_randomized(cache_path)
+            # ``overwrite`` forces a full re-encode (e.g. after changing the
+            # randomize rate / variant count, which the existence check can't see).
+            if (
+                not overwrite
+                and cache_path.exists()
+                and not (want_randomized and not _cache_has_randomized(cache_path))
             ):
                 stats.skipped += 1
                 if progress is not None:

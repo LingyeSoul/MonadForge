@@ -219,6 +219,7 @@ _GROUPS = {
         "use_valid",
         "validation_split_num",
         "repeat_by_folder_name",
+        "training_comment",
     },
     "Samples": {
         "sample_prompts",

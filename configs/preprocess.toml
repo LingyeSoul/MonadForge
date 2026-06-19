@@ -29,7 +29,7 @@ caption_tag_dropout_rate = 0.1
 # re-preprocess to A/B). 0.0 = off (no r-family). Needs caption_shuffle_variants >= 2.
 # Re-running with this > 0 upgrades existing caches in place. Paper's prior ~0.2.
 # Override: make preprocess ARGS="--caption_tag_randomize_rate 0.2"
-caption_tag_randomize_rate = 0.2
+caption_tag_randomize_rate = 0.1
 
 # Preprocess input filter. drop_lowres_images = false keeps every image; otherwise
 # images under min_pixels are skipped at resize/VAE/TE. Override per-run:

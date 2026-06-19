@@ -57,6 +57,7 @@
   "vae": "Path to the VAE model for image encoding/decoding.",
   "output_dir": "Base directory for trained LoRA checkpoints. With path_scope set, the GUI appends the scope at submit time, e.g. output/ckpt + data_group1 becomes output/ckpt/data_group1.",
   "output_name": "Base filename for saved checkpoints inside output_dir. Epoch/version suffixes are appended automatically.",
+  "training_comment": "Free-text note embedded verbatim in the checkpoint metadata (ss_training_comment). Use it for training notes, dataset provenance, or technique variants. Leave empty for none.",
   "save_model_as": "Checkpoint format. safetensors: recommended (fast, safe).",
   "source_image_dir": "Base directory for raw images and .txt captions. With path_scope set, the GUI appends the scope before running preprocess, e.g. image_dataset + data_group1 becomes image_dataset/data_group1.",
   "resized_image_dir": "Base directory where preprocess writes resized PNGs. With path_scope set, the GUI appends the same scope used by source_image_dir, so resized images stay grouped with their source dataset.",

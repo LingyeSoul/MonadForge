@@ -114,6 +114,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Re-encode every cache even if it already exists. Use after changing "
+            "the variant count / dropout / randomize rate, which the existence "
+            "check can't detect (existing caches are otherwise skipped)."
+        ),
+    )
+    parser.add_argument(
         "--match_images_from",
         type=str,
         default=None,
@@ -160,6 +169,7 @@ def main() -> None:
         path_pattern=args.path_pattern,
         keep_rel_stems=keep_rel_stems,
         min_pixels=args.min_pixels,
+        overwrite=args.overwrite,
     )
     uncond_needed = bool(args.dit) and not default_uncond_path().exists()
     if pending == 0 and not uncond_needed:
@@ -251,6 +261,7 @@ def main() -> None:
         caption_tag_dropout_rate=tag_dropout_rate,
         caption_tag_randomize_rate=tag_randomize_rate,
         min_pixels=args.min_pixels,
+        overwrite=args.overwrite,
         progress=tqdm_progress("Caching text embeddings"),
     )
     print(

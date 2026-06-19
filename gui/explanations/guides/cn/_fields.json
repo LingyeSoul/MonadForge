@@ -57,6 +57,7 @@
   "vae": "用于图像编码/解码的VAE模型路径。",
   "output_dir": "保存训练后LoRA检查点的目录。",
   "output_name": "保存检查点的基础文件名（自动追加轮次编号）。",
+  "training_comment": "原样嵌入检查点元数据（ss_training_comment）的自由文本备注。可用于记录训练笔记、数据集来源或技术变体。留空则不保存。",
   "save_model_as": "检查点格式。safetensors：推荐（快速、安全）。",
   "source_image_dir": "原始图像和.txt字幕的存放位置。预处理按钮将此路径传递给resize_images.py（写入调整大小的PNG）和cache_text_embeddings.py（缓存字幕）。如果并行使用多个数据集，可按预设/方法覆盖。",
   "resized_image_dir": "预处理写入VAE对齐PNG的目录。训练时也解析为数据集子集的image_dir（通过base.toml中的{resized_image_dir}模板），因此修改此项会同时影响预处理和训练。",
