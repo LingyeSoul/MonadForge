@@ -179,6 +179,38 @@ def _resolve_method_path(
     return os.path.join(configs_dir, methods_subdir, f"{method}.toml")
 
 
+def _load_gui_method_merged(configs_dir: str, method: str) -> tuple[dict, str]:
+    """Load a gui-methods variant as ``{**builtin, **overlay}``.
+
+    Mirrors ``webui.services.config_service.merged_gui_variant_preset`` so the
+    training merge chain and the WebUI see the *same* config: a sparse user
+    overlay under ``configs/custom/variants/<method>.toml`` inherits the
+    builtin's knobs (``max_train_epochs``, ``network_dim``, …) instead of
+    silently dropping them — which had let a path-only overlay fall back to
+    ``--max_train_steps`` default 1600 at train time while the UI looked fine.
+
+    Returns ``(merged_dict, source_tag)``. Overlay keys win; the source tag
+    prefers the overlay path (the user owns the effective config), falling
+    back to the builtin when no overlay exists. Both missing → empty dict +
+    builtin path tag (callers gate on ``os.path.exists`` themselves).
+    """
+    builtin_path = os.path.join(configs_dir, "gui-methods", f"{method}.toml")
+    overlay_path = os.path.join(configs_dir, "custom", "variants", f"{method}.toml")
+    merged: dict = {}
+    if os.path.exists(builtin_path):
+        with open(builtin_path, "r", encoding="utf-8") as f:
+            merged.update(toml.load(f))
+    if os.path.exists(overlay_path):
+        with open(overlay_path, "r", encoding="utf-8") as f:
+            merged.update(toml.load(f))  # overlay wins on conflict
+    # source_path: absolute path for _flatten_toml's schema line lookup
+    # (prefers the overlay so line numbers point at the user-owned file).
+    # source_tag: display path for provenance / print-config output.
+    has_overlay = os.path.exists(overlay_path)
+    source_path = overlay_path if has_overlay else builtin_path
+    return merged, source_path, _display_path(source_path)
+
+
 def _normalize_config_path(config_file: str) -> str:
     return config_file if config_file.endswith(".toml") else config_file + ".toml"
 
@@ -306,10 +338,29 @@ def load_dataset_config_from_base(
                 source_raw = cfg_raw
 
     if method is not None and not config_file:
-        method_path = _resolve_method_path(configs_dir, methods_subdir, method)
-        if method_path and os.path.exists(method_path):
-            with open(method_path, "r", encoding="utf-8") as f:
-                method_raw = toml.load(f)
+        # gui-methods: read the merged {builtin, overlay} dict so a sparse
+        # overlay can't drop the builtin's dataset-section overrides (and so
+        # the blueprint source matches what load_method_preset sees). Other
+        # subdirs resolve to a single method file as before.
+        if methods_subdir == "gui-methods":
+            builtin_path = os.path.join(configs_dir, "gui-methods", f"{method}.toml")
+            overlay_path = os.path.join(
+                configs_dir, "custom", "variants", f"{method}.toml"
+            )
+            method_exists = os.path.exists(builtin_path) or os.path.exists(overlay_path)
+            if method_exists:
+                method_raw, _src_path = _load_gui_method_merged(configs_dir, method)[:2]
+            else:
+                method_raw = None
+        else:
+            method_path = _resolve_method_path(configs_dir, methods_subdir, method)
+            if method_path and os.path.exists(method_path):
+                with open(method_path, "r", encoding="utf-8") as f:
+                    method_raw = toml.load(f)
+            else:
+                method_raw = None
+
+        if method_raw:
             method_sections = {
                 k: v for k, v in method_raw.items() if k in _DATASET_CONFIG_SECTIONS
             }
@@ -518,11 +569,23 @@ def _iter_method_preset_layers(
     unknown presets silently.
     """
     base_path = os.path.join(configs_dir, "base.toml")
-    method_path = _resolve_method_path(configs_dir, methods_subdir, method)
-    if require_files:
-        for p in (base_path, method_path):
-            if p and not os.path.exists(p):
-                raise FileNotFoundError(f"Config file not found: {p}")
+    # gui-methods: the effective method layer is {**builtin, **overlay} (see
+    # _load_gui_method_merged) — a sparse user overlay must inherit the
+    # builtin's knobs, not replace them wholesale. Other subdirs keep the
+    # single-file resolution.
+    is_gui = methods_subdir == "gui-methods"
+    if is_gui:
+        builtin_path = os.path.join(configs_dir, "gui-methods", f"{method}.toml")
+        overlay_path = os.path.join(configs_dir, "custom", "variants", f"{method}.toml")
+        method_exists = os.path.exists(builtin_path) or os.path.exists(overlay_path)
+        if require_files and not method_exists:
+            raise FileNotFoundError(
+                f"Config file not found: {builtin_path} (or overlay {overlay_path})"
+            )
+    else:
+        method_path = _resolve_method_path(configs_dir, methods_subdir, method)
+        if require_files and method_path and not os.path.exists(method_path):
+            raise FileNotFoundError(f"Config file not found: {method_path}")
 
     if os.path.exists(base_path):
         with open(base_path, "r", encoding="utf-8") as f:
@@ -539,7 +602,13 @@ def _iter_method_preset_layers(
         else:
             yield "preset", preset_path, tag, section
 
-    if method_path and os.path.exists(method_path):
+    if is_gui:
+        if method_exists:
+            merged, source_path, src_tag = _load_gui_method_merged(configs_dir, method)
+            # source_path (absolute) feeds _flatten_toml's schema line lookup;
+            # src_tag (display) rides along for provenance / print-config.
+            yield "method", source_path, src_tag, merged
+    elif method_path and os.path.exists(method_path):
         with open(method_path, "r", encoding="utf-8") as f:
             yield "method", method_path, _display_path(method_path), toml.load(f)
 

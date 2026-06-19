@@ -192,3 +192,86 @@ def test_render_header_includes_method_and_preset(populated_parser):
     preset_idx = rendered.index("configs/presets.toml[low_vram]")
     method_idx = rendered.index("configs/methods/lora.toml")
     assert base_idx < preset_idx < method_idx
+
+
+# ---------------------------------------------------------------------------
+# gui-methods overlay merge contract
+# ---------------------------------------------------------------------------
+
+
+def _build_gui_configs_tree(root: Path) -> str:
+    """Materialize a minimal configs/ tree under *root* for overlay-merge tests.
+
+    Mirrors the real layout: base.toml + gui-methods/<m>.toml builtin +
+    custom/variants/<m>.toml overlay. The builtin ships ``max_train_epochs``
+    (and the network_module needed by the trainer); the overlay is deliberately
+    sparse — just a path override — to reproduce the "1600 steps" regression
+    where a path-only overlay had silently dropped the builtin's epoch knob.
+    """
+    configs = root / "configs"
+    (configs / "gui-methods").mkdir(parents=True)
+    (configs / "custom" / "variants").mkdir(parents=True)
+
+    (configs / "base.toml").write_text(
+        "network_module = \"networks.lora_anima\"\n"
+        "output_name = \"anima\"\n",
+        encoding="utf-8",
+    )
+    # presets.toml: load_method_preset(require_files=True) needs the preset.
+    (configs / "presets.toml").write_text(
+        "[default]\n",
+        encoding="utf-8",
+    )
+    (configs / "gui-methods" / "lora.toml").write_text(
+        "network_dim = 32\n"
+        "network_alpha = 32\n"
+        "learning_rate = 2e-5\n"
+        "max_train_epochs = 4\n"
+        "output_name = \"anima\"\n"
+        "[variant]\n"
+        "family = \"lora\"\n",
+        encoding="utf-8",
+    )
+    # Sparse overlay: only a path override, no training knobs.
+    (configs / "custom" / "variants" / "lora.toml").write_text(
+        "output_name = \"test\"\n",
+        encoding="utf-8",
+    )
+    return str(configs)
+
+
+def test_sparse_overlay_inherits_builtin_knobs(tmp_path: Path):
+    """A sparse gui-methods overlay must inherit the builtin's knobs.
+
+    Regression guard for the contract mismatch where the training merge chain
+    treated a user overlay as a wholesale replacement (dropping
+    ``max_train_epochs`` → fallback to ``--max_train_steps`` default 1600),
+    while the WebUI merged ``{**builtin, **overlay}``. The two paths must now
+    agree: builtin fills gaps, overlay wins on conflict.
+    """
+    configs_dir = _build_gui_configs_tree(tmp_path)
+    merged = load_method_preset(
+        "lora", "default", configs_dir=configs_dir, methods_subdir="gui-methods"
+    )
+    # Inherited from builtin — would be absent (→ argparse default 1600) under
+    # the old wholesale-replace behavior.
+    assert merged.get("max_train_epochs") == 4
+    assert merged.get("network_dim") == 32
+    assert merged.get("learning_rate") == 2e-5
+    # Overlay wins on conflict.
+    assert merged.get("output_name") == "test"
+
+
+def test_overlay_provenance_points_at_user_file(tmp_path: Path):
+    """Provenance for an inherited builtin key tags the overlay path (the
+    user owns the effective config), matching the WebUI's origin model."""
+    configs_dir = _build_gui_configs_tree(tmp_path)
+    _merged, provenance = load_method_preset(
+        "lora",
+        "default",
+        configs_dir=configs_dir,
+        methods_subdir="gui-methods",
+        return_provenance=True,
+    )
+    tag = provenance.get("max_train_epochs", "")
+    assert "custom/variants/lora.toml" in tag
