@@ -69,7 +69,7 @@ caption_dropout_rate = 0.1
 # the training distribution, so clean-cond inference still works unchanged.
 easycontrol_cond_noise_max = 0.3
 
-activation_memory_budget = 0.3
+activation_memory_budget = 0.2
 
 # --- Dataset blueprint (inline; fully replaces base.toml's default) ---------
 # Source images + .txt captions live in `easycontrol-dataset/` (user-facing).
