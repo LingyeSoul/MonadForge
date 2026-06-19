@@ -186,6 +186,8 @@ STRINGS: dict[str, str] = {
     "log_placeholder": "学習の出力がここに表示されます...",
     "copy_log": "コピー",
     "copy_log_tooltip": "学習ログ全体をクリップボードにコピー",
+    "gpu_probing": "GPU: 確認中…",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "copy_log_done": "コピーしました",
     "from_base": "base.toml から",
     "saved": "保存済み",

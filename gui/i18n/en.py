@@ -186,6 +186,8 @@ STRINGS: dict[str, str] = {
     "copy_log": "Copy",
     "copy_log_tooltip": "Copy the full training log to the clipboard",
     "copy_log_done": "Copied",
+    "gpu_probing": "GPU: probing…",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "from_base": "From base.toml",
     "saved": "Saved",
     "saved_file": "Saved {name}",

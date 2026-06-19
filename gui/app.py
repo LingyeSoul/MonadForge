@@ -40,6 +40,7 @@ from gui import (
 )
 from gui import daemon as gui_daemon
 from gui import theme as gui_theme
+from gui.gpu_status import GpuStatusBar
 from gui.widgets import action_button
 from gui.i18n import (
     available_languages,
@@ -572,6 +573,11 @@ class MainWindow(QMainWindow):
         self.tab_stack.addWidget(self._tb_tab)
         self.tab_stack.addWidget(self._queue_tab)
         main_lay.addWidget(self.tab_stack)
+
+        # Live GPU utilisation/VRAM footer, always visible below the tab set
+        # (so it sits beneath the Config tab's CLI/log panel).
+        self._gpu_bar = GpuStatusBar()
+        main_lay.addWidget(self._gpu_bar)
         self.setCentralWidget(central)
 
         self._update_tensorboard_btn_style(False)
@@ -591,6 +597,7 @@ class MainWindow(QMainWindow):
         # The shared TensorBoard + Queue views live in the stack, not a tab set.
         self._tb_tab.cleanup_subprocess()
         self._queue_tab.cleanup_subprocess()
+        self._gpu_bar.cleanup()
         super().closeEvent(event)
 
     def _show_update_available(self, latest_tag: str) -> None:

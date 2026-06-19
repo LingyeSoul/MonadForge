@@ -182,6 +182,8 @@ STRINGS: dict[str, str] = {
     "copy_log": "복사",
     "copy_log_tooltip": "전체 학습 로그를 클립보드에 복사",
     "copy_log_done": "복사됨",
+    "gpu_probing": "GPU: 확인 중…",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "from_base": "base.toml에서 상속",
     "saved": "저장 완료",
     "saved_file": "{name} 저장됨",
