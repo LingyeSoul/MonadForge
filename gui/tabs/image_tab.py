@@ -2755,10 +2755,23 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._refresh_buttons()
         self._refresh_inline_diff()
 
+    def _editable_text(self) -> str:
+        """The user's edit buffer.
+
+        While a read-only variant preview is on screen the editor holds the
+        variant text, not the user's caption — the real buffer lives in
+        ``_preview_stash``. Dirty-detection and Save must read this, never the
+        raw editor, or previewing a variant looks like an unsaved edit (and
+        Save would clobber the caption with the variant).
+        """
+        if self._previewing_variant:
+            return self._preview_stash
+        return self.cap.toPlainText()
+
     def _is_dirty(self) -> bool:
         if self._current_caption_path is None:
             return False
-        return self.cap.toPlainText() != self._disk_text
+        return self._editable_text() != self._disk_text
 
     def _refresh_buttons(self) -> None:
         dirty = self._is_dirty()
@@ -2801,7 +2814,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         cp = self._current_caption_path
         if cp is None or not self._is_dirty():
             return
-        new_text = self.cap.toPlainText()
+        new_text = self._editable_text()
         try:
             # Snapshot the prior on-disk version into history before overwriting.
             if cp.exists():
