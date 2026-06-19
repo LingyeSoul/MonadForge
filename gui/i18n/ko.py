@@ -473,6 +473,11 @@ STRINGS: dict[str, str] = {
     ),
     "caption_correct_db_failed": "태그 DB 로드 실패: {err}",
     "caption_versions": "이력…",
+    "caption_variant_training": "학습 캡션",
+    "caption_variants_tooltip": (
+        "전처리가 생성한 학습용 캡션 변형(셔플 / 태그 드롭아웃 / 정체성 무작위화)을 "
+        "미리 봅니다. 읽기 전용이며 편집 가능한 학습 캡션에는 영향을 주지 않습니다."
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(변경 없음)",

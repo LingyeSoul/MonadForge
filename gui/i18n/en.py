@@ -486,6 +486,12 @@ STRINGS: dict[str, str] = {
     ),
     "caption_correct_db_failed": "Failed to load tag DB: {err}",
     "caption_versions": "Versions…",
+    "caption_variant_training": "Training caption",
+    "caption_variants_tooltip": (
+        "Preview the train-time caption variants (shuffle / tag-dropout / "
+        "identity-randomize) written by preprocess. Read-only — the editable "
+        "training caption is unaffected."
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(no changes)",

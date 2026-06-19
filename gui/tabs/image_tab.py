@@ -107,6 +107,10 @@ from library.datasets.curation_actions import (
     rel_key,
     save_curation_decisions,
 )
+from library.preprocess.caption_variants import (
+    read_variants_sidecar,
+    variants_sidecar_path,
+)
 from library.preprocess.resize_preview import (
     DEFAULT_FIT_MODE,
     DEFAULT_FREEFIT_MAX_RATIO,
@@ -1099,11 +1103,23 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         )
         self.versions_btn = QPushButton(t("caption_versions"))
         self.versions_btn.clicked.connect(self._open_versions)
+        # Read-only preview of the train-time caption variants written by
+        # preprocess into {stem}.variants.txt — selecting one shows it without
+        # touching the editable training caption. Hidden unless a sidecar exists.
+        self.variant_combo = QComboBox()
+        self.variant_combo.setToolTip(t("caption_variants_tooltip"))
+        self.variant_combo.setMaximumWidth(220)
+        self.variant_combo.setVisible(False)
+        self.variant_combo.currentIndexChanged.connect(self._on_variant_selected)
+        self._variant_rows: list[tuple[str, str]] = []
+        self._previewing_variant = False
+        self._preview_stash = ""
         cap_head.addWidget(self.save_btn)
         cap_head.addWidget(self.revert_btn)
         cap_head.addWidget(self.autotag_btn)
         cap_head.addWidget(self.caption_correct_btn)
         cap_head.addWidget(self.versions_btn)
+        cap_head.addWidget(self.variant_combo)
         rl.addLayout(cap_head)
 
         # Caption editor with inline tag-box overlay; @artist and section
@@ -1259,9 +1275,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             p.suffix.lower() in IMAGE_EXTS for p in resized_dir.rglob("*")
         )
         if not has_resized:
-            QMessageBox.warning(
-                self, t("error"), t("preprocess_no_resized_to_process")
-            )
+            QMessageBox.warning(self, t("error"), t("preprocess_no_resized_to_process"))
             return
         # Grouping is GPU work — free the resident tagger first so they don't
         # fight over VRAM.
@@ -2202,6 +2216,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             text = ""
         self._disk_text = text
         self._set_caption_text(text if text else "")
+        self._refresh_variant_combo(p)
         self._refresh_image_meta(p)
         self._refresh_preprocess_controls()
         self._refresh_buttons()
@@ -2650,6 +2665,14 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.img.clear()
         self._refresh_image_meta(None)
         self._refresh_preprocess_controls()
+        # No image → no variants to preview; drop any active read-only preview.
+        self._previewing_variant = False
+        self.cap.setReadOnly(False)
+        self._variant_rows = []
+        self.variant_combo.blockSignals(True)
+        self.variant_combo.clear()
+        self.variant_combo.setVisible(False)
+        self.variant_combo.blockSignals(False)
 
     def _set_caption_text(self, text: str) -> None:
         self._suspend_dirty = True
@@ -2657,6 +2680,74 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             self.cap.setPlainText(text)
         finally:
             self._suspend_dirty = False
+
+    @staticmethod
+    def _variant_item_label(label: str, text: str) -> str:
+        """Dropdown entry: the variant tag plus a short text preview."""
+        short = text if len(text) <= 32 else text[:31] + "…"
+        return f"{label}  {short}" if short else label
+
+    def _refresh_variant_combo(self, image_path: Path) -> None:
+        """Repopulate the variant-preview dropdown for the current image.
+
+        Reads ``{stem}.variants.txt`` next to the image (only present under
+        ``resized/`` after preprocess). Resets any active preview back to the
+        editable training caption first, so navigating images never leaves the
+        editor stuck read-only.
+        """
+        # Leaving any prior preview: restore edit mode (the new image's caption
+        # was already loaded into the editor by ``_show``).
+        self._previewing_variant = False
+        self.cap.setReadOnly(False)
+
+        rows: list[tuple[str, str]] = []
+        sidecar = variants_sidecar_path(image_path)
+        if sidecar.exists():
+            try:
+                rows = read_variants_sidecar(sidecar)
+            except OSError:
+                rows = []
+        self._variant_rows = rows
+
+        self.variant_combo.blockSignals(True)
+        try:
+            self.variant_combo.clear()
+            if rows:
+                self.variant_combo.addItem(t("caption_variant_training"))
+                for label, text in rows:
+                    self.variant_combo.addItem(self._variant_item_label(label, text))
+                self.variant_combo.setCurrentIndex(0)
+            self.variant_combo.setVisible(bool(rows))
+        finally:
+            self.variant_combo.blockSignals(False)
+
+    def _on_variant_selected(self, idx: int) -> None:
+        """Preview a variant read-only, or restore the editable training caption.
+
+        Index 0 is the training caption; 1..N map to the sidecar rows. The
+        editor buffer (possibly with unsaved edits) is stashed on entering a
+        preview and restored on returning, so previewing never discards work.
+        """
+        if idx <= 0:
+            if self._previewing_variant:
+                self._previewing_variant = False
+                self.cap.setReadOnly(False)
+                self._set_caption_text(self._preview_stash)
+                self._refresh_buttons()
+                self._refresh_inline_diff()
+            return
+        row = idx - 1
+        if not 0 <= row < len(self._variant_rows):
+            return
+        if not self._previewing_variant:
+            self._preview_stash = self.cap.toPlainText()
+            self._previewing_variant = True
+        self.cap.setReadOnly(True)
+        self._set_caption_text(self._variant_rows[row][1])
+        # No diff/save in preview — this isn't the editable caption.
+        self.cap.setExtraSelections([])
+        self.save_btn.setEnabled(False)
+        self.revert_btn.setEnabled(False)
 
     def _on_text_changed(self) -> None:
         if self._suspend_dirty:

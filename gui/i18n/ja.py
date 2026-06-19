@@ -434,6 +434,12 @@ STRINGS: dict[str, str] = {
     ),
     "caption_correct_db_failed": "タグ DB の読み込みに失敗: {err}",
     "caption_versions": "履歴…",
+    "caption_variant_training": "学習キャプション",
+    "caption_variants_tooltip": (
+        "前処理が生成した学習用キャプションのバリアント（シャッフル / タグドロップ"
+        "アウト / アイデンティティのランダム化）をプレビューします。読み取り専用で、"
+        "編集可能な学習キャプションには影響しません。"
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(変更なし)",

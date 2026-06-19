@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 from collections.abc import Callable, Collection
 from pathlib import Path
 
@@ -21,155 +20,19 @@ from library.io.cache import TE_CACHE_SUFFIX, resolve_cache_path
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 
+# generate_caption_variants + build_erasure_token_pool live in the torch-free
+# caption_variants module so the caption-correction step (which materializes the
+# variant sidecars before the encoder loads) and the GUI can reuse them. Re-export
+# here for backward compatibility (existing callers import them off this module /
+# the package façade).
+from library.preprocess.caption_variants import (  # noqa: F401
+    build_erasure_token_pool,
+    generate_caption_variants,
+    read_variants_sidecar,
+    variants_sidecar_path,
+)
+
 logger = logging.getLogger(__name__)
-
-
-def build_erasure_token_pool(
-    qwen3_tokenizer,
-    t5_tokenizer,
-    *,
-    exclude: Collection[str] | None = None,
-    min_len: int = 4,
-    max_len: int = 9,
-) -> list[str]:
-    """Pool of tokens used to *erase a tag's identity* while keeping its slot
-    (lexinvariant tag regularization, arXiv:2305.16349).
-
-    A randomized slot is filled by a *different* pool token each draw, so the
-    literal symbol stays unreliable — pushing the adapter to ground the concept
-    in surrounding structure (image content + co-occurring tags) rather than the
-    exact trigger vector (role-based, not vector-based, binding). Per the cited
-    method the filler is a *real* vocab token, not gibberish: unreliability comes
-    from the per-draw variation, not from the symbol being intrinsically
-    meaningless. Distinct from tag-dropout (which removes the slot).
-
-    **Dual-single** is the load-bearing constraint. Anima tokenizes captions
-    twice — Qwen3 for the text encoder (``prompt_embeds``) *and* T5 for the LLM
-    adapter's target ids (``crossattn_emb``). A filler must therefore be exactly
-    one token in *both* vocabularies; otherwise it shreds into junk subword
-    pieces on whichever side fragments it (random ASCII fragments in Qwen3; rare
-    foreign tokens are clean in Qwen3 but explode in T5's English-centric
-    sentencepiece). We pick lowercase ascii alphabetic words and keep only those
-    that survive as a single token in both. ``exclude`` (the dataset's real tags)
-    drops any word that is itself a genuine tag, so a filler is never mistakable
-    for a true concept. Returns bare words (no leading space).
-
-    Selection keys off the ``Ġ`` (leading-space) Qwen3 vocab form — exact for
-    this token class (verified: heuristic == round-trip), so no Qwen3 re-encode
-    is needed; only the T5 single-token property is checked at runtime.
-    """
-    excl = {t.lower() for t in exclude} if exclude else set()
-    try:
-        vocab = qwen3_tokenizer.get_vocab()
-    except Exception:
-        return []
-    # Qwen3-single candidates (cheap, pure vocab): leading-space lowercase ascii.
-    candidates = sorted(
-        sym[1:]
-        for sym in vocab
-        if sym.startswith("Ġ")
-        and (core := sym[1:]).isascii()
-        and core.isalpha()
-        and core.islower()
-        and min_len <= len(core) <= max_len
-        and core not in excl
-    )
-    # Keep only those that are also a single T5 token in a ``", "``-joined caption.
-    try:
-        t5_base = len(t5_tokenizer(", ", add_special_tokens=False)["input_ids"])
-    except Exception:
-        return []
-    pool: list[str] = []
-    for word in candidates:
-        ids = t5_tokenizer(", " + word, add_special_tokens=False)["input_ids"]
-        if len(ids) - t5_base == 1:
-            pool.append(word)
-    return pool
-
-
-def generate_caption_variants(
-    caption: str,
-    num_variants: int,
-    tag_dropout_rate: float,
-    protect_fn: Callable[[str], bool] | None = None,
-    tag_randomize_rate: float = 0.0,
-    erasure_pool: Collection[str] | None = None,
-) -> list[str]:
-    """Generate ``num_variants`` caption variants for stochastic train-time sampling.
-
-    v0 = pristine original caption. v1..v{N-1} are smart-shuffled (preserving
-    the @artist prefix and section anchors), then every tag *after* the prefix
-    is independently dropped with probability ``tag_dropout_rate``, then every
-    surviving tag *after the prefix* has its identity erased (replaced by a fresh
-    vocab token drawn from ``erasure_pool``) with probability
-    ``tag_randomize_rate``. The ``@no-artist`` sentinel participates in the
-    boundary but is stripped from every variant (including v0) before it is
-    written.
-
-    ``protect_fn`` (when given) marks tags that must survive tag-dropout *and*
-    tag-randomization: a tag for which it returns True is always kept verbatim
-    even past the @artist prefix. It is still subject to shuffling. Used by the
-    colorize prep to keep copyright tags present/intact in every variant.
-
-    Both axes are **prefix-protected**: tag-dropout is the *presence* axis and
-    tag-randomize is the *identity* axis, and neither touches the @artist prefix
-    (the trigger tag stays intact, only tags *after* ``split_idx`` are
-    randomized). Section headers (``On the …`` / ``In the …``) and the sentinel
-    are never randomized either.
-
-    ``erasure_pool`` (see :func:`build_erasure_token_pool`) is the source of
-    erasure symbols: each randomized slot draws a fresh dual-single vocab token
-    (clean one-token in both Qwen3 and T5). It is **required** whenever
-    ``tag_randomize_rate > 0`` (no random-ASCII fallback); ignored otherwise.
-    """
-    from library.anima import training as anima_train_utils
-
-    sentinel = anima_train_utils.NO_ARTIST_SENTINEL
-    if tag_randomize_rate > 0.0 and not erasure_pool:
-        raise ValueError(
-            "tag_randomize_rate > 0 requires a non-empty erasure_pool "
-            "(build_erasure_token_pool); there is no random-ASCII fallback."
-        )
-    pool = list(erasure_pool) if erasure_pool else None
-
-    tags = [t.strip() for t in caption.split(",")]
-    split_idx = anima_train_utils.find_anima_prefix_end(tags)
-
-    # v0 stays byte-identical to the source caption unless the sentinel is present
-    # — re-joining would otherwise normalize whitespace around commas.
-    if sentinel in tags:
-        variants = [", ".join(anima_train_utils.strip_no_artist_sentinel(tags))]
-    else:
-        variants = [caption]
-
-    for _ in range(max(0, num_variants - 1)):
-        shuffled = anima_train_utils.anima_smart_shuffle_caption(tags.copy())
-        if tag_dropout_rate > 0.0 and len(shuffled) > split_idx:
-            kept = list(shuffled[:split_idx])
-            for tag in shuffled[split_idx:]:
-                if (protect_fn is not None and protect_fn(tag)) or (
-                    random.random() >= tag_dropout_rate
-                ):
-                    kept.append(tag)
-            if not kept:
-                kept = shuffled[:1]
-            shuffled = kept
-        if tag_randomize_rate > 0.0:
-            shuffled = [
-                random.choice(pool)
-                if (
-                    i >= split_idx
-                    and tag != sentinel
-                    and not tag.startswith(("On the ", "In the "))
-                    and not (protect_fn is not None and protect_fn(tag))
-                    and random.random() < tag_randomize_rate
-                )
-                else tag
-                for i, tag in enumerate(shuffled)
-            ]
-        shuffled = anima_train_utils.strip_no_artist_sentinel(shuffled)
-        variants.append(", ".join(shuffled))
-    return variants
 
 
 def _strip_no_artist_sentinel_from_caption(caption: str) -> str:
@@ -252,13 +115,23 @@ def _cache_has_randomized(cache_path: Path) -> bool:
 def _cache_is_current(image_path: Path, cache_path: Path) -> bool:
     if not cache_path.exists():
         return False
-    caption_path = image_path.with_suffix(".txt")
-    if not caption_path.exists():
-        return True
     try:
-        return cache_path.stat().st_mtime >= caption_path.stat().st_mtime
+        cache_mtime = cache_path.stat().st_mtime
     except OSError:
         return False
+    # The cache must be newer than BOTH the caption and (if present) the variant
+    # sidecar — the sidecar is the encoded source of truth, so an edit/regen to it
+    # has to invalidate the cache just like a caption edit does.
+    newest = 0.0
+    for src in (image_path.with_suffix(".txt"), variants_sidecar_path(image_path)):
+        if src.exists():
+            try:
+                newest = max(newest, src.stat().st_mtime)
+            except OSError:
+                return False
+    if newest == 0.0:
+        return True  # no caption and no sidecar → nothing to be stale against
+    return cache_mtime >= newest
 
 
 def _walk_te_candidates(
@@ -498,6 +371,48 @@ def cache_text_embeddings(
 
     from safetensors.torch import save_file
 
+    def _rows_for(img_path: Path, caption: str) -> list[tuple[str, str]]:
+        """Ordered ``(label, text)`` variants to encode for one image.
+
+        The ``{stem}.variants.txt`` sidecar — written upstream by the caption
+        step — is the **source of truth**: when present we encode exactly its
+        lines so the visible text matches what trains. Without a sidecar we fall
+        back to in-process generation (the colorize ``caption_transform`` path,
+        and any flow that skipped the caption step). A lone ``("", caption)`` row
+        is the legacy single-caption (flat-key) layout.
+        """
+        if caption_transform is None:
+            sidecar = variants_sidecar_path(img_path)
+            if sidecar.exists():
+                try:
+                    rows = read_variants_sidecar(sidecar)
+                except OSError:
+                    rows = []
+                if rows:
+                    # Sentinel is already stripped by the generator; re-strip
+                    # defensively against a hand-edited sidecar.
+                    return [
+                        (label, _strip_no_artist_sentinel_from_caption(text))
+                        for label, text in rows
+                    ]
+        if n_variants > 0:
+            v_list = generate_caption_variants(
+                caption, n_variants, tag_dropout_rate, caption_protect_fn
+            )
+            rows = [(f"v{i}", text) for i, text in enumerate(v_list)]
+            if n_rand:
+                r_list = generate_caption_variants(
+                    caption,
+                    n_variants,
+                    tag_dropout_rate,
+                    caption_protect_fn,
+                    tag_randomize_rate=tag_randomize_rate,
+                    erasure_pool=erasure_pool,
+                )
+                rows += [(f"r{j}", text) for j, text in enumerate(r_list[1:], start=1)]
+            return rows
+        return [("", caption)]
+
     if progress is not None:
         progress(0, total=len(entries))
 
@@ -525,106 +440,66 @@ def cache_text_embeddings(
         if not to_encode:
             continue
 
-        if n_variants <= 0:
-            captions = [c for _, c, _ in to_encode]
-            prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, crossattn_emb = (
-                _encode_batch(
-                    captions,
-                    tokenize_strategy,
-                    encoding_strategy,
-                    text_encoder,
-                    llm_adapter,
-                    device,
-                )
+        # Build each image's variant rows, then flatten the whole batch into one
+        # encode call. Row counts may differ per image (a sidecar vs the
+        # fallback, mixed within a batch), so we track a running flat offset
+        # instead of a uniform block stride.
+        per_image_rows = [
+            _rows_for(img_path, caption) for img_path, caption, _ in to_encode
+        ]
+        all_captions = [text for rows in per_image_rows for _, text in rows]
+        prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, crossattn_emb = (
+            _encode_batch(
+                all_captions,
+                tokenize_strategy,
+                encoding_strategy,
+                text_encoder,
+                llm_adapter,
+                device,
             )
+        )
 
-            for i, (img_path, _, cache_path) in enumerate(to_encode):
+        flat = 0
+        for (img_path, _, cache_path), rows in zip(to_encode, per_image_rows):
+            labels = [label for label, _ in rows]
+            if labels == [""]:
+                # Legacy single-caption layout: flat (unsuffixed) keys.
                 save_dict = {
-                    "prompt_embeds": prompt_embeds[i],
-                    "attn_mask": attn_mask[i],
-                    "t5_input_ids": t5_input_ids[i],
-                    "t5_attn_mask": t5_attn_mask[i],
+                    "prompt_embeds": prompt_embeds[flat],
+                    "attn_mask": attn_mask[flat],
+                    "t5_input_ids": t5_input_ids[flat],
+                    "t5_attn_mask": t5_attn_mask[flat],
                     "caption_dropout_rate": caption_dropout_rate,
                 }
                 if crossattn_emb is not None:
-                    save_dict["crossattn_emb"] = crossattn_emb[i]
-                save_file(save_dict, str(cache_path))
-                stats.written += 1
-                if progress is not None:
-                    progress(1, detail=f"{img_path.name}")
-        else:
-            # Per image: N v-variants (v0 pristine + v1..v{N-1} shuffled/dropped)
-            # then, when randomizing, N-1 r-variants (shuffled/dropped + identity
-            # erasure; their own pristine v0 is dropped since it equals the
-            # shared v0). Block size is uniform, so flat indexing stays simple.
-            block = n_variants + n_rand
-            all_captions: list[str] = []
-            for _, caption, _ in to_encode:
-                all_captions.extend(
-                    generate_caption_variants(
-                        caption,
-                        n_variants,
-                        tag_dropout_rate,
-                        caption_protect_fn,
-                    )
-                )
-                if n_rand:
-                    r_list = generate_caption_variants(
-                        caption,
-                        n_variants,
-                        tag_dropout_rate,
-                        caption_protect_fn,
-                        tag_randomize_rate=tag_randomize_rate,
-                        erasure_pool=erasure_pool,
-                    )
-                    all_captions.extend(r_list[1:])  # share v0 as the anchor
-
-            prompt_embeds, attn_mask, t5_input_ids, t5_attn_mask, crossattn_emb = (
-                _encode_batch(
-                    all_captions,
-                    tokenize_strategy,
-                    encoding_strategy,
-                    text_encoder,
-                    llm_adapter,
-                    device,
-                )
-            )
-
-            for i, (img_path, _, cache_path) in enumerate(to_encode):
-                base = i * block
+                    save_dict["crossattn_emb"] = crossattn_emb[flat]
+                detail = img_path.name
+            else:
+                n_v = sum(1 for label in labels if label.startswith("v"))
+                n_r = sum(1 for label in labels if label.startswith("r"))
                 save_dict = {
-                    "num_variants": torch.tensor(n_variants, dtype=torch.int64),
+                    "num_variants": torch.tensor(n_v, dtype=torch.int64),
                     # Marker: v0 is pristine; loaders switch on weighted 20%/80%
                     # sampling between v0 and v1..v{N-1}.
                     "v0_intact": torch.tensor(1, dtype=torch.int8),
                     "caption_dropout_rate": caption_dropout_rate,
                 }
-                if n_rand:
-                    save_dict["num_randomized"] = torch.tensor(
-                        n_rand, dtype=torch.int64
-                    )
-                for vi in range(n_variants):
-                    flat_idx = base + vi
-                    save_dict[f"prompt_embeds_v{vi}"] = prompt_embeds[flat_idx]
-                    save_dict[f"attn_mask_v{vi}"] = attn_mask[flat_idx]
-                    save_dict[f"t5_input_ids_v{vi}"] = t5_input_ids[flat_idx]
-                    save_dict[f"t5_attn_mask_v{vi}"] = t5_attn_mask[flat_idx]
+                if n_r:
+                    save_dict["num_randomized"] = torch.tensor(n_r, dtype=torch.int64)
+                for off, (label, _) in enumerate(rows):
+                    k = flat + off
+                    save_dict[f"prompt_embeds_{label}"] = prompt_embeds[k]
+                    save_dict[f"attn_mask_{label}"] = attn_mask[k]
+                    save_dict[f"t5_input_ids_{label}"] = t5_input_ids[k]
+                    save_dict[f"t5_attn_mask_{label}"] = t5_attn_mask[k]
                     if crossattn_emb is not None:
-                        save_dict[f"crossattn_emb_v{vi}"] = crossattn_emb[flat_idx]
-                for rj in range(n_rand):
-                    ri = rj + 1  # r1..r{n_rand}; v0 is the shared pristine anchor
-                    flat_idx = base + n_variants + rj
-                    save_dict[f"prompt_embeds_r{ri}"] = prompt_embeds[flat_idx]
-                    save_dict[f"attn_mask_r{ri}"] = attn_mask[flat_idx]
-                    save_dict[f"t5_input_ids_r{ri}"] = t5_input_ids[flat_idx]
-                    save_dict[f"t5_attn_mask_r{ri}"] = t5_attn_mask[flat_idx]
-                    if crossattn_emb is not None:
-                        save_dict[f"crossattn_emb_r{ri}"] = crossattn_emb[flat_idx]
-                save_file(save_dict, str(cache_path))
-                stats.written += 1
-                if progress is not None:
-                    detail = f"{img_path.name} ({n_variants}v"
-                    detail += f"+{n_rand}r)" if n_rand else ")"
-                    progress(1, detail=detail)
+                        save_dict[f"crossattn_emb_{label}"] = crossattn_emb[k]
+                detail = f"{img_path.name} ({n_v}v" + (f"+{n_r}r)" if n_r else ")")
+
+            save_file(save_dict, str(cache_path))
+            stats.written += 1
+            if progress is not None:
+                progress(1, detail=detail)
+            flat += len(rows)
 
     return stats

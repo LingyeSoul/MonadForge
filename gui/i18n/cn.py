@@ -417,6 +417,11 @@ STRINGS: dict[str, str] = {
     ),
     "caption_correct_db_failed": "标签 DB 加载失败: {err}",
     "caption_versions": "历史……",
+    "caption_variant_training": "训练标注",
+    "caption_variants_tooltip": (
+        "预览预处理生成的训练用标注变体（打乱 / 标签丢弃 / 身份随机化）。"
+        "只读，不影响可编辑的训练标注。"
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(无变化)",

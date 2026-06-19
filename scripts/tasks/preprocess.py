@@ -530,49 +530,97 @@ def cmd_preprocess_vae(extra):
     )
 
 
+_QWEN3_TOKENIZER = "models/text_encoders/qwen_3_06b_base.safetensors"
+
+
+def _variant_settings() -> tuple[str, str, str]:
+    """Caption-variant knobs: env override → preprocess.toml → historical default.
+
+    Returns ``(shuffle_variants, tag_dropout_rate, tag_randomize_rate)`` as raw
+    strings (forwarded straight to the script). CAPTION_SHUFFLE_VARIANTS /
+    CAPTION_TAG_DROPOUT_RATE / CAPTION_TAG_RANDOMIZE_RATE let the GUI tune these
+    without editing config.
+    """
+    shuffle = os.environ.get("CAPTION_SHUFFLE_VARIANTS") or _path(
+        "caption_shuffle_variants", "4"
+    )
+    dropout = os.environ.get("CAPTION_TAG_DROPOUT_RATE") or _path(
+        "caption_tag_dropout_rate", "0.1"
+    )
+    # Lexinvariant tag regularization: identity-randomized r-family. 0.0 = off
+    # (no r-family written, fully backward compatible).
+    randomize = os.environ.get("CAPTION_TAG_RANDOMIZE_RATE") or _path(
+        "caption_tag_randomize_rate", "0.0"
+    )
+    return str(shuffle), str(dropout), str(randomize)
+
+
+def _float_or_zero(value: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = None):
+    """Write corrected/variant caption sidecars into ``resized/``.
+
+    Runs whenever caption order-correction is enabled **or** variants are
+    requested (the default ``caption_shuffle_variants=4``). Order-correction off
+    + variants on runs in passthrough (``--no_correct``): v0 mirrors the raw
+    caption and the shuffle/dropout/randomize sidecars ride alongside, so the
+    user can see the train-time variants directly in ``resized/``.
+    """
     if caption_config is None:
         caption_config, extra = _caption_correction_config(extra)
-    if not _caption_correction_enabled(caption_config):
+    correct = _caption_correction_enabled(caption_config)
+    shuffle, dropout, randomize = _variant_settings()
+    n_variants = int(_float_or_zero(shuffle))
+    if not correct and n_variants <= 0:
         print("  [preprocess] caption correction disabled")
         return
     pp_args = _resolved_path_pattern_args(extra)
-    run(
-        [
-            PY,
-            "scripts/preprocess/correct_captions.py",
-            "--src",
-            _path("source_image_dir", "image_dataset"),
-            "--dst",
-            _path("resized_image_dir", "post_image_dataset/resized"),
-            "--recursive",
-            *pp_args,
-            *_caption_correction_args(caption_config),
+    cmd = [
+        PY,
+        "scripts/preprocess/correct_captions.py",
+        "--src",
+        _path("source_image_dir", "image_dataset"),
+        "--dst",
+        _path("resized_image_dir", "post_image_dataset/resized"),
+        "--recursive",
+        *pp_args,
+    ]
+    if correct:
+        cmd += _caption_correction_args(caption_config)
+    else:
+        cmd.append("--no_correct")
+    if n_variants > 0:
+        cmd += [
+            "--caption_shuffle_variants",
+            shuffle,
+            "--caption_tag_dropout_rate",
+            dropout,
+            "--caption_tag_randomize_rate",
+            randomize,
         ]
-    )
+        # Identity-randomize needs the two tokenizers to build the erasure pool.
+        if _float_or_zero(randomize) > 0.0 and n_variants >= 2:
+            cmd += ["--qwen3", _QWEN3_TOKENIZER]
+    run(cmd)
 
 
 def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
-    # CAPTION_SHUFFLE_VARIANTS / CAPTION_TAG_DROPOUT_RATE let the GUI tune these;
-    # env override → preprocess.toml → historical default (so non-GUI/non-config
-    # invocations are unchanged).
     if caption_config is None:
         caption_config, extra = _caption_correction_config(extra)
-    shuffle_variants = os.environ.get("CAPTION_SHUFFLE_VARIANTS") or _path(
-        "caption_shuffle_variants", "4"
-    )
-    tag_dropout_rate = os.environ.get("CAPTION_TAG_DROPOUT_RATE") or _path(
-        "caption_tag_dropout_rate", "0.1"
-    )
-    # Lexinvariant tag regularization: identity-randomized r-family. Read from
-    # preprocess.toml (caption_tag_randomize_rate) with an env override; 0.0 =
-    # off (no r-family written, fully backward compatible). When > 0 a re-run
-    # upgrades existing caches in place (adds the r-family without a full delete).
-    randomize_rate = os.environ.get("CAPTION_TAG_RANDOMIZE_RATE") or _path(
-        "caption_tag_randomize_rate", "0.0"
-    )
-    caption_correct = _caption_correction_enabled(caption_config)
-    if caption_correct:
+    shuffle, dropout, randomize = _variant_settings()
+    n_variants = int(_float_or_zero(shuffle))
+    # The caption step writes the variant sidecars (the encode source of truth);
+    # it runs whenever correction is on OR variants are requested. In that case
+    # the TE step reads ``resized/`` (already the curated set, so min_pixels=0)
+    # and encodes the sidecars verbatim. Only the pure no-correction +
+    # no-variants case still reads the source captions with a match filter.
+    needs_caption_step = _caption_correction_enabled(caption_config) or n_variants > 0
+    if needs_caption_step:
         _, extra = _resolve_lowres_filter(extra)
         extra = _drop_option_with_value(extra, {"--min_pixels"})
         pp_args = _preprocess_path_pattern_args(extra)
@@ -598,15 +646,19 @@ def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
             _path("lora_cache_dir", "post_image_dataset/lora"),
             *match_args,
             "--qwen3",
-            "models/text_encoders/qwen_3_06b_base.safetensors",
+            _QWEN3_TOKENIZER,
             "--dit",
             "models/diffusion_models/anima-base-v1.0.safetensors",
+            # Fallback only — when a {stem}.variants.txt sidecar is present (the
+            # caption step wrote it) the encoder uses it verbatim and these are
+            # ignored; they still drive in-process generation for any image that
+            # reaches TE without a sidecar.
             "--caption_shuffle_variants",
-            shuffle_variants,
+            shuffle,
             "--caption_tag_dropout_rate",
-            tag_dropout_rate,
+            dropout,
             "--caption_tag_randomize_rate",
-            str(randomize_rate),
+            randomize,
             "--recursive",
             *mp_args,
             *pp_args,

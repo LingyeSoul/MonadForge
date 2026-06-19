@@ -36,6 +36,7 @@ from library.datasets.buckets import (
     freefit_bucket,
 )
 from library.io.walk import safe_walk
+from library.preprocess.caption_variants import VARIANTS_SIDECAR_SUFFIX
 
 NPZ_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d{4})x(?P<h>\d{4})_anima\.npz$")
 TE_RE = re.compile(r"^(?P<stem>.+)_anima_te\.safetensors$")
@@ -123,13 +124,17 @@ class OrphanCaches:
     pe: list[Path] = field(default_factory=list)
     png: list[Path] = field(default_factory=list)
     mask: list[Path] = field(default_factory=list)
+    # Resized-dir caption sidecars ({stem}.txt + {stem}.variants.txt) whose
+    # source image is gone — the corrected caption / variant preview is dead
+    # weight without the image it described.
+    txt: list[Path] = field(default_factory=list)
 
     @property
     def n_files(self) -> int:
         return len(self.all_paths())
 
     def all_paths(self) -> list[Path]:
-        return [*self.npz, *self.te, *self.pe, *self.png, *self.mask]
+        return [*self.npz, *self.te, *self.pe, *self.png, *self.mask, *self.txt]
 
 
 def _native_keys(image_dir: Path) -> set[tuple[str, str]]:
@@ -187,8 +192,17 @@ def find_orphan_caches(
 
     for rel, dirpath, fn in _walk(resized_dir):
         stem, ext = os.path.splitext(fn)
-        if ext.lower() == ".png" and (rel, stem) not in native:
-            orphans.png.append(Path(dirpath) / fn)
+        if ext.lower() == ".png":
+            if (rel, stem) not in native:
+                orphans.png.append(Path(dirpath) / fn)
+        elif fn.endswith(VARIANTS_SIDECAR_SUFFIX):
+            # {stem}.variants.txt — the image stem is the name minus the marker
+            # double-suffix, not splitext's stem ({stem}.variants).
+            img_stem = fn[: -len(VARIANTS_SIDECAR_SUFFIX)]
+            if (rel, img_stem) not in native:
+                orphans.txt.append(Path(dirpath) / fn)
+        elif ext.lower() == ".txt" and (rel, stem) not in native:
+            orphans.txt.append(Path(dirpath) / fn)
 
     for rel, dirpath, fn in _walk(mask_dir):
         m = MASK_RE.match(fn)
@@ -207,6 +221,7 @@ def delete_orphans(orphans: OrphanCaches) -> Counter:
         ("pe", orphans.pe),
         ("png", orphans.png),
         ("mask", orphans.mask),
+        ("txt", orphans.txt),
     ):
         for p in paths:
             if p.exists():

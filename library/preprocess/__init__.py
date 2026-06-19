@@ -40,7 +40,13 @@ _LAZY = {
     "StaleCaches": ("reconcile", "StaleCaches"),
     "cache_text_embeddings": ("text", "cache_text_embeddings"),
     "count_pending_text": ("text", "count_pending_text"),
-    "generate_caption_variants": ("text", "generate_caption_variants"),
+    # Torch-free leaf (caption_variants) so the caption-correction step / GUI can
+    # import these without dragging torch in via the text submodule.
+    "generate_caption_variants": ("caption_variants", "generate_caption_variants"),
+    "build_erasure_token_pool": ("caption_variants", "build_erasure_token_pool"),
+    "variants_sidecar_path": ("caption_variants", "variants_sidecar_path"),
+    "write_variants_sidecar": ("caption_variants", "write_variants_sidecar"),
+    "read_variants_sidecar": ("caption_variants", "read_variants_sidecar"),
 }
 
 __all__ = list(_LAZY)
