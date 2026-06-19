@@ -391,6 +391,21 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "自動タグ付けに失敗しました: {err}",
     "caption_autotag_empty": "タガーはこの画像のタグを返しませんでした。",
+    "caption_correct": "順序補正",
+    "caption_correct_tooltip": (
+        "danbooru_tags_classified.csv を使ってキャプションを ANIMA 推奨順に並べ替え、"
+        "設定に応じて @no-artist を挿入します。"
+    ),
+    "caption_correct_visible": "現在の一覧を一括補正",
+    "caption_correct_visible_confirm": "現在の一覧のキャプション {n} 件を補正しますか？",
+    "caption_correct_visible_done": "キャプション {n} 件を補正しました。",
+    "caption_correct_visible_failed": "キャプション {n} 件を補正しました。\n\n失敗:\n{err}",
+    "caption_correct_no_change": "補正する変更はありません。",
+    "caption_correct_db_missing": (
+        "danbooru_tags_classified.csv が見つかりません。\n\n"
+        "モデル画面から Danbooru タグ DB をダウンロードするか、次の場所に置いてください:\n{paths}"
+    ),
+    "caption_correct_db_failed": "タグ DB の読み込みに失敗: {err}",
     "caption_versions": "履歴…",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -426,6 +441,16 @@ STRINGS: dict[str, str] = {
     "settings_autotag_confidence_tooltip": (
         "タガーのタグ別しきい値に追加で適用する確率の下限（0–1）です。"
         "高いほど確信度の高いタグだけが少数残ります。既定値 0.50。"
+    ),
+    "settings_caption_insert_no_artist": "補正時に @no-artist を挿入",
+    "settings_caption_insert_no_artist_tooltip": (
+        "補正後のキャプションに作家タグがない場合、作家位置に @no-artist を入れます。"
+        "キャプションシャッフルの境界としてのみ使われ、トークン化前に除去されます。"
+    ),
+    "settings_caption_validate_artist_tags": "作家タグを DB で検証",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "有効にすると danbooru_tags_classified.csv で作家に分類された @タグだけを"
+        "作家位置へ移動します。無効なら @ で始まるタグを作家タグとして扱います。"
     ),
     "settings_group_match_frac": "グループ化の厳しさ:",
     "settings_group_match_frac_tooltip": (
@@ -500,8 +525,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "モデルのダウンロード",
     "models_intro": "以下からモデルグループを選択するか、「すべてダウンロード」で標準セット "
-    "(Anima + SAM3 + MIT + PE) をダウンロードします。ファイルは models/ に保存されます。",
-    "models_download_all": "すべてダウンロード (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + タグ DB) をダウンロードします。ファイルは models/ に保存されます。",
+    "models_download_all": "すべてダウンロード (Anima + SAM3 + MIT + PE + タグ DB)",
     "models_download": "ダウンロード",
     "models_redownload": "再ダウンロード",
     "models_installed": "✓ インストール済み",
@@ -510,6 +535,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — テキストバブルマスキング",
     "model_mit": "MIT — 漫画テキストマスキング",
     "model_pe": "PE-Core-L14-336 — ビジョンエンコーダー (CMMD 検証 / DCW)",
+    "model_danbooru_tags": "Danbooru タグ DB — キャプション順序補正",
     # HuggingFace 認証 (モデルダイアログ)
     "models_hf_token_placeholder": "HuggingFace トークンを貼り付けてください (hf_…)",
     "models_hf_authenticate": "認証",

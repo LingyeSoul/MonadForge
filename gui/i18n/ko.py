@@ -429,6 +429,21 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "자동 태깅 실패: {err}",
     "caption_autotag_empty": "태거가 이 이미지에서 태그를 찾지 못했습니다.",
+    "caption_correct": "순서 교정",
+    "caption_correct_tooltip": (
+        "danbooru_tags_classified.csv를 사용해 캡션을 ANIMA 권장 순서로 "
+        "재배치하고, 설정에 따라 @no-artist를 삽입합니다."
+    ),
+    "caption_correct_visible": "현재 목록 전체 교정",
+    "caption_correct_visible_confirm": "현재 목록의 캡션 {n}개를 교정할까요?",
+    "caption_correct_visible_done": "캡션 {n}개를 교정했습니다.",
+    "caption_correct_visible_failed": "캡션 {n}개를 교정했습니다.\n\n실패:\n{err}",
+    "caption_correct_no_change": "교정할 변경사항이 없습니다.",
+    "caption_correct_db_missing": (
+        "danbooru_tags_classified.csv를 찾을 수 없습니다.\n\n"
+        "모델 창에서 Danbooru 태그 DB를 다운로드하거나 다음 위치에 배치하세요:\n{paths}"
+    ),
+    "caption_correct_db_failed": "태그 DB 로드 실패: {err}",
     "caption_versions": "이력…",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -465,6 +480,16 @@ STRINGS: dict[str, str] = {
     "settings_autotag_confidence_tooltip": (
         "태거의 태그별 임계값 위에 추가로 적용되는 확률 하한(0–1)입니다. "
         "높을수록 더 확실한 태그만 적게 남습니다. 기본값 0.50."
+    ),
+    "settings_caption_insert_no_artist": "캡션 교정 시 @no-artist 삽입",
+    "settings_caption_insert_no_artist_tooltip": (
+        "교정 결과에 작가 태그가 없으면 작가 위치에 @no-artist를 넣습니다. "
+        "캡션 셔플 경계로만 쓰이며 토큰화 직전에 제거됩니다."
+    ),
+    "settings_caption_validate_artist_tags": "작가 태그를 DB로 검증",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "켜면 danbooru_tags_classified.csv에서 작가로 분류된 @태그만 작가 위치로 "
+        "옮깁니다. 끄면 @로 시작하는 태그를 작가 태그로 취급합니다."
     ),
     "settings_group_match_frac": "그룹화 엄격도:",
     "settings_group_match_frac_tooltip": (
@@ -539,8 +564,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "모델 다운로드",
     "models_intro": "아래에서 모델 그룹을 선택하거나 '전체 다운로드'로 표준 세트 "
-    "(Anima + SAM3 + MIT + PE)를 받으세요. 파일은 models/ 아래에 저장됩니다.",
-    "models_download_all": "전체 다운로드 (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + 태그 DB)를 받으세요. 파일은 models/ 아래에 저장됩니다.",
+    "models_download_all": "전체 다운로드 (Anima + SAM3 + MIT + PE + 태그 DB)",
     "models_download": "다운로드",
     "models_redownload": "재다운로드",
     "models_installed": "✓ 설치됨",
@@ -549,6 +574,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — 말풍선 마스킹",
     "model_mit": "MIT — 만화 텍스트 마스킹",
     "model_pe": "PE-Core-L14-336 — 비전 인코더 (CMMD 검증 / DCW)",
+    "model_danbooru_tags": "Danbooru 태그 DB — 캡션 순서 교정",
     # HuggingFace 인증 (모델 다이얼로그)
     "models_hf_token_placeholder": "HuggingFace 토큰을 붙여넣으세요 (hf_…)",
     "models_hf_authenticate": "인증",

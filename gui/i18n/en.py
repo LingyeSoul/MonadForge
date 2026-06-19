@@ -441,6 +441,21 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "Autotag failed: {err}",
     "caption_autotag_empty": "The tagger returned no tags for this image.",
+    "caption_correct": "Correct order",
+    "caption_correct_tooltip": (
+        "Use danbooru_tags_classified.csv to reorder this caption into the "
+        "recommended ANIMA order, optionally inserting @no-artist."
+    ),
+    "caption_correct_visible": "Correct current list",
+    "caption_correct_visible_confirm": "Correct {n} caption(s) in the current list?",
+    "caption_correct_visible_done": "Corrected {n} caption(s).",
+    "caption_correct_visible_failed": "Corrected {n} caption(s).\n\nFailed:\n{err}",
+    "caption_correct_no_change": "No caption changes to apply.",
+    "caption_correct_db_missing": (
+        "danbooru_tags_classified.csv was not found.\n\n"
+        "Download the Danbooru tag DB from the Models dialog, or place it here:\n{paths}"
+    ),
+    "caption_correct_db_failed": "Failed to load tag DB: {err}",
     "caption_versions": "Versions…",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -477,6 +492,16 @@ STRINGS: dict[str, str] = {
     "settings_autotag_confidence_tooltip": (
         "Extra probability floor (0–1) applied on top of the tagger's per-tag "
         "thresholds. Higher = fewer, more confident tags. Default 0.50."
+    ),
+    "settings_caption_insert_no_artist": "Insert @no-artist during caption correction",
+    "settings_caption_insert_no_artist_tooltip": (
+        "If the corrected caption has no artist tag, insert @no-artist at the "
+        "artist position. It only anchors caption shuffle and is stripped before tokenization."
+    ),
+    "settings_caption_validate_artist_tags": "Validate artist tags with DB",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "When enabled, only @tags classified as artists in danbooru_tags_classified.csv "
+        "move to the artist position. When disabled, any @tag is treated as an artist tag."
     ),
     "settings_group_match_frac": "Grouping tightness:",
     "settings_group_match_frac_tooltip": (
@@ -551,8 +576,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "Download Models",
     "models_intro": "Pick a model group below or use 'Download all' for the standard set "
-    "(Anima + SAM3 + MIT + PE). Files are saved under models/.",
-    "models_download_all": "Download all (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + tag DB). Files are saved under models/.",
+    "models_download_all": "Download all (Anima + SAM3 + MIT + PE + tag DB)",
     "models_download": "Download",
     "models_redownload": "Re-download",
     "models_installed": "✓ Installed",
@@ -565,6 +590,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — text-bubble masking",
     "model_mit": "MIT — manga text masking",
     "model_pe": "PE-Core-L14-336 — vision encoder (CMMD validation / DCW)",
+    "model_danbooru_tags": "Danbooru tag DB — caption order correction",
     # HuggingFace authentication (Models dialog)
     "models_hf_token_placeholder": "Paste your HuggingFace token (hf_…)",
     "models_hf_authenticate": "Authenticate",

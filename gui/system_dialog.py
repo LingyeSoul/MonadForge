@@ -58,6 +58,11 @@ _MODEL_GROUPS: list[tuple[str, str, list[str]]] = [
             "models/pe/PE-Spatial-B16-512.pt",
         ],
     ),
+    (
+        "danbooru-tags",
+        "model_danbooru_tags",
+        ["models/danbooru_tags_classified.csv"],
+    ),
 ]
 
 

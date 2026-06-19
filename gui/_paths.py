@@ -22,6 +22,8 @@ GUI_SETTINGS_FILE = Path(__file__).resolve().parent / "gui_settings.json"
 # Default autotagger probability floor applied on top of the model's per-tag
 # F1 thresholds (see AnimaTagger.predict_caption min_confidence).
 DEFAULT_AUTOTAG_CONFIDENCE = 0.5
+DEFAULT_CAPTION_INSERT_NO_ARTIST = True
+DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS = False
 # Defaults for the Dataset-tab grouping run (`curate-group`). Mirror the
 # library values (library.datasets.grouping.DEFAULT_*) so the GUI stays
 # torch-free; higher = tighter groups. See SettingsDialog + ImageViewerTab.

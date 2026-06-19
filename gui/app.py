@@ -40,6 +40,10 @@ from gui import (
 )
 from gui import daemon as gui_daemon
 from gui import theme as gui_theme
+from gui._paths import (
+    DEFAULT_CAPTION_INSERT_NO_ARTIST,
+    DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS,
+)
 from gui.gpu_status import GpuStatusBar
 from gui.widgets import action_button
 from gui.i18n import (
@@ -229,6 +233,43 @@ class SettingsDialog(QDialog):
         conf_row.addWidget(self.conf_spin)
         conf_row.addStretch()
         prefs_lay.addLayout(conf_row)
+
+        self.caption_insert_no_artist = QCheckBox(
+            t("settings_caption_insert_no_artist")
+        )
+        self.caption_insert_no_artist.setToolTip(
+            t("settings_caption_insert_no_artist_tooltip")
+        )
+        self.caption_insert_no_artist.setChecked(
+            bool(
+                get_setting(
+                    "caption_insert_no_artist", DEFAULT_CAPTION_INSERT_NO_ARTIST
+                )
+            )
+        )
+        self.caption_insert_no_artist.toggled.connect(
+            lambda checked: set_setting("caption_insert_no_artist", bool(checked))
+        )
+        prefs_lay.addWidget(self.caption_insert_no_artist)
+
+        self.caption_validate_artist_tags = QCheckBox(
+            t("settings_caption_validate_artist_tags")
+        )
+        self.caption_validate_artist_tags.setToolTip(
+            t("settings_caption_validate_artist_tags_tooltip")
+        )
+        self.caption_validate_artist_tags.setChecked(
+            bool(
+                get_setting(
+                    "caption_validate_artist_tags",
+                    DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS,
+                )
+            )
+        )
+        self.caption_validate_artist_tags.toggled.connect(
+            lambda checked: set_setting("caption_validate_artist_tags", bool(checked))
+        )
+        prefs_lay.addWidget(self.caption_validate_artist_tags)
 
         # Dataset-tab grouping (`curate-group`) tightness. Higher = tighter,
         # cleaner groups. Read at grouping time by ImageViewerTab._rebuild_groups

@@ -269,6 +269,10 @@ COMMANDS = {
         downloads.cmd_download_tagger,
         "Download Anima Tagger v2 vocab.json (caption-index dependency; not the full model)",
     ),
+    "download-danbooru-tags": (
+        downloads.cmd_download_danbooru_tags,
+        "Download danbooru_tags_classified.csv for caption order correction",
+    ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (
         masking.cmd_mask,

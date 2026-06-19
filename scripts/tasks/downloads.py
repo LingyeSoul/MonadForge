@@ -17,9 +17,17 @@ failures at the end.
 from __future__ import annotations
 
 import shutil
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from ._common import ROOT, run
+
+
+DANBOORU_TAGS_PATH = ROOT / "models" / "danbooru_tags_classified.csv"
+DANBOORU_TAGS_URLS = (
+    "https://raw.githubusercontent.com/Localsmile/danbooru_KR_wiki_tag_search/main/danbooru_tags_classified.csv",
+)
 
 
 def _present(paths: list[Path]) -> bool:
@@ -104,6 +112,36 @@ def cmd_download_tagger(_extra):
     )
 
 
+def cmd_download_danbooru_tags(_extra):
+    """Download the classified Danbooru tag table used by caption correction."""
+
+    if _skip("Danbooru classified tags", [DANBOORU_TAGS_PATH], _extra):
+        return
+    DANBOORU_TAGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DANBOORU_TAGS_PATH.with_suffix(".csv.tmp")
+    last_error = ""
+    for url in DANBOORU_TAGS_URLS:
+        print(f"  download {url}")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "anima-lora"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                tmp.write_bytes(resp.read())
+            if tmp.stat().st_size <= 0:
+                raise OSError("downloaded file is empty")
+            tmp.replace(DANBOORU_TAGS_PATH)
+            print(f"  ✓ wrote {DANBOORU_TAGS_PATH}")
+            return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = str(exc)
+            if tmp.exists():
+                tmp.unlink()
+            print(f"  ✗ failed: {last_error}")
+    raise SystemExit(
+        "failed to download danbooru_tags_classified.csv from "
+        "Localsmile/danbooru_KR_wiki_tag_search"
+    )
+
+
 def cmd_download_mit(_extra):
     dst = ROOT / "models" / "mit"
     if _skip("MIT", [dst / "model.pth"], _extra):
@@ -170,6 +208,7 @@ def cmd_download_models(_extra):
         ("PE-Core", cmd_download_pe),
         ("PE-Spatial", cmd_download_pe_spatial),
         ("Anima Tagger vocab", cmd_download_tagger),
+        ("Danbooru classified tags", cmd_download_danbooru_tags),
     ]
     failed: list[str] = []
     for name, fn in components:

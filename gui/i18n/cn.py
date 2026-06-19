@@ -376,6 +376,21 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "自动标注失败：{err}",
     "caption_autotag_empty": "标注器未为该图像返回任何标签。",
+    "caption_correct": "校正顺序",
+    "caption_correct_tooltip": (
+        "使用 danbooru_tags_classified.csv 将标注按 ANIMA 推荐顺序重排，"
+        "并可按设置插入 @no-artist。"
+    ),
+    "caption_correct_visible": "校正当前列表",
+    "caption_correct_visible_confirm": "要校正当前列表中的 {n} 个标注吗？",
+    "caption_correct_visible_done": "已校正 {n} 个标注。",
+    "caption_correct_visible_failed": "已校正 {n} 个标注。\n\n失败:\n{err}",
+    "caption_correct_no_change": "没有需要校正的更改。",
+    "caption_correct_db_missing": (
+        "找不到 danbooru_tags_classified.csv。\n\n"
+        "请在模型窗口下载 Danbooru 标签 DB，或将它放到以下位置:\n{paths}"
+    ),
+    "caption_correct_db_failed": "标签 DB 加载失败: {err}",
     "caption_versions": "历史……",
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
@@ -411,6 +426,16 @@ STRINGS: dict[str, str] = {
     "settings_autotag_confidence_tooltip": (
         "在打标器各标签阈值之上额外应用的概率下限（0–1）。"
         "数值越高，保留的标签越少但越可靠。默认 0.50。"
+    ),
+    "settings_caption_insert_no_artist": "校正时插入 @no-artist",
+    "settings_caption_insert_no_artist_tooltip": (
+        "如果校正后的标注没有作者标签，则在作者位置插入 @no-artist。"
+        "它只用于固定标注打乱边界，并会在分词前移除。"
+    ),
+    "settings_caption_validate_artist_tags": "用 DB 验证作者标签",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "启用后，只有在 danbooru_tags_classified.csv 中分类为作者的 @标签"
+        "才会移动到作者位置。关闭时，所有 @开头的标签都视为作者标签。"
     ),
     "settings_group_match_frac": "分组严格度:",
     "settings_group_match_frac_tooltip": (
@@ -481,8 +506,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "下载模型",
     "models_intro": "在下方选择模型组,或使用「全部下载」获取标准套件 "
-    "(Anima + SAM3 + MIT + PE)。文件保存于 models/ 下。",
-    "models_download_all": "全部下载 (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + 标签 DB)。文件保存于 models/ 下。",
+    "models_download_all": "全部下载 (Anima + SAM3 + MIT + PE + 标签 DB)",
     "models_download": "下载",
     "models_redownload": "重新下载",
     "models_installed": "✓ 已安装",
@@ -491,6 +516,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — 对话气泡蒙版",
     "model_mit": "MIT — 漫画文字蒙版",
     "model_pe": "PE-Core-L14-336 — 视觉编码器 (CMMD 验证 / DCW)",
+    "model_danbooru_tags": "Danbooru 标签 DB — 标注顺序校正",
     # HuggingFace 认证（模型对话框）
     "models_hf_token_placeholder": "粘贴你的 HuggingFace 令牌 (hf_…)",
     "models_hf_authenticate": "认证",

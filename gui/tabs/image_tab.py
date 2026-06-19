@@ -75,11 +75,23 @@ from gui import (
     get_setting,
 )
 from gui import daemon as gui_daemon
+from gui._paths import (
+    DEFAULT_CAPTION_INSERT_NO_ARTIST,
+    DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS,
+)
 from gui._job_mixin import DaemonJobMixin
 from gui.i18n import t
 from gui.progress import TqdmProgressTracker, make_progress_bar
 from gui.theme import tok
 from gui.widgets import apply_variant
+from library.captioning.correction import (
+    CaptionCorrectionOptions,
+    TagKnowledgeBase,
+    correct_caption,
+    default_tag_csv_candidates,
+    find_tag_csv,
+    load_tag_knowledge_base,
+)
 from library.datasets.curation_actions import (
     load_curation_decisions,
     move_linked_files,
@@ -694,6 +706,9 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._gpu_watch_timer = QTimer(self)
         self._gpu_watch_timer.setInterval(_AUTOTAG_GPU_WATCH_MS)
         self._gpu_watch_timer.timeout.connect(self._autotag_gpu_watch_tick)
+        self._caption_kb: TagKnowledgeBase | None = None
+        self._caption_kb_source: Path | None = None
+        self._caption_kb_mtime: float | None = None
         # Make sure the resident worker (and its VRAM) dies with the app.
         _app = QApplication.instance()
         if _app is not None:
@@ -887,11 +902,19 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.autotag_btn.setToolTip(t("caption_autotag_tooltip"))
         apply_variant(self.autotag_btn, "info")
         self.autotag_btn.clicked.connect(self._run_autotag)
+        self.caption_correct_btn = self._make_button_with_menu(
+            t("caption_correct"),
+            t("caption_correct_tooltip"),
+            self._correct_current_caption,
+            [(t("caption_correct_visible"), self._correct_visible_captions)],
+            variant="info",
+        )
         self.versions_btn = QPushButton(t("caption_versions"))
         self.versions_btn.clicked.connect(self._open_versions)
         cap_head.addWidget(self.save_btn)
         cap_head.addWidget(self.revert_btn)
         cap_head.addWidget(self.autotag_btn)
+        cap_head.addWidget(self.caption_correct_btn)
         cap_head.addWidget(self.versions_btn)
         rl.addLayout(cap_head)
 
@@ -956,7 +979,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             self._load_dir(self.dc.currentText())
 
     def _make_button_with_menu(
-        self, text: str, tooltip: str, clicked_cb, actions
+        self, text: str, tooltip: str, clicked_cb, actions, *, variant: str | None = None
     ) -> QWidget:
         host = QWidget()
         row = QHBoxLayout(host)
@@ -965,6 +988,8 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
 
         main_btn = QPushButton(text)
         main_btn.setToolTip(tooltip)
+        if variant is not None:
+            apply_variant(main_btn, variant)
         main_btn.clicked.connect(lambda _checked=False: clicked_cb())
         row.addWidget(main_btn)
 
@@ -1203,6 +1228,142 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._set_caption_text(combined)
         self._refresh_buttons()
         self._refresh_inline_diff()
+
+    def _caption_correction_options(self) -> CaptionCorrectionOptions:
+        return CaptionCorrectionOptions(
+            insert_no_artist=bool(
+                get_setting(
+                    "caption_insert_no_artist", DEFAULT_CAPTION_INSERT_NO_ARTIST
+                )
+            ),
+            validate_artist_tags=bool(
+                get_setting(
+                    "caption_validate_artist_tags",
+                    DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS,
+                )
+            ),
+        )
+
+    def _load_caption_kb(self) -> TagKnowledgeBase | None:
+        csv_path = find_tag_csv(ROOT)
+        if csv_path is None:
+            candidates = "\n".join(
+                f"  {path}" for path in default_tag_csv_candidates(ROOT)
+            )
+            QMessageBox.warning(
+                self,
+                t("error"),
+                t("caption_correct_db_missing", paths=candidates),
+            )
+            return None
+        try:
+            mtime = csv_path.stat().st_mtime
+        except OSError as exc:
+            QMessageBox.warning(
+                self, t("error"), t("caption_correct_db_failed", err=str(exc))
+            )
+            return None
+        if (
+            self._caption_kb is not None
+            and self._caption_kb_source == csv_path
+            and self._caption_kb_mtime == mtime
+        ):
+            return self._caption_kb
+        try:
+            self._caption_kb = load_tag_knowledge_base(csv_path)
+            self._caption_kb_source = csv_path
+            self._caption_kb_mtime = mtime
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(
+                self, t("error"), t("caption_correct_db_failed", err=str(exc))
+            )
+            self._caption_kb = None
+            self._caption_kb_source = None
+            self._caption_kb_mtime = None
+        return self._caption_kb
+
+    def _correct_current_caption(self) -> None:
+        if self._current_caption_path is None:
+            return
+        kb = self._load_caption_kb()
+        if kb is None:
+            return
+        result = correct_caption(
+            self.cap.toPlainText(),
+            kb,
+            options=self._caption_correction_options(),
+        )
+        if not result.changed:
+            QMessageBox.information(self, "", t("caption_correct_no_change"))
+            return
+        self._set_caption_text(result.text)
+        self._refresh_buttons()
+        self._refresh_inline_diff()
+
+    def _correct_visible_captions(self) -> None:
+        if not self._images:
+            return
+        if not self._confirm_discard_if_dirty():
+            return
+        kb = self._load_caption_kb()
+        if kb is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            t("caption_correct"),
+            t("caption_correct_visible_confirm", n=len(self._images)),
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        changed = 0
+        failed: list[str] = []
+        options = self._caption_correction_options()
+        for image_path in self._images:
+            caption_path = image_path.with_suffix(".txt")
+            if not caption_path.exists():
+                continue
+            try:
+                old_text = caption_path.read_text(encoding="utf-8")
+                result = correct_caption(old_text, kb, options=options)
+                if not result.changed:
+                    continue
+                _append_history(caption_path, old_text)
+                caption_path.write_text(result.text, encoding="utf-8")
+                changed += 1
+            except OSError as exc:
+                failed.append(f"{caption_path}: {exc}")
+
+        if (
+            self._current_caption_path is not None
+            and self._current_caption_path.exists()
+        ):
+            try:
+                self._disk_text = self._current_caption_path.read_text(
+                    encoding="utf-8"
+                )
+            except OSError:
+                pass
+            self._set_caption_text(self._disk_text)
+            self._refresh_buttons()
+            self._refresh_inline_diff()
+
+        if failed:
+            QMessageBox.warning(
+                self,
+                t("error"),
+                t(
+                    "caption_correct_visible_failed",
+                    n=changed,
+                    err="\n".join(failed[:10]),
+                ),
+            )
+        else:
+            QMessageBox.information(
+                self, "", t("caption_correct_visible_done", n=changed)
+            )
 
     def _finish_autotag_request(self) -> None:
         """Clear the in-flight state and re-arm the button after a reply."""
