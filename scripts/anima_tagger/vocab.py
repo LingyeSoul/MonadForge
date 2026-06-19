@@ -511,9 +511,62 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     vocab["rules_source_path"] = str(rules_src.resolve())
     vocab["coverage"] = coverage
 
-    # Resolve typed groups against the kept vocab into vocab.json. Optional —
-    # without --groups we build a flat-vocab checkpoint (trainer falls to BCE).
+    # Optionally derive tag-groups from the danbooru taxonomy + the captions we
+    # just scanned, merging onto any existing curated --groups (preserved
+    # verbatim). Writes out_dir/groups.yaml and uses it as the groups source, so
+    # one build_vocab call replaces the separate derive_groups step.
     groups_src = Path(args.groups) if args.groups else None
+    if getattr(args, "derive_groups", False):
+        from library.captioning.correction import find_tag_csv, load_tag_knowledge_base
+
+        from .derive_groups import derive_rows, merge_apply, solo_sets_from_index
+
+        csv_path = (
+            Path(args.tag_cache)
+            if str(args.tag_cache).lower().endswith(".csv")
+            else find_tag_csv()
+        )
+        if csv_path is None or not Path(csv_path).exists():
+            logger.warning(
+                "derive_groups on but danbooru_tags_classified.csv KB not found "
+                "(set --tag_cache to it or place it under models/); skipping "
+                "derivation — using --groups as-is"
+            )
+        else:
+            kb = load_tag_knowledge_base(csv_path)
+            solo_sets = solo_sets_from_index(index)
+            rows, unmatched = derive_rows(
+                vocab,
+                kb,
+                rules,
+                solo_sets,
+                min_group_size=args.min_group_size,
+                min_member_freq=args.min_member_freq,
+                min_group_support=args.min_group_support,
+                softmax_cooc_max=args.softmax_cooc_max,
+                borderline_cooc_max=args.borderline_cooc_max,
+            )
+            # Preserve --groups verbatim if it exists; else merge onto nothing.
+            preserve = groups_src if (groups_src and groups_src.exists()) else None
+            text, notes = merge_apply(
+                rows, preserve, min_group_size=args.min_group_size
+            )
+            derived_path = out_dir / "groups.yaml"
+            if derived_path.exists() and derived_path != preserve:
+                derived_path.with_suffix(".yaml.bak").write_text(
+                    derived_path.read_text(), encoding="utf-8"
+                )
+            derived_path.write_text(text, encoding="utf-8")
+            n_general = sum(1 for t in vocab["tags"] if t["category"] == "general")
+            logger.info(
+                "derived groups (%d solo samples, %d/%d general tags matched): %s → %s",
+                len(solo_sets),
+                n_general - len(unmatched),
+                n_general,
+                "; ".join(notes),
+                derived_path,
+            )
+            groups_src = derived_path
     if groups_src is not None and groups_src.exists():
         groups = tg.load_groups(groups_src)
         tag_to_idx = {t["name"]: t["index"] for t in vocab["tags"]}

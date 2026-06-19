@@ -81,6 +81,7 @@ def parse_args() -> argparse.Namespace:
             "calibrate",
             "predict",
             "scan_role_markers",
+            "derive_groups",
         ],
         default="build_vocab",
     )
@@ -383,7 +384,80 @@ def parse_args() -> argparse.Namespace:
         "--out_yaml",
         default=None,
         help="scan_role_markers: optional path for a YAML stub of candidates, "
-        "ready to paste into tag_rules.yaml.",
+        "ready to paste into tag_rules.yaml. derive_groups: path for the "
+        "candidate groups.yaml.",
+    )
+
+    # derive_groups: bucket general vocab by danbooru 소분류 taxonomy → group
+    # candidates; co-occurrence on solo images picks softmax vs multilabel.
+    p.add_argument(
+        "--min_group_size",
+        type=int,
+        default=3,
+        help="derive_groups: minimum members for a taxonomy bucket to become a "
+        "candidate group (default: 3).",
+    )
+    p.add_argument(
+        "--min_member_freq",
+        type=int,
+        default=50,
+        help="derive_groups: drop group members appearing in fewer than this "
+        "many training captions (default: 50).",
+    )
+    p.add_argument(
+        "--min_group_support",
+        type=int,
+        default=30,
+        help="derive_groups: a group seen on fewer than this many solo images "
+        "can't be trusted for exclusivity → defaults to multilabel (default: 30).",
+    )
+    p.add_argument(
+        "--softmax_cooc_max",
+        type=float,
+        default=0.05,
+        help="derive_groups: a group whose members co-occur on at most this "
+        "fraction of single-subject images is mutually exclusive → "
+        "softmax_when_solo (default: 0.05).",
+    )
+    p.add_argument(
+        "--borderline_cooc_max",
+        type=float,
+        default=0.20,
+        help="derive_groups: groups with multi-rate between --softmax_cooc_max "
+        "and this are flagged 'borderline' (attribute families inflated by "
+        "hierarchical/mixed tags) — emitted multilabel but tagged PROMOTE? for "
+        "review (default: 0.20).",
+    )
+    p.add_argument(
+        "--report",
+        action="store_true",
+        help="derive_groups: print a coverage + per-group table to stdout.",
+    )
+    p.add_argument(
+        "--derive_groups",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="build_vocab: derive tag-groups from the danbooru taxonomy + the "
+        "scanned captions and merge onto --groups (preserved verbatim), writing "
+        "<out_dir>/groups.yaml and baking it into vocab.json — folds the "
+        "derive_groups step into the build. On by default; pass "
+        "--no-derive_groups to build a flat-vocab checkpoint or use a static "
+        "--groups file. Skipped with a warning when the danbooru CSV KB is "
+        "absent. (As a --mode, derive_groups runs standalone for review.)",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="derive_groups: write a curated, English-keyed groups.yaml that "
+        "merges the derived groups onto --preserve_groups (kept verbatim) "
+        "instead of the raw candidate. Destination is --out_yaml or "
+        "<out_dir>/groups.yaml (backed up to .bak first).",
+    )
+    p.add_argument(
+        "--preserve_groups",
+        default="models/captioners/anima-tagger-v2/groups.yaml",
+        help="derive_groups --apply: existing groups.yaml whose groups are "
+        "preserved verbatim and claim their tags first (no regression).",
     )
 
     # --out_dir holds the checkpoint + vocab; bulky feature caches are decoupled
@@ -466,6 +540,10 @@ def main() -> None:
         from .role_markers import cmd_scan_role_markers
 
         cmd_scan_role_markers(args)
+    elif args.mode == "derive_groups":
+        from .derive_groups import cmd_derive_groups
+
+        cmd_derive_groups(args)
     else:
         raise SystemExit(f"unknown --mode={args.mode!r}")
 
