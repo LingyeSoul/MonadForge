@@ -15,7 +15,16 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS_768
+from library.datasets.buckets import freefit_band_for_edge
+
+
+def _tokens(reso: tuple[int, int]) -> int:
+    return (reso[0] // 16) * (reso[1] // 16)
+
+
+def _in_tier_band(reso: tuple[int, int], edge: int) -> bool:
+    lo, hi = freefit_band_for_edge(edge)
+    return lo <= _tokens(reso) <= hi
 
 
 def _write_image(path: Path, size: tuple[int, int]) -> None:
@@ -447,17 +456,16 @@ def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
 ) -> None:
     """Regression: target_res=None (no preprocess.toml / no flag, and the bare
     [1024] that tasks.py strips to None) must resize against the single 1024
-    tier, NOT the full multi-tier catalog. The old else-branch fell back to
-    all_constant_token_buckets(), whose aspect-only match shoved a 0.73MP
-    portrait into the 1536-tier (1024, 2160) bucket — a 3x upscale."""
-    from library.datasets.buckets import buckets_for_edges
+    tier, NOT a larger tier. The old multi-tier catalog else-branch shoved a
+    0.73MP portrait into the 1536-tier (1024, 2160) bucket — a 3x upscale. Under
+    free-fit the image lands inside the 1024 tier's token band at its native
+    aspect."""
     from library.preprocess import resize_to_buckets
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _write_image(src / "portrait.png", (589, 1233))  # 0.73MP, ar 0.478
 
-    one_tier = set(buckets_for_edges([1024]))
     for target_res in (None, [1024]):
         stats, _ = resize_to_buckets(
             src,
@@ -471,8 +479,10 @@ def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
         assert stats.written == 1
         with Image.open(dst / "portrait.png") as im:
             reso = (im.width, im.height)
-        assert reso in one_tier, f"{target_res}: {reso} escaped the 1024 tier"
+        assert _in_tier_band(reso, 1024), f"{target_res}: {reso} escaped 1024 tier"
         assert reso != (1024, 2160), f"{target_res}: reproduced the upscale bug"
+        # native aspect preserved to sub-patch (no AR-snap)
+        assert abs(reso[0] / reso[1] - 589 / 1233) < (16 / min(reso))
 
 
 def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
@@ -505,7 +515,7 @@ def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
     )
     assert (stats.written, stats.skipped) == (1, 1)
     with Image.open(dst / "small.png") as im:
-        assert (im.width, im.height) in CONSTANT_TOKEN_BUCKETS_768
+        assert _in_tier_band((im.width, im.height), 768)
 
     # overwrite=True forces both even when up to date.
     stats, _ = resize_to_buckets(

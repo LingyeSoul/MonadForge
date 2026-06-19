@@ -171,8 +171,8 @@ def test_preprocess_tab_persists_masking_settings_to_variant():
             tab.deleteLater()
 
 
-def test_preprocess_tab_freefit_round_trips_to_variant():
-    """Toggling free-fit + a non-default max-ratio must persist and reload."""
+def test_preprocess_tab_freefit_max_ratio_round_trips_to_variant():
+    """Free-fit is always on; a non-default max-ratio must persist and reload."""
     from gui import _load
 
     tab = None
@@ -182,28 +182,25 @@ def test_preprocess_tab_freefit_round_trips_to_variant():
     ):
         tab = _make_tab()
         tab.set_variant(variant, method="lora")
-        tab.freefit_chk.setChecked(True)
         tab.freefit_max_ratio_spin.setValue(3.0)
 
         assert tab.persist_preprocess_inputs()
         meta = _load(path)["variant"]
-        assert meta["freefit"] is True
+        # The freefit toggle is gone (free-fit is the only mode); only the clamp.
+        assert "freefit" not in meta
         assert meta["freefit_max_ratio"] == 3.0
 
-        # Reload into a fresh widget and confirm the values come back.
-        tab.freefit_chk.setChecked(False)
+        # Reload into a fresh widget and confirm the value comes back.
+        tab.freefit_max_ratio_spin.setValue(4.0)
         tab.set_variant(variant, method="lora")
-        assert tab.freefit_chk.isChecked() is True
         assert tab.freefit_max_ratio_spin.value() == 3.0
-        # Max-ratio is only enabled in free-fit mode.
-        assert tab.freefit_max_ratio_spin.isEnabled() is True
 
         if tab is not None:
             tab.deleteLater()
 
 
-def test_preprocess_overrides_carry_freefit():
-    """preprocess_overrides feeds both the resize CLI and the train snapshot."""
+def test_preprocess_overrides_carry_freefit_max_ratio():
+    """preprocess_overrides feeds the resize CLI; free-fit is always on."""
     tab = None
     with _temporary_custom_variant("__pytest_preprocess_freefit_ovr__") as (
         variant,
@@ -211,11 +208,10 @@ def test_preprocess_overrides_carry_freefit():
     ):
         tab = _make_tab()
         tab.set_variant(variant, method="lora")
-        tab.freefit_chk.setChecked(True)
         tab.freefit_max_ratio_spin.setValue(3.5)
 
         overrides = tab.preprocess_overrides()
-        assert overrides["freefit"] is True
+        assert "freefit" not in overrides
         assert overrides["freefit_max_ratio"] == 3.5
 
         if tab is not None:

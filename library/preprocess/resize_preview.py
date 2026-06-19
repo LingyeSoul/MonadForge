@@ -7,22 +7,23 @@ touching files, so GUI previews can show what preprocessing will keep.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Iterable
 
 from library.datasets.buckets import (
     DEFAULT_FREEFIT_MAX_RATIO,
     DEFAULT_TARGET_RES,
-    buckets_for_edges,
     choose_edge,
     freefit_band_for_edge,
     freefit_bucket,
 )
 
 DEFAULT_RESIZE_CROP_ANCHOR = "center"
-FIT_MODES = ("snap", "freefit")
-DEFAULT_FIT_MODE = "snap"
+# Free-fit is the only resize mode; "snap" (the old discrete constant-token bucket
+# pool) was removed. FIT_MODES / DEFAULT_FIT_MODE are kept so the resize-metadata
+# signature and existing call sites stay stable.
+FIT_MODES = ("freefit",)
+DEFAULT_FIT_MODE = "freefit"
 RESIZE_CROP_ANCHORS = {
     "top_left": (0.0, 0.0),
     "top": (0.5, 0.0),
@@ -166,44 +167,14 @@ def select_resize_bucket(
     fit_mode: str = DEFAULT_FIT_MODE,
     max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
 ) -> tuple[int, tuple[int, int]]:
+    # Free-fit is the only mode: choose_edge assigns the tier, then free-fit lands
+    # the (W, H) anywhere in that tier's token band, preserving native aspect (no
+    # AR-snap). ``fit_mode`` / ``bucket_resos`` are accepted for signature
+    # compatibility but no longer branch (the snap allow-list never applied here).
     tiers = normalize_target_res(target_res)
-    if normalize_fit_mode(fit_mode) == "freefit":
-        # choose_edge still assigns the tier; free-fit lands the (W, H) anywhere
-        # in that tier's token band, preserving native aspect (no AR-snap).
-        # bucket_resos (the snap allow-list) does not apply in free-fit mode.
-        edge = choose_edge(width, height, tiers)
-        band = freefit_band_for_edge(edge)
-        return edge, freefit_bucket(width, height, band, max_ratio=max_ratio)
-
-    allowed = set(parse_bucket_resos(bucket_resos))
-    if not allowed:
-        edge = choose_edge(width, height, tiers)
-        return edge, _nearest_aspect_bucket(width, height, buckets_for_edges([edge]))
-
     edge = choose_edge(width, height, tiers)
-    buckets = [bucket for bucket in buckets_for_edges([edge]) if bucket in allowed]
-    if buckets:
-        return edge, _nearest_aspect_bucket(width, height, buckets)
-
-    fallback: list[tuple[int, tuple[int, int]]] = []
-    for candidate_edge in tiers:
-        fallback.extend(
-            (candidate_edge, bucket)
-            for bucket in buckets_for_edges([candidate_edge])
-            if bucket in allowed
-        )
-    if not fallback:
-        raise ValueError("resize_bucket_resos has no buckets for selected target_res")
-    ar = width / height
-    return min(
-        fallback,
-        key=lambda item: (
-            abs(item[1][0] / item[1][1] - ar),
-            abs(math.log(_cover_scale(width, height, item[1][0], item[1][1]))),
-            item[0],
-            item[1],
-        ),
-    )
+    band = freefit_band_for_edge(edge)
+    return edge, freefit_bucket(width, height, band, max_ratio=max_ratio)
 
 
 def compute_resize_preview(
@@ -258,14 +229,3 @@ def compute_resize_preview(
         crop_anchor=anchor,
         crop_margins=margins,
     )
-
-
-def _nearest_aspect_bucket(
-    width: int, height: int, buckets: Iterable[tuple[int, int]]
-) -> tuple[int, int]:
-    ar = width / height
-    return min(buckets, key=lambda bucket: abs(bucket[0] / bucket[1] - ar))
-
-
-def _cover_scale(width: int, height: int, bw: int, bh: int) -> float:
-    return max(bw / width, bh / height)

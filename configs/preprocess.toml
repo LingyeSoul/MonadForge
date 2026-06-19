@@ -1,8 +1,8 @@
 # Preprocess settings — split out of base.toml so they survive `make update`.
 # Read by the preprocess pipeline via library.config.io.load_path_overrides,
 # layered: preprocess.toml → base.toml → presets.toml[<preset>] → methods/<method>.
-# `target_res` and `freefit` are dual-use: train.py reads them too, so they MUST
-# match between preprocess and training.
+# `target_res` is dual-use: train.py reads it too (though it's inert at train time
+# — the on-disk caches are the source of truth for which tiers are present).
 
 source_image_dir = "image_dataset"
 
@@ -37,13 +37,9 @@ caption_tag_randomize_rate = 0.1
 drop_lowres_images = true
 min_pixels = 250000
 
-# Free-aspect token-band resize ("free-fit"). When true, images keep their native
-# aspect ratio and land anywhere inside the tier's token band instead of snapping to
-# a discrete bucket, driving crop loss to ~zero. Dual-use: train.py reads it too
-# (switches bucket mode to the on-disk shapes + auto-enables compile_dynamic_seq), so
-# preprocess and training MUST agree. Override: make preprocess ARGS="--freefit"
-freefit = true
-
+# Free-aspect token-band resize ("free-fit") is the only resize mode: images keep
+# their native aspect ratio and land anywhere inside the tier's token band, driving
+# crop loss to ~zero (the old discrete constant-token bucket pool was removed).
 # Max aspect-ratio clamp for free-fit (1:R / R:1); beyond-clamp images cover-crop to
 # the limit. Preprocess-only. Override: make preprocess ARGS="--freefit_max_ratio 3.0"
 freefit_max_ratio = 4.0

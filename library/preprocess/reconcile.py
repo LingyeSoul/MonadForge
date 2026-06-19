@@ -29,7 +29,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from library.datasets.buckets import BucketManager, buckets_for_edges, choose_edge
+from library.datasets.buckets import (
+    DEFAULT_FREEFIT_MAX_RATIO,
+    choose_edge,
+    freefit_band_for_edge,
+    freefit_bucket,
+)
 from library.io.walk import safe_walk
 
 NPZ_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d{4})x(?P<h>\d{4})_anima\.npz$")
@@ -62,13 +67,21 @@ class StaleCaches:
         return [*self.npz, *self.png, *self.pe, *self.mask]
 
 
-def _correct_bucket(w: int, h: int, target_res: list[int]) -> tuple[int, int]:
-    """Mirror ``process_image``: ``choose_edge`` → nearest-aspect bucket in tier."""
+def _correct_bucket(
+    w: int,
+    h: int,
+    target_res: list[int],
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
+) -> tuple[int, int]:
+    """Mirror ``process_image`` under free-fit: ``choose_edge`` → ``freefit_bucket``.
+
+    Uses the raw native size (margins are not reconstructed here — same limitation
+    the snap-era reconcile carried). ``max_ratio`` should match the value used at
+    preprocess time (``freefit_max_ratio``); the default matches preprocess.toml.
+    """
     edge = choose_edge(w, h, target_res)
-    mgr = BucketManager()
-    mgr.set_predefined_resos(buckets_for_edges([edge]))
-    reso, _, _ = mgr.select_bucket(w, h)
-    return reso
+    band = freefit_band_for_edge(edge)
+    return freefit_bucket(w, h, band, max_ratio=max_ratio)
 
 
 def _native_size_index(image_dir: Path) -> dict[tuple[str, str], tuple[int, int]]:
@@ -208,6 +221,7 @@ def find_stale_caches(
     lora_cache_dir: Path,
     mask_dir: Path,
     target_res: list[int],
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
 ) -> StaleCaches:
     """Scan caches and return everything inconsistent with ``target_res``.
 
@@ -219,7 +233,7 @@ def find_stale_caches(
     stale = StaleCaches()
 
     for (rel, stem), (w, h) in native.items():
-        correct = _correct_bucket(w, h, target_res)
+        correct = _correct_bucket(w, h, target_res, max_ratio)
         reldir = Path(rel) if rel else Path()
 
         # A stem may carry several latent npzs (multi-resolution); any whose
@@ -284,6 +298,7 @@ def reconcile_caches(
     mask_dir: Path,
     target_res: list[int],
     *,
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
     delete: bool = False,
 ) -> tuple[StaleCaches, Counter]:
     """Find stale caches and (when ``delete``) remove them.
@@ -291,7 +306,7 @@ def reconcile_caches(
     Returns ``(stale, removed)`` — ``removed`` is empty on a dry run.
     """
     stale = find_stale_caches(
-        image_dir, resized_dir, lora_cache_dir, mask_dir, target_res
+        image_dir, resized_dir, lora_cache_dir, mask_dir, target_res, max_ratio
     )
     removed = delete_stale(stale) if delete else Counter()
     return stale, removed

@@ -54,7 +54,6 @@ identity_saturation_min = 0.4
 # resized,cache,cond} (the `name` above) — only add a path key to point one
 # elsewhere.
 [preprocess]
-freefit=true
 min_pixels = 0  # 0 = never drop a member (dropping one orphans its pair partner)
 recursive = true
 vae = 'models/vae/qwen_image_vae.safetensors'
@@ -82,7 +81,6 @@ network_dim = 32
 network_alpha = 128
 masked_loss=false
 target_res = [896, 1024]
-freefit=true
 
 network_args = [
     "b_cond_init=-4.0",

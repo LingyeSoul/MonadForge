@@ -86,13 +86,11 @@ from library.datasets.curation_actions import (
     rel_key,
     save_curation_decisions,
 )
-from library.datasets.buckets import buckets_for_edges
 from library.preprocess.resize_preview import (
     DEFAULT_FIT_MODE,
     DEFAULT_FREEFIT_MAX_RATIO,
     compute_resize_preview,
     format_bucket_resos,
-    normalize_target_res,
 )
 
 # Stdio protocol sentinels of the resident autotag worker (kept in sync with
@@ -1889,11 +1887,9 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         try:
             combo.clear()
             combo.addItem(t("dataset_resize_preview_bucket_auto"), "")
-            try:
-                tiers = normalize_target_res(self._resize_preview_target_res())
-                buckets = buckets_for_edges(tiers)
-            except (TypeError, ValueError, KeyError):
-                buckets = []
+            # Free-fit (the only resize mode) has no discrete bucket allow-list, so
+            # only the "auto" entry is offered — the preview free-fits the source.
+            buckets: list[tuple[int, int]] = []
             for label in dict.fromkeys(format_bucket_resos(buckets)):
                 width, height = label.split("x", 1)
                 ratio = int(width) / int(height)

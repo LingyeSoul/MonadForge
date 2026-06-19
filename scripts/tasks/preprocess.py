@@ -150,30 +150,19 @@ def _resize_crop_args(extra) -> list[str]:
 
 
 def _freefit_args(extra) -> list[str]:
-    """``--freefit [--freefit_max_ratio R]`` from the merged config chain.
+    """``--freefit_max_ratio R`` from the merged config chain.
 
-    Reads the dual-use ``freefit`` + preprocess-only ``freefit_max_ratio`` keys
-    (preprocess.toml → base → preset → method). CLI ``ARGS`` wins: if either flag
-    is already in ``extra`` we emit nothing for it (no duplicate).
+    Free-fit is the only resize mode now (the ``--freefit`` toggle was removed),
+    so we only forward the preprocess-only ``freefit_max_ratio`` knob
+    (preprocess.toml → base → preset → method). CLI ``ARGS`` wins: if the flag is
+    already in ``extra`` we emit nothing for it (no duplicate). A stale
+    ``--freefit`` in ``ARGS`` is silently dropped by ``_strip_resize_only_args``.
     """
     from ._common import _path_overrides
 
     overrides = _path_overrides()
     out: list[str] = []
-
-    if "--freefit" not in extra:
-        raw = overrides.get("freefit")
-        enabled = raw is True or str(raw).strip().lower() in ("1", "true", "yes")
-        if enabled:
-            out.append("--freefit")
-
-    # Only meaningful when free-fit is on (either from config or CLI).
-    freefit_on = "--freefit" in out or "--freefit" in extra
-    if (
-        freefit_on
-        and "--freefit_max_ratio" not in extra
-        and "--freefit-max-ratio" not in extra
-    ):
+    if "--freefit_max_ratio" not in extra and "--freefit-max-ratio" not in extra:
         raw = overrides.get("freefit_max_ratio")
         if raw is not None:
             try:

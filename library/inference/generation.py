@@ -966,17 +966,22 @@ def _setup_easycontrol(args, anima, device, shared_models):
     from library.models import qwen_vae as qwen_image_autoencoder_kl
 
     if getattr(args, "easycontrol_image_match_size", False):
-        from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+        from library.datasets.buckets import (
+            choose_edge,
+            freefit_band_for_edge,
+            freefit_bucket,
+        )
 
         with Image.open(ec_image) as _ref_for_size:
             _rw, _rh = _ref_for_size.size
-        _target = _rw / _rh
-        _best_wh = min(
-            CONSTANT_TOKEN_BUCKETS, key=lambda wh: abs((wh[0] / wh[1]) - _target)
-        )
-        args.image_size = [_best_wh[1], _best_wh[0]]
+        # Free-fit the reference's native aspect into the canonical 1024 tier band
+        # (the old path snapped to the nearest discrete CONSTANT_TOKEN_BUCKETS;
+        # free-fit preserves aspect with sub-patch crop).
+        _edge = choose_edge(_rw, _rh, [1024])
+        _bw, _bh = freefit_bucket(_rw, _rh, freefit_band_for_edge(_edge))
+        args.image_size = [_bh, _bw]
         logger.info(
-            f"EasyControl: image_size auto-picked from ref (aspect w/h={_target:.3f}) "
+            f"EasyControl: image_size auto-picked from ref (aspect w/h={_rw / _rh:.3f}) "
             f"-> {tuple(args.image_size)} (HxW)"
         )
 

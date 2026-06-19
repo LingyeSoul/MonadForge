@@ -17,10 +17,7 @@ from PIL import Image
 from PIL import ImageOps
 from PIL.PngImagePlugin import PngInfo
 
-from library.datasets.buckets import (
-    DEFAULT_TARGET_RES,
-    BucketManager,
-)
+from library.datasets.buckets import DEFAULT_TARGET_RES
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 from library.datasets.buckets import DEFAULT_FREEFIT_MAX_RATIO, FREEFIT_BAND_VERSION
@@ -188,20 +185,16 @@ def process_image(
     change (e.g. adding a ``--target_res`` tier) still re-resizes only the
     images whose target bucket actually moved.
     """
-    # 6th+ elements are optional so pre-multiscale callers still work.
-    max_reso, min_size, max_size, reso_steps, use_constant, *rest = bucket_args
+    # Leading (resolution, min/max bucket, step) elements are vestigial under
+    # free-fit (the legacy aspect-ratio BucketManager path is gone); kept in the
+    # tuple for layout stability. 5th+ elements are the active free-fit params.
+    _max_reso, _min_size, _max_size, _reso_steps, *rest = bucket_args
     target_res = rest[0] if rest else None
     crop_anchor = rest[1] if len(rest) > 1 else DEFAULT_RESIZE_CROP_ANCHOR
     bucket_resos = rest[2] if len(rest) > 2 else None
     crop_margins = rest[3] if len(rest) > 3 else None
     fit_mode = rest[4] if len(rest) > 4 else DEFAULT_FIT_MODE
     max_ratio = rest[5] if len(rest) > 5 else DEFAULT_FREEFIT_MAX_RATIO
-    bucket_mgr = BucketManager(
-        max_reso=max_reso,
-        min_size=min_size,
-        max_size=max_size,
-        reso_steps=reso_steps,
-    )
 
     src_img = Image.open(image_path)
     save_kwargs = _collect_metadata(src_img)
@@ -217,17 +210,12 @@ def process_image(
     work_w = max(1, margin_box[2] - margin_box[0])
     work_h = max(1, margin_box[3] - margin_box[1])
 
-    if use_constant:
-        # Default to the canonical 1024 tier (not the full multi-tier catalog):
-        # all_constant_token_buckets()'s aspect-only select_bucket would UPSCALE
-        # a 0.7MP portrait into a 1536-tier bucket — the multi-tier resize regression.
-        tier = target_res or list(DEFAULT_TARGET_RES)
-        _, bucket_reso = select_resize_bucket(
-            work_w, work_h, tier, bucket_resos, fit_mode=fit_mode, max_ratio=max_ratio
-        )
-    else:
-        bucket_mgr.make_buckets(constant_token_buckets=False)
-        bucket_reso, _, _ = bucket_mgr.select_bucket(w, h)
+    # Free-fit (the only mode): choose_edge assigns the tier (default = canonical
+    # 1024), then free-fit lands the native-aspect (W, H) inside that tier's band.
+    tier = target_res or list(DEFAULT_TARGET_RES)
+    _, bucket_reso = select_resize_bucket(
+        work_w, work_h, tier, bucket_resos, fit_mode=fit_mode, max_ratio=max_ratio
+    )
 
     bw, bh = bucket_reso
     crop_anchor = normalize_crop_anchor(crop_anchor)
@@ -271,7 +259,6 @@ def resize_to_buckets(
     min_bucket_reso: int = 512,
     max_bucket_reso: int = 2048,
     bucket_reso_steps: int = 64,
-    constant_token_buckets: bool = True,
     target_res: list[int] | None = None,
     workers: int = 4,
     min_pixels: int = 500_000,
@@ -306,7 +293,6 @@ def resize_to_buckets(
         min_bucket_reso,
         max_bucket_reso,
         bucket_reso_steps,
-        constant_token_buckets,
         target_res,
         crop_anchor,
         parse_bucket_resos(bucket_resos),
@@ -372,15 +358,8 @@ def resize_to_buckets(
         image_files = kept
 
     if verbose:
-        mode = "standard"
-        if constant_token_buckets:
-            mode = (
-                f"multi-scale constant-token (tiers {sorted(target_res)})"
-                if target_res
-                else "constant-token"
-            )
-            if normalize_fit_mode(fit_mode) == "freefit":
-                mode = f"free-fit (band, max_ratio {float(max_ratio):g}) over {mode}"
+        tiers = sorted(target_res) if target_res else list(DEFAULT_TARGET_RES)
+        mode = f"free-fit (tiers {tiers}, band, max_ratio {float(max_ratio):g})"
         print(f"Resizing {len(image_files)} images to {mode} buckets")
 
     def _rel_for(p: Path) -> str:

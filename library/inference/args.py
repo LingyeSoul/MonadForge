@@ -95,8 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--easycontrol_image_match_size",
         action="store_true",
-        help="Auto-pick --image_size from the closest CONSTANT_TOKEN_BUCKETS entry to the "
-        "reference image's aspect ratio (overrides --image_size). Only effective with --easycontrol_image.",
+        help="Auto-pick --image_size by free-fitting the reference image's aspect ratio "
+        "into the 1024 tier's token band (overrides --image_size). Only effective with --easycontrol_image.",
     )
     parser.add_argument(
         "--include_patterns",

@@ -115,24 +115,18 @@ def write_config_snapshot(
 def ensure_dynamic_seq_for_freefit(
     token_counts, dynamic_seq: bool, *, logger: logging.Logger = log
 ) -> bool:
-    """Force ``dynamic_seq`` on when the cached pool is free-fit.
+    """Force ``dynamic_seq`` on for the (free-fit) cached pool.
 
-    The free-fit fail-safe ``train.py`` applies that never reaches these bespoke
-    loops (project_daemon_wiring_pattern): a free-fit pool lands many distinct
-    token counts inside one tier's band, so the static per-count compile cascade
-    would explode and poison the compile cache. Returns ``True`` if already on or
-    if any token count is off the canonical bucket table; otherwise returns
-    ``dynamic_seq`` unchanged. Callers gate this on ``torch_compile`` being set.
+    Free-fit is the only resize mode now: a cached pool lands many distinct token
+    counts inside one tier's band, so the static per-count compile cascade would
+    explode and poison the compile cache. The bespoke distill loops never see
+    train.py's auto-enable (project_daemon_wiring_pattern), so they call this.
+    Callers gate it on ``torch_compile`` being set. Always returns ``True``
+    (``token_counts`` is accepted for call-site compatibility, no longer read).
     """
-    if dynamic_seq:
-        return True
-    from library.datasets.buckets import is_freefit_token_counts
-
-    if is_freefit_token_counts(token_counts):
-        logger.warning(
-            "freefit pool detected (cached token counts off the bucket table); "
+    if not dynamic_seq:
+        logger.info(
             "auto-enabling dynamic_seq — free-fit shapes need the single-graph "
             "dynamic-seq path (static compile would explode the graph cascade)"
         )
-        return True
-    return dynamic_seq
+    return True

@@ -67,26 +67,26 @@ def test_single_prompt_slice_wraps_modulo():
     assert len(ds.samples) == 1
 
 
-# Canonical 1024-tier token counts (CONSTANT_TOKEN_BUCKETS) are on-table.
+# Canonical 1024-tier token counts (4032/4200).
 _ON_TABLE = {4032, 4200}
 
 
 def test_freefit_guard_noop_when_already_dynamic():
-    # short-circuits without even consulting the bucket table
     assert ensure_dynamic_seq_for_freefit({999999}, True, logger=log) is True
 
 
-def test_freefit_guard_keeps_static_for_on_table_counts():
-    assert ensure_dynamic_seq_for_freefit(_ON_TABLE, False, logger=log) is False
+def test_freefit_guard_forces_dynamic_for_on_table_counts():
+    # Free-fit is the only resize mode now, so the guard forces dynamic_seq
+    # unconditionally — even when every count happens to land on the old table.
+    assert ensure_dynamic_seq_for_freefit(_ON_TABLE, False, logger=log) is True
 
 
 def test_freefit_guard_forces_dynamic_for_offtable_counts():
-    # a clearly off-the-catalog count is the free-fit signature
     assert ensure_dynamic_seq_for_freefit({999999}, False, logger=log) is True
 
 
-def test_freefit_guard_empty_pool_stays_static():
-    assert ensure_dynamic_seq_for_freefit(set(), False, logger=log) is False
+def test_freefit_guard_empty_pool_forces_dynamic():
+    assert ensure_dynamic_seq_for_freefit(set(), False, logger=log) is True
 
 
 def test_write_config_snapshot_success(tmp_path):

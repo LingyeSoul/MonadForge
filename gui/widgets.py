@@ -83,15 +83,10 @@ def _target_res_tiers() -> tuple[tuple[int, ...], dict[int, int]]:
     token count exceeds the canonical 1024 tier — which reproduces the previous
     ``{1280: 6300, 1536: 8640}`` flag set, but recomputed from the tables.
     """
-    from library.datasets.buckets import (
-        ALLOWED_TARGET_RES,
-        CONSTANT_TOKEN_BUCKETS_BY_EDGE,
-    )
+    from library.datasets.buckets import ALLOWED_TARGET_RES, EDGE_TOKEN_BANDS
 
-    max_tok = {
-        edge: max((w // 16) * (h // 16) for w, h in buckets)
-        for edge, buckets in CONSTANT_TOKEN_BUCKETS_BY_EDGE.items()
-    }
+    # A tier's max token count is the high end of its free-fit band.
+    max_tok = {edge: hi for edge, (lo, hi) in EDGE_TOKEN_BANDS.items()}
     canonical = max_tok.get(1024, 4200)
     danger = {edge: tok for edge, tok in max_tok.items() if tok > canonical}
     return tuple(ALLOWED_TARGET_RES), danger
@@ -99,16 +94,10 @@ def _target_res_tiers() -> tuple[tuple[int, ...], dict[int, int]]:
 
 @functools.cache
 def _target_res_buckets() -> dict[int, tuple[tuple[int, int], ...]]:
-    from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS_BY_EDGE
-
-    return {
-        edge: tuple(
-            sorted(
-                CONSTANT_TOKEN_BUCKETS_BY_EDGE[edge], key=lambda size: size[0] / size[1]
-            )
-        )
-        for edge in sorted(CONSTANT_TOKEN_BUCKETS_BY_EDGE)
-    }
+    # Free-fit (the only resize mode) preserves native aspect inside each tier's
+    # token band — there is no discrete bucket allow-list to choose from, so the
+    # per-tier bucket popup is empty. Kept as a stub so the widget API is intact.
+    return {}
 
 
 class _BucketMenuPanel(QWidget):
@@ -164,39 +153,48 @@ class _TargetResWidget(QWidget):
                     )
                 )
             edge_lay.addWidget(cb)
-            toggle = QToolButton()
-            toggle.setText(str(edge))
-            toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            toggle.setPopupMode(QToolButton.InstantPopup)
-            popup = QMenu(toggle)
-            panel = _BucketMenuPanel(popup)
-            panel_lay = QVBoxLayout(panel)
-            panel_lay.setContentsMargins(8, 4, 8, 4)
-            panel_lay.setSpacing(0)
-            for width, height in _target_res_buckets().get(edge, ()):
-                ratio = width / height
-                cb_bucket = QCheckBox(f"{width}x{height} ({ratio:.2f})")
-                cb_bucket.setMinimumHeight(22)
-                cb_bucket.setToolTip(t("target_res_bucket_tooltip", edge=edge))
-                cb_bucket.toggled.connect(self._on_bucket_toggled)
-                panel_lay.addWidget(cb_bucket)
-                self._bucket_boxes[(width, height)] = cb_bucket
-            action = QWidgetAction(popup)
-            action.setDefaultWidget(panel)
-            popup.addAction(action)
-            toggle.setMenu(popup)
-            if edge in danger:
-                toggle.setStyleSheet(
-                    "QToolButton { color: #d9822b; font-weight: bold; }"
-                )
-                toggle.setToolTip(
-                    t(
-                        "target_res_danger_tooltip",
-                        edge=edge,
-                        tokens=danger[edge],
+            edge_buckets = _target_res_buckets().get(edge, ())
+            if edge_buckets:
+                # Free-fit has no discrete allow-list, so this popup is normally
+                # empty and skipped; kept for a possible future snap-style filter.
+                toggle = QToolButton()
+                toggle.setText(str(edge))
+                toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+                toggle.setPopupMode(QToolButton.InstantPopup)
+                popup = QMenu(toggle)
+                panel = _BucketMenuPanel(popup)
+                panel_lay = QVBoxLayout(panel)
+                panel_lay.setContentsMargins(8, 4, 8, 4)
+                panel_lay.setSpacing(0)
+                for width, height in edge_buckets:
+                    ratio = width / height
+                    cb_bucket = QCheckBox(f"{width}x{height} ({ratio:.2f})")
+                    cb_bucket.setMinimumHeight(22)
+                    cb_bucket.setToolTip(t("target_res_bucket_tooltip", edge=edge))
+                    cb_bucket.toggled.connect(self._on_bucket_toggled)
+                    panel_lay.addWidget(cb_bucket)
+                    self._bucket_boxes[(width, height)] = cb_bucket
+                action = QWidgetAction(popup)
+                action.setDefaultWidget(panel)
+                popup.addAction(action)
+                toggle.setMenu(popup)
+                if edge in danger:
+                    toggle.setStyleSheet(
+                        "QToolButton { color: #d9822b; font-weight: bold; }"
                     )
-                )
-            edge_lay.addWidget(toggle)
+                    toggle.setToolTip(
+                        t("target_res_danger_tooltip", edge=edge, tokens=danger[edge])
+                    )
+                edge_lay.addWidget(toggle)
+            else:
+                # No popup: show the tier number as a plain label next to its box.
+                label = QLabel(str(edge))
+                if edge in danger:
+                    label.setStyleSheet("QLabel { color: #d9822b; font-weight: bold; }")
+                    label.setToolTip(
+                        t("target_res_danger_tooltip", edge=edge, tokens=danger[edge])
+                    )
+                edge_lay.addWidget(label)
             lay.addWidget(edge_box)
             self._boxes[edge] = cb
         lay.addStretch(1)
