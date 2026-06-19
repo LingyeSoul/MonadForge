@@ -108,6 +108,25 @@ with open(path, "w", buffering=1) as f:
     f.write(json.dumps({"ev": "run_end", "ts": dur, "status": "ok", "final_step": 1}) + "\n")
 """
 
+# A fake trainer that dies before writing ``run_end`` with a chosen exit code.
+# Exercises the ``_finalize_from_exit`` no-run_end branch (the real trainer
+# crashes here — e.g. a CUDA SIGABRT — so the only terminal signal is the
+# nonzero rc the manager must forward to the WebUI as ``Job.rc``).
+_FAKE_TRAINER_CRASH = r"""
+import sys
+path, rc = sys.argv[1], int(sys.argv[2])
+with open(path, "w", buffering=1) as f:
+    f.write('{"ev": "run_start", "ts": 0.0}\n')
+    f.write('{"ev": "step", "ts": 0.1, "global_step": 1, "loss": 0.5}\n')
+sys.exit(rc)
+"""
+
+
+def _fake_build_cmd_crash(self, job):
+    rc = int(job.overrides.get("crash_rc", 42))
+    cmd = [sys.executable, "-c", _FAKE_TRAINER_CRASH, job.progress_path, str(rc)]
+    return cmd, os.environ.copy()
+
 
 def _fake_build_cmd(self, job):
     dur = float(job.overrides.get("duration", 1.0))
@@ -333,6 +352,48 @@ def test_stop_queued_job_finalizes_immediately(daemon):
     assert _wait_until(lambda: cl.get(j1)["state"] == "stopped", timeout=10)
     time.sleep(0.5)
     assert cl.get(j2)["state"] == "stopped"
+
+
+def test_done_job_carries_zero_rc(daemon):
+    """A clean ``run_end:ok`` job surfaces its real subprocess exit code (0)
+    as ``Job.rc`` — the WebUI's ``Task.exit_code`` mirrors the old
+    direct-subprocess design (which got it from ``process.wait()``). Before
+    the rc field was added, the WebUI read ``info.get("rc")`` and always saw
+    ``None``, masking whether the trainer actually exited cleanly."""
+    cl, _ = daemon
+    jid = cl.submit(method="lora", overrides={"duration": 0.2})["job_id"]
+    assert _wait_until(lambda: cl.get(jid)["state"] == "done", timeout=15)
+    assert cl.get(jid)["rc"] == 0
+
+
+def test_crashed_job_carries_real_rc(daemon, monkeypatch):
+    """A trainer that dies before ``run_end`` (CUDA SIGABRT / segfault) leaves
+    only a nonzero exit code. The manager must forward that exact rc — not a
+    synthesized -1 — so the WebUI sees the real failure code (the old
+    direct-subprocess design surfaced it faithfully)."""
+    monkeypatch.setattr(JobManager, "_build_cmd", _fake_build_cmd_crash)
+    cl, _ = daemon
+    jid = cl.submit(method="lora", overrides={"crash_rc": 42})["job_id"]
+    assert _wait_until(lambda: cl.get(jid)["state"] == "error", timeout=15)
+    assert cl.get(jid)["rc"] == 42
+
+
+def test_stopped_job_carries_kill_rc(daemon):
+    """A job stopped mid-run (the GUI's cancel) is tree-killed; its rc is the
+    kill's exit code (a signal, reported negative by POSIX poll). Forwarding
+    it lets the WebUI distinguish a clean cancel from a crash-then-cancel.
+    The WebUI's cancelled path ignores the value (frontend hardcodes -1), but
+    the record stays faithful for logs/diagnostics."""
+    cl, _ = daemon
+    jid = cl.submit(method="lora", overrides={"duration": 60.0})["job_id"]
+    assert _wait_until(lambda: cl.get(jid)["state"] == "running", timeout=10)
+    cl.stop(jid)
+    assert _wait_until(lambda: cl.get(jid)["state"] == "stopped", timeout=10)
+    # Killed by proc.kill_tree — the rc is the tree-kill's exit code (a
+    # nonzero signal on POSIX, 1 on the Windows taskkill path). Just assert
+    # it's present and nonzero (we never kill with rc 0).
+    rec = cl.get(jid)
+    assert rec["rc"] is not None and rec["rc"] != 0
 
 
 def test_queue_hold_then_start(daemon):

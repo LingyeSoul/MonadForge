@@ -360,14 +360,14 @@ wheels = [
 
 [[package]]
 name = "comfy-aimdo"
-version = "0.4.7"
+version = "0.4.10"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/a6/ec/bb2779b223e3495f768c53f645aaf131b601f0d6bc927c3a5d380afccb0d/comfy_aimdo-0.4.7-cp39-abi3-manylinux2010_x86_64.manylinux2014_x86_64.manylinux_2_12_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:7c1b5694209751b85a313c714d80b514cd7663fed112f192b2772a21eed204a9", size = 339783, upload-time = "2026-05-28T11:05:45.491Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6e/34/1b92796a3d2495765686698ef4684e1b55564fb6131e62bce67bdec253db/comfy_aimdo-0.4.7-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1b0c4c5e328582f07e5d563e7307452e3c13d75ff9d44facf18bfc68badf15d9", size = 564189, upload-time = "2026-05-28T11:05:47.211Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/49/d8/1aa69a321e515ea2a36e821e01b6d4a54242a7952f60556d3f8dfa2c1268/comfy_aimdo-0.4.7-cp39-abi3-win_amd64.whl", hash = "sha256:d2055975ebf11dbf231ad48ae5c76bb4f098a5f866ccc0e1c3ea304dbfe99179", size = 254952, upload-time = "2026-05-28T11:05:48.572Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/00/38/e193c38e02f2e42f6d79afc5f00029c29d949af8080d3a0930c0201bcfa8/comfy_aimdo-0.4.7-cp39-abi3-win_arm64.whl", hash = "sha256:67fbbc9e0af4843befc3cdd1f3d00d0a951857bff4faaa9ec887cf0f6ed9d4b4", size = 224892, upload-time = "2026-05-28T11:05:49.79Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/cc/51/45cc0c8b5c4b40e00280f0631978ea26fb83061079ef84b4d5fa72f17360/comfy_aimdo-0.4.7-py3-none-any.whl", hash = "sha256:b265e8f40943c74cf52ba2f78c2d79297663c0d834b18e8df278e2e7cfc14ea1", size = 22196, upload-time = "2026-05-28T11:05:50.85Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/3e/63/29035f15a32c1e31723585c452c7416d6c3c00f92469e2a923a35500df49/comfy_aimdo-0.4.10-cp39-abi3-manylinux2010_x86_64.manylinux2014_x86_64.manylinux_2_12_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ffae0519a8c37751e1097e8275a3450a5b8bee9aeb179b5da0c00fcb57a2cc5f", size = 346776, upload-time = "2026-06-15T12:19:12.334Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/e9/ab/bcda7e71dea484fe0c796df0cb65c4288c167282210597f5de1c54744f45/comfy_aimdo-0.4.10-cp39-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:afb4d85d291e6cc076975df90cbfa85de28ecc3b830132d0716a67cd7890de49", size = 571800, upload-time = "2026-06-15T12:19:13.804Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/20/8a/00b0a8324a5bb5258711ccd1cab0d84bde6198465d793e8d9b4a4565e80c/comfy_aimdo-0.4.10-cp39-abi3-win_amd64.whl", hash = "sha256:5b5a51bf521336aa32fe2514eee89aa87ffdf5ef5d779add669cd90242e92f1d", size = 256475, upload-time = "2026-06-15T12:19:15.159Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/25/f4/10b3ece1402405fd67cce5de597b924c8d560082872a92df5eb0092fe1cb/comfy_aimdo-0.4.10-cp39-abi3-win_arm64.whl", hash = "sha256:887628c8a83b5b090412e42d427c7df3df05d806d51ca2ccd6b7c99d3fbe0656", size = 226254, upload-time = "2026-06-15T12:19:16.382Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/68/f4/9fc884854191a0d347e3b5bb185d68ea8099228ccb5b3116dd8aa43839e5/comfy_aimdo-0.4.10-py3-none-any.whl", hash = "sha256:a06deb8258cc6c33ef8473b4bfb6c5bbe11676f88019baa841db6235ff3c9b90", size = 22454, upload-time = "2026-06-15T12:19:17.503Z" },
 ]
 
 [[package]]
@@ -403,13 +403,13 @@ wheels = [
 
 [[package]]
 name = "comfy-kitchen"
-version = "0.2.8"
+version = "0.2.10"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/94/f1/1206bc530adef9193ba78964d687b6f0381a853abee04cf6fa483bd082a0/comfy_kitchen-0.2.8-cp312-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0c2eb7d03921a70e21fd9bb43d557e09b20bec81479cb85c2b58e8cdfb2cacc9", size = 791523, upload-time = "2026-03-12T04:07:47.083Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/9a/af/e87ebae2b1bba35291663b0d6eea6748b340d7c21802224cfb37f3a48dda/comfy_kitchen-0.2.8-cp312-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:570b2eb74c77ce9356b0140ec190253dcbedeb1e92bec5092444abef9cd24ebf", size = 794595, upload-time = "2026-03-12T04:07:48.443Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/84/5c/14cb27952313dca93e3e8a58223fd6297acd701df3d9727c007edbcb3559/comfy_kitchen-0.2.8-cp312-abi3-win_amd64.whl", hash = "sha256:20b94aa87e6d42181ad928560487a0e2a692dfcc9fce40d4e31f8fc57753865c", size = 677964, upload-time = "2026-03-12T04:07:49.719Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/46/b0/64c3e0656db822cb4f7dbc928d6a13cf2cad861cc178e6386114634e355b/comfy_kitchen-0.2.8-py3-none-any.whl", hash = "sha256:0b322992cf1681ebe3d413ac7950f39e5cc425505c13cef8d08527ce82fe5e32", size = 64854, upload-time = "2026-03-12T04:07:51.051Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/fb/4d/7416b070a0957aeb4551068306484610789c1af8bcbf2fe140a03b702e88/comfy_kitchen-0.2.10-cp312-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b945da25740a3f51e3c1c1292dc1b2f37350d7f37b1e1c73d988f33acc0aa249", size = 3727059, upload-time = "2026-05-30T04:47:40.082Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c2/b9/4d4efa9e5f5ec4296cfce426dbd211642685141d9a52f6b5f037fcef0e6e/comfy_kitchen-0.2.10-cp312-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:54a64bf4dddf05ad69f5eef73d72caa328a331b798a41997559a5158e616d87f", size = 3734494, upload-time = "2026-05-30T04:47:41.518Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/00/6b/75f744abcacb17ef24d61e96fee6147d2288aaa4a165cf87ad543548a37d/comfy_kitchen-0.2.10-cp312-abi3-win_amd64.whl", hash = "sha256:fe6b1789dc7a673c0f9091d693c6a1013a693c988e3dfb68dc429b4bd6d81050", size = 2525530, upload-time = "2026-05-30T04:47:42.809Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/40/a9/45869a10ead662992bd35374536e056b7ec019c6851e11e23228dc675031/comfy_kitchen-0.2.10-py3-none-any.whl", hash = "sha256:c242afd18d120e28fc949c423fa28cbb22cb4d70d627d8cc7cdf6bad54dd272c", size = 89054, upload-time = "2026-05-30T04:47:44.077Z" },
 ]
 
 [[package]]
@@ -1128,19 +1128,6 @@ wheels = [
 ]
 
 [[package]]
-name = "lion-pytorch"
-version = "0.2.4"
-source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-dependencies = [
-    { name = "torch", version = "2.12.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
-]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/70/69/d655dc09ba401640f3d94121b7c6e984ce9db6450b2806659709bfabe61c/lion_pytorch-0.2.4.tar.gz", hash = "sha256:b5f32dfa727cc61aa63522b3392d0902d2743e2eae6b3b71a34fb11a62f9bc23", size = 7798, upload-time = "2026-03-04T15:42:25.085Z" }
-wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6d/23/a31cfe4662c1d9ef879d67e60d0640272bdea074891dba9483ce3278620c/lion_pytorch-0.2.4-py3-none-any.whl", hash = "sha256:494f44723b8d3f451170283e904f44e3aedf80995f97e316e370e5d0546cae4e", size = 9929, upload-time = "2026-03-04T15:42:24.077Z" },
-]
-
-[[package]]
 name = "llvmlite"
 version = "0.47.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -1300,7 +1287,6 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "imagesize" },
     { name = "kornia" },
-    { name = "lion-pytorch" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python" },
@@ -1310,17 +1296,19 @@ dependencies = [
     { name = "psutil" },
     { name = "pycocotools" },
     { name = "pydantic-settings" },
+    { name = "pystray", marker = "sys_platform == 'win32'" },
     { name = "pytest" },
     { name = "python-multipart" },
     { name = "pytorch-optimizer" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
     { name = "pyyaml" },
     { name = "rich" },
     { name = "ruff" },
     { name = "safetensors" },
     { name = "sam3" },
-    { name = "schedulefree" },
     { name = "scikit-learn" },
     { name = "segmentation-models-pytorch" },
+    { name = "send2trash" },
     { name = "sentencepiece" },
     { name = "simpleeval" },
     { name = "softtorch" },
@@ -1332,7 +1320,6 @@ dependencies = [
     { name = "tomlkit" },
     { name = "torch", version = "2.12.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
-    { name = "torchaudio" },
     { name = "torchsde" },
     { name = "torchvision", version = "0.27.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torchvision", version = "0.27.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
@@ -1367,9 +1354,9 @@ requires-dist = [
     { name = "av", specifier = ">=17.0.1" },
     { name = "bitsandbytes", specifier = ">=0.45.0" },
     { name = "blake3", specifier = ">=1.0.8" },
-    { name = "comfy-aimdo", specifier = ">=0.3.0" },
+    { name = "comfy-aimdo", specifier = ">=0.4.9" },
     { name = "comfy-cli", specifier = ">=1.10.3" },
-    { name = "comfy-kitchen", specifier = ">=0.2.8" },
+    { name = "comfy-kitchen", specifier = ">=0.2.10" },
     { name = "controlnet-aux", specifier = ">=0.0.10" },
     { name = "datasets", specifier = ">=4.8.5" },
     { name = "diffusers", specifier = ">=0.37.0" },
@@ -1380,7 +1367,6 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.9.0" },
     { name = "imagesize", specifier = ">=1.4.1" },
     { name = "kornia", specifier = ">=0.8.2" },
-    { name = "lion-pytorch", specifier = ">=0.2.3" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
@@ -1390,20 +1376,22 @@ requires-dist = [
     { name = "psutil" },
     { name = "pycocotools", specifier = ">=2.0.11" },
     { name = "pydantic-settings", specifier = ">=2.14.0" },
+    { name = "pystray", marker = "sys_platform == 'win32'", specifier = ">=0.19.5" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2.3" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6" },
     { name = "python-multipart", specifier = ">=0.0.20" },
     { name = "pytorch-optimizer", specifier = ">=3.9.0" },
+    { name = "pywin32", marker = "sys_platform == 'win32'", specifier = ">=308" },
     { name = "pyyaml" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "ruff", specifier = ">=0.15.9" },
     { name = "safetensors", specifier = ">=0.7.0" },
     { name = "sam3", git = "https://github.com/facebookresearch/sam3.git" },
-    { name = "schedulefree", specifier = ">=1.4" },
     { name = "scikit-learn", specifier = ">=1.9.0rc1" },
     { name = "segmentation-models-pytorch", specifier = ">=0.3.4" },
+    { name = "send2trash", specifier = ">=2.1.0" },
     { name = "sentencepiece", specifier = ">=0.2.1" },
     { name = "simpleeval", specifier = ">=1.0.7" },
     { name = "softtorch", specifier = ">=0.1.1" },
@@ -1414,11 +1402,10 @@ requires-dist = [
     { name = "toml", specifier = ">=0.10.2" },
     { name = "tomlkit", specifier = ">=0.13" },
     { name = "torch", specifier = ">=2.12.0,<2.13" },
-    { name = "torchaudio", specifier = ">=2.11.0" },
     { name = "torchsde", specifier = ">=0.2.6" },
     { name = "torchvision", specifier = ">=0.27.0,<0.28" },
     { name = "tqdm" },
-    { name = "transformers", specifier = ">=5.3.0" },
+    { name = "transformers", specifier = ">=5.10.1" },
     { name = "triton-windows", marker = "sys_platform == 'win32'", specifier = ">=3.7.0,<3.8.0" },
     { name = "uv", specifier = ">=0.11.7" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
@@ -2185,6 +2172,18 @@ wheels = [
 ]
 
 [[package]]
+name = "pystray"
+version = "0.19.5"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "pillow", marker = "sys_platform == 'win32'" },
+    { name = "six", marker = "sys_platform == 'win32'" },
+]
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/5c/64/927a4b9024196a4799eba0180e0ca31568426f258a4a5c90f87a97f51d28/pystray-0.19.5-py2.py3-none-any.whl", hash = "sha256:a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -2452,20 +2451,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "schedulefree"
-version = "1.4.1"
-source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-dependencies = [
-    { name = "torch", version = "2.12.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
-    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/bd/51/d78369c32b0f3818ee7f5a04e77ed02a6bd0ba8642462f780623af0010f5/schedulefree-1.4.1.tar.gz", hash = "sha256:69ef25601d1fc0d8dd00cb36f9af78833f88b7846f1bb6ddecc9f144f3e9f7cb", size = 29281, upload-time = "2025-03-24T17:32:37.996Z" }
-wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/93/ef/aac74263f0252806b46f0fd5a52566ee06129744572d0958cd0a77d22b0a/schedulefree-1.4.1-py3-none-any.whl", hash = "sha256:21602d3a0d35ee190152e3d56f547ea725d316310bd198fa6108f8039386b242", size = 55068, upload-time = "2025-03-24T20:32:10.525Z" },
-]
-
-[[package]]
 name = "scikit-image"
 version = "0.26.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -2579,6 +2564,15 @@ source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/72/d1/d3159231aec234a59dd7d601e9dd9fe96f3afff15efd33c1070019b26132/semver-3.0.4.tar.gz", hash = "sha256:afc7d8c584a5ed0a11033af086e8af226a9c0b206f313e0301f8dd7b6b589602", size = 269730, upload-time = "2025-01-24T13:19:27.617Z" }
 wheels = [
     { url = "https://pypi.tuna.tsinghua.edu.cn/packages/a6/24/4d91e05817e92e3a61c8a21e08fd0f390f5301f1c448b137c57c4bc6e543/semver-3.0.4-py3-none-any.whl", hash = "sha256:9c824d87ba7f7ab4a1890799cec8596f15c1241cb473404ea1cb0c55e4b04746", size = 17912, upload-time = "2025-01-24T13:19:24.949Z" },
+]
+
+[[package]]
+name = "send2trash"
+version = "2.1.0"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/c5/f0/184b4b5f8d00f2a92cf96eec8967a3d550b52cf94362dad1100df9e48d57/send2trash-2.1.0.tar.gz", hash = "sha256:1c72b39f09457db3c05ce1d19158c2cbef4c32b8bedd02c155e49282b7ea7459", size = 17255, upload-time = "2026-01-14T06:27:36.056Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/1c/78/504fdd027da3b84ff1aecd9f6957e65f35134534ccc6da8628eb71e76d3f/send2trash-2.1.0-py3-none-any.whl", hash = "sha256:0da2f112e6d6bb22de6aa6daa7e144831a4febf2a87261451c4ad849fe9a873c", size = 17610, upload-time = "2026-01-14T06:27:35.218Z" },
 ]
 
 [[package]]
@@ -2997,21 +2991,6 @@ wheels = [
 ]
 
 [[package]]
-name = "torchaudio"
-version = "2.11.0"
-source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
-wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/fb/9e/f76fcd9877c8c78f258ee34e0fb8291fdb91e6218d582d9ca66b1e4bd4ae/torchaudio-2.11.0-cp313-cp313-macosx_12_0_arm64.whl", hash = "sha256:e3f9696a9ef1d49acc452159b052370c636406d072e9d8f10895fda87b591ea9", size = 679904, upload-time = "2026-03-23T18:13:28.329Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/85/70/249c1498ebdad3e7752866635ec0855fc0dcf898beccda5a9d2b9df8e4d0/torchaudio-2.11.0-cp313-cp313-manylinux_2_28_aarch64.whl", hash = "sha256:b034d7672f1c415434f48ef17807f2cce47f29e8795338c751d4e596c9fbe8b5", size = 1618523, upload-time = "2026-03-23T18:13:15.703Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/4f/98/be13fe35d9aa5c26381c0e453c828a789d15c007f8f7d08c95341d19974d/torchaudio-2.11.0-cp313-cp313-manylinux_2_28_x86_64.whl", hash = "sha256:1c1101c1243ef0e4063ec63298977e2d3655c15cf88d9eb0a1bd4fe2db9f47ea", size = 1771992, upload-time = "2026-03-23T18:13:35.343Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/e2/8b/2bbb3dca6ff28cba0de250874d5ef4fc2822c47a934b59b3974cff3219ef/torchaudio-2.11.0-cp313-cp313-win_amd64.whl", hash = "sha256:986f4df5ed17b003dc52489468601720090e65f964f8bebccf90eb45bba75744", size = 328662, upload-time = "2026-03-23T18:13:18.308Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/fe/ce/52c652d30af7d6e96c8f1735d26131e94708e3f38d852b8fa97958804dd8/torchaudio-2.11.0-cp313-cp313t-macosx_12_0_arm64.whl", hash = "sha256:bda09ea630ae7207384fb0f28c35e4f8c0d82dd6eba020b6b335ad0caa9fed49", size = 680814, upload-time = "2026-03-23T18:13:17.08Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/06/95/1ad1507482e7263e556709a3f5f87fecd375a0742cdaf238806c8e72eaad/torchaudio-2.11.0-cp313-cp313t-manylinux_2_28_aarch64.whl", hash = "sha256:9fe3083c62e035646483a14e180d33561bdc2eed436c9ab1259c137fb7120b4a", size = 1618546, upload-time = "2026-03-23T18:13:29.686Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/98/4c/480328ba07487eb9890406720304d0d460dd7a6a64098614f5aa53b662ca/torchaudio-2.11.0-cp313-cp313t-manylinux_2_28_x86_64.whl", hash = "sha256:13cff988697ccbad539987599f9dc672f40c417bed67570b365e4e5002bbd096", size = 1771991, upload-time = "2026-03-23T18:13:30.843Z" },
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/3e/98/5d4790e2d6548768999acd34999d5aeefce8bcc23a07afaa5f03e723f557/torchaudio-2.11.0-cp313-cp313t-win_amd64.whl", hash = "sha256:ed404c4399ad7f172c86a47c1b25293d322d1d58e26b10b0456a86cf67d37d84", size = 328661, upload-time = "2026-03-23T18:13:34.359Z" },
-]
-
-[[package]]
 name = "torchopt"
 version = "0.7.3"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -3107,7 +3086,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "5.5.0"
+version = "5.12.1"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -3120,9 +3099,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "typer" },
 ]
-sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/ff/9d/fb46e729b461985f41a5740167688b924a4019141e5c164bea77548d3d9e/transformers-5.5.0.tar.gz", hash = "sha256:c8db656cf51c600cd8c75f06b20ef85c72e8b8ff9abc880c5d3e8bc70e0ddcbd", size = 8237745, upload-time = "2026-04-02T16:13:08.113Z" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/aa/7c/8240f612819718100a9346dc28dea6a11370c3ca9c8c6eabadd3dea4ef29/transformers-5.12.1.tar.gz", hash = "sha256:679ee731c8225347889ad4fb3b2c926a62e9da3b7d284e9d12c791da7272466b", size = 8924054, upload-time = "2026-06-15T17:27:50.604Z" }
 wheels = [
-    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/e7/28/35f7411ff80a3640c1f4fc907dcbb6a65061ebb82f66950e38bfc9f7f740/transformers-5.5.0-py3-none-any.whl", hash = "sha256:821a9ff0961abbb29eb1eb686d78df1c85929fdf213a3fe49dc6bd94f9efa944", size = 10245591, upload-time = "2026-04-02T16:13:03.462Z" },
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/df/56/bbd60dd8668055803bf8ba55a81f9b8a8b31497f620109a9671d26a2076d/transformers-5.12.1-py3-none-any.whl", hash = "sha256:2a5e109d2021265df7098ffbb738295acaf5ad256f12cbc586db2ea4dcbb1a8a", size = 11150587, upload-time = "2026-06-15T17:27:46.679Z" },
 ]
 
 [[package]]

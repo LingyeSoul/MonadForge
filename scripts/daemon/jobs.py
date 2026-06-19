@@ -75,6 +75,13 @@ class Job:
     progress_path: Optional[str] = None
     stdout_path: Optional[str] = None
     ckpt_path: Optional[str] = None
+    # The subprocess's real exit code (``popen.poll()``), captured at finalize
+    # time so the WebUI's Task.exit_code mirrors the old direct-subprocess
+    # design (which got it straight from ``process.wait()``). ``None`` for
+    # queued-cancelled / launch-failed / orphaned paths that never ran a
+    # process — ``public()`` exposes it as ``rc``, which the WebUI's
+    # ``_finalize_from_daemon`` reads.
+    rc: Optional[int] = None
 
     error: Optional[str] = None
     # Free-text hint for terminal states ("orphaned", "gpu_held_by_unknown", …).

@@ -515,7 +515,10 @@ class JobManager:
         ev = tail.last_event(job.progress_path)
         rc = popen.poll() if popen is not None else None
         if job.stop_requested:
-            self._finalize(job, STATE_STOPPED)
+            # Carry the kill's exit code so callers can distinguish a clean
+            # SIGTERM/SIGKILL from an unknown stop (popen may already be None
+            # for an adopted orphan that vanished — then rc stays None).
+            self._finalize(job, STATE_STOPPED, rc=rc)
             return
         if ev and ev.get("ev") == "run_end":
             status = ev.get("status")
@@ -524,15 +527,19 @@ class JobManager:
                 "stopped": STATE_STOPPED,
                 "error": STATE_ERROR,
             }.get(status, STATE_ERROR)
-            self._finalize(job, mapped, error=ev.get("error"))
+            # A run_end event is the trainer's own terminal signal — its rc
+            # isn't exposed in the event, but the popen still carries the real
+            # process exit code (0 on a clean ``sys.exit``). Forward it so a
+            # run_end:ok job reports 0, not None.
+            self._finalize(job, mapped, error=ev.get("error"), rc=rc)
             return
         if rc == 0:
-            self._finalize(job, STATE_DONE)
+            self._finalize(job, STATE_DONE, rc=rc)
         else:
             # No run_end + nonzero exit: the trainer died before its terminal
             # event. Classify the code — signal deaths (SIGKILL/OOM, CUDA
             # SIGABRT, segfault) leave no traceback, so it's the only signal.
-            self._finalize(job, STATE_ERROR, error=_classify_exit(rc))
+            self._finalize(job, STATE_ERROR, error=_classify_exit(rc), rc=rc)
 
     def _finalize(
         self,
@@ -541,6 +548,7 @@ class JobManager:
         *,
         error: Optional[str] = None,
         detail: Optional[str] = None,
+        rc: Optional[int] = None,
     ) -> None:
         with self._lock:
             job.state = state
@@ -549,6 +557,11 @@ class JobManager:
                 job.error = error
             if detail:
                 job.status_detail = detail
+            # The real subprocess exit code (``popen.poll()``); ``None`` when
+            # the caller has no process to read (queued-cancel / launch-fail /
+            # orphan paths). Written in the same persist() so the WebUI's
+            # ``_finalize_from_daemon`` sees it atomically with the state flip.
+            job.rc = rc
             job.ckpt_path = tail.last_ckpt_path(job.progress_path)
             # Auto-chain: a done command job with a chain_train spec enqueues its
             # follow-on train job here (survives the GUI closing). chained_job_id
