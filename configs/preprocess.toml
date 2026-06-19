@@ -15,7 +15,7 @@ target_res = [1024, 896]
 # v1..v{N-1} are smart-shuffled, with optional tag dropout / identity-randomize.
 # The strategy loader picks v0 at 20%, uniform v1..v{N-1} at 80%. Env override:
 # CAPTION_SHUFFLE_VARIANTS=N make preprocess-te
-caption_shuffle_variants = 3
+caption_shuffle_variants = 4
 
 # Per-tag dropout probability applied to v1..v{N-1} only (presence axis; tags up
 # to and including the first @artist marker are protected). Env: CAPTION_TAG_DROPOUT_RATE
@@ -29,7 +29,7 @@ caption_tag_dropout_rate = 0.1
 # re-preprocess to A/B). 0.0 = off (no r-family). Needs caption_shuffle_variants >= 2.
 # Re-running with this > 0 upgrades existing caches in place. Paper's prior ~0.2.
 # Override: make preprocess ARGS="--caption_tag_randomize_rate 0.2"
-caption_tag_randomize_rate = 0.1
+caption_tag_randomize_rate = 0.0
 
 # Preprocess input filter. drop_lowres_images = false keeps every image; otherwise
 # images under min_pixels are skipped at resize/VAE/TE. Override per-run:

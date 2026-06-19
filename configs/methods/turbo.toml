@@ -16,7 +16,7 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 750
+iterations = 6000
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -145,7 +145,7 @@ grad_ckpt = true                # checkpoint ONLY the grad-bearing GAN gen forwa
 # anchor (they may not be additive). Numerical care (ports of f_distill.py):
 # ±10 logit clamp, r∈[ratio_lower, ratio_upper], per-τ EMA histogram of r.
 [f_distill]
-f_div = "js"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
+f_div = "rkl"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
 ratio_lower = 0.1
 ratio_upper = 20.0
 ratio_ema_rate = 0.0            # per-τ histogram EMA decay (0 = instantaneous per-bin)

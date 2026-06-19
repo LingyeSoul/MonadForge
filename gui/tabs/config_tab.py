@@ -1101,6 +1101,17 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         snapshot = self._gui_scoped_paths(snapshot)
         if self._preprocess_tab is not None:
             snapshot.update(self._preprocess_tab.preprocess_overrides())
+        # Preprocess-only knobs leak into `merged` via `_load_base()` (which folds
+        # preprocess.toml in) and `preprocess_overrides()`. They're owned by the
+        # Preprocess tab and persist to preprocess.toml — they must NOT ride into
+        # the training config. Most are harmless ("unknown key" warnings), but
+        # `caption_tag_dropout_rate` collides with a real train argparse arg whose
+        # meaning is *live dataloader tag dropout*; the blueprint generator pushes
+        # it onto every subset and trips the TE-cache assertion in assert_extra_args
+        # (tag dropout is baked into cached caption variants at preprocess time, so
+        # it can't also run live against cached TE outputs). Strip the whole set.
+        from gui.tabs.preprocess_tab import _GUI_PREPROCESS_KEYS
+
         for key in (
             "base_config",
             "dataset_config",
@@ -1110,6 +1121,8 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
             "methods_subdir",
             _GUI_PATH_SCOPE_KEY,
             "preprocess_path_pattern",
+            "caption_tag_randomize_rate",
+            *_GUI_PREPROCESS_KEYS,
             *_VIRTUAL_KEYS,
         ):
             snapshot.pop(key, None)
