@@ -172,6 +172,16 @@ def generate_caption_variants(
     return variants
 
 
+def _strip_no_artist_sentinel_from_caption(caption: str) -> str:
+    from library.anima import training as anima_train_utils
+
+    sentinel = anima_train_utils.NO_ARTIST_SENTINEL
+    tags = [t.strip() for t in caption.split(",")]
+    if sentinel not in tags:
+        return caption
+    return ", ".join(anima_train_utils.strip_no_artist_sentinel(tags))
+
+
 def _encode_batch(
     captions: list[str],
     tokenize_strategy,
@@ -236,6 +246,18 @@ def _cache_has_randomized(cache_path: Path) -> bool:
             return "num_randomized" in f.keys()
     except Exception:
         # Unreadable/partial cache → treat as missing the family so it re-encodes.
+        return False
+
+
+def _cache_is_current(image_path: Path, cache_path: Path) -> bool:
+    if not cache_path.exists():
+        return False
+    caption_path = image_path.with_suffix(".txt")
+    if not caption_path.exists():
+        return True
+    try:
+        return cache_path.stat().st_mtime >= caption_path.stat().st_mtime
+    except OSError:
         return False
 
 
@@ -350,7 +372,9 @@ def count_pending_text(
     if overwrite:
         return len(candidates), len(candidates)
     pending = sum(
-        1 for p in candidates if not _te_cache_path(p, cache_dir, data_dir).exists()
+        1
+        for p in candidates
+        if not _cache_is_current(p, _te_cache_path(p, cache_dir, data_dir))
     )
     return pending, len(candidates)
 
@@ -432,6 +456,7 @@ def cache_text_embeddings(
             caption = ""
         if caption_transform is not None:
             caption = caption_transform(caption)
+        caption = _strip_no_artist_sentinel_from_caption(caption)
         entries.append((p, caption))
 
     stats = PreprocessStats(seen=len(entries))
@@ -488,7 +513,7 @@ def cache_text_embeddings(
             # randomize rate / variant count, which the existence check can't see).
             if (
                 not overwrite
-                and cache_path.exists()
+                and _cache_is_current(img_path, cache_path)
                 and not (want_randomized and not _cache_has_randomized(cache_path))
             ):
                 stats.skipped += 1

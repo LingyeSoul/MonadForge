@@ -45,6 +45,8 @@ class CaptionCorrectionOptions:
 
     insert_no_artist: bool = True
     validate_artist_tags: bool = False
+    trigger_word: str = ""
+    trigger_at_front: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,9 +151,15 @@ def correct_caption(
     options = options or CaptionCorrectionOptions()
     tags = _parse_tags(text)
     if not tags:
-        return CaptionCorrectionResult(text="", changed=bool(text.strip()), inserted_no_artist=False, unknown_tags=())
+        return CaptionCorrectionResult(
+            text="",
+            changed=bool(text.strip()),
+            inserted_no_artist=False,
+            unknown_tags=(),
+        )
 
     buckets: dict[str, list[str]] = {
+        "front": [],
         "meta": [],
         "count": [],
         "character": [],
@@ -161,6 +169,7 @@ def correct_caption(
     }
     unknown: list[str] = []
     seen: set[str] = set()
+    trigger = options.trigger_word.strip()
 
     for tag in tags:
         key = tag_key(tag)
@@ -173,12 +182,19 @@ def correct_caption(
             kind = "general"
         buckets[kind].append(tag)
 
+    if trigger:
+        if options.trigger_at_front:
+            buckets["front"].append(trigger)
+        else:
+            buckets["artist"].insert(0, trigger)
+
     inserted_no_artist = False
     if options.insert_no_artist and not buckets["artist"]:
         buckets["artist"].append("@no-artist")
         inserted_no_artist = True
 
     ordered = [
+        *buckets["front"],
         *buckets["meta"],
         *buckets["count"],
         *buckets["character"],
