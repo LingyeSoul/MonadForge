@@ -166,21 +166,23 @@ def parse_args() -> argparse.Namespace:
         "--ram_resident",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Load the whole packed feature set into RAM once at startup and "
-        "serve batches from memory (no per-epoch disk IO; runs the loader inline "
-        "with a free global shuffle). Needs ~feature-set-sized RAM (~40 GB here). "
-        "Use --no-ram_resident to fall back to the mmap-shard path with chunked "
+        help="Load the whole feature set into RAM once at startup (stacking the "
+        "per-stem sidecars into per-bucket CPU tensors) and serve batches from "
+        "memory (no per-epoch disk IO; runs the loader inline with a free global "
+        "shuffle). Needs ~feature-set-sized RAM (~40 GB here). Use "
+        "--no-ram_resident to fall back to the lazy per-stem path with chunked "
         "shuffle + prefetch workers (default: on).",
     )
     p.add_argument(
         "--shuffle_chunk_size",
         type=int,
         default=2048,
-        help="IO-locality knob for the cached-feature loader. Each epoch "
-        "shuffles within contiguous chunks of this many samples (snapped to a "
-        "multiple of --batch_size) and shuffles chunk order, instead of a global "
-        "shuffle — keeps packed-shard reads inside a cache-resident window so the "
-        "~40 GB token set doesn't thrash on a RAM-bound box. Larger = closer to a "
+        help="IO-locality knob for the cached-feature loader (--no-ram_resident "
+        "path only). Each epoch shuffles within contiguous chunks of this many "
+        "samples (snapped to a multiple of --batch_size) and shuffles chunk "
+        "order, instead of a global shuffle — keeps sidecar reads inside a "
+        "cache-resident window so the ~40 GB token set doesn't thrash on a "
+        "RAM-bound box. Larger = closer to a "
         "full global shuffle (more random IO); smaller = more sequential IO, "
         "slightly more correlated batch composition (default: 2048).",
     )
@@ -215,17 +217,6 @@ def parse_args() -> argparse.Namespace:
         "that drives the train/val tag-loss gap. 0.0 (default) is inert; "
         "0.05–0.1 is the usual range. Val loss is always reported unsmoothed.",
     )
-    p.add_argument(
-        "--drop_sidecars_after_pack",
-        action="store_true",
-        help="After the per-bucket mmap shards are built (and verified), delete "
-        "the original per-stem token sidecars to reclaim disk (~the full "
-        "tokens-<encoder>/ trees). DESTRUCTIVE: repacking a different split "
-        "later then requires re-running `--mode build_features` (GPU "
-        "re-encode). Off by default. Only deletes once BOTH train and val "
-        "shards are present.",
-    )
-
     # build_features / train / calibrate all read --pool_kind to pick the cache
     # subdir and head shape — they must agree.
     p.add_argument(
@@ -469,8 +460,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--feature_cache_dir",
         default=None,
-        help="Root dir for build_features caches (per-stem token sidecars + "
-        "packed mmap shards). Decoupled from --out_dir so these bulky "
+        help="Root dir for build_features caches (per-stem token sidecars). "
+        "Decoupled from --out_dir so these bulky "
         "dataset-derived caches live under post_image_dataset/. Default "
         "(unset): post_image_dataset/anima_tagger/. "
         "Read by build_features / train / calibrate — they must all agree, "

@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def feature_cache_root(args: argparse.Namespace) -> Path:
-    """Root dir for build_features caches (per-stem token sidecars + packed shards).
+    """Root dir for build_features caches (per-stem token sidecars).
 
     Decoupled from ``--out_dir`` (the model checkpoint + vocab home) so the
     bulky dataset-derived feature caches live alongside the other dataset

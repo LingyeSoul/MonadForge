@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import shutil
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -130,45 +129,6 @@ def _save_cfg_dict(args, cfg, d_in, best_f1):
         "n_tag_indices_core": len(cfg.tag_indices_core),
         "n_tag_indices_spatial": len(cfg.tag_indices_spatial),
     }
-
-
-def _drop_packed_sidecars(datasets, logger) -> None:
-    """Delete the per-stem token sidecars now that the mmap shards hold the
-    same data. Verifies every live shard exists + is non-empty FIRST, so a
-    half-built/corrupt pack never triggers a delete (we'd rather keep the
-    redundant sidecars than lose both copies). DESTRUCTIVE — repacking a
-    different split later needs `--mode build_features` to re-encode.
-    """
-    # Guard: every live shard must exist + be non-empty before any unlink.
-    for ds in datasets:
-        for side, dirpath in ds._pack_dirs.items():
-            row_map = ds._pack_main if side == "main" else ds._pack_aux
-            for bucket_key in {bk for bk, _row in row_map}:
-                shard = dirpath / f"{bucket_key}.safetensors"
-                if not (shard.exists() and shard.stat().st_size > 0):
-                    logger.warning(
-                        "skipping sidecar drop — shard missing/empty: %s", shard
-                    )
-                    return
-    # Both splits share cache dirs, so union + dedup before unlinking.
-    sidecars = set()
-    for ds in datasets:
-        sidecars.update(Path(p) for p in ds.paths)
-        sidecars.update(Path(p) for p in ds.paths_aux)
-    n_removed, bytes_freed = 0, 0
-    for p in sidecars:
-        try:
-            bytes_freed += p.stat().st_size
-            p.unlink()
-            n_removed += 1
-        except FileNotFoundError:
-            pass
-    logger.info(
-        "dropped %d packed sidecars (%.1f GB freed). NOTE: repacking a "
-        "different split now requires re-running `--mode build_features`.",
-        n_removed,
-        bytes_freed / 1e9,
-    )
 
 
 @torch.no_grad()
@@ -347,10 +307,9 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
             f"--encoder {args.encoder} --aux_encoder {aux_encoder} "
             f"--pool_kind_aux {pool_kind_aux}` first."
         )
-    # Consolidate per-stem sidecars into per-bucket mmap shards so the loader
-    # stops opening ~30k tiny files per epoch. Built once under
-    # <feature_root>/packed; reused across runs while the split is unchanged.
-    pack_root = feature_root / "packed"
+    # ram_resident pulls the per-stem sidecars into per-bucket CPU tensors once
+    # at startup so the loader stops opening ~30k tiny files per epoch; the train
+    # loop then touches zero disk. --no-ram_resident keeps the lazy per-file path.
     ram_resident = bool(getattr(args, "ram_resident", True))
     train_ds = CachedDualDataset(
         manifest,
@@ -361,7 +320,6 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
         pool_kind_aux,
         spec_aux,
         stems_subset=manifest.train_stems,
-        pack_root=pack_root,
         ram_resident=ram_resident,
     )
     val_ds = CachedDualDataset(
@@ -373,20 +331,8 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
         pool_kind_aux,
         spec_aux,
         stems_subset=manifest.val_stems,
-        pack_root=pack_root,
         ram_resident=ram_resident,
     )
-    # Shard dirs are hash-keyed on the stem list, so a changed split orphans the
-    # old ~40 GB; prune any non-live packed-shard dir to bound disk to one
-    # split. Only touches <feature_root>/packed/ — never the per-stem sidecars.
-    live_dirs = {d for ds in (train_ds, val_ds) for d in ds._pack_dirs.values()}
-    if pack_root.exists():
-        for child in pack_root.iterdir():
-            if child.is_dir() and child not in live_dirs:
-                logger.info("pruning orphaned packed-shard dir: %s", child.name)
-                shutil.rmtree(child, ignore_errors=True)
-    if getattr(args, "drop_sidecars_after_pack", False):
-        _drop_packed_sidecars((train_ds, val_ds), logger)
     d_in_aux = train_ds.d_in_aux
     logger.info(
         "train (cached dual): N=%d  val: N=%d  d_in=%d  d_in_aux=%d  "
