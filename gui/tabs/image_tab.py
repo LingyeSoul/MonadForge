@@ -90,7 +90,6 @@ from library.preprocess.resize_preview import (
     DEFAULT_FIT_MODE,
     DEFAULT_FREEFIT_MAX_RATIO,
     compute_resize_preview,
-    format_bucket_resos,
 )
 
 # Stdio protocol sentinels of the resident autotag worker (kept in sync with
@@ -820,15 +819,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.resize_preview_cb.setEnabled(False)
         self.resize_preview_cb.toggled.connect(self._on_overlay_toggled)
         img_head.addWidget(self.resize_preview_cb)
-        self.resize_preview_bucket_combo = QComboBox()
-        self.resize_preview_bucket_combo.setToolTip(
-            t("dataset_resize_preview_bucket_tooltip")
-        )
-        self.resize_preview_bucket_combo.setEnabled(False)
-        self.resize_preview_bucket_combo.currentIndexChanged.connect(
-            self._on_overlay_toggled
-        )
-        img_head.addWidget(self.resize_preview_bucket_combo)
         self.preprocess_use_btn = QPushButton(t("dataset_preprocess_use_short"))
         self.preprocess_use_btn.setToolTip(t("dataset_preprocess_use_tooltip"))
         self.preprocess_use_btn.clicked.connect(
@@ -875,11 +865,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             f"QLabel {{ color:{tok('text_dim')}; padding:2px 0; }}"
         )
         rl.addWidget(self.image_meta)
-        self.preprocess_decision_label = QLabel(t("dataset_preprocess_decision_none"))
-        self.preprocess_decision_label.setStyleSheet(
-            f"QLabel {{ color:{tok('text_dim')}; padding:2px 0; }}"
-        )
-        rl.addWidget(self.preprocess_decision_label)
 
         cap_head = QHBoxLayout()
         self.cap_label = QLabel(t("caption"))
@@ -1796,8 +1781,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._overlay_pm = None  # compose lazily in _apply_image_view
         self.overlay_cb.setEnabled(self._mask_path is not None)
         self.resize_preview_cb.setEnabled(source is not None)
-        self.resize_preview_bucket_combo.setEnabled(source is not None)
-        self._refresh_resize_preview_buckets()
         self._apply_image_view()
 
     def _apply_image_view(self) -> None:
@@ -1827,7 +1810,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.img.set_source(pm)
 
     def _on_overlay_toggled(self, _value=None) -> None:
-        self._refresh_resize_preview_buckets()
         self._apply_image_view()
         self._refresh_image_meta(self._current_image_path())
 
@@ -1859,45 +1841,18 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         if tab is not None and hasattr(tab, "_resize_crop_margins"):
             crop_margins = tab._resize_crop_margins()
         fit_mode, max_ratio = self._resize_preview_fit_mode()
-        selected = self.resize_preview_bucket_combo.currentData()
-        if selected:
-            # Picking an explicit bucket forces snap-to-that-shape regardless of mode.
-            bucket_resos = [selected]
-            fit_mode = DEFAULT_FIT_MODE
         return target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
 
     def _resize_preview_fit_mode(self):
         """(fit_mode, max_ratio) from the live preprocess-tab widgets, falling
-        back to configs/preprocess.toml when the tab isn't available."""
-        tab = self._preprocess_tab
-        chk = getattr(tab, "freefit_chk", None)
-        spin = getattr(tab, "freefit_max_ratio_spin", None)
-        if chk is not None and spin is not None:
-            fit_mode = "freefit" if chk.isChecked() else "snap"
-            return fit_mode, float(spin.value())
+        back to configs/preprocess.toml when the tab isn't available. Free-fit is
+        the only resize mode, so fit_mode is always ``"freefit"``."""
+        spin = getattr(self._preprocess_tab, "freefit_max_ratio_spin", None)
+        if spin is not None:
+            return "freefit", float(spin.value())
         data = _load_preprocess_toml_data()
-        fit_mode = "freefit" if data.get("freefit") else "snap"
         max_ratio = float(data.get("freefit_max_ratio", DEFAULT_FREEFIT_MAX_RATIO))
-        return fit_mode, max_ratio
-
-    def _refresh_resize_preview_buckets(self) -> None:
-        combo = self.resize_preview_bucket_combo
-        current = combo.currentData()
-        combo.blockSignals(True)
-        try:
-            combo.clear()
-            combo.addItem(t("dataset_resize_preview_bucket_auto"), "")
-            # Free-fit (the only resize mode) has no discrete bucket allow-list, so
-            # only the "auto" entry is offered — the preview free-fits the source.
-            buckets: list[tuple[int, int]] = []
-            for label in dict.fromkeys(format_bucket_resos(buckets)):
-                width, height = label.split("x", 1)
-                ratio = int(width) / int(height)
-                combo.addItem(f"{label} ({ratio:.2f})", label)
-            idx = combo.findData(current)
-            combo.setCurrentIndex(idx if idx >= 0 else 0)
-        finally:
-            combo.blockSignals(False)
+        return "freefit", max_ratio
 
     def _current_index(self) -> int:
         """Index into ``self._images`` of the currently selected image.
@@ -1997,6 +1952,9 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         resize_meta = self._resize_preview_meta(width, height)
         if resize_meta:
             meta = f"{meta} · {resize_meta}"
+        decision = self._preprocess_decision_text(path)
+        if decision:
+            meta = f"{meta} · {escape(decision)}"
         self.image_meta.setText(meta)
 
     def _current_image_path(self) -> Path | None:
@@ -2051,8 +2009,10 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._refresh_preprocess_controls()
 
     def _preprocess_decision_text(self, path: Path | None) -> str:
+        # The "no decision" state is already conveyed by the tree-view row styling
+        # on the left, so render nothing here to avoid clutter over the image.
         if path is None:
-            return t("dataset_preprocess_decision_none")
+            return ""
         if path in self._marked:
             return t("dataset_preprocess_decision_move")
         action = self._preprocess_decisions.get(path)
@@ -2060,7 +2020,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             return t("dataset_preprocess_decision_skip")
         if action == "use":
             return t("dataset_preprocess_decision_use")
-        return t("dataset_preprocess_decision_none")
+        return ""
 
     def _refresh_preprocess_controls(self) -> None:
         path = self._current_image_path()
@@ -2077,7 +2037,8 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             enabled and (current_has_decision or has_any_decision)
         )
         self.preprocess_save_btn.setEnabled(self._current_dir is not None)
-        self.preprocess_decision_label.setText(self._preprocess_decision_text(path))
+        # The decision state is appended to the image-meta line (single row).
+        self._refresh_image_meta(path)
 
     def _toggle_mark_current(self) -> None:
         """Toggle the deletion mark on the currently selected image."""
@@ -2252,7 +2213,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._overlay_pm = None
         self.overlay_cb.setEnabled(False)
         self.resize_preview_cb.setEnabled(False)
-        self.resize_preview_bucket_combo.setEnabled(False)
         self.img.clear()
         self._refresh_image_meta(None)
         self._refresh_preprocess_controls()

@@ -51,22 +51,12 @@ STRINGS: dict[str, str] = {
         "Ignored when 'Drop low-resolution images' is unchecked."
     ),
     "preprocess_target_res": "Resolution tiers (target_res):",
-    "preprocess_freefit": "Free-fit (band):",
-    "preprocess_freefit_tip": (
-        "Preserve each image's native aspect ratio and resize so its patch-grid "
-        "token count lands inside the tier's token band, instead of snapping to a "
-        "discrete bucket. Drives crop to ~zero. Dual-use: train.py reads this too "
-        "and auto-enables the dynamic-seq compile path."
-    ),
     "preprocess_freefit_max_ratio": "Max aspect ratio:",
     "preprocess_freefit_max_ratio_tip": (
         "Clamp for free-fit: aspect ratios beyond 1:R / R:1 are cover-cropped to "
         "the limit (honoring the crop position above). Default 4.0 matches the "
         "old bucket table's most-elongated reach and blocks degenerate 1:5 / 1:6 "
-        "inputs. Only used in free-fit mode."
-    ),
-    "preprocess_freefit_note": (
-        "Free-fit ⇒ dynamic_seq compile path auto-enabled at train time."
+        "inputs."
     ),
     "preprocess_text_caching": "Caching (VAE + text)",
     "preprocess_caption_shuffle_variants": "Shuffle variants per caption (N):",
@@ -404,8 +394,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "Show resize preview",
     "dataset_resize_preview_tooltip": "Show the center-crop area and final bucket selected by preprocessing target_res. Source files are not modified.",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_resize_preview_bucket_auto": "Auto bucket",
-    "dataset_resize_preview_bucket_tooltip": "Preview a specific bucket resolution. Auto uses the current preprocessing bucket selection.",
     "dataset_preprocess_use_short": "Use (A)",
     "dataset_preprocess_use_tooltip": "Mark the current image as included for preprocessing. Source files are not modified.",
     "dataset_preprocess_skip_short": "Skip (S)",
@@ -416,7 +404,6 @@ STRINGS: dict[str, str] = {
     "dataset_preprocess_save": "Save preprocess decisions",
     "dataset_preprocess_save_tooltip": "Save per-image use/skip/move decisions as JSON for preprocessing. Move marks are excluded from preprocessing even before files are moved.",
     "dataset_preprocess_saved": "Preprocess decisions saved:\n{path}",
-    "dataset_preprocess_decision_none": "No preprocess decision",
     "dataset_preprocess_decision_use": "Preprocess decision: use",
     "dataset_preprocess_decision_skip": "Preprocess decision: skip",
     "dataset_preprocess_decision_move": "Current state: marked to move",

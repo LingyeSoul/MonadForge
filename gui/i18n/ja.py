@@ -50,24 +50,12 @@ STRINGS: dict[str, str] = {
         "「低解像度画像を除外」がオフの場合は無視されます。"
     ),
     "preprocess_target_res": "解像度ティア (target_res):",
-    "preprocess_freefit": "フリーフィット (バンド):",
-    "preprocess_freefit_tip": (
-        "各画像のネイティブアスペクト比を保持したまま、パッチグリッドの"
-        "トークン数がティアのトークンバンド内に収まるようにリサイズします。"
-        "個別バケットへのスナップの代わりに使用します。クロップをほぼゼロに抑えます。"
-        "デュアルユース: train.py もこの設定を読み込み、dynamic-seq コンパイルパスを"
-        "自動有効化します。"
-    ),
     "preprocess_freefit_max_ratio": "最大アスペクト比:",
     "preprocess_freefit_max_ratio_tip": (
         "フリーフィット用クランプ: 1:R / R:1 を超えるアスペクト比の画像は、"
         "上で設定したクロップ位置に従いカバークロップされます。"
         "デフォルト 4.0 は旧バケットテーブルの最長の縦横比に合わせており、"
         "1:5 / 1:6 など極端な比率の入力をブロックします。"
-        "フリーフィットモードでのみ使用されます。"
-    ),
-    "preprocess_freefit_note": (
-        "フリーフィット ⇒ 学習時に dynamic_seq コンパイルパスが自動有効化されます。"
     ),
     "preprocess_text_caching": "キャッシュ (VAE + テキスト)",
     "preprocess_caption_shuffle_variants": "キャプションあたりのシャッフルバリアント数 (N):",
@@ -356,8 +344,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "リサイズプレビューを表示",
     "dataset_resize_preview_tooltip": "前処理 target_res が選択する中央クロップ領域と最終 bucket を表示します。元ファイルは変更しません。",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_resize_preview_bucket_auto": "自動 bucket",
-    "dataset_resize_preview_bucket_tooltip": "特定の bucket 解像度をプレビューします。自動では現在の前処理 bucket 選択を使います。",
     "dataset_preprocess_use_short": "使用 (A)",
     "dataset_preprocess_use_tooltip": "現在の画像を前処理対象としてマークします。元ファイルは変更しません。",
     "dataset_preprocess_skip_short": "スキップ (S)",
@@ -368,7 +354,6 @@ STRINGS: dict[str, str] = {
     "dataset_preprocess_save": "前処理決定を保存",
     "dataset_preprocess_save_tooltip": "前処理用の画像別使用/スキップ/移動決定を JSON として保存します。移動マークは実際に移動する前でも前処理から除外されます。",
     "dataset_preprocess_saved": "前処理決定を保存しました:\n{path}",
-    "dataset_preprocess_decision_none": "前処理決定なし",
     "dataset_preprocess_decision_use": "前処理決定: 使用",
     "dataset_preprocess_decision_skip": "前処理決定: スキップ",
     "dataset_preprocess_decision_move": "現在の状態: 移動予定",

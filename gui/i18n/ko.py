@@ -48,24 +48,12 @@ STRINGS: dict[str, str] = {
         "'저해상도 이미지 제외'가 해제되면 무시됩니다."
     ),
     "preprocess_target_res": "해상도 티어 (target_res):",
-    "preprocess_freefit": "프리핏 (밴드):",
-    "preprocess_freefit_tip": (
-        "각 이미지의 원본 비율을 보존하면서 패치 그리드 토큰 수가 "
-        "티어의 토큰 밴드 안에 들어오도록 리사이즈합니다. "
-        "고정 버킷 스냅 대신 사용하며 크롭을 거의 없앱니다. "
-        "이중 용도: train.py도 이 설정을 읽어 dynamic-seq 컴파일 경로를 "
-        "자동 활성화합니다."
-    ),
     "preprocess_freefit_max_ratio": "최대 종횡비:",
     "preprocess_freefit_max_ratio_tip": (
         "프리핏 클램프: 1:R / R:1을 초과하는 종횡비의 이미지는 "
         "위에서 선택한 크롭 위치에 따라 커버 크롭됩니다. "
         "기본값 4.0은 기존 버킷 테이블의 가장 긴 종횡비와 일치하며 "
-        "1:5 / 1:6 같은 극단적인 입력을 차단합니다. "
-        "프리핏 모드에서만 사용됩니다."
-    ),
-    "preprocess_freefit_note": (
-        "프리핏 ⇒ 학습 시 dynamic_seq 컴파일 경로가 자동 활성화됩니다."
+        "1:5 / 1:6 같은 극단적인 입력을 차단합니다."
     ),
     "preprocess_text_caching": "캐싱 (VAE + 텍스트)",
     "preprocess_caption_shuffle_variants": "캡션당 셔플 변형 수 (N):",
@@ -394,8 +382,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "리사이즈 미리보기 표시",
     "dataset_resize_preview_tooltip": "전처리 target_res가 선택할 중앙 크롭 영역과 최종 bucket을 표시합니다. 원본 파일은 변경하지 않습니다.",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_resize_preview_bucket_auto": "자동 bucket",
-    "dataset_resize_preview_bucket_tooltip": "특정 bucket 해상도로 미리봅니다. 자동은 현재 전처리 bucket 선택을 사용합니다.",
     "dataset_preprocess_use_short": "사용 (A)",
     "dataset_preprocess_use_tooltip": "현재 이미지를 전처리 대상에 포함하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
     "dataset_preprocess_skip_short": "생략 (S)",
@@ -406,7 +392,6 @@ STRINGS: dict[str, str] = {
     "dataset_preprocess_save": "전처리 결정 저장",
     "dataset_preprocess_save_tooltip": "전처리에서 사용할 이미지별 사용/생략/이동 결정을 JSON으로 저장합니다. 이동 표시는 실제 이동 전에도 전처리에서 제외됩니다.",
     "dataset_preprocess_saved": "전처리 결정이 저장되었습니다:\n{path}",
-    "dataset_preprocess_decision_none": "전처리 결정 없음",
     "dataset_preprocess_decision_use": "전처리 결정: 사용",
     "dataset_preprocess_decision_skip": "전처리 결정: 생략",
     "dataset_preprocess_decision_move": "현재 상태: 이동 예정",

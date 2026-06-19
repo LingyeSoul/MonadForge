@@ -636,12 +636,6 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             self._field_label("freefit_max_ratio", t("preprocess_freefit_max_ratio")),
             self.freefit_max_ratio_spin,
         )
-        self.freefit_note = QLabel(t("preprocess_freefit_note"))
-        self.freefit_note.setWordWrap(True)
-        self.freefit_note.setStyleSheet(
-            f"QLabel {{ color:{tok('text_dim')}; font-style: italic; }}"
-        )
-        img_form.addRow("", self.freefit_note)
 
         img_box.setLayout(img_form)
         form_layout.addWidget(img_box)

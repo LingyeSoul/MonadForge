@@ -51,19 +51,12 @@ STRINGS: dict[str, str] = {
         "当「丢弃低分辨率图像」未勾选时忽略。"
     ),
     "preprocess_target_res": "分辨率档位 (target_res):",
-    "preprocess_freefit": "自由适配 (频段):",
-    "preprocess_freefit_tip": (
-        "保留每张图像的原始宽高比，并将其调整大小，使补丁网格的令牌数落在"
-        "所选档位的令牌频段内，而非对齐到固定桶。裁剪量趋近于零。"
-        "双重用途: train.py 也会读取此设置，并自动启用 dynamic-seq 编译路径。"
-    ),
     "preprocess_freefit_max_ratio": "最大宽高比:",
     "preprocess_freefit_max_ratio_tip": (
         "自由适配的限制: 宽高比超过 1:R / R:1 的图像将按上方选择的裁剪位置"
         "进行覆盖裁剪。默认 4.0 与旧桶表最极端的宽高比一致，"
-        "可阻止 1:5 / 1:6 等退化输入。仅在自由适配模式下使用。"
+        "可阻止 1:5 / 1:6 等退化输入。"
     ),
-    "preprocess_freefit_note": ("自由适配 ⇒ 训练时自动启用 dynamic_seq 编译路径。"),
     "preprocess_text_caching": "缓存 (VAE + 文本)",
     "preprocess_caption_shuffle_variants": "每条标注的随机变体数 (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -338,8 +331,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "显示 resize 预览",
     "dataset_resize_preview_tooltip": "显示预处理 target_res 选择的中心裁剪区域和最终 bucket。不会修改源文件。",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_resize_preview_bucket_auto": "自动 bucket",
-    "dataset_resize_preview_bucket_tooltip": "预览指定 bucket 分辨率。自动会使用当前预处理 bucket 选择。",
     "dataset_preprocess_use_short": "使用 (A)",
     "dataset_preprocess_use_tooltip": "将当前图像标记为参与预处理。不会修改源文件。",
     "dataset_preprocess_skip_short": "跳过 (S)",
@@ -350,7 +341,6 @@ STRINGS: dict[str, str] = {
     "dataset_preprocess_save": "保存预处理决定",
     "dataset_preprocess_save_tooltip": "将逐图像使用/跳过/移动决定保存为预处理使用的 JSON。移动标记即使在文件实际移动前也会从预处理中排除。",
     "dataset_preprocess_saved": "预处理决定已保存:\n{path}",
-    "dataset_preprocess_decision_none": "无预处理决定",
     "dataset_preprocess_decision_use": "预处理决定: 使用",
     "dataset_preprocess_decision_skip": "预处理决定: 跳过",
     "dataset_preprocess_decision_move": "当前状态: 已标记为移动",
