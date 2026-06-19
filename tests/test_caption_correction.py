@@ -50,7 +50,7 @@ def test_correct_caption_inserts_no_artist_at_artist_position(tmp_path):
     kb = load_tag_knowledge_base(_csv(tmp_path / "tags.csv"))
     result = correct_caption("long hair, vocaloid, hatsune miku, solo", kb)
 
-    assert result.text == "solo, hatsune miku, vocaloid, @no-artist, long hair"
+    assert result.text == "hatsune miku, vocaloid, @no-artist, long hair, solo"
     assert result.inserted_no_artist
 
 
@@ -151,9 +151,7 @@ def test_artist_validation_keeps_unknown_at_tag_in_general_tail(tmp_path):
         ),
     )
 
-    assert result.text == (
-        "1girl, hatsune miku, vocaloid, @no-artist, @trigger-word"
-    )
+    assert result.text == ("1girl, hatsune miku, vocaloid, @no-artist, @trigger-word")
 
 
 def test_artist_validation_does_not_reclassify_at_prefixed_character(tmp_path):
@@ -180,6 +178,40 @@ def test_numeric_category_wins_over_description_prefix(tmp_path):
     assert result.text == (
         "1girl, hatsune miku, vocaloid, @no-artist, copyright notice"
     )
+
+
+def test_describe_returns_body_category_and_post_count(tmp_path):
+    kb = load_tag_knowledge_base(_csv(tmp_path / "tags.csv"))
+
+    info = kb.describe("long hair")
+    assert info is not None
+    assert info.name == "long hair"
+    assert info.kind == "general"
+    assert info.category_path == "머리카락 > 머리 길이"
+    assert info.description == "general"  # bracketed category prefix stripped
+    assert info.post_count == 10
+
+    assert kb.describe("not_a_real_tag") is None
+
+
+def test_ranked_infos_orders_by_post_count_and_is_cached(tmp_path):
+    path = _csv(tmp_path / "tags.csv")
+    path.write_text(
+        "\n".join(
+            [
+                "name,category,post_count,description",
+                'rare_tag,0,5,"[머리카락 > x] rare"',
+                'common_tag,0,9000,"[머리카락 > x] common"',
+                'mid_tag,0,500,"[머리카락 > x] mid"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    kb = load_tag_knowledge_base(path)
+
+    ranked = kb.ranked_infos()
+    assert [info.name for info in ranked] == ["common tag", "mid tag", "rare tag"]
+    assert kb.ranked_infos() is ranked  # cached identity
 
 
 def test_default_tag_csv_prefers_models_dir_over_env(tmp_path, monkeypatch):

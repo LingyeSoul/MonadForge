@@ -160,6 +160,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "缓存 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "蒙版: {masks}",
     "preprocess_status_no_resized": "尚无已调整大小的图像。",
+    "preprocess_no_resized_to_process": (
+        "post_image_dataset/resized/ 中没有已调整大小的图像。请先运行预处理"
+        "（调整大小）——蒙版和分组都基于已调整大小的图像。"
+    ),
     "preprocess_open_dataset_dir": "打开cache文件夹",
     "preprocess_open_dataset_dir_tooltip": "在文件管理器中打开 post_image_dataset/ 文件夹（已调整大小的图像 + 缓存）。",
     "preprocess_clear_scope_cache": "删除当前 scope 缓存",
@@ -354,8 +358,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "显示 resize 预览",
     "dataset_resize_preview_tooltip": "显示预处理 target_res 选择的中心裁剪区域和最终 bucket。不会修改源文件。",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_use_short": "使用 (A)",
-    "dataset_preprocess_use_tooltip": "将当前图像标记为参与预处理。不会修改源文件。",
     "dataset_preprocess_skip_short": "跳过 (S)",
     "dataset_preprocess_skip_tooltip": "将当前图像标记为在预处理 resize 阶段跳过。不会修改源文件。",
     "dataset_preprocess_clear_short": "清除 (F)",
@@ -407,6 +409,8 @@ STRINGS: dict[str, str] = {
     "caption_correct_visible_done": "已校正 {n} 个标注。",
     "caption_correct_visible_failed": "已校正 {n} 个标注。\n\n失败:\n{err}",
     "caption_correct_no_change": "没有需要校正的更改。",
+    "tag_kb_posts": "{n} 个帖子",
+    "tag_kb_unknown": "{tag} — 不在标签知识库中",
     "caption_correct_db_missing": (
         "找不到 danbooru_tags_classified.csv。\n\n"
         "请在模型窗口下载 Danbooru 标签 DB，或将它放到以下位置:\n{paths}"

@@ -171,6 +171,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "Caches — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "Masks: {masks}",
     "preprocess_status_no_resized": "No resized images yet.",
+    "preprocess_no_resized_to_process": (
+        "No resized images found in post_image_dataset/resized/. Run Preprocess "
+        "(resize) first — masking and grouping operate on the resized images."
+    ),
     "preprocess_open_dataset_dir": "Open cache folder",
     "preprocess_open_dataset_dir_tooltip": "Open the post_image_dataset/ folder (resized images + caches) in your file manager.",
     "preprocess_clear_scope_cache": "Delete current-scope cache",
@@ -421,8 +425,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "Show resize preview",
     "dataset_resize_preview_tooltip": "Show the center-crop area and final bucket selected by preprocessing target_res. Source files are not modified.",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_use_short": "Use (A)",
-    "dataset_preprocess_use_tooltip": "Mark the current image as included for preprocessing. Source files are not modified.",
     "dataset_preprocess_skip_short": "Skip (S)",
     "dataset_preprocess_skip_tooltip": "Mark the current image to be skipped by preprocess resize. Source files are not modified.",
     "dataset_preprocess_clear_short": "Clear (F)",
@@ -476,6 +478,8 @@ STRINGS: dict[str, str] = {
     "caption_correct_visible_done": "Corrected {n} caption(s).",
     "caption_correct_visible_failed": "Corrected {n} caption(s).\n\nFailed:\n{err}",
     "caption_correct_no_change": "No caption changes to apply.",
+    "tag_kb_posts": "{n} posts",
+    "tag_kb_unknown": "{tag} — not in the tag knowledge base",
     "caption_correct_db_missing": (
         "danbooru_tags_classified.csv was not found.\n\n"
         "Download the Danbooru tag DB from the Models dialog, or place it here:\n{paths}"

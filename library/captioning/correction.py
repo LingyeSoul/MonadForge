@@ -31,13 +31,6 @@ _DANBOORU_NUMERIC_CATEGORIES = {
     "5": "meta",
 }
 
-_ANIMA_PERSON_TAGS = frozenset(
-    {
-        "solo",
-        "no humans",
-    }
-)
-
 
 @dataclass(frozen=True)
 class CaptionCorrectionOptions:
@@ -62,6 +55,8 @@ class TagInfo:
     name: str
     kind: str
     category_path: str
+    description: str = ""
+    post_count: int = 0
 
 
 class TagKnowledgeBase:
@@ -70,6 +65,7 @@ class TagKnowledgeBase:
     def __init__(self, tags: dict[str, TagInfo], source: Path):
         self.tags = tags
         self.source = source
+        self._ranked: list[TagInfo] | None = None
 
     def classify(self, tag: str) -> str | None:
         info = self.tags.get(tag_key(tag))
@@ -78,6 +74,21 @@ class TagKnowledgeBase:
     def has_artist(self, tag: str) -> bool:
         bare = tag[1:] if tag.startswith("@") else tag
         return self.classify(bare) == "artist"
+
+    def describe(self, tag: str) -> TagInfo | None:
+        """Full KB entry for ``tag`` (or ``None`` if unknown)."""
+        return self.tags.get(tag_key(tag))
+
+    def ranked_infos(self) -> list[TagInfo]:
+        """Every known tag ordered by Danbooru ``post_count`` (popular first).
+
+        Cached on first use — the GUI tag-completer model is built from this.
+        """
+        if self._ranked is None:
+            self._ranked = sorted(
+                self.tags.values(), key=lambda info: info.post_count, reverse=True
+            )
+        return self._ranked
 
 
 def default_tag_csv_candidates(root: Path | None = None) -> list[Path]:
@@ -112,20 +123,41 @@ def find_tag_csv(root: Path | None = None) -> Path | None:
 
 
 def load_tag_knowledge_base(path: str | Path) -> TagKnowledgeBase:
+    # Hot path: ~114k rows. ``csv.reader`` (no per-row dict) + a single
+    # ``normalize_tag`` per row + reusing the category regex match for the
+    # description body keep this ~2x faster than the naive DictReader form.
     csv_path = Path(path)
     tags: dict[str, TagInfo] = {}
     with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
+        reader = csv.reader(f)
+        header = next(reader, None) or []
+        cols = {name: i for i, name in enumerate(header)}
+        i_name = cols.get("name", 0)
+        i_category = cols.get("category", 1)
+        i_post = cols.get("post_count", 2)
+        i_desc = cols.get("description", 3)
+        ncols = len(header)
         for row in reader:
-            raw_name = str(row.get("name") or "").strip()
+            if len(row) < ncols:
+                continue
+            raw_name = row[i_name].strip()
             if not raw_name:
                 continue
-            category_path = _description_category_path(str(row.get("description") or ""))
-            kind = _kind_from_category(category_path, str(row.get("category") or ""))
-            tags[tag_key(raw_name)] = TagInfo(
-                name=normalize_tag(raw_name),
-                kind=kind,
+            description = row[i_desc]
+            match = _CATEGORY_RE.match(description)
+            if match:
+                category_path = normalize_tag(match.group(1).replace(">", " > "))
+                body = description[match.end() :].strip()
+            else:
+                category_path = ""
+                body = description.strip()
+            name = normalize_tag(raw_name)
+            tags[_key_from_normalized(name)] = TagInfo(
+                name=name,
+                kind=_kind_from_category(category_path, row[i_category]),
                 category_path=category_path,
+                description=body,
+                post_count=_parse_post_count(row[i_post]),
             )
     return TagKnowledgeBase(tags=tags, source=csv_path)
 
@@ -136,10 +168,14 @@ def normalize_tag(tag: str) -> str:
 
 
 def tag_key(tag: str) -> str:
-    tag = normalize_tag(tag)
-    if tag.startswith("@"):
-        tag = tag[1:]
-    return tag.replace(" ", "_")
+    return _key_from_normalized(normalize_tag(tag))
+
+
+def _key_from_normalized(name: str) -> str:
+    """Lookup key from an already ``normalize_tag``-ed name (no re-normalize)."""
+    if name.startswith("@"):
+        name = name[1:]
+    return name.replace(" ", "_")
 
 
 def correct_caption(
@@ -227,16 +263,16 @@ def _classify_tag(
         return "general"
     if tag in CAPTION_RATINGS or _is_year_tag(tag):
         return "meta"
-    if is_count_tag(tag) or tag in _ANIMA_PERSON_TAGS:
+    if is_count_tag(tag):
         return "count"
     return kb.classify(tag)
 
 
-def _description_category_path(description: str) -> str:
-    match = _CATEGORY_RE.match(description)
-    if not match:
-        return ""
-    return normalize_tag(match.group(1).replace(">", " > "))
+def _parse_post_count(value: object) -> int:
+    try:
+        return int(str(value or "").strip() or 0)
+    except ValueError:
+        return 0
 
 
 def _kind_from_category(category_path: str, numeric_category: str) -> str:
@@ -270,4 +306,6 @@ def correct_many(
     *,
     options: CaptionCorrectionOptions | None = None,
 ) -> list[tuple[Path, CaptionCorrectionResult]]:
-    return [(path, correct_caption(text, kb, options=options)) for path, text in captions]
+    return [
+        (path, correct_caption(text, kb, options=options)) for path, text in captions
+    ]

@@ -303,6 +303,51 @@ class QwenImageCausalConv3d(nn.Conv3d):
         return self._forward_chunked_height(x)
 
 
+class Folded2DConv(nn.Module):
+    r"""2D-equivalent of a single-image (``T=1``) :class:`QwenImageCausalConv3d`.
+
+    For one frame the causal temporal padding is zero-pad with the real frame
+    in the last temporal slot, so only the **last** temporal tap of the 3D
+    kernel sees data. The exact equivalent is therefore a plain ``nn.Conv2d``
+    whose weight is ``weight[:, :, -1, :, :]`` (bias unchanged), run on the
+    squeezed ``(B, C, H, W)`` frame. Per-layer this is bit-exact (verified in
+    fp64); whole-VAE it matches the 3D path within bf16 latent quantization
+    (~1e-2), while running ~2x faster at ~0.65-0.7x peak memory. See
+    ``bench/qwen_vae_2d/``.
+
+    Keeps the surrounding 5D ``(B, C, 1, H, W)`` plumbing intact (squeeze the
+    singleton time axis in, unsqueeze out) and accepts the ``cache_x`` arg of
+    the 3D conv it replaces (ignored — caching is a temporal no-op here).
+
+    ONLY valid for single-frame input; it asserts ``T == 1`` on every forward.
+    """
+
+    def __init__(self, c3d: "QwenImageCausalConv3d") -> None:
+        super().__init__()
+        # _padding = (pad_w, pad_w, pad_h, pad_h, 2*pad_t, 0); spatial pad is
+        # symmetric, so recover (pad_h, pad_w) directly.
+        pad_w, pad_h = c3d._padding[0], c3d._padding[2]
+        self.conv = nn.Conv2d(
+            c3d.in_channels,
+            c3d.out_channels,
+            kernel_size=(c3d.kernel_size[1], c3d.kernel_size[2]),
+            stride=(c3d.stride[1], c3d.stride[2]),
+            padding=(pad_h, pad_w),
+            bias=c3d.bias is not None,
+        ).to(device=c3d.weight.device, dtype=c3d.weight.dtype)
+        with torch.no_grad():
+            self.conv.weight.copy_(c3d.weight[:, :, -1, :, :])
+            if c3d.bias is not None:
+                self.conv.bias.copy_(c3d.bias)
+
+    def forward(self, x: torch.Tensor, cache_x=None) -> torch.Tensor:
+        assert x.shape[2] == 1, (
+            f"Folded2DConv only supports single-frame (T=1) input, got T={x.shape[2]}"
+        )
+        x = self.conv(x[:, :, 0])  # (B,C,1,H,W) -> (B,C,H,W) -> (B,C,H',W')
+        return x[:, :, None]  # -> (B,C,1,H',W')
+
+
 class QwenImageRMS_norm(nn.Module):
     r"""
     A custom RMS normalization layer.
@@ -1144,6 +1189,8 @@ class AutoencoderKLQwenImage(
         if disable_cache:
             self.disable_cache()
 
+        self.is_2d = False
+
     @property
     def dtype(self):
         return self.encoder.parameters().__next__().dtype
@@ -1234,6 +1281,28 @@ class AutoencoderKLQwenImage(
                 module.spatial_chunk_size = None
             elif isinstance(module, ChunkedConv2d):
                 module.spatial_chunk_size = None
+
+    def convert_to_2d(self) -> int:
+        r"""Fold every causal Conv3d into an equivalent 2D conv (image-only).
+
+        Rewrites all :class:`QwenImageCausalConv3d` to :class:`Folded2DConv` in
+        place and disables the temporal feature cache (indexed by Conv3d count,
+        and a no-op for single frames). After this the VAE handles **only
+        single images** (``T=1``) — encode/decode of multi-frame input will
+        assert. Numerically equivalent to the 3D path within bf16 noise; ~2x
+        faster at ~0.65-0.7x peak memory. Mirrors sd-scripts' ``--qwen_image_vae_2d``.
+
+        Returns the number of convs folded.
+        """
+        n = 0
+        for parent in self.modules():
+            for name, child in list(parent.named_children()):
+                if isinstance(child, QwenImageCausalConv3d):
+                    setattr(parent, name, Folded2DConv(child))
+                    n += 1
+        self.disable_cache()
+        self.is_2d = True
+        return n
 
     def enable_gradient_checkpointing(self) -> None:
         r"""Checkpoint the decoder up-blocks to cut backward activation memory.
@@ -1835,6 +1904,7 @@ def load_vae(
     disable_cache: bool = False,
     dtype: Optional[torch.dtype] = None,
     eval: bool = False,
+    vae_2d: bool = False,
 ) -> AutoencoderKLQwenImage:
     """Load VAE from a given path.
 
@@ -1842,6 +1912,11 @@ def load_vae(
     ``vae.to(torch.bfloat16); vae.eval()`` that almost every call site repeats:
     pass ``dtype=torch.bfloat16, eval=True`` to get a ready-to-run model.
     Both default off to preserve the historical "raw load" behaviour.
+
+    ``vae_2d`` folds the causal Conv3d stack into 2D convs after loading (see
+    :meth:`AutoencoderKLQwenImage.convert_to_2d`): ~2x faster encode/decode at
+    ~0.65-0.7x peak memory, numerically equivalent within bf16 noise, but
+    **image-only** (single-frame). Recommended for latent caching / decode.
     """
     vae_path = str(resolve_under_home(vae_path))
     VAE_CONFIG_JSON = """
@@ -1938,6 +2013,9 @@ def load_vae(
     vae.to(device)
     if dtype is not None:
         vae.to(dtype)
+    if vae_2d:
+        n = vae.convert_to_2d()
+        logger.info(f"Folded VAE to 2D (image-only): {n} Conv3d -> Conv2d")
     if eval:
         vae.eval()
     return vae

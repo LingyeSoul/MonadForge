@@ -166,6 +166,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "캐시 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "마스크: {masks}장",
     "preprocess_status_no_resized": "리사이즈된 이미지가 없습니다.",
+    "preprocess_no_resized_to_process": (
+        "post_image_dataset/resized/에 리사이즈된 이미지가 없습니다. 먼저 전처리"
+        "(리사이즈)를 실행하세요 — 마스킹과 그룹화는 리사이즈된 이미지를 대상으로 동작합니다."
+    ),
     "preprocess_open_dataset_dir": "캐시 폴더 열기",
     "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ 폴더(리사이즈된 이미지 + 캐시)를 파일 탐색기에서 엽니다.",
     "preprocess_clear_scope_cache": "현재 scope 캐시 삭제",
@@ -408,8 +412,6 @@ STRINGS: dict[str, str] = {
     "dataset_resize_preview": "리사이즈 미리보기 표시",
     "dataset_resize_preview_tooltip": "전처리 target_res가 선택할 중앙 크롭 영역과 최종 bucket을 표시합니다. 원본 파일은 변경하지 않습니다.",
     "dataset_resize_preview_label": "{width}x{height} @ {edge}",
-    "dataset_preprocess_use_short": "사용 (A)",
-    "dataset_preprocess_use_tooltip": "현재 이미지를 전처리 대상에 포함하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
     "dataset_preprocess_skip_short": "생략 (S)",
     "dataset_preprocess_skip_tooltip": "현재 이미지를 전처리 resize 단계에서 생략하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
     "dataset_preprocess_clear_short": "해제 (F)",
@@ -463,6 +465,8 @@ STRINGS: dict[str, str] = {
     "caption_correct_visible_done": "캡션 {n}개를 교정했습니다.",
     "caption_correct_visible_failed": "캡션 {n}개를 교정했습니다.\n\n실패:\n{err}",
     "caption_correct_no_change": "교정할 변경사항이 없습니다.",
+    "tag_kb_posts": "게시물 {n}개",
+    "tag_kb_unknown": "{tag} — 태그 지식베이스에 없음",
     "caption_correct_db_missing": (
         "danbooru_tags_classified.csv를 찾을 수 없습니다.\n\n"
         "모델 창에서 Danbooru 태그 DB를 다운로드하거나 다음 위치에 배치하세요:\n{paths}"

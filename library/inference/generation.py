@@ -1021,6 +1021,7 @@ def _setup_easycontrol(args, anima, device, shared_models):
             disable_mmap=True,
             spatial_chunk_size=getattr(args, "vae_chunk_size", None),
             disable_cache=getattr(args, "vae_disable_cache", False),
+            vae_2d=getattr(args, "vae_2d", True),
         )
         vae.to(torch.bfloat16)
         vae.eval()

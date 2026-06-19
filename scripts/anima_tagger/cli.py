@@ -10,9 +10,9 @@ these can be overridden individually by CLI flags.
 Modes (selected by ``--mode``):
 
 * ``build_vocab``    — scan caption sources, intersect with the tag-taxonomy
-                       cache, snapshot ``tag_rules.yaml``, emit
-                       ``vocab.json`` plus a fixed train/val split and a
-                       per-stem ``dataset.json`` manifest.
+                       cache, snapshot ``tag_rules.yaml``, emit ``vocab.json``
+                       (label space) plus a per-stem ``dataset.json`` manifest
+                       that carries the fixed train/val split.
 * ``build_features`` — encode every manifest image through frozen PE-Core +
                        PE-Spatial and write per-stem caches. Each side's
                        layout follows ``--pool_kind`` / ``--pool_kind_aux``
@@ -51,6 +51,23 @@ def _corpus_default(rel: str):
     if not root:
         return None
     return str(Path(root) / rel)
+
+
+def _default_tag_cache():
+    """Default tag-taxonomy source for ``--tag_cache``.
+
+    Prefers the corpus JSON when ``$CAPTION_CORPUS_DIR`` is set; otherwise falls
+    back to the publicly downloadable ``models/danbooru_tags_classified.csv`` KB
+    (``make download-danbooru-tags``), so the vocab build works without the
+    private crawl. Returns ``None`` only when neither is resolvable.
+    """
+    corpus = _corpus_default("retrieved/.tag_cache.json")
+    if corpus:
+        return corpus
+    csv_kb = (
+        Path(__file__).resolve().parents[2] / "models" / "danbooru_tags_classified.csv"
+    )
+    return str(csv_kb) if csv_kb.exists() else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -117,9 +134,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--tag_cache",
-        default=_corpus_default("retrieved/.tag_cache.json"),
-        help="Tag-taxonomy JSON (tag → integer type ID). "
-        "Default: $CAPTION_CORPUS_DIR/retrieved/.tag_cache.json.",
+        default=_default_tag_cache(),
+        help="Tag-taxonomy source mapping tag → Danbooru type ID. Accepts the "
+        "corpus JSON ($CAPTION_CORPUS_DIR/retrieved/.tag_cache.json) or the "
+        "public danbooru_tags_classified.csv KB. Default: the corpus JSON when "
+        "$CAPTION_CORPUS_DIR is set, else models/danbooru_tags_classified.csv.",
     )
     p.add_argument(
         "--rules",

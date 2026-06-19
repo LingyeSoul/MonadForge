@@ -510,6 +510,7 @@ def cmd_preprocess_vae(extra):
             "--chunk_size",
             "64",
             "--recursive",
+            "--no_half_vae",
             *pp_args,
             *extra,
         ]

@@ -1716,6 +1716,14 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             return
         # Carry the scoped paths so masking only scans the configured subfolder — without the snapshot the task falls back to the unscoped resized/ and re-masks every group each run.
         snapshot = self.preprocess_config_snapshot()
+        # Masking reads the resized images; with none on disk the task exits
+        # with an opaque "no images to mask". Surface the real cause first.
+        resized_dir = self._snapshot_path(snapshot, "resized_image_dir", RESIZED_DIR)
+        if _count_resized(resized_dir, mask_path_pattern) == 0:
+            QMessageBox.warning(
+                self, t("error"), t("preprocess_no_resized_to_process")
+            )
+            return
         self._submit(
             label="mask",
             argv=["tasks.py", "mask"],

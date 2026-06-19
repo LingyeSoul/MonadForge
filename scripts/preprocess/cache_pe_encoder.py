@@ -82,11 +82,15 @@ def main() -> None:
         include_num_workers=True,
         num_workers_default=4,
     )
+    # PE features are consumed as fp32 everywhere (REPA upcasts the cache at
+    # repa.py, CMMD pools in fp32), so cache at full precision by default — the
+    # historical bf16 save silently truncated the encoder output. --dtype now
+    # drives both the encoder compute dtype and the on-disk save dtype.
     add_device_args(
         parser,
         include_device=False,
-        dtype_default="bfloat16",
-        dtype_choices=("bfloat16", "float16", "float32"),
+        dtype_default="float32",
+        dtype_choices=("float32", "bfloat16", "float16"),
     )
     parser.add_argument(
         "--encoder",
@@ -205,8 +209,12 @@ def main() -> None:
         "float32": torch.float32,
     }[args.dtype]
 
-    print(f"Loading vision encoder '{args.encoder}' on {device} ...")
-    bundle = load_pe_encoder(device, name=args.encoder, model_id=args.model_id)
+    print(
+        f"Loading vision encoder '{args.encoder}' on {device} (dtype: {save_dtype}) ..."
+    )
+    bundle = load_pe_encoder(
+        device, name=args.encoder, model_id=args.model_id, dtype=save_dtype
+    )
     print(
         f"  encoder={bundle.name} d_enc={bundle.d_enc} "
         f"patch={bundle.bucket_spec.patch} cls={bundle.bucket_spec.use_cls}"

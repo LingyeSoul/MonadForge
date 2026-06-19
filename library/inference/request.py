@@ -82,6 +82,8 @@ class GenerationRequest:
     attn_mode: str = "torch"
     vae_chunk_size: Optional[int] = None
     vae_disable_cache: bool = False
+    # 2D-fold the VAE for ~2x faster decode; set False for the stock 3D path.
+    vae_2d: bool = True
     text_encoder_cpu: bool = False
 
     save_path: Optional[str] = None
@@ -151,6 +153,8 @@ class GenerationRequest:
             argv += ["--no_metadata"]
         if self.vae_disable_cache:
             argv += ["--vae_disable_cache"]
+        if not self.vae_2d:
+            argv += ["--no_vae_2d"]
         if self.text_encoder_cpu:
             argv += ["--text_encoder_cpu"]
 

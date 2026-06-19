@@ -45,6 +45,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
         + "",
     )
+    # Fold the causal Conv3d stack into 2D convs for decode (image-only, T=1):
+    # ~2x faster decode at ~0.65-0.7x peak memory, numerically equivalent within
+    # bf16 noise. Mirrors the preprocess caching path (cache_latents.py); default
+    # on. Flag names match that script (--qwen_image_vae_2d / --no_vae_2d).
+    parser.add_argument(
+        "--vae_2d",
+        "--qwen_image_vae_2d",
+        dest="vae_2d",
+        action="store_true",
+        default=True,
+        help="Fold the VAE Conv3d stack into 2D convs for decode (default on).",
+    )
+    parser.add_argument(
+        "--no_vae_2d",
+        dest="vae_2d",
+        action="store_false",
+        help="Use the stock 3D causal-Conv3d VAE for decode instead of the 2D fold.",
+    )
     parser.add_argument(
         "--text_encoder",
         type=str,

@@ -189,6 +189,7 @@ class InferenceEngine:
                 disable_mmap=True,
                 dtype=torch.bfloat16,
                 eval=True,
+                vae_2d=getattr(args, "vae_2d", True),
             )
 
     def unload(self) -> dict:

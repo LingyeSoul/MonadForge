@@ -6,6 +6,7 @@ import difflib
 import json
 import shutil
 import sys
+import threading
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -17,12 +18,15 @@ from PySide6.QtCore import (
     QProcess,
     QProcessEnvironment,
     QRect,
+    QStringListModel,
     Qt,
     QTimer,
     QUrl,
+    Signal,
 )
 from PySide6.QtGui import (
     QColor,
+    QCursor,
     QDesktopServices,
     QFont,
     QFontDatabase,
@@ -41,6 +45,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QCompleter,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -54,9 +59,11 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QSplitter,
+    QStyledItemDelegate,
     QTextBrowser,
     QTextEdit,
     QToolButton,
+    QToolTip,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -78,9 +85,11 @@ from gui import daemon as gui_daemon
 from gui._paths import (
     DEFAULT_CAPTION_INSERT_NO_ARTIST,
     DEFAULT_CAPTION_VALIDATE_ARTIST_TAGS,
+    IMAGE_EXTS,
 )
+from gui.config_io import default_resized_dir
 from gui._job_mixin import DaemonJobMixin
-from gui.i18n import t
+from gui.i18n import current_language, t
 from gui.progress import TqdmProgressTracker, make_progress_bar
 from gui.theme import tok
 from gui.widgets import apply_variant
@@ -454,6 +463,47 @@ def _tag_border_color(tag: str) -> QColor:
     return _BOX_BORDER_PLAIN
 
 
+class _TagCompletionDelegate(QStyledItemDelegate):
+    """Autocomplete popup row: tag name on the left, its KB category dimmed
+    on the right (e.g. ``long hair            general``)."""
+
+    # Horizontal breathing room reserved between the tag name and its
+    # right-aligned category, plus the right-edge inset (kept in sync with the
+    # ``adjusted(0, 0, -_CATEGORY_INSET, 0)`` in ``paint``).
+    _CATEGORY_GAP = 24
+    _CATEGORY_INSET = 8
+
+    def __init__(self, kind_lookup: dict[str, str], parent=None):
+        super().__init__(parent)
+        self._kind_lookup = kind_lookup
+
+    def paint(self, painter, option, index) -> None:  # noqa: N802 — Qt API
+        super().paint(painter, option, index)
+        kind = self._kind_lookup.get(index.data(Qt.DisplayRole) or "")
+        if not kind:
+            return
+        painter.save()
+        painter.setPen(QColor("#9a9a9a"))
+        painter.drawText(
+            option.rect.adjusted(0, 0, -self._CATEGORY_INSET, 0),
+            Qt.AlignRight | Qt.AlignVCenter,
+            kind,
+        )
+        painter.restore()
+
+    def sizeHint(self, option, index):  # noqa: N802 — Qt API
+        # Reserve width for the right-aligned category so it never crowds the
+        # tag name. ``sizeHintForColumn(0)`` (which sizes the popup) reads this.
+        hint = super().sizeHint(option, index)
+        kind = self._kind_lookup.get(index.data(Qt.DisplayRole) or "")
+        if kind:
+            extra = option.fontMetrics.horizontalAdvance(kind)
+            hint.setWidth(
+                hint.width() + extra + self._CATEGORY_GAP + self._CATEGORY_INSET
+            )
+        return hint
+
+
 class BoxedCaptionEdit(QTextEdit):
     """QTextEdit that paints thin border boxes inline around each
     comma-separated tag.
@@ -472,6 +522,10 @@ class BoxedCaptionEdit(QTextEdit):
     (wrapped lines don't crowd their box borders together).
     """
 
+    # Emitted when the user clicks on an existing comma-separated tag; carries
+    # the tag text so the owning tab can show its KB explanation.
+    tag_clicked = Signal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         font = self.font()
@@ -481,6 +535,10 @@ class BoxedCaptionEdit(QTextEdit):
         font.setLetterSpacing(QFont.PercentageSpacing, 115)
         self.setFont(font)
         self._apply_block_format()
+        # Tag autocomplete. The model is heavy (~114k rows) so the owning tab
+        # builds it on a background thread and hands it over via
+        # ``set_completion_data`` — until then the completer is simply absent.
+        self._completer: QCompleter | None = None
 
     def setPlainText(self, text: str) -> None:  # noqa: N802 — Qt API
         # setPlainText replaces the document, so the line-height format we
@@ -564,6 +622,135 @@ class BoxedCaptionEdit(QTextEdit):
                 line_right = cr.left()
         _emit()
         return rects
+
+    # --- Tag click → explanation -------------------------------------------
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 — Qt API
+        super().mouseReleaseEvent(event)
+        if event.button() != Qt.LeftButton or self.textCursor().hasSelection():
+            return
+        pos = self.cursorForPosition(event.position().toPoint()).position()
+        for start, end, tag in _tag_ranges(self.toPlainText()):
+            if start <= pos <= end:
+                self.tag_clicked.emit(tag)
+                return
+
+    # --- Tag autocomplete ---------------------------------------------------
+
+    # Cap on how many contains-matches the popup offers. Since ``names`` is
+    # ordered by popularity, the first N matches are the N most popular.
+    _MAX_COMPLETIONS = 30
+
+    def set_completion_data(self, names, kind_lookup) -> None:
+        """Attach the autocomplete model (``names`` already ordered by
+        popularity, ``kind_lookup`` = name → category). Called on the main
+        thread once the owning tab has built the data off-thread.
+
+        We filter to the top ``_MAX_COMPLETIONS`` matches ourselves (refilling
+        a small model on each keystroke) rather than handing the full ~114k-row
+        list to ``QCompleter`` and letting it scroll endlessly."""
+        self._completion_names = names
+        self._completion_names_lc = [n.lower() for n in names]
+        model = QStringListModel([], self)
+        comp = QCompleter(model, self)
+        comp.setWidget(self)
+        comp.setCaseSensitivity(Qt.CaseInsensitive)
+        comp.setCompletionMode(QCompleter.PopupCompletion)
+        comp.setMaxVisibleItems(12)
+        comp.popup().setItemDelegate(_TagCompletionDelegate(kind_lookup, comp.popup()))
+        comp.activated[str].connect(self._insert_completion)
+        self._completer = comp
+        self._completion_model = model
+
+    def _top_matches(self, prefix: str) -> list[str]:
+        """Top ``_MAX_COMPLETIONS`` tags matching ``prefix``, prefix-matches
+        first then mid-word substring matches, each ranked by popularity.
+
+        So typing ``ye`` surfaces ``yellow eyes`` ahead of ``eye`` — a tag that
+        *starts* with what you typed is a stronger hit than one that merely
+        contains it."""
+        needle = prefix.lower()
+        prefix_hits: list[str] = []
+        contains_hits: list[str] = []
+        for name, name_lc in zip(self._completion_names, self._completion_names_lc):
+            if name_lc.startswith(needle):
+                prefix_hits.append(name)
+            elif needle in name_lc:
+                contains_hits.append(name)
+            if len(prefix_hits) >= self._MAX_COMPLETIONS:
+                # Already enough prefix matches; nothing later can outrank them.
+                return prefix_hits[: self._MAX_COMPLETIONS]
+        return (prefix_hits + contains_hits)[: self._MAX_COMPLETIONS]
+
+    def _current_tag_prefix(self) -> tuple[str, bool]:
+        """Return ``(prefix, in_tag_context)`` for the token under the cursor.
+
+        Tags are comma-separated; a period boundary means the user is writing a
+        prose sentence (the ``On the … . In the …`` caption sections), so the
+        helper stays out of the way there.
+        """
+        pos = self.textCursor().position()
+        text = self.toPlainText()
+        start = pos
+        while start > 0 and text[start - 1] not in ",.\n":
+            start -= 1
+        if start > 0 and text[start - 1] == ".":
+            return "", False
+        return text[start:pos].strip(), True
+
+    def _insert_completion(self, completion: str) -> None:
+        cursor = self.textCursor()
+        pos = cursor.position()
+        text = self.toPlainText()
+        start = pos
+        while start > 0 and text[start - 1] not in ",\n":
+            start -= 1
+        while start < pos and text[start] == " ":
+            start += 1
+        cursor.setPosition(start, QTextCursor.MoveAnchor)
+        cursor.setPosition(pos, QTextCursor.KeepAnchor)
+        cursor.insertText(completion)
+        self.setTextCursor(cursor)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 — Qt API
+        comp = self._completer
+        if (
+            comp is not None
+            and comp.popup().isVisible()
+            and event.key()
+            in (
+                Qt.Key_Enter,
+                Qt.Key_Return,
+                Qt.Key_Escape,
+                Qt.Key_Tab,
+                Qt.Key_Backtab,
+            )
+        ):
+            event.ignore()  # let the popup consume navigation / accept keys
+            return
+        super().keyPressEvent(event)
+
+        if comp is None:
+            return
+        prefix, in_tag = self._current_tag_prefix()
+        if not in_tag or len(prefix) < 2:
+            comp.popup().hide()
+            return
+        matches = self._top_matches(prefix)
+        if not matches:
+            comp.popup().hide()
+            return
+        if matches != self._completion_model.stringList():
+            self._completion_model.setStringList(matches)
+            # Model already holds only the matches; an empty prefix shows them all.
+            comp.setCompletionPrefix("")
+            comp.popup().setCurrentIndex(comp.completionModel().index(0, 0))
+        rect = self.cursorRect()
+        rect.setWidth(
+            comp.popup().sizeHintForColumn(0)
+            + comp.popup().verticalScrollBar().sizeHint().width()
+        )
+        comp.complete(rect)
 
 
 def _unified_diff_html(old: str, new: str) -> str:
@@ -680,6 +867,10 @@ class CaptionVersionsDialog(QDialog):
 
 
 class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
+    # Carries the (names, kind_lookup) tag-completion payload from the
+    # background loader thread back to the GUI thread (queued delivery).
+    _completion_ready = Signal(object)
+
     def __init__(self, preprocess_tab=None):
         super().__init__()
         # Daemon job observer so curate-group's progress bar lives in this tab.
@@ -834,12 +1025,9 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.resize_preview_cb.setEnabled(False)
         self.resize_preview_cb.toggled.connect(self._on_overlay_toggled)
         img_head.addWidget(self.resize_preview_cb)
-        self.preprocess_use_btn = QPushButton(t("dataset_preprocess_use_short"))
-        self.preprocess_use_btn.setToolTip(t("dataset_preprocess_use_tooltip"))
-        self.preprocess_use_btn.clicked.connect(
-            lambda: self._set_current_preprocess_decision("use", advance=True)
-        )
-        img_head.addWidget(self.preprocess_use_btn)
+        # No explicit "Use" button — an image with no decision is already
+        # processed (preprocess only honours skip/move), so "use" was a no-op
+        # marker. Skip / Clear / Move cover the real states.
         self.preprocess_skip_btn = QPushButton(t("dataset_preprocess_skip_short"))
         self.preprocess_skip_btn.setToolTip(t("dataset_preprocess_skip_tooltip"))
         self.preprocess_skip_btn.clicked.connect(
@@ -924,6 +1112,9 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self.cap = BoxedCaptionEdit()
         self.cap.setMaximumHeight(180)
         self.cap.textChanged.connect(self._on_text_changed)
+        self.cap.tag_clicked.connect(self._on_tag_clicked)
+        self._completion_ready.connect(self._on_completion_ready)
+        self._start_tag_completion_preload()
         rl.addWidget(self.cap)
 
         # One-line grammar reminder, mirrors anima_smart_shuffle's split rules.
@@ -953,12 +1144,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         _esc = QShortcut(QKeySequence(Qt.Key_Escape), self.tree, self._unmark_current)
         _esc.setContext(Qt.WidgetShortcut)
         for target in (self.tree, self.img):
-            use_sc = QShortcut(
-                QKeySequence("A"),
-                target,
-                lambda: self._set_current_preprocess_decision("use", advance=True),
-            )
-            use_sc.setContext(Qt.WidgetShortcut)
             skip_sc = QShortcut(
                 QKeySequence("S"),
                 target,
@@ -979,7 +1164,13 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             self._load_dir(self.dc.currentText())
 
     def _make_button_with_menu(
-        self, text: str, tooltip: str, clicked_cb, actions, *, variant: str | None = None
+        self,
+        text: str,
+        tooltip: str,
+        clicked_cb,
+        actions,
+        *,
+        variant: str | None = None,
     ) -> QWidget:
         host = QWidget()
         row = QHBoxLayout(host)
@@ -1053,6 +1244,18 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         if self._job_id:  # a grouping run is already attached
             QMessageBox.information(
                 self, "", t("dataset_group_queued", job_id=self._job_id)
+            )
+            return
+        # Grouping keys off PE-Spatial features of the resized images; with none
+        # on disk the task exits with an opaque "no images to group". Point the
+        # user at the real cause (run Preprocess first) instead.
+        resized_dir = default_resized_dir()
+        has_resized = resized_dir.is_dir() and any(
+            p.suffix.lower() in IMAGE_EXTS for p in resized_dir.rglob("*")
+        )
+        if not has_resized:
+            QMessageBox.warning(
+                self, t("error"), t("preprocess_no_resized_to_process")
             )
             return
         # Grouping is GPU work — free the resident tagger first so they don't
@@ -1244,24 +1447,26 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             ),
         )
 
-    def _load_caption_kb(self) -> TagKnowledgeBase | None:
+    def _load_caption_kb(self, *, warn: bool = True) -> TagKnowledgeBase | None:
         csv_path = find_tag_csv(ROOT)
         if csv_path is None:
-            candidates = "\n".join(
-                f"  {path}" for path in default_tag_csv_candidates(ROOT)
-            )
-            QMessageBox.warning(
-                self,
-                t("error"),
-                t("caption_correct_db_missing", paths=candidates),
-            )
+            if warn:
+                candidates = "\n".join(
+                    f"  {path}" for path in default_tag_csv_candidates(ROOT)
+                )
+                QMessageBox.warning(
+                    self,
+                    t("error"),
+                    t("caption_correct_db_missing", paths=candidates),
+                )
             return None
         try:
             mtime = csv_path.stat().st_mtime
         except OSError as exc:
-            QMessageBox.warning(
-                self, t("error"), t("caption_correct_db_failed", err=str(exc))
-            )
+            if warn:
+                QMessageBox.warning(
+                    self, t("error"), t("caption_correct_db_failed", err=str(exc))
+                )
             return None
         if (
             self._caption_kb is not None
@@ -1274,13 +1479,79 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             self._caption_kb_source = csv_path
             self._caption_kb_mtime = mtime
         except (OSError, ValueError) as exc:
-            QMessageBox.warning(
-                self, t("error"), t("caption_correct_db_failed", err=str(exc))
-            )
+            if warn:
+                QMessageBox.warning(
+                    self, t("error"), t("caption_correct_db_failed", err=str(exc))
+                )
             self._caption_kb = None
             self._caption_kb_source = None
             self._caption_kb_mtime = None
         return self._caption_kb
+
+    def _on_tag_clicked(self, tag: str) -> None:
+        """Show the clicked tag's KB entry as a rich tooltip at the cursor.
+
+        The tag KB (``danbooru_tags_classified.csv``) is Korean-only, so the
+        explanation view is gated to the Korean UI — in any other language the
+        tooltip would be untranslated Hangul. The autocomplete helper stays on
+        for every language (tag names / categories are language-neutral). When a
+        translated KB lands, widen this guard (see CONTRIBUTING.md §5)."""
+        if current_language() != "ko":
+            return
+        kb = self._load_caption_kb(warn=False)
+        info = kb.describe(tag) if kb is not None else None
+        if info is None:
+            QToolTip.showText(QCursor.pos(), t("tag_kb_unknown", tag=tag), self.cap)
+            return
+        head = f"<b>{escape(info.name)}</b> &middot; {escape(info.kind)}"
+        if info.post_count:
+            head += " &middot; " + escape(t("tag_kb_posts", n=f"{info.post_count:,}"))
+        parts = [head]
+        if info.category_path:
+            parts.append(
+                f"<span style='color:#8aa9c0;'>[{escape(info.category_path)}]</span>"
+            )
+        if info.description:
+            parts.append(escape(info.description))
+        html = "<div style='max-width:360px;'>" + "<br>".join(parts) + "</div>"
+        QToolTip.showText(QCursor.pos(), html, self.cap)
+
+    def _start_tag_completion_preload(self) -> None:
+        """Build the tag-autocomplete model on a daemon thread so the ~114k-row
+        CSV parse never blocks the first keystroke. Runs at most once."""
+        if getattr(self, "_completion_preloading", False):
+            return
+        self._completion_preloading = True
+        threading.Thread(target=self._preload_tag_completion, daemon=True).start()
+
+    def _preload_tag_completion(self) -> None:
+        # Worker thread: pure Python only, no Qt object creation and no writes
+        # to self — the parsed payload is marshalled back via a queued signal.
+        payload = None
+        try:
+            csv_path = find_tag_csv(ROOT)
+            if csv_path is not None:
+                mtime = csv_path.stat().st_mtime
+                kb = load_tag_knowledge_base(csv_path)
+                infos = kb.ranked_infos()  # popular tags first
+                names = [info.name for info in infos]
+                kind_lookup = {info.name: info.kind for info in infos}
+                payload = (kb, csv_path, mtime, names, kind_lookup)
+        except (OSError, ValueError):
+            payload = None
+        self._completion_ready.emit(payload)
+
+    def _on_completion_ready(self, payload) -> None:
+        if payload is None:
+            return
+        kb, csv_path, mtime, names, kind_lookup = payload
+        # Seed the shared KB cache (main-thread write) so tag-click explanations
+        # and caption-correct reuse this parse instead of re-reading the CSV.
+        if self._caption_kb is None:
+            self._caption_kb = kb
+            self._caption_kb_source = csv_path
+            self._caption_kb_mtime = mtime
+        self.cap.set_completion_data(names, kind_lookup)
 
     def _correct_current_caption(self) -> None:
         if self._current_caption_path is None:
@@ -1341,9 +1612,7 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             and self._current_caption_path.exists()
         ):
             try:
-                self._disk_text = self._current_caption_path.read_text(
-                    encoding="utf-8"
-                )
+                self._disk_text = self._current_caption_path.read_text(encoding="utf-8")
             except OSError:
                 pass
             self._set_caption_text(self._disk_text)
@@ -2186,7 +2455,6 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
     def _refresh_preprocess_controls(self) -> None:
         path = self._current_image_path()
         enabled = path is not None
-        self.preprocess_use_btn.setEnabled(enabled)
         self.preprocess_skip_btn.setEnabled(enabled)
         current_has_decision = (
             path in self._preprocess_decisions or path in self._marked

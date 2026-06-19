@@ -3,12 +3,14 @@
 Produces three artifacts under ``out_dir/``:
 
 * ``vocab.json``   — kept tag list (with category + median emit position),
-                     rating list, slot order, coverage stats, train/val split.
+                     rating list, slot order, coverage stats. No per-stem data:
+                     it's the model's label space, independent of the corpus.
 * ``rules.yaml``   — snapshot of the source ``tag_rules.yaml`` so the
                      inference wrapper has zero runtime dep on the corpus.
 * ``dataset.json`` — per-stem ``(image_path, multi_hot_indices, rating_idx)``
-                     manifest, filtered to captions with a sibling image,
-                     a recognized rating, and at least one in-vocab tag.
+                     manifest + the train/val ``split``, filtered to captions
+                     with a sibling image, a recognized rating, and at least
+                     one in-vocab tag. This is the sole home of the split.
 
 The build is intentionally self-contained: every other CLI mode reads from
 the manifest + vocab snapshot, never from the source corpus.
@@ -17,6 +19,7 @@ the manifest + vocab snapshot, never from the source corpus.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import random
@@ -95,7 +98,23 @@ def build_caption_index(
 
 
 def load_tag_cache(path: Path) -> Dict[str, str]:
-    """Load the corpus tag-taxonomy cache and map tag → category name."""
+    """Load a tag-taxonomy source and map tag → category name.
+
+    Two on-disk formats are accepted, dispatched by suffix:
+
+    * ``.json`` — gelcrawl's corpus cache, a ``{tag: integer type_id}`` dict.
+    * ``.csv``  — the public ``danbooru_tags_classified.csv`` KB (``name``,
+      ``category``, ``post_count``, ``description``); ``category`` carries the
+      same numeric Danbooru type id, so it feeds the identical ``TAG_TYPE_NAMES``
+      mapping. This lets the vocab build run off the downloadable KB with no
+      dependency on the private corpus crawl.
+
+    Both normalize underscored cache keys to the space-separated canonical
+    caption form.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        return _load_tag_cache_csv(path)
     with open(path) as f:
         raw = json.load(f)
     out: Dict[str, str] = {}
@@ -104,6 +123,25 @@ def load_tag_cache(path: Path) -> Dict[str, str]:
         if cat is not None:
             # Cache uses underscored names; canonical caption format uses spaces.
             out[tag.replace("_", " ")] = cat
+    return out
+
+
+def _load_tag_cache_csv(path: Path) -> Dict[str, str]:
+    """Parse ``danbooru_tags_classified.csv`` into a tag → category-name map."""
+    out: Dict[str, str] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = str(row.get("name") or "").strip()
+            raw_cat = str(row.get("category") or "").strip()
+            if not name or not raw_cat:
+                continue
+            try:
+                cat = TAG_TYPE_NAMES.get(int(raw_cat))
+            except ValueError:
+                continue
+            if cat is not None:
+                out[name.replace("_", " ")] = cat
     return out
 
 
@@ -519,12 +557,14 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
                 "(pure BCE on every tag)",
             )
 
+    # The train/val split is a property of the training corpus, not the model's
+    # label space — it lives only in dataset.json (the manifest), never in the
+    # shipped vocab.json, so the published vocab carries no per-stem train list.
     split = make_split(
         sorted(index.keys()),
         val_frac=args.val_frac,
         seed=args.seed,
     )
-    vocab["split"] = split
 
     vocab_path = out_dir / "vocab.json"
     with open(vocab_path, "w") as f:
