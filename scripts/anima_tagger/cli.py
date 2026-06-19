@@ -217,6 +217,19 @@ def parse_args() -> argparse.Namespace:
         "that drives the train/val tag-loss gap. 0.0 (default) is inert; "
         "0.05–0.1 is the usual range. Val loss is always reported unsmoothed.",
     )
+    p.add_argument(
+        "--inactive_neg_weight",
+        type=float,
+        default=0.6,
+        help="Group-conditional negative weighting λ (train only). A negative "
+        "tag whose group has NO tags on that image (annotator likely skipped "
+        "the category → possible missing label) gets its BCE scaled by λ. "
+        "Positives / active-group negatives / ungrouped tags untouched. 1.0 "
+        "(default) is bit-inert; 0.6–0.75 is the intended range (bench/"
+        "tagger_groups gold-check: inactive-group negatives only mildly less "
+        "reliable, so don't mask). Trades long-tail recall↑ vs precision↓ — "
+        "A/B on val. Val loss is always reported at λ=1.",
+    )
     # build_features / train / calibrate all read --pool_kind to pick the cache
     # subdir and head shape — they must agree.
     p.add_argument(

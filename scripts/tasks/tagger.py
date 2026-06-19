@@ -79,7 +79,7 @@ def cmd_tagger(extra):
         "--lr",
         "1.5e-4",
         "--label_smooth",
-        "0.05",
+        "0.0",
         "--pool_kind",
         "map",
         "--pool_kind_aux",

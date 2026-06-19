@@ -1161,8 +1161,12 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         METHOD / METHODS_SUBDIR / PRESET point tasks.py at the same variant
         training will use, so any source_image_dir / resized_image_dir /
         lora_cache_dir override in the variant file is honored by preprocess too
-        (read via scripts/tasks/_common._path_overrides; drop_lowres_images /
-        min_pixels likewise come from the merged config chain)."""
+        (read via scripts/tasks/_common._path_overrides). The geometry/filter
+        knobs (drop_lowres_images / min_pixels / target_res / freefit_max_ratio)
+        can't ride the CONFIG_FILE snapshot — it's the dual-purpose training
+        config and strips preprocess-only keys — so they're forwarded as env by
+        _preprocess_env (preprocess_tab.preprocess_env), which tasks.py reads with
+        priority over the snapshot."""
         chain_after = getattr(self, "_chain_train_after_preprocess", False)
         if chain_after:
             self.train_btn.setText(t("train_preprocessing"))
@@ -1223,9 +1227,9 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         if self._dirty:
             self._save_preset(silent=True)
 
-        # Flush the Preprocess tab's cache settings to preprocess.toml: the
-        # auto-chain `tasks.py preprocess` reads tiers/filter from there and
-        # caption shuffle knobs from the env, not directly from widgets.
+        # Flush the Preprocess tab's cache settings to the variant profile: the
+        # auto-chain `tasks.py preprocess` reads tiers/filter and caption shuffle
+        # knobs from the env (_preprocess_env), not directly from widgets.
         if self._preprocess_tab is not None:
             if not self._preprocess_tab.persist_preprocess_inputs():
                 return

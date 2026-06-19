@@ -114,6 +114,56 @@ def test_preprocess_te_runs_correction_for_trigger_word_without_correct_order(
     assert te_cmd[te_cmd.index("--dir") + 1] == "post_image_dataset/resized"
 
 
+def _stub_overrides(monkeypatch, overrides: dict) -> None:
+    """Pin the merged-config read both builders fall back to when env is unset."""
+    from scripts.tasks import _common
+
+    monkeypatch.setattr(_common, "_path_overrides", lambda: dict(overrides))
+
+
+def test_min_pixels_args_env_drop_false_keeps_every_image(monkeypatch):
+    """GUI auto-chain unchecks low-res → DROP_LOWRES_IMAGES=0 forces --min_pixels 0,
+    overriding a merged config that still says drop=true (the snapshot strips it)."""
+    from scripts.tasks.preprocess import _min_pixels_args
+
+    _stub_overrides(monkeypatch, {"drop_lowres_images": True, "min_pixels": 250_000})
+    monkeypatch.setenv("DROP_LOWRES_IMAGES", "0")
+    monkeypatch.setenv("MIN_PIXELS", "250000")
+
+    assert _min_pixels_args() == ["--min_pixels", "0"]
+
+
+def test_min_pixels_args_env_drop_true_uses_env_threshold(monkeypatch):
+    from scripts.tasks.preprocess import _min_pixels_args
+
+    _stub_overrides(monkeypatch, {})
+    monkeypatch.setenv("DROP_LOWRES_IMAGES", "1")
+    monkeypatch.setenv("MIN_PIXELS", "250000")
+
+    assert _min_pixels_args() == ["--min_pixels", "250000"]
+
+
+def test_min_pixels_args_no_env_falls_back_to_config(monkeypatch):
+    from scripts.tasks.preprocess import _min_pixels_args
+
+    _stub_overrides(monkeypatch, {"drop_lowres_images": False, "min_pixels": 250_000})
+    monkeypatch.delenv("DROP_LOWRES_IMAGES", raising=False)
+    monkeypatch.delenv("MIN_PIXELS", raising=False)
+
+    assert _min_pixels_args() == ["--min_pixels", "0"]
+
+
+def test_target_res_args_env_wins_over_config(monkeypatch):
+    from scripts.tasks.preprocess import _target_res_args
+
+    _stub_overrides(monkeypatch, {"target_res": [1024]})
+    monkeypatch.setenv("TARGET_RES", "1024 896")
+
+    assert _target_res_args([]) == ["--target_res", "1024", "896"]
+    # An explicit CLI --target_res still wins over both env and config.
+    assert _target_res_args(["--target_res", "768"]) == []
+
+
 def test_caption_correction_config_parses_trigger_cli_args():
     from scripts.tasks.preprocess import _caption_correction_config
 

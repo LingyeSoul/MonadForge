@@ -1361,8 +1361,21 @@ class PreprocessingTab(DaemonJobMixin, DirtyTrackingMixin, LazyTabMixin, QWidget
             return None
 
     def preprocess_env(self) -> dict[str, str]:
-        """Environment values consumed by ``tasks.py preprocess``."""
+        """Environment values consumed by ``tasks.py preprocess``.
+
+        The geometry/filter knobs (``DROP_LOWRES_IMAGES`` / ``MIN_PIXELS`` /
+        ``TARGET_RES`` / ``FREEFIT_MAX_RATIO``) ride as env — not just the config
+        snapshot — because the ConfigTab Train auto-chain hands preprocess a
+        CONFIG_FILE snapshot with the preprocess-only keys stripped (they must not
+        leak into the chained training config). Env wins over the snapshot in
+        ``tasks.py`` (mirrors ``PREPROCESS_PATH_PATTERN``), so the auto-chain
+        honors the unchecked low-res filter / selected tiers. Harmlessly redundant
+        on the standalone Preprocess Run (snapshot already carries them)."""
         return {
+            "DROP_LOWRES_IMAGES": "1" if self.drop_lowres_chk.isChecked() else "0",
+            "MIN_PIXELS": str(int(self.min_pixels_spin.value())),
+            "TARGET_RES": " ".join(str(e) for e in self.target_res_widget.value()),
+            "FREEFIT_MAX_RATIO": f"{float(self.freefit_max_ratio_spin.value()):g}",
             "CAPTION_SHUFFLE_VARIANTS": str(int(self.shuffle_spin.value())),
             "CAPTION_TAG_DROPOUT_RATE": self.dropout_edit.text().strip(),
             "CAPTION_CORRECT_ORDER": (

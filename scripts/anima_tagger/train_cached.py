@@ -121,6 +121,7 @@ def _save_cfg_dict(args, cfg, d_in, best_f1):
         "lr": args.lr,
         "weight_decay": args.weight_decay,
         "label_smooth": args.label_smooth,
+        "inactive_neg_weight": args.inactive_neg_weight,
         "lambda_rating": args.lambda_rating,
         "lambda_people": args.lambda_people,
         "seed": args.seed,
@@ -425,6 +426,13 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
             )
     else:
         logger.info("no typed groups — pure BCE on every tag")
+    if args.inactive_neg_weight != 1.0:
+        logger.info(
+            "group-conditional negative weighting active: λ=%.3f on inactive-group "
+            "negatives (%d typed groups span the vocab)",
+            args.inactive_neg_weight,
+            router.n_group_slots,
+        )
 
     # RAM-resident reads hit no disk → full global shuffle is free (chunk_size=0);
     # the on-disk mmap path wants chunked locality instead.
@@ -504,7 +512,11 @@ def _train_cached_dual(args: argparse.Namespace) -> None:
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 tag_logits, rating_logits, people_logits = model(tokens, tokens_aux)
                 l_tag, _per_group = compute_grouped_loss(
-                    tag_logits, mh, router, label_smooth=args.label_smooth
+                    tag_logits,
+                    mh,
+                    router,
+                    label_smooth=args.label_smooth,
+                    inactive_neg_weight=args.inactive_neg_weight,
                 )
                 l_rate = ce(rating_logits, rate)
                 loss = l_tag + args.lambda_rating * l_rate

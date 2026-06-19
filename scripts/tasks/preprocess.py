@@ -19,8 +19,26 @@ def _min_pixels_args() -> list[str]:
     Returns ``[]`` when both keys are absent so plain CLI use keeps each
     script's own argparse default (500_000 = 0.5MP). ``drop_lowres_images
     = false`` forces ``--min_pixels 0`` even when ``min_pixels`` is set, so
-    the user can flip a single boolean to disable the filter."""
+    the user can flip a single boolean to disable the filter.
+
+    The GUI Train auto-chain forwards the filter via the ``DROP_LOWRES_IMAGES`` /
+    ``MIN_PIXELS`` env vars (mirrors ``PREPROCESS_PATH_PATTERN``): its CONFIG_FILE
+    snapshot has the preprocess-only keys stripped, so the merged-config read
+    below would miss them. Env wins over the merged config; absent env falls back
+    to the merged chain (``preprocess.toml`` → base → preset → method)."""
     from ._common import _path_overrides  # local import: avoids unused circular
+
+    env_drop = os.environ.get("DROP_LOWRES_IMAGES")
+    env_min = os.environ.get("MIN_PIXELS")
+    if env_drop is not None or env_min is not None:
+        if env_drop is not None and not _boolish(env_drop, True):
+            return ["--min_pixels", "0"]
+        if env_min is None:
+            return []
+        try:
+            return ["--min_pixels", str(max(0, int(env_min)))]
+        except (TypeError, ValueError):
+            return []
 
     overrides = _path_overrides()
     if "drop_lowres_images" not in overrides and "min_pixels" not in overrides:
@@ -60,9 +78,15 @@ def _target_res_args(extra) -> list[str]:
 
     from library.datasets.buckets import ALLOWED_TARGET_RES
 
-    from ._common import _path_overrides
+    # GUI Train auto-chain forwards tiers via env (its CONFIG_FILE snapshot strips
+    # target_res); env wins over the merged config. Space/comma separated edges.
+    env_tr = os.environ.get("TARGET_RES")
+    if env_tr is not None:
+        raw = env_tr.replace(",", " ").split()
+    else:
+        from ._common import _path_overrides
 
-    raw = _path_overrides().get("target_res")
+        raw = _path_overrides().get("target_res")
     if not raw:
         return []
     edges = raw if isinstance(raw, (list, tuple)) else [raw]
@@ -281,10 +305,12 @@ def _freefit_args(extra) -> list[str]:
     """
     from ._common import _path_overrides
 
-    overrides = _path_overrides()
     out: list[str] = []
     if "--freefit_max_ratio" not in extra and "--freefit-max-ratio" not in extra:
-        raw = overrides.get("freefit_max_ratio")
+        # Env (GUI auto-chain) wins over the merged config, which the snapshot strips.
+        raw = os.environ.get("FREEFIT_MAX_RATIO")
+        if raw is None:
+            raw = _path_overrides().get("freefit_max_ratio")
         if raw is not None:
             try:
                 out += ["--freefit_max_ratio", f"{float(raw):g}"]
