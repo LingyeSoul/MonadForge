@@ -33,9 +33,14 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 # Shared torch-free tag-shape primitives, kept in sync with the Anima Tagger
 # vocab build (scripts/anima_tagger/vocab.py).

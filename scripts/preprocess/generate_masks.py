@@ -2,8 +2,13 @@
 """Generate text/speech-bubble masks for training images using SAM3."""
 
 import argparse
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import numpy as np
 

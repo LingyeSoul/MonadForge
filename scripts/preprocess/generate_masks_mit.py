@@ -5,8 +5,13 @@ Model: https://huggingface.co/a-b-c-x-y-z/Manga-Text-Segmentation-2025
 """
 
 import argparse
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+_ROOT = Path(__file__).resolve().parents[2]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import cv2
 import numpy as np
