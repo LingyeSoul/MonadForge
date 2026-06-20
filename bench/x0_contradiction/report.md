@@ -51,6 +51,76 @@ contradiction" real and measurable? Is it the LoRA's fault? Which way does
 
 ---
 
+## Follow-up (2026-06-21): closing the wander→breakage caveat with a real detector
+
+The original report ends on a caveat: *"We did not establish that early wander
+causes specific visible breakages — the one artifact dissected (eyes) was a
+different mechanism."* Three follow-up probes close it. Net: **the LoRA's extra
+wander is not real degradation, and wander is not the breakage axis** — the n=1
+eyes dissection now holds on n=30 with a validated pixel-space detector.
+
+### F1. The "benign detail" story holds for *motion*, not *contradiction*
+
+`wander_is_it_real.py` decomposes the LoRA's +10% (TL;DR #1) by spatial
+coincidence at fixed caption (Δ = lora−base, per patch, seed-avg):
+
+| signal | corr with Δ early-path | corr with Δ backtrack |
+|---|---|---|
+| Δ detail (Sobel HF energy of final) | **+0.19** (consistent, all 4 prompts) | −0.09 (≈0) |
+| lora cross-seed var (multimodal/breakage-prone) | — | −0.02 (≈0) |
+
+So TL;DR #1's "busier scene buys the wander" is earned by the **monotone motion**
+(extra path ↔ added detail, +0.19), **not** by the **backtracking** the report
+actually calls *contradiction* (≈0 with both detail and seed-lottery regions —
+it's diffuse, structureless, low-amplitude). Correction to TL;DR #1: *the +10%
+splits — path tracks detail; the contradiction component tracks nothing
+detectable.*
+
+### F2. SAM3 finger-count detector — no degradation, wander ⊥ breakage
+
+OpenPose is useless on anime (0 poses — photo-trained). **SAM3 is anime-robust**
+and text-promptable: `"hand"`/`"finger"` → instance masks+scores; finger-count is
+THE canonical breakage (6-finger hand). `breakage = Σ_hand max(0, n_fingers−5)`
+(excess-only — a fist <5 is occlusion, not breakage). **Detector validated by
+eye**: 0-excess images are clean 5-finger hands; the 8-excess outlier is a
+visibly broken multi-finger grip on a mug. Paired base-vs-LoRA, same prompt+seed
+(`wander_vs_breakage.py`, 6 hand prompts × 5 seeds = 30 pairs):
+
+| | base | lora |
+|---|--:|--:|
+| **A. excess fingers / img** | 0.90 | 0.70 |
+| total fingers / img | 6.50 | 6.23 |
+| pairs LoRA *worse* / *better* | — | **8 / 7** (symmetric coin-flip; median excess 0 both) |
+| **B. hand-region wander enrichment** | 1.21× | 1.20× (identical) |
+| B. corr(hand-region wander, excess) | — | **−0.06** (null) |
+
+**A: the LoRA does not break more hands than base.** Breakage is real (~30% of
+hand prompts carry some excess) but **base-owned**. **B: wander is not the
+mechanism** — hands carry mild wander enrichment but *identically* for base and
+LoRA, and hand-region wander doesn't predict excess fingers. This is exactly the
+two-axis table on real statistics: breakage = overfit axis, not wander/path axis.
+
+### F3. A protective hint — robust but observational, and *not* causally testable here
+
+The paired link `corr(Δ hand-region wander, Δ excess)` is **−0.35** (Pearson,
+p=0.06), strengthening to **−0.47** (p=0.01) dropping the one excess-8 outlier,
+Spearman −0.38 (p=0.04) — i.e. where the LoRA adds hand-region wander it adds
+*fewer* broken fingers. Mechanistically consistent with the report's filmstrip
+(committed bad modes *snap early and hold* = low wander; more wander = more
+exploration, less early lock-in). **But it is observational** (the level-corr is
+null −0.06; the signal lives only in the base→LoRA paired delta) and the
+**causal test is not doable with available knobs**: er_sde `s_noise`
+(`wander_intervention.py`) is degenerate outside ≈1.0 — `s_noise=0` collapses to
+flat color (multistep diverges without noise), `s_noise≥2` is RGB static. **Trap
+noted:** SAM3 finds no hands in static → scores it 0%-broken → would have
+manufactured a spurious "more noise → less breakage → wander protective." *Always
+eyeball the pixels before trusting the detector.* A clean test needs Restart
+sampling (re-noise mid-trajectory, deterministic re-converge) — unimplemented;
+low priority since the LoRA isn't degrading hands anyway. The protective trend
+stays a **hint, not a result**.
+
+---
+
 ## Method
 
 - **Capture seam.** Monkeypatch `library.inference.sampling.step` (the euler ODE
@@ -204,16 +274,33 @@ python bench/x0_contradiction/base_vs_lora_wander.py --seeds 0,1 --compile
 python bench/x0_contradiction/x0_strip.py --prompt "<prompt>" --seed 0
 # caption-sparsity wander sweep -> wander_vs_sparsity.png
 python bench/x0_contradiction/sparsity_sweep.py --seeds 0,1
+
+# --- follow-up (2026-06-21): detail-vs-contradiction split (F1) ---
+python bench/x0_contradiction/wander_is_it_real.py \
+    --prompts-file bench/x0_contradiction/prompts/sincos.txt --seeds 0,1,2 --compile
+# SAM3 finger-count breakage: does the LoRA degrade? is wander the cause? (F2/F3)
+python bench/x0_contradiction/wander_vs_breakage.py \
+    --prompts-file bench/x0_contradiction/prompts/hands.txt --seeds 0,1,2,3,4 --compile
+# er_sde s_noise intervention (F3) — DEAD instrument: degenerate outside ≈1.0
+python bench/x0_contradiction/wander_intervention.py --seeds 0,1,2,3,4 --compile
 ```
 
 All scripts take `--compile` (compile_blocks; safe at fixed square res).
+`wander_vs_breakage` / `wander_intervention` need SAM3 (`make download-models`).
 
 ## Caveats
 
 - wander is a latent-space, per-patch channel-vector metric; high values mean
   per-patch non-monotonicity but a latent reshuffle need not equal a pixel-space
-  artifact. We did *not* establish that early wander causes specific visible
-  breakages — the one artifact dissected (eyes) was a different mechanism.
+  artifact. The original "we did not establish wander→breakage" caveat is now
+  **resolved by the F2 SAM3 detector** (see Follow-up): on n=30 hand prompts the
+  LoRA does not break more hands than base, and wander does not predict/locate
+  the breakage. Breakage = overfit axis, not the wander/contradiction axis.
+- F2/F3 caveats: n=30, one artist, one LoRA; SAM3 finger-count is noisy
+  per-image (validated at the extremes, fuzzy in the middle); excess-only ignores
+  fused/<5-finger breakage to dodge the occlusion confound. Direction (no
+  degradation, null mechanism) is consistent across all F2 metrics + the
+  symmetric paired test, so it's robust as a direction even if magnitudes are soft.
 - Single LoRA, single artist, euler/cfg=4. The base-owned conclusion is robust
   across the in-dist/OOD split; the magnitude numbers are model-specific.
 - Tail wander (×1.005) and full-trajectory wander (×1.08–1.12) disagree because

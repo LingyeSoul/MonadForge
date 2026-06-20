@@ -11,7 +11,7 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_P"
+output_name = "anima_turbo_Q3"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
@@ -58,7 +58,7 @@ per_step_expert = false
 
 # DMD schedule.
 [dmd]
-student_steps = 4               # N — student rolls N Euler steps; inference matches (--infer_steps 4)
+student_steps = 3               # N — student rolls N Euler steps; inference matches (--infer_steps 4)
 teacher_cfg = 4                 # CFG scale baked into the teacher anchor + DMD real score (Anima prod CFG=4)
 dm_x0_norm = true               # per-sample x0-space magnitude normalization of the DM gradient
 norm_floor = 0.05               # clamp_min for the dm_x0_norm denominator (latent scale)
@@ -154,10 +154,10 @@ ratio_normalization = true      # per-τ histogram normalization of r
 
 # Turbo × REPA — relational (Gram) alignment on REAL data 
 [repa]
-weight = 0.0                   # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
+weight = 0.0                    # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
 layer = 8                       # DiT block tap (matches LoRA-family REPA)
 encoder = "pe_spatial"          # sidecar {stem}_anima_{encoder}.safetensors next to the TE cache
-every_n = 4                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
+every_n = 2                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
 # spatial_norm = true           # iREPA target standardization (the validated LoRA operating point)
 # target_dog = true             # turn the DoG band-pass on
 # dog_sigma1_div = 16.0         # low-pass σ1 = min(gh,gw)/16 (Phase-0 sweet spot min/16–32)
