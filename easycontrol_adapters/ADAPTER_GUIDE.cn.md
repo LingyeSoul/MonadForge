@@ -206,9 +206,6 @@ unsloth_offload_checkpointing = true
    ```
 
 3. 训练本身**无需**改动——`cmd_easycontrol` 已经调用了 `train(_easyadapter() or "easycontrol", extra)`，所以只要名称进入允许列表，`EASYADAPTER=<task>` 就会自动运行 `configs/methods/<task>.toml`。
-
-4. （仅当你的构建器需要下载时）在 `cmd_easycontrol_download` 中为你的权重获取任务添加一个分支。
-
 **在 `scripts/tasks/inference.py`**（`cmd_test_easycontrol`）中：选择器目前硬编码了 colorize。将几个 colorize 专属的值针对你的任务进行泛化——检查点名称、输出文件夹、备用参考文件夹和空提示默认值：
 
 ```python

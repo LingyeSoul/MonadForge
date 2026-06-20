@@ -116,7 +116,6 @@ set ANIMA_DAEMON_HOST_WEBUI=0 && python tasks.py daemon
 > 自行 `ensure_daemon`（daemon 已在跑则跳过）。
 
 **Windows 系统托盘**（`scripts/tray/`）：状态指示器 + 控制器。
-
 ```bash
 .venv\Scripts\pythonw.exe -m scripts.tray   # 或双击 start-tray-win.bat
 ```
@@ -173,7 +172,6 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 - daemon 负责串行作业队列、GPU 守卫、进程树管理、任务取消与状态落盘，避免多个训练任务争抢显存
 - WebUI TaskService 作为适配层，尾随 daemon 的 `stdout.log` 与每个 job 独立的 `progress.jsonl`，再通过 WebSocket 推送日志、指标与预览图
 - 训练进度使用每任务隔离的 `output/daemon/jobs/<job_id>/progress.jsonl`，避免跨 run 复用 `output/logs/<output_name>.progress.jsonl` 导致旧数据串入
-
 ---
 
 ## 与上游版本的区别
@@ -188,7 +186,6 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 | **任务调度** | 本地 training daemon 串行队列 + WebUI TaskService 适配层 | 外部 Python daemon 进程 |
 | **更新机制** | `make update` 支持 + 内置更新器 | 仅 `make update` |
 | **跨平台** | 浏览器统一体验，完全一致 | Qt 平台差异（Linux 字体渲染等） |
-
 ### 功能增强
 
 | 功能 | MonadForge | upstream |

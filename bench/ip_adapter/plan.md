@@ -95,7 +95,7 @@ Arm B drives training through the existing trainer (a plain-LoRA config built on
 ## Scope & named follow-ups (out of phase 1)
 
 - **PE cache stays regardless.** `scripts/preprocess/cache_pe_encoder.py` (+ `make preprocess-pe`) and the `{stem}_anima_pe.safetensors` / `anima_pe_centroid_*.safetensors` sidecars are **not** IP-Adapter-private — CMMD validation (`library/training/cmmd.py`) and DCW v4 read them. They were left in the live tree. This bench reuses them for the metric.
-- **PE-LoRA stays too.** `networks/methods/ip_adapter_pe_lora.py` is vendored into the live Anima-Tagger ComfyUI node (`scripts/sync_vendor.py`, `comfyui-anima-tagger/nodes.py` `pe_lora` UI) — left in place. The IP-Adapter import of it was the thing removed.
+- **PE-LoRA stays too.** `networks/methods/ip_adapter_pe_lora.py` is vendored into the live Anima-Tagger ComfyUI node (`scripts/release/sync_vendor.py`, `comfyui-anima-tagger/nodes.py` `pe_lora` UI) — left in place. The IP-Adapter import of it was the thing removed.
 - **EasyControl:** *not* a candidate to replace IP-Adapter — spatial conditioning is a different axis (see above). Excluded by design, not by experiment.
 - **`ip_scale` / CFG / aspect:** swept in phase 1 only enough to find the fidelity-matched operating point; not a full optimization.
 

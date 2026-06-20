@@ -104,32 +104,6 @@ extra-index-url = [
 prerelease = "allow"
 override-dependencies = ["numpy>=2.0.0", "httptools<0.8.0"]
 
-[tool.pyright]
-extraPaths = ["."]
-exclude = ["archive", "**/__pycache__"]
-reportMissingImports = "none"
-reportPrivateImportUsage = "none"
-reportAttributeAccessIssue = "none"
-reportArgumentType = "none"
-reportOptionalOperand = "none"
-reportCallIssue = "none"
-reportOperatorIssue = "none"
-reportPossiblyUnboundVariable = "none"
-reportGeneralTypeIssues = "none"
-reportIncompatibleMethodOverride = "none"
-reportOptionalMemberAccess = "none"
-reportOptionalSubscript = "none"
-reportOptionalIterable = "none"
-reportOptionalCall = "none"
-reportReturnType = "none"
-reportAssignmentType = "none"
-reportIndexIssue = "none"
-reportRedeclaration = "none"
-reportFunctionMemberAccess = "none"
-reportIncompatibleVariableOverride = "none"
-reportInvalidStringEscapeSequence = "none"
-reportUnsupportedDunderAll = "none"
-
 [tool.ruff.lint.per-file-ignores]
 # `train.py` / `inference.py` call `install_no_window_default()` at module scope
 # *before* `import torch` (Windows: suppress per-kernel ptxas/cl console flashes

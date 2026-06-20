@@ -319,11 +319,11 @@ def test_resize_images_nested_output(tmp_path: Path) -> None:
 
     dst = tmp_path / "post_image_dataset" / "resized"
     bucket_args = (
-        (1024, 1024),  # max_reso
+        (1024, 1024),  # max_reso (vestigial under free-fit)
         512,  # min_size
         2048,  # max_size
         64,  # reso_steps
-        True,  # use_constant_token_buckets
+        # no target_res → defaults to the canonical 1024 tier; free-fit resize
     )
 
     name, _reso, _skipped = process_image(
@@ -352,7 +352,8 @@ def test_resize_images_flat_output(tmp_path: Path) -> None:
     _write_test_image(img_path)
 
     dst = tmp_path / "post_image_dataset" / "resized"
-    bucket_args = ((1024, 1024), 512, 2048, 64, True)
+    # 4 elements → target_res defaults to the canonical 1024 tier (free-fit).
+    bucket_args = ((1024, 1024), 512, 2048, 64)
 
     process_image(img_path, dst, bucket_args, copy_captions=False, rel_dir="")
     assert (dst / "cover.png").exists()

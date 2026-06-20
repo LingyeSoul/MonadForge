@@ -44,12 +44,14 @@ def run_validation(
     per_sigma: dict[float, list[float]] = {s: [] for s in sigmas}
     overall: list[float] = []
 
-    for i, (_idxs, latents, crossattn_emb, pooled_text) in enumerate(val_dataloader):
+    for i, batch in enumerate(val_dataloader):
         if max_steps is not None and i >= max_steps:
             break
-        latents = latents.to(device, dtype=dtype, non_blocking=True)
-        crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
-        pooled_text = pooled_text.to(device, dtype=dtype, non_blocking=True)
+        latents = batch["latents"].to(device, dtype=dtype, non_blocking=True)
+        crossattn_emb = batch["crossattn_emb"].to(
+            device, dtype=dtype, non_blocking=True
+        )
+        pooled_text = batch["pooled_text"].to(device, dtype=dtype, non_blocking=True)
         B = latents.shape[0]
 
         noise = torch.randn(

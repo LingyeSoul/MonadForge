@@ -1,36 +1,45 @@
-# Preprocess settings — split out of base.toml so they survive `make update`
-# (base.toml is overwritten on update to ship new infra keys; this file is not).
-#
-# Most knobs here are read ONLY by the preprocess pipeline (resize → VAE/TE/PE
-# caching → masking) via library.config.io.load_path_overrides, layered as:
-#   preprocess.toml → base.toml → presets.toml[<preset>] → methods/<method>.toml
-# (preset/method still win per-run; a legacy copy of any key left in base.toml
-# also wins, so old checkouts keep working — backward compatible.)
-#
-# EXCEPTION: `target_res` below is dual-use — train.py reads it too (it builds
-# the bucket table + sizes the compile cache), so it MUST match between
-# preprocess and training. load_method_preset seeds it from this file for the
-# training side; keep it here, not in base.toml.
+# Preprocess settings — split out of base.toml so they survive `make update`.
+# Read by the preprocess pipeline via library.config.io.load_path_overrides,
+# layered: preprocess.toml → base.toml → presets.toml[<preset>] → methods/<method>.
+# `target_res` is dual-use: train.py reads it too (though it's inert at train time
+# — the on-disk caches are the source of truth for which tiers are present).
 
 source_image_dir = "image_dataset"
 
-# Multi-scale constant-token tiers. Each image is preprocessed into the tier that
-# resizes it the LEAST (nearest bucket by scale — see library/datasets/buckets.py
-# choose_edge), giving v1.0-style diverse-resolution training from a mixed
-# dataset. Allowed edges: 512 768 896 1024 1280 1536 (tokens 1024+1008 / 2160 /
-# 3024+3000 / 4032+4200 / 6300 / 8640). `[1024]` = single ~1MP tier. Training MUST use the same
-# tiers as preprocess — this one key feeds both. Override per-run:
-#   make preprocess ARGS="--target_res 1024 1536"
+# Multi-scale constant-token tiers. Each image goes to the tier that resizes it
+# the LEAST (see library/datasets/buckets.py). Allowed edges: 512 768 896 1024
+# 1280 1536. `[1024]` = single ~1MP tier. Override: make preprocess ARGS="--target_res 1024 1536"
 target_res = [1024, 896]
 
-# Preprocess input filter. When true, scripts/tasks/preprocess.py forwards
-# `--min_pixels = min_pixels` to both preprocess/resize_images.py and
-# preprocess/cache_text_embeddings.py so under-sized source images never
-# enter the resize / VAE / TE caches. Default 500_000 = 0.5MP — matches the
-# scripts' own argparse defaults. Set drop_lowres_images = false to keep
-# every image regardless of size. Override per-run without editing this file:
-#   make preprocess ARGS="--min_pixels 0"        # explicit threshold (wins)
-#   make preprocess ARGS="--no_drop_lowres"      # keep every image
-#   make preprocess ARGS="--drop_lowres"         # force the configured threshold
+# Caption shuffle variants per image (0 = single caption). v0 = pristine original;
+# v1..v{N-1} are smart-shuffled, with optional tag dropout / identity-randomize.
+# The strategy loader picks v0 at 20%, uniform v1..v{N-1} at 80%. Env override:
+# CAPTION_SHUFFLE_VARIANTS=N make preprocess-te
+caption_shuffle_variants = 4
+
+# Per-tag dropout probability applied to v1..v{N-1} only (presence axis; tags up
+# to and including the first @artist marker are protected). Env: CAPTION_TAG_DROPOUT_RATE
+caption_tag_dropout_rate = 0.1
+
+# Lexinvariant tag regularization (arXiv:2305.16349): per-tag probability of
+# *erasing a tag's identity* — replacing the tag string with a meaningless token
+# while keeping its slot, @artist prefix included (the IDENTITY axis, vs dropout's
+# presence axis). Writes a parallel `r`-family alongside the `v`-family in the same
+# cache; pick the arm at train time with `use_randomized_caption_variants` (no
+# re-preprocess to A/B). 0.0 = off (no r-family). Needs caption_shuffle_variants >= 2.
+# Re-running with this > 0 upgrades existing caches in place. Paper's prior ~0.2.
+# Override: make preprocess ARGS="--caption_tag_randomize_rate 0.2"
+caption_tag_randomize_rate = 0.0
+
+# Preprocess input filter. drop_lowres_images = false keeps every image; otherwise
+# images under min_pixels are skipped at resize/VAE/TE. Override per-run:
+#   make preprocess ARGS="--min_pixels 0 | --no_drop_lowres | --drop_lowres"
 drop_lowres_images = true
-min_pixels = 500000
+min_pixels = 250000
+
+# Free-aspect token-band resize ("free-fit") is the only resize mode: images keep
+# their native aspect ratio and land anywhere inside the tier's token band, driving
+# crop loss to ~zero (the old discrete constant-token bucket pool was removed).
+# Max aspect-ratio clamp for free-fit (1:R / R:1); beyond-clamp images cover-crop to
+# the limit. Preprocess-only. Override: make preprocess ARGS="--freefit_max_ratio 3.0"
+freefit_max_ratio = 4.0

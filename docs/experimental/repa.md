@@ -48,9 +48,10 @@ order + closed-lever record in the archived proposal,
   weighted REPA settles at **~4% of total loss** (≈8% in the first decile).
   At plateau, w = 0.02 / 0.05 / 0.1 ≈ 1.7% / 4% / 8% of total loss — the
   frame for the eventual weight sweep (lever 4).
-- Progress curves via `scripts/repa_progress_report.py <progress.jsonl>`
-  (deciles + plateau; on annealed runs, the FM-only before/after-release
-  delta — negative ⇒ REPA was fighting FM late).
+- Progress curves: read the `repa/align_loss` / `repa/active` step metrics
+  from the run's `*.progress.jsonl` directly (deciles + plateau; on annealed
+  runs, the FM-only before/after-release delta — negative ⇒ REPA was fighting
+  FM late).
 
 ### External validation (same-week literature)
 
@@ -192,10 +193,10 @@ converts via `gradient_accumulation_steps`; past the cutoff the term is
 skipped before the PE transfer. Hard cutoff first (one knob); only if it
 helps, compare linear decay-to-zero as a second variant.
 
-- *Read the curve*: `scripts/repa_progress_report.py <progress.jsonl>` prints
-  deciles + the plateau point, and on an annealed run the FM-only
-  before/after-release delta — **negative ⇒ REPA was fighting FM late**,
-  which is the signal the cutoff is paying off.
+- *Read the curve*: from the run's `*.progress.jsonl`, bucket the
+  `repa/align_loss` step metric into deciles and find the plateau point; on an
+  annealed run compute the FM-only before/after-release delta — **negative ⇒
+  REPA was fighting FM late**, which is the signal the cutoff is paying off.
 
 **2. Weight sweep — `repa_weight ∈ {0.02, 0.05, 0.1}`.** Run *after* the
 anneal point settles, on the winning cutoff — weight interacts with the

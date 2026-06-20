@@ -103,9 +103,9 @@ def prefill_teacher_cache(teacher_cache, dataset, model, device, dtype):
     n = len(dataset)
     logger.info(f"Prefilling teacher cache: {n} samples × {K} sigmas = {n * K} entries")
     for sample_idx in tqdm(range(n), desc="prefill teacher"):
-        _idx, latents_cpu, crossattn_emb_cpu, _pooled = dataset[sample_idx]
-        latents = latents_cpu.unsqueeze(0).to(device, dtype=dtype)
-        crossattn_emb = crossattn_emb_cpu.unsqueeze(0).to(device, dtype=dtype)
+        sample = dataset[sample_idx]
+        latents = sample["latents"].unsqueeze(0).to(device, dtype=dtype)
+        crossattn_emb = sample["crossattn_emb"].unsqueeze(0).to(device, dtype=dtype)
         padding_mask = make_padding_mask(latents, dtype)
         for sigma_idx in range(K):
             sigma = teacher_cache.get_sigma(sigma_idx)

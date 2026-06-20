@@ -59,7 +59,9 @@ def inject_pe_lora(
     so we monkey-patch the whole ``_SelfAttention.forward`` to add a LoRA residual
     onto the concatenated ``[Q, K, V]`` projection before the head split.
     """
-    if not (hasattr(pe_vit, "transformer") and hasattr(pe_vit.transformer, "resblocks")):
+    if not (
+        hasattr(pe_vit, "transformer") and hasattr(pe_vit.transformer, "resblocks")
+    ):
         raise ValueError(
             "inject_pe_lora expects a PEVisionTransformer (with .transformer.resblocks)"
         )
@@ -80,10 +82,8 @@ def inject_pe_lora(
         if i < first_idx:
             continue
         attn = block.attn
-        # qkv must be patched before attn.out_proj — _patch_pe_qkv calls
-        # attn.out_proj(...) inside the patched forward, and we want THAT call
-        # to pick up the wrapped (LoRA-augmented) forward when target_attn_out
-        # is also on. Order: out_proj wrap first, then qkv patch.
+        # Wrap out_proj BEFORE patching qkv: _patch_pe_qkv's forward calls
+        # attn.out_proj(...), which must pick up the wrapped forward.
         if target_attn_out and isinstance(getattr(attn, "out_proj", None), nn.Linear):
             _wrap_linear(attn.out_proj, layers, f"b{i}_attn_out_proj", rank, alpha)
         if target_qkv:
@@ -143,7 +143,9 @@ def _patch_pe_qkv(
     embed_dim = attn.embed_dim
     layer = PELoRALayer(embed_dim, 3 * embed_dim, rank, alpha)
 
-    def patched_forward(x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def patched_forward(
+        x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         proj = F.linear(x, attn.in_proj_weight, attn.in_proj_bias)
         proj = proj + layer(x.to(layer.lora_down.weight.dtype)).to(proj.dtype)
         proj = (

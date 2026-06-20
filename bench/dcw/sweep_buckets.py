@@ -61,14 +61,18 @@ import subprocess
 import time
 from pathlib import Path
 
-from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+from library.datasets.buckets import freefit_band_for_edge, freefit_bucket
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Bucket presets. ``CONSTANT_TOKEN_BUCKETS`` is the canonical 24-entry list
-# from ``library/datasets/buckets.py`` — two token-count families (4032 and
-# 4200), each entry exactly filling its count (no padding) under the native
-# shapes that are the only mode.
+# Bucket presets. Free-fit is the only resize mode (the discrete constant-token
+# bucket pool was removed), so the "all" preset is a representative aspect spread
+# free-fit into the canonical 1024 tier's token band (~1MP, native aspect).
+_BAND_1024 = freefit_band_for_edge(1024)
+_ALL_ASPECTS = [
+    (1, 1), (5, 4), (4, 5), (6, 5), (5, 6), (4, 3), (3, 4),
+    (3, 2), (2, 3), (16, 9), (9, 16), (2, 1), (1, 2),
+]  # fmt: skip
 PRESETS: dict[str, list[tuple[int, int]]] = {
     # Square + 1.5 mirror pair. Cheapest sign-flip / sanity check.
     "minimal": [(1024, 1024), (832, 1248), (1248, 832)],
@@ -82,8 +86,10 @@ PRESETS: dict[str, list[tuple[int, int]]] = {
         (832, 1248),  # 1.50
         (768, 1344),  # 2.00
     ],
-    # All 17 constant-token buckets. Overkill for most analyses.
-    "all": list(CONSTANT_TOKEN_BUCKETS),
+    # A spread across the 1024 tier band. Overkill for most analyses.
+    "all": list(
+        dict.fromkeys(freefit_bucket(w, h, _BAND_1024) for w, h in _ALL_ASPECTS)
+    ),
 }
 
 _FORBIDDEN_PASSTHROUGH = {"--image_h", "--image_w", "--label"}

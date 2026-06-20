@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Resize training images to constant-token bucket resolutions.
+"""Resize training images with free-fit (native-aspect token-band) resize.
 
-Reads images from a source directory, resizes and center-crops them to the
-nearest bucket resolution, writes the results plus caption sidecars to an
-output directory (mirroring the source subdir layout).
+Reads images from a source directory, resizes them to land their patch-grid token
+count inside the chosen tier's band while preserving native aspect (sub-patch
+crop), writes the results plus caption sidecars to an output directory (mirroring
+the source subdir layout).
 
 The walk → filter → parallel resize → caption-mirror loop lives in
 ``library/preprocess/images.py``; this file is argparse only.
@@ -14,6 +15,7 @@ from pathlib import Path
 
 
 from library.datasets.curation_actions import load_curation_decisions
+from library.preprocess.resize_preview import RESIZE_CROP_ANCHORS
 from library.preprocess import resize_to_buckets, tqdm_progress
 
 # Re-exported for callers/tests that import the picklable worker directly
@@ -47,27 +49,16 @@ def main() -> None:
         help="Bucket step size (default: 64)",
     )
     parser.add_argument(
-        "--constant_token_buckets",
-        action="store_true",
-        default=True,
-        help="Use constant-token buckets (default: True)",
-    )
-    parser.add_argument(
-        "--no_constant_token_buckets",
-        action="store_true",
-        help="Disable constant-token buckets",
-    )
-    parser.add_argument(
         "--target_res",
         type=int,
         nargs="+",
         default=None,
         metavar="EDGE",
         help=(
-            "Multi-scale constant-token tiers (allowed: 512 768 896 1024 1280 1536). "
-            "Each image lands in the tier that resizes it the least (nearest). "
-            "Default (unset) = single 1024 tier (current behavior). "
-            "Each extra tier adds 1 compiled block graph (1024 contributes 2). "
+            "Multi-scale free-fit tiers (allowed: 512 768 896 1024 1280 1536). "
+            "Each image lands in the tier that resizes it the least, keeping native "
+            "aspect inside that tier's token band. Default (unset) = single 1024 "
+            "tier. Each extra tier adds 1 compiled block graph (1024 contributes 2). "
             "e.g. --target_res 1024 1536 for ~1MP + ~2.25MP training."
         ),
     )
@@ -120,21 +111,63 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--resize_crop_anchor",
+        "--resize-crop-anchor",
+        dest="resize_crop_anchor",
+        choices=tuple(RESIZE_CROP_ANCHORS),
+        default="center",
+        help=(
+            "Anchor used when the cover-resize result needs cropping. Default: center."
+        ),
+    )
+    parser.add_argument(
+        "--resize_bucket_resos",
+        "--resize-bucket-resos",
+        dest="resize_bucket_resos",
+        nargs="*",
+        default=None,
+        metavar="WxH",
+        help=(
+            "Optional allow-list of constant-token bucket resolutions, e.g. "
+            "1008x1024 1024x1008. Empty/unset uses every bucket in target_res."
+        ),
+    )
+    parser.add_argument(
+        "--resize_crop_margins",
+        "--resize-crop-margins",
+        dest="resize_crop_margins",
+        nargs=4,
+        type=float,
+        default=None,
+        metavar=("TOP", "RIGHT", "BOTTOM", "LEFT"),
+        help=(
+            "Percent margins cropped from source before bucket resize, in "
+            "top/right/bottom/left order. Default: 0 0 0 0."
+        ),
+    )
+    parser.add_argument(
+        "--freefit_max_ratio",
+        "--freefit-max-ratio",
+        dest="freefit_max_ratio",
+        type=float,
+        default=4.0,
+        help=(
+            "Max aspect ratio clamp for the free-fit token-band resize (default "
+            "4.0 = 1:4 / 4:1). Beyond-clamp images cover-crop to the limit; also "
+            "keeps the token band solvable."
+        ),
+    )
+    parser.add_argument(
         "--curation_decisions",
         "--curation-decisions",
         dest="curation_decisions",
         default=None,
         help=(
             "Optional GUI curation decision JSON. Images marked action=skip/move are "
-            "left out, and crop_bounds are applied only to generated resized "
-            "outputs. Source images are not modified."
+            "left out of preprocessing. Source images are not modified."
         ),
     )
     args = parser.parse_args()
-
-    constant_token_buckets = (
-        args.constant_token_buckets and not args.no_constant_token_buckets
-    )
 
     if args.target_res is not None:
         from library.datasets.buckets import ALLOWED_TARGET_RES
@@ -152,7 +185,6 @@ def main() -> None:
         min_bucket_reso=args.min_bucket_reso,
         max_bucket_reso=args.max_bucket_reso,
         bucket_reso_steps=args.bucket_reso_steps,
-        constant_token_buckets=constant_token_buckets,
         target_res=args.target_res,
         workers=args.workers,
         min_pixels=args.min_pixels,
@@ -164,6 +196,11 @@ def main() -> None:
             args.curation_decisions,
             source_dir=Path(args.src),
         ),
+        crop_anchor=args.resize_crop_anchor,
+        bucket_resos=args.resize_bucket_resos,
+        crop_margins=args.resize_crop_margins,
+        fit_mode="freefit",
+        max_ratio=args.freefit_max_ratio,
         progress=tqdm_progress("Resizing"),
     )
 

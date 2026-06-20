@@ -15,7 +15,7 @@ caveat that nearly masked this). The training port now exists in
 `scripts/distill_turbo/` as a **selectable objective** (`objective = "dpdmd"`,
 alongside the incumbent `"dmd2"`) — see §3 for the code surface and §8 for the
 plan to retire the incumbent once the gate passes. Inference-only probe:
-`bench/dpdmd/probe_first_step_anchor.py`, results under `bench/dpdmd/results/`.
+`bench/turbo/probe_first_step_anchor.py`, results under `bench/turbo/results/`.
 The build target is **vanilla first-step DP-DMD**; the multi-step "depth-m"
 generalization in §5 is a documented fallback, not the plan.
 
@@ -93,7 +93,7 @@ first-step `div_loss` → detach → `N−1` student rollout → `compute_dmd_lo
 
 ## 2. Grounding on Anima
 
-1. **Phase 0 — two inference-only runs** (`bench/dpdmd/probe_first_step_anchor.py`,
+1. **Phase 0 — two inference-only runs** (`bench/turbo/probe_first_step_anchor.py`,
    R=4, 1024², `anima_turbo_H_4k`). Three arms: teacher (ceiling, 28-step CFG),
    4-step student (floor), and *anchor-injection* (teacher rolled to the student's
    step-b boundary σ, student finishes b..N — `anchor@b` is the faithful proxy
@@ -257,7 +257,7 @@ regresses the fake to the student's `x_θ` distribution at resampled τ.
 
 - **Phase 0 — GO on the pose axis** (done): inference-only anchor@1 visibly de-
   collapses pose on the real caption distribution; the pooled-cosine metric
-  understates it (§2.2). `bench/dpdmd/probe_first_step_anchor.py`.
+  understates it (§2.2). `bench/turbo/probe_first_step_anchor.py`.
 - **Phase 1 — minimal training port (CODE WIRED).** N-step rollout student +
   `loss_div` + detach + DMD on `x_θ`, landed as a selectable `objective="dpdmd"`
   (§3.1) — the incumbent CA path is bypassed at runtime, not yet deleted (§8).
@@ -267,7 +267,7 @@ regresses the fake to the student's `x_θ` distribution at resampled τ.
   blind to the axis we're optimizing. Gate: a checkpoint whose CMMD/quality
   matches the best turbo (`g_agg_250`) while measurably beating it on the
   *structure-sensitive* diversity metric at fixed seeds, with grids that confirm
-  pose variety. Bench: `bench/dpdmd/` with the standard `result.json` envelope
+  pose variety. Bench: `bench/turbo/` with the standard `result.json` envelope
   (`bench/_common.py`).
 - **Phase 2 — anchor/λ sweep.** Reproduce their Table 3 (`K`) / Table 4 (`λ`) on
   Anima. The b-sweep says deep-K (step-1 velocity aimed at a σ≈0.5 anchor) commits

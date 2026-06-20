@@ -112,6 +112,7 @@ def _load_pe_variant(
     repo_id: str,
     filename: str,
     download_make_target: str,
+    dtype: torch.dtype = torch.bfloat16,
 ) -> _PEEncoder:
     """Build a vendored PE vision tower and load Meta's official ``.pt`` weights.
 
@@ -119,6 +120,11 @@ def _load_pe_variant(
     ``repo_id`` / ``filename`` parameterize the HF auto-download fallback.
     Used by both PE-Core and PE-Spatial registry entries — the only thing
     that differs between them is the build name and the download tuple.
+
+    ``dtype`` is the compute dtype the model is cast to. Meta ships the ``.pt``
+    in fp32; the default bf16 cast matches the live training/CMMD path, but
+    feature caching passes ``float32`` for a full-precision cache (the cast is
+    done once here, straight from the fp32 checkpoint — no bf16 round-trip).
     """
     from library.models.pe import build_pe_vision
 
@@ -157,12 +163,14 @@ def _load_pe_variant(
     logger.info(f"Loading {config_name} from {ckpt_path}")
     model = build_pe_vision(config_name)
     model.load_pe_checkpoint(str(ckpt_path), verbose=True)
-    model = model.to(dtype=torch.bfloat16, device=device).eval()
+    model = model.to(dtype=dtype, device=device).eval()
     model.requires_grad_(False)
     return _PEEncoder(model)
 
 
-def _load_pe_encoder(device: torch.device, model_id: str) -> _PEEncoder:
+def _load_pe_encoder(
+    device: torch.device, model_id: str, *, dtype: torch.dtype = torch.bfloat16
+) -> _PEEncoder:
     return _load_pe_variant(
         device,
         model_id,
@@ -170,10 +178,13 @@ def _load_pe_encoder(device: torch.device, model_id: str) -> _PEEncoder:
         repo_id="facebook/PE-Core-L14-336",
         filename="PE-Core-L14-336.pt",
         download_make_target="download-pe",
+        dtype=dtype,
     )
 
 
-def _load_pe_spatial_encoder(device: torch.device, model_id: str) -> _PEEncoder:
+def _load_pe_spatial_encoder(
+    device: torch.device, model_id: str, *, dtype: torch.dtype = torch.bfloat16
+) -> _PEEncoder:
     return _load_pe_variant(
         device,
         model_id,
@@ -181,6 +192,7 @@ def _load_pe_spatial_encoder(device: torch.device, model_id: str) -> _PEEncoder:
         repo_id="facebook/PE-Spatial-B16-512",
         filename="PE-Spatial-B16-512.pt",
         download_make_target="download-pe-spatial",
+        dtype=dtype,
     )
 
 
@@ -192,7 +204,8 @@ class EncoderInfo:
     d_pool: int
     default_model_id: Callable[[], str]
     processor_factory: Callable[..., object]  # (image_size) -> processor
-    loader: Callable[[torch.device, str], object]  # (device, model_id) -> encoder
+    # (device, model_id, *, dtype) -> encoder
+    loader: Callable[..., object]
 
     def t_max_tokens(self) -> int:
         return self.bucket_spec.t_max_tokens

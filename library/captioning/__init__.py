@@ -2,7 +2,7 @@
 
 Ships :class:`AnimaTagger` — trained on the Anima caption distribution,
 the ψ_src provider for DirectEdit when a checkpoint is present at
-``models/captioners/anima-tagger-v1/``.
+``models/captioners/anima-tagger-v2/``.
 
 Exposes ``predict(pil_img)`` and ``predict_caption(pil_img)`` for a
 comma-separated tag string.

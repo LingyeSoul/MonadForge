@@ -7,11 +7,11 @@ Three idempotent stages:
 1. **Mangafy** — walk every color image under ``--src`` (the existing resized
    training images), screen each to a synthetic B&W manga page, and write the
    result to ``--staging`` mirroring the source subpath. Two engines via
-   ``--engine``: ``sd`` (default, Phase B) runs the learned sketch2manga screening
-   (:func:`screentone_sd.screentone_array`, on-manifold tones, needs
-   ``make easycontrol-download EASYADAPTER=colorize``); ``cv2`` runs the fast
-   XDoG + algorithmic-screentone fallback (:func:`mangafy.mangafy_array`, no
-   downloads). Skips already-staged PNGs unless ``--overwrite``.
+   ``--engine`` (both the XDoG + algorithmic-screentone synthesizer, no
+   downloads): ``gpu`` (default) runs the screens on CUDA
+   (:func:`mangafy_gpu.mangafy_array_gpu`, fast, serial); ``cv2`` runs the same
+   math on a CPU ProcessPool (:func:`mangafy.mangafy_array`). Skips
+   already-staged PNGs unless ``--overwrite``.
 
 2. **Encode** — VAE-encode the staged manga images into ``--cond_cache_dir`` via
    the existing ``library.preprocess.cache_latents`` (same ``{stem}_{WxH}_anima.npz``
@@ -112,13 +112,11 @@ def _apply_text_mask(
 ) -> np.ndarray:
     """Paste the source's own grayscale back into the text/speech-bubble regions.
 
-    The ``sd`` screening engine *redraws* the image, so overlaid text and logos come
-    out as garbled pseudo-glyphs. The MIT text masks (black = text) localize exactly
-    those regions; replacing them with a deterministic grayscale of the source keeps the
-    text pixel-exact while SD still handles the smooth-region tone. No-op when there's no
-    mask for this stem or masking is disabled. The algorithmic (cv2/gpu) engines already
-    preserve structure, but the paste only sharpens their screened text, so it's applied
-    uniformly. ``dilate`` grows the mask a few px to catch anti-aliased glyph fringes."""
+    The MIT text masks (black = text) localize the overlaid text/logo regions;
+    replacing them with a deterministic grayscale of the source sharpens the screened
+    text so it stays pixel-exact. No-op when there's no mask for this stem or masking
+    is disabled. ``dilate`` grows the mask a few px to catch anti-aliased glyph
+    fringes."""
     if mask_path is None:
         return manga
     h, w = manga.shape[:2]
@@ -139,29 +137,11 @@ def _apply_text_mask(
     return out
 
 
-def _route_to_sd(
-    rel: Path, h: int, w: int, sd_match: list[str], sd_max_aspect: float
-) -> bool:
-    """Whether this page should use the SD screener instead of the primary engine.
-
-    SD (screentone_sd) gives the cleanest on-manifold tone but is ~10× slower and
-    *distorts at extreme aspect ratios* — SD1.5 was trained near-square, so a 1:4 page
-    folded to long-side 1024 tiles/warps. So SD is opt-in by path: a page runs SD only
-    when its rel path matches one of ``sd_match`` AND its aspect (long/short) is within
-    ``sd_max_aspect``. Everything else stays on the fast algorithmic primary engine."""
-    if not sd_match or not any(m in str(rel) for m in sd_match):
-        return False
-    aspect = max(h, w) / max(1, min(h, w))
-    return aspect <= sd_max_aspect
-
-
-def _make_screener(engine: str, sd_kwargs: dict) -> Screener:
+def _make_screener(engine: str) -> Screener:
     """Resolve ``engine`` to a ``(img, seed) → manga`` callable.
 
-    Imports are deferred so the heavy ``sd`` stack (diffusers / controlnet_aux)
-    is only loaded when actually selected, and ``cv2`` stays download-free. Takes
-    plain (picklable) args rather than the argparse Namespace so it can be rebuilt
-    inside a worker process."""
+    Imports are deferred so ``cv2`` stays import-light. Takes plain (picklable) args
+    rather than the argparse Namespace so it can be rebuilt inside a worker process."""
     if engine == "cv2":
         import cv2
 
@@ -172,16 +152,11 @@ def _make_screener(engine: str, sd_kwargs: dict) -> Screener:
 
         return lambda img, seed: mangafy_array(img, seed=seed)
 
-    if engine == "gpu":
-        # Same algorithmic screentone as cv2, but the trig screens + XDoG blurs run on
-        # CUDA — one serial GPU pass, no ProcessPool. Structurally identical per seed.
-        from mangafy_gpu import mangafy_array_gpu
+    # gpu: same algorithmic screentone as cv2, but the trig screens + XDoG blurs run on
+    # CUDA — one serial GPU pass, no ProcessPool. Structurally identical per seed.
+    from mangafy_gpu import mangafy_array_gpu
 
-        return lambda img, seed: mangafy_array_gpu(img, seed=seed)
-
-    from screentone_sd import screentone_array
-
-    return lambda img, seed: screentone_array(img, seed=seed, **sd_kwargs)
+    return lambda img, seed: mangafy_array_gpu(img, seed=seed)
 
 
 # ── Worker process state (cv2 engine only) ───────────────────────────────────
@@ -195,7 +170,6 @@ _WORKER: dict = {}
 
 def _worker_init(
     engine: str,
-    sd_kwargs: dict,
     src: Path,
     staging: Path,
     overwrite: bool,
@@ -203,7 +177,7 @@ def _worker_init(
     text_mask_dilate: int,
 ):
     _WORKER.update(
-        screener=_make_screener(engine, sd_kwargs),
+        screener=_make_screener(engine),
         src=src,
         staging=staging,
         overwrite=overwrite,
@@ -236,7 +210,6 @@ def _mangafy_gpu_overlap(
     src: Path,
     staging: Path,
     *,
-    sd_kwargs: dict,
     overwrite: bool,
     mask_dir: Path | None,
     text_mask_dilate: int,
@@ -250,7 +223,7 @@ def _mangafy_gpu_overlap(
     so they're farmed to thread pools and overlap the GPU work. ``mangafy_array_gpu``
     returns a host numpy array, so nothing GPU-bound crosses a thread boundary. The
     seed is per-stem, so decoding ahead of order is safe — output is identical."""
-    screener = _make_screener("gpu", sd_kwargs)
+    screener = _make_screener("gpu")
 
     def _decode(p: Path):
         rel = p.relative_to(src)
@@ -305,15 +278,12 @@ def stage_mangafy(
     staging: Path,
     *,
     engine: str,
-    sd_kwargs: dict,
     recursive: bool,
     overwrite: bool,
     limit: int | None,
     workers: int,
     mask_dir: Path | None,
     text_mask_dilate: int,
-    sd_match: list[str],
-    sd_max_aspect: float,
     only_stems: frozenset[str] | None = None,
     exclude_stems: frozenset[str] = frozenset(),
 ) -> tuple[int, int]:
@@ -333,29 +303,18 @@ def stage_mangafy(
             )
     if limit:
         images = images[:limit]
-    # Selective routing: primary engine isn't sd, but ``sd_match`` paths get SD anyway.
-    selective = bool(sd_match) and engine != "sd"
-    if engine == "sd" or selective:
-        # Group same-resolution pages together so the SD pipeline's per-shape cudnn
-        # autotune (enabled in _build_pipe) amortizes across each run and the GPU clocks
-        # stay warm — the dominant cost when resolutions vary image-to-image. Reordering
-        # is safe: the seed is per-stem, so output is identical regardless of order.
-        # PIL .size is lazy (header only), so this doesn't decode the pixels.
-        images = sorted(images, key=lambda p: Image.open(p).size)
     progress = tqdm_progress("Mangafy")
     progress(0, total=len(images))
 
-    # The sd engine holds a single GPU pipeline, so it stays serial; the cv2 engine
-    # fans out across processes (``--workers``) when there's more than one to use. The
-    # parallel path can't host the serial SD pipeline, so selective routing goes serial.
-    if engine == "cv2" and workers > 1 and len(images) > 1 and not selective:
+    # The cv2 engine fans out across processes (``--workers``) when there's more than
+    # one to use; the gpu engine runs one serial GPU stream (handled below).
+    if engine == "cv2" and workers > 1 and len(images) > 1:
         written = 0
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_worker_init,
             initargs=(
                 engine,
-                sd_kwargs,
                 src,
                 staging,
                 overwrite,
@@ -372,14 +331,12 @@ def stage_mangafy(
 
     # The gpu engine runs one serial GPU stream, but its disk decode + text-mask + PNG
     # write are CPU/IO — overlap them across thread pools so the GPU isn't starved
-    # between images (the 0→100 utilization sawtooth). Selective sd routing stays on the
-    # plain serial loop below (it swaps screeners per page).
-    if engine == "gpu" and len(images) > 1 and not selective:
+    # between images (the 0→100 utilization sawtooth).
+    if engine == "gpu" and len(images) > 1:
         return _mangafy_gpu_overlap(
             images,
             src,
             staging,
-            sd_kwargs=sd_kwargs,
             overwrite=overwrite,
             mask_dir=mask_dir,
             text_mask_dilate=text_mask_dilate,
@@ -387,8 +344,7 @@ def stage_mangafy(
             progress=progress,
         )
 
-    primary = _make_screener(engine, sd_kwargs)
-    sd_screener = None  # lazy — only built (3.5GB) if a page actually routes to SD
+    screener = _make_screener(engine)
     written = 0
     for p in images:
         rel = p.relative_to(src)
@@ -398,14 +354,6 @@ def stage_mangafy(
             continue
         out.parent.mkdir(parents=True, exist_ok=True)
         img = np.array(Image.open(p).convert("RGB"))
-        if selective and _route_to_sd(
-            rel, img.shape[0], img.shape[1], sd_match, sd_max_aspect
-        ):
-            if sd_screener is None:
-                sd_screener = _make_screener("sd", sd_kwargs)
-            screener = sd_screener
-        else:
-            screener = primary
         manga = screener(img, _stable_seed(rel.stem))
         manga = _apply_text_mask(
             manga, img, _text_mask_path(mask_dir, rel), dilate=text_mask_dilate
@@ -640,40 +588,17 @@ def main() -> None:
     parser.add_argument("--vae", default="models/vae/qwen_image_vae.safetensors")
     parser.add_argument(
         "--engine",
-        choices=["sd", "cv2", "gpu"],
+        choices=["cv2", "gpu"],
         default="gpu",
-        help="condition synthesizer: sd = learned sketch2manga screening (Phase B, "
-        "needs `make easycontrol-download EASYADAPTER=colorize`); "
-        "cv2 = XDoG+halftone fallback (no downloads, CPU ProcessPool); "
-        "gpu = same XDoG+halftone math on CUDA (no downloads, fast, serial)",
-    )
-    parser.add_argument(
-        "--steps", type=int, default=40, help="sd engine: diffusion steps"
-    )
-    parser.add_argument(
-        "--cfg", type=float, default=9.0, help="sd engine: guidance scale"
-    )
-    parser.add_argument(
-        "--strength",
-        type=float,
-        default=0.6,
-        help="sd engine: img2img denoise (lower = more faithful to source structure)",
-    )
-    parser.add_argument(
-        "--tone_period",
-        type=float,
-        default=4.5,
-        help="sd engine: halftone dot period (px at long_side); larger = coarser dots",
-    )
-    parser.add_argument(
-        "--long_side", type=int, default=1024, help="sd engine: screening resolution"
+        help="condition synthesizer (both XDoG+halftone, no downloads): "
+        "gpu = on CUDA (fast, serial); cv2 = same math on a CPU ProcessPool",
     )
     parser.add_argument(
         "--workers",
         type=int,
         default=min(8, os.cpu_count() or 1),
-        help="cv2 engine: parallel mangafy worker processes (1 = serial). The sd "
-        "engine ignores this (single GPU pipeline).",
+        help="cv2 engine: parallel mangafy worker processes (1 = serial). The gpu "
+        "engine ignores this (single GPU stream).",
     )
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--chunk_size", type=int, default=64)
@@ -707,7 +632,7 @@ def main() -> None:
         "--mask_dir",
         default="post_image_dataset/masks",
         help="text/speech-bubble masks (black=text); the source grayscale is pasted "
-        "back over these regions so the sd engine's redrawn text stays pixel-exact",
+        "back over these regions so the screened text stays pixel-exact",
     )
     parser.add_argument(
         "--skip_text_mask",
@@ -719,20 +644,6 @@ def main() -> None:
         type=int,
         default=0,
         help="px to grow the text mask before pasting (catches anti-aliased glyph fringes)",
-    )
-    parser.add_argument(
-        "--sd_match",
-        default="",
-        help="comma-separated rel-path substrings routed to the SD screener while the "
-        "rest use --engine (e.g. ''). Empty = --engine for everything. "
-        "Ignored when --engine is already sd.",
-    )
-    parser.add_argument(
-        "--sd_max_aspect",
-        type=float,
-        default=2.6,
-        help="sd_match pages whose aspect (long/short) exceeds this fall back to "
-        "--engine — screentone_sd distorts at extreme aspect (e.g. 1:4).",
     )
     parser.add_argument(
         "--skip_mangafy",
@@ -812,11 +723,6 @@ def main() -> None:
     src = Path(args.src)
     staging = Path(args.staging)
     cond_cache_dir = Path(args.cond_cache_dir)
-    sd_match = (
-        [s.strip() for s in args.sd_match.split(",") if s.strip()]
-        if args.sd_match
-        else []
-    )
 
     # Select which pages enter the colorize set, by caption tags (matched against the
     # caption master, --caption_src): net set = only_data_includes − exclude_data_includes.
@@ -836,39 +742,23 @@ def main() -> None:
     exclude_stems = stems_with_any_tag(args.caption_src, args.exclude_data_includes)
 
     if not args.skip_mangafy:
-        sd_kwargs = dict(
-            steps=args.steps,
-            cfg=args.cfg,
-            long_side=args.long_side,
-            strength=args.strength,
-            tone_period=args.tone_period,
-        )
         seen, written = stage_mangafy(
             src,
             staging,
             engine=args.engine,
-            sd_kwargs=sd_kwargs,
             recursive=args.recursive,
             overwrite=args.overwrite,
             limit=args.limit,
             workers=args.workers,
             mask_dir=None if args.skip_text_mask else Path(args.mask_dir),
             text_mask_dilate=args.text_mask_dilate,
-            sd_match=sd_match,
-            sd_max_aspect=args.sd_max_aspect,
             only_stems=only_stems,
             exclude_stems=exclude_stems,
         )
         print(
-            f"\nMangafy ({args.engine}{', sd:' + ','.join(sd_match) if sd_match else ''}): "
+            f"\nMangafy ({args.engine}): "
             f"{written} written, {seen - written} skipped/seen={seen}"
         )
-        if args.engine == "sd" or sd_match:
-            # Free the SD pipeline's VRAM before the encode stage loads the Qwen VAE
-            # (the SD screener may have been built for the sd_match subset too).
-            from screentone_sd import unload
-
-            unload()
 
     if not args.skip_encode:
         stats = stage_encode(

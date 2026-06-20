@@ -269,6 +269,18 @@ def run(cmd: list[str], **kwargs):
     env = kwargs.pop("env", None)
     if env is None:
         env = os.environ.copy()
+    # Bound `hf` CLI socket timeouts so a stalled download can't hang the serial
+    # daemon queue. The task route shells out to the `hf` CLI (downloads.py + the
+    # preprocess tagger-vocab auto-fetch), which — unlike library.runtime.hf_download —
+    # is otherwise unbounded; a hung-not-failed fetch inside the daemon wedges every
+    # job queued behind it (training included). Reuse the library's single source of
+    # truth; setdefault means an explicit ANIMA_HF_TIMEOUT / HF_HUB_* still wins.
+    if cmd and os.path.basename(str(cmd[0])) in ("hf", "hf.exe"):
+        from library.runtime.hf_download import ensure_hf_timeouts
+
+        ensure_hf_timeouts()
+        env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", os.environ["HF_HUB_DOWNLOAD_TIMEOUT"])
+        env.setdefault("HF_HUB_ETAG_TIMEOUT", os.environ["HF_HUB_ETAG_TIMEOUT"])
     venv_bin = str(Path(PY).parent)
     if venv_bin not in env.get("PATH", "").split(os.pathsep):
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
@@ -744,3 +756,14 @@ INFERENCE_BASE = [
     "--save_path",
     "output/tests",
 ]
+
+
+def override_arg(argv: list[str], flag: str, value: str) -> list[str]:
+    """Replace a ``--flag VALUE`` (or ``--flag V1 V2``) pair in argv with a
+    fresh ``--flag value`` pair. Used to retarget ``INFERENCE_BASE`` defaults
+    (e.g. the turbo contract: 4 steps, cfg=1.0) without rewriting the whole list.
+    """
+    if flag not in argv:
+        return argv + [flag, value]
+    i = argv.index(flag)
+    return argv[:i] + [flag, value] + argv[i + 2 :]

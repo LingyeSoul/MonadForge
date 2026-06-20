@@ -36,7 +36,7 @@ def cmd_comfy_batch(extra):
         make comfy-batch W=colorize.json IMAGES=/path/to/imgs
     """
     workflow = os.environ.get("W") or (
-        extra[0] if extra else "workflows/modhydra-simple.json"
+        extra[0] if extra else "workflows/modhydra.json"
     )
     if os.sep not in workflow and "/" not in workflow:
         workflow = f"workflows/{workflow}"
@@ -119,7 +119,7 @@ def cmd_vendor_sync(extra):
     vendor copies (tagger + directedit) are how the ComfyUI nodes import
     their inference subset when not running inside the anima_lora repo.
     """
-    run([PY, "scripts/sync_vendor.py", *extra])
+    run([PY, "scripts/release/sync_vendor.py", *extra])
 
 
 def cmd_export_logs(extra):

@@ -33,7 +33,8 @@ def _run_orphans(args) -> None:
     print(
         f"orphan caches (source image gone from {args.image_dir}): "
         f"{len(orphans.npz)} latent npz, {len(orphans.te)} te, {len(orphans.pe)} pe, "
-        f"{len(orphans.png)} resized png, {len(orphans.mask)} mask"
+        f"{len(orphans.png)} resized png, {len(orphans.mask)} mask, "
+        f"{len(orphans.txt)} caption/variants txt"
         f"  ({orphans.n_files} files)"
     )
     if not args.delete:

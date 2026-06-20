@@ -49,6 +49,14 @@ STRINGS: dict[str, str] = {
         "低解像度フィルターのピクセル数閾値。500000 = 0.5MP。"
         "「低解像度画像を除外」がオフの場合は無視されます。"
     ),
+    "preprocess_target_res": "解像度ティア (target_res):",
+    "preprocess_freefit_max_ratio": "最大アスペクト比:",
+    "preprocess_freefit_max_ratio_tip": (
+        "フリーフィット用クランプ: 1:R / R:1 を超えるアスペクト比の画像は、"
+        "上で設定したクロップ位置に従いカバークロップされます。"
+        "デフォルト 4.0 は旧バケットテーブルの最長の縦横比に合わせており、"
+        "1:5 / 1:6 など極端な比率の入力をブロックします。"
+    ),
     "preprocess_text_caching": "キャッシュ (VAE + テキスト)",
     "preprocess_caption_shuffle_variants": "キャプションあたりのシャッフルバリアント数 (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -64,6 +72,29 @@ STRINGS: dict[str, str] = {
         "v1..v(N-1)に適用されるタグごとのドロップアウト確率。"
         "最初の @artist マーカー以前のタグはドロップされません。"
         "シャッフルバリアント ≤ 0 の場合は無視されます。"
+    ),
+    "preprocess_caption_correct_order": "キャプション順序補正",
+    "preprocess_caption_correct_order_tip": (
+        "補正済み .txt キャプションをリサイズ画像の隣に保存し、"
+        "テキストエンコーダーキャッシュに使用します。元のソースキャプションは変更しません。"
+    ),
+    "preprocess_caption_insert_no_artist": "@no-artist を挿入",
+    "preprocess_caption_insert_no_artist_tip": (
+        "キャプション順序補正が有効で、アーティストマーカーがない場合に "
+        "artist 位置へ @no-artist を挿入します。トリガー語が artist 位置にある場合は"
+        "トリガーが優先され、@no-artist は挿入されません。"
+    ),
+    "preprocess_caption_trigger_word": "トリガー語:",
+    "preprocess_caption_trigger_word_tip": (
+        "補正済みキャプションに配置する任意のトリガータグです。先頭固定がオフの場合、"
+        "既存アーティストタグより前の artist 位置に置かれます。シャッフル/ドロップアウト"
+        "保護の artist マーカーとして使う場合は @ を含めてください。"
+        "トリガー語のアンダースコアは保持されます。"
+    ),
+    "preprocess_caption_trigger_at_front": "トリガーを先頭に固定",
+    "preprocess_caption_trigger_at_front_tip": (
+        "トリガー語をキャプションの最初に置きます。このモードでは @no-artist 挿入は、"
+        "既存アーティストタグの有無と no-artist オプションに従って別に動作します。"
     ),
     "preprocess_run_te": "キャッシュ実行 (VAE + テキスト)",
     "preprocess_run_pe": "PE キャッシュ実行",
@@ -139,6 +170,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "キャッシュ — 潜在変数: {lat}, テキスト: {te}, PE: {pe}",
     "preprocess_status_masks": "マスク: {masks}",
     "preprocess_status_no_resized": "リサイズ済み画像がありません。",
+    "preprocess_no_resized_to_process": (
+        "post_image_dataset/resized/ にリサイズ済み画像がありません。先に前処理"
+        "（リサイズ）を実行してください — マスク生成とグループ化はリサイズ済み画像を対象に動作します。"
+    ),
     "preprocess_open_dataset_dir": "cacheフォルダを開く",
     "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ フォルダ（リサイズ済み画像 + キャッシュ）をファイルマネージャーで開きます。",
     "preprocess_clear_scope_cache": "現在scopeのキャッシュ削除",
@@ -178,6 +213,8 @@ STRINGS: dict[str, str] = {
     "log_placeholder": "学習の出力がここに表示されます...",
     "copy_log": "コピー",
     "copy_log_tooltip": "学習ログ全体をクリップボードにコピー",
+    "gpu_probing": "GPU: 確認中…",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "copy_log_done": "コピーしました",
     "from_base": "base.toml から",
     "saved": "保存済み",
@@ -330,42 +367,31 @@ STRINGS: dict[str, str] = {
     "dataset_group_first_tooltip": "グループ優先表示: グループ化された画像をフォルダを跨いで最上部にまとめて表示 (グループ外の画像は下にフォルダツリーで表示)。",
     "dataset_view_group": "グループ",
     "dataset_view_tree": "ツリー",
+    "dataset_group_sort_tooltip": "各グループ内の画像の並び順です。矢印キー移動は左のツリー表示順に従います。",
+    "dataset_group_sort_name": "名前順",
+    "dataset_group_sort_name_desc": "名前逆順",
+    "dataset_group_sort_size": "容量順",
+    "dataset_group_sort_size_desc": "容量逆順",
+    "dataset_group_sort_resolution": "解像度順",
+    "dataset_group_sort_resolution_desc": "解像度逆順",
     "dataset_mask_overlay": "マスクオーバーレイを表示",
-    "dataset_preprocess_use_short": "使用 (A)",
-    "dataset_preprocess_use_tooltip": "現在の画像を前処理対象としてマークします。元ファイルは変更しません。",
+    "dataset_resize_preview": "リサイズプレビューを表示",
+    "dataset_resize_preview_tooltip": "前処理 target_res が選択する中央クロップ領域と最終 bucket を表示します。元ファイルは変更しません。",
+    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
     "dataset_preprocess_skip_short": "スキップ (S)",
     "dataset_preprocess_skip_tooltip": "現在の画像を前処理 resize でスキップするようにマークします。元ファイルは変更しません。",
     "dataset_preprocess_clear_short": "解除 (F)",
     "dataset_preprocess_clear_tooltip": "現在の画像の使用/スキップ/移動マークを解除します。右側メニューですべてのマークを解除できます。",
     "dataset_preprocess_clear_all": "すべてのマークを解除",
     "dataset_preprocess_save": "前処理決定を保存",
-    "dataset_preprocess_save_tooltip": "前処理用の画像別使用/スキップ/移動/クロップ決定を JSON として保存します。移動マークは実際に移動する前でも前処理から除外されます。",
+    "dataset_preprocess_save_tooltip": "前処理用の画像別使用/スキップ/移動決定を JSON として保存します。移動マークは実際に移動する前でも前処理から除外されます。",
     "dataset_preprocess_saved": "前処理決定を保存しました:\n{path}",
-    "dataset_preprocess_decision_none": "前処理決定なし",
     "dataset_preprocess_decision_use": "前処理決定: 使用",
     "dataset_preprocess_decision_skip": "前処理決定: スキップ",
-    "dataset_preprocess_decision_crop": "前処理決定: クロップ適用",
-    "dataset_preprocess_decision_use_crop": "前処理決定: 使用 + クロップ適用",
-    "dataset_preprocess_decision_skip_crop": "前処理決定: スキップ (クロップは保存されますがスキップが優先されます)",
     "dataset_preprocess_decision_move": "現在の状態: 移動予定",
-    "dataset_preprocess_decision_move_crop": "現在の状態: 移動予定 (クロップ範囲も保存済み)",
-    "dataset_crop_preview": "クロップ表示",
-    "dataset_crop_preview_tooltip": "前処理 resize で適用されるクロップ範囲をプレビューします。元ファイルは変更しません。",
-    "dataset_crop_margin": "余白:",
-    "dataset_crop_margin_left": "左",
-    "dataset_crop_margin_top": "上",
-    "dataset_crop_margin_right": "右",
-    "dataset_crop_margin_bottom": "下",
-    "dataset_crop_margin_tooltip": "元画像の各辺から切り取る割合です。",
-    "dataset_crop_margin_apply": "範囲指定",
-    "dataset_crop_margin_apply_tooltip": "現在の余白割合で前処理クロップ範囲を保存します。",
-    "dataset_crop_margin_apply_visible": "現在の一覧全体に適用",
-    "dataset_crop_margin_apply_all": "全画像に適用",
-    "dataset_crop_clear": "クロップ解除",
-    "dataset_crop_clear_tooltip": "現在の画像の前処理クロップ決定を削除します。",
-    "dataset_crop_rect": "範囲 {bx},{by} {bw}x{bh} · 最終 {x},{y} {w}x{h}",
     "dataset_image_meta_empty": "画像なし",
     "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_image_meta_resize": "リサイズ {width}x{height} @ {edge}",
     "dataset_delete": "移動 (D)",
     "dataset_delete_tooltip": "Delete または D キーで印を付けた画像とサイドカーを post_image_dataset/moved/ へ移動します。",
     "dataset_delete_confirm_title": "画像を移動",
@@ -395,7 +421,30 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "自動タグ付けに失敗しました: {err}",
     "caption_autotag_empty": "タガーはこの画像のタグを返しませんでした。",
+    "caption_correct": "順序補正",
+    "caption_correct_tooltip": (
+        "danbooru_tags_classified.csv を使ってキャプションを ANIMA 推奨順に並べ替え、"
+        "設定に応じて @no-artist を挿入します。"
+    ),
+    "caption_correct_visible": "現在の一覧を一括補正",
+    "caption_correct_visible_confirm": "現在の一覧のキャプション {n} 件を補正しますか？",
+    "caption_correct_visible_done": "キャプション {n} 件を補正しました。",
+    "caption_correct_visible_failed": "キャプション {n} 件を補正しました。\n\n失敗:\n{err}",
+    "caption_correct_no_change": "補正する変更はありません。",
+    "tag_kb_posts": "{n} 件の投稿",
+    "tag_kb_unknown": "{tag} — タグ知識ベースにありません",
+    "caption_correct_db_missing": (
+        "danbooru_tags_classified.csv が見つかりません。\n\n"
+        "モデル画面から Danbooru タグ DB をダウンロードするか、次の場所に置いてください:\n{paths}"
+    ),
+    "caption_correct_db_failed": "タグ DB の読み込みに失敗: {err}",
     "caption_versions": "履歴…",
+    "caption_variant_training": "学習キャプション",
+    "caption_variants_tooltip": (
+        "前処理が生成した学習用キャプションのバリアント（シャッフル / タグドロップ"
+        "アウト / アイデンティティのランダム化）をプレビューします。読み取り専用で、"
+        "編集可能な学習キャプションには影響しません。"
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(変更なし)",
@@ -431,6 +480,26 @@ STRINGS: dict[str, str] = {
         "タガーのタグ別しきい値に追加で適用する確率の下限（0–1）です。"
         "高いほど確信度の高いタグだけが少数残ります。既定値 0.50。"
     ),
+    "settings_caption_insert_no_artist": "補正時に @no-artist を挿入",
+    "settings_caption_insert_no_artist_tooltip": (
+        "補正後のキャプションに作家タグがない場合、作家位置に @no-artist を入れます。"
+        "キャプションシャッフルの境界としてのみ使われ、トークン化前に除去されます。"
+    ),
+    "settings_caption_validate_artist_tags": "作家タグを DB で検証",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "有効にすると danbooru_tags_classified.csv で作家に分類された @タグだけを"
+        "作家位置へ移動します。無効なら @ で始まるタグを作家タグとして扱います。"
+    ),
+    "settings_group_match_frac": "グループ化の厳しさ:",
+    "settings_group_match_frac_tooltip": (
+        "データセットタブでグループ化を押したとき、2枚の画像をまとめるのに必要な"
+        "一致割合（0–1）です。高いほど厳密で整ったグループになります。既定値 0.25。"
+    ),
+    "settings_group_cell_match": "グループ化のセル一致:",
+    "settings_group_cell_match_tooltip": (
+        "データセットのグループ化でセル単位の一致とみなすコサイン下限（0–1）です。"
+        "高いほどセル一致の基準が厳しくなります。既定値 0.93。"
+    ),
     "settings_theme": "テーマ:",
     "settings_theme_tooltip": (
         "インターフェース全体のカラーテーマです。即時に反映され、設定画面を閉じると"
@@ -444,6 +513,18 @@ STRINGS: dict[str, str] = {
     "settings_theme_dark": "ダーク",
     "settings_theme_light": "ライト",
     "settings_theme_sepia": "セピア",
+    "settings_debug_mode": "デバッグモード",
+    "settings_debug_mode_tooltip": (
+        "学習デーモンを DEBUG レベルで記録し、ジョブが固まった原因をバグ報告に含め "
+        "られるようにします。次にデーモンが起動したときに反映されます（アプリを閉じ "
+        "るか、デーモンを停止してから開き直してください）。"
+    ),
+    "settings_debug_report_desc": (
+        "無限ローディングで止まっていますか？ デバッグモードを有効にして症状を再現し、"
+        "「デバッグレポートをコピー」を押して結果をバグ報告に貼り付けてください。デー "
+        "モンのログと最近のジョブ状態がまとめられます。"
+    ),
+    "settings_debug_copy_report": "デバッグレポートをコピー",
     "settings_mcp_header": "MCP サーバー（エージェント連携）",
     "settings_mcp_desc": "ローカル学習デーモンを MCP クライアント（Claude Code、Claude Desktop "
     "など）に公開します。以下のコマンドをターミナルで実行すると Claude Code に登録されます:",
@@ -482,8 +563,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "モデルのダウンロード",
     "models_intro": "以下からモデルグループを選択するか、「すべてダウンロード」で標準セット "
-    "(Anima + SAM3 + MIT + PE) をダウンロードします。ファイルは models/ に保存されます。",
-    "models_download_all": "すべてダウンロード (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + タグ DB) をダウンロードします。ファイルは models/ に保存されます。",
+    "models_download_all": "すべてダウンロード (Anima + SAM3 + MIT + PE + タグ DB)",
     "models_download": "ダウンロード",
     "models_redownload": "再ダウンロード",
     "models_installed": "✓ インストール済み",
@@ -492,6 +573,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — テキストバブルマスキング",
     "model_mit": "MIT — 漫画テキストマスキング",
     "model_pe": "PE-Core-L14-336 — ビジョンエンコーダー (CMMD 検証 / DCW)",
+    "model_danbooru_tags": "Danbooru タグ DB — キャプション順序補正",
     # HuggingFace 認証 (モデルダイアログ)
     "models_hf_token_placeholder": "HuggingFace トークンを貼り付けてください (hf_…)",
     "models_hf_authenticate": "認証",
@@ -555,7 +637,24 @@ STRINGS: dict[str, str] = {
     "merge_pick_out": "マージ済み DiT を名前を付けて保存...",
     "browse": "参照…",
     # Multi-scale target_res tiers
+    "target_res_bucket_tooltip": "{edge}px ティアでこの bucket 解像度だけを前処理に使用します。すべて未選択なら選択ティアの全 bucket を使用します。",
     "target_res_danger_tooltip": "高コストなティア：{edge}px は画像あたり約 {tokens} トークンを使用し、コンパイル済みブロックグラフを 1 つ追加します（コンパイルが遅くなり、VRAM が増加）。この解像度が本当に必要な場合のみ有効にしてください。",
+    "resize_crop_anchor": "リサイズクロップ位置:",
+    "resize_crop_anchor_tip": "cover resize 後に target bucket へクロップするとき、どの方向を保持するか選択します。",
+    "resize_crop_anchor_top_left": "左上",
+    "resize_crop_anchor_top": "上",
+    "resize_crop_anchor_top_right": "右上",
+    "resize_crop_anchor_left": "左",
+    "resize_crop_anchor_center": "中央",
+    "resize_crop_anchor_right": "右",
+    "resize_crop_anchor_bottom_left": "左下",
+    "resize_crop_anchor_bottom": "下",
+    "resize_crop_anchor_bottom_right": "右下",
+    "resize_crop_margins": "リサイズ余白:",
+    "resize_crop_margin_top": "上",
+    "resize_crop_margin_right": "右",
+    "resize_crop_margin_bottom": "下",
+    "resize_crop_margin_left": "左",
     # TensorBoard panel
     "tb_panel_title": "TensorBoard 実行一覧",
     "tb_open": "TensorBoard を開く",

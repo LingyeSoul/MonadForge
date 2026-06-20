@@ -98,6 +98,24 @@ def test_apply_is_noop_when_disabled_or_unpaired():
     assert apply_cond_diff_loss(loss, ctx) is loss
 
 
+def test_apply_is_noop_on_shape_mismatch():
+    """Free-fit can pair a cond at a different shape than the target; the
+    element-wise diff weight is undefined there, so apply must no-op (return the
+    loss unchanged) rather than crash on the cond−target subtraction."""
+    target, _, _ = _paired_latents(h=24, w=32)
+    cond, _, _ = _paired_latents(h=28, w=30)  # deliberately different shape
+    cond = cond[0]  # (16, 28, 30) → make a (1, 16, 28, 30) cond below
+    cond = cond.unsqueeze(0)
+    target = target[:1]  # (1, 16, 24, 32), batch_size=1 (the free-fit regime)
+    loss = torch.rand(1, 16, 24, 32)
+    ctx = _ctx(
+        _make_args(cond_diff_loss=True),
+        {"latents": target, "cond_latents": cond},
+        loss, loss,
+    )
+    assert apply_cond_diff_loss(loss, ctx) is loss
+
+
 def test_uniform_loss_scalar_preserved():
     """mean(w)=1 per image → a constant per-element loss reduces unchanged."""
     target, cond, _ = _paired_latents()

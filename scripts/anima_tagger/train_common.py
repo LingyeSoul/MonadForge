@@ -123,6 +123,12 @@ class GroupRouter:
     softmax_member_indices: Optional[torch.Tensor] = None  # LongTensor [Σ K_g]
     solo_indices: Optional[torch.Tensor] = None  # LongTensor [s]
     multi_indices: Optional[torch.Tensor] = None  # LongTensor [m]
+    # Per-tag group id over ALL groups (any mode), for group-conditional
+    # negative weighting (:func:`compute_grouped_loss` ``inactive_neg_weight``).
+    # Value in ``[0, n_group_slots)``; the sentinel ``n_group_slots`` marks an
+    # ungrouped tag (never down-weighted). ``None`` when the vocab has no groups.
+    group_of_tag: Optional[torch.Tensor] = None  # LongTensor [n_tags]
+    n_group_slots: int = 0
 
     @classmethod
     def from_vocab(
@@ -190,6 +196,18 @@ class GroupRouter:
             else None
         )
 
+        # Per-tag group id over ALL groups (any mode, incl. multilabel) — drives
+        # group-conditional negative weighting. tag_to_group is ≤1 group/tag so
+        # no collision. Ungrouped tags get the sentinel ``n_group_slots``.
+        n_group_slots = len(groups_raw)
+        group_of_tag: Optional[torch.Tensor] = None
+        if n_group_slots > 0:
+            got = [n_group_slots] * n_tags
+            for gid, g in enumerate(groups_raw):
+                for ti in g.get("tag_indices") or []:
+                    got[int(ti)] = gid
+            group_of_tag = torch.tensor(got, dtype=torch.long, device=device)
+
         return cls(
             n_tags=n_tags,
             bce_pos_weight=bce_pos_weight,
@@ -197,6 +215,8 @@ class GroupRouter:
             softmax_member_indices=softmax_member_indices,
             solo_indices=solo_indices,
             multi_indices=multi_indices,
+            group_of_tag=group_of_tag,
+            n_group_slots=n_group_slots,
         )
 
     def is_active(self) -> bool:
@@ -227,6 +247,7 @@ def compute_grouped_loss(
     multi_hot: torch.Tensor,  # [B, n_tags]
     router: GroupRouter,
     label_smooth: float = 0.0,
+    inactive_neg_weight: float = 1.0,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """Return ``(total_tag_loss, per_group_metrics_for_logging)``.
 
@@ -245,6 +266,17 @@ def compute_grouped_loss(
     softmax-group ``cross_entropy`` so both tag objectives smooth
     consistently. Pass ``0.0`` (default) on the val/metric path so reported
     loss stays the true unsmoothed objective and is comparable across ε.
+
+    ``inactive_neg_weight`` (λ ∈ (0, 1]) implements group-conditional negative
+    weighting: a negative (sample, tag) cell whose group is *inactive* for that
+    sample (no tag in the group fired → the annotator likely never attended to
+    the category, so the negative may be a missing label) gets its BCE
+    contribution scaled by λ. Positives, active-group negatives, and ungrouped
+    tags are untouched. λ=1.0 (default) is bit-identical to the un-weighted
+    path. Phase-0 gold-check (bench/tagger_groups) found inactive-group
+    negatives only *mildly* less reliable than active-group ones, so a gentle
+    λ≈0.6–0.75 is the intended operating range — masking (λ→0) would trade away
+    too much precision.
 
     Returned metrics: ``"bce"`` (mean of unmasked BCE entries) plus
     ``f"ce_{group_name}"`` for each softmax group; loss curves stay
@@ -304,8 +336,26 @@ def compute_grouped_loss(
             ce_idx = ce_samples.nonzero(as_tuple=False).squeeze(1)
             bce_mask[ce_idx[:, None], g.tag_indices[None, :]] = False
 
-    bce_count = bce_mask.sum().clamp_min(1.0)
-    l_bce = (bce_per_elem * bce_mask.float()).sum() / bce_count
+    # Weighted mean over surviving (un-CE-masked) cells. ``cell_w`` is 1.0
+    # everywhere except inactive-group negatives, which get λ — so both the
+    # numerator and the denominator shrink consistently (a proper weighted
+    # mean, not a magnitude rescale).
+    cell_w = bce_mask.float()
+    if inactive_neg_weight != 1.0 and router.group_of_tag is not None:
+        G = router.n_group_slots
+        # Per-group positive count this batch via scatter-add over tag→group.
+        gpc = multi_hot.new_zeros(B, G + 1)
+        gpc.index_add_(1, router.group_of_tag, multi_hot)
+        active = gpc > 0  # [B, G+1]; column G is the ungrouped sentinel bucket
+        per_tag_active = active.gather(
+            1, router.group_of_tag.unsqueeze(0).expand(B, -1)
+        )  # [B, n_tags]
+        grouped = (router.group_of_tag != G).unsqueeze(0)  # [1, n_tags]
+        is_neg = multi_hot == 0
+        downweight = is_neg & grouped & ~per_tag_active  # [B, n_tags]
+        cell_w = torch.where(downweight, cell_w * inactive_neg_weight, cell_w)
+    bce_denom = cell_w.sum().clamp_min(1.0)
+    l_bce = (bce_per_elem * cell_w).sum() / bce_denom
     metrics["bce"] = float(l_bce.detach().item())
 
     return l_bce + ce_total, metrics

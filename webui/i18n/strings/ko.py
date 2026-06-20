@@ -47,6 +47,14 @@ STRINGS: dict[str, str] = {
         "저해상도 필터의 픽셀 수 임계값. 500000 = 0.5MP. "
         "'저해상도 이미지 제외'가 해제되면 무시됩니다."
     ),
+    "preprocess_target_res": "해상도 티어 (target_res):",
+    "preprocess_freefit_max_ratio": "최대 종횡비:",
+    "preprocess_freefit_max_ratio_tip": (
+        "프리핏 클램프: 1:R / R:1을 초과하는 종횡비의 이미지는 "
+        "위에서 선택한 크롭 위치에 따라 커버 크롭됩니다. "
+        "기본값 4.0은 기존 버킷 테이블의 가장 긴 종횡비와 일치하며 "
+        "1:5 / 1:6 같은 극단적인 입력을 차단합니다."
+    ),
     "preprocess_text_caching": "캐싱 (VAE + 텍스트)",
     "preprocess_caption_shuffle_variants": "캡션당 셔플 변형 수 (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -61,6 +69,30 @@ STRINGS: dict[str, str] = {
         "v1..v(N-1)에만 적용되는 태그별 드롭아웃 확률입니다. "
         "첫 번째 @artist 마커까지의 태그는 절대 드롭되지 않습니다. "
         "셔플 변형 수가 0 이하이면 무시됩니다."
+    ),
+    "preprocess_caption_correct_order": "캡션 순서 교정",
+    "preprocess_caption_correct_order_tip": (
+        "교정된 .txt 캡션을 리사이즈 이미지 옆에 저장하고 텍스트 인코더 "
+        "캐싱에 사용합니다. 원본 소스 캡션은 수정하지 않습니다."
+    ),
+    "preprocess_caption_insert_no_artist": "@no-artist 삽입",
+    "preprocess_caption_insert_no_artist_tip": (
+        "캡션 순서 교정이 켜져 있을 때 작가 마커가 없으면 artist 위치에 "
+        "@no-artist를 넣습니다. 트리거 워드가 artist 위치에 있으면 "
+        "트리거를 우선하며 @no-artist는 넣지 않습니다."
+    ),
+    "preprocess_caption_trigger_word": "트리거 워드:",
+    "preprocess_caption_trigger_word_tip": (
+        "교정 캡션에 배치할 선택 트리거 태그입니다. 맨 앞 고정 옵션이 "
+        "꺼져 있으면 기존 작가 태그보다 앞의 artist 위치에 둡니다. "
+        "셔플/드롭아웃 보호용 작가 마커처럼 쓰려면 @를 포함하세요. "
+        "트리거 워드의 underscore는 보존됩니다."
+    ),
+    "preprocess_caption_trigger_at_front": "트리거를 맨 앞에 고정",
+    "preprocess_caption_trigger_at_front_tip": (
+        "트리거 워드를 캡션의 가장 앞에 둡니다. 이 모드에서는 "
+        "@no-artist 삽입이 기존 작가 태그 유무와 no-artist 옵션에 따라 "
+        "별도로 동작합니다."
     ),
     "preprocess_run_te": "캐싱 실행 (VAE + 텍스트)",
     "preprocess_run_pe": "PE 캐싱 실행",
@@ -134,6 +166,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "캐시 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "마스크: {masks}장",
     "preprocess_status_no_resized": "리사이즈된 이미지가 없습니다.",
+    "preprocess_no_resized_to_process": (
+        "post_image_dataset/resized/에 리사이즈된 이미지가 없습니다. 먼저 전처리"
+        "(리사이즈)를 실행하세요 — 마스킹과 그룹화는 리사이즈된 이미지를 대상으로 동작합니다."
+    ),
     "preprocess_open_dataset_dir": "캐시 폴더 열기",
     "preprocess_open_dataset_dir_tooltip": "post_image_dataset/ 폴더(리사이즈된 이미지 + 캐시)를 파일 탐색기에서 엽니다.",
     "preprocess_clear_scope_cache": "현재 scope 캐시 삭제",
@@ -174,6 +210,8 @@ STRINGS: dict[str, str] = {
     "copy_log": "복사",
     "copy_log_tooltip": "전체 학습 로그를 클립보드에 복사",
     "copy_log_done": "복사됨",
+    "gpu_probing": "GPU: 확인 중…",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "from_base": "base.toml에서 상속",
     "saved": "저장 완료",
     "saved_file": "{name} 저장됨",
@@ -368,42 +406,31 @@ STRINGS: dict[str, str] = {
     "dataset_group_first_tooltip": "그룹 우선 정렬: 묶인 이미지를 폴더 구분 없이 맨 위로 모아서 보여줍니다 (그룹 외 이미지는 아래에 폴더 트리로).",
     "dataset_view_group": "그룹",
     "dataset_view_tree": "트리",
+    "dataset_group_sort_tooltip": "그룹 내부 이미지 정렬 기준입니다. 방향키 이동은 왼쪽 트리에 보이는 순서를 따릅니다.",
+    "dataset_group_sort_name": "이름순",
+    "dataset_group_sort_name_desc": "이름 역순",
+    "dataset_group_sort_size": "용량순",
+    "dataset_group_sort_size_desc": "용량 역순",
+    "dataset_group_sort_resolution": "해상도순",
+    "dataset_group_sort_resolution_desc": "해상도 역순",
     "dataset_mask_overlay": "마스크 오버레이 표시",
-    "dataset_preprocess_use_short": "사용 (A)",
-    "dataset_preprocess_use_tooltip": "현재 이미지를 전처리 대상에 포함하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
+    "dataset_resize_preview": "리사이즈 미리보기 표시",
+    "dataset_resize_preview_tooltip": "전처리 target_res가 선택할 중앙 크롭 영역과 최종 bucket을 표시합니다. 원본 파일은 변경하지 않습니다.",
+    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
     "dataset_preprocess_skip_short": "생략 (S)",
     "dataset_preprocess_skip_tooltip": "현재 이미지를 전처리 resize 단계에서 생략하도록 표시합니다. 원본 파일은 변경하지 않습니다.",
     "dataset_preprocess_clear_short": "해제 (F)",
     "dataset_preprocess_clear_tooltip": "현재 이미지의 사용/생략/이동 표시를 해제합니다. 우측 메뉴에서 전체 표시를 해제할 수 있습니다.",
     "dataset_preprocess_clear_all": "전체 표시 해제",
     "dataset_preprocess_save": "전처리 결정 저장",
-    "dataset_preprocess_save_tooltip": "전처리에서 사용할 이미지별 사용/생략/이동/크롭 결정을 JSON으로 저장합니다. 이동 표시는 실제 이동 전에도 전처리에서 제외됩니다.",
+    "dataset_preprocess_save_tooltip": "전처리에서 사용할 이미지별 사용/생략/이동 결정을 JSON으로 저장합니다. 이동 표시는 실제 이동 전에도 전처리에서 제외됩니다.",
     "dataset_preprocess_saved": "전처리 결정이 저장되었습니다:\n{path}",
-    "dataset_preprocess_decision_none": "전처리 결정 없음",
     "dataset_preprocess_decision_use": "전처리 결정: 사용",
     "dataset_preprocess_decision_skip": "전처리 결정: 생략",
-    "dataset_preprocess_decision_crop": "전처리 결정: 크롭 적용",
-    "dataset_preprocess_decision_use_crop": "전처리 결정: 사용 + 크롭 적용",
-    "dataset_preprocess_decision_skip_crop": "전처리 결정: 생략 (크롭은 저장되지만 생략이 우선합니다)",
     "dataset_preprocess_decision_move": "현재 상태: 이동 예정",
-    "dataset_preprocess_decision_move_crop": "현재 상태: 이동 예정 (크롭 범위도 저장됨)",
-    "dataset_crop_preview": "크롭 표시",
-    "dataset_crop_preview_tooltip": "전처리 resize 단계에서 적용될 크롭 범위를 미리 봅니다. 원본 파일은 변경하지 않습니다.",
-    "dataset_crop_margin": "여백:",
-    "dataset_crop_margin_left": "좌",
-    "dataset_crop_margin_top": "상",
-    "dataset_crop_margin_right": "우",
-    "dataset_crop_margin_bottom": "하",
-    "dataset_crop_margin_tooltip": "원본 이미지의 각 방향에서 잘라낼 비율입니다.",
-    "dataset_crop_margin_apply": "범위 지정",
-    "dataset_crop_margin_apply_tooltip": "현재 여백 비율로 전처리 크롭 범위를 저장합니다.",
-    "dataset_crop_margin_apply_visible": "현재 목록 전체에 적용",
-    "dataset_crop_margin_apply_all": "전체 이미지에 적용",
-    "dataset_crop_clear": "크롭 해제",
-    "dataset_crop_clear_tooltip": "현재 이미지의 전처리 크롭 결정을 제거합니다.",
-    "dataset_crop_rect": "범위 {bx},{by} {bw}x{bh} · 최종 {x},{y} {w}x{h}",
     "dataset_image_meta_empty": "이미지 없음",
     "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_image_meta_resize": "리사이즈 {width}x{height} @ {edge}",
     "dataset_delete": "이동 (D)",
     "dataset_delete_tooltip": "Delete 또는 D 키로 표시한 이미지를 사이드카와 함께 post_image_dataset/moved/로 이동합니다.",
     "dataset_delete_confirm_title": "이미지 이동",
@@ -433,7 +460,29 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "자동 태깅 실패: {err}",
     "caption_autotag_empty": "태거가 이 이미지에서 태그를 찾지 못했습니다.",
+    "caption_correct": "순서 교정",
+    "caption_correct_tooltip": (
+        "danbooru_tags_classified.csv를 사용해 캡션을 ANIMA 권장 순서로 "
+        "재배치하고, 설정에 따라 @no-artist를 삽입합니다."
+    ),
+    "caption_correct_visible": "현재 목록 전체 교정",
+    "caption_correct_visible_confirm": "현재 목록의 캡션 {n}개를 교정할까요?",
+    "caption_correct_visible_done": "캡션 {n}개를 교정했습니다.",
+    "caption_correct_visible_failed": "캡션 {n}개를 교정했습니다.\n\n실패:\n{err}",
+    "caption_correct_no_change": "교정할 변경사항이 없습니다.",
+    "tag_kb_posts": "게시물 {n}개",
+    "tag_kb_unknown": "{tag} — 태그 지식베이스에 없음",
+    "caption_correct_db_missing": (
+        "danbooru_tags_classified.csv를 찾을 수 없습니다.\n\n"
+        "모델 창에서 Danbooru 태그 DB를 다운로드하거나 다음 위치에 배치하세요:\n{paths}"
+    ),
+    "caption_correct_db_failed": "태그 DB 로드 실패: {err}",
     "caption_versions": "이력…",
+    "caption_variant_training": "학습 캡션",
+    "caption_variants_tooltip": (
+        "전처리가 생성한 학습용 캡션 변형(셔플 / 태그 드롭아웃 / 정체성 무작위화)을 "
+        "미리 봅니다. 읽기 전용이며 편집 가능한 학습 캡션에는 영향을 주지 않습니다."
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(변경 없음)",
@@ -470,6 +519,26 @@ STRINGS: dict[str, str] = {
         "태거의 태그별 임계값 위에 추가로 적용되는 확률 하한(0–1)입니다. "
         "높을수록 더 확실한 태그만 적게 남습니다. 기본값 0.50."
     ),
+    "settings_caption_insert_no_artist": "캡션 교정 시 @no-artist 삽입",
+    "settings_caption_insert_no_artist_tooltip": (
+        "교정 결과에 작가 태그가 없으면 작가 위치에 @no-artist를 넣습니다. "
+        "캡션 셔플 경계로만 쓰이며 토큰화 직전에 제거됩니다."
+    ),
+    "settings_caption_validate_artist_tags": "작가 태그를 DB로 검증",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "켜면 danbooru_tags_classified.csv에서 작가로 분류된 @태그만 작가 위치로 "
+        "옮깁니다. 끄면 @로 시작하는 태그를 작가 태그로 취급합니다."
+    ),
+    "settings_group_match_frac": "그룹화 엄격도:",
+    "settings_group_match_frac_tooltip": (
+        "데이터셋 탭에서 그룹화를 누를 때 두 이미지를 묶는 데 필요한 일치 "
+        "비율(0–1)입니다. 높을수록 더 엄격하고 깔끔한 그룹이 됩니다. 기본값 0.25."
+    ),
+    "settings_group_cell_match": "그룹화 셀 일치도:",
+    "settings_group_cell_match_tooltip": (
+        "데이터셋 그룹화 시 셀 단위 일치로 인정하는 코사인 하한(0–1)입니다. "
+        "높을수록 셀 일치 기준이 엄격해집니다. 기본값 0.93."
+    ),
     "settings_theme": "테마:",
     "settings_theme_tooltip": (
         "인터페이스 전체 색상 테마입니다. 즉시 적용되며, 설정 창을 닫으면 "
@@ -483,6 +552,18 @@ STRINGS: dict[str, str] = {
     "settings_theme_dark": "다크",
     "settings_theme_light": "라이트",
     "settings_theme_sepia": "세피아",
+    "settings_debug_mode": "디버그 모드",
+    "settings_debug_mode_tooltip": (
+        "학습 데몬을 DEBUG 레벨로 기록해, 작업이 멈춘 원인을 버그 리포트에 담을 수 "
+        "있게 합니다. 데몬이 다음에 시작될 때 적용됩니다(앱을 닫거나 데몬을 종료한 뒤 "
+        "다시 여세요)."
+    ),
+    "settings_debug_report_desc": (
+        "무한 로딩에 걸렸나요? 디버그 모드를 켜고 증상을 재현한 다음 '디버그 리포트 "
+        "복사'를 눌러 결과를 버그 리포트에 붙여넣어 주세요. 데몬 로그와 최근 작업 "
+        "상태가 함께 담깁니다."
+    ),
+    "settings_debug_copy_report": "디버그 리포트 복사",
     "settings_mcp_header": "MCP 서버 (에이전트 연동)",
     "settings_mcp_desc": "로컬 학습 데몬을 MCP 클라이언트(Claude Code, Claude Desktop 등)에 "
     "노출합니다. 아래 명령을 터미널에서 실행하면 Claude Code에 등록됩니다:",
@@ -521,8 +602,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "모델 다운로드",
     "models_intro": "아래에서 모델 그룹을 선택하거나 '전체 다운로드'로 표준 세트 "
-    "(Anima + SAM3 + MIT + PE)를 받으세요. 파일은 models/ 아래에 저장됩니다.",
-    "models_download_all": "전체 다운로드 (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + 태그 DB)를 받으세요. 파일은 models/ 아래에 저장됩니다.",
+    "models_download_all": "전체 다운로드 (Anima + SAM3 + MIT + PE + 태그 DB)",
     "models_download": "다운로드",
     "models_redownload": "재다운로드",
     "models_installed": "✓ 설치됨",
@@ -531,6 +612,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — 말풍선 마스킹",
     "model_mit": "MIT — 만화 텍스트 마스킹",
     "model_pe": "PE-Core-L14-336 — 비전 인코더 (CMMD 검증 / DCW)",
+    "model_danbooru_tags": "Danbooru 태그 DB — 캡션 순서 교정",
     # HuggingFace 인증 (모델 다이얼로그)
     "models_hf_token_placeholder": "HuggingFace 토큰을 붙여넣으세요 (hf_…)",
     "models_hf_authenticate": "인증",
@@ -595,7 +677,24 @@ STRINGS: dict[str, str] = {
     "merge_pick_out": "병합된 DiT 저장 위치...",
     "browse": "찾아보기…",
     # Multi-scale target_res tiers
+    "target_res_bucket_tooltip": "{edge}px tier에서 이 bucket 해상도만 전처리에 사용합니다. 모두 해제하면 선택한 tier의 모든 bucket을 사용합니다.",
     "target_res_danger_tooltip": "고비용 티어: {edge}px는 이미지당 약 {tokens} 토큰을 사용하고 컴파일된 블록 그래프를 하나 더 추가합니다(컴파일 느려짐, VRAM 증가). 이 해상도가 정말 필요할 때만 켜세요.",
+    "resize_crop_anchor": "리사이즈 크롭 위치:",
+    "resize_crop_anchor_tip": "cover resize 후 target bucket으로 crop할 때 어느 방향을 보존할지 선택합니다.",
+    "resize_crop_anchor_top_left": "좌상단",
+    "resize_crop_anchor_top": "상단",
+    "resize_crop_anchor_top_right": "우상단",
+    "resize_crop_anchor_left": "좌측",
+    "resize_crop_anchor_center": "중앙",
+    "resize_crop_anchor_right": "우측",
+    "resize_crop_anchor_bottom_left": "좌하단",
+    "resize_crop_anchor_bottom": "하단",
+    "resize_crop_anchor_bottom_right": "우하단",
+    "resize_crop_margins": "리사이즈 여백:",
+    "resize_crop_margin_top": "상",
+    "resize_crop_margin_right": "우",
+    "resize_crop_margin_bottom": "하",
+    "resize_crop_margin_left": "좌",
     # TensorBoard panel
     "tb_panel_title": "TensorBoard 실행 목록",
     "tb_open": "TensorBoard 열기",

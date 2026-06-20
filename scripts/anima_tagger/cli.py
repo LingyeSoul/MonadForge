@@ -10,9 +10,9 @@ these can be overridden individually by CLI flags.
 Modes (selected by ``--mode``):
 
 * ``build_vocab``    — scan caption sources, intersect with the tag-taxonomy
-                       cache, snapshot ``tag_rules.yaml``, emit
-                       ``vocab.json`` plus a fixed train/val split and a
-                       per-stem ``dataset.json`` manifest.
+                       cache, snapshot ``tag_rules.yaml``, emit ``vocab.json``
+                       (label space) plus a per-stem ``dataset.json`` manifest
+                       that carries the fixed train/val split.
 * ``build_features`` — encode every manifest image through frozen PE-Core +
                        PE-Spatial and write per-stem caches. Each side's
                        layout follows ``--pool_kind`` / ``--pool_kind_aux``
@@ -53,6 +53,23 @@ def _corpus_default(rel: str):
     return str(Path(root) / rel)
 
 
+def _default_tag_cache():
+    """Default tag-taxonomy source for ``--tag_cache``.
+
+    Prefers the corpus JSON when ``$CAPTION_CORPUS_DIR`` is set; otherwise falls
+    back to the publicly downloadable ``models/danbooru_tags_classified.csv`` KB
+    (``make download-danbooru-tags``), so the vocab build works without the
+    private crawl. Returns ``None`` only when neither is resolvable.
+    """
+    corpus = _corpus_default("retrieved/.tag_cache.json")
+    if corpus:
+        return corpus
+    csv_kb = (
+        Path(__file__).resolve().parents[2] / "models" / "danbooru_tags_classified.csv"
+    )
+    return str(csv_kb) if csv_kb.exists() else None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Anima tagger trainer")
     p.add_argument(
@@ -64,6 +81,7 @@ def parse_args() -> argparse.Namespace:
             "calibrate",
             "predict",
             "scan_role_markers",
+            "derive_groups",
         ],
         default="build_vocab",
     )
@@ -117,9 +135,11 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--tag_cache",
-        default=_corpus_default("retrieved/.tag_cache.json"),
-        help="Tag-taxonomy JSON (tag → integer type ID). "
-        "Default: $CAPTION_CORPUS_DIR/retrieved/.tag_cache.json.",
+        default=_default_tag_cache(),
+        help="Tag-taxonomy source mapping tag → Danbooru type ID. Accepts the "
+        "corpus JSON ($CAPTION_CORPUS_DIR/retrieved/.tag_cache.json) or the "
+        "public danbooru_tags_classified.csv KB. Default: the corpus JSON when "
+        "$CAPTION_CORPUS_DIR is set, else models/danbooru_tags_classified.csv.",
     )
     p.add_argument(
         "--rules",
@@ -146,21 +166,23 @@ def parse_args() -> argparse.Namespace:
         "--ram_resident",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Load the whole packed feature set into RAM once at startup and "
-        "serve batches from memory (no per-epoch disk IO; runs the loader inline "
-        "with a free global shuffle). Needs ~feature-set-sized RAM (~40 GB here). "
-        "Use --no-ram_resident to fall back to the mmap-shard path with chunked "
+        help="Load the whole feature set into RAM once at startup (stacking the "
+        "per-stem sidecars into per-bucket CPU tensors) and serve batches from "
+        "memory (no per-epoch disk IO; runs the loader inline with a free global "
+        "shuffle). Needs ~feature-set-sized RAM (~40 GB here). Use "
+        "--no-ram_resident to fall back to the lazy per-stem path with chunked "
         "shuffle + prefetch workers (default: on).",
     )
     p.add_argument(
         "--shuffle_chunk_size",
         type=int,
         default=2048,
-        help="IO-locality knob for the cached-feature loader. Each epoch "
-        "shuffles within contiguous chunks of this many samples (snapped to a "
-        "multiple of --batch_size) and shuffles chunk order, instead of a global "
-        "shuffle — keeps packed-shard reads inside a cache-resident window so the "
-        "~40 GB token set doesn't thrash on a RAM-bound box. Larger = closer to a "
+        help="IO-locality knob for the cached-feature loader (--no-ram_resident "
+        "path only). Each epoch shuffles within contiguous chunks of this many "
+        "samples (snapped to a multiple of --batch_size) and shuffles chunk "
+        "order, instead of a global shuffle — keeps sidecar reads inside a "
+        "cache-resident window so the ~40 GB token set doesn't thrash on a "
+        "RAM-bound box. Larger = closer to a "
         "full global shuffle (more random IO); smaller = more sequential IO, "
         "slightly more correlated batch composition (default: 2048).",
     )
@@ -196,16 +218,18 @@ def parse_args() -> argparse.Namespace:
         "0.05–0.1 is the usual range. Val loss is always reported unsmoothed.",
     )
     p.add_argument(
-        "--drop_sidecars_after_pack",
-        action="store_true",
-        help="After the per-bucket mmap shards are built (and verified), delete "
-        "the original per-stem token sidecars to reclaim disk (~the full "
-        "tokens-<encoder>/ trees). DESTRUCTIVE: repacking a different split "
-        "later then requires re-running `--mode build_features` (GPU "
-        "re-encode). Off by default. Only deletes once BOTH train and val "
-        "shards are present.",
+        "--inactive_neg_weight",
+        type=float,
+        default=0.6,
+        help="Group-conditional negative weighting λ (train only). A negative "
+        "tag whose group has NO tags on that image (annotator likely skipped "
+        "the category → possible missing label) gets its BCE scaled by λ. "
+        "Positives / active-group negatives / ungrouped tags untouched. 1.0 "
+        "(default) is bit-inert; 0.6–0.75 is the intended range (bench/"
+        "tagger_groups gold-check: inactive-group negatives only mildly less "
+        "reliable, so don't mask). Trades long-tail recall↑ vs precision↓ — "
+        "A/B on val. Val loss is always reported at λ=1.",
     )
-
     # build_features / train / calibrate all read --pool_kind to pick the cache
     # subdir and head shape — they must agree.
     p.add_argument(
@@ -364,20 +388,93 @@ def parse_args() -> argparse.Namespace:
         "--out_yaml",
         default=None,
         help="scan_role_markers: optional path for a YAML stub of candidates, "
-        "ready to paste into tag_rules.yaml.",
+        "ready to paste into tag_rules.yaml. derive_groups: path for the "
+        "candidate groups.yaml.",
+    )
+
+    # derive_groups: bucket general vocab by danbooru 소분류 taxonomy → group
+    # candidates; co-occurrence on solo images picks softmax vs multilabel.
+    p.add_argument(
+        "--min_group_size",
+        type=int,
+        default=3,
+        help="derive_groups: minimum members for a taxonomy bucket to become a "
+        "candidate group (default: 3).",
+    )
+    p.add_argument(
+        "--min_member_freq",
+        type=int,
+        default=50,
+        help="derive_groups: drop group members appearing in fewer than this "
+        "many training captions (default: 50).",
+    )
+    p.add_argument(
+        "--min_group_support",
+        type=int,
+        default=30,
+        help="derive_groups: a group seen on fewer than this many solo images "
+        "can't be trusted for exclusivity → defaults to multilabel (default: 30).",
+    )
+    p.add_argument(
+        "--softmax_cooc_max",
+        type=float,
+        default=0.05,
+        help="derive_groups: a group whose members co-occur on at most this "
+        "fraction of single-subject images is mutually exclusive → "
+        "softmax_when_solo (default: 0.05).",
+    )
+    p.add_argument(
+        "--borderline_cooc_max",
+        type=float,
+        default=0.20,
+        help="derive_groups: groups with multi-rate between --softmax_cooc_max "
+        "and this are flagged 'borderline' (attribute families inflated by "
+        "hierarchical/mixed tags) — emitted multilabel but tagged PROMOTE? for "
+        "review (default: 0.20).",
+    )
+    p.add_argument(
+        "--report",
+        action="store_true",
+        help="derive_groups: print a coverage + per-group table to stdout.",
+    )
+    p.add_argument(
+        "--derive_groups",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="build_vocab: derive tag-groups from the danbooru taxonomy + the "
+        "scanned captions and merge onto --groups (preserved verbatim), writing "
+        "<out_dir>/groups.yaml and baking it into vocab.json — folds the "
+        "derive_groups step into the build. On by default; pass "
+        "--no-derive_groups to build a flat-vocab checkpoint or use a static "
+        "--groups file. Skipped with a warning when the danbooru CSV KB is "
+        "absent. (As a --mode, derive_groups runs standalone for review.)",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="derive_groups: write a curated, English-keyed groups.yaml that "
+        "merges the derived groups onto --preserve_groups (kept verbatim) "
+        "instead of the raw candidate. Destination is --out_yaml or "
+        "<out_dir>/groups.yaml (backed up to .bak first).",
+    )
+    p.add_argument(
+        "--preserve_groups",
+        default="models/captioners/anima-tagger-v2/groups.yaml",
+        help="derive_groups --apply: existing groups.yaml whose groups are "
+        "preserved verbatim and claim their tags first (no regression).",
     )
 
     # --out_dir holds the checkpoint + vocab; bulky feature caches are decoupled
     # into --feature_cache_dir under post_image_dataset/.
     p.add_argument(
         "--out_dir",
-        default="models/captioners/anima-tagger-v1",
+        default="models/captioners/anima-tagger-v2",
     )
     p.add_argument(
         "--feature_cache_dir",
         default=None,
-        help="Root dir for build_features caches (per-stem token sidecars + "
-        "packed mmap shards). Decoupled from --out_dir so these bulky "
+        help="Root dir for build_features caches (per-stem token sidecars). "
+        "Decoupled from --out_dir so these bulky "
         "dataset-derived caches live under post_image_dataset/. Default "
         "(unset): post_image_dataset/anima_tagger/. "
         "Read by build_features / train / calibrate — they must all agree, "
@@ -447,6 +544,10 @@ def main() -> None:
         from .role_markers import cmd_scan_role_markers
 
         cmd_scan_role_markers(args)
+    elif args.mode == "derive_groups":
+        from .derive_groups import cmd_derive_groups
+
+        cmd_derive_groups(args)
     else:
         raise SystemExit(f"unknown --mode={args.mode!r}")
 

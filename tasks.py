@@ -12,30 +12,63 @@ Examples:
     python tasks.py test                     # add MOD=1 to enable modulation guidance
     python tasks.py test                     # add NOLORA=1 to run against the bare DiT
     python tasks.py download-models
+    python tasks.py turbo                    # DP-DMD 4-step distillation
     python tasks.py exp-chimera              # experimental method
-    python tasks.py exp-test-turbo           # experimental inference
+    python tasks.py exp-test-spd             # experimental inference
 
 Command implementations live under ``scripts/tasks/`` (shipped methods) and
 ``scripts/experimental_tasks/`` (unstable methods exposed under ``exp-*``).
 This file is just a name → callable dispatch table.
 """
 
+import importlib
 import sys
 
-from scripts.experimental_tasks import inference as exp_inference
-from scripts.experimental_tasks import training as exp_training
-from scripts.tasks import (
-    curate,
-    daemon,
-    dcw,
-    downloads,
-    inference,
-    masking,
-    preprocess,
-    tagger,
-    training,
-    utilities,
-)
+
+class _LazyCmd:
+    """A command callable that imports its module only when first invoked.
+
+    tasks.py is a pure dispatch table: a single ``python tasks.py <cmd>`` needs
+    exactly one command module, but importing all of them up front to build
+    ``COMMANDS`` cost ~100ms (the daemon client's urllib/http chain dominates) —
+    wasted for the common case (``make <target>`` immediately spawns a child for
+    the real work). Wrapping each entry defers the import to dispatch time, so
+    every target stops paying for modules it won't run.
+    """
+
+    def __init__(self, modpath: str, name: str):
+        self._modpath = modpath
+        self._name = name
+
+    def resolve(self):
+        return getattr(importlib.import_module(self._modpath), self._name)
+
+    def __call__(self, extra):
+        return self.resolve()(extra)
+
+
+class _LazyModule:
+    """``<alias>.cmd_x`` in the COMMANDS table → a _LazyCmd, with no import yet."""
+
+    def __init__(self, modpath: str):
+        self._modpath = modpath
+
+    def __getattr__(self, name: str) -> _LazyCmd:
+        return _LazyCmd(self._modpath, name)
+
+
+curate = _LazyModule("scripts.tasks.curate")
+daemon = _LazyModule("scripts.tasks.daemon")
+dcw = _LazyModule("scripts.tasks.dcw")
+downloads = _LazyModule("scripts.tasks.downloads")
+inference = _LazyModule("scripts.tasks.inference")
+masking = _LazyModule("scripts.tasks.masking")
+preprocess = _LazyModule("scripts.tasks.preprocess")
+tagger = _LazyModule("scripts.tasks.tagger")
+training = _LazyModule("scripts.tasks.training")
+utilities = _LazyModule("scripts.tasks.utilities")
+exp_inference = _LazyModule("scripts.experimental_tasks.inference")
+exp_training = _LazyModule("scripts.experimental_tasks.training")
 
 COMMANDS = {
     # ── Training ──────────────────────────────────────────────────────
@@ -47,6 +80,13 @@ COMMANDS = {
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
         "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora).",
+    ),
+    "turbo": (
+        training.cmd_turbo,
+        "Turbo (DP-DMD) distillation — bakes CFG=4 / 28-step Anima into a 4-step "
+        "LoRA student (configs/methods/turbo.toml). Single-GPU bespoke loop "
+        "(bypasses train.py/accelerate, like distill-mod). Output is a normal LoRA "
+        "(https://huggingface.co/sorryhyun/anima-turbo-4step).",
     ),
     "easycontrol": (
         training.cmd_easycontrol,
@@ -62,11 +102,6 @@ COMMANDS = {
         training.cmd_easycontrol_preprocess,
         "Full EasyControl preprocess: latents + text emb. "
         "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
-    ),
-    "easycontrol-download": (
-        training.cmd_easycontrol_download,
-        "Download an EasyControl adapter's extra weights. "
-        "EASYADAPTER=colorize → Sketch2Manga screening weights (~5.7GB).",
     ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (
@@ -119,6 +154,11 @@ COMMANDS = {
         inference.cmd_test_easycontrol,
         "Inference with latest EasyControl weight. Usage: test-easycontrol <ref_image> [--prompt ... --easycontrol_scale ...]",
     ),
+    "test-turbo": (
+        inference.cmd_test_turbo,
+        "Inference with latest Turbo student LoRA at 4 steps, cfg=1.0 "
+        "(CFG is baked into the student).",
+    ),
     # ── Preprocess ────────────────────────────────────────────────────
     "preprocess": (
         preprocess.cmd_preprocess,
@@ -141,9 +181,9 @@ COMMANDS = {
     ),
     "preprocess-vae": (preprocess.cmd_preprocess_vae, "Cache VAE latents"),
     "preprocess-te": (preprocess.cmd_preprocess_te, "Cache text encoder embeddings"),
-    "preprocess-pooled": (
-        preprocess.cmd_preprocess_pooled,
-        "Cache pooled text embeddings sidecar (consumed by distill-mod). No GPU.",
+    "preprocess-captions": (
+        preprocess.cmd_preprocess_captions,
+        "Write corrected caption sidecars next to resized preprocessing images",
     ),
     "preprocess-pe": (
         preprocess.cmd_preprocess_pe,
@@ -214,6 +254,10 @@ COMMANDS = {
     "download-tagger": (
         downloads.cmd_download_tagger,
         "Download Anima Tagger v2 vocab.json (caption-index dependency; not the full model)",
+    ),
+    "download-danbooru-tags": (
+        downloads.cmd_download_danbooru_tags,
+        "Download danbooru_tags_classified.csv for caption order correction",
     ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (
@@ -286,12 +330,6 @@ COMMANDS = {
     # ── Experimental ──────────────────────────────────────────────────
     # Unstable methods kept under exp-* so they don't pollute the main command
     # surface. May produce broken output, change without notice, or be removed.
-    "exp-turbo": (
-        exp_training.cmd_turbo,
-        "[experimental] Decoupled DMD2 distillation — bakes CFG=4 / 28-step Anima "
-        "into a 4-step LoRA student (configs/methods/turbo.toml). "
-        "Single-GPU bespoke loop (bypasses train.py/accelerate, like distill-mod).",
-    ),
     "exp-spd": (
         exp_training.cmd_spd,
         "[experimental] SPD fine-tuning LoRA — §4.3 trajectory adapter that teaches a "
@@ -324,11 +362,6 @@ COMMANDS = {
         "[experimental] Inference with latest soft_tokens weight "
         "(SoftREPA-style per-layer × per-t bank, spliced into cross-attn via "
         "monkey-patched Block.forward). Composes freely with --spectrum.",
-    ),
-    "exp-test-turbo": (
-        exp_inference.cmd_test_turbo,
-        "[experimental] Inference with latest turbo student LoRA at 4 steps, cfg=1.0 "
-        "(CFG is baked into the student).",
     ),
     "exp-test-spd": (
         exp_inference.cmd_test_spd,
@@ -400,8 +433,9 @@ def main():
     fn, desc = COMMANDS[command]
     if extra and extra[0] in ("-h", "--help"):
         print(f"python tasks.py {command} -- {desc}\n")
-        if fn.__doc__:
-            print(fn.__doc__.strip())
+        doc = fn.resolve().__doc__ if isinstance(fn, _LazyCmd) else fn.__doc__
+        if doc:
+            print(doc.strip())
         else:
             print("(no detailed help available)")
         print(

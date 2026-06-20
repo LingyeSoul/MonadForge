@@ -1,3 +1,4 @@
+import glob
 import logging
 import math
 import os
@@ -544,15 +545,19 @@ class BaseDataset(torch.utils.data.Dataset):
         self.image_data[info.image_key] = info
         self.image_to_subset[info.image_key] = subset
 
-    def make_buckets(self, constant_token_buckets: bool = False, target_res=None):
+    def make_buckets(
+        self,
+        target_res=None,
+    ):
         """Assign every image to its nearest bucket resolution.
 
-        With ``constant_token_buckets`` (the only training mode) buckets come
-        from the full native-shape catalog (``all_constant_token_buckets`` — every
-        tier), so every cached latent exact-matches its true (W, H) and nothing
-        AR-snaps. ``target_res`` is preprocess-only and inert here: the on-disk
-        caches decide which tiers are present, and the compile token-family budget
-        is derived from the populated buckets (train.py), not from this arg.
+        Free-fit is the only resize mode: the predefined bucket set is the **union
+        of the distinct on-disk resized sizes** (read here as ``info.image_size``),
+        so each latent exact-matches its own (W, H) and nothing AR-snaps at load.
+        The on-disk caches are the source of truth for which shapes/tiers are
+        present; ``target_res`` is preprocess-only and inert here. The compile
+        token-family budget is derived from the populated buckets (train.py) — all
+        within one tier's band, so ``compile_dynamic_seq`` keeps them at one graph.
         """
         logger.info("loading image sizes.")
         for info in tqdm(self.image_data.values()):
@@ -561,17 +566,18 @@ class BaseDataset(torch.utils.data.Dataset):
 
         logger.info("make buckets")
 
-        # Remember the mode + tier set so a later rebuild (e.g.
-        # restrict_to_byg_tuples) re-buckets identically.
-        self._constant_token_buckets = constant_token_buckets
+        # Remember the tier set so a later rebuild (e.g. restrict_to_byg_tuples)
+        # re-buckets identically.
         self._target_res = target_res
 
         if self.bucket_manager is None:
             self.bucket_manager = BucketManager()
-            self.bucket_manager.make_buckets(
-                constant_token_buckets=constant_token_buckets,
-                target_res=target_res,
-            )
+            freefit_resos = {
+                tuple(info.image_size)
+                for info in self.image_data.values()
+                if info.image_size is not None
+            }
+            self.bucket_manager.make_buckets(freefit_resos=freefit_resos)
 
         img_ar_errors = []
         for image_info in self.image_data.values():
@@ -1432,16 +1438,32 @@ class BaseDataset(torch.utils.data.Dataset):
             cache_dir=str(cond_dir),
             image_dir=subset.image_dir,
         )
+        # The cond is loaded at the target's bucket by default (the common case:
+        # cond and target share a shape). Under free-fit the cond is a paired but
+        # *distinct* image (e.g. the near-twin _tags member) that can land at a
+        # DIFFERENT free-fit shape, so the same-bucket path won't exist — fall back
+        # to the cond filed at its own shape (glob by stem; exactly one cond per
+        # target) and read its reso from the filename. cond≠target shapes are fine
+        # downstream: the EasyControl cond stream encodes at the cond's native token
+        # count, and cond_diff_loss self-skips on a shape mismatch.
+        cond_reso = image_info.bucket_reso
         if not os.path.exists(npz_path):
-            raise FileNotFoundError(
-                f"Condition latent cache missing for {image_info.absolute_path!r}: "
-                f"{npz_path}. Run the cond prep step first "
-                f"(e.g. `make easycontrol-preprocess EASYADAPTER=colorize`)."
-            )
+            suffix = self.latents_caching_strategy.ANIMA_LATENTS_NPZ_SUFFIX
+            stem_prefix = npz_path[: -len(suffix)].rsplit("_", 1)[0]  # drop "_WxH"
+            matches = sorted(glob.glob(f"{stem_prefix}_*{suffix}"))
+            if not matches:
+                raise FileNotFoundError(
+                    f"Condition latent cache missing for "
+                    f"{image_info.absolute_path!r}: {npz_path} (and no free-fit "
+                    f"sibling {stem_prefix}_*{suffix}). Run the cond prep step "
+                    f"first (e.g. `make easycontrol-preprocess EASYADAPTER=colorize`)."
+                )
+            npz_path = matches[0]
+            wxh = npz_path[: -len(suffix)].rsplit("_", 1)[1]  # "WWWWxHHHH"
+            cw, ch = wxh.split("x")
+            cond_reso = (int(cw), int(ch))
         cond, _, _, cond_flipped, _ = (
-            self.latents_caching_strategy.load_latents_from_disk(
-                npz_path, image_info.bucket_reso
-            )
+            self.latents_caching_strategy.load_latents_from_disk(npz_path, cond_reso)
         )
         if flipped:
             if cond_flipped is None:
@@ -1719,10 +1741,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.num_train_images = sum(info.num_repeats for info in kept.values())
         # bucket_manager.add_image accumulates, so reset before re-bucketing.
         self.bucket_manager = None
-        self.make_buckets(
-            constant_token_buckets=getattr(self, "_constant_token_buckets", True),
-            target_res=getattr(self, "_target_res", None),
-        )
+        self.make_buckets(target_res=getattr(self, "_target_res", None))
         return (len(kept), dropped)
 
     def _try_load_byg_tuple(self, info: ImageInfo) -> Optional[dict]:
@@ -2125,14 +2144,24 @@ class BaseDataset(torch.utils.data.Dataset):
         example["latents"] = (
             torch.stack(latents_list) if latents_list[0] is not None else None
         )
-        # Condition latent for cond≠target tasks (colorization). All samples in a
-        # bucket share the resolution, so the cond latents share shape with the
-        # targets and a plain stack works. None when no cond_cache_dir is set.
-        example["cond_latents"] = (
-            torch.stack(cond_latents_list)
-            if cond_latents_list and cond_latents_list[0] is not None
-            else None
-        )
+        # Condition latent for cond≠target tasks (colorization / near-twin removal).
+        # Targets in a batch share a bucket, so same-shape conds stack plainly. Under
+        # free-fit a cond can land at a different shape than its target, so conds in
+        # one batch may be ragged — fine at batch_size=1 (the EasyControl default; a
+        # 1-element stack is shape-agnostic). For batch_size>1 a ragged batch can't
+        # stack, so fail with a clear message instead of a cryptic torch error.
+        if cond_latents_list and cond_latents_list[0] is not None:
+            shapes = {tuple(c.shape) for c in cond_latents_list}
+            if len(shapes) > 1:
+                raise RuntimeError(
+                    "cond_latents have mixed shapes within a batch "
+                    f"({sorted(shapes)}) — free-fit can pair a cond at a different "
+                    "shape than its target. Use batch_size=1 for cond≠target "
+                    "subsets under free-fit (the EasyControl default)."
+                )
+            example["cond_latents"] = torch.stack(cond_latents_list)
+        else:
+            example["cond_latents"] = None
         example["captions"] = captions
 
         example["original_sizes_hw"] = torch.stack(

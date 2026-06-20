@@ -168,7 +168,6 @@ cache.
   `if adapter == "inpaint": run([PY, "easycontrol_adapters/inpainting/prep.py", *extra]); return`
 - `cmd_easycontrol` needs **no change** — it already routes `_easyadapter()` to
   `configs/methods/<name>.toml`, so `inpaint` resolves for free.
-- `cmd_easycontrol_download` needs no change — synthetic masks, no extra weights.
 
 **`scripts/tasks/inference.py::cmd_test_easycontrol`** — generalize the current
 two-way `is_colorize` branch into a small per-adapter table

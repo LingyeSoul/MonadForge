@@ -18,7 +18,7 @@ turbo code) — the student LoRA is just a normal LoRA with CFG=4 baked in.
 This harness is method-agnostic (two view-toggled LoRA stacks); the shipped
 objective driving it is DP-DMD.
 
-Docs: ``docs/structure/dpdmd.md`` (structure), ``docs/experimental/dpdmd.md`` (ops).
+Docs: ``docs/structure/turbo.md`` (structure), ``docs/methods/turbo.md`` (ops).
 Paper: Wu, Li, Zhang, Ma, "Diversity-Preserved Distribution Matching
 Distillation" (arXiv:2602.03139).
 """

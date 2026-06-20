@@ -25,10 +25,8 @@ storage layout → invalidate the cache dir → rebuild.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -480,7 +478,6 @@ class CachedDualDataset(Dataset):
         pool_kind_aux: str,
         spec_aux: Optional[BucketSpec],
         stems_subset: Optional[Sequence[str]] = None,
-        pack_root: Optional[Path] = None,
         ram_resident: bool = False,
     ):
         self._ram_resident_req = bool(ram_resident)
@@ -503,27 +500,6 @@ class CachedDualDataset(Dataset):
         if stems_subset is None:
             stems_subset = manifest.stems
         self._stems_requested = list(stems_subset)
-
-        # Recovery path: once `--drop_sidecars_after_pack` removes the per-stem
-        # caches, rebuild from the mmap shards + index instead. The index is keyed
-        # by the REQUESTED subset, unlike shard dirs which key on the KEPT stems.
-        if pack_root is not None:
-            pack_index = self._try_load_pack_index(Path(pack_root), stems_subset)
-            if pack_index is not None and not self._sidecars_present(
-                cache_dir, stems_subset, idx_of
-            ):
-                self._init_from_pack_index(
-                    manifest,
-                    cache_dir,
-                    cache_dir_aux,
-                    pool_kind,
-                    pool_kind_aux,
-                    spec,
-                    spec_aux,
-                    Path(pack_root),
-                    pack_index,
-                )
-                return
 
         # Per-side T → bucket map (only used on map sides; empty for mean sides).
         def _bucket_map(spec: Optional[BucketSpec]) -> Dict[int, tuple[int, int]]:
@@ -627,13 +603,13 @@ class CachedDualDataset(Dataset):
         self.d_in = self._peek_d(kept_paths[0], pool_kind)
         self.d_in_aux = self._peek_d(kept_paths_aux[0], pool_kind_aux)
 
-        # Optional packed-cache layer: loading two sidecars per __getitem__ is ~30k
-        # file opens/epoch and the loader (not the GPU) is the wall. pack_root
-        # consolidates each (side, bucket) into one [N, T, D] mmap shard served as
-        # zero-copy slices (~6x faster/batch). Bit-identical to the per-file path.
-        self._packed = False
-        if pack_root is not None:
-            self._init_packed(Path(pack_root))
+        # Optional RAM-resident layer: loading two sidecars per __getitem__ is ~30k
+        # file opens/epoch and the loader (not the GPU) is the wall. ram_resident
+        # pulls every sidecar into per-(side, bucket) CPU tensors once at startup,
+        # so __getitem__ indexes RAM and a shuffled epoch never touches disk.
+        # Bit-identical to the per-file path. Otherwise __getitem__ stays lazy.
+        if self._ram_resident_req:
+            self._load_ram_from_sidecars()
 
     @staticmethod
     def _peek_d(path: Path, kind: str) -> int:
@@ -657,255 +633,62 @@ class CachedDualDataset(Dataset):
         h, w = bucket
         return f"{h}x{w}"
 
-    def _init_packed(self, pack_root: Path) -> None:
-        """Build (if missing) per-(side, bucket) shards and per-item row maps.
+    def _load_ram_from_sidecars(self) -> None:
+        """Pull every per-stem sidecar into process-resident per-(side, bucket)
+        CPU tensors, so ``__getitem__`` indexes RAM instead of opening two files.
 
-        Shards are keyed by a hash of the kept-stem list so train and val get
-        distinct shard sets and an unchanged split reuses shards across runs.
-        Handles are opened lazily inside __getitem__ so each DataLoader worker
-        mmaps its own (nothing is opened in the parent before fork).
+        Each (side, bucket) group is stacked into one ``[N, ...]`` tensor and a
+        per-item ``(bucket_key, row)`` map records where each dataset index lands.
+        One sequential pass over the sidecars at startup replaces ~30k file opens
+        per epoch; the training loop then touches zero disk. Run single-process
+        (``num_workers=0``) — the resident set is large and there's no IO left for
+        workers to hide. Bit-identical to the lazy per-file path.
         """
-        self._pack_dirs: Dict[str, Path] = {}
-        self._pack_main = self._pack_side(
-            "main", self.paths, self.pool_kind, [b[0] for b in self.buckets], pack_root
+        self._ram_row_main = self._stack_ram_side(
+            "main", self.paths, self.pool_kind, [b[0] for b in self.buckets]
         )
-        self._pack_aux = self._pack_side(
-            "aux",
-            self.paths_aux,
-            self.pool_kind_aux,
-            [b[1] for b in self.buckets],
-            pack_root,
+        self._ram_row_aux = self._stack_ram_side(
+            "aux", self.paths_aux, self.pool_kind_aux, [b[1] for b in self.buckets]
         )
-        self._handles: Dict[tuple, object] = {}
-        self._packed = True
-        self._write_pack_index(pack_root)
-        if self._ram_resident_req:
-            self._load_ram_from_shards()
-
-    @staticmethod
-    def _subset_sig(stems: Sequence[str]) -> str:
-        return hashlib.sha1("\n".join(stems).encode()).hexdigest()[:12]
-
-    def _write_pack_index(self, pack_root: Path) -> None:
-        """Persist a sidecar-independent index so the dataset can be rebuilt
-        from the shards alone after the per-stem sidecars are dropped. Keyed by
-        a hash of the REQUESTED subset (available before the sidecar-dependent
-        keep-loop) so recovery can find it; records the kept stems, per-side
-        (bucket_key, row), shard dir names, and feature dims — everything
-        __init__ otherwise derives from the sidecars. Written atomically.
-        """
-        sig = self._subset_sig(self._stems_requested)
-        index = {
-            "version": 1,
-            "stems": self.stems,
-            "pool_kind": self.pool_kind,
-            "pool_kind_aux": self.pool_kind_aux,
-            "d_in": int(self.d_in),
-            "d_in_aux": int(self.d_in_aux),
-            "dirs": {k: v.name for k, v in self._pack_dirs.items()},
-            "rows": {
-                "main": [[bk, row] for bk, row in self._pack_main],
-                "aux": [[bk, row] for bk, row in self._pack_aux],
-            },
-        }
-        tmp = pack_root / f"index-{sig}.json.tmp"
-        tmp.write_text(json.dumps(index))
-        os.replace(tmp, pack_root / f"index-{sig}.json")
-
-    def _try_load_pack_index(self, pack_root: Path, stems_subset) -> Optional[dict]:
-        """Return the packed index for this requested subset iff it AND every
-        shard it references exist; else None (so a pruned/corrupt/stale pack
-        falls back to the per-stem path rather than half-loading)."""
-        index_path = pack_root / f"index-{self._subset_sig(stems_subset)}.json"
-        if not index_path.exists():
-            return None
-        try:
-            index = json.loads(index_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            return None
-        dirs = index.get("dirs", {})
-        rows = index.get("rows", {})
-        for side in ("main", "aux"):
-            d = pack_root / dirs.get(side, "")
-            if not d.is_dir():
-                return None
-            for bk in {bk for bk, _row in rows.get(side, [])}:
-                if not (d / f"{bk}.safetensors").exists():
-                    logger.warning(
-                        "packed index %s references missing shard %s — falling "
-                        "back to per-stem sidecars",
-                        index_path.name,
-                        d / f"{bk}.safetensors",
-                    )
-                    return None
-        return index
-
-    @staticmethod
-    def _sidecars_present(cache_dir: Path, stems_subset, idx_of) -> bool:
-        """True while the per-stem caches still back this subset (normal path);
-        False once dropped (recover from shards). The drop is all-or-nothing, so
-        the first manifest-known stem's sidecar settles it."""
-        for stem in stems_subset:
-            if stem in idx_of:
-                return (cache_dir / f"{stem}.safetensors").exists()
-        return True
-
-    def _init_from_pack_index(
-        self,
-        manifest,
-        cache_dir: Path,
-        cache_dir_aux: Path,
-        pool_kind: str,
-        pool_kind_aux: str,
-        spec: Optional[BucketSpec],
-        spec_aux: Optional[BucketSpec],
-        pack_root: Path,
-        index: dict,
-    ) -> None:
-        """Populate the dataset from a packed index (sidecars absent). Mirrors
-        the keep-loop tail, sourcing stems / buckets / dims / row maps from the
-        index and the per-row labels from the manifest."""
-        kept_stems = list(index["stems"])
-        idx_of = manifest.stem_index()
-        has_people = bool(manifest.people_count_indices)
-        kept_tag_idx: List[List[int]] = []
-        kept_rating: List[int] = []
-        kept_people: List[int] = []
-        for stem in kept_stems:
-            i = idx_of.get(stem)
-            if i is None:
-                raise RuntimeError(
-                    f"packed index lists stem {stem!r} absent from the manifest "
-                    f"— manifest changed under a stale pack; re-run `--mode "
-                    f"build_features` to repack."
-                )
-            kept_tag_idx.append(manifest.tag_indices[i])
-            kept_rating.append(manifest.rating_indices[i])
-            kept_people.append(manifest.people_count_indices[i] if has_people else 0)
-
-        def _parse_bk(bk: str) -> Optional[tuple[int, int]]:
-            if bk == "mean":
-                return None
-            h, w = bk.split("x")
-            return (int(h), int(w))
-
-        rows_main = [(bk, int(r)) for bk, r in index["rows"]["main"]]
-        rows_aux = [(bk, int(r)) for bk, r in index["rows"]["aux"]]
-        self.stems = kept_stems
-        self.paths = [cache_dir / f"{s}.safetensors" for s in kept_stems]
-        self.paths_aux = [cache_dir_aux / f"{s}.safetensors" for s in kept_stems]
-        self.buckets = [
-            (_parse_bk(rows_main[i][0]), _parse_bk(rows_aux[i][0]))
-            for i in range(len(kept_stems))
-        ]
-        self.pool_kind = pool_kind
-        self.pool_kind_aux = pool_kind_aux
-        self.multi_hot = torch.zeros(len(kept_stems), manifest.n_tags)
-        for row, idxs in enumerate(kept_tag_idx):
-            self.multi_hot[row, idxs] = 1.0
-        self.rating_idx = torch.tensor(kept_rating, dtype=torch.long)
-        self.people_idx = torch.tensor(kept_people, dtype=torch.long)
-        self.n_tags = manifest.n_tags
-        self.n_ratings = manifest.n_ratings
-        self.n_people_counts = manifest.n_people_counts
-        self.spec = spec
-        self.spec_aux = spec_aux
-        self.d_in = int(index["d_in"])
-        self.d_in_aux = int(index["d_in_aux"])
-        self._pack_dirs = {
-            "main": pack_root / index["dirs"]["main"],
-            "aux": pack_root / index["dirs"]["aux"],
-        }
-        self._pack_main = rows_main
-        self._pack_aux = rows_aux
-        self._handles: Dict[tuple, object] = {}
-        self._packed = True
+        self._ram_resident = True
+        total = sum(t.numel() * t.element_size() for t in self._ram.values())
         logger.info(
-            "CachedDualDataset: recovered %d stems from packed shards "
-            "(per-stem sidecars absent)",
-            len(kept_stems),
+            "CachedDualDataset: %d stems resident in RAM (%.1f GB) — "
+            "loader is now disk-free",
+            len(self.stems),
+            total / 1024**3,
         )
-        if self._ram_resident_req:
-            self._load_ram_from_shards()
 
-    def _pack_side(self, side, paths, kind, buckets, pack_root):
+    def _stack_ram_side(self, side, paths, kind, buckets) -> List[tuple]:
+        """Stack each (side, bucket) group's sidecars into one RAM tensor.
+
+        Returns a per-item ``(bucket_key, row)`` map; rows are assigned in
+        ascending dataset-index order within each bucket so a chunked-shuffle
+        epoch reads contiguous windows of the resident tensor.
+        """
         groups: Dict[str, List[int]] = defaultdict(list)
         for i, b in enumerate(buckets):
             groups[self._bucket_key(b, kind)].append(i)
-        stem_sig = hashlib.sha1("\n".join(self.stems).encode()).hexdigest()[:12]
-        pack_dir = Path(pack_root) / f"{side}-{kind}-{stem_sig}"
-        pack_dir.mkdir(parents=True, exist_ok=True)
-        self._pack_dirs[side] = pack_dir
         row_of: List[tuple] = [(None, -1)] * len(paths)
         for bk, idxs in groups.items():
             for row, i in enumerate(idxs):
                 row_of[i] = (bk, row)
-            shard = pack_dir / f"{bk}.safetensors"
-            if shard.exists():
-                continue
             first = self._load_one(paths[idxs[0]], kind)
             out = torch.empty((len(idxs),) + tuple(first.shape), dtype=first.dtype)
             out[0] = first
             for row, i in enumerate(
-                tqdm(idxs[1:], desc=f"pack {side} {bk}", leave=False), start=1
+                tqdm(idxs[1:], desc=f"load {side} {bk}", leave=False), start=1
             ):
                 out[row] = self._load_one(paths[i], kind)
-            # tmp + rename so an interrupted build never leaves a partial shard
-            # that exists() would treat as complete.
-            tmp = shard.with_suffix(".safetensors.tmp")
-            st_save({"data": out.contiguous()}, str(tmp))
-            os.replace(tmp, shard)
-            del out
+            self._ram[(side, bk)] = out
         return row_of
-
-    def _load_ram_from_shards(self) -> None:
-        """Pull every per-(side, bucket) shard fully into a process-resident CPU
-        tensor, so ``__getitem__`` indexes RAM instead of mmap'ing the shard.
-
-        The on-disk shards are kept only as the load source (one big sequential
-        read per bucket beats 30k sidecar opens); once here, the training loop
-        touches zero disk. ``get_tensor`` copies into anonymous RAM (unlike
-        ``get_slice``, which stays lazily mmap-backed), so a shuffled epoch never
-        page-faults. Run single-process (``num_workers=0``) — the resident set is
-        large and there's no IO left for workers to hide.
-        """
-        keys = {("main", bk) for bk, _ in self._pack_main}
-        keys |= {("aux", bk) for bk, _ in self._pack_aux}
-        total = 0
-        for side, bk in sorted(keys):
-            shard = self._pack_dirs[side] / f"{bk}.safetensors"
-            with safe_open(str(shard), framework="pt") as h:
-                t = h.get_tensor("data")  # copied into RAM, not mmap-backed
-            self._ram[(side, bk)] = t
-            total += t.numel() * t.element_size()
-        self._handles = {}
-        self._ram_resident = True
-        logger.info(
-            "CachedDualDataset: %d shards resident in RAM (%.1f GB) — "
-            "loader is now disk-free",
-            len(keys),
-            total / 1024**3,
-        )
-
-    def _handle(self, side: str, bucket_key: str):
-        h = self._handles.get((side, bucket_key))
-        if h is None:
-            shard = self._pack_dirs[side] / f"{bucket_key}.safetensors"
-            h = safe_open(str(shard), framework="pt")
-            self._handles[(side, bucket_key)] = h
-        return h
 
     def __getitem__(self, idx: int):
         if self._ram_resident:
-            bk_m, row_m = self._pack_main[idx]
-            bk_a, row_a = self._pack_aux[idx]
+            bk_m, row_m = self._ram_row_main[idx]
+            bk_a, row_a = self._ram_row_aux[idx]
             feat = self._ram[("main", bk_m)][row_m]
             feat_aux = self._ram[("aux", bk_a)][row_a]
-        elif self._packed:
-            bk_m, row_m = self._pack_main[idx]
-            bk_a, row_a = self._pack_aux[idx]
-            feat = self._handle("main", bk_m).get_slice("data")[row_m]
-            feat_aux = self._handle("aux", bk_a).get_slice("data")[row_a]
         else:
             feat = self._load_one(self.paths[idx], self.pool_kind)
             feat_aux = self._load_one(self.paths_aux[idx], self.pool_kind_aux)

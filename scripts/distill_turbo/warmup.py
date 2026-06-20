@@ -66,9 +66,10 @@ def run_fake_warmup(
         except StopIteration:
             data_iter = iter(dataloader)
             batch = next(data_iter)
-        latents, crossattn_emb = batch[1], batch[2]
-        latents = latents.to(device, dtype=dtype, non_blocking=True)
-        crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
+        latents = batch["latents"].to(device, dtype=dtype, non_blocking=True)
+        crossattn_emb = batch["crossattn_emb"].to(
+            device, dtype=dtype, non_blocking=True
+        )
         B = latents.shape[0]
         torch.compiler.cudagraph_mark_step_begin()
 

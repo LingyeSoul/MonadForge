@@ -10,6 +10,9 @@ output_dir = "output/ckpt"
 output_name = "anima_lora"
 save_model_as = "safetensors"
 logging_dir = "output/logs"
+# Arbitrary note embedded verbatim in the checkpoint metadata (ss_training_comment).
+# Overridable per-preset/method/CLI and surfaced as a GUI field; leave empty for none.
+training_comment = ""
 log_with = "tensorboard"
 
 network_module = "networks.lora_anima"

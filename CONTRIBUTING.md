@@ -35,13 +35,13 @@ Read colorize's [README](easycontrol_adapters/colorization/README.md) before sta
 
 ### 2. Turbo LoRA (Decoupled DMD distillation)
 
-Distill 28-step Anima @ CFG=4 into a 4–8 step generator using **co-LoRA** (LoRA for both the student and the fake score model on the same frozen DiT). The deployment story is that `turbo_anima_lora.safetensors` stacks on top of any existing concept LoRA at inference, the same way LCM-LoRA composes with style LoRAs. See [`docs/experimental/dpdmd.md`](docs/experimental/dpdmd.md) (ops) and [`docs/structure/dpdmd.md`](docs/structure/dpdmd.md) (structure/math) — the shipped method is DP-DMD (Wu et al., arXiv:2602.03139); the CA-decoupled DMD2 it replaced is Liu et al., arXiv:2511.22677.
+Distill 28-step Anima @ CFG=4 into a 4–8 step generator using **co-LoRA** (LoRA for both the student and the fake score model on the same frozen DiT). The deployment story is that `turbo_anima_lora.safetensors` stacks on top of any existing concept LoRA at inference, the same way LCM-LoRA composes with style LoRAs. See [`docs/methods/turbo.md`](docs/methods/turbo.md) (ops) and [`docs/structure/turbo.md`](docs/structure/turbo.md) (structure/math) — the shipped method is DP-DMD (Wu et al., arXiv:2602.03139); the CA-decoupled DMD2 it replaced is Liu et al., arXiv:2511.22677.
 
-Status: proposal only — no code, no checkpoints, no bench. The proposal is fully scoped (file-level plan, phased validation, risk register) and is waiting on an implementer.
+Status: **shipped** — `make turbo` / `make test-turbo`, with a published 4-step student at [huggingface.co/sorryhyun/anima-turbo-4step](https://huggingface.co/sorryhyun/anima-turbo-4step). The phased plan below is retained as a worked example of how a Tier 2 method PR is scoped and gated.
 
-What's missing — this is one Tier 2 PR by definition (new method + paper + a turbo bench + docs/methods entry + `make exp-turbo` / `make exp-test-turbo`), but it splits cleanly along phase boundaries:
+The shape of the Tier 2 PR (new method + paper + a turbo bench + docs/methods entry + `make turbo` / `make test-turbo`), split along phase boundaries:
 
-- **Phase 0: single-prompt overfit (~1 day).** Implement `networks/methods/turbo_dmd.py` (two LoRA networks, attachment toggle), `scripts/distill_turbo/` (CA + DM gradient assembly, two optimizer states, the renoise primitive), `configs/methods/turbo.toml`, `make exp-turbo`. Prove the loop converges on one prompt at batch 1, 2k iterations. *[Tier 2 — drop a `bench/turbo_repa/results/<ts>-phase0/` with teacher@28 vs student@4 side-by-side on a fixed seed]*
+- **Phase 0: single-prompt overfit (~1 day).** Implement `networks/methods/turbo_dmd.py` (two LoRA networks, attachment toggle), `scripts/distill_turbo/` (CA + DM gradient assembly, two optimizer states, the renoise primitive), `configs/methods/turbo.toml`, `make turbo`. Prove the loop converges on one prompt at batch 1, 2k iterations. *[Tier 2 — drop a `bench/turbo/results/<ts>-phase0/` with teacher@28 vs student@4 side-by-side on a fixed seed]*
 - **Phase 1: 100-prompt sweep (~3 days).** Image Reward + HPS v2.1 + per-aspect breakdown (1024², 832×1248, 1248×832). Pass = student IR ≥ 80% of teacher, no aspect below 60%. *[Tier 2 continuation]*
 - **Phase 2: full HPS bench (~1 week).** 1k COCO-prompt sample, all 4 schedule configs from the paper's Table 1 as an ablation, replicates the paper's Decoupled-Hybrid claim on Anima. *[Tier 1.5 once Phase 1 has landed]*
 - **Phase 3: composition test (~2 days).** (turbo only) vs (concept LoRA @ 28) vs (turbo + concept @ 4) on three existing concept checkpoints. Validates the deployment story. *[Tier 1.5]*
@@ -73,7 +73,7 @@ Each missing README is a self-contained Tier 1 PR. Use `bench/spd/README.md` as 
 A second-order bench-gap contribution worth calling out:
 
 - **Envelope conformance.** Older bench scripts predate `bench/_common.py` and don't drop a `result.json` via `make_run_dir` + `write_result`. Auditing each script and converting the holdouts (so cross-run indexing actually works) is a clean Tier 1 PR per script.
-- **A dedicated turbo bench** lands as part of the Turbo LoRA contribution in (2) above (currently `bench/turbo_repa/`).
+- **A dedicated turbo bench** lands as part of the Turbo LoRA contribution in (2) above (currently `bench/turbo/`).
 
 ### 5. Translations & localization
 
@@ -89,6 +89,8 @@ Translatable content lives in four places, each with its own contribution shape 
 - `docs/guidelines/가이드북.md` is the end-to-end onboarding doc and only exists in Korean. An English translation (or any other language) would significantly widen the audience.
 - `docs/structure_images_korean/` holds Korean-labeled versions of the architecture diagrams under `docs/structure_images/` (e.g. `animakor.png` ↔ `anima.png`). English/other-language equivalents are welcome under the natural sibling tree (`docs/structure_images/` is the English baseline; `docs/structure_images_<lang>/` for translations). Mention which markdown files reference the diagram so the reviewer can update the embed paths.
 - Method docs under `docs/methods/`, `docs/experimental/`, `docs/proposal/`, and `docs/optimizations/` are **English-only by convention** — translations are welcome as `<name>.<code>.md` siblings, but nothing reads them at runtime yet. Don't translate `CLAUDE.md` — that file is consumed by Claude Code and is single-source-of-truth for project conventions.
+
+**(e) Tag knowledge-base descriptions — `models/danbooru_tags_classified.csv`.** The Dataset tab's tag-explanation view (click a tag in the caption editor → a KB tooltip with its category and a written description) is powered by this CSV (`name,category,post_count,description`; loaded by `library/captioning/correction.py::load_tag_knowledge_base`). The `description` column is **Korean-only**, so the explanation view is gated to the Korean UI — `ImageViewerTab._on_tag_clicked` (`gui/tabs/image_tab.py`) early-returns when `current_language() != "ko"`, otherwise non-Korean users would get untranslated Hangul. (The autocomplete *helper* is not gated — tag names and categories are language-neutral.) To light the view up for another language, ship a sibling CSV with translated `description`s (`danbooru_tags_classified.<code>.csv`), have `find_tag_csv` / `load_tag_knowledge_base` prefer the current-language file with English/Korean fallback, and widen the `_on_tag_clicked` language guard to whatever languages have a KB. ~114k rows, so partial/machine-assisted coverage that grows over time is fine — untranslated rows can fall back to the Korean (or English) entry the same way the i18n surfaces do. *[Tier 1]*
 
 **Parity check (covers all per-language surfaces):**
 ```bash
@@ -136,7 +138,7 @@ These sit between Tier 1 and Tier 2: no new paper or new docs page is required, 
 
 1. **Bench script.** A runnable script that quantifies the change. Two acceptable shapes:
    - **Add to an existing `bench/<method>/`** if the change is scoped to one method (e.g. a router tweak goes under that method's bench dir such as `bench/dcw/`). Append a new script and a new section to that bench's README.
-   - **Add a small `bench/<topic>/`** for cross-cutting changes (e.g. a sampler-correction optimization belongs in a new dir alongside `bench/cns/`).
+   - **Add a small `bench/<topic>/`** for cross-cutting changes (e.g. a sampler-correction optimization belongs in a new dir alongside `bench/dave/`).
 
    The script must report the headline number(s) it claims to move — wall-clock, peak VRAM, loss-at-N-steps, drift, whatever the change targets — for **both before and after**. A single-number claim ("20% faster") with no reproducible script does not clear the bar. If the script loads the DiT, use `bench/_anima.py` (`add_common_args` + `build_anima`) — same rationale as Tier 2 §2 below: every DiT-loading bench needs to expose `--compile` and load the adapter in the right order, and the helper enforces both.
 

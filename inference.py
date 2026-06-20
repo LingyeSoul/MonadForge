@@ -168,6 +168,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         disable_mmap=True,
         spatial_chunk_size=args.vae_chunk_size,
         disable_cache=args.vae_disable_cache,
+        vae_2d=args.vae_2d,
     )
     vae_for_batch.to(device, dtype=torch.bfloat16)
     vae_for_batch.eval()
@@ -338,6 +339,7 @@ def process_interactive(args: argparse.Namespace) -> None:
         disable_mmap=True,
         spatial_chunk_size=args.vae_chunk_size,
         disable_cache=args.vae_disable_cache,
+        vae_2d=args.vae_2d,
     )
     vae.to(torch.bfloat16)
     vae.eval()
@@ -510,6 +512,7 @@ def main():
             disable_mmap=True,
             spatial_chunk_size=args.vae_chunk_size,
             disable_cache=args.vae_disable_cache,
+            vae_2d=args.vae_2d,
         )
         vae.to(torch.bfloat16)
         vae.eval()
@@ -557,6 +560,7 @@ def main():
                 disable_mmap=True,
                 spatial_chunk_size=args.vae_chunk_size,
                 disable_cache=args.vae_disable_cache,
+                vae_2d=args.vae_2d,
             )
             vae.to(torch.bfloat16)
             vae.eval()

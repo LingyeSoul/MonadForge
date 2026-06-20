@@ -17,9 +17,17 @@ failures at the end.
 from __future__ import annotations
 
 import shutil
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from ._common import ROOT, run
+
+
+DANBOORU_TAGS_PATH = ROOT / "models" / "danbooru_tags_classified.csv"
+DANBOORU_TAGS_URLS = (
+    "https://raw.githubusercontent.com/Localsmile/danbooru_KR_wiki_tag_search/main/danbooru_tags_classified.csv",
+)
 
 
 def _present(paths: list[Path]) -> bool:
@@ -104,6 +112,36 @@ def cmd_download_tagger(_extra):
     )
 
 
+def cmd_download_danbooru_tags(_extra):
+    """Download the classified Danbooru tag table used by caption correction."""
+
+    if _skip("Danbooru classified tags", [DANBOORU_TAGS_PATH], _extra):
+        return
+    DANBOORU_TAGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DANBOORU_TAGS_PATH.with_suffix(".csv.tmp")
+    last_error = ""
+    for url in DANBOORU_TAGS_URLS:
+        print(f"  download {url}")
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "anima-lora"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                tmp.write_bytes(resp.read())
+            if tmp.stat().st_size <= 0:
+                raise OSError("downloaded file is empty")
+            tmp.replace(DANBOORU_TAGS_PATH)
+            print(f"  ✓ wrote {DANBOORU_TAGS_PATH}")
+            return
+        except (OSError, urllib.error.URLError) as exc:
+            last_error = str(exc)
+            if tmp.exists():
+                tmp.unlink()
+            print(f"  ✗ failed: {last_error}")
+    raise SystemExit(
+        "failed to download danbooru_tags_classified.csv from "
+        "Localsmile/danbooru_KR_wiki_tag_search"
+    )
+
+
 def cmd_download_mit(_extra):
     dst = ROOT / "models" / "mit"
     if _skip("MIT", [dst / "model.pth"], _extra):
@@ -159,47 +197,6 @@ def cmd_download_anima(_extra):
         shutil.rmtree(split)
 
 
-def cmd_download_sketch2manga(_extra):
-    """Sketch2Manga screening weights for the colorization EasyControl adapter.
-
-    The learned (Phase B) condition synthesizer in
-    ``easycontrol_adapters/colorization/screentone_sd.py`` — finetuned SD1.5
-    ``mangatone.ckpt`` + no-LPIPS VAE + the SD1.5 lineart ControlNet. Optional /
-    experimental, so it's NOT in ``download-models``; fetch on demand via
-    ``make easycontrol-download EASYADAPTER=colorize``. ~5.7GB total.
-    """
-    dst = ROOT / "models" / "sketch2manga"
-    finals = [
-        dst / "mangatone.ckpt",
-        dst / "vae" / "mangatone_default.ckpt",
-        dst / "control_v11p_sd15_lineart.pth",
-    ]
-    if _skip("Sketch2Manga screening weights (~5.7GB)", finals, _extra):
-        return
-    dst.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "hf",
-            "download",
-            "dreMaz/sketch2manga",
-            "mangatone.ckpt",
-            "vae/mangatone_default.ckpt",
-            "--local-dir",
-            "models/sketch2manga",
-        ]
-    )
-    run(
-        [
-            "hf",
-            "download",
-            "lllyasviel/ControlNet-v1-1",
-            "control_v11p_sd15_lineart.pth",
-            "--local-dir",
-            "models/sketch2manga",
-        ]
-    )
-
-
 def cmd_download_models(_extra):
     # Continue-on-failure: a gated/un-authed component (SAM3) must not abort the
     # rest. ``run`` sys.exits on a non-zero subprocess, so catch SystemExit per
@@ -211,6 +208,7 @@ def cmd_download_models(_extra):
         ("PE-Core", cmd_download_pe),
         ("PE-Spatial", cmd_download_pe_spatial),
         ("Anima Tagger vocab", cmd_download_tagger),
+        ("Danbooru classified tags", cmd_download_danbooru_tags),
     ]
     failed: list[str] = []
     for name, fn in components:

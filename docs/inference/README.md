@@ -30,6 +30,14 @@ Edit intermediate block features inside the forward (a hook), not the sampler bo
 |-----|-----------|------|---------------------|
 | [dave.md](dave.md) | Same-prompt **diversity** recovery — per-block post-`forward` hook attenuates the cross-seed-shared DC (spatial mean) during the early steps, freeing the seed-specific AC. Flat 8–18 pool. | `--dave auto` / `make test DAVE=1` | Text/hand damage tracks **window width** not dose — defaults `τ0.10·s0.3`; baked `≤18` cap forecloses the patch-grid dots. Block-hook (survives `compile_blocks`), no sampler-boundary compose yet (v0). |
 
+## Serving
+
+Infrastructure, not a sampler method — how to *run* inference, not what it does at the boundary.
+
+| Doc | What it is | Entry | Load-bearing gotcha |
+|-----|-----------|-------|---------------------|
+| [server.md](server.md) | Resident inference server — load DiT/VAE/TE once, serve many generations over a localhost HTTP port + pidfile (the inference twin of `scripts/daemon/`). | `python scripts/inference_server.py serve` | Separate process from the training daemon (opposite GPU lifetime); coexists via cooperative `/unload` + idle-TTL so it yields the card to training. |
+
 ## Other
 
 | Doc | What it is | Gotcha |

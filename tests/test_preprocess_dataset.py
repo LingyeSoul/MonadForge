@@ -9,13 +9,23 @@ separately on ``make preprocess-pe`` (needs the encoder weights).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS_768
+from library.datasets.buckets import freefit_band_for_edge
+
+
+def _tokens(reso: tuple[int, int]) -> int:
+    return (reso[0] // 16) * (reso[1] // 16)
+
+
+def _in_tier_band(reso: tuple[int, int], edge: int) -> bool:
+    lo, hi = freefit_band_for_edge(edge)
+    return lo <= _tokens(reso) <= hi
 
 
 def _write_image(path: Path, size: tuple[int, int]) -> None:
@@ -106,9 +116,7 @@ def test_walk_images_path_pattern_filters_relative_paths(tmp_path: Path) -> None
     _write_image(tmp_path / "charB" / "cover.png", (8, 8))
 
     paths = walk_images(tmp_path, recursive=True, pattern="charA/*")
-    assert [p.relative_to(tmp_path).as_posix() for p in paths] == [
-        "charA/cover.png"
-    ]
+    assert [p.relative_to(tmp_path).as_posix() for p in paths] == ["charA/cover.png"]
 
 
 def test_walk_images_collision_within_folder_raises(tmp_path: Path) -> None:
@@ -151,6 +159,67 @@ def test_partition_cached(tmp_path: Path) -> None:
     assert [p.name for p in pending] == ["img0.png", "img2.png"]
 
 
+
+
+
+def test_write_corrected_preprocess_captions_preserves_source(tmp_path: Path) -> None:
+    from library.captioning.correction import (
+        CaptionCorrectionOptions,
+        load_tag_knowledge_base,
+    )
+    from library.captioning.preprocess import write_corrected_preprocess_captions
+    from tests.test_caption_correction import _csv
+
+    source = tmp_path / "image_dataset"
+    resized = tmp_path / "post_image_dataset" / "resized"
+    _write_image(source / "charA" / "cover.jpg", (64, 64))
+    _write_image(resized / "charA" / "cover.png", (64, 64))
+    original = "long hair, vocaloid, hatsune miku, 1girl"
+    (source / "charA" / "cover.txt").write_text(original, encoding="utf-8")
+
+    stats = write_corrected_preprocess_captions(
+        source,
+        resized,
+        load_tag_knowledge_base(_csv(tmp_path / "tags.csv")),
+        options=CaptionCorrectionOptions(
+            insert_no_artist=True,
+            trigger_word="@dataset-trigger",
+        ),
+        recursive=True,
+    )
+
+    assert stats.written == 1
+    assert (source / "charA" / "cover.txt").read_text(encoding="utf-8") == original
+    assert (resized / "charA" / "cover.txt").read_text(encoding="utf-8") == (
+        "1girl, hatsune miku, vocaloid, @dataset-trigger, long hair"
+    )
+
+def test_write_corrected_preprocess_captions_removes_stale_missing_source(
+    tmp_path: Path,
+) -> None:
+    from library.captioning.correction import CaptionCorrectionOptions
+    from library.captioning.correction import load_tag_knowledge_base
+    from library.captioning.preprocess import write_corrected_preprocess_captions
+    from tests.test_caption_correction import _csv
+
+    source = tmp_path / "image_dataset"
+    resized = tmp_path / "post_image_dataset" / "resized"
+    source.mkdir()
+    _write_image(resized / "charA" / "cover.png", (64, 64))
+    stale = resized / "charA" / "cover.txt"
+    stale.write_text("stale", encoding="utf-8")
+
+    stats = write_corrected_preprocess_captions(
+        source,
+        resized,
+        load_tag_knowledge_base(_csv(tmp_path / "tags.csv")),
+        options=CaptionCorrectionOptions(),
+        recursive=True,
+    )
+
+    assert stats.missing_source == 1
+    assert stats.removed_stale == 1
+    assert not stale.exists()
 # ---------------------------------------------------------------------------
 # Pre-flight cache-coverage probes — let the entry points skip the (slow) model
 # load when a dataset is already fully cached. Model-free.
@@ -168,7 +237,9 @@ def test_count_pending_latents_per_resolution(tmp_path: Path) -> None:
     assert count_pending_latents(data, cache_dir=cache) == (2, 2)
 
     # Cache a's 64x64 latent (key latents_{H//8}x{W//8} = latents_8x8).
-    npz = get_latents_npz_path(data / "a.png", (64, 64), cache_dir=cache, image_dir=data)
+    npz = get_latents_npz_path(
+        data / "a.png", (64, 64), cache_dir=cache, image_dir=data
+    )
     npz.parent.mkdir(parents=True, exist_ok=True)
     np.savez(npz, **{"latents_8x8": np.zeros((16, 8, 8), dtype=np.float32)})
     assert count_pending_latents(data, cache_dir=cache) == (1, 2)
@@ -210,6 +281,28 @@ def test_count_pending_text_counts_uncaptioned(tmp_path: Path) -> None:
     te.parent.mkdir(parents=True, exist_ok=True)
     te.touch()
     assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (1, 2)
+
+
+def test_count_pending_text_recaches_when_caption_is_newer(tmp_path: Path) -> None:
+    from library.preprocess import count_pending_text
+    from library.preprocess.text import _te_cache_path
+
+    data = tmp_path / "imgs"
+    cache = tmp_path / "cache"
+    img = data / "a.png"
+    caption = data / "a.txt"
+    _write_image(img, (64, 64))
+    caption.write_text("old", encoding="utf-8")
+    te = _te_cache_path(img, cache, data)
+    te.parent.mkdir(parents=True, exist_ok=True)
+    te.touch()
+
+    os.utime(caption, (100, 100))
+    os.utime(te, (200, 200))
+    assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (0, 1)
+
+    os.utime(caption, (300, 300))
+    assert count_pending_text(data, cache_dir=cache, min_pixels=0) == (1, 1)
 
 
 def test_count_pending_text_min_pixels_filter(tmp_path: Path) -> None:
@@ -260,13 +353,6 @@ def test_count_pending_text_keep_rel_stems_filters_nested_paths(tmp_path: Path) 
 # ---------------------------------------------------------------------------
 
 
-def _write_te_cache(path: Path, crossattn: "object") -> None:
-    from safetensors.torch import save_file
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    save_file({"crossattn_emb": crossattn}, str(path))
-
-
 def test_count_preprocess_caches_is_pe_encoder_aware(tmp_path: Path) -> None:
     # Regression: the PE sidecar suffix is ``_anima_{encoder}.safetensors`` and
     # the default REPA encoder is ``pe_spatial`` — counting must default to that,
@@ -289,37 +375,6 @@ def test_count_preprocess_caches_is_pe_encoder_aware(tmp_path: Path) -> None:
 
     # Asking for the PE-Core encoder finds no matching sidecar.
     assert count_preprocess_caches(tmp_path, pe_encoder="pe")["pe"] == 0
-
-
-def test_cache_pooled_text_pools_and_is_idempotent(tmp_path: Path) -> None:
-    import torch
-    from safetensors.torch import load_file
-
-    from library.io.cache import POOLED_CACHE_SUFFIX, TE_CACHE_SUFFIX
-    from library.preprocess import cache_pooled_text
-
-    crossattn = torch.randn(5, 4)
-    te_path = tmp_path / f"img1{TE_CACHE_SUFFIX}"
-    _write_te_cache(te_path, crossattn)
-    # A TE cache with no crossattn key -> counted as failed.
-    from safetensors.torch import save_file
-
-    bad = tmp_path / f"img2{TE_CACHE_SUFFIX}"
-    save_file({"prompt_embeds": torch.zeros(2, 2)}, str(bad))
-
-    stats = cache_pooled_text(tmp_path)
-    assert stats.seen == 2
-    assert stats.written == 1
-    assert stats.failed == 1
-
-    pooled_path = tmp_path / f"img1{POOLED_CACHE_SUFFIX}"
-    pooled = load_file(str(pooled_path))["pooled"]
-    assert torch.allclose(pooled, crossattn.amax(dim=0))
-
-    # Re-run: the written sidecar is skipped (idempotent).
-    stats2 = cache_pooled_text(tmp_path)
-    assert stats2.written == 0
-    assert stats2.skipped == 1
 
 
 def test_resize_to_buckets_writes_and_mirrors_layout(tmp_path: Path) -> None:
@@ -407,39 +462,33 @@ def test_resize_to_buckets_applies_curation_skip_decision(tmp_path: Path) -> Non
     assert (src / "move.png").exists()
 
 
-def test_resize_to_buckets_applies_curation_crop_to_output_only(
+def test_resize_to_buckets_accumulates_decision_and_min_pixel_skips(
     tmp_path: Path,
 ) -> None:
     from library.preprocess import resize_to_buckets
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
-    src.mkdir()
-    img = Image.new("RGB", (200, 100), "red")
-    for x in range(100, 200):
-        for y in range(100):
-            img.putpixel((x, y), (0, 0, 255))
-    img.save(src / "split.png")
+    _write_image(src / "keep.png", (900, 900))
+    _write_image(src / "decision_skip.png", (900, 900))
+    _write_image(src / "too_small.png", (64, 64))
 
-    stats, _ = resize_to_buckets(
+    stats, bucket_counts = resize_to_buckets(
         src,
         dst,
-        target_res=[512],
-        min_pixels=0,
+        min_pixels=500_000,
         workers=1,
         verbose=False,
-        curation_decisions={
-            "split.png": {"action": "use", "crop_bounds": [100, 0, 100, 100]},
-        },
+        curation_decisions={"decision_skip.png": {"action": "skip"}},
     )
 
+    assert stats.seen == 3
+    assert stats.skipped == 2
     assert stats.written == 1
-    with Image.open(dst / "split.png") as out:
-        center = out.getpixel((out.width // 2, out.height // 2))
-    assert center[2] > 200
-    with Image.open(src / "split.png") as original:
-        assert original.size == (200, 100)
-        assert original.getpixel((0, 50)) == (255, 0, 0)
+    assert sum(bucket_counts.values()) == 1
+    assert (dst / "keep.png").exists()
+    assert not (dst / "decision_skip.png").exists()
+    assert not (dst / "too_small.png").exists()
 
 
 def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
@@ -447,17 +496,16 @@ def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
 ) -> None:
     """Regression: target_res=None (no preprocess.toml / no flag, and the bare
     [1024] that tasks.py strips to None) must resize against the single 1024
-    tier, NOT the full multi-tier catalog. The old else-branch fell back to
-    all_constant_token_buckets(), whose aspect-only match shoved a 0.73MP
-    portrait into the 1536-tier (1024, 2160) bucket — a 3x upscale."""
-    from library.datasets.buckets import buckets_for_edges
+    tier, NOT a larger tier. The old multi-tier catalog else-branch shoved a
+    0.73MP portrait into the 1536-tier (1024, 2160) bucket — a 3x upscale. Under
+    free-fit the image lands inside the 1024 tier's token band at its native
+    aspect."""
     from library.preprocess import resize_to_buckets
 
     src = tmp_path / "src"
     dst = tmp_path / "dst"
     _write_image(src / "portrait.png", (589, 1233))  # 0.73MP, ar 0.478
 
-    one_tier = set(buckets_for_edges([1024]))
     for target_res in (None, [1024]):
         stats, _ = resize_to_buckets(
             src,
@@ -471,8 +519,10 @@ def test_resize_to_buckets_default_tier_does_not_upscale_to_multitier(
         assert stats.written == 1
         with Image.open(dst / "portrait.png") as im:
             reso = (im.width, im.height)
-        assert reso in one_tier, f"{target_res}: {reso} escaped the 1024 tier"
+        assert _in_tier_band(reso, 1024), f"{target_res}: {reso} escaped 1024 tier"
         assert reso != (1024, 2160), f"{target_res}: reproduced the upscale bug"
+        # native aspect preserved to sub-patch (no AR-snap)
+        assert abs(reso[0] / reso[1] - 589 / 1233) < (16 / min(reso))
 
 
 def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
@@ -505,7 +555,7 @@ def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
     )
     assert (stats.written, stats.skipped) == (1, 1)
     with Image.open(dst / "small.png") as im:
-        assert (im.width, im.height) in CONSTANT_TOKEN_BUCKETS_768
+        assert _in_tier_band((im.width, im.height), 768)
 
     # overwrite=True forces both even when up to date.
     stats, _ = resize_to_buckets(

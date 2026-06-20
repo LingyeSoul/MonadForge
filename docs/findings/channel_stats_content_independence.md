@@ -9,7 +9,7 @@ consequences: the shipped calibration generalizes across datasets (no
 per-dataset recompute needed), and the `distill_mod_synth` teacher pool is
 **redundant for calibration** (a dead-end reuse direction).
 
-Method/mechanism reference: `bench/channel_stats/` and the audit memory
+Method/mechanism reference: `scripts/calibration/` and the audit memory
 `project_per_channel_scaling_audit`. Calibration consumer:
 `networks/lora_modules/base.py::_absorb_channel_scale` (gated by
 `channel_scaling_alpha > 0`).
@@ -35,7 +35,7 @@ Both runs used the **same 1823 stems, same TE sidecars, same sigmas**
 symlinked the same TE sidecar next to either the real or the synth `npz` so the
 analyzer's stem→latent+TE pairing resolved identically on both sides.
 
-Run: `bench/channel_stats/analyze_lora_input_channels.py --dataset_dir <dir>
+Run: `scripts/calibration/analyze_lora_input_channels.py --dataset_dir <dir>
 --per_artist --out_json <out>`, then diffed `overall` / `groups` / `per_module`.
 
 ## Result — the profiles are the same
@@ -96,9 +96,9 @@ Build matched real/synth dirs (symlink each synth `npz` + the stem's TE sidecar
 into one tree, the real `npz` + same TE into another), then:
 
 ```bash
-uv run python bench/channel_stats/analyze_lora_input_channels.py \
+uv run python scripts/calibration/analyze_lora_input_channels.py \
   --dataset_dir <real_dir>  --per_artist --out_json /tmp/cs_real.json
-uv run python bench/channel_stats/analyze_lora_input_channels.py \
+uv run python scripts/calibration/analyze_lora_input_channels.py \
   --dataset_dir <synth_dir> --per_artist --out_json /tmp/cs_synth.json
 # diff overall/groups/per_module: dominant-channel argmax agreement +
 # per-module dominance_ratio relative drift.

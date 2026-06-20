@@ -45,6 +45,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable internal VAE caching mechanism to reduce memory usage. Encoding / decoding will also be faster, but this differs from official behavior."
         + "",
     )
+    # Fold the causal Conv3d stack into 2D convs for decode (image-only, T=1):
+    # ~2x faster decode at ~0.65-0.7x peak memory, numerically equivalent within
+    # bf16 noise. Mirrors the preprocess caching path (cache_latents.py); default
+    # on. Flag names match that script (--qwen_image_vae_2d / --no_vae_2d).
+    parser.add_argument(
+        "--vae_2d",
+        "--qwen_image_vae_2d",
+        dest="vae_2d",
+        action="store_true",
+        default=True,
+        help="Fold the VAE Conv3d stack into 2D convs for decode (default on).",
+    )
+    parser.add_argument(
+        "--no_vae_2d",
+        dest="vae_2d",
+        action="store_false",
+        help="Use the stock 3D causal-Conv3d VAE for decode instead of the 2D fold.",
+    )
     parser.add_argument(
         "--text_encoder",
         type=str,
@@ -95,8 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--easycontrol_image_match_size",
         action="store_true",
-        help="Auto-pick --image_size from the closest CONSTANT_TOKEN_BUCKETS entry to the "
-        "reference image's aspect ratio (overrides --image_size). Only effective with --easycontrol_image.",
+        help="Auto-pick --image_size by free-fitting the reference image's aspect ratio "
+        "into the 1024 tier's token band (overrides --image_size). Only effective with --easycontrol_image.",
     )
     parser.add_argument(
         "--include_patterns",
@@ -472,7 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
     # injected noise by sqrt(1-γ) from a precomputed completion matrix so the
     # fixed stochastic budget lands in unresolved frequency bands. Training-free,
     # er_sde-only (no-op on euler). γ is calibrated per (cfg×aspect) by
-    # bench/cns/calibrate.py. See docs/methods (bench/cns/plan.md).
+    # scripts/calibration/cns_calibrate.py. See docs/methods (_archive/bench/cns/plan.md).
     parser.add_argument(
         "--cns",
         type=str,

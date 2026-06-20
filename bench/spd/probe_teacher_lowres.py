@@ -226,10 +226,10 @@ def main() -> None:
     any_nan = False
 
     for si in range(n):
-        _idx, latents, crossattn_emb, _pooled = dataset[si]
+        sample = dataset[si]
         # latents: (16, H, W) → (1, 16, 1, H, W)
-        x0_full = to_dit_5d(latents.to(device, dtype).unsqueeze(0))
-        c = crossattn_emb.to(device, dtype).unsqueeze(0)
+        x0_full = to_dit_5d(sample["latents"].to(device, dtype).unsqueeze(0))
+        c = sample["crossattn_emb"].to(device, dtype).unsqueeze(0)
 
         # True clean LL — the analytic target's implied x0 (σ-independent).
         x0_true_low = dct_lowpass_init(x0_full, args.s0, patch).float()

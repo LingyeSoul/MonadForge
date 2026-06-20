@@ -233,7 +233,7 @@ class AnimaTagger:
 
     def __init__(
         self,
-        ckpt_dir: str | Path = "models/captioners/anima-tagger-v1",
+        ckpt_dir: str | Path = DEFAULT_TAGGER_DIR,
         device: torch.device | str | None = None,
         dtype: torch.dtype = torch.bfloat16,
         pe_ckpt: str | Path | None = None,

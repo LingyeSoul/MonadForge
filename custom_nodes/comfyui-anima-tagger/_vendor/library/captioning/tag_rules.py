@@ -37,17 +37,9 @@ class TagRules:
     replacements: Tuple[Tuple[str, str], ...]
     remove: frozenset
     dedup: Dict[str, frozenset]
-    # Per-tag category override consulted *before* the booru tag cache in
-    # ``vocab.categorize()``. Useful when the cache mis-types a tag (e.g.
-    # GFL character tags stored as type_id=0 ``general``). Empty by default
-    # — overrides only apply when the curator lists the tag explicitly.
+    # Per-tag category override consulted before the booru tag cache in vocab.categorize() (for tags the cache mis-types); only applies to tags the curator lists explicitly.
     category_overrides: Dict[str, str]
-    # Substring patterns suppressed from the build-time "top-20
-    # uncategorized" coverage log. Pure logging filter — does not change
-    # categorization. Use for noisy general descriptors the booru cache
-    # doesn't track (e.g. ``"another's"`` catches "grabbing another's
-    # breast", "holding another's hair", etc.). Substring match is
-    # case-sensitive; booru tags are already lowercase.
+    # Substring patterns suppressed from the build-time "top-20 uncategorized" coverage log. Logging filter only — does not change categorization. Case-sensitive (booru tags are lowercase).
     coverage_ignore: Tuple[str, ...]
 
     def to_dict(self) -> dict:
@@ -60,32 +52,30 @@ class TagRules:
             out["category_overrides"] = dict(self.category_overrides)
         if self.coverage_ignore:
             out["coverage_ignore"] = list(self.coverage_ignore)
-        out.update(
-            {base: sorted(variants) for base, variants in self.dedup.items()}
-        )
+        out.update({base: sorted(variants) for base, variants in self.dedup.items()})
         return out
 
 
-# Top-level YAML keys that are NOT dedup base→variants entries. Centralized
-# so :func:`load_rules` and :func:`from_dict` agree on what to exclude.
-_RESERVED_KEYS = frozenset({
-    "replacements",
-    "remove",
-    "category_overrides",
-    "coverage_ignore",
-})
+# Top-level YAML keys that are NOT dedup base→variants entries (load_rules and from_dict must agree on what to exclude).
+_RESERVED_KEYS = frozenset(
+    {
+        "replacements",
+        "remove",
+        "category_overrides",
+        "coverage_ignore",
+    }
+)
 
 
 def load_rules(path: str | Path) -> TagRules:
     """Load a ``tag_rules.yaml`` (gelcrawl format) into a :class:`TagRules`."""
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
     repl_map = raw.pop("replacements", {}) or {}
     remove = frozenset(raw.pop("remove", []) or [])
     overrides = dict(raw.pop("category_overrides", {}) or {})
     coverage_ignore = tuple(str(s) for s in (raw.pop("coverage_ignore", []) or []))
-    # Everything else in the YAML is a dedup base→variants entry.
     dedup = {str(base): frozenset(variants) for base, variants in raw.items()}
     replacements = tuple((str(k), str(v)) for k, v in repl_map.items())
     return TagRules(
@@ -103,11 +93,7 @@ def from_dict(d: dict) -> TagRules:
     remove = frozenset(d.get("remove", []) or [])
     overrides = dict(d.get("category_overrides", {}) or {})
     coverage_ignore = tuple(str(s) for s in (d.get("coverage_ignore", []) or []))
-    dedup = {
-        k: frozenset(v)
-        for k, v in d.items()
-        if k not in _RESERVED_KEYS
-    }
+    dedup = {k: frozenset(v) for k, v in d.items() if k not in _RESERVED_KEYS}
     replacements = tuple((str(k), str(v)) for k, v in repl_map.items())
     return TagRules(
         replacements=replacements,

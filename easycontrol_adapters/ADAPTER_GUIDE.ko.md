@@ -206,9 +206,6 @@ unsloth_offload_checkpointing = true
    ```
 
 3. 학습 자체는 **편집이 필요 없습니다** — `cmd_easycontrol`이 이미 `train(_easyadapter() or "easycontrol", extra)`를 호출하므로, 이름이 허용목록에 들어가면 `EASYADAPTER=<task>`가 자동으로 `configs/methods/<task>.toml`을 실행합니다.
-
-4. (빌더가 다운로드를 필요로 하는 경우에만) `cmd_easycontrol_download`에 자신의 weight-fetch 태스크를 가리키는 분기를 추가하세요.
-
 **`scripts/tasks/inference.py`**(`cmd_test_easycontrol`)에서: selector가 현재 colorize를 하드코딩하고 있습니다. 자신의 태스크에 맞게 몇 가지 colorize 전용 값을 일반화하세요 — 체크포인트 이름, 출력 폴더, 폴백 레퍼런스 폴더, 빈 프롬프트 기본값:
 
 ```python

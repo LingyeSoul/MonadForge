@@ -121,7 +121,9 @@ There is no padded mode anymore. The legacy `set_static_token_count(count, pad=T
 
 ### 3.1 Constant-token buckets (`buckets.py`)
 
-`CONSTANT_TOKEN_BUCKETS` — 24 predefined `(W, H)` resolutions grouped into **two token-count families**, 4032 (= 63·64) and 4200 (= 60·70). Each resolution *exactly* fills its family's count, so there is **zero intra-bucket padding** by construction. Native shapes are the only mode: every forward runs at its real token count, so `compile_blocks`' flatten makes `torch.compile` trace one block graph per distinct count — just **two** for this table.
+`CONSTANT_TOKEN_BUCKETS` — 24 predefined `(W, H)` resolutions grouped into **two token-count families**, 4032 (= 63·64) and 4200 (= 60·70). Each resolution *exactly* fills its family's count, so there is **zero intra-bucket padding** by construction. Native shapes are the default mode: every forward runs at its real token count, so `compile_blocks`' flatten makes `torch.compile` trace one block graph per distinct count — just **two** for this table.
+
+> **Free-fit (opt-in `freefit=true`)** is the alternative: keep native aspect ratio and land the token count *anywhere* inside a tier's band rather than snapping to these discrete buckets (`freefit_bucket`; `docs/proposal/free_aspect_token_band_resize.md`). The off-table counts would explode the static graph count, so free-fit **requires `compile_dynamic_seq`** (auto-enabled when `freefit` + `torch_compile`), which marks only the seq axis dynamic and bounds it to the tier's `seq_range` — collapsing the whole band to **one graph**. Constant-token bucketing stays the default and stays frozen (DCW keys off it); the two modes coexist per-dataset via the `freefit` flag.
 
 ```python
 CONSTANT_TOKEN_BUCKETS = [
@@ -188,10 +190,11 @@ padding_mask = self._padding_mask_cache.get(padding_mask_key)
 ### 4.4 `constant_token_buckets` plumbed to dataset config
 
 ```python
-constant_token_buckets=True,  # native constant-token bucketing is the only mode
+constant_token_buckets=True,                          # native bucketing (default)
+freefit=bool(getattr(args, "freefit", False)),        # opt-in free-aspect override
 ```
 
-Passed through `library/config/` to `BucketManager.make_buckets()`.
+Passed through `library/config/` to `BucketManager.make_buckets()`. When `freefit=True` the bucket set becomes the actual on-disk cached `(W,H)` instead of the constant-token table (training auto-enables `compile_dynamic_seq`).
 
 ---
 

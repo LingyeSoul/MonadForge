@@ -29,8 +29,14 @@ from pathlib import Path
 
 from PIL import Image
 
-from library.datasets.buckets import BucketManager, buckets_for_edges, choose_edge
+from library.datasets.buckets import (
+    DEFAULT_FREEFIT_MAX_RATIO,
+    choose_edge,
+    freefit_band_for_edge,
+    freefit_bucket,
+)
 from library.io.walk import safe_walk
+from library.preprocess.caption_variants import VARIANTS_SIDECAR_SUFFIX
 
 NPZ_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d{4})x(?P<h>\d{4})_anima\.npz$")
 TE_RE = re.compile(r"^(?P<stem>.+)_anima_te\.safetensors$")
@@ -62,13 +68,21 @@ class StaleCaches:
         return [*self.npz, *self.png, *self.pe, *self.mask]
 
 
-def _correct_bucket(w: int, h: int, target_res: list[int]) -> tuple[int, int]:
-    """Mirror ``process_image``: ``choose_edge`` → nearest-aspect bucket in tier."""
+def _correct_bucket(
+    w: int,
+    h: int,
+    target_res: list[int],
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
+) -> tuple[int, int]:
+    """Mirror ``process_image`` under free-fit: ``choose_edge`` → ``freefit_bucket``.
+
+    Uses the raw native size (margins are not reconstructed here — same limitation
+    the snap-era reconcile carried). ``max_ratio`` should match the value used at
+    preprocess time (``freefit_max_ratio``); the default matches preprocess.toml.
+    """
     edge = choose_edge(w, h, target_res)
-    mgr = BucketManager()
-    mgr.set_predefined_resos(buckets_for_edges([edge]))
-    reso, _, _ = mgr.select_bucket(w, h)
-    return reso
+    band = freefit_band_for_edge(edge)
+    return freefit_bucket(w, h, band, max_ratio=max_ratio)
 
 
 def _native_size_index(image_dir: Path) -> dict[tuple[str, str], tuple[int, int]]:
@@ -110,13 +124,17 @@ class OrphanCaches:
     pe: list[Path] = field(default_factory=list)
     png: list[Path] = field(default_factory=list)
     mask: list[Path] = field(default_factory=list)
+    # Resized-dir caption sidecars ({stem}.txt + {stem}.variants.txt) whose
+    # source image is gone — the corrected caption / variant preview is dead
+    # weight without the image it described.
+    txt: list[Path] = field(default_factory=list)
 
     @property
     def n_files(self) -> int:
         return len(self.all_paths())
 
     def all_paths(self) -> list[Path]:
-        return [*self.npz, *self.te, *self.pe, *self.png, *self.mask]
+        return [*self.npz, *self.te, *self.pe, *self.png, *self.mask, *self.txt]
 
 
 def _native_keys(image_dir: Path) -> set[tuple[str, str]]:
@@ -174,8 +192,17 @@ def find_orphan_caches(
 
     for rel, dirpath, fn in _walk(resized_dir):
         stem, ext = os.path.splitext(fn)
-        if ext.lower() == ".png" and (rel, stem) not in native:
-            orphans.png.append(Path(dirpath) / fn)
+        if ext.lower() == ".png":
+            if (rel, stem) not in native:
+                orphans.png.append(Path(dirpath) / fn)
+        elif fn.endswith(VARIANTS_SIDECAR_SUFFIX):
+            # {stem}.variants.txt — the image stem is the name minus the marker
+            # double-suffix, not splitext's stem ({stem}.variants).
+            img_stem = fn[: -len(VARIANTS_SIDECAR_SUFFIX)]
+            if (rel, img_stem) not in native:
+                orphans.txt.append(Path(dirpath) / fn)
+        elif ext.lower() == ".txt" and (rel, stem) not in native:
+            orphans.txt.append(Path(dirpath) / fn)
 
     for rel, dirpath, fn in _walk(mask_dir):
         m = MASK_RE.match(fn)
@@ -194,6 +221,7 @@ def delete_orphans(orphans: OrphanCaches) -> Counter:
         ("pe", orphans.pe),
         ("png", orphans.png),
         ("mask", orphans.mask),
+        ("txt", orphans.txt),
     ):
         for p in paths:
             if p.exists():
@@ -208,6 +236,7 @@ def find_stale_caches(
     lora_cache_dir: Path,
     mask_dir: Path,
     target_res: list[int],
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
 ) -> StaleCaches:
     """Scan caches and return everything inconsistent with ``target_res``.
 
@@ -219,7 +248,7 @@ def find_stale_caches(
     stale = StaleCaches()
 
     for (rel, stem), (w, h) in native.items():
-        correct = _correct_bucket(w, h, target_res)
+        correct = _correct_bucket(w, h, target_res, max_ratio)
         reldir = Path(rel) if rel else Path()
 
         # A stem may carry several latent npzs (multi-resolution); any whose
@@ -284,6 +313,7 @@ def reconcile_caches(
     mask_dir: Path,
     target_res: list[int],
     *,
+    max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
     delete: bool = False,
 ) -> tuple[StaleCaches, Counter]:
     """Find stale caches and (when ``delete``) remove them.
@@ -291,7 +321,7 @@ def reconcile_caches(
     Returns ``(stale, removed)`` — ``removed`` is empty on a dry run.
     """
     stale = find_stale_caches(
-        image_dir, resized_dir, lora_cache_dir, mask_dir, target_res
+        image_dir, resized_dir, lora_cache_dir, mask_dir, target_res, max_ratio
     )
     removed = delete_stale(stale) if delete else Counter()
     return stale, removed

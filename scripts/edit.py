@@ -43,7 +43,11 @@ from torchvision import transforms
 from typing import Optional
 
 from library.anima import text_strategies  # noqa: E402
-from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS  # noqa: E402
+from library.datasets.buckets import (  # noqa: E402
+    choose_edge,
+    freefit_band_for_edge,
+    freefit_bucket,
+)
 from library.inference import sampling as inference_utils  # noqa: E402
 from library.inference.editing import directedit  # noqa: E402
 from library.inference.editing.directedit_splice import splice_crossattn_emb  # noqa: E402
@@ -242,8 +246,8 @@ def parse_args() -> argparse.Namespace:
         type=int,
         nargs=2,
         default=None,
-        help="Override image size (H W). Default: snap to closest "
-        "CONSTANT_TOKEN_BUCKETS bucket for the source aspect ratio.",
+        help="Override image size (H W). Default: free-fit the source aspect "
+        "ratio into the 1024 tier's token band (preserves native aspect).",
     )
     p.add_argument("--seed", type=int, default=42)
 
@@ -279,11 +283,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def _pick_bucket(img: Image.Image) -> tuple[int, int]:
-    """Return (H, W) from CONSTANT_TOKEN_BUCKETS closest to the source aspect."""
+    """Return (H, W): free-fit the source aspect into the canonical 1024 tier band.
+
+    The old path snapped to the nearest discrete CONSTANT_TOKEN_BUCKETS; free-fit
+    preserves the native aspect (sub-patch crop).
+    """
     rw, rh = img.size
-    target = rw / rh
-    best = min(CONSTANT_TOKEN_BUCKETS, key=lambda wh: abs(wh[0] / wh[1] - target))
-    return best[1], best[0]  # bucket is (W, H); we return (H, W)
+    edge = choose_edge(rw, rh, [1024])
+    bw, bh = freefit_bucket(rw, rh, freefit_band_for_edge(edge))
+    return bh, bw  # bucket is (W, H); we return (H, W)
 
 
 def _parse_t_inj_blocks(spec: str, n_blocks: int) -> list[int] | None:

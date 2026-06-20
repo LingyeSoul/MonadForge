@@ -57,7 +57,7 @@ _COMMAND_DESCRIPTIONS = {
     "test-unit": "Run unit tests",
     "print-config": "Dump merged config",
     "exp-postfix": "Postfix tuning",
-    "exp-turbo": "DMD2 turbo distillation",
+    "turbo": "Turbo (DP-DMD) distillation",
     "exp-spd": "SPD distillation training",
     "exp-chimera": "ChimeraHydra training",
     "exp-ip-adapter": "IP-Adapter training",

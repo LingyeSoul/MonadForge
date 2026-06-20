@@ -24,8 +24,6 @@ from pathlib import Path
 LATENT_CACHE_SUFFIX = "_anima.npz"
 # Text-encoder cross-attention embeddings: ``{stem}_anima_te.safetensors``.
 TE_CACHE_SUFFIX = "_anima_te.safetensors"
-# Pooled text embedding sidecar: ``{stem}_anima_pooled.safetensors``.
-POOLED_CACHE_SUFFIX = "_anima_pooled.safetensors"
 
 # Default REPA / PE vision encoder. Its sidecars are named
 # ``{stem}_anima_pe_spatial.safetensors``; the PE-Core encoder (``pe``) writes

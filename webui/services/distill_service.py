@@ -19,7 +19,7 @@ _DISTILL_METHODS: dict[str, dict[str, str | bool]] = {
     },
     "turbo": {
         "path": "configs/methods/turbo.toml",
-        "task": "exp-turbo",
+        "task": "turbo",
         "label": "Turbo",
         "experimental": True,
     },

@@ -21,7 +21,7 @@ name = "sanitize"
 # legacy name [miner] still accepted). Any --flag dest works as a key here.
 [staging]
 # Discriminator — set exactly one of: tag_any / tag / region (bool) / signal.
-tag_any = ["speech bubble", "thought bubble", "blank speech bubble", "spoken text", "english text", "japanese text", "sound effects", "text focus"]
+tag_any = ["speech bubble", "thought bubble", "blank speech bubble", "spoken text", "english text", "japanese text", "sound effects", "text focus", "zzz", "company name", "character name"]
 
 # Source trees (<dir>/<artist>/<id>.<ext>).
 image_dirs = ["{CAPTION_CORPUS_DIR}/retrieved"]
@@ -54,8 +54,6 @@ identity_saturation_min = 0.4
 # resized,cache,cond} (the `name` above) — only add a path key to point one
 # elsewhere.
 [preprocess]
-# Constant-token bucket tiers to resize into before VAE encoding (allowed edges:
-# 512 768 1024 1280 1536; see configs/base.toml target_res). Must match training.
 min_pixels = 0  # 0 = never drop a member (dropping one orphans its pair partner)
 recursive = true
 vae = 'models/vae/qwen_image_vae.safetensors'
@@ -109,12 +107,12 @@ network_args = [
     "repa_timestep_weighting=1.0",
 ]
 # Keep the REPA arm from clobbering the baseline checkpoint during the A/B.
-output_name = "anima_easycontrol_sanitize_repaMA3"
+output_name = "anima_easycontrol_sanitize"
 
 learning_rate = 2e-5
-max_train_epochs = 12
-save_every_n_epochs = 12
-checkpointing_epochs = 12
+max_train_epochs = 6
+save_every_n_epochs = 6
+checkpointing_epochs = 6
 
 easycontrol_cond_noise_max = 0.0
 caption_dropout_rate = 1.0

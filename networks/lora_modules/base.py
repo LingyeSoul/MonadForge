@@ -22,7 +22,7 @@ def _absorb_channel_scale(
     ``inv_scale = 1 / s_norm`` (caller applies ``x * inv_scale`` at forward).
     Output is unchanged; the point is to rebalance per-column gradient magnitudes
     so each column's ``∂L/∂W[:,c]`` no longer scales with ``|x[c]|^2``.
-    See ``bench/channel_stats/channel_dominance_analysis.md``.
+    See ``_archive/bench/channel_stats/channel_dominance_analysis.md``.
     """
     assert channel_scale.ndim == 1, (
         f"channel_scale must be 1D, got shape {tuple(channel_scale.shape)}"

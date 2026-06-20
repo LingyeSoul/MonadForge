@@ -23,23 +23,19 @@ Usage::
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import json
 import logging
-import os
 import random
 from pathlib import Path
 
 
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
-from torch.utils.tensorboard import SummaryWriter  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
-from library.config.io import toml_get as _flatten  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
 from library.runtime.harness import (  # noqa: E402
@@ -48,6 +44,12 @@ from library.runtime.harness import (  # noqa: E402
     place_dit_for_training,
 )
 from library.training.accumulator import ScalarAccumulator  # noqa: E402
+from library.training.distill_runtime import (  # noqa: E402
+    apply_single_prompt_slice,
+    create_tb_writer,
+    ensure_dynamic_seq_for_freefit,
+    resolve_device_dtype,
+)
 from library.training.forward import PadCache, renoise, to_dit_5d  # noqa: E402
 from library.training.schedulers import make_warmup_cosine_scheduler  # noqa: E402
 from networks.lora_anima.factory import create_network  # noqa: E402
@@ -63,11 +65,11 @@ from networks.spd import (  # noqa: E402
     spectral_expand,
 )
 from library.io.cache import get_latent_resolution, load_cached_latents  # noqa: E402
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib  # type: ignore[no-redef]
+from scripts.distill_spd_config import (  # noqa: E402
+    build_argparser,
+    load_toml,
+    resolve_config,
+)
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -76,388 +78,55 @@ logging.basicConfig(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="SPD fine-tuning LoRA — §4.3 trajectory adapter"
-    )
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="configs/methods/spd.toml",
-        help="Path to the SPD TOML config (CLI flags override TOML values).",
-    )
-    # CLI overrides — sentinels (None / -1 / -1.0) mean "use the TOML value".
-    parser.add_argument("--dit_path", type=str, default=None)
-    parser.add_argument("--data_dir", type=str, default=None)
-    parser.add_argument("--output_dir", type=str, default=None)
-    parser.add_argument("--output_name", type=str, default=None)
-    parser.add_argument("--iterations", type=int, default=-1)
-    parser.add_argument("--batch_size", type=int, default=-1)
-    parser.add_argument("--seed", type=int, default=-1)
-    parser.add_argument("--rank", type=int, default=-1)
-    parser.add_argument("--alpha", type=float, default=-1.0)
-    parser.add_argument(
-        "--channel_scaling_alpha",
-        type=float,
-        default=-1.0,
-        help="SmoothQuant-style per-channel input pre-scaling exponent for the LoRA "
-        "down projection (0.0 = off / paper-faithful, 0.5 = sqrt balance, 1.0 = full "
-        "flatten). Overrides network.channel_scaling_alpha. inv_scale is baked into the "
-        "saved weights, so inference needs no extra plumbing.",
-    )
-    parser.add_argument("--attn_mode", type=str, default=None)
-    parser.add_argument(
-        "--stages",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Ascending resolution scales (last must be 1.0). Overrides schedule.stages.",
-    )
-    parser.add_argument(
-        "--transition_sigmas",
-        type=float,
-        nargs="+",
-        default=None,
-        help="σ thresholds to expand to the next stage (len = len(stages)-1). "
-        "Overrides schedule.transition_sigmas.",
-    )
-    parser.add_argument(
-        "--sigma_jitter",
-        type=float,
-        default=-1.0,
-        help="±absolute uniform jitter on transition σ each step (R2 robustness). 0 = off.",
-    )
-    parser.add_argument(
-        "--stage_weights",
-        type=float,
-        nargs="+",
-        default=None,
-        help="Per-stage sampling multiplier (len = len(stages)). Stage sampled "
-        "∝ (band width × stage_weight) — tilts gradient budget across stages "
-        "without disturbing in-band σ density. Omitted/all-ones = band-width "
-        "baseline. e.g. 0.3 0.7 leans post-transition. Overrides schedule.stage_weights.",
-    )
-    parser.add_argument("--lr", type=float, default=-1.0)
-    parser.add_argument("--grad_clip", type=float, default=-1.0)
-    parser.add_argument(
-        "--grad_accum",
-        type=int,
-        default=-1,
-        help="Micro-steps accumulated per optimizer step (resampling the SPD "
-        "stage each one, so updates mix low-/full-res). 1 = off. `iterations` "
-        "counts optimizer steps, so wall-clock scales ~linearly with this.",
-    )
-    parser.add_argument("--warmup", type=float, default=-1.0)
-    parser.add_argument("--blocks_to_swap", type=int, default=0)
-    parser.add_argument("--grad_ckpt", action="store_true", default=False)
-    parser.add_argument("--no_grad_ckpt", dest="grad_ckpt", action="store_false")
-    parser.add_argument(
-        "--torch_compile",
-        default=True,
-        action=argparse.BooleanOptionalAction,
-        help="torch.compile each block's _forward (dynamic=False). Recompiles "
-        "once per distinct (stage x bucket) shape on the flash backend, each at "
-        "its real token count (no padding); the dynamo cache limit is raised to "
-        "keep every specialization cached. On by default; pass --no-torch_compile "
-        "to run eager.",
-    )
-    parser.add_argument("--dynamo_backend", type=str, default="inductor")
-    parser.add_argument(
-        "--compile_inductor_mode",
-        type=str,
-        default=None,
-        help="torch.compile inductor preset (e.g. 'reduce-overhead'). "
-        "Incompatible with --blocks_to_swap (CUDAGraphs need stable addresses).",
-    )
-    parser.add_argument(
-        "--compile_dynamic_seq",
-        default=None,
-        action=argparse.BooleanOptionalAction,
-        help="Collapse the per-(stage x bucket) block graphs into ONE symbolic-seq "
-        "graph (mark_dynamic on the seq axis only), mirroring the LoRA-training "
-        "compile_dynamic_seq path. The dynamic axis is bounded by the *downsampled* "
-        "stage token counts (not just the on-disk full-res latents). Only matters "
-        "with --torch_compile. Sentinel None -> TOML (compile_dynamic_seq, default true).",
-    )
-    parser.add_argument(
-        "--activation_memory_budget",
-        type=float,
-        default=-1.0,
-        help="torch.compile partitioner saved-activation fraction (<1.0 recomputes "
-        "cheap intermediates in backward to cut peak VRAM; mirrors train.py). "
-        "Ignored under --grad_ckpt (CheckpointError otherwise; redundant there). "
-        "Sentinel -1 -> TOML (activation_memory_budget, default 1.0 = off).",
-    )
-    parser.add_argument("--save_every", type=int, default=-1)
-    parser.add_argument("--log_interval", type=int, default=-1)
-    parser.add_argument("--log_dir", type=str, default=None)
-    parser.add_argument("--no_log", action="store_true")
-    parser.add_argument(
-        "--single_prompt_idx",
-        type=int,
-        default=None,
-        help="Phase 0 overfit mode — pin the dataloader to a single (latent, text) pair.",
-    )
-    parser.add_argument("--sample_ratio", type=float, default=1.0)
-    parser.add_argument(
-        "--val_split",
-        type=float,
-        default=-1.0,
-        help="Fraction of each bucket held out (never trained on) for the "
-        "CMMD-free analytic-MSE validation signal. 0 = off. Overrides io.val_split.",
-    )
-    parser.add_argument(
-        "--val_interval",
-        type=int,
-        default=-1,
-        help="Run validation every N optimizer steps (+ once at the end). "
-        "Defaults to io.val_interval, else save_every.",
-    )
-    parser.add_argument(
-        "--n_val_sigmas",
-        type=int,
-        default=-1,
-        help="Deterministic σ grid points per stage band used by validation "
-        "(midpoints of equal sub-intervals). Overrides io.n_val_sigmas (default 4).",
-    )
-    parser.add_argument(
-        "--ema_decay",
-        type=float,
-        default=-1.0,
-        help="EMA decay on the LoRA params (e.g. 0.999). 0 = off. When on, the "
-        "EMA weights are what gets validated AND saved. Overrides optim.ema_decay.",
-    )
-    # On-policy (DAgger) stage entry. Analytic entries are a straight line from
-    # the true clean low-passed latent, but inference rolls to an imperfect,
-    # off-manifold state (exposure bias; bench/spd/probe_onpolicy_handoff.py).
-    # --onpolicy instead supervises from the state the adapter-on prefix actually
-    # rolls to (spd_rollout_to_stage), targeting the true clean x0. Stage 0 is
-    # already on-policy (pure-noise entry), so only stage>0 micro-steps change.
-    parser.add_argument(
-        "--onpolicy",
-        default=False,
-        action=argparse.BooleanOptionalAction,
-        help="Roll the adapter-on prefix to build the stage>0 entry (DAgger). "
-        "Validation moves on-policy too, so best-ckpt selection tracks inference.",
-    )
-    parser.add_argument(
-        "--dagger_warmup",
-        type=float,
-        default=-1.0,
-        help="Steps (int >=1) or ratio of iterations (<1) trained fully analytic "
-        "before mixing on-policy entries in — the adapter is too random early to "
-        "roll a useful prefix. Overrides onpolicy.dagger_warmup (default 0.25).",
-    )
-    parser.add_argument(
-        "--onpolicy_ratio",
-        type=float,
-        default=-1.0,
-        help="Final fraction of stage>0 micro-steps that use the on-policy entry "
-        "(ramped in linearly after dagger_warmup). 1.0 = fully on-policy. "
-        "Overrides onpolicy.ratio (default 1.0).",
-    )
-    parser.add_argument(
-        "--rollout_steps",
-        type=int,
-        default=-1,
-        help="Euler steps in the no-grad prefix rollout. Fewer than deploy is fine "
-        "(only a plausible on-policy state is needed, not a finished image) and "
-        "keeps the extra forwards cheap. Overrides onpolicy.rollout_steps (default 12).",
-    )
-    parser.add_argument(
-        "--flow_shift",
-        type=float,
-        default=-1.0,
-        help="flow_shift for the rollout σ schedule — MUST match the deployed SPD "
-        "sampler. Overrides schedule.flow_shift (default 1.0).",
-    )
-    # SNR-gated (information-aware) loss. Plain velocity MSE supervises bands
-    # whose clean coefficient is unrecoverable from x_t (post-expansion HF is
-    # fresh noise); the MSE-optimal response there is dataset-mean detail, i.e.
-    # learned HF attenuation (blur). The gate weights DCT-domain error by the
-    # per-band recoverable fraction (paper Prop. 1 / Eq. 15; see SpdSnrGate).
-    parser.add_argument(
-        "--snr_gate",
-        default=None,
-        action=argparse.BooleanOptionalAction,
-        help="Weight the velocity loss per DCT band by SNR_w(t) so only bands "
-        "the input determines are supervised. Sentinel None -> TOML "
-        "(snr_gate.enabled). Validation uses the same gated loss, so best-ckpt "
-        "selection no longer rewards HF hedging.",
-    )
-    parser.add_argument(
-        "--snr_gate_mode",
-        type=str,
-        default=None,
-        choices=["soft", "hard"],
-        help="soft = w=SNR/(1+SNR) (recoverable-variance fraction); hard = "
-        "binary 1[t <= t_w] at the Prop.-1 delta-activation time.",
-    )
-    parser.add_argument(
-        "--snr_gate_delta",
-        type=float,
-        default=-1.0,
-        help="Error tolerance delta for the hard gate's activation time "
-        "(paper default 0.01). Ignored in soft mode.",
-    )
-    parser.add_argument(
-        "--snr_gate_profile_n",
-        type=int,
-        default=-1,
-        help="Training latents sampled at startup to measure the per-frequency "
-        "power profile P_w the gate is built from.",
-    )
-    parser.add_argument(
-        "--dry_run",
-        action="store_true",
-        help="Build the schedule + iterate the dataloader without loading the DiT.",
-    )
-    args = parser.parse_args()
+    args = build_argparser().parse_args()
+    c = resolve_config(args, load_toml(args.config))
 
-    with open(args.config, "rb") as f:
-        cfg = tomllib.load(f)
-
-    def pick(cli_val, toml_key, default):
-        if cli_val is not None and cli_val != -1 and cli_val != -1.0:
-            return cli_val
-        return _flatten(cfg, toml_key, default)
-
-    dit_path = pick(
-        args.dit_path, "dit_path", "models/diffusion_models/anima-base-v1.0.safetensors"
-    )
-    data_dir = pick(args.data_dir, "data_dir", "post_image_dataset/lora")
-    output_dir = pick(args.output_dir, "output_dir", "output/ckpt")
-    output_name = pick(args.output_name, "output_name", "anima_spd")
-    iterations = int(pick(args.iterations, "iterations", 1000))
-    batch_size = int(pick(args.batch_size, "batch_size", 1))
-    seed = int(pick(args.seed, "seed", 42))
-
-    rank = int(pick(args.rank, "network.rank", 48))
-    alpha = float(
-        _flatten(cfg, "network.alpha", rank) if args.alpha == -1.0 else args.alpha
-    )
-    attn_mode = pick(args.attn_mode, "network.attn_mode", "flash")
-    channel_scaling_alpha = float(
-        pick(args.channel_scaling_alpha, "network.channel_scaling_alpha", 0.0)
-    )
-    compile_inductor_mode = pick(
-        args.compile_inductor_mode, "compile_inductor_mode", None
-    )
-    compile_dynamic_seq = bool(
-        args.compile_dynamic_seq
-        if args.compile_dynamic_seq is not None
-        else _flatten(cfg, "compile_dynamic_seq", True)
-    )
-    activation_memory_budget = float(
-        pick(args.activation_memory_budget, "activation_memory_budget", 1.0)
-    )
-    if (
-        args.torch_compile
-        and compile_inductor_mode == "reduce-overhead"
-        and (args.blocks_to_swap > 0)
-    ):
-        logger.warning(
-            "compile_inductor_mode='reduce-overhead' (CUDAGraphs) is incompatible "
-            "with --blocks_to_swap (block addresses move each step); expect breakage."
-        )
-
-    stages = list(
-        args.stages
-        if args.stages is not None
-        else _flatten(cfg, "schedule.stages", [0.5, 1.0])
-    )
-    transition_sigmas = list(
-        args.transition_sigmas
-        if args.transition_sigmas is not None
-        else _flatten(cfg, "schedule.transition_sigmas", [0.5])
-    )
-    schedule_label = _flatten(cfg, "schedule.label", "custom")
-    sigma_jitter = float(pick(args.sigma_jitter, "schedule.sigma_jitter", 0.0))
-
-    # Schedule sanity — same invariants spd_denoise / spd_schedule_bands assume.
-    if not stages or abs(stages[-1] - 1.0) > 1e-9:
-        raise ValueError(f"schedule.stages must end at 1.0, got {stages}")
-    if any(stages[i] >= stages[i + 1] for i in range(len(stages) - 1)):
-        raise ValueError(f"schedule.stages must be strictly ascending, got {stages}")
-    if len(transition_sigmas) != len(stages) - 1:
-        raise ValueError(
-            f"transition_sigmas (len {len(transition_sigmas)}) must be len(stages)-1 "
-            f"({len(stages) - 1}); stages={stages}, transition_sigmas={transition_sigmas}"
-        )
-
-    # Per-stage sampling multiplier (default all-ones → band-width baseline).
-    stage_weights = list(
-        args.stage_weights
-        if args.stage_weights is not None
-        else _flatten(cfg, "schedule.stage_weights", [1.0] * len(stages))
-    )
-    if len(stage_weights) != len(stages):
-        raise ValueError(
-            f"schedule.stage_weights (len {len(stage_weights)}) must match "
-            f"len(stages) ({len(stages)}); stages={stages}, stage_weights={stage_weights}"
-        )
-    if any(w < 0 for w in stage_weights) or sum(stage_weights) <= 0:
-        raise ValueError(
-            f"schedule.stage_weights must be non-negative with positive sum, "
-            f"got {stage_weights}"
-        )
-
-    lr = float(pick(args.lr, "optim.lr", 1e-4))
-    weight_decay = float(_flatten(cfg, "optim.weight_decay", 0.0))
-    grad_clip = float(pick(args.grad_clip, "optim.grad_clip", 1.0))
-    grad_accum = max(1, int(pick(args.grad_accum, "optim.grad_accum", 1)))
-    warmup = float(pick(args.warmup, "optim.warmup", 0.02))
-
-    save_every = int(pick(args.save_every, "io.save_every", 500))
-    log_interval = int(pick(args.log_interval, "io.log_interval", 10))
-    log_dir = pick(args.log_dir, "io.log_dir", "output/logs/spd")
-
-    val_split = float(pick(args.val_split, "io.val_split", 0.0))
-    val_interval = int(pick(args.val_interval, "io.val_interval", save_every))
-    n_val_sigmas = max(1, int(pick(args.n_val_sigmas, "io.n_val_sigmas", 4)))
-    ema_decay = float(pick(args.ema_decay, "optim.ema_decay", 0.0))
-
-    # On-policy (DAgger) stage-entry config.
-    onpolicy = bool(args.onpolicy or _flatten(cfg, "onpolicy.enabled", False))
-    flow_shift = float(pick(args.flow_shift, "schedule.flow_shift", 1.0))
-    dagger_warmup_raw = float(pick(args.dagger_warmup, "onpolicy.dagger_warmup", 0.25))
-    dagger_warmup = (
-        int(dagger_warmup_raw)
-        if dagger_warmup_raw >= 1
-        else int(dagger_warmup_raw * iterations)
-    )
-    onpolicy_ratio = float(pick(args.onpolicy_ratio, "onpolicy.ratio", 1.0))
-    rollout_steps = int(pick(args.rollout_steps, "onpolicy.rollout_steps", 12))
-
-    # SNR-gated loss config.
-    snr_gate_enabled = bool(
-        args.snr_gate
-        if args.snr_gate is not None
-        else _flatten(cfg, "snr_gate.enabled", False)
-    )
-    snr_gate_mode = pick(args.snr_gate_mode, "snr_gate.mode", "soft")
-    snr_gate_delta = float(pick(args.snr_gate_delta, "snr_gate.delta", 0.01))
-    snr_gate_profile_n = int(pick(args.snr_gate_profile_n, "snr_gate.profile_n", 64))
-    snr_gate_n_bins = int(_flatten(cfg, "snr_gate.n_bins", 128))
-    if onpolicy and len(stages) < 2:
-        logger.warning(
-            "onpolicy set but schedule has one stage → no prefix to roll; ignoring."
-        )
-        onpolicy = False
-    if onpolicy:
-        logger.info(
-            "on-policy DAgger: warmup=%d steps, ratio→%.2f, rollout_steps=%d, flow_shift=%.3g",
-            dagger_warmup,
-            onpolicy_ratio,
-            rollout_steps,
-            flow_shift,
-        )
-
-    # Phase-0 overfit mode has a single pinned sample → nothing to hold out.
-    if args.single_prompt_idx is not None and val_split > 0.0:
-        logger.warning(
-            "single_prompt_idx set → disabling validation (no held-out data)."
-        )
-        val_split = 0.0
+    # Unpack the resolved frozen config to locals (the training loop below is
+    # unchanged). The argparser + CLI/TOML precedence + schedule sanity now live
+    # in scripts/distill_spd_config.py; the few raw flags the loop still reads
+    # (single_prompt_idx / dry_run / torch_compile / blocks_to_swap / grad_ckpt /
+    # sample_ratio / dynamo_backend / no_log) stay on ``args``.
+    dit_path = c.dit_path
+    data_dir = c.data_dir
+    output_dir = c.output_dir
+    output_name = c.output_name
+    iterations = c.iterations
+    batch_size = c.batch_size
+    seed = c.seed
+    rank = c.rank
+    alpha = c.alpha
+    attn_mode = c.attn_mode
+    channel_scaling_alpha = c.channel_scaling_alpha
+    compile_inductor_mode = c.compile_inductor_mode
+    compile_dynamic_seq = c.compile_dynamic_seq
+    activation_memory_budget = c.activation_memory_budget
+    stages = c.stages
+    transition_sigmas = c.transition_sigmas
+    schedule_label = c.schedule_label
+    sigma_jitter = c.sigma_jitter
+    stage_weights = c.stage_weights
+    lr = c.lr
+    weight_decay = c.weight_decay
+    grad_clip = c.grad_clip
+    grad_accum = c.grad_accum
+    warmup = c.warmup
+    save_every = c.save_every
+    log_interval = c.log_interval
+    log_dir = c.log_dir
+    val_split = c.val_split
+    val_interval = c.val_interval
+    n_val_sigmas = c.n_val_sigmas
+    ema_decay = c.ema_decay
+    onpolicy = c.onpolicy
+    flow_shift = c.flow_shift
+    dagger_warmup = c.dagger_warmup
+    onpolicy_ratio = c.onpolicy_ratio
+    rollout_steps = c.rollout_steps
+    snr_gate_enabled = c.snr_gate_enabled
+    snr_gate_mode = c.snr_gate_mode
+    snr_gate_delta = c.snr_gate_delta
+    snr_gate_profile_n = c.snr_gate_profile_n
+    snr_gate_n_bins = c.snr_gate_n_bins
 
     torch.manual_seed(seed)
 
@@ -489,8 +158,7 @@ def main():
             p,
         )
 
-    device = torch.device("cuda")
-    dtype = torch.bfloat16
+    device, dtype = resolve_device_dtype()
 
     # Dataset (bucket-grouped, one resolution per batch). CachedDataset carves a
     # deterministic per-bucket val slice (seeded by validation_seed) that never
@@ -502,19 +170,14 @@ def main():
         split="train",
         validation_split=val_split,
         validation_seed=seed,
+        need_pooled=False,  # SPD conditions on crossattn only
     )
     if args.single_prompt_idx is not None:
-        pinned = args.single_prompt_idx % len(dataset.samples)
-        only = dataset.samples[pinned]
-        dataset.samples = [only]
-        logger.info(
-            "single-prompt overfit mode: pinned idx=%d (latent=%s)",
-            args.single_prompt_idx,
-            os.path.basename(only[0]),
-        )
+        apply_single_prompt_slice(dataset, args.single_prompt_idx, logger=logger)
 
-    # Stacking collate (pooled-text slot returned but unused by SPD). Shared with
-    # the val loader; pickle-safe under the Windows/spawn DataLoader start method.
+    # Stacking collate → batch dict (no pooled_text key: need_pooled=False).
+    # Shared with the val loader; pickle-safe under the Windows/spawn DataLoader
+    # start method.
     collate_fn = make_cached_collate()
     dataloader = torch.utils.data.DataLoader(
         dataset,
@@ -538,6 +201,7 @@ def main():
             split="val",
             validation_split=val_split,
             validation_seed=seed,
+            need_pooled=False,  # SPD conditions on crossattn only
         )
         if len(val_dataset) == 0:
             logger.warning(
@@ -561,8 +225,8 @@ def main():
     gen = torch.Generator(device=device).manual_seed(seed + 7919)
 
     if args.dry_run:
-        for i, (_idx, lat, te, _pooled) in enumerate(tqdm(dataloader, desc="dry-run")):
-            lat = lat.to(device, dtype=dtype)
+        for i, batch in enumerate(tqdm(dataloader, desc="dry-run")):
+            lat = batch["latents"].to(device, dtype=dtype)
             x0_full = to_dit_5d(lat)
             for s in range(len(stages)):
                 x0_si, eps_si = spd_stage_target(
@@ -661,12 +325,22 @@ def main():
         # to SPD's multi-stage schedule, so it stays here; the budget → cache
         # isolation → block-compile glue is the shared library helper.
         stage_bucket_tokens: set[int] = set()
+        full_res_tokens: set[int] = set()
         for npz, _te in dataset.samples:
             w_lat, h_lat = (int(v) for v in get_latent_resolution(npz).split("x"))
+            full_res_tokens.add((w_lat // patch) * (h_lat // patch))
             for s in stages:
                 h = min(_snap(h_lat * s, patch), h_lat) if s < 1.0 else h_lat
                 w = min(_snap(w_lat * s, patch), w_lat) if s < 1.0 else w_lat
                 stage_bucket_tokens.add((h // patch) * (w // patch))
+        # Free-fit fail-safe (mirrors train.py's auto-enable, which never reaches
+        # this bespoke loop — project_daemon_wiring_pattern). NB: detect on the
+        # *full-res* on-disk latents, not stage_bucket_tokens — SPD's downsampling
+        # already produces off-table sub-band counts on a snapped dataset, so the
+        # native cached shapes are the only true free-fit signature here.
+        compile_dynamic_seq = ensure_dynamic_seq_for_freefit(
+            full_res_tokens, compile_dynamic_seq, logger=logger
+        )
         pc = compile_dit_blocks_for_pool(
             model,
             stage_bucket_tokens,
@@ -729,38 +403,30 @@ def main():
     )
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    writer = None
-    if not args.no_log:
-        from datetime import datetime
-
-        run_log = Path(log_dir) / datetime.now().strftime("%Y%m%d-%H%M%S")
-        run_log.mkdir(parents=True, exist_ok=True)
-        writer = SummaryWriter(log_dir=str(run_log))
-        writer.add_text(
-            "config",
-            "  \n".join(
-                f"{k}: {v}"
-                for k, v in {
-                    "schedule_label": schedule_label,
-                    "stages": stages,
-                    "transition_sigmas": transition_sigmas,
-                    "stage_weights": stage_weights,
-                    "rank": rank,
-                    "alpha": alpha,
-                    "channel_scaling_alpha": channel_scaling_alpha,
-                    "lr": lr,
-                    "iterations": iterations,
-                    "sigma_jitter": sigma_jitter,
-                    "val_split": val_split,
-                    "val_interval": val_interval,
-                    "n_val_sigmas": n_val_sigmas,
-                    "ema_decay": ema_decay,
-                    "snr_gate": snr_gate_mode if snr_gate is not None else "off",
-                    "snr_gate_delta": snr_gate_delta,
-                }.items()
-            ),
-        )
-        logger.info("TensorBoard logs -> %s", run_log)
+    config_text = "  \n".join(
+        f"{k}: {v}"
+        for k, v in {
+            "schedule_label": schedule_label,
+            "stages": stages,
+            "transition_sigmas": transition_sigmas,
+            "stage_weights": stage_weights,
+            "rank": rank,
+            "alpha": alpha,
+            "channel_scaling_alpha": channel_scaling_alpha,
+            "lr": lr,
+            "iterations": iterations,
+            "sigma_jitter": sigma_jitter,
+            "val_split": val_split,
+            "val_interval": val_interval,
+            "n_val_sigmas": n_val_sigmas,
+            "ema_decay": ema_decay,
+            "snr_gate": snr_gate_mode if snr_gate is not None else "off",
+            "snr_gate_delta": snr_gate_delta,
+        }.items()
+    )
+    writer, _run_log = create_tb_writer(
+        log_dir, config_text, enabled=not args.no_log, logger=logger
+    )
 
     def _save(step: int):
         save_path = str(Path(output_dir) / f"{output_name}.safetensors")
@@ -929,9 +595,11 @@ def main():
         if cudagraph_step:
             torch.compiler.cudagraph_mark_step_begin()
         with _ema_weights():
-            for _idx, latents, crossattn_emb, _pooled in val_loader:
-                latents = latents.to(device, dtype=dtype, non_blocking=True)
-                crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)
+            for batch in val_loader:
+                latents = batch["latents"].to(device, dtype=dtype, non_blocking=True)
+                crossattn_emb = batch["crossattn_emb"].to(
+                    device, dtype=dtype, non_blocking=True
+                )
                 B = latents.shape[0]
                 x0_full = to_dit_5d(latents)
                 for stage_idx in range(n_stages):
@@ -984,10 +652,12 @@ def main():
         stage losses is regime-switching noise, which accumulation cancels.
         """
         try:
-            _idx, latents, crossattn_emb, _pooled = next(data_iter[0])
+            batch = next(data_iter[0])
         except StopIteration:
             data_iter[0] = iter(dataloader)
-            _idx, latents, crossattn_emb, _pooled = next(data_iter[0])
+            batch = next(data_iter[0])
+        latents = batch["latents"]
+        crossattn_emb = batch["crossattn_emb"]
 
         latents = latents.to(device, dtype=dtype, non_blocking=True)
         crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)

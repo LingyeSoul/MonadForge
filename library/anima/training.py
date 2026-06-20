@@ -391,6 +391,24 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "--use_shuffled_caption_variants; no-op on single-variant caches.",
     )
     parser.add_argument(
+        "--use_randomized_caption_variants",
+        action="store_true",
+        help="Lexinvariant tag regularization (arXiv:2305.16349): consume the "
+        "identity-randomized r-family from the TE cache (written by "
+        "`cache_text_embeddings.py --caption_tag_randomize_rate p`). Samples v0 "
+        "(pristine) 20%% / r1..r{N-1} (tags' identities erased) 80%%, instead of the "
+        "shuffled v-family. One cache holds both families, so this is an A/B toggle "
+        "against --use_shuffled_caption_variants. Falls back to the v-family (warns "
+        "once) if the cache has no r-family. Implies --use_shuffled_caption_variants.",
+    )
+    parser.add_argument(
+        "--use_randomized_caption_variants_only",
+        action="store_true",
+        help="Like --use_randomized_caption_variants but never draw the pristine v0 "
+        "— sample uniformly over the identity-randomized r1..r{N-1} only. Implies "
+        "--use_randomized_caption_variants; no-op on caches without an r-family.",
+    )
+    parser.add_argument(
         "--artist_filter",
         type=str,
         default=None,

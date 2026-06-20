@@ -407,7 +407,7 @@ The metric is layout-robust (DC = mean over all non-(batch,channel) axes), so it
 reads correctly under both eager 5D blocks and the compiled native-flatten.
 
 ```bash
-make exp-turbo  # then add to the turbo config or CLI:
+make turbo  # then add to the turbo config or CLI:
 #   --validate_every_n_steps 750 --val_diversity_seeds 8 [--val_prompt_idx N]
 ```
 

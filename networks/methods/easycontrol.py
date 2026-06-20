@@ -113,7 +113,7 @@ DEFAULT_COND_RES_SCALE = 1.0  # 1.0 = native cond res (bit-exact to pre-PAI path
 
 # Cond-stream channel scaling uses a COND-SPECIFIC calibration — the LoRA-family
 # main-stream file does NOT transfer to the cond stream (post-GELU mlp.layer2
-# inputs diverge; xfer_eff ~0.06). See bench/channel_stats/cond_stream_profile.py.
+# inputs diverge; xfer_eff ~0.06). See scripts/calibration/cond_stream_profile.py.
 _COND_CHANNEL_STATS_PATH = (
     Path(__file__).resolve().parent.parent
     / "calibration"
@@ -150,7 +150,7 @@ def _load_cond_channel_scales(alpha: float) -> Optional[dict]:
     if not _COND_CHANNEL_STATS_PATH.is_file():
         raise FileNotFoundError(
             f"cond channel calibration missing at {_COND_CHANNEL_STATS_PATH}. "
-            "Regenerate via `bench/channel_stats/cond_stream_profile.py "
+            "Regenerate via `scripts/calibration/cond_stream_profile.py "
             "--dump_cond_stats ...`, or set channel_scaling_alpha=0 to disable."
         )
     from safetensors.torch import load_file
@@ -194,7 +194,7 @@ class _LoRAProj(nn.Module):
         # SmoothQuant-style per-channel scaling: absorb s into lora_down and store
         # inv_scale=1/s_norm (persistent so it saves/loads with the absorbed
         # weight); forward applies x*inv_scale, output-preserving but rebalances
-        # per-column gradients. See bench/channel_stats/cond_stream_profile.py.
+        # per-column gradients. See scripts/calibration/cond_stream_profile.py.
         self._has_channel_scale = False
         if channel_scale is not None:
             inv_scale = _absorb_channel_scale(self.lora_down.weight.data, channel_scale)
@@ -316,7 +316,7 @@ def create_network(
             kwargs.get("repa_timestep_weighting", 0.0) or 0.0
         )
         network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
-        # REPA-DoG target band-pass (docs/proposal/repa_dog_target.md): when on,
+        # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): when on,
         # replaces the spatial_norm block in the relational target preprocess.
         network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
         network._repa_dog_sigma1_div = float(

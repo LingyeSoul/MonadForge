@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Vendored SmoothQuant-style calibration — ships in-tree (~3.5 MB) so deploys
 # (including custom_nodes/*/_vendor/ trees) work without a separate download.
-# Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
+# Regenerate via `scripts/calibration/analyze_lora_input_channels.py`.
 _CHANNEL_STATS_PATH = (
     Path(__file__).resolve().parent.parent / "calibration" / "channel_stats.safetensors"
 )
@@ -44,11 +44,11 @@ def _load_channel_scales(
     0.0 disables (the kwarg fallback when unset); base.toml ships 0.5 = sqrt
     balance, so it is ON by default; 1.0 fully flattens. The calibration file
     is vendored at ``networks/calibration/channel_stats.safetensors``;
-    regenerate it with ``bench/channel_stats/analyze_lora_input_channels.py``.
+    regenerate it with ``scripts/calibration/analyze_lora_input_channels.py``.
     Only rebalances variants whose down-projection is trainable — exactly
     inert on frozen-basis ortho variants (see
     ``docs/optimizations/channel_scaling.md`` §Liveness).
-    See ``bench/channel_stats/channel_dominance_analysis.md`` for motivation.
+    See ``_archive/bench/channel_stats/channel_dominance_analysis.md`` for motivation.
     """
     raw_alpha = kwargs.get("channel_scaling_alpha", 0.0)
     channel_scaling_alpha = float(raw_alpha) if raw_alpha is not None else 0.0
@@ -59,7 +59,7 @@ def _load_channel_scales(
         raise FileNotFoundError(
             f"vendored channel stats missing at {_CHANNEL_STATS_PATH}. "
             f"Regenerate with:\n"
-            f"  python bench/channel_stats/analyze_lora_input_channels.py "
+            f"  python scripts/calibration/analyze_lora_input_channels.py "
             f"--per_artist --dump_channel_stats {_CHANNEL_STATS_PATH}"
         )
     from safetensors.torch import load_file as _load_channel_stats_file
@@ -150,7 +150,7 @@ def create_network(
             kwargs.get("repa_timestep_weighting", 0.0) or 0.0
         )
         network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
-        # REPA-DoG target band-pass (docs/proposal/repa_dog_target.md): when on
+        # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): when on
         # replaces the spatial_norm block in relational target preprocess (no head).
         network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
         network._repa_dog_sigma1_div = float(

@@ -19,7 +19,7 @@ re-integration doesn't require commit archaeology.
   `anima_pe_centroid_{encoder}.safetensors` sidecars. Shared with **CMMD validation**
   (`library/training/cmmd.py`) and **DCW v4** — not IP-Adapter-private.
 - **`networks/methods/ip_adapter_pe_lora.py`** (`inject_pe_lora` / `PELoRALayer`).
-  Vendored into the live **Anima-Tagger** ComfyUI node (`scripts/sync_vendor.py`
+  Vendored into the live **Anima-Tagger** ComfyUI node (`scripts/release/sync_vendor.py`
   `TAGGER_VERBATIM`, `custom_nodes/comfyui-anima-tagger/nodes.py` `pe_lora` UI). The
   live trainer no longer imports it once IP-Adapter is gone, but the published node
   does. Left in place.

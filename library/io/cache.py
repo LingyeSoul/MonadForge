@@ -23,7 +23,6 @@ from safetensors.torch import load_file
 from library.io.cache_names import (  # noqa: F401
     DEFAULT_PE_ENCODER,
     LATENT_CACHE_SUFFIX,
-    POOLED_CACHE_SUFFIX,
     TE_CACHE_SUFFIX,
     classify_cache_file,
     count_preprocess_caches,
@@ -211,13 +210,9 @@ def load_cached_text_features(
 ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
     """Load ``(crossattn_emb, pooled_text)`` for one sample.
 
-    The pooled tensor is sourced from a ``{stem}_anima_pooled.safetensors``
-    sidecar next to ``te_path`` when present (written by
-    ``scripts/preprocess/cache_pooled_text.py``). When the sidecar is missing — old
-    caches that predate the pooled-sidecar pass — pooled is computed at
-    load time via ``crossattn_emb.amax(dim=0)`` (cheaper than
-    ``.max(dim=0).values``, which also computes argmax). The same variant
-    index is used for both halves so cross-attn / pooled don't desync.
+    The pooled tensor is computed at load time via ``crossattn_emb.amax(dim=0)``
+    (cheaper than ``.max(dim=0).values``, which also computes argmax) over the
+    same variant index as the cross-attn so the two can't desync.
 
     Returns ``(None, None)`` if no crossattn variant is found.
     """
@@ -243,20 +238,7 @@ def load_cached_text_features(
     if crossattn is None:
         return None, None
 
-    pooled_path = te_path.removesuffix(TE_CACHE_SUFFIX) + POOLED_CACHE_SUFFIX
-    pooled = None
-    if os.path.exists(pooled_path):
-        psd = load_file(pooled_path)
-        if f"pooled_v{vi}" in psd:
-            pooled = psd[f"pooled_v{vi}"].float()
-        elif "pooled_v0" in psd:
-            pooled = psd["pooled_v0"].float()
-        elif "pooled" in psd:
-            pooled = psd["pooled"].float()
-
-    if pooled is None:
-        pooled = crossattn.amax(dim=0)
-
+    pooled = crossattn.amax(dim=0)
     return crossattn, pooled
 
 

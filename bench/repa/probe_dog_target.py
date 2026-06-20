@@ -37,7 +37,7 @@ That descriptor *is* the Gram affinity the relational arm matches, made
 comparable across aspect buckets (which have different token counts ``N``).
 
 READOUT = **target discriminability**, reusing the global-anchor probe's metric
-(``bench/pe_cls_probe/discriminability.py``): AUC of
+(``bench/repa/discriminability.py``): AUC of
 ``P(in-group cosine > out-group cosine)`` over character / copyright / artist
 pairs from ``caption_index.json``. AUC≈0.5 ⇒ dead target.
 
@@ -52,7 +52,7 @@ GATE (pre-registered, ``docs/proposal/repa_dog_target.md`` §"Phase 0"):
 
 Operator + sweep recipe borrowed from ``bench/fera_artist/probe_fei_artist.py``
 (``σ = min(gh, gw) / div``, bucket-invariant); metric machinery imported from
-``bench/pe_cls_probe/discriminability.py`` so it can't drift from the shipped
+``bench/repa/discriminability.py`` so it can't drift from the shipped
 probe. NB σ here is calibrated on the **coarse PE grid** (~28–46 patches/side),
 not the ~64-patch latent grid FEI tunes — its own sweep.
 

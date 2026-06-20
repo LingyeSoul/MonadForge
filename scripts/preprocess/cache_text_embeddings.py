@@ -10,7 +10,9 @@ Supports caption shuffle variants: with --caption_shuffle_variants N, generates
 N variants per image and caches them all in one file. v0 is the pristine
 original caption (no shuffle, no dropout); v1..v{N-1} are smart-shuffled and,
 if --caption_tag_dropout_rate > 0, have non-prefix tags independently dropped
-at that rate. The strategy loader picks v0 with 20% probability and uniform
+at that rate, and if --caption_tag_randomize_rate > 0, have surviving tags'
+identities erased (replaced by meaningless tokens, prefix included) at that
+rate. The strategy loader picks v0 with 20% probability and uniform
 v1..v{N-1} with 80% probability when use_shuffled_caption_variants is on.
 
 The encode loop lives in ``library/preprocess/text.py``; this file is argparse +
@@ -75,6 +77,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--caption_tag_randomize_rate",
+        type=float,
+        default=0.0,
+        help=(
+            "Lexinvariant tag regularization (arXiv:2305.16349): per-tag "
+            "probability of *erasing a tag's identity* — replacing it with a "
+            "fresh meaningless token while keeping its slot — applied to "
+            "v1..v{N-1} only. Unlike dropout this DOES include the @artist "
+            "prefix (the concept/trigger tag is the target). Section headers "
+            "and the @no-artist sentinel are never randomized. Paper's prior is "
+            "p~=0.2. Ignored when --caption_shuffle_variants <= 0. Build a "
+            "randomized cache into a SEPARATE --cache_dir to A/B against the "
+            "baseline cache."
+        ),
+    )
+    parser.add_argument(
         "--min_pixels",
         type=int,
         default=500_000,
@@ -93,6 +111,15 @@ def main() -> None:
         help=(
             "Only cache images whose path relative to --dir matches this "
             "fnmatch glob. Use | to separate alternatives. Default: *"
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Re-encode every cache even if it already exists. Use after changing "
+            "the variant count / dropout / randomize rate, which the existence "
+            "check can't detect (existing caches are otherwise skipped)."
         ),
     )
     parser.add_argument(
@@ -142,6 +169,7 @@ def main() -> None:
         path_pattern=args.path_pattern,
         keep_rel_stems=keep_rel_stems,
         min_pixels=args.min_pixels,
+        overwrite=args.overwrite,
     )
     uncond_needed = bool(args.dit) and not default_uncond_path().exists()
     if pending == 0 and not uncond_needed:
@@ -194,6 +222,7 @@ def main() -> None:
         )
 
     tag_dropout_rate = float(args.caption_tag_dropout_rate)
+    tag_randomize_rate = float(args.caption_tag_randomize_rate)
     if N > 0:
         print(
             f"Caption shuffle variants: {N} "
@@ -203,12 +232,17 @@ def main() -> None:
                 if tag_dropout_rate > 0.0
                 else ""
             )
+            + (
+                f" + identity-randomize p={tag_randomize_rate:.3f}"
+                if tag_randomize_rate > 0.0
+                else ""
+            )
             + ")"
         )
-    elif tag_dropout_rate > 0.0:
+    elif tag_dropout_rate > 0.0 or tag_randomize_rate > 0.0:
         print(
-            "warn: --caption_tag_dropout_rate ignored because "
-            "--caption_shuffle_variants <= 0 (single-variant cache)."
+            "warn: --caption_tag_dropout_rate / --caption_tag_randomize_rate "
+            "ignored because --caption_shuffle_variants <= 0 (single-variant cache)."
         )
 
     stats = cache_text_embeddings(
@@ -225,7 +259,9 @@ def main() -> None:
         batch_size=args.batch_size,
         caption_shuffle_variants=N,
         caption_tag_dropout_rate=tag_dropout_rate,
+        caption_tag_randomize_rate=tag_randomize_rate,
         min_pixels=args.min_pixels,
+        overwrite=args.overwrite,
         progress=tqdm_progress("Caching text embeddings"),
     )
     print(

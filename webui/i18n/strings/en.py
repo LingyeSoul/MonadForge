@@ -51,6 +51,13 @@ STRINGS: dict[str, str] = {
         "Ignored when 'Drop low-resolution images' is unchecked."
     ),
     "preprocess_target_res": "Resolution tiers (target_res):",
+    "preprocess_freefit_max_ratio": "Max aspect ratio:",
+    "preprocess_freefit_max_ratio_tip": (
+        "Clamp for free-fit: aspect ratios beyond 1:R / R:1 are cover-cropped to "
+        "the limit (honoring the crop position above). Default 4.0 matches the "
+        "old bucket table's most-elongated reach and blocks degenerate 1:5 / 1:6 "
+        "inputs."
+    ),
     "preprocess_text_caching": "Caching (VAE + text)",
     "preprocess_caption_shuffle_variants": "Shuffle variants per caption (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -65,6 +72,31 @@ STRINGS: dict[str, str] = {
         "Per-tag dropout probability applied to v1..v(N-1). Tags up to and "
         "including the first @artist marker are never dropped. Ignored when "
         "shuffle variants ≤ 0."
+    ),
+    "preprocess_caption_correct_order": "Correct caption order",
+    "preprocess_caption_correct_order_tip": (
+        "Write corrected .txt captions next to resized images and use them for "
+        "text-encoder caching. Original source captions are not modified."
+    ),
+    "preprocess_caption_insert_no_artist": "Insert @no-artist",
+    "preprocess_caption_insert_no_artist_tip": (
+        "When caption order correction is enabled, insert @no-artist at the "
+        "artist slot only when there is no artist marker. A trigger word in the "
+        "artist slot takes priority and suppresses @no-artist."
+    ),
+    "preprocess_caption_trigger_word": "Trigger word:",
+    "preprocess_caption_trigger_word_tip": (
+        "Optional trigger tag to move into the corrected caption. With the "
+        "front option off it is placed in the artist slot before existing "
+        "artist tags. Include @ if you want it to behave as an artist marker "
+        "for shuffle/dropout protection. Underscores in trigger words are "
+        "preserved."
+    ),
+    "preprocess_caption_trigger_at_front": "Keep trigger first",
+    "preprocess_caption_trigger_at_front_tip": (
+        "Place the trigger word at the very front of the caption. In this mode "
+        "@no-artist insertion follows the normal no-artist option and existing "
+        "artist tags."
     ),
     "preprocess_run_te": "Run caching (VAE + text)",
     "preprocess_run_pe": "Run PE caching",
@@ -139,6 +171,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "Caches — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "Masks: {masks}",
     "preprocess_status_no_resized": "No resized images yet.",
+    "preprocess_no_resized_to_process": (
+        "No resized images found in post_image_dataset/resized/. Run Preprocess "
+        "(resize) first — masking and grouping operate on the resized images."
+    ),
     "preprocess_open_dataset_dir": "Open cache folder",
     "preprocess_open_dataset_dir_tooltip": "Open the post_image_dataset/ folder (resized images + caches) in your file manager.",
     "preprocess_clear_scope_cache": "Delete current-scope cache",
@@ -179,6 +215,8 @@ STRINGS: dict[str, str] = {
     "copy_log": "Copy",
     "copy_log_tooltip": "Copy the full training log to the clipboard",
     "copy_log_done": "Copied",
+    "gpu_probing": "GPU: probing…",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "from_base": "From base.toml",
     "saved": "Saved",
     "saved_file": "Saved {name}",
@@ -381,42 +419,31 @@ STRINGS: dict[str, str] = {
     "dataset_group_first_tooltip": "Group-first ordering: float every group to the top, flattened across folders (ungrouped images follow below in the folder tree).",
     "dataset_view_group": "Groups",
     "dataset_view_tree": "Tree",
+    "dataset_group_sort_tooltip": "Sort order inside each group. Arrow-key navigation follows the visible tree order.",
+    "dataset_group_sort_name": "Name",
+    "dataset_group_sort_name_desc": "Name desc",
+    "dataset_group_sort_size": "File size",
+    "dataset_group_sort_size_desc": "File size desc",
+    "dataset_group_sort_resolution": "Resolution",
+    "dataset_group_sort_resolution_desc": "Resolution desc",
     "dataset_mask_overlay": "Show mask overlay",
-    "dataset_preprocess_use_short": "Use (A)",
-    "dataset_preprocess_use_tooltip": "Mark the current image as included for preprocessing. Source files are not modified.",
+    "dataset_resize_preview": "Show resize preview",
+    "dataset_resize_preview_tooltip": "Show the center-crop area and final bucket selected by preprocessing target_res. Source files are not modified.",
+    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
     "dataset_preprocess_skip_short": "Skip (S)",
     "dataset_preprocess_skip_tooltip": "Mark the current image to be skipped by preprocess resize. Source files are not modified.",
     "dataset_preprocess_clear_short": "Clear (F)",
     "dataset_preprocess_clear_tooltip": "Clear the current image's use/skip/move mark. Use the right-side menu to clear all marks.",
     "dataset_preprocess_clear_all": "Clear all marks",
     "dataset_preprocess_save": "Save preprocess decisions",
-    "dataset_preprocess_save_tooltip": "Save per-image use/skip/move/crop decisions as JSON for preprocessing. Move marks are excluded from preprocessing even before files are moved.",
+    "dataset_preprocess_save_tooltip": "Save per-image use/skip/move decisions as JSON for preprocessing. Move marks are excluded from preprocessing even before files are moved.",
     "dataset_preprocess_saved": "Preprocess decisions saved:\n{path}",
-    "dataset_preprocess_decision_none": "No preprocess decision",
     "dataset_preprocess_decision_use": "Preprocess decision: use",
     "dataset_preprocess_decision_skip": "Preprocess decision: skip",
-    "dataset_preprocess_decision_crop": "Preprocess decision: apply crop",
-    "dataset_preprocess_decision_use_crop": "Preprocess decision: use + apply crop",
-    "dataset_preprocess_decision_skip_crop": "Preprocess decision: skip (crop is saved, but skip wins)",
     "dataset_preprocess_decision_move": "Current state: marked to move",
-    "dataset_preprocess_decision_move_crop": "Current state: marked to move (crop bounds also saved)",
-    "dataset_crop_preview": "Show crop",
-    "dataset_crop_preview_tooltip": "Preview the crop bounds that preprocess resize will apply. Source files are not modified.",
-    "dataset_crop_margin": "Margin:",
-    "dataset_crop_margin_left": "L",
-    "dataset_crop_margin_top": "T",
-    "dataset_crop_margin_right": "R",
-    "dataset_crop_margin_bottom": "B",
-    "dataset_crop_margin_tooltip": "Percentage trimmed from each side of the source image.",
-    "dataset_crop_margin_apply": "Set bounds",
-    "dataset_crop_margin_apply_tooltip": "Save preprocess crop bounds from the current margin percentages.",
-    "dataset_crop_margin_apply_visible": "Apply to current list",
-    "dataset_crop_margin_apply_all": "Apply to all images",
-    "dataset_crop_clear": "Clear crop",
-    "dataset_crop_clear_tooltip": "Remove the current image's preprocess crop decision.",
-    "dataset_crop_rect": "bounds {bx},{by} {bw}x{bh} · final {x},{y} {w}x{h}",
     "dataset_image_meta_empty": "No image",
     "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_image_meta_resize": "Resize {width}x{height} @ {edge}",
     "dataset_delete": "Move (D)",
     "dataset_delete_tooltip": "Move the images marked with the Delete or D key to post_image_dataset/moved/, along with sidecars.",
     "dataset_delete_confirm_title": "Move images",
@@ -446,7 +473,30 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "Autotag failed: {err}",
     "caption_autotag_empty": "The tagger returned no tags for this image.",
+    "caption_correct": "Correct order",
+    "caption_correct_tooltip": (
+        "Use danbooru_tags_classified.csv to reorder this caption into the "
+        "recommended ANIMA order, optionally inserting @no-artist."
+    ),
+    "caption_correct_visible": "Correct current list",
+    "caption_correct_visible_confirm": "Correct {n} caption(s) in the current list?",
+    "caption_correct_visible_done": "Corrected {n} caption(s).",
+    "caption_correct_visible_failed": "Corrected {n} caption(s).\n\nFailed:\n{err}",
+    "caption_correct_no_change": "No caption changes to apply.",
+    "tag_kb_posts": "{n} posts",
+    "tag_kb_unknown": "{tag} — not in the tag knowledge base",
+    "caption_correct_db_missing": (
+        "danbooru_tags_classified.csv was not found.\n\n"
+        "Download the Danbooru tag DB from the Models dialog, or place it here:\n{paths}"
+    ),
+    "caption_correct_db_failed": "Failed to load tag DB: {err}",
     "caption_versions": "Versions…",
+    "caption_variant_training": "Training caption",
+    "caption_variants_tooltip": (
+        "Preview the train-time caption variants (shuffle / tag-dropout / "
+        "identity-randomize) written by preprocess. Read-only — the editable "
+        "training caption is unaffected."
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(no changes)",
@@ -483,6 +533,26 @@ STRINGS: dict[str, str] = {
         "Extra probability floor (0–1) applied on top of the tagger's per-tag "
         "thresholds. Higher = fewer, more confident tags. Default 0.50."
     ),
+    "settings_caption_insert_no_artist": "Insert @no-artist during caption correction",
+    "settings_caption_insert_no_artist_tooltip": (
+        "If the corrected caption has no artist tag, insert @no-artist at the "
+        "artist position. It only anchors caption shuffle and is stripped before tokenization."
+    ),
+    "settings_caption_validate_artist_tags": "Validate artist tags with DB",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "When enabled, only @tags classified as artists in danbooru_tags_classified.csv "
+        "move to the artist position. When disabled, any @tag is treated as an artist tag."
+    ),
+    "settings_group_match_frac": "Grouping tightness:",
+    "settings_group_match_frac_tooltip": (
+        "Inlier fraction (0–1) needed to group two Dataset images when you press "
+        "Group. Higher = tighter, cleaner groups. Default 0.25."
+    ),
+    "settings_group_cell_match": "Grouping cell match:",
+    "settings_group_cell_match_tooltip": (
+        "Per-cell cosine floor (0–1) for an inlier match during Dataset grouping. "
+        "Higher = stricter cell agreement. Default 0.93."
+    ),
     "settings_theme": "Theme:",
     "settings_theme_tooltip": (
         "Overall color theme for the interface. Applies immediately; the window "
@@ -496,6 +566,18 @@ STRINGS: dict[str, str] = {
         "Point size of the interface font. Applies immediately; the window "
         "rebuilds when you close Settings so every panel relayouts. Default 10."
     ),
+    "settings_debug_mode": "Debug mode",
+    "settings_debug_mode_tooltip": (
+        "Log the training daemon at DEBUG level so a bug report can include why a "
+        "job hung. Takes effect the next time the daemon starts (close the app, "
+        "or stop the daemon, then reopen)."
+    ),
+    "settings_debug_report_desc": (
+        "Stuck on an endless spinner? Enable Debug mode, reproduce it, then click "
+        "Copy debug report and paste the result into your bug report — it bundles "
+        "the daemon log and recent job states."
+    ),
+    "settings_debug_copy_report": "Copy debug report",
     "settings_mcp_header": "MCP server (agent access)",
     "settings_mcp_desc": "Expose the local training daemon to MCP clients (Claude Code, "
     "Claude Desktop, …). Run this in a terminal to register it with Claude Code:",
@@ -534,8 +616,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "Download Models",
     "models_intro": "Pick a model group below or use 'Download all' for the standard set "
-    "(Anima + SAM3 + MIT + PE). Files are saved under models/.",
-    "models_download_all": "Download all (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + tag DB). Files are saved under models/.",
+    "models_download_all": "Download all (Anima + SAM3 + MIT + PE + tag DB)",
     "models_download": "Download",
     "models_redownload": "Re-download",
     "models_installed": "✓ Installed",
@@ -548,6 +630,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — text-bubble masking",
     "model_mit": "MIT — manga text masking",
     "model_pe": "PE-Core-L14-336 — vision encoder (CMMD validation / DCW)",
+    "model_danbooru_tags": "Danbooru tag DB — caption order correction",
     # HuggingFace authentication (Models dialog)
     "models_hf_token_placeholder": "Paste your HuggingFace token (hf_…)",
     "models_hf_authenticate": "Authenticate",
@@ -612,7 +695,24 @@ STRINGS: dict[str, str] = {
     "merge_pick_out": "Save merged DiT as...",
     "browse": "Browse…",
     # Multi-scale target_res tiers
+    "target_res_bucket_tooltip": "Limit preprocessing to this {edge}px bucket resolution. Leave all unchecked to use every bucket in the selected tiers.",
     "target_res_danger_tooltip": "Heavy tier: {edge}px runs ~{tokens} tokens per image and adds an extra compiled block graph (slower compile, higher VRAM). Only enable if you actually need this resolution.",
+    "resize_crop_anchor": "Resize crop position:",
+    "resize_crop_anchor_tip": "Choose which side/corner is preserved when preprocessing crops the cover-resized image to the target bucket.",
+    "resize_crop_anchor_top_left": "Top-left",
+    "resize_crop_anchor_top": "Top",
+    "resize_crop_anchor_top_right": "Top-right",
+    "resize_crop_anchor_left": "Left",
+    "resize_crop_anchor_center": "Center",
+    "resize_crop_anchor_right": "Right",
+    "resize_crop_anchor_bottom_left": "Bottom-left",
+    "resize_crop_anchor_bottom": "Bottom",
+    "resize_crop_anchor_bottom_right": "Bottom-right",
+    "resize_crop_margins": "Resize margins:",
+    "resize_crop_margin_top": "Top",
+    "resize_crop_margin_right": "Right",
+    "resize_crop_margin_bottom": "Bottom",
+    "resize_crop_margin_left": "Left",
     # TensorBoard panel
     "tb_panel_title": "TensorBoard Runs",
     "tb_open": "Open TensorBoard",

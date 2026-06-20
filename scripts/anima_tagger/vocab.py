@@ -3,12 +3,14 @@
 Produces three artifacts under ``out_dir/``:
 
 * ``vocab.json``   — kept tag list (with category + median emit position),
-                     rating list, slot order, coverage stats, train/val split.
+                     rating list, slot order, coverage stats. No per-stem data:
+                     it's the model's label space, independent of the corpus.
 * ``rules.yaml``   — snapshot of the source ``tag_rules.yaml`` so the
                      inference wrapper has zero runtime dep on the corpus.
 * ``dataset.json`` — per-stem ``(image_path, multi_hot_indices, rating_idx)``
-                     manifest, filtered to captions with a sibling image,
-                     a recognized rating, and at least one in-vocab tag.
+                     manifest + the train/val ``split``, filtered to captions
+                     with a sibling image, a recognized rating, and at least
+                     one in-vocab tag. This is the sole home of the split.
 
 The build is intentionally self-contained: every other CLI mode reads from
 the manifest + vocab snapshot, never from the source corpus.
@@ -17,6 +19,7 @@ the manifest + vocab snapshot, never from the source corpus.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import random
@@ -95,7 +98,23 @@ def build_caption_index(
 
 
 def load_tag_cache(path: Path) -> Dict[str, str]:
-    """Load the corpus tag-taxonomy cache and map tag → category name."""
+    """Load a tag-taxonomy source and map tag → category name.
+
+    Two on-disk formats are accepted, dispatched by suffix:
+
+    * ``.json`` — gelcrawl's corpus cache, a ``{tag: integer type_id}`` dict.
+    * ``.csv``  — the public ``danbooru_tags_classified.csv`` KB (``name``,
+      ``category``, ``post_count``, ``description``); ``category`` carries the
+      same numeric Danbooru type id, so it feeds the identical ``TAG_TYPE_NAMES``
+      mapping. This lets the vocab build run off the downloadable KB with no
+      dependency on the private corpus crawl.
+
+    Both normalize underscored cache keys to the space-separated canonical
+    caption form.
+    """
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        return _load_tag_cache_csv(path)
     with open(path) as f:
         raw = json.load(f)
     out: Dict[str, str] = {}
@@ -104,6 +123,25 @@ def load_tag_cache(path: Path) -> Dict[str, str]:
         if cat is not None:
             # Cache uses underscored names; canonical caption format uses spaces.
             out[tag.replace("_", " ")] = cat
+    return out
+
+
+def _load_tag_cache_csv(path: Path) -> Dict[str, str]:
+    """Parse ``danbooru_tags_classified.csv`` into a tag → category-name map."""
+    out: Dict[str, str] = {}
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            name = str(row.get("name") or "").strip()
+            raw_cat = str(row.get("category") or "").strip()
+            if not name or not raw_cat:
+                continue
+            try:
+                cat = TAG_TYPE_NAMES.get(int(raw_cat))
+            except ValueError:
+                continue
+            if cat is not None:
+                out[name.replace("_", " ")] = cat
     return out
 
 
@@ -473,9 +511,62 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
     vocab["rules_source_path"] = str(rules_src.resolve())
     vocab["coverage"] = coverage
 
-    # Resolve typed groups against the kept vocab into vocab.json. Optional —
-    # without --groups we build a flat-vocab checkpoint (trainer falls to BCE).
+    # Optionally derive tag-groups from the danbooru taxonomy + the captions we
+    # just scanned, merging onto any existing curated --groups (preserved
+    # verbatim). Writes out_dir/groups.yaml and uses it as the groups source, so
+    # one build_vocab call replaces the separate derive_groups step.
     groups_src = Path(args.groups) if args.groups else None
+    if getattr(args, "derive_groups", False):
+        from library.captioning.correction import find_tag_csv, load_tag_knowledge_base
+
+        from .derive_groups import derive_rows, merge_apply, solo_sets_from_index
+
+        csv_path = (
+            Path(args.tag_cache)
+            if str(args.tag_cache).lower().endswith(".csv")
+            else find_tag_csv()
+        )
+        if csv_path is None or not Path(csv_path).exists():
+            logger.warning(
+                "derive_groups on but danbooru_tags_classified.csv KB not found "
+                "(set --tag_cache to it or place it under models/); skipping "
+                "derivation — using --groups as-is"
+            )
+        else:
+            kb = load_tag_knowledge_base(csv_path)
+            solo_sets = solo_sets_from_index(index)
+            rows, unmatched = derive_rows(
+                vocab,
+                kb,
+                rules,
+                solo_sets,
+                min_group_size=args.min_group_size,
+                min_member_freq=args.min_member_freq,
+                min_group_support=args.min_group_support,
+                softmax_cooc_max=args.softmax_cooc_max,
+                borderline_cooc_max=args.borderline_cooc_max,
+            )
+            # Preserve --groups verbatim if it exists; else merge onto nothing.
+            preserve = groups_src if (groups_src and groups_src.exists()) else None
+            text, notes = merge_apply(
+                rows, preserve, min_group_size=args.min_group_size
+            )
+            derived_path = out_dir / "groups.yaml"
+            if derived_path.exists() and derived_path != preserve:
+                derived_path.with_suffix(".yaml.bak").write_text(
+                    derived_path.read_text(), encoding="utf-8"
+                )
+            derived_path.write_text(text, encoding="utf-8")
+            n_general = sum(1 for t in vocab["tags"] if t["category"] == "general")
+            logger.info(
+                "derived groups (%d solo samples, %d/%d general tags matched): %s → %s",
+                len(solo_sets),
+                n_general - len(unmatched),
+                n_general,
+                "; ".join(notes),
+                derived_path,
+            )
+            groups_src = derived_path
     if groups_src is not None and groups_src.exists():
         groups = tg.load_groups(groups_src)
         tag_to_idx = {t["name"]: t["index"] for t in vocab["tags"]}
@@ -519,12 +610,14 @@ def cmd_build_vocab(args: argparse.Namespace) -> None:
                 "(pure BCE on every tag)",
             )
 
+    # The train/val split is a property of the training corpus, not the model's
+    # label space — it lives only in dataset.json (the manifest), never in the
+    # shipped vocab.json, so the published vocab carries no per-stem train list.
     split = make_split(
         sorted(index.keys()),
         val_frac=args.val_frac,
         seed=args.seed,
     )
-    vocab["split"] = split
 
     vocab_path = out_dir / "vocab.json"
     with open(vocab_path, "w") as f:

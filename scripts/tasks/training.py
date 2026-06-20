@@ -17,7 +17,15 @@ from pathlib import Path
 
 import toml
 
-from ._common import PY, ROOT, run, train
+from ._common import (
+    PY,
+    ROOT,
+    _preset,
+    bespoke_preset_flags,
+    queue_command,
+    run,
+    train,
+)
 
 # EasyControl control-task projects are descriptor-driven: a self-contained
 # ``configs/easycontrol/<EASYADAPTER>.toml`` (``name`` slug + [staging]/[preprocess]/
@@ -39,6 +47,45 @@ def _easyadapter() -> str:
 
 def cmd_lora(extra):
     train("lora", extra)
+
+
+def cmd_turbo(extra):
+    """Turbo Anima — DP-DMD distillation (docs: docs/methods/turbo.md).
+
+    Bypasses train.py / accelerate (single-GPU bespoke loop, like distill-mod).
+    Reads ``configs/methods/turbo.toml``; trailing args are forwarded so user
+    CLI flags override TOML values, e.g.::
+
+        make turbo                                  # defaults: rank=64, 4-step
+        make turbo ARGS="--student_rank 64 --iterations 5000"
+        make turbo ARGS="--single_prompt_idx 0"     # Phase 0 single-prompt overfit
+        make turbo --queue                          # enqueue on the daemon
+
+    The output is a normal LoRA — a distilled student ships at
+    https://huggingface.co/sorryhyun/anima-turbo-4step (infer with
+    ``make test-turbo`` / ``--infer_steps 4 --cfg 1.0``).
+
+    Honors ``PRESET`` (default ``default``) — translates ``blocks_to_swap`` and
+    ``gradient_checkpointing`` from ``configs/presets.toml`` into CLI flags so
+    ``make turbo PRESET=low_vram`` enables grad ckpt + unsloth offload, and
+    ``PRESET=half/quarter/tenth`` shrinks the dataset via ``--sample_ratio``.
+    ``extra`` is appended last, so user CLI overrides win.
+
+    ``--queue`` anywhere in ``extra`` enqueues the distillation as a daemon
+    command-job (run serially behind any other queued work) and returns
+    immediately, instead of running it inline — the bespoke-loop analogue of
+    ``make lora --queue``. The job is labeled ``turbo`` so the GUI's Turbo
+    tab can re-attach to it. Preset flags are baked into the queued argv since the
+    daemon's command path does no config merging.
+    """
+    extra = list(extra or [])
+    preset_flags = bespoke_preset_flags(_preset())
+    argv = ["-m", "scripts.distill_turbo.distill", *preset_flags, *extra]
+    if "--queue" in argv:
+        argv.remove("--queue")
+        queue_command("turbo", argv)
+        return
+    run([PY, *argv])
 
 
 def cmd_lora_gui(extra):
@@ -214,27 +261,6 @@ def cmd_easycontrol(extra):
     train("easycontrol", extra)
 
 
-def cmd_easycontrol_download(extra):
-    """Download an EasyControl control-task project's extra weights.
-
-    ``EASYADAPTER=colorize`` fetches the Sketch2Manga screening weights
-    (``models/sketch2manga/``) used by the learned Phase B condition synthesizer
-    (``easycontrol_adapters/colorization/prep.py --engine sd``). The default
-    EasyControl (no adapter) needs no extra weights beyond the Anima base.
-    """
-    from scripts.tasks import downloads as _downloads
-
-    adapter = _easyadapter()
-    if adapter == "colorize":
-        _downloads.cmd_download_sketch2manga(extra)
-        return
-    print(
-        "Default EasyControl needs no extra weights (uses the Anima base from "
-        "`make download-models`). Set EASYADAPTER=colorize for the Sketch2Manga "
-        "screening weights."
-    )
-
-
 def _near_twins_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     """Resize + VAE/TE caching for the mined near-twin pair tree.
 
@@ -267,6 +293,25 @@ def _near_twins_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     target_res_flag = (
         ["--target_res", *[str(e) for e in target_res]] if target_res else []
     )
+    # Free-fit (native-aspect token-band resize): [preprocess].freefit wins, else
+    # base.toml's freefit (shared with the LoRA pipeline). CAVEAT pair coherence —
+    # the cond/target pairing in _near_twins_build_cond matches twins on an EXACT
+    # same bucket string, and the loader (_load_cond_latent) resolves+validates the
+    # cond latent at the TARGET's bucket, so a pair whose members free-fit to
+    # different shapes is dropped at cond-build with a warning (more often than
+    # under coarse constant buckets, since free-fit granularity is per-token-count).
+    # Near-twins share an aspect so most pairs survive; pairs from differently-sized
+    # source scans are the casualties.
+    freefit = pp.get("freefit")
+    if freefit is None:
+        from ._common import _path_overrides
+
+        freefit = bool(_path_overrides().get("freefit", False))
+    freefit_flag: list[str] = []
+    if freefit:
+        freefit_flag = ["--freefit"]
+        if pp.get("freefit_max_ratio") is not None:
+            freefit_flag += ["--freefit_max_ratio", str(pp["freefit_max_ratio"])]
 
     # 1. Resize staging tree into buckets. min_pixels defaults to 0 (not 0.5MP) so a
     #    small member can't be dropped and orphan its pair partner.
@@ -281,6 +326,7 @@ def _near_twins_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
             "--min_pixels",
             str(pp.get("min_pixels", 0)),
             *target_res_flag,
+            *freefit_flag,
             *recursive,
         ]
     )
@@ -347,13 +393,16 @@ def _near_twins_build_cond(pp: dict, base: str) -> None:
 
     Pairing convention (matches the generated blueprint): the denoising target is
     the clean ``_no_tags`` member; its ``_tags`` twin is the EasyControl condition
-    reference. The loader resolves the cond latent by the *target* stem+bucket
-    under ``cond_cache_dir``, so for each ``{id}_no_tags_{WxH}_anima.npz`` target
-    latent we symlink the sibling ``{id}_tags_{WxH}_anima.npz`` into
-    ``cond/<artist>/{id}_no_tags_{WxH}_anima.npz`` (cond content = the _tags
-    latent, filed under the _no_tags name). Same-bucket twins only — a member that
-    bucketed to a different resolution has no latent at the target's bucket and is
-    skipped with a warning.
+    reference. The loader resolves the cond latent by the *target* stem (bucket
+    first, then a stem-glob fallback) under ``cond_cache_dir``, so for each
+    ``{id}_no_tags_{WxH}_anima.npz`` target latent we symlink the sibling
+    ``{id}_tags_{W'xH'}_anima.npz`` into ``cond/<artist>/{id}_no_tags_{W'xH'}_anima.npz``
+    (cond content = the _tags latent, filed under the _no_tags stem at the *twin's*
+    bucket). Same-bucket twins are the constant-bucket common case; under free-fit a
+    twin may resize to a different shape (W'xH' ≠ WxH) and is paired anyway — cond≠
+    target shapes are supported (the cond stream encodes at its native token count,
+    cond_diff_loss self-skips on a shape mismatch). Only a truly unpaired target
+    (no _tags twin at any bucket) is skipped with a warning.
 
     Pure symlinks over the existing cache; the tree is rebuilt from scratch each
     run so a dropped pair can't leave a stale link behind.
@@ -369,26 +418,46 @@ def _near_twins_build_cond(pp: dict, base: str) -> None:
         shutil.rmtree(cond_dir)
 
     pat = re.compile(r"^(?P<id>.+)_no_tags_(?P<bucket>\d{4}x\d{4})_anima\.npz$")
-    linked = skipped = 0
+    twin_pat = re.compile(r"_tags_(?P<bucket>\d{4}x\d{4})_anima\.npz$")
+    linked = skipped = crossfit = 0
     for npz in sorted(cache_dir.rglob("*_no_tags_*_anima.npz")):
         m = pat.match(npz.name)
         if not m:
             continue
+        # Prefer the same-bucket twin (zero-cost, the constant-bucket common case).
         twin = npz.with_name(f"{m['id']}_tags_{m['bucket']}_anima.npz")
+        twin_bucket = m["bucket"]
         if not twin.is_file():
-            print(
-                f"  [near_twin cond] no _tags twin at bucket {m['bucket']} for "
-                f"{npz.relative_to(cache_dir)} — skipping (unpaired / diff bucket).",
-                file=sys.stderr,
-            )
-            skipped += 1
-            continue
-        link = cond_dir / npz.relative_to(cache_dir)
+            # Free-fit may land the _tags twin at a DIFFERENT shape than the clean
+            # target — that's fine (cond≠target is supported: the cond stream
+            # encodes at its native token count, cond_diff_loss self-skips on a
+            # shape mismatch). Pair the twin at whatever bucket it has.
+            cands = sorted(npz.parent.glob(f"{m['id']}_tags_*_anima.npz"))
+            if not cands:
+                print(
+                    f"  [near_twin cond] no _tags twin for "
+                    f"{npz.relative_to(cache_dir)} — skipping (truly unpaired).",
+                    file=sys.stderr,
+                )
+                skipped += 1
+                continue
+            twin = cands[0]
+            twin_bucket = twin_pat.search(twin.name)["bucket"]
+            crossfit += 1
+        # File the symlink under the target stem at the TWIN's actual bucket so the
+        # loader's stem-glob fallback resolves it and reads the right reso. For the
+        # same-bucket case the name is unchanged (target bucket == twin bucket).
+        link = (
+            cond_dir
+            / npz.relative_to(cache_dir).parent
+            / f"{m['id']}_no_tags_{twin_bucket}_anima.npz"
+        )
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(twin.resolve())
         linked += 1
     print(
         f"[near_twins cond] linked {linked} cond latents into {cond_dir}"
+        + (f" ({crossfit} cross-shape under free-fit)" if crossfit else "")
         + (f" ({skipped} skipped)" if skipped else "")
     )
 

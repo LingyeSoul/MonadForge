@@ -54,34 +54,26 @@ import torch.nn as nn
 
 @dataclass
 class AnimaTaggerConfig:
-    # ── Required (dual encoder is the only mode) ──────────────────────────
     d_in: int  # PE-Core token dim (d_enc), not the pool-output dim.
     n_tags: int
     d_in_aux: int  # PE-Spatial token dim — always required.
-    # ── Optional scalars ──────────────────────────────────────────────────
     n_ratings: int = 3
-    # 0 = no people head. Trainer sets this from the manifest (currently
-    # len(library.captioning.anima_tagger.PEOPLE_COUNT_LABELS) == 8) when in use.
+    # 0 = no people head; trainer sets this from the manifest when in use.
     n_people_counts: int = 0
     d_hidden: int = 1024
     dropout: float = 0.1
-    # ── Core (PE-Core) pool ───────────────────────────────────────────────
-    # ``"map"`` consumes [B, T, d_in] tokens (MAPHead + optional CLS/mean concat);
-    # ``"mean"`` consumes a pre-pooled [B, d_in] feature.
+    # "map" consumes [B, T, d_in] tokens (MAPHead + optional CLS/mean concat); "mean" consumes a pre-pooled [B, d_in] feature.
     pool_kind: str = "map"
     pool_n_queries: int = 4
     pool_n_heads: int = 8
     pool_use_cls: bool = True
     pool_use_mean: bool = True
-    # ── Spatial (PE-Spatial) pool ─────────────────────────────────────────
     pool_kind_aux: str = "map"
     pool_n_queries_aux: int = 4
     pool_n_heads_aux: int = 8
     pool_use_cls_aux: bool = True
     pool_use_mean_aux: bool = True
-    # ── Hard routing partition (required, must partition [0, n_tags)) ──────
-    # Vocab indices read off PE-Core (identity / global: character / copyright /
-    # artist / count). The complement is read off PE-Spatial (localized).
+    # Hard routing partition (must partition [0, n_tags)): PE-Core reads identity/global (character / copyright / artist / count), PE-Spatial reads the localized complement.
     tag_indices_core: List[int] = field(default_factory=list)
     tag_indices_spatial: List[int] = field(default_factory=list)
 
@@ -221,12 +213,11 @@ class MAPHead(nn.Module):
         )
 
     def forward(self, tokens: torch.Tensor) -> torch.Tensor:
-        # tokens: [B, T, D]
         B = tokens.shape[0]
-        q = self.q.unsqueeze(0).expand(B, -1, -1)  # [B, K, D]
-        kv = self.norm_kv(tokens)  # [B, T, D]
+        q = self.q.unsqueeze(0).expand(B, -1, -1)
+        kv = self.norm_kv(tokens)
         out, _ = self.attn(q, kv, kv, need_weights=False)
-        return out  # [B, K, D]
+        return out
 
 
 class AnimaTaggerHead(nn.Module):
@@ -246,8 +237,7 @@ class AnimaTaggerHead(nn.Module):
         if cfg.pool_kind_aux not in ("mean", "map"):
             raise ValueError(f"unknown pool_kind_aux={cfg.pool_kind_aux!r}")
 
-        # Per-side MAPHead — only instantiated when that side uses MAP pool.
-        # Kept as None on mean-pool sides so the state_dict stays minimal.
+        # Per-side MAPHead, None on mean-pool sides so the state_dict stays minimal.
         self.pool_core: Optional[MAPHead] = (
             MAPHead(
                 d=cfg.d_in,
@@ -269,8 +259,7 @@ class AnimaTaggerHead(nn.Module):
             else None
         )
 
-        # Two parallel projection trunks — each pool projects to d_hidden
-        # independently. No shared concat trunk, no gating.
+        # Two parallel projection trunks — no shared concat trunk, no gating.
         self.trunk_core = nn.Sequential(
             nn.LayerNorm(cfg.core_trunk_in_dim),
             nn.Linear(cfg.core_trunk_in_dim, cfg.d_hidden),
@@ -284,15 +273,13 @@ class AnimaTaggerHead(nn.Module):
             nn.Dropout(cfg.dropout),
         )
 
-        # Tag sub-heads over the disjoint vocab partition. Guarded so a
-        # degenerate all-one-side partition still builds.
+        # Tag sub-heads over the disjoint vocab partition, guarded so a degenerate all-one-side partition still builds.
         n_core = len(cfg.tag_indices_core)
         n_spatial = len(cfg.tag_indices_spatial)
         self.tag_head_core = nn.Linear(cfg.d_hidden, n_core) if n_core > 0 else None
         self.tag_head_spatial = (
             nn.Linear(cfg.d_hidden, n_spatial) if n_spatial > 0 else None
         )
-        # PE-Core also drives rating + (optional) people-count.
         self.rating_head = nn.Linear(cfg.d_hidden, cfg.n_ratings)
         self.people_head: Optional[nn.Linear] = (
             nn.Linear(cfg.d_hidden, cfg.n_people_counts)
@@ -300,8 +287,7 @@ class AnimaTaggerHead(nn.Module):
             else None
         )
 
-        # Routing index buffers — ride device / dtype moves and round-trip in
-        # state_dict (useful for sanity-checking loaded checkpoints).
+        # Routing index buffers — ride device/dtype moves and round-trip in state_dict.
         self.register_buffer(
             "tag_idx_core",
             torch.tensor(cfg.tag_indices_core, dtype=torch.long),
@@ -321,11 +307,11 @@ class AnimaTaggerHead(nn.Module):
         use_mean: bool,
     ) -> torch.Tensor:
         """[B, T, D] → [B, (K + use_cls + use_mean) * D] via MAP + (optional) CLS / mean concat."""
-        chans = [pool(tokens).flatten(1)]  # [B, K*D]
+        chans = [pool(tokens).flatten(1)]
         if use_cls:
-            chans.append(tokens[:, 0])  # [B, D]
+            chans.append(tokens[:, 0])
         if use_mean:
-            chans.append(tokens.mean(dim=1))  # [B, D]
+            chans.append(tokens.mean(dim=1))
         return torch.cat(chans, dim=-1)
 
     def _pool_side(

@@ -131,7 +131,7 @@ A naive implementation lets this shape propagate through the DiT. Every distinct
 
 ### The fix: collapse to a few exact token counts, run them natively
 
-`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 (= 63·64) and 4200 (= 60·70)**. Every bucket resolution *exactly* fills its family's count, so there is **zero intra-bucket padding by construction**. Native shapes are the only mode: every forward runs at its real token count, so dynamo guards only on the token count — and the whole table collapses to **two** distinct counts → two compiled block graphs.
+`CONSTANT_TOKEN_BUCKETS` (`library/datasets/buckets.py`) is **two token-count families — 4032 (= 63·64) and 4200 (= 60·70)**. Every bucket resolution *exactly* fills its family's count, so there is **zero intra-bucket padding by construction**. Native shapes are the default mode: every forward runs at its real token count, so dynamo guards only on the token count — and the whole table collapses to **two** distinct counts → two compiled block graphs. (The opt-in `freefit=true` alternative lands token counts anywhere in a tier's band at native aspect ratio and rides `compile_dynamic_seq` to keep that one graph — see `docs/proposal/free_aspect_token_band_resize.md`. It coexists with this table, which stays the default and stays frozen for DCW.)
 
 When `compile_blocks` is active, `library/anima/models.py`'s forward flattens `(B, T, H, W, D)` into a *fake-5D* `(B, 1, seq_len, 1, D)` tensor the block code already knows how to consume:
 

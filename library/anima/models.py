@@ -1592,21 +1592,17 @@ class Anima(nn.Module):
         self._native_flatten = True
 
         # Local import avoids a circular import (buckets does not import models).
-        from library.datasets.buckets import CONSTANT_TOKEN_BUCKETS
+        from library.datasets.buckets import token_count_families
         from library.runtime.dynamo import pin_dynamo_limit
 
         # Number of distinct token-count families (== compiled block graphs).
-        # Defaults to the 1024 table (2: 4032/4200); callers pass the count derived
-        # from the buckets the dataset actually populated (train.py::_derive_token_budget).
+        # Defaults to the canonical 1024 tier (2: 4032/4200); callers pass the count
+        # derived from the buckets the dataset actually populated
+        # (train.py::_derive_token_budget).
         if n_token_families is not None:
             n = n_token_families
         else:
-            n = len(
-                {
-                    (h // self.patch_spatial) * (w // self.patch_spatial)
-                    for h, w in CONSTANT_TOKEN_BUCKETS
-                }
-            )
+            n = token_count_families((1024,))
         # pin_dynamo_limit (not a plain config.recompile_limit=…): the budget is a
         # ContextVar that reverts to the default 8 in the backward compile context;
         # a wide multi-scale run would silently spill to eager without pinning .default.
@@ -1614,17 +1610,15 @@ class Anima(nn.Module):
 
         # dynamic_seq compiles static and marks only the seq axis dynamic (not
         # torch.compile(dynamic=True)). Derive the (min,max) seq bound: passed-in
-        # seq_range (multi-tier) or the 1024 table's token counts.
+        # seq_range (multi-tier) or the canonical 1024 tier's band (4032, 4200).
         self._dynamic_seq = dynamic_seq
         if dynamic_seq:
             if seq_range is not None:
                 self._dynamic_seq_range = (int(seq_range[0]), int(seq_range[1]))
             else:
-                counts = {
-                    (h // self.patch_spatial) * (w // self.patch_spatial)
-                    for h, w in CONSTANT_TOKEN_BUCKETS
-                }
-                self._dynamic_seq_range = (min(counts), max(counts))
+                from library.datasets.buckets import token_count_range
+
+                self._dynamic_seq_range = token_count_range((1024,))
 
         compile_kwargs = {"backend": backend, "dynamic": False}
         if mode is not None:

@@ -4,7 +4,7 @@ Training-free SDE sampler plug-in. Replaces the **white** noise that `ERSDESampl
 
 Paper: [Colored Noise Diffusion Sampling](https://hadardavidson.github.io/CNS/) (Davidson, Issachar, Benaim — Hebrew U., arXiv [2605.30332](https://arxiv.org/abs/2605.30332)). Local PDF at repo root `2605.30332v1.pdf`.
 
-**Read first:** `bench/cns/plan.md` (precondition + Phase-0 staircase results + composition tensions). The γ premise is independently corroborated by `project_sigma_signal_resolves_by_045` (base resolves x0 by σ≈0.45; e_low triples in the σ<0.45 tail — that finding *is* the CNS γ-matrix viewed from the σ axis).
+**Read first:** `_archive/bench/cns/plan.md` (precondition + Phase-0 staircase results + composition tensions). The γ premise is independently corroborated by `project_sigma_signal_resolves_by_045` (base resolves x0 by σ≈0.45; e_low triples in the σ<0.45 tail — that finding *is* the CNS γ-matrix viewed from the σ axis).
 
 ## The mechanism (Algorithm 1, paper p.7)
 
@@ -27,7 +27,7 @@ w_c     /= std(w_c)                    # RMS-renormalize → conserve total vari
 
 ## Why it works on Anima — precondition verified
 
-CNS feeds on **spectral bias** (low-freq structure resolves early, high-freq detail late). Phase 0 measured this directly on Anima (`bench/cns/plan.md`, 2026-05-31, GO):
+CNS feeds on **spectral bias** (low-freq structure resolves early, high-freq detail late). Phase 0 measured this directly on Anima (`_archive/bench/cns/plan.md`, 2026-05-31, GO):
 
 | config | t50 spread (low→high freq) | aggregate σ50 | linear-target MAE |
 |---|---|---|---|
@@ -71,13 +71,13 @@ python inference.py --sampler er_sde --cns auto   ...   # shipped γ, full stren
 
 Cross-aspect variation is **cosmetic** (β MAD ~0.01, same conclusion as `project_dcw_bucket_prior_cosmetic`), so one averaged `(1, T, F)` γ ships and serves any resolution — the recolorer's nearest-aspect select degrades to index 0. Radial bins are normalized to [0, 1], so a γ calibrated at one grid maps onto any other shape by bin index. **Caveat:** all calibrated aspects are 4200-token, AR 0.6–1.34; extreme shapes are unmeasured extrapolation.
 
-## Calibration: `bench/cns/calibrate.py`
+## Calibration: `scripts/calibration/cns_calibrate.py`
 
 ```bash
-python bench/cns/calibrate.py --cfg 4.0 --n_aspects 3            # compiled (default)
-python bench/cns/calibrate.py --cfg 4.0 --no-compile            # eager
+python scripts/calibration/cns_calibrate.py --cfg 4.0 --n_aspects 3            # compiled (default)
+python scripts/calibration/cns_calibrate.py --cfg 4.0 --no-compile            # eager
 # probe the adapter instead of base (γ is LoRA-transparent per Phase 0):
-python bench/cns/calibrate.py --cfg 4.0 --extra --lora_weight output/ckpt/<x>.safetensors
+python scripts/calibration/cns_calibrate.py --cfg 4.0 --extra --lora_weight output/ckpt/<x>.safetensors
 ```
 
 Drives the Phase-0 euler capture across the **deploy config** — `--cfg 4.0` at the top-`--n_aspects` `DCW_ASPECT_BUCKETS` — and bundles per-aspect γ into the shipped npz (with `--average_aspects`, default on). γ is measured from the deterministic euler ODE (Eq. 8); the recoloring then applies on er_sde. Prompts are **real captions** (richest/most-tags across distinct artists, from preprocessed stems → `image_dataset/*.txt`), not synthetic — they matter: real-vs-synthetic β MAD 0.036, ~3–5× the cross-aspect MAD. GPU-heavy (3 aspects × prompts × seeds at cfg=4); loads the DiT once, precomputes all text, frees the TE before the loop (TE→free→DiT invariant), and compiles by default (the 3 default aspects are all token-count 4200 → one native-flatten graph reused across them). `gamma_probe.py` is the single-config read-only Phase-0 staircase check; `calibrate.py` reuses its helpers.
@@ -125,7 +125,7 @@ One implementation divergence worth noting: Alg. 1 renormalizes by a single **gl
 | `library/inference/sampling.py` | `ERSDESampler._sample_noise` — the recolor seam (white draw → `cns.recolor(white, σ_s)`); injection at `step()`. |
 | `library/inference/generation.py` | `_build_cns_recolorer` — builds from `--cns` / `--cns_strength`, warns if `--sampler` injects no noise. |
 | `inference.py` | `--cns` / `--cns_strength` CLI surface. |
-| `bench/cns/calibrate.py` | Phase-1 completion-matrix calibration → the shipped npz + a `bench/cns/results/` record. |
-| `bench/cns/gamma_probe.py` | Phase-0 read-only staircase check (one config). |
-| `bench/cns/plan.md` | Precondition, phase log, composition tensions. |
+| `scripts/calibration/cns_calibrate.py` | Phase-1 completion-matrix calibration → the shipped npz + per-aspect γ heatmaps next to it. |
+| `scripts/calibration/gamma_probe.py` | Phase-0 read-only staircase check (one config). |
+| `_archive/bench/cns/plan.md` | Precondition, phase log, composition tensions. |
 | `networks/calibration/cns_gamma.npz` | Shipped completion matrix (`--cns auto`). |

@@ -1,6 +1,6 @@
 """Guard that tracked docs don't drift from the live tree.
 
-``scripts/check_docs.py`` is a standalone CLI linter, but nothing ran it
+``scripts/release/check_docs.py`` is a standalone CLI linter, but nothing ran it
 automatically — so a doc could reference a deleted file or a renamed ``make``
 target and nobody would notice. This pins its **ERROR** classes (broken repo
 paths + unknown ``make`` targets) as a hard test: the live tree must be clean.
@@ -13,7 +13,7 @@ guard can't silently pass because the detector itself broke.
 
 from __future__ import annotations
 
-from scripts.check_docs import (
+from scripts.release.check_docs import (
     REPO_ROOT,
     _check_path,
     collect_issues,
@@ -52,9 +52,9 @@ def test_check_path_flags_missing_and_accepts_real():
     missing = "library/this_module_does_not_exist.py"
     assert _check_path(missing, top) == missing
     # A real tracked file is accepted (returns None).
-    assert _check_path("scripts/check_docs.py", top) is None
+    assert _check_path("scripts/release/check_docs.py", top) is None
     # An extensionless module reference resolves via the ``.py`` fallback.
-    assert _check_path("scripts/check_docs", top) is None
+    assert _check_path("scripts/release/check_docs", top) is None
     # Non-repo roots (URLs, data dirs) are skipped, never flagged.
     assert _check_path("https://example.com/x", top) is None
     assert _check_path("output/tests/foo.png", top) is None

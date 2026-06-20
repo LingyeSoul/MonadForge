@@ -32,7 +32,6 @@ Usage:
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import math
 import os
@@ -42,11 +41,11 @@ import random
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
-from torch.utils.tensorboard import SummaryWriter  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
+from library.config.resolved import dataclass_tb_text  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
 from library.io.cache import (  # noqa: E402
@@ -58,6 +57,11 @@ from library.runtime.harness import (  # noqa: E402
     compile_dit_blocks_for_pool,
     enable_training_grad_ckpt,
     place_dit_for_training,
+)
+from library.training.distill_runtime import (  # noqa: E402
+    create_tb_writer,
+    ensure_dynamic_seq_for_freefit,
+    resolve_device_dtype,
 )
 from library.training.forward import (  # noqa: E402
     PadCache,
@@ -147,9 +151,9 @@ def _draw_gad_pair(
         j = rng.randrange(n)
         while n > 1 and j == cur:
             j = rng.randrange(n)
-        _j, _lat, cross_j, pool_j = dataset[j]
-        cross_list.append(cross_j)
-        pool_list.append(pool_j)
+        s_j = dataset[j]
+        cross_list.append(s_j["crossattn_emb"])
+        pool_list.append(s_j["pooled_text"])
     cross_b = torch.stack(cross_list).to(device, dtype=dtype, non_blocking=True)
     pool_b = torch.stack(pool_list).to(device, dtype=dtype, non_blocking=True)
     return cross_b, pool_b
@@ -189,8 +193,7 @@ def main():
         logger.info(f"Dry run OK: {total} batches, no collation errors.")
         return
 
-    device = torch.device("cuda")
-    dtype = torch.bfloat16
+    device, dtype = resolve_device_dtype()
 
     # Load the T5("") uncond sidecar (staged by `make distill-prep`).
     uncond_te_path = cfg.uncond_te_path or str(default_uncond_path())
@@ -247,11 +250,17 @@ def main():
         # pool, not a fixed table. The derivation is coupled to mod's synth-pool
         # logic so it stays here; the rest is the shared library helper.
         token_counts = _pool_token_counts(cfg, model.patch_spatial)
+        # Free-fit fail-safe (mirrors train.py's auto-enable, which never reaches
+        # this bespoke loop — project_daemon_wiring_pattern). cfg is frozen → local
+        # override.
+        dynamic_seq = ensure_dynamic_seq_for_freefit(
+            token_counts, cfg.compile_dynamic_seq, logger=logger
+        )
         pc = compile_dit_blocks_for_pool(
             model,
             token_counts,
             enabled=True,
-            dynamic_seq=cfg.compile_dynamic_seq,
+            dynamic_seq=dynamic_seq,
             mode=cfg.compile_inductor_mode,
             activation_memory_budget=cfg.activation_memory_budget,
             grad_ckpt=cfg.grad_ckpt,
@@ -262,11 +271,11 @@ def main():
             "%d distinct token counts in pool, %s.",
             len(model.blocks),
             cfg.compile_inductor_mode,
-            cfg.compile_dynamic_seq,
+            dynamic_seq,
             pc.n_shapes,
             (
                 f"seq_range={pc.seq_range} (one symbolic graph)"
-                if cfg.compile_dynamic_seq
+                if dynamic_seq
                 else "static per-shape graphs"
             ),
         )
@@ -385,7 +394,7 @@ def main():
             sigmoid_scale=cfg.sigmoid_scale,
             base_seed=cfg.teacher_cache_seed,
         )
-        _peek = dataset[0][1]
+        _peek = dataset[0]["latents"]
         bytes_per_entry = _peek.numel() * 2
         approx_gb = len(dataset) * cfg.teacher_cache_K * bytes_per_entry / 1e9
         logger.info(
@@ -398,19 +407,9 @@ def main():
 
     os.makedirs(os.path.dirname(cfg.output_path) or ".", exist_ok=True)
 
-    writer = None
-    if not cfg.no_log:
-        from datetime import datetime
-
-        run_name = datetime.now().strftime("%Y%m%d-%H%M%S")
-        run_log_dir = os.path.join(cfg.log_dir, run_name)
-        os.makedirs(run_log_dir, exist_ok=True)
-        writer = SummaryWriter(log_dir=run_log_dir)
-        writer.add_text(
-            "config",
-            "  \n".join(f"{k}: {v}" for k, v in dataclasses.asdict(cfg).items()),
-        )
-        logger.info(f"TensorBoard logs -> {run_log_dir}")
+    writer, _run_log = create_tb_writer(
+        cfg.log_dir, dataclass_tb_text(cfg), enabled=not cfg.no_log, logger=logger
+    )
 
     # GAD setup. gad_weight=0 → fully off (no extra forwards, bit-for-bit the
     # MSE-only path). Resolve the perturbation-pair source against batch_size.
@@ -469,10 +468,14 @@ def main():
 
         for accum_step in range(grad_accum):
             try:
-                idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
+                batch = next(data_iter)
             except StopIteration:
                 data_iter = iter(dataloader)
-                idx_list, latents, crossattn_emb, pooled_text = next(data_iter)
+                batch = next(data_iter)
+            idx_list = batch["idx"]
+            latents = batch["latents"]
+            crossattn_emb = batch["crossattn_emb"]
+            pooled_text = batch["pooled_text"]
 
             latents = latents.to(device, dtype=dtype, non_blocking=True)
             crossattn_emb = crossattn_emb.to(device, dtype=dtype, non_blocking=True)

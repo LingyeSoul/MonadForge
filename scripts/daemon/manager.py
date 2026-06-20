@@ -722,7 +722,6 @@ class JobManager:
         if script != "tasks.py":
             return False
         return str(argv[1]) in {"lora", "lora-gui", "easycontrol"}
-
     def _build_cmd(self, job: Job) -> tuple[list[str], dict]:
         from .client import venv_python
 

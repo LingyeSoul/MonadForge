@@ -61,10 +61,15 @@ def load_pe_encoder(
 
     The encoder is placed in eval mode with ``requires_grad_(False)`` (the
     underlying loaders already do this; we just bundle the metadata).
+
+    ``dtype`` is the model compute dtype (cast once from the fp32 checkpoint)
+    *and* ``bundle.dtype``, which ``encode_pe_from_imageminus1to1`` casts inputs
+    to — so the two always agree. Default bf16 for the live training/CMMD path;
+    feature caching passes ``float32`` for a full-precision cache.
     """
     info = get_encoder_info(name)
     resolved_id = model_id or info.default_model_id()
-    encoder = info.loader(device, resolved_id)
+    encoder = info.loader(device, resolved_id, dtype=dtype)
     return VisionEncoderBundle(
         name=name,
         encoder=encoder,

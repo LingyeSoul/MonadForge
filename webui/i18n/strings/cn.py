@@ -50,6 +50,13 @@ STRINGS: dict[str, str] = {
         "低分辨率过滤器的像素数阈值。500000 = 0.5MP。"
         "当「丢弃低分辨率图像」未勾选时忽略。"
     ),
+    "preprocess_target_res": "分辨率档位 (target_res):",
+    "preprocess_freefit_max_ratio": "最大宽高比:",
+    "preprocess_freefit_max_ratio_tip": (
+        "自由适配的限制: 宽高比超过 1:R / R:1 的图像将按上方选择的裁剪位置"
+        "进行覆盖裁剪。默认 4.0 与旧桶表最极端的宽高比一致，"
+        "可阻止 1:5 / 1:6 等退化输入。"
+    ),
     "preprocess_text_caching": "缓存 (VAE + 文本)",
     "preprocess_caption_shuffle_variants": "每条标注的随机变体数 (N):",
     "preprocess_caption_shuffle_variants_tip": (
@@ -64,6 +71,27 @@ STRINGS: dict[str, str] = {
         "适用于 v1..v(N-1) 的每标签 dropout 概率。"
         "直到首个 @artist 标记之前的标签 (含该标记) 永不丢弃。"
         "当随机变体数 ≤ 0 时忽略。"
+    ),
+    "preprocess_caption_correct_order": "校正标注顺序",
+    "preprocess_caption_correct_order_tip": (
+        "将校正后的 .txt 标注保存到已调整大小的图像旁边，并用于文本编码器缓存。"
+        "不会修改原始源标注。"
+    ),
+    "preprocess_caption_insert_no_artist": "插入 @no-artist",
+    "preprocess_caption_insert_no_artist_tip": (
+        "启用标注顺序校正且没有作者标记时，在 artist 位置插入 @no-artist。"
+        "若触发词位于 artist 位置，则触发词优先，不插入 @no-artist。"
+    ),
+    "preprocess_caption_trigger_word": "触发词:",
+    "preprocess_caption_trigger_word_tip": (
+        "要放入校正标注的可选触发标签。未启用置顶时，它会放在现有作者标签"
+        "之前的 artist 位置。若要作为随机/丢弃保护用的作者标记，请包含 @。"
+        "触发词中的下划线会保留。"
+    ),
+    "preprocess_caption_trigger_at_front": "触发词固定在最前",
+    "preprocess_caption_trigger_at_front_tip": (
+        "将触发词放在标注最前方。在此模式下，@no-artist 插入会根据现有作者"
+        "标签和 no-artist 选项单独处理。"
     ),
     "preprocess_run_te": "运行缓存 (VAE + 文本)",
     "preprocess_run_pe": "运行 PE 缓存",
@@ -132,6 +160,10 @@ STRINGS: dict[str, str] = {
     "preprocess_status_caches": "缓存 — latents: {lat}, text: {te}, PE: {pe}",
     "preprocess_status_masks": "蒙版: {masks}",
     "preprocess_status_no_resized": "尚无已调整大小的图像。",
+    "preprocess_no_resized_to_process": (
+        "post_image_dataset/resized/ 中没有已调整大小的图像。请先运行预处理"
+        "（调整大小）——蒙版和分组都基于已调整大小的图像。"
+    ),
     "preprocess_open_dataset_dir": "打开cache文件夹",
     "preprocess_open_dataset_dir_tooltip": "在文件管理器中打开 post_image_dataset/ 文件夹（已调整大小的图像 + 缓存）。",
     "preprocess_clear_scope_cache": "删除当前 scope 缓存",
@@ -171,6 +203,8 @@ STRINGS: dict[str, str] = {
     "log_placeholder": "训练输出将显示在此处……",
     "copy_log": "复制",
     "copy_log_tooltip": "将完整训练日志复制到剪贴板",
+    "gpu_probing": "GPU：检测中……",
+    "gpu_stat": "GPU{i}: {util}%  ·  {used}/{total} GiB  ·  {temp}°C",
     "copy_log_done": "已复制",
     "from_base": "继承自 base.toml",
     "saved": "已保存",
@@ -318,42 +352,31 @@ STRINGS: dict[str, str] = {
     "dataset_group_first_tooltip": "分组优先排序：将已分组的图片跨文件夹汇总到最上方显示（未分组图片在下方以文件夹树显示）。",
     "dataset_view_group": "分组",
     "dataset_view_tree": "树形",
+    "dataset_group_sort_tooltip": "每个分组内部的图片排序方式。方向键导航会跟随左侧树中的显示顺序。",
+    "dataset_group_sort_name": "按名称",
+    "dataset_group_sort_name_desc": "按名称倒序",
+    "dataset_group_sort_size": "按文件大小",
+    "dataset_group_sort_size_desc": "按文件大小倒序",
+    "dataset_group_sort_resolution": "按分辨率",
+    "dataset_group_sort_resolution_desc": "按分辨率倒序",
     "dataset_mask_overlay": "显示蒙版覆盖",
-    "dataset_preprocess_use_short": "使用 (A)",
-    "dataset_preprocess_use_tooltip": "将当前图像标记为参与预处理。不会修改源文件。",
+    "dataset_resize_preview": "显示 resize 预览",
+    "dataset_resize_preview_tooltip": "显示预处理 target_res 选择的中心裁剪区域和最终 bucket。不会修改源文件。",
+    "dataset_resize_preview_label": "{width}x{height} @ {edge}",
     "dataset_preprocess_skip_short": "跳过 (S)",
     "dataset_preprocess_skip_tooltip": "将当前图像标记为在预处理 resize 阶段跳过。不会修改源文件。",
     "dataset_preprocess_clear_short": "清除 (F)",
     "dataset_preprocess_clear_tooltip": "清除当前图像的使用/跳过/移动标记。可通过右侧菜单清除所有标记。",
     "dataset_preprocess_clear_all": "清除所有标记",
     "dataset_preprocess_save": "保存预处理决定",
-    "dataset_preprocess_save_tooltip": "将逐图像使用/跳过/移动/裁剪决定保存为预处理使用的 JSON。移动标记即使在文件实际移动前也会从预处理中排除。",
+    "dataset_preprocess_save_tooltip": "将逐图像使用/跳过/移动决定保存为预处理使用的 JSON。移动标记即使在文件实际移动前也会从预处理中排除。",
     "dataset_preprocess_saved": "预处理决定已保存:\n{path}",
-    "dataset_preprocess_decision_none": "无预处理决定",
     "dataset_preprocess_decision_use": "预处理决定: 使用",
     "dataset_preprocess_decision_skip": "预处理决定: 跳过",
-    "dataset_preprocess_decision_crop": "预处理决定: 应用裁剪",
-    "dataset_preprocess_decision_use_crop": "预处理决定: 使用 + 应用裁剪",
-    "dataset_preprocess_decision_skip_crop": "预处理决定: 跳过（已保存裁剪，但跳过优先）",
     "dataset_preprocess_decision_move": "当前状态: 已标记为移动",
-    "dataset_preprocess_decision_move_crop": "当前状态: 已标记为移动（裁剪范围也已保存）",
-    "dataset_crop_preview": "显示裁剪",
-    "dataset_crop_preview_tooltip": "预览预处理 resize 阶段将应用的裁剪范围。不会修改源文件。",
-    "dataset_crop_margin": "边距:",
-    "dataset_crop_margin_left": "左",
-    "dataset_crop_margin_top": "上",
-    "dataset_crop_margin_right": "右",
-    "dataset_crop_margin_bottom": "下",
-    "dataset_crop_margin_tooltip": "从源图像各边裁掉的百分比。",
-    "dataset_crop_margin_apply": "设置范围",
-    "dataset_crop_margin_apply_tooltip": "按当前边距百分比保存预处理裁剪范围。",
-    "dataset_crop_margin_apply_visible": "应用到当前列表",
-    "dataset_crop_margin_apply_all": "应用到全部图像",
-    "dataset_crop_clear": "清除裁剪",
-    "dataset_crop_clear_tooltip": "移除当前图像的预处理裁剪决定。",
-    "dataset_crop_rect": "范围 {bx},{by} {bw}x{bh} · 最终 {x},{y} {w}x{h}",
     "dataset_image_meta_empty": "无图像",
     "dataset_image_meta": "{width}x{height} · {size} · {fmt}",
+    "dataset_image_meta_resize": "调整大小 {width}x{height} @ {edge}",
     "dataset_delete": "移动 (D)",
     "dataset_delete_tooltip": "将用 Delete 或 D 键标记的图像和 sidecar 移动到 post_image_dataset/moved/。",
     "dataset_delete_confirm_title": "移动图像",
@@ -381,7 +404,29 @@ STRINGS: dict[str, str] = {
     ),
     "caption_autotag_error": "自动标注失败：{err}",
     "caption_autotag_empty": "标注器未为该图像返回任何标签。",
+    "caption_correct": "校正顺序",
+    "caption_correct_tooltip": (
+        "使用 danbooru_tags_classified.csv 将标注按 ANIMA 推荐顺序重排，"
+        "并可按设置插入 @no-artist。"
+    ),
+    "caption_correct_visible": "校正当前列表",
+    "caption_correct_visible_confirm": "要校正当前列表中的 {n} 个标注吗？",
+    "caption_correct_visible_done": "已校正 {n} 个标注。",
+    "caption_correct_visible_failed": "已校正 {n} 个标注。\n\n失败:\n{err}",
+    "caption_correct_no_change": "没有需要校正的更改。",
+    "tag_kb_posts": "{n} 个帖子",
+    "tag_kb_unknown": "{tag} — 不在标签知识库中",
+    "caption_correct_db_missing": (
+        "找不到 danbooru_tags_classified.csv。\n\n"
+        "请在模型窗口下载 Danbooru 标签 DB，或将它放到以下位置:\n{paths}"
+    ),
+    "caption_correct_db_failed": "标签 DB 加载失败: {err}",
     "caption_versions": "历史……",
+    "caption_variant_training": "训练标注",
+    "caption_variants_tooltip": (
+        "预览预处理生成的训练用标注变体（打乱 / 标签丢弃 / 身份随机化）。"
+        "只读，不影响可编辑的训练标注。"
+    ),
     "caption_dirty_marker": " *",
     "caption_diff_stats": "(+{add} / −{rem})",
     "caption_diff_clean": "(无变化)",
@@ -417,6 +462,26 @@ STRINGS: dict[str, str] = {
         "在打标器各标签阈值之上额外应用的概率下限（0–1）。"
         "数值越高，保留的标签越少但越可靠。默认 0.50。"
     ),
+    "settings_caption_insert_no_artist": "校正时插入 @no-artist",
+    "settings_caption_insert_no_artist_tooltip": (
+        "如果校正后的标注没有作者标签，则在作者位置插入 @no-artist。"
+        "它只用于固定标注打乱边界，并会在分词前移除。"
+    ),
+    "settings_caption_validate_artist_tags": "用 DB 验证作者标签",
+    "settings_caption_validate_artist_tags_tooltip": (
+        "启用后，只有在 danbooru_tags_classified.csv 中分类为作者的 @标签"
+        "才会移动到作者位置。关闭时，所有 @开头的标签都视为作者标签。"
+    ),
+    "settings_group_match_frac": "分组严格度:",
+    "settings_group_match_frac_tooltip": (
+        "在数据集标签页点击分组时，将两张图片归为一组所需的匹配比例（0–1）。"
+        "数值越高，分组越严格、越干净。默认 0.25。"
+    ),
+    "settings_group_cell_match": "分组单元匹配:",
+    "settings_group_cell_match_tooltip": (
+        "数据集分组时判定单元匹配的余弦下限（0–1）。数值越高，单元匹配越严格。"
+        "默认 0.93。"
+    ),
     "settings_theme": "主题:",
     "settings_theme_tooltip": (
         "界面整体配色主题，立即生效；关闭设置窗口时会重建窗口以完全重绘。"
@@ -428,6 +493,16 @@ STRINGS: dict[str, str] = {
     "settings_theme_dark": "深色",
     "settings_theme_light": "浅色",
     "settings_theme_sepia": "护眼棕",
+    "settings_debug_mode": "调试模式",
+    "settings_debug_mode_tooltip": (
+        "以 DEBUG 级别记录训练守护进程日志，以便在错误报告中包含任务卡住的原因。"
+        "在守护进程下次启动时生效（关闭应用，或停止守护进程后重新打开）。"
+    ),
+    "settings_debug_report_desc": (
+        "卡在无限加载？启用调试模式并复现问题，然后点击“复制调试报告”，把结果粘贴到 "
+        "你的错误报告中——它会打包守护进程日志和最近的任务状态。"
+    ),
+    "settings_debug_copy_report": "复制调试报告",
     "settings_mcp_header": "MCP 服务器（智能体接入）",
     "settings_mcp_desc": "将本地训练守护进程暴露给 MCP 客户端（Claude Code、Claude Desktop 等）。"
     "在终端中运行以下命令即可注册到 Claude Code:",
@@ -466,8 +541,8 @@ STRINGS: dict[str, str] = {
     # Models dialog
     "models_title": "下载模型",
     "models_intro": "在下方选择模型组,或使用「全部下载」获取标准套件 "
-    "(Anima + SAM3 + MIT + PE)。文件保存于 models/ 下。",
-    "models_download_all": "全部下载 (Anima + SAM3 + MIT + PE)",
+    "(Anima + SAM3 + MIT + PE + 标签 DB)。文件保存于 models/ 下。",
+    "models_download_all": "全部下载 (Anima + SAM3 + MIT + PE + 标签 DB)",
     "models_download": "下载",
     "models_redownload": "重新下载",
     "models_installed": "✓ 已安装",
@@ -476,6 +551,7 @@ STRINGS: dict[str, str] = {
     "model_sam3": "SAM3 — 对话气泡蒙版",
     "model_mit": "MIT — 漫画文字蒙版",
     "model_pe": "PE-Core-L14-336 — 视觉编码器 (CMMD 验证 / DCW)",
+    "model_danbooru_tags": "Danbooru 标签 DB — 标注顺序校正",
     # HuggingFace 认证（模型对话框）
     "models_hf_token_placeholder": "粘贴你的 HuggingFace 令牌 (hf_…)",
     "models_hf_authenticate": "认证",
@@ -539,7 +615,24 @@ STRINGS: dict[str, str] = {
     "merge_pick_out": "另存为合并后的 DiT...",
     "browse": "浏览……",
     # Multi-scale target_res tiers
+    "target_res_bucket_tooltip": "在 {edge}px 档位中仅使用此 bucket 分辨率进行预处理。全部不选则使用所选档位的所有 bucket。",
     "target_res_danger_tooltip": "高开销档位：{edge}px 每张图像约使用 {tokens} 个 token，并额外增加一张已编译的块图（编译更慢、显存更高）。仅在确实需要该分辨率时才启用。",
+    "resize_crop_anchor": "Resize 裁剪位置:",
+    "resize_crop_anchor_tip": "cover resize 后裁剪到 target bucket 时，选择保留哪个方向。",
+    "resize_crop_anchor_top_left": "左上",
+    "resize_crop_anchor_top": "上",
+    "resize_crop_anchor_top_right": "右上",
+    "resize_crop_anchor_left": "左",
+    "resize_crop_anchor_center": "居中",
+    "resize_crop_anchor_right": "右",
+    "resize_crop_anchor_bottom_left": "左下",
+    "resize_crop_anchor_bottom": "下",
+    "resize_crop_anchor_bottom_right": "右下",
+    "resize_crop_margins": "Resize 边距:",
+    "resize_crop_margin_top": "上",
+    "resize_crop_margin_right": "右",
+    "resize_crop_margin_bottom": "下",
+    "resize_crop_margin_left": "左",
     # TensorBoard panel
     "tb_panel_title": "TensorBoard 运行列表",
     "tb_open": "打开 TensorBoard",

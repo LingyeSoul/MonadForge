@@ -48,9 +48,9 @@ use_ortho = true
 #     per-layer when m·r overflows a Linear's width. m=1 = canonical r-slice.
 #   chimera_expert_diag: per-expert (K, r) trainable diagonal σ (the singular
 #     spectrum the orthogonal-only path lacks). ΔW=0 at init still holds.
-# bench/chimera_expert_capacity: subspace freedom (m=2) is the big lever
+# bench/chimera (expert_capacity probe): subspace freedom (m=2) is the big lever
 # (×700 reach on an off-slice target); diag alone is a minor ×1.15.
-chimera_expert_basis_mult = 2
+chimera_expert_basis_mult = 4
 chimera_expert_diag = true
 
 # use_timestep_mask = true

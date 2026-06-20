@@ -30,10 +30,11 @@ save_every_n_epochs = 3
 checkpointing_epochs = 3
 
 use_shuffled_caption_variants = true
+# use_randomized_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-output_name = "anima_repa_MA_tenth"
+output_name = "anima_tenth_repa_corrected"
 # sigmoid_bias = 0.5
 # path_pattern = "channel_(caststation)/*"
 
@@ -185,7 +186,7 @@ repa_spatial_norm = false
 # plateaus by ~18% of the run (anima_repa_normed_quarter, 2026-06-12).
 # repa_anneal_steps = 0.25
 
-# REPA-DoG (docs/proposal/repa_dog_target.md) — band-pass the alignment TARGET
+# REPA-DoG (_archive/proposals/repa_dog_target.md) — band-pass the alignment TARGET
 # before the Gram match, generalizing spatial_norm's DC removal to a broader
 # low-band strip (arXiv:2603.14645v1 §3.5). When on it REPLACES the spatial_norm
 # block (DoG at σ₁→0 *is* DC removal — same family, mutually exclusive). Pure
