@@ -585,13 +585,19 @@ def main():
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
         apply_single_prompt_slice(dataset, cfg.single_prompt_idx, logger=logger)
 
+    # Bucket-grouped batch sampler (mirrors distill_mod): every batch is one
+    # resolution — free-fit gives each image its own token count, so a
+    # cross-resolution batch can't stack. Batch ORDER is shuffled per epoch,
+    # seeded by cfg.seed, which activates the data-order axis of the training
+    # lottery (init + per-step noise already ride cfg.seed via manual_seed). The
+    # largest-token bucket is pinned first for compile warmup
+    # ([[project_compile_context_vram_climb]]). Supersedes the old shuffle=False
+    # path — bucket grouping is enforced by the sampler, not by on-disk order.
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=cfg.batch_size,
-        shuffle=False,  # bucket-grouped
+        batch_sampler=dataset.make_batch_sampler(shuffle=True, seed=cfg.seed),
         num_workers=2,
         pin_memory=True,
-        drop_last=True,
         collate_fn=make_collate(),
     )
 
