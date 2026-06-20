@@ -72,14 +72,18 @@ def count_pending_latents(
     cache_dir: Path | None = None,
     recursive: bool = False,
     path_pattern: str | None = None,
+    overwrite: bool = False,
 ) -> tuple[int, int]:
     """Return ``(pending, total)`` latent caches **without loading the VAE**.
 
     ``pending`` is the number of images whose ``(W, H)`` latent isn't already
     on disk; ``total`` is every enumerated image. Mirrors the per-resolution
     skip in :func:`cache_latents`, so the entry point can skip the (slow) VAE
-    load entirely when ``pending == 0``. Reads only NPZ headers (no decode)."""
+    load entirely when ``pending == 0``. Reads only NPZ headers (no decode).
+    With ``overwrite`` every enumerated image counts as pending."""
     image_files = walk_images(data_dir, recursive=recursive, pattern=path_pattern)
+    if overwrite:
+        return len(image_files), len(image_files)
     pending = 0
     for (w, h), paths in group_by_shape(image_files).items():
         for p in paths:
@@ -97,6 +101,7 @@ def _decode_batch(
     h: int,
     cache_dir: Path | None,
     data_dir: Path,
+    overwrite: bool = False,
 ) -> tuple[
     list[Path],
     list[tuple[Path, str]],
@@ -119,7 +124,7 @@ def _decode_batch(
         npz_path = get_latents_npz_path(
             p, (w, h), cache_dir=cache_dir, image_dir=data_dir
         )
-        if _latent_cached(npz_path, w, h):
+        if not overwrite and _latent_cached(npz_path, w, h):
             skipped.append(p)
             continue
         try:
@@ -161,11 +166,15 @@ def cache_latents(
     batch_size: int = 4,
     progress: ProgressFn | None = None,
     io_workers: int | None = None,
+    overwrite: bool = False,
 ) -> PreprocessStats:
     """Encode every image under ``data_dir`` through ``vae`` → latent NPZs.
 
     ``vae`` is supplied loaded + on-device (``device``/``dtype`` are read off
-    it). Returns counts; pass ``progress`` for a per-image bar.
+    it). Returns counts; pass ``progress`` for a per-image bar. With
+    ``overwrite`` the per-resolution skip is bypassed and every (W,H) latent is
+    re-encoded (the matching ``latents_{H}x{W}`` key is replaced in place,
+    other-resolution keys preserved).
 
     The VAE forward stays serial on the calling thread (single GPU stream); the
     per-batch disk decode + image transform and the npz read-modify-write are
@@ -197,7 +206,9 @@ def cache_latents(
         if b is None:
             return False
         w, h, bp = b
-        decode_q.append(decode_ex.submit(_decode_batch, bp, w, h, cache_dir, data_dir))
+        decode_q.append(
+            decode_ex.submit(_decode_batch, bp, w, h, cache_dir, data_dir, overwrite)
+        )
         return True
 
     with (

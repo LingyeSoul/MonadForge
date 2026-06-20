@@ -79,6 +79,15 @@ def main() -> None:
             "fnmatch glob. Use | to separate alternatives. Default: *"
         ),
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Re-encode every latent even if its (W,H) cache already exists. Use "
+            "after a VAE / encode-dtype change, which the per-resolution skip "
+            "can't detect (existing caches are otherwise skipped)."
+        ),
+    )
     args = parser.parse_args()
 
     from library.models import qwen_vae as qwen_image_autoencoder_kl
@@ -92,6 +101,7 @@ def main() -> None:
         cache_dir=cache_dir,
         recursive=args.recursive,
         path_pattern=args.path_pattern,
+        overwrite=args.overwrite,
     )
     if pending == 0:
         print(f"Latent caching: all {total} images already cached — skipping VAE load.")
@@ -124,6 +134,7 @@ def main() -> None:
         path_pattern=args.path_pattern,
         batch_size=args.batch_size,
         progress=tqdm_progress("Caching latents"),
+        overwrite=args.overwrite,
     )
     print(
         f"\nLatent caching complete: {stats.written} cached, "

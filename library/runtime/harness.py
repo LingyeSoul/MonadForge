@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -523,6 +524,38 @@ def _apply_activation_memory_budget(
         )
 
 
+def _apply_cudagraph_skip_dynamic(mode: Optional[str], *, logger: logging.Logger = log) -> None:
+    """Opt-in: skip CUDAGraph capture for dynamic-shape graphs (env toggle).
+
+    Under ``mode='reduce-overhead'`` inductor records a fresh CUDAGraph per
+    distinct input size. Free-fit's native-shape bucketing populates many
+    distinct seq lengths per tier, so inductor records one graph per size
+    (the "observed N distinct sizes" warning) — each pinning its own static
+    I/O buffers in the cudagraph pool, which fights the OOM the partitioner
+    budget is already managing. Setting
+    ``triton.cudagraph_skip_dynamic_graphs=True`` keeps CUDAGraphs only for
+    fully-static graphs and runs the dynamic-seq blocks as ordinary inductor
+    launches. Env-gated so it's a clean A/B against plain ``reduce-overhead``;
+    a no-op unless cudagraphs are actually active (reduce-overhead /
+    max-autotune).
+    """
+    if os.environ.get("ANIMA_CUDAGRAPH_SKIP_DYNAMIC", "0") not in ("1", "true", "True"):
+        return
+    if mode not in ("reduce-overhead", "max-autotune"):
+        logger.info(
+            "ANIMA_CUDAGRAPH_SKIP_DYNAMIC set but mode=%r has no cudagraphs — no-op",
+            mode,
+        )
+        return
+    import torch._inductor.config as _inductor_config
+
+    _inductor_config.triton.cudagraph_skip_dynamic_graphs = True
+    logger.info(
+        "cudagraph_skip_dynamic_graphs = True "
+        "(dynamic-seq blocks run as inductor launches; cudagraphs only for static graphs)"
+    )
+
+
 def compile_blocks_for_training(
     unet: object,
     network: object,
@@ -568,6 +601,7 @@ def compile_blocks_for_training(
     _apply_activation_memory_budget(
         activation_memory_budget, grad_ckpt=grad_ckpt, logger=logger
     )
+    _apply_cudagraph_skip_dynamic(mode, logger=logger)
     isolate_compile_cache(
         compile_signature(
             n_token_families=n_token_families,
