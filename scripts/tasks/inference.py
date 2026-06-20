@@ -285,14 +285,36 @@ def cmd_test_easycontrol(extra):
       REF_IMAGE=manga.png EASYADAPTER=colorize python tasks.py test-easycontrol
     """
     adapter = (os.environ.get("EASYADAPTER") or "").strip()
-    is_colorize = adapter == "colorize"
-    weight_name = "anima_colorize" if is_colorize else "anima_easycontrol"
-    out_sub = "colorize" if is_colorize else "easycontrol"
-    ref_fallback_dir = (
-        ROOT / "post_image_dataset" / "resized"
-        if is_colorize
-        else ROOT / "easycontrol-dataset"
-    )
+    # Per-adapter inference table: weight prefix, output subdir, ref fallback dir,
+    # and whether to default to an empty prompt. The default (ref==target) row is
+    # used when EASYADAPTER is unset or unknown.
+    _DEFAULT = {
+        "weight": "anima_easycontrol",
+        "out": "easycontrol",
+        "ref_dir": ROOT / "easycontrol-dataset",
+        "empty_prompt": False,
+    }
+    _ADAPTERS = {
+        # colorize: feed a real B&W manga page; empty prompt → caption-free colorize.
+        "colorize": {
+            "weight": "anima_colorize",
+            "out": "colorize",
+            "ref_dir": ROOT / "post_image_dataset" / "resized",
+            "empty_prompt": True,
+        },
+        # inpaint: the ref is the already-masked (gray-holed) PNG; a caption steers
+        # the fill, so don't force an empty prompt.
+        "inpaint": {
+            "weight": "anima_inpaint",
+            "out": "inpaint",
+            "ref_dir": ROOT / "post_image_dataset" / "resized",
+            "empty_prompt": False,
+        },
+    }
+    spec = _ADAPTERS.get(adapter, _DEFAULT)
+    weight_name = spec["weight"]
+    out_sub = spec["out"]
+    ref_fallback_dir = spec["ref_dir"]
 
     ref_image = os.environ.get("REF_IMAGE", "").strip()
     if not ref_image and extra and not extra[0].startswith("-"):
@@ -326,8 +348,8 @@ def cmd_test_easycontrol(extra):
         args += ["--easycontrol_scale", scale]
     if prompt := os.environ.get("PROMPT"):
         args += ["--prompt", prompt]
-    elif is_colorize and not any(a == "--prompt" for a in extra):
-        # caption-free default for colorization (empty prompt → uncond text path)
+    elif spec["empty_prompt"] and not any(a == "--prompt" for a in extra):
+        # caption-free default (empty prompt → uncond text path), e.g. colorize
         args += ["--prompt", ""]
     if neg := os.environ.get("NEG"):
         args += ["--negative_prompt", neg]

@@ -465,14 +465,21 @@ def cache_text_embeddings(
             if labels == [""]:
                 # Legacy single-caption layout: flat (unsuffixed) keys.
                 save_dict = {
-                    "prompt_embeds": prompt_embeds[flat],
-                    "attn_mask": attn_mask[flat],
-                    "t5_input_ids": t5_input_ids[flat],
                     "t5_attn_mask": t5_attn_mask[flat],
                     "caption_dropout_rate": caption_dropout_rate,
                 }
                 if crossattn_emb is not None:
+                    # Adapter-output cache: only crossattn_emb is consumed at
+                    # train time (+ t5_attn_mask for postfix). The Qwen
+                    # prompt_embeds / attn_mask / t5_input_ids are unused
+                    # downstream (see library/training/forward/text_conds.py),
+                    # so dropping them ~halves the file. The pad length is
+                    # unchanged (512), so crossattn values are bit-identical.
                     save_dict["crossattn_emb"] = crossattn_emb[flat]
+                else:
+                    save_dict["prompt_embeds"] = prompt_embeds[flat]
+                    save_dict["attn_mask"] = attn_mask[flat]
+                    save_dict["t5_input_ids"] = t5_input_ids[flat]
                 detail = img_path.name
             else:
                 n_v = sum(1 for label in labels if label.startswith("v"))
@@ -488,12 +495,19 @@ def cache_text_embeddings(
                     save_dict["num_randomized"] = torch.tensor(n_r, dtype=torch.int64)
                 for off, (label, _) in enumerate(rows):
                     k = flat + off
-                    save_dict[f"prompt_embeds_{label}"] = prompt_embeds[k]
-                    save_dict[f"attn_mask_{label}"] = attn_mask[k]
-                    save_dict[f"t5_input_ids_{label}"] = t5_input_ids[k]
                     save_dict[f"t5_attn_mask_{label}"] = t5_attn_mask[k]
                     if crossattn_emb is not None:
+                        # Adapter-output cache: prune the unused Qwen
+                        # prompt_embeds / attn_mask / t5_input_ids (~half the
+                        # file). Only crossattn_emb (+ t5_attn_mask for postfix)
+                        # is read at train time — see
+                        # library/training/forward/text_conds.py. 512-pad kept,
+                        # so crossattn is bit-identical to the legacy layout.
                         save_dict[f"crossattn_emb_{label}"] = crossattn_emb[k]
+                    else:
+                        save_dict[f"prompt_embeds_{label}"] = prompt_embeds[k]
+                        save_dict[f"attn_mask_{label}"] = attn_mask[k]
+                        save_dict[f"t5_input_ids_{label}"] = t5_input_ids[k]
                 detail = f"{img_path.name} ({n_v}v" + (f"+{n_r}r)" if n_r else ")")
 
             save_file(save_dict, str(cache_path))

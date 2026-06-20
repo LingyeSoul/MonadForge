@@ -1082,7 +1082,7 @@ class AnimaTrainer:
 
         if (
             len(text_encoder_conds) == 0
-            or text_encoder_conds[0] is None
+            or all(c is None for c in text_encoder_conds)
             or train_text_encoder
         ):
             with (
