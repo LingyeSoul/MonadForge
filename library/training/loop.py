@@ -255,8 +255,19 @@ def build_loop_state(
 
     clean_memory_on_device(accelerator.device)
 
+    # Use the ABSOLUTE step range so the bar shows ``global_step /
+    # max_train_steps`` on both a fresh run and a resume. The training loop
+    # calls ``progress_bar.update(1)`` once per optimizer step and
+    # ``global_step`` is seeded with the resume offset above, so starting the
+    # iterator at ``initial=global_step`` keeps tqdm's internal ``n`` in lock
+    # step with ``global_step``. Without this, the bar sized itself to
+    # ``max_train_steps - global_step`` (the remaining count) while the JSONL
+    # progress sink logged the absolute ``global_step`` — the WebUI's two
+    # metric channels (stdout tqdm parser vs JSONL) then raced on ``step`` /
+    # ``total_steps`` and produced impossible reads like ``172/138``.
     progress_bar = tqdm(
-        range(args.max_train_steps - global_step),
+        range(args.max_train_steps),
+        initial=global_step,
         smoothing=0,
         disable=not accelerator.is_local_main_process,
         desc="steps",

@@ -805,7 +805,14 @@ async function wipeAndTrain() {
   try {
     const stateDir = checkpointInfo.value.state_dir
     const stateDirName = stateDir.split(/[/\\]/).pop() || ''
-    const outputName = stateDirName.replace('-checkpoint-state', '')
+    // A resumable state dir is named ``<output_name>-checkpoint-state`` (the
+    // mid-training snapshot written by ``checkpointing_epochs``) OR
+    // ``<output_name>-state`` (the end-of-training snapshot written by
+    // ``save_state_on_train_end``). Strip whichever suffix is present so the
+    // backend gets the real output_name; otherwise the end-state dir is never
+    // matched and the "wipe" silently no-ops (training resumes anyway).
+    const outputName =
+      stateDirName.replace(/-checkpoint-state$/, '').replace(/-state$/, '')
     const outputDir = stateDir.replace(/[/\\][^/\\]+$/, '').replace(/\\/g, '/')
 
     await fetch('/api/config/wipe-checkpoint', {
