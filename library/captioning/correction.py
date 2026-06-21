@@ -234,9 +234,12 @@ def correct_caption(
     unknown: list[str] = []
     seen: set[str] = set()
     trigger = options.trigger_word.strip()
+    trigger_key = tag_key(trigger) if trigger else ""
 
     for tag in tags:
         key = tag_key(tag)
+        if trigger and key == trigger_key:
+            continue
         if key in seen:
             continue
         seen.add(key)

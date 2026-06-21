@@ -1030,12 +1030,17 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
             env.update(self._preprocess_tab.preprocess_env())
         return env
 
-    def _chain_train_spec(self, variant: str) -> dict[str, str]:
-        return {
+    def _chain_train_spec(
+        self, variant: str, *, config_snapshot: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        spec: dict[str, Any] = {
             "method": variant,
             "preset": self._IMPLICIT_PRESET,
             "methods_subdir": "gui-methods",
         }
+        if config_snapshot is not None:
+            spec["config_snapshot"] = config_snapshot
+        return spec
 
     @staticmethod
     def _normalize_path_scope(scope: Any) -> str | None:
@@ -1147,6 +1152,18 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
 
         return _clean(snapshot)
 
+    def _preprocess_config_snapshot(self, variant: str) -> dict[str, Any]:
+        """Config snapshot for the queued preprocess command.
+
+        Training snapshots intentionally strip preprocess-only keys, including
+        source_image_dir. Preprocess still needs the scoped source path, so use
+        the Preprocess tab's own snapshot when available.
+        """
+        if self._preprocess_tab is not None:
+            return self._preprocess_tab.preprocess_config_snapshot()
+        merged, _ = merged_gui_variant_preset(variant, self._IMPLICIT_PRESET)
+        return self._gui_scoped_paths(copy.deepcopy(merged))
+
     def _launch_preprocess(self, variant: str) -> None:
         """Submit the auto-chain preprocess step to the daemon (Phase 2).
 
@@ -1192,7 +1209,12 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         # succeeds — the chain then completes even if the GUI closes mid-cache.
         # The spec also tags this command job as *this tab's* preprocess, so
         # ConfigTab re-claims it on reopen and the PreprocessingTab leaves it be.
-        chain_train = self._chain_train_spec(variant) if chain_after else None
+        train_snapshot = self._queue_config_snapshot(variant)
+        chain_train = (
+            self._chain_train_spec(variant, config_snapshot=train_snapshot)
+            if chain_after
+            else None
+        )
 
         def _on_fail():
             self._chain_train_after_preprocess = False
@@ -1204,7 +1226,7 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
                 argv=["tasks.py", "preprocess"],
                 extra_env=self._preprocess_env(variant),
                 chain_train=chain_train,
-                config_snapshot=self._queue_config_snapshot(variant),
+                config_snapshot=self._preprocess_config_snapshot(variant),
                 start=True,  # main Train auto-chain: run now
             ),
             on_fail=_on_fail,
@@ -1347,13 +1369,21 @@ class ConfigTab(DaemonJobMixin, DirtyTrackingMixin, QWidget):
         queued_key = (
             "queue_added_preprocess" if train_after else "queue_added_preprocess_only"
         )
+        train_snapshot = self._queue_config_snapshot(variant, merged)
+        preprocess_snapshot = self._preprocess_config_snapshot(variant)
+        chain_train = (
+            self._chain_train_spec(variant, config_snapshot=train_snapshot)
+            if train_after
+            else None
+        )
+
         job_id = self._submit_job(
             lambda: gui_daemon.submit_command(
                 label="preprocess",
                 argv=["tasks.py", "preprocess"],
                 extra_env=self._preprocess_env(variant),
-                chain_train=self._chain_train_spec(variant) if train_after else None,
-                config_snapshot=self._queue_config_snapshot(variant, merged),
+                chain_train=chain_train,
+                config_snapshot=preprocess_snapshot,
                 start=False,  # queue dropdown: add to queue, don't start now
             )
         )
