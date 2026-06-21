@@ -1458,33 +1458,6 @@ def _make_patched_block_forward(
                     cond_adaln_lora,
                     cond_rope,
                 )
-            elif block.cpu_offload_checkpointing:
-                # cpu_offload variant moves activations to CPU on save and
-                # back on recompute. Mirrors Block.forward.
-                from library.anima.models import to_device, to_cpu
-
-                def _custom_forward(*inputs):
-                    device = next(
-                        t.device for t in inputs if isinstance(t, torch.Tensor)
-                    )
-                    device_inputs = to_device(inputs, device)
-                    outputs = inner(*device_inputs)
-                    return to_cpu(outputs)
-
-                target_x_out, cond_x_out = torch_checkpoint(
-                    _custom_forward,
-                    x_B_T_H_W_D,
-                    emb_B_T_D,
-                    crossattn_emb,
-                    attn_params,
-                    rope_cos_sin,
-                    adaln_lora_B_T_3D,
-                    cond_x_in,
-                    cond_emb,
-                    cond_adaln_lora,
-                    cond_rope,
-                    use_reentrant=False,
-                )
             else:
                 target_x_out, cond_x_out = torch_checkpoint(
                     inner,

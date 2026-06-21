@@ -21,7 +21,7 @@ Usage::
 
 ``build_anima`` reads its knobs off an argparse ``Namespace`` (``device`` /
 ``dtype`` / ``attn_mode`` / ``gradient_checkpointing`` /
-``cpu_offload_checkpointing`` / ``compile`` / ``compile_mode``); the matching
+``compile`` / ``compile_mode``); the matching
 parser surface lives in ``library.runtime.cli.add_device_args`` +
 ``bench._anima.add_common_args``. Callers without a parser can pass a plain
 ``argparse.Namespace(**kwargs)``.
@@ -83,7 +83,7 @@ def build_anima(
         args: argparse namespace populated by ``add_device_args`` /
             ``bench._anima.add_common_args``. Reads ``device``, ``dtype``,
             ``attn_mode``, ``gradient_checkpointing``,
-            ``cpu_offload_checkpointing``, ``compile``, ``compile_mode``.
+            ``compile``, ``compile_mode``.
         dit_path: Path to the base DiT safetensors. Defaults to
             ``args.dit`` if the caller's argparse exposed one.
         adapter: Optional adapter safetensors path. When set, the adapter
@@ -171,10 +171,8 @@ def build_anima(
     # Grad checkpointing is gated on anima.training (see models.py); set the
     # flag here but its effect requires train_mode below.
     if getattr(args, "gradient_checkpointing", False):
-        cpu_off = getattr(args, "cpu_offload_checkpointing", False)
-        suffix = " (cpu offload)" if cpu_off else ""
-        log.info(f"enabling gradient checkpointing{suffix}")
-        anima.enable_gradient_checkpointing(cpu_offload=cpu_off)
+        log.info("enabling gradient checkpointing")
+        anima.enable_gradient_checkpointing()
 
     if train_mode:
         anima.train()
@@ -524,7 +522,9 @@ def _apply_activation_memory_budget(
         )
 
 
-def _apply_cudagraph_skip_dynamic(mode: Optional[str], *, logger: logging.Logger = log) -> None:
+def _apply_cudagraph_skip_dynamic(
+    mode: Optional[str], *, logger: logging.Logger = log
+) -> None:
     """Opt-in: skip CUDAGraph capture for dynamic-shape graphs (env toggle).
 
     Under ``mode='reduce-overhead'`` inductor records a fresh CUDAGraph per

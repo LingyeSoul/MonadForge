@@ -262,21 +262,12 @@ class AnimaTrainer:
             "network for Text Encoder cannot be trained with caching Text Encoder outputs"
         )
 
-        assert (
-            args.blocks_to_swap is None or args.blocks_to_swap == 0
-        ) or not args.cpu_offload_checkpointing, (
-            "blocks_to_swap is not supported with cpu_offload_checkpointing"
-        )
-
         if args.unsloth_offload_checkpointing:
             if not args.gradient_checkpointing:
                 logger.warning(
                     "unsloth_offload_checkpointing is enabled, so gradient_checkpointing is also enabled"
                 )
                 args.gradient_checkpointing = True
-            assert not args.cpu_offload_checkpointing, (
-                "Cannot use both --unsloth_offload_checkpointing and --cpu_offload_checkpointing"
-            )
             assert args.blocks_to_swap is None or args.blocks_to_swap == 0, (
                 "blocks_to_swap is not supported with unsloth_offload_checkpointing"
             )
@@ -507,7 +498,7 @@ class AnimaTrainer:
         # construction rather than by luck.
 
         # Store unsloth preference so that when the base trainer calls
-        # dit.enable_gradient_checkpointing(cpu_offload=...), we can override to use unsloth.
+        # dit.enable_gradient_checkpointing(), we can override to use unsloth.
         self._use_unsloth_offload_checkpointing = args.unsloth_offload_checkpointing
 
         # Block swap
@@ -1670,10 +1661,7 @@ class AnimaTrainer:
             )
 
         if args.gradient_checkpointing:
-            if args.cpu_offload_checkpointing:
-                unet.enable_gradient_checkpointing(cpu_offload=True)
-            else:
-                unet.enable_gradient_checkpointing()
+            unet.enable_gradient_checkpointing()
 
             for t_enc, flag in zip(
                 text_encoders, self.get_text_encoders_train_flags(args, text_encoders)

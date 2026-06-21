@@ -244,8 +244,7 @@ def main() -> None:
     # activations during backward — exactly what the taps need. It's gated on
     # anima.training, so train_mode=True; the DiT has no train-only stochastic
     # layers (deterministic AdaLN, no dropout/BN) and its params stay frozen, so
-    # numerics are unchanged from eval. --cpu_offload_checkpointing trims further
-    # on very tight cards.
+    # numerics are unchanged from eval.
     if not getattr(args, "gradient_checkpointing", False):
         log.info("forcing gradient checkpointing (full-stack grad backprop)")
         args.gradient_checkpointing = True

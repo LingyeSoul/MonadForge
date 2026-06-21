@@ -276,21 +276,18 @@ def selective_block_grad_ckpt(model: Anima):
     saved = [
         (
             b.gradient_checkpointing,
-            b.cpu_offload_checkpointing,
             b.unsloth_offload_checkpointing,
         )
         for b in model.blocks
     ]
     for b in model.blocks:
         b.gradient_checkpointing = True
-        b.cpu_offload_checkpointing = False
         b.unsloth_offload_checkpointing = True
     try:
         yield
     finally:
-        for b, (g, c, u) in zip(model.blocks, saved):
+        for b, (g, u) in zip(model.blocks, saved):
             b.gradient_checkpointing = g
-            b.cpu_offload_checkpointing = c
             b.unsloth_offload_checkpointing = u
 
 
