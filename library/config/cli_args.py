@@ -410,7 +410,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=str,
         default="bf16",
         choices=["no", "fp16", "bf16"],
-        help="use mixed precision (Anima trains in bf16; fp16/no are untested)",
+        help="use mixed precision. Anima trains in bf16 (the default). fp16 is "
+        "supported on GPUs without native bf16 (e.g. V100): the DiT residual "
+        "stream exceeds fp16's 65504 range, so fp16 auto-enables fp32 residual "
+        "accumulation (matmuls stay fp16) to avoid NaN. 'no' runs fp32.",
     )
     parser.add_argument(
         "--logging_dir",

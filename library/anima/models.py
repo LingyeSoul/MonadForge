@@ -1006,6 +1006,11 @@ class FinalLayer(nn.Module):
             torch.nn.init.zeros_(self.adaln_modulation[1].weight)
 
         self.layer_norm.reset_parameters()
+        # fp16-safe AdaLN modulation (mirror of Block.fp32_residual): the final
+        # layer runs on the already-large residual stream, so the
+        # ``norm(x)*(1+scale)+shift`` modulate can exceed fp16's 65504 ceiling
+        # before the unpatchify linear. Inert (False) by default.
+        self.fp32_residual = False
 
     def forward(
         self,
@@ -1025,10 +1030,23 @@ class FinalLayer(nn.Module):
         shift_B_T_1_1_D = shift_B_T_D[:, :, None, None, :]
         scale_B_T_1_1_D = scale_B_T_D[:, :, None, None, :]
 
-        x_B_T_H_W_D = (
-            self.layer_norm(x_B_T_H_W_D) * (1 + scale_B_T_1_1_D) + shift_B_T_1_1_D
-        )
-        x_B_T_H_W_O = self.linear(x_B_T_H_W_D)
+        if self.fp32_residual:
+            # The final layer runs on the already-large residual stream; the
+            # ``norm(x)*(1+scale)+shift`` modulate is computed in fp32 so a
+            # large scale/shift can't overflow fp16. The downstream ``linear``
+            # (unpatchify) runs under autocast, which re-casts the fp32 input
+            # into the compute dtype — so the matmul stays fp16. Branch on a
+            # plain bool → compile-safe (specialized once by dynamo).
+            normed = self.layer_norm(x_B_T_H_W_D)
+            x_modulated = (
+                normed.float() * (1.0 + scale_B_T_1_1_D.float())
+                + shift_B_T_1_1_D.float()
+            )
+        else:
+            x_modulated = (
+                self.layer_norm(x_B_T_H_W_D) * (1 + scale_B_T_1_1_D) + shift_B_T_1_1_D
+            )
+        x_B_T_H_W_O = self.linear(x_modulated)
         return x_B_T_H_W_O
 
 
@@ -1098,6 +1116,15 @@ class Block(nn.Module):
         self.cpu_offload_checkpointing = False
         self.unsloth_offload_checkpointing = False
 
+        # fp16-safe residual accumulation: the DiT residual stream can exceed
+        # fp16's 65504 ceiling late in the block stack
+        # (docs/findings/selfflow.md), so under fp16 autocast the residual adds
+        # overflow → inf → NaN. When True, each residual add runs in fp32 then
+        # casts back to the compute dtype (matmuls stay fp16). Plain bool set
+        # once at construction-time, flipped on the fp16 path — inert (False) by
+        # default so the bf16/fp32 paths are bit-exact to the legacy code.
+        self.fp32_residual = False
+
     def enable_gradient_checkpointing(
         self, cpu_offload: bool = False, unsloth_offload: bool = False
     ):
@@ -1136,6 +1163,26 @@ class Block(nn.Module):
         self.self_attn.init_weights()
         self.cross_attn.init_weights()
         self.mlp.init_weights()
+
+    def _residual_add(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+        """Residual-stream addition ``a + b`` with an fp16 overflow guard.
+
+        The DiT residual stream exceeds fp16's 65504 ceiling late in the block
+        stack (docs/findings/selfflow.md); under fp16 autocast the naive
+        ``a + b`` overflows to inf → NaN, and casting back to fp16 after the
+        add is no help — the value itself (>65504) has no fp16 representation.
+        So when ``self.fp32_residual`` is set (the fp16 path) the result is
+        kept in fp32: the residual stream stays fp32 across the block stack,
+        while every sublayer's matmuls still run fp16 under autocast (autocast
+        re-casts fp32 activations into fp16 at each ``Linear``/attention).
+
+        Compile-safe: the branch is on a plain bool (specialized once by
+        dynamo, like ``_native_flatten``), not a tensor value — no guard churn
+        and no data-dependent control flow inside the compiled ``_forward``.
+        """
+        if not self.fp32_residual:
+            return a + b
+        return a.float() + b.float()
 
     def _forward(
         self,
@@ -1199,7 +1246,7 @@ class Block(nn.Module):
             x_flat,
             rope_cos_sin=rope_cos_sin,
         ).unflatten(1, (T, H, W))
-        x_B_T_H_W_D = x_B_T_H_W_D + gate_self_attn_B_T_1_1_D * result
+        x_B_T_H_W_D = self._residual_add(x_B_T_H_W_D, gate_self_attn_B_T_1_1_D * result)
 
         normalized_x = _adaln_fn(
             x_B_T_H_W_D,
@@ -1213,13 +1260,15 @@ class Block(nn.Module):
             crossattn_emb,
             rope_cos_sin=rope_cos_sin,
         ).unflatten(1, (T, H, W))
-        x_B_T_H_W_D = result * gate_cross_attn_B_T_1_1_D + x_B_T_H_W_D
+        x_B_T_H_W_D = self._residual_add(
+            result * gate_cross_attn_B_T_1_1_D, x_B_T_H_W_D
+        )
 
         normalized_x = _adaln_fn(
             x_B_T_H_W_D, self.layer_norm_mlp, scale_mlp_B_T_1_1_D, shift_mlp_B_T_1_1_D
         )
         result = self.mlp(normalized_x)
-        x_B_T_H_W_D = x_B_T_H_W_D + gate_mlp_B_T_1_1_D * result
+        x_B_T_H_W_D = self._residual_add(x_B_T_H_W_D, gate_mlp_B_T_1_1_D * result)
 
         return x_B_T_H_W_D
 
@@ -1358,6 +1407,11 @@ class Anima(nn.Module):
         # the block graph on token count alone, not H/W separately. Eager forwards
         # leave it False and skip the reshape (bit-exact to the flattened path).
         self._native_flatten: bool = False
+
+        # fp16-safe residual accumulation (flipped on by enable_fp32_residual()).
+        # Propagates to every Block + FinalLayer; the compiled _forward specializes
+        # on the per-Block bool once (no guard churn). Inert on bf16/fp32.
+        self._fp32_residual_enabled: bool = False
 
         # Dynamic-seq compile: when True, marks the seq-length axis dynamic to
         # collapse the per-token-count graphs to one; _dynamic_seq_range is the
@@ -1531,6 +1585,30 @@ class Anima(nn.Module):
     def disable_gradient_checkpointing(self):
         for block in self.blocks:
             block.disable_gradient_checkpointing()
+
+    def enable_fp32_residual(self) -> None:
+        """Promote the DiT residual stream to fp32-safe accumulation.
+
+        The Anima DiT residual stream exceeds fp16's 65504 ceiling late in the
+        block stack (docs/findings/selfflow.md), so under fp16 autocast the
+        Block residual adds and the FinalLayer AdaLN modulate overflow to
+        inf → NaN from step 0 (V100 has no native bf16, so the ``bf16``
+        default silently runs fp32 autocast; users pick fp16 for the matmul
+        speedup). This keeps the residual stream in fp32 across the block
+        stack; the sublayer matmuls still run fp16 because autocast re-casts
+        fp32 activations into fp16 at each ``Linear``/attention. Values
+        >65504 have no fp16 representation, so the residual must stay fp32
+        (not cast back) until a downstream matmul picks it up.
+
+        Inert on bf16 (default) / fp32: the per-module ``fp32_residual`` bool
+        is set once at construction and stays False unless this flips it, so
+        the default path is bit-exact to the legacy code. Plain bool →
+        compile-safe (specialized once by dynamo, no data-dependent branch).
+        """
+        self._fp32_residual_enabled = True
+        for block in self.blocks:
+            block.fp32_residual = True
+        self.final_layer.fp32_residual = True
 
     def compile_blocks(
         self,

@@ -1862,6 +1862,21 @@ class AnimaTrainer:
 
         unet.requires_grad_(False)
         unet.to(dtype=unet_weight_dtype)
+
+        # fp16 overflow guard: the DiT residual stream exceeds fp16's 65504
+        # ceiling late in the block stack (docs/findings/selfflow.md), so fp16
+        # autocast overflows to inf → NaN from step 0. Promote the residual
+        # adds + final-layer AdaLN modulate to fp32 (matmuls stay fp16 for the
+        # V100 speedup). No-op on bf16 (default) / fp32 — the per-module
+        # ``fp32_residual`` bool stays False unless this flips it.
+        if args.mixed_precision == "fp16" and isinstance(unet, anima_models.Anima):
+            unet.enable_fp32_residual()
+            logger.info(
+                "fp16 mixed precision: enabled fp32 residual accumulation "
+                "(DiT residual stream exceeds fp16 range; prevents NaN). "
+                "Sublayer matmuls still run fp16 under autocast; bf16/fp32 "
+                "runs are unaffected."
+            )
         for i, t_enc in enumerate(text_encoders):
             # None when the TE was never loaded (cache_text_encoder_outputs with
             # no sample prompts / val / TE-training -- qwen3_needed=False).
