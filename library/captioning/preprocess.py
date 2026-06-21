@@ -111,7 +111,7 @@ def _sidecar_is_current(
 def write_corrected_preprocess_captions(
     source_dir: Path,
     resized_dir: Path,
-    kb: TagKnowledgeBase,
+    kb: TagKnowledgeBase | None,
     *,
     options: CaptionCorrectionOptions,
     recursive: bool = True,
@@ -134,7 +134,9 @@ def write_corrected_preprocess_captions(
     :func:`correct_caption`; pass ``correct=False`` to mirror the raw source
     caption verbatim as v0 (the variant-only path, where the user wants shuffle
     sidecars without reordering). Either way v0 is what lands in ``{stem}.txt``
-    and anchors the variant sidecar.
+    and anchors the variant sidecar. ``kb`` is only consulted when
+    ``correct=True`` — the passthrough path may pass ``None`` and skip the
+    Danbooru tag-CSV dependency entirely.
 
     When ``num_variants > 0`` each image also gets a combined ``{stem}.variants.txt``
     sidecar holding the shuffle / tag-dropout / identity-randomize draws the TE
@@ -181,7 +183,15 @@ def write_corrected_preprocess_captions(
             continue
 
         raw = src_caption.read_text(encoding="utf-8").strip()
-        corrected = correct_caption(raw, kb, options=options).text if correct else raw
+        if correct:
+            if kb is None:
+                raise ValueError(
+                    "correct=True requires a tag knowledge base "
+                    "(danbooru_tags_classified.csv)."
+                )
+            corrected = correct_caption(raw, kb, options=options).text
+        else:
+            corrected = raw
         entries.append(_Entry(src_caption, dst_caption, corrected))
 
     n_rand = _resolve_n_rand(num_variants, tag_randomize_rate)

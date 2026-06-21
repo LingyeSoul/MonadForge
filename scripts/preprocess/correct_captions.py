@@ -118,15 +118,22 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    csv_path = Path(args.tag_csv) if args.tag_csv else find_tag_csv(ROOT)
-    if csv_path is None or not csv_path.exists():
-        raise SystemExit(
-            "danbooru_tags_classified.csv not found. Run "
-            "`python tasks.py download-danbooru-tags` first."
-        )
-
     num_variants = int(args.caption_shuffle_variants or 0)
     randomize_rate = float(args.caption_tag_randomize_rate or 0.0)
+
+    # The tag KB (danbooru_tags_classified.csv) only backs bucket-reordering.
+    # The --no_correct variant-only path never touches it, so we skip the
+    # download-demanding CSV lookup entirely there.
+    kb = None
+    if not bool(args.no_correct):
+        csv_path = Path(args.tag_csv) if args.tag_csv else find_tag_csv(ROOT)
+        if csv_path is None or not csv_path.exists():
+            raise SystemExit(
+                "danbooru_tags_classified.csv not found. Run "
+                "`python tasks.py download-danbooru-tags` first."
+            )
+        kb = load_tag_knowledge_base(csv_path)
+
     # The erasure pool (identity-randomize only) needs both tokenizers. Loaded
     # tokenizer-only — no encoder weights — so this stays a light pass.
     qwen3_tokenizer = None
@@ -144,7 +151,7 @@ def main() -> None:
     stats = write_corrected_preprocess_captions(
         Path(args.src),
         Path(args.dst),
-        load_tag_knowledge_base(csv_path),
+        kb,
         options=CaptionCorrectionOptions(
             insert_no_artist=bool(args.caption_insert_no_artist),
             trigger_word=str(args.caption_trigger_word or ""),

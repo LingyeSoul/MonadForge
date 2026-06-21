@@ -199,6 +199,61 @@ def test_caption_step_missing_source_removes_sidecar(tmp_path):
     assert not variants_sidecar_path(dst / "a.png").exists()
 
 
+# ----- passthrough path needs no tag KB (variant-only) -------------------
+
+
+def test_caption_step_passthrough_accepts_none_kb(tmp_path):
+    """--no_correct path: kb=None skips the danbooru CSV dependency entirely.
+
+    Pins the fix for the bug where the CLI demanded danbooru_tags_classified.csv
+    even on the variant-only path that never reorders captions.
+    """
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    raw = "1girl, blue hair, @sincos, smile"
+    (src / "a.txt").write_text(raw, encoding="utf-8")
+    (dst / "a.png").write_bytes(b"")
+
+    random.seed(0)
+    stats = write_corrected_preprocess_captions(
+        src,
+        dst,
+        None,  # no tag KB — passthrough path must not need it
+        options=CaptionCorrectionOptions(),
+        recursive=False,
+        correct=False,
+        num_variants=4,
+        tag_dropout_rate=0.1,
+    )
+    rows = dict(read_variants_sidecar(variants_sidecar_path(dst / "a.png")))
+    assert rows["v0"] == raw  # passthrough: v0 is the raw source caption verbatim
+    assert (dst / "a.txt").read_text(encoding="utf-8") == raw
+    assert stats.variants_written == 1
+
+
+def test_caption_step_correct_without_kb_raises(tmp_path):
+    """correct=True with kb=None is a misuse, not a silent skip."""
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "a.txt").write_text("1girl, @sincos", encoding="utf-8")
+    (dst / "a.png").write_bytes(b"")
+
+    import pytest
+
+    with pytest.raises(ValueError, match="knowledge base"):
+        write_corrected_preprocess_captions(
+            src,
+            dst,
+            None,
+            options=CaptionCorrectionOptions(),
+            recursive=False,
+            correct=True,
+            num_variants=0,
+        )
+
+
 # ----- TE step encodes the sidecar verbatim -------------------------------
 
 
