@@ -904,6 +904,10 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
         self._caption_kb: TagKnowledgeBase | None = None
         self._caption_kb_source: Path | None = None
         self._caption_kb_mtime: float | None = None
+        # Per-language description KB cache (path -> (kb, mtime)), used by the
+        # tag-explanation tooltip so a translated sibling CSV doesn't clobber the
+        # base KB feeding autocomplete / caption-correct.
+        self._desc_kb_cache: dict[Path, tuple[TagKnowledgeBase, float]] = {}
         # Make sure the resident worker (and its VRAM) dies with the app.
         _app = QApplication.instance()
         if _app is not None:
@@ -1507,17 +1511,42 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
             self._caption_kb_mtime = None
         return self._caption_kb
 
+    def _describe_kb(self, csv_path: Path) -> TagKnowledgeBase | None:
+        """Load (and mtime-cache) a description KB for the tag-click tooltip."""
+        try:
+            mtime = csv_path.stat().st_mtime
+        except OSError:
+            return None
+        cached = self._desc_kb_cache.get(csv_path)
+        if cached is not None and cached[1] == mtime:
+            return cached[0]
+        try:
+            kb = load_tag_knowledge_base(csv_path)
+        except (OSError, ValueError):
+            return None
+        self._desc_kb_cache[csv_path] = (kb, mtime)
+        return kb
+
     def _on_tag_clicked(self, tag: str) -> None:
         """Show the clicked tag's KB entry as a rich tooltip at the cursor.
 
-        The tag KB (``danbooru_tags_classified.csv``) is Korean-only, so the
-        explanation view is gated to the Korean UI — in any other language the
-        tooltip would be untranslated Hangul. The autocomplete helper stays on
-        for every language (tag names / categories are language-neutral). When a
-        translated KB lands, widen this guard (see CONTRIBUTING.md §5)."""
-        if current_language() != "ko":
-            return
-        kb = self._load_caption_kb(warn=False)
+        The base tag KB (``danbooru_tags_classified.csv``) carries Korean
+        descriptions. A non-Korean UI resolves to a same-language sibling if one
+        exists, else the English ``danbooru_tags_classified.en.csv`` (shipped by
+        ``download-danbooru-tags``) — so ja/cn show English rather than
+        untranslated Hangul. We only suppress the tooltip when the sole file is
+        the Korean base. The autocomplete helper stays on for every language
+        (tag names / categories are language-neutral). See CONTRIBUTING.md §5."""
+        lang = current_language()
+        if lang == "ko":
+            kb = self._load_caption_kb(warn=False)
+        else:
+            csv_path = find_tag_csv(ROOT, lang=lang)
+            # Suppress only when the resolved file is the Korean base (no
+            # translated / English sibling on disk) — that would show Hangul.
+            if csv_path is None or csv_path.name == "danbooru_tags_classified.csv":
+                return
+            kb = self._describe_kb(csv_path)
         info = kb.describe(tag) if kb is not None else None
         if info is None:
             QToolTip.showText(QCursor.pos(), t("tag_kb_unknown", tag=tag), self.cap)
