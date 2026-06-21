@@ -100,7 +100,7 @@ TOOLS = [
                 },
                 "start": {
                     "type": "boolean",
-                    "description": "true → run now (resume queue); false → enqueue but hold the queue paused; omit → leave the gate as-is.",
+                    "description": "true → run now (resume queue); false → add to queue (held for Start Queue only if the queue is idle; auto-advances behind a job that's already running); omit → leave the gate as-is.",
                 },
             },
         },
@@ -150,7 +150,7 @@ TOOLS = [
                 },
                 "start": {
                     "type": "boolean",
-                    "description": "true → run now; false → enqueue paused; omit → leave gate as-is.",
+                    "description": "true → run now; false → add to queue (held only if the queue is idle; auto-advances behind a running job); omit → leave gate as-is.",
                 },
             },
         },

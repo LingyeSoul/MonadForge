@@ -205,11 +205,20 @@ class JobManager:
     def _register_and_queue(self, job: Job, *, start: Optional[bool] = None) -> Job:
         # ``start`` controls the run gate atomically with enqueue, so there's no
         # window where a "hold this one" job could slip past the worker:
-        #   False → pause *before* the job is visible to the worker (hold it);
+        #   False → "add to queue". Hold this job for a later Start Queue ONLY
+        #           when the queue is otherwise idle (so a user can stage several
+        #           jobs before pressing Start). If a job is already running or
+        #           queued, the queue is "playing" — leave the gate alone so this
+        #           job auto-advances behind the current ones (cassette-tape
+        #           behaviour). Pausing a playing queue here was the bug that
+        #           stalled auto-advance the moment the running job finished.
         #   True  → enqueue, then resume (run now — flushes any held backlog);
         #   None  → leave the gate as-is (legacy: runs if not currently paused).
         if start is False:
-            self.pause()
+            with self._lock:
+                queue_idle = self._queue_is_idle_locked()
+            if queue_idle:
+                self.pause()
         d = config.job_dir(job.id)
         job.progress_path = str(d / "progress.jsonl")
         job.stdout_path = str(d / "stdout.log")
@@ -790,6 +799,16 @@ class JobManager:
             if job.state == STATE_RUNNING:
                 return job
         return None
+
+    def _queue_is_idle_locked(self) -> bool:
+        """True when no job is running or waiting to run — the worker is parked
+        on an empty queue. Used to decide whether an ``add to queue`` submission
+        should hold the gate (idle → stage it) or leave the gate alone (a job is
+        already playing → let the new one auto-advance behind it). The
+        just-submitted job is not in ``_jobs`` yet when this is consulted."""
+        return not any(
+            job.state in (STATE_QUEUED, STATE_RUNNING) for job in self._jobs.values()
+        )
 
     def active_job(self) -> Optional[Job]:
         """The currently-running job, if any (lock-safe public accessor)."""
