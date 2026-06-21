@@ -1179,6 +1179,42 @@ class Block(nn.Module):
             return a + b
         return a.float() + b.float()
 
+    def _gated_residual_add(
+        self,
+        residual: torch.Tensor,
+        gate: torch.Tensor,
+        branch: torch.Tensor,
+    ) -> torch.Tensor:
+        """Residual add of a gated sublayer output, ``residual + gate * branch``.
+
+        ``_residual_add`` alone is *not* enough on the fp16 path: the
+        ``gate * branch`` product is what actually overflows. Both ``gate``
+        (a trained AdaLN modulation, can be >1) and ``branch`` (an attention /
+        MLP output at the residual magnitude) are fp16 under autocast, and
+        ``gate * branch`` is materialized in fp16 *before* it reaches
+        ``_residual_add`` — so a product past 65504 has already collapsed to
+        ``inf`` by the time the guard runs, and ``fp32 + inf = inf``. This was
+        the V100 fp16 NaN from step 0 even with the residual guard enabled
+        (V100 / sm_70 has no native bf16, so the default ``bf16`` silently
+        runs fp32 autocast; users pick fp16 for the matmul speedup).
+
+        The fix is to pull the gated product into the fp32 region: compute
+        ``gate.float() * branch.float()`` then add ``residual.float()``, all in
+        one fp32 expression. The sublayer matmuls upstream of ``branch`` still
+        run fp16 under autocast (their inputs are the LayerNorm-bounded stream,
+        which stays fp32 under autocast — only ``Linear``/matmul casts fp32→fp16).
+
+        Compile-safe for the same reason as ``_residual_add``: the branch is on
+        the plain bool ``self.fp32_residual``, specialized once by dynamo.
+
+        Inert on bf16 (default) / fp32: ``fp32_residual=False`` reproduces the
+        legacy ``residual + gate * branch`` bit-exactly (same fp16 mul + add
+        under autocast), so the production path is unchanged.
+        """
+        if not self.fp32_residual:
+            return residual + gate * branch
+        return residual.float() + gate.float() * branch.float()
+
     def _forward(
         self,
         x_B_T_H_W_D: torch.Tensor,
@@ -1241,7 +1277,9 @@ class Block(nn.Module):
             x_flat,
             rope_cos_sin=rope_cos_sin,
         ).unflatten(1, (T, H, W))
-        x_B_T_H_W_D = self._residual_add(x_B_T_H_W_D, gate_self_attn_B_T_1_1_D * result)
+        x_B_T_H_W_D = self._gated_residual_add(
+            x_B_T_H_W_D, gate_self_attn_B_T_1_1_D, result
+        )
 
         normalized_x = _adaln_fn(
             x_B_T_H_W_D,
@@ -1255,15 +1293,17 @@ class Block(nn.Module):
             crossattn_emb,
             rope_cos_sin=rope_cos_sin,
         ).unflatten(1, (T, H, W))
-        x_B_T_H_W_D = self._residual_add(
-            result * gate_cross_attn_B_T_1_1_D, x_B_T_H_W_D
+        x_B_T_H_W_D = self._gated_residual_add(
+            x_B_T_H_W_D, gate_cross_attn_B_T_1_1_D, result
         )
 
         normalized_x = _adaln_fn(
             x_B_T_H_W_D, self.layer_norm_mlp, scale_mlp_B_T_1_1_D, shift_mlp_B_T_1_1_D
         )
         result = self.mlp(normalized_x)
-        x_B_T_H_W_D = self._residual_add(x_B_T_H_W_D, gate_mlp_B_T_1_1_D * result)
+        x_B_T_H_W_D = self._gated_residual_add(
+            x_B_T_H_W_D, gate_mlp_B_T_1_1_D, result
+        )
 
         return x_B_T_H_W_D
 

@@ -67,20 +67,38 @@ on GPU for representative flag-overhead numbers.
 
 The >65504 overflow only bites on a **trained** model at **large resolution**
 with **deep** block stacks. A tiny untrained CPU fixture can't reproduce it
-without fragile scale injection (and if it could, the result would exceed
-fp16 range at the unpatchify `linear`'s autocast fp32→fp16 cast anyway — an
-unavoidable property of the dtype, not something the guard can fix).
+(CPU fp16 dispatch, default-zero AdaLN gates that don't accumulate the residual
+past 65504), so this bench stays finite on all three configs by design.
 
-The **dispositive overflow regression** is the unit test
-`tests/test_fp16_residual_safe.py::test_residual_add_unit_overflow_guard`:
-it injects a >65504 sum directly into `Block._residual_add` and asserts
-finiteness with the flag on vs inf with it off. This bench validates the
-*mechanism wires through a real multi-block forward* (flag propagation,
-dtype contract, finite output) and quantifies the speed tradeoff — not the
-overflow itself.
+The guard has two layers, each pinned by a dispositive unit test:
+
+1. **The residual add** (`Block._residual_add`):
+   `test_residual_add_unit_overflow_guard` injects a >65504 sum directly into
+   `_residual_add` and asserts finiteness with the flag on vs inf with it off.
+2. **The gated product** (`Block._gated_residual_add`): the actual V100 fp16
+   NaN from step 0 that survived the original `_residual_add` guard. `gate *
+   branch` is materialized in fp16 under autocast *before* it reaches the
+   residual add, so a product past 65504 has already collapsed to `inf` — the
+   add guard runs too late. `_gated_residual_add` pulls the product into the
+   fp32 region. `test_gated_residual_add_guards_the_product_overflow` injects a
+   >65504 `gate*branch` and asserts finiteness with the flag on; it also pins
+   the negative control that the old `_residual_add` cannot recover an
+   already-`inf` product.
+
+This bench validates the *mechanism wires through a real multi-block forward*
+(flag propagation, dtype contract, finite output) and quantifies the speed
+tradeoff — not the overflow itself.
 
 For real overflow reproduction + GPU timing, run on a V100 with a trained
 checkpoint at training resolution.
+
+> Note — the unpatchify `linear` cast is *still* outside the guard's scope:
+> if the residual stream itself is past 65504 *after* the last block, the
+> autocast fp32→fp16 cast at `FinalLayer.linear`'s matmul overflows. In
+> practice the FinalLayer `LayerNorm` collapses the residual to O(1) before
+> the modulate, so this only bites if the AdaLN `scale` is pathologically
+> large. Not observed on the trained V100 checkpoint after the gated-product
+> fix.
 
 ## Related
 

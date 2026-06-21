@@ -288,6 +288,82 @@ def test_residual_add_backward_under_fp16_autocast():
     assert b.grad.dtype == torch.float16
 
 
+def test_gated_residual_add_guards_the_product_overflow():
+    """The gate*branch product, not just the add, must stay in fp32.
+
+    This is the dispositive regression for the V100 fp16 NaN that survived the
+    original ``_residual_add`` guard: ``gate * branch`` is materialized in fp16
+    under autocast *before* it reaches ``_residual_add``, so a product past
+    65504 has already collapsed to ``inf`` and ``fp32 + inf = inf`` — the guard
+    never gets a chance. ``_gated_residual_add`` pulls the product into the
+    fp32 region so ``gate.float() * branch.float()`` is finite.
+
+    Mirrors the real block call shape: ``gate`` is a per-(B,T,1,1,D) AdaLN
+    modulation (>1 on a trained model), ``branch`` is an attention/MLP output.
+    """
+    block = Block(x_dim=64, context_dim=64, num_heads=4)
+
+    # gate=2.0 (a trained modulation), branch=0.6 * 65504 -> product = 1.2*65504
+    # overflows fp16. residual is a normal-magnitude fp16 stream.
+    shape = (1, 1, 1, 1, 64)
+    gate = torch.full(shape, 2.0, dtype=torch.float16)
+    branch = torch.full(shape, 0.6 * _FP16_MAX, dtype=torch.float16)
+    residual = torch.randn(shape, dtype=torch.float16)
+
+    # Negative control: the naive fp16 product overflows (proves the input trips
+    # fp16 on the multiply, before any add).
+    with torch.autocast("cpu", dtype=torch.float16):
+        naive_product = gate * branch
+    assert torch.isinf(naive_product).any(), "test input does not overflow fp16 on gate*branch"
+
+    # _residual_add alone CANNOT recover: the product is already inf when it
+    # arrives. This pins why the gated variant is required.
+    block.fp32_residual = True
+    with torch.autocast("cpu", dtype=torch.float16):
+        recovered_too_late = block._residual_add(residual, gate * branch)
+    assert torch.isinf(recovered_too_late).any() or torch.isnan(
+        recovered_too_late
+    ).any(), "plain _residual_add should NOT recover an already-inf product"
+
+    # The gated variant keeps the product in fp32 -> finite result.
+    with torch.autocast("cpu", dtype=torch.float16):
+        guarded = block._gated_residual_add(residual, gate, branch)
+    assert guarded.dtype == torch.float32
+    assert torch.isfinite(guarded).all(), "gated fp32 product path produced inf/nan"
+
+    # Inert parity: flag off == legacy ``residual + gate * branch`` bit-exactly.
+    block.fp32_residual = False
+    with torch.autocast("cpu", dtype=torch.float16):
+        guarded_off = block._gated_residual_add(residual, gate, branch)
+        legacy = residual + gate * branch
+    assert torch.equal(guarded_off, legacy), "inert path drifted from legacy gate*branch+residual"
+
+
+def test_gated_residual_add_backward_under_fp16_autocast():
+    """Gradients flow through _gated_residual_add's fp32 mul+add under autocast.
+
+    The ``gate.float() * branch.float() + residual.float()`` expression is
+    differentiable end-to-end; pins that the .float() upcasts don't break the
+    autograd graph and grads reach the fp16 leaves.
+    """
+    block = Block(x_dim=64, context_dim=64, num_heads=4)
+    block.fp32_residual = True
+
+    shape = (2, 1, 1, 1, 4)
+    residual = torch.full(shape, 0.2 * _FP16_MAX, dtype=torch.float16, requires_grad=True)
+    gate = torch.full(shape, 1.5, dtype=torch.float16, requires_grad=True)
+    branch = torch.full(shape, 0.2 * _FP16_MAX, dtype=torch.float16, requires_grad=True)
+
+    with torch.autocast("cpu", dtype=torch.float16):
+        out = block._gated_residual_add(residual, gate, branch)
+        loss = out.float().sum()
+    loss.backward()
+
+    for name, g in (("residual", residual.grad), ("gate", gate.grad), ("branch", branch.grad)):
+        assert g is not None and torch.isfinite(g).all(), f"{name}.grad has inf/nan"
+        assert g.dtype == torch.float16
+
+
 def test_final_layer_forward_overflow_end_to_end():
     """A real FinalLayer forward under fp16 autocast: flag wires through + dtype contract.
 
