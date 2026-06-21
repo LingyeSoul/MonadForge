@@ -1321,11 +1321,19 @@ def main():
                 # count == student_steps.
                 metadata["ss_turbo_per_step_expert"] = "1"
                 metadata["ss_turbo_step_expert_K"] = str(cfg.step_expert_K)
-            save_names = [f"{cfg.output_name}_{_step_tag(n)}"]
+            # Step-tagged intermediates live in a per-run subdir so they don't
+            # clutter output/ckpt/; the canonical bare {output_name} stays at the
+            # root where inference / merge / `make test` look for it.
+            ckpt_subdir = Path(cfg.output_dir) / cfg.output_name
+            ckpt_subdir.mkdir(parents=True, exist_ok=True)
+            save_paths = [
+                str(ckpt_subdir / f"{cfg.output_name}_{_step_tag(n)}.safetensors")
+            ]
             if is_final:
-                save_names.append(cfg.output_name)  # canonical bare name
-            for name in save_names:
-                save_path = str(Path(cfg.output_dir) / f"{name}.safetensors")
+                save_paths.append(
+                    str(Path(cfg.output_dir) / f"{cfg.output_name}.safetensors")
+                )
+            for save_path in save_paths:
                 turbo.save_student(save_path, dtype=torch.bfloat16, metadata=metadata)
                 logger.info(f"saved checkpoint: {save_path}")
 

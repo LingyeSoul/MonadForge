@@ -196,6 +196,11 @@ class ModelsDialog(_StreamingDialog):
     dropping to a terminal — required for the gated SAM3 repo.
     """
 
+    # Emitted after any successful (exit_code 0) download run so live tabs can
+    # pick up freshly-installed assets — e.g. ImageViewerTab reloading the
+    # danbooru tag KB — without an app restart.
+    models_changed = Signal()
+
     def __init__(self, parent=None):
         # (status_label, paths, button) — _after_finished refreshes every row after download-all.
         self._rows: list[tuple[QLabel, list[str], QPushButton]] = []
@@ -348,6 +353,7 @@ class ModelsDialog(_StreamingDialog):
                 t("models_failed_message", code=exit_code),
             )
         else:
+            self.models_changed.emit()
             QMessageBox.information(
                 self,
                 t("models_done_title"),
@@ -673,8 +679,11 @@ class UpdateDialog(_StreamingDialog):
 # Public helpers for app.py.
 
 
-def open_models_dialog(parent=None):
-    ModelsDialog(parent).exec()
+def open_models_dialog(parent=None, on_models_changed=None):
+    dlg = ModelsDialog(parent)
+    if on_models_changed is not None:
+        dlg.models_changed.connect(on_models_changed)
+    dlg.exec()
 
 
 def open_update_dialog(parent=None):

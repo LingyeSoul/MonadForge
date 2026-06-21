@@ -524,7 +524,11 @@ class MainWindow(QMainWindow):
 
         self.models_btn = QPushButton(t("models_btn"))
         self.models_btn.setToolTip(t("models_btn_tooltip"))
-        self.models_btn.clicked.connect(lambda: open_models_dialog(self))
+        self.models_btn.clicked.connect(
+            lambda: open_models_dialog(
+                self, on_models_changed=self._image_tab.reload_tag_knowledge_base
+            )
+        )
         lang_bar.addWidget(self.models_btn)
 
         self.update_btn = QPushButton(t("update_btn"))
@@ -592,9 +596,8 @@ class MainWindow(QMainWindow):
             t("tab_config"),
         )
         self.tabs.addTab(self._preprocess_tab, t("tab_preprocess"))
-        self.tabs.addTab(
-            ImageViewerTab(preprocess_tab=self._preprocess_tab), t("tab_images")
-        )
+        self._image_tab = ImageViewerTab(preprocess_tab=self._preprocess_tab)
+        self.tabs.addTab(self._image_tab, t("tab_images"))
         self.tabs.addTab(MergeTab(), t("tab_merge"))
         # MethodsTab folds every trainable experimental method behind one dropdown; EasyControl keeps
         # a dedicated tab because it has its own preprocess/dataset lifecycle.

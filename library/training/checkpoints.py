@@ -29,14 +29,27 @@ def default_if_none(value, default):
     return default if value is None else value
 
 
+def _ensure_parent_dir(path: str) -> None:
+    """makedirs the directory that will contain ``path`` (the per-run subdir)."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+# Trajectory (step/epoch) checkpoints + their resumable -state dirs live in a
+# per-run subdir ``<output_dir>/<model_name>/`` so they don't clutter
+# output_dir; the final ``<output_name>.<ext>`` and the rolling
+# ``<output_name>-checkpoint`` resumable family stay at the output_dir root
+# (where inference / merge / auto_resume look). Returned names are relative to
+# output_dir and carry the subdir prefix, so save and remove stay symmetric.
 def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
-    return EPOCH_FILE_NAME.format(model_name, epoch_no) + ext
+    return os.path.join(model_name, EPOCH_FILE_NAME.format(model_name, epoch_no) + ext)
 
 
 def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
-    return STEP_FILE_NAME.format(model_name, step_no) + ext
+    return os.path.join(model_name, STEP_FILE_NAME.format(model_name, step_no) + ext)
 
 
 def get_last_ckpt_name(args: argparse.Namespace, ext: str):
@@ -102,6 +115,7 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
             ckpt_name = get_step_ckpt_name(args, ext, global_step)
 
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
+        _ensure_parent_dir(ckpt_file)  # create the per-run subdir
         logger.info("")
         logger.info(f"saving checkpoint: {ckpt_file}")
         sd_saver(ckpt_file, epoch_no, global_step)
@@ -159,11 +173,12 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
 
     logger.info("")
     logger.info(f"saving state at epoch {epoch_no}")
-    os.makedirs(args.output_dir, exist_ok=True)
 
+    # Trajectory -state dirs live alongside their weights in the per-run subdir.
     state_dir = os.path.join(
-        args.output_dir, EPOCH_STATE_NAME.format(model_name, epoch_no)
+        args.output_dir, model_name, EPOCH_STATE_NAME.format(model_name, epoch_no)
     )
+    _ensure_parent_dir(state_dir)
     accelerator.save_state(state_dir)
 
     last_n_epochs = (
@@ -174,7 +189,9 @@ def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, ep
     if last_n_epochs is not None:
         remove_epoch_no = epoch_no - args.save_every_n_epochs * last_n_epochs
         state_dir_old = os.path.join(
-            args.output_dir, EPOCH_STATE_NAME.format(model_name, remove_epoch_no)
+            args.output_dir,
+            model_name,
+            EPOCH_STATE_NAME.format(model_name, remove_epoch_no),
         )
         if os.path.exists(state_dir_old):
             logger.info(f"removing old state: {state_dir_old}")
@@ -186,11 +203,12 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
 
     logger.info("")
     logger.info(f"saving state at step {step_no}")
-    os.makedirs(args.output_dir, exist_ok=True)
 
+    # Trajectory -state dirs live alongside their weights in the per-run subdir.
     state_dir = os.path.join(
-        args.output_dir, STEP_STATE_NAME.format(model_name, step_no)
+        args.output_dir, model_name, STEP_STATE_NAME.format(model_name, step_no)
     )
+    _ensure_parent_dir(state_dir)
     accelerator.save_state(state_dir)
 
     last_n_steps = (
@@ -204,7 +222,9 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_n
 
         if remove_step_no > 0:
             state_dir_old = os.path.join(
-                args.output_dir, STEP_STATE_NAME.format(model_name, remove_step_no)
+                args.output_dir,
+                model_name,
+                STEP_STATE_NAME.format(model_name, remove_step_no),
             )
             if os.path.exists(state_dir_old):
                 logger.info(f"removing old state: {state_dir_old}")
@@ -399,6 +419,9 @@ class CheckpointSaver:
 
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
+        # ckpt_name carries a per-run subdir for trajectory (step/epoch) saves;
+        # final + resumable names are bare and resolve to output_dir directly.
+        _ensure_parent_dir(ckpt_file)
 
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
         self.metadata["ss_training_finished_at"] = str(time.time())

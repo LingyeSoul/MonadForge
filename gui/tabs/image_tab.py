@@ -1566,11 +1566,21 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
 
     def _start_tag_completion_preload(self) -> None:
         """Build the tag-autocomplete model on a daemon thread so the ~114k-row
-        CSV parse never blocks the first keystroke. Runs at most once."""
+        CSV parse never blocks the first keystroke. Runs at most once per
+        successful load (a missing CSV leaves the door open for a retry)."""
         if getattr(self, "_completion_preloading", False):
             return
         self._completion_preloading = True
         threading.Thread(target=self._preload_tag_completion, daemon=True).start()
+
+    def reload_tag_knowledge_base(self) -> None:
+        """Re-attempt the tag-autocomplete load after the danbooru CSV may have
+        appeared mid-session (e.g. just downloaded via the Models dialog). A
+        no-op once tags are loaded, so it's cheap to call on every download."""
+        if getattr(self, "_completion_loaded", False):
+            return
+        self._completion_preloading = False
+        self._start_tag_completion_preload()
 
     def _preload_tag_completion(self) -> None:
         # Worker thread: pure Python only, no Qt object creation and no writes
@@ -1591,7 +1601,11 @@ class ImageViewerTab(DaemonJobMixin, LazyTabMixin, QWidget):
 
     def _on_completion_ready(self, payload) -> None:
         if payload is None:
+            # CSV absent — leave _completion_loaded unset so a later download
+            # can retry via reload_tag_knowledge_base().
+            self._completion_preloading = False
             return
+        self._completion_loaded = True
         kb, csv_path, mtime, names, kind_lookup = payload
         # Seed the shared KB cache (main-thread write) so tag-click explanations
         # and caption-correct reuse this parse instead of re-reading the CSV.
