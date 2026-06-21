@@ -11,12 +11,12 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_Q3"
+output_name = "anima_turbo_Q"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 6000
+iterations = 9000
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -56,9 +56,19 @@ attn_mode = "flash"
 # drive per-step head selection — use AnimaTurboPerStepExpertLoader).
 per_step_expert = false
 
+# OrthoInit (use_ortho_init) per stack: seed each adapted Linear with a trainable
+# top-r SVD basis of W0 + a zero-init lambda (dW=0 at init, so the start-zero
+# invariant holds), giving a W0-aligned warm start with full LoRA expressivity.
+# Distills to a plain LoRA at save, so the turbo output stays mergeable. The
+# benefit lands on the STUDENT (fixes "ortho feels too weak"); the fake/critic is
+# a fast-refit score net, so leave it off unless A/B'ing. student_ortho_init is
+# incompatible with per_step_expert (StepExpertLoRAModule has no ortho-init path).
+student_ortho_init = true
+fake_ortho_init = false
+
 # DMD schedule.
 [dmd]
-student_steps = 3               # N — student rolls N Euler steps; inference matches (--infer_steps 4)
+student_steps = 4               # N — student rolls N Euler steps; inference matches (--infer_steps 4)
 teacher_cfg = 4                 # CFG scale baked into the teacher anchor + DMD real score (Anima prod CFG=4)
 dm_x0_norm = true               # per-sample x0-space magnitude normalization of the DM gradient
 norm_floor = 0.05               # clamp_min for the dm_x0_norm denominator (latent scale)

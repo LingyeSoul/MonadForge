@@ -188,6 +188,8 @@ class TurboDMDNetwork:
         use_custom_down_autograd: bool = False,
         channel_scaling_alpha: float = 0.0,
         student_step_expert_K: int = 0,
+        student_ortho_init: bool = False,
+        fake_ortho_init: bool = False,
         gan_feature_indices: set[int] | None = None,
         gan_disc_hidden: int | None = None,
     ) -> None:
@@ -209,7 +211,24 @@ class TurboDMDNetwork:
         # plain single-head LoRA. 0/1 = the shipped single-head student.
         self.student_step_expert_K = int(student_step_expert_K)
 
-        # Plain LoRA on both (LoRANetworkCfg defaults: no MoE/ortho/T-LoRA).
+        # OrthoInit (use_ortho_init): trainable top-r SVD seed of W0 + lambda
+        # (lambda=0 -> dW=0 at init, so the start-zero invariant below holds).
+        # A W0-aligned warm start with FULL LoRA expressivity that distills to a
+        # standard LoRA at save, so the turbo output stays a plain mergeable LoRA.
+        # Non-MoE only: the resolver raises if it ever meets use_moe_style, and it
+        # is NOT compatible with the per-step-expert student (StepExpertLoRAModule
+        # is not ortho-init-aware), so guard that combo here.
+        self.student_ortho_init = bool(student_ortho_init)
+        self.fake_ortho_init = bool(fake_ortho_init)
+        if self.student_ortho_init and self.student_step_expert_K > 1:
+            raise ValueError(
+                "student_ortho_init=True is incompatible with the per-step-expert "
+                "student (step_expert_K>1): StepExpertLoRAModule has no OrthoInit "
+                "path. Disable per_step_expert or student_ortho_init."
+            )
+
+        # Plain LoRA on both (LoRANetworkCfg defaults: no MoE/T-LoRA), optionally
+        # OrthoInit-seeded per stack.
         # alpha = rank by default (scale 1.0) per the LoRA-family convention.
         # use_custom_down_autograd is forwarded for config compat but a deprecated
         # no-op in the factory (fp32-bottleneck path removed 2026-06-10).
@@ -218,6 +237,8 @@ class TurboDMDNetwork:
         _student_kwargs: dict = {}
         if self.student_step_expert_K > 1:
             _student_kwargs["step_expert_K"] = self.student_step_expert_K
+        if self.student_ortho_init:
+            _student_kwargs["use_ortho_init"] = True
         self.student: LoRANetwork = create_network(
             multiplier=1.0,
             network_dim=self.student_rank,
@@ -231,6 +252,9 @@ class TurboDMDNetwork:
             channel_scaling_alpha=self.channel_scaling_alpha,
             **_student_kwargs,
         )
+        _fake_kwargs: dict = {}
+        if self.fake_ortho_init:
+            _fake_kwargs["use_ortho_init"] = True
         self.fake: LoRANetwork = create_network(
             multiplier=1.0,
             network_dim=self.fake_rank,
@@ -240,6 +264,7 @@ class TurboDMDNetwork:
             unet=unet,
             use_custom_down_autograd=use_custom_down_autograd,
             channel_scaling_alpha=self.channel_scaling_alpha,
+            **_fake_kwargs,
         )
 
         # Apply student-first so the runtime chain is
@@ -259,9 +284,11 @@ class TurboDMDNetwork:
 
         logger.info(
             f"TurboDMDNetwork: student rank={self.student_rank} "
-            f"({len(self.student.unet_loras)} modules), "
+            f"({len(self.student.unet_loras)} modules"
+            f"{', ortho_init' if self.student_ortho_init else ''}), "
             f"fake rank={self.fake_rank} "
-            f"({len(self.fake.unet_loras)} modules)"
+            f"({len(self.fake.unet_loras)} modules"
+            f"{', ortho_init' if self.fake_ortho_init else ''})"
         )
 
         # Start in teacher view. LoRAModule defaults enabled=True, and diff-only
@@ -420,25 +447,24 @@ class TurboDMDNetwork:
         Output is loadable by ``inference.py --lora_weight <file>`` — the
         fake network is training scaffolding and never shipped.
         """
-        sd = self.student.state_dict()
-        # Strip any non-LoRA keys defensively (plain LoRA shouldn't have any, but
-        # the LoRANetwork may carry non-load-bearing buffers).
-        sd = {k: v for k, v in sd.items() if ".lora_" in k or ".alpha" in k}
-
         if self.student_step_expert_K > 1:
+            sd = self.student.state_dict()
+            # Strip any non-LoRA keys defensively (the per-step-expert layout is
+            # written verbatim, so drop non-load-bearing buffers here).
+            sd = {k: v for k, v in sd.items() if ".lora_" in k or ".alpha" in k}
             self._save_student_step_expert(sd, file, dtype, metadata)
             return
 
-        from networks.lora_save import save_network_weights
-
-        save_network_weights(
-            sd,
-            file=file,
-            dtype=dtype,
-            metadata=metadata,
-            save_variant="standard",
-        )
-        logger.info(f"saved student LoRA → {file}  ({len(sd)} keys)")
+        # Delegate to the network's own save so the full distill chain runs.
+        # An OrthoInit / OrthoLoRA student stores P_init/Q_init/lambda_layer (or
+        # Cayley/SVD bases), NOT lora_down/lora_up — `save_weights` →
+        # `save_network_weights` distills those into the standard factorization.
+        # A naive ".lora_"/".alpha" pre-filter would strip them before the
+        # distill step ever sees them, emitting an alpha-only checkpoint
+        # (training-only buffers like `_timestep_mask` are already persistent=False
+        # so they never reach the state dict).
+        self.student.save_weights(file, dtype, metadata)
+        logger.info(f"saved student LoRA → {file}")
 
     def _save_student_step_expert(
         self,
