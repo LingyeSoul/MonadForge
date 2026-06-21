@@ -190,6 +190,8 @@ class TurboDMDNetwork:
         student_step_expert_K: int = 0,
         student_ortho_init: bool = False,
         fake_ortho_init: bool = False,
+        student_down_init: str = "kaiming",
+        fake_down_init: str = "kaiming",
         gan_feature_indices: set[int] | None = None,
         gan_disc_hidden: int | None = None,
     ) -> None:
@@ -227,6 +229,45 @@ class TurboDMDNetwork:
                 "path. Disable per_step_expert or student_ortho_init."
             )
 
+        # SVD-Down init (down_init="weight_svd"): seed the plain-LoRA student's
+        # lora_down from W0's top-r right singular vectors (scale-matched), the
+        # wide-tangent alternative to OrthoInit's cold start (the defect this
+        # student exposed — docs/proposal/svd_down_lora_init.md). It targets the
+        # plain LoRAModule only, so it is mutually exclusive with both ortho_init
+        # (different module class → down_init silently inert) and per-step-expert.
+        self.student_down_init = str(student_down_init)
+        if self.student_down_init not in ("kaiming", "weight_svd"):
+            raise ValueError(
+                f"student_down_init={self.student_down_init!r}: "
+                "expected 'kaiming' or 'weight_svd'."
+            )
+        if self.student_down_init == "weight_svd":
+            if self.student_ortho_init:
+                raise ValueError(
+                    "student_down_init='weight_svd' and student_ortho_init=True are "
+                    "mutually exclusive: ortho_init swaps the module class, leaving "
+                    "down_init inert. Pick one (SVD-Down replaces the OrthoInit start)."
+                )
+            if self.student_step_expert_K > 1:
+                raise ValueError(
+                    "student_down_init='weight_svd' is incompatible with the "
+                    "per-step-expert student (step_expert_K>1): StepExpertLoRAModule "
+                    "is not a plain LoRAModule. Disable per_step_expert."
+                )
+        # Same lever on the fake/critic. It is always a plain single-head LoRA
+        # (no per-step-expert), so the only conflict is fake_ortho_init.
+        self.fake_down_init = str(fake_down_init)
+        if self.fake_down_init not in ("kaiming", "weight_svd"):
+            raise ValueError(
+                f"fake_down_init={self.fake_down_init!r}: "
+                "expected 'kaiming' or 'weight_svd'."
+            )
+        if self.fake_down_init == "weight_svd" and self.fake_ortho_init:
+            raise ValueError(
+                "fake_down_init='weight_svd' and fake_ortho_init=True are mutually "
+                "exclusive: ortho_init swaps the module class, leaving down_init inert."
+            )
+
         # Plain LoRA on both (LoRANetworkCfg defaults: no MoE/T-LoRA), optionally
         # OrthoInit-seeded per stack.
         # alpha = rank by default (scale 1.0) per the LoRA-family convention.
@@ -239,6 +280,8 @@ class TurboDMDNetwork:
             _student_kwargs["step_expert_K"] = self.student_step_expert_K
         if self.student_ortho_init:
             _student_kwargs["use_ortho_init"] = True
+        if self.student_down_init != "kaiming":
+            _student_kwargs["down_init"] = self.student_down_init
         self.student: LoRANetwork = create_network(
             multiplier=1.0,
             network_dim=self.student_rank,
@@ -255,6 +298,8 @@ class TurboDMDNetwork:
         _fake_kwargs: dict = {}
         if self.fake_ortho_init:
             _fake_kwargs["use_ortho_init"] = True
+        if self.fake_down_init != "kaiming":
+            _fake_kwargs["down_init"] = self.fake_down_init
         self.fake: LoRANetwork = create_network(
             multiplier=1.0,
             network_dim=self.fake_rank,

@@ -451,12 +451,15 @@ def _load_anima(args, device: torch.device, apply_before_compile=None):
         if args.compile_blocks:
             # Native-shape flatten (real token count per bucket, no flash
             # pad-leak); compiles block._forward so unsloth_checkpoint's
-            # @torch._disable_dynamo survives the trace. Probe spans more than
-            # the 2 CONSTANT_TOKEN_BUCKETS families, so pre-raise the dynamo
-            # cache (compile_blocks' max() won't lower it).
-            import torch._dynamo as _dynamo
+            # @torch._disable_dynamo survives the trace. The probe spans more
+            # token-count families than compile_blocks' 1024-tier default, so
+            # pin the dynamo budget context-independently — a plain
+            # config.cache_size_limit = N is a ContextVar override that reverts
+            # to 8 in the backward-compile context and spills to eager (see
+            # pin_dynamo_limit). compile_blocks' own max() won't lower it.
+            from library.runtime.dynamo import pin_dynamo_limit
 
-            _dynamo.config.cache_size_limit = max(_dynamo.config.cache_size_limit, 64)
+            pin_dynamo_limit("cache_size_limit", 64)
             anima.compile_blocks(backend="inductor", mode=args.compile_inductor_mode)
         else:
             logger.info("torch.compile disabled (--no_compile_blocks)")

@@ -357,6 +357,8 @@ def main():
         student_step_expert_K=cfg.step_expert_K,
         student_ortho_init=cfg.student_ortho_init,
         fake_ortho_init=cfg.fake_ortho_init,
+        student_down_init=cfg.student_down_init,
+        fake_down_init=cfg.fake_down_init,
         gan_feature_indices=gan_indices,
         gan_disc_hidden=cfg.gan_disc_hidden if cfg.gan_disc_hidden > 0 else None,
     )

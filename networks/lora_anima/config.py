@@ -258,6 +258,12 @@ class LoRANetworkCfg:
     # exclusive with ``use_ortho`` (validated in the resolver). Non-MoE only.
     use_ortho_init: bool = False
 
+    # SVD-Down: ``lora_down`` initialization for plain LoRA — ``"kaiming"``
+    # (default) or ``"weight_svd"`` (seed input basis from W0's top-r right
+    # singular vectors, scale-matched). Plain two-factor LoRAModule only;
+    # ignored by ortho/Hydra/Chimera classes. docs/proposal/svd_down_lora_init.md.
+    down_init: str = "kaiming"
+
     # σ-conditional router parameters (consumed when ``router_source="sigma"``).
     # Layer scope is shared with Hydra and FEI via ``router_targets`` above.
     sigma_feature_dim: int = 16
@@ -423,6 +429,12 @@ class LoRANetworkCfg:
 
         router_lr_scale = kwargs.get("network_router_lr_scale")
         router_lr_scale = float(router_lr_scale) if router_lr_scale is not None else 1.0
+
+        down_init = str(kwargs.get("down_init", "kaiming"))
+        if down_init not in ("kaiming", "weight_svd"):
+            raise ValueError(
+                f"down_init={down_init!r}: expected 'kaiming' or 'weight_svd'."
+            )
 
         _legacy_router_keys = [
             k
@@ -631,6 +643,21 @@ class LoRANetworkCfg:
             route_per_layer = True
             router_source = "input"
 
+        # SVD-Down (down_init="weight_svd") targets the plain LoRAModule only —
+        # the ortho/Hydra/Chimera classes own their own SVD seeding and the
+        # network.py pass-through is gated to LoRAModule, so a non-plain variant
+        # would silently ignore it. Fail loudly instead of no-op'ing. T-LoRA
+        # (use_timestep_mask) is fine — it stays on LoRAModule.
+        if down_init != "kaiming" and (
+            use_ortho or use_ortho_init or use_moe_style is not False or use_chimera_hydra
+        ):
+            raise ValueError(
+                f"down_init={down_init!r} only applies to plain LoRA, but a "
+                "non-plain variant is selected (use_ortho / use_ortho_init / "
+                "use_moe_style / use_chimera_hydra). Disable those to use SVD-Down, "
+                "or keep down_init='kaiming'."
+            )
+
         # Validate impossible combos.
         if use_moe_style is False and (route_per_layer or router_source != "none"):
             raise ValueError(
@@ -699,6 +726,7 @@ class LoRANetworkCfg:
             use_ortho=use_ortho,
             ortho_init_std=ortho_init_std,
             use_ortho_init=use_ortho_init,
+            down_init=down_init,
             fera_fecl_weight=fera_fecl_weight,
             fera_num_bands=fera_num_bands,
             use_chimera_hydra=use_chimera_hydra,

@@ -27,8 +27,17 @@ class LoRAModule(BaseLoRAModule):
         rank_dropout=None,
         module_dropout=None,
         channel_scale=None,
+        down_init="kaiming",
     ):
-        """if alpha == 0 or None, alpha is rank (no scaling)."""
+        """if alpha == 0 or None, alpha is rank (no scaling).
+
+        ``down_init`` selects the ``lora_down`` initialization (Linear only):
+        ``"kaiming"`` (default ``kaiming_uniform_(a=sqrt(5))``) or ``"weight_svd"``
+        (SVD-Down — seed the input basis from W0's top-r right singular vectors,
+        scale-matched to Kaiming's expected row-norm so it is NOT a larger step).
+        Still ordinary LoRA after init: ΔW=0 (up=0), full B trainable on step 1.
+        See docs/proposal/svd_down_lora_init.md.
+        """
         super().__init__(
             lora_name,
             org_module,
@@ -61,6 +70,13 @@ class LoRAModule(BaseLoRAModule):
         torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
         torch.nn.init.zeros_(self.lora_up.weight)
 
+        if down_init == "weight_svd":
+            self._init_down_weight_svd(org_module)
+        elif down_init != "kaiming":
+            raise ValueError(
+                f"down_init={down_init!r}: expected 'kaiming' or 'weight_svd'."
+            )
+
         self._register_channel_scale(self.lora_down.weight.data, channel_scale)
 
         # List wrapping prevents nn.Module from registering org_module as a
@@ -69,6 +85,30 @@ class LoRAModule(BaseLoRAModule):
         # handle for fuse/unfuse.
         self.org_module_ref = [org_module]
         self._fused = False
+
+    def _init_down_weight_svd(self, org_module: torch.nn.Module) -> None:
+        """SVD-Down: seed ``lora_down`` with W0's top-r right singular vectors.
+
+        ``A_0 = V_r^T / sqrt(3)`` where ``W0 = U Σ V^T`` and the ``1/sqrt(3)``
+        matches the expected row-norm of the Kaiming default (a row of V_r^T has
+        norm 1; a Kaiming row has E[‖·‖²] ≈ 1/3), so "better direction" is not
+        confounded with "larger effective step". Linear only in v0 — Conv2d keeps
+        the Kaiming init already written above. Uses the same randomized SVD as
+        ``ortho.py`` (no new numerical machinery).
+        """
+        if not isinstance(self.lora_down, torch.nn.Linear):
+            logger.warning(
+                "down_init='weight_svd' is Linear-only (v0); %s keeps Kaiming.",
+                self.lora_name,
+            )
+            return
+        W = org_module.weight.data.float()
+        rank = self.lora_dim
+        q = min(rank + 6, min(W.shape))
+        _, _, V = torch.svd_lowrank(W, q=q, niter=2)  # V: (in_features, q)
+        with torch.no_grad():
+            v_r = (V[:, :rank].T / math.sqrt(3)).to(self.lora_down.weight.dtype)
+            self.lora_down.weight.copy_(v_r)
 
     # Forward is the shared BaseLoRAModule scaffold; this class supplies the
     # down / up GEMMs (Linear-or-Conv2d dispatch) and the eval delta. The

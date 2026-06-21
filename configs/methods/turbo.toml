@@ -11,12 +11,12 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_Q"
+output_name = "anima_turbo_Q_WSVD"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 9000
+iterations = 750
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -63,8 +63,21 @@ per_step_expert = false
 # benefit lands on the STUDENT (fixes "ortho feels too weak"); the fake/critic is
 # a fast-refit score net, so leave it off unless A/B'ing. student_ortho_init is
 # incompatible with per_step_expert (StepExpertLoRAModule has no ortho-init path).
-student_ortho_init = true
-fake_ortho_init = false
+
+# student_ortho_init = true
+# fake_ortho_init = false
+# fake_down_init = "weight_svd"   # same SVD-Down lever on the fake/critic
+                                  # (default "kaiming"; off under fake_ortho_init)
+
+# SVD-Down (down_init="weight_svd") — the wide-tangent ALTERNATIVE to OrthoInit
+# for the student. OrthoInit cold-starts the student (~25x smaller step-1 dW than
+# plain LoRA; the defect this distiller exposed — docs/proposal/svd_down_lora_init.md);
+# SVD-Down keeps plain LoRA's full first-step tangent but seeds lora_down from W0's
+# top-r right singular vectors (scale-matched, so it is NOT a larger step). Distills
+# to a plain mergeable LoRA exactly like the default. To A/B it, set
+# student_ortho_init = false above and uncomment the next line (they are mutually
+# exclusive — weight_svd needs the plain LoRAModule; also off under per_step_expert).
+student_down_init = "weight_svd"
 
 # DMD schedule.
 [dmd]

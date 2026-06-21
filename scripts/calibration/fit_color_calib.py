@@ -448,6 +448,13 @@ def main():
             "steps": str(args.steps),
             "crop": str(args.crop),
             "null_caption": str(not args.no_null_caption),
+            # Tiling provenance — the PiD candidate's tone is mildly decode-path
+            # dependent (LQ-projection GroupNorm sees per-extent statistics), so a
+            # calib only transfers within the tiling regime it was fit on. The node
+            # decodes with global_lq=True (tile-invariant LQ conditioning), so this
+            # calib is fit through the same path. Latents > tile_latent auto-tile.
+            "tile_latent": str(args.tile_latent),
+            "global_lq": "True",
         },
     )
 

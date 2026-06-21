@@ -472,6 +472,14 @@ class TurboConfig:
     # is incompatible with per_step_expert (guarded in TurboDMDNetwork).
     student_ortho_init: bool
     fake_ortho_init: bool
+    # SVD-Down init for the plain-LoRA student (down_init="weight_svd"): seed
+    # lora_down from W0's top-r right singular vectors, scale-matched. The
+    # wide-tangent alternative to student_ortho_init's cold start; mutually
+    # exclusive with it and with per_step_expert (guarded in TurboDMDNetwork).
+    student_down_init: str
+    # Same lever on the fake/critic (always plain single-head LoRA → only
+    # conflicts with fake_ortho_init).
+    fake_down_init: str
 
     # Masked loss
     use_masked_loss: bool
@@ -587,6 +595,29 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
     fake_alpha = float(_flatten(cfg, "network.fake_alpha", fake_rank))
     student_ortho_init = bool(_flatten(cfg, "network.student_ortho_init", False))
     fake_ortho_init = bool(_flatten(cfg, "network.fake_ortho_init", False))
+    student_down_init = str(_flatten(cfg, "network.student_down_init", "kaiming"))
+    if student_down_init not in ("kaiming", "weight_svd"):
+        raise ValueError(
+            f"network.student_down_init={student_down_init!r}: "
+            "expected 'kaiming' or 'weight_svd'."
+        )
+    if student_down_init == "weight_svd" and student_ortho_init:
+        raise ValueError(
+            "network.student_down_init='weight_svd' and "
+            "network.student_ortho_init=true are mutually exclusive — SVD-Down "
+            "replaces the OrthoInit warm start. Set student_ortho_init=false."
+        )
+    fake_down_init = str(_flatten(cfg, "network.fake_down_init", "kaiming"))
+    if fake_down_init not in ("kaiming", "weight_svd"):
+        raise ValueError(
+            f"network.fake_down_init={fake_down_init!r}: "
+            "expected 'kaiming' or 'weight_svd'."
+        )
+    if fake_down_init == "weight_svd" and fake_ortho_init:
+        raise ValueError(
+            "network.fake_down_init='weight_svd' and network.fake_ortho_init=true "
+            "are mutually exclusive. Set fake_ortho_init=false."
+        )
     attn_mode = _pick(args.attn_mode, cfg, "network.attn_mode", "flash")
     # use_custom_down_autograd is a top-level TOML scalar; CLI flag wins when set.
     if args.use_custom_down_autograd is None:
@@ -1000,6 +1031,8 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         step_expert_K=step_expert_K,
         student_ortho_init=student_ortho_init,
         fake_ortho_init=fake_ortho_init,
+        student_down_init=student_down_init,
+        fake_down_init=fake_down_init,
         use_masked_loss=use_masked_loss,
         mask_dir=mask_dir,
         k_anchor=k_anchor,
