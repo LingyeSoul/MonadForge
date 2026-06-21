@@ -90,7 +90,7 @@ colorize는 레퍼런스만 바꾸는 게 아니라 **캡션을 색상 단어로
 colorize가 처리하는, 그 구조를 복사하면 공짜로 물려받는 두 가지 정확성 함정:
 
 - **Stem이 일치해야 합니다.** 텍스트 단계는 캡션 마스터(`image_dataset/`, `resized/`와 같은 레이아웃)에서 `.txt` 캡션을 읽으므로, 결과 텍스트 캐시 파일명이 로더가 찾는 것(`image_dir=post_image_dataset/resized` 기준)과 일치합니다. 캐시 파일명이 타깃 stem과 맞지 않으면 로더가 아무 말 없이 짝짓기를 못 합니다.
-- **uncond 사이드카.** colorize의 텍스트 단계는 공유 `T5("")` 빈 프롬프트 사이드카가 없으면 다시 만듭니다. 텍스트 캐시를 만들고 캡션 드롭아웃을 사용한다면 똑같이 하세요(`library.inference.uncond.stage_uncond_sidecar_with_models`).
+- **uncond 사이드카.** colorize의 텍스트 단계는 공유 `T5("")` 빈 프롬프트 사이드카가 없으면 다시 만듭니다. 텍스트 캐시를 만들고 캡션 드롭아웃을 사용한다면 똑같이 하세요(`library.preprocess.uncond.stage_uncond_sidecar_with_models`).
 
 ---
 

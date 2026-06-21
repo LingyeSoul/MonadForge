@@ -172,7 +172,7 @@ its structure:
 - **The uncond sidecar.** colorize's text stage re-creates the shared `T5("")`
   empty-prompt sidecar if it's missing. If you build a text cache and use caption
   dropout, do the same
-  (`library.inference.uncond.stage_uncond_sidecar_with_models`).
+  (`library.preprocess.uncond.stage_uncond_sidecar_with_models`).
 
 ---
 

@@ -268,7 +268,7 @@ def stage_text(
 
     # The loader reuses the shared T5("") uncond sidecar for caption dropout, staged
     # by `make preprocess`; re-stage idempotently in case this run touches it first.
-    from library.inference.uncond import (
+    from library.preprocess.uncond import (
         DEFAULT_UNCOND_DIR,
         stage_uncond_sidecar_with_models,
     )

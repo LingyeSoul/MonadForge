@@ -50,7 +50,7 @@ from pathlib import Path
 
 
 from library.datasets.buckets import DCW_ASPECT_NAMES  # noqa: E402
-from library.inference.uncond import (  # noqa: E402
+from library.preprocess.uncond import (  # noqa: E402
     DEFAULT_SEQ_LEN,
     DEFAULT_UNCOND_DIR,
     UNCOND_TE_FILENAME,

@@ -18,19 +18,11 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from safetensors.torch import load_file as _load_safetensors
 from tqdm import tqdm
 
+from library.anima.uncond import load_uncond_crossattn
+
 logger = logging.getLogger(__name__)
-
-
-def _load_uncond_for_synth(
-    uncond_path: Path, device: torch.device, dtype: torch.dtype
-) -> torch.Tensor:
-    """Load the Phase 1 sidecar as a ``(1, seq, 1024)`` tensor for CFG-negative."""
-    sd = _load_safetensors(str(uncond_path))
-    uncond = sd["crossattn_emb"]
-    return uncond.to(device=device, dtype=dtype).unsqueeze(0).contiguous()
 
 
 def denoise_one(
@@ -245,7 +237,7 @@ def generate_synthetic_latents(
             "torch.compile skipped: block swap moves weights mid-forward; eager."
         )
 
-    crossattn_neg = _load_uncond_for_synth(uncond_path, device, dtype)
+    crossattn_neg = load_uncond_crossattn(str(uncond_path), device, dtype)
 
     pbar = tqdm(pairs, desc="synth latents")
     n_written = 0

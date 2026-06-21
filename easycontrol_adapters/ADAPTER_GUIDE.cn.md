@@ -90,7 +90,7 @@ colorize 不仅改变参考——还**将标注精简为颜色词**（`color_cap
 colorize 处理了两个正确性陷阱，照搬它的结构即可免费获得：
 
 - **Stem 必须匹配。** 文本阶段从标注主目录（`image_dataset/`，与 `resized/` 布局相同）读取 `.txt` 标注，使生成的文本缓存文件名与加载器查找的内容（基于 `image_dir=post_image_dataset/resized`）匹配。如果缓存文件名与目标 stem 不匹配，加载器会静默地不进行配对。
-- **uncond sidecar。** colorize 的文本阶段在共享的 `T5("")` 空提示 sidecar 缺失时会重新创建它。如果你构建了文本缓存并使用了 caption dropout，也要这样做（`library.inference.uncond.stage_uncond_sidecar_with_models`）。
+- **uncond sidecar。** colorize 的文本阶段在共享的 `T5("")` 空提示 sidecar 缺失时会重新创建它。如果你构建了文本缓存并使用了 caption dropout，也要这样做（`library.preprocess.uncond.stage_uncond_sidecar_with_models`）。
 
 ---
 

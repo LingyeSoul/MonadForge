@@ -24,7 +24,7 @@ from library.anima import weights as anima_utils
 from library.anima.models import Anima
 from library.datasets.cache import CachedDataset
 from library.inference.sampling import get_timesteps_sigmas
-from library.inference.uncond import (
+from library.anima.uncond import (
     default_uncond_path,
     load_uncond_crossattn,
     uncond_for_batch,

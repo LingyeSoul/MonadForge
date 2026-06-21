@@ -1,15 +1,16 @@
-"""T5("") unconditional cross-attention sidecar.
+"""T5("") unconditional cross-attention sidecar — Anima-domain helpers.
 
-Every training / distill entry point routes its unconditional text input
-through the same model-scoped file — ``post_image_dataset/_anima_uncond_te.safetensors``
+The unconditional text input every training / distill / inference path shares is
+a single model-scoped file — ``post_image_dataset/_anima_uncond_te.safetensors``
 — so the LoRA's CFG-uncond branch matches Anima's own inference path
 (``library/inference/text.py:99-127``). This is paper-faithful (Starodubcev
 et al., ICLR 2026, arXiv:2602.09268v1 §5) and avoids the
 ``torch.zeros_like(crossattn_emb)`` shortcut that would be neither.
 
-The sidecar is produced by ``make preprocess-te`` (free piggyback on the
-already-loaded text encoder + LLM adapter) and re-used by ``make distill-prep``,
-``make distill-mod``, ``make distill-turbo``, and training-time caption dropout.
+This module owns the *Anima-domain* half: path/constants, encoding ``T5("")``
+through Qwen3 + the LLM adapter, and loading/broadcasting the cached tensor.
+The *produce-to-disk* half (writing the sidecar, staging, on-demand ensure)
+lives in :mod:`library.preprocess.uncond`, which builds on these primitives.
 """
 
 from __future__ import annotations
@@ -21,14 +22,14 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from safetensors.torch import load_file as _load_safetensors
-from safetensors.torch import save_file
-
-from library.inference.text import MAX_CROSSATTN_TOKENS
 
 logger = logging.getLogger(__name__)
 
 UNCOND_TE_FILENAME = "_anima_uncond_te.safetensors"
-DEFAULT_SEQ_LEN = MAX_CROSSATTN_TOKENS  # matches library/inference/text.py CFG-uncond padding
+# Matches ``library.inference.text.MAX_CROSSATTN_TOKENS``; defined locally so the
+# anima/ domain layer never imports up into inference/. The 512 cap is an
+# Anima-model fact (its CFG-uncond padding), so it rightly lives here.
+DEFAULT_SEQ_LEN = 512
 
 # The uncond sidecar is a model-scoped artifact, not a per-cache-dir one:
 # every training run + every distill run reuses the same T5("") embedding.
@@ -137,86 +138,6 @@ def encode_uncond_crossattn(
         torch.cuda.empty_cache()
 
     return crossattn_emb, pooled
-
-
-def _write_sidecar(out_path: Path, crossattn_emb: torch.Tensor, pooled: torch.Tensor) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    save_file({"crossattn_emb": crossattn_emb, "pooled": pooled}, str(out_path))
-    logger.info(
-        f"Wrote {out_path}  (crossattn_emb={tuple(crossattn_emb.shape)}, "
-        f"pooled={tuple(pooled.shape)}, dtype={crossattn_emb.dtype})"
-    )
-
-
-def stage_uncond_sidecar(
-    cache_dir: Path,
-    qwen3_path: str,
-    dit_path: str,
-    *,
-    t5_tokenizer_path: str | None,
-    seq_len: int,
-    overwrite: bool,
-) -> Path:
-    """Stand-alone entry point: loads models from disk, encodes, writes
-    ``<cache_dir>/_anima_uncond_te.safetensors``.
-
-    Use :func:`stage_uncond_sidecar_with_models` when models are already
-    loaded (e.g. inside ``make preprocess-te``).
-    """
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    out_path = cache_dir / UNCOND_TE_FILENAME
-
-    if out_path.exists() and not overwrite:
-        logger.info(
-            f"Uncond sidecar already exists at {out_path}; pass --overwrite to regenerate."
-        )
-        return out_path
-
-    crossattn_emb, pooled = encode_uncond_crossattn(
-        qwen3_path,
-        dit_path,
-        t5_tokenizer_path=t5_tokenizer_path,
-        seq_len=seq_len,
-    )
-    _write_sidecar(out_path, crossattn_emb, pooled)
-    return out_path
-
-
-def stage_uncond_sidecar_with_models(
-    out_dir: Path,
-    text_encoder,
-    tokenize_strategy,
-    encoding_strategy,
-    llm_adapter,
-    *,
-    seq_len: int = DEFAULT_SEQ_LEN,
-    device: torch.device,
-    overwrite: bool = False,
-) -> Path:
-    """Stage the sidecar using already-loaded models. No-op when the file
-    already exists unless ``overwrite=True``. Returns the sidecar path.
-
-    Intended for ``scripts/preprocess/cache_text_embeddings.py`` and any other entry
-    point that already has Qwen3 + LLM adapter on device — encoding ``T5("")``
-    is one extra batch so the marginal cost is ~ms.
-    """
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / UNCOND_TE_FILENAME
-    if out_path.exists() and not overwrite:
-        logger.info(
-            f"Uncond sidecar already exists at {out_path}; skipping encode."
-        )
-        return out_path
-    crossattn_emb, pooled = encode_uncond_with_models(
-        text_encoder,
-        tokenize_strategy,
-        encoding_strategy,
-        llm_adapter,
-        seq_len=seq_len,
-        device=device,
-    )
-    _write_sidecar(out_path, crossattn_emb, pooled)
-    return out_path
 
 
 def load_uncond_crossattn(path: str, device, dtype) -> torch.Tensor:

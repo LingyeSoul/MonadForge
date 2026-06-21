@@ -144,10 +144,11 @@ class RuntimeState:
     # ``get_noise_pred_and_target``.
     vr: dict = field(default_factory=lambda: {"lambda_ema": None})
     # T5("") crossattn sidecar (shape ``(1, S, 1024)`` bf16 on device).
-    # Populated by ``_ensure_uncond_crossattn`` when caption dropout is
-    # enabled; consumed by ``prepare_text_conds`` so dropped rows match
-    # Anima's CFG-uncond inference path instead of falling back to zeros.
+    # Populated via ``library.preprocess.uncond.ensure_uncond_crossattn`` when
+    # caption dropout is enabled; consumed by ``prepare_text_conds`` so dropped
+    # rows match Anima's CFG-uncond inference path instead of falling back to
+    # zeros.
     uncond_crossattn_1: torch.Tensor | None = None
     # Set during dataset prep from subset.caption_dropout_rate; gates whether
-    # ``_ensure_uncond_crossattn`` actually stages the sidecar.
+    # ``ensure_uncond_crossattn`` actually stages the sidecar.
     caption_dropout_enabled: bool = False

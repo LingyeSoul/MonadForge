@@ -156,7 +156,7 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
 
         ``uncond_crossattn_emb`` is the T5("") sidecar (shape ``(1, S, D)``
         staged by ``make distill-prep`` — see
-        ``library/inference/uncond.py``). When provided, dropped rows of
+        ``library/preprocess/uncond.py``). When provided, dropped rows of
         ``crossattn_emb`` are replaced with it so the trained adapter sees
         the *same* unconditional embedding at CFG-uncond time that
         ``library/inference/text.py:99-127`` feeds at inference. When None,

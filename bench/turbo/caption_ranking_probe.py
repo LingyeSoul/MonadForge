@@ -89,7 +89,7 @@ from bench.soft_tokens_contrastive.reward_premise_probe import (  # noqa: E402
     shuffled_negatives,
 )
 from library.inference.sampling import get_timesteps_sigmas  # noqa: E402
-from library.inference.uncond import (  # noqa: E402
+from library.anima.uncond import (  # noqa: E402
     default_uncond_path,
     load_uncond_crossattn,
     uncond_for_batch,

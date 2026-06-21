@@ -532,50 +532,6 @@ class AnimaTrainer:
             return None  # no text encoders needed for encoding
         return text_encoders
 
-    def _ensure_uncond_crossattn(
-        self,
-        args: argparse.Namespace,
-        accelerator,
-        weight_dtype: torch.dtype,
-    ) -> None:
-        """Lazily load the T5("") crossattn sidecar onto ``self._state.uncond_crossattn_1``.
-
-        Primary producer is ``make preprocess-te`` (drops the file at
-        ``post_image_dataset/_anima_uncond_te.safetensors``); this method is
-        the fallback that stages on demand if a training run was kicked off
-        without the preprocess step.
-        """
-        if self._state.uncond_crossattn_1 is not None:
-            return
-        from library.inference.uncond import (
-            DEFAULT_UNCOND_DIR,
-            default_uncond_path,
-            load_uncond_crossattn,
-            stage_uncond_sidecar,
-        )
-
-        sidecar = default_uncond_path()
-        if not sidecar.exists():
-            logger.info(
-                f"T5('') uncond sidecar missing at {sidecar} — staging "
-                f"on demand (would normally be produced by `make preprocess-te`)."
-            )
-            stage_uncond_sidecar(
-                DEFAULT_UNCOND_DIR,
-                qwen3_path=args.qwen3,
-                dit_path=args.pretrained_model_name_or_path,
-                t5_tokenizer_path=getattr(args, "t5_tokenizer_path", None),
-                seq_len=512,
-                overwrite=False,
-            )
-        self._state.uncond_crossattn_1 = load_uncond_crossattn(
-            str(sidecar), device=accelerator.device, dtype=weight_dtype
-        )
-        logger.info(
-            f"caption dropout uncond loaded: {sidecar} "
-            f"shape={tuple(self._state.uncond_crossattn_1.shape)}"
-        )
-
     def get_noise_scheduler(
         self, args: argparse.Namespace, device: torch.device
     ) -> Any:
@@ -2169,7 +2125,16 @@ class AnimaTrainer:
         # rows then get the same crossattn embedding Anima feeds at
         # CFG-uncond inference instead of all-zeros (which is out-of-dist).
         if self._state.caption_dropout_enabled:
-            self._ensure_uncond_crossattn(args, accelerator, weight_dtype)
+            from library.preprocess.uncond import ensure_uncond_crossattn
+
+            self._state.uncond_crossattn_1 = ensure_uncond_crossattn(
+                qwen3_path=args.qwen3,
+                dit_path=args.pretrained_model_name_or_path,
+                t5_tokenizer_path=getattr(args, "t5_tokenizer_path", None),
+                device=accelerator.device,
+                dtype=weight_dtype,
+                existing=self._state.uncond_crossattn_1,
+            )
 
         net = self._create_and_apply_network(
             args, accelerator, vae, text_encoder, unet, text_encoders, weight_dtype

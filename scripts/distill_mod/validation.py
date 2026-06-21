@@ -12,7 +12,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from library.inference.uncond import uncond_for_batch
+from library.anima.uncond import uncond_for_batch
 from library.training.forward import (
     make_padding_mask,
     renoise,
