@@ -992,6 +992,11 @@ class FinalLayer(nn.Module):
                 nn.Linear(hidden_size, self.n_adaln_chunks * hidden_size, bias=False),
             )
 
+        # fp16-safe AdaLN modulate; see Anima.enable_fp32_residual(). Inert (False)
+        # by default. Lives in __init__ (not init_weights) — it's runtime config,
+        # not weight state, so a weight reload must not reset it.
+        self.fp32_residual = False
+
         self.init_weights()
 
     def init_weights(self) -> None:
@@ -1006,11 +1011,6 @@ class FinalLayer(nn.Module):
             torch.nn.init.zeros_(self.adaln_modulation[1].weight)
 
         self.layer_norm.reset_parameters()
-        # fp16-safe AdaLN modulation (mirror of Block.fp32_residual): the final
-        # layer runs on the already-large residual stream, so the
-        # ``norm(x)*(1+scale)+shift`` modulate can exceed fp16's 65504 ceiling
-        # before the unpatchify linear. Inert (False) by default.
-        self.fp32_residual = False
 
     def forward(
         self,
@@ -1116,13 +1116,8 @@ class Block(nn.Module):
         self.cpu_offload_checkpointing = False
         self.unsloth_offload_checkpointing = False
 
-        # fp16-safe residual accumulation: the DiT residual stream can exceed
-        # fp16's 65504 ceiling late in the block stack
-        # (docs/findings/selfflow.md), so under fp16 autocast the residual adds
-        # overflow → inf → NaN. When True, each residual add runs in fp32 then
-        # casts back to the compute dtype (matmuls stay fp16). Plain bool set
-        # once at construction-time, flipped on the fp16 path — inert (False) by
-        # default so the bf16/fp32 paths are bit-exact to the legacy code.
+        # fp16-safe residual accumulation; see Anima.enable_fp32_residual() for
+        # the full rationale. Inert (False) by default (bf16/fp32 bit-exact).
         self.fp32_residual = False
 
     def enable_gradient_checkpointing(
@@ -1408,11 +1403,6 @@ class Anima(nn.Module):
         # leave it False and skip the reshape (bit-exact to the flattened path).
         self._native_flatten: bool = False
 
-        # fp16-safe residual accumulation (flipped on by enable_fp32_residual()).
-        # Propagates to every Block + FinalLayer; the compiled _forward specializes
-        # on the per-Block bool once (no guard churn). Inert on bf16/fp32.
-        self._fp32_residual_enabled: bool = False
-
         # Dynamic-seq compile: when True, marks the seq-length axis dynamic to
         # collapse the per-token-count graphs to one; _dynamic_seq_range is the
         # (min, max) token-count bound. Both inert on the static/eager paths.
@@ -1600,12 +1590,15 @@ class Anima(nn.Module):
         >65504 have no fp16 representation, so the residual must stay fp32
         (not cast back) until a downstream matmul picks it up.
 
+        MUST be called before ``compile_blocks`` so dynamo specializes on the
+        flipped (True) per-module bool once — flipping it post-compile trips
+        the guard and recompiles every block graph on the first forward.
+
         Inert on bf16 (default) / fp32: the per-module ``fp32_residual`` bool
-        is set once at construction and stays False unless this flips it, so
-        the default path is bit-exact to the legacy code. Plain bool →
+        is False at construction and stays False unless this flips it, so the
+        default path is bit-exact to the legacy code. Plain bool →
         compile-safe (specialized once by dynamo, no data-dependent branch).
         """
-        self._fp32_residual_enabled = True
         for block in self.blocks:
             block.fp32_residual = True
         self.final_layer.fp32_residual = True

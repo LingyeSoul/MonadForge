@@ -1691,6 +1691,22 @@ class AnimaTrainer:
         # isolation → compile_blocks → EasyControl cond-stream compile) lives
         # in library/runtime/harness.py with the other compile entry points.
         # Matches the harness order: block-swap → grad-ckpt → compile.
+
+        # fp16 overflow guard — MUST run before compile_blocks below: dynamo
+        # specializes block._forward on the per-module ``fp32_residual`` bool,
+        # so flipping it post-compile trips the guard and recompiles every
+        # block graph on the first forward. No-op on bf16 (default) / fp32.
+        # See Anima.enable_fp32_residual() for the full rationale
+        # (docs/findings/selfflow.md).
+        if args.mixed_precision == "fp16" and isinstance(unet, anima_models.Anima):
+            unet.enable_fp32_residual()
+            logger.info(
+                "fp16 mixed precision: enabled fp32 residual accumulation "
+                "(DiT residual stream exceeds fp16 range; prevents NaN). "
+                "Sublayer matmuls still run fp16 under autocast; bf16/fp32 "
+                "runs are unaffected."
+            )
+
         if args.torch_compile:
             from library.runtime.harness import compile_blocks_for_training
 
@@ -1863,20 +1879,6 @@ class AnimaTrainer:
         unet.requires_grad_(False)
         unet.to(dtype=unet_weight_dtype)
 
-        # fp16 overflow guard: the DiT residual stream exceeds fp16's 65504
-        # ceiling late in the block stack (docs/findings/selfflow.md), so fp16
-        # autocast overflows to inf → NaN from step 0. Promote the residual
-        # adds + final-layer AdaLN modulate to fp32 (matmuls stay fp16 for the
-        # V100 speedup). No-op on bf16 (default) / fp32 — the per-module
-        # ``fp32_residual`` bool stays False unless this flips it.
-        if args.mixed_precision == "fp16" and isinstance(unet, anima_models.Anima):
-            unet.enable_fp32_residual()
-            logger.info(
-                "fp16 mixed precision: enabled fp32 residual accumulation "
-                "(DiT residual stream exceeds fp16 range; prevents NaN). "
-                "Sublayer matmuls still run fp16 under autocast; bf16/fp32 "
-                "runs are unaffected."
-            )
         for i, t_enc in enumerate(text_encoders):
             # None when the TE was never loaded (cache_text_encoder_outputs with
             # no sample prompts / val / TE-training -- qwen3_needed=False).
