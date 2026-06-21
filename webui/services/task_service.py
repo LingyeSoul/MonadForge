@@ -112,6 +112,67 @@ class TaskService:
     def list_tasks(self) -> list[dict]:
         return [t.info() for t in self._tasks.values()]
 
+    async def get_queue_status(self) -> dict:
+        """Snapshot of the daemon queue: paused flag + per-job queue position.
+
+        One ``GET /jobs`` (FIFO by ``submitted_at``) + one ``GET /health``.
+        ``queue_position`` semantics: queued jobs are ``1, 2, 3…`` in submission
+        order — i.e. "how many jobs finish before this one starts." Running and
+        terminal jobs carry no position (the frontend only renders ``#N`` for
+        ``state === 'pending'`` tasks). On daemon-down we return
+        ``daemon_up: False`` so the frontend can disable the pause button /
+        hide positions without erroring.
+
+        ``positions`` maps ``id -> position`` for queued jobs only (``id`` is the
+        job's id field as returned by ``GET /jobs`` — the same value the store
+        keys ``TaskInfo.task_id`` by). The store merges these onto its
+        ``TaskInfo`` list by id.
+        """
+        try:
+            jobs = await daemon_client.list_jobs()
+            health = await daemon_client.health()
+        except DaemonError:
+            return {
+                "daemon_up": False,
+                "paused": False,
+                "positions": {},
+            }
+
+        # Daemon returns the full table incl. terminal + running jobs; only
+        # queued jobs need a position. FIFO by submitted_at.
+        queued = [j for j in jobs if (j.get("state") or "") == "queued"]
+        queued.sort(key=lambda j: j.get("submitted_at") or 0)
+
+        positions: dict[str, int] = {}
+        for idx, j in enumerate(queued, start=1):
+            jid = j.get("id")
+            if jid is None:
+                continue
+            positions[jid] = idx
+
+        return {
+            "daemon_up": True,
+            "paused": bool(health.get("paused")),
+            "positions": positions,
+        }
+
+    async def pause_queue(self) -> dict:
+        """Hold the queue — queued jobs wait until ``resume_queue``.
+
+        Raises :class:`DaemonError` if the daemon is unreachable; the API layer
+        maps that to HTTP 502 so a daemon-down click surfaces as a real failure
+        rather than a 500.
+        """
+        return await daemon_client.pause_queue()
+
+    async def resume_queue(self) -> dict:
+        """Release a paused queue — the worker launches queued jobs in order.
+
+        Raises :class:`DaemonError` if the daemon is unreachable; the API layer
+        maps that to HTTP 502.
+        """
+        return await daemon_client.start_queue()
+
     def get_task(self, task_id: str) -> Optional[Task]:
         return self._tasks.get(task_id)
 

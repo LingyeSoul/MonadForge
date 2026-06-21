@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from webui.services.daemon_client import DaemonError
 from webui.services.task_service import task_service
 
 router = APIRouter()
@@ -86,6 +87,39 @@ def list_tasks():
 def list_commands():
     """Return available task commands with descriptions."""
     return TaskCommandListResponse(commands=_COMMAND_DESCRIPTIONS)
+
+
+# ── Queue control ──────────────────────────────────────────────────────────
+# These MUST be declared before /{task_id} routes, otherwise FastAPI matches
+# "queue" as a task_id.
+
+
+@router.get("/queue/status")
+async def queue_status():
+    """Queue snapshot: daemon_up + paused + {job_id: queue_position} map.
+
+    Polled by the Tasks view (5s) alongside ``GET /api/tasks`` to render
+    per-task queue positions and the pause/resume button state.
+    """
+    return await task_service.get_queue_status()
+
+
+@router.post("/queue/pause")
+async def queue_pause():
+    """Hold the queue — queued jobs wait until ``/queue/resume``."""
+    try:
+        return await task_service.pause_queue()
+    except DaemonError as exc:
+        raise HTTPException(status_code=502, detail=f"daemon: {exc}") from exc
+
+
+@router.post("/queue/resume")
+async def queue_resume():
+    """Release a paused queue — the worker launches queued jobs in order."""
+    try:
+        return await task_service.resume_queue()
+    except DaemonError as exc:
+        raise HTTPException(status_code=502, detail=f"daemon: {exc}") from exc
 
 
 @router.get("/{task_id}")

@@ -3,7 +3,17 @@
     <div class="d-flex align-center mb-1">
       <div class="text-h5">{{ t('taskTitle') }}</div>
       <v-spacer />
-      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="taskStore.fetchTasks()">
+      <v-btn
+        variant="text"
+        size="small"
+        :disabled="!taskStore.daemonUp"
+        :prepend-icon="taskStore.daemonPaused ? 'mdi-play' : 'mdi-pause'"
+        :color="taskStore.daemonPaused ? 'success' : undefined"
+        @click="taskStore.daemonPaused ? taskStore.resumeQueue() : taskStore.pauseQueue()"
+      >
+        {{ taskStore.daemonPaused ? t('taskResumeQueue') : t('taskPauseQueue') }}
+      </v-btn>
+      <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="taskStore.poll()">
         {{ t('ppRefresh') }}
       </v-btn>
     </div>
@@ -34,6 +44,15 @@
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
             <span class="text-truncate">{{ task.command }}</span>
             <v-spacer />
+            <v-chip
+              v-if="task.state === 'pending' && task.queue_position != null"
+              size="x-small"
+              variant="tonal"
+              color="info"
+              class="ml-1"
+            >
+              #{{ task.queue_position }}
+            </v-chip>
             <v-chip size="x-small" variant="outlined" class="ml-2">{{ task.state }}</v-chip>
           </v-card-title>
           <v-card-subtitle class="text-caption">
@@ -77,6 +96,15 @@
             <v-icon :icon="stateIcon(task.state)" size="small" class="mr-2" />
             <span class="text-truncate">{{ task.command }}</span>
             <v-spacer />
+            <v-chip
+              v-if="task.state === 'pending' && task.queue_position != null"
+              size="x-small"
+              variant="tonal"
+              color="info"
+              class="ml-1"
+            >
+              #{{ task.queue_position }}
+            </v-chip>
             <v-chip size="x-small" variant="outlined" class="ml-2">{{ task.state }}</v-chip>
           </v-card-title>
           <v-card-subtitle class="text-caption flex-shrink-0">
@@ -120,8 +148,8 @@ const selectedTask = ref('')
 let pollTimer = 0
 
 onMounted(() => {
-  taskStore.fetchTasks()
-  pollTimer = window.setInterval(() => taskStore.fetchTasks(), 5000)
+  taskStore.poll()
+  pollTimer = window.setInterval(() => taskStore.poll(), 5000)
 })
 
 onUnmounted(() => {

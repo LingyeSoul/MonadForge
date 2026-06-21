@@ -26,6 +26,9 @@ export default {
   taskHideLogs: '隐藏日志',
   taskState: '状态',
   taskConnecting: '连接中...',
+  taskPauseQueue: '暂停队列',
+  taskResumeQueue: '恢复队列',
+  taskQueuePosition: '队列位置',
 
   // Training Dashboard
   dashTitle: '训练仪表盘',
@@ -407,6 +410,11 @@ export default {
   notifyTestLaunched: '测试推理已启动',
   notifyTaskStarted: '{command} 已启动',
   notifyTaskStartFailed: '{command} 启动失败',
+  notifyQueuePaused: '队列已暂停 — 新任务将等待',
+  notifyQueueResumed: '队列已恢复',
+  notifyQueuePauseFailed: '暂停队列失败',
+  notifyQueueResumeFailed: '恢复队列失败',
+  notifyDaemonDown: '训练守护进程未运行',
 
   // WandB Tracking
   cfgWandbSection: 'W&B 追踪',

@@ -1,5 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { useNotifyStore } from './notify'
+import { useI18n } from '../composables/useI18n'
 
 export interface TaskInfo {
   task_id: string
@@ -8,6 +10,10 @@ export interface TaskInfo {
   pid: number | null
   started_at: string | null
   output_lines: number
+  // Set by fetchQueueStatus (only meaningful for state === 'pending'): how
+  // many queued jobs finish before this one starts (1, 2, … in FIFO order).
+  // null/undefined for running or terminal tasks.
+  queue_position?: number | null
 }
 
 export interface CommandInfo {
@@ -20,6 +26,16 @@ export const useTaskStore = defineStore('task', () => {
   const tasks = ref<TaskInfo[]>([])
   const commands = ref<CommandInfo[]>([])
   const loading = ref(false)
+  // Queue state — driven by GET /api/tasks/queue/status (polled alongside
+  // fetchTasks in the Tasks view).
+  const daemonPaused = ref(false)
+  const daemonUp = ref(true)
+  // Tracks the daemon_up transition so we only toast once per down-edge
+  // (polls every 5s — without this the toast would fire on every tick).
+  const daemonWasDown = ref(false)
+
+  const notify = useNotifyStore()
+  const { t } = useI18n()
 
   async function fetchTasks() {
     try {
@@ -40,6 +56,56 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  async function fetchQueueStatus() {
+    try {
+      const res = await fetch('/api/tasks/queue/status')
+      const data = await res.json()
+      const up = data.daemon_up !== false
+      daemonUp.value = up
+      // Toast once when the daemon transitions up → down (the key exists for
+      // this; without the edge-guard the toast would repeat every 5s poll).
+      if (!up && !daemonWasDown.value) {
+        notify.show(t('notifyDaemonDown'), 'warning')
+      }
+      daemonWasDown.value = !up
+      daemonPaused.value = !!data.paused
+      // Merge positions onto the matching tasks. Only queued tasks carry a
+      // position; running/terminal tasks get cleared so a job that just left
+      // the queue doesn't keep a stale #N.
+      const positions: Record<string, number> = data.positions || {}
+      tasks.value = tasks.value.map((task) => ({
+        ...task,
+        queue_position: positions[task.task_id] ?? null,
+      }))
+    } catch {
+      // daemon unreachable on this tick — leave the last known state.
+    }
+  }
+
+  async function pauseQueue() {
+    try {
+      const res = await fetch('/api/tasks/queue/pause', { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      daemonPaused.value = true
+      notify.show(t('notifyQueuePaused'), 'info')
+      await fetchQueueStatus()
+    } catch {
+      notify.show(t('notifyQueuePauseFailed'), 'error')
+    }
+  }
+
+  async function resumeQueue() {
+    try {
+      const res = await fetch('/api/tasks/queue/resume', { method: 'POST' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      daemonPaused.value = false
+      notify.show(t('notifyQueueResumed'), 'success')
+      await fetchQueueStatus()
+    } catch {
+      notify.show(t('notifyQueueResumeFailed'), 'error')
+    }
+  }
+
   async function startTask(command: string, args: string[] = [], env?: Record<string, string>): Promise<string | null> {
     loading.value = true
     try {
@@ -50,6 +116,7 @@ export const useTaskStore = defineStore('task', () => {
       })
       const data = await res.json()
       await fetchTasks()
+      await fetchQueueStatus()
       return data.task_id || null
     } catch {
       return null
@@ -62,14 +129,29 @@ export const useTaskStore = defineStore('task', () => {
     try {
       await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' })
       await fetchTasks()
+      await fetchQueueStatus()
     } catch {
       // silently ignore
     }
   }
 
   async function poll() {
-    await fetchTasks()
+    await Promise.all([fetchTasks(), fetchQueueStatus()])
   }
 
-  return { tasks, commands, loading, fetchTasks, fetchCommands, startTask, cancelTask, poll }
+  return {
+    tasks,
+    commands,
+    loading,
+    daemonPaused,
+    daemonUp,
+    fetchTasks,
+    fetchCommands,
+    fetchQueueStatus,
+    pauseQueue,
+    resumeQueue,
+    startTask,
+    cancelTask,
+    poll,
+  }
 })

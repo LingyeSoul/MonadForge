@@ -26,6 +26,9 @@ export default {
   taskHideLogs: 'Hide Logs',
   taskState: 'State',
   taskConnecting: 'Connecting...',
+  taskPauseQueue: 'Pause Queue',
+  taskResumeQueue: 'Resume Queue',
+  taskQueuePosition: 'Queue Position',
 
   // Training Dashboard
   dashTitle: 'Training Dashboard',
@@ -407,6 +410,11 @@ export default {
   notifyTestLaunched: 'Test inference started',
   notifyTaskStarted: '{command} started',
   notifyTaskStartFailed: 'Failed to start {command}',
+  notifyQueuePaused: 'Queue paused — new jobs will wait',
+  notifyQueueResumed: 'Queue resumed',
+  notifyQueuePauseFailed: 'Failed to pause the queue',
+  notifyQueueResumeFailed: 'Failed to resume the queue',
+  notifyDaemonDown: 'Training daemon not running',
 
   // WandB Tracking
   cfgWandbSection: 'W&B Tracking',
