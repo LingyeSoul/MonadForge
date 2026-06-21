@@ -105,6 +105,11 @@ override-dependencies = ["numpy>=2.0.0"]
 [tool.setuptools.packages.find]
 include = ["anima_lora*", "library*", "networks*", "bench*", "scripts*", "preprocess*"]
 
+[tool.setuptools.package-data]
+# Ship the model-scoped T5("") CFG-uncond sidecar bundled in library/anima/assets/
+# (resolved package-relative in library/anima/uncond.py) inside wheels/sdists.
+"library.anima" = ["assets/*.safetensors"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"

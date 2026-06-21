@@ -1,13 +1,15 @@
 """T5("") unconditional sidecar — produce-to-disk half.
 
-Staging (encode → write ``post_image_dataset/_anima_uncond_te.safetensors``) and
-the load-or-stage ``ensure`` orchestration. Builds on the Anima-domain encode /
-load primitives in :mod:`library.anima.uncond`.
+Staging (encode → write the sidecar) and the load-or-stage ``ensure``
+orchestration. Builds on the Anima-domain encode / load primitives in
+:mod:`library.anima.uncond`.
 
-The sidecar is produced by ``make preprocess-te`` (free piggyback on the
-already-loaded text encoder + LLM adapter via
-:func:`stage_uncond_sidecar_with_models`) and re-used by ``make distill-prep``,
-``make distill-mod``, ``make distill-turbo``, and training-time caption dropout.
+The sidecar is a model-scoped, run-invariant artifact, so it ships as a bundled
+package asset (``library/anima/assets/_anima_uncond_te.safetensors``) and is read
+directly by ``make distill-prep``, ``make distill-mod``, ``make distill-turbo``,
+and training-time caption dropout. The staging here is now only the
+*regeneration* path — it overwrites that same asset in place after a base-model
+swap (or if the bundled copy is ever missing).
 """
 
 from __future__ import annotations
@@ -124,11 +126,12 @@ def ensure_uncond_crossattn(
     """Return the ``T5("")`` crossattn sidecar as a ``(1, S, 1024)`` tensor.
 
     Idempotent: pass the previously-loaded tensor as ``existing`` and it's
-    returned untouched. The primary producer is ``make preprocess-te`` (drops
-    the file at ``post_image_dataset/_anima_uncond_te.safetensors``); this is
-    the on-demand fallback that stages the sidecar if a run was kicked off
-    without the preprocess step. Caller owns where it stores the result (e.g.
-    ``TrainState.uncond_crossattn_1``) — this stays ignorant of trainer state.
+    returned untouched. The sidecar normally ships as a bundled package asset
+    (``library/anima/assets/_anima_uncond_te.safetensors``), so this just loads
+    it; the on-demand staging below is a fallback that only fires if that asset
+    is somehow missing (e.g. deleted, or a swapped base model). Caller owns where
+    it stores the result (e.g. ``TrainState.uncond_crossattn_1``) — this stays
+    ignorant of trainer state.
     """
     if existing is not None:
         return existing

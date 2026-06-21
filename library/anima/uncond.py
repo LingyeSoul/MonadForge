@@ -31,15 +31,20 @@ UNCOND_TE_FILENAME = "_anima_uncond_te.safetensors"
 # Anima-model fact (its CFG-uncond padding), so it rightly lives here.
 DEFAULT_SEQ_LEN = 512
 
-# The uncond sidecar is a model-scoped artifact, not a per-cache-dir one:
-# every training run + every distill run reuses the same T5("") embedding.
-# It lives at the dataset root, one level above the per-pipeline cache subdirs
-# (``post_image_dataset/lora/``, ``post_image_dataset/easycontrol/``, …).
-DEFAULT_UNCOND_DIR = Path("post_image_dataset")
+# The uncond sidecar is a model-scoped artifact, not a per-cache-dir one: it is a
+# pure function of the base Qwen3 encoder + base-DiT LLM adapter + 512-pad, so it
+# never varies by dataset / checkpoint / run. We therefore SHIP it as a bundled
+# package asset (~1 MB) right next to this module — no preprocess step needed to
+# materialise it. The path is package-relative (via ``__file__``) so it resolves
+# from any CWD and ships with the install; staging/regeneration (e.g. after a
+# base-model swap) overwrites this same file in place, keeping one source of
+# truth. Override with an explicit path arg where a call site exposes one.
+DEFAULT_UNCOND_DIR = Path(__file__).resolve().parent / "assets"
 
 
 def default_uncond_path() -> Path:
-    """Canonical sidecar path. Override via CLI flag when needed."""
+    """Canonical sidecar path — the shipped, model-scoped package asset.
+    Override via CLI flag where a call site exposes one."""
     return DEFAULT_UNCOND_DIR / UNCOND_TE_FILENAME
 
 

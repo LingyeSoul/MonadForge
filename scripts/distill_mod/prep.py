@@ -87,9 +87,9 @@ def main() -> None:
         type=str,
         default=str(DEFAULT_UNCOND_DIR),
         help=(
-            'Where to stage the T5("") sidecar. Model-scoped, lives at the '
-            "dataset root above the per-pipeline cache subdirs so every "
-            "training/distill run can share one file."
+            'Where to stage the T5("") sidecar. Model-scoped and shipped as a '
+            "bundled package asset (library/anima/assets/), so by default this "
+            "reuses that file; pass --overwrite to regenerate it in place."
         ),
     )
     parser.add_argument(
