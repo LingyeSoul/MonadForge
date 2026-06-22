@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turbo FEI band-gap probe (Phase 0 of docs/proposal/turbo_fei_band_on_trajectory.md).
+"""Turbo FEI band-gap probe (Phase 0 of _archive/proposals/turbo_fei_band_on_trajectory.md).
 
 THE QUESTION. Does the trained DP-DMD student over-blur *on its own rollout*
 relative to the teacher — i.e. is there a HF deficit at the distribution the

@@ -11,7 +11,7 @@ from typing import NamedTuple, Tuple
 # Per-tier token-count bands — the free-fit search range for each tier edge.
 #
 # Free-fit (the only resize mode; see freefit_bucket / freefit_band_for_edge
-# below and docs/proposal/free_aspect_token_band_resize.md) preserves an image's
+# below) preserves an image's
 # native aspect ratio and lands its patch-grid token count anywhere inside its
 # tier's band. The per-tier discrete (W, H) "constant token bucket" pool that used
 # to define these tiers (and snapped every image to one of its entries) is gone —
@@ -141,8 +141,7 @@ def choose_edge(width: int, height: int, target_res) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Free-fit ("free-aspect token-band") solver — see
-# docs/proposal/free_aspect_token_band_resize.md.
+# Free-fit ("free-aspect token-band") solver.
 #
 # Free-fit preserves the native aspect ratio and lands the patch-grid token count
 # *anywhere* inside the tier's band (EDGE_TOKEN_BANDS, e.g. [4032, 4200] for 1024).
