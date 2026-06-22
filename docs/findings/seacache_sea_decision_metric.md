@@ -5,8 +5,9 @@ Cache for Accelerating Diffusion Models", arXiv:2602.18993v2) as an alternative 
 the shipped **Spectrum** inference accelerator. Two separable conclusions, plus a
 reusable methodology trap that produced a confidently-wrong first answer.
 
-Bench: `bench/spectrum_sea/` (`run_bench.py` = Phase 0, `phase1_counterfactual.py`
-= Phase 1, `report.md`, `sea.py` = the SEA filter). Cross-refs:
+Bench: `_archive/bench/spectrum_sea/` (`run_bench.py` = Phase 0,
+`phase1_counterfactual.py` = Phase 1, `report.md`, `sea.py` = the SEA filter;
+archived after the metric shipped). Cross-refs:
 `spectral_fraction_metric_inverts.md` (sibling trap), `sigma_signal_where_anima_resolves.md`,
 `ctcal_premise_inverted_on_anima.md` (the prior-inversion record this had to clear).
 
@@ -131,15 +132,15 @@ the lagging residual Spectrum currently has. Keep Spectrum's Chebyshev forecasti
 for the *reuse* — only the *when-to-skip* changes, which is orthogonal to the
 plugin boundary, so SMC-CFG / mod-guidance / DCW composition is unaffected.
 
+**Shipped.** The SEA-distance trigger is wired into `spectrum_denoise`
+(`networks/spectrum.py` + the `networks/spectrum_sea.py` helpers) as the opt-in
+`--spectrum_schedule sea` mode with auto-δ matched-compute calibration — see
+`docs/inference/spectrum.md` §"SEA schedule". The growing window remains the
+default.
+
 Not yet settled:
 
-- **End-to-end A/B.** These correlations rank *local* injected error; they do not
-  prove a fixed image-quality win at matched refresh ratio. The next step is to
-  wire the SEA-distance trigger into `spectrum_denoise` (accumulate
-  `‖Δ SEA_σ(x_t)‖`, refresh on threshold δ — SeaCache Eq. 4/8) and A/B rendered
-  samples vs the growing window at matched forward count, scored by CMMD
-  (`project_cmmd_val_signal`) not FM-MSE. Integration design:
-  `docs/proposal/spectrum_sea_schedule.md`.
+- **β sensitivity.** All runs used the natural-image power-law β = 2; untuned.
 - **β sensitivity.** All runs used the natural-image power-law β = 2; untuned.
 - The σ<0.45 tail carries ≈0% of SEA-weighted skip-cost (consistent with x̂₀
   resolving by σ≈0.45) yet the blind schedule force-computes the last 3 steps —

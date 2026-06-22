@@ -42,7 +42,7 @@ DTYPE = torch.bfloat16
 # Mirrored to disk (``output/spectrum_sea_delta.json``) so the calibration
 # survives across separate CLI processes — a one-process many-prompt run (the
 # bench harness) only ever calibrates on the first prompt via the in-memory
-# dict. See docs/proposal/spectrum_sea_schedule.md §"The δ knob".
+# dict. See docs/inference/spectrum.md §"SEA schedule" ("The δ knob").
 _AUTO_DELTA_CACHE: dict = {}
 
 
@@ -104,8 +104,8 @@ def _window_decision_fraction(
     advance) and returns ``actual_decision_steps / decision_steps``. The SEA
     auto-δ target defaults to *this* so the SEA arm is a like-for-like swap at
     matched compute for any step count — the hard-coded 0.62 in the proposal was
-    only the 24-step value and over-computes elsewhere (bench/spectrum_sea/
-    prompt_generalization.py: 0.62 → +22% forwards at 28 steps).
+    only the 24-step value and over-computes elsewhere (_archive/bench/
+    spectrum_sea/prompt_generalization.py: 0.62 → +22% forwards at 28 steps).
     """
     curr_ws = window_size
     consec = 0

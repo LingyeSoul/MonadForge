@@ -104,15 +104,7 @@ def test_accumulate_distances_length():
     assert d[0] == pytest.approx(l1rel(seas[1], seas[0]), abs=1e-5)
 
 
-# ── re-export shim + defaults ───────────────────────────────────────────────────
-
-
-def test_bench_sea_shim_reexports():
-    from bench.spectrum_sea import sea as bench_sea
-
-    assert bench_sea.sea_filter is sea_filter
-    assert bench_sea.l1rel is l1rel
-    assert bench_sea.solve_delta_for_refresh_ratio is solve_delta_for_refresh_ratio
+# ── defaults ────────────────────────────────────────────────────────────────────
 
 
 def test_spectrum_denoise_defaults_to_window():
