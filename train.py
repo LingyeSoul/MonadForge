@@ -262,21 +262,12 @@ class AnimaTrainer:
             "network for Text Encoder cannot be trained with caching Text Encoder outputs"
         )
 
-        assert (
-            args.blocks_to_swap is None or args.blocks_to_swap == 0
-        ) or not args.cpu_offload_checkpointing, (
-            "blocks_to_swap is not supported with cpu_offload_checkpointing"
-        )
-
         if args.unsloth_offload_checkpointing:
             if not args.gradient_checkpointing:
                 logger.warning(
                     "unsloth_offload_checkpointing is enabled, so gradient_checkpointing is also enabled"
                 )
                 args.gradient_checkpointing = True
-            assert not args.cpu_offload_checkpointing, (
-                "Cannot use both --unsloth_offload_checkpointing and --cpu_offload_checkpointing"
-            )
             assert args.blocks_to_swap is None or args.blocks_to_swap == 0, (
                 "blocks_to_swap is not supported with unsloth_offload_checkpointing"
             )
@@ -507,7 +498,7 @@ class AnimaTrainer:
         # construction rather than by luck.
 
         # Store unsloth preference so that when the base trainer calls
-        # dit.enable_gradient_checkpointing(cpu_offload=...), we can override to use unsloth.
+        # dit.enable_gradient_checkpointing(), we can override to use unsloth.
         self._use_unsloth_offload_checkpointing = args.unsloth_offload_checkpointing
 
         # Block swap
@@ -540,50 +531,6 @@ class AnimaTrainer:
         if args.cache_text_encoder_outputs:
             return None  # no text encoders needed for encoding
         return text_encoders
-
-    def _ensure_uncond_crossattn(
-        self,
-        args: argparse.Namespace,
-        accelerator,
-        weight_dtype: torch.dtype,
-    ) -> None:
-        """Lazily load the T5("") crossattn sidecar onto ``self._state.uncond_crossattn_1``.
-
-        Primary producer is ``make preprocess-te`` (drops the file at
-        ``post_image_dataset/_anima_uncond_te.safetensors``); this method is
-        the fallback that stages on demand if a training run was kicked off
-        without the preprocess step.
-        """
-        if self._state.uncond_crossattn_1 is not None:
-            return
-        from library.inference.uncond import (
-            DEFAULT_UNCOND_DIR,
-            default_uncond_path,
-            load_uncond_crossattn,
-            stage_uncond_sidecar,
-        )
-
-        sidecar = default_uncond_path()
-        if not sidecar.exists():
-            logger.info(
-                f"T5('') uncond sidecar missing at {sidecar} — staging "
-                f"on demand (would normally be produced by `make preprocess-te`)."
-            )
-            stage_uncond_sidecar(
-                DEFAULT_UNCOND_DIR,
-                qwen3_path=args.qwen3,
-                dit_path=args.pretrained_model_name_or_path,
-                t5_tokenizer_path=getattr(args, "t5_tokenizer_path", None),
-                seq_len=512,
-                overwrite=False,
-            )
-        self._state.uncond_crossattn_1 = load_uncond_crossattn(
-            str(sidecar), device=accelerator.device, dtype=weight_dtype
-        )
-        logger.info(
-            f"caption dropout uncond loaded: {sidecar} "
-            f"shape={tuple(self._state.uncond_crossattn_1.shape)}"
-        )
 
     def get_noise_scheduler(
         self, args: argparse.Namespace, device: torch.device
@@ -1083,7 +1030,7 @@ class AnimaTrainer:
 
         if (
             len(text_encoder_conds) == 0
-            or text_encoder_conds[0] is None
+            or all(c is None for c in text_encoder_conds)
             or train_text_encoder
         ):
             with (
@@ -1671,10 +1618,7 @@ class AnimaTrainer:
             )
 
         if args.gradient_checkpointing:
-            if args.cpu_offload_checkpointing:
-                unet.enable_gradient_checkpointing(cpu_offload=True)
-            else:
-                unet.enable_gradient_checkpointing()
+            unet.enable_gradient_checkpointing()
 
             for t_enc, flag in zip(
                 text_encoders, self.get_text_encoders_train_flags(args, text_encoders)
@@ -2199,7 +2143,16 @@ class AnimaTrainer:
         # rows then get the same crossattn embedding Anima feeds at
         # CFG-uncond inference instead of all-zeros (which is out-of-dist).
         if self._state.caption_dropout_enabled:
-            self._ensure_uncond_crossattn(args, accelerator, weight_dtype)
+            from library.preprocess.uncond import ensure_uncond_crossattn
+
+            self._state.uncond_crossattn_1 = ensure_uncond_crossattn(
+                qwen3_path=args.qwen3,
+                dit_path=args.pretrained_model_name_or_path,
+                t5_tokenizer_path=getattr(args, "t5_tokenizer_path", None),
+                device=accelerator.device,
+                dtype=weight_dtype,
+                existing=self._state.uncond_crossattn_1,
+            )
 
         net = self._create_and_apply_network(
             args, accelerator, vae, text_encoder, unet, text_encoders, weight_dtype

@@ -16,28 +16,6 @@ from library.runtime.device import weighs_to_device
 from networks import attention_dispatch
 
 
-def to_device(x, device):
-    if isinstance(x, torch.Tensor):
-        return x.to(device)
-    elif isinstance(x, (list, tuple)):
-        return type(x)(to_device(elem, device) for elem in x)
-    elif isinstance(x, dict):
-        return {k: to_device(v, device) for k, v in x.items()}
-    else:
-        return x
-
-
-def to_cpu(x):
-    if isinstance(x, torch.Tensor):
-        return x.cpu()
-    elif isinstance(x, (list, tuple)):
-        return [to_cpu(elem) for elem in x]
-    elif isinstance(x, dict):
-        return {k: to_cpu(v) for k, v in x.items()}
-    else:
-        return x
-
-
 # Based on Unsloth Zoo by Daniel Han-Chen & the Unsloth team
 try:
     from deepspeed.runtime.activation_checkpointing.checkpointing import detach_variable
@@ -74,8 +52,7 @@ except ImportError:
 class UnslothOffloadedGradientCheckpointer(torch.autograd.Function):
     """Saves VRAM by offloading activations to CPU RAM using non-blocking transfers.
 
-    Compared to standard cpu_offload_checkpointing which uses blocking transfers,
-    this uses non_blocking=True to hide CPU<->GPU transfer latency behind compute.
+    Uses non_blocking=True to hide CPU<->GPU transfer latency behind compute.
     """
 
     @staticmethod
@@ -1124,23 +1101,18 @@ class Block(nn.Module):
             )
 
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
         self.unsloth_offload_checkpointing = False
 
         # fp16-safe residual accumulation; see Anima.enable_fp32_residual() for
         # the full rationale. Inert (False) by default (bf16/fp32 bit-exact).
         self.fp32_residual = False
 
-    def enable_gradient_checkpointing(
-        self, cpu_offload: bool = False, unsloth_offload: bool = False
-    ):
+    def enable_gradient_checkpointing(self, unsloth_offload: bool = False):
         self.gradient_checkpointing = True
-        self.cpu_offload_checkpointing = cpu_offload if not unsloth_offload else False
         self.unsloth_offload_checkpointing = unsloth_offload
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
-        self.cpu_offload_checkpointing = False
         self.unsloth_offload_checkpointing = False
 
     def reset_parameters(self) -> None:
@@ -1337,29 +1309,6 @@ class Block(nn.Module):
                     attn_params,
                     rope_cos_sin,
                     adaln_lora_B_T_3D,
-                )
-            elif self.cpu_offload_checkpointing:
-
-                def create_custom_forward(func):
-                    def custom_forward(*inputs):
-                        device = next(
-                            t.device for t in inputs if isinstance(t, torch.Tensor)
-                        )
-                        device_inputs = to_device(inputs, device)
-                        outputs = func(*device_inputs)
-                        return to_cpu(outputs)
-
-                    return custom_forward
-
-                return torch_checkpoint(
-                    create_custom_forward(self._forward),
-                    x_B_T_H_W_D,
-                    emb_B_T_D,
-                    crossattn_emb,
-                    attn_params,
-                    rope_cos_sin,
-                    adaln_lora_B_T_3D,
-                    use_reentrant=False,
                 )
             else:
                 return torch_checkpoint(
@@ -1615,13 +1564,9 @@ class Anima(nn.Module):
         nn.init.zeros_(self.pooled_text_sigma_film.weight)
         nn.init.zeros_(self.pooled_text_sigma_film.bias)
 
-    def enable_gradient_checkpointing(
-        self, cpu_offload: bool = False, unsloth_offload: bool = False
-    ):
+    def enable_gradient_checkpointing(self, unsloth_offload: bool = False):
         for block in self.blocks:
-            block.enable_gradient_checkpointing(
-                cpu_offload=cpu_offload, unsloth_offload=unsloth_offload
-            )
+            block.enable_gradient_checkpointing(unsloth_offload=unsloth_offload)
 
     def disable_gradient_checkpointing(self):
         for block in self.blocks:

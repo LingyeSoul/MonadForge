@@ -11,12 +11,12 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_P"
+output_name = "anima_turbo_Q_WSVD_KL"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 6000
+iterations = 750
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -55,6 +55,29 @@ attn_mode = "flash"
 # (kept-live only; `make merge` refuses it, stock ComfyUI LoRA loaders can't
 # drive per-step head selection — use AnimaTurboPerStepExpertLoader).
 per_step_expert = false
+
+# OrthoInit (use_ortho_init) per stack: seed each adapted Linear with a trainable
+# top-r SVD basis of W0 + a zero-init lambda (dW=0 at init, so the start-zero
+# invariant holds), giving a W0-aligned warm start with full LoRA expressivity.
+# Distills to a plain LoRA at save, so the turbo output stays mergeable. The
+# benefit lands on the STUDENT (fixes "ortho feels too weak"); the fake/critic is
+# a fast-refit score net, so leave it off unless A/B'ing. student_ortho_init is
+# incompatible with per_step_expert (StepExpertLoRAModule has no ortho-init path).
+
+# student_ortho_init = true
+# fake_ortho_init = false
+# fake_down_init = "weight_svd"   # same SVD-Down lever on the fake/critic
+                                  # (default "kaiming"; off under fake_ortho_init)
+
+# SVD-Down (down_init="weight_svd") — the wide-tangent ALTERNATIVE to OrthoInit
+# for the student. OrthoInit cold-starts the student (~25x smaller step-1 dW than
+# plain LoRA; the defect this distiller exposed — docs/proposal/svd_down_lora_init.md);
+# SVD-Down keeps plain LoRA's full first-step tangent but seeds lora_down from W0's
+# top-r right singular vectors (scale-matched, so it is NOT a larger step). Distills
+# to a plain mergeable LoRA exactly like the default. To A/B it, set
+# student_ortho_init = false above and uncomment the next line (they are mutually
+# exclusive — weight_svd needs the plain LoRAModule; also off under per_step_expert).
+student_down_init = "weight_svd"
 
 # DMD schedule.
 [dmd]
@@ -145,7 +168,7 @@ grad_ckpt = true                # checkpoint ONLY the grad-bearing GAN gen forwa
 # anchor (they may not be additive). Numerical care (ports of f_distill.py):
 # ±10 logit clamp, r∈[ratio_lower, ratio_upper], per-τ EMA histogram of r.
 [f_distill]
-f_div = "rkl"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
+f_div = "kl"                   # rkl|kl|js|sf|neyman|sh|jf ; "rkl" = off (no-op)
 ratio_lower = 0.1
 ratio_upper = 20.0
 ratio_ema_rate = 0.0            # per-τ histogram EMA decay (0 = instantaneous per-bin)
@@ -154,10 +177,10 @@ ratio_normalization = true      # per-τ histogram normalization of r
 
 # Turbo × REPA — relational (Gram) alignment on REAL data 
 [repa]
-weight = 0.0                   # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
+weight = 0.0                    # λ on the Gram align loss. 0 = off; first live value 0.05 (LoRA-validated scale)
 layer = 8                       # DiT block tap (matches LoRA-family REPA)
 encoder = "pe_spatial"          # sidecar {stem}_anima_{encoder}.safetensors next to the TE cache
-every_n = 4                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
+every_n = 2                     # run the term every N student steps (amortization; ~0.08 partial fwd/step)
 # spatial_norm = true           # iREPA target standardization (the validated LoRA operating point)
 # target_dog = true             # turn the DoG band-pass on
 # dog_sigma1_div = 16.0         # low-pass σ1 = min(gh,gw)/16 (Phase-0 sweet spot min/16–32)

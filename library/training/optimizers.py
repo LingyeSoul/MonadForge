@@ -6,9 +6,6 @@ from typing import Callable, Tuple
 
 import torch
 from torch.optim import Optimizer
-# transformers (~1.3s) is imported lazily inside the Adafactor branch of
-# get_optimizer; no other optimizer needs it, so importing this module stays
-# cheap.
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +15,6 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
     if optimizer_type is None or optimizer_type == "":
         optimizer_type = "AdamW"
     optimizer_type = optimizer_type.lower()
-
-    if args.fused_backward_pass:
-        assert optimizer_type == "Adafactor".lower(), (
-            "fused_backward_pass currently only works with optimizer_type Adafactor"
-        )
-        assert args.gradient_accumulation_steps == 1, (
-            "fused_backward_pass does not work with gradient_accumulation_steps > 1"
-        )
 
     optimizer_kwargs = {}
     if args.optimizer_args is not None and len(args.optimizer_args) > 0:
@@ -207,55 +196,6 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
             logger.info(f"use Prodigy optimizer | {optimizer_kwargs}")
             optimizer_class = prodigyopt.Prodigy
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
-
-    elif optimizer_type == "Adafactor".lower():
-        if "relative_step" not in optimizer_kwargs:
-            optimizer_kwargs["relative_step"] = True
-        if not optimizer_kwargs["relative_step"] and optimizer_kwargs.get(
-            "warmup_init", False
-        ):
-            logger.info("set relative_step to True because warmup_init is True")
-            optimizer_kwargs["relative_step"] = True
-        logger.info(f"use Adafactor optimizer | {optimizer_kwargs}")
-
-        if optimizer_kwargs["relative_step"]:
-            logger.info("relative_step is true")
-            if lr != 0.0:
-                logger.warning("learning rate is used as initial_lr")
-            args.learning_rate = None
-
-            if isinstance(trainable_params, list) and isinstance(
-                trainable_params[0], dict
-            ):
-                has_group_lr = False
-                for group in trainable_params:
-                    p = group.pop("lr", None)
-                    has_group_lr = has_group_lr or (p is not None)
-
-                if has_group_lr:
-                    logger.warning("unet_lr and text_encoder_lr are ignored")
-                    args.unet_lr = None
-                    args.text_encoder_lr = None
-
-            if args.lr_scheduler != "adafactor":
-                logger.info("use adafactor_scheduler")
-            args.lr_scheduler = f"adafactor:{lr}"
-
-            lr = None
-        else:
-            if args.max_grad_norm != 0.0:
-                logger.warning(
-                    "because max_grad_norm is set, clip_grad_norm is enabled. consider set to 0"
-                )
-            if args.lr_scheduler != "constant_with_warmup":
-                logger.warning("constant_with_warmup will be good")
-            if optimizer_kwargs.get("clip_threshold", 1.0) != 1.0:
-                logger.warning("clip_threshold=1.0 will be good")
-
-        import transformers
-
-        optimizer_class = transformers.optimization.Adafactor
-        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif optimizer_type == "AdamW".lower():
         if "fused" not in optimizer_kwargs and torch.cuda.is_available():

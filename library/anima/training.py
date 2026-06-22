@@ -16,10 +16,6 @@ from library.runtime.device import clean_memory_on_device, synchronize_device
 from library import train_util
 from library.datasets.buckets import snap_sample_size
 from library.training.checkpoints import (
-    get_epoch_ckpt_name,
-    get_remove_epoch_no,
-    get_remove_step_no,
-    get_step_ckpt_name,
     save_sd_model_on_epoch_end_or_stepwise_common,
     save_sd_model_on_train_end_common,
 )
@@ -721,16 +717,6 @@ def _get_ema_filename(ckpt_file):
     return os.path.join(dirpath, f"ema_{basename}")
 
 
-def _remove_old_ema_file(old_ckpt_file):
-    """Remove old EMA file corresponding to an old checkpoint file (for save_last_n cleanup)."""
-    if old_ckpt_file is None:
-        return
-    old_ema_file = _get_ema_filename(old_ckpt_file)
-    if os.path.exists(old_ema_file):
-        logger.info(f"removing old EMA checkpoint: {old_ema_file}")
-        os.remove(old_ema_file)
-
-
 def _save_ema_model(ema, dit, ckpt_file, sai_metadata, save_dtype):
     """Save EMA model as standard format with ema_ prefix.
 
@@ -802,19 +788,6 @@ def save_anima_model_on_epoch_end_or_stepwise(
 
         if ema is not None:
             _save_ema_model(ema, dit, ckpt_file, sai_metadata, save_dtype)
-
-            # Clean up old EMA files (train_util only cleans normal model files)
-            ext = ".safetensors"
-            if on_epoch_end:
-                remove_no = get_remove_epoch_no(args, epoch_no)
-                if remove_no is not None:
-                    old_ckpt_name = get_epoch_ckpt_name(args, ext, remove_no)
-                    _remove_old_ema_file(os.path.join(args.output_dir, old_ckpt_name))
-            else:
-                remove_no = get_remove_step_no(args, global_step)
-                if remove_no is not None:
-                    old_ckpt_name = get_step_ckpt_name(args, ext, remove_no)
-                    _remove_old_ema_file(os.path.join(args.output_dir, old_ckpt_name))
 
     save_sd_model_on_epoch_end_or_stepwise_common(
         args,

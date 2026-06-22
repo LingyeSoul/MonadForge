@@ -76,8 +76,7 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         default="",
         help="Optimizer to use"
         "Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
-        "DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD, "
-        "AdaFactor.",
+        "DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD.",
     )
 
     parser.add_argument(
@@ -123,41 +122,6 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         type=int_or_float,
         default=0,
         help="Int number of steps for the warmup in the lr scheduler (default is 0) or float with ratio of train steps",
-    )
-    parser.add_argument(
-        "--lr_decay_steps",
-        type=int_or_float,
-        default=0,
-        help="Int number of steps for the decay in the lr scheduler (default is 0) or float (<1) with ratio of train steps",
-    )
-    parser.add_argument(
-        "--lr_scheduler_num_cycles",
-        type=int,
-        default=1,
-        help="Number of restarts for cosine scheduler with restarts",
-    )
-    parser.add_argument(
-        "--lr_scheduler_power",
-        type=float,
-        default=1,
-        help="Polynomial power for polynomial scheduler",
-    )
-    parser.add_argument(
-        "--fused_backward_pass",
-        action="store_true",
-        help="Combines backward pass and optimizer step to reduce VRAM usage.",
-    )
-    parser.add_argument(
-        "--lr_scheduler_timescale",
-        type=int,
-        default=None,
-        help="Inverse sqrt timescale for inverse sqrt scheduler,defaults to `num_warmup_steps`",
-    )
-    parser.add_argument(
-        "--lr_scheduler_min_lr_ratio",
-        type=float,
-        default=None,
-        help="The minimum learning rate as a ratio of the initial learning rate for cosine with min lr scheduler and warmup decay scheduler",
     )
 
 
@@ -215,30 +179,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=int,
         default=None,
         help="save checkpoint N epoch ratio",
-    )
-    parser.add_argument(
-        "--save_last_n_epochs",
-        type=int,
-        default=None,
-        help="save last N checkpoints when saving every N epochs (remove older checkpoints)",
-    )
-    parser.add_argument(
-        "--save_last_n_epochs_state",
-        type=int,
-        default=None,
-        help="save last N checkpoints of state (overrides the value of --save_last_n_epochs)",
-    )
-    parser.add_argument(
-        "--save_last_n_steps",
-        type=int,
-        default=None,
-        help="save checkpoints until N steps elapsed (remove older checkpoints if N steps elapsed)",
-    )
-    parser.add_argument(
-        "--save_last_n_steps_state",
-        type=int,
-        default=None,
-        help="save states until N steps elapsed (remove older states if N steps elapsed, overrides --save_last_n_steps)",
     )
     parser.add_argument(
         "--save_state",
@@ -883,12 +823,6 @@ def add_train_misc_arguments(parser: argparse.ArgumentParser):
     flags (``--print-config`` / ``--config-snapshot`` / ``--config-strict``).
     """
     parser.add_argument(
-        "--cpu_offload_checkpointing",
-        action="store_true",
-        help="[EXPERIMENTAL] enable offloading of tensors to CPU during checkpointing for U-Net or DiT, if supported"
-        "",
-    )
-    parser.add_argument(
         "--no_metadata",
         action="store_true",
         help="do not save metadata in output model",
@@ -940,8 +874,8 @@ def add_train_misc_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--unsloth_offload_checkpointing",
         action="store_true",
-        help="offload activations to CPU RAM using async non-blocking transfers (faster than --cpu_offload_checkpointing). "
-        "Cannot be used with --cpu_offload_checkpointing or --blocks_to_swap.",
+        help="offload activations to CPU RAM using async non-blocking transfers. "
+        "Cannot be used with --blocks_to_swap.",
     )
     parser.add_argument(
         "--print-config",

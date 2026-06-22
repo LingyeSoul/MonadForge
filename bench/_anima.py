@@ -32,7 +32,7 @@ Usage::
     p.add_argument("--adapter", default=None)
     add_common_args(p)            # injects --label/--seed/--device/--dtype/
                                   # --attn_mode/--gradient_checkpointing/
-                                  # --cpu_offload_checkpointing/--compile/--compile_mode
+                                  # --compile/--compile_mode
     args = p.parse_args()
 
     bundle = build_anima(args, adapter=args.adapter, train_mode=False)
@@ -142,7 +142,6 @@ def add_common_args(
         --dtype             bf16|fp16|fp32, default bf16
         --attn_mode         flash|torch|..., default "flash"
         --gradient_checkpointing  bool flag
-        --cpu_offload_checkpointing  bool flag
         --compile           bool flag — torch.compile DiT blocks
         --compile_mode      str, default None (inductor default)
     """
@@ -175,13 +174,6 @@ def add_common_args(
             help="Enable activation checkpointing on the DiT. Trades ~30%% "
             "compute for ~4-5x smaller activation footprint. Required for "
             "benches that backward through the full DiT at high resolutions.",
-        )
-        parser.add_argument(
-            "--cpu_offload_checkpointing",
-            action="store_true",
-            help="With --gradient_checkpointing, additionally CPU-offload "
-            "the checkpointed activations. Further VRAM savings at higher "
-            "compute cost.",
         )
     if include_compile:
         parser.add_argument(

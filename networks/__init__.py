@@ -98,6 +98,8 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "use_ortho",
         "use_ortho_init",
         "ortho_init_std",
+        # SVD-Down: lora_down init for plain LoRA ("kaiming" | "weight_svd").
+        "down_init",
         "use_moe_style",
         "route_per_layer",
         "router_source",

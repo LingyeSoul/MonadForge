@@ -54,6 +54,13 @@ checkpointing_epochs = 3
 # sibling sidecars. EasyControl reuses the existing VAE-cache output as the
 # cond source — no separate sidecar.
 # (use_vae_cache and use_text_cache default to true in configs/base.toml.)
+#
+# The frozen DiT consumes the LLM-adapter output (crossattn_emb), and the
+# preprocess text stage caches exactly that (prep.py loads the llm_adapter). The
+# loader only reads the cached crossattn_emb when this flag is on — otherwise it
+# falls back to the plain prompt_embeds tensors that adapter-format caches don't
+# contain, raising `SafetensorError: File does not contain tensor prompt_embeds_v*`.
+cache_llm_adapter_outputs = true
 
 # CFG dropout for image conditioning (independent of text dropout).
 # Read by train.py when use_easycontrol is on.

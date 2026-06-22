@@ -82,7 +82,7 @@ def none_or_stack_elements(tensors_list, converter):
         len(tensors_list) == 0
         or tensors_list[0] is None
         or len(tensors_list[0]) == 0
-        or tensors_list[0][0] is None
+        or all(t is None for t in tensors_list[0])
     ):
         return None
 

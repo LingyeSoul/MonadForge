@@ -116,13 +116,31 @@ class TagKnowledgeBase:
         return self._ranked
 
 
-def default_tag_csv_candidates(root: Path | None = None) -> list[Path]:
-    """Likely local CSV locations, in priority order."""
+def default_tag_csv_candidates(
+    root: Path | None = None, lang: str | None = None
+) -> list[Path]:
+    """Likely local CSV locations, in priority order.
+
+    The shipped base CSV (``danbooru_tags_classified.csv``) carries Korean
+    descriptions. When ``lang`` is a non-Korean UI language the lookup prefers,
+    in order, a same-language sibling ``danbooru_tags_classified.<lang>.csv`` then
+    the English ``danbooru_tags_classified.en.csv`` (the ``download-danbooru-tags``
+    output), so e.g. a Japanese/Chinese UI shows English explanations rather than
+    untranslated Hangul; the Korean base file remains the final fallback (it still
+    supplies language-neutral tag names / categories for autocomplete).
+    """
+
+    stems = ["danbooru_tags_classified.csv"]
+    if lang and lang != "ko":
+        if lang != "en":
+            stems.insert(0, "danbooru_tags_classified.en.csv")
+        stems.insert(0, f"danbooru_tags_classified.{lang}.csv")
 
     paths: list[Path] = []
-    if root is not None:
-        paths.append(root / "models" / "danbooru_tags_classified.csv")
-    paths.append(_REPO_ROOT / "models" / "danbooru_tags_classified.csv")
+    for stem in stems:
+        if root is not None:
+            paths.append(root / "models" / stem)
+        paths.append(_REPO_ROOT / "models" / stem)
     env = os.environ.get("ANIMA_DANBOORU_TAGS_CSV")
     if env:
         paths.append(Path(env))
@@ -140,8 +158,8 @@ def default_tag_csv_candidates(root: Path | None = None) -> list[Path]:
     return out
 
 
-def find_tag_csv(root: Path | None = None) -> Path | None:
-    for path in default_tag_csv_candidates(root):
+def find_tag_csv(root: Path | None = None, lang: str | None = None) -> Path | None:
+    for path in default_tag_csv_candidates(root, lang):
         if path.exists():
             return path
     return None
@@ -234,9 +252,12 @@ def correct_caption(
     unknown: list[str] = []
     seen: set[str] = set()
     trigger = options.trigger_word.strip()
+    trigger_key = tag_key(trigger) if trigger else ""
 
     for tag in tags:
         key = tag_key(tag)
+        if trigger and key == trigger_key:
+            continue
         if key in seen:
             continue
         seen.add(key)

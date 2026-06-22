@@ -110,7 +110,7 @@ Per training step:
    the student's `x_θ.detach()` distribution (resampling τ_fake, ε_fake each) —
    keeps the fake score tracker ahead of the moving x_θ.
 
-The teacher uncond is the **T5("") sidecar** (`library/inference/uncond.py`), *not*
+The teacher uncond is the **T5("") sidecar** (`library/anima/uncond.py`), *not*
 a zero tensor — a zero crossattn is fed-out-of-distribution and the resulting
 `v_real_uncond` amplified at (α−1)=3× drives the student off-manifold (saturated
 white output). Staged by `make distill-prep` / `make preprocess-te`; shared with the

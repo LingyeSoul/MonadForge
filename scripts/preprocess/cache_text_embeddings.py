@@ -165,7 +165,7 @@ def main() -> None:
     # Pre-flight: skip the (slow) Qwen3 + LLM-adapter load when every TE cache
     # already exists. When --dit is set the run also stages the one-time uncond
     # sidecar (needs the loaded model), so a missing sidecar still forces a load.
-    from library.inference.uncond import default_uncond_path
+    from library.anima.uncond import default_uncond_path
 
     pending, total = count_pending_text(
         data_dir,
@@ -211,7 +211,7 @@ def main() -> None:
     # training/distill run reuses this file (matches library/inference/text.py).
     # Skipped without --dit (no llm_adapter → can't produce crossattn here).
     if llm_adapter is not None:
-        from library.inference.uncond import (
+        from library.preprocess.uncond import (
             DEFAULT_UNCOND_DIR,
             stage_uncond_sidecar_with_models,
         )

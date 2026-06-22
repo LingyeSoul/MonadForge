@@ -90,7 +90,7 @@ colorize は参照を変えるだけでなく、**キャプションを色の単
 colorize が対処している、その構造をコピーすれば無償で受け継げる二つの正確性の落とし穴:
 
 - **Stem が一致していなければなりません。** テキストステージはキャプションマスター (`image_dataset/`、`resized/` と同じレイアウト) から `.txt` キャプションを読むので、生成されるテキストキャッシュのファイル名がローダーの `image_dir=post_image_dataset/resized` を参照する形と一致します。キャッシュのファイル名がターゲットの stem と合わなければ、ローダーは黙ってペアにしません。
-- **uncond サイドカー。** colorize のテキストステージは共有の `T5("")` 空プロンプトサイドカーがなければ再作成します。テキストキャッシュを構築してキャプションドロップアウトを使うなら同じことをしてください (`library.inference.uncond.stage_uncond_sidecar_with_models`)。
+- **uncond サイドカー。** colorize のテキストステージは共有の `T5("")` 空プロンプトサイドカーがなければ再作成します。テキストキャッシュを構築してキャプションドロップアウトを使うなら同じことをしてください (`library.preprocess.uncond.stage_uncond_sidecar_with_models`)。
 
 ---
 

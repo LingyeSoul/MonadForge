@@ -1,8 +1,19 @@
 # FEI band-deficit, revived on-trajectory — log-only Phase 0 inside the DP-DMD loop
 
-Status: **proposal / not started**. Phase 0 is pure logging (zero behavior change,
-zero extra forwards) and is designed to be able to **close this line permanently**
-— that outcome is as valuable as the lever.
+Status: **CLOSED 2026-06-20** — Phase 0 run, gate hit CLOSE. See
+`docs/findings/turbo_fei_band_revival_closed.md`. Measured on-trajectory
+(`bench/turbo/probe_fei_band.py`, anima_turbo_P_5k, n=60 paired, Site A σ-matched
+exactly): the student does **not** over-blur on its rollout (Site A gap_low
+−0.0014, frac_over 0.03) and the over-blur arm `dh` is dead in the lever's
+mid/low-τ region while the falsified LF arm `dl` fires at 100% frac — the inverse
+persists at the right distribution. The diversity anchor already absorbed the
+over-blur. The line is dead twice; do not re-propose FEI/band levers on turbo.
+
+---
+
+Phase 0 was pure logging (zero behavior change, zero extra forwards) and was
+designed to be able to **close this line permanently** — that outcome is as
+valuable as the lever.
 
 Premise sources: `docs/findings/turbo_fei_band_deficit_falsified.md` (the
 falsification this revives *on its own stated terms*), `docs/methods/turbo.md`

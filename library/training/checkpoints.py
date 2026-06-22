@@ -29,40 +29,32 @@ def default_if_none(value, default):
     return default if value is None else value
 
 
+def _ensure_parent_dir(path: str) -> None:
+    """makedirs the directory that will contain ``path`` (the per-run subdir)."""
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+# Trajectory (step/epoch) checkpoints + their resumable -state dirs live in a
+# per-run subdir ``<output_dir>/<model_name>/`` so they don't clutter
+# output_dir; the final ``<output_name>.<ext>`` and the rolling
+# ``<output_name>-checkpoint`` resumable family stay at the output_dir root
+# (where inference / merge / auto_resume look). Returned names are relative to
+# output_dir and carry the subdir prefix, so save and remove stay symmetric.
 def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
-    return EPOCH_FILE_NAME.format(model_name, epoch_no) + ext
+    return os.path.join(model_name, EPOCH_FILE_NAME.format(model_name, epoch_no) + ext)
 
 
 def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
-    return STEP_FILE_NAME.format(model_name, step_no) + ext
+    return os.path.join(model_name, STEP_FILE_NAME.format(model_name, step_no) + ext)
 
 
 def get_last_ckpt_name(args: argparse.Namespace, ext: str):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
     return model_name + ext
-
-
-def get_remove_epoch_no(args: argparse.Namespace, epoch_no: int):
-    if args.save_last_n_epochs is None:
-        return None
-
-    remove_epoch_no = epoch_no - args.save_every_n_epochs * args.save_last_n_epochs
-    if remove_epoch_no < 0:
-        return None
-    return remove_epoch_no
-
-
-def get_remove_step_no(args: argparse.Namespace, step_no: int):
-    if args.save_last_n_steps is None:
-        return None
-
-    remove_step_no = step_no - args.save_last_n_steps - 1
-    remove_step_no = remove_step_no - (remove_step_no % args.save_every_n_steps)
-    if remove_step_no < 0:
-        return None
-    return remove_step_no
 
 
 def save_sd_model_on_epoch_end_or_stepwise_common(
@@ -86,11 +78,9 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
             return
 
         model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
-        remove_no = get_remove_epoch_no(args, epoch_no)
     else:
         model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
         epoch_no = epoch
-        remove_no = get_remove_step_no(args, global_step)
 
     os.makedirs(args.output_dir, exist_ok=True)
     if save_stable_diffusion_format:
@@ -102,20 +92,10 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
             ckpt_name = get_step_ckpt_name(args, ext, global_step)
 
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
+        _ensure_parent_dir(ckpt_file)  # create the per-run subdir
         logger.info("")
         logger.info(f"saving checkpoint: {ckpt_file}")
         sd_saver(ckpt_file, epoch_no, global_step)
-
-        if remove_no is not None:
-            if on_epoch_end:
-                remove_ckpt_name = get_epoch_ckpt_name(args, ext, remove_no)
-            else:
-                remove_ckpt_name = get_step_ckpt_name(args, ext, remove_no)
-
-            remove_ckpt_file = os.path.join(args.output_dir, remove_ckpt_name)
-            if os.path.exists(remove_ckpt_file):
-                logger.info(f"removing old checkpoint: {remove_ckpt_file}")
-                os.remove(remove_ckpt_file)
 
     else:
         if on_epoch_end:
@@ -131,84 +111,39 @@ def save_sd_model_on_epoch_end_or_stepwise_common(
         logger.info(f"saving model: {out_dir}")
         diffusers_saver(out_dir)
 
-        if remove_no is not None:
-            if on_epoch_end:
-                remove_out_dir = os.path.join(
-                    args.output_dir,
-                    EPOCH_DIFFUSERS_DIR_NAME.format(model_name, remove_no),
-                )
-            else:
-                remove_out_dir = os.path.join(
-                    args.output_dir,
-                    STEP_DIFFUSERS_DIR_NAME.format(model_name, remove_no),
-                )
-
-            if os.path.exists(remove_out_dir):
-                logger.info(f"removing old model: {remove_out_dir}")
-                shutil.rmtree(remove_out_dir)
-
     if args.save_state:
         if on_epoch_end:
-            save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
+            save_state_on_epoch_end(args, accelerator, epoch_no)
         else:
-            save_and_remove_state_stepwise(args, accelerator, global_step)
+            save_state_stepwise(args, accelerator, global_step)
 
 
-def save_and_remove_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
+def save_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
 
     logger.info("")
     logger.info(f"saving state at epoch {epoch_no}")
-    os.makedirs(args.output_dir, exist_ok=True)
 
+    # Trajectory -state dirs live alongside their weights in the per-run subdir.
     state_dir = os.path.join(
-        args.output_dir, EPOCH_STATE_NAME.format(model_name, epoch_no)
+        args.output_dir, model_name, EPOCH_STATE_NAME.format(model_name, epoch_no)
     )
+    _ensure_parent_dir(state_dir)
     accelerator.save_state(state_dir)
 
-    last_n_epochs = (
-        args.save_last_n_epochs_state
-        if args.save_last_n_epochs_state
-        else args.save_last_n_epochs
-    )
-    if last_n_epochs is not None:
-        remove_epoch_no = epoch_no - args.save_every_n_epochs * last_n_epochs
-        state_dir_old = os.path.join(
-            args.output_dir, EPOCH_STATE_NAME.format(model_name, remove_epoch_no)
-        )
-        if os.path.exists(state_dir_old):
-            logger.info(f"removing old state: {state_dir_old}")
-            shutil.rmtree(state_dir_old)
 
-
-def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator, step_no):
+def save_state_stepwise(args: argparse.Namespace, accelerator, step_no):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
 
     logger.info("")
     logger.info(f"saving state at step {step_no}")
-    os.makedirs(args.output_dir, exist_ok=True)
 
+    # Trajectory -state dirs live alongside their weights in the per-run subdir.
     state_dir = os.path.join(
-        args.output_dir, STEP_STATE_NAME.format(model_name, step_no)
+        args.output_dir, model_name, STEP_STATE_NAME.format(model_name, step_no)
     )
+    _ensure_parent_dir(state_dir)
     accelerator.save_state(state_dir)
-
-    last_n_steps = (
-        args.save_last_n_steps_state
-        if args.save_last_n_steps_state
-        else args.save_last_n_steps
-    )
-    if last_n_steps is not None:
-        remove_step_no = step_no - last_n_steps - 1
-        remove_step_no = remove_step_no - (remove_step_no % args.save_every_n_steps)
-
-        if remove_step_no > 0:
-            state_dir_old = os.path.join(
-                args.output_dir, STEP_STATE_NAME.format(model_name, remove_step_no)
-            )
-            if os.path.exists(state_dir_old):
-                logger.info(f"removing old state: {state_dir_old}")
-                shutil.rmtree(state_dir_old)
 
 
 def get_checkpoint_state_dir(args: argparse.Namespace):
@@ -427,6 +362,9 @@ class CheckpointSaver:
 
         os.makedirs(args.output_dir, exist_ok=True)
         ckpt_file = os.path.join(args.output_dir, ckpt_name)
+        # ckpt_name carries a per-run subdir for trajectory (step/epoch) saves;
+        # final + resumable names are bare and resolve to output_dir directly.
+        _ensure_parent_dir(ckpt_file)
 
         accelerator.print(f"\nsaving checkpoint: {ckpt_file}")
         self.metadata["ss_training_finished_at"] = str(time.time())
@@ -441,19 +379,6 @@ class CheckpointSaver:
 
         if self.progress_sink is not None:
             self.progress_sink.ckpt(global_step=steps, path=ckpt_file)
-
-    def remove(self, old_ckpt_name: str) -> None:
-        """Delete an old checkpoint plus its HydraLoRA ``_moe`` sibling if present."""
-        args = self.args
-        accelerator = self.accelerator
-        old_ckpt_file = os.path.join(args.output_dir, old_ckpt_name)
-        if os.path.exists(old_ckpt_file):
-            accelerator.print(f"removing old checkpoint: {old_ckpt_file}")
-            os.remove(old_ckpt_file)
-        moe_file = os.path.splitext(old_ckpt_file)[0] + "_moe.safetensors"
-        if os.path.exists(moe_file):
-            accelerator.print(f"removing old checkpoint: {moe_file}")
-            os.remove(moe_file)
 
     def maybe_save_step(self, network: Any, global_step: int, epoch: int) -> None:
         """Step-cadence save. ``global_step`` must already be incremented."""
@@ -470,13 +395,7 @@ class CheckpointSaver:
         ckpt_name = get_step_ckpt_name(args, "." + args.save_model_as, global_step)
         self.save(ckpt_name, network, global_step, epoch)
         if args.save_state:
-            save_and_remove_state_stepwise(args, accelerator, global_step)
-        remove_step_no = get_remove_step_no(args, global_step)
-        if remove_step_no is not None:
-            remove_ckpt_name = get_step_ckpt_name(
-                args, "." + args.save_model_as, remove_step_no
-            )
-            self.remove(remove_ckpt_name)
+            save_state_stepwise(args, accelerator, global_step)
 
     def maybe_save_epoch(
         self, network: Any, global_step: int, epoch: int, num_train_epochs: int
@@ -494,14 +413,8 @@ class CheckpointSaver:
             return
         ckpt_name = get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
         self.save(ckpt_name, network, global_step, epoch_no)
-        remove_epoch_no = get_remove_epoch_no(args, epoch_no)
-        if remove_epoch_no is not None:
-            remove_ckpt_name = get_epoch_ckpt_name(
-                args, "." + args.save_model_as, remove_epoch_no
-            )
-            self.remove(remove_ckpt_name)
         if args.save_state:
-            save_and_remove_state_on_epoch_end(args, accelerator, epoch_no)
+            save_state_on_epoch_end(args, accelerator, epoch_no)
 
     def maybe_save_resumable(
         self, network: Any, global_step: int, epoch: int, num_train_epochs: int

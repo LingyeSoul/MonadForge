@@ -257,7 +257,7 @@ COMMANDS = {
     ),
     "download-danbooru-tags": (
         downloads.cmd_download_danbooru_tags,
-        "Download danbooru_tags_classified.csv for caption order correction",
+        "Download danbooru tag tables (KR base + EN sibling) for caption correction",
     ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (

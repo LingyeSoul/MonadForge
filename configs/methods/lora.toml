@@ -20,32 +20,33 @@
 #
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
-# 90, 128, 152, 180 each for 16, 32, 48, 64
-network_alpha = 90
-network_dim = 16
+# 90, 128, 152, 180, 214 each for 16, 32, 48, 64, 96
+network_alpha = 128
+network_dim = 32
 
-learning_rate = 5e-5
-max_train_epochs = 3
-save_every_n_epochs = 3
-checkpointing_epochs = 3
+learning_rate = 2e-5
+max_train_epochs = 6
+save_every_n_epochs = 6
+checkpointing_epochs = 6
 
 use_shuffled_caption_variants = true
-# use_randomized_caption_variants = true
+use_randomized_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-output_name = "anima_tenth_repa_corrected"
+output_name = "anima_sincos2"
 # sigmoid_bias = 0.5
-# path_pattern = "channel_(caststation)/*"
+path_pattern = "sincos/*"
 
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
 
-# compile_inductor_mode = "reduce-overhead"
+# compile_inductor_mode = "max-autotune"
 
 # -------------
 # Ortho-lora
 
+down_init = "weight_svd"
 # use_ortho_init = true
 
 # -------------
@@ -58,9 +59,9 @@ output_name = "anima_tenth_repa_corrected"
 # -------------
 # Timestep mask
 
-# use_timestep_mask = true
-# min_rank = 1
-# alpha_rank_scale = 1.0
+use_timestep_mask = true
+min_rank = 1
+alpha_rank_scale = 1.0
 
 
 # ---

@@ -50,7 +50,7 @@ from pathlib import Path
 
 
 from library.datasets.buckets import DCW_ASPECT_NAMES  # noqa: E402
-from library.inference.uncond import (  # noqa: E402
+from library.preprocess.uncond import (  # noqa: E402
     DEFAULT_SEQ_LEN,
     DEFAULT_UNCOND_DIR,
     UNCOND_TE_FILENAME,
@@ -87,9 +87,9 @@ def main() -> None:
         type=str,
         default=str(DEFAULT_UNCOND_DIR),
         help=(
-            'Where to stage the T5("") sidecar. Model-scoped, lives at the '
-            "dataset root above the per-pipeline cache subdirs so every "
-            "training/distill run can share one file."
+            'Where to stage the T5("") sidecar. Model-scoped and shipped as a '
+            "bundled package asset (library/anima/assets/), so by default this "
+            "reuses that file; pass --overwrite to regenerate it in place."
         ),
     )
     parser.add_argument(

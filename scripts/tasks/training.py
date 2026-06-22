@@ -547,6 +547,69 @@ def _colorize_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
     )
 
 
+def _inpaint_prep_paths(base: str) -> list[str]:
+    """Slug-derived prep.py path flags so ``name`` reroutes inpaint's trees.
+
+    ``--src`` stays the shared corpus (``post_image_dataset/resized`` — the inpaint
+    *targets*); only the masked staging tree + cond/text caches ride the slug,
+    matching the blueprint's ``cond_cache_dir`` / ``text_cache_dir``. The text cache
+    holds full captions with shuffle + tag-dropout variants (the cond-latent target
+    captions are otherwise reused from the shared LoRA cache). Injected before the
+    descriptor knob tables so a ``[staging]``/``[preprocess]`` key (or user
+    ``extra``) still wins via argparse last-flag precedence."""
+    return [
+        "--staging",
+        f"{base}/staging",
+        "--cond_cache_dir",
+        f"{base}/cond",
+        "--text_cache_dir",
+        f"{base}/text",
+    ]
+
+
+def _inpaint_stage(adapter: str, cfg: dict, base: str, extra) -> None:
+    """Inpaint staging: synthesize the gray-masked condition tree.
+
+    Runs only prep.py's mask stage (``--skip_encode --skip_text``) over the shared
+    corpus into ``{base}/staging``. Knobs come from the descriptor's ``[staging]``
+    table; user ``extra`` argv wins last. The cond-latent + caption-text caching is
+    the separate preprocess pass."""
+    knobs = _toml_table_to_argv(cfg.get("staging") or {})
+    run(
+        [
+            PY,
+            "easycontrol_adapters/inpainting/prep.py",
+            "--skip_encode",
+            "--skip_text",
+            *_inpaint_prep_paths(base),
+            *knobs,
+            *list(extra or []),
+        ]
+    )
+
+
+def _inpaint_preprocess(adapter: str, cfg: dict, base: str, extra) -> None:
+    """Inpaint preprocess: cache cond latents over the masked staging tree.
+
+    Runs prep.py's encode + caption-text stages (``--skip_mask`` — masking is the
+    staging step). The target latents are reused from the shared LoRA cache (no
+    re-encode); the text stage re-caches full captions with shuffle + tag-dropout
+    variants into ``{base}/text``. Knobs come from the descriptor's ``[preprocess]``
+    table; pass ``ARGS="--no-skip_mask"`` to re-stage inline, or ``--skip_text`` to
+    reuse the shared LoRA TE cache instead."""
+    knobs = _toml_table_to_argv(cfg.get("preprocess") or {})
+    run(
+        [
+            PY,
+            "easycontrol_adapters/inpainting/prep.py",
+            "--skip_mask",
+            *_inpaint_prep_paths(base),
+            *knobs,
+            *list(extra or []),
+        ]
+    )
+
+
 # Per-adapter materialization bodies (training is generic via _easy_train_extra);
 # only `stage` (data gen) + `preprocess` (VAE/TE caching) differ per adapter. Both
 # receive ``(adapter, cfg, base, extra)``. ``sanitize`` reuses the near-twin miner
@@ -555,6 +618,7 @@ _EASY_ADAPTERS = {
     "near_twins": {"stage": _near_twins_stage, "preprocess": _near_twins_preprocess},
     "sanitize": {"stage": _near_twins_stage, "preprocess": _near_twins_preprocess},
     "colorize": {"stage": _colorize_stage, "preprocess": _colorize_preprocess},
+    "inpaint": {"stage": _inpaint_stage, "preprocess": _inpaint_preprocess},
 }
 
 

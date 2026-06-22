@@ -21,10 +21,11 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ._common import ROOT, run
+from ._common import PY, ROOT, run
 
 
 DANBOORU_TAGS_PATH = ROOT / "models" / "danbooru_tags_classified.csv"
+DANBOORU_TAGS_EN_PATH = ROOT / "models" / "danbooru_tags_classified.en.csv"
 DANBOORU_TAGS_URLS = (
     "https://raw.githubusercontent.com/Localsmile/danbooru_KR_wiki_tag_search/main/danbooru_tags_classified.csv",
 )
@@ -112,9 +113,8 @@ def cmd_download_tagger(_extra):
     )
 
 
-def cmd_download_danbooru_tags(_extra):
-    """Download the classified Danbooru tag table used by caption correction."""
-
+def _download_danbooru_base(_extra):
+    """Fetch the Korean-description base CSV from Localsmile (idempotent)."""
     if _skip("Danbooru classified tags", [DANBOORU_TAGS_PATH], _extra):
         return
     DANBOORU_TAGS_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -139,6 +139,27 @@ def cmd_download_danbooru_tags(_extra):
     raise SystemExit(
         "failed to download danbooru_tags_classified.csv from "
         "Localsmile/danbooru_KR_wiki_tag_search"
+    )
+
+
+def cmd_download_danbooru_tags(_extra):
+    """Fetch the Danbooru tag table for caption correction — both languages.
+
+    Downloads the Korean-description base CSV (``danbooru_tags_classified.csv``)
+    from Localsmile, then builds the English sibling
+    (``danbooru_tags_classified.en.csv``) by joining tag names against the
+    ``isek-ai/danbooru-wiki-2024`` wiki mirror so the GUI tag-explanation tooltip
+    works for non-Korean UIs. Both steps are idempotent (``--force`` re-fetches).
+    """
+    _download_danbooru_base(_extra)
+    if _skip("Danbooru English tags", [DANBOORU_TAGS_EN_PATH], _extra):
+        return
+    # Pass through only the builder's own flags (e.g. --revision); --force is a
+    # task-runner concept the build script doesn't accept.
+    build_args = [a for a in (_extra or []) if a != "--force"]
+    run(
+        [PY, "-m", "scripts.anima_tagger.build_english_tag_csv", *build_args],
+        cwd=ROOT,
     )
 
 

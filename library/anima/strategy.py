@@ -156,7 +156,7 @@ class AnimaTextEncodingStrategy(TextEncodingStrategy):
 
         ``uncond_crossattn_emb`` is the T5("") sidecar (shape ``(1, S, D)``
         staged by ``make distill-prep`` — see
-        ``library/inference/uncond.py``). When provided, dropped rows of
+        ``library/preprocess/uncond.py``). When provided, dropped rows of
         ``crossattn_emb`` are replaced with it so the trained adapter sees
         the *same* unconditional embedding at CFG-uncond time that
         ``library/inference/text.py:99-127`` feeds at inference. When None,
@@ -275,27 +275,27 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 keys = set(f.keys())
                 if "num_variants" in keys:
                     num_variants = int(f.get_tensor("num_variants"))
+            # Adapter-output caches prune the unused Qwen tensors and store only
+            # crossattn_emb (+ t5_attn_mask); plain (no-adapter) caches store the
+            # Qwen prompt_embeds tuple. Require whichever set the mode consumes.
+            if self.cache_llm_adapter_outputs:
+                required = ("crossattn_emb", "t5_attn_mask")
+            else:
+                required = (
+                    "prompt_embeds",
+                    "attn_mask",
+                    "t5_input_ids",
+                    "t5_attn_mask",
+                )
             if "num_variants" in keys:
                 for vi in range(num_variants):
-                    if f"prompt_embeds_v{vi}" not in keys:
-                        return False
-                    if f"attn_mask_v{vi}" not in keys:
-                        return False
-                    if f"t5_input_ids_v{vi}" not in keys:
-                        return False
-                    if f"t5_attn_mask_v{vi}" not in keys:
-                        return False
-                    if (
-                        self.cache_llm_adapter_outputs
-                        and f"crossattn_emb_v{vi}" not in keys
-                    ):
-                        return False
+                    for stem in required:
+                        if f"{stem}_v{vi}" not in keys:
+                            return False
             else:
-                for k in ("prompt_embeds", "attn_mask", "t5_input_ids", "t5_attn_mask"):
-                    if k not in keys:
+                for stem in required:
+                    if stem not in keys:
                         return False
-                if self.cache_llm_adapter_outputs and "crossattn_emb" not in keys:
-                    return False
             if "caption_dropout_rate" not in keys:
                 return False
         except Exception as e:
@@ -384,40 +384,40 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                         if random.random() < 0.2
                         else f"v{random.randint(1, num_variants - 1)}"
                     )
-                prompt_embeds = f.get_tensor(f"prompt_embeds_{suffix}")
-                attn_mask = f.get_tensor(f"attn_mask_{suffix}")
-                t5_input_ids = f.get_tensor(f"t5_input_ids_{suffix}")
-                t5_attn_mask = f.get_tensor(f"t5_attn_mask_{suffix}")
-                crossattn_key = f"crossattn_emb_{suffix}"
-                crossattn_emb = (
-                    f.get_tensor(crossattn_key)
-                    if self.cache_llm_adapter_outputs and crossattn_key in keys
-                    else None
-                )
+                sfx = f"_{suffix}"
             elif has_variants:
                 # Variants on disk but the user opted out — pin to v0 deterministically.
-                prompt_embeds = f.get_tensor("prompt_embeds_v0")
-                attn_mask = f.get_tensor("attn_mask_v0")
-                t5_input_ids = f.get_tensor("t5_input_ids_v0")
-                t5_attn_mask = f.get_tensor("t5_attn_mask_v0")
-                crossattn_emb = (
-                    f.get_tensor("crossattn_emb_v0")
-                    if self.cache_llm_adapter_outputs and "crossattn_emb_v0" in keys
-                    else None
-                )
+                sfx = "_v0"
             else:
                 # Single-variant cache. Loaded as-is whether or not the user
                 # asked for shuffles — silent fallback so a bool flip doesn't
                 # require re-preprocessing.
-                prompt_embeds = f.get_tensor("prompt_embeds")
-                attn_mask = f.get_tensor("attn_mask")
-                t5_input_ids = f.get_tensor("t5_input_ids")
-                t5_attn_mask = f.get_tensor("t5_attn_mask")
-                crossattn_emb = (
-                    f.get_tensor("crossattn_emb")
-                    if self.cache_llm_adapter_outputs and "crossattn_emb" in keys
-                    else None
-                )
+                sfx = ""
+
+            crossattn_key = f"crossattn_emb{sfx}"
+            crossattn_emb = (
+                f.get_tensor(crossattn_key)
+                if self.cache_llm_adapter_outputs and crossattn_key in keys
+                else None
+            )
+            t5_attn_mask = (
+                f.get_tensor(f"t5_attn_mask{sfx}")
+                if f"t5_attn_mask{sfx}" in keys
+                else None
+            )
+            if crossattn_emb is not None:
+                # Adapter-output mode: the Qwen prompt_embeds / attn_mask /
+                # t5_input_ids are unused downstream (see
+                # library/training/forward/text_conds.py) — skip the read.
+                # Force them to None even for legacy caches that still carry the
+                # keys, so a batch mixing pruned + legacy files stacks to a
+                # uniform all-None column instead of crashing in
+                # none_or_stack_elements.
+                prompt_embeds = attn_mask = t5_input_ids = None
+            else:
+                prompt_embeds = f.get_tensor(f"prompt_embeds{sfx}")
+                attn_mask = f.get_tensor(f"attn_mask{sfx}")
+                t5_input_ids = f.get_tensor(f"t5_input_ids{sfx}")
 
             caption_dropout_rate = f.get_tensor("caption_dropout_rate")
         if crossattn_emb is None:
@@ -550,14 +550,19 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
 
             if self.cache_to_disk:
                 save_dict = {
-                    "prompt_embeds": pe_i,
-                    "attn_mask": am_i,
-                    "t5_input_ids": t5_i,
                     "t5_attn_mask": t5m_i,
                     "caption_dropout_rate": caption_dropout_rate,
                 }
                 if ce_i is not None:
+                    # Adapter-output cache: only crossattn_emb is consumed at
+                    # train time (+ t5_attn_mask for postfix). Prune the unused
+                    # Qwen prompt_embeds / attn_mask / t5_input_ids (~half the
+                    # file). Mirrors library/preprocess/text.py.
                     save_dict["crossattn_emb"] = ce_i
+                else:
+                    save_dict["prompt_embeds"] = pe_i
+                    save_dict["attn_mask"] = am_i
+                    save_dict["t5_input_ids"] = t5_i
                 _save_safetensors(save_dict, info.text_encoder_outputs_npz)
             else:
                 if ce_i is None:

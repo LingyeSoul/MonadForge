@@ -58,7 +58,7 @@ from library.anima.models import Anima
 from library.datasets.cache import CachedDataset
 from library.runtime.harness import compile_dit_blocks
 from library.training.forward import from_dit_5d, make_padding_mask, to_dit_5d
-from library.inference.uncond import (
+from library.anima.uncond import (
     default_uncond_path,
     load_uncond_crossattn,
     uncond_for_batch,

@@ -272,7 +272,7 @@ the separate CA branch; with CA gone, guidance has to ride the single DMD real s
 (matching the reference `compute_dmd_loss`). Without it $v_\text{real} \approx
 v_\text{fake}$ (`dm_cos ≈ 0.9999`) and the quality gradient is noise. **The fake
 stays cond-only.** The teacher uncond is the **T5("") sidecar**
-(`library/inference/uncond.py`), *not* a zero tensor — a zero crossattn is
+(`library/anima/uncond.py`), *not* a zero tensor — a zero crossattn is
 fed-out-of-distribution and the resulting $v_\text{real,uncond}$ amplified at
 $(\alpha-1)=3\times$ drives the student off-manifold (saturated white output).
 

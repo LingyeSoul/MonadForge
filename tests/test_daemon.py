@@ -431,6 +431,30 @@ def test_queue_start_true_flushes_held_backlog(daemon):
     assert cl.get(run_now)["started_at"] >= cl.get(held)["ended_at"] - 0.5
 
 
+def test_add_to_queue_while_running_auto_advances(daemon):
+    """Regression: ``start=False`` ("add to queue") must NOT pause a queue that's
+    already playing. Adding a job while another was running used to clear the
+    global run gate, so the new job stalled ``queued`` the moment the running one
+    finished — the GUI's "infinite loading" report. It should auto-advance on its
+    own (cassette-tape behaviour), with no Start Queue press."""
+    cl, _ = daemon
+    running = cl.submit(method="lora", overrides={"duration": 3.0}, start=True)[
+        "job_id"
+    ]
+    assert _wait_until(lambda: cl.get(running)["state"] == "running", timeout=10)
+
+    # Add-to-queue while a job is running: the gate must stay open.
+    queued = cl.submit(method="lora", overrides={"duration": 1.0}, start=False)[
+        "job_id"
+    ]
+    assert cl.health()["paused"] is False
+
+    # Both drain without anyone pressing Start Queue, in FIFO order.
+    assert _wait_until(lambda: cl.get(running)["state"] == "done", timeout=20)
+    assert _wait_until(lambda: cl.get(queued)["state"] == "done", timeout=20)
+    assert cl.get(queued)["started_at"] >= cl.get(running)["ended_at"] - 0.5
+
+
 def test_pause_does_not_interrupt_running_job(daemon):
     """Pausing the queue holds the *next* launch but never stops a job already
     running."""

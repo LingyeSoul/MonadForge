@@ -71,7 +71,7 @@ from library.training.forward import (  # noqa: E402
     to_dit_5d,
 )
 from library.training.schedulers import make_warmup_cosine_scheduler  # noqa: E402
-from library.inference.uncond import (  # noqa: E402
+from library.anima.uncond import (  # noqa: E402
     default_uncond_path,
     load_uncond_crossattn,
     uncond_for_batch,

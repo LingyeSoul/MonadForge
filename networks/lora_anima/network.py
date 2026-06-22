@@ -508,6 +508,12 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                         extra_kwargs["fei_feature_dim"] = cfg.fei_feature_dim
                         self._fei_router_hits += 1
 
+                # SVD-Down init — plain two-factor LoRAModule only (v0). Ortho/
+                # Hydra/Chimera classes own their own SVD seeding and reject this
+                # kwarg; gate so it never reaches them.
+                if cfg.down_init != "kaiming" and effective_module_class is LoRAModule:
+                    extra_kwargs["down_init"] = cfg.down_init
+
                 # Per-channel scaling is DiT-only — TE activations are never calibrated.
                 if cfg.channel_scales_dict is not None and is_unet:
                     _cs = cfg.channel_scales_dict.get(lora_name)

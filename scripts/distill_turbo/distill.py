@@ -24,7 +24,7 @@ from library.anima import weights as anima_utils
 from library.anima.models import Anima
 from library.datasets.cache import CachedDataset
 from library.inference.sampling import get_timesteps_sigmas
-from library.inference.uncond import (
+from library.anima.uncond import (
     default_uncond_path,
     load_uncond_crossattn,
     uncond_for_batch,
@@ -276,21 +276,18 @@ def selective_block_grad_ckpt(model: Anima):
     saved = [
         (
             b.gradient_checkpointing,
-            b.cpu_offload_checkpointing,
             b.unsloth_offload_checkpointing,
         )
         for b in model.blocks
     ]
     for b in model.blocks:
         b.gradient_checkpointing = True
-        b.cpu_offload_checkpointing = False
         b.unsloth_offload_checkpointing = True
     try:
         yield
     finally:
-        for b, (g, c, u) in zip(model.blocks, saved):
+        for b, (g, u) in zip(model.blocks, saved):
             b.gradient_checkpointing = g
-            b.cpu_offload_checkpointing = c
             b.unsloth_offload_checkpointing = u
 
 
@@ -358,6 +355,10 @@ def main():
         use_custom_down_autograd=cfg.use_custom_down_autograd,
         channel_scaling_alpha=cfg.channel_scaling_alpha,
         student_step_expert_K=cfg.step_expert_K,
+        student_ortho_init=cfg.student_ortho_init,
+        fake_ortho_init=cfg.fake_ortho_init,
+        student_down_init=cfg.student_down_init,
+        fake_down_init=cfg.fake_down_init,
         gan_feature_indices=gan_indices,
         gan_disc_hidden=cfg.gan_disc_hidden if cfg.gan_disc_hidden > 0 else None,
     )
@@ -585,13 +586,19 @@ def main():
         # Phase 0 overfit — wrap as a 1-sample list so the dataloader cycles it.
         apply_single_prompt_slice(dataset, cfg.single_prompt_idx, logger=logger)
 
+    # Bucket-grouped batch sampler (mirrors distill_mod): every batch is one
+    # resolution — free-fit gives each image its own token count, so a
+    # cross-resolution batch can't stack. Batch ORDER is shuffled per epoch,
+    # seeded by cfg.seed, which activates the data-order axis of the training
+    # lottery (init + per-step noise already ride cfg.seed via manual_seed). The
+    # largest-token bucket is pinned first for compile warmup
+    # ([[project_compile_context_vram_climb]]). Supersedes the old shuffle=False
+    # path — bucket grouping is enforced by the sampler, not by on-disk order.
     dataloader = torch.utils.data.DataLoader(
         dataset,
-        batch_size=cfg.batch_size,
-        shuffle=False,  # bucket-grouped
+        batch_sampler=dataset.make_batch_sampler(shuffle=True, seed=cfg.seed),
         num_workers=2,
         pin_memory=True,
-        drop_last=True,
         collate_fn=make_collate(),
     )
 
@@ -1313,11 +1320,19 @@ def main():
                 # count == student_steps.
                 metadata["ss_turbo_per_step_expert"] = "1"
                 metadata["ss_turbo_step_expert_K"] = str(cfg.step_expert_K)
-            save_names = [f"{cfg.output_name}_{_step_tag(n)}"]
+            # Step-tagged intermediates live in a per-run subdir so they don't
+            # clutter output/ckpt/; the canonical bare {output_name} stays at the
+            # root where inference / merge / `make test` look for it.
+            ckpt_subdir = Path(cfg.output_dir) / cfg.output_name
+            ckpt_subdir.mkdir(parents=True, exist_ok=True)
+            save_paths = [
+                str(ckpt_subdir / f"{cfg.output_name}_{_step_tag(n)}.safetensors")
+            ]
             if is_final:
-                save_names.append(cfg.output_name)  # canonical bare name
-            for name in save_names:
-                save_path = str(Path(cfg.output_dir) / f"{name}.safetensors")
+                save_paths.append(
+                    str(Path(cfg.output_dir) / f"{cfg.output_name}.safetensors")
+                )
+            for save_path in save_paths:
                 turbo.save_student(save_path, dtype=torch.bfloat16, metadata=metadata)
                 logger.info(f"saved checkpoint: {save_path}")
 

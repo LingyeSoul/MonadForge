@@ -48,3 +48,5 @@ configs/gui-methods/custom/
 /wandb
 /.playwright-mcp
 near_twins_temp.toml
+sincos_decensored/
+bench/x0_contradiction/prompts/
