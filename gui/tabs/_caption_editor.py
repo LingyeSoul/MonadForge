@@ -263,11 +263,33 @@ class BoxedCaptionEdit(QTextEdit):
                 pen = QPen(_tag_border_color(tag))
                 pen.setWidth(1)
                 painter.setPen(pen)
-                for r in self._tag_rects(start, end):
-                    if r.width() > 0:
-                        painter.drawRoundedRect(r, 2, 2)
+                rects = [r for r in self._tag_rects(start, end) if r.width() > 0]
+                for i, r in enumerate(rects):
+                    # A tag split across a soft wrap draws "open" boxes: omit the
+                    # right edge of every segment but the last and the left edge
+                    # of every segment but the first, so the run reads as one
+                    # continuous box flowing off the right margin and back in.
+                    self._draw_tag_box(
+                        painter, r, open_left=i > 0, open_right=i < len(rects) - 1
+                    )
         finally:
             painter.end()
+
+    def _draw_tag_box(
+        self, painter: QPainter, r: QRect, *, open_left: bool, open_right: bool
+    ) -> None:
+        if not open_left and not open_right:
+            painter.drawRoundedRect(r, 2, 2)
+            return
+        # Open side gets a square (unrounded) corner so the segment butts flush
+        # against the line edge instead of curling back inward.
+        left, right, top, bottom = r.left(), r.right(), r.top(), r.bottom()
+        painter.drawLine(left, top, right, top)
+        painter.drawLine(left, bottom, right, bottom)
+        if not open_left:
+            painter.drawLine(left, top, left, bottom)
+        if not open_right:
+            painter.drawLine(right, top, right, bottom)
 
     def _tag_rects(self, start: int, end: int) -> list[QRect]:
         """Per-line bounding rectangles for char range ``[start, end)``.
