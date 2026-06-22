@@ -672,6 +672,36 @@ def queue_command(label: str, argv: list[str]) -> None:
     )
 
 
+# ``tasks.py`` command names whose body is ``train(...)`` — i.e. they run
+# ``train.py`` (via ``accelerate_launch`` / ``build_launch_cmd``) and therefore
+# honor ``--progress_jsonl``. Bespoke-loop commands (``turbo``, ``exp-spd``,
+# ``distill-*``) bypass ``train.py`` and never read that flag, so they're
+# excluded. Single source of truth shared by:
+#   - scripts/daemon/manager.py::_command_runs_train  (injects --progress_jsonl)
+#   - webui/services/task_service.py::_commandRunsTraining (watches the jsonl)
+# Keep both delegating here so the two surfaces can't drift — a prior drift
+# (only ``lora``/``lora-gui``/``easycontrol``) left exp-chimera / exp-soft-tokens
+# / exp-byg falling back to the shared cross-run progress file.
+_TRAIN_COMMANDS = frozenset(
+    {
+        "lora",
+        "lora-gui",
+        "easycontrol",
+        "exp-chimera",
+        "exp-soft-tokens",
+        "exp-byg",
+    }
+)
+
+
+def command_runs_training(command: str | None) -> bool:
+    """True iff the ``tasks.py`` command ``command`` runs through ``train.py``.
+
+    See :data:`_TRAIN_COMMANDS` for the contract + the two call sites.
+    """
+    return command in _TRAIN_COMMANDS
+
+
 def train(
     method: str, extra, preset: str | None = None, methods_subdir: str | None = None
 ):

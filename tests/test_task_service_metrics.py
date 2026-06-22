@@ -125,6 +125,47 @@ def test_non_training_command_has_no_progress_jsonl_watcher():
     )
 
 
+# Regression: the WebUI's command-name set once drifted from the daemon's
+# (only {lora, lora-gui, easycontrol}), so exp-* training commands that route
+# through train.py were not watched even though the daemon redirected their
+# --progress_jsonl. The two surfaces must agree via the shared helper.
+@pytest.mark.parametrize("command", ["lora", "lora-gui", "easycontrol", "exp-chimera"])
+def test_training_command_gets_progress_jsonl_watcher(command):
+    """Commands that route through train.py must tail the per-job JSONL."""
+    svc, _, _ = _make_service()
+
+    path = svc._derive_progress_jsonl_path(
+        {"job_id": "20260617-163000-abcdef"},
+        command,
+        [],
+        {},
+    )
+
+    assert path is not None
+    # Path is absolute + platform-specific separators, so assert on components
+    # (matches test_lora_gui_progress_jsonl_path_uses_daemon_job_file's style).
+    p = Path(path)
+    assert p.name == "progress.jsonl"
+    assert p.parent.name == "20260617-163000-abcdef"
+    assert p.parent.parent.name == "jobs"
+
+
+@pytest.mark.parametrize("command", ["turbo", "exp-spd"])
+def test_bespoke_loop_command_has_no_progress_jsonl_watcher(command):
+    """turbo/exp-spd bypass train.py and write no progress.jsonl — no watcher."""
+    svc, _, _ = _make_service()
+
+    assert (
+        svc._derive_progress_jsonl_path(
+            {"job_id": "20260617-163000-abcdef"},
+            command,
+            [],
+            {},
+        )
+        is None
+    )
+
+
 def test_progress_jsonl_explicit_path_wins_for_command_job(tmp_path: Path):
     """A caller-provided ``--progress_jsonl`` must match train.py semantics."""
     svc, _, _ = _make_service()

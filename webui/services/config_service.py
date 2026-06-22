@@ -107,6 +107,13 @@ _METHOD_ORDER = (
 _ATTN_MODES = ["flash", "torch", "sageattn", "flex", "xformers"]
 _SAMPLER_CHOICES = ["euler", "er_sde", "euler_a"]
 
+# Curated to exactly what library/training/optimizers.py::get_optimizer and
+# library/training/schedulers.py::get_scheduler_fix accept. Keep in sync with
+# those two — a name listed here that the trainer no longer branches on either
+# crashes (Adafactor → AttributeError via the torch.optim fallback; inverse_sqrt
+# → TypeError; cosine_with_min_lr → ValueError) or silently drops its params
+# (cosine_with_restarts / polynomial / warmup_stable_decay). The Adafactor +
+# 5 LR-scheduler names were pruned from the trainer in commit 772dda7.
 _SELECT_OPTIONS: dict[str, list[str]] = {
     "attn_mode": _ATTN_MODES,
     "optimizer_type": [
@@ -129,7 +136,6 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
         "DAdaptLion",
         "DAdaptSGD",
         "Prodigy",
-        "Adafactor",
         "RAdamScheduleFree",
         "AdamWScheduleFree",
         "SGDScheduleFree",
@@ -139,12 +145,7 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
         "constant_with_warmup",
         "linear",
         "cosine",
-        "cosine_with_restarts",
-        "polynomial",
-        "inverse_sqrt",
-        "cosine_with_min_lr",
         "piecewise_constant",
-        "warmup_stable_decay",
     ],
     "timestep_sampling": [
         "sigmoid",

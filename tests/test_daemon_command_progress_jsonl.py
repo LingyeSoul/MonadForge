@@ -9,6 +9,8 @@ replay stale metrics at task start and leave the live dashboard empty.
 
 from __future__ import annotations
 
+import pytest
+
 from scripts.daemon.jobs import Job
 from scripts.daemon.manager import JobManager
 
@@ -77,3 +79,50 @@ def test_command_training_job_keeps_explicit_progress_jsonl(monkeypatch):
     assert cmd.count("--progress_jsonl") == 1
     idx = cmd.index("--progress_jsonl")
     assert cmd[idx + 1] == "custom.progress.jsonl"
+
+
+# Regression: the command-name set was once hardcoded to only
+# {lora, lora-gui, easycontrol}, so exp-chimera / exp-soft-tokens / exp-byg
+# (which also route through train.py via train()) were launched WITHOUT the
+# per-job --progress_jsonl and fell back to the shared cross-run file.
+@pytest.mark.parametrize("command", ["exp-chimera", "exp-soft-tokens", "exp-byg"])
+def test_exp_training_command_gets_per_job_progress_jsonl(command, monkeypatch):
+    mgr = JobManager()
+    job = Job(
+        id="20260617-163000-abcdef",
+        method=command,
+        preset="",
+        kind="command",
+        argv=["tasks.py", command],
+        progress_path="output/daemon/jobs/20260617-163000-abcdef/progress.jsonl",
+    )
+
+    monkeypatch.setattr("scripts.daemon.client.venv_python", lambda windowless=False: "pythonw.exe")
+
+    cmd, _env = mgr._build_cmd(job)
+
+    assert "--progress_jsonl" in cmd
+    idx = cmd.index("--progress_jsonl")
+    assert cmd[idx + 1] == job.progress_path
+
+
+# turbo / exp-spd are bespoke single-GPU loops that bypass train.py and never
+# read --progress_jsonl, so the daemon must not inject it (matches the
+# historical intent of _command_runs_train = "train.py jobs").
+@pytest.mark.parametrize("command", ["turbo", "exp-spd"])
+def test_bespoke_loop_command_does_not_get_progress_jsonl(command, monkeypatch):
+    mgr = JobManager()
+    job = Job(
+        id="20260617-163000-abcdef",
+        method=command,
+        preset="",
+        kind="command",
+        argv=["tasks.py", command],
+        progress_path="output/daemon/jobs/20260617-163000-abcdef/progress.jsonl",
+    )
+
+    monkeypatch.setattr("scripts.daemon.client.venv_python", lambda windowless=False: "pythonw.exe")
+
+    cmd, _env = mgr._build_cmd(job)
+
+    assert "--progress_jsonl" not in cmd

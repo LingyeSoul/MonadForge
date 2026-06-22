@@ -57,6 +57,17 @@ _SIGNAL_HINTS = {
 
 def _classify_exit(rc) -> str:
     """Human-readable diagnosis for a nonzero/unknown process exit code."""
+    if rc is None:
+        # The adopted-orphan path (``popen is None``) can't ``poll()`` a process
+        # that vanished while the daemon was down, so it lands here with no exit
+        # code at all. Don't claim "crashed before finishing" + point at a
+        # non-existent traceback — give the actionable "we couldn't read it"
+        # diagnosis instead.
+        return (
+            "process exit code unavailable — the adopted job vanished before the "
+            "daemon could read its exit code. Check if the process was killed "
+            "externally (OOM reaper, SIGKILL from another tool), then retry."
+        )
     sig = None
     if rc is not None and rc < 0:
         sig = -rc
@@ -724,13 +735,21 @@ class JobManager:
 
     @staticmethod
     def _command_runs_train(argv: list[str]) -> bool:
-        """True for command jobs that eventually invoke ``train.py`` via tasks.py."""
+        """True for command jobs that eventually invoke ``train.py`` via tasks.py.
+
+        Delegates the command-name set to
+        :func:`scripts.tasks._common.command_runs_training` so this and the
+        WebUI's mirror decision stay in lockstep — see that helper for the
+        rationale (and the exp-* commands that also run train.py)."""
         if len(argv) < 2:
             return False
         script = os.path.basename(str(argv[0])).lower()
         if script != "tasks.py":
             return False
-        return str(argv[1]) in {"lora", "lora-gui", "easycontrol"}
+        from scripts.tasks._common import command_runs_training
+
+        return command_runs_training(str(argv[1]))
+
     def _build_cmd(self, job: Job) -> tuple[list[str], dict]:
         from .client import venv_python
 

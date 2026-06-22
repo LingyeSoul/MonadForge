@@ -527,7 +527,15 @@ class TaskService:
 
     @staticmethod
     def _command_runs_training(command: str) -> bool:
-        return command in {"lora", "lora-gui", "easycontrol"}
+        """Mirror of the daemon's ``_command_runs_train`` argv classification.
+
+        Delegates to :func:`scripts.tasks._common.command_runs_training` so this
+        and the daemon's ``--progress_jsonl`` injection decision can't drift —
+        they must agree on which ``tasks.py`` commands route through ``train.py``
+        (and thus honor ``--progress_jsonl``)."""
+        from scripts.tasks._common import command_runs_training
+
+        return command_runs_training(command)
 
     def _config_path_overrides(
         self,
