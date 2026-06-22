@@ -11,12 +11,12 @@
 # standard inference path with --infer_steps 2 --cfg 1.0 (CFG is baked into the
 # student during distillation).
 
-output_name = "anima_turbo_Q_WSVD_KL"
+output_name = "anima_turbo_R"
 dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 750
+iterations = 4000
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -91,7 +91,7 @@ grad_step = "random"
 [optim]
 student_lr = 1e-5
 fake_lr = 2e-5
-fake_steps_per_student_step = 4
+fake_steps_per_student_step = 5
 fake_warmup_steps = 50
 weight_decay = 0.0
 grad_clip = 1.0                 # student grad-norm cap
@@ -186,6 +186,31 @@ every_n = 2                     # run the term every N student steps (amortizati
 # dog_sigma1_div = 16.0         # low-pass σ1 = min(gh,gw)/16 (Phase-0 sweet spot min/16–32)
 # dog_sigma2_div = 0.0          # σ2 = min(gh,gw)/div; 0 = off (single low-pass)
 # dog_norm_std = 0.0            # post band-pass std; 0 = empirical per-batch std
+
+# Soft-rank caption-discrimination auxiliary (turbo_caption_ranking.md Phase 1).
+#
+# Phase 0 measured that DP-DMD distillation degrades the teacher's caption
+# discriminability, concentrated exactly at the step-0 state (σ→1): at σ=1.0 a
+# quarter of anchors lose to a RANDOM caption (rank@1 0.750 vs base 0.958). This
+# term fixes it at the source — at the DP-DMD step-0 diversity anchor, k extra
+# no_grad student forwards re-run the SAME (ε, t=1) with another pool sample's
+# caption, and a bounded listwise soft-RANK loss pushes the matched caption to
+# explain the anchor (v_target) better than the mismatched ones. Grad flows
+# through the matched forward only (negatives detached); bounded by construction
+# (L→0 as the matched caption wins). Requires base_loss="dpdmd" + blocks_to_swap=0.
+# weight=0 keeps the whole path OFF → byte-identical DP-DMD (no extra forwards).
+#
+# Negatives come from a cross-step caption POOL (not the current batch), so the
+# term fires at batch_size=1. The pool holds the last `pool_size` captions (~1 MiB
+# each on GPU → pool_size MiB VRAM) and must fill to `warmup_ratio` of capacity
+# before firing (negatives = a representative shuffle, not just the last few).
+[softrank]
+weight = 0.05                   # λ on the soft-rank loss. 0 = off; first live value 0.05
+k = 2                           # shuffled-caption negatives per firing (chance 1/3 at k=2)
+every_n = 4                     # fire every N student steps (amortization; ≈ +k/N no_grad fwd/step)
+softness = 0.1                  # soft-rank temperature τ (smaller = closer to the hard integer rank)
+pool_size = 128                 # cross-step caption pool capacity (≈ pool_size MiB VRAM); must be >= k
+warmup_ratio = 1.0              # fill this fraction of the pool before firing (1.0 = full; ≈ pool_size steps @ B=1)
 
 # Logging / checkpoints.
 [io]

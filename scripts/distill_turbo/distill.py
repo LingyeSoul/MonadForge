@@ -68,6 +68,7 @@ from .primitives import (
     renoise,
     sample_t,
 )
+from .softrank import CaptionNegativePool, caption_rank_loss
 from .warmup import run_fake_warmup
 
 logger = logging.getLogger(__name__)
@@ -544,6 +545,23 @@ def main():
             f"{repa_target_desc}"
         )
 
+    # Soft-rank caption auxiliary (turbo_caption_ranking.md Phase 1): at the
+    # DP-DMD step-0 anchor, rank the matched caption against k shuffled-caption
+    # negatives so it explains the diversity target better. weight=0 → the whole
+    # path is off (no extra forwards) → byte-identical DP-DMD.
+    #
+    # Negatives are drawn from a cross-step caption pool (CaptionNegativePool) so
+    # the term fires even at batch_size=1, where within-batch negatives don't
+    # exist. The pool holds detached on-device caption clones (~1 MiB each →
+    # pool_size MiB VRAM); it must fill to `softrank_min_pool` (warmup_ratio of
+    # capacity) before firing, so negatives are a representative shuffle rather
+    # than the last few captions.
+    softrank_on = cfg.softrank_weight > 0.0
+    softrank_pool = CaptionNegativePool(cfg.softrank_pool_size) if softrank_on else None
+    softrank_min_pool = max(
+        cfg.softrank_k, round(cfg.softrank_warmup_ratio * cfg.softrank_pool_size)
+    )
+
     dataset = CachedDataset(
         cfg.data_dir,
         batch_size=cfg.batch_size,
@@ -836,6 +854,12 @@ def main():
         split_bwd = use_anchor and cfg.detach_after_first
         last_step = cfg.student_steps - 1
 
+        # Soft-rank caption auxiliary state (metrics + non-split backward read it
+        # even on steps/branches where the term doesn't fire). Zero leaf ⇒ adds
+        # nothing to any backward when off/skipped.
+        softrank_loss = torch.zeros((), device=device)
+        softrank_ran = False
+
         if use_anchor:
             # Step 0 is the diversity anchor (supervised toward v_target, then
             # detached under split_bwd); steps 1..N-1 carry the DMD-refine grad,
@@ -850,11 +874,43 @@ def main():
             )
             x = x - (s0 - s0_next) * v_first
             div_loss_t = nn.functional.mse_loss(v_first.float(), v_target)
+
+            # --- soft-rank caption-discrimination auxiliary (Phase 1) ---------
+            # k extra no_grad student forwards at the SAME step-0 (ε, t=1, head 0),
+            # only crossattn_emb swapped for a pooled sample's caption (the
+            # `shuffled` negatives where Phase 0 measured the worst damage). The
+            # matched caption should explain the diversity anchor v_target better
+            # than the mismatched ones; soft-rank its position and push it to 0.
+            # Grad flows through v_first ONLY (negatives detached under no_grad) —
+            # "make the matched caption explain the anchor better", and the term
+            # stays bounded (no negative-push). It rides the step-0 backward below.
+            if softrank_on:
+                if step % cfg.softrank_every_n == 0 and softrank_pool.ready(
+                    softrank_min_pool
+                ):
+                    # Pool negatives → works at any batch size (B=1 included). Head
+                    # 0 stays selected → no per-step-expert recompute hazard.
+                    v_negs = [
+                        _forward("student", eps, t_b, c_neg, no_grad=True).squeeze(2)
+                        for c_neg in softrank_pool.draw(cfg.softrank_k, B)
+                    ]
+                    softrank_loss = caption_rank_loss(
+                        v_first, v_negs, v_target, tau=cfg.softrank_softness
+                    )
+                    softrank_ran = True
+                # Fill AFTER drawing so an anchor never draws its own caption.
+                softrank_pool.add(crossattn_emb)
+
             if split_bwd:
                 # Load-bearing stop-grad: the DMD reverse-KL from steps 1..N-1 must
                 # NOT flow into the diversity mapping (their Fig 5). Backward the
-                # diversity term now, then re-leaf for a fresh DMD-chain root.
-                (cfg.div_weight * div_loss_t).backward()
+                # diversity term now, then re-leaf for a fresh DMD-chain root. The
+                # soft-rank term joins THIS backward (both ride v_first's step-0
+                # graph), so the DMD graph separation is untouched.
+                (
+                    cfg.div_weight * div_loss_t + cfg.softrank_weight * softrank_loss
+                ).backward()
+                softrank_loss = softrank_loss.detach()  # metrics-only from here
                 x = x.detach().requires_grad_()
             if cfg.dmd_grad_step == "random":
                 # Memory-flat anchored DMD: sample ONE refinement step g~U{1..N-1},
@@ -1113,7 +1169,13 @@ def main():
             loss_student = loss_student + cfg.mean_var_weight * mv_loss
 
         if use_anchor and not split_bwd:
-            loss_student = loss_student + cfg.div_weight * div_loss_t
+            # div + soft-rank both ride v_first's retained step-0 graph here (no
+            # split backward), so they join the combined student backward below.
+            loss_student = (
+                loss_student
+                + cfg.div_weight * div_loss_t
+                + cfg.softrank_weight * softrank_loss
+            )
 
         if turbo.disc is not None:
             loss_student = loss_student + cfg.gan_loss_weight_gen * gan_gen_loss
@@ -1248,6 +1310,8 @@ def main():
             metrics.add_gan(gan_gen_loss, gan_disc_mean_t)
         if repa_on:
             metrics.add_repa(repa_loss, active=repa_ran)
+        if softrank_on:
+            metrics.add_softrank(softrank_loss, active=softrank_ran)
 
         if (step + 1) % cfg.log_interval == 0:
             m = metrics.flush(cfg.log_interval)

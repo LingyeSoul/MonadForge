@@ -375,6 +375,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Spectrum residual calibration strength (0.0=disabled, default 0.0). "
         "Adds residual bias correction from last actual forward to cached predictions.",
     )
+    parser.add_argument(
+        "--spectrum_schedule",
+        choices=["window", "sea"],
+        default="window",
+        help="Spectrum when-to-skip rule: 'window' (default, content-blind growing "
+        "window) or 'sea' (SeaCache SEA-filtered input-distance trigger). 'sea' "
+        "changes only the decision; the forecast+head reuse path is untouched.",
+    )
+    parser.add_argument(
+        "--spectrum_delta",
+        type=str,
+        default="auto",
+        help="SEA threshold for --spectrum_schedule sea. 'auto' (default) "
+        "self-calibrates to --spectrum_refresh_ratio on the first generate; a "
+        "float pins delta explicitly (for sweeps).",
+    )
+    parser.add_argument(
+        "--spectrum_refresh_ratio",
+        type=float,
+        default=-1.0,
+        help="Target post-warmup refresh fraction for SEA auto-delta calibration. "
+        "<=0 (default) matches the growing-window's own refresh fraction at this "
+        "step count (like-for-like at matched compute); a positive float pins it.",
+    )
 
     # SPD (arXiv:2605.18736): forces Euler, mutually exclusive with --spectrum.
     # See networks/spd.py + bench/spd/.

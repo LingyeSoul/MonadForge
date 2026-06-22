@@ -115,6 +115,24 @@ def _seqlens_from_context(context_dict, device):
     return embed_mask.sum(dim=-1).to(torch.int32)
 
 
+def _parse_spectrum_delta(raw):
+    """Parse ``--spectrum_delta`` (str 'auto' or a float) into the runner's arg.
+
+    Returns ``None`` for auto-calibration (the SEA accumulator self-tunes δ to
+    the refresh ratio), or a float for an explicit threshold.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if str(raw).strip().lower() == "auto":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def register_spectrum_runner(fn):
     """Plug in a spectrum_denoise implementation.
 
@@ -720,6 +738,9 @@ def generate_body(
             lam=getattr(args, "spectrum_lam", 0.1),
             stop_caching_step=getattr(args, "spectrum_stop_caching_step", -1),
             calibration_strength=getattr(args, "spectrum_calibration", 0.0),
+            schedule=getattr(args, "spectrum_schedule", "window"),
+            delta=_parse_spectrum_delta(getattr(args, "spectrum_delta", "auto")),
+            refresh_ratio=getattr(args, "spectrum_refresh_ratio", -1.0),
         )
     else:
         try:

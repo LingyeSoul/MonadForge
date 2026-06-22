@@ -42,7 +42,9 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
     - ``NOLORA=1`` skips ``--lora_weight`` (bare DiT). When unset, ``lora_default``
       decides whether the caller wants a LoRA by default — ``test-dcw-v4`` opts
       out (DCW v4 is meant to ride on the bare DiT unless the user adds one).
-    - ``SPECTRUM=1`` appends Spectrum flags.
+    - ``SPECTRUM=1`` appends Spectrum flags. ``SEA=1`` (with SPECTRUM=1) swaps the
+      growing-window skip rule for the SeaCache SEA-distance trigger; tune via
+      ``SPECTRUM_DELTA=`` (default ``auto``) and ``SPECTRUM_REFRESH_RATIO=``.
     - ``SPD=1`` appends SPD (Spectral Progressive Diffusion) flags. Mutually
       exclusive with ``SPECTRUM=1`` (both replace the denoise loop).
     - ``MOD=1`` appends ``--pooled_text_proj <latest>``.
@@ -91,7 +93,7 @@ def _dave_flags() -> list[str]:
 
 
 def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
-    return [
+    flags = [
         "--spectrum",
         "--spectrum_window_size",
         "2.0",
@@ -110,6 +112,18 @@ def _spectrum_flags(stop_caching_step: int = 27) -> list[str]:
         "--spectrum_calibration",
         "0.0",
     ]
+    # SEA=1 opts into the SeaCache SEA-distance trigger (off by default).
+    # SPECTRUM_DELTA (default 'auto') / SPECTRUM_REFRESH_RATIO tune it.
+    if _env_truthy("SEA"):
+        flags += [
+            "--spectrum_schedule",
+            "sea",
+            "--spectrum_delta",
+            os.environ.get("SPECTRUM_DELTA", "auto").strip() or "auto",
+        ]
+        if rr := os.environ.get("SPECTRUM_REFRESH_RATIO", "").strip():
+            flags += ["--spectrum_refresh_ratio", rr]
+    return flags
 
 
 def _spd_flags() -> list[str]:

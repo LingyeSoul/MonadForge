@@ -57,6 +57,8 @@ class FlushedMetrics:
     gan_disc: float
     repa: float
     repa_active: float
+    softrank: float
+    softrank_active: float
 
 
 # Single source of truth for the accumulator key set — adding a logged scalar is
@@ -134,6 +136,18 @@ class TurboMetrics:
         self._acc.add("repa", repa_loss.detach().float())
         self._acc.add("repa_active", 1.0 if active else 0.0)
 
+    @torch.no_grad()
+    def add_softrank(self, softrank_loss: torch.Tensor, *, active: bool) -> None:
+        """Accumulate the soft-rank caption loss (pre-weight) + its run indicator.
+
+        Amortized like REPA (``softrank.every_n``), so the flushed ``softrank``
+        mean is diluted by skipped steps; consumers normalize by
+        ``softrank_active`` to recover the per-firing soft rank (0 = matched
+        caption wins every pair).
+        """
+        self._acc.add("softrank", softrank_loss.detach().float())
+        self._acc.add("softrank_active", 1.0 if active else 0.0)
+
     def flush(self, log_interval: int) -> FlushedMetrics:
         """One CUDA sync per log boundary: read every accumulator, mean it."""
         m = self._acc.flush()
@@ -162,6 +176,11 @@ def write_scalars(writer, m: FlushedMetrics, step: int) -> None:
         # Normalize the interval mean to active steps so the curve reads as the
         # per-run align loss regardless of the every_n amortization.
         writer.add_scalar("train/repa_align_loss", m.repa / m.repa_active, step)
+    writer.add_scalar("train/softrank_active", m.softrank_active, step)
+    if m.softrank_active > 0:
+        # Same active-step normalization as REPA → the curve is the per-firing
+        # matched-caption soft rank (→ 0 as discrimination recovers).
+        writer.add_scalar("train/softrank_loss", m.softrank / m.softrank_active, step)
 
 
 def tqdm_postfix(m: FlushedMetrics) -> dict:
@@ -182,4 +201,6 @@ def tqdm_postfix(m: FlushedMetrics) -> dict:
         postfix["dsc"] = f"{m.gan_disc:.3f}"
     if m.repa_active > 0:
         postfix["repa"] = f"{m.repa / m.repa_active:.4f}"
+    if m.softrank_active > 0:
+        postfix["srank"] = f"{m.softrank / m.softrank_active:.3f}"
     return postfix

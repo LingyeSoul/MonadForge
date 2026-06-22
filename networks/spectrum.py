@@ -24,10 +24,107 @@ from tqdm import tqdm
 from library.inference.adapters import clear_hydra_sigma, set_hydra_sigma
 from library.inference import sampling as inference_utils
 from library.inference.sampler_context import SamplerSideChannels
+from networks.spectrum_sea import (
+    l1rel,
+    sea_filter,
+    solve_delta_for_refresh_ratio,
+)
 
 logger = logging.getLogger(__name__)
 
 DTYPE = torch.bfloat16
+
+# Auto-δ calibration cache for the SEA schedule. Keyed by the schedule geometry
+# (num_steps, warmup, stop_at, refresh_ratio); the first generate with
+# ``--spectrum_delta auto`` runs the legacy window schedule while recording the
+# SEA distance trace, derives δ to match the target refresh fraction, and caches
+# it here so subsequent generates use the SEA trigger at matched compute.
+# Mirrored to disk (``output/spectrum_sea_delta.json``) so the calibration
+# survives across separate CLI processes — a one-process many-prompt run (the
+# bench harness) only ever calibrates on the first prompt via the in-memory
+# dict. See docs/proposal/spectrum_sea_schedule.md §"The δ knob".
+_AUTO_DELTA_CACHE: dict = {}
+
+
+def _auto_delta_store_path():
+    from library.env import anima_home
+
+    return anima_home() / "output" / "spectrum_sea_delta.json"
+
+
+def _auto_delta_lookup(key: tuple) -> Optional[float]:
+    """In-memory then on-disk lookup of a calibrated δ for ``key``."""
+    if key in _AUTO_DELTA_CACHE:
+        return _AUTO_DELTA_CACHE[key]
+    import json
+
+    path = _auto_delta_store_path()
+    try:
+        with open(path) as f:
+            disk = json.load(f)
+    except (OSError, ValueError):
+        return None
+    val = disk.get("_".join(str(k) for k in key))
+    if val is not None:
+        val = float(val)
+        _AUTO_DELTA_CACHE[key] = val  # promote to in-memory for this process
+    return val
+
+
+def _auto_delta_save(key: tuple, value: float) -> None:
+    """Persist a calibrated δ to both the in-memory and on-disk caches."""
+    _AUTO_DELTA_CACHE[key] = value
+    import json
+
+    path = _auto_delta_store_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with open(path) as f:
+                disk = json.load(f)
+        except (OSError, ValueError):
+            disk = {}
+        disk["_".join(str(k) for k in key)] = value
+        with open(path, "w") as f:
+            json.dump(disk, f, indent=2)
+    except OSError as e:
+        logger.warning("Spectrum SEA: could not persist auto-delta to %s (%s)", path, e)
+
+
+def _window_decision_fraction(
+    num_steps: int,
+    warmup_steps: int,
+    stop_at: int,
+    window_size: float,
+    flex_window: float,
+) -> float:
+    """Refresh fraction the growing-window schedule spends in the decision region.
+
+    Replays the exact window rule (the ``else`` branch below + its curr_ws
+    advance) and returns ``actual_decision_steps / decision_steps``. The SEA
+    auto-δ target defaults to *this* so the SEA arm is a like-for-like swap at
+    matched compute for any step count — the hard-coded 0.62 in the proposal was
+    only the 24-step value and over-computes elsewhere (bench/spectrum_sea/
+    prompt_generalization.py: 0.62 → +22% forwards at 28 steps).
+    """
+    curr_ws = window_size
+    consec = 0
+    actual_dec = 0
+    n_dec = 0
+    for i in range(num_steps):
+        if i < warmup_steps or i >= stop_at:
+            actual = True
+        else:
+            actual = (consec + 1) % max(1, math.floor(curr_ws)) == 0
+            n_dec += 1
+            actual_dec += int(actual)
+        if actual:
+            if i >= warmup_steps:
+                curr_ws = round(curr_ws + flex_window, 3)
+            consec = 0
+        else:
+            consec += 1
+    return actual_dec / max(1, n_dec)
 
 
 def _flatten(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size]:
@@ -231,6 +328,10 @@ def spectrum_denoise(
     lam: float = 0.1,
     stop_caching_step: int = -1,
     calibration_strength: float = 0.0,
+    schedule: str = "window",
+    delta: Optional[float] = None,
+    refresh_ratio: float = -1.0,
+    sea_beta: float = 2.0,
 ) -> torch.Tensor:
     """Spectrum-accelerated denoising loop.
 
@@ -248,6 +349,25 @@ def spectrum_denoise(
         stop_caching_step: Force actual forwards from this step onward (-1 = auto: total_steps - 3).
         calibration_strength: Residual calibration strength (0.0 = disabled). On actual forwards,
             computes residual = actual - predicted; on cached steps, adds residual * strength.
+        schedule: When-to-skip rule. ``"window"`` (default) = the content-blind
+            growing window. ``"sea"`` = accumulate the SEA-filtered relative-L1
+            distance of the input latent across steps and refresh when it crosses
+            ``delta`` (SeaCache Eq. 4/8; only the *decision* changes — the
+            forecast+head reuse path is untouched, so SMC-CFG / mod-guidance / DCW
+            composition is unaffected). ``window_size``/``flex_window`` are unused
+            in SEA mode.
+        delta: SEA threshold. ``None`` or ``<=0`` = auto-calibrate to
+            ``refresh_ratio`` (the first generate runs the window schedule while
+            recording the distance trace, derives δ, and caches it; subsequent
+            generates use the SEA trigger). A positive float pins δ explicitly
+            (for sweeps).
+        refresh_ratio: Target post-warmup refresh fraction for auto-δ. ``<=0``
+            (default) matches the growing-window schedule's own refresh fraction
+            at this exact (num_steps, warmup, stop, window_size, flex_window) —
+            a true like-for-like swap at matched compute. A positive float pins
+            the target explicitly (for sweeps). Do not hard-code: the window
+            fraction varies with step count (~0.45 at 28 steps, ~0.62 at 24).
+        sea_beta: Natural-image power-law exponent for the SEA filter (default 2).
         ctx: Shared conditioning side-channels (DCW / SMC-CFG / soft-tokens /
             P-GRAFT / pooled-text) — see ``library.inference.sampler_context``.
     """
@@ -273,6 +393,46 @@ def spectrum_denoise(
     consec_cached = 0
     fwd_count = 0
     stop_at = num_steps - 3 if stop_caching_step < 0 else stop_caching_step
+
+    # SEA schedule (SeaCache decision metric). delta_val is None while the
+    # accumulator is uncalibrated (auto mode, first generate) — the loop then
+    # falls back to the window rule and records the distance trace for δ tuning.
+    use_sea = schedule == "sea"
+    auto_delta = use_sea and (delta is None or float(delta) <= 0.0)
+    # Default the auto-δ target to the window schedule's own refresh fraction at
+    # this geometry (like-for-like at matched compute); a positive override is
+    # honored for sweeps.
+    if use_sea and float(refresh_ratio) <= 0.0:
+        refresh_ratio = _window_decision_fraction(
+            num_steps, warmup_steps, stop_at, window_size, flex_window
+        )
+    # δ rides the input-latent trajectory, so it must be re-calibrated whenever
+    # the trajectory changes: step count, CFG scale, sampler rule, and latent
+    # resolution all move it (the L1rel-normalized SEA gain is only *roughly*
+    # scale-stable). refresh_ratio is the target itself. Prompt is deliberately
+    # excluded — fixed δ + per-prompt-varying refresh pattern is the whole point
+    # of content-adaptivity. A new config just triggers one window-scheduled
+    # calibration pass, then the cached δ kicks in.
+    sampler_label = type(sampler).__name__ if sampler is not None else "euler"
+    sea_cache_key = (
+        num_steps,
+        warmup_steps,
+        stop_at,
+        round(float(refresh_ratio), 4),
+        round(float(guidance_scale), 3),
+        sampler_label,
+        int(latents.shape[-2]),
+        int(latents.shape[-1]),
+    )
+    if not use_sea:
+        delta_val: Optional[float] = None
+    elif auto_delta:
+        delta_val = _auto_delta_lookup(sea_cache_key)
+    else:
+        delta_val = float(delta)
+    sea_prev: Optional[torch.Tensor] = None
+    sea_accum = 0.0
+    sea_dists: list = []  # per-step distances over decision steps, for auto-δ
 
     # Forecasters (created lazily on first actual forward)
     cond_fc: Optional[SpectrumPredictor] = None
@@ -302,9 +462,24 @@ def spectrum_denoise(
                     pgraft_network.set_enabled(False)
                     logger.info(f"P-GRAFT: Disabled LoRA at step {i}/{num_steps}")
 
+                # SEA: accumulate the SEA-filtered relative-L1 distance of the
+                # input latent (x_t == `latents`, shared across cond/uncond so
+                # one accumulator drives both branches). One FFT/iFFT per step —
+                # negligible vs a block forward, zero extra DiT forwards.
+                if use_sea:
+                    sea_now = sea_filter(latents[:, :, 0], float(sigmas[i]), sea_beta)
+                    if sea_prev is not None:
+                        d = l1rel(sea_now, sea_prev)
+                        sea_accum += d
+                        if warmup_steps <= i < stop_at:
+                            sea_dists.append(d)
+                    sea_prev = sea_now
+
                 # Decide: actual forward or cached prediction?
                 if i < warmup_steps or i >= stop_at:
                     actual = True
+                elif use_sea and delta_val is not None:
+                    actual = sea_accum >= delta_val
                 else:
                     actual = (consec_cached + 1) % max(1, math.floor(curr_ws)) == 0
 
@@ -385,6 +560,7 @@ def spectrum_denoise(
                     if i >= warmup_steps:
                         curr_ws = round(curr_ws + flex_window, 3)
                     consec_cached = 0
+                    sea_accum = 0.0  # refresh resets the SEA accumulator (Eq. 8)
                     fwd_count += 1
                     pbar.set_postfix(mode="fwd", ws=f"{curr_ws:.1f}", n=fwd_count)
 
@@ -462,11 +638,33 @@ def spectrum_denoise(
 
                 pbar.update()
 
+        # Auto-δ: this generate ran the window schedule while recording the SEA
+        # distance trace; derive the δ that matches the target refresh fraction
+        # and cache it so subsequent generates use the SEA trigger.
+        if auto_delta and delta_val is None and sea_dists:
+            new_delta = solve_delta_for_refresh_ratio(sea_dists, refresh_ratio)
+            _auto_delta_save(sea_cache_key, new_delta)
+            logger.info(
+                "Spectrum SEA: auto-calibrated delta=%.4g (target refresh_ratio="
+                "%.2f over %d decision steps); this generate used the window "
+                "schedule — subsequent generates (incl. new processes, via "
+                "%s) use the SEA trigger.",
+                new_delta,
+                refresh_ratio,
+                len(sea_dists),
+                _auto_delta_store_path().name,
+            )
+
         speedup = num_steps / max(1, fwd_count)
         cfg_label = " (x2 for CFG)" if do_cfg else ""
+        sched_label = (
+            f", schedule=sea (delta={delta_val:.4g})"
+            if use_sea and delta_val is not None
+            else (", schedule=sea (calibrating)" if use_sea else "")
+        )
         logger.info(
             f"Spectrum: {fwd_count}/{num_steps} actual forwards "
-            f"({speedup:.2f}x theoretical speedup{cfg_label})"
+            f"({speedup:.2f}x theoretical speedup{cfg_label}){sched_label}"
         )
 
     finally:
