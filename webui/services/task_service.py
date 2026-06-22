@@ -711,6 +711,15 @@ class TaskService:
                             # ``lr``) from those, with the legacy flat
                             # names as a fallback for any future writer
                             # that emits the older shape.
+                            #
+                            # IMPORTANT: parse lr BEFORE appending to
+                            # histories so lr_history records the *current*
+                            # step's lr, not the previous step's value.
+                            lr = ev.get("lr/unet")
+                            if lr is None:
+                                lr = ev.get("lr")
+                            if lr is not None:
+                                metrics.lr = float(lr)
                             loss = ev.get("loss/average")
                             if loss is None:
                                 loss = ev.get("avr_loss")
@@ -724,11 +733,6 @@ class TaskService:
                                     metrics.loss_history.append(metrics.avr_loss)
                                     metrics.step_history.append(s)
                                     metrics.lr_history.append(metrics.lr)
-                            lr = ev.get("lr/unet")
-                            if lr is None:
-                                lr = ev.get("lr")
-                            if lr is not None:
-                                metrics.lr = float(lr)
                             self._update_jsonl_timing_metrics(task, ev)
                             # Emit a fresh snapshot per step event. The
                             # earlier debounce was meant to coalesce a
