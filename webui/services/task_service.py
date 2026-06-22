@@ -711,11 +711,40 @@ class TaskService:
                             # ``lr``) from those, with the legacy flat
                             # names as a fallback for any future writer
                             # that emits the older shape.
+                            #
+                            # IMPORTANT: parse loss AND lr BEFORE appending
+                            # to the histories. Parsing lr after the append
+                            # (the old shape) recorded the *previous* step's
+                            # lr under the current step — and, before the
+                            # first lr is seen, the default ``0.0``. That
+                            # made the dashboard's LR curve visibly dip to
+                            # zero / kink at the first logged step and at
+                            # every preview-sampling boundary (the sample
+                            # event arrives just before its matching step
+                            # event, so the stale-lr entry lined up exactly
+                            # with the sample on the chart). The loss curve
+                            # showed the same kink because
+                            # ``lr_history``/``step_history``/``loss_history``
+                            # are index-aligned and the dashboard zips them
+                            # by position. Mirror the already-correct order
+                            # in ``training_log_parser._parse_tqdm``.
                             loss = ev.get("loss/average")
                             if loss is None:
                                 loss = ev.get("avr_loss")
+                            lr = ev.get("lr/unet")
+                            if lr is None:
+                                lr = ev.get("lr")
                             if loss is not None:
                                 metrics.avr_loss = float(loss)
+                            if lr is not None:
+                                metrics.lr = float(lr)
+                            # Only grow the aligned histories when this
+                            # step carries a loss value (a ``step`` event
+                            # without ``loss/average`` — e.g. the trainer's
+                            # ``loss/epoch_average`` flush — is not a
+                            # plottable point). Dedupe by ``global_step``
+                            # so a replayed event can't double-append.
+                            if loss is not None:
                                 s = metrics.step
                                 if (
                                     not metrics.step_history
@@ -724,11 +753,6 @@ class TaskService:
                                     metrics.loss_history.append(metrics.avr_loss)
                                     metrics.step_history.append(s)
                                     metrics.lr_history.append(metrics.lr)
-                            lr = ev.get("lr/unet")
-                            if lr is None:
-                                lr = ev.get("lr")
-                            if lr is not None:
-                                metrics.lr = float(lr)
                             self._update_jsonl_timing_metrics(task, ev)
                             # Emit a fresh snapshot per step event. The
                             # earlier debounce was meant to coalesce a

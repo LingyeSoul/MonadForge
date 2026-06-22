@@ -407,6 +407,200 @@ def test_jsonl_step_maps_loss_average_and_lr_unet(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# 2c. Preview sampling must not dip the LR / loss curves to zero
+# ---------------------------------------------------------------------------
+
+
+def test_sample_step_does_not_zero_first_lr_history_point(tmp_path: Path):
+    """The LR curve's first point must be the real first lr, not ``0.0``.
+
+    Regression: the watcher parsed ``lr`` AFTER appending to
+    ``lr_history``. Since ``TrainingMetrics.lr`` defaults to ``0.0``,
+    the very first logged ``step`` event appended ``0.0`` and only then
+    recorded the event's real lr — so the dashboard's LR curve started
+    with a hard zero and the loss curve (index-aligned with it) showed a
+    matching kink. This was especially visible on runs with
+    ``--sample_at_first`` (a preview lands at step 0 just before the
+    first ``step`` event), which is why it surfaced as "curves dip to
+    zero during preview sampling".
+    """
+    svc, Task, TaskState = _make_service()
+    jsonl = tmp_path / "run.progress.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    task = Task(id="z", command="lora", args=[], state=TaskState.RUNNING)
+    task.is_training = True
+    sub: asyncio.Queue = asyncio.Queue()
+    task._subscribers.append(sub)
+    svc._tasks["z"] = task
+
+    # sample_at_first fires before the first logged step, then a normal
+    # cadence. The first step event carries a non-zero lr/unet.
+    _write_jsonl(
+        jsonl,
+        [
+            {
+                "ev": "sample",
+                "ts": 0.5,
+                "global_step": 0,
+                "epoch": None,
+                "path": "output/sample/000.png",
+                "prompt": "p",
+            },
+            {
+                "ev": "step",
+                "ts": 1.0,
+                "loss/current": 0.3,
+                "loss/average": 0.28,
+                "lr/unet": 9.5e-5,
+                "global_step": 2,
+                "epoch": 1,
+            },
+            {
+                "ev": "step",
+                "ts": 2.0,
+                "loss/current": 0.25,
+                "loss/average": 0.26,
+                "lr/unet": 8.0e-5,
+                "global_step": 4,
+                "epoch": 1,
+            },
+        ],
+    )
+
+    async def _run():
+        async def _stop():
+            await asyncio.sleep(0.6)
+            task.state = TaskState.SUCCESS
+
+        stopper = asyncio.create_task(_stop())
+        try:
+            await svc._watch_progress_jsonl(task, str(jsonl))
+        finally:
+            await stopper
+
+    _drive(_run())
+
+    msgs = _drive(_drain_queue(sub, timeout=0.2))
+    metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
+    data = metrics_msgs[-1]["data"]
+
+    # The first LR history point must be the real lr from step 2, not
+    # the default 0.0 — this is the exact "curve dips to zero at the
+    # sample step" regression.
+    assert data["lr_history"][0] == pytest.approx(9.5e-5), (
+        "first lr_history entry should be the first step's real lr, not "
+        "the default 0.0 (parse-after-append regression)"
+    )
+    # Histories are index-aligned and not shifted by one step.
+    assert data["step_history"] == [2, 4]
+    assert data["loss_history"] == [pytest.approx(0.28), pytest.approx(0.26)]
+    assert data["lr_history"] == [pytest.approx(9.5e-5), pytest.approx(8.0e-5)]
+    # No spurious zero point was ever appended.
+    assert all(v > 0 for v in data["lr_history"])
+
+
+def test_sample_step_does_not_kink_lr_at_sampling_boundary(tmp_path: Path):
+    """An ``--sample_every_n_steps`` boundary must not record a stale lr.
+
+    The trainer emits the ``sample`` event for step S immediately before
+    the matching ``step`` event for S. With the old parse-after-append
+    order, the step-S lr_history entry held step-(S-2)'s lr (the
+    previous value), so the LR curve visibly kinked at every sampling
+    boundary. The fix records the current step's lr, matching the
+    already-correct ``training_log_parser._parse_tqdm``.
+    """
+    svc, Task, TaskState = _make_service()
+    jsonl = tmp_path / "run.progress.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    task = Task(id="k", command="lora", args=[], state=TaskState.RUNNING)
+    task.is_training = True
+    sub: asyncio.Queue = asyncio.Queue()
+    task._subscribers.append(sub)
+    svc._tasks["k"] = task
+
+    _write_jsonl(
+        jsonl,
+        [
+            {
+                "ev": "step",
+                "ts": 1.0,
+                "loss/average": 0.10,
+                "lr/unet": 1.0e-4,
+                "global_step": 2,
+                "epoch": 1,
+            },
+            {
+                "ev": "step",
+                "ts": 2.0,
+                "loss/average": 0.09,
+                "lr/unet": 8.0e-5,
+                "global_step": 4,
+                "epoch": 1,
+            },
+            # Sampling boundary at step 6: sample event then step event.
+            {
+                "ev": "sample",
+                "ts": 2.5,
+                "global_step": 6,
+                "epoch": None,
+                "path": "output/sample/006.png",
+                "prompt": "p",
+            },
+            {
+                "ev": "step",
+                "ts": 3.0,
+                "loss/average": 0.085,
+                "lr/unet": 6.0e-5,
+                "global_step": 6,
+                "epoch": 1,
+            },
+            {
+                "ev": "step",
+                "ts": 4.0,
+                "loss/average": 0.08,
+                "lr/unet": 4.0e-5,
+                "global_step": 8,
+                "epoch": 1,
+            },
+        ],
+    )
+
+    async def _run():
+        async def _stop():
+            await asyncio.sleep(0.6)
+            task.state = TaskState.SUCCESS
+
+        stopper = asyncio.create_task(_stop())
+        try:
+            await svc._watch_progress_jsonl(task, str(jsonl))
+        finally:
+            await stopper
+
+    _drive(_run())
+
+    msgs = _drive(_drain_queue(sub, timeout=0.2))
+    metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
+    data = metrics_msgs[-1]["data"]
+
+    # Each lr_history entry is its OWN step's lr (no one-step shift);
+    # in particular step 6 — the sampling boundary — carries 6.0e-5,
+    # not the stale 8.0e-5 from step 4.
+    assert data["step_history"] == [2, 4, 6, 8]
+    assert data["loss_history"] == [
+        pytest.approx(0.10),
+        pytest.approx(0.09),
+        pytest.approx(0.085),
+        pytest.approx(0.08),
+    ]
+    assert data["lr_history"] == [
+        pytest.approx(1.0e-4),
+        pytest.approx(8.0e-5),
+        pytest.approx(6.0e-5),
+        pytest.approx(4.0e-5),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # 3. Stdout parser IS the source of speed / total_steps / elapsed / eta
 #    (the JSONL doesn't carry these — only ``avr_loss`` / ``lr`` / ``epoch``)
 # ---------------------------------------------------------------------------
