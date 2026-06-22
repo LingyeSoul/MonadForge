@@ -15,6 +15,8 @@ from pathlib import Path
 from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -28,6 +30,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -199,6 +202,7 @@ class MergeTab(LazyTabMixin, QWidget):
 
         self.file_list = QListWidget()
         self.file_list.currentRowChanged.connect(self._show_file)
+        self.file_list.itemSelectionChanged.connect(self._on_lora_selection)
         sp.addWidget(self.file_list)
 
         right = QWidget()
@@ -213,6 +217,21 @@ class MergeTab(LazyTabMixin, QWidget):
         self.stats_label = QLabel()
         self.stats_label.setStyleSheet(f"color:{tok('text_dim')};")
         rlay.addWidget(self.stats_label)
+
+        # Mode toggle: bake one adapter into the DiT, or fuse N LoRAs into one LoRA.
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel(t("merge_mode")))
+        self.mode_dit = QRadioButton(t("merge_mode_dit"))
+        self.mode_loras = QRadioButton(t("merge_mode_loras"))
+        self.mode_dit.setChecked(True)
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.addButton(self.mode_dit)
+        self._mode_group.addButton(self.mode_loras)
+        self.mode_dit.toggled.connect(self._on_mode_changed)
+        mode_row.addWidget(self.mode_dit)
+        mode_row.addWidget(self.mode_loras)
+        mode_row.addStretch()
+        rlay.addLayout(mode_row)
 
         self.verdict_label = QLabel()
         self.verdict_label.setWordWrap(True)
@@ -249,7 +268,45 @@ class MergeTab(LazyTabMixin, QWidget):
         self.allow_partial.setToolTip(t("merge_allow_partial_tip"))
         opt_lay.addRow("", self.allow_partial)
 
+        self.opt_box = opt_box
         rlay.addWidget(opt_box)
+
+        # LoRA ⊕ LoRA → LoRA options (merge_loras.py); hidden until that mode.
+        lora_box = QGroupBox(t("merge_lora_options"))
+        lora_lay = QFormLayout(lora_box)
+
+        self.lora_hint = QLabel(t("merge_lora_select_hint"))
+        self.lora_hint.setWordWrap(True)
+        self.lora_hint.setStyleSheet(f"color:{tok('text_dim')};")
+        lora_lay.addRow(self.lora_hint)
+
+        self.lora_selected_label = QLabel()
+        self.lora_selected_label.setWordWrap(True)
+        self.lora_selected_label.setStyleSheet(f"color:{tok('text_dim')};")
+        lora_lay.addRow(t("merge_lora_selected"), self.lora_selected_label)
+
+        self.weights_edit = QLineEdit()
+        self.weights_edit.setPlaceholderText(t("merge_weights_placeholder"))
+        self.weights_edit.setToolTip(t("merge_weights_tip"))
+        lora_lay.addRow(t("merge_weights"), self.weights_edit)
+
+        self.normalize_combo = QComboBox()
+        self.normalize_combo.addItems(["global", "per_module", "off"])
+        self.normalize_combo.setToolTip(t("merge_normalize_tip"))
+        lora_lay.addRow(t("merge_normalize"), self.normalize_combo)
+
+        self.lora_dtype_combo = QComboBox()
+        self.lora_dtype_combo.addItems(["bf16", "fp16", "fp32"])
+        lora_lay.addRow(t("merge_dtype"), self.lora_dtype_combo)
+
+        self.lora_out_edit = PickerLineEdit()
+        self.lora_out_edit.setPlaceholderText(t("merge_lora_out_placeholder"))
+        self.lora_out_edit.clicked.connect(self._browse_out)
+        lora_lay.addRow(t("merge_out"), self.lora_out_edit)
+
+        self.lora_box = lora_box
+        lora_box.setVisible(False)
+        rlay.addWidget(lora_box)
 
         bar = QHBoxLayout()
         self.merge_btn = action_button(
@@ -365,6 +422,10 @@ class MergeTab(LazyTabMixin, QWidget):
         )
         # Match allow-partial to this file so the previous selection's state can't linger.
         self.allow_partial.setChecked(scan["severity"] == "partial")
+        if self._lora_mode():
+            # LoRA-merge enablement is driven by the multi-selection, not this scan.
+            self._on_lora_selection()
+            return
         # Only "ok" / "partial" are mergeable.
         self.merge_btn.setEnabled(
             self._proc.state() == QProcess.NotRunning
@@ -395,14 +456,57 @@ class MergeTab(LazyTabMixin, QWidget):
             self, t("merge_pick_out"), start, "Safetensors (*.safetensors)"
         )
         if f:
-            self.out_edit.setText(f)
+            target = self.lora_out_edit if self._lora_mode() else self.out_edit
+            target.setText(f)
+
+    def _lora_mode(self) -> bool:
+        return self.mode_loras.isChecked()
+
+    def _selected_loras(self) -> list[Path]:
+        """Selected adapters in list order (LoRA-merge mode uses multi-select)."""
+        return [
+            self._files[i]
+            for i in range(len(self._files))
+            if self.file_list.item(i).isSelected()
+        ]
+
+    def _on_mode_changed(self):
+        lora = self._lora_mode()
+        self.opt_box.setVisible(not lora)
+        self.lora_box.setVisible(lora)
+        self.file_list.setSelectionMode(
+            QAbstractItemView.ExtendedSelection
+            if lora
+            else QAbstractItemView.SingleSelection
+        )
+        self.merge_btn.setText(t("merge_lora_button") if lora else t("merge_button"))
+        if lora:
+            self._on_lora_selection()
+        else:
+            # Restore single-file enablement from the current scan.
+            self._show_file(self.file_list.currentRow())
+
+    def _on_lora_selection(self):
+        if not self._lora_mode():
+            return
+        sel = self._selected_loras()
+        self.lora_selected_label.setText(
+            "\n".join(f"{i + 1}. {p.name}" for i, p in enumerate(sel))
+            or t("merge_lora_need_two")
+        )
+        self.merge_btn.setEnabled(
+            self._proc.state() == QProcess.NotRunning and len(sel) >= 2
+        )
 
     def _start_merge(self):
-        import sys as _sys
-
         if self._proc.state() != QProcess.NotRunning:
             return
+        if self._lora_mode():
+            self._start_lora_merge()
+        else:
+            self._start_dit_merge()
 
+    def _start_dit_merge(self):
         adapter = self._current_file()
         if adapter is None or not adapter.exists():
             QMessageBox.warning(self, t("error"), t("merge_no_adapter_msg"))
@@ -424,15 +528,50 @@ class MergeTab(LazyTabMixin, QWidget):
             args += ["--out", out]
         if self.allow_partial.isChecked():
             args.append("--allow-partial")
+        self._launch(args)
+
+    def _start_lora_merge(self):
+        sel = self._selected_loras()
+        if len(sel) < 2:
+            QMessageBox.warning(self, t("error"), t("merge_lora_need_two"))
+            return
+
+        args = ["scripts/merge_loras.py"]
+        args += [str(p) for p in sel]
+        args += [
+            "--normalize",
+            self.normalize_combo.currentText(),
+            "--dtype",
+            self.lora_dtype_combo.currentText(),
+        ]
+        # Empty → merge_loras.py defaults to <first-stem>_merged<N>.safetensors.
+        out = self.lora_out_edit.text().strip()
+        if out:
+            args += ["--out", out]
+        weights = self.weights_edit.text().strip()
+        if weights:
+            n = len(weights.split(","))
+            if n != len(sel):
+                QMessageBox.warning(
+                    self, t("error"), t("merge_weights_mismatch", n=n, m=len(sel))
+                )
+                return
+            args += ["--weights", weights]
+        self._launch(args)
+
+    def _launch(self, args: list[str]):
+        import sys as _sys
 
         self.log.clear()
         self._log(f"> {_sys.executable} {' '.join(args)}\n")
 
         self.merge_btn.setEnabled(False)
         apply_variant(self.merge_btn, "busy")
-        self.merge_btn.setText(t("merge_button") + " ...")
+        self.merge_btn.setText(self.merge_btn.text() + " ...")
         self.stop_btn.setEnabled(True)
         self.dir_combo.setEnabled(False)
+        self.mode_dit.setEnabled(False)
+        self.mode_loras.setEnabled(False)
 
         self._proc.start(_sys.executable, args)
 
@@ -454,13 +593,19 @@ class MergeTab(LazyTabMixin, QWidget):
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus):
         self._log(f"\n{t('finished', code=exit_code)}\n")
         apply_variant(self.merge_btn, "success")
-        self.merge_btn.setText(t("merge_button"))
-        self.merge_btn.setEnabled(
-            self._current_scan is not None
-            and self._current_scan.get("severity") in ("ok", "partial")
-        )
         self.stop_btn.setEnabled(False)
         self.dir_combo.setEnabled(True)
+        self.mode_dit.setEnabled(True)
+        self.mode_loras.setEnabled(True)
+        if self._lora_mode():
+            self.merge_btn.setText(t("merge_lora_button"))
+            self._on_lora_selection()
+        else:
+            self.merge_btn.setText(t("merge_button"))
+            self.merge_btn.setEnabled(
+                self._current_scan is not None
+                and self._current_scan.get("severity") in ("ok", "partial")
+            )
         # A merged file may have been created — refresh so it shows up.
         if exit_code == 0:
             self._refresh_dirs()
