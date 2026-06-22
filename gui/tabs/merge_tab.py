@@ -463,12 +463,15 @@ class MergeTab(LazyTabMixin, QWidget):
         return self.mode_loras.isChecked()
 
     def _selected_loras(self) -> list[Path]:
-        """Selected adapters in list order (LoRA-merge mode uses multi-select)."""
-        return [
-            self._files[i]
-            for i in range(len(self._files))
-            if self.file_list.item(i).isSelected()
-        ]
+        """Selected adapters in list order (LoRA-merge mode uses multi-select).
+
+        `_files` and `file_list` can be momentarily out of sync — `_load_dir`
+        sets `_files` before `file_list.clear()`, and the clear emits
+        `itemSelectionChanged`, re-entering here while the widget is empty. Bound
+        the scan by the widget's own count so `item(i)` is never None.
+        """
+        n = min(len(self._files), self.file_list.count())
+        return [self._files[i] for i in range(n) if self.file_list.item(i).isSelected()]
 
     def _on_mode_changed(self):
         lora = self._lora_mode()

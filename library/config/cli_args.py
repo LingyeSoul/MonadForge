@@ -1025,6 +1025,20 @@ def add_dataset_arguments(
             "Validation and image-count thresholds honour the filtered pool."
         ),
     )
+    parser.add_argument(
+        "--artists_shard",
+        type=str,
+        default=None,
+        help=(
+            "Restrict training to one round-robin shard of the artist "
+            "subdirectories under each subset's image_dir. Format `k_N` (e.g. "
+            "`1_4` = shard 1 of 4): artists are sorted and artist i is assigned "
+            "to shard i mod N, so each shard is a balanced cross-alphabet mix. "
+            "Expands to a `<artist>/*|...` path_pattern at load — mutually "
+            "exclusive with an explicit --path_pattern. Used by the "
+            "lora_merge_interference partition-coherence sweep."
+        ),
+    )
 
     if support_caption_dropout:
         parser.add_argument(
