@@ -20,7 +20,7 @@
 #
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
-# 90, 128, 152, 180 each for 16, 32, 48, 64
+# 90, 128, 152, 180, 214 each for 16, 32, 48, 64, 96
 network_alpha = 128
 network_dim = 32
 
