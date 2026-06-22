@@ -49,6 +49,8 @@ def test_schema_has_known_keys(populated_parser):
         "learning_rate",
         "max_train_epochs",
         "attn_mode",
+        "v100_flash_stability",
+        "debug_finite_checks",
         "base_config",  # manual extra
         "use_moe_style",  # network-module allowlist (three-axis routing)
     ):

@@ -16,6 +16,30 @@ from library.runtime.device import weighs_to_device
 from networks import attention_dispatch
 
 
+def _finite_checks_enabled(default: bool = False) -> bool:
+    # Keep this compile-friendly: train.py resolves ANIMA_DEBUG_FINITE once and
+    # stores the plain bool on the model/AttentionParams before compile_blocks().
+    return bool(default)
+
+
+def _assert_finite_tensor(tensor: torch.Tensor, label: str) -> None:
+    if torch.isfinite(tensor.detach()).all():
+        return
+    finite = torch.isfinite(tensor.detach())
+    finite_vals = tensor.detach()[finite]
+    if finite_vals.numel() > 0:
+        finite_range = (
+            f" finite_min={float(finite_vals.min().item()):.6g}"
+            f" finite_max={float(finite_vals.max().item()):.6g}"
+        )
+    else:
+        finite_range = " no_finite_values"
+    raise FloatingPointError(
+        f"non-finite tensor at {label}: dtype={tensor.dtype} "
+        f"shape={tuple(tensor.shape)}{finite_range}"
+    )
+
+
 # Based on Unsloth Zoo by Daniel Han-Chen & the Unsloth team
 try:
     from deepspeed.runtime.activation_checkpointing.checkpointing import detach_variable
@@ -385,7 +409,17 @@ class Attention(nn.Module):
         context: torch.Tensor,
         rope_cos_sin: Optional[tuple[torch.Tensor, torch.Tensor]] = None,
     ) -> torch.Tensor:
+        attn_params = attn_params.for_attention_kind(is_selfattn=self.is_selfattn)
+        kind = "self_attn" if self.is_selfattn else "cross_attn"
+        check_finite = _finite_checks_enabled(attn_params.debug_finite_checks) or (
+            attn_params.v100_flash_stability == "safe" and attn_params.attn_mode == "flash"
+        )
+
         q, k, v = self.compute_qkv(x, context, rope_cos_sin=rope_cos_sin)
+        if check_finite:
+            _assert_finite_tensor(q, f"{kind}.q before attention backend={attn_params.attn_mode}")
+            _assert_finite_tensor(k, f"{kind}.k before attention backend={attn_params.attn_mode}")
+            _assert_finite_tensor(v, f"{kind}.v before attention backend={attn_params.attn_mode}")
         if q.dtype != v.dtype:
             if not attn_params.supports_fp32 and torch.is_autocast_enabled():
                 # FlashAttention requires fp16/bf16; only cast when autocast is active.
@@ -395,7 +429,18 @@ class Attention(nn.Module):
         qkv = [q, k, v]
         del q, k, v
         result = attention_dispatch.dispatch_attention(qkv, attn_params=attn_params)
-        return self.output_dropout(self.output_proj(result))
+        if check_finite:
+            _assert_finite_tensor(
+                result,
+                f"{kind}.attention_output backend={attn_params.attn_mode}",
+            )
+        out = self.output_dropout(self.output_proj(result))
+        if check_finite:
+            _assert_finite_tensor(
+                out,
+                f"{kind}.output_projection backend={attn_params.attn_mode}",
+            )
+        return out
 
 
 class VideoPositionEmb(nn.Module):
@@ -1263,6 +1308,11 @@ class Block(nn.Module):
         x_B_T_H_W_D = self._gated_residual_add(
             x_B_T_H_W_D, gate_self_attn_B_T_1_1_D, result
         )
+        if _finite_checks_enabled(attn_params.debug_finite_checks):
+            _assert_finite_tensor(
+                x_B_T_H_W_D,
+                f"block={getattr(self, '_block_index', '?')}.self_attn_residual",
+            )
 
         normalized_x = _adaln_fn(
             x_B_T_H_W_D,
@@ -1279,6 +1329,11 @@ class Block(nn.Module):
         x_B_T_H_W_D = self._gated_residual_add(
             x_B_T_H_W_D, gate_cross_attn_B_T_1_1_D, result
         )
+        if _finite_checks_enabled(attn_params.debug_finite_checks):
+            _assert_finite_tensor(
+                x_B_T_H_W_D,
+                f"block={getattr(self, '_block_index', '?')}.cross_attn_residual",
+            )
 
         normalized_x = _adaln_fn(
             x_B_T_H_W_D, self.layer_norm_mlp, scale_mlp_B_T_1_1_D, shift_mlp_B_T_1_1_D
@@ -1287,6 +1342,11 @@ class Block(nn.Module):
         x_B_T_H_W_D = self._gated_residual_add(
             x_B_T_H_W_D, gate_mlp_B_T_1_1_D, result
         )
+        if _finite_checks_enabled(attn_params.debug_finite_checks):
+            _assert_finite_tensor(
+                x_B_T_H_W_D,
+                f"block={getattr(self, '_block_index', '?')}.mlp_residual",
+            )
 
         return x_B_T_H_W_D
 
@@ -1367,6 +1427,8 @@ class Anima(nn.Module):
         use_llm_adapter: bool = True,
         attn_mode: str = "torch",
         attn_softmax_scale: Optional[float] = None,
+        v100_flash_stability: str = "off",
+        debug_finite_checks: bool = False,
     ) -> None:
         super().__init__()
         self.max_img_h = max_img_h
@@ -1391,6 +1453,8 @@ class Anima(nn.Module):
 
         self.attn_mode = attn_mode
         self.attn_softmax_scale = attn_softmax_scale
+        self.v100_flash_stability = v100_flash_stability
+        self.debug_finite_checks = debug_finite_checks
 
         self.blocks_to_swap = None
         self.offloader: Optional[custom_offloading_utils.ModelOffloader] = None
@@ -1429,19 +1493,18 @@ class Anima(nn.Module):
                 self_attn=True,
             )
 
-        self.blocks = nn.ModuleList(
-            [
-                Block(
-                    x_dim=model_channels,
-                    context_dim=crossattn_emb_channels,
-                    num_heads=num_heads,
-                    mlp_ratio=mlp_ratio,
-                    use_adaln_lora=use_adaln_lora,
-                    adaln_lora_dim=adaln_lora_dim,
-                )
-                for _ in range(num_blocks)
-            ]
-        )
+        self.blocks = nn.ModuleList()
+        for i in range(num_blocks):
+            block = Block(
+                x_dim=model_channels,
+                context_dim=crossattn_emb_channels,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                use_adaln_lora=use_adaln_lora,
+                adaln_lora_dim=adaln_lora_dim,
+            )
+            block._block_index = i
+            self.blocks.append(block)
 
         self.final_layer = FinalLayer(
             hidden_size=self.model_channels,
@@ -2092,7 +2155,10 @@ class Anima(nn.Module):
         }
 
         attn_params = attention_dispatch.AttentionParams.create_attention_params(
-            self.attn_mode, self.attn_softmax_scale
+            self.attn_mode,
+            self.attn_softmax_scale,
+            v100_flash_stability=self.v100_flash_stability,
+            debug_finite_checks=self.debug_finite_checks,
         )
 
         # Pre-compute cross-attention BlockMask once for all blocks (flex mode only)

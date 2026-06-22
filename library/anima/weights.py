@@ -117,6 +117,8 @@ def load_anima_model(
     lora_weights_list: Optional[List[Dict[str, torch.Tensor]]] = None,
     lora_multipliers: Optional[list[float]] = None,
     attn_softmax_scale: Optional[float] = None,
+    v100_flash_stability: str = "off",
+    debug_finite_checks: bool = False,
 ) -> anima_models.Anima:
     """
     Load Anima model from the specified checkpoint.
@@ -154,7 +156,10 @@ def load_anima_model(
         "patch_temporal": 1,
         "attn_mode": attn_mode,
         "attn_softmax_scale": attn_softmax_scale,
+        "v100_flash_stability": v100_flash_stability,
+        "debug_finite_checks": debug_finite_checks,
     }
+
     with init_empty_weights():
         model = anima_models.Anima(**dit_config)
         if dit_weight_dtype is not None:

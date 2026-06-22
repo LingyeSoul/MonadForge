@@ -99,6 +99,20 @@ tradeoff — not the trained-model overflow itself.
 For real overflow reproduction + GPU timing, run on a V100 with a trained
 checkpoint at training resolution.
 
+## V100 FlashAttention note
+
+The fp32 residual guard is necessary but not always sufficient for the third-party
+`flash-attention-v100` backend. For users who want to keep FA2 on V100, use the
+separate probe and stability mode:
+
+```bash
+python -m bench.v100_flash.run_probe --attn_mode flash --stability hybrid --device cuda
+ANIMA_V100_FLASH_STABILITY=hybrid ANIMA_DEBUG_FINITE=1 python tasks.py lora-gui tlora
+```
+
+`hybrid` keeps self-attention on flash and routes cross-attention through torch
+SDPA; `safe` keeps flash but adds finite checks. See `bench/v100_flash/README.md`.
+
 ## Related
 
 - `tests/test_fp16_residual_safe.py` — the invariant tests (unit overflow,

@@ -128,6 +128,31 @@ import logging  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str) -> bool:
+    value = os.environ.get(name)
+    return value is not None and value.lower() not in {"", "0", "false", "no", "off"}
+
+
+def _resolve_v100_flash_stability(args) -> str:
+    value = getattr(args, "v100_flash_stability", None)
+    if value is None:
+        value = os.environ.get("ANIMA_V100_FLASH_STABILITY", "off")
+    value = str(value).lower()
+    if value not in {"off", "hybrid", "safe"}:
+        logger.warning(
+            "invalid ANIMA_V100_FLASH_STABILITY=%r; expected off|hybrid|safe, using off",
+            value,
+        )
+        return "off"
+    return value
+
+
+def _flash_attn_v100_doc(flash_attn_module) -> tuple[str, bool]:
+    doc = getattr(flash_attn_module, "__doc__", None) or ""
+    is_v100_fork = "Tesla V100" in doc or "Flash Attention for Tesla V100" in doc
+    return doc.strip().replace("\n", " "), is_v100_fork
+
+
 class AnimaTrainer:
     def __init__(self):
         self.sample_prompts_te_outputs = None
@@ -435,6 +460,11 @@ class AnimaTrainer:
         if args.attn_mode is not None:
             attn_mode = args.attn_mode
 
+        v100_flash_stability = _resolve_v100_flash_stability(args)
+        debug_finite_checks = bool(getattr(args, "debug_finite_checks", False)) or _env_flag(
+            "ANIMA_DEBUG_FINITE"
+        )
+
         if attn_mode == "flash4":
             # Flash Attention 4 (flash-attention-sm120) is not supported yet.
             raise RuntimeError(
@@ -445,13 +475,32 @@ class AnimaTrainer:
         elif attn_mode == "flash":
             from networks.attention_dispatch import flash_attn, flash_attn_func
 
-            if flash_attn_func is not None:
-                logger.info(
-                    f"Using Flash Attention 2 (flash_attn {flash_attn.__version__})"
-                )
-            else:
+            if flash_attn_func is None:
                 raise RuntimeError(
                     "attn_mode='flash' requested but flash_attn is not available."
+                )
+            flash_doc, is_v100_fork = _flash_attn_v100_doc(flash_attn)
+            try:
+                major, minor = torch.cuda.get_device_capability(accelerator.device)
+            except Exception:
+                major, minor = -1, -1
+            logger.info(
+                "Using Flash Attention 2 (flash_attn %s), gpu_sm=%s.%s, "
+                "v100_fork=%s, v100_flash_stability=%s, debug_finite_checks=%s%s",
+                getattr(flash_attn, "__version__", "unknown"),
+                major,
+                minor,
+                is_v100_fork,
+                v100_flash_stability,
+                debug_finite_checks,
+                f", doc={flash_doc}" if flash_doc else "",
+            )
+            if major == 7 and minor == 0 and is_v100_fork:
+                logger.warning(
+                    "Detected flash-attention-v100 on Volta/V100. This backend is "
+                    "experimental for fp16 diffusion training; use "
+                    "v100_flash_stability=hybrid or safe plus ANIMA_DEBUG_FINITE=1 "
+                    "to diagnose NaN/Inf without disabling flash entirely."
                 )
         else:
             logger.info(f"Using attention mode: {attn_mode}")
@@ -486,6 +535,8 @@ class AnimaTrainer:
             lora_weights_list=lora_weights_list,
             lora_multipliers=lora_multipliers,
             attn_softmax_scale=attn_softmax_scale,
+            v100_flash_stability=v100_flash_stability,
+            debug_finite_checks=debug_finite_checks,
         )
 
         # NOTE: torch.compile (compile_blocks) is intentionally NOT done here.

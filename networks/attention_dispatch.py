@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import torch
 from typing import Optional, Union
 
@@ -64,18 +64,44 @@ class AttentionParams:
     uniform_seqlens: bool = (
         False  # caller guarantees all seqlens are equal (skips GPU sync check)
     )
+    v100_flash_stability: str = "off"  # off|hybrid|safe; training-only Volta FA2 guard
+    debug_finite_checks: bool = False
 
     @property
     def supports_fp32(self) -> bool:
         # flash4 is not supported yet, but keep it in the exclusion list for parity.
         return self.attn_mode not in ["flash", "flash4"]
 
+    def for_attention_kind(self, *, is_selfattn: bool) -> "AttentionParams":
+        """Return params specialized for a self/cross attention call.
+
+        ``v100_flash_stability='hybrid'`` keeps self-attention on FlashAttention
+        (where the token-count speedup matters most) but routes cross-attention
+        through torch SDPA.  Return a copy instead of mutating this shared params
+        object because the same instance is passed through every block.
+        """
+        if (
+            self.v100_flash_stability == "hybrid"
+            and self.attn_mode == "flash"
+            and not is_selfattn
+        ):
+            return replace(self, attn_mode="torch")
+        return self
+
     @staticmethod
     def create_attention_params(
         attn_mode: Optional[str],
         softmax_scale: Optional[float] = None,
+        *,
+        v100_flash_stability: str = "off",
+        debug_finite_checks: bool = False,
     ) -> "AttentionParams":
-        return AttentionParams(attn_mode, softmax_scale=softmax_scale)
+        return AttentionParams(
+            attn_mode,
+            softmax_scale=softmax_scale,
+            v100_flash_stability=v100_flash_stability,
+            debug_finite_checks=debug_finite_checks,
+        )
 
     @staticmethod
     def create_attention_params_from_mask(
@@ -217,7 +243,10 @@ def dispatch_attention(
             v = v[:, :seqlen]
             max_seqlen = attn_params.max_seqlen
             attn_params = AttentionParams.create_attention_params(
-                attn_params.attn_mode, softmax_scale=attn_params.softmax_scale
+                attn_params.attn_mode,
+                softmax_scale=attn_params.softmax_scale,
+                v100_flash_stability=attn_params.v100_flash_stability,
+                debug_finite_checks=attn_params.debug_finite_checks,
             )  # do not in-place modify
             attn_params.max_seqlen = max_seqlen  # keep max_seqlen for padding
             seqlen_trimmed = True

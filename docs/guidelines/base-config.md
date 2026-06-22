@@ -120,7 +120,9 @@ during `make preprocess`, then training reads only the caches.
 | Key | Default | What it controls |
 |---|---|---|
 | `torch_compile` | `true` | Enable `torch.compile` via `compile_blocks()` — the blessed path (bit-exact, lowers memory). It flips on native-shape bucketing and keys the dynamo graph on token-count families derived from `target_res`. **Enable this first on OOM**, before gradient checkpointing. |
-| `attn_mode` | `flash` | Attention backend for training: `flash` (FA2), `torch` (SDPA), `sageattn`, `flex`. Falls back to `torch` (SDPA) if unavailable. |
+| `attn_mode` | `flash` | Attention backend for training: `flash` (FA2), `torch` (SDPA), `sageattn`, `flex`. `flash` requires an installed `flash_attn`; use `torch` as the portable fallback. |
+| `v100_flash_stability` | `off` | Experimental guard for `flash-attention-v100` on Volta/V100 fp16 training: `off` = normal flash, `hybrid` = self-attn flash + cross-attn torch SDPA, `safe` = flash with finite-check diagnostics. Also settable with `ANIMA_V100_FLASH_STABILITY`. |
+| `debug_finite_checks` | `false` | Optional fail-fast NaN/Inf diagnostics for q/k/v, attention outputs, block residuals, loss, and gradients. Also enabled with `ANIMA_DEBUG_FINITE=1`. |
 | `save_precision` | `bf16` | Dtype for saved adapter weights. Stored params stay bf16 even though LoRA/Hydra bottleneck matmuls always accumulate in fp32. |
 
 ## Memory & throughput knobs

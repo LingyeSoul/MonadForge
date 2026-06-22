@@ -504,6 +504,14 @@ def _should_check_loss_finite(state: LoopState) -> bool:
     return (next_step % log_every == 0) or (next_step >= state.args.max_train_steps)
 
 
+def _debug_finite_enabled(args) -> bool:
+    value = getattr(args, "debug_finite_checks", False)
+    env = os.environ.get("ANIMA_DEBUG_FINITE")
+    if env is not None:
+        return env.lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def _check_loss_finite(loss: torch.Tensor, *, mixed_precision: Optional[str] = None) -> None:
     """Fail fast before backward when the scalar loss is non-finite.
 
@@ -522,6 +530,22 @@ def _check_loss_finite(loss: torch.Tensor, *, mixed_precision: Optional[str] = N
         "non-finite training loss before backward; aborting to avoid logging "
         "NaN averages or saving an invalid checkpoint." + hint
     )
+
+
+def _check_trainable_grads_finite(network) -> None:
+    bad: list[str] = []
+    for name, param in network.named_parameters():
+        grad = param.grad
+        if grad is None:
+            continue
+        if not torch.isfinite(grad.detach()).all():
+            bad.append(f"{name}: dtype={grad.dtype} shape={tuple(grad.shape)}")
+            if len(bad) >= 8:
+                break
+    if bad:
+        raise FloatingPointError(
+            "non-finite trainable gradients after backward: " + "; ".join(bad)
+        )
 
 
 def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
@@ -555,7 +579,7 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         if state.profile_started:
             torch.cuda.nvtx.range_push("forward")
         loss = trainer.process_batch(state.train_ctx, batch, is_train=True)
-        if _should_check_loss_finite(state):
+        if _should_check_loss_finite(state) or _debug_finite_enabled(args):
             _check_loss_finite(
                 loss,
                 mixed_precision=getattr(state.accelerator, "mixed_precision", None),
@@ -573,6 +597,8 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         # contributions that can't share the primary backward, e.g. soft-tokens
         # gradient-cached contrastive negatives under active block swapping.
         trainer.run_after_backward(state.train_ctx)
+        if _debug_finite_enabled(args):
+            _check_trainable_grads_finite(accelerator.unwrap_model(network))
 
         if accelerator.sync_gradients:
             net_unwrapped = accelerator.unwrap_model(network)
