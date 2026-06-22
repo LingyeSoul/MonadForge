@@ -1,10 +1,11 @@
 """fp16-safe residual accumulation bench (Tier 1.5 numerics gate).
 
 The DiT residual stream exceeds fp16's 65504 ceiling late in the block stack
-(``docs/findings/selfflow.md``); under fp16 autocast the Block residual adds +
-FinalLayer AdaLN modulate overflow to inf→NaN from step 0.
-``Anima.enable_fp32_residual()`` keeps the residual adds + final-layer modulate
-in fp32 (matmuls still run fp16 under autocast). This bench quantifies:
+(``docs/findings/selfflow.md``); under fp16 autocast the Block residual adds,
+FinalLayer AdaLN modulate, and final projection can overflow to inf→NaN from
+step 0. ``Anima.enable_fp32_residual()`` keeps those numerically sensitive
+residual/final-layer operations in fp32 while transformer-block matmuls still
+run fp16 under autocast. This bench quantifies:
 
 1. **Correctness**: fp16 + flag-on runs N steps finite; bf16 baseline finite.
    (The >65504 overflow itself only bites on a trained model at large

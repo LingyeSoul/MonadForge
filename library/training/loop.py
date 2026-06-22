@@ -495,6 +495,35 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             break
 
 
+def _should_check_loss_finite(state: LoopState) -> bool:
+    """Return True on the same cadence that would sync loss to host for logging."""
+    if not state.accelerator.sync_gradients:
+        return False
+    log_every = max(1, int(getattr(state.args, "log_every_n_steps", 1) or 1))
+    next_step = state.global_step + 1
+    return (next_step % log_every == 0) or (next_step >= state.args.max_train_steps)
+
+
+def _check_loss_finite(loss: torch.Tensor, *, mixed_precision: Optional[str] = None) -> None:
+    """Fail fast before backward when the scalar loss is non-finite.
+
+    This intentionally syncs the scalar predicate to Python, so callers should
+    run it only on log cadence rather than every micro-step.
+    """
+    if torch.isfinite(loss.detach()).all():
+        return
+    hint = ""
+    if mixed_precision == "fp16":
+        hint = (
+            " fp16 autocast is active; inspect batch/σ, residual-range guards, "
+            "and the fp16-safe FinalLayer projection path."
+        )
+    raise FloatingPointError(
+        "non-finite training loss before backward; aborting to avoid logging "
+        "NaN averages or saving an invalid checkpoint." + hint
+    )
+
+
 def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
     """The accumulate-scope body: on_step_start hooks, cudagraph mark, forward,
     backward gating, sync_gradients hooks (hydra warmup, grad capture, clip),
@@ -526,6 +555,11 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         if state.profile_started:
             torch.cuda.nvtx.range_push("forward")
         loss = trainer.process_batch(state.train_ctx, batch, is_train=True)
+        if _should_check_loss_finite(state):
+            _check_loss_finite(
+                loss,
+                mixed_precision=getattr(state.accelerator, "mixed_precision", None),
+            )
         if state.profile_started:
             torch.cuda.nvtx.range_pop()
 

@@ -7,9 +7,9 @@ overflow to ``inf → NaN`` from step 0 — this is the V100 + fp16 NaN
 reproduction (V100 / sm_70 has no native bf16, so the default ``bf16``
 silently runs fp32 autocast; users pick fp16 for the matmul speedup).
 
-The fix (``Anima.enable_fp32_residual()``) keeps matmuls in the autocast
-(fp16) dtype but promotes the residual adds + final-layer modulate to fp32,
-casting back after. These tests pin three contracts:
+The fix (``Anima.enable_fp32_residual()``) keeps transformer-block matmuls in
+the autocast (fp16) dtype but promotes the residual adds, final-layer modulate,
+and final projection to fp32. These tests pin three contracts:
 
 1. **Unit**: ``Block._residual_add`` is finite for fp16 inputs summing past
    65504 when ``fp32_residual=True``, and overflows when ``False`` (the
@@ -376,12 +376,8 @@ def test_final_layer_forward_overflow_end_to_end():
        fp32 before the linear), so the AdaLN math can't overflow mid-expression.
     2. The output is finite for a normal-magnitude input.
 
-    We deliberately do NOT try to drive the output past 65504: if the modulate
-    *result* exceeds fp16 range, the downstream unpatchify ``linear`` overflows
-    at the autocast fp32→fp16 cast — that's an unavoidable property of the
-    fp16 dtype, not something the guard can or should fix. The guard's job is
-    to keep the modulate *expression* finite (so a transient mid-expression
-    overflow doesn't poison the result); the unit test pins the >65504 case.
+    The high-magnitude final-projection overflow case is covered separately by
+    ``test_final_layer_projection_stays_fp32_under_fp16_autocast`` below.
     """
     hidden_size = 64
     final = FinalLayer(
@@ -409,3 +405,47 @@ def test_final_layer_forward_overflow_end_to_end():
     with _fp16_autocast(), torch.no_grad():
         out_off = final(x, emb)
     assert torch.isfinite(out_off).all()
+
+
+def test_final_layer_projection_stays_fp32_under_fp16_autocast():
+    """Final projection must not re-cast the fp32 residual stream to fp16.
+
+    The earlier guard kept FinalLayer's AdaLN modulate in fp32 but then called
+    ``self.linear(x_modulated)`` under fp16 autocast. That final call casts the
+    fp32 activation and weight to fp16 before the matmul, so a projection whose
+    true fp32 result is finite but >65504 collapses to ``inf``. The fp16-safe
+    path keeps this final projection in fp32 too.
+    """
+    hidden_size = 64
+    final = FinalLayer(
+        hidden_size=hidden_size,
+        spatial_patch_size=1,
+        temporal_patch_size=1,
+        out_channels=1,
+        use_adaln_lora=False,
+    )
+    final.eval()
+    final.fp32_residual = True
+
+    # Make LayerNorm output exactly ones: (63 channels at -1/sqrt(63), one at
+    # sqrt(63)) has sample mean 0 and sample variance 1, so LN preserves the
+    # pattern. The projection sums only the positive channel with a large weight:
+    # fp32 result is finite (~80k), fp16 autocast projection overflows.
+    x = torch.full(
+        (1, 1, 1, 1, hidden_size),
+        -1.0 / (hidden_size - 1) ** 0.5,
+        dtype=torch.float32,
+    )
+    x[..., -1] = (hidden_size - 1) ** 0.5
+    emb = torch.zeros(1, 1, hidden_size, dtype=torch.float32)
+    with torch.no_grad():
+        final.adaln_modulation[1].weight.zero_()
+        final.linear.weight.zero_()
+        final.linear.weight[0, -1] = 10000.0
+
+    with _fp16_autocast(), torch.no_grad():
+        out = final(x, emb)
+
+    assert out.dtype == torch.float32
+    assert torch.isfinite(out).all(), "fp32 FinalLayer projection produced inf/nan"
+    assert out.item() > _FP16_MAX

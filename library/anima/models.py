@@ -1012,6 +1012,17 @@ class FinalLayer(nn.Module):
 
         self.layer_norm.reset_parameters()
 
+    def _fp32_project(self, x_modulated: torch.Tensor) -> torch.Tensor:
+        """fp16-safe unpatchify projection for the fp32 residual path.
+
+        ``self.linear`` is bias-free. Under fp16 autocast, ``Linear`` would cast
+        both operands to fp16 before the matmul; a trained final projection whose
+        true fp32 result exceeds 65504 would collapse to ``inf``. Disable autocast
+        so the fp32 residual stream stays fp32 through the final projection.
+        """
+        with torch.autocast(device_type=x_modulated.device.type, enabled=False):
+            return F.linear(x_modulated, self.linear.weight.float())
+
     def forward(
         self,
         x_B_T_H_W_D: torch.Tensor,
@@ -1031,21 +1042,21 @@ class FinalLayer(nn.Module):
         scale_B_T_1_1_D = scale_B_T_D[:, :, None, None, :]
 
         if self.fp32_residual:
-            # The final layer runs on the already-large residual stream; the
-            # ``norm(x)*(1+scale)+shift`` modulate is computed in fp32 so a
-            # large scale/shift can't overflow fp16. The downstream ``linear``
-            # (unpatchify) runs under autocast, which re-casts the fp32 input
-            # into the compute dtype — so the matmul stays fp16. Branch on a
-            # plain bool → compile-safe (specialized once by dynamo).
+            # The final layer runs on the already-large residual stream. Keep
+            # both the AdaLN modulate and the unpatchify projection in fp32; if
+            # the projection runs under autocast it re-casts this fp32 stream to
+            # fp16 and can overflow at the last step. Branch on a plain bool →
+            # compile-safe (specialized once by dynamo).
             normed = self.layer_norm(x_B_T_H_W_D)
             x_modulated = (
                 normed.float() * (1.0 + scale_B_T_1_1_D.float())
                 + shift_B_T_1_1_D.float()
             )
-        else:
-            x_modulated = (
-                self.layer_norm(x_B_T_H_W_D) * (1 + scale_B_T_1_1_D) + shift_B_T_1_1_D
-            )
+            return self._fp32_project(x_modulated)
+
+        x_modulated = (
+            self.layer_norm(x_B_T_H_W_D) * (1 + scale_B_T_1_1_D) + shift_B_T_1_1_D
+        )
         x_B_T_H_W_O = self.linear(x_modulated)
         return x_B_T_H_W_O
 
