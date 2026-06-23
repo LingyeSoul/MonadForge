@@ -75,6 +75,8 @@
           >
             <v-btn value="en" size="small">EN</v-btn>
             <v-btn value="cn" size="small">中</v-btn>
+            <v-btn value="ko" size="small">한</v-btn>
+            <v-btn value="ja" size="small">日</v-btn>
           </v-btn-toggle>
         </div>
       </template>

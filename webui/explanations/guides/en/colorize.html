@@ -1,0 +1,10 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize</h2>
+<p>A manga/lineart colorization variant of EasyControl. Uses the same extended self-attention cond stream architecture, but with different training data: the <b>target</b> is an existing color illustration (reusing latent + caption caches from <code>post_image_dataset/lora/</code>), and the <b>condition</b> is a <i>synthetic</i> mangafied version of that image (XDoG lineart + algorithmic screentone), cached to a separate <code>cond_cache_dir</code>.</p>
+<p>The text channel is reduced to <b>color-only captions</b> (hair/eye/garment colors), cached to a separate <code>text_cache_dir</code>, so the prompt carries the one variable B&amp;W can't — hue. At inference, an empty prompt auto-colorizes; a color prompt (e.g. <code>pink hair, blue eyes</code>) steers the palette.</p>
+<p><b>Usage</b></p>
+<pre>make easycontrol-staging    EASYADAPTER=colorize   # 1) mangafy cond tree
+make easycontrol-preprocess EASYADAPTER=colorize   # 2-3) VAE-encode cond + color text
+make easycontrol            EASYADAPTER=colorize   # train
+REF_IMAGE=page.png make test-easycontrol EASYADAPTER=colorize   # inference</pre>
+<p>In the GUI, the EasyControl tab's Variant dropdown lists <i>Colorize</i>. Its config file is <code>configs/easycontrol/colorize.toml</code> (a descriptor file with <code>[staging]</code>/<code>[preprocess]</code>/<code>[training]</code> sections).</p>
+<p>Full design notes (caption policy, screentone bands, inference settings) live in <code>easycontrol_adapters/colorization/README.md</code>.</p>

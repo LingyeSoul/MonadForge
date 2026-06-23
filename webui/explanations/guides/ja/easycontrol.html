@@ -1,0 +1,9 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>拡張セルフアテンション画像条件アダプター。DiT を凍結し、各ブロックのセルフアテンション(q/k/v/o)と FFN(layer1/layer2)にブロック別条件 LoRA を学習し、ブロック別スカラー加法ロジットバイアス <code>b_cond</code>(条件ストリームの softmax 比重を制御) を追加します。参照画像は VAE でエンコードされた後 DiT の <code>x_embedder</code> を通じて条件トークンに変換され、ターゲットストリームと共に各ブロックを通過します。ターゲットセルフアテンションは自身のキーと条件ストリームのキー/値の両方に同時にアテンションします。</p>
+<p><b>学習</b>は <code>make easycontrol</code> で開始します。既存の VAE 潜在変数キャッシュを条件入力として再利用 — 別途サイドカークキャッシュは不要です。VAE 潜在変数がまだキャッシュされていない場合は <code>make preprocess</code> を先に実行してください。</p>
+<p><b>推論</b>は <code>make test-easycontrol REF_IMAGE=&lt;path&gt; PROMPT="..."</code> を使用します。条件ストリームはデノイジングステップで確定的です — 推論時に事前計算された KV キャッシュで条件ストリームの繰り返し計算を排除します。</p>
+<p><b>バリアント</b><br>
+&bull; <b>default</b>（ref==target）&mdash; 条件画像が参照画像そのものです。<br>
+&bull; <b>colorize</b> &mdash; 漫画/線画彩色。条件は合成マンガ化 B&amp;W バージョン(XDoG 線画 + アルゴリズムスクリーントーン)、ターゲットはカラーイラスト。別途 Colorize ガイドを参照。</p>
+<p><b>学習可能パラメータ</b>（デフォルト r=16, D=2048, 28 ブロック）: ~14.7M. <code>apply_ffn_lora=0</code> で FFN LoRA を除外するとパラメータ数が半減します。</p>
+<p><b>主要設定</b>: <code>b_cond_init</code>（初期バイアス、デフォルト -10）, <code>easycontrol_drop_p</code>（CFG dropout 確率、デフォルト 0.1）, <code>cond_res_scale</code>（位置認識補間スケール、&lt;1.0 で学習加速）. <code>docs/experimental/easycontrol.md</code> 参照.</p>

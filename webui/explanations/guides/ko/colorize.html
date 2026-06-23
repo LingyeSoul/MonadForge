@@ -1,0 +1,10 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize（채색）</h2>
+<p>EasyControl의 만화/선화 채색 변형. EasyControl과 동일한 확장 셀프 어텐션 조건 스트림 아키텍처를 사용하지만 학습 데이터가 다릅니다: <b>타겟</b>은 기존 컬러 일러스트(<code>post_image_dataset/lora/</code>의 잠재 변수와 캡션 캐시 재사용), <b>조건</b>은 해당 이미지의 <i>합성</i> 만화화 버전(XDoG 선화 + 알고리즘 스크린톤)으로, 별도의 <code>cond_cache_dir</code>에 캐시됩니다.</p>
+<p>텍스트 채널은 <b>색상 전용 캡션</b>(머리색/눈색/의상 색상)으로 축소되어 별도의 <code>text_cache_dir</code>에 캐시됩니다. 따라서 프롬프트는 B&amp;W가 표현할 수 없는 유일한 변수 — 색조 — 를 전달합니다. 추론 시 빈 프롬프트는 자동 채색, 색상 프롬프트(예: <code>pink hair, blue eyes</code>)는 색상을 유도합니다.</p>
+<p><b>사용 절차</b></p>
+<pre>make easycontrol-staging    EASYADAPTER=colorize   # 1) 만화화 조건 이미지
+make easycontrol-preprocess EASYADAPTER=colorize   # 2-3) VAE 인코딩 조건 + 색상 텍스트
+make easycontrol            EASYADAPTER=colorize   # 학습
+REF_IMAGE=page.png make test-easycontrol EASYADAPTER=colorize   # 추론</pre>
+<p>GUI에서 EasyControl 탭의 Variant 드롭다운에 <i>Colorize</i>가 표시됩니다. 설정 파일: <code>configs/easycontrol/colorize.toml</code>.</p>
+<p>자세한 설계(캡션 정책, 스크린톤 대역, 추론 설정)는 <code>easycontrol_adapters/colorization/README.md</code>를 참조하세요.</p>

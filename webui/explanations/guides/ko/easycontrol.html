@@ -1,0 +1,9 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>확장 셀프 어텐션 이미지 조건 어댑터. DiT를 고정하고 각 블록의 셀프 어텐션(q/k/v/o)과 FFN(layer1/layer2)에 블록별 조건 LoRA를 학습하며, 블록별 스칼라 가법 로짓 바이어스 <code>b_cond</code>(조건 스트림의 softmax 비중 제어)를 추가합니다. 참조 이미지는 VAE로 인코딩된 후 DiT의 <code>x_embedder</code>를 통해 조건 토큰으로 변환되어 타겟 스트림과 함께 각 블록을 통과합니다. 타겟 셀프 어텐션은 자기 자신의 키와 조건 스트림의 키/값에 동시에 어텐션합니다.</p>
+<p><b>학습</b>은 <code>make easycontrol</code>로 시작합니다. 기존 VAE 잠재 변수 캐시를 조건 입력으로 재사용합니다 — 별도의 사이드카 캐시가 필요 없습니다. VAE 잠재 변수가 아직 캐시되지 않았다면 <code>make preprocess</code>를 먼저 실행하세요.</p>
+<p><b>추론</b>은 <code>make test-easycontrol REF_IMAGE=&lt;path&gt; PROMPT="..."</code>를 사용합니다. 조건 스트림은 디노이징 단계에서 결정적입니다 — 추론 시 사전 계산된 KV 캐시로 조건 스트림의 반복 계산을 제거합니다.</p>
+<p><b>변형</b><br>
+&bull; <b>default</b>（ref==target）&mdash; 조건 이미지가 참조 이미지 자체입니다.<br>
+&bull; <b>colorize</b> &mdash; 만화/선화 채색. 조건은 합성 만화화 B&amp;W 버전(XDoG 선화 + 알고리즘 스크린톤), 타겟은 컬러 일러스트. 별도의 Colorize 가이드를 참조하세요.</p>
+<p><b>학습 가능 파라미터</b>（기본 r=16, D=2048, 28 블록）: ~14.7M. <code>apply_ffn_lora=0</code>으로 FFN LoRA를 제거하면 파라미터 수가 절반으로 줄어듭니다.</p>
+<p><b>주요 설정</b>: <code>b_cond_init</code>（초기 바이어스, 기본 -10）, <code>easycontrol_drop_p</code>（CFG dropout 확률, 기본 0.1）, <code>cond_res_scale</code>（위치 인식 보간 스케일, &lt;1.0이면 학습 가속）. <code>docs/experimental/easycontrol.md</code> 참조.</p>

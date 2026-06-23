@@ -33,7 +33,7 @@ def get_translations() -> dict[str, dict[str, str]]:
     global _cache
     if _cache is None:
         _cache = {}
-        for lang in ("en", "cn", "ko"):
+        for lang in ("en", "cn", "ko", "ja"):
             strings = _load_strings(lang)
             if strings:
                 _cache[lang] = strings

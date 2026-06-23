@@ -1,0 +1,10 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize（上色）</h2>
+<p>EasyControl 的漫画/线稿上色变体。使用与 EasyControl 相同的扩展自注意力条件流架构，但训练数据不同：<b>目标</b>是现有彩色插图（复用 <code>post_image_dataset/lora/</code> 中的潜变量和字幕缓存），<b>条件</b>是该图像的<i>合成</i>漫画化版本（XDoG 线稿 + 算法网点），缓存到独立的 <code>cond_cache_dir</code>。</p>
+<p>文本通道缩减为<b>仅颜色字幕</b>（发色/瞳色/服装颜色），缓存到独立的 <code>text_cache_dir</code>，因此提示词携带 B&amp;W 无法表达的唯一变量 — 色相。推理时留空提示词可自动上色；提供颜色提示词（如 <code>pink hair, blue eyes</code>）可引导配色。</p>
+<p><b>使用流程</b></p>
+<pre>make easycontrol-staging    EASYADAPTER=colorize   # 1) 漫画化条件图
+make easycontrol-preprocess EASYADAPTER=colorize   # 2-3) VAE编码条件 + 颜色文本
+make easycontrol            EASYADAPTER=colorize   # 训练
+REF_IMAGE=page.png make test-easycontrol EASYADAPTER=colorize   # 推理</pre>
+<p>在 GUI 中，EasyControl 标签页的 Variant 下拉菜单列出 <i>Colorize</i>。其配置文件为 <code>configs/easycontrol/colorize.toml</code>（描述符文件，包含 <code>[staging]</code>/<code>[preprocess]</code>/<code>[training]</code> 分节）。</p>
+<p>详细设计（字幕策略、网点频带、推理设置）参见 <code>easycontrol_adapters/colorization/README.md</code>。</p>

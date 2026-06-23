@@ -1,0 +1,9 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>Extended self-attention image conditioning adapter. Frozen DiT with per-block cond LoRA on self-attention (q/k/v/o) and FFN (layer1/layer2), plus per-block scalar additive logit bias <code>b_cond</code> (controls how much softmax mass the cond positions can claim). The reference image is VAE-encoded and patch-embedded via the DiT's <code>x_embedder</code> into condition tokens that flow through every block alongside the target stream; target self-attention attends to keys from both itself and the cond stream.</p>
+<p><b>Training</b> launches via <code>make easycontrol</code>. Reuses existing VAE latent cache as cond input — no separate sidecar cache needed. Run <code>make preprocess</code> first if VAE latents aren't cached, then <code>make easycontrol</code>.</p>
+<p><b>Inference</b> uses <code>make test-easycontrol REF_IMAGE=&lt;path&gt; PROMPT="..."</code>. The cond stream is deterministic across denoising steps — at inference, a precomputed KV cache eliminates per-step recomputation of the cond stream.</p>
+<p><b>Variants</b><br>
+&bull; <b>default</b> (ref==target) — the condition is the reference image itself.<br>
+&bull; <b>colorize</b> — manga/lineart colorization. Condition is a synthetic mangafied B&amp;W version (XDoG lineart + algorithmic screentone), target is a color illustration. See the separate Colorize guide.</p>
+<p><b>Trainable parameters</b> (default r=16, D=2048, 28 blocks): ~14.7M. Set <code>apply_ffn_lora=0</code> to drop FFN LoRA, halving the count.</p>
+<p><b>Key settings</b>: <code>b_cond_init</code> (initial bias, default -10), <code>easycontrol_drop_p</code> (CFG dropout probability, default 0.1), <code>cond_res_scale</code> (position-aware interpolation scale, &lt;1.0 speeds up training). See <code>docs/experimental/easycontrol.md</code>.</p>

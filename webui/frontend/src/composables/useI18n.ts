@@ -3,7 +3,7 @@ import { useAppStore } from '../stores/app'
 import { getFrontendTranslations, type TranslationMessages } from '../i18n'
 
 const backendTranslations = ref<TranslationMessages>({})
-const languages = ref<string[]>(['en', 'cn'])
+const languages = ref<string[]>(['en', 'cn', 'ko', 'ja'])
 const loaded = ref(false)
 
 export async function initI18n() {
@@ -11,9 +11,9 @@ export async function initI18n() {
   try {
     const langRes = await fetch('/api/i18n')
     const langData = await langRes.json()
-    languages.value = langData.languages || ['en', 'cn']
+    languages.value = langData.languages || ['en', 'cn', 'ko', 'ja']
   } catch {
-    // fallback to en/cn
+    // fallback to en/cn/ko/ja
   }
   await loadBackendTranslations(appStore.language)
   loaded.value = true

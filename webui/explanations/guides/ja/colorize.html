@@ -1,0 +1,10 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>Colorize（彩色）</h2>
+<p>EasyControl の漫画/線画彩色バリアント。EasyControl と同じ拡張セルフアテンション条件ストリームアーキテクチャを使用しますが、学習データが異なります：<b>ターゲット</b>は既存のカラーイラスト（<code>post_image_dataset/lora/</code> の潜在変数とキャプションキャッシュを再利用）、<b>条件</b>はその画像の<i>合成</i>マンガ化バージョン（XDoG 線画 + アルゴリズムスクリーントーン）で、別途 <code>cond_cache_dir</code> にキャッシュされます。</p>
+<p>テキストチャンネルは<b>色専用キャプション</b>（髪色/瞳色/服装色）に縮小され、別途 <code>text_cache_dir</code> にキャッシュされます。そのためプロンプトは B&amp;W が表現できない唯一の変数 — 色相 — を伝達します。推論時、空プロンプトは自動彩色、色プロンプト（例: <code>pink hair, blue eyes</code>）は配色を誘導します。</p>
+<p><b>使用手順</b></p>
+<pre>make easycontrol-staging    EASYADAPTER=colorize   # 1) 漫画化条件画像
+make easycontrol-preprocess EASYADAPTER=colorize   # 2-3) VAE エンコード条件 + 色テキスト
+make easycontrol            EASYADAPTER=colorize   # 学習
+REF_IMAGE=page.png make test-easycontrol EASYADAPTER=colorize   # 推論</pre>
+<p>GUI で EasyControl タブの Variant ドロップダウンに <i>Colorize</i> が表示されます。設定ファイル: <code>configs/easycontrol/colorize.toml</code>.</p>
+<p>詳細な設計（キャプションポリシー、スクリーントーン帯域、推論設定）は <code>easycontrol_adapters/colorization/README.md</code> を参照してください。</p>

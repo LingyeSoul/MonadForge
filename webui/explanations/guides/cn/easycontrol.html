@@ -1,0 +1,9 @@
+<h2 style='margin:0 0 10px 0; font-size:17px;'>EasyControl</h2>
+<p>扩展自注意力图像条件适配器。冻结 DiT，为每层的自注意力（q/k/v/o）和 FFN（layer1/layer2）训练逐块条件 LoRA，外加逐块标量加性对数偏置 <code>b_cond</code>（控制条件流在 softmax 中的权重）。参考图像经 VAE 编码后通过 DiT 的 <code>x_embedder</code> 转为条件词元，与目标流并行通过每个块；目标自注意力同时关注自身键和条件流的键/值。</p>
+<p><b>训练</b>通过 <code>make easycontrol</code> 启动。复用已有的 VAE 潜变量缓存作为条件输入 — 无需额外的旁文件缓存。如果 VAE 潜变量尚未缓存，先运行 <code>make preprocess</code>，再运行 <code>make easycontrol</code>。</p>
+<p><b>推理</b>使用 <code>make test-easycontrol REF_IMAGE=&lt;path&gt; PROMPT="..."</code>。条件流在去噪过程中是确定性的 — 推理时通过预计算 KV 缓存消除每步重复计算条件流的开销。</p>
+<p><b>变体</b><br>
+&bull; <b>default</b>（ref==target）&mdash; 条件图即参考图像本身。<br>
+&bull; <b>colorize</b> &mdash; 漫画/线稿上色。条件图是合成的漫画化 B&amp;W 版本（XDoG 线稿 + 算法网点），目标是彩色插图。参见单独的 Colorize 指南。</p>
+<p><b>可训练参数</b>（默认 r=16, D=2048, 28 块）：~14.7M。设置 <code>apply_ffn_lora=0</code> 可去掉 FFN LoRA，参数量减半。</p>
+<p><b>关键配置</b>：<code>b_cond_init</code>（初始偏置，默认 -10）、<code>easycontrol_drop_p</code>（CFG dropout 概率，默认 0.1）、<code>cond_res_scale</code>（位置感知插值缩放，&lt;1.0 可加速训练）。参见 <code>docs/experimental/easycontrol.md</code>。</p>

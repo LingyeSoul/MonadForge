@@ -410,6 +410,8 @@ How it works:
 | **Standalone ReFT** | `make lora-gui GUI_PRESETS=reft` or set `add_reft = true` in `methods/lora.toml` | Representation Fine-Tuning (ReFT), minimal parameter count |
 | **Postfix Tuning** (*Experimental*) | `make exp-postfix` or `make lora-gui GUI_PRESETS=postfix_ortho_cond` | Appends trainable N vectors at the end of cross-attention (caption-conditional + orthogonal variants) |
 | **ChimeraHydra** (*Experimental*) | `make exp-chimera` or `make lora-gui GUI_PRESETS=chimera_hydra` | Content/frequency dual-pool MoE — for research only |
+| **EasyControl** (*Experimental*) | `make easycontrol` or GUI Adapter tab | Extended self-attention image conditioning. Frozen DiT with per-block cond LoRA + scalar bias. Dataset: `easycontrol-dataset/` |
+| **Colorize** (*Experimental*) | `make easycontrol EASYADAPTER=colorize` | EasyControl's manga/lineart colorization variant. Cond = synthetic B&W (XDoG + screentone), target = color illustration |
 
 For detailed options per variant, see [`docs/guidelines/training.md`](training.md) and the individual documents in `docs/methods/`.
 
@@ -434,6 +436,7 @@ make test-hydra                  # HydraLoRA (router-live, anima_hydra*_moe.safe
 make test-merge                  # Inference with baked standalone DiT (`*_merged.safetensors`)
 make test-dcw                    # LoRA + DCW scalar correction (sampler-level SNR-t correction)
 make test-dcw-v4                 # LoRA + DCW v4 learnable calibrator
+make test-easycontrol REF_IMAGE=... PROMPT="..."  # EasyControl image-conditioned inference
 # Experimental inference
 make exp-test-postfix            # Postfix tuning (standard)
 make exp-test-postfix-exp        # postfix_exp variant

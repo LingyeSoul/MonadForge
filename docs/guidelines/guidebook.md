@@ -434,6 +434,8 @@ checkpointing_epochs = 2     # 每 2 个 epoch 保存一次续训状态（覆盖
 | **单独 ReFT** | `make lora-gui GUI_PRESETS=reft` 或在 `methods/lora.toml` 中设置 `add_reft = true` | 表达编辑（Representation Fine-Tuning），极少参数量 |
 | **Postfix Tuning**（*实验性*） | `make exp-postfix` 或 `make lora-gui GUI_PRESETS=postfix_ortho_cond` | 在 cross-attention 末尾追加可训练的 N 个向量（标注条件 + 正交变体） |
 | **ChimeraHydra**（*实验性*） | `make exp-chimera` 或 `make lora-gui GUI_PRESETS=chimera_hydra` | 内容/频率双池 MoE — 仅用于研究 |
+| **EasyControl**（*实验性*） | `make easycontrol` 或 GUI 适配器标签页 | 扩展自注意力图像条件。冻结 DiT，训练逐块条件 LoRA + 标量偏置。数据集：`easycontrol-dataset/` |
+| **Colorize**（*实验性*） | `make easycontrol EASYADAPTER=colorize` | EasyControl 的漫画/线稿上色变体。条件图 = 合成 B&amp;W（XDoG + 网点），目标 = 彩色插图 |
 
 各变体的详细选项请参阅 [`docs/guidelines/training.md`](training.md) 和 `docs/methods/` 中的各单独文档。
 
@@ -458,6 +460,7 @@ make test-hydra                  # HydraLoRA（路由器在线，anima_hydra*_mo
 make test-merge                  # 用烘焙后的独立 DiT（`*_merged.safetensors`）推理
 make test-dcw                    # LoRA + DCW 标量校正（采样器级 SNR-t 校正）
 make test-dcw-v4                 # LoRA + DCW v4 学习型校正器
+make test-easycontrol REF_IMAGE=... PROMPT="..."  # EasyControl 图像条件推理
 # 实验性推理
 make exp-test-postfix            # Postfix tuning（标准版）
 make exp-test-postfix-exp        # postfix_exp 变体
