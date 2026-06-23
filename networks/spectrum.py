@@ -97,6 +97,7 @@ def _window_decision_fraction(
     stop_at: int,
     window_size: float,
     flex_window: float,
+    forced_steps: frozenset = frozenset(),
 ) -> float:
     """Refresh fraction the growing-window schedule spends in the decision region.
 
@@ -106,20 +107,27 @@ def _window_decision_fraction(
     matched compute for any step count — the hard-coded 0.62 in the proposal was
     only the 24-step value and over-computes elsewhere (_archive/bench/
     spectrum_sea/prompt_generalization.py: 0.62 → +22% forwards at 28 steps).
+
+    ``forced_steps`` are step indices forced to an actual forward by an external
+    consumer (FSG-scheduled calibration steps). They are treated exactly like
+    warmup/tail — forced actual, excluded from the decision denominator — so the
+    fraction (and therefore the SEA δ target) is matched against the window
+    baseline *over the same adaptive budget*; FSG's fixed forward cost lands
+    identically on both arms.
     """
     curr_ws = window_size
     consec = 0
     actual_dec = 0
     n_dec = 0
     for i in range(num_steps):
-        if i < warmup_steps or i >= stop_at:
+        if i < warmup_steps or i >= stop_at or i in forced_steps:
             actual = True
         else:
             actual = (consec + 1) % max(1, math.floor(curr_ws)) == 0
             n_dec += 1
             actual_dec += int(actual)
         if actual:
-            if i >= warmup_steps:
+            if i >= warmup_steps and i not in forced_steps:
                 curr_ws = round(curr_ws + flex_window, 3)
             consec = 0
         else:
@@ -369,7 +377,10 @@ def spectrum_denoise(
             fraction varies with step count (~0.45 at 28 steps, ~0.62 at 24).
         sea_beta: Natural-image power-law exponent for the SEA filter (default 2).
         ctx: Shared conditioning side-channels (DCW / SMC-CFG / soft-tokens /
-            P-GRAFT / pooled-text) — see ``library.inference.sampler_context``.
+            P-GRAFT / pooled-text / FSG) — see ``library.inference.sampler_context``.
+            ``ctx.fsg``, when set, forces its scheduled σ-band steps to actual
+            forwards (excluded from the window/SEA decision domain) and calibrates
+            the latent before each.
     """
     # Unpack the shared side-channels into the locals the loop body uses.
     pgraft_network = ctx.pgraft_network
@@ -385,9 +396,23 @@ def spectrum_denoise(
     soft_tokens_net = ctx.soft_tokens_net
     soft_tokens_embed_seqlens = ctx.soft_tokens_embed_seqlens
     soft_tokens_neg_seqlens = ctx.soft_tokens_neg_seqlens
+    fsg = ctx.fsg
 
     do_cfg = guidance_scale != 1.0
     num_steps = len(timesteps)
+
+    # FSG pre-step latent calibration composes by carving its scheduled steps
+    # out of the cache scheduler: a calibrated step is forced to an actual
+    # forward (you cannot calibrate on a cached step, and re-observing keeps the
+    # Chebyshev basis honest across the calibration-induced kink) and excluded
+    # from the SEA decision domain — the same treatment warmup/tail steps get,
+    # so neither the window fraction nor the auto-δ trace is corrupted. FSG runs
+    # on the cond/uncond gap, so generation.py only sets ctx.fsg under CFG.
+    fsg_steps = (
+        frozenset(i for i in range(num_steps) if fsg.scheduled(float(sigmas[i])))
+        if fsg is not None
+        else frozenset()
+    )
 
     curr_ws = window_size
     consec_cached = 0
@@ -404,7 +429,7 @@ def spectrum_denoise(
     # honored for sweeps.
     if use_sea and float(refresh_ratio) <= 0.0:
         refresh_ratio = _window_decision_fraction(
-            num_steps, warmup_steps, stop_at, window_size, flex_window
+            num_steps, warmup_steps, stop_at, window_size, flex_window, fsg_steps
         )
     # δ rides the input-latent trajectory, so it must be re-calibrated whenever
     # the trajectory changes: step count, CFG scale, sampler rule, and latent
@@ -423,6 +448,11 @@ def spectrum_denoise(
         sampler_label,
         int(latents.shape[-2]),
         int(latents.shape[-1]),
+        # FSG moves the trajectory (and the forced-step set), so δ must
+        # recalibrate when the band/K/Δσ/γ changes.
+        (tuple(sorted(fsg_steps)), fsg.k, round(fsg.d_sigma, 3), fsg.gamma)
+        if fsg is not None
+        else None,
     )
     if not use_sea:
         delta_val: Optional[float] = None
@@ -462,6 +492,29 @@ def spectrum_denoise(
                     pgraft_network.set_enabled(False)
                     logger.info(f"P-GRAFT: Disabled LoRA at step {i}/{num_steps}")
 
+                # FSG: pre-step latent calibration toward the golden path, run
+                # *before* the SEA metric so both the accumulator and the
+                # forecaster see the calibrated trajectory. The calibration's own
+                # internal anima() forwards transiently overwrite captured["feat"],
+                # but the real per-step forward below is the last anima() call
+                # before we read it, so the captured feature is always the
+                # post-calibration one. The step is forced to an actual forward
+                # in the decision block below.
+                fsg_forced = fsg is not None and i in fsg_steps
+                if fsg_forced:
+                    latents = fsg.calibrate(
+                        anima,
+                        latents,
+                        float(sigmas[i]),
+                        i,
+                        embed,
+                        negative_embed,
+                        padding_mask,
+                        guidance_scale,
+                        pooled_pos=pooled_text_pos,
+                        pooled_neg=pooled_text_neg,
+                    )
+
                 # SEA: accumulate the SEA-filtered relative-L1 distance of the
                 # input latent (x_t == `latents`, shared across cond/uncond so
                 # one accumulator drives both branches). One FFT/iFFT per step —
@@ -471,12 +524,16 @@ def spectrum_denoise(
                     if sea_prev is not None:
                         d = l1rel(sea_now, sea_prev)
                         sea_accum += d
-                        if warmup_steps <= i < stop_at:
+                        # FSG steps are forced actual; exclude their distance
+                        # from the auto-δ decision trace (matched to the window
+                        # baseline, which also excludes them).
+                        if warmup_steps <= i < stop_at and not fsg_forced:
                             sea_dists.append(d)
                     sea_prev = sea_now
 
-                # Decide: actual forward or cached prediction?
-                if i < warmup_steps or i >= stop_at:
+                # Decide: actual forward or cached prediction? FSG-scheduled
+                # steps are forced actual regardless of window/SEA rule.
+                if i < warmup_steps or i >= stop_at or fsg_forced:
                     actual = True
                 elif use_sea and delta_val is not None:
                     actual = sea_accum >= delta_val
@@ -556,8 +613,11 @@ def spectrum_denoise(
                                 noise_pred - uncond_noise_pred
                             )
 
-                    # Advance schedule (only post-warmup to avoid inflating window)
-                    if i >= warmup_steps:
+                    # Advance schedule (only post-warmup to avoid inflating
+                    # window). FSG-forced steps don't advance it — they are an
+                    # external forcing, not a window-driven refresh, so the
+                    # window rhythm matches the no-FSG schedule (cf. warmup).
+                    if i >= warmup_steps and not fsg_forced:
                         curr_ws = round(curr_ws + flex_window, 3)
                     consec_cached = 0
                     sea_accum = 0.0  # refresh resets the SEA accumulator (Eq. 8)
@@ -662,9 +722,16 @@ def spectrum_denoise(
             if use_sea and delta_val is not None
             else (", schedule=sea (calibrating)" if use_sea else "")
         )
+        # FSG spends 3·K extra forwards per scheduled step on top of the
+        # schedule's own forwards — call it out so the speedup isn't misread.
+        fsg_label = (
+            f", fsg={len(fsg_steps)} steps×K{fsg.k} (+{3 * fsg.k * len(fsg_steps)} fwd)"
+            if fsg is not None and fsg_steps
+            else ""
+        )
         logger.info(
             f"Spectrum: {fwd_count}/{num_steps} actual forwards "
-            f"({speedup:.2f}x theoretical speedup{cfg_label}){sched_label}"
+            f"({speedup:.2f}x theoretical speedup{cfg_label}){sched_label}{fsg_label}"
         )
 
     finally:

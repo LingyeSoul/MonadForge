@@ -510,6 +510,54 @@ def build_parser() -> argparse.ArgumentParser:
         "so the α path is the only mode now. α=0.2 is the production default.",
     )
 
+    # FSG: Foresight Guidance (NeurIPS 2025, arXiv 23177). Pre-step latent
+    # calibration: at scheduled mid-σ steps, run K forward(cond)-backward(uncond)
+    # fixed-point iterations to pull x_t onto the golden path, then denoise from
+    # x̂_t. Training-free, deterministic; ~3·K extra forwards per scheduled step.
+    # Composes with --mod_guidance / --dave / --dcw / --cns / --smc_cfg (FSG's
+    # calibration uses plain γ-combine; the outer step keeps the configured CFG
+    # variant). Ignored under --spectrum / --spd (they replace the loop). See
+    # docs/inference/fsg.md and docs/proposal/foresight_guidance.md.
+    parser.add_argument(
+        "--fsg",
+        action="store_true",
+        help="Enable Foresight Guidance pre-step latent calibration (CFG only). "
+        "Defaults band=[0.45,0.85], K=3, Δσ=0.1, γ=guidance_scale.",
+    )
+    parser.add_argument(
+        "--fsg_band",
+        type=float,
+        nargs=2,
+        default=[0.75, 0.85],
+        metavar=("SIGMA_LO", "SIGMA_HI"),
+        help="σ-band [lo, hi] where FSG calibrates. Default [0.75, 0.85] -- the "
+        "narrow registered band that carried ~all the Phase-1 win at ~half the "
+        "cost (the operator contracts in [0.45, 0.85] but σ≈0.94 diverges; the "
+        "paper's noisy-stage prescription is wrong here). Widen to [0.45, 0.85] "
+        "for the full band. bench/fsg probe is the calibration instrument.",
+    )
+    parser.add_argument(
+        "--fsg_k",
+        type=int,
+        default=3,
+        help="FSG fixed-point iterations per scheduled step. error ~ρ^K, ρ≈0.93 "
+        "⇒ K=3-4 captures ~all the gain. 0 disables (bit-exact baseline).",
+    )
+    parser.add_argument(
+        "--fsg_d_sigma",
+        type=float,
+        default=0.1,
+        help="FSG forward-backward interval Δσ (the calibration stride, not the "
+        "sampler step). Too large is what makes the noisy end diverge.",
+    )
+    parser.add_argument(
+        "--fsg_gamma",
+        type=float,
+        default=None,
+        help="FSG calibration guidance γ. Default None -- reuse --guidance_scale "
+        "(the paper's plain γ-combine).",
+    )
+
     # CNS: Colored Noise Sampling (arXiv:2605.30332). Recolors the er_sde
     # injected noise by sqrt(1-γ) from a precomputed completion matrix so the
     # fixed stochastic budget lands in unresolved frequency bands. Training-free,

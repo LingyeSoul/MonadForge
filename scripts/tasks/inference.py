@@ -50,6 +50,10 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
     - ``MOD=1`` appends ``--pooled_text_proj <latest>``.
     - ``DAVE=1`` appends the DAVE DC-attenuation flags (``--dave auto``); tune via
       ``DAVE_STRENGTH=``, ``DAVE_SIGMA='lo,hi'`` and ``DAVE_TAU=`` (early-step cutoff).
+    - ``FSG=1`` appends Foresight Guidance pre-step latent calibration (CFG-only);
+      tune via ``FSG_BAND='lo,hi'``, ``FSG_K=``, ``FSG_D_SIGMA=``, ``FSG_GAMMA=``.
+      Composes with ``SPECTRUM=1`` (incl. ``SEA=1``) — calibrated steps are forced
+      to actual forwards. No-op under ``SPD=1`` (it replaces the loop).
     """
     args = list(INFERENCE_BASE)
     nolora_env = os.environ.get("NOLORA")
@@ -71,7 +75,26 @@ def _base_test_args(*, lora_default: bool = True) -> list[str]:
         args += _mod_flags()
     if _env_truthy("DAVE"):
         args += _dave_flags()
+    if _env_truthy("FSG"):
+        args += _fsg_flags()
     return args
+
+
+def _fsg_flags() -> list[str]:
+    """FSG pre-step latent calibration (Foresight Guidance). ``FSG_BAND='lo,hi'``,
+    ``FSG_K``, ``FSG_D_SIGMA``, ``FSG_GAMMA`` tune the live knobs; all optional.
+    Composes with SPECTRUM (incl. SEA); no-op under SPD (it replaces the loop)."""
+    flags = ["--fsg"]
+    if band := os.environ.get("FSG_BAND", "").strip():
+        lo, hi = (x.strip() for x in band.split(","))
+        flags += ["--fsg_band", lo, hi]
+    if k := os.environ.get("FSG_K", "").strip():
+        flags += ["--fsg_k", k]
+    if ds := os.environ.get("FSG_D_SIGMA", "").strip():
+        flags += ["--fsg_d_sigma", ds]
+    if g := os.environ.get("FSG_GAMMA", "").strip():
+        flags += ["--fsg_gamma", g]
+    return flags
 
 
 def _dave_flags() -> list[str]:

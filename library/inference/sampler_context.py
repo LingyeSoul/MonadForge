@@ -38,6 +38,7 @@ class SamplerSideChannels:
     dcw_band_mask: str = "LL"
     dcw_calibrator: Any = None
     smc_cfg: "Optional[SMCCFGState]" = None
+    fsg: Any = None
     soft_tokens_net: Any = None
     soft_tokens_embed_seqlens: Optional[torch.Tensor] = None
     soft_tokens_neg_seqlens: Optional[torch.Tensor] = None
@@ -53,6 +54,7 @@ class SamplerSideChannels:
         pooled_text_neg: Optional[torch.Tensor] = None,
         dcw_calibrator: Any = None,
         smc_cfg: "Optional[SMCCFGState]" = None,
+        fsg: Any = None,
         soft_tokens_net: Any = None,
         soft_tokens_embed_seqlens: Optional[torch.Tensor] = None,
         soft_tokens_neg_seqlens: Optional[torch.Tensor] = None,
@@ -72,6 +74,7 @@ class SamplerSideChannels:
             dcw_band_mask=getattr(args, "dcw_band_mask", "LL"),
             dcw_calibrator=dcw_calibrator,
             smc_cfg=smc_cfg,
+            fsg=fsg,
             soft_tokens_net=soft_tokens_net,
             soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
             soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,

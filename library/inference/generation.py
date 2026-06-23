@@ -28,6 +28,7 @@ from library.inference.text import prepare_text_inputs
 from library.inference.models import load_dit_model
 from library.inference.corrections.mod_guidance import setup_mod_guidance
 from library.inference.corrections.smc_cfg import SMCCFGState
+from library.inference.corrections.fsg import FSGCalibrator
 from library.inference.sampler_context import SamplerSideChannels
 
 logger = logging.getLogger(__name__)
@@ -662,6 +663,28 @@ def generate_body(
         else None
     )
 
+    # FSG pre-step latent calibration. CFG-only (the operator needs the
+    # cond/uncond gap). Composes with --spectrum (the spectrum runner reads
+    # ctx.fsg and forces calibrated steps to actual forwards). Still ignored
+    # under --spd (it grows resolution along the trajectory — FSG×SPD is v2).
+    fsg = None
+    if getattr(args, "fsg", False):
+        if not do_cfg:
+            logger.warning("--fsg requires CFG (guidance_scale != 1.0); ignoring.")
+        elif getattr(args, "spd", False):
+            logger.warning(
+                "--fsg is ignored under --spd (it replaces the denoise loop); "
+                "FSG×SPD is a v2 item."
+            )
+        else:
+            _band = getattr(args, "fsg_band", [0.75, 0.85])
+            fsg = FSGCalibrator(
+                band=(float(_band[0]), float(_band[1])),
+                k=getattr(args, "fsg_k", 3),
+                d_sigma=getattr(args, "fsg_d_sigma", 0.1),
+                gamma=getattr(args, "fsg_gamma", None),
+            )
+
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
 
@@ -675,6 +698,7 @@ def generate_body(
         pooled_text_neg=_pooled_text_neg,
         dcw_calibrator=dcw_calibrator,
         smc_cfg=smc_cfg,
+        fsg=fsg,
         soft_tokens_net=soft_tokens_net,
         soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
         soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,
@@ -758,6 +782,22 @@ def generate_body(
                         )
 
                     t_expand = t.expand(latents.shape[0])
+                    # FSG: pre-step latent calibration toward the golden path.
+                    # Mutates `latents` before the real forward; the hydra/FEI
+                    # setters below then recompute on the calibrated latent.
+                    if fsg is not None and fsg.scheduled(float(sigmas[i])):
+                        latents = fsg.calibrate(
+                            anima,
+                            latents,
+                            float(sigmas[i]),
+                            i,
+                            embed,
+                            negative_embed,
+                            padding_mask,
+                            args.guidance_scale,
+                            pooled_pos=_pooled_text_pos,
+                            pooled_neg=_pooled_text_neg,
+                        )
                     set_hydra_sigma(anima, t_expand)
                     set_step_expert_index(anima, i)
                     compute_and_set_hydra_fei(anima, latents)
