@@ -703,6 +703,8 @@ STRINGS: dict[str, str] = {
     "merge_normalize": "Normalize:",
     "merge_normalize_tip": "Rescale the merged delta to single-LoRA magnitude. 'global' (default) matches the global RMS to the average single-LoRA norm; 'per_module' matches each module but reweights layers; 'off' = raw exact-concat sum (can overdrive the DiT).",
     "merge_lora_button": "Merge LoRAs",
+    "merge_analyze_button": "Analyze interference",
+    "merge_analyze_tip": "Dry-run: report how the selected LoRAs interfere in weight space (constructive reinforce vs destructive cancel, per pair and per layer) without writing a merged file.",
     "merge_lora_out_placeholder": "(auto: <first-lora>_merged<N>.safetensors)",
     "browse": "Browse…",
     # Multi-scale target_res tiers

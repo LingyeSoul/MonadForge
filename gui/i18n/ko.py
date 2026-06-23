@@ -685,6 +685,8 @@ STRINGS: dict[str, str] = {
     "merge_normalize": "정규화:",
     "merge_normalize_tip": "병합된 델타를 단일 LoRA 크기로 재조정합니다. 'global'(기본값)은 전역 RMS를 평균 단일 LoRA 노름에 맞추고, 'per_module'은 모듈별로 맞추지만 레이어 가중치가 바뀌며, 'off'는 원시 정확 연결 합계(DiT를 과도하게 구동할 수 있음)입니다.",
     "merge_lora_button": "LoRA 병합",
+    "merge_analyze_button": "간섭 분석",
+    "merge_analyze_tip": "드라이런: 선택한 LoRA들이 가중치 공간에서 어떻게 간섭하는지(쌍별·레이어별로 보강 대 상쇄) 병합 파일을 쓰지 않고 보고합니다.",
     "merge_lora_out_placeholder": "(자동: <첫 LoRA>_merged<N>.safetensors)",
     "browse": "찾아보기…",
     # Multi-scale target_res tiers

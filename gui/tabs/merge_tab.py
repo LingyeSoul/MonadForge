@@ -314,6 +314,14 @@ class MergeTab(LazyTabMixin, QWidget):
         )
         bar.addWidget(self.merge_btn)
 
+        # LoRA-mode only: dry-run weight-space interference report (no file written).
+        self.analyze_btn = action_button(
+            t("merge_analyze_button"), variant="info", on_click=self._start_analyze
+        )
+        self.analyze_btn.setToolTip(t("merge_analyze_tip"))
+        self.analyze_btn.setVisible(False)
+        bar.addWidget(self.analyze_btn)
+
         self.stop_btn = QPushButton(t("stop"))
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop_merge)
@@ -483,6 +491,7 @@ class MergeTab(LazyTabMixin, QWidget):
             else QAbstractItemView.SingleSelection
         )
         self.merge_btn.setText(t("merge_lora_button") if lora else t("merge_button"))
+        self.analyze_btn.setVisible(lora)
         if lora:
             self._on_lora_selection()
         else:
@@ -497,9 +506,9 @@ class MergeTab(LazyTabMixin, QWidget):
             "\n".join(f"{i + 1}. {p.name}" for i, p in enumerate(sel))
             or t("merge_lora_need_two")
         )
-        self.merge_btn.setEnabled(
-            self._proc.state() == QProcess.NotRunning and len(sel) >= 2
-        )
+        enabled = self._proc.state() == QProcess.NotRunning and len(sel) >= 2
+        self.merge_btn.setEnabled(enabled)
+        self.analyze_btn.setEnabled(enabled)
 
     def _start_merge(self):
         if self._proc.state() != QProcess.NotRunning:
@@ -562,6 +571,26 @@ class MergeTab(LazyTabMixin, QWidget):
             args += ["--weights", weights]
         self._launch(args)
 
+    def _start_analyze(self):
+        """Dry-run interference report for the selected LoRAs (writes nothing)."""
+        if self._proc.state() != QProcess.NotRunning:
+            return
+        sel = self._selected_loras()
+        if len(sel) < 2:
+            QMessageBox.warning(self, t("error"), t("merge_lora_need_two"))
+            return
+        args = ["scripts/merge_loras.py", *[str(p) for p in sel], "--analyze"]
+        weights = self.weights_edit.text().strip()
+        if weights:
+            n = len(weights.split(","))
+            if n != len(sel):
+                QMessageBox.warning(
+                    self, t("error"), t("merge_weights_mismatch", n=n, m=len(sel))
+                )
+                return
+            args += ["--weights", weights]
+        self._launch(args)
+
     def _launch(self, args: list[str]):
         import sys as _sys
 
@@ -569,6 +598,7 @@ class MergeTab(LazyTabMixin, QWidget):
         self._log(f"> {_sys.executable} {' '.join(args)}\n")
 
         self.merge_btn.setEnabled(False)
+        self.analyze_btn.setEnabled(False)
         apply_variant(self.merge_btn, "busy")
         self.merge_btn.setText(self.merge_btn.text() + " ...")
         self.stop_btn.setEnabled(True)

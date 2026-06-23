@@ -645,6 +645,8 @@ STRINGS: dict[str, str] = {
     "merge_normalize": "正規化:",
     "merge_normalize_tip": "マージしたデルタを単一 LoRA の大きさに再スケーリングします。'global'（既定）はグローバル RMS を平均単一 LoRA ノルムに合わせ、'per_module' はモジュールごとに合わせますがレイヤー重みが変わり、'off' は生の厳密連結和（DiT を過剰駆動する可能性があります）です。",
     "merge_lora_button": "LoRA をマージ",
+    "merge_analyze_button": "干渉を分析",
+    "merge_analyze_tip": "ドライラン: 選択した LoRA が重み空間でどう干渉するか（ペアごと・層ごとの強め合い対打ち消し合い）を、マージファイルを書き出さずにレポートします。",
     "merge_lora_out_placeholder": "（自動: <最初の LoRA>_merged<N>.safetensors）",
     "browse": "参照…",
     # Multi-scale target_res tiers
