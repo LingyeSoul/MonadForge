@@ -879,33 +879,45 @@ def do_sample(
     # 5D latent (1, 16, T=1, H/8, W/8) — singleton temporal axis at dim 2.
     latent_h = height // 8
     latent_w = width // 8
-    latent = torch.zeros(1, 16, 1, latent_h, latent_w, device=device, dtype=dtype)
 
     if seed is not None:
-        generator = torch.manual_seed(seed)
+        # Device-matched generator: torch.manual_seed() returns the *CPU* default
+        # generator, which raises when passed to a CUDA torch.randn. Build the
+        # generator on the actual device so seeded previews are reproducible on
+        # both CPU and CUDA.
+        generator = torch.Generator(device=device).manual_seed(seed)
     else:
         generator = None
-    noise = (
-        torch.randn(
-            latent.size(), dtype=torch.float32, generator=generator, device="cpu"
-        )
-        .to(dtype)
-        .to(device)
+    # Noise in fp32 — the whole Euler trajectory accumulates in fp32 (x stays
+    # fp32 below), so fp32 noise avoids the initial bf16 quantization error
+    # compounding across steps. NOTE: the inference path (library/inference/
+    # generation.py:296) generates noise in bf16; this preview path is
+    # intentionally fp32 for preview quality, not parity.
+    noise = torch.randn(
+        (1, 16, 1, latent_h, latent_w),
+        dtype=torch.float32,
+        generator=generator,
+        device=device,
     )
 
-    sigmas = torch.linspace(1.0, 0.0, steps + 1, device=device, dtype=dtype)
-    flow_shift = float(flow_shift)
-    if flow_shift != 1.0:
-        sigmas = (sigmas * flow_shift) / (1 + (flow_shift - 1) * sigmas)
+    # Reuse the inference-side sigma schedule (library/inference/sampling.py::
+    # get_timesteps_sigmas) — bit-exact to the inline linspace + flow-shift map.
+    # It returns sigmas on CPU; move to device for the per-step math below.
+    _, sigmas = inference_utils.get_timesteps_sigmas(steps, float(flow_shift), device)
+    sigmas = sigmas.to(device)
 
     x = noise.clone()
 
-    # Padding mask (zeros = no padding)
-    padding_mask = torch.zeros(1, 1, latent_h, latent_w, dtype=dtype, device=device)
+    # Padding mask (zeros = no padding) — fp32; the DiT's internal ops handle
+    # dtype casting via autocast/weight dtype.
+    padding_mask = torch.zeros(
+        1, 1, latent_h, latent_w, dtype=torch.float32, device=device
+    )
 
     use_cfg = guidance_scale > 1.0 and neg_crossattn_emb is not None
 
-    # Create sampler object for er_sde / euler_a; euler uses inline steps
+    # Create sampler object for er_sde / euler_a; euler uses inline steps.
+    # Pass fp32 sigmas — the samplers' .step() calls .float() internally.
     sampler_obj = None
     if sampler == "er_sde":
         sampler_obj = inference_utils.ERSDESampler(sigmas, seed=seed, device=device)
@@ -915,34 +927,36 @@ def do_sample(
         )
 
     for i in tqdm(range(steps), desc="Sampling", disable=not show_progress):
-        sigma = sigmas[i]
-        t = sigma.unsqueeze(0)
+        # Cast x to model dtype for the DiT forward pass; keep sigmas/t in fp32
+        # (the t_embedder handles dtype internally).
+        t = sigmas[i].unsqueeze(0)
 
         if use_cfg:
             # CFG: two separate passes to reduce memory usage
-            pos_out = dit(x, t, crossattn_emb, padding_mask=padding_mask)
+            pos_out = dit(x.to(dtype), t, crossattn_emb, padding_mask=padding_mask)
             pos_out = pos_out.float()
-            neg_out = dit(x, t, neg_crossattn_emb, padding_mask=padding_mask)
+            neg_out = dit(x.to(dtype), t, neg_crossattn_emb, padding_mask=padding_mask)
             neg_out = neg_out.float()
 
             model_output = neg_out + guidance_scale * (pos_out - neg_out)
         else:
-            model_output = dit(x, t, crossattn_emb, padding_mask=padding_mask)
+            model_output = dit(x.to(dtype), t, crossattn_emb, padding_mask=padding_mask)
             model_output = model_output.float()
 
-        # Compute denoised prediction
-        denoised = x.float() - sigmas[i] * model_output.float()
+        # Compute denoised prediction in fp32
+        denoised = x - sigmas[i] * model_output
 
         if sampler_obj is not None:
-            # ER-SDE or Euler Ancestral: delegate to sampler
+            # ER-SDE or Euler Ancestral: delegate to sampler (expects fp32)
             x = sampler_obj.step(x, denoised, i)
         else:
-            # Euler ODE step: x_{t-1} = x_t - (sigma_t - sigma_{t-1}) * v_pred
-            dt = sigmas[i + 1] - sigmas[i]
-            x = x + model_output * dt
-        x = x.to(dtype)
+            # Euler ODE step — reuse the inference-side step() (algebraically
+            # identical to the inline x + model_output*(σ_{i+1}-σ_i)).
+            x = inference_utils.step(x, model_output, sigmas, i)
 
-    return x
+    # x accumulated in fp32 throughout; normalize to the model dtype at the API
+    # boundary (callers stash latents to disk — bf16 halves the footprint).
+    return x.to(dtype)
 
 
 def sample_images(

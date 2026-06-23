@@ -147,6 +147,47 @@ def _resolve_v100_flash_stability(args) -> str:
     return value
 
 
+def _resolve_mixed_precision(args) -> None:
+    """Back-write ``args.mixed_precision`` for pre-Ampere GPUs in place.
+
+    Pre-Ampere GPUs (sm<8, e.g. V100 sm_70 / T4 sm_75) have no native bf16:
+    under autocast, bf16 ops run via slower fp32 emulation. When the user is
+    on the default bf16 and the GPU can't do bf16 natively, switch to fp16
+    (which every sm≥7.0 GPU supports natively).
+
+    This MUST run before ``prepare_accelerator``: ``Accelerator()`` bakes the
+    autocast dtype in at construction time, and three other consumers
+    (``enable_fp32_residual`` guard below, ``library/training/metadata.py``,
+    and ``library/training/loop.py`` reading it off the accelerator object)
+    must all see the same value. Back-writing args propagates to all of them.
+
+    fp16 carries residual-overflow risk; the ``Anima.enable_fp32_residual()``
+    guard in the loop-setup path (gated on ``args.mixed_precision=="fp16"``)
+    handles it, so it stays consistent once we switch here.
+    """
+    if getattr(args, "mixed_precision", None) != "bf16":
+        return
+    if not torch.cuda.is_available():
+        return
+    try:
+        major, _ = torch.cuda.get_device_capability()
+    except Exception:
+        # CUDA reported available but capability probe failed (init failure,
+        # multi-GPU index mismatch, …) — keep bf16, log so it's diagnosable.
+        logger.warning(
+            "could not read GPU compute capability; keeping --mixed_precision bf16.",
+        )
+        return
+    if major < 8:
+        args.mixed_precision = "fp16"
+        logger.warning(
+            "GPU sm_%d0 has no native bf16 (bf16 autocast runs the slower "
+            "fp32 emulation) — auto-switching --mixed_precision from bf16 to "
+            "fp16. Pass --mixed_precision bf16 explicitly to keep bf16.",
+            major,
+        )
+
+
 def _flash_attn_v100_doc(flash_attn_module) -> tuple[str, bool]:
     doc = getattr(flash_attn_module, "__doc__", None) or ""
     is_v100_fork = "Tesla V100" in doc or "Flash Attention for Tesla V100" in doc
@@ -2119,6 +2160,12 @@ class AnimaTrainer:
             or bool(args.sample_prompts)
             or self.is_train_text_encoder(args)
         )
+
+        # Resolve mixed precision BEFORE prepare_accelerator: Accelerator() bakes
+        # the autocast dtype at construction, and the fp32-residual guard / metadata
+        # read args.mixed_precision later. _resolve_mixed_precision back-writes args
+        # so all consumers agree.
+        _resolve_mixed_precision(args)
 
         # Prepare accelerator
         logger.info("preparing accelerator")

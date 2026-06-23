@@ -220,6 +220,11 @@ def prepare_accelerator(args: argparse.Namespace):
 
 
 def prepare_dtype(args: argparse.Namespace):
+    # Pure dtype derivation from the (already-finalized) args.mixed_precision.
+    # The pre-Ampere bf16→fp16 auto-switch lives in train.py::_resolve_mixed_precision,
+    # which runs BEFORE prepare_accelerator so the Accelerator's autocast, the
+    # enable_fp32_residual guard (train.py gates it on args.mixed_precision=="fp16"),
+    # and checkpoint metadata (library/training/metadata.py) all see the same value.
     weight_dtype = torch.float32
     if args.mixed_precision == "fp16":
         weight_dtype = torch.float16
