@@ -74,6 +74,11 @@ class Job:
 
     progress_path: Optional[str] = None
     stdout_path: Optional[str] = None
+    # Per-job preview-image dir (``<job_dir>/sample``); injected as
+    # ``--sample_dir`` on training jobs so the dashboard never replays a
+    # previous task's gallery. Returned to the WebUI on submit so it can find
+    # the gallery even after a restart (``_tasks`` is session-only memory).
+    sample_dir: Optional[str] = None
     ckpt_path: Optional[str] = None
     # The subprocess's real exit code (``popen.poll()``), captured at finalize
     # time so the WebUI's Task.exit_code mirrors the old direct-subprocess

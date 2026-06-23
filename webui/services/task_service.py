@@ -64,6 +64,10 @@ class Task:
     # `job_id` == `id` (the daemon's sortable job id is adopted as task_id);
     # `stdout_path` is the daemon-managed <job_dir>/stdout.log we tail.
     job_id: Optional[str] = field(default=None, repr=False)
+    # Per-job preview-image dir returned by the daemon on submit. Read by the
+    # preview API to locate the gallery — kept here (not re-parsed from args)
+    # so it survives a WebUI restart via ``daemon_client.get_job``.
+    sample_dir: Optional[str] = field(default=None, repr=False)
     stdout_path: Optional[str] = field(default=None, repr=False)
     stdout_offset: int = field(default=0, repr=False)
     started_at: Optional[str] = field(default=None)
@@ -236,6 +240,7 @@ class TaskService:
         # Re-key the task under its daemon job_id so WS/REST addressing lines up.
         task.id = job_id
         task.job_id = job_id
+        task.sample_dir = resp.get("sample_dir")
         self._tasks[job_id] = task
         if temp_id != job_id:
             del self._tasks[temp_id]
@@ -246,7 +251,9 @@ class TaskService:
         # One poller drives state transitions + stdout tailing + terminal
         # signaling. The progress-JSONL watcher runs alongside it.
         asyncio.create_task(self._poll_daemon_job(task))
-        jsonl_path = self._derive_progress_jsonl_path(resp, command, args or [], env or {})
+        jsonl_path = self._derive_progress_jsonl_path(
+            resp, command, args or [], env or {}
+        )
         if jsonl_path:
             # Mark as a training task. Both the JSONL watcher and stdout tqdm
             # parser feed the same metrics snapshot: JSONL supplies structured

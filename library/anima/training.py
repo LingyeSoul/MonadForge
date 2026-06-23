@@ -30,6 +30,27 @@ import logging  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+# Subdir under ``--output_dir`` (or the value of ``--sample_dir``) where the
+# training preview gallery + staged latents land. Single source of truth for
+# both ``sample_images`` and ``decode_pending_samples`` so they never drift
+# apart (one writing, one reading the staged latents).
+SAMPLE_SUBDIR = "sample"
+
+
+def resolve_sample_dir(args: argparse.Namespace) -> str:
+    """Where training samples/latents are written for this run.
+
+    Explicit ``--sample_dir`` wins (the daemon injects a per-job path so a new
+    task's gallery never replays the previous task's); otherwise it's
+    ``<output_dir>/sample``. Used by both ``sample_images`` (writes PNGs +
+    staged latents) and ``decode_pending_samples`` (reads the staged latents),
+    so the two must share this single resolution.
+    """
+    return getattr(args, "sample_dir", None) or os.path.join(
+        args.output_dir, SAMPLE_SUBDIR
+    )
+
+
 # Sentinel users can drop into captions that lack a real artist tag, so the
 # shuffle/drop boundary keeps working. Stripped from caption variants before
 # they reach the tokenizer (see _generate_caption_variants in
@@ -980,7 +1001,7 @@ def sample_images(
     dit.switch_block_swap_for_inference()
 
     prompts = train_util.load_prompts(args.sample_prompts)
-    save_dir = os.path.join(args.output_dir, "sample")
+    save_dir = resolve_sample_dir(args)
     os.makedirs(save_dir, exist_ok=True)
 
     rng_state = torch.get_rng_state()
@@ -1035,9 +1056,7 @@ def sample_images(
         dit.to("cpu")
         clean_memory_on_device(accelerator.device)
         try:
-            decode_pending_samples(
-                accelerator, args, vae, progress_sink=progress_sink
-            )
+            decode_pending_samples(accelerator, args, vae, progress_sink=progress_sink)
         finally:
             dit.move_to_device_except_swap_blocks(accelerator.device)
             dit.prepare_block_swap_before_forward()
@@ -1348,7 +1367,7 @@ def decode_pending_samples(
     """
     if vae is None:
         return
-    save_dir = os.path.join(args.output_dir, "sample")
+    save_dir = resolve_sample_dir(args)
     latents_dir = os.path.join(save_dir, "latents")
     if not os.path.isdir(latents_dir):
         return

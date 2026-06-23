@@ -12,6 +12,24 @@ from webui.services.task_service import task_service
 router = APIRouter()
 
 
+# Flags the WebUI caller must NOT set: they're either injected by the daemon
+# (``--progress_jsonl`` / ``--sample_dir`` → per-job paths the daemon owns, and
+# letting the caller override them breaks dashboard gallery isolation) or they
+# point train.py at arbitrary filesystem locations (``--output_dir`` /
+# ``--config_file`` / ``--dataset_config`` → arbitrary dir-create / file-write
+# primitive, since train.py ``os.makedirs``/writes at these). The daemon runs
+# localhost no-auth, but the WebUI is the public surface — filter at the edge.
+_FORBIDDEN_ARG_FLAGS = frozenset(
+    {
+        "--sample_dir",
+        "--output_dir",
+        "--progress_jsonl",
+        "--config_file",
+        "--dataset_config",
+    }
+)
+
+
 class TaskStartRequest(BaseModel):
     command: str
     args: list[str] = []
@@ -154,8 +172,26 @@ async def start_task(body: TaskStartRequest):
     """Start a new task."""
     if body.command not in _COMMAND_DESCRIPTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown command: {body.command}")
+    _reject_forbidden_args(body.args)
     task = await task_service.start_task(body.command, body.args, body.env or None)
     return task.info()
+
+
+def _reject_forbidden_args(args: list[str]) -> None:
+    """Reject path/daemon-owned flags a WebUI caller must not set.
+
+    Matches both ``--flag value`` and ``--flag=value`` forms; the daemon's own
+    argv injection uses ``not in`` (bare-flag only), so filtering here closes
+    the ``--flag=value`` bypass at the public edge.
+    """
+    for a in args:
+        token = a.split("=", 1)[0]
+        if token in _FORBIDDEN_ARG_FLAGS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Argument {token} is reserved (set by the daemon/train.py, "
+                "not the WebUI).",
+            )
 
 
 @router.delete("/{task_id}")

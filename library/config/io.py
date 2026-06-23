@@ -32,6 +32,12 @@ _DATASET_CONFIG_SECTIONS = {"general", "datasets"}
 # stripped before flattening so their keys never reach the trainer / schema.
 _METADATA_CONFIG_SECTIONS = {"variant"}
 _NON_FLAT_SECTIONS = _DATASET_CONFIG_SECTIONS | _METADATA_CONFIG_SECTIONS
+# ``methods_subdir`` value selecting the GUI per-variant tree (builtin +
+# sparse user overlay merged via ``_load_gui_method_merged``). Centralized so
+# the equality checks that gate that merge path can't silently fall through
+# on a typo — a path-string typo fails loudly (file not found), but a
+# comparison typo would route a gui variant through the flat-methods path.
+GUI_METHODS_SUBDIR = "gui-methods"
 _SNAPSHOT_SUFFIX = ".snapshot.toml"
 _DUMP_SKIP_KEYS = {
     "print_config",
@@ -166,7 +172,7 @@ def _resolve_method_path(
         return None
     # Custom overlay for gui-methods takes precedence over the template
     # (webui `lora-gui` custom variants live under configs/custom/variants/).
-    if methods_subdir == "gui-methods":
+    if methods_subdir == GUI_METHODS_SUBDIR:
         custom_overlay = os.path.join(
             configs_dir, "custom", "variants", f"{method}.toml"
         )
@@ -342,7 +348,7 @@ def load_dataset_config_from_base(
         # overlay can't drop the builtin's dataset-section overrides (and so
         # the blueprint source matches what load_method_preset sees). Other
         # subdirs resolve to a single method file as before.
-        if methods_subdir == "gui-methods":
+        if methods_subdir == GUI_METHODS_SUBDIR:
             builtin_path = os.path.join(configs_dir, "gui-methods", f"{method}.toml")
             overlay_path = os.path.join(
                 configs_dir, "custom", "variants", f"{method}.toml"
@@ -373,7 +379,14 @@ def load_dataset_config_from_base(
             # source). Scalar-only / subset-less sections keep the shallow
             # override so a method bumping ``batch_size`` doesn't drop base's
             # subsets (see tests/test_folder_repeats.py).
-            method_has_full_blueprint = any(
+            #
+            # gui-methods is the exception: its method layer is the shallow
+            # {**builtin, **overlay} merge (see ``_load_gui_method_merged``),
+            # so a ``[[datasets.subsets]]`` reaching here is a sparse USER
+            # overlay, never a self-contained blueprint — force the shallow
+            # path or it'd drop base's ``image_dir``/``cache_dir`` and crash
+            # the schema. See test_sparse_subset_overlay_keeps_base_image_dir.
+            method_has_full_blueprint = methods_subdir != GUI_METHODS_SUBDIR and any(
                 isinstance(d, dict) and d.get("subsets")
                 for d in (method_sections.get("datasets") or [])
             )
@@ -593,7 +606,7 @@ def _iter_method_preset_layers(
     # _load_gui_method_merged) — a sparse user overlay must inherit the
     # builtin's knobs, not replace them wholesale. Other subdirs keep the
     # single-file resolution.
-    is_gui = methods_subdir == "gui-methods"
+    is_gui = methods_subdir == GUI_METHODS_SUBDIR
     if is_gui:
         builtin_path = os.path.join(configs_dir, "gui-methods", f"{method}.toml")
         overlay_path = os.path.join(configs_dir, "custom", "variants", f"{method}.toml")

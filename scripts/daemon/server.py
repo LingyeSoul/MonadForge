@@ -419,7 +419,10 @@ class _Handler(BaseHTTPRequestHandler):
                 config_file=body.get("config_file") or None,
                 start=start,
             )
-            self._send_json({"job_id": job.id, "state": job.state}, 201)
+            self._send_json(
+                {"job_id": job.id, "state": job.state, "sample_dir": job.sample_dir},
+                201,
+            )
             return
         method = body.get("method")
         if not method:
@@ -435,7 +438,10 @@ class _Handler(BaseHTTPRequestHandler):
             extra=body.get("extra") or [],
             start=start,
         )
-        self._send_json({"job_id": job.id, "state": job.state}, 201)
+        self._send_json(
+            {"job_id": job.id, "state": job.state, "sample_dir": job.sample_dir},
+            201,
+        )
 
     def _handle_list(self) -> None:
         self._send_json([j.public() for j in self.manager.list_jobs()])

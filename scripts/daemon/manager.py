@@ -233,6 +233,10 @@ class JobManager:
         d = config.job_dir(job.id)
         job.progress_path = str(d / "progress.jsonl")
         job.stdout_path = str(d / "stdout.log")
+        # Per-job sample dir — mirrors progress_path so the preview API can
+        # locate the gallery even after a WebUI restart (it reads this back
+        # over HTTP, not from the injected argv).
+        job.sample_dir = str(d / "sample")
         with self._lock:
             self._jobs[job.id] = job
             job.persist()
@@ -750,6 +754,19 @@ class JobManager:
 
         return command_runs_training(str(argv[1]))
 
+    @staticmethod
+    def _ensure_flag(argv: list[str], flag: str, value: str) -> None:
+        """Append ``flag value`` to *argv* unless the caller already set it.
+
+        Lowest-precedence injection: the daemon only fills in per-job paths the
+        caller didn't provide (e.g. ``--progress_jsonl`` / ``--sample_dir``).
+        Note this is a bare-token check, so ``--flag=value`` from a caller would
+        double-add — the WebUI rejects those reserved flags at the edge instead
+        (``webui/api/tasks.py::_reject_forbidden_args``).
+        """
+        if flag not in argv:
+            argv += [flag, value]
+
     def _build_cmd(self, job: Job) -> tuple[list[str], dict]:
         from .client import venv_python
 
@@ -781,8 +798,13 @@ class JobManager:
             if self._command_runs_train(argv):
                 env["TQDM_MININTERVAL"] = "0.5"
                 env["TQDM_MINITERS"] = "1"
-                if "--progress_jsonl" not in argv:
-                    argv += ["--progress_jsonl", job.progress_path or ""]
+                # Per-job progress + preview paths. The WebUI reads
+                # job.progress_path / job.sample_dir back over HTTP (the argv
+                # here is only the train process's copy, not visible to the
+                # dashboard API after a restart), so these two must be set on
+                # the Job record — not just injected into argv.
+                self._ensure_flag(argv, "--progress_jsonl", job.progress_path or "")
+                self._ensure_flag(argv, "--sample_dir", job.sample_dir or "")
             return [venv_python(windowless=True), *argv], env
 
         # Imported lazily so loading the daemon package never drags in the task
@@ -806,10 +828,11 @@ class JobManager:
                 extra += [flag, *[str(v) for v in val]]
             else:
                 extra += [flag, str(val)]
-        # Point the structured progress stream at the job dir so we always know
-        # where it is, regardless of the method's output_name default.
-        if "--progress_jsonl" not in extra:
-            extra += ["--progress_jsonl", job.progress_path or ""]
+        # Point the structured progress stream + preview dir at the job dir so
+        # we always know where they are, regardless of the method's
+        # output_name default. Same rationale as the command branch above.
+        self._ensure_flag(extra, "--progress_jsonl", job.progress_path or "")
+        self._ensure_flag(extra, "--sample_dir", job.sample_dir or "")
         if job.config_file:
             args = ["--config_file", job.config_file, *extra]
         else:

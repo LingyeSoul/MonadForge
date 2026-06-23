@@ -147,6 +147,14 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "/ 'none' / 'off' to disable.",
     )
     parser.add_argument(
+        "--sample_dir",
+        type=str,
+        default=None,
+        help="directory for training sample/preview images. Unset → "
+        "<output_dir>/sample (the default). Set per-job by the daemon so a new "
+        "task's previews don't replay the previous task's gallery.",
+    )
+    parser.add_argument(
         "--huggingface_token",
         type=str,
         default=None,
