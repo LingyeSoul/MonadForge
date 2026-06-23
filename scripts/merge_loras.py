@@ -43,6 +43,7 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+from library.anima import merge_analysis
 from library.log import setup_logging
 
 setup_logging()
@@ -80,6 +81,13 @@ def main() -> int:
     )
     ap.add_argument("--dtype", choices=["bf16", "fp16", "fp32"], default="bf16")
     ap.add_argument(
+        "--analyze",
+        action="store_true",
+        help="Dry-run: report weight-space interference between the inputs "
+        "(pairwise constructive/destructive cosine + worst layers) and exit "
+        "WITHOUT writing a merged file.",
+    )
+    ap.add_argument(
         "--normalize",
         choices=["off", "global", "per_module"],
         default="global",
@@ -110,6 +118,16 @@ def main() -> int:
 
     loaded = [load_lora(p) for p in args.loras]
     names = [Path(p).stem for p in args.loras]
+
+    # Weight-space interference: how much the inputs reinforce vs cancel once
+    # summed. A one-line summary always; the full report (and an early exit) on
+    # --analyze. Cheap — same Gram-trace identity as fro2, no out×in ΔW.
+    report = merge_analysis.analyze(loaded, names, weights)
+    if args.analyze:
+        print(merge_analysis.format_report(report))
+        return 0
+    logger.info(report.summary_line())
+
     logger.info("merging %d LoRAs: %s  weights=%s", len(names), names, weights)
 
     def fro2(up: torch.Tensor, down: torch.Tensor) -> torch.Tensor:

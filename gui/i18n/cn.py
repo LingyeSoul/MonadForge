@@ -623,6 +623,8 @@ STRINGS: dict[str, str] = {
     "merge_normalize": "归一化：",
     "merge_normalize_tip": "将合并后的增量重新缩放到单个 LoRA 的量级。'global'（默认）使全局 RMS 与平均单 LoRA 范数匹配；'per_module' 逐模块匹配但会重新加权各层；'off' 为原始精确拼接和（可能过度驱动 DiT）。",
     "merge_lora_button": "合并 LoRA",
+    "merge_analyze_button": "分析干涉",
+    "merge_analyze_tip": "试运行：报告所选 LoRA 在权重空间中的相互干涉（逐对、逐层的相长增强还是相消抵消），不写出合并文件。",
     "merge_lora_out_placeholder": "（自动：<首个 LoRA>_merged<N>.safetensors）",
     "browse": "浏览……",
     # Multi-scale target_res tiers
