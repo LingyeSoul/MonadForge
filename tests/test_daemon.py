@@ -553,6 +553,63 @@ def test_command_job_loads_with_train_default():
     assert job.argv == [] and job.extra_env == {}
 
 
+def test_command_training_job_injects_sample_dir(tmp_path, monkeypatch):
+    """A training command job (``tasks.py lora …``) gets ``--sample_dir`` and
+    ``--progress_jsonl`` injected pointing at its own job dir, so the dashboard
+    never replays a previous task's gallery/metrics.
+
+    Regression guard for the per-job sample isolation fix: the daemon must set
+    ``job.sample_dir`` (read back by the WebUI over HTTP) AND inject it into
+    the train process's argv. Both halves are required — argv alone is
+    invisible to the preview API after a WebUI restart.
+    """
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    job = jobs.Job(
+        id="train-job",
+        method="lora",
+        preset="default",
+        kind="command",
+        argv=["tasks.py", "lora"],
+    )
+    # Mirror what submit() does: assign the per-job paths on the record.
+    d = job.dir
+    job.progress_path = str(d / "progress.jsonl")
+    job.sample_dir = str(d / "sample")
+
+    mgr = JobManager.__new__(JobManager)  # no worker thread
+    cmd, _env = mgr._build_cmd(job)
+
+    # Both flags injected, pointing at the job's own dir (not a shared path).
+    def _flag_value(argv, flag):
+        i = argv.index(flag)
+        return argv[i + 1]
+
+    assert _flag_value(cmd, "--progress_jsonl") == str(d / "progress.jsonl")
+    assert _flag_value(cmd, "--sample_dir") == str(d / "sample")
+    # The WebUI recovers sample_dir from the persisted Job record — assert it
+    # round-trips through job.json (the C8 restart-recovery path).
+    job.persist()
+    loaded = jobs.load_all()["train-job"]
+    assert loaded.sample_dir == str(d / "sample")
+
+
+def test_legacy_job_json_loads_without_sample_dir(tmp_path, monkeypatch):
+    """A job.json written before ``sample_dir`` existed must still load —
+    ``from_dict`` filters unknown keys, and the new field defaults to None."""
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
+    (tmp_path / "jobs").mkdir(parents=True)
+    legacy = tmp_path / "jobs" / "old" / "job.json"
+    legacy.parent.mkdir(parents=True)
+    # No sample_dir key — simulates a pre-fix job.json on disk.
+    legacy.write_text(
+        '{"id": "old", "method": "lora", "preset": "default", "state": "done"}',
+        encoding="utf-8",
+    )
+    loaded = jobs.load_all()["old"]
+    assert loaded.sample_dir is None
+    assert loaded.method == "lora"
+
+
 @pytest.fixture
 def real_cmd_daemon(tmp_path, monkeypatch):
     """Daemon with the *real* `_build_cmd` (no fake-trainer patch) so command
