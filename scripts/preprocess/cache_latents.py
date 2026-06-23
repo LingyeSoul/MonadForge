@@ -16,7 +16,7 @@ import torch
 
 
 from library.preprocess import cache_latents, count_pending_latents, tqdm_progress
-from library.runtime.cli import add_io_args
+from library.runtime.argparse_groups import add_io_args
 
 
 def main() -> None:

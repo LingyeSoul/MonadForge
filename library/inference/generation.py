@@ -703,7 +703,7 @@ def generate_body(
         elif getattr(args, "spectrum", False) or getattr(args, "spd", False):
             logger.warning("--cfgpp is ignored under --spectrum/--spd (they own the loop).")
         else:
-            cfgpp_lambda = float(getattr(args, "cfgpp_lambda", 2.0))
+            cfgpp_lambda = float(getattr(args, "cfgpp_lambda", 1.5))
             _sampler_name = "er_sde" if er_sde is not None else "euler"
             logger.info(
                 f"CFG++ substrate active (λ={cfgpp_lambda}, sampler={_sampler_name})."

@@ -1,8 +1,8 @@
 # FSG follow-up plan — CFG++ λ sweep & production (er_sde, ~30-step) calibration
 
-**Status:** mechanism settled; tuning + Tier-2 gates open. This plan sequences the
-two remaining calibration jobs (λ for the CFG++ substrate, band/K for the real
-step count + sampler) and the confound read that decides whether FSG ships.
+**Status:** mechanism settled; **Plan A DONE (λ\*=1.5)**. Plan B (band/K at the real
+step count + sampler) and the Plan C confound read that decides whether FSG ships
+remain open. This plan sequences them.
 
 Read first: `docs/proposal/foresight_guidance.md`, memory
 `project_fsg_golden_path_phase0`. Tools: `probe_golden_path.py` (gap/ρ mechanism),
@@ -42,7 +42,18 @@ This sets the matched-NFE baseline (Plan C): plain CFG at ~50 steps.
 
 ---
 
-## Plan A — CFG++ λ sweep (pick λ*)
+## Plan A — CFG++ λ sweep (pick λ*) — ✅ DONE 2026-06-23 → **λ\*=1.5**
+
+**Result** (`bench/fsg/results/20260623-2042-planA-lambda-sweep-ersde28`, er_sde,
+28 steps, 1024, 6 captions × 2 seeds): swept λ∈{1,1.5,2,3} as `cfg++ λ` arms vs
+CFG=4. **λ1.5 tracks CFG=4 best on all three axes** — Δsat +1.7% (lowest),
+Δcontrast +4.4%, mean latent drift 0.593 (lowest), all inside the ±10% band. λ1
+under-guides (composition wanders — w_eff is mid-σ-loaded, only ~λ at the schedule
+ends, so at λ=1 high-σ guidance ~1 ≪ CFG's flat 4; +4.4% sat, drift 0.610). λ2 ok
+but Δcontrast already +10.2%. λ3 rejected (+73% sat = neon blowout). **λ\*=1.5 is
+now the shipped default** (`--cfgpp_lambda`, args.py / generation.py /
+render_compare.py). The sweep tooling (`--sampler`, `--cfgpp_lambdas`, per-arm
+sat/contrast) is in `render_compare.py`. Below is the original plan, kept for record.
 
 **Goal:** find λ where `cfg++` matches-or-beats plain CFG=4 quality. Anima was tuned
 for CFG=4; λ is a free flow-space coeff. Estimate: λ≈1.5–2 ≈ CFG=4 total guidance.
@@ -62,11 +73,12 @@ for CFG=4; λ is a free flow-space coeff. Estimate: λ≈1.5–2 ≈ CFG=4 total
 **Success:** one λ* where `cfg++(λ*)` ≈ baseline saturation/contrast (±~10%) and is
 visually as clean or cleaner. Record λ* → feeds Plan B & C.
 
-**Tooling gap (prereq):** `render_compare.py` is Euler-only and renders a fixed
-4-arm set. Need either (a) extend it: `--sampler {euler,er_sde}` + `--cfgpp_lambdas`
-(one arm per λ) + per-arm sat/contrast in the result.json, **or** (b) a thin
-`lambda_sweep.py` looping `inference.py --cfgpp --cfgpp_lambda <λ> --sampler er_sde`
-into one contact sheet. Prefer (a) — keep one calibration instrument.
+**Tooling (prereq) — ✅ BUILT (option a):** `render_compare.py` extended with
+`--sampler {euler,er_sde}`, `--cfgpp_lambdas` (one `cfg++ λ` arm per value, +
+`--with_foresight` for fsg/cfg++ per λ), and per-arm mean HSV saturation + RMS
+contrast (Δ% vs baseline) in `result.json` `sat_contrast` and on panel labels. The
+er_sde seed is shared across arms (fair A/B); output recast to bf16 per step to
+match production. One calibration instrument, reused by Plans B & C.
 
 ---
 
@@ -134,10 +146,10 @@ Otherwise write the negative finding and close.
 
 ## Sequencing
 
-1. **Tooling:** extend `render_compare.py` (`--sampler`, `--cfgpp_lambdas`,
-   sat/contrast in result.json). One small PR.
-2. **Plan A** → λ*.
-3. **Plan B** → production `(band, K)` at 28/30 steps on er_sde.
+1. ~~**Tooling:** extend `render_compare.py`~~ ✅ done (`--sampler`,
+   `--cfgpp_lambdas`, sat/contrast in result.json).
+2. ~~**Plan A** → λ*~~ ✅ done → **λ\*=1.5** (now the `--cfgpp_lambda` default).
+3. **Plan B** → production `(band, K)` at 28/30 steps on er_sde (use λ=1.5). ← next
 4. **Plan C** → confound read + matched-NFE. Ship-or-close decision.
 
 Each stage is one bench run + eyeball; record results under

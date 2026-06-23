@@ -572,11 +572,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cfgpp_lambda",
         type=float,
-        default=2.0,
+        default=1.5,
         help="CFG++ calibration strength λ. NB this is a FLOW-space coefficient "
         "(guidance enters as λ·(1−σ')·σ·Δv), NOT the paper's DDIM ξ̃-space λ=0.6 — "
-        "the schedules differ, so it needs its own sweep. λ≈1.5-2 gives rough "
-        "total-guidance parity with CFG=4. Only used with --cfgpp.",
+        "the schedules differ. Default 1.5 = λ* from the er_sde/28-step sweep "
+        "(bench/fsg Plan A): best tracks CFG=4 saturation/contrast/composition "
+        "(λ<1.5 under-guides → composition wanders; λ≥2 over-saturates). Only used "
+        "with --cfgpp.",
     )
 
     # CNS: Colored Noise Sampling (arXiv:2605.30332). Recolors the er_sde

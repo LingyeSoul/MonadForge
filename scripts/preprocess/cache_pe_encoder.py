@@ -44,7 +44,7 @@ from library.preprocess import (
     tqdm_progress,
     write_pe_centroid,
 )
-from library.runtime.cli import add_device_args, add_io_args
+from library.runtime.argparse_groups import add_device_args, add_io_args
 from library.vision.encoder import load_pe_encoder
 
 ROOT = Path(__file__).resolve().parents[2]

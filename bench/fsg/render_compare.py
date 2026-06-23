@@ -28,14 +28,23 @@ visible difference is the intervention. We also print the latent drift ‖x_fsg�
 σ=0 (relative) per image — large drift + degraded image = the drift-to-mush
 confound; small drift + cleaner image = a real refinement.
 
-NOTE production sampling is er_sde CFG=4; this A/B uses deterministic Euler CFG=4
-to isolate the operator (er_sde stochasticity would swamp the comparison). A
-production-sampler render is a follow-up, not this script's job.
+Sampler: ``--sampler euler`` (default) is deterministic and isolates the operator;
+``--sampler er_sde`` runs the production stochastic SDE (the er_sde seed is shared
+across arms so the injected-noise sequence is identical — differences are the
+intervention, not noise luck). The CFG++ reweight composes with either.
+
+Plan A (λ sweep — pick λ* where cfg++ tracks CFG=4 saturation/contrast): pass
+``--cfgpp_lambdas`` for one ``cfg++ λ`` arm per value vs the CFG=4 baseline. Per-arm
+mean HSV saturation + RMS contrast (and Δ% vs baseline) land in result.json's
+``sat_contrast`` and on each panel label — λ* = the arm closest to baseline tone.
 
 Run from anima_lora/::
 
     uv run python bench/fsg/render_compare.py --num_prompts 4 --compile
     uv run python bench/fsg/render_compare.py --prompts "1girl, ..." --num_seeds 2
+    # Plan A — λ sweep on the production sampler:
+    uv run python bench/fsg/render_compare.py --sampler er_sde --infer_steps 28 \
+        --cfgpp_lambdas 1.0 1.5 2.0 3.0 --num_prompts 6 --num_seeds 2 --compile
 """
 
 from __future__ import annotations
@@ -48,6 +57,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
+import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image, ImageDraw  # noqa: E402
 
@@ -60,6 +70,7 @@ from bench.fsg.probe_golden_path import (  # noqa: E402
 )
 from library.anima import models as anima_models  # noqa: E402
 from library.inference.sampling import (  # noqa: E402
+    ERSDESampler,
     cfgpp_guidance_weight,
     get_timesteps_sigmas,
 )
@@ -71,6 +82,22 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 def _norm(t: torch.Tensor) -> float:
     return float(t.float().pow(2).sum().sqrt())
+
+
+def _sat_contrast(im: Image.Image) -> tuple[float, float]:
+    """(mean HSV saturation, RMS contrast) of an RGB image, both in [0,1].
+
+    The whole FSG "win" question is whether it's just a global tone bump — these
+    two scalars quantify it so λ* selection (Plan A) keys off numbers, not eyeball
+    alone. Saturation = mean HSV S = mean((max−min)/max); RMS contrast = std of
+    Rec.601 luminance. Both computed on the decoded RGB, not the latent.
+    """
+    arr = np.asarray(im.convert("RGB"), dtype=np.float32) / 255.0
+    mx = arr.max(axis=2)
+    mn = arr.min(axis=2)
+    sat = np.where(mx > 1e-6, (mx - mn) / np.maximum(mx, 1e-6), 0.0)
+    lum = arr @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    return float(sat.mean()), float(lum.std())
 
 
 @torch.no_grad()
@@ -88,9 +115,26 @@ def _fsg_calibrate(anima, x, s_i, dsig, gamma, k_iters, embed, nembed, pad, step
 
 @torch.no_grad()
 def _trajectory(
-    anima, x0, sig, embed, nembed, pad, guidance, *, band, dsig, gamma, k, cfgpp_lambda
+    anima,
+    x0,
+    sig,
+    sigmas_t,
+    embed,
+    nembed,
+    pad,
+    guidance,
+    *,
+    band,
+    dsig,
+    gamma,
+    k,
+    cfgpp_lambda,
+    sampler,
+    er_seed,
+    device,
+    dtype,
 ):
-    """Deterministic trajectory; ``band`` is (lo, hi) or None (no foresight).
+    """Trajectory; ``band`` is (lo, hi) or None (no foresight).
 
     Outer denoise substrate (Algorithm 1 lines 9–12):
 
@@ -98,29 +142,43 @@ def _trajectory(
       ``v^u + w(v^c − v^u)``. This is what the shipped plugin grafts the foresight
       loop onto — *not* the paper's substrate.
     * ``cfgpp_lambda`` set → faithful **CFG++** (paper App A.2): deliver guidance
-      through a σ-scaled calibration ``x̂ = x − λ·σ·(v^c − v^u)`` and integrate
-      along the **unconditional** field ``x − Δσ·v^u``. λ∈[0,1] (paper uses 0.6).
-      This is the substrate FSG is actually defined on; the σ-schedule keeps
-      guidance stable through early σ (paper Fig 6) where CFG's coefficient decays.
+      through the σ-scheduled reweight ``v^u + w_eff·(v^c − v^u)`` (a pure cond/
+      uncond combine change, so it composes with ANY integrator). λ is a
+      flow-space coeff, NOT the paper's DDIM λ=0.6.
+
+    ``sampler`` selects the integrator: ``"euler"`` (deterministic ODE) or
+    ``"er_sde"`` (production stochastic SDE). The CFG++ reweight is sampler-
+    agnostic — er_sde consumes the reweighted prediction unchanged. The FSG
+    foresight inner loop (``_fsg_calibrate``) stays Euler-deterministic in both:
+    it's a probe of the trajectory's golden-path geometry, not a denoise step.
+
+    A fresh ER-SDE solver is built per call seeded by ``er_seed`` so the injected
+    noise sequence is identical across arms — differences are the operator, not
+    noise luck (the same isolation Euler gives for free).
     """
     x = x0.clone()
     n = len(sig) - 1
+    er = (
+        ERSDESampler(sigmas_t, seed=er_seed, device=device)
+        if sampler == "er_sde"
+        else None
+    )
     for i in range(n):
         s_i = sig[i]
         if band is not None and band[0] <= s_i <= band[1]:
             x = _fsg_calibrate(anima, x, s_i, dsig, gamma, k, embed, nembed, pad, i)
         vc = _velocity(anima, x, s_i, embed, pad, i)
         vu = _velocity(anima, x, s_i, nembed, pad, i)
-        step = sig[i] - sig[i + 1]
         if cfgpp_lambda is None:
-            v_cfg = vu + guidance * (vc - vu)
-            x = x - step * v_cfg
+            noise_pred = vu + guidance * (vc - vu)
         else:
-            # CFG++ as a σ-scheduled guidance reweight (App A.2) — integrator-
-            # agnostic, identical to the calibrate-then-step form, and the same
-            # path the production sampler uses (composes with er_sde).
             w_eff = cfgpp_guidance_weight(s_i, sig[i + 1], cfgpp_lambda)
-            x = x - step * (vu + w_eff * (vc - vu))
+            noise_pred = vu + w_eff * (vc - vu)
+        if er is not None:
+            denoised = x.float() - s_i * noise_pred.float()
+            x = er.step(x, denoised, i).to(dtype)  # match production's per-step recast
+        else:
+            x = x - (sig[i] - sig[i + 1]) * noise_pred
     return x
 
 
@@ -164,10 +222,32 @@ def main() -> None:
     ap.add_argument(
         "--cfgpp_lambda",
         type=float,
-        default=2.0,
+        default=1.5,
         help="CFG++ strength λ (FLOW-space coefficient: guidance enters as "
-        "λ·(1−σ')·σ·Δv, NOT the paper's DDIM ξ̃-space λ=0.6). λ≈1.5-2 ≈ CFG=4 total "
-        "guidance; sweep it. The substrate integrates along v^u.",
+        "λ·(1−σ')·σ·Δv, NOT the paper's DDIM ξ̃-space λ=0.6). Default 1.5 = λ* from "
+        "the er_sde/28-step Plan-A sweep. The substrate integrates along v^u.",
+    )
+    ap.add_argument(
+        "--cfgpp_lambdas",
+        type=float,
+        nargs="+",
+        default=None,
+        help="Plan-A λ SWEEP: one `cfg++ λ` arm per value (vs the CFG=4 baseline), "
+        "e.g. --cfgpp_lambdas 1.0 1.5 2.0 3.0. Replaces the default 4-arm set; the "
+        "shipped fsg/cfg arm is dropped (use --with_foresight to add fsg/cfg++ per λ "
+        "for the Plan-C confound read). λ* = closest sat/contrast to baseline.",
+    )
+    ap.add_argument(
+        "--with_foresight",
+        action="store_true",
+        help="In --cfgpp_lambdas sweep mode, also render a fsg/cfg++ arm per λ.",
+    )
+    ap.add_argument(
+        "--sampler",
+        choices=["euler", "er_sde"],
+        default="euler",
+        help="Integrator: 'euler' (deterministic, isolates the operator) or "
+        "'er_sde' (production stochastic SDE). Default euler.",
     )
     ap.add_argument(
         "--no_cfgpp",
@@ -191,16 +271,24 @@ def main() -> None:
 
     # (label, band, cfgpp_lambda). band=None → no foresight; λ=None → CFG substrate.
     nb = (args.narrow_lo, args.narrow_hi)
-    lam = args.cfgpp_lambda
-    arms = [
-        ("baseline", None, None),  # plain CFG (reference)
-        (f"fsg/cfg {nb[0]:g}-{nb[1]:g}", nb, None),  # shipped: foresight on CFG
-    ]
-    if not args.no_cfgpp:
-        arms += [
-            (f"cfg++ λ{lam:g}", None, lam),  # CFG++ substrate alone (no foresight)
-            (f"fsg/cfg++ {nb[0]:g}-{nb[1]:g}", nb, lam),  # faithful Algorithm 1
+    if args.cfgpp_lambdas:
+        # Plan-A λ sweep: baseline CFG=4 + one cfg++ arm per λ (+ optional fsg/cfg++).
+        arms = [("baseline", None, None)]
+        for lam in args.cfgpp_lambdas:
+            arms.append((f"cfg++ λ{lam:g}", None, lam))
+            if args.with_foresight:
+                arms.append((f"fsg/cfg++ λ{lam:g} {nb[0]:g}-{nb[1]:g}", nb, lam))
+    else:
+        lam = args.cfgpp_lambda
+        arms = [
+            ("baseline", None, None),  # plain CFG (reference)
+            (f"fsg/cfg {nb[0]:g}-{nb[1]:g}", nb, None),  # shipped: foresight on CFG
         ]
+        if not args.no_cfgpp:
+            arms += [
+                (f"cfg++ λ{lam:g}", None, lam),  # CFG++ substrate alone (no foresight)
+                (f"fsg/cfg++ {nb[0]:g}-{nb[1]:g}", nb, lam),  # faithful Algorithm 1
+            ]
     band_steps = {
         lab: [round(s, 3) for s in sig[:-1] if b and b[0] <= s <= b[1]]
         for lab, b, _ in arms
@@ -208,15 +296,20 @@ def main() -> None:
     log.info(f"arms: {[a[0] for a in arms]}")
     for lab, b, _ in arms:
         if b:
-            log.info(f"  '{lab}' calibrates {len(band_steps[lab])} steps at σ={band_steps[lab]}")
+            log.info(
+                f"  '{lab}' calibrates {len(band_steps[lab])} steps at σ={band_steps[lab]}"
+            )
 
     C = anima_models.Anima.LATENT_CHANNELS
     hl, wl = args.height // 8, args.width // 8
     pad = torch.zeros(1, 1, hl, wl, dtype=dtype, device=device)
 
+    log.info(f"sampler: {args.sampler}")
     run_dir = make_run_dir("fsg", label=args.label or "render-compare")
     panels: list[Image.Image] = []
     drift_log: list[dict] = []
+    # arm → list of (saturation, rms_contrast) across all prompts/seeds.
+    sat_con: dict[str, list[tuple[float, float]]] = {lab: [] for lab, _, _ in arms}
 
     for pi, prompt in enumerate(prompts):
         ctx, ctx_null = prepare_text_inputs(
@@ -233,31 +326,61 @@ def main() -> None:
             g = torch.Generator(device=device).manual_seed(args.seed + pi * 1000 + sj)
             x0 = torch.randn((1, C, 1, hl, wl), generator=g, device=device, dtype=dtype)
 
+            er_seed = args.seed + pi * 1000 + sj  # shared across arms for fair A/B
             imgs, labels = [], []
             base_lat = None
             for lab, band, cfgpp_lambda in arms:
                 lat = _trajectory(
-                    anima, x0, sig, embed, nembed, pad, args.guidance,
-                    band=band, dsig=args.d_sigma, gamma=gamma, k=args.k_iters,
+                    anima,
+                    x0,
+                    sig,
+                    sigmas,
+                    embed,
+                    nembed,
+                    pad,
+                    args.guidance,
+                    band=band,
+                    dsig=args.d_sigma,
+                    gamma=gamma,
+                    k=args.k_iters,
                     cfgpp_lambda=cfgpp_lambda,
+                    sampler=args.sampler,
+                    er_seed=er_seed,
+                    device=device,
+                    dtype=dtype,
                 )
                 if lab == "baseline":
                     base_lat = lat
                     drift = 0.0
                 else:
                     drift = _norm(lat - base_lat) / max(_norm(base_lat), 1e-8)
-                imgs.append(decode_to_pil(vae, lat, device))
+                im = decode_to_pil(vae, lat, device)
+                imgs.append(im)
+                sat, con = _sat_contrast(im)
+                sat_con[lab].append((sat, con))
                 is_base = lab == "baseline"
-                labels.append(f"{lab}" + (f"  Δ={drift:.3f}" if not is_base else ""))
+                labels.append(
+                    f"{lab}  sat{sat:.3f} c{con:.3f}"
+                    + (f"  Δ={drift:.3f}" if not is_base else "")
+                )
                 _safe = lab.replace(" ", "_").replace(".", "p").replace("/", "-")
                 fn = f"p{pi}_s{sj}_{_safe}.png"
                 imgs[-1].save(run_dir / fn)
                 drift_log.append(
-                    {"prompt_idx": pi, "seed": sj, "arm": lab, "drift": drift}
+                    {
+                        "prompt_idx": pi,
+                        "seed": sj,
+                        "arm": lab,
+                        "drift": drift,
+                        "saturation": sat,
+                        "rms_contrast": con,
+                    }
                 )
             panels.append(_panel(imgs, labels, prompt))
-            log.info(f"  [{pi + 1}/{len(prompts)} seed {sj}] rendered  "
-                     + "  ".join(f"{labels[k]}" for k in range(1, len(labels))))
+            log.info(
+                f"  [{pi + 1}/{len(prompts)} seed {sj}] rendered  "
+                + "  ".join(f"{labels[k]}" for k in range(1, len(labels)))
+            )
             if device.type == "cuda":
                 torch.cuda.empty_cache()
 
@@ -272,6 +395,36 @@ def main() -> None:
             y += p.height + 4
         sheet.save(run_dir / "contact_sheet.png")
 
+    # Per-arm sat/contrast aggregate + Δ vs baseline (the λ* selector for Plan A).
+    base_sat = (
+        float(np.mean([s for s, _ in sat_con["baseline"]]))
+        if sat_con["baseline"]
+        else 0.0
+    )
+    base_con = (
+        float(np.mean([c for _, c in sat_con["baseline"]]))
+        if sat_con["baseline"]
+        else 0.0
+    )
+    sat_contrast: dict[str, dict] = {}
+    log.info("\narm                          sat     Δsat%    contrast  Δcon%")
+    for lab, _, _ in arms:
+        vals = sat_con[lab]
+        if not vals:
+            continue
+        msat = float(np.mean([s for s, _ in vals]))
+        mcon = float(np.mean([c for _, c in vals]))
+        dsat = 100.0 * (msat - base_sat) / base_sat if base_sat else 0.0
+        dcon = 100.0 * (mcon - base_con) / base_con if base_con else 0.0
+        sat_contrast[lab] = {
+            "saturation": msat,
+            "rms_contrast": mcon,
+            "d_saturation_pct": dsat,
+            "d_rms_contrast_pct": dcon,
+            "n": len(vals),
+        }
+        log.info(f"{lab:28s} {msat:.4f}  {dsat:+6.1f}   {mcon:.4f}   {dcon:+6.1f}")
+
     write_result(
         run_dir,
         script=__file__,
@@ -279,13 +432,17 @@ def main() -> None:
         metrics={
             "n_prompts": len(prompts),
             "num_seeds": args.num_seeds,
+            "sampler": args.sampler,
+            "infer_steps": args.infer_steps,
             "arms": [a[0] for a in arms],
             "band_steps": band_steps,
             "guidance": args.guidance,
             "cfgpp_lambda": None if args.no_cfgpp else args.cfgpp_lambda,
+            "cfgpp_lambdas": args.cfgpp_lambdas,
             "fsg_gamma": gamma,
             "d_sigma": args.d_sigma,
             "k_iters": args.k_iters,
+            "sat_contrast": sat_contrast,
             "drift": drift_log,
         },
         label=args.label,
