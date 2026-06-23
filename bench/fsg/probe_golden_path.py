@@ -192,7 +192,35 @@ def main() -> None:
         help="Foresight interval Δσ (absolute, in σ units). FSG: long & early.",
     )
     ap.add_argument(
+        "--d_sigma_frac",
+        type=float,
+        default=None,
+        help="If set, Δσ = d_sigma_frac · σ (interval proportional to the current "
+        "σ, overriding --d_sigma). This is the paper's actual prescription — App C "
+        "Table 9 measures contraction with intervals as a fraction of t (t/4, t/2, "
+        "t), and the long-interval operator contracts at *early* t where a fixed "
+        "short Δσ does not. Use e.g. 0.5 to test whether the σ≈0.94 divergence is a "
+        "fixed-Δσ artifact rather than a real Anima property.",
+    )
+    ap.add_argument(
         "--k_iters", type=int, default=4, help="Fixed-point iterations per probe."
+    )
+    ap.add_argument(
+        "--cfgpp",
+        action="store_true",
+        help="Advance the UNDISTURBED trajectory on the CFG++ substrate (App A.2) "
+        "instead of plain CFG, so the golden path is measured at the x_t states FSG "
+        "actually rides. CFG++ is manifold-constrained — CFG=4 over-shoots "
+        "off-manifold at high σ, which may be the real cause of the σ≈0.94 "
+        "divergence rather than the golden path itself. The foresight clone operator "
+        "is unchanged (it always uses γ-combine forward + v^u backward).",
+    )
+    ap.add_argument(
+        "--cfgpp_lambda",
+        type=float,
+        default=2.0,
+        help="CFG++ strength λ (flow-space: guidance enters as λ·(1−σ')·σ·Δv). "
+        "λ≈1.5-2 ≈ CFG=4 total guidance. Only used with --cfgpp.",
     )
     ap.add_argument("--num_seeds", type=int, default=2, help="Noise draws per prompt.")
     # Pre-registered gate.
@@ -221,7 +249,8 @@ def main() -> None:
     log.info(
         f"schedule σ[0..]={[round(s, 3) for s in sig[: args.infer_steps]]}\n"
         f"probing steps {sorted(probe_steps)} at σ={[round(probe_steps[i], 3) for i in sorted(probe_steps)]}"
-        f"  |  Δσ={args.d_sigma}  γ={gamma}  CFG={args.guidance}  K={args.k_iters}"
+        f"  |  Δσ={f'{args.d_sigma_frac}·σ' if args.d_sigma_frac is not None else args.d_sigma}"
+        f"  γ={gamma}  CFG={args.guidance}  K={args.k_iters}"
     )
 
     C = anima_models.Anima.LATENT_CHANNELS
@@ -260,7 +289,12 @@ def main() -> None:
 
                 # ── FSG probe at scheduled steps (branch off a clone) ──────────
                 if i in probe_steps:
-                    s_lo = max(s_i - args.d_sigma, 1e-3)
+                    ds_target = (
+                        args.d_sigma_frac * s_i
+                        if args.d_sigma_frac is not None
+                        else args.d_sigma
+                    )
+                    s_lo = max(s_i - ds_target, 1e-3)
                     dsig = s_i - s_lo
                     xk = x.clone()
                     gap_trace: list[float] = []
@@ -294,8 +328,14 @@ def main() -> None:
                     )
                     rec[s_key]["drift"].append(_norm(xk - x) / max(_norm(x), 1e-8))
 
-                # advance the (undisturbed) trajectory: deterministic Euler-CFG.
-                x = x - (sig[i] - sig[i + 1]) * v_cfg
+                # advance the (undisturbed) trajectory: CFG++ substrate if asked
+                # (integrate along v^u with σ-weighted guidance), else Euler-CFG.
+                step = sig[i] - sig[i + 1]
+                if args.cfgpp:
+                    w = (1.0 - sig[i + 1]) * s_i
+                    x = x - step * vu - args.cfgpp_lambda * w * (vc - vu)
+                else:
+                    x = x - step * v_cfg
 
             log.info(f"  [{pi + 1}/{len(prompts)} seed {sj}] trajectory done")
             if device.type == "cuda":
@@ -350,7 +390,8 @@ def main() -> None:
         f"- prompts: **{len(prompts)}** × {args.num_seeds} seeds · "
         f"{args.height}×{args.width} · infer_steps {args.infer_steps} "
         f"(flow_shift {args.flow_shift})\n"
-        f"- operator: Δσ={args.d_sigma}, γ={gamma}, K={args.k_iters}; "
+        f"- operator: Δσ={f'{args.d_sigma_frac}·σ' if args.d_sigma_frac is not None else args.d_sigma}, "
+        f"γ={gamma}, K={args.k_iters}; "
         f"trajectory CFG={args.guidance}, neg=`{args.neg_prompt or '∅ (null)'}`\n"
         f"- gate: gap drop ≥ {args.gate_gap:.0%} AND median ρ < {args.gate_rho} "
         f"at any σ ≥ {args.gate_sigma}\n"
@@ -416,6 +457,9 @@ def main() -> None:
         "guidance": args.guidance,
         "fsg_gamma": gamma,
         "d_sigma": args.d_sigma,
+        "d_sigma_frac": args.d_sigma_frac,
+        "trajectory_substrate": "cfg++" if args.cfgpp else "cfg",
+        "cfgpp_lambda": args.cfgpp_lambda if args.cfgpp else None,
         "k_iters": args.k_iters,
         "flow_shift": args.flow_shift,
         "resolution": [args.height, args.width],

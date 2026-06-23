@@ -685,6 +685,30 @@ def generate_body(
                 gamma=getattr(args, "fsg_gamma", None),
             )
 
+    # CFG++ substrate (paper App A.2 / Algorithm 1 lines 9-12). Implemented as a
+    # σ-scheduled guidance REWEIGHT (CFG++ differs from CFG solely in strength
+    # scheduling), so it's a pure change to the cond/uncond combine and integrates
+    # unchanged under Euler AND er_sde/lcm — the substrate FSG is defined on, now
+    # production-sampler-ready. Still refused under --smc_cfg (an alternative
+    # combine, mutually exclusive) and --spectrum/--spd (they own the loop).
+    cfgpp_lambda = None
+    if getattr(args, "cfgpp", False):
+        if not do_cfg:
+            logger.warning("--cfgpp requires CFG (guidance_scale != 1.0); ignoring.")
+        elif smc_cfg is not None:
+            logger.warning(
+                "--cfgpp and --smc_cfg both replace the cond/uncond combine; "
+                "ignoring --cfgpp."
+            )
+        elif getattr(args, "spectrum", False) or getattr(args, "spd", False):
+            logger.warning("--cfgpp is ignored under --spectrum/--spd (they own the loop).")
+        else:
+            cfgpp_lambda = float(getattr(args, "cfgpp_lambda", 2.0))
+            _sampler_name = "er_sde" if er_sde is not None else "euler"
+            logger.info(
+                f"CFG++ substrate active (λ={cfgpp_lambda}, sampler={_sampler_name})."
+            )
+
     pgraft_network = getattr(anima, "_pgraft_network", None)
     lora_cutoff_step = getattr(args, "lora_cutoff_step", None)
 
@@ -848,7 +872,20 @@ def generate_body(
                                 padding_mask=padding_mask,
                                 **_neg_kw,
                             )
-                        if smc_cfg is not None:
+                        if cfgpp_lambda is not None:
+                            # CFG++ substrate as a σ-scheduled guidance reweight
+                            # (App A.2): noise_pred = v^u + w_eff·(v^c − v^u). Pure
+                            # change to the combine — `denoised` and the downstream
+                            # step/er_sde consume it unchanged, so this composes with
+                            # er_sde. Bit-identical to the Euler calibrate-then-step
+                            # form; see sampling.cfgpp_guidance_weight.
+                            w_eff = inference_utils.cfgpp_guidance_weight(
+                                float(sigmas[i]), float(sigmas[i + 1]), cfgpp_lambda
+                            )
+                            noise_pred = uncond_noise_pred + w_eff * (
+                                noise_pred - uncond_noise_pred
+                            )
+                        elif smc_cfg is not None:
                             noise_pred = smc_cfg.combine(
                                 noise_pred, uncond_noise_pred, args.guidance_scale
                             )

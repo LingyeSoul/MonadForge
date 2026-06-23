@@ -139,3 +139,50 @@ def test_fsg_step_set_matches_band():
     fsg = FSGCalibrator(band=(0.75, 0.85), k=3)
     steps = frozenset(i for i, s in enumerate(sigmas) if fsg.scheduled(s))
     assert steps == {2, 3}  # 0.82, 0.78 in [0.75, 0.85]; 0.9/0.6 out
+
+
+# --- CFG++ substrate (the σ-scheduled guidance reweight) ------------------
+# CFG++ is implemented as a pure reweight of the cond/uncond combine so it
+# composes with any integrator (Euler, er_sde). These pin: (1) the reweight is
+# algebraically identical to the "calibrate x̂ then Euler-step along v^u" form it
+# replaced — so the validated Euler renders are unchanged; (2) the final-step
+# boundary; (3) the weight is finite/positive across a real schedule.
+
+
+def test_cfgpp_reweight_equals_calibrate_then_step():
+    """w_eff form ≡ the old calibrate-then-step form, for the Euler integrator."""
+    from library.inference.sampling import cfgpp_guidance_weight
+
+    g = torch.Generator().manual_seed(1)
+    x = torch.randn(1, 4, 1, 8, 8, generator=g)
+    vc = torch.randn(1, 4, 1, 8, 8, generator=g)
+    vu = torch.randn(1, 4, 1, 8, 8, generator=g)
+    s_i, s_next, lam = 0.8, 0.72, 2.0
+    step = s_i - s_next
+
+    # Old form: calibrate x̂ = x − λ(1−σ')σ·Δv, then Euler-step along v^u.
+    x_hat = x - lam * (1.0 - s_next) * s_i * (vc - vu)
+    old = x_hat - step * vu
+
+    # New form: reweight the combine, plain Euler step.
+    w_eff = cfgpp_guidance_weight(s_i, s_next, lam)
+    new = x - step * (vu + w_eff * (vc - vu))
+
+    assert torch.allclose(old, new, atol=1e-6)
+
+
+def test_cfgpp_weight_final_step_and_finite():
+    from library.inference.sampling import (
+        cfgpp_guidance_weight,
+        get_timesteps_sigmas,
+    )
+
+    # Final step (σ_next → 0) collapses to λ.
+    assert abs(cfgpp_guidance_weight(0.05, 0.0, 2.0) - 2.0) < 1e-9
+    # Degenerate Δσ ≤ 0 falls back to λ rather than dividing by zero.
+    assert cfgpp_guidance_weight(0.5, 0.5, 2.0) == 2.0
+    # Across a real flow schedule: finite, positive, no blow-up.
+    _, sigmas = get_timesteps_sigmas(20, 3.0, torch.device("cpu"))
+    sig = [float(s) for s in sigmas]
+    ws = [cfgpp_guidance_weight(sig[i], sig[i + 1], 2.0) for i in range(20)]
+    assert all(0.0 < w < 50.0 for w in ws)

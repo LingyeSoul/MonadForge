@@ -557,6 +557,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="FSG calibration guidance γ. Default None -- reuse --guidance_scale "
         "(the paper's plain γ-combine).",
     )
+    # CFG++ substrate (paper App A.2 / Algorithm 1 lines 9-12). FSG is *defined*
+    # on a CFG++ base. Implemented as a σ-scheduled guidance REWEIGHT (CFG++
+    # differs from CFG solely in strength scheduling) so it composes with er_sde
+    # and Euler alike -- see sampling.cfgpp_guidance_weight. Refused only under
+    # --smc_cfg (alternative combine) and --spectrum/--spd (they own the loop).
+    parser.add_argument(
+        "--cfgpp",
+        action="store_true",
+        help="Use the CFG++ substrate (App A.2): replace the constant-w cond/uncond "
+        "combine with the σ-scheduled CFG++ weight. The substrate FSG is defined "
+        "on; composes with er_sde. Needs its own λ sweep on Anima.",
+    )
+    parser.add_argument(
+        "--cfgpp_lambda",
+        type=float,
+        default=2.0,
+        help="CFG++ calibration strength λ. NB this is a FLOW-space coefficient "
+        "(guidance enters as λ·(1−σ')·σ·Δv), NOT the paper's DDIM ξ̃-space λ=0.6 — "
+        "the schedules differ, so it needs its own sweep. λ≈1.5-2 gives rough "
+        "total-guidance parity with CFG=4. Only used with --cfgpp.",
+    )
 
     # CNS: Colored Noise Sampling (arXiv:2605.30332). Recolors the er_sde
     # injected noise by sqrt(1-γ) from a precomputed completion matrix so the

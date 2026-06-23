@@ -1,37 +1,18 @@
-# Foresight Guidance (FSG) for Anima — golden-path CFG calibration
+# Foresight Guidance (FSG) — shipping to the Spectrum ComfyUI node
 
-**Status:** Phase-0 + Phase-1 (eyeball) PASSED → green-lit. **Stage 2 plugin BUILT**
-(`library/inference/corrections/fsg.py`, `--fsg` / `FSG=1`, invariant test) — Stage 3
-rigor (matched-NFE A/B, er_sde render, saturation-confound) **still owed** (§8–§9).
-**Paper:** "Towards a Golden Classifier-Free Guidance Path via Foresight Fixed Point Iterations" (NeurIPS 2025, arXiv 23177). Code: github.com/Ka1b0/Foresight-Guidance.
-**Benches:** `bench/fsg/probe_golden_path.py` (premise), `bench/fsg/render_compare.py` (eyeball A/B).
-**Memory:** [[project_fsg_golden_path_phase0]].
+**Status:** library plugin BUILT + validated (Phase-0 premise, Phase-1 eyeball, resolution
+sweep); **Tier-2 rigor still owed** (matched-NFE A/B, er_sde render, saturation confound);
+**node port NOT started.** This doc is the node-shipping plan — the "should we build FSG"
+question is settled (yes, in the library). Earlier build-decision content lives in git history.
+**Paper:** "Towards a Golden Classifier-Free Guidance Path via Foresight Fixed Point Iterations"
+(NeurIPS 2025, arXiv 23177). **Library plugin:** `library/inference/corrections/fsg.py`
+(`--fsg` / `FSG=1`). **Benches:** `bench/fsg/probe_golden_path.py`, `bench/fsg/render_compare.py`.
+**Docs:** `docs/inference/fsg.md`. **Memory:** [[project_fsg_golden_path_phase0]].
 
-## TL;DR
+## 1. What's already true (don't redo)
 
-FSG is a training-free, checkpoint-agnostic inference stack that reframes CFG as
-*fixed-point calibration toward a golden path* — a latent state where the
-conditional and unconditional predictions agree. At scheduled timesteps it runs
-K forward(conditional)–backward(unconditional) iterations over a long interval Δσ
-to pull `x_t → x̂_t` onto that path, then denoises from `x̂_t`.
-
-On Anima the premise **holds** — but **not where the paper says**. The fixed-point
-operator contracts and the conditional/unconditional gap shrinks in **σ∈[0.45, 0.85]**;
-at the noisy top (σ≈0.94, the paper's primary target region) it *diverges*. A
-VAE-decode A/B in the working band is **visibly, clearly better** than baseline —
-more saturated, more detailed, more complete — and does **not** drift to mush.
-
-This proposal records the groundings and lays out the build, with three open
-questions answered: composition with existing stacks, inference cost, and
-hyperparameter calibration.
-
-## 1. Background and flow-matching translation
-
-The paper is ε-prediction + DDIM. Anima is **velocity-prediction flow-matching**,
-sampled at production **CFG=4 / er_sde**. The FSG forward-backward operator maps
-cleanly onto Anima's reversible Euler ODE (`library/inference/sampling.py::step`),
-so no DDIM machinery is needed. At a scheduled σ with latent `x`, interval `Δσ`,
-calibration guidance `γ`:
+The operator (flow-matching translation of the paper's ε-pred/DDIM forward-backward) — at a
+scheduled σ with latent `x`, interval `Δσ`, calibration guidance `γ`:
 
 ```
 v^γ(x,σ) = v^u(x,σ) + γ·(v^c(x,σ) − v^u(x,σ))     # CFG-guided velocity
@@ -40,137 +21,125 @@ invert  :  x'' = x' + Δσ · v^u(x', σ−Δσ)            # re-noise back (unc
 F(x) = x'' ; iterate x ← F(x), K times ; then denoise from x̂ = x^(K)
 ```
 
-The golden path is the fixed point where conditional-forward and
-unconditional-backward agree, i.e. where `‖v^c − v^u‖` is minimized.
+Settled facts the node port inherits:
 
-## 2. Phase-0 findings — premise holds, but mid-σ only
+- **Library plugin exists and works** — `FSGCalibrator` (~145 lines, `corrections/fsg.py`),
+  CLI surface, `GenerationRequest` fields, `test-*` flag composition, K=0/empty-band ==
+  baseline invariant test (`tests/test_fsg_invariant.py`).
+- **The library spectrum runner already honors FSG** — `networks/spectrum.py` computes
+  `fsg_steps`, forces them to actual forwards, calls `fsg.calibrate()`, excludes them from
+  the SEA decision denominator, and folds `(fsg_steps, k, d_sigma, gamma)` into the δ cache
+  key (≈ lines 381–454, 495–536, 727). **The node port mirrors this diff.**
+- **Validated band / K (1024 token tier):** working band **σ∈[0.45, 0.85]**, narrow default
+  **[0.75, 0.85]** (carries ~all the Phase-1 win at ~half the NFE), **K=3** (error ~ρ^K,
+  ρ≈0.93 ⇒ K=3–4 captures ~all gain), Δσ=0.1, γ=guidance. σ≈0.94 *diverges* (ρ>1) — the
+  paper's "iterate in the noisiest stage" prescription is wrong on Anima.
 
-`bench/fsg/probe_golden_path.py` runs a deterministic Euler-CFG=4 trajectory from
-noise on **real training captions** (`post_image_dataset/resized/**/*.txt`), and
-at early-σ steps branches a clone to iterate F, measuring the prediction gap
-`‖v^c−v^u‖/‖v^u‖` (the flow analogue of paper Fig 2b) and contraction
-`ρ = ‖Δx_k‖/‖Δx_{k−1}‖`. Result (6 prompts × 2 seeds, K=4, 1024px):
+### 1a. Band is token-tier-dependent (resolution sweep, 2026-06-23)
 
-| σ | gap drop (k=0→4) | contraction ρ̃ | verdict |
-|---|---|---|---|
-| **0.94** | **−20% (gap GREW)** | **1.04 (diverges)** | ✗ |
-| 0.85 | +13.9% | 0.93 | ✓ (registered) |
-| 0.75 | +12.3% | 0.93 | ✓ (registered) |
-| 0.62 | +14.5% | 0.94 | ✓ (exploratory) |
-| 0.43 | +11.0% | 0.95 | ✓ (exploratory) |
+The band is **not** globally resolution-invariant — this directly drives the node's default UX:
 
-**Key Anima-specific finding:** the paper prescribes concentrating iterations in
-the *earliest / noisiest* stages ([2/3 T, T], 3:2:1 early-weighted). On Anima
-that is exactly the **dead zone** — at σ≈0.94 there is barely any conditional
-structure yet, so cond≈uncond and iterating amplifies noise (ρ>1). The working
-band is **mid-σ**, consistent with: x̂₀ resolves by σ≈0.45 ([[project_sigma_signal_resolves_by_045]])
-and FEI/cross-attn discrimination peaks at the clean end, not the noisy end
-([[project_cbs_monitor_vs_fei_routing]]). The pre-registered gate (σ≥0.75) is
-cleared at σ=0.85/0.75; σ=0.62/0.43 are below-gate exploratory.
+- **Robust across the dominant 1024 tier.** The four most-used real shapes
+  (864×1216, 848×1232, 896×1200, 768×1360 — all ~4080–4200 tok) reproduce [0.75,0.85]/K=3:
+  σ=0.85 is the sweet spot, frac_shrunk=1.0 in-band, σ=0.94 inverts. So [0.75,0.85] is sound
+  for ~the whole head of the dataset.
+- **Shifts DOWN at the 768 tier.** At 768² (~2.3k tok) the band slides ~one schedule notch:
+  **σ=0.85 actively diverges** (gap +13%, ρ=0.97, both samples grew), the peak moves to
+  **0.75**, and the clean band is **≈[0.62, 0.75]**. A fixed [0.75,0.85] default would fire
+  half its steps in a diverging zone at low-token renders — i.e. *hurt* output, not just waste
+  NFE. (Direction is opposite the naive guess — fewer tokens pushed it down. 1536²/512² unprobed.)
 
-## 3. Phase-1 findings — visibly better, not mush
+**Implication for the node:** band must be a user knob (or auto-derived from token count),
+defaulting to the 1024-tier values with a tooltip; never a silent fixed constant.
 
-`bench/fsg/render_compare.py` VAE-decodes baseline vs FSG (deterministic Euler
-CFG=4, 4 real captions, K=4). The FSG arms are **clearly better** across all
-prompts: more saturated, more detailed, more finished (added backgrounds,
-clothing detail, cleaner faces/hands), same composition. This refutes the
-"contracting latent ≠ same image" confound: a falling gap *does* track real
-refinement here, not drift to a flat low-velocity region.
+## 2. Why the Spectrum node — and why not a model patch
 
-The **narrow registered band (0.75–0.85) does ~all the work** — its latent drift
-is nearly identical to the wide band (0.45–0.85): 0.38 vs 0.40, 0.22 vs 0.23,
-0.53 vs 0.57, 0.44 vs 0.46 — and the images are near-indistinguishable. So the
-win rests on the defensible registered band.
+FSG is a **sampler-loop** operation, not a model modification:
 
-Caveat (kept honest): part of the visible "better" is saturation/contrast, and
-Anima has a history of levers that turn out to be global-tone-only
-([[project_mod_guidance_text_derivative_orthogonal]], null-TTA). It is *more*
-than tone (added structure), but ruling out a pure saturation confound is on the
-checklist (§7).
+- It runs a K-iteration fixed-point loop **between** sampler steps, **changes the NFE count**
+  (+3·K per scheduled step), and **mutates the latent before the step**.
+- A ComfyUI `MODEL` patch (`set_model_unet_function_wrapper` / attention patch) only
+  intercepts a *single* forward call — it can't own inter-step integration or change NFE.
+  This is why `AnimaModGuidance` legitimately *is* a model patch (per-forward AdaLN steering)
+  but FSG can't be: different seam.
+- A standalone competing KSampler can't compose with Spectrum (two nodes can't both own the
+  loop) and would duplicate the whole denoise loop in a second hand-maintained file — strictly
+  worse, and it throws away the FSG×SEA interaction.
 
-## 4. Where it hooks — the calibration seam
+The Spectrum node is already the consolidation point (`SpectrumKSampler` bundles mod-guidance,
+SMC-CFG, spectrum accel; DCW lives on the Advanced node), and the library already encodes the
+FSG×Spectrum interaction. So FSG ships as **another scalar-config stack on that sampler**,
+mirroring DCW.
 
-FSG occupies a **new seam — pre-step latent calibration** — that no existing
-plugin uses. In `generation.py::generate_body`, immediately before the per-step
-velocity forwards (current line ~781), insert: *if this step is scheduled, run
-the FSG calibration loop on `latents`, then proceed.* Plugin home:
-`library/inference/corrections/fsg.py` (mirrors DCW/SMC/DAVE), threaded via
-`SamplerSideChannels`. Enable via CLI (`--fsg`, `--fsg_band`, `--fsg_k`,
-`--fsg_d_sigma`, `--fsg_gamma`) + `GenerationRequest` fields, composed into the
-`test-*` flag family.
+## 3. Integration reality — hand-mirror, NO vendor-sync
 
-## 5. Composition with existing inference stacks (Q1)
+The Spectrum repo (`~/ComfyUI-Spectrum-KSampler`, symlinked at
+`../comfy/custom_nodes/comfyui-spectrum-ksampler`) is **not** part of `scripts/release/sync_vendor.py`
+(which targets only tagger / directedit / trainer / the hydralora-adapter repo) and has **no
+`_vendor/` tree**. Its `spectrum.py` is **994 lines vs the library's 750** — a hand-maintained
+reimplementation against **ComfyUI's sampler internals** (`comfy` `calc_cond_batch`, model
+hooks, `get_executing_context()`), **not** the library's `generate_body` / `SamplerSideChannels`.
+`dcw.py`, `cns.py`, `mod_guidance.py`, `smc_cfg.py` are siblings ported the same way.
 
-FSG sits at a seam distinct from every existing stack, so most compose for free:
+So porting FSG is **manual**, mirroring how DCW was, with one real subtlety: the calibrator's
+velocity calls must be rewritten against ComfyUI's model-call surface (cond/uncond via
+`calc_cond_batch` / `apply_model`), **not** the library's `anima(x, t, embed)` + hydra setters.
+The operator *math* is unchanged; only how `v^c`/`v^u` are obtained differs.
 
-| Stack | Seam | Composition |
-|---|---|---|
-| **mod-guidance** | AdaLN embedding (every forward) | ✅ FSG's calibration forwards inherit mod's steering — mod steers the field, FSG calibrates the latent onto that field's golden path. Complementary jobs. |
-| **DCW** | post-step x-space | ✅ Serial: FSG calibrate → denoise → DCW correct. |
-| **DAVE** | block-forward hooks | ✅ FSG forwards see DAVE-attenuated features; orthogonal like DAVE×mod. |
-| **CNS** | noise injection (er_sde) | ✅ Orthogonal — FSG calibration is deterministic. |
-| **SMC-CFG** | CFG-combine (replaces CFG) | ⚠️ Only overlap. Rule: FSG calibration uses plain γ-combine (paper's operator); the outer denoise step uses the configured CFG variant. |
-| **Spectrum / SPD** | alternate denoise runners | 🔜 v2 — they replace the loop and Spectrum caches block feats that FSG's extra forwards perturb. |
+(Separate, deferred decision: bring the Spectrum repo into `sync_vendor` to kill the drift
+permanently. Bigger one-time refactor — not now; port FSG by hand like its siblings.)
 
-## 6. Inference cost (Q2)
+## 4. Port plan — three pieces, mirror DCW
 
-Extra forwards = `3 · K · M` (per scheduled step, per iteration: v^c+v^u at σ,
-v^u at σ−Δσ). Baseline 20-step CFG = 40 NFE.
+1. **`fsg.py` in the repo.** Port `FSGCalibrator` verbatim *except* `_velocity`: replace the
+   `anima(...)` + `set_hydra_*` calls with the node's cond/uncond velocity path
+   (`calc_cond_batch` over positive/negative conditioning at arbitrary (x, σ)). Keep `band`,
+   `k`, `d_sigma`, `gamma`, `scheduled()`, and the K-loop math identical.
+2. **Node surface.** Add a `_FSG_INPUTS` flat-scalar dict (mirror `_DCW_INPUTS`,
+   `nodes.py:420`): `fsg` (bool / "off"|"on"), `fsg_band_lo`, `fsg_band_hi`, `fsg_k`,
+   `fsg_d_sigma`, `fsg_gamma`. Merge into `SpectrumKSamplerAdvanced.INPUT_TYPES`; thread as
+   `sample()` kwargs into `_run_spectrum`. (Optionally a single `fsg` toggle on the basic node.)
+3. **Runner (`_run_spectrum`).** Mirror the library diff: compute `fsg_steps` from the
+   schedule (`{i : fsg.scheduled(σ_i)}`); inside the denoise loop, on a scheduled step
+   **calibrate `latents` first**, force that step **actual** (exclude from the SEA/window
+   decision denominator — third forced-actual class alongside warmup + tail), and add
+   `(tuple(fsg_steps), k, d_sigma, gamma)` to the spectrum cache key so δ recalibrates when
+   they change. The node loop already has the forced-actual concept for warmup/tail; FSG slots
+   in identically.
 
-| Config | Extra NFE | Total | vs baseline |
-|---|---|---|---|
-| Baseline (20 steps) | 0 | 40 | — |
-| Render-A/B setting (M≈7, K=4) | +84 | 124 | ~3.1× |
-| Conservative (M=3, K=3) | +27 | 67 | +68% |
-| + reuse last-iter v^c/v^u for the step | −2M | ~60 | +50% |
+Cost surfaced in the node log line, same as the library (`+3·K·M` extra forwards).
 
-The visible win used the ~3× setting. **The matched-NFE test is therefore the
-load-bearing experiment** (§7): does FSG-at-67-NFE beat a plain 33-step baseline?
-The paper's efficiency claim is precisely "fewer, longer subproblems beat more
-short ones" — must be confirmed on Anima. Cost levers: fewer scheduled steps
-(FSG's design point), per-σ K taper (ρ≈0.93 ⇒ gap-drop plateaus by K≈3), and
-velocity reuse.
+## 5. Band default UX (the §1a finding)
 
-## 7. Hyperparameter calibration (Q3)
+- Default `fsg_band_lo=0.75`, `fsg_band_hi=0.85` (1024-tier) with a tooltip: *"σ-band where
+  calibration fires. Calibrated for the 1024 token tier; for ~768px / low-token renders drop
+  ~0.1 (0.85 diverges there)."*
+- Long-term: **auto-derive the band from the latent's token count** via a per-tier table — but
+  that needs 1536² and 512² probed first (we only have 768 + 1024). Ship manual knobs now,
+  auto-table later. Never hardcode a silent fixed band.
 
-All inference-time, no retraining, checkpoint-agnostic. The Phase-0 probe **is**
-the calibration instrument:
+## 6. Gate — what must pass before the node ships
 
-- **Band [σ_lo, σ_hi] + per-σ K_i:** read off the probe's ρ and gap-drop curves —
-  calibrate where ρ<0.95, spend more K where gap-drop is largest. Current:
-  [0.45, 0.85], K≈3.
-- **K:** bounded by contraction (error ~ρ^K, ρ≈0.93 ⇒ K=3–4 captures ~all gain;
-  probe traces plateau by k≈2–3).
-- **Δσ (interval), γ (calibration guidance):** cheap `render_compare` sweep
-  ({0.05, 0.1, 0.15, 0.2} × γ∈{1, 4, …}). Too-large Δσ is what makes σ=0.94
-  diverge — there is a stability ceiling to map.
-- **λ (outer CFG++):** the paper denoises with CFG++ after calibration; A/B
-  whether Anima benefits vs plain CFG.
-- **Portability:** likely portable across checkpoints like DCW's λ / SEA's δ
-  were ([[reference_spectrum_node_dcw_defaults]], [[project_spectrum_sea_schedule_prompt_gen]]);
-  verify once on 2 checkpoints rather than per-LoRA.
+FSG is still **pre-Tier-2**; do not expose a node knob until:
 
-## 8. Staged build plan
+- **Matched-NFE A/B** (decisive): FSG-at-N vs a plain longer baseline at the same N. The
+  Phase-1 win used ~3× compute; if a longer plain run matches it, the knob is pointless.
+- **Production er_sde CFG=4 render** — the eyeball used deterministic Euler; er_sde
+  flipped-then-reclosed the σ-reshape line ([[project_sigma_reshape_no_win]]).
+- **Saturation confound** — rule out that "better" is a global tone/contrast bump (Anima lever
+  history: [[project_mod_guidance_text_derivative_orthogonal]], null-TTA).
 
-1. **Stage 1 — CFG×K (cheapest).** Increasing fixed-point iterations on the
-   *linear* operator (no forward-backward) restricted to mid-σ; the paper shows
-   this alone already helps. Smallest diff, fastest sanity check.
-2. **Stage 2 — full FSG plugin.** `library/inference/corrections/fsg.py` with the
-   forward-backward operator + scheduled band + CLI/GenerationRequest surface +
-   velocity reuse.
-3. **Stage 3 — rigor (CONTRIBUTING Tier-2: bench + invariant test).**
-   - **Matched-NFE A/B** (the decisive one): FSG-N vs plain-baseline-N.
-   - **Production er_sde CFG=4** render — the Euler-only signal is not production;
-     er_sde flipped-then-reclosed the σ-reshape result ([[project_sigma_reshape_no_win]]).
-   - **Saturation confound** check vs a contrast/saturation bump.
-   - Invariant test: FSG with K=0 / empty band == baseline bit-exact.
+Shipping order: land Tier-2 in the library → then port to the node with a defensible band
+default. A node that exposes a wrong-tier band or an NFE-for-nothing knob is worse than no node.
 
-## 9. Open risks
+## 7. Open risks
 
-- **Matched-NFE** may erase the win (the render was ~3× compute). Decisive.
-- **er_sde** is the real sampler and reversed σ-reshape once; Euler-only is not proof.
-- The payoff lands in the already-near-resolved σ band where σ-reshape found no
-  fixed-NFE headroom. FSG's *mechanism* is distinct (a consistency operator, not
-  a schedule reshape — verifier agreed), but the overlap of *payoff zone* is why
-  matched-NFE is load-bearing.
-- Part of the visible win may be global tone/saturation (Anima lever history).
+- **Matched-NFE may erase the win** (decisive, still owed).
+- **er_sde** is the real sampler and reversed σ-reshape once; Euler-only isn't proof.
+- **Payoff-zone overlap** with the already-near-resolved σ band where σ-reshape found no
+  fixed-NFE headroom — FSG's mechanism is distinct (a consistency operator) but the overlap is
+  why matched-NFE is load-bearing.
+- **Tier-band hazard** — a fixed default mis-fires off the 1024 tier (§1a); the node must
+  expose / auto-derive the band.
+- **Hand-mirror drift** — the node's `spectrum.py` diverges from the library by hand; any later
+  FSG change in the library must be re-ported until/unless the repo joins `sync_vendor`.

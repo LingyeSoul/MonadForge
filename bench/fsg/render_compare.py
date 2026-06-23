@@ -10,15 +10,21 @@ drifts it to a flatter, lower-velocity (mushy) region. The only way to know is
 to look. This renders, for the same noise/prompt/seed:
 
   * **baseline**       — plain deterministic Euler-CFG, no calibration
-  * **fsg (narrow)**   — calibrate at steps with σ ∈ [--narrow_lo, --narrow_hi]
-                         (the pre-registered passing band, 0.75–0.85)
-  * **fsg (wide)**     — calibrate at σ ∈ [--wide_lo, --wide_hi] (0.45–0.85, the
-                         full band where the operator contracted)
+  * **fsg/cfg**        — foresight loop at σ ∈ [--narrow_lo, --narrow_hi] grafted
+                         onto the CFG substrate (what the shipped plugin does)
+  * **cfg++**          — plain CFG++ substrate (paper App A.2), no foresight: step
+                         along v^u with guidance via λ·σ·(v^c−v^u)
+  * **fsg/cfg++**      — faithful Algorithm 1: foresight loop ON the CFG++ substrate
+
+The last two are dropped with --no_cfgpp. The cfg++ vs baseline column isolates
+the substrate switch; fsg/cfg++ vs cfg++ isolates the foresight win *on the
+substrate FSG is actually defined on* — the paper grafts foresight onto CFG++,
+not CFG, and the shipped plugin's CFG graft was the gap this A/B closes.
 
 Calibration per scheduled step is FSG's forward-backward operator applied to the
 trajectory itself (Algorithm 1's x_t → x̂_t), then the denoise step proceeds from
-x̂_t. Everything but the calibration is held fixed across arms, so any visible
-difference is the intervention. We also print the latent drift ‖x_fsg−x_base‖ at
+x̂_t. Everything but the calibration/substrate is held fixed across arms, so any
+visible difference is the intervention. We also print the latent drift ‖x_fsg−x_base‖ at
 σ=0 (relative) per image — large drift + degraded image = the drift-to-mush
 confound; small drift + cleaner image = a real refinement.
 
@@ -53,7 +59,10 @@ from bench.fsg.probe_golden_path import (  # noqa: E402
     _velocity,
 )
 from library.anima import models as anima_models  # noqa: E402
-from library.inference.sampling import get_timesteps_sigmas  # noqa: E402
+from library.inference.sampling import (  # noqa: E402
+    cfgpp_guidance_weight,
+    get_timesteps_sigmas,
+)
 from library.inference.text import prepare_text_inputs  # noqa: E402
 
 log = logging.getLogger("bench.fsg.render")
@@ -78,8 +87,22 @@ def _fsg_calibrate(anima, x, s_i, dsig, gamma, k_iters, embed, nembed, pad, step
 
 
 @torch.no_grad()
-def _trajectory(anima, x0, sig, embed, nembed, pad, guidance, *, band, dsig, gamma, k):
-    """Deterministic Euler-CFG trajectory. ``band`` is (lo, hi) or None (baseline)."""
+def _trajectory(
+    anima, x0, sig, embed, nembed, pad, guidance, *, band, dsig, gamma, k, cfgpp_lambda
+):
+    """Deterministic trajectory; ``band`` is (lo, hi) or None (no foresight).
+
+    Outer denoise substrate (Algorithm 1 lines 9–12):
+
+    * ``cfgpp_lambda is None`` → plain **CFG**: step along the guided velocity
+      ``v^u + w(v^c − v^u)``. This is what the shipped plugin grafts the foresight
+      loop onto — *not* the paper's substrate.
+    * ``cfgpp_lambda`` set → faithful **CFG++** (paper App A.2): deliver guidance
+      through a σ-scaled calibration ``x̂ = x − λ·σ·(v^c − v^u)`` and integrate
+      along the **unconditional** field ``x − Δσ·v^u``. λ∈[0,1] (paper uses 0.6).
+      This is the substrate FSG is actually defined on; the σ-schedule keeps
+      guidance stable through early σ (paper Fig 6) where CFG's coefficient decays.
+    """
     x = x0.clone()
     n = len(sig) - 1
     for i in range(n):
@@ -88,8 +111,16 @@ def _trajectory(anima, x0, sig, embed, nembed, pad, guidance, *, band, dsig, gam
             x = _fsg_calibrate(anima, x, s_i, dsig, gamma, k, embed, nembed, pad, i)
         vc = _velocity(anima, x, s_i, embed, pad, i)
         vu = _velocity(anima, x, s_i, nembed, pad, i)
-        v_cfg = vu + guidance * (vc - vu)
-        x = x - (sig[i] - sig[i + 1]) * v_cfg
+        step = sig[i] - sig[i + 1]
+        if cfgpp_lambda is None:
+            v_cfg = vu + guidance * (vc - vu)
+            x = x - step * v_cfg
+        else:
+            # CFG++ as a σ-scheduled guidance reweight (App A.2) — integrator-
+            # agnostic, identical to the calibrate-then-step form, and the same
+            # path the production sampler uses (composes with er_sde).
+            w_eff = cfgpp_guidance_weight(s_i, sig[i + 1], cfgpp_lambda)
+            x = x - step * (vu + w_eff * (vc - vu))
     return x
 
 
@@ -130,8 +161,19 @@ def main() -> None:
     ap.add_argument("--k_iters", type=int, default=4)
     ap.add_argument("--narrow_lo", type=float, default=0.75)
     ap.add_argument("--narrow_hi", type=float, default=0.85)
-    ap.add_argument("--wide_lo", type=float, default=0.45)
-    ap.add_argument("--wide_hi", type=float, default=0.85)
+    ap.add_argument(
+        "--cfgpp_lambda",
+        type=float,
+        default=2.0,
+        help="CFG++ strength λ (FLOW-space coefficient: guidance enters as "
+        "λ·(1−σ')·σ·Δv, NOT the paper's DDIM ξ̃-space λ=0.6). λ≈1.5-2 ≈ CFG=4 total "
+        "guidance; sweep it. The substrate integrates along v^u.",
+    )
+    ap.add_argument(
+        "--no_cfgpp",
+        action="store_true",
+        help="Drop the CFG++ arms; render only baseline + FSG-on-CFG (old behaviour).",
+    )
     add_common_args(ap)
     args = ap.parse_args()
 
@@ -147,17 +189,24 @@ def main() -> None:
     _, sigmas = get_timesteps_sigmas(args.infer_steps, args.flow_shift, device)
     sig = [float(s) for s in sigmas]
 
+    # (label, band, cfgpp_lambda). band=None → no foresight; λ=None → CFG substrate.
+    nb = (args.narrow_lo, args.narrow_hi)
+    lam = args.cfgpp_lambda
     arms = [
-        ("baseline", None),
-        (f"fsg {args.narrow_lo:g}-{args.narrow_hi:g}", (args.narrow_lo, args.narrow_hi)),
-        (f"fsg {args.wide_lo:g}-{args.wide_hi:g}", (args.wide_lo, args.wide_hi)),
+        ("baseline", None, None),  # plain CFG (reference)
+        (f"fsg/cfg {nb[0]:g}-{nb[1]:g}", nb, None),  # shipped: foresight on CFG
     ]
+    if not args.no_cfgpp:
+        arms += [
+            (f"cfg++ λ{lam:g}", None, lam),  # CFG++ substrate alone (no foresight)
+            (f"fsg/cfg++ {nb[0]:g}-{nb[1]:g}", nb, lam),  # faithful Algorithm 1
+        ]
     band_steps = {
         lab: [round(s, 3) for s in sig[:-1] if b and b[0] <= s <= b[1]]
-        for lab, b in arms
+        for lab, b, _ in arms
     }
     log.info(f"arms: {[a[0] for a in arms]}")
-    for lab, b in arms:
+    for lab, b, _ in arms:
         if b:
             log.info(f"  '{lab}' calibrates {len(band_steps[lab])} steps at σ={band_steps[lab]}")
 
@@ -186,19 +235,22 @@ def main() -> None:
 
             imgs, labels = [], []
             base_lat = None
-            for lab, band in arms:
+            for lab, band, cfgpp_lambda in arms:
                 lat = _trajectory(
                     anima, x0, sig, embed, nembed, pad, args.guidance,
                     band=band, dsig=args.d_sigma, gamma=gamma, k=args.k_iters,
+                    cfgpp_lambda=cfgpp_lambda,
                 )
-                if band is None:
+                if lab == "baseline":
                     base_lat = lat
                     drift = 0.0
                 else:
                     drift = _norm(lat - base_lat) / max(_norm(base_lat), 1e-8)
                 imgs.append(decode_to_pil(vae, lat, device))
-                labels.append(f"{lab}" + (f"  Δ={drift:.3f}" if band else ""))
-                fn = f"p{pi}_s{sj}_{lab.replace(' ', '_').replace('.', 'p')}.png"
+                is_base = lab == "baseline"
+                labels.append(f"{lab}" + (f"  Δ={drift:.3f}" if not is_base else ""))
+                _safe = lab.replace(" ", "_").replace(".", "p").replace("/", "-")
+                fn = f"p{pi}_s{sj}_{_safe}.png"
                 imgs[-1].save(run_dir / fn)
                 drift_log.append(
                     {"prompt_idx": pi, "seed": sj, "arm": lab, "drift": drift}
@@ -230,6 +282,7 @@ def main() -> None:
             "arms": [a[0] for a in arms],
             "band_steps": band_steps,
             "guidance": args.guidance,
+            "cfgpp_lambda": None if args.no_cfgpp else args.cfgpp_lambda,
             "fsg_gamma": gamma,
             "d_sigma": args.d_sigma,
             "k_iters": args.k_iters,
