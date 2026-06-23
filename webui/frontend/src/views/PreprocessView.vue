@@ -94,17 +94,22 @@
           <v-row>
             <!-- Resize Settings -->
             <v-col cols="12" md="3">
-              <div class="text-subtitle-2 mb-2">{{ t('ppResizeGroup') }}</div>
-              <v-text-field
-                v-model.number="settings.resize_resolution"
-                :label="t('ppResizeResolution')"
-                type="number"
-                step="64"
-                min="256"
-                max="2048"
-                density="compact"
-                hide-details="auto"
-              />
+              <div class="text-subtitle-2 mb-2">{{ t('ppResizeTargetRes') }}</div>
+              <div class="d-flex flex-wrap ga-1">
+                <v-chip
+                  v-for="edge in TARGET_RES_OPTIONS"
+                  :key="edge"
+                  size="small"
+                  :variant="settings.target_res.includes(edge) ? 'flat' : 'tonal'"
+                  :color="settings.target_res.includes(edge) ? 'primary' : 'default'"
+                  @click="toggleTier(edge)"
+                >
+                  {{ edge }}
+                </v-chip>
+              </div>
+              <div v-if="settings.target_res.length === 0" class="text-caption text-error mt-1">
+                {{ t('ppTargetResNone') }}
+              </div>
             </v-col>
 
             <!-- SAM Settings -->
@@ -218,7 +223,12 @@
             <div class="text-body-2 mb-2" v-html="t('ppResizeDesc')" />
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('preprocess-resize')" @click="runTask('preprocess-resize')">
+            <v-btn
+              color="primary"
+              :disabled="settings.target_res.length === 0"
+              :loading="isRunning('preprocess-resize')"
+              @click="runTask('preprocess-resize')"
+            >
               {{ t('ppRunResize') }}
             </v-btn>
           </v-card-actions>
@@ -451,10 +461,22 @@ const defaultSettings = () => ({
   caption_tag_dropout_rate: 0.1,
   mit_text_threshold: 0.8,
   mit_dilate: 5,
-  resize_resolution: 1024,
+  // Free-fit tier edges (allowed: 512 768 896 1024 1280 1536). This is the
+  // value resize actually consumes — the old resize_resolution scalar was a
+  // no-op under free-fit. Persisted to configs/preprocess.toml.
+  target_res: [1024] as number[],
 })
 
 const settings = reactive(defaultSettings())
+
+// Allowed free-fit tier edges (mirror of ALLOWED_TARGET_RES in the backend).
+const TARGET_RES_OPTIONS = [512, 768, 896, 1024, 1280, 1536]
+
+function toggleTier(edge: number) {
+  const idx = settings.target_res.indexOf(edge)
+  if (idx >= 0) settings.target_res.splice(idx, 1)
+  else settings.target_res.push(edge)
+}
 
 const samPromptsText = computed({
   get: () => settings.sam.prompts.join('\n'),
@@ -473,7 +495,10 @@ async function fetchSettings() {
     settings.caption_tag_dropout_rate = data.caption_tag_dropout_rate ?? 0.1
     settings.mit_text_threshold = data.mit_text_threshold ?? 0.8
     settings.mit_dilate = data.mit_dilate ?? 5
-    settings.resize_resolution = data.resize_resolution ?? 1024
+    // Backend normalizes (drops invalid edges, guarantees ≥[1024]); trust it.
+    settings.target_res = Array.isArray(data.target_res) && data.target_res.length
+      ? data.target_res
+      : [1024]
   } catch { /* ignore */ }
 }
 
@@ -594,16 +619,15 @@ function stateColor(state: string) {
 }
 
 async function runTask(command: string) {
-  // Save settings before running mask/te tasks so env vars are current
-  if (['mask', 'preprocess-te', 'preprocess'].includes(command)) {
+  // Save settings before running tasks that consume them, so the on-disk
+  // config / env vars are current. resize writes target_res to
+  // configs/preprocess.toml; mask/te forward their knobs as env vars.
+  if (['preprocess-resize', 'mask', 'preprocess-te', 'preprocess'].includes(command)) {
     await saveSettings()
   }
 
   // Build CLI args for tasks that accept them
   const args: string[] = []
-  if (command === 'preprocess-resize') {
-    args.push('--resolution', String(settings.resize_resolution))
-  }
 
   // Pass relevant env vars for tasks that read them
   const env: Record<string, string> = {}
@@ -613,6 +637,12 @@ async function runTask(command: string) {
   }
   if (configStore.preset) {
     env.PRESET = configStore.preset
+  }
+  // Forward the chosen free-fit tiers so the resize step uses exactly what
+  // the UI shows (TARGET_RES env wins over the merged config in
+  // scripts/tasks/preprocess.py::_target_res_args). Space-separated edges.
+  if (['preprocess-resize', 'preprocess'].includes(command)) {
+    env.TARGET_RES = settings.target_res.join(' ')
   }
   if (['mask', 'preprocess'].includes(command)) {
     env.MIT_TEXT_THRESHOLD = String(settings.mit_text_threshold)

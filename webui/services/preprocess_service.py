@@ -7,8 +7,10 @@ counts preprocess caches for the status dashboard.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
+import toml
 import yaml
 
 from webui.services.config_service import ROOT, get_path_overrides
@@ -18,6 +20,12 @@ from webui.services.config_service import ROOT, get_path_overrides
 CONFIGS_DIR = ROOT / "configs"
 SAM_YAML = CONFIGS_DIR / "sam_mask.yaml"
 SETTINGS_FILE = CONFIGS_DIR / "webui_settings.json"
+# target_res lives here (owned by this file, preserved across `make update`)
+# — see library/config/io.py::load_path_overrides for the ownership contract.
+PREPROCESS_TOML = CONFIGS_DIR / "preprocess.toml"
+
+# Allowed free-fit tier edge sizes (must match library/datasets/buckets.py).
+ALLOWED_TARGET_RES = (512, 768, 896, 1024, 1280, 1536)
 
 
 def _resolve(p: str) -> Path:
@@ -82,7 +90,12 @@ DEFAULTS = {
     "caption_tag_dropout_rate": 0.1,
     "mit_text_threshold": 0.8,
     "mit_dilate": 5,
-    "resize_resolution": 1024,
+    # free-fit tier edges that preprocess actually resizes into. The legacy
+    # single-number `resize_resolution` was vestigial under free-fit (the
+    # `--resolution` it fed is dropped in library/preprocess/images.py), so it
+    # never matched the real output. This list is the value the resize step
+    # consumes (saved to configs/preprocess.toml).
+    "target_res": [1024],
 }
 
 
@@ -124,6 +137,83 @@ def _load_gui_settings() -> dict:
         return {}
 
 
+def _normalize_target_res(raw) -> list[int]:
+    """Coerce a config/cli value into a sorted list of valid tier edges.
+
+    Accepts the forms the config chain can produce: an int list
+    (``[1024, 896]``), a single int, or a space/comma string. Drops anything
+    not in ALLOWED_TARGET_RES. Always returns at least ``[1024]`` so preprocess
+    never gets an empty tier set (which would fall back to the same default).
+    """
+    if raw is None:
+        return list(DEFAULTS["target_res"])
+    if isinstance(raw, int):
+        edges = [raw]
+    elif isinstance(raw, str):
+        edges = [p for p in raw.replace(",", " ").split() if p.strip()]
+    elif isinstance(raw, (list, tuple)):
+        edges = list(raw)
+    else:
+        return list(DEFAULTS["target_res"])
+    try:
+        edges = [int(e) for e in edges]
+    except (TypeError, ValueError):
+        return list(DEFAULTS["target_res"])
+    edges = sorted({e for e in edges if e in ALLOWED_TARGET_RES})
+    return edges or [1024]
+
+
+def get_target_res() -> list[int]:
+    """The active free-fit tier edges from the config chain (preprocess.toml
+    → base → preset → method).
+
+    This is the value the resize step actually consumes — what the user should
+    see/edit, as opposed to the old (vestigial) ``resize_resolution`` scalar.
+
+    Reads ``load_path_overrides`` directly (NOT ``config_service.get_path_overrides``):
+    the latter only projects the five dataset-path keys, so it would drop
+    ``target_res`` and silently regress to the default.
+    """
+    from library.config.io import load_path_overrides
+
+    overrides = load_path_overrides(
+        preset="default",
+        method=os.environ.get("METHOD") or None,
+        methods_subdir="gui-methods" if os.environ.get("METHOD") else "methods",
+    )
+    return _normalize_target_res(overrides.get("target_res"))
+
+
+def save_target_res(edges: list[int]) -> list[int]:
+    """Persist the free-fit tier set to ``configs/preprocess.toml``.
+
+    Round-trips the file so the other user-owned knobs (freefit_max_ratio,
+    caption_*, min_pixels, …) are preserved. ``preprocess.toml`` is the
+    canonical home for target_res — a stray copy in base.toml is deliberately
+    ignored at read time (library/config/io.py), so writing here wins.
+
+    A corrupt file is never silently clobbered: a ``TomlDecodeError`` /
+    ``OSError`` propagates so the API layer reports the failure instead of
+    wiping the other user-owned keys by re-writing from an empty dict. The
+    write is atomic (temp file + ``os.replace``) so a crash mid-write can't
+    leave the truncated file that would itself trigger that path on the next
+    save.
+    """
+    normalized = _normalize_target_res(edges)
+    if PREPROCESS_TOML.exists():
+        # Corrupt file → raise; do not fall back to {} and clobber the other
+        # user-owned keys the docstring promises to preserve.
+        data = toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
+    else:
+        data = {}
+    data["target_res"] = normalized
+    CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = PREPROCESS_TOML.parent / (PREPROCESS_TOML.name + ".tmp")
+    tmp.write_text(toml.dumps(data), encoding="utf-8")
+    os.replace(tmp, PREPROCESS_TOML)
+    return normalized
+
+
 def get_settings() -> dict:
     """Read both config files and return a unified settings dict."""
     sam = _load_sam()
@@ -146,12 +236,14 @@ def get_settings() -> dict:
             "mit_text_threshold", DEFAULTS["mit_text_threshold"]
         ),
         "mit_dilate": gui.get("mit_dilate", DEFAULTS["mit_dilate"]),
-        "resize_resolution": gui.get("resize_resolution", DEFAULTS["resize_resolution"]),
+        # From the config chain (configs/preprocess.toml → preset → method),
+        # not webui_settings.json — it's the value resize actually uses.
+        "target_res": get_target_res(),
     }
 
 
 def save_settings(data: dict) -> dict:
-    """Write settings back to both config files.
+    """Write settings back to the config files.
 
     Returns the saved settings (round-tripped through get_settings).
     """
@@ -182,12 +274,15 @@ def save_settings(data: dict) -> dict:
         "caption_tag_dropout_rate",
         "mit_text_threshold",
         "mit_dilate",
-        "resize_resolution",
     ):
         if key in data:
             gui[key] = data[key]
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(gui, indent=2), encoding="utf-8")
+
+    # ── target_res → configs/preprocess.toml ──
+    if "target_res" in data:
+        save_target_res(data["target_res"])
 
     return get_settings()
 

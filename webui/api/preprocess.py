@@ -27,7 +27,10 @@ class PreprocessSettings(BaseModel):
     caption_tag_dropout_rate: float = 0.1
     mit_text_threshold: float = 0.8
     mit_dilate: int = 5
-    resize_resolution: int = 1024
+    # Free-fit tier edges (allowed: 512 768 896 1024 1280 1536). This is the
+    # value resize actually consumes — the old vestigial resize_resolution
+    # scalar was dropped under free-fit. Saved to configs/preprocess.toml.
+    target_res: list[int] = [1024]
 
 
 class CacheCounts(BaseModel):

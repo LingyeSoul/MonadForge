@@ -101,17 +101,28 @@ checkpoint at training resolution.
 
 ## V100 FlashAttention note
 
-The fp32 residual guard is necessary but not always sufficient for the third-party
-`flash-attention-v100` backend. For users who want to keep FA2 on V100, use the
-separate probe and stability mode:
+The fp32 residual guard fixes Anima's fp16 residual-stream overflow, but it does
+not make every third-party attention kernel stable. Real V100 testing with
+`flash-attention-v100` showed first-step NaNs in Anima DiT **self-attention** even
+when `v100_flash_stability="hybrid"` routed cross-attention through torch SDPA.
 
-```bash
-python -m bench.v100_flash.run_probe --attn_mode flash --stability hybrid --device cuda
-ANIMA_V100_FLASH_STABILITY=hybrid ANIMA_DEBUG_FINITE=1 python tasks.py lora-gui tlora
+For production V100 training, use:
+
+```toml
+mixed_precision = "fp16"
+attn_mode = "torch"
+torch_compile = true
+gradient_checkpointing = true
 ```
 
-`hybrid` keeps self-attention on flash and routes cross-attention through torch
-SDPA; `safe` keeps flash but adds finite checks. See `bench/v100_flash/README.md`.
+The separate V100 flash probe is diagnostic only:
+
+```bash
+python -m bench.v100_flash.run_probe --attn_mode torch --device cuda
+python -m bench.v100_flash.run_probe --attn_mode flash --stability hybrid --debug_finite --device cuda
+```
+
+See `bench/v100_flash/README.md` for the test report summary and caveats.
 
 ## Related
 
