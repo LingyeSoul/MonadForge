@@ -677,7 +677,7 @@ def generate_body(
                 "FSG×SPD is a v2 item."
             )
         else:
-            _band = getattr(args, "fsg_band", [0.75, 0.85])
+            _band = getattr(args, "fsg_band", [0.59, 0.75])
             fsg = FSGCalibrator(
                 band=(float(_band[0]), float(_band[1])),
                 k=getattr(args, "fsg_k", 3),
@@ -689,8 +689,11 @@ def generate_body(
     # σ-scheduled guidance REWEIGHT (CFG++ differs from CFG solely in strength
     # scheduling), so it's a pure change to the cond/uncond combine and integrates
     # unchanged under Euler AND er_sde/lcm — the substrate FSG is defined on, now
-    # production-sampler-ready. Still refused under --smc_cfg (an alternative
-    # combine, mutually exclusive) and --spectrum/--spd (they own the loop).
+    # production-sampler-ready. It threads through the spectrum runner as a
+    # side-channel (the runner applies the same reweight in its CFG-combine), so
+    # faithful FSG = CFG++ + foresight composes under --spectrum. Still refused
+    # under --smc_cfg (an alternative combine, mutually exclusive) and --spd
+    # (mid-loop σ re-spacing — CFG++ not wired there, a v2 item).
     cfgpp_lambda = None
     if getattr(args, "cfgpp", False):
         if not do_cfg:
@@ -700,13 +703,18 @@ def generate_body(
                 "--cfgpp and --smc_cfg both replace the cond/uncond combine; "
                 "ignoring --cfgpp."
             )
-        elif getattr(args, "spectrum", False) or getattr(args, "spd", False):
-            logger.warning("--cfgpp is ignored under --spectrum/--spd (they own the loop).")
+        elif getattr(args, "spd", False):
+            logger.warning(
+                "--cfgpp is ignored under --spd (mid-loop σ re-spacing; CFG++ is "
+                "not wired into the SPD runner)."
+            )
         else:
             cfgpp_lambda = float(getattr(args, "cfgpp_lambda", 1.5))
             _sampler_name = "er_sde" if er_sde is not None else "euler"
+            _loop = "spectrum" if getattr(args, "spectrum", False) else _sampler_name
             logger.info(
-                f"CFG++ substrate active (λ={cfgpp_lambda}, sampler={_sampler_name})."
+                f"CFG++ substrate active (λ={cfgpp_lambda}, sampler={_sampler_name}"
+                f", loop={_loop})."
             )
 
     pgraft_network = getattr(anima, "_pgraft_network", None)
@@ -723,6 +731,7 @@ def generate_body(
         dcw_calibrator=dcw_calibrator,
         smc_cfg=smc_cfg,
         fsg=fsg,
+        cfgpp_lambda=cfgpp_lambda,
         soft_tokens_net=soft_tokens_net,
         soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
         soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,

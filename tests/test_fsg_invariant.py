@@ -186,3 +186,55 @@ def test_cfgpp_weight_final_step_and_finite():
     sig = [float(s) for s in sigmas]
     ws = [cfgpp_guidance_weight(sig[i], sig[i + 1], 2.0) for i in range(20)]
     assert all(0.0 < w < 50.0 for w in ws)
+
+
+# --- CFG++ × Spectrum combine ---------------------------------------------
+# The spectrum runner threads cfgpp_lambda as a side-channel and merges
+# cond/uncond through `_combine_guided` in both its actual-forward and
+# cached-prediction branches. These pin: (1) cfgpp off == plain CFG (the
+# trajectory is bit-identical to a non-cfg++ spectrum run); (2) cfgpp on applies
+# exactly the w_eff reweight; (3) the branch order is total (cfgpp wins over a
+# stray smc state, matching generation.py's mutual-exclusion guard).
+
+
+def test_spectrum_combine_off_is_plain_cfg():
+    from networks.spectrum import _combine_guided
+
+    g = torch.Generator().manual_seed(2)
+    cond = torch.randn(1, 4, 1, 8, 8, generator=g)
+    uncond = torch.randn(1, 4, 1, 8, 8, generator=g)
+    gs = 4.0
+    out = _combine_guided(cond, uncond, cfgpp_w_eff=None, guidance_scale=gs)
+    assert torch.equal(out, uncond + gs * (cond - uncond))
+
+
+def test_spectrum_combine_cfgpp_applies_weff():
+    from networks.spectrum import _combine_guided
+
+    g = torch.Generator().manual_seed(3)
+    cond = torch.randn(1, 4, 1, 8, 8, generator=g)
+    uncond = torch.randn(1, 4, 1, 8, 8, generator=g)
+    w_eff = 7.5
+    out = _combine_guided(cond, uncond, cfgpp_w_eff=w_eff, guidance_scale=4.0)
+    assert torch.equal(out, uncond + w_eff * (cond - uncond))
+    # cfg++ reweight ignores guidance_scale entirely (w_eff carries the strength).
+    out2 = _combine_guided(cond, uncond, cfgpp_w_eff=w_eff, guidance_scale=1.0)
+    assert torch.equal(out, out2)
+
+
+def test_spectrum_combine_cfgpp_beats_smc():
+    """cfgpp_w_eff set wins over a stray smc_cfg — matches generation.py's
+    refusal to run both combines at once."""
+    from networks.spectrum import _combine_guided
+
+    class _Boom:
+        def combine(self, *a):  # pragma: no cover - must never be called
+            raise AssertionError("smc_cfg.combine called despite cfg++ active")
+
+    g = torch.Generator().manual_seed(4)
+    cond = torch.randn(1, 4, 1, 8, 8, generator=g)
+    uncond = torch.randn(1, 4, 1, 8, 8, generator=g)
+    out = _combine_guided(
+        cond, uncond, cfgpp_w_eff=2.0, smc_cfg=_Boom(), guidance_scale=4.0
+    )
+    assert torch.equal(out, uncond + 2.0 * (cond - uncond))

@@ -315,6 +315,29 @@ def _spectrum_fast_forward(
     return model.unpatchify(x)
 
 
+def _combine_guided(
+    cond_pred,
+    uncond_pred,
+    *,
+    cfgpp_w_eff: Optional[float] = None,
+    smc_cfg=None,
+    guidance_scale: float = 1.0,
+):
+    """Merge cond/uncond predictions — plain CFG, CFG++ reweight, or SMC-CFG.
+
+    CFG++ (``cfgpp_w_eff`` set) and SMC-CFG (``smc_cfg`` set) are mutually
+    exclusive substrates (generation.py refuses both at once), so the branch
+    order is total. CFG++ is a pure σ-scheduled reweight of the same combine, so
+    it composes with the spectrum cache: the forecaster stores the raw
+    cond/uncond features and only this merge weight differs from plain CFG.
+    """
+    if cfgpp_w_eff is not None:
+        return uncond_pred + cfgpp_w_eff * (cond_pred - uncond_pred)
+    if smc_cfg is not None:
+        return smc_cfg.combine(cond_pred, uncond_pred, guidance_scale)
+    return uncond_pred + guidance_scale * (cond_pred - uncond_pred)
+
+
 def spectrum_denoise(
     anima,
     latents: torch.Tensor,
@@ -397,9 +420,32 @@ def spectrum_denoise(
     soft_tokens_embed_seqlens = ctx.soft_tokens_embed_seqlens
     soft_tokens_neg_seqlens = ctx.soft_tokens_neg_seqlens
     fsg = ctx.fsg
+    cfgpp_lambda = ctx.cfgpp_lambda
 
     do_cfg = guidance_scale != 1.0
     num_steps = len(timesteps)
+
+    # CFG / CFG++ / SMC-CFG combine — the single cond/uncond merge used by both
+    # the actual-forward and the cached-prediction branches. CFG++ is a pure
+    # σ-scheduled reweight of the same combine (paper App A.2), so it rides the
+    # spectrum loop unchanged: the forecaster caches the raw cond/uncond features
+    # and only the merge weight changes. cfgpp_lambda and smc_cfg are mutually
+    # exclusive (generation.py refuses both), so this branch order is total.
+    def _combine_cfg(cond_pred, uncond_pred, i):
+        w_eff = (
+            inference_utils.cfgpp_guidance_weight(
+                float(sigmas[i]), float(sigmas[i + 1]), cfgpp_lambda
+            )
+            if cfgpp_lambda is not None
+            else None
+        )
+        return _combine_guided(
+            cond_pred,
+            uncond_pred,
+            cfgpp_w_eff=w_eff,
+            smc_cfg=smc_cfg,
+            guidance_scale=guidance_scale,
+        )
 
     # FSG pre-step latent calibration composes by carving its scheduled steps
     # out of the cache scheduler: a calibrated step is forced to an actual
@@ -453,6 +499,8 @@ def spectrum_denoise(
         (tuple(sorted(fsg_steps)), fsg.k, round(fsg.d_sigma, 3), fsg.gamma)
         if fsg is not None
         else None,
+        # CFG++ reweights the combine, so it changes the cached trajectory too.
+        round(cfgpp_lambda, 4) if cfgpp_lambda is not None else None,
     )
     if not use_sea:
         delta_val: Optional[float] = None
@@ -604,14 +652,7 @@ def spectrum_denoise(
                         ):
                             uncond_residual = ufeat - uncond_fc.predict(float(i))
                         uncond_fc.update(float(i), ufeat)
-                        if smc_cfg is not None:
-                            noise_pred = smc_cfg.combine(
-                                noise_pred, uncond_noise_pred, guidance_scale
-                            )
-                        else:
-                            noise_pred = uncond_noise_pred + guidance_scale * (
-                                noise_pred - uncond_noise_pred
-                            )
+                        noise_pred = _combine_cfg(noise_pred, uncond_noise_pred, i)
 
                     # Advance schedule (only post-warmup to avoid inflating
                     # window). FSG-forced steps don't advance it — they are an
@@ -641,14 +682,7 @@ def spectrum_denoise(
                             uncond_noise_pred = _spectrum_fast_forward(
                                 anima, t_exp, upred_feat
                             )
-                            if smc_cfg is not None:
-                                noise_pred = smc_cfg.combine(
-                                    noise_pred, uncond_noise_pred, guidance_scale
-                                )
-                            else:
-                                noise_pred = uncond_noise_pred + guidance_scale * (
-                                    noise_pred - uncond_noise_pred
-                                )
+                            noise_pred = _combine_cfg(noise_pred, uncond_noise_pred, i)
 
                     consec_cached += 1
                     pbar.set_postfix(mode="cached", n=fwd_count)
@@ -729,9 +763,11 @@ def spectrum_denoise(
             if fsg is not None and fsg_steps
             else ""
         )
+        cfgpp_label = f", cfg++ λ={cfgpp_lambda}" if cfgpp_lambda is not None else ""
         logger.info(
             f"Spectrum: {fwd_count}/{num_steps} actual forwards "
-            f"({speedup:.2f}x theoretical speedup{cfg_label}){sched_label}{fsg_label}"
+            f"({speedup:.2f}x theoretical speedup{cfg_label})"
+            f"{sched_label}{fsg_label}{cfgpp_label}"
         )
 
     finally:

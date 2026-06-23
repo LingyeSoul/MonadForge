@@ -1,8 +1,11 @@
 # FSG follow-up plan — CFG++ λ sweep & production (er_sde, ~30-step) calibration
 
-**Status:** mechanism settled; **Plan A DONE (λ\*=1.5)**. Plan B (band/K at the real
-step count + sampler) and the Plan C confound read that decides whether FSG ships
-remain open. This plan sequences them.
+**Status:** **Plan A/B/C DONE → SHIPPED in library (2026-06-23).** Production config:
+cfg++ λ1.5, band **[0.59,0.75]**, K=3, Δσ=0.1, γ=guidance(4), er_sde, 28 steps —
+library defaults updated; `docs/proposal/foresight_guidance.md` revised for the node
+port. **Only matched-NFE A/B remains** (cost-efficiency proof, not a ship blocker —
+ship rested on the cfg++-substrate confound read). See memory
+`project_fsg_golden_path_phase0` for the full Plan B/C findings.
 
 Read first: `docs/proposal/foresight_guidance.md`, memory
 `project_fsg_golden_path_phase0`. Tools: `probe_golden_path.py` (gap/ρ mechanism),
@@ -149,8 +152,8 @@ Otherwise write the negative finding and close.
 1. ~~**Tooling:** extend `render_compare.py`~~ ✅ done (`--sampler`,
    `--cfgpp_lambdas`, sat/contrast in result.json).
 2. ~~**Plan A** → λ*~~ ✅ done → **λ\*=1.5** (now the `--cfgpp_lambda` default).
-3. **Plan B** → production `(band, K)` at 28/30 steps on er_sde (use λ=1.5). ← next
-4. **Plan C** → confound read + matched-NFE. Ship-or-close decision.
+3. ~~**Plan B** → production `(band, K)` at 28/30 steps on er_sde~~ ✅ → **band [0.59,0.75], K=3** (band shifted down from the 20-step [0.75,0.85]; γ=w_eff diverges, keep γ≈4).
+4. ~~**Plan C** → confound read~~ ✅ → **fsg/cfg++ beats cfg++** by eyeball, not a tone bump (Δsat +1.7%p); SHIPPED. **Matched-NFE** still owed (cost proof).
 
 Each stage is one bench run + eyeball; record results under
 `bench/fsg/results/<ts>-<label>/` and update `project_fsg_golden_path_phase0`.

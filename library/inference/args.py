@@ -522,19 +522,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--fsg",
         action="store_true",
         help="Enable Foresight Guidance pre-step latent calibration (CFG only). "
-        "Defaults band=[0.45,0.85], K=3, Δσ=0.1, γ=guidance_scale.",
+        "Defaults band=[0.59,0.75], K=3, Δσ=0.1, γ=guidance_scale.",
     )
     parser.add_argument(
         "--fsg_band",
         type=float,
         nargs=2,
-        default=[0.75, 0.85],
+        default=[0.59, 0.75],
         metavar=("SIGMA_LO", "SIGMA_HI"),
-        help="σ-band [lo, hi] where FSG calibrates. Default [0.75, 0.85] -- the "
-        "narrow registered band that carried ~all the Phase-1 win at ~half the "
-        "cost (the operator contracts in [0.45, 0.85] but σ≈0.94 diverges; the "
-        "paper's noisy-stage prescription is wrong here). Widen to [0.45, 0.85] "
-        "for the full band. bench/fsg probe is the calibration instrument.",
+        help="σ-band [lo, hi] where FSG calibrates. Default [0.59, 0.75] -- the "
+        "production band from the er_sde/28-step Plan-B calibration (bench/fsg). "
+        "The contracting band moves DOWN with step count: it was [0.75, 0.85] at "
+        "20-step Euler, but at 28 steps σ≈0.84 stops contracting and the sweet "
+        "spot is σ≈0.75 (the operator contracts in mid-σ; σ≈0.94 always diverges, "
+        "ρ>1 -- the paper's noisy-stage prescription is wrong here). Re-probe with "
+        "bench/fsg if you change infer_steps.",
     )
     parser.add_argument(
         "--fsg_k",
@@ -560,14 +562,16 @@ def build_parser() -> argparse.ArgumentParser:
     # CFG++ substrate (paper App A.2 / Algorithm 1 lines 9-12). FSG is *defined*
     # on a CFG++ base. Implemented as a σ-scheduled guidance REWEIGHT (CFG++
     # differs from CFG solely in strength scheduling) so it composes with er_sde
-    # and Euler alike -- see sampling.cfgpp_guidance_weight. Refused only under
-    # --smc_cfg (alternative combine) and --spectrum/--spd (they own the loop).
+    # and Euler alike -- see sampling.cfgpp_guidance_weight. Composes with
+    # --spectrum (threaded as a side-channel; the reweight is applied in the
+    # spectrum combine). Refused under --smc_cfg (alternative combine) and --spd
+    # (mid-loop σ re-spacing; not wired there).
     parser.add_argument(
         "--cfgpp",
         action="store_true",
         help="Use the CFG++ substrate (App A.2): replace the constant-w cond/uncond "
         "combine with the σ-scheduled CFG++ weight. The substrate FSG is defined "
-        "on; composes with er_sde. Needs its own λ sweep on Anima.",
+        "on; composes with er_sde and --spectrum. Needs its own λ sweep on Anima.",
     )
     parser.add_argument(
         "--cfgpp_lambda",

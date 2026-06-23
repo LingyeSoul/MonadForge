@@ -20,11 +20,13 @@ onto the reversible Euler ODE (no DDIM machinery):
 
 **Anima-specific band.** The paper concentrates iterations in the noisiest
 stages; on Anima that is the dead zone (σ≈0.94 diverges, ρ>1). The operator
-contracts only in **mid-σ**: the working band is [0.45, 0.85], but the default
-is the narrow [0.75, 0.85] sub-band — Phase-1 showed it carried ~all the visible
-win at ~half the cost (fewer scheduled steps). This is a
-``pre-step latent calibration`` seam: it mutates ``latents`` *before* the real
-per-step forward and is otherwise invisible to the rest of the loop.
+contracts only in **mid-σ**, and the contracting band **moves down with step
+count**: at 20-step Euler it was [0.75, 0.85], but at the 28-step er_sde
+production schedule σ≈0.84 stops contracting and the sweet spot is σ≈0.75, so
+the default is the **[0.59, 0.75]** band (Plan-B calibration, bench/fsg). This is
+a ``pre-step latent calibration`` seam: it mutates ``latents`` *before* the real
+per-step forward and is otherwise invisible to the rest of the loop. Re-probe the
+band with bench/fsg if you change ``infer_steps``.
 
 This is a faithful port of ``bench/fsg/render_compare.py::_fsg_calibrate``; the
 bench remains the calibration instrument (Phase-0 probe → band/K/Δσ/γ).
@@ -52,8 +54,8 @@ class FSGCalibrator:
 
     Args:
         band: ``(σ_lo, σ_hi)`` — calibrate only when the step's σ falls inside.
-            Default [0.75, 0.85] — the narrow sub-band that carried ~all the
-            Phase-1 win at ~half the cost; the full working band is [0.45, 0.85].
+            Default [0.59, 0.75] — the 28-step er_sde production band (Plan-B);
+            the band shifts down with step count (was [0.75, 0.85] at 20-step).
         k: fixed-point iterations per scheduled step (error ~ρ^K, ρ≈0.93 ⇒
             K=3–4 captures ~all the gain). ``k=0`` makes the calibrator inert.
         d_sigma: calibration interval Δσ (the forward-backward stride; *not* the
@@ -62,7 +64,7 @@ class FSGCalibrator:
             passed at call time (the paper's operator uses plain γ-combine).
     """
 
-    band: Tuple[float, float] = (0.75, 0.85)
+    band: Tuple[float, float] = (0.59, 0.75)
     k: int = 3
     d_sigma: float = 0.1
     gamma: Optional[float] = None

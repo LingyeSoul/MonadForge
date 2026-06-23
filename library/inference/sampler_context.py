@@ -39,6 +39,7 @@ class SamplerSideChannels:
     dcw_calibrator: Any = None
     smc_cfg: "Optional[SMCCFGState]" = None
     fsg: Any = None
+    cfgpp_lambda: Optional[float] = None
     soft_tokens_net: Any = None
     soft_tokens_embed_seqlens: Optional[torch.Tensor] = None
     soft_tokens_neg_seqlens: Optional[torch.Tensor] = None
@@ -55,6 +56,7 @@ class SamplerSideChannels:
         dcw_calibrator: Any = None,
         smc_cfg: "Optional[SMCCFGState]" = None,
         fsg: Any = None,
+        cfgpp_lambda: Optional[float] = None,
         soft_tokens_net: Any = None,
         soft_tokens_embed_seqlens: Optional[torch.Tensor] = None,
         soft_tokens_neg_seqlens: Optional[torch.Tensor] = None,
@@ -75,6 +77,7 @@ class SamplerSideChannels:
             dcw_calibrator=dcw_calibrator,
             smc_cfg=smc_cfg,
             fsg=fsg,
+            cfgpp_lambda=cfgpp_lambda,
             soft_tokens_net=soft_tokens_net,
             soft_tokens_embed_seqlens=soft_tokens_embed_seqlens,
             soft_tokens_neg_seqlens=soft_tokens_neg_seqlens,
