@@ -625,6 +625,11 @@ STRINGS: dict[str, str] = {
     "merge_lora_button": "合并 LoRA",
     "merge_analyze_button": "分析干涉",
     "merge_analyze_tip": "试运行：报告所选 LoRA 在权重空间中的相互干涉（逐对、逐层的相长增强还是相消抵消），不写出合并文件。",
+    "merge_analysis_safe": "✓ 可安全合并 — LoRA 近似正交 · 最强配对 |cos| {cos} · 能量比 {ratio} · 共享模块 {shared}/{modules}",
+    "merge_analysis_reinforce": "⚠ {strength}相长增强 — {a} ↔ {b} cos {cos} · 能量比 {ratio}（normalize=global 会重新缩放相加后的幅度）· 共享模块 {shared}/{modules}",
+    "merge_analysis_cancel": "⚠ {strength}相消抵消 — {a} ↔ {b} cos {cos} · 这些 LoRA 会部分相互抵消 · 能量比 {ratio} · 共享模块 {shared}/{modules}",
+    "merge_analysis_moderate": "中等",
+    "merge_analysis_strong": "强",
     "merge_lora_out_placeholder": "（自动：<首个 LoRA>_merged<N>.safetensors）",
     "browse": "浏览……",
     # Multi-scale target_res tiers

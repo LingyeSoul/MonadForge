@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -125,6 +126,9 @@ def main() -> int:
     report = merge_analysis.analyze(loaded, names, weights)
     if args.analyze:
         print(merge_analysis.format_report(report))
+        # Machine-readable trailer so the GUI can render a pass/warning banner
+        # without re-parsing the human report. Ignored on the CLI.
+        print("ANALYZE_RESULT " + json.dumps(report.marker_payload()))
         return 0
     logger.info(report.summary_line())
 

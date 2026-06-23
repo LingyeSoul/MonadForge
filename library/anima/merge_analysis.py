@@ -79,12 +79,43 @@ class InterferenceReport:
             return None
         return min(self.pair_cosine.items(), key=lambda kv: kv[1])
 
+    @property
+    def strongest_pair(self) -> tuple[tuple[int, int], float] | None:
+        """The input pair with the largest |cosine| — the dominant interference,
+        whether reinforcing (+) or cancelling (−). This, not the energy ratio
+        (which inflates with N) or the most-negative pair, is the honest severity
+        signal for the GUI banner."""
+        if not self.pair_cosine:
+            return None
+        return max(self.pair_cosine.items(), key=lambda kv: abs(kv[1]))
+
     def _verdict(self, ratio: float) -> str:
         if ratio > 1.05:
             return "constructive"
         if ratio < 0.95:
             return "destructive"
         return "orthogonal"
+
+    @property
+    def verdict(self) -> str:
+        """'orthogonal' | 'constructive' | 'destructive' for the aggregate ratio."""
+        return self._verdict(self.overall_energy_ratio)
+
+    def marker_payload(self) -> dict:
+        """Machine-readable summary for the GUI banner (one compact JSON line)."""
+        payload: dict = {
+            "verdict": self.verdict,
+            "ratio": round(self.overall_energy_ratio, 4),
+            "shared": self.n_shared_modules,
+            "modules": self.n_modules,
+        }
+        # The dominant pair (largest |cos|) grades the banner severity; the
+        # most-negative pair stays the CLI report's "most opposed".
+        strongest = self.strongest_pair
+        if strongest is not None:
+            (i, j), c = strongest
+            payload["strongest"] = [self.names[i], self.names[j], round(c, 4)]
+        return payload
 
     def summary_line(self) -> str:
         v = self._verdict(self.overall_energy_ratio)

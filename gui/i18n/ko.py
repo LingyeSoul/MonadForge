@@ -687,6 +687,11 @@ STRINGS: dict[str, str] = {
     "merge_lora_button": "LoRA 병합",
     "merge_analyze_button": "간섭 분석",
     "merge_analyze_tip": "드라이런: 선택한 LoRA들이 가중치 공간에서 어떻게 간섭하는지(쌍별·레이어별로 보강 대 상쇄) 병합 파일을 쓰지 않고 보고합니다.",
+    "merge_analysis_safe": "✓ 병합 안전 — LoRA들이 거의 직교함 · 최강 쌍 |cos| {cos} · 에너지 비율 {ratio} · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_reinforce": "⚠ {strength} 보강 간섭 — {a} ↔ {b} cos {cos} · 에너지 비율 {ratio} (normalize=global이 합산 크기를 재조정함) · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_cancel": "⚠ {strength} 상쇄 간섭 — {a} ↔ {b} cos {cos} · 이 LoRA들이 서로 부분적으로 지움 · 에너지 비율 {ratio} · 공유 모듈 {shared}/{modules}",
+    "merge_analysis_moderate": "중간",
+    "merge_analysis_strong": "강한",
     "merge_lora_out_placeholder": "(자동: <첫 LoRA>_merged<N>.safetensors)",
     "browse": "찾아보기…",
     # Multi-scale target_res tiers

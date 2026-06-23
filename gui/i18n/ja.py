@@ -647,6 +647,11 @@ STRINGS: dict[str, str] = {
     "merge_lora_button": "LoRA をマージ",
     "merge_analyze_button": "干渉を分析",
     "merge_analyze_tip": "ドライラン: 選択した LoRA が重み空間でどう干渉するか（ペアごと・層ごとの強め合い対打ち消し合い）を、マージファイルを書き出さずにレポートします。",
+    "merge_analysis_safe": "✓ マージ安全 — LoRA はほぼ直交 · 最大ペア |cos| {cos} · エネルギー比 {ratio} · 共有モジュール {shared}/{modules}",
+    "merge_analysis_reinforce": "⚠ {strength}強め合い — {a} ↔ {b} cos {cos} · エネルギー比 {ratio}（normalize=global が合算量を再スケール）· 共有モジュール {shared}/{modules}",
+    "merge_analysis_cancel": "⚠ {strength}打ち消し合い — {a} ↔ {b} cos {cos} · これらの LoRA は互いに部分的に消し合う · エネルギー比 {ratio} · 共有モジュール {shared}/{modules}",
+    "merge_analysis_moderate": "中程度の",
+    "merge_analysis_strong": "強い",
     "merge_lora_out_placeholder": "（自動: <最初の LoRA>_merged<N>.safetensors）",
     "browse": "参照…",
     # Multi-scale target_res tiers

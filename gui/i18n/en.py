@@ -705,6 +705,11 @@ STRINGS: dict[str, str] = {
     "merge_lora_button": "Merge LoRAs",
     "merge_analyze_button": "Analyze interference",
     "merge_analyze_tip": "Dry-run: report how the selected LoRAs interfere in weight space (constructive reinforce vs destructive cancel, per pair and per layer) without writing a merged file.",
+    "merge_analysis_safe": "✓ Safe to merge — LoRAs are near-orthogonal · strongest pair |cos| {cos} · energy ratio {ratio} · {shared}/{modules} shared modules",
+    "merge_analysis_reinforce": "⚠ {strength} reinforcing — {a} ↔ {b} cos {cos} · energy ratio {ratio} (normalize=global rescales the summed magnitude) · {shared}/{modules} shared modules",
+    "merge_analysis_cancel": "⚠ {strength} cancellation — {a} ↔ {b} cos {cos} · these LoRAs partially erase each other · energy ratio {ratio} · {shared}/{modules} shared modules",
+    "merge_analysis_moderate": "Moderate",
+    "merge_analysis_strong": "Strong",
     "merge_lora_out_placeholder": "(auto: <first-lora>_merged<N>.safetensors)",
     "browse": "Browse…",
     # Multi-scale target_res tiers

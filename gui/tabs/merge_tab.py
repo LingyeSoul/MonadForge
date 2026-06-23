@@ -16,7 +16,6 @@ from PySide6.QtCore import QProcess, Qt, Signal
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
-    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -30,7 +29,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QRadioButton,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -182,6 +180,7 @@ class MergeTab(LazyTabMixin, QWidget):
         self._dirs = _adapter_dirs()
         self._files: list[Path] = []
         self._current_scan: dict | None = None
+        self._stdout_buf = ""  # line buffer for ANALYZE_RESULT marker detection
 
         lay = QVBoxLayout(self)
 
@@ -218,18 +217,17 @@ class MergeTab(LazyTabMixin, QWidget):
         self.stats_label.setStyleSheet(f"color:{tok('text_dim')};")
         rlay.addWidget(self.stats_label)
 
-        # Mode toggle: bake one adapter into the DiT, or fuse N LoRAs into one LoRA.
+        # Mode picker: bake one adapter into the DiT, or fuse N LoRAs into one LoRA.
+        # Dropdown (not checkboxes) — the two modes are mutually exclusive and
+        # drive quite different option panels below.
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel(t("merge_mode")))
-        self.mode_dit = QRadioButton(t("merge_mode_dit"))
-        self.mode_loras = QRadioButton(t("merge_mode_loras"))
-        self.mode_dit.setChecked(True)
-        self._mode_group = QButtonGroup(self)
-        self._mode_group.addButton(self.mode_dit)
-        self._mode_group.addButton(self.mode_loras)
-        self.mode_dit.toggled.connect(self._on_mode_changed)
-        mode_row.addWidget(self.mode_dit)
-        mode_row.addWidget(self.mode_loras)
+        self.mode_combo = QComboBox()
+        # Index 0 = Into DiT (default), index 1 = Merge LoRAs. _lora_mode() keys off this.
+        self.mode_combo.addItem(t("merge_mode_dit"))
+        self.mode_combo.addItem(t("merge_mode_loras"))
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        mode_row.addWidget(self.mode_combo)
         mode_row.addStretch()
         rlay.addLayout(mode_row)
 
@@ -328,6 +326,14 @@ class MergeTab(LazyTabMixin, QWidget):
         bar.addWidget(self.stop_btn)
         bar.addStretch()
         rlay.addLayout(bar)
+
+        # Styled pass/warning banner for the interference analysis — populated
+        # from the ANALYZE_RESULT marker that merge_loras.py --analyze emits.
+        # The full report still streams into the log below; this is the verdict.
+        self.analysis_label = QLabel()
+        self.analysis_label.setWordWrap(True)
+        self.analysis_label.setVisible(False)
+        rlay.addWidget(self.analysis_label)
 
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
@@ -468,7 +474,7 @@ class MergeTab(LazyTabMixin, QWidget):
             target.setText(f)
 
     def _lora_mode(self) -> bool:
-        return self.mode_loras.isChecked()
+        return self.mode_combo.currentIndex() == 1
 
     def _selected_loras(self) -> list[Path]:
         """Selected adapters in list order (LoRA-merge mode uses multi-select).
@@ -492,6 +498,9 @@ class MergeTab(LazyTabMixin, QWidget):
         )
         self.merge_btn.setText(t("merge_lora_button") if lora else t("merge_button"))
         self.analyze_btn.setVisible(lora)
+        if not lora:
+            # The interference banner only applies to LoRA-merge mode.
+            self.analysis_label.setVisible(False)
         if lora:
             self._on_lora_selection()
         else:
@@ -595,6 +604,8 @@ class MergeTab(LazyTabMixin, QWidget):
         import sys as _sys
 
         self.log.clear()
+        self._stdout_buf = ""
+        self.analysis_label.setVisible(False)
         self._log(f"> {_sys.executable} {' '.join(args)}\n")
 
         self.merge_btn.setEnabled(False)
@@ -603,8 +614,7 @@ class MergeTab(LazyTabMixin, QWidget):
         self.merge_btn.setText(self.merge_btn.text() + " ...")
         self.stop_btn.setEnabled(True)
         self.dir_combo.setEnabled(False)
-        self.mode_dit.setEnabled(False)
-        self.mode_loras.setEnabled(False)
+        self.mode_combo.setEnabled(False)
 
         self._proc.start(_sys.executable, args)
 
@@ -617,19 +627,97 @@ class MergeTab(LazyTabMixin, QWidget):
 
     def _read_stdout(self):
         data = self._proc.readAllStandardOutput().data().decode(errors="replace")
-        self._log(data)
+        # Scan complete lines for the ANALYZE_RESULT marker; route it to the
+        # styled banner and keep it out of the visible log. Anything before the
+        # last newline is a complete line; the remainder stays buffered.
+        self._stdout_buf += data
+        *lines, self._stdout_buf = self._stdout_buf.split("\n")
+        visible = []
+        for ln in lines:
+            if ln.startswith("ANALYZE_RESULT "):
+                self._apply_analysis_marker(ln[len("ANALYZE_RESULT ") :])
+            else:
+                visible.append(ln)
+        if visible:
+            self._log("\n".join(visible) + "\n")
+
+    # Banner severity grades on the strongest pairwise |cos| (operator alignment),
+    # NOT the verdict word or the N-inflated energy ratio. Near-orthogonal LoRAs
+    # (the common case for distinct artists, ~0.06) are safe to merge — and
+    # normalize=global tames summed magnitude regardless. These bands are heuristic.
+    _SAFE_COS = 0.15
+    _STRONG_COS = 0.35
+
+    def _apply_analysis_marker(self, payload: str):
+        """Render the interference result as a colored safe/caution/warn banner."""
+        import json as _json
+
+        try:
+            data = _json.loads(payload)
+        except ValueError:
+            return
+        ratio = data.get("ratio", 0.0)
+        shared = data.get("shared", 0)
+        modules = data.get("modules", 0)
+        strongest = data.get("strongest")
+        if strongest and len(strongest) == 3:
+            a, b, cos = strongest[0], strongest[1], float(strongest[2])
+        else:
+            a = b = None
+            cos = ratio - 1.0  # fall back to ratio deviation if no pair
+        mag = abs(cos)
+
+        if mag < self._SAFE_COS:
+            # Near-orthogonal — safe to merge regardless of sign.
+            text = t(
+                "merge_analysis_safe",
+                cos=f"{mag:.3f}",
+                ratio=f"{ratio:.3f}",
+                shared=shared,
+                modules=modules,
+            )
+            sev, bg = "ok", "#0a3d2a"
+        else:
+            strong = mag >= self._STRONG_COS
+            strength = t(
+                "merge_analysis_strong" if strong else "merge_analysis_moderate"
+            )
+            key = "merge_analysis_reinforce" if cos >= 0 else "merge_analysis_cancel"
+            text = t(
+                key,
+                strength=strength,
+                a=a,
+                b=b,
+                cos=f"{cos:+.3f}",
+                ratio=f"{ratio:.3f}",
+                shared=shared,
+                modules=modules,
+            )
+            sev, bg = ("err", "#3d0a0a") if strong else ("warn", "#3d2e0a")
+
+        self.analysis_label.setText(text)
+        self.analysis_label.setStyleSheet(
+            f"padding:8px; border-radius:3px; background:{bg}; color:{tok(sev)};"
+        )
+        self.analysis_label.setVisible(True)
 
     def _read_stderr(self):
         data = self._proc.readAllStandardError().data().decode(errors="replace")
         self._log(data)
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus):
+        # Flush any trailing partial line left in the stdout buffer.
+        if self._stdout_buf:
+            tail, self._stdout_buf = self._stdout_buf, ""
+            if tail.startswith("ANALYZE_RESULT "):
+                self._apply_analysis_marker(tail[len("ANALYZE_RESULT ") :])
+            else:
+                self._log(tail)
         self._log(f"\n{t('finished', code=exit_code)}\n")
         apply_variant(self.merge_btn, "success")
         self.stop_btn.setEnabled(False)
         self.dir_combo.setEnabled(True)
-        self.mode_dit.setEnabled(True)
-        self.mode_loras.setEnabled(True)
+        self.mode_combo.setEnabled(True)
         if self._lora_mode():
             self.merge_btn.setText(t("merge_lora_button"))
             self._on_lora_selection()
