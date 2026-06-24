@@ -727,6 +727,16 @@ def _log_step(
     # is more than sufficient for a responsive UI.  This eliminates a
     # per-step GPU→CPU synchronisation point that stalls the pipeline.
     _unwrapped_net = state.accelerator.unwrap_model(state.network)
+    # Track whether a *real* loss/lr has been observed yet. The caches below
+    # default to 0.0, and ``state.progress_bar.update(1)`` (the refresh that
+    # flushes the postfix to stderr) runs at the TOP of the sync_gradients
+    # block — BEFORE this function — so the first logged step's postfix is
+    # whatever ``set_postfix`` staged on the PREVIOUS step. On step 1 that
+    # staged value is the uninitialized 0.0 default, which the WebUI's stdout
+    # parser then reads as a real ``avr_loss=0, lr=0`` data point and plots as
+    # a zero on the loss/LR curves. Suppressing the fields until a real value
+    # exists keeps the zero off the chart instead of injecting a phantom one.
+    _have_real = getattr(trainer, "_postfix_has_real", False)
     _cached_avr = getattr(trainer, "_last_postfix_avr", 0.0)
     _cached_lr = getattr(trainer, "_last_postfix_lr", 0.0)
     if should_log_step:
@@ -737,9 +747,16 @@ def _log_step(
         lrs = state.lr_scheduler.get_last_lr()
         _cached_lr = lrs[0] if lrs else 0.0
         trainer._last_postfix_lr = _cached_lr
+        trainer._postfix_has_real = True
+        _have_real = True
 
-    # Lightweight tqdm postfix update every step using cached values.
-    logs = {"avr_loss": _cached_avr, "lr": _cached_lr}
+    # Lightweight tqdm postfix update every step using cached values. Until the
+    # first real loss/lr lands, omit the fields entirely (see _have_real note
+    # above) so tqdm never renders a phantom ``avr_loss=0, lr=0``.
+    logs: dict = {}
+    if _have_real:
+        logs["avr_loss"] = _cached_avr
+        logs["lr"] = _cached_lr
     # Refresh router_H only on log cadence — get_router_entropy does a full
     # get_router_stats compute (D2H syncs) wasted on the progress-bar postfix;
     # tqdm shows a harmlessly-stale cached value between log steps.
@@ -758,8 +775,16 @@ def _log_step(
     # log_every_n_steps cadence (typically every 2 steps) is more than fast
     # enough for a responsive UI. When tracking is active the step_logging
     # call below already feeds the sink via dispatch_logs.
+    # NOTE: this branch only fires on log cadence (should_log_step gated), by
+    # which point the caches hold real values — but guard with _have_real
+    # anyway so a future code path can't re-introduce a phantom-zero step event.
     progress_sink = getattr(trainer, "progress_sink", None)
-    if should_log_step and not state.is_tracking and progress_sink is not None:
+    if (
+        should_log_step
+        and _have_real
+        and not state.is_tracking
+        and progress_sink is not None
+    ):
         progress_sink.log(logs, global_step=state.global_step, epoch=epoch + 1)
 
     if state.is_tracking and should_log_step:
