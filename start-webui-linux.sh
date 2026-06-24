@@ -5,7 +5,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 echo "Starting MonadForge WebUI..."
 echo "Access at http://127.0.0.1:8000"
 
-.uv/bin/python -m webui "$@" &
+	uv/bin/python -m webui "$@" &
 WEBUI_PID=$!
 
 sleep 3
