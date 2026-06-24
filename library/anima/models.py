@@ -13,6 +13,7 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 from library.runtime import offloading as custom_offloading_utils
 from library.runtime.device import weighs_to_device
+from library.inference.corrections.mod_guidance_core import project_pooled
 from networks import attention_dispatch
 
 
@@ -1429,14 +1430,23 @@ class Anima(nn.Module):
         without one (the legacy single-delta inference bake) fall back to the
         σ-flat projection.
         """
-        if not self.enable_pooled_text_sigma_film or t_embedding is None:
-            return self.pooled_text_proj(pooled_text)
-        lin_in, act, lin_out = self.pooled_text_proj
-        h = lin_in(pooled_text)
-        t = t_embedding[:, 0, :] if t_embedding.ndim == 3 else t_embedding
-        scale, shift = self.pooled_text_sigma_film(t).chunk(2, dim=-1)
-        h = act(h * (1.0 + scale) + shift)
-        return lin_out(h)
+        lin_in, _act, lin_out = self.pooled_text_proj
+        use_film = self.enable_pooled_text_sigma_film and t_embedding is not None
+        t = None
+        if use_film:
+            t = t_embedding[:, 0, :] if t_embedding.ndim == 3 else t_embedding
+        # Single source of truth for the projection math (shared verbatim with the
+        # ComfyUI node via library/inference/corrections/mod_guidance_core.py).
+        return project_pooled(
+            pooled_text,
+            lin_in.weight,
+            lin_in.bias,
+            lin_out.weight,
+            lin_out.bias,
+            film_w=self.pooled_text_sigma_film.weight if use_film else None,
+            film_b=self.pooled_text_sigma_film.bias if use_film else None,
+            t_emb=t,
+        )
 
     def reset_mod_guidance(self) -> None:
         """Disable modulation guidance by zeroing the runtime buffers."""

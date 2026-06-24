@@ -37,6 +37,7 @@ dims broadcast against the shared ``(H, W)`` gain.
 
 from __future__ import annotations
 
+import math
 from typing import List, Sequence
 
 import torch
@@ -105,6 +106,50 @@ def l1rel(a: torch.Tensor, b: torch.Tensor) -> float:
 # target fraction of refreshes — making the SEA arm a like-for-like swap at
 # matched compute (see proposal §"The δ knob").
 # ---------------------------------------------------------------------------
+
+
+def window_decision_fraction(
+    num_steps: int,
+    warmup_steps: int,
+    stop_at: int,
+    window_size: float,
+    flex_window: float,
+    forced_steps: frozenset = frozenset(),
+) -> float:
+    """Refresh fraction the growing-window schedule spends in the decision region.
+
+    Replays the exact window rule (the Spectrum loop's ``else`` branch + its
+    curr_ws advance) and returns ``actual_decision_steps / decision_steps``. The
+    SEA auto-δ target defaults to *this* so the SEA arm is a like-for-like swap at
+    matched compute for any step count — the hard-coded 0.62 in the proposal was
+    only the 24-step value and over-computes elsewhere (_archive/bench/
+    spectrum_sea/prompt_generalization.py: 0.62 → +22% forwards at 28 steps).
+
+    ``forced_steps`` are step indices forced to an actual forward by an external
+    consumer (FSG-scheduled calibration steps). They are treated exactly like
+    warmup/tail — forced actual, excluded from the decision denominator — so the
+    fraction (and therefore the SEA δ target) is matched against the window
+    baseline *over the same adaptive budget*; FSG's fixed forward cost lands
+    identically on both arms. Default empty reproduces the plain window schedule.
+    """
+    curr_ws = window_size
+    consec = 0
+    actual_dec = 0
+    n_dec = 0
+    for i in range(num_steps):
+        if i < warmup_steps or i >= stop_at or i in forced_steps:
+            actual = True
+        else:
+            actual = (consec + 1) % max(1, math.floor(curr_ws)) == 0
+            n_dec += 1
+            actual_dec += int(actual)
+        if actual:
+            if i >= warmup_steps and i not in forced_steps:
+                curr_ws = round(curr_ws + flex_window, 3)
+            consec = 0
+        else:
+            consec += 1
+    return actual_dec / max(1, n_dec)
 
 
 def count_refreshes(dists: Sequence[float], delta: float) -> int:

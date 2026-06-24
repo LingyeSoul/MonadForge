@@ -457,6 +457,20 @@ SPECTRUM_VERBATIM: list[tuple[str, str]] = [
         "library/inference/corrections/smc_cfg.py",
         "library/inference/corrections/smc_cfg.py",
     ),
+    # Mod-guidance projection (σ-flat / σ-FiLM pooled-text head) + per-block
+    # schedule. The node imports project_pooled / build_block_schedule from here,
+    # replacing its hand-mirrored _project / _project_film / _build_schedule.
+    (
+        "library/inference/corrections/mod_guidance_core.py",
+        "library/inference/corrections/mod_guidance_core.py",
+    ),
+    # Spectrum Chebyshev forecasters (ChebyshevForecaster + SpectrumPredictor) +
+    # the SEA cache-decision metric / auto-δ calibration. Both are pure torch and
+    # were hand-mirrored node-side (forecaster.py + the verbatim-ported SEA math);
+    # the node now imports them and keeps only its ComfyUI seam (disk δ-cache,
+    # model_function_wrapper state machine).
+    ("networks/spectrum_forecast.py", "networks/spectrum_forecast.py"),
+    ("networks/spectrum_sea.py", "networks/spectrum_sea.py"),
     # SPD spectral primitives (DCT helpers + spectral_expand geometry). The node
     # imports these so its SPEED sampler matches the CLI SPD path bit-for-bit.
     ("networks/spd_core.py", "networks/spd_core.py"),

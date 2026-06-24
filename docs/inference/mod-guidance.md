@@ -234,7 +234,7 @@ Mod guidance ships inside the [ComfyUI-Spectrum-KSampler](https://github.com/sor
 
 The `mod_w_profile` dropdown exposes the same two profiles documented above plus `uniform_w3` for reproducing pre-0413 behavior. Default is `step_i8_skip27`; switch to `step_i14` when a LoRA shows anatomy drift.
 
-**`quality_neg` — decoupled steering negative.** The mod delta is `proj(quality_tags) − proj(quality_neg)`. Historically the node reused the **CFG** negative here, which is anti-correlated (cos ≈ −0.38) with the intended quality axis and weaker — the broad CFG negative is a velocity-space repulsion target, not a clean quality counter-pole. `quality_neg` gives the steering axis its own baseline (e.g. `worst quality, score_1`), matching the CLI's long-standing `--mod_pos_prompt` / `--mod_neg_prompt` split. **Empty = reuse the CFG negative** (legacy behavior, bit-for-bit). The CFG negative is unchanged either way. See [`docs/proposal/mod_guidance_decoupled_negative.md`](../proposal/mod_guidance_decoupled_negative.md).
+**`quality_neg` — decoupled steering negative.** The mod delta is `proj(quality_tags) − proj(quality_neg)`. Historically the node reused the **CFG** negative here, which is anti-correlated (cos ≈ −0.38) with the intended quality axis and weaker — the broad CFG negative is a velocity-space repulsion target, not a clean quality counter-pole. `quality_neg` gives the steering axis its own baseline (e.g. `worst quality, score_1`), matching the CLI's long-standing `--mod_pos_prompt` / `--mod_neg_prompt` split. **Empty = reuse the CFG negative** (legacy behavior, bit-for-bit). The CFG negative is unchanged either way.
 
 ## Design rationale
 
