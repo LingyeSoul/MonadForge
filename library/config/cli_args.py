@@ -768,6 +768,17 @@ def add_validation_arguments(parser: argparse.ArgumentParser):
         "on tight VRAM where the PE encoder + sampling path doesn't fit.",
     )
     parser.add_argument(
+        "--validation_fm_with_cmmd",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Also run the per-σ FM-MSE pass alongside a successful CMMD "
+        "validation, logged under separate `loss/validation/fm_*` keys (CMMD "
+        "stays the primary signal / best-ckpt selector). Set "
+        "`validation_fm_with_cmmd = false` (or pass `--no-validation_fm_with_cmmd`) "
+        "to skip the extra DiT forwards when you only want CMMD. No effect when "
+        "`use_cmmd` is off — FM-MSE is already the primary signal then.",
+    )
+    parser.add_argument(
         "--validation_baselines",
         action=argparse.BooleanOptionalAction,
         default=True,
