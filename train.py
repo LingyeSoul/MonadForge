@@ -147,6 +147,34 @@ def _resolve_v100_flash_stability(args) -> str:
     return value
 
 
+def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -> bool:
+    """Return True when V100 fp16 training should keep LoRA rank GEMMs in fp32.
+
+    Explicit ``lora_fp32_compute=...`` from TOML / ``--network_args`` wins. The
+    automatic fallback is intentionally narrow (Volta V100 sm_70 + fp16) so the
+    long-tested bf16 path and other GPUs remain unchanged.
+    """
+    if "lora_fp32_compute" in net_kwargs:
+        return False
+    if getattr(args, "mixed_precision", None) != "fp16":
+        return False
+    if not torch.cuda.is_available():
+        return False
+    device = getattr(accelerator, "device", None)
+    try:
+        if device is not None and getattr(device, "type", None) == "cuda":
+            major, minor = torch.cuda.get_device_capability(device)
+        else:
+            major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        logger.warning(
+            "could not read GPU compute capability; not auto-enabling "
+            "lora_fp32_compute."
+        )
+        return False
+    return (major, minor) == (7, 0)
+
+
 def _resolve_mixed_precision(args) -> None:
     """Back-write ``args.mixed_precision`` for pre-Ampere GPUs in place.
 
@@ -1664,6 +1692,14 @@ class AnimaTrainer:
         # default below stays a factory-call detail, not part of the cached
         # ``args._network_kwargs`` view other consumers read.
         net_kwargs = dict(resolve_network_kwargs(args))
+        if _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs):
+            net_kwargs["lora_fp32_compute"] = "true"
+            logger.warning(
+                "V100/sm_70 fp16 training detected: auto-enabling "
+                "lora_fp32_compute so LoRA rank GEMMs run in fp32 while the "
+                "frozen base remains fp16. Set lora_fp32_compute=false to "
+                "disable for A/B testing."
+            )
 
         if args.dim_from_weights:
             network, _ = network_module.create_network_from_weights(

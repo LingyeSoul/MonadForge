@@ -534,6 +534,7 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     module_dropout=module_dropout,
                     **extra_kwargs,
                 )
+                lora.fp32_compute = bool(cfg.lora_fp32_compute)
                 lora.original_name = original_name
                 loras.append(lora)
 
@@ -879,9 +880,10 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
     def prepare_network(self, args):
         if getattr(args, "lora_fp32_accumulation", False):
             logger.warning(
-                "--lora_fp32_accumulation is deprecated and has no effect; "
-                "fp32 accumulation is now unconditional in LoRA/Hydra "
-                "bottleneck matmuls. Remove the flag from your config."
+                "--lora_fp32_accumulation is deprecated and has no effect. "
+                "LoRA rank GEMMs normally run in the model compute dtype; use "
+                "network_args lora_fp32_compute=true for the V100/fp16 fp32 "
+                "rank-path fallback. Remove the deprecated flag from your config."
             )
 
     def set_multiplier(self, multiplier):

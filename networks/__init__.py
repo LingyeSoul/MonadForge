@@ -89,6 +89,9 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         # Per-channel input pre-scaling, gated by alpha (0.0 off; 0.5 sqrt
         # balance; 1.0 flatten). Calib: networks/calibration/channel_stats.safetensors.
         "channel_scaling_alpha",
+        # FP16/V100 quality fallback: keep LoRA rank GEMMs in fp32 while the
+        # frozen base still runs in the selected mixed-precision dtype.
+        "lora_fp32_compute",
         # DEPRECATED no-op (fp32-bottleneck path removed 2026-06-10); kept so old
         # snapshot TOMLs replay. The factory logs and ignores it.
         "use_custom_down_autograd",

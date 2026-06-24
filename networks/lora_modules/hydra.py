@@ -384,43 +384,48 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
         # (autocast re-casts the GEMM to bf16 anyway). LoRA params are fp32
         # master, so cast x + weights DOWN to the base dtype. Inference keeps
         # fp32. See bench/lora_fp32_bottleneck.
-        comp = org_forwarded.dtype if self.training else torch.float32
-        x_lora = self._rebalance(x.to(comp))
-        lx = torch.nn.functional.linear(x_lora, self.lora_down.weight.to(comp))
-
-        # Gate from rank-R signal pre-mask/dropout — those are training-time
-        # perturbations and the gate must behave identically at inference.
-        gate = self._compute_gate(lx)  # (B, E)
-        if self.training:
-            # Plain STORE_ATTR (NOT @compiler.disable): a disabled helper
-            # forces a graph break per LoRA forward and explodes
-            # saved-for-backward memory under torch.compile (observed
-            # OOM at 56 MoE + 140 OrthoLoRA modules on T4-class budget).
-            self._last_gate = gate
-
-        if self.training:
-            lx = lx * self._timestep_mask
-
-        if self.dropout is not None and self.training:
-            lx = torch.nn.functional.dropout(lx, p=self.dropout)
-
-        lx, scale = self._apply_rank_dropout(lx)
-
-        # Centered-gate parity (single-pool only). The concat gate of a chimera
-        # dual-pool form is not one E-simplex, so centering is gated off there.
-        gate_eff = gate
-        if self._centered_gate and self.num_experts_content == 0:
-            gate_eff = gate - (1.0 / self.num_experts)
-
-        # Gate-weighted up projection: (B, out, r) per batch element.
-        combined = torch.einsum(
-            "be,eod->bod", gate_eff.to(comp), self.lora_up_weight.to(comp)
+        comp = (
+            self._rank_compute_dtype(org_forwarded)
+            if self.training
+            else torch.float32
         )
-        orig_shape = lx.shape
-        B = orig_shape[0]
-        lx_3d = lx.reshape(B, -1, orig_shape[-1]).to(comp)
-        out = torch.bmm(lx_3d, combined.transpose(1, 2))
-        out = out.reshape(*orig_shape[:-1], -1)
+        with self._rank_autocast_context(x, comp):
+            x_lora = self._rebalance(x.to(comp))
+            lx = torch.nn.functional.linear(x_lora, self.lora_down.weight.to(comp))
+
+            # Gate from rank-R signal pre-mask/dropout — those are training-time
+            # perturbations and the gate must behave identically at inference.
+            gate = self._compute_gate(lx)  # (B, E)
+            if self.training:
+                # Plain STORE_ATTR (NOT @compiler.disable): a disabled helper
+                # forces a graph break per LoRA forward and explodes
+                # saved-for-backward memory under torch.compile (observed
+                # OOM at 56 MoE + 140 OrthoLoRA modules on T4-class budget).
+                self._last_gate = gate
+
+            if self.training:
+                lx = lx * self._timestep_mask
+
+            if self.dropout is not None and self.training:
+                lx = torch.nn.functional.dropout(lx, p=self.dropout)
+
+            lx, scale = self._apply_rank_dropout(lx)
+
+            # Centered-gate parity (single-pool only). The concat gate of a chimera
+            # dual-pool form is not one E-simplex, so centering is gated off there.
+            gate_eff = gate
+            if self._centered_gate and self.num_experts_content == 0:
+                gate_eff = gate - (1.0 / self.num_experts)
+
+            # Gate-weighted up projection: (B, out, r) per batch element.
+            combined = torch.einsum(
+                "be,eod->bod", gate_eff.to(comp), self.lora_up_weight.to(comp)
+            )
+            orig_shape = lx.shape
+            B = orig_shape[0]
+            lx_3d = lx.reshape(B, -1, orig_shape[-1]).to(comp)
+            out = torch.bmm(lx_3d, combined.transpose(1, 2))
+            out = out.reshape(*orig_shape[:-1], -1)
 
         return org_forwarded + (out * self.multiplier * scale).to(org_forwarded.dtype)
 

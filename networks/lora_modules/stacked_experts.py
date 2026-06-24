@@ -208,32 +208,33 @@ class StackedExpertsLoRAModule(RouterStateMixin, BaseLoRAModule):
             # ``.float()`` operands materialized a full fp32 activation + weight
             # copies (autocast re-cast the einsum to bf16 anyway) and OOMed. The
             # expert weights are fp32 master, so cast x + weights DOWN here.
-            compute_dtype = org_forwarded.dtype
-            x_lora = self._rebalance(x.to(compute_dtype))
+            compute_dtype = self._rank_compute_dtype(org_forwarded)
+            with self._rank_autocast_context(x, compute_dtype):
+                x_lora = self._rebalance(x.to(compute_dtype))
 
-            # Batched down: (..., in) @ (E, r, in)^T → (..., E, r). Saves ONE
-            # (..., E, r) activation vs E × (..., out) from a per-expert loop.
-            lx = torch.einsum(
-                "...i,eri->...er",
-                x_lora,
-                self.lora_down_weight.to(compute_dtype),
-            )
+                # Batched down: (..., in) @ (E, r, in)^T → (..., E, r). Saves ONE
+                # (..., E, r) activation vs E × (..., out) from a per-expert loop.
+                lx = torch.einsum(
+                    "...i,eri->...er",
+                    x_lora,
+                    self.lora_down_weight.to(compute_dtype),
+                )
 
-            lx = lx * self._timestep_mask
-            if self.dropout is not None and self.training:
-                lx = torch.nn.functional.dropout(lx, p=self.dropout)
+                lx = lx * self._timestep_mask
+                if self.dropout is not None and self.training:
+                    lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-            B = w.shape[0]
-            n_mid = lx.ndim - 3
-            view_shape = (B,) + (1,) * n_mid + (self.num_experts, 1)
-            lx = lx * w.view(view_shape).to(compute_dtype)
+                B = w.shape[0]
+                n_mid = lx.ndim - 3
+                view_shape = (B,) + (1,) * n_mid + (self.num_experts, 1)
+                lx = lx * w.view(view_shape).to(compute_dtype)
 
-            # Batched up: (..., E, r) @ (E, out, r)^T → (..., out).
-            adapter = torch.einsum(
-                "...er,eor->...o",
-                lx.to(compute_dtype),
-                self.lora_up_weight.to(compute_dtype),
-            )
+                # Batched up: (..., E, r) @ (E, out, r)^T → (..., out).
+                adapter = torch.einsum(
+                    "...er,eor->...o",
+                    lx.to(compute_dtype),
+                    self.lora_up_weight.to(compute_dtype),
+                )
 
         lora_out = adapter * self.multiplier * self.scale
         return org_forwarded + lora_out.to(org_forwarded.dtype)

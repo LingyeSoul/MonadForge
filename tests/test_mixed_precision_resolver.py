@@ -30,6 +30,10 @@ def _fake_args(mp="bf16"):
     return types.SimpleNamespace(mixed_precision=mp)
 
 
+def _fake_accelerator(device="cuda:0"):
+    return types.SimpleNamespace(device=device)
+
+
 def _patch_cuda(monkeypatch, available=True, capability=(8, 0)):
     monkeypatch.setattr("torch.cuda.is_available", lambda: available)
     if available:
@@ -104,3 +108,34 @@ def test_no_mixed_precision_attr_is_safe(train_mod, monkeypatch):
     args = types.SimpleNamespace()  # no mixed_precision attribute
     train_mod._resolve_mixed_precision(args)  # must not raise
     assert not hasattr(args, "mixed_precision")
+
+
+def test_auto_lora_fp32_compute_on_v100_fp16(train_mod, monkeypatch):
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    args = _fake_args("fp16")
+    assert train_mod._should_auto_enable_lora_fp32_compute(
+        args, _fake_accelerator(), {}
+    )
+
+
+def test_auto_lora_fp32_compute_respects_explicit_false(train_mod, monkeypatch):
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    args = _fake_args("fp16")
+    assert not train_mod._should_auto_enable_lora_fp32_compute(
+        args, _fake_accelerator(), {"lora_fp32_compute": "false"}
+    )
+
+
+def test_auto_lora_fp32_compute_only_v100_fp16(train_mod, monkeypatch):
+    _patch_cuda(monkeypatch, capability=(8, 0))
+    assert not train_mod._should_auto_enable_lora_fp32_compute(
+        _fake_args("fp16"), _fake_accelerator(), {}
+    )
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    assert not train_mod._should_auto_enable_lora_fp32_compute(
+        _fake_args("bf16"), _fake_accelerator(), {}
+    )
+    _patch_cuda(monkeypatch, available=False)
+    assert not train_mod._should_auto_enable_lora_fp32_compute(
+        _fake_args("fp16"), _fake_accelerator("cpu"), {}
+    )

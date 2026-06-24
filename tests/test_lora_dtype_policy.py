@@ -353,6 +353,74 @@ def test_hydra_fp32_activation_no_upcast():
     _fp32_activation_no_upcast(make)
 
 
+def test_lora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
+    from networks.lora_modules.lora import LoRAModule
+
+    cs = _make_channel_scale(32)
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.float16)
+    base.weight.requires_grad_(False)
+    module = LoRAModule("m", base, multiplier=1.0, lora_dim=4, alpha=4, channel_scale=cs)
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+
+    # Avoid relying on CPU fp16 Linear support for the frozen base; the test is
+    # about the LoRA rank path after ``org_forwarded.dtype`` is known.
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.float16
+    )
+
+    seen = {"down": False, "up": False}
+
+    def down(x_lora, work):
+        seen["down"] = True
+        assert work == torch.float32
+        assert x_lora.dtype == torch.float32  # channel-scale rebalance stayed fp32
+        return torch.ones((*x_lora.shape[:-1], 4), device=x_lora.device, dtype=work)
+
+    def up(lx, work):
+        seen["up"] = True
+        assert work == torch.float32
+        assert lx.dtype == torch.float32
+        return torch.ones((*lx.shape[:-1], 24), device=lx.device, dtype=work)
+
+    module._down = down
+    module._up = up
+
+    x = torch.randn(2, 8, 32, dtype=torch.float16)
+    y = module.forward(x)
+    assert seen == {"down": True, "up": True}
+    assert y.dtype == torch.float16
+
+
+def test_lora_fp32_compute_is_inert_on_bf16_base():
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
+    module = LoRAModule("m", base, multiplier=1.0, lora_dim=4, alpha=4)
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.bfloat16
+    )
+
+    def down(x_lora, work):
+        assert work == torch.bfloat16
+        assert x_lora.dtype == torch.bfloat16
+        return torch.ones((*x_lora.shape[:-1], 4), device=x_lora.device, dtype=work)
+
+    def up(lx, work):
+        assert work == torch.bfloat16
+        return torch.ones((*lx.shape[:-1], 24), device=lx.device, dtype=work)
+
+    module._down = down
+    module._up = up
+
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float32))
+    assert y.dtype == torch.bfloat16
+
+
 def test_hydra_inference_keeps_fp32_compute():
     """The rewrite is training-only: at eval the hydra forward still computes
     in fp32 (router-live checkpoints run through the no-autocast inference

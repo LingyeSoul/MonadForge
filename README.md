@@ -332,7 +332,7 @@ WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆�
 | ML 框架 | PyTorch 2.12, Transformers, Diffusers, Flash Attention 2 |
 | 字体 | JetBrains Mono, Roboto |
 
-> **V100 注意事项**：Tesla V100 / SM 7.0 需要单独的兼容 PyTorch/CUDA 环境（例如 `.venv-v100` + `torch==2.10.0+cu129`）。生产训练请使用 `attn_mode="torch"`，`torch_compile=true` 可以正常启用，配合 `gradient_checkpointing=true`。实测 `flash-attention-v100` 在 Anima fp16 DiT self-attention 首步产生 NaN，`v100_flash_stability="hybrid"` 也无法规避；相关开关仅用于诊断。详见 `bench/v100_flash/README.md`。
+> **V100 注意事项**：Tesla V100 / SM 7.0 需要单独的兼容 PyTorch/CUDA 环境（例如 `.venv-v100` + `torch==2.10.0+cu129`）。生产训练请使用 `attn_mode="torch"`，`torch_compile=true` 可以正常启用，配合 `gradient_checkpointing=true`。V100 上默认 bf16 会自动切换为 fp16；训练器会在 V100+fp16 时自动启用 `lora_fp32_compute`，让 LoRA rank 分支保持 fp32 计算以降低偏色/语义退化风险（可用 `network_args = ["lora_fp32_compute=false"]` 做 A/B）。实测 `flash-attention-v100` 在 Anima fp16 DiT self-attention 首步产生 NaN，`v100_flash_stability="hybrid"` 也无法规避；相关开关仅用于诊断。详见 `bench/v100_flash/README.md`。
 
 ---
 

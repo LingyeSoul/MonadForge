@@ -2,6 +2,7 @@
 #   https://github.com/microsoft/LoRA/blob/main/loralib/layers.py
 #   https://github.com/cloneofsimo/lora/blob/master/lora_diffusion/lora.py
 
+import contextlib
 import random
 
 import torch
@@ -70,6 +71,10 @@ class BaseLoRAModule(torch.nn.Module):
         self.dropout = dropout
         self.rank_dropout = rank_dropout
         self.module_dropout = module_dropout
+        # Runtime knob set by LoRANetwork after construction. Keeps constructor
+        # signatures stable across LoRA variants while letting V100/fp16 training
+        # preserve LoRA rank-path signal in fp32.
+        self.fp32_compute = False
 
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -139,6 +144,25 @@ class BaseLoRAModule(torch.nn.Module):
             return lx, self.scale * (1.0 / (1.0 - self.rank_dropout))
         return lx, self.scale
 
+    def _rank_compute_dtype(
+        self, org_forwarded: torch.Tensor, default_dtype: torch.dtype | None = None
+    ) -> torch.dtype:
+        """Return the LoRA rank-path compute dtype for the current forward.
+
+        Default remains the frozen base's compute dtype. The opt-in fp32 path is
+        intentionally narrow: training only, and only when the base produced fp16.
+        BF16/Ampere users keep the long-tested bf16 LoRA behavior unchanged.
+        """
+        base_dtype = default_dtype or org_forwarded.dtype
+        if self.training and self.fp32_compute and org_forwarded.dtype == torch.float16:
+            return torch.float32
+        return base_dtype
+
+    def _rank_autocast_context(self, x: torch.Tensor, work: torch.dtype):
+        if work == torch.float32 and self.training and self.fp32_compute:
+            return torch.autocast(device_type=x.device.type, enabled=False)
+        return contextlib.nullcontext()
+
     # Forward scaffold (template method). The invariant chain — enable/fuse
     # short-circuit, eval delegation, module dropout, dtype policy, T-LoRA
     # gate, dropout / rank-dropout, residual add — lives here ONCE; the
@@ -166,25 +190,25 @@ class BaseLoRAModule(torch.nn.Module):
         if self._skip_module():
             return org_forwarded
 
-        # THE dtype policy, stated once. Rank GEMMs run in the model COMPUTE
-        # dtype (``org_forwarded.dtype`` — what the frozen bf16 base just
+        # THE dtype policy, stated once. By default rank GEMMs run in the model
+        # COMPUTE dtype (``org_forwarded.dtype`` — what the frozen base just
         # produced = the autocast/model dtype), NOT the activation dtype: ``x``
         # arrives fp32 from the AdaLN ``nn.LayerNorm`` under autocast(bf16).
         # Keying off ``x`` left the rank path fp32 and made ``_rebalance``
         # allocate a full fp32 activation (``x * inv_scale``) — the OOM the
-        # per-channel-scaling path hit — for zero numeric gain (autocast
-        # re-casts the GEMM to bf16 regardless). LoRA params are fp32 masters,
-        # so cast x + weights DOWN to the base dtype; bit-identical to the
-        # retired fp32-bottleneck path under autocast (bench/lora_fp32_bottleneck,
-        # tests/test_lora_dtype_policy.py). Single-point home of commit 8c2005c.
-        work = org_forwarded.dtype
-        x_lora = self._rebalance(x.to(work))
-        lx = self._down(x_lora, work)
-        lx = self._gate(lx, work)
-        if self.dropout is not None:
-            lx = torch.nn.functional.dropout(lx, p=self.dropout)
-        lx, scale = self._apply_rank_dropout(lx)
-        lx = self._up(lx.to(work), work)
+        # per-channel-scaling path hit — for zero numeric gain on bf16 (autocast
+        # re-casts the GEMM to bf16 regardless). V100/fp16 is the exception: the
+        # optional fp32_compute flag disables autocast around the tiny rank path
+        # so LoRA updates do not lose signal to fp16 underflow/rounding.
+        work = self._rank_compute_dtype(org_forwarded)
+        with self._rank_autocast_context(x, work):
+            x_lora = self._rebalance(x.to(work))
+            lx = self._down(x_lora, work)
+            lx = self._gate(lx, work)
+            if self.dropout is not None:
+                lx = torch.nn.functional.dropout(lx, p=self.dropout)
+            lx, scale = self._apply_rank_dropout(lx)
+            lx = self._up(lx.to(work), work)
         return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:

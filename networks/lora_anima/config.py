@@ -366,6 +366,11 @@ class LoRANetworkCfg:
     # 0/1 = inactive. See ``networks/lora_modules/step_expert.py``.
     step_expert_K: int = 0
 
+    # FP16/V100 quality fallback: run LoRA rank GEMMs in fp32 while leaving the
+    # frozen base in the selected mixed-precision dtype. Auto-enabled by train.py
+    # for V100+fp16 unless explicitly set.
+    lora_fp32_compute: bool = False
+
     # SmoothQuant-style per-channel input pre-scaling
     channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None
 
@@ -681,6 +686,8 @@ class LoRANetworkCfg:
         step_expert_K_raw = kwargs.get("step_expert_K")
         step_expert_K = int(step_expert_K_raw) if step_expert_K_raw is not None else 0
 
+        lora_fp32_compute = _as_bool(kwargs.get("lora_fp32_compute"))
+
         reg_dims_str = kwargs.get("network_reg_dims")
         reg_dims = _parse_kv_pairs(reg_dims_str, is_int=True) if reg_dims_str else None
         reg_lrs_str = kwargs.get("network_reg_lrs")
@@ -744,10 +751,12 @@ class LoRANetworkCfg:
             content_router_init_std=content_router_init_std,
             chimera_lambda_init=chimera_lambda_init,
             chimera_expert_basis_mult=chimera_expert_basis_mult,
-            chimera_expert_diag=chimera_expert_diag,
-            step_expert_K=step_expert_K,
-            channel_scales_dict=channel_scales_dict,
-            verbose=verbose,
+                chimera_expert_diag=chimera_expert_diag,
+                step_expert_K=step_expert_K,
+                lora_fp32_compute=lora_fp32_compute,
+                channel_scales_dict=channel_scales_dict,
+                verbose=verbose,
+
         )
 
     @classmethod
