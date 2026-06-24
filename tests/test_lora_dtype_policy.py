@@ -359,7 +359,9 @@ def test_lora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
     cs = _make_channel_scale(32)
     base = torch.nn.Linear(32, 24, bias=False).to(torch.float16)
     base.weight.requires_grad_(False)
-    module = LoRAModule("m", base, multiplier=1.0, lora_dim=4, alpha=4, channel_scale=cs)
+    module = LoRAModule(
+        "m", base, multiplier=1.0, lora_dim=4, alpha=4, channel_scale=cs
+    )
     module.apply_to()
     module.train()
     module.fp32_compute = True
@@ -720,3 +722,273 @@ def test_chimera_ortho_init_distill_roundtrip_unscaled():
 
 def test_chimera_ortho_init_distill_roundtrip_scaled():
     _ortho_init_distill_roundtrip(channel_scale=_make_channel_scale(32))
+
+
+# ---------------------------------------------------------------------------
+# fp32_compute flag coverage for the ortho / Cayley / chimera forward paths
+# that override forward() independently (the gap commit fea3433 fixed for
+# OrthoInitLoRAModule in 2026-06-10 — same pattern).
+# ---------------------------------------------------------------------------
+
+
+def test_ortholora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
+    from networks.lora_modules.ortho import OrthoLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.float16)
+    base.weight.requires_grad_(False)
+    module = OrthoLoRAModule("m", base, multiplier=1.0, lora_dim=2, alpha=2)
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.float16
+    )
+
+    seen = {"forward": False}
+
+    orig = module.forward
+    module.forward = lambda x: _capture_rank_dtype(x, module, seen, orig)
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
+    assert seen["forward"]
+    assert seen.get("work") == torch.float32, f"expected fp32, got {seen.get('work')}"
+    assert y.dtype == torch.float16
+
+
+def _capture_rank_dtype(x, module, seen, orig):
+    """Inject a dtype probe via a patched ortho forward rather than
+    monkey-patching every internal GEMM inside the Cayley chain."""
+    # Patch _rank_compute_dtype to capture what it returns.
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        seen["forward"] = True
+        seen["work"] = work
+        return work
+
+    module._rank_compute_dtype = probe
+    try:
+        return orig(x)
+    finally:
+        module._rank_compute_dtype = _rcd
+
+
+def test_ortholora_fp32_compute_is_inert_on_bf16_base():
+    from networks.lora_modules.ortho import OrthoLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
+    module = OrthoLoRAModule("m", base, multiplier=1.0, lora_dim=2, alpha=2)
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.bfloat16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        assert work == torch.bfloat16, f"bf16 base should stay bf16, got {work}"
+        return work
+
+    module._rank_compute_dtype = probe
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float32))
+    assert y.dtype == torch.bfloat16
+
+
+def test_orthohydra_fp32_compute_uses_fp32_rank_path_on_fp16_base():
+    from networks.lora_modules.ortho import OrthoHydraLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.float16)
+    base.weight.requires_grad_(False)
+    module = OrthoHydraLoRAModule(
+        "m", base, multiplier=1.0, lora_dim=2, alpha=2, num_experts=2
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.float16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        assert work == torch.float32, (
+            f"fp16 base + fp32_compute: expected fp32, got {work}"
+        )
+        return work
+
+    module._rank_compute_dtype = probe
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
+    assert y.dtype == torch.float16
+
+
+def test_orthohydra_fp32_compute_is_inert_on_bf16_base():
+    from networks.lora_modules.ortho import OrthoHydraLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
+    module = OrthoHydraLoRAModule(
+        "m", base, multiplier=1.0, lora_dim=2, alpha=2, num_experts=2
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.bfloat16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        assert work == torch.bfloat16, f"bf16 base should stay bf16, got {work}"
+        return work
+
+    module._rank_compute_dtype = probe
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float32))
+    assert y.dtype == torch.bfloat16
+
+
+def test_chimera_cayley_fp32_compute_uses_fp32_rank_path_on_fp16_base():
+    from networks.lora_modules.chimera import ChimeraHydraLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.float16)
+    base.weight.requires_grad_(False)
+    module = ChimeraHydraLoRAModule(
+        "m",
+        base,
+        multiplier=1.0,
+        lora_dim=2,
+        alpha=2,
+        num_experts_content=1,
+        num_experts_freq=1,
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.float16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        assert work == torch.float32, (
+            f"fp16 base + fp32_compute: expected fp32, got {work}"
+        )
+        return work
+
+    module._rank_compute_dtype = probe
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
+    assert y.dtype == torch.float16
+
+
+def test_chimera_cayley_fp32_compute_is_inert_on_bf16_base():
+    from networks.lora_modules.chimera import ChimeraHydraLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
+    module = ChimeraHydraLoRAModule(
+        "m",
+        base,
+        multiplier=1.0,
+        lora_dim=2,
+        alpha=2,
+        num_experts_content=1,
+        num_experts_freq=1,
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.bfloat16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        assert work == torch.bfloat16, f"bf16 base should stay bf16, got {work}"
+        return work
+
+    module._rank_compute_dtype = probe
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float32))
+    assert y.dtype == torch.bfloat16
+
+
+def test_stacked_experts_ortho_fp32_compute_uses_fp32_rank_path_on_fp16_base():
+    from networks.lora_modules.stacked_experts import StackedExpertsLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.float16)
+    base.weight.requires_grad_(False)
+    module = StackedExpertsLoRAModule(
+        "m",
+        base,
+        multiplier=1.0,
+        lora_dim=2,
+        alpha=2,
+        num_experts=2,
+        ortho=True,
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.float16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        assert work == torch.float32, (
+            f"fp16 base + fp32_compute: expected fp32, got {work}"
+        )
+        return work
+
+    module._rank_compute_dtype = probe
+    # Set routing weights so the forward doesn't crash on missing router output.
+    module._routing_weights = torch.full((2, 2), 0.5)
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
+    assert y.dtype == torch.float16
+
+
+def test_stacked_experts_ortho_fp32_compute_is_inert_on_bf16_base():
+    """StackedExperts ortho uses fp32 P_basis (frozen-basis Parameter), so the
+    rank path's floor dtype is already fp32 even on a bf16 DiT. fp32_compute
+    doesn't change that — it's already running in fp32. Verify the flag is
+    safe: no error, output dtype matches base."""
+    from networks.lora_modules.stacked_experts import StackedExpertsLoRAModule
+
+    base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
+    module = StackedExpertsLoRAModule(
+        "m",
+        base,
+        multiplier=1.0,
+        lora_dim=2,
+        alpha=2,
+        num_experts=2,
+        ortho=True,
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.zeros(
+        (*x.shape[:-1], 24), device=x.device, dtype=torch.bfloat16
+    )
+
+    _rcd = module._rank_compute_dtype
+
+    def probe(org_fwd, default_dtype=None):
+        work = _rcd(org_fwd, default_dtype)
+        # P_basis is fp32, so floor dtype is already fp32 for this ortho variant.
+        assert work == torch.float32, f"ortho P_basis floor should be fp32, got {work}"
+        return work
+
+    module._rank_compute_dtype = probe
+    module._routing_weights = torch.full((2, 2), 0.5)
+    y = module.forward(torch.randn(2, 8, 32, dtype=torch.float32))
+    assert y.dtype == torch.bfloat16

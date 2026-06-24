@@ -112,32 +112,33 @@ class OrthoLoRAModule(BaseLoRAModule):
         if self._skip_module():
             return org_forwarded
 
-        work = self.P_basis.dtype  # bf16 — bases live here, chain follows
+        work = self._rank_compute_dtype(org_forwarded, default_dtype=self.P_basis.dtype)
 
-        # Stack S_q + S_p into one (2, r, r) solve — halves LU/TRSM launches.
-        # Cayley island stays fp32; we cast R only at the boundary into the
-        # basis matmuls so orthogonality is preserved while downstream
-        # activations stay bf16.
-        skew = torch.stack([self.S_q, self.S_p])
-        A = skew - skew.transpose(-2, -1)
-        R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
-        R_q = R[0].to(work)
-        R_p = R[1].to(work)
-        Q_eff = R_q @ self.Q_basis  # bf16
+        with self._rank_autocast_context(x, work):
+            # Stack S_q + S_p into one (2, r, r) solve — halves LU/TRSM launches.
+            # Cayley island stays fp32; we cast R only at the boundary into the
+            # basis matmuls so orthogonality is preserved while downstream
+            # activations stay bf16.
+            skew = torch.stack([self.S_q, self.S_p])
+            A = skew - skew.transpose(-2, -1)
+            R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
+            R_q = R[0].to(work)
+            R_p = R[1].to(work)
+            Q_eff = R_q @ self.Q_basis.to(work)  # bf16
 
-        x_lora = self._rebalance(x.to(work))
-        lx = torch.nn.functional.linear(x_lora, Q_eff)
-        # λ stays a fp32 Parameter (Adam state precision); cast at multiply
-        # so the chain remains bf16. Same for the timestep mask buffer.
-        lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
+            x_lora = self._rebalance(x.to(work))
+            lx = torch.nn.functional.linear(x_lora, Q_eff)
+            # λ stays a fp32 Parameter (Adam state precision); cast at multiply
+            # so the chain remains bf16. Same for the timestep mask buffer.
+            lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
 
-        if self.dropout is not None and self.training:
-            lx = torch.nn.functional.dropout(lx, p=self.dropout)
+            if self.dropout is not None and self.training:
+                lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-        lx, scale = self._apply_rank_dropout(lx)
+            lx, scale = self._apply_rank_dropout(lx)
 
-        P_eff = self.P_basis @ R_p  # bf16
-        out = torch.nn.functional.linear(lx, P_eff)
+            P_eff = self.P_basis.to(work) @ R_p  # bf16
+            out = torch.nn.functional.linear(lx, P_eff)
 
         lora_out = out * self.multiplier * scale
         return org_forwarded + lora_out.to(org_forwarded.dtype)
@@ -569,53 +570,54 @@ class OrthoHydraLoRAModule(RouterStateMixin, BaseLoRAModule):
         if self._skip_module():
             return org_forwarded
 
-        work = self.P_bases.dtype  # bf16 — bases + downstream activations
+        work = self._rank_compute_dtype(org_forwarded, default_dtype=self.P_bases.dtype)
 
-        # Stack S_q with S_p into one (E+1, r, r) solve — single LU+TRSM
-        # launch covers shared Q rotation and all per-expert P rotations.
-        # Cayley solve stays fp32; boundary cast feeds R into the basis matmuls.
-        skew = torch.cat([self.S_q.unsqueeze(0), self.S_p], dim=0)
-        A = skew - skew.transpose(-2, -1)
-        R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
-        R_q = R[0].to(work)
-        R_p = R[1:].to(work)
-        Q_eff = R_q @ self.Q_basis  # bf16
+        with self._rank_autocast_context(x, work):
+            # Stack S_q with S_p into one (E+1, r, r) solve — single LU+TRSM
+            # launch covers shared Q rotation and all per-expert P rotations.
+            # Cayley solve stays fp32; boundary cast feeds R into the basis matmuls.
+            skew = torch.cat([self.S_q.unsqueeze(0), self.S_p], dim=0)
+            A = skew - skew.transpose(-2, -1)
+            R = torch.linalg.solve(self._eye_r + A, self._eye_r - A)
+            R_q = R[0].to(work)
+            R_p = R[1:].to(work)
+            Q_eff = R_q @ self.Q_basis.to(work)  # bf16
 
-        x_lora = self._rebalance(x.to(work))
-        lx = torch.nn.functional.linear(x_lora, Q_eff)
+            x_lora = self._rebalance(x.to(work))
+            lx = torch.nn.functional.linear(x_lora, Q_eff)
 
-        # Pool pre-λ (zero-init λ would zero the router input at step 0).
-        gate = self._compute_gate(lx)  # (B, E) — fp32 from the router
-        if self.training:
-            # Plain STORE_ATTR — see HydraLoRAModule.forward. Keep native
-            # dtype here so the balance loss reads the router-native gate.
-            self._last_gate = gate
+            # Pool pre-λ (zero-init λ would zero the router input at step 0).
+            gate = self._compute_gate(lx)  # (B, E) — fp32 from the router
+            if self.training:
+                # Plain STORE_ATTR — see HydraLoRAModule.forward. Keep native
+                # dtype here so the balance loss reads the router-native gate.
+                self._last_gate = gate
 
-        lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
+            lx = lx * self.lambda_layer.to(work) * self._timestep_mask.to(work)
 
-        if self.dropout is not None and self.training:
-            lx = torch.nn.functional.dropout(lx, p=self.dropout)
+            if self.dropout is not None and self.training:
+                lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-        lx, scale = self._apply_rank_dropout(lx)
+            lx, scale = self._apply_rank_dropout(lx)
 
-        P_eff = self.P_bases @ R_p  # (E, out, r) bf16
-        # Centered-gate residual: (g_e - 1/E). With a uniform (zero-init)
-        # router this is exactly 0 at init → ΔW=0 (base preserved), while
-        # ∂Δy/∂a_k ∝ (P_k - P̄)·diag(λ0)·ℓ ≠ 0 → router gradient at step 0.
-        # _last_gate stays the raw softmax so the balance loss still reads a
-        # proper distribution.
-        gate_eff = gate
-        if self._centered_gate:
-            gate_eff = gate - (1.0 / self.num_experts)
-        # Cast gate at the einsum boundary so bf16 × fp32 doesn't promote
-        # P_combined back to fp32 and inflate the saved activation.
-        P_combined = torch.einsum("be,eor->bor", gate_eff.to(work), P_eff)
+            P_eff = self.P_bases.to(work) @ R_p  # (E, out, r) bf16
+            # Centered-gate residual: (g_e - 1/E). With a uniform (zero-init)
+            # router this is exactly 0 at init → ΔW=0 (base preserved), while
+            # ∂Δy/∂a_k ∝ (P_k - P̄)·diag(λ0)·ℓ ≠ 0 → router gradient at step 0.
+            # _last_gate stays the raw softmax so the balance loss still reads a
+            # proper distribution.
+            gate_eff = gate
+            if self._centered_gate:
+                gate_eff = gate - (1.0 / self.num_experts)
+            # Cast gate at the einsum boundary so bf16 × fp32 doesn't promote
+            # P_combined back to fp32 and inflate the saved activation.
+            P_combined = torch.einsum("be,eor->bor", gate_eff.to(work), P_eff)
 
-        orig_shape = lx.shape
-        B = orig_shape[0]
-        lx_3d = lx.reshape(B, -1, orig_shape[-1])
-        out = torch.bmm(lx_3d, P_combined.transpose(1, 2))
-        out = out.reshape(*orig_shape[:-1], -1)
+            orig_shape = lx.shape
+            B = orig_shape[0]
+            lx_3d = lx.reshape(B, -1, orig_shape[-1])
+            out = torch.bmm(lx_3d, P_combined.transpose(1, 2))
+            out = out.reshape(*orig_shape[:-1], -1)
 
         lora_out = out * self.multiplier * scale
         return org_forwarded + lora_out.to(org_forwarded.dtype)

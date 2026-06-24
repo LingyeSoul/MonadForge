@@ -464,8 +464,8 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             R_p_c = R[2 : 2 + K_c].to(work)
             R_p_f = R[2 + K_c : 2 + K_c + K_f].to(work)
 
-            Q_eff_c = R_q_c @ self.Q_basis_c  # (r, in)
-            Q_eff_f = R_q_f @ self.Q_basis_f  # (r, in)
+            Q_eff_c = R_q_c @ self.Q_basis_c.to(work)  # (r, in)
+            Q_eff_f = R_q_f @ self.Q_basis_f.to(work)  # (r, in)
         else:
             # Over-complete (M>r): the A's rotate at size r, the B-pools at
             # size M, so they can't share one solve. Two batched LU+TRSM calls.
@@ -483,8 +483,8 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             R_p_c = R_p[:K_c].to(work)  # (K_c, M, M)
             R_p_f = R_p[K_c : K_c + K_f].to(work)
 
-            Q_eff_c = R_q_c @ self.Q_basis_c  # (r, in)
-            Q_eff_f = R_q_f @ self.Q_basis_f  # (r, in)
+            Q_eff_c = R_q_c @ self.Q_basis_c.to(work)  # (r, in)
+            Q_eff_f = R_q_f @ self.Q_basis_f.to(work)  # (r, in)
 
         # Single rank-cat down-projection for both pools. The two pools share
         # the same input ``x`` but have distinct ``Q_eff``; running them as
@@ -503,71 +503,74 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
         # activation (``inv_scale``) to fp32 and OOMed; autocast re-casts the
         # GEMM to bf16 regardless. Bit-identical to the retired fp32-bottleneck
         # path under autocast (see bench/lora_fp32_bottleneck); OrthoInit still
-        # gets its intended fp32 bottleneck via ``work``.
-        comp = work
-        Q_eff_cat = torch.cat([Q_eff_c, Q_eff_f], dim=0)  # (2r, in)
-        x_lora = self._rebalance(x.to(comp))
-        lx_down_cat = torch.nn.functional.linear(x_lora, Q_eff_cat.to(comp))
-        lx_c = lx_down_cat[..., :r]
-        lx_f = lx_down_cat[..., r:]
+        # gets its intended fp32 bottleneck via ``work``. The V100/fp16 fallback
+        # forces fp32 compute through ``_rank_compute_dtype`` when needed, with
+        # autocast disabled so the fp32 GEMMs actually execute in fp32.
+        comp = self._rank_compute_dtype(org_forwarded, default_dtype=work)
+        with self._rank_autocast_context(x, comp):
+            Q_eff_cat = torch.cat([Q_eff_c, Q_eff_f], dim=0)  # (2r, in)
+            x_lora = self._rebalance(x.to(comp))
+            lx_down_cat = torch.nn.functional.linear(x_lora, Q_eff_cat.to(comp))
+            lx_c = lx_down_cat[..., :r]
+            lx_f = lx_down_cat[..., r:]
 
-        # Content gate: broadcast π_c from the network-level ContentRouter
-        # (slot-assigned with grad_fn intact). Cache the RAW (uncentered)
-        # simplex for the per-pool balance loss BEFORE recentering.
-        pi_c = self._content_gate_raw(lx_c.shape[0])  # (B, K_c) fp32
-        if self.training:
-            # Plain STORE_ATTR — see HydraLoRAModule.forward for the rationale;
-            # @compiler.disable would force a graph break and explode
-            # saved-for-backward memory under torch.compile.
-            self._last_gate = self._full_gate(pi_c)
-        pi_c = self._center(pi_c, K_c)
+            # Content gate: broadcast π_c from the network-level ContentRouter
+            # (slot-assigned with grad_fn intact). Cache the RAW (uncentered)
+            # simplex for the per-pool balance loss BEFORE recentering.
+            pi_c = self._content_gate_raw(lx_c.shape[0])  # (B, K_c) fp32
+            if self.training:
+                # Plain STORE_ATTR — see HydraLoRAModule.forward for the rationale;
+                # @compiler.disable would force a graph break and explode
+                # saved-for-backward memory under torch.compile.
+                self._last_gate = self._full_gate(pi_c)
+            pi_c = self._center(pi_c, K_c)
 
-        # λ application + T-LoRA mask (content only). Freq branch keeps
-        # full rank at every t — by construction the freq pool's job is
-        # coarse-stage / high-σ refinement which T-LoRA's argument says
-        # WANTS the full rank (TimeStep Master-style asymmetric mixture).
-        lx_c = lx_c * self.lambda_c.to(work) * self._timestep_mask.to(work)
-        lx_f = lx_f * self.lambda_f.to(work)
+            # λ application + T-LoRA mask (content only). Freq branch keeps
+            # full rank at every t — by construction the freq pool's job is
+            # coarse-stage / high-σ refinement which T-LoRA's argument says
+            # WANTS the full rank (TimeStep Master-style asymmetric mixture).
+            lx_c = lx_c * self.lambda_c.to(work) * self._timestep_mask.to(work)
+            lx_f = lx_f * self.lambda_f.to(work)
 
-        if self.dropout is not None and self.training:
-            lx_c = torch.nn.functional.dropout(lx_c, p=self.dropout)
-            lx_f = torch.nn.functional.dropout(lx_f, p=self.dropout)
+            if self.dropout is not None and self.training:
+                lx_c = torch.nn.functional.dropout(lx_c, p=self.dropout)
+                lx_f = torch.nn.functional.dropout(lx_f, p=self.dropout)
 
-        lx_c, scale_c = self._apply_rank_dropout(lx_c)
-        lx_f, scale_f = self._apply_rank_dropout(lx_f)
+            lx_c, scale_c = self._apply_rank_dropout(lx_c)
+            lx_f, scale_f = self._apply_rank_dropout(lx_f)
 
-        # Per-pool gate-weighted P_combined; one bmm per pool over the
-        # B/L axis. Cast π at the einsum boundary so bf16 × fp32 doesn't
-        # promote P_combined back to fp32 (would inflate saved activation).
-        if self.use_ortho_init:
-            P_eff_c = self.P_bases_c  # (K_c, out, r)
-            P_eff_f = self.P_bases_f  # (K_f, out, r)
-        else:
-            P_eff_c = self.P_bases_c @ R_p_c  # (K_c, out, M)
-            P_eff_f = self.P_bases_f @ R_p_f  # (K_f, out, M)
-            if self._M != r:
-                # Stiefel(M, r) select: the first r columns of the rotated
-                # over-complete pool. Orthonormal r-dim colspace ⊆ the
-                # expert's private m·r slice — trainable subspace, still
-                # disjoint across experts.
-                P_eff_c = P_eff_c[..., :r]  # (K_c, out, r)
-                P_eff_f = P_eff_f[..., :r]  # (K_f, out, r)
+            # Per-pool gate-weighted P_combined; one bmm per pool over the
+            # B/L axis. Cast π at the einsum boundary so bf16 × fp32 doesn't
+            # promote P_combined back to fp32 (would inflate saved activation).
+            if self.use_ortho_init:
+                P_eff_c = self.P_bases_c  # (K_c, out, r)
+                P_eff_f = self.P_bases_f  # (K_f, out, r)
+            else:
+                P_eff_c = self.P_bases_c.to(work) @ R_p_c  # (K_c, out, M)
+                P_eff_f = self.P_bases_f.to(work) @ R_p_f  # (K_f, out, M)
+                if self._M != r:
+                    # Stiefel(M, r) select: the first r columns of the rotated
+                    # over-complete pool. Orthonormal r-dim colspace ⊆ the
+                    # expert's private m·r slice — trainable subspace, still
+                    # disjoint across experts.
+                    P_eff_c = P_eff_c[..., :r]  # (K_c, out, r)
+                    P_eff_f = P_eff_f[..., :r]  # (K_f, out, r)
 
-        if self._expert_diag:
-            # Per-expert learnable singular spectrum (the magnitude DOF the
-            # orthogonal-only frozen path lacks). Scales each expert's r cols.
-            P_eff_c = P_eff_c * self.sigma_c.to(P_eff_c.dtype).unsqueeze(1)
-            P_eff_f = P_eff_f * self.sigma_f.to(P_eff_f.dtype).unsqueeze(1)
+            if self._expert_diag:
+                # Per-expert learnable singular spectrum (the magnitude DOF the
+                # orthogonal-only frozen path lacks). Scales each expert's r cols.
+                P_eff_c = P_eff_c * self.sigma_c.to(P_eff_c.dtype).unsqueeze(1)
+                P_eff_f = P_eff_f * self.sigma_f.to(P_eff_f.dtype).unsqueeze(1)
 
-        pi_c_w = pi_c.to(comp)
-        pi_f_w = self._center(self._freq_gate_raw(lx_c.shape[0]), K_f).to(comp)
+            pi_c_w = pi_c.to(comp)
+            pi_f_w = self._center(self._freq_gate_raw(lx_c.shape[0]), K_f).to(comp)
 
-        P_combined_c = torch.einsum("bc,cor->bor", pi_c_w, P_eff_c.to(comp))
-        P_combined_f = torch.einsum("bf,for->bor", pi_f_w, P_eff_f.to(comp))
+            P_combined_c = torch.einsum("bc,cor->bor", pi_c_w, P_eff_c.to(comp))
+            P_combined_f = torch.einsum("bf,for->bor", pi_f_w, P_eff_f.to(comp))
 
-        out = self._combine_up(
-            lx_c.to(comp), lx_f.to(comp), P_combined_c, P_combined_f, scale_c
-        )
+            out = self._combine_up(
+                lx_c.to(comp), lx_f.to(comp), P_combined_c, P_combined_f, scale_c
+            )
 
         return org_forwarded + (out * self.multiplier).to(org_forwarded.dtype)
 

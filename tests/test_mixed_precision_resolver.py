@@ -139,3 +139,13 @@ def test_auto_lora_fp32_compute_only_v100_fp16(train_mod, monkeypatch):
     assert not train_mod._should_auto_enable_lora_fp32_compute(
         _fake_args("fp16"), _fake_accelerator("cpu"), {}
     )
+
+
+def test_auto_lora_fp32_compute_respects_explicit_true(train_mod, monkeypatch):
+    """Explicit lora_fp32_compute=true already in net_kwargs — must not
+    double-inject (no-op: the caller already has it)."""
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    args = _fake_args("fp16")
+    assert not train_mod._should_auto_enable_lora_fp32_compute(
+        args, _fake_accelerator(), {"lora_fp32_compute": "true"}
+    )

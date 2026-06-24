@@ -175,32 +175,39 @@ class StackedExpertsLoRAModule(RouterStateMixin, BaseLoRAModule):
         w = self._routing_weights
 
         if self.ortho:
-            compute_dtype = self.P_basis.dtype
-            x_lora = self._rebalance(x.to(compute_dtype))
+            compute_dtype = self._rank_compute_dtype(
+                org_forwarded, default_dtype=self.P_basis.dtype
+            )
+            with self._rank_autocast_context(x, compute_dtype):
+                x_lora = self._rebalance(x.to(compute_dtype))
 
-            R_q, R_p = self._cayley_rotations()
-            R_q = R_q.to(compute_dtype)
-            R_p = R_p.to(compute_dtype)
+                R_q, R_p = self._cayley_rotations()
+                R_q = R_q.to(compute_dtype)
+                R_p = R_p.to(compute_dtype)
 
-            # Shared down boundary, then per-expert R_q rotation.
-            x_proj = torch.nn.functional.linear(x_lora, self.Q_basis)
-            lx = torch.einsum("...j,eij->...ei", x_proj, R_q)
+                # Shared down boundary, then per-expert R_q rotation.
+                x_proj = torch.nn.functional.linear(
+                    x_lora, self.Q_basis.to(compute_dtype)
+                )
+                lx = torch.einsum("...j,eij->...ei", x_proj, R_q)
 
-            lx = lx * self.lambda_layer.to(compute_dtype)
-            # _timestep_mask (1, r) broadcasts uniformly over the expert axis.
-            lx = lx * self._timestep_mask
+                lx = lx * self.lambda_layer.to(compute_dtype)
+                # _timestep_mask (1, r) broadcasts uniformly over the expert axis.
+                lx = lx * self._timestep_mask
 
-            if self.dropout is not None and self.training:
-                lx = torch.nn.functional.dropout(lx, p=self.dropout)
+                if self.dropout is not None and self.training:
+                    lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-            B = w.shape[0]
-            n_mid = lx.ndim - 3
-            view_shape = (B,) + (1,) * n_mid + (self.num_experts, 1)
-            lx = lx * w.view(view_shape).to(compute_dtype)
+                B = w.shape[0]
+                n_mid = lx.ndim - 3
+                view_shape = (B,) + (1,) * n_mid + (self.num_experts, 1)
+                lx = lx * w.view(view_shape).to(compute_dtype)
 
-            # Per-expert R_p + sum-over-experts in one einsum, then shared P.
-            mid = torch.einsum("ejr,...er->...j", R_p, lx)
-            adapter = torch.nn.functional.linear(mid, self.P_basis)
+                # Per-expert R_p + sum-over-experts in one einsum, then shared P.
+                mid = torch.einsum("ejr,...er->...j", R_p, lx)
+                adapter = torch.nn.functional.linear(
+                    mid, self.P_basis.to(compute_dtype)
+                )
         else:
             # Compute in the model dtype (``org_forwarded.dtype`` = the frozen
             # base's output = the autocast/model dtype), not fp32. ``x`` arrives

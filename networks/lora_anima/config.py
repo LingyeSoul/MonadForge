@@ -654,7 +654,10 @@ class LoRANetworkCfg:
         # would silently ignore it. Fail loudly instead of no-op'ing. T-LoRA
         # (use_timestep_mask) is fine — it stays on LoRAModule.
         if down_init != "kaiming" and (
-            use_ortho or use_ortho_init or use_moe_style is not False or use_chimera_hydra
+            use_ortho
+            or use_ortho_init
+            or use_moe_style is not False
+            or use_chimera_hydra
         ):
             raise ValueError(
                 f"down_init={down_init!r} only applies to plain LoRA, but a "
@@ -751,12 +754,11 @@ class LoRANetworkCfg:
             content_router_init_std=content_router_init_std,
             chimera_lambda_init=chimera_lambda_init,
             chimera_expert_basis_mult=chimera_expert_basis_mult,
-                chimera_expert_diag=chimera_expert_diag,
-                step_expert_K=step_expert_K,
-                lora_fp32_compute=lora_fp32_compute,
-                channel_scales_dict=channel_scales_dict,
-                verbose=verbose,
-
+            chimera_expert_diag=chimera_expert_diag,
+            step_expert_K=step_expert_K,
+            lora_fp32_compute=lora_fp32_compute,
+            channel_scales_dict=channel_scales_dict,
+            verbose=verbose,
         )
 
     @classmethod
