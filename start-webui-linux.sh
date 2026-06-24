@@ -2,10 +2,19 @@
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
+# Detect Python interpreter: prefer .venv/bin/python (Linux venv), then system python
+if [ -x ".venv/bin/python" ]; then
+    PYTHON=".venv/bin/python"
+elif command -v python3 &>/dev/null; then
+    PYTHON="python3"
+else
+    PYTHON="python"
+fi
+
 echo "Starting MonadForge WebUI..."
 echo "Access at http://127.0.0.1:8000"
 
-	uv/bin/python -m webui "$@" &
+"$PYTHON" -m webui "$@" &
 WEBUI_PID=$!
 
 sleep 3
