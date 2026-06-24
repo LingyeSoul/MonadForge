@@ -353,6 +353,35 @@ def test_hydra_fp32_activation_no_upcast():
     _fp32_activation_no_upcast(make)
 
 
+def test_chimera_fp32_activation_no_upcast():
+    from networks.lora_modules.chimera import ChimeraHydraLoRAModule
+
+    cs = _make_channel_scale(32)  # inv_scale ON
+
+    def make():
+        torch.manual_seed(0)
+        base = torch.nn.Linear(32, 24, bias=False).to(torch.bfloat16)
+        module = ChimeraHydraLoRAModule(
+            "c",
+            base,
+            multiplier=1.0,
+            lora_dim=4,
+            alpha=4,
+            num_experts_content=3,
+            num_experts_freq=2,
+            channel_scale=cs,
+        )
+        with torch.no_grad():
+            module.lambda_c.copy_(torch.randn_like(module.lambda_c) * 0.1)
+            module.lambda_f.copy_(torch.randn_like(module.lambda_f) * 0.1)
+        module.set_content_routing_weights(torch.tensor([[0.5, 0.3, 0.2]]))
+        module.set_freq_routing_weights(torch.tensor([[0.6, 0.4]]))
+        module.apply_to()
+        return base, module
+
+    _fp32_activation_no_upcast(make)
+
+
 def test_lora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
     from networks.lora_modules.lora import LoRAModule
 

@@ -529,15 +529,17 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             # full rank at every t — by construction the freq pool's job is
             # coarse-stage / high-σ refinement which T-LoRA's argument says
             # WANTS the full rank (TimeStep Master-style asymmetric mixture).
-            lx_c = lx_c * self.lambda_c.to(work) * self._timestep_mask.to(work)
-            lx_f = lx_f * self.lambda_f.to(work)
+            lx_c = lx_c * self.lambda_c.to(comp) * self._timestep_mask.to(comp)
+            lx_f = lx_f * self.lambda_f.to(comp)
 
             if self.dropout is not None and self.training:
                 lx_c = torch.nn.functional.dropout(lx_c, p=self.dropout)
                 lx_f = torch.nn.functional.dropout(lx_f, p=self.dropout)
 
-            lx_c, scale_c = self._apply_rank_dropout(lx_c)
-            lx_f, scale_f = self._apply_rank_dropout(lx_f)
+            # Rank-dropout masks are sampled independently per pool, but the
+            # returned scale is a module-level scalar shared by both branches.
+            lx_c, rank_scale = self._apply_rank_dropout(lx_c)
+            lx_f, _rank_scale_f = self._apply_rank_dropout(lx_f)
 
             # Per-pool gate-weighted P_combined; one bmm per pool over the
             # B/L axis. Cast π at the einsum boundary so bf16 × fp32 doesn't
@@ -569,7 +571,7 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             P_combined_f = torch.einsum("bf,for->bor", pi_f_w, P_eff_f.to(comp))
 
             out = self._combine_up(
-                lx_c.to(comp), lx_f.to(comp), P_combined_c, P_combined_f, scale_c
+                lx_c.to(comp), lx_f.to(comp), P_combined_c, P_combined_f, rank_scale
             )
 
         return org_forwarded + (out * self.multiplier).to(org_forwarded.dtype)
