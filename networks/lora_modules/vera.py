@@ -56,14 +56,29 @@ class VeRAModule(BaseLoRAModule):
         self.org_module_ref = [org_module]
         self._fused = False
 
-    def set_shared_matrices(self, seed: int) -> None:
-        """Seed frozen random A, B matrices deterministically."""
-        self._vera_seed = seed
+    def _sample_AB(self, seed: int, device) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample the frozen random A/B matrices deterministically from ``seed``.
+
+        A consumes the generator stream before B (same order as the original
+        inline construction), so the result is bit-identical to the pre-dedup
+        code for any given seed. Shared by ``set_shared_matrices`` (registers
+        the buffers), ``_reconstruct_delta`` and ``merge_to`` (re-samples at
+        save/merge time) — keeping the train-time and reconstruction paths on
+        one sampler is what guarantees VeRA's core invariant: the A/B a layer
+        trains against equal the A/B its delta is rebuilt from.
+        """
         gen = torch.Generator()
         gen.manual_seed(seed)
         A = torch.empty(self.lora_dim, self.in_dim)
-        B = torch.zeros(self.out_dim, self.lora_dim)
+        B = torch.empty(self.out_dim, self.lora_dim)
         torch.nn.init.kaiming_uniform_(A, a=math.sqrt(5), generator=gen)
+        torch.nn.init.kaiming_uniform_(B, a=math.sqrt(5), generator=gen)
+        return A.to(torch.float).to(device), B.to(torch.float).to(device)
+
+    def set_shared_matrices(self, seed: int) -> None:
+        """Seed frozen random A, B matrices deterministically."""
+        self._vera_seed = seed
+        A, B = self._sample_AB(seed, torch.device("cpu"))
         self.register_buffer("A", A, persistent=False)
         self.register_buffer("B", B, persistent=False)
 
@@ -131,12 +146,7 @@ class VeRAModule(BaseLoRAModule):
         vera_b = sd["vera_b"].to(torch.float).to(device)
         seed = int(sd["vera_seed"].item())
 
-        gen = torch.Generator()
-        gen.manual_seed(seed)
-        A = torch.empty(self.lora_dim, self.in_dim)
-        torch.nn.init.kaiming_uniform_(A, a=math.sqrt(5), generator=gen)
-        A = A.to(torch.float).to(device)
-        B = torch.zeros(self.out_dim, self.lora_dim, device=device)
+        A, B = self._sample_AB(seed, device)
 
         # Forward: delta = (x @ A.T * d) @ B.T * b => ΔW = diag(b) @ B @ diag(d) @ A
         delta = vera_b.unsqueeze(1) * B * vera_d.unsqueeze(0) @ A
@@ -155,12 +165,7 @@ class VeRAModule(BaseLoRAModule):
             vera_b = sd["vera_b"].to(torch.float).to(device)
             seed = int(sd["vera_seed"].item())
 
-            gen = torch.Generator()
-            gen.manual_seed(seed)
-            A = torch.empty(self.lora_dim, self.in_dim)
-            torch.nn.init.kaiming_uniform_(A, a=math.sqrt(5), generator=gen)
-            A = A.to(torch.float).to(device)
-            B = torch.zeros(self.out_dim, self.lora_dim, device=device)
+            A, B = self._sample_AB(seed, device)
 
             # ΔW = diag(b) @ B @ diag(d) @ A
             delta = vera_b.unsqueeze(1) * B * vera_d.unsqueeze(0) @ A

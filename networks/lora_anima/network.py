@@ -19,6 +19,7 @@ from networks.lora_anima.loading import (
     _stack_lora_ups,
 )
 from networks.lora_modules import (
+    ChimeraHydraInferenceModule,
     ChimeraHydraLoRAModule,
     HydraLoRAModule,
     LoKRModule,
@@ -28,6 +29,7 @@ from networks.lora_modules import (
     OrthoLoRAModule,
     StackedExpertsLoRAModule,
     StepExpertLoRAModule,
+    _sigma_sinusoidal_features,
 )
 from networks.lora_modules.router_state import _fei_temperature
 from networks.lora_anima.network_metrics import _NetworkMetricsMixin
