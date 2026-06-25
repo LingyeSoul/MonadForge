@@ -839,7 +839,7 @@ def save_anima_model_on_epoch_end_or_stepwise(
     )
 
 
-# Sampling (Euler discrete / ER-SDE / Euler Ancestral for rectified flow)
+# Sampling (Euler discrete / ER-SDE for rectified flow)
 def do_sample(
     height: int,
     width: int,
