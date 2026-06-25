@@ -568,6 +568,12 @@ wheels = [
 ]
 
 [[package]]
+name = "dadaptation"
+version = "3.2"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/d6/46/d6fb2546c58a1abdd804ad5c8a1a53314a669fbb64ca97281931942928fd/dadaptation-3.2.tar.gz", hash = "sha256:de8e8289d56bfdee0c8e3ca353143295d8a48363bcb02d6868a708354b47ccc0" }
+
+[[package]]
 name = "datasets"
 version = "4.8.5"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -1128,6 +1134,19 @@ wheels = [
 ]
 
 [[package]]
+name = "lion-pytorch"
+version = "0.2.4"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "torch", version = "2.12.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/70/69/d655dc09ba401640f3d94121b7c6e984ce9db6450b2806659709bfabe61c/lion_pytorch-0.2.4.tar.gz", hash = "sha256:b5f32dfa727cc61aa63522b3392d0902d2743e2eae6b3b71a34fb11a62f9bc23", size = 7798, upload-time = "2026-03-04T15:42:25.085Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/6d/23/a31cfe4662c1d9ef879d67e60d0640272bdea074891dba9483ce3278620c/lion_pytorch-0.2.4-py3-none-any.whl", hash = "sha256:494f44723b8d3f451170283e904f44e3aedf80995f97e316e370e5d0546cae4e", size = 9929, upload-time = "2026-03-04T15:42:24.077Z" },
+]
+
+[[package]]
 name = "llvmlite"
 version = "0.47.0"
 source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
@@ -1278,6 +1297,7 @@ dependencies = [
     { name = "comfy-cli" },
     { name = "comfy-kitchen" },
     { name = "controlnet-aux" },
+    { name = "dadaptation" },
     { name = "datasets" },
     { name = "diffusers" },
     { name = "einops" },
@@ -1287,6 +1307,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "imagesize" },
     { name = "kornia" },
+    { name = "lion-pytorch" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "opencv-python" },
@@ -1306,6 +1327,7 @@ dependencies = [
     { name = "ruff" },
     { name = "safetensors" },
     { name = "sam3" },
+    { name = "schedulefree" },
     { name = "scikit-learn" },
     { name = "segmentation-models-pytorch" },
     { name = "send2trash" },
@@ -1358,6 +1380,7 @@ requires-dist = [
     { name = "comfy-cli", specifier = ">=1.10.3" },
     { name = "comfy-kitchen", specifier = ">=0.2.10" },
     { name = "controlnet-aux", specifier = ">=0.0.10" },
+    { name = "dadaptation", specifier = ">=3.1" },
     { name = "datasets", specifier = ">=4.8.5" },
     { name = "diffusers", specifier = ">=0.37.0" },
     { name = "einops", specifier = ">=0.7.0" },
@@ -1367,6 +1390,7 @@ requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.9.0" },
     { name = "imagesize", specifier = ">=1.4.1" },
     { name = "kornia", specifier = ">=0.8.2" },
+    { name = "lion-pytorch", specifier = ">=0.2.3" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "opencv-python", specifier = ">=4.11.0.86" },
@@ -1389,6 +1413,7 @@ requires-dist = [
     { name = "ruff", specifier = ">=0.15.9" },
     { name = "safetensors", specifier = ">=0.7.0" },
     { name = "sam3", git = "https://github.com/facebookresearch/sam3.git" },
+    { name = "schedulefree", specifier = ">=1.4" },
     { name = "scikit-learn", specifier = ">=1.9.0rc1" },
     { name = "segmentation-models-pytorch", specifier = ">=0.3.4" },
     { name = "send2trash", specifier = ">=2.1.0" },
@@ -2448,6 +2473,20 @@ dependencies = [
     { name = "timm" },
     { name = "tqdm" },
     { name = "typing-extensions" },
+]
+
+[[package]]
+name = "schedulefree"
+version = "1.4.1"
+source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+dependencies = [
+    { name = "torch", version = "2.12.0", source = { registry = "https://pypi.tuna.tsinghua.edu.cn/simple" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://pypi.tuna.tsinghua.edu.cn/packages/bd/51/d78369c32b0f3818ee7f5a04e77ed02a6bd0ba8642462f780623af0010f5/schedulefree-1.4.1.tar.gz", hash = "sha256:69ef25601d1fc0d8dd00cb36f9af78833f88b7846f1bb6ddecc9f144f3e9f7cb", size = 29281, upload-time = "2025-03-24T17:32:37.996Z" }
+wheels = [
+    { url = "https://pypi.tuna.tsinghua.edu.cn/packages/93/ef/aac74263f0252806b46f0fd5a52566ee06129744572d0958cd0a77d22b0a/schedulefree-1.4.1-py3-none-any.whl", hash = "sha256:21602d3a0d35ee190152e3d56f547ea725d316310bd198fa6108f8039386b242", size = 55068, upload-time = "2025-03-24T20:32:10.525Z" },
 ]
 
 [[package]]
