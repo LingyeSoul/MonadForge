@@ -40,7 +40,7 @@ from library.training.wandb_metrics import (
     SystemMetricsCollector,
     WeightSnapshotCollector,
 )
-from library.training.log_dispatch import dispatch_wandb_extras
+from library.training.log_dispatch import dispatch_wandb_extras, effective_lr
 
 logger = logging.getLogger(__name__)
 
@@ -746,6 +746,15 @@ def _log_step(
         trainer._last_postfix_avr = _cached_avr
         lrs = state.lr_scheduler.get_last_lr()
         _cached_lr = lrs[0] if lrs else 0.0
+        # Prodigy / D-Adaptation are adaptive: the user-set ``lr`` (e.g. 1.0)
+        # is only a multiplier on the optimizer's internal distance estimate
+        # ``d``; the *effective* learning rate actually applied to params is
+        # ``d * lr``. ``d`` starts tiny and grows each step, so reporting the
+        # base ``lr`` alone makes the dashboard show a flat 1.0 while the real
+        # lr rises from ~1e-6. Report the effective value here so the tqdm
+        # postfix (and the WebUI's stdout parser) tracks the real lr. The base
+        # lr is still recorded under ``lr/base`` by ``generate_step_logs``.
+        _cached_lr = effective_lr(getattr(args, "optimizer_type", None), state.optimizer, _cached_lr)
         trainer._last_postfix_lr = _cached_lr
         trainer._postfix_has_real = True
         _have_real = True

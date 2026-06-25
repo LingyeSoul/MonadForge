@@ -738,7 +738,16 @@ class TaskService:
                             loss = ev.get("loss/average")
                             if loss is None:
                                 loss = ev.get("avr_loss")
-                            lr = ev.get("lr/unet")
+                            # Prefer the effective lr (``d*lr`` for
+                            # Prodigy/D-Adaptation). New trainer builds write
+                            # it directly under ``lr/unet``; legacy progress
+                            # JSONL from before that change carried only the
+                            # base lr there and the effective value under
+                            # ``lr/d*lr/unet`` — fall back to that so old runs
+                            # still show the real (rising) lr instead of a flat 1.0.
+                            lr = ev.get("lr/d*lr/unet")
+                            if lr is None:
+                                lr = ev.get("lr/unet")
                             if lr is None:
                                 lr = ev.get("lr")
                             if loss is not None:

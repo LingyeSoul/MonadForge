@@ -30,6 +30,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from library.training.loop import _log_step
 from library.training.loss_recorder import LossRecorder
 
@@ -234,3 +236,100 @@ def test_has_real_flag_persists_across_steps():
         max_mean_logs={},
     )
     assert trainer._postfix_has_real is True
+
+
+# ---------------------------------------------------------------------------
+# Prodigy / D-Adaptation: the postfix must show the *effective* lr (d * lr),
+# not the base multiplier the user set (e.g. 1.0). Regression for the
+# "WebUI always shows lr=1.0 with Prodigy" bug.
+# ---------------------------------------------------------------------------
+
+
+def test_prodigy_postfix_reports_effective_lr_not_base():
+    """Prodigy: ``lr`` in the postfix must be ``d * lr``, not the base lr.
+
+    Prodigy's user-set ``lr`` (e.g. 1.0) is only a multiplier on the
+    optimizer's internal distance estimate ``d``; the real lr applied to the
+    params is ``d * lr`` (``d`` grows from ~1e-6 upward). Reporting the base
+    lr made the dashboard show a flat 1.0 for the whole run. Here the base lr
+    is 1.0 and ``d`` is 0.01, so the postfix must report 0.01.
+    """
+    state = _make_state(global_step=2)  # log step
+    state.args.optimizer_type = "Prodigy"
+    state.lr_scheduler.get_last_lr.return_value = [1.0]
+    # d=0.01 → effective lr 0.01, NOT the base 1.0.
+    state.optimizer = MagicMock(param_groups=[{"lr": 1.0, "d": 0.01}])
+    trainer = _fresh_trainer()
+
+    _log_step(
+        trainer,
+        state,
+        loss=_loss_tensor(0.05),
+        step=2,
+        epoch=0,
+        keys_scaled=None,
+        mean_norm=None,
+        maximum_norm=None,
+        max_mean_logs={},
+    )
+
+    kwargs = _last_set_postfix_kwargs(state.progress_bar)
+    assert kwargs["lr"] == pytest.approx(0.01), (
+        "Prodigy postfix must show the effective lr (d * lr = 0.01), not the "
+        "base multiplier (1.0) — the dashboard would otherwise render a flat 1.0"
+    )
+
+
+@pytest.mark.parametrize("optimizer_type", ["DAdaptAdam", "DAdaptation"])
+def test_dadapt_postfix_reports_effective_lr(optimizer_type):
+    """All D-Adaptation variants apply ``d * lr`` — same fix must cover them."""
+    state = _make_state(global_step=2)
+    state.args.optimizer_type = optimizer_type
+    state.lr_scheduler.get_last_lr.return_value = [1.0]
+    state.optimizer = MagicMock(param_groups=[{"lr": 1.0, "d": 0.005}])
+    trainer = _fresh_trainer()
+
+    _log_step(
+        trainer,
+        state,
+        loss=_loss_tensor(0.05),
+        step=2,
+        epoch=0,
+        keys_scaled=None,
+        mean_norm=None,
+        maximum_norm=None,
+        max_mean_logs={},
+    )
+
+    kwargs = _last_set_postfix_kwargs(state.progress_bar)
+    assert kwargs["lr"] == pytest.approx(0.005)
+
+
+def test_non_adaptive_optimizer_postfix_unchanged():
+    """AdamW must keep reporting the plain base lr — no ``d`` multiplier.
+
+    Guards against the Prodigy fix accidentally bleeding into ordinary
+    optimizers: AdamW param_groups have no ``d`` field, so the effective-lr
+    helper must return the base lr untouched.
+    """
+    state = _make_state(global_step=2)
+    state.args.optimizer_type = "AdamW"
+    state.lr_scheduler.get_last_lr.return_value = [1e-4]
+    # No "d" key — a real AdamW group.
+    state.optimizer = MagicMock(param_groups=[{"lr": 1e-4}])
+    trainer = _fresh_trainer()
+
+    _log_step(
+        trainer,
+        state,
+        loss=_loss_tensor(0.05),
+        step=2,
+        epoch=0,
+        keys_scaled=None,
+        mean_norm=None,
+        maximum_norm=None,
+        max_mean_logs={},
+    )
+
+    kwargs = _last_set_postfix_kwargs(state.progress_bar)
+    assert kwargs["lr"] == pytest.approx(1e-4)

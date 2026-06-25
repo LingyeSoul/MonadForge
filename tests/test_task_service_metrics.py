@@ -406,6 +406,64 @@ def test_jsonl_step_maps_loss_average_and_lr_unet(tmp_path: Path):
     assert data["loss_history"] == [pytest.approx(0.28)]
 
 
+def test_legacy_jsonl_prefers_d_star_lr_over_base_lr(tmp_path: Path):
+    """Legacy Prodigy logs carry the base lr under ``lr/unet`` and the
+    effective lr under ``lr/d*lr/unet``.
+
+    Regression for "WebUI always shows lr=1.0 with Prodigy": those older
+    progress files wrote the user-set base multiplier (1.0) to ``lr/unet`` and
+    the real, rising ``d * lr`` only to ``lr/d*lr/unet``. The watcher must
+    prefer the effective value so a Prodigy run's dashboard tracks the real lr
+    instead of a flat 1.0.
+    """
+    svc, Task, TaskState = _make_service()
+    jsonl = tmp_path / "run.progress.jsonl"
+    jsonl.write_text("", encoding="utf-8")
+    task = Task(id="prod", command="lora", args=[], state=TaskState.RUNNING)
+    task.is_training = True
+    sub: asyncio.Queue = asyncio.Queue()
+    task._subscribers.append(sub)
+    svc._tasks["prod"] = task
+
+    # Legacy shape: base lr under lr/unet, effective under lr/d*lr/unet.
+    _write_jsonl(
+        jsonl,
+        [
+            {
+                "ev": "step",
+                "ts": 1.0,
+                "loss/average": 0.28,
+                "lr/unet": 1.0,           # base multiplier (the bug value)
+                "lr/d*lr/unet": 0.01,     # effective d*lr (the real value)
+                "global_step": 2,
+                "epoch": 1,
+            }
+        ],
+    )
+
+    async def _run():
+        async def _stop():
+            await asyncio.sleep(0.6)
+            task.state = TaskState.SUCCESS
+
+        stopper = asyncio.create_task(_stop())
+        try:
+            await svc._watch_progress_jsonl(task, str(jsonl))
+        finally:
+            await stopper
+
+    _drive(_run())
+
+    msgs = _drive(_drain_queue(sub, timeout=0.2))
+    metrics_msgs = [m for m in msgs if m.get("type") == "metrics"]
+    data = metrics_msgs[-1]["data"]
+    # Effective lr wins over the flat base multiplier.
+    assert data["lr"] == pytest.approx(0.01), (
+        "legacy Prodigy logs must surface d*lr (0.01), not the base 1.0"
+    )
+    assert data["lr_history"] == [pytest.approx(0.01)]
+
+
 # ---------------------------------------------------------------------------
 # 2c. Preview sampling must not dip the LR / loss curves to zero
 # ---------------------------------------------------------------------------

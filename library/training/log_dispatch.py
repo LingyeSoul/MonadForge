@@ -17,6 +17,42 @@ from __future__ import annotations
 from typing import Optional
 
 
+def is_d_adaptation_optimizer(optimizer_type: Optional[str]) -> bool:
+    """True for adaptive optimizers where the user-set ``lr`` is only a multiplier.
+
+    Prodigy (``prodigyopt.Prodigy``) and D-Adaptation (``dadaptation.*``) grow
+    an internal distance estimate ``d`` each step and apply ``d * lr`` to the
+    parameters. The base ``lr`` is therefore not the effective learning rate —
+    reporting it directly (e.g. ``lr=1.0``) makes the dashboard show a flat
+    line while the real lr rises from ~1e-6. Case-insensitive.
+    """
+    if not optimizer_type:
+        return False
+    ot = optimizer_type.lower()
+    return ot.startswith("dadapt") or ot.startswith("prodigy")
+
+
+def effective_lr(optimizer_type: Optional[str], optimizer, base_lr: float) -> float:
+    """Return the learning rate actually applied to parameters.
+
+    For Prodigy / D-Adaptation the effective lr is ``d * lr`` (``d`` is the
+    optimizer's per-group distance estimate, updated after each step). For
+    every other optimizer the base ``lr`` is the effective lr. Falls back to
+    ``base_lr`` if the optimizer exposes no ``d`` field (e.g. before the first
+    step) so the postfix never shows ``0.0`` prematurely.
+    """
+    if not is_d_adaptation_optimizer(optimizer_type):
+        return base_lr
+    try:
+        group = optimizer.param_groups[0]
+    except (AttributeError, IndexError):
+        return base_lr
+    d = group.get("d")
+    if d is None:
+        return base_lr
+    return float(d) * base_lr
+
+
 def generate_step_logs(
     args,
     current_loss,
@@ -79,24 +115,35 @@ def generate_step_logs(
                 else:
                     lr_desc = "unet"
 
-        logs[f"lr/{lr_desc}"] = lr
+        is_d_adapt = is_d_adaptation_optimizer(args.optimizer_type)
+        # Prodigy / D-Adaptation apply ``d * lr`` to the params, not the base
+        # ``lr`` (``d`` is the optimizer's growing distance estimate). The
+        # dashboard reads the plain ``lr/<desc>`` key, so emit the *effective*
+        # value there; keep the raw base lr under ``lr/base/<desc>`` for anyone
+        # who wants the multiplier, and leave ``lr/d*lr/<desc>`` in place for
+        # backward compatibility with existing tensorboard curves.
+        if is_d_adapt:
+            group = lr_scheduler.optimizers[-1].param_groups[i]
+            d = group.get("d")
+            if d is not None:
+                d_lr = float(d) * float(group["lr"])
+                logs[f"lr/{lr_desc}"] = d_lr
+                logs[f"lr/base/{lr_desc}"] = lr
+                logs[f"lr/d*lr/{lr_desc}"] = d_lr
+            else:
+                logs[f"lr/{lr_desc}"] = lr
+        else:
+            logs[f"lr/{lr_desc}"] = lr
 
-        if (
-            args.optimizer_type.lower().startswith("DAdapt".lower())
-            or args.optimizer_type.lower() == "Prodigy".lower()
-        ):
-            # tracking d*lr value
-            logs[f"lr/d*lr/{lr_desc}"] = (
-                lr_scheduler.optimizers[-1].param_groups[i]["d"]
-                * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
-            )
         if (
             args.optimizer_type.lower().endswith("ProdigyPlusScheduleFree".lower())
             and optimizer is not None
         ):  # tracking d*lr value of unet.
-            logs["lr/d*lr"] = (
-                optimizer.param_groups[0]["d"] * optimizer.param_groups[0]["lr"]
-            )
+            d = optimizer.param_groups[0].get("d")
+            if d is not None:
+                logs["lr/d*lr"] = float(d) * float(
+                    optimizer.param_groups[0]["lr"]
+                )
 
     return logs
 
