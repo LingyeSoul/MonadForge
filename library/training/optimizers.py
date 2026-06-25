@@ -88,6 +88,13 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         if optimizer_class is not None:
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
+    elif optimizer_type == "AdamW8bitKahan".lower():
+        from library.training.adamw_8bit_kahan import AdamW8bitKahan
+
+        logger.info(f"use 8-bit AdamW with Kahan summation optimizer | {optimizer_kwargs}")
+        optimizer_class = AdamW8bitKahan
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
     elif optimizer_type == "PagedAdamW".lower():
         logger.info(f"use PagedAdamW optimizer | {optimizer_kwargs}")
         try:
@@ -265,6 +272,12 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
 
     if hasattr(optimizer, "train") and callable(optimizer.train):
         optimizer.train()
+
+    if getattr(args, "optimizer_cpu_offload", False):
+        from library.training.optimizer_offload import OffloadedOptimizer
+
+        logger.info("Wrapping optimizer with CPU state offloading")
+        optimizer = OffloadedOptimizer(optimizer)
 
     return optimizer_name, optimizer_args, optimizer
 

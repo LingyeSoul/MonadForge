@@ -95,3 +95,16 @@ recursive = true
 
 [general]
 caption_extension = ".txt"
+
+# --- lora-rescripts integration (commented out, activate as needed) ---
+# optimizer_type = "AdamW8bitKahan"   # Kahan-compensated 8-bit AdamW
+# optimizer_args = ["stabilize=true"] # Cap lr by rms(grad²/exp_avg_sq)
+# staged_resolution = true            # Curriculum: 512→768→1024
+# staged_resolution_ratios = "20,30,50"
+# adaptive_noise_offset = true        # Latent-statistics-based noise offset
+# contrastive_flow_matching = true    # Contrastive loss on RF objective
+# cfm_lambda = 0.05
+# pyramid_noise_iterations = 6        # Multi-frequency noise
+# pyramid_noise_discount = 0.4
+# optimizer_cpu_offload = true         # CPU offload optimizer states
+# profile_steps = 50                  # Step timing profiler

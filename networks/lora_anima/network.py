@@ -19,16 +19,15 @@ from networks.lora_anima.loading import (
     _stack_lora_ups,
 )
 from networks.lora_modules import (
-    ChimeraHydraInferenceModule,
     ChimeraHydraLoRAModule,
     HydraLoRAModule,
+    LoKRModule,
     LoRAModule,
     OrthoHydraLoRAModule,
     OrthoInitLoRAModule,
     OrthoLoRAModule,
     StackedExpertsLoRAModule,
     StepExpertLoRAModule,
-    _sigma_sinusoidal_features,
 )
 from networks.lora_modules.router_state import _fei_temperature
 from networks.lora_anima.network_metrics import _NetworkMetricsMixin
@@ -513,6 +512,13 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                 # kwarg; gate so it never reaches them.
                 if cfg.down_init != "kaiming" and effective_module_class is LoRAModule:
                     extra_kwargs["down_init"] = cfg.down_init
+
+                # LoKR-specific kwargs.
+                if getattr(cfg, "use_lokr", False) and effective_module_class is LoKRModule:
+                    if cfg.lokr_factor != -1:
+                        extra_kwargs["lokr_factor"] = cfg.lokr_factor
+                    if cfg.decompose_both:
+                        extra_kwargs["decompose_both"] = True
 
                 # Per-channel scaling is DiT-only — TE activations are never calibrated.
                 if cfg.channel_scales_dict is not None and is_unet:
@@ -1834,6 +1840,12 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             metadata = {}
         if metadata:
             metadata["ss_network_spec"] = spec.name
+
+        if spec.name == "vera":
+            for lora in self.unet_loras:
+                if hasattr(lora, "_vera_seed") and lora._vera_seed is not None:
+                    metadata["ss_vera_seed"] = str(lora._vera_seed)
+                    break
 
         # Hard σ-band partition lives in non-persistent buffers + a Python attr;
         # nothing survives the state_dict write. Stamp the scalars the loader

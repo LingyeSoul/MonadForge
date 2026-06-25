@@ -170,6 +170,7 @@ def save_network_weights(
     #   * standard: defuse qkv → *.safetensors
     # Auto-fallback: any surviving ``.lora_up_weight`` key implies a Hydra
     # payload — kept for callers that don't plumb ``save_variant`` through.
+    is_lokr_variant = save_variant == "lokr"
     is_stacked_experts_variant = save_variant == "stacked_experts_global_fei"
     is_chimera_variant = save_variant == "chimera_hydra_moe"
     is_hydra_variant = (
@@ -207,6 +208,26 @@ def save_network_weights(
         logger.info(f"HydraLoRA full format saved to {hydra_file}")
         # The _moe file is the only useful artifact for HydraLoRA —
         # a uniform expert average defeats layer-local routing.
+        return
+
+    if is_lokr_variant:
+        # LoKR: native factor keys, no qkv defuse needed. Just cast and save.
+        if dtype is not None:
+            for key in list(state_dict.keys()):
+                v = state_dict[key].detach().clone().to("cpu").to(dtype)
+                state_dict[key] = v
+        if os.path.splitext(file)[1] == ".safetensors":
+            from safetensors.torch import save_file
+            from library.training.hashing import precalculate_safetensors_hashes
+
+            if metadata is None:
+                metadata = {}
+            model_hash, legacy_hash = precalculate_safetensors_hashes(state_dict, metadata)
+            metadata["sshs_model_hash"] = model_hash
+            metadata["sshs_legacy_hash"] = legacy_hash
+            save_file(state_dict, file, metadata)
+        else:
+            torch.save(state_dict, file)
         return
 
     # Standard (lora / ortho) write path.

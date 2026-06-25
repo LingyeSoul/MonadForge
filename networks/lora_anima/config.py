@@ -258,6 +258,12 @@ class LoRANetworkCfg:
     # exclusive with ``use_ortho`` (validated in the resolver). Non-MoE only.
     use_ortho_init: bool = False
 
+    # LoKR (Low-Rank Kronecker product): ΔW = kron(w1, w2) * scale.
+    # Selects ``LoKRModule`` via ``resolve_network_spec``. Non-MoE only.
+    use_lokr: bool = False
+    lokr_factor: int = -1
+    decompose_both: bool = False
+
     # SVD-Down: ``lora_down`` initialization for plain LoRA — ``"kaiming"``
     # (default) or ``"weight_svd"`` (seed input basis from W0's top-r right
     # singular vectors, scale-matched). Plain two-factor LoRAModule only;
@@ -503,6 +509,11 @@ class LoRANetworkCfg:
         ortho_init_std = float(kwargs.get("ortho_init_std", 0.02))
         use_ortho_init = _as_bool(kwargs.get("use_ortho_init"))
 
+        # LoKR knobs.
+        use_lokr = _as_bool(kwargs.get("use_lokr"))
+        lokr_factor = int(kwargs.get("lokr_factor", -1))
+        decompose_both = _as_bool(kwargs.get("decompose_both"))
+
         # FECL knobs. Default off; turning it on requires `num_bands >= 3`
         # to be a meaningful objective (see compute_fecl docstring).
         fera_fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
@@ -736,6 +747,9 @@ class LoRANetworkCfg:
             use_ortho=use_ortho,
             ortho_init_std=ortho_init_std,
             use_ortho_init=use_ortho_init,
+            use_lokr=use_lokr,
+            lokr_factor=lokr_factor,
+            decompose_both=decompose_both,
             down_init=down_init,
             fera_fecl_weight=fera_fecl_weight,
             fera_num_bands=fera_num_bands,
@@ -799,6 +813,9 @@ class LoRANetworkCfg:
         freq_router_tau: float = 1.0,
         content_router_layer_norm: bool = True,
         step_expert_K: int = 0,
+        is_lokr: bool = False,
+        lokr_factor: int = -1,
+        decompose_both: bool = False,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -904,4 +921,7 @@ class LoRANetworkCfg:
             freq_router_tau=float(freq_router_tau),
             content_router_layer_norm=bool(content_router_layer_norm),
             step_expert_K=int(step_expert_K),
+            use_lokr=is_lokr,
+            lokr_factor=int(lokr_factor),
+            decompose_both=bool(decompose_both),
         )

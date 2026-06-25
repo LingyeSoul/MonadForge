@@ -2795,5 +2795,27 @@ if __name__ == "__main__":
             f"output_name={args.output_name}"
         )
 
+    if getattr(args, "staged_resolution", False):
+        from library.training.staged_resolution import build_staged_plan, run_staged_training
+
+        ratios = None
+        if getattr(args, "staged_resolution_ratios", None):
+            ratios = [int(x.strip()) for x in args.staged_resolution_ratios.split(",")]
+        base_sides = None
+        if getattr(args, "staged_resolution_base_sides", None):
+            base_sides = [int(x.strip()) for x in args.staged_resolution_base_sides.split(",")]
+
+        plan = build_staged_plan(
+            target_res=(args.target_res[0] if isinstance(args.target_res, list) else args.target_res) or 1024,
+            base_batch_size=args.train_batch_size,
+            total_epochs=args.max_train_epochs or 100,
+            save_every=args.save_every_n_epochs,
+            sample_every=args.sample_every_n_epochs,
+            ratios=ratios,
+            base_sides=base_sides,
+        )
+        exit_code = run_staged_training(plan, sys.argv[1:])
+        sys.exit(exit_code)
+
     trainer = AnimaTrainer()
     trainer.train(args)

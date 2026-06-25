@@ -98,6 +98,13 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
     )
 
     parser.add_argument(
+        "--optimizer_cpu_offload",
+        action="store_true",
+        default=False,
+        help="Offload optimizer states to CPU RAM to save VRAM",
+    )
+
+    parser.add_argument(
         "--lr_scheduler_type",
         type=str,
         default="",
@@ -303,6 +310,26 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--vae", type=str, default=None, help="path to checkpoint of vae to replace"
     )
+    parser.add_argument(
+        "--staged_resolution",
+        action="store_true",
+        help="Enable staged mixed-resolution curriculum training. "
+        "Launches sequential training phases at increasing resolutions.",
+    )
+    parser.add_argument(
+        "--staged_resolution_ratios",
+        type=str,
+        default=None,
+        help="Comma-separated percentage ratios for each stage (e.g. '20,30,50'). "
+        "Must sum to 100. Default: 20,30,50.",
+    )
+    parser.add_argument(
+        "--staged_resolution_base_sides",
+        type=str,
+        default=None,
+        help="Comma-separated resolution sides for each stage (e.g. '512,768,1024'). "
+        "Must match the number of ratios. Default: 512,768,1024.",
+    )
 
     parser.add_argument(
         "--max_train_steps",
@@ -423,6 +450,30 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="Use random strength between 0~ip_noise_gamma for input perturbation noise.",
     )
     parser.add_argument(
+        "--adaptive_noise_offset",
+        action="store_true",
+        default=False,
+        help="Use latent-statistics-based adaptive noise offset",
+    )
+    parser.add_argument(
+        "--adaptive_noise_scale",
+        type=float,
+        default=1.0,
+        help="Scale factor for adaptive noise offset",
+    )
+    parser.add_argument(
+        "--pyramid_noise_iterations",
+        type=int,
+        default=0,
+        help="Number of pyramid noise scales (0=disabled, 6 recommended)",
+    )
+    parser.add_argument(
+        "--pyramid_noise_discount",
+        type=float,
+        default=0.4,
+        help="Discount factor per pyramid scale",
+    )
+    parser.add_argument(
         "--t_min",
         type=float,
         default=None,
@@ -471,6 +522,18 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         type=float,
         default=0,
         help="Weight for 2x-downsampled multiscale loss term. 0 = disabled. default is 0",
+    )
+    parser.add_argument(
+        "--contrastive_flow_matching",
+        action="store_true",
+        default=False,
+        help="Add contrastive loss term to flow matching objective",
+    )
+    parser.add_argument(
+        "--cfm_lambda",
+        type=float,
+        default=0.05,
+        help="Weight for contrastive flow matching loss term",
     )
     parser.add_argument(
         "--lowram", action="store_true", help="enable low RAM optimization."
@@ -905,6 +968,12 @@ def add_train_misc_arguments(parser: argparse.ArgumentParser):
         dest="config_strict",
         action="store_true",
         help="Treat config-schema warnings (unknown keys, off-list choices) as errors.",
+    )
+    parser.add_argument(
+        "--profile_steps",
+        type=int,
+        default=0,
+        help="Number of steps to profile (0=disabled). Reports timing breakdown after N steps.",
     )
 
 

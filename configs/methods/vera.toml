@@ -1,0 +1,6 @@
+network_module = "vera"
+network_dim = 64
+network_alpha = 64
+learning_rate = 1e-4
+max_train_epochs = 6
+output_name = "vera"

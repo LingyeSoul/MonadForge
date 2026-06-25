@@ -7,6 +7,7 @@ from networks.lora_modules.chimera import (
     ChimeraHydraLoRAModule,
 )
 from networks.lora_modules.hydra import HydraLoRAModule, _sigma_sinusoidal_features
+from networks.lora_modules.lokr import LoKRModule
 from networks.lora_modules.lora import LoRAModule
 from networks.lora_modules.ortho import (
     OrthoHydraLoRAModule,
@@ -15,18 +16,21 @@ from networks.lora_modules.ortho import (
 )
 from networks.lora_modules.stacked_experts import StackedExpertsLoRAModule
 from networks.lora_modules.step_expert import StepExpertLoRAModule
+from networks.lora_modules.vera import VeRAModule
 
 __all__ = [
     "BaseLoRAModule",
     "ChimeraHydraInferenceModule",
     "ChimeraHydraLoRAModule",
     "HydraLoRAModule",
+    "LoKRModule",
     "LoRAModule",
     "OrthoHydraLoRAModule",
     "OrthoInitLoRAModule",
     "OrthoLoRAModule",
     "StackedExpertsLoRAModule",
     "StepExpertLoRAModule",
+    "VeRAModule",
     "_absorb_channel_scale",
     "_sigma_sinusoidal_features",
 ]

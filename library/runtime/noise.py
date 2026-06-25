@@ -87,11 +87,34 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, sigmas=None):
     return weighting
 
 
+def pyramid_noise_like(latents, iterations=6, discount=0.4):
+    b, c, h, w = latents.shape
+    device = latents.device
+    dtype = latents.dtype
+    noise = torch.randn(b, c, h, w, device=device, dtype=dtype)
+    for i in range(1, iterations):
+        r = torch.empty(1).uniform_(2.0, 4.0).item()
+        rh, rw = max(1, int(h / r)), max(1, int(w / r))
+        small_noise = torch.randn(b, c, rh, rw, device=device, dtype=dtype)
+        upsampled = torch.nn.functional.interpolate(
+            small_noise, size=(h, w), mode="bilinear", align_corners=False
+        )
+        noise = noise + upsampled * (discount ** i)
+    noise = noise / noise.std()
+    return noise
+
+
 def get_noisy_model_input_and_timesteps(
     args, noise_scheduler, latents: torch.Tensor, noise: torch.Tensor, device, dtype
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     bsz, h, w = latents.shape[0], latents.shape[-2], latents.shape[-1]
     assert bsz > 0, "Batch size not large enough"
+
+    pyramid_iters = getattr(args, "pyramid_noise_iterations", 0)
+    if pyramid_iters > 0:
+        discount = getattr(args, "pyramid_noise_discount", 0.4)
+        noise = pyramid_noise_like(latents, iterations=pyramid_iters, discount=discount)
+
     num_timesteps = noise_scheduler.config.num_train_timesteps
     # logit-space mean shift; >0 skews σ toward high-noise, 0.0 (default) = unbiased
     sigmoid_bias = getattr(args, "sigmoid_bias", 0.0)
@@ -147,6 +170,12 @@ def get_noisy_model_input_and_timesteps(
 
     if args.ip_noise_gamma:
         xi = torch.randn_like(latents, device=latents.device, dtype=dtype)
+        if getattr(args, "adaptive_noise_offset", False):
+            adaptive_scale = getattr(args, "adaptive_noise_scale", 1.0)
+            with torch.no_grad():
+                channel_mean = latents.abs().mean(dim=(-2, -1), keepdim=True)
+                channel_mean = channel_mean.clamp_min(1e-6)
+                xi = xi * channel_mean * adaptive_scale
         if args.ip_noise_gamma_random_strength:
             ip_noise_gamma = (
                 torch.rand(1, device=latents.device, dtype=dtype) * args.ip_noise_gamma

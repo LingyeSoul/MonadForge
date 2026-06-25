@@ -306,6 +306,27 @@ def _flow_match_loss(ctx: LossContext) -> torch.Tensor:
     return loss
 
 
+def _contrastive_flow_matching_loss(ctx: LossContext) -> torch.Tensor:
+    base_loss = _flow_match_loss(ctx)
+    cfm_weight = float(getattr(ctx.args, "cfm_lambda", 0.0) or 0.0)
+    if cfm_weight <= 0.0:
+        return base_loss
+
+    positive = (ctx.model_pred.float() - ctx.target.float()).pow(2).mean(
+        dim=list(range(1, ctx.model_pred.ndim))
+    )
+
+    with torch.no_grad():
+        perm = torch.randperm(ctx.target.shape[0], device=ctx.target.device)
+        neg_target = ctx.target[perm]
+    negative = (ctx.model_pred.float() - neg_target.float()).pow(2).mean(
+        dim=list(range(1, ctx.model_pred.ndim))
+    )
+
+    contrastive = (positive - negative).clamp(min=0.0)
+    return base_loss + cfm_weight * contrastive
+
+
 def _flow_matching_vr_loss(ctx: LossContext) -> torch.Tensor:
     """AsymFlow §5.2 control-variate FM loss.
 
@@ -557,6 +578,7 @@ def _multiscale_loss(ctx: LossContext) -> torch.Tensor:
 
 LOSS_REGISTRY: dict[str, LossFn] = {
     "flow_match": _flow_match_loss,
+    "contrastive_flow_matching": _contrastive_flow_matching_loss,
     "flow_matching_vr": _flow_matching_vr_loss,
     "ortho_reg": _ortho_reg_loss,
     "hydra_balance": _hydra_balance_loss,
@@ -679,7 +701,7 @@ class LivenessLedger:
 # Which stage each registered loss runs in (see module docstring).
 # `flow_match` and `flow_matching_vr` are mutually exclusive — both produce
 # the per-sample [B] tensor that downstream stages add into.
-_STAGE_PER_SAMPLE = ("flow_match", "flow_matching_vr")
+_STAGE_PER_SAMPLE = ("flow_match", "contrastive_flow_matching", "flow_matching_vr")
 _STAGE_SCALAR_BROADCAST = (
     "ortho_reg",
     "hydra_balance",
@@ -790,7 +812,11 @@ def build_loss_composer(
     fm_name = (
         "flow_matching_vr"
         if float(getattr(args, "vr_loss_weight", 0.0) or 0.0) > 0.0
-        else "flow_match"
+        else (
+            "contrastive_flow_matching"
+            if getattr(args, "contrastive_flow_matching", False)
+            else "flow_match"
+        )
     )
     active: list[str] = [fm_name]
 

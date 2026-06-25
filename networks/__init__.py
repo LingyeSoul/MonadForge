@@ -29,12 +29,14 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple, Type
 from networks.lora_modules import (
     ChimeraHydraLoRAModule,
     HydraLoRAModule,
+    LoKRModule,
     LoRAModule,
     OrthoHydraLoRAModule,
     OrthoInitLoRAModule,
     OrthoLoRAModule,
     StackedExpertsLoRAModule,
     StepExpertLoRAModule,
+    VeRAModule,
 )
 
 
@@ -101,8 +103,14 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "use_ortho",
         "use_ortho_init",
         "ortho_init_std",
+        # LoKR (Low-Rank Kronecker product) variant.
+        "use_lokr",
+        "lokr_factor",
+        "decompose_both",
         # SVD-Down: lora_down init for plain LoRA ("kaiming" | "weight_svd").
         "down_init",
+        # VeRA: seed for shared frozen random matrices A, B.
+        "vera_seed",
         "use_moe_style",
         "route_per_layer",
         "router_source",
@@ -183,6 +191,9 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "repa_dog_sigma1_div",  # σ₁ = min(gh,gw)/div (outer, broad low band removed)
         "repa_dog_sigma2_div",  # 0 ⇒ σ₂ off (low-band strip only); >div1 ⇒ band-pass
         "repa_dog_norm_std",  # 0 ⇒ empirical std (matches spatial_norm); >0 = fixed
+        # DyLoRA rank granularity and algorithm variant.
+        "unit",
+        "algo",
     }
 )
 
@@ -226,11 +237,23 @@ def _post_init_hydra(network: Any, kwargs: Mapping[str, Any]) -> None:
         network._use_chimera_hydra = False
 
 
+def _post_init_vera(network: Any, kwargs: Mapping[str, Any]) -> None:
+    seed = int(kwargs.get("vera_seed", 0))
+    for lora in network.unet_loras + getattr(network, "text_encoder_loras", []):
+        if isinstance(lora, VeRAModule):
+            lora.set_shared_matrices(seed)
+
+
 NETWORK_REGISTRY: Dict[str, NetworkSpec] = {
     "lora": NetworkSpec(
         name="lora",
         module_class=LoRAModule,
         save_variant="standard",
+    ),
+    "lokr": NetworkSpec(
+        name="lokr",
+        module_class=LoKRModule,
+        save_variant="lokr",
     ),
     "ortho": NetworkSpec(
         name="ortho",
@@ -285,6 +308,12 @@ NETWORK_REGISTRY: Dict[str, NetworkSpec] = {
         module_class=StackedExpertsLoRAModule,
         save_variant="stacked_experts_global_fei",
         post_init=_post_init_hydra,
+    ),
+    "vera": NetworkSpec(
+        name="vera",
+        module_class=VeRAModule,
+        save_variant="standard",
+        post_init=_post_init_vera,
     ),
 }
 
@@ -378,6 +407,8 @@ def resolve_network_spec(kwargs: Mapping[str, Any]) -> NetworkSpec:
         return NETWORK_REGISTRY["ortho_init"]
     if use_ortho:
         return NETWORK_REGISTRY["ortho"]
+    if _parse_bool_flag(kwargs, "use_lokr"):
+        return NETWORK_REGISTRY["lokr"]
     return NETWORK_REGISTRY["lora"]
 
 

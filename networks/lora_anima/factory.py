@@ -372,6 +372,7 @@ def create_network_from_weights(
     # down (Hydra's is the 2-D shared ``lora_down.weight``). The plan-2 stamps
     # are canonical; this key-sniff is a fallback for unstamped/legacy artifacts.
     has_stacked_experts = False
+    has_lokr = False
     hydra_num_experts = 0
     # Which lora_names were MoE (Hydra) vs plain, passed as `hydra_router_names`
     # so create_modules picks the right class per module in mixed checkpoints.
@@ -396,6 +397,14 @@ def create_network_from_weights(
 
         if "alpha" in key:
             modules_alpha[lora_name] = value
+        elif key.endswith(".lokr_w1") or key.endswith(".lokr_w2") or key.endswith(".w1a") or key.endswith(".w2a"):
+            has_lokr = True
+            # For LoKR, dim is derived from alpha (set below when we see the alpha key).
+            # Fill a placeholder; the alpha key will set the real value.
+            if lora_name not in modules_dim:
+                modules_dim[lora_name] = 0
+        elif key.endswith(".vera_d"):
+            modules_dim[lora_name] = value.size(0)
         elif key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
             # Chimera dual-A per-pool stacked ups; modules_dim filled by the
             # matching ``.lora_down_{c,f}.weight`` branch below.
@@ -439,6 +448,42 @@ def create_network_from_weights(
                 plain_module_names.add(lora_name)
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
+
+    # LoKR: derive dim from alpha (LoKR's lora_dim controls factor decomposition,
+    # not a weight dimension; alpha == lora_dim in the common case).
+    # Also detect decompose_both and lokr_factor from checkpoint keys.
+    lokr_decompose_both = False
+    lokr_detected_factor = -1
+    if has_lokr:
+        for name in list(modules_dim.keys()):
+            if modules_dim[name] == 0 and name in modules_alpha:
+                modules_dim[name] = int(modules_alpha[name])
+        # Detect decompose_both: if any module has .w1a key, both factors are decomposed.
+        lokr_decompose_both = any(k.endswith(".w1a") for k in weights_sd)
+        # Derive lokr_factor from the first w1/w2 shape we find.
+        for k, v in weights_sd.items():
+            if k.endswith(".lokr_w1") or k.endswith(".w1a"):
+                # w1 shape is (out_a, in_a); out_a * w2_out = out_features
+                # We can't recover the original factor exactly, but we can
+                # use the w1 shape to set a reasonable factor.
+                if k.endswith(".lokr_w1"):
+                    out_a = v.shape[0]
+                    # Find matching w2 to compute the full dimension
+                    prefix = k[: -len(".lokr_w1")]
+                    w2_key = f"{prefix}.lokr_w2"
+                    w2a_key = f"{prefix}.w2a"
+                    if w2_key in weights_sd:
+                        out_b = weights_sd[w2_key].shape[0]
+                        full_dim = out_a * out_b
+                        # Check if out_a divides full_dim (it always does by construction)
+                        if full_dim % out_a == 0 and out_a > 1:
+                            lokr_detected_factor = out_a
+                    elif w2a_key in weights_sd:
+                        out_b = weights_sd[w2a_key].shape[0]
+                        full_dim = out_a * out_b
+                        if full_dim % out_a == 0 and out_a > 1:
+                            lokr_detected_factor = out_a
+                break  # one module is enough to detect the factor
 
     # Finalize the MoE shape post-scan: up_weight (3-D) with no matching
     # down_weight (3-D) is Hydra (shared down); both 3-D means StackedExperts.
@@ -544,6 +589,12 @@ def create_network_from_weights(
                     f"Inconsistent σ-feature dims across modules: expected "
                     f"{sigma_feature_dim_detected}, found {extra} at {k!r}."
                 )
+    elif has_lokr:
+        spec = NETWORK_REGISTRY["lokr"]
+        module_class = spec.module_class
+    elif any(k.endswith(".vera_d") for k in weights_sd):
+        spec = NETWORK_REGISTRY["vera"]
+        module_class = spec.module_class
     elif for_inference:
         # Force plain LoRA spec even for ortho — merge_to/fuse_weight wants flat
         # down/up, and ortho checkpoints are distilled to LoRA shape at save.
@@ -816,6 +867,9 @@ def create_network_from_weights(
         freq_router_mode=chimera_freq_router_mode,
         freq_router_tau=chimera_freq_router_tau,
         content_router_layer_norm=chimera_content_router_layer_norm,
+        is_lokr=has_lokr,
+        lokr_factor=lokr_detected_factor,
+        decompose_both=lokr_decompose_both,
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)
@@ -823,6 +877,11 @@ def create_network_from_weights(
     network._use_hydra = False
     network._balance_loss_weight = 0.0
     network._network_spec = spec
+    # Inject vera_seed from checkpoint metadata if not already in kwargs.
+    if spec.name == "vera" and "vera_seed" not in kwargs:
+        meta_seed = file_metadata.get("ss_vera_seed")
+        if meta_seed is not None:
+            kwargs["vera_seed"] = int(meta_seed)
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
 
