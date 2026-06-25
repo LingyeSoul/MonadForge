@@ -22,7 +22,7 @@
 한 줄이면 됩니다 — [uv](https://astral.sh/uv)가 없으면 설치하고, 최신 릴리스를 받아 `uv sync`까지 실행합니다 (git 불필요). 설치 스크립트는 체크섬으로 검증 가능한 릴리스 에셋으로 배포됩니다:
 
 ```bash
-# Linux / macOS
+# Linux
 curl -LsSf https://github.com/sorryhyun/anima_lora/releases/latest/download/install.sh | sh
 ```
 ```powershell
@@ -38,7 +38,7 @@ irm https://github.com/sorryhyun/anima_lora/releases/latest/download/install.ps1
 모든 릴리스에는 `checksums.txt`(설치 스크립트 + 소스 아카이브의 SHA-256)가 포함됩니다. 내려받아 검증한 뒤 실행하세요:
 
 ```bash
-# Linux / macOS
+# Linux
 curl -fLO https://github.com/sorryhyun/anima_lora/releases/latest/download/install.sh
 curl -fLO https://github.com/sorryhyun/anima_lora/releases/latest/download/checksums.txt
 grep install.sh checksums.txt | sha256sum -c -    # "install.sh: OK" 가 출력되어야 함

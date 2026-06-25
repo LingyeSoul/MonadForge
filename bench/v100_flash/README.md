@@ -29,7 +29,7 @@ gradient_checkpointing = true
 Operational notes from the verified V100 environment:
 
 - Use a V100-compatible PyTorch build/venv (for example `torch==2.10.0+cu129` in
-  `.venv-v100`). Newer CUDA/PyTorch wheels may omit SM 7.0 kernels and fail with
+  `.venv`). Newer CUDA/PyTorch wheels may omit SM 7.0 kernels and fail with
   `no kernel image is available for execution on the device`.
 - `torch_compile=true` can remain enabled with `attn_mode="torch"`; disable it
   only when debugging the unsupported `flash-attention-v100` path.

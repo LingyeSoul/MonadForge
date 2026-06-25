@@ -1,0 +1,88 @@
+# V100专用依赖文件
+# 使用 torch==2.10.0+cu129，不安装 flash-attn
+# V100 (SM 7.0) 不支持 flash-attn，生产训练请使用 attn_mode="torch"
+
+# Core ML - V100兼容版本
+torch==2.10.0+cu129
+torchvision==0.21.0+cu129
+accelerate>=1.13.0
+transformers>=5.10.1
+diffusers>=0.37.0
+einops>=0.7.0
+bitsandbytes>=0.45.0
+
+# Optimizers
+pytorch-optimizer>=3.9.0
+prodigyopt>=1.1.2
+
+# Data & Config
+toml>=0.10.2
+tomlkit>=0.13
+voluptuous>=0.15.2
+safetensors>=0.7.0
+imagesize>=1.4.1
+
+# Text processing
+sentencepiece>=0.2.1
+huggingface-hub>=1.9.0
+
+# Monitoring & Utilities
+tensorboard
+rich>=14.0.0
+tqdm
+numpy>=2.0.0
+Pillow
+psutil
+opencv-python>=4.11.0.86
+
+# Masking
+pyyaml
+segmentation-models-pytorch>=0.3.4
+albumentations>=1.4.0
+packaging
+pycocotools>=2.0.11
+
+# 注意：不安装 flash-attn
+# V100 使用 attn_mode="torch" (SDPA) 进行注意力计算
+# flash-attention-v100 在 Anima fp16 DiT self-attention 首步产生 NaN
+
+# Development & Testing
+ruff>=0.15.9
+matplotlib
+torchsde>=0.2.6
+yarl>=1.23.0
+spandrel>=0.4.2
+sqlalchemy>=2.1.0b2
+aiohttp>=3.13.5
+av>=17.0.1
+alembic>=1.18.4
+pydantic-settings>=2.14.0
+kornia>=0.8.2
+simpleeval>=1.0.7
+pytest>=9.0.3
+blake3>=1.0.8
+
+# WebUI
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20
+
+# System tray (Windows)
+pystray>=0.19.5 ; sys_platform == 'win32'
+pywin32>=308 ; sys_platform == 'win32'
+
+# WD Tagger
+timm>=1.0.0
+
+# Experiment tracking
+wandb>=0.19.0
+
+# Upstream additions
+softtorch>=0.1.1
+controlnet-aux>=0.0.10
+scikit-learn>=1.9.0rc1
+datasets>=4.8.5
+send2trash>=2.1.0
+
+# triton for Windows (V100兼容版本)
+triton-windows>=3.7.0,<3.8.0 ; sys_platform == 'win32'

@@ -22,7 +22,7 @@ MonadForge 是 [anima_lora](https://github.com/sorryhyun/anima_lora) 的一个�
 > 🌐 **双语界面** — 内置中英文切换，代码注释与界面文案全面国际化  
 > ⚡ **实时训练监控** — WebSocket 流式传输训练指标、损失曲线、学习率变化与预览图  
 > 🎨 **Material Design 3 主题** — 琥珀色品牌系统、JetBrains Mono 等宽字体、精致的交互动效  
-> 🖥️ **跨平台一致体验** — Windows / Linux / macOS 统一的浏览器界面，告别 Qt 平台差异
+> 🖥️ **跨平台一致体验** — Windows / Linux 统一的浏览器界面，告别 Qt 平台差异
 
 ---
 
@@ -49,7 +49,7 @@ start-webui-win.bat
 - 构建 Vue 3 前端并输出到 `webui/frontend/dist/`
 - 自动打开浏览器访问 `http://127.0.0.1:8000`
 
-### Linux / macOS 一键安装
+### Linux 一键安装
 
 ```bash
 # 1. 克隆仓库
@@ -332,7 +332,14 @@ WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆�
 | ML 框架 | PyTorch 2.12, Transformers, Diffusers, Flash Attention 2 |
 | 字体 | JetBrains Mono, Roboto |
 
-> **V100 注意事项**：Tesla V100 / SM 7.0 需要单独的兼容 PyTorch/CUDA 环境（例如 `.venv-v100` + `torch==2.10.0+cu129`）。生产训练请使用 `attn_mode="torch"`，`torch_compile=true` 可以正常启用，配合 `gradient_checkpointing=true`。V100 上默认 bf16 会自动切换为 fp16；训练器会在 V100+fp16 时自动启用 `lora_fp32_compute`，让 LoRA rank 分支保持 fp32 计算以降低偏色/语义退化风险（可用 `network_args = ["lora_fp32_compute=false"]` 做 A/B）。实测 `flash-attention-v100` 在 Anima fp16 DiT self-attention 首步产生 NaN，`v100_flash_stability="hybrid"` 也无法规避；相关开关仅用于诊断。详见 `bench/v100_flash/README.md`。
+> **V100 注意事项**：Tesla V100 / SM 7.0 需要单独的兼容 PyTorch/CUDA 环境（`torch==2.10.0+cu129`）。**不安装 flash-attn**，生产训练请使用 `attn_mode="torch"`，`torch_compile=true` 可以正常启用，配合 `gradient_checkpointing=true`。V100 上默认 bf16 会自动切换为 fp16；训练器会在 V100+fp16 时自动启用 `lora_fp32_compute`，让 LoRA rank 分支保持 fp32 计算以降低偏色/语义退化风险（可用 `network_args = ["lora_fp32_compute=false"]` 做 A/B）。实测 `flash-attention-v100` 在 Anima fp16 DiT self-attention 首步产生 NaN，`v100_flash_stability="hybrid"` 也无法规避；相关开关仅用于诊断。
+>
+> **V100 专用安装脚本**：
+> - **Windows**: `setup-v100-win.bat` — 一键创建 `.venv` 并安装 torch==2.10.0+cu129
+> - **Linux**: `setup-v100-linux.sh` — 自动配置 V100 兼容环境
+> - **依赖文件**: `requirements-v100.txt` — V100 专用依赖（不含 flash-attn）
+>
+> 详见 `bench/v100_flash/README.md`。
 
 ---
 
@@ -342,7 +349,7 @@ WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆�
 - **驱动**: NVIDIA Driver ≥ 595
 - **CUDA**: 13.2 Toolkit（用于 `torch.compile` / Triton）
 - **Python**: 3.13（由 uv 自动管理）
-- **OS**: Windows 10/11, Linux, macOS（Apple Silicon 需 Rosetta）
+- **OS**: Windows 10/11, Linux
 - **内存**: 16GB+ 系统内存
 - **VRAM**: 8GB+（推荐 16GB+ 用于完整功能）
 
