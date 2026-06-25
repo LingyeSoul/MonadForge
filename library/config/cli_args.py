@@ -506,8 +506,8 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--sample_sampler",
         type=str,
         default="euler",
-        choices=["euler", "er_sde", "euler_a"],
-        help="sampler for sample images: euler (deterministic ODE), er_sde (Extended Reverse-Time SDE), euler_a (Euler Ancestral with noise injection)",
+        choices=["euler", "er_sde"],
+        help="sampler for sample images: euler (deterministic ODE), er_sde (Extended Reverse-Time SDE)",
     )
     parser.add_argument(
         "--sample_guidance_scale",

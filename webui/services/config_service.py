@@ -105,7 +105,7 @@ _METHOD_ORDER = (
 )
 
 _ATTN_MODES = ["flash", "torch", "sageattn", "flex", "xformers"]
-_SAMPLER_CHOICES = ["euler", "er_sde", "euler_a"]
+_SAMPLER_CHOICES = ["euler", "er_sde"]
 
 # Curated to exactly what library/training/optimizers.py::get_optimizer and
 # library/training/schedulers.py::get_scheduler_fix accept. Keep in sync with
@@ -154,7 +154,7 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
         "shift",
         "flux_shift",
     ],
-    "sample_sampler": ["euler", "er_sde", "euler_a"],
+    "sample_sampler": ["euler", "er_sde"],
 }
 
 _GROUPS = {

@@ -230,7 +230,7 @@ watch(currentValue, () => { if (floatRaw.value !== null) floatRaw.value = null }
 // --- End float field ---
 
 const selectItems = computed(() => {
-  if (props.field.key === 'sample_sampler') return ['euler', 'er_sde', 'euler_a']
+  if (props.field.key === 'sample_sampler') return ['euler', 'er_sde']
   return props.field.options ?? []
 })
 

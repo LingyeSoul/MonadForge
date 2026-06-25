@@ -869,7 +869,7 @@ def do_sample(
         flow_shift: Flow shift parameter for rectified flow
         neg_crossattn_emb: Negative cross-attention embeddings for CFG
         sampler: Sampling algorithm - "euler" (deterministic ODE),
-                 "er_sde" (Extended Reverse-Time SDE), "euler_a" (Euler Ancestral)
+                 "er_sde" (Extended Reverse-Time SDE)
 
     Returns:
         Denoised latents
@@ -916,15 +916,11 @@ def do_sample(
 
     use_cfg = guidance_scale > 1.0 and neg_crossattn_emb is not None
 
-    # Create sampler object for er_sde / euler_a; euler uses inline steps.
+    # Create sampler object for er_sde; euler uses inline steps.
     # Pass fp32 sigmas — the samplers' .step() calls .float() internally.
     sampler_obj = None
     if sampler == "er_sde":
         sampler_obj = inference_utils.ERSDESampler(sigmas, seed=seed, device=device)
-    elif sampler == "euler_a":
-        sampler_obj = inference_utils.EulerAncestralSampler(
-            sigmas, seed=seed, device=device
-        )
 
     for i in tqdm(range(steps), desc="Sampling", disable=not show_progress):
         # Cast x to model dtype for the DiT forward pass; keep sigmas/t in fp32
@@ -947,7 +943,7 @@ def do_sample(
         denoised = x - sigmas[i] * model_output
 
         if sampler_obj is not None:
-            # ER-SDE or Euler Ancestral: delegate to sampler (expects fp32)
+            # ER-SDE: delegate to sampler (expects fp32)
             x = sampler_obj.step(x, denoised, i)
         else:
             # Euler ODE step — reuse the inference-side step() (algebraically
