@@ -44,6 +44,7 @@ configs/webui_settings.json
 configs/custom/
 configs/gui-methods/custom/
 /docs/plans
+/docs/compose
 /webui/frontend/node_modules
 /wandb
 /.playwright-mcp
