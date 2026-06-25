@@ -15,8 +15,16 @@ from webui.services.config_service import ROOT, get_path_overrides
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-# Allow safe relative paths only — no traversal.
-_SAFE_REL = re.compile(r"^[a-zA-Z0-9_./-]+$")
+# Reject only the path-traversal vectors: NUL/control bytes and a ``..``
+# segment. We deliberately do NOT use a positive character whitelist here:
+# dataset filenames legitimately contain characters outside
+# ``[a-zA-Z0-9_./-]`` (spaces, CJK, ``@``, parens, …), and the old whitelist
+# silently broke browsing for such images — the file appeared in the listing
+# (``list_images`` never applied it) but its ``<img>``/caption fetch 404'd.
+# Relative paths MAY contain ``/`` (subdirectories, via ``rglob`` in
+# ``list_images``), so separators are allowed; containment is enforced by the
+# ``resolve() / relative_to(base)`` check in :func:`resolve_image_path`.
+_UNSAFE_REL = re.compile(r"[\x00-\x1f]|\.\.")
 
 _MASK_SEARCH_ROOTS_FALLBACK = [
     ROOT / "post_image_dataset" / "masks",
@@ -187,10 +195,11 @@ def resolve_image_path(directory: str, rel_path: str) -> Path | None:
     base = resolve_directory(directory)
     if base is None:
         return None
-    if ".." in rel_path or not _SAFE_REL.match(rel_path):
+    if _UNSAFE_REL.search(rel_path):
         return None
     candidate = (base / rel_path).resolve()
-    # Ensure the resolved path is still under base
+    # Ensure the resolved path is still under base. This is the real
+    # containment guarantee — the regex above is defense-in-depth only.
     try:
         candidate.relative_to(base)
     except ValueError:

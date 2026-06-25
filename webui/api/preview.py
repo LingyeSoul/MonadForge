@@ -27,10 +27,16 @@ router = APIRouter()
 
 _SAMPLE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
-# Whitelist: only [a-zA-Z0-9_./-] is allowed in the relative path. No spaces,
-# no NULs, no parent-traversal dots-as-segments — combined with the
-# ``.resolve() / relative_to(root)`` check below, this is defense-in-depth.
-_SAFE_REL = re.compile(r"^[a-zA-Z0-9_./-]+$")
+# Reject only the path-traversal vectors: NUL/control bytes, any path separator
+# (the served path is meant to be a bare filename within the sample dir), and a
+# ``..`` segment. We deliberately do NOT use a positive character whitelist:
+# ``output_name`` is user-controlled and legitimately contains characters
+# outside ``[a-zA-Z0-9_./-]`` (e.g. ``@``, spaces, CJK, parens), and a whitelist
+# silently broke the gallery for such runs — the file showed up in the listing
+# but ``<img>`` got a 400 and fell back to the filename text. Containment is
+# still enforced by the ``resolve() / relative_to(sample_dir)`` check below;
+# this check is defense-in-depth against the traversal itself.
+_UNSAFE_PATH = re.compile(r"[\x00-\x1f\\/]|\.\.|^\.")
 
 
 class SampleImage(BaseModel):
@@ -187,7 +193,7 @@ def get_sample_file(
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    if not _SAFE_REL.match(path) or ".." in path.split("/"):
+    if _UNSAFE_PATH.search(path):
         raise HTTPException(status_code=400, detail="Invalid sample path")
 
     sample_dir = _resolve_task_sample_dir(task_id)

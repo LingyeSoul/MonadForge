@@ -313,3 +313,97 @@ def test_safe_args_pass_through():
 
     # Should not raise.
     _reject_forbidden_args(["--network_dim", "32", "--max_train_epochs", "64"])
+
+
+# ---------------------------------------------------------------------------
+# get_sample_file: filename whitelist replaced with a traversal blacklist
+#
+# The file endpoint used to gate ``path`` on ``^[a-zA-Z0-9_./-]+$``, which
+# silently rejected sample files whose ``output_name`` carries characters
+# outside that set (e.g. ``@``, spaces, CJK, parens). The file still appeared
+# in the listing (``list_task_samples`` never applied the regex), so the gallery
+# tile rendered the *filename text* in place of the broken ``<img>`` — the
+# "不显示图片只显示文件名" symptom. Containment is now enforced by
+# ``resolve() + relative_to(sample_dir)``; only traversal vectors are rejected.
+# ---------------------------------------------------------------------------
+
+
+def _write_png(p: Path) -> None:
+    """Write a minimal 1x1 PNG (valid header + IEND) so ``is_file()`` passes."""
+    p.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
+        b"\x1f\x15\xc4\x89"
+        b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4"
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
+def test_sample_file_with_at_sign_is_served(preview_env):
+    """Regression: ``output_name = lanima_tlora_ortho-@nanfang_e000002`` produces
+    a sample PNG whose filename contains ``@``. The old whitelist rejected it
+    (400), so the gallery tile showed the filename text instead of the image."""
+    svc, tmp = preview_env
+    from webui.services.task_service import Task, TaskState
+
+    task = Task(id="at", command="lora", args=[], state=TaskState.RUNNING)
+    task.sample_dir = "output/daemon/jobs/at/sample"
+    svc._tasks["at"] = task
+    sample_dir = _mkdir(tmp / "output" / "daemon" / "jobs" / "at" / "sample")
+    fn = "lanima_tlora_ortho-@nanfang_e000002_00_20260625091724_740298002.png"
+    _write_png(sample_dir / fn)
+
+    from webui.api.preview import get_sample_file
+
+    # Must NOT raise — ``@`` is a legitimate filename character.
+    resp = get_sample_file("at", path=fn)
+    assert resp.status_code == 200
+
+
+def test_sample_file_with_spaces_and_cjk_is_served(preview_env):
+    """``output_name`` may carry spaces and CJK; both are legitimate filename
+    characters and must reach the file, not trip the gate."""
+    svc, tmp = preview_env
+    from webui.services.task_service import Task, TaskState
+
+    task = Task(id="i18n", command="lora", args=[], state=TaskState.RUNNING)
+    task.sample_dir = "output/daemon/jobs/i18n/sample"
+    svc._tasks["i18n"] = task
+    sample_dir = _mkdir(tmp / "output" / "daemon" / "jobs" / "i18n" / "sample")
+    fn = "我的 LoRA e000002_00_20260625091724.png"
+    _write_png(sample_dir / fn)
+
+    from webui.api.preview import get_sample_file
+
+    resp = get_sample_file("i18n", path=fn)
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        "../secret.png",  # parent traversal
+        "subdir/img.png",  # separator (must be a bare filename)
+        "..\\..\\evil.png",  # backslash traversal (Windows)
+        "img\x00.png",  # NUL byte
+    ],
+)
+def test_sample_file_traversal_vectors_rejected(preview_env, bad_path):
+    """Traversal / separator / NUL paths are still rejected with 400 — the
+    blacklist retains the defense-in-depth the whitelist once (over-broadly)
+    provided. Containment is then re-asserted by ``relative_to``."""
+    svc, tmp = preview_env
+    from webui.services.task_service import Task, TaskState
+
+    task = Task(id="tv", command="lora", args=[], state=TaskState.RUNNING)
+    task.sample_dir = "output/daemon/jobs/tv/sample"
+    svc._tasks["tv"] = task
+    _mkdir(tmp / "output" / "daemon" / "jobs" / "tv" / "sample")
+
+    from fastapi import HTTPException
+
+    from webui.api.preview import get_sample_file
+
+    with pytest.raises(HTTPException) as exc:
+        get_sample_file("tv", path=bad_path)
+    assert exc.value.status_code == 400
