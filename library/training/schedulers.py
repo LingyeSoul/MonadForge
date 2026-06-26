@@ -6,7 +6,10 @@ from typing import Any, Optional
 import torch
 from torch.optim import Optimizer
 
-from library.training.optimizers import is_schedulefree_optimizer
+from library.training.optimizers import (
+    is_schedulefree_optimizer,
+    is_self_managed_lr_optimizer,
+)
 
 # transformers (~1.3s) and diffusers (~2s) are imported lazily inside
 # get_scheduler_fix so that merely importing this module (and, transitively,
@@ -26,6 +29,8 @@ def get_dummy_scheduler(optimizer: Optimizer) -> Any:
             pass
 
         def get_last_lr(self):
+            if hasattr(self.optimizer, "get_learning_rates"):
+                return list(self.optimizer.get_learning_rates())
             return [group["lr"] for group in self.optimizer.param_groups]
 
     return DummyScheduler(optimizer)
@@ -70,7 +75,9 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     """
     Unified API to get any scheduler from its name.
     """
-    if is_schedulefree_optimizer(optimizer, args):
+    if is_schedulefree_optimizer(optimizer, args) or is_self_managed_lr_optimizer(
+        optimizer, args
+    ):
         return get_dummy_scheduler(optimizer)
 
     name = args.lr_scheduler
@@ -83,7 +90,7 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     lr_scheduler_kwargs = {}
     if args.lr_scheduler_args is not None and len(args.lr_scheduler_args) > 0:
         for arg in args.lr_scheduler_args:
-            key, value = arg.split("=")
+            key, value = arg.split("=", 1)
             value = ast.literal_eval(value)
             lr_scheduler_kwargs[key] = value
 
@@ -106,6 +113,17 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         lr_scheduler_class = getattr(lr_scheduler_module, lr_scheduler_type)
         lr_scheduler = lr_scheduler_class(optimizer, **lr_scheduler_kwargs)
         return wrap_check_needless_num_warmup_steps(lr_scheduler)
+
+    if name.startswith("adafactor"):
+        import transformers
+
+        assert isinstance(optimizer, transformers.optimization.Adafactor), (
+            "adafactor scheduler must be used with Adafactor optimizer"
+        )
+        initial_lr = float(name.split(":")[1])
+        return wrap_check_needless_num_warmup_steps(
+            transformers.optimization.AdafactorSchedule(optimizer, initial_lr)
+        )
 
     # Gate on the literal value ("piecewise_constant") so the diffusers import
     # (~2s) is only paid when that scheduler is actually requested.
