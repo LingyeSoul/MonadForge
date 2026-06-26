@@ -10,7 +10,7 @@ from torch.optim import Optimizer
 logger = logging.getLogger(__name__)
 
 
-def get_optimizer_kwargs(args) -> dict:
+def get_optimizer_kwargs(args: argparse.Namespace) -> dict:
     optimizer_kwargs = {}
     if args.optimizer_args is not None and len(args.optimizer_args) > 0:
         for arg in args.optimizer_args:
@@ -20,7 +20,9 @@ def get_optimizer_kwargs(args) -> dict:
     return optimizer_kwargs
 
 
-def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
+def get_optimizer(
+    args: argparse.Namespace, trainable_params
+) -> tuple[str, str, object]:
     optimizer_type = args.optimizer_type
     if optimizer_type is None or optimizer_type == "":
         optimizer_type = "AdamW"
@@ -142,6 +144,18 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         )
 
     elif optimizer_type == "Adafactor".lower():
+        # Cross-function handshake with get_scheduler_fix (schedulers.py): under
+        # relative_step=True this branch rewrites ``args.lr_scheduler`` to
+        # ``"adafactor:<lr>"`` and nulls ``args.learning_rate`` so the subsequent
+        # ``get_scheduler_fix(args, optimizer, ...)`` call in train.py builds an
+        # ``AdafactorSchedule(optimizer, initial_lr)`` from that encoded LR. The
+        # ``group.pop("lr")`` below strips per-group LRs (unet_lr/text_encoder_lr)
+        # that Adafactor would ignore under relative_step. These mutations of the
+        # caller's ``args`` and ``trainable_params`` are intentional — do not
+        # remove them without also updating the scheduler-side dispatch. The
+        # Automagic / ProdigyPlusScheduleFree branches above follow the opposite
+        # convention (they only *warn* about the ignored scheduler and do not
+        # mutate args) because they self-manage LR rather than encoding it.
         if "relative_step" not in optimizer_kwargs:
             optimizer_kwargs["relative_step"] = True
         if not optimizer_kwargs["relative_step"] and optimizer_kwargs.get(
@@ -155,7 +169,7 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
             if lr != 0.0:
                 logger.warning("learning rate is used as initial_lr")
             args.learning_rate = None
-            if isinstance(trainable_params, list) and isinstance(
+            if isinstance(trainable_params, list) and trainable_params and isinstance(
                 trainable_params[0], dict
             ):
                 has_group_lr = False
@@ -188,7 +202,9 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
     ):
         actual_lr = lr
         lr_count = 1
-        if isinstance(trainable_params, list) and isinstance(trainable_params[0], dict):
+        if isinstance(trainable_params, list) and trainable_params and isinstance(
+            trainable_params[0], dict
+        ):
             lrs = set()
             actual_lr = trainable_params[0].get("lr", actual_lr)
             for group in trainable_params:
@@ -197,12 +213,14 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
 
         if actual_lr <= 0.1:
             logger.warning(
-                f"learning rate is too low. If using D-Adaptation or Prodigy, set learning rate around 1.0: lr={actual_lr}"
+                "learning rate is too low. If using D-Adaptation or Prodigy, set learning rate around 1.0: lr=%s",
+                actual_lr,
             )
             logger.warning("recommend option: lr=1.0")
         if lr_count > 1:
             logger.warning(
-                f"when multiple learning rates are specified with dadaptation, only the first one will take effect: lr={actual_lr}"
+                "when multiple learning rates are specified with dadaptation, only the first one will take effect: lr=%s",
+                actual_lr,
             )
 
         if optimizer_type.startswith("DAdapt".lower()):
@@ -263,7 +281,9 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         try:
             import pytorch_optimizer
         except ImportError:
-            raise ImportError("No pytorch_optimizer")
+            raise ImportError(
+                "No pytorch_optimizer. Install with: pip install pytorch_optimizer"
+            )
         logger.info(f"use CAME optimizer | {optimizer_kwargs}")
         optimizer_class = pytorch_optimizer.CAME
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)

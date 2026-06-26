@@ -49,6 +49,26 @@ def test_parse_args_value_with_equals_old_behavior_fails():
         _key, _value = arg.split("=")
 
 
+def test_scheduler_fix_parses_value_with_equals():
+    """End-to-end: a value containing '=' must round-trip through get_scheduler_fix.
+
+    Regression guard for the ``split("=", 1)`` parse loop inside
+    ``get_scheduler_fix`` (schedulers.py). The ``constant`` scheduler accepts no
+    extra kwargs, so forwarding ``foo="a=b"`` raises ``TypeError`` mentioning the
+    *parsed* key ``foo`` — which only happens if the value survived the parse
+    intact (``split("=")`` would have raised ``ValueError`` before reaching the
+    scheduler). The isolated ``test_scheduler_args_value_with_equals`` above
+    covers the algorithm in isolation; this test pins the integration path.
+    """
+    pytest.importorskip("torch")
+    from library.training.schedulers import get_scheduler_fix
+
+    optimizer = MagicMock()
+    args = _make_args(lr_scheduler="constant", lr_scheduler_args=['foo="a=b"'])
+    with pytest.raises(TypeError, match="foo"):
+        get_scheduler_fix(args, optimizer, num_processes=1)
+
+
 def test_adafactor_scheduler_missing_colon_raises():
     """--lr_scheduler 'adafactor' without ':lr' should raise ValueError, not IndexError."""
     pytest.importorskip("torch")

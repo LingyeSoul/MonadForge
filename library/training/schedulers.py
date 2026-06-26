@@ -14,8 +14,8 @@ from library.training.optimizers import (
 # transformers (~1.3s) and diffusers (~2s) are imported lazily inside
 # get_scheduler_fix so that merely importing this module (and, transitively,
 # library.train_util) doesn't pay for them. Only the actual scheduler-build
-# path needs them, and only the piecewise_constant branch reaches into
-# diffusers.optimization.
+# path needs them: the adafactor branch reaches into transformers.optimization
+# and the piecewise_constant branch reaches into diffusers.optimization.
 
 logger = logging.getLogger(__name__)
 
