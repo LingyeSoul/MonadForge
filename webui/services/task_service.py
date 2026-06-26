@@ -572,7 +572,11 @@ class TaskService:
             variant = env.get("GUI_PRESETS")
             if not variant and args and not args[0].startswith("-"):
                 variant = args[0]
-            method = variant or "lora"
+            # The WebUI lists custom overlays as ``custom/<stem>`` and feeds
+            # that identifier back here; strip the prefix (and canonicalize
+            # casing on case-insensitive FSes) so load_path_overrides gets the
+            # bare stem it expects. Mirrors scripts/tasks/training.py.
+            method = (variant or "lora").split("/", 1)[-1]
             methods_subdir = "gui-methods"
         else:
             method_by_command = {

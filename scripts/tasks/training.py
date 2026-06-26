@@ -88,12 +88,92 @@ def cmd_turbo(extra):
     run([PY, *argv])
 
 
+def _list_gui_variants() -> list[str]:
+    """All selectable gui-methods variant identifiers, sorted.
+
+    Built-ins are bare stems (``lora``, ``lokr``); user overlays under
+    ``configs/custom/variants/`` are prefixed ``custom/<stem>``. This is the
+    single source of truth for the ``Available:`` list AND for the lookup in
+    :func:`_resolve_gui_variant` — both must agree on the ``custom/`` namespace
+    convention, or a user clicking a listed variant can't find it again.
+    """
+    available = sorted(
+        p.stem for p in (ROOT / "configs" / "gui-methods").glob("*.toml")
+    )
+    custom = ROOT / "configs" / "custom" / "variants"
+    if custom.is_dir():
+        for p in sorted(custom.glob("*.toml")):
+            # An overlay whose stem collides with a builtin is an override of
+            # that builtin, not a new variant — list it under its bare stem.
+            tag = p.stem if p.stem in available else f"custom/{p.stem}"
+            if tag not in available:
+                available.append(tag)
+    return available
+
+
+def _resolve_gui_variant(raw: str) -> str:
+    """Normalize a user-supplied variant selector to a bare stem.
+
+    The WebUI lists user overlays as ``custom/<stem>`` (see
+    ``config_service.list_gui_variants``) and feeds that same string back as
+    ``GUI_PRESETS`` / the positional argv. Two real-world failure modes this
+    must absorb:
+
+    1. ``custom/`` prefix: ``custom/lokr`` is an *identifier*, not a path — the
+       on-disk file is ``configs/custom/variants/lokr.toml`` (no nested
+       ``custom/`` segment). Stripping the prefix yields the stem the rest of
+       the pipeline expects.
+    2. Case: Windows' case-insensitive FS lets ``Lokr.toml`` resolve against
+       ``lokr.toml`` at open time, but downstream string compares (TOML
+       ``output_name``, save paths, provenance tags) are case-sensitive and
+       silently desync. We match the selector against the actual on-disk stems
+       (builtins + custom overlays) and return the canonical casing.
+
+    Returns the bare stem (e.g. ``"lokr"``). Raises ``SystemExit`` with the
+    full available list when no builtin or custom variant matches — so a typo
+    surfaces before a two-hour run starts.
+    """
+    raw = (raw or "").strip()
+    stem = raw.split("/", 1)[-1]  # strip a single leading "custom/" (or any dir)
+
+    # Collect canonical on-disk stems from both variant roots.
+    builtin_stems = {p.stem for p in (ROOT / "configs" / "gui-methods").glob("*.toml")}
+    custom_dir = ROOT / "configs" / "custom" / "variants"
+    custom_stems = (
+        {p.stem for p in custom_dir.glob("*.toml")} if custom_dir.is_dir() else set()
+    )
+
+    # Exact (case-sensitive) match wins outright.
+    if stem in builtin_stems or stem in custom_stems:
+        return stem
+
+    # Case-insensitive fallback — canonicalize to the on-disk casing. Needed
+    # on Windows where the FS is case-insensitive but downstream string ops
+    # (output_name, provenance) are not.
+    lower = stem.lower()
+    for candidate in sorted(builtin_stems | custom_stems):
+        if candidate.lower() == lower:
+            return candidate
+
+    print(
+        f"Unknown gui-methods variant: {raw!r}\n"
+        f"Available: {', '.join(_list_gui_variants())}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def cmd_lora_gui(extra):
     """Train from configs/gui-methods/<variant>.toml.
 
     Variant is taken from GUI_PRESETS env var, falling back to the first
     positional extra arg (``python tasks.py lora-gui tlora ...``), then to
     ``lora`` (plain). Extra args after the variant are forwarded as usual.
+
+    The selector is normalized by :func:`_resolve_gui_variant`: a
+    ``custom/<stem>`` identifier is unwrapped to its bare stem, and casing is
+    canonicalized against the on-disk variant files (Windows' case-insensitive
+    FS otherwise lets ``Lokr`` silently desync from downstream string ops).
     """
     variant = os.environ.get("GUI_PRESETS")
     if not variant and extra and not extra[0].startswith("-"):
@@ -101,25 +181,18 @@ def cmd_lora_gui(extra):
         extra = extra[1:]
     variant = variant or "lora"
     preset_env = os.environ.get("PRESET", "<not set>")
-    print(f"[cmd_lora_gui] variant={variant!r} PRESET env={preset_env!r}", file=sys.stderr)
 
-    expected = ROOT / "configs" / "gui-methods" / f"{variant}.toml"
-    custom_overlay = ROOT / "configs" / "custom" / "variants" / f"{variant}.toml"
-    if not expected.exists() and not custom_overlay.exists():
-        available = sorted(
-            p.stem for p in (ROOT / "configs" / "gui-methods").glob("*.toml")
-        )
-        custom = ROOT / "configs" / "custom" / "variants"
-        if custom.is_dir():
-            available.extend(f"custom/{p.stem}" for p in sorted(custom.glob("*.toml")))
+    stem = _resolve_gui_variant(variant)
+    if stem != variant:
         print(
-            f"Unknown gui-methods variant: {variant!r}\n"
-            f"Available: {', '.join(available)}",
+            f"[cmd_lora_gui] normalized variant {variant!r} -> {stem!r} "
+            f"(PRESET env={preset_env!r})",
             file=sys.stderr,
         )
-        sys.exit(1)
+    else:
+        print(f"[cmd_lora_gui] variant={variant!r} PRESET env={preset_env!r}", file=sys.stderr)
 
-    train(variant, extra, methods_subdir="gui-methods")
+    train(stem, extra, methods_subdir="gui-methods")
 
 
 def _toml_table_to_argv(table: dict) -> list[str]:
