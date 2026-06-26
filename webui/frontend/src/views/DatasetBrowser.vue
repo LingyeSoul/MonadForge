@@ -414,17 +414,31 @@
               </div>
             </v-col>
             <v-col cols="12" md="6">
-              <v-textarea
-                v-model="editCaption"
-                :label="t('dsCaption')"
-                variant="outlined"
-                rows="10"
-                auto-grow
-                :loading="saving"
-                :hint="captionHint"
-                persistent-hint
-                class="caption-editor"
-              />
+              <div class="caption-editor-wrapper">
+                <v-textarea
+                  v-model="editCaption"
+                  :label="t('dsCaption')"
+                  variant="outlined"
+                  rows="10"
+                  auto-grow
+                  :loading="saving"
+                  :hint="captionHint"
+                  persistent-hint
+                  class="caption-editor"
+                  @input="onCaptionInput"
+                  @keydown="onAutocompleteKeydown"
+                />
+                <v-card v-if="autocompleteVisible" class="autocomplete-dropdown" elevation="8" density="compact">
+                  <v-list density="compact" class="autocomplete-list">
+                    <v-list-item v-for="(suggestion, si) in autocompleteSuggestions" :key="suggestion" :active="si === autocompleteSelected" @click="applyAutocomplete(suggestion)" @mouseenter="autocompleteSelected = si">
+                      <v-list-item-title class="text-caption">{{ suggestion }}</v-list-item-title>
+                      <template #append>
+                        <span class="text-caption text-medium-emphasis">{{ tagIndex.get(suggestion) || 0 }}</span>
+                      </template>
+                    </v-list-item>
+                  </v-list>
+                </v-card>
+              </div>
               <!-- Tag preview -->
               <div v-if="editCaption" class="tag-preview mt-2">
                 <div class="text-caption text-medium-emphasis mb-1">{{ t('dsTagPreview') }}</div>
@@ -562,7 +576,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import { useNotifyStore } from '../stores/notify'
 
@@ -627,6 +641,90 @@ const skipExisting = ref(true)
 const tagging = ref(false)
 const tagProgress = ref({ current: 0, total: 0 })
 const showTaggerSettings = ref(false)
+
+// Tag index for autocomplete
+const tagIndex = ref<Map<string, number>>(new Map())
+const loadingTagIndex = ref(false)
+
+async function loadTagIndex() {
+  loadingTagIndex.value = true
+  try {
+    const res = await fetch(`/api/images/tag-index?directory=${encodeURIComponent(directory.value)}`)
+    const data = await res.json()
+    tagIndex.value = new Map(Object.entries(data.tags || {}))
+  } catch {
+    tagIndex.value = new Map()
+  } finally {
+    loadingTagIndex.value = false
+  }
+}
+
+// Autocomplete state
+const autocompleteVisible = ref(false)
+const autocompleteSuggestions = ref<string[]>([])
+const autocompleteSelected = ref(0)
+
+function onCaptionInput(e: Event) {
+  const textarea = e.target as HTMLTextAreaElement
+  const value = textarea.value
+  const cursorPos = textarea.selectionStart
+  const beforeCursor = value.slice(0, cursorPos)
+  const lastComma = beforeCursor.lastIndexOf(',')
+  const currentTag = beforeCursor.slice(lastComma + 1).trimStart()
+  if (currentTag.length < 1 || tagIndex.value.size === 0) {
+    autocompleteVisible.value = false
+    return
+  }
+  const filter = currentTag.toLowerCase()
+  const matches: string[] = []
+  for (const [tag] of tagIndex.value) {
+    if (tag.toLowerCase().includes(filter) && tag.toLowerCase() !== filter) {
+      matches.push(tag)
+    }
+    if (matches.length >= 20) break
+  }
+  if (matches.length === 0) {
+    autocompleteVisible.value = false
+    return
+  }
+  autocompleteSuggestions.value = matches
+  autocompleteSelected.value = 0
+  autocompleteVisible.value = true
+}
+
+function applyAutocomplete(tag: string) {
+  const textarea = document.querySelector('.caption-editor textarea') as HTMLTextAreaElement
+  if (!textarea) return
+  const value = textarea.value
+  const cursorPos = textarea.selectionStart
+  const beforeCursor = value.slice(0, cursorPos)
+  const lastComma = beforeCursor.lastIndexOf(',')
+  const prefix = value.slice(0, lastComma + 1) + ' '
+  const suffix = value.slice(cursorPos)
+  editCaption.value = prefix + tag + suffix
+  autocompleteVisible.value = false
+  nextTick(() => {
+    textarea.focus()
+    const newPos = prefix.length + tag.length
+    textarea.setSelectionRange(newPos, newPos)
+  })
+}
+
+function onAutocompleteKeydown(e: KeyboardEvent) {
+  if (!autocompleteVisible.value) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    autocompleteSelected.value = Math.min(autocompleteSelected.value + 1, autocompleteSuggestions.value.length - 1)
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    autocompleteSelected.value = Math.max(autocompleteSelected.value - 1, 0)
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault()
+    applyAutocomplete(autocompleteSuggestions.value[autocompleteSelected.value])
+  } else if (e.key === 'Escape') {
+    autocompleteVisible.value = false
+  }
+}
 
 // ── computed ──────────────────────────────────────────────────
 
@@ -747,6 +845,7 @@ async function loadImages() {
 function onDirectoryChange() {
   page.value = 1
   loadImages()
+  loadTagIndex()
 }
 
 async function addCustomPath() {
@@ -1213,6 +1312,7 @@ const grammarGuideText = computed(() => {
 onMounted(async () => {
   await loadDirectories()
   await loadImages()
+  loadTagIndex()
   fetchTaggerSettings()
   document.addEventListener('keydown', _onKeyDown)
 })
@@ -1261,6 +1361,10 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
 }
+
+.caption-editor-wrapper { position: relative; }
+.autocomplete-dropdown { position: absolute; bottom: 100%; left: 0; right: 0; z-index: 10; max-height: 200px; overflow-y: auto; }
+.autocomplete-list { padding: 0; }
 
 .caption-editor :deep(.v-field) {
   font-family: monospace;
