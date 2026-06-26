@@ -13,6 +13,17 @@
       >
         {{ taskStore.daemonPaused ? t('taskResumeQueue') : t('taskPauseQueue') }}
       </v-btn>
+      <v-btn
+        v-if="!isWindows"
+        variant="text"
+        size="small"
+        color="error"
+        :disabled="!taskStore.daemonUp"
+        prepend-icon="mdi-power"
+        @click="showShutdownDlg = true"
+      >
+        {{ t('taskShutdownDaemon') }}
+      </v-btn>
       <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="taskStore.poll()">
         {{ t('ppRefresh') }}
       </v-btn>
@@ -132,6 +143,38 @@
         </v-card>
       </template>
     </div>
+
+    <!-- Shutdown daemon confirmation dialog -->
+    <v-dialog v-model="showShutdownDlg" max-width="450">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon icon="mdi-power" color="error" class="mr-2" />
+          {{ t('taskShutdownDaemon') }}
+        </v-card-title>
+        <v-card-text>
+          <div class="text-body-2 mb-3">{{ t('taskShutdownDaemonDesc') }}</div>
+          <v-checkbox
+            v-model="shutdownKillJobs"
+            :label="t('taskShutdownKillJobs')"
+            density="compact"
+            hide-details
+          />
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" :disabled="shutdownLoading" @click="showShutdownDlg = false">
+            {{ t('dsCancel') }}
+          </v-btn>
+          <v-btn
+            color="error"
+            :loading="shutdownLoading"
+            @click="confirmShutdown"
+          >
+            {{ t('taskShutdownConfirm') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -144,6 +187,27 @@ import LogStream from '../components/LogStream.vue'
 const taskStore = useTaskStore()
 const { t } = useI18n()
 const selectedTask = ref('')
+
+// On Windows the daemon hosts the WebUI as a sidecar and the system-tray app is
+// the proper "complete exit" entry point (its Quit already shuts the daemon
+// down). So the in-WebUI "Stop Daemon" button only makes sense on non-Windows
+// setups where there is no tray.
+const isWindows = navigator.userAgent.includes('Windows')
+
+// ── Shutdown daemon dialog ─────────────────────────────────────
+const showShutdownDlg = ref(false)
+const shutdownKillJobs = ref(true)
+const shutdownLoading = ref(false)
+
+async function confirmShutdown() {
+  shutdownLoading.value = true
+  try {
+    await taskStore.shutdownDaemon(shutdownKillJobs.value)
+    showShutdownDlg.value = false
+  } finally {
+    shutdownLoading.value = false
+  }
+}
 
 let pollTimer = 0
 

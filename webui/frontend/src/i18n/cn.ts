@@ -29,6 +29,10 @@ export default {
   taskPauseQueue: '暂停队列',
   taskResumeQueue: '恢复队列',
   taskQueuePosition: '队列位置',
+  taskShutdownDaemon: '关闭守护进程',
+  taskShutdownDaemonDesc: '将完全退出训练守护进程。若守护进程同时托管 WebUI，本界面也会一并关闭。',
+  taskShutdownKillJobs: '同时终止正在运行的任务',
+  taskShutdownConfirm: '关闭并退出',
 
   // Training Dashboard
   dashTitle: '训练仪表盘',
@@ -416,6 +420,7 @@ export default {
   notifyQueuePauseFailed: '暂停队列失败',
   notifyQueueResumeFailed: '恢复队列失败',
   notifyDaemonDown: '训练守护进程未运行',
+  notifyDaemonShutdown: '训练守护进程已关闭',
 
   // WandB Tracking
   cfgWandbSection: 'W&B 追踪',

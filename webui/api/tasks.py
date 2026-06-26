@@ -140,6 +140,24 @@ async def queue_resume():
         raise HTTPException(status_code=502, detail=f"daemon: {exc}") from exc
 
 
+class DaemonShutdownRequest(BaseModel):
+    kill_jobs: bool = True
+
+
+@router.post("/daemon/shutdown")
+async def daemon_shutdown(body: DaemonShutdownRequest):
+    """Fully stop the training daemon (complete exit).
+
+    A connection-reset / 5xx is expected here when the daemon hosts the WebUI
+    as a sidecar — its shutdown tree-kills this server too. The shutdown has
+    still been triggered in that case.
+    """
+    try:
+        return await task_service.shutdown_daemon(kill_jobs=body.kill_jobs)
+    except DaemonError as exc:
+        raise HTTPException(status_code=502, detail=f"daemon: {exc}") from exc
+
+
 @router.get("/{task_id}")
 def get_task(task_id: str):
     """Get task status."""

@@ -106,6 +106,28 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  async function shutdownDaemon(killJobs: boolean = true): Promise<boolean> {
+    try {
+      await fetch('/api/tasks/daemon/shutdown', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kill_jobs: killJobs }),
+      })
+      // A clean response is best-case — but the daemon may host the WebUI as a
+      // sidecar and tree-kill this server on shutdown, so a network error here
+      // is also an expected outcome. Treat both as success.
+      notify.show(t('notifyDaemonShutdown'), 'info')
+      daemonUp.value = false
+      return true
+    } catch {
+      // Connection reset = the daemon (and possibly this server) went down —
+      // the shutdown did fire.
+      notify.show(t('notifyDaemonShutdown'), 'info')
+      daemonUp.value = false
+      return true
+    }
+  }
+
   async function startTask(command: string, args: string[] = [], env?: Record<string, string>): Promise<string | null> {
     loading.value = true
     try {
@@ -150,6 +172,7 @@ export const useTaskStore = defineStore('task', () => {
     fetchQueueStatus,
     pauseQueue,
     resumeQueue,
+    shutdownDaemon,
     startTask,
     cancelTask,
     poll,

@@ -29,6 +29,10 @@ export default {
   taskPauseQueue: '一時停止',
   taskResumeQueue: '再開',
   taskQueuePosition: 'キュー位置',
+  taskShutdownDaemon: 'デーモン停止',
+  taskShutdownDaemonDesc: '学習デーモンを完全に終了します。デーモンが WebUI をホストしている場合、この画面も閉じます。',
+  taskShutdownKillJobs: '実行中のタスクも終了',
+  taskShutdownConfirm: '停止して終了',
 
   // Training Dashboard
   dashTitle: '学習ダッシュボード',
@@ -416,6 +420,7 @@ export default {
   notifyQueuePauseFailed: 'キュー一時停止失敗',
   notifyQueueResumeFailed: 'キュー再開失敗',
   notifyDaemonDown: '学習デーモン未実行',
+  notifyDaemonShutdown: '学習デーモンを停止しました',
 
   // WandB Tracking
   cfgWandbSection: 'W&B トラッキング',

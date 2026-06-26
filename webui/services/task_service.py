@@ -177,6 +177,19 @@ class TaskService:
         """
         return await daemon_client.start_queue()
 
+    async def shutdown_daemon(self, *, kill_jobs: bool = True) -> dict:
+        """Fully stop the training daemon — a complete exit (process + worker).
+
+        Posts to the daemon's ``/shutdown``; by default ``kill_jobs=True`` also
+        tree-kills the running job so nothing is left behind. When the daemon
+        hosts the WebUI as a sidecar (the default), the WebUI process is taken
+        down too, so the response may arrive after the connection drops —
+        callers should not treat a connection-reset as failure.
+
+        Raises :class:`DaemonError` if the daemon is unreachable.
+        """
+        return await daemon_client.shutdown(kill_jobs=kill_jobs)
+
     def get_task(self, task_id: str) -> Optional[Task]:
         return self._tasks.get(task_id)
 

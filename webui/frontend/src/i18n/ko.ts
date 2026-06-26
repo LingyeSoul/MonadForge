@@ -29,6 +29,10 @@ export default {
   taskPauseQueue: '일시정지',
   taskResumeQueue: '재개',
   taskQueuePosition: '대기 위치',
+  taskShutdownDaemon: '데몬 종료',
+  taskShutdownDaemonDesc: '학습 데몬을 완전히 종료합니다. 데몬이 WebUI를 호스팅 중이면 이 화면도 함께 닫힙니다.',
+  taskShutdownKillJobs: '실행 중인 작업도 종료',
+  taskShutdownConfirm: '종료',
 
   // Training Dashboard
   dashTitle: '학습 대시보드',
@@ -416,6 +420,7 @@ export default {
   notifyQueuePauseFailed: '큐 일시정지 실패',
   notifyQueueResumeFailed: '큐 재개 실패',
   notifyDaemonDown: '학습 데몬 미실행',
+  notifyDaemonShutdown: '학습 데몬이 종료되었습니다',
 
   // WandB Tracking
   cfgWandbSection: 'W&B 추적',

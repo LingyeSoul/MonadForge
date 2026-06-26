@@ -29,6 +29,10 @@ export default {
   taskPauseQueue: 'Pause Queue',
   taskResumeQueue: 'Resume Queue',
   taskQueuePosition: 'Queue Position',
+  taskShutdownDaemon: 'Stop Daemon',
+  taskShutdownDaemonDesc: 'This will fully exit the training daemon. If the daemon hosts the WebUI, this interface will also close.',
+  taskShutdownKillJobs: 'Also terminate running jobs',
+  taskShutdownConfirm: 'Stop & Exit',
 
   // Training Dashboard
   dashTitle: 'Training Dashboard',
@@ -416,6 +420,7 @@ export default {
   notifyQueuePauseFailed: 'Failed to pause the queue',
   notifyQueueResumeFailed: 'Failed to resume the queue',
   notifyDaemonDown: 'Training daemon not running',
+  notifyDaemonShutdown: 'Training daemon has been stopped',
 
   // WandB Tracking
   cfgWandbSection: 'W&B Tracking',
