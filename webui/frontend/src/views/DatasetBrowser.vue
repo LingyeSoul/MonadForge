@@ -208,6 +208,39 @@
       </v-progress-linear>
     </v-card>
 
+    <!-- Batch operations toolbar -->
+    <v-expand-transition>
+      <v-card v-if="selectionMode && selectedCount > 0" variant="tonal" class="mb-4 pa-3">
+        <v-row align="center" dense>
+          <v-col cols="auto">
+            <span class="text-body-2">{{ selectedCount }} selected</span>
+          </v-col>
+          <v-col cols="auto">
+            <v-btn size="small" variant="text" @click="selectAll">Select All</v-btn>
+          </v-col>
+          <v-col cols="auto">
+            <v-btn size="small" variant="text" @click="deselectAll">Deselect All</v-btn>
+          </v-col>
+          <v-spacer />
+          <v-col cols="auto">
+            <v-btn size="small" color="primary" variant="tonal" @click="openBatchDialog('append')">
+              <v-icon icon="mdi-plus" class="mr-1" />Append Tag
+            </v-btn>
+          </v-col>
+          <v-col cols="auto">
+            <v-btn size="small" color="warning" variant="tonal" @click="openBatchDialog('remove')">
+              <v-icon icon="mdi-minus" class="mr-1" />Remove Tag
+            </v-btn>
+          </v-col>
+          <v-col cols="auto">
+            <v-btn size="small" variant="tonal" @click="openBatchDialog('replace')">
+              <v-icon icon="mdi-find-replace" class="mr-1" />Find &amp;&amp; Replace
+            </v-btn>
+          </v-col>
+        </v-row>
+      </v-card>
+    </v-expand-transition>
+
     <!-- Scrollable content area -->
     <div class="content-scroll">
       <!-- Grid view -->
@@ -599,6 +632,26 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Batch operation dialog -->
+    <v-dialog v-model="batchDialog" max-width="500">
+      <v-card>
+        <v-card-title>Batch — {{ batchAction }}</v-card-title>
+        <v-card-text>
+          <v-text-field v-if="batchAction === 'append' || batchAction === 'remove'" v-model="batchTag" :label="batchAction === 'append' ? 'Tags to append (comma-separated)' : 'Tags to remove (comma-separated)'" placeholder="e.g. smile, wink" variant="outlined" density="compact" hint="Comma-separated" persistent-hint />
+          <template v-if="batchAction === 'replace'">
+            <v-text-field v-model="batchFind" label="Find:" variant="outlined" density="compact" class="mb-2" />
+            <v-text-field v-model="batchReplace" label="Replace with:" variant="outlined" density="compact" />
+            <v-checkbox v-model="batchUseRegex" label="Regex" density="compact" hide-details />
+          </template>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="batchDialog = false">Cancel</v-btn>
+          <v-btn color="primary" :loading="batchProcessing" :disabled="batchProcessing || (batchAction === 'append' && !batchTag) || (batchAction === 'remove' && !batchTag) || (batchAction === 'replace' && !batchFind)" @click="executeBatch">Execute</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -665,6 +718,58 @@ function deselectAll() {
 }
 
 const selectedCount = computed(() => selectedPaths.value.size)
+
+// Batch operations
+const batchDialog = ref(false)
+const batchAction = ref<'append' | 'remove' | 'replace'>('append')
+const batchTag = ref('')
+const batchFind = ref('')
+const batchReplace = ref('')
+const batchUseRegex = ref(false)
+const batchProcessing = ref(false)
+
+function openBatchDialog(action: 'append' | 'remove' | 'replace') {
+  batchAction.value = action
+  batchTag.value = ''
+  batchFind.value = ''
+  batchReplace.value = ''
+  batchUseRegex.value = false
+  batchDialog.value = true
+}
+
+async function executeBatch() {
+  batchProcessing.value = true
+  try {
+    const res = await fetch('/api/images/batch-caption', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directory: directory.value,
+        paths: [...selectedPaths.value],
+        action: batchAction.value,
+        tag: batchTag.value || undefined,
+        find: batchFind.value || undefined,
+        replace: batchReplace.value || undefined,
+        use_regex: batchUseRegex.value,
+      }),
+    })
+    const data = await res.json()
+    if (data.failed > 0) {
+      notify.show(`Updated ${data.updated}, failed ${data.failed}`, 'warning')
+    } else {
+      notify.show(`Updated ${data.updated} caption(s)`, 'success')
+    }
+    batchDialog.value = false
+    deselectAll()
+    selectionMode.value = false
+    loadImages()
+    loadTagIndex()
+  } catch (err: any) {
+    notify.show(err.message || 'Batch operation failed', 'error')
+  } finally {
+    batchProcessing.value = false
+  }
+}
 
 // Editor
 const editorDialog = ref(false)
