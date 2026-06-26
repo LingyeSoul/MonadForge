@@ -25,6 +25,16 @@ class CaptionUpdate(BaseModel):
     content: str
 
 
+class BatchCaptionRequest(BaseModel):
+    directory: str
+    paths: list[str]
+    action: str
+    tag: str | None = None
+    find: str | None = None
+    replace: str | None = None
+    use_regex: bool = False
+
+
 class ImagePageResponse(BaseModel):
     items: list[dict]
     total: int
@@ -128,6 +138,20 @@ def get_versions(path: str, directory: str | None = Query(None)):
 def get_tag_index(directory: str | None = Query(None)):
     """Return tag frequency table for all images in directory."""
     return svc.build_tag_index(directory or _default_directory())
+
+
+@router.put("/batch-caption")
+def batch_caption(body: BatchCaptionRequest):
+    """Batch update captions for multiple images."""
+    return svc.batch_update_captions(
+        directory=body.directory,
+        paths=body.paths,
+        action=body.action,
+        tag=body.tag,
+        find=body.find,
+        replace=body.replace,
+        use_regex=body.use_regex,
+    )
 
 
 # ── mask info ──────────────────────────────────────────────────

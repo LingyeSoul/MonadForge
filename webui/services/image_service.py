@@ -310,6 +310,65 @@ def build_tag_index(directory: str) -> dict[str, Any]:
     return {"tags": sorted_tags, "total_images": total}
 
 
+def batch_update_captions(
+    directory: str,
+    paths: list[str],
+    action: str,
+    tag: str | None = None,
+    find: str | None = None,
+    replace: str | None = None,
+    use_regex: bool = False,
+) -> dict[str, Any]:
+    """Batch update captions for multiple images.
+
+    *action* is one of ``"append"``, ``"remove"``, or ``"replace"``.
+    Returns ``{"updated": N, "failed": M, "errors": [...]}``.
+    """
+    import re as _re
+
+    updated = 0
+    failed = 0
+    errors: list[str] = []
+
+    for rel_path in paths:
+        try:
+            img = resolve_image_path(directory, rel_path)
+            if img is None:
+                raise FileNotFoundError(f"Image not found: {rel_path}")
+            cp = img.with_suffix(".txt")
+            current = cp.read_text(encoding="utf-8") if cp.exists() else ""
+
+            if action == "append":
+                parts = [t.strip() for t in current.split(",") if t.strip()]
+                new_tags = [t.strip() for t in (tag or "").split(",") if t.strip()]
+                parts.extend(new_tags)
+                new_content = ", ".join(parts)
+
+            elif action == "remove":
+                remove_set = {t.strip() for t in (tag or "").split(",") if t.strip()}
+                parts = [t.strip() for t in current.split(",") if t.strip()]
+                parts = [t for t in parts if t not in remove_set]
+                new_content = ", ".join(parts)
+
+            elif action == "replace":
+                if use_regex:
+                    new_content = _re.sub(find or "", replace or "", current)
+                else:
+                    new_content = current.replace(find or "", replace or "")
+            else:
+                raise ValueError(f"Unknown action: {action}")
+
+            if new_content != current:
+                _append_history(cp, current)
+                cp.write_text(new_content, encoding="utf-8")
+            updated += 1
+        except Exception as e:
+            failed += 1
+            errors.append(f"{rel_path}: {e}")
+
+    return {"updated": updated, "failed": failed, "errors": errors}
+
+
 # ── mask resolution ────────────────────────────────────────────
 
 
