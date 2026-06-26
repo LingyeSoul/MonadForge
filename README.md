@@ -329,15 +329,22 @@ WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆�
 | 前端 | Vue 3, Vuetify 3, Pinia, Vue Router, TypeScript |
 | 构建 | Vite, Sass, vue-tsc |
 | 包管理 | uv (Python), npm (Node.js) |
-| ML 框架 | PyTorch 2.12, Transformers, Diffusers, Flash Attention 2 |
+| ML 框架 | PyTorch 2.12（Ampere+）/ 2.10+cu129（SM 7.x），Transformers, Diffusers, Flash Attention 2（SM 8.0+） |
 | 字体 | JetBrains Mono, Roboto |
 
-> **V100 注意事项**：Tesla V100 / SM 7.0 需要单独的兼容 PyTorch/CUDA 环境（`torch==2.10.0+cu129`）。**不安装 flash-attn**，生产训练请使用 `attn_mode="torch"`，`torch_compile=true` 可以正常启用，配合 `gradient_checkpointing=true`。V100 上默认 bf16 会自动切换为 fp16；训练器会在 V100+fp16 时自动启用 `lora_fp32_compute`，让 LoRA rank 分支保持 fp32 计算以降低偏色/语义退化风险（可用 `network_args = ["lora_fp32_compute=false"]` 做 A/B）。实测 `flash-attention-v100` 在 Anima fp16 DiT self-attention 首步产生 NaN，`v100_flash_stability="hybrid"` 也无法规避；相关开关仅用于诊断。
+> **老显卡兼容方案（SM 7.0 / SM 7.5）**：V100、T4、RTX 2060/2070/2080 等 Volta/Turing 架构显卡需要单独的兼容环境。核心差异：
+> - **PyTorch 版本**：使用 `torch==2.10.0+cu129`（而非默认的 2.12），确保 SM 7.x 兼容
+> - **不安装 flash-attn**：flash-attn 要求 SM 8.0+（Ampere 及以上），在 SM 7.x 上会产生 NaN
+> - **注意力后端**：生产训练使用 `attn_mode="torch"`（SDPA）
+> - **精度策略**：默认 bf16 会自动切换为 fp16（V100/T4 无 bf16 张量核心）；训练器自动启用 `lora_fp32_compute`，LoRA rank 分支保持 fp32 计算以降低偏色/语义退化风险（可用 `network_args = ["lora_fp32_compute=false"]` 做 A/B）
+> - **torch_compile**：可正常启用，配合 `gradient_checkpointing=true`
 >
-> **V100 专用安装脚本**：
+> **V100 专用安装脚本（适配所有 SM 7.x 老显卡）**：
 > - **Windows**: `setup-v100-win.bat` — 一键创建 `.venv` 并安装 torch==2.10.0+cu129
-> - **Linux**: `setup-v100-linux.sh` — 自动配置 V100 兼容环境
-> - **依赖文件**: `requirements-v100.txt` — V100 专用依赖（不含 flash-attn）
+> - **Linux**: `setup-v100-linux.sh` — 自动配置兼容环境
+> - **依赖文件**: `requirements-v100.txt` — 不含 flash-attn 的依赖清单
+>
+> 脚本以 V100 命名，但同样适用于 T4、RTX 20 系列等所有 SM 7.0/7.5 显卡。安装完成后，在 WebUI 或 TOML 配置中使用上述参数即可。
 >
 > 详见 `bench/v100_flash/README.md`。
 
@@ -345,7 +352,7 @@ WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆�
 
 ## 系统要求
 
-- **GPU**: NVIDIA Ampere 或更新架构（RTX 3000 系列 / A100 / RTX 5060 Ti 等）
+- **GPU**: NVIDIA Volta 或更新架构（V100 / T4 / RTX 20 系列及以上）；推荐 Ampere+（RTX 3000 / A100 / RTX 5060 Ti）
 - **驱动**: NVIDIA Driver ≥ 595
 - **CUDA**: 13.2 Toolkit（用于 `torch.compile` / Triton）
 - **Python**: 3.13（由 uv 自动管理）
