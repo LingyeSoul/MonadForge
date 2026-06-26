@@ -48,3 +48,25 @@ def test_parse_args_value_with_equals_old_behavior_fails():
     arg = "scale=1+1=2"
     with pytest.raises(ValueError):
         _key, _value = arg.split("=")
+
+
+def test_adafactor_scheduler_missing_colon_raises():
+    """--lr_scheduler 'adafactor' without ':lr' should raise ValueError, not IndexError."""
+    pytest.importorskip("torch")
+    from library.training.schedulers import get_scheduler_fix
+
+    optimizer = MagicMock()
+    args = _make_args(lr_scheduler="adafactor")
+    with pytest.raises(ValueError, match="adafactor"):
+        get_scheduler_fix(args, optimizer, num_processes=1)
+
+
+def test_adafactor_scheduler_wrong_optimizer_raises():
+    """adafactor scheduler with non-Adafactor optimizer should raise ValueError."""
+    pytest.importorskip("torch")
+    from library.training.schedulers import get_scheduler_fix
+
+    optimizer = MagicMock()  # not an Adafactor instance
+    args = _make_args(lr_scheduler="adafactor:0.001")
+    with pytest.raises(ValueError, match="Adafactor"):
+        get_scheduler_fix(args, optimizer, num_processes=1)

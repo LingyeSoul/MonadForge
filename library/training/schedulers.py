@@ -117,9 +117,15 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
     if name.startswith("adafactor"):
         import transformers
 
-        assert isinstance(optimizer, transformers.optimization.Adafactor), (
-            "adafactor scheduler must be used with Adafactor optimizer"
-        )
+        if not isinstance(optimizer, transformers.optimization.Adafactor):
+            raise ValueError(
+                "adafactor scheduler must be used with Adafactor optimizer"
+            )
+        if ":" not in name:
+            raise ValueError(
+                "adafactor scheduler requires format 'adafactor:<initial_lr>', got: "
+                + name
+            )
         initial_lr = float(name.split(":")[1])
         return wrap_check_needless_num_warmup_steps(
             transformers.optimization.AdafactorSchedule(optimizer, initial_lr)
