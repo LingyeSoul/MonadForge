@@ -140,6 +140,7 @@ export default {
   dsHasMask: '마스크 있음',
   dsToggleMask: '마스크 오버레이 토글',
   dsSaveCaption: '저장',
+  dsAutoNext: '자동 다음',
   dsRevert: '되돌리기',
   dsVersions: '이력',
   dsRestore: '복원',

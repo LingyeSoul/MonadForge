@@ -494,6 +494,8 @@
             {{ t('dsRevert') }}
           </v-btn>
           <v-spacer />
+          <span class="text-caption text-medium-emphasis mr-2">{{ currentPosition }}</span>
+          <v-checkbox v-model="autoAdvance" :label="t('dsAutoNext')" density="compact" hide-details class="mr-2" style="max-width: 120px" />
           <v-btn variant="text" @click="tryCloseEditor">
             {{ t('dsClose') }}
           </v-btn>
@@ -501,7 +503,7 @@
             color="primary"
             :disabled="!isDirty"
             :loading="saving"
-            @click="saveCaption"
+            @click="saveCaptionAndMaybeAdvance"
           >
             <v-icon icon="mdi-content-save" class="mr-1" />
             {{ t('dsSaveCaption') }}
@@ -638,6 +640,13 @@ const editCaption = ref('')
 const diskCaption = ref('') // last known on-disk value
 const saving = ref(false)
 const showMask = ref(false)
+const autoAdvance = ref(true)
+
+const currentPosition = computed(() => {
+  if (!selectedImage.value || !images.value.length) return ''
+  const idx = images.value.findIndex(i => i.path === selectedImage.value!.path)
+  return `${idx + 1} / ${images.value.length}`
+})
 
 // Unsaved
 const discardDialog = ref(false)
@@ -1042,6 +1051,13 @@ async function saveCaption() {
   }
 }
 
+async function saveCaptionAndMaybeAdvance() {
+  await saveCaption()
+  if (autoAdvance.value) {
+    navigateImage(1)
+  }
+}
+
 function tryCloseEditor() {
   if (isDirty.value) {
     _pendingClose = true
@@ -1299,14 +1315,19 @@ function navigateImage(delta: number) {
   }
 }
 
-function _onKeyDown(e: KeyboardEvent) {
+async function _onKeyDown(e: KeyboardEvent) {
   // Don't intercept when typing in an input/textarea
   const tag = (e.target as HTMLElement)?.tagName?.toLowerCase()
   const isInput = tag === 'input' || tag === 'textarea'
 
   if (editorDialog.value) {
     // Editor-specific shortcuts
-    if (e.ctrlKey && e.key === 's') {
+    if (e.ctrlKey && !e.shiftKey && e.key === 's') {
+      e.preventDefault()
+      if (isDirty.value) saveCaptionAndMaybeAdvance()
+      return
+    }
+    if (e.ctrlKey && e.shiftKey && e.key === 'S') {
       e.preventDefault()
       if (isDirty.value) saveCaption()
       return
@@ -1314,6 +1335,21 @@ function _onKeyDown(e: KeyboardEvent) {
     if (e.key === 'Escape' && !isDirty.value) {
       editorDialog.value = false
       return
+    }
+    // Arrow navigation when dialog is open but not in textarea
+    if (!isInput) {
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        if (isDirty.value) await saveCaption()
+        navigateImage(1)
+        return
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        if (isDirty.value) await saveCaption()
+        navigateImage(-1)
+        return
+      }
     }
   }
 

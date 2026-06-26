@@ -140,6 +140,7 @@ export default {
   dsHasMask: '已有遮罩',
   dsToggleMask: '切换遮罩叠加',
   dsSaveCaption: '保存',
+  dsAutoNext: '自动下一张',
   dsRevert: '还原',
   dsVersions: '历史',
   dsRestore: '恢复',

@@ -140,6 +140,7 @@ export default {
   dsHasMask: 'Has Mask',
   dsToggleMask: 'Toggle mask overlay',
   dsSaveCaption: 'Save',
+  dsAutoNext: 'Auto-next',
   dsRevert: 'Revert',
   dsVersions: 'History',
   dsRestore: 'Restore',
