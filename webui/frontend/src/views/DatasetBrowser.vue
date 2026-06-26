@@ -80,6 +80,12 @@
           </v-btn-toggle>
         </v-col>
         <v-col cols="auto">
+          <v-btn :color="selectionMode ? 'primary' : undefined" :variant="selectionMode ? 'flat' : 'text'" density="compact" @click="selectionMode = !selectionMode; if (!selectionMode) deselectAll()">
+            <v-icon icon="mdi-checkbox-multiple-marked-outline" class="mr-1" />
+            {{ t('dsSelect') }}
+          </v-btn>
+        </v-col>
+        <v-col cols="auto">
           <v-btn
             color="primary"
             variant="tonal"
@@ -220,6 +226,9 @@
             :class="{ 'border-primary': selectedImage?.path === img.path }"
             @click="selectImage(img)"
           >
+            <div v-if="selectionMode" class="selection-checkbox" @click.stop="toggleSelection(img.path)">
+              <v-checkbox-btn :model-value="selectedPaths.has(img.path)" density="compact" color="primary" />
+            </div>
             <v-img
               :src="imageUrl(img)"
               :alt="img.filename"
@@ -275,6 +284,9 @@
           <span class="text-truncate d-inline-block" style="max-width: 500px">
             {{ item.caption ? item.caption.slice(0, 120) : '—' }}
           </span>
+        </template>
+        <template #item.select="{ item }">
+          <v-checkbox-btn :model-value="selectedPaths.has(item.path)" density="compact" color="primary" @click.stop="toggleSelection(item.path)" />
         </template>
         <template #item.has_mask="{ item }">
           <v-icon
@@ -633,6 +645,27 @@ const totalPages = ref(0)
 const loadingDirs = ref(false)
 const loadingImages = ref(false)
 
+// Selection mode
+const selectionMode = ref(false)
+const selectedPaths = ref<Set<string>>(new Set())
+
+function toggleSelection(path: string) {
+  const s = new Set(selectedPaths.value)
+  if (s.has(path)) s.delete(path)
+  else s.add(path)
+  selectedPaths.value = s
+}
+
+function selectAll() {
+  selectedPaths.value = new Set(images.value.map(i => i.path))
+}
+
+function deselectAll() {
+  selectedPaths.value = new Set()
+}
+
+const selectedCount = computed(() => selectedPaths.value.size)
+
 // Editor
 const editorDialog = ref(false)
 const selectedImage = ref<ImageItem | null>(null)
@@ -786,12 +819,19 @@ const totalLabel = computed(() => {
   return `${total.value} images · p${page.value}/${totalPages.value}`
 })
 
-const listHeaders = computed(() => [
-  { title: '', key: 'preview', width: '60px', sortable: false },
-  { title: t('dsFilename'), key: 'filename' },
-  { title: t('dsCaption'), key: 'caption', sortable: false },
-  { title: t('dsMask'), key: 'has_mask', width: '60px', sortable: false },
-])
+const listHeaders = computed(() => {
+  const headers: { title: string; key: string; width?: string; sortable?: boolean }[] = []
+  if (selectionMode.value) {
+    headers.push({ title: '', key: 'select', width: '48px', sortable: false })
+  }
+  headers.push(
+    { title: '', key: 'preview', width: '60px', sortable: false },
+    { title: t('dsFilename'), key: 'filename' },
+    { title: t('dsCaption'), key: 'caption', sortable: false },
+    { title: t('dsMask'), key: 'has_mask', width: '60px', sortable: false },
+  )
+  return headers
+})
 
 // ── URL helpers ───────────────────────────────────────────────
 
@@ -1567,6 +1607,16 @@ onUnmounted(() => {
 .remove-dir-btn:hover {
   opacity: 1;
   color: rgb(var(--v-theme-error)) !important;
+}
+
+.selection-checkbox {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  z-index: 2;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 4px;
+  padding: 2px;
 }
 
 /* Image card hover effect */
