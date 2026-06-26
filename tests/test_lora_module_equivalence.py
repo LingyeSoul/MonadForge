@@ -380,6 +380,20 @@ def _golden_path(name: str) -> Path:
 # off the canonical platform unless explicitly forced.
 _CANONICAL_PLATFORM = "linux"
 
+_SVD_INIT_VARIANTS = {
+    "ortho_init",
+    "ortho_init_channel_scale",
+    "ortho",
+    "ortho_channel_scale",
+    "ortho_hydra",
+    "hydra",
+    "hydra_channel_scale",
+    "stacked_ortho",
+    "chimera_frozen",
+    "chimera_ortho_init",
+}
+_NONCANONICAL_SVD_ATOL = 2e-2
+
 
 def _write_goldens():
     if sys.platform != _CANONICAL_PLATFORM and "--force-platform" not in sys.argv:
@@ -410,10 +424,26 @@ def test_module_forward_matches_golden(name):
         got = captured[key]
         assert got.shape == ref.shape, f"{name}/{key}: shape {got.shape} != {ref.shape}"
         assert got.dtype == ref.dtype, f"{name}/{key}: dtype {got.dtype} != {ref.dtype}"
-        assert torch.equal(got, ref), (
-            f"{name}/{key}: forward/backward diverged from golden "
-            f"(max abs diff {(got.float() - ref.float()).abs().max().item():.3e})"
-        )
+        if sys.platform == _CANONICAL_PLATFORM or name not in _SVD_INIT_VARIANTS:
+            assert torch.equal(got, ref), (
+                f"{name}/{key}: forward/backward diverged from golden "
+                f"(max abs diff {(got.float() - ref.float()).abs().max().item():.3e})"
+            )
+        else:
+            # ``torch.svd_lowrank``'s LAPACK backend is not bit-portable across
+            # platforms (see module docstring). Keep CI/Linux bit-exact, but let
+            # local Windows/MKL runs use a tight bf16-scale tolerance so unrelated
+            # development is not blocked by canonical Linux golden bytes.
+            assert torch.allclose(
+                got.float(),
+                ref.float(),
+                atol=_NONCANONICAL_SVD_ATOL,
+                rtol=0.0,
+            ), (
+                f"{name}/{key}: forward/backward diverged from golden beyond "
+                f"non-canonical SVD tolerance {_NONCANONICAL_SVD_ATOL:.1e} "
+                f"(max abs diff {(got.float() - ref.float()).abs().max().item():.3e})"
+            )
 
 
 if __name__ == "__main__":
