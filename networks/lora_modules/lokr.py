@@ -123,14 +123,45 @@ class LoKRModule(BaseLoRAModule):
             torch.nn.init.kaiming_uniform_(self.w2a, a=math.sqrt(5))
             torch.nn.init.zeros_(self.w2b)
 
-        self._register_channel_scale(
-            self.w1a if not self._use_w1 else self.lokr_w1,
-            channel_scale,
-            linear_only=True,
-        )
+        # LoKR cannot absorb channel_scale into w1: ΔW = kron(w1, w2) where
+        # w1's in-axis is ``in_a`` (a factor of ``in_features``), so the
+        # full-length ``channel_scale`` (length ``in_features``) has no clean
+        # Kron decomposition. Standard LoRA absorbs it into ``lora_down`` whose
+        # columns equal ``in_features``; LoKR's Kronecker structure breaks that.
+        # Register ``inv_scale`` for forward-time input rebalancing; full
+        # materialized deltas (get_weight/merge/fuse) apply the equivalent input
+        # column scaling after kron reconstruction, not in the factors.
+        if channel_scale is not None:
+            self._register_lokr_inv_scale(channel_scale, in_dim)
 
         self.org_module_ref = [org_module]
         self._fused = False
+
+    def _register_lokr_inv_scale(
+        self, channel_scale: torch.Tensor, in_features: int, eps: float = 1e-12
+    ) -> None:
+        """Register ``inv_scale`` for LoKR without factor absorption.
+
+        Mirrors the mean-normalize step of ``_absorb_channel_scale`` so the
+        saved/resumed ``inv_scale`` matches the calibration convention, but
+        skips the in-place ``W[:,c] *= s[c]`` step (impossible under the Kron
+        factorization). Forward ``_rebalance(x)`` applies ``x * inv_scale``;
+        full materialized deltas apply the same effect as input-column scaling.
+        """
+        assert channel_scale.ndim == 1, (
+            f"channel_scale must be 1D, got shape {tuple(channel_scale.shape)}"
+        )
+        assert channel_scale.shape[0] == in_features, (
+            f"channel_scale length {channel_scale.shape[0]} does not match "
+            f"LoKR in_features {in_features}"
+        )
+        s = channel_scale.detach().to(dtype=torch.float32).clamp_min(eps)
+        s = s / s.mean().clamp_min(eps)
+        # fp32 CPU storage — device follows the module on load (matches
+        # ``_absorb_channel_scale``'s convention).
+        inv_scale = (1.0 / s).contiguous()
+        self.register_buffer("inv_scale", inv_scale, persistent=True)
+        self._has_channel_scale = True
 
     # --- Factor reconstruction helpers ---
 
@@ -144,17 +175,23 @@ class LoKRModule(BaseLoRAModule):
             return self.lokr_w2
         return self.w2a @ self.w2b
 
+    def _apply_inv_scale_to_full_delta(self, delta: torch.Tensor) -> torch.Tensor:
+        """Apply input-column scaling to a materialized full LoKR delta."""
+        if not self._has_channel_scale:
+            return delta
+        return delta * self.inv_scale.to(delta).unsqueeze(0)
+
     def get_weight(self, multiplier=None) -> torch.Tensor:
         """Return the LoKR delta as a full weight tensor (out, in)."""
         if multiplier is None:
             multiplier = self.multiplier
         w1 = self._get_w1().to(torch.float)
         w2 = self._get_w2().to(torch.float)
-        # Undo channel absorption so the merged delta applies to raw inputs.
-        if self._has_channel_scale:
-            w1 = w1 * self.inv_scale.to(w1).unsqueeze(0)
-        delta = torch.kron(w1, w2) * self.scale * multiplier
-        return delta
+        # LoKR cannot absorb channel_scale into the factors, but a materialized
+        # full delta can still represent the forward-time ``x * inv_scale`` as
+        # input-column scaling: x @ (delta * inv_scale[None, :]).T.
+        delta = self._apply_inv_scale_to_full_delta(torch.kron(w1, w2))
+        return delta * self.scale * multiplier
 
     # --- Forward: override the base scaffold (LoKR doesn't decompose as
     # down→gate→up; it computes a full delta-weight and applies it). ---
@@ -184,12 +221,15 @@ class LoKRModule(BaseLoRAModule):
             in_b = w2.shape[1]
 
             # Efficient Kronecker-structured forward (no full kron materialization):
-            # kron(A, B) @ x  ==  B @ X_mat @ A^T  (reshape x to (in_a, in_b))
+            # for row-major x reshaped to X (..., in_a, in_b),
+            #   (x @ kron(w1, w2).T).reshape(..., out_a, out_b)
+            #     == w1 @ X @ w2.T
+            # where the flattened output order is (out_a, out_b), matching
+            # torch.kron(w1, w2)'s row layout.
             x_mat = x_r.reshape(*x_r.shape[:-1], in_a, in_b)
-            # w2: (out_b, in_b)  x_mat: (..., in_a, in_b) → h: (..., in_a, out_b)
-            h = torch.einsum("...ij,oj->...io", x_mat, w2.to(x_mat))
-            # w1: (out_a, in_a)  h: (..., in_a, out_b) → out: (..., out_a, out_b)
-            delta = torch.einsum("...ia,oa->...oa", h, w1.to(h))
+            delta = torch.einsum(
+                "oi,...ij,bj->...ob", w1.to(x_mat), x_mat, w2.to(x_mat)
+            )
             lx = delta.reshape(*x_r.shape[:-1], out_a * out_b)
 
             if self.dropout is not None:
@@ -204,8 +244,7 @@ class LoKRModule(BaseLoRAModule):
         out_a, in_a = w1.shape
         out_b, in_b = w2.shape
         x_mat = x_r.reshape(*x_r.shape[:-1], in_a, in_b)
-        h = torch.einsum("...ij,oj->...io", x_mat, w2)
-        delta = torch.einsum("...ia,oa->...oa", h, w1)
+        delta = torch.einsum("oi,...ij,bj->...ob", w1, x_mat, w2)
         lx = delta.reshape(*x_r.shape[:-1], out_a * out_b)
         return lx * self.multiplier * self.scale
 
@@ -244,11 +283,13 @@ class LoKRModule(BaseLoRAModule):
             w2b = sd["w2b"].to(torch.float).to(device)
             w2 = w2a @ w2b
 
+        delta = torch.kron(w1, w2)
         if "inv_scale" in sd:
+            # State-dict merge materializes the full delta, so express
+            # forward-time ``x * inv_scale`` as input-column scaling here.
             inv_scale = sd["inv_scale"].to(torch.float).to(device)
-            w1 = w1 * inv_scale.unsqueeze(0)
-
-        return torch.kron(w1, w2)
+            delta = delta * inv_scale.unsqueeze(0)
+        return delta
 
     def fuse_weight(self):
         if self._fused:
