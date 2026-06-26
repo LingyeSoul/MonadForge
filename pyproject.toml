@@ -18,6 +18,7 @@ dependencies = [
     "dadaptation>=3.1",
     "lion-pytorch>=0.2.3",
     "schedulefree>=1.4",
+    "prodigy-plus-schedule-free>=0.1.5",
     # Data & Config
     "toml>=0.10.2",
     "tomlkit>=0.13",  # style-preserving TOML for the sectioned distill-config editor

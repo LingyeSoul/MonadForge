@@ -235,6 +235,43 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 
 > 感谢 [WhitecrowAurora](https://github.com/WhitecrowAurora) 的出色工作。lora-rescripts 在注意力后端（FlashAttention / SageAttention / SparseAttention）、多平台支持（NVIDIA / AMD ROCm / Intel XPU）、优化器生态（50+ 种优化器）等方面的工程实践为本项目提供了重要参考。
 
+### 优化器生态
+
+MonadForge 支持丰富的优化器选择，以下列出各优化器的来源与许可：
+
+| 优化器 | `--optimizer_type` 值 | 来源 | 许可 | 说明 |
+|--------|----------------------|------|------|------|
+| **AdamW** | `AdamW` | PyTorch 内置 | BSD-3 | 默认优化器，fused CUDA 实现 |
+| **AdamW 8-bit** | `AdamW8bit` | [bitsandbytes](https://github.com/bitsandbytesai/bitsandbytes) | MIT | 8-bit 量化 AdamW |
+| **AdamW 8-bit Kahan** | `AdamW8bitKahan` | [WhitecrowAurora/lora-rescripts](https://github.com/WhitecrowAurora/lora-rescripts) | AGPL-3.0 | 8-bit AdamW + Kahan 补偿求和 |
+| **PagedAdamW** | `PagedAdamW` / `PagedAdamW8bit` / `PagedAdamW32bit` | [bitsandbytes](https://github.com/bitsandbytesai/bitsandbytes) | MIT | 分页内存优化 |
+| **Lion** | `Lion` / `Lion8bit` / `PagedLion8bit` | [lion-pytorch](https://github.com/lucidrains/lion-pytorch) | MIT | 符号动量优化器 |
+| **SGD Nesterov** | `SGDNesterov` / `SGDNesterov8bit` | PyTorch / bitsandbytes | BSD-3 / MIT | 经典 SGD + Nesterov 动量 |
+| **D-Adaptation** | `DAdaptAdam` / `DAdaptLion` / `DAdaptSGD` 等 | [dadaptation](https://github.com/facebookresearch/dadaptation) | MIT | 自动学习率调整 |
+| **Prodigy** | `Prodigy` | [prodigyopt](https://github.com/konstmish/prodigy) | MIT | D-Adaptation 改进版 |
+| **Prodigy Plus Schedule-Free** | `ProdigyPlusScheduleFree` | [LoganBooker/prodigy-plus-schedule-free](https://github.com/LoganBooker/prodigy-plus-schedule-free) | MIT | Prodigy + schedule-free |
+| **Adafactor** | `Adafactor` | [transformers](https://github.com/huggingface/transformers) (Google) | Apache-2.0 | 内存高效二阶优化器 |
+| **CAME** | `CAME` | [kozistr/pytorch_optimizer](https://github.com/kozistr/pytorch_optimizer) | Apache-2.0 | 信赖域自适应学习率 |
+| **Automagic** | `Automagic` | [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit) → [scvxzf1/anima_lora_webui](https://github.com/scvxzf1/anima_lora_webui) | MIT | 逐参数自适应 LR |
+| **Schedule-Free** | `RAdamScheduleFree` / `AdamWScheduleFree` / `SGDScheduleFree` | [schedulefree](https://github.com/facebookresearch/schedulefree) | MIT | 无需调度器 |
+| **Rose** | *(注释中，需手动启用)* | [MatthewK78/Rose](https://github.com/MatthewK78/Rose) | — | 无状态优化器 |
+
+使用示例：
+
+```bash
+# Adafactor — 大模型低显存训练
+python tasks.py lora --optimizer_type Adafactor --lr_scheduler adafactor
+
+# CAME — 自适应信赖域
+python tasks.py lora --optimizer_type CAME --learning_rate 1e-4
+
+# Automagic — 逐参数自适应 LR（无需调度器）
+python tasks.py lora --optimizer_type Automagic --lr_scheduler constant
+
+# Prodigy Plus Schedule-Free
+python tasks.py lora --optimizer_type ProdigyPlusScheduleFree --learning_rate 1.0 --lr_scheduler constant
+```
+
 ### 保留的上游核心能力
 
 MonadForge 完整继承并同步上游的所有训练与推理能力：
@@ -398,6 +435,8 @@ WebUI 启动后，上述所有操作均可在浏览器中完成，无需记忆�
 MonadForge 基于 [sorryhyun/anima_lora](https://github.com/sorryhyun/anima_lora) 构建，感谢上游项目的卓越工作。
 
 训练算法优化部分移植自 [WhitecrowAurora/lora-rescripts](https://github.com/WhitecrowAurora/lora-rescripts)，感谢该项目在 LoRA 训练效率与算法创新方面的贡献。
+
+优化器部分参考了 [scvxzf1/anima_lora_webui](https://github.com/scvxzf1/anima_lora_webui)（MIT）的实现，感谢该项目在 Anima LoRA WebUI 工程化方面的贡献。Automagic 优化器源自 [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit)（MIT）。ProdigyPlusScheduleFree 来自 [LoganBooker/prodigy-plus-schedule-free](https://github.com/LoganBooker/prodigy-plus-schedule-free)（MIT）。CAME 优化器来自 [kozistr/pytorch_optimizer](https://github.com/kozistr/pytorch_optimizer)（Apache-2.0）。
 
 - **Toolkit 代码**: [MIT](LICENSE)
 - **上游衍生部分**: [Apache 2.0](LICENSE-APACHE)（源自 [kohya-ss/sd-scripts](https://github.com/kohya-ss/sd-scripts)）
