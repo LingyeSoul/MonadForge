@@ -106,3 +106,113 @@ def test_nonexistent_returns_none(image_env):
     FileNotFoundError for a friendlier 404 message."""
     dataset, _ = image_env
     assert _resolve(dataset, "nope.png") is None
+
+
+# ── Tag index tests ──────────────────────────────────────────────
+
+def _write_txt(p: Path, text: str) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def test_build_tag_index_basic(image_env):
+    dataset, _ = image_env
+    _write_png(dataset / "a.png")
+    _write_txt(dataset / "a.txt", "1girl, solo, blue eyes")
+    _write_png(dataset / "b.png")
+    _write_txt(dataset / "b.txt", "1girl, cat ears")
+
+    from webui.services.image_service import build_tag_index
+
+    result = build_tag_index(str(dataset))
+    assert result["total_images"] == 2
+    assert result["tags"]["1girl"] == 2
+    assert result["tags"]["solo"] == 1
+    assert result["tags"]["cat ears"] == 1
+
+
+def test_build_tag_index_empty(image_env):
+    dataset, _ = image_env
+    from webui.services.image_service import build_tag_index
+
+    result = build_tag_index(str(dataset))
+    assert result == {"tags": {}, "total_images": 0}
+
+
+def test_build_tag_index_no_caption(image_env):
+    dataset, _ = image_env
+    _write_png(dataset / "a.png")
+
+    from webui.services.image_service import build_tag_index
+
+    result = build_tag_index(str(dataset))
+    assert result["total_images"] == 0
+
+
+# ── Batch caption update tests ───────────────────────────────────
+
+def test_batch_append(image_env):
+    dataset, _ = image_env
+    _write_png(dataset / "a.png")
+    _write_txt(dataset / "a.txt", "1girl, solo")
+
+    from webui.services.image_service import batch_update_captions
+
+    result = batch_update_captions(str(dataset), ["a.png"], "append", tag="smile, wink")
+    assert result["updated"] == 1
+    assert result["failed"] == 0
+    content = (dataset / "a.txt").read_text(encoding="utf-8")
+    assert "smile" in content
+    assert "wink" in content
+
+
+def test_batch_remove(image_env):
+    dataset, _ = image_env
+    _write_png(dataset / "a.png")
+    _write_txt(dataset / "a.txt", "1girl, solo, smile")
+
+    from webui.services.image_service import batch_update_captions
+
+    result = batch_update_captions(str(dataset), ["a.png"], "remove", tag="solo")
+    assert result["updated"] == 1
+    content = (dataset / "a.txt").read_text(encoding="utf-8")
+    assert "solo" not in content
+    assert "1girl" in content
+
+
+def test_batch_replace(image_env):
+    dataset, _ = image_env
+    _write_png(dataset / "a.png")
+    _write_txt(dataset / "a.txt", "1girl, blue_eyes, solo")
+
+    from webui.services.image_service import batch_update_captions
+
+    result = batch_update_captions(str(dataset), ["a.png"], "replace", find="blue_eyes", replace="green_eyes")
+    assert result["updated"] == 1
+    content = (dataset / "a.txt").read_text(encoding="utf-8")
+    assert "green_eyes" in content
+    assert "blue_eyes" not in content
+
+
+def test_batch_replace_regex(image_env):
+    dataset, _ = image_env
+    _write_png(dataset / "a.png")
+    _write_txt(dataset / "a.txt", "1girl, by artist1, solo")
+
+    from webui.services.image_service import batch_update_captions
+
+    result = batch_update_captions(str(dataset), ["a.png"], "replace", find=r"by \w+", replace="by newartist", use_regex=True)
+    assert result["updated"] == 1
+    content = (dataset / "a.txt").read_text(encoding="utf-8")
+    assert "by newartist" in content
+    assert "by artist1" not in content
+
+
+def test_batch_missing_image(image_env):
+    dataset, _ = image_env
+    from webui.services.image_service import batch_update_captions
+
+    result = batch_update_captions(str(dataset), ["nonexistent.png"], "append", tag="test")
+    assert result["updated"] == 0
+    assert result["failed"] == 1
+    assert len(result["errors"]) == 1
