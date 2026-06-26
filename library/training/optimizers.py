@@ -10,18 +10,23 @@ from torch.optim import Optimizer
 logger = logging.getLogger(__name__)
 
 
+def get_optimizer_kwargs(args) -> dict:
+    optimizer_kwargs = {}
+    if args.optimizer_args is not None and len(args.optimizer_args) > 0:
+        for arg in args.optimizer_args:
+            key, value = arg.split("=", 1)
+            value = ast.literal_eval(value)
+            optimizer_kwargs[key] = value
+    return optimizer_kwargs
+
+
 def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
     optimizer_type = args.optimizer_type
     if optimizer_type is None or optimizer_type == "":
         optimizer_type = "AdamW"
     optimizer_type = optimizer_type.lower()
 
-    optimizer_kwargs = {}
-    if args.optimizer_args is not None and len(args.optimizer_args) > 0:
-        for arg in args.optimizer_args:
-            key, value = arg.split("=")
-            value = ast.literal_eval(value)
-            optimizer_kwargs[key] = value
+    optimizer_kwargs = get_optimizer_kwargs(args)
 
     lr = args.learning_rate
     optimizer = None
@@ -91,7 +96,9 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
     elif optimizer_type == "AdamW8bitKahan".lower():
         from library.training.adamw_8bit_kahan import AdamW8bitKahan
 
-        logger.info(f"use 8-bit AdamW with Kahan summation optimizer | {optimizer_kwargs}")
+        logger.info(
+            f"use 8-bit AdamW with Kahan summation optimizer | {optimizer_kwargs}"
+        )
         optimizer_class = AdamW8bitKahan
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
@@ -133,6 +140,47 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
         optimizer = optimizer_class(
             trainable_params, lr=lr, nesterov=True, **optimizer_kwargs
         )
+
+    elif optimizer_type == "Adafactor".lower():
+        if "relative_step" not in optimizer_kwargs:
+            optimizer_kwargs["relative_step"] = True
+        if not optimizer_kwargs["relative_step"] and optimizer_kwargs.get(
+            "warmup_init", False
+        ):
+            logger.info("set relative_step to True because warmup_init is True")
+            optimizer_kwargs["relative_step"] = True
+        logger.info(f"use Adafactor optimizer | {optimizer_kwargs}")
+        if optimizer_kwargs["relative_step"]:
+            logger.info("relative_step is true")
+            if lr != 0.0:
+                logger.warning("learning rate is used as initial_lr")
+            args.learning_rate = None
+            if isinstance(trainable_params, list) and isinstance(
+                trainable_params[0], dict
+            ):
+                has_group_lr = False
+                for group in trainable_params:
+                    p = group.pop("lr", None)
+                    has_group_lr = has_group_lr or (p is not None)
+                if has_group_lr:
+                    logger.warning("unet_lr and text_encoder_lr are ignored")
+            if args.lr_scheduler != "adafactor":
+                logger.info("use adafactor_scheduler")
+                args.lr_scheduler = f"adafactor:{lr}"
+                lr = None
+        else:
+            if args.max_grad_norm != 0.0:
+                logger.warning(
+                    "because max_grad_norm is set, clip_grad_norm is enabled. consider set to 0"
+                )
+            if args.lr_scheduler != "constant_with_warmup":
+                logger.warning("constant_with_warmup will be good")
+            if optimizer_kwargs.get("clip_threshold", 1.0) != 1.0:
+                logger.warning("clip_threshold=1.0 will be good")
+        import transformers
+
+        optimizer_class = transformers.optimization.Adafactor
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     elif (
         optimizer_type.startswith("DAdapt".lower())
@@ -209,6 +257,57 @@ def get_optimizer(args, trainable_params) -> tuple[str, str, object]:
             optimizer_kwargs["fused"] = True
         logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
         optimizer_class = torch.optim.AdamW
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type == "CAME".lower():
+        try:
+            import pytorch_optimizer
+        except ImportError:
+            raise ImportError("No pytorch_optimizer")
+        logger.info(f"use CAME optimizer | {optimizer_kwargs}")
+        optimizer_class = pytorch_optimizer.CAME
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type == "Automagic".lower():
+        from library.training.automagic import Automagic
+
+        if args.lr_scheduler != "constant":
+            logger.warning(
+                "Automagic manages effective learning rates internally; external lr_scheduler=%s will be ignored.",
+                args.lr_scheduler,
+            )
+            logger.warning("recommend option: lr_scheduler=constant")
+        logger.info(f"use Automagic optimizer | {optimizer_kwargs}")
+        optimizer_class = Automagic
+        optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+    elif optimizer_type == "ProdigyPlusScheduleFree".lower():
+        try:
+            from prodigyplus.prodigy_plus_schedulefree import ProdigyPlusScheduleFree
+        except ImportError:
+            raise ImportError("No prodigy-plus-schedule-free")
+        schedulefree_enabled = bool(optimizer_kwargs.get("use_schedulefree", True))
+        if schedulefree_enabled:
+            if lr != 1.0:
+                logger.warning(
+                    "ProdigyPlusScheduleFree usually expects learning_rate=1.0: lr=%s",
+                    lr,
+                )
+                logger.warning("recommend option: learning_rate=1.0")
+            if args.lr_scheduler != "constant":
+                logger.warning(
+                    "ProdigyPlusScheduleFree with schedule-free enabled should use lr_scheduler=constant: lr_scheduler=%s",
+                    args.lr_scheduler,
+                )
+                logger.warning("recommend option: lr_scheduler=constant")
+            if args.max_grad_norm != 0.0:
+                logger.warning(
+                    "ProdigyPlusScheduleFree handles update scaling internally; external max_grad_norm may hamper LR adaptation: max_grad_norm=%s",
+                    args.max_grad_norm,
+                )
+                logger.warning("recommend option: max_grad_norm=0")
+        logger.info(f"use ProdigyPlusScheduleFree optimizer | {optimizer_kwargs}")
+        optimizer_class = ProdigyPlusScheduleFree
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     # elif optimizer_type == "Rose".lower():
@@ -295,4 +394,25 @@ def get_optimizer_train_eval_fn(
 
 
 def is_schedulefree_optimizer(optimizer: Optimizer, args: argparse.Namespace) -> bool:
+    if is_prodigy_plus_schedulefree_type(args):
+        return is_prodigy_plus_schedulefree_enabled(args)
     return args.optimizer_type.lower().endswith("schedulefree".lower())
+
+
+def is_prodigy_plus_schedulefree_type(args: argparse.Namespace) -> bool:
+    return (
+        getattr(args, "optimizer_type", "") or ""
+    ).lower() == "prodigyplusschedulefree"
+
+
+def is_prodigy_plus_schedulefree_enabled(args: argparse.Namespace) -> bool:
+    if not is_prodigy_plus_schedulefree_type(args):
+        return False
+    return bool(get_optimizer_kwargs(args).get("use_schedulefree", True))
+
+
+def is_self_managed_lr_optimizer(
+    optimizer: Optimizer, args: argparse.Namespace
+) -> bool:
+    optimizer_type = (getattr(args, "optimizer_type", "") or "").lower()
+    return optimizer_type == "automagic" and hasattr(optimizer, "get_learning_rates")
