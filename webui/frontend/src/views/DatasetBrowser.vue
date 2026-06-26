@@ -394,6 +394,7 @@
             :title="t('dsToggleMask')"
             @click="showMask = !showMask"
           />
+          <v-btn :icon="showTagPanel ? 'mdi-tag' : 'mdi-tag-outline'" variant="text" size="small" :title="t('dsToggleTagPanel')" @click="showTagPanel = !showTagPanel" />
         </v-card-title>
         <v-card-text>
           <v-row>
@@ -451,6 +452,18 @@
                   >{{ tag }}</span>
                 </div>
               </div>
+              <v-expand-transition>
+                <div v-if="showTagPanel" class="tag-panel mt-2">
+                  <v-text-field v-model="tagPanelSearch" prepend-inner-icon="mdi-magnify" :label="t('dsSearchTags')" variant="outlined" density="compact" hide-details clearable class="mb-2" />
+                  <div class="tag-panel-content">
+                    <v-chip v-for="[tag, count] in topTags" :key="tag" size="small" variant="outlined" class="tag-freq-chip" @click="insertTag(tag)">
+                      {{ tag }}
+                      <span class="text-caption text-medium-emphasis ml-1">{{ count }}</span>
+                    </v-chip>
+                  </div>
+                  <div v-if="tagIndex.size === 0" class="text-caption text-medium-emphasis pa-2">{{ t('dsNoTags') }}</div>
+                </div>
+              </v-expand-transition>
               <!-- Inline diff display -->
               <div v-if="isDirty && inlineDiffSpans.length" class="inline-diff mt-1">
                 <span
@@ -663,6 +676,24 @@ async function loadTagIndex() {
 const autocompleteVisible = ref(false)
 const autocompleteSuggestions = ref<string[]>([])
 const autocompleteSelected = ref(0)
+
+const showTagPanel = ref(false)
+const tagPanelSearch = ref('')
+const topTags = computed(() => {
+  const search = tagPanelSearch.value.toLowerCase()
+  return [...tagIndex.value.entries()]
+    .filter(([tag]) => !search || tag.toLowerCase().includes(search))
+    .slice(0, 100)
+})
+
+function insertTag(tag: string) {
+  const current = editCaption.value.trim()
+  if (!current) {
+    editCaption.value = tag
+  } else {
+    editCaption.value = current + ', ' + tag
+  }
+}
 
 function onCaptionInput(e: Event) {
   const textarea = e.target as HTMLTextAreaElement
@@ -1379,6 +1410,11 @@ onUnmounted(() => {
   font-size: 12px;
   line-height: 1.6;
 }
+
+.tag-panel { border: 1px solid rgba(var(--v-border-color), 0.2); border-radius: 8px; padding: 8px; max-height: 200px; overflow-y: auto; }
+.tag-panel-content { display: flex; flex-wrap: wrap; gap: 4px; }
+.tag-freq-chip { cursor: pointer; transition: background 0.15s; }
+.tag-freq-chip:hover { background: rgba(var(--v-theme-primary), 0.1); }
 
 .tag-chip {
   padding: 1px 6px;
