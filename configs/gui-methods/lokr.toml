@@ -11,7 +11,7 @@ output_name = "lokr"
 blocks_to_swap = 0
 
 use_lokr = true
-lokr_factor = -1
+lokr_factor = 8
 decompose_both = false
 
 [variant]
