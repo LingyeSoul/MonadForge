@@ -124,6 +124,12 @@ def get_versions(path: str, directory: str | None = Query(None)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.get("/tag-index")
+def get_tag_index(directory: str | None = Query(None)):
+    """Return tag frequency table for all images in directory."""
+    return svc.build_tag_index(directory or _default_directory())
+
+
 # ── mask info ──────────────────────────────────────────────────
 
 

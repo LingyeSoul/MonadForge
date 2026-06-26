@@ -279,6 +279,37 @@ def get_versions(directory: str, rel_path: str) -> list[dict]:
     return history
 
 
+def build_tag_index(directory: str) -> dict[str, Any]:
+    """Build a tag frequency table from all .txt sidecars in *directory*.
+
+    Returns ``{"tags": {"tag": count, ...}, "total_images": N}`` sorted by
+    count descending.
+    """
+    base = resolve_directory(directory)
+    if base is None:
+        return {"tags": {}, "total_images": 0}
+
+    all_images = _scan_images(base)
+    tag_counts: dict[str, int] = {}
+    total = 0
+
+    for img_path in all_images:
+        caption_path = img_path.with_suffix(".txt")
+        if not caption_path.exists():
+            continue
+        text = caption_path.read_text(encoding="utf-8").strip()
+        if not text:
+            continue
+        total += 1
+        for tag in text.split(","):
+            tag = tag.strip()
+            if tag:
+                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    sorted_tags = dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True))
+    return {"tags": sorted_tags, "total_images": total}
+
+
 # ── mask resolution ────────────────────────────────────────────
 
 
