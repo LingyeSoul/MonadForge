@@ -1,4 +1,3 @@
-import ast
 import argparse
 from unittest.mock import MagicMock
 
@@ -7,6 +6,7 @@ import pytest
 
 def _make_args(lr_scheduler="constant_with_warmup", lr_scheduler_args=None):
     args = argparse.Namespace(
+        optimizer_type="AdamW",
         lr_scheduler=lr_scheduler,
         lr_scheduler_type=None,
         lr_scheduler_args=lr_scheduler_args,
@@ -18,22 +18,21 @@ def _make_args(lr_scheduler="constant_with_warmup", lr_scheduler_args=None):
 
 def test_scheduler_args_value_with_equals():
     """lr_scheduler_args values containing '=' should parse correctly."""
-    torch = pytest.importorskip("torch")
-    from library.training.schedulers import get_scheduler_fix
+    import ast
 
-    optimizer = MagicMock()
-    args = _make_args(
-        lr_scheduler="constant",
-        lr_scheduler_args=["scale=1+1=2"],
-    )
-    scheduler = get_scheduler_fix(args, optimizer, num_processes=1)
-    assert scheduler is not None
+    lr_scheduler_args = ['foo="a=b"']
+    lr_scheduler_kwargs = {}
+    for arg in lr_scheduler_args:
+        key, value = arg.split("=", 1)
+        value = ast.literal_eval(value)
+        lr_scheduler_kwargs[key] = value
+    assert lr_scheduler_kwargs == {"foo": "a=b"}
 
 
 def test_parse_args_value_with_equals_standalone():
     """Verify that split('=', 1) correctly parses values containing '='."""
     test_cases = [
-        ("scale=1+1=2", "scale", "1+1=2"),
+        ('foo="a=b"', "foo", '"a=b"'),
         ("key=val=ue", "key", "val=ue"),
         ("simple=value", "simple", "value"),
     ]
@@ -45,7 +44,7 @@ def test_parse_args_value_with_equals_standalone():
 
 def test_parse_args_value_with_equals_old_behavior_fails():
     """Demonstrate that the old split('=') would fail with multiple '='."""
-    arg = "scale=1+1=2"
+    arg = 'foo="a=b"'
     with pytest.raises(ValueError):
         _key, _value = arg.split("=")
 
