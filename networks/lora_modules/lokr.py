@@ -104,15 +104,21 @@ class LoKRModule(BaseLoRAModule):
             self.lokr_w2 = torch.nn.Parameter(torch.empty(out_b, in_b))
             self._use_w2 = True
 
-        # --- Init: kaiming for non-zero params, zero for the "end" of each chain ---
+        # --- Init (matches LyCORIS LokrModule, use_scalar=False) ---
+        # Zero-start comes entirely from nulling w2: ΔW = kron(w1, 0) = 0.
+        # w1 stays kaiming on all paths (full: lokr_w1; decomposed: w1a AND
+        # w1b both kaiming) so its gradient flows from step 0. w2 is the null
+        # branch — full lokr_w2 and the decomposed chain-end w2b are zeroed;
+        # only w2a is kaiming, so the first update only touches w2a's partner
+        # (w2b) and the factor unblocks on step 2.
         if self._use_w1:
             torch.nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
         else:
             torch.nn.init.kaiming_uniform_(self.w1a, a=math.sqrt(5))
-            torch.nn.init.zeros_(self.w1b)
+            torch.nn.init.kaiming_uniform_(self.w1b, a=math.sqrt(5))
 
         if self._use_w2:
-            torch.nn.init.kaiming_uniform_(self.lokr_w2, a=math.sqrt(5))
+            torch.nn.init.zeros_(self.lokr_w2)
         else:
             torch.nn.init.kaiming_uniform_(self.w2a, a=math.sqrt(5))
             torch.nn.init.zeros_(self.w2b)
