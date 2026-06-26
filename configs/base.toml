@@ -107,4 +107,4 @@ caption_extension = ".txt"
 # pyramid_noise_iterations = 6        # Multi-frequency noise
 # pyramid_noise_discount = 0.4
 # optimizer_cpu_offload = true         # CPU offload optimizer states
-# profile_steps = 50                  # Step timing profiler
+# profile_step_timing = 50            # Step timing profiler (renamed from profile_steps)

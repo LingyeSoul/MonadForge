@@ -63,7 +63,7 @@
 
 ### 2.2 （可选）切换到 CUDA 13.2 + torch 2.12 nightly
 
-默认安装的是 CUDA 13.0 + torch 2.11 stable。如果在 RTX 50 系列等显卡上希望获得约 **10% 的训练速度提升**，可以切换到 CUDA 13.2 + torch 2.12 nightly（基准测试参考 [docs/optimizations/cuda132.md](../optimizations/cuda132.md)）。不需要编译工具——`pyproject.toml` 的 URL 中已上传了预编译的精简版 FA2 轮子包，`uv sync` 可以直接下载安装。
+默认安装的是 CUDA 13.0 + torch 2.11 stable。如果在 RTX 50 系列等显卡上希望获得约 **10% 的训练速度提升**，可以切换到 CUDA 13.2 + torch 2.12 nightly（基准测试见 `docs/optimizations/`）。不需要编译工具——`pyproject.toml` 的 URL 中已上传了预编译的精简版 FA2 轮子包，`uv sync` 可以直接下载安装。
 
 操作步骤：
 
@@ -96,7 +96,7 @@
 
 > 如需回退：将 `pyproject.toml` 中的注释恢复原样，然后重新运行 `uv sync`。
 >
-> 如果需要自行编译（例如不是 RTX 5060 Ti 的其他 GPU、Python 版本不同、或需要在自己的 fork 中管理轮子包）：请参考 [docs/optimizations/cuda132.md](../optimizations/cuda132.md)。
+> 如果需要自行编译（例如不是 RTX 5060 Ti 的其他 GPU、Python 版本不同、或需要在自己的 fork 中管理轮子包）：请参考 `docs/optimizations/` 下的相关文档。
 
 ---
 
@@ -432,7 +432,6 @@ checkpointing_epochs = 2     # 每 2 个 epoch 保存一次续训状态（覆盖
 | **T-LoRA + Ortho + ReFT** | `make lora-gui GUI_PRESETS=tlora_ortho_reft` | 在推荐组合基础上增加表达编辑（ReFT），用更少的额外参数进行微调 |
 | **HydraLoRA** | `make lora-gui GUI_PRESETS=hydralora`（8GB 版本为 `hydralora-8gb`） | MoE 多头路由，将多种概念整合到一个适配器中 |
 | **单独 ReFT** | `make lora-gui GUI_PRESETS=reft` 或在 `methods/lora.toml` 中设置 `add_reft = true` | 表达编辑（Representation Fine-Tuning），极少参数量 |
-| **Postfix Tuning**（*实验性*） | `make exp-postfix` 或 `make lora-gui GUI_PRESETS=postfix_ortho_cond` | 在 cross-attention 末尾追加可训练的 N 个向量（标注条件 + 正交变体） |
 | **ChimeraHydra**（*实验性*） | `make exp-chimera` 或 `make lora-gui GUI_PRESETS=chimera_hydra` | 内容/频率双池 MoE — 仅用于研究 |
 | **EasyControl**（*实验性*） | `make easycontrol` 或 GUI 适配器标签页 | 扩展自注意力图像条件。冻结 DiT，训练逐块条件 LoRA + 标量偏置。数据集：`easycontrol-dataset/` |
 | **Colorize**（*实验性*） | `make easycontrol EASYADAPTER=colorize` | EasyControl 的漫画/线稿上色变体。条件图 = 合成 B&amp;W（XDoG + 网点），目标 = 彩色插图 |
@@ -461,10 +460,6 @@ make test-merge                  # 用烘焙后的独立 DiT（`*_merged.safeten
 make test-dcw                    # LoRA + DCW 标量校正（采样器级 SNR-t 校正）
 make test-dcw-v4                 # LoRA + DCW v4 学习型校正器
 make test-easycontrol REF_IMAGE=... PROMPT="..."  # EasyControl 图像条件推理
-# 实验性推理
-make exp-test-postfix            # Postfix tuning（标准版）
-make exp-test-postfix-exp        # postfix_exp 变体
-make exp-test-postfix-func       # postfix_func 变体
 ```
 
 ### 10.2 通用推理（手动）
@@ -547,13 +542,6 @@ make update -- --dry-run # 预览哪些文件会被更改
 - [`docs/guidelines/difference_between_comfy.md`](difference_between_comfy.md) — anima_lora 与 ComfyUI 核心实现差异
 - [`docs/methods/timestep_mask.md`](../methods/timestep_mask.md) — T-LoRA 时间步遮罩
 - [`docs/methods/psoft-integrated-ortholora.md`](../methods/psoft-integrated-ortholora.md) — OrthoLoRA 细节（推荐 `tlora` 变体的正交旋转部分）
-- [`docs/methods/spectrum.md`](../methods/spectrum.md) — Spectrum 加速的原理与选项
-- [`docs/methods/dcw.md`](../methods/dcw.md) — DCW（标量 + v4 学习型校正器）
-- [`docs/methods/mod-guidance.md`](../methods/mod-guidance.md) — Modulation guidance
 - [`docs/methods/hydra-lora.md`](../methods/hydra-lora.md) — HydraLoRA 多头路由
-- [`docs/methods/reft.md`](../methods/reft.md) — ReFT 表达编辑
-- [`docs/experimental/postfix.md`](../experimental/postfix.md) — Postfix（cond+ortho）
-- [`docs/optimizations/cuda132.md`](../optimizations/cuda132.md) — 如何升级到 CUDA 13.2
-- [`docs/optimizations/full_model_cudagraph.md`](../optimizations/full_model_cudagraph.md) — `compile_mode=full` + CUDAGraph 不变量与调试
 
 如有问题或 Bug 报告，欢迎在 GitHub Issues 中用中文提交。祝训练愉快！

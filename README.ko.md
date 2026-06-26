@@ -127,11 +127,11 @@ Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe`)은 기본적�
 
 | 기법 | 설명 | 엔지니어링 노트 | 문서 |
 |---|---|---|---|
-| **Spectrum 추론** | Chebyshev 다항식 특성 예측을 통한 학습 없는 가속 (Han et al., CVPR 2026) — 기본 설정에서 ≈1.75×, 더 공격적인 스케줄에서 최대 ~5× (품질 트레이드오프 있음). 캐시된 스텝에서는 모든 트랜스포머 블록을 건너뛰고 `t_embedder` + `final_layer` + `unpatchify`만 실행. | `register_forward_pre_hook`을 `final_layer`에 걸어 모델을 monkey-patch하지 않고 블록 출력을 캡처. 적응형 윈도우 스케줄로 실제 forward를 초반 고노이즈 스텝에 집중. 별도 안정판 ComfyUI 노드: [ComfyUI-Spectrum-KSampler](https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler). | [spectrum.md](docs/methods/spectrum.md) |
-| **DCW 캘리브레이터** | 샘플러 단계의 SNR-t 편향 보정 (Yu et al., CVPR 2026) — 매 Euler 스텝의 `prev_sample`을 모델의 `x0_pred`로 LL Haar 밴드 방향으로 혼합. 두 모드: 스칼라 `λ` (오프라인 튜닝)와 **v4 학습형** 프롬프트별 캘리브레이터. | v4 헤드는 `(aspect, prompt, 관측된 prefix gap)` 조건부이며 `k=7` 워밍업 후 발화. Anima에서 편향 방향은 **(CFG × aspect) 의존적** — CFG=4 비정사각에서 paper-direction, CFG=1 / 1024²에서 paper-opposite. `make dcw`로 체크포인트별 학습. | [dcw.md](docs/methods/dcw.md) |
-| **SMC-CFG** | 속도 공간에서의 학습 없는 슬라이딩 모드 CFG 보정 (Wang et al., CFG-Ctrl) — cond/uncond 결합을 잔차 `e = v_cond − v_uncond`에 적용하는 제어 문제로 취급. 추가 DiT forward 없음. | **α-적응형 변형**을 탑재: 논문의 고정 이득 `k` (Anima CFG=4에서 ≈14× 과다, 가시적 채터링)를 스텝별 `k_t = α·mean(|e_t|)`로 교체. `make test-smc-cfg` (λ=5, α=0.2); Spectrum 및 mod-guidance와 조합 가능. | [smc_cfg.md](docs/methods/smc_cfg.md) |
+| **Spectrum 추론** | Chebyshev 다항식 특성 예측을 통한 학습 없는 가속 (Han et al., CVPR 2026) — 기본 설정에서 ≈1.75×, 더 공격적인 스케줄에서 최대 ~5× (품질 트레이드오프 있음). 캐시된 스텝에서는 모든 트랜스포머 블록을 건너뛰고 `t_embedder` + `final_layer` + `unpatchify`만 실행. | `register_forward_pre_hook`을 `final_layer`에 걸어 모델을 monkey-patch하지 않고 블록 출력을 캡처. 적응형 윈도우 스케줄로 실제 forward를 초반 고노이즈 스텝에 집중. 별도 안정판 ComfyUI 노드: [ComfyUI-Spectrum-KSampler](https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler). | — |
+| **DCW 캘리브레이터** | 샘플러 단계의 SNR-t 편향 보정 (Yu et al., CVPR 2026) — 매 Euler 스텝의 `prev_sample`을 모델의 `x0_pred`로 LL Haar 밴드 방향으로 혼합. 두 모드: 스칼라 `λ` (오프라인 튜닝)와 **v4 학습형** 프롬프트별 캘리브레이터. | v4 헤드는 `(aspect, prompt, 관측된 prefix gap)` 조건부이며 `k=7` 워밍업 후 발화. Anima에서 편향 방향은 **(CFG × aspect) 의존적** — CFG=4 비정사각에서 paper-direction, CFG=1 / 1024²에서 paper-opposite. `make dcw`로 체크포인트별 학습. | — |
+| **SMC-CFG** | 속도 공간에서의 학습 없는 슬라이딩 모드 CFG 보정 (Wang et al., CFG-Ctrl) — cond/uncond 결합을 잔차 `e = v_cond − v_uncond`에 적용하는 제어 문제로 취급. 추가 DiT forward 없음. | **α-적응형 변형**을 탑재: 논문의 고정 이득 `k` (Anima CFG=4에서 ≈14× 과다, 가시적 채터링)를 스텝별 `k_t = α·mean(|e_t|)`로 교체. `make test-smc-cfg` (λ=5, α=0.2); Spectrum 및 mod-guidance와 조합 가능. | — |
 | **OrthoHydraLoRA** | MoE 스타일 멀티헤드 LoRA — 직교화된 전문가들과 레이어 로컬 라우터. 공유 `lora_down`, 전문가별 `lora_up_i`, 학습된 per-sample 라우터. 단일 저랭크 부공간이 만들어내는 다중 스타일 cross-bleed를 회피. 원논문: [arXiv:2605.03252](https://arxiv.org/abs/2605.03252). | 두 파일을 나란히 저장: `anima_hydra.safetensors` (베이크다운 LoRA, ComfyUI 드롭인)와 `anima_hydra_moe.safetensors` (풀 멀티헤드). ComfyUI 라이브 라우팅은 동봉된 **Anima Adapter Loader** 노드 (`custom_nodes/comfyui-hydralora/`)로, per-Linear forward hook이 `HydraLoRAModule.forward`를 그대로 재현. | [hydra-lora.md](docs/methods/hydra-lora.md) |
-| **Modulation guidance** | AdaLN 변조 계수를 품질-양성 방향으로 조향하는 `pooled_text_proj` MLP를 distillation (Starodubcev et al., ICLR 2026). 교사는 실제 cross-attention을 보고, 학생은 cross-attention이 0이지만 풀드 텍스트가 변조 경로로 들어옴. | `make distill-mod`로 frozen DiT에 대해 학습. 추론 시점에 AdaLN 단계에서 적용되므로 어떤 LoRA 변형과도 조합 가능. `make test MOD=1`로 적용 샘플을 즉시 확인 (`SPECTRUM=1`과 조합 가능). | [mod-guidance.md](docs/methods/mod-guidance.md) |
+| **Modulation guidance** | AdaLN 변조 계수를 품질-양성 방향으로 조향하는 `pooled_text_proj` MLP를 distillation (Starodubcev et al., ICLR 2026). 교사는 실제 cross-attention을 보고, 학생은 cross-attention이 0이지만 풀드 텍스트가 변조 경로로 들어옴. | `make distill-mod`로 frozen DiT에 대해 학습. 추론 시점에 AdaLN 단계에서 적용되므로 어떤 LoRA 변형과도 조합 가능. `make test MOD=1`로 적용 샘플을 즉시 확인 (`SPECTRUM=1`과 조합 가능). | — |
 
 ---
 
@@ -141,15 +141,15 @@ Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe`)은 기본적�
 
 | 기능 | 설명 | 문서 |
 |---|---|---|
-| **SPD** | Spectral Progressive Diffusion (Xiao et al., 2026) — 학습 없는 다중 해상도 추론 (`--spd`): 초반 노이즈 우세 스텝을 저해상도로 실행한 뒤, 스펙트럴 노이즈 확장을 통해 고주파 디테일을 주입. 선택적 궤적 어댑터 파인튜닝 가능 (`make exp-spd`). | [spd.md](docs/experimental/spd.md) |
+| **SPD** | Spectral Progressive Diffusion (Xiao et al., 2026) — 학습 없는 다중 해상도 추론 (`--spd`): 초반 노이즈 우세 스텝을 저해상도로 실행한 뒤, 스펙트럴 노이즈 확장을 통해 고주파 디테일을 주입. 선택적 궤적 어댑터 파인튜닝 가능 (`make exp-spd`). | — |
 | **ChimeraHydra** | 이중 풀 가산 MoE: 콘텐츠 풀 (레이어 로컬 라우터) + 주파수 풀 (FEI + σ 특성 기반 네트워크 라우터), 각각 서로소인 SVD 부공간의 비대칭 HydraLoRA. HydraLoRA + TimeStep Master + FeRA를 융합. `make exp-chimera`. | [chimera-hydra.md](docs/experimental/chimera-hydra.md) |
 | **Soft Tokens** | SoftREPA (Lee et al., NeurIPS 2025) — 레이어별 × t별 학습 가능한 텍스트 토큰 (~1M params)을 `crossattn_emb`에 결합; DiT 동결. `make exp-soft-tokens`. | [soft_tokens.md](docs/experimental/soft_tokens.md) |
-| **Turbo** | CFG=4 교사를 소수 스텝 생성기로 DP-DMD 증류 (Wu et al., arXiv:2602.03139). 출력은 일반 LoRA — `--infer_steps 2 --cfg 1.0`으로 추론. `make exp-turbo`. | [dpdmd.md](docs/experimental/dpdmd.md) |
+| **Turbo** | CFG=4 교사를 소수 스텝 생성기로 DP-DMD 증류 (Wu et al., arXiv:2602.03139). 출력은 일반 LoRA — `--infer_steps 2 --cfg 1.0`으로 추론. `make turbo`. | — |
 | **DirectEdit** | 플로우 인버전 이미지 편집 (Yang & Ye, 2026) — 노이즈로 인버트, 편집 조건화 교체, V-injection으로 재디노이즈. 소스 캡션은 **Anima Tagger** (이미지 → Anima 포맷 태그)에서 가져옴. `make exp-test-directedit`. | [directedit_editing_v3.md](docs/experimental/directedit_editing_v3.md) |
-| **ReFT** | 블록 단위 residual-stream intervention (LoReFT, NeurIPS 2024). 어떤 LoRA 변형과도 조합 가능. | [reft.md](docs/methods/reft.md) |
-| **IP-Adapter** | Decoupled image cross-attention (Ye et al. 2023). DiT는 frozen, Perceiver 리샘플러와 블록별 `to_k_ip`/`to_v_ip`만 학습. | [ip-adapter.md](docs/experimental/ip-adapter.md) |
+| **ReFT** | 블록 단위 residual-stream intervention (LoReFT, NeurIPS 2024). 어떤 LoRA 변형과도 조합 가능. | — |
+| **IP-Adapter** | Decoupled image cross-attention (Ye et al. 2023). DiT는 frozen, Perceiver 리샘플러와 블록별 `to_k_ip`/`to_v_ip`만 학습. | — |
 | **EasyControl** | 확장 self-attention 이미지 조건화. DiT는 frozen, 블록별 cond LoRA(self-attn + FFN)와 스칼라 `b_cond` 게이트만 학습. | [easycontrol.md](docs/experimental/easycontrol.md) |
-| **임베딩 인버전** | frozen DiT를 통과시켜 타깃 이미지에 맞도록 텍스트 임베딩을 최적화. | [invert.md](docs/methods/invert.md) |
+| **임베딩 인버전** | frozen DiT를 통과시켜 타깃 이미지에 맞도록 텍스트 임베딩을 최적화. | — |
 
 > **기여하고 싶으신가요?** 외부 기여가 특히 큰 임팩트를 낼 수 있는 두 영역: **IP-Adapter 프로덕션화** (테스트, 공개 레퍼런스 체크포인트, 더 가벼운 비전 인코더) 와 **EasyControl 어댑터** (canny / depth / pose / … — 컨트롤 타입 하나가 곧 자체 완결 PR 한 건). 자세한 내용은 [CONTRIBUTING.md → Priority areas](CONTRIBUTING.md#priority-areas).
 

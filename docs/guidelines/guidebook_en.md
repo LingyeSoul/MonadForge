@@ -63,7 +63,7 @@ Download page: <https://developer.nvidia.com/cuda-13-0-2-download-archive>
 
 ### 2.2 (Optional) Switching to CUDA 13.2 + torch 2.12 nightly
 
-The default installation is CUDA 13.0 + torch 2.11 stable. If you want approximately **10% training speed improvement** on GPUs like the RTX 50 series, you can switch to CUDA 13.2 + torch 2.12 nightly (benchmark reference: [docs/optimizations/cuda132.md](../optimizations/cuda132.md)). No compilation tools are needed — `pyproject.toml` URLs already include pre-compiled trimmed FA2 wheel packages, and `uv sync` can download and install them directly.
+The default installation is CUDA 13.0 + torch 2.11 stable. If you want approximately **10% training speed improvement** on GPUs like the RTX 50 series, you can switch to CUDA 13.2 + torch 2.12 nightly (see `docs/optimizations/` for benchmarks). No compilation tools are needed — `pyproject.toml` URLs already include pre-compiled trimmed FA2 wheel packages, and `uv sync` can download and install them directly.
 
 Steps:
 
@@ -96,7 +96,7 @@ Steps:
 
 > To revert: restore the original comments in `pyproject.toml` and re-run `uv sync`.
 >
-> If you need to compile manually (e.g., different GPU from RTX 5060 Ti, different Python version, or managing wheels in your own fork): please refer to [docs/optimizations/cuda132.md](../optimizations/cuda132.md).
+> If you need to compile manually (e.g., different GPU from RTX 5060 Ti, different Python version, or managing wheels in your own fork): see the relevant docs under `docs/optimizations/`.
 
 ---
 
@@ -408,7 +408,6 @@ How it works:
 | **T-LoRA + Ortho + ReFT** | `make lora-gui GUI_PRESETS=tlora_ortho_reft` | Adds expressive editing (ReFT) to the recommended combination, with minimal extra parameters |
 | **HydraLoRA** | `make lora-gui GUI_PRESETS=hydralora` (8GB version: `hydralora-8gb`) | MoE multi-head routing, integrating multiple concepts into a single adapter |
 | **Standalone ReFT** | `make lora-gui GUI_PRESETS=reft` or set `add_reft = true` in `methods/lora.toml` | Representation Fine-Tuning (ReFT), minimal parameter count |
-| **Postfix Tuning** (*Experimental*) | `make exp-postfix` or `make lora-gui GUI_PRESETS=postfix_ortho_cond` | Appends trainable N vectors at the end of cross-attention (caption-conditional + orthogonal variants) |
 | **ChimeraHydra** (*Experimental*) | `make exp-chimera` or `make lora-gui GUI_PRESETS=chimera_hydra` | Content/frequency dual-pool MoE — for research only |
 | **EasyControl** (*Experimental*) | `make easycontrol` or GUI Adapter tab | Extended self-attention image conditioning. Frozen DiT with per-block cond LoRA + scalar bias. Dataset: `easycontrol-dataset/` |
 | **Colorize** (*Experimental*) | `make easycontrol EASYADAPTER=colorize` | EasyControl's manga/lineart colorization variant. Cond = synthetic B&W (XDoG + screentone), target = color illustration |
@@ -437,10 +436,6 @@ make test-merge                  # Inference with baked standalone DiT (`*_merge
 make test-dcw                    # LoRA + DCW scalar correction (sampler-level SNR-t correction)
 make test-dcw-v4                 # LoRA + DCW v4 learnable calibrator
 make test-easycontrol REF_IMAGE=... PROMPT="..."  # EasyControl image-conditioned inference
-# Experimental inference
-make exp-test-postfix            # Postfix tuning (standard)
-make exp-test-postfix-exp        # postfix_exp variant
-make exp-test-postfix-func       # postfix_func variant
 ```
 
 ### 10.2 General Inference (Manual)
@@ -523,13 +518,6 @@ make update -- --dry-run # Preview which files would be changed
 - [`docs/guidelines/difference_between_comfy.md`](difference_between_comfy.md) — Differences between anima_lora and ComfyUI core implementation
 - [`docs/methods/timestep_mask.md`](../methods/timestep_mask.md) — T-LoRA timestep masking
 - [`docs/methods/psoft-integrated-ortholora.md`](../methods/psoft-integrated-ortholora.md) — OrthoLoRA details (orthogonal rotation part of the recommended `tlora` variant)
-- [`docs/methods/spectrum.md`](../methods/spectrum.md) — Spectrum acceleration principles and options
-- [`docs/methods/dcw.md`](../methods/dcw.md) — DCW (scalar + v4 learnable calibrator)
-- [`docs/methods/mod-guidance.md`](../methods/mod-guidance.md) — Modulation guidance
 - [`docs/methods/hydra-lora.md`](../methods/hydra-lora.md) — HydraLoRA multi-head routing
-- [`docs/methods/reft.md`](../methods/reft.md) — ReFT expression editing
-- [`docs/experimental/postfix.md`](../experimental/postfix.md) — Postfix (cond+ortho)
-- [`docs/optimizations/cuda132.md`](../optimizations/cuda132.md) — How to upgrade to CUDA 13.2
-- [`docs/optimizations/full_model_cudagraph.md`](../optimizations/full_model_cudagraph.md) — `compile_mode=full` + CUDAGraph invariants and debugging
 
 If you have questions or bug reports, feel free to submit them in Chinese on GitHub Issues. Happy training!

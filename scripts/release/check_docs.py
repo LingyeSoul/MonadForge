@@ -193,9 +193,20 @@ def _check_path(tok: str, top: set[str]) -> str | None:
     tok = tok.strip().rstrip(".")
     if not tok or tok.startswith(("http", "..", "/", "~", "mailto")):
         return None
+    # `<lang>` placeholders / truncated glob prefixes (`docs/structure_images_`,
+    # `--region-`) — never a real path. Mirrors the flag-truncation skip policy
+    # below in collect_issues; ``_MULTI_RE`` matches the stub before the ``<``.
+    if tok.endswith(("-", "_")):
+        return None
     if "/" not in tok and "." not in tok:
         return None
     first = tok.split("/", 1)[0]
+    if first == "_archive":  # historical pointers — files were deleted/renamed;
+        return None            # the doc is the record, the path never resolves
+    # Experiment run-output dirs (`bench/<exp>/results/<run>/…`) only exist
+    # after someone ran the experiment; they never resolve on a clean checkout.
+    if first == "bench" and "/results" in tok:
+        return None
     if first not in top:  # not rooted in the repo (URL / data dir / bare name)
         return None
     if (REPO_ROOT / tok).exists():

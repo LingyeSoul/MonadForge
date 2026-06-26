@@ -970,10 +970,18 @@ def add_train_misc_arguments(parser: argparse.ArgumentParser):
         help="Treat config-schema warnings (unknown keys, off-list choices) as errors.",
     )
     parser.add_argument(
-        "--profile_steps",
+        # Renamed from --profile_steps: that flag name is already taken in
+        # ``add_training_arguments`` (str, the nsys CUDA-profiler step range,
+        # consumed by ``trainer._parse_profile_steps``). Both register onto the
+        # same parser via ``setup_parser()``, so the int form got a distinct
+        # name. The StepProfiler class this drives isn't wired into the loop
+        # yet — rename is forward-looking, see configs/base.toml.
+        "--profile_step_timing",
         type=int,
         default=0,
-        help="Number of steps to profile (0=disabled). Reports timing breakdown after N steps.",
+        help="Report a per-section timing breakdown every N steps (0=disabled). "
+        "Independent of --profile_steps (str), which toggles the CUDA profiler "
+        "for an nsys step window.",
     )
 
 
