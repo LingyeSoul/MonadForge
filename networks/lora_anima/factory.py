@@ -595,6 +595,9 @@ def create_network_from_weights(
     elif any(k.endswith(".vera_d") for k in weights_sd):
         spec = NETWORK_REGISTRY["vera"]
         module_class = spec.module_class
+    elif str(file_metadata.get("ss_network_spec", "")).strip() == "dylora":
+        spec = NETWORK_REGISTRY["dylora"]
+        module_class = spec.module_class
     elif for_inference:
         # Force plain LoRA spec even for ortho — merge_to/fuse_weight wants flat
         # down/up, and ortho checkpoints are distilled to LoRA shape at save.
@@ -838,6 +841,14 @@ def create_network_from_weights(
         if chimera_fei_sigma_low_div is not None:
             fei_sigma_low_div_meta = chimera_fei_sigma_low_div
 
+    # Read DyLoRA params from checkpoint metadata.
+    dylora_unit = int(file_metadata.get("ss_dylora_unit", 1))
+    dylora_algo = str(file_metadata.get("ss_dylora_algo", ""))
+    # ``spec`` was resolved above (vera/dylora/lora/…). Thread the selector so
+    # warm-started DyLoRA checkpoints route ``unit``/``algo`` into each module
+    # (network.py keys the extra_kwargs injection off ``cfg.use_dylora``).
+    use_dylora = spec.name == "dylora"
+
     cfg = LoRANetworkCfg.from_weights(
         modules_dim=modules_dim,
         modules_alpha=modules_alpha,
@@ -870,6 +881,9 @@ def create_network_from_weights(
         is_lokr=has_lokr,
         lokr_factor=lokr_detected_factor,
         decompose_both=lokr_decompose_both,
+        dylora_unit=dylora_unit,
+        dylora_algo=dylora_algo,
+        use_dylora=use_dylora,
     )
 
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)
@@ -882,6 +896,7 @@ def create_network_from_weights(
         meta_seed = file_metadata.get("ss_vera_seed")
         if meta_seed is not None:
             kwargs["vera_seed"] = int(meta_seed)
+
     if spec.post_init is not None:
         spec.post_init(network, kwargs)
 

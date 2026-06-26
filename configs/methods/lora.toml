@@ -201,7 +201,8 @@ repa_dog_sigma1_div = 16      # σ₁ = min(gh,gw)/div; Phase-0 character winner
 repa_dog_sigma2_div = 0       # 0 ⇒ σ₂ off (low-band strip only, +1a); >sigma1_div ⇒ band-pass
 repa_dog_norm_std   = 0       # 0 ⇒ empirical std (matches spatial_norm); >0 ⇒ fixed const
 
-# --- Alternative adapters (uncomment to switch) ---
-# network_module = "vera"    # VeRA: ~10-100x fewer params than LoRA
-# network_module = "dylora"  # DyLoRA: train multiple ranks simultaneously
+# --- Alternative adapters (use separate method TOMLs) ---
+# VeRA:  --method vera   (configs/methods/vera.toml)
+# DyLoRA: --method dylora (configs/methods/dylora.toml)
+# LoKR:  set use_lokr = true in network_args
 

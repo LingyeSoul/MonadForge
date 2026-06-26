@@ -264,6 +264,17 @@ class LoRANetworkCfg:
     lokr_factor: int = -1
     decompose_both: bool = False
 
+    # DyLoRA: trains multiple LoRA ranks simultaneously by sampling a random
+    # rank r ∈ {unit, 2*unit, ..., lora_dim} at each forward pass.
+    # Selects ``DyLoRAModule`` via ``resolve_network_spec``. Non-MoE only.
+    use_dylora: bool = False
+    dylora_unit: int = 1
+    dylora_algo: str = ""
+
+    # VeRA: shared frozen random matrices + per-layer diagonal scaling.
+    # Selects ``VeRAModule`` via ``resolve_network_spec``. Non-MoE only.
+    use_ve: bool = False
+
     # SVD-Down: ``lora_down`` initialization for plain LoRA — ``"kaiming"``
     # (default) or ``"weight_svd"`` (seed input basis from W0's top-r right
     # singular vectors, scale-matched). Plain two-factor LoRAModule only;
@@ -514,6 +525,14 @@ class LoRANetworkCfg:
         lokr_factor = int(kwargs.get("lokr_factor", -1))
         decompose_both = _as_bool(kwargs.get("decompose_both"))
 
+        # DyLoRA knobs.
+        use_dylora = _as_bool(kwargs.get("use_dylora"))
+        dylora_unit = int(kwargs.get("dylora_unit", 1))
+        dylora_algo = str(kwargs.get("dylora_algo", ""))
+
+        # VeRA knob.
+        use_ve = _as_bool(kwargs.get("use_ve"))
+
         # FECL knobs. Default off; turning it on requires `num_bands >= 3`
         # to be a meaningful objective (see compute_fecl docstring).
         fera_fecl_weight = float(kwargs.get("fera_fecl_weight", 0.0))
@@ -750,6 +769,10 @@ class LoRANetworkCfg:
             use_lokr=use_lokr,
             lokr_factor=lokr_factor,
             decompose_both=decompose_both,
+            use_dylora=use_dylora,
+            dylora_unit=dylora_unit,
+            dylora_algo=dylora_algo,
+            use_ve=use_ve,
             down_init=down_init,
             fera_fecl_weight=fera_fecl_weight,
             fera_num_bands=fera_num_bands,
@@ -816,6 +839,12 @@ class LoRANetworkCfg:
         is_lokr: bool = False,
         lokr_factor: int = -1,
         decompose_both: bool = False,
+        dylora_unit: int = 1,
+        dylora_algo: str = "",
+        # DyLoRA selector — must be threaded through so ``network.py``'s
+        # per-module ``extra_kwargs`` injection (``if cfg.use_dylora and ...``)
+        # fires on warm-started/inference checkpoints, not just fresh train.
+        use_dylora: bool = False,
     ) -> "LoRANetworkCfg":
         """Build cfg from a checkpoint key-sniff (warm-start / inference path).
 
@@ -924,4 +953,7 @@ class LoRANetworkCfg:
             use_lokr=is_lokr,
             lokr_factor=int(lokr_factor),
             decompose_both=bool(decompose_both),
+            dylora_unit=int(dylora_unit),
+            dylora_algo=str(dylora_algo),
+            use_dylora=bool(use_dylora),
         )

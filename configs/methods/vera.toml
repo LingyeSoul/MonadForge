@@ -1,6 +1,11 @@
-network_module = "vera"
+# VeRA (Vector-based Random Matrix Adaptation) — ~10-100x fewer trainable
+# params than LoRA. Routed via `use_ve` (see resolve_network_spec); the host
+# network module is networks.lora_anima (inherited from base.toml).
 network_dim = 64
 network_alpha = 64
 learning_rate = 1e-4
 max_train_epochs = 6
 output_name = "vera"
+
+use_ve = true
+vera_seed = 0

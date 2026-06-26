@@ -1,0 +1,22 @@
+network_dim = 32
+network_alpha = 32
+learning_rate = 2e-5
+max_train_epochs = 4
+save_every_n_epochs = 2
+checkpointing_epochs = 2
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+caption_dropout_rate = 0.1
+output_name = "dylora"
+blocks_to_swap = 0
+
+use_dylora = true
+dylora_unit = 1
+dylora_algo = ""
+
+[variant]
+family = "lora"
+label = "DyLoRA"
+description = "Dynamic LoRA — trains multiple ranks simultaneously by sampling random rank each step."
+order = 50
+target_res = [ 896, 1024,]

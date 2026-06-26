@@ -1,0 +1,20 @@
+# DyLoRA — trains multiple LoRA ranks simultaneously.
+#
+# At each training step a random rank r ∈ {unit, 2*unit, ..., lora_dim} is
+# sampled and only the [:r] / [:, :r] slices are computed. After training
+# any rank ≤ lora_dim can be extracted.
+#
+# Ref: https://arxiv.org/abs/2202.05955
+#
+# dylora_unit: rank granularity (default 1 = every integer rank)
+# dylora_algo: algorithm variant (default "" = standard DyLoRA)
+
+network_dim = 32
+network_alpha = 32
+learning_rate = 1e-4
+max_train_epochs = 6
+output_name = "dylora"
+
+use_dylora = true
+dylora_unit = 1
+dylora_algo = ""

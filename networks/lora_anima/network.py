@@ -21,6 +21,7 @@ from networks.lora_anima.loading import (
 from networks.lora_modules import (
     ChimeraHydraInferenceModule,
     ChimeraHydraLoRAModule,
+    DyLoRAModule,
     HydraLoRAModule,
     LoKRModule,
     LoRAModule,
@@ -521,6 +522,11 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                         extra_kwargs["lokr_factor"] = cfg.lokr_factor
                     if cfg.decompose_both:
                         extra_kwargs["decompose_both"] = True
+
+                # DyLoRA-specific kwargs.
+                if getattr(cfg, "use_dylora", False) and effective_module_class is DyLoRAModule:
+                    extra_kwargs["unit"] = cfg.dylora_unit
+                    extra_kwargs["algo"] = cfg.dylora_algo
 
                 # Per-channel scaling is DiT-only — TE activations are never calibrated.
                 if cfg.channel_scales_dict is not None and is_unet:
@@ -1840,14 +1846,20 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         spec: NetworkSpec = getattr(self, "_network_spec", NETWORK_REGISTRY["lora"])
         if metadata is None:
             metadata = {}
-        if metadata:
-            metadata["ss_network_spec"] = spec.name
+        # Stamp the spec name unconditionally (even on an empty dict) so
+        # create_network_from_weights can route the checkpoint back to its
+        # module class from ``ss_network_spec`` (factory.py key-sniff).
+        metadata["ss_network_spec"] = spec.name
 
         if spec.name == "vera":
             for lora in self.unet_loras:
                 if hasattr(lora, "_vera_seed") and lora._vera_seed is not None:
                     metadata["ss_vera_seed"] = str(lora._vera_seed)
                     break
+
+        if spec.name == "dylora":
+            metadata["ss_dylora_unit"] = str(self.cfg.dylora_unit)
+            metadata["ss_dylora_algo"] = str(self.cfg.dylora_algo)
 
         # Hard σ-band partition lives in non-persistent buffers + a Python attr;
         # nothing survives the state_dict write. Stamp the scalars the loader

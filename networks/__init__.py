@@ -28,6 +28,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple, Type
 
 from networks.lora_modules import (
     ChimeraHydraLoRAModule,
+    DyLoRAModule,
     HydraLoRAModule,
     LoKRModule,
     LoRAModule,
@@ -109,7 +110,8 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "decompose_both",
         # SVD-Down: lora_down init for plain LoRA ("kaiming" | "weight_svd").
         "down_init",
-        # VeRA: seed for shared frozen random matrices A, B.
+        # VeRA: seed for shared frozen random matrices A, B. Selected via use_ve=true.
+        "use_ve",
         "vera_seed",
         "use_moe_style",
         "route_per_layer",
@@ -191,9 +193,11 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "repa_dog_sigma1_div",  # σ₁ = min(gh,gw)/div (outer, broad low band removed)
         "repa_dog_sigma2_div",  # 0 ⇒ σ₂ off (low-band strip only); >div1 ⇒ band-pass
         "repa_dog_norm_std",  # 0 ⇒ empirical std (matches spatial_norm); >0 = fixed
-        # DyLoRA rank granularity and algorithm variant.
-        "unit",
-        "algo",
+        # DyLoRA: trains multiple ranks simultaneously by sampling random rank
+        # at each forward pass. Selected via use_dylora=True.
+        "use_dylora",
+        "dylora_unit",
+        "dylora_algo",
     }
 )
 
@@ -315,6 +319,11 @@ NETWORK_REGISTRY: Dict[str, NetworkSpec] = {
         save_variant="standard",
         post_init=_post_init_vera,
     ),
+    "dylora": NetworkSpec(
+        name="dylora",
+        module_class=DyLoRAModule,
+        save_variant="standard",
+    ),
 }
 
 
@@ -409,6 +418,10 @@ def resolve_network_spec(kwargs: Mapping[str, Any]) -> NetworkSpec:
         return NETWORK_REGISTRY["ortho"]
     if _parse_bool_flag(kwargs, "use_lokr"):
         return NETWORK_REGISTRY["lokr"]
+    if _parse_bool_flag(kwargs, "use_dylora"):
+        return NETWORK_REGISTRY["dylora"]
+    if _parse_bool_flag(kwargs, "use_ve"):
+        return NETWORK_REGISTRY["vera"]
     return NETWORK_REGISTRY["lora"]
 
 
