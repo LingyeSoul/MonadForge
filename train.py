@@ -1792,6 +1792,19 @@ class AnimaTrainer:
 
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
+        # Resolution curriculum (autoscale_mode) — arm on the TRAIN group only so
+        # validation always scores at full populated resolution. No-op for
+        # single-tier data. See docs/proposal/autoscale_resolution_curriculum.md.
+        if getattr(args, "autoscale_mode", False):
+            from library.datasets.autoscale import AutoscaleSchedule
+
+            train_dataset_group.enable_autoscale(
+                AutoscaleSchedule(
+                    finish=args.autoscale_finish,
+                    ramp=args.autoscale_ramp,
+                )
+            )
+
         # lr scheduler
         lr_scheduler = get_scheduler_fix(args, optimizer, accelerator.num_processes)
 

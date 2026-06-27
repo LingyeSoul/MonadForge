@@ -16,7 +16,7 @@ dit_path = "models/diffusion_models/anima-base-v1.0.safetensors"
 data_dir = "post_image_dataset/lora"
 output_dir = "output/ckpt"
 
-iterations = 4000
+iterations = 6000
 batch_size = 1
 seed = 42
 use_masked_loss = true
@@ -43,10 +43,10 @@ activation_memory_budget = 0.99
 base_loss = "dpdmd"
 
 [network]
-student_rank = 64
-student_alpha = 180
-fake_rank = 64
-fake_alpha = 180
+student_rank = 96
+student_alpha = 224
+fake_rank = 96
+fake_alpha = 224
 attn_mode = "flash"
 # Per-step expert: split the student into K = student_steps up-heads off a
 # shared down-proj, head k serving denoise step k. Removes the diversity↔quality
@@ -205,7 +205,7 @@ every_n = 2                     # run the term every N student steps (amortizati
 # each on GPU → pool_size MiB VRAM) and must fill to `warmup_ratio` of capacity
 # before firing (negatives = a representative shuffle, not just the last few).
 [softrank]
-weight = 0.05                   # λ on the soft-rank loss. 0 = off; first live value 0.05
+weight = 0.0                    # λ on the soft-rank loss. 0 = off; first live value 0.05
 k = 2                           # shuffled-caption negatives per firing (chance 1/3 at k=2)
 every_n = 4                     # fire every N student steps (amortization; ≈ +k/N no_grad fwd/step)
 softness = 0.1                  # soft-rank temperature τ (smaller = closer to the hard integer rank)
