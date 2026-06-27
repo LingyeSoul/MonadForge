@@ -192,6 +192,13 @@ class BaseDataset(torch.utils.data.Dataset):
         self.max_train_steps: int = 0
         self.seed: int = 0
 
+        # Resolution-curriculum (autoscale_mode) state — inert unless
+        # enable_autoscale() is called (train group only). See autoscale.py.
+        self._autoscale = None  # AutoscaleSchedule | None
+        self._autoscale_bucket_rank: dict = {}  # bucket_index -> tier rank
+        self._autoscale_n_ranks: int = 0
+        self._autoscale_rank_positions: dict = {}  # rank -> [positions in buckets_indices]
+
         self.aug_helper = AugHelper()
 
         self.image_transforms = IMAGE_TRANSFORMS
@@ -334,6 +341,89 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def set_max_train_steps(self, max_train_steps):
         self.max_train_steps = max_train_steps
+
+    def enable_autoscale(self, schedule):
+        """Arm the resolution curriculum on this dataset (train group only).
+
+        Ranks the dataset's populated buckets into a low→high token-count ladder
+        (``edge_for_token_count``) and builds the per-rank position index the
+        ``__getitem__`` remap draws from. A single-tier dataset yields one rank,
+        so the schedule is a no-op (``active_rank`` returns ``None``) — autoscale
+        then trains exactly like a normal run. Must run after ``make_buckets``.
+        """
+        from library.datasets.buckets import edge_for_token_count
+
+        self._autoscale = schedule
+        self._autoscale_bucket_rank = {}
+        if self.bucket_manager is None:
+            self._autoscale_n_ranks = 0
+            return
+        resos = self.bucket_manager.resos
+        bucket_edge: dict[int, int] = {}
+        for bbi in self.buckets_indices:
+            bi = bbi.bucket_index
+            if bi not in bucket_edge:
+                w, h = resos[bi]
+                bucket_edge[bi] = edge_for_token_count((w // 16) * (h // 16))
+        ladder = sorted(set(bucket_edge.values()))  # ascending token count
+        self._autoscale_n_ranks = len(ladder)
+        rank_of = {edge: r for r, edge in enumerate(ladder)}
+        self._autoscale_bucket_rank = {
+            bi: rank_of[edge] for bi, edge in bucket_edge.items()
+        }
+        self._rebuild_autoscale_positions()
+        if self._autoscale_n_ranks > 1:
+            logger.info(
+                f"autoscale_mode: {self._autoscale_n_ranks}-tier ladder "
+                f"{ladder} (ramp={schedule.ramp}, finish={schedule.finish})"
+            )
+        else:
+            logger.warning(
+                "autoscale_mode enabled but data has a single tier "
+                f"({ladder}) — schedule is a no-op (cache both tiers via "
+                "preprocess --autoscale_tiers to activate)."
+            )
+
+    def _rebuild_autoscale_positions(self):
+        """Index buckets_indices positions by tier rank for the active epoch order.
+
+        Called after every ``shuffle_buckets`` because that reorders
+        ``buckets_indices`` in place, invalidating stored positions.
+        """
+        if self._autoscale is None or self._autoscale_n_ranks <= 1:
+            return
+        positions: dict[int, list[int]] = {}
+        for pos, bbi in enumerate(self.buckets_indices):
+            rank = self._autoscale_bucket_rank.get(bbi.bucket_index)
+            if rank is not None:
+                positions.setdefault(rank, []).append(pos)
+        self._autoscale_rank_positions = positions
+
+    def _autoscale_remap(self, index):
+        """Redirect ``index`` to an active-tier batch under the curriculum.
+
+        No-op unless autoscale is armed with ≥2 tiers and ``max_train_steps`` is
+        known. If the requested batch's tier is not the one active at the current
+        step, draw a deterministic active-tier batch instead (so the bulk phase
+        trains only the cheap tier and the finish phase only the top tier). The
+        requested index spreads the substitution across the active pool.
+        """
+        if self._autoscale is None or self._autoscale_n_ranks <= 1:
+            return index
+        active = self._autoscale.active_rank(
+            self.current_step, self.max_train_steps, self._autoscale_n_ranks
+        )
+        if active is None:
+            return index
+        req_rank = self._autoscale_bucket_rank.get(
+            self.buckets_indices[index].bucket_index
+        )
+        if req_rank == active:
+            return index
+        pool = self._autoscale_rank_positions.get(active)
+        if not pool:
+            return index  # active tier absent in this epoch order — keep request
+        return pool[index % len(pool)]
 
     def set_tag_frequency(self, dir_name, captions):
         frequency_for_dir = self.tag_frequency.get(dir_name, {})
@@ -679,6 +769,7 @@ class BaseDataset(torch.utils.data.Dataset):
         random.shuffle(self.buckets_indices)
         self.bucket_manager.shuffle()
         self._largest_bucket_first()
+        self._rebuild_autoscale_positions()
 
     def _largest_bucket_first(self):
         """Pin one batch of EACH token-count family to the front of the epoch
@@ -1756,6 +1847,11 @@ class BaseDataset(torch.utils.data.Dataset):
             ) from e
 
     def __getitem__(self, index):
+        if self.caching_mode is None:
+            # Resolution curriculum: redirect to the tier active at this step.
+            # Skipped during latent/TE caching (caching_mode set) — caches every
+            # tier — and a no-op when autoscale is disarmed.
+            index = self._autoscale_remap(index)
         bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
         bucket_batch_size = self.buckets_indices[index].bucket_batch_size
         image_index = self.buckets_indices[index].batch_index * bucket_batch_size

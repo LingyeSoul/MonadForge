@@ -72,6 +72,17 @@ gradient_accumulation_steps=1
 use_repa = false
 repa_target_dog = false
 
+# Resolution-curriculum training (docs/proposal/autoscale_resolution_curriculum.md).
+# Off by default — opt-in schedule. Trains the bulk of the run at the cheapest
+# cached tier and switches to the top tier for the final ``autoscale_finish``
+# fraction of steps. Tiers are discovered from the populated buckets (cache both
+# via ``make preprocess-resize ARGS="--autoscale_tiers 896 1024"``); a single-tier
+# dataset makes the schedule a no-op. ramp = "step" (hard low→high switch, exact
+# for a 2-tier ladder) | "stairs" (progressive climb across ≥3 tiers).
+autoscale_mode = false
+autoscale_finish = 0.15
+autoscale_ramp = "step"
+
 [general]
 [[datasets]]
 batch_size = 1

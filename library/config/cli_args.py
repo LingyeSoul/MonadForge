@@ -226,6 +226,37 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="use torch.compile (requires PyTorch 2.0)",
     )
     parser.add_argument(
+        "--autoscale_mode",
+        action="store_true",
+        help=(
+            "Resolution-curriculum training: train the bulk of the run at the "
+            "cheapest cached tier, switch to the top tier for the final "
+            "--autoscale_finish fraction of steps. Tiers are discovered from the "
+            "populated buckets (cache both via preprocess --autoscale_tiers); "
+            "single-tier data makes it a no-op. "
+            "See docs/proposal/autoscale_resolution_curriculum.md."
+        ),
+    )
+    parser.add_argument(
+        "--autoscale_finish",
+        type=float,
+        default=0.15,
+        help=(
+            "Fraction of max_train_steps spent at the top tier (the high-res "
+            "tail). Only used when --autoscale_mode is set."
+        ),
+    )
+    parser.add_argument(
+        "--autoscale_ramp",
+        type=str,
+        default="step",
+        choices=["step", "stairs"],
+        help=(
+            "Curriculum ramp: 'step' = hard low→high switch (exact for a 2-tier "
+            "ladder); 'stairs' = progressive climb across ≥3 tiers."
+        ),
+    )
+    parser.add_argument(
         "--target_res",
         type=int,
         nargs="+",
@@ -766,6 +797,17 @@ def add_validation_arguments(parser: argparse.ArgumentParser):
         "`use_cmmd = false` in the method TOML (or pass `--no-use_cmmd`) to "
         "skip CMMD and run only the legacy per-σ FM-MSE val pass — useful "
         "on tight VRAM where the PE encoder + sampling path doesn't fit.",
+    )
+    parser.add_argument(
+        "--validation_fm_with_cmmd",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Also run the per-σ FM-MSE pass alongside a successful CMMD "
+        "validation, logged under separate `loss/validation/fm_*` keys (CMMD "
+        "stays the primary signal / best-ckpt selector). Set "
+        "`validation_fm_with_cmmd = false` (or pass `--no-validation_fm_with_cmmd`) "
+        "to skip the extra DiT forwards when you only want CMMD. No effect when "
+        "`use_cmmd` is off — FM-MSE is already the primary signal then.",
     )
     parser.add_argument(
         "--validation_baselines",

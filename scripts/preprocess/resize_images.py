@@ -63,6 +63,20 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--autoscale_tiers",
+        type=int,
+        nargs="+",
+        default=None,
+        metavar="EDGE",
+        help=(
+            "Resolution-curriculum emit: write EVERY listed tier for EACH image "
+            "(stem-suffixed .as{edge}), so one source image trains as independent "
+            "samples at each tier (vs --target_res which picks one tier per image). "
+            "Pairs with training --autoscale_mode. ~N× latent/TE/PE cache disk for "
+            "N tiers. e.g. --autoscale_tiers 896 1024."
+        ),
+    )
+    parser.add_argument(
         "--workers", type=int, default=4, help="Number of parallel workers (default: 4)"
     )
     parser.add_argument(
@@ -169,14 +183,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if args.target_res is not None:
+    if args.target_res is not None or args.autoscale_tiers is not None:
         from library.datasets.buckets import ALLOWED_TARGET_RES
 
-        bad = [e for e in args.target_res if e not in ALLOWED_TARGET_RES]
-        if bad:
-            parser.error(
-                f"--target_res {bad} not in allowed tiers {list(ALLOWED_TARGET_RES)}"
-            )
+        for flag, vals in (
+            ("--target_res", args.target_res),
+            ("--autoscale_tiers", args.autoscale_tiers),
+        ):
+            bad = [e for e in (vals or []) if e not in ALLOWED_TARGET_RES]
+            if bad:
+                parser.error(
+                    f"{flag} {bad} not in allowed tiers {list(ALLOWED_TARGET_RES)}"
+                )
 
     resize_to_buckets(
         Path(args.src),
@@ -186,6 +204,7 @@ def main() -> None:
         max_bucket_reso=args.max_bucket_reso,
         bucket_reso_steps=args.bucket_reso_steps,
         target_res=args.target_res,
+        autoscale_tiers=args.autoscale_tiers,
         workers=args.workers,
         min_pixels=args.min_pixels,
         copy_captions=not args.no_copy_captions,

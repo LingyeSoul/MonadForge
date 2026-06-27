@@ -18,7 +18,7 @@ DMD2 single-call training never visited. Its stated revival condition:
 The 2026-05-30 DP-DMD migration (commit `9410a3a`) met that condition as a side
 effect: the student now rolls its genuine N-step trajectory in-loop, and the DMD
 point is a renoise of the **student's own output** (`distill.py:1006`), not real
-data. `docs/proposal/turbo_fei_band_on_trajectory.md` reopened the line to
+data. `_archive/proposals/turbo_fei_band_on_trajectory.md` reopened the line to
 re-measure at that distribution — measurement only.
 
 ## How it was measured (this time, at the right distribution)

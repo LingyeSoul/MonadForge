@@ -4,6 +4,11 @@ from typing import Optional, Tuple, Union
 
 import torch
 from torchvision import transforms
+
+# Single source of truth for the CFG++ reweight — shared with the FSG operator
+# and (vendored) the ComfyUI Spectrum node. Re-exported here for callers that
+# read it off the sampling module (networks/spectrum.py, generation.py, tests).
+from library.inference.corrections.fsg_core import cfgpp_guidance_weight  # noqa: F401
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import (
@@ -48,31 +53,6 @@ def get_timesteps_sigmas(
 def step(latents, noise_pred, sigmas, step_i):
     """Euler ODE step."""
     return latents.float() - (sigmas[step_i] - sigmas[step_i + 1]) * noise_pred.float()
-
-
-def cfgpp_guidance_weight(sigma_i: float, sigma_next: float, lam: float) -> float:
-    """CFG++ effective guidance weight for one step (integrator-agnostic).
-
-    CFG++ differs from CFG *only* in guidance-strength scheduling (paper arXiv
-    23177 App A.2, eqs 18-19): both add ``weight·(v^c − v^u)`` to the update, CFG
-    with a constant ``w``, CFG++ with the σ-scheduled ``ξ̃``. The flow-matching
-    form, derived from the denoise-guided / renoise-unconditional step collapsing
-    to the Euler step, is
-
-        w_eff = λ · (1 − σ_next) · σ_i / (σ_i − σ_next)
-
-    Applied as ``noise_pred = v^u + w_eff·(v^c − v^u)`` this is algebraically
-    identical to the Euler "calibrate x̂ = x − λ(1−σ')σ·Δv then step along v^u"
-    form — but because it's a *pure reweight of the cond/uncond combine*, it
-    composes with ANY integrator (Euler, ER-SDE, LCM): the sampler consumes the
-    reweighted prediction unchanged, no integration surgery needed. This is the
-    key to running CFG++ (and thus faithful FSG) under the production er_sde
-    sampler. At the final step (σ_next → 0) it collapses to ``w_eff = λ``.
-    """
-    ds = sigma_i - sigma_next
-    if ds <= 0.0:
-        return lam
-    return lam * (1.0 - sigma_next) * sigma_i / ds
 
 
 class ERSDESampler:

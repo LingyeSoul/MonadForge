@@ -1,22 +1,11 @@
-"""Foresight Guidance (FSG) — pre-step latent calibration toward the golden path.
+"""Foresight Guidance (FSG) — library binding of the velocity seam.
 
-FSG reframes CFG as a *fixed-point calibration*: at scheduled timesteps it runs
-``K`` forward(conditional)–backward(unconditional) iterations over a long
-interval ``Δσ`` to pull ``x_t → x̂_t`` onto the path where the conditional and
-unconditional velocities agree, then the denoise step proceeds from ``x̂_t``.
-Training-free, checkpoint-agnostic, deterministic. See
-``docs/inference/fsg.md`` and ``docs/proposal/foresight_guidance.md``; the
-premise/eyeball probes live in ``bench/fsg/``.
-
-Paper: "Towards a Golden Classifier-Free Guidance Path via Foresight Fixed
-Point Iterations" (NeurIPS 2025, arXiv 23177). The paper is ε-prediction + DDIM;
-Anima is velocity-prediction flow-matching, so the forward-backward operator maps
-onto the reversible Euler ODE (no DDIM machinery):
-
-    v^γ  = v^u + γ·(v^c − v^u)              # CFG-guided velocity
-    x'   = x  − Δσ · v^γ(x,   σ)            # denoise σ → σ−Δσ (guided)
-    x''  = x' + Δσ · v^u(x',  σ−Δσ)         # re-noise back (unconditional)
-    F(x) = x'' ;  iterate x ← F(x), K times
+The framework-agnostic operator (config gate + K-iteration fixed-point loop +
+the CFG++ weight) lives in :mod:`library.inference.corrections.fsg_core`, shared
+verbatim with the ComfyUI Spectrum node. This module binds the velocity
+callbacks to a **direct DiT forward** — ``anima(x, t, embed)`` with the
+hydra/step/FEI/content/crossattn context set exactly as ``generate_body`` does,
+so adapter-routed checkpoints calibrate with the routing the real step will use.
 
 **Anima-specific band.** The paper concentrates iterations in the noisiest
 stages; on Anima that is the dead zone (σ≈0.94 diverges, ρ>1). The operator
@@ -35,7 +24,7 @@ bench remains the calibration instrument (Phase-0 probe → band/K/Δσ/γ).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 
@@ -46,39 +35,20 @@ from library.inference.adapters import (
     set_hydra_sigma,
     set_step_expert_index,
 )
+from library.inference.corrections.fsg_core import FSGCalibrator as _FSGCalibratorCore
+from library.inference.corrections.fsg_core import cfgpp_guidance_weight
+
+__all__ = ["FSGCalibrator", "cfgpp_guidance_weight"]
 
 
 @dataclass
-class FSGCalibrator:
-    """Forward-backward fixed-point calibrator, scheduled over a σ-band.
+class FSGCalibrator(_FSGCalibratorCore):
+    """FSG calibrator bound to a direct Anima DiT forward.
 
-    Args:
-        band: ``(σ_lo, σ_hi)`` — calibrate only when the step's σ falls inside.
-            Default [0.59, 0.75] — the 28-step er_sde production band (Plan-B);
-            the band shifts down with step count (was [0.75, 0.85] at 20-step).
-        k: fixed-point iterations per scheduled step (error ~ρ^K, ρ≈0.93 ⇒
-            K=3–4 captures ~all the gain). ``k=0`` makes the calibrator inert.
-        d_sigma: calibration interval Δσ (the forward-backward stride; *not* the
-            sampler's own per-step Δσ). Too-large Δσ is what makes σ≈0.94 diverge.
-        gamma: calibration guidance γ. ``None`` → use the outer ``guidance_scale``
-            passed at call time (the paper's operator uses plain γ-combine).
+    Inherits ``band`` / ``k`` / ``d_sigma`` / ``gamma`` config, the ``scheduled``
+    σ-band gate, and the pure ``run_fixed_point`` loop from
+    :class:`~library.inference.corrections.fsg_core.FSGCalibrator`.
     """
-
-    band: Tuple[float, float] = (0.59, 0.75)
-    k: int = 3
-    d_sigma: float = 0.1
-    gamma: Optional[float] = None
-
-    def __post_init__(self) -> None:
-        self.k = int(self.k)
-        self.d_sigma = float(self.d_sigma)
-        lo, hi = float(self.band[0]), float(self.band[1])
-        self.band = (lo, hi)
-
-    def scheduled(self, sigma_i: float) -> bool:
-        """True iff this step's σ is in-band and the calibrator is active (K>0)."""
-        lo, hi = self.band
-        return self.k > 0 and lo <= float(sigma_i) <= hi
 
     @staticmethod
     @torch.no_grad()
@@ -125,22 +95,18 @@ class FSGCalibrator:
         if not self.scheduled(sigma_i):
             return latents
 
-        gamma = float(guidance_scale) if self.gamma is None else float(self.gamma)
-        ds = self.d_sigma
-        s_lo = max(float(sigma_i) - ds, 1e-3)
-
-        x = latents
-        for _ in range(self.k):
-            vc = self._velocity(
-                anima, x, sigma_i, step_i, embed, padding_mask, pooled_pos
-            )
+        def vel_cond_uncond(x, sigma):
+            vc = self._velocity(anima, x, sigma, step_i, embed, padding_mask, pooled_pos)
             vu = self._velocity(
-                anima, x, sigma_i, step_i, negative_embed, padding_mask, pooled_neg
+                anima, x, sigma, step_i, negative_embed, padding_mask, pooled_neg
             )
-            vg = vu + gamma * (vc - vu)
-            x_fwd = x - ds * vg  # denoise σ → σ−Δσ (guided)
-            vu_lo = self._velocity(
-                anima, x_fwd, s_lo, step_i, negative_embed, padding_mask, pooled_neg
+            return vc, vu
+
+        def vel_uncond(x, sigma):
+            return self._velocity(
+                anima, x, sigma, step_i, negative_embed, padding_mask, pooled_neg
             )
-            x = x_fwd + ds * vu_lo  # invert back (uncond)
-        return x.to(latents.dtype)
+
+        return self.run_fixed_point(
+            latents, sigma_i, guidance_scale, vel_cond_uncond, vel_uncond
+        )

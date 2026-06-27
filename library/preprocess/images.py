@@ -172,6 +172,8 @@ def process_image(
     copy_captions: bool = True,
     rel_dir: str = "",
     overwrite: bool = False,
+    force_edge: int | None = None,
+    out_stem_suffix: str = "",
 ) -> tuple[str, tuple[int, int], bool]:
     """Worker — receives bucket params (not a BucketManager) to stay picklable.
 
@@ -212,7 +214,12 @@ def process_image(
 
     # Free-fit (the only mode): choose_edge assigns the tier (default = canonical
     # 1024), then free-fit lands the native-aspect (W, H) inside that tier's band.
-    tier = target_res or list(DEFAULT_TARGET_RES)
+    # ``force_edge`` (autoscale curriculum emit) pins the tier instead of letting
+    # choose_edge pick, so one source image is emitted at every ladder tier.
+    if force_edge is not None:
+        tier = [force_edge]
+    else:
+        tier = target_res or list(DEFAULT_TARGET_RES)
     _, bucket_reso = select_resize_bucket(
         work_w, work_h, tier, bucket_resos, fit_mode=fit_mode, max_ratio=max_ratio
     )
@@ -223,14 +230,15 @@ def process_image(
         crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
     )
 
+    out_stem = f"{image_path.stem}{out_stem_suffix}"
     target_dir = out_dir / rel_dir if rel_dir else out_dir
-    out_path = target_dir / f"{image_path.stem}.png"
+    out_path = target_dir / f"{out_stem}.png"
 
     if not overwrite and out_path.exists():
         try:
             with Image.open(out_path) as ex:
                 if ex.size == (bw, bh) and _resize_metadata_matches(ex, signature):
-                    return image_path.name, bucket_reso, True
+                    return f"{out_stem}.png", bucket_reso, True
         except Exception:
             pass
 
@@ -246,9 +254,9 @@ def process_image(
         for ext in CAPTION_EXTENSIONS:
             cap = image_path.with_suffix(ext)
             if cap.exists():
-                shutil.copy2(cap, target_dir / f"{image_path.stem}{ext}")
+                shutil.copy2(cap, target_dir / f"{out_stem}{ext}")
 
-    return image_path.name, bucket_reso, False
+    return f"{out_stem}.png", bucket_reso, False
 
 
 def resize_to_buckets(
@@ -260,6 +268,7 @@ def resize_to_buckets(
     max_bucket_reso: int = 2048,
     bucket_reso_steps: int = 64,
     target_res: list[int] | None = None,
+    autoscale_tiers: list[int] | None = None,
     workers: int = 4,
     min_pixels: int = 500_000,
     copy_captions: bool = True,
@@ -370,8 +379,16 @@ def resize_to_buckets(
         rel_str = str(rel)
         return "" if rel_str == "." else rel_str
 
+    # Autoscale curriculum emit: one resized PNG per ladder tier per image
+    # (stem-suffixed ``.as{edge}``) so each source image trains as an independent
+    # sample at every tier. ``None``/empty → normal single-tier emit (choose_edge).
+    if autoscale_tiers:
+        emit_specs = [(edge, f".as{edge}") for edge in sorted(set(autoscale_tiers))]
+    else:
+        emit_specs = [(None, "")]
+
     if progress is not None:
-        progress(0, total=len(image_files))
+        progress(0, total=len(image_files) * len(emit_specs))
 
     bucket_counts: dict[tuple[int, int], int] = {}
     resize_skipped = 0
@@ -385,8 +402,11 @@ def resize_to_buckets(
                 copy_captions,
                 _rel_for(img_path),
                 overwrite,
+                force_edge,
+                stem_suffix,
             ): img_path
             for img_path in image_files
+            for force_edge, stem_suffix in emit_specs
         }
         for future in as_completed(futures):
             name, reso, skipped = future.result()

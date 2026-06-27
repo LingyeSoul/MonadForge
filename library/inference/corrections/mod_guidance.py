@@ -11,6 +11,7 @@ from library.anima import models as anima_models, text_strategies
 from library.runtime.device import clean_memory_on_device
 from library.inference.models import load_text_encoder
 from library.inference.text import process_escape
+from library.inference.corrections.mod_guidance_core import build_block_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -52,23 +53,14 @@ def build_mod_schedule(args: argparse.Namespace, num_blocks: int) -> List[float]
     tonal-DC blocks 0-7 and the compensation block 27, applying full w to 8-26.
     See docs/inference/mod-guidance.md for rationale.
     """
-    w = float(args.mod_w)
-    start = int(getattr(args, "mod_start_layer", 8))
-    end_raw = int(getattr(args, "mod_end_layer", 27))
-    end = num_blocks if end_raw < 0 else min(end_raw, num_blocks)
-    start = max(0, min(start, end))
-    taper = int(getattr(args, "mod_taper", 0))
-    taper_scale = float(getattr(args, "mod_taper_scale", 0.25))
-
-    sched = [0.0] * num_blocks
-    for i in range(start, end):
-        sched[i] = w
-    if taper > 0 and end > start:
-        taper_start = max(start, end - taper)
-        taper_w = w * taper_scale
-        for i in range(taper_start, end):
-            sched[i] = taper_w
-    return sched
+    return build_block_schedule(
+        num_blocks,
+        w=float(args.mod_w),
+        start_layer=int(getattr(args, "mod_start_layer", 8)),
+        end_layer=int(getattr(args, "mod_end_layer", 27)),
+        taper=int(getattr(args, "mod_taper", 0)),
+        taper_scale=float(getattr(args, "mod_taper_scale", 0.25)),
+    )
 
 
 def setup_mod_guidance(

@@ -113,6 +113,28 @@ def token_counts_for_sample_prompts(prompts) -> set:
     return counts
 
 
+def edge_for_token_count(n_tokens: int, edges=ALLOWED_TARGET_RES) -> int:
+    """Map a patch-token count back to the tier edge it belongs to.
+
+    The inverse of the preprocess tier assignment: given a cached latent's token
+    count ``(W//16)*(H//16)``, return which tier (512…1536) emitted it. Used by
+    the resolution-curriculum schedule (``autoscale_mode``) to rank a dataset's
+    populated buckets into a low→high ladder. A count inside a tier's free-fit
+    band maps to that tier; anything off-band (snap-era caches) falls back to the
+    nearest tier by ``|log(nominal / n)|`` (same scale-symmetric metric as
+    ``choose_edge``), so legacy data still ranks sensibly.
+    """
+    for edge in edges:
+        lo, hi = freefit_band_for_edge(edge)
+        if lo <= n_tokens <= hi:
+            return edge
+    n = max(int(n_tokens), 1)
+    return min(
+        edges,
+        key=lambda e: abs(math.log(((_band(e)[0] + _band(e)[1]) / 2.0) / n)),
+    )
+
+
 def choose_edge(width: int, height: int, target_res) -> int:
     """Assign an image to the tier that resizes it the *least*.
 

@@ -16,7 +16,7 @@ Core forecasting algorithm adapted from:
 
 import math
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from tqdm import tqdm
@@ -28,11 +28,25 @@ from networks.spectrum_sea import (
     l1rel,
     sea_filter,
     solve_delta_for_refresh_ratio,
+    window_decision_fraction,
+)
+
+# The Chebyshev forecasters live in the pure-compute core (single source shared
+# verbatim with the ComfyUI node). Re-exported here for back-compat — existing
+# importers (bench/spd, tests) keep doing ``from networks.spectrum import ...``.
+from networks.spectrum_forecast import (  # noqa: F401
+    DTYPE,
+    ChebyshevForecaster,
+    SpectrumPredictor,
+    _flatten,
+    _unflatten,
 )
 
 logger = logging.getLogger(__name__)
 
-DTYPE = torch.bfloat16
+# Back-compat alias: the window-fraction helper moved to spectrum_sea (it is the
+# SEA auto-δ target), but tests import it as ``_window_decision_fraction`` here.
+_window_decision_fraction = window_decision_fraction
 
 # Auto-δ calibration cache for the SEA schedule. Keyed by the schedule geometry
 # (num_steps, warmup, stop_at, refresh_ratio); the first generate with
@@ -89,215 +103,6 @@ def _auto_delta_save(key: tuple, value: float) -> None:
             json.dump(disk, f, indent=2)
     except OSError as e:
         logger.warning("Spectrum SEA: could not persist auto-delta to %s (%s)", path, e)
-
-
-def _window_decision_fraction(
-    num_steps: int,
-    warmup_steps: int,
-    stop_at: int,
-    window_size: float,
-    flex_window: float,
-    forced_steps: frozenset = frozenset(),
-) -> float:
-    """Refresh fraction the growing-window schedule spends in the decision region.
-
-    Replays the exact window rule (the ``else`` branch below + its curr_ws
-    advance) and returns ``actual_decision_steps / decision_steps``. The SEA
-    auto-δ target defaults to *this* so the SEA arm is a like-for-like swap at
-    matched compute for any step count — the hard-coded 0.62 in the proposal was
-    only the 24-step value and over-computes elsewhere (_archive/bench/
-    spectrum_sea/prompt_generalization.py: 0.62 → +22% forwards at 28 steps).
-
-    ``forced_steps`` are step indices forced to an actual forward by an external
-    consumer (FSG-scheduled calibration steps). They are treated exactly like
-    warmup/tail — forced actual, excluded from the decision denominator — so the
-    fraction (and therefore the SEA δ target) is matched against the window
-    baseline *over the same adaptive budget*; FSG's fixed forward cost lands
-    identically on both arms.
-    """
-    curr_ws = window_size
-    consec = 0
-    actual_dec = 0
-    n_dec = 0
-    for i in range(num_steps):
-        if i < warmup_steps or i >= stop_at or i in forced_steps:
-            actual = True
-        else:
-            actual = (consec + 1) % max(1, math.floor(curr_ws)) == 0
-            n_dec += 1
-            actual_dec += int(actual)
-        if actual:
-            if i >= warmup_steps and i not in forced_steps:
-                curr_ws = round(curr_ws + flex_window, 3)
-            consec = 0
-        else:
-            consec += 1
-    return actual_dec / max(1, n_dec)
-
-
-def _flatten(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Size]:
-    shape = x.shape
-    return x.reshape(1, -1), shape
-
-
-def _unflatten(x_flat: torch.Tensor, shape: torch.Size) -> torch.Tensor:
-    return x_flat.reshape(shape)
-
-
-class ChebyshevForecaster:
-    """Chebyshev T-polynomial ridge regression forecaster.
-
-    Maintains a sliding window of (t, feature) observations, fits Chebyshev
-    polynomial coefficients via ridge regression (Cholesky solve), and predicts
-    features at arbitrary timesteps.
-
-    Args:
-        M: Number of Chebyshev basis functions (degree).
-        K: Maximum window size (number of observations to keep).
-        lam: Ridge regression regularization strength.
-        device: Torch device for buffers.
-    """
-
-    def __init__(
-        self,
-        M: int = 4,
-        K: int = 10,
-        lam: float = 1e-3,
-        device: Optional[torch.device] = None,
-        total_steps: int = 30,
-    ):
-        assert K >= M + 2, "K should exceed basis size for stability"
-        self.M = M
-        self.K = K
-        self.lam = lam
-        self.device = device
-        self.total_steps = total_steps
-
-        self.t_buf = torch.empty(0)  # (<=K,)
-        self._H_buf: Optional[torch.Tensor] = None  # (<=K, F)
-        self._shape: Optional[torch.Size] = None
-        self._coef: Optional[torch.Tensor] = None  # (P, F)
-
-    @property
-    def P(self) -> int:
-        return self.M + 1
-
-    def _taus(self, t: torch.Tensor) -> torch.Tensor:
-        """Map step index t ∈ [0, total_steps) to τ ∈ [-1, 1]."""
-        return 2.0 * (t / self.total_steps) - 1.0
-
-    def _build_design(self, taus: torch.Tensor) -> torch.Tensor:
-        """Build Chebyshev design matrix [T0, T1, ..., TM] via recurrence."""
-        taus = taus.reshape(-1, 1)
-        K = taus.shape[0]
-        T0 = torch.ones((K, 1), device=taus.device, dtype=taus.dtype)
-        if self.M == 0:
-            return T0
-        T1 = taus
-        cols = [T0, T1]
-        for _ in range(2, self.M + 1):
-            Tm = 2 * taus * cols[-1] - cols[-2]
-            cols.append(Tm)
-        return torch.cat(cols[: self.M + 1], dim=1)
-
-    def update(self, t: float, h: torch.Tensor) -> None:
-        """Append observation (t, h) to the sliding window."""
-        device = self.device or h.device
-        t_tensor = torch.as_tensor(t, dtype=DTYPE, device=device)
-        h_flat, shape = _flatten(h)
-        h_flat = h_flat.to(device)
-
-        if self._shape is None:
-            self._shape = shape
-        else:
-            assert shape == self._shape, "Feature shape must remain constant"
-
-        if self.t_buf.numel() == 0:
-            self.t_buf = t_tensor[None]
-            self._H_buf = h_flat
-        else:
-            self.t_buf = torch.cat([self.t_buf, t_tensor[None]], dim=0)
-            self._H_buf = torch.cat([self._H_buf, h_flat], dim=0)
-            if self.t_buf.numel() > self.K:
-                self.t_buf = self.t_buf[-self.K :]
-                self._H_buf = self._H_buf[-self.K :]
-
-        self._coef = None
-
-    def _fit_if_needed(self) -> None:
-        if self._coef is not None:
-            return
-        taus = self._taus(self.t_buf)
-        X = self._build_design(taus).to(torch.float32)
-        H = self._H_buf.to(torch.float32)
-        P = X.shape[1]
-
-        lamI = self.lam * torch.eye(P, device=X.device, dtype=X.dtype)
-        Xt = X.T
-        XtX = Xt @ X + lamI
-        try:
-            L = torch.linalg.cholesky(XtX)
-        except torch.linalg.LinAlgError:
-            jitter = 1e-6 * XtX.diag().mean()
-            L = torch.linalg.cholesky(
-                XtX + jitter * torch.eye(P, device=X.device, dtype=X.dtype)
-            )
-        XtH = Xt @ H
-        self._coef = torch.cholesky_solve(XtH, L).to(DTYPE)
-
-    @torch.no_grad()
-    def predict(self, t_star: torch.Tensor) -> torch.Tensor:
-        """Predict feature at timestep t_star via Chebyshev regression."""
-        assert self._shape is not None
-        self._fit_if_needed()
-        tau_star = self._taus(t_star)
-        x_star = self._build_design(tau_star[None])  # (1, P)
-        h_flat = x_star @ self._coef  # (1, F)
-        return _unflatten(h_flat, self._shape)
-
-
-class SpectrumPredictor:
-    """Chebyshev polynomial forecaster with optional first-order Taylor blending.
-
-    Wraps ChebyshevForecaster and blends with a discrete Newton forward-difference
-    extrapolation for improved stability on the most recent observations.
-    """
-
-    def __init__(
-        self,
-        m: int,
-        lam: float,
-        w: float,
-        device: torch.device,
-        feature_shape,
-        total_steps: int = 30,
-    ):
-        self.cheb = ChebyshevForecaster(
-            M=m, K=100, lam=lam, device=device, total_steps=total_steps
-        )
-        self.w = w
-
-    def update(self, t: float, h: torch.Tensor):
-        self.cheb.update(t, h)
-
-    @torch.no_grad()
-    def predict(self, t_star: float) -> torch.Tensor:
-        device = self.cheb.t_buf.device
-        t_star_t = torch.as_tensor(t_star, dtype=DTYPE, device=device)
-
-        h_cheb = self.cheb.predict(t_star_t)
-
-        if self.w >= 1.0 or self.cheb.t_buf.numel() < 2:
-            return h_cheb
-
-        # First-order discrete Taylor (Newton forward difference)
-        H = self.cheb._H_buf  # (K, F) flattened
-        t = self.cheb.t_buf
-        dt = (t[-1] - t[-2]).clamp_min(1e-8)
-        k = ((t_star_t - t[-1]) / dt).to(H.dtype)
-        h_taylor = (H[-1] + k * (H[-1] - H[-2])).reshape(h_cheb.shape)
-
-        return (1 - self.w) * h_taylor + self.w * h_cheb
 
 
 def _spectrum_fast_forward(
