@@ -137,8 +137,8 @@ export UV_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cu129"
 export UV_INDEX_STRATEGY="unsafe-best-match"
 
 # 安装torch和torchvision（V100兼容版本）
-say "安装 torch==2.10.0+cu129 和 torchvision==0.21.0+cu129 ..."
-uv pip install torch==2.10.0+cu129 torchvision==0.21.0+cu129 \
+say "安装 torch==2.10.0+cu129 和 torchvision==0.25.0+cu129 ..."
+uv pip install torch==2.10.0+cu129 torchvision==0.25.0+cu129 \
     --index-url https://download.pytorch.org/whl/cu129 \
     --quiet
 ok "torch 和 torchvision 安装完成"

@@ -66,8 +66,8 @@ set "UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cu129"
 set "UV_INDEX_STRATEGY=unsafe-best-match"
 
 REM 安装torch和torchvision（V100兼容版本）
-echo [INFO] Installing torch==2.10.0+cu129 and torchvision==0.21.0+cu129 ...
-uv pip install torch==2.10.0+cu129 torchvision==0.21.0+cu129 --index-url https://download.pytorch.org/whl/cu129
+echo [INFO] Installing torch==2.10.0+cu129 and torchvision==0.25.0+cu129 ...
+uv pip install torch==2.10.0+cu129 torchvision==0.25.0+cu129 --index-url https://download.pytorch.org/whl/cu129
 if errorlevel 1 (
     echo [ERROR] Failed to install torch.
     pause

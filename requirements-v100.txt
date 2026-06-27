@@ -4,7 +4,7 @@
 
 # Core ML - V100兼容版本
 torch==2.10.0+cu129
-torchvision==0.21.0+cu129
+torchvision==0.25.0+cu129
 accelerate>=1.13.0
 transformers>=5.10.1
 diffusers>=0.37.0
