@@ -216,6 +216,56 @@ def _resolve_mixed_precision(args) -> None:
         )
 
 
+def _resolve_vae_dtype(args, weight_dtype: torch.dtype) -> torch.dtype:
+    """Derive the VAE dtype, forcing fp32 where fp16 decode is unsafe.
+
+    The Qwen VAE decoder runs almost entirely in its parameter dtype (only
+    ``QwenImageUpsample`` self-protects via ``forward(x.float()).type_as(x)``,
+    see ``library/models/qwen_vae.py:399-400``). Under fp16 the decoder's
+    conv accumulators and group-norm variance stats hit the ±65504 dynamic
+    range and lose precision, producing artifacts in preview/sample images
+    (花图/糊图). bf16 (Ampere+) is safe — its exponent matches fp32.
+
+    So on pre-Ampere GPUs (sm<8, e.g. V100 sm_70 / T4 sm_75) under fp16 we
+    force the VAE to fp32 unless the user explicitly opts into half with
+    ``--half_vae``. ``--no_half_vae`` always wins (unconditional fp32).
+
+    ``weight_dtype`` is passed in so this stays consistent with whatever
+    ``prepare_dtype`` produced (and with ``_resolve_mixed_precision``, which
+    has already back-written ``args.mixed_precision`` before this runs).
+    """
+    if getattr(args, "no_half_vae", False):
+        return torch.float32
+    if getattr(args, "half_vae", False):
+        # Explicit user override — they accept the fp16 artifacts. Only
+        # meaningful under fp16 on pre-Ampere; no-op elsewhere.
+        return weight_dtype
+    if getattr(args, "mixed_precision", None) != "fp16":
+        return weight_dtype
+    if not torch.cuda.is_available():
+        return weight_dtype
+    try:
+        major, _ = torch.cuda.get_device_capability()
+    except Exception:
+        # Probe failed (init failure, multi-GPU index mismatch, …) — keep
+        # weight_dtype rather than forcing fp32 blindly. Logged so it's
+        # diagnosable, mirroring _resolve_mixed_precision's safe fallback.
+        logger.warning(
+            "could not read GPU compute capability; keeping VAE dtype at "
+            f"{weight_dtype} (fp16 decode artifacts possible on pre-Ampere).",
+        )
+        return weight_dtype
+    if major < 8:
+        logger.info(
+            "pre-Ampere GPU (sm_%d0) under fp16: forcing VAE to fp32 to avoid "
+            "decode artifacts (花图/糊图). Pass --half_vae to allow half-precision "
+            "VAE (not recommended).",
+            major,
+        )
+        return torch.float32
+    return weight_dtype
+
+
 def _flash_attn_v100_doc(flash_attn_module) -> tuple[str, bool]:
     doc = getattr(flash_attn_module, "__doc__", None) or ""
     is_v100_fork = "Tesla V100" in doc or "Flash Attention for Tesla V100" in doc
@@ -2214,7 +2264,7 @@ class AnimaTrainer:
 
         # mixed precision dtype
         weight_dtype, save_dtype = prepare_dtype(args)
-        vae_dtype = torch.float32 if args.no_half_vae else weight_dtype
+        vae_dtype = _resolve_vae_dtype(args, weight_dtype)
 
         # load target models: unet may be None for lazy loading
         model_version, text_encoder, vae, unet = self.load_target_model(

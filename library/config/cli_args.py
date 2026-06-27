@@ -921,7 +921,19 @@ def add_train_misc_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--no_half_vae",
         action="store_true",
-        help="do not use fp16",
+        help="Run the VAE in fp32 (never half). Forces fp32 unconditionally on every GPU and precision.",
+    )
+    parser.add_argument(
+        "--half_vae",
+        action="store_true",
+        help=(
+            "Explicitly allow the VAE to run in half precision, overriding the "
+            "automatic fp32 protection that kicks in on pre-Ampere GPUs (sm<8, e.g. "
+            "V100/T4) under fp16 training. NOT recommended there: fp16 VAE decode "
+            "produces artifacts (花图/糊图) because the decoder conv/group-norm stack "
+            "runs naked in fp16 (±65504 dynamic range), with only the Upsample layer "
+            "self-protecting. No-op on Ampere+ or under bf16/fp32."
+        ),
     )
     parser.add_argument(
         "--skip_until_initial_step",
