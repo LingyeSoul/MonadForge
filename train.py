@@ -245,7 +245,7 @@ def _resolve_vae_dtype(args, weight_dtype: torch.dtype) -> torch.dtype:
     if not torch.cuda.is_available():
         return weight_dtype
     try:
-        major, _ = torch.cuda.get_device_capability()
+        major, minor = torch.cuda.get_device_capability()
     except Exception:
         # Probe failed (init failure, multi-GPU index mismatch, …) — keep
         # weight_dtype rather than forcing fp32 blindly. Logged so it's
@@ -257,10 +257,11 @@ def _resolve_vae_dtype(args, weight_dtype: torch.dtype) -> torch.dtype:
         return weight_dtype
     if major < 8:
         logger.info(
-            "pre-Ampere GPU (sm_%d0) under fp16: forcing VAE to fp32 to avoid "
+            "pre-Ampere GPU (sm_%d%d) under fp16: forcing VAE to fp32 to avoid "
             "decode artifacts (花图/糊图). Pass --half_vae to allow half-precision "
             "VAE (not recommended).",
             major,
+            minor,
         )
         return torch.float32
     return weight_dtype

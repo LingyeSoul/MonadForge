@@ -90,11 +90,14 @@ def test_auto_fp32_on_v100_fp16(train_mod, monkeypatch, caplog):
     assert any("sm_70" in r.getMessage() for r in caplog.records)
 
 
-def test_auto_fp32_on_t4_fp16(train_mod, monkeypatch):
+def test_auto_fp32_on_t4_fp16(train_mod, monkeypatch, caplog):
     # T4 is sm_75 → major 7 < 8, covered by the same guard as V100.
     _patch_cuda(monkeypatch, capability=(7, 5))
     args = _fake_args(mp="fp16")
-    assert train_mod._resolve_vae_dtype(args, torch.float16) == torch.float32
+    with caplog.at_level("INFO"):
+        dtype = train_mod._resolve_vae_dtype(args, torch.float16)
+    assert dtype == torch.float32
+    assert any("sm_75" in r.getMessage() for r in caplog.records)
 
 
 # --- no auto-forcing --------------------------------------------------------
@@ -135,4 +138,7 @@ def test_capability_probe_failure_is_safe(train_mod, monkeypatch, caplog):
     # Never force fp32 on a probe failure — keep weight_dtype, log so it's
     # diagnosable (mirrors _resolve_mixed_precision's safe fallback).
     assert dtype == torch.float16
-    assert any("could not read GPU compute capability" in r.getMessage() for r in caplog.records)
+    assert any(
+        "could not read GPU compute capability" in r.getMessage()
+        for r in caplog.records
+    )
