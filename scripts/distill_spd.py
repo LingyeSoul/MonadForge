@@ -355,7 +355,7 @@ def main():
         logger.info(
             "torch_compile: %d block._forward compiled (backend=%s, mode=%s, "
             "dynamic_seq=%s); %d distinct (stage x bucket) token counts in %s.",
-            len(model.blocks),
+            len(model.blocks) - (args.blocks_to_swap or 0),
             args.dynamo_backend,
             compile_inductor_mode,
             compile_dynamic_seq,

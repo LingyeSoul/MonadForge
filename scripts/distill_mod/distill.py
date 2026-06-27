@@ -269,7 +269,7 @@ def main():
         logger.info(
             "torch_compile: %d block._forward compiled (mode=%s, dynamic_seq=%s); "
             "%d distinct token counts in pool, %s.",
-            len(model.blocks),
+            len(model.blocks) - (cfg.blocks_to_swap or 0),
             cfg.compile_inductor_mode,
             dynamic_seq,
             pc.n_shapes,

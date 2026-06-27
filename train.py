@@ -1780,6 +1780,10 @@ class AnimaTrainer:
             )
 
         if args.torch_compile:
+            # Block swap coexists with compile: compile_blocks compiles only the
+            # resident head blocks and leaves the tail swap blocks eager (their
+            # .weight.data CPU↔GPU swaps would trip dynamo's device guard). So no
+            # special-casing here — see Anima.compile_blocks.
             from library.runtime.harness import compile_blocks_for_training
 
             # Token-family budget derived from the buckets the dataset actually

@@ -12,12 +12,13 @@ families: 4032 (= 63·64) and 4200 (= 60·70).
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from library.anima.models import Anima
 
 
-def _tiny_anima() -> Anima:
+def _tiny_anima(*, num_blocks: int = 2) -> Anima:
     """A small but real Anima DiT runnable on CPU."""
     model = Anima(
         max_img_h=256,
@@ -29,7 +30,7 @@ def _tiny_anima() -> Anima:
         patch_temporal=1,
         concat_padding_mask=False,
         model_channels=64,
-        num_blocks=2,
+        num_blocks=num_blocks,
         num_heads=4,
         mlp_ratio=2.0,
         crossattn_emb_channels=64,
@@ -72,6 +73,45 @@ def test_compile_blocks_does_not_lower_a_higher_budget():
     _dynamo.config.cache_size_limit = 64  # a caller asked for more headroom
     model.compile_blocks(backend="eager")
     assert _dynamo.config.cache_size_limit == 64
+
+
+def _callable_identity(fn):
+    """Stable identity for bound methods and instance-assigned callables."""
+    return getattr(fn, "__func__", fn)
+
+
+def test_compile_blocks_compiles_all_blocks_without_swap(capsys):
+    model = _tiny_anima()
+    before = [_callable_identity(block._forward) for block in model.blocks]
+
+    model.blocks_to_swap = 0
+    model.compile_blocks(backend="eager")
+
+    after = [_callable_identity(block._forward) for block in model.blocks]
+    assert all(new is not old for new, old in zip(after, before))
+    assert "compiled 2 block._forward" in capsys.readouterr().out
+
+
+def test_compile_blocks_with_block_swap_keeps_tail_eager(capsys):
+    model = _tiny_anima(num_blocks=3)
+    before = [_callable_identity(block._forward) for block in model.blocks]
+
+    model.blocks_to_swap = 1
+    model.compile_blocks(backend="eager")
+
+    after = [_callable_identity(block._forward) for block in model.blocks]
+    assert after[0] is not before[0]
+    assert after[1] is not before[1]
+    assert after[2] is before[2]
+    assert "compiled 2 resident compiled / 1 swapped (eager)" in capsys.readouterr().out
+
+
+def test_compile_blocks_rejects_invalid_blocks_to_swap():
+    model = _tiny_anima()
+    model.blocks_to_swap = model.num_blocks
+
+    with pytest.raises(ValueError, match="Invalid blocks_to_swap=2"):
+        model.compile_blocks(backend="eager")
 
 
 @torch.no_grad()
