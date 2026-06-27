@@ -184,8 +184,12 @@ export default {
   dsReplaceWith: 'Replace with',
   dsRegex: 'Regex',
   dsExecute: 'Execute',
+  dsChars: 'chars',
+  dsImageCount: '{n} images',
+  dsImageCountPaged: '{n} images · p{p}/{total}',
+  tgTriggerWordHint: 'e.g. ohwx',
 
-  // WD Tagger
+  // Merge View extras
   tgAutoTag: 'Auto Tag',
   tgTagging: 'Tagging...',
   tgTagComplete: 'Tagged {count} images',
@@ -343,6 +347,9 @@ export default {
   mgKeyCounts: 'Key breakdown',
   mgBaseDit: 'Base DiT Path',
   mgOutputPath: 'Output Path',
+  mgOutputPathHint: 'Leave empty for auto',
+  mgBaseDitHint: 'models/diffusion_models/anima-base-v1.0.safetensors',
+  mgDtype: 'dtype',
   mgVerdict_ok: 'Ready to merge',
   mgVerdict_partial: 'Partial (some keys will be dropped)',
   mgVerdict_block: 'Cannot merge',

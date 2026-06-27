@@ -184,8 +184,12 @@ export default {
   dsReplaceWith: '置換先',
   dsRegex: '正規表現',
   dsExecute: '実行',
+  dsChars: '文字',
+  dsImageCount: '{n} 枚の画像',
+  dsImageCountPaged: '{n} 枚の画像 · {p}/{total}ページ',
+  tgTriggerWordHint: '例: ohwx',
 
-  // WD Tagger
+  // Merge View extras
   tgAutoTag: '自動タグ付け',
   tgTagging: 'タグ付け中...',
   tgTagComplete: '{count} 枚タグ付け完了',
@@ -343,6 +347,9 @@ export default {
   mgKeyCounts: 'キー分類統計',
   mgBaseDit: 'ベース DiT パス',
   mgOutputPath: '出力パス',
+  mgOutputPathHint: '空欄で自動',
+  mgBaseDitHint: 'models/diffusion_models/anima-base-v1.0.safetensors',
+  mgDtype: 'dtype',
   mgVerdict_ok: 'マージ可能',
   mgVerdict_partial: '部分マージ (一部キー削除)',
   mgVerdict_block: 'マージ不可',

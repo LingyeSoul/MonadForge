@@ -184,8 +184,12 @@ export default {
   dsReplaceWith: '替换为',
   dsRegex: '正则表达式',
   dsExecute: '执行',
+  dsChars: '字符',
+  dsImageCount: '{n} 张图片',
+  dsImageCountPaged: '{n} 张图片 · 第{p}/{total}页',
+  tgTriggerWordHint: '例如 ohwx',
 
-  // WD Tagger
+  // Merge View extras
   tgAutoTag: '自动打标',
   tgTagging: '打标中...',
   tgTagComplete: '已标注 {count} 张图片',
@@ -343,6 +347,9 @@ export default {
   mgKeyCounts: '键分类统计',
   mgBaseDit: '基础 DiT 路径',
   mgOutputPath: '输出路径',
+  mgOutputPathHint: '留空自动生成',
+  mgBaseDitHint: 'models/diffusion_models/anima-base-v1.0.safetensors',
+  mgDtype: '数据类型',
   mgVerdict_ok: '可以合并',
   mgVerdict_partial: '部分合并（部分键将被丢弃）',
   mgVerdict_block: '无法合并',

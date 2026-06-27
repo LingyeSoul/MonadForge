@@ -78,7 +78,7 @@
                 <v-text-field
                   v-model="baseDit"
                   :label="t('mgBaseDit')"
-                  hint="models/diffusion_models/anima-base-v1.0.safetensors"
+                  :hint="t('mgBaseDitHint')"
                   persistent-hint
                   variant="outlined"
                   density="compact"
@@ -88,7 +88,7 @@
                 <v-select
                   v-model="dtype"
                   :items="['bf16', 'fp16', 'fp32']"
-                  label="dtype"
+                  :label="t('mgDtype')"
                   variant="outlined"
                   density="compact"
                   hide-details
@@ -114,7 +114,7 @@
                 <v-text-field
                   v-model="outputPath"
                   :label="t('mgOutputPath')"
-                  hint="Leave empty for auto"
+                  :hint="t('mgOutputPathHint')"
                   persistent-hint
                   variant="outlined"
                   density="compact"

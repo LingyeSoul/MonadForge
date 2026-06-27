@@ -162,7 +162,7 @@
             <v-text-field
               v-model="taggerSettings.trigger_word"
               :label="t('tgTriggerWord')"
-              placeholder="e.g. ohwx"
+              :placeholder="t('tgTriggerWordHint')"
               variant="outlined"
               density="compact"
               hide-details
@@ -915,13 +915,13 @@ const captionHint = computed(() => {
   const parts: string[] = []
   if (diff.added > 0) parts.push(`+${diff.added}`)
   if (diff.removed > 0) parts.push(`-${diff.removed}`)
-  return parts.join(' / ') + ' chars'
+  return parts.join(' / ') + ' ' + t('dsChars')
 })
 
 const totalLabel = computed(() => {
   if (total.value === 0) return t('dsNoImages')
-  if (totalPages.value <= 1) return `${total.value} images`
-  return `${total.value} images · p${page.value}/${totalPages.value}`
+  if (totalPages.value <= 1) return t('dsImageCount', { n: total.value })
+  return t('dsImageCountPaged', { n: total.value, p: page.value, total: totalPages.value })
 })
 
 const listHeaders = computed(() => {

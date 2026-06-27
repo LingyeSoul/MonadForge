@@ -184,8 +184,12 @@ export default {
   dsReplaceWith: '바꾸기',
   dsRegex: '정규식',
   dsExecute: '실행',
+  dsChars: '자',
+  dsImageCount: '{n}장 이미지',
+  dsImageCountPaged: '{n}장 이미지 · {p}/{total}페이지',
+  tgTriggerWordHint: '예: ohwx',
 
-  // WD Tagger
+  // Merge View extras
   tgAutoTag: '자동 태깅',
   tgTagging: '태깅 중...',
   tgTagComplete: '{count}장 태깅 완료',
@@ -343,6 +347,9 @@ export default {
   mgKeyCounts: '키 분류 통계',
   mgBaseDit: '기본 DiT 경로',
   mgOutputPath: '출력 경로',
+  mgOutputPathHint: '비워두면 자동',
+  mgBaseDitHint: 'models/diffusion_models/anima-base-v1.0.safetensors',
+  mgDtype: 'dtype',
   mgVerdict_ok: '병합 가능',
   mgVerdict_partial: '부분 병합 (일부 키 삭제됨)',
   mgVerdict_block: '병합 불가',
