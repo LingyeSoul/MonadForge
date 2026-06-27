@@ -139,7 +139,9 @@ def _convert_lokr_to_standard_lora(
     ``lokr_w2`` (or ``w1a``/``w1b``/``w2a``/``w2b`` decomposed pairs), applies
     ``inv_scale`` when present, SVD-splits the result, and replaces the
     original factor keys in *state_dict* so the file is ComfyUI-compatible.
-    Sets ``alpha = rank`` so ``alpha/rank == 1`` (scale baked into SVD).
+    Uses the per-module ``alpha`` (set to ``lora_dim`` in shipped LoKR presets,
+    but user-overridable via ``network_alpha``) as the SVD rank cap when
+    present; falls back to *lora_rank* only when no ``.alpha`` key exists.
     """
     prefixes: Dict[str, Dict[str, torch.Tensor]] = {}
     for key in list(state_dict.keys()):
@@ -201,7 +203,12 @@ def _convert_lokr_to_standard_lora(
             delta = delta * inv_s.unsqueeze(0)
 
         U, S, Vh = torch.linalg.svd(delta, full_matrices=False)
-        max_rank = min(lora_rank, S.shape[0])
+        alpha_key = f"{prefix}.alpha"
+        if alpha_key in state_dict:
+            target_rank = int(state_dict[alpha_key].item())
+        else:
+            target_rank = lora_rank
+        max_rank = min(target_rank, S.shape[0])
         S_sqrt = S[:max_rank].sqrt()
         lora_up = (
             (U[:, :max_rank] * S_sqrt.unsqueeze(0)).to(save_dtype).cpu().contiguous()

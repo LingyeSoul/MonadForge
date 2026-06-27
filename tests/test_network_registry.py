@@ -305,23 +305,36 @@ def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
     """Decomposed LoKR (``w1a``/``w1b``/``w2a``/``w2b``, no ``inv_scale``).
 
     Verifies the ``w1a @ w1b`` / ``w2a @ w2b`` reconstruction branch and the
-    Kronecker orientation on the decomposed factor path.
+    Kronecker orientation on the decomposed factor path. A ``.alpha`` key is
+    present so the converter exercises the per-module-alpha SVD-cap branch
+    (the headline behavior) rather than the ``lora_rank`` fallback — pinned at
+    the lossless full-rank boundary so the roundtrip stays bit-equivalent.
+    Rank truncation itself is covered by ``test_save_lokr_uses_alpha_for_svd_rank``
+    and the no-alpha fallback by ``test_save_lokr_falls_back_to_lora_rank_without_alpha``.
     """
     in_dim, out_dim = 8, 12
     out_a, out_b, in_a, in_b, lora_dim = 6, 6, 2, 4, 4
-    rank = min(128, min(3 * out_dim, in_dim))
     prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
 
     w1a = torch.randn(out_a, lora_dim)
     w1b = torch.randn(lora_dim, in_a)
     w2a = torch.randn(out_b, lora_dim)
     w2b = torch.randn(lora_dim, in_b)
+    # The kron delta = kron(w1a@w1b, w2a@w2b) has rank ≤ rank(w1)*rank(w2)
+    # = in_a * in_b = 2*4 = 8. Set alpha at that lossless boundary so the
+    # roundtrip stays bit-equivalent (this test is about the decomposed-factor
+    # kron ORIENTATION, not rank truncation — that's covered by
+    # test_save_lokr_uses_alpha_for_svd_rank). The key is still present so the
+    # converter exercises the per-module-alpha branch rather than the fallback.
+    alpha_val = in_a * in_b  # 8
     sd = {
         f"{prefix}.w1a": w1a,
         f"{prefix}.w1b": w1b,
         f"{prefix}.w2a": w2a,
         f"{prefix}.w2b": w2b,
+        f"{prefix}.alpha": torch.tensor(float(alpha_val), dtype=torch.float32),
     }
+    rank = min(alpha_val, min(out_dim, in_dim))
 
     loaded = _save_and_reload(sd, tmp_path, save_variant="lokr")
 
@@ -340,6 +353,74 @@ def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
         recon = up.to(torch.float) @ down.to(torch.float)
         rows = expected_delta[i * out_dim : (i + 1) * out_dim, :]
         assert torch.allclose(recon, rows, atol=1e-4), f"delta mismatch in {suffix}"
+
+
+def test_save_lokr_falls_back_to_lora_rank_without_alpha(tmp_path: Path):
+    """When no ``.alpha`` key is present, the converter must fall back to the
+    ``lora_rank`` argument (default 128) as the SVD rank cap.
+
+    This deliberately exercises the fallback branch so it's covered by intent,
+    not accidentally — ``test_save_lokr_decomposed_roundtrip`` covers the
+    per-module-alpha headline path; this one pins the no-alpha fallback.
+    """
+    from networks.lora_save import _convert_lokr_to_standard_lora
+
+    # Factors derive from a 12×8 Linear: _factorization(12,-1)=(6,2),
+    # _factorization(8,-1)=(4,2) → kron delta (36, 8).
+    out_a, out_b, in_a, in_b = 6, 6, 2, 4
+    prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
+    explicit_rank = 8  # smaller than the default 128 to make the cap observable
+
+    w1 = torch.randn(out_a, in_a)
+    w2 = torch.randn(out_b, in_b)
+    sd = {
+        f"{prefix}.lokr_w1": w1,
+        f"{prefix}.lokr_w2": w2,
+        # NOTE: no .alpha key → converter must use the lora_rank arg.
+    }
+
+    _convert_lokr_to_standard_lora(sd, dtype=torch.float32, lora_rank=explicit_rank)
+
+    # kron delta is (out_a*out_b=36, in_a*in_b=8); cap = min(8, 36) = 8.
+    expected_rank = min(explicit_rank, min(out_a * out_b, in_a * in_b))
+    up = sd[f"{prefix}.lora_up.weight"]
+    down = sd[f"{prefix}.lora_down.weight"]
+    assert up.shape == (out_a * out_b, expected_rank), (
+        f"lora_up rank should be capped at lora_rank={explicit_rank}, got {up.shape}"
+    )
+    assert down.shape == (expected_rank, in_a * in_b)
+    # When alpha was absent, the converter writes the *capped* rank back as alpha
+    # so the saved file stays self-describing.
+    assert sd[f"{prefix}.alpha"].item() == expected_rank
+
+
+def test_save_lokr_uses_alpha_for_svd_rank(tmp_path: Path):
+    """LoKR→standard conversion must use per-module alpha as SVD rank cap."""
+    from networks.lora_save import _convert_lokr_to_standard_lora
+
+    # 8×8 factors → 64×64 delta (rank up to 64).
+    # alpha=32 should cap SVD at rank 32, not 128.
+    out_a, in_a, out_b, in_b = 8, 8, 8, 8
+    alpha_val = 32
+    prefix = "lora_unet_blocks_0_ffn_proj"
+
+    w1 = torch.randn(out_a, in_a)
+    w2 = torch.randn(out_b, in_b)
+    sd = {
+        f"{prefix}.lokr_w1": w1,
+        f"{prefix}.lokr_w2": w2,
+        f"{prefix}.alpha": torch.tensor(alpha_val, dtype=torch.float32),
+    }
+    _convert_lokr_to_standard_lora(sd, dtype=torch.float32)
+
+    up = sd[f"{prefix}.lora_up.weight"]
+    down = sd[f"{prefix}.lora_down.weight"]
+    assert up.shape[1] == alpha_val, (
+        f"SVD rank should be capped at alpha={alpha_val}, got {up.shape[1]}"
+    )
+    assert down.shape[0] == alpha_val
+    # alpha in saved output should reflect the capped rank
+    assert sd[f"{prefix}.alpha"].item() == alpha_val
 
 
 def test_ortho_init_module_zero_delta_and_distill_fidelity():

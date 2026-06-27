@@ -242,3 +242,59 @@ def test_fuse_unfuse_preserves_forward_and_restores_weight():
     assert torch.allclose(base.weight, w0, atol=1e-6), (
         "unfuse_weight must restore the original base weight"
     )
+
+
+# --- Effective rank control tests ---
+
+def test_decomposition_respects_lora_dim():
+    """lora_dim < min(out_b, in_b) must trigger w2 decomposition."""
+    # 1024×1024, lokr_factor=-1 → factorization (32, 32)
+    # min(32, 32) = 32, so lora_dim=4 should decompose w2
+    base = torch.nn.Linear(1024, 1024, bias=False)
+    m = LoKRModule("test", base, lora_dim=4, alpha=4, lokr_factor=-1)
+    assert not m._use_w2, "w2 must be decomposed when lora_dim < min(out_b, in_b)"
+    assert hasattr(m, "w2a") and hasattr(m, "w2b")
+    assert m.w2a.shape == (32, 4), f"w2a shape should be (32, 4), got {m.w2a.shape}"
+    assert m.w2b.shape == (4, 32), f"w2b shape should be (4, 32), got {m.w2b.shape}"
+
+
+def test_decomposition_full_rank_when_lora_dim_large():
+    """lora_dim >= min(out_b, in_b) keeps w2 full."""
+    base = torch.nn.Linear(1024, 1024, bias=False)
+    m = LoKRModule("test", base, lora_dim=32, alpha=32, lokr_factor=-1)
+    assert m._use_w2, "w2 must be full when lora_dim >= min(out_b, in_b)"
+    assert m.lokr_w2.shape == (32, 32)
+
+
+def test_effective_rank_scales_with_lora_dim():
+    """Effective rank should scale with lora_dim, not be fixed at full rank.
+
+    LoKR's effective rank = rank(w1) * rank(w2).  When w2 is decomposed as
+    w2a(lora_dim) @ w2b(lora_dim), its rank is lora_dim; when full, it's
+    min(out_b, in_b).  We check the parameter shapes directly rather than
+    calling _get_w2() (which returns the product w2a@w2b at full shape).
+    """
+    base = torch.nn.Linear(1024, 1024, bias=False)
+    # _factorization(1024, -1) → (32, 32), so w1 is always (32, 32) rank 32.
+    configs = [
+        (4, False, 32 * 4),    # lora_dim=4 → w2 decomposed, eff_rank=128
+        (8, False, 32 * 8),    # lora_dim=8 → w2 decomposed, eff_rank=256
+        (16, False, 32 * 16),  # lora_dim=16 → w2 decomposed, eff_rank=512
+        (32, True, 32 * 32),   # lora_dim=32 → w2 full, eff_rank=1024
+    ]
+    for lora_dim, expect_full_w2, expected_eff_rank in configs:
+        m = LoKRModule("test", base, lora_dim=lora_dim, alpha=lora_dim, lokr_factor=-1)
+        assert m._use_w2 is expect_full_w2, (
+            f"lora_dim={lora_dim}: expected _use_w2={expect_full_w2}"
+        )
+        # w1 is always full (32, 32)
+        r1 = min(m.lokr_w1.shape[0], m.lokr_w1.shape[1])
+        # w2 rank: full → min(shape), decomposed → lora_dim
+        if m._use_w2:
+            r2 = min(m.lokr_w2.shape[0], m.lokr_w2.shape[1])
+        else:
+            r2 = lora_dim
+        eff_rank = r1 * r2
+        assert eff_rank == expected_eff_rank, (
+            f"lora_dim={lora_dim}: expected eff_rank={expected_eff_rank}, got {eff_rank}"
+        )

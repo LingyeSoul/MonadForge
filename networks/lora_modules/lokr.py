@@ -87,7 +87,7 @@ class LoKRModule(BaseLoRAModule):
         # shape: ΔW = (out_a*out_b, in_a*in_b) via kron((out_a, in_a), (out_b, in_b))
 
         # --- Factor 1 (smaller): shape (out_a, in_a) ---
-        if decompose_both and lora_dim < max(out_a, in_a) / 2:
+        if decompose_both and lora_dim < min(out_a, in_a):
             self.w1a = torch.nn.Parameter(torch.empty(out_a, lora_dim))
             self.w1b = torch.nn.Parameter(torch.empty(lora_dim, in_a))
             self._use_w1 = False
@@ -96,7 +96,7 @@ class LoKRModule(BaseLoRAModule):
             self._use_w1 = True
 
         # --- Factor 2 (larger): shape (out_b, in_b) ---
-        if lora_dim < max(out_b, in_b) / 2:
+        if lora_dim < min(out_b, in_b):
             self.w2a = torch.nn.Parameter(torch.empty(out_b, lora_dim))
             self.w2b = torch.nn.Parameter(torch.empty(lora_dim, in_b))
             self._use_w2 = False
@@ -235,7 +235,9 @@ class LoKRModule(BaseLoRAModule):
             if self.dropout is not None:
                 lx = F.dropout(lx, p=self.dropout)
 
-        return org_forwarded + (lx * self.multiplier * self.scale).to(org_forwarded.dtype)
+        return org_forwarded + (lx * self.multiplier * self.scale).to(
+            org_forwarded.dtype
+        )
 
     def _eval_delta(self, x, org_forwarded):
         x_r = self._rebalance(x)
@@ -309,7 +311,9 @@ class LoKRModule(BaseLoRAModule):
 
     # --- Save pipeline ---
 
-    def distill_save_state_dict(self, prefix: str, state_dict: Dict[str, torch.Tensor]) -> None:
+    def distill_save_state_dict(
+        self, prefix: str, state_dict: Dict[str, torch.Tensor]
+    ) -> None:
         """Write LoKR factors into *state_dict* under *prefix*."""
         if self._use_w1:
             state_dict[f"{prefix}.lokr_w1"] = self.lokr_w1.data.cpu()
