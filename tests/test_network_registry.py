@@ -254,6 +254,94 @@ def test_save_ortho_init_roundtrip(tmp_path: Path):
         assert not k.endswith(".lambda_layer")
 
 
+def test_save_lokr_roundtrip(tmp_path: Path):
+    """Full-factor LoKR (``lokr_w1``/``lokr_w2`` + ``inv_scale``) → standard LoRA.
+
+    Pins the load-bearing invariants of ``_convert_lokr_to_standard_lora``:
+    Kronecker orientation (``kron(w1, w2)`` = ``(out, in)``, not transposed),
+    ``inv_scale`` column-bake (``delta *= inv_scale.unsqueeze(0)``), the
+    SVD-split (``up @ down == delta`` at full rank), and qkv defuse. The fused
+    qkv target carries ``3 * out_dim`` output rows so defuse yields q/k/v.
+    """
+    in_dim, out_dim = 8, 12  # → fused out = 36
+    # factor pairs: out_a*out_b == 3*out_dim (36), in_a*in_b == in_dim (8)
+    out_a, out_b, in_a, in_b = 6, 6, 2, 4
+    rank = min(128, min(3 * out_dim, in_dim))  # SVD rank cap = 8 here
+    prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
+
+    w1 = torch.randn(out_a, in_a)
+    w2 = torch.randn(out_b, in_b)
+    inv_scale = torch.rand(in_dim) + 0.5  # strictly positive
+    sd = {
+        f"{prefix}.lokr_w1": w1,
+        f"{prefix}.lokr_w2": w2,
+        f"{prefix}.inv_scale": inv_scale,
+    }
+
+    loaded = _save_and_reload(sd, tmp_path, save_variant="lokr")
+
+    base = "lora_unet_blocks_0_self_attn"
+    for suffix in ("q_proj", "k_proj", "v_proj"):
+        assert loaded[f"{base}_{suffix}.lora_down.weight"].shape == (rank, in_dim)
+        assert loaded[f"{base}_{suffix}.lora_up.weight"].shape == (out_dim, rank)
+        assert f"{base}_{suffix}.alpha" in loaded
+    # LoKR factor + inv_scale keys must be purged
+    for k in loaded:
+        assert not k.endswith(".lokr_w1") and not k.endswith(".lokr_w2")
+        assert not k.endswith(".inv_scale")
+
+    # Numeric: at full rank, up @ down reconstructs the materialised delta.
+    # defuse chunks lora_up rows per component (q/k/v), clones down for each.
+    expected_delta = torch.kron(w1, w2) * inv_scale.unsqueeze(0)
+    down = loaded[f"{base}_q_proj.lora_down.weight"]
+    for i, suffix in enumerate(("q_proj", "k_proj", "v_proj")):
+        up = loaded[f"{base}_{suffix}.lora_up.weight"]
+        recon = up.to(torch.float) @ down.to(torch.float)
+        rows = expected_delta[i * out_dim : (i + 1) * out_dim, :]
+        assert torch.allclose(recon, rows, atol=1e-4), f"delta mismatch in {suffix}"
+
+
+def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
+    """Decomposed LoKR (``w1a``/``w1b``/``w2a``/``w2b``, no ``inv_scale``).
+
+    Verifies the ``w1a @ w1b`` / ``w2a @ w2b`` reconstruction branch and the
+    Kronecker orientation on the decomposed factor path.
+    """
+    in_dim, out_dim = 8, 12
+    out_a, out_b, in_a, in_b, lora_dim = 6, 6, 2, 4, 4
+    rank = min(128, min(3 * out_dim, in_dim))
+    prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
+
+    w1a = torch.randn(out_a, lora_dim)
+    w1b = torch.randn(lora_dim, in_a)
+    w2a = torch.randn(out_b, lora_dim)
+    w2b = torch.randn(lora_dim, in_b)
+    sd = {
+        f"{prefix}.w1a": w1a,
+        f"{prefix}.w1b": w1b,
+        f"{prefix}.w2a": w2a,
+        f"{prefix}.w2b": w2b,
+    }
+
+    loaded = _save_and_reload(sd, tmp_path, save_variant="lokr")
+
+    base = "lora_unet_blocks_0_self_attn"
+    for suffix in ("q_proj", "k_proj", "v_proj"):
+        assert loaded[f"{base}_{suffix}.lora_down.weight"].shape == (rank, in_dim)
+        assert loaded[f"{base}_{suffix}.lora_up.weight"].shape == (out_dim, rank)
+    for k in loaded:
+        assert not any(k.endswith(s) for s in (".w1a", ".w1b", ".w2a", ".w2b"))
+        assert not k.endswith(".inv_scale")
+
+    expected_delta = torch.kron(w1a @ w1b, w2a @ w2b)
+    down = loaded[f"{base}_q_proj.lora_down.weight"]
+    for i, suffix in enumerate(("q_proj", "k_proj", "v_proj")):
+        up = loaded[f"{base}_{suffix}.lora_up.weight"]
+        recon = up.to(torch.float) @ down.to(torch.float)
+        rows = expected_delta[i * out_dim : (i + 1) * out_dim, :]
+        assert torch.allclose(recon, rows, atol=1e-4), f"delta mismatch in {suffix}"
+
+
 def test_ortho_init_module_zero_delta_and_distill_fidelity():
     """ΔW=0 at init (λ=0) and the sqrt-split distill reproduces P·diag(λ)·Q."""
     from networks.lora_modules import OrthoInitLoRAModule

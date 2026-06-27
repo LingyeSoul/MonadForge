@@ -128,6 +128,100 @@ def _convert_legacy_ortho_to_lora(
             state_dict[f"{prefix}.alpha"] = alpha
 
 
+def _convert_lokr_to_standard_lora(
+    state_dict: Dict[str, torch.Tensor],
+    dtype: Optional[torch.dtype],
+    lora_rank: int = 128,
+) -> None:
+    """Convert LoKR factor keys to standard ``lora_down``/``lora_up`` format.
+
+    Materialises the Kronecker-product delta from each prefix's ``lokr_w1`` /
+    ``lokr_w2`` (or ``w1a``/``w1b``/``w2a``/``w2b`` decomposed pairs), applies
+    ``inv_scale`` when present, SVD-splits the result, and replaces the
+    original factor keys in *state_dict* so the file is ComfyUI-compatible.
+    Sets ``alpha = rank`` so ``alpha/rank == 1`` (scale baked into SVD).
+    """
+    prefixes: Dict[str, Dict[str, torch.Tensor]] = {}
+    for key in list(state_dict.keys()):
+        if key.endswith(".lokr_w1"):
+            p = key[: -len(".lokr_w1")]
+            prefixes.setdefault(p, {})["lokr_w1"] = state_dict[key]
+        elif key.endswith(".lokr_w2"):
+            p = key[: -len(".lokr_w2")]
+            prefixes.setdefault(p, {})["lokr_w2"] = state_dict[key]
+        elif key.endswith(".w1a"):
+            p = key[: -len(".w1a")]
+            prefixes.setdefault(p, {})["w1a"] = state_dict[key]
+        elif key.endswith(".w2a"):
+            p = key[: -len(".w2a")]
+            prefixes.setdefault(p, {})["w2a"] = state_dict[key]
+        elif key.endswith(".w1b"):
+            p = key[: -len(".w1b")]
+            prefixes.setdefault(p, {})["w1b"] = state_dict[key]
+        elif key.endswith(".w2b"):
+            p = key[: -len(".w2b")]
+            prefixes.setdefault(p, {})["w2b"] = state_dict[key]
+
+    if not prefixes:
+        return
+
+    svd_device = "cuda" if torch.cuda.is_available() else "cpu"
+    converted = 0
+
+    for prefix, factors in prefixes.items():
+        # Preserve source dtype when no explicit dtype was requested — matches
+        # ``_convert_legacy_ortho_to_lora`` and the standard write path. Read
+        # before the ``.float()`` SVD casts below.
+        save_dtype = dtype if dtype is not None else next(iter(factors.values())).dtype
+
+        w1 = factors.get("lokr_w1")
+        if w1 is None:
+            w1a = factors.get("w1a")
+            w1b = factors.get("w1b")
+            if w1a is None or w1b is None:
+                continue
+            w1 = w1a.float().to(svd_device) @ w1b.float().to(svd_device)
+        else:
+            w1 = w1.float().to(svd_device)
+
+        w2 = factors.get("lokr_w2")
+        if w2 is None:
+            w2a = factors.get("w2a")
+            w2b = factors.get("w2b")
+            if w2a is None or w2b is None:
+                continue
+            w2 = w2a.float().to(svd_device) @ w2b.float().to(svd_device)
+        else:
+            w2 = w2.float().to(svd_device)
+
+        delta = torch.kron(w1, w2)
+        inv_scale_key = f"{prefix}.inv_scale"
+        if inv_scale_key in state_dict:
+            inv_s = state_dict[inv_scale_key].float().to(svd_device)
+            delta = delta * inv_s.unsqueeze(0)
+
+        U, S, Vh = torch.linalg.svd(delta, full_matrices=False)
+        max_rank = min(lora_rank, S.shape[0])
+        S_sqrt = S[:max_rank].sqrt()
+        lora_up = (
+            (U[:, :max_rank] * S_sqrt.unsqueeze(0)).to(save_dtype).cpu().contiguous()
+        )
+        lora_down = (
+            (S_sqrt.unsqueeze(1) * Vh[:max_rank, :]).to(save_dtype).cpu().contiguous()
+        )
+
+        for suffix in ("lokr_w1", "lokr_w2", "w1a", "w1b", "w2a", "w2b", "inv_scale"):
+            state_dict.pop(f"{prefix}.{suffix}", None)
+
+        state_dict[f"{prefix}.lora_up.weight"] = lora_up
+        state_dict[f"{prefix}.lora_down.weight"] = lora_down
+        state_dict[f"{prefix}.alpha"] = torch.tensor(max_rank, dtype=save_dtype)
+        converted += 1
+
+    if converted:
+        logger.info(f"LoKR → standard LoRA: converted {converted} module(s)")
+
+
 # Back-compat shim: tests/test_global_router.py imports this name directly
 # to exercise the StackedExperts MoE writer in isolation.
 
@@ -211,7 +305,11 @@ def save_network_weights(
         return
 
     if is_lokr_variant:
-        # LoKR: native factor keys, no qkv defuse needed. Just cast and save.
+        # LoKR → standard LoRA: materialise kron delta and SVD-split so the
+        # file is ComfyUI-compatible (lora_down/lora_up format).
+        _convert_lokr_to_standard_lora(state_dict, dtype)
+        defuse_and_bake_standard(state_dict)
+
         if dtype is not None:
             for key in list(state_dict.keys()):
                 v = state_dict[key].detach().clone().to("cpu").to(dtype)
@@ -222,7 +320,9 @@ def save_network_weights(
 
             if metadata is None:
                 metadata = {}
-            model_hash, legacy_hash = precalculate_safetensors_hashes(state_dict, metadata)
+            model_hash, legacy_hash = precalculate_safetensors_hashes(
+                state_dict, metadata
+            )
             metadata["sshs_model_hash"] = model_hash
             metadata["sshs_legacy_hash"] = legacy_hash
             save_file(state_dict, file, metadata)
