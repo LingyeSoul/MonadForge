@@ -545,7 +545,7 @@ def cmd_preprocess_vae(extra):
             "--vae",
             "models/vae/qwen_image_vae.safetensors",
             "--batch_size",
-            "4",
+            "2",
             "--chunk_size",
             "64",
             "--recursive",
@@ -588,6 +588,32 @@ def _float_or_zero(value: str) -> float:
         return 0.0
 
 
+def _ensure_danbooru_tags() -> None:
+    """Fetch the Danbooru tag KB on demand so caption correction never aborts.
+
+    ``correct_captions.py`` loads ``danbooru_tags_classified.csv`` (the bucket
+    taxonomy) and ``SystemExit``s if it's missing — GUI users reach preprocess
+    without ``make download-danbooru-tags``. Mirror the tagger-vocab auto-fetch
+    (best-effort): catch ``SystemExit``/``OSError`` so a failed download skips
+    rather than aborts; ``correct_captions.py`` still surfaces its own clear
+    error if the file is genuinely unavailable.
+    """
+    from library.captioning.correction import find_tag_csv
+
+    if find_tag_csv(ROOT) is not None:
+        return
+    print("  [preprocess] danbooru tag KB missing; fetching it for caption correction")
+    try:
+        # Base CSV only — that's the file `find_tag_csv` / `correct_captions.py`
+        # need. The English sibling (`download-danbooru-tags`) is a heavier
+        # wiki-join step only the GUI tooltip uses; skip it on the preprocess path.
+        from .downloads import _download_danbooru_base
+
+        _download_danbooru_base([])
+    except (SystemExit, OSError) as e:
+        print(f"  [preprocess] danbooru tag KB auto-download failed: {e}")
+
+
 def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = None):
     """Write corrected/variant caption sidecars into ``resized/``.
 
@@ -605,6 +631,10 @@ def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = No
     if not correct and n_variants <= 0:
         print("  [preprocess] caption correction disabled")
         return
+    # correct_captions.py loads the Danbooru tag KB unconditionally (bucket
+    # taxonomy for both correct + variant-only paths) — fetch it on demand so a
+    # GUI preprocess that skipped `make download-danbooru-tags` doesn't abort.
+    _ensure_danbooru_tags()
     pp_args = _resolved_path_pattern_args(extra)
     cmd = [
         PY,
@@ -965,7 +995,7 @@ def cmd_preprocess_config(extra):
                 "--vae",
                 vae_path,
                 "--batch_size",
-                "4",
+                "2",
                 "--chunk_size",
                 "64",
                 "--recursive",
