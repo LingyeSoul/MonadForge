@@ -213,28 +213,28 @@
       <v-card v-if="selectionMode && selectedCount > 0" variant="tonal" class="mb-4 pa-3">
         <v-row align="center" dense>
           <v-col cols="auto">
-            <span class="text-body-2">{{ selectedCount }} selected</span>
+            <span class="text-body-2">{{ t('dsSelected', { n: selectedCount }) }}</span>
           </v-col>
           <v-col cols="auto">
-            <v-btn size="small" variant="text" @click="selectAll">Select All</v-btn>
+            <v-btn size="small" variant="text" @click="selectAll">{{ t('dsSelectAll') }}</v-btn>
           </v-col>
           <v-col cols="auto">
-            <v-btn size="small" variant="text" @click="deselectAll">Deselect All</v-btn>
+            <v-btn size="small" variant="text" @click="deselectAll">{{ t('dsDeselectAll') }}</v-btn>
           </v-col>
           <v-spacer />
           <v-col cols="auto">
             <v-btn size="small" color="primary" variant="tonal" @click="openBatchDialog('append')">
-              <v-icon icon="mdi-plus" class="mr-1" />Append Tag
+              <v-icon icon="mdi-plus" class="mr-1" />{{ t('dsAppendTag') }}
             </v-btn>
           </v-col>
           <v-col cols="auto">
             <v-btn size="small" color="warning" variant="tonal" @click="openBatchDialog('remove')">
-              <v-icon icon="mdi-minus" class="mr-1" />Remove Tag
+              <v-icon icon="mdi-minus" class="mr-1" />{{ t('dsRemoveTag') }}
             </v-btn>
           </v-col>
           <v-col cols="auto">
             <v-btn size="small" variant="tonal" @click="openBatchDialog('replace')">
-              <v-icon icon="mdi-find-replace" class="mr-1" />Find &amp;&amp; Replace
+              <v-icon icon="mdi-find-replace" class="mr-1" />{{ t('dsFindReplace') }}
             </v-btn>
           </v-col>
         </v-row>
@@ -636,19 +636,19 @@
     <!-- Batch operation dialog -->
     <v-dialog v-model="batchDialog" max-width="500">
       <v-card>
-        <v-card-title>Batch — {{ batchAction }}</v-card-title>
+        <v-card-title>{{ t('dsBatch') }} — {{ batchAction }}</v-card-title>
         <v-card-text>
-          <v-text-field v-if="batchAction === 'append' || batchAction === 'remove'" v-model="batchTag" :label="batchAction === 'append' ? 'Tags to append (comma-separated)' : 'Tags to remove (comma-separated)'" placeholder="e.g. smile, wink" variant="outlined" density="compact" hint="Comma-separated" persistent-hint />
+          <v-text-field v-if="batchAction === 'append' || batchAction === 'remove'" v-model="batchTag" :label="batchAction === 'append' ? t('dsTagsToAppend') : t('dsTagsToRemove')" :placeholder="t('dsTagPlaceholder')" variant="outlined" density="compact" :hint="t('dsCommaSeparated')" persistent-hint />
           <template v-if="batchAction === 'replace'">
-            <v-text-field v-model="batchFind" label="Find:" variant="outlined" density="compact" class="mb-2" />
-            <v-text-field v-model="batchReplace" label="Replace with:" variant="outlined" density="compact" />
-            <v-checkbox v-model="batchUseRegex" label="Regex" density="compact" hide-details />
+            <v-text-field v-model="batchFind" :label="t('dsFind')" variant="outlined" density="compact" class="mb-2" />
+            <v-text-field v-model="batchReplace" :label="t('dsReplaceWith')" variant="outlined" density="compact" />
+            <v-checkbox v-model="batchUseRegex" :label="t('dsRegex')" density="compact" hide-details />
           </template>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
-          <v-btn variant="text" @click="batchDialog = false">Cancel</v-btn>
-          <v-btn color="primary" :loading="batchProcessing" :disabled="batchProcessing || (batchAction === 'append' && !batchTag) || (batchAction === 'remove' && !batchTag) || (batchAction === 'replace' && !batchFind)" @click="executeBatch">Execute</v-btn>
+          <v-btn variant="text" @click="batchDialog = false">{{ t('dsCancel') }}</v-btn>
+          <v-btn color="primary" :loading="batchProcessing" :disabled="batchProcessing || (batchAction === 'append' && !batchTag) || (batchAction === 'remove' && !batchTag) || (batchAction === 'replace' && !batchFind)" @click="executeBatch">{{ t('dsExecute') }}</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
