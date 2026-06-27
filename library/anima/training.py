@@ -980,6 +980,14 @@ def sample_images(
     samples would be generated at inference) and restored to ``train()``
     afterward, reusing the live in-GPU model rather than reloading anything. The
     optimizer eval/train swap is handled by the caller in ``loop.py``.
+
+    Latent lifecycle: each sampled image is persisted to
+    ``output_dir/sample/latents/*.pt``. When :func:`_should_decode_inline`
+    allows it (explicit ``--sample_decode_inline true``, or ``auto`` while not
+    block-swapping), :func:`decode_samples_for_live_preview` decodes them to PNG
+    immediately and deletes the latents on success; otherwise (or if the live
+    decode OOM-skips) the latents stay on disk for the deferred end-of-training
+    pass via :func:`decode_pending_samples`.
     """
     if steps == 0:
         if not args.sample_at_first:
@@ -1023,11 +1031,12 @@ def sample_images(
     except Exception:
         pass
 
+    saved_latents: list[str] = []
     try:
         with torch.no_grad(), accelerator.autocast():
             for prompt_dict in prompts:
                 dit.prepare_block_swap_before_forward()
-                _sample_image_inference(
+                lat_path = _sample_image_inference(
                     accelerator,
                     args,
                     dit,
@@ -1042,6 +1051,8 @@ def sample_images(
                     sample_prompts_te_outputs,
                     prompt_replacement,
                 )
+                if lat_path:
+                    saved_latents.append(lat_path)
     finally:
         # Restore RNG + model state even if a prompt errors, so training
         # resumes exactly where it left off (mirrors run_validation's finally).
@@ -1057,19 +1068,22 @@ def sample_images(
         # Letting the caching allocator hold its blocks keeps usage flat (peak
         # settles at max(training, sampling) and stays there).
 
-    # Decode this round's latents now for per-epoch visibility; block-swap runs
-    # defer to end-of-training decode_pending_samples (see _should_decode_inline).
-    # Main process only.
-    if accelerator.is_main_process and _should_decode_inline(args):
-        # Evict the DiT to CPU before the VAE decode so the two are never
-        # co-resident, then restore block-swap placement. Mirrors train.py teardown.
-        dit.to("cpu")
-        clean_memory_on_device(accelerator.device)
-        try:
-            decode_pending_samples(accelerator, args, vae, progress_sink=progress_sink)
-        finally:
-            dit.move_to_device_except_swap_blocks(accelerator.device)
-            dit.prepare_block_swap_before_forward()
+    # Best-effort live decode: offload DiT + network to CPU, decode latents
+    # to PNG so the WebUI gallery refreshes immediately. Gracefully skips on
+    # CUDA OOM — latent .pt files are still on disk for end-of-training decode.
+    # Gated by ``--sample_decode_inline``: explicit true/false wins, ``auto``
+    # (default) inlines only when the run isn't block-swapping so tight cards
+    # don't pay a full DiT+network CPU<->GPU round-trip every sample event
+    # (the deferred end-of-training decode is free). See ``_should_decode_inline``.
+    if saved_latents and _should_decode_inline(args):
+        decode_samples_for_live_preview(
+            accelerator,
+            args,
+            vae,
+            dit=dit,
+            network=net,
+            progress_sink=progress_sink,
+        )
 
 
 def _should_decode_inline(args) -> bool:
@@ -1080,7 +1094,7 @@ def _should_decode_inline(args) -> bool:
     run isn't block-swapping (``blocks_to_swap == 0``), deferred when it is. The
     inline path parks the DiT on CPU before the VAE decode (so the two are never
     co-resident), so it's OOM-safe either way; the block-swap default still
-    defers because on a tight card the repeated full-DiT CPU↔GPU transfer per
+    defers because on a tight card the repeated full-DiT CPU<->GPU transfer per
     sample event isn't worth paying when the end-of-training decode is free."""
     explicit = getattr(args, "sample_decode_inline", None)
     if isinstance(explicit, str):
@@ -1342,6 +1356,7 @@ def _sample_image_inference(
     # Persist with the latent so ``decode_pending_samples`` can re-emit a
     # ``sample`` progress event with the correct step/epoch metadata even
     # when the actual PNG decode is deferred to end-of-training.
+    latent_path = os.path.join(latents_dir, stem + ".pt")
     torch.save(
         {
             "latents": latents.detach().to("cpu"),
@@ -1350,8 +1365,88 @@ def _sample_image_inference(
             "global_step": steps,
             "epoch": epoch,
         },
-        os.path.join(latents_dir, stem + ".pt"),
+        latent_path,
     )
+    return latent_path
+
+
+def _module_device(module) -> Optional[torch.device]:
+    if module is None:
+        return None
+    try:
+        return next(module.parameters()).device
+    except StopIteration:
+        return None
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    return isinstance(exc, torch.cuda.OutOfMemoryError) or (
+        "out of memory" in str(exc).lower()
+    )
+
+
+def _restore_dit_training_device(dit, device: torch.device) -> None:
+    if getattr(dit, "blocks_to_swap", 0) and hasattr(
+        dit, "move_to_device_except_swap_blocks"
+    ):
+        dit.move_to_device_except_swap_blocks(device)
+    else:
+        dit.to(device)
+
+
+def decode_samples_for_live_preview(
+    accelerator: Accelerator,
+    args,
+    vae,
+    *,
+    dit=None,
+    network=None,
+    progress_sink=None,
+) -> None:
+    """Best-effort PNG decode right after sampling so the WebUI can refresh live.
+
+    Moves DiT and network to CPU before VAE decode to avoid co-residence OOM.
+    On CUDA OOM this warns and skips; any other exception is logged at ERROR and
+    skipped. In both cases the latent ``.pt`` files are left on disk so they are
+    recovered by :func:`decode_pending_samples` at stop/end (which deletes each
+    file only after a successful decode). Invoked from :func:`sample_images`
+    when :func:`_should_decode_inline` allows it (never on a block-swap run
+    unless ``--sample_decode_inline true``).
+    """
+    if vae is None or not accelerator.is_main_process:
+        return
+    save_dir = resolve_sample_dir(args)
+    latents_dir = os.path.join(save_dir, "latents")
+    if not os.path.isdir(latents_dir) or not any(
+        name.endswith(".pt") for name in os.listdir(latents_dir)
+    ):
+        return
+
+    dit_device = _module_device(dit)
+    network_device = _module_device(network)
+    try:
+        if dit is not None and dit_device is not None:
+            dit.to("cpu")
+        if network is not None and network_device is not None:
+            network.to("cpu")
+        clean_memory_on_device(accelerator.device)
+        decode_pending_samples(accelerator, args, vae, progress_sink=progress_sink)
+    except Exception as exc:
+        if _is_cuda_oom(exc):
+            logger.warning(
+                "Live sample decode skipped — CUDA memory tight; "
+                "latent previews will be decoded at stop/end."
+            )
+        else:
+            logger.error(f"Live sample decode failed; will retry at stop/end: {exc}")
+    finally:
+        if dit is not None and dit_device is not None:
+            _restore_dit_training_device(dit, dit_device)
+        if network is not None and network_device is not None:
+            network.to(network_device)
+        if dit is not None and hasattr(dit, "switch_block_swap_for_training"):
+            dit.switch_block_swap_for_training()
+        clean_memory_on_device(accelerator.device)
 
 
 def decode_pending_samples(
@@ -1363,12 +1458,17 @@ def decode_pending_samples(
 ) -> None:
     """Decode the sample latents stashed during training into PNGs.
 
-    Called once from train.py after the training loop tears down (optimizer /
-    gradient / block-swap buffers freed → max GPU headroom). Loads the VAE to
-    GPU a single time, decodes every ``output_dir/sample/latents/*.pt`` into a
-    PNG in ``output_dir/sample/``, then parks the VAE back. Each latent file is
-    removed after a successful decode; a failed one is left on disk so it can be
-    recovered. No-op when sampling was disabled or the VAE isn't available.
+    Called in two places: from :func:`decode_samples_for_live_preview`
+    mid-training (best-effort per-event live preview, gated by
+    ``--sample_decode_inline``) and once from train.py after the training loop
+    tears down (optimizer / gradient / block-swap buffers freed → max GPU
+    headroom, catches anything the live path skipped or OOM-skipped). Loads the
+    VAE to GPU a single time, decodes every ``output_dir/sample/latents/*.pt``
+    into a PNG in ``output_dir/sample/``, then parks the VAE back. Each latent
+    file is removed after a successful decode; a failed one is left on disk so
+    it can be recovered. No-op when the latents dir is empty or absent, so the
+    end-of-training call is a clean no-op whenever the live path already
+    decoded everything.
 
     When ``progress_sink`` is provided, every successfully decoded PNG emits a
     ``sample`` event (with the originating ``global_step``/``epoch``/``prompt``
