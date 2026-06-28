@@ -82,7 +82,7 @@ use_repa = false
 # training at the top tier (both modes). ramp (curriculum only) = "step" (hard
 # low→high switch, exact for a 2-tier ladder) | "stairs" (climb across ≥3 tiers).
 autoscale_mode = "none"
-autoscale_highres_ratio = 0.15
+autoscale_highres_ratio = 0.5
 autoscale_ramp = "step"
 
 [general]

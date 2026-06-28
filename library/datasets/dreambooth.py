@@ -286,9 +286,7 @@ class DreamBoothDataset(BaseDataset):
             # tier) unless autoscale_mode wants every tier as a separate sample.
             # Runs before the validation split so val never duplicates tiers.
             if self.collapse_autoscale_tiers:
-                img_paths, sizes, dropped = _collapse_autoscale_tiers(
-                    img_paths, sizes
-                )
+                img_paths, sizes, dropped = _collapse_autoscale_tiers(img_paths, sizes)
                 if dropped:
                     logger.info(
                         f"autoscale tiers collapsed: dropped {dropped} lower-tier "
@@ -365,9 +363,7 @@ class DreamBoothDataset(BaseDataset):
                     for p, s in zip(img_paths, sizes)
                     if os.path.splitext(os.path.basename(p))[0] in cond_stems
                 ]
-                img_paths, sizes = (
-                    (list(t) for t in zip(*kept)) if kept else ([], [])
-                )
+                img_paths, sizes = (list(t) for t in zip(*kept)) if kept else ([], [])
                 if len(img_paths) != pre:
                     logger.info(
                         f"colorize: kept {len(img_paths)}/{pre} targets with a cached "
@@ -596,7 +592,17 @@ class DreamBoothDataset(BaseDataset):
                     else self.resize_interpolation
                 )
                 if getattr(subset, "mask_dir", None):
+                    from library.io.cache_names import tier_base_stem
+
                     stem = os.path.splitext(os.path.basename(img_path))[0]
+                    # Autoscale tier emits (``pic.as896``) share one tier-
+                    # independent mask written under the base stem (``pic``);
+                    # masking only processes the highest-edge tier. Fall back to
+                    # the base stem so every tier variant resolves to it (a
+                    # no-op for non-autoscale stems). base.py resizes the mask to
+                    # each tier's bucket_reso at preload.
+                    base_stem = tier_base_stem(stem)
+                    stems = [stem] if base_stem == stem else [stem, base_stem]
                     # Prefer the nested path that mirrors subset.image_dir →
                     # mask_dir; fall back to the flat layout so legacy
                     # masks/merged/ etc. caches keep working.
@@ -608,10 +614,13 @@ class DreamBoothDataset(BaseDataset):
                         except ValueError:
                             rel = ""
                         if rel and rel != "." and not rel.startswith(".."):
-                            candidates.append(
-                                os.path.join(subset.mask_dir, rel, f"{stem}_mask.png")
+                            candidates.extend(
+                                os.path.join(subset.mask_dir, rel, f"{s}_mask.png")
+                                for s in stems
                             )
-                    candidates.append(os.path.join(subset.mask_dir, f"{stem}_mask.png"))
+                    candidates.extend(
+                        os.path.join(subset.mask_dir, f"{s}_mask.png") for s in stems
+                    )
                     for mask_path in candidates:
                         if os.path.exists(mask_path):
                             info.mask_path = mask_path

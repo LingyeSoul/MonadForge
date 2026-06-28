@@ -261,7 +261,7 @@ class LoRANetworkCfg:
     # SVD-Down: ``lora_down`` initialization for plain LoRA — ``"kaiming"``
     # (default) or ``"weight_svd"`` (seed input basis from W0's top-r right
     # singular vectors, scale-matched). Plain two-factor LoRAModule only;
-    # ignored by ortho/Hydra/Chimera classes. docs/proposal/svd_down_lora_init.md.
+    # ignored by ortho/Hydra/Chimera classes. docs/methods/svd-down-lora.md.
     down_init: str = "kaiming"
 
     # σ-conditional router parameters (consumed when ``router_source="sigma"``).

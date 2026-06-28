@@ -42,7 +42,7 @@ def main() -> None:
     )
     # 2D VAE fold is ON by default: image-only pipeline, ~2x faster encode at
     # ~0.65-0.7x peak VRAM, latents equivalent within bf16 noise. See
-    # bench/qwen_vae_2d/. Opt out with --no_vae_2d for the stock 3D causal VAE.
+    # _archive/bench/qwen_vae_2d/. Opt out with --no_vae_2d for the stock 3D causal VAE.
     parser.add_argument(
         "--qwen_image_vae_2d",
         "--vae_2d",
@@ -61,7 +61,7 @@ def main() -> None:
     # Encode in fp32 instead of bf16. The fp32 save already happens regardless;
     # this also encodes in fp32, removing the (structured but ~17 dB-below-recon)
     # bf16 accumulation error and making the 2D fold bit-exact. See
-    # bench/qwen_vae_2d/encode_dtype_probe.py — quality-neutral, hygiene only.
+    # _archive/bench/qwen_vae_2d/encode_dtype_probe.py — quality-neutral, hygiene only.
     parser.add_argument(
         "--no_half_vae",
         "--fp32_vae",

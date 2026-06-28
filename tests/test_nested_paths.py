@@ -140,6 +140,43 @@ def test_load_mask_from_dir_flat_fallback(tmp_path: Path) -> None:
     assert abs(float(mask.mean()) - 50.0 / 255.0) < 1e-5
 
 
+def test_load_mask_from_dir_autoscale_base_stem_fallback(tmp_path: Path) -> None:
+    """An autoscale tier emit (``img1.as896``) resolves the base-stem mask.
+
+    Masking only processes the highest-edge tier and writes the mask under the
+    base stem (``img1_mask.png``); every tier variant must fall back to it.
+    """
+    from library.datasets.image_utils import load_mask_from_dir
+
+    image_dir = tmp_path / "image_dataset"
+    img = image_dir / "charA" / "img1.as896.png"  # a tier emit
+    img.parent.mkdir(parents=True)
+
+    mask_dir = tmp_path / "post_image_dataset" / "masks"
+    _write_mask(mask_dir / "charA" / "img1_mask.png", 90)  # base-stem mask
+
+    mask = load_mask_from_dir(str(mask_dir), str(img), (4, 4), image_dir=str(image_dir))
+    assert mask is not None
+    assert abs(float(mask.mean()) - 90.0 / 255.0) < 1e-5
+
+
+def test_load_mask_from_dir_tier_specific_preferred(tmp_path: Path) -> None:
+    """A legacy per-tier mask still wins over the base-stem fallback."""
+    from library.datasets.image_utils import load_mask_from_dir
+
+    image_dir = tmp_path / "image_dataset"
+    img = image_dir / "img1.as896.png"
+    img.parent.mkdir(parents=True)
+
+    mask_dir = tmp_path / "masks"
+    _write_mask(mask_dir / "img1.as896_mask.png", 200)  # tier-specific
+    _write_mask(mask_dir / "img1_mask.png", 50)  # base-stem
+
+    mask = load_mask_from_dir(str(mask_dir), str(img), (4, 4), image_dir=str(image_dir))
+    assert mask is not None
+    assert abs(float(mask.mean()) - 200.0 / 255.0) < 1e-5
+
+
 def test_load_mask_from_dir_missing(tmp_path: Path) -> None:
     """No mask anywhere → None."""
     from library.datasets.image_utils import load_mask_from_dir

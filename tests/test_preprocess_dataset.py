@@ -119,6 +119,31 @@ def test_walk_images_path_pattern_filters_relative_paths(tmp_path: Path) -> None
     assert [p.relative_to(tmp_path).as_posix() for p in paths] == ["charA/cover.png"]
 
 
+def test_walk_images_collapse_autoscale_tiers(tmp_path: Path) -> None:
+    """Tier collapse keeps the highest-edge emit per source stem, per folder."""
+    from library.preprocess import walk_images
+
+    _write_image(tmp_path / "charA" / "pic.as896.png", (8, 8))
+    _write_image(tmp_path / "charA" / "pic.as1024.png", (8, 8))
+    _write_image(tmp_path / "charA" / "other.png", (8, 8))  # no tier marker
+    _write_image(tmp_path / "charB" / "pic.as768.png", (8, 8))  # different folder
+
+    paths = walk_images(tmp_path, recursive=True, collapse_autoscale_tiers=True)
+    rels = sorted(p.relative_to(tmp_path).as_posix() for p in paths)
+    assert rels == ["charA/other.png", "charA/pic.as1024.png", "charB/pic.as768.png"]
+
+
+def test_walk_images_collapse_off_keeps_every_tier(tmp_path: Path) -> None:
+    """Default (collapse off) leaves every tier — VAE latents stay per-tier."""
+    from library.preprocess import walk_images
+
+    _write_image(tmp_path / "pic.as896.png", (8, 8))
+    _write_image(tmp_path / "pic.as1024.png", (8, 8))
+
+    paths = walk_images(tmp_path, recursive=False)
+    assert [p.name for p in paths] == ["pic.as1024.png", "pic.as896.png"]
+
+
 def test_walk_images_collision_within_folder_raises(tmp_path: Path) -> None:
     from library.preprocess import walk_images
 

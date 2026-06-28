@@ -156,7 +156,14 @@ def load_mask_from_dir(
     Returns:
         Float tensor [H, W] in [0, 1] range, or None if no mask file found.
     """
+    from library.io.cache_names import tier_base_stem
+
     stem = os.path.splitext(os.path.basename(image_path))[0]
+    # Autoscale tier emits (``pic.as896``) share one tier-independent mask
+    # written under the base stem (``pic``); fall back to it so every tier
+    # variant resolves (a no-op for non-autoscale stems).
+    base_stem = tier_base_stem(stem)
+    stems = [stem] if base_stem == stem else [stem, base_stem]
     candidates: list[str] = []
     if image_dir is not None:
         try:
@@ -164,8 +171,10 @@ def load_mask_from_dir(
         except ValueError:
             rel = ""
         if rel and rel != "." and not rel.startswith(".."):
-            candidates.append(os.path.join(mask_dir, rel, f"{stem}_mask.png"))
-    candidates.append(os.path.join(mask_dir, f"{stem}_mask.png"))
+            candidates.extend(
+                os.path.join(mask_dir, rel, f"{s}_mask.png") for s in stems
+            )
+    candidates.extend(os.path.join(mask_dir, f"{s}_mask.png") for s in stems)
 
     mask_path = next((p for p in candidates if os.path.exists(p)), None)
     if mask_path is None:
