@@ -17,7 +17,7 @@ from PIL import Image
 from PIL import ImageOps
 from PIL.PngImagePlugin import PngInfo
 
-from library.datasets.buckets import DEFAULT_TARGET_RES
+from library.datasets.buckets import DEFAULT_TARGET_RES, choose_edge
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 from library.datasets.buckets import DEFAULT_FREEFIT_MAX_RATIO, FREEFIT_BAND_VERSION
@@ -174,7 +174,8 @@ def process_image(
     overwrite: bool = False,
     force_edge: int | None = None,
     out_stem_suffix: str = "",
-) -> tuple[str, tuple[int, int], bool]:
+    emit_ladder: list[int] | None = None,
+) -> tuple[str, tuple[int, int] | None, bool]:
     """Worker — receives bucket params (not a BucketManager) to stay picklable.
 
     ``rel_dir`` is the (possibly empty) relative subdir under the source root;
@@ -217,6 +218,17 @@ def process_image(
     # ``force_edge`` (autoscale curriculum emit) pins the tier instead of letting
     # choose_edge pick, so one source image is emitted at every ladder tier.
     if force_edge is not None:
+        # Don't upscale above the image's natural home tier: the curriculum wants
+        # cheaper (downscaled) tiers for the bulk phase + the image's natural tier
+        # for the finish phase, never a tier ABOVE natural (which would invent
+        # detail and waste the expensive tokens). ``emit_ladder`` is the autoscale
+        # tier set; natural = the least-resize tier within it (same rule as the
+        # non-autoscale pipeline). A sub-natural force_edge is a downscale (keep);
+        # a force_edge above natural is skipped (returns bucket_reso=None).
+        if emit_ladder:
+            natural = choose_edge(work_w, work_h, sorted(set(emit_ladder)))
+            if force_edge > natural:
+                return f"{image_path.stem}{out_stem_suffix}.png", None, True
         tier = [force_edge]
     else:
         tier = target_res or list(DEFAULT_TARGET_RES)
@@ -383,15 +395,22 @@ def resize_to_buckets(
     # (stem-suffixed ``.as{edge}``) so each source image trains as an independent
     # sample at every tier. ``None``/empty → normal single-tier emit (choose_edge).
     if autoscale_tiers:
-        emit_specs = [(edge, f".as{edge}") for edge in sorted(set(autoscale_tiers))]
+        from library.io.cache_names import tier_emit_suffix
+
+        emit_specs = [
+            (edge, tier_emit_suffix(edge)) for edge in sorted(set(autoscale_tiers))
+        ]
     else:
         emit_specs = [(None, "")]
 
     if progress is not None:
         progress(0, total=len(image_files) * len(emit_specs))
 
+    ladder = sorted(set(autoscale_tiers)) if autoscale_tiers else None
+
     bucket_counts: dict[tuple[int, int], int] = {}
     resize_skipped = 0
+    upscale_skipped = 0
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
@@ -404,12 +423,20 @@ def resize_to_buckets(
                 overwrite,
                 force_edge,
                 stem_suffix,
+                ladder,
             ): img_path
             for img_path in image_files
             for force_edge, stem_suffix in emit_specs
         }
         for future in as_completed(futures):
             name, reso, skipped = future.result()
+            if reso is None:
+                # Autoscale: this tier would upscale the image above its natural
+                # home tier — not emitted (no invented detail at the costly tier).
+                upscale_skipped += 1
+                if progress is not None:
+                    progress(1, detail=f"{name} no-upscale")
+                continue
             bucket_counts[reso] = bucket_counts.get(reso, 0) + 1
             if skipped:
                 resize_skipped += 1
@@ -419,6 +446,11 @@ def resize_to_buckets(
                 tag = "skip" if skipped else f"→ {reso[0]}x{reso[1]}"
                 progress(1, detail=f"{name} {tag}")
     stats.skipped += resize_skipped
+    if verbose and upscale_skipped:
+        print(
+            f"Autoscale: skipped {upscale_skipped} tier-emit(s) that would "
+            "upscale an image above its natural tier."
+        )
     if verbose and resize_skipped:
         print(
             f"Skipped {resize_skipped} image(s) already at their target bucket "

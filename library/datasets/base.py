@@ -373,9 +373,22 @@ class BaseDataset(torch.utils.data.Dataset):
         }
         self._rebuild_autoscale_positions()
         if self._autoscale_n_ranks > 1:
+            # Keep total steps/epoch equal to a single-resolution run. Buckets
+            # carry every tier of each image (the lowest tier holds them all, so
+            # its pool is one full pass over the stems), which would otherwise
+            # make the epoch ~n_tiers× longer. Shrink the reported length to one
+            # tier's worth — the __getitem__ remap then fills that fixed step
+            # budget from whichever tier is active (the top tier repeats to fill
+            # the finish phase). Must precede the trainer's len()-based step calc.
+            self._length = max(
+                (len(p) for p in self._autoscale_rank_positions.values()),
+                default=self._length,
+            )
             logger.info(
                 f"autoscale_mode: {self._autoscale_n_ranks}-tier ladder "
-                f"{ladder} (ramp={schedule.ramp}, finish={schedule.finish})"
+                f"{ladder} (ramp={schedule.ramp}, finish={schedule.finish}); "
+                f"epoch length pinned to {self._length} batch(es) (one tier — "
+                f"total steps unchanged vs single-resolution)"
             )
         else:
             logger.warning(
@@ -1566,7 +1579,13 @@ class BaseDataset(torch.utils.data.Dataset):
            directory with no sidecars,
         3. next to the image (legacy no-cache_dir layout).
         """
-        stem = os.path.splitext(os.path.basename(info.absolute_path))[0]
+        # PE features are tier-independent (semantic), so autoscale tier variants
+        # share one sidecar — strip the .as<edge> marker (no-op off autoscale).
+        from library.io.cache_names import tier_base_stem
+
+        stem = tier_base_stem(
+            os.path.splitext(os.path.basename(info.absolute_path))[0]
+        )
         name = f"{stem}_anima_{self.repa_pe_encoder}.safetensors"
         candidates: List[str] = []
         if info.text_encoder_outputs_npz:

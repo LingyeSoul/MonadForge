@@ -186,6 +186,10 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
     def enable_autoscale(self, schedule):
         for dataset in self.datasets:
             dataset.enable_autoscale(schedule)
+        # Member lengths shrink to one tier's worth (see BaseDataset.enable_
+        # autoscale) — refresh ConcatDataset's cached cumulative_sizes so len()
+        # and global-index routing reflect the pinned epoch length.
+        self.refresh_concat_state()
 
     def disable_token_padding(self):
         for dataset in self.datasets:

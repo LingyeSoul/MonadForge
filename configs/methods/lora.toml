@@ -34,19 +34,21 @@ use_randomized_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-output_name = "anima_test"
+output_name = "anima_autoscale_tenth"
 # sigmoid_bias = 0.5
 # path_pattern = "sweetonedollar/*|ama_mitsuki/*|hews/*"
 # artists_shard="3_16"
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
-use_cmmd=true
+# use_cmmd=true
 # compile_inductor_mode = "max-autotune"
+
+autoscale_mode = true
 
 # -------------
 # Ortho-lora
 
-down_init = "weight_svd"
+# down_init = "weight_svd"
 # use_ortho_init = true
 
 # -------------
@@ -59,9 +61,9 @@ down_init = "weight_svd"
 # -------------
 # Timestep mask
 
-use_timestep_mask = true
-min_rank = 1
-alpha_rank_scale = 1.0
+# use_timestep_mask = true
+# min_rank = 1
+# alpha_rank_scale = 1.0
 
 
 # ---
@@ -201,9 +203,3 @@ repa_dog_sigma1_div = 16      # σ₁ = min(gh,gw)/div; Phase-0 character winner
 repa_dog_sigma2_div = 0       # 0 ⇒ σ₂ off (low-band strip only, +1a); >sigma1_div ⇒ band-pass
 repa_dog_norm_std   = 0       # 0 ⇒ empirical std (matches spatial_norm); >0 ⇒ fixed const
 
-[general]
-[[datasets]]
-batch_size = 1
-
-# validation_split = 0.025
-validation_split_num = 16

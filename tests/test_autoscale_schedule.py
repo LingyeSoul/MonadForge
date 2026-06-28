@@ -116,6 +116,7 @@ class _FakeDataset:
         self._autoscale_bucket_rank = {}
         self._autoscale_n_ranks = 0
         self._autoscale_rank_positions = {}
+        self._length = len(self.buckets_indices)  # full (all-tier) batch count
         self.current_step = 0
         self.max_train_steps = 1000
 
@@ -149,6 +150,23 @@ def test_dataset_remap_redirects_out_of_phase_batches():
         assert ds._autoscale_bucket_rank[ds.buckets_indices[out].bucket_index] == 1
 
 
+def test_autoscale_pins_epoch_length_to_one_tier():
+    # buckets carry both tiers: 3 low-tier (rank 0) + 2 high-tier (rank 1)
+    # batch slots → 5 total. Autoscale must pin the epoch length to the largest
+    # single tier (3), NOT the all-tier sum (5), so total steps don't inflate.
+    ds = _two_tier_dataset()
+    assert ds._length == 5  # full all-tier count before arming
+    ds.enable_autoscale(AutoscaleSchedule(finish=0.15, ramp="step"))
+    assert ds._length == 3  # one tier's worth — the low tier holds every stem
+
+
+def test_autoscale_single_tier_does_not_shrink_length():
+    ds = _FakeDataset([(1120, 960)], bucket_of_position=[0, 0, 0])
+    ds.enable_autoscale(AutoscaleSchedule())
+    # one tier -> no curriculum, length untouched (normal full-length run)
+    assert ds._length == 3
+
+
 def test_dataset_remap_warmup_and_inphase_passthrough():
     ds = _two_tier_dataset()
     ds.enable_autoscale(AutoscaleSchedule(finish=0.15, ramp="step", warmup_batches=4))
@@ -167,6 +185,48 @@ def test_dataset_remap_warmup_and_inphase_passthrough():
         assert ds._autoscale_remap(idx) == idx
 
 
+def test_tier_caches_share_te_pe_but_split_latents(tmp_path):
+    # TE (caption) + PE (semantic) caches are tier-independent → one shared
+    # sidecar per source image; VAE latents stay per-tier (resolution-specific).
+    from library.io.cache import resolve_cache_path
+    from library.io.cache_names import (
+        TE_CACHE_SUFFIX,
+        pe_cache_suffix,
+        tier_base_stem,
+        tier_emit_suffix,
+    )
+
+    cd = str(tmp_path)
+    te, pe, lat = [], [], []
+    for edge in (896, 1024):
+        img = f"/img/sub/pic{tier_emit_suffix(edge)}.png"
+        te.append(
+            resolve_cache_path(img, TE_CACHE_SUFFIX, cache_dir=cd, image_dir="/img")
+        )
+        pe.append(
+            resolve_cache_path(
+                img, pe_cache_suffix("pe_spatial"), cache_dir=cd, image_dir="/img"
+            )
+        )
+        lat.append(
+            resolve_cache_path(
+                img, f"_0{edge}x0{edge}_anima.npz", cache_dir=cd, image_dir="/img"
+            )
+        )
+    assert te[0] == te[1] and te[0].endswith("pic_anima_te.safetensors")
+    assert pe[0] == pe[1] and pe[0].endswith("pic_anima_pe_spatial.safetensors")
+    assert lat[0] != lat[1]  # per-tier
+
+    # sidecar layout (cache_dir=None) shares too
+    assert resolve_cache_path(
+        "/img/pic.as896.png", TE_CACHE_SUFFIX
+    ) == resolve_cache_path("/img/pic.as1024.png", TE_CACHE_SUFFIX)
+
+    # ordinary (non-autoscale) stems are untouched
+    assert tier_base_stem("artist_3_16") == "artist_3_16"
+    assert tier_base_stem("pic.as1024") == "pic"
+
+
 def test_single_tier_dataset_is_no_op():
     ds = _FakeDataset([(1120, 960)], bucket_of_position=[0, 0, 0])
     ds.enable_autoscale(AutoscaleSchedule())
@@ -174,3 +234,40 @@ def test_single_tier_dataset_is_no_op():
     ds.current_step = 900
     for idx in range(len(ds.buckets_indices)):
         assert ds._autoscale_remap(idx) == idx
+
+
+def test_collapse_autoscale_tiers_keeps_highest_per_stem():
+    from library.datasets.dreambooth import _collapse_autoscale_tiers
+
+    paths = [
+        "/d/pic.as896.png",
+        "/d/pic.as1024.png",  # higher tier of pic -> keep this one
+        "/d/other.as768.png",
+        "/d/other.as896.png",  # higher tier of other -> keep this one
+    ]
+    sizes = [(896, 864), (1120, 960), (768, 720), (896, 864)]
+    kept, kept_sizes, dropped = _collapse_autoscale_tiers(paths, sizes)
+    assert dropped == 2
+    assert kept == ["/d/pic.as1024.png", "/d/other.as896.png"]
+    assert kept_sizes == [(1120, 960), (896, 864)]
+
+
+def test_collapse_autoscale_tiers_leaves_ordinary_data_untouched():
+    from library.datasets.dreambooth import _collapse_autoscale_tiers
+
+    # No tier markers at all -> nothing collapses.
+    paths = ["/d/a.png", "/d/b.png", "/d/c.png"]
+    sizes = [(1, 1), (2, 2), (3, 3)]
+    kept, kept_sizes, dropped = _collapse_autoscale_tiers(paths, sizes)
+    assert dropped == 0
+    assert kept == paths and kept_sizes == sizes
+
+    # A group mixing a plain image with a tier emit is ambiguous -> left intact.
+    mixed = ["/d/x.png", "/d/x.as896.png"]
+    kept2, _, dropped2 = _collapse_autoscale_tiers(mixed, [(1, 1), (2, 2)])
+    assert dropped2 == 0 and kept2 == mixed
+
+    # Same stem in different dirs are distinct images -> both kept.
+    dirs = ["/d1/pic.as896.png", "/d2/pic.as896.png"]
+    kept3, _, dropped3 = _collapse_autoscale_tiers(dirs, [(1, 1), (2, 2)])
+    assert dropped3 == 0 and kept3 == dirs

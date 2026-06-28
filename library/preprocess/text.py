@@ -17,6 +17,7 @@ import torch
 from PIL import Image
 
 from library.io.cache import TE_CACHE_SUFFIX, resolve_cache_path
+from library.io.cache_names import tier_base_stem
 from library.preprocess._dataset import PreprocessStats, walk_images
 from library.preprocess._progress import ProgressFn
 
@@ -84,7 +85,9 @@ def _encode_batch(
 
 def _te_cache_path(image_path: Path, cache_dir: Path | None, image_dir: Path) -> Path:
     if cache_dir is None:
-        return image_path.with_name(image_path.stem + TE_CACHE_SUFFIX)
+        # Shared across autoscale tiers (caption is tier-independent); no-op off
+        # autoscale. The cache_dir branch strips inside resolve_cache_path.
+        return image_path.with_name(tier_base_stem(image_path.stem) + TE_CACHE_SUFFIX)
     return Path(
         resolve_cache_path(
             str(image_path),

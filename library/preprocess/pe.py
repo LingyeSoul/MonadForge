@@ -18,7 +18,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
 from library.io.cache import resolve_cache_path
-from library.io.cache_names import pe_cache_suffix
+from library.io.cache_names import pe_cache_suffix, tier_base_stem
 from library.datasets.image_utils import IMAGE_TRANSFORMS
 from library.preprocess._dataset import (
     PreprocessStats,
@@ -46,7 +46,9 @@ def cache_path_for(
     """
     suffix = pe_cache_suffix(encoder)
     if cache_dir is None:
-        return image_path.with_name(image_path.stem + suffix)
+        # Shared across autoscale tiers (PE feature is tier-independent); no-op
+        # off autoscale. The cache_dir branch strips inside resolve_cache_path.
+        return image_path.with_name(tier_base_stem(image_path.stem) + suffix)
     return Path(
         resolve_cache_path(
             str(image_path),

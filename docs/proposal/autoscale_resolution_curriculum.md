@@ -7,8 +7,10 @@ The schedule + autoscale-aware preprocess emit ship behind the default-off
 ## How to run (v1)
 
 ```bash
-# 1. Cache each image at BOTH ladder tiers (independent samples, stem-suffixed
-#    .as896 / .as1024). ~N× latent/TE/PE cache disk for N tiers.
+# 1. Cache each image at BOTH ladder tiers (stem-suffixed .as896 / .as1024).
+#    ~N× latent disk for N tiers (TE/PE caches are shared). The curriculum picks
+#    ONE tier per step — total steps stay equal to a single-resolution run; off
+#    autoscale the tiers collapse to the highest-res copy per stem.
 make preprocess-resize ARGS="--autoscale_tiers 896 1024"
 make preprocess-vae && make preprocess-te && make preprocess-pe   # cache every emitted PNG
 
@@ -29,16 +31,48 @@ Implementation map:
   graph warms up front (no recompile/VRAM climb at the phase switch). Tiers are
   discovered from the data via `edge_for_token_count` (`buckets.py`); single-tier
   data ⇒ no-op.
+- **Epoch length is pinned to one tier (total steps unchanged).** The buckets
+  hold *every* tier of each image, so a naive epoch would be ~N_tiers× longer and
+  the same `max_train_epochs` would silently train N× the steps — the curriculum
+  would degenerate into "train the whole dataset at every resolution." Instead
+  `enable_autoscale` shrinks the reported length to one tier's worth (the largest
+  single-tier pool — the low tier, which holds every stem), and the `__getitem__`
+  remap fills that fixed step budget from whichever tier is active (the smaller
+  top tier repeats to cover the finish phase). So a run at fixed `max_train_epochs`
+  has the **same total step count as a single-resolution run** — autoscale changes
+  *which resolution* each step trains at, never *how many* steps there are. To
+  actually spend the saved FLOPs on more steps, raise `max_train_epochs` yourself.
+  Because this resizes the train group, `enable_autoscale` runs in `train.py`
+  **before** the `len(dataloader)`-based step calc (and `DatasetGroup.enable_autoscale`
+  calls `refresh_concat_state()` so `ConcatDataset` re-reads the new length).
+  - **Off autoscale (`autoscale_mode=false`) the tiers collapse**: the dataset
+    keeps only the **highest-edge tier per stem** (autoscale never upscales, so
+    that's the least-downscaled copy) instead of training every emitted tier as a
+    duplicate — so a corpus preprocessed with `--autoscale_tiers` trains exactly
+    like a single-resolution run when the curriculum is off
+    (`DreamBoothDataset.collapse_autoscale_tiers`, default on; always on for val).
 - **Preprocess emit**: `--autoscale_tiers` on `scripts/preprocess/resize_images.py`
   → `resize_to_buckets(autoscale_tiers=…)` → one stem-suffixed PNG per tier.
+  **No gratuitous upscaling**: a tier is emitted for an image only if it does not
+  exceed the image's natural `choose_edge` home tier — i.e. cheaper (downscaled)
+  tiers for the bulk phase + the natural tier for the finish phase, never a tier
+  *above* natural (which would invent detail and waste the costly tokens). So a
+  sub-896-native image just emits its natural tier and trains normally (no
+  curriculum, no upscale); only images with the native resolution to span the
+  ladder get the multi-tier curriculum. This makes the FLOP-accounting bound
+  ("images below the low tier are unaffected") literally true.
 - **Config**: `autoscale_mode` / `autoscale_finish` / `autoscale_ramp` in
   `configs/base.toml` + `library/config/cli_args.py`; wired in `train.py`.
 
-v1 cost note: the stem-suffixed emit duplicates the **TE/PE caches per tier** too
-(simplest layout, zero dataset-enumeration surgery). A future optimization
-(multi-npz-per-stem) would share the resolution-independent TE/PE and pay only
-the latent 2×. Bespoke loops (turbo/spd/mod) do not inherit the schedule (the
-standing mirror caveat).
+Cache sharing: the stem-suffixed emit keeps the **latent** cache per-tier
+(resolution-specific) but **shares the TE (caption) and PE (semantic) caches**
+across tiers — both are tier-independent, so the cache-name builder strips the
+`.as<edge>` marker for those suffixes (`library/io/cache_names.tier_base_stem`,
+applied at the `resolve_cache_path` chokepoint + the few direct-construction
+sites). So disk cost is ~2× **latents only**, not 2× everything, and the TE pass
+encodes each caption once (the second tier hits the shared cache and skips).
+Bespoke loops (turbo/spd/mod) do not inherit the schedule (the standing mirror
+caveat).
 
 ---
 
@@ -57,11 +91,15 @@ and the T-LoRA σ-schedule do).
 
 `autoscale_mode=true` trains most of the run at a **cheap low tier** (e.g. 896 →
 ~3000 tok) and automatically switches to the **expensive high tier** (1024 →
-4032/4200 tok) for the final fraction of steps. At a fixed FLOP budget this buys
-more gradient steps (the bulk phase is ~0.65–0.73× the per-step cost of the high
-tier); the bet is that final-resolution quality is preserved because low-res
-steps point the same way high-res steps do. The bench confirms the premise holds
-and rules out the failure mode (low-res misdirecting the adapter).
+4032/4200 tok) for the final fraction of steps. The total step count is **the
+same** as a single-resolution run at the same `max_train_epochs` (the epoch
+length is pinned to one tier — see the dataset-hook note); the win is that the
+bulk phase costs ~0.65–0.73× the per-step FLOPs of the high tier, so the run is
+**cheaper for the same number of steps**. The bet is that final-resolution
+quality is preserved because low-res steps point the same way high-res steps do.
+To convert the saved FLOPs into *more* steps instead of a cheaper run, raise
+`max_train_epochs` explicitly. The bench confirms the premise holds and rules out
+the failure mode (low-res misdirecting the adapter).
 
 ## Motivation
 
@@ -78,7 +116,11 @@ This is the NaViT efficiency lever ("more useful examples per compute budget")
 adapted to a *temporal* schedule rather than NaViT's packing — and unlike the
 "cache the same image at N scales and sample randomly" idea (which re-renders
 content without adding examples; see the discussion that spawned this), a
-curriculum spends the FLOPs it saves on *more steps*, not on redundant views.
+curriculum trains **one resolution per step** on a schedule. The step count is
+held equal to a single-resolution run (the epoch length is pinned to one tier, so
+the extra cached tiers never inflate the steps); the FLOP saving is a cheaper run
+at the same step budget. Spending those saved FLOPs on *more* steps is an opt-in
+(bump `max_train_epochs`), not an automatic doubling from caching extra tiers.
 
 ## What `autoscale_mode` does
 

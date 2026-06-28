@@ -27,6 +27,7 @@ from library.io.cache_names import (  # noqa: F401
     classify_cache_file,
     count_preprocess_caches,
     pe_cache_suffix,
+    tier_base_stem,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,9 +53,15 @@ def resolve_cache_path(
     source root.
     """
     src = str(image_abs_path)
+    src_dir = os.path.dirname(src)
     stem = os.path.splitext(os.path.basename(src))[0]
+    # Autoscale tier-shared caches (TE / PE) collapse the per-tier stem variants
+    # (``pic.as896`` / ``pic.as1024``) onto one shared sidecar; resolution-specific
+    # latents (``*_anima.npz``) keep their full per-tier stem. No-op off autoscale.
+    if not suffix.endswith(LATENT_CACHE_SUFFIX):
+        stem = tier_base_stem(stem)
     if cache_dir is None:
-        return os.path.splitext(src)[0] + suffix
+        return os.path.join(src_dir, stem + suffix) if src_dir else stem + suffix
     cache_dir_path = os.fspath(cache_dir)
     rel_dir = ""
     if image_dir is not None:
