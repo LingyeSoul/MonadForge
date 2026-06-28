@@ -1,8 +1,23 @@
-# `autoscale_mode` — resolution-curriculum training
+# `autoscale_mode` — resolution-schedule training
 
-Status: **IMPLEMENTED (v1, `ramp=step`/`stairs`) — awaiting the Phase-1 A/B.**
-The schedule + autoscale-aware preprocess emit ship behind the default-off
-`autoscale_mode` knob; the matched-FLOPs arbiter (Phase 1 below) has not run yet.
+Status: **IMPLEMENTED (v1) — awaiting the Phase-1 A/B.** The schedule +
+autoscale-aware preprocess emit ship behind the `autoscale_mode` knob (default
+`"none"`); the matched-FLOPs arbiter (Phase 1 below) has not run yet.
+
+`autoscale_mode` is a three-way enum (was a `true`/`false` flag; legacy booleans
+still parse as `curriculum`/`none`):
+
+- **`none`** — off; train normally (cached tier emits collapse to one per stem).
+- **`curriculum`** — train the bulk at the cheapest cached tier, then the top
+  tier for the trailing `autoscale_highres_ratio` fraction of steps (`ramp`
+  picks the multi-tier climb shape). The original temporal curriculum.
+- **`random`** — interleave high/low-res throughout the run, drawing the top
+  tier for `autoscale_highres_ratio` of each epoch's batches and the cheapest
+  tier otherwise (binary, no hard phase boundary; `ramp` is ignored). Same
+  long-run compute split as `curriculum`, spread uniformly instead of back-loaded.
+
+Both real modes share the single `autoscale_highres_ratio` knob (this replaced
+the curriculum-only `autoscale_finish`).
 
 ## How to run (v1)
 
@@ -16,7 +31,8 @@ make preprocess-vae && make preprocess-te && make preprocess-pe   # cache every 
 
 # 2. Train with the curriculum on (bulk at the cheap tier, top tier for the
 #    final 15% of steps). Tiers are auto-discovered from the populated buckets.
-make lora ARGS="--autoscale_mode --autoscale_finish 0.15 --autoscale_ramp step"
+#    Swap curriculum→random to interleave high/low-res instead of back-loading.
+make lora ARGS="--autoscale_mode curriculum --autoscale_highres_ratio 0.15 --autoscale_ramp step"
 ```
 
 Implementation map:
@@ -45,7 +61,7 @@ Implementation map:
   Because this resizes the train group, `enable_autoscale` runs in `train.py`
   **before** the `len(dataloader)`-based step calc (and `DatasetGroup.enable_autoscale`
   calls `refresh_concat_state()` so `ConcatDataset` re-reads the new length).
-  - **Off autoscale (`autoscale_mode=false`) the tiers collapse**: the dataset
+  - **Off autoscale (`autoscale_mode="none"`) the tiers collapse**: the dataset
     keeps only the **highest-edge tier per stem** (autoscale never upscales, so
     that's the least-downscaled copy) instead of training every emitted tier as a
     duplicate — so a corpus preprocessed with `--autoscale_tiers` trains exactly
@@ -61,8 +77,9 @@ Implementation map:
   curriculum, no upscale); only images with the native resolution to span the
   ladder get the multi-tier curriculum. This makes the FLOP-accounting bound
   ("images below the low tier are unaffected") literally true.
-- **Config**: `autoscale_mode` / `autoscale_finish` / `autoscale_ramp` in
-  `configs/base.toml` + `library/config/cli_args.py`; wired in `train.py`.
+- **Config**: `autoscale_mode` / `autoscale_highres_ratio` / `autoscale_ramp` in
+  `configs/base.toml` + `library/config/cli_args.py`; normalized via
+  `normalize_autoscale_mode` and wired in `train.py`.
 
 Cache sharing: the stem-suffixed emit keeps the **latent** cache per-tier
 (resolution-specific) but **shares the TE (caption) and PE (semantic) caches**

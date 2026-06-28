@@ -62,6 +62,7 @@ from library.datasets import (
     load_arbitrary_dataset,
 )
 from library.datasets import base as _datasets_base
+from library.datasets.autoscale import normalize_autoscale_mode
 from library.runtime.accelerator import (
     prepare_accelerator,
     prepare_dtype,
@@ -1451,13 +1452,17 @@ class AnimaTrainer:
                     # is preprocess-only and inert here — the on-disk caches decide
                     # which tiers/shapes are present, not this list.
                     target_res=getattr(args, "target_res", None),
-                    # Off autoscale_mode, collapse each stem's autoscale tier
-                    # emits to its highest-res copy so they don't train as
-                    # duplicates. autoscale_mode wants every tier (it remaps
-                    # them by step), so keep them then. Inert on non-autoscale
-                    # data. Val always collapses (set inside the loader).
-                    collapse_autoscale_tiers=not getattr(
-                        args, "autoscale_mode", False
+                    # With autoscale_mode='none', collapse each stem's autoscale
+                    # tier emits to its highest-res copy so they don't train as
+                    # duplicates. The 'curriculum'/'random' schedules want every
+                    # tier (the remap picks one per step/batch), so keep them
+                    # then. Inert on non-autoscale data. Val always collapses
+                    # (set inside the loader).
+                    collapse_autoscale_tiers=(
+                        normalize_autoscale_mode(
+                            getattr(args, "autoscale_mode", "none")
+                        )
+                        == "none"
                     ),
                 )
             )
@@ -1787,18 +1792,22 @@ class AnimaTrainer:
             **dataloader_kwargs,
         )
 
-        # Resolution curriculum (autoscale_mode) — arm on the TRAIN group only so
+        # Resolution schedule (autoscale_mode) — arm on the TRAIN group only so
         # validation always scores at full populated resolution. No-op for
-        # single-tier data. Must run BEFORE the len()-based step calc below: it
-        # pins the train group's epoch length to one tier's worth so total steps
-        # match a single-resolution run (the kept tiers don't double the steps).
-        # See docs/proposal/autoscale_resolution_curriculum.md.
-        if getattr(args, "autoscale_mode", False):
+        # single-tier data or mode='none'. Must run BEFORE the len()-based step
+        # calc below: it pins the train group's epoch length to one tier's worth
+        # so total steps match a single-resolution run (the kept tiers don't
+        # double the steps). See docs/proposal/autoscale_resolution_curriculum.md.
+        autoscale_mode = normalize_autoscale_mode(
+            getattr(args, "autoscale_mode", "none")
+        )
+        if autoscale_mode != "none":
             from library.datasets.autoscale import AutoscaleSchedule
 
             train_dataset_group.enable_autoscale(
                 AutoscaleSchedule(
-                    finish=args.autoscale_finish,
+                    highres_ratio=args.autoscale_highres_ratio,
+                    mode=autoscale_mode,
                     ramp=args.autoscale_ramp,
                 )
             )

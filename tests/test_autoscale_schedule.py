@@ -6,15 +6,18 @@ docs/proposal/autoscale_resolution_curriculum.md:
     that emitted it (``edge_for_token_count``),
   * the progress policy (``AutoscaleSchedule.active_rank``): warmup window and
     single-tier data both yield "no remap"; the bulk phase trains the cheap
-    tier; the trailing ``finish`` fraction trains the top tier,
+    tier; the trailing ``highres_ratio`` fraction trains the top tier,
   * "step" == "stairs" for a 2-tier ladder,
   * the dataset ``__getitem__`` remap actually redirects out-of-phase batches to
-    the active tier and never escapes the active tier mid-phase.
+    the active tier and never escapes the active tier mid-phase,
+  * ``random`` mode draws the top tier for ~``highres_ratio`` of each epoch's
+    batches and the cheapest tier otherwise,
+  * ``normalize_autoscale_mode`` maps the config surface (incl. legacy bool).
 """
 
 import pytest
 
-from library.datasets.autoscale import AutoscaleSchedule
+from library.datasets.autoscale import AutoscaleSchedule, normalize_autoscale_mode
 from library.datasets.buckets import (
     EDGE_TOKEN_BANDS,
     edge_for_token_count,
@@ -35,7 +38,7 @@ def test_edge_for_token_count_round_trips_every_tier():
 
 
 def test_active_rank_no_op_cases():
-    sched = AutoscaleSchedule(finish=0.15, ramp="step", warmup_batches=8)
+    sched = AutoscaleSchedule(highres_ratio=0.15, ramp="step", warmup_batches=8)
     # single tier -> nothing to schedule
     assert sched.active_rank(1000, 1000, n_ranks=1) is None
     # max_steps unknown -> no remap
@@ -46,7 +49,7 @@ def test_active_rank_no_op_cases():
 
 
 def test_step_ramp_two_tier_phases():
-    sched = AutoscaleSchedule(finish=0.15, ramp="step", warmup_batches=8)
+    sched = AutoscaleSchedule(highres_ratio=0.15, ramp="step", warmup_batches=8)
     T = 1000
     # bulk phase -> cheapest tier (rank 0)
     assert sched.active_rank(100, T, 2) == 0
@@ -59,15 +62,15 @@ def test_step_ramp_two_tier_phases():
 
 
 def test_step_equals_stairs_for_two_tiers():
-    step = AutoscaleSchedule(finish=0.2, ramp="step", warmup_batches=0)
-    stairs = AutoscaleSchedule(finish=0.2, ramp="stairs", warmup_batches=0)
+    step = AutoscaleSchedule(highres_ratio=0.2, ramp="step", warmup_batches=0)
+    stairs = AutoscaleSchedule(highres_ratio=0.2, ramp="stairs", warmup_batches=0)
     T = 500
     for s in range(0, T, 7):
         assert step.active_rank(s, T, 2) == stairs.active_rank(s, T, 2)
 
 
 def test_stairs_three_tier_progression():
-    sched = AutoscaleSchedule(finish=0.2, ramp="stairs", warmup_batches=0)
+    sched = AutoscaleSchedule(highres_ratio=0.2, ramp="stairs", warmup_batches=0)
     T = 1000
     # top tier (rank 2) owns the last 20%
     assert sched.active_rank(999, T, 3) == 2
@@ -81,11 +84,31 @@ def test_stairs_three_tier_progression():
 
 def test_invalid_config_rejected():
     with pytest.raises(ValueError):
-        AutoscaleSchedule(finish=0.0)
+        AutoscaleSchedule(highres_ratio=0.0)
     with pytest.raises(ValueError):
-        AutoscaleSchedule(finish=1.0)
+        AutoscaleSchedule(highres_ratio=1.0)
     with pytest.raises(ValueError):
         AutoscaleSchedule(ramp="ramp")
+    with pytest.raises(ValueError):
+        AutoscaleSchedule(mode="none")  # 'none' must be filtered upstream
+    with pytest.raises(ValueError):
+        AutoscaleSchedule(mode="bogus")
+
+
+def test_normalize_autoscale_mode():
+    # canonical strings pass through
+    for m in ("none", "curriculum", "random"):
+        assert normalize_autoscale_mode(m) == m
+    # case / whitespace tolerated
+    assert normalize_autoscale_mode("  Curriculum ") == "curriculum"
+    # legacy boolean flag
+    assert normalize_autoscale_mode(True) == "curriculum"
+    assert normalize_autoscale_mode(False) == "none"
+    assert normalize_autoscale_mode("true") == "curriculum"
+    assert normalize_autoscale_mode("false") == "none"
+    assert normalize_autoscale_mode(None) == "none"
+    with pytest.raises(ValueError):
+        normalize_autoscale_mode("bogus")
 
 
 class _FakeBBI:
@@ -105,6 +128,8 @@ class _FakeDataset:
 
     enable_autoscale = BaseDataset.enable_autoscale
     _rebuild_autoscale_positions = BaseDataset._rebuild_autoscale_positions
+    _rebuild_autoscale_redirect = BaseDataset._rebuild_autoscale_redirect
+    _rebuild_autoscale_random_ranks = BaseDataset._rebuild_autoscale_random_ranks
     _autoscale_remap = BaseDataset._autoscale_remap
 
     def __init__(self, resos, bucket_of_position):
@@ -116,8 +141,12 @@ class _FakeDataset:
         self._autoscale_bucket_rank = {}
         self._autoscale_n_ranks = 0
         self._autoscale_rank_positions = {}
+        self._autoscale_redirect = {}
+        self._autoscale_random_ranks = []
         self._length = len(self.buckets_indices)  # full (all-tier) batch count
         self.current_step = 0
+        self.current_epoch = 0
+        self.seed = 42
         self.max_train_steps = 1000
 
 
@@ -132,7 +161,9 @@ def _two_tier_dataset():
 
 def test_dataset_remap_redirects_out_of_phase_batches():
     ds = _two_tier_dataset()
-    ds.enable_autoscale(AutoscaleSchedule(finish=0.15, ramp="step", warmup_batches=2))
+    ds.enable_autoscale(
+        AutoscaleSchedule(highres_ratio=0.15, ramp="step", warmup_batches=2)
+    )
     assert ds._autoscale_n_ranks == 2
     # rank 0 == 896, rank 1 == 1024
     assert ds._autoscale_bucket_rank == {0: 0, 1: 1}
@@ -150,13 +181,79 @@ def test_dataset_remap_redirects_out_of_phase_batches():
         assert ds._autoscale_bucket_rank[ds.buckets_indices[out].bucket_index] == 1
 
 
+def test_bulk_phase_is_exact_permutation_over_cheap_tier():
+    # Over one epoch the bulk (cheap-tier) pass must hit every rank-0 batch
+    # exactly once — no over/under-sampling from the redirect. buckets order
+    # [0,1,0,1,0]: rank-0 positions {0,2,4}, pinned epoch length L=3.
+    ds = _two_tier_dataset()
+    ds.enable_autoscale(
+        AutoscaleSchedule(highres_ratio=0.15, ramp="step", warmup_batches=0)
+    )
+    ds.current_step = 100  # bulk phase, rank 0 active
+    rank0_positions = {
+        i
+        for i, b in enumerate(ds.buckets_indices)
+        if ds._autoscale_bucket_rank[b.bucket_index] == 0
+    }
+    trained = [ds._autoscale_remap(idx) for idx in range(ds._length)]
+    # exact coverage: each rank-0 batch trained once, none repeated, none skipped
+    assert sorted(trained) == sorted(rank0_positions)
+    assert len(trained) == len(set(trained))
+
+
+def test_finish_phase_cycles_top_tier_to_fill_budget():
+    # The top tier has fewer batches than the epoch length, so the finish pass
+    # repeats them to fill the step budget — every fetch is still a top-tier batch.
+    ds = _two_tier_dataset()
+    ds.enable_autoscale(
+        AutoscaleSchedule(highres_ratio=0.15, ramp="step", warmup_batches=0)
+    )
+    ds.current_step = 900  # finish phase, rank 1 (top) active
+    trained = [ds._autoscale_remap(idx) for idx in range(ds._length)]
+    for pos in trained:
+        assert ds._autoscale_bucket_rank[ds.buckets_indices[pos].bucket_index] == 1
+    # length pinned to the cheap tier (3) > top-tier pool (2), so a repeat exists
+    assert len(trained) == ds._length
+    assert len(set(trained)) < len(trained)
+
+
+def test_random_mode_draws_top_tier_at_highres_ratio():
+    # random mode: exactly round(L * highres_ratio) of the epoch's slots resolve
+    # to the top tier, the rest to the cheapest — binary (no middle tier drawn).
+    ds = _two_tier_dataset()
+    ds.enable_autoscale(
+        AutoscaleSchedule(mode="random", highres_ratio=0.34, warmup_batches=0)
+    )
+    assert ds._length == 3  # pinned to the cheap tier (holds every stem)
+    ds.current_step = 100  # past warmup
+    top = ds._autoscale_n_ranks - 1
+    tiers = [
+        ds._autoscale_bucket_rank[
+            ds.buckets_indices[ds._autoscale_remap(i)].bucket_index
+        ]
+        for i in range(ds._length)
+    ]
+    assert sum(t == top for t in tiers) == round(ds._length * 0.34)  # == 1
+    assert all(t in (0, top) for t in tiers)
+
+
+def test_random_mode_warmup_passthrough():
+    ds = _two_tier_dataset()
+    ds.enable_autoscale(
+        AutoscaleSchedule(mode="random", highres_ratio=0.5, warmup_batches=4)
+    )
+    ds.current_step = 1  # inside warmup -> every tier flows (warm compile graphs)
+    for idx in range(len(ds.buckets_indices)):
+        assert ds._autoscale_remap(idx) == idx
+
+
 def test_autoscale_pins_epoch_length_to_one_tier():
     # buckets carry both tiers: 3 low-tier (rank 0) + 2 high-tier (rank 1)
     # batch slots → 5 total. Autoscale must pin the epoch length to the largest
     # single tier (3), NOT the all-tier sum (5), so total steps don't inflate.
     ds = _two_tier_dataset()
     assert ds._length == 5  # full all-tier count before arming
-    ds.enable_autoscale(AutoscaleSchedule(finish=0.15, ramp="step"))
+    ds.enable_autoscale(AutoscaleSchedule(highres_ratio=0.15, ramp="step"))
     assert ds._length == 3  # one tier's worth — the low tier holds every stem
 
 
@@ -169,7 +266,9 @@ def test_autoscale_single_tier_does_not_shrink_length():
 
 def test_dataset_remap_warmup_and_inphase_passthrough():
     ds = _two_tier_dataset()
-    ds.enable_autoscale(AutoscaleSchedule(finish=0.15, ramp="step", warmup_batches=4))
+    ds.enable_autoscale(
+        AutoscaleSchedule(highres_ratio=0.15, ramp="step", warmup_batches=4)
+    )
     # Inside warmup -> no remap regardless of tier (warms both compile graphs).
     ds.current_step = 1
     for idx in range(len(ds.buckets_indices)):

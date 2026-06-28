@@ -25,16 +25,16 @@ network_alpha = 90
 network_dim = 16
 
 learning_rate = 5e-5
-max_train_epochs = 3
-save_every_n_epochs = 3
-checkpointing_epochs = 3
+max_train_epochs = 4
+save_every_n_epochs = 4
+checkpointing_epochs = 4
 
 use_shuffled_caption_variants = true
 use_randomized_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-output_name = "anima_autoscale_tenth"
+output_name = "anima_autorandom_matched_tenth"
 # sigmoid_bias = 0.5
 # path_pattern = "sweetonedollar/*|ama_mitsuki/*|hews/*"
 # artists_shard="3_16"
@@ -43,7 +43,7 @@ output_name = "anima_autoscale_tenth"
 # use_cmmd=true
 # compile_inductor_mode = "max-autotune"
 
-autoscale_mode = true
+autoscale_mode = "random"   # "none" | "curriculum" | "random"
 
 # -------------
 # Ortho-lora

@@ -165,32 +165,13 @@ def resize_to_bucket(
     return img.crop((left, top, left + bw, top + bh))
 
 
-def process_image(
-    image_path: Path,
-    out_dir: Path,
-    bucket_args: tuple,
-    copy_captions: bool = True,
-    rel_dir: str = "",
-    overwrite: bool = False,
-    force_edge: int | None = None,
-    out_stem_suffix: str = "",
-    emit_ladder: list[int] | None = None,
-) -> tuple[str, tuple[int, int] | None, bool]:
-    """Worker — receives bucket params (not a BucketManager) to stay picklable.
+def _unpack_bucket_args(bucket_args: tuple):
+    """Split the picklable ``bucket_args`` tuple into the active free-fit params.
 
-    ``rel_dir`` is the (possibly empty) relative subdir under the source root;
-    the output mirrors it as ``out_dir / rel_dir / stem.png``. Empty ``rel_dir``
-    collapses to the flat layout.
-
-    Returns ``(name, bucket_reso, skipped)``. Unless ``overwrite`` is set, an
-    image whose resized PNG already exists *at the correct bucket size* is
-    skipped (no re-decode/resize) — so a re-run is near-free, while a bucket
-    change (e.g. adding a ``--target_res`` tier) still re-resizes only the
-    images whose target bucket actually moved.
+    Leading (resolution, min/max bucket, step) elements are vestigial under
+    free-fit (the legacy aspect-ratio BucketManager path is gone); kept in the
+    tuple for layout stability. 5th+ elements are the active free-fit params.
     """
-    # Leading (resolution, min/max bucket, step) elements are vestigial under
-    # free-fit (the legacy aspect-ratio BucketManager path is gone); kept in the
-    # tuple for layout stability. 5th+ elements are the active free-fit params.
     _max_reso, _min_size, _max_size, _reso_steps, *rest = bucket_args
     target_res = rest[0] if rest else None
     crop_anchor = rest[1] if len(rest) > 1 else DEFAULT_RESIZE_CROP_ANCHOR
@@ -198,7 +179,18 @@ def process_image(
     crop_margins = rest[3] if len(rest) > 3 else None
     fit_mode = rest[4] if len(rest) > 4 else DEFAULT_FIT_MODE
     max_ratio = rest[5] if len(rest) > 5 else DEFAULT_FREEFIT_MAX_RATIO
+    return target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
 
+
+def _prepare_source(image_path: Path, crop_margins):
+    """Open + EXIF-transpose the source once; return the shared working geometry.
+
+    Decode, metadata pull-through and EXIF transpose are tier-independent, so the
+    autoscale path runs this once per source and resizes the result into every
+    ladder tier (instead of re-opening/decoding the source per tier). Returns the
+    EXIF-corrected image (not yet RGB-converted/cropped — that's deferred to the
+    write path), its ``save()`` metadata kwargs, and the margin-crop box + dims.
+    """
     src_img = Image.open(image_path)
     save_kwargs = _collect_metadata(src_img)
     img = ImageOps.exif_transpose(src_img)
@@ -212,7 +204,40 @@ def process_image(
     )
     work_w = max(1, margin_box[2] - margin_box[0])
     work_h = max(1, margin_box[3] - margin_box[1])
+    return img, save_kwargs, margin_box, work_w, work_h
 
+
+def _emit_resized(
+    img: Image.Image,
+    save_kwargs: dict,
+    margin_box: tuple[int, int, int, int],
+    work_w: int,
+    work_h: int,
+    rgb_cache: list,
+    *,
+    image_path: Path,
+    out_dir: Path,
+    rel_dir: str,
+    overwrite: bool,
+    copy_captions: bool,
+    target_res,
+    crop_anchor: str,
+    bucket_resos,
+    fit_mode: str,
+    max_ratio: float,
+    signature: dict,
+    force_edge: int | None,
+    out_stem_suffix: str,
+    emit_ladder: list[int] | None,
+) -> tuple[str, tuple[int, int] | None, bool]:
+    """Resize the shared working region into a single tier and write the PNG.
+
+    ``rgb_cache`` is a 1-element mutable cell holding the lazily-built
+    ``convert("RGB").crop(margin_box)`` of the source, so the multi-tier
+    (autoscale) caller converts/crops the source at most once across all tiers.
+    ``crop_anchor`` is expected already normalized; ``signature`` is the resize
+    metadata signature (tier-independent) shared by skip-check and save.
+    """
     # Free-fit (the only mode): choose_edge assigns the tier (default = canonical
     # 1024), then free-fit lands the native-aspect (W, H) inside that tier's band.
     # ``force_edge`` (autoscale curriculum emit) pins the tier instead of letting
@@ -237,11 +262,6 @@ def process_image(
     )
 
     bw, bh = bucket_reso
-    crop_anchor = normalize_crop_anchor(crop_anchor)
-    signature = _resize_metadata_signature(
-        crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
-    )
-
     out_stem = f"{image_path.stem}{out_stem_suffix}"
     target_dir = out_dir / rel_dir if rel_dir else out_dir
     out_path = target_dir / f"{out_stem}.png"
@@ -254,13 +274,15 @@ def process_image(
         except Exception:
             pass
 
-    img = img.convert("RGB")
-    img = img.crop(margin_box)
-    img = resize_to_bucket(img, bucket_reso, crop_anchor=crop_anchor)
+    if rgb_cache[0] is None:
+        rgb_cache[0] = img.convert("RGB").crop(margin_box)
+    out_img = resize_to_bucket(rgb_cache[0], bucket_reso, crop_anchor=crop_anchor)
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    _add_resize_metadata(save_kwargs, signature)
-    img.save(out_path, format="PNG", **save_kwargs)
+    # compress_level=1: resized PNGs are an intermediate cache re-read by the VAE
+    # latent step, so trade marginally larger files for a much faster zlib encode
+    # (the dominant per-image cost) over Pillow's default level 6.
+    out_img.save(out_path, format="PNG", compress_level=1, **save_kwargs)
 
     if copy_captions:
         for ext in CAPTION_EXTENSIONS:
@@ -269,6 +291,126 @@ def process_image(
                 shutil.copy2(cap, target_dir / f"{out_stem}{ext}")
 
     return f"{out_stem}.png", bucket_reso, False
+
+
+def process_image(
+    image_path: Path,
+    out_dir: Path,
+    bucket_args: tuple,
+    copy_captions: bool = True,
+    rel_dir: str = "",
+    overwrite: bool = False,
+    force_edge: int | None = None,
+    out_stem_suffix: str = "",
+    emit_ladder: list[int] | None = None,
+) -> tuple[str, tuple[int, int] | None, bool]:
+    """Worker — receives bucket params (not a BucketManager) to stay picklable.
+
+    ``rel_dir`` is the (possibly empty) relative subdir under the source root;
+    the output mirrors it as ``out_dir / rel_dir / stem.png``. Empty ``rel_dir``
+    collapses to the flat layout.
+
+    Returns ``(name, bucket_reso, skipped)``. Unless ``overwrite`` is set, an
+    image whose resized PNG already exists *at the correct bucket size* is
+    skipped (no re-decode/resize) — so a re-run is near-free, while a bucket
+    change (e.g. adding a ``--target_res`` tier) still re-resizes only the
+    images whose target bucket actually moved. ``process_image_autoscale`` is the
+    decode-once multi-tier variant of this single-emit worker.
+    """
+    target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio = (
+        _unpack_bucket_args(bucket_args)
+    )
+    img, save_kwargs, margin_box, work_w, work_h = _prepare_source(
+        image_path, crop_margins
+    )
+    crop_anchor = normalize_crop_anchor(crop_anchor)
+    signature = _resize_metadata_signature(
+        crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
+    )
+    _add_resize_metadata(save_kwargs, signature)
+    return _emit_resized(
+        img,
+        save_kwargs,
+        margin_box,
+        work_w,
+        work_h,
+        [None],
+        image_path=image_path,
+        out_dir=out_dir,
+        rel_dir=rel_dir,
+        overwrite=overwrite,
+        copy_captions=copy_captions,
+        target_res=target_res,
+        crop_anchor=crop_anchor,
+        bucket_resos=bucket_resos,
+        fit_mode=fit_mode,
+        max_ratio=max_ratio,
+        signature=signature,
+        force_edge=force_edge,
+        out_stem_suffix=out_stem_suffix,
+        emit_ladder=emit_ladder,
+    )
+
+
+def process_image_autoscale(
+    image_path: Path,
+    out_dir: Path,
+    bucket_args: tuple,
+    copy_captions: bool,
+    rel_dir: str,
+    overwrite: bool,
+    emit_specs: list[tuple[int | None, str]],
+    emit_ladder: list[int] | None,
+) -> list[tuple[str, tuple[int, int] | None, bool]]:
+    """Decode the source once, resize it into every autoscale ladder tier.
+
+    Equivalent to calling ``process_image`` once per ``(force_edge, stem_suffix)``
+    in ``emit_specs``, but the source is opened/decoded/EXIF-transposed and
+    RGB-converted+margin-cropped a single time and shared across all tier emits
+    (autoscale otherwise re-decodes each source once per tier). Returns one
+    ``(name, bucket_reso, skipped)`` tuple per emit, in ``emit_specs`` order.
+    """
+    target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio = (
+        _unpack_bucket_args(bucket_args)
+    )
+    img, save_kwargs, margin_box, work_w, work_h = _prepare_source(
+        image_path, crop_margins
+    )
+    crop_anchor = normalize_crop_anchor(crop_anchor)
+    signature = _resize_metadata_signature(
+        crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
+    )
+    _add_resize_metadata(save_kwargs, signature)
+    # Shared across tiers: convert+margin-crop happens at most once (in the first
+    # emit that actually writes), then every tier resizes from the same RGB.
+    rgb_cache: list = [None]
+    results = []
+    for force_edge, out_stem_suffix in emit_specs:
+        results.append(
+            _emit_resized(
+                img,
+                save_kwargs,
+                margin_box,
+                work_w,
+                work_h,
+                rgb_cache,
+                image_path=image_path,
+                out_dir=out_dir,
+                rel_dir=rel_dir,
+                overwrite=overwrite,
+                copy_captions=copy_captions,
+                target_res=target_res,
+                crop_anchor=crop_anchor,
+                bucket_resos=bucket_resos,
+                fit_mode=fit_mode,
+                max_ratio=max_ratio,
+                signature=signature,
+                force_edge=force_edge,
+                out_stem_suffix=out_stem_suffix,
+                emit_ladder=emit_ladder,
+            )
+        )
+    return results
 
 
 def resize_to_buckets(
@@ -411,40 +553,65 @@ def resize_to_buckets(
     bucket_counts: dict[tuple[int, int], int] = {}
     resize_skipped = 0
     upscale_skipped = 0
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(
-                process_image,
-                img_path,
-                dst,
-                bucket_args,
-                copy_captions,
-                _rel_for(img_path),
-                overwrite,
-                force_edge,
-                stem_suffix,
-                ladder,
-            ): img_path
-            for img_path in image_files
-            for force_edge, stem_suffix in emit_specs
-        }
-        for future in as_completed(futures):
-            name, reso, skipped = future.result()
-            if reso is None:
-                # Autoscale: this tier would upscale the image above its natural
-                # home tier — not emitted (no invented detail at the costly tier).
-                upscale_skipped += 1
-                if progress is not None:
-                    progress(1, detail=f"{name} no-upscale")
-                continue
-            bucket_counts[reso] = bucket_counts.get(reso, 0) + 1
-            if skipped:
-                resize_skipped += 1
-            else:
-                stats.written += 1
+
+    def _tally(name, reso, skipped):
+        nonlocal resize_skipped, upscale_skipped
+        if reso is None:
+            # Autoscale: this tier would upscale the image above its natural home
+            # tier — not emitted (no invented detail at the costly tier).
+            upscale_skipped += 1
             if progress is not None:
-                tag = "skip" if skipped else f"→ {reso[0]}x{reso[1]}"
-                progress(1, detail=f"{name} {tag}")
+                progress(1, detail=f"{name} no-upscale")
+            return
+        bucket_counts[reso] = bucket_counts.get(reso, 0) + 1
+        if skipped:
+            resize_skipped += 1
+        else:
+            stats.written += 1
+        if progress is not None:
+            tag = "skip" if skipped else f"→ {reso[0]}x{reso[1]}"
+            progress(1, detail=f"{name} {tag}")
+
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        if autoscale_tiers:
+            # Decode-once: one future per source emits every ladder tier, so the
+            # source PNG is opened/decoded a single time instead of once per tier.
+            futures = {
+                pool.submit(
+                    process_image_autoscale,
+                    img_path,
+                    dst,
+                    bucket_args,
+                    copy_captions,
+                    _rel_for(img_path),
+                    overwrite,
+                    emit_specs,
+                    ladder,
+                ): img_path
+                for img_path in image_files
+            }
+            for future in as_completed(futures):
+                for name, reso, skipped in future.result():
+                    _tally(name, reso, skipped)
+        else:
+            futures = {
+                pool.submit(
+                    process_image,
+                    img_path,
+                    dst,
+                    bucket_args,
+                    copy_captions,
+                    _rel_for(img_path),
+                    overwrite,
+                    None,
+                    "",
+                    None,
+                ): img_path
+                for img_path in image_files
+            }
+            for future in as_completed(futures):
+                name, reso, skipped = future.result()
+                _tally(name, reso, skipped)
     stats.skipped += resize_skipped
     if verbose and upscale_skipped:
         print(
