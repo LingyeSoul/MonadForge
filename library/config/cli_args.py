@@ -226,44 +226,6 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         help="use torch.compile (requires PyTorch 2.0)",
     )
     parser.add_argument(
-        "--autoscale_mode",
-        type=str,
-        default="none",
-        help=(
-            "Resolution schedule (validated against none/curriculum/random; a "
-            "legacy true/false is accepted as curriculum/none). 'none' trains "
-            "normally (collapsing cached tier emits to one per stem). "
-            "'curriculum' trains the bulk of the run at the cheapest cached tier "
-            "then switches to the top tier for the final --autoscale_highres_ratio "
-            "fraction of steps. 'random' interleaves high/low-res batches "
-            "throughout, drawing the top tier for --autoscale_highres_ratio of "
-            "each epoch's batches. Tiers are discovered from the populated buckets "
-            "(cache both via preprocess --autoscale_tiers); single-tier data makes "
-            "it a no-op. See docs/proposal/autoscale_resolution_curriculum.md."
-        ),
-    )
-    parser.add_argument(
-        "--autoscale_highres_ratio",
-        type=float,
-        default=0.15,
-        help=(
-            "Fraction of training spent at the top tier — the trailing-step "
-            "fraction in 'curriculum' mode, the per-epoch batch fraction in "
-            "'random' mode. Only used when --autoscale_mode is curriculum/random."
-        ),
-    )
-    parser.add_argument(
-        "--autoscale_ramp",
-        type=str,
-        default="step",
-        choices=["step", "stairs"],
-        help=(
-            "Curriculum ramp (curriculum mode only): 'step' = hard low→high switch "
-            "(exact for a 2-tier ladder); 'stairs' = progressive climb across ≥3 "
-            "tiers."
-        ),
-    )
-    parser.add_argument(
         "--target_res",
         type=int,
         nargs="+",

@@ -21,10 +21,10 @@
 # Per-variant dim/alpha/lr/epochs are experiment drift, not calibrated
 # defaults — tune freely.
 # 90, 128, 152, 180, 214 each for 16, 32, 48, 64, 96
-network_alpha = 90
-network_dim = 16
+network_alpha = 128
+network_dim = 32
 
-learning_rate = 5e-5
+learning_rate = 2e-5
 max_train_epochs = 4
 save_every_n_epochs = 4
 checkpointing_epochs = 4
@@ -34,16 +34,14 @@ use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 
-output_name = "anima_down_plain_tenth"
+output_name = "anima_sincos3_curr2_"
 # sigmoid_bias = 0.5
-# path_pattern = "sweetonedollar/*|ama_mitsuki/*|hews/*"
+path_pattern = "sincos/*"
 # artists_shard="3_16"
 # vr_loss_weight = 1.0
 # vr_fei_sigma_low_div = 4.0
 # use_cmmd=true
 # compile_inductor_mode = "max-autotune"
-
-autoscale_mode = "curriculum"   # "none" | "curriculum" | "random"
 
 # -------------
 # Ortho-lora
@@ -180,7 +178,7 @@ repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where styl
 repa_layer     = 8            # block to hook (of 28)
 repa_encoder   = "pe_spatial"
 repa_lr_scale  = 1.0          # head LR multiplier (absolute mode only)
-repa_spatial_norm = false
+
 # repa_anneal_steps = 0.5
 
 # Lever 1 — hard cutoff (HASTE): (0,1] = fraction of the run, >1 = absolute

@@ -18,7 +18,7 @@ from PIL import Image
 from torch.utils.data import DataLoader, Dataset
 
 from library.io.cache import resolve_cache_path
-from library.io.cache_names import pe_cache_suffix, tier_base_stem
+from library.io.cache_names import pe_cache_suffix
 from library.datasets.image_utils import IMAGE_TRANSFORMS
 from library.preprocess._dataset import (
     PreprocessStats,
@@ -46,9 +46,7 @@ def cache_path_for(
     """
     suffix = pe_cache_suffix(encoder)
     if cache_dir is None:
-        # Shared across autoscale tiers (PE feature is tier-independent); no-op
-        # off autoscale. The cache_dir branch strips inside resolve_cache_path.
-        return image_path.with_name(tier_base_stem(image_path.stem) + suffix)
+        return image_path.with_name(image_path.stem + suffix)
     return Path(
         resolve_cache_path(
             str(image_path),
@@ -65,14 +63,18 @@ def count_pending_pe(
     *,
     cache_dir: Path | None = None,
     recursive: bool = False,
+    overwrite: bool = False,
 ) -> tuple[int, int]:
     """Return ``(pending, total)`` PE sidecars **without loading the encoder**.
 
     ``pending`` is the number of images whose ``{stem}_anima_{encoder}``
     sidecar isn't on disk; ``total`` is every enumerated image. Mirrors the
     pre-skip in :func:`cache_pe_features` (pure existence), so the entry point
-    can skip the (slow) vision-encoder load when ``pending == 0``."""
+    can skip the (slow) vision-encoder load when ``pending == 0``. With
+    ``overwrite`` every enumerated image counts as pending."""
     image_files = walk_images(data_dir, recursive=recursive)
+    if overwrite:
+        return len(image_files), len(image_files)
     pending, _ = partition_cached(
         image_files,
         lambda p: cache_path_for(p, encoder, cache_dir=cache_dir, image_dir=data_dir),
@@ -120,23 +122,28 @@ def cache_pe_features(
     num_workers: int = 4,
     save_dtype: torch.dtype = torch.bfloat16,
     progress: ProgressFn | None = None,
+    overwrite: bool = False,
 ) -> PreprocessStats:
     """Encode every image under ``data_dir`` through ``bundle`` → sidecars.
 
     Groups images by ``(W, H)`` (same encoder bucket → one batched forward),
     pre-skips already-cached entries, and writes ``image_features`` per image.
     The encoder is supplied loaded (``load_pe_encoder``) so model setup stays in
-    the caller. Returns counts; pass ``progress`` for a per-image bar.
+    the caller. Returns counts; pass ``progress`` for a per-image bar. With
+    ``overwrite`` the existence skip is bypassed and every image is re-encoded.
     """
     image_files = walk_images(data_dir, recursive=recursive)
     stats = PreprocessStats(seen=len(image_files))
 
-    pending, skipped = partition_cached(
-        image_files,
-        lambda p: cache_path_for(
-            p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
-        ),
-    )
+    if overwrite:
+        pending, skipped = image_files, 0
+    else:
+        pending, skipped = partition_cached(
+            image_files,
+            lambda p: cache_path_for(
+                p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
+            ),
+        )
     stats.skipped = skipped
 
     reso_groups = group_by_shape(pending)

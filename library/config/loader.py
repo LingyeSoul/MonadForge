@@ -417,7 +417,6 @@ def _count_training_image_paths(dataset_blueprint: "DatasetBlueprint") -> int:
 def generate_dataset_group_by_blueprint(
     dataset_group_blueprint: DatasetGroupBlueprint,
     target_res=None,
-    collapse_autoscale_tiers: bool = True,
 ) -> Tuple[DatasetGroup, Optional[DatasetGroup]]:
     datasets: List[DreamBoothDataset] = []
 
@@ -449,7 +448,6 @@ def generate_dataset_group_by_blueprint(
             subsets=subsets,
             **asdict(dataset_blueprint.params),
             is_training_dataset=True,
-            collapse_autoscale_tiers=collapse_autoscale_tiers,
         )
         datasets.append(dataset)
 

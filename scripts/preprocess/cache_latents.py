@@ -40,6 +40,17 @@ def main() -> None:
         default=True,
         help="Disable VAE internal cache (default: True)",
     )
+    # torch.compile(dynamic=True) on the encoder: ~33% faster steady-state encode
+    # at +~0.8GB peak, after a ~70s one-time warmup (dynamic shapes mean ONE
+    # compile covers every free-fit (W,H) — no per-shape recompile). Opt-in
+    # because the warmup is a net loss for tiny incremental re-caches. Forces
+    # --chunk_size 0: the chunked-conv Python loop is compile-hostile (never
+    # finishes compiling). See scratch bench 2026-06-28.
+    parser.add_argument(
+        "--compile_vae",
+        action="store_true",
+        help="torch.compile the VAE encoder (dynamic=True). Forces chunk_size=0.",
+    )
     # 2D VAE fold is ON by default: image-only pipeline, ~2x faster encode at
     # ~0.65-0.7x peak VRAM, latents equivalent within bf16 noise. See
     # _archive/bench/qwen_vae_2d/. Opt out with --no_vae_2d for the stock 3D causal VAE.
@@ -110,13 +121,20 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32 if args.no_half_vae else torch.bfloat16
 
+    # Chunking is incompatible with compile (shape-dependent Python loop), and
+    # buys no memory at the resized resolutions anyway — drop it when compiling.
+    chunk_size = args.chunk_size
+    if args.compile_vae and chunk_size:
+        print("--compile_vae: forcing chunk_size=0 (chunking is compile-hostile).")
+        chunk_size = 0
+
     print(f"{pending}/{total} images need latents.")
     print(f"Loading VAE from {args.vae} (encode dtype: {dtype}) ...")
     vae = qwen_image_autoencoder_kl.load_vae(
         args.vae,
         device="cpu",
         disable_mmap=True,
-        spatial_chunk_size=args.chunk_size,
+        spatial_chunk_size=chunk_size,
         disable_cache=args.disable_cache,
     )
     vae.to(device, dtype=dtype)
@@ -125,6 +143,11 @@ def main() -> None:
         print(f"Folded VAE to 2D (image-only): {n} Conv3d -> Conv2d")
     vae.requires_grad_(False)
     vae.eval()
+    if args.compile_vae:
+        # dynamic=True: one compile covers every free-fit (W,H); ~70s warmup on
+        # the first batch, then ~33% faster encode.
+        print("Compiling VAE encoder (dynamic=True) — first batch warms up (~70s)...")
+        vae.encoder = torch.compile(vae.encoder, dynamic=True)
 
     stats = cache_latents(
         data_dir,

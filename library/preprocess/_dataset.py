@@ -43,38 +43,10 @@ class PreprocessStats:
     failed: int = 0
 
 
-def _collapse_tier_emits(paths: list[Path]) -> list[Path]:
-    """Keep one image per (folder, base-stem): the highest-edge autoscale tier.
-
-    Preprocess ``--autoscale_tiers`` emits several downscaled copies of each
-    source image (``pic.as896.png`` / ``pic.as1024.png``). For tier-independent
-    artifacts (masks are semantic, not resolution-specific) only the
-    least-downscaled (highest-edge) copy is worth processing — its output,
-    stored under the base stem, is resized to each tier's grid at load time
-    (autoscale never upscales, so the top tier is the natural-resolution emit).
-    A no-op on non-autoscale corpora: an unmarked stem is its own group and
-    ranks above any (absent) tier sibling. Mirrors
-    ``DreamBoothDataset._collapse_autoscale_tiers``.
-    """
-    from library.io.cache_names import tier_base_stem, tier_emit_edge
-
-    best: dict[tuple[str, str], Path] = {}
-    for p in paths:
-        key = (str(p.parent), tier_base_stem(p.stem))
-        cur = best.get(key)
-        if cur is None or (tier_emit_edge(p.stem) or -1) > (
-            tier_emit_edge(cur.stem) or -1
-        ):
-            best[key] = p
-    kept = set(best.values())
-    return [p for p in paths if p in kept]  # preserve sorted input order
-
-
 def walk_images(
     data_dir: Path,
     recursive: bool = False,
     pattern: str | None = None,
-    collapse_autoscale_tiers: bool = False,
 ) -> list[Path]:
     """Enumerate dataset images under ``data_dir``, sorted and de-duplicated.
 
@@ -90,19 +62,11 @@ def walk_images(
     empty, or ``"*"`` keeps everything. The uniqueness check runs on the
     filtered set so a narrowed pattern can't trip a collision in files it
     excludes.
-
-    ``collapse_autoscale_tiers`` keeps one image per source stem — the
-    highest-edge autoscale tier — so tier-independent passes (mask generation)
-    don't redundantly process every downscaled copy. The VAE-latent passes
-    leave it off (each tier needs its own resolution-specific latent). A no-op
-    when no ``--autoscale_tiers`` emits are present.
     """
     paths = glob_images_pathlib(data_dir, recursive)
     if pattern and pattern != "*":
         keep = filter_paths_by_glob([str(p) for p in paths], str(data_dir), pattern)
         paths = [p for p, k in zip(paths, keep) if k]
-    if collapse_autoscale_tiers:
-        paths = _collapse_tier_emits(paths)
     _assert_unique_stems([str(p) for p in paths], source_label=str(data_dir))
     return paths
 

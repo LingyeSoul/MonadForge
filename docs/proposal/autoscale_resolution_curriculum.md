@@ -43,8 +43,12 @@ Implementation map:
   (RandomSampler), so the curriculum is a per-fetch remap keyed on the shared
   `current_step`/`max_train_steps`, not a custom sampler. Armed on the **train
   group only** (val always scores at full populated resolution). A leading
-  `warmup_batches` window is left unscheduled so every tier's `torch.compile`
-  graph warms up front (no recompile/VRAM climb at the phase switch). Tiers are
+  `warmup_batches` window (default 1 — just the largest-token step-0 batch) is left
+  unscheduled; it does not try to warm every `torch.compile` graph up front (free-fit
+  yields far more graph families than a sane window, and holding the whole top tier's
+  compile context from step 0 would bloat the cheap bulk phase). Top-tier graphs
+  compile lazily at the phase switch instead, where the curriculum needs that budget
+  anyway. Tiers are
   discovered from the data via `edge_for_token_count` (`buckets.py`); single-tier
   data ⇒ no-op.
 - **Epoch length is pinned to one tier (total steps unchanged).** The buckets

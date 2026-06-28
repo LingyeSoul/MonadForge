@@ -71,46 +71,6 @@ def stems_with_any_tag(caption_master_dir: str, tags) -> frozenset:
     return result
 
 
-def _collapse_autoscale_tiers(img_paths, sizes):
-    """Keep one image per stem — the highest-edge autoscale tier.
-
-    Preprocess ``--autoscale_tiers`` emits several downscaled copies of each
-    source image (``pic.as896.png`` / ``pic.as1024.png``); off autoscale_mode
-    these would train as duplicate samples. Group paths by (dir, base-stem) and,
-    for any group whose members are *all* tier emits, drop everything but the
-    highest edge (autoscale never upscales, so the top tier is the
-    least-downscaled copy of that image). Groups containing an untagged image
-    are left untouched, so ordinary (non-autoscale) corpora pass through
-    unchanged. Returns ``(img_paths, sizes, n_dropped)`` with both lists kept in
-    lockstep.
-    """
-    from collections import defaultdict
-
-    from library.io.cache_names import tier_base_stem, tier_emit_edge
-
-    groups: dict = defaultdict(list)
-    for i, p in enumerate(img_paths):
-        stem = os.path.splitext(os.path.basename(p))[0]
-        key = (os.path.dirname(p), tier_base_stem(stem))
-        groups[key].append((i, tier_emit_edge(stem)))
-
-    keep = [True] * len(img_paths)
-    dropped = 0
-    for members in groups.values():
-        if len(members) < 2 or any(edge is None for _, edge in members):
-            continue
-        best_idx = max(members, key=lambda m: m[1])[0]
-        for idx, _edge in members:
-            if idx != best_idx:
-                keep[idx] = False
-                dropped += 1
-
-    if dropped:
-        img_paths = [p for p, k in zip(img_paths, keep) if k]
-        sizes = [s for s, k in zip(sizes, keep) if k]
-    return img_paths, sizes, dropped
-
-
 def read_caption(img_path, caption_extension, enable_wildcard):
     """Read the caption sidecar for ``img_path``.
 
@@ -163,7 +123,6 @@ class DreamBoothDataset(BaseDataset):
         validation_seed: Optional[int],
         resize_interpolation: Optional[str],
         validation_split_num: int = 0,
-        collapse_autoscale_tiers: bool = True,
     ) -> None:
         super().__init__(network_multiplier, debug_dataset, resize_interpolation)
 
@@ -174,14 +133,6 @@ class DreamBoothDataset(BaseDataset):
         self.validation_seed = validation_seed
         self.validation_split = validation_split
         self.validation_split_num = int(validation_split_num or 0)
-        # Resolution-curriculum: preprocess can emit several downscaled tiers per
-        # image stem (``pic.as896.png`` / ``pic.as1024.png``). They are distinct
-        # training samples ONLY under autoscale_mode (which remaps them by step);
-        # otherwise every tier of one image would train as a duplicate. When set
-        # (the default, and always for validation) collapse each stem to its
-        # highest-edge tier — autoscale never upscales, so the top tier is the
-        # least-downscaled copy. A no-op on non-autoscale data.
-        self.collapse_autoscale_tiers = bool(collapse_autoscale_tiers)
 
         def load_dreambooth_dir(subset: DreamBoothSubset):
             if not os.path.isdir(subset.image_dir):
@@ -280,18 +231,6 @@ class DreamBoothDataset(BaseDataset):
                             size_set_count += 1
                     logger.info(
                         f"set image size from cache files: {size_set_count}/{len(img_paths)}"
-                    )
-
-            # Collapse autoscale tier emits to one sample per stem (highest-edge
-            # tier) unless autoscale_mode wants every tier as a separate sample.
-            # Runs before the validation split so val never duplicates tiers.
-            if self.collapse_autoscale_tiers:
-                img_paths, sizes, dropped = _collapse_autoscale_tiers(img_paths, sizes)
-                if dropped:
-                    logger.info(
-                        f"autoscale tiers collapsed: dropped {dropped} lower-tier "
-                        f"duplicate(s), kept highest-res per stem from "
-                        f"{subset.image_dir}"
                     )
 
             if self.validation_split > 0.0 or self.validation_split_num > 0:
@@ -430,13 +369,7 @@ class DreamBoothDataset(BaseDataset):
                     else:
                         img_rel_dir = ""
                     img_stem = os.path.splitext(os.path.basename(img_path))[0]
-                    # Autoscale tiers share one TE cache (stripped stem on disk).
-                    from library.io.cache_names import tier_base_stem
-
-                    has_te_cache = (
-                        img_rel_dir,
-                        tier_base_stem(img_stem),
-                    ) in te_cached_keys
+                    has_te_cache = (img_rel_dir, img_stem) in te_cached_keys
                     if cap_for_img is None and subset.class_tokens is None:
                         if not has_te_cache:
                             logger.warning(
@@ -592,17 +525,7 @@ class DreamBoothDataset(BaseDataset):
                     else self.resize_interpolation
                 )
                 if getattr(subset, "mask_dir", None):
-                    from library.io.cache_names import tier_base_stem
-
                     stem = os.path.splitext(os.path.basename(img_path))[0]
-                    # Autoscale tier emits (``pic.as896``) share one tier-
-                    # independent mask written under the base stem (``pic``);
-                    # masking only processes the highest-edge tier. Fall back to
-                    # the base stem so every tier variant resolves to it (a
-                    # no-op for non-autoscale stems). base.py resizes the mask to
-                    # each tier's bucket_reso at preload.
-                    base_stem = tier_base_stem(stem)
-                    stems = [stem] if base_stem == stem else [stem, base_stem]
                     # Prefer the nested path that mirrors subset.image_dir →
                     # mask_dir; fall back to the flat layout so legacy
                     # masks/merged/ etc. caches keep working.
@@ -614,13 +537,10 @@ class DreamBoothDataset(BaseDataset):
                         except ValueError:
                             rel = ""
                         if rel and rel != "." and not rel.startswith(".."):
-                            candidates.extend(
-                                os.path.join(subset.mask_dir, rel, f"{s}_mask.png")
-                                for s in stems
+                            candidates.append(
+                                os.path.join(subset.mask_dir, rel, f"{stem}_mask.png")
                             )
-                    candidates.extend(
-                        os.path.join(subset.mask_dir, f"{s}_mask.png") for s in stems
-                    )
+                    candidates.append(os.path.join(subset.mask_dir, f"{stem}_mask.png"))
                     for mask_path in candidates:
                         if os.path.exists(mask_path):
                             info.mask_path = mask_path

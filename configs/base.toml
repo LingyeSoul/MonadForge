@@ -71,20 +71,6 @@ gradient_accumulation_steps=1
 
 use_repa = false
 
-# Resolution schedule (docs/proposal/autoscale_resolution_curriculum.md).
-# autoscale_mode: "none" (off — train normally) | "curriculum" (train the bulk of
-# the run at the cheapest cached tier, switch to the top tier for the final
-# autoscale_highres_ratio fraction of steps) | "random" (interleave high/low-res
-# batches throughout, drawing the top tier for autoscale_highres_ratio of each
-# epoch's batches). Tiers are discovered from the populated buckets (cache both
-# via ``make preprocess-resize ARGS="--autoscale_tiers 896 1024"``); a single-tier
-# dataset makes the schedule a no-op. autoscale_highres_ratio = fraction of
-# training at the top tier (both modes). ramp (curriculum only) = "step" (hard
-# low→high switch, exact for a 2-tier ladder) | "stairs" (climb across ≥3 tiers).
-autoscale_mode = "none"
-autoscale_highres_ratio = 0.5
-autoscale_ramp = "step"
-
 [general]
 [[datasets]]
 batch_size = 1

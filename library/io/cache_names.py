@@ -18,46 +18,11 @@ and the GUI (torch-free) agree on one definition.
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 # VAE latents: ``{stem}_{WxH}_anima.npz`` (resolution infix added by the caller).
 LATENT_CACHE_SUFFIX = "_anima.npz"
 
-# Resolution-curriculum (autoscale_mode) tier marker. Preprocess emits one resized
-# PNG per ladder tier with the tier appended to the stem (``pic.as896.png`` /
-# ``pic.as1024.png``) so each trains as an independent sample. The VAE *latent*
-# cache must stay per-tier (different (W,H)), but the TE (caption) and PE
-# (semantic) caches are tier-independent and identical across tiers — so those are
-# shared by stripping this marker before building their names (``tier_base_stem``).
-# ``\.as<digits>`` at the end of the stem only; a no-op for ordinary stems.
-_TIER_EMIT_RE = re.compile(r"\.as\d+$")
-
-
-def tier_emit_suffix(edge: int) -> str:
-    """The stem marker preprocess appends for a tier emit (``.as896``)."""
-    return f".as{edge}"
-
-
-def tier_base_stem(stem: str) -> str:
-    """Strip a trailing autoscale tier marker (``pic.as896`` → ``pic``).
-
-    Applied when building tier-shared caches (TE / PE) so every tier of one image
-    resolves to a single sidecar; a no-op for non-autoscale stems.
-    """
-    return _TIER_EMIT_RE.sub("", stem)
-
-
-def tier_emit_edge(stem: str) -> int | None:
-    """The tier edge a stem carries (``pic.as896`` → ``896``), else ``None``.
-
-    ``None`` means the stem has no autoscale tier marker (an ordinary image).
-    Used to rank a stem's tier variants so the least-downscaled (highest-edge)
-    copy can be picked — autoscale only ever downscales, so the top tier is the
-    natural-resolution emit.
-    """
-    m = _TIER_EMIT_RE.search(stem)
-    return int(m.group(0)[3:]) if m else None
 # Text-encoder cross-attention embeddings: ``{stem}_anima_te.safetensors``.
 TE_CACHE_SUFFIX = "_anima_te.safetensors"
 

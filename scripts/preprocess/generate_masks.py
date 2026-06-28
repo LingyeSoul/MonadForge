@@ -17,7 +17,6 @@ from PIL import Image
 from tqdm import tqdm
 
 from library.datasets.subsets import filter_paths_by_glob
-from library.io.cache_names import tier_base_stem
 from library.preprocess import walk_images
 
 
@@ -183,14 +182,10 @@ def main() -> None:
 
     # walk_images raises on same-stem collisions within one folder (cross-folder
     # stems are fine — the nested output layout disambiguates by folder).
-    # Masks are tier-independent, so process one image per source stem (the
-    # highest-edge autoscale tier) and store the result under the base stem —
-    # training resizes it to each tier's grid at load. No-op off autoscale.
     image_files = walk_images(
         image_dir,
         recursive=args.recursive,
         pattern=path_pattern,
-        collapse_autoscale_tiers=True,
     )
 
     work_items = []
@@ -201,7 +196,7 @@ def main() -> None:
             rel = Path("")
         rel_str = str(rel)
         target_dir = masks_dir / rel if rel_str not in ("", ".") else masks_dir
-        mask_path = target_dir / f"{tier_base_stem(image_path.stem)}_mask.png"
+        mask_path = target_dir / f"{image_path.stem}_mask.png"
         if mask_path.exists() and not args.force:
             continue
         target_dir.mkdir(parents=True, exist_ok=True)

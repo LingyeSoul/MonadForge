@@ -192,15 +192,6 @@ class BaseDataset(torch.utils.data.Dataset):
         self.max_train_steps: int = 0
         self.seed: int = 0
 
-        # Resolution-curriculum (autoscale_mode) state — inert unless
-        # enable_autoscale() is called (train group only). See autoscale.py.
-        self._autoscale = None  # AutoscaleSchedule | None
-        self._autoscale_bucket_rank: dict = {}  # bucket_index -> tier rank
-        self._autoscale_n_ranks: int = 0
-        self._autoscale_rank_positions: dict = {}  # rank -> [positions in buckets_indices]
-        self._autoscale_redirect: dict = {}  # rank -> per-index redirect target list
-        self._autoscale_random_ranks: list = []  # random mode: per-index target rank
-
         self.aug_helper = AugHelper()
 
         self.image_transforms = IMAGE_TRANSFORMS
@@ -343,193 +334,6 @@ class BaseDataset(torch.utils.data.Dataset):
 
     def set_max_train_steps(self, max_train_steps):
         self.max_train_steps = max_train_steps
-
-    def enable_autoscale(self, schedule):
-        """Arm the resolution schedule on this dataset (train group only).
-
-        Ranks the dataset's populated buckets into a low→high token-count ladder
-        (``edge_for_token_count``) and builds the per-rank position index the
-        ``__getitem__`` remap draws from. A single-tier dataset yields one rank,
-        so the schedule is a no-op — autoscale then trains exactly like a normal
-        run. Both ``curriculum`` and ``random`` modes share this bookkeeping; they
-        differ only in how the remap picks the active tier per index. Must run
-        after ``make_buckets``.
-        """
-        from library.datasets.buckets import edge_for_token_count
-
-        self._autoscale = schedule
-        self._autoscale_bucket_rank = {}
-        if self.bucket_manager is None:
-            self._autoscale_n_ranks = 0
-            return
-        resos = self.bucket_manager.resos
-        bucket_edge: dict[int, int] = {}
-        for bbi in self.buckets_indices:
-            bi = bbi.bucket_index
-            if bi not in bucket_edge:
-                w, h = resos[bi]
-                bucket_edge[bi] = edge_for_token_count((w // 16) * (h // 16))
-        ladder = sorted(set(bucket_edge.values()))  # ascending token count
-        self._autoscale_n_ranks = len(ladder)
-        rank_of = {edge: r for r, edge in enumerate(ladder)}
-        self._autoscale_bucket_rank = {
-            bi: rank_of[edge] for bi, edge in bucket_edge.items()
-        }
-        self._rebuild_autoscale_positions()
-        if self._autoscale_n_ranks > 1:
-            # Keep total steps/epoch equal to a single-resolution run. Buckets
-            # carry every tier of each image (the lowest tier holds them all, so
-            # its pool is one full pass over the stems), which would otherwise
-            # make the epoch ~n_tiers× longer. Shrink the reported length to one
-            # tier's worth — the __getitem__ remap then fills that fixed step
-            # budget from whichever tier is active (the top tier repeats to fill
-            # the finish phase). Must precede the trainer's len()-based step calc.
-            self._length = max(
-                (len(p) for p in self._autoscale_rank_positions.values()),
-                default=self._length,
-            )
-            extent = (
-                f"ramp={schedule.ramp}"
-                if schedule.mode == "curriculum"
-                else "interleaved"
-            )
-            logger.info(
-                f"autoscale_mode={schedule.mode}: {self._autoscale_n_ranks}-tier "
-                f"ladder {ladder} ({extent}, highres_ratio="
-                f"{schedule.highres_ratio}); epoch length pinned to "
-                f"{self._length} batch(es) (one tier — total steps unchanged vs "
-                "single-resolution)"
-            )
-        else:
-            logger.warning(
-                "autoscale_mode enabled but data has a single tier "
-                f"({ladder}) — schedule is a no-op (cache both tiers via "
-                "preprocess --autoscale_tiers to activate)."
-            )
-
-    def _rebuild_autoscale_positions(self):
-        """Index buckets_indices positions by tier rank for the active epoch order.
-
-        Called after every ``shuffle_buckets`` because that reorders
-        ``buckets_indices`` in place, invalidating stored positions.
-        """
-        if self._autoscale is None or self._autoscale_n_ranks <= 1:
-            return
-        positions: dict[int, list[int]] = {}
-        for pos, bbi in enumerate(self.buckets_indices):
-            rank = self._autoscale_bucket_rank.get(bbi.bucket_index)
-            if rank is not None:
-                positions.setdefault(rank, []).append(pos)
-        self._autoscale_rank_positions = positions
-        self._rebuild_autoscale_redirect(positions)
-        self._rebuild_autoscale_random_ranks(positions)
-
-    def _rebuild_autoscale_redirect(self, positions):
-        """Per-rank, stateless redirect targets for the active-tier remap.
-
-        For each rank ``a`` builds a length-``L`` list (``L`` = pinned epoch length
-        = the largest tier's batch count, i.e. the iterated index range), giving
-        for every requested ``index`` the active-pool position to train when the
-        request's own tier isn't ``a``. Slots whose own tier *is* ``a`` are direct
-        hits (``__getitem__`` returns ``index`` unchanged) and never read this list,
-        so the redirect serves the rank-``a`` positions those direct hits *miss*
-        — the ones past the window — first, each exactly once, then cycles the full
-        pool to fill any remainder. When the active pool fills the whole window
-        (the bulk/cheap tier, ``len(pool) == L``) direct hits + redirects then form
-        an exact one-pass permutation over that tier's stems, matching a plain
-        shuffle's coverage instead of the old ``pool[index % len]`` (which
-        over-sampled some stems and skipped others within an epoch). Smaller pools
-        (the finish tier) have no overflow and simply cycle, repeating to fill the
-        step budget as intended.
-
-        Stateless by construction (a pure function of the shuffled order), so it is
-        safe across DataLoader worker processes — same contract as the positions
-        index it is rebuilt alongside.
-        """
-        L = max((len(p) for p in positions.values()), default=0)
-        redirect: dict[int, list[int]] = {}
-        for rank, pool in positions.items():
-            seq = list(range(L))  # identity default; direct-hit slots never read it
-            if pool and L:
-                in_window = {p for p in pool if p < L}
-                # rank-a positions past the window can't be reached as direct hits,
-                # so serve them first (each once) — this is what makes the bulk-tier
-                # pass exact when |pool| == L.
-                overflow = [p for p in pool if p >= L]
-                slots = [i for i in range(L) if i not in in_window]
-                fill = list(overflow)
-                if len(fill) < len(slots):
-                    extra = len(slots) - len(fill)
-                    fill.extend(pool[k % len(pool)] for k in range(extra))
-                for i, target in zip(slots, fill):
-                    seq[i] = target
-            redirect[rank] = seq
-        self._autoscale_redirect = redirect
-
-    def _rebuild_autoscale_random_ranks(self, positions):
-        """Per-index target tier for ``random`` mode (recomputed each epoch).
-
-        Assigns each of the ``L`` epoch slots (``L`` = pinned epoch length) a target
-        rank: the top tier for a ``highres_ratio`` fraction of the slots, the
-        cheapest (rank 0) for the rest — exactly ``round(L * highres_ratio)`` top
-        slots, shuffled per epoch (own RNG stream, seeded by epoch) so high/low-res
-        batches interleave randomly across the run instead of being back-loaded like
-        ``curriculum``. Binary by design (top vs cheapest, mirroring curriculum's
-        ``step`` ramp); middle tiers, if any, aren't drawn. No-op off ``random``.
-        """
-        self._autoscale_random_ranks = []
-        sched = self._autoscale
-        if sched is None or sched.mode != "random" or self._autoscale_n_ranks <= 1:
-            return
-        L = max((len(p) for p in positions.values()), default=0)
-        if L <= 0:
-            return
-        top = self._autoscale_n_ranks - 1
-        n_top = max(0, min(L, round(L * sched.highres_ratio)))
-        ranks = [top if i < n_top else 0 for i in range(L)]
-        # Separate stream from the bucket shuffle (offset seed) so toggling random
-        # mode doesn't perturb the bucket order, and reproducible per epoch.
-        rng = random.Random(int(self.seed) + int(self.current_epoch) + 1009)
-        rng.shuffle(ranks)
-        self._autoscale_random_ranks = ranks
-
-    def _autoscale_remap(self, index):
-        """Redirect ``index`` to the active-tier batch the schedule wants here.
-
-        No-op unless autoscale is armed with ≥2 tiers. In ``curriculum`` mode the
-        active tier is a function of the current step (bulk phase → cheap tier,
-        finish phase → top tier); in ``random`` mode it's a per-index draw
-        (``highres_ratio`` of each epoch's slots → top tier, rest → cheap). If the
-        requested batch's own tier isn't the active one, draw a deterministic
-        active-tier batch from the per-rank redirect sequence instead.
-        """
-        if self._autoscale is None or self._autoscale_n_ranks <= 1:
-            return index
-        if self._autoscale.mode == "random":
-            # Warmup: let every tier flow through to warm all compile graphs first
-            # (same rationale as curriculum's warmup window).
-            if self.current_step < self._autoscale.warmup_batches:
-                return index
-            targets = self._autoscale_random_ranks
-            if not targets:
-                return index
-            active = targets[index % len(targets)]
-        else:
-            active = self._autoscale.active_rank(
-                self.current_step, self.max_train_steps, self._autoscale_n_ranks
-            )
-            if active is None:
-                return index
-        req_rank = self._autoscale_bucket_rank.get(
-            self.buckets_indices[index].bucket_index
-        )
-        if req_rank == active:
-            return index
-        seq = self._autoscale_redirect.get(active)
-        if not seq:
-            return index  # active tier absent in this epoch order — keep request
-        # seq is length L (the iterated index range); guard out-of-range callers.
-        return seq[index] if index < len(seq) else seq[index % len(seq)]
 
     def set_tag_frequency(self, dir_name, captions):
         frequency_for_dir = self.tag_frequency.get(dir_name, {})
@@ -875,7 +679,6 @@ class BaseDataset(torch.utils.data.Dataset):
         random.shuffle(self.buckets_indices)
         self.bucket_manager.shuffle()
         self._largest_bucket_first()
-        self._rebuild_autoscale_positions()
 
     def _largest_bucket_first(self):
         """Pin one batch of EACH token-count family to the front of the epoch
@@ -1672,11 +1475,7 @@ class BaseDataset(torch.utils.data.Dataset):
            directory with no sidecars,
         3. next to the image (legacy no-cache_dir layout).
         """
-        # PE features are tier-independent (semantic), so autoscale tier variants
-        # share one sidecar — strip the .as<edge> marker (no-op off autoscale).
-        from library.io.cache_names import tier_base_stem
-
-        stem = tier_base_stem(os.path.splitext(os.path.basename(info.absolute_path))[0])
+        stem = os.path.splitext(os.path.basename(info.absolute_path))[0]
         name = f"{stem}_anima_{self.repa_pe_encoder}.safetensors"
         candidates: List[str] = []
         if info.text_encoder_outputs_npz:
@@ -1957,11 +1756,6 @@ class BaseDataset(torch.utils.data.Dataset):
             ) from e
 
     def __getitem__(self, index):
-        if self.caching_mode is None:
-            # Resolution curriculum: redirect to the tier active at this step.
-            # Skipped during latent/TE caching (caching_mode set) — caches every
-            # tier — and a no-op when autoscale is disarmed.
-            index = self._autoscale_remap(index)
         bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
         bucket_batch_size = self.buckets_indices[index].bucket_batch_size
         image_index = self.buckets_indices[index].batch_index * bucket_batch_size
