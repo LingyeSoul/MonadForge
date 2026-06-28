@@ -76,8 +76,8 @@ def test_default_language_is_chinese():
     assert DEFAULT_LANGUAGE == "cn"
 
 
-def test_languages_are_en_and_cn():
-    assert set(LANGUAGES) == {"en", "cn"}
+def test_languages_include_all_supported():
+    assert set(LANGUAGES) == {"en", "cn", "ko", "ja"}
 
 
 def test_normalize_lang_accepts_supported():
@@ -86,7 +86,7 @@ def test_normalize_lang_accepts_supported():
 
 
 def test_normalize_lang_falls_back_for_unsupported():
-    assert normalize_lang("ja") == "en"
+    assert normalize_lang("fr") == "en"
     assert normalize_lang("xyz") == "en"
 
 
@@ -232,5 +232,5 @@ def test_set_language_rejects_unsupported(tmp_path, monkeypatch):
     monkeypatch.setattr(prefs, "PREFS_FILE", prefs_file)
 
     t = TrayApp()
-    t._set_language("ja")  # not in LANGUAGES
+    t._set_language("fr")  # not in LANGUAGES
     assert t._lang == "cn"

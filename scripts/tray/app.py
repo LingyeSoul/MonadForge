@@ -4,7 +4,7 @@ A small ``pystray`` system-tray app that reflects the local training daemon's
 state (idle / running / error / down) and exposes the handful of control
 actions a user wants without opening the WebUI: open the WebUI, pause/resume
 the queue, stop the active job, restart the daemon, quit. The menu + tooltips
-are localized (Chinese/English) via the tray's own language choice
+are localized (English/Chinese/Korean/Japanese) via the tray's own language choice
 (:mod:`scripts.tray.i18n` + :mod:`scripts.tray.prefs`) — independent of the
 WebUI's language.
 
@@ -50,11 +50,12 @@ class TrayApp:
         self._stop = threading.Event()
         self._poll_thread: Optional[threading.Thread] = None
         # Tray language (own choice, persisted — does not follow the WebUI).
-        from scripts.tray.i18n import LANGUAGES, normalize_lang
+        from scripts.tray.i18n import LANGUAGES, LANGUAGE_LABELS, normalize_lang
         from scripts.tray.prefs import load_language
 
         self._lang = normalize_lang(load_language())
         self._languages = LANGUAGES
+        self._lang_labels = LANGUAGE_LABELS
         # Last known state for tooltip + flicker animation.
         self._state = "down"
         self._active_job: Optional[dict] = None
@@ -256,6 +257,7 @@ class TrayApp:
         # Force-exit: pystray leaves a non-daemon thread behind on quit, which
         # would otherwise strand the pythonw.exe process in the background.
         import os
+
         os._exit(0)
 
     # ── menu ───────────────────────────────────────────────────────────
@@ -281,11 +283,12 @@ class TrayApp:
         def _make_lang_action(lng):
             def _action(_icon, _item):
                 self._set_language(lng)
+
             return _action
 
         lang_items = [
             MenuItem(
-                lambda _i, lng=lng: self._tr("English" if lng == "en" else "Chinese"),
+                lambda _i, lng=lng: self._lang_labels.get(lng, lng),
                 _make_lang_action(lng),
                 checked=lambda _i, lng=lng: self._lang == lng,
                 radio=True,
