@@ -70,7 +70,6 @@ channel_scaling_alpha = 0.5
 gradient_accumulation_steps=1
 
 use_repa = false
-repa_target_dog = false
 
 # Resolution schedule (docs/proposal/autoscale_resolution_curriculum.md).
 # autoscale_mode: "none" (off — train normally) | "curriculum" (train the bulk of

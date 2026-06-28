@@ -189,17 +189,3 @@ repa_spatial_norm = false
 # plateaus by ~18% of the run (anima_repa_normed_quarter, 2026-06-12).
 # repa_anneal_steps = 0.25
 
-# REPA-DoG (_archive/proposals/repa_dog_target.md) — band-pass the alignment TARGET
-# before the Gram match, generalizing spatial_norm's DC removal to a broader
-# low-band strip (arXiv:2603.14645v1 §3.5). When on it REPLACES the spatial_norm
-# block (DoG at σ₁→0 *is* DC removal — same family, mutually exclusive). Pure
-# target-side preprocessing: byte-identical no-op when off, can't regress non-DoG
-# runs. Phase 0 PASSED (bench/repa/probe_dog_target.py, 2026-06-13): broad low-
-# band strip beats spatial_norm on all 3 content axes, character peaks at σ₁=min/16.
-# A/B (vs spatial_norm) still open — flip true with σ₂ off, HOLD norm_std=0 so the
-# only change vs baseline is the band-pass (the paper's std confound, Table 6).
-repa_target_dog     = true   # true ⇒ DoG band-pass the target (replaces spatial_norm)
-repa_dog_sigma1_div = 16      # σ₁ = min(gh,gw)/div; Phase-0 character winner = 16
-repa_dog_sigma2_div = 0       # 0 ⇒ σ₂ off (low-band strip only, +1a); >sigma1_div ⇒ band-pass
-repa_dog_norm_std   = 0       # 0 ⇒ empirical std (matches spatial_norm); >0 ⇒ fixed const
-
