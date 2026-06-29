@@ -394,11 +394,19 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 # require re-preprocessing.
                 sfx = ""
 
+            # Serve whatever the cache actually holds, independent of this
+            # run's cache_llm_adapter_outputs flag. A pruned adapter cache
+            # stores only crossattn_emb (no prompt_embeds); gating the read on
+            # the run flag hard-crashed in safetensors when preprocess (flag on
+            # → wrote crossattn-only) and training (flag off → read
+            # prompt_embeds) disagreed. The downstream consumer
+            # (library/training/forward/text_conds.py) switches on tuple shape,
+            # not the flag, so returning crossattn whenever the file carries it
+            # is always correct — and it's the only readable path for a pruned
+            # cache. The flag governs writing/encoding, never reading.
             crossattn_key = f"crossattn_emb{sfx}"
             crossattn_emb = (
-                f.get_tensor(crossattn_key)
-                if self.cache_llm_adapter_outputs and crossattn_key in keys
-                else None
+                f.get_tensor(crossattn_key) if crossattn_key in keys else None
             )
             t5_attn_mask = (
                 f.get_tensor(f"t5_attn_mask{sfx}")
@@ -414,10 +422,17 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                 # uniform all-None column instead of crashing in
                 # none_or_stack_elements.
                 prompt_embeds = attn_mask = t5_input_ids = None
-            else:
+            elif f"prompt_embeds{sfx}" in keys:
                 prompt_embeds = f.get_tensor(f"prompt_embeds{sfx}")
                 attn_mask = f.get_tensor(f"attn_mask{sfx}")
                 t5_input_ids = f.get_tensor(f"t5_input_ids{sfx}")
+            else:
+                raise RuntimeError(
+                    f"TE cache {cache_path!r} has neither 'crossattn_emb{sfx}' "
+                    f"nor 'prompt_embeds{sfx}' — incompatible cache format "
+                    f"(keys: {sorted(keys)}). Re-run `make preprocess-te` to "
+                    f"regenerate it."
+                )
 
             caption_dropout_rate = f.get_tensor("caption_dropout_rate")
         if crossattn_emb is None:

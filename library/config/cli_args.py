@@ -875,6 +875,17 @@ def add_validation_arguments(parser: argparse.ArgumentParser):
         "on tight VRAM where the PE encoder + sampling path doesn't fit.",
     )
     parser.add_argument(
+        "--validation_fm_with_cmmd",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Also run the per-σ FM-MSE pass alongside a successful CMMD "
+        "validation, logged under separate `loss/validation/fm_*` keys (CMMD "
+        "stays the primary signal / best-ckpt selector). Set "
+        "`validation_fm_with_cmmd = false` (or pass `--no-validation_fm_with_cmmd`) "
+        "to skip the extra DiT forwards when you only want CMMD. No effect when "
+        "`use_cmmd` is off — FM-MSE is already the primary signal then.",
+    )
+    parser.add_argument(
         "--validation_baselines",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -1156,6 +1167,20 @@ def add_dataset_arguments(
             "`char_a/*` keeps only the char_a/ subfolder, "
             "`char_a/*|char_b/*` keeps either. Unset / `*` = use everything. "
             "Validation and image-count thresholds honour the filtered pool."
+        ),
+    )
+    parser.add_argument(
+        "--artists_shard",
+        type=str,
+        default=None,
+        help=(
+            "Restrict training to one round-robin shard of the artist "
+            "subdirectories under each subset's image_dir. Format `k_N` (e.g. "
+            "`1_4` = shard 1 of 4): artists are sorted and artist i is assigned "
+            "to shard i mod N, so each shard is a balanced cross-alphabet mix. "
+            "Expands to a `<artist>/*|...` path_pattern at load — mutually "
+            "exclusive with an explicit --path_pattern. Used by the "
+            "lora_merge_interference partition-coherence sweep."
         ),
     )
 

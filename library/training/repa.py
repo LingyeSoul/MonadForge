@@ -375,7 +375,7 @@ class REPAMethodAdapter(MethodAdapter):
 
         # REPA-DoG target band-pass: replaces the spatial_norm DC-removal block
         # in the relational loss when on (relational mode only).
-        self._dog = bool(getattr(net, "_repa_target_dog", False))
+        self._dog = bool(getattr(net, "_repa_target_dog", True))
         self._dog_sigma1_div = float(getattr(net, "_repa_dog_sigma1_div", 16.0) or 16.0)
         self._dog_sigma2_div = float(getattr(net, "_repa_dog_sigma2_div", 0.0) or 0.0)
         self._dog_norm_std = float(getattr(net, "_repa_dog_norm_std", 0.0) or 0.0)

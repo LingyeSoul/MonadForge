@@ -375,6 +375,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Spectrum residual calibration strength (0.0=disabled, default 0.0). "
         "Adds residual bias correction from last actual forward to cached predictions.",
     )
+    parser.add_argument(
+        "--spectrum_schedule",
+        choices=["window", "sea"],
+        default="window",
+        help="Spectrum when-to-skip rule: 'window' (default, content-blind growing "
+        "window) or 'sea' (SeaCache SEA-filtered input-distance trigger). 'sea' "
+        "changes only the decision; the forecast+head reuse path is untouched.",
+    )
+    parser.add_argument(
+        "--spectrum_delta",
+        type=str,
+        default="auto",
+        help="SEA threshold for --spectrum_schedule sea. 'auto' (default) "
+        "self-calibrates to --spectrum_refresh_ratio on the first generate; a "
+        "float pins delta explicitly (for sweeps).",
+    )
+    parser.add_argument(
+        "--spectrum_refresh_ratio",
+        type=float,
+        default=-1.0,
+        help="Target post-warmup refresh fraction for SEA auto-delta calibration. "
+        "<=0 (default) matches the growing-window's own refresh fraction at this "
+        "step count (like-for-like at matched compute); a positive float pins it.",
+    )
 
     # SPD (arXiv:2605.18736): forces Euler, mutually exclusive with --spectrum.
     # See networks/spd.py + bench/spd/.
@@ -484,6 +508,81 @@ def build_parser() -> argparse.ArgumentParser:
         "step — self-scales across model / CFG / σ / sample. Paper's fixed "
         "k=0.1 was off by ~14× on Anima (bench/smc_cfg/analysis_and_proposal.md), "
         "so the α path is the only mode now. α=0.2 is the production default.",
+    )
+
+    # FSG: Foresight Guidance (NeurIPS 2025, arXiv 23177). Pre-step latent
+    # calibration: at scheduled mid-σ steps, run K forward(cond)-backward(uncond)
+    # fixed-point iterations to pull x_t onto the golden path, then denoise from
+    # x̂_t. Training-free, deterministic; ~3·K extra forwards per scheduled step.
+    # Composes with --mod_guidance / --dave / --dcw / --cns / --smc_cfg (FSG's
+    # calibration uses plain γ-combine; the outer step keeps the configured CFG
+    # variant). Ignored under --spectrum / --spd (they replace the loop). See
+    # docs/inference/fsg.md and docs/proposal/foresight_guidance.md.
+    parser.add_argument(
+        "--fsg",
+        action="store_true",
+        help="Enable Foresight Guidance pre-step latent calibration (CFG only). "
+        "Defaults band=[0.59,0.75], K=3, Δσ=0.1, γ=guidance_scale.",
+    )
+    parser.add_argument(
+        "--fsg_band",
+        type=float,
+        nargs=2,
+        default=[0.59, 0.75],
+        metavar=("SIGMA_LO", "SIGMA_HI"),
+        help="σ-band [lo, hi] where FSG calibrates. Default [0.59, 0.75] -- the "
+        "production band from the er_sde/28-step Plan-B calibration (bench/fsg). "
+        "The contracting band moves DOWN with step count: it was [0.75, 0.85] at "
+        "20-step Euler, but at 28 steps σ≈0.84 stops contracting and the sweet "
+        "spot is σ≈0.75 (the operator contracts in mid-σ; σ≈0.94 always diverges, "
+        "ρ>1 -- the paper's noisy-stage prescription is wrong here). Re-probe with "
+        "bench/fsg if you change infer_steps.",
+    )
+    parser.add_argument(
+        "--fsg_k",
+        type=int,
+        default=3,
+        help="FSG fixed-point iterations per scheduled step. error ~ρ^K, ρ≈0.93 "
+        "⇒ K=3-4 captures ~all the gain. 0 disables (bit-exact baseline).",
+    )
+    parser.add_argument(
+        "--fsg_d_sigma",
+        type=float,
+        default=0.1,
+        help="FSG forward-backward interval Δσ (the calibration stride, not the "
+        "sampler step). Too large is what makes the noisy end diverge.",
+    )
+    parser.add_argument(
+        "--fsg_gamma",
+        type=float,
+        default=None,
+        help="FSG calibration guidance γ. Default None -- reuse --guidance_scale "
+        "(the paper's plain γ-combine).",
+    )
+    # CFG++ substrate (paper App A.2 / Algorithm 1 lines 9-12). FSG is *defined*
+    # on a CFG++ base. Implemented as a σ-scheduled guidance REWEIGHT (CFG++
+    # differs from CFG solely in strength scheduling) so it composes with er_sde
+    # and Euler alike -- see sampling.cfgpp_guidance_weight. Composes with
+    # --spectrum (threaded as a side-channel; the reweight is applied in the
+    # spectrum combine). Refused under --smc_cfg (alternative combine) and --spd
+    # (mid-loop σ re-spacing; not wired there).
+    parser.add_argument(
+        "--cfgpp",
+        action="store_true",
+        help="Use the CFG++ substrate (App A.2): replace the constant-w cond/uncond "
+        "combine with the σ-scheduled CFG++ weight. The substrate FSG is defined "
+        "on; composes with er_sde and --spectrum. Needs its own λ sweep on Anima.",
+    )
+    parser.add_argument(
+        "--cfgpp_lambda",
+        type=float,
+        default=1.5,
+        help="CFG++ calibration strength λ. NB this is a FLOW-space coefficient "
+        "(guidance enters as λ·(1−σ')·σ·Δv), NOT the paper's DDIM ξ̃-space λ=0.6 — "
+        "the schedules differ. Default 1.5 = λ* from the er_sde/28-step sweep "
+        "(bench/fsg Plan A): best tracks CFG=4 saturation/contrast/composition "
+        "(λ<1.5 under-guides → composition wanders; λ≥2 over-saturates). Only used "
+        "with --cfgpp.",
     )
 
     # CNS: Colored Noise Sampling (arXiv:2605.30332). Recolors the er_sde

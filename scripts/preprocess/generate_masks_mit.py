@@ -186,7 +186,9 @@ def main() -> None:
     # collisions would overwrite each other's mask); same stem across folders
     # is fine — the nested output layout disambiguates by subdir.
     image_files = walk_images(
-        image_dir, recursive=args.recursive, pattern=args.path_pattern
+        image_dir,
+        recursive=args.recursive,
+        pattern=args.path_pattern,
     )
 
     work_items = []

@@ -35,7 +35,7 @@ from library.preprocess import (
     count_pending_text,
     tqdm_progress,
 )
-from library.runtime.cli import add_io_args
+from library.runtime.argparse_groups import add_io_args
 
 
 def main() -> None:

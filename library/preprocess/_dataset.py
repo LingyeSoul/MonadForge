@@ -44,7 +44,9 @@ class PreprocessStats:
 
 
 def walk_images(
-    data_dir: Path, recursive: bool = False, pattern: str | None = None
+    data_dir: Path,
+    recursive: bool = False,
+    pattern: str | None = None,
 ) -> list[Path]:
     """Enumerate dataset images under ``data_dir``, sorted and de-duplicated.
 

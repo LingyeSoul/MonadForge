@@ -22,6 +22,7 @@ from pathlib import Path
 
 # VAE latents: ``{stem}_{WxH}_anima.npz`` (resolution infix added by the caller).
 LATENT_CACHE_SUFFIX = "_anima.npz"
+
 # Text-encoder cross-attention embeddings: ``{stem}_anima_te.safetensors``.
 TE_CACHE_SUFFIX = "_anima_te.safetensors"
 

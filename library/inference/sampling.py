@@ -4,6 +4,11 @@ from typing import Optional, Tuple, Union
 
 import torch
 from torchvision import transforms
+
+# Single source of truth for the CFG++ reweight — shared with the FSG operator
+# and (vendored) the ComfyUI Spectrum node. Re-exported here for callers that
+# read it off the sampling module (networks/spectrum.py, generation.py, tests).
+from library.inference.corrections.fsg_core import cfgpp_guidance_weight  # noqa: F401
 from diffusers import EulerAncestralDiscreteScheduler
 import diffusers.schedulers.scheduling_euler_ancestral_discrete
 from diffusers.schedulers.scheduling_euler_ancestral_discrete import (

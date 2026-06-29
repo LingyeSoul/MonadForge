@@ -65,7 +65,7 @@ from library.io.cache import (  # noqa: F401
     discover_latents_by_stem,
     parse_latent_cache_name,
 )
-from library.runtime.cli import add_device_args
+from library.runtime.argparse_groups import add_device_args
 from library.runtime.device import str_to_dtype
 from library.runtime.harness import AnimaBundle, build_anima  # noqa: F401
 
@@ -133,7 +133,7 @@ def add_common_args(
     All groups are individually opt-out so a bench can skip what doesn't
     apply (e.g. a CPU-only analytical script can drop ``include_device``).
     ``--device`` / ``--dtype`` delegate to
-    ``library.runtime.cli.add_device_args`` (the shared compute flag group).
+    ``library.runtime.argparse_groups.add_device_args`` (the shared compute flag group).
 
     Flags injected at defaults:
         --label             free-form run label, fed to make_run_dir

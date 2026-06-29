@@ -36,7 +36,7 @@ class LoRAModule(BaseLoRAModule):
         (SVD-Down — seed the input basis from W0's top-r right singular vectors,
         scale-matched to Kaiming's expected row-norm so it is NOT a larger step).
         Still ordinary LoRA after init: ΔW=0 (up=0), full B trainable on step 1.
-        See docs/proposal/svd_down_lora_init.md.
+        See docs/methods/svd-down-lora.md.
         """
         super().__init__(
             lora_name,

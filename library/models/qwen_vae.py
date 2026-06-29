@@ -313,7 +313,7 @@ class Folded2DConv(nn.Module):
     squeezed ``(B, C, H, W)`` frame. Per-layer this is bit-exact (verified in
     fp64); whole-VAE it matches the 3D path within bf16 latent quantization
     (~1e-2), while running ~2x faster at ~0.65-0.7x peak memory. See
-    ``bench/qwen_vae_2d/``.
+    ``_archive/bench/qwen_vae_2d/``.
 
     Keeps the surrounding 5D ``(B, C, 1, H, W)`` plumbing intact (squeeze the
     singleton time axis in, unsqueeze out) and accepts the ``cache_x`` arg of

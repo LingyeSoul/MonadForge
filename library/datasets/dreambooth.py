@@ -302,9 +302,7 @@ class DreamBoothDataset(BaseDataset):
                     for p, s in zip(img_paths, sizes)
                     if os.path.splitext(os.path.basename(p))[0] in cond_stems
                 ]
-                img_paths, sizes = (
-                    (list(t) for t in zip(*kept)) if kept else ([], [])
-                )
+                img_paths, sizes = (list(t) for t in zip(*kept)) if kept else ([], [])
                 if len(img_paths) != pre:
                     logger.info(
                         f"colorize: kept {len(img_paths)}/{pre} targets with a cached "

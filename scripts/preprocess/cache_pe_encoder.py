@@ -48,7 +48,7 @@ from library.preprocess import (
     tqdm_progress,
     write_pe_centroid,
 )
-from library.runtime.cli import add_device_args, add_io_args
+from library.runtime.argparse_groups import add_device_args, add_io_args
 from library.vision.encoder import load_pe_encoder
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -142,6 +142,14 @@ def main() -> None:
         default=0,
         help="Cap the number of cache files pooled into the centroid (0 = all).",
     )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Re-encode every PE sidecar even if it already exists. Use after an "
+            "encoder / dtype change, which the existence skip can't detect."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.centroid_only and args.dir is None:
@@ -187,7 +195,11 @@ def main() -> None:
     # Pre-flight: skip the encoder load when every sidecar exists (--centroid
     # still runs — caches only). total == 0 falls through to the "no images" path.
     pending, total = count_pending_pe(
-        data_dir, args.encoder, cache_dir=cache_dir, recursive=args.recursive
+        data_dir,
+        args.encoder,
+        cache_dir=cache_dir,
+        recursive=args.recursive,
+        overwrite=args.overwrite,
     )
     if total > 0 and pending == 0:
         print(
@@ -233,6 +245,7 @@ def main() -> None:
         num_workers=args.num_workers,
         save_dtype=save_dtype,
         progress=tqdm_progress(f"Caching {bundle.name} features"),
+        overwrite=args.overwrite,
     )
     if stats.seen == 0:
         print(f"No images found in {data_dir}/", file=sys.stderr)

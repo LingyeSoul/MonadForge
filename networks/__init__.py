@@ -64,142 +64,64 @@ class NetworkSpec:
     post_init: Optional[Callable[[Any, Mapping[str, Any]], None]] = None
 
 
-# Single flat allowlist of every TOML key the LoRA family forwards into
-# ``create_network``. It passes these keys through the config-schema validator
-# and tells ``train.py`` which keys to copy off ``args`` into ``net_kwargs``.
-# Closed mirror of what ``LoRANetworkCfg.from_kwargs`` (+ ``_post_init_hydra``)
-# read via ``kwargs.get(...)`` — keep in sync: a new ``kwargs.get("foo")`` there
-# means adding ``"foo"`` here, or the kwarg is inert and fails the config test.
-NETWORK_KWARGS: frozenset[str] = frozenset(
-    {
-        "train_llm_adapter",
-        "exclude_patterns",
-        "include_patterns",
-        "layer_start",
-        "layer_end",
-        "rank_dropout",
-        "module_dropout",
-        "verbose",
-        "network_reg_dims",
-        "network_reg_lrs",
-        "network_router_lr_scale",
-        "loraplus_lr_ratio",
-        "loraplus_unet_lr_ratio",
-        "loraplus_text_encoder_lr_ratio",
-        "use_timestep_mask",
-        "min_rank",
-        "alpha_rank_scale",
-        # Per-channel input pre-scaling, gated by alpha (0.0 off; 0.5 sqrt
-        # balance; 1.0 flatten). Calib: networks/calibration/channel_stats.safetensors.
-        "channel_scaling_alpha",
-        # FP16/V100 quality fallback: keep LoRA rank GEMMs in fp32 while the
-        # frozen base still runs in the selected mixed-precision dtype.
-        "lora_fp32_compute",
-        # DEPRECATED no-op (fp32-bottleneck path removed 2026-06-10); kept so old
-        # snapshot TOMLs replay. The factory logs and ignores it.
-        "use_custom_down_autograd",
-        # Three-axis routing + variant selectors (read by resolve_network_spec /
-        # LoRANetworkCfg.from_kwargs). use_ortho/use_ortho_init are mutually
-        # exclusive; use_moe_style="independent_A" → stacked_experts_global_fei.
-        "use_ortho",
-        "use_ortho_init",
-        "ortho_init_std",
-        # LoKR (Low-Rank Kronecker product) variant.
-        "use_lokr",
-        "lokr_factor",
-        "decompose_both",
-        # SVD-Down: lora_down init for plain LoRA ("kaiming" | "weight_svd").
-        "down_init",
-        # VeRA: seed for shared frozen random matrices A, B. Selected via use_ve=true.
-        "use_ve",
-        "vera_seed",
-        "use_moe_style",
-        "route_per_layer",
-        "router_source",
-        # GlobalRouter knobs (consumed only when route_per_layer=False).
-        "router_hidden_dim",
-        "router_tau",
-        # FECL: FeRA auxiliary loss, opt-in via fera_fecl_weight > 0.
-        "fera_fecl_weight",
-        "fera_num_bands",
-        "num_experts",
-        "balance_loss_weight",
-        "balance_loss_warmup_ratio",
-        "expert_init_std",
-        # OrthoHydra centered-gate init: recenter gate to (g_e - 1/E) + zero-init
-        # router + start λ at ortho_lambda_init, so the router gets a step-0
-        # gradient while ΔW stays 0.
-        "ortho_centered_gate",
-        "ortho_lambda_init",
-        # Scopes which Linears participate in routed adaptation.
-        "router_targets",
-        # σ-conditional router (router_source="sigma").
-        "sigma_feature_dim",
-        "per_bucket_balance_weight",
-        "num_sigma_buckets",
-        "specialize_experts_by_sigma_buckets",
-        "sigma_bucket_boundaries",
-        # FEI-conditional router (router_source="fei").
-        "fei_feature_dim",
-        "fei_sigma_low_div",
-        # Step-expert (turbo DP-DMD student): K step-indexed up-heads on the
-        # shared down-proj. Presence (>1) selects the step_expert spec.
-        "step_expert_K",
-        # ChimeraHydra dual-pool routing.
-        "use_chimera_hydra",
-        "num_experts_content",
-        "num_experts_freq",
-        # Per-pool balance weights. Fall back to balance_loss_weight when unset.
-        "balance_w_content",
-        "balance_w_freq",
-        # FreqRouter init magnitude (non-zero so the freq pool differentiates at step 0).
-        "freq_router_init_std",
-        # Per-modality LN on FreqRouter input. Active only when both FEI and σ
-        # blocks are on — equalizes variance so the σ block doesn't overpower the FEI simplex.
-        "freq_router_layer_norm",
-        # Freq-pool routing mode: "learned" (FreqRouter MLP) or "fei" (hardwire
-        # π_f = normalize(FEI ** (1/τ)), no params; requires num_experts_freq == fei_feature_dim).
-        "freq_router_mode",
-        "freq_router_tau",
-        # Per-pool router LR multipliers — stack on top of network_router_lr_scale.
-        "network_content_router_lr_scale",
-        "network_freq_router_lr_scale",
-        # Parameterless LN on the ContentRouter's pooled crossattn_emb input.
-        "content_router_layer_norm",
-        # ContentRouter output-layer init magnitude (default 0.0 = zero-init).
-        "content_router_init_std",
-        # Centered-gate λ init for BOTH chimera pools (always-on).
-        "chimera_lambda_init",
-        # Per-expert capability levers (frozen-Cayley chimera; distill away).
-        "chimera_expert_basis_mult",
-        "chimera_expert_diag",
-        # REPA v2 auxiliary alignment loss (docs/experimental/repa.md). Off by default.
-        "use_repa",
-        "repa_mode",  # "relational" (Gram, no head) | "absolute" (patchwise + head)
-        "repa_weight",
-        "repa_layer",
-        "repa_encoder",  # vision-encoder registry name (default pe_spatial)
-        "repa_lr_scale",  # head LR multiplier (absolute mode)
-        "repa_anneal_steps",  # hard cutoff: (0,1] = fraction of run, >1 = opt steps
-        "repa_spatial_norm",  # iREPA target-side spatial standardization (relational)
-        # Signed timestep reweighting (0 = uniform): >0 emphasizes high noise. See repa.py.
-        "repa_timestep_weighting",
-        # Lever-3 gate diagnostic: probe alignment-gradient heatmap every N
-        # micro-steps (0 = off); dumps <output_name>_repa_grad_heatmap.npz.
-        "repa_grad_heatmap",
-        # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): broader
-        # low-band strip than spatial_norm's DC removal. Off by default.
-        "repa_target_dog",  # false = off (no-op); true ⇒ DoG band-pass the target
-        "repa_dog_sigma1_div",  # σ₁ = min(gh,gw)/div (outer, broad low band removed)
-        "repa_dog_sigma2_div",  # 0 ⇒ σ₂ off (low-band strip only); >div1 ⇒ band-pass
-        "repa_dog_norm_std",  # 0 ⇒ empirical std (matches spatial_norm); >0 = fixed
-        # DyLoRA: trains multiple ranks simultaneously by sampling random rank
-        # at each forward pass. Selected via use_dylora=True.
-        "use_dylora",
-        "dylora_unit",
-        "dylora_algo",
-    }
+# Single source of truth = the reads themselves. The LoRA-family TOML allowlist
+# is *derived* by scanning what these consumer modules actually read via
+# ``kwargs.get("literal")``; it passes those keys through the config-schema
+# validator and tells ``train.py`` which keys to copy off ``args`` into
+# ``net_kwargs``. So adding a new knob is **one edit** — write the
+# ``kwargs.get("foo")`` read at its consumer and it auto-registers here. No
+# separate frozenset entry to keep in sync (the old H1 triple-registration
+# gotcha — see docs/findings/entanglement_audit_high_severity.md §H1).
+#
+# Per-knob documentation lives at the read sites (the ``LoRANetworkCfg``
+# dataclass fields and the ``factory.py`` reads are richly commented) rather than
+# being duplicated here.
+_KWARG_CONSUMER_MODULES = (
+    "lora_anima/config.py",  # LoRANetworkCfg.from_kwargs
+    "lora_anima/factory.py",  # REPA / loraplus / channel_scaling / custom_down
+    "__init__.py",  # _post_init_hydra / _post_init_vera
 )
+
+# Read positionally as the *default* of a canonical key
+# (``kwargs.get("router_hidden_dim", kwargs.get("router_hidden", 64))`` /
+# ``kwargs.get("fera_num_bands", kwargs.get("num_bands", 3))``). The canonical
+# names are forwarded; these back-compat aliases are intentionally not.
+_KWARG_ALIAS_FALLBACKS = frozenset({"router_hidden", "num_bands"})
+
+
+def _derive_network_kwargs() -> frozenset[str]:
+    """Every literal key the LoRA-family consumers read via ``kwargs.get(...)``.
+
+    AST-scans the consumer modules so the allowlist can never silently drift
+    from the reads. Recognizes the ``kwargs.get("literal"[, default])`` form
+    only — a consumer that reads a forwarded knob some other way (a helper
+    wrapper, ``kwargs["k"]`` indexing) must use ``kwargs.get`` or it won't be
+    picked up. The ``must_have`` registry tests pin the load-bearing keys as a
+    backstop against a scan that breaks.
+    """
+    import ast
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent
+    keys: set[str] = set()
+    for rel in _KWARG_CONSUMER_MODULES:
+        tree = ast.parse((pkg / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "kwargs"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                keys.add(node.args[0].value)
+    return frozenset(keys - _KWARG_ALIAS_FALLBACKS)
+
+
+NETWORK_KWARGS: frozenset[str] = _derive_network_kwargs()
 
 
 def _post_init_hydra(network: Any, kwargs: Mapping[str, Any]) -> None:

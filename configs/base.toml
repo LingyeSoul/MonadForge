@@ -71,7 +71,6 @@ channel_scaling_alpha = 0.5
 gradient_accumulation_steps = 1
 
 use_repa = false
-repa_target_dog = false
 
 # Preview sampling — generate sample images at checkpoint saves
 [preview]

@@ -232,7 +232,7 @@ class TurboDMDNetwork:
         # SVD-Down init (down_init="weight_svd"): seed the plain-LoRA student's
         # lora_down from W0's top-r right singular vectors (scale-matched), the
         # wide-tangent alternative to OrthoInit's cold start (the defect this
-        # student exposed — docs/proposal/svd_down_lora_init.md). It targets the
+        # student exposed — _archive/proposals/svd_down_lora_init.md). It targets the
         # plain LoRAModule only, so it is mutually exclusive with both ortho_init
         # (different module class → down_init silently inert) and per-step-expert.
         self.student_down_init = str(student_down_init)
