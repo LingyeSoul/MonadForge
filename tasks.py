@@ -298,6 +298,10 @@ COMMANDS = {
         utilities.cmd_merge,
         "Bake latest LoRA (ADAPTER_DIR=..., default 'output/ckpt') into base DiT",
     ),
+    "merge-loras": (
+        utilities.cmd_merge_loras,
+        "Merge N LoRA adapters into one (concat-exact, with interference analysis)",
+    ),
     "comfy-batch": (utilities.cmd_comfy_batch, "Run ComfyUI batch workflow"),
     "distill-prep": (
         utilities.cmd_distill_prep,

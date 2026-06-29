@@ -3,6 +3,15 @@
     <div class="text-h5 mb-1">{{ t('mgTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('mgSubtitle') }}</div>
 
+    <!-- Mode toggle: DiT-bake vs LoRA⊕LoRA fusion -->
+    <div class="d-flex align-center mb-4">
+      <span class="text-body-2 text-medium-emphasis mr-3">{{ t('merge_mode') }}</span>
+      <v-btn-toggle v-model="mode" mandatory color="primary" density="compact" variant="outlined">
+        <v-btn value="dit">{{ t('merge_mode_dit') }}</v-btn>
+        <v-btn value="loras">{{ t('merge_mode_loras') }}</v-btn>
+      </v-btn-toggle>
+    </div>
+
     <v-row>
       <!-- Left: File Browser -->
       <v-col cols="12" md="5">
@@ -24,13 +33,21 @@
               @update:model-value="onDirChange"
             />
 
+            <!-- LoRA-fusion mode: multi-select hint + selection count -->
+            <div v-if="mode === 'loras'" class="text-caption text-medium-emphasis mt-3 mb-1">
+              {{ t('merge_lora_select_hint') }}
+            </div>
+
             <v-list v-if="adapterFiles.length > 0" density="compact" class="mt-3" max-height="400" style="overflow-y: auto">
               <v-list-item
                 v-for="file in adapterFiles"
                 :key="file.path"
-                :active="selectedFile?.path === file.path"
-                @click="selectFile(file)"
+                :active="isFileActive(file)"
+                @click="onFileClick(file)"
               >
+                <template v-if="mode === 'loras'" #prepend>
+                  <v-icon :icon="isFileSelected(file) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline'" />
+                </template>
                 <v-list-item-title class="text-body-2">{{ file.name }}</v-list-item-title>
                 <v-list-item-subtitle>{{ file.size_human }} | {{ formatDate(file.mtime) }}</v-list-item-subtitle>
               </v-list-item>
@@ -38,14 +55,24 @@
             <div v-else-if="selectedDir" class="text-medium-emphasis text-body-2 mt-3">
               {{ t('mgNoFiles') }}
             </div>
+
+            <!-- LoRA-fusion selection summary -->
+            <div v-if="mode === 'loras'" class="text-body-2 mt-2">
+              <v-chip size="small" variant="tonal" color="primary">
+                {{ t('merge_lora_selected') }} {{ selectedFiles.length }}
+              </v-chip>
+              <span v-if="selectedFiles.length > 0 && selectedFiles.length < 2" class="text-warning ml-2 text-caption">
+                {{ t('merge_lora_need_two') }}
+              </span>
+            </div>
           </v-card-text>
         </v-card>
       </v-col>
 
       <!-- Right: Scan Results + Config -->
       <v-col cols="12" md="7">
-        <!-- Scan result card -->
-        <v-card v-if="scanResult" variant="tonal" class="mb-4" :border="verdictBorder">
+        <!-- Scan result card (DiT mode only) -->
+        <v-card v-if="mode === 'dit' && scanResult" variant="tonal" class="mb-4" :border="verdictBorder">
           <v-card-title class="text-subtitle-1">
             <v-icon :icon="verdictIcon" class="mr-2" :color="verdictColor" />
             {{ t('mgScanResult') }}
@@ -66,8 +93,21 @@
           </v-card-text>
         </v-card>
 
-        <!-- Merge Configuration -->
-        <v-card variant="tonal">
+        <!-- Analysis interference banner (LoRA-fusion mode only) -->
+        <v-alert
+          v-if="mode === 'loras' && analyzeBanner"
+          :type="analyzeBanner.type"
+          variant="tonal"
+          density="comfortable"
+          class="mb-4"
+          closable
+          @click:close="analyzeBanner = null"
+        >
+          {{ bannerText(analyzeBanner) }}
+        </v-alert>
+
+        <!-- ════ DiT-bake Configuration ════ -->
+        <v-card v-if="mode === 'dit'" variant="tonal">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-call-merge" class="mr-2" />
             {{ t('mgConfig') }}
@@ -148,6 +188,83 @@
             </v-btn>
           </v-card-actions>
         </v-card>
+
+        <!-- ════ LoRA-fusion Configuration ════ -->
+        <v-card v-else variant="tonal">
+          <v-card-title class="text-subtitle-1">
+            <v-icon icon="mdi-merge" class="mr-2" />
+            {{ t('merge_lora_options') }}
+          </v-card-title>
+          <v-card-text>
+            <v-row>
+              <v-col cols="12" md="6">
+                <v-text-field
+                  v-model="loraWeights"
+                  :label="t('merge_weights')"
+                  :hint="t('merge_weights_tip')"
+                  persistent-hint
+                  :placeholder="t('merge_weights_placeholder')"
+                  variant="outlined"
+                  density="compact"
+                />
+              </v-col>
+              <v-col cols="12" md="3">
+                <v-select
+                  v-model="loraNormalize"
+                  :items="['global', 'per_module', 'off']"
+                  :label="t('merge_normalize')"
+                  :hint="t('merge_normalize_tip')"
+                  persistent-hint
+                  variant="outlined"
+                  density="compact"
+                />
+              </v-col>
+              <v-col cols="12" md="3">
+                <v-select
+                  v-model="loraDtype"
+                  :items="['bf16', 'fp16', 'fp32']"
+                  :label="t('mgDtype')"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                />
+              </v-col>
+            </v-row>
+            <v-row>
+              <v-col cols="12">
+                <v-text-field
+                  v-model="loraOutPath"
+                  :label="t('mgOutputPath')"
+                  :placeholder="t('merge_lora_out_placeholder')"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                />
+              </v-col>
+            </v-row>
+          </v-card-text>
+          <v-card-actions>
+            <v-btn
+              color="primary"
+              prepend-icon="mdi-merge"
+              :loading="isRunning('merge-loras')"
+              :disabled="selectedFiles.length < 2 || weightsError !== null"
+              @click="runMergeLoras"
+            >
+              {{ t('merge_lora_button') }}
+            </v-btn>
+            <v-btn
+              variant="outlined"
+              prepend-icon="mdi-magnify-scan"
+              :loading="analyzing"
+              :disabled="selectedFiles.length < 2"
+              @click="runAnalyze"
+            >
+              {{ t('merge_analyze_button') }}
+            </v-btn>
+            <span v-if="weightsError" class="text-error text-caption ml-2">{{ weightsError }}</span>
+          </v-card-actions>
+        </v-card>
       </v-col>
     </v-row>
 
@@ -172,7 +289,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
@@ -184,21 +301,54 @@ taskStore.fetchTasks()
 
 // ── State ─────────────────────────────────────────────────────
 
+type MergeMode = 'dit' | 'loras'
+
 interface AdapterDir { name: string; path: string }
 interface AdapterFile { name: string; path: string; size: number; size_human: string; mtime: string }
 interface ScanResult { verdict: string; counts: Record<string, number>; total_keys: number; metadata: Record<string, string> }
+interface AnalyzePayload {
+  verdict: 'orthogonal' | 'constructive' | 'destructive'
+  ratio: number
+  shared: number
+  modules: number
+  strongest?: [string, string, number]  // [a, b, cos]
+}
+interface AnalyzeBanner {
+  type: 'success' | 'warning' | 'error'
+  verdict: 'orthogonal' | 'constructive' | 'destructive' | 'failed'
+  ratio: number
+  shared: number
+  modules: number
+  cos: number
+  a: string
+  b: string
+  strong: boolean
+}
+
+const mode = ref<MergeMode>('dit')
 
 const adapterDirs = ref<AdapterDir[]>([])
 const selectedDir = ref('')
 const adapterFiles = ref<AdapterFile[]>([])
+
+// DiT mode
 const selectedFile = ref<AdapterFile | null>(null)
 const scanResult = ref<ScanResult | null>(null)
-
 const baseDit = ref('models/diffusion_models/anima-base-v1.0.safetensors')
 const dtype = ref('bf16')
 const multiplier = ref(1.0)
 const allowPartial = ref(false)
 const outputPath = ref('')
+
+// LoRA-fusion mode
+const selectedFiles = ref<AdapterFile[]>([])
+const loraWeights = ref('')
+const loraNormalize = ref('global')
+const loraDtype = ref('bf16')
+const loraOutPath = ref('')
+const analyzeBanner = ref<AnalyzeBanner | null>(null)
+const analyzing = ref(false)
+let analyzeTimer: ReturnType<typeof setInterval> | null = null
 
 // ── Load directories ──────────────────────────────────────────
 
@@ -216,10 +366,26 @@ async function fetchDirs() {
 }
 
 onMounted(fetchDirs)
+onUnmounted(clearAnalyzeTimer)
+
+// Leaving LoRA-fusion mode (or unmounting) must stop the analyze poller and
+// drop its banner so no stale state carries over.
+function clearAnalyzeTimer() {
+  if (analyzeTimer) { clearInterval(analyzeTimer); analyzeTimer = null }
+  analyzing.value = false
+}
+
+watch(mode, () => {
+  clearAnalyzeTimer()
+  analyzeBanner.value = null
+})
 
 async function onDirChange(dirPath: string) {
   selectedFile.value = null
+  selectedFiles.value = []
   scanResult.value = null
+  analyzeBanner.value = null
+  clearAnalyzeTimer()
   if (!dirPath) { adapterFiles.value = []; return }
   try {
     const res = await fetch(`/api/merge/files?dir=${encodeURIComponent(dirPath)}`)
@@ -229,7 +395,28 @@ async function onDirChange(dirPath: string) {
   } catch { adapterFiles.value = [] }
 }
 
-// ── File selection & scan ─────────────────────────────────────
+// ── File selection ─────────────────────────────────────────────
+
+function isFileActive(file: AdapterFile) {
+  if (mode.value === 'dit') return selectedFile.value?.path === file.path
+  return isFileSelected(file)
+}
+
+function isFileSelected(file: AdapterFile) {
+  return selectedFiles.value.some(f => f.path === file.path)
+}
+
+async function onFileClick(file: AdapterFile) {
+  if (mode.value === 'dit') {
+    await selectFile(file)
+  } else {
+    // toggle membership
+    const idx = selectedFiles.value.findIndex(f => f.path === file.path)
+    if (idx >= 0) selectedFiles.value.splice(idx, 1)
+    else selectedFiles.value.push(file)
+    analyzeBanner.value = null  // selection changed → stale banner
+  }
+}
 
 async function selectFile(file: AdapterFile) {
   selectedFile.value = file
@@ -244,7 +431,7 @@ async function selectFile(file: AdapterFile) {
   } catch { /* ignore */ }
 }
 
-// ── Verdict display ───────────────────────────────────────────
+// ── DiT verdict display ───────────────────────────────────────
 
 const verdictColor = computed(() => {
   const v = scanResult.value?.verdict
@@ -270,7 +457,42 @@ const verdictBorder = computed(() => {
   return undefined
 })
 
-// ── Merge ─────────────────────────────────────────────────────
+// ── Weights validation ────────────────────────────────────────
+
+const parsedWeights = computed<string[] | null>(() => {
+  const raw = loraWeights.value.trim()
+  if (!raw) return []  // empty = all-1.0 sentinel (valid)
+  const parts = raw.split(',').map(s => s.trim()).filter(s => s.length > 0)
+  return parts
+})
+
+const weightsError = computed<string | null>(() => {
+  if (selectedFiles.value.length < 2) return null  // button already disabled; don't double-warn
+  const parts = parsedWeights.value
+  if (parts === null) return null
+  if (parts.length === 0) return null  // empty → all 1.0, valid
+  if (parts.length !== selectedFiles.value.length) {
+    return t('merge_weights_mismatch', { n: parts.length, m: selectedFiles.value.length })
+  }
+  if (parts.some(p => isNaN(Number(p)))) return t('merge_weights_tip')
+  return null
+})
+
+function buildSharedArgs(withAnalyze: boolean): string[] | null {
+  const paths = selectedFiles.value.map(f => f.path)
+  const args = [...paths]
+  if (withAnalyze) args.push('--analyze')
+  const parts = parsedWeights.value
+  if (parts && parts.length > 0) args.push('--weights', parts.join(','))
+  args.push('--dtype', loraDtype.value)
+  if (!withAnalyze) {
+    args.push('--normalize', loraNormalize.value)
+    if (loraOutPath.value.trim()) args.push('--out', loraOutPath.value.trim())
+  }
+  return args
+}
+
+// ── DiT merge ─────────────────────────────────────────────────
 
 async function runMerge() {
   if (!selectedFile.value) return
@@ -288,6 +510,106 @@ async function runMerge() {
   }
 }
 
+// ── LoRA fusion ───────────────────────────────────────────────
+
+async function runMergeLoras() {
+  if (selectedFiles.value.length < 2 || weightsError.value) return
+  const args = buildSharedArgs(false)
+  if (!args) return
+  const taskId = await taskStore.startTask('merge-loras', args)
+  if (taskId) {
+    notify.show(t('notifyTaskStarted', { command: t('merge_lora_button') }), 'success')
+  } else {
+    notify.show(t('notifyTaskStartFailed', { command: t('merge_lora_button') }), 'error')
+  }
+}
+
+async function runAnalyze() {
+  if (selectedFiles.value.length < 2) return
+  const args = buildSharedArgs(true)
+  if (!args) return
+  analyzing.value = true
+  analyzeBanner.value = null
+  const taskId = await taskStore.startTask('merge-loras', args)
+  if (!taskId) {
+    analyzing.value = false
+    notify.show(t('notifyTaskStartFailed', { command: t('merge_analyze_button') }), 'error')
+    return
+  }
+  // Poll the analyze task until terminal, then harvest the ANALYZE_RESULT trailer.
+  clearAnalyzeTimer()
+  analyzing.value = true  // clearAnalyzeTimer resets this; re-arm for the new poll
+  analyzeTimer = setInterval(async () => {
+    const done = await pollAnalyze(taskId)
+    if (done) clearAnalyzeTimer()
+  }, 1500)
+}
+
+async function pollAnalyze(taskId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`/api/tasks/${taskId}/output`)
+    if (!res.ok) return false
+    const data = await res.json()
+    const state: string = data.state
+    if (state === 'running' || state === 'pending') return false
+    // terminal — parse the ANALYZE_RESULT trailer from accumulated lines.
+    const lines: string[] = data.lines || []
+    analyzeBanner.value = parseAnalyzeBanner(lines, state)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function parseAnalyzeBanner(lines: string[], finalState: string): AnalyzeBanner | null {
+  // The trailer is the LAST line starting with "ANALYZE_RESULT ".
+  let payload: AnalyzePayload | null = null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    const idx = line.indexOf('ANALYZE_RESULT ')
+    if (idx >= 0) {
+      try {
+        payload = JSON.parse(line.slice(idx + 'ANALYZE_RESULT '.length))
+      } catch { /* malformed JSON — keep scanning / fall through */ }
+      break
+    }
+  }
+  if (!payload) {
+    if (finalState === 'failed') {
+      return { type: 'error', verdict: 'failed', ratio: 0, shared: 0, modules: 0, cos: 0, a: '', b: '', strong: false }
+    }
+    return null
+  }
+  const { verdict, ratio, shared, modules } = payload
+  const cos = payload.strongest?.[2] ?? 0
+  const a = payload.strongest?.[0] ?? ''
+  const b = payload.strongest?.[1] ?? ''
+  return {
+    type: verdict === 'orthogonal' ? 'success' : (cos >= 0 ? 'warning' : 'error'),
+    verdict,
+    ratio,
+    shared,
+    modules,
+    cos,
+    a,
+    b,
+    strong: Math.abs(cos) >= 0.5,
+  }
+}
+
+// Render a structured banner as localized plain text (no v-html — filenames
+// are user-controlled, so we never treat the result as HTML).
+function bannerText(b: AnalyzeBanner): string {
+  if (b.verdict === 'failed') {
+    return t('notifyTaskStartFailed', { command: t('merge_analyze_button') })
+  }
+  const strength = b.strong ? t('merge_analysis_strong') : t('merge_analysis_moderate')
+  const common = { ratio: b.ratio, shared: b.shared, modules: b.modules, a: b.a, b: b.b, strength }
+  if (b.verdict === 'orthogonal') return t('merge_analysis_safe', common)
+  if (b.cos >= 0) return t('merge_analysis_reinforce', common)
+  return t('merge_analysis_cancel', common)
+}
+
 // ── Helpers ───────────────────────────────────────────────────
 
 function formatDate(iso: string) {
@@ -299,7 +621,7 @@ function isRunning(command: string) {
 }
 
 const mergeTasks = computed(() =>
-  taskStore.tasks.filter(tp => tp.command === 'merge')
+  taskStore.tasks.filter(tp => tp.command === 'merge' || tp.command === 'merge-loras')
 )
 
 function stateColor(state: string) {
