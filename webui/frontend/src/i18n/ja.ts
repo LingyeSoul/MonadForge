@@ -459,6 +459,7 @@ export default {
   cfgErrSave: '保存失敗: {error}',
   cfgGroupOther: 'その他',
   cfgGroupResume: '再開 & ウォームスタート',
+  cfgGroupReg: '正則化画像',
 
   // Notifications
   notifyConfigSaved: '設定保存済',

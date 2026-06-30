@@ -459,6 +459,7 @@ export default {
   cfgErrSave: '保存失败：{error}',
   cfgGroupOther: '其他',
   cfgGroupResume: '续训与热启动',
+  cfgGroupReg: '正则化图像',
 
   // Notifications
   notifyConfigSaved: '配置已保存',

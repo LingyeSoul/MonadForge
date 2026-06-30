@@ -376,13 +376,202 @@ def test_webui_num_repeats_writer_round_trips(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Symmetric guard: flat ``methods`` subdir (NOT gui-methods) with a full
-# inline blueprint MUST still wholesale-replace base's dataset definition.
-# This is the other half of the gui-methods shallow-merge exception — if the
-# ``methods_subdir != GUI_METHODS_SUBDIR`` guard were ever inverted (``==``
-# instead of ``!=``), a self-contained method like easycontrol would silently
-# degrade to shallow-merge and drop its own ``image_dir``.
+# Regularization (DreamBooth prior preservation) — is_reg=true subset must
+# reach train.py as subsets[1] alongside the training subset, and
+# prior_loss_weight must NOT be written inside ``[[datasets]]`` (it is an
+# argparse-only key; the user-config sanitizer rejects it there).
 # ---------------------------------------------------------------------------
+
+
+def test_reg_subset_appended_at_index1(tmp_path: Path):
+    """A gui-methods overlay carrying an ``is_reg=true`` regularization subset
+    (with its own image_dir) at ``subsets[1]`` is APPENDED by
+    ``_apply_dataset_overrides`` instead of dropped. The training subset at
+    ``subsets[0]`` is untouched."""
+    configs_dir = _build_gui_dataset_tree(tmp_path)
+    (Path(configs_dir) / "custom" / "variants" / "lora.toml").write_text(
+        "[[datasets]]\nvalidation_split_num = 0\n"
+        "[[datasets.subsets]]\nnum_repeats = 4\n"
+        "[[datasets.subsets]]\n"
+        'image_dir = "reg_images"\n'
+        "is_reg = true\n"
+        "num_repeats = 1\n",
+        encoding="utf-8",
+    )
+    bp = load_dataset_config_from_base(
+        configs_dir, method="lora", methods_subdir="gui-methods"
+    )
+    subsets = bp["datasets"][0]["subsets"]
+    assert len(subsets) == 2, f"reg subset must be appended, got {subsets}"
+    # Training subset (index 0) untouched.
+    train = subsets[0]
+    assert train["num_repeats"] == 4
+    assert train["image_dir"] == "post_image_dataset/resized"
+    assert "is_reg" not in train
+    # Reg subset (index 1) survived whole.
+    reg = subsets[1]
+    assert reg["is_reg"] is True
+    assert reg["image_dir"] == "reg_images"
+    assert reg["num_repeats"] == 1
+
+
+def test_reg_subset_at_index0_does_not_clobber_training(tmp_path: Path):
+    """Regression: when the WebUI writes a reg subset into a sparse overlay,
+    it is the ONLY subset there (index 0). A naive index-matched shallow
+    merge would fold it INTO base's training subset — clobbering the training
+    image_dir and stamping is_reg=True onto it. The merge must extract reg
+    subsets BY FLAG and append them, leaving the training subset intact.
+
+    This mirrors the exact shape produced by save_variant_config → _apply_reg
+    when reg is enabled on a fresh overlay (no positional subsets present)."""
+    configs_dir = _build_gui_dataset_tree(tmp_path)
+    (Path(configs_dir) / "custom" / "variants" / "lora.toml").write_text(
+        "[[datasets]]\n"
+        "[[datasets.subsets]]\n"
+        'image_dir = "reg_images"\n'
+        "is_reg = true\n"
+        "num_repeats = 1\n",
+        encoding="utf-8",
+    )
+    bp = load_dataset_config_from_base(
+        configs_dir, method="lora", methods_subdir="gui-methods"
+    )
+    subsets = bp["datasets"][0]["subsets"]
+    assert len(subsets) == 2, f"reg must be appended, got {subsets}"
+    # Training subset (index 0) is base's, untouched by the reg overlay.
+    train = subsets[0]
+    assert train["image_dir"] == "post_image_dataset/resized"
+    assert "is_reg" not in train
+    # Reg subset (index 1).
+    reg = subsets[1]
+    assert reg["is_reg"] is True
+    assert reg["image_dir"] == "reg_images"
+
+
+def test_sparse_subset_without_image_dir_still_ignored(tmp_path: Path):
+    """An overflow subset WITHOUT image_dir is still ignored (with a warning),
+    not appended — it couldn't satisfy the Required subset schema. This pins
+    the guard that distinguishes a self-contained reg subset from a sparse
+    override fragment."""
+    configs_dir = _build_gui_dataset_tree(tmp_path)
+    (Path(configs_dir) / "custom" / "variants" / "lora.toml").write_text(
+        "[[datasets]]\n"
+        "[[datasets.subsets]]\nnum_repeats = 4\n"
+        "[[datasets.subsets]]\nkeep_tokens = 1\n",  # no image_dir → ignored
+        encoding="utf-8",
+    )
+    bp = load_dataset_config_from_base(
+        configs_dir, method="lora", methods_subdir="gui-methods"
+    )
+    subsets = bp["datasets"][0]["subsets"]
+    assert len(subsets) == 1, f"overflow fragment must be ignored, got {subsets}"
+
+
+def test_prior_loss_weight_flat_key_round_trips(tmp_path: Path):
+    """``_apply_reg`` writes prior_loss_weight as a TOP-LEVEL flat key (not
+    inside ``[[datasets]]``), because it is an argparse-only key that the
+    user-config sanitizer rejects under datasets. And merged_gui_variant_preset
+    reads it back from the method overlay root."""
+    from webui.services.config_service import (
+        _apply_reg,
+        merged_gui_variant_preset,
+    )
+
+    configs_dir = _build_gui_dataset_tree(tmp_path)
+    # _apply_reg writes into an overlay dict.
+    overlay: dict = {}
+    _apply_reg(
+        overlay,
+        enable=True,
+        reg_dir="reg_images",
+        num_repeats=1,
+        prior_loss_weight=0.7,
+        base_num_repeats=1,
+        base_plw=1.0,
+    )
+    # prior_loss_weight is a top-level key, NOT under datasets[0].
+    assert overlay.get("prior_loss_weight") == 0.7
+    datasets = overlay.get("datasets", [])
+    assert isinstance(datasets, list) and datasets
+    assert "prior_loss_weight" not in datasets[0], (
+        "prior_loss_weight must NOT live inside [[datasets]] (sanitizer rejects it)"
+    )
+    # The reg subset itself is correct (appended; from a sparse overlay it is
+    # the only subset, which is fine — the WebUI save path owns the subset list).
+    reg = datasets[0]["subsets"][-1]
+    assert reg["is_reg"] is True
+    assert reg["image_dir"] == "reg_images"
+
+    # Persist + read back via merged_gui_variant_preset (the WebUI load path).
+    (Path(configs_dir) / "custom" / "variants" / "lora.toml").write_text(
+        toml.dumps(overlay), encoding="utf-8"
+    )
+    # merged_gui_variant_preset reads configs from CONFIGS_DIR at module
+    # constant; point it at our tmp tree via monkeypatching the paths.
+    import webui.services.config_service as svc
+
+    orig_configs = svc.CONFIGS_DIR
+    orig_custom = svc.CUSTOM_VARIANTS_DIR
+    orig_gui = svc.GUI_METHODS_DIR
+    svc.CONFIGS_DIR = Path(configs_dir)
+    svc.CUSTOM_VARIANTS_DIR = Path(configs_dir) / "custom" / "variants"
+    svc.GUI_METHODS_DIR = Path(configs_dir) / "gui-methods"
+    try:
+        merged, _origin = merged_gui_variant_preset("lora", "default")
+    finally:
+        svc.CONFIGS_DIR = orig_configs
+        svc.CUSTOM_VARIANTS_DIR = orig_custom
+        svc.GUI_METHODS_DIR = orig_gui
+    assert merged["prior_loss_weight"] == pytest.approx(0.7)
+    assert merged["enable_reg"] is True
+    assert merged["reg_image_dir"] == "reg_images"
+
+
+def test_save_variant_config_validates_reg_image_dir(tmp_path: Path):
+    """save_variant_config enforces validation + path safety on the save path
+    (the PUT /method endpoint does not call validate_config itself). It must
+    reject an empty reg_image_dir when enable_reg is true, and reject a
+    traversal attempt."""
+    import webui.services.config_service as svc
+
+    configs_dir = _build_gui_dataset_tree(tmp_path)
+    # Point the service's path constants at the tmp tree.
+    orig_configs = svc.CONFIGS_DIR
+    orig_custom = svc.CUSTOM_VARIANTS_DIR
+    orig_gui = svc.GUI_METHODS_DIR
+    svc.CONFIGS_DIR = Path(configs_dir)
+    svc.CUSTOM_VARIANTS_DIR = Path(configs_dir) / "custom" / "variants"
+    svc.GUI_METHODS_DIR = Path(configs_dir) / "gui-methods"
+    try:
+        # Empty reg_image_dir with enable_reg=true → ValueError.
+        with pytest.raises(ValueError, match="reg_image_dir"):
+            svc.save_variant_config(
+                "lora",
+                {"enable_reg": True, "reg_image_dir": ""},
+            )
+        # Traversal attempt → ValueError.
+        with pytest.raises(ValueError, match="repo root"):
+            svc.save_variant_config(
+                "lora",
+                {"enable_reg": True, "reg_image_dir": "../../../etc"},
+            )
+        # Negative prior_loss_weight → ValueError (range check on save path).
+        with pytest.raises(ValueError, match="prior_loss_weight"):
+            svc.save_variant_config(
+                "lora",
+                {
+                    "enable_reg": True,
+                    "reg_image_dir": "reg_images",
+                    "prior_loss_weight": -0.5,
+                },
+            )
+    finally:
+        svc.CONFIGS_DIR = orig_configs
+        svc.CUSTOM_VARIANTS_DIR = orig_custom
+        svc.GUI_METHODS_DIR = orig_gui
+
+
+
 
 
 def test_flat_method_full_blueprint_replaces_base(tmp_path: Path):

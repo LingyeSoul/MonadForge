@@ -55,6 +55,7 @@ const _GROUP_LABELS: Record<string, Record<string, string>> = {
 const _GROUP_I18N_KEYS: Record<string, string> = {
   Other: 'cfgGroupOther',
   'Resume & Warm-start': 'cfgGroupResume',
+  Regularization: 'cfgGroupReg',
 }
 
 function _t(key: string, lang: string): string {
