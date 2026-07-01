@@ -80,7 +80,7 @@ network_content_router_lr_scale = 5.0
 # crossattn_emb (the per-Linear lx_c router was removed).
 content_router_layer_norm = true   # parameterless LN on the pooled input
 
-use_repa       = true
+use_repa       = false          # disabled: PE-Spatial checkpoint missing → preprocess fail-fast
 repa_mode      = "relational"
 repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where style drifts
 repa_layer     = 8            # block to hook (of 28)

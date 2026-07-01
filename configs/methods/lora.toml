@@ -172,7 +172,7 @@ down_init = "weight_svd"
 # Phase-1 operating-point levers (anneal/cutoff, spatial norm, token-subset Gram):
 # docs/experimental/repa.md §"Annealing plan". spatial_norm is validated + ON
 # below; anneal stays off pending its A/B (candidate 0.25); lever 3 closed.
-use_repa       = true
+use_repa       = false          # disabled: PE-Spatial checkpoint missing → preprocess fail-fast
 repa_mode      = "relational"
 repa_weight    = 0.05          # vs v1's 0.5 — late-run gradient is where style drifts
 repa_layer     = 8            # block to hook (of 28)
