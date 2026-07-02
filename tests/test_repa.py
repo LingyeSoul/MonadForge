@@ -623,22 +623,11 @@ def test_factory_stamps_dog_levers():
     assert net._repa_dog_sigma1_div == pytest.approx(16.0)
     assert net._repa_dog_sigma2_div == 0.0
 
-    # repa_target_dog is default-on under use_repa (Phase-0 winner; upstream
-    # fbe2cc9c) — opt out with repa_target_dog=false to fall back to spatial_norm.
     net_default = lora_create(1.0, 4, 4.0, **lora_common, use_repa="true")
-    assert net_default._repa_target_dog is True
-
-    net_optout = lora_create(
-        1.0, 4, 4.0, **lora_common, use_repa="true", repa_target_dog="false"
-    )
-    assert net_optout._repa_target_dog is False
+    assert net_default._repa_target_dog is False
 
     ec_common = dict(vae=None, text_encoders=[], unet=None)
     ec = ec_create(1.0, 8, 8.0, **ec_common, use_repa="true", repa_target_dog="true")
     assert ec._repa_target_dog is True
     ec_default = ec_create(1.0, 8, 8.0, **ec_common, use_repa="true")
-    assert ec_default._repa_target_dog is True
-    ec_optout = ec_create(
-        1.0, 8, 8.0, **ec_common, use_repa="true", repa_target_dog="false"
-    )
-    assert ec_optout._repa_target_dog is False
+    assert ec_default._repa_target_dog is False
