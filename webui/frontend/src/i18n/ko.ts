@@ -459,7 +459,6 @@ export default {
   cfgErrSave: '저장 실패: {error}',
   cfgGroupOther: '기타',
   cfgGroupResume: '이어서 학습 & 웜스타트',
-  cfgGroupReg: '정규화 이미지',
 
   // Notifications
   notifyConfigSaved: '설정 저장됨',

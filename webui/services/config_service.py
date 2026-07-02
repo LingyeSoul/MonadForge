@@ -35,30 +35,6 @@ def _safe_variant(variant: str) -> str:
     return variant
 
 
-def _safe_reg_image_dir(reg_dir: str) -> str:
-    """Validate a regularization image directory resolves under the repo root.
-
-    The WebUI is the public surface (it can bind 0.0.0.0, no auth), so a
-    user-supplied reg image dir must not let training enumerate / write caches
-    into arbitrary filesystem locations. Accept relative paths (resolved
-    against ROOT) and absolute paths that already live under ROOT; reject
-    anything that escapes via ``..`` or points outside the repo. Mirrors the
-    "reject rather than rewrite" style of _safe_variant and the edge-filtering
-    discipline of _FORBIDDEN_ARG_FLAGS in webui/api/tasks.py.
-    """
-    p = reg_dir.strip()
-    if not p:
-        raise ValueError("reg_image_dir must not be empty when enable_reg is true")
-    target = (Path(p) if Path(p).is_absolute() else _ROOT / p).resolve()
-    try:
-        target.relative_to(_ROOT)
-    except ValueError:
-        raise ValueError(
-            f"reg_image_dir must resolve under the repo root: {reg_dir!r}"
-        )
-    return reg_dir
-
-
 def _resolve_variant_path(variant: str) -> Path:
     """Resolve a variant name to its TOML file path.
 
@@ -286,29 +262,10 @@ _GROUPS = {
         "dim_from_weights",
         "save_state_on_train_end",
     },
-    "Regularization": {
-        "enable_reg",
-        "reg_image_dir",
-        "reg_num_repeats",
-        "prior_loss_weight",
-    },
 }
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
-# NOTE: _VIRTUAL_KEYS controls the frontend "virtual" chip + the preset-create
-# dialog's field exclusion (ConfigEditor.vue). Reg keys are deliberately NOT
-# members here — they have their own _REG_KEYS channel so they still appear in
-# the preset-create dialog. See _REG_KEYS below.
 _VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats", "sample_ratio"}
-# Reg keys. enable_reg / reg_image_dir / reg_num_repeats are NOT flat TOML
-# scalars — save_variant_config routes them through _apply_reg() into a nested
-# ``[[datasets.subsets]]`` with is_reg=true, instead of writing them as
-# top-level keys. prior_loss_weight IS a flat top-level scalar (it is an
-# argparse-only key in ARGPARSE_SPECIFIC_SCHEMA, so it must NOT live inside
-# ``[[datasets]]`` — the user-config sanitizer rejects it there); it is still
-# handled by _apply_reg() so it stays in sync with enable_reg and is stripped
-# when reg is disabled.
-_REG_KEYS = {"enable_reg", "reg_image_dir", "reg_num_repeats", "prior_loss_weight"}
 
 # Resume & Warm-start defaults. These keys are NOT in base.toml (which is
 # overwritten by `make update`), so merged_gui_variant_preset injects them with
@@ -320,20 +277,6 @@ _RESUME_DEFAULTS = {
     "network_weights": "",
     "dim_from_weights": False,
     "save_state_on_train_end": False,
-}
-
-# Regularization image defaults. Like _RESUME_DEFAULTS these keys are NOT in
-# base.toml (which `make update` overwrites), so merged_gui_variant_preset
-# injects them with neutral values so the group always renders in the WebUI.
-# enable_reg=false / empty reg_image_dir means "no regularization" and the reg
-# subset is stripped on save (an is_reg=true subset would otherwise be passed
-# to train.py as a literal regularization dataset). Values already present at
-# the method layer (or an existing is_reg subset in datasets) win over these.
-_REG_DEFAULTS = {
-    "enable_reg": False,
-    "reg_image_dir": "",
-    "reg_num_repeats": 1,
-    "prior_loss_weight": 1.0,
 }
 
 _BASIC = {
@@ -618,43 +561,6 @@ def _base_sample_ratio(base_data: dict) -> float:
     return float(sr) if sr is not None else 1.0
 
 
-def _find_reg_subset(datasets: Any) -> dict | None:
-    """Return the first is_reg=true subset under datasets[0].subsets, or None."""
-    if not isinstance(datasets, list) or not datasets:
-        return None
-    first_ds = datasets[0]
-    if not isinstance(first_ds, dict):
-        return None
-    subsets = first_ds.get("subsets")
-    if not isinstance(subsets, list):
-        return None
-    for sub in subsets:
-        if isinstance(sub, dict) and sub.get("is_reg") is True:
-            return sub
-    return None
-
-
-def _base_reg_num_repeats(base_data: dict) -> int:
-    """Read num_repeats from the is_reg subset in *base_data*."""
-    sub = _find_reg_subset(base_data.get("datasets"))
-    if sub is None:
-        return 1
-    nr = sub.get("num_repeats")
-    return int(nr) if nr is not None else 1
-
-
-def _base_prior_loss_weight(base_data: dict) -> float:
-    """Read prior_loss_weight as a top-level scalar from *base_data*.
-
-    prior_loss_weight is an argparse-only key (ARGPARSE_SPECIFIC_SCHEMA), so it
-    lives at the TOML root (consumed via the argparse namespace), never inside
-    ``[[datasets]]``. base.toml does not currently define it, so the default is
-    1.0 (matching cli_args.py:--prior_loss_weight).
-    """
-    plw = base_data.get("prior_loss_weight")
-    return float(plw) if plw is not None else 1.0
-
-
 def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str, str]]:
     """Merge base + preset + gui-methods/<variant>.toml.
 
@@ -777,45 +683,6 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
         if key not in merged:
             merged[key] = default
             origin[key] = "method"  # editable on built-in presets
-
-    # Regularization keys. Inject neutral defaults so the group always renders,
-    # then reverse-fill from any existing is_reg subset in the merged datasets so
-    # the form reflects a user-configured reg setup. A reg subset lives in the
-    # method layer (variant overlay), not base.toml. prior_loss_weight lives at
-    # the dataset level (datasets[0].prior_loss_weight).
-    for key, default in _REG_DEFAULTS.items():
-        if key not in merged:
-            merged[key] = default
-            origin[key] = "method"  # editable on built-in presets
-
-    # Use the effective datasets (method overlay wins over base) for backfill.
-    eff_datasets = meth.get("datasets")
-    if eff_datasets is None:
-        eff_datasets = base.get("datasets")
-    reg_sub = _find_reg_subset(eff_datasets)
-    if reg_sub is not None:
-        merged["enable_reg"] = True
-        origin["enable_reg"] = "method"
-        d = reg_sub.get("image_dir")
-        if d is not None:
-            merged["reg_image_dir"] = str(d)
-            origin["reg_image_dir"] = "method"
-        nr = reg_sub.get("num_repeats")
-        if nr is not None:
-            try:
-                merged["reg_num_repeats"] = int(nr)
-                origin["reg_num_repeats"] = "method"
-            except (TypeError, ValueError):
-                pass
-    # prior_loss_weight is an argparse-only top-level scalar (NOT inside
-    # ``[[datasets]]``), so read it from the method overlay root.
-    plw = meth.get("prior_loss_weight")
-    if plw is not None:
-        try:
-            merged["prior_loss_weight"] = float(plw)
-            origin["prior_loss_weight"] = "method"
-        except (TypeError, ValueError):
-            pass
 
     return merged, origin
 
@@ -1107,87 +974,6 @@ def _apply_sample_ratio(out: dict, value: float, base_value: float) -> None:
     first_sub["sample_ratio"] = value
 
 
-def _apply_reg(
-    out: dict,
-    enable: bool,
-    reg_dir: Optional[str],
-    num_repeats: Optional[int],
-    prior_loss_weight: Optional[float],
-    base_num_repeats: int,
-    base_plw: float,
-) -> None:
-    """Write or strip the regularization subset in the variant TOML.
-
-    When *enable* is True and *reg_dir* is non-empty, ensure datasets[0].subsets
-    contains an ``is_reg=true`` subset with the given image_dir / num_repeats,
-    and write prior_loss_weight as a TOP-LEVEL flat key on *out* (if it differs
-    from base). prior_loss_weight is an argparse-only key
-    (ARGPARSE_SPECIFIC_SCHEMA in library/config/loader.py); it must NOT live
-    inside ``[[datasets]]`` because the user-config sanitizer rejects it there.
-    The reg subset is APPENDED to subsets (the first subset is the training
-    data and must not be touched). When disabled, the is_reg subset is removed
-    and prior_loss_weight is stripped, with empty datasets/subsets chains
-    cleaned up.
-    """
-    enabled = bool(enable) and bool(reg_dir)
-
-    datasets = out.get("datasets")
-    if not isinstance(datasets, list):
-        datasets = []
-        out["datasets"] = datasets
-    if not datasets:
-        datasets.append({})
-    first_ds = datasets[0]
-    if not isinstance(first_ds, dict):
-        first_ds = {}
-        datasets[0] = first_ds
-
-    subsets = first_ds.get("subsets")
-    if not isinstance(subsets, list):
-        subsets = []
-        first_ds["subsets"] = subsets
-
-    if enabled:
-        # Find existing is_reg subset, or append a new one (don't touch subsets[0])
-        reg_sub: dict | None = None
-        for sub in subsets:
-            if isinstance(sub, dict) and sub.get("is_reg") is True:
-                reg_sub = sub
-                break
-        if reg_sub is None:
-            reg_sub = {"is_reg": True}
-            subsets.append(reg_sub)
-        reg_sub["is_reg"] = True
-        reg_sub["image_dir"] = reg_dir
-        nr = int(num_repeats) if num_repeats is not None else 1
-        if nr != base_num_repeats:
-            reg_sub["num_repeats"] = nr
-        else:
-            reg_sub.pop("num_repeats", None)
-
-        plw = float(prior_loss_weight) if prior_loss_weight is not None else 1.0
-        if not math.isclose(plw, base_plw, rel_tol=1e-9):
-            out["prior_loss_weight"] = plw
-        else:
-            out.pop("prior_loss_weight", None)
-        return
-
-    # Disabled: remove any is_reg subset and strip prior_loss_weight
-    new_subsets = [
-        sub for sub in subsets if not (isinstance(sub, dict) and sub.get("is_reg") is True)
-    ]
-    if new_subsets != subsets:
-        first_ds["subsets"] = new_subsets
-        subsets = new_subsets
-    out.pop("prior_loss_weight", None)
-
-    # Clean up empty subsets -> empty datasets chain (mirror _apply_num_repeats)
-    if not subsets:
-        first_ds.pop("subsets", None)
-        if not first_ds and len(datasets) == 1:
-            del out["datasets"]
-
-
 def validate_config(data: dict) -> list[str]:
     """Validate a config dict. Returns a list of error strings (empty = valid)."""
     errors: list[str] = []
@@ -1215,23 +1001,6 @@ def validate_config(data: dict) -> list[str]:
         sr = data["sample_ratio"]
         if isinstance(sr, (int, float)) and not (0.0 < sr <= 1.0):
             errors.append("sample_ratio must be between 0.0 (exclusive) and 1.0 (inclusive)")
-    if data.get("enable_reg") and not str(data.get("reg_image_dir", "")).strip():
-        errors.append("reg_image_dir must be set when enable_reg is true")
-    if data.get("reg_num_repeats") is not None:
-        rnr = data["reg_num_repeats"]
-        # Reject bool (isinstance(True, int) is True in Python) and require a
-        # real number; coerce floats to int after the range check so a value
-        # like 1.5 doesn't silently truncate to 1.
-        if isinstance(rnr, bool) or not isinstance(rnr, (int, float)):
-            errors.append("reg_num_repeats must be a number")
-        elif int(rnr) < 1:
-            errors.append("reg_num_repeats must be at least 1")
-    if data.get("prior_loss_weight") is not None:
-        plw = data["prior_loss_weight"]
-        if isinstance(plw, bool) or not isinstance(plw, (int, float)):
-            errors.append("prior_loss_weight must be a number")
-        elif plw < 0:
-            errors.append("prior_loss_weight must be non-negative")
     return errors
 
 
@@ -1299,50 +1068,6 @@ def save_variant_config(variant: str, data: dict) -> None:
         base_sr = _base_sample_ratio(base)
         _apply_sample_ratio(current, float(sr), base_sr)
 
-    # Handle regularization keys (virtual: routed into [[datasets.subsets]]
-    # with is_reg=true). Popped here so the flat-key loop below doesn't write
-    # them as top-level scalars.
-    enable_reg = data.pop("enable_reg", None)
-    reg_dir = data.pop("reg_image_dir", None)
-    reg_nr = data.pop("reg_num_repeats", None)
-    plw = data.pop("prior_loss_weight", None)
-    if any(v is not None for v in (enable_reg, reg_dir, reg_nr, plw)):
-        # Enforce save-path validation + path safety here (the PUT /method
-        # endpoint does not call validate_config itself). Raises ValueError,
-        # which put_layer maps to HTTP 400.
-        errors = validate_config(
-            {
-                "enable_reg": enable_reg,
-                "reg_image_dir": reg_dir,
-                "reg_num_repeats": reg_nr,
-                "prior_loss_weight": plw,
-            }
-        )
-        if errors:
-            raise ValueError("; ".join(errors))
-        base = _load(CONFIGS_DIR / "base.toml")
-        # Sanitize reg_image_dir against directory traversal (only matters
-        # when reg is actually enabled with a non-empty dir).
-        safe_dir = ""
-        if enable_reg and isinstance(reg_dir, str) and reg_dir.strip():
-            safe_dir = _safe_reg_image_dir(reg_dir)
-        # Type-safe coercion (validate_config already range-checked numeric
-        # values; re-coerce defensively and surface bad types as ValueError).
-        try:
-            reg_nr_i = int(reg_nr) if reg_nr is not None else None
-            plw_f = float(plw) if plw is not None else None
-        except (TypeError, ValueError) as e:
-            raise ValueError(f"Invalid reg value type: {e}") from e
-        _apply_reg(
-            current,
-            bool(enable_reg) if enable_reg is not None else False,
-            safe_dir,
-            reg_nr_i,
-            plw_f,
-            _base_reg_num_repeats(base),
-            _base_prior_loss_weight(base),
-        )
-
     # Write flat keys. Strip Resume & Warm-start keys left at their neutral
     # default (empty path / False) so the variant TOML stays clean and the
     # flag isn't forwarded to train.py as a literal empty/false arg.
@@ -1350,10 +1075,6 @@ def save_variant_config(variant: str, data: dict) -> None:
         if key in _SKIP:
             continue
         if key in _RESUME_DEFAULTS and value == _RESUME_DEFAULTS[key]:
-            current.pop(key, None)
-            continue
-        if key in _REG_KEYS:
-            # Reg keys are handled by _apply_reg above; never write as flat key
             current.pop(key, None)
             continue
         current[key] = value
@@ -1666,3 +1387,4 @@ def save_wandb_settings(settings: dict) -> dict:
     _SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return get_wandb_settings()
+    return "".join(parts)

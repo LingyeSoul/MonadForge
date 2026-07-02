@@ -251,18 +251,9 @@ def _apply_dataset_overrides(blueprint: dict, override: dict) -> None:
     - ``[general]``: per-key overwrite.
     - ``[[datasets]]``: matched by index against the base blueprint; only
       top-level scalars on the dataset table are overwritten.
-    - ``[[datasets.subsets]]``: split by flag.
-      * Positional (non-reg) subsets are matched by index against the base
-        dataset's subsets for a per-key shallow merge (the sparse-override
-        semantics that keep base's required ``image_dir`` alive). An overflow
-        positional subset carrying its own ``image_dir`` is appended; one
-        without it is ignored with a warning.
-      * ``is_reg=true`` regularization subsets are pulled out by flag and
-        appended/updated AFTER the positional merge — they are written by the
-        WebUI into a sparse overlay where they are typically the only subset
-        (index 0), so matching them positionally would clobber base's training
-        subset. A reg subset updates base's existing is_reg subset in place,
-        or is appended as ``subsets[1+]``.
+    - ``[[datasets.subsets]]``: matched by index against the base dataset's
+      subsets; per-key shallow merge.  Extra subsets in the override beyond
+      the base length are ignored.
     """
     g_override = override.get("general")
     if isinstance(g_override, dict):
@@ -287,60 +278,24 @@ def _apply_dataset_overrides(blueprint: dict, override: dict) -> None:
             if k == "subsets":
                 continue
             base_datasets[i][k] = v
-        # Split override subsets into positional (sparse overrides of base
-        # subsets) vs self-contained ``is_reg=true`` regularization subsets.
-        # A reg subset is written by the WebUI into a sparse overlay where it
-        # is typically the ONLY subset (index 0); matching it positionally
-        # against base's training subset would clobber the training image_dir
-        # and stamp is_reg onto it. So pull reg subsets out by flag and append
-        # them AFTER the positional merge, keyed against any existing is_reg
-        # subset in base (update-in-place) or appended as new.
-        positional: list[dict] = []
-        reg_subsets: list[dict] = []
+        # Merge subset-level scalars (num_repeats, keep_tokens, …)
         if isinstance(override_subsets, list):
-            for sub in override_subsets:
-                if isinstance(sub, dict) and sub.get("is_reg") is True:
-                    reg_subsets.append(sub)
-                elif isinstance(sub, dict):
-                    positional.append(sub)
-        # Merge positional subset-level scalars (num_repeats, keep_tokens, …)
-        if positional:
             base_subsets = base_datasets[i].get("subsets") or []
-            for j, override_sub in enumerate(positional):
+            for j, override_sub in enumerate(override_subsets):
+                if not isinstance(override_sub, dict):
+                    continue
                 if j >= len(base_subsets):
-                    # A sparse overflow fragment without is_reg and without
-                    # image_dir cannot stand alone (image_dir is Required by
-                    # the subset schema) — ignore it, preserving the historical
-                    # "sparse override" behavior for index 0.
-                    if "image_dir" not in override_sub:
-                        logger.warning(
-                            "Subset override index %d on dataset %d has no "
-                            "matching base subset and no image_dir; ignoring.",
-                            j,
-                            i,
-                        )
-                        continue
-                    base_datasets[i].setdefault("subsets", [])
-                    base_datasets[i]["subsets"].append(dict(override_sub))
+                    logger.warning(
+                        "Subset override index %d on dataset %d has no matching "
+                        "base subset; ignoring.",
+                        j,
+                        i,
+                    )
                     continue
                 if not isinstance(base_subsets[j], dict):
                     continue
                 for k, v in override_sub.items():
                     base_subsets[j][k] = v
-        # Append / update is_reg=true regularization subsets by flag.
-        if reg_subsets:
-            base_datasets[i].setdefault("subsets", [])
-            existing_reg = [
-                s for s in base_datasets[i]["subsets"]
-                if isinstance(s, dict) and s.get("is_reg") is True
-            ]
-            for reg in reg_subsets:
-                # Update the first existing reg subset in place; otherwise append.
-                target = existing_reg.pop(0) if existing_reg else None
-                if target is None:
-                    target = {}
-                    base_datasets[i]["subsets"].append(target)
-                target.update(reg)
 
 
 def load_dataset_config_from_base(
