@@ -1,23 +1,6 @@
 # Turbo prompt-following — Phase 0 measured (degradation confirmed), Phase 1 soft-rank auxiliary
 
-Status: **Phase 0 COMPLETE 2026-06-11 — gate FIRED → Phase 1 WIRED 2026-06-22
-(off-by-default `[softrank]` flag; A/B + ship-gate pending).**
-
-Phase-1 implementation (off by default — `softrank.weight=0` is byte-identical
-DP-DMD):
-- `scripts/distill_turbo/softrank.py` — vendored `soft_rank` + `caption_rank_loss`.
-- `scripts/distill_turbo/distill.py` — step-0 wiring (k no-grad caption-negative
-  forwards, rank term joins the split-bwd diversity backward).
-- `scripts/distill_turbo/config.py` + `configs/methods/turbo.toml` `[softrank]` —
-  `weight` / `k` / `every_n` / `softness` (the `method` knob was dropped: the
-  vendored relaxation has a single pairwise-sigmoid form, no NeuralSort variant).
-- `scripts/distill_turbo/metrics.py` — `train/softrank_loss` + `softrank_active`.
-- Tests: `tests/test_turbo_softrank.py` (config gate/precedence/validation + the
-  rank-loss math + grad-through-matched-only).
-
-To run the A/B: `make turbo` (weight=0 baseline) vs
-`make turbo ARGS="--softrank_weight 0.05"`; then rerun
-`bench/turbo/caption_ranking_probe.py --adapter <ckpt>` and check the gate below.
+Status: **Phase 0 COMPLETE 2026-06-11 — gate FIRED → Phase 1 unlocked, not started.**
 
 - Bench (now the standing regression probe): `bench/turbo/caption_ranking_probe.py`
 - Phase-0 run: `bench/turbo/results/20260611-2020-phase0-turboN1250/` (checkpoint
@@ -147,16 +130,10 @@ confirmed as where the damage is). Everything needed is already in scope there:
   probe just exercised 3k+ times without surprises).
 
 ```python
-# shipped form (scripts/distill_turbo/softrank.py::caption_rank_loss):
-r = stack([-mse(v_first, v_target), *(-mse(v_j, v_target) for j in negs)], dim=1)
-L_rank = soft_rank(r, tau=softness)[:, 0].mean()        # 0 when matched wins
+r = stack([-mse(v_first, v_target), *(-mse(v_j, v_target) for j in negs)])
+L_rank = soft_rank(r, method, softness)[0] - 1          # 0 when matched wins
 loss_div_total = cfg.div_weight * div_loss_t + cfg.softrank_weight * L_rank
 ```
-
-> The vendored `soft_rank` is **0-indexed** (best/highest-score → rank 0), so the
-> matched caption's rank is minimized directly — no `−1` offset (the draft's
-> `[0] − 1` assumed a 1-indexed `softtorch.rank`). `method` was dropped: the
-> vendored relaxation is a single pairwise-sigmoid form, temperature-only.
 
 It rides the existing step-0 backward (the `split_bwd` branch at `:860-865`
 backwards the diversity term before the detach — the rank term joins that

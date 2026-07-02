@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) working in this repository.
 
 ## Project Overview
 
@@ -18,17 +18,40 @@ make preprocess            # Resize → post_image_dataset/resized/, cache → p
 
 ## Commands
 
-Both `make` (Unix) and `python tasks.py` (cross-platform/Windows) work — the `Makefile` is a thin dispatcher forwarding every target to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; command bodies live in `scripts/tasks/{training,inference,preprocess,masking,gui,downloads,utilities,tagger,dcw}.py` and `scripts/experimental_tasks/` (for `exp-*`). Don't grep the Makefile for a recipe — look there.
+Both `make` (Unix) and `python tasks.py` (cross-platform/Windows) work — the `Makefile` is a thin dispatcher forwarding every target to `python tasks.py <target> $(ARGS)`. **`tasks.py` is the source of truth**; command bodies live in `scripts/tasks/{training,inference,preprocess,masking,webui,downloads,utilities,tagger,dcw}.py` and `scripts/experimental_tasks/` (for `exp-*`). Don't grep the Makefile for a recipe — look there.
 
 All training runs `train.py --method <name> --preset <name>`. By default it's invoked **directly** (single-GPU fast path — skips the ~5s accelerate launcher bootstrap; `train.py` builds its own single-process `Accelerator()` and reads `mixed_precision` from the config chain). Set `ANIMA_ACCELERATE_LAUNCH=1` to wrap it in `accelerate launch` for multi-GPU / distributed runs (see `build_launch_cmd` in `scripts/tasks/_common.py`). Override any config value from CLI (`--network_dim 32 --max_train_epochs 64`) or the preset via `PRESET=low_vram make lora`. `exp-*` targets are experimental — may break or be removed.
 
 `make help` lists every target; the canonical bodies are in `tasks.py`. Non-obvious knobs and gotchas worth knowing up front:
 
-- **Training**: `make lora PRESET=low_vram|fast_16gb|half` (half → `sample_ratio=0.5`); `make lora-gui GUI_PRESETS=tlora` runs the clean per-variant `configs/gui-methods/` tree (`ls` it for the live list). `make turbo` is the shipped DP-DMD distiller (promoted from `exp-turbo`); `exp-soft-tokens | exp-chimera` are the experimental methods.
-- **Inference compose flags**: `SPECTRUM=1` / `MOD=1` / `NOLORA=1` compose into **every** `test-*` target (`make test`, `test-hydra`, `test-merge`, `test-dcw{,-v4}`, `test-smc-cfg`, `test-easycontrol REF_IMAGE=…`, `exp-test-*`).
-- **Daemon** (local FIFO job queue, auto-starts on first submit): `make daemon | daemon-attach [JOB=<id>] | daemon-kill | daemon-terminate`. Append `--queue` to any train/distill target to enqueue instead of running inline (`make lora --queue`, `make turbo --queue`). GUI Train button, ComfyUI trainer node, and preprocessing all submit here. **Agent surface**: discovery is pidfile-based (`output/daemon/daemon.json` / `~/.anima/daemon.json` → `{port, root}`; never hardcode 8765 — the port falls back to ephemeral on collision). `make daemon-status` prints one JSON object (health + resolved `base_url` + compact job summaries; `--full` for raw records; passive, exit 1 when down); the daemon self-describes at `GET /` (README) and `GET /tools` (JSON-Schema manifest); `scripts/daemon/mcp.py` is a stdio MCP bridge over the same surface (register the script path as the MCP command — it discovers the daemon itself). Full contract: `scripts/daemon/README.md`.
-- **Gotchas**: `make merge ADAPTER_DIR=… [MULTIPLIER=0.8]` bakes LoRA into the DiT (LoRA/Ortho/T-LoRA only) and refuses Hydra-moe / postfix unless `--allow-partial`. `turbo` output is a normal LoRA — infer with `--infer_steps` matched to the DP-DMD `student_steps` rollout (currently 4) and `--cfg 1.0`. `make print-config METHOD=… PRESET=…` dumps the merged chain; `make test-unit` runs pytest; `ruff check . --fix && ruff format .` (touched files only — see [[feedback_ruff_scope_collateral]]).
+# Inference (latest output) — SPECTRUM=1 / MOD=1 / NOLORA=1 compose into every test-* target
+make test [MOD=1] [NOLORA=1] [SPECTRUM=1]
+make test-hydra            # HydraLoRA / FeRA router-live checkpoints
+make test-merge            # merged/baked DiT (no adapter)
+make test-dcw | test-dcw-v4 | test-smc-cfg     # DCW scalar / v4 calibrator / SMC-CFG
+make exp-test-soft | test-turbo | exp-test-ip REF_IMAGE=... | exp-test-easycontrol REF_IMAGE=...
+make exp-test-directedit PROMPT='...' | exp-test-directedit-dry
 
+# Modulation guidance distillation
+make distill-prep          # stage uncond sidecar + teacher-synthetic clean-latents pool
+make distill-mod           # train pooled_text_proj MLP (add --synth_data_dir for paper-faithful fit)
+
+# DCW v4 calibration (one-shot per LoRA checkpoint)
+make dcw                   # sample 5 aspect buckets + train fusion head (~3-5h on a 5060 Ti)
+make dcw-train             # train-only on existing pool (~30s)
+
+python -m webui            # WebUI (FastAPI + Vue 3 — config editing, dataset browsing, training)
+make mask | mask-clean     # SAM3 + MIT → post_image_dataset/masks/ (for masked loss)
+make merge ADAPTER_DIR=output/ckpt [MULTIPLIER=0.8]   # bake LoRA into DiT (LoRA/Ortho/T-LoRA only)
+make comfy-batch           # run ComfyUI batch workflow
+make print-config METHOD=lora PRESET=default          # dump merged config chain
+make test-unit             # pytest tests/ (smoke, config, loss/network registries)
+make export-logs RUN=...   # export TensorBoard run to JSON
+make update                # update from a GitHub release (--dry-run / --version / --no-sync)
+ruff check . --fix && ruff format .
+```
+
+Gotchas: `merge` refuses ReFT / Hydra moe / postfix (not foldable) unless `--allow-partial`. `turbo` output is a normal LoRA — infer with `--infer_steps 2 --cfg 1.0` (matched to the DP-DMD `student_steps=2` rollout).
 ## Key entry points
 
 | File | Purpose |
@@ -38,9 +61,11 @@ All training runs `train.py --method <name> --preset <name>`. By default it's in
 | `train.py` | `AnimaTrainer` — main training loop via HF Accelerate |
 | `inference.py` | Standalone image generation (`--help` for all flags) |
 | `networks/spectrum.py` | Spectrum inference acceleration |
-| `gui/` | PySide6 GUI package |
+| `webui/` | FastAPI + Vue 3 WebUI (config editing, dataset browsing, training, system management). Its `services/task_service.py` submits every task to the daemon (below) as a *command* job and tails the daemon-managed stdout + progress.jsonl. |
+| `scripts/daemon/` | **Training daemon** — localhost serial job queue (`127.0.0.1:8765`, no auth): one job at a time (GPU guard), state persists to `output/daemon/` (survives WebUI restart), `chain_train` (preprocess→train), REST + Python client (`scripts/daemon/client.py`) + stdio MCP bridge (`mcp.py`) so AI agents can submit/watch/stop jobs. CLI: `python tasks.py daemon[-status\|-attach\|-kill\|-terminate]`. `--queue` on any train target enqueues here. **Also hosts the WebUI as a supervised sidecar** (`webui_sidecar.py`) — the daemon spawns the uvicorn server on boot, respawns it on crash, and tree-kills it on shutdown; the sidecar is NOT a job (excluded from the serial queue + `active_job`). Disable with `ANIMA_DAEMON_HOST_WEBUI=0` (CLI/ComfyUI-only setups). |
+| `scripts/tray/` | **Windows system-tray app** (pystray) — status indicator (idle/running/error/down) + controller (open WebUI, pause/resume queue, stop job, restart daemon, language switcher 中/英). Run `pythonw -m scripts.tray` or the `monadforge-tray` gui-script. Icons are procedural (Pillow) in `icons.py`; strings localized in `i18n.py` (own choice persisted to `output/daemon/tray-prefs.json`, default 中文 — independent of the WebUI's language). |
 | `tasks.py` | Cross-platform task runner — source of truth for every `make` target |
-| `scripts/tasks/` + `scripts/experimental_tasks/` | Where command bodies actually live (`_common.py` = shared helpers) |
+| `scripts/tasks/` + `scripts/experimental_tasks/` | Where command bodies actually live (`_common.py` = shared helpers, incl. `_queue_submit`/`queue_command` for the daemon `--queue` path) |
 
 Docs: shipped method deep-dives in `docs/methods/`, experimental in `docs/experimental/`, active proposals in `docs/proposal/`, retired material under `_archive/`.
 
@@ -59,7 +84,7 @@ Config-driven via a three-layer merge chain: `base.toml → presets.toml[<preset
 - **Self-contained per-method dir** (`configs/<method>/<method>.toml`) — the consolidated layout: method config **+** full inline dataset blueprint in one file, no `dataset_config` cross-reference. `_resolve_method_path` (`library/config/io.py`) **prefers** `configs/<method>/<method>.toml` over the flat `configs/methods/<method>.toml` when present (default `methods` subdir only — `gui-methods` stays flat), so `--method <m>` auto-discovers it with no new flags. **EasyControl is the pilot**: `configs/easycontrol/easycontrol.toml` (alongside the miner-generated descriptor blueprints `near_twins.toml` / `colorize.toml` in the same dir). NB `configs/gui-methods/easycontrol.toml` still points at the standalone `configs/datasets/easycontrol.toml` — keep the inline subset in sync until gui-methods is migrated.
 - `configs/gui-methods/` — clean per-**variant** parallel tree, no toggle blocks (what you see is what runs). Selected via `--methods_subdir gui-methods` (wrapped by `make lora-gui`). `ls` for the live list.
 
-Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with stem-mirrored names (EasyControl uses this to keep source dirs user-facing while caches live under `post_image_dataset/`). `library.config.io.load_method_preset(method, preset, methods_subdir=...)` is the reusable merge helper (not re-exported via `train_util`). All config paths are relative to `anima_lora/`. Outputs split by kind: checkpoints (+ `.snapshot.toml` + `_moe` siblings) in `output/ckpt/`, inference images in `output/tests/`.
+Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with stem-mirrored names (EasyControl uses this to keep source dirs user-facing while caches live under `post_image_dataset/`). `library.config.io.load_method_preset(method, preset, methods_subdir=...)` is the reusable merge helper (not re-exported via `train_util`). All config paths are relative to `anima_lora/`. Outputs split by kind: checkpoints (+ `.snapshot.toml` + `_moe` siblings) in `output/ckpt/`, inference images in `output/tests/`. **Daemon per-job outputs** live under `output/daemon/jobs/<job_id>/`: `job.json` (persisted `Job` record), `stdout.log`, `progress.jsonl`, and `sample/` (training preview gallery, injected as `--sample_dir` so a new task's gallery never replays the previous task's). The daemon returns `sample_dir` on submit and the WebUI reads it back (via `task.sample_dir` in-session, or `GET /jobs/<id>` after a restart) to locate the gallery.
 
 ## Architecture
 
@@ -74,7 +99,7 @@ Subsets accept `cache_dir` — redirects all VAE/TE/PE caches to that dir with s
 The pretrained model expects max-padded text encoder outputs — zero-padded positions act as attention sinks in cross-attention softmax. Trimming to actual text length produces **black images**. Both training and inference must pad to `max_length` and must NOT mask out padding via `crossattn_seqlens`. Regenerate disk-cached `.npz` after any tokenizer/padding change.
 
 ### Free-fit native-shape bucketing — the only resize mode
-Free-fit is the sole resize mode (the discrete **constant-token bucket pool** — `CONSTANT_TOKEN_BUCKETS` and the per-tier tables — was **removed 2026-06-19**; the migration kept only each tier's numeric token band in `EDGE_TOKEN_BANDS`). Free-fit keeps each image's **native aspect ratio** and lands its patch-grid token count *anywhere* inside its tier's band (`freefit_bucket` / `freefit_band_for_edge` in `buckets.py`; design in `_archive/proposals/free_aspect_token_band_resize.md`), driving crop loss to ~zero (sub-patch <16px residual). There is no `freefit` flag any more — it's implicit. Each forward runs at its real token count; `compile_blocks()` sets `_native_flatten` (flattens each patch grid to a fake-5D `(B, 1, seq_len, 1, D)` shape, keying the block graph on **token count alone**), bit-exact to the eager 5D path. The legacy pad-to-static path was removed 2026-05-24 (`static_token_count`/`static_pad` etc.).
+Free-fit is the sole resize mode (the discrete **constant-token bucket pool** — `CONSTANT_TOKEN_BUCKETS` and the per-tier tables — was **removed 2026-06-19**; the migration kept only each tier's numeric token band in `EDGE_TOKEN_BANDS`). Free-fit keeps each image's **native aspect ratio** and lands its patch-grid token count *anywhere* inside its tier's band (`freefit_bucket` / `freefit_band_for_edge` in `buckets.py`; bands defined in `EDGE_TOKEN_BANDS`), driving crop loss to ~zero (sub-patch <16px residual). There is no `freefit` flag any more — it's implicit. Each forward runs at its real token count; `compile_blocks()` sets `_native_flatten` (flattens each patch grid to a fake-5D `(B, 1, seq_len, 1, D)` shape, keying the block graph on **token count alone**), bit-exact to the eager 5D path. The legacy pad-to-static path was removed 2026-05-24 (`static_token_count`/`static_pad` etc.).
 
 **Compile coupling**: free-fit populates many distinct `(W,H)` inside a tier's band, which would explode the static N-graph cascade, so it **requires `compile_dynamic_seq`** — auto-enabled by `train.py` whenever `torch_compile` is on (and unconditionally forced in the bespoke distill loops via `ensure_dynamic_seq_for_freefit`). `dynamic_seq` marks only the seq axis dynamic and bounds it to the tier's `seq_range`, collapsing the whole band to **one graph per tier**. `make_buckets()` uses the actual on-disk cached `(W,H)` as the bucket set (caches are literally the source of truth), so nothing AR-snaps at load. **Snap-era caches still train fine** (a snap pool is just a free-fit pool that landed only on the old discrete counts); re-preprocess only to gain the reduced-crop benefit.
 
@@ -112,7 +137,7 @@ Caches live under `post_image_dataset/lora/`: `{stem}_{WxH}_anima.npz` (VAE), `{
 
 ## Custom nodes
 
-Spectrum KSampler + mod-guidance nodes live in a separate repo (https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler; ships DCW scalar default `+0.01` + `auto` mode). The PiD decode node ships from its own repo too (https://github.com/sorryhyun/ComfyUI-Anima-PiD — full handoff 2026-06-04; symlinked into `../comfy/custom_nodes/comfyui-anima-pid`), as does the EasyControl KSampler node (`~/ComfyUI-EasyControl-KSamplerCompat`). In-tree under `custom_nodes/`: `comfyui-hydralora/` (Adapter / FeRA / Soft Tokens loaders — see its `CLAUDE.md` for the `forward_hook`-not-override invariant), `comfyui-anima-directedit/`, `comfyui-anima-tagger/`, `comfyui-anima-trainer/` (daemon-backed one-shot trainer), `comfyui-anima-blockcompile/`.
+Spectrum KSampler + mod-guidance nodes live in a separate repo (https://github.com/sorryhyun/ComfyUI-Spectrum-KSampler; ships DCW scalar default `+0.01` + `auto` mode). In-tree under `custom_nodes/`: `comfyui-hydralora/` (Adapter / FeRA / Soft Tokens loaders — see its `CLAUDE.md` for the `forward_hook`-not-override invariant), `comfyui-anima-directedit/`, `comfyui-anima-tagger/`, `comfyui-anima-trainer/`, `comfyui-anima-blockcompile/`.
 
 Several nodes carry a `_vendor/` subset of the live tree. **Regenerate vendor trees with `make vendor-sync` (`scripts/release/sync_vendor.py`), never `cp` by hand** — re-run before every node publish. See [[feedback_vendor_sync]]. Note `../comfy/custom_nodes/` is symlinked into this repo — edit the source here, not the symlink.
 

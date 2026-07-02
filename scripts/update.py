@@ -59,11 +59,8 @@ BACKUP_ROOT = ROOT / ".anima-update-backups"
 
 # Directories never touched by update (user data, caches, env, downloads).
 # Matched by leading path segments, so "archive/graft/runtime" matches that
-# prefix while leaving the rest of archive/ updatable. The whole "_archive/"
-# tree is user-owned (retired methods + frozen bench results), so it's
-# preserved wholesale and never overwritten or pruned by an update.
+# prefix while leaving the rest of archive/ updatable.
 PRESERVE_DIRS: tuple[str, ...] = (
-    "_archive",
     "image_dataset",
     "post_image_dataset",
     "ip-adapter-dataset",

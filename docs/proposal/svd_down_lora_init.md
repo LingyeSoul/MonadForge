@@ -1,10 +1,8 @@
 # SVD-Down LoRA — a principal input basis without OrthoInit's cold-start bottleneck
 
-Status: **SHIPPED** (Phase 0 passed; archived 2026-06-28). The `down_init =
-"weight_svd"` option is live on the plain-LoRA path — see the ops doc
-`docs/methods/svd-down-lora.md`. This file is kept as the original theory /
-motivation write-up. Turbo is the observation that motivated the proposal, not
-the only intended use case.
+Status: **proposal, nothing implemented.** The first deliverable is a three-arm
+initialization probe; normal LoRA training is the decision benchmark. Turbo is
+the observation that motivated the proposal, not the only intended use case.
 
 ## Executive claim
 

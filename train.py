@@ -1586,33 +1586,6 @@ class AnimaTrainer:
                         sub["sample_ratio"] = sample_ratio
                 logger.info(f"Applied --sample_ratio={sample_ratio} to all subsets")
 
-            # --artists_shard k_N: restrict training to one round-robin shard of
-            # the artist subdirs, expanded into each subset's path_pattern before
-            # the blueprint is built (so _derive_token_budget's path_pattern-
-            # filtered count and validation thresholds all see the shard).
-            artists_shard = getattr(args, "artists_shard", None)
-            if artists_shard:
-                if getattr(args, "path_pattern", None):
-                    raise ValueError(
-                        "--artists_shard and --path_pattern are mutually "
-                        "exclusive (the shard expands to a path_pattern)."
-                    )
-                from library.datasets.artist_shard import apply_artist_shard
-                from library.env import resolve_under_home
-
-                shard_info = apply_artist_shard(
-                    user_config, artists_shard, resolve=resolve_under_home
-                )
-                for image_dir, meta in shard_info.items():
-                    logger.info(
-                        "Applied --artists_shard=%s to %s: %d/%d artists [%s]",
-                        artists_shard,
-                        image_dir,
-                        meta["n_shard"],
-                        meta["n_artists"],
-                        ", ".join(meta["artists"]),
-                    )
-
             blueprint = blueprint_generator.generate(user_config, args)
             train_dataset_group, val_dataset_group = (
                 config_util.generate_dataset_group_by_blueprint(

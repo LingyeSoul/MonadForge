@@ -22,7 +22,7 @@ Usage::
 ``build_anima`` reads its knobs off an argparse ``Namespace`` (``device`` /
 ``dtype`` / ``attn_mode`` / ``gradient_checkpointing`` /
 ``compile`` / ``compile_mode``); the matching
-parser surface lives in ``library.runtime.argparse_groups.add_device_args`` +
+parser surface lives in ``library.runtime.cli.add_device_args`` +
 ``bench._anima.add_common_args``. Callers without a parser can pass a plain
 ``argparse.Namespace(**kwargs)``.
 """

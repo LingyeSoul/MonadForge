@@ -16,8 +16,6 @@ import pytest
 import torch
 from safetensors.torch import load_file
 
-import networks as _networks_pkg
-
 from networks import (
     NETWORK_KWARGS,
     NETWORK_REGISTRY,
@@ -94,43 +92,6 @@ def test_repa_kwargs_registered():
     }
     missing = must_have - set(NETWORK_KWARGS)
     assert not missing, f"allowlist missing repa kwargs: {missing}"
-
-
-# ---------------------------------------------------------------------------
-# Allowlist derivation — the H1 gotcha is now retired (single edit)
-# ---------------------------------------------------------------------------
-#
-# ``NETWORK_KWARGS`` is *derived* by AST-scanning the LoRA-family consumers for
-# ``kwargs.get("literal")`` reads (``networks._derive_network_kwargs``), so a new
-# knob auto-registers from its read alone — no second frozenset edit. These tests
-# pin the derivation's invariants; the ``must_have`` tests above pin the
-# load-bearing keys as a backstop against a scan that breaks.
-
-
-def test_derivation_is_sane_and_independent_of_import_order():
-    """Re-deriving yields the same non-trivial set the module exposes."""
-    rederived = _networks_pkg._derive_network_kwargs()
-    assert rederived == NETWORK_KWARGS
-    # A broken scan (wrong path, pattern miss) would collapse the set; the live
-    # allowlist is ~75 keys, so anything tiny means the derivation regressed.
-    assert len(NETWORK_KWARGS) > 50
-
-
-def test_alias_fallbacks_excluded():
-    """Back-compat alias defaults (router_hidden / num_bands) must NOT forward —
-    only their canonical names do."""
-    assert "router_hidden" not in NETWORK_KWARGS
-    assert "num_bands" not in NETWORK_KWARGS
-    assert "router_hidden_dim" in NETWORK_KWARGS
-    assert "fera_num_bands" in NETWORK_KWARGS
-
-
-def test_factory_only_keys_are_derived():
-    """Keys read in factory.py (not config.from_kwargs) must still be picked up —
-    this is the case the audit's 'introspect from_kwargs' fix would have dropped.
-    """
-    for k in ("use_repa", "channel_scaling_alpha", "use_custom_down_autograd"):
-        assert k in NETWORK_KWARGS, f"factory-read key {k!r} not derived"
 
 
 # ---------------------------------------------------------------------------

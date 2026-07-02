@@ -206,7 +206,7 @@ shelved with a clear, falsifiable reason on record.
 - ChimeraHydra deep-dive: `docs/experimental/chimera-hydra.md`;
   module `networks/lora_modules/chimera.py`.
 - Sibling proposal (the plain-LoRA case, Phase 0 passed):
-  `_archive/proposals/svd_down_lora_init.md`.
+  `docs/proposal/svd_down_lora_init.md`.
 - Memory: [[project_chimera_expert_capacity_levers]],
   [[project_chimera_content_half_weak_overprovisioned]],
   [[project_orthoinit_variant]], [[project_cmmd_val_signal]].

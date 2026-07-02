@@ -165,13 +165,29 @@ def resize_to_bucket(
     return img.crop((left, top, left + bw, top + bh))
 
 
-def _unpack_bucket_args(bucket_args: tuple):
-    """Split the picklable ``bucket_args`` tuple into the active free-fit params.
+def process_image(
+    image_path: Path,
+    out_dir: Path,
+    bucket_args: tuple,
+    copy_captions: bool = True,
+    rel_dir: str = "",
+    overwrite: bool = False,
+) -> tuple[str, tuple[int, int], bool]:
+    """Worker — receives bucket params (not a BucketManager) to stay picklable.
 
-    Leading (resolution, min/max bucket, step) elements are vestigial under
-    free-fit (the legacy aspect-ratio BucketManager path is gone); kept in the
-    tuple for layout stability. 5th+ elements are the active free-fit params.
+    ``rel_dir`` is the (possibly empty) relative subdir under the source root;
+    the output mirrors it as ``out_dir / rel_dir / stem.png``. Empty ``rel_dir``
+    collapses to the flat layout.
+
+    Returns ``(name, bucket_reso, skipped)``. Unless ``overwrite`` is set, an
+    image whose resized PNG already exists *at the correct bucket size* is
+    skipped (no re-decode/resize) — so a re-run is near-free, while a bucket
+    change (e.g. adding a ``--target_res`` tier) still re-resizes only the
+    images whose target bucket actually moved.
     """
+    # Leading (resolution, min/max bucket, step) elements are vestigial under
+    # free-fit (the legacy aspect-ratio BucketManager path is gone); kept in the
+    # tuple for layout stability. 5th+ elements are the active free-fit params.
     _max_reso, _min_size, _max_size, _reso_steps, *rest = bucket_args
     target_res = rest[0] if rest else None
     crop_anchor = rest[1] if len(rest) > 1 else DEFAULT_RESIZE_CROP_ANCHOR
@@ -179,18 +195,7 @@ def _unpack_bucket_args(bucket_args: tuple):
     crop_margins = rest[3] if len(rest) > 3 else None
     fit_mode = rest[4] if len(rest) > 4 else DEFAULT_FIT_MODE
     max_ratio = rest[5] if len(rest) > 5 else DEFAULT_FREEFIT_MAX_RATIO
-    return target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
 
-
-def _prepare_source(image_path: Path, crop_margins):
-    """Open + EXIF-transpose the source once; return the shared working geometry.
-
-    Decode, metadata pull-through and EXIF transpose are factored out so the
-    write path resizes from a single shared decode (instead of re-opening the
-    source). Returns the EXIF-corrected image (not yet RGB-converted/cropped —
-    that's deferred to the write path), its ``save()`` metadata kwargs, and the
-    margin-crop box + dims.
-    """
     src_img = Image.open(image_path)
     save_kwargs = _collect_metadata(src_img)
     img = ImageOps.exif_transpose(src_img)
@@ -204,128 +209,46 @@ def _prepare_source(image_path: Path, crop_margins):
     )
     work_w = max(1, margin_box[2] - margin_box[0])
     work_h = max(1, margin_box[3] - margin_box[1])
-    return img, save_kwargs, margin_box, work_w, work_h
 
-
-def _emit_resized(
-    img: Image.Image,
-    save_kwargs: dict,
-    margin_box: tuple[int, int, int, int],
-    work_w: int,
-    work_h: int,
-    rgb_cache: list,
-    *,
-    image_path: Path,
-    out_dir: Path,
-    rel_dir: str,
-    overwrite: bool,
-    copy_captions: bool,
-    target_res,
-    crop_anchor: str,
-    bucket_resos,
-    fit_mode: str,
-    max_ratio: float,
-    signature: dict,
-    out_stem_suffix: str = "",
-) -> tuple[str, tuple[int, int] | None, bool]:
-    """Resize the shared working region into its tier and write the PNG.
-
-    ``rgb_cache`` is a 1-element mutable cell holding the lazily-built
-    ``convert("RGB").crop(margin_box)`` of the source, so the caller
-    converts/crops the source at most once. ``crop_anchor`` is expected already
-    normalized; ``signature`` is the resize metadata signature shared by
-    skip-check and save.
-    """
-    # Free-fit (the only mode): choose_edge (inside select_resize_bucket) assigns
-    # the tier (default = canonical 1024), then free-fit lands the native-aspect
-    # (W, H) inside that tier's band.
+    # Free-fit (the only mode): choose_edge assigns the tier (default = canonical
+    # 1024), then free-fit lands the native-aspect (W, H) inside that tier's band.
     tier = target_res or list(DEFAULT_TARGET_RES)
     _, bucket_reso = select_resize_bucket(
         work_w, work_h, tier, bucket_resos, fit_mode=fit_mode, max_ratio=max_ratio
     )
 
     bw, bh = bucket_reso
-    out_stem = f"{image_path.stem}{out_stem_suffix}"
+    crop_anchor = normalize_crop_anchor(crop_anchor)
+    signature = _resize_metadata_signature(
+        crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
+    )
+
     target_dir = out_dir / rel_dir if rel_dir else out_dir
-    out_path = target_dir / f"{out_stem}.png"
+    out_path = target_dir / f"{image_path.stem}.png"
 
     if not overwrite and out_path.exists():
         try:
             with Image.open(out_path) as ex:
                 if ex.size == (bw, bh) and _resize_metadata_matches(ex, signature):
-                    return f"{out_stem}.png", bucket_reso, True
+                    return image_path.name, bucket_reso, True
         except Exception:
             pass
 
-    if rgb_cache[0] is None:
-        rgb_cache[0] = img.convert("RGB").crop(margin_box)
-    out_img = resize_to_bucket(rgb_cache[0], bucket_reso, crop_anchor=crop_anchor)
+    img = img.convert("RGB")
+    img = img.crop(margin_box)
+    img = resize_to_bucket(img, bucket_reso, crop_anchor=crop_anchor)
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    # compress_level=1: resized PNGs are an intermediate cache re-read by the VAE
-    # latent step, so trade marginally larger files for a much faster zlib encode
-    # (the dominant per-image cost) over Pillow's default level 6.
-    out_img.save(out_path, format="PNG", compress_level=1, **save_kwargs)
+    _add_resize_metadata(save_kwargs, signature)
+    img.save(out_path, format="PNG", **save_kwargs)
 
     if copy_captions:
         for ext in CAPTION_EXTENSIONS:
             cap = image_path.with_suffix(ext)
             if cap.exists():
-                shutil.copy2(cap, target_dir / f"{out_stem}{ext}")
+                shutil.copy2(cap, target_dir / f"{image_path.stem}{ext}")
 
-    return f"{out_stem}.png", bucket_reso, False
-
-
-def process_image(
-    image_path: Path,
-    out_dir: Path,
-    bucket_args: tuple,
-    copy_captions: bool = True,
-    rel_dir: str = "",
-    overwrite: bool = False,
-) -> tuple[str, tuple[int, int] | None, bool]:
-    """Worker — receives bucket params (not a BucketManager) to stay picklable.
-
-    ``rel_dir`` is the (possibly empty) relative subdir under the source root;
-    the output mirrors it as ``out_dir / rel_dir / stem.png``. Empty ``rel_dir``
-    collapses to the flat layout.
-
-    Returns ``(name, bucket_reso, skipped)``. Unless ``overwrite`` is set, an
-    image whose resized PNG already exists *at the correct bucket size* is
-    skipped (no re-decode/resize) — so a re-run is near-free, while a bucket
-    change (e.g. adding a ``--target_res`` tier) still re-resizes only the
-    images whose target bucket actually moved.
-    """
-    target_res, crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio = (
-        _unpack_bucket_args(bucket_args)
-    )
-    img, save_kwargs, margin_box, work_w, work_h = _prepare_source(
-        image_path, crop_margins
-    )
-    crop_anchor = normalize_crop_anchor(crop_anchor)
-    signature = _resize_metadata_signature(
-        crop_anchor, bucket_resos, crop_margins, fit_mode, max_ratio
-    )
-    _add_resize_metadata(save_kwargs, signature)
-    return _emit_resized(
-        img,
-        save_kwargs,
-        margin_box,
-        work_w,
-        work_h,
-        [None],
-        image_path=image_path,
-        out_dir=out_dir,
-        rel_dir=rel_dir,
-        overwrite=overwrite,
-        copy_captions=copy_captions,
-        target_res=target_res,
-        crop_anchor=crop_anchor,
-        bucket_resos=bucket_resos,
-        fit_mode=fit_mode,
-        max_ratio=max_ratio,
-        signature=signature,
-    )
+    return image_path.name, bucket_reso, False
 
 
 def resize_to_buckets(
@@ -452,7 +375,6 @@ def resize_to_buckets(
 
     bucket_counts: dict[tuple[int, int], int] = {}
     resize_skipped = 0
-
     with ProcessPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(

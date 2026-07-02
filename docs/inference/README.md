@@ -21,7 +21,6 @@ The DiT operates on 5D latents `(B, C, T=1, H, W)`; sampler-boundary plug-ins he
 | [smc_cfg.md](smc_cfg.md) | α-adaptive sliding-mode CFG correction in velocity space (λ=5, α=0.2). | `--smc_cfg` | Paper's fixed k was ~14× off; ships `sign()` only (tanh ε removed). |
 | [cns.md](cns.md) | SDE noise recolorer — per-step injected noise is `sqrt(1−γ)`-shaped toward unresolved freq bands, RMS-renormalized (zero-sum). | `--sampler er_sde --cns auto` | **er_sde-only** (no-op on euler/lcm); faithful to paper Alg. 1. |
 | [mod-guidance.md](mod-guidance.md) | Text-conditioned AdaLN via a learned `pooled_text_proj` MLP, distilled with `make distill-mod`. | `make test MOD=1` | Global-tone lever, not a content lever (σ-FiLM probe was a geometric ceiling). |
-| [fsg.md](fsg.md) | Foresight Guidance — **pre-step latent calibration**: at scheduled mid-σ steps run K forward(cond)–backward(uncond) fixed-point iterations to pull `x_t` onto the golden path, then denoise from `x̂_t`. | `make test FSG=1` | **Mid-σ band only** (`[0.45,0.85]`) — σ≈0.94 diverges (paper's noisy-stage prescription is wrong on Anima). CFG-only; `3·K` extra forwards/step; matched-NFE A/B still owed. No-op under `--spectrum`/`--spd` (v2). |
 
 ## Representation edits
 

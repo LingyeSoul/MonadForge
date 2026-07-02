@@ -63,32 +63,8 @@ def run_validation(
     )
 
     try:
-        use_cmmd = getattr(args, "use_cmmd", True)
-        want_fm = getattr(args, "validation_fm_with_cmmd", True)
-        val_seed = (
-            args.validation_seed if args.validation_seed is not None else args.seed
-        )
-
-        # FM-MSE forwards run FIRST, on the DiT as it sits at the end of the
-        # training step — resident and block-swap-prepared — so they don't pay
-        # CMMD's DiT→CPU→GPU unload/reload, nor forward a DiT left in the
-        # all-blocks-on-GPU state that CMMD's `.to(device)` reload leaves under
-        # block swap. The result's role (aux vs primary) is decided after CMMD,
-        # so the forward sweep happens at most once. Re-seed for determinism.
-        fm_result = None
-        if use_cmmd and want_fm:
-            trainer._switch_rng_state(val_seed)
-            fm_result = _compute_fm_validation(
-                trainer,
-                ctx=ctx,
-                val=val,
-                progress_desc=progress_desc,
-                postfix_label=postfix_label,
-                primary=False,
-            )
-
         cmmd_ok = False
-        if use_cmmd:
+        if getattr(args, "use_cmmd", True):
             cmmd_ok = _try_cmmd_validation(
                 trainer,
                 ctx=ctx,
@@ -102,50 +78,20 @@ def run_validation(
                 log_div_key=log_div_key,
                 logging_fn=logging_fn,
             )
-
-        # CMMD owns the primary signal when it ran; the FM sweep (if done) is
-        # logged as a diagnostic under distinct `loss/validation/fm_*` keys. If
-        # CMMD is off or failed, FM is the primary signal instead — reusing the
-        # sweep already done above, or running it now (the DiT is back on the
-        # GPU via _try_cmmd_validation's finally, or never left it).
-        if cmmd_ok:
-            if fm_result is not None:
-                _log_fm_validation(
-                    fm_result,
-                    ctx=ctx,
-                    val=val,
-                    epoch=epoch,
-                    global_step=global_step,
-                    log_avg_key=log_avg_key,
-                    log_div_key=log_div_key,
-                    logging_fn=logging_fn,
-                    val_loss_recorder=val_loss_recorder,
-                    primary=False,
-                )
-        else:
-            if fm_result is None:
-                trainer._switch_rng_state(val_seed)
-                fm_result = _compute_fm_validation(
-                    trainer,
-                    ctx=ctx,
-                    val=val,
-                    progress_desc=progress_desc,
-                    postfix_label=postfix_label,
-                    primary=True,
-                )
-            if fm_result is not None:
-                _log_fm_validation(
-                    fm_result,
-                    ctx=ctx,
-                    val=val,
-                    epoch=epoch,
-                    global_step=global_step,
-                    log_avg_key=log_avg_key,
-                    log_div_key=log_div_key,
-                    logging_fn=logging_fn,
-                    val_loss_recorder=val_loss_recorder,
-                    primary=True,
-                )
+        if not cmmd_ok:
+            _run_fm_validation(
+                trainer,
+                ctx=ctx,
+                val=val,
+                val_loss_recorder=val_loss_recorder,
+                epoch=epoch,
+                global_step=global_step,
+                progress_desc=progress_desc,
+                postfix_label=postfix_label,
+                log_avg_key=log_avg_key,
+                log_div_key=log_div_key,
+                logging_fn=logging_fn,
+            )
         # Method-adapter baseline deltas (e.g. IP-Adapter no_ip / shuffled_ref).
         # Runs independently of CMMD/FM above — these are FM-MSE re-forwards on
         # the same (batch, sigma, noise) with the adapter perturbed, so the
@@ -254,101 +200,71 @@ def _try_cmmd_validation(
         args.validation_seed if args.validation_seed is not None else args.seed
     )
 
-    # Three-phase val so the DiT, VAE and PE-Core never share the GPU — the
-    # peak is one model + its working set, not DiT+VAE simultaneously (the old
-    # OOM: per-sample VAE decode ran with the DiT still resident):
-    #   phase 1: DiT resident → sample every item's latents, park on CPU.
-    #   phase 2: DiT → CPU, VAE → GPU → decode all latents to pixels (CPU).
-    #   phase 3: VAE → CPU, PE → GPU → encode all pixels to features.
-    # One DiT/VAE/PE round-trip per val pass instead of N VAE shuttles.
-    latents_cpu: list[torch.Tensor] = []
+    # Two-phase val to keep DiT and PE-Core off the GPU at the same time:
+    # phase 1 generates every sample with DiT resident and parks the
+    # decoded pixels on CPU; phase 2 swaps DiT → CPU + PE → GPU and
+    # encodes them all. One DiT round-trip per val pass instead of N.
     pixel_images: list[torch.Tensor] = []
     try:
-        try:
-            with torch.no_grad(), accelerator.autocast():
-                unwrapped_unet.prepare_block_swap_before_forward()
-                # PHASE 1 — sample latents with the DiT on the GPU; keep the
-                # decode out so the VAE never loads while the DiT is resident.
-                for i, item in enumerate(ref_items):
-                    sd = _load_safetensors(item.text_encoder_outputs_npz)
-                    crossattn_emb = _build_val_crossattn_emb(
-                        unwrapped_unet, sd, accelerator
-                    )
+        with torch.no_grad(), accelerator.autocast():
+            unwrapped_unet.prepare_block_swap_before_forward()
+            for i, item in enumerate(ref_items):
+                sd = _load_safetensors(item.text_encoder_outputs_npz)
+                crossattn_emb = _build_val_crossattn_emb(
+                    unwrapped_unet, sd, accelerator
+                )
 
-                    bucket_w, bucket_h = item.bucket_reso
+                bucket_w, bucket_h = item.bucket_reso
 
-                    latents = anima_train_utils.sample_image_latents(
-                        accelerator=accelerator,
-                        dit=unwrapped_unet,
-                        height=int(bucket_h),
-                        width=int(bucket_w),
-                        crossattn_emb=crossattn_emb,
-                        sample_steps=sample_steps,
-                        guidance_scale=cfg_scale,
-                        flow_shift=flow_shift,
-                        seed=seed_base + i,
-                        show_progress=False,
-                        # Keep the DiT's allocator pool warm across items — no
-                        # per-item empty_cache; the boundary cleans (before the
-                        # VAE / PE swaps) are what actually free the GPU.
-                        clean_cache=False,
-                    )
-                    latents_cpu.append(latents.detach().to("cpu"))
-                    del latents, crossattn_emb
-                    val_progress_bar.update(1)
-
-                    trainer.on_validation_step_end(ctx, {})
-
-                # PHASE 2 — park DiT on CPU, bring VAE on, decode every latent.
-                unwrapped_unet.to("cpu")
+                image = anima_train_utils.sample_image_to_tensor(
+                    accelerator=accelerator,
+                    dit=unwrapped_unet,
+                    vae=ctx.vae,
+                    height=int(bucket_h),
+                    width=int(bucket_w),
+                    crossattn_emb=crossattn_emb,
+                    sample_steps=sample_steps,
+                    guidance_scale=cfg_scale,
+                    flow_shift=flow_shift,
+                    seed=seed_base + i,
+                    show_progress=False,
+                )
+                pixel_images.append(image.detach().cpu())
+                del image, crossattn_emb
                 clean_memory_on_device(accelerator.device)
-                org_vae_device = ctx.vae.device
-                ctx.vae.to(accelerator.device)
-                try:
-                    for latents in latents_cpu:
-                        image = anima_train_utils.decode_latents_to_image(
-                            ctx.vae, latents, accelerator.device
-                        )
-                        pixel_images.append(image.detach().cpu())
-                        del image
-                finally:
-                    ctx.vae.to(org_vae_device)
-                    clean_memory_on_device(accelerator.device)
-                latents_cpu.clear()
+                val_progress_bar.update(1)
 
-                # PHASE 3 — VAE off, PE on, encode every decoded pixel batch.
-                bundle.encoder.inner.to(accelerator.device)
-                try:
-                    # Batch PE encoding by bucket: same-shape images go through
-                    # one same_bucket=True forward instead of N. Original order
-                    # is preserved so gen_pooled[i] still pairs with ref_pool[i].
-                    bucket_groups: dict[tuple[int, int], list[int]] = {}
-                    for idx, img in enumerate(pixel_images):
-                        key = (int(img.shape[-2]), int(img.shape[-1]))
-                        bucket_groups.setdefault(key, []).append(idx)
+                trainer.on_validation_step_end(ctx, {})
 
-                    pooled_slots: list[torch.Tensor | None] = [None] * len(
-                        pixel_images
-                    )
-                    for indices in bucket_groups.values():
-                        batch = torch.stack(
-                            [pixel_images[idx] for idx in indices], dim=0
-                        ).to(accelerator.device)
-                        feats_list = encode_pe_from_imageminus1to1(
-                            bundle, batch, same_bucket=True
-                        )
-                        for idx, feats in zip(indices, feats_list):
-                            pooled_slots[idx] = pool_and_normalize(feats).cpu()
-                        del batch, feats_list
-                    gen_pooled = [t for t in pooled_slots if t is not None]
-                finally:
-                    bundle.encoder.inner.to("cpu")
-                    clean_memory_on_device(accelerator.device)
-        finally:
-            # The DiT must end on the GPU regardless of how the phases exit:
-            # FM-aux / the FM-MSE fallback / resumed training all forward it.
-            unwrapped_unet.to(accelerator.device)
+            # Hand the GPU to PE: park DiT on CPU, bring PE on.
+            unwrapped_unet.to("cpu")
             clean_memory_on_device(accelerator.device)
+            bundle.encoder.inner.to(accelerator.device)
+            try:
+                # Batch PE encoding by bucket: same-shape images go through
+                # one same_bucket=True forward instead of N. Original order
+                # is preserved so gen_pooled[i] still pairs with ref_pool[i].
+                bucket_groups: dict[tuple[int, int], list[int]] = {}
+                for idx, img in enumerate(pixel_images):
+                    key = (int(img.shape[-2]), int(img.shape[-1]))
+                    bucket_groups.setdefault(key, []).append(idx)
+
+                pooled_slots: list[torch.Tensor | None] = [None] * len(pixel_images)
+                for indices in bucket_groups.values():
+                    batch = torch.stack(
+                        [pixel_images[idx] for idx in indices], dim=0
+                    ).to(accelerator.device)
+                    feats_list = encode_pe_from_imageminus1to1(
+                        bundle, batch, same_bucket=True
+                    )
+                    for idx, feats in zip(indices, feats_list):
+                        pooled_slots[idx] = pool_and_normalize(feats).cpu()
+                    del batch, feats_list
+                gen_pooled = [t for t in pooled_slots if t is not None]
+            finally:
+                bundle.encoder.inner.to("cpu")
+                clean_memory_on_device(accelerator.device)
+                unwrapped_unet.to(accelerator.device)
     except (KeyError, RuntimeError, FileNotFoundError) as exc:
         val_progress_bar.close()
         logger.warning(
@@ -363,13 +279,6 @@ def _try_cmmd_validation(
     cmmd_value = cmmd_from_pools(ref_pool, gen_pool)
     val_loss_recorder.add(epoch=epoch, step=global_step, loss=cmmd_value)
 
-    # Always surface the score to the console — the tracker logging below is
-    # gated on `is_tracking`, so without this the CMMD value never shows.
-    logger.info(
-        f"CMMD validation @ step {global_step} (epoch {epoch + 1}): "
-        f"{cmmd_value:.4f}  (n={len(ref_items)}, lower is better)"
-    )
-
     if ctx.is_tracking:
         logs = {
             log_avg_key: cmmd_value,
@@ -381,38 +290,40 @@ def _try_cmmd_validation(
     return True
 
 
-def _compute_fm_validation(
+def _run_fm_validation(
     trainer,
     *,
     ctx,
     val,
+    val_loss_recorder,
+    epoch,
+    global_step,
     progress_desc,
     postfix_label,
-    primary: bool,
-) -> dict | None:
-    """Run the per-sigma FM-MSE forward sweep over ``val.dataloader`` (pinning
-    ``args.t_{min,max}`` to each sigma in ``val.sigmas``) and return the raw
-    losses for :func:`_log_fm_validation` to record/log once CMMD's outcome is
-    known — so the role decision (primary vs aux) never costs a second sweep.
-
-    Returns ``{"per_sigma_losses", "ordered_losses"}`` or ``None`` when there's
-    nothing to validate. Must run with the DiT resident (the caller schedules
-    it before CMMD's unload). Mutates ``args.t_{min,max}``; the caller restores
-    them. ``primary`` only selects the progress-bar label here."""
+    log_avg_key,
+    log_div_key,
+    logging_fn,
+) -> None:
+    """Legacy per-sigma FM-MSE validation, used as a fallback when CMMD
+    can't run. Pins ``args.t_{min,max}`` to each sigma in ``val.sigmas``
+    and runs ``process_batch`` over up to ``val.steps`` batches of
+    ``val.dataloader``. The caller owns RNG save/restore and eval-mode
+    switching; this helper only restores ``t_{min,max}`` since it mutates
+    them per sigma."""
     args = ctx.args
     accelerator = ctx.accelerator
 
     if val.dataloader is None or len(val.dataloader) == 0 or not val.sigmas:
-        return None
+        return
 
     val_progress_bar = tqdm(
         range(val.total_steps),
         smoothing=0,
         disable=not accelerator.is_local_main_process,
-        desc=f"{progress_desc} ({'fm-mse' if primary else 'fm-aux'})",
+        desc=f"{progress_desc} (fm-mse)",
     )
+    val_timesteps_step = 0
     per_sigma_losses = {s: [] for s in val.sigmas}
-    ordered_losses: list[float] = []
 
     try:
         for val_step, batch in enumerate(val.dataloader):
@@ -425,59 +336,23 @@ def _compute_fm_validation(
 
                 loss = trainer.process_batch(ctx, batch, is_train=False)
                 current_loss = loss.detach().item()
-                ordered_losses.append(current_loss)
+                val_loss_recorder.add(
+                    epoch=epoch, step=val_timesteps_step, loss=current_loss
+                )
                 per_sigma_losses[sigma].append(current_loss)
                 val_progress_bar.update(1)
                 val_progress_bar.set_postfix(
                     {
-                        postfix_label: sum(ordered_losses) / len(ordered_losses),
+                        postfix_label: val_loss_recorder.moving_average,
                         "sigma": f"{sigma:.2f}",
                     }
                 )
                 trainer.on_validation_step_end(ctx, batch)
+                val_timesteps_step += 1
     finally:
         val_progress_bar.close()
 
-    if not ordered_losses:
-        return None
-    return {"per_sigma_losses": per_sigma_losses, "ordered_losses": ordered_losses}
-
-
-def _log_fm_validation(
-    fm: dict,
-    *,
-    ctx,
-    val,
-    epoch,
-    global_step,
-    log_avg_key,
-    log_div_key,
-    logging_fn,
-    val_loss_recorder,
-    primary: bool,
-) -> None:
-    """Record/log a precomputed FM-MSE sweep from :func:`_compute_fm_validation`.
-
-    ``primary=True`` (CMMD off / failed): FM-MSE is the validation signal — it
-    feeds ``val_loss_recorder`` (the best-ckpt selector, populated even when not
-    tracking) and logs to ``log_avg_key``/``log_div_key`` (tagged
-    ``_fm_fallback``). ``primary=False`` (alongside a successful CMMD pass):
-    purely diagnostic — it never touches the CMMD ``val_loss_recorder`` and logs
-    to separate ``loss/validation/fm_*`` keys so the two signals don't collide.
-    """
-    ordered_losses = fm["ordered_losses"]
-    per_sigma_losses = fm["per_sigma_losses"]
-
-    # Primary FM feeds the recorder regardless of tracking (best-ckpt needs it).
-    if primary:
-        for step, loss in enumerate(ordered_losses):
-            val_loss_recorder.add(epoch=epoch, step=step, loss=loss)
-
-    if not ctx.is_tracking:
-        return
-
-    accelerator = ctx.accelerator
-    if primary:
+    if ctx.is_tracking:
         logs = {
             log_avg_key: val_loss_recorder.moving_average,
             log_div_key: val_loss_recorder.moving_average
@@ -487,17 +362,7 @@ def _log_fm_validation(
         for s, losses in per_sigma_losses.items():
             if losses:
                 logs[f"loss/validation/sigma_{s:.2f}"] = sum(losses) / len(losses)
-    else:
-        fm_mean = sum(ordered_losses) / len(ordered_losses)
-        logs = {
-            "loss/validation/fm_average": fm_mean,
-            "loss/validation/fm_div": fm_mean
-            - val.train_loss_recorder.moving_average,
-        }
-        for s, losses in per_sigma_losses.items():
-            if losses:
-                logs[f"loss/validation/fm_sigma_{s:.2f}"] = sum(losses) / len(losses)
-    logging_fn(accelerator, logs, global_step, epoch + 1)
+        logging_fn(accelerator, logs, global_step, epoch + 1)
 
 
 def _run_validation_baselines(

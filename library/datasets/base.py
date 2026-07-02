@@ -1922,28 +1922,6 @@ class BaseDataset(torch.utils.data.Dataset):
         )
         return neg_crossattn, neg_jaccard
 
-    @staticmethod
-    def _guard_item_load(image_info, what: str, thunk):
-        """Run a per-item disk load, turning a bare loader exception (corrupt
-        npz, missing/mismatched safetensors key, …) into a clear error that
-        names the offending image and its cache files.
-
-        Without this, a single bad cache raises deep inside safetensors/numpy
-        with no file context; under a Windows DataLoader worker that surfaces
-        as an opaque "training froze at epoch 1" rather than an actionable
-        error. Naming the file makes it debuggable and re-fixable (re-run
-        ``make preprocess-*`` for that image)."""
-        try:
-            return thunk()
-        except Exception as e:
-            raise RuntimeError(
-                f"DataLoader failed to load {what} for image "
-                f"{image_info.absolute_path!r} "
-                f"(latents={image_info.latents_npz!r}, "
-                f"TE={image_info.text_encoder_outputs_npz!r}): "
-                f"{type(e).__name__}: {e}"
-            ) from e
-
     def __getitem__(self, index):
         bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
         bucket_batch_size = self.buckets_indices[index].bucket_batch_size
@@ -1994,22 +1972,14 @@ class BaseDataset(torch.utils.data.Dataset):
 
             flipped = subset.flip_aug and random.random() < 0.5
 
-            image, latents, alpha_mask, original_size, crop_ltrb = (
-                self._guard_item_load(
-                    image_info,
-                    "latents",
-                    lambda: self._load_sample(subset, image_info, flipped),
-                )
+            image, latents, alpha_mask, original_size, crop_ltrb = self._load_sample(
+                subset, image_info, flipped
             )
 
             images.append(image)
             latents_list.append(latents)
             cond_latents_list.append(
-                self._guard_item_load(
-                    image_info,
-                    "cond latents",
-                    lambda: self._load_cond_latent(subset, image_info, flipped),
-                )
+                self._load_cond_latent(subset, image_info, flipped)
             )
             alpha_mask_list.append(alpha_mask)
 
@@ -2045,12 +2015,10 @@ class BaseDataset(torch.utils.data.Dataset):
             if image_info.text_encoder_outputs is not None:
                 text_encoder_outputs = image_info.text_encoder_outputs
             elif image_info.text_encoder_outputs_npz is not None:
-                text_encoder_outputs = self._guard_item_load(
-                    image_info,
-                    "text-encoder cache",
-                    lambda: self.text_encoder_output_caching_strategy.load_outputs_npz(
+                text_encoder_outputs = (
+                    self.text_encoder_output_caching_strategy.load_outputs_npz(
                         image_info.text_encoder_outputs_npz
-                    ),
+                    )
                 )
             else:
                 tokenization_required = True

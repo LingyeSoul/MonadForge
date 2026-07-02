@@ -4,7 +4,7 @@ Each ComfyUI node tries to import the live ``library.*`` first, falling back
 to a bundled vendor copy when the host install isn't sitting inside the
 anima_lora repo. This script keeps those vendor copies fresh.
 
-Five targets:
+Four targets:
 
 * ``custom_nodes/comfyui-anima-tagger/_vendor/`` — captioning + PE encoder
   inference path (AnimaTagger, tag rules/groups, vision encoder, vendored PE).
@@ -34,15 +34,6 @@ Five targets:
   is trimmed to ``read_pidfile`` only so the vendored client stays pure-stdlib
   (the live ``proc.py`` imports psutil for spawn/kill, which the node never
   needs — it errors if the daemon isn't already up rather than auto-starting).
-* ``ComfyUI-Spectrum-KSampler/_vendor/`` — the pure-compute ``*_core`` kernels
-  (FSG / SMC / CNS / DCW / SPD numerics) shared verbatim between the library's
-  sampler-boundary plugins and the node's ComfyUI seam wrappers. Like the
-  hydralora target this is a standalone published repo (default a sibling of
-  anima_lora's parent; override ``ANIMA_SPECTRUM_NODE_REPO``); sync_vendor writes
-  the tree *into that repo*. Each core is torch/numpy only — no ``comfy`` and no
-  anima-model imports — so drift between the live tree and the vendored copy is
-  the bug class this target eliminates. Skipped (with a warning) when the repo
-  isn't checked out beside anima_lora.
 
 Run before bumping a node version / publishing:
 
@@ -72,18 +63,6 @@ ADAPTER_NODE_REPO = Path(
     )
 )
 HYDRALORA_VENDOR = ADAPTER_NODE_REPO / "_vendor"
-
-# The Spectrum KSampler is also a standalone published repo (default a sibling of
-# anima_lora's parent; override with ``ANIMA_SPECTRUM_NODE_REPO``). sync_vendor
-# writes the pure-compute *_core kernels (FSG / SMC / CNS / DCW / SPD numerics)
-# into its ``_vendor/`` tree. The node imports the live ``library.*`` / ``networks.*``
-# first and falls back to this tree when installed outside the repo.
-SPECTRUM_NODE_REPO = Path(
-    os.environ.get(
-        "ANIMA_SPECTRUM_NODE_REPO", ROOT.parents[1] / "ComfyUI-Spectrum-KSampler"
-    )
-)
-SPECTRUM_VENDOR = SPECTRUM_NODE_REPO / "_vendor"
 
 # Tagger-only captioning + vision subset. Since the directedit node takes
 # ``source_tag``/``target_tag`` STRINGs directly (no embedded tagger), this
@@ -440,95 +419,11 @@ def build_trainer_vendor() -> None:
     _write_trimmed(TRAINER_VENDOR, TRAINER_TRIMMED)
 
 
-# Spectrum vendor tree — the pure-compute ``*_core`` kernels shared verbatim
-# between the library's sampler-boundary plugins and the node's ComfyUI seam
-# wrappers. Each core is torch/numpy only (no comfy / no anima-model imports),
-# so the copied files' internal imports keep working unchanged. The node files
-# import the live ``library.*`` / ``networks.*`` first and fall back to this tree.
-SPECTRUM_VERBATIM: list[tuple[str, str]] = [
-    (
-        "library/inference/corrections/fsg_core.py",
-        "library/inference/corrections/fsg_core.py",
-    ),
-    # SMC-CFG is already pure compute (torch-only); the library module IS the
-    # shared core — no separate ``_core`` split. The node imports SMCCFGState
-    # from here and keeps only its denoised↔v-space seam wrapper.
-    (
-        "library/inference/corrections/smc_cfg.py",
-        "library/inference/corrections/smc_cfg.py",
-    ),
-    # Mod-guidance projection (σ-flat / σ-FiLM pooled-text head) + per-block
-    # schedule. The node imports project_pooled / build_block_schedule from here,
-    # replacing its hand-mirrored _project / _project_film / _build_schedule.
-    (
-        "library/inference/corrections/mod_guidance_core.py",
-        "library/inference/corrections/mod_guidance_core.py",
-    ),
-    # Spectrum Chebyshev forecasters (ChebyshevForecaster + SpectrumPredictor) +
-    # the SEA cache-decision metric / auto-δ calibration. Both are pure torch and
-    # were hand-mirrored node-side (forecaster.py + the verbatim-ported SEA math);
-    # the node now imports them and keeps only its ComfyUI seam (disk δ-cache,
-    # model_function_wrapper state machine).
-    ("networks/spectrum_forecast.py", "networks/spectrum_forecast.py"),
-    ("networks/spectrum_sea.py", "networks/spectrum_sea.py"),
-    # SPD spectral primitives (DCT helpers + spectral_expand geometry). The node
-    # imports these so its SPEED sampler matches the CLI SPD path bit-for-bit.
-    ("networks/spd_core.py", "networks/spd_core.py"),
-    # CNS recolorer numerics (radial binning + γ-driven recolor). Path resolution
-    # stays node-side; the node imports CNSRecolorer + radial_bins from here.
-    (
-        "library/inference/corrections/cns_core.py",
-        "library/inference/corrections/cns_core.py",
-    ),
-    # DCW: networks/dcw.py (Haar + apply_dcw + FusionHead w/ fei_k) and the
-    # OnlineDCWCalibrator are already pure compute with full v6 support — the
-    # canonical source. The node vendors all three (the calibrator imports fei +
-    # networks.dcw transitively) and keeps only its hook/download/Anima-DiT seam.
-    ("networks/dcw.py", "networks/dcw.py"),
-    (
-        "library/inference/corrections/dcw_calibrator.py",
-        "library/inference/corrections/dcw_calibrator.py",
-    ),
-    ("library/runtime/fei.py", "library/runtime/fei.py"),
-]
-
-SPECTRUM_PACKAGE_DIRS: list[str] = [
-    "library",
-    "library/inference",
-    "library/inference/corrections",
-    "library/runtime",
-    "networks",
-]
-
-
-def build_spectrum_vendor() -> None:
-    if not SPECTRUM_NODE_REPO.is_dir():
-        print(
-            f"\n[spectrum] SKIPPED — standalone node repo not found at "
-            f"{SPECTRUM_NODE_REPO}\n"
-            f"           clone it beside anima_lora, or set "
-            f"ANIMA_SPECTRUM_NODE_REPO to its path."
-        )
-        return
-    print(f"\n[spectrum] -> {SPECTRUM_VENDOR}")
-    if SPECTRUM_VENDOR.exists():
-        shutil.rmtree(SPECTRUM_VENDOR)
-    SPECTRUM_VENDOR.mkdir(parents=True)
-    (SPECTRUM_VENDOR / "__init__.py").write_text(
-        '"""Bundled pure-compute kernel subset of anima_lora.\n\n'
-        "Synced by scripts/release/sync_vendor.py — do not edit by hand.\n"
-        '"""\n'
-    )
-    _write_pkg_markers(SPECTRUM_VENDOR, SPECTRUM_PACKAGE_DIRS)
-    _copy_verbatim(SPECTRUM_VENDOR, SPECTRUM_VERBATIM)
-
-
 def main() -> None:
     build_tagger_vendor()
     build_directedit_vendor()
     build_hydralora_vendor()
     build_trainer_vendor()
-    build_spectrum_vendor()
     print("\nvendor trees fresh.")
 
 

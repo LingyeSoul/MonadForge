@@ -318,8 +318,7 @@ def create_network(
         network._repa_grad_heatmap = float(kwargs.get("repa_grad_heatmap", 0) or 0)
         # REPA-DoG target band-pass (_archive/proposals/repa_dog_target.md): when on,
         # replaces the spatial_norm block in the relational target preprocess.
-        # Default-on under use_repa; opt out with repa_target_dog=false.
-        network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"), default=True)
+        network._repa_target_dog = _as_bool(kwargs.get("repa_target_dog"))
         network._repa_dog_sigma1_div = float(
             kwargs.get("repa_dog_sigma1_div", 16.0) or 16.0
         )

@@ -3,7 +3,7 @@
 The fold rewrites every causal ``QwenImageCausalConv3d`` into a plain 2D
 ``Conv2d`` using the last temporal slice of the kernel — exact for single-image
 (``T=1``) input because the causal temporal padding zero-fills with the real
-frame in the last slot. See ``_archive/bench/qwen_vae_2d/`` and
+frame in the last slot. See ``bench/qwen_vae_2d/`` and
 ``AutoencoderKLQwenImage.convert_to_2d``.
 
 Contracts pinned here:

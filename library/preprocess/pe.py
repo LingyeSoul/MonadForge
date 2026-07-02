@@ -63,18 +63,14 @@ def count_pending_pe(
     *,
     cache_dir: Path | None = None,
     recursive: bool = False,
-    overwrite: bool = False,
 ) -> tuple[int, int]:
     """Return ``(pending, total)`` PE sidecars **without loading the encoder**.
 
     ``pending`` is the number of images whose ``{stem}_anima_{encoder}``
     sidecar isn't on disk; ``total`` is every enumerated image. Mirrors the
     pre-skip in :func:`cache_pe_features` (pure existence), so the entry point
-    can skip the (slow) vision-encoder load when ``pending == 0``. With
-    ``overwrite`` every enumerated image counts as pending."""
+    can skip the (slow) vision-encoder load when ``pending == 0``."""
     image_files = walk_images(data_dir, recursive=recursive)
-    if overwrite:
-        return len(image_files), len(image_files)
     pending, _ = partition_cached(
         image_files,
         lambda p: cache_path_for(p, encoder, cache_dir=cache_dir, image_dir=data_dir),
@@ -122,28 +118,23 @@ def cache_pe_features(
     num_workers: int = 4,
     save_dtype: torch.dtype = torch.bfloat16,
     progress: ProgressFn | None = None,
-    overwrite: bool = False,
 ) -> PreprocessStats:
     """Encode every image under ``data_dir`` through ``bundle`` → sidecars.
 
     Groups images by ``(W, H)`` (same encoder bucket → one batched forward),
     pre-skips already-cached entries, and writes ``image_features`` per image.
     The encoder is supplied loaded (``load_pe_encoder``) so model setup stays in
-    the caller. Returns counts; pass ``progress`` for a per-image bar. With
-    ``overwrite`` the existence skip is bypassed and every image is re-encoded.
+    the caller. Returns counts; pass ``progress`` for a per-image bar.
     """
     image_files = walk_images(data_dir, recursive=recursive)
     stats = PreprocessStats(seen=len(image_files))
 
-    if overwrite:
-        pending, skipped = image_files, 0
-    else:
-        pending, skipped = partition_cached(
-            image_files,
-            lambda p: cache_path_for(
-                p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
-            ),
-        )
+    pending, skipped = partition_cached(
+        image_files,
+        lambda p: cache_path_for(
+            p, bundle.name, cache_dir=cache_dir, image_dir=data_dir
+        ),
+    )
     stats.skipped = skipped
 
     reso_groups = group_by_shape(pending)

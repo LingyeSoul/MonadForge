@@ -187,11 +187,7 @@ def main() -> None:
 
     # walk_images raises on same-stem collisions within one folder (cross-folder
     # stems are fine — the nested output layout disambiguates by folder).
-    image_files = walk_images(
-        image_dir,
-        recursive=args.recursive,
-        pattern=path_pattern,
-    )
+    image_files = walk_images(image_dir, recursive=args.recursive, pattern=path_pattern)
 
     work_items = []
     for image_path in image_files:

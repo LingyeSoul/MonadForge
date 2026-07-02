@@ -415,56 +415,6 @@ def build_argparser() -> argparse.ArgumentParser:
         "std). Default: TOML (repa.dog_norm_std, default 0).",
     )
 
-    # Soft-rank caption-discrimination auxiliary (off by default).
-    parser.add_argument(
-        "--softrank_weight",
-        type=float,
-        default=-1.0,
-        help="λ on the step-0 soft-rank caption loss (pushes the matched caption "
-        "to explain the diversity anchor better than k mismatched ones). 0 "
-        "disables the whole path (byte-identical DP-DMD). First live value: 0.05. "
-        "Default: TOML (softrank.weight, default 0).",
-    )
-    parser.add_argument(
-        "--softrank_k",
-        type=int,
-        default=-1,
-        help="Number of shuffled-caption negatives per firing (k extra no_grad "
-        "student forwards). Must be >= 2. Default: TOML (softrank.k, default 2).",
-    )
-    parser.add_argument(
-        "--softrank_every_n",
-        type=int,
-        default=-1,
-        help="Fire the soft-rank term every N student steps (amortizes the k "
-        "extra forwards). Default: TOML (softrank.every_n, default 4).",
-    )
-    parser.add_argument(
-        "--softrank_softness",
-        type=float,
-        default=-1.0,
-        help="Temperature τ of the soft-rank relaxation (smaller = closer to the "
-        "hard integer rank). Default: TOML (softrank.softness, default 0.1).",
-    )
-    parser.add_argument(
-        "--softrank_pool_size",
-        type=int,
-        default=-1,
-        help="Capacity of the cross-step caption pool the negatives are drawn from "
-        "(lets the term fire at batch_size=1). Must be >= k. Each caption is ~1 MiB "
-        "(bf16 [512,1024]), so the pool costs pool_size MiB of VRAM. Default: TOML "
-        "(softrank.pool_size, default 64).",
-    )
-    parser.add_argument(
-        "--softrank_warmup_ratio",
-        type=float,
-        default=-1.0,
-        help="Fraction of the caption pool that must fill before the term fires "
-        "(so negatives are drawn from a representative shuffle, not the last few "
-        "captions). 1.0 = wait for a full pool; 0 = fire as soon as k are cached. "
-        "Default: TOML (softrank.warmup_ratio, default 1.0).",
-    )
-
     # f-distill reweighting (FastGen idea 2; needs the GAN disc).
     parser.add_argument(
         "--f_div",
@@ -578,14 +528,6 @@ class TurboConfig:
     repa_dog_sigma1_div: float
     repa_dog_sigma2_div: float
     repa_dog_norm_std: float
-
-    # Soft-rank caption-discrimination auxiliary (turbo_caption_ranking.md Phase 1)
-    softrank_weight: float
-    softrank_k: int
-    softrank_every_n: int
-    softrank_softness: float
-    softrank_pool_size: int
-    softrank_warmup_ratio: float
 
     # Mean-variance reg (lever B / Eq. 7)
     mean_var_weight: float
@@ -759,21 +701,6 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         _pick(args.repa_dog_norm_std, cfg, "repa.dog_norm_std", 0.0)
     )
 
-    # weight=0 keeps the whole soft-rank path off → byte-identical DP-DMD (no
-    # extra forwards, no extra RNG draws, no negatives loaded).
-    softrank_weight = float(_pick(args.softrank_weight, cfg, "softrank.weight", 0.0))
-    softrank_k = int(_pick(args.softrank_k, cfg, "softrank.k", 2))
-    softrank_every_n = int(_pick(args.softrank_every_n, cfg, "softrank.every_n", 4))
-    softrank_softness = float(
-        _pick(args.softrank_softness, cfg, "softrank.softness", 0.1)
-    )
-    softrank_pool_size = int(
-        _pick(args.softrank_pool_size, cfg, "softrank.pool_size", 64)
-    )
-    softrank_warmup_ratio = float(
-        _pick(args.softrank_warmup_ratio, cfg, "softrank.warmup_ratio", 1.0)
-    )
-
     # step_expert_K = student_steps so head k ↔ denoise step k by construction.
     # K==1 collapses to a plain LoRA, so the network factory ignores it there.
     if args.per_step_expert is None:
@@ -945,46 +872,6 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
             f"REPA (turbo×REPA relational alignment) ON: weight={repa_weight}, "
             f"layer={repa_layer}, encoder={repa_encoder!r}, "
             f"every_n={repa_every_n}, {target_desc}."
-        )
-    if softrank_weight < 0.0:
-        raise ValueError(f"softrank.weight={softrank_weight}: must be >= 0")
-    if softrank_weight > 0.0:
-        if base_loss != "dpdmd":
-            # The term sites on the DP-DMD step-0 diversity anchor (v_target); plain
-            # DMD2 has no anchor, so there's nothing to rank against.
-            raise ValueError(
-                f"softrank.weight > 0 requires base_loss='dpdmd' (got {base_loss!r}) "
-                "— the soft-rank term rides the step-0 diversity anchor."
-            )
-        if softrank_k < 2:
-            # softrank needs >= 2 candidates for a non-degenerate rank (chance 1/3
-            # at k=2, matching the Phase-0 probe).
-            raise ValueError(f"softrank.k={softrank_k}: must be >= 2")
-        if softrank_every_n < 1:
-            raise ValueError(f"softrank.every_n={softrank_every_n}: must be >= 1")
-        if softrank_pool_size < softrank_k:
-            # The pool must hold at least k captions or it never reaches `ready`.
-            raise ValueError(
-                f"softrank.pool_size={softrank_pool_size}: must be >= "
-                f"softrank.k={softrank_k}."
-            )
-        if not (0.0 <= softrank_warmup_ratio <= 1.0):
-            raise ValueError(
-                f"softrank.warmup_ratio={softrank_warmup_ratio}: must be in [0, 1]."
-            )
-        if int(args.blocks_to_swap) > 0:
-            # The k extra student forwards are the offloader's audited-risk area
-            # ([[project_blockswap_extra_forwards_gradcache]]); turbo keeps the DiT
-            # resident by default. Fail at config time rather than desync the swap.
-            raise ValueError(
-                "softrank.weight > 0 requires blocks_to_swap=0 — the extra "
-                "caption-negative forwards are unaudited under block swap."
-            )
-        logger.info(
-            "soft-rank caption auxiliary ON (turbo_caption_ranking.md Phase 1): "
-            f"weight={softrank_weight}, k={softrank_k}, every_n={softrank_every_n}, "
-            f"softness={softrank_softness}, pool_size={softrank_pool_size} "
-            f"(~{softrank_pool_size} MiB), warmup_ratio={softrank_warmup_ratio}."
         )
     if bool(args.grad_ckpt) and gan_loss_weight_gen > 0.0:
         # Same view × deferred-ckpt-recompute hazard class as the REPA guard above.
@@ -1182,12 +1069,6 @@ def resolve_config(args: argparse.Namespace, cfg: dict) -> TurboConfig:
         repa_dog_sigma1_div=repa_dog_sigma1_div,
         repa_dog_sigma2_div=repa_dog_sigma2_div,
         repa_dog_norm_std=repa_dog_norm_std,
-        softrank_weight=softrank_weight,
-        softrank_k=softrank_k,
-        softrank_every_n=softrank_every_n,
-        softrank_softness=softrank_softness,
-        softrank_pool_size=softrank_pool_size,
-        softrank_warmup_ratio=softrank_warmup_ratio,
         mean_var_weight=mean_var_weight,
         mv_mu_t=mv_mu_t,
         mv_sigma2_t=mv_sigma2_t,
@@ -1244,7 +1125,6 @@ _TB_KEYS = (
     "repa_dog_sigma1_div",
     "repa_dog_sigma2_div",
     "repa_dog_norm_std",
-    "softrank_weight",
     "f_div",
     "k_anchor",
     "teacher_anchor_steps",

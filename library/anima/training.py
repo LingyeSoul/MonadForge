@@ -1543,86 +1543,6 @@ def decode_pending_samples(
         pass
 
 
-def sample_image_latents(
-    *,
-    accelerator: Accelerator,
-    dit: anima_models.Anima,
-    height: int,
-    width: int,
-    crossattn_emb: torch.Tensor,
-    neg_crossattn_emb: Optional[torch.Tensor] = None,
-    sample_steps: int = 20,
-    guidance_scale: float = 4.0,
-    flow_shift: float = 3.0,
-    seed: Optional[int] = None,
-    show_progress: bool = True,
-    clean_cache: bool = True,
-) -> torch.Tensor:
-    """Sample one image's latents and return the 5D latent tensor
-    ``(1, 16, 1, H//8, W//8)`` (on ``accelerator.device``, ``dit.dtype``)
-    WITHOUT decoding to pixels.
-
-    Splitting the VAE decode out of the sample step lets callers park the
-    DiT off-GPU before bringing the VAE on-device — CMMD val keeps the DiT
-    and the VAE from sharing the GPU (peak = one model, not both). Pair with
-    :func:`decode_latents_to_image`.
-
-    ``crossattn_emb`` is the prepared cross-attention embedding (already
-    LLM-adapter'd and padded to the model's expected length); CMMD val
-    builds it from cached TE outputs so we don't re-run the text encoder.
-
-    ``clean_cache=False`` skips the gc / ``empty_cache`` bracketing so a
-    caller that samples many items back-to-back (CMMD val) keeps the CUDA
-    allocator pool warm — the per-item denoise scratch is freed by refcount
-    and reused by the next item, instead of being handed back to the driver
-    and re-allocated each time (which also makes VRAM visibly sawtooth).
-    """
-    height = max(64, height - height % 16)
-    width = max(64, width - width % 16)
-    crossattn_emb = crossattn_emb.to(accelerator.device, dtype=dit.dtype)
-    if neg_crossattn_emb is not None:
-        neg_crossattn_emb = neg_crossattn_emb.to(accelerator.device, dtype=dit.dtype)
-
-    if clean_cache:
-        clean_memory_on_device(accelerator.device)
-    latents = do_sample(
-        height,
-        width,
-        seed,
-        dit,
-        crossattn_emb,
-        sample_steps,
-        dit.dtype,
-        accelerator.device,
-        guidance_scale,
-        flow_shift,
-        neg_crossattn_emb,
-        show_progress=show_progress,
-    )
-
-    if clean_cache:
-        gc.collect()
-        synchronize_device(accelerator.device)
-        clean_memory_on_device(accelerator.device)
-    return latents
-
-
-def decode_latents_to_image(vae, latents: torch.Tensor, device) -> torch.Tensor:
-    """Decode sampled 5D latents to a ``[3, H, W]`` pixel tensor in
-    ``[-1, 1]``.
-
-    The VAE is assumed to already be on ``device`` — callers own the VAE's
-    on/off-GPU lifecycle so a whole batch can be decoded under one VAE
-    residency (CMMD val decodes every sample with the DiT parked on CPU).
-    """
-    decoded = vae.decode_to_pixels(latents.to(device, dtype=vae.dtype))
-    image = decoded.float()[0]
-    if image.ndim == 4:
-        # Drop temporal dim if the VAE returned [C, T, H, W].
-        image = image[:, 0, :, :]
-    return image.clamp(-1.0, 1.0)
-
-
 def sample_image_to_tensor(
     *,
     accelerator: Accelerator,
@@ -1642,27 +1562,45 @@ def sample_image_to_tensor(
 
     Sibling of :func:`_sample_image_inference` that skips disk I/O and the
     PIL conversion. Returned tensor is ``[3, H, W]`` float (on
-    ``accelerator.device``), suitable for direct PE-Core encoding. This is the
-    sample-then-decode convenience wrapper (VAE shuttled on/off GPU around the
-    single decode); the two-model-residency-aware CMMD path drives
-    :func:`sample_image_latents` + :func:`decode_latents_to_image` directly.
+    ``accelerator.device``), suitable for direct PE-Core encoding.
+
+    ``crossattn_emb`` is the prepared cross-attention embedding (already
+    LLM-adapter'd and padded to the model's expected length); CMMD val
+    builds it from cached TE outputs so we don't re-run the text encoder.
     """
-    latents = sample_image_latents(
-        accelerator=accelerator,
-        dit=dit,
-        height=height,
-        width=width,
-        crossattn_emb=crossattn_emb,
-        neg_crossattn_emb=neg_crossattn_emb,
-        sample_steps=sample_steps,
-        guidance_scale=guidance_scale,
-        flow_shift=flow_shift,
-        seed=seed,
+    height = max(64, height - height % 16)
+    width = max(64, width - width % 16)
+    crossattn_emb = crossattn_emb.to(accelerator.device, dtype=dit.dtype)
+    if neg_crossattn_emb is not None:
+        neg_crossattn_emb = neg_crossattn_emb.to(accelerator.device, dtype=dit.dtype)
+
+    clean_memory_on_device(accelerator.device)
+    latents = do_sample(
+        height,
+        width,
+        seed,
+        dit,
+        crossattn_emb,
+        sample_steps,
+        dit.dtype,
+        accelerator.device,
+        guidance_scale,
+        flow_shift,
+        neg_crossattn_emb,
         show_progress=show_progress,
     )
+
+    gc.collect()
+    synchronize_device(accelerator.device)
+    clean_memory_on_device(accelerator.device)
     org_vae_device = vae.device
     vae.to(accelerator.device)
-    image = decode_latents_to_image(vae, latents, accelerator.device)
+    decoded = vae.decode_to_pixels(latents)
     vae.to(org_vae_device)
     clean_memory_on_device(accelerator.device)
-    return image
+
+    image = decoded.float()[0]
+    if image.ndim == 4:
+        # Drop temporal dim if the VAE returned [C, T, H, W].
+        image = image[:, 0, :, :]
+    return image.clamp(-1.0, 1.0)

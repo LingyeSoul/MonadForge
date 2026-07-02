@@ -34,7 +34,6 @@ output_temp/
 /workflows
 results
 logs
-_logs/
 .claude
 .env
 .anima-update-backups

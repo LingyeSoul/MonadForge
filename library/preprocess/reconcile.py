@@ -40,10 +40,7 @@ from library.preprocess.caption_variants import VARIANTS_SIDECAR_SUFFIX
 
 NPZ_RE = re.compile(r"^(?P<stem>.+)_(?P<w>\d{4})x(?P<h>\d{4})_anima\.npz$")
 TE_RE = re.compile(r"^(?P<stem>.+)_anima_te\.safetensors$")
-# Both PE-family encoders: PE-Core writes ``_anima_pe`` and PE-Spatial (the
-# default ``repa_encoder``) writes ``_anima_pe_spatial`` — match both so neither
-# is left orphaned when its source image is gone. See ``library/io/cache_names``.
-PE_RE = re.compile(r"^(?P<stem>.+)_anima_pe(?:_spatial)?\.safetensors$")
+PE_RE = re.compile(r"^(?P<stem>.+)_anima_pe\.safetensors$")
 MASK_RE = re.compile(r"^(?P<stem>.+)_mask\.png$")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 

@@ -10,7 +10,7 @@ that and *falsified the "hot start" direction*: OrthoInit's step-1 ‖ΔW‖ is 
 SMALLER than plain LoRA's (cold start, not hot) — see
 ``results/20260621-1420-ortho-init-step``.
 
-THE QUESTION (this extension — Phase 0 of _archive/proposals/svd_down_lora_init.md).
+THE QUESTION (this extension — Phase 0 of docs/proposal/svd_down_lora_init.md).
 If OrthoInit's defect is a narrow cold-start tangent (only its r λ-amplitudes
 get gradient at init), can we keep plain LoRA's WIDE first-step tangent (the
 whole d_out×r up-projection) while still seeding the *input* basis from W₀'s

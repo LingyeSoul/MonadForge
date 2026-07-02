@@ -35,7 +35,7 @@ def test_build_anima_requires_dit_path() -> None:
 
 
 def test_add_device_args_defaults() -> None:
-    from library.runtime.argparse_groups import add_device_args
+    from library.runtime.cli import add_device_args
 
     p = argparse.ArgumentParser()
     add_device_args(p)
@@ -58,7 +58,7 @@ def test_add_device_args_defaults() -> None:
 
 
 def test_add_io_args_required_and_optional() -> None:
-    from library.runtime.argparse_groups import add_io_args
+    from library.runtime.cli import add_io_args
 
     p = argparse.ArgumentParser()
     add_io_args(p, include_batch_size=True, batch_size_default=4)
