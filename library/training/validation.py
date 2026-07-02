@@ -163,23 +163,6 @@ def run_validation(
                 progress_desc=progress_desc,
                 logging_fn=logging_fn,
             )
-    except Exception as exc:
-        # Validation is best-effort diagnostics — a failure here (OOM during
-        # the CMMD VAE-decode phase, a sampler/decoder AttributeError, a
-        # missing cache file mid-pass) must NOT kill the training loop, which
-        # has no surrounding try (loop.py::_maybe_run_step_validation /
-        # _run_epoch_validation call this directly). Log with the full
-        # traceback so the root cause stays visible, then let training
-        # continue — the next validation cadence retries from scratch. The
-        # finally block below still restores RNG / optimizer / block-swap
-        # state, so a mid-pass crash can't poison the training step. Mirrors
-        # _try_cmmd_validation's "log + degrade, never re-raise" philosophy.
-        logger.warning(
-            f"Validation at step {global_step} (epoch {epoch + 1}) raised "
-            f"{type(exc).__name__}: {exc}; skipping this validation pass. "
-            "Training continues; see the traceback below for the cause.",
-            exc_info=True,
-        )
     finally:
         trainer._restore_rng_state(rng_states)
         args.t_min = val.original_t_min

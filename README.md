@@ -221,15 +221,15 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 
 | 优化项 | 来源文件 | 说明 | 本项目对应文件 |
 |--------|---------|------|---------------|
-| **AdamW 8-bit Kahan 补偿求和** | `lora-rescripts/scripts/stable/library/adamw_8bit_kahan.py` | 在 8-bit 量化 AdamW 上叠加 Kahan 补偿求和，将舍入误差回注下一步，有效精度从 8-bit 提升至 ~11-12 bit，显著改善长训练 run 的收敛稳定性 | `library/training/adamw_8bit_kahan.py` |
+| **AdamW 8-bit Kahan 补偿求和** | `scripts/stable/library/adamw_8bit_kahan.py` | 在 8-bit 量化 AdamW 上叠加 Kahan 补偿求和，将舍入误差回注下一步，有效精度从 8-bit 提升至 ~11-12 bit，显著改善长训练 run 的收敛稳定性 | `library/training/adamw_8bit_kahan.py` |
 | **分阶段混合分辨率训练** | `mikazuki/utils/mixed_resolution.py` | 课程学习：按阶段递增分辨率（512→768→1024），batch size 按像素面积比自动缩放，save/sample 间隔 LCM 对齐 | `library/training/staged_resolution.py` |
-| **自适应噪声偏移** | `lora-rescripts/scripts/stable/library/custom_train_functions.py` | 基于 latent 通道统计量的自适应噪声偏移，替代固定噪声偏移，改善生成图像的动态范围 | `library/runtime/noise.py` |
-| **对比流匹配损失** | `lora-rescripts/scripts/stable/train_network.py` | 在 Rectified Flow 目标上叠加对比损失项，通过正/负流方向对比提升 latent 表征质量 | `library/training/losses.py` |
-| **金字塔多分辨率噪声** | `lora-rescripts/scripts/stable/library/custom_train_functions.py` | 多尺度噪声叠加（6 层，discount=0.4），让模型同时接触多频段噪声模式 | `library/runtime/noise.py` |
-| **VeRA 适配器** | `lora-rescripts/scripts/stable/networks/vera.py` | 向量随机矩阵适配 — 跨层共享冻结随机投影矩阵，仅学习对角缩放向量，参数量比标准 LoRA 低 10-100× | `networks/lora_modules/vera.py` |
-| **DyLoRA 适配器** | `lora-rescripts/scripts/stable/networks/dylora.py` | 动态 LoRA — 每次前向随机选择 rank，同时训练多个 rank 级别，训练后可提取任意 rank ≤ max_rank | `networks/lora_modules/dylora.py` |
-| **优化器状态 CPU 卸载** | `lora-rescripts/scripts/stable/library/optimizer_offload_util.py` | 将 Adam 系优化器的 momentum/variance 缓冲区卸载到 CPU RAM，step 时按需搬回 GPU，可节省 ~50% 优化器显存 | `library/training/optimizer_offload.py` |
-| **训练步计时分析器** | `lora-rescripts/scripts/stable/train_network.py` (ExperimentalAttentionStepProfiler) | 窗口化计时分析器，按 forward/backward/optimizer/save 分段统计每步耗时与占比 | `library/training/profiler.py` |
+| **自适应噪声偏移** | `scripts/stable/library/custom_train_functions.py` | 基于 latent 通道统计量的自适应噪声偏移，替代固定噪声偏移，改善生成图像的动态范围 | `library/runtime/noise.py` |
+| **对比流匹配损失** | `scripts/stable/train_network.py` | 在 Rectified Flow 目标上叠加对比损失项，通过正/负流方向对比提升 latent 表征质量 | `library/training/losses.py` |
+| **金字塔多分辨率噪声** | `scripts/stable/library/custom_train_functions.py` | 多尺度噪声叠加（6 层，discount=0.4），让模型同时接触多频段噪声模式 | `library/runtime/noise.py` |
+| **VeRA 适配器** | `scripts/stable/networks/vera.py` | 向量随机矩阵适配 — 跨层共享冻结随机投影矩阵，仅学习对角缩放向量，参数量比标准 LoRA 低 10-100× | `networks/lora_modules/vera.py` |
+| **DyLoRA 适配器** | `scripts/stable/networks/dylora.py` | 动态 LoRA — 每次前向随机选择 rank，同时训练多个 rank 级别，训练后可提取任意 rank ≤ max_rank | `networks/lora_modules/dylora.py` |
+| **优化器状态 CPU 卸载** | `scripts/stable/library/optimizer_offload_util.py` | 将 Adam 系优化器的 momentum/variance 缓冲区卸载到 CPU RAM，step 时按需搬回 GPU，可节省 ~50% 优化器显存 | `library/training/optimizer_offload.py` |
+| **训练步计时分析器** | `scripts/stable/train_network.py` (ExperimentalAttentionStepProfiler) | 窗口化计时分析器，按 forward/backward/optimizer/save 分段统计每步耗时与占比 | `library/training/profiler.py` |
 
 所有特性均为**可选激活**，不改变默认训练行为。通过 CLI 参数（如 `--optimizer_type AdamW8bitKahan`、`--staged_resolution`、`--contrastive_flow_matching` 等）或配置文件启用。
 
