@@ -19,6 +19,17 @@ from library.runtime.proc import install_no_window_default
 
 install_no_window_default()
 
+# Allocator default must land before torch initializes the CUDA caching
+# allocator: free-fit varies seq_len per step and fragments the reserved pool
+# without expandable segments (issue #58). Opt out: ANIMA_EXPANDABLE_SEGMENTS=0.
+from library.runtime.allocator import default_expandable_segments
+
+if default_expandable_segments():
+    print(
+        "Anima: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True "
+        "(default; set ANIMA_EXPANDABLE_SEGMENTS=0 to disable)"
+    )
+
 import torch
 import torch.nn as nn
 from library.runtime.device import clean_memory_on_device
@@ -1863,6 +1874,12 @@ class AnimaTrainer:
                 dynamic_seq=bool(getattr(args, "compile_dynamic_seq", False)),
                 activation_memory_budget=float(
                     getattr(args, "activation_memory_budget", 1.0) or 1.0
+                ),
+                partitioner_recompute_views=bool(
+                    getattr(args, "partitioner_recompute_views", False)
+                ),
+                partitioner_aggressive_recomputation=bool(
+                    getattr(args, "partitioner_aggressive_recomputation", False)
                 ),
                 grad_ckpt=bool(getattr(args, "gradient_checkpointing", False)),
                 logger=logger,
