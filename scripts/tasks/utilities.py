@@ -25,15 +25,6 @@ def cmd_merge(extra):
     )
 
 
-def cmd_merge_loras(extra):
-    """Merge N LoRA adapters into ONE LoRA via scripts/merge_loras.py.
-
-    Concat-exact fusion (no SVD): rank grows to Σrᵢ. Adapter paths (positional,
-    ≥2) plus ``--analyze`` / ``--out`` / ``--weights`` / ``--dtype`` /
-    ``--normalize`` all come from the WebUI via ``extra``."""
-    run([PY, "scripts/merge_loras.py", *extra])
-
-
 def cmd_comfy_batch(extra):
     """Run a ComfyUI workflow as a batch.
 

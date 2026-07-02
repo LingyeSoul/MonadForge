@@ -63,7 +63,6 @@ _COMMAND_DESCRIPTIONS = {
     "mask": "Run SAM + MIT masking",
     "mask-clean": "Remove masks",
     "merge": "Merge LoRA into DiT",
-    "merge-loras": "Merge LoRAs (N\u21921 fusion)",
     "dcw": "Calibrate DCW v4",
     "dcw-train": "Train DCW fusion head",
     "distill-prep": "Stage modulation guidance artifacts",
