@@ -379,6 +379,23 @@
       </v-card>
     </v-dialog>
 
+    <!-- Conditioning interception dialog -->
+    <v-dialog v-model="showConditioningDlg" max-width="520">
+      <v-card>
+        <v-card-title>{{ t('cfgConditioningBlocked') }}</v-card-title>
+        <v-card-text>
+          {{ t('cfgConditioningBlockedBody', { keys: conditioningCtx.keys.join(', ') }) }}
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showConditioningDlg = false">{{ t('dsCancel') }}</v-btn>
+          <v-btn color="primary" @click="confirmRemoveConditioning">
+            {{ t('cfgConditioningRemove') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Create preset dialog -->
     <v-dialog v-model="showCreatePresetDlg" max-width="400">
       <v-card>
@@ -489,6 +506,18 @@ const showCheckpointDlg = ref(false)
 const checkpointInfo = ref<{ state_dir: string; step: number } | null>(null)
 const prelaunchResult = ref<any>(null)
 
+// Conditioning interception — block conditioning_data_dir / cond_cache_dir
+// on variants whose family isn't conditioning-capable (controlnet/easycontrol).
+// These keys only reach the editor via the Extra Args textarea or a manual
+// flat-key edit; the default merge never surfaces them.
+const CONDITIONING_FAMILIES = new Set(['controlnet', 'easycontrol'])
+const CONDITIONING_KEYS = ['conditioning_data_dir', 'cond_cache_dir'] as const
+const showConditioningDlg = ref(false)
+const conditioningCtx = ref<{ keys: string[]; action: 'save' | 'train' }>({
+  keys: [],
+  action: 'save',
+})
+
 // Preset management
 const showCreatePresetDlg = ref(false)
 const newPresetName = ref('')
@@ -598,6 +627,60 @@ async function checkExperimental() {
   }
 }
 
+/**
+ * Detect conditioning keys (conditioning_data_dir / cond_cache_dir) that would
+ * land on a subset but the current variant's family isn't conditioning-capable.
+ *
+ * Returns the list of offending key names (empty = pass). On a fetch error or
+ * unknown family, defaults to pass-through (mirrors checkExperimental's
+ * tolerance) — the backend's dreambooth.py FileNotFoundError is the backstop.
+ *
+ * Scans two sources:
+ *   - extraArgsText: free-form TOML text from the Extra Args textarea
+ *     (line-regex match — the backend does the real TOML parse on save)
+ *   - configStore.editedValues: flat form overrides (defensive; the standard
+ *     form doesn't expose these keys, but a custom field could)
+ */
+async function checkConditioning(extraArgsText?: string): Promise<string[]> {
+  if (!selectedVariant.value) return []
+  let family: string | undefined
+  try {
+    const res = await fetch(
+      `/api/config/variant-meta?variant=${encodeURIComponent(selectedVariant.value)}`,
+    )
+    if (res.ok) family = (await res.json()).family
+  } catch {
+    // Network/parse failure → don't block; backend remains the backstop.
+    return []
+  }
+  if (family && CONDITIONING_FAMILIES.has(family)) return []
+
+  const hits = new Set<string>()
+  if (extraArgsText) {
+    for (const k of CONDITIONING_KEYS) {
+      const kre = new RegExp(`^\\s*${k}\\s*=`, 'm')
+      if (kre.test(extraArgsText)) hits.add(k)
+    }
+  }
+  for (const k of CONDITIONING_KEYS) {
+    const v = configStore.editedValues[k]
+    if (v !== undefined && v !== null && v !== '') hits.add(k)
+  }
+  return [...hits]
+}
+
+/** Strip conditioning key assignments from free-form TOML text. */
+function stripConditioningFromExtraArgs(text: string): string {
+  return text
+    .split('\n')
+    .filter((line) => {
+      const m = line.match(/^\s*(conditioning_data_dir|cond_cache_dir)\s*=/)
+      return !m
+    })
+    .join('\n')
+    .trim()
+}
+
 function onFieldHelp(key: string, origin: string) {
   helpPanelRef.value?.showFieldHelp(key, origin)
 }
@@ -631,6 +714,16 @@ watch(() => appStore.language, () => {
 async function onSave() {
   try {
     const args = extraArgs.value.trim() || undefined
+
+    // Conditioning interception: block save when conditioning keys are present
+    // on a non-conditioning variant. Prompt the user to remove them.
+    const badKeys = await checkConditioning(args)
+    if (badKeys.length) {
+      conditioningCtx.value = { keys: badKeys, action: 'save' }
+      showConditioningDlg.value = true
+      return
+    }
+
     await configStore.save(args)
     if (args) extraArgs.value = ''
     notify.show(t('notifyConfigSaved'), 'success')
@@ -743,6 +836,18 @@ async function startTraining() {
   try {
     await autoSaveIfDirty()
 
+    // Conditioning interception (post-save): re-check the persisted config.
+    // autoSaveIfDirty already cleared extraArgs on save, so a hit here means
+    // the keys live in the variant TOML on disk (e.g. a prior unguarded save
+    // or a hand-edited file). editedValues may still carry them if the user
+    // typed but didn't trigger a save path that stripped them.
+    const badKeys = await checkConditioning()
+    if (badKeys.length) {
+      conditioningCtx.value = { keys: badKeys, action: 'train' }
+      showConditioningDlg.value = true
+      return
+    }
+
     const result = await fetchPrelaunch()
     prelaunchResult.value = result
 
@@ -825,6 +930,56 @@ async function wipeAndTrain() {
     configStore.error = e.message
   } finally {
     trainingLaunching.value = false
+  }
+}
+
+/**
+ * Confirmation callback for the conditioning interception dialog.
+ *
+ * 'save'  : strip the keys from extraArgs, re-run the original save.
+ * 'train' : strip + re-save (autoSaveIfDirty), then resume the launch flow
+ *           (prelaunch → launch). Keys that already live in the on-disk
+ *           variant TOML but aren't in extraArgs can't be auto-stripped here
+ *           — the user is told to remove them manually (see dialog body).
+ */
+async function confirmRemoveConditioning() {
+  showConditioningDlg.value = false
+  const action = conditioningCtx.value.action
+
+  // Strip from the Extra Args textarea (the only writable source we control).
+  if (extraArgs.value) {
+    extraArgs.value = stripConditioningFromExtraArgs(extraArgs.value)
+  }
+  // Drop any flat editedValues entries for the conditioning keys.
+  for (const k of CONDITIONING_KEYS) {
+    if (k in configStore.editedValues) delete configStore.editedValues[k]
+  }
+
+  try {
+    if (action === 'save') {
+      const args = extraArgs.value.trim() || undefined
+      await configStore.save(args)
+      if (args) extraArgs.value = ''
+      notify.show(t('notifyConfigSaved'), 'success')
+    } else {
+      // 'train' — persist the stripped state, then resume the launch flow.
+      await autoSaveIfDirty()
+      const result = await fetchPrelaunch()
+      prelaunchResult.value = result
+      if (!result.has_cache) {
+        showNoCacheDlg.value = true
+      } else if (result.checkpoint) {
+        checkpointInfo.value = result.checkpoint
+        showCheckpointDlg.value = true
+      } else {
+        await launchTrainingTask()
+      }
+    }
+  } catch (e: any) {
+    if (action === 'save') notify.show(t('notifyConfigSaveFailed'), 'error')
+    else configStore.error = e.message
+  } finally {
+    if (action === 'train') trainingLaunching.value = false
   }
 }
 
