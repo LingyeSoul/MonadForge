@@ -25,7 +25,7 @@ from ._common import PY, ROOT, _path, run
 
 MASK_OUTPUT_DIR = ROOT / "post_image_dataset" / "masks"
 RESIZED_IMAGE_DIR = ROOT / "post_image_dataset" / "resized"
-SAM_CONFIG = ROOT / "configs" / "sam_mask.yaml"
+SAM_CONFIG = ROOT / "configs" / "custom" / "sam_mask.yaml"
 _UNSET = object()
 
 
@@ -68,7 +68,7 @@ def _runtime_sam_config() -> dict | None:
     """GUI queue jobs can pass an immutable SAM config snapshot via env.
 
     Direct CLI usage leaves this unset and continues to read
-    ``configs/sam_mask.yaml``.
+    ``configs/custom/sam_mask.yaml``.
     """
     raw = os.environ.get("SAM_MASK_CONFIG_JSON")
     if not raw:
@@ -109,7 +109,7 @@ def _config_path_pattern(cfg: dict) -> str | None:
 
 def _sam_config_path(cfg: dict, tmp_root: str, *, from_env: bool) -> str:
     if not from_env:
-        return "configs/sam_mask.yaml"
+        return "configs/custom/sam_mask.yaml"
     path = Path(tmp_root) / "sam_mask.yaml"
     path.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
     return str(path)

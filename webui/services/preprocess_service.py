@@ -1,7 +1,8 @@
 """Preprocessing settings and status service — no Qt dependencies.
 
-Reads/writes ``configs/sam_mask.yaml`` and ``configs/webui_settings.json``, and
-counts preprocess caches for the status dashboard.
+Reads/writes ``configs/custom/sam_mask.yaml`` and ``configs/webui_settings.json``,
+and counts preprocess caches for the status dashboard. The SAM yaml lives under
+``configs/custom/`` so WebUI edits never dirty the git-tracked repo copy.
 """
 
 from __future__ import annotations
@@ -18,11 +19,15 @@ from webui.services.config_service import ROOT, get_path_overrides
 # ── Paths ─────────────────────────────────────────────────────────
 
 CONFIGS_DIR = ROOT / "configs"
-SAM_YAML = CONFIGS_DIR / "sam_mask.yaml"
+CUSTOM_DIR = CONFIGS_DIR / "custom"
+SAM_YAML = CUSTOM_DIR / "sam_mask.yaml"
 SETTINGS_FILE = CONFIGS_DIR / "webui_settings.json"
 # target_res lives here (owned by this file, preserved across `make update`)
 # — see library/config/io.py::load_path_overrides for the ownership contract.
-PREPROCESS_TOML = CONFIGS_DIR / "preprocess.toml"
+# Both preprocess.toml and sam_mask.yaml sit under custom/ so WebUI edits
+# never dirty the git-tracked repo copies at configs/{preprocess.toml,
+# sam_mask.yaml}. configs/custom/ is gitignored (see .gitignore).
+PREPROCESS_TOML = CUSTOM_DIR / "preprocess.toml"
 
 # Allowed free-fit tier edge sizes (must match library/datasets/buckets.py).
 ALLOWED_TARGET_RES = (512, 768, 896, 1024, 1280, 1536)
@@ -185,7 +190,7 @@ def get_target_res() -> list[int]:
 
 
 def save_target_res(edges: list[int]) -> list[int]:
-    """Persist the free-fit tier set to ``configs/preprocess.toml``.
+    """Persist the free-fit tier set to ``configs/custom/preprocess.toml``.
 
     Round-trips the file so the other user-owned knobs (freefit_max_ratio,
     caption_*, min_pixels, …) are preserved. ``preprocess.toml`` is the
@@ -207,7 +212,7 @@ def save_target_res(edges: list[int]) -> list[int]:
     else:
         data = {}
     data["target_res"] = normalized
-    CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    PREPROCESS_TOML.parent.mkdir(parents=True, exist_ok=True)
     tmp = PREPROCESS_TOML.parent / (PREPROCESS_TOML.name + ".tmp")
     tmp.write_text(toml.dumps(data), encoding="utf-8")
     os.replace(tmp, PREPROCESS_TOML)
@@ -236,7 +241,7 @@ def get_settings() -> dict:
             "mit_text_threshold", DEFAULTS["mit_text_threshold"]
         ),
         "mit_dilate": gui.get("mit_dilate", DEFAULTS["mit_dilate"]),
-        # From the config chain (configs/preprocess.toml → preset → method),
+        # From the config chain (configs/custom/preprocess.toml → preset → method),
         # not webui_settings.json — it's the value resize actually uses.
         "target_res": get_target_res(),
     }
@@ -254,7 +259,7 @@ def save_settings(data: dict) -> dict:
         "threshold": sam.get("threshold", DEFAULTS["sam_threshold"]),
         "dilate": sam.get("dilate", DEFAULTS["sam_dilate"]),
     }
-    CONFIGS_DIR.mkdir(parents=True, exist_ok=True)
+    SAM_YAML.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.dump(
         sam_yaml,
         Dumper=_IndentedListDumper,
@@ -280,7 +285,7 @@ def save_settings(data: dict) -> dict:
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(gui, indent=2), encoding="utf-8")
 
-    # ── target_res → configs/preprocess.toml ──
+    # ── target_res → configs/custom/preprocess.toml ──
     if "target_res" in data:
         save_target_res(data["target_res"])
 

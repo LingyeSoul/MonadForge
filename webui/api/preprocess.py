@@ -29,7 +29,8 @@ class PreprocessSettings(BaseModel):
     mit_dilate: int = 5
     # Free-fit tier edges (allowed: 512 768 896 1024 1280 1536). This is the
     # value resize actually consumes — the old vestigial resize_resolution
-    # scalar was dropped under free-fit. Saved to configs/preprocess.toml.
+    # scalar was dropped under free-fit. Saved to configs/custom/preprocess.toml
+    # so WebUI edits don't dirty the git-tracked repo copy.
     target_res: list[int] = [1024]
 
 

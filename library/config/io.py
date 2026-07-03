@@ -435,13 +435,14 @@ def load_path_overrides(
     out: dict = {}
 
     # Preprocess-only knobs (source_image_dir, drop_lowres_images, min_pixels)
-    # were split out of base.toml into configs/preprocess.toml. Read it FIRST,
-    # before base.toml, so any legacy copy of those keys still sitting in a
-    # user's customized base.toml keeps winning (never regress an existing
-    # customization), while a freshly-shipped base.toml — which no longer
-    # carries them — lets the preprocess.toml value through. preset / method
-    # layers below still override per-run. Absent file → no-op.
-    preprocess_path = os.path.join(configs_dir, "preprocess.toml")
+    # were split out of base.toml into configs/preprocess.toml. They now live
+    # under configs/custom/ so WebUI edits never dirty the git-tracked repo
+    # copy. Read it FIRST, before base.toml, so any legacy copy of those keys
+    # still sitting in a user's customized base.toml keeps winning (never
+    # regress an existing customization), while a freshly-shipped base.toml —
+    # which no longer carries them — lets the preprocess.toml value through.
+    # preset / method layers below still override per-run. Absent file → no-op.
+    preprocess_path = os.path.join(configs_dir, "custom", "preprocess.toml")
     if os.path.exists(preprocess_path):
         with open(preprocess_path, "r", encoding="utf-8") as f:
             out.update(_flat_scalars(toml.load(f)))
@@ -681,7 +682,9 @@ def load_method_preset(
     # We still seed it here (lowest priority, preset/method/CLI override) so it
     # shows up in the snapshot/provenance for the record. Only this key is pulled
     # in; the other preprocess-only scalars (source_image_dir, …) aren't read.
-    preprocess_path = os.path.join(configs_dir, "preprocess.toml")
+    # The preprocess.toml lives under configs/custom/ so WebUI edits don't
+    # dirty the git-tracked repo copy.
+    preprocess_path = os.path.join(configs_dir, "custom", "preprocess.toml")
     if os.path.exists(preprocess_path):
         with open(preprocess_path, "r", encoding="utf-8") as f:
             pp_raw = toml.load(f)
