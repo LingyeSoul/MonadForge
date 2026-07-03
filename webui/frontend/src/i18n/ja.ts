@@ -354,6 +354,14 @@ export default {
   mgVerdict_partial: '部分マージ (一部キー削除)',
   mgVerdict_block: 'マージ不可',
   mgVerdict_unknown: '不明なアダプター種別',
+  mgCustomDir: 'カスタムディレクトリ',
+  mgCustomDirHint: '.safetensors アダプタを含む絶対パスまたは相対パス',
+  mgAddCustomDir: '追加',
+  mgCustomDirAdded: 'カスタムディレクトリを追加しました: {path}',
+  mgCustomDirInvalid: 'ディレクトリが見つからないか、.safetensors ファイルが含まれていません',
+  mgCustomDirExists: 'ディレクトリは既にリストにあります',
+  mgCustomDirRemove: 'カスタムディレクトリを削除',
+  mgCustomDirSuffix: 'カスタム',
 
   // Merge View — LoRA-fusion mode
   merge_mode: 'モード',

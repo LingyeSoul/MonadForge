@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from webui.services.config_service import ROOT
+from webui.services.paths import resolve_path
 
 
 def list_adapter_dirs() -> list[dict]:
@@ -46,10 +46,8 @@ def list_adapter_dirs() -> list[dict]:
 
 def list_files(dir_path: str) -> list[dict]:
     """List .safetensors files in a directory, newest first."""
-    d = Path(dir_path)
-    if not d.is_absolute():
-        d = ROOT / d
-    if not d.is_dir():
+    d = resolve_path(dir_path, expect_file=False)
+    if d is None:
         return []
     files = []
     for p in sorted(
@@ -90,10 +88,8 @@ def scan_adapter(file_path: str) -> dict:
     except ImportError:
         return {"error": "safetensors package not installed", "verdict": "unknown"}
 
-    p = Path(file_path)
-    if not p.is_absolute():
-        p = ROOT / file_path
-    if not p.is_file():
+    p = resolve_path(file_path, expect_file=True)
+    if p is None:
         return {"error": f"File not found: {file_path}", "verdict": "unknown"}
 
     try:

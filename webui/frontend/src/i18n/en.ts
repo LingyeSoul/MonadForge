@@ -354,6 +354,14 @@ export default {
   mgVerdict_partial: 'Partial (some keys will be dropped)',
   mgVerdict_block: 'Cannot merge',
   mgVerdict_unknown: 'Unknown adapter type',
+  mgCustomDir: 'Custom Directory',
+  mgCustomDirHint: 'Absolute or relative path to a directory containing .safetensors adapters',
+  mgAddCustomDir: 'Add',
+  mgCustomDirAdded: 'Custom directory added: {path}',
+  mgCustomDirInvalid: 'Directory not found or contains no .safetensors files',
+  mgCustomDirExists: 'Directory already in list',
+  mgCustomDirRemove: 'Remove custom directory',
+  mgCustomDirSuffix: 'custom',
 
   // Merge View — LoRA-fusion mode
   merge_mode: 'Mode',

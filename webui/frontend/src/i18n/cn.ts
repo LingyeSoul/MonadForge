@@ -354,6 +354,14 @@ export default {
   mgVerdict_partial: '部分合并（部分键将被丢弃）',
   mgVerdict_block: '无法合并',
   mgVerdict_unknown: '未知适配器类型',
+  mgCustomDir: '自定义目录',
+  mgCustomDirHint: '包含 .safetensors 适配器的绝对路径或相对项目根目录的路径',
+  mgAddCustomDir: '添加',
+  mgCustomDirAdded: '已添加自定义目录：{path}',
+  mgCustomDirInvalid: '目录不存在或没有 .safetensors 文件',
+  mgCustomDirExists: '该目录已在列表中',
+  mgCustomDirRemove: '移除自定义目录',
+  mgCustomDirSuffix: '自定义',
 
   // Merge View — LoRA-fusion mode
   merge_mode: '模式',

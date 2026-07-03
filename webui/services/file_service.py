@@ -6,27 +6,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from webui.services.config_service import ROOT
+from webui.services.paths import resolve_path
 
 _MODEL_EXTS = {".safetensors", ".pt", ".pth", ".bin", ".ckpt"}
-
-
-def _resolve(dir_path: str) -> Path | None:
-    """Resolve a directory path relative to ROOT or as absolute.
-
-    Returns None if the path doesn't exist or isn't a directory.
-    Rejects ``..`` components in relative paths for safety.
-    """
-    p = Path(dir_path)
-    if p.is_absolute():
-        return p if p.is_dir() else None
-    if ".." in p.parts:
-        return None
-    resolved = (ROOT / p).resolve()
-    try:
-        resolved.relative_to(ROOT)
-    except ValueError:
-        return None
-    return resolved if resolved.is_dir() else None
 
 
 def _human_size(n: int) -> str:
@@ -53,7 +35,7 @@ def browse_directory(dir_path: str, ext: str | None = None) -> dict:
     """
     if not dir_path or not dir_path.strip():
         dir_path = str(ROOT)
-    resolved = _resolve(dir_path)
+    resolved = resolve_path(dir_path, expect_file=False)
     if resolved is None:
         return {"current_dir": dir_path, "parent": None, "subdirs": [], "files": [], "error": "Directory not found"}
 

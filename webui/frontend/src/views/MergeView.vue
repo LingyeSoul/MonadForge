@@ -33,6 +33,45 @@
               @update:model-value="onDirChange"
             />
 
+            <!-- Custom directory: allows users to browse adapters outside the
+                 hard-coded server directories. Works for both DiT-bake and
+                 LoRA-fusion modes because they share the same file browser. -->
+            <div class="d-flex ga-2 align-start mt-3">
+              <v-text-field
+                v-model="customDirInput"
+                :label="t('mgCustomDir')"
+                :hint="t('mgCustomDirHint')"
+                persistent-hint
+                variant="outlined"
+                density="compact"
+                hide-details="auto"
+                class="flex-grow-1"
+                @keydown.enter="addCustomDir"
+              />
+              <v-btn
+                color="primary"
+                variant="tonal"
+                :disabled="!customDirInput.trim()"
+                @click="addCustomDir"
+              >
+                {{ t('mgAddCustomDir') }}
+              </v-btn>
+            </div>
+            <div v-if="customDirs.length > 0" class="d-flex flex-wrap ga-1 mt-2">
+              <v-chip
+                v-for="dir in customDirs"
+                :key="dir.path"
+                size="small"
+                closable
+                variant="tonal"
+                color="primary"
+                :title="t('mgCustomDirRemove')"
+                @click:close="removeCustomDir(dir.path)"
+              >
+                {{ customDirLabel(dir.path) }}
+              </v-chip>
+            </div>
+
             <!-- LoRA-fusion mode: multi-select hint + selection count -->
             <div v-if="mode === 'loras'" class="text-caption text-medium-emphasis mt-3 mb-1">
               {{ t('merge_lora_select_hint') }}
@@ -304,6 +343,7 @@ taskStore.fetchTasks()
 type MergeMode = 'dit' | 'loras'
 
 interface AdapterDir { name: string; path: string }
+interface CustomDir { path: string }
 interface AdapterFile { name: string; path: string; size: number; size_human: string; mtime: string }
 interface ScanResult { verdict: string; counts: Record<string, number>; total_keys: number; metadata: Record<string, string> }
 interface AnalyzePayload {
@@ -327,9 +367,87 @@ interface AnalyzeBanner {
 
 const mode = ref<MergeMode>('dit')
 
-const adapterDirs = ref<AdapterDir[]>([])
+const serverDirs = ref<AdapterDir[]>([])
+const customDirs = ref<CustomDir[]>([])
+const customDirInput = ref('')
 const selectedDir = ref('')
 const adapterFiles = ref<AdapterFile[]>([])
+
+const adapterDirs = computed<AdapterDir[]>(() => {
+  const merged: AdapterDir[] = [...serverDirs.value]
+  const seen = new Set(merged.map(d => d.path))
+  for (const d of customDirs.value) {
+    if (!seen.has(d.path)) {
+      merged.push({ name: customDirLabel(d.path), path: d.path })
+      seen.add(d.path)
+    }
+  }
+  return merged
+})
+
+function customDirLabel(path: string) {
+  return `${path} (${t('mgCustomDirSuffix')})`
+}
+
+const CUSTOM_DIRS_KEY = 'merge_custom_dirs'
+
+function loadCustomDirs() {
+  try {
+    const raw = localStorage.getItem(CUSTOM_DIRS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown[]
+      customDirs.value = parsed
+        .filter((d): d is { path: string } =>
+          typeof d === 'object' && d !== null &&
+          'path' in d && typeof (d as Record<string, unknown>).path === 'string'
+        )
+        .map(d => ({ path: d.path }))
+    }
+  } catch {
+    customDirs.value = []
+  }
+}
+
+function saveCustomDirs() {
+  localStorage.setItem(CUSTOM_DIRS_KEY, JSON.stringify(customDirs.value))
+}
+
+async function addCustomDir() {
+  const raw = customDirInput.value.trim()
+  if (!raw) return
+
+  if (adapterDirs.value.some(d => d.path === raw)) {
+    notify.show(t('mgCustomDirExists'), 'warning')
+    return
+  }
+
+  try {
+    const res = await fetch(`/api/files/browse?dir=${encodeURIComponent(raw)}&ext=${encodeURIComponent('.safetensors')}`)
+    if (!res.ok) throw new Error()
+    const data = await res.json()
+    if (data.error) {
+      notify.show(t('mgCustomDirInvalid'), 'warning')
+      return
+    }
+    customDirs.value.push({ path: raw })
+    saveCustomDirs()
+    selectedDir.value = raw
+    await onDirChange(raw)
+    customDirInput.value = ''
+    notify.show(t('mgCustomDirAdded', { path: raw }), 'success')
+  } catch {
+    notify.show(t('mgCustomDirInvalid'), 'warning')
+  }
+}
+
+function removeCustomDir(path: string) {
+  customDirs.value = customDirs.value.filter(d => d.path !== path)
+  saveCustomDirs()
+  if (selectedDir.value === path) {
+    selectedDir.value = adapterDirs.value[0]?.path ?? ''
+    onDirChange(selectedDir.value)
+  }
+}
 
 // DiT mode
 const selectedFile = ref<AdapterFile | null>(null)
@@ -357,7 +475,7 @@ async function fetchDirs() {
     const res = await fetch('/api/merge/dirs')
     if (!res.ok) return
     const data = await res.json()
-    adapterDirs.value = data.dirs || []
+    serverDirs.value = data.dirs || []
     if (adapterDirs.value.length > 0 && !selectedDir.value) {
       selectedDir.value = adapterDirs.value[0].path
       await onDirChange(selectedDir.value)
@@ -365,7 +483,11 @@ async function fetchDirs() {
   } catch { /* ignore */ }
 }
 
-onMounted(fetchDirs)
+onMounted(() => {
+  loadCustomDirs()
+  fetchDirs()
+})
+
 onUnmounted(clearAnalyzeTimer)
 
 // Leaving LoRA-fusion mode (or unmounting) must stop the analyze poller and

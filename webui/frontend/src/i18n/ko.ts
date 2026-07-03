@@ -354,6 +354,14 @@ export default {
   mgVerdict_partial: '부분 병합 (일부 키 삭제됨)',
   mgVerdict_block: '병합 불가',
   mgVerdict_unknown: '알 수 없는 어댑터 유형',
+  mgCustomDir: '사용자 지정 디렉터리',
+  mgCustomDirHint: '.safetensors 어댑터가 포함된 절대 또는 상대 경로',
+  mgAddCustomDir: '추가',
+  mgCustomDirAdded: '사용자 지정 디렉터리 추가됨: {path}',
+  mgCustomDirInvalid: '디렉터리를 찾을 수 없거나 .safetensors 파일이 없습니다',
+  mgCustomDirExists: '이미 목록에 있는 디렉터리입니다',
+  mgCustomDirRemove: '사용자 지정 디렉터리 제거',
+  mgCustomDirSuffix: '사용자 지정',
 
   // Merge View — LoRA-fusion mode
   merge_mode: '모드',
