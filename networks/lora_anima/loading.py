@@ -32,6 +32,33 @@ logger = logging.getLogger(__name__)
 # ``iter_split_groups``.
 
 
+def _normalize_native_lokr_keys(
+    state_dict: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    """Map LyCORIS/ComfyUI native decomposed LoKR keys to runtime names.
+
+    Native LoKR files store decomposed factors as ``lokr_w1_a``/``lokr_w1_b``
+    and ``lokr_w2_a``/``lokr_w2_b``. MonadForge's ``LoKRModule`` Parameter
+    names are ``w1a``/``w1b`` and ``w2a``/``w2b``. Normalize on load only;
+    native saves still emit the LyCORIS/ComfyUI key layout.
+    """
+    suffix_map = {
+        ".lokr_w1_a": ".w1a",
+        ".lokr_w1_b": ".w1b",
+        ".lokr_w2_a": ".w2a",
+        ".lokr_w2_b": ".w2b",
+    }
+    normalized: Dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        new_key = key
+        for src, dst in suffix_map.items():
+            if key.endswith(src):
+                new_key = f"{key[: -len(src)]}{dst}"
+                break
+        normalized[new_key] = value
+    return normalized
+
+
 def _stack_lora_ups(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Stack per-expert ``.lora_ups.N.weight`` / ``.lora_downs.N.weight`` keys
     into fused ``.lora_up_weight`` / ``.lora_down_weight`` parameters

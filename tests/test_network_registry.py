@@ -305,13 +305,14 @@ def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
     """Decomposed LoKR (``w1a``/``w1b``/``w2a``/``w2b``, no ``inv_scale``).
 
     Verifies the ``w1a @ w1b`` / ``w2a @ w2b`` reconstruction branch and the
-    Kronecker orientation on the decomposed factor path. A ``.alpha`` key is
-    present so the converter exercises the per-module-alpha SVD-cap branch
-    (the headline behavior) rather than the ``lora_rank`` fallback — pinned at
-    the lossless full-rank boundary so the roundtrip stays bit-equivalent.
-    Rank truncation itself is covered by ``test_save_lokr_uses_alpha_for_svd_rank``
-    and the no-alpha fallback by ``test_save_lokr_falls_back_to_lora_rank_without_alpha``.
+    Kronecker orientation on the decomposed factor path. Calls
+    ``_convert_lokr_to_standard_lora`` directly (bypassing the save_variant
+    dispatch, which routes no-inv_scale decomposed LoKR to the native lokr
+    format — covered by ``test_native_lokr_decomposed_raw_factors_restore_scale``
+    in test_lokr_channel_scale.py). Pinned at the lossless full-rank boundary.
     """
+    from networks.lora_save import _convert_lokr_to_standard_lora
+
     in_dim, out_dim = 8, 12
     out_a, out_b, in_a, in_b, lora_dim = 6, 6, 2, 4, 4
     prefix = "lora_unet_blocks_0_self_attn_qkv_proj"
@@ -320,12 +321,8 @@ def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
     w1b = torch.randn(lora_dim, in_a)
     w2a = torch.randn(out_b, lora_dim)
     w2b = torch.randn(lora_dim, in_b)
-    # The kron delta = kron(w1a@w1b, w2a@w2b) has rank ≤ rank(w1)*rank(w2)
-    # = in_a * in_b = 2*4 = 8. Set alpha at that lossless boundary so the
-    # roundtrip stays bit-equivalent (this test is about the decomposed-factor
-    # kron ORIENTATION, not rank truncation — that's covered by
-    # test_save_lokr_uses_alpha_for_svd_rank). The key is still present so the
-    # converter exercises the per-module-alpha branch rather than the fallback.
+    # The kron delta = kron(w1a@w1b, w2a@w2b) has rank ≤ in_a*in_b = 8. Full
+    # rank (lora_rank=0) keeps the roundtrip bit-equivalent.
     alpha_val = in_a * in_b  # 8
     sd = {
         f"{prefix}.w1a": w1a,
@@ -334,25 +331,31 @@ def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
         f"{prefix}.w2b": w2b,
         f"{prefix}.alpha": torch.tensor(float(alpha_val), dtype=torch.float32),
     }
-    rank = min(alpha_val, min(out_dim, in_dim))
+    rank = min(out_dim, in_dim)  # 8
 
-    loaded = _save_and_reload(sd, tmp_path, save_variant="lokr")
+    _convert_lokr_to_standard_lora(sd, dtype=torch.float32, lora_rank=0)
 
-    base = "lora_unet_blocks_0_self_attn"
-    for suffix in ("q_proj", "k_proj", "v_proj"):
-        assert loaded[f"{base}_{suffix}.lora_down.weight"].shape == (rank, in_dim)
-        assert loaded[f"{base}_{suffix}.lora_up.weight"].shape == (out_dim, rank)
-    for k in loaded:
-        assert not any(k.endswith(s) for s in (".w1a", ".w1b", ".w2a", ".w2b"))
+    up = sd[f"{prefix}.lora_up.weight"]
+    down = sd[f"{prefix}.lora_down.weight"]
+    # kron delta is (out_a*out_b=36, in_a*in_b=8); full SVD rank = min(36,8) = 8.
+    assert up.shape == (out_a * out_b, rank), f"lora_up shape {up.shape}"
+    assert down.shape == (rank, in_a * in_b), f"lora_down shape {down.shape}"
+    for k in sd:
+        assert not any(k.endswith(s) for s in (".w1a", ".w1b", ".w2a", ".w2b")), (
+            f"leftover decomposed key: {k}"
+        )
         assert not k.endswith(".inv_scale")
 
+    # Numeric: at full rank, up @ down reconstructs the materialised delta.
+    # scale = alpha/network_dim; with network_dim=alpha (alpha_val) scale=1.
     expected_delta = torch.kron(w1a @ w1b, w2a @ w2b)
-    down = loaded[f"{base}_q_proj.lora_down.weight"]
-    for i, suffix in enumerate(("q_proj", "k_proj", "v_proj")):
-        up = loaded[f"{base}_{suffix}.lora_up.weight"]
-        recon = up.to(torch.float) @ down.to(torch.float)
-        rows = expected_delta[i * out_dim : (i + 1) * out_dim, :]
-        assert torch.allclose(recon, rows, atol=1e-4), f"delta mismatch in {suffix}"
+    recon = up.to(torch.float) @ down.to(torch.float)
+    saved_alpha = sd[f"{prefix}.alpha"].item()
+    # ComfyUI formula: (alpha/rank) * (up @ down). alpha==rank → scale=1.
+    recon = recon * (saved_alpha / rank)
+    assert torch.allclose(recon, expected_delta, atol=1e-4), (
+        "decomposed kron delta mismatch"
+    )
 
 
 def test_save_lokr_falls_back_to_lora_rank_without_alpha(tmp_path: Path):
@@ -394,14 +397,20 @@ def test_save_lokr_falls_back_to_lora_rank_without_alpha(tmp_path: Path):
     assert sd[f"{prefix}.alpha"].item() == expected_rank
 
 
-def test_save_lokr_uses_alpha_for_svd_rank(tmp_path: Path):
-    """LoKR→standard conversion must use per-module alpha as SVD rank cap."""
+def test_save_lokr_uses_lora_rank_for_svd_truncation(tmp_path: Path):
+    """LoKR→standard SVD conversion caps rank at the ``lora_rank`` argument.
+
+    Design (post black-image fix): ``alpha`` is the training scale source
+    (scale = alpha/network_dim), not a rank cap. The SVD truncation rank is
+    controlled solely by ``lora_rank`` (0 = full rank). This test pins that
+    contract — passing ``lora_rank=32`` caps the output at rank 32 regardless
+    of the per-module alpha value.
+    """
     from networks.lora_save import _convert_lokr_to_standard_lora
 
     # 8×8 factors → 64×64 delta (rank up to 64).
-    # alpha=32 should cap SVD at rank 32, not 128.
     out_a, in_a, out_b, in_b = 8, 8, 8, 8
-    alpha_val = 32
+    alpha_val = 32  # unrelated to rank now
     prefix = "lora_unet_blocks_0_ffn_proj"
 
     w1 = torch.randn(out_a, in_a)
@@ -411,16 +420,16 @@ def test_save_lokr_uses_alpha_for_svd_rank(tmp_path: Path):
         f"{prefix}.lokr_w2": w2,
         f"{prefix}.alpha": torch.tensor(alpha_val, dtype=torch.float32),
     }
-    _convert_lokr_to_standard_lora(sd, dtype=torch.float32)
+    _convert_lokr_to_standard_lora(sd, dtype=torch.float32, lora_rank=32)
 
     up = sd[f"{prefix}.lora_up.weight"]
     down = sd[f"{prefix}.lora_down.weight"]
-    assert up.shape[1] == alpha_val, (
-        f"SVD rank should be capped at alpha={alpha_val}, got {up.shape[1]}"
+    assert up.shape[1] == 32, (
+        f"SVD rank should be capped at lora_rank=32, got {up.shape[1]}"
     )
-    assert down.shape[0] == alpha_val
-    # alpha in saved output should reflect the capped rank
-    assert sd[f"{prefix}.alpha"].item() == alpha_val
+    assert down.shape[0] == 32
+    # alpha is written back as the (capped) rank so ComfyUI's scale = alpha/rank = 1.0.
+    assert sd[f"{prefix}.alpha"].item() == 32
 
 
 def test_ortho_init_module_zero_delta_and_distill_fidelity():

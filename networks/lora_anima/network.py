@@ -13,6 +13,7 @@ from library.log import setup_logging
 from networks import NETWORK_REGISTRY, NetworkSpec, lora_save
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
+    _normalize_native_lokr_keys,
     _refuse_split_hydra_keys,
     _refuse_split_stacked_experts_keys,
     _refuse_unfused_attn_lora_keys,
@@ -517,19 +518,35 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     extra_kwargs["down_init"] = cfg.down_init
 
                 # LoKR-specific kwargs.
-                if getattr(cfg, "use_lokr", False) and effective_module_class is LoKRModule:
+                if (
+                    getattr(cfg, "use_lokr", False)
+                    and effective_module_class is LoKRModule
+                ):
                     if cfg.lokr_factor != -1:
                         extra_kwargs["lokr_factor"] = cfg.lokr_factor
                     if cfg.decompose_both:
                         extra_kwargs["decompose_both"] = True
 
                 # DyLoRA-specific kwargs.
-                if getattr(cfg, "use_dylora", False) and effective_module_class is DyLoRAModule:
+                if (
+                    getattr(cfg, "use_dylora", False)
+                    and effective_module_class is DyLoRAModule
+                ):
                     extra_kwargs["unit"] = cfg.dylora_unit
                     extra_kwargs["algo"] = cfg.dylora_algo
 
                 # Per-channel scaling is DiT-only — TE activations are never calibrated.
-                if cfg.channel_scales_dict is not None and is_unet:
+                # LoKR is excluded: its Kronecker structure (w1's in-axis is a
+                # *factor* of in_features) cannot absorb a full-length
+                # channel_scale, so the resulting inv_scale cannot be saved in
+                # ComfyUI's native lokr format (see LoKRModule docstring at
+                # lokr.py:126 and _convert_lokr_to_native_lokr). Allowing it
+                # silently produces black-image checkpoints on save.
+                if (
+                    cfg.channel_scales_dict is not None
+                    and is_unet
+                    and effective_module_class is not LoKRModule
+                ):
                     _cs = cfg.channel_scales_dict.get(lora_name)
                     if _cs is not None:
                         extra_kwargs["channel_scale"] = _cs
@@ -1445,6 +1462,7 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         else:
             weights_sd = torch.load(file, map_location="cpu")
 
+        weights_sd = _normalize_native_lokr_keys(weights_sd)
         # Stack per-expert hydra ups into fused lora_up_weight (+ per-expert
         # downs for StackedExperts; no-op for Hydra).
         weights_sd = _stack_lora_ups(weights_sd)
@@ -1850,6 +1868,10 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         # create_network_from_weights can route the checkpoint back to its
         # module class from ``ss_network_spec`` (factory.py key-sniff).
         metadata["ss_network_spec"] = spec.name
+
+        if spec.name == "lokr":
+            metadata.setdefault("ss_network_dim", str(self.cfg.lora_dim))
+            metadata.setdefault("ss_network_alpha", str(self.cfg.alpha))
 
         if spec.name == "vera":
             for lora in self.unet_loras:

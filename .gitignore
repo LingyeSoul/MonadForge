@@ -51,3 +51,4 @@ configs/gui-methods/custom/
 near_twins_temp.toml
 sincos_decensored/
 bench/x0_contradiction/prompts/
+/refs

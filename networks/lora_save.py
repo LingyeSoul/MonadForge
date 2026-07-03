@@ -128,42 +128,110 @@ def _convert_legacy_ortho_to_lora(
             state_dict[f"{prefix}.alpha"] = alpha
 
 
+def _collect_lokr_prefixes(
+    state_dict: Dict[str, torch.Tensor],
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    """Group LoKR factor keys by prefix.
+
+    Handles both the MonadForge-internal naming (``lokr_w1`` / ``lokr_w2`` full,
+    ``w1a`` / ``w1b`` / ``w2a`` / ``w2b`` decomposed) and the ComfyUI/LyCORIS
+    native naming (``lokr_w1_a`` / ``lokr_w1_b`` / ``lokr_w2_a`` / ``lokr_w2_b``).
+    """
+    prefixes: Dict[str, Dict[str, torch.Tensor]] = {}
+    suffix_map = (
+        "lokr_w1",
+        "lokr_w2",
+        "lokr_w1_a",
+        "lokr_w1_b",
+        "lokr_w2_a",
+        "lokr_w2_b",
+        "w1a",
+        "w1b",
+        "w2a",
+        "w2b",
+    )
+    for key in list(state_dict.keys()):
+        for suf in suffix_map:
+            if key.endswith(f".{suf}"):
+                p = key[: -len(suf) - 1]
+                # Normalize internal names (w1a/w1b/w2a/w2b) to a canonical key
+                # so the reconstruction helpers below can treat both layouts
+                # uniformly. Native names are kept as-is.
+                canon = suf
+                if suf == "w1a":
+                    canon = "lokr_w1_a"
+                elif suf == "w1b":
+                    canon = "lokr_w1_b"
+                elif suf == "w2a":
+                    canon = "lokr_w2_a"
+                elif suf == "w2b":
+                    canon = "lokr_w2_b"
+                prefixes.setdefault(p, {})[canon] = state_dict[key]
+                break
+    return prefixes
+
+
+def _reconstruct_lokr_factor(
+    factors: Dict[str, torch.Tensor], which: str
+) -> torch.Tensor:
+    """Reconstruct a full ``w1`` / ``w2`` matrix from full or decomposed keys.
+
+    ``which`` is ``"w1"`` or ``"w2"``. Decomposed pairs are ``lokr_w1_a @
+    lokr_w1_b`` (and likewise for w2); the full key is ``lokr_w1`` / ``lokr_w2``.
+    """
+    full_key = f"lokr_{which}"
+    a_key = f"lokr_{which}_a"
+    b_key = f"lokr_{which}_b"
+    if full_key in factors:
+        return factors[full_key]
+    return factors[a_key] @ factors[b_key]
+
+
+def _materialize_lokr_delta(
+    factors: Dict[str, torch.Tensor],
+    inv_scale: Optional[torch.Tensor],
+    scale: float,
+    device: str,
+) -> torch.Tensor:
+    """Materialize the full LoKR delta including scale and inv_scale.
+
+    ``delta = kron(w1, w2) * scale``, with input-column scaling ``*
+    inv_scale[None, :]`` applied when *inv_scale* is present (the forward-time
+    ``x * inv_scale`` expressed as delta-column scaling — see
+    ``LoKRModule._apply_inv_scale_to_full_delta``).
+    """
+    w1 = _reconstruct_lokr_factor(factors, "w1").float().to(device)
+    w2 = _reconstruct_lokr_factor(factors, "w2").float().to(device)
+    delta = torch.kron(w1, w2) * scale
+    if inv_scale is not None:
+        delta = delta * inv_scale.float().to(device).unsqueeze(0)
+    return delta
+
+
 def _convert_lokr_to_standard_lora(
     state_dict: Dict[str, torch.Tensor],
     dtype: Optional[torch.dtype],
-    lora_rank: int = 128,
+    lora_rank: int = 0,
+    network_dim: Optional[int] = None,
 ) -> None:
     """Convert LoKR factor keys to standard ``lora_down``/``lora_up`` format.
 
-    Materialises the Kronecker-product delta from each prefix's ``lokr_w1`` /
-    ``lokr_w2`` (or ``w1a``/``w1b``/``w2a``/``w2b`` decomposed pairs), applies
-    ``inv_scale`` when present, SVD-splits the result, and replaces the
-    original factor keys in *state_dict* so the file is ComfyUI-compatible.
-    Uses the per-module ``alpha`` (set to ``lora_dim`` in shipped LoKR presets,
-    but user-overridable via ``network_alpha``) as the SVD rank cap when
-    present; falls back to *lora_rank* only when no ``.alpha`` key exists.
-    """
-    prefixes: Dict[str, Dict[str, torch.Tensor]] = {}
-    for key in list(state_dict.keys()):
-        if key.endswith(".lokr_w1"):
-            p = key[: -len(".lokr_w1")]
-            prefixes.setdefault(p, {})["lokr_w1"] = state_dict[key]
-        elif key.endswith(".lokr_w2"):
-            p = key[: -len(".lokr_w2")]
-            prefixes.setdefault(p, {})["lokr_w2"] = state_dict[key]
-        elif key.endswith(".w1a"):
-            p = key[: -len(".w1a")]
-            prefixes.setdefault(p, {})["w1a"] = state_dict[key]
-        elif key.endswith(".w2a"):
-            p = key[: -len(".w2a")]
-            prefixes.setdefault(p, {})["w2a"] = state_dict[key]
-        elif key.endswith(".w1b"):
-            p = key[: -len(".w1b")]
-            prefixes.setdefault(p, {})["w1b"] = state_dict[key]
-        elif key.endswith(".w2b"):
-            p = key[: -len(".w2b")]
-            prefixes.setdefault(p, {})["w2b"] = state_dict[key]
+    Materialises the full Kronecker delta (including the training ``scale =
+    alpha / network_dim`` and per-channel ``inv_scale`` when present), SVD-splits
+    it, and writes ComfyUI-compatible ``lora_down`` / ``lora_up`` keys whose
+    ``(alpha/rank) * (up @ down)`` reproduces the trained delta exactly at full
+    rank (``alpha`` is written as ``rank`` so ComfyUI's scale term is 1.0 — the
+    factors carry the full scaling).
 
+    ``lora_rank`` caps the SVD truncation rank per module (0 = full rank,
+    lossless; values like 128/256 trade accuracy for file size — see
+    ``docs/compose/plans/2026-06-27-lokr-full-rank-fix.md`` for the energy
+    retention table). ``network_dim`` is the training ``lora_dim`` used to
+    derive ``scale``; when None it is read from the per-module ``.alpha`` key
+    (assuming ``alpha == lora_dim``, the common LyCORIS-style default). When
+    neither is available, scale defaults to 1.0.
+    """
+    prefixes = _collect_lokr_prefixes(state_dict)
     if not prefixes:
         return
 
@@ -171,44 +239,33 @@ def _convert_lokr_to_standard_lora(
     converted = 0
 
     for prefix, factors in prefixes.items():
-        # Preserve source dtype when no explicit dtype was requested — matches
-        # ``_convert_legacy_ortho_to_lora`` and the standard write path. Read
-        # before the ``.float()`` SVD casts below.
         save_dtype = dtype if dtype is not None else next(iter(factors.values())).dtype
 
-        w1 = factors.get("lokr_w1")
-        if w1 is None:
-            w1a = factors.get("w1a")
-            w1b = factors.get("w1b")
-            if w1a is None or w1b is None:
-                continue
-            w1 = w1a.float().to(svd_device) @ w1b.float().to(svd_device)
+        # Derive the training scale = alpha / lora_dim. alpha is per-module
+        # (network_alpha); lora_dim is network-level and not in the per-module
+        # state_dict — callers pass it via network_dim, else we assume the
+        # LyCORIS convention alpha == lora_dim (scale = 1).
+        alpha_key = f"{prefix}.alpha"
+        alpha_val = (
+            float(state_dict[alpha_key].item()) if alpha_key in state_dict else 1.0
+        )
+        if network_dim is not None and network_dim > 0:
+            scale = alpha_val / network_dim
         else:
-            w1 = w1.float().to(svd_device)
+            scale = 1.0
 
-        w2 = factors.get("lokr_w2")
-        if w2 is None:
-            w2a = factors.get("w2a")
-            w2b = factors.get("w2b")
-            if w2a is None or w2b is None:
-                continue
-            w2 = w2a.float().to(svd_device) @ w2b.float().to(svd_device)
-        else:
-            w2 = w2.float().to(svd_device)
-
-        delta = torch.kron(w1, w2)
         inv_scale_key = f"{prefix}.inv_scale"
-        if inv_scale_key in state_dict:
-            inv_s = state_dict[inv_scale_key].float().to(svd_device)
-            delta = delta * inv_s.unsqueeze(0)
+        inv_scale = state_dict.get(inv_scale_key)
+
+        delta = _materialize_lokr_delta(factors, inv_scale, scale, svd_device)
 
         U, S, Vh = torch.linalg.svd(delta, full_matrices=False)
-        alpha_key = f"{prefix}.alpha"
-        if alpha_key in state_dict:
-            target_rank = int(state_dict[alpha_key].item())
+        # rank cap: 0 = full rank (lossless); explicit value truncates.
+        max_avail = S.shape[0]
+        if lora_rank and lora_rank > 0:
+            max_rank = min(lora_rank, max_avail)
         else:
-            target_rank = lora_rank
-        max_rank = min(target_rank, S.shape[0])
+            max_rank = max_avail
         S_sqrt = S[:max_rank].sqrt()
         lora_up = (
             (U[:, :max_rank] * S_sqrt.unsqueeze(0)).to(save_dtype).cpu().contiguous()
@@ -217,16 +274,156 @@ def _convert_lokr_to_standard_lora(
             (S_sqrt.unsqueeze(1) * Vh[:max_rank, :]).to(save_dtype).cpu().contiguous()
         )
 
-        for suffix in ("lokr_w1", "lokr_w2", "w1a", "w1b", "w2a", "w2b", "inv_scale"):
+        for suffix in (
+            "lokr_w1",
+            "lokr_w2",
+            "lokr_w1_a",
+            "lokr_w1_b",
+            "lokr_w2_a",
+            "lokr_w2_b",
+            "w1a",
+            "w1b",
+            "w2a",
+            "w2b",
+            "inv_scale",
+        ):
             state_dict.pop(f"{prefix}.{suffix}", None)
 
         state_dict[f"{prefix}.lora_up.weight"] = lora_up
         state_dict[f"{prefix}.lora_down.weight"] = lora_down
+        # alpha == rank ⇒ ComfyUI scale = alpha/rank = 1.0, so the up/down
+        # product (which already carries the trained scale) is applied as-is.
         state_dict[f"{prefix}.alpha"] = torch.tensor(max_rank, dtype=save_dtype)
         converted += 1
 
     if converted:
         logger.info(f"LoKR → standard LoRA: converted {converted} module(s)")
+
+
+def _convert_lokr_to_native_lokr(
+    state_dict: Dict[str, torch.Tensor],
+    dtype: Optional[torch.dtype],
+    network_dim: Optional[int] = None,
+) -> bool:
+    """Rewrite LoKR factor keys to the ComfyUI/LyCORIS native lokr layout.
+
+    Follows the LyCORIS convention (matches reference checkpoints such as
+    ``chen_bin_anima_epoch72.safetensors``): **factors are saved RAW** — the
+    unmodified training parameters — and the training ``scale = alpha /
+    network_dim`` is recovered at load time by ComfyUI's ``LokrAdapter``, which
+    applies ``alpha / rank`` whenever any factor is decomposed (see
+    ``comfy/weight_adapter/lokr.py`` ``calculate_weight``).
+
+    Per factor:
+      * Decomposed (``w1a``/``w1b``/``w2a``/``w2b``) → renamed to ComfyUI's
+        ``lokr_w1_a``/``lokr_w1_b``/``lokr_w2_a``/``lokr_w2_b``, contents raw.
+      * Full (``lokr_w1``/``lokr_w2``) → kept as-is, contents raw.
+      * ``alpha`` → the training alpha (``int64`` when integral, else ``float32``),
+        so ComfyUI's ``alpha / rank`` restores the trained scale exactly.
+
+    One edge case breaks the raw-factor convention: when **both** factors are
+    full (``lokr_w1`` + ``lokr_w2``, no decomposition), ComfyUI's loader sets
+    ``dim = None`` and forces the load scale to ``1.0`` — it cannot recover the
+    training scale. LyCORIS sidesteps this by forcing ``alpha = lora_dim``
+    (scale 1.0) on the full-full path; MonadForge does not, so when the training
+    scale differs from 1.0 we fold it into ``lokr_w2`` (the only place the
+    loader will look). ``alpha`` is still written as the training value for
+    provenance (the loader ignores it on this path).
+
+    Returns True if any module was converted. Raises if any module carries an
+    ``inv_scale`` key — native lokr format cannot represent per-channel input
+    scaling (the Kronecker structure breaks it; see ``LoKRModule`` docstring at
+    ``lokr.py:126``). Callers with ``inv_scale`` must use
+    ``_convert_lokr_to_standard_lora`` instead.
+    """
+    prefixes = _collect_lokr_prefixes(state_dict)
+    if not prefixes:
+        return False
+
+    # Refuse inv_scale — native lokr cannot represent it.
+    inv_prefixes = [p for p in prefixes if f"{p}.inv_scale" in state_dict]
+    if inv_prefixes:
+        raise ValueError(
+            f"Cannot emit native lokr format: {len(inv_prefixes)} module(s) "
+            f"carry inv_scale (first: {inv_prefixes[0]}). Native lokr cannot "
+            "represent per-channel input scaling — use the SVD-to-standard-lora "
+            "path (save_variant='lokr' with inv_scale, or extract script "
+            "--format lora). Re-train without channel_scaling_alpha to get a "
+            "native-lokr-compatible checkpoint."
+        )
+
+    converted = 0
+    for prefix, factors in prefixes.items():
+        save_dtype = dtype if dtype is not None else next(iter(factors.values())).dtype
+
+        alpha_key = f"{prefix}.alpha"
+        alpha_val = (
+            float(state_dict[alpha_key].item()) if alpha_key in state_dict else 1.0
+        )
+        if network_dim is not None and network_dim > 0:
+            scale = alpha_val / network_dim
+        else:
+            scale = 1.0
+
+        use_w1 = "lokr_w1" in factors
+        use_w2 = "lokr_w2" in factors
+        # ComfyUI forces load scale = 1.0 when both factors are full (dim=None),
+        # so a non-unit training scale can only be carried by the factors.
+        full_full_needs_fold = use_w1 and use_w2 and abs(scale - 1.0) > 1e-12
+
+        # Drop any stale keys (handles mixed internal/naming layouts).
+        for suffix in (
+            "lokr_w1_a",
+            "lokr_w1_b",
+            "lokr_w2_a",
+            "lokr_w2_b",
+            "w1a",
+            "w1b",
+            "w2a",
+            "w2b",
+        ):
+            state_dict.pop(f"{prefix}.{suffix}", None)
+
+        # w1: raw passthrough (full key already correct; decomposed → rename).
+        if use_w1:
+            state_dict[f"{prefix}.lokr_w1"] = (
+                factors["lokr_w1"].to(save_dtype).cpu().contiguous()
+            )
+        else:
+            state_dict[f"{prefix}.lokr_w1_a"] = (
+                factors["lokr_w1_a"].to(save_dtype).cpu().contiguous()
+            )
+            state_dict[f"{prefix}.lokr_w1_b"] = (
+                factors["lokr_w1_b"].to(save_dtype).cpu().contiguous()
+            )
+
+        # w2: raw passthrough, except the full-full + scale≠1 edge case above,
+        # where the loader's forced scale=1.0 means the factor must carry it.
+        if use_w2:
+            w2 = factors["lokr_w2"]
+            if full_full_needs_fold:
+                w2 = (w2.float() * scale).to(save_dtype)
+            state_dict[f"{prefix}.lokr_w2"] = w2.to(save_dtype).cpu().contiguous()
+        else:
+            state_dict[f"{prefix}.lokr_w2_a"] = (
+                factors["lokr_w2_a"].to(save_dtype).cpu().contiguous()
+            )
+            state_dict[f"{prefix}.lokr_w2_b"] = (
+                factors["lokr_w2_b"].to(save_dtype).cpu().contiguous()
+            )
+
+        # alpha = training alpha (LyCORIS convention): ComfyUI restores scale via
+        # alpha/rank on the decomposed path. int64 matches reference checkpoints;
+        # fall back to float32 for non-integral alphas to avoid truncation.
+        if alpha_val == int(alpha_val):
+            state_dict[alpha_key] = torch.tensor(int(alpha_val), dtype=torch.int64)
+        else:
+            state_dict[alpha_key] = torch.tensor(alpha_val, dtype=torch.float32)
+        converted += 1
+
+    if converted:
+        logger.info(f"LoKR → native lokr: converted {converted} module(s)")
+    return True
 
 
 # Back-compat shim: tests/test_global_router.py imports this name directly
@@ -312,10 +509,32 @@ def save_network_weights(
         return
 
     if is_lokr_variant:
-        # LoKR → standard LoRA: materialise kron delta and SVD-split so the
-        # file is ComfyUI-compatible (lora_down/lora_up format).
-        _convert_lokr_to_standard_lora(state_dict, dtype)
-        defuse_and_bake_standard(state_dict)
+        # LoKR save path. Two sub-paths:
+        #   * No inv_scale keys → native lokr format (lokr_w1 + lokr_w2_a/b),
+        #     ComfyUI's LokrAdapter loads it directly. Scale folded into factors.
+        #   * inv_scale present (channel_scaling was on, or pre-fix training
+        #     state) → native lokr can't represent per-channel scaling, so SVD
+        #     to standard lora (lora_down/up) which can bake inv_scale in.
+        # ``ss_network_dim`` carries the training lora_dim needed to recover
+        # scale = alpha/network_dim. It's written by the metadata builder.
+        meta_dim = metadata.get("ss_network_dim") if metadata else None
+        network_dim = int(float(meta_dim)) if meta_dim else None
+
+        has_inv_scale = any(k.endswith(".inv_scale") for k in state_dict.keys())
+        if has_inv_scale:
+            logger.warning(
+                "LoKR checkpoint has inv_scale (channel_scaling_alpha was on "
+                "during training). Native lokr format cannot represent it — "
+                "falling back to SVD-to-standard-lora. Re-train with "
+                "channel_scaling_alpha=0 (lokr auto-disables it) to emit a "
+                "native lokr file."
+            )
+            _convert_lokr_to_standard_lora(
+                state_dict, dtype, lora_rank=0, network_dim=network_dim
+            )
+            defuse_and_bake_standard(state_dict)
+        else:
+            _convert_lokr_to_native_lokr(state_dict, dtype, network_dim=network_dim)
 
         if dtype is not None:
             for key in list(state_dict.keys()):

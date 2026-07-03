@@ -14,6 +14,7 @@ from library.log import setup_logging
 from networks import NETWORK_REGISTRY, resolve_network_spec
 from networks.lora_anima.config import LoRANetworkCfg
 from networks.lora_anima.loading import (
+    _normalize_native_lokr_keys,
     _refuse_split_chimera_keys,
     _refuse_split_hydra_keys,
     _refuse_split_stacked_experts_keys,
@@ -106,6 +107,23 @@ def create_network(
         )
 
     channel_scales_dict = _load_channel_scales(kwargs)
+
+    # LoKR + channel_scaling is incompatible: the Kronecker factorization can't
+    # absorb a full-length channel_scale (lokr.py:126), and the resulting
+    # inv_scale can't be saved in ComfyUI's native lokr format. create_modules
+    # skips the injection for LoKRModule; warn here so users know to drop the
+    # config knob rather than discover it via a black-image checkpoint.
+    if (
+        spec.name == "lokr"
+        and channel_scales_dict
+        and float(kwargs.get("channel_scaling_alpha", 0.0) or 0.0) > 0
+    ):
+        logger.warning(
+            "LoKR + channel_scaling_alpha>0 is incompatible — LoKR's Kronecker "
+            "factors cannot absorb the per-channel scale, so channel scaling is "
+            "auto-disabled for LoKR modules. Set channel_scaling_alpha=0 to "
+            "silence this. The checkpoint will save in native lokr format."
+        )
 
     cfg = LoRANetworkCfg.from_kwargs(
         kwargs,
@@ -349,6 +367,12 @@ def create_network_from_weights(
     # Strip torch.compile '_orig_mod_' from old checkpoint keys
     weights_sd = LoRANetwork._strip_orig_mod_keys(weights_sd)
 
+    # Native LyCORIS/ComfyUI LoKR checkpoints store decomposed factors with
+    # ``lokr_w{1,2}_{a,b}`` suffixes. MonadForge's runtime LoKRModule keeps the
+    # decomposed Parameter names as ``w{1,2}{a,b}``, so normalize only the
+    # internal load-side view. The save path still emits native keys.
+    weights_sd = _normalize_native_lokr_keys(weights_sd)
+
     # MoE files: stack per-expert ups (and downs, for StackedExperts) and fuse
     # split q/k/v first so the attention refuser + detection loop see fused
     # runtime keys. Chimera dual-A files have their own per-pool ups
@@ -397,7 +421,14 @@ def create_network_from_weights(
 
         if "alpha" in key:
             modules_alpha[lora_name] = value
-        elif key.endswith(".lokr_w1") or key.endswith(".lokr_w2") or key.endswith(".w1a") or key.endswith(".w2a"):
+        elif (
+            key.endswith(".lokr_w1")
+            or key.endswith(".lokr_w2")
+            or key.endswith(".w1a")
+            or key.endswith(".w1b")
+            or key.endswith(".w2a")
+            or key.endswith(".w2b")
+        ):
             has_lokr = True
             # For LoKR, dim is derived from alpha (set below when we see the alpha key).
             # Fill a placeholder; the alpha key will set the real value.

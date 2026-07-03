@@ -19,8 +19,26 @@ Kron delta for get_weight/merge/fuse. These tests pin all affected paths.
 from __future__ import annotations
 
 import torch
+from safetensors import safe_open
 
+from networks.lora_anima.factory import create_network, create_network_from_weights
 from networks.lora_modules.lokr import LoKRModule
+from networks.lora_save import (
+    _convert_lokr_to_native_lokr,
+    _convert_lokr_to_standard_lora,
+)
+
+
+class Block(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proj = torch.nn.Linear(512, 512, bias=False)
+
+
+class _TinyDiT(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.block = Block()
 
 
 def _make_calibration(in_dim: int, seed: int = 0) -> torch.Tensor:
@@ -246,6 +264,7 @@ def test_fuse_unfuse_preserves_forward_and_restores_weight():
 
 # --- Effective rank control tests ---
 
+
 def test_decomposition_respects_lora_dim():
     """lora_dim < min(out_b, in_b) must trigger w2 decomposition."""
     # 1024×1024, lokr_factor=-1 → factorization (32, 32)
@@ -277,10 +296,10 @@ def test_effective_rank_scales_with_lora_dim():
     base = torch.nn.Linear(1024, 1024, bias=False)
     # _factorization(1024, -1) → (32, 32), so w1 is always (32, 32) rank 32.
     configs = [
-        (4, False, 32 * 4),    # lora_dim=4 → w2 decomposed, eff_rank=128
-        (8, False, 32 * 8),    # lora_dim=8 → w2 decomposed, eff_rank=256
+        (4, False, 32 * 4),  # lora_dim=4 → w2 decomposed, eff_rank=128
+        (8, False, 32 * 8),  # lora_dim=8 → w2 decomposed, eff_rank=256
         (16, False, 32 * 16),  # lora_dim=16 → w2 decomposed, eff_rank=512
-        (32, True, 32 * 32),   # lora_dim=32 → w2 full, eff_rank=1024
+        (32, True, 32 * 32),  # lora_dim=32 → w2 full, eff_rank=1024
     ]
     for lora_dim, expect_full_w2, expected_eff_rank in configs:
         m = LoKRModule("test", base, lora_dim=lora_dim, alpha=lora_dim, lokr_factor=-1)
@@ -298,3 +317,294 @@ def test_effective_rank_scales_with_lora_dim():
         assert eff_rank == expected_eff_rank, (
             f"lora_dim={lora_dim}: expected eff_rank={expected_eff_rank}, got {eff_rank}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Save-pipeline regression: scale correctness in the LoKR → standard LoRA
+# (SVD) and native-lokr conversion paths. These pin the black-image fix.
+# ---------------------------------------------------------------------------
+
+
+def _trained_lokr_state_dict(
+    lora_dim: int, alpha: float, network_dim: int, with_inv_scale: bool, seed: int = 0
+):
+    """Build a trained-looking LoKR state_dict and its ground-truth delta.
+
+    Returns ``(sd, true_delta)`` where ``sd`` keys are prefixed with ``P.`` and
+    ``true_delta`` is the full materialized delta the saved file must reproduce
+    under ComfyUI's load formula.
+    """
+    torch.manual_seed(seed)
+    base = torch.nn.Linear(512, 512, bias=False)
+    m = LoKRModule("test", base, lora_dim=lora_dim, alpha=alpha, lokr_factor=-1)
+    if with_inv_scale:
+        cs = torch.rand(512) * 0.5 + 0.5
+        m._register_lokr_inv_scale(cs, 512)
+    # Simulate training: non-zero w2.
+    with torch.no_grad():
+        if m._use_w2:
+            m.lokr_w2.normal_(0, 0.1)
+        else:
+            m.w2b.normal_(0, 0.1)
+    m.apply_to()
+    true_delta = m.get_weight()
+    sd = {f"P.{k}": v.clone() for k, v in m.state_dict().items()}
+    return sd, true_delta, m
+
+
+def test_svd_conversion_scale_correctness_with_inv_scale():
+    """SVD-to-standard-lora must reproduce the trained delta including scale
+    and inv_scale. Verifies the ComfyUI formula (alpha/rank)*(up@down) matches
+    get_weight() — the core black-image fix."""
+    sd, true_delta, m = _trained_lokr_state_dict(
+        lora_dim=32, alpha=32, network_dim=32, with_inv_scale=True
+    )
+    # network_dim=alpha → scale=1 here; the dim != alpha case is covered below.
+    _convert_lokr_to_standard_lora(sd, dtype=torch.float32, network_dim=32)
+
+    up = sd["P.lora_up.weight"]
+    down = sd["P.lora_down.weight"]
+    alpha = sd["P.alpha"].item()
+    rank = up.shape[1]
+    # ComfyUI's standard LoRA load formula.
+    comfy_delta = (alpha / rank) * (up @ down) * m.multiplier
+    rel = (true_delta - comfy_delta).abs().max().item() / max(
+        true_delta.abs().max().item(), 1e-12
+    )
+    # Full-rank SVD in fp32 has ~1e-3 relative error on these magnitudes.
+    assert rel < 1e-3, f"SVD delta diverges from truth: rel={rel:.2e}"
+    # alpha must equal rank so ComfyUI's scale term is 1.0 (factors carry scale).
+    assert alpha == rank, f"alpha={alpha} must equal rank={rank} for scale=1.0"
+
+
+def test_svd_conversion_large_network_dim_scale():
+    """The real black-image case: network_dim=114514 (Prodigy), alpha=32.
+    scale = 32/114514 ≈ 2.8e-4. Without the fix, alpha was overwritten to rank
+    and ComfyUI computed scale=1.0 → delta blown up ~3579x → black image."""
+    sd, true_delta, m = _trained_lokr_state_dict(
+        lora_dim=114514, alpha=32, network_dim=114514, with_inv_scale=True
+    )
+    _convert_lokr_to_standard_lora(
+        sd, dtype=torch.float32, network_dim=114514, lora_rank=0
+    )
+    up = sd["P.lora_up.weight"]
+    down = sd["P.lora_down.weight"]
+    alpha = sd["P.alpha"].item()
+    rank = up.shape[1]
+    comfy_delta = (alpha / rank) * (up @ down) * m.multiplier
+    rel = (true_delta - comfy_delta).abs().max().item() / max(
+        true_delta.abs().max().item(), 1e-12
+    )
+    assert rel < 1e-3, f"large-dim scale bug: rel={rel:.2e}"
+
+
+def test_svd_conversion_drops_factor_keys():
+    """After SVD conversion, no lokr_* / w*a / inv_scale keys survive."""
+    sd, _, _ = _trained_lokr_state_dict(
+        lora_dim=32, alpha=32, network_dim=32, with_inv_scale=True
+    )
+    _convert_lokr_to_standard_lora(sd, dtype=torch.float32, network_dim=32)
+    for k in sd:
+        assert not any(
+            k.endswith(s)
+            for s in (
+                ".lokr_w1",
+                ".lokr_w2",
+                ".lokr_w1_a",
+                ".lokr_w2_a",
+                ".w1a",
+                ".w2a",
+                ".w1b",
+                ".w2b",
+                ".inv_scale",
+            )
+        ), f"leftover factor key after SVD conversion: {k}"
+    assert any(k.endswith(".lora_down.weight") for k in sd)
+    assert any(k.endswith(".lora_up.weight") for k in sd)
+
+
+def test_native_lokr_decomposed_raw_factors_restore_scale():
+    """Decomposed w2 path (LyCORIS convention): factors saved RAW and alpha kept
+    as the training alpha, so ComfyUI's load formula ``kron(w1, w2a@w2b) *
+    (alpha/rank) * multiplier`` reproduces ``get_weight()``.
+
+    Uses alpha=16, lora_dim=4 → training scale = 16/4 = 4.0 (a non-trivial
+    scale, unlike the old alpha==dim test which silently exercised a 1.0 no-op).
+    """
+    torch.manual_seed(0)
+    base = torch.nn.Linear(512, 512, bias=False)
+    # lora_dim=4 < min(out_b,in_b) → w2 decomposed; w1 stays full.
+    m = LoKRModule("test", base, lora_dim=4, alpha=16, lokr_factor=-1)
+    with torch.no_grad():
+        m.w2b.normal_(0, 0.1)
+    true_delta = m.get_weight()  # = kron(w1,w2) * scale * multiplier
+    sd = {f"P.{k}": v.clone() for k, v in m.state_dict().items()}
+    assert not any(k.endswith(".inv_scale") for k in sd), (
+        "fixture must have no inv_scale"
+    )
+    raw_w2a = sd["P.w2a"].clone()
+    raw_w2b = sd["P.w2b"].clone()
+
+    _convert_lokr_to_native_lokr(sd, dtype=torch.float32, network_dim=4)
+
+    # ComfyUI-expected key names present; no internal-naming leaks.
+    assert "P.lokr_w1" in sd, "lokr_w1 full key must survive"
+    assert "P.lokr_w2_a" in sd, "decomposed w2a must be renamed to lokr_w2_a"
+    assert "P.lokr_w2_b" in sd, "decomposed w2b must be renamed to lokr_w2_b"
+    assert not any(k.endswith(".w2a") or k.endswith(".w2b") for k in sd), (
+        "internal w2a/w2b naming leaked"
+    )
+
+    # Factors are RAW (LyCORIS convention) — not folded with scale.
+    assert torch.equal(sd["P.lokr_w2_a"].float(), raw_w2a.float())
+    assert torch.equal(sd["P.lokr_w2_b"].float(), raw_w2b.float())
+
+    # alpha = training alpha (16), int64 to match reference checkpoints.
+    assert sd["P.alpha"].dtype == torch.int64, (
+        f"alpha dtype {sd['P.alpha'].dtype} != int64 (reference convention)"
+    )
+    assert sd["P.alpha"].item() == 16, (
+        f"alpha must be training value 16, got {sd['P.alpha'].item()}"
+    )
+
+    # ComfyUI load formula: kron(w1, w2a@w2b) * (alpha/rank) * multiplier.
+    rank = sd["P.lokr_w2_b"].shape[0]
+    alpha = sd["P.alpha"].item()
+    w1 = sd["P.lokr_w1"].float()
+    w2 = (sd["P.lokr_w2_a"].float() @ sd["P.lokr_w2_b"].float())
+    comfy_delta = torch.kron(w1, w2) * (alpha / rank) * m.multiplier
+    rel = (true_delta - comfy_delta).abs().max().item() / max(
+        true_delta.abs().max().item(), 1e-12
+    )
+    assert rel < 1e-5, f"decomposed native lokr scale restore wrong: rel={rel:.2e}"
+
+
+def test_native_lokr_refuses_inv_scale():
+    """Native lokr format cannot represent inv_scale — must raise."""
+    sd, _, _ = _trained_lokr_state_dict(
+        lora_dim=32, alpha=32, network_dim=32, with_inv_scale=True
+    )
+    try:
+        _convert_lokr_to_native_lokr(sd, dtype=torch.float32, network_dim=32)
+    except ValueError:
+        return
+    raise AssertionError("native lokr conversion must refuse inv_scale")
+
+
+def test_native_lokr_full_full_folds_scale_into_w2():
+    """Full-full path: ComfyUI's loader sets dim=None → forced scale=1.0, so a
+    non-unit training scale must be folded into lokr_w2 (the only place the
+    loader reads). With scale=1.0 no fold occurs (factors stay raw)."""
+    torch.manual_seed(0)
+    base = torch.nn.Linear(512, 512, bias=False)
+    # lora_dim=32 ≥ min(out_b,in_b) → both factors full.
+    m = LoKRModule("test", base, lora_dim=32, alpha=16, lokr_factor=-1)
+    with torch.no_grad():
+        m.lokr_w2.normal_(0, 0.1)
+    true_delta = m.get_weight()  # scale = 16/32 = 0.5
+    sd = {f"P.{k}": v.clone() for k, v in m.state_dict().items()}
+    raw_w2 = sd["P.lokr_w2"].clone()
+
+    _convert_lokr_to_native_lokr(sd, dtype=torch.float32, network_dim=32)
+
+    assert "P.lokr_w1" in sd and "P.lokr_w2" in sd, "full keys must survive"
+    # scale=0.5≠1 → w2 must be folded (raw * 0.5).
+    folded_w2 = raw_w2.float() * (16.0 / 32.0)
+    assert torch.allclose(sd["P.lokr_w2"].float(), folded_w2, atol=1e-6), (
+        "full-full + scale≠1 must fold scale into lokr_w2"
+    )
+    # ComfyUI applies scale=1.0 on the full path, so kron(w1, w2_saved) * mult.
+    comfy_delta = torch.kron(
+        sd["P.lokr_w1"].float(), sd["P.lokr_w2"].float()
+    ) * m.multiplier
+    rel = (true_delta - comfy_delta).abs().max().item() / max(
+        true_delta.abs().max().item(), 1e-12
+    )
+    assert rel < 1e-5, f"full-full native lokr fold wrong: rel={rel:.2e}"
+
+
+def test_native_lokr_full_full_scale_one_keeps_factors_raw():
+    """Full-full path with scale=1.0 (alpha==network_dim): no fold needed,
+    factors stay raw — the LyCORIS/reference default for full-full checkpoints."""
+    torch.manual_seed(0)
+    base = torch.nn.Linear(512, 512, bias=False)
+    m = LoKRModule("test", base, lora_dim=32, alpha=32, lokr_factor=-1)
+    with torch.no_grad():
+        m.lokr_w2.normal_(0, 0.1)
+    sd = {f"P.{k}": v.clone() for k, v in m.state_dict().items()}
+    raw_w1 = sd["P.lokr_w1"].clone()
+    raw_w2 = sd["P.lokr_w2"].clone()
+
+    _convert_lokr_to_native_lokr(sd, dtype=torch.float32, network_dim=32)
+
+    assert torch.equal(sd["P.lokr_w1"].float(), raw_w1.float()), "w1 must be raw"
+    assert torch.equal(sd["P.lokr_w2"].float(), raw_w2.float()), (
+        "w2 must be raw when scale=1.0 (no fold)"
+    )
+
+
+def test_native_lokr_keys_load_into_monadforge_runtime_names():
+    """LyCORIS/ComfyUI native decomposed keys must load into LoKRModule.
+
+    The runtime module stores decomposed Parameters as w2a/w2b, but native LoKR
+    checkpoints store lokr_w2_a/lokr_w2_b. Loading must normalize those names so
+    strict=False does not silently leave the learned factors at initialization.
+    """
+    torch.manual_seed(0)
+    lora_name = "lora_unet_block_proj"
+    w1 = torch.randn(16, 16)
+    w2a = torch.randn(32, 4)
+    w2b = torch.randn(4, 32)
+    native_sd = {
+        f"{lora_name}.lokr_w1": w1,
+        f"{lora_name}.lokr_w2_a": w2a,
+        f"{lora_name}.lokr_w2_b": w2b,
+        f"{lora_name}.alpha": torch.tensor(4),
+    }
+
+    network, normalized_sd = create_network_from_weights(
+        multiplier=1.0,
+        file=None,
+        weights_sd=native_sd,
+        metadata={"ss_network_spec": "lokr"},
+        ae=None,
+        text_encoders=[],
+        unet=_TinyDiT(),
+    )
+
+    assert network._network_spec.name == "lokr"
+    assert f"{lora_name}.w2a" in normalized_sd
+    assert f"{lora_name}.w2b" in normalized_sd
+    assert f"{lora_name}.lokr_w2_a" not in normalized_sd
+    assert f"{lora_name}.lokr_w2_b" not in normalized_sd
+
+    network.apply_to(text_encoders=[], unet=None, apply_text_encoder=False)
+    info = network.load_state_dict(normalized_sd, strict=False)
+    assert not any(key.endswith("w2a") or key.endswith("w2b") for key in info.missing_keys)
+    assert not any("lokr_w2_a" in key or "lokr_w2_b" in key for key in info.unexpected_keys)
+    mod = network.unet_loras[0]
+    assert torch.equal(mod.w2a.detach(), w2a)
+    assert torch.equal(mod.w2b.detach(), w2b)
+
+
+def test_lokr_save_weights_stamps_dim_and_alpha_on_empty_metadata(tmp_path):
+    """LoKR save needs ss_network_dim to preserve native-lokr scale."""
+    net = create_network(
+        multiplier=1.0,
+        network_dim=4,
+        network_alpha=16,
+        vae=None,
+        text_encoders=[],
+        unet=_TinyDiT(),
+        use_lokr="true",
+        lokr_factor="32",
+    )
+
+    out = tmp_path / "lokr.safetensors"
+    net.save_weights(str(out), torch.float32, metadata={})
+
+    with safe_open(str(out), framework="pt") as f:
+        meta = f.metadata() or {}
+    assert meta["ss_network_spec"] == "lokr"
+    assert meta["ss_network_dim"] == "4"
+    assert meta["ss_network_alpha"] == "16"
