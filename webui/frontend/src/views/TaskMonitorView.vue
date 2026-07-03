@@ -40,13 +40,13 @@
     <div
       v-else
       class="d-flex flex-column flex-grow-1"
-      :style="selectedTask ? 'min-height: 0;' : 'min-height: 0; overflow-y: auto;'"
+      :style="selectedTask ? 'min-height: 0; overflow: hidden;' : 'min-height: 0; overflow-y: auto;'"
     >
       <template v-for="task in taskStore.tasks" :key="task.task_id">
         <!-- Compact card for non-selected tasks -->
         <v-card
           v-if="selectedTask !== task.task_id"
-          class="mb-2"
+          class="mb-2 flex-shrink-0"
           :class="{ 'task-complete': task.state === 'success', 'task-failed': task.state === 'failed', 'task-running': task.state === 'running' }"
           variant="tonal"
           :color="stateColor(task.state)"

@@ -1,5 +1,5 @@
 <template>
-  <v-container fluid class="pa-4">
+  <v-container fluid class="pa-4 d-flex flex-column merge-page">
     <div class="text-h5 mb-1">{{ t('mgTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('mgSubtitle') }}</div>
 
@@ -12,6 +12,7 @@
       </v-btn-toggle>
     </div>
 
+    <div class="merge-scroll flex-grow-1">
     <v-row>
       <!-- Left: File Browser -->
       <v-col cols="12" md="5">
@@ -324,6 +325,7 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('mgNoTasks') }}</div>
+    </div>
   </v-container>
 </template>
 
@@ -755,6 +757,21 @@ function stateColor(state: string) {
 </script>
 
 <style scoped>
+/* Fill the v-main flex container so the page owns a real height. */
+.merge-page {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* The scrollable region below the page header. Inside we still want the
+   header rows (mode toggle, two columns) and the active-tasks list to share
+   one scroll context, so users can reach every task on short viewports. */
+.merge-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 /* File tree: hover highlight */
 :deep(.v-list-item:hover) {
   background: rgba(199, 91, 26, 0.06) !important;
