@@ -21,6 +21,7 @@ from networks.lora_anima.loading import (
     _refuse_unfused_attn_lora_keys,
     _stack_chimera_lora_ups,
     _stack_lora_ups,
+    _warn_legacy_fused_lokr_keys,
 )
 from networks.lora_anima.network import LoRANetwork
 
@@ -372,6 +373,9 @@ def create_network_from_weights(
     # decomposed Parameter names as ``w{1,2}{a,b}``, so normalize only the
     # internal load-side view. The save path still emits native keys.
     weights_sd = _normalize_native_lokr_keys(weights_sd)
+    # Detect legacy fused-projection LoKR (pre-split-layout) checkpoints so
+    # the user gets an actionable warning instead of silent key drops.
+    _warn_legacy_fused_lokr_keys(weights_sd)
 
     # MoE files: stack per-expert ups (and downs, for StackedExperts) and fuse
     # split q/k/v first so the attention refuser + detection loop see fused

@@ -59,6 +59,58 @@ def _normalize_native_lokr_keys(
     return normalized
 
 
+def _warn_legacy_fused_lokr_keys(state_dict: Dict[str, torch.Tensor]) -> None:
+    """Detect legacy fused-projection LoKR keys and warn once.
+
+    Pre-split LoKR checkpoints (trained on the fused ``qkv_proj`` / ``kv_proj``
+    Linear) carry keys like ``lora_unet_blocks_0_self_attn_qkv_proj.lokr_w2_a``.
+    These cannot be loaded into the now-split per-component LoKR modules
+    (``q_proj`` / ``k_proj`` / ``v_proj``) — every attention key is silently
+    dropped. There is no in-place migration (the Kronecker factors mix q/k/v
+    output channels); the only fix is to retrain under the split-projection
+    layout.
+
+    Logs a warning naming the fused prefixes found. Non-fatal: the caller
+    proceeds and ``load_state_dict`` reports the unmatched keys as usual.
+    """
+    # Module-prefix endings that mark a fused-projection LoKR module (the
+    # Kronecker factors target the fused Linear, not split q/k/v). Trailing
+    # boundary matters: ``_kv_proj`` must not match a hypothetical
+    # ``..._kv_proj_extra`` module, so we anchor at end-of-string.
+    fused_endings = ("_qkv_proj", "_kv_proj")
+    fused_prefixes: List[str] = []
+    lokr_factor_suffixes = (
+        ".lokr_w1", ".lokr_w2",
+        ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2_a", ".lokr_w2_b",
+        ".w1a", ".w1b", ".w2a", ".w2b",
+    )
+    for key in state_dict.keys():
+        if not any(key.endswith(suf) for suf in lokr_factor_suffixes):
+            continue
+        # Extract the module prefix (drop the trailing factor suffix).
+        for suf in lokr_factor_suffixes:
+            if key.endswith(suf):
+                module_prefix = key[: -len(suf)]
+                break
+        else:
+            continue
+        for fused in fused_endings:
+            if module_prefix.endswith(fused) and module_prefix not in fused_prefixes:
+                fused_prefixes.append(module_prefix)
+                break
+    if fused_prefixes:
+        sample = fused_prefixes[0]
+        logger.warning(
+            f"Legacy fused-projection LoKR checkpoint detected ({len(fused_prefixes)} "
+            f"module(s), e.g. '{sample}'). These keys target the fused "
+            f"qkv_proj/kv_proj Linear and cannot be loaded into the current "
+            f"per-component split LoKR layout (q_proj/k_proj/v_proj) — the "
+            f"Kronecker factors mix output channels and admit no clean slice. "
+            f"Attention LoKR keys will be silently unloaded. Retrain the LoRA "
+            f"under use_lokr to produce ComfyUI-compatible split keys."
+        )
+
+
 def _stack_lora_ups(state_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """Stack per-expert ``.lora_ups.N.weight`` / ``.lora_downs.N.weight`` keys
     into fused ``.lora_up_weight`` / ``.lora_down_weight`` parameters

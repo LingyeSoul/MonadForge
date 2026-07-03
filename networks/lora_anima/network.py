@@ -18,6 +18,7 @@ from networks.lora_anima.loading import (
     _refuse_split_stacked_experts_keys,
     _refuse_unfused_attn_lora_keys,
     _stack_lora_ups,
+    _warn_legacy_fused_lokr_keys,
 )
 from networks.lora_modules import (
     ChimeraHydraInferenceModule,
@@ -602,6 +603,19 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         target_modules = list(LoRANetwork.ANIMA_TARGET_REPLACE_MODULE)
         if train_llm_adapter:
             target_modules.extend(LoRANetwork.ANIMA_ADAPTER_TARGET_REPLACE_MODULE)
+
+        # LoKR-only: split fused qkv_proj/kv_proj into per-component q_proj/
+        # k_proj/v_proj Linears BEFORE create_modules walks the DiT. Each split
+        # Linear's weight is a zero-copy narrow view of the fused weight, so
+        # the frozen base storage is shared. This lets each q/k/v get its own
+        # LoKRModule (the Kronecker product can't be sliced at q/k/v output
+        # boundaries at save time), and produces ComfyUI-compatible split
+        # keys directly (``…_self_attn_q_proj.lokr_*``). Other variants keep
+        # the fused Linear and rely on ``defuse_standard_qkv`` at save.
+        if getattr(cfg, "use_lokr", False):
+            from networks.lora_modules.split_attn import split_fused_projections
+
+            split_fused_projections(unet)
 
         self.unet_loras: List[LoRAModule]
         self.unet_loras, skipped_un = create_modules(True, None, unet, target_modules)
@@ -1463,6 +1477,8 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             weights_sd = torch.load(file, map_location="cpu")
 
         weights_sd = _normalize_native_lokr_keys(weights_sd)
+        # Detect legacy fused-projection LoKR (pre-split-layout) checkpoints.
+        _warn_legacy_fused_lokr_keys(weights_sd)
         # Stack per-expert hydra ups into fused lora_up_weight (+ per-expert
         # downs for StackedExperts; no-op for Hydra).
         weights_sd = _stack_lora_ups(weights_sd)
