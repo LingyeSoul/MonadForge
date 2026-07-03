@@ -130,6 +130,12 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         default=0,
         help="Int number of steps for the warmup in the lr scheduler (default is 0) or float with ratio of train steps",
     )
+    parser.add_argument(
+        "--lr_scheduler_num_cycles",
+        type=int,
+        default=1,
+        help="Number of restarts for cosine scheduler with restarts",
+    )
 
 
 def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: bool):

@@ -176,6 +176,17 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
             **lr_scheduler_kwargs,
         )
 
+    if name == SchedulerType.COSINE_WITH_RESTARTS:
+        # Without num_cycles the transformers default (1 hard cycle) is
+        # shape-identical to plain cosine — silently degenerate (issue #69).
+        lr_scheduler_kwargs.setdefault("num_cycles", args.lr_scheduler_num_cycles)
+        return schedule_func(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=num_training_steps,
+            **lr_scheduler_kwargs,
+        )
+
     return schedule_func(
         optimizer,
         num_warmup_steps=num_warmup_steps,
