@@ -60,6 +60,17 @@ CUSTOM_DIR = CONFIGS_DIR / "custom"
 CUSTOM_VARIANTS_DIR = CUSTOM_DIR / "variants"
 CUSTOM_PRESETS_DIR = CUSTOM_DIR / "presets"
 
+# Variant families whose dataset blueprints actually consume a condition
+# latent (subset.cond_cache_dir). Only these may carry conditioning keys
+# (conditioning_data_dir / conditioning_resized_dir / cond_cache_dir) — any
+# other family with such a key would have BlueprintGenerator map
+# conditioning_data_dir → cond_cache_dir onto every subset and silently turn a
+# plain LoRA run into a cond≠target task that crashes on the empty default dir.
+# Single source of truth; the WebUI frontend
+# (webui/frontend/src/views/ConfigEditor.vue::CONDITIONING_FAMILIES) and
+# preprocess_service.save_path_overrides must stay in sync with this set.
+CONDITIONING_CAPABLE_FAMILIES = frozenset({"controlnet", "easycontrol"})
+
 # ── Path overrides from the config chain ──────────────────────────
 
 _DEFAULT_PATHS = {
@@ -414,11 +425,18 @@ def create_variant(name: str, seed_from: str | None = None) -> list[str]:
 
 def variant_metadata(variant: str) -> dict:
     _safe_variant(variant)
-    # Always read metadata from the built-in file, not the custom overlay
-    if variant.startswith("custom/"):
-        path = _resolve_variant_path(variant)
+    # Always read metadata from the built-in file, not the custom overlay.
+    # A custom overlay (configs/custom/variants/<stem>.toml) is a sparse user
+    # edit that carries no [variant] block, so reading it would return
+    # family=None and break family-based gating (e.g. the conditioning-key
+    # guard in preprocess_service). Fall back through: custom/<stem> → builtin
+    # <stem>.toml if it exists, else the overlay file itself.
+    stem = variant.split("/", 1)[-1] if variant.startswith("custom/") else variant
+    builtin_path = GUI_METHODS_DIR / f"{stem}.toml"
+    if builtin_path.is_file():
+        path = builtin_path
     else:
-        path = GUI_METHODS_DIR / f"{variant}.toml"
+        path = _resolve_variant_path(variant)
     meta = _read_variant_metadata(path)
     return {
         "variant": variant,

@@ -65,11 +65,32 @@ def get_paths(variant: str | None = None, preset: str | None = None) -> dict[str
 
 
 def save_path_overrides(variant: str, data: dict[str, str]) -> dict[str, str]:
-    """Persist path overrides to the variant TOML and return updated paths."""
-    from webui.services.config_service import save_variant_config
+    """Persist path overrides to the variant TOML and return updated paths.
+
+    Conditioning keys (``conditioning_data_dir`` / ``conditioning_resized_dir``)
+    are only persisted for conditioning-capable families (controlnet /
+    easycontrol). For any other variant they're dropped: a stale default value
+    landing on a plain LoRA variant would otherwise get merged into the subset's
+    ``cond_cache_dir`` by the BlueprintGenerator and turn a normal run into a
+    cond≠target task that crashes on the empty default dir.
+    """
+    from webui.services.config_service import (
+        CONDITIONING_CAPABLE_FAMILIES,
+        save_variant_config,
+        variant_metadata,
+    )
 
     allowed = {"source_image_dir", "resized_image_dir", "lora_cache_dir", "conditioning_data_dir", "conditioning_resized_dir"}
     filtered = {k: v for k, v in data.items() if k in allowed and v}
+    # Gate conditioning keys by variant family — only conditioning-capable
+    # families (controlnet / easycontrol) may carry them. Any other family
+    # would have BlueprintGenerator map conditioning_data_dir → cond_cache_dir
+    # onto the subset and crash the run. See CONDITIONING_CAPABLE_FAMILIES.
+    meta = variant_metadata(variant)
+    family = meta.get("family") if isinstance(meta, dict) else None
+    if family not in CONDITIONING_CAPABLE_FAMILIES:
+        filtered.pop("conditioning_data_dir", None)
+        filtered.pop("conditioning_resized_dir", None)
     if filtered:
         save_variant_config(variant, filtered)
     return get_paths(variant=variant)

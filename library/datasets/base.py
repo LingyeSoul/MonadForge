@@ -45,6 +45,21 @@ HIGH_VRAM = False
 # `load_dreambooth_dir` keeps only images whose caption contains the `@<artist>` tag.
 _ARTIST_FILTER: Optional[str] = None
 
+# Module-level gate for conditioning methods (use_controlnet / use_easycontrol /
+# use_byg / cond_diff_loss). When False, a stray `cond_cache_dir` left on a
+# subset (e.g. the WebUI path-saving bug that wrote the conditioning default
+# into a plain LoRA variant's TOML) is treated as unset — the loader neither
+# filters targets by condition stems nor raises FileNotFoundError on the empty
+# default dir. Set from train.py right after argparse so the dataset layer can
+# stay torch-free and not import the method-adapter stack.
+_CONDITIONING_METHOD_ENABLED: bool = False
+
+
+def set_conditioning_method_enabled(enabled: bool) -> None:
+    """Toggle whether subset.cond_cache_dir is honored by the dataset loader."""
+    global _CONDITIONING_METHOD_ENABLED
+    _CONDITIONING_METHOD_ENABLED = bool(enabled)
+
 
 def set_artist_filter(artist: Optional[str]) -> None:
     global _ARTIST_FILTER
@@ -1430,7 +1445,7 @@ class BaseDataset(torch.utils.data.Dataset):
         target, or ``None`` when the subset has no ``cond_cache_dir`` configured
         (→ caller falls back to the ref==target latent)."""
         cond_dir = getattr(subset, "cond_cache_dir", None)
-        if not cond_dir:
+        if not cond_dir or not _CONDITIONING_METHOD_ENABLED:
             return None
         npz_path = self.latents_caching_strategy.get_latents_npz_path(
             image_info.absolute_path,

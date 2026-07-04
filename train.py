@@ -2850,6 +2850,21 @@ if __name__ == "__main__":
             f"output_name={args.output_name}"
         )
 
+    # Tell the dataset layer whether a conditioning method is actually enabled.
+    # The method-adapter resolver (library/training/method_adapter.py) gates on
+    # these same flags; mirroring it here lets the loader ignore a stray
+    # `cond_cache_dir` (e.g. the WebUI path-saver writing the `conditioning_data`
+    # default into a plain LoRA variant's TOML) instead of crashing on the empty
+    # dir. cond_diff_loss is included because it also consumes cond_latents.
+    _datasets_base.set_conditioning_method_enabled(
+        bool(
+            getattr(args, "use_controlnet", False)
+            or getattr(args, "use_easycontrol", False)
+            or getattr(args, "use_byg", False)
+            or getattr(args, "cond_diff_loss", False)
+        )
+    )
+
     if getattr(args, "staged_resolution", False):
         from library.training.staged_resolution import build_staged_plan, run_staged_training
 

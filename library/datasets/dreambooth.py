@@ -286,7 +286,15 @@ class DreamBoothDataset(BaseDataset):
             # spamming "neither caption file nor class tokens" for the thousands
             # of unpaired targets we're about to drop anyway. A target with no
             # cond latent would also crash at load time (_load_cond_latent raises).
-            if getattr(subset, "cond_cache_dir", None):
+            #
+            # Gated on `_CONDITIONING_METHOD_ENABLED`: a stray `cond_cache_dir`
+            # (e.g. the WebUI path-saver writing the `conditioning_data` default
+            # into a plain LoRA variant's TOML) must NOT turn a normal LoRA run
+            # into a cond≠target task and crash on the empty default dir. Only
+            # runs that actually enable a conditioning method (use_controlnet /
+            # use_easycontrol / use_byg / cond_diff_loss) honor it.
+            cond_dir = getattr(subset, "cond_cache_dir", None)
+            if cond_dir and _base._CONDITIONING_METHOD_ENABLED:
                 from library.io.cache import discover_latents_by_stem
 
                 cond_stems = set(discover_latents_by_stem(subset.cond_cache_dir))
@@ -549,7 +557,10 @@ class DreamBoothDataset(BaseDataset):
                             break
                 # Conditioning image path resolution (same nested-then-flat
                 # pattern as mask_dir). Supports ControlNet-LLLite training.
-                if getattr(subset, "cond_cache_dir", None):
+                # Gated the same way as the cond_stems filter above so a stray
+                # cond_cache_dir on a plain LoRA variant doesn't trigger FS
+                # probes against an unrelated dir.
+                if getattr(subset, "cond_cache_dir", None) and _base._CONDITIONING_METHOD_ENABLED:
                     stem = os.path.splitext(os.path.basename(img_path))[0]
                     cond_candidates: list[str] = []
                     image_dir = getattr(subset, "image_dir", None)

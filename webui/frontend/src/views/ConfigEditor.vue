@@ -510,6 +510,8 @@ const prelaunchResult = ref<any>(null)
 // on variants whose family isn't conditioning-capable (controlnet/easycontrol).
 // These keys only reach the editor via the Extra Args textarea or a manual
 // flat-key edit; the default merge never surfaces them.
+// MUST stay in sync with webui/services/config_service.py::CONDITIONING_CAPABLE_FAMILIES
+// (the backend is the authoritative gate; this frontend check is UX-layer only).
 const CONDITIONING_FAMILIES = new Set(['controlnet', 'easycontrol'])
 const CONDITIONING_KEYS = ['conditioning_data_dir', 'cond_cache_dir'] as const
 const showConditioningDlg = ref(false)
