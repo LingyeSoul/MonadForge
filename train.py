@@ -2441,6 +2441,7 @@ class AnimaTrainer:
                     total_epochs=num_train_epochs,
                     pid=os.getpid(),
                     log_dir=resolve_run_log_dir(args),
+                    sampling_enabled=sampling_enabled,
                 )
                 # Mirror WARNING+ records into the stream so a reader debugging
                 # the run gets them structured instead of buried in tqdm stdout.

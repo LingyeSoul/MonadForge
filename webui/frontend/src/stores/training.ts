@@ -32,6 +32,7 @@ export interface TrainingMetrics {
   wandb_run_url: string | null
   sample_history: SampleInfo[]
   latest_sample: SampleInfo | null
+  sampling_enabled: boolean
 }
 
 export interface TrainingEvent {
@@ -64,6 +65,7 @@ const emptyMetrics: TrainingMetrics = {
   wandb_run_url: null,
   sample_history: [],
   latest_sample: null,
+  sampling_enabled: false,
 }
 
 // Hard cap on the client-side gallery so a long run doesn't accumulate

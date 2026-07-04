@@ -70,6 +70,7 @@ export default {
   dashSampleDialogTitle: 'Sample Preview',
   dashSampleHistoryCount: '{n} previews',
   dashWaitingSample: 'Waiting for samples...',
+  dashSamplingDisabled: 'Sampling disabled — set sample_every_n_steps / sample_every_n_epochs in the training config to capture previews.',
 
   // System Monitoring (dashboard)
   dashSysMon: 'System Monitoring',

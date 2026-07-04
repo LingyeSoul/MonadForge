@@ -101,8 +101,12 @@ const yDomain = computed(() => {
   let min = Math.min(...vals)
   let max = Math.max(...vals)
   if (min === max) {
-    min -= 0.001
-    max += 0.001
+    // Degenerate (constant) series: expand symmetrically around the value
+    // by a magnitude-relative margin, not a hardcoded ±0.001. A hardcoded
+    // absolute margin collapses a tiny value like lr=1e-5 onto the baseline.
+    const mag = Math.abs(min) || 1
+    min -= mag * 0.1
+    max += mag * 0.1
   }
   const pad = (max - min) * 0.1
   return { min: min - pad, max: max + pad }
@@ -141,7 +145,15 @@ const yTicks = computed(() => {
   const start = Math.ceil(min / step) * step
   const ticks: { y: number; label: string }[] = []
   for (let v = start; v <= max; v += step) {
-    ticks.push({ y: yFor(v), label: v < 0.01 ? v.toExponential(1) : v.toFixed(4) })
+    // Format by magnitude so both loss (~0.08) and lr (~1e-5) read cleanly
+    // without manual per-series config.
+    const av = Math.abs(v)
+    let label: string
+    if (av === 0) label = '0'
+    else if (av >= 1) label = v.toFixed(3)
+    else if (av >= 0.001) label = v.toFixed(5)
+    else label = v.toExponential(1)
+    ticks.push({ y: yFor(v), label })
   }
   return ticks
 })

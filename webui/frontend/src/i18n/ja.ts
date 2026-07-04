@@ -70,6 +70,7 @@ export default {
   dashSampleDialogTitle: 'プレビュー詳細',
   dashSampleHistoryCount: '{n} 件のプレビュー',
   dashWaitingSample: 'プレビュー待機中...',
+  dashSamplingDisabled: 'サンプリング無効 — sample_every_n_steps / sample_every_n_epochs を設定しないとプレビューは生成されません。',
 
   // System Monitoring (dashboard)
   dashSysMon: 'システムモニタリング',

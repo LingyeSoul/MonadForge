@@ -70,6 +70,7 @@ export default {
   dashSampleDialogTitle: '预览图详情',
   dashSampleHistoryCount: '{n} 张预览',
   dashWaitingSample: '等待预览样本...',
+  dashSamplingDisabled: '未开启采样 —— 在训练配置中设置 sample_every_n_steps / sample_every_n_epochs 才会生成预览图。',
 
   // System Monitoring (dashboard)
   dashSysMon: '系统监控',

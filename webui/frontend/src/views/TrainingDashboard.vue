@@ -118,12 +118,27 @@
         </v-row>
       </v-card>
 
-      <!-- Row 1.7: Sample previews (only shown when sampling has produced images) -->
+      <!-- Row 1.7: Sample previews. Renders whenever sampling is enabled so the
+           user gets an explicit "waiting/disabled" state instead of an empty
+           dashboard that reads as broken. -->
       <SampleGallery
-        v-if="selectedTaskId && m.sample_history.length > 0"
+        v-if="selectedTaskId && m.sampling_enabled"
         :samples="m.sample_history"
         :task-id="selectedTaskId"
       />
+      <v-card
+        v-else-if="selectedTaskId"
+        variant="tonal"
+        class="pa-4"
+        style="flex: 0 0 auto;"
+      >
+        <div class="d-flex align-center">
+          <v-icon icon="mdi-image-off-outline" size="small" class="mr-2" />
+          <div class="text-body-2 text-medium-emphasis">
+            {{ t('dashSamplingDisabled') }}
+          </div>
+        </div>
+      </v-card>
 
       <!-- Row 2: Loss Curve + LR Curve -->
       <v-row dense style="flex: 0 0 auto;">

@@ -6,7 +6,8 @@ tailing one file instead of regex-parsing tqdm stdout. Append-only,
 line-buffered, main-process only. One event per line:
 
     {"ev": "run_start", "ts": 0.0, "run": ..., "method": ..., "preset": ...,
-     "total_steps": ..., "total_epochs": ..., "pid": ...}
+     "total_steps": ..., "total_epochs": ..., "pid": ...,
+     "sampling_enabled": ...}
     {"ev": "step", "ts": ..., "global_step": ..., "epoch": ..., "loss": ..., ...}
     {"ev": "val",  "ts": ..., "global_step": ..., "epoch": ..., "cmmd": ...}
     {"ev": "ckpt", "ts": ..., "global_step": ..., "path": ...}
@@ -185,9 +186,18 @@ class ProgressSink:
         total_epochs: int,
         pid: int,
         log_dir: Optional[str] = None,
+        sampling_enabled: bool = False,
     ) -> None:
         """Open the file fresh (truncating any stale stream) and write the
-        opening event."""
+        opening event.
+
+        ``sampling_enabled`` mirrors the trainer's own gating decision
+        (``sample_prompts`` set AND one of the ``--sample_every_*`` /
+        ``--sample_at_first`` triggers) so downstream consumers (the WebUI)
+        read it from this single source of truth instead of re-deriving it
+        from a CLI argv that may carry no ``--sample_*`` flags at all (the
+        GUI path sources them from the method TOML).
+        """
         if self._closed:
             return
         try:
@@ -209,6 +219,7 @@ class ProgressSink:
             total_steps=total_steps,
             total_epochs=total_epochs,
             pid=pid,
+            sampling_enabled=sampling_enabled,
             **extra,
         )
 

@@ -70,6 +70,7 @@ export default {
   dashSampleDialogTitle: '미리보기 상세',
   dashSampleHistoryCount: '{n}장 미리보기',
   dashWaitingSample: '미리보기 대기 중...',
+  dashSamplingDisabled: '샘플링 비활성화 — sample_every_n_steps / sample_every_n_epochs 를 설정해야 미리보기가 생성됩니다.',
 
   // System Monitoring (dashboard)
   dashSysMon: '시스템 모니터링',

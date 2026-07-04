@@ -234,6 +234,12 @@ class TaskService:
         # task_id == job_id (the frontend addresses jobs by task_id over WS).
         temp_id = uuid.uuid4().hex[:12]
         task = Task(id=temp_id, command=command, args=args or [])
+        # ``sampling_enabled`` is NOT derived here: the GUI training path
+        # sources its ``--sample_*`` flags from the method TOML, merged inside
+        # ``train.py``, so the raw ``args`` never carry them. The trainer is
+        # the single source of truth — it emits ``sampling_enabled`` on the
+        # ``run_start`` progress event, which ``_watch_progress_jsonl`` reads
+        # back into ``metrics.sampling_enabled`` once the run actually starts.
         self._tasks[temp_id] = task
 
         try:
@@ -714,6 +720,12 @@ class TaskService:
                                 metrics.total_steps = int(ev["total_steps"])
                             if "total_epochs" in ev:
                                 metrics.total_epochs = int(ev["total_epochs"])
+                            # ``sampling_enabled`` is the trainer's authoritative
+                            # decision (sample_prompts set AND a trigger) — read
+                            # it here instead of re-deriving from CLI argv, which
+                            # carries no ``--sample_*`` flags on the GUI path.
+                            if "sampling_enabled" in ev:
+                                metrics.sampling_enabled = bool(ev["sampling_enabled"])
                             # Wake up any late-joining subscriber waiting
                             # for total_steps — emit a snapshot now so the
                             # UI sees the denominator as soon as the trainer

@@ -61,6 +61,11 @@ class TrainingMetrics:
     avg_key_norm: float | None = None
     checkpoint_saved: bool = False
     events: list[dict] = field(default_factory=list)
+    # Whether sampling (--sample_every_n_steps / --sample_every_n_epochs /
+    # --sample_at_first) is configured for this task. Surfaced to the UI so
+    # the gallery can show "sampling disabled" instead of appearing broken
+    # when no preview images will ever be produced.
+    sampling_enabled: bool = False
 
     def snapshot(self) -> dict:
         """Return a JSON-serializable snapshot of current metrics."""
@@ -82,6 +87,7 @@ class TrainingMetrics:
             "avg_key_norm": self.avg_key_norm,
             "checkpoint_saved": self.checkpoint_saved,
             "events": list(self.events),
+            "sampling_enabled": self.sampling_enabled,
         }
 
 
