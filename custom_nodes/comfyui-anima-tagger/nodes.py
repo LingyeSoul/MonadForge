@@ -179,19 +179,47 @@ def _ensure_tagger_dir(tdir: Path, hf_subfolder: str = "") -> None:
             )
 
 
+def _evict_anima_namespaces() -> None:
+    """Drop any cached ``library``/``networks`` modules from ``sys.modules``.
+
+    A sibling anima node (e.g. ``comfyui-anima-lora-adapter``) that fell back to
+    *its* ``_vendor`` tree repoints ``sys.modules['library']`` at an INCOMPLETE
+    subset — its ``library.runtime`` ships only ``fei.py``, no ``device.py``. That
+    partial tree then shadows ours: our live ``library.datasets.image_utils``
+    imports ``library.runtime.device`` and hits ``ModuleNotFoundError`` even
+    though the live tree is on ``sys.path``. Evicting first lets the next import
+    resolve cleanly against whichever tree we just prepended. Siblings hold direct
+    references to the callables they already imported, so repointing is safe."""
+    for _name in [
+        k
+        for k in list(sys.modules)
+        if k in ("library", "networks") or k.startswith(("library.", "networks."))
+    ]:
+        del sys.modules[_name]
+
+
 def _resolve_anima_tagger():
     """Return the ``AnimaTagger`` class from the live tree if reachable,
     else from the bundled vendor copy. Vendor wins only when the live import
     fails - keeps in-repo edits picked up automatically during development."""
-    if str(ANIMA_LORA) not in sys.path:
-        sys.path.insert(0, str(ANIMA_LORA))
+    # Force the live tree to the FRONT of sys.path (not merely present): a
+    # sibling anima node may have prepended its own ``_vendor`` ahead of us, and
+    # after eviction the re-import resolves against whichever entry comes first.
+    _live = str(ANIMA_LORA)
+    if _live in sys.path:
+        sys.path.remove(_live)
+    sys.path.insert(0, _live)
     try:
+        _evict_anima_namespaces()
         return importlib.import_module("library.captioning.anima_tagger").AnimaTagger
     except ImportError:
         if not VENDOR.exists():
             raise
-        if str(VENDOR) not in sys.path:
-            sys.path.insert(0, str(VENDOR))
+        _vendor = str(VENDOR)
+        if _vendor in sys.path:
+            sys.path.remove(_vendor)
+        sys.path.insert(0, _vendor)
+        _evict_anima_namespaces()
         return importlib.import_module("library.captioning.anima_tagger").AnimaTagger
 
 
