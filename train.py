@@ -156,6 +156,12 @@ from library.training.log_dispatch import (
     generate_step_logs as _generate_step_logs,
 )
 from library.training.progress import ProgressSink, run_scope
+from library.training.mem_reweight import (
+    MemGapTracker,
+    adapted_logmse,
+    measure_base_logmse,
+    measure_grid_delta,
+)
 from library.training.forward import (
     ForwardConditioning,
     apply_router_conditioning,
@@ -1396,6 +1402,32 @@ class AnimaTrainer:
                 f"using trainable DiT with multiplier=0 as the control variate"
             )
 
+        # Online memorization Δ-gap tracker (same set_multiplier(0) trick as
+        # VR — _archive/proposals/memorization_lowsigma_reweight.md). The
+        # measurement is a second per-step DiT forward, unaudited against the
+        # block-swap offloader (cf.
+        # [[project_blockswap_extra_forwards_gradcache]]) — raise, not warn,
+        # same policy as the register-tokens guard.
+        mem_mode = str(getattr(args, "mem_reweight_mode", "") or "")
+        if mem_mode:
+            if self.is_swapping_blocks:
+                raise ValueError(
+                    "--mem_reweight_mode requires blocks_to_swap=0 — the "
+                    "Δ-gap measurement forward has not been validated against "
+                    "the block-swap offloader and can silently desync it. "
+                    "Use block compile for memory instead."
+                )
+            save_path = os.path.join(
+                args.output_dir,
+                f"{getattr(args, 'output_name', None) or 'lora'}_memgap.json",
+            )
+            self._state.mem_tracker = MemGapTracker(args, save_path)
+            logger.info(
+                f"memorization Δ-gap tracker enabled (mode={mem_mode}, "
+                f"σ≤{args.mem_sigma_max}, K={args.mem_measure_every}) — "
+                f"state → {save_path}"
+            )
+
         return model, text_encoders
 
     # Strategy construction + singleton installation lives in
@@ -1641,6 +1673,63 @@ class AnimaTrainer:
             self._state.extras_for_step["vr"] = {
                 "z": z_residual.detach(),
                 "state": self._state.vr,
+            }
+
+        # Online memorization Δ-gap (mem_reweight.py). Producer half: the
+        # causal per-item weights (from state BEFORE this step's measurement)
+        # plus, on measurement steps with any σ ≤ sigma_max draw, the base
+        # forward's per-sample log-MSE on the identical (x_t, ε, σ). The
+        # consumer half (EMA update + loss_weights multiply) lives at the
+        # loss site in ``_process_batch_inner`` where model_pred/target exist.
+        tracker = self._state.mem_tracker
+        if (
+            is_train
+            and tracker is not None
+            and cond.crossattn_emb is not None
+            and "image_keys" in batch
+        ):
+            sig = sigmas.reshape(sigmas.shape[0], -1)[:, 0].float()
+            low_mask = sig <= tracker.sigma_max
+            keys = list(batch["image_keys"])
+            base_logmse = None
+            grid_deltas = None
+            if tracker.extra_sigmas:
+                # Multi-draw mode: fixed σ grid × antithetic ε, every visit
+                # (not gated on the train draw's σ) — the Δ is computed fully
+                # here; the consumer only folds it into the EMA.
+                if tracker.should_measure():
+                    grid_deltas = measure_grid_delta(
+                        anima_call=anima,
+                        network=ctx.network,
+                        latents=latents,
+                        crossattn_emb=cond.crossattn_emb,
+                        padding_mask=padding_mask,
+                        forward_kwargs=cond.kw,
+                        model_dtype=noisy_model_input.dtype,
+                        sigmas=tracker.extra_sigmas,
+                        n_noise=tracker.extra_noise,
+                        delta=tracker.delta,
+                        generator=tracker.noise_generator(latents.device),
+                    )
+            elif tracker.should_measure() and bool(low_mask.any()):
+                base_logmse = measure_base_logmse(
+                    anima_call=anima,
+                    network=ctx.network,
+                    noisy_model_input=noisy_model_input,
+                    timesteps=timesteps,
+                    crossattn_emb=cond.crossattn_emb,
+                    padding_mask=padding_mask,
+                    forward_kwargs=cond.kw,
+                    noise=noise,
+                    latents=latents,
+                    delta=tracker.delta,
+                )
+            self._state.extras_for_step["mem_gap"] = {
+                "keys": keys,
+                "weights": tracker.weights(keys, low_mask.tolist()),
+                "low_mask": low_mask,
+                "base_logmse": base_logmse,
+                "grid_deltas": grid_deltas,
             }
 
     def _dispatch_adapter_extras(
@@ -1989,6 +2078,34 @@ class AnimaTrainer:
         if func_loss is not None:
             loss_aux["func_loss"] = func_loss
 
+        # Online memorization Δ-gap, consumer half (producer: the mem_gap
+        # block in ``_attach_aux_losses``). Fold this step's paired Δ into the
+        # per-item EMA (measurement steps only), then apply the CAUSAL weights
+        # (computed from pre-step state) onto the per-sample loss_weights.
+        loss_weights = batch["loss_weights"]
+        mem_gap = loss_aux.pop("mem_gap", None)
+        if mem_gap is not None:
+            tracker = self._state.mem_tracker
+            if mem_gap.get("grid_deltas") is not None:
+                # Multi-draw Δ was fully computed in the producer, for every
+                # batch item regardless of the train draw's σ.
+                tracker.update(mem_gap["keys"], mem_gap["grid_deltas"].tolist())
+            elif mem_gap["base_logmse"] is not None:
+                with torch.no_grad():
+                    d = mem_gap["base_logmse"] - adapted_logmse(
+                        noise_pred, target, tracker.delta
+                    )
+                low = mem_gap["low_mask"].tolist()
+                tracker.update(
+                    [k for k, m in zip(mem_gap["keys"], low) if m],
+                    [v for v, m in zip(d.tolist(), low) if m],
+                )
+            w = mem_gap["weights"]
+            if any(x != 1.0 for x in w):
+                loss_weights = loss_weights * torch.tensor(
+                    w, device=loss_weights.device, dtype=loss_weights.dtype
+                )
+
         composer = build_loss_composer(
             args, getattr(self, "_network", network), ledger=self._liveness
         )
@@ -2002,7 +2119,7 @@ class AnimaTrainer:
                 timesteps=timesteps,
                 weighting=weighting,
                 huber_c=huber_c,
-                loss_weights=batch["loss_weights"],
+                loss_weights=loss_weights,
                 network=getattr(self, "_network", network),
                 aux=aux,
                 is_train=is_train,

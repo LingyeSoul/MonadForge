@@ -598,6 +598,109 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "λ_ema ← (1−β)·λ_ema + β·λ_batch. Default 0.01 over typically B=4.",
     )
 
+    # Memorization-aware training — per-sample low-σ Δ-gap reweight
+    # (_archive/proposals/memorization_lowsigma_reweight.md). Gated off by default.
+    # LoRA-family train.py only; hard-requires blocks_to_swap=0 (the
+    # measurement is a second per-step DiT forward, unaudited vs the offloader).
+    parser.add_argument(
+        "--mem_reweight_mode",
+        type=str,
+        default="",
+        choices=["", "measure", "reweight"],
+        help="'' = off (default). 'measure' = track the per-item online Δ-gap "
+        "(log-MSE base − adapted on the same (x_t, ε, σ), adapter zeroed via "
+        "set_multiplier(0)) and dump <output_name>_memgap.json — no loss "
+        "change. 'reweight' = additionally downweight flagged items' FM loss "
+        "on σ ≤ mem_sigma_max draws (Arm A).",
+    )
+    parser.add_argument(
+        "--mem_sigma_max",
+        type=float,
+        default=0.7,
+        help="σ band for both measurement and reweighting (the MIA signal "
+        "lives at σ ≤ 0.7 — bench/memorization/loss_gap.py). High-σ draws are "
+        "never touched.",
+    )
+    parser.add_argument(
+        "--mem_measure_every",
+        type=int,
+        default=1,
+        help="Measure on every K-th train batch. Small datasets at bs=1 need "
+        "K=1 for enough per-item coverage; raise to bound overhead on long "
+        "runs (each measurement is one extra no-grad forward).",
+    )
+    parser.add_argument(
+        "--mem_ema_beta",
+        type=float,
+        default=0.3,
+        help="Per-item Δ-gap EMA rate (bias-corrected, Adam-style — per-item "
+        "measurement counts are tiny).",
+    )
+    parser.add_argument(
+        "--mem_z_threshold",
+        type=float,
+        default=1.5,
+        help="Flag items whose Δ-EMA z-scores above this against the dataset "
+        "distribution.",
+    )
+    parser.add_argument(
+        "--mem_weight_temp",
+        type=float,
+        default=0.5,
+        help="Softness of the logistic downweight gate "
+        "w = floor + (1−floor)·sigmoid((z_thr − z)/temp).",
+    )
+    parser.add_argument(
+        "--mem_weight_floor",
+        type=float,
+        default=0.0,
+        help="Minimum loss weight for a fully-flagged item (0 = its low-σ "
+        "loss can be suppressed entirely).",
+    )
+    parser.add_argument(
+        "--mem_warmup_updates",
+        type=int,
+        default=100,
+        help="No reweighting until this many total per-item measurements have "
+        "been folded in (the z-score needs a populated distribution first).",
+    )
+    parser.add_argument(
+        "--mem_delta",
+        type=float,
+        default=1e-3,
+        help="log offset δ in Δ = log(mse_base+δ) − log(mse_adapted+δ); "
+        "matches loss_gap.py's --delta so online and offline stats are "
+        "commensurable.",
+    )
+    parser.add_argument(
+        "--mem_snapshot_every",
+        type=int,
+        default=50,
+        help="Record the flagged-item set every N measurements into the "
+        "memgap JSON (for flag-churn analysis; 0 disables).",
+    )
+    parser.add_argument(
+        "--mem_extra_sigmas",
+        type=float,
+        nargs="*",
+        default=[],
+        help="Multi-draw measurement σ grid (e.g. 0.5 0.7). When set, each "
+        "measurement step scores every batch item at these σ × mem_extra_noise "
+        "antithetic ε draws (mirrors loss_gap.py's statistic; ~3× per-item "
+        "counts, ~4× lower variance) instead of the single train-draw pair. "
+        "Costs 2·len(grid)·n_noise extra no-grad forwards per step. Plain-LoRA "
+        "stacks only — grid forwards reuse the train step's per-step adapter "
+        "conditioning, so σ-conditioned state (use_timestep_mask, σ/FEI "
+        "routers) would be evaluated at the wrong σ.",
+    )
+    parser.add_argument(
+        "--mem_extra_noise",
+        type=int,
+        default=2,
+        help="Noise draws per grid σ in multi-draw measurement (antithetic "
+        "±ε pairs, matching the offline probe).",
+    )
+
     parser.add_argument(
         "--inversion_dir",
         type=str,
