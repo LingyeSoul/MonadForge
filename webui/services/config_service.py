@@ -129,6 +129,7 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
     "attn_mode": _ATTN_MODES,
     "optimizer_type": [
         "AdamW",
+        "CAME",
         "AdamW8bit",
         "Lion",
         "Lion8bit",

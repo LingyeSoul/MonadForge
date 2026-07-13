@@ -251,7 +251,7 @@ MonadForge 支持丰富的优化器选择，以下列出各优化器的来源与
 | **Prodigy** | `Prodigy` | [prodigyopt](https://github.com/konstmish/prodigy) | MIT | D-Adaptation 改进版 |
 | **Prodigy Plus Schedule-Free** | `ProdigyPlusScheduleFree` | [LoganBooker/prodigy-plus-schedule-free](https://github.com/LoganBooker/prodigy-plus-schedule-free) | MIT | Prodigy + schedule-free |
 | **Adafactor** | `Adafactor` | [transformers](https://github.com/huggingface/transformers) (Google) | Apache-2.0 | 内存高效二阶优化器 |
-| **CAME** | `CAME` | [kozistr/pytorch_optimizer](https://github.com/kozistr/pytorch_optimizer) | Apache-2.0 | 信赖域自适应学习率 |
+| **CAME** | `CAME` | [kozistr/pytorch_optimizer](https://github.com/kozistr/pytorch_optimizer) | Apache-2.0 | 置信度引导的内存高效优化器，兼容多分辨率批次 |
 | **Automagic** | `Automagic` | [Ostris AI Toolkit](https://github.com/ostris/ai-toolkit) → [scvxzf1/anima_lora_webui](https://github.com/scvxzf1/anima_lora_webui) | MIT | 逐参数自适应 LR |
 | **Schedule-Free** | `RAdamScheduleFree` / `AdamWScheduleFree` / `SGDScheduleFree` | [schedulefree](https://github.com/facebookresearch/schedulefree) | MIT | 无需调度器 |
 | **Rose** | *(注释中，需手动启用)* | [MatthewK78/Rose](https://github.com/MatthewK78/Rose) | — | 无状态优化器 |
@@ -262,7 +262,7 @@ MonadForge 支持丰富的优化器选择，以下列出各优化器的来源与
 # Adafactor — 大模型低显存训练
 python tasks.py lora --optimizer_type Adafactor --lr_scheduler adafactor
 
-# CAME — 自适应信赖域
+# CAME — 置信度引导的内存高效优化器（支持多分辨率批次）
 python tasks.py lora --optimizer_type CAME --learning_rate 1e-4
 
 # Automagic — 逐参数自适应 LR（无需调度器）

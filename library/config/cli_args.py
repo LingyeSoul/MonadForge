@@ -74,8 +74,8 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         "--optimizer_type",
         type=str,
         default="",
-        help="Optimizer to use"
-        "Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
+        help="Optimizer to use: "
+        "CAME, Lion8bit, PagedLion8bit, Lion, SGDNesterov, SGDNesterov8bit, "
         "DAdaptation(DAdaptAdamPreprint), DAdaptAdaGrad, DAdaptAdam, DAdaptAdan, DAdaptAdanIP, DAdaptLion, DAdaptSGD.",
     )
 

@@ -9,6 +9,9 @@ from torch.optim import Optimizer
 
 logger = logging.getLogger(__name__)
 
+_CAME_DEFAULT_BETA3 = 0.9999
+_PYTORCH_OPTIMIZER_CAME_MODULE = "pytorch_optimizer.optimizer.came"
+
 
 def get_optimizer_kwargs(args: argparse.Namespace) -> dict:
     optimizer_kwargs = {}
@@ -18,6 +21,29 @@ def get_optimizer_kwargs(args: argparse.Namespace) -> dict:
             value = ast.literal_eval(value)
             optimizer_kwargs[key] = value
     return optimizer_kwargs
+
+
+def _normalize_came_betas(optimizer_kwargs: dict) -> dict:
+    """Upgrade Adam-style two-beta configs to CAME's three-beta contract."""
+    betas = optimizer_kwargs.get("betas")
+    if not isinstance(betas, (list, tuple)) or len(betas) != 2:
+        return optimizer_kwargs
+
+    normalized = dict(optimizer_kwargs)
+    normalized["betas"] = (*betas, _CAME_DEFAULT_BETA3)
+    logger.warning(
+        "CAME requires three beta values; appended beta3=%s to betas=%s",
+        _CAME_DEFAULT_BETA3,
+        betas,
+    )
+    return normalized
+
+
+def _is_pytorch_optimizer_came(optimizer_class: type) -> bool:
+    return (
+        optimizer_class.__module__ == _PYTORCH_OPTIMIZER_CAME_MODULE
+        and optimizer_class.__name__ == "CAME"
+    )
 
 
 def get_optimizer(
@@ -284,6 +310,7 @@ def get_optimizer(
             raise ImportError(
                 "No pytorch_optimizer. Install with: pip install pytorch_optimizer"
             )
+        optimizer_kwargs = _normalize_came_betas(optimizer_kwargs)
         logger.info(f"use CAME optimizer | {optimizer_kwargs}")
         optimizer_class = pytorch_optimizer.CAME
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
@@ -384,6 +411,8 @@ def get_optimizer(
             case_sensitive_optimizer_type = values[-1]
 
         optimizer_class = getattr(optimizer_module, case_sensitive_optimizer_type)
+        if _is_pytorch_optimizer_came(optimizer_class):
+            optimizer_kwargs = _normalize_came_betas(optimizer_kwargs)
         optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
 
     optimizer_name = optimizer_class.__module__ + "." + optimizer_class.__name__

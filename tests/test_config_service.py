@@ -99,6 +99,10 @@ def test_no_pruned_optimizers_offered():
     )
 
 
+def test_came_is_offered_in_webui():
+    assert "CAME" in _SELECT_OPTIONS["optimizer_type"]
+
+
 def test_no_pruned_schedulers_offered():
     offered = set(_SELECT_OPTIONS["lr_scheduler"])
     leaked = offered & _PRUNED_SCHEDULERS
