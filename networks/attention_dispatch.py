@@ -1,5 +1,7 @@
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 import torch
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from typing import Optional, Union
 
 try:
@@ -44,6 +46,13 @@ except ImportError:
     create_block_mask = None
 
 
+def sdpa_backend_context(attn_mode: Optional[str]):
+    """Scope an explicitly requested PyTorch SDPA backend to one call."""
+    if attn_mode == "mem_efficient":
+        return sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
+    return nullcontext()
+
+
 @dataclass
 class AttentionParams:
     attn_mode: Optional[str] = None
@@ -70,7 +79,7 @@ class AttentionParams:
     @property
     def supports_fp32(self) -> bool:
         # flash4 is not supported yet, but keep it in the exclusion list for parity.
-        return self.attn_mode not in ["flash", "flash4"]
+        return self.attn_mode not in ["flash", "flash4", "mem_efficient"]
 
     def for_attention_kind(self, *, is_selfattn: bool) -> "AttentionParams":
         """Return params specialized for a self/cross attention call.
@@ -135,7 +144,7 @@ class AttentionParams:
                 attention_mask, (img_len, 0), value=1
             )  # [B, img_len + L]
 
-            if attn_mode in ("torch", "flex"):
+            if attn_mode in ("torch", "mem_efficient", "flex"):
                 attention_mask = attention_mask[:, None, None, :].to(
                     torch.bool
                 )  # [B, 1, 1, img_len + L]
@@ -252,7 +261,7 @@ def dispatch_attention(
             seqlen_trimmed = True
 
     # Determine tensor layout based on attention implementation
-    if attn_params.attn_mode == "torch" or (
+    if attn_params.attn_mode in ("torch", "mem_efficient") or (
         attn_params.attn_mode == "sageattn" and attn_params.cu_seqlens is None
     ):
 
@@ -280,6 +289,22 @@ def dispatch_attention(
             dropout_p=drop_rate,
             scale=scale,
         )
+        del q, k, v
+
+    elif attn_params.attn_mode == "mem_efficient":
+        # Scope backend forcing to this call. Process-global CUDA backend flags
+        # would also affect the text encoder, VAE, and third-party components.
+        # The public context manager is traceable by torch.compile (covered by
+        # tests/test_mem_efficient_sdpa.py).
+        with sdpa_backend_context(attn_params.attn_mode):
+            x = torch.nn.functional.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                attn_mask=attn_params.attention_mask,
+                dropout_p=drop_rate,
+                scale=scale,
+            )
         del q, k, v
 
     elif attn_params.attn_mode == "sageattn":
@@ -341,7 +366,7 @@ def dispatch_attention(
         raise NotImplementedError(
             "attn_mode='flash4' is disabled in this build "
             "(see docs/optimizations/fa4.md). "
-            "Use 'flash', 'torch', 'flex', or 'sageattn'."
+            "Use 'flash', 'torch', 'mem_efficient', 'flex', or 'sageattn'."
         )
 
     else:

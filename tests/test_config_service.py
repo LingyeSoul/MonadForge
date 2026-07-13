@@ -16,6 +16,10 @@ trainer, and the names the WebUI must not offer stay off the list.
 
 from __future__ import annotations
 
+import argparse
+
+from library.anima.training import add_anima_training_arguments
+from library.inference.args import build_parser as build_inference_parser
 from webui.services.config_service import _SELECT_OPTIONS
 
 # Names pruned from the trainer in commit 772dda7. They must never reappear in
@@ -29,6 +33,21 @@ _PRUNED_SCHEDULERS = {
     "cosine_with_min_lr",
     "warmup_stable_decay",
 }
+
+
+def _choices(parser: argparse.ArgumentParser, dest: str) -> set[str]:
+    action = next(action for action in parser._actions if action.dest == dest)
+    return set(action.choices or ())
+
+
+def test_attention_modes_match_training_and_inference_parsers():
+    training_parser = argparse.ArgumentParser()
+    add_anima_training_arguments(training_parser)
+    training_modes = _choices(training_parser, "attn_mode") - {"sdpa"}
+    inference_modes = _choices(build_inference_parser(), "attn_mode") - {"sdpa"}
+    webui_modes = set(_SELECT_OPTIONS["attn_mode"]) - {"xformers"}
+
+    assert webui_modes == training_modes == inference_modes
 
 
 def test_no_pruned_optimizers_offered():

@@ -68,12 +68,17 @@ def _grads_finite(model) -> bool:
 def _run(args):
     device = torch.device(args.device)
     if device.type == "cuda":
+        if device.index is None:
+            device = torch.device("cuda", torch.cuda.current_device())
         torch.cuda.set_device(device)
         props = torch.cuda.get_device_properties(device)
         gpu = {"name": props.name, "sm": f"{props.major}.{props.minor}"}
     else:
         gpu = {"name": "cpu", "sm": "n/a"}
 
+    # Keep model initialization identical across separate backend runs so loss,
+    # timing, and memory comparisons change only with the selected backend.
+    torch.manual_seed(0)
     model = _build_tiny_anima(
         attn_mode=args.attn_mode,
         stability=args.stability,
@@ -86,6 +91,9 @@ def _run(args):
     autocast_device = "cuda" if device.type == "cuda" else "cpu"
 
     results = []
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
     t0 = time.perf_counter()
     for step in range(args.steps):
         model.zero_grad(set_to_none=True)
@@ -108,7 +116,16 @@ def _run(args):
         )
         if not (out_finite and loss_finite and grad_finite):
             break
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - t0
+
+    peak_allocated_mib = None
+    peak_reserved_mib = None
+    if device.type == "cuda":
+        mib = 1024**2
+        peak_allocated_mib = round(torch.cuda.max_memory_allocated(device) / mib, 3)
+        peak_reserved_mib = round(torch.cuda.max_memory_reserved(device) / mib, 3)
 
     return {
         "device": args.device,
@@ -124,6 +141,8 @@ def _run(args):
             r["out_finite"] and r["loss_finite"] and r["grad_finite"] for r in results
         ),
         "ms_per_step": round((elapsed / max(1, len(results))) * 1000.0, 3),
+        "peak_allocated_mib": peak_allocated_mib,
+        "peak_reserved_mib": peak_reserved_mib,
         "steps": results,
     }
 
@@ -131,7 +150,11 @@ def _run(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    p.add_argument("--attn_mode", choices=["torch", "flash", "flex"], default="flash")
+    p.add_argument(
+        "--attn_mode",
+        choices=["torch", "mem_efficient", "flash", "flex"],
+        default="flash",
+    )
     p.add_argument("--stability", choices=["off", "hybrid", "safe"], default="hybrid")
     p.add_argument("--mixed_precision", choices=["fp16", "bf16"], default="fp16")
     p.add_argument("--debug_finite", action="store_true")

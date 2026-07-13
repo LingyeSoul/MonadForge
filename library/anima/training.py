@@ -471,6 +471,7 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "--attn_mode",
         choices=[
             "torch",
+            "mem_efficient",
             "flash",
             # "flash4",  # not supported yet (flash-attention-sm120 disabled)
             "sageattn",
@@ -478,7 +479,10 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
             "sdpa",
         ],  # "sdpa" is for backward compatibility
         default=None,
-        help="Attention implementation to use. Default is None (torch). sageattn does not support training (inference only). This option overrides --sdpa."
+        help="Attention implementation to use. mem_efficient forces PyTorch's "
+        "efficient SDPA backend for each call; torch lets PyTorch choose. "
+        "Default is None (torch). sageattn does not support training (inference only). "
+        "This option overrides --sdpa."
         "",
     )
     parser.add_argument(

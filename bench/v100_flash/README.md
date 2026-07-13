@@ -15,16 +15,57 @@ DiT fp16 training showed that it is **not production-stable** for this model:
 **Recommendation:** use `attn_mode="torch"` for V100 production training. Keep this
 probe and the stability modes for diagnostics only.
 
+### Optional memory-efficient SDPA
+
+`attn_mode="mem_efficient"` forces PyTorch's native Efficient Attention backend
+for Anima attention calls only. Unlike the process-global CUDA backend flags, it
+does not change backend selection for the text encoder, VAE, or third-party
+components. The public `sdpa_kernel` context is traceable by current
+`torch.compile` (one graph, no graph break in the invariant test).
+
+Validate the installed V100 PyTorch build before adopting it:
+
+```bash
+python -m bench.v100_flash.run_probe \
+  --attn_mode mem_efficient --device cuda --steps 5 --label mem-efficient
+```
+
+If every step is finite and peak VRAM/step time improve over `--attn_mode torch`,
+set `attn_mode = "mem_efficient"` in the custom V100 preset. A build without a
+compatible Efficient Attention CUDA kernel fails explicitly instead of falling
+back to the O(N^2) math backend.
+
 ## Production V100 recipe
 
-Use a V100-specific preset/variant like:
+Keep the hardware profile in the user-owned (and git-ignored)
+`configs/custom/presets/V100.toml`, then run:
+
+```bash
+PRESET=V100 make lora
+```
+
+PowerShell / cross-platform task runner:
+
+```powershell
+$env:PRESET = "V100"
+python tasks.py lora
+```
+
+Use this profile:
 
 ```toml
 mixed_precision = "fp16"
+save_precision = "fp16"
 attn_mode = "torch"
 torch_compile = true
 gradient_checkpointing = true
+unsloth_offload_checkpointing = false
+blocks_to_swap = 8
 ```
+
+Leave PyTorch's SDPA backend selection intact. Do not set CUDA SDPA backend
+flags globally: other components need the math fallback, and current MonadForge
+does not disable memory-efficient SDPA.
 
 Operational notes from the verified V100 environment:
 
@@ -46,6 +87,9 @@ These commands are for investigation, not production recommendation:
 ```bash
 # Baseline: should be finite.
 python -m bench.v100_flash.run_probe --attn_mode torch --device cuda
+
+# Candidate: force native memory-efficient SDPA (must not silently use math).
+python -m bench.v100_flash.run_probe --attn_mode mem_efficient --device cuda
 
 # Diagnostic: self-attn flash, cross-attn torch SDPA.
 python -m bench.v100_flash.run_probe --attn_mode flash --stability hybrid --debug_finite --device cuda

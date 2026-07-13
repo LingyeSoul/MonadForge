@@ -204,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
             "flash",
             # "flash4",  # not supported yet (flash-attention-sm120 disabled)
             "torch",
+            "mem_efficient",
             "sageattn",
             "flex",
             "sdpa",

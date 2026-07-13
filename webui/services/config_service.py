@@ -115,7 +115,7 @@ _METHOD_ORDER = (
     "controlnet",
 )
 
-_ATTN_MODES = ["flash", "torch", "sageattn", "flex", "xformers"]
+_ATTN_MODES = ["flash", "torch", "mem_efficient", "sageattn", "flex", "xformers"]
 _SAMPLER_CHOICES = ["euler", "er_sde"]
 
 # Curated to exactly what library/training/optimizers.py::get_optimizer and

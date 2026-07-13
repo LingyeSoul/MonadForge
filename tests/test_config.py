@@ -26,6 +26,8 @@ from library.config.io import (
     _render_merged_toml,
     load_dataset_config_from_base,
     load_method_preset,
+    load_preset_section,
+    list_presets,
 )
 from tests.conftest import iter_method_names
 
@@ -66,6 +68,7 @@ def test_choices_preserved(populated_parser):
     lw = config_schema.get_schema()["log_with"]
     assert "tensorboard" in lw.choices
     assert "wandb" in lw.choices
+    assert "mem_efficient" in config_schema.get_schema()["attn_mode"].choices
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +122,25 @@ METHODS = list(iter_method_names())
 
 def _load_preset_names() -> list[str]:
     return list(toml.load("configs/presets.toml").keys())
+
+
+def test_list_presets_includes_new_and_legacy_custom_layouts(tmp_path: Path):
+    configs = tmp_path / "configs"
+    (configs / "custom" / "presets").mkdir(parents=True)
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (configs / "custom" / "presets" / "V100.toml").write_text(
+        'attn_mode = "torch"\n', encoding="utf-8"
+    )
+    (configs / "custom" / "V100.toml").write_text(
+        'attn_mode = "flash"\n', encoding="utf-8"
+    )
+    (configs / "custom" / "legacy.toml").write_text(
+        'attn_mode = "torch"\n', encoding="utf-8"
+    )
+
+    assert list_presets(str(configs)) == ["V100", "default", "legacy"]
+    assert load_preset_section("V100", str(configs)) == {"attn_mode": "torch"}
+    assert load_preset_section("legacy", str(configs)) == {"attn_mode": "torch"}
 
 
 @pytest.mark.parametrize("method", METHODS)

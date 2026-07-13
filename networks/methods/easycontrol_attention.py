@@ -322,7 +322,8 @@ def _extended_target_attention(
     target_zeros = torch.zeros(S_t, device=target_q.device, dtype=q_s.dtype)
     cond_b = b.expand(S_c)
     attn_bias = torch.cat([target_zeros, cond_b], dim=0).view(1, 1, 1, S_t + S_c)
-    out = F.scaled_dot_product_attention(
-        q_s, k_s, v_s, attn_mask=attn_bias, scale=scale
-    )
+    with anima_attention.sdpa_backend_context(attn_params.attn_mode):
+        out = F.scaled_dot_product_attention(
+            q_s, k_s, v_s, attn_mask=attn_bias, scale=scale
+        )
     return out.transpose(1, 2).reshape(B, S_t, -1)
