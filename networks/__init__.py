@@ -108,6 +108,10 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "use_lokr",
         "lokr_factor",
         "decompose_both",
+        "lokr_full_factor",
+        # Escape hatch for resuming historical states that used network_dim as
+        # a full-factor sentinel and must preserve their old alpha/dim scale.
+        "lokr_allow_legacy_dim",
         # SVD-Down: lora_down init for plain LoRA ("kaiming" | "weight_svd").
         "down_init",
         # VeRA: seed for shared frozen random matrices A, B. Selected via use_ve=true.

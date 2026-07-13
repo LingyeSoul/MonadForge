@@ -13,6 +13,7 @@ blocks_to_swap = 0
 use_lokr = true
 lokr_factor = 8
 decompose_both = false
+lokr_full_factor = false
 
 [variant]
 family = "lora"

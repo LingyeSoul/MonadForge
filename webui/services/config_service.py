@@ -198,6 +198,7 @@ _GROUPS = {
         "use_lokr",
         "lokr_factor",
         "decompose_both",
+        "lokr_full_factor",
         "use_dylora",
         "dylora_unit",
         "dylora_algo",
@@ -296,6 +297,7 @@ _BASIC = {
     "save_every_n_epochs",
     "network_dim",
     "network_alpha",
+    "lokr_full_factor",
     "num_experts",
     "output_name",
     "batch_size",
@@ -1003,6 +1005,15 @@ def validate_config(data: dict) -> list[str]:
         dim = data["network_dim"]
         if isinstance(dim, int) and dim <= 0:
             errors.append("network_dim must be positive")
+    if data.get("use_lokr"):
+        if data.get("lokr_full_factor") and data.get("decompose_both"):
+            errors.append("lokr_full_factor=true conflicts with decompose_both=true")
+        if data.get("network_dim") == 114514 and not data.get("lokr_allow_legacy_dim"):
+            errors.append(
+                "LoKR network_dim=114514 is a deprecated full-factor sentinel "
+                "that suppresses training via alpha/dim. Use network_dim=32, "
+                "network_alpha=32, lokr_full_factor=true instead."
+            )
     if "max_train_epochs" in data:
         ep = data["max_train_epochs"]
         if isinstance(ep, int) and ep <= 0:
@@ -1101,6 +1112,17 @@ def save_variant_config(variant: str, data: dict) -> None:
     if extras:
         current.update(extras)
 
+    # Validate the prospective effective method config, not only the sparse
+    # overlay. Built-in LoKR flags live in gui-methods/lokr.toml while a user
+    # overlay may contain only network_dim, so validating the overlay alone
+    # would miss the deprecated sentinel.
+    stem = variant.split("/", 1)[-1]
+    candidate = _load(GUI_METHODS_DIR / f"{stem}.toml")
+    candidate.update(current)
+    errors = validate_config(candidate)
+    if errors:
+        raise ValueError("; ".join(errors))
+
     _save(path, current)
 
 
@@ -1176,6 +1198,9 @@ def prelaunch_check(variant: str, preset: str) -> dict:
     and whether PE cache is required.
     """
     merged, _origin = merged_gui_variant_preset(variant, preset)
+    errors = validate_config(merged)
+    if errors:
+        raise ValueError("; ".join(errors))
 
     # Resolve cache directory
     cache_dir_str = merged.get("lora_cache_dir", "post_image_dataset/lora")

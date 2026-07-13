@@ -527,6 +527,8 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                         extra_kwargs["lokr_factor"] = cfg.lokr_factor
                     if cfg.decompose_both:
                         extra_kwargs["decompose_both"] = True
+                    if cfg.lokr_full_factor:
+                        extra_kwargs["full_factor"] = True
 
                 # DyLoRA-specific kwargs.
                 if (
@@ -1888,6 +1890,19 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         if spec.name == "lokr":
             metadata.setdefault("ss_network_dim", str(self.cfg.lora_dim))
             metadata.setdefault("ss_network_alpha", str(self.cfg.alpha))
+            lokr_modules = [
+                lora
+                for lora in self.text_encoder_loras + self.unet_loras
+                if isinstance(lora, LoKRModule)
+            ]
+            # Native full-full LoKR files fold alpha/dim into w2 because their
+            # loader applies scale=1. Stamp the emitted tensor layout, not only
+            # the config switch, so naturally-full and legacy-sentinel modules
+            # are reconstructed with matching parameter names and scale.
+            uses_full_factor_layout = bool(lokr_modules) and all(
+                lora._use_w1 and lora._use_w2 for lora in lokr_modules
+            )
+            metadata["ss_lokr_full_factor"] = str(uses_full_factor_layout).lower()
 
         if spec.name == "vera":
             for lora in self.unet_loras:

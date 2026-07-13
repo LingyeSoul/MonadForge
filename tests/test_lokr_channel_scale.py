@@ -18,6 +18,7 @@ Kron delta for get_weight/merge/fuse. These tests pin all affected paths.
 
 from __future__ import annotations
 
+import pytest
 import torch
 from safetensors import safe_open
 
@@ -285,6 +286,31 @@ def test_decomposition_full_rank_when_lora_dim_large():
     assert m.lokr_w2.shape == (32, 32)
 
 
+def test_full_factor_is_independent_from_lora_dim_and_keeps_unit_scale():
+    """Full-factor mode must not need an oversized lora_dim sentinel."""
+    base = torch.nn.Linear(2048, 2048, bias=False)
+    m = LoKRModule(
+        "test",
+        base,
+        lora_dim=32,
+        alpha=32,
+        lokr_factor=8,
+        full_factor=True,
+    )
+    assert m._use_w1 and m._use_w2
+    assert m.lokr_w1.shape == (8, 8)
+    assert m.lokr_w2.shape == (256, 256)
+    assert m.scale == 1.0
+
+
+def test_without_full_factor_same_shape_uses_rank_32_w2():
+    base = torch.nn.Linear(2048, 2048, bias=False)
+    m = LoKRModule("test", base, lora_dim=32, alpha=32, lokr_factor=8)
+    assert not m._use_w2
+    assert m.w2a.shape == (256, 32)
+    assert m.w2b.shape == (32, 256)
+
+
 def test_effective_rank_scales_with_lora_dim():
     """Effective rank should scale with lora_dim, not be fixed at full rank.
 
@@ -471,7 +497,7 @@ def test_native_lokr_decomposed_raw_factors_restore_scale():
     rank = sd["P.lokr_w2_b"].shape[0]
     alpha = sd["P.alpha"].item()
     w1 = sd["P.lokr_w1"].float()
-    w2 = (sd["P.lokr_w2_a"].float() @ sd["P.lokr_w2_b"].float())
+    w2 = sd["P.lokr_w2_a"].float() @ sd["P.lokr_w2_b"].float()
     comfy_delta = torch.kron(w1, w2) * (alpha / rank) * m.multiplier
     rel = (true_delta - comfy_delta).abs().max().item() / max(
         true_delta.abs().max().item(), 1e-12
@@ -514,9 +540,9 @@ def test_native_lokr_full_full_folds_scale_into_w2():
         "full-full + scale≠1 must fold scale into lokr_w2"
     )
     # ComfyUI applies scale=1.0 on the full path, so kron(w1, w2_saved) * mult.
-    comfy_delta = torch.kron(
-        sd["P.lokr_w1"].float(), sd["P.lokr_w2"].float()
-    ) * m.multiplier
+    comfy_delta = (
+        torch.kron(sd["P.lokr_w1"].float(), sd["P.lokr_w2"].float()) * m.multiplier
+    )
     rel = (true_delta - comfy_delta).abs().max().item() / max(
         true_delta.abs().max().item(), 1e-12
     )
@@ -580,14 +606,18 @@ def test_native_lokr_keys_load_into_monadforge_runtime_names():
 
     network.apply_to(text_encoders=[], unet=None, apply_text_encoder=False)
     info = network.load_state_dict(normalized_sd, strict=False)
-    assert not any(key.endswith("w2a") or key.endswith("w2b") for key in info.missing_keys)
-    assert not any("lokr_w2_a" in key or "lokr_w2_b" in key for key in info.unexpected_keys)
+    assert not any(
+        key.endswith("w2a") or key.endswith("w2b") for key in info.missing_keys
+    )
+    assert not any(
+        "lokr_w2_a" in key or "lokr_w2_b" in key for key in info.unexpected_keys
+    )
     mod = network.unet_loras[0]
     assert torch.equal(mod.w2a.detach(), w2a)
     assert torch.equal(mod.w2b.detach(), w2b)
 
 
-def test_lokr_save_weights_stamps_dim_and_alpha_on_empty_metadata(tmp_path):
+def test_lokr_save_weights_stamps_full_factor_dim_and_alpha_on_empty_metadata(tmp_path):
     """LoKR save needs ss_network_dim to preserve native-lokr scale."""
     net = create_network(
         multiplier=1.0,
@@ -598,6 +628,7 @@ def test_lokr_save_weights_stamps_dim_and_alpha_on_empty_metadata(tmp_path):
         unet=_TinyDiT(),
         use_lokr="true",
         lokr_factor="32",
+        lokr_full_factor="true",
     )
 
     out = tmp_path / "lokr.safetensors"
@@ -608,3 +639,126 @@ def test_lokr_save_weights_stamps_dim_and_alpha_on_empty_metadata(tmp_path):
     assert meta["ss_network_spec"] == "lokr"
     assert meta["ss_network_dim"] == "4"
     assert meta["ss_network_alpha"] == "16"
+    assert meta["ss_lokr_full_factor"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("network_dim", "network_alpha", "extra_kwargs"),
+    [
+        pytest.param(32, 16, {}, id="naturally-full"),
+        pytest.param(
+            114514,
+            32,
+            {"lokr_allow_legacy_dim": "true"},
+            id="legacy-sentinel-resume",
+        ),
+    ],
+)
+def test_full_layout_round_trip_stamps_actual_layout(
+    tmp_path, network_dim, network_alpha, extra_kwargs
+):
+    """A full tensor layout must win over the opt-in config flag in metadata."""
+    net = create_network(
+        multiplier=1.0,
+        network_dim=network_dim,
+        network_alpha=network_alpha,
+        vae=None,
+        text_encoders=[],
+        unet=_TinyDiT(),
+        use_lokr="true",
+        lokr_factor="32",
+        **extra_kwargs,
+    )
+    source = net.unet_loras[0]
+    assert source._use_w1 and source._use_w2
+    assert net.cfg.lokr_full_factor is False
+    net.apply_to(text_encoders=[], unet=None, apply_text_encoder=False)
+    with torch.no_grad():
+        source.lokr_w2.normal_(0, 0.1)
+    expected_delta = source.get_weight().clone()
+
+    out = tmp_path / "naturally-full.safetensors"
+    net.save_weights(str(out), torch.float32, metadata={})
+    with safe_open(str(out), framework="pt") as f:
+        meta = f.metadata() or {}
+    assert meta["ss_lokr_full_factor"] == "true"
+
+    restored, weights_sd = create_network_from_weights(
+        multiplier=1.0,
+        file=str(out),
+        ae=None,
+        text_encoders=[],
+        unet=_TinyDiT(),
+    )
+    restored.apply_to(text_encoders=[], unet=None, apply_text_encoder=False)
+    info = restored.load_state_dict(weights_sd, strict=False)
+    assert not any(key.endswith(("w2a", "w2b")) for key in info.missing_keys)
+    assert not any(key.endswith("lokr_w2") for key in info.unexpected_keys)
+    actual_delta = restored.unet_loras[0].get_weight()
+    assert torch.allclose(actual_delta, expected_delta, atol=1e-6, rtol=1e-5)
+
+
+def test_full_factor_checkpoint_stamp_restores_runtime_layout():
+    lora_name = "lora_unet_block_proj"
+    native_sd = {
+        f"{lora_name}.lokr_w1": torch.randn(16, 16),
+        f"{lora_name}.lokr_w2": torch.randn(32, 32),
+        f"{lora_name}.alpha": torch.tensor(4),
+    }
+    network, _ = create_network_from_weights(
+        multiplier=1.0,
+        file=None,
+        weights_sd=native_sd,
+        metadata={
+            "ss_network_spec": "lokr",
+            "ss_lokr_full_factor": "true",
+        },
+        ae=None,
+        text_encoders=[],
+        unet=_TinyDiT(),
+    )
+    assert network.cfg.lokr_full_factor is True
+    assert network.unet_loras[0]._use_w2 is True
+
+
+def test_full_factor_checkpoint_stamp_rejects_decomposed_factor_keys():
+    lora_name = "lora_unet_block_proj"
+    native_sd = {
+        f"{lora_name}.lokr_w1_a": torch.randn(16, 4),
+        f"{lora_name}.lokr_w1_b": torch.randn(4, 16),
+        f"{lora_name}.lokr_w2": torch.randn(32, 32),
+        f"{lora_name}.alpha": torch.tensor(4),
+    }
+    with pytest.raises(RuntimeError, match="contains decomposed factor keys"):
+        create_network_from_weights(
+            multiplier=1.0,
+            file=None,
+            weights_sd=native_sd,
+            metadata={
+                "ss_network_spec": "lokr",
+                "ss_lokr_full_factor": "true",
+            },
+            ae=None,
+            text_encoders=[],
+            unet=_TinyDiT(),
+        )
+
+
+def test_legacy_unstamped_full_factor_checkpoint_is_inferred():
+    lora_name = "lora_unet_block_proj"
+    native_sd = {
+        f"{lora_name}.lokr_w1": torch.randn(16, 16),
+        f"{lora_name}.lokr_w2": torch.randn(32, 32),
+        f"{lora_name}.alpha": torch.tensor(4),
+    }
+    network, _ = create_network_from_weights(
+        multiplier=1.0,
+        file=None,
+        weights_sd=native_sd,
+        metadata={"ss_network_spec": "lokr"},
+        ae=None,
+        text_encoders=[],
+        unet=_TinyDiT(),
+    )
+    assert network.cfg.lokr_full_factor is True
+    assert network.unet_loras[0]._use_w2 is True

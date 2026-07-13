@@ -1,6 +1,6 @@
 """LoKR decomposition threshold + SVD rank-cap bench (Tier 1.5 numerics gate).
 
-Two numerics changes landed in the same diff:
+Three LoKR numerics surfaces are reported:
 
 1. **Decomposition threshold** (``networks/lora_modules/lokr.py``): a LoKR
    factor decomposes into ``(Xa, Xb)`` pairs when ``lora_dim < <threshold>``.
@@ -15,6 +15,10 @@ Two numerics changes landed in the same diff:
    The old cap was the global ``lora_rank`` default (128); the new one is the
    per-module ``alpha`` (= ``lora_dim`` in shipped LoKR presets). Lower cap →
    smaller saved file, more SVD truncation error.
+
+3. **Full-factor mode** (``lokr_full_factor=true``): both Kronecker factors
+   stay full while ``network_dim`` remains at 32, so ``alpha / dim`` stays 1.
+   This is compared with the retired ``network_dim=114514`` sentinel.
 
 This bench reports **both before and after** for both changes, on real Anima
 DiT Linear shapes (q/k/v/ffn proj). Pure parameter math — no DiT load (the
@@ -123,7 +127,12 @@ def _effective_rank(
 
 
 def _measure_threshold(
-    shape: tuple[int, int], lora_dim: int, lokr_factor: int, threshold: str
+    shape: tuple[int, int],
+    lora_dim: int,
+    lokr_factor: int,
+    threshold: str,
+    *,
+    full_factor: bool = False,
 ) -> dict:
     """Compute effective rank + param count for one threshold policy.
 
@@ -139,7 +148,10 @@ def _measure_threshold(
     in_a, in_b = _factorization(in_dim, lokr_factor)
     decompose_both = False  # gui-methods/lokr.toml default
 
-    if threshold == "old":
+    if full_factor:
+        w1_dec = False
+        w2_dec = False
+    elif threshold == "old":
         w1_dec = decompose_both and lora_dim < max(out_a, in_a) / 2
         w2_dec = lora_dim < max(out_b, in_b) / 2
     else:  # new
@@ -158,6 +170,7 @@ def _measure_threshold(
         "factor_a": [out_a, in_a],
         "factor_b": [out_b, in_b],
         "lora_dim": lora_dim,
+        "full_factor": full_factor,
         "w1_decomposed": w1_dec,
         "w2_decomposed": w2_dec,
         "effective_rank": eff,
@@ -242,12 +255,20 @@ def main() -> None:
         for lora_dim in args.lora_dim:
             old = _measure_threshold(shape, lora_dim, args.lokr_factor, "old")
             new = _measure_threshold(shape, lora_dim, args.lokr_factor, "new")
+            full = _measure_threshold(
+                shape,
+                lora_dim,
+                args.lokr_factor,
+                "new",
+                full_factor=True,
+            )
             threshold_rows.append(
                 {
                     "shape": f"{shape[0]}x{shape[1]}",
                     "lora_dim": lora_dim,
                     "old_threshold": old,
                     "new_threshold": new,
+                    "full_factor": full,
                     "eff_rank_delta": new["effective_rank"] - old["effective_rank"],
                     "param_count_delta": new["param_count"] - old["param_count"],
                 }
@@ -315,6 +336,15 @@ def main() -> None:
         },
         "threshold_change": threshold_rows,
         "svd_cap_change": svd_rows,
+        "full_factor_scale": {
+            "recommended_dim": 32,
+            "recommended_alpha": 32,
+            "recommended_scale": 1.0,
+            "legacy_dim": 114514,
+            "legacy_alpha": 32,
+            "legacy_scale": round(32 / 114514, 12),
+            "legacy_suppression_ratio": round(114514 / 32, 6),
+        },
         # PR headline numbers (before → after deltas, averaged across shapes):
         "headline_eff_rank_delta_avg": round(avg_eff_delta, 1),
         "headline_param_count_delta_avg_pct": round(avg_param_delta_pct, 1),
@@ -351,6 +381,25 @@ def main() -> None:
     )
     print(
         f"  avg param_count delta:    {metrics['headline_param_count_delta_avg_pct']:+.1f}%"
+    )
+
+    print("\n-- independent full-factor mode --")
+    print(
+        f"{'shape':>12} {'dim':>4} {'eff_rank':>9} {'eff_full':>9} "
+        f"{'params':>10} {'params_full':>12}"
+    )
+    for r in threshold_rows:
+        normal, full = r["new_threshold"], r["full_factor"]
+        print(
+            f"{r['shape']:>12} {r['lora_dim']:>4} "
+            f"{normal['effective_rank']:>9} {full['effective_rank']:>9} "
+            f"{normal['param_count']:>10} {full['param_count']:>12}"
+        )
+    scale = metrics["full_factor_scale"]
+    print(
+        f"  recommended scale: {scale['recommended_scale']:.1f}; "
+        f"legacy scale: {scale['legacy_scale']:.12f}; "
+        f"suppression: {scale['legacy_suppression_ratio']:.4f}x"
     )
 
     print("\n-- SVD rank cap (saved size & drift) --")

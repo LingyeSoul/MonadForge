@@ -489,12 +489,34 @@ def create_network_from_weights(
     # Also detect decompose_both and lokr_factor from checkpoint keys.
     lokr_decompose_both = False
     lokr_detected_factor = -1
+    lokr_full_factor = False
     if has_lokr:
         for name in list(modules_dim.keys()):
             if modules_dim[name] == 0 and name in modules_alpha:
                 modules_dim[name] = int(modules_alpha[name])
         # Detect decompose_both: if any module has .w1a key, both factors are decomposed.
         lokr_decompose_both = any(k.endswith(".w1a") for k in weights_sd)
+        has_full_w2 = any(k.endswith(".lokr_w2") for k in weights_sd)
+        has_decomposed_w1 = any(
+            k.endswith(".w1a") or k.endswith(".w1b") for k in weights_sd
+        )
+        has_decomposed_w2 = any(
+            k.endswith(".w2a") or k.endswith(".w2b") for k in weights_sd
+        )
+        stamped_full_factor = file_metadata.get("ss_lokr_full_factor")
+        if stamped_full_factor is not None:
+            lokr_full_factor = str(stamped_full_factor).strip().lower() == "true"
+            if lokr_full_factor and (has_decomposed_w1 or has_decomposed_w2):
+                raise RuntimeError(
+                    "LoKR checkpoint is stamped ss_lokr_full_factor=true but "
+                    "contains decomposed factor keys."
+                )
+        else:
+            # Legacy full-factor checkpoints have no stamp. Full w2 factors on
+            # every module are sufficient to reconstruct the intended layout.
+            lokr_full_factor = (
+                has_full_w2 and not has_decomposed_w1 and not has_decomposed_w2
+            )
         # Derive lokr_factor from the first w1/w2 shape we find.
         for k, v in weights_sd.items():
             if k.endswith(".lokr_w1") or k.endswith(".w1a"):
@@ -916,6 +938,7 @@ def create_network_from_weights(
         is_lokr=has_lokr,
         lokr_factor=lokr_detected_factor,
         decompose_both=lokr_decompose_both,
+        lokr_full_factor=lokr_full_factor,
         dylora_unit=dylora_unit,
         dylora_algo=dylora_algo,
         use_dylora=use_dylora,

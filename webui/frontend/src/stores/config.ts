@@ -186,6 +186,7 @@ export const useConfigStore = defineStore('config', () => {
     } catch (e) {
       const lang = appStore.language
       error.value = _t('cfgErrSave', lang).replace('{error}', String(e))
+      throw e
     } finally {
       loading.value = false
     }

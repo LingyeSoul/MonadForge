@@ -46,8 +46,10 @@ class LoKRModule(BaseLoRAModule):
     """LoKR adapter: ΔW = kron(w1, w2) * scale.
 
     Each factor is either a full parameter or a low-rank pair
-    (``w1a @ w1b`` / ``w2a @ w2b``). ``decompose_both`` controls whether
-    both factors are low-rank; ``factor`` controls the dimension split.
+    (``w1a @ w1b`` / ``w2a @ w2b``). ``full_factor`` forces both factors to
+    stay full independently of ``lora_dim``; otherwise ``decompose_both``
+    controls whether both factors may be low-rank. ``factor`` controls the
+    dimension split.
 
     Supports Linear only (``supports_conv2d = False``).
     """
@@ -67,7 +69,12 @@ class LoKRModule(BaseLoRAModule):
         channel_scale=None,
         decompose_both: bool = False,
         lokr_factor: int = -1,
+        full_factor: bool = False,
     ):
+        if full_factor and decompose_both:
+            raise ValueError(
+                "LoKR full_factor and decompose_both are mutually exclusive"
+            )
         super().__init__(
             lora_name,
             org_module,
@@ -81,13 +88,14 @@ class LoKRModule(BaseLoRAModule):
 
         out_dim = org_module.out_features
         in_dim = org_module.in_features
+        self.full_factor = bool(full_factor)
 
         out_a, out_b = _factorization(out_dim, lokr_factor)
         in_a, in_b = _factorization(in_dim, lokr_factor)
         # shape: ΔW = (out_a*out_b, in_a*in_b) via kron((out_a, in_a), (out_b, in_b))
 
         # --- Factor 1 (smaller): shape (out_a, in_a) ---
-        if decompose_both and lora_dim < min(out_a, in_a):
+        if not self.full_factor and decompose_both and lora_dim < min(out_a, in_a):
             self.w1a = torch.nn.Parameter(torch.empty(out_a, lora_dim))
             self.w1b = torch.nn.Parameter(torch.empty(lora_dim, in_a))
             self._use_w1 = False
@@ -96,7 +104,7 @@ class LoKRModule(BaseLoRAModule):
             self._use_w1 = True
 
         # --- Factor 2 (larger): shape (out_b, in_b) ---
-        if lora_dim < min(out_b, in_b):
+        if not self.full_factor and lora_dim < min(out_b, in_b):
             self.w2a = torch.nn.Parameter(torch.empty(out_b, lora_dim))
             self.w2b = torch.nn.Parameter(torch.empty(lora_dim, in_b))
             self._use_w2 = False

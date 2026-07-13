@@ -254,7 +254,7 @@
               >
                 <ConfigField
                   :field="field"
-                  @update="(v) => configStore.setFieldValue(field.key, v)"
+                  @update="(v) => onConfigFieldUpdate(field.key, v)"
                   @help-click="(k) => onFieldHelp(k, field.origin)"
                 />
               </v-col>
@@ -287,7 +287,7 @@
                   <ConfigField
                     v-else
                     :field="field"
-                    @update="(v) => configStore.setFieldValue(field.key, v)"
+                    @update="(v) => onConfigFieldUpdate(field.key, v)"
                     @help-click="(k) => onFieldHelp(k, field.origin)"
                   />
                 </v-col>
@@ -354,6 +354,29 @@
           <v-btn variant="text" @click="showNoCacheDlg = false">{{ t('dsCancel') }}</v-btn>
           <v-btn color="primary" :loading="preprocessRunning" @click="runPreprocessThenTrain">
             {{ t('cfgRunPreprocess') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <!-- Legacy LoKR full-factor sentinel migration -->
+    <v-dialog v-model="showLegacyLokrDlg" max-width="560">
+      <v-card>
+        <v-card-title>{{ t('cfgLokrLegacyTitle') }}</v-card-title>
+        <v-card-text>
+          {{ t('cfgLokrLegacyBody') }}
+          <pre class="lokr-migration-preview">network_dim = 32
+network_alpha = 32
+lokr_full_factor = true
+decompose_both = false</pre>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showLegacyLokrDlg = false">
+            {{ t('cfgLokrLegacyBack') }}
+          </v-btn>
+          <v-btn color="primary" prepend-icon="mdi-auto-fix" @click="applyLokrFullFactorMigration">
+            {{ t('cfgLokrLegacyApply') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -503,6 +526,7 @@ const guideHtml = ref('')
 // Dialog state
 const showNoCacheDlg = ref(false)
 const showCheckpointDlg = ref(false)
+const showLegacyLokrDlg = ref(false)
 const checkpointInfo = ref<{ state_dir: string; step: number } | null>(null)
 const prelaunchResult = ref<any>(null)
 
@@ -576,6 +600,46 @@ const variantItems = computed(() =>
     label: configStore.variantLabels[v] || v,
   }))
 )
+
+const LEGACY_LOKR_DIM_RE = /^\s*network_dim\s*=\s*114514\s*(?:#.*)?$/m
+const LEGACY_LOKR_ALLOW_RE = /^\s*lokr_allow_legacy_dim\s*=\s*true\s*(?:#.*)?$/mi
+const LOKR_MIGRATION_OVERRIDE_RE = /^\s*(?:network_dim|network_alpha|lokr_full_factor|decompose_both)\s*=/i
+
+function isLegacyLokrSentinel(): boolean {
+  if (configStore.getFieldValue('use_lokr') !== true) return false
+  const explicitlyAllowed =
+    configStore.getFieldValue('lokr_allow_legacy_dim') === true
+    || LEGACY_LOKR_ALLOW_RE.test(extraArgs.value)
+  if (explicitlyAllowed) return false
+  return Number(configStore.getFieldValue('network_dim')) === 114514
+    || LEGACY_LOKR_DIM_RE.test(extraArgs.value)
+}
+
+function promptLegacyLokrSentinel(): boolean {
+  if (!isLegacyLokrSentinel()) return false
+  showLegacyLokrDlg.value = true
+  return true
+}
+
+function onConfigFieldUpdate(key: string, value: unknown) {
+  configStore.setFieldValue(key, value)
+  if (key === 'network_dim' && Number(value) === 114514) {
+    promptLegacyLokrSentinel()
+  }
+}
+
+function applyLokrFullFactorMigration() {
+  configStore.setFieldValue('network_dim', 32)
+  configStore.setFieldValue('network_alpha', 32)
+  configStore.setFieldValue('lokr_full_factor', true)
+  configStore.setFieldValue('decompose_both', false)
+  extraArgs.value = extraArgs.value
+    .split('\n')
+    .filter(line => !LOKR_MIGRATION_OVERRIDE_RE.test(line))
+    .join('\n')
+    .trim()
+  showLegacyLokrDlg.value = false
+}
 
 // ── Navigation ────────────────────────────────────────────────
 
@@ -714,6 +778,7 @@ watch(() => appStore.language, () => {
 // ── Save ───────────────────────────────────────────────────────
 
 async function onSave() {
+  if (promptLegacyLokrSentinel()) return
   try {
     const args = extraArgs.value.trim() || undefined
 
@@ -834,6 +899,7 @@ async function autoSaveIfDirty() {
 
 async function startTraining() {
   if (!selectedVariant.value) return
+  if (promptLegacyLokrSentinel()) return
   trainingLaunching.value = true
   try {
     await autoSaveIfDirty()
@@ -1071,6 +1137,17 @@ function waitForTask(taskId: string): Promise<void> {
 </script>
 
 <style scoped>
+.lokr-migration-preview {
+  margin-top: 12px;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 4px;
+  background: rgba(var(--v-theme-surface-variant), 0.45);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+}
+
 .config-editor {
   flex: 1 1 0;
   min-height: 0;

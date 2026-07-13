@@ -11,12 +11,63 @@ from __future__ import annotations
 import pytest
 
 from networks.lora_anima.config import LoRANetworkCfg
-from networks.lora_modules import HydraLoRAModule, LoRAModule
+from networks.lora_modules import HydraLoRAModule, LoKRModule, LoRAModule
 
 
 def _base_kwargs() -> dict:
     """Empty kwargs — all fields fall to their stringless defaults."""
     return {}
+
+
+def test_lokr_full_factor_parses_without_changing_scale_inputs():
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"use_lokr": "true", "lokr_full_factor": "true", "lokr_factor": "8"},
+        network_dim=32,
+        network_alpha=32.0,
+        neuron_dropout=None,
+        module_class=LoKRModule,
+    )
+    assert cfg.lokr_full_factor is True
+    assert cfg.lora_dim == 32
+    assert cfg.alpha == 32.0
+
+
+def test_lokr_full_factor_rejects_decompose_both():
+    with pytest.raises(ValueError, match="conflicts with decompose_both"):
+        LoRANetworkCfg.from_kwargs(
+            {
+                "use_lokr": "true",
+                "lokr_full_factor": "true",
+                "decompose_both": "true",
+            },
+            network_dim=32,
+            network_alpha=32.0,
+            neuron_dropout=None,
+            module_class=LoKRModule,
+        )
+
+
+def test_lokr_legacy_full_factor_sentinel_is_blocked():
+    with pytest.raises(ValueError, match="deprecated full-factor sentinel"):
+        LoRANetworkCfg.from_kwargs(
+            {"use_lokr": "true"},
+            network_dim=114514,
+            network_alpha=32.0,
+            neuron_dropout=None,
+            module_class=LoKRModule,
+        )
+
+
+def test_lokr_legacy_full_factor_sentinel_requires_explicit_compat(caplog):
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"use_lokr": "true", "lokr_allow_legacy_dim": "true"},
+        network_dim=114514,
+        network_alpha=32.0,
+        neuron_dropout=None,
+        module_class=LoKRModule,
+    )
+    assert cfg.lora_dim == 114514
+    assert "suppressed scale is preserved" in caplog.text
 
 
 def test_defaults_when_all_kwargs_absent():

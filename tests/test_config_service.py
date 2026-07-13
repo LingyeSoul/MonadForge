@@ -20,7 +20,46 @@ import argparse
 
 from library.anima.training import add_anima_training_arguments
 from library.inference.args import build_parser as build_inference_parser
-from webui.services.config_service import _SELECT_OPTIONS
+from webui.services.config_service import _SELECT_OPTIONS, validate_config
+
+
+def test_lokr_legacy_dim_validation_guides_to_full_factor():
+    errors = validate_config(
+        {
+            "use_lokr": True,
+            "network_dim": 114514,
+            "network_alpha": 32,
+            "lokr_full_factor": False,
+        }
+    )
+    assert len(errors) == 1
+    assert "lokr_full_factor=true" in errors[0]
+
+
+def test_lokr_recommended_full_factor_config_is_valid():
+    errors = validate_config(
+        {
+            "use_lokr": True,
+            "network_dim": 32,
+            "network_alpha": 32,
+            "lokr_full_factor": True,
+            "decompose_both": False,
+        }
+    )
+    assert errors == []
+
+
+def test_lokr_legacy_dim_validation_allows_explicit_resume_compatibility():
+    errors = validate_config(
+        {
+            "use_lokr": True,
+            "network_dim": 114514,
+            "network_alpha": 32,
+            "lokr_allow_legacy_dim": True,
+        }
+    )
+    assert errors == []
+
 
 # Names pruned from the trainer in commit 772dda7. They must never reappear in
 # the WebUI's curated lists — each one either crashes the trainer or silently
