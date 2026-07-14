@@ -133,9 +133,9 @@ def _collect_lokr_prefixes(
 ) -> Dict[str, Dict[str, torch.Tensor]]:
     """Group LoKR factor keys by prefix.
 
-    Handles both the MonadForge-internal naming (``lokr_w1`` / ``lokr_w2`` full,
-    ``w1a`` / ``w1b`` / ``w2a`` / ``w2b`` decomposed) and the ComfyUI/LyCORIS
-    native naming (``lokr_w1_a`` / ``lokr_w1_b`` / ``lokr_w2_a`` / ``lokr_w2_b``).
+    Handles the official LyCORIS naming (``lokr_w1`` / ``lokr_w2`` full,
+    ``lokr_w1_a`` / ``lokr_w1_b`` / ``lokr_w2_a`` / ``lokr_w2_b`` decomposed)
+    plus shortened keys from pre-official MonadForge training states.
     """
     prefixes: Dict[str, Dict[str, torch.Tensor]] = {}
     suffix_map = (
@@ -197,8 +197,8 @@ def _materialize_lokr_delta(
 
     ``delta = kron(w1, w2) * scale``, with input-column scaling ``*
     inv_scale[None, :]`` applied when *inv_scale* is present (the forward-time
-    ``x * inv_scale`` expressed as delta-column scaling — see
-    ``LoKRModule._apply_inv_scale_to_full_delta``).
+    ``x * inv_scale`` effect from pre-official MonadForge checkpoints expressed
+    as delta-column scaling).
     """
     w1 = _reconstruct_lokr_factor(factors, "w1").float().to(device)
     w2 = _reconstruct_lokr_factor(factors, "w2").float().to(device)
@@ -321,19 +321,18 @@ def _convert_lokr_to_native_lokr(
       * ``alpha`` → the training alpha (``int64`` when integral, else ``float32``),
         so ComfyUI's ``alpha / rank`` restores the trained scale exactly.
 
-    One edge case breaks the raw-factor convention: when **both** factors are
+    One legacy edge case breaks the raw-factor convention: when **both** factors are
     full (``lokr_w1`` + ``lokr_w2``, no decomposition), ComfyUI's loader sets
     ``dim = None`` and forces the load scale to ``1.0`` — it cannot recover the
-    training scale. LyCORIS sidesteps this by forcing ``alpha = lora_dim``
-    (scale 1.0) on the full-full path; MonadForge does not, so when the training
-    scale differs from 1.0 we fold it into ``lokr_w2`` (the only place the
-    loader will look). ``alpha`` is still written as the training value for
-    provenance (the loader ignores it on this path).
+    training scale. Official LyCORIS forces ``alpha = lora_dim`` (scale 1.0)
+    on the full-full path, so new checkpoints never need a fold. Pre-official
+    MonadForge states could retain a non-unit scale; for those only, fold it
+    into ``lokr_w2``. ``alpha`` is still written for provenance (the loader
+    ignores it on this path).
 
     Returns True if any module was converted. Raises if any module carries an
     ``inv_scale`` key — native lokr format cannot represent per-channel input
-    scaling (the Kronecker structure breaks it; see ``LoKRModule`` docstring at
-    ``lokr.py:126``). Callers with ``inv_scale`` must use
+    scaling under the Kronecker structure. Callers with ``inv_scale`` must use
     ``_convert_lokr_to_standard_lora`` instead.
     """
     prefixes = _collect_lokr_prefixes(state_dict)

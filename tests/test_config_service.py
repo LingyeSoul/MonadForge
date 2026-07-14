@@ -23,7 +23,7 @@ from library.inference.args import build_parser as build_inference_parser
 from webui.services.config_service import _SELECT_OPTIONS, validate_config
 
 
-def test_lokr_legacy_dim_validation_guides_to_full_factor():
+def test_lokr_legacy_dim_validation_accepts_official_full_matrix_semantics():
     errors = validate_config(
         {
             "use_lokr": True,
@@ -32,8 +32,7 @@ def test_lokr_legacy_dim_validation_guides_to_full_factor():
             "lokr_full_factor": False,
         }
     )
-    assert len(errors) == 1
-    assert "lokr_full_factor=true" in errors[0]
+    assert errors == []
 
 
 def test_lokr_recommended_full_factor_config_is_valid():
@@ -44,6 +43,19 @@ def test_lokr_recommended_full_factor_config_is_valid():
             "network_alpha": 32,
             "lokr_full_factor": True,
             "decompose_both": False,
+        }
+    )
+    assert errors == []
+
+
+def test_lokr_full_factor_with_decompose_both_is_valid():
+    errors = validate_config(
+        {
+            "use_lokr": True,
+            "network_dim": 32,
+            "network_alpha": 16,
+            "lokr_full_factor": True,
+            "decompose_both": True,
         }
     )
     assert errors == []

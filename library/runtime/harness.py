@@ -70,7 +70,7 @@ def build_anima(
         1. ``load_anima_model`` → DiT on device, weights cast to ``dtype``.
         2. ``anima.requires_grad_(False)`` + ``reset_mod_guidance``.
         3. If ``adapter``: ``create_network_from_weights`` → ``apply_to``
-           → ``load_weights`` → ``network.to(device, dtype)``.
+           → load the normalized state → ``network.to(device, dtype)``.
         4. If ``--gradient_checkpointing``: enable it (gated by
            ``anima.training`` — so train mode below must come after).
         5. ``anima.train()`` / ``anima.eval()`` per ``train_mode``. Network
@@ -136,7 +136,7 @@ def build_anima(
         # Late import — adapter machinery has its own load-time cost.
         from networks.lora_anima.factory import create_network_from_weights
 
-        network, _sd = create_network_from_weights(
+        network, weights_sd = create_network_from_weights(
             multiplier,
             adapter,
             None,  # ae (unused for harness callers)
@@ -145,7 +145,7 @@ def build_anima(
             for_inference=not train_mode,
         )
         network.apply_to([], anima, apply_text_encoder=False, apply_unet=True)
-        info = network.load_weights(adapter)
+        info = network.load_state_dict(weights_sd, strict=False)
         log.info(f"adapter loaded — {info}")
 
         network.to(device=device, dtype=dtype)

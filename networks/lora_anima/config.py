@@ -263,8 +263,8 @@ class LoRANetworkCfg:
     use_lokr: bool = False
     lokr_factor: int = -1
     decompose_both: bool = False
-    # Force both Kronecker factors to remain full without abusing lora_dim as
-    # an oversized sentinel. lora_dim/alpha keep their normal scale semantics.
+    # Compatibility name for LyCORIS ``full_matrix``. When both factors are
+    # full, official LyCORIS forces alpha=lora_dim and scale=1.
     lokr_full_factor: bool = False
 
     # DyLoRA: trains multiple LoRA ranks simultaneously by sampling a random
@@ -529,29 +529,15 @@ class LoRANetworkCfg:
         decompose_both = _as_bool(kwargs.get("decompose_both"))
         lokr_full_factor = _as_bool(kwargs.get("lokr_full_factor"))
         allow_legacy_lokr_dim = _as_bool(kwargs.get("lokr_allow_legacy_dim"))
-        if use_lokr and lokr_full_factor and decompose_both:
-            raise ValueError(
-                "lokr_full_factor=true conflicts with decompose_both=true. "
-                "Full-factor LoKR cannot also decompose both factors."
-            )
         if use_lokr and network_dim == 114514:
-            legacy_scale = float(network_alpha) / float(network_dim)
-            message = (
-                "LoKR network_dim=114514 is a deprecated full-factor sentinel. "
-                f"It also sets training scale=network_alpha/network_dim={legacy_scale:.8g}, "
-                "which suppresses adapter output and gradients. Use "
-                "network_dim=32, network_alpha=32, lokr_full_factor=true instead."
-            )
-            if not allow_legacy_lokr_dim:
-                raise ValueError(
-                    message
-                    + " Set lokr_allow_legacy_dim=true only to resume an old state "
-                    "without changing its historical scale."
-                )
             logger.warning(
-                "%s Legacy compatibility was explicitly enabled; the suppressed "
-                "scale is preserved.",
-                message,
+                "LoKR network_dim=114514 is a legacy implicit full-matrix "
+                "selector. Official LyCORIS forces scale=1 when both factors "
+                "are full; prefer a normal network_dim with "
+                "lokr_full_factor=true for explicit configuration.%s",
+                " lokr_allow_legacy_dim is no longer required."
+                if allow_legacy_lokr_dim
+                else "",
             )
 
         # DyLoRA knobs.

@@ -1,7 +1,7 @@
 {
   "network_dim": "LoRA rank (dimension of low-rank matrices). Higher = more expressive but more VRAM. Typical: 8–64.",
   "network_alpha": "LoRA scaling factor. Effective scale = alpha / dim. When alpha == dim, scale is 1.0. Lower alpha = more conservative updates.",
-  "lokr_full_factor": "LoKr full-factor mode. Keeps both w1 and w2 full without setting network_dim=114514. Keep network_dim=network_alpha=32 for training scale 1.",
+  "lokr_full_factor": "LoKr full-matrix mode (official LyCORIS full_matrix). Keeps both w1 and w2 full; LyCORIS forces the effective scale to 1.",
   "network_module": "Python module path for the LoRA network implementation.",
   "use_timestep_mask": "Enable T-LoRA: effective rank varies with denoising timestep via power-law schedule. Full rank at high noise, reduced at low noise.",
   "use_ortho": "Enable OrthoLoRA: SVD-based orthogonal parameterization of the update matrix (linear layers only). Regularizes toward structured updates; saved as plain LoRA via thin SVD at checkpoint time.",

@@ -2,13 +2,13 @@
 
 Three LoKR numerics surfaces are reported:
 
-1. **Decomposition threshold** (``networks/lora_modules/lokr.py``): a LoKR
+1. **Decomposition threshold** (``lycoris.modules.lokr.LokrModule``): a LoKr
    factor decomposes into ``(Xa, Xb)`` pairs when ``lora_dim < <threshold>``.
-   The old threshold was ``max(out, in) / 2``; the new one is ``min(out, in)``.
+   The pre-migration local threshold was ``min(out, in)``; official LyCORIS
+   uses ``max(out, in) / 2``.
    The threshold governs the *effective rank* of ΔW = kron(w1, w2):
    ``eff_rank = rank(w1) * rank(w2)`` (full factor → ``min(out, in)``,
-   decomposed → ``lora_dim``). Tightening ``max/2`` → ``min`` makes
-   decomposition fire later, raising effective rank + parameter count.
+   decomposed → ``lora_dim``).
 
 2. **SVD rank cap** (``networks/lora_save.py::_convert_lokr_to_standard_lora``):
    the kron delta is SVD-split into ``lora_down``/``lora_up`` for ComfyUI.
@@ -16,9 +16,9 @@ Three LoKR numerics surfaces are reported:
    per-module ``alpha`` (= ``lora_dim`` in shipped LoKR presets). Lower cap →
    smaller saved file, more SVD truncation error.
 
-3. **Full-factor mode** (``lokr_full_factor=true``): both Kronecker factors
-   stay full while ``network_dim`` remains at 32, so ``alpha / dim`` stays 1.
-   This is compared with the retired ``network_dim=114514`` sentinel.
+3. **Full-matrix mode** (``lokr_full_factor=true``): the compatibility flag
+   maps to LyCORIS ``full_matrix=true``. Both explicit full-matrix mode and the
+   legacy ``network_dim=114514`` selector force unit scaling.
 
 This bench reports **both before and after** for both changes, on real Anima
 DiT Linear shapes (q/k/v/ffn proj). Pure parameter math — no DiT load (the
@@ -137,10 +137,8 @@ def _measure_threshold(
     """Compute effective rank + param count for one threshold policy.
 
     ``threshold`` ∈ {"old", "new"}:
-      old: w2 decomposes iff ``lora_dim < max(out_b, in_b) / 2``
-           w1 decomposes iff ``decompose_both and lora_dim < max(out_a, in_a) / 2``
-      new: w2 decomposes iff ``lora_dim < min(out_b, in_b)``
-           w1 decomposes iff ``decompose_both and lora_dim < min(out_a, in_a)``
+      old: pre-migration local ``min(out, in)`` policy
+      new: official LyCORIS ``max(out, in) / 2`` policy
     (decompose_both defaults to False in shipped presets → w1 stays full.)
     """
     out_dim, in_dim = shape
@@ -152,11 +150,11 @@ def _measure_threshold(
         w1_dec = False
         w2_dec = False
     elif threshold == "old":
-        w1_dec = decompose_both and lora_dim < max(out_a, in_a) / 2
-        w2_dec = lora_dim < max(out_b, in_b) / 2
-    else:  # new
         w1_dec = decompose_both and lora_dim < min(out_a, in_a)
         w2_dec = lora_dim < min(out_b, in_b)
+    else:  # official LyCORIS
+        w1_dec = decompose_both and lora_dim < max(out_a, in_a) / 2
+        w2_dec = lora_dim < max(out_b, in_b) / 2
 
     eff = _effective_rank(
         out_a, in_a, out_b, in_b, lora_dim, use_w1=not w1_dec, use_w2=not w2_dec
@@ -336,14 +334,13 @@ def main() -> None:
         },
         "threshold_change": threshold_rows,
         "svd_cap_change": svd_rows,
-        "full_factor_scale": {
+        "full_matrix_scale": {
             "recommended_dim": 32,
             "recommended_alpha": 32,
             "recommended_scale": 1.0,
             "legacy_dim": 114514,
             "legacy_alpha": 32,
-            "legacy_scale": round(32 / 114514, 12),
-            "legacy_suppression_ratio": round(114514 / 32, 6),
+            "legacy_scale": 1.0,
         },
         # PR headline numbers (before → after deltas, averaged across shapes):
         "headline_eff_rank_delta_avg": round(avg_eff_delta, 1),
@@ -395,11 +392,10 @@ def main() -> None:
             f"{normal['effective_rank']:>9} {full['effective_rank']:>9} "
             f"{normal['param_count']:>10} {full['param_count']:>12}"
         )
-    scale = metrics["full_factor_scale"]
+    scale = metrics["full_matrix_scale"]
     print(
         f"  recommended scale: {scale['recommended_scale']:.1f}; "
-        f"legacy scale: {scale['legacy_scale']:.12f}; "
-        f"suppression: {scale['legacy_suppression_ratio']:.4f}x"
+        f"legacy implicit-full scale: {scale['legacy_scale']:.1f}"
     )
 
     print("\n-- SVD rank cap (saved size & drift) --")

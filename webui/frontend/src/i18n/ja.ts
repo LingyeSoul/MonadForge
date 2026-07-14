@@ -102,7 +102,7 @@ export default {
   cfgConditioningBlockedBody: '現在のバリアントは conditioning 対応ではありません（controlnet / easycontrol のみ対応）。次のキーは学習エラーの原因になるため削除してください: {keys}',
   cfgConditioningRemove: '削除して続行',
   cfgLokrLegacyTitle: '旧式 LoKr フルファクター設定',
-  cfgLokrLegacyBody: 'network_dim=114514 は旧式のフルファクター用センチネルです。完全な因子を強制しますが、network_alpha / network_dim により出力と勾配も抑制します。専用のフルファクタースイッチを使用してください:',
+  cfgLokrLegacyBody: 'network_dim=114514 は旧式の暗黙的なフルマトリクス指定です。公式 LyCORIS は両因子が完全な場合にスケールを 1 に固定します。明示的なフルマトリクス設定を推奨します:',
   cfgLokrLegacyBack: '編集に戻る',
   cfgLokrLegacyApply: '推奨設定を適用',
   cfgPresetCreate: '新規プリセット',

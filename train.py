@@ -1752,8 +1752,9 @@ class AnimaTrainer:
                 "disable for A/B testing."
             )
 
+        factory_weights_sd = None
         if args.dim_from_weights:
-            network, _ = network_module.create_network_from_weights(
+            network, factory_weights_sd = network_module.create_network_from_weights(
                 1, args.network_weights, vae, text_encoder, unet, **net_kwargs
             )
         else:
@@ -1791,7 +1792,10 @@ class AnimaTrainer:
         network.apply_to(text_encoder, unet, train_text_encoder, train_unet)
 
         if args.network_weights is not None:
-            info = network.load_weights(args.network_weights)
+            if factory_weights_sd is not None:
+                info = network.load_state_dict(factory_weights_sd, strict=False)
+            else:
+                info = network.load_weights(args.network_weights)
             accelerator.print(
                 f"load network weights from {args.network_weights}: {info}"
             )

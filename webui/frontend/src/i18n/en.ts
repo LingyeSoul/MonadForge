@@ -102,7 +102,7 @@ export default {
   cfgConditioningBlockedBody: 'The current variant is not conditioning-capable (only controlnet / easycontrol are). The following keys will cause training to fail — remove them: {keys}',
   cfgConditioningRemove: 'Remove and Continue',
   cfgLokrLegacyTitle: 'Legacy LoKr Full-Factor Setting',
-  cfgLokrLegacyBody: 'network_dim=114514 is an old full-factor sentinel. It forces full factors but also suppresses output and gradients through network_alpha / network_dim. Use the dedicated full-factor switch instead:',
+  cfgLokrLegacyBody: 'network_dim=114514 is a legacy implicit full-matrix selector. Official LyCORIS forces scale 1 when both factors are full. Prefer the explicit full-matrix switch:',
   cfgLokrLegacyBack: 'Back to Edit',
   cfgLokrLegacyApply: 'Apply Recommended Settings',
   cfgPresetCreate: 'New Preset',

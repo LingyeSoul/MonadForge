@@ -1,7 +1,7 @@
 {
   "network_dim": "LoRA ランク (低ランク行列の次元)。高いほど表現力が上がりますが VRAM を多く消費します。典型値: 8–64。",
   "network_alpha": "LoRA スケーリング係数。有効スケール = alpha / dim。alpha == dim のとき scale は 1.0。alpha を小さくすると更新が保守的になります。",
-  "lokr_full_factor": "LoKr フルファクターモード。network_dim=114514 を使わずに w1 と w2 を完全な因子として保持します。学習スケールを1にするには network_dim=network_alpha=32 を推奨します。",
+  "lokr_full_factor": "LoKr フルマトリクスモード（公式 LyCORIS full_matrix）。w1 と w2 を完全な因子として保持し、有効スケールは 1 に固定されます。",
   "network_module": "LoRA ネットワーク実装の Python モジュールパス。",
   "use_timestep_mask": "T-LoRA を有効化: 冪乗則スケジュールによってノイズ除去タイムステップに応じて有効ランクが変化します。高ノイズ時はフルランク、低ノイズ時はランクが縮小します。",
   "use_ortho": "OrthoLoRA を有効化: 更新行列の SVD ベースの直交パラメタライゼーション (線形層のみ)。構造化された更新へと正則化されます。チェックポイント時に thin SVD で通常の LoRA として保存されます。",

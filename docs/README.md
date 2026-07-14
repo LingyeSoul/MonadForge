@@ -18,7 +18,7 @@ Shipped training algorithms — adapter families.
 
 | Doc | Description |
 |-----|-------------|
-| [methods/lokr.md](methods/lokr.md) | LoKr - Kronecker factorization, independent full-factor mode, and legacy sentinel migration |
+| [methods/lokr.md](methods/lokr.md) | LoKr - official LyCORIS backend, Anima integration, and checkpoint compatibility |
 | [methods/psoft-integrated-ortholora.md](methods/psoft-integrated-ortholora.md) | OrthoLoRA (Cayley) — SVD-informed init, structural orthogonality via tiny skew-symmetric seeds |
 | [methods/hydra-lora.md](methods/hydra-lora.md) | HydraLoRA — MoE multi-head routing (shared-A experts), one cell of the three-axis routing surface in `configs/methods/lora.toml` |
 | [methods/timestep_mask.md](methods/timestep_mask.md) | T-LoRA — timestep-dependent rank masking (full rank at noise, rank 1 at clean) |

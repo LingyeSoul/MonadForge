@@ -528,6 +528,8 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     if cfg.decompose_both:
                         extra_kwargs["decompose_both"] = True
                     if cfg.lokr_full_factor:
+                        # Historical config name; the wrapper maps this to
+                        # LyCORIS LokrModule(full_matrix=True).
                         extra_kwargs["full_factor"] = True
 
                 # DyLoRA-specific kwargs.
@@ -1481,6 +1483,14 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         weights_sd = _normalize_native_lokr_keys(weights_sd)
         # Detect legacy fused-projection LoKR (pre-split-layout) checkpoints.
         _warn_legacy_fused_lokr_keys(weights_sd)
+        if any(k.endswith(".inv_scale") for k in weights_sd) and any(
+            ".lokr_w" in k for k in weights_sd
+        ):
+            raise RuntimeError(
+                "Legacy LoKr checkpoints with inv_scale must be reconstructed "
+                "through create_network_from_weights so they can be converted "
+                "to standard LoRA. Use --dim_from_weights when resuming training."
+            )
         # Stack per-expert hydra ups into fused lora_up_weight (+ per-expert
         # downs for StackedExperts; no-op for Hydra).
         weights_sd = _stack_lora_ups(weights_sd)
@@ -1895,12 +1905,10 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                 for lora in self.text_encoder_loras + self.unet_loras
                 if isinstance(lora, LoKRModule)
             ]
-            # Native full-full LoKR files fold alpha/dim into w2 because their
-            # loader applies scale=1. Stamp the emitted tensor layout, not only
-            # the config switch, so naturally-full and legacy-sentinel modules
-            # are reconstructed with matching parameter names and scale.
+            # Stamp the emitted tensor layout, not only the config switch, so
+            # naturally-full modules reconstruct with LyCORIS full_matrix mode.
             uses_full_factor_layout = bool(lokr_modules) and all(
-                lora._use_w1 and lora._use_w2 for lora in lokr_modules
+                lora.use_w1 and lora.use_w2 for lora in lokr_modules
             )
             metadata["ss_lokr_full_factor"] = str(uses_full_factor_layout).lower()
 

@@ -9,6 +9,7 @@ accelerate>=1.13.0
 transformers>=5.10.1
 diffusers>=0.37.0
 einops>=0.7.0
+lycoris-lora==3.4.0
 bitsandbytes>=0.45.0
 
 # Optimizers

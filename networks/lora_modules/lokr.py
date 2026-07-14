@@ -1,57 +1,29 @@
-# LoKR (Low-Rank Kronecker product) — ΔW = kron(w1, w2) * scale.
-# Each factor can be full or further low-rank decomposed (w1 = w1a @ w1b).
-# Based on LyCORIS LokrModule (KohakuBlueleaf/LyCORIS) adapted to
-# BaseLoRAModule scaffold. Linear-only (Conv2d deferred).
+"""LyCORIS LoKr backend with MonadForge lifecycle adapters.
 
-import math
-from typing import Dict
+The factorization, initialization, bypass forward, dropout, and canonical
+state-dict layout come directly from ``lycoris-lora``. This wrapper only
+bridges the small lifecycle surface used by :class:`LoRANetwork`.
+"""
+
+from __future__ import annotations
+
+from typing import Mapping
 
 import torch
-import torch.nn.functional as F
-
-from networks.lora_modules.base import BaseLoRAModule
-
-
-def _factorization(dimension: int, factor: int = -1) -> tuple[int, int]:
-    """Split *dimension* into ``(m, n)`` where ``m * n == dimension`` and ``m <= n``.
-
-    If *factor* > 0 and divides *dimension*, use it directly. Otherwise find
-    the divisor pair whose sum is smallest (closest to square). ``factor == -1``
-    searches all divisors.
-    """
-    if factor > 0 and (dimension % factor) == 0:
-        m = factor
-        n = dimension // factor
-        if m > n:
-            n, m = m, n
-        return m, n
-    if factor < 0:
-        factor = dimension
-    m, n = 1, dimension
-    length = m + n
-    while m < n:
-        new_m = m + 1
-        while dimension % new_m != 0:
-            new_m += 1
-        new_n = dimension // new_m
-        if new_m + new_n > length or new_m > factor:
-            break
-        m, n = new_m, new_n
-    if m > n:
-        n, m = m, n
-    return m, n
+from lycoris.functional.lokr import (
+    bypass_forward_diff as lycoris_lokr_bypass_forward_diff,
+)
+from lycoris.functional.lokr import diff_weight as lycoris_lokr_diff_weight
+from lycoris.modules.lokr import LokrModule as LycorisLokrModule
 
 
-class LoKRModule(BaseLoRAModule):
-    """LoKR adapter: ΔW = kron(w1, w2) * scale.
+class LoKRModule(LycorisLokrModule):
+    """Official LyCORIS LoKr with the MonadForge adapter protocol.
 
-    Each factor is either a full parameter or a low-rank pair
-    (``w1a @ w1b`` / ``w2a @ w2b``). ``full_factor`` forces both factors to
-    stay full independently of ``lora_dim``; otherwise ``decompose_both``
-    controls whether both factors may be low-rank. ``factor`` controls the
-    dimension split.
-
-    Supports Linear only (``supports_conv2d = False``).
+    ``full_factor`` is the historical MonadForge config name for LyCORIS'
+    ``full_matrix`` option. Linear LoKr always uses LyCORIS bypass mode so the
+    Kronecker delta is evaluated as a sequence of small linear operations
+    rather than materializing a full DiT-sized matrix on every forward.
     """
 
     supports_conv2d = False
@@ -70,272 +42,174 @@ class LoKRModule(BaseLoRAModule):
         decompose_both: bool = False,
         lokr_factor: int = -1,
         full_factor: bool = False,
-    ):
-        if full_factor and decompose_both:
+    ) -> None:
+        if channel_scale is not None:
             raise ValueError(
-                "LoKR full_factor and decompose_both are mutually exclusive"
+                "LyCORIS LoKr does not support MonadForge channel scaling; "
+                "channel_scaling_alpha is disabled for LoKr networks"
             )
+
         super().__init__(
             lora_name,
             org_module,
             multiplier=multiplier,
             lora_dim=lora_dim,
             alpha=alpha,
-            dropout=dropout,
-            rank_dropout=rank_dropout,
-            module_dropout=module_dropout,
+            dropout=float(dropout or 0.0),
+            rank_dropout=float(rank_dropout or 0.0),
+            module_dropout=float(module_dropout or 0.0),
+            decompose_both=decompose_both,
+            factor=lokr_factor,
+            full_matrix=full_factor,
+            bypass_mode=True,
         )
 
-        out_dim = org_module.out_features
-        in_dim = org_module.in_features
-        self.full_factor = bool(full_factor)
-
-        out_a, out_b = _factorization(out_dim, lokr_factor)
-        in_a, in_b = _factorization(in_dim, lokr_factor)
-        # shape: ΔW = (out_a*out_b, in_a*in_b) via kron((out_a, in_a), (out_b, in_b))
-
-        # --- Factor 1 (smaller): shape (out_a, in_a) ---
-        if not self.full_factor and decompose_both and lora_dim < min(out_a, in_a):
-            self.w1a = torch.nn.Parameter(torch.empty(out_a, lora_dim))
-            self.w1b = torch.nn.Parameter(torch.empty(lora_dim, in_a))
-            self._use_w1 = False
-        else:
-            self.lokr_w1 = torch.nn.Parameter(torch.empty(out_a, in_a))
-            self._use_w1 = True
-
-        # --- Factor 2 (larger): shape (out_b, in_b) ---
-        if not self.full_factor and lora_dim < min(out_b, in_b):
-            self.w2a = torch.nn.Parameter(torch.empty(out_b, lora_dim))
-            self.w2b = torch.nn.Parameter(torch.empty(lora_dim, in_b))
-            self._use_w2 = False
-        else:
-            self.lokr_w2 = torch.nn.Parameter(torch.empty(out_b, in_b))
-            self._use_w2 = True
-
-        # --- Init (matches LyCORIS LokrModule, use_scalar=False) ---
-        # Zero-start comes entirely from nulling w2: ΔW = kron(w1, 0) = 0.
-        # w1 stays kaiming on all paths (full: lokr_w1; decomposed: w1a AND
-        # w1b both kaiming) so its gradient flows from step 0. w2 is the null
-        # branch — full lokr_w2 and the decomposed chain-end w2b are zeroed;
-        # only w2a is kaiming, so the first update only touches w2a's partner
-        # (w2b) and the factor unblocks on step 2.
-        if self._use_w1:
-            torch.nn.init.kaiming_uniform_(self.lokr_w1, a=math.sqrt(5))
-        else:
-            torch.nn.init.kaiming_uniform_(self.w1a, a=math.sqrt(5))
-            torch.nn.init.kaiming_uniform_(self.w1b, a=math.sqrt(5))
-
-        if self._use_w2:
-            torch.nn.init.zeros_(self.lokr_w2)
-        else:
-            torch.nn.init.kaiming_uniform_(self.w2a, a=math.sqrt(5))
-            torch.nn.init.zeros_(self.w2b)
-
-        # LoKR cannot absorb channel_scale into w1: ΔW = kron(w1, w2) where
-        # w1's in-axis is ``in_a`` (a factor of ``in_features``), so the
-        # full-length ``channel_scale`` (length ``in_features``) has no clean
-        # Kron decomposition. Standard LoRA absorbs it into ``lora_down`` whose
-        # columns equal ``in_features``; LoKR's Kronecker structure breaks that.
-        # Register ``inv_scale`` for forward-time input rebalancing; full
-        # materialized deltas (get_weight/merge/fuse) apply the equivalent input
-        # column scaling after kron reconstruction, not in the factors.
-        if channel_scale is not None:
-            self._register_lokr_inv_scale(channel_scale, in_dim)
-
-        self.org_module_ref = [org_module]
+        self.org_module_ref = self.org_module
+        self.enabled = True
         self._fused = False
+        self.fp32_compute = False
 
-    def _register_lokr_inv_scale(
-        self, channel_scale: torch.Tensor, in_features: int, eps: float = 1e-12
-    ) -> None:
-        """Register ``inv_scale`` for LoKR without factor absorption.
+    def forward(self, x: torch.Tensor, *args, **kwargs):
+        if not self.enabled or self._fused:
+            return self.org_forward(x, *args, **kwargs)
+        if (
+            self.module_dropout
+            and self.training
+            and torch.rand(1) < self.module_dropout
+        ):
+            return self.org_forward(x, *args, **kwargs)
 
-        Mirrors the mean-normalize step of ``_absorb_channel_scale`` so the
-        saved/resumed ``inv_scale`` matches the calibration convention, but
-        skips the in-place ``W[:,c] *= s[c]`` step (impossible under the Kron
-        factorization). Forward ``_rebalance(x)`` applies ``x * inv_scale``;
-        full materialized deltas apply the same effect as input-column scaling.
+        # LyCORIS 3.4.0's bypass_forward passes only ``multiplier`` and omits
+        # ``self.scale``. Its regular forward and get_weight both include the
+        # scale. Keep the memory-efficient official bypass operations while
+        # restoring that required alpha/rank factor.
+        base = self.org_forward(x, *args, **kwargs)
+        if self.training and self.fp32_compute and base.dtype == torch.float16:
+            with torch.autocast(device_type=x.device.type, enabled=False):
+                delta = self._fp32_bypass_forward_diff(x)
+        else:
+            delta = self.bypass_forward_diff(x, scale=self.multiplier * self.scale)
+        return base + delta.to(base.dtype)
+
+    def _fp32_bypass_forward_diff(self, x: torch.Tensor) -> torch.Tensor:
+        """Run the official linear LoKr bypass with fp32 rank operands."""
+
+        def fp32(value: torch.Tensor | None) -> torch.Tensor | None:
+            return None if value is None else value.to(dtype=torch.float32)
+
+        w1 = fp32(self.lokr_w1 if self.use_w1 else None)
+        w1a = fp32(None if self.use_w1 else self.lokr_w1_a)
+        w1b = fp32(None if self.use_w1 else self.lokr_w1_b)
+        w2 = fp32(self.lokr_w2 if self.use_w2 else None)
+        w2a = fp32(None if self.use_w2 else self.lokr_w2_a)
+        w2b = fp32(None if self.use_w2 else self.lokr_w2_b)
+        rank = (
+            self.lokr_w1_a.shape[1]
+            if not self.use_w1
+            else self.lokr_w2_a.shape[1]
+            if not self.use_w2
+            else 1
+        )
+        gamma = float(self.scale) * rank
+        delta = lycoris_lokr_bypass_forward_diff(
+            x.to(dtype=torch.float32),
+            None,
+            w1,
+            w1a,
+            w1b,
+            w2,
+            w2a,
+            w2b,
+            None,
+            gamma=gamma,
+        )
+        return self.drop(delta * self.multiplier * self.scalar.float())
+
+    def get_weight(self, multiplier=None, shape=None) -> torch.Tensor:
+        """Return the official LyCORIS delta with a local multiplier.
+
+        LyCORIS internally calls ``get_weight(shape)`` from regular rebuild
+        mode. LoKr is pinned to bypass mode here, but accepting that call shape
+        keeps inherited utilities such as ``apply_max_norm`` correct.
         """
-        assert channel_scale.ndim == 1, (
-            f"channel_scale must be 1D, got shape {tuple(channel_scale.shape)}"
-        )
-        assert channel_scale.shape[0] == in_features, (
-            f"channel_scale length {channel_scale.shape[0]} does not match "
-            f"LoKR in_features {in_features}"
-        )
-        s = channel_scale.detach().to(dtype=torch.float32).clamp_min(eps)
-        s = s / s.mean().clamp_min(eps)
-        # fp32 CPU storage — device follows the module on load (matches
-        # ``_absorb_channel_scale``'s convention).
-        inv_scale = (1.0 / s).contiguous()
-        self.register_buffer("inv_scale", inv_scale, persistent=True)
-        self._has_channel_scale = True
-
-    # --- Factor reconstruction helpers ---
-
-    def _get_w1(self) -> torch.Tensor:
-        if self._use_w1:
-            return self.lokr_w1
-        return self.w1a @ self.w1b
-
-    def _get_w2(self) -> torch.Tensor:
-        if self._use_w2:
-            return self.lokr_w2
-        return self.w2a @ self.w2b
-
-    def _apply_inv_scale_to_full_delta(self, delta: torch.Tensor) -> torch.Tensor:
-        """Apply input-column scaling to a materialized full LoKR delta."""
-        if not self._has_channel_scale:
-            return delta
-        return delta * self.inv_scale.to(delta).unsqueeze(0)
-
-    def get_weight(self, multiplier=None) -> torch.Tensor:
-        """Return the LoKR delta as a full weight tensor (out, in)."""
-        if multiplier is None:
+        if isinstance(multiplier, (tuple, torch.Size)):
+            shape = multiplier
+            multiplier = 1.0
+        elif multiplier is None:
             multiplier = self.multiplier
-        w1 = self._get_w1().to(torch.float)
-        w2 = self._get_w2().to(torch.float)
-        # LoKR cannot absorb channel_scale into the factors, but a materialized
-        # full delta can still represent the forward-time ``x * inv_scale`` as
-        # input-column scaling: x @ (delta * inv_scale[None, :]).T.
-        delta = self._apply_inv_scale_to_full_delta(torch.kron(w1, w2))
-        return delta * self.scale * multiplier
+        target_shape = self.shape if shape is None else shape
+        was_training = self.training
+        if was_training and self.rank_dropout:
+            self.train(False)
+        try:
+            weight = LycorisLokrModule.get_weight(self, target_shape)
+        finally:
+            if was_training and self.rank_dropout:
+                self.train(True)
+        return weight.float() * float(multiplier)
 
-    # --- Forward: override the base scaffold (LoKR doesn't decompose as
-    # down→gate→up; it computes a full delta-weight and applies it). ---
+    def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
+        target_shape = self.shape if shape is None else shape
+        diff = self.get_weight(multiplier=multiplier, shape=target_shape)
+        if device is not None:
+            diff = diff.to(device)
+        return diff, None
 
-    def forward(self, x):
-        if not self.enabled or getattr(self, "_fused", False):
-            return self.org_forward(x)
+    def get_merged_weight(self, multiplier=1.0, shape=None, device=None):
+        diff = self.get_diff_weight(multiplier, shape, device)[0]
+        return self.org_weight.to(diff) + diff, None
 
-        org_forwarded = self.org_forward(x)
+    @staticmethod
+    def _state_tensor(
+        state_dict: Mapping[str, torch.Tensor],
+        canonical: str,
+        legacy: str | None = None,
+    ) -> torch.Tensor | None:
+        value = state_dict.get(canonical)
+        if value is None and legacy is not None:
+            value = state_dict.get(legacy)
+        return value
 
-        if not self.training:
-            return org_forwarded + self._eval_delta(x, org_forwarded)
+    def _reconstruct_delta_from_sd(
+        self, state_dict: Mapping[str, torch.Tensor], device
+    ) -> torch.Tensor:
+        """Rebuild a checkpoint delta through LyCORIS' functional API."""
 
-        if self._skip_module():
-            return org_forwarded
-
-        work = self._rank_compute_dtype(org_forwarded)
-        with self._rank_autocast_context(x, work):
-            x_r = self._rebalance(x.to(work))
-
-            w1 = self._get_w1().to(work)
-            w2 = self._get_w2().to(work)
-
-            out_a = w1.shape[0]
-            in_a = w1.shape[1]
-            out_b = w2.shape[0]
-            in_b = w2.shape[1]
-
-            # Efficient Kronecker-structured forward (no full kron materialization):
-            # for row-major x reshaped to X (..., in_a, in_b),
-            #   (x @ kron(w1, w2).T).reshape(..., out_a, out_b)
-            #     == w1 @ X @ w2.T
-            # where the flattened output order is (out_a, out_b), matching
-            # torch.kron(w1, w2)'s row layout.
-            x_mat = x_r.reshape(*x_r.shape[:-1], in_a, in_b)
-            delta = torch.einsum(
-                "oi,...ij,bj->...ob", w1.to(x_mat), x_mat, w2.to(x_mat)
+        def prepare(value: torch.Tensor | None) -> torch.Tensor | None:
+            return (
+                None if value is None else value.to(device=device, dtype=torch.float32)
             )
-            lx = delta.reshape(*x_r.shape[:-1], out_a * out_b)
 
-            if self.dropout is not None:
-                lx = F.dropout(lx, p=self.dropout)
+        w1 = prepare(self._state_tensor(state_dict, "lokr_w1"))
+        w1a = prepare(self._state_tensor(state_dict, "lokr_w1_a", "w1a"))
+        w1b = prepare(self._state_tensor(state_dict, "lokr_w1_b", "w1b"))
+        w2 = prepare(self._state_tensor(state_dict, "lokr_w2"))
+        w2a = prepare(self._state_tensor(state_dict, "lokr_w2_a", "w2a"))
+        w2b = prepare(self._state_tensor(state_dict, "lokr_w2_b", "w2b"))
+        alpha = state_dict.get("alpha", self.alpha)
+        gamma = float(alpha.item()) if isinstance(alpha, torch.Tensor) else float(alpha)
+        return lycoris_lokr_diff_weight(w1, w1a, w1b, w2, w2a, w2b, None, gamma=gamma)
 
-        return org_forwarded + (lx * self.multiplier * self.scale).to(
-            org_forwarded.dtype
-        )
-
-    def _eval_delta(self, x, org_forwarded):
-        x_r = self._rebalance(x)
-        w1 = self._get_w1().to(x_r)
-        w2 = self._get_w2().to(x_r)
-        out_a, in_a = w1.shape
-        out_b, in_b = w2.shape
-        x_mat = x_r.reshape(*x_r.shape[:-1], in_a, in_b)
-        delta = torch.einsum("oi,...ij,bj->...ob", w1, x_mat, w2)
-        lx = delta.reshape(*x_r.shape[:-1], out_a * out_b)
-        return lx * self.multiplier * self.scale
-
-    # --- Merge / Fuse (same pattern as LoRAModule) ---
-
-    def merge_to(self, sd, dtype, device):
+    def merge_to(self, state_dict, dtype=None, device=None):
+        """Merge a per-module state-dict slice using official LoKr math."""
         with torch.no_grad():
-            weight = self.org_module.weight
-            org_dtype = weight.dtype
-            if dtype is None:
-                dtype = org_dtype
-            if device is None:
-                device = weight.device
+            weight = self.org_module_ref[0].weight
+            target_device = weight.device if device is None else device
+            target_dtype = weight.dtype if dtype is None else dtype
+            delta = self._reconstruct_delta_from_sd(state_dict, target_device)
+            merged = weight.data.float() + delta * self.multiplier
+            weight.data.copy_(merged.to(device=weight.device, dtype=target_dtype))
 
-            w = weight.data.float()
-            delta = self._reconstruct_delta_from_sd(sd, device)
-            w += self.multiplier * delta * self.scale
-            weight.data.copy_(w.to(dtype))
-
-    def _reconstruct_delta_from_sd(self, sd, device) -> torch.Tensor:
-        """Rebuild the full kron delta from a state-dict slice."""
-        use_w1 = "lokr_w1" in sd
-        use_w2 = "lokr_w2" in sd
-
-        if use_w1:
-            w1 = sd["lokr_w1"].to(torch.float).to(device)
-        else:
-            w1a = sd["w1a"].to(torch.float).to(device)
-            w1b = sd["w1b"].to(torch.float).to(device)
-            w1 = w1a @ w1b
-
-        if use_w2:
-            w2 = sd["lokr_w2"].to(torch.float).to(device)
-        else:
-            w2a = sd["w2a"].to(torch.float).to(device)
-            w2b = sd["w2b"].to(torch.float).to(device)
-            w2 = w2a @ w2b
-
-        delta = torch.kron(w1, w2)
-        if "inv_scale" in sd:
-            # State-dict merge materializes the full delta, so express
-            # forward-time ``x * inv_scale`` as input-column scaling here.
-            inv_scale = sd["inv_scale"].to(torch.float).to(device)
-            delta = delta * inv_scale.unsqueeze(0)
-        return delta
-
-    def fuse_weight(self):
+    def fuse_weight(self) -> None:
         if self._fused:
             return
-        org_module = self.org_module_ref[0]
-        delta = self.get_weight().to(org_module.weight.dtype)
-        org_module.weight.data += delta
+        module = self.org_module_ref[0]
+        module.weight.data.add_(self.get_weight().to(module.weight))
         self._fused = True
 
-    def unfuse_weight(self):
+    def unfuse_weight(self) -> None:
         if not self._fused:
             return
-        org_module = self.org_module_ref[0]
-        delta = self.get_weight().to(org_module.weight.dtype)
-        org_module.weight.data -= delta
+        module = self.org_module_ref[0]
+        module.weight.data.sub_(self.get_weight().to(module.weight))
         self._fused = False
-
-    # --- Save pipeline ---
-
-    def distill_save_state_dict(
-        self, prefix: str, state_dict: Dict[str, torch.Tensor]
-    ) -> None:
-        """Write LoKR factors into *state_dict* under *prefix*."""
-        if self._use_w1:
-            state_dict[f"{prefix}.lokr_w1"] = self.lokr_w1.data.cpu()
-        else:
-            state_dict[f"{prefix}.w1a"] = self.w1a.data.cpu()
-            state_dict[f"{prefix}.w1b"] = self.w1b.data.cpu()
-
-        if self._use_w2:
-            state_dict[f"{prefix}.lokr_w2"] = self.lokr_w2.data.cpu()
-        else:
-            state_dict[f"{prefix}.w2a"] = self.w2a.data.cpu()
-            state_dict[f"{prefix}.w2b"] = self.w2b.data.cpu()
-
-        state_dict[f"{prefix}.alpha"] = self.alpha.cpu()
-
-        if self._has_channel_scale:
-            state_dict[f"{prefix}.inv_scale"] = self.inv_scale.cpu()

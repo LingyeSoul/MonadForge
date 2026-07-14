@@ -37,6 +37,82 @@ _CHANNEL_STATS_PATH = (
 )
 
 
+def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor]) -> int:
+    """Infer one factor that reconstructs every canonical LoKr module.
+
+    A single module can be ambiguous: an explicit factor may produce the same
+    split as LyCORIS' default factorization for one shape but not for another.
+    Unstamped checkpoints therefore need a network-wide consistency check.
+    """
+    from lycoris.functional import factorization
+
+    prefixes = sorted(
+        {
+            key.rsplit(".", 1)[0]
+            for key in state_dict
+            if key.endswith(
+                (
+                    ".lokr_w1",
+                    ".lokr_w1_a",
+                    ".lokr_w2",
+                    ".lokr_w2_a",
+                )
+            )
+        }
+    )
+    if not prefixes:
+        return -1
+
+    layouts: list[tuple[str, tuple[int, int], tuple[int, int], tuple[int, int]]] = []
+    candidates = {-1}
+    for prefix in prefixes:
+        w1 = state_dict.get(f"{prefix}.lokr_w1")
+        w1a = state_dict.get(f"{prefix}.lokr_w1_a")
+        w1b = state_dict.get(f"{prefix}.lokr_w1_b")
+        w2 = state_dict.get(f"{prefix}.lokr_w2")
+        w2a = state_dict.get(f"{prefix}.lokr_w2_a")
+        w2b = state_dict.get(f"{prefix}.lokr_w2_b")
+
+        if w1 is None and (w1a is None or w1b is None):
+            raise RuntimeError(
+                f"LoKr checkpoint has an incomplete w1 factor at {prefix!r}"
+            )
+        if w2 is None and (w2a is None or w2b is None):
+            raise RuntimeError(
+                f"LoKr checkpoint has an incomplete w2 factor at {prefix!r}"
+            )
+
+        w1_shape = tuple(w1.shape) if w1 is not None else (w1a.size(0), w1b.size(1))
+        w2_shape = tuple(w2.shape) if w2 is not None else (w2a.size(0), w2b.size(1))
+        full_shape = (
+            w1_shape[0] * w2_shape[0],
+            w1_shape[1] * w2_shape[1],
+        )
+        layouts.append((prefix, w1_shape, w2_shape, full_shape))
+        candidates.update((max(w1_shape), max(w2_shape)))
+
+    def matches_factor(
+        layout: tuple[str, tuple[int, int], tuple[int, int], tuple[int, int]],
+        factor: int,
+    ) -> bool:
+        _, w1_shape, w2_shape, full_shape = layout
+        out_a, out_b = factorization(full_shape[0], factor)
+        in_a, in_b = factorization(full_shape[1], factor)
+        return w1_shape == (out_a, in_a) and w2_shape == (out_b, in_b)
+
+    for candidate in sorted(candidates):
+        if all(matches_factor(layout, candidate) for layout in layouts):
+            return candidate
+
+    details = ", ".join(
+        f"{prefix}: w1={w1_shape}, w2={w2_shape}"
+        for prefix, w1_shape, w2_shape, _ in layouts
+    )
+    raise RuntimeError(
+        "LoKr checkpoint factor layouts are inconsistent across modules; " + details
+    )
+
+
 def _load_channel_scales(
     kwargs: Dict[str, object],
 ) -> Optional[Dict[str, torch.Tensor]]:
@@ -368,14 +444,45 @@ def create_network_from_weights(
     # Strip torch.compile '_orig_mod_' from old checkpoint keys
     weights_sd = LoRANetwork._strip_orig_mod_keys(weights_sd)
 
-    # Native LyCORIS/ComfyUI LoKR checkpoints store decomposed factors with
-    # ``lokr_w{1,2}_{a,b}`` suffixes. MonadForge's runtime LoKRModule keeps the
-    # decomposed Parameter names as ``w{1,2}{a,b}``, so normalize only the
-    # internal load-side view. The save path still emits native keys.
+    raw_network_args = file_metadata.get("ss_network_args", "")
+    network_args_metadata: Dict[str, object] = {}
+    if raw_network_args:
+        try:
+            parsed_network_args = json.loads(raw_network_args)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Ignoring malformed ss_network_args metadata")
+        else:
+            if isinstance(parsed_network_args, dict):
+                network_args_metadata = parsed_network_args
+
+    # Canonical keys pass through; only old shortened MonadForge factor names
+    # are rewritten to the official LyCORIS/ComfyUI layout.
     weights_sd = _normalize_native_lokr_keys(weights_sd)
     # Detect legacy fused-projection LoKR (pre-split-layout) checkpoints so
     # the user gets an actionable warning instead of silent key drops.
     _warn_legacy_fused_lokr_keys(weights_sd)
+
+    # Pre-official MonadForge could store a full-input ``inv_scale`` alongside
+    # LoKr factors. LyCORIS has no representation for that extra transform, so
+    # preserve the exact delta by materializing it into standard LoRA at the
+    # compatibility boundary. New LoKr training never creates inv_scale.
+    has_legacy_lokr_scale = any(k.endswith(".inv_scale") for k in weights_sd)
+    has_lokr_factors = any(".lokr_w" in k for k in weights_sd)
+    if has_legacy_lokr_scale and has_lokr_factors:
+        from networks.lora_save import _convert_lokr_to_standard_lora
+
+        raw_dim = file_metadata.get("ss_network_dim")
+        legacy_network_dim = int(float(raw_dim)) if raw_dim else None
+        _convert_lokr_to_standard_lora(
+            weights_sd,
+            dtype=None,
+            lora_rank=0,
+            network_dim=legacy_network_dim,
+        )
+        logger.warning(
+            "Converted legacy LoKr+inv_scale checkpoint to standard LoRA "
+            "during load; official LyCORIS LoKr cannot represent inv_scale"
+        )
 
     # MoE files: stack per-expert ups (and downs, for StackedExperts) and fuse
     # split q/k/v first so the attention refuser + detection loop see fused
@@ -425,19 +532,19 @@ def create_network_from_weights(
 
         if "alpha" in key:
             modules_alpha[lora_name] = value
-        elif (
-            key.endswith(".lokr_w1")
-            or key.endswith(".lokr_w2")
-            or key.endswith(".w1a")
-            or key.endswith(".w1b")
-            or key.endswith(".w2a")
-            or key.endswith(".w2b")
-        ):
+        elif key.endswith((".lokr_w1_a", ".lokr_w2_a")):
             has_lokr = True
-            # For LoKR, dim is derived from alpha (set below when we see the alpha key).
-            # Fill a placeholder; the alpha key will set the real value.
-            if lora_name not in modules_dim:
-                modules_dim[lora_name] = 0
+            # Official LyCORIS stores decomposed A as (factor_out, rank).
+            modules_dim[lora_name] = value.size(1)
+        elif key.endswith((".lokr_w1_b", ".lokr_w2_b")):
+            has_lokr = True
+            # B is (rank, factor_in). Prefer an A-derived rank when present.
+            modules_dim.setdefault(lora_name, value.size(0))
+        elif key.endswith((".lokr_w1", ".lokr_w2")):
+            has_lokr = True
+            # A full-full checkpoint has no rank-shaped tensor. Its canonical
+            # alpha is the LyCORIS lora_dim because full matrices force scale=1.
+            modules_dim.setdefault(lora_name, 0)
         elif key.endswith(".vera_d"):
             modules_dim[lora_name] = value.size(0)
         elif key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
@@ -484,26 +591,41 @@ def create_network_from_weights(
         if "llm_adapter" in lora_name:
             train_llm_adapter = True
 
-    # LoKR: derive dim from alpha (LoKR's lora_dim controls factor decomposition,
-    # not a weight dimension; alpha == lora_dim in the common case).
-    # Also detect decompose_both and lokr_factor from checkpoint keys.
+    # LoKR: decomposed checkpoints derive rank from their canonical A/B shapes;
+    # only full-full layouts fall back to alpha. Also detect decompose_both and
+    # the Kronecker factor from checkpoint keys.
     lokr_decompose_both = False
     lokr_detected_factor = -1
     lokr_full_factor = False
     if has_lokr:
+        metadata_factor = network_args_metadata.get(
+            "lokr_factor", network_args_metadata.get("factor")
+        )
+        if metadata_factor is not None:
+            lokr_detected_factor = int(metadata_factor)
         for name in list(modules_dim.keys()):
             if modules_dim[name] == 0 and name in modules_alpha:
                 modules_dim[name] = int(modules_alpha[name])
-        # Detect decompose_both: if any module has .w1a key, both factors are decomposed.
-        lokr_decompose_both = any(k.endswith(".w1a") for k in weights_sd)
+        metadata_decompose_both = network_args_metadata.get("decompose_both")
+        if metadata_decompose_both is not None:
+            lokr_decompose_both = str(metadata_decompose_both).strip().lower() in (
+                "true",
+                "1",
+            )
+        else:
+            lokr_decompose_both = any(k.endswith(".lokr_w1_a") for k in weights_sd)
         has_full_w2 = any(k.endswith(".lokr_w2") for k in weights_sd)
         has_decomposed_w1 = any(
-            k.endswith(".w1a") or k.endswith(".w1b") for k in weights_sd
+            k.endswith(".lokr_w1_a") or k.endswith(".lokr_w1_b") for k in weights_sd
         )
         has_decomposed_w2 = any(
-            k.endswith(".w2a") or k.endswith(".w2b") for k in weights_sd
+            k.endswith(".lokr_w2_a") or k.endswith(".lokr_w2_b") for k in weights_sd
         )
         stamped_full_factor = file_metadata.get("ss_lokr_full_factor")
+        if stamped_full_factor is None:
+            stamped_full_factor = network_args_metadata.get(
+                "lokr_full_factor", network_args_metadata.get("full_matrix")
+            )
         if stamped_full_factor is not None:
             lokr_full_factor = str(stamped_full_factor).strip().lower() == "true"
             if lokr_full_factor and (has_decomposed_w1 or has_decomposed_w2):
@@ -517,30 +639,8 @@ def create_network_from_weights(
             lokr_full_factor = (
                 has_full_w2 and not has_decomposed_w1 and not has_decomposed_w2
             )
-        # Derive lokr_factor from the first w1/w2 shape we find.
-        for k, v in weights_sd.items():
-            if k.endswith(".lokr_w1") or k.endswith(".w1a"):
-                # w1 shape is (out_a, in_a); out_a * w2_out = out_features
-                # We can't recover the original factor exactly, but we can
-                # use the w1 shape to set a reasonable factor.
-                if k.endswith(".lokr_w1"):
-                    out_a = v.shape[0]
-                    # Find matching w2 to compute the full dimension
-                    prefix = k[: -len(".lokr_w1")]
-                    w2_key = f"{prefix}.lokr_w2"
-                    w2a_key = f"{prefix}.w2a"
-                    if w2_key in weights_sd:
-                        out_b = weights_sd[w2_key].shape[0]
-                        full_dim = out_a * out_b
-                        # Check if out_a divides full_dim (it always does by construction)
-                        if full_dim % out_a == 0 and out_a > 1:
-                            lokr_detected_factor = out_a
-                    elif w2a_key in weights_sd:
-                        out_b = weights_sd[w2a_key].shape[0]
-                        full_dim = out_a * out_b
-                        if full_dim % out_a == 0 and out_a > 1:
-                            lokr_detected_factor = out_a
-                break  # one module is enough to detect the factor
+        if metadata_factor is None:
+            lokr_detected_factor = _infer_lokr_factor(weights_sd)
 
     # Finalize the MoE shape post-scan: up_weight (3-D) with no matching
     # down_weight (3-D) is Hydra (shared down); both 3-D means StackedExperts.

@@ -302,7 +302,7 @@ def test_save_lokr_roundtrip(tmp_path: Path):
 
 
 def test_save_lokr_decomposed_roundtrip(tmp_path: Path):
-    """Decomposed LoKR (``w1a``/``w1b``/``w2a``/``w2b``, no ``inv_scale``).
+    """Legacy shortened decomposed LoKR keys, without ``inv_scale``.
 
     Verifies the ``w1a @ w1b`` / ``w2a @ w2b`` reconstruction branch and the
     Kronecker orientation on the decomposed factor path. Calls

@@ -1006,15 +1006,6 @@ def validate_config(data: dict) -> list[str]:
         dim = data["network_dim"]
         if isinstance(dim, int) and dim <= 0:
             errors.append("network_dim must be positive")
-    if data.get("use_lokr"):
-        if data.get("lokr_full_factor") and data.get("decompose_both"):
-            errors.append("lokr_full_factor=true conflicts with decompose_both=true")
-        if data.get("network_dim") == 114514 and not data.get("lokr_allow_legacy_dim"):
-            errors.append(
-                "LoKR network_dim=114514 is a deprecated full-factor sentinel "
-                "that suppresses training via alpha/dim. Use network_dim=32, "
-                "network_alpha=32, lokr_full_factor=true instead."
-            )
     if "max_train_epochs" in data:
         ep = data["max_train_epochs"]
         if isinstance(ep, int) and ep <= 0:

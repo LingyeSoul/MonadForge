@@ -102,7 +102,7 @@ export default {
   cfgConditioningBlockedBody: '当前变体不是 conditioning 类型（仅 controlnet / easycontrol 支持），以下键会导致训练报错，建议移除：{keys}',
   cfgConditioningRemove: '移除并继续',
   cfgLokrLegacyTitle: '旧式 LoKr 全矢配置',
-  cfgLokrLegacyBody: '检测到 network_dim=114514。这个旧式哨兵虽然会强制完整因子，但也会通过 network_alpha / network_dim 压低输出和梯度。请改用独立的全矢开关：',
+  cfgLokrLegacyBody: 'network_dim=114514 是旧式的隐式完整矩阵选择器。官方 LyCORIS 在两个因子完整时会强制缩放为 1；建议改用语义明确的完整矩阵开关：',
   cfgLokrLegacyBack: '返回修改',
   cfgLokrLegacyApply: '应用推荐配置',
   cfgPresetCreate: '新建预设',

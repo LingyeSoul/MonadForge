@@ -35,18 +35,18 @@ logger = logging.getLogger(__name__)
 def _normalize_native_lokr_keys(
     state_dict: Dict[str, torch.Tensor],
 ) -> Dict[str, torch.Tensor]:
-    """Map LyCORIS/ComfyUI native decomposed LoKR keys to runtime names.
+    """Map legacy MonadForge LoKr keys to LyCORIS' canonical names.
 
-    Native LoKR files store decomposed factors as ``lokr_w1_a``/``lokr_w1_b``
-    and ``lokr_w2_a``/``lokr_w2_b``. MonadForge's ``LoKRModule`` Parameter
-    names are ``w1a``/``w1b`` and ``w2a``/``w2b``. Normalize on load only;
-    native saves still emit the LyCORIS/ComfyUI key layout.
+    Official LyCORIS and ComfyUI use ``lokr_w1_a``/``lokr_w1_b`` and
+    ``lokr_w2_a``/``lokr_w2_b``. Builds before the official-backend migration
+    used shortened runtime-only names. Accept those old states at the boundary
+    while leaving canonical checkpoints unchanged.
     """
     suffix_map = {
-        ".lokr_w1_a": ".w1a",
-        ".lokr_w1_b": ".w1b",
-        ".lokr_w2_a": ".w2a",
-        ".lokr_w2_b": ".w2b",
+        ".w1a": ".lokr_w1_a",
+        ".w1b": ".lokr_w1_b",
+        ".w2a": ".lokr_w2_a",
+        ".w2b": ".lokr_w2_b",
     }
     normalized: Dict[str, torch.Tensor] = {}
     for key, value in state_dict.items():
@@ -80,9 +80,16 @@ def _warn_legacy_fused_lokr_keys(state_dict: Dict[str, torch.Tensor]) -> None:
     fused_endings = ("_qkv_proj", "_kv_proj")
     fused_prefixes: List[str] = []
     lokr_factor_suffixes = (
-        ".lokr_w1", ".lokr_w2",
-        ".lokr_w1_a", ".lokr_w1_b", ".lokr_w2_a", ".lokr_w2_b",
-        ".w1a", ".w1b", ".w2a", ".w2b",
+        ".lokr_w1",
+        ".lokr_w2",
+        ".lokr_w1_a",
+        ".lokr_w1_b",
+        ".lokr_w2_a",
+        ".lokr_w2_b",
+        ".w1a",
+        ".w1b",
+        ".w2a",
+        ".w2b",
     )
     for key in state_dict.keys():
         if not any(key.endswith(suf) for suf in lokr_factor_suffixes):

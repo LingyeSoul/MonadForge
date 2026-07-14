@@ -102,7 +102,7 @@ export default {
   cfgConditioningBlockedBody: '현재 변형은 conditioning을 지원하지 않습니다 (controlnet / easycontrol만 지원). 다음 키는 학습 오류를 유발하므로 제거하세요: {keys}',
   cfgConditioningRemove: '제거하고 계속',
   cfgLokrLegacyTitle: '레거시 LoKr 전체 팩터 설정',
-  cfgLokrLegacyBody: 'network_dim=114514는 기존 전체 팩터 센티널입니다. 전체 팩터를 강제하지만 network_alpha / network_dim으로 출력과 그래디언트도 억제합니다. 전용 전체 팩터 스위치를 사용하세요:',
+  cfgLokrLegacyBody: 'network_dim=114514는 기존의 암시적 전체 행렬 선택자입니다. 공식 LyCORIS는 두 팩터가 모두 전체일 때 스케일을 1로 고정합니다. 명시적 전체 행렬 설정을 권장합니다:',
   cfgLokrLegacyBack: '편집으로 돌아가기',
   cfgLokrLegacyApply: '권장 설정 적용',
   cfgPresetCreate: '새 프리셋',

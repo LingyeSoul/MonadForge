@@ -19,7 +19,7 @@ def _base_kwargs() -> dict:
     return {}
 
 
-def test_lokr_full_factor_parses_without_changing_scale_inputs():
+def test_lokr_full_factor_parses_as_lycoris_full_matrix_alias():
     cfg = LoRANetworkCfg.from_kwargs(
         {"use_lokr": "true", "lokr_full_factor": "true", "lokr_factor": "8"},
         network_dim=32,
@@ -32,33 +32,35 @@ def test_lokr_full_factor_parses_without_changing_scale_inputs():
     assert cfg.alpha == 32.0
 
 
-def test_lokr_full_factor_rejects_decompose_both():
-    with pytest.raises(ValueError, match="conflicts with decompose_both"):
-        LoRANetworkCfg.from_kwargs(
-            {
-                "use_lokr": "true",
-                "lokr_full_factor": "true",
-                "decompose_both": "true",
-            },
-            network_dim=32,
-            network_alpha=32.0,
-            neuron_dropout=None,
-            module_class=LoKRModule,
-        )
+def test_lokr_full_factor_accepts_decompose_both_like_lycoris():
+    cfg = LoRANetworkCfg.from_kwargs(
+        {
+            "use_lokr": "true",
+            "lokr_full_factor": "true",
+            "decompose_both": "true",
+        },
+        network_dim=32,
+        network_alpha=32.0,
+        neuron_dropout=None,
+        module_class=LoKRModule,
+    )
+    assert cfg.lokr_full_factor is True
+    assert cfg.decompose_both is True
 
 
-def test_lokr_legacy_full_factor_sentinel_is_blocked():
-    with pytest.raises(ValueError, match="deprecated full-factor sentinel"):
-        LoRANetworkCfg.from_kwargs(
-            {"use_lokr": "true"},
-            network_dim=114514,
-            network_alpha=32.0,
-            neuron_dropout=None,
-            module_class=LoKRModule,
-        )
+def test_lokr_legacy_full_factor_sentinel_uses_official_semantics(caplog):
+    cfg = LoRANetworkCfg.from_kwargs(
+        {"use_lokr": "true"},
+        network_dim=114514,
+        network_alpha=32.0,
+        neuron_dropout=None,
+        module_class=LoKRModule,
+    )
+    assert cfg.lora_dim == 114514
+    assert "Official LyCORIS forces scale=1" in caplog.text
 
 
-def test_lokr_legacy_full_factor_sentinel_requires_explicit_compat(caplog):
+def test_lokr_legacy_compat_flag_is_accepted_but_no_longer_required(caplog):
     cfg = LoRANetworkCfg.from_kwargs(
         {"use_lokr": "true", "lokr_allow_legacy_dim": "true"},
         network_dim=114514,
@@ -67,7 +69,7 @@ def test_lokr_legacy_full_factor_sentinel_requires_explicit_compat(caplog):
         module_class=LoKRModule,
     )
     assert cfg.lora_dim == 114514
-    assert "suppressed scale is preserved" in caplog.text
+    assert "no longer required" in caplog.text
 
 
 def test_defaults_when_all_kwargs_absent():
