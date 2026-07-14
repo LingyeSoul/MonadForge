@@ -16,6 +16,11 @@ export function useTaskStream(taskId: string | (() => string)) {
   const done = ref(false)
   const exitCode = ref<number | null>(null)
   let ws: WebSocket | null = null
+  let reconnectTimer = 0
+  let reconnectAttempt = 0
+  let manuallyClosed = false
+  let connectionVersion = 0
+  let replayRemaining = 0
 
   const resolvedId = typeof taskId === 'function' ? taskId : () => taskId
 
@@ -43,18 +48,67 @@ export function useTaskStream(taskId: string | (() => string)) {
     }
   }
 
-  function _connect(id: string) {
-    if (!id) return
+  function closeSocket() {
+    if (!ws) return
+    ws.onclose = null
+    ws.onerror = null
+    ws.close()
+    ws = null
+  }
+
+  function scheduleReconnect(id: string, version: number) {
+    if (manuallyClosed || done.value || reconnectTimer || version !== connectionVersion) return
+    const delays = [1000, 2000, 5000]
+    const delay = delays[Math.min(reconnectAttempt, delays.length - 1)]
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = 0
+      reconnectAttempt += 1
+      void open(id, version)
+    }, delay)
+  }
+
+  async function open(id: string, version: number) {
+    if (!id || manuallyClosed || version !== connectionVersion) return
+    closeSocket()
+
+    let historyCount = 0
+    try {
+      const res = await fetch(`/api/tasks/${id}/output`)
+      if (res.ok) {
+        const data = await res.json()
+        if (Array.isArray(data.lines)) {
+          historyCount = data.lines.length
+          pendingLines.length = 0
+          if (rafId) cancelAnimationFrame(rafId)
+          rafId = 0
+          messages.value = [...data.lines]
+        }
+        if (data.state && data.state !== 'running' && data.state !== 'pending') {
+          done.value = true
+          exitCode.value = data.exit_code ?? null
+        }
+      }
+    } catch {
+      // The WebSocket may still recover this tick.
+    }
+
+    if (manuallyClosed || done.value || version !== connectionVersion) return
+    replayRemaining = historyCount
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     ws = new WebSocket(`${protocol}//${location.host}/ws/tasks/${id}`)
 
     ws.onopen = () => {
+      reconnectAttempt = 0
       connected.value = true
     }
     ws.onmessage = (event) => {
       try {
         const msg: WsMessage = JSON.parse(event.data)
         if (msg.type === 'log' && msg.line) {
+          if (replayRemaining > 0) {
+            replayRemaining--
+            return
+          }
           enqueueLine(msg.line, msg.replace === true)
         } else if (msg.type === 'done') {
           done.value = true
@@ -72,25 +126,36 @@ export function useTaskStream(taskId: string | (() => string)) {
     }
     ws.onclose = () => {
       connected.value = false
+      ws = null
+      scheduleReconnect(id, version)
     }
     ws.onerror = () => {
       connected.value = false
+      ws?.close()
     }
   }
 
   function disconnect() {
-    ws?.close()
-    ws = null
+    connectionVersion += 1
+    manuallyClosed = true
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = 0
+    closeSocket()
     connected.value = false
+    pendingLines.length = 0
     if (rafId) cancelAnimationFrame(rafId)
+    rafId = 0
   }
 
   function reconnect(id: string) {
     disconnect()
+    manuallyClosed = false
+    reconnectAttempt = 0
     messages.value = []
     done.value = false
     exitCode.value = null
-    _connect(id)
+    const version = connectionVersion
+    void open(id, version)
   }
 
   // Reconnect whenever the task ID changes

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from webui.services.daemon_client import DaemonError
+from webui.services.task_catalog import COMMAND_CATALOG
 from webui.services.task_service import task_service
 
 router = APIRouter()
@@ -31,69 +32,16 @@ _FORBIDDEN_ARG_FLAGS = frozenset(
 
 
 class TaskStartRequest(BaseModel):
-    command: str
-    args: list[str] = []
-    env: dict[str, str] = {}
+    command: str = Field(min_length=1, max_length=64)
+    args: list[str] = Field(default_factory=list, max_length=256)
+    env: dict[str, str] = Field(default_factory=dict, max_length=64)
 
 
 class TaskCommandListResponse(BaseModel):
     commands: dict[str, str]
 
 
-# Canonical command list with descriptions
-_COMMAND_DESCRIPTIONS = {
-    "lora": "LoRA family training",
-    "lora-gui": "Train from gui-methods variant",
-    "test": "Inference with latest LoRA",
-    "test-hydra": "Inference with HydraLoRA",
-    "test-merge": "Inference with merged DiT",
-    "test-dcw": "Inference + DCW correction",
-    "test-dcw-v4": "Inference + DCW v4",
-    "test-smc-cfg": "Inference + SMC-CFG",
-    "test-spectrum-dcw": "Spectrum + DCW",
-    "test-dcw-v4-spectrum": "DCW v4 + Spectrum",
-    "preprocess": "Full preprocess (resize + VAE + TE)",
-    "preprocess-resize": "Resize images",
-    "preprocess-vae": "Cache VAE latents",
-    "preprocess-te": "Cache text embeddings",
-    "preprocess-pooled": "Cache pooled text embeddings",
-    "preprocess-pe": "Cache PE features",
-    "preprocess-cond-resize": "Resize conditioning images",
-    "preprocess-cond-vae": "Cache conditioning VAE latents",
-    "mask": "Run SAM + MIT masking",
-    "mask-clean": "Remove masks",
-    "merge": "Merge LoRA into DiT",
-    "merge-loras": "Merge LoRAs (N\u21921 fusion)",
-    "dcw": "Calibrate DCW v4",
-    "dcw-train": "Train DCW fusion head",
-    "distill-prep": "Stage modulation guidance artifacts",
-    "distill-mod": "Distill pooled_text_proj MLP",
-    "download-models": "Download all models",
-    "download-anima": "Download Anima model",
-    "download-sam3": "Download SAM3 model",
-    "download-mit": "Download MIT model",
-    "download-pe": "Download PE encoder",
-    "download-pe-spatial": "Download PE-Spatial encoder",
-    "test-unit": "Run unit tests",
-    "print-config": "Dump merged config",
-    "exp-postfix": "Postfix tuning",
-    "turbo": "Turbo (DP-DMD) distillation",
-    "exp-spd": "SPD distillation training",
-    "exp-chimera": "ChimeraHydra training",
-    "exp-ip-adapter": "IP-Adapter training",
-    "exp-ip-adapter-preprocess": "IP-Adapter preprocess",
-    "exp-easycontrol": "EasyControl training",
-    "exp-easycontrol-preprocess": "EasyControl preprocess",
-    "exp-test-postfix": "Postfix inference",
-    "exp-test-turbo": "Turbo inference",
-    "exp-test-ip": "IP-Adapter inference",
-    "exp-test-easycontrol": "EasyControl inference",
-    "exp-test-directedit": "DirectEdit inference",
-    "exp-test-directedit-dry": "DirectEdit dry run",
-    "update": "Self-update from GitHub release",
-    "vendor-sync": "Sync vendor trees for custom nodes",
-    "export-logs": "Export TensorBoard logs to JSON",
-}
+_COMMAND_DESCRIPTIONS = COMMAND_CATALOG
 
 
 @router.get("", response_model=list[dict])
@@ -192,7 +140,12 @@ async def start_task(body: TaskStartRequest):
     if body.command not in _COMMAND_DESCRIPTIONS:
         raise HTTPException(status_code=400, detail=f"Unknown command: {body.command}")
     _reject_forbidden_args(body.args)
-    task = await task_service.start_task(body.command, body.args, body.env or None)
+    try:
+        task = await task_service.start_task(body.command, body.args, body.env or None)
+    except DaemonError as exc:
+        raise HTTPException(
+            status_code=502, detail="Training daemon is unavailable"
+        ) from exc
     return task.info()
 
 

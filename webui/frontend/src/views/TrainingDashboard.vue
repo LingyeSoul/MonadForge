@@ -252,14 +252,8 @@ async function fetchHwStats() {
 const selectedTaskId = ref('')
 let stream: ReturnType<typeof useTrainingStream> | null = null
 
-// Filter tasks that look like training commands
-const _TRAINING_COMMANDS = new Set([
-  'lora', 'lora-gui', 'exp-postfix', 'exp-chimera', 'exp-ip-adapter', 'exp-easycontrol',
-  'exp-soft-tokens', 'distill-mod', 'dcw', 'dcw-train',
-])
-
 const trainingTasks = computed(() =>
-  taskStore.tasks.filter((t) => _TRAINING_COMMANDS.has(t.command))
+  taskStore.tasks.filter((t) => t.category === 'training')
 )
 
 const trainingTaskItems = computed(() =>
@@ -367,6 +361,7 @@ onMounted(() => {
   }, 5000)
 })
 onUnmounted(() => {
+  stream?.disconnect()
   if (refreshTimer) clearInterval(refreshTimer)
   if (hwTimer) clearInterval(hwTimer)
 })

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -25,6 +26,7 @@ from webui.api import system as system_api
 from webui.api import tagger as tagger_api
 from webui.api import tasks as tasks_api
 from webui.api import ws as ws_api
+from webui.services.task_service import task_service
 
 _DIST_DIR = Path(__file__).parent / "frontend" / "dist"
 _INDEX_HTML = _DIST_DIR / "index.html"
@@ -36,6 +38,15 @@ _ALLOWED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 ]
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    await task_service.reconcile_daemon_jobs()
+    try:
+        yield
+    finally:
+        await task_service.close()
 
 
 def _spa_fallback(request: Request):
@@ -55,7 +66,7 @@ def create_app(dev: bool = False) -> FastAPI:
 
     migrate_custom_configs()
 
-    app = FastAPI(title="MonadForge WebUI", version="0.1.0")
+    app = FastAPI(title="MonadForge WebUI", version="0.1.0", lifespan=_lifespan)
 
     origins = ["*"] if dev else _ALLOWED_ORIGINS
     app.add_middleware(

@@ -1090,9 +1090,7 @@ async function startTest() {
     let command = 'test'
     const family = metaData.family || ''
     if (family === 'hydralora' || family === 'fera') command = 'test-hydra'
-    else if (family === 'postfix') command = 'exp-test-postfix'
-    else if (family === 'ip_adapter') command = 'exp-test-ip'
-    else if (family === 'easycontrol') command = 'exp-test-easycontrol'
+    else if (family === 'easycontrol') command = 'test-easycontrol'
     else if (family === 'chimera') command = 'test-hydra'
 
     // Pass test prompt/negative_prompt from config so the backend uses

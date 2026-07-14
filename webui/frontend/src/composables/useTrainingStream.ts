@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue'
+import { ref } from 'vue'
 import { useTrainingStore } from '../stores/training'
 import type { TrainingMetrics } from '../stores/training'
 
@@ -25,6 +25,9 @@ export function useTrainingStream(taskId: string) {
   const exitCode = ref<number | null>(null)
   const logLines = ref<string[]>([])
   let ws: WebSocket | null = null
+  let reconnectTimer = 0
+  let reconnectAttempt = 0
+  let manuallyClosed = false
 
   // Skip WS replay lines already loaded via REST
   let replayRemaining = 0
@@ -46,18 +49,42 @@ export function useTrainingStream(taskId: string) {
     }
   }
 
-  async function connect() {
-    store.reset()
+  function closeSocket() {
+    if (!ws) return
+    ws.onclose = null
+    ws.onerror = null
+    ws.close()
+    ws = null
+  }
 
-    // 1. Load accumulated history + metrics via REST
+  function scheduleReconnect() {
+    if (manuallyClosed || done.value || reconnectTimer) return
+    const delays = [1000, 2000, 5000]
+    const delay = delays[Math.min(reconnectAttempt, delays.length - 1)]
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = 0
+      reconnectAttempt += 1
+      void open()
+    }, delay)
+  }
+
+  async function open() {
+    if (manuallyClosed) return
+    closeSocket()
+
+    // Load accumulated history + metrics before opening the live stream so a
+    // reconnect fills the gap instead of duplicating or dropping messages.
     let historyCount = 0
     try {
       const res = await fetch(`/api/tasks/${taskId}/output`)
       if (res.ok) {
         const data = await res.json()
-        if (data.lines?.length) {
+        if (Array.isArray(data.lines)) {
           historyCount = data.lines.length
-          logLines.value.push(...data.lines)
+          pendingLines.length = 0
+          if (rafId) cancelAnimationFrame(rafId)
+          rafId = 0
+          logLines.value = [...data.lines]
         }
         if (data.state && data.state !== 'running' && data.state !== 'pending') {
           done.value = true
@@ -73,12 +100,13 @@ export function useTrainingStream(taskId: string) {
     await store.loadFromRest(taskId)
 
     replayRemaining = historyCount
+    if (manuallyClosed || done.value) return
 
-    // 2. Open WebSocket for live updates
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
     ws = new WebSocket(`${protocol}//${location.host}/ws/tasks/${taskId}`)
 
     ws.onopen = () => {
+      reconnectAttempt = 0
       connected.value = true
       store.connected = true
     }
@@ -127,22 +155,42 @@ export function useTrainingStream(taskId: string) {
     ws.onclose = () => {
       connected.value = false
       store.connected = false
+      ws = null
+      scheduleReconnect()
     }
     ws.onerror = () => {
       connected.value = false
       store.connected = false
+      ws?.close()
     }
   }
 
-  function disconnect() {
-    ws?.close()
-    ws = null
-    connected.value = false
-    store.connected = false
+  async function connect() {
+    manuallyClosed = false
+    reconnectAttempt = 0
+    done.value = false
+    exitCode.value = null
+    store.reset()
+    logLines.value = []
+    pendingLines.length = 0
     if (rafId) cancelAnimationFrame(rafId)
+    rafId = 0
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = 0
+    await open()
   }
 
-  onUnmounted(disconnect)
+  function disconnect() {
+    manuallyClosed = true
+    if (reconnectTimer) clearTimeout(reconnectTimer)
+    reconnectTimer = 0
+    closeSocket()
+    connected.value = false
+    store.connected = false
+    pendingLines.length = 0
+    if (rafId) cancelAnimationFrame(rafId)
+    rafId = 0
+  }
 
   return { logLines, connected, done, exitCode, connect, disconnect }
 }

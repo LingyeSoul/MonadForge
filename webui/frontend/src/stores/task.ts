@@ -10,21 +10,16 @@ export interface TaskInfo {
   pid: number | null
   started_at: string | null
   output_lines: number
+  category: 'training' | 'task'
   // Set by fetchQueueStatus (only meaningful for state === 'pending'): how
   // many queued jobs finish before this one starts (1, 2, … in FIFO order).
   // null/undefined for running or terminal tasks.
   queue_position?: number | null
 }
 
-export interface CommandInfo {
-  name: string
-  description: string
-  category: string
-}
-
 export const useTaskStore = defineStore('task', () => {
   const tasks = ref<TaskInfo[]>([])
-  const commands = ref<CommandInfo[]>([])
+  const commands = ref<Record<string, string>>({})
   const loading = ref(false)
   // Queue state — driven by GET /api/tasks/queue/status (polled alongside
   // fetchTasks in the Tasks view).
@@ -40,7 +35,9 @@ export const useTaskStore = defineStore('task', () => {
   async function fetchTasks() {
     try {
       const res = await fetch('/api/tasks')
-      tasks.value = await res.json()
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      if (Array.isArray(data)) tasks.value = data
     } catch {
       // silently ignore
     }
@@ -49,8 +46,9 @@ export const useTaskStore = defineStore('task', () => {
   async function fetchCommands() {
     try {
       const res = await fetch('/api/tasks/commands')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      commands.value = data.commands || []
+      commands.value = data.commands || {}
     } catch {
       // silently ignore
     }
@@ -59,6 +57,7 @@ export const useTaskStore = defineStore('task', () => {
   async function fetchQueueStatus() {
     try {
       const res = await fetch('/api/tasks/queue/status')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       const up = data.daemon_up !== false
       daemonUp.value = up
@@ -136,6 +135,7 @@ export const useTaskStore = defineStore('task', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command, args, env: env || {} }),
       })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       await fetchTasks()
       await fetchQueueStatus()
@@ -149,7 +149,8 @@ export const useTaskStore = defineStore('task', () => {
 
   async function cancelTask(taskId: string) {
     try {
-      await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' })
+      const res = await fetch(`/api/tasks/${taskId}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       await fetchTasks()
       await fetchQueueStatus()
     } catch {

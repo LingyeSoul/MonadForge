@@ -74,14 +74,6 @@
               </div>
             </div>
           </v-card-text>
-          <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('exp-ip-adapter')" @click="runTask('exp-ip-adapter')">
-              {{ t('adTrainIp') }}
-            </v-btn>
-            <v-btn variant="text" :loading="isRunning('exp-ip-adapter-preprocess')" @click="runTask('exp-ip-adapter-preprocess')">
-              {{ t('adPreprocess') }}
-            </v-btn>
-          </v-card-actions>
         </v-card>
       </v-col>
 
@@ -156,10 +148,10 @@
             </div>
           </v-card-text>
           <v-card-actions>
-            <v-btn color="primary" :loading="isRunning('exp-easycontrol')" @click="runTask('exp-easycontrol')">
+            <v-btn color="primary" :loading="isRunning('easycontrol')" @click="runTask('easycontrol')">
               {{ t('adTrainEasy') }}
             </v-btn>
-            <v-btn variant="text" :loading="isRunning('exp-easycontrol-preprocess')" @click="runTask('exp-easycontrol-preprocess')">
+            <v-btn variant="text" :loading="isRunning('easycontrol-preprocess')" @click="runTask('easycontrol-preprocess')">
               {{ t('adPreprocess') }}
             </v-btn>
           </v-card-actions>
@@ -199,8 +191,7 @@ const { t } = useI18n()
 taskStore.fetchTasks()
 
 const adapterCommands = [
-  'exp-ip-adapter', 'exp-ip-adapter-preprocess',
-  'exp-easycontrol', 'exp-easycontrol-preprocess',
+  'easycontrol', 'easycontrol-preprocess',
 ]
 
 const adapterTasks = computed(() =>

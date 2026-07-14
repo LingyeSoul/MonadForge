@@ -433,8 +433,8 @@ def test_legacy_jsonl_prefers_d_star_lr_over_base_lr(tmp_path: Path):
                 "ev": "step",
                 "ts": 1.0,
                 "loss/average": 0.28,
-                "lr/unet": 1.0,           # base multiplier (the bug value)
-                "lr/d*lr/unet": 0.01,     # effective d*lr (the real value)
+                "lr/unet": 1.0,  # base multiplier (the bug value)
+                "lr/d*lr/unet": 0.01,  # effective d*lr (the real value)
                 "global_step": 2,
                 "epoch": 1,
             }
@@ -803,8 +803,7 @@ def test_run_end_emits_final_step_metric(tmp_path: Path):
     # both shared the same history, but the run_end's final_step
     # update was being lost in the debounce window.)
     assert len(metrics_msgs) == 2, (
-        f"expected 2 metrics messages (step + run_end), got "
-        f"{len(metrics_msgs)}"
+        f"expected 2 metrics messages (step + run_end), got {len(metrics_msgs)}"
     )
 
 
@@ -887,3 +886,31 @@ def test_watcher_waits_for_running_state(tmp_path: Path):
         "dashboard would never see any step events"
     )
     assert metrics_msgs[-1]["data"]["step"] == 7
+
+
+def test_watcher_waits_beyond_legacy_queue_timeout(tmp_path: Path, monkeypatch):
+    """A queued job must not lose its JSONL watcher after the old 60s limit."""
+    svc, Task, TaskState = _make_service()
+    jsonl = tmp_path / "long-queued.progress.jsonl"
+    _write_jsonl(
+        jsonl,
+        [{"ev": "step", "global_step": 9, "epoch": 0, "avr_loss": 0.4}],
+    )
+    task = Task(id="long-queue", command="lora", args=[], state=TaskState.PENDING)
+    task.is_training = True
+    sleep_calls = 0
+
+    async def fake_sleep(_seconds):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 121:
+            task.state = TaskState.RUNNING
+        elif sleep_calls >= 122:
+            task.state = TaskState.SUCCESS
+
+    monkeypatch.setattr("webui.services.task_service.asyncio.sleep", fake_sleep)
+
+    _drive(svc._watch_progress_jsonl(task, str(jsonl)))
+
+    assert sleep_calls >= 122
+    assert task.parser.metrics.step == 9

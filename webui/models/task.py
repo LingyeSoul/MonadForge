@@ -24,3 +24,4 @@ class TaskInfo(BaseModel):
     exit_code: Optional[int] = None
     output_lines: int = 0
     started_at: Optional[str] = None
+    category: str = "task"

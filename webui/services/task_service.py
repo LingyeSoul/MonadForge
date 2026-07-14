@@ -27,7 +27,6 @@ import logging
 import os
 import re
 import sys
-import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -36,6 +35,7 @@ from pathlib import Path
 from typing import Optional
 
 from webui.services.daemon_client import DaemonError, daemon_client
+from webui.services.task_catalog import task_category
 from webui.services.training_log_parser import TrainingLogParser
 
 logger = logging.getLogger(__name__)
@@ -96,6 +96,7 @@ class Task:
             "output_lines": len(self.lines),
             "started_at": self.started_at,
             "wandb_run_url": self.wandb_run_url,
+            "category": task_category(self.command),
         }
 
 
@@ -111,7 +112,138 @@ class TaskService:
 
     def __init__(self) -> None:
         self._tasks: dict[str, Task] = {}
+        self._pollers: dict[str, asyncio.Task] = {}
+        self._progress_watchers: dict[str, asyncio.Task] = {}
         self._python = sys.executable
+
+    async def reconcile_daemon_jobs(self) -> None:
+        """Restore active daemon jobs after a WebUI process restart."""
+        try:
+            jobs = await daemon_client.list_jobs()
+        except DaemonError as exc:
+            logger.warning("Could not reconcile daemon jobs at WebUI startup: %s", exc)
+            return
+
+        self._reconcile_job_list(jobs)
+
+    def _reconcile_job_list(self, jobs: list[dict]) -> None:
+        """Merge active daemon jobs into the WebUI's in-memory task table."""
+
+        for info in jobs:
+            if info.get("state") not in ("queued", "running"):
+                continue
+            job_id = info.get("id")
+            if not job_id:
+                continue
+            task = self._tasks.get(str(job_id))
+            if task is None:
+                task = self._task_from_daemon(info)
+                self._tasks[task.id] = task
+            else:
+                self._apply_daemon_state(task, info)
+            self._ensure_monitors(task, info.get("progress_path"))
+
+    def _task_from_daemon(self, info: dict) -> Task:
+        job_id = str(info["id"])
+        argv = [str(value) for value in (info.get("argv") or [])]
+        command = str(info.get("method") or "unknown")
+        args: list[str] = []
+        if len(argv) >= 2 and Path(argv[0]).name.lower() == "tasks.py":
+            command = argv[1]
+            args = argv[2:]
+
+        task = Task(
+            id=job_id,
+            command=command,
+            args=args,
+            state=self._map_daemon_state(info.get("state")),
+            pid=info.get("pid"),
+            exit_code=info.get("rc"),
+            job_id=job_id,
+            sample_dir=info.get("sample_dir"),
+            stdout_path=info.get("stdout_path"),
+            started_at=self._format_daemon_timestamp(
+                info.get("started_at") or info.get("submitted_at")
+            ),
+        )
+        task.is_training = self._command_runs_training(command)
+        return task
+
+    @staticmethod
+    def _format_daemon_timestamp(value) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            return datetime.fromtimestamp(float(value), timezone.utc).isoformat()
+        except (TypeError, ValueError, OSError):
+            return None
+
+    @staticmethod
+    def _map_daemon_state(state: Optional[str]) -> TaskState:
+        return {
+            "queued": TaskState.PENDING,
+            "running": TaskState.RUNNING,
+            "done": TaskState.SUCCESS,
+            "stopped": TaskState.CANCELLED,
+            "error": TaskState.FAILED,
+        }.get(state or "", TaskState.PENDING)
+
+    def _apply_daemon_state(self, task: Task, info: dict) -> None:
+        task.state = self._map_daemon_state(info.get("state"))
+        task.pid = info.get("pid")
+        task.exit_code = info.get("rc")
+        task.sample_dir = info.get("sample_dir") or task.sample_dir
+        task.stdout_path = info.get("stdout_path") or task.stdout_path
+
+    def _ensure_monitors(self, task: Task, progress_path: Optional[str] = None) -> None:
+        """Start the per-job pollers once, including for restored jobs."""
+        if task.job_id is None or task.state not in (
+            TaskState.PENDING,
+            TaskState.RUNNING,
+        ):
+            return
+
+        poller = self._pollers.get(task.id)
+        if poller is None or poller.done():
+            poller = asyncio.create_task(self._poll_daemon_job(task))
+            self._pollers[task.id] = poller
+            poller.add_done_callback(
+                lambda done, task_id=task.id: self._forget_monitor(
+                    self._pollers, task_id, done
+                )
+            )
+
+        if task.is_training and progress_path:
+            watcher = self._progress_watchers.get(task.id)
+            if watcher is None or watcher.done():
+                watcher = asyncio.create_task(
+                    self._watch_progress_jsonl(task, str(progress_path))
+                )
+                self._progress_watchers[task.id] = watcher
+                watcher.add_done_callback(
+                    lambda done, task_id=task.id: self._forget_monitor(
+                        self._progress_watchers, task_id, done
+                    )
+                )
+
+    @staticmethod
+    def _forget_monitor(
+        registry: dict[str, asyncio.Task], task_id: str, done: asyncio.Task
+    ) -> None:
+        if registry.get(task_id) is done:
+            registry.pop(task_id, None)
+
+    async def close(self) -> None:
+        """Stop WebUI-owned watchers without touching daemon jobs."""
+        monitors = [*self._pollers.values(), *self._progress_watchers.values()]
+        for monitor in monitors:
+            monitor.cancel()
+        if monitors:
+            await asyncio.gather(*monitors, return_exceptions=True)
+        self._pollers.clear()
+        self._progress_watchers.clear()
 
     def list_tasks(self) -> list[dict]:
         return [t.info() for t in self._tasks.values()]
@@ -141,6 +273,11 @@ class TaskService:
                 "paused": False,
                 "positions": {},
             }
+
+        # Queue status is already polled by the task page. Reuse that daemon
+        # snapshot to heal a startup race (WebUI came up before the daemon) or
+        # an unexpectedly exited monitor without adding another HTTP request.
+        self._reconcile_job_list(jobs)
 
         # Daemon returns the full table incl. terminal + running jobs; only
         # queued jobs need a position. FIFO by submitted_at.
@@ -250,10 +387,9 @@ class TaskService:
                 start=True,
             )
         except DaemonError as exc:
-            task.state = TaskState.FAILED
-            task.lines.append(f"[error] Failed to submit to daemon: {exc}")
-            logger.exception("Failed to submit task to daemon")
-            return task
+            self._tasks.pop(temp_id, None)
+            logger.warning("Failed to submit task to daemon: %s", exc)
+            raise
 
         job_id = resp.get("job_id") or temp_id
         # Re-key the task under its daemon job_id so WS/REST addressing lines up.
@@ -267,9 +403,6 @@ class TaskService:
         task.state = TaskState.PENDING  # queued; _poll_daemon_job flips to RUNNING
         task.started_at = datetime.now(timezone.utc).isoformat()
 
-        # One poller drives state transitions + stdout tailing + terminal
-        # signaling. The progress-JSONL watcher runs alongside it.
-        asyncio.create_task(self._poll_daemon_job(task))
         jsonl_path = self._derive_progress_jsonl_path(
             resp, command, args or [], env or {}
         )
@@ -278,7 +411,7 @@ class TaskService:
             # parser feed the same metrics snapshot: JSONL supplies structured
             # scalars, stdout supplies tqdm-only fields like speed / ETA.
             task.is_training = True
-            asyncio.create_task(self._watch_progress_jsonl(task, jsonl_path))
+        self._ensure_monitors(task, jsonl_path)
 
         return task
 
@@ -339,45 +472,46 @@ class TaskService:
         """
         assert task.job_id is not None
         poll_interval = 0.5
-        try:
-            while task.state in (TaskState.PENDING, TaskState.RUNNING):
-                try:
-                    info = await daemon_client.get_job(task.job_id)
-                except DaemonError:
-                    logger.debug("daemon poll failed for %s; will retry", task.job_id)
-                    await asyncio.sleep(poll_interval)
-                    continue
-
-                # Resolve / learn the stdout path lazily (daemon sets it once
-                # the job is launched). Persisting it lets us tail even if a
-                # later poll transiently fails.
-                stdout_path = info.get("stdout_path")
-                if stdout_path:
-                    task.stdout_path = stdout_path
-
-                # Map daemon state → TaskState. queued → PENDING, running →
-                # RUNNING; terminal states break the loop after a final drain.
-                dstate = info.get("state")
-                if dstate == "running" and task.state == TaskState.PENDING:
-                    task.state = TaskState.RUNNING
-                    task.pid = info.get("pid")
-                elif dstate in ("done", "error", "stopped"):
-                    # Drain any final stdout before signaling done.
-                    await self._drain_stdout(task)
-                    await self._finalize_from_daemon(task, info)
-                    return
-
-                # Tail new stdout bytes each tick (no-op until path is known).
-                await self._drain_stdout(task)
+        while task.state in (TaskState.PENDING, TaskState.RUNNING):
+            try:
+                info = await daemon_client.get_job(task.job_id)
+            except asyncio.CancelledError:
+                raise
+            except DaemonError:
+                logger.debug("daemon poll failed for %s; will retry", task.job_id)
                 await asyncio.sleep(poll_interval)
+                continue
+            except Exception:
+                logger.exception("Unexpected daemon poll error for %s", task.job_id)
+                await asyncio.sleep(poll_interval)
+                continue
+
+            stdout_path = info.get("stdout_path")
+            if stdout_path:
+                task.stdout_path = stdout_path
+
+            dstate = info.get("state")
+            if dstate == "running":
+                task.state = TaskState.RUNNING
+                task.pid = info.get("pid")
+            elif dstate == "queued":
+                task.state = TaskState.PENDING
+            elif dstate in ("done", "error", "stopped"):
+                await self._safe_drain_stdout(task)
+                await self._finalize_from_daemon(task, info)
+                return
+
+            await self._safe_drain_stdout(task)
+            await asyncio.sleep(poll_interval)
+
+    async def _safe_drain_stdout(self, task: Task) -> None:
+        """Keep telemetry failures from changing daemon-authoritative state."""
+        try:
+            await self._drain_stdout(task)
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Error polling daemon job %s", task.job_id)
-            task.state = TaskState.FAILED
-            await self._notify_subscribers(
-                task, {"type": "done", "exit_code": -1, "state": "failed"}
-            )
+            logger.exception("Task telemetry failed for daemon job %s", task.job_id)
 
     async def _finalize_from_daemon(self, task: Task, info: dict) -> None:
         """Map a terminal daemon job record onto the Task + emit ``done``."""
@@ -646,37 +780,17 @@ class TaskService:
         # the daemon to launch the subprocess before tailing — otherwise
         # the ``while state == RUNNING`` below exits on the first poll
         # and the dashboard never sees any step events.
-        for _ in range(120):
-            if task.state == TaskState.RUNNING:
-                break
-            if task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
-                return
+        while task.state == TaskState.PENDING:
             await asyncio.sleep(0.5)
-        else:
-            if task.state != TaskState.RUNNING:
-                logger.debug(
-                    "task %s never reached RUNNING; JSONL watcher exiting",
-                    task.id,
-                )
-                return
+        if task.state != TaskState.RUNNING:
+            return
 
         # Wait for the file to appear (training subprocess creates it on
-        # first ``run_start``).  Give up after 5 minutes — the first
-        # torch.compile / model-load trace on a long-running job can
-        # easily take that long before the trainer writes its first
-        # event, and a too-short timeout silently strands the
-        # dashboard with no progress info for the rest of the run.
-        for _ in range(600):
-            if task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
-                return
-            if os.path.isfile(jsonl_path):
-                break
+        # first ``run_start``). Keep waiting for as long as the daemon says the
+        # job is running; model load/compile time has no reliable upper bound.
+        while task.state == TaskState.RUNNING and not os.path.isfile(jsonl_path):
             await asyncio.sleep(0.5)
-        else:
-            logger.debug(
-                "progress JSONL not found after 5 min, skipping watcher: %s",
-                jsonl_path,
-            )
+        if task.state != TaskState.RUNNING:
             return
 
         logger.info("Tailing progress JSONL: %s", jsonl_path)
