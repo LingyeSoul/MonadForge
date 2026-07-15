@@ -12,6 +12,8 @@ _WEBUI_COMMAND_NAMES = frozenset(
     {
         "lora",
         "lora-gui",
+        "staged-train",
+        "staged-preprocess",
         "turbo",
         "easycontrol",
         "exp-spd",
@@ -71,6 +73,7 @@ TRAINING_DASHBOARD_COMMANDS = frozenset(
     {
         "lora",
         "lora-gui",
+        "staged-train",
         "turbo",
         "easycontrol",
         "exp-spd",

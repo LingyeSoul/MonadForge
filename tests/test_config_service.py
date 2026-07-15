@@ -27,6 +27,51 @@ from webui.services import config_service
 from webui.services.config_service import _SELECT_OPTIONS, validate_config
 
 
+def test_sample_decode_inline_is_editable_and_round_trips(monkeypatch, tmp_path):
+    configs = tmp_path / "configs"
+    methods = configs / "gui-methods"
+    overlays = configs / "custom" / "variants"
+    methods.mkdir(parents=True)
+    overlays.mkdir(parents=True)
+    (configs / "base.toml").write_text(
+        '[preview]\nsample_decode_inline = "auto"\n', encoding="utf-8"
+    )
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (methods / "lora.toml").write_text("network_dim = 16\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_service, "CONFIGS_DIR", configs)
+    monkeypatch.setattr(config_service, "GUI_METHODS_DIR", methods)
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_VARIANTS_DIR", overlays)
+
+    result = config_service.build_merged_config("lora", "default", lang="en")
+    field = next(f for f in result["fields"] if f["key"] == "sample_decode_inline")
+    assert field["value"] == "auto"
+    assert field["origin"] == "base"
+    assert field["field_type"] == "select"
+    assert field["group"] == "Preview Sampling"
+    assert field["read_only"] is False
+    assert field["options"] == ["auto", "true", "false"]
+
+    config_service.save_variant_config("lora", {"sample_decode_inline": "false"})
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert saved["sample_decode_inline"] is False
+
+    merged, origin = config_service.merged_gui_variant_preset("lora", "default")
+    assert merged["sample_decode_inline"] is False
+    assert origin["sample_decode_inline"] == "method"
+
+    config_service.save_variant_config("lora", {"sample_decode_inline": "auto"})
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert "sample_decode_inline" not in saved
+
+
+def test_sample_decode_inline_validation_rejects_unknown_mode():
+    assert validate_config({"sample_decode_inline": "sometimes"}) == [
+        "sample_decode_inline must be auto, true, or false"
+    ]
+
+
 def test_create_custom_preset_strips_neutral_resume_defaults(monkeypatch, tmp_path):
     """A fresh WebUI preset must not turn an empty warm-start into a path."""
     configs = tmp_path / "configs"

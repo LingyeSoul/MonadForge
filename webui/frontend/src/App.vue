@@ -167,6 +167,7 @@ const navItems = [
   { icon: 'mdi-cog-transfer-outline', titleKey: 'navConfig', to: '/config' },
   { icon: 'mdi-image-multiple-outline', titleKey: 'navDataset', to: '/dataset' },
   { icon: 'mdi-cogs', titleKey: 'navPreprocess', to: '/preprocess' },
+  { icon: 'mdi-layers-triple-outline', titleKey: 'navStagedResolution', to: '/staged-resolution' },
   { icon: 'mdi-puzzle-outline', titleKey: 'navAdapter', to: '/adapter' },
   { icon: 'mdi-flask', titleKey: 'navDistill', to: '/distill' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },

@@ -78,6 +78,7 @@ repa_target_dog = false
 sample_every_n_epochs = 2
 sample_prompts = "configs/custom/sample_prompts.txt"
 sample_sampler = "euler"
+sample_decode_inline = "auto"
 sample_guidance_scale = 3.5
 sample_flow_shift = 1.0
 sample_image_size = [1024, 1024]

@@ -117,6 +117,7 @@ _METHOD_ORDER = (
 
 _ATTN_MODES = ["flash", "torch", "mem_efficient", "sageattn", "flex", "xformers"]
 _SAMPLER_CHOICES = ["euler", "er_sde"]
+_SAMPLE_DECODE_INLINE_CHOICES = ["auto", "true", "false"]
 
 # Curated to exactly what library/training/optimizers.py::get_optimizer and
 # library/training/schedulers.py::get_scheduler_fix accept. Keep in sync with
@@ -167,6 +168,7 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
         "flux_shift",
     ],
     "sample_sampler": ["euler", "er_sde"],
+    "sample_decode_inline": _SAMPLE_DECODE_INLINE_CHOICES,
 }
 
 _GROUPS = {
@@ -265,6 +267,7 @@ _GROUPS = {
         "sample_at_first",
         "sample_prompts",
         "sample_sampler",
+        "sample_decode_inline",
         "sample_guidance_scale",
         "sample_flow_shift",
         "sample_image_size",
@@ -279,6 +282,10 @@ _GROUPS = {
 _K2G = {k: g for g, ks in _GROUPS.items() for k in ks}
 _SKIP = {"base_config", "dataset_config", "general", "datasets", "variant"}
 _VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats", "sample_ratio"}
+# Most inherited fields are intentionally read-only in the WebUI. Preview decode
+# timing is safe to override per variant, and save_variant_config persists that
+# choice in the user overlay without touching base.toml.
+_EDITABLE_INHERITED_KEYS = {"sample_decode_inline"}
 
 # Resume & Warm-start defaults. These keys are NOT in base.toml (which is
 # overwritten by `make update`), so merged_gui_variant_preset injects them with
@@ -775,7 +782,9 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
         if custom_preset:
             read_only = False
         else:
-            read_only = orig in ("base", "preset")
+            read_only = (
+                orig in ("base", "preset") and key not in _EDITABLE_INHERITED_KEYS
+            )
         fields.append(
             {
                 "key": key,
@@ -1040,6 +1049,14 @@ def validate_config(data: dict) -> list[str]:
         sr = data["sample_ratio"]
         if isinstance(sr, (int, float)) and not (0.0 < sr <= 1.0):
             errors.append("sample_ratio must be between 0.0 (exclusive) and 1.0 (inclusive)")
+    if "sample_decode_inline" in data:
+        value = data["sample_decode_inline"]
+        valid = isinstance(value, bool) or (
+            isinstance(value, str)
+            and value.strip().lower() in _SAMPLE_DECODE_INLINE_CHOICES
+        )
+        if not valid:
+            errors.append("sample_decode_inline must be auto, true, or false")
     return errors
 
 
@@ -1112,6 +1129,15 @@ def save_variant_config(variant: str, data: dict) -> None:
     # flag isn't forwarded to train.py as a literal empty/false arg.
     for key, value in data.items():
         if key in _SKIP:
+            continue
+        if key == "sample_decode_inline":
+            normalized = str(value).strip().lower()
+            if normalized not in _SAMPLE_DECODE_INLINE_CHOICES:
+                raise ValueError("sample_decode_inline must be auto, true, or false")
+            if normalized == "auto":
+                current.pop(key, None)
+            else:
+                current[key] = normalized == "true"
             continue
         if _is_neutral_resume_value(key, value):
             current.pop(key, None)

@@ -20,6 +20,11 @@ const router = createRouter({
       component: () => import('./views/PreprocessView.vue'),
     },
     {
+      path: '/staged-resolution',
+      name: 'staged-resolution',
+      component: () => import('./views/StagedResolutionView.vue'),
+    },
+    {
       path: '/adapter',
       name: 'adapter',
       component: () => import('./views/AdapterView.vue'),

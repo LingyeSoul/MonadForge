@@ -64,6 +64,7 @@ downloads = _LazyModule("scripts.tasks.downloads")
 inference = _LazyModule("scripts.tasks.inference")
 masking = _LazyModule("scripts.tasks.masking")
 preprocess = _LazyModule("scripts.tasks.preprocess")
+staged_resolution = _LazyModule("scripts.tasks.staged_resolution")
 tagger = _LazyModule("scripts.tasks.tagger")
 training = _LazyModule("scripts.tasks.training")
 utilities = _LazyModule("scripts.tasks.utilities")
@@ -80,6 +81,11 @@ COMMANDS = {
         training.cmd_lora_gui,
         "Train from a self-contained configs/gui-methods/<variant>.toml "
         "(variant from GUI_PRESETS env or 1st positional; e.g. tlora, hydralora).",
+    ),
+    "staged-train": (
+        staged_resolution.cmd_staged_train,
+        "Train a saved WebUI staged-resolution profile with one continuous "
+        "model/optimizer/scheduler state.",
     ),
     "turbo": (
         training.cmd_turbo,
@@ -169,6 +175,11 @@ COMMANDS = {
         preprocess.cmd_preprocess_config,
         "Preprocess the dirs named in a --dataset_config TOML (resize --src "
         "→ image_dir, then VAE + TE caches → cache_dir). Used by the trainer node.",
+    ),
+    "staged-preprocess": (
+        staged_resolution.cmd_staged_preprocess,
+        "Preprocess the source images once for every tier in a saved WebUI "
+        "staged-resolution profile.",
     ),
     "preprocess-resize": (
         preprocess.cmd_preprocess_resize,

@@ -549,6 +549,7 @@ def cmd_preprocess_vae(extra):
             "--chunk_size",
             "64",
             "--recursive",
+            *pp_args,
             *extra,
         ]
     )
@@ -561,9 +562,17 @@ def cmd_preprocess_cond_resize(extra):
             PY,
             "scripts/preprocess/resize_images.py",
             "--src",
-            _path("conditioning_data_dir", os.environ.get("CONDITIONING_DATA_DIR", "conditioning_data")),
+            _path(
+                "conditioning_data_dir",
+                os.environ.get("CONDITIONING_DATA_DIR", "conditioning_data"),
+            ),
             "--dst",
-            _path("conditioning_resized_dir", os.environ.get("CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized")),
+            _path(
+                "conditioning_resized_dir",
+                os.environ.get(
+                    "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
+                ),
+            ),
             "--no_copy_captions",
             "--recursive",
             *extra,
@@ -573,12 +582,18 @@ def cmd_preprocess_cond_resize(extra):
 
 def cmd_preprocess_cond_vae(extra):
     """Cache VAE latents for conditioning images."""
+    pp_args = _preprocess_path_pattern_args(extra)
     run(
         [
             PY,
             "scripts/preprocess/cache_latents.py",
             "--dir",
-            _path("conditioning_resized_dir", os.environ.get("CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized")),
+            _path(
+                "conditioning_resized_dir",
+                os.environ.get(
+                    "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
+                ),
+            ),
             "--cache_dir",
             _path("lora_cache_dir", "post_image_dataset/lora"),
             "--vae",
@@ -615,6 +630,21 @@ def _variant_settings() -> tuple[str, str, str]:
         "caption_tag_randomize_rate", "0.0"
     )
     return str(shuffle), str(dropout), str(randomize)
+
+
+def caption_variant_args(
+    settings: tuple[str, str, str] | None = None,
+) -> list[str]:
+    """Canonical caption-augmentation CLI arguments for TE preprocessing."""
+    shuffle, dropout, randomize = settings or _variant_settings()
+    return [
+        "--caption_shuffle_variants",
+        shuffle,
+        "--caption_tag_dropout_rate",
+        dropout,
+        "--caption_tag_randomize_rate",
+        randomize,
+    ]
 
 
 def _float_or_zero(value: str) -> float:
@@ -657,17 +687,13 @@ def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = No
     else:
         cmd.append("--no_correct")
     if n_variants > 0:
-        cmd += [
-            "--caption_shuffle_variants",
-            shuffle,
-            "--caption_tag_dropout_rate",
-            dropout,
-            "--caption_tag_randomize_rate",
-            randomize,
-        ]
+        cmd += caption_variant_args((shuffle, dropout, randomize))
         # Identity-randomize needs the two tokenizers to build the erasure pool.
         if _float_or_zero(randomize) > 0.0 and n_variants >= 2:
-            cmd += ["--qwen3", _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors")]
+            cmd += [
+                "--qwen3",
+                _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
+            ]
     run(cmd)
 
 
@@ -710,17 +736,15 @@ def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
             "--qwen3",
             _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
             "--dit",
-            _path("pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
+            _path(
+                "pretrained_model_name_or_path",
+                "models/diffusion_models/anima-base-v1.0.safetensors",
+            ),
             # Fallback only — when a {stem}.variants.txt sidecar is present (the
             # caption step wrote it) the encoder uses it verbatim and these are
             # ignored; they still drive in-process generation for any image that
             # reaches TE without a sidecar.
-            "--caption_shuffle_variants",
-            shuffle,
-            "--caption_tag_dropout_rate",
-            dropout,
-            "--caption_tag_randomize_rate",
-            randomize,
+            *caption_variant_args((shuffle, dropout, randomize)),
             "--recursive",
             *mp_args,
             *pp_args,

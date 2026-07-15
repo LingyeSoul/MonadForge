@@ -686,6 +686,7 @@ _TRAIN_COMMANDS = frozenset(
     {
         "lora",
         "lora-gui",
+        "staged-train",
         "easycontrol",
         "exp-chimera",
         "exp-soft-tokens",

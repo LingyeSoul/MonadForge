@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -23,6 +23,7 @@ from webui.api import merge as merge_api
 from webui.api import preprocess as preprocess_api
 from webui.api import preview as preview_api
 from webui.api import system as system_api
+from webui.api import staged_resolution as staged_resolution_api
 from webui.api import tagger as tagger_api
 from webui.api import tasks as tasks_api
 from webui.api import ws as ws_api
@@ -38,6 +39,7 @@ _ALLOWED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
 ]
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 @asynccontextmanager
@@ -76,6 +78,22 @@ def create_app(dev: bool = False) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def enforce_same_origin(request: Request, call_next):
+        if request.method.upper() in _UNSAFE_METHODS:
+            fetch_site = request.headers.get("sec-fetch-site", "").lower()
+            origin = request.headers.get("origin")
+            if fetch_site == "cross-site" or (
+                origin is not None and origin not in _ALLOWED_ORIGINS
+            ):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "detail": "Cross-origin state-changing requests are forbidden"
+                    },
+                )
+        return await call_next(request)
+
     # API routers
     app.include_router(config_api.router, prefix="/api/config")
     app.include_router(distill_api.router, prefix="/api/distill")
@@ -87,6 +105,7 @@ def create_app(dev: bool = False) -> FastAPI:
     app.include_router(preprocess_api.router, prefix="/api/preprocess")
     app.include_router(preview_api.router, prefix="/api/preview")
     app.include_router(system_api.router, prefix="/api/system")
+    app.include_router(staged_resolution_api.router, prefix="/api/staged-resolution")
     app.include_router(tagger_api.router, prefix="/api/tagger")
     app.include_router(tasks_api.router, prefix="/api/tasks")
     app.include_router(ws_api.router)
