@@ -13,12 +13,15 @@ This is the ``Popen``-flavored sibling of ``gui/process.py`` (which is
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
 import psutil
+
+from library.runtime.compat import prepare_python_child_env
 
 
 def create_time(pid: int) -> Optional[float]:
@@ -80,13 +83,15 @@ def spawn_detached(
     launch under ``pythonw.exe`` instead (see ``client.venv_python``).
     """
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    child_env = dict(os.environ if env is None else env)
+    prepare_python_child_env(child_env)
     log = open(stdout_path, "ab", buffering=0)
     kwargs: dict = {
         "cwd": str(cwd),
         "stdout": log,
         "stderr": subprocess.STDOUT,
         "stdin": subprocess.DEVNULL,
-        "env": env,
+        "env": child_env,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW

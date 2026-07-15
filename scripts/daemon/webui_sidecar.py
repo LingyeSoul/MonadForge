@@ -68,13 +68,13 @@ class WebUISidecar:
         return [py, "-m", "webui", "--host", self._host, "--port", str(self._port)]
 
     def _env(self) -> dict:
+        from library.runtime.compat import prepare_python_child_env
+
         env = os.environ.copy()
         # Tell the child it was launched by the daemon so it doesn't try to
         # re-spawn one (which would race / no-op).
         env["ANIMA_DAEMON_HOST_WEBUI"] = "1"
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
+        prepare_python_child_env(env)
         return env
 
     def _spawn(self) -> None:

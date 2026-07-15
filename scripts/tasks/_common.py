@@ -284,14 +284,11 @@ def run(cmd: list[str], **kwargs):
     venv_bin = str(Path(PY).parent)
     if venv_bin not in env.get("PATH", "").split(os.pathsep):
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
-    # Un-buffer children's stdio so the GUI sees tqdm/training output live
-    # instead of in pipe-buffered chunks. Inherited by grandchildren too.
-    env.setdefault("PYTHONUNBUFFERED", "1")
-    # Force UTF-8 stdio regardless of console locale: on non-UTF-8 consoles
-    # (e.g. Korean Windows cp949) a child printing an em-dash crashes with
-    # UnicodeEncodeError. PYTHONIOENCODING is the belt-and-suspenders fallback.
-    env.setdefault("PYTHONUTF8", "1")
-    env.setdefault("PYTHONIOENCODING", "utf-8")
+    # Keep Python stdio UTF-8 without making nested native subprocesses decode
+    # their local-codepage output as UTF-8 on Windows.
+    from library.runtime.compat import prepare_python_child_env
+
+    prepare_python_child_env(env)
     cmd = list(cmd)
     if cmd and not Path(cmd[0]).is_absolute():
         resolved = shutil.which(cmd[0], path=env["PATH"])
@@ -752,7 +749,10 @@ INFERENCE_BASE = [
     PY,
     "inference.py",
     "--dit",
-    _path("pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
+    _path(
+        "pretrained_model_name_or_path",
+        "models/diffusion_models/anima-base-v1.0.safetensors",
+    ),
     "--text_encoder",
     _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
     "--vae",

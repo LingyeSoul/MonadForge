@@ -769,14 +769,10 @@ class JobManager:
 
     def _build_cmd(self, job: Job) -> tuple[list[str], dict]:
         from .client import venv_python
+        from library.runtime.compat import prepare_python_child_env
 
         env = os.environ.copy()
-        env.setdefault("PYTHONUNBUFFERED", "1")
-        # Force UTF-8 stdio in the job tree so a non-ASCII char (em-dash, etc.)
-        # never crashes a child on a non-UTF-8 console locale (e.g. Korean
-        # Windows cp949 → UnicodeEncodeError). Inherited by grandchildren.
-        env.setdefault("PYTHONUTF8", "1")
-        env.setdefault("PYTHONIOENCODING", "utf-8")
+        prepare_python_child_env(env)
         # tqdm redraws ride "\r"; at 0.1s cadence they drown stdout.log's real
         # lines (warnings/tracebacks). 10s is plenty — the GUI tracker parses
         # only the latest line, and training has its own progress.jsonl.
