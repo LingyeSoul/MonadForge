@@ -2,6 +2,7 @@
 
 import importlib
 import argparse
+import json
 import math
 import os
 import typing
@@ -106,6 +107,11 @@ from library.config.cli_args import (
     verify_training_args,
 )
 from library.training.loop import build_loop_state, run_training_loop
+from library.training.stage_schedule import (
+    prepare_stage_runtime,
+    stage_epoch_upper_bound,
+)
+from library.training.staged_resolution import configure_staged_resolution
 from library.training.sampling_config import normalize_sample_args
 from library.training.log_dispatch import (
     dispatch_logs,
@@ -581,9 +587,9 @@ class AnimaTrainer:
             attn_mode = args.attn_mode
 
         v100_flash_stability = _resolve_v100_flash_stability(args)
-        debug_finite_checks = bool(getattr(args, "debug_finite_checks", False)) or _env_flag(
-            "ANIMA_DEBUG_FINITE"
-        )
+        debug_finite_checks = bool(
+            getattr(args, "debug_finite_checks", False)
+        ) or _env_flag("ANIMA_DEBUG_FINITE")
 
         if attn_mode == "flash4":
             # Flash Attention 4 (flash-attention-sm120) is not supported yet.
@@ -1931,8 +1937,23 @@ class AnimaTrainer:
         if val_dataset_group is not None:
             val_dataset_group.set_current_strategies()
 
+        stage_plan = prepare_stage_runtime(args, train_dataset_group)
+        schedule_on = stage_plan is not None
+        if stage_plan is not None:
+            if getattr(args, "max_train_epochs", None) is not None:
+                logger.warning(
+                    "stage_schedule with max_train_epochs derives max_train_steps "
+                    "from the first stage length; set max_train_steps explicitly "
+                    "for a stable percentage budget"
+                )
+
         n_workers = min(args.max_data_loader_n_workers, os.cpu_count())
         persistent_workers = args.persistent_data_loader_workers and n_workers > 0
+        if schedule_on and persistent_workers:
+            logger.info(
+                "disabling persistent DataLoader workers for stage_schedule hot switches"
+            )
+            persistent_workers = False
 
         dataloader_kwargs = {
             "batch_size": 1,
@@ -1941,13 +1962,19 @@ class AnimaTrainer:
             "persistent_workers": persistent_workers,
             "pin_memory": args.dataloader_pin_memory,
         }
+        train_dataloader_kwargs = dict(dataloader_kwargs)
+        if stage_plan is not None:
+            stage_plan.loader_generator = torch.Generator()
+            stage_plan.loader_generator.manual_seed(int(args.seed or 0))
+            train_dataloader_kwargs["generator"] = stage_plan.loader_generator
         if n_workers > 0:
             dataloader_kwargs["prefetch_factor"] = args.dataloader_prefetch_factor
+            train_dataloader_kwargs["prefetch_factor"] = args.dataloader_prefetch_factor
 
         train_dataloader = torch.utils.data.DataLoader(
             train_dataset_group,
             shuffle=True,
-            **dataloader_kwargs,
+            **train_dataloader_kwargs,
         )
 
         val_dataloader = torch.utils.data.DataLoader(
@@ -1969,6 +1996,9 @@ class AnimaTrainer:
 
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
+        if stage_plan is not None:
+            stage_plan.dataloader_kwargs = dict(train_dataloader_kwargs)
+
         # lr scheduler
         lr_scheduler = get_scheduler_fix(args, optimizer, accelerator.num_processes)
 
@@ -1983,6 +2013,7 @@ class AnimaTrainer:
             train_dataloader=train_dataloader,
             val_dataloader=val_dataloader,
             lr_scheduler=lr_scheduler,
+            stage_plan=stage_plan,
         )
 
     def _prepare_with_accelerator(
@@ -2097,6 +2128,7 @@ class AnimaTrainer:
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
+        configure_staged_resolution(args)
         normalize_sample_args(args)
         verify_training_args(args)
         train_util.prepare_dataset_args(args, True)
@@ -2391,6 +2423,7 @@ class AnimaTrainer:
         train_dataloader = opt.train_dataloader
         val_dataloader = opt.val_dataloader
         lr_scheduler = opt.lr_scheduler
+        stage_plan = opt.stage_plan
 
         acc = self._prepare_with_accelerator(
             args,
@@ -2425,6 +2458,15 @@ class AnimaTrainer:
             len(train_dataloader) / args.gradient_accumulation_steps
         )
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+        if stage_plan is not None:
+            stage_budget = stage_epoch_upper_bound(
+                stage_plan.stages,
+                args.max_train_steps,
+                stage_plan.target_batch_counts,
+                num_processes=accelerator.num_processes,
+                gradient_accumulation_steps=args.gradient_accumulation_steps,
+            )
+            num_train_epochs = max(num_train_epochs, stage_budget)
 
         # Structured progress sink (Phase 0): a JSONL event stream next to the
         # checkpoint that the GUI / daemon can tail instead of regex-parsing
@@ -2480,11 +2522,19 @@ class AnimaTrainer:
             optimizer_name=optimizer_name,
             optimizer_args=optimizer_args,
             model_version=model_version,
-            num_train_images=train_dataset_group.num_train_images,
+            num_train_images=(
+                stage_plan.full_num_train_images
+                if stage_plan is not None
+                else train_dataset_group.num_train_images
+            ),
             num_val_images=val_dataset_group.num_train_images
             if val_dataset_group is not None
             else 0,
-            num_reg_images=train_dataset_group.num_reg_images,
+            num_reg_images=(
+                stage_plan.full_num_reg_images
+                if stage_plan is not None
+                else train_dataset_group.num_reg_images
+            ),
             num_batches_per_epoch=len(train_dataloader),
             num_train_epochs=num_train_epochs,
         )
@@ -2496,7 +2546,13 @@ class AnimaTrainer:
             use_user_config=use_user_config,
             use_dreambooth_method=use_dreambooth_method,
             total_batch_size=total_batch_size,
+            dataset_counts=(
+                list(stage_plan.full_dataset_counts) if stage_plan is not None else None
+            ),
         )
+        if stage_plan is not None:
+            metadata["ss_stage_schedule"] = json.dumps(stage_plan.as_dicts())
+            metadata["ss_stage_index"] = str(stage_plan.initial_index)
         add_model_hash_metadata(metadata, args)
         metadata, minimum_metadata = finalize_metadata(
             metadata, net_kwargs=net_kwargs if args.network_args else None
@@ -2525,6 +2581,7 @@ class AnimaTrainer:
         # resume
         resume_from_local_or_hf_if_specified(accelerator, args)
         steps_from_state = saver.steps_from_state
+        loaded_train_state = saver.loaded_train_state
 
         # calculate steps to skip when resuming or starting from a specific step
         initial_step = 0
@@ -2552,7 +2609,49 @@ class AnimaTrainer:
             )
 
         epoch_to_start = 0
-        if initial_step > 0:
+        initial_global_step = None
+        stage_batch_cursor = 0
+        stage_loader_generator_state = None
+        if stage_plan is not None and initial_step > 0:
+            initial_global_step = initial_step
+            expected_stage_index = stage_plan.index_for_step(
+                initial_step, args.max_train_steps
+            )
+            saved_stage_index = loaded_train_state.get("stage_index")
+            if (
+                saved_stage_index is not None
+                and int(saved_stage_index) != expected_stage_index
+            ):
+                raise ValueError(
+                    "resume stage does not match the active stage_schedule: "
+                    f"state={saved_stage_index}, expected={expected_stage_index}"
+                )
+            if (
+                args.skip_until_initial_step
+                and "stage_batch_cursor" in loaded_train_state
+            ):
+                epoch_to_start = max(
+                    0, int(loaded_train_state.get("stage_outer_epoch", 0))
+                )
+                stage_batch_cursor = max(
+                    0, int(loaded_train_state.get("stage_batch_cursor", 0))
+                )
+                raw_generator_state = loaded_train_state.get(
+                    "stage_loader_generator_state"
+                )
+                if raw_generator_state is not None:
+                    stage_loader_generator_state = torch.tensor(
+                        raw_generator_state, dtype=torch.uint8
+                    )
+                    stage_plan.loader_generator.set_state(stage_loader_generator_state)
+                initial_step = stage_batch_cursor
+            else:
+                logger.warning(
+                    "stage_schedule resume state has no stage-local cursor; "
+                    "continuing from the start of the selected stage loader"
+                )
+                initial_step = 0
+        elif initial_step > 0:
             if args.skip_until_initial_step:
                 if not args.resume:
                     logger.info(
@@ -2570,11 +2669,10 @@ class AnimaTrainer:
                 )
                 initial_step = 0  # do not skip
 
-        # Drop the train dataset-group local before loop entry — the
-        # dataloader already holds the data it needs. Keep val_dataset_group
-        # alive: CMMD validation enumerates its image_data to pair held-out
-        # references with generated samples.
-        del train_dataset_group
+        # Stage schedules keep the mutable dataset group so the loop can rebuild
+        # membership and its DataLoader. Ordinary runs drop the local as before.
+        if stage_plan is None:
+            del train_dataset_group
 
         loop_state = build_loop_state(
             self,
@@ -2609,7 +2707,15 @@ class AnimaTrainer:
             epoch_to_start=epoch_to_start,
             initial_step=initial_step,
             metadata=metadata,
+            stage_plan=stage_plan,
+            initial_global_step=initial_global_step,
+            stage_batch_cursor=stage_batch_cursor,
+            stage_loader_generator_state=stage_loader_generator_state,
         )
+        loop_state.stage_index = (
+            stage_plan.initial_index if stage_plan is not None else -1
+        )
+        saver.set_runtime_state_provider(loop_state.checkpoint_runtime_state)
 
         # run_scope emits the matching run_end (ok / stopped / error) on exit;
         # run_start already fired when the sink was constructed above.
@@ -2869,28 +2975,6 @@ if __name__ == "__main__":
             or getattr(args, "cond_diff_loss", False)
         )
     )
-
-    if getattr(args, "staged_resolution", False):
-        from library.training.staged_resolution import build_staged_plan, run_staged_training
-
-        ratios = None
-        if getattr(args, "staged_resolution_ratios", None):
-            ratios = [int(x.strip()) for x in args.staged_resolution_ratios.split(",")]
-        base_sides = None
-        if getattr(args, "staged_resolution_base_sides", None):
-            base_sides = [int(x.strip()) for x in args.staged_resolution_base_sides.split(",")]
-
-        plan = build_staged_plan(
-            target_res=(args.target_res[0] if isinstance(args.target_res, list) else args.target_res) or 1024,
-            base_batch_size=args.train_batch_size,
-            total_epochs=args.max_train_epochs or 100,
-            save_every=args.save_every_n_epochs,
-            sample_every=args.sample_every_n_epochs,
-            ratios=ratios,
-            base_sides=base_sides,
-        )
-        exit_code = run_staged_training(plan, sys.argv[1:])
-        sys.exit(exit_code)
 
     trainer = AnimaTrainer()
     trainer.train(args)

@@ -99,8 +99,10 @@ caption_extension = ".txt"
 # --- lora-rescripts integration (commented out, activate as needed) ---
 # optimizer_type = "AdamW8bitKahan"   # Kahan-compensated 8-bit AdamW
 # optimizer_args = ["stabilize=true"] # Cap lr by rms(grad²/exp_avg_sq)
-# staged_resolution = true            # Curriculum: 512→768→1024
+# staged_resolution = true            # Deprecated shorthand; requires 3 dataset rows
 # staged_resolution_ratios = "20,30,50"
+# staged_resolution_base_sides = "512,768,1024" # validates each row's cached tier
+# See docs/guidelines/staged-resolution-training.md for the required row layout.
 # adaptive_noise_offset = true        # Latent-statistics-based noise offset
 # contrastive_flow_matching = true    # Contrastive loss on RF objective
 # cfm_lambda = 0.05

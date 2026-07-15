@@ -313,22 +313,23 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--staged_resolution",
         action="store_true",
-        help="Enable staged mixed-resolution curriculum training. "
-        "Launches sequential training phases at increasing resolutions.",
+        help="Deprecated shorthand for an in-process three-row dataset curriculum. "
+        "Requires one fully preprocessed [[datasets]] row per stage; model, optimizer, "
+        "scheduler, and global step stay continuous.",
     )
     parser.add_argument(
         "--staged_resolution_ratios",
         type=str,
         default=None,
         help="Comma-separated percentage ratios for each stage (e.g. '20,30,50'). "
-        "Must sum to 100. Default: 20,30,50.",
+        "Values must be positive and sum to 100. Default: 20,30,50.",
     )
     parser.add_argument(
         "--staged_resolution_base_sides",
         type=str,
         default=None,
-        help="Comma-separated resolution sides for each stage (e.g. '512,768,1024'). "
-        "Must match the number of ratios. Default: 512,768,1024.",
+        help="Comma-separated expected resolution tier for each dataset row "
+        "(e.g. '512,768,1024'). Must match the ratios. Default: 512,768,1024.",
     )
 
     parser.add_argument(

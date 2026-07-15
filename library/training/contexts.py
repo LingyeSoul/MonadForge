@@ -104,6 +104,7 @@ class OptimizerBundle:
     train_dataloader: Any
     val_dataloader: Any
     lr_scheduler: Any
+    stage_plan: Any = None
 
 
 @dataclass(frozen=True)

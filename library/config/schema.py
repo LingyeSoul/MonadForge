@@ -213,6 +213,36 @@ def populate_schema(
         ),
     )
 
+    # Generic percent-based dataset curriculum. These values are TOML-only;
+    # ``--staged_resolution`` remains the CLI shorthand for the common three-row
+    # 512/768/1024 schedule.
+    CONFIG_SCHEMA.setdefault(
+        "stage_schedule_enabled",
+        ConfigKey(
+            name="stage_schedule_enabled",
+            type="bool",
+            default=False,
+            help=(
+                "Switch active dataset rows by percent of max_train_steps. "
+                "Every row must be fully preprocessed before training."
+            ),
+            source="manual",
+        ),
+    )
+    CONFIG_SCHEMA.setdefault(
+        "stage_schedule",
+        ConfigKey(
+            name="stage_schedule",
+            type="list",
+            default=None,
+            help=(
+                "List of {name, subset_index, start_pct, end_pct} curriculum "
+                "stages covering 0..1 without gaps."
+            ),
+            source="manual",
+        ),
+    )
+
     # Test inference defaults — read by WebUI ConfigEditor "Test" button and
     # by scripts/tasks/inference.py.  Not argparse args on train.py; the
     # WebUI reads them via configStore.getFieldValue().

@@ -260,6 +260,14 @@ class CheckpointSaver:
         # Set by the load_state pre-hook when resuming. Read by train() to
         # decide initial_step.
         self.steps_from_state: Optional[int] = None
+        self.loaded_train_state: dict[str, Any] = {}
+        self._runtime_state_provider: Optional[Callable[[], dict[str, Any]]] = None
+
+    def set_runtime_state_provider(
+        self, provider: Optional[Callable[[], dict[str, Any]]]
+    ) -> None:
+        """Attach loop-owned fields that must ride in ``train_state.json``."""
+        self._runtime_state_provider = provider
 
     def register_hooks(self, network: Any) -> None:
         """Install accelerator save/load pre-hooks that persist epoch/step
@@ -283,14 +291,14 @@ class CheckpointSaver:
                 f"save train state to {train_state_file} at epoch "
                 f"{self.current_epoch.value} step {self.current_step.value + 1}"
             )
+            state = {
+                "current_epoch": self.current_epoch.value,
+                "current_step": self.current_step.value + 1,
+            }
+            if self._runtime_state_provider is not None:
+                state.update(self._runtime_state_provider())
             with open(train_state_file, "w", encoding="utf-8") as f:
-                json.dump(
-                    {
-                        "current_epoch": self.current_epoch.value,
-                        "current_step": self.current_step.value + 1,
-                    },
-                    f,
-                )
+                json.dump(state, f)
 
         def load_model_hook(models, input_dir):
             remove_indices = []
@@ -304,6 +312,7 @@ class CheckpointSaver:
             if os.path.exists(train_state_file):
                 with open(train_state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                self.loaded_train_state = data
                 self.steps_from_state = data["current_step"]
                 logger.info(f"load train state from {train_state_file}: {data}")
 

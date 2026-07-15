@@ -200,6 +200,7 @@ class BaseDataset(torch.utils.data.Dataset):
 
         self.bucket_manager: BucketManager = None  # not initialized
         self.bucket_info = None  # for metadata
+        self._stage_active = True
 
         self.current_epoch: int = 0
 
@@ -325,6 +326,9 @@ class BaseDataset(torch.utils.data.Dataset):
         self.caching_mode = mode
 
     def set_current_epoch(self, epoch):
+        if not getattr(self, "_stage_active", True):
+            self.current_epoch = epoch
+            return
         if not self.current_epoch == epoch:
             if epoch > self.current_epoch:
                 logger.info(
@@ -687,6 +691,83 @@ class BaseDataset(torch.utils.data.Dataset):
             logger.info(
                 f"  {n_resized} masks needed runtime resize (size != bucket_reso)"
             )
+
+    def snapshot_full_image_data(self, *, force: bool = False) -> None:
+        """Freeze full dataset membership before a curriculum stage filters it."""
+        if not force and getattr(self, "_all_image_data", None) is not None:
+            return
+        self._all_image_data = dict(self.image_data)
+        self._all_image_to_subset = dict(self.image_to_subset)
+
+    def has_full_image_data_snapshot(self) -> bool:
+        return getattr(self, "_all_image_data", None) is not None
+
+    def rebuild_buckets_for_subsets(self, active_subset_indices=None) -> bool:
+        """Filter from the full snapshot and rebuild bucket indices only.
+
+        ``None`` restores all images. This never encodes caches; staged training
+        requires every selected dataset row to be preprocessed before startup.
+        """
+        if not self.has_full_image_data_snapshot():
+            if not self.image_data:
+                return False
+            self.snapshot_full_image_data()
+
+        if active_subset_indices is None:
+            allowed_subsets = None
+        else:
+            allowed_indices = {int(index) for index in active_subset_indices}
+            allowed_subsets = {
+                subset
+                for index, subset in enumerate(self.subsets)
+                if index in allowed_indices
+            }
+            if not allowed_subsets:
+                logger.warning(
+                    "rebuild_buckets_for_subsets: no subsets matched %s",
+                    sorted(allowed_indices),
+                )
+                return False
+
+        source_data = self._all_image_data
+        source_map = self._all_image_to_subset
+        if allowed_subsets is None:
+            filtered = source_data
+            filtered_map = source_map
+        else:
+            filtered = {
+                key: info
+                for key, info in source_data.items()
+                if source_map.get(key) in allowed_subsets
+            }
+            filtered_map = {key: source_map[key] for key in filtered}
+
+        if not filtered:
+            logger.warning("rebuild_buckets_for_subsets: filtered image set is empty")
+            return False
+
+        self.image_data = dict(filtered)
+        self.image_to_subset = dict(filtered_map)
+        self.num_train_images = sum(
+            info.num_repeats
+            for info in filtered.values()
+            if not getattr(info, "is_reg", False)
+        )
+        self.num_reg_images = sum(
+            info.num_repeats
+            for info in filtered.values()
+            if getattr(info, "is_reg", False)
+        )
+
+        self.bucket_manager = None
+        self._warmup_bucket_indices = None
+        self.make_buckets(target_res=getattr(self, "_target_res", None))
+        self._stage_active = len(self) > 0
+        if not self._stage_active:
+            logger.warning(
+                "rebuild_buckets_for_subsets: selected images form no complete batches"
+            )
+        return self._stage_active
 
     def shuffle_buckets(self):
         random.seed(self.seed + self.current_epoch)

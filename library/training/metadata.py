@@ -138,18 +138,25 @@ def _build_subset_metadata(subset) -> dict[str, Any]:
     return meta
 
 
-def _build_dataset_metadata_user_config(datasets) -> tuple[list, dict, dict]:
+def _build_dataset_metadata_user_config(
+    datasets, dataset_counts: Optional[list[tuple[int, int]]] = None
+) -> tuple[list, dict, dict]:
     """Build dataset metadata when using user_config (multiple datasets)."""
     datasets_metadata = []
     tag_frequency: dict = {}
     dataset_dirs_info: dict = {}
 
-    for dataset in datasets:
+    for index, dataset in enumerate(datasets):
+        if dataset_counts is not None and index < len(dataset_counts):
+            num_train_images, num_reg_images = dataset_counts[index]
+        else:
+            num_train_images = dataset.num_train_images
+            num_reg_images = dataset.num_reg_images
         dataset_metadata = {
             "is_dreambooth": True,
             "batch_size_per_device": dataset.batch_size,
-            "num_train_images": dataset.num_train_images,
-            "num_reg_images": dataset.num_reg_images,
+            "num_train_images": num_train_images,
+            "num_reg_images": num_reg_images,
             "tag_frequency": dataset.tag_frequency,
             "bucket_info": dataset.bucket_info,
             "resize_interpolation": dataset.resize_interpolation,
@@ -204,11 +211,14 @@ def add_dataset_metadata(
     use_user_config: bool,
     use_dreambooth_method: bool,
     total_batch_size: int,
+    dataset_counts: Optional[list[tuple[int, int]]] = None,
 ) -> None:
     """Add dataset-related metadata to *metadata* in place."""
     if use_user_config:
         datasets_metadata, tag_frequency, dataset_dirs_info = (
-            _build_dataset_metadata_user_config(train_dataset_group.datasets)
+            _build_dataset_metadata_user_config(
+                train_dataset_group.datasets, dataset_counts=dataset_counts
+            )
         )
         metadata["ss_datasets"] = json.dumps(datasets_metadata)
         metadata["ss_tag_frequency"] = json.dumps(tag_frequency)

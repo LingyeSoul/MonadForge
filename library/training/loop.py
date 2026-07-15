@@ -34,6 +34,13 @@ from library.training.checkpoints import CheckpointSaver
 from library.training.contexts import TrainCtx, ValCtx
 from library.training.method_adapter import StepCtx
 from library.training.metrics import MetricContext, collect_metrics
+from library.training.stage_schedule import (
+    StageRuntimePlan,
+    apply_active_subsets_to_dataset,
+    log_stage_switch,
+    progress_from_steps,
+    resolve_stage_index,
+)
 from library.training.validation import run_validation
 from library.training.wandb_metrics import (
     GradientHistogramCollector,
@@ -100,8 +107,28 @@ class LoopState:
     profile_range: Optional[tuple]
     on_step_start_for_network: Callable
 
+    stage_plan: Optional[StageRuntimePlan] = None
+    stage_index: int = -1
+    stage_batch_cursor: int = 0
+    stage_loader_generator_state: Any = None
+    outer_epoch_index: int = 0
+
     global_step: int = 0
     profile_started: bool = False
+
+    def checkpoint_runtime_state(self) -> dict[str, Any]:
+        if self.stage_plan is None:
+            return {}
+        runtime_state: dict[str, Any] = {
+            "stage_index": self.stage_index,
+            "stage_batch_cursor": self.stage_batch_cursor,
+            "stage_outer_epoch": self.outer_epoch_index,
+        }
+        if self.stage_loader_generator_state is not None:
+            runtime_state["stage_loader_generator_state"] = (
+                self.stage_loader_generator_state.tolist()
+            )
+        return runtime_state
 
 
 def build_loop_state(
@@ -138,6 +165,10 @@ def build_loop_state(
     epoch_to_start,
     initial_step,
     metadata,
+    stage_plan=None,
+    initial_global_step=None,
+    stage_batch_cursor=0,
+    stage_loader_generator_state=None,
 ) -> LoopState:
     """Build :class:`LoopState`. Mirrors the pre-loop setup that used to sit
     between ``_prepare_with_accelerator()`` and the for-epoch loop in
@@ -219,8 +250,8 @@ def build_loop_state(
     # Resume skip prelude: fast-forward global_step before tqdm so the bar
     # total is sized right, and consume per-epoch skip credit so
     # skip_first_batches has the right first-epoch offset.
-    global_step = 0
-    if initial_step > 0:
+    global_step = int(initial_global_step) if initial_global_step is not None else 0
+    if initial_global_step is None and initial_step > 0:
         global_step = initial_step // args.gradient_accumulation_steps
         for skip_epoch in range(epoch_to_start):
             logger.info(
@@ -337,6 +368,9 @@ def build_loop_state(
         validation_steps=validation_steps,
         profile_range=profile_range,
         on_step_start_for_network=on_step_start_for_network,
+        stage_plan=stage_plan,
+        stage_batch_cursor=stage_batch_cursor,
+        stage_loader_generator_state=stage_loader_generator_state,
         global_step=global_step,
     )
 
@@ -382,8 +416,12 @@ def run_training_loop(trainer, state: LoopState) -> None:
     """
     args = state.args
     accelerator = state.accelerator
+    _maybe_apply_stage_schedule(state)
 
     for epoch in range(state.epoch_to_start, state.num_train_epochs):
+        state.outer_epoch_index = epoch
+        if not (epoch == state.epoch_to_start and state.initial_step > 0):
+            state.stage_batch_cursor = 0
         accelerator.print(f"\nepoch {epoch + 1}/{state.num_train_epochs}\n")
         state.current_epoch.value = epoch + 1
         state.metadata["ss_epoch"] = str(epoch + 1)
@@ -393,6 +431,9 @@ def run_training_loop(trainer, state: LoopState) -> None:
         )
 
         _run_epoch_steps(trainer, state, epoch)
+        schedule_finished = (
+            state.stage_plan is not None and state.global_step >= args.max_train_steps
+        )
         _run_epoch_validation(trainer, state, epoch)
         _log_epoch_average(trainer, state, epoch)
         _run_adapter_epoch_hooks(trainer, state)
@@ -401,7 +442,9 @@ def run_training_loop(trainer, state: LoopState) -> None:
         _wb = getattr(trainer, "_wandb_collectors", {})
         if _wb:
             weight_collector: WeightSnapshotCollector = _wb.get("weight")
-            if weight_collector and weight_collector.should_collect(epoch_boundary=True):
+            if weight_collector and weight_collector.should_collect(
+                epoch_boundary=True
+            ):
                 _unwrapped = accelerator.unwrap_model(state.network)
                 extras = weight_collector.collect(_unwrapped)
                 dispatch_wandb_extras(accelerator, extras, state.global_step)
@@ -433,16 +476,75 @@ def run_training_loop(trainer, state: LoopState) -> None:
         )
         state.optimizer_train_fn()
 
+        if schedule_finished:
+            break
+
     _audit_liveness(trainer, state, where="run end")
 
     state.metadata["ss_training_finished_at"] = str(time.time())
 
 
+def _maybe_apply_stage_schedule(state: LoopState) -> None:
+    """Switch dataset membership and rebuild the prepared DataLoader."""
+    args = state.args
+    plan = state.stage_plan
+    if plan is None:
+        return
+    if plan.dataset_group is None or not plan.dataloader_kwargs:
+        raise RuntimeError("stage_schedule lost its dataset or DataLoader factory")
+
+    stages = plan.stages
+    progress = progress_from_steps(state.global_step, int(args.max_train_steps or 1))
+    next_index = resolve_stage_index(stages, progress)
+    if next_index == state.stage_index:
+        return
+
+    active = {stages[next_index].subset_index}
+    if not apply_active_subsets_to_dataset(plan.dataset_group, active):
+        raise RuntimeError(
+            "stage_schedule switch produced an empty dataset "
+            f"(stage={next_index + 1}, subset_indices={sorted(active or [])}, "
+            f"step={state.global_step}/{args.max_train_steps})"
+        )
+
+    raw_dataloader = torch.utils.data.DataLoader(
+        plan.dataset_group,
+        shuffle=True,
+        **plan.dataloader_kwargs,
+    )
+    state.train_dataloader = state.accelerator.prepare_data_loader(raw_dataloader)
+    if state.initial_step <= 0:
+        state.stage_batch_cursor = 0
+    state.stage_index = next_index
+    state.metadata["ss_stage_index"] = str(next_index)
+    stage = stages[next_index]
+    log_stage_switch(stage, next_index, state.global_step, args.max_train_steps)
+    state.accelerator.print(
+        f"[stage] {next_index + 1}/{len(stages)} {stage.name or ''} "
+        f"dataset={stage.subset_index} @ step "
+        f"{state.global_step}/{args.max_train_steps}"
+    )
+
+
 def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
     """Inner per-step loop: walk the dataloader, execute the accumulate
-    scope, run sample / save / log / step-validation ticks."""
+    scope, run sample / save / log / step-validation ticks.
+
+    A stage boundary may occur inside an epoch. In that case the current loader
+    is abandoned, membership is switched, and iteration continues with the new
+    prepared loader without resetting optimizer or scheduler state.
+    """
     args = state.args
     accelerator = state.accelerator
+    generator = (
+        state.stage_plan.loader_generator if state.stage_plan is not None else None
+    )
+    if (
+        state.initial_step > 0
+        and generator is not None
+        and state.stage_loader_generator_state is not None
+    ):
+        generator.set_state(state.stage_loader_generator_state)
 
     skipped_dataloader = None
     if state.initial_step > 0:
@@ -451,48 +553,70 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         )
         state.initial_step = 1
 
-    for step, batch in enumerate(skipped_dataloader or state.train_dataloader):
-        state.current_step.value = state.global_step
-        if state.initial_step > 0:
-            state.initial_step -= 1
-            continue
+    step = -1
+    while state.global_step < args.max_train_steps:
+        _maybe_apply_stage_schedule(state)
+        loader = skipped_dataloader or state.train_dataloader
+        if skipped_dataloader is None and generator is not None:
+            state.stage_loader_generator_state = generator.get_state()
+        skipped_dataloader = None
+        stage_at_start = state.stage_index
 
-        _profiler_step_begin(state)
+        for batch in loader:
+            step += 1
+            state.current_step.value = state.global_step
+            if state.initial_step > 0:
+                state.initial_step -= 1
+                continue
 
-        loss = _run_step(trainer, state, batch)
+            _profiler_step_begin(state)
+            loss = _run_step(trainer, state, batch)
+            if state.stage_plan is not None:
+                state.stage_batch_cursor += 1
+            _profiler_step_end(state)
 
-        _profiler_step_end(state)
+            keys_scaled, mean_norm, maximum_norm, max_mean_logs = _maybe_scale_norm(
+                state
+            )
 
-        keys_scaled, mean_norm, maximum_norm, max_mean_logs = _maybe_scale_norm(state)
+            if accelerator.sync_gradients:
+                state.progress_bar.update(1)
+                state.global_step += 1
+                if state.global_step == LIVENESS_EARLY_CHECK_STEP:
+                    _audit_liveness(
+                        trainer, state, where=f"step {state.global_step} early check"
+                    )
+                _sample_at_step(trainer, state)
+                state.saver.maybe_save_step(state.network, state.global_step, epoch)
+                _log_checkpoint_artifact(trainer, args, state, epoch)
+                state.optimizer_train_fn()
 
-        if accelerator.sync_gradients:
-            state.progress_bar.update(1)
-            state.global_step += 1
-            if state.global_step == LIVENESS_EARLY_CHECK_STEP:
-                _audit_liveness(
-                    trainer, state, where=f"step {state.global_step} early check"
+            _log_step(
+                trainer,
+                state,
+                loss=loss,
+                step=step,
+                epoch=epoch,
+                keys_scaled=keys_scaled,
+                mean_norm=mean_norm,
+                maximum_norm=maximum_norm,
+                max_mean_logs=max_mean_logs,
+            )
+
+            _maybe_run_step_validation(trainer, state, epoch)
+
+            if state.global_step >= args.max_train_steps:
+                return
+
+            if stage_at_start >= 0 and state.stage_plan is not None:
+                stages = state.stage_plan.stages
+                progress = progress_from_steps(
+                    state.global_step, int(args.max_train_steps or 1)
                 )
-            _sample_at_step(trainer, state)
-            state.saver.maybe_save_step(state.network, state.global_step, epoch)
-            _log_checkpoint_artifact(trainer, args, state, epoch)
-            state.optimizer_train_fn()
-
-        avr_loss = _log_step(
-            trainer,
-            state,
-            loss=loss,
-            step=step,
-            epoch=epoch,
-            keys_scaled=keys_scaled,
-            mean_norm=mean_norm,
-            maximum_norm=maximum_norm,
-            max_mean_logs=max_mean_logs,
-        )
-
-        _maybe_run_step_validation(trainer, state, epoch)
-
-        if state.global_step >= args.max_train_steps:
-            break
+                if resolve_stage_index(stages, progress) != state.stage_index:
+                    break
+        else:
+            return
 
 
 def _should_check_loss_finite(state: LoopState) -> bool:
@@ -512,7 +636,9 @@ def _debug_finite_enabled(args) -> bool:
     return bool(value)
 
 
-def _check_loss_finite(loss: torch.Tensor, *, mixed_precision: Optional[str] = None) -> None:
+def _check_loss_finite(
+    loss: torch.Tensor, *, mixed_precision: Optional[str] = None
+) -> None:
     """Fail fast before backward when the scalar loss is non-finite.
 
     This intentionally syncs the scalar predicate to Python, so callers should
@@ -754,7 +880,9 @@ def _log_step(
         # lr rises from ~1e-6. Report the effective value here so the tqdm
         # postfix (and the WebUI's stdout parser) tracks the real lr. The base
         # lr is still recorded under ``lr/base`` by ``generate_step_logs``.
-        _cached_lr = effective_lr(getattr(args, "optimizer_type", None), state.optimizer, _cached_lr)
+        _cached_lr = effective_lr(
+            getattr(args, "optimizer_type", None), state.optimizer, _cached_lr
+        )
         trainer._last_postfix_lr = _cached_lr
         trainer._postfix_has_real = True
         _have_real = True
