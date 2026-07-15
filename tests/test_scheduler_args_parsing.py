@@ -4,12 +4,18 @@ from unittest.mock import MagicMock
 import pytest
 
 
-def _make_args(lr_scheduler="constant_with_warmup", lr_scheduler_args=None):
+def _make_args(
+    lr_scheduler="constant_with_warmup",
+    lr_scheduler_args=None,
+    *,
+    lr_scheduler_num_cycles=1,
+):
     args = argparse.Namespace(
         optimizer_type="AdamW",
         lr_scheduler=lr_scheduler,
         lr_scheduler_type=None,
         lr_scheduler_args=lr_scheduler_args,
+        lr_scheduler_num_cycles=lr_scheduler_num_cycles,
         lr_warmup_steps=0.0,
         max_train_steps=1000,
     )
@@ -67,6 +73,34 @@ def test_scheduler_fix_parses_value_with_equals():
     args = _make_args(lr_scheduler="constant", lr_scheduler_args=['foo="a=b"'])
     with pytest.raises(TypeError, match="foo"):
         get_scheduler_fix(args, optimizer, num_processes=1)
+
+
+def test_cosine_with_restarts_honors_num_cycles():
+    """Three requested cycles must restart at one-third intervals.
+
+    Without the dedicated scheduler branch, Transformers receives no
+    ``num_cycles`` argument and silently builds a single cycle, which is
+    shape-identical to plain cosine.
+    """
+    torch = pytest.importorskip("torch")
+    from library.training.schedulers import get_scheduler_fix
+
+    parameter = torch.nn.Parameter(torch.zeros(1))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    args = _make_args(
+        lr_scheduler="cosine_with_restarts",
+        lr_scheduler_num_cycles=3,
+    )
+    args.max_train_steps = 90
+
+    scheduler = get_scheduler_fix(args, optimizer, num_processes=1)
+    lr_factor = scheduler.lr_lambdas[0]
+
+    assert lr_factor(0) == pytest.approx(1.0)
+    assert lr_factor(29) < 0.01
+    assert lr_factor(30) == pytest.approx(1.0)
+    assert lr_factor(59) < 0.01
+    assert lr_factor(60) == pytest.approx(1.0)
 
 
 def test_adafactor_scheduler_missing_colon_raises():
