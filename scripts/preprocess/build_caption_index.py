@@ -10,23 +10,27 @@ limited by the vocab's frequency cutoff), and writes a single JSON index to
     {
       "meta":  {... provenance: vocab path+mtime, src, n_images, generated ...},
       "image_meta": {
-        "<stem>": {"path": "<rel>", "character": [...], "copyright": [...],
-                   "artist": [...], "count": [...]},
+        "<key>": {"path": "<rel>", "character": [...], "copyright": [...],
+                  "artist": [...], "count": [...]},
         ...
       },
       "groups": {
-        "character": {"<tag>": ["<stem>", ...], ...},
+        "character": {"<tag>": ["<key>", ...], ...},
         "copyright": {...},
         "artist":    {...}
       }
     }
+
+``<key>`` is the extension-free POSIX path relative to the source root (for
+example ``en/1``), so equal bare stems in different folders remain distinct.
 
 This is a *dataset artifact* — it lives beside the VAE/PE caches under
 ``post_image_dataset/`` (not in any checkpoint) and is regenerated when the
 dataset or vocab changes. It encodes **no sampling policy**: how a method backs
 off across the character → copyright → artist tiers is the method's own concern
 (e.g. the IP-Adapter distinct-pair sampler). Consumers: the IP-Adapter
-identity-pair sampler, artist balancing, dataset analytics.
+identity-pair sampler, contrastive negatives, artist balancing, dataset
+analytics. Existing indexes must be rebuilt when moving from bare-stem keys.
 """
 
 import argparse
@@ -44,10 +48,15 @@ if str(_ROOT) not in sys.path:
 
 # Shared torch-free tag-shape primitives, kept in sync with the Anima Tagger
 # vocab build (scripts/anima_tagger/vocab.py).
-from library.captioning.taxonomy import CAPTION_RATINGS, is_artist_tag, is_count_tag
-from library.datasets.image_utils import IMAGE_EXTENSIONS
-from library.datasets.subsets import filter_paths_by_glob
-from library.io.walk import safe_walk
+from library.captioning.taxonomy import (  # noqa: E402
+    CAPTION_RATINGS,
+    is_artist_tag,
+    is_count_tag,
+)
+from library.datasets.image_utils import IMAGE_EXTENSIONS  # noqa: E402
+from library.datasets.subsets import filter_paths_by_glob  # noqa: E402
+from library.io.cache import caption_key  # noqa: E402
+from library.io.walk import safe_walk  # noqa: E402
 
 
 DEFAULT_VOCAB = "models/captioners/anima-tagger-v2/vocab.json"
@@ -129,12 +138,13 @@ def _load_vocab_sets(vocab_path: str) -> dict[str, set[str]]:
 
 
 def _iter_captions(src: Path, path_pattern: str | None = None):
-    """Yield ``(stem, rel_path, text)`` for every ``.txt`` under ``src``.
+    """Yield ``(key, rel_path, text)`` for every ``.txt`` under ``src``.
 
     ``image_dataset`` is a symlink to a tree of (possibly symlinked) artist
     dirs, so resolve the root and walk with ``followlinks=True`` — a plain walk
-    descends into neither. Stems are assumed unique across the tree (the same
-    invariant the stem-keyed VAE/PE caches rely on)."""
+    descends into neither. Keys are extension-free POSIX paths relative to the
+    root, matching nested cache disambiguation (``en/1`` and ``ew/1`` remain
+    distinct even though both files have the bare stem ``1``)."""
     root = Path(os.path.realpath(src))
     for dirpath, _dirnames, filenames in safe_walk(root, followlinks=True):
         for name in filenames:
@@ -160,8 +170,8 @@ def _iter_captions(src: Path, path_pattern: str | None = None):
                 text = abs_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            rel = os.path.relpath(abs_path, root)
-            yield name[:-4], rel, text
+            rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+            yield caption_key(abs_path, root), rel, text
 
 
 def _classify(
@@ -247,21 +257,19 @@ def build_index(
     }
 
     n_seen = 0
-    for stem, rel, text in sorted(_iter_captions(Path(src), path_pattern)):
-        n_seen += 1
+    for key, rel, text in sorted(_iter_captions(Path(src), path_pattern)):
         typed = _classify(
             text,
             vsets,
             recover_paren=recover_paren,
             recover_positional=recover_positional,
         )
-        if stem in image_meta:
-            # Stems must be unique across the tree — surface collisions, don't drop.
-            raise SystemExit(
-                f"duplicate caption stem {stem!r} (paths: "
-                f"{image_meta[stem]['path']} vs {rel}); stems must be unique"
-            )
-        image_meta[stem] = {
+        if key in image_meta:
+            # Relative keys cannot collide for distinct files. A duplicate is
+            # the same caption reached twice through a followed symlink.
+            continue
+        n_seen += 1
+        image_meta[key] = {
             "path": rel,
             "character": typed["character"],
             "copyright": typed["copyright"],
@@ -270,7 +278,7 @@ def build_index(
         }
         for axis in ("character", "copyright", "artist"):
             for tag in typed[axis]:
-                groups[axis].setdefault(tag, []).append(stem)
+                groups[axis].setdefault(tag, []).append(key)
 
     for axis in groups:
         groups[axis] = {

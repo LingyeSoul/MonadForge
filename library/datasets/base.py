@@ -1441,6 +1441,19 @@ class BaseDataset(torch.utils.data.Dataset):
         # H2D bandwidth before being cast right back down.
         return feats
 
+    def _caption_key(self, info: ImageInfo) -> str:
+        """Return the caption-index key for ``info``.
+
+        The resized dataset mirrors the source caption tree, so a path relative
+        to the active subset's ``image_dir`` reproduces the builder's
+        ``subdir/stem`` key.
+        """
+        from library.io.cache import caption_key
+
+        subset = self.image_to_subset.get(info.image_key)
+        image_dir = getattr(subset, "image_dir", None) if subset is not None else None
+        return caption_key(info.absolute_path, image_dir)
+
     def setup_identity_pairs(
         self,
         index_path: str,
@@ -1460,10 +1473,7 @@ class BaseDataset(torch.utils.data.Dataset):
         in the training pool (the deployment condition)."""
         from library.datasets.identity_pairs import IdentityPairSampler
 
-        registered = {
-            os.path.splitext(os.path.basename(info.absolute_path))[0]
-            for info in self.image_data.values()
-        }
+        registered = {self._caption_key(info) for info in self.image_data.values()}
         restrict = None if is_validation else registered
         self.identity_pair_sampler = IdentityPairSampler(
             index_path,
@@ -1495,12 +1505,15 @@ class BaseDataset(torch.utils.data.Dataset):
         from safetensors.torch import load_file
 
         suffix = f"_anima_{self.ip_features_encoder}.safetensors"
+        cache_stem = os.path.basename(stem)
         cache_dir = getattr(subset, "cache_dir", None) if subset is not None else None
         candidates: list[str] = []
         if cache_dir:
             if rel_dir:
-                candidates.append(os.path.join(str(cache_dir), rel_dir, stem + suffix))
-            candidates.append(os.path.join(str(cache_dir), stem + suffix))
+                candidates.append(
+                    os.path.join(str(cache_dir), rel_dir, cache_stem + suffix)
+                )
+            candidates.append(os.path.join(str(cache_dir), cache_stem + suffix))
         cache_path = next((c for c in candidates if os.path.exists(c)), None)
         if cache_path is None:
             raise FileNotFoundError(
@@ -1602,10 +1615,7 @@ class BaseDataset(torch.utils.data.Dataset):
             )
         from library.datasets.identity_pairs import IdentityPairSampler
 
-        registered = {
-            os.path.splitext(os.path.basename(info.absolute_path))[0]
-            for info in self.image_data.values()
-        }
+        registered = {self._caption_key(info) for info in self.image_data.values()}
         self.contrastive_neg_sampler = IdentityPairSampler(
             index_path,
             min_level="artist",
@@ -1658,12 +1668,15 @@ class BaseDataset(torch.utils.data.Dataset):
         from safetensors import safe_open
 
         suffix = "_anima_te.safetensors"
+        cache_stem = os.path.basename(stem)
         cache_dir = getattr(subset, "cache_dir", None) if subset is not None else None
         candidates: list[str] = []
         if cache_dir:
             if rel_dir:
-                candidates.append(os.path.join(str(cache_dir), rel_dir, stem + suffix))
-            candidates.append(os.path.join(str(cache_dir), stem + suffix))
+                candidates.append(
+                    os.path.join(str(cache_dir), rel_dir, cache_stem + suffix)
+                )
+            candidates.append(os.path.join(str(cache_dir), cache_stem + suffix))
         cache_path = next((c for c in candidates if os.path.exists(c)), None)
         if cache_path is None:
             raise FileNotFoundError(
@@ -2095,9 +2108,7 @@ class BaseDataset(torch.utils.data.Dataset):
             target_sizes_hw.append((int(target_size[1]), int(target_size[0])))
             flippeds.append(flipped)
 
-            target_stem = os.path.splitext(os.path.basename(image_info.absolute_path))[
-                0
-            ]
+            target_stem = self._caption_key(image_info)
 
             caption = image_info.caption
 

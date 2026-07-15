@@ -141,6 +141,28 @@ def test_rel_dir(index_path):
     assert s.rel_dir("a3") == "art_y"
 
 
+def test_nested_caption_keys_keep_equal_bare_stems_distinct(tmp_path):
+    meta = {
+        "en/1": {
+            "path": "en/1.txt",
+            "character": ["miku"],
+            "copyright": ["vocaloid"],
+            "artist": ["@x"],
+        },
+        "ew/1": {
+            "path": "ew/1.txt",
+            "character": ["miku"],
+            "copyright": ["vocaloid"],
+            "artist": ["@y"],
+        },
+    }
+    sampler = IdentityPairSampler(_write_index(tmp_path, meta))
+
+    assert sampler.resolve("en/1", random.Random(0)) == ("ew/1", "character")
+    assert sampler.rel_dir("en/1") == "en"
+    assert sampler.rel_dir("ew/1") == "ew"
+
+
 def test_invalid_min_level(index_path):
     with pytest.raises(ValueError):
         IdentityPairSampler(index_path, min_level="franchise")
@@ -203,9 +225,24 @@ def test_hard_negative_backoff_original_tier(tmp_path):
     # image. The OC target o1 has no character to disjoint on → the back-off's
     # original tier returns the same-artist sibling o2, not shuffled.
     meta = {
-        "o1": {"path": "x/o1.txt", "character": [], "copyright": ["original"], "artist": ["@x"]},
-        "o2": {"path": "x/o2.txt", "character": [], "copyright": ["original"], "artist": ["@x"]},
-        "f1": {"path": "y/f1.txt", "character": ["miku"], "copyright": ["vocaloid"], "artist": ["@y"]},
+        "o1": {
+            "path": "x/o1.txt",
+            "character": [],
+            "copyright": ["original"],
+            "artist": ["@x"],
+        },
+        "o2": {
+            "path": "x/o2.txt",
+            "character": [],
+            "copyright": ["original"],
+            "artist": ["@x"],
+        },
+        "f1": {
+            "path": "y/f1.txt",
+            "character": ["miku"],
+            "copyright": ["vocaloid"],
+            "artist": ["@y"],
+        },
     }
     s = IdentityPairSampler(_write_index(tmp_path, meta), min_level="artist")
     rng = random.Random(0)
@@ -219,8 +256,18 @@ def test_hard_negative_backoff_original_tier_only_for_original(tmp_path):
     # A franchise target with no diff-character sibling must NOT borrow an
     # original negative — the original tier is gated on the target being OC.
     meta = {
-        "f1": {"path": "x/f1.txt", "character": ["miku"], "copyright": ["vocaloid"], "artist": ["@x"]},
-        "o1": {"path": "x/o1.txt", "character": [], "copyright": ["original"], "artist": ["@x"]},
+        "f1": {
+            "path": "x/f1.txt",
+            "character": ["miku"],
+            "copyright": ["vocaloid"],
+            "artist": ["@x"],
+        },
+        "o1": {
+            "path": "x/o1.txt",
+            "character": [],
+            "copyright": ["original"],
+            "artist": ["@x"],
+        },
     }
     s = IdentityPairSampler(_write_index(tmp_path, meta), min_level="artist")
     stem, level = s.hard_negative_backoff("f1", random.Random(0))

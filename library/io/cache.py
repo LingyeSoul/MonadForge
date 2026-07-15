@@ -78,6 +78,29 @@ def resolve_cache_path(
     return os.path.join(target_dir, stem + suffix)
 
 
+def caption_key(
+    image_path: str | os.PathLike,
+    image_dir: str | os.PathLike | None = None,
+) -> str:
+    """Return the stable, subdir-aware key used by the caption index.
+
+    Keys are extension-free POSIX paths relative to the dataset root, such as
+    ``en/1``.  This matches the nested cache layout and keeps identical bare
+    stems in different folders distinct.  Flat datasets retain their legacy
+    bare-stem keys.  If the path cannot be relativized safely, fall back to the
+    bare stem instead of allowing a key to escape the supplied root.
+    """
+    stem_no_ext = os.path.splitext(os.fspath(image_path))[0]
+    if image_dir is not None:
+        try:
+            rel = os.path.relpath(stem_no_ext, os.fspath(image_dir))
+        except ValueError:
+            rel = ""
+        if rel and rel != "." and not rel.startswith(".."):
+            return rel.replace(os.sep, "/")
+    return os.path.basename(stem_no_ext)
+
+
 class CachedImage(NamedTuple):
     """A preprocessed image with its cached latent and optional text encoder output."""
 

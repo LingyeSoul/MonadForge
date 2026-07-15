@@ -5,7 +5,9 @@ vocab predates (e.g. `endministrator (arknights)`)."""
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 _SPEC = importlib.util.spec_from_file_location(
     "build_caption_index",
@@ -70,7 +72,9 @@ def test_recover_paren_can_be_disabled():
 
 
 def test_artist_prefix_unaffected():
-    typed = bci._classify("@some artist, mualani (genshin impact), genshin impact", VSETS)
+    typed = bci._classify(
+        "@some artist, mualani (genshin impact), genshin impact", VSETS
+    )
     assert typed["artist"] == ["@some artist"]
     assert "mualani (genshin impact)" in typed["character"]
 
@@ -146,3 +150,87 @@ def test_original_crossover_keeps_character():
     # the franchise character survives.
     typed = bci._classify("1girl, dawn (pokemon), pokemon, original, @x", VSETS)
     assert "dawn (pokemon)" in typed["character"]
+
+
+# ── subdir-aware caption keys ────────────────────────────────────────────────
+
+
+def _write_vocab(tmp_path: Path) -> str:
+    vocab = {
+        "tags": [
+            {"name": "hatsune miku", "category": "character"},
+            {"name": "vocaloid", "category": "copyright"},
+            {"name": "genshin impact", "category": "copyright"},
+            {"name": "1girl", "category": "count"},
+        ]
+    }
+    path = tmp_path / "vocab.json"
+    path.write_text(json.dumps(vocab), encoding="utf-8")
+    return str(path)
+
+
+def test_duplicate_bare_stem_across_folders_kept_distinct(tmp_path):
+    src = tmp_path / "captions"
+    (src / "en").mkdir(parents=True)
+    (src / "ew").mkdir(parents=True)
+    (src / "en" / "1.txt").write_text("1girl, hatsune miku, vocaloid", encoding="utf-8")
+    (src / "ew" / "1.txt").write_text("1girl, genshin impact", encoding="utf-8")
+
+    index = bci.build_index(str(src), _write_vocab(tmp_path))
+
+    assert set(index["image_meta"]) == {"en/1", "ew/1"}
+    assert index["image_meta"]["en/1"]["path"] == "en/1.txt"
+    assert index["image_meta"]["ew/1"]["path"] == "ew/1.txt"
+    assert index["groups"]["copyright"]["vocaloid"] == ["en/1"]
+    assert index["groups"]["copyright"]["genshin impact"] == ["ew/1"]
+
+
+def test_flat_layout_keeps_legacy_bare_stem_key(tmp_path):
+    src = tmp_path / "captions"
+    src.mkdir()
+    (src / "pic.txt").write_text("1girl, hatsune miku, vocaloid", encoding="utf-8")
+
+    index = bci.build_index(str(src), _write_vocab(tmp_path))
+
+    assert set(index["image_meta"]) == {"pic"}
+    assert index["image_meta"]["pic"]["path"] == "pic.txt"
+
+
+def test_caption_key_and_nested_cache_consumers_share_contract(tmp_path):
+    torch = __import__("torch")
+    from safetensors.torch import save_file
+
+    from library.datasets.base import BaseDataset
+    from library.io.cache import caption_key
+
+    image_dir = tmp_path / "resized"
+    image = image_dir / "en" / "1.png"
+    image.parent.mkdir(parents=True)
+    image.touch()
+
+    assert caption_key(image, image_dir) == "en/1"
+    assert caption_key(image_dir / "flat.png", image_dir) == "flat"
+
+    cache_dir = tmp_path / "cache"
+    nested_cache = cache_dir / "en"
+    nested_cache.mkdir(parents=True)
+    expected_te = torch.ones(2, 3)
+    expected_pe = torch.ones(4, 5)
+    save_file(
+        {"crossattn_emb": expected_te},
+        str(nested_cache / "1_anima_te.safetensors"),
+    )
+    save_file(
+        {"image_features": expected_pe},
+        str(nested_cache / "1_anima_pe.safetensors"),
+    )
+
+    dataset = object.__new__(BaseDataset)
+    dataset.ip_features_cache_to_disk = True
+    dataset.ip_features_encoder = "pe"
+    subset = SimpleNamespace(cache_dir=str(cache_dir), image_dir=str(image_dir))
+
+    loaded_te = dataset._load_te_for_stem("en/1", subset, "en")
+    loaded_pe = dataset._load_ip_features_for_stem("en/1", subset, "en")
+    assert torch.equal(loaded_te, expected_te)
+    assert torch.equal(loaded_pe, expected_pe)
