@@ -39,6 +39,7 @@ _NON_FLAT_SECTIONS = _DATASET_CONFIG_SECTIONS | _METADATA_CONFIG_SECTIONS
 # comparison typo would route a gui variant through the flat-methods path.
 GUI_METHODS_SUBDIR = "gui-methods"
 _SNAPSHOT_SUFFIX = ".snapshot.toml"
+_EMPTY_STRING_IS_UNSET = frozenset({"network_weights"})
 _DUMP_SKIP_KEYS = {
     "print_config",
     "config_snapshot",
@@ -48,6 +49,18 @@ _DUMP_SKIP_KEYS = {
     "wandb_api_key",
     "huggingface_token",
 }
+
+
+def _drop_unset_config_values(
+    config: dict, provenance: Optional[dict[str, str]] = None
+) -> None:
+    """Remove optional path values serialized as blank strings by older UIs."""
+    for key in _EMPTY_STRING_IS_UNSET:
+        value = config.get(key)
+        if isinstance(value, str) and not value.strip():
+            config.pop(key, None)
+            if provenance is not None:
+                provenance.pop(key, None)
 
 
 def _read_text_silent(path: Optional[str]) -> Optional[str]:
@@ -716,6 +729,8 @@ def load_method_preset(
             merged[k] = v
             provenance[k] = tag
 
+    _drop_unset_config_values(merged, provenance)
+
     if return_provenance:
         return merged, provenance
     return merged
@@ -969,6 +984,7 @@ def read_config_from_file(
 
     logger.info(f"Loading settings from {config_path}...")
     merged = _load_toml_with_base(config_path, strict=strict)
+    _drop_unset_config_values(merged)
 
     config_args = argparse.Namespace(**merged)
     args = parser.parse_args(args=argv, namespace=config_args)

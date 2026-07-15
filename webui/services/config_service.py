@@ -292,6 +292,21 @@ _RESUME_DEFAULTS = {
     "save_state_on_train_end": False,
 }
 
+
+def _is_neutral_resume_value(key: str, value: Any) -> bool:
+    if key == "network_weights":
+        return value is None or (isinstance(value, str) and not value.strip())
+    return key in _RESUME_DEFAULTS and value == _RESUME_DEFAULTS[key]
+
+
+def _strip_neutral_resume_defaults(data: dict) -> dict:
+    return {
+        key: value
+        for key, value in data.items()
+        if not _is_neutral_resume_value(key, value)
+    }
+
+
 _BASIC = {
     "learning_rate",
     "max_train_epochs",
@@ -488,7 +503,10 @@ def create_custom_preset(name: str, data: dict) -> list[str]:
     if is_builtin_preset(name):
         raise ValueError(f"Cannot overwrite built-in preset: {name}")
     CUSTOM_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
-    _save(CUSTOM_PRESETS_DIR / f"{name}.toml", data)
+    _save(
+        CUSTOM_PRESETS_DIR / f"{name}.toml",
+        _strip_neutral_resume_defaults(data),
+    )
     return list_presets()
 
 
@@ -1095,7 +1113,7 @@ def save_variant_config(variant: str, data: dict) -> None:
     for key, value in data.items():
         if key in _SKIP:
             continue
-        if key in _RESUME_DEFAULTS and value == _RESUME_DEFAULTS[key]:
+        if _is_neutral_resume_value(key, value):
             current.pop(key, None)
             continue
         current[key] = value

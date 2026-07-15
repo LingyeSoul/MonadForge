@@ -283,6 +283,27 @@ def test_sparse_overlay_inherits_builtin_knobs(tmp_path: Path):
     assert merged.get("output_name") == "test"
 
 
+def test_blank_network_weights_in_existing_custom_preset_is_unset(tmp_path: Path):
+    """Legacy WebUI presets may contain an empty warm-start path."""
+    configs_dir = Path(_build_gui_configs_tree(tmp_path))
+    custom_presets = configs_dir / "custom" / "presets"
+    custom_presets.mkdir(parents=True)
+    (custom_presets / "legacy.toml").write_text(
+        'network_weights = ""\n', encoding="utf-8"
+    )
+
+    merged, provenance = load_method_preset(
+        "lora",
+        "legacy",
+        configs_dir=str(configs_dir),
+        methods_subdir="gui-methods",
+        return_provenance=True,
+    )
+
+    assert merged.get("network_weights") is None
+    assert "network_weights" not in provenance
+
+
 def test_overlay_provenance_points_at_user_file(tmp_path: Path):
     """Provenance for an inherited builtin key tags the overlay path (the
     user owns the effective config), matching the WebUI's origin model."""

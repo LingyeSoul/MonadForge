@@ -18,9 +18,67 @@ from __future__ import annotations
 
 import argparse
 
+import toml
+
 from library.anima.training import add_anima_training_arguments
+from library.config.io import load_method_preset
 from library.inference.args import build_parser as build_inference_parser
+from webui.services import config_service
 from webui.services.config_service import _SELECT_OPTIONS, validate_config
+
+
+def test_create_custom_preset_strips_neutral_resume_defaults(monkeypatch, tmp_path):
+    """A fresh WebUI preset must not turn an empty warm-start into a path."""
+    configs = tmp_path / "configs"
+    custom_presets = configs / "custom" / "presets"
+    methods = configs / "gui-methods"
+    custom_presets.mkdir(parents=True)
+    methods.mkdir(parents=True)
+    (configs / "base.toml").write_text("network_dim = 16\n", encoding="utf-8")
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (methods / "lora.toml").write_text("network_alpha = 16\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_PRESETS_DIR", custom_presets)
+
+    config_service.create_custom_preset(
+        "fresh",
+        {
+            "network_weights": "",
+            "dim_from_weights": False,
+            "save_state_on_train_end": False,
+        },
+    )
+
+    saved = toml.loads((custom_presets / "fresh.toml").read_text(encoding="utf-8"))
+    assert not (set(config_service._RESUME_DEFAULTS) & saved.keys())
+
+    merged = load_method_preset(
+        "lora", "fresh", str(configs), methods_subdir="gui-methods"
+    )
+    assert merged.get("network_weights") is None
+
+    config_service.create_custom_preset(
+        "warm-start",
+        {
+            "network_weights": "weights/model.safetensors",
+            "dim_from_weights": True,
+            "save_state_on_train_end": True,
+        },
+    )
+    warm_start = toml.loads(
+        (custom_presets / "warm-start.toml").read_text(encoding="utf-8")
+    )
+    assert warm_start == {
+        "network_weights": "weights/model.safetensors",
+        "dim_from_weights": True,
+        "save_state_on_train_end": True,
+    }
+    warm_merged = load_method_preset(
+        "lora", "warm-start", str(configs), methods_subdir="gui-methods"
+    )
+    assert warm_merged["network_weights"] == "weights/model.safetensors"
+    assert warm_merged["dim_from_weights"] is True
 
 
 def test_lokr_legacy_dim_validation_accepts_official_full_matrix_semantics():
