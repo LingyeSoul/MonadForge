@@ -440,6 +440,10 @@ export default {
   merge_analysis_safe: 'Orthogonal — safe to merge. Shared modules {shared}/{modules}, overlap ratio {ratio}. Strongest pair {a} ↔ {b} ({strength} interference).',
   merge_analysis_reinforce: 'Constructive — inputs reinforce each other. Shared modules {shared}/{modules}, overlap ratio {ratio}. Strongest pair {a} ↔ {b} ({strength} interference).',
   merge_analysis_cancel: 'Destructive — inputs cancel each other. Shared modules {shared}/{modules}, overlap ratio {ratio}. Strongest pair {a} ↔ {b} ({strength} interference).',
+  merge_analysis_overlap_reinforcing: 'Reinforcing subspace overlap — {oa} ↔ {ob} shares {xrandom}× the random expectation (overlap {overlap}) with aligned directions. Shared modules {shared}/{modules}, energy ratio {ratio}.',
+  merge_analysis_overlap_cancelling: 'Cancelling subspace overlap — {oa} ↔ {ob} shares {xrandom}× the random expectation (overlap {overlap}) in opposing directions. Shared modules {shared}/{modules}, energy ratio {ratio}.',
+  merge_analysis_overlap_elevated: 'Elevated subspace overlap — {oa} ↔ {ob} reaches {xrandom}× the random expectation (overlap {overlap}); lower the weights and test first. Shared modules {shared}/{modules}, energy ratio {ratio}.',
+  merge_analysis_overlap_colliding: 'Subspace collision — {oa} ↔ {ob} reaches {xrandom}× the random expectation (overlap {overlap}) while directions remain near-orthogonal. Shared modules {shared}/{modules}, energy ratio {ratio}.',
 
   // System View
   sysTitle: 'System',
