@@ -84,6 +84,7 @@ dependencies = [
     "scikit-learn>=1.9.0rc1",
     "datasets>=4.8.5",
     "send2trash>=2.1.0",
+    "onnxruntime-gpu>=1.27.0",
 ]
 
 [project.optional-dependencies]

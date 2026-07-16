@@ -2,10 +2,16 @@
 """Generate text segmentation masks for training images.
 
 Model: https://huggingface.co/a-b-c-x-y-z/Manga-Text-Segmentation-2025
+
+By default each mask is gated by comictextdetector's text-block head
+(``--ctd-gate``): only UNet++ mask components overlapping a detected text block
+survive. The extra detector filters decorative line-art false positives; use
+``--no-ctd-gate`` to retain the raw UNet++ mask behavior.
 """
 
 import argparse
 import sys
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -30,6 +36,7 @@ from library.preprocess import walk_images
 _ENCODER = "tu-efficientnetv2_rw_m"
 _HF_REPO = "a-b-c-x-y-z/Manga-Text-Segmentation-2025"
 _HF_FILENAME = "model.pth"
+_CtdForward = Callable[[np.ndarray], list[np.ndarray]]
 
 
 def _convert_batchnorm_to_groupnorm(module: nn.Module) -> None:
@@ -121,6 +128,118 @@ def save_mask(path: Path, alpha_mask: np.ndarray) -> None:
     Image.fromarray(alpha_mask, mode="L").save(path)
 
 
+def _load_ctd(onnx_path: str, device: str = "cuda") -> _CtdForward:
+    """Return a CTD forward function, preferring ONNX Runtime CUDA.
+
+    Explicit CPU use and any unavailable or failed CUDA provider fall back to
+    OpenCV DNN. Keeping the fallback independent of ONNX Runtime lets the CLI
+    remain usable on non-CUDA hosts.
+    """
+    if device != "cpu":
+        try:
+            import onnxruntime as ort
+
+            ort.preload_dlls()
+            session = ort.InferenceSession(
+                str(onnx_path),
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            if "CUDAExecutionProvider" in session.get_providers():
+                input_name = session.get_inputs()[0].name
+
+                def forward(canvas: np.ndarray) -> list[np.ndarray]:
+                    blob = canvas.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+                    return session.run(None, {input_name: blob})
+
+                return forward
+            print(
+                "WARNING: onnxruntime CUDAExecutionProvider unavailable — "
+                "CTD gate falls back to cv2.dnn CPU"
+            )
+        except Exception as exc:  # noqa: BLE001 - optional acceleration fallback
+            print(
+                f"WARNING: onnxruntime CUDA init failed ({exc}) — "
+                "CTD gate falls back to cv2.dnn CPU"
+            )
+
+    net = cv2.dnn.readNetFromONNX(str(onnx_path))
+    output_names = net.getUnconnectedOutLayersNames()
+
+    def forward(canvas: np.ndarray) -> list[np.ndarray]:
+        net.setInput(
+            cv2.dnn.blobFromImage(
+                canvas,
+                scalefactor=1 / 255.0,
+                size=(1024, 1024),
+            )
+        )
+        return list(net.forward(output_names))
+
+    return forward
+
+
+def _ctd_text_boxes(
+    ctd_forward: _CtdForward,
+    image: np.ndarray,
+    conf_th: float = 0.4,
+    nms_th: float = 0.35,
+    seg_th: float = 0.3,
+    seg_cov: float = 0.03,
+) -> list[tuple[int, int, int, int]]:
+    """Return CTD text-block boxes in the original image coordinates."""
+    h0, w0 = image.shape[:2]
+    ratio = min(1024 / h0, 1024 / w0)
+    nw, nh = int(round(w0 * ratio)), int(round(h0 * ratio))
+    canvas = np.zeros((1024, 1024, 3), np.uint8)
+    canvas[:nh, :nw] = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+
+    outputs = ctd_forward(canvas)
+    blocks = next(output for output in outputs if output.ndim == 3)[0]
+    segmentation = next(
+        output for output in outputs if output.ndim == 4 and output.shape[1] == 1
+    )[0, 0]
+    confidence = blocks[:, 4] * blocks[:, 5:].max(axis=1)
+    keep = confidence > conf_th
+    if not keep.any():
+        return []
+
+    blocks, confidence = blocks[keep], confidence[keep]
+    xywh = np.concatenate([blocks[:, :2] - blocks[:, 2:4] / 2, blocks[:, 2:4]], axis=1)
+    boxes = []
+    selected = np.array(
+        cv2.dnn.NMSBoxes(xywh.tolist(), confidence.tolist(), conf_th, nms_th)
+    ).flatten()
+    for index in selected:
+        x, y, width, height = xywh[index]
+        cx0, cy0 = max(int(x), 0), max(int(y), 0)
+        cx1, cy1 = min(int(x + width), 1024), min(int(y + height), 1024)
+        if cx1 <= cx0 or cy1 <= cy0:
+            continue
+        if (segmentation[cy0:cy1, cx0:cx1] > seg_th).mean() < seg_cov:
+            continue
+        boxes.append(
+            (
+                max(int(x / ratio), 0),
+                max(int(y / ratio), 0),
+                min(int((x + width) / ratio), w0),
+                min(int((y + height) / ratio), h0),
+            )
+        )
+    return boxes
+
+
+def _keep_mask_components_in_boxes(
+    mask: np.ndarray, boxes: list[tuple[int, int, int, int]]
+) -> np.ndarray:
+    """Keep complete connected components that overlap at least one CTD box."""
+    box_mask = np.zeros(mask.shape, dtype=bool)
+    for x0, y0, x1, y1 in boxes:
+        box_mask[y0:y1, x0:x1] = True
+    _, labels = cv2.connectedComponents(mask)
+    keep_ids = np.unique(labels[box_mask])
+    return np.isin(labels, keep_ids[keep_ids != 0]).astype(np.uint8)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-dir", type=str, required=True, help="Image directory")
@@ -152,6 +271,21 @@ def main() -> None:
         "--workers", type=int, default=4, help="I/O workers (default: 4)"
     )
     parser.add_argument(
+        "--ctd-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "keep only mask components overlapping a comictextdetector text "
+            "block (--no-ctd-gate restores raw UNet++ masks)"
+        ),
+    )
+    parser.add_argument(
+        "--ctd-onnx",
+        type=str,
+        default="models/mit/comictextdetector.pt.onnx",
+        help="comictextdetector ONNX model used by --ctd-gate",
+    )
+    parser.add_argument(
         "--recursive",
         action="store_true",
         help=(
@@ -177,6 +311,16 @@ def main() -> None:
 
     print("Loading text segmentation model...")
     model = _load_model(args.model_path, device=args.device)
+
+    ctd = None
+    if args.ctd_gate:
+        if Path(args.ctd_onnx).exists():
+            ctd = _load_ctd(args.ctd_onnx, device=args.device)
+        else:
+            print(
+                f"WARNING: --ctd-gate on but {args.ctd_onnx} is missing — "
+                "gating disabled (pass --no-ctd-gate to silence this warning)"
+            )
 
     image_dir = Path(args.image_dir)
     masks_dir = Path(args.mask_dir)
@@ -229,6 +373,13 @@ def main() -> None:
             continue
 
         combined_mask = (mask > 127).astype(np.uint8)
+
+        if ctd is not None and combined_mask.any():
+            boxes = _ctd_text_boxes(ctd, img_np)
+            combined_mask = _keep_mask_components_in_boxes(combined_mask, boxes)
+            if not combined_mask.any():
+                pbar.set_postfix_str(f"{image_path.name}: skipped (ctd-gated)")
+                continue
 
         if dilate_kernel is not None:
             combined_mask = cv2.dilate(combined_mask, dilate_kernel, iterations=1)
