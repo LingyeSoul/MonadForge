@@ -343,6 +343,7 @@ taskStore.fetchTasks()
 // ── State ─────────────────────────────────────────────────────
 
 type MergeMode = 'dit' | 'loras'
+type OverlapBand = 'chance' | 'reinforcing' | 'cancelling' | 'elevated' | 'colliding'
 
 interface AdapterDir { name: string; path: string }
 interface CustomDir { path: string }
@@ -354,6 +355,7 @@ interface AnalyzePayload {
   shared: number
   modules: number
   strongest?: [string, string, number]  // [a, b, cos]
+  overlap?: [string, string, number, number, OverlapBand?, number?]  // [a, b, out, xrandom, band, cos]
 }
 interface AnalyzeBanner {
   type: 'success' | 'warning' | 'error'
@@ -365,6 +367,11 @@ interface AnalyzeBanner {
   a: string
   b: string
   strong: boolean
+  overlapBand: OverlapBand
+  overlap: number
+  overlapXRandom: number
+  overlapA: string
+  overlapB: string
 }
 
 const mode = ref<MergeMode>('dit')
@@ -700,7 +707,11 @@ function parseAnalyzeBanner(lines: string[], finalState: string): AnalyzeBanner 
   }
   if (!payload) {
     if (finalState === 'failed') {
-      return { type: 'error', verdict: 'failed', ratio: 0, shared: 0, modules: 0, cos: 0, a: '', b: '', strong: false }
+      return {
+        type: 'error', verdict: 'failed', ratio: 0, shared: 0, modules: 0,
+        cos: 0, a: '', b: '', strong: false, overlapBand: 'chance',
+        overlap: 0, overlapXRandom: 0, overlapA: '', overlapB: '',
+      }
     }
     return null
   }
@@ -708,8 +719,28 @@ function parseAnalyzeBanner(lines: string[], finalState: string): AnalyzeBanner 
   const cos = payload.strongest?.[2] ?? 0
   const a = payload.strongest?.[0] ?? ''
   const b = payload.strongest?.[1] ?? ''
+  const overlap = payload.overlap?.[2] ?? 0
+  const overlapXRandom = payload.overlap?.[3] ?? 0
+  const overlapA = payload.overlap?.[0] ?? ''
+  const overlapB = payload.overlap?.[1] ?? ''
+  const overlapCos = payload.overlap?.[5]
+    ?? ((overlapA === a && overlapB === b) || (overlapA === b && overlapB === a) ? cos : 0)
+  let overlapBand = payload.overlap?.[4]
+  // Backward-compatible classification for analysis trailers emitted before
+  // the fork added the explicit band/cosine fields.
+  if (!overlapBand) {
+    if (overlapXRandom < 3) overlapBand = 'chance'
+    else if (overlapCos >= 0.5) overlapBand = 'reinforcing'
+    else if (overlapCos <= -0.5) overlapBand = 'cancelling'
+    else overlapBand = overlapXRandom >= 8 ? 'colliding' : 'elevated'
+  }
+  const type = overlapBand === 'colliding' || overlapBand === 'cancelling'
+    ? 'error'
+    : overlapBand === 'elevated' || overlapBand === 'reinforcing'
+      ? 'warning'
+      : verdict === 'orthogonal' ? 'success' : (cos >= 0 ? 'warning' : 'error')
   return {
-    type: verdict === 'orthogonal' ? 'success' : (cos >= 0 ? 'warning' : 'error'),
+    type,
     verdict,
     ratio,
     shared,
@@ -718,6 +749,11 @@ function parseAnalyzeBanner(lines: string[], finalState: string): AnalyzeBanner 
     a,
     b,
     strong: Math.abs(cos) >= 0.5,
+    overlapBand,
+    overlap,
+    overlapXRandom,
+    overlapA,
+    overlapB,
   }
 }
 
@@ -728,7 +764,13 @@ function bannerText(b: AnalyzeBanner): string {
     return t('notifyTaskStartFailed', { command: t('merge_analyze_button') })
   }
   const strength = b.strong ? t('merge_analysis_strong') : t('merge_analysis_moderate')
-  const common = { ratio: b.ratio, shared: b.shared, modules: b.modules, a: b.a, b: b.b, strength }
+  const common = {
+    ratio: b.ratio, shared: b.shared, modules: b.modules, a: b.a, b: b.b, strength,
+    oa: b.overlapA, ob: b.overlapB, overlap: b.overlap, xrandom: b.overlapXRandom,
+  }
+  if (b.overlapBand !== 'chance') {
+    return t(`merge_analysis_overlap_${b.overlapBand}`, common)
+  }
   if (b.verdict === 'orthogonal') return t('merge_analysis_safe', common)
   if (b.cos >= 0) return t('merge_analysis_reinforce', common)
   return t('merge_analysis_cancel', common)

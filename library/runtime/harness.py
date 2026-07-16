@@ -522,6 +522,54 @@ def _apply_activation_memory_budget(
         )
 
 
+def _apply_partitioner_tuning(
+    *,
+    recompute_views: bool,
+    aggressive_recomputation: bool,
+    grad_ckpt: bool,
+    logger: logging.Logger = log,
+) -> None:
+    """Tune the AOT min-cut partitioner's default save/recompute heuristics.
+
+    Unlike ``activation_memory_budget`` (a knapsack cap applied on top of the
+    default partition), these flags change what the default partition is
+    willing to recompute at all: ``recompute_views`` stops saving view ops
+    (free to recompute, but saving one pins its base tensor alive),
+    ``aggressive_recomputation`` drops the ban list on recomputing whole op
+    classes when the min-cut is cheap. Issue #58 follow-up — candidate
+    recovery of the saved-set growth from the 2026-06-10 custom-autograd
+    removal without paying the budget's recompute-expensive-ops tail
+    (docs/findings/custom_autograd_removal_partitioner_oom.md).
+
+    Skipped under gradient checkpointing for the same reason as the budget:
+    repartitioning the joint graph can desync checkpoint's recompute pass
+    from the forward graph (torch #166926), and ckpt already minimizes the
+    saved set.
+    """
+    if not (recompute_views or aggressive_recomputation):
+        return
+    if grad_ckpt:
+        logger.info(
+            "partitioner tuning (recompute_views=%s, aggressive_recomputation=%s) "
+            "ignored: incompatible with gradient_checkpointing (and redundant "
+            "under it)",
+            recompute_views,
+            aggressive_recomputation,
+        )
+        return
+    import torch._functorch.config as _functorch_config
+
+    if recompute_views:
+        _functorch_config.recompute_views = True
+    if aggressive_recomputation:
+        _functorch_config.aggressive_recomputation = True
+    logger.info(
+        "partitioner tuning: recompute_views=%s aggressive_recomputation=%s",
+        recompute_views,
+        aggressive_recomputation,
+    )
+
+
 def _apply_cudagraph_skip_dynamic(
     mode: Optional[str], *, logger: logging.Logger = log
 ) -> None:
@@ -566,6 +614,8 @@ def compile_blocks_for_training(
     seq_range: Optional[tuple] = None,
     dynamic_seq: bool = False,
     activation_memory_budget: float = 1.0,
+    partitioner_recompute_views: bool = False,
+    partitioner_aggressive_recomputation: bool = False,
     grad_ckpt: bool = False,
     logger: logging.Logger = log,
 ) -> None:
@@ -600,6 +650,12 @@ def compile_blocks_for_training(
     """
     _apply_activation_memory_budget(
         activation_memory_budget, grad_ckpt=grad_ckpt, logger=logger
+    )
+    _apply_partitioner_tuning(
+        recompute_views=partitioner_recompute_views,
+        aggressive_recomputation=partitioner_aggressive_recomputation,
+        grad_ckpt=grad_ckpt,
+        logger=logger,
     )
     _apply_cudagraph_skip_dynamic(mode, logger=logger)
     isolate_compile_cache(

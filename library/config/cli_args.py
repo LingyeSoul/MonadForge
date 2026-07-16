@@ -130,6 +130,12 @@ def add_optimizer_arguments(parser: argparse.ArgumentParser):
         default=0,
         help="Int number of steps for the warmup in the lr scheduler (default is 0) or float with ratio of train steps",
     )
+    parser.add_argument(
+        "--lr_scheduler_num_cycles",
+        type=int,
+        default=1,
+        help="Number of restarts for cosine scheduler with restarts",
+    )
 
 
 def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: bool):
@@ -293,6 +299,25 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "gradient_checkpointing — repartitioning breaks checkpoint's "
         "recompute-graph match (torch #166926) and ckpt already minimizes "
         "saved activations.",
+    )
+    parser.add_argument(
+        "--partitioner_recompute_views",
+        action="store_true",
+        help="torch._functorch.config.recompute_views: let the AOT min-cut "
+        "partitioner recompute view ops in backward instead of saving them "
+        "(views are free to recompute but saving one pins its base tensor "
+        "alive). Lowers the saved-for-backward set without engaging the "
+        "activation_memory_budget knapsack. Ignored (with a log line) under "
+        "gradient_checkpointing — same repartitioning hazard as the budget.",
+    )
+    parser.add_argument(
+        "--partitioner_aggressive_recomputation",
+        action="store_true",
+        help="torch._functorch.config.aggressive_recomputation: drop the "
+        "min-cut partitioner's ban-recompute heuristics so more op classes "
+        "may be recomputed in backward when the cut is cheap. Can trade "
+        "backward time for VRAM — see bench/freefit_vram before adopting. "
+        "Ignored (with a log line) under gradient_checkpointing.",
     )
     parser.add_argument(
         "--compile_dynamic_seq",

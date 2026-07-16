@@ -440,6 +440,10 @@ export default {
   merge_analysis_safe: '直交 — 統合安全。共有モジュール {shared}/{modules}、重複比率 {ratio}。最強干渉ペア {a} ↔ {b} ({strength} 干渉)。',
   merge_analysis_reinforce: '構成的 — 入力が相互に強化。共有モジュール {shared}/{modules}、重複比率 {ratio}。最強干渉ペア {a} ↔ {b} ({strength} 干渉)。',
   merge_analysis_cancel: '破壊的 — 入力が相互に打消。共有モジュール {shared}/{modules}、重複比率 {ratio}。最強干渉ペア {a} ↔ {b} ({strength} 干渉)。',
+  merge_analysis_overlap_reinforcing: '部分空間の同方向強化 — {oa} ↔ {ob} はランダム期待値の {xrandom}×（重複 {overlap}）を共有し、方向も一致しています。共有モジュール {shared}/{modules}、エネルギー比 {ratio}。',
+  merge_analysis_overlap_cancelling: '部分空間の相殺 — {oa} ↔ {ob} はランダム期待値の {xrandom}×（重複 {overlap}）を共有しますが、方向が逆です。共有モジュール {shared}/{modules}、エネルギー比 {ratio}。',
+  merge_analysis_overlap_elevated: '部分空間の重複が高め — {oa} ↔ {ob} はランダム期待値の {xrandom}×（重複 {overlap}）。重みを下げて事前テストしてください。共有モジュール {shared}/{modules}、エネルギー比 {ratio}。',
+  merge_analysis_overlap_colliding: '部分空間の衝突 — {oa} ↔ {ob} はランダム期待値の {xrandom}×（重複 {overlap}）ですが、方向はほぼ直交しています。共有モジュール {shared}/{modules}、エネルギー比 {ratio}。',
 
   // System View
   sysTitle: 'システム',

@@ -440,6 +440,10 @@ export default {
   merge_analysis_safe: '직교 — 병합 안전. 공유 모듈 {shared}/{modules}, 중복 비율 {ratio}. 최강 간섭쌍 {a} ↔ {b} ({strength} 간섭).',
   merge_analysis_reinforce: '구성적 — 입력이 서로 강화. 공유 모듈 {shared}/{modules}, 중복 비율 {ratio}. 최강 간섭쌍 {a} ↔ {b} ({strength} 간섭).',
   merge_analysis_cancel: '파괴적 — 입력이 서로 상쇄. 공유 모듈 {shared}/{modules}, 중복 비율 {ratio}. 최강 간섭쌍 {a} ↔ {b} ({strength} 간섭).',
+  merge_analysis_overlap_reinforcing: '부분공간 동방향 강화 — {oa} ↔ {ob}의 출력 부분공간이 무작위 기대치의 {xrandom}×(중복 {overlap})이며 방향도 일치합니다. 공유 모듈 {shared}/{modules}, 에너지 비율 {ratio}.',
+  merge_analysis_overlap_cancelling: '부분공간 상쇄 — {oa} ↔ {ob}의 출력 부분공간이 무작위 기대치의 {xrandom}×(중복 {overlap})이지만 방향이 반대입니다. 공유 모듈 {shared}/{modules}, 에너지 비율 {ratio}.',
+  merge_analysis_overlap_elevated: '부분공간 중복 높음 — {oa} ↔ {ob}가 무작위 기대치의 {xrandom}×(중복 {overlap})입니다. 가중치를 낮추고 먼저 테스트하세요. 공유 모듈 {shared}/{modules}, 에너지 비율 {ratio}.',
+  merge_analysis_overlap_colliding: '부분공간 충돌 — {oa} ↔ {ob}가 무작위 기대치의 {xrandom}×(중복 {overlap})이지만 방향은 거의 직교합니다. 공유 모듈 {shared}/{modules}, 에너지 비율 {ratio}.',
 
   // System View
   sysTitle: '시스템',

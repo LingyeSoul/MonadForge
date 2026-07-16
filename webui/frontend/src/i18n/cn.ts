@@ -440,6 +440,10 @@ export default {
   merge_analysis_safe: '正交 —— 可安全合并。共享模块 {shared}/{modules}，重叠比例 {ratio}。最强干扰对 {a} ↔ {b}（{strength} 干扰）。',
   merge_analysis_reinforce: '构造性 —— 输入相互增强。共享模块 {shared}/{modules}，重叠比例 {ratio}。最强干扰对 {a} ↔ {b}（{strength} 干扰）。',
   merge_analysis_cancel: '破坏性 —— 输入相互抵消。共享模块 {shared}/{modules}，重叠比例 {ratio}。最强干扰对 {a} ↔ {b}（{strength} 干扰）。',
+  merge_analysis_overlap_reinforcing: '子空间同向增强 —— {oa} ↔ {ob} 的输出子空间为随机期望的 {xrandom}×（重叠 {overlap}），且方向一致。共享模块 {shared}/{modules}，能量比例 {ratio}。',
+  merge_analysis_overlap_cancelling: '子空间相消 —— {oa} ↔ {ob} 的输出子空间为随机期望的 {xrandom}×（重叠 {overlap}），但方向相反，合并会互相抵消。共享模块 {shared}/{modules}，能量比例 {ratio}。',
+  merge_analysis_overlap_elevated: '子空间重叠偏高 —— {oa} ↔ {ob} 达到随机期望的 {xrandom}×（重叠 {overlap}），建议先降低权重并测试。共享模块 {shared}/{modules}，能量比例 {ratio}。',
+  merge_analysis_overlap_colliding: '子空间碰撞 —— {oa} ↔ {ob} 达到随机期望的 {xrandom}×（重叠 {overlap}），但方向近似正交，合并风险高。共享模块 {shared}/{modules}，能量比例 {ratio}。',
 
   // System View
   sysTitle: '系统',
