@@ -64,6 +64,55 @@ def _config_min_pixels() -> int:
         return 500_000
 
 
+def _target_res_values(extra) -> list[int]:
+    from library.datasets.buckets import ALLOWED_TARGET_RES
+
+    raw = None
+    if "--target_res" in extra:
+        start = extra.index("--target_res") + 1
+        values = []
+        for token in extra[start:]:
+            if token.startswith("--"):
+                break
+            values.append(token)
+        raw = values
+    if raw is None:
+        env_tr = os.environ.get("TARGET_RES")
+        if env_tr is not None:
+            raw = env_tr.replace(",", " ").split()
+        else:
+            from ._common import _path_overrides
+
+            raw = _path_overrides().get("target_res")
+    edges = raw if isinstance(raw, (list, tuple)) else [raw] if raw else []
+    try:
+        normalized = []
+        for edge in edges:
+            value = int(edge)
+            if value in ALLOWED_TARGET_RES and value not in normalized:
+                normalized.append(value)
+    except (TypeError, ValueError):
+        normalized = []
+    return normalized or [1024]
+
+
+def _explicit_option_value(extra, option: str) -> str | None:
+    """Return the last explicit value for a single-value option."""
+    prefix = option + "="
+    for index in range(len(extra) - 1, -1, -1):
+        token = extra[index]
+        if token.startswith(prefix):
+            value = token[len(prefix) :]
+            if not value:
+                raise ValueError(f"{option} requires a value")
+            return value
+        if token == option:
+            if index + 1 >= len(extra) or extra[index + 1].startswith("--"):
+                raise ValueError(f"{option} requires a value")
+            return extra[index + 1]
+    return None
+
+
 def _target_res_args(extra) -> list[str]:
     """``--target_res E1 E2 …`` derived from the merged TOML's ``target_res`` key.
 
@@ -76,28 +125,56 @@ def _target_res_args(extra) -> list[str]:
     if "--target_res" in extra:
         return []
 
-    from library.datasets.buckets import ALLOWED_TARGET_RES
-
-    # GUI Train auto-chain forwards tiers via env (its CONFIG_FILE snapshot strips
-    # target_res); env wins over the merged config. Space/comma separated edges.
-    env_tr = os.environ.get("TARGET_RES")
-    if env_tr is not None:
-        raw = env_tr.replace(",", " ").split()
-    else:
-        from ._common import _path_overrides
-
-        raw = _path_overrides().get("target_res")
-    if not raw:
-        return []
-    edges = raw if isinstance(raw, (list, tuple)) else [raw]
-    try:
-        edges = [int(e) for e in edges]
-    except (TypeError, ValueError):
-        return []
-    edges = [e for e in edges if e in ALLOWED_TARGET_RES]
-    if not edges or edges == [1024]:
+    edges = _target_res_values(extra)
+    if edges == [1024]:
         return []
     return ["--target_res", *(str(e) for e in edges)]
+
+
+def _multires_per_image_enabled(extra) -> bool:
+    if "--multires_per_image" in extra:
+        return True
+    if "--no-multires_per_image" in extra:
+        return False
+    raw = os.environ.get("MULTIRES_PER_IMAGE")
+    if raw is None:
+        from ._common import _path_overrides
+
+        raw = _path_overrides().get("multires_per_image", False)
+    return _boolish(raw, False)
+
+
+def _multires_root(extra, *, conditioning: bool = False) -> str:
+    explicit = _explicit_option_value(extra, "--multires_dir")
+    if explicit is not None:
+        return explicit
+    key = "conditioning_multires_dir" if conditioning else "multires_image_dir"
+    default = (
+        "post_image_dataset/cond_multires"
+        if conditioning
+        else "post_image_dataset/multires"
+    )
+    return _path(key, default)
+
+
+def _multires_resize_args(extra, *, conditioning: bool = False) -> list[str]:
+    if not _multires_per_image_enabled(extra):
+        return []
+    args = [] if "--multires_per_image" in extra else ["--multires_per_image"]
+    if _explicit_option_value(extra, "--multires_dir") is None:
+        args.extend(
+            ["--multires_dir", _multires_root(extra, conditioning=conditioning)]
+        )
+    return args
+
+
+def _multires_target_res_values(extra) -> list[int]:
+    edges = _target_res_values(extra)
+    if _multires_per_image_enabled(extra) and len(edges) < 2:
+        raise ValueError(
+            f"multires_per_image requires at least two target_res tiers; got {edges}"
+        )
+    return edges
 
 
 def _preprocess_path_pattern_args(extra) -> list[str]:
@@ -405,30 +482,45 @@ def _pop_resize_only_args(extra) -> list[str]:
     The VAE/TE/PE stages read whatever latent shapes are already on disk, so they
     must never see resize-only argparse flags.
     """
+    variable_value_options = {
+        "--target_res",
+        "--resize_bucket_resos",
+        "--resize-bucket-resos",
+        "--resize_crop_margins",
+        "--resize-crop-margins",
+    }
+    single_value_options = {
+        "--resize_crop_anchor",
+        "--resize-crop-anchor",
+        "--freefit_max_ratio",
+        "--freefit-max-ratio",
+        "--multires_dir",
+    }
+    flag_options = {
+        "--freefit",
+        "--multires_per_image",
+        "--no-multires_per_image",
+    }
     cleaned: list[str] = []
-    it = iter(extra)
-    for tok in it:
-        if tok in {
-            "--target_res",
-            "--resize_bucket_resos",
-            "--resize-bucket-resos",
-            "--resize_crop_margins",
-            "--resize-crop-margins",
-        }:
-            for nxt in it:
-                if nxt.startswith("--"):
-                    cleaned.append(nxt)
-                    break
+    i = 0
+    while i < len(extra):
+        tok = extra[i]
+        if tok in variable_value_options:
+            i += 1
+            while i < len(extra) and not extra[i].startswith("--"):
+                i += 1
             continue
-        if tok in {"--resize_crop_anchor", "--resize-crop-anchor"}:
-            next(it, None)
+        if tok.startswith("--multires_dir="):
+            i += 1
             continue
-        if tok in {"--freefit_max_ratio", "--freefit-max-ratio"}:
-            next(it, None)
+        if tok in single_value_options:
+            i += 2
             continue
-        if tok == "--freefit":  # store_true — no value to consume
+        if tok in flag_options:
+            i += 1
             continue
         cleaned.append(tok)
+        i += 1
     return cleaned
 
 
@@ -480,6 +572,7 @@ def cmd_preprocess_resize(extra):
     cd_args = _curation_decisions_args()
     rc_args = _resize_crop_args(extra)
     ff_args = _freefit_args(extra)
+    mr_args = _multires_resize_args(extra)
     run(
         [
             PY,
@@ -494,6 +587,7 @@ def cmd_preprocess_resize(extra):
             *tr_args,
             *rc_args,
             *ff_args,
+            *mr_args,
             *pp_args,
             *cd_args,
             *extra,
@@ -533,30 +627,43 @@ def cmd_preprocess_reconcile(extra):
 
 
 def cmd_preprocess_vae(extra):
-    pp_args = _preprocess_path_pattern_args(extra)
-    run(
-        [
-            PY,
-            "scripts/preprocess/cache_latents.py",
-            "--dir",
-            _path("resized_image_dir", "post_image_dataset/resized"),
-            "--cache_dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
-            "--vae",
-            _path("vae", "models/vae/qwen_image_vae.safetensors"),
-            "--batch_size",
-            "4",
-            "--chunk_size",
-            "64",
-            "--recursive",
-            *pp_args,
-            *extra,
+    multires = _multires_per_image_enabled(extra)
+    cleaned = _pop_resize_only_args(extra)
+    _, cleaned = _resolve_lowres_filter(cleaned)
+    cleaned = _drop_option_with_value(cleaned, {"--min_pixels"})
+    pp_args = _preprocess_path_pattern_args(cleaned)
+    data_dirs = [_path("resized_image_dir", "post_image_dataset/resized")]
+    if multires:
+        root = _multires_root(extra)
+        data_dirs = [
+            os.path.join(root, str(edge)) for edge in _multires_target_res_values(extra)
         ]
-    )
+    for data_dir in data_dirs:
+        run(
+            [
+                PY,
+                "scripts/preprocess/cache_latents.py",
+                "--dir",
+                data_dir,
+                "--cache_dir",
+                _path("lora_cache_dir", "post_image_dataset/lora"),
+                "--vae",
+                _path("vae", "models/vae/qwen_image_vae.safetensors"),
+                "--batch_size",
+                "4",
+                "--chunk_size",
+                "64",
+                "--recursive",
+                *pp_args,
+                *cleaned,
+            ]
+        )
 
 
 def cmd_preprocess_cond_resize(extra):
     """Resize conditioning images to match target bucket resolutions."""
+    tr_args = _target_res_args(extra)
+    mr_args = _multires_resize_args(extra, conditioning=True)
     run(
         [
             PY,
@@ -575,6 +682,8 @@ def cmd_preprocess_cond_resize(extra):
             ),
             "--no_copy_captions",
             "--recursive",
+            *tr_args,
+            *mr_args,
             *extra,
         ]
     )
@@ -582,32 +691,45 @@ def cmd_preprocess_cond_resize(extra):
 
 def cmd_preprocess_cond_vae(extra):
     """Cache VAE latents for conditioning images."""
-    pp_args = _preprocess_path_pattern_args(extra)
-    run(
-        [
-            PY,
-            "scripts/preprocess/cache_latents.py",
-            "--dir",
-            _path(
-                "conditioning_resized_dir",
-                os.environ.get(
-                    "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
-                ),
+    multires = _multires_per_image_enabled(extra)
+    cleaned = _pop_resize_only_args(extra)
+    _, cleaned = _resolve_lowres_filter(cleaned)
+    cleaned = _drop_option_with_value(cleaned, {"--min_pixels"})
+    pp_args = _preprocess_path_pattern_args(cleaned)
+    data_dirs = [
+        _path(
+            "conditioning_resized_dir",
+            os.environ.get(
+                "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
             ),
-            "--cache_dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
-            "--vae",
-            _path("vae", "models/vae/qwen_image_vae.safetensors"),
-            "--batch_size",
-            "4",
-            "--chunk_size",
-            "64",
-            "--recursive",
-            "--no_half_vae",
-            *pp_args,
-            *extra,
+        )
+    ]
+    if multires:
+        root = _multires_root(extra, conditioning=True)
+        data_dirs = [
+            os.path.join(root, str(edge)) for edge in _multires_target_res_values(extra)
         ]
-    )
+    for data_dir in data_dirs:
+        run(
+            [
+                PY,
+                "scripts/preprocess/cache_latents.py",
+                "--dir",
+                data_dir,
+                "--cache_dir",
+                _path("lora_cache_dir", "post_image_dataset/lora"),
+                "--vae",
+                _path("vae", "models/vae/qwen_image_vae.safetensors"),
+                "--batch_size",
+                "4",
+                "--chunk_size",
+                "64",
+                "--recursive",
+                "--no_half_vae",
+                *pp_args,
+                *cleaned,
+            ]
+        )
 
 
 def _variant_settings() -> tuple[str, str, str]:
@@ -856,8 +978,7 @@ def cmd_preprocess(extra):
     # VAE/TE steps read on-disk shapes — strip the low-res convenience flags AND
     # the resize-only --target_res so their argparse never sees an undefined arg.
     downstream = _pop_resize_only_args(extra)
-    _, vae_extra = _resolve_lowres_filter(downstream)
-    cmd_preprocess_vae(vae_extra)
+    cmd_preprocess_vae(extra)
     cmd_preprocess_te(downstream, caption_config=caption_config)
     # Caption index as a free by-product — consumed by the IP-Adapter pair sampler,
     # artist balancing, analytics, AND soft-tokens (which hard-errors without it).

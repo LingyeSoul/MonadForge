@@ -1637,6 +1637,9 @@ class AnimaTrainer:
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
+        for dataset_group in (train_dataset_group, val_dataset_group):
+            if dataset_group is not None and hasattr(dataset_group, "set_shared_epoch"):
+                dataset_group.set_shared_epoch(current_epoch)
         ds_for_collator = (
             train_dataset_group if args.max_data_loader_n_workers == 0 else None
         )

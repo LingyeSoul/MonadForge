@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 from webui.services import preprocess_service as svc
 
@@ -32,6 +32,27 @@ class PreprocessSettings(BaseModel):
     # scalar was dropped under free-fit. Saved to configs/custom/preprocess.toml
     # so WebUI edits don't dirty the git-tracked repo copy.
     target_res: list[int] = [1024]
+    multires_per_image: bool = False
+
+    @field_validator("target_res")
+    @classmethod
+    def validate_target_res(cls, edges: list[int]) -> list[int]:
+        allowed = {512, 768, 896, 1024, 1280, 1536}
+        normalized = sorted(set(edges))
+        invalid = [edge for edge in normalized if edge not in allowed]
+        if not normalized:
+            raise ValueError("target_res must contain at least one tier")
+        if invalid:
+            raise ValueError(f"unsupported target_res tier(s): {invalid}")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_multires_tiers(self):
+        if self.multires_per_image and len(self.target_res) < 2:
+            raise ValueError(
+                "multires_per_image requires at least two target_res tiers"
+            )
+        return self
 
 
 class CacheCounts(BaseModel):
@@ -115,7 +136,9 @@ def save_paths(
 ):
     """Save path overrides to the variant TOML."""
     if not variant:
-        raise HTTPException(status_code=400, detail="variant query parameter is required")
+        raise HTTPException(
+            status_code=400, detail="variant query parameter is required"
+        )
     return svc.save_path_overrides(variant, body.model_dump(exclude_none=True))
 
 

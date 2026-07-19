@@ -273,6 +273,8 @@ def resize_to_buckets(
     crop_margins=None,
     fit_mode: str = DEFAULT_FIT_MODE,
     max_ratio: float = DEFAULT_FREEFIT_MAX_RATIO,
+    multires_per_image: bool = False,
+    multires_dir: Path | None = None,
     progress: ProgressFn | None = None,
 ) -> tuple[PreprocessStats, dict[tuple[int, int], int]]:
     """Resize+crop every image under ``src`` into bucket resolutions under ``dst``.
@@ -285,7 +287,73 @@ def resize_to_buckets(
     Unless ``overwrite`` is set, images whose resized PNG already exists at the
     correct bucket are skipped — a re-run only touches images whose target
     bucket changed (e.g. after adding a ``--target_res`` tier).
+
+    With ``multires_per_image``, the normal nearest-tier output is still written
+    to ``dst`` for caption/mask/PE preprocessing. In addition, every source image
+    is written once per selected tier under ``multires_dir/<edge>/``. The VAE
+    cache step consumes those staging trees and keeps all resulting resolution
+    caches for the same stem; training then expands them into separate samples.
     """
+    if multires_per_image:
+        tiers = sorted(set(target_res or DEFAULT_TARGET_RES))
+        if multires_dir is None:
+            multires_dir = dst.parent / "multires"
+
+        primary_stats, _ = resize_to_buckets(
+            src,
+            dst,
+            resolution=resolution,
+            min_bucket_reso=min_bucket_reso,
+            max_bucket_reso=max_bucket_reso,
+            bucket_reso_steps=bucket_reso_steps,
+            target_res=tiers,
+            workers=workers,
+            min_pixels=min_pixels,
+            copy_captions=copy_captions,
+            recursive=recursive,
+            path_pattern=path_pattern,
+            verbose=verbose,
+            overwrite=overwrite,
+            curation_decisions=curation_decisions,
+            crop_anchor=crop_anchor,
+            bucket_resos=bucket_resos,
+            crop_margins=crop_margins,
+            fit_mode=fit_mode,
+            max_ratio=max_ratio,
+            progress=progress,
+        )
+        staged_counts: dict[tuple[int, int], int] = {}
+        for edge in tiers:
+            tier_stats, tier_counts = resize_to_buckets(
+                src,
+                multires_dir / str(edge),
+                resolution=resolution,
+                min_bucket_reso=min_bucket_reso,
+                max_bucket_reso=max_bucket_reso,
+                bucket_reso_steps=bucket_reso_steps,
+                target_res=[edge],
+                workers=workers,
+                min_pixels=min_pixels,
+                copy_captions=False,
+                recursive=recursive,
+                path_pattern=path_pattern,
+                verbose=False,
+                overwrite=overwrite,
+                curation_decisions=curation_decisions,
+                crop_anchor=crop_anchor,
+                bucket_resos=bucket_resos,
+                crop_margins=crop_margins,
+                fit_mode=fit_mode,
+                max_ratio=max_ratio,
+                progress=None,
+            )
+            primary_stats.written += tier_stats.written
+            primary_stats.skipped += tier_stats.skipped
+            primary_stats.failed += tier_stats.failed
+            for reso, count in tier_counts.items():
+                staged_counts[reso] = staged_counts.get(reso, 0) + count
+        return primary_stats, staged_counts
+
     dst.mkdir(parents=True, exist_ok=True)
 
     bucket_args = (

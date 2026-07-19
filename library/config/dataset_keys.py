@@ -27,6 +27,7 @@ _DATASET_ASCENDABLE_KEYS = frozenset(
         "validation_split_num",
         "network_multiplier",
         "resize_interpolation",
+        "multires_per_image",
     }
 )
 _SUBSET_ASCENDABLE_KEYS = frozenset(

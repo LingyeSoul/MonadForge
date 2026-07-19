@@ -695,6 +695,10 @@ def load_method_preset(
     merged: dict = {}
     provenance: dict[str, str] = {}
 
+    # These preprocess-owned knobs also describe the on-disk dataset contract.
+    # `target_res` decides which tiers exist; `multires_per_image` decides whether
+    # every stem must have one cache in every selected tier. Training consumes
+    # both to validate and expand the self-describing cache pool.
     # `target_res` is a preprocess-only knob (it decides what each image is
     # resized to). Training is now self-describing: the bucket table is the full
     # native-shape catalog and the compile cache is sized from the buckets the
@@ -708,9 +712,10 @@ def load_method_preset(
     if os.path.exists(preprocess_path):
         with open(preprocess_path, "r", encoding="utf-8") as f:
             pp_raw = toml.load(f)
-        if "target_res" in pp_raw:
-            merged["target_res"] = pp_raw["target_res"]
-            provenance["target_res"] = _display_path(preprocess_path)
+        for key in ("target_res", "multires_per_image"):
+            if key in pp_raw:
+                merged[key] = pp_raw[key]
+                provenance[key] = _display_path(preprocess_path)
 
     # preprocess.toml owns target_res; a stale copy in base.toml must not clobber
     # the seed above (preset / method / CLI may still override per run).

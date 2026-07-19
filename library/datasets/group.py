@@ -175,6 +175,10 @@ class DatasetGroup(torch.utils.data.ConcatDataset):
         for dataset in self.datasets:
             dataset.set_current_epoch(epoch)
 
+    def set_shared_epoch(self, epoch):
+        for dataset in self.datasets:
+            dataset.set_shared_epoch(epoch)
+
     def set_current_step(self, step):
         for dataset in self.datasets:
             dataset.set_current_step(step)

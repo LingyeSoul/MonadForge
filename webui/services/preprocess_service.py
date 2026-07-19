@@ -80,7 +80,13 @@ def save_path_overrides(variant: str, data: dict[str, str]) -> dict[str, str]:
         variant_metadata,
     )
 
-    allowed = {"source_image_dir", "resized_image_dir", "lora_cache_dir", "conditioning_data_dir", "conditioning_resized_dir"}
+    allowed = {
+        "source_image_dir",
+        "resized_image_dir",
+        "lora_cache_dir",
+        "conditioning_data_dir",
+        "conditioning_resized_dir",
+    }
     filtered = {k: v for k, v in data.items() if k in allowed and v}
     # Gate conditioning keys by variant family — only conditioning-capable
     # families (controlnet / easycontrol) may carry them. Any other family
@@ -122,6 +128,7 @@ DEFAULTS = {
     # never matched the real output. This list is the value the resize step
     # consumes (saved to configs/preprocess.toml).
     "target_res": [1024],
+    "multires_per_image": False,
 }
 
 
@@ -210,6 +217,20 @@ def get_target_res() -> list[int]:
     return _normalize_target_res(overrides.get("target_res"))
 
 
+def get_multires_per_image() -> bool:
+    from library.config.io import load_path_overrides
+
+    overrides = load_path_overrides(
+        preset="default",
+        method=os.environ.get("METHOD") or None,
+        methods_subdir="gui-methods" if os.environ.get("METHOD") else "methods",
+    )
+    raw = overrides.get("multires_per_image", DEFAULTS["multires_per_image"])
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(raw)
+
+
 def save_target_res(edges: list[int]) -> list[int]:
     """Persist the free-fit tier set to ``configs/custom/preprocess.toml``.
 
@@ -240,10 +261,26 @@ def save_target_res(edges: list[int]) -> list[int]:
     return normalized
 
 
+def save_multires_per_image(enabled: bool) -> bool:
+    value = bool(enabled)
+    if PREPROCESS_TOML.exists():
+        data = toml.loads(PREPROCESS_TOML.read_text(encoding="utf-8"))
+    else:
+        data = {}
+    data["multires_per_image"] = value
+    PREPROCESS_TOML.parent.mkdir(parents=True, exist_ok=True)
+    tmp = PREPROCESS_TOML.parent / (PREPROCESS_TOML.name + ".tmp")
+    tmp.write_text(toml.dumps(data), encoding="utf-8")
+    os.replace(tmp, PREPROCESS_TOML)
+    return value
+
+
 def get_settings() -> dict:
     """Read both config files and return a unified settings dict."""
     sam = _load_sam()
     gui = _load_gui_settings()
+    target_res = get_target_res()
+    multires_per_image = get_multires_per_image() and len(target_res) >= 2
     return {
         "sam": {
             "prompts": sam.get("prompts", DEFAULTS["sam_prompts"]),
@@ -264,7 +301,8 @@ def get_settings() -> dict:
         "mit_dilate": gui.get("mit_dilate", DEFAULTS["mit_dilate"]),
         # From the config chain (configs/custom/preprocess.toml → preset → method),
         # not webui_settings.json — it's the value resize actually uses.
-        "target_res": get_target_res(),
+        "target_res": target_res,
+        "multires_per_image": multires_per_image,
     }
 
 
@@ -306,9 +344,24 @@ def save_settings(data: dict) -> dict:
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(gui, indent=2), encoding="utf-8")
 
+    target_res = (
+        _normalize_target_res(data["target_res"])
+        if "target_res" in data
+        else get_target_res()
+    )
+    multires_per_image = (
+        bool(data["multires_per_image"])
+        if "multires_per_image" in data
+        else get_multires_per_image()
+    )
+    if multires_per_image and len(target_res) < 2:
+        raise ValueError("multires_per_image requires at least two target_res tiers")
+
     # ── target_res → configs/custom/preprocess.toml ──
     if "target_res" in data:
-        save_target_res(data["target_res"])
+        save_target_res(target_res)
+    if "multires_per_image" in data:
+        save_multires_per_image(multires_per_image)
 
     return get_settings()
 
@@ -348,7 +401,9 @@ def adapter_stats(source_dir: str) -> dict:
     lora cache directory matching the source stems.
     """
     src = _resolve(source_dir)
-    cache_dir = _resolve(get_path_overrides().get("lora_cache_dir", "post_image_dataset/lora"))
+    cache_dir = _resolve(
+        get_path_overrides().get("lora_cache_dir", "post_image_dataset/lora")
+    )
 
     source_count = 0
     caption_count = 0

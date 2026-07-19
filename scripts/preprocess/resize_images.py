@@ -67,6 +67,21 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--multires_per_image",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Write every source image once per target_res tier under --multires_dir. "
+            "Requires at least two target_res values."
+        ),
+    )
+    parser.add_argument(
+        "--multires_dir",
+        type=str,
+        default=None,
+        help="Staging root for per-tier images (default: sibling multires/ directory).",
+    )
+    parser.add_argument(
         "--workers", type=int, default=4, help="Number of parallel workers (default: 4)"
     )
     parser.add_argument(
@@ -181,6 +196,8 @@ def main() -> None:
             parser.error(
                 f"--target_res {bad} not in allowed tiers {list(ALLOWED_TARGET_RES)}"
             )
+    if args.multires_per_image and len(args.target_res or [1024]) < 2:
+        parser.error("--multires_per_image requires at least two --target_res values")
 
     resize_to_buckets(
         Path(args.src),
@@ -205,6 +222,8 @@ def main() -> None:
         crop_margins=args.resize_crop_margins,
         fit_mode="freefit",
         max_ratio=args.freefit_max_ratio,
+        multires_per_image=args.multires_per_image,
+        multires_dir=Path(args.multires_dir) if args.multires_dir else None,
         progress=tqdm_progress("Resizing"),
     )
 

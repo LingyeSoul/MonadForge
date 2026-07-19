@@ -131,6 +131,45 @@ These read `post_image_dataset/resized/` (the resized output of
 present, falling back to legacy `masks/{merged,sam,mit}/` so users who
 haven't re-run `make mask` after the consolidation keep training.
 
+## Multiple resolutions per image in one epoch
+
+This mode repeats every source image once at every selected free-fit tier in
+the **same epoch**. Configure it in `configs/custom/preprocess.toml` (or in the
+WebUI **Preprocess** view), then run the complete preprocessing pipeline:
+
+```toml
+target_res = [512, 896, 1024]
+multires_per_image = true
+```
+
+```bash
+make preprocess
+```
+
+At least two distinct tiers are required. Supported tier edges are `512`,
+`768`, `896`, `1024`, `1280`, and `1536`. Preprocessing keeps the normal
+nearest-tier image under `post_image_dataset/resized/`, writes one variant per
+selected tier under `post_image_dataset/multires/<edge>/`, and creates a separate
+`{stem}_{WxH}_anima.npz` latent cache for every selected tier. Caption, text
+encoder, PE, and mask sidecars remain shared by all variants.
+
+Training expands each image/tier pair into a distinct sample before bucket
+construction. Therefore, with `N` source images, `T` tiers, and
+`num_repeats = 1`, an epoch exposes `N * T` samples. Batches remain
+shape-homogeneous, and incomplete bucket tails are retained so a tier cannot be
+silently dropped when `batch_size > 1`. The train/validation split happens
+before expansion, keeping all resolutions of one source image on the same side
+of the split.
+
+After changing the selected tiers, run `make preprocess` again. Existing
+matching caches are reused, newly selected tiers are generated, and stale tiers
+outside the active list are ignored by training. Startup fails early if any
+selected image/tier cache is missing or malformed.
+
+This is different from [staged-resolution training](staged-resolution-training.md):
+multi-resolution-per-image mixes every selected tier into each epoch, while a
+stage schedule switches the entire active dataset at progress boundaries.
+
 ## Dataset configuration
 
 The default LoRA blueprint lives in `base.toml` (under `[general]` /

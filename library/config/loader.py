@@ -116,6 +116,7 @@ class BaseDatasetParams:
     validation_split: float = 0.0
     validation_split_num: int = 0
     resize_interpolation: Optional[str] = None
+    multires_per_image: bool = False
 
 
 @dataclass
@@ -214,6 +215,7 @@ class ConfigSanitizer:
         "validation_split_num": int,
         "network_multiplier": float,
         "resize_interpolation": str,
+        "multires_per_image": bool,
     }
 
     # options handled by argparse but not handled by user config
@@ -451,6 +453,7 @@ def generate_dataset_group_by_blueprint(
             subsets=subsets,
             **asdict(dataset_blueprint.params),
             is_training_dataset=True,
+            target_res=target_res,
         )
         datasets.append(dataset)
 
@@ -479,6 +482,7 @@ def generate_dataset_group_by_blueprint(
             subsets=subsets,
             **asdict(dataset_blueprint.params),
             is_training_dataset=False,
+            target_res=target_res,
         )
         # When validation_split_num >= subset image count, split_train_val
         # disables the val slice for that subset (see library/datasets/subsets.py).

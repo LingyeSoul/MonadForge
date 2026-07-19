@@ -1,15 +1,21 @@
 # Preprocess settings — split out of base.toml so they survive `make update`.
 # Read by the preprocess pipeline via library.config.io.load_path_overrides,
 # layered: preprocess.toml → base.toml → presets.toml[<preset>] → methods/<method>.
-# `target_res` is dual-use: train.py reads it too (though it's inert at train time
-# — the on-disk caches are the source of truth for which tiers are present).
+# `target_res` is dual-use: train.py records it and, when multires_per_image=true,
+# uses it to require and expand one latent cache per selected tier. In the default
+# nearest-tier mode, the on-disk caches remain the source of truth.
 
 source_image_dir = "image_dataset"
 
-# Multi-scale constant-token tiers. Each image goes to the tier that resizes it
+# Multi-scale free-fit tiers. Each image goes to the tier that resizes it
 # the LEAST (see library/datasets/buckets.py). Allowed edges: 512 768 896 1024
 # 1280 1536. `[1024]` = single ~1MP tier. Override: make preprocess ARGS="--target_res 1024 1536"
 target_res = [1024, 896]
+
+# Repeat every source image at every selected target_res tier in each epoch.
+# This multiplies the number of training samples by the tier count and requires
+# one VAE cache per image/tier. Keep false for nearest-tier-per-image behavior.
+multires_per_image = false
 
 # Caption shuffle variants per image (0 = single caption). v0 = pristine original;
 # v1..v{N-1} are smart-shuffled, with optional tag dropout / identity-randomize.

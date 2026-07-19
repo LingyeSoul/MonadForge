@@ -134,7 +134,7 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 |------|---------|
 | **⚙️ Config** | 可视化配置编辑器 — 方法/变体/预设选择、TOML 字段级编辑、实时帮助提示、自定义变体与预设创建 |
 | **📁 Dataset** | 数据集浏览器 — 多目录管理、缩略图网格/列表视图、搜索筛选、排序、图片详情与标签编辑 |
-| **🔧 Preprocess** | 预处理流水线 — 状态仪表盘、数据集路径配置、一键执行 resize/VAE cache/TE cache/PE cache/mask |
+| **🔧 Preprocess** | 预处理流水线 — 状态仪表盘、数据集路径配置、一键执行 resize/VAE cache/TE cache/PE cache/mask，并支持同一源图在单个 epoch 内遍历多个分辨率档位 |
 | **🧩 Adapter** | 适配器管理 — 查看已训练 LoRA/HydraLoRA 检查点、版本信息、元数据浏览 |
 | **🧪 Distill** | 蒸馏配置 — Modulation Guidance 蒸馏参数编辑、训练启动、状态监控 |
 | **🔀 Merge** | 模型合并 — 文件树浏览、合并策略选择、多检查点融合为独立 DiT |
@@ -197,6 +197,7 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 | **ControlNet 预处理** | ✅ 内置 canny/depth/pose 预处理与数据集生成 | ❌ 实验性 / 缺失 |
 | **蒸馏 UI** | ✅ 完整的 Modulation Guidance 蒸馏配置界面 | ❌ 仅命令行 |
 | **自定义数据集路径** | ✅ WebUI 配置多组 source/resized/cache 路径 | ❌ 手动编辑 TOML |
+| **单 epoch 多分辨率** | ✅ 每张源图按所选 free-fit 档位分别缓存，并在每个 epoch 中全部参与训练（[使用说明](docs/guidelines/training.md#multiple-resolutions-per-image-in-one-epoch)） | ❌ 每张图只使用一个就近档位 |
 | **自定义预设** | ✅ 图形化创建硬件预设（VRAM 档位） | ❌ 仅内置预设 |
 | **文件浏览器** | ✅ 内置目录树浏览、模型选择器 | ❌ 系统文件对话框 |
 | **WebSocket 日志** | ✅ 彩色分级实时日志流（INFO/WARN/ERROR） | ❌ 文件 tail |

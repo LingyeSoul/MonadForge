@@ -164,6 +164,159 @@ def test_target_res_args_env_wins_over_config(monkeypatch):
     assert _target_res_args(["--target_res", "768"]) == []
 
 
+def test_multires_resize_and_vae_commands_cover_every_tier(monkeypatch):
+    from scripts.tasks import preprocess
+
+    calls: list[list[str]] = []
+    values = {
+        "source_image_dir": "image_dataset",
+        "resized_image_dir": "post/resized",
+        "multires_image_dir": "post/multires",
+        "lora_cache_dir": "post/lora",
+        "vae": "models/vae.safetensors",
+    }
+    _stub_overrides(
+        monkeypatch,
+        {"target_res": [512, 1024], "multires_per_image": True},
+    )
+    monkeypatch.delenv("TARGET_RES", raising=False)
+    monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
+    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    monkeypatch.setattr(
+        preprocess, "_path", lambda key, default: values.get(key, default)
+    )
+
+    preprocess.cmd_preprocess_resize([])
+    resize_command = calls.pop()
+    assert "--multires_per_image" in resize_command
+    assert resize_command[resize_command.index("--multires_dir") + 1] == "post/multires"
+    target_index = resize_command.index("--target_res")
+    assert resize_command[target_index + 1 : target_index + 3] == [
+        "512",
+        "1024",
+    ]
+
+    preprocess.cmd_preprocess_vae([])
+    vae_dirs = [
+        command[command.index("--dir") + 1].replace("\\", "/") for command in calls
+    ]
+    assert vae_dirs == [
+        "post/multires/512",
+        "post/multires/1024",
+    ]
+    assert all("--multires_per_image" not in command for command in calls)
+
+
+def test_explicit_multires_dir_is_shared_by_resize_and_vae(monkeypatch):
+    from scripts.tasks import preprocess
+
+    calls: list[list[str]] = []
+    values = {
+        "source_image_dir": "image_dataset",
+        "resized_image_dir": "post/resized",
+        "lora_cache_dir": "post/lora",
+        "vae": "models/vae.safetensors",
+    }
+    _stub_overrides(
+        monkeypatch,
+        {"target_res": [512, 1024], "multires_per_image": True},
+    )
+    monkeypatch.delenv("TARGET_RES", raising=False)
+    monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
+    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+    monkeypatch.setattr(
+        preprocess, "_path", lambda key, default: values.get(key, default)
+    )
+
+    extra = [
+        "--multires_per_image",
+        "--target_res",
+        "512",
+        "1024",
+        "--multires_dir",
+        "custom/mr",
+    ]
+    preprocess.cmd_preprocess_resize(extra)
+    resize_command = calls.pop()
+    assert resize_command[resize_command.index("--multires_dir") + 1] == "custom/mr"
+
+    preprocess.cmd_preprocess_vae(extra)
+    vae_dirs = [
+        command[command.index("--dir") + 1].replace("\\", "/") for command in calls
+    ]
+    assert vae_dirs == ["custom/mr/512", "custom/mr/1024"]
+    assert all("--multires_dir" not in command for command in calls)
+
+    calls.clear()
+    preprocess.cmd_preprocess_cond_resize(extra)
+    cond_resize_command = calls.pop()
+    assert (
+        cond_resize_command[cond_resize_command.index("--multires_dir") + 1]
+        == "custom/mr"
+    )
+
+    preprocess.cmd_preprocess_cond_vae(extra)
+    cond_vae_dirs = [
+        command[command.index("--dir") + 1].replace("\\", "/") for command in calls
+    ]
+    assert cond_vae_dirs == ["custom/mr/512", "custom/mr/1024"]
+
+
+def test_pop_resize_only_args_keeps_following_downstream_flag():
+    from scripts.tasks.preprocess import _pop_resize_only_args
+
+    assert _pop_resize_only_args(
+        [
+            "--target_res",
+            "512",
+            "1024",
+            "--multires_per_image",
+            "--batch_size",
+            "2",
+        ]
+    ) == ["--batch_size", "2"]
+
+
+def test_multires_vae_requires_at_least_two_target_tiers(monkeypatch):
+    import pytest
+
+    from scripts.tasks import preprocess
+
+    _stub_overrides(
+        monkeypatch,
+        {"target_res": [1024], "multires_per_image": True},
+    )
+    monkeypatch.delenv("TARGET_RES", raising=False)
+    monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
+
+    with pytest.raises(ValueError, match="at least two target_res tiers"):
+        preprocess.cmd_preprocess_vae([])
+
+
+def test_preprocess_vae_strips_resize_lowres_arguments(monkeypatch):
+    from scripts.tasks import preprocess
+
+    calls: list[list[str]] = []
+    _stub_overrides(
+        monkeypatch,
+        {"target_res": [1024], "multires_per_image": False},
+    )
+    monkeypatch.delenv("TARGET_RES", raising=False)
+    monkeypatch.delenv("MULTIRES_PER_IMAGE", raising=False)
+    monkeypatch.setattr(preprocess, "run", lambda command: calls.append(command))
+
+    preprocess.cmd_preprocess_vae(
+        ["--min_pixels", "250000", "--no_drop_lowres", "--overwrite"]
+    )
+
+    assert len(calls) == 1
+    command = calls[0]
+    assert "--min_pixels" not in command
+    assert "--no_drop_lowres" not in command
+    assert "--drop_lowres" not in command
+    assert "--overwrite" in command
+
+
 def test_caption_correction_config_parses_trigger_cli_args():
     from scripts.tasks.preprocess import _caption_correction_config
 

@@ -231,9 +231,30 @@ make preprocess-pe           # （可选）PE-Core 视觉编码器特征缓存 �
 ### 6.1 缩放的作用
 
 - 按照 VAE 要求的像素对齐方式缩放图像
-- 自动归类到满足 (H/16) × (W/16) ≈ 4096 个 patch 的*固定 token 分辨率桶*
+- 根据所选 `target_res` 档位进入 free-fit token 区间，尽量保留原始宽高比并减少裁剪
 - 自动排除过小的图像（默认低于 0.5MP），并生成报告
 - 结果以 PNG 格式保存到 `post_image_dataset/resized/`
+
+#### 6.1.1 单个 epoch 内使用多种分辨率
+
+如果希望**同一张源图在每个 epoch 中按所有选中分辨率各训练一次**，可在 WebUI 的 **Preprocess** 页面选择至少两个分辨率档位并启用“每张图遍历全部档位”，或编辑 `configs/custom/preprocess.toml`：
+
+```toml
+target_res = [512, 896, 1024]
+multires_per_image = true
+```
+
+随后运行完整预处理：
+
+```bash
+make preprocess
+```
+
+可用档位为 `512`、`768`、`896`、`1024`、`1280`、`1536`，启用本模式时至少需要两个不同档位。额外缩放图写入 `post_image_dataset/multires/<档位>/`，每个图像/档位会生成独立 VAE latent；标注、文本嵌入、PE 特征和 mask 仍由同一源图共享。
+
+若有 `N` 张源图、`T` 个档位且 `num_repeats = 1`，一个 epoch 会包含 `N × T` 个样本。训练/验证划分在多分辨率展开之前完成，因此同一源图的所有档位不会跨到训练集和验证集两侧。修改档位后重新运行 `make preprocess` 即可补齐新缓存；训练启动时会拒绝缺失或损坏的选中档位缓存。
+
+这与[分阶段分辨率训练](staged-resolution-training.md)不同：本模式在**每个 epoch 内混合所有档位**，分阶段训练则按训练进度整体切换数据集。
 
 ### 6.2 潜变量缓存
 

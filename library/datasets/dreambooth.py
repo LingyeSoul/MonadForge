@@ -5,6 +5,7 @@ import os
 import random
 from typing import List, Optional, Sequence, Tuple
 
+import numpy as np
 from tqdm import tqdm
 
 from library.anima.text_strategies import LatentsCachingStrategy
@@ -22,6 +23,8 @@ from library.datasets.subsets import (
     folder_repeat_count,
     split_train_val,
 )
+from library.datasets.buckets import freefit_band_for_edge
+from library.io.cache import parse_latent_cache_name
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,8 @@ class DreamBoothDataset(BaseDataset):
         validation_seed: Optional[int],
         resize_interpolation: Optional[str],
         validation_split_num: int = 0,
+        multires_per_image: bool = False,
+        target_res: Optional[Sequence[int]] = None,
     ) -> None:
         super().__init__(network_multiplier, debug_dataset, resize_interpolation)
 
@@ -133,6 +138,116 @@ class DreamBoothDataset(BaseDataset):
         self.validation_seed = validation_seed
         self.validation_split = validation_split
         self.validation_split_num = int(validation_split_num or 0)
+        self.multires_per_image = bool(multires_per_image)
+        self.multires_target_res = tuple(
+            dict.fromkeys(int(edge) for edge in (target_res or ()))
+        )
+        if self.multires_per_image and len(self.multires_target_res) < 2:
+            raise ValueError(
+                "multires_per_image=true requires at least two target_res tiers"
+            )
+        multires_cache_index: dict[str, dict[str, list]] = {}
+
+        def cache_validation_error(cache) -> str | None:
+            suffix = f"_{cache.height // 8}x{cache.width // 8}"
+            required = {
+                f"latents{suffix}",
+                f"original_size{suffix}",
+                f"crop_ltrb{suffix}",
+            }
+            try:
+                with np.load(cache.path, allow_pickle=False) as npz:
+                    missing = sorted(required.difference(npz.files))
+            except Exception as exc:
+                return f"{type(exc).__name__}: {exc}"
+            if missing:
+                return f"missing NPZ key(s) {missing}"
+            return None
+
+        def multires_cache_variants(subset, img_path: str):
+            cache_root = getattr(subset, "cache_dir", None)
+            if cache_root:
+                try:
+                    rel_dir = os.path.relpath(
+                        os.path.dirname(img_path), subset.image_dir
+                    )
+                except ValueError:
+                    rel_dir = ""
+                root = (
+                    os.path.join(cache_root, rel_dir)
+                    if rel_dir not in {"", "."}
+                    else cache_root
+                )
+            else:
+                root = os.path.dirname(img_path)
+
+            stem = os.path.splitext(os.path.basename(img_path))[0]
+            root_key = os.path.normcase(os.path.abspath(root))
+            by_stem = multires_cache_index.get(root_key)
+            if by_stem is None:
+                by_stem = {}
+                for path in glob.glob(os.path.join(root, "*_anima.npz")):
+                    parsed = parse_latent_cache_name(path)
+                    if parsed is not None:
+                        by_stem.setdefault(parsed.stem, []).append(parsed)
+                multires_cache_index[root_key] = by_stem
+            candidates = by_stem.get(stem, [])
+            if not candidates:
+                raise FileNotFoundError(
+                    f"multires_per_image=true but no VAE caches were found for "
+                    f"{img_path!r} under {root!r}; run the multi-resolution "
+                    "resize and VAE preprocess steps first"
+                )
+
+            selected = []
+            missing = []
+            invalid: dict[int, list[str]] = {}
+            for edge in self.multires_target_res:
+                lo, hi = freefit_band_for_edge(edge)
+                matches = [
+                    item
+                    for item in candidates
+                    if lo <= (item.width // 16) * (item.height // 16) <= hi
+                ]
+                if not matches:
+                    missing.append(edge)
+                    continue
+                valid_matches = []
+                validation_errors = []
+                for item in matches:
+                    error = cache_validation_error(item)
+                    if error is None:
+                        valid_matches.append(item)
+                    else:
+                        validation_errors.append(f"{item.path}: {error}")
+                if not valid_matches:
+                    invalid[edge] = validation_errors
+                    continue
+                if len(valid_matches) > 1:
+                    paths = ", ".join(str(item.path) for item in valid_matches)
+                    raise ValueError(
+                        f"multires_per_image=true but {img_path!r} has multiple "
+                        f"usable VAE caches for tier {edge}: {paths}. Remove stale "
+                        "same-tier caches and rerun VAE preprocessing; selecting by "
+                        "file timestamp could silently train the wrong crop."
+                    )
+                selected.append(valid_matches[0])
+            if missing:
+                raise FileNotFoundError(
+                    f"multires_per_image=true but {img_path!r} is missing VAE "
+                    f"cache tier(s) {missing}; expected target_res="
+                    f"{list(self.multires_target_res)} under {root!r}"
+                )
+            unusable = [edge for edge in self.multires_target_res if edge in invalid]
+            if unusable:
+                details = "; ".join(
+                    f"tier {edge}: {', '.join(invalid[edge])}" for edge in unusable
+                )
+                raise ValueError(
+                    f"multires_per_image=true but {img_path!r} has no usable VAE "
+                    f"cache for tier(s) {unusable}: {details}"
+                )
+            return selected
 
         def load_dreambooth_dir(subset: DreamBoothSubset):
             if not os.path.isdir(subset.image_dir):
@@ -310,9 +425,7 @@ class DreamBoothDataset(BaseDataset):
                     for p, s in zip(img_paths, sizes)
                     if os.path.splitext(os.path.basename(p))[0] in cond_stems
                 ]
-                img_paths, sizes = (
-                    (list(t) for t in zip(*kept)) if kept else ([], [])
-                )
+                img_paths, sizes = (list(t) for t in zip(*kept)) if kept else ([], [])
                 if len(img_paths) != pre:
                     logger.info(
                         f"colorize: kept {len(img_paths)}/{pre} targets with a cached "
@@ -513,16 +626,38 @@ class DreamBoothDataset(BaseDataset):
                         continue
                     img_paths, captions, sizes, repeats = (list(t) for t in zip(*kept))
 
-            if subset.is_reg:
-                num_reg_images += sum(repeats)
-            else:
-                num_train_images += sum(repeats)
-
+            samples = []
             for img_path, caption, size, image_repeats in zip(
                 img_paths, captions, sizes, repeats
             ):
+                if self.multires_per_image:
+                    for cache in multires_cache_variants(subset, img_path):
+                        samples.append(
+                            (
+                                img_path,
+                                caption,
+                                (cache.width, cache.height),
+                                image_repeats,
+                                str(cache.path),
+                            )
+                        )
+                else:
+                    samples.append((img_path, caption, size, image_repeats, None))
+
+            expanded_repeats = sum(sample[3] for sample in samples)
+            if subset.is_reg:
+                num_reg_images += expanded_repeats
+            else:
+                num_train_images += expanded_repeats
+
+            for img_path, caption, size, image_repeats, latent_cache in samples:
+                image_key = (
+                    f"{img_path}::anima-multires={size[0]}x{size[1]}"
+                    if latent_cache is not None
+                    else img_path
+                )
                 info = ImageInfo(
-                    img_path,
+                    image_key,
                     image_repeats,
                     caption,
                     subset.is_reg,
@@ -560,7 +695,10 @@ class DreamBoothDataset(BaseDataset):
                 # Gated the same way as the cond_stems filter above so a stray
                 # cond_cache_dir on a plain LoRA variant doesn't trigger FS
                 # probes against an unrelated dir.
-                if getattr(subset, "cond_cache_dir", None) and _base._CONDITIONING_METHOD_ENABLED:
+                if (
+                    getattr(subset, "cond_cache_dir", None)
+                    and _base._CONDITIONING_METHOD_ENABLED
+                ):
                     stem = os.path.splitext(os.path.basename(img_path))[0]
                     cond_candidates: list[str] = []
                     image_dir = getattr(subset, "image_dir", None)
@@ -588,12 +726,14 @@ class DreamBoothDataset(BaseDataset):
                             break
                 if size is not None:
                     info.image_size = size
+                if latent_cache is not None:
+                    info.latents_npz = latent_cache
                 if subset.is_reg:
                     reg_infos.append((info, subset))
                 else:
                     self.register_image(info, subset)
 
-            subset.img_count = len(img_paths)
+            subset.img_count = len(samples)
             self.subsets.append(subset)
 
         images_split_name = "train" if self.is_training_dataset else "validation"

@@ -283,6 +283,26 @@ def test_sparse_overlay_inherits_builtin_knobs(tmp_path: Path):
     assert merged.get("output_name") == "test"
 
 
+def test_training_merge_reads_multires_per_image_from_preprocess(tmp_path: Path):
+    configs_dir = Path(_build_gui_configs_tree(tmp_path))
+    (configs_dir / "custom" / "preprocess.toml").write_text(
+        "target_res = [512, 1024]\nmultires_per_image = true\n",
+        encoding="utf-8",
+    )
+
+    merged, provenance = load_method_preset(
+        "lora",
+        "default",
+        configs_dir=str(configs_dir),
+        methods_subdir="gui-methods",
+        return_provenance=True,
+    )
+
+    assert merged["target_res"] == [512, 1024]
+    assert merged["multires_per_image"] is True
+    assert "custom/preprocess.toml" in provenance["multires_per_image"]
+
+
 def test_blank_network_weights_in_existing_custom_preset_is_unset(tmp_path: Path):
     """Legacy WebUI presets may contain an empty warm-start path."""
     configs_dir = Path(_build_gui_configs_tree(tmp_path))

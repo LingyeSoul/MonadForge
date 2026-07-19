@@ -203,6 +203,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self._stage_active = True
 
         self.current_epoch: int = 0
+        self._shared_epoch = None
 
         self.current_step: int = 0
         self.max_train_steps: int = 0
@@ -347,6 +348,15 @@ class BaseDataset(torch.utils.data.Dataset):
                     )
                 )
                 self.current_epoch = epoch
+
+    def set_shared_epoch(self, epoch):
+        """Bind the cross-process epoch value used by DataLoader workers."""
+        self._shared_epoch = epoch
+
+    def _sync_shared_epoch(self):
+        shared_epoch = getattr(self, "_shared_epoch", None)
+        if shared_epoch is not None and self.current_epoch != shared_epoch.value:
+            self.set_current_epoch(shared_epoch.value)
 
     def set_current_step(self, step):
         self.current_step = step
@@ -637,11 +647,16 @@ class BaseDataset(torch.utils.data.Dataset):
         logger.info(f"mean ar error (without repeats): {mean_img_ar_error}")
 
         # Drop incomplete last batches to keep batch dim constant for torch.compile,
-        # but only when no subset uses sample_ratio (where every image matters more).
+        # except when every image matters: sample_ratio datasets and per-image
+        # multi-resolution expansion must not silently lose the final sample from
+        # any resolution tier within an epoch.
         has_sample_ratio = any(s.sample_ratio < 1.0 for s in self.subsets)
+        keep_incomplete_batches = has_sample_ratio or bool(
+            getattr(self, "multires_per_image", False)
+        )
         self.buckets_indices: List[BucketBatchIndex] = []
         for bucket_index, bucket in enumerate(self.bucket_manager.buckets):
-            if has_sample_ratio:
+            if keep_incomplete_batches:
                 batch_count = int(math.ceil(len(bucket) / self.batch_size))
             else:
                 batch_count = len(bucket) // self.batch_size
@@ -2032,6 +2047,9 @@ class BaseDataset(torch.utils.data.Dataset):
         return neg_crossattn, neg_jaccard
 
     def __getitem__(self, index):
+        # Collation runs after __getitem__. Sync here so an epoch shuffle cannot
+        # rewrite bucket indices after the first batch and duplicate/drop a batch.
+        self._sync_shared_epoch()
         bucket = self.bucket_manager.buckets[self.buckets_indices[index].bucket_index]
         bucket_batch_size = self.buckets_indices[index].bucket_batch_size
         image_index = self.buckets_indices[index].batch_index * bucket_batch_size

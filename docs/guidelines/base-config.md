@@ -70,7 +70,8 @@ can override them, and the dataset blueprint interpolates them via
 | `resized_image_dir` | `post_image_dataset/resized` | Where `make preprocess` writes bucket-resized PNGs; what training reads images from. |
 | `lora_cache_dir` | `post_image_dataset/lora` | Flat, stem-keyed cache dir for VAE/TE/PE sidecars. |
 | `path_pattern` | `"*"` | `fnmatch` glob applied to each image's path **relative to its subset's `image_dir`**. `*` (or unset) = everything. OR-combine with `\|`: `char_a/*\|char_b/*`, or `*portrait*` for a substring. Applies to both training and validation enumeration. |
-| `target_res` | `[1024]` | Multi-scale constant-token tiers (allowed edges `512 768 896 1024 1280 1536`). Each image is assigned to the tier that **resizes it the least**. **You MUST pass the same `--target_res …` at training time as at preprocess** — it builds the bucket table and sizes the compile cache. Omit a tier and its caches get snapped into a 1024 bucket and silently never loaded. See `library/datasets/buckets.py` and the bucketing invariant in `CLAUDE.md`. |
+| `target_res` | `[1024]` | Free-fit tier edges (allowed: `512 768 896 1024 1280 1536`). In the default mode each image is assigned only to the tier that resizes it the least. Training and compile sizing derive actual shapes from latent caches; the tier list is consulted at training time only when `multires_per_image=true`. |
+| `multires_per_image` | `false` | With at least two `target_res` tiers, resize/cache every source image at every selected tier and expand all image/tier pairs into the same epoch. Missing or malformed tier caches fail before training. Sample count and epoch length are multiplied by the number of tiers. |
 
 ## Optimizer & schedule
 
@@ -119,7 +120,7 @@ during `make preprocess`, then training reads only the caches.
 
 | Key | Default | What it controls |
 |---|---|---|
-| `torch_compile` | `true` | Enable `torch.compile` via `compile_blocks()` — the blessed path (bit-exact, lowers memory). It flips on native-shape bucketing and keys the dynamo graph on token-count families derived from `target_res`. **Enable this first on OOM**, before gradient checkpointing. Works on V100 when using the stable `attn_mode="torch"` path; only the experimental `flash-attention-v100` path is known to hit compile/tracing issues. |
+| `torch_compile` | `true` | Enable `torch.compile` via `compile_blocks()` — the blessed path (bit-exact, lowers memory). It flips on native-shape bucketing and derives the dynamic sequence range from the latent buckets actually populated. **Enable this first on OOM**, before gradient checkpointing. Works on V100 when using the stable `attn_mode="torch"` path; only the experimental `flash-attention-v100` path is known to hit compile/tracing issues. |
 | `attn_mode` | `flash` | Attention backend for training: `flash` (FA2), `torch` (SDPA), `sageattn`, `flex`. `flash` requires an installed `flash_attn`; use `torch` as the portable fallback. **V100 production training should use `torch`** — real Anima fp16 tests found `flash-attention-v100` produces self-attention NaNs. |
 | `v100_flash_stability` | `off` | Diagnostic guard for `flash-attention-v100` on Volta/V100 fp16 training: `off` = normal flash, `hybrid` = self-attn flash + cross-attn torch SDPA, `safe` = flash with finite-check diagnostics. Real V100 tests showed `hybrid` still fails in self-attn, so this is for debugging only. Also settable with `ANIMA_V100_FLASH_STABILITY`. |
 | `debug_finite_checks` | `false` | Optional fail-fast NaN/Inf diagnostics for q/k/v, attention outputs, block residuals, loss, and gradients. Also enabled with `ANIMA_DEBUG_FINITE=1`. Use this to capture the first failing tensor; do not hide training NaNs with `nan_to_num`. |
@@ -186,22 +187,24 @@ override — it shrinks **train only**; validation count stays exact.
 
 ---
 
-## `configs/preprocess.toml` (preprocess-only)
+## `configs/custom/preprocess.toml` (preprocess-owned)
 
-Split out of base.toml so the trainer never reads it. Layered
-`preprocess.toml → base.toml → preset → method` (preprocess.toml read first, so
-a legacy copy of any key still in base.toml keeps winning — backward
-compatible).
+The tracked `configs/preprocess.toml` is the shipped template; WebUI changes are
+persisted to gitignored `configs/custom/preprocess.toml`. The preprocess pipeline
+layers `custom/preprocess.toml → base.toml → preset → method`. Training seeds only
+the two dataset-contract fields (`target_res`, `multires_per_image`) from this
+file; source/filter knobs remain preprocess-only.
 
 | Key | What it controls |
 |---|---|
 | `source_image_dir` | The raw input dir `make preprocess` resizes from (`image_dataset/`). |
 | `drop_lowres_images` | Skip images below the resolution floor instead of upscaling. |
 | `min_pixels` | The low-res floor used by `drop_lowres_images`. |
+| `target_res` | Selected free-fit tier edges. Default behavior chooses one nearest tier per image. |
+| `multires_per_image` | When true, stage/cache every image at every selected tier and expand all variants in each epoch. Requires at least two tiers. |
 
-The **shared** path/tier contract (`resized_image_dir`, `lora_cache_dir`,
-`target_res`, model paths) stays in base.toml because the dataset blueprint
-interpolates the dirs and the compile cache is sized from `target_res`.
+The shared path contract (`resized_image_dir`, `lora_cache_dir`, model paths)
+stays in base.toml because the dataset blueprint interpolates those directories.
 
 ---
 

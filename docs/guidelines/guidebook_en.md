@@ -226,9 +226,30 @@ make preprocess-pe           # (Optional) PE-Core vision encoder feature caching
 ### 6.1 What Resize Does
 
 - Resizes images according to the VAE's required pixel alignment
-- Automatically sorts images into *fixed-token-resolution buckets* satisfying (H/16) x (W/16) ~ 4096 patches
+- Places images in the selected `target_res` free-fit token bands while preserving native aspect ratio and minimizing crop loss
 - Automatically excludes images that are too small (default: below 0.5 MP) and generates a report
 - Saves results as PNG files to `post_image_dataset/resized/`
+
+#### 6.1.1 Multiple Resolutions per Image in One Epoch
+
+To train the **same source image once at every selected resolution in each epoch**, select at least two resolution tiers and enable **Every image at every tier** in the WebUI **Preprocess** view, or edit `configs/custom/preprocess.toml`:
+
+```toml
+target_res = [512, 896, 1024]
+multires_per_image = true
+```
+
+Then run the complete preprocessing pipeline:
+
+```bash
+make preprocess
+```
+
+Supported tiers are `512`, `768`, `896`, `1024`, `1280`, and `1536`; this mode requires at least two distinct tiers. Additional resized images are written under `post_image_dataset/multires/<tier>/`, with one VAE latent per image/tier pair. Captions, text embeddings, PE features, and masks remain shared by variants of the same source image.
+
+With `N` source images, `T` tiers, and `num_repeats = 1`, each epoch contains `N * T` samples. The train/validation split happens before resolution expansion, so all tiers of one source image stay on the same side. After changing tiers, run `make preprocess` again to add missing caches; training rejects missing or malformed caches for selected tiers at startup.
+
+This differs from [staged-resolution training](staged-resolution-training.md): this mode mixes every tier into **every epoch**, while staged training switches the whole active dataset at progress boundaries.
 
 ### 6.2 Latent Caching
 

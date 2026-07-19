@@ -48,8 +48,8 @@ def test_save_target_res_preserves_other_keys(tmp_path, monkeypatch):
     knobs (freefit_max_ratio, caption_*, …) survive untouched."""
     pp = tmp_path / "preprocess.toml"
     pp.write_text(
-        'target_res = [1024, 896]\nfreefit_max_ratio = 4.0\n'
-        'caption_shuffle_variants = 4\nmin_pixels = 250000\n',
+        "target_res = [1024, 896]\nfreefit_max_ratio = 4.0\n"
+        "caption_shuffle_variants = 4\nmin_pixels = 250000\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(svc, "PREPROCESS_TOML", pp)
@@ -99,6 +99,32 @@ def test_save_target_res_atomic_write(tmp_path, monkeypatch):
     assert data["target_res"] == [896, 1024]
 
 
+def test_multires_per_image_round_trips_without_clobbering_tiers(tmp_path, monkeypatch):
+    pp = tmp_path / "preprocess.toml"
+    pp.write_text(
+        "target_res = [512, 1024]\nfreefit_max_ratio = 4.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(svc, "PREPROCESS_TOML", pp)
+    monkeypatch.setattr(svc, "CONFIGS_DIR", tmp_path)
+
+    assert svc.save_multires_per_image(True) is True
+    data = toml.loads(pp.read_text(encoding="utf-8"))
+    assert data["multires_per_image"] is True
+    assert data["target_res"] == [512, 1024]
+    assert data["freefit_max_ratio"] == 4.0
+
+
+def test_get_multires_per_image_reads_config_chain(monkeypatch):
+    monkeypatch.delenv("METHOD", raising=False)
+    monkeypatch.setattr(
+        "library.config.io.load_path_overrides",
+        lambda preset, method, methods_subdir: {"multires_per_image": True},
+    )
+
+    assert svc.get_multires_per_image() is True
+
+
 def test_settings_carries_target_res_not_resize_resolution(monkeypatch):
     """``get_settings`` surfaces ``target_res`` and no longer mentions the dead
     ``resize_resolution`` scalar."""
@@ -112,4 +138,25 @@ def test_settings_carries_target_res_not_resize_resolution(monkeypatch):
 
     s = svc.get_settings()
     assert s["target_res"] == [896, 1024]
+    assert s["multires_per_image"] is False
     assert "resize_resolution" not in s
+
+
+def test_preprocess_api_rejects_multires_with_one_tier():
+    import pytest
+    from pydantic import ValidationError
+
+    from webui.api.preprocess import PreprocessSettings
+
+    with pytest.raises(ValidationError, match="at least two target_res tiers"):
+        PreprocessSettings(target_res=[1024], multires_per_image=True)
+
+
+def test_preprocess_api_rejects_unknown_target_tier():
+    import pytest
+    from pydantic import ValidationError
+
+    from webui.api.preprocess import PreprocessSettings
+
+    with pytest.raises(ValidationError, match="unsupported target_res"):
+        PreprocessSettings(target_res=[999, 1024])

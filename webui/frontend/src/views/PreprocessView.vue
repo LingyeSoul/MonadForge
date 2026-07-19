@@ -94,7 +94,9 @@
           <v-row>
             <!-- Resize Settings -->
             <v-col cols="12" md="3">
-              <div class="text-subtitle-2 mb-2">{{ t('ppResizeTargetRes') }}</div>
+              <div class="text-subtitle-2 mb-2">
+                {{ t(settings.multires_per_image ? 'ppResizeTargetResAll' : 'ppResizeTargetRes') }}
+              </div>
               <div class="d-flex flex-wrap ga-1">
                 <v-chip
                   v-for="edge in TARGET_RES_OPTIONS"
@@ -110,6 +112,15 @@
               <div v-if="settings.target_res.length === 0" class="text-caption text-error mt-1">
                 {{ t('ppTargetResNone') }}
               </div>
+              <v-switch
+                v-model="settings.multires_per_image"
+                :label="t('ppMultiresPerImage')"
+                :hint="t('ppMultiresPerImageHint')"
+                :disabled="settings.target_res.length < 2"
+                persistent-hint
+                density="compact"
+                class="mt-2"
+              />
             </v-col>
 
             <!-- SAM Settings -->
@@ -465,6 +476,7 @@ const defaultSettings = () => ({
   // value resize actually consumes — the old resize_resolution scalar was a
   // no-op under free-fit. Persisted to configs/preprocess.toml.
   target_res: [1024] as number[],
+  multires_per_image: false,
 })
 
 const settings = reactive(defaultSettings())
@@ -476,6 +488,7 @@ function toggleTier(edge: number) {
   const idx = settings.target_res.indexOf(edge)
   if (idx >= 0) settings.target_res.splice(idx, 1)
   else settings.target_res.push(edge)
+  if (settings.target_res.length < 2) settings.multires_per_image = false
 }
 
 const samPromptsText = computed({
@@ -499,6 +512,7 @@ async function fetchSettings() {
     settings.target_res = Array.isArray(data.target_res) && data.target_res.length
       ? data.target_res
       : [1024]
+    settings.multires_per_image = data.multires_per_image ?? false
   } catch { /* ignore */ }
 }
 
@@ -584,7 +598,7 @@ async function savePaths() {
 
 onMounted(fetchPaths)
 
-async function saveSettings() {
+async function saveSettings(): Promise<boolean> {
   try {
     const res = await fetch('/api/preprocess/settings', {
       method: 'PUT',
@@ -593,12 +607,14 @@ async function saveSettings() {
     })
     if (res.ok) {
       notify.show(t('ppSettingsSaved'), 'success')
+      return true
     } else {
       notify.show(t('notifyConfigSaveFailed'), 'error')
     }
   } catch {
     notify.show(t('notifyConfigSaveFailed'), 'error')
   }
+  return false
 }
 
 // ── Task management ──────────────────────────────────────────
@@ -622,8 +638,17 @@ async function runTask(command: string) {
   // Save settings before running tasks that consume them, so the on-disk
   // config / env vars are current. resize writes target_res to
   // configs/preprocess.toml; mask/te forward their knobs as env vars.
-  if (['preprocess-resize', 'mask', 'preprocess-te', 'preprocess'].includes(command)) {
-    await saveSettings()
+  const settingsConsumers = [
+    'preprocess-resize',
+    'preprocess-vae',
+    'preprocess-cond-resize',
+    'preprocess-cond-vae',
+    'mask',
+    'preprocess-te',
+    'preprocess',
+  ]
+  if (settingsConsumers.includes(command)) {
+    if (!(await saveSettings())) return
   }
 
   // Build CLI args for tasks that accept them
@@ -641,8 +666,16 @@ async function runTask(command: string) {
   // Forward the chosen free-fit tiers so the resize step uses exactly what
   // the UI shows (TARGET_RES env wins over the merged config in
   // scripts/tasks/preprocess.py::_target_res_args). Space-separated edges.
-  if (['preprocess-resize', 'preprocess'].includes(command)) {
+  const multiresConsumers = [
+    'preprocess-resize',
+    'preprocess-vae',
+    'preprocess-cond-resize',
+    'preprocess-cond-vae',
+    'preprocess',
+  ]
+  if (multiresConsumers.includes(command)) {
     env.TARGET_RES = settings.target_res.join(' ')
+    env.MULTIRES_PER_IMAGE = settings.multires_per_image ? '1' : '0'
   }
   if (['mask', 'preprocess'].includes(command)) {
     env.MIT_TEXT_THRESHOLD = String(settings.mit_text_threshold)

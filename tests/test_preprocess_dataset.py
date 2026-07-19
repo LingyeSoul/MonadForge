@@ -159,9 +159,6 @@ def test_partition_cached(tmp_path: Path) -> None:
     assert [p.name for p in pending] == ["img0.png", "img2.png"]
 
 
-
-
-
 def test_write_corrected_preprocess_captions_preserves_source(tmp_path: Path) -> None:
     from library.captioning.correction import (
         CaptionCorrectionOptions,
@@ -194,6 +191,7 @@ def test_write_corrected_preprocess_captions_preserves_source(tmp_path: Path) ->
         "1girl, hatsune miku, vocaloid, @dataset-trigger, long hair"
     )
 
+
 def test_write_corrected_preprocess_captions_removes_stale_missing_source(
     tmp_path: Path,
 ) -> None:
@@ -220,6 +218,8 @@ def test_write_corrected_preprocess_captions_removes_stale_missing_source(
     assert stats.missing_source == 1
     assert stats.removed_stale == 1
     assert not stale.exists()
+
+
 # ---------------------------------------------------------------------------
 # Pre-flight cache-coverage probes — let the entry points skip the (slow) model
 # load when a dataset is already fully cached. Model-free.
@@ -568,6 +568,37 @@ def test_resize_to_buckets_skips_up_to_date_and_rebuckets_on_tier_change(
         overwrite=True,
     )
     assert (stats.written, stats.skipped) == (2, 0)
+
+
+def test_resize_to_buckets_materializes_every_tier_for_each_image(
+    tmp_path: Path,
+) -> None:
+    from library.preprocess import resize_to_buckets
+
+    src = tmp_path / "src"
+    dst = tmp_path / "resized"
+    multires_dir = tmp_path / "multires"
+    _write_image(src / "portrait.png", (900, 1200))
+
+    stats, counts = resize_to_buckets(
+        src,
+        dst,
+        target_res=[512, 1024],
+        multires_per_image=True,
+        multires_dir=multires_dir,
+        min_pixels=0,
+        workers=1,
+        verbose=False,
+    )
+
+    assert stats.seen == 1
+    assert sum(counts.values()) == 2
+    assert (dst / "portrait.png").exists()
+    for edge in (512, 1024):
+        staged = multires_dir / str(edge) / "portrait.png"
+        assert staged.exists()
+        with Image.open(staged) as image:
+            assert _in_tier_band(image.size, edge)
 
 
 def test_resize_to_buckets_min_pixels_filter(tmp_path: Path) -> None:
