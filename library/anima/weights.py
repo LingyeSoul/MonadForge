@@ -19,8 +19,14 @@ import logging  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+# Official Anima releases ship the same 685-key DiT under two different
+# state-dict prefixes: "net." (base-v1.0) and "model.diffusion_model."
+# (aesthetic-v1.0/1.0b/1.1, turbo-v1.0, preview*). Strip either.
+_DIT_PREFIXES = ("net.", "model.diffusion_model.")
+
+
 def _strip_net_prefix(key: str) -> str:
-    for prefix in ("model.diffusion_model.", "net."):
+    for prefix in _DIT_PREFIXES:
         if key.startswith(prefix):
             return key[len(prefix) :]
     return key
@@ -364,12 +370,11 @@ def load_llm_adapter(
     with safe_open(weight_path, framework="pt", device="cpu") as f:
         keys = list(f.keys())
 
-    if any(k.startswith("llm_adapter.") for k in keys):
-        prefix = "llm_adapter."
-    elif any(k.startswith("net.llm_adapter.") for k in keys):
-        prefix = "net.llm_adapter."
-    else:
-        prefix = None  # adapter-only weights file (no prefix)
+    candidates = ("llm_adapter.", *(p + "llm_adapter." for p in _DIT_PREFIXES))
+    prefix = next(
+        (c for c in candidates if any(k.startswith(c) for k in keys)),
+        None,  # adapter-only weights file (no prefix)
+    )
 
     state_dict: Dict[str, torch.Tensor] = {}
     with safe_open(weight_path, framework="pt", device="cpu") as f:
