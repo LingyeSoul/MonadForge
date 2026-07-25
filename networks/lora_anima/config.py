@@ -391,8 +391,9 @@ class LoRANetworkCfg:
     # for V100+fp16 unless explicitly set.
     lora_fp32_compute: bool = False
 
-    # Eager-only saved-activation optimization for the FP32 LoRA down path.
-    # Saves original input storage and recomputes FP32 casts/scaling in backward.
+    # Compatibility name for the eager-only V100 memory path. Besides saving
+    # original FP32-LoRA inputs, it enables bounded LoRA-up and fused MLP
+    # intermediates; compiled graphs keep AOTAutograd in control.
     use_custom_down_autograd: bool = False
 
     # SmoothQuant-style per-channel input pre-scaling

@@ -80,9 +80,7 @@ def test_lora_module_custom_eager_path_matches_plain_path(channel_scaling):
             channel_scale=channel_scale,
         )
         with torch.no_grad():
-            module.lora_up.weight.copy_(
-                torch.randn_like(module.lora_up.weight) * 0.1
-            )
+            module.lora_up.weight.copy_(torch.randn_like(module.lora_up.weight) * 0.1)
         module.apply_to()
         module.train()
         module.fp32_compute = True
@@ -136,3 +134,49 @@ def test_compile_trace_bypasses_custom_eager_function(monkeypatch):
     out = module._project_down(x, torch.float32)
     assert out.dtype == torch.float32
     assert called is False
+
+
+@pytest.mark.parametrize("org_dtype", [torch.float16, torch.float32])
+def test_eager_up_residual_chunks_forward_and_backward(org_dtype):
+    from networks.lora_modules.custom_autograd import eager_lora_up_residual
+
+    torch.manual_seed(4)
+    base = torch.nn.Linear(7, 11, bias=False).to(org_dtype)
+    base.weight.requires_grad_(False)
+    x0 = torch.randn(2, 5, 7, dtype=org_dtype)
+    rank0 = torch.randn(2, 5, 3, dtype=torch.float32)
+    weight0 = torch.randn(11, 3, dtype=torch.float16)
+    grad_out = torch.randn(2, 5, 11, dtype=org_dtype)
+    scale = 0.375
+
+    x_ref = x0.clone().requires_grad_()
+    rank_ref = rank0.clone().requires_grad_()
+    weight_ref = weight0.clone().requires_grad_()
+    org_ref = base(x_ref)
+    out_ref = org_ref + (F.linear(rank_ref.float(), weight_ref.float()) * scale).to(
+        org_ref.dtype
+    )
+    out_ref.backward(grad_out)
+
+    x_got = x0.clone().requires_grad_()
+    rank_got = rank0.clone().requires_grad_()
+    weight_got = weight0.clone().requires_grad_()
+    org_got = base(x_got)
+    org_storage = org_got.data_ptr()
+    out_got = eager_lora_up_residual(
+        org_got,
+        rank_got,
+        weight_got,
+        scale,
+        chunk_size=3,
+    )
+    assert out_got.data_ptr() == org_storage
+    out_got.backward(grad_out)
+
+    if org_dtype == torch.float16:
+        assert torch.equal(out_ref, out_got)
+    else:
+        assert torch.allclose(out_ref, out_got, rtol=1e-6, atol=3e-7)
+    assert torch.equal(x_ref.grad, x_got.grad)
+    assert torch.allclose(rank_ref.grad, rank_got.grad, rtol=1e-6, atol=3e-7)
+    assert torch.equal(weight_ref.grad, weight_got.grad)

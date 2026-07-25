@@ -9,7 +9,10 @@ import torch
 
 from networks.attn_fuse import match_fused_spec
 from networks.lora_modules.base import BaseLoRAModule
-from networks.lora_modules.custom_autograd import eager_lora_down_project
+from networks.lora_modules.custom_autograd import (
+    eager_lora_down_project,
+    eager_lora_up_residual,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +130,22 @@ class LoRAModule(BaseLoRAModule):
             inv_scale = self.inv_scale if self._has_channel_scale else None
             return eager_lora_down_project(x, self.lora_down.weight, inv_scale)
         return super()._project_down(x, work)
+
+    def _project_up_and_merge(self, org_forwarded, lx, work, scale):
+        if (
+            self.use_custom_down_autograd
+            and self.training
+            and work == torch.float32
+            and isinstance(self.lora_up, torch.nn.Linear)
+            and not torch.compiler.is_compiling()
+        ):
+            return eager_lora_up_residual(
+                org_forwarded,
+                lx,
+                self.lora_up.weight,
+                self.multiplier * scale,
+            )
+        return super()._project_up_and_merge(org_forwarded, lx, work, scale)
 
     def _down(self, x_lora, work):
         if isinstance(self.lora_down, torch.nn.Linear):

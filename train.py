@@ -195,11 +195,13 @@ def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -
 def _should_auto_enable_eager_lora_down_autograd(
     args, net_kwargs: dict
 ) -> bool:
-    """Use saved-input recompute for eager FP32 LoRA rank training.
+    """Enable the eager V100 LoRA/operator-fusion memory path.
 
-    Explicit ``use_custom_down_autograd=...`` wins. The optimization is useful
-    only when compile is off (compiled graphs use AOTAutograd's partitioner)
-    and the LoRA rank path has resolved to fp32.
+    ``use_custom_down_autograd`` is the compatibility name for the complete
+    eager path: saved-input LoRA rank projections plus bounded LoRA-up, RoPE,
+    RMSNorm, and MLP intermediates. Explicit configuration wins. The path is
+    useful only when compile is off (compiled graphs already use Dynamo fusion
+    and AOTAutograd partitioning) and the LoRA rank path resolved to fp32.
     """
     if "use_custom_down_autograd" in net_kwargs:
         return False
@@ -1793,10 +1795,11 @@ class AnimaTrainer:
         if _should_auto_enable_eager_lora_down_autograd(args, net_kwargs):
             net_kwargs["use_custom_down_autograd"] = "true"
             logger.warning(
-                "eager fp32 LoRA training detected: auto-enabling "
-                "use_custom_down_autograd so down projections save original "
-                "input storage and recompute fp32 casts/scaling in backward. "
-                "Set use_custom_down_autograd=false to disable for A/B testing."
+                "eager V100 fp16/FP32-residual LoRA training detected: "
+                "auto-enabling use_custom_down_autograd for bounded eager "
+                "LoRA and MLP intermediates. Rank GEMMs remain fp32; frozen "
+                "sublayer matmuls remain fp16. Set "
+                "use_custom_down_autograd=false to disable for A/B testing."
             )
 
         factory_weights_sd = None

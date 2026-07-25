@@ -11,6 +11,8 @@ import torch.nn.functional as F
 
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
+from library.anima.eager_autograd import eager_fused_lora_mlp, eager_rotary_qk
+
 from library.runtime import offloading as custom_offloading_utils
 from library.runtime.device import weighs_to_device
 from networks import attention_dispatch
@@ -237,6 +239,31 @@ def apply_rotary_pos_emb_qk(
     # slice is empty; skip the torch.cat to avoid a full per-Q/K-per-block alloc.
     # `rot_dim == q.shape[-1]` is a compile-time constant, so the branch resolves
     # once under torch.compile (no per-bucket recompile).
+    cos_k = cos_q if k.dtype == q.dtype else cos_.to(k.dtype)
+    sin_k = sin_q if k.dtype == q.dtype else sin_.to(k.dtype)
+
+    # Dynamo fuses the pointwise RoPE expression. On eager V100/fp16 the same
+    # expression otherwise retains/allocates several full q/k tensors and can
+    # OOM before attention. Reuse the fresh RMSNorm output storage and recompute
+    # the linear rotation in backward with bounded sequence chunks.
+    if (
+        not torch.compiler.is_compiling()
+        and torch.is_grad_enabled()
+        and q.is_cuda
+        and q.dtype == torch.float16
+        and k.dtype == q.dtype
+        and torch.cuda.get_device_capability(q.device) == (7, 0)
+    ):
+        seq_axis = 1 if tensor_format == "bshd" else 0
+        return eager_rotary_qk(
+            q,
+            k,
+            cos_q,
+            sin_q,
+            seq_axis=seq_axis,
+            rot_dim=rot_dim,
+        )
+
     q_rot = q[..., :rot_dim]
     q_emb = (q_rot * cos_q) + (_rotate_half(q_rot, False) * sin_q)
     q = (
@@ -244,9 +271,6 @@ def apply_rotary_pos_emb_qk(
         if rot_dim == q.shape[-1]
         else torch.cat((q_emb, q[..., rot_dim:]), dim=-1)
     )
-
-    cos_k = cos_q if k.dtype == q.dtype else cos_.to(k.dtype)
-    sin_k = sin_q if k.dtype == q.dtype else sin_.to(k.dtype)
     k_rot = k[..., :rot_dim]
     k_emb = (k_rot * cos_k) + (_rotate_half(k_rot, False) * sin_k)
     k = (
@@ -273,8 +297,12 @@ class RMSNorm(torch.nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        output = self._norm(x.float())
-        return (output * self.weight).to(x.dtype)
+        # ``F.rms_norm`` keeps the public activation in the model dtype while
+        # using the backend's stable accumulation.  On V100/fp16 its native CUDA
+        # kernel is bit-identical in forward to the explicit FP32 formula above,
+        # but avoids materializing several full-width FP32 q/k/v temporaries in
+        # eager mode (torch.compile already fuses that expression).
+        return F.rms_norm(x, (x.shape[-1],), self.weight, self.eps)
 
 
 class GPT2FeedForward(nn.Module):
@@ -301,6 +329,9 @@ class GPT2FeedForward(nn.Module):
         torch.nn.init.trunc_normal_(self.layer2.weight, std=std, a=-3 * std, b=3 * std)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        fused = eager_fused_lora_mlp(x, self.layer1, self.layer2)
+        if fused is not None:
+            return fused
         x = self.layer1(x)
         x = self.activation(x)
         x = self.layer2(x)
@@ -412,14 +443,21 @@ class Attention(nn.Module):
         attn_params = attn_params.for_attention_kind(is_selfattn=self.is_selfattn)
         kind = "self_attn" if self.is_selfattn else "cross_attn"
         check_finite = _finite_checks_enabled(attn_params.debug_finite_checks) or (
-            attn_params.v100_flash_stability == "safe" and attn_params.attn_mode == "flash"
+            attn_params.v100_flash_stability == "safe"
+            and attn_params.attn_mode == "flash"
         )
 
         q, k, v = self.compute_qkv(x, context, rope_cos_sin=rope_cos_sin)
         if check_finite:
-            _assert_finite_tensor(q, f"{kind}.q before attention backend={attn_params.attn_mode}")
-            _assert_finite_tensor(k, f"{kind}.k before attention backend={attn_params.attn_mode}")
-            _assert_finite_tensor(v, f"{kind}.v before attention backend={attn_params.attn_mode}")
+            _assert_finite_tensor(
+                q, f"{kind}.q before attention backend={attn_params.attn_mode}"
+            )
+            _assert_finite_tensor(
+                k, f"{kind}.k before attention backend={attn_params.attn_mode}"
+            )
+            _assert_finite_tensor(
+                v, f"{kind}.v before attention backend={attn_params.attn_mode}"
+            )
         if q.dtype != v.dtype:
             if not attn_params.supports_fp32 and torch.is_autocast_enabled():
                 # FlashAttention requires fp16/bf16; only cast when autocast is active.
@@ -1339,9 +1377,7 @@ class Block(nn.Module):
             x_B_T_H_W_D, self.layer_norm_mlp, scale_mlp_B_T_1_1_D, shift_mlp_B_T_1_1_D
         )
         result = self.mlp(normalized_x)
-        x_B_T_H_W_D = self._gated_residual_add(
-            x_B_T_H_W_D, gate_mlp_B_T_1_1_D, result
-        )
+        x_B_T_H_W_D = self._gated_residual_add(x_B_T_H_W_D, gate_mlp_B_T_1_1_D, result)
         if _finite_checks_enabled(attn_params.debug_finite_checks):
             _assert_finite_tensor(
                 x_B_T_H_W_D,

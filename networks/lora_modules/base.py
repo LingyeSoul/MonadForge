@@ -212,8 +212,7 @@ class BaseLoRAModule(torch.nn.Module):
             if self.dropout is not None:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
             lx, scale = self._apply_rank_dropout(lx)
-            lx = self._up(lx.to(work), work)
-        return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
+            return self._project_up_and_merge(org_forwarded, lx, work, scale)
 
     def _project_down(self, x: torch.Tensor, work: torch.dtype) -> torch.Tensor:
         """Prepare the rank-path input and dispatch the down projection.
@@ -223,6 +222,17 @@ class BaseLoRAModule(torch.nn.Module):
         """
         x_lora = self._rebalance(x.to(work))
         return self._down(x_lora, work)
+
+    def _project_up_and_merge(
+        self,
+        org_forwarded: torch.Tensor,
+        lx: torch.Tensor,
+        work: torch.dtype,
+        scale: float,
+    ) -> torch.Tensor:
+        """Run the up projection and merge it into the frozen-base residual."""
+        lx = self._up(lx.to(work), work)
+        return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:
         """Default T-LoRA gate: ``lx * mask``. The fp32 mask promotes ``lx``;

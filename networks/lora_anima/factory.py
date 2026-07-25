@@ -167,17 +167,17 @@ def create_network(
 ):
     spec = resolve_network_spec(kwargs)
 
-    # Reintroduced narrowly for eager V100/fp16 training: rank GEMMs remain
-    # fp32, but the down projection saves original input storage and recomputes
-    # casts/channel scaling in backward. Under torch.compile the module bypasses
-    # this Function so AOTAutograd + activation_memory_budget retain control.
+    # Reintroduced narrowly for eager V100/fp16 training. Rank GEMMs remain
+    # fp32 while custom Functions bound the large eager LoRA/MLP intermediates.
+    # Under torch.compile these paths are bypassed so Dynamo fusion plus
+    # AOTAutograd/activation_memory_budget retain control.
     if str(kwargs.get("use_custom_down_autograd", "false")).strip().lower() in (
         "true",
         "1",
     ):
         logger.info(
-            "use_custom_down_autograd enabled: eager FP32 LoRA down inputs "
-            "save original storage and recompute casts/scaling in backward"
+            "use_custom_down_autograd enabled: bounded eager FP32 LoRA and "
+            "MLP intermediates (compile path unchanged)"
         )
 
     channel_scales_dict = _load_channel_scales(kwargs)
