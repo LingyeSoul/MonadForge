@@ -5,7 +5,8 @@ from __future__ import annotations
 import torch
 
 
-_EAGER_ROPE_SEQ_CHUNK = 32
+# Large enough to avoid tiny Volta kernels, while bounding the RoPE clone.
+_EAGER_ROPE_SEQ_CHUNK = 256
 
 
 def _seq_slice(
@@ -157,7 +158,8 @@ def eager_rotary_qk(
     )
 
 
-_EAGER_MLP_ROW_CHUNK = 512
+# V100-tuned balance between eager launch overhead and rematerialization memory.
+_EAGER_MLP_ROW_CHUNK = 1024
 
 
 def _flatten_last(tensor: torch.Tensor) -> torch.Tensor:
@@ -181,7 +183,8 @@ def _lora_linear_chunk(
     rank = torch.nn.functional.linear(rank_x, down_weight.float())
     rank = rank * rank_mask.float()
     delta = torch.nn.functional.linear(rank, up_weight.float())
-    delta.mul_(residual_scale)
+    if residual_scale != 1.0:
+        delta.mul_(residual_scale)
     base.add_(delta.to(base.dtype))
     return base
 

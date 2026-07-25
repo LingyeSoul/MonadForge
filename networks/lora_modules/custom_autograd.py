@@ -17,7 +17,8 @@ import torch
 import torch.nn.functional as F
 
 
-EAGER_LORA_CHUNK_ROWS = 256
+# Avoid fragmented rank GEMMs without retaining full FP32 layer activations.
+EAGER_LORA_CHUNK_ROWS = 2048
 
 
 def _flatten_last(x: torch.Tensor) -> torch.Tensor:
@@ -178,7 +179,8 @@ class EagerLoRAUpResidualFn(torch.autograd.Function):
         for start in range(0, org_flat.shape[0], chunk):
             end = min(start + chunk, org_flat.shape[0])
             delta = F.linear(rank_flat[start:end].float(), weight_fp32)
-            delta.mul_(scale)
+            if scale != 1.0:
+                delta.mul_(scale)
             org_flat[start:end].add_(delta.to(org_forwarded.dtype))
 
         ctx.save_for_backward(rank_input, weight)
@@ -209,7 +211,9 @@ class EagerLoRAUpResidualFn(torch.autograd.Function):
 
         for start in range(0, grad_flat.shape[0], chunk):
             end = min(start + chunk, grad_flat.shape[0])
-            grad_chunk = grad_flat[start:end].float() * scale
+            grad_chunk = grad_flat[start:end].float()
+            if scale != 1.0:
+                grad_chunk = grad_chunk * scale
 
             if grad_rank_flat is not None:
                 grad_rank_flat[start:end] = grad_chunk.matmul(weight_fp32).to(
@@ -235,7 +239,7 @@ def eager_lora_up_residual(
     rank_input: torch.Tensor,
     weight: torch.Tensor,
     residual_scale: float,
-    chunk_size: int = 256,
+    chunk_size: int = EAGER_LORA_CHUNK_ROWS,
 ) -> torch.Tensor:
     return EagerLoRAUpResidualFn.apply(
         org_forwarded,
