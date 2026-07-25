@@ -251,9 +251,13 @@ prefill) kept their historical fp32 compute since the inference engine runs
 without autocast. Regression tests: `tests/test_lora_dtype_policy.py`
 (bitwise legacy parity under autocast + dtype honesty).
 
-`use_custom_down_autograd` is still **accepted** everywhere it used to be (TOML
-allowlist, factory, EasyControl, turbo CLI) but is a logged no-op, so old
-snapshot TOMLs replay cleanly.
+`use_custom_down_autograd` remains accepted by the TOML allowlist. For the
+standard LoRA module it is now an **eager-only** V100/fp16 memory path: the
+forward still performs FP32 rank GEMMs, while the down projection saves the
+original input/weight storage and reconstructs FP32 casts plus channel scaling
+in backward. Compiled graphs deliberately bypass the Function so AOTAutograd's
+partitioner and `activation_memory_budget` remain authoritative. Other method
+families that still log the option as ignored are unchanged.
 
 **Post-removal addendum (2026-06-10, same day):** the Function was numerically
 dead weight but NOT memory-dead. Under `torch.compile` an `autograd.Function`

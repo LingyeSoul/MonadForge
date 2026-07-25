@@ -192,6 +192,25 @@ def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -
     return (major, minor) == (7, 0)
 
 
+def _should_auto_enable_eager_lora_down_autograd(
+    args, net_kwargs: dict
+) -> bool:
+    """Use saved-input recompute for eager FP32 LoRA rank training.
+
+    Explicit ``use_custom_down_autograd=...`` wins. The optimization is useful
+    only when compile is off (compiled graphs use AOTAutograd's partitioner)
+    and the LoRA rank path has resolved to fp32.
+    """
+    if "use_custom_down_autograd" in net_kwargs:
+        return False
+    if getattr(args, "torch_compile", False):
+        return False
+    return str(net_kwargs.get("lora_fp32_compute", "false")).strip().lower() in (
+        "true",
+        "1",
+    )
+
+
 def _resolve_mixed_precision(args) -> None:
     """Back-write ``args.mixed_precision`` for pre-Ampere GPUs in place.
 
@@ -1770,6 +1789,14 @@ class AnimaTrainer:
                 "lora_fp32_compute so LoRA rank GEMMs run in fp32 while the "
                 "frozen base remains fp16. Set lora_fp32_compute=false to "
                 "disable for A/B testing."
+            )
+        if _should_auto_enable_eager_lora_down_autograd(args, net_kwargs):
+            net_kwargs["use_custom_down_autograd"] = "true"
+            logger.warning(
+                "eager fp32 LoRA training detected: auto-enabling "
+                "use_custom_down_autograd so down projections save original "
+                "input storage and recompute fp32 casts/scaling in backward. "
+                "Set use_custom_down_autograd=false to disable for A/B testing."
             )
 
         factory_weights_sd = None

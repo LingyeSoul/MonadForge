@@ -75,6 +75,11 @@ class BaseLoRAModule(torch.nn.Module):
         # signatures stable across LoRA variants while letting V100/fp16 training
         # preserve LoRA rank-path signal in fp32.
         self.fp32_compute = False
+        # Eager-only companion for the V100/fp16 fp32 rank path. Standard eager
+        # autograd saves the converted full-FP32 down-projection input until
+        # backward; the custom Function saves original storage and recomputes
+        # casts/scaling. Subclasses opt in through ``_project_down``.
+        self.use_custom_down_autograd = False
 
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
@@ -202,14 +207,22 @@ class BaseLoRAModule(torch.nn.Module):
         # so LoRA updates do not lose signal to fp16 underflow/rounding.
         work = self._rank_compute_dtype(org_forwarded)
         with self._rank_autocast_context(x, work):
-            x_lora = self._rebalance(x.to(work))
-            lx = self._down(x_lora, work)
+            lx = self._project_down(x, work)
             lx = self._gate(lx, work)
             if self.dropout is not None:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
             lx, scale = self._apply_rank_dropout(lx)
             lx = self._up(lx.to(work), work)
         return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
+
+    def _project_down(self, x: torch.Tensor, work: torch.dtype) -> torch.Tensor:
+        """Prepare the rank-path input and dispatch the down projection.
+
+        Kept as a hook so plain LoRA can replace eager autograd's saved FP32
+        activation without changing the shared dtype/gating scaffold.
+        """
+        x_lora = self._rebalance(x.to(work))
+        return self._down(x_lora, work)
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:
         """Default T-LoRA gate: ``lx * mask``. The fp32 mask promotes ``lx``;

@@ -571,6 +571,9 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     **extra_kwargs,
                 )
                 lora.fp32_compute = bool(cfg.lora_fp32_compute)
+                lora.use_custom_down_autograd = bool(
+                    cfg.use_custom_down_autograd
+                )
                 lora.original_name = original_name
                 loras.append(lora)
 

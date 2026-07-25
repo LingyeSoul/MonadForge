@@ -391,6 +391,10 @@ class LoRANetworkCfg:
     # for V100+fp16 unless explicitly set.
     lora_fp32_compute: bool = False
 
+    # Eager-only saved-activation optimization for the FP32 LoRA down path.
+    # Saves original input storage and recomputes FP32 casts/scaling in backward.
+    use_custom_down_autograd: bool = False
+
     # SmoothQuant-style per-channel input pre-scaling
     channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None
 
@@ -735,6 +739,9 @@ class LoRANetworkCfg:
         step_expert_K = int(step_expert_K_raw) if step_expert_K_raw is not None else 0
 
         lora_fp32_compute = _as_bool(kwargs.get("lora_fp32_compute"))
+        use_custom_down_autograd = _as_bool(
+            kwargs.get("use_custom_down_autograd")
+        )
 
         reg_dims_str = kwargs.get("network_reg_dims")
         reg_dims = _parse_kv_pairs(reg_dims_str, is_int=True) if reg_dims_str else None
@@ -810,6 +817,7 @@ class LoRANetworkCfg:
             chimera_expert_diag=chimera_expert_diag,
             step_expert_K=step_expert_K,
             lora_fp32_compute=lora_fp32_compute,
+            use_custom_down_autograd=use_custom_down_autograd,
             channel_scales_dict=channel_scales_dict,
             verbose=verbose,
         )

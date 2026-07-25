@@ -97,6 +97,7 @@ def test_defaults_when_all_kwargs_absent():
     assert cfg.reg_dims is None
     assert cfg.reg_lrs is None
     assert cfg.lora_fp32_compute is False
+    assert cfg.use_custom_down_autograd is False
 
 
 def test_string_bool_parsing_matches_old_factory_path():
@@ -112,6 +113,7 @@ def test_string_bool_parsing_matches_old_factory_path():
         "route_per_layer": "true",
         "router_source": "sigma",
         "lora_fp32_compute": "true",
+        "use_custom_down_autograd": "true",
         "verbose": "false",
     }
     cfg = LoRANetworkCfg.from_kwargs(
@@ -127,6 +129,7 @@ def test_string_bool_parsing_matches_old_factory_path():
     assert cfg.route_per_layer is True
     assert cfg.router_source == "sigma"
     assert cfg.lora_fp32_compute is True
+    assert cfg.use_custom_down_autograd is True
     assert cfg.verbose is False
 
 
