@@ -5,8 +5,10 @@ from __future__ import annotations
 import torch
 
 
-# Large enough to avoid tiny Volta kernels, while bounding the RoPE clone.
-_EAGER_ROPE_SEQ_CHUNK = 256
+# A 1024px Anima sample is only ~4200 tokens. Keeping it in one chunk removes
+# dozens of tiny eager pointwise launches on Volta, while still bounding custom
+# larger buckets.
+_EAGER_ROPE_SEQ_CHUNK = 8192
 
 
 def _seq_slice(
@@ -159,7 +161,7 @@ def eager_rotary_qk(
 
 
 # V100-tuned balance between eager launch overhead and rematerialization memory.
-_EAGER_MLP_ROW_CHUNK = 1024
+_EAGER_MLP_ROW_CHUNK = 3072
 
 
 def _flatten_last(tensor: torch.Tensor) -> torch.Tensor:

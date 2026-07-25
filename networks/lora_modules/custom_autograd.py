@@ -18,7 +18,7 @@ import torch.nn.functional as F
 
 
 # Avoid fragmented rank GEMMs without retaining full FP32 layer activations.
-EAGER_LORA_CHUNK_ROWS = 2048
+EAGER_LORA_CHUNK_ROWS = 3072
 
 
 def _flatten_last(x: torch.Tensor) -> torch.Tensor:
