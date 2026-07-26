@@ -13,6 +13,10 @@ Flag precedence (evaluated top to bottom, first match wins):
     use_moe_style="shared_A"             → hydra
     use_ortho_init                       → ortho_init
     use_ortho                            → ortho
+    use_lokr                             → lokr
+    use_loha                             → loha
+    use_dylora                           → dylora
+    use_ve                               → vera
     (none)                               → lora
 
 The legacy ``use_hydra`` / ``use_sigma_router`` / ``use_fei_router``
@@ -30,6 +34,7 @@ from networks.lora_modules import (
     ChimeraHydraLoRAModule,
     DyLoRAModule,
     HydraLoRAModule,
+    LoHaModule,
     LoKRModule,
     LoRAModule,
     OrthoHydraLoRAModule,
@@ -109,6 +114,8 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "lokr_factor",
         "decompose_both",
         "lokr_full_factor",
+        # LoHa (Low-rank Hadamard product) variant — LyCORIS backend.
+        "use_loha",
         # Escape hatch for resuming historical states that used network_dim as
         # a full-factor sentinel and must preserve their old alpha/dim scale.
         "lokr_allow_legacy_dim",
@@ -262,6 +269,14 @@ NETWORK_REGISTRY: Dict[str, NetworkSpec] = {
         name="lokr",
         module_class=LoKRModule,
         save_variant="lokr",
+    ),
+    # LoHa: LyCORIS Hadamard-product adapter. Saves canonical hada_* keys
+    # (split q/k/v layout from train-time split_fused_projections), loaded
+    # natively by ComfyUI core's loha weight adapter.
+    "loha": NetworkSpec(
+        name="loha",
+        module_class=LoHaModule,
+        save_variant="loha",
     ),
     "ortho": NetworkSpec(
         name="ortho",
@@ -422,6 +437,8 @@ def resolve_network_spec(kwargs: Mapping[str, Any]) -> NetworkSpec:
         return NETWORK_REGISTRY["ortho"]
     if _parse_bool_flag(kwargs, "use_lokr"):
         return NETWORK_REGISTRY["lokr"]
+    if _parse_bool_flag(kwargs, "use_loha"):
+        return NETWORK_REGISTRY["loha"]
     if _parse_bool_flag(kwargs, "use_dylora"):
         return NETWORK_REGISTRY["dylora"]
     if _parse_bool_flag(kwargs, "use_ve"):

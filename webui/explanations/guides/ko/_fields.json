@@ -2,6 +2,7 @@
   "network_dim": "LoRA 랭크 (저랭크 행렬의 차원). 높을수록 표현력이 좋지만 VRAM 사용량 증가. 일반적: 8–64.",
   "network_alpha": "LoRA 스케일링 계수. 실효 스케일 = alpha / dim. alpha == dim이면 1.0. 낮을수록 보수적 업데이트.",
   "lokr_full_factor": "LoKr 전체 행렬 모드(공식 LyCORIS full_matrix). w1과 w2를 전체 팩터로 유지하며 유효 스케일은 1로 고정됩니다.",
+  "use_loha": "LoHa(저랭크 Hadamard 곱, LyCORIS 백엔드) 활성화: deltaW = (w1a@w1b) ⊙ (w2a@w2b) * (alpha/rank). rank-r 인수 쌍 2개로 LoRA-r의 2배 파라미터로 최대 r²의 유효 랭크를 제공. 표준 hada_* 키로 저장; channel scaling은 자동 비활성화.",
   "network_module": "LoRA 네트워크 구현의 Python 모듈 경로.",
   "use_timestep_mask": "T-LoRA 활성화: 디노이징 타임스텝에 따라 유효 랭크 변동. 높은 노이즈에서 전체 랭크, 낮은 노이즈에서 축소.",
   "use_ortho": "OrthoLoRA 활성화: 업데이트 행렬의 SVD 기반 직교 파라미터화 (선형 레이어 전용). 구조화된 업데이트로 정규화되며, 저장 시 thin SVD로 일반 LoRA로 변환.",

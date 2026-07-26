@@ -185,21 +185,25 @@ def create_network(
 
     channel_scales_dict = _load_channel_scales(kwargs)
 
-    # LoKR + channel_scaling is incompatible: the Kronecker factorization can't
-    # absorb a full-length channel_scale (lokr.py:126), and the resulting
-    # inv_scale can't be saved in ComfyUI's native lokr format. create_modules
-    # skips the injection for LoKRModule; warn here so users know to drop the
+    # LoKR/LoHa + channel_scaling is incompatible: LoKR's Kronecker
+    # factorization can't absorb a full-length channel_scale (lokr.py:126),
+    # and neither native on-disk format (lokr_w* / hada_*) has an inv_scale
+    # slot ComfyUI-side loaders would honor. create_modules skips the
+    # injection for both module classes; warn here so users know to drop the
     # config knob rather than discover it via a black-image checkpoint.
     if (
-        spec.name == "lokr"
+        spec.name in ("lokr", "loha")
         and channel_scales_dict
         and float(kwargs.get("channel_scaling_alpha", 0.0) or 0.0) > 0
     ):
         logger.warning(
-            "LoKR + channel_scaling_alpha>0 is incompatible — LoKR's Kronecker "
-            "factors cannot absorb the per-channel scale, so channel scaling is "
-            "auto-disabled for LoKR modules. Set channel_scaling_alpha=0 to "
-            "silence this. The checkpoint will save in native lokr format."
+            "%s + channel_scaling_alpha>0 is incompatible — the per-channel "
+            "scale cannot be absorbed/saved in the native %s format, so "
+            "channel scaling is auto-disabled for these modules. Set "
+            "channel_scaling_alpha=0 to silence this. The checkpoint will "
+            "save in native format.",
+            spec.name.upper(),
+            spec.name,
         )
 
     cfg = LoRANetworkCfg.from_kwargs(
@@ -508,6 +512,7 @@ def create_network_from_weights(
     # are canonical; this key-sniff is a fallback for unstamped/legacy artifacts.
     has_stacked_experts = False
     has_lokr = False
+    has_loha = False
     hydra_num_experts = 0
     # Which lora_names were MoE (Hydra) vs plain, passed as `hydra_router_names`
     # so create_modules picks the right class per module in mixed checkpoints.
@@ -545,6 +550,37 @@ def create_network_from_weights(
             # A full-full checkpoint has no rank-shaped tensor. Its canonical
             # alpha is the LyCORIS lora_dim because full matrices force scale=1.
             modules_dim.setdefault(lora_name, 0)
+        elif key.endswith((".hada_w1_a", ".hada_w2_a")):
+            has_loha = True
+            # LyCORIS LoHa A factors are (out, rank).
+            modules_dim[lora_name] = value.size(1)
+        elif key.endswith((".hada_w1_b", ".hada_w2_b")):
+            has_loha = True
+            # B factors are (rank, in). Prefer an A-derived rank when present.
+            modules_dim.setdefault(lora_name, value.size(0))
+        elif key.endswith((".hada_t1", ".hada_t2")):
+            # Tucker cores exist only for conv LoHa upstream; Anima adapts
+            # Linears exclusively, and a rebuilt non-tucker module would
+            # silently drop these keys under the non-strict load.
+            raise RuntimeError(
+                f"LoHa checkpoint carries a Tucker core ({key!r}); "
+                "tucker/conv LoHa is not supported by the Anima DiT "
+                "(Linear-only adapters)."
+            )
+        elif key.endswith(".dora_scale"):
+            # LyCORIS weight_decompose (DoRA) renormalizes the merged weight
+            # per row (W' = dora_scale * (W+ΔW)/||W+ΔW||) — the MonadForge
+            # LoKr/LoHa wrappers carry no dora_scale slot, so a non-strict
+            # load would silently drop the key and produce materially wrong
+            # deltas. Fail loudly like the tucker branch above.
+            raise RuntimeError(
+                f"Checkpoint carries a DoRA weight-decompose key ({key!r}); "
+                "LyCORIS weight_decompose/DoRA checkpoints are not supported "
+                "— the decompose renormalization cannot be reproduced by the "
+                "MonadForge LoKr/LoHa wrappers. Retrain without "
+                "weight_decompose, or merge the file with official LyCORIS "
+                "tooling first."
+            )
         elif key.endswith(".vera_d"):
             modules_dim[lora_name] = value.size(0)
         elif key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
@@ -748,6 +784,12 @@ def create_network_from_weights(
                 )
     elif has_lokr:
         spec = NETWORK_REGISTRY["lokr"]
+        module_class = spec.module_class
+    elif has_loha:
+        # Must sit before the ``for_inference`` fallback — a plain LoRAModule
+        # cannot consume hada_* keys, and LoHaModule.merge_to handles the
+        # static-merge path with official Hadamard math.
+        spec = NETWORK_REGISTRY["loha"]
         module_class = spec.module_class
     elif any(k.endswith(".vera_d") for k in weights_sd):
         spec = NETWORK_REGISTRY["vera"]
@@ -1039,6 +1081,7 @@ def create_network_from_weights(
         lokr_factor=lokr_detected_factor,
         decompose_both=lokr_decompose_both,
         lokr_full_factor=lokr_full_factor,
+        is_loha=has_loha,
         dylora_unit=dylora_unit,
         dylora_algo=dylora_algo,
         use_dylora=use_dylora,

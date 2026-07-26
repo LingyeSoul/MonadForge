@@ -1,0 +1,14 @@
+# LoHa (Low-rank Hadamard product adaptation, arXiv:2108.06098 / LyCORIS) —
+# ΔW = (w1a @ w1b) ⊙ (w2a @ w2b) * (alpha/rank). Two rank-r factor pairs give
+# an effective rank up to r² at 2x the LoRA-r param count. Routed via
+# `use_loha` (see resolve_network_spec); the backend is the official
+# lycoris-lora package, the host network module is networks.lora_anima
+# (inherited from base.toml). Saves canonical hada_* keys in the split q/k/v
+# layout — loaded natively by ComfyUI core's loha weight adapter.
+network_dim = 32
+network_alpha = 32
+learning_rate = 1e-4
+max_train_epochs = 6
+output_name = "loha"
+
+use_loha = true

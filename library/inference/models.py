@@ -329,6 +329,21 @@ def load_dit_model(
         for lora_weight in args.lora_weight:
             logger.info(f"Loading LoRA weight from: {lora_weight}")
             lora_sd = load_file(lora_weight)  # load on CPU, dtype is as is
+            # Native LyCORIS factorizations (LoKr/LoHa) are not foldable by
+            # the static-merge hook (it only understands lora_down/lora_up)
+            # — without this the adapter silently no-ops into base-model
+            # outputs.
+            native_lycoris = [k for k in lora_sd if ".lokr_" in k or ".hada_" in k]
+            if native_lycoris:
+                logger.warning(
+                    "%s carries %d native LyCORIS keys (lokr_*/hada_*) which "
+                    "the static merge cannot fold — the adapter will NOT be "
+                    "applied. Bake it first (make merge ADAPTER_DIR=...) and "
+                    "point --dit at the merged model, or use the ComfyUI "
+                    "loader.",
+                    lora_weight,
+                    len(native_lycoris),
+                )
             lora_sd = {
                 k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")
             }  # only keep unet lora weights
