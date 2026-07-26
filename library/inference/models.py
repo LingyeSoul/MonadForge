@@ -73,6 +73,29 @@ def _is_chimera_moe(path: str) -> bool:
         return False
 
 
+def _is_glokr(path: str) -> bool:
+    """Peek for a GLoKr checkpoint (``ss_network_spec="glokr"`` stamp, with a
+    header key-sniff fallback for metadata-stripped files).
+
+    GLoKr (Kronecker delta + BoRA bi-dimensional weight decomposition) cannot
+    ride the static merge — its keys are not ``lora_down/up`` and its merged
+    weight is a *replacement* (re-normalized), not an additive delta. Without
+    this branch the static-merge hook would silently drop every key (the LoKr
+    inert-adapter failure mode), so detection must skip static merge and go
+    through the kept-live rebuild instead.
+    """
+    from safetensors import safe_open
+
+    try:
+        with safe_open(path, framework="pt") as f:
+            md = f.metadata() or {}
+            if str(md.get("ss_network_spec", "")).strip() == "glokr":
+                return True
+            return any(".glokr_w" in k for k in f.keys())
+    except Exception:
+        return False
+
+
 def _is_step_expert_turbo(path: str) -> bool:
     """Peek at safetensors metadata for ``ss_turbo_per_step_expert``.
 
@@ -103,6 +126,7 @@ def attach_adapters(
     pgraft_mode: bool,
     hydra_mode: bool,
     step_expert_mode: bool = False,
+    glokr_mode: bool = False,
 ) -> None:
     """Attach LoRA-family adapters that ride as dynamic forward hooks.
 
@@ -117,6 +141,58 @@ def attach_adapters(
     ``pgraft_mode`` / ``hydra_mode`` are passed in (not recomputed) because the
     caller already derives them to decide whether to skip the static merge.
     """
+    # GLoKr (Kronecker + BoRA weight decomposition): kept-live weight-replacement
+    # hooks. Not routable through the static merge (keys aren't down/up; the
+    # merged weight replaces rather than adds). Metadata must ride along —
+    # the Kronecker factor + rs_lora scale are stamped, not shape-recoverable.
+    # Handles the pgraft flag too (reuses the cutoff slot like Hydra does).
+    if glokr_mode:
+        from networks import lora_anima
+        from safetensors import safe_open
+
+        logger.info("GLoKr: loading as kept-live weight-decomposed hooks")
+        for lora_weight_path in args.lora_weight:
+            with safe_open(lora_weight_path, framework="pt") as f:
+                glokr_metadata = dict(f.metadata() or {})
+            lora_sd = load_file(lora_weight_path)
+            lora_sd = {k: v for k, v in lora_sd.items() if k.startswith("lora_unet_")}
+            multiplier = (
+                args.lora_multiplier
+                if isinstance(args.lora_multiplier, (int, float))
+                else args.lora_multiplier[0]
+            )
+            network, weights_sd = lora_anima.create_network_from_weights(
+                multiplier=multiplier,
+                file=None,
+                ae=None,
+                text_encoders=[],
+                unet=model,
+                weights_sd=lora_sd,
+                metadata=glokr_metadata,
+                for_inference=True,
+            )
+            network.apply_to([], model, apply_text_encoder=False, apply_unet=True)
+            info = network.load_state_dict(weights_sd, strict=False)
+            if info.unexpected_keys:
+                logger.warning(
+                    f"GLoKr: unexpected keys in state dict: {info.unexpected_keys[:5]}..."
+                )
+            if info.missing_keys:
+                logger.warning(
+                    f"GLoKr: missing keys in state dict: {info.missing_keys[:5]}..."
+                )
+            network.to(device, dtype=torch.bfloat16)
+            network.eval().requires_grad_(False)
+            model._glokr_network = network
+            # Reuse the P-GRAFT cutoff slot so --lora_cutoff_step toggle sites
+            # work without further plumbing (set_enabled flips the live hooks).
+            model._pgraft_network = network
+            logger.info(
+                f"GLoKr: kept-live attached ({len(network.unet_loras)} modules, "
+                f"cutoff_step={getattr(args, 'lora_cutoff_step', None)})"
+            )
+        return
+
     # P-GRAFT: attach LoRA as dynamic hooks (can be toggled mid-denoising)
     if pgraft_mode and not hydra_mode:
         from networks import lora_anima
@@ -309,6 +385,39 @@ def load_dit_model(
                 )
             hydra_mode = True
 
+    # GLoKr (Kronecker + BoRA): weight-replacement adapter — the static merge
+    # hook only understands lora_down/up keys and would silently drop every
+    # glokr key (adapter inert with just a log line). Skip static merge and
+    # take the kept-live rebuild in attach_adapters instead.
+    glokr_mode = False
+    if (
+        not step_expert_mode
+        and not hydra_mode
+        and args.lora_weight is not None
+        and len(args.lora_weight) > 0
+    ):
+        glokr_flags = [_is_glokr(p) for p in args.lora_weight]
+        if any(glokr_flags):
+            if not all(glokr_flags):
+                raise ValueError(
+                    "Mixing GLoKr files with regular LoRA files in a single "
+                    "--lora_weight list is not supported (static merge + "
+                    "weight-replacement hooks are untested together). Pass "
+                    "them in separate invocations, or bake the GLoKr first "
+                    "with `make merge`."
+                )
+            if len(args.lora_weight) > 1:
+                # Weight-REPLACEMENT hooks don't stack: each network's forward
+                # rebuilds W' from W0 without calling the previous hook, so all
+                # but the last file would be silently inert. Composition of
+                # BoRA-decomposed weights is undefined anyway.
+                raise ValueError(
+                    "GLoKr must be loaded alone (one --lora_weight). Its "
+                    "weight-replacement forward does not stack with other "
+                    "adapters — bake with `make merge` to compose."
+                )
+            glokr_mode = True
+
     # P-GRAFT: load without LoRA merge, attach dynamic hooks instead
     pgraft_mode = (
         getattr(args, "pgraft", False)
@@ -322,6 +431,7 @@ def load_dit_model(
         not pgraft_mode
         and not hydra_mode
         and not step_expert_mode
+        and not glokr_mode
         and args.lora_weight is not None
         and len(args.lora_weight) > 0
     ):
@@ -371,6 +481,7 @@ def load_dit_model(
         pgraft_mode=pgraft_mode,
         hydra_mode=hydra_mode,
         step_expert_mode=step_expert_mode,
+        glokr_mode=glokr_mode,
     )
 
     if getattr(args, "compile", False):

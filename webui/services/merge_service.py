@@ -104,6 +104,7 @@ def scan_adapter(file_path: str) -> dict:
         "lora_down": 0,
         "ortho_sp": 0,
         "dora": 0,
+        "glokr": 0,
         "lora_ups": 0,
         "lora_up_weight": 0,
         "reft": 0,
@@ -122,6 +123,10 @@ def scan_adapter(file_path: str) -> dict:
             counts["lora_down"] += 1
         elif key.endswith(".S_p"):
             counts["ortho_sp"] += 1
+        elif ".glokr_w" in key or key.endswith((".bora_m_row", ".bora_m_col")):
+            # GLoKr (Kronecker + BoRA weight decomposition) — bakeable via
+            # GLoKRModule.merge_to (weight replacement + multiplier lerp).
+            counts["glokr"] += 1
         elif key.endswith(".dora_scale") or key.endswith(".magnitude"):
             counts["dora"] += 1
         else:
@@ -134,7 +139,9 @@ def scan_adapter(file_path: str) -> dict:
 
     # Severity verdict
     has_hydra = counts["lora_up_weight"] > 0 or counts["lora_ups"] > 0
-    has_lora_like = counts["lora_down"] > 0 or counts["ortho_sp"] > 0
+    has_lora_like = (
+        counts["lora_down"] > 0 or counts["ortho_sp"] > 0 or counts["glokr"] > 0
+    )
     has_reft = counts["reft"] > 0
     has_postfix = counts["postfix"] > 0
 

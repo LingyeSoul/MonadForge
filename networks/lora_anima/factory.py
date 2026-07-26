@@ -37,12 +37,15 @@ _CHANNEL_STATS_PATH = (
 )
 
 
-def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor]) -> int:
+def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor], stem: str = "lokr") -> int:
     """Infer one factor that reconstructs every canonical LoKr module.
 
     A single module can be ambiguous: an explicit factor may produce the same
     split as LyCORIS' default factorization for one shape but not for another.
     Unstamped checkpoints therefore need a network-wide consistency check.
+
+    ``stem`` selects the key family — ``"lokr"`` (LyCORIS wrapper) or
+    ``"glokr"`` (native Kronecker+BoRA); both share the factorization math.
     """
     from lycoris.functional import factorization
 
@@ -52,10 +55,10 @@ def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor]) -> int:
             for key in state_dict
             if key.endswith(
                 (
-                    ".lokr_w1",
-                    ".lokr_w1_a",
-                    ".lokr_w2",
-                    ".lokr_w2_a",
+                    f".{stem}_w1",
+                    f".{stem}_w1_a",
+                    f".{stem}_w2",
+                    f".{stem}_w2_a",
                 )
             )
         }
@@ -66,12 +69,12 @@ def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor]) -> int:
     layouts: list[tuple[str, tuple[int, int], tuple[int, int], tuple[int, int]]] = []
     candidates = {-1}
     for prefix in prefixes:
-        w1 = state_dict.get(f"{prefix}.lokr_w1")
-        w1a = state_dict.get(f"{prefix}.lokr_w1_a")
-        w1b = state_dict.get(f"{prefix}.lokr_w1_b")
-        w2 = state_dict.get(f"{prefix}.lokr_w2")
-        w2a = state_dict.get(f"{prefix}.lokr_w2_a")
-        w2b = state_dict.get(f"{prefix}.lokr_w2_b")
+        w1 = state_dict.get(f"{prefix}.{stem}_w1")
+        w1a = state_dict.get(f"{prefix}.{stem}_w1_a")
+        w1b = state_dict.get(f"{prefix}.{stem}_w1_b")
+        w2 = state_dict.get(f"{prefix}.{stem}_w2")
+        w2a = state_dict.get(f"{prefix}.{stem}_w2_a")
+        w2b = state_dict.get(f"{prefix}.{stem}_w2_b")
 
         if w1 is None and (w1a is None or w1b is None):
             raise RuntimeError(
@@ -191,15 +194,15 @@ def create_network(
     # skips the injection for LoKRModule; warn here so users know to drop the
     # config knob rather than discover it via a black-image checkpoint.
     if (
-        spec.name == "lokr"
+        spec.name in ("lokr", "glokr")
         and channel_scales_dict
         and float(kwargs.get("channel_scaling_alpha", 0.0) or 0.0) > 0
     ):
         logger.warning(
-            "LoKR + channel_scaling_alpha>0 is incompatible — LoKR's Kronecker "
+            f"{spec.name} + channel_scaling_alpha>0 is incompatible — Kronecker "
             "factors cannot absorb the per-channel scale, so channel scaling is "
-            "auto-disabled for LoKR modules. Set channel_scaling_alpha=0 to "
-            "silence this. The checkpoint will save in native lokr format."
+            "auto-disabled for these modules. Set channel_scaling_alpha=0 to "
+            "silence this."
         )
 
     cfg = LoRANetworkCfg.from_kwargs(
@@ -508,6 +511,7 @@ def create_network_from_weights(
     # are canonical; this key-sniff is a fallback for unstamped/legacy artifacts.
     has_stacked_experts = False
     has_lokr = False
+    has_glokr = False
     hydra_num_experts = 0
     # Which lora_names were MoE (Hydra) vs plain, passed as `hydra_router_names`
     # so create_modules picks the right class per module in mixed checkpoints.
@@ -545,6 +549,20 @@ def create_network_from_weights(
             # A full-full checkpoint has no rank-shaped tensor. Its canonical
             # alpha is the LyCORIS lora_dim because full matrices force scale=1.
             modules_dim.setdefault(lora_name, 0)
+        elif key.endswith((".glokr_w1_a", ".glokr_w2_a")):
+            has_glokr = True
+            # Same layout as LoKR: decomposed A is (factor_out, rank).
+            modules_dim[lora_name] = value.size(1)
+        elif key.endswith((".glokr_w1_b", ".glokr_w2_b")):
+            has_glokr = True
+            modules_dim.setdefault(lora_name, value.size(0))
+        elif key.endswith((".glokr_w1", ".glokr_w2")):
+            has_glokr = True
+            # Full-full layout: no rank-shaped tensor; alpha carries lora_dim.
+            modules_dim.setdefault(lora_name, 0)
+        elif key.endswith((".bora_m_row", ".bora_m_col")):
+            # BoRA magnitudes ride alongside glokr factors; dim comes from those.
+            has_glokr = True
         elif key.endswith(".vera_d"):
             modules_dim[lora_name] = value.size(0)
         elif key.endswith(".lora_up_c_weight") or key.endswith(".lora_up_f_weight"):
@@ -641,6 +659,45 @@ def create_network_from_weights(
             )
         if metadata_factor is None:
             lokr_detected_factor = _infer_lokr_factor(weights_sd)
+
+    # GLoKr: same shape-recovery story as LoKR (factor + rs_lora ride metadata,
+    # decompose/full layouts are key-sniffed, bora from magnitude keys).
+    glokr_detected_factor = -1
+    glokr_decompose_both = False
+    glokr_full_factor = False
+    glokr_rs_lora = False
+    glokr_bora = True
+    if has_glokr:
+        _glokr_meta_factor = file_metadata.get(
+            "ss_glokr_factor", network_args_metadata.get("glokr_factor")
+        )
+        if _glokr_meta_factor is not None:
+            glokr_detected_factor = int(_glokr_meta_factor)
+        else:
+            glokr_detected_factor = _infer_lokr_factor(weights_sd, stem="glokr")
+        for name in list(modules_dim.keys()):
+            if modules_dim[name] == 0 and name in modules_alpha:
+                modules_dim[name] = int(modules_alpha[name])
+        glokr_decompose_both = any(k.endswith(".glokr_w1_a") for k in weights_sd)
+        _glokr_full_stamp = file_metadata.get(
+            "ss_glokr_full_factor", network_args_metadata.get("glokr_full_factor")
+        )
+        if _glokr_full_stamp is not None:
+            glokr_full_factor = str(_glokr_full_stamp).strip().lower() == "true"
+        else:
+            glokr_full_factor = all(
+                not k.endswith(
+                    (".glokr_w1_a", ".glokr_w1_b", ".glokr_w2_a", ".glokr_w2_b")
+                )
+                for k in weights_sd
+                if ".glokr_w" in k
+            )
+        # rs_lora is NOT recovered: the module pre-folds sqrt(r) into the
+        # persisted alpha buffer (LyCORIS convention), so rebuilding with
+        # rs_lora=False + the stored alpha reproduces the training scale
+        # exactly — even on metadata-stripped checkpoints. The
+        # ss_glokr_rs_lora stamp is provenance only.
+        glokr_bora = any(k.endswith(".bora_m_row") for k in weights_sd)
 
     # Finalize the MoE shape post-scan: up_weight (3-D) with no matching
     # down_weight (3-D) is Hydra (shared down); both 3-D means StackedExperts.
@@ -748,6 +805,12 @@ def create_network_from_weights(
                 )
     elif has_lokr:
         spec = NETWORK_REGISTRY["lokr"]
+        module_class = spec.module_class
+    elif has_glokr:
+        # Must resolve BEFORE the for_inference flatten: GLoKr's merged weight
+        # is not expressible as flat down/up, and its merge_to (weight
+        # replacement + multiplier lerp) is what the bake path needs.
+        spec = NETWORK_REGISTRY["glokr"]
         module_class = spec.module_class
     elif any(k.endswith(".vera_d") for k in weights_sd):
         spec = NETWORK_REGISTRY["vera"]
@@ -1037,8 +1100,13 @@ def create_network_from_weights(
         content_router_layer_norm=chimera_content_router_layer_norm,
         is_lokr=has_lokr,
         lokr_factor=lokr_detected_factor,
-        decompose_both=lokr_decompose_both,
+        decompose_both=lokr_decompose_both or glokr_decompose_both,
         lokr_full_factor=lokr_full_factor,
+        is_glokr=has_glokr,
+        glokr_factor=glokr_detected_factor,
+        glokr_full_factor=glokr_full_factor,
+        glokr_rs_lora=glokr_rs_lora,
+        glokr_bora=glokr_bora,
         dylora_unit=dylora_unit,
         dylora_algo=dylora_algo,
         use_dylora=use_dylora,

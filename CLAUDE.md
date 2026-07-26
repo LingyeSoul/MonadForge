@@ -42,7 +42,7 @@ make dcw-train             # train-only on existing pool (~30s)
 
 python -m webui            # WebUI (FastAPI + Vue 3 — config editing, dataset browsing, training)
 make mask | mask-clean     # SAM3 + MIT → post_image_dataset/masks/ (for masked loss)
-make merge ADAPTER_DIR=output/ckpt [MULTIPLIER=0.8]   # bake LoRA into DiT (LoRA/Ortho/T-LoRA only)
+make merge ADAPTER_DIR=output/ckpt [MULTIPLIER=0.8]   # bake LoRA into DiT (LoRA/Ortho/T-LoRA/LoKR/GLoKr)
 make comfy-batch           # run ComfyUI batch workflow
 make print-config METHOD=lora PRESET=default          # dump merged config chain
 make test-unit             # pytest tests/ (smoke, config, loss/network registries)

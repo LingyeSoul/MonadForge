@@ -279,6 +279,7 @@ MonadForge 完整继承并同步上游的所有训练与推理能力：
 
 - ✅ **Fast LoRA Training** — 恒定 token 分桶 + 逐块 `torch.compile`，RTX 5060 Ti 上 13.4GB VRAM / 1.1s per step
 - ✅ **LoRA / OrthoLoRA / T-LoRA** — 三种变体可叠加，无损合并为独立 DiT 检查点
+- ✅ **GLoKr (BoRA)** — Kronecker 分解 ΔW + BoRA 双维度权重分解（行/列可训练幅值，[文档](docs/methods/glokr.md)）
 - ✅ **Spectrum 推理加速** — 训练无关的 ~1.75× 加速，支持 ComfyUI 节点
 - ✅ **DCW / SMC-CFG** — 采样器级 SNR 校正与滑模 CFG 修正
 - ✅ **HydraLoRA / ChimeraHydra** — MoE 多专家路由与双池加法架构

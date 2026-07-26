@@ -24,6 +24,7 @@ from networks.lora_modules import (
     ChimeraHydraInferenceModule,
     ChimeraHydraLoRAModule,
     DyLoRAModule,
+    GLoKRModule,
     HydraLoRAModule,
     LoKRModule,
     LoRAModule,
@@ -532,6 +533,19 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                         # LyCORIS LokrModule(full_matrix=True).
                         extra_kwargs["full_factor"] = True
 
+                # GLoKr-specific kwargs. Always thread the full set — the
+                # module owns the layout decisions (use_w1/use_w2), and the
+                # defaults are only meaningful in aggregate.
+                if (
+                    getattr(cfg, "use_glokr", False)
+                    and effective_module_class is GLoKRModule
+                ):
+                    extra_kwargs["glokr_factor"] = cfg.glokr_factor
+                    extra_kwargs["decompose_both"] = cfg.decompose_both
+                    extra_kwargs["full_factor"] = cfg.glokr_full_factor
+                    extra_kwargs["rs_lora"] = cfg.glokr_rs_lora
+                    extra_kwargs["bora"] = cfg.glokr_bora
+
                 # DyLoRA-specific kwargs.
                 if (
                     getattr(cfg, "use_dylora", False)
@@ -551,6 +565,7 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     cfg.channel_scales_dict is not None
                     and is_unet
                     and effective_module_class is not LoKRModule
+                    and effective_module_class is not GLoKRModule
                 ):
                     _cs = cfg.channel_scales_dict.get(lora_name)
                     if _cs is not None:
@@ -608,7 +623,7 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         if train_llm_adapter:
             target_modules.extend(LoRANetwork.ANIMA_ADAPTER_TARGET_REPLACE_MODULE)
 
-        # LoKR-only: split fused qkv_proj/kv_proj into per-component q_proj/
+        # LoKR/GLoKr-only: split fused qkv_proj/kv_proj into per-component q_proj/
         # k_proj/v_proj Linears BEFORE create_modules walks the DiT. Each split
         # Linear's weight is a zero-copy narrow view of the fused weight, so
         # the frozen base storage is shared. This lets each q/k/v get its own
@@ -616,7 +631,7 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         # boundaries at save time), and produces ComfyUI-compatible split
         # keys directly (``…_self_attn_q_proj.lokr_*``). Other variants keep
         # the fused Linear and rely on ``defuse_standard_qkv`` at save.
-        if getattr(cfg, "use_lokr", False):
+        if getattr(cfg, "use_lokr", False) or getattr(cfg, "use_glokr", False):
             from networks.lora_modules.split_attn import split_fused_projections
 
             split_fused_projections(unet)
@@ -1912,6 +1927,26 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             )
             metadata["ss_lokr_full_factor"] = str(uses_full_factor_layout).lower()
 
+        if spec.name == "glokr":
+            metadata.setdefault("ss_network_dim", str(self.cfg.lora_dim))
+            metadata.setdefault("ss_network_alpha", str(self.cfg.alpha))
+            # Factor and rs_lora leave no tensor footprint — a decomposed
+            # checkpoint's shapes are ambiguous between factors, and the
+            # alpha/sqrt(r) scale is invisible in the weights. bora / layout
+            # flags are key-sniffable but stamped anyway for cheap peeks.
+            metadata["ss_glokr_factor"] = str(self.cfg.glokr_factor)
+            metadata["ss_glokr_rs_lora"] = str(self.cfg.glokr_rs_lora).lower()
+            metadata["ss_glokr_bora"] = str(self.cfg.glokr_bora).lower()
+            glokr_modules = [
+                lora
+                for lora in self.text_encoder_loras + self.unet_loras
+                if isinstance(lora, GLoKRModule)
+            ]
+            uses_full_layout = bool(glokr_modules) and all(
+                lora.use_w1 and lora.use_w2 for lora in glokr_modules
+            )
+            metadata["ss_glokr_full_factor"] = str(uses_full_layout).lower()
+
         if spec.name == "vera":
             for lora in self.unet_loras:
                 if hasattr(lora, "_vera_seed") and lora._vera_seed is not None:
@@ -2094,5 +2129,10 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                 state_dict[downkeys[i]] *= sqrt_ratio
             scalednorm = updown.norm() * ratio
             norms.append(scalednorm.item())
+
+        # Variants without plain down/up factors (LoKR / GLoKr Kronecker keys)
+        # match nothing above — report a no-op instead of dividing by zero.
+        if not norms:
+            return 0, 0.0, 0.0
 
         return keys_scaled, sum(norms) / len(norms), max(norms)

@@ -267,6 +267,17 @@ class LoRANetworkCfg:
     # full, official LyCORIS forces alpha=lora_dim and scale=1.
     lokr_full_factor: bool = False
 
+    # GLoKr: native Kronecker delta + BoRA bi-dimensional weight decomposition
+    # (arXiv 2412.06441). Selects ``GLoKRModule`` via ``resolve_network_spec``.
+    # Non-MoE only; shares ``decompose_both`` with LoKR. ``glokr_rs_lora``
+    # switches scale to alpha/sqrt(r); ``glokr_bora=False`` degrades to a plain
+    # additive Kronecker delta (materialized, no bypass — prefer use_lokr then).
+    use_glokr: bool = False
+    glokr_factor: int = -1
+    glokr_full_factor: bool = False
+    glokr_rs_lora: bool = False
+    glokr_bora: bool = True
+
     # DyLoRA: trains multiple LoRA ranks simultaneously by sampling a random
     # rank r ∈ {unit, 2*unit, ..., lora_dim} at each forward pass.
     # Selects ``DyLoRAModule`` via ``resolve_network_spec``. Non-MoE only.
@@ -540,6 +551,15 @@ class LoRANetworkCfg:
                 else "",
             )
 
+        # GLoKr knobs. ``glokr_bora`` defaults ON — the BoRA decomposition is
+        # the point of the variant; absent key ≠ explicit false.
+        use_glokr = _as_bool(kwargs.get("use_glokr"))
+        glokr_factor = int(kwargs.get("glokr_factor", -1))
+        glokr_full_factor = _as_bool(kwargs.get("glokr_full_factor"))
+        glokr_rs_lora = _as_bool(kwargs.get("glokr_rs_lora"))
+        glokr_bora_raw = kwargs.get("glokr_bora")
+        glokr_bora = True if glokr_bora_raw is None else _as_bool(glokr_bora_raw)
+
         # DyLoRA knobs.
         use_dylora = _as_bool(kwargs.get("use_dylora"))
         dylora_unit = int(kwargs.get("dylora_unit", 1))
@@ -785,6 +805,11 @@ class LoRANetworkCfg:
             lokr_factor=lokr_factor,
             decompose_both=decompose_both,
             lokr_full_factor=lokr_full_factor,
+            use_glokr=use_glokr,
+            glokr_factor=glokr_factor,
+            glokr_full_factor=glokr_full_factor,
+            glokr_rs_lora=glokr_rs_lora,
+            glokr_bora=glokr_bora,
             use_dylora=use_dylora,
             dylora_unit=dylora_unit,
             dylora_algo=dylora_algo,
@@ -856,6 +881,13 @@ class LoRANetworkCfg:
         lokr_factor: int = -1,
         decompose_both: bool = False,
         lokr_full_factor: bool = False,
+        # GLoKr selector + non-shape-recoverable scalars (factor / rs_lora
+        # ride safetensors metadata; bora / full layouts are key-sniffed).
+        is_glokr: bool = False,
+        glokr_factor: int = -1,
+        glokr_full_factor: bool = False,
+        glokr_rs_lora: bool = False,
+        glokr_bora: bool = True,
         dylora_unit: int = 1,
         dylora_algo: str = "",
         # DyLoRA selector — must be threaded through so ``network.py``'s
@@ -971,6 +1003,11 @@ class LoRANetworkCfg:
             lokr_factor=int(lokr_factor),
             decompose_both=bool(decompose_both),
             lokr_full_factor=bool(lokr_full_factor),
+            use_glokr=is_glokr,
+            glokr_factor=int(glokr_factor),
+            glokr_full_factor=bool(glokr_full_factor),
+            glokr_rs_lora=bool(glokr_rs_lora),
+            glokr_bora=bool(glokr_bora),
             dylora_unit=int(dylora_unit),
             dylora_algo=str(dylora_algo),
             use_dylora=bool(use_dylora),

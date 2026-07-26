@@ -108,6 +108,10 @@ def test_repa_kwargs_registered():
         ({"use_moe_style": "shared_A"}, "hydra"),
         ({"use_moe_style": "shared_A", "use_ortho": "true"}, "ortho_hydra"),
         ({"use_moe_style": "independent_A"}, "stacked_experts_global_fei"),
+        ({"use_lokr": "true"}, "lokr"),
+        ({"use_glokr": "true"}, "glokr"),
+        # ortho wins over the Kronecker selectors (evaluated earlier).
+        ({"use_glokr": "true", "use_ortho": "true"}, "ortho"),
         # Falsey forms of use_moe_style resolve to plain LoRA.
         ({"use_moe_style": False}, "lora"),
         ({"use_moe_style": "false"}, "lora"),
@@ -117,6 +121,11 @@ def test_repa_kwargs_registered():
 def test_resolve_precedence(kwargs, expected):
     spec = resolve_network_spec(kwargs)
     assert spec.name == expected
+
+
+def test_glokr_and_lokr_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        resolve_network_spec({"use_glokr": "true", "use_lokr": "true"})
 
 
 def test_ortho_and_ortho_init_mutually_exclusive():

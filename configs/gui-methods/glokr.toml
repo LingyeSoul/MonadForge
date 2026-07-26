@@ -1,0 +1,26 @@
+network_dim = 32
+network_alpha = 32
+learning_rate = 2e-5
+max_train_epochs = 6
+save_every_n_epochs = 2
+checkpointing_epochs = 2
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+caption_dropout_rate = 0.1
+output_name = "glokr"
+blocks_to_swap = 0
+
+use_glokr = true
+glokr_factor = 8
+decompose_both = false
+glokr_full_factor = false
+glokr_rs_lora = false
+glokr_bora = true
+channel_scaling_alpha = 0
+
+[variant]
+family = "lora"
+label = "GLoKr (BoRA)"
+description = "Kronecker delta + BoRA bi-dimensional weight decomposition — trainable row/col magnitudes over a re-normalized merged weight."
+order = 41
+target_res = [ 896, 1024,]

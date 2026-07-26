@@ -468,6 +468,7 @@ def save_network_weights(
     # Auto-fallback: any surviving ``.lora_up_weight`` key implies a Hydra
     # payload — kept for callers that don't plumb ``save_variant`` through.
     is_lokr_variant = save_variant == "lokr"
+    is_glokr_variant = save_variant == "glokr"
     is_stacked_experts_variant = save_variant == "stacked_experts_global_fei"
     is_chimera_variant = save_variant == "chimera_hydra_moe"
     is_hydra_variant = (
@@ -505,6 +506,38 @@ def save_network_weights(
         logger.info(f"HydraLoRA full format saved to {hydra_file}")
         # The _moe file is the only useful artifact for HydraLoRA —
         # a uniform expert average defeats layer-local routing.
+        return
+
+    if is_glokr_variant:
+        # GLoKr save path: native keys pass through verbatim. The network
+        # pre-split fused qkv/kv projections at build time (same as LoKR), so
+        # no defuse is needed; channel scaling is refused at the module ctor,
+        # so no inv_scale can appear. Keys: glokr_w1[_a/_b], glokr_w2[_a/_b],
+        # bora_m_row, bora_m_col, alpha.
+        stray_inv_scale = [k for k in state_dict if k.endswith(".inv_scale")]
+        if stray_inv_scale:
+            raise RuntimeError(
+                "GLoKr checkpoint unexpectedly carries inv_scale keys "
+                f"({stray_inv_scale[:3]}...) — channel scaling is refused at "
+                "module construction, so this state dict is malformed."
+            )
+        if dtype is not None:
+            for key in list(state_dict.keys()):
+                state_dict[key] = state_dict[key].detach().clone().to("cpu").to(dtype)
+        if os.path.splitext(file)[1] == ".safetensors":
+            from safetensors.torch import save_file
+            from library.training.hashing import precalculate_safetensors_hashes
+
+            if metadata is None:
+                metadata = {}
+            model_hash, legacy_hash = precalculate_safetensors_hashes(
+                state_dict, metadata
+            )
+            metadata["sshs_model_hash"] = model_hash
+            metadata["sshs_legacy_hash"] = legacy_hash
+            save_file(state_dict, file, metadata)
+        else:
+            torch.save(state_dict, file)
         return
 
     if is_lokr_variant:

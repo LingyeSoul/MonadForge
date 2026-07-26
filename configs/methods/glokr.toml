@@ -1,0 +1,40 @@
+# GLoKr — Kronecker-factored delta (LoKr layout) + BoRA bi-dimensional
+# weight decomposition.
+#
+# ΔW = kron(w1, w2)·scale is applied to W0, then the merged weight is
+# re-normalized row-wise and column-wise with two trainable magnitude vectors
+# (m_row, m_col), initialized to W0's row/col norms — W' == W0 exactly at
+# step 0. Symmetric magnitude training is the BoRA contribution; the
+# Kronecker factorization keeps the direction update parameter-efficient.
+#
+# Refs:
+#   BoRA: Bi-dimensional Weight-Decomposed Low-Rank Adaptation
+#         https://arxiv.org/abs/2412.06441
+#   LoKr / KronA: https://arxiv.org/abs/2212.10650 (Kronecker adapter)
+#
+# glokr_factor:      Kronecker split factor (-1 = LyCORIS auto; 8 matches the
+#                    in-tree LoKr default profile)
+# decompose_both:    also low-rank-factor the small w1 leg
+# glokr_full_factor: full-matrix both legs (scale forced to 1)
+# glokr_rs_lora:     rank-stabilized scale alpha/sqrt(r) instead of alpha/r
+# glokr_bora:        BoRA decomposition on/off (off = plain additive Kronecker
+#                    delta; prefer use_lokr for that — it has the cheap bypass)
+#
+# Not supported: channel_scaling (auto-warned + refused at module level),
+# dropout / rank_dropout (module_dropout works), Conv2d.
+
+network_dim = 32
+network_alpha = 32
+learning_rate = 2e-5
+max_train_epochs = 6
+output_name = "glokr"
+
+use_glokr = true
+glokr_factor = 8
+decompose_both = false
+glokr_full_factor = false
+glokr_rs_lora = false
+glokr_bora = true
+# Kronecker factors can't absorb the per-channel scale (base.toml ships 0.5);
+# zero it here so runs don't warn + auto-disable every time.
+channel_scaling_alpha = 0

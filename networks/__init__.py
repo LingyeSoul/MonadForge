@@ -29,6 +29,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Tuple, Type
 from networks.lora_modules import (
     ChimeraHydraLoRAModule,
     DyLoRAModule,
+    GLoKRModule,
     HydraLoRAModule,
     LoKRModule,
     LoRAModule,
@@ -109,6 +110,13 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         "lokr_factor",
         "decompose_both",
         "lokr_full_factor",
+        # GLoKr: native Kronecker delta + BoRA bi-dimensional weight
+        # decomposition (arXiv 2412.06441). Shares ``decompose_both``.
+        "use_glokr",
+        "glokr_factor",
+        "glokr_full_factor",
+        "glokr_rs_lora",
+        "glokr_bora",
         # Escape hatch for resuming historical states that used network_dim as
         # a full-factor sentinel and must preserve their old alpha/dim scale.
         "lokr_allow_legacy_dim",
@@ -262,6 +270,16 @@ NETWORK_REGISTRY: Dict[str, NetworkSpec] = {
         name="lokr",
         module_class=LoKRModule,
         save_variant="lokr",
+    ),
+    # GLoKr: native Kronecker delta + BoRA bi-dimensional weight decomposition.
+    # Saves native ``glokr_*`` + ``bora_m_*`` keys (not foldable to down/up —
+    # W' − W0 is full-rank); merge/bake works via GLoKRModule.merge_to
+    # (weight replacement + multiplier lerp), inference rides kept-live hooks
+    # keyed off the ``ss_network_spec="glokr"`` stamp.
+    "glokr": NetworkSpec(
+        name="glokr",
+        module_class=GLoKRModule,
+        save_variant="glokr",
     ),
     "ortho": NetworkSpec(
         name="ortho",
@@ -420,7 +438,17 @@ def resolve_network_spec(kwargs: Mapping[str, Any]) -> NetworkSpec:
         return NETWORK_REGISTRY["ortho_init"]
     if use_ortho:
         return NETWORK_REGISTRY["ortho"]
-    if _parse_bool_flag(kwargs, "use_lokr"):
+    use_glokr = _parse_bool_flag(kwargs, "use_glokr")
+    use_lokr = _parse_bool_flag(kwargs, "use_lokr")
+    if use_glokr and use_lokr:
+        raise ValueError(
+            "use_glokr and use_lokr are mutually exclusive: GLoKr is the "
+            "native Kronecker+BoRA variant, LoKr the LyCORIS-wrapped additive "
+            "one. Pick one."
+        )
+    if use_glokr:
+        return NETWORK_REGISTRY["glokr"]
+    if use_lokr:
         return NETWORK_REGISTRY["lokr"]
     if _parse_bool_flag(kwargs, "use_dylora"):
         return NETWORK_REGISTRY["dylora"]
