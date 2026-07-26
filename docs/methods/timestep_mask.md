@@ -25,13 +25,18 @@ Or toggle inside `configs/methods/lora.toml` by uncommenting the T-LoRA block an
 
 ## Compatibility
 
-Timestep masking composes with every adapter module type. The mask is applied at the bottleneck (after down-projection), so it is orthogonal to the module's outer parameterization:
+Timestep masking applies only to adapter families with a shared
+`network_dim` bottleneck. The mask is applied after down-projection:
 
 | Module | Where mask is applied |
 |--------|----------------------|
 | **LoRA** | After `lora_down`, before dropout and `lora_up` |
 | **OrthoLoRA (Cayley)** | After `Q_eff` projection, multiplied with `lambda_layer` |
 | **HydraLoRA** | After shared `lora_down`; per-expert `lora_up` heads unaffected |
+| **LoKr** | Unsupported: separate Kronecker factors have no shared bottleneck; full-matrix LoKr has no rank axis |
+
+Configuration validation rejects `use_lokr=true` together with
+`use_timestep_mask=true`. Set `use_timestep_mask=false` when training LoKr.
 
 The default block in `configs/methods/lora.toml` stacks LoRA + OrthoLoRA + T-LoRA together.
 

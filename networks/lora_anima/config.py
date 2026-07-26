@@ -534,6 +534,13 @@ class LoRANetworkCfg:
         decompose_both = _as_bool(kwargs.get("decompose_both"))
         lokr_full_factor = _as_bool(kwargs.get("lokr_full_factor"))
         allow_legacy_lokr_dim = _as_bool(kwargs.get("lokr_allow_legacy_dim"))
+        if use_lokr and use_timestep_mask:
+            raise ValueError(
+                "use_timestep_mask is not supported by LoKr. The current "
+                "LyCORIS LoKr parameterization has no shared network_dim "
+                "bottleneck to mask, and full-matrix LoKr has no rank axis at "
+                "all. Set use_timestep_mask=false when use_lokr=true."
+            )
         if use_lokr and network_dim == 114514:
             logger.warning(
                 "LoKR network_dim=114514 is a legacy implicit full-matrix "

@@ -28,3 +28,21 @@ Drops a `result.json` envelope (schema from `bench/_common.py`) into
 
 The stdout summary table is sized for copy-paste into the PR description (per
 the Tier 1.5 rule: before/after numbers must be in the PR).
+
+## Eager memory path
+
+`run_eager_memory_bench.py` compares official LyCORIS eager bypass autograd
+with MonadForge's chunked/rematerialized FP32 path. It reports saved-tensor
+bytes on CPU and, when CUDA is selected, peak allocated/reserved memory and
+forward+backward time.
+
+```bash
+python bench/lokr/run_eager_memory_bench.py
+python bench/lokr/run_eager_memory_bench.py \
+  --device cuda --rows 4200 --shape 9216 3072 \
+  --chunks 512 1024 2048 3072 --label v100
+```
+
+The default `--shape 9216 3072 --factor 8` represents a wide Anima FFN
+projection. CPU defaults to 128 rows so the saved-tensor comparison remains
+quick; use the actual bucket row count for a hardware peak-memory run.

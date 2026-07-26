@@ -48,6 +48,21 @@ def test_lokr_full_factor_accepts_decompose_both_like_lycoris():
     assert cfg.decompose_both is True
 
 
+def test_lokr_rejects_timestep_mask_without_a_defined_rank_axis():
+    with pytest.raises(ValueError, match="use_timestep_mask is not supported"):
+        LoRANetworkCfg.from_kwargs(
+            {
+                "use_lokr": "true",
+                "lokr_full_factor": "true",
+                "use_timestep_mask": "true",
+            },
+            network_dim=32,
+            network_alpha=32.0,
+            neuron_dropout=None,
+            module_class=LoKRModule,
+        )
+
+
 def test_lokr_legacy_full_factor_sentinel_uses_official_semantics(caplog):
     cfg = LoRANetworkCfg.from_kwargs(
         {"use_lokr": "true"},

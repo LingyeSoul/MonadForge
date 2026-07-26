@@ -164,6 +164,21 @@ def test_lokr_full_factor_with_decompose_both_is_valid():
     assert errors == []
 
 
+def test_lokr_with_timestep_mask_is_rejected():
+    errors = validate_config(
+        {
+            "use_lokr": True,
+            "network_dim": 32,
+            "network_alpha": 32,
+            "lokr_full_factor": True,
+            "use_timestep_mask": True,
+        }
+    )
+    assert errors == [
+        "use_timestep_mask is not supported by LoKr; set it to false"
+    ]
+
+
 def test_lokr_legacy_dim_validation_allows_explicit_resume_compatibility():
     errors = validate_config(
         {

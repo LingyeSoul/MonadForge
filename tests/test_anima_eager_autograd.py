@@ -7,9 +7,12 @@ import torch
 import torch.nn.functional as F
 
 from library.anima.eager_autograd import (
+    _lokr_owner,
     eager_fused_lora_mlp_tensors,
+    eager_fused_lokr_mlp_tensors,
     eager_rotary_qk,
 )
+from networks.lora_modules.lokr import LoKRModule
 
 
 def _lora_linear_reference(
@@ -126,6 +129,186 @@ def test_fused_lora_mlp_does_not_save_full_d_ff_activations():
 
     assert (rows, d_model) in saved_shapes
     assert (rows, d_ff) not in saved_shapes
+
+
+def _lokr_factors(layout, up, uq, vp, vq):
+    rank = 2
+    if layout == "full":
+        return (
+            torch.randn(up, uq, requires_grad=True),
+            None,
+            None,
+            torch.randn(vp, vq, requires_grad=True),
+            None,
+            None,
+        )
+    if layout == "w2_decomposed":
+        return (
+            torch.randn(up, uq, requires_grad=True),
+            None,
+            None,
+            None,
+            torch.randn(vp, rank, requires_grad=True),
+            torch.randn(rank, vq, requires_grad=True),
+        )
+    if layout == "w1_decomposed":
+        return (
+            None,
+            torch.randn(up, rank, requires_grad=True),
+            torch.randn(rank, uq, requires_grad=True),
+            torch.randn(vp, vq, requires_grad=True),
+            None,
+            None,
+        )
+    return (
+        None,
+        torch.randn(up, rank, requires_grad=True),
+        torch.randn(rank, uq, requires_grad=True),
+        None,
+        torch.randn(vp, rank, requires_grad=True),
+        torch.randn(rank, vq, requires_grad=True),
+    )
+
+
+def _lokr_linear_reference(
+    x,
+    base_weight,
+    factors,
+    scalar,
+    residual_scale,
+):
+    w1, w1a, w1b, w2, w2a, w2b = factors
+    c = w1.float() if w1 is not None else w1a.float().matmul(w1b.float())
+    grouped = x.float().reshape(x.shape[0], c.shape[1], -1)
+    if w2 is not None:
+        projected = F.linear(grouped, w2.float())
+    else:
+        projected = F.linear(
+            F.linear(grouped, w2b.float()),
+            w2a.float(),
+        )
+    delta = F.linear(projected.transpose(-1, -2), c)
+    delta = delta.transpose(-1, -2).reshape(x.shape[0], -1)
+    delta = delta * scalar.float() * residual_scale
+    return F.linear(x.to(base_weight.dtype), base_weight) + delta.to(
+        base_weight.dtype
+    )
+
+
+@pytest.mark.parametrize(
+    "layout",
+    ["full", "w2_decomposed", "w1_decomposed", "decompose_both"],
+)
+def test_fused_lokr_mlp_forward_and_grads_match_reference(layout):
+    torch.manual_seed(23)
+    rows, d_model, d_ff = 11, 12, 18
+    base1 = torch.randn(d_ff, d_model)
+    base2 = torch.randn(d_model, d_ff)
+    grad_out = torch.randn(rows, d_model)
+
+    def run(fused):
+        x = torch.randn(rows, d_model, requires_grad=True)
+        factors1 = _lokr_factors(layout, 3, 3, 6, 4)
+        factors2 = _lokr_factors(layout, 3, 3, 4, 6)
+        scalar1 = torch.tensor(0.625, requires_grad=True)
+        scalar2 = torch.tensor(0.875, requires_grad=True)
+        if fused:
+            out = eager_fused_lokr_mlp_tensors(
+                x,
+                base1,
+                *factors1,
+                scalar1,
+                0.75,
+                base2,
+                *factors2,
+                scalar2,
+                1.25,
+                chunk_size=4,
+            )
+        else:
+            hidden = F.gelu(
+                _lokr_linear_reference(
+                    x,
+                    base1,
+                    factors1,
+                    scalar1,
+                    0.75,
+                )
+            )
+            out = _lokr_linear_reference(
+                hidden,
+                base2,
+                factors2,
+                scalar2,
+                1.25,
+            )
+        requested = (
+            x,
+            *(factor for factor in factors1 if factor is not None),
+            scalar1,
+            *(factor for factor in factors2 if factor is not None),
+            scalar2,
+        )
+        return out, torch.autograd.grad(out, requested, grad_out)
+
+    torch.manual_seed(24)
+    expected_out, expected_grads = run(False)
+    torch.manual_seed(24)
+    actual_out, actual_grads = run(True)
+
+    assert torch.allclose(actual_out, expected_out, rtol=1e-5, atol=2e-6)
+    for actual, expected in zip(actual_grads, expected_grads):
+        assert torch.allclose(actual, expected, rtol=2e-5, atol=2e-5)
+
+
+def test_fused_lokr_mlp_does_not_save_full_d_ff_activations():
+    torch.manual_seed(25)
+    rows, d_model, d_ff = 9, 12, 18
+    x = torch.randn(rows, d_model, requires_grad=True)
+    base1 = torch.randn(d_ff, d_model)
+    base2 = torch.randn(d_model, d_ff)
+    factors1 = _lokr_factors("full", 3, 3, 6, 4)
+    factors2 = _lokr_factors("full", 3, 3, 4, 6)
+    saved_shapes = []
+
+    def pack(tensor):
+        saved_shapes.append(tuple(tensor.shape))
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+        eager_fused_lokr_mlp_tensors(
+            x,
+            base1,
+            *factors1,
+            torch.tensor(1.0),
+            1.0,
+            base2,
+            *factors2,
+            torch.tensor(1.0),
+            1.0,
+            chunk_size=3,
+        )
+
+    assert (rows, d_model) in saved_shapes
+    assert (rows, d_ff) not in saved_shapes
+
+
+def test_lokr_mlp_owner_accepts_full_factor_without_decomposed_attributes():
+    base = torch.nn.Linear(8, 12, bias=False)
+    module = LoKRModule(
+        "m",
+        base,
+        lora_dim=2,
+        alpha=2,
+        lokr_factor=2,
+        full_factor=True,
+    )
+    module.fp32_compute = True
+    module.use_custom_down_autograd = True
+    module.train()
+    module.apply_to()
+
+    assert _lokr_owner(base) is module
 
 
 def _rotate_half(x):

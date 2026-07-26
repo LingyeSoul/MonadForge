@@ -186,7 +186,10 @@ def test_wrapper_forward_and_gradients_equal_direct_lycoris():
     wrapped_out = wrapped_base(x)
     official_out = official_base(x)
 
-    assert torch.allclose(wrapped_out, official_out, atol=1e-6, rtol=1e-6)
+    # Rebuild mode materializes kron(W1, W2), while bypass mode evaluates the
+    # equivalent grouped linears. Their FP32 accumulation orders can differ by
+    # one or two ulps on this 512-wide case.
+    assert torch.allclose(wrapped_out, official_out, atol=2e-6, rtol=1e-6)
 
     wrapped_out.square().mean().backward()
     official_out.square().mean().backward()

@@ -165,7 +165,7 @@ def _resolve_v100_flash_stability(args) -> str:
 
 
 def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -> bool:
-    """Return True when V100 fp16 training should keep LoRA rank GEMMs in fp32.
+    """Keep LoRA-family adapter projections in fp32 on V100/fp16.
 
     Explicit ``lora_fp32_compute=...`` from TOML / ``--network_args`` wins. The
     automatic fallback is intentionally narrow (Volta V100 sm_70 + fp16) so the
@@ -195,13 +195,14 @@ def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -
 def _should_auto_enable_eager_lora_down_autograd(
     args, net_kwargs: dict
 ) -> bool:
-    """Enable the eager V100 LoRA/operator-fusion memory path.
+    """Enable the eager V100 adapter/operator-fusion memory path.
 
     ``use_custom_down_autograd`` is the compatibility name for the complete
-    eager path: saved-input LoRA rank projections plus bounded LoRA-up, RoPE,
-    RMSNorm, and MLP intermediates. Explicit configuration wins. The path is
-    useful only when compile is off (compiled graphs already use Dynamo fusion
-    and AOTAutograd partitioning) and the LoRA rank path resolved to fp32.
+    eager path: saved-input LoRA rank projections, rematerialized LoKr bypass,
+    plus bounded LoRA-up, RoPE, RMSNorm, and MLP intermediates. Explicit
+    configuration wins. The path is useful only when compile is off (compiled
+    graphs already use Dynamo fusion and AOTAutograd partitioning) and the
+    adapter projection path resolved to fp32.
     """
     if "use_custom_down_autograd" in net_kwargs:
         return False

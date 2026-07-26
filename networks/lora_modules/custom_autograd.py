@@ -1,4 +1,4 @@
-"""Eager-only memory-saving autograd for FP32 LoRA down projections.
+"""Eager-only memory-saving autograd for FP32 LoRA/LoKr projections.
 
 The V100/fp16 training path intentionally runs the small LoRA rank GEMMs in
 FP32.  Plain eager autograd then saves the converted/scaled FP32 activation for
@@ -19,6 +19,9 @@ import torch.nn.functional as F
 
 # Avoid fragmented rank GEMMs without retaining full FP32 layer activations.
 EAGER_LORA_CHUNK_ROWS = 3072
+# Full-factor LoKr projects close to the base layer's full width. A smaller
+# chunk keeps its transient FP32 workspace bounded on 16 GiB V100 cards.
+EAGER_LOKR_CHUNK_ROWS = 1024
 
 
 def _flatten_last(x: torch.Tensor) -> torch.Tensor:
@@ -258,3 +261,218 @@ def eager_lora_down_project(
     if inv_scale is None:
         return EagerLoRADownProjectFn.apply(x, weight)
     return EagerScaledLoRADownProjectFn.apply(x, weight, inv_scale)
+
+
+def _lokr_linear_chunk(
+    x: torch.Tensor,
+    w1: torch.Tensor | None,
+    w1a: torch.Tensor | None,
+    w1b: torch.Tensor | None,
+    w2: torch.Tensor | None,
+    w2a: torch.Tensor | None,
+    w2b: torch.Tensor | None,
+) -> torch.Tensor:
+    """Evaluate LyCORIS' linear LoKr bypass formula for one row chunk."""
+    c = w1.float() if w1 is not None else w1a.float().matmul(w1b.float())
+    grouped = x.float().reshape(x.shape[0], c.shape[1], -1)
+    if w2 is not None:
+        projected = F.linear(grouped, w2.float())
+    else:
+        projected = F.linear(
+            F.linear(grouped, w2b.float()),
+            w2a.float(),
+        )
+    crossed = projected.transpose(-1, -2)
+    output = F.linear(crossed, c).transpose(-1, -2)
+    return output.reshape(x.shape[0], -1)
+
+
+class EagerLoKrResidualFn(torch.autograd.Function):
+    """Chunk and rematerialize the FP32 linear LoKr bypass.
+
+    LyCORIS' eager bypass keeps the full FP32 input plus its near-full-width
+    Kronecker-group intermediate for factor backward. This Function saves only
+    the original input and factor storage. Each row chunk is reconstructed in
+    backward, with factor gradients accumulated in FP32 before one final cast
+    to the parameter dtype.
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        org_forwarded: torch.Tensor,
+        x: torch.Tensor,
+        w1: torch.Tensor | None,
+        w1a: torch.Tensor | None,
+        w1b: torch.Tensor | None,
+        w2: torch.Tensor | None,
+        w2a: torch.Tensor | None,
+        w2b: torch.Tensor | None,
+        scalar: torch.Tensor,
+        residual_scale: float,
+        chunk_size: int,
+    ) -> torch.Tensor:
+        scale = float(residual_scale)
+        chunk = max(1, int(chunk_size))
+        x_flat = _flatten_last(x)
+        out_flat = _flatten_last(org_forwarded)
+        factors = (w1, w1a, w1b, w2, w2a, w2b)
+
+        ctx.mark_dirty(org_forwarded)
+        for start in range(0, x_flat.shape[0], chunk):
+            end = min(start + chunk, x_flat.shape[0])
+            delta = _lokr_linear_chunk(x_flat[start:end], *factors)
+            if scale != 1.0:
+                delta.mul_(scale)
+            delta.mul_(scalar.float())
+            out_flat[start:end].add_(delta.to(org_forwarded.dtype))
+
+        present = tuple(factor is not None for factor in factors)
+        ctx.save_for_backward(
+            x,
+            scalar,
+            *(factor for factor in factors if factor is not None),
+        )
+        ctx.factor_present = present
+        ctx.residual_scale = scale
+        ctx.chunk_size = chunk
+        return org_forwarded
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_out: torch.Tensor):
+        x, scalar, *saved_factors = ctx.saved_tensors
+        factor_iter = iter(saved_factors)
+        factors = tuple(
+            next(factor_iter) if present else None
+            for present in ctx.factor_present
+        )
+        needs_scalar_grad = ctx.needs_input_grad[8]
+        if not (
+            ctx.needs_input_grad[1]
+            or needs_scalar_grad
+            or any(ctx.needs_input_grad[2:8])
+        ):
+            return grad_out, None, None, None, None, None, None, None, None, None, None
+
+        x_flat = _flatten_last(x)
+        grad_flat = _flatten_last(grad_out)
+        chunk = ctx.chunk_size
+
+        grad_x_flat = torch.empty_like(x_flat) if ctx.needs_input_grad[1] else None
+        grad_factors_fp32 = [
+            (
+                torch.zeros_like(factor, dtype=torch.float32)
+                if factor is not None and ctx.needs_input_grad[2 + index]
+                else None
+            )
+            for index, factor in enumerate(factors)
+        ]
+        grad_scalar_fp32 = (
+            torch.zeros_like(scalar, dtype=torch.float32)
+            if needs_scalar_grad
+            else None
+        )
+
+        for start in range(0, x_flat.shape[0], chunk):
+            end = min(start + chunk, x_flat.shape[0])
+            with torch.enable_grad():
+                local_x = (
+                    x_flat[start:end]
+                    .detach()
+                    .float()
+                    .requires_grad_(ctx.needs_input_grad[1])
+                )
+                local_factors = tuple(
+                    (
+                        factor.detach()
+                        .float()
+                        .requires_grad_(grad_factor is not None)
+                        if factor is not None
+                        else None
+                    )
+                    for factor, grad_factor in zip(factors, grad_factors_fp32)
+                )
+                local_scalar = (
+                    scalar.detach()
+                    .float()
+                    .requires_grad_(needs_scalar_grad)
+                )
+                local_out = _lokr_linear_chunk(local_x, *local_factors)
+                if ctx.residual_scale != 1.0:
+                    local_out = local_out * ctx.residual_scale
+                local_out = local_out * local_scalar
+
+                requested = []
+                requested_slots = []
+                if ctx.needs_input_grad[1]:
+                    requested.append(local_x)
+                    requested_slots.append(("x", -1))
+                for index, (factor, grad_factor) in enumerate(
+                    zip(local_factors, grad_factors_fp32)
+                ):
+                    if factor is not None and grad_factor is not None:
+                        requested.append(factor)
+                        requested_slots.append(("factor", index))
+                if needs_scalar_grad:
+                    requested.append(local_scalar)
+                    requested_slots.append(("scalar", -1))
+
+                local_grads = torch.autograd.grad(
+                    local_out,
+                    requested,
+                    grad_outputs=grad_flat[start:end].float(),
+                    allow_unused=False,
+                )
+
+            for (kind, index), local_grad in zip(requested_slots, local_grads):
+                if kind == "x":
+                    grad_x_flat[start:end] = local_grad.to(x.dtype)
+                elif kind == "scalar":
+                    grad_scalar_fp32.add_(local_grad)
+                else:
+                    grad_factors_fp32[index].add_(local_grad)
+
+        grad_x = grad_x_flat.reshape_as(x) if grad_x_flat is not None else None
+        grad_factors = tuple(
+            (
+                grad_factor.to(factor.dtype)
+                if factor is not None and grad_factor is not None
+                else None
+            )
+            for factor, grad_factor in zip(factors, grad_factors_fp32)
+        )
+        grad_scalar = (
+            grad_scalar_fp32.to(scalar.dtype)
+            if grad_scalar_fp32 is not None
+            else None
+        )
+        return grad_out, grad_x, *grad_factors, grad_scalar, None, None
+
+
+def eager_lokr_residual(
+    org_forwarded: torch.Tensor,
+    x: torch.Tensor,
+    w1: torch.Tensor | None,
+    w1a: torch.Tensor | None,
+    w1b: torch.Tensor | None,
+    w2: torch.Tensor | None,
+    w2a: torch.Tensor | None,
+    w2b: torch.Tensor | None,
+    scalar: torch.Tensor,
+    residual_scale: float,
+    chunk_size: int = EAGER_LOKR_CHUNK_ROWS,
+) -> torch.Tensor:
+    return EagerLoKrResidualFn.apply(
+        org_forwarded,
+        x,
+        w1,
+        w1a,
+        w1b,
+        w2,
+        w2a,
+        w2b,
+        scalar,
+        residual_scale,
+        chunk_size,
+    )

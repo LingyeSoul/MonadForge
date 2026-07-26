@@ -16,6 +16,8 @@ from lycoris.functional.lokr import (
 from lycoris.functional.lokr import diff_weight as lycoris_lokr_diff_weight
 from lycoris.modules.lokr import LokrModule as LycorisLokrModule
 
+from networks.lora_modules.custom_autograd import eager_lokr_residual
+
 
 class LoKRModule(LycorisLokrModule):
     """Official LyCORIS LoKr with the MonadForge adapter protocol.
@@ -68,6 +70,7 @@ class LoKRModule(LycorisLokrModule):
         self.enabled = True
         self._fused = False
         self.fp32_compute = False
+        self.use_custom_down_autograd = False
 
     def forward(self, x: torch.Tensor, *args, **kwargs):
         if not self.enabled or self._fused:
@@ -86,10 +89,36 @@ class LoKRModule(LycorisLokrModule):
         base = self.org_forward(x, *args, **kwargs)
         if self.training and self.fp32_compute and base.dtype == torch.float16:
             with torch.autocast(device_type=x.device.type, enabled=False):
+                if (
+                    self.use_custom_down_autograd
+                    and not self.dropout
+                    and not torch.compiler.is_compiling()
+                    and torch.is_grad_enabled()
+                ):
+                    return self._eager_fp32_bypass_residual(base, x)
                 delta = self._fp32_bypass_forward_diff(x)
         else:
             delta = self.bypass_forward_diff(x, scale=self.multiplier * self.scale)
         return base + delta.to(base.dtype)
+
+    def _eager_fp32_bypass_residual(
+        self,
+        base: torch.Tensor,
+        x: torch.Tensor,
+    ) -> torch.Tensor:
+        """Merge a chunked FP32 LoKr bypass into the fresh base output."""
+        return eager_lokr_residual(
+            base,
+            x,
+            self.lokr_w1 if self.use_w1 else None,
+            None if self.use_w1 else self.lokr_w1_a,
+            None if self.use_w1 else self.lokr_w1_b,
+            self.lokr_w2 if self.use_w2 else None,
+            None if self.use_w2 else self.lokr_w2_a,
+            None if self.use_w2 else self.lokr_w2_b,
+            self.scalar,
+            self.multiplier * self.scale,
+        )
 
     def _fp32_bypass_forward_diff(self, x: torch.Tensor) -> torch.Tensor:
         """Run the official linear LoKr bypass with fp32 rank operands."""

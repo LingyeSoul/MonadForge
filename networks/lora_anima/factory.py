@@ -176,8 +176,8 @@ def create_network(
         "1",
     ):
         logger.info(
-            "use_custom_down_autograd enabled: bounded eager FP32 LoRA and "
-            "MLP intermediates (compile path unchanged)"
+            "use_custom_down_autograd enabled: bounded eager FP32 LoRA/LoKr "
+            "and MLP intermediates (compile path unchanged)"
         )
 
     channel_scales_dict = _load_channel_scales(kwargs)
