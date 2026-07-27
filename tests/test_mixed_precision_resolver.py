@@ -27,7 +27,7 @@ def train_mod():
 
 
 def _fake_args(mp="bf16"):
-    return types.SimpleNamespace(mixed_precision=mp)
+    return types.SimpleNamespace(mixed_precision=mp, torch_compile=False)
 
 
 def _fake_accelerator(device="cuda:0"):
@@ -148,4 +148,34 @@ def test_auto_lora_fp32_compute_respects_explicit_true(train_mod, monkeypatch):
     args = _fake_args("fp16")
     assert not train_mod._should_auto_enable_lora_fp32_compute(
         args, _fake_accelerator(), {"lora_fp32_compute": "true"}
+    )
+
+
+def test_auto_eager_lora_down_autograd_for_fp32_rank_path(train_mod):
+    args = _fake_args("fp16")
+    assert train_mod._should_auto_enable_eager_lora_down_autograd(
+        args, {"lora_fp32_compute": "true"}
+    )
+
+
+def test_auto_eager_lora_down_autograd_requires_eager_fp32(train_mod):
+    args = _fake_args("fp16")
+    args.torch_compile = True
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        args, {"lora_fp32_compute": "true"}
+    )
+    args.torch_compile = False
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        args, {"lora_fp32_compute": "false"}
+    )
+
+
+def test_auto_eager_lora_down_autograd_respects_explicit_false(train_mod):
+    args = _fake_args("fp16")
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        args,
+        {
+            "lora_fp32_compute": "true",
+            "use_custom_down_autograd": "false",
+        },
     )

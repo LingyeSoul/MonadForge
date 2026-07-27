@@ -101,8 +101,8 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         # FP16/V100 quality fallback: keep LoRA rank GEMMs in fp32 while the
         # frozen base still runs in the selected mixed-precision dtype.
         "lora_fp32_compute",
-        # DEPRECATED no-op (fp32-bottleneck path removed 2026-06-10); kept so old
-        # snapshot TOMLs replay. The factory logs and ignores it.
+        # Eager-only FP32 LoRA saved-input recompute. Compile bypasses the custom
+        # Function and continues to use AOTAutograd's activation partitioner.
         "use_custom_down_autograd",
         # Three-axis routing + variant selectors (read by resolve_network_spec /
         # LoRANetworkCfg.from_kwargs). use_ortho/use_ortho_init are mutually

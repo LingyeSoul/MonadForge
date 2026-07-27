@@ -251,9 +251,13 @@ prefill) kept their historical fp32 compute since the inference engine runs
 without autocast. Regression tests: `tests/test_lora_dtype_policy.py`
 (bitwise legacy parity under autocast + dtype honesty).
 
-`use_custom_down_autograd` is still **accepted** everywhere it used to be (TOML
-allowlist, factory, EasyControl, turbo CLI) but is a logged no-op, so old
-snapshot TOMLs replay cleanly.
+`use_custom_down_autograd` remains accepted by the TOML allowlist. For the
+standard LoRA module it is now an **eager-only** V100/fp16 memory path: the
+forward still performs FP32 rank GEMMs, while the down projection saves the
+original input/weight storage and reconstructs FP32 casts plus channel scaling
+in backward. Compiled graphs deliberately bypass the Function so AOTAutograd's
+partitioner and `activation_memory_budget` remain authoritative. Other method
+families that still log the option as ignored are unchanged.
 
 **Post-removal addendum (2026-06-10, same day):** the Function was numerically
 dead weight but NOT memory-dead. Under `torch.compile` an `autograd.Function`
@@ -271,6 +275,35 @@ pass select a different graph than forward (`CheckpointError`, torch #166926),
 and ckpt already minimizes saved activations. Lesson: *numerically-inert ≠
 memory-inert* — removing a custom Function changes partitioning even when its
 math traces identically.
+
+**Eager V100 follow-up (2026-07-25):** `torch.compile` does not shrink model
+weights or optimizer state, but saying that it "cannot save VRAM" is too
+absolute. At the 1024/free-fit (~4k-token) T-LoRA bucket, disabling compile
+exposed several eager-only peaks in order: a full FP32 LoRA-up result plus its
+scaled residual (~96 MiB for qkv), explicit FP32 RMSNorm intermediates, RoPE
+pointwise/cat tensors, and finally GELU's simultaneous full `d_ff`
+pre/post-activations (~132 MiB per block). Dynamo fusion, tensor lifetime
+planning, and AOTAutograd partitioning avoid or rematerialize those tensors,
+which is why the compiled run fits even though parameters are unchanged.
+
+The non-compiled V100 path now mirrors those memory properties narrowly:
+
+* FP32 LoRA down/up GEMMs are row-chunked; original FP16/FP32 input storage is
+  saved and the fresh frozen-base output is reused for the residual merge;
+* native `F.rms_norm` retains stable accumulation without eager full-width FP32
+  q/k/v temporaries;
+* RoPE mutates fresh q/k norm outputs and reconstructs its linear gradient;
+* the two-Linear GELU MLP is evaluated in 512-row chunks and rematerialized per
+  chunk in backward, so no full `d_ff` activation is saved.
+
+This remains mixed precision rather than an FP16→FP32 conversion: frozen
+sublayer matmuls stay FP16, LoRA rank GEMMs and the DiT residual/gated add are
+FP32, and the FP32 residual stream is the NaN/overflow guard for FP16 training.
+A real Tesla V100-SXM2-16GB smoke run completed two optimizer steps with
+`torch_compile=false`, `gradient_checkpointing=false`, and `blocks_to_swap=0`.
+The bounded eager path trades speed for memory (512-row test: about 21 seconds
+per optimizer step with gradient accumulation 4 on the measured setup), so
+compile remains the preferred fast path when available.
 
 ---
 

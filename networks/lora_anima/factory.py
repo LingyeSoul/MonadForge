@@ -170,20 +170,17 @@ def create_network(
 ):
     spec = resolve_network_spec(kwargs)
 
-    # Deprecated 2026-06-10 (accepted so old snapshot TOMLs replay): the
-    # fp32-bottleneck down-projection autograd was removed. Training GEMMs run in
-    # ``org_forwarded.dtype`` (bf16) — bit-identical to the old autocast(bf16)
-    # path (autocast re-cast the Function's ``.float()`` inputs to bf16 anyway).
-    # Keying off ``x.dtype`` was wrong: AdaLN hands fp32, upcasting + OOMing. See
-    # bench/lora_fp32_bottleneck.
+    # Reintroduced narrowly for eager V100/fp16 training. Rank GEMMs remain
+    # fp32 while custom Functions bound the large eager LoRA/MLP intermediates.
+    # Under torch.compile these paths are bypassed so Dynamo fusion plus
+    # AOTAutograd/activation_memory_budget retain control.
     if str(kwargs.get("use_custom_down_autograd", "false")).strip().lower() in (
         "true",
         "1",
     ):
         logger.info(
-            "use_custom_down_autograd is deprecated and ignored "
-            "(fp32-bottleneck path removed; compute-dtype GEMMs are "
-            "bit-identical under the trainer's autocast)"
+            "use_custom_down_autograd enabled: bounded eager FP32 LoRA/LoKr "
+            "and MLP intermediates (compile path unchanged)"
         )
 
     channel_scales_dict = _load_channel_scales(kwargs)

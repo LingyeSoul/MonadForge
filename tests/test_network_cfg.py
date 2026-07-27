@@ -48,6 +48,21 @@ def test_lokr_full_factor_accepts_decompose_both_like_lycoris():
     assert cfg.decompose_both is True
 
 
+def test_lokr_rejects_timestep_mask_without_a_defined_rank_axis():
+    with pytest.raises(ValueError, match="use_timestep_mask is not supported"):
+        LoRANetworkCfg.from_kwargs(
+            {
+                "use_lokr": "true",
+                "lokr_full_factor": "true",
+                "use_timestep_mask": "true",
+            },
+            network_dim=32,
+            network_alpha=32.0,
+            neuron_dropout=None,
+            module_class=LoKRModule,
+        )
+
+
 def test_lokr_legacy_full_factor_sentinel_uses_official_semantics(caplog):
     cfg = LoRANetworkCfg.from_kwargs(
         {"use_lokr": "true"},
@@ -97,6 +112,7 @@ def test_defaults_when_all_kwargs_absent():
     assert cfg.reg_dims is None
     assert cfg.reg_lrs is None
     assert cfg.lora_fp32_compute is False
+    assert cfg.use_custom_down_autograd is False
 
 
 def test_string_bool_parsing_matches_old_factory_path():
@@ -112,6 +128,7 @@ def test_string_bool_parsing_matches_old_factory_path():
         "route_per_layer": "true",
         "router_source": "sigma",
         "lora_fp32_compute": "true",
+        "use_custom_down_autograd": "true",
         "verbose": "false",
     }
     cfg = LoRANetworkCfg.from_kwargs(
@@ -127,6 +144,7 @@ def test_string_bool_parsing_matches_old_factory_path():
     assert cfg.route_per_layer is True
     assert cfg.router_source == "sigma"
     assert cfg.lora_fp32_compute is True
+    assert cfg.use_custom_down_autograd is True
     assert cfg.verbose is False
 
 

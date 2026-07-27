@@ -1058,6 +1058,10 @@ def validate_config(data: dict) -> list[str]:
         )
         if not valid:
             errors.append("sample_decode_inline must be auto, true, or false")
+    if data.get("use_lokr") is True and data.get("use_timestep_mask") is True:
+        errors.append(
+            "use_timestep_mask is not supported by LoKr; set it to false"
+        )
     return errors
 
 
