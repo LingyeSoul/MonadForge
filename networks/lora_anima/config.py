@@ -278,6 +278,10 @@ class LoRANetworkCfg:
     glokr_rs_lora: bool = False
     glokr_bora: bool = True
 
+    # LoHa (Low-rank Hadamard product): ΔW = (w1a@w1b) ⊙ (w2a@w2b) * scale.
+    # Selects ``LoHaModule`` via ``resolve_network_spec``. Non-MoE only.
+    use_loha: bool = False
+
     # DyLoRA: trains multiple LoRA ranks simultaneously by sampling a random
     # rank r ∈ {unit, 2*unit, ..., lora_dim} at each forward pass.
     # Selects ``DyLoRAModule`` via ``resolve_network_spec``. Non-MoE only.
@@ -560,6 +564,9 @@ class LoRANetworkCfg:
         glokr_bora_raw = kwargs.get("glokr_bora")
         glokr_bora = True if glokr_bora_raw is None else _as_bool(glokr_bora_raw)
 
+        # LoHa knob.
+        use_loha = _as_bool(kwargs.get("use_loha"))
+
         # DyLoRA knobs.
         use_dylora = _as_bool(kwargs.get("use_dylora"))
         dylora_unit = int(kwargs.get("dylora_unit", 1))
@@ -810,6 +817,7 @@ class LoRANetworkCfg:
             glokr_full_factor=glokr_full_factor,
             glokr_rs_lora=glokr_rs_lora,
             glokr_bora=glokr_bora,
+            use_loha=use_loha,
             use_dylora=use_dylora,
             dylora_unit=dylora_unit,
             dylora_algo=dylora_algo,
@@ -888,6 +896,10 @@ class LoRANetworkCfg:
         glokr_full_factor: bool = False,
         glokr_rs_lora: bool = False,
         glokr_bora: bool = True,
+        # LoHa selector — like ``use_dylora`` below, must be threaded through
+        # so warm-started/inference LoHa checkpoints rebuild LoHaModules (and
+        # trigger split_fused_projections) instead of silently defaulting.
+        is_loha: bool = False,
         dylora_unit: int = 1,
         dylora_algo: str = "",
         # DyLoRA selector — must be threaded through so ``network.py``'s
@@ -1008,6 +1020,7 @@ class LoRANetworkCfg:
             glokr_full_factor=bool(glokr_full_factor),
             glokr_rs_lora=bool(glokr_rs_lora),
             glokr_bora=bool(glokr_bora),
+            use_loha=bool(is_loha),
             dylora_unit=int(dylora_unit),
             dylora_algo=str(dylora_algo),
             use_dylora=bool(use_dylora),

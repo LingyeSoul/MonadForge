@@ -205,4 +205,5 @@ repa_dog_norm_std   = 0       # 0 â‡’ empirical std (matches spatial_norm); >0 â
 # VeRA:  --method vera   (configs/methods/vera.toml)
 # DyLoRA: --method dylora (configs/methods/dylora.toml)
 # LoKR:  set use_lokr = true in network_args
+# LoHa:  --method loha   (configs/methods/loha.toml)
 

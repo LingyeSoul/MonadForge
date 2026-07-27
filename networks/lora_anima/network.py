@@ -26,6 +26,7 @@ from networks.lora_modules import (
     DyLoRAModule,
     GLoKRModule,
     HydraLoRAModule,
+    LoHaModule,
     LoKRModule,
     LoRAModule,
     OrthoHydraLoRAModule,
@@ -560,12 +561,15 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                 # channel_scale, so the resulting inv_scale cannot be saved in
                 # ComfyUI's native lokr format (see LoKRModule docstring at
                 # lokr.py:126 and _convert_lokr_to_native_lokr). Allowing it
-                # silently produces black-image checkpoints on save.
+                # silently produces black-image checkpoints on save. LoHa is
+                # excluded for the save-format half of that argument: the
+                # native hada_* layout has no inv_scale slot, so ComfyUI-side
+                # loaders would silently drop it.
                 if (
                     cfg.channel_scales_dict is not None
                     and is_unet
-                    and effective_module_class is not LoKRModule
-                    and effective_module_class is not GLoKRModule
+                    and effective_module_class
+                    not in (LoKRModule, LoHaModule, GLoKRModule)
                 ):
                     _cs = cfg.channel_scales_dict.get(lora_name)
                     if _cs is not None:
@@ -623,15 +627,21 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         if train_llm_adapter:
             target_modules.extend(LoRANetwork.ANIMA_ADAPTER_TARGET_REPLACE_MODULE)
 
-        # LoKR/GLoKr-only: split fused qkv_proj/kv_proj into per-component q_proj/
+        # LoKR/LoHa/GLoKr: split fused qkv_proj/kv_proj into per-component q_proj/
         # k_proj/v_proj Linears BEFORE create_modules walks the DiT. Each split
         # Linear's weight is a zero-copy narrow view of the fused weight, so
         # the frozen base storage is shared. This lets each q/k/v get its own
-        # LoKRModule (the Kronecker product can't be sliced at q/k/v output
-        # boundaries at save time), and produces ComfyUI-compatible split
-        # keys directly (``…_self_attn_q_proj.lokr_*``). Other variants keep
+        # module (the Kronecker product can't be sliced at q/k/v output
+        # boundaries at save time; LoHa's Hadamard delta is row-sliceable in
+        # principle but reuses the proven split path instead of a bespoke
+        # defuse), and produces ComfyUI-compatible split keys directly
+        # (``…_self_attn_q_proj.lokr_*`` / ``.hada_*``). Other variants keep
         # the fused Linear and rely on ``defuse_standard_qkv`` at save.
-        if getattr(cfg, "use_lokr", False) or getattr(cfg, "use_glokr", False):
+        if (
+            getattr(cfg, "use_lokr", False)
+            or getattr(cfg, "use_loha", False)
+            or getattr(cfg, "use_glokr", False)
+        ):
             from networks.lora_modules.split_attn import split_fused_projections
 
             split_fused_projections(unet)
@@ -1947,6 +1957,13 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             )
             metadata["ss_glokr_full_factor"] = str(uses_full_layout).lower()
 
+        if spec.name == "loha":
+            # scale = alpha/rank is recoverable from the per-module alpha keys;
+            # dim/alpha are stamped for parity with the standard metadata
+            # builder when save_weights is called with a bare dict.
+            metadata.setdefault("ss_network_dim", str(self.cfg.lora_dim))
+            metadata.setdefault("ss_network_alpha", str(self.cfg.alpha))
+
         if spec.name == "vera":
             for lora in self.unet_loras:
                 if hasattr(lora, "_vera_seed") and lora._vera_seed is not None:
@@ -2130,9 +2147,10 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             scalednorm = updown.norm() * ratio
             norms.append(scalednorm.item())
 
-        # Variants without plain down/up factors (LoKR / GLoKr Kronecker keys)
-        # match nothing above — report a no-op instead of dividing by zero.
         if not norms:
+            # Variants without plain down/up factors (LoKr/LoHa/GLoKr native
+            # keys) match nothing above — nothing to regularize. Report a
+            # clean no-op instead of dividing by zero at the first
+            # --scale_weight_norms step.
             return 0, 0.0, 0.0
-
         return keys_scaled, sum(norms) / len(norms), max(norms)

@@ -202,6 +202,7 @@ _GROUPS = {
         "lokr_factor",
         "decompose_both",
         "lokr_full_factor",
+        "use_loha",
         "use_dylora",
         "dylora_unit",
         "dylora_algo",
@@ -1466,4 +1467,3 @@ def save_wandb_settings(settings: dict) -> dict:
     _SETTINGS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return get_wandb_settings()
-    return "".join(parts)

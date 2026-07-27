@@ -469,6 +469,7 @@ def save_network_weights(
     # payload — kept for callers that don't plumb ``save_variant`` through.
     is_lokr_variant = save_variant == "lokr"
     is_glokr_variant = save_variant == "glokr"
+    is_loha_variant = save_variant == "loha"
     is_stacked_experts_variant = save_variant == "stacked_experts_global_fei"
     is_chimera_variant = save_variant == "chimera_hydra_moe"
     is_hydra_variant = (
@@ -567,6 +568,42 @@ def save_network_weights(
             defuse_and_bake_standard(state_dict)
         else:
             _convert_lokr_to_native_lokr(state_dict, dtype, network_dim=network_dim)
+
+        if dtype is not None:
+            for key in list(state_dict.keys()):
+                v = state_dict[key].detach().clone().to("cpu").to(dtype)
+                state_dict[key] = v
+        if os.path.splitext(file)[1] == ".safetensors":
+            from safetensors.torch import save_file
+            from library.training.hashing import precalculate_safetensors_hashes
+
+            if metadata is None:
+                metadata = {}
+            model_hash, legacy_hash = precalculate_safetensors_hashes(
+                state_dict, metadata
+            )
+            metadata["sshs_model_hash"] = model_hash
+            metadata["sshs_legacy_hash"] = legacy_hash
+            save_file(state_dict, file, metadata)
+        else:
+            torch.save(state_dict, file)
+        return
+
+    if is_loha_variant:
+        # LoHa writes canonical LyCORIS hada_* keys RAW (the module's
+        # custom_state_dict already emits them, scalar folded into hada_w1_a).
+        # The split q/k/v layout comes from train-time split_fused_projections,
+        # so no defuse surgery is needed and ComfyUI core's loha weight
+        # adapter loads the file natively. channel_scale is rejected at the
+        # module boundary, so inv_scale keys cannot exist — guard anyway to
+        # fail loudly instead of silently shipping an unrepresentable delta.
+        stray_inv_scale = [k for k in state_dict if k.endswith(".inv_scale")]
+        if stray_inv_scale:
+            raise ValueError(
+                "LoHa state_dict unexpectedly contains inv_scale keys "
+                f"(first: {stray_inv_scale[0]!r}) — the native hada_* format "
+                "cannot represent per-channel input scaling."
+            )
 
         if dtype is not None:
             for key in list(state_dict.keys()):

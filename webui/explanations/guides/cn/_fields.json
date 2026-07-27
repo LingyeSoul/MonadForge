@@ -2,6 +2,7 @@
   "network_dim": "LoRA秩（低秩矩阵的维度）。越高表现力越强，但显存占用越多。典型值：8–64。",
   "network_alpha": "LoRA缩放系数。有效缩放 = alpha / dim。当alpha == dim时，缩放为1.0。较低的alpha = 更保守的更新。",
   "lokr_full_factor": "LoKr完整矩阵模式（映射到官方LyCORIS full_matrix）。开启后w1和w2都使用完整因子，官方实现会强制有效缩放为1。",
+  "use_loha": "启用 LoHa（低秩 Hadamard 乘积，LyCORIS 后端）：deltaW = (w1a@w1b) ⊙ (w2a@w2b) * (alpha/rank)。两对 rank-r 因子以 2 倍 LoRA-r 参数量提供最高 r² 的有效秩。保存为标准 hada_* 键；channel scaling 会自动禁用。",
   "network_module": "LoRA网络实现的Python模块路径。",
   "use_timestep_mask": "启用T-LoRA：有效秩随去噪时间步通过幂律调度变化。高噪声时全秩，低噪声时降低。",
   "use_ortho": "启用OrthoLoRA：基于SVD的更新矩阵正交参数化（仅限线性层）。正则化为结构化更新；保存时通过thin SVD转换为普通LoRA。",
@@ -77,6 +78,6 @@
   "sample_at_first": "在训练开始前（第0轮）也渲染一次样本提示词 — 作为未微调模型的基线，供后续各轮进行比较。",
   "use_easycontrol": "启用 EasyControl 扩展自注意力图像条件。冻结 DiT，训练逐块条件 LoRA + 标量偏置 b_cond。需要 easycontrol-dataset/ 中的参考图像。",
   "easycontrol_drop_p": "EasyControl 图像条件的 CFG dropout 概率。每个批次以该概率完全丢弃条件图（回退到基线 DiT 行为），使推理时可独立进行图像 CFG 和文本 CFG。典型值：0.05–0.2。",
-  "easycontrol_cond_noise_max": "训练时对条件潜变量添加的高斯噪声最大标准差。每步采样 σ ~ U(0, max) 并应用 cond + σ·ε。0.0 = 条件图无噪声（ref==target 完美复制）；正值（如 0.3）将条件从\u201c完美蓝图\u201d降级为\u201c有损提示\u201d，迫使文本承载残余高频细节。推理时仍使用干净条件图，不受影响。",
+  "easycontrol_cond_noise_max": "训练时对条件潜变量添加的高斯噪声最大标准差。每步采样 σ ~ U(0, max) 并应用 cond + σ·ε。0.0 = 条件图无噪声（ref==target 完美复制）；正值（如 0.3）将条件从“完美蓝图”降级为“有损提示”，迫使文本承载残余高频细节。推理时仍使用干净条件图，不受影响。",
   "cond_res_scale": "EasyControl 位置感知插值缩放（PAI）。&lt;1.0 时将条件流降采样到该比例（仅条件流，目标流和损失保持原始分辨率），并将条件 RoPE 位置插值回目标网格以保持空间对齐。1.0 = 不缩放（默认）。0.5 = 条件词元数约减为 1/4，训练加速约 25-30%。适合主体/语义控制（如身份、物体）；结构关键任务（线稿上色）建议保持 1.0。"
 }
