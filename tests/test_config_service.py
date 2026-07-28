@@ -23,8 +23,40 @@ import toml
 from library.anima.training import add_anima_training_arguments
 from library.config.io import load_method_preset
 from library.inference.args import build_parser as build_inference_parser
+from networks import NETWORK_KWARGS
 from webui.services import config_service
 from webui.services.config_service import _SELECT_OPTIONS, validate_config
+
+
+def test_glokr_training_fields_are_complete_and_grouped_as_architecture():
+    """Keep the WebUI aligned with GLoKr's documented training surface."""
+    expected = {
+        "network_dim",
+        "network_alpha",
+        "use_glokr",
+        "decompose_both",
+    } | {key for key in NETWORK_KWARGS if key.startswith("glokr_")}
+
+    canonical = toml.loads(
+        (config_service.METHODS_DIR / "glokr.toml").read_text(encoding="utf-8")
+    )
+    gui = toml.loads(
+        (config_service.GUI_METHODS_DIR / "glokr.toml").read_text(encoding="utf-8")
+    )
+
+    result = config_service.build_merged_config("glokr", "default", lang="en")
+    fields = {field["key"]: field for field in result["fields"]}
+
+    assert expected <= canonical.keys()
+    assert expected <= gui.keys()
+    assert {key: gui[key] for key in expected} == {
+        key: canonical[key] for key in expected
+    }
+    assert expected <= fields.keys()
+    assert {key: fields[key]["group"] for key in expected} == {
+        key: "Architecture" for key in expected
+    }
+    assert fields["channel_scaling_alpha"]["group"] == "Performance"
 
 
 def test_sample_decode_inline_is_editable_and_round_trips(monkeypatch, tmp_path):
