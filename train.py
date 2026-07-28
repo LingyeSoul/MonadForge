@@ -164,6 +164,29 @@ def _resolve_v100_flash_stability(args) -> str:
     return value
 
 
+def _is_v100_fp16_training(args, accelerator) -> bool:
+    if getattr(args, "mixed_precision", None) != "fp16":
+        return False
+    if not torch.cuda.is_available():
+        return False
+    device = getattr(accelerator, "device", None)
+    try:
+        if device is not None:
+            device_type = getattr(device, "type", None) or torch.device(device).type
+            if device_type != "cuda":
+                return False
+            major, minor = torch.cuda.get_device_capability(device)
+        else:
+            major, minor = torch.cuda.get_device_capability()
+    except Exception:
+        logger.warning(
+            "could not read GPU compute capability; V100 eager optimizations "
+            "remain disabled."
+        )
+        return False
+    return (major, minor) == (7, 0)
+
+
 def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -> bool:
     """Keep LoRA-family adapter projections in fp32 on V100/fp16.
 
@@ -173,40 +196,34 @@ def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -
     """
     if "lora_fp32_compute" in net_kwargs:
         return False
-    if getattr(args, "mixed_precision", None) != "fp16":
+    if getattr(args, "network_module", None) != "networks.lora_anima":
         return False
-    if not torch.cuda.is_available():
-        return False
-    device = getattr(accelerator, "device", None)
-    try:
-        if device is not None and getattr(device, "type", None) == "cuda":
-            major, minor = torch.cuda.get_device_capability(device)
-        else:
-            major, minor = torch.cuda.get_device_capability()
-    except Exception:
-        logger.warning(
-            "could not read GPU compute capability; not auto-enabling "
-            "lora_fp32_compute."
-        )
-        return False
-    return (major, minor) == (7, 0)
+    return _is_v100_fp16_training(args, accelerator)
 
 
 def _should_auto_enable_eager_lora_down_autograd(
-    args, net_kwargs: dict
+    args, accelerator, net_kwargs: dict
 ) -> bool:
     """Enable the eager V100 adapter/operator-fusion memory path.
 
-    ``use_custom_down_autograd`` is the compatibility name for the complete
-    eager path: saved-input LoRA rank projections, rematerialized LoKr bypass,
-    plus bounded LoRA-up, RoPE, RMSNorm, and MLP intermediates. Explicit
-    configuration wins. The path is useful only when compile is off (compiled
-    graphs already use Dynamo fusion and AOTAutograd partitioning) and the
-    adapter projection path resolved to fp32.
+    ``use_custom_down_autograd`` is the compatibility name for saved-input
+    LoRA rank projections, the rematerialized LoKr bypass, and bounded LoRA-up
+    and MLP intermediates. RMSNorm and RoPE use their own V100-only guards.
+    Explicit configuration wins. This path is useful only when compile is off
+    (compiled graphs already use Dynamo fusion and AOTAutograd partitioning)
+    and the adapter projection path resolved to fp32.
     """
     if "use_custom_down_autograd" in net_kwargs:
         return False
     if getattr(args, "torch_compile", False):
+        return False
+    if not _is_v100_fp16_training(args, accelerator):
+        return False
+    if getattr(args, "network_module", None) != "networks.lora_anima":
+        return False
+    from networks import resolve_network_spec
+
+    if resolve_network_spec(net_kwargs).name not in ("lora", "lokr"):
         return False
     return str(net_kwargs.get("lora_fp32_compute", "false")).strip().lower() in (
         "true",
@@ -1793,7 +1810,9 @@ class AnimaTrainer:
                 "frozen base remains fp16. Set lora_fp32_compute=false to "
                 "disable for A/B testing."
             )
-        if _should_auto_enable_eager_lora_down_autograd(args, net_kwargs):
+        if _should_auto_enable_eager_lora_down_autograd(
+            args, accelerator, net_kwargs
+        ):
             net_kwargs["use_custom_down_autograd"] = "true"
             logger.warning(
                 "eager V100 fp16/FP32-residual LoRA training detected: "

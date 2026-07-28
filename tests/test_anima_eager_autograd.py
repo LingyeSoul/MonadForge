@@ -8,11 +8,15 @@ import torch.nn.functional as F
 
 from library.anima.eager_autograd import (
     _lokr_owner,
+    _plain_lora_owner,
     eager_fused_lora_mlp_tensors,
     eager_fused_lokr_mlp_tensors,
+    eager_rms_norm,
     eager_rotary_qk,
 )
+from library.anima.models import RMSNorm
 from networks.lora_modules.lokr import LoKRModule
+from networks.lora_modules.lora import LoRAModule
 
 
 def _lora_linear_reference(
@@ -91,6 +95,264 @@ def test_fused_lora_mlp_forward_and_grads_match_reference():
         assert torch.allclose(actual, expected, rtol=2e-5, atol=2e-5)
 
 
+def test_fused_lora_mlp_fp16_parameter_grads_accumulate_before_cast():
+    """FP16 LoRA parameters must not round every row chunk independently."""
+    torch.manual_seed(77)
+    rows, d_model, d_ff, rank = 4200, 64, 128, 16
+    x0 = torch.randn(rows, d_model, dtype=torch.float16) * 0.1
+    base1 = torch.randn(d_ff, d_model, dtype=torch.float16) * 0.05
+    base2 = torch.randn(d_model, d_ff, dtype=torch.float16) * 0.05
+    down10 = torch.randn(rank, d_model, dtype=torch.float16) * 0.1
+    up10 = torch.randn(d_ff, rank, dtype=torch.float16) * 0.1
+    down20 = torch.randn(rank, d_ff, dtype=torch.float16) * 0.1
+    up20 = torch.randn(d_model, rank, dtype=torch.float16) * 0.1
+    inv1 = torch.rand(d_model, dtype=torch.float32) + 0.5
+    inv2 = torch.rand(d_ff, dtype=torch.float32) + 0.5
+    mask = torch.ones(1, rank, dtype=torch.float32)
+    grad_out = torch.randn(rows, d_model, dtype=torch.float16) * 0.1
+
+    def reference(x, down1, up1, down2, up2):
+        rank1 = F.linear(x.float() * inv1, down1.float()) * mask
+        pre_activation = F.linear(x, base1) + (F.linear(rank1, up1.float()) * 0.75).half()
+        hidden = F.gelu(pre_activation)
+        rank2 = F.linear(hidden.float() * inv2, down2.float()) * mask
+        return F.linear(hidden, base2) + (F.linear(rank2, up2.float()) * 1.25).half()
+
+    reference_inputs = [
+        value.clone().requires_grad_()
+        for value in (x0, down10, up10, down20, up20)
+    ]
+    reference_output = reference(*reference_inputs)
+    reference_grads = torch.autograd.grad(
+        reference_output, reference_inputs, grad_out
+    )
+
+    fused_inputs = [
+        value.clone().requires_grad_()
+        for value in (x0, down10, up10, down20, up20)
+    ]
+    fused_output = eager_fused_lora_mlp_tensors(
+        fused_inputs[0],
+        base1,
+        fused_inputs[1],
+        fused_inputs[2],
+        inv1,
+        mask,
+        0.75,
+        base2,
+        fused_inputs[3],
+        fused_inputs[4],
+        inv2,
+        mask,
+        1.25,
+        chunk_size=3072,
+    )
+    fused_grads = torch.autograd.grad(fused_output, fused_inputs, grad_out)
+
+    assert torch.equal(fused_output, reference_output)
+    assert torch.equal(fused_grads[0], reference_grads[0])
+    for actual, expected in zip(fused_grads[1:], reference_grads[1:]):
+        assert torch.allclose(actual, expected, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+def test_fused_lora_mlp_cuda_stays_within_fp16_tolerance():
+    torch.manual_seed(79)
+    rows, d_model, d_ff, rank = 4200, 64, 128, 16
+    device = torch.device("cuda")
+    x0 = torch.randn(rows, d_model, device=device, dtype=torch.float16) * 0.1
+    base1 = torch.randn(d_ff, d_model, device=device, dtype=torch.float16) * 0.05
+    base2 = torch.randn(d_model, d_ff, device=device, dtype=torch.float16) * 0.05
+    down10 = torch.randn(rank, d_model, device=device, dtype=torch.float16) * 0.1
+    up10 = torch.randn(d_ff, rank, device=device, dtype=torch.float16) * 0.1
+    down20 = torch.randn(rank, d_ff, device=device, dtype=torch.float16) * 0.1
+    up20 = torch.randn(d_model, rank, device=device, dtype=torch.float16) * 0.1
+    inv1 = torch.rand(d_model, device=device, dtype=torch.float32) + 0.5
+    inv2 = torch.rand(d_ff, device=device, dtype=torch.float32) + 0.5
+    mask = torch.ones(1, rank, device=device, dtype=torch.float32)
+    grad_out = torch.randn(rows, d_model, device=device, dtype=torch.float16) * 0.1
+
+    def run(fused):
+        inputs = [
+            value.clone().requires_grad_()
+            for value in (x0, down10, up10, down20, up20)
+        ]
+        if fused:
+            output = eager_fused_lora_mlp_tensors(
+                inputs[0],
+                base1,
+                inputs[1],
+                inputs[2],
+                inv1,
+                mask,
+                0.75,
+                base2,
+                inputs[3],
+                inputs[4],
+                inv2,
+                mask,
+                1.25,
+                chunk_size=3072,
+            )
+        else:
+            hidden = F.gelu(
+                _lora_linear_reference(
+                    inputs[0], base1, inputs[1], inputs[2], inv1, mask, 0.75
+                )
+            )
+            output = _lora_linear_reference(
+                hidden, base2, inputs[3], inputs[4], inv2, mask, 1.25
+            )
+        return output.detach(), torch.autograd.grad(output, inputs, grad_out)
+
+    expected_output, expected_grads = run(False)
+    actual_output, actual_grads = run(True)
+
+    assert torch.allclose(actual_output, expected_output, rtol=1e-3, atol=2e-3)
+    assert torch.allclose(
+        actual_grads[0], expected_grads[0], rtol=1e-3, atol=2e-3
+    )
+    for actual, expected in zip(actual_grads[1:], expected_grads[1:]):
+        assert torch.allclose(actual, expected, rtol=2e-4, atol=2e-3)
+
+
+def test_fused_lora_mlp_preserves_fp32_rank_math_under_autocast():
+    torch.manual_seed(78)
+    rows, d_model, d_ff, rank = 23, 16, 24, 4
+    x = torch.randn(rows, d_model, dtype=torch.bfloat16) * 0.2
+    base1 = torch.randn(d_ff, d_model, dtype=torch.bfloat16) * 0.1
+    base2 = torch.randn(d_model, d_ff, dtype=torch.bfloat16) * 0.1
+    down1 = torch.randn(rank, d_model, dtype=torch.bfloat16) * 0.3
+    up1 = torch.randn(d_ff, rank, dtype=torch.bfloat16) * 0.3
+    down2 = torch.randn(rank, d_ff, dtype=torch.bfloat16) * 0.3
+    up2 = torch.randn(d_model, rank, dtype=torch.bfloat16) * 0.3
+    inv1 = torch.rand(d_model) + 0.5
+    inv2 = torch.rand(d_ff) + 0.5
+    mask = torch.ones(1, rank)
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        with torch.autocast("cpu", enabled=False):
+            pre_activation = _lora_linear_reference(
+                x, base1, down1, up1, inv1, mask, 0.75
+            )
+        hidden = F.gelu(pre_activation)
+        with torch.autocast("cpu", enabled=False):
+            expected = _lora_linear_reference(
+                hidden, base2, down2, up2, inv2, mask, 1.25
+            )
+        actual = eager_fused_lora_mlp_tensors(
+            x,
+            base1,
+            down1,
+            up1,
+            inv1,
+            mask,
+            0.75,
+            base2,
+            down2,
+            up2,
+            inv2,
+            mask,
+            1.25,
+            chunk_size=7,
+        )
+
+    assert torch.equal(actual, expected)
+
+
+def test_rms_norm_keeps_explicit_cpu_formula(monkeypatch):
+    norm = RMSNorm(7, eps=1e-5)
+    x = torch.randn(3, 7, dtype=torch.float16)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("native rms_norm is only for the V100 fp16 path")
+
+    monkeypatch.setattr(F, "rms_norm", fail_if_called)
+    actual = norm(x)
+    expected = (norm._norm(x.float()) * norm.weight).to(x.dtype)
+
+    assert torch.equal(actual, expected)
+
+
+def test_eager_rms_norm_rematerializes_explicit_input_gradient():
+    torch.manual_seed(80)
+    x0 = torch.randn(33, 4, 128, dtype=torch.float16)
+    weight = torch.randn(128, dtype=torch.float16)
+    grad_out = torch.randn_like(x0)
+
+    x_ref = x0.clone().requires_grad_()
+    x_ref_fp32 = x_ref.float()
+    normalized = x_ref_fp32 * torch.rsqrt(
+        x_ref_fp32.pow(2).mean(-1, keepdim=True) + 1e-6
+    )
+    expected = (normalized * weight.float()).to(x_ref.dtype)
+    expected.backward(grad_out)
+
+    x_got = x0.clone().requires_grad_()
+    actual = eager_rms_norm(x_got, weight, 1e-6, chunk_size=8192)
+    actual.backward(grad_out)
+
+    assert torch.equal(actual, expected)
+    assert torch.equal(x_got.grad, x_ref.grad)
+
+
+def test_eager_rms_norm_saves_original_storage_only():
+    x = torch.randn(33, 4, 128, dtype=torch.float16, requires_grad=True)
+    weight = torch.ones(128, dtype=torch.float16)
+    saved = []
+
+    def pack(tensor):
+        saved.append((tuple(tensor.shape), tensor.dtype))
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+        eager_rms_norm(x, weight, 1e-6, chunk_size=31)
+
+    assert ((33, 4, 128), torch.float16) in saved
+    assert ((33, 4, 128), torch.float32) not in saved
+
+
+def test_eager_rms_norm_chunks_all_leading_dimensions(monkeypatch):
+    x = torch.randn(1, 5, 4, 8, dtype=torch.float16, requires_grad=True)
+    weight = torch.ones(8, dtype=torch.float16)
+    chunk_rows = []
+    original_grad = torch.autograd.grad
+
+    def record_grad(outputs, inputs, *args, **kwargs):
+        chunk_rows.append(inputs.numel() // inputs.shape[-1])
+        return original_grad(outputs, inputs, *args, **kwargs)
+
+    monkeypatch.setattr(torch.autograd, "grad", record_grad)
+    eager_rms_norm(x, weight, 1e-6, chunk_size=6).sum().backward()
+
+    assert sum(chunk_rows) == 20
+    assert len(chunk_rows) > 1
+    assert max(chunk_rows) <= 6
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+def test_eager_rms_norm_cuda_preserves_explicit_input_gradient():
+    torch.manual_seed(81)
+    x0 = torch.randn(1, 4200, 16, 128, device="cuda", dtype=torch.float16)
+    weight = torch.randn(128, device="cuda", dtype=torch.float16)
+    grad_out = torch.randn_like(x0)
+
+    x_ref = x0.clone().requires_grad_()
+    x_ref_fp32 = x_ref.float()
+    normalized = x_ref_fp32 * torch.rsqrt(
+        x_ref_fp32.pow(2).mean(-1, keepdim=True) + 1e-6
+    )
+    expected = (normalized * weight.float()).to(x_ref.dtype)
+    expected.backward(grad_out)
+
+    x_got = x0.clone().requires_grad_()
+    actual = eager_rms_norm(x_got, weight, 1e-6)
+    actual.backward(grad_out)
+
+    assert torch.equal(actual, expected)
+    assert torch.equal(x_got.grad, x_ref.grad)
+
+
 def test_fused_lora_mlp_does_not_save_full_d_ff_activations():
     torch.manual_seed(21)
     rows, d_model, d_ff, rank = 9, 5, 17, 2
@@ -129,6 +391,27 @@ def test_fused_lora_mlp_does_not_save_full_d_ff_activations():
 
     assert (rows, d_model) in saved_shapes
     assert (rows, d_ff) not in saved_shapes
+
+
+def test_plain_lora_owner_accepts_zero_dropout_values():
+    base = torch.nn.Linear(8, 12, bias=False)
+    module = LoRAModule(
+        "m",
+        base,
+        lora_dim=2,
+        alpha=2,
+        dropout=0.0,
+        rank_dropout=0.0,
+        module_dropout=0.0,
+    )
+    module.fp32_compute = True
+    module.use_custom_down_autograd = True
+    module.train()
+    module.apply_to()
+
+    assert _plain_lora_owner(base) is module
+    module.dropout = 0.1
+    assert _plain_lora_owner(base) is None
 
 
 def _lokr_factors(layout, up, uq, vp, vq):
@@ -259,6 +542,124 @@ def test_fused_lokr_mlp_forward_and_grads_match_reference(layout):
     assert torch.allclose(actual_out, expected_out, rtol=1e-5, atol=2e-6)
     for actual, expected in zip(actual_grads, expected_grads):
         assert torch.allclose(actual, expected, rtol=2e-5, atol=2e-5)
+
+
+def test_fused_lokr_mlp_fp32_factor_grads_keep_chunked_reduction_tolerance():
+    torch.manual_seed(97)
+    rows, d_model, d_ff = 4200, 12, 18
+    x0 = torch.randn(rows, d_model, dtype=torch.float16) * 0.1
+    base1 = torch.randn(d_ff, d_model, dtype=torch.float16) * 0.05
+    base2 = torch.randn(d_model, d_ff, dtype=torch.float16) * 0.05
+    grad_out = torch.randn(rows, d_model, dtype=torch.float16) * 0.1
+
+    def run(fused):
+        torch.manual_seed(98)
+        x = x0.clone().requires_grad_()
+        factors1 = tuple(
+            factor.detach().mul(0.1).requires_grad_()
+            if factor is not None
+            else None
+            for factor in _lokr_factors("full", 3, 3, 6, 4)
+        )
+        factors2 = tuple(
+            factor.detach().mul(0.1).requires_grad_()
+            if factor is not None
+            else None
+            for factor in _lokr_factors("full", 3, 3, 4, 6)
+        )
+        scalar1 = torch.tensor(0.625, requires_grad=True)
+        scalar2 = torch.tensor(0.875, requires_grad=True)
+        if fused:
+            output = eager_fused_lokr_mlp_tensors(
+                x,
+                base1,
+                *factors1,
+                scalar1,
+                0.75,
+                base2,
+                *factors2,
+                scalar2,
+                1.25,
+                chunk_size=1024,
+            )
+        else:
+            hidden = F.gelu(
+                _lokr_linear_reference(
+                    x,
+                    base1,
+                    factors1,
+                    scalar1,
+                    0.75,
+                )
+            )
+            output = _lokr_linear_reference(
+                hidden,
+                base2,
+                factors2,
+                scalar2,
+                1.25,
+            )
+        requested = (
+            x,
+            *(factor for factor in factors1 if factor is not None),
+            scalar1,
+            *(factor for factor in factors2 if factor is not None),
+            scalar2,
+        )
+        return output.detach(), torch.autograd.grad(output, requested, grad_out)
+
+    expected_output, expected_grads = run(False)
+    actual_output, actual_grads = run(True)
+
+    assert torch.allclose(actual_output, expected_output, rtol=1e-3, atol=2e-3)
+    assert torch.allclose(
+        actual_grads[0], expected_grads[0], rtol=1e-3, atol=2e-3
+    )
+    for actual, expected in zip(actual_grads[1:], expected_grads[1:]):
+        assert torch.allclose(actual, expected, rtol=2e-4, atol=2e-3)
+
+
+def test_fused_lokr_mlp_preserves_fp32_factor_math_under_autocast():
+    torch.manual_seed(79)
+    rows, d_model, d_ff = 13, 12, 18
+    x = torch.randn(rows, d_model, dtype=torch.bfloat16) * 0.2
+    base1 = torch.randn(d_ff, d_model, dtype=torch.bfloat16) * 0.1
+    base2 = torch.randn(d_model, d_ff, dtype=torch.bfloat16) * 0.1
+    factors1 = tuple(
+        factor.to(torch.bfloat16) if factor is not None else None
+        for factor in _lokr_factors("full", 3, 3, 6, 4)
+    )
+    factors2 = tuple(
+        factor.to(torch.bfloat16) if factor is not None else None
+        for factor in _lokr_factors("full", 3, 3, 4, 6)
+    )
+    scalar1 = torch.tensor(0.625)
+    scalar2 = torch.tensor(0.875)
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        with torch.autocast("cpu", enabled=False):
+            pre_activation = _lokr_linear_reference(
+                x, base1, factors1, scalar1, 0.75
+            )
+        hidden = F.gelu(pre_activation)
+        with torch.autocast("cpu", enabled=False):
+            expected = _lokr_linear_reference(
+                hidden, base2, factors2, scalar2, 1.25
+            )
+        actual = eager_fused_lokr_mlp_tensors(
+            x,
+            base1,
+            *factors1,
+            scalar1,
+            0.75,
+            base2,
+            *factors2,
+            scalar2,
+            1.25,
+            chunk_size=5,
+        )
+
+    assert torch.equal(actual, expected)
 
 
 def test_fused_lokr_mlp_does_not_save_full_d_ff_activations():

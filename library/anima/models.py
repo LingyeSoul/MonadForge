@@ -11,7 +11,11 @@ import torch.nn.functional as F
 
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-from library.anima.eager_autograd import eager_fused_lora_mlp, eager_rotary_qk
+from library.anima.eager_autograd import (
+    eager_fused_lora_mlp,
+    eager_rms_norm,
+    eager_rotary_qk,
+)
 
 from library.runtime import offloading as custom_offloading_utils
 from library.runtime.device import weighs_to_device
@@ -298,11 +302,21 @@ class RMSNorm(torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # ``F.rms_norm`` keeps the public activation in the model dtype while
-        # using the backend's stable accumulation.  On V100/fp16 its native CUDA
-        # kernel is bit-identical in forward to the explicit FP32 formula above,
-        # but avoids materializing several full-width FP32 q/k/v temporaries in
-        # eager mode (torch.compile already fuses that expression).
-        return F.rms_norm(x, (x.shape[-1],), self.weight, self.eps)
+        # using the backend's stable accumulation. On V100/fp16 its native CUDA
+        # kernel avoids materializing several full-width FP32 q/k/v temporaries
+        # in eager mode. Keep the optimization scoped to that path: the explicit
+        # expression is the established behavior on CPU, BF16, and newer GPUs.
+        if (
+            not torch.compiler.is_compiling()
+            and x.is_cuda
+            and x.dtype == torch.float16
+            and not self.weight.requires_grad
+            and self.weight.dtype == x.dtype
+            and torch.cuda.get_device_capability(x.device) == (7, 0)
+        ):
+            return eager_rms_norm(x, self.weight, self.eps)
+        output = self._norm(x.float())
+        return (output * self.weight).to(x.dtype)
 
 
 class GPT2FeedForward(nn.Module):

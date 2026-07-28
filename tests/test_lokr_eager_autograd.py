@@ -163,6 +163,120 @@ def test_eager_lokr_saves_original_storage_not_fp32_activations():
     assert ((22, 4, 5), torch.float32) not in saved
 
 
+@pytest.mark.parametrize(("layout", "seed"), [("full", 3), ("decompose_both", 95)])
+def test_eager_lokr_fp32_factor_grads_stay_within_chunked_reduction_tolerance(
+    layout,
+    seed,
+):
+    """Production row counts keep bounded memory with a documented FP32 drift."""
+    factors0, in_features, out_features = _factors(layout, torch.float32)
+    torch.manual_seed(seed)
+    x0 = torch.randn(4200, in_features, dtype=torch.float16) * 0.1
+    grad_out = torch.randn(4200, out_features, dtype=torch.float16) * 0.1
+
+    def run(custom: bool):
+        x = x0.clone().requires_grad_()
+        factors = tuple(
+            factor.clone().requires_grad_() if factor is not None else None
+            for factor in factors0
+        )
+        scalar = torch.tensor(0.625, dtype=torch.float32, requires_grad=True)
+        base = torch.zeros_like(grad_out)
+        if custom:
+            output = eager_lokr_residual(
+                base,
+                x,
+                *factors,
+                scalar,
+                0.75,
+                chunk_size=1024,
+            )
+        else:
+            rank = 1 if layout == "full" else 2
+            delta = bypass_forward_diff(
+                x.float(),
+                None,
+                *factors,
+                None,
+                gamma=rank,
+            )
+            output = base + (delta * 0.75 * scalar).to(base.dtype)
+        requested = (
+            x,
+            *(factor for factor in factors if factor is not None),
+            scalar,
+        )
+        return output.detach(), torch.autograd.grad(output, requested, grad_out)
+
+    expected_output, expected_grads = run(custom=False)
+    actual_output, actual_grads = run(custom=True)
+
+    assert torch.allclose(actual_output, expected_output, rtol=1e-3, atol=2e-3)
+    assert torch.equal(actual_grads[0], expected_grads[0])
+    # The bounded path cannot use a single full-width factor-gradient GEMM
+    # without recreating the activation workspace it exists to avoid. FP32
+    # chunk accumulation changes only the reduction order, so lock the measured
+    # 4200-row drift instead of requiring bit identity.
+    for actual, expected in zip(actual_grads[1:], expected_grads[1:]):
+        assert torch.allclose(actual, expected, rtol=2e-4, atol=2e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+def test_eager_lokr_cuda_stays_within_public_fp16_tolerance():
+    factors0, in_features, out_features = _factors("full", torch.float32)
+    factors0 = tuple(
+        factor.cuda() if factor is not None else None for factor in factors0
+    )
+    torch.manual_seed(99)
+    x0 = torch.randn(2100, in_features, device="cuda", dtype=torch.float16) * 0.1
+    grad_out = (
+        torch.randn(2100, out_features, device="cuda", dtype=torch.float16) * 0.1
+    )
+
+    def run(custom: bool):
+        x = x0.clone().requires_grad_()
+        factors = tuple(
+            factor.clone().requires_grad_() if factor is not None else None
+            for factor in factors0
+        )
+        scalar = torch.tensor(0.625, device="cuda", requires_grad=True)
+        base = torch.zeros_like(grad_out)
+        if custom:
+            output = eager_lokr_residual(
+                base,
+                x,
+                *factors,
+                scalar,
+                0.75,
+                chunk_size=1024,
+            )
+        else:
+            delta = bypass_forward_diff(
+                x.float(),
+                None,
+                *factors,
+                None,
+                gamma=1,
+            )
+            output = base + (delta * 0.75 * scalar).to(base.dtype)
+        requested = (
+            x,
+            *(factor for factor in factors if factor is not None),
+            scalar,
+        )
+        return output.detach(), torch.autograd.grad(output, requested, grad_out)
+
+    expected_output, expected_grads = run(custom=False)
+    actual_output, actual_grads = run(custom=True)
+
+    assert torch.allclose(actual_output, expected_output, rtol=1e-3, atol=2e-3)
+    assert torch.allclose(
+        actual_grads[0], expected_grads[0], rtol=1e-3, atol=2e-3
+    )
+    for actual, expected in zip(actual_grads[1:], expected_grads[1:]):
+        assert torch.allclose(actual, expected, rtol=2e-4, atol=2e-3)
+
+
 def test_eager_lokr_backward_handles_frozen_residual_inputs():
     factors, in_features, out_features = _factors("full", torch.float16)
     base_leaf = torch.zeros(

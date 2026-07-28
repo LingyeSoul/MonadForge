@@ -27,7 +27,11 @@ def train_mod():
 
 
 def _fake_args(mp="bf16"):
-    return types.SimpleNamespace(mixed_precision=mp, torch_compile=False)
+    return types.SimpleNamespace(
+        mixed_precision=mp,
+        torch_compile=False,
+        network_module="networks.lora_anima",
+    )
 
 
 def _fake_accelerator(device="cuda:0"):
@@ -141,6 +145,15 @@ def test_auto_lora_fp32_compute_only_v100_fp16(train_mod, monkeypatch):
     )
 
 
+def test_auto_lora_fp32_compute_only_lora_family(train_mod, monkeypatch):
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    args = _fake_args("fp16")
+    args.network_module = "networks.methods.easycontrol"
+    assert not train_mod._should_auto_enable_lora_fp32_compute(
+        args, _fake_accelerator(), {}
+    )
+
+
 def test_auto_lora_fp32_compute_respects_explicit_true(train_mod, monkeypatch):
     """Explicit lora_fp32_compute=true already in net_kwargs — must not
     double-inject (no-op: the caller already has it)."""
@@ -151,31 +164,82 @@ def test_auto_lora_fp32_compute_respects_explicit_true(train_mod, monkeypatch):
     )
 
 
-def test_auto_eager_lora_down_autograd_for_fp32_rank_path(train_mod):
+def test_auto_eager_lora_down_autograd_for_fp32_rank_path(train_mod, monkeypatch):
+    _patch_cuda(monkeypatch, capability=(7, 0))
     args = _fake_args("fp16")
     assert train_mod._should_auto_enable_eager_lora_down_autograd(
-        args, {"lora_fp32_compute": "true"}
+        args, _fake_accelerator(), {"lora_fp32_compute": "true"}
+    )
+    assert train_mod._should_auto_enable_eager_lora_down_autograd(
+        args,
+        _fake_accelerator(),
+        {"lora_fp32_compute": "true", "use_lokr": "true"},
     )
 
 
-def test_auto_eager_lora_down_autograd_requires_eager_fp32(train_mod):
+def test_auto_eager_lora_down_autograd_requires_eager_fp32(train_mod, monkeypatch):
+    _patch_cuda(monkeypatch, capability=(7, 0))
     args = _fake_args("fp16")
     args.torch_compile = True
     assert not train_mod._should_auto_enable_eager_lora_down_autograd(
-        args, {"lora_fp32_compute": "true"}
+        args, _fake_accelerator(), {"lora_fp32_compute": "true"}
     )
     args.torch_compile = False
     assert not train_mod._should_auto_enable_eager_lora_down_autograd(
-        args, {"lora_fp32_compute": "false"}
+        args, _fake_accelerator(), {"lora_fp32_compute": "false"}
     )
 
 
-def test_auto_eager_lora_down_autograd_respects_explicit_false(train_mod):
+def test_auto_eager_lora_down_autograd_respects_explicit_false(
+    train_mod, monkeypatch
+):
+    _patch_cuda(monkeypatch, capability=(7, 0))
     args = _fake_args("fp16")
     assert not train_mod._should_auto_enable_eager_lora_down_autograd(
         args,
+        _fake_accelerator(),
         {
             "lora_fp32_compute": "true",
             "use_custom_down_autograd": "false",
         },
+    )
+
+
+def test_auto_eager_lora_down_autograd_only_v100_fp16(train_mod, monkeypatch):
+    kwargs = {"lora_fp32_compute": "true"}
+    _patch_cuda(monkeypatch, capability=(8, 0))
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        _fake_args("fp16"), _fake_accelerator(), kwargs
+    )
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        _fake_args("bf16"), _fake_accelerator(), kwargs
+    )
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        _fake_args("fp16"), _fake_accelerator("cpu"), kwargs
+    )
+
+
+@pytest.mark.parametrize(
+    "network_module,variant_kwargs",
+    [
+        ("networks.methods.easycontrol", {}),
+        ("networks.lora_anima", {"use_ortho": "true"}),
+        ("networks.lora_anima", {"use_loha": "true"}),
+        ("networks.lora_anima", {"use_glokr": "true"}),
+        ("networks.lora_anima", {"use_moe_style": "shared_A"}),
+    ],
+)
+def test_auto_eager_lora_down_autograd_only_supported_specs(
+    train_mod,
+    monkeypatch,
+    network_module,
+    variant_kwargs,
+):
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    args = _fake_args("fp16")
+    args.network_module = network_module
+    kwargs = {"lora_fp32_compute": "true", **variant_kwargs}
+    assert not train_mod._should_auto_enable_eager_lora_down_autograd(
+        args, _fake_accelerator(), kwargs
     )

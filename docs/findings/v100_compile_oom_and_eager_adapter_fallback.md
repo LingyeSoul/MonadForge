@@ -171,8 +171,11 @@ path. Materializing a full Kronecker delta was therefore not the OOM source.
 
 ## Bounded eager implementation
 
-The eager path is enabled only for V100 FP16 training with FP32 adapter
-compute, either automatically or through:
+The adapter-specific eager path is enabled only for V100 FP16 training with
+FP32 adapter compute. Automatic enablement is limited to plain LoRA and LoKr,
+the two module types that implement the bounded down/up or factor paths;
+Hydra, Ortho, LoHa, GLoKr, and non-LoRA networks are not given a misleading
+no-op flag. Plain LoRA and LoKr can also opt in explicitly through:
 
 ```toml
 use_custom_down_autograd = true
@@ -195,7 +198,13 @@ copy for every adapted projection.
 The Anima eager helpers bound the remaining wide intermediates:
 
 - LoRA-up/residual work is processed in row chunks.
-- native RMSNorm avoids explicit full-width FP32 temporary chains.
+- native RMSNorm forward avoids explicit full-width FP32 temporary chains;
+  its custom backward rematerializes the established explicit formula while
+  recursively slicing the largest leading dimension so every chunk contains
+  at most 8192 logical normalization rows. This preserves non-contiguous fused
+  qkv views without first copying the complete tensor. The explicit backward
+  remains necessary because native backward has observably different FP16
+  gradients.
 - rotary q/k work reuses fresh outputs and reconstructs gradients.
 - the two-Linear GELU MLP saves the original `d_model` input and rematerializes
   layer1, GELU, and layer2 work by row chunk during backward.
@@ -210,6 +219,15 @@ while retaining enough memory margin.
 chunk. It saves the original activation and factor storage, then reconstructs
 the FP32 grouped projections in backward. Factor and scalar gradients are
 accumulated in FP32 before their final cast to parameter dtype.
+
+This factor-gradient accumulation intentionally differs from the official
+single-graph reduction order. Unlike LoRA down/up, a full LoKr reduction would
+recreate the wide grouped FP32 workspace that caused the memory failure. At a
+production-sized 4200-row fixture the observed relative difference is on the
+order of `1e-4`; the invariant test states both relative and absolute tolerances
+rather than treating one seed's maximum as a universal bound.
+Forward values and activation gradients remain within FP16 rounding tolerance
+at the adapter's public dtype.
 
 It supports all four LyCORIS layouts used by the wrapper:
 
@@ -281,6 +299,28 @@ The isolated wide-projection V100 benchmark used
 The 1024-row default intentionally accepts projection-level overhead to keep
 the complete training run inside 16 GiB.
 
+### Cross-cutting allocator regression
+
+The final code was also rerun at 4200 rows with `d_model=2048`, `d_ff=8192`,
+rank 32, and 16 heads on an RTX 4060. These numbers validate the benchmark and
+the final row-chunked RMSNorm implementation; they are not a substitute for a
+new end-to-end V100 measurement.
+
+| Case | Saved tensors before/after | Peak allocated before/after | Peak reserved before/after |
+|---|---:|---:|---:|
+| LoRA down | 33.1 / 16.7 MiB | 99.8 / 74.8 MiB | 106 / 96 MiB |
+| LoRA up | 0.8 / 0.8 MiB | 115.6 / 91.8 MiB | 142 / 110 MiB |
+| LoRA MLP | 297.2 / 81.7 MiB | 512.2 / 509.5 MiB | 702 / 638 MiB |
+| LoKr MLP | 459.8 / 81.4 MiB | 841.2 / 330.6 MiB | 898 / 374 MiB |
+| RoPE | 4.1 / 2.1 MiB | 136 / 123 MiB | 182 / 140 MiB |
+| RMSNorm | 66.1 / 16.4 MiB | 229.7 / 99.6 MiB | 242 / 116 MiB |
+
+CUDA may choose different GEMM kernels for a full reduction and its row-chunked
+equivalent. LoRA activation/output gradients are therefore constrained at the
+public FP16 tolerance rather than claimed bit-identical on CUDA. LoRA parameter
+gradients still use the full reference reduction where that does not recreate
+the wide LoKr workspace.
+
 ## Configuration and semantic guards
 
 The known-good eager recipes are:
@@ -324,22 +364,32 @@ the same factor layout.
 
 ## Validation
 
-The focused implementation, configuration, and benchmark suite completed:
+The focused implementation and configuration suite completed:
 
 ```text
-114 passed, 14 warnings
+246 passed, 15 warnings
 ```
 
 Coverage includes:
 
-- LoRA output and gradient parity with and without channel scaling;
+- LoRA output and gradient parity with and without channel scaling, including
+  frozen-input combinations and CUDA tolerance checks for down, up, and fused
+  MLP paths;
 - original-storage saved-tensor assertions;
 - LoKr output and gradient parity for all four factor layouts;
-- LoKr scalar and factor gradient accumulation;
+- production-sized LoKr scalar and factor gradient tolerances for the residual
+  and fused-MLP paths, including an optional CUDA check;
 - assertions that full `d_ff` activations are not saved;
+- native RMSNorm forward with row-bounded rematerialization of the legacy
+  explicit input gradient, including the real `(1, 4200, 16, 128)` CUDA shape;
 - compile guards that keep eager Functions out of Dynamo traces;
-- V100 automatic configuration resolution; and
+- V100 automatic configuration resolution for supported adapter specs; and
 - CLI/WebUI rejection of LoKr plus timestep masking.
+
+`bench/v100_eager/run_bench.py` provides the cross-cutting before/after gate for
+LoRA down/up, LoRA and LoKr fused MLPs, RoPE, and RMSNorm. The individual LoKr
+factor projection keeps its dedicated official-LyCORIS comparison in
+`bench/lokr/run_eager_memory_bench.py`.
 
 `ruff` passed on all changed implementation, test, and benchmark files.
 `git diff --check` also passed.

@@ -60,27 +60,26 @@ class EagerLoRADownProjectFn(torch.autograd.Function):
 
         grad_x = None
         grad_x_flat = torch.empty_like(x_flat) if ctx.needs_input_grad[0] else None
-        grad_weight_fp32 = (
-            torch.zeros_like(weight, dtype=torch.float32)
-            if ctx.needs_input_grad[1]
-            else None
-        )
+        grad_weight = None
+        if ctx.needs_input_grad[1]:
+            # Preserve the reference Linear backward's reduction order. The
+            # full cast is transient in backward instead of being retained by
+            # every adapted layer from forward until its backward executes.
+            grad_weight = grad_flat.float().transpose(0, 1).matmul(
+                x_flat.float()
+            ).to(weight.dtype)
+
+        if grad_x_flat is None:
+            return None, grad_weight
 
         for start in range(0, x_flat.shape[0], EAGER_LORA_CHUNK_ROWS):
             end = min(start + EAGER_LORA_CHUNK_ROWS, x_flat.shape[0])
             grad_chunk = grad_flat[start:end].float()
             if grad_x_flat is not None:
                 grad_x_flat[start:end] = grad_chunk.matmul(weight_fp32).to(x.dtype)
-            if grad_weight_fp32 is not None:
-                grad_weight_fp32.add_(
-                    grad_chunk.transpose(0, 1).matmul(x_flat[start:end].float())
-                )
 
         if grad_x_flat is not None:
             grad_x = grad_x_flat.reshape_as(x)
-        grad_weight = (
-            grad_weight_fp32.to(weight.dtype) if grad_weight_fp32 is not None else None
-        )
         return grad_x, grad_weight
 
 
@@ -117,11 +116,17 @@ class EagerScaledLoRADownProjectFn(torch.autograd.Function):
 
         grad_x = None
         grad_x_flat = torch.empty_like(x_flat) if ctx.needs_input_grad[0] else None
-        grad_weight_fp32 = (
-            torch.zeros_like(weight, dtype=torch.float32)
-            if ctx.needs_input_grad[1]
-            else None
-        )
+        grad_weight = None
+        if ctx.needs_input_grad[1]:
+            weight_input = x_flat.to(torch.float32, copy=True)
+            weight_input.mul_(inv)
+            grad_weight = grad_flat.float().transpose(0, 1).matmul(
+                weight_input
+            ).to(weight.dtype)
+            del weight_input
+
+        if grad_x_flat is None:
+            return None, grad_weight, None
 
         for start in range(0, x_flat.shape[0], EAGER_LORA_CHUNK_ROWS):
             end = min(start + EAGER_LORA_CHUNK_ROWS, x_flat.shape[0])
@@ -130,16 +135,9 @@ class EagerScaledLoRADownProjectFn(torch.autograd.Function):
                 grad_x_chunk = grad_chunk.matmul(weight_fp32)
                 grad_x_chunk.mul_(inv)
                 grad_x_flat[start:end] = grad_x_chunk.to(x.dtype)
-            if grad_weight_fp32 is not None:
-                x_chunk = x_flat[start:end].float()
-                x_chunk.mul_(inv)
-                grad_weight_fp32.add_(grad_chunk.transpose(0, 1).matmul(x_chunk))
 
         if grad_x_flat is not None:
             grad_x = grad_x_flat.reshape_as(x)
-        grad_weight = (
-            grad_weight_fp32.to(weight.dtype) if grad_weight_fp32 is not None else None
-        )
         return grad_x, grad_weight, None
 
 
@@ -194,6 +192,9 @@ class EagerLoRAUpResidualFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor):
         rank_input, weight = ctx.saved_tensors
+        if not (ctx.needs_input_grad[1] or ctx.needs_input_grad[2]):
+            return grad_out, None, None, None, None
+
         grad_flat = _flatten_last(grad_out)
         rank_flat = _flatten_last(rank_input)
         weight_fp32 = weight.float()
@@ -206,32 +207,52 @@ class EagerLoRAUpResidualFn(torch.autograd.Function):
         else:
             grad_rank_flat = None
 
+        # Match the reference ``F.linear`` backward's single GEMM for the
+        # parameter gradient. Accumulating per-token chunks changes the FP32
+        # reduction order and can round to a different FP16 update, even
+        # though the two expressions are mathematically identical. The
+        # adapter weight is tiny compared with the activation. Scale the one
+        # required FP32 grad-output cast in place so the full GEMM does not
+        # retain a second output-sized FP32 temporary.
         grad_weight = None
+        grad_weight_input = None
         if ctx.needs_input_grad[2]:
-            grad_weight_fp32 = torch.zeros_like(weight, dtype=torch.float32)
-        else:
-            grad_weight_fp32 = None
+            grad_weight_input = grad_flat.to(
+                torch.float32,
+                copy=scale != 1.0,
+            )
+            if scale != 1.0:
+                grad_weight_input.mul_(scale)
+            grad_weight = grad_weight_input.transpose(0, 1).matmul(
+                rank_flat.float()
+            ).to(weight.dtype)
+
+        if grad_rank_flat is None:
+            return grad_out, None, grad_weight, None, None
 
         for start in range(0, grad_flat.shape[0], chunk):
             end = min(start + chunk, grad_flat.shape[0])
-            grad_chunk = grad_flat[start:end].float()
-            if scale != 1.0:
-                grad_chunk = grad_chunk * scale
+            if grad_weight_input is not None:
+                # Reuse the full FP32 cast required by the exact weight-gradient
+                # GEMM instead of overlapping it with another output-width cast.
+                grad_chunk = grad_weight_input[start:end]
+            else:
+                grad_chunk = grad_flat[start:end].to(
+                    torch.float32,
+                    copy=scale != 1.0,
+                )
+                if scale != 1.0:
+                    # The forced copy keeps an FP32 upstream gradient untouched
+                    # and lets FP16 use one cast buffer instead of cast + multiply.
+                    grad_chunk.mul_(scale)
 
             if grad_rank_flat is not None:
                 grad_rank_flat[start:end] = grad_chunk.matmul(weight_fp32).to(
                     rank_input.dtype
                 )
-            if grad_weight_fp32 is not None:
-                grad_weight_fp32.add_(
-                    grad_chunk.transpose(0, 1).matmul(rank_flat[start:end].float())
-                )
 
         if grad_rank_flat is not None:
             grad_rank = grad_rank_flat.reshape_as(rank_input)
-        if grad_weight_fp32 is not None:
-            grad_weight = grad_weight_fp32.to(weight.dtype)
-
         # The residual branch is an identity with respect to the frozen base
         # output.  Scalar/chunk arguments are non-Tensor controls.
         return grad_out, grad_rank, grad_weight, None, None

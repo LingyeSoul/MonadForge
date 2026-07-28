@@ -84,6 +84,16 @@ a normal LoRA rank projection. The same switch also enables a LoKr-aware,
 two-linear GELU MLP Function that saves only the original `d_model` input and
 rematerializes the base and LoKr work per row chunk.
 
+LoRA down/up weight gradients use one full reduction GEMM so their FP32
+parameters match standard autograd exactly. LoKr factor gradients deliberately
+retain row-chunked FP32 accumulation: replacing that reduction with one full
+LoKr backward would reconstruct the hundreds-of-MiB grouped workspace this
+path is designed to avoid. The changed summation order can differ from the
+official eager bypass at about `1e-4` relative scale. The production-sized
+regression fixture locks both relative and absolute tolerances rather than
+claiming a universal absolute bound. Forward values and activation gradients
+remain within FP16 rounding tolerance at the adapter's public dtype.
+
 On July 25, 2026, the unchanged 1024px V100 16 GiB configuration OOMed on its
 first forward before the LoKr-aware MLP path was added: PyTorch had 15.30 GiB
 allocated, 31.44 MiB free, and failed a 64 MiB allocation in the frozen MLP
@@ -99,6 +109,13 @@ LoKr, V100) reduced saved tensors from 198.6 MiB to 25.5 MiB. At the default
 1024-row chunk, peak reserved workspace fell from 814 MiB to 382 MiB. These
 numbers isolate one adapter projection; the full-training peak above includes
 the model, optimizer, all activations, and CUDA allocator state.
+
+The cross-cutting `bench/v100_eager/run_bench.py --cases lokr_mlp` comparison
+also covers the complete two-linear GELU path. A final 4200-row
+`2048 -> 8192 -> 2048` RTX 4060 regression reduced saved tensors from 459.8 MiB
+to 81.4 MiB, peak allocated workspace from 841.2 MiB to 330.6 MiB, and peak
+reserved workspace from 898 MiB to 374 MiB. These are allocator regression
+numbers for the final implementation, not V100 end-to-end results.
 
 For the reported 1024px eager configuration, use:
 

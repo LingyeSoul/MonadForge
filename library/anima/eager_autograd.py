@@ -160,6 +160,95 @@ def eager_rotary_qk(
     )
 
 
+_EAGER_RMS_NORM_ROW_CHUNK = 8192
+
+
+class EagerRMSNormFn(torch.autograd.Function):
+    """Use native RMSNorm forward with the established explicit backward."""
+
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.Tensor,
+        weight: torch.Tensor,
+        eps: float,
+        chunk_size: int,
+    ) -> torch.Tensor:
+        if weight.requires_grad:
+            raise ValueError("eager RMSNorm requires a frozen weight")
+        ctx.save_for_backward(x, weight)
+        ctx.eps = float(eps)
+        ctx.chunk_size = max(1, int(chunk_size))
+        return torch.nn.functional.rms_norm(
+            x,
+            (x.shape[-1],),
+            weight,
+            ctx.eps,
+        )
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(ctx, grad_out: torch.Tensor):
+        x, weight = ctx.saved_tensors
+        if not ctx.needs_input_grad[0]:
+            return None, None, None, None
+
+        grad_x = torch.empty_like(x)
+        weight_fp32 = weight.float()
+        pending = [(x, grad_out, grad_x)]
+        while pending:
+            local_source, local_grad_out, local_grad_target = pending.pop()
+            row_count = local_source.numel() // local_source.shape[-1]
+            if row_count > ctx.chunk_size:
+                axis = max(
+                    range(local_source.ndim - 1),
+                    key=lambda index: local_source.shape[index],
+                )
+                axis_size = local_source.shape[axis]
+                rows_per_axis_item = row_count // axis_size
+                axis_chunk = max(1, ctx.chunk_size // rows_per_axis_item)
+                last_start = ((axis_size - 1) // axis_chunk) * axis_chunk
+                for start in range(last_start, -1, -axis_chunk):
+                    length = min(axis_chunk, axis_size - start)
+                    pending.append(
+                        tuple(
+                            tensor.narrow(axis, start, length)
+                            for tensor in (
+                                local_source,
+                                local_grad_out,
+                                local_grad_target,
+                            )
+                        )
+                    )
+                continue
+
+            with torch.enable_grad(), torch.autocast(
+                device_type=x.device.type, enabled=False
+            ):
+                local_x = local_source.detach().float().requires_grad_(True)
+                normalized = local_x * torch.rsqrt(
+                    local_x.pow(2).mean(-1, keepdim=True) + ctx.eps
+                )
+                local_out = (normalized * weight_fp32).to(x.dtype)
+                (local_grad,) = torch.autograd.grad(
+                    local_out,
+                    local_x,
+                    grad_outputs=local_grad_out,
+                )
+            local_grad_target.copy_(local_grad.to(x.dtype))
+        return grad_x, None, None, None
+
+
+def eager_rms_norm(
+    x: torch.Tensor,
+    weight: torch.Tensor,
+    eps: float,
+    chunk_size: int = _EAGER_RMS_NORM_ROW_CHUNK,
+) -> torch.Tensor:
+    """Bound V100 RMSNorm memory without changing the legacy input gradient."""
+    return EagerRMSNormFn.apply(x, weight, eps, chunk_size)
+
+
 # V100-tuned balance between eager launch overhead and rematerialization memory.
 _EAGER_MLP_ROW_CHUNK = 3072
 
@@ -179,14 +268,18 @@ def _lora_linear_chunk(
 ) -> torch.Tensor:
     """Evaluate one frozen Linear plus FP32 LoRA rank path for a small row chunk."""
     base = torch.nn.functional.linear(x.to(base_weight.dtype), base_weight)
-    rank_x = x.float()
-    if inv_scale.numel() != 0:
-        rank_x = rank_x * inv_scale.float()
-    rank = torch.nn.functional.linear(rank_x, down_weight.float())
-    rank = rank * rank_mask.float()
-    delta = torch.nn.functional.linear(rank, up_weight.float())
-    if residual_scale != 1.0:
-        delta.mul_(residual_scale)
+    # The fused MLP bypasses each LoRA module's normal autocast-disabled
+    # rank context. Disable it locally so the explicit FP32 operands are not
+    # silently cast back to FP16 by the surrounding training autocast region.
+    with torch.autocast(device_type=x.device.type, enabled=False):
+        rank_x = x.float()
+        if inv_scale.numel() != 0:
+            rank_x = rank_x * inv_scale.float()
+        rank = torch.nn.functional.linear(rank_x, down_weight.float())
+        rank = rank * rank_mask.float()
+        delta = torch.nn.functional.linear(rank, up_weight.float())
+        if residual_scale != 1.0:
+            delta.mul_(residual_scale)
     base.add_(delta.to(base.dtype))
     return base
 
@@ -303,8 +396,12 @@ class EagerFusedLoRAMLPFn(torch.autograd.Function):
         grad_x_flat = torch.empty_like(x_flat) if ctx.needs_input_grad[0] else None
         trainable = (down_weight1, up_weight1, down_weight2, up_weight2)
         trainable_indices = (2, 3, 8, 9)
-        grad_params = [
-            torch.zeros_like(param) if ctx.needs_input_grad[index] else None
+        grad_params_fp32 = [
+            (
+                torch.zeros_like(param, dtype=torch.float32)
+                if ctx.needs_input_grad[index]
+                else None
+            )
             for param, index in zip(trainable, trainable_indices)
         ]
 
@@ -315,7 +412,9 @@ class EagerFusedLoRAMLPFn(torch.autograd.Function):
                     ctx.needs_input_grad[0]
                 )
                 local_params = [
-                    param.detach().requires_grad_(ctx.needs_input_grad[index])
+                    param.detach()
+                    .float()
+                    .requires_grad_(ctx.needs_input_grad[index])
                     for param, index in zip(trainable, trainable_indices)
                 ]
                 local_down1, local_up1, local_down2, local_up2 = local_params
@@ -345,7 +444,7 @@ class EagerFusedLoRAMLPFn(torch.autograd.Function):
                     requested.append(x_chunk)
                     requested_slots.append(("x", None))
                 for param_index, (param, grad_param) in enumerate(
-                    zip(local_params, grad_params)
+                    zip(local_params, grad_params_fp32)
                 ):
                     if grad_param is not None:
                         requested.append(param)
@@ -363,12 +462,13 @@ class EagerFusedLoRAMLPFn(torch.autograd.Function):
                 if kind == "x":
                     grad_x_flat[start:end] = local_grad.to(x.dtype)
                 else:
-                    grad_params[param_index].add_(
-                        local_grad.to(grad_params[param_index].dtype)
-                    )
+                    grad_params_fp32[param_index].add_(local_grad)
 
         grad_x = grad_x_flat.reshape_as(x) if grad_x_flat is not None else None
-        grad_down1, grad_up1, grad_down2, grad_up2 = grad_params
+        grad_down1, grad_up1, grad_down2, grad_up2 = (
+            grad.to(param.dtype) if grad is not None else None
+            for grad, param in zip(grad_params_fp32, trainable)
+        )
         return (
             grad_x,
             None,
@@ -435,21 +535,22 @@ def _lokr_linear_chunk(
 ) -> torch.Tensor:
     """Evaluate one frozen Linear plus FP32 LoKr bypass for a row chunk."""
     base = torch.nn.functional.linear(x.to(base_weight.dtype), base_weight)
-    c = w1.float() if w1 is not None else w1a.float().matmul(w1b.float())
-    grouped = x.float().reshape(x.shape[0], c.shape[1], -1)
-    if w2 is not None:
-        projected = torch.nn.functional.linear(grouped, w2.float())
-    else:
-        projected = torch.nn.functional.linear(
-            torch.nn.functional.linear(grouped, w2b.float()),
-            w2a.float(),
-        )
-    crossed = projected.transpose(-1, -2)
-    delta = torch.nn.functional.linear(crossed, c).transpose(-1, -2)
-    delta = delta.reshape(x.shape[0], -1)
-    if residual_scale != 1.0:
-        delta.mul_(residual_scale)
-    delta.mul_(scalar.float())
+    with torch.autocast(device_type=x.device.type, enabled=False):
+        c = w1.float() if w1 is not None else w1a.float().matmul(w1b.float())
+        grouped = x.float().reshape(x.shape[0], c.shape[1], -1)
+        if w2 is not None:
+            projected = torch.nn.functional.linear(grouped, w2.float())
+        else:
+            projected = torch.nn.functional.linear(
+                torch.nn.functional.linear(grouped, w2b.float()),
+                w2a.float(),
+            )
+        crossed = projected.transpose(-1, -2)
+        delta = torch.nn.functional.linear(crossed, c).transpose(-1, -2)
+        delta = delta.reshape(x.shape[0], -1)
+        if residual_scale != 1.0:
+            delta.mul_(residual_scale)
+        delta.mul_(scalar.float())
     base.add_(delta.to(base.dtype))
     return base
 
@@ -746,7 +847,7 @@ def _plain_lora_owner(linear: torch.nn.Linear):
     if not owner.use_custom_down_autograd or not owner.fp32_compute:
         return None
     if any(
-        value is not None
+        bool(value)
         for value in (owner.dropout, owner.rank_dropout, owner.module_dropout)
     ):
         return None
