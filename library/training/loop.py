@@ -57,6 +57,18 @@ logger = logging.getLogger(__name__)
 LIVENESS_EARLY_CHECK_STEP = 25
 
 
+def release_text_encoder_handles(text_encoder, text_encoders):
+    """Remove text-encoder references from the loop-facing state.
+
+    Rebinding a loop-local variable is insufficient because the original list
+    can still be aliased by the caller or an accelerator bundle. Clear it before
+    discarding the scalar handle so cached-only encoders can be reclaimed.
+    """
+    if isinstance(text_encoders, list):
+        text_encoders.clear()
+    return None, []
+
+
 @dataclass
 class LoopState:
     """Bundles every local that used to live in ``train()``'s for-epoch scope.
@@ -203,10 +215,9 @@ def build_loop_state(
 
     if trainer.is_text_encoder_not_needed_for_training(args):
         logger.info("text_encoder is not needed for training. deleting to save memory.")
-        for t_enc in text_encoders:
-            del t_enc
-        text_encoders = []
-        text_encoder = None
+        text_encoder, text_encoders = release_text_encoder_handles(
+            text_encoder, text_encoders
+        )
         gc.collect()
         clean_memory_on_device(accelerator.device)
 

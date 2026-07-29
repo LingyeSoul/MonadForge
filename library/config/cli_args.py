@@ -382,8 +382,11 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
     parser.add_argument(
         "--max_data_loader_n_workers",
         type=int,
-        default=1,
-        help="max num workers for DataLoader",
+        default=0,
+        help=(
+            "max num workers for DataLoader (default: 0; avoids forking the "
+            "large training process; set >0 only when explicitly needed)"
+        ),
     )
     parser.add_argument(
         "--persistent_data_loader_workers",
@@ -642,11 +645,9 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
             "Decode each round of sample latents to PNG right after that "
             "sampling event (per-epoch visibility) instead of batching the "
             "decode to the end of training. The inline decode parks the DiT on "
-            "CPU while the VAE runs (never co-resident), so it's OOM-safe. "
-            "true/false, or 'auto' (default): auto decodes inline unless the run "
-            "is block-swapping (blocks_to_swap>0), where the deferred end-of-"
-            "training decode avoids paying a full DiT CPU<->GPU round-trip per "
-            "sample event on a tight card."
+            "CPU while the VAE runs, which can substantially increase host RSS. "
+            "true forces inline decoding; false or 'auto' (the memory-safe "
+            "default) defers decoding until training ends."
         ),
     )
     parser.add_argument(

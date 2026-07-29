@@ -134,7 +134,8 @@ during `make preprocess`, then training reads only the caches.
 | `unsloth_offload_checkpointing` | `false` | Unsloth offload variant of grad checkpointing — **auto-enables `gradient_checkpointing`**; incompatible with `blocks_to_swap`. ⚠️ Its reentrant default can silently zero gradients on detached-input passes; the codebase forces `use_reentrant=False` where it matters. |
 | `channel_scaling_alpha` | `0.5` | SmoothQuant-style per-channel input pre-scaling, baked into the adapter **at training-init time** (not an inference knob). `0.0` disables; `0.5` = sqrt balance; `1.0` = fully flatten channel dominance. Calibration is vendored at `networks/calibration/channel_stats.safetensors` (cond-stream sibling for EasyControl). Only affects variants with a *trainable* down-projection — exactly inert on frozen-basis ortho variants (`use_ortho` / OrthoHydra). See `docs/optimizations/channel_scaling.md`. |
 | `dataloader_pin_memory` | `true` | Pin DataLoader tensors in host RAM for faster GPU transfer. |
-| `persistent_data_loader_workers` | `true` | Keep DataLoader workers alive across epochs. |
+| `persistent_data_loader_workers` | `false` | Keep DataLoader workers alive across epochs when worker processes are enabled. |
+| `max_data_loader_n_workers` | `0` | Run loading in the training process by default. Worker processes created after the models load inherit the large parent address space on Linux and can drive host RSS/zram upward; set this above zero only after measuring a real input bottleneck. |
 
 `blocks_to_swap`, gradient/CPU offload-checkpointing, and `mixed_precision`
 live in the **preset** (`configs/presets.toml`), not here — that's the

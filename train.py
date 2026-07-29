@@ -1,5 +1,6 @@
 # Anima LoRA training script (merged standalone)
 
+import gc
 import importlib
 import argparse
 import json
@@ -117,7 +118,11 @@ from library.config.cli_args import (
     verify_command_line_training_args,
     verify_training_args,
 )
-from library.training.loop import build_loop_state, run_training_loop
+from library.training.loop import (
+    build_loop_state,
+    release_text_encoder_handles,
+    run_training_loop,
+)
 from library.training.stage_schedule import (
     prepare_stage_runtime,
     stage_epoch_upper_bound,
@@ -1509,13 +1514,18 @@ class AnimaTrainer:
                         if p not in sample_prompts_te_outputs:
                             logger.info(f"  cache TE outputs for: {p}")
                             tokens_and_masks = tokenize_strategy.tokenize(p)
-                            sample_prompts_te_outputs[p] = (
-                                text_encoding_strategy.encode_tokens(
-                                    tokenize_strategy,
-                                    text_encoders,
-                                    tokens_and_masks,
-                                )
+                            encoded = text_encoding_strategy.encode_tokens(
+                                tokenize_strategy,
+                                text_encoders,
+                                tokens_and_masks,
                             )
+                            # Sampling copies these back to the target device.
+                            sample_prompts_te_outputs[p] = [
+                                value.detach().cpu()
+                                if torch.is_tensor(value)
+                                else value
+                                for value in encoded
+                            ]
             self.sample_prompts_te_outputs = sample_prompts_te_outputs
 
             logger.info("move text encoder back to cpu")
@@ -2177,6 +2187,16 @@ class AnimaTrainer:
 
         accelerator.unwrap_model(network).prepare_grad_etc(text_encoder, unet)
 
+        # Caches are complete and the frozen encoder has no remaining work.
+        # Drop every alias so the large CPU model is not retained for the run.
+        if args.cache_text_encoder_outputs and not train_text_encoder:
+            logger.info("releasing cached-only text encoder from training state")
+            text_encoder, text_encoders = release_text_encoder_handles(
+                text_encoder, text_encoders
+            )
+            gc.collect()
+            clean_memory_on_device(accelerator.device)
+
         if not cache_latents:
             vae.requires_grad_(False)
             vae.eval()
@@ -2523,6 +2543,7 @@ class AnimaTrainer:
         text_encoders = acc.text_encoders
         text_encoder = acc.text_encoder
         unet_weight_dtype = acc.unet_weight_dtype
+        del acc
 
         num_update_steps_per_epoch = math.ceil(
             len(train_dataloader) / args.gradient_accumulation_steps
