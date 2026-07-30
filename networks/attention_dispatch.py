@@ -1,23 +1,57 @@
+import importlib
+import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
+from typing import Optional, Union
+
 import torch
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from typing import Optional, Union
 
 try:
     import flash_attn
-    from flash_attn.flash_attn_interface import _flash_attn_forward
-    from flash_attn.flash_attn_interface import flash_attn_varlen_func
-    from flash_attn.flash_attn_interface import flash_attn_func
-    from flash_attn.flash_attn_interface import _wrapped_flash_attn_forward
-    from flash_attn.flash_attn_interface import _wrapped_flash_attn_backward
+    from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
 except ImportError:
     flash_attn = None
     flash_attn_varlen_func = None
-    _flash_attn_forward = None
     flash_attn_func = None
-    _wrapped_flash_attn_forward = None
-    _wrapped_flash_attn_backward = None
+
+flash_attn_v100_provider = getattr(flash_attn_func, "__module__", "").startswith(
+    "flash_attn_v100."
+)
+flash_attn_v100_compat_active = False
+if flash_attn_v100_provider:
+    try:
+        from networks.flash_attn_v100_compat import (
+            flash_attn_func,
+            flash_attn_varlen_func,
+        )
+
+        flash_attn_v100_compat_active = True
+    except (ImportError, AttributeError) as exc:
+        warnings.warn(
+            "flash-attention-v100 is installed, but MonadForge could not enable "
+            f"its torch.compile compatibility layer: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+# The V100 fork implements the public FA2 facade but intentionally omits
+# TriDao's private wrapped entry points. Keep those optional so their absence
+# does not disable normal flash_attn_func/flash_attn_varlen_func dispatch.
+_flash_interface = None
+if flash_attn is not None:
+    try:
+        _flash_interface = importlib.import_module("flash_attn.flash_attn_interface")
+    except ImportError:
+        pass
+
+_flash_attn_forward = getattr(_flash_interface, "_flash_attn_forward", None)
+_wrapped_flash_attn_forward = getattr(
+    _flash_interface, "_wrapped_flash_attn_forward", None
+)
+_wrapped_flash_attn_backward = getattr(
+    _flash_interface, "_wrapped_flash_attn_backward", None
+)
 
 # Flash Attention 4 (flash-attention-sm120) is disabled; see docs/optimizations/fa4.md.
 _flash_attn_4_func_raw = None
@@ -25,16 +59,14 @@ flash_attn_4_func = None
 flash_attn_4_varlen_func = None
 
 try:
-    from sageattention import sageattn_varlen, sageattn
+    from sageattention import sageattn, sageattn_varlen
 except ImportError:
     sageattn_varlen = None
     sageattn = None
 
 try:
-    from torch.nn.attention.flex_attention import (
-        flex_attention as _flex_attention,
-        create_block_mask,
-    )
+    from torch.nn.attention.flex_attention import create_block_mask
+    from torch.nn.attention.flex_attention import flex_attention as _flex_attention
 
     # Do NOT pre-compile flex_attention: under compile_blocks the outer
     # torch.compile already traces+fuses _flex_attention; pre-compiling nests
@@ -51,6 +83,15 @@ def sdpa_backend_context(attn_mode: Optional[str]):
     if attn_mode == "mem_efficient":
         return sdpa_kernel(SDPBackend.EFFICIENT_ATTENTION)
     return nullcontext()
+
+
+def flash_attn_available_for_dtype(dtype: torch.dtype) -> bool:
+    """Return whether the imported Flash provider supports this input dtype."""
+    if flash_attn_func is None or flash_attn_varlen_func is None:
+        return False
+    if dtype == torch.float16:
+        return True
+    return dtype == torch.bfloat16 and not flash_attn_v100_provider
 
 
 @dataclass

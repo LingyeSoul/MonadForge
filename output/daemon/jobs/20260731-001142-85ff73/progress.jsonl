@@ -1,0 +1,83 @@
+{"ev": "run_start", "ts": 24.632, "run": "anima-torch\u6d4b\u8bd5", "method": "lora", "preset": "V100", "total_steps": 144, "total_epochs": 4, "pid": 1508142, "sampling_enabled": true, "log_dir": "output/logs/anima-torch\u6d4b\u8bd5_20260731-0011"}
+{"ev": "step", "ts": 74.694, "loss/current": 0.03623814508318901, "loss/average": 0.03623814508318901, "lr/unet": 2e-05, "global_step": 2, "epoch": 1}
+{"ev": "step", "ts": 75.661, "loss/current": 0.04317048564553261, "loss/average": 0.03970431536436081, "lr/unet": 2e-05, "global_step": 4, "epoch": 1}
+{"ev": "step", "ts": 76.653, "loss/current": 0.04682443290948868, "loss/average": 0.042077687879403435, "lr/unet": 2e-05, "global_step": 6, "epoch": 1}
+{"ev": "step", "ts": 77.619, "loss/current": 0.040709029883146286, "loss/average": 0.041735523380339146, "lr/unet": 2e-05, "global_step": 8, "epoch": 1}
+{"ev": "step", "ts": 78.586, "loss/current": 0.05779436603188515, "loss/average": 0.04494729191064835, "lr/unet": 2e-05, "global_step": 10, "epoch": 1}
+{"ev": "step", "ts": 79.554, "loss/current": 0.045040521770715714, "loss/average": 0.044962830220659576, "lr/unet": 2e-05, "global_step": 12, "epoch": 1}
+{"ev": "step", "ts": 80.523, "loss/current": 0.04012453556060791, "loss/average": 0.04427164526922362, "lr/unet": 2e-05, "global_step": 14, "epoch": 1}
+{"ev": "step", "ts": 81.492, "loss/current": 0.0395171195268631, "loss/average": 0.043677329551428556, "lr/unet": 2e-05, "global_step": 16, "epoch": 1}
+{"ev": "step", "ts": 82.459, "loss/current": 0.044968727976083755, "loss/average": 0.043820818265279136, "lr/unet": 2e-05, "global_step": 18, "epoch": 1}
+{"ev": "step", "ts": 83.428, "loss/current": 0.038016851991415024, "loss/average": 0.043240421637892726, "lr/unet": 2e-05, "global_step": 20, "epoch": 1}
+{"ev": "step", "ts": 84.398, "loss/current": 0.04486320540308952, "loss/average": 0.0433879474347288, "lr/unet": 2e-05, "global_step": 22, "epoch": 1}
+{"ev": "step", "ts": 85.369, "loss/current": 0.05141553655266762, "loss/average": 0.04405691319455703, "lr/unet": 2e-05, "global_step": 24, "epoch": 1}
+{"ev": "step", "ts": 86.337, "loss/current": 0.04750893637537956, "loss/average": 0.04432245343923569, "lr/unet": 2e-05, "global_step": 26, "epoch": 1}
+{"ev": "step", "ts": 87.328, "loss/current": 0.11013074219226837, "loss/average": 0.049023045493023734, "lr/unet": 2e-05, "global_step": 28, "epoch": 1}
+{"ev": "step", "ts": 88.318, "loss/current": 0.04882621765136719, "loss/average": 0.0490099236369133, "lr/unet": 2e-05, "global_step": 30, "epoch": 1}
+{"ev": "step", "ts": 89.285, "loss/current": 0.04839693754911423, "loss/average": 0.04897161200642586, "lr/unet": 2e-05, "global_step": 32, "epoch": 1}
+{"ev": "step", "ts": 90.252, "loss/current": 0.04108976200222969, "loss/average": 0.04850797377088491, "lr/unet": 2e-05, "global_step": 34, "epoch": 1}
+{"ev": "step", "ts": 91.302, "loss/current": 0.045348212122917175, "loss/average": 0.04833243145710892, "lr/unet": 2e-05, "global_step": 36, "epoch": 1}
+{"ev": "step", "ts": 91.303, "loss/epoch_average": 0.04833243145710892, "global_step": 36, "epoch": 1}
+{"ev": "step", "ts": 92.409, "loss/current": 0.03572256118059158, "loss/average": 0.04791865787572331, "lr/unet": 2e-05, "global_step": 38, "epoch": 2}
+{"ev": "step", "ts": 93.38, "loss/current": 0.05695667490363121, "loss/average": 0.048821304821305804, "lr/unet": 2e-05, "global_step": 40, "epoch": 2}
+{"ev": "step", "ts": 94.349, "loss/current": 0.10834027081727982, "loss/average": 0.05233795754611492, "lr/unet": 2e-05, "global_step": 42, "epoch": 2}
+{"ev": "step", "ts": 95.317, "loss/current": 0.03764510527253151, "loss/average": 0.05223395675420761, "lr/unet": 2e-05, "global_step": 44, "epoch": 2}
+{"ev": "step", "ts": 96.309, "loss/current": 0.10651465505361557, "loss/average": 0.0560393902576632, "lr/unet": 2e-05, "global_step": 46, "epoch": 2}
+{"ev": "step", "ts": 97.277, "loss/current": 0.03761393576860428, "loss/average": 0.055272634658548564, "lr/unet": 2e-05, "global_step": 48, "epoch": 2}
+{"ev": "step", "ts": 98.249, "loss/current": 0.035876888781785965, "loss/average": 0.05114742058018843, "lr/unet": 2e-05, "global_step": 50, "epoch": 2}
+{"ev": "step", "ts": 99.22, "loss/current": 0.03710398077964783, "loss/average": 0.05052003409299585, "lr/unet": 2e-05, "global_step": 52, "epoch": 2}
+{"ev": "step", "ts": 100.192, "loss/current": 0.03735439106822014, "loss/average": 0.05007593292329046, "lr/unet": 2e-05, "global_step": 54, "epoch": 2}
+{"ev": "step", "ts": 101.163, "loss/current": 0.02757914736866951, "loss/average": 0.04644729699939489, "lr/unet": 2e-05, "global_step": 56, "epoch": 2}
+{"ev": "step", "ts": 102.137, "loss/current": 0.04624684527516365, "loss/average": 0.044326944784684616, "lr/unet": 2e-05, "global_step": 58, "epoch": 2}
+{"ev": "step", "ts": 103.13, "loss/current": 0.03336285799741745, "loss/average": 0.042023151802519955, "lr/unet": 2e-05, "global_step": 60, "epoch": 2}
+{"ev": "step", "ts": 104.101, "loss/current": 0.05851220339536667, "loss/average": 0.041041071025224835, "lr/unet": 2e-05, "global_step": 62, "epoch": 2}
+{"ev": "step", "ts": 105.077, "loss/current": 0.04608003795146942, "loss/average": 0.0397552815931184, "lr/unet": 2e-05, "global_step": 64, "epoch": 2}
+{"ev": "step", "ts": 106.047, "loss/current": 0.03888678178191185, "loss/average": 0.03840115554630756, "lr/unet": 2e-05, "global_step": 66, "epoch": 2}
+{"ev": "step", "ts": 107.018, "loss/current": 0.047616615891456604, "loss/average": 0.03748910257127136, "lr/unet": 2e-05, "global_step": 68, "epoch": 2}
+{"ev": "step", "ts": 108.01, "loss/current": 0.05126389488577843, "loss/average": 0.03679162285783712, "lr/unet": 2e-05, "global_step": 70, "epoch": 2}
+{"ev": "step", "ts": 109.056, "loss/current": 0.05930124223232269, "loss/average": 0.03639490053885513, "lr/unet": 2e-05, "global_step": 72, "epoch": 2}
+{"ev": "step", "ts": 109.057, "loss/epoch_average": 0.03639490053885513, "global_step": 72, "epoch": 2}
+{"ev": "ckpt", "ts": 109.742, "global_step": 72, "path": "output/ckpt/anima-torch\u6d4b\u8bd5/anima-torch\u6d4b\u8bd5-000002.safetensors"}
+{"ev": "ckpt", "ts": 110.42, "global_step": 72, "path": "output/ckpt/anima-torch\u6d4b\u8bd5-checkpoint.safetensors"}
+{"ev": "log", "ts": 111.355, "level": "WARNING", "logger": "library.anima.training", "msg": "Skipping sample prompt at 1024x1024 (4096 tokens): outside the compiled dynamic-seq token range (1024, 2196). The compile budget covers the training buckets plus the sample prompts present at startup; to sample at this resolution, restart training with it in the prompt file, lower --w/--h, or disable torch_compile."}
+{"ev": "step", "ts": 112.46, "loss/current": 0.045638639479875565, "loss/average": 0.03667034715827969, "lr/unet": 2e-05, "global_step": 74, "epoch": 3}
+{"ev": "step", "ts": 113.429, "loss/current": 0.04459068551659584, "loss/average": 0.03632684745308426, "lr/unet": 2e-05, "global_step": 76, "epoch": 3}
+{"ev": "step", "ts": 114.4, "loss/current": 0.09676714241504669, "loss/average": 0.03600537166413334, "lr/unet": 2e-05, "global_step": 78, "epoch": 3}
+{"ev": "step", "ts": 115.369, "loss/current": 0.07204830646514893, "loss/average": 0.03696101614170604, "lr/unet": 2e-05, "global_step": 80, "epoch": 3}
+{"ev": "step", "ts": 116.361, "loss/current": 0.024773884564638138, "loss/average": 0.034690439183678895, "lr/unet": 2e-05, "global_step": 82, "epoch": 3}
+{"ev": "step", "ts": 117.332, "loss/current": 0.035796668380498886, "loss/average": 0.0346399595340093, "lr/unet": 2e-05, "global_step": 84, "epoch": 3}
+{"ev": "step", "ts": 118.301, "loss/current": 0.0404815599322319, "loss/average": 0.03476786706596613, "lr/unet": 2e-05, "global_step": 86, "epoch": 3}
+{"ev": "step", "ts": 119.268, "loss/current": 0.04206414148211479, "loss/average": 0.03490564930770132, "lr/unet": 2e-05, "global_step": 88, "epoch": 3}
+{"ev": "step", "ts": 120.236, "loss/current": 0.04204915836453438, "loss/average": 0.03503605951037672, "lr/unet": 2e-05, "global_step": 90, "epoch": 3}
+{"ev": "step", "ts": 121.206, "loss/current": 0.043880343437194824, "loss/average": 0.035488870512280196, "lr/unet": 2e-05, "global_step": 92, "epoch": 3}
+{"ev": "step", "ts": 122.2, "loss/current": 0.057232122868299484, "loss/average": 0.03579401711208953, "lr/unet": 2e-05, "global_step": 94, "epoch": 3}
+{"ev": "step", "ts": 123.169, "loss/current": 0.04260747507214546, "loss/average": 0.03605081203083197, "lr/unet": 2e-05, "global_step": 96, "epoch": 3}
+{"ev": "step", "ts": 124.138, "loss/current": 0.0377783365547657, "loss/average": 0.035474871285259724, "lr/unet": 2e-05, "global_step": 98, "epoch": 3}
+{"ev": "step", "ts": 125.106, "loss/current": 0.04620816186070442, "loss/average": 0.03547843028273848, "lr/unet": 2e-05, "global_step": 100, "epoch": 3}
+{"ev": "step", "ts": 126.075, "loss/current": 0.05478891357779503, "loss/average": 0.03592015616595745, "lr/unet": 2e-05, "global_step": 102, "epoch": 3}
+{"ev": "step", "ts": 127.044, "loss/current": 0.041844017803668976, "loss/average": 0.03575980621907446, "lr/unet": 2e-05, "global_step": 104, "epoch": 3}
+{"ev": "step", "ts": 128.014, "loss/current": 0.05476471409201622, "loss/average": 0.03585705119702551, "lr/unet": 2e-05, "global_step": 106, "epoch": 3}
+{"ev": "step", "ts": 129.087, "loss/current": 0.06168917939066887, "loss/average": 0.035923382784757346, "lr/unet": 2e-05, "global_step": 108, "epoch": 3}
+{"ev": "step", "ts": 129.088, "loss/epoch_average": 0.035923382784757346, "global_step": 108, "epoch": 3}
+{"ev": "step", "ts": 130.178, "loss/current": 0.10586554557085037, "loss/average": 0.03759635239839554, "lr/unet": 2e-05, "global_step": 110, "epoch": 4}
+{"ev": "step", "ts": 131.146, "loss/current": 0.04084034264087677, "loss/average": 0.03749217620740334, "lr/unet": 2e-05, "global_step": 112, "epoch": 4}
+{"ev": "step", "ts": 132.115, "loss/current": 0.044118184596300125, "loss/average": 0.036029705156882606, "lr/unet": 2e-05, "global_step": 114, "epoch": 4}
+{"ev": "step", "ts": 133.085, "loss/current": 0.0666973739862442, "loss/average": 0.03588106814357969, "lr/unet": 2e-05, "global_step": 116, "epoch": 4}
+{"ev": "step", "ts": 134.078, "loss/current": 0.09606080502271652, "loss/average": 0.037861260378526315, "lr/unet": 2e-05, "global_step": 118, "epoch": 4}
+{"ev": "step", "ts": 135.045, "loss/current": 0.031440287828445435, "loss/average": 0.03774024980763594, "lr/unet": 2e-05, "global_step": 120, "epoch": 4}
+{"ev": "step", "ts": 136.015, "loss/current": 0.12799663841724396, "loss/average": 0.040171224209997386, "lr/unet": 2e-05, "global_step": 122, "epoch": 4}
+{"ev": "step", "ts": 136.985, "loss/current": 0.04705551639199257, "loss/average": 0.04030987351304955, "lr/unet": 2e-05, "global_step": 124, "epoch": 4}
+{"ev": "step", "ts": 137.955, "loss/current": 0.03892811760306358, "loss/average": 0.04022317793634203, "lr/unet": 2e-05, "global_step": 126, "epoch": 4}
+{"ev": "step", "ts": 138.924, "loss/current": 0.04041888937354088, "loss/average": 0.04012702643457386, "lr/unet": 2e-05, "global_step": 128, "epoch": 4}
+{"ev": "step", "ts": 139.916, "loss/current": 0.11015455424785614, "loss/average": 0.04159709397289488, "lr/unet": 2e-05, "global_step": 130, "epoch": 4}
+{"ev": "step", "ts": 140.884, "loss/current": 0.19281528890132904, "loss/average": 0.04576953324592776, "lr/unet": 2e-05, "global_step": 132, "epoch": 4}
+{"ev": "step", "ts": 141.855, "loss/current": 0.036458540707826614, "loss/average": 0.04573287225017945, "lr/unet": 2e-05, "global_step": 134, "epoch": 4}
+{"ev": "step", "ts": 142.825, "loss/current": 0.043190862983465195, "loss/average": 0.04564905839247836, "lr/unet": 2e-05, "global_step": 136, "epoch": 4}
+{"ev": "step", "ts": 143.822, "loss/current": 0.036213167011737823, "loss/average": 0.045133065432310104, "lr/unet": 2e-05, "global_step": 138, "epoch": 4}
+{"ev": "step", "ts": 144.79, "loss/current": 0.03273789957165718, "loss/average": 0.04488011770364311, "lr/unet": 2e-05, "global_step": 140, "epoch": 4}
+{"ev": "step", "ts": 145.758, "loss/current": 0.052559178322553635, "loss/average": 0.04481885282115804, "lr/unet": 2e-05, "global_step": 142, "epoch": 4}
+{"ev": "step", "ts": 146.808, "loss/current": 0.04518153518438339, "loss/average": 0.04436030714876122, "lr/unet": 2e-05, "global_step": 144, "epoch": 4}
+{"ev": "step", "ts": 146.809, "loss/epoch_average": 0.04436030714876122, "global_step": 144, "epoch": 4}
+{"ev": "log", "ts": 146.817, "level": "WARNING", "logger": "library.anima.training", "msg": "Skipping sample prompt at 1024x1024 (4096 tokens): outside the compiled dynamic-seq token range (1024, 2196). The compile budget covers the training buckets plus the sample prompts present at startup; to sample at this resolution, restart training with it in the prompt file, lower --w/--h, or disable torch_compile."}
+{"ev": "ckpt", "ts": 150.65, "global_step": 144, "path": "output/ckpt/anima-torch\u6d4b\u8bd5.safetensors"}
+{"ev": "run_end", "ts": 150.651, "status": "ok", "final_step": 144, "error": null}

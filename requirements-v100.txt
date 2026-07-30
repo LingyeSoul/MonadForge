@@ -1,6 +1,6 @@
 # V100专用依赖文件
-# 使用 torch==2.10.0+cu129，不安装 flash-attn
-# V100 (SM 7.0) 不支持 flash-attn，生产训练请使用 attn_mode="torch"
+# 使用 torch==2.10.0+cu129；不从索引安装任何 flash-attn wheel
+# V100 fork 由 `make v100-flash-install` 从固定源码单独构建，再严格验收
 
 # Core ML - V100兼容版本
 torch==2.10.0+cu129
@@ -43,9 +43,11 @@ albumentations>=1.4.0
 packaging
 pycocotools>=2.0.11
 
-# 注意：不安装 flash-attn
-# V100 使用 attn_mode="torch" (SDPA) 进行注意力计算
-# flash-attention-v100 在 Anima fp16 DiT self-attention 首步产生 NaN
+# 注意：这里故意不声明 flash-attn
+# 公共 26.06 wheel 存在 dense-tail NaN；只有固定 main c91cad40 的本地
+# cp313 构建通过 `make v100-flash-validate` 后才启用 V100_flash preset。
+# `uv sync` 会按 pyproject 安装普通 Ampere wheel；V100 环境不要用它覆盖
+# 本地 wheel；必要时重新运行 install + validate，并以最新 manifest 为准。
 
 # Development & Testing
 ruff>=0.15.9

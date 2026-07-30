@@ -2,8 +2,8 @@
 # ============================================================
 # MonadForge V100 专用安装脚本 (Linux)
 # ============================================================
-# 使用 torch==2.10.0+cu129，不安装 flash-attn
-# V100 (SM 7.0) 不支持 flash-attn，生产训练请使用 attn_mode="torch"
+# 使用 torch==2.10.0+cu129；基础依赖阶段不从索引安装 flash-attn
+# 可在基础安装后显式构建固定的 flash-attention-v100 源码并单独验收
 #
 # 用法:
 #   chmod +x setup-v100-linux.sh
@@ -128,7 +128,7 @@ source "$VENV_DIR/bin/activate"
 ok "虚拟环境已激活: $VIRTUAL_ENV"
 
 # ============================================================
-# 5. 安装V100兼容依赖
+# 5. 安装V100兼容依赖（Flash 单独从固定源码构建）
 # ============================================================
 say "安装V100兼容依赖 ..."
 
@@ -147,8 +147,8 @@ ok "torch 和 torchvision 安装完成"
 say "验证torch安装 ..."
 python3 -c "import torch; print(f'PyTorch版本: {torch.__version__}'); print(f'CUDA可用: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')"
 
-# 安装其他依赖（不包含flash-attn）
-say "安装其他依赖 (不包含flash-attn) ..."
+# 安装其他依赖（不从公共索引安装 flash-attn）
+say "安装其他依赖 (FlashAttention 由独立源码任务处理) ..."
 if [ -f "requirements-v100.txt" ]; then
     uv pip install -r requirements-v100.txt \
         --index-strategy unsafe-best-match \
@@ -176,6 +176,18 @@ EOF
     ok "已添加V100优化环境变量"
 else
     say "环境变量已配置"
+fi
+
+# ============================================================
+# 6.1 可选：构建并安装固定的 V100 FlashAttention 源码
+# ============================================================
+if [ "${ANIMA_INSTALL_V100_FLASH:-0}" = "1" ]; then
+    V100_FLASH_CUDA_HOME="${V100_FLASH_CUDA_HOME:-output/v100-flash-validation/toolchain/cuda-12.9.1}"
+    say "构建 flash-attention-v100 c91cad40 (cp313) ..."
+    python tasks.py v100-flash-install --cuda-home "$V100_FLASH_CUDA_HOME"
+    warn "Flash wheel 已安装但尚未验收；继续运行: make v100-flash-validate"
+else
+    say "未安装 V100 FlashAttention（显式启用：ANIMA_INSTALL_V100_FLASH=1）"
 fi
 
 # ============================================================
@@ -229,13 +241,14 @@ echo -e "${GREEN}============================================================${N
 echo
 echo "  重要配置说明："
 echo "  ---------------------------------------------------------"
-echo "  1. 使用 attn_mode=\"torch\" (SDPA) 进行注意力计算"
-echo "     - flash-attn 在V100上不稳定，会产生NaN"
+echo "  1. 默认使用 attn_mode=\"torch\" (SDPA)"
 echo "     - torch_compile=true 可以正常启用"
+echo "     - 要启用源码版 Flash：先运行 make v100-flash-install"
+echo "       再运行 make v100-flash-validate；只有 validated 后使用 V100_flash"
 echo ""
 echo "  2. 推荐的V100训练配置："
 echo "     mixed_precision = \"fp16\""
-echo "     attn_mode = \"torch\""
+echo "     attn_mode = \"torch\"  # 或验收后的 V100_flash preset"
 echo "     torch_compile = true"
 echo "     gradient_checkpointing = true"
 echo "     lora_fp32_compute = true  (自动启用)"

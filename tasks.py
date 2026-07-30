@@ -68,10 +68,19 @@ staged_resolution = _LazyModule("scripts.tasks.staged_resolution")
 tagger = _LazyModule("scripts.tasks.tagger")
 training = _LazyModule("scripts.tasks.training")
 utilities = _LazyModule("scripts.tasks.utilities")
+v100_flash = _LazyModule("scripts.tasks.v100_flash")
 exp_inference = _LazyModule("scripts.experimental_tasks.inference")
 exp_training = _LazyModule("scripts.experimental_tasks.training")
 
 COMMANDS = {
+    "v100-flash-install": (
+        v100_flash.cmd_install,
+        "Build and install the pinned flash-attention-v100 cp313 wheel into .venv.",
+    ),
+    "v100-flash-validate": (
+        v100_flash.cmd_validate,
+        "Run the strict V100 FlashAttention capture, matrix, compile, and Anima gates.",
+    ),
     # ── Training ──────────────────────────────────────────────────────
     "lora": (
         training.cmd_lora,
