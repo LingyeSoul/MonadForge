@@ -1,0 +1,320 @@
+[cmd_lora_gui] variant='lora' PRESET env='V100'
+  > /home/buxinzi/Projects/toolbox/model-train/MonadForge/.venv/bin/python train.py --method lora --preset V100 --methods_subdir gui-methods --progress_jsonl /home/buxinzi/Projects/toolbox/model-train/MonadForge/output/daemon/jobs/20260731-001509-e84e33/progress.jsonl --sample_dir /home/buxinzi/Projects/toolbox/model-train/MonadForge/output/daemon/jobs/20260731-001509-e84e33/sample
+Anima: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (default; set ANIMA_EXPANDABLE_SEGMENTS=0 to disable)
+2026-07-31 00:15:11 WARNING  WARNING: BNB_CUDA_VERSION=128      cextension.py:46
+                             environment variable detected;                     
+                             loading                                            
+                             libbitsandbytes_cuda128.so.                        
+                             This overrides automatic CUDA                      
+                             version selection.                                 
+                             If this was unintended clear the                   
+                             variable and retry: unset                          
+                             BNB_CUDA_VERSION                                   
+                                                                                
+2026-07-31 00:15:17 INFO     Loading chain: base → presets/V100 →      io.py:913
+                             gui-methods/lora                                   
+                    INFO     Config snapshot written:                  io.py:863
+                             output/ckpt/anima-men测试.snapshot.toml            
+                    INFO     Config snapshot mirrored:                 io.py:883
+                             output/logs/anima-men测试_20260731-0015/a          
+                             nima-men测试.snapshot.toml                         
+                    INFO     Wrote 1 inline sample         sampling_config.py:69
+                             prompt(s) to                                       
+                             output/ckpt/sample_prompts.tx                      
+                             t                                                  
+2026-07-31 00:15:19 INFO     Loading dataset config from           train.py:1608
+                             configs/base.toml                                  
+                    WARNING  Training pool has 36 image(s) (< 100) loader.py:435
+                             — auto-disabling                                   
+                             validation_split_num=16 /                          
+                             validation_split=0.0. The whole pool               
+                             will be used for training and no                   
+                             validation pass will run.                          
+                    INFO     prepare images.                   dreambooth.py:563
+                    INFO     get image size from name of cache dreambooth.py:303
+                             files                                              
+  0%|          | 0/36 [00:00<?, ?it/s]100%|██████████| 36/36 [00:00<00:00, 345526.19it/s]
+                    INFO     set image size from cache files:  dreambooth.py:347
+                             0/36                                               
+                    INFO     found directory                   dreambooth.py:390
+                             post_image_dataset/resized                         
+                             contains 36 image files                            
+read caption:   0%|          | 0/36 [00:00<?, ?it/s]read caption: 100%|██████████| 36/36 [00:00<00:00, 23165.84it/s]
+                    INFO     36 train images with repeats.     dreambooth.py:740
+                    INFO     0 reg images with repeats.        dreambooth.py:744
+                    WARNING  no regularization images          dreambooth.py:749
+                    INFO     [Dataset 0]                           loader.py:542
+                               batch_size: 1                                    
+                               resize_interpolation: None                       
+                                                                                
+                               [Subset 0 of Dataset 0]                          
+                                 image_dir:                                     
+                             "post_image_dataset/resized"                       
+                                 image_count: 36                                
+                                 num_repeats: 1                                 
+                                 repeat_by_folder_name: False                   
+                                 sample_ratio: 1.0                              
+                                 caption_dropout_rate: 0.1                      
+                                 caption_dropout_every_n_epochs: 0              
+                                 caption_tag_dropout_rate: 0.0                  
+                                 caption_prefix: None                           
+                                 caption_suffix: None                           
+                                 color_aug: False                               
+                                 flip_aug: False                                
+                                 face_crop_aug_range: None                      
+                                 random_crop: False                             
+                                 token_warmup_min: 1,                           
+                                 token_warmup_step: 0,                          
+                                 alpha_mask: False                              
+                                 resize_interpolation: None                     
+                                 custom_attributes: {}                          
+                                 is_reg: False                                  
+                                 class_tokens: None                             
+                                 caption_extension: .txt                        
+                                                                                
+                    INFO     [Prepare dataset 0]                   loader.py:554
+                    INFO     loading image sizes.                    base.py:591
+  0%|          | 0/36 [00:00<?, ?it/s]100%|██████████| 36/36 [00:00<00:00, 1076.75it/s]
+                    INFO     make buckets                            base.py:596
+                    INFO     number of images (including repeats)    base.py:629
+                    INFO     bucket 0: resolution (608, 896), count: base.py:639
+                             33                                                 
+                    INFO     bucket 1: resolution (976, 576), count: base.py:639
+                             3                                                  
+                    INFO     mean ar error (without repeats): 0.0    base.py:647
+                    INFO     caption dropout ENABLED -- per-subset train.py:1667
+                             rates: [0.1]                                       
+                    INFO     preparing accelerator                 train.py:2368
+accelerator device: cuda
+                    INFO     pre-Ampere GPU (sm_70) under fp16:     train.py:315
+                             forcing VAE to fp32 to avoid decode                
+                             artifacts (花图/糊图). Pass --half_vae             
+                             to allow half-precision VAE (not                   
+                             recommended).                                      
+                    INFO     Loading Qwen3 text encoder...          train.py:598
+                    INFO     Loading Qwen3 text encoder from      weights.py:414
+                             /home/buxinzi/Projects/toolbox/comfy               
+                             ui-image/ComfyUI/models/text_encoder               
+                             s/qwen_3_06b_base.safetensors                      
+2026-07-31 00:15:30 INFO     Loaded Qwen3 state dict: <All keys   weights.py:464
+                             matched successfully>                              
+                    INFO     Loaded Qwen3 text encoder.           weights.py:472
+                             Parameters: 596,049,920                            
+                    INFO     Loading Anima VAE...                   train.py:612
+                    INFO     Initializing VAE                   qwen_vae.py:1980
+2026-07-31 00:15:31 INFO     Loading VAE from                   qwen_vae.py:2004
+                             /home/buxinzi/Projects/toolbox/com                 
+                             fyui-image/ComfyUI/models/vae/qwen                 
+                             _image_vae.safetensors                             
+2026-07-31 00:15:32 INFO     Converted ComfyUI AutoencoderKL    qwen_vae.py:1894
+                             state dict keys to official format                 
+                    INFO     Loaded VAE: <All keys matched      qwen_vae.py:2011
+                             successfully>                                      
+                    INFO     [Dataset 0]                             group.py:79
+                    INFO     caching latents with caching strategy.  base.py:931
+                    INFO     caching latents...                      base.py:978
+  0%|          | 0/36 [00:00<?, ?it/s]100%|██████████| 36/36 [00:00<00:00, 26924.92it/s]
+2026-07-31 00:15:33 INFO     [Dataset 0]                            group.py:131
+                    INFO     caching Text Encoder outputs with      base.py:1139
+                             caching strategy.                                  
+                    INFO     checking cache validity...             base.py:1148
+  0%|          | 0/36 [00:00<?, ?it/s]100%|██████████| 36/36 [00:00<00:00, 41210.41it/s]
+                    INFO     no Text Encoder outputs to cache       base.py:1184
+                    INFO     cache Text Encoder outputs for sample train.py:1492
+                             prompts:                                           
+                             output/ckpt/sample_prompts.txt                     
+                    INFO     move text encoder to gpu              train.py:1495
+                    INFO       cache TE outputs for:               train.py:1510
+                             configs/custom/sample_prompts.txt                  
+2026-07-31 00:15:34 INFO       cache TE outputs for:               train.py:1510
+                    INFO     move text encoder back to cpu         train.py:1521
+2026-07-31 00:15:35 INFO     Using attention mode: mem_efficient    train.py:682
+                    INFO     Loading Anima DiT model with           train.py:702
+                             attn_softmax_scale: None...                        
+                    INFO     Loading DiT model from               weights.py:168
+                             /home/buxinzi/Projects/toolbox/comfy               
+                             ui-image/ComfyUI/models/diffusion_mo               
+                             dels/Anima/anima-base-v1.0.safetenso               
+                             rs, device=cuda                                    
+                    INFO     Loading model files:              lora_utils.py:162
+                             ['/home/buxinzi/Projects/toolbox/                  
+                             comfyui-image/ComfyUI/models/diff                  
+                             usion_models/Anima/anima-base-v1.                  
+                             0.safetensors']                                    
+                    INFO     Loading state dict. Dtype of      lora_utils.py:316
+                             weight: torch.float16, hook                        
+                             enabled: False                                     
+Loading anima-base-v1.0.safetensors:   0%|          | 0/545 [00:00<?, ?it/s]Loading anima-base-v1.0.safetensors:  12%|█▏        | 66/545 [00:00<00:03, 129.98it/s]Loading anima-base-v1.0.safetensors:  24%|██▍       | 130/545 [00:01<00:03, 128.76it/s]Loading anima-base-v1.0.safetensors:  35%|███▌      | 191/545 [00:01<00:02, 123.67it/s]Loading anima-base-v1.0.safetensors:  48%|████▊     | 261/545 [00:02<00:02, 129.18it/s]Loading anima-base-v1.0.safetensors:  60%|█████▉    | 326/545 [00:02<00:01, 128.45it/s]Loading anima-base-v1.0.safetensors:  71%|███████   | 388/545 [00:03<00:01, 126.30it/s]Loading anima-base-v1.0.safetensors:  77%|███████▋  | 418/545 [00:03<00:01, 101.06it/s]Loading anima-base-v1.0.safetensors:  90%|████████▉ | 490/545 [00:04<00:00, 113.08it/s]Loading anima-base-v1.0.safetensors:  99%|█████████▊| 538/545 [00:04<00:00, 100.41it/s]                                                                                       2026-07-31 00:15:40 INFO     Loaded DiT model from                weights.py:210
+                             /home/buxinzi/Projects/toolbox/comfy               
+                             ui-image/ComfyUI/models/diffusion_mo               
+                             dels/Anima/anima-base-v1.0.safetenso               
+                             rs, unexpected missing keys: 0,                    
+                             unexpected keys: 0                                 
+2026-07-31 00:15:41 INFO     caption dropout uncond loaded:        uncond.py:154
+                             /home/buxinzi/Projects/toolbox/model-              
+                             train/MonadForge/library/anima/assets              
+                             /_anima_uncond_te.safetensors                      
+                             shape=(1, 512, 1024)                               
+import network module: networks.lora_anima
+                    WARNING  V100/sm_70 fp16 training detected:    train.py:1807
+                             auto-enabling lora_fp32_compute so                 
+                             LoRA rank GEMMs run in fp32 while the              
+                             frozen base remains fp16. Set                      
+                             lora_fp32_compute=false to disable                 
+                             for A/B testing.                                   
+                    INFO     channel_scaling: alpha=0.5,          factory.py:154
+                             stats=channel_stats.safetensors (454               
+                             calibrated modules)                                
+                    INFO     create LoRA network. base dim        network.py:189
+                             (rank): 32, alpha: 32.0                            
+                    INFO     neuron dropout: p=None, rank         network.py:192
+                             dropout: p=None, module dropout:                   
+                             p=None                                             
+                    INFO     create LoRA for Text Encoder 1:      network.py:615
+Creating TE1 LoRA:   0%|          | 0/196 [00:00<?, ?it/s]                                                                              INFO     create LoRA for Text Encoder 1: 196  network.py:622
+                             modules.                                           
+Creating DiT LoRA:   0%|          | 0/196 [00:00<?, ?it/s]Creating DiT LoRA:  91%|█████████ | 178/196 [00:00<00:00, 354.76it/s]                                                                     2026-07-31 00:15:42 INFO     create LoRA for Anima DiT: 196       network.py:655
+                             modules.                                           
+                    INFO     channel_scaling: 196 DiT modules     network.py:667
+                             received calibration-based input                   
+                             scaling                                            
+                    INFO     enable LoRA for DiT: 196 modules    network.py:1585
+                    INFO     fp16 mixed precision: enabled fp32    train.py:1900
+                             residual accumulation (DiT residual                
+                             stream exceeds fp16 range; prevents                
+                             NaN). Sublayer matmuls still run fp16              
+                             under autocast; bf16/fp32 runs are                 
+                             unaffected.                                        
+                    INFO     torch.compile                        harness.py:513
+                             activation_memory_budget = 0.99                    
+                             (partitioner recomputes cheap                      
+                             intermediates in backward)                         
+                    INFO     torch.compile cache isolated per     harness.py:481
+                             compile signature:                                 
+                             /tmp/torchinductor_buxinzi/anima-sig               
+                             -f810c39f6a7bc413                                  
+                    INFO     compile signature:                   harness.py:482
+                             families=3;seq_range=(1024,                        
+                             2196);dynamic_seq=True;backend=induc               
+                             tor;mode=None                                      
+Anima: native_flatten on, 3 token-count families, dynamic-seq mark_dynamic seq∈(1024, 2196) (1 graph) (recompile_limit=14); compiled 28 block._forward with backend=inductor, mode=None
+prepare optimizer, data loader etc.
+                    INFO     use AdamW optimizer | {'fused':   optimizers.py:302
+                             True}                                              
+override steps. steps for 4 epochs is
+running training
+  num train images * repeats
+  num validation images * repeats
+  num reg images
+  num batches per epoch
+  num epochs
+  batch size per device
+  gradient accumulation steps
+  total optimization steps
+2026-07-31 00:15:55 INFO     text_encoder is not needed for          loop.py:205
+                             training. deleting to save memory.                 
+2026-07-31 00:15:56 INFO     unet dtype: torch.float16, device:      loop.py:263
+                             cuda:0                                             
+                    INFO     sigma sampling:                         loop.py:277
+                             timestep_sampling=sigmoid,                         
+                             sigmoid_scale=1.0, sigmoid_bias=0.0                
+steps:   0%|          | 0/144 [00:00<?, ?it/s]
+epoch 1/4
+
+                    INFO     epoch is incremented. current_epoch: 0, base.py:335
+                             epoch: 1                                           
+steps:   1%|          | 1/144 [00:16<39:55, 16.75s/it]steps:   2%|▏         | 3/144 [00:17<13:49,  5.89s/it, avr_loss=0.152, lr=2e-5]steps:   3%|▎         | 5/144 [00:18<08:38,  3.73s/it, avr_loss=0.103, lr=2e-5]steps:   5%|▍         | 7/144 [00:19<06:23,  2.80s/it, avr_loss=0.0994, lr=2e-5]steps:   6%|▋         | 9/144 [00:20<05:08,  2.29s/it, avr_loss=0.0854, lr=2e-5]steps:   8%|▊         | 11/144 [00:21<04:20,  1.96s/it, avr_loss=0.0794, lr=2e-5]steps:   9%|▉         | 13/144 [00:22<03:46,  1.73s/it, avr_loss=0.0722, lr=2e-5]steps:  10%|█         | 15/144 [00:23<03:21,  1.57s/it, avr_loss=0.069, lr=2e-5] steps:  12%|█▏        | 17/144 [00:24<03:02,  1.44s/it, avr_loss=0.066, lr=2e-5]steps:  13%|█▎        | 19/144 [00:25<02:47,  1.34s/it, avr_loss=0.067, lr=2e-5]steps:  15%|█▍        | 21/144 [00:26<02:34,  1.26s/it, avr_loss=0.0646, lr=2e-5]steps:  16%|█▌        | 23/144 [00:27<02:23,  1.19s/it, avr_loss=0.062, lr=2e-5] steps:  17%|█▋        | 25/144 [00:28<02:14,  1.13s/it, avr_loss=0.0619, lr=2e-5]steps:  19%|█▉        | 27/144 [00:29<02:06,  1.08s/it, avr_loss=0.0594, lr=2e-5]steps:  20%|██        | 29/144 [00:30<01:59,  1.04s/it, avr_loss=0.058, lr=2e-5] steps:  21%|██        | 30/144 [00:30<01:56,  1.03s/it, avr_loss=0.058, lr=2e-5]steps:  22%|██▏       | 32/144 [00:31<01:51,  1.01it/s, avr_loss=0.0608, lr=2e-5]steps:  24%|██▎       | 34/144 [00:32<01:45,  1.04it/s, avr_loss=0.0632, lr=2e-5]steps:  25%|██▌       | 36/144 [00:33<01:41,  1.07it/s, avr_loss=0.065, lr=2e-5] 
+epoch 2/4
+
+2026-07-31 00:16:30 INFO     epoch is incremented. current_epoch: 0, base.py:335
+                             epoch: 2                                           
+steps:  26%|██▌       | 37/144 [00:34<01:39,  1.08it/s, avr_loss=0.0633, lr=2e-5]steps:  27%|██▋       | 39/144 [00:35<01:35,  1.10it/s, avr_loss=0.0633, lr=2e-5]steps:  28%|██▊       | 41/144 [00:36<01:31,  1.13it/s, avr_loss=0.0637, lr=2e-5]steps:  30%|██▉       | 43/144 [00:37<01:27,  1.15it/s, avr_loss=0.0654, lr=2e-5]steps:  31%|███▏      | 45/144 [00:38<01:24,  1.18it/s, avr_loss=0.0656, lr=2e-5]steps:  33%|███▎      | 47/144 [00:39<01:20,  1.20it/s, avr_loss=0.065, lr=2e-5] steps:  34%|███▍      | 49/144 [00:40<01:17,  1.22it/s, avr_loss=0.0651, lr=2e-5]steps:  35%|███▌      | 51/144 [00:41<01:15,  1.24it/s, avr_loss=0.0655, lr=2e-5]steps:  37%|███▋      | 53/144 [00:42<01:12,  1.26it/s, avr_loss=0.0632, lr=2e-5]steps:  38%|███▊      | 55/144 [00:43<01:09,  1.28it/s, avr_loss=0.0635, lr=2e-5]steps:  40%|███▉      | 57/144 [00:44<01:07,  1.29it/s, avr_loss=0.0629, lr=2e-5]steps:  41%|████      | 59/144 [00:45<01:04,  1.31it/s, avr_loss=0.0587, lr=2e-5]steps:  42%|████▏     | 61/144 [00:46<01:02,  1.32it/s, avr_loss=0.0549, lr=2e-5]steps:  44%|████▍     | 63/144 [00:47<01:00,  1.34it/s, avr_loss=0.0525, lr=2e-5]steps:  45%|████▌     | 65/144 [00:48<00:58,  1.35it/s, avr_loss=0.0504, lr=2e-5]steps:  47%|████▋     | 67/144 [00:48<00:56,  1.37it/s, avr_loss=0.0487, lr=2e-5]steps:  48%|████▊     | 69/144 [00:49<00:54,  1.38it/s, avr_loss=0.0466, lr=2e-5]steps:  49%|████▉     | 71/144 [00:50<00:52,  1.39it/s, avr_loss=0.0453, lr=2e-5]steps:  50%|█████     | 72/144 [00:51<00:51,  1.40it/s, avr_loss=0.0453, lr=2e-5]
+saving checkpoint: output/ckpt/anima-men测试/anima-men测试-000002.safetensors
+
+saving checkpoint: output/ckpt/anima-men测试-checkpoint.safetensors
+2026-07-31 00:16:49 INFO                                      checkpoints.py:175
+                    INFO     saving checkpoint state to       checkpoints.py:176
+                             output/ckpt/anima-men测试-checkp                   
+                             oint-state (overwriting)                           
+                    INFO     [RANK 0] Saving current state   accelerator.py:3649
+                             to                                                 
+                             output/ckpt/anima-men测试-check                    
+                             point-state                                        
+                    INFO     save train state to              checkpoints.py:290
+                             output/ckpt/anima-men测试-checkp                   
+                             oint-state/train_state.json at                     
+                             epoch 2 step 72                                    
+                    INFO     [RANK 0] Model weights saved   checkpointing.py:115
+                             in                                                 
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/model.safetensors                     
+2026-07-31 00:16:50 INFO     [RANK 0] Optimizer state saved checkpointing.py:122
+                             in                                                 
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/optimizer.bin                         
+                    INFO     [RANK 0] Scheduler state saved checkpointing.py:129
+                             in                                                 
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/scheduler.bin                         
+                    INFO     [RANK 0] Sampler state for     checkpointing.py:146
+                             dataloader 0 saved in                              
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/sampler.bin                           
+                    INFO     [RANK 0] Sampler state for     checkpointing.py:146
+                             dataloader 1 saved in                              
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/sampler_1.bin                         
+                    INFO     [RANK 0] Gradient scaler state checkpointing.py:153
+                             saved in                                           
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/scaler.pt                             
+                    INFO     [RANK 0] Random states saved   checkpointing.py:179
+                             in                                                 
+                             output/ckpt/anima-men测试-chec                     
+                             kpoint-state/random_states_0.p                     
+                             kl                                                 
+                    INFO     Generating sample images at step   training.py:1009
+                             72                                                 
+                    WARNING  Skipping sample prompt at          training.py:1187
+                             1024x1024 (4096 tokens): outside                   
+                             the compiled dynamic-seq token                     
+                             range (1024, 2196). The compile                    
+                             budget covers the training buckets                 
+                             plus the sample prompts present at                 
+                             startup; to sample at this                         
+                             resolution, restart training with                  
+                             it in the prompt file, lower                       
+                             --w/--h, or disable torch_compile.                 
+
+epoch 3/4
+
+                    INFO     epoch is incremented. current_epoch: 0, base.py:335
+                             epoch: 3                                           
+steps:  51%|█████     | 73/144 [00:54<00:52,  1.34it/s, avr_loss=0.044, lr=2e-5] steps:  52%|█████▏    | 75/144 [00:55<00:50,  1.35it/s, avr_loss=0.0441, lr=2e-5]steps:  53%|█████▎    | 76/144 [00:55<00:50,  1.36it/s, avr_loss=0.0441, lr=2e-5]steps:  54%|█████▍    | 78/144 [00:56<00:48,  1.37it/s, avr_loss=0.0454, lr=2e-5]steps:  56%|█████▌    | 80/144 [00:57<00:46,  1.38it/s, avr_loss=0.0446, lr=2e-5]steps:  57%|█████▋    | 82/144 [00:58<00:44,  1.39it/s, avr_loss=0.048, lr=2e-5] steps:  58%|█████▊    | 84/144 [00:59<00:42,  1.41it/s, avr_loss=0.0482, lr=2e-5]steps:  60%|█████▉    | 86/144 [01:00<00:40,  1.42it/s, avr_loss=0.0482, lr=2e-5]steps:  61%|██████    | 88/144 [01:01<00:39,  1.43it/s, avr_loss=0.0484, lr=2e-5]steps:  62%|██████▎   | 90/144 [01:02<00:37,  1.44it/s, avr_loss=0.0476, lr=2e-5]steps:  64%|██████▍   | 92/144 [01:03<00:35,  1.44it/s, avr_loss=0.0487, lr=2e-5]steps:  65%|██████▌   | 94/144 [01:04<00:34,  1.45it/s, avr_loss=0.0474, lr=2e-5]steps:  67%|██████▋   | 96/144 [01:05<00:32,  1.46it/s, avr_loss=0.0474, lr=2e-5]steps:  68%|██████▊   | 98/144 [01:06<00:31,  1.47it/s, avr_loss=0.0487, lr=2e-5]steps:  69%|██████▉   | 100/144 [01:07<00:29,  1.48it/s, avr_loss=0.0485, lr=2e-5]steps:  71%|███████   | 102/144 [01:08<00:28,  1.49it/s, avr_loss=0.0484, lr=2e-5]steps:  72%|███████▏  | 104/144 [01:09<00:26,  1.50it/s, avr_loss=0.0482, lr=2e-5]steps:  74%|███████▎  | 106/144 [01:10<00:25,  1.50it/s, avr_loss=0.0484, lr=2e-5]steps:  74%|███████▍  | 107/144 [01:10<00:24,  1.51it/s, avr_loss=0.0482, lr=2e-5]steps:  75%|███████▌  | 108/144 [01:11<00:23,  1.51it/s, avr_loss=0.0482, lr=2e-5]
+epoch 4/4
+
+2026-07-31 00:17:08 INFO     epoch is incremented. current_epoch: 0, base.py:335
+                             epoch: 4                                           
+steps:  76%|███████▌  | 109/144 [01:12<00:23,  1.51it/s, avr_loss=0.0487, lr=2e-5]steps:  77%|███████▋  | 111/144 [01:13<00:21,  1.52it/s, avr_loss=0.0478, lr=2e-5]steps:  78%|███████▊  | 113/144 [01:14<00:20,  1.53it/s, avr_loss=0.0461, lr=2e-5]steps:  80%|███████▉  | 115/144 [01:15<00:18,  1.53it/s, avr_loss=0.0471, lr=2e-5]steps:  81%|████████▏ | 117/144 [01:16<00:17,  1.54it/s, avr_loss=0.0448, lr=2e-5]steps:  83%|████████▎ | 119/144 [01:16<00:16,  1.55it/s, avr_loss=0.0445, lr=2e-5]steps:  84%|████████▍ | 121/144 [01:17<00:14,  1.55it/s, avr_loss=0.0438, lr=2e-5]steps:  85%|████████▍ | 122/144 [01:18<00:14,  1.56it/s, avr_loss=0.0438, lr=2e-5]steps:  86%|████████▌ | 124/144 [01:19<00:12,  1.56it/s, avr_loss=0.0449, lr=2e-5]steps:  88%|████████▊ | 126/144 [01:20<00:11,  1.57it/s, avr_loss=0.0452, lr=2e-5]steps:  88%|████████▊ | 127/144 [01:20<00:10,  1.57it/s, avr_loss=0.0446, lr=2e-5]steps:  90%|████████▉ | 129/144 [01:21<00:09,  1.58it/s, avr_loss=0.0437, lr=2e-5]steps:  91%|█████████ | 131/144 [01:22<00:08,  1.58it/s, avr_loss=0.0447, lr=2e-5]steps:  92%|█████████▏| 133/144 [01:23<00:06,  1.59it/s, avr_loss=0.0437, lr=2e-5]steps:  94%|█████████▍| 135/144 [01:24<00:05,  1.59it/s, avr_loss=0.0436, lr=2e-5]steps:  95%|█████████▌| 137/144 [01:25<00:04,  1.60it/s, avr_loss=0.0434, lr=2e-5]steps:  97%|█████████▋| 139/144 [01:26<00:03,  1.60it/s, avr_loss=0.0433, lr=2e-5]steps:  98%|█████████▊| 141/144 [01:27<00:01,  1.61it/s, avr_loss=0.0436, lr=2e-5]steps:  99%|█████████▉| 143/144 [01:28<00:00,  1.61it/s, avr_loss=0.0442, lr=2e-5]steps: 100%|██████████| 144/144 [01:29<00:00,  1.61it/s, avr_loss=0.0442, lr=2e-5]2026-07-31 00:17:25 INFO     Generating sample images at step   training.py:1009
+                             144                                                
+                    WARNING  Skipping sample prompt at          training.py:1187
+                             1024x1024 (4096 tokens): outside                   
+                             the compiled dynamic-seq token                     
+                             range (1024, 2196). The compile                    
+                             budget covers the training buckets                 
+                             plus the sample prompts present at                 
+                             startup; to sample at this                         
+                             resolution, restart training with                  
+                             it in the prompt file, lower                       
+                             --w/--h, or disable torch_compile.                 
+2026-07-31 00:17:29 INFO     training complete, removing      checkpoints.py:459
+                             checkpoint state:                                  
+                             output/ckpt/anima-men测试-checkp                   
+                             oint-state                                         
+                    INFO     removing checkpoint weights:     checkpoints.py:468
+                             output/ckpt/anima-men测试-checkp                   
+                             oint.safetensors                                   
+
+saving checkpoint: output/ckpt/anima-men测试.safetensors
+                    INFO     model saved.                     checkpoints.py:478
+steps: 100%|██████████| 144/144 [01:36<00:00,  1.50it/s, avr_loss=0.0441, lr=2e-5]

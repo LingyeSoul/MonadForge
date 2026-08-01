@@ -251,6 +251,16 @@ def test_attention_modes_match_training_and_inference_parsers():
     assert webui_modes == training_modes == inference_modes
 
 
+def test_v100_flash_fields_are_grouped_and_typed_for_webui():
+    result = config_service.build_merged_config("lora", "default", lang="en")
+    fields = {field["key"]: field for field in result["fields"]}
+
+    assert fields["compile_dynamic_seq"]["group"] == "Performance"
+    assert config_service._K2G["v100_flash_stability"] == "Performance"
+    assert config_service._K2G["debug_finite_checks"] == "Performance"
+    assert _SELECT_OPTIONS["v100_flash_stability"] == ["off", "hybrid", "safe"]
+
+
 def test_no_pruned_optimizers_offered():
     offered = set(_SELECT_OPTIONS["optimizer_type"])
     leaked = offered & _PRUNED_OPTIMIZERS

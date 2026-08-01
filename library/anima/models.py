@@ -28,7 +28,17 @@ def _finite_checks_enabled(default: bool = False) -> bool:
     return bool(default)
 
 
-def _assert_finite_tensor(tensor: torch.Tensor, label: str) -> None:
+def _assert_finite_tensor(
+    tensor: torch.Tensor, label: str, *, block: nn.Module | None = None
+) -> None:
+    if torch.compiler.is_compiling():
+        # Keep the assertion in the compiled graph.  The eager diagnostic below
+        # indexes the tensor and converts values to Python scalars, which makes
+        # Dynamo resume at a fixed sequence length and drops mark_dynamic.
+        torch._assert_async(torch.isfinite(tensor).all(), label)
+        return
+    if block is not None:
+        label = f"block={getattr(block, '_block_index', '?')}.{label}"
     if torch.isfinite(tensor.detach()).all():
         return
     finite = torch.isfinite(tensor.detach())
@@ -1363,7 +1373,8 @@ class Block(nn.Module):
         if _finite_checks_enabled(attn_params.debug_finite_checks):
             _assert_finite_tensor(
                 x_B_T_H_W_D,
-                f"block={getattr(self, '_block_index', '?')}.self_attn_residual",
+                "self_attn_residual",
+                block=self,
             )
 
         normalized_x = _adaln_fn(
@@ -1384,7 +1395,8 @@ class Block(nn.Module):
         if _finite_checks_enabled(attn_params.debug_finite_checks):
             _assert_finite_tensor(
                 x_B_T_H_W_D,
-                f"block={getattr(self, '_block_index', '?')}.cross_attn_residual",
+                "cross_attn_residual",
+                block=self,
             )
 
         normalized_x = _adaln_fn(
@@ -1395,7 +1407,8 @@ class Block(nn.Module):
         if _finite_checks_enabled(attn_params.debug_finite_checks):
             _assert_finite_tensor(
                 x_B_T_H_W_D,
-                f"block={getattr(self, '_block_index', '?')}.mlp_residual",
+                "mlp_residual",
+                block=self,
             )
 
         return x_B_T_H_W_D
@@ -2519,9 +2532,8 @@ class LLMAdapterAttention(nn.Module):
                 key_states.transpose(1, 2), cos, sin
             ).transpose(1, 2)
 
-        can_use_flash = (
-            attention_dispatch.flash_attn_varlen_func is not None
-            and query_states.dtype in (torch.float16, torch.bfloat16)
+        can_use_flash = attention_dispatch.flash_attn_available_for_dtype(
+            query_states.dtype
         )
 
         if can_use_flash and q_mask is None and kv_mask is None:

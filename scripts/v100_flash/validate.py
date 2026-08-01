@@ -1,0 +1,705 @@
+"""Run the strict acceptance suite for the installed V100 cp313 wheel."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import statistics
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from bench.v100_flash.replay_capture import DEFAULT_FULL_REPEATS
+from scripts.v100_flash import (
+    CAPTURE_SHA256,
+    CROSSATTN_SHA256,
+    DIT_SHA256,
+    PINNED_COMMIT,
+    ROOT,
+)
+from scripts.v100_flash.install import (
+    command_string,
+    executable_path,
+    run_logged,
+    sha256_file,
+    write_json,
+)
+
+DEFAULT_DIT = Path(
+    "/home/buxinzi/Projects/toolbox/comfyui-image/ComfyUI/models/"
+    "diffusion_models/Anima/anima-base-v1.0.safetensors"
+)
+DEFAULT_CAPTURE = ROOT / "output/v100-flash-validation/downloads/first_failure.pt"
+DEFAULT_CROSSATTN = ROOT / "library/anima/assets/_anima_uncond_te.safetensors"
+DEFAULT_BASELINE = (
+    ROOT / "output/v100-flash-validation/results/main-c91cad4/tail-matrix.json"
+)
+
+FLASH_PRESET = """mixed_precision = \"fp16\"
+save_precision = \"fp16\"
+attn_mode = \"flash\"
+v100_flash_stability = \"off\"
+debug_finite_checks = false
+torch_compile = true
+compile_dynamic_seq = true
+gradient_checkpointing = true
+unsloth_offload_checkpointing = false
+blocks_to_swap = 8
+"""
+
+SDPA_PRESET = FLASH_PRESET.replace('attn_mode = "flash"', 'attn_mode = "torch"')
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _require_sha(path: Path, expected: str, label: str) -> str:
+    if not path.is_file():
+        raise RuntimeError(f"{label} not found: {path}")
+    actual = sha256_file(path)
+    if actual != expected:
+        raise RuntimeError(
+            f"{label} SHA-256 mismatch: {actual}, expected {expected} ({path})"
+        )
+    return actual
+
+
+def _benchmarks_by_length(report: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {int(row["length"]): row for row in report.get("aligned_benchmarks", [])}
+
+
+def compare_aligned_benchmarks(
+    candidate: dict[str, Any], baseline: dict[str, Any], threshold: float = 5.0
+) -> dict[str, Any]:
+    current = _benchmarks_by_length(candidate)
+    previous = _benchmarks_by_length(baseline)
+    rows: list[dict[str, Any]] = []
+    for length in (4112, 4128):
+        if length not in current or length not in previous:
+            raise RuntimeError(f"aligned benchmark {length} missing")
+        row: dict[str, Any] = {"length": length}
+        for key in (
+            "forward_median_ms",
+            "backward_median_ms",
+            "peak_allocated_mib",
+            "peak_reserved_mib",
+        ):
+            old = float(previous[length][key])
+            new = float(current[length][key])
+            row[key] = {
+                "baseline": old,
+                "candidate": new,
+                "delta_percent": ((new / old) - 1.0) * 100.0,
+            }
+        rows.append(row)
+
+    metrics = (
+        "forward_median_ms",
+        "backward_median_ms",
+        "peak_allocated_mib",
+        "peak_reserved_mib",
+    )
+    material = {
+        metric: all(row[metric]["delta_percent"] > threshold for row in rows)
+        for metric in metrics
+    }
+    return {
+        "threshold_percent": threshold,
+        "rows": rows,
+        "material_regressions": material,
+        "accepted": not any(material.values()),
+    }
+
+
+def compare_anima_steps(
+    flash_report: dict[str, Any], sdpa_report: dict[str, Any]
+) -> dict[str, Any]:
+    def grouped(report: dict[str, Any]) -> dict[int, list[float]]:
+        values: dict[int, list[float]] = {}
+        for row in report.get("steps", []):
+            if row.get("passed"):
+                values.setdefault(int(row["tokens"]), []).append(
+                    float(row["elapsed_ms"])
+                )
+        return values
+
+    flash = grouped(flash_report)
+    sdpa = grouped(sdpa_report)
+    rows: list[dict[str, Any]] = []
+    for tokens in sorted(set(flash) & set(sdpa)):
+        flash_median = statistics.median(flash[tokens])
+        sdpa_median = statistics.median(sdpa[tokens])
+        rows.append(
+            {
+                "tokens": tokens,
+                "flash_median_ms": flash_median,
+                "sdpa_median_ms": sdpa_median,
+                "flash_vs_sdpa_percent": ((flash_median / sdpa_median) - 1.0) * 100.0,
+            }
+        )
+    return {
+        "rows": rows,
+        "flash_peak_allocated_mib": flash_report.get("peak_allocated_mib"),
+        "flash_peak_reserved_mib": flash_report.get("peak_reserved_mib"),
+        "sdpa_peak_allocated_mib": sdpa_report.get("peak_allocated_mib"),
+        "sdpa_peak_reserved_mib": sdpa_report.get("peak_reserved_mib"),
+    }
+
+
+def _preset_paths(root: Path = ROOT) -> tuple[Path, Path]:
+    directory = root / "configs/custom/presets"
+    return directory / "V100_flash.toml", directory / "V100_sdpa.toml"
+
+
+def _write_presets(root: Path = ROOT) -> list[str]:
+    flash, sdpa = _preset_paths(root)
+    directory = flash.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    for path, contents in ((flash, FLASH_PRESET), (sdpa, SDPA_PRESET)):
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(contents, encoding="utf-8")
+        temporary.replace(path)
+    return [str(flash), str(sdpa)]
+
+
+def _remove_presets(root: Path = ROOT) -> list[str]:
+    removed: list[str] = []
+    for path in _preset_paths(root):
+        if path.is_file():
+            path.unlink()
+            removed.append(str(path))
+    return removed
+
+
+def _write_report(path: Path, report: dict[str, Any]) -> None:
+    performance = report.get("performance", {})
+    material = performance.get("aligned", {}).get("material_regressions", {})
+    result_files = report.get("result_files", {})
+    if not result_files and report.get("run_dir"):
+        results_dir = Path(report["run_dir"]) / "results"
+        result_files = {
+            "capture_replay": str(results_dir / "replay.json"),
+            "tail_matrix": str(results_dir / "tail-matrix.json"),
+            "anima_eager_flash": str(results_dir / "anima-eager-flash.json"),
+            "anima_compiled_flash": str(results_dir / "anima-compiled-flash.json"),
+            "anima_compiled_sdpa": str(results_dir / "anima-compiled-sdpa.json"),
+        }
+
+    def result(name: str) -> dict[str, Any]:
+        result_path = result_files.get(name)
+        if not result_path or not Path(result_path).is_file():
+            return {}
+        return _load_json(Path(result_path))
+
+    lines = [
+        "# MonadForge V100 FlashAttention cp313 validation",
+        "",
+        f"- Status: `{report['status']}`",
+        f"- Source: `{report['source_commit']}`",
+        f"- Wheel SHA-256: `{report['wheel_sha256']}`",
+        f"- Extension SHA-256: `{report['extension_sha256']}`",
+        f"- Capture SHA-256: `{report['capture_sha256']}`",
+        f"- Python: `{report['environment']['python']}`",
+        f"- Torch: `{report['environment']['torch']}`",
+        f"- GPU: `{report['environment']['gpu']}`",
+        "",
+        "## Gates",
+        "",
+    ]
+    for gate in report.get("gates", []):
+        lines.append(f"- `{gate['name']}`: `{gate['status']}` ({gate['log']})")
+
+    replay = result("capture_replay")
+    if replay:
+        lines += [
+            "",
+            "## Capture replay",
+            "",
+            f"- Full-capture repeats per Flash path: `{replay.get('full_repeats')}`",
+            f"- Accepted: `{replay.get('accepted')}`",
+            f"- Kernel numeric accepted: `{replay.get('kernel_numeric_accepted')}`",
+            (
+                "- Compiled integration accepted: "
+                f"`{replay.get('compiled_integration_accepted')}`"
+            ),
+        ]
+        for name, rows in replay.get("repeat_replays", {}).items():
+            candidate_errors = [
+                row.get("vs_fp32_tolerance", {}).get("candidate_max_abs")
+                for row in rows
+                if row.get("vs_fp32_tolerance", {}).get("candidate_max_abs") is not None
+            ]
+            failed = [
+                row.get("repeat")
+                for row in rows
+                if row.get("vs_fp32_tolerance", {}).get("passed") is False
+            ]
+            maximum = max(candidate_errors) if candidate_errors else None
+            lines.append(
+                f"- `{name}`: max error `{maximum}`, failed repeats `{failed}`"
+            )
+        lines.append(
+            "- Upstream full-capture forward limit: "
+            f"`{next((row.get('vs_fp32_tolerance', {}).get('limit') for rows in replay.get('repeat_replays', {}).values() for row in rows if row.get('vs_fp32_tolerance', {}).get('limit') is not None), None)}`"
+        )
+        lines.append(
+            f"- Prefixes tested: `{len(replay.get('prefix_sweep', []))}` (4112 through 4128)"
+        )
+        compiled_rows = replay.get("repeat_replays", {}).get(
+            "compat_flash_compiled", []
+        )
+        if replay.get("compiled_fullgraph") and all(
+            row.get("ok") for row in compiled_rows
+        ):
+            lines.append(
+                "- Compiled fullgraph execution completed without a graph break; "
+                "its rejection is numerical."
+            )
+        for failure in replay.get("acceptance_failures", []):
+            lines.append(f"- Failure: {failure}")
+
+    tail = result("tail_matrix")
+    if tail:
+        matrix = tail.get("matrix", {})
+        lines += [
+            "",
+            "## Dense-tail matrix",
+            "",
+            (
+                f"- `{matrix.get('passed_count')}/{matrix.get('case_count')}` cases passed; "
+                f"failures: `{matrix.get('failed_count')}`"
+            ),
+            "- Head dimensions: `16/32/64/128/256`; self/cross, causal/non-causal, forward/backward.",
+        ]
+
+    anima_names = (
+        ("anima_eager_flash", "eager Flash"),
+        ("anima_compiled_flash", "compiled Flash"),
+        ("anima_compiled_sdpa", "compiled Torch SDPA"),
+    )
+    anima_results = [(label, result(name)) for name, label in anima_names]
+    if any(payload for _label, payload in anima_results):
+        lines += ["", "## Real Anima LoRA", ""]
+        for label, payload in anima_results:
+            if not payload:
+                continue
+            steps = payload.get("steps", [])
+            passed_steps = sum(bool(step.get("passed")) for step in steps)
+            covered = sorted(
+                {step.get("tokens") for step in steps if step.get("passed")}
+            )
+            lines.append(
+                f"- {label}: `{passed_steps}/{len(steps)}` steps passed; tokens `{covered}`; "
+                f"peak allocated `{payload.get('peak_allocated_mib')}` MiB"
+            )
+
+    lines += [
+        "",
+        "## Performance",
+        "",
+        f"Material regressions over 5% on both aligned lengths: `{material}`.",
+    ]
+    for row in performance.get("aligned", {}).get("rows", []):
+        lines.append(
+            f"- `{row['length']}`: forward `{row['forward_median_ms']['delta_percent']:.3f}%`, "
+            f"backward `{row['backward_median_ms']['delta_percent']:.3f}%`, "
+            f"peak allocated `{row['peak_allocated_mib']['delta_percent']:.3f}%`"
+        )
+    lines += [
+        "",
+        "## Decision",
+        "",
+        f"- Validation report status: `{report['status']}`",
+        (
+            "- V100 Flash presets were generated."
+            if report["status"] == "validated"
+            else "- V100 Flash/SDPA presets were not generated or were revoked."
+        ),
+    ]
+    for failure in report.get("evaluation_failures", []):
+        lines.append(f"- Acceptance failure: {failure}")
+    lines += [
+        "- No padding, nan_to_num, softmax-scale override, or global FP16 accumulation change was used.",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--python", type=Path, default=ROOT / ".venv/bin/python")
+    parser.add_argument(
+        "--manifest", type=Path, default=ROOT / "output/v100-flash-install/current.json"
+    )
+    parser.add_argument("--capture", type=Path, default=DEFAULT_CAPTURE)
+    parser.add_argument("--dit", type=Path, default=DEFAULT_DIT)
+    parser.add_argument("--crossattn", type=Path, default=DEFAULT_CROSSATTN)
+    parser.add_argument("--performance-baseline", type=Path, default=DEFAULT_BASELINE)
+    parser.add_argument(
+        "--output-root", type=Path, default=ROOT / "output/v100-flash-install"
+    )
+    parser.add_argument("--blocks-to-swap", type=int, default=8)
+    args = parser.parse_args()
+
+    python = executable_path(args.python)
+    manifest_path = args.manifest.resolve()
+    install_manifest = _load_json(manifest_path)
+    if install_manifest.get("status") not in {
+        "installed_unvalidated",
+        "validation_failed",
+        "validated",
+    }:
+        raise RuntimeError(
+            f"install manifest is not ready for validation: {install_manifest.get('status')}"
+        )
+    if install_manifest.get("source", {}).get("commit") != PINNED_COMMIT:
+        raise RuntimeError("installed source commit does not match the validation pin")
+    installed_python = Path(
+        install_manifest.get("environment", {}).get("python_executable", "")
+    )
+    if not installed_python.is_file() or installed_python.resolve() != python.resolve():
+        raise RuntimeError(
+            f"validation interpreter {python} does not match installed interpreter "
+            f"{installed_python}"
+        )
+
+    wheel_sha = install_manifest["wheel"]["sha256"]
+    _require_sha(
+        Path(install_manifest["wheel"]["path"]),
+        wheel_sha,
+        "built wheel",
+    )
+    extension_path = Path(install_manifest["installed"]["extension_path"])
+    extension_sha = _require_sha(
+        extension_path,
+        install_manifest["installed"]["extension_sha256"],
+        "installed extension",
+    )
+    capture_sha = _require_sha(args.capture.resolve(), CAPTURE_SHA256, "capture")
+    dit_sha = _require_sha(args.dit.resolve(), DIT_SHA256, "Anima DiT")
+    crossattn_sha = _require_sha(
+        args.crossattn.resolve(), CROSSATTN_SHA256, "cross-attention sidecar"
+    )
+    if not args.performance_baseline.is_file():
+        raise RuntimeError(
+            f"performance baseline not found: {args.performance_baseline}"
+        )
+    performance_baseline_sha = sha256_file(args.performance_baseline.resolve())
+
+    run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    run_dir = args.output_root.resolve() / "validation" / run_id
+    logs_dir = run_dir / "logs"
+    results_dir = run_dir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    report_path = run_dir / "validation.json"
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "status": "running",
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "invocation": command_string([str(python), *sys.argv]),
+        "source_commit": PINNED_COMMIT,
+        "wheel_sha256": wheel_sha,
+        "extension_sha256": extension_sha,
+        "capture_sha256": capture_sha,
+        "dit_sha256": dit_sha,
+        "crossattn_sha256": crossattn_sha,
+        "performance_baseline": str(args.performance_baseline.resolve()),
+        "performance_baseline_sha256": performance_baseline_sha,
+        "environment": install_manifest["environment"],
+        "gates": [],
+    }
+    report["revoked_presets"] = _remove_presets()
+    write_json(report_path, report)
+
+    # A new validation supersedes any earlier approval. Keep the installation
+    # usable, but do not expose a Flash preset while the current gates are running.
+    install_manifest["status"] = "installed_unvalidated"
+    install_manifest["validation"] = {
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "report": str(report_path),
+        "status": "running",
+    }
+    write_json(manifest_path, install_manifest)
+    source_manifest = Path(install_manifest["run_dir"]) / "manifest.json"
+    if source_manifest.resolve() != manifest_path:
+        write_json(source_manifest, install_manifest)
+
+    common = [
+        "--source-sha",
+        PINNED_COMMIT,
+        "--wheel-sha",
+        wheel_sha,
+        "--expect",
+        "fixed",
+    ]
+
+    def gate(name: str, command: list[str]) -> bool:
+        log = logs_dir / f"{name}.log"
+        print(f"START {name}: {log}", flush=True)
+        try:
+            run_logged(
+                command,
+                log_path=log,
+                env={**os.environ, "ANIMA_TEST_GPU": "1"},
+            )
+        except Exception as exc:  # noqa: BLE001 - collect every serial gate result.
+            report["gates"].append(
+                {
+                    "name": name,
+                    "status": "failed",
+                    "log": str(log),
+                    "error": str(exc),
+                }
+            )
+            write_json(report_path, report)
+            print(f"FAIL {name}: {exc}", flush=True)
+            return False
+        report["gates"].append({"name": name, "status": "passed", "log": str(log)})
+        write_json(report_path, report)
+        print(f"PASS {name}", flush=True)
+        return True
+
+    try:
+        gate(
+            "pytest",
+            [
+                str(python),
+                "-m",
+                "pytest",
+                "-q",
+                "tests/test_v100_flash_install.py",
+                "tests/test_v100_flash_stability.py",
+                "tests/test_flash_attn_v100_compile.py",
+                "tests/test_config_service.py",
+            ],
+        )
+        replay = results_dir / "replay.json"
+        gate(
+            "capture-replay",
+            [
+                str(python),
+                "-m",
+                "bench.v100_flash.replay_capture",
+                str(args.capture.resolve()),
+                "--output",
+                str(replay),
+                "--candidate",
+                "main-c91cad4-cp313",
+                "--compiled-fullgraph",
+                "--full-repeats",
+                str(DEFAULT_FULL_REPEATS),
+                *common,
+            ],
+        )
+        tail = results_dir / "tail-matrix.json"
+        gate(
+            "tail-matrix",
+            [
+                str(python),
+                "-m",
+                "bench.v100_flash.run_tail_matrix",
+                "--output",
+                str(tail),
+                "--progress-jsonl",
+                str(results_dir / "tail-matrix-progress.jsonl"),
+                "--candidate",
+                "main-c91cad4-cp313",
+                "--source-sha",
+                PINNED_COMMIT,
+                "--wheel-sha",
+                wheel_sha,
+                "--expect-fixed",
+            ],
+        )
+
+        def anima_command(
+            *, output: Path, candidate: str, attn_mode: str, compile_blocks: bool
+        ) -> list[str]:
+            command = [
+                str(python),
+                "-m",
+                "bench.v100_flash.run_anima_smoke",
+                "--dit",
+                str(args.dit.resolve()),
+                "--crossattn",
+                str(args.crossattn.resolve()),
+                "--output",
+                str(output),
+                "--candidate",
+                candidate,
+                "--dit-sha",
+                dit_sha,
+                "--attn-mode",
+                attn_mode,
+                "--blocks-to-swap",
+                str(args.blocks_to_swap),
+                *common,
+            ]
+            if compile_blocks:
+                command += ["--compile", "--compile-dynamic-seq"]
+            return command
+
+        anima_eager = results_dir / "anima-eager-flash.json"
+        gate(
+            "anima-eager-flash",
+            anima_command(
+                output=anima_eager,
+                candidate="main-c91cad4-cp313-eager-flash",
+                attn_mode="flash",
+                compile_blocks=False,
+            ),
+        )
+        anima_compiled_flash = results_dir / "anima-compiled-flash.json"
+        gate(
+            "anima-compiled-flash",
+            anima_command(
+                output=anima_compiled_flash,
+                candidate="main-c91cad4-cp313-compiled-flash",
+                attn_mode="flash",
+                compile_blocks=True,
+            ),
+        )
+        anima_compiled_sdpa = results_dir / "anima-compiled-sdpa.json"
+        gate(
+            "anima-compiled-sdpa",
+            anima_command(
+                output=anima_compiled_sdpa,
+                candidate="torch-sdpa-cp313-compiled",
+                attn_mode="torch",
+                compile_blocks=True,
+            ),
+        )
+
+        result_paths = {
+            "capture_replay": replay,
+            "tail_matrix": tail,
+            "anima_eager_flash": anima_eager,
+            "anima_compiled_flash": anima_compiled_flash,
+            "anima_compiled_sdpa": anima_compiled_sdpa,
+        }
+        report["result_files"] = {
+            name: str(result_path) for name, result_path in result_paths.items()
+        }
+        result_reports: dict[str, dict[str, Any]] = {}
+        evaluation_failures: list[str] = []
+        for name, path in result_paths.items():
+            if path.is_file():
+                result_reports[name] = _load_json(path)
+            else:
+                result_reports[name] = {}
+                evaluation_failures.append(f"{name} did not write {path}")
+
+        accepted_reports = {
+            name: result.get("accepted") for name, result in result_reports.items()
+        }
+        rejected = [
+            name for name, accepted in accepted_reports.items() if accepted is not True
+        ]
+        if rejected:
+            evaluation_failures.append(f"result files rejected: {rejected}")
+
+        replay_report = result_reports["capture_replay"]
+        if replay_report and not replay_report.get("environment", {}).get(
+            "v100_compile_compat_active"
+        ):
+            evaluation_failures.append(
+                "capture replay did not use the V100 compile compatibility layer"
+            )
+
+        performance: dict[str, Any] = {}
+        tail_report = result_reports["tail_matrix"]
+        if tail_report:
+            try:
+                aligned = compare_aligned_benchmarks(
+                    tail_report,
+                    _load_json(args.performance_baseline.resolve()),
+                )
+                performance["aligned"] = aligned
+                if not aligned["accepted"]:
+                    evaluation_failures.append(
+                        "material aligned regression detected: "
+                        f"{aligned['material_regressions']}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - retain all later gate results.
+                performance["aligned"] = {"error": str(exc), "accepted": False}
+                evaluation_failures.append(
+                    f"aligned performance comparison failed: {exc}"
+                )
+
+        compiled_flash_report = result_reports["anima_compiled_flash"]
+        compiled_sdpa_report = result_reports["anima_compiled_sdpa"]
+        if compiled_flash_report and compiled_sdpa_report:
+            performance["compiled_anima_flash_vs_sdpa"] = compare_anima_steps(
+                compiled_flash_report, compiled_sdpa_report
+            )
+
+        failed_gates = [
+            gate_result["name"]
+            for gate_result in report["gates"]
+            if gate_result["status"] != "passed"
+        ]
+        if failed_gates:
+            evaluation_failures.append(f"failed command gates: {failed_gates}")
+
+        report["results"] = accepted_reports
+        report["performance"] = performance
+        report["evaluation_failures"] = evaluation_failures
+        if evaluation_failures:
+            raise RuntimeError("; ".join(evaluation_failures))
+
+        report["presets"] = _write_presets()
+        report["status"] = "validated"
+        report["completed_at"] = datetime.now(UTC).isoformat()
+        write_json(report_path, report)
+        _write_report(run_dir / "report.md", report)
+
+        install_manifest["status"] = "validated"
+        install_manifest["validation"] = {
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "report": str(report_path),
+            "completed_at": report["completed_at"],
+            "performance": report["performance"],
+            "presets": report["presets"],
+        }
+        write_json(manifest_path, install_manifest)
+        source_manifest = Path(install_manifest["run_dir"]) / "manifest.json"
+        if source_manifest.resolve() != manifest_path:
+            write_json(source_manifest, install_manifest)
+    except Exception as exc:
+        report["revoked_presets"] = sorted(
+            set(report.get("revoked_presets", [])) | set(_remove_presets())
+        )
+        report["status"] = "failed"
+        report["error_type"] = type(exc).__name__
+        report["error"] = str(exc)
+        report["completed_at"] = datetime.now(UTC).isoformat()
+        write_json(report_path, report)
+        _write_report(run_dir / "report.md", report)
+        install_manifest["status"] = "validation_failed"
+        install_manifest["validation"] = {
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "report": str(report_path),
+            "error": str(exc),
+        }
+        write_json(manifest_path, install_manifest)
+        source_manifest = Path(install_manifest["run_dir"]) / "manifest.json"
+        if source_manifest.resolve() != manifest_path:
+            write_json(source_manifest, install_manifest)
+        raise
+
+    print(f"validated manifest: {manifest_path}")
+    print(f"validation report: {report_path}")
+    for preset in report["presets"]:
+        print(f"preset: {preset}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

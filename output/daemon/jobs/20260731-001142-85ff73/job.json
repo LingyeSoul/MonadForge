@@ -1,0 +1,35 @@
+{
+  "id": "20260731-001142-85ff73",
+  "method": "lora-gui",
+  "preset": "",
+  "methods_subdir": null,
+  "config_file": null,
+  "overrides": {},
+  "extra": [],
+  "kind": "command",
+  "argv": [
+    "tasks.py",
+    "lora-gui",
+    "lora"
+  ],
+  "extra_env": {
+    "PRESET": "V100"
+  },
+  "chain_train": null,
+  "chained_job_id": null,
+  "from_chain": false,
+  "state": "done",
+  "submitted_at": 1785427902.5784545,
+  "started_at": 1785427902.623654,
+  "ended_at": 1785428067.652831,
+  "pid": 1508141,
+  "create_time": 1785427902.6,
+  "progress_path": "/home/buxinzi/Projects/toolbox/model-train/MonadForge/output/daemon/jobs/20260731-001142-85ff73/progress.jsonl",
+  "stdout_path": "/home/buxinzi/Projects/toolbox/model-train/MonadForge/output/daemon/jobs/20260731-001142-85ff73/stdout.log",
+  "sample_dir": "/home/buxinzi/Projects/toolbox/model-train/MonadForge/output/daemon/jobs/20260731-001142-85ff73/sample",
+  "ckpt_path": "output/ckpt/anima-torch\u6d4b\u8bd5.safetensors",
+  "rc": 0,
+  "error": null,
+  "status_detail": null,
+  "stop_requested": false
+}

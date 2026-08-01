@@ -128,6 +128,7 @@ _SAMPLE_DECODE_INLINE_CHOICES = ["auto", "true", "false"]
 # 5 LR-scheduler names were pruned from the trainer in commit 772dda7.
 _SELECT_OPTIONS: dict[str, list[str]] = {
     "attn_mode": _ATTN_MODES,
+    "v100_flash_stability": ["off", "hybrid", "safe"],
     "optimizer_type": [
         "AdamW",
         "CAME",
@@ -234,10 +235,13 @@ _GROUPS = {
     },
     "Performance": {
         "attn_mode",
+        "v100_flash_stability",
+        "debug_finite_checks",
         "gradient_checkpointing",
         "unsloth_offload_checkpointing",
         "blocks_to_swap",
         "torch_compile",
+        "compile_dynamic_seq",
         "compile_mode",
         "trim_crossattn_kv",
         "cache_llm_adapter_outputs",
