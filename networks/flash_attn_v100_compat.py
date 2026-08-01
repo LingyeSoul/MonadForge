@@ -365,7 +365,7 @@ class _V100FlashAttnFunc(torch.autograd.Function):
             window_left,
             window_right,
             softcap,
-            return_softmax,
+            return_softmax and dropout_p > 0.0,
         )
         result = out[..., :head_size].permute(0, 2, 1, 3).contiguous()
 

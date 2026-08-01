@@ -182,10 +182,20 @@ fi
 # 6.1 可选：构建并安装固定的 V100 FlashAttention 源码
 # ============================================================
 if [ "${ANIMA_INSTALL_V100_FLASH:-0}" = "1" ]; then
-    V100_FLASH_CUDA_HOME="${V100_FLASH_CUDA_HOME:-output/v100-flash-validation/toolchain/cuda-12.9.1}"
+    V100_FLASH_CUDA_HOME="${V100_FLASH_CUDA_HOME:-${CUDA_HOME:-}}"
+    if [ -z "$V100_FLASH_CUDA_HOME" ]; then
+        for nvcc_candidate in "$(command -v nvcc 2>/dev/null || true)" \
+            /usr/local/cuda-12.9/bin/nvcc /usr/local/cuda/bin/nvcc; do
+            if [ -n "$nvcc_candidate" ] && [ -x "$nvcc_candidate" ]; then
+                V100_FLASH_CUDA_HOME="$(dirname "$(dirname "$(readlink -f "$nvcc_candidate")")")"
+                break
+            fi
+        done
+    fi
+    [ -n "$V100_FLASH_CUDA_HOME" ] || die "无法定位CUDA toolkit；请设置 V100_FLASH_CUDA_HOME"
     say "构建 flash-attention-v100 c91cad40 (cp313) ..."
     python tasks.py v100-flash-install --cuda-home "$V100_FLASH_CUDA_HOME"
-    warn "Flash wheel 已安装但尚未验收；继续运行: make v100-flash-validate"
+    warn "Flash wheel 已安装但尚未验收；按 bench/v100_flash/README.md 传入验收资产"
 else
     say "未安装 V100 FlashAttention（显式启用：ANIMA_INSTALL_V100_FLASH=1）"
 fi

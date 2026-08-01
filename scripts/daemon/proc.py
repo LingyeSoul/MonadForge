@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -130,6 +131,58 @@ def kill_tree(pid: int, *, grace_seconds: float = 5.0) -> None:
     for p in alive:
         try:
             p.kill()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+
+
+def stop_tree_gracefully(pid: int, *, grace_seconds: float = 30.0) -> None:
+    """Interrupt a detached job group, then force-kill survivors after grace.
+
+    Training installs handlers that turn this interrupt into
+    ``KeyboardInterrupt``, giving its deferred-preview ``finally`` block time to
+    run. The force-kill fallback preserves the daemon's queue/GPU guarantee when
+    a native kernel or compiler process does not respond.
+    """
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+
+    family = [parent]
+    try:
+        family.extend(parent.children(recursive=True))
+    except psutil.NoSuchProcess:
+        pass
+
+    interrupted = False
+    try:
+        if sys.platform == "win32":
+            # CREATE_NO_WINDOW processes cannot reliably receive console
+            # control events. The manager writes the training stop-file; its
+            # in-process watcher raises KeyboardInterrupt on the main thread.
+            interrupted = True
+        else:
+            process_group = os.getpgid(pid)
+            if process_group == pid:
+                os.killpg(process_group, signal.SIGINT)
+            else:
+                parent.send_signal(signal.SIGINT)
+            interrupted = True
+    except (OSError, psutil.Error, ValueError):
+        pass
+
+    alive = family
+    if interrupted:
+        _, alive = psutil.wait_procs(family, timeout=grace_seconds)
+    for process in alive:
+        try:
+            process.terminate()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    _, alive = psutil.wait_procs(alive, timeout=5.0)
+    for process in alive:
+        try:
+            process.kill()
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 

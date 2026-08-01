@@ -286,12 +286,14 @@ class JobManager:
 
     def stop(self, job_id: Optional[str] = None) -> Optional[Job]:
         """Abort a job. ``None`` → the running job. Queued → cancelled in place;
-        running → tree killed, GPU freed. The daemon stays up and advances to
-        the next queued job."""
+        running → interrupted for graceful cleanup, then force-killed after
+        the grace period if needed. The daemon stays up and advances to the next
+        queued job."""
         with self._lock:
             job = self._jobs.get(job_id) if job_id else self._current_running_locked()
             if job is None or job.state in TERMINAL_STATES:
                 return job
+            already_requested = job.stop_requested
             job.stop_requested = True
             state = job.state
             if state == STATE_QUEUED:
@@ -304,8 +306,13 @@ class JobManager:
                 self._finalize(job, STATE_STOPPED, detail="cancelled while queued")
                 return job
             job.persist()
-        if state == STATE_RUNNING:
-            self._kill_job_tree(job)
+        if state == STATE_RUNNING and not already_requested:
+            threading.Thread(
+                target=self._stop_job_tree,
+                args=(job,),
+                name=f"anima-job-stop-{job.id}",
+                daemon=True,
+            ).start()
         return job
 
     def _run(self) -> None:
@@ -412,6 +419,10 @@ class JobManager:
             # train jobs; keep it INSIDE the guard so a bad config / import error
             # fails just this job instead of crashing the worker.
             cmd, env = self._build_cmd(job)
+            if self._job_runs_train(job):
+                stop_path = self._stop_request_path(job)
+                stop_path.unlink(missing_ok=True)
+                env["ANIMA_DAEMON_STOP_FILE"] = str(stop_path)
             popen = proc.spawn_detached(
                 cmd,
                 cwd=config.ROOT,
@@ -696,6 +707,23 @@ class JobManager:
         if job.pid is not None:
             proc.kill_tree(job.pid)
 
+    def _stop_job_tree(self, job: Job) -> None:
+        if job.pid is not None:
+            if self._job_runs_train(job):
+                stop_path = self._stop_request_path(job)
+                try:
+                    stop_path.parent.mkdir(parents=True, exist_ok=True)
+                    stop_path.write_text("stop\n", encoding="utf-8")
+                except OSError as exc:
+                    logger.warning(
+                        "job %s stop-file write failed; forcing stop: %s", job.id, exc
+                    )
+                    proc.kill_tree(job.pid)
+                else:
+                    proc.stop_tree_gracefully(job.pid)
+            else:
+                proc.kill_tree(job.pid)
+
     def _evict_resident_inference(self) -> None:
         """Ask a resident inference server (if any) to free VRAM before launch.
 
@@ -753,6 +781,14 @@ class JobManager:
         from scripts.tasks._common import command_runs_training
 
         return command_runs_training(str(argv[1]))
+
+    @classmethod
+    def _job_runs_train(cls, job: Job) -> bool:
+        return job.kind == "train" or cls._command_runs_train(job.argv)
+
+    @staticmethod
+    def _stop_request_path(job: Job):
+        return config.job_dir(job.id) / "stop.requested"
 
     @staticmethod
     def _ensure_flag(argv: list[str], flag: str, value: str) -> None:

@@ -87,3 +87,19 @@ def test_v100_flash_varlen_inductor_fullgraph_backward():
     assert torch.isfinite(output).all()
     assert all(tensor.grad is not None for tensor in (q, k, v))
     assert all(torch.isfinite(tensor.grad).all() for tensor in (q, k, v))
+
+
+def test_v100_flash_attention_with_lse_zero_dropout_eager_and_fullgraph():
+    from networks.attention_dispatch import attention_with_lse
+
+    def with_lse(q):
+        return attention_with_lse(q, q, q, attn_mode="flash")
+
+    q = torch.randn(1, 33, 2, 64, device="cuda", dtype=torch.float16)
+    compiled = torch.compile(with_lse, backend="inductor", fullgraph=True)
+    for implementation in (with_lse, compiled):
+        out, lse = implementation(q)
+        assert out.shape == q.shape
+        assert lse.shape == (q.shape[0], q.shape[2], q.shape[1])
+        assert torch.isfinite(out).all()
+        assert torch.isfinite(lse).all()

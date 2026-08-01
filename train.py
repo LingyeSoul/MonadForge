@@ -1,6 +1,7 @@
 # Anima LoRA training script (merged standalone)
 
 import gc
+import _thread
 import importlib
 import argparse
 import json
@@ -10,6 +11,8 @@ import typing
 from typing import Any, Union, Optional
 import sys
 import random
+import signal
+import threading
 import time
 from multiprocessing import Value
 
@@ -148,6 +151,33 @@ setup_logging()
 import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+
+def _install_graceful_stop_handlers() -> None:
+    """Turn daemon termination signals into cleanup-capable interrupts."""
+    for name in ("SIGTERM", "SIGBREAK"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            signal.signal(signum, signal.default_int_handler)
+        except (OSError, ValueError):
+            pass
+
+    stop_file = os.environ.get("ANIMA_DAEMON_STOP_FILE")
+    if os.name != "nt" or not stop_file:
+        return
+
+    def watch_stop_file() -> None:
+        while not os.path.exists(stop_file):
+            time.sleep(0.1)
+        _thread.interrupt_main()
+
+    threading.Thread(
+        target=watch_stop_file,
+        name="anima-daemon-stop-watcher",
+        daemon=True,
+    ).start()
 
 
 def _env_flag(name: str) -> bool:
@@ -1820,9 +1850,7 @@ class AnimaTrainer:
                 "frozen base remains fp16. Set lora_fp32_compute=false to "
                 "disable for A/B testing."
             )
-        if _should_auto_enable_eager_lora_down_autograd(
-            args, accelerator, net_kwargs
-        ):
+        if _should_auto_enable_eager_lora_down_autograd(args, accelerator, net_kwargs):
             net_kwargs["use_custom_down_autograd"] = "true"
             logger.warning(
                 "eager V100 fp16/FP32-residual LoRA training detected: "
@@ -2815,27 +2843,18 @@ class AnimaTrainer:
             final_step=lambda: loop_state.global_step,
             extra_fields=self._liveness.run_end_fields,
         ):
-            run_training_loop(self, loop_state)
+            try:
+                run_training_loop(self, loop_state)
 
-            accelerator.end_training()
-            optimizer_eval_fn()
-
-            # Catch-all sample decode for any latents not already decoded inline
-            # (block-swapping runs defer the whole batch to here, and a latent
-            # that failed an inline decode is left on disk for retry). The VAE
-            # gets the full budget now that the loop has freed its activation /
-            # block-swap memory; no-op when inline decode already drained them.
-            # Park the DiT on CPU first so the VAE decode gets the full budget.
-            if is_main_process and args.sample_prompts:
-                try:
-                    accelerator.unwrap_model(loop_state.unet).to("cpu")
-                except Exception:
-                    pass
-                clean_memory_on_device(accelerator.device)
-                anima_train_utils.decode_pending_samples(
+                accelerator.end_training()
+                optimizer_eval_fn()
+            finally:
+                _decode_pending_samples_at_exit(
                     accelerator,
                     args,
                     vae,
+                    loop_state.unet,
+                    is_main_process=is_main_process,
                     progress_sink=getattr(self, "progress_sink", None),
                 )
 
@@ -2852,6 +2871,34 @@ class AnimaTrainer:
             _cleanup_short_log_dir(args)
 
     # endregion
+
+
+def _decode_pending_samples_at_exit(
+    accelerator,
+    args,
+    vae,
+    unet,
+    *,
+    is_main_process: bool,
+    progress_sink=None,
+) -> None:
+    """Best-effort deferred preview decode on success, error, or graceful stop."""
+    if not is_main_process or not args.sample_prompts:
+        return
+    try:
+        accelerator.unwrap_model(unet).to("cpu")
+    except Exception as exc:
+        logger.warning("Could not park DiT before deferred sample decode: %s", exc)
+    clean_memory_on_device(accelerator.device)
+    try:
+        anima_train_utils.decode_pending_samples(
+            accelerator,
+            args,
+            vae,
+            progress_sink=progress_sink,
+        )
+    except Exception as exc:
+        logger.error("Deferred sample decode during training cleanup failed: %s", exc)
 
 
 def _cleanup_short_log_dir(args) -> None:
@@ -3030,6 +3077,7 @@ def _install_crash_reporter(argv: list[str]) -> None:
 
 
 if __name__ == "__main__":
+    _install_graceful_stop_handlers()
     _install_crash_reporter(sys.argv)
     parser = setup_parser()
     _config_schema.populate_schema(parser, extras=build_network_extras())

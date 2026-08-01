@@ -353,13 +353,14 @@ print(json.dumps({
     return probe
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", type=Path, default=ROOT / ".venv/bin/python")
     parser.add_argument(
         "--cuda-home",
         type=Path,
-        default=ROOT / "output/v100-flash-validation/toolchain/cuda-12.9.1",
+        required=True,
+        help="CUDA 12.9 toolkit root containing bin/nvcc and lib64/.",
     )
     parser.add_argument("--gcc", type=Path, default=Path("/usr/bin/gcc-14"))
     parser.add_argument("--gxx", type=Path, default=Path("/usr/bin/g++-14"))
@@ -367,7 +368,11 @@ def main() -> int:
         "--output-root", type=Path, default=ROOT / "output/v100-flash-install"
     )
     parser.add_argument("--allow-reinstall", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
 
     python = executable_path(args.python)
     cuda_home = args.cuda_home.resolve()

@@ -71,12 +71,19 @@ are under `output/v100-flash-validation/`.
 
 MonadForge pins the V100 source landing to current upstream main
 `c91cad40c0539805754819e6ea96c75184d816a6`; the upstream kernel source is not
-patched. Build it for the existing Python 3.13 / Torch 2.10 V100 environment:
+patched. Build it for the existing Python 3.13 / Torch 2.10 V100 environment.
+The CUDA toolkit path is explicit so the installer never depends on an
+untracked local artifact:
 
 ```bash
-make v100-flash-install
-make v100-flash-validate
+make v100-flash-install ARGS="--cuda-home /usr/local/cuda-12.9"
+make v100-flash-validate ARGS="--capture /path/to/first_failure.pt --dit /path/to/anima-base-v1.0.safetensors --performance-baseline /path/to/tail-matrix.json"
 ```
+
+The capture and DiT must match the SHA-256 pins in
+`scripts/v100_flash/__init__.py`; the performance baseline is also hashed into
+the validation report. These three machine-local inputs are required rather
+than silently defaulting to an author's workstation paths.
 
 The installer writes a cp313 wheel, full build logs, compiler/toolkit details,
 and hashes under `output/v100-flash-install/`. Installation alone records

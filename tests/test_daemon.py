@@ -98,14 +98,39 @@ def test_liveness_pid_create_time():
 # --------------------------------------------------------------------------
 
 _FAKE_TRAINER = r"""
-import json, sys, time
+import _thread, json, os, signal, sys, threading, time
 path, dur = sys.argv[1], float(sys.argv[2])
+
+def interrupt(_signum, _frame):
+    raise KeyboardInterrupt
+
+for name in ("SIGTERM", "SIGBREAK"):
+    signum = getattr(signal, name, None)
+    if signum is not None:
+        signal.signal(signum, interrupt)
+
+stop_file = os.environ.get("ANIMA_DAEMON_STOP_FILE")
+if os.name == "nt" and stop_file:
+    def watch_stop_file():
+        while not os.path.exists(stop_file):
+            time.sleep(0.05)
+        _thread.interrupt_main()
+
+    threading.Thread(target=watch_stop_file, daemon=True).start()
+
 with open(path, "w", buffering=1) as f:
     f.write(json.dumps({"ev": "run_start", "ts": 0.0}) + "\n")
     f.write(json.dumps({"ev": "step", "ts": 0.1, "global_step": 1, "loss": 0.5}) + "\n")
-    time.sleep(dur)
-    f.write(json.dumps({"ev": "ckpt", "ts": dur, "global_step": 1, "path": "/tmp/fake.safetensors"}) + "\n")
-    f.write(json.dumps({"ev": "run_end", "ts": dur, "status": "ok", "final_step": 1}) + "\n")
+    try:
+        deadline = time.time() + dur
+        while time.time() < deadline:
+            time.sleep(min(0.05, deadline - time.time()))
+    except KeyboardInterrupt:
+        f.write(json.dumps({"ev": "run_end", "ts": 0.2, "status": "stopped", "final_step": 1}) + "\n")
+        raise
+    else:
+        f.write(json.dumps({"ev": "ckpt", "ts": dur, "global_step": 1, "path": "/tmp/fake.safetensors"}) + "\n")
+        f.write(json.dumps({"ev": "run_end", "ts": dur, "status": "ok", "final_step": 1}) + "\n")
 """
 
 # A fake trainer that dies before writing ``run_end`` with a chosen exit code.
@@ -379,21 +404,21 @@ def test_crashed_job_carries_real_rc(daemon, monkeypatch):
 
 
 def test_stopped_job_carries_kill_rc(daemon):
-    """A job stopped mid-run (the GUI's cancel) is tree-killed; its rc is the
-    kill's exit code (a signal, reported negative by POSIX poll). Forwarding
-    it lets the WebUI distinguish a clean cancel from a crash-then-cancel.
+    """A job stopped mid-run gets an interrupt so trainer cleanup can run; its
+    rc still records the nonzero signal exit. Forwarding it lets the WebUI
+    distinguish a clean cancel from a crash-then-cancel.
     The WebUI's cancelled path ignores the value (frontend hardcodes -1), but
     the record stays faithful for logs/diagnostics."""
     cl, _ = daemon
     jid = cl.submit(method="lora", overrides={"duration": 60.0})["job_id"]
     assert _wait_until(lambda: cl.get(jid)["state"] == "running", timeout=10)
+    assert _wait_until(lambda: cl.get(jid)["latest"] is not None, timeout=10)
     cl.stop(jid)
     assert _wait_until(lambda: cl.get(jid)["state"] == "stopped", timeout=10)
-    # Killed by proc.kill_tree — the rc is the tree-kill's exit code (a
-    # nonzero signal on POSIX, 1 on the Windows taskkill path). Just assert
-    # it's present and nonzero (we never kill with rc 0).
     rec = cl.get(jid)
     assert rec["rc"] is not None and rec["rc"] != 0
+    assert rec["latest"]["ev"] == "run_end"
+    assert rec["latest"]["status"] == "stopped"
 
 
 def test_queue_hold_then_start(daemon):

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from bench.v100_flash.replay_capture import DEFAULT_FULL_REPEATS
 from bench.v100_flash.replay_capture import _acceptance as capture_acceptance
 from scripts.v100_flash.install import (
+    build_parser as build_install_parser,
     build_environment,
     executable_path,
     validate_wheel_name,
@@ -14,12 +17,15 @@ from scripts.v100_flash.validate import (
     SDPA_PRESET,
     _remove_presets,
     _write_presets,
+    build_parser as build_validate_parser,
     compare_aligned_benchmarks,
 )
 
 
 def test_v100_build_environment_is_fixed_and_clears_extra_mma(tmp_path: Path):
     cuda_home = tmp_path / "cuda"
+    gcc = Path("/usr/bin/gcc-14")
+    gxx = Path("/usr/bin/g++-14")
     env = build_environment(
         {
             "PATH": "/usr/bin",
@@ -29,18 +35,18 @@ def test_v100_build_environment_is_fixed_and_clears_extra_mma(tmp_path: Path):
             "ATTENTION_DEBUG": "1",
         },
         cuda_home=cuda_home,
-        gcc=Path("/usr/bin/gcc-14"),
-        gxx=Path("/usr/bin/g++-14"),
+        gcc=gcc,
+        gxx=gxx,
     )
 
     assert env["MAX_JOBS"] == "2"
     assert env["NVCC_THREADS"] == "2"
-    assert env["CC"] == "/usr/bin/gcc-14"
-    assert env["CXX"] == "/usr/bin/g++-14"
-    assert env["CUDAHOSTCXX"] == "/usr/bin/g++-14"
+    assert env["CC"] == str(gcc)
+    assert env["CXX"] == str(gxx)
+    assert env["CUDAHOSTCXX"] == str(gxx)
     assert env["CUDA_HOME"] == str(cuda_home)
-    assert env["PATH"].startswith(f"{cuda_home}/bin:")
-    assert env["LD_LIBRARY_PATH"].startswith(f"{cuda_home}/lib64:")
+    assert env["PATH"].startswith(f"{cuda_home / 'bin'}:")
+    assert env["LD_LIBRARY_PATH"].startswith(f"{cuda_home / 'lib64'}:")
     assert "MMA_NATIVE" not in env
     assert "MMA_884" not in env
     assert "ATTENTION_DEBUG" not in env
@@ -89,6 +95,42 @@ def test_v100_presets_are_revoked_before_revalidation(tmp_path: Path):
     assert all(Path(path).is_file() for path in written)
     assert sorted(_remove_presets(tmp_path)) == sorted(written)
     assert not any(Path(path).exists() for path in written)
+
+
+def test_v100_presets_preserve_user_owned_collisions(tmp_path: Path):
+    flash = tmp_path / "configs/custom/presets/V100_flash.toml"
+    sdpa = flash.with_name("V100_sdpa.toml")
+    flash.parent.mkdir(parents=True)
+    flash.write_text('attn_mode = "flash"\n# user tuning\n', encoding="utf-8")
+    sdpa.write_text('attn_mode = "torch"\n# user tuning\n', encoding="utf-8")
+
+    assert _remove_presets(tmp_path) == []
+    with pytest.raises(RuntimeError, match="user-owned"):
+        _write_presets(tmp_path)
+
+    assert "user tuning" in flash.read_text(encoding="utf-8")
+    assert "user tuning" in sdpa.read_text(encoding="utf-8")
+
+
+def test_v100_cli_requires_machine_local_inputs():
+    with pytest.raises(SystemExit):
+        build_install_parser().parse_args([])
+    with pytest.raises(SystemExit):
+        build_validate_parser().parse_args([])
+
+    install = build_install_parser().parse_args(["--cuda-home", "/opt/cuda-12.9"])
+    validate = build_validate_parser().parse_args(
+        [
+            "--capture",
+            "/data/first_failure.pt",
+            "--dit",
+            "/models/anima.safetensors",
+            "--performance-baseline",
+            "/data/tail-matrix.json",
+        ]
+    )
+    assert install.cuda_home == Path("/opt/cuda-12.9")
+    assert validate.capture == Path("/data/first_failure.pt")
 
 
 def test_aligned_regression_requires_both_lengths():
