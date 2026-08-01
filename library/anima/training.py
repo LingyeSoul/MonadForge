@@ -987,11 +987,11 @@ def sample_images(
 
     Latent lifecycle: each sampled image is persisted to
     ``output_dir/sample/latents/*.pt``. When :func:`_should_decode_inline`
-    allows it (explicit ``--sample_decode_inline true``, or ``auto`` while not
-    block-swapping), :func:`decode_samples_for_live_preview` decodes them to PNG
-    immediately and deletes the latents on success; otherwise (or if the live
-    decode OOM-skips) the latents stay on disk for the deferred end-of-training
-    pass via :func:`decode_pending_samples`.
+    allows it (explicit ``--sample_decode_inline true``),
+    :func:`decode_samples_for_live_preview` decodes them to PNG immediately and
+    deletes the latents on success; otherwise (or if the live decode OOM-skips)
+    the latents stay on disk for the deferred end-of-training pass via
+    :func:`decode_pending_samples`.
     """
     if steps == 0:
         if not args.sample_at_first:
@@ -1075,10 +1075,8 @@ def sample_images(
     # Best-effort live decode: offload DiT + network to CPU, decode latents
     # to PNG so the WebUI gallery refreshes immediately. Gracefully skips on
     # CUDA OOM — latent .pt files are still on disk for end-of-training decode.
-    # Gated by ``--sample_decode_inline``: explicit true/false wins, ``auto``
-    # (default) inlines only when the run isn't block-swapping so tight cards
-    # don't pay a full DiT+network CPU<->GPU round-trip every sample event
-    # (the deferred end-of-training decode is free). See ``_should_decode_inline``.
+    # Gated by ``--sample_decode_inline``: only explicit true enables this
+    # host-memory-heavy round trip; false/auto defer to end of training.
     if saved_latents and _should_decode_inline(args):
         decode_samples_for_live_preview(
             accelerator,
@@ -1094,12 +1092,10 @@ def _should_decode_inline(args) -> bool:
     """Whether to decode sample latents to PNG right after each sampling event
     (per-epoch visibility) vs. deferring the whole batch to end of training.
 
-    Explicit ``--sample_decode_inline`` wins; otherwise auto — inline when the
-    run isn't block-swapping (``blocks_to_swap == 0``), deferred when it is. The
-    inline path parks the DiT on CPU before the VAE decode (so the two are never
-    co-resident), so it's OOM-safe either way; the block-swap default still
-    defers because on a tight card the repeated full-DiT CPU<->GPU transfer per
-    sample event isn't worth paying when the end-of-training decode is free."""
+    Explicit ``--sample_decode_inline`` wins; otherwise auto defers decoding.
+    Repeatedly parking the full DiT on CPU for every preview causes host RSS to
+    grow through allocator churn and can trigger zram. Users who accept that
+    tradeoff can still opt into the live path with ``true``."""
     explicit = getattr(args, "sample_decode_inline", None)
     if isinstance(explicit, str):
         s = explicit.strip().lower()
@@ -1116,7 +1112,7 @@ def _should_decode_inline(args) -> bool:
         )
     if explicit is not None:
         return bool(explicit)
-    return not getattr(args, "blocks_to_swap", 0)
+    return False
 
 
 def _sample_image_inference(
@@ -1414,8 +1410,7 @@ def decode_samples_for_live_preview(
     skipped. In both cases the latent ``.pt`` files are left on disk so they are
     recovered by :func:`decode_pending_samples` at stop/end (which deletes each
     file only after a successful decode). Invoked from :func:`sample_images`
-    when :func:`_should_decode_inline` allows it (never on a block-swap run
-    unless ``--sample_decode_inline true``).
+    only when ``--sample_decode_inline true`` is explicit.
     """
     if vae is None or not accelerator.is_main_process:
         return

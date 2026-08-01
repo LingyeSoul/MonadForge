@@ -56,5 +56,5 @@ checkpointing_epochs = 4
 blocks_to_swap = 0
 
 
-max_data_loader_n_workers=1
+max_data_loader_n_workers=0
 validation_split_num = 0

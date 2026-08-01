@@ -106,7 +106,7 @@ activation_memory_budget = 0.99
 # low/high crossover near σ≈0.3 (mid-denoising) on this dataset.
 fei_feature_dim = 2
 fei_sigma_low_div = 4.0
-max_data_loader_n_workers=1
+max_data_loader_n_workers=0
 # Routing scope. Every Linear matched by this regex becomes a chimera
 # leaf; non-matching layers fall back to OrthoLoRA (single-pool Cayley,
 # no router). Same default as the other hydra variants.

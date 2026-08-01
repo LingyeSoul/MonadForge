@@ -12,9 +12,9 @@ from library.anima.training import _should_decode_inline
 @pytest.mark.parametrize(
     ("explicit", "blocks_to_swap", "expected"),
     [
-        (None, 0, True),
+        (None, 0, False),
         (None, 20, False),
-        ("auto", 0, True),
+        ("auto", 0, False),
         ("auto", 20, False),
         (True, 20, True),
         (False, 0, False),
