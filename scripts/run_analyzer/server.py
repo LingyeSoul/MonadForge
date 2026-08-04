@@ -42,10 +42,18 @@ _index: list[Run] = []
 _index_cache_key: Optional[str] = None
 
 
+_INDEX_WATCH_FILES = ("progress.jsonl", "stdout.log", "job.json", "snapshot.toml")
+
+
 def _dir_mtime_key() -> str:
-    """所有 job 目录 + 日志目录的 mtime 指纹；未变化时跳过全量重解析。"""
-    jobs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "output", "daemon", "jobs")
-    logs = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "output", "logs")
+    """所有 job 目录 + 日志目录的 mtime 指纹；未变化时跳过全量重解析。
+
+    仅取顶层目录 mtime 不够：progress.jsonl/tfevents 是内容追加写入，
+    文件 mtime 变化但目录 mtime 不变，会导致索引冻结在旧解析。
+    因此对每个 job/日志目录额外取关键文件自身的 mtime。
+    """
+    jobs = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "output", "daemon", "jobs")
+    logs = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "output", "logs")
     parts = []
     for base in (jobs, logs):
         if not os.path.isdir(base):
@@ -56,6 +64,20 @@ def _dir_mtime_key() -> str:
                 parts.append(f"{name}:{os.path.getmtime(p)}")
             except OSError:
                 continue
+            if not os.path.isdir(p):
+                continue
+            for sub in _INDEX_WATCH_FILES:
+                fp = os.path.join(p, sub)
+                try:
+                    parts.append(f"{name}/{sub}:{os.path.getmtime(fp)}")
+                except OSError:
+                    continue
+            tb = os.path.join(p, "network_train")
+            if os.path.isdir(tb):
+                try:
+                    parts.append(f"{name}/network_train:{os.path.getmtime(tb)}")
+                except OSError:
+                    continue
     return "|".join(parts)
 
 
@@ -78,6 +100,39 @@ def _find(run_id: str) -> Run:
     raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 
 
+def _freshen_run(run: Run) -> None:
+    """按需重解析单个 run 的 jsonl/stdout（毫秒级），不触发全量 discover。
+
+    监控 2s 轮询调 /api/runs/{id}：index 里的 Run.jsonl 是上次 discover 的
+    快照，progress.jsonl 是内容追加写入（文件 mtime 变、目录 mtime 不变），
+    必须按请求重读才能拿到最新 step。index 列表仍由 _dir_mtime_key 控制。
+    """
+    try:
+        from scripts.run_analyzer.sources.jsonl import parse as parse_jsonl
+        from scripts.run_analyzer.sources.stdout_log import parse as parse_stdout
+
+        jl = parse_jsonl(os.path.join(run.dir, "progress.jsonl"))
+        if jl is not None:
+            run.jsonl = jl
+            if jl.run:
+                run.run_name = jl.run
+            if jl.method:
+                run.method = jl.method
+            if jl.preset:
+                run.preset = jl.preset
+            if jl.total_steps:
+                run.total_steps = jl.total_steps
+            if jl.total_epochs:
+                run.total_epochs = jl.total_epochs
+            if jl.log_dir:
+                run.log_dir = os.path.join(analyze.MONADFORGE_ROOT, jl.log_dir)
+        so = parse_stdout(os.path.join(run.dir, "stdout.log"))
+        if so is not None:
+            run.stdout = so
+    except Exception:
+        pass
+
+
 @app.on_event("startup")
 def _startup() -> None:
     _refresh_index()
@@ -98,6 +153,7 @@ def api_run_overview(run_id: str):
 @app.get("/api/runs/{run_id}")
 def api_run(run_id: str):
     r = _find(run_id)
+    _freshen_run(r)
     return analyze.full_payload(r)
 
 
@@ -105,6 +161,7 @@ def api_run(run_id: str):
 def api_live(run_id: str, since: float = 0.0):
     """Incremental events since ``since`` (seconds of run-relative ts)."""
     r = _find(run_id)
+    _freshen_run(r)
     jl = r.jsonl
     if jl is None:
         return {"events": []}

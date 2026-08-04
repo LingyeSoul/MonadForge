@@ -22,6 +22,7 @@ let monMaxGs = 0;
 let monDropdown = null;
 let monQueued = 0;
 let monLastSampleCount = 0;
+let monListTick = 0;
 let monFeedFilter = 'all';
 
 function monitorRunOrder(runs) {
@@ -274,8 +275,7 @@ function refreshMonitor() {
   return api(`/api/runs/${encodeURIComponent(monRunId)}`).then(d => {
     const wasRunning = monData && (monData.state === 'running' || monData.state === 'queued');
     monData = d;
-    const running = d.state === 'running' || d.state === 'queued';
-    /* 先构建图表以取得 maxGs（供进度条刻度定位），再渲染顶栏 */
+    const running = d.state === 'running' || d.state === 'queued';    /* 先构建图表以取得 maxGs（供进度条刻度定位），再渲染顶栏 */
     const { opt, maxGs } = lossChartOption(d, monUI, { scan: running });
     monMaxGs = maxGs;
     renderMonBar();
@@ -307,5 +307,22 @@ function refreshMonitor() {
     } else if (wasRunning) {
       toast(`${d.run_name} 训练已结束`);
     }
+    /* 运行中定期重拉 run 列表：新任务/结束任务自动出现在下拉与队列计数 */
+    monListTick += 1;
+    if (monListTick % 15 === 0 || (wasRunning && !running)) refreshMonList();
+  }).catch(() => { });
+}
+
+function refreshMonList() {
+  return api('/api/runs').then(d => {
+    const runs = d.runs || [];
+    if (!runs.length) return;
+    if (!runs.some(r => r.id === monRunId)) {
+      const live = runs.find(r => r.state === 'running' || r.state === 'queued');
+      monRunId = live ? live.id : monitorRunOrder(runs)[0].id;
+    }
+    monQueued = runs.filter(r => r.state === 'queued').length;
+    monDropdown.setOptions(toDropdownOptions(runs), monRunId);
+    renderMonBar();
   }).catch(() => { });
 }
