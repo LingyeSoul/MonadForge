@@ -1,0 +1,86 @@
+/* ==========================================================================
+   tokens.css — 设计令牌（遵循《终末地官网设计体系拆解》）
+   提炼规则：碳黑/纸白/电能黄 角色分工、1px 细线、矩形裁切（无圆角）、
+   200-300ms easeOutQuad、黄色仅用于状态与动作。
+   禁止：圆角卡片 / 玻璃拟态 / 模糊 / 软阴影 / 弹跳按钮。
+   ========================================================================== */
+
+:root {
+  /* ── 色彩角色 ── */
+  --ink: #191919;
+  --paper: #FFFFFF;
+  --stage: #000000;
+  --volt: #FFFA00;
+  --aux: #FFF000;
+  --g0: #F7F7F7;
+  --g1: #F2F2F2;
+  --g2: #E5E5E5;
+  --g3: #D9D9D9;
+  --g4: #B3B3B3;
+  --g5: #999999;
+  --g6: #666666;
+  --g7: #424242;
+  --g8: #35373C;
+  --g9: #1A1A1A;
+
+  /* ── 电能黄 alpha 变体（扫描/进度底衬专用，避免字面 rgba 散落）── */
+  --volt-faint: rgba(255, 250, 0, 0.10);
+  --volt-dim: rgba(255, 250, 0, 0.16);
+
+  /* ── 字体分工：中文正文中性可读 / 数据等宽终端感 ── */
+  --font-sans: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* ── 字号层级（超大文字作版面结构）── */
+  --ts-micro: 0.6875rem;
+  --ts-nano: 0.625rem;
+  --ts-sm: 0.75rem;
+  --ts-md: 0.875rem;
+  --ts-lg: 1rem;
+  --ts-xl: 1.25rem;
+  --ts-2xl: 1.5rem;
+  --ts-3xl: 2rem;
+  --ts-4xl: 3rem;
+
+  /* ── 动效：200-300ms easeOutQuad ── */
+  --dur: 240ms;
+  --ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+
+  --line: 1px solid var(--g3);
+  --line-dark: 1px solid var(--g8);
+
+  /* ── 索引轨尺寸（官网：收起 7.5rem / 展开 22.5rem）── */
+  --rail-w: 120px;
+  --rail-w-open: 360px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; border-radius: 0 !important; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-sans);
+  color: var(--ink);
+  background: var(--paper);
+  font-size: var(--ts-md);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono { font-family: var(--font-mono); }
+
+button, input { font: inherit; color: inherit; background: none; border: none; }
+
+a { color: inherit; text-decoration: none; }
+
+:focus-visible { outline: 1px solid var(--volt); outline-offset: 2px; }
+
+.hidden { display: none !important; }
+
+/* E16：视图切换 clip-path 揭示（display:none→block 天然重放动画） */
+@keyframes revealX {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0 0 0 0); }
+}
+.view:not(.hidden) .mh-title { animation: revealX 240ms var(--ease); }
+.view:not(.hidden) .mh-deco-line { animation: revealX 240ms var(--ease) 60ms backwards; }

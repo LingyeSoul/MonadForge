@@ -1,0 +1,203 @@
+/* view-monitor.css — 监控器：顶栏 / 下拉 / 网格 / 胶片带 */
+
+.mon-bar {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 14px 2px 16px;
+  border-bottom: var(--line);
+  margin-bottom: 22px;
+}
+.mon-select-wrap { position: relative; display: inline-flex; }
+.mon-select {
+  appearance: none; -webkit-appearance: none;
+  height: 36px; padding: 0 40px 0 14px;
+  border: 1px solid var(--g3);
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--ts-sm);
+  cursor: pointer;
+  max-width: 360px;
+  transition: border-color var(--dur) var(--ease);
+}
+.mon-select:hover { border-color: var(--ink); }
+.mon-select:focus-visible { outline: 1px solid var(--volt); outline-offset: 2px; }
+.mon-select-arrow {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  color: var(--g5); pointer-events: none; font-size: var(--ts-sm);
+}
+.mon-state-live { display: inline-flex; align-items: center; gap: 8px; font-size: var(--ts-sm); white-space: nowrap; }
+
+/* ── 自定义下拉（F2）── */
+.mon-dd { position: relative; }
+.mon-dd-trigger {
+  display: inline-flex; align-items: center; gap: 10px;
+  height: 36px; padding: 0 12px;
+  border: 1px solid var(--g3);
+  background: var(--paper);
+  color: var(--ink);
+  cursor: pointer;
+  max-width: 420px;
+  transition: border-color var(--dur) var(--ease);
+}
+.mon-dd-trigger:hover { border-color: var(--ink); }
+.mon-dd-trigger[aria-expanded="true"] { border-color: var(--ink); }
+.mon-dd-trigger .mdd-name {
+  font-size: var(--ts-sm);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: 200px;
+}
+.mon-dd-trigger .mdd-meta { font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); white-space: nowrap; }
+.mdd-caret { font-family: var(--font-mono); color: var(--g5); font-size: var(--ts-sm); transition: transform var(--dur) var(--ease); }
+.mon-dd-trigger[aria-expanded="true"] .mdd-caret { transform: rotate(180deg); }
+.mon-dd-panel {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 60;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  min-width: 440px; max-width: 600px; max-height: 320px;
+  overflow-y: auto;
+}
+.mdd-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--g2);
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.mdd-row:last-child { border-bottom: none; }
+.mdd-row:hover { background: var(--g1); }
+.mdd-row.selected { background: var(--g0); border-left-color: var(--volt); }
+.mdd-row.mdd-cursor { background: var(--g1); }
+.mdd-row .mdd-r-name {
+  font-size: var(--ts-sm);
+  flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.mdd-row .mdd-r-meta { font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); white-space: nowrap; }
+.mdd-empty { padding: 14px; font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g4); text-align: center; }
+
+.mon-live {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  letter-spacing: 0.2em;
+  color: var(--ink);
+  border: 1px solid var(--ink);
+  padding: 3px 10px;
+}
+.mon-live i {
+  width: 6px; height: 6px; background: var(--volt);
+  animation: pulse 1.2s var(--ease) infinite;
+}
+
+/* ── 队列微标（D15）── */
+.mon-queued {
+  font-size: var(--ts-micro);
+  letter-spacing: 0.14em;
+  color: var(--g6);
+  border: 1px solid var(--g3);
+  padding: 3px 10px;
+}
+.mon-queued b { color: var(--volt); font-weight: 500; }
+
+.mon-bar-progress { flex: 1; min-width: 320px; }
+.mbp-track { height: 3px; background: var(--g3); position: relative; }
+.mbp-fill { height: 100%; background: var(--volt); width: 0; transition: width var(--dur) var(--ease); position: relative; z-index: 2; }
+/* D12：每轮刻度 */
+.mbp-epoch {
+  position: absolute; top: 0; bottom: 0;
+  background: var(--volt-dim);
+  z-index: 1;
+}
+.mbp-tick {
+  position: absolute; top: 0; bottom: 0;
+  width: 1px; background: var(--g5);
+  z-index: 3;
+}
+.mbp-meta {
+  display: flex; justify-content: space-between; gap: 16px;
+  padding-top: 6px;
+  font-size: var(--ts-micro); letter-spacing: 0.06em;
+  color: var(--g5);
+}
+.mbp-meta b { color: var(--ink); font-weight: 500; }
+
+.mon-grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; align-items: start; }
+.mon-main { min-width: 0; }
+.mon-side { display: flex; flex-direction: column; gap: 20px; min-height: 700px; }
+.mon-feed-block { flex: 1; display: flex; flex-direction: column; }
+.mon-feed-block .ev-list { flex: 1; max-height: none; }
+.mon-feed-head { display: flex; align-items: center; justify-content: space-between; }
+.mon-feed-head .meta-head { border-bottom: none; }
+
+/* D13：事件流时间轴 */
+.mon-feed-block .ev-row { padding: 6px 12px; font-size: var(--ts-micro); }
+.tl-row { display: flex; align-items: baseline; gap: 10px; }
+.tl-ts { flex: 0 0 58px; font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g4); text-align: right; }
+.tl-dot {
+  flex: none; width: 7px; height: 7px;
+  border-radius: 0;
+  background: var(--g4);
+}
+.tl-row.tl-ckpt .tl-dot { background: var(--g4); }
+.tl-row.tl-warn .tl-dot { background: var(--volt); }
+.tl-row.tl-err .tl-dot { background: var(--volt); }
+.tl-msg { color: var(--g6); word-break: break-all; flex: 1; }
+.tl-row.tl-warn .tl-msg { color: var(--ink); }
+.tl-row.tl-err .tl-msg { color: var(--ink); font-weight: 700; }
+
+.mon-tools { border-bottom: var(--line-dark); }
+.mon-tools .ctl-label { color: var(--g5); }
+.mon-tools .seg button { border-color: var(--g8); color: var(--g5); background: transparent; }
+.mon-tools .seg button.active { background: var(--volt); border-color: var(--volt); color: var(--ink); }
+.mon-tools .sc-chip { border-color: var(--g8); color: var(--g5); }
+.mon-tools .sc-chip.active { border-color: var(--paper); color: var(--paper); }
+.mon-tools .checkbox { color: var(--g5); }
+.mon-tools .checkbox span { border-color: var(--g8); }
+.mon-tools .checkbox input:checked + span { background: var(--volt); border-color: var(--volt); }
+.mon-tools .ctl input[type="range"] { background: var(--g8); }
+.mon-tools .ctl input[type="range"]::-webkit-slider-thumb { background: var(--paper); }
+.mon-tools .ctl-val { color: var(--paper); }
+
+.mon-kpi-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.mon-kpi-grid .kpi-cell { padding: 14px 14px 12px; min-height: 74px; }
+.mon-kpi-grid .kpi-label { margin-bottom: 6px; font-size: var(--ts-micro); }
+.mon-kpi-grid .kpi-value { font-size: var(--ts-xl); }
+
+.mon-subrow { display: flex; gap: 20px; margin-top: 20px; align-items: stretch; }
+.mon-subrow .stage { flex: 2; min-width: 0; }
+.mon-epochs { flex: 1; border: var(--line); min-width: 0; }
+.mon-epoch-list { max-height: 280px; overflow-y: auto; }
+.mon-epoch-list .epoch-table th, .mon-epoch-list .epoch-table td { padding: 6px 8px; font-size: var(--ts-micro); }
+.mon-epoch-list .epoch-table tbody tr { cursor: pointer; }
+.mon-epoch-list .epoch-table tbody tr:hover { background: var(--g1); }
+
+.mon-feed-block .ev-row { padding: 6px 12px; font-size: var(--ts-micro); }
+
+.mon-film-row { margin-top: 20px; border: var(--line); }
+.mon-film-row .meta-head { border-bottom: var(--line); }
+.mon-film {
+  display: flex;
+  overflow-x: auto;
+  gap: 1px;
+  background: var(--g2);
+  scrollbar-width: thin;
+}
+.mon-film .g-item { flex: none; width: 132px; aspect-ratio: var(--ar, 1 / 1); }
+.mon-film .g-item img { width: 100%; height: 100%; object-fit: cover; }
+.mon-film .g-cap { padding: 4px 6px; font-size: var(--ts-micro); }
+.mon-film .g-cap > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon-film .g-cap .g-step { color: var(--g5); flex: none; }
+.mon-film .g-cap .g-size { color: var(--g4); flex: none; }
+/* D14：采样 hover / 新采样闪烁 */
+.mon-film .g-item { outline: 1px solid transparent; outline-offset: -1px; transition: outline-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.mon-film .g-item:hover { outline-color: var(--volt); }
+@keyframes flashOutline {
+  0% { outline-color: var(--volt); }
+  100% { outline-color: transparent; }
+}
+.mon-film .g-item.flash { animation: flashOutline 400ms var(--ease) 1; }
+
+@media (max-width: 1280px) {
+  .mon-grid { grid-template-columns: 1fr; }
+  .mon-subrow { flex-direction: column; }
+}

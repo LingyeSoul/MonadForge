@@ -1,0 +1,73 @@
+/* view-runs.css — 档案索引页 */
+
+.table-wrap { border-top: var(--line); }
+.runs-table { width: 100%; border-collapse: collapse; }
+.runs-table th {
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  color: var(--g5);
+  text-align: left;
+  padding: 12px 12px;
+  border-bottom: var(--line);
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}
+.runs-table th.sortable { cursor: pointer; }
+.runs-table th.sortable:hover { color: var(--ink); }
+.th-arrow { font-size: var(--ts-nano); margin-left: 4px; }
+.runs-table tbody tr {
+  border-bottom: 1px solid var(--g2);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.runs-table tbody tr:hover { background: var(--g1); }
+.runs-table tbody tr.active-row { background: var(--g0); }
+.runs-table td { padding: 14px 12px; font-size: var(--ts-md); vertical-align: middle; }
+.runs-table td.mono, .runs-table td.num { font-family: var(--font-mono); font-size: var(--ts-sm); }
+.ta-run-name { font-weight: 600; }
+.ta-run-id { display: block; font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); margin-top: 2px; }
+
+/* ── 行内勾选（B5）── */
+.ta-pick { width: 36px; }
+.runs-table .run-pick {
+  appearance: none; -webkit-appearance: none;
+  width: 14px; height: 14px;
+  border: 1px solid var(--g3);
+  cursor: pointer;
+  display: inline-block;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.runs-table .run-pick:checked { background: var(--volt); border-color: var(--volt); }
+.runs-table .run-pick:focus-visible { outline: 1px solid var(--volt); outline-offset: 2px; }
+
+/* ── 行内迷你曲线（B4）── */
+.ta-spark { width: 72px; }
+.spark { display: block; width: 64px; height: 22px; }
+.spark-empty { font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); }
+.spark path {
+  fill: none;
+  stroke: var(--g4);
+  stroke-width: 1;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  transition: stroke var(--dur) var(--ease);
+}
+.runs-table tbody tr:hover .spark path { stroke: var(--volt); }
+
+/* ── 浮动对比动作条（B5）── */
+.cmp-bar {
+  position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+  z-index: 90;
+  display: flex; align-items: center; gap: 18px;
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  color: var(--paper);
+  padding: 10px 18px;
+}
+.cmp-bar .cb-count { font-size: var(--ts-sm); color: var(--g5); }
+.cmp-bar .cb-count b { color: var(--volt); font-weight: 500; }
+.cmp-bar .text-btn { color: var(--g5); }
+.cmp-bar .text-btn:hover { color: var(--paper); border-bottom-color: var(--paper); }
