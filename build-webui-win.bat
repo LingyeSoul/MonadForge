@@ -17,14 +17,11 @@ if errorlevel 1 (
 
 cd /d "%~dp0\webui\frontend"
 
-if not exist node_modules (
-    echo Installing dependencies...
-    call npm install
-    if errorlevel 1 (
-        echo npm install failed.
-        pause
-        exit /b 1
-    )
+node "%~dp0scripts\webui\ensure_npm_deps.mjs" --ensure --clean
+if errorlevel 1 (
+    echo Frontend dependency verification failed.
+    pause
+    exit /b 1
 )
 
 echo Building frontend...

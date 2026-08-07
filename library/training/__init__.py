@@ -115,7 +115,19 @@ from library.training.checkpoints import (
     get_checkpoint_state_dir,
     get_checkpoint_ckpt_name,
     save_checkpoint_state,
+    get_interrupted_state_dir,
+    INTERRUPTED_STATE_NAME,
 )
+
+from library.training.state import (
+    SCHEMA_VERSION,
+    build_train_state,
+    capture_rng_state,
+    normalize_train_state,
+    restore_rng_state,
+    state_is_complete,
+)
+from library.training.stop import StopController
 
 from library.training.progress import (
     ProgressSink,
@@ -200,6 +212,15 @@ __all__ = [
     "get_checkpoint_state_dir",
     "get_checkpoint_ckpt_name",
     "save_checkpoint_state",
+    "get_interrupted_state_dir",
+    "INTERRUPTED_STATE_NAME",
+    "SCHEMA_VERSION",
+    "build_train_state",
+    "capture_rng_state",
+    "normalize_train_state",
+    "restore_rng_state",
+    "state_is_complete",
+    "StopController",
     "ProgressSink",
     "run_scope",
     "LossRecorder",

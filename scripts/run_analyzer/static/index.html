@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>run-analyzer — 训练档案</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23191919'/%3E%3Crect x='4' y='4' width='8' height='8' fill='%23FFFA00'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/css/tokens.css">
+<link rel="stylesheet" href="/css/base.css">
+<link rel="stylesheet" href="/css/components.css">
+<link rel="stylesheet" href="/css/view-runs.css">
+<link rel="stylesheet" href="/css/view-detail.css">
+<link rel="stylesheet" href="/css/view-monitor.css">
+<link rel="stylesheet" href="/css/view-compare.css">
+</head>
+<body>
+
+<!-- ── 左侧索引轨：收起 7.5rem，悬停展开 22.5rem ───────────── -->
+<aside id="rail" class="rail" aria-label="主导航">
+  <div class="rail-inner">
+    <div class="rail-brand"><span class="rb-mark">MF//RA</span></div>
+    <nav class="rail-nav" aria-label="视图">
+      <a href="#runs" data-view="runs" class="rail-item active">
+        <span class="ri-num">01</span><span class="ri-label">训练档案</span>
+      </a>
+      <a href="#compare" data-view="compare" class="rail-item">
+        <span class="ri-num">02</span><span class="ri-label">对比</span>
+      </a>
+      <a href="#monitor" data-view="monitor" class="rail-item">
+        <span class="ri-num">03</span><span class="ri-label">监控</span>
+      </a>
+    </nav>
+    <div class="rail-foot">
+      <span class="rf-line" id="rail-status">IDLE</span>
+      <span class="rf-line rf-port">PORT <b id="rail-port">8320</b></span>
+    </div>
+  </div>
+</aside>
+
+<main id="main" class="main">
+
+  <!-- ════════════ 视图：运行索引（空间目录） ════════════ -->
+  <section id="view-runs" class="view" aria-label="训练档案">
+    <header class="masthead">
+      <div class="mh-index">01</div>
+      <div>
+        <h1 class="mh-title">训练档案</h1>
+        <p class="mh-sub"><span class="mono" id="run-count">—</span> 次训练记录 · <span class="mono" id="run-running">—</span> 进行中</p>
+      </div>
+      <div class="mh-deco"><span class="mh-deco-line"></span><span class="mh-deco-tag mono">ARCHIVE</span></div>
+    </header>
+
+    <div class="index-tools">
+      <label class="search-box">
+        <span class="search-ic mono">⌕</span>
+        <input id="run-search" type="search" placeholder="搜索运行名 / 方法 / preset / job id" autocomplete="off">
+      </label>
+      <div class="chips" id="status-chips" role="group" aria-label="状态筛选">
+        <button class="chip active" data-st="all">全部</button>
+        <button class="chip" data-st="running">进行中</button>
+        <button class="chip" data-st="done">已完成</button>
+        <button class="chip" data-st="stopped">已停止</button>
+        <button class="chip" data-st="error">异常</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table class="runs-table" id="runs-table">
+        <thead>
+          <tr>
+            <th class="ta-pick"><input type="checkbox" id="pick-all" aria-label="全选" tabindex="-1"></th>
+            <th class="ta-num" data-sort="submitted_at">序<span class="th-arrow"></span></th>
+            <th class="ta-run" data-sort="run_name">运行</th>
+            <th class="ta-st">状态</th>
+            <th class="ta-meth" data-sort="method">方法·预设</th>
+            <th class="ta-num" data-sort="steps">轮数</th>
+            <th class="ta-num" data-sort="steps">步数</th>
+            <th class="ta-num" data-sort="final_avr_loss">最终 avg loss</th>
+            <th class="ta-num" data-sort="min_loss">最低 loss</th>
+            <th class="ta-num" data-sort="duration_s">时长</th>
+            <th class="ta-src">来源</th>
+            <th class="ta-spark">曲线</th>
+          </tr>
+        </thead>
+        <tbody id="runs-body"></tbody>
+      </table>
+      <div id="runs-empty" class="empty-state mono">NO RECORDS — 无匹配记录</div>
+    </div>
+
+    <div id="cmp-bar" class="cmp-bar hidden">
+      <span class="cb-count mono">已选 <b id="cmp-bar-n">0</b> 项</span>
+      <button class="block-btn" id="cmp-bar-go">开始对比</button>
+      <button class="text-btn" id="cmp-bar-clear">清空</button>
+    </div>
+  </section>
+
+  <!-- ════════════ 视图：单次运行详情 ════════════ -->
+  <section id="view-detail" class="view hidden" aria-label="运行详情">
+    <div id="detail-root"></div>
+  </section>
+
+  <!-- ════════════ 视图：对比 ════════════ -->
+  <section id="view-compare" class="view hidden" aria-label="对比">
+    <header class="masthead">
+      <div class="mh-index">02</div>
+      <div>
+        <h1 class="mh-title">对比</h1>
+        <p class="mh-sub">选择 <span class="mono" id="cmp-count">0</span> / 8 次运行，叠加对比 loss 曲线</p>
+      </div>
+      <div class="mh-deco"><span class="mh-deco-line"></span><span class="mh-deco-tag mono">COMPARE</span></div>
+    </header>
+
+    <div class="cmp-picker" id="cmp-picker">
+      <div class="cmp-pick-head mono">PICK RUNS</div>
+      <div class="cmp-pick-list" id="cmp-list"></div>
+      <div class="cmp-actions">
+        <button class="block-btn" id="cmp-go" disabled>开始对比</button>
+        <button class="text-btn" id="cmp-clear">清空</button>
+      </div>
+    </div>
+
+    <div class="stage" id="cmp-stage-wrap">
+      <div class="stage-head">
+        <span class="stage-title mono">LOSS // AVERAGE</span>
+        <div class="stage-tools">
+          <label class="checkbox"><input type="checkbox" id="cmp-epavg"><span></span>每轮均值</label>
+          <label class="checkbox"><input type="checkbox" id="cmp-spans" checked><span></span>轮次分段</label>
+        </div>
+      </div>
+      <div id="cmp-chart" class="chart chart-h-lg"></div>
+      <table class="cmp-table" id="cmp-table">
+        <thead><tr><th>运行</th><th>最终 avg loss</th><th>步数</th><th>轮数</th><th>状态</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ════════════ 视图：监控器 ════════════ -->
+  <section id="view-monitor" class="view hidden" aria-label="监控">
+    <header class="masthead masthead-tight">
+      <div class="mh-index">03</div>
+      <div>
+        <h1 class="mh-title">监控</h1>
+        <p class="mh-sub">实时跟踪运行中任务 · <span class="mono" id="mon-status">—</span></p>
+      </div>
+      <div class="mh-deco"><span class="mh-deco-line"></span><span class="mh-deco-tag mono">MONITOR</span></div>
+    </header>
+
+    <div class="mon-bar">
+      <div class="mon-dd" id="mon-dd" aria-label="运行选择"></div>
+      <span class="st-dot" id="mon-state"><i></i><span id="mon-state-label">—</span></span>
+      <span class="mon-queued mono hidden" id="mon-queued">队列 <b>0</b></span>
+      <span class="mon-live hidden" id="mon-live"><i></i>LIVE</span>
+      <div class="mon-bar-progress">
+        <div class="mbp-track"><div class="mbp-fill" id="mon-fill"></div></div>
+        <div class="mbp-meta mono"><span id="mon-left">—</span><span id="mon-right">—</span></div>
+      </div>
+    </div>
+
+    <div id="mon-empty" class="empty-state mono hidden">NO ACTIVE RUN — 无运行中任务，从下拉框选择任意任务</div>
+
+    <div id="mon-root" class="hidden">
+      <div class="mon-grid">
+        <div class="mon-main">
+          <div class="stage mon-stage" id="mon-stage">
+            <div class="stage-head">
+              <span class="stage-title mono" id="mon-stage-title">LOSS // STEP</span>
+              <span class="stage-tools"><span class="mono stage-sub" id="mon-progress">—</span></span>
+            </div>
+            <div class="chart-tools mon-tools">
+              <div class="ctl">
+                <span class="ctl-label">SMOOTH</span>
+                <input type="range" id="mon-smooth" min="1" max="200" step="1" value="50">
+                <span class="ctl-val" id="mon-smooth-v">50</span>
+              </div>
+              <div class="seg" id="mon-seg-scale">
+                <button data-scale="0">线性</button><button data-scale="1">对数</button>
+              </div>
+              <label class="checkbox"><input type="checkbox" id="mon-bands" checked><span></span>每轮范围</label>
+              <label class="checkbox"><input type="checkbox" id="mon-raw"><span></span>原始点线</label>
+              <div class="chip-set" id="mon-chip-loss">
+                <button class="sc-chip active" data-tag="loss/current">current</button>
+                <button class="sc-chip active" data-tag="loss/average">average</button>
+                <button class="sc-chip active" data-tag="loss/epoch_average">epoch avg</button>
+              </div>
+            </div>
+            <div class="chart-pad"><div id="mon-chart-loss" class="chart chart-h-md"></div></div>
+          </div>
+          <div class="mon-subrow">
+            <div class="stage" style="flex:2">
+              <div class="stage-head"><span class="stage-title mono" id="mon-lr-title">LR // STEP</span></div>
+              <div class="chart-pad"><div id="mon-chart-lr" class="chart chart-h-xs"></div></div>
+            </div>
+            <div class="mon-epochs">
+              <div class="meta-head">EPOCHS // 每轮统计 · 点击跳转</div>
+              <div class="ev-list mon-epoch-list">
+                <table class="epoch-table">
+                  <thead><tr><th>轮</th><th>min</th><th>max</th><th>mean</th><th>std</th><th>n</th><th>step 范围</th></tr></thead>
+                  <tbody id="mon-epoch-body"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <div class="mon-film-row">
+            <div class="meta-head">SAMPLES // 采样</div>
+            <div class="mon-film" id="mon-film"></div>
+          </div>
+        </div>
+
+        <div class="mon-side">
+          <div class="stage mon-kpis">
+            <div class="stage-head"><span class="stage-title mono">LIVE // KPI</span></div>
+            <div class="kpi-grid mon-kpi-grid" id="mon-kpis"></div>
+          </div>
+          <div class="ev-block mon-feed-block">
+            <div class="mon-feed-head">
+              <div class="meta-head">EVENTS // 事件流</div>
+              <div class="seg" id="mon-feed-filter">
+                <button class="active" data-f="all">全部</button>
+                <button data-f="warn">警告</button>
+              </div>
+            </div>
+            <div class="ev-list" id="mon-feed"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- 采样大图遮罩（无圆角、纸白框） -->
+<div id="lightbox" class="lightbox hidden" role="dialog" aria-modal="true" aria-label="采样预览">
+  <div class="lb-frame">
+    <div class="lb-head">
+      <span class="mono" id="lb-meta">—</span>
+      <button class="block-btn" id="lb-close">关闭</button>
+    </div>
+    <img id="lb-img" alt="sample preview">
+    <div class="lb-prompt mono" id="lb-prompt"></div>
+  </div>
+</div>
+
+<!-- 快捷键面板（A2） -->
+<div id="help-panel" class="help-panel hidden" role="dialog" aria-modal="true" aria-label="快捷键">
+  <div class="help-frame">
+    <div class="help-head">
+      <span class="mono">KEYS // 快捷键</span>
+      <button class="block-btn" id="help-close">关闭</button>
+    </div>
+    <div class="help-rows">
+      <div class="help-row"><kbd>g</kbd><kbd>r</kbd><span>进入训练档案</span></div>
+      <div class="help-row"><kbd>g</kbd><kbd>m</kbd><span>进入监控</span></div>
+      <div class="help-row"><kbd>g</kbd><kbd>c</kbd><span>进入对比</span></div>
+      <div class="help-row"><kbd>/</kbd><span>聚焦档案搜索</span></div>
+      <div class="help-row"><kbd>?</kbd><span>显示 / 关闭本面板</span></div>
+      <div class="help-row"><kbd>Esc</kbd><span>关闭面板 / 采样遮罩</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/echarts.min.js"></script>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

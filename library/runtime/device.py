@@ -33,9 +33,19 @@ def synchronize_device(device: Optional[Union[str, torch.device]]):
         torch.cuda.synchronize()
 
 
-def weighs_to_device(layer: nn.Module, device: torch.device):
+def weighs_to_device(
+    layer: nn.Module, device: torch.device, *, include_trainable: bool = True
+):
+    """Move parameter storage while optionally keeping trainable adapters resident.
+
+    Block swapping must never move a LoRA/adapter parameter during an autograd
+    graph.  The default remains the historical all-weights behavior for callers
+    outside the offloader; swap preparation passes ``include_trainable=False``.
+    """
     for module in layer.modules():
         if hasattr(module, "weight") and module.weight is not None:
+            if not include_trainable and module.weight.requires_grad:
+                continue
             module.weight.data = module.weight.data.to(device, non_blocking=True)
 
 

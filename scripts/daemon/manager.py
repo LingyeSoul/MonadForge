@@ -40,6 +40,7 @@ from .jobs import (
 logger = logging.getLogger("anima.daemon")
 
 _POLL_INTERVAL = 1.0  # seconds between liveness checks
+_STOP_FILE_RETRIES = 8
 _SENTINEL = "__stop__"
 
 # Signal → user-actionable hint, for a process that died without writing a
@@ -87,6 +88,12 @@ class JobManager:
         self._jobs: dict[str, Job] = {}
         self._queue: "queue.Queue[str]" = queue.Queue()
         self._popens: dict[str, object] = {}  # job_id -> Popen (spawned only)
+        # A stop request runs on a helper thread so the worker can keep serving
+        # health/status requests.  The monitor nevertheless waits for this
+        # event before finalizing a job: an accelerate launcher may exit as
+        # soon as it receives SIGTERM while its train/DataLoader descendants
+        # are still saving state and releasing the GPU.
+        self._stop_events: dict[str, threading.Event] = {}
         self._adopt: list[str] = []  # running orphans to monitor before the queue
         self._subscribers: set["queue.Queue[dict]"] = set()
         self._stopping = False
@@ -286,13 +293,17 @@ class JobManager:
 
     def stop(self, job_id: Optional[str] = None) -> Optional[Job]:
         """Abort a job. ``None`` → the running job. Queued → cancelled in place;
-        running → tree killed, GPU freed. The daemon stays up and advances to
+        running → request a cooperative save/exit, force-killing the tree only
+        after the configured grace period. The daemon stays up and advances to
         the next queued job."""
         with self._lock:
             job = self._jobs.get(job_id) if job_id else self._current_running_locked()
             if job is None or job.state in TERMINAL_STATES:
                 return job
+            already_requested = job.stop_requested
             job.stop_requested = True
+            job.stop_requested_at = job.stop_requested_at or time.time()
+            job.status_detail = "stopping"
             state = job.state
             if state == STATE_QUEUED:
                 # Finalize the queued job *now* (reentrant RLock) so its cancel
@@ -304,9 +315,29 @@ class JobManager:
                 self._finalize(job, STATE_STOPPED, detail="cancelled while queued")
                 return job
             job.persist()
-        if state == STATE_RUNNING:
-            self._kill_job_tree(job)
+            if state == STATE_RUNNING and not already_requested:
+                # Install the monitor gate before releasing the job lock.  The
+                # launcher can exit immediately on SIGTERM; without this order
+                # the monitor could miss the event and advance the queue while
+                # descendants were still saving/releasing GPU memory.
+                self._start_stop_worker(job)
         return job
+
+    def _start_stop_worker(self, job: Job) -> threading.Event:
+        """Start at most one in-memory stop worker for a running job."""
+        with self._lock:
+            existing = self._stop_events.get(job.id)
+            if existing is not None and not existing.is_set():
+                return existing
+            event = threading.Event()
+            self._stop_events[job.id] = event
+        threading.Thread(
+            target=self._stop_job_tree_worker,
+            args=(job, event),
+            name=f"anima-job-stop-{job.id}",
+            daemon=True,
+        ).start()
+        return event
 
     def _run(self) -> None:
         # Drain re-attached orphans before touching the queue so the serial
@@ -412,6 +443,13 @@ class JobManager:
             # train jobs; keep it INSIDE the guard so a bad config / import error
             # fails just this job instead of crashing the worker.
             cmd, env = self._build_cmd(job)
+            if self._job_runs_train(job):
+                stop_path = self._stop_request_path(job)
+                try:
+                    stop_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                env["ANIMA_DAEMON_STOP_FILE"] = str(stop_path)
             popen = proc.spawn_detached(
                 cmd,
                 cwd=config.ROOT,
@@ -456,8 +494,33 @@ class JobManager:
                 popen.wait(timeout=5)
             except Exception:  # noqa: BLE001
                 pass
+        self._wait_for_stop_worker(job)
         self._popens.pop(job.id, None)
         self._finalize_from_exit(job, popen)
+
+    def _wait_for_stop_worker(self, job: Job) -> None:
+        """Do not finalize/advance the queue before tree teardown completes."""
+        if not job.stop_requested:
+            return
+        with self._lock:
+            event = self._stop_events.get(job.id)
+        if event is None:
+            # Adopted jobs from an older daemon may have a persisted stop flag
+            # but no in-memory event.  Their reconciliation path starts a new
+            # worker when possible; this fallback keeps the monitor non-blocking
+            # for genuinely stale records.
+            return
+        timeout = max(5.0, float(config.STOP_GRACE_SECONDS) + 10.0)
+        if not event.wait(timeout=timeout):
+            logger.warning(
+                "stop worker for job %s did not finish within %.1fs; "
+                "finalizing with the available process evidence",
+                job.id,
+                timeout,
+            )
+        with self._lock:
+            if self._stop_events.get(job.id) is event:
+                self._stop_events.pop(job.id, None)
 
     @staticmethod
     def _proc_running(job: Job, popen) -> bool:
@@ -538,12 +601,12 @@ class JobManager:
             return
         ev = tail.last_event(job.progress_path)
         rc = popen.poll() if popen is not None else None
-        if job.stop_requested:
-            # Carry the kill's exit code so callers can distinguish a clean
-            # SIGTERM/SIGKILL from an unknown stop (popen may already be None
-            # for an adopted orphan that vanished — then rc stays None).
-            self._finalize(job, STATE_STOPPED, rc=rc)
-            return
+        # A terminal run_end is the trainer's authoritative outcome.  The stop
+        # endpoint and the monitor run on different threads, so a click that
+        # lands after the trainer has flushed run_end:ok but before the daemon
+        # observes process exit must not rewrite a successful run as stopped.
+        # Cooperative stops still emit run_end:stopped and therefore retain the
+        # stopped state and the checkpoint/state evidence.
         if ev and ev.get("ev") == "run_end":
             status = ev.get("status")
             mapped = {
@@ -551,11 +614,46 @@ class JobManager:
                 "stopped": STATE_STOPPED,
                 "error": STATE_ERROR,
             }.get(status, STATE_ERROR)
+            event_detail = None
+            if mapped == STATE_STOPPED:
+                event_detail = (
+                    "stop timeout; process tree force-killed"
+                    if job.forced_stop
+                    else "cooperative stop completed"
+                )
             # A run_end event is the trainer's own terminal signal — its rc
             # isn't exposed in the event, but the popen still carries the real
             # process exit code (0 on a clean ``sys.exit``). Forward it so a
             # run_end:ok job reports 0, not None.
-            self._finalize(job, mapped, error=ev.get("error"), rc=rc)
+            if status == "ok" and job.stop_requested:
+                # Do not leave a misleading "stop requested" marker on a job
+                # whose trainer completed normally.  Clearing it also prevents
+                # the asynchronous stop worker from signalling a reused PID
+                # after this job has already become terminal.
+                with self._lock:
+                    job.stop_requested = False
+                    job.stop_requested_at = None
+                    job.forced_stop = False
+                    if job.status_detail == "stopping":
+                        job.status_detail = None
+            self._finalize(
+                job,
+                mapped,
+                error=ev.get("error"),
+                detail=event_detail,
+                rc=rc,
+            )
+            return
+        if job.stop_requested:
+            # No terminal event means the process exited before it could report
+            # its own outcome. Carry the kill's exit code so callers can
+            # distinguish a clean SIGTERM/SIGKILL from an unknown stop (popen
+            # may already be None for an adopted orphan that vanished).
+            if job.forced_stop:
+                detail = "stop timeout; process tree force-killed"
+            else:
+                detail = "stop requested; process exited"
+            self._finalize(job, STATE_STOPPED, detail=detail, rc=rc)
             return
         if rc == 0:
             self._finalize(job, STATE_DONE, rc=rc)
@@ -658,10 +756,17 @@ class JobManager:
             for pid, owner in known.items():
                 if owner.id == job.id:
                     continue
+                if owner.create_time is None:
+                    logger.warning(
+                        "gpu_guard: refusing to reap job %s pid %s without create_time",
+                        owner.id,
+                        pid,
+                    )
+                    continue
                 logger.warning(
                     "gpu_guard: reaping leaked VRAM from job %s (pid %s)", owner.id, pid
                 )
-                proc.kill_tree(pid)
+                proc.kill_tree(pid, expected_create_time=owner.create_time)
                 reaped = True
             if reaped:
                 time.sleep(0.5)  # let the killed procs release VRAM
@@ -693,8 +798,95 @@ class JobManager:
         job.status_detail = "launched despite busy GPU"
 
     def _kill_job_tree(self, job: Job) -> None:
-        if job.pid is not None:
-            proc.kill_tree(job.pid)
+        with self._lock:
+            pid = job.pid
+            expected_create_time = job.create_time
+        if pid is None:
+            return
+        if expected_create_time is None:
+            logger.warning(
+                "refusing to kill job %s pid %s without persisted create_time",
+                job.id,
+                pid,
+            )
+            return
+        proc.kill_tree(pid, expected_create_time=expected_create_time)
+
+    def _stop_job_tree(self, job: Job) -> None:
+        """Request a checkpoint-capable stop and enforce the hard deadline."""
+
+        with self._lock:
+            # The monitor may have observed run_end:ok while this asynchronous
+            # stopper was waiting to run.  Never signal a terminal job (or a
+            # PID that was cleared by a later launch) after that race.
+            if job.state in TERMINAL_STATES or not job.stop_requested:
+                return
+            pid = job.pid
+            expected_create_time = job.create_time
+        if pid is None:
+            return
+        if expected_create_time is None:
+            logger.warning(
+                "refusing to stop job %s pid %s without persisted create_time",
+                job.id,
+                pid,
+            )
+            return
+        if not self._job_runs_train(job):
+            with self._lock:
+                if (
+                    job.state in TERMINAL_STATES
+                    or not job.stop_requested
+                    or job.pid != pid
+                    or job.create_time != expected_create_time
+                ):
+                    return
+                job.forced_stop = True
+                job.status_detail = "non-training job force-killed"
+                job.persist()
+            proc.kill_tree(pid, expected_create_time=expected_create_time)
+            return
+
+        stop_path = self._stop_request_path(job)
+        try:
+            self._write_stop_request(stop_path)
+        except OSError as exc:
+            logger.warning("job %s stop-file write failed: %s", job.id, exc)
+
+        with self._lock:
+            if (
+                job.state in TERMINAL_STATES
+                or not job.stop_requested
+                or job.pid != pid
+                or job.create_time != expected_create_time
+            ):
+                return
+        graceful = proc.stop_tree_gracefully(
+            pid,
+            expected_create_time=expected_create_time,
+            grace_seconds=config.STOP_GRACE_SECONDS,
+        )
+        if not graceful:
+            with self._lock:
+                if (
+                    job.state in TERMINAL_STATES
+                    or not job.stop_requested
+                    or job.pid != pid
+                    or job.create_time != expected_create_time
+                ):
+                    return
+                job.forced_stop = True
+                job.status_detail = "stop timeout; process tree force-killed"
+                job.persist()
+
+    def _stop_job_tree_worker(
+        self, job: Job, event: threading.Event
+    ) -> None:
+        """Run tree teardown and always release the monitor's wait gate."""
+        try:
+            self._stop_job_tree(job)
+        finally:
+            event.set()
 
     def _evict_resident_inference(self) -> None:
         """Ask a resident inference server (if any) to free VRAM before launch.
@@ -753,6 +945,39 @@ class JobManager:
         from scripts.tasks._common import command_runs_training
 
         return command_runs_training(str(argv[1]))
+
+    @classmethod
+    def _job_runs_train(cls, job: Job) -> bool:
+        return job.kind == "train" or cls._command_runs_train(job.argv)
+
+    @staticmethod
+    def _stop_request_path(job: Job):
+        return config.job_dir(job.id) / "stop.requested"
+
+    @staticmethod
+    def _write_stop_request(path, *, retries: int = _STOP_FILE_RETRIES) -> None:
+        """Publish the Windows cooperative-stop marker with bounded retries."""
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        last_error: OSError | None = None
+        for attempt in range(max(1, retries)):
+            temporary = path.with_name(
+                f".{path.name}.{os.getpid()}-{time.time_ns()}.tmp"
+            )
+            try:
+                temporary.write_text("stop\n", encoding="utf-8")
+                os.replace(temporary, path)
+                return
+            except OSError as exc:
+                last_error = exc
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt + 1 < max(1, retries):
+                    time.sleep(min(0.1 * (attempt + 1), 0.75))
+        assert last_error is not None
+        raise last_error
 
     @staticmethod
     def _ensure_flag(argv: list[str], flag: str, value: str) -> None:
@@ -851,15 +1076,31 @@ class JobManager:
                 if proc.is_alive(job.pid, job.create_time):
                     logger.info("reconcile: re-attaching live job %s", job.id)
                     self._adopt.append(job.id)
+                    if job.stop_requested:
+                        logger.info(
+                            "reconcile: resuming persisted stop request for job %s",
+                            job.id,
+                        )
+                        self._start_stop_worker(job)
                 else:
                     logger.info("reconcile: job %s died while we were down", job.id)
-                    job.stop_requested = False
-                    self._finalize(
-                        job,
-                        STATE_ERROR,
-                        error="daemon was down when the process exited",
-                        detail="orphaned",
-                    )
+                    if job.stop_requested:
+                        self._finalize(
+                            job,
+                            STATE_STOPPED,
+                            detail=(
+                                "forced stop while daemon was down"
+                                if job.forced_stop
+                                else "cooperative stop while daemon was down"
+                            ),
+                        )
+                    else:
+                        self._finalize(
+                            job,
+                            STATE_ERROR,
+                            error="daemon was down when the process exited",
+                            detail="orphaned",
+                        )
             elif job.state == STATE_QUEUED:
                 self._queue.put(job.id)
 

@@ -1221,28 +1221,59 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
     output_name = merged.get("output_name") or "last"
     if not output_dir:
         return None
-    base_path = ROOT / output_dir
+    from library.io.output_layout import resolve_output_layout, safe_output_name
+    from library.training.state import read_train_state, state_is_complete
 
-    candidates: list[Path] = []
+    raw_base = Path(str(output_dir))
+    base_path = raw_base if raw_base.is_absolute() else ROOT / raw_base
+    safe_name = safe_output_name(output_name)
+    layout = resolve_output_layout(base_path, safe_name)
+    roots: list[Path] = []
+    for root in layout.legacy_candidates():
+        if root not in roots:
+            roots.append(root)
+
+    # Explicit stop wins, then the rolling checkpoint, then a normal end state.
+    # The latter two remain gated by their historical save flags to avoid
+    # surprising a user who intentionally disabled auto-resume; interrupted
+    # states are always considered because they represent an explicit stop.
+    suffixes = [f"{safe_name}-interrupted-state"]
     if merged.get("checkpointing_epochs"):
-        candidates.append(base_path / f"{output_name}-checkpoint-state")
+        suffixes.append(f"{safe_name}-checkpoint-state")
     if merged.get("save_state_on_train_end"):
-        candidates.append(base_path / f"{output_name}-state")
+        suffixes.append(f"{safe_name}-state")
+    # An explicit daemon/CLI auto-resume request may opt into discovering old
+    # state even when the current GUI snapshot omitted the save flags. Keep the
+    # historical WebUI behavior (no flags => no prompt) otherwise.
+    if merged.get("auto_resume"):
+        for suffix in (f"{safe_name}-checkpoint-state", f"{safe_name}-state"):
+            if suffix not in suffixes:
+                suffixes.append(suffix)
 
-    for state_dir in candidates:
-        train_state_file = state_dir / "train_state.json"
-        if not train_state_file.is_file():
-            continue
-        try:
-            data = json.loads(train_state_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        step = int(data.get("current_step", 0))
-        return state_dir, step
+    seen: set[Path] = set()
+    for root in roots:
+        for suffix in suffixes:
+            state_dir = root / suffix
+            if state_dir in seen or not state_is_complete(state_dir, require_marker=True):
+                continue
+            seen.add(state_dir)
+            data = read_train_state(state_dir) or {}
+            expected_config = merged.get("config_signature")
+            expected_dataset = merged.get("dataset_signature")
+            if expected_config and data.get("config_signature") not in (None, expected_config):
+                continue
+            if expected_dataset and data.get("dataset_signature") not in (None, expected_dataset):
+                continue
+            step = int(data.get("global_step", data.get("current_step", 0)) or 0)
+            return state_dir, step
     return None
 
 
-def prelaunch_check(variant: str, preset: str) -> dict:
+def prelaunch_check(
+    variant: str,
+    preset: str,
+    preprocess_run: str | None = None,
+) -> dict:
     """Check cache counts and checkpoint state for a training launch.
 
     Returns a dict with cache_counts, has_cache, checkpoint info,
@@ -1253,9 +1284,22 @@ def prelaunch_check(variant: str, preset: str) -> dict:
     if errors:
         raise ValueError("; ".join(errors))
 
-    # Resolve cache directory
-    cache_dir_str = merged.get("lora_cache_dir", "post_image_dataset/lora")
-    cache_dir = ROOT / cache_dir_str
+    # Resolve cache directory. A selected preprocess manifest is authoritative;
+    # this keeps the preflight check aligned with train.py's run pinning.
+    selected_run = None
+    if preprocess_run:
+        from library.preprocess.runs import PreprocessRunError, run_from_manifest
+
+        try:
+            selected_run = run_from_manifest(preprocess_run)
+        except (PreprocessRunError, OSError, ValueError) as exc:
+            raise ValueError(f"invalid preprocess run: {exc}") from exc
+        cache_dir = selected_run.lora_cache_dir
+    else:
+        cache_dir_str = merged.get("lora_cache_dir", "post_image_dataset/lora")
+        cache_dir = Path(cache_dir_str)
+        if not cache_dir.is_absolute():
+            cache_dir = ROOT / cache_dir
     cache_counts = count_preprocess_caches(cache_dir)
 
     # Check if PE cache is required
@@ -1284,6 +1328,7 @@ def prelaunch_check(variant: str, preset: str) -> dict:
         "has_cache": has_cache,
         "checkpoint": checkpoint_info,
         "requires_pe": requires_pe,
+        "preprocess_run": str(selected_run.manifest_path) if selected_run else None,
     }
 
 
@@ -1297,20 +1342,29 @@ def wipe_checkpoint(output_dir: str, output_name: str) -> None:
 
     Raises ``OSError`` if deletion fails.
     """
-    name = output_name or "last"
-    parent = ROOT / output_dir
-    # checkpoint-state dir + its resumable sidecar adapter
-    state_dir = parent / f"{name}-checkpoint-state"
-    sidecar = parent / f"{name}-checkpoint.safetensors"
-    # last-state dir written by save_state_on_train_end (no sidecar — the final
-    # <name>.safetensors is a separate, intentional product and is NOT touched)
-    last_state_dir = parent / f"{name}-state"
-    if state_dir.is_dir():
-        shutil.rmtree(state_dir)
-    if sidecar.is_file():
-        sidecar.unlink()
-    if last_state_dir.is_dir():
-        shutil.rmtree(last_state_dir)
+    from library.io.output_layout import (
+        OUTPUT_WEIGHT_EXTENSIONS,
+        remove_path_with_retry,
+        resolve_output_layout,
+        safe_output_name,
+    )
+
+    name = safe_output_name(output_name or "last")
+    raw_parent = Path(str(output_dir))
+    parent = raw_parent if raw_parent.is_absolute() else ROOT / raw_parent
+    layout = resolve_output_layout(parent, name)
+    roots: list[Path] = []
+    for root in layout.legacy_candidates():
+        if root not in roots:
+            roots.append(root)
+    for root in roots:
+        # Do not touch the final adapter, snapshot, or arbitrary historical
+        # epoch files. These are only resumable sidecars.
+        for suffix in ("-interrupted-state", "-checkpoint-state", "-state"):
+            remove_path_with_retry(root / f"{name}{suffix}")
+        for ext in OUTPUT_WEIGHT_EXTENSIONS:
+            for suffix in ("-interrupted", "-checkpoint"):
+                remove_path_with_retry(root / f"{name}{suffix}{ext}")
 
 
 # ── Sample prompts file I/O ────────────────────────────────────

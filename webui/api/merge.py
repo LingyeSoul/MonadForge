@@ -16,19 +16,19 @@ class ScanRequest(BaseModel):
 
 @router.get("/dirs")
 def list_dirs():
-    """List directories containing .safetensors adapter files."""
+    """List directories containing supported adapter weight files."""
     return {"dirs": svc.list_adapter_dirs()}
 
 
 @router.get("/files")
 def list_files(dir: str = Query(...)):
-    """List .safetensors files in a directory."""
+    """List supported adapter weight files in a directory."""
     return {"files": svc.list_files(dir)}
 
 
 @router.post("/scan")
 def scan_adapter(body: ScanRequest):
-    """Scan a .safetensors file for bakeability."""
+    """Scan an adapter weight file for bakeability."""
     result = svc.scan_adapter(body.file_path)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])

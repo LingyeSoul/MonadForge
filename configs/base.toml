@@ -1,53 +1,27 @@
-pretrained_model_name_or_path = "D:\\AIArt\\ComfyUI-aki-v2\\ComfyUI\\models\\diffusion_models\\anima-base-v1.0.safetensors"
-qwen3 = "D:\\AIArt\\ComfyUI-aki-v2\\ComfyUI\\models\\clip\\qwen_3_06b_base.safetensors"
-vae = "D:\\AIArt\\ComfyUI-aki-v2\\ComfyUI\\models\\vae\\qwen_image_vae.safetensors"
-
-# Test inference defaults (used by `make test` / WebUI "Test" button)
+pretrained_model_name_or_path = "/home/buxinzi/Projects/toolbox/comfyui-image/ComfyUI/models/diffusion_models/Anima/anima-base-v1.0.safetensors"
+qwen3 = "/home/buxinzi/Projects/toolbox/comfyui-image/ComfyUI/models/text_encoders/qwen_3_06b_base.safetensors"
+vae = "/home/buxinzi/Projects/toolbox/comfyui-image/ComfyUI/models/vae/qwen_image_vae.safetensors"
 test_prompt = "masterpiece, best quality, score_7, safe. An anime girl wearing a black tank-top and denim shorts is standing outdoors. She's holding a rectangular sign out in front of her that reads \"ANIMA\". She's looking at the viewer with a smile. The background features some trees and blue sky with clouds."
 test_negative_prompt = "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, sepia"
-
 output_dir = "output/ckpt"
 output_name = "anima_lora"
 save_model_as = "safetensors"
 logging_dir = "output/logs"
-# Arbitrary note embedded verbatim in the checkpoint metadata (ss_training_comment).
-# Overridable per-preset/method/CLI and surfaced as a GUI field; leave empty for none.
 training_comment = ""
 log_with = "tensorboard"
-
 network_module = "networks.lora_anima"
 network_train_unet_only = true
-
-# ── Dataset paths (shared preprocess ↔ training contract) ──────────────────
-# Top-level scalars so any preset / method can override (the merge chain is
-# base.toml → presets.toml[<preset>] → methods/<method>.toml).
-# NOTE: preprocess-only knobs (source_image_dir, drop_lowres_images,
-# min_pixels, target_res) now live in configs/preprocess.toml.
 resized_image_dir = "post_image_dataset/resized"
 lora_cache_dir = "post_image_dataset/lora"
-
-# fnmatch glob applied to each image's path relative to its subset's image_dir.
-# `*` (or unset) trains on everything. Use `|` to OR-combine patterns:
-#   `char_a/*`           → one subfolder
-#   `char_a/*|char_b/*`  → two subfolders
-#   `*portrait*`         → any path containing "portrait"
-# Same blueprint applies to validation enumeration.
 path_pattern = "*"
-
-# Multi-scale constant-token tiers (`target_res`) live in configs/preprocess.toml
-# (preserved across `make update`). Set your resolution tiers there.
-
 optimizer_type = "AdamW"
 lr_scheduler = "constant"
-
 timestep_sampling = "sigmoid"
 sigmoid_bias = 0.0
 discrete_flow_shift = 1.0
 mixed_precision = "bf16"
-
 gradient_checkpointing = false
 unsloth_offload_checkpointing = false
-
 use_vae_cache = true
 use_text_cache = true
 skip_cache_check = true
@@ -58,10 +32,6 @@ torch_compile = true
 attn_mode = "flash"
 save_precision = "bf16"
 compile_dynamic_seq = true
-# Partitioner recompute cap — restores the pre-2026-06-10 no-grad-ckpt VRAM
-# footprint after the custom-autograd removal (which had implicitly pinned the
-# saved-for-backward set). 0.85 ≈ old peak at identical step time. Auto-skipped
-# (logged) when gradient_checkpointing=true — incompatible and redundant there.
 activation_memory_budget = 0.99
 log_every_n_steps = 2
 dataloader_pin_memory = true
@@ -69,21 +39,8 @@ persistent_data_loader_workers = false
 use_cmmd = false
 channel_scaling_alpha = 0.5
 gradient_accumulation_steps = 1
-
 use_repa = false
 repa_target_dog = false
-
-# Preview sampling — generate sample images at checkpoint saves
-[preview]
-sample_every_n_epochs = 2
-sample_prompts = "configs/custom/sample_prompts.txt"
-sample_sampler = "euler"
-sample_decode_inline = "auto"
-sample_guidance_scale = 3.5
-sample_flow_shift = 1.0
-sample_image_size = [1024, 1024]
-# sample_seed = 42  # uncomment for reproducible previews
-
 [[datasets]]
 batch_size = 1
 validation_split_num = 16
@@ -94,20 +51,15 @@ cache_dir = "{lora_cache_dir}"
 num_repeats = 1
 recursive = true
 
+
+[preview]
+sample_every_n_epochs = 2
+sample_prompts = "configs/custom/sample_prompts.txt"
+sample_sampler = "euler"
+sample_decode_inline = "auto"
+sample_guidance_scale = 3.5
+sample_flow_shift = 1.0
+sample_image_size = [ 1024, 1024,]
+
 [general]
 caption_extension = ".txt"
-
-# --- lora-rescripts integration (commented out, activate as needed) ---
-# optimizer_type = "AdamW8bitKahan"   # Kahan-compensated 8-bit AdamW
-# optimizer_args = ["stabilize=true"] # Cap lr by rms(grad²/exp_avg_sq)
-# staged_resolution = true            # Deprecated shorthand; requires 3 dataset rows
-# staged_resolution_ratios = "20,30,50"
-# staged_resolution_base_sides = "512,768,1024" # validates each row's cached tier
-# See docs/guidelines/staged-resolution-training.md for the required row layout.
-# adaptive_noise_offset = true        # Latent-statistics-based noise offset
-# contrastive_flow_matching = true    # Contrastive loss on RF objective
-# cfm_lambda = 0.05
-# pyramid_noise_iterations = 6        # Multi-frequency noise
-# pyramid_noise_discount = 0.4
-# optimizer_cpu_offload = true         # CPU offload optimizer states
-# profile_step_timing = 50            # Step timing profiler (renamed from profile_steps)

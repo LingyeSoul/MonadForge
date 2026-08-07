@@ -125,9 +125,9 @@ echo "[STEP 4/4] Building WebUI frontend ..."
 
 cd "$SCRIPT_DIR/webui/frontend"
 
-if [ ! -d node_modules ]; then
-    echo "        Installing npm dependencies ..."
-    npm install
+if ! node "$SCRIPT_DIR/scripts/webui/ensure_npm_deps.mjs" --ensure --clean; then
+    echo "[ERROR] Frontend dependency verification failed."
+    exit 1
 fi
 
 npm run build

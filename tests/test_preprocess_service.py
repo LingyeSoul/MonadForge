@@ -10,6 +10,8 @@ replaced it: reading the live config value and persisting it back to
 
 from __future__ import annotations
 
+import json
+
 import toml
 
 from webui.services import preprocess_service as svc
@@ -133,13 +135,29 @@ def test_settings_carries_target_res_not_resize_resolution(monkeypatch):
         "library.config.io.load_path_overrides",
         lambda preset, method, methods_subdir: {"target_res": [1024, 896]},
     )
-    monkeypatch.setattr(svc, "_load_sam", lambda: {})
-    monkeypatch.setattr(svc, "_load_gui_settings", lambda: {})
+    monkeypatch.setattr(svc, "_load_sam", dict)
+    monkeypatch.setattr(svc, "_load_gui_settings", dict)
 
     s = svc.get_settings()
     assert s["target_res"] == [896, 1024]
     assert s["multires_per_image"] is False
+    assert s["mit_ctd_gate"] is True
     assert "resize_resolution" not in s
+
+
+def test_ctd_gate_round_trips_gui_settings(tmp_path, monkeypatch):
+    settings_file = tmp_path / "webui_settings.json"
+    sam_yaml = tmp_path / "sam_mask.yaml"
+    monkeypatch.setattr(svc, "SETTINGS_FILE", settings_file)
+    monkeypatch.setattr(svc, "SAM_YAML", sam_yaml)
+    monkeypatch.setattr(svc, "get_target_res", lambda: [1024])
+    monkeypatch.setattr(svc, "get_multires_per_image", lambda: False)
+    monkeypatch.setattr(svc, "_load_sam", dict)
+
+    saved = svc.save_settings({"sam": {}, "mit_ctd_gate": False})
+
+    assert saved["mit_ctd_gate"] is False
+    assert json.loads(settings_file.read_text(encoding="utf-8"))["mit_ctd_gate"] is False
 
 
 def test_preprocess_api_rejects_multires_with_one_tier():
@@ -160,3 +178,67 @@ def test_preprocess_api_rejects_unknown_target_tier():
 
     with pytest.raises(ValidationError, match="unsupported target_res"):
         PreprocessSettings(target_res=[999, 1024])
+
+
+def test_run_listing_status_and_manifest_paths(tmp_path, monkeypatch):
+    from library.preprocess.runs import resolve_preprocess_run
+
+    source = tmp_path / "nested" / "source"
+    source.mkdir(parents=True)
+    post = tmp_path / "post"
+    run = resolve_preprocess_run(
+        source,
+        {"target_res": [1024], "caption_shuffle_variants": 4},
+        post_image_dataset=post,
+    )
+    (run.resized_dir / "a.png").write_bytes(b"png")
+    (run.lora_dir / "a_anima.npz").write_bytes(b"npz")
+    run.write_manifest(
+        status="ready",
+        artifacts={"resized": 1, "latents": 1, "te": 0, "pe": 0},
+        updated_at=123.0,
+    )
+
+    monkeypatch.setattr(svc, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        svc,
+        "get_path_overrides",
+        lambda preset="default", variant=None: {
+            "source_image_dir": str(source),
+            "resized_image_dir": str(post / "resized"),
+            "lora_cache_dir": str(post / "lora"),
+            "conditioning_data_dir": str(tmp_path / "conditioning"),
+            "conditioning_resized_dir": str(post / "cond_resized"),
+        },
+    )
+
+    listed = svc.list_runs(source=str(source))
+    assert [item["manifest"] for item in listed] == [str(run.manifest_path.resolve())]
+    assert listed[0]["status"] == "ready"
+    assert listed[0]["artifacts"]["latents"] == 1
+
+    status = svc.get_status(manifest=str(run.manifest_path))
+    assert status["resized"] == 1
+    assert status["cache"]["latents"] == 1
+    assert status["preprocess_run"]["complete"] is True
+
+    paths = svc.get_paths(manifest=str(run.manifest_path))
+    assert paths["source_image_dir"] == str(source.resolve())
+    assert paths["resized_image_dir"] == str(run.resized_dir)
+    assert paths["lora_cache_dir"] == str(run.lora_dir)
+
+
+def test_manifest_paths_reject_incomplete_run(tmp_path):
+    import pytest
+
+    from library.preprocess.runs import PreprocessRunError, resolve_preprocess_run
+
+    source = tmp_path / "source"
+    source.mkdir()
+    run = resolve_preprocess_run(
+        source, {"target_res": [1024]}, post_image_dataset=tmp_path / "post"
+    )
+    run.write_manifest(status="failed", error="worker failed")
+
+    with pytest.raises(PreprocessRunError, match="Incomplete preprocess manifest"):
+        svc.get_paths(manifest=str(run.manifest_path))

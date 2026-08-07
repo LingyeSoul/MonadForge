@@ -54,6 +54,11 @@ GPU_GUARD_DELAY = float(os.environ.get("ANIMA_DAEMON_GPU_DELAY", "2.0"))
 CMD_STALL_TIMEOUT = float(os.environ.get("ANIMA_DAEMON_CMD_STALL_TIMEOUT", "120"))
 JOB_STALL_TIMEOUT = float(os.environ.get("ANIMA_DAEMON_JOB_STALL_TIMEOUT", "0"))
 
+# Cooperative stop budget.  The trainer saves an atomic interrupted state at
+# the next complete optimizer step; after this deadline the daemon must reclaim
+# the whole process tree so the serial queue and GPU do not remain wedged.
+STOP_GRACE_SECONDS = float(os.environ.get("ANIMA_DAEMON_STOP_GRACE", "30"))
+
 
 def ensure_state_dirs() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)

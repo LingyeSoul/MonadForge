@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from tasks import COMMANDS as CLI_COMMANDS
 
-
 # This remains an explicit security boundary: only commands listed here can be
 # submitted by a browser. Descriptions come from tasks.py so command renames
 # cannot silently leave the WebUI pointing at a removed command.
@@ -46,6 +45,17 @@ _WEBUI_COMMAND_NAMES = frozenset(
         "dcw-train",
         "distill-prep",
         "distill-mod",
+        # ResShift SR/RSD sidecar.  ``sr-setup`` is intentionally excluded:
+        # it mutates the WebUI interpreter and must remain a terminal command.
+        "sr-prep",
+        "sr-phase0",
+        "sr-test",
+        "sr-build-hr-pool",
+        "sr-detect-text",
+        "sr-train",
+        "sr-rsd-train",
+        "sr-rsd-dryrun",
+        "sr-rsd-infer",
         "download-models",
         "download-anima",
         "download-sam3",

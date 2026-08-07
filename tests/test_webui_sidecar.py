@@ -74,6 +74,7 @@ def test_sidecar_start_writes_pidfile(tmp_path: Path, monkeypatch):
         time.sleep(0.4)
         assert sc._pidfile.is_file()
         rec = json.load(open(sc._pidfile, encoding="utf-8"))
+        assert rec["create_time"] is not None
         assert rec["port"] == 9999
         assert rec["url"] == "http://127.0.0.1:9999"
     sc.stop()

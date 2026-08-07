@@ -329,6 +329,7 @@ def run_scope(
     *,
     final_step: Callable[[], int],
     extra_fields: Optional[Callable[[], dict]] = None,
+    stopped: Optional[Callable[[], bool]] = None,
 ):
     """Emit the matching ``run_end`` when the wrapped training block exits.
 
@@ -372,4 +373,5 @@ def run_scope(
         )
         raise
     else:
-        sink.run_end(status="ok", final_step=final_step(), **_extra())
+        status = "stopped" if stopped is not None and bool(stopped()) else "ok"
+        sink.run_end(status=status, final_step=final_step(), **_extra())

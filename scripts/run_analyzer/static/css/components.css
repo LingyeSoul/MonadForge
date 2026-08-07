@@ -1,0 +1,252 @@
+/* components.css — 跨视图通用组件：舞台 / KPI / 元数据 / 图表控件 / 按钮 */
+
+/* ── 深黑舞台 ── */
+.stage {
+  background: var(--stage);
+  border: var(--line-dark);
+  color: var(--paper);
+}
+.stage.live { border-color: var(--volt); }
+.stage-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: var(--line-dark);
+}
+.stage-title { font-size: var(--ts-micro); letter-spacing: 0.22em; color: var(--g5); }
+.stage-sub { font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); white-space: nowrap; }
+.stage-tools { display: flex; align-items: center; gap: 14px; }
+
+/* ── KPI 数字墙 ── */
+.kpi-grid {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px; background: var(--g8);
+}
+.kpi-cell { background: var(--stage); padding: 22px 18px 18px; min-height: 108px; }
+.kpi-label {
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  letter-spacing: 0.14em;
+  color: var(--g5);
+  margin-bottom: 10px;
+  white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.kpi-value {
+  font-family: var(--font-mono);
+  font-size: var(--ts-3xl);
+  line-height: 1.1;
+  color: var(--paper);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+.kpi-value.volt { color: var(--volt); }
+.kpi-value.flash { color: var(--volt); transition: color 300ms var(--ease); }
+.kpi-unit { font-size: var(--ts-sm); color: var(--g5); margin-left: 4px; }
+.kpi-sub { margin-top: 6px; font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); }
+
+/* C7：圆弧进度（黑图版 + volt 弧） */
+.meta-arc { display: flex; justify-content: center; padding: 18px 16px 8px; }
+.arc-block {
+  position: relative;
+  width: 180px; height: 180px;
+  background: var(--stage);
+  border: var(--line-dark);
+}
+.arc-svg { width: 100%; height: 100%; display: block; }
+.arc-track { fill: none; stroke: var(--g8); stroke-width: 3; }
+.arc-fill { fill: none; stroke: var(--volt); stroke-width: 3; stroke-linecap: butt; }
+.arc-center {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 4px;
+}
+.arc-step { font-size: var(--ts-3xl); color: var(--paper); line-height: 1; }
+.arc-sub { font-size: var(--ts-micro); color: var(--g5); letter-spacing: 0.1em; }
+
+/* ── 运行元数据 ── */
+.meta-card { border: var(--line); }
+.meta-head {
+  padding: 12px 16px;
+  border-bottom: var(--line);
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  letter-spacing: 0.18em;
+  color: var(--g5);
+}
+.meta-list { padding: 6px 16px 12px; }
+.meta-row {
+  display: flex; gap: 16px; align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--g2);
+  font-size: var(--ts-sm);
+}
+.meta-row:last-child { border-bottom: none; }
+.meta-k {
+  flex: 0 0 96px;
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  letter-spacing: 0.08em;
+  color: var(--g5);
+}
+.meta-v { font-family: var(--font-mono); color: var(--ink); word-break: break-all; }
+
+/* ── 图表控件 ── */
+.chart-tools {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 18px;
+  padding: 14px 2px;
+  border-bottom: var(--line);
+  margin-bottom: 0;
+}
+.ctl { display: flex; align-items: center; gap: 8px; font-size: var(--ts-sm); color: var(--g6); }
+.ctl-label { font-family: var(--font-mono); font-size: var(--ts-micro); letter-spacing: 0.1em; color: var(--g4); }
+.ctl input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 140px; height: 1px; background: var(--g3); outline: none;
+}
+.ctl input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 10px; height: 10px; background: var(--ink);
+  cursor: pointer; transition: background var(--dur) var(--ease);
+}
+.ctl input[type="range"]:active::-webkit-slider-thumb { background: var(--volt); }
+.ctl input[type="range"]::-moz-range-thumb {
+  width: 10px; height: 10px; border: none; background: var(--ink);
+  cursor: pointer;
+}
+.ctl-val { font-family: var(--font-mono); font-size: var(--ts-sm); color: var(--ink); min-width: 30px; }
+
+.seg { display: flex; }
+.seg button {
+  height: 26px; padding: 0 12px;
+  border: 1px solid var(--g3); border-right: none;
+  font-size: var(--ts-sm); color: var(--g6); cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.seg button:last-child { border-right: 1px solid var(--g3); }
+.seg button.active { background: var(--volt); border-color: var(--volt); color: var(--ink); }
+
+.chip-set { display: flex; gap: 6px; flex-wrap: wrap; }
+.sc-chip {
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  padding: 3px 9px;
+  border: 1px solid var(--g3);
+  color: var(--g6);
+  cursor: pointer;
+  transition: all var(--dur) var(--ease);
+}
+.sc-chip.active { border-color: var(--ink); color: var(--ink); }
+.sc-chip.dim { opacity: 0.4; }
+
+.checkbox { display: inline-flex; align-items: center; gap: 8px; font-size: var(--ts-sm); color: var(--g6); cursor: pointer; }
+.checkbox input { position: absolute; opacity: 0; }
+.checkbox span {
+  width: 14px; height: 14px;
+  border: 1px solid var(--g3);
+  display: inline-block;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.checkbox input:checked + span { background: var(--volt); border-color: var(--volt); }
+.checkbox input:focus-visible + span { outline: 1px solid var(--volt); outline-offset: 2px; }
+
+.chart { width: 100%; }
+.chart-pad { padding: 0 18px 18px; }
+.chart-h-lg { height: 520px; }
+.chart-h-md { height: 440px; }
+.chart-h-sm { height: 280px; }
+.chart-h-xs { height: 220px; }
+.chart-gap { height: 28px; }
+.masthead-tight { margin-bottom: 18px; }
+
+/* ── 按钮 ── */
+.block-btn {
+  display: inline-flex; align-items: center;
+  height: 34px; padding: 0 20px;
+  background: var(--volt);
+  border: 1px solid var(--volt);
+  color: var(--ink);
+  font-size: var(--ts-md); font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.block-btn:hover { background: var(--ink); border-color: var(--ink); color: var(--volt); }
+.block-btn:disabled { background: var(--g1); border-color: var(--g3); color: var(--g4); cursor: not-allowed; }
+
+.text-btn {
+  font-size: var(--ts-sm); color: var(--g6); cursor: pointer;
+  border-bottom: 1px solid transparent; padding: 2px 0;
+  transition: color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.text-btn:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* ── 采样预览遮罩（lightbox）── */
+.lightbox {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  z-index: 100;
+  display: flex; align-items: center; justify-content: center;
+  padding: 48px;
+}
+.lb-frame {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  max-width: min(1200px, 92vw);
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+}
+.lb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: var(--line);
+}
+.lb-head .mono { font-size: var(--ts-sm); color: var(--g6); }
+.lb-frame img {
+  max-width: 100%; max-height: 62vh;
+  object-fit: contain; display: block; margin: 0 auto;
+  background: var(--g1);
+}
+.lb-prompt {
+  padding: 14px 16px;
+  border-top: var(--line);
+  font-size: var(--ts-sm);
+  color: var(--g6);
+  max-height: 140px; overflow-y: auto;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* ── 快捷键面板 ── */
+.help-panel {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.88);
+  z-index: 120;
+  display: flex; align-items: center; justify-content: center;
+  padding: 48px;
+}
+.help-frame {
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  width: min(520px, 90vw);
+}
+.help-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: var(--line);
+}
+.help-head .mono { font-size: var(--ts-sm); letter-spacing: 0.18em; color: var(--g6); }
+.help-rows { padding: 8px 16px 14px; }
+.help-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--g2);
+  font-size: var(--ts-sm);
+}
+.help-row:last-child { border-bottom: none; }
+.help-row kbd {
+  font-family: var(--font-mono);
+  font-size: var(--ts-micro);
+  border: 1px solid var(--g3);
+  padding: 2px 7px;
+  color: var(--ink);
+  background: var(--g1);
+}
+.help-row span { color: var(--g6); }

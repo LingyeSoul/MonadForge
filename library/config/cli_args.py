@@ -168,6 +168,16 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "task's previews don't replay the previous task's gallery.",
     )
     parser.add_argument(
+        "--preprocess_run",
+        type=str,
+        default=None,
+        help=(
+            "Manifest or run directory produced by preprocessing. When set, "
+            "training reads only the caches belonging to this run and rejects "
+            "mixed/unsigned cache directories."
+        ),
+    )
+    parser.add_argument(
         "--huggingface_token",
         type=str,
         default=None,
@@ -377,7 +387,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "--max_train_epochs",
         type=int,
         default=None,
-        help="training epochs (overrides max_train_steps)",
+        help=(
+            "training epochs used to derive the step budget only when "
+            "max_train_steps was not explicitly configured"
+        ),
     )
     parser.add_argument(
         "--max_data_loader_n_workers",

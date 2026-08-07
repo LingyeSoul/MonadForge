@@ -42,6 +42,10 @@ segmentation-models-pytorch>=0.3.4
 albumentations>=1.4.0
 packaging
 pycocotools>=2.0.11
+# MIT/CTD 文本检测 onnx 加速。固定 CUDA 12 线（1.26.0）：1.27+ wheel 是
+# CUDA 13 构建，要求系统 CUDA 13 运行库；本机 CUDA 12.9 运行库由
+# nvidia-*-cu12 pip 包提供（generate_masks_mit.py 会自动预加载它们）。
+onnxruntime-gpu==1.26.0
 
 # 注意：这里故意不声明 flash-attn
 # 公共 26.06 wheel 存在 dense-tail NaN；只有固定 main c91cad40 的本地

@@ -128,6 +128,46 @@ def save_mask(path: Path, alpha_mask: np.ndarray) -> None:
     Image.fromarray(alpha_mask, mode="L").save(path)
 
 
+def _preload_nvidia_cuda_libs() -> None:
+    """dlopen pip-installed nvidia CUDA runtime libs so onnxruntime's CUDA
+    ExecutionProvider can resolve them.
+
+    Torch wheels carry an RPATH into ``nvidia/*/lib`` under site-packages, but
+    onnxruntime's provider library does not — on a host without a system CUDA
+    install (all CUDA libs come from the ``nvidia-*-cu12`` pip packages) ORT
+    fails to dlopen ``libcublasLt.so.12`` etc. and silently falls back to CPU.
+    Loading the libs with ``RTLD_GLOBAL`` puts them in the loader's namespace,
+    so ORT's dlopen-by-soname succeeds. No-op when CUDA libs are already
+    reachable (system CUDA / LD_LIBRARY_PATH) or absent.
+    """
+    import ctypes
+    import site
+
+    prefixes = (
+        "libcudart",
+        "libcublas",
+        "libcudnn",
+        "libcusparse",
+        "libcusolver",
+        "libcurand",
+        "libcufft",
+        "libnvrtc",
+        "libnvjitlink",
+        "libcusparselt",
+    )
+    seen: set[str] = set()
+    for base in (Path(p) for p in site.getsitepackages()):
+        for so in sorted(base.glob("nvidia/*/lib/*.so*")):
+            name = so.name
+            if name in seen or not name.startswith(prefixes):
+                continue
+            seen.add(name)
+            try:
+                ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                continue
+
+
 def _load_ctd(onnx_path: str, device: str = "cuda") -> _CtdForward:
     """Return a CTD forward function, preferring ONNX Runtime CUDA.
 
@@ -136,6 +176,7 @@ def _load_ctd(onnx_path: str, device: str = "cuda") -> _CtdForward:
     remain usable on non-CUDA hosts.
     """
     if device != "cpu":
+        _preload_nvidia_cuda_libs()
         try:
             import onnxruntime as ort
 

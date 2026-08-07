@@ -2,9 +2,25 @@ import argparse
 import json
 import logging
 import os
-import shutil
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+from library.io.output_layout import (
+    atomic_replace_dir,
+    atomic_write_json,
+    layout_from_args,
+    remove_path_with_retry,
+)
+from library.training.state import (
+    COMPLETE_MARKER,
+    build_train_state,
+    normalize_train_state,
+    read_train_state,
+    state_is_complete,
+    write_complete_marker,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +39,7 @@ STEP_DIFFUSERS_DIR_NAME = "{}-step{:08d}"
 
 CHECKPOINT_STATE_NAME = "{}-checkpoint-state"
 CHECKPOINT_FILE_NAME = "{}-checkpoint"
+INTERRUPTED_STATE_NAME = "{}-interrupted-state"
 
 
 def default_if_none(value, default):
@@ -36,6 +53,17 @@ def _ensure_parent_dir(path: str) -> None:
         os.makedirs(parent, exist_ok=True)
 
 
+def _canonical(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "_output_layout_canonical", False))
+
+
+def _layout(args: argparse.Namespace):
+    """Return the canonical layout, preserving legacy callers until train()
+    explicitly opts into it."""
+
+    return layout_from_args(args)
+
+
 # Trajectory (step/epoch) checkpoints + their resumable -state dirs live in a
 # per-run subdir ``<output_dir>/<model_name>/`` so they don't clutter
 # output_dir; the final ``<output_name>.<ext>`` and the rolling
@@ -44,11 +72,15 @@ def _ensure_parent_dir(path: str) -> None:
 # output_dir and carry the subdir prefix, so save and remove stay symmetric.
 def get_epoch_ckpt_name(args: argparse.Namespace, ext: str, epoch_no: int):
     model_name = default_if_none(args.output_name, DEFAULT_EPOCH_NAME)
+    if _canonical(args):
+        return EPOCH_FILE_NAME.format(model_name, epoch_no) + ext
     return os.path.join(model_name, EPOCH_FILE_NAME.format(model_name, epoch_no) + ext)
 
 
 def get_step_ckpt_name(args: argparse.Namespace, ext: str, step_no: int):
     model_name = default_if_none(args.output_name, DEFAULT_STEP_NAME)
+    if _canonical(args):
+        return STEP_FILE_NAME.format(model_name, step_no) + ext
     return os.path.join(model_name, STEP_FILE_NAME.format(model_name, step_no) + ext)
 
 
@@ -124,12 +156,15 @@ def save_state_on_epoch_end(args: argparse.Namespace, accelerator, epoch_no):
     logger.info("")
     logger.info(f"saving state at epoch {epoch_no}")
 
-    # Trajectory -state dirs live alongside their weights in the per-run subdir.
+    # Canonical runs already have ``args.output_dir=<ckpt>/<name>``; legacy
+    # callers retain the historical extra model-name directory.
     state_dir = os.path.join(
-        args.output_dir, model_name, EPOCH_STATE_NAME.format(model_name, epoch_no)
+        args.output_dir,
+        EPOCH_STATE_NAME.format(model_name, epoch_no)
+        if _canonical(args)
+        else os.path.join(model_name, EPOCH_STATE_NAME.format(model_name, epoch_no)),
     )
-    _ensure_parent_dir(state_dir)
-    accelerator.save_state(state_dir)
+    _atomic_accelerator_save_state(accelerator, state_dir)
 
 
 def save_state_stepwise(args: argparse.Namespace, accelerator, step_no):
@@ -138,16 +173,19 @@ def save_state_stepwise(args: argparse.Namespace, accelerator, step_no):
     logger.info("")
     logger.info(f"saving state at step {step_no}")
 
-    # Trajectory -state dirs live alongside their weights in the per-run subdir.
     state_dir = os.path.join(
-        args.output_dir, model_name, STEP_STATE_NAME.format(model_name, step_no)
+        args.output_dir,
+        STEP_STATE_NAME.format(model_name, step_no)
+        if _canonical(args)
+        else os.path.join(model_name, STEP_STATE_NAME.format(model_name, step_no)),
     )
-    _ensure_parent_dir(state_dir)
-    accelerator.save_state(state_dir)
+    _atomic_accelerator_save_state(accelerator, state_dir)
 
 
 def get_checkpoint_state_dir(args: argparse.Namespace):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+    if _canonical(args):
+        return os.path.join(args.output_dir, CHECKPOINT_STATE_NAME.format(model_name))
     return os.path.join(args.output_dir, CHECKPOINT_STATE_NAME.format(model_name))
 
 
@@ -164,6 +202,11 @@ def get_last_state_dir(args: argparse.Namespace):
     return os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name))
 
 
+def get_interrupted_state_dir(args: argparse.Namespace) -> str:
+    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+    return os.path.join(args.output_dir, INTERRUPTED_STATE_NAME.format(model_name))
+
+
 def get_checkpoint_ckpt_name(args: argparse.Namespace, ext: str):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
     return CHECKPOINT_FILE_NAME.format(model_name) + ext
@@ -176,10 +219,7 @@ def save_checkpoint_state(args: argparse.Namespace, accelerator):
     logger.info(f"saving checkpoint state to {state_dir} (overwriting)")
     os.makedirs(args.output_dir, exist_ok=True)
 
-    if os.path.exists(state_dir):
-        shutil.rmtree(state_dir)
-
-    accelerator.save_state(state_dir)
+    _atomic_accelerator_save_state(accelerator, state_dir)
 
 
 def save_state_on_train_end(args: argparse.Namespace, accelerator):
@@ -190,7 +230,210 @@ def save_state_on_train_end(args: argparse.Namespace, accelerator):
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_dir = os.path.join(args.output_dir, LAST_STATE_NAME.format(model_name))
-    accelerator.save_state(state_dir)
+    _atomic_accelerator_save_state(accelerator, state_dir)
+
+
+def _accelerator_process_count(accelerator) -> int:
+    """Return the number of ranks participating in a save operation."""
+
+    try:
+        return max(1, int(getattr(accelerator, "num_processes", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _accelerator_process_index(accelerator) -> int:
+    """Return the stable rank index used by Accelerate's RNG filenames."""
+
+    try:
+        return max(0, int(getattr(accelerator, "process_index", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _write_save_status(path: Path, *, ok: bool, detail: str = "") -> None:
+    """Publish a per-rank save status without exposing a partial file."""
+
+    payload = "ok\n" if ok else f"error\n{detail}\n"
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _read_save_error(path: Path) -> str | None:
+    try:
+        if path.is_file():
+            text = path.read_text(encoding="utf-8").strip()
+            return text or "checkpoint save failed"
+    except OSError:
+        return "checkpoint save failed (error marker unreadable)"
+    return None
+
+
+def _atomic_accelerator_save_state(accelerator, state_dir: str) -> None:
+    """Atomically publish a complete Accelerate state across all ranks.
+
+    ``Accelerator.save_state`` writes the shared model/optimizer payload from
+    the main rank and a distinct RNG file from every rank.  All ranks therefore
+    have to use one staging directory; publishing one PID-scoped directory per
+    rank loses whichever files were written by the other ranks.  Rank status
+    files make a failed rank visible to the publisher before the completion
+    marker is written.
+    """
+
+    target = Path(state_dir)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    process_count = _accelerator_process_count(accelerator)
+    process_index = _accelerator_process_index(accelerator)
+    is_main = bool(getattr(accelerator, "is_main_process", process_index == 0))
+    distributed = process_count > 1
+
+    # This name is intentionally shared by every rank.  Checkpoint calls are
+    # serialized by the training loop; main removes a stale staging directory
+    # before the first barrier so a prior crash cannot contribute old files.
+    staging = target.with_name(f".{target.name}.tmp")
+    error_marker = target.with_name(f".{target.name}.save-error")
+    token_path = staging / ".save-token"
+    expected_token: str | None = None
+
+    preparation_error: BaseException | None = None
+    if is_main:
+        try:
+            if staging.exists():
+                remove_path_with_retry(staging)
+            error_marker.unlink(missing_ok=True)
+            staging.mkdir(parents=True, exist_ok=True)
+            expected_token = f"{os.getpid()}-{time.time_ns()}"
+            token_tmp = token_path.with_name(f".{token_path.name}.{os.getpid()}.tmp")
+            token_tmp.write_text(expected_token, encoding="ascii")
+            os.replace(token_tmp, token_path)
+        except BaseException as exc:  # noqa: BLE001 - all ranks must see prep failure
+            preparation_error = exc
+            try:
+                _write_save_status(
+                    error_marker,
+                    ok=False,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+            except BaseException as status_exc:  # noqa: BLE001
+                logger.debug("could not write checkpoint prep failure marker: %s", status_exc)
+
+    if distributed:
+        accelerator.wait_for_everyone()
+
+    remote_preparation_error = _read_save_error(error_marker)
+    if preparation_error is not None or remote_preparation_error is not None or not staging.is_dir():
+        if preparation_error is not None:
+            raise preparation_error
+        raise RuntimeError(
+            remote_preparation_error or "checkpoint staging directory was not prepared"
+        )
+
+    if expected_token is None:
+        try:
+            expected_token = token_path.read_text(encoding="ascii")
+        except OSError as exc:
+            raise RuntimeError("checkpoint staging token is missing") from exc
+    if not expected_token:
+        raise RuntimeError("checkpoint staging token is empty")
+
+    staging.mkdir(parents=True, exist_ok=True)
+
+    rank_status = staging / f".rank-{process_index}.status"
+    local_error: BaseException | None = None
+    try:
+        accelerator.save_state(str(staging))
+    except BaseException as exc:  # noqa: BLE001 - synchronize all save failures
+        local_error = exc
+        try:
+            _write_save_status(
+                rank_status,
+                ok=False,
+                detail=f"{type(exc).__name__}: {exc}",
+            )
+        except BaseException as status_exc:  # noqa: BLE001
+            # The original exception remains the actionable failure.  Missing
+            # status is also rejected by the publisher after the barrier.
+            logger.debug("could not write rank save failure marker: %s", status_exc)
+    else:
+        try:
+            _write_save_status(rank_status, ok=True)
+        except BaseException as exc:  # noqa: BLE001 - status failure is publish-fatal
+            local_error = exc
+
+    # Every rank must reach this barrier, including a rank whose save failed;
+    # otherwise the publisher could observe a transiently incomplete directory
+    # and incorrectly mark it complete.
+    if distributed:
+        accelerator.wait_for_everyone()
+
+    publish_error: BaseException | None = None
+    if is_main:
+        failures: list[str] = []
+        for rank in range(process_count):
+            status_path = staging / f".rank-{rank}.status"
+            try:
+                status = status_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                status = ""
+            if status != "ok":
+                failures.append(
+                    f"rank {rank}: " + (status or "missing save status")
+                )
+
+        if failures:
+            publish_error = RuntimeError(
+                "Accelerate state save failed; refusing to publish incomplete state: "
+                + "; ".join(failures)
+            )
+        else:
+            try:
+                write_complete_marker(staging)
+                atomic_replace_dir(staging, target)
+            except BaseException as exc:  # noqa: BLE001 - preserve publish failure
+                publish_error = exc
+
+        if publish_error is not None:
+            try:
+                _write_save_status(
+                    error_marker,
+                    ok=False,
+                    detail=f"{type(publish_error).__name__}: {publish_error}",
+                )
+            except BaseException as status_exc:  # noqa: BLE001
+                logger.debug("could not write checkpoint failure marker: %s", status_exc)
+
+    # Let non-main ranks observe publication failures before returning.  The
+    # marker is intentionally left on disk after a failure for diagnostics and
+    # is removed at the start of the next save attempt.
+    if distributed:
+        accelerator.wait_for_everyone()
+
+    remote_error = _read_save_error(error_marker)
+    publication_token_error: RuntimeError | None = None
+    try:
+        published_token = (target / ".save-token").read_text(encoding="ascii")
+    except OSError:
+        published_token = None
+    if (
+        published_token != expected_token
+        or not (target / COMPLETE_MARKER).is_file()
+    ):
+        publication_token_error = RuntimeError(
+            "checkpoint publication was not observed by every rank"
+        )
+    if local_error is not None:
+        raise local_error
+    if publish_error is not None:
+        raise publish_error
+    if remote_error is not None:
+        raise RuntimeError(remote_error)
+    if publication_token_error is not None:
+        raise publication_token_error
+
+    # A failed publication intentionally leaves staging/status files alongside
+    # the error marker for diagnostics and the next bounded cleanup attempt;
+    # successful replaces have already moved staging into ``target``.
 
 
 def save_sd_model_on_train_end_common(
@@ -213,7 +456,11 @@ def save_sd_model_on_train_end_common(
         logger.info(f"save trained model as StableDiffusion checkpoint to {ckpt_file}")
         sd_saver(ckpt_file, epoch, global_step)
     else:
-        out_dir = os.path.join(args.output_dir, model_name)
+        out_dir = (
+            os.path.join(args.output_dir, "diffusers")
+            if _canonical(args)
+            else os.path.join(args.output_dir, model_name)
+        )
         os.makedirs(out_dir, exist_ok=True)
 
         logger.info(f"save trained model as Diffusers to {out_dir}")
@@ -259,12 +506,13 @@ class CheckpointSaver:
         self.progress_sink = progress_sink
         # Set by the load_state pre-hook when resuming. Read by train() to
         # decide initial_step.
-        self.steps_from_state: Optional[int] = None
+        self.steps_from_state: int | None = None
         self.loaded_train_state: dict[str, Any] = {}
-        self._runtime_state_provider: Optional[Callable[[], dict[str, Any]]] = None
+        self._runtime_state_provider: Callable[[], dict[str, Any]] | None = None
+        self._saving_interrupted_state = False
 
     def set_runtime_state_provider(
-        self, provider: Optional[Callable[[], dict[str, Any]]]
+        self, provider: Callable[[], dict[str, Any]] | None
     ) -> None:
         """Attach loop-owned fields that must ride in ``train_state.json``."""
         self._runtime_state_provider = provider
@@ -277,28 +525,52 @@ class CheckpointSaver:
         unwrap_type = type(accelerator.unwrap_model(network))
 
         def save_model_hook(models, weights, output_dir):
-            if accelerator.is_main_process:
-                remove_indices = []
-                for i, model in enumerate(models):
-                    if not isinstance(model, unwrap_type):
-                        remove_indices.append(i)
-                for i in reversed(remove_indices):
-                    if len(weights) > i:
-                        weights.pop(i)
+            # Accelerate invokes hooks on every rank, but ``train_state.json``
+            # is a shared sidecar.  Restrict both model-list surgery and the
+            # sidecar write to rank 0 so ranks cannot race on that JSON file.
+            if not accelerator.is_main_process:
+                return
+
+            remove_indices = []
+            for i, model in enumerate(models):
+                if not isinstance(model, unwrap_type):
+                    remove_indices.append(i)
+            for i in reversed(remove_indices):
+                if len(weights) > i:
+                    weights.pop(i)
 
             train_state_file = os.path.join(output_dir, "train_state.json")
+            runtime = self._runtime_state_provider() if self._runtime_state_provider else {}
+            runtime = dict(runtime or {})
+            global_step = int(
+                runtime.get("global_step", self.current_step.value + 1)
+            )
+            # ``global_step`` is passed explicitly below; remove it from the
+            # extension payload so old/custom runtime providers cannot cause a
+            # duplicate keyword error when the hook serializes the state.
+            runtime.pop("global_step", None)
+            provider_interrupted = bool(runtime.pop("interrupted", False))
             logger.info(
                 f"save train state to {train_state_file} at epoch "
-                f"{self.current_epoch.value} step {self.current_step.value + 1}"
+                f"{self.current_epoch.value} step {global_step}"
             )
-            state = {
-                "current_epoch": self.current_epoch.value,
-                "current_step": self.current_step.value + 1,
-            }
-            if self._runtime_state_provider is not None:
-                state.update(self._runtime_state_provider())
-            with open(train_state_file, "w", encoding="utf-8") as f:
-                json.dump(state, f)
+            state = build_train_state(
+                global_step=global_step,
+                current_epoch=int(runtime.pop("current_epoch", self.current_epoch.value)),
+                micro_batch_offset=int(runtime.pop("micro_batch_offset", 0) or 0),
+                stage_index=int(runtime.pop("stage_index", -1) or -1),
+                stage_batch_cursor=int(runtime.pop("stage_batch_cursor", 0) or 0),
+                stage_outer_epoch=int(
+                    runtime.pop("stage_outer_epoch", self.current_epoch.value)
+                    or self.current_epoch.value
+                ),
+                rng_state=runtime.pop("rng_state", None),
+                config_signature=runtime.pop("config_signature", None),
+                dataset_signature=runtime.pop("dataset_signature", None),
+                interrupted=bool(self._saving_interrupted_state or provider_interrupted),
+                **runtime,
+            )
+            atomic_write_json(Path(train_state_file), state, indent=None)
 
         def load_model_hook(models, input_dir):
             remove_indices = []
@@ -310,10 +582,30 @@ class CheckpointSaver:
 
             train_state_file = os.path.join(input_dir, "train_state.json")
             if os.path.exists(train_state_file):
+                if not state_is_complete(input_dir, require_marker=True):
+                    raise ValueError(
+                        "refusing to resume from an incomplete training state: "
+                        f"{input_dir}"
+                    )
                 with open(train_state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                data = normalize_train_state(data)
+                expected_config = getattr(self.args, "config_signature", None)
+                actual_config = data.get("config_signature")
+                if expected_config and actual_config not in (None, expected_config):
+                    raise ValueError(
+                        "resume state config signature mismatch: "
+                        f"state={actual_config}, expected={expected_config}"
+                    )
+                expected_dataset = getattr(self.args, "dataset_signature", None)
+                actual_dataset = data.get("dataset_signature")
+                if expected_dataset and actual_dataset not in (None, expected_dataset):
+                    raise ValueError(
+                        "resume state dataset signature mismatch: "
+                        f"state={actual_dataset}, expected={expected_dataset}"
+                    )
                 self.loaded_train_state = data
-                self.steps_from_state = data["current_step"]
+                self.steps_from_state = data["global_step"]
                 logger.info(f"load train state from {train_state_file}: {data}")
 
         accelerator.register_save_state_pre_hook(save_model_hook)
@@ -337,31 +629,90 @@ class CheckpointSaver:
         if args.resume:
             return
 
-        candidates: list[str] = []
-        if getattr(args, "checkpointing_epochs", None):
-            candidates.append(get_checkpoint_state_dir(args))
-        if getattr(args, "save_state_on_train_end", None):
-            candidates.append(get_last_state_dir(args))
-
-        for state_dir in candidates:
-            train_state_file = os.path.join(state_dir, "train_state.json")
-            if not os.path.exists(train_state_file):
-                continue
-            with open(train_state_file, "r", encoding="utf-8") as f:
-                ckpt_data = json.load(f)
-            ckpt_step = ckpt_data.get("current_step", 0)
-            if ckpt_step < args.max_train_steps:
-                args.resume = state_dir
-                args.skip_until_initial_step = True
-                logger.info(
-                    f"auto-resuming from state at step {ckpt_step}: {state_dir}"
-                )
-                return
-            logger.info(
-                f"state already reached max_train_steps "
-                f"({ckpt_step} >= {args.max_train_steps}), starting fresh: {state_dir}"
+        layout = _layout(args)
+        roots: list[Path] = []
+        for root in layout.legacy_candidates():
+            root = Path(root)
+            if root not in roots:
+                roots.append(root)
+        suffixes: list[str] = [
+            INTERRUPTED_STATE_NAME.format(
+                default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
             )
+        ]
+        if getattr(args, "checkpointing_epochs", None):
+            suffixes.append(
+                CHECKPOINT_STATE_NAME.format(
+                    default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+                )
+            )
+        if getattr(args, "save_state_on_train_end", None):
+            suffixes.append(
+                LAST_STATE_NAME.format(
+                    default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+                )
+            )
+        # A caller may explicitly enable auto-resume through the daemon even
+        # when the corresponding save flag is absent.  The existence/completion
+        # checks below keep this backwards-compatible and safe.
+        if getattr(args, "auto_resume", False):
+            for suffix in (
+                CHECKPOINT_STATE_NAME.format(
+                    default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+                ),
+                LAST_STATE_NAME.format(
+                    default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+                ),
+            ):
+                if suffix not in suffixes:
+                    suffixes.append(suffix)
+
+        candidates = [
+            (root_priority, state_priority, root / suffix)
+            for root_priority, root in enumerate(roots)
+            for state_priority, suffix in enumerate(suffixes)
+        ]
+        seen: set[Path] = set()
+        eligible: list[tuple[int, int, int, Path]] = []
+        for root_priority, state_priority, state_dir in candidates:
+            if state_dir in seen:
+                continue
+            seen.add(state_dir)
+            if not state_is_complete(state_dir, require_marker=True):
+                continue
+            ckpt_data = read_train_state(state_dir) or {}
+            ckpt_step = int(ckpt_data.get("global_step", 0) or 0)
+            expected_config = getattr(args, "config_signature", None)
+            expected_dataset = getattr(args, "dataset_signature", None)
+            if expected_config and ckpt_data.get("config_signature") not in (None, expected_config):
+                logger.warning("ignoring resume state with mismatched config signature: %s", state_dir)
+                continue
+            if expected_dataset and ckpt_data.get("dataset_signature") not in (None, expected_dataset):
+                logger.warning("ignoring resume state with mismatched dataset signature: %s", state_dir)
+                continue
+            eligible.append((ckpt_step, state_priority, root_priority, state_dir))
+
+        if not eligible:
             return
+
+        # A completed continuation can leave its older interrupted state beside
+        # a newer normal state.  Fixed suffix ordering would then replay already
+        # committed optimizer steps on the next extension.  Step is therefore
+        # authoritative; interrupted -> rolling -> normal remains the tie-break
+        # policy when two complete states describe the same committed step.
+        ckpt_step, _, _, state_dir = min(
+            eligible,
+            key=lambda item: (-item[0], item[1], item[2], str(item[3])),
+        )
+        if ckpt_step < args.max_train_steps:
+            args.resume = state_dir
+            args.skip_until_initial_step = True
+            logger.info(f"auto-resuming from state at step {ckpt_step}: {state_dir}")
+            return
+        logger.info(
+            f"state already reached max_train_steps "
+            f"({ckpt_step} >= {args.max_train_steps}), starting fresh: {state_dir}"
+        )
 
     def save(self, ckpt_name: str, network: Any, steps: int, epoch_no: int) -> None:
         """Write a network checkpoint with up-to-date training metadata."""
@@ -399,11 +750,12 @@ class CheckpointSaver:
         ):
             return
         accelerator.wait_for_everyone()
-        if not accelerator.is_main_process:
-            return
-        ckpt_name = get_step_ckpt_name(args, "." + args.save_model_as, global_step)
-        self.save(ckpt_name, network, global_step, epoch)
+        if accelerator.is_main_process:
+            ckpt_name = get_step_ckpt_name(args, "." + args.save_model_as, global_step)
+            self.save(ckpt_name, network, global_step, epoch)
         if args.save_state:
+            # All ranks contribute their RNG/sampler state to the shared
+            # staging directory; only rank 0 publishes it.
             save_state_stepwise(args, accelerator, global_step)
 
     def maybe_save_epoch(
@@ -418,11 +770,13 @@ class CheckpointSaver:
         saving = (
             epoch_no % args.save_every_n_epochs == 0 and epoch_no < num_train_epochs
         )
-        if not saving or not accelerator.is_main_process:
+        if not saving:
             return
-        ckpt_name = get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
-        self.save(ckpt_name, network, global_step, epoch_no)
+        if accelerator.is_main_process:
+            ckpt_name = get_epoch_ckpt_name(args, "." + args.save_model_as, epoch_no)
+            self.save(ckpt_name, network, global_step, epoch_no)
         if args.save_state:
+            # See ``maybe_save_step``: every rank must enter the state save.
             save_state_on_epoch_end(args, accelerator, epoch_no)
 
     def maybe_save_resumable(
@@ -459,14 +813,14 @@ class CheckpointSaver:
             logger.info(
                 f"training complete, removing checkpoint state: {checkpoint_state_dir}"
             )
-            shutil.rmtree(checkpoint_state_dir)
+            remove_path_with_retry(Path(checkpoint_state_dir))
         checkpoint_ckpt = os.path.join(
             args.output_dir,
             get_checkpoint_ckpt_name(args, "." + args.save_model_as),
         )
         if os.path.exists(checkpoint_ckpt):
             logger.info(f"removing checkpoint weights: {checkpoint_ckpt}")
-            os.remove(checkpoint_ckpt)
+            remove_path_with_retry(Path(checkpoint_ckpt))
 
     def save_final(self, network: Any, global_step: int, num_train_epochs: int) -> None:
         """Write the final ``<output_name>.<ext>`` checkpoint. Main-process only."""
@@ -476,3 +830,32 @@ class CheckpointSaver:
         ckpt_name = get_last_ckpt_name(args, "." + args.save_model_as)
         self.save(ckpt_name, network, global_step, num_train_epochs)
         logger.info("model saved.")
+
+    def save_interrupt_state(
+        self, network: Any, global_step: int, epoch: int, *, save_weights: bool = True
+    ) -> str:
+        """Persist the newest complete state for a cooperative stop.
+
+        The interrupted state has its own directory and is never removed by
+        normal-run cleanup.  This makes an explicit stop win over an older
+        rolling checkpoint during automatic resume while leaving the final
+        product untouched.
+        """
+
+        args = self.args
+        if self.accelerator.is_main_process and save_weights:
+            ext = "." + args.save_model_as
+            interrupted_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME) + "-interrupted" + ext
+            self.save(interrupted_name, network, global_step, epoch)
+        self.accelerator.wait_for_everyone()
+        state_dir = get_interrupted_state_dir(args)
+        self._saving_interrupted_state = True
+        try:
+            _atomic_accelerator_save_state(self.accelerator, state_dir)
+        finally:
+            self._saving_interrupted_state = False
+        logger.info("saved cooperative-stop state at step %s: %s", global_step, state_dir)
+        return state_dir
+
+    # Short alias used by stop/daemon integration and external embedders.
+    save_interrupted = save_interrupt_state

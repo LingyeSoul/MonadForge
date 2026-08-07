@@ -41,7 +41,7 @@ def main() -> int:
         "--adapter",
         type=Path,
         default=None,
-        help="Explicit adapter .safetensors path (overrides --adapter_dir).",
+        help="Explicit adapter .safetensors/.ckpt/.pt path (overrides --adapter_dir).",
     )
     parser.add_argument(
         "--dit",

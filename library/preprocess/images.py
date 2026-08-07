@@ -19,7 +19,7 @@ from PIL.PngImagePlugin import PngInfo
 
 from library.datasets.buckets import DEFAULT_TARGET_RES
 from library.preprocess._dataset import PreprocessStats, walk_images
-from library.preprocess._progress import ProgressFn
+from library.preprocess._progress import ProgressFn, tqdm_progress
 from library.datasets.buckets import DEFAULT_FREEFIT_MAX_RATIO, FREEFIT_BAND_VERSION
 from library.preprocess.resize_preview import (
     DEFAULT_FIT_MODE,
@@ -337,7 +337,7 @@ def resize_to_buckets(
                 copy_captions=False,
                 recursive=recursive,
                 path_pattern=path_pattern,
-                verbose=False,
+                verbose=verbose,
                 overwrite=overwrite,
                 curation_decisions=curation_decisions,
                 crop_anchor=crop_anchor,
@@ -345,7 +345,12 @@ def resize_to_buckets(
                 crop_margins=crop_margins,
                 fit_mode=fit_mode,
                 max_ratio=max_ratio,
-                progress=None,
+                # The tier passes re-run the full walk per edge; give them a bar
+                # so a long silent tier (the stall watchdog treats >120s of no
+                # stdout as a wedged job and SIGKILLs it) stays visible.
+                progress=(
+                    tqdm_progress(f"Tier {edge}px") if progress is not None else None
+                ),
             )
             primary_stats.written += tier_stats.written
             primary_stats.skipped += tier_stats.skipped

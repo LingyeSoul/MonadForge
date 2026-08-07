@@ -9,6 +9,7 @@ authority while running; ``persist()`` mirrors each state change to disk, and
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -94,6 +95,8 @@ class Job:
     # Set by an explicit stop request so the monitor records `stopped`, not
     # `error`, when it sees the process vanish. Runtime + persisted.
     stop_requested: bool = False
+    stop_requested_at: Optional[float] = None
+    forced_stop: bool = False
 
     @property
     def dir(self) -> Path:
@@ -102,9 +105,24 @@ class Job:
     def persist(self) -> None:
         d = self.dir
         d.mkdir(parents=True, exist_ok=True)
-        tmp = d / "job.json.tmp"
-        tmp.write_text(json.dumps(asdict(self), indent=2), encoding="utf-8")
-        tmp.replace(d / "job.json")  # atomic on POSIX + Windows
+        target = d / "job.json"
+        payload = json.dumps(asdict(self), indent=2)
+        # Windows scanners can briefly hold the previous record. Keep the
+        # replacement atomic while retrying that transient lock.
+        for attempt in range(8):
+            tmp = d / f".job.json.{os.getpid()}.{time.time_ns()}.tmp"
+            try:
+                tmp.write_text(payload, encoding="utf-8")
+                os.replace(tmp, target)
+                return
+            except OSError:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt >= 7:
+                    raise
+                time.sleep(min(0.05 * (attempt + 1), 0.5))
 
     @classmethod
     def from_dict(cls, data: dict) -> "Job":

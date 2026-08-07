@@ -1,0 +1,33 @@
+/* view-compare.css — 对比页 */
+
+.cmp-picker { border: var(--line); margin-bottom: 28px; }
+.cmp-pick-head {
+  padding: 12px 16px;
+  border-bottom: var(--line);
+  font-size: var(--ts-micro); letter-spacing: 0.2em; color: var(--g4);
+}
+.cmp-pick-list { max-height: 320px; overflow-y: auto; }
+.cmp-run {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--g2);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease);
+}
+.cmp-run:hover { background: var(--g0); }
+.cmp-run input { position: absolute; opacity: 0; }
+.cmp-run .cb {
+  width: 14px; height: 14px; border: 1px solid var(--g3); flex: none;
+}
+.cmp-run input:checked ~ .cb { background: var(--volt); border-color: var(--volt); }
+.cmp-run .cr-name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmp-run .cr-meta { font-family: var(--font-mono); font-size: var(--ts-micro); color: var(--g5); white-space: nowrap; }
+.cmp-actions { display: flex; align-items: center; gap: 16px; padding: 14px 16px; }
+
+.cmp-table { width: 100%; border-collapse: collapse; margin-top: 0; border-top: var(--line); }
+.cmp-table th {
+  font-family: var(--font-mono); font-size: var(--ts-micro); font-weight: 400;
+  letter-spacing: 0.1em; color: var(--g5);
+  text-align: left; padding: 10px 14px; border-bottom: var(--line);
+}
+.cmp-table td { padding: 9px 14px; font-family: var(--font-mono); font-size: var(--ts-sm); border-bottom: 1px solid var(--g2); }

@@ -332,3 +332,48 @@ def test_caption_correction_config_parses_trigger_cli_args():
     assert config["trigger_word"] == "@foo"
     assert config["trigger_at_front"] is True
     assert cleaned == ["--other"]
+
+
+def test_preprocess_run_alias_is_stripped_and_explicit_value_wins(monkeypatch):
+    from scripts.tasks.preprocess import _consume_preprocess_run
+
+    monkeypatch.setenv("PREPROCESS_RUN", "/env/manifest.json")
+    selected, cleaned = _consume_preprocess_run(
+        ["--preprocess-run=/cli/manifest.json", "--overwrite"]
+    )
+
+    assert selected == "/cli/manifest.json"
+    assert cleaned == ["--overwrite"]
+
+
+def test_full_preprocess_failure_keeps_manifest_incomplete(tmp_path, monkeypatch):
+    import json
+    import pytest
+
+    from library.preprocess.runs import resolve_preprocess_run
+    from scripts.tasks import preprocess
+
+    source = tmp_path / "source"
+    source.mkdir()
+    run = resolve_preprocess_run(
+        source, {"target_res": [1024]}, post_image_dataset=tmp_path / "post"
+    )
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (run, []),
+    )
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+
+    def fail_resize(extra):
+        raise RuntimeError("resize failed")
+
+    monkeypatch.setattr(preprocess, "cmd_preprocess_resize", fail_resize)
+
+    with pytest.raises(RuntimeError, match="resize failed"):
+        preprocess.cmd_preprocess([])
+
+    manifest = json.loads(run.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["complete"] is False
+    assert "resize failed" in manifest["error"]

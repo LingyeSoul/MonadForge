@@ -2012,8 +2012,7 @@ class Anima(nn.Module):
             return False
         if self._paused_blocks_to_swap is not None:
             return False
-        for block_idx in list(self.offloader.futures.keys()):
-            self.offloader._wait_blocks_move(block_idx)
+        self.offloader.wait_for_all()
         for b in self.blocks:
             weighs_to_device(b, self.offloader.device)
         if self.offloader.cuda_available:
@@ -2038,6 +2037,11 @@ class Anima(nn.Module):
         self.offloader.prepare_block_devices_before_forward(
             self.blocks, free_cache=free_cache
         )
+
+    def wait_for_block_swap(self) -> None:
+        """Drain asynchronous block transfers before optimizer/eval boundaries."""
+        if self.offloader is not None:
+            self.offloader.wait_for_all()
 
     def _run_blocks(
         self,

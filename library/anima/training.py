@@ -4,6 +4,7 @@ import math
 import os
 import random
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -1361,9 +1362,10 @@ def _sample_image_inference(
     # ``sample`` progress event with the correct step/epoch metadata even
     # when the actual PNG decode is deferred to end-of-training.
     latent_path = os.path.join(latents_dir, stem + ".pt")
+    latents_cpu = latents.detach().to("cpu")
     torch.save(
         {
-            "latents": latents.detach().to("cpu"),
+            "latents": latents_cpu,
             "prompt": prompt,
             "enum": i,
             "global_step": steps,
@@ -1371,6 +1373,8 @@ def _sample_image_inference(
         },
         latent_path,
     )
+    del latents_cpu, latents, neg_crossattn_emb, crossattn_emb
+    _log_preview_memory("sample latent staged")
     return latent_path
 
 
@@ -1481,15 +1485,16 @@ def decode_pending_samples(
     """
     if vae is None:
         return
-    save_dir = resolve_sample_dir(args)
-    latents_dir = os.path.join(save_dir, "latents")
-    if not os.path.isdir(latents_dir):
+    save_dir = Path(resolve_sample_dir(args))
+    latents_dir = save_dir / "latents"
+    if not latents_dir.is_dir():
         return
-    files = sorted(f for f in os.listdir(latents_dir) if f.endswith(".pt"))
+    files = sorted(path for path in latents_dir.iterdir() if path.is_file() and path.suffix == ".pt")
     if not files:
         return
 
     logger.info(f"Decoding {len(files)} deferred sample image(s) to {save_dir}")
+    save_dir.mkdir(parents=True, exist_ok=True)
     wandb_tracker = None
     if "wandb" in [tracker.name for tracker in accelerator.trackers]:
         wandb_tracker = accelerator.get_tracker("wandb")
@@ -1498,8 +1503,8 @@ def decode_pending_samples(
     org_vae_device = vae.device
     vae.to(accelerator.device)
     try:
-        for fn in files:
-            path = os.path.join(latents_dir, fn)
+        for path in files:
+            rec = latents = decoded = image = decoded_np = pil = wandb_image = None
             try:
                 rec = torch.load(path, map_location="cpu")
                 latents = rec["latents"].to(accelerator.device)
@@ -1513,15 +1518,14 @@ def decode_pending_samples(
                     np.uint8
                 )
                 pil = Image.fromarray(decoded_np)
-                stem = os.path.splitext(fn)[0]
-                png_path = os.path.join(save_dir, stem + ".png")
+                stem = path.stem
+                png_path = save_dir / (stem + ".png")
                 pil.save(png_path)
                 if wandb_tracker is not None:
+                    wandb_image = wandb.Image(pil, caption=rec.get("prompt", ""))
                     wandb_tracker.log(
                         {
-                            f"sample_{rec.get('enum', 0)}": wandb.Image(
-                                pil, caption=rec.get("prompt", "")
-                            )
+                            f"sample_{rec.get('enum', 0)}": wandb_image
                         },
                         commit=False,
                     )
@@ -1529,22 +1533,59 @@ def decode_pending_samples(
                     progress_sink.sample(
                         global_step=rec.get("global_step", 0) or 0,
                         epoch=rec.get("epoch"),
-                        path=png_path,
+                        path=str(png_path),
                         prompt=rec.get("prompt"),
                     )
-                os.remove(path)
+                path.unlink()
             except Exception as exc:  # never let one bad latent abort the rest
-                logger.error(f"Failed to decode sample latent {fn}: {exc}")
-            clean_memory_on_device(accelerator.device)
+                logger.error(f"Failed to decode sample latent {path.name}: {exc}")
+            finally:
+                # PIL/NumPy/W&B wrappers can retain the decoded storage through
+                # reference cycles. Drop every per-image object before the next
+                # item so allocator/RSS samples describe the actual workload.
+                del wandb_image, pil, decoded_np, image, decoded, latents, rec
+                # Those wrappers may form cycles, so explicit ``del`` alone can
+                # leave a full decoded image reachable until a later automatic
+                # collection. Reclaim before the next RSS sample/latent.
+                gc.collect()
+                clean_memory_on_device(accelerator.device)
+                _log_preview_memory("sample decode")
     finally:
         vae.to(org_vae_device)
         clean_memory_on_device(accelerator.device)
+        gc.collect()
 
     # Drop the staging dir if everything decoded cleanly.
     try:
-        os.rmdir(latents_dir)
+        latents_dir.rmdir()
     except OSError:
         pass
+
+
+def _log_preview_memory(label: str) -> None:
+    """Log host RSS separately from CUDA allocator counters when available."""
+
+    rss_mib = None
+    try:
+        import psutil
+
+        rss_mib = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    except Exception:
+        pass
+    allocated = reserved = None
+    try:
+        if torch.cuda.is_available():
+            allocated = torch.cuda.memory_allocated() / (1024 * 1024)
+            reserved = torch.cuda.memory_reserved() / (1024 * 1024)
+    except Exception:
+        pass
+    logger.info(
+        "preview memory [%s]: rss_mib=%s cuda_allocated_mib=%s cuda_reserved_mib=%s",
+        label,
+        f"{rss_mib:.1f}" if rss_mib is not None else "n/a",
+        f"{allocated:.1f}" if allocated is not None else "n/a",
+        f"{reserved:.1f}" if reserved is not None else "n/a",
+    )
 
 
 def sample_image_to_tensor(

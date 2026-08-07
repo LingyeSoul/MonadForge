@@ -383,14 +383,18 @@ def test_checkpoint_state_persists_stage_cursor(tmp_path):
     accelerator.save_hook([network], [], str(tmp_path))
 
     state = json.loads((tmp_path / "train_state.json").read_text(encoding="utf-8"))
-    assert state == {
-        "current_epoch": 4,
-        "current_step": 60,
-        "stage_index": 1,
-        "stage_batch_cursor": 12,
-        "stage_outer_epoch": 3,
-        "stage_loader_generator_state": generator_state.tolist(),
-    }
+    # The sidecar now carries an explicit schema/cursor and RNG protocol while
+    # retaining ``current_step`` for old readers.
+    assert state["schema_version"] >= 2
+    assert state["global_step"] == 60
+    assert state["current_step"] == 60
+    assert state["current_epoch"] == 4
+    assert state["micro_batch_offset"] == 0
+    assert state["stage_index"] == 1
+    assert state["stage_batch_cursor"] == 12
+    assert state["stage_outer_epoch"] == 3
+    assert state["stage_loader_generator_state"] == generator_state.tolist()
+    assert "rng_state" in state
 
 
 def test_resumed_stage_skips_saved_batch_cursor(monkeypatch):
@@ -446,6 +450,7 @@ def test_resumed_stage_skips_saved_batch_cursor(monkeypatch):
     loop_module._run_epoch_steps(object(), state, epoch=0)
     assert processed == ["c"]
     assert state.stage_batch_cursor == 3
+    assert state.micro_batch_offset == 3
     assert state.global_step == 1
 
 

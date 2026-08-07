@@ -121,6 +121,40 @@ with open(path, "w", buffering=1) as f:
 sys.exit(rc)
 """
 
+# A cooperative trainer used by the stop contract test. It treats either the
+# daemon stop-file or SIGTERM/SIGINT as a request, writes a complete semantic
+# state record, and emits run_end(stopped) before exiting cleanly.
+_FAKE_TRAINER_COOPERATIVE = r"""
+import json, os, signal, sys, time
+progress, state_dir, dur = sys.argv[1], sys.argv[2], float(sys.argv[3])
+requested = False
+def request(*_args):
+    global requested
+    requested = True
+for name in ('SIGTERM', 'SIGINT'):
+    sig = getattr(signal, name, None)
+    if sig is not None:
+        signal.signal(sig, request)
+os.makedirs(state_dir, exist_ok=True)
+with open(progress, 'w', buffering=1) as f:
+    f.write(json.dumps({'ev': 'run_start', 'ts': 0.0}) + '\n')
+    f.write(json.dumps({'ev': 'step', 'ts': 0.1, 'global_step': 3}) + '\n')
+    deadline = time.time() + dur
+    while time.time() < deadline and not requested:
+        stop_file = os.environ.get('ANIMA_DAEMON_STOP_FILE')
+        if stop_file and os.path.exists(stop_file):
+            requested = True
+        time.sleep(0.02)
+    if requested:
+        with open(os.path.join(state_dir, 'train_state.json'), 'w') as sf:
+            json.dump({'global_step': 3, 'current_epoch': 1, 'micro_batch_offset': 0}, sf)
+        with open(os.path.join(state_dir, '.complete'), 'w') as marker:
+            marker.write('ok\n')
+        f.write(json.dumps({'ev': 'run_end', 'ts': 1.0, 'status': 'stopped', 'final_step': 3}) + '\n')
+        sys.exit(0)
+    f.write(json.dumps({'ev': 'run_end', 'ts': dur, 'status': 'ok', 'final_step': 3}) + '\n')
+"""
+
 
 def _fake_build_cmd_crash(self, job):
     rc = int(job.overrides.get("crash_rc", 42))
@@ -129,6 +163,16 @@ def _fake_build_cmd_crash(self, job):
 
 
 def _fake_build_cmd(self, job):
+    if job.overrides.get("cooperative"):
+        cmd = [
+            sys.executable,
+            "-c",
+            _FAKE_TRAINER_COOPERATIVE,
+            job.progress_path,
+            str(job.dir / "resume-state"),
+            str(job.overrides.get("duration", 60.0)),
+        ]
+        return cmd, os.environ.copy()
     dur = float(job.overrides.get("duration", 1.0))
     cmd = [sys.executable, "-c", _FAKE_TRAINER, job.progress_path, str(dur)]
     return cmd, os.environ.copy()
@@ -366,6 +410,40 @@ def test_done_job_carries_zero_rc(daemon):
     assert cl.get(jid)["rc"] == 0
 
 
+def test_late_stop_cannot_override_run_end_ok(tmp_path, monkeypatch):
+    """A stop click racing process reaping must not turn run_end:ok into stopped."""
+    _isolate_state(tmp_path, monkeypatch)
+    job = jobs.Job(
+        id="late-stop-ok",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_RUNNING,
+        stop_requested=True,
+        stop_requested_at=time.time(),
+        status_detail="stopping",
+        forced_stop=True,
+    )
+    job.progress_path = str(job.dir / "progress.jsonl")
+    job.dir.mkdir(parents=True, exist_ok=True)
+    (job.dir / "progress.jsonl").write_text(
+        json.dumps({"ev": "run_end", "status": "ok", "final_step": 7}) + "\n",
+        encoding="utf-8",
+    )
+
+    class Exited:
+        def poll(self):
+            return 0
+
+    JobManager()._finalize_from_exit(job, Exited())
+
+    assert job.state == jobs.STATE_DONE
+    assert job.rc == 0
+    assert job.stop_requested is False
+    assert job.stop_requested_at is None
+    assert job.forced_stop is False
+    assert job.status_detail is None
+
+
 def test_crashed_job_carries_real_rc(daemon, monkeypatch):
     """A trainer that dies before ``run_end`` (CUDA SIGABRT / segfault) leaves
     only a nonzero exit code. The manager must forward that exact rc — not a
@@ -379,21 +457,44 @@ def test_crashed_job_carries_real_rc(daemon, monkeypatch):
 
 
 def test_stopped_job_carries_kill_rc(daemon):
-    """A job stopped mid-run (the GUI's cancel) is tree-killed; its rc is the
-    kill's exit code (a signal, reported negative by POSIX poll). Forwarding
-    it lets the WebUI distinguish a clean cancel from a crash-then-cancel.
-    The WebUI's cancelled path ignores the value (frontend hardcodes -1), but
-    the record stays faithful for logs/diagnostics."""
+    """A stopped job keeps the subprocess rc, including a clean cooperative 0."""
     cl, _ = daemon
     jid = cl.submit(method="lora", overrides={"duration": 60.0})["job_id"]
     assert _wait_until(lambda: cl.get(jid)["state"] == "running", timeout=10)
     cl.stop(jid)
     assert _wait_until(lambda: cl.get(jid)["state"] == "stopped", timeout=10)
-    # Killed by proc.kill_tree — the rc is the tree-kill's exit code (a
-    # nonzero signal on POSIX, 1 on the Windows taskkill path). Just assert
-    # it's present and nonzero (we never kill with rc 0).
+    # The new stop path first requests a checkpoint-capable exit. Depending on
+    # which process in the detached tree observes the signal, rc can be 0 or a
+    # platform signal code; it must still be captured rather than synthesized.
     rec = cl.get(jid)
-    assert rec["rc"] is not None and rec["rc"] != 0
+    assert rec["rc"] is not None
+
+
+def test_cooperative_stop_persists_state_and_queue_continues(daemon):
+    cl, _ = daemon
+    first = cl.submit(
+        method="lora", overrides={"cooperative": True, "duration": 60.0}
+    )["job_id"]
+    second = cl.submit(method="lora", overrides={"duration": 0.2})["job_id"]
+    assert _wait_until(lambda: cl.get(first)["state"] == "running", timeout=10)
+
+    cl.stop(first)
+    assert _wait_until(lambda: cl.get(first)["state"] == "stopped", timeout=10)
+    record = cl.get(first)
+    assert record["status_detail"] == "cooperative stop completed"
+    assert record["rc"] == 0
+    state_file = (
+        config.JOBS_DIR / first / "resume-state" / "train_state.json"
+    )
+    assert state_file.is_file()
+    events = [
+        json.loads(line)
+        for line in (config.JOBS_DIR / first / "progress.jsonl").read_text().splitlines()
+    ]
+    assert events[-1]["ev"] == "run_end"
+    assert events[-1]["status"] == "stopped"
+
+    assert _wait_until(lambda: cl.get(second)["state"] == "done", timeout=15)
 
 
 def test_queue_hold_then_start(daemon):

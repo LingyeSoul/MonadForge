@@ -33,6 +33,8 @@ if default_expandable_segments():
 import torch
 import torch.nn as nn
 from library.runtime.device import clean_memory_on_device
+from library.io.output_layout import layout_from_args, write_run_manifest
+from library.training.state import restore_rng_state, signature
 
 from accelerate.utils import set_seed
 from accelerate import Accelerator
@@ -65,6 +67,7 @@ from library.training.method_adapter import (
 from library.config.io import (
     load_dataset_config_from_base,
     read_config_from_file,
+    refresh_config_snapshot,
 )
 from library.datasets import (
     DatasetGroup,
@@ -80,6 +83,7 @@ from library.runtime.accelerator import (
     resolve_run_log_dir,
     resume_from_local_or_hf_if_specified,
 )
+from library.runtime.block_swap_budget import check_block_swap_budget
 from library.training import (
     AcceleratedBundle,
     CheckpointSaver,
@@ -103,6 +107,7 @@ from library.training import (
     get_optimizer_train_eval_fn,
     get_scheduler_fix,
     save_state_on_train_end,
+    StopController,
 )
 from library.config.cli_args import (
     add_dataset_arguments,
@@ -118,6 +123,11 @@ from library.config.cli_args import (
     verify_training_args,
 )
 from library.training.loop import build_loop_state, run_training_loop
+from library.training.resume import (
+    resolve_persisted_resume_position,
+    resolve_resume_position,
+)
+from library.preprocess.runs import PreprocessRun, PreprocessRunError, run_from_manifest
 from library.training.stage_schedule import (
     prepare_stage_runtime,
     stage_epoch_upper_bound,
@@ -148,6 +158,151 @@ logger = logging.getLogger(__name__)
 def _env_flag(name: str) -> bool:
     value = os.environ.get(name)
     return value is not None and value.lower() not in {"", "0", "false", "no", "off"}
+
+
+_RESUME_SIGNATURE_EXCLUDES = {
+    "resume",
+    # The daemon materializes an identical config snapshot under each job's
+    # directory.  Its absolute path is transport metadata, not training
+    # semantics; including it would make a stopped job impossible to resume
+    # from the next daemon submission.
+    "config_file",
+    "initial_step",
+    "initial_epoch",
+    "max_train_steps",
+    "max_train_epochs",
+    "progress_jsonl",
+    "sample_dir",
+    "logging_dir",
+    "config_snapshot",
+    "print_config",
+    # These fields describe the hardware-dependent effective block-swap
+    # policy.  They are recorded in the run manifest/metadata, but excluding
+    # them keeps old state directories resumable when a newer trainer learns
+    # to report the policy.
+    "block_swap_reliable_mode",
+    "block_swap_gpu_sm",
+    "block_swap_requested_torch_compile",
+    "block_swap_compile_disabled",
+    "block_swap_effective_lora_fp32_compute",
+    "block_swap_effective_use_custom_down_autograd",
+    "block_swap_effective_network_spec",
+}
+
+
+def _resume_config_signature(args) -> str:
+    """Hash resume-critical config while allowing a run-length extension."""
+
+    payload = {
+        key: value
+        for key, value in vars(args).items()
+        if not key.startswith("_") and key not in _RESUME_SIGNATURE_EXCLUDES
+    }
+    return signature(payload)
+
+
+def _dataset_group_signature(group) -> str | None:
+    if group is None:
+        return None
+    datasets = []
+    for dataset in getattr(group, "datasets", []):
+        subsets = []
+        for subset in getattr(dataset, "subsets", []):
+            subsets.append(
+                {
+                    "image_dir": getattr(subset, "image_dir", None),
+                    "cache_dir": getattr(subset, "cache_dir", None),
+                    "text_cache_dir": getattr(subset, "text_cache_dir", None),
+                    "cond_cache_dir": getattr(subset, "cond_cache_dir", None),
+                    "repeats": getattr(subset, "num_repeats", None),
+                    "pattern": getattr(subset, "path_pattern", None),
+                }
+            )
+        datasets.append({"subsets": subsets, "length": len(dataset)})
+    return signature(datasets)
+
+
+def _apply_preprocess_run(args) -> PreprocessRun | None:
+    """Pin dataset/cache path resolution to one completed preprocess run."""
+
+    raw = getattr(args, "preprocess_run", None)
+    if not raw:
+        return None
+    try:
+        run = run_from_manifest(raw)
+    except PreprocessRunError as exc:
+        raise ValueError(f"invalid --preprocess_run manifest: {exc}") from exc
+
+    # The base and GUI blueprints use these scalar placeholders.  Setting them
+    # before ``_prepare_dataset`` routes every generated subset to this run;
+    # legacy fixed directories remain untouched when the flag is absent.
+    args.preprocess_run = str(run.manifest_path)
+    args.resized_image_dir = str(run.resized_dir)
+    args.lora_cache_dir = str(run.lora_dir)
+    # Text-encoder caches normally share the run's ``lora`` directory, but a
+    # subset may explicitly redirect them with ``text_cache_dir`` (for
+    # example, colorization/easycontrol blueprints).  Seed the scalar fallback
+    # as well so generated blueprints stay inside the selected run unless they
+    # deliberately provide another path that is checked below.
+    args.text_cache_dir = str(run.lora_dir)
+    args.multires_image_dir = str(run.multires_dir)
+    args.conditioning_data_dir = str(run.conditioning_data_dir)
+    args.conditioning_resized_dir = str(run.conditioning_resized_dir)
+    logger.info(
+        "preprocess run pinned: manifest=%s source=%s resized=%s cache=%s",
+        run.manifest_path,
+        run.source_dir,
+        run.resized_dir,
+        run.lora_dir,
+    )
+    return run
+
+
+def _validate_preprocess_dataset_paths(group, run: PreprocessRun | None) -> None:
+    """Reject a dataset group that mixes caches from outside its selected run."""
+
+    if run is None or group is None:
+        return
+    roots = {
+        "image": (run.resized_dir, run.multires_dir, run.conditioning_resized_dir),
+        "cache": (run.lora_dir,),
+        "text": (run.lora_dir,),
+        "conditioning": (run.conditioning_dir, run.conditioning_resized_dir),
+    }
+
+    def inside(value, allowed) -> bool:
+        if not value:
+            return True
+        path = os.path.abspath(os.fspath(value))
+        for root in allowed:
+            try:
+                root_path = os.path.abspath(os.fspath(root))
+                if os.path.commonpath([path, root_path]) == root_path:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    violations: list[str] = []
+    for dataset in getattr(group, "datasets", []):
+        for subset in getattr(dataset, "subsets", []):
+            image_dir = getattr(subset, "image_dir", None)
+            cache_dir = getattr(subset, "cache_dir", None)
+            text_cache_dir = getattr(subset, "text_cache_dir", None)
+            cond_dir = getattr(subset, "cond_cache_dir", None)
+            if not inside(image_dir, roots["image"]):
+                violations.append(f"image_dir={image_dir}")
+            if not inside(cache_dir, roots["cache"]):
+                violations.append(f"cache_dir={cache_dir}")
+            if not inside(text_cache_dir, roots["text"]):
+                violations.append(f"text_cache_dir={text_cache_dir}")
+            if not inside(cond_dir, roots["conditioning"]):
+                violations.append(f"cond_cache_dir={cond_dir}")
+    if violations:
+        raise ValueError(
+            "--preprocess_run cache mixing detected; all dataset paths must belong "
+            f"to {run.manifest_path}: " + ", ".join(violations[:8])
+        )
 
 
 def _resolve_v100_flash_stability(args) -> str:
@@ -187,6 +342,244 @@ def _is_v100_fp16_training(args, accelerator) -> bool:
     return (major, minor) == (7, 0)
 
 
+def _as_boolish(value: Any) -> bool:
+    """Interpret config/CLI bools without treating non-empty ``"false"`` as true."""
+
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _blocks_to_swap_enabled(args) -> bool:
+    """Return whether the run requests actual DiT block swapping."""
+
+    try:
+        return int(getattr(args, "blocks_to_swap", 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _block_swap_rejection_reasons(args) -> list[str]:
+    """List method features that cannot share the block-swap scheduler.
+
+    Block swap owns the DiT block residency schedule.  The listed methods add
+    extra forwards/conditioning streams or their own activation offload path;
+    allowing them to opt in would make a successful-looking first step
+    unreliable.  Keep this check independent of dataset construction so a bad
+    combination fails before accelerator/model allocation.
+    """
+
+    if not _blocks_to_swap_enabled(args):
+        return []
+
+    module = str(getattr(args, "network_module", "") or "").strip().lower()
+    method = str(getattr(args, "method", "") or "").strip().lower()
+    reasons: list[str] = []
+
+    if module.endswith(".soft_tokens") or module == "soft_tokens" or method in {
+        "soft_tokens",
+        "soft-tokens",
+    }:
+        reasons.append("Soft Tokens")
+    if (
+        module.endswith(".easycontrol")
+        or module == "easycontrol"
+        or method == "easycontrol"
+        or _as_boolish(getattr(args, "use_easycontrol", False))
+    ):
+        reasons.append("EasyControl")
+    if _as_boolish(getattr(args, "use_byg", False)) or method == "byg":
+        reasons.append("BYG")
+    if _as_boolish(getattr(args, "unsloth_offload_checkpointing", False)):
+        reasons.append("unsloth_offload_checkpointing")
+
+    # Preserve declaration order while avoiding duplicate labels when both a
+    # method module and its top-level feature flag identify the same feature.
+    return list(dict.fromkeys(reasons))
+
+
+def _validate_block_swap_config(args) -> None:
+    """Reject unsupported method/offload combinations before model startup."""
+
+    reasons = _block_swap_rejection_reasons(args)
+    if not reasons:
+        return
+    labels = ", ".join(reasons)
+    raise ValueError(
+        "blocks_to_swap>0 is unsupported with "
+        f"{labels}; set blocks_to_swap=0 for this method/offload path. "
+        "Block swap is currently limited to the standard LoRA/T-LoRA path."
+    )
+
+
+def _resolve_block_swap_reliable_mode(args) -> bool:
+    """Apply the conservative Volta block-swap runtime policy.
+
+    V100/sm_70 has no reliable high-peak compile path when blocks are moved
+    between CPU and CUDA.  Resolve this *before* ``Accelerator`` construction,
+    disable compile/CUDAGraph modes, and leave a machine-readable record on
+    ``args`` for metadata and the run manifest.  Other GPUs retain the user's
+    compile settings unchanged.
+    """
+
+    enabled = _blocks_to_swap_enabled(args)
+    args.block_swap_reliable_mode = False
+    args.block_swap_gpu_sm = None
+    args.block_swap_requested_torch_compile = bool(
+        getattr(args, "torch_compile", False)
+    )
+    args.block_swap_compile_disabled = False
+
+    if not enabled:
+        return False
+    if not torch.cuda.is_available():
+        logger.info(
+            "block swap requested without a visible CUDA device; reliable mode "
+            "cannot be enabled (the accelerator will report the actual device)."
+        )
+        return False
+
+    try:
+        major, minor = torch.cuda.get_device_capability()
+    except (AssertionError, IndexError, NotImplementedError, RuntimeError, TypeError, ValueError):
+        logger.warning(
+            "block swap requested but GPU compute capability could not be read; "
+            "leaving compile settings unchanged and disabling reliable-mode claim."
+        )
+        return False
+
+    args.block_swap_gpu_sm = f"sm_{major}{minor}"
+    if (major, minor) != (7, 0):
+        logger.info(
+            "block swap enabled on gpu_sm=%s; V100 reliable mode is not needed, "
+            "keeping torch_compile=%s",
+            args.block_swap_gpu_sm,
+            bool(getattr(args, "torch_compile", False)),
+        )
+        return False
+
+    args.block_swap_reliable_mode = True
+    if getattr(args, "torch_compile", False):
+        args.torch_compile = False
+        args.block_swap_compile_disabled = True
+    # ``compile_inductor_mode`` is inert once torch_compile is off, but clearing
+    # it makes the effective configuration explicit and prevents a later
+    # consumer from accidentally re-enabling a CUDAGraph/high-peak path.
+    if getattr(args, "compile_inductor_mode", None) is not None:
+        args.compile_inductor_mode = None
+    if hasattr(args, "dynamo_backend"):
+        args.dynamo_backend = "eager"
+
+    logger.warning(
+        "block swap reliable mode enabled for gpu_sm=sm_70: effective "
+        "torch_compile=false, compile_inductor_mode=None, dynamo_backend=eager; "
+        "standard LoRA/T-LoRA will use the eager/custom-autograd memory path."
+    )
+    return True
+
+
+def _block_swap_manifest_fields(args) -> dict[str, Any]:
+    """Return effective block-swap fields for run manifests."""
+
+    raw_blocks = getattr(args, "blocks_to_swap", 0)
+    try:
+        blocks = int(raw_blocks or 0)
+    except (TypeError, ValueError):
+        blocks = 0
+    fields = {
+        "blocks_to_swap": blocks,
+        "block_swap_reliable_mode": bool(
+            getattr(args, "block_swap_reliable_mode", False)
+        ),
+        "block_swap_gpu_sm": getattr(args, "block_swap_gpu_sm", None),
+        "block_swap_requested_torch_compile": bool(
+            getattr(args, "block_swap_requested_torch_compile", False)
+        ),
+        "block_swap_compile_disabled": bool(
+            getattr(args, "block_swap_compile_disabled", False)
+        ),
+        "block_swap_effective_torch_compile": bool(
+            getattr(args, "torch_compile", False)
+        ),
+        "block_swap_effective_lora_fp32_compute": bool(
+            getattr(args, "block_swap_effective_lora_fp32_compute", False)
+        ),
+        "block_swap_effective_use_custom_down_autograd": bool(
+            getattr(args, "block_swap_effective_use_custom_down_autograd", False)
+        ),
+        "block_swap_effective_network_spec": getattr(
+            args, "block_swap_effective_network_spec", None
+        ),
+    }
+    # The budget is populated immediately before accelerator.prepare.  Keep it
+    # optional so older callers/tests that only exercise the effective policy
+    # retain their compact manifest shape.
+    budget = getattr(args, "block_swap_budget", None)
+    if isinstance(budget, dict):
+        fields["block_swap_budget"] = dict(budget)
+    return fields
+
+
+def _training_budget_manifest_fields(args) -> dict[str, Any]:
+    """Return the resolved budget and its explicit provenance for manifests."""
+
+    return {
+        "training_budget_source": getattr(args, "training_budget_source", None),
+        "training_budget_origin": getattr(args, "training_budget_origin", None),
+        "max_train_steps": int(getattr(args, "max_train_steps", 0) or 0),
+        "max_train_epochs": getattr(args, "max_train_epochs", None),
+    }
+
+
+def _finalize_training_budget(args, *, dataloader_length: int, num_processes: int) -> int:
+    """Resolve the optimizer-step budget without letting epochs overwrite it.
+
+    ``argparse`` supplies a default step value even when the user only set
+    epochs.  ``read_config_from_file`` records explicit intent in the private
+    provenance flag; direct embedders that do not use that loader retain the
+    historical interpretation that a non-None step value is explicit.
+    """
+
+    explicit_steps = getattr(args, "_max_train_steps_explicit", None)
+    if explicit_steps is None:
+        explicit_steps = getattr(args, "max_train_steps", None) is not None
+    epochs = getattr(args, "max_train_epochs", None)
+    if explicit_steps:
+        effective = int(getattr(args, "max_train_steps", 0) or 0)
+        source = "max_train_steps"
+        if epochs is not None:
+            logger.warning(
+                "Both max_train_steps and max_train_epochs are set; using the "
+                "explicit max_train_steps=%s (epochs=%s is ignored)",
+                effective,
+                epochs,
+            )
+    elif epochs is not None:
+        effective = int(epochs) * math.ceil(
+            dataloader_length / num_processes / args.gradient_accumulation_steps
+        )
+        source = "max_train_epochs"
+    else:
+        effective = int(getattr(args, "max_train_steps", 0) or 0)
+        source = "max_train_steps_default"
+
+    if effective <= 0:
+        raise ValueError(f"resolved max_train_steps must be positive, got {effective}")
+    args.max_train_steps = effective
+    args.effective_max_train_steps = effective
+    args.training_budget_source = source
+    if source == "max_train_steps":
+        args.training_budget_origin = getattr(args, "_max_train_steps_source", "unknown")
+    elif source == "max_train_epochs":
+        args.training_budget_origin = getattr(args, "_max_train_epochs_source", "unknown")
+    else:
+        args.training_budget_origin = "argparse default"
+    refresh_config_snapshot(args)
+    return effective
+
+
 def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -> bool:
     """Keep LoRA-family adapter projections in fp32 on V100/fp16.
 
@@ -194,7 +587,13 @@ def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -
     automatic fallback is intentionally narrow (Volta V100 sm_70 + fp16) so the
     long-tested bf16 path and other GPUs remain unchanged.
     """
-    if "lora_fp32_compute" in net_kwargs:
+    # On V100 block-swap reliable mode this setting is part of the safety
+    # contract, so an explicit ``false`` is overridden after a warning at the
+    # network-construction call site.  Outside that mode explicit config keeps
+    # its historical precedence.
+    if "lora_fp32_compute" in net_kwargs and not getattr(
+        args, "block_swap_reliable_mode", False
+    ):
         return False
     if getattr(args, "network_module", None) != "networks.lora_anima":
         return False
@@ -213,7 +612,9 @@ def _should_auto_enable_eager_lora_down_autograd(
     (compiled graphs already use Dynamo fusion and AOTAutograd partitioning)
     and the adapter projection path resolved to fp32.
     """
-    if "use_custom_down_autograd" in net_kwargs:
+    if "use_custom_down_autograd" in net_kwargs and not getattr(
+        args, "block_swap_reliable_mode", False
+    ):
         return False
     if getattr(args, "torch_compile", False):
         return False
@@ -229,6 +630,94 @@ def _should_auto_enable_eager_lora_down_autograd(
         "true",
         "1",
     )
+
+
+def _apply_v100_adapter_runtime_policy(
+    args, accelerator, net_kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply and record the effective V100 LoRA eager-memory policy."""
+
+    reliable_block_swap = bool(
+        getattr(args, "block_swap_reliable_mode", False)
+    )
+    if _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs):
+        if reliable_block_swap and str(
+            net_kwargs.get("lora_fp32_compute", "")
+        ).strip().lower() in {"0", "false", "no", "off"}:
+            logger.warning(
+                "V100 block-swap reliable mode overrides explicit "
+                "lora_fp32_compute=false; adapter projections stay in fp32."
+            )
+        net_kwargs["lora_fp32_compute"] = "true"
+        if reliable_block_swap:
+            logger.warning(
+                "V100/sm_70 block-swap reliable mode: enforcing "
+                "lora_fp32_compute=true so LoRA rank GEMMs stay fp32 while "
+                "the frozen base remains fp16."
+            )
+        else:
+            logger.warning(
+                "V100/sm_70 fp16 training detected: auto-enabling "
+                "lora_fp32_compute so LoRA rank GEMMs run in fp32 while the "
+                "frozen base remains fp16. Set lora_fp32_compute=false to "
+                "disable for A/B testing."
+            )
+    if _should_auto_enable_eager_lora_down_autograd(
+        args, accelerator, net_kwargs
+    ):
+        if reliable_block_swap and str(
+            net_kwargs.get("use_custom_down_autograd", "")
+        ).strip().lower() in {"0", "false", "no", "off"}:
+            logger.warning(
+                "V100 block-swap reliable mode overrides explicit "
+                "use_custom_down_autograd=false; eager rematerialization "
+                "remains enabled for the supported LoRA family."
+            )
+        net_kwargs["use_custom_down_autograd"] = "true"
+        if reliable_block_swap:
+            logger.warning(
+                "V100/sm_70 block-swap reliable mode: enforcing "
+                "use_custom_down_autograd=true for bounded eager LoRA and "
+                "MLP intermediates."
+            )
+        else:
+            logger.warning(
+                "eager V100 fp16/FP32-residual LoRA training detected: "
+                "auto-enabling use_custom_down_autograd for bounded eager "
+                "LoRA and MLP intermediates. Rank GEMMs remain fp32; frozen "
+                "sublayer matmuls remain fp16. Set "
+                "use_custom_down_autograd=false to disable for A/B testing."
+            )
+
+    # Record the *effective* adapter path rather than only the requested TOML
+    # values.  Reliable mode may intentionally override explicit false values.
+    args.block_swap_effective_lora_fp32_compute = _as_boolish(
+        net_kwargs.get("lora_fp32_compute")
+    )
+    args.block_swap_effective_use_custom_down_autograd = _as_boolish(
+        net_kwargs.get("use_custom_down_autograd")
+    )
+    try:
+        from networks import resolve_network_spec
+
+        args.block_swap_effective_network_spec = resolve_network_spec(net_kwargs).name
+    except (NotImplementedError, RuntimeError, TypeError, ValueError):
+        # The network factory will report the authoritative configuration error;
+        # manifest generation should still remain best-effort.
+        args.block_swap_effective_network_spec = None
+    logger.info(
+        "block swap effective config: enabled=%s reliable_mode=%s "
+        "gpu_sm=%s torch_compile=%s lora_fp32_compute=%s "
+        "use_custom_down_autograd=%s network_spec=%s",
+        _blocks_to_swap_enabled(args),
+        reliable_block_swap,
+        getattr(args, "block_swap_gpu_sm", None),
+        bool(getattr(args, "torch_compile", False)),
+        args.block_swap_effective_lora_fp32_compute,
+        args.block_swap_effective_use_custom_down_autograd,
+        args.block_swap_effective_network_spec,
+    )
+    return net_kwargs
 
 
 def _resolve_mixed_precision(args) -> None:
@@ -429,6 +918,10 @@ class AnimaTrainer:
         train_dataset_group: Union[DatasetGroup, MinimalDataset],
         val_dataset_group: Optional[DatasetGroup],
     ):
+        # Keep this guard here as well as at train() entry: a few embedders call
+        # the trainer lifecycle directly, bypassing the command-line wrapper.
+        _validate_block_swap_config(args)
+
         # use_text_cache → cache_text_encoder_outputs{,_to_disk} is expanded in
         # verify_training_args (runs first); just read the derived flag here.
         if args.cache_text_encoder_outputs:
@@ -469,10 +962,6 @@ class AnimaTrainer:
                     "unsloth_offload_checkpointing is enabled, so gradient_checkpointing is also enabled"
                 )
                 args.gradient_checkpointing = True
-            assert args.blocks_to_swap is None or args.blocks_to_swap == 0, (
-                "blocks_to_swap is not supported with unsloth_offload_checkpointing"
-            )
-
         # Propagate inversion_dir to datasets for functional-loss supervision (postfix-func).
         inversion_dir = getattr(args, "inversion_dir", None)
         if inversion_dir:
@@ -1430,6 +1919,23 @@ class AnimaTrainer:
         metadata["ss_sigmoid_scale"] = args.sigmoid_scale
         metadata["ss_sigmoid_bias"] = getattr(args, "sigmoid_bias", 0.0)
         metadata["ss_discrete_flow_shift"] = args.discrete_flow_shift
+        # Hardware-dependent block-swap policy is part of the reproducibility
+        # record.  Keep it in safetensors metadata as well as run_manifest.json
+        # so an exported adapter still explains why compile was disabled.
+        metadata["ss_blocks_to_swap"] = getattr(args, "blocks_to_swap", 0) or 0
+        metadata["ss_block_swap_reliable_mode"] = bool(
+            getattr(args, "block_swap_reliable_mode", False)
+        )
+        metadata["ss_block_swap_gpu_sm"] = getattr(args, "block_swap_gpu_sm", None)
+        metadata["ss_block_swap_effective_torch_compile"] = bool(
+            getattr(args, "torch_compile", False)
+        )
+        metadata["ss_block_swap_effective_lora_fp32_compute"] = bool(
+            getattr(args, "block_swap_effective_lora_fp32_compute", False)
+        )
+        metadata["ss_block_swap_effective_use_custom_down_autograd"] = bool(
+            getattr(args, "block_swap_effective_use_custom_down_autograd", False)
+        )
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
@@ -1801,26 +2307,9 @@ class AnimaTrainer:
         # (--network_args + allowlisted top-level keys). Copied so the dropout
         # default below stays a factory-call detail, not part of the cached
         # ``args._network_kwargs`` view other consumers read.
-        net_kwargs = dict(resolve_network_kwargs(args))
-        if _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs):
-            net_kwargs["lora_fp32_compute"] = "true"
-            logger.warning(
-                "V100/sm_70 fp16 training detected: auto-enabling "
-                "lora_fp32_compute so LoRA rank GEMMs run in fp32 while the "
-                "frozen base remains fp16. Set lora_fp32_compute=false to "
-                "disable for A/B testing."
-            )
-        if _should_auto_enable_eager_lora_down_autograd(
-            args, accelerator, net_kwargs
-        ):
-            net_kwargs["use_custom_down_autograd"] = "true"
-            logger.warning(
-                "eager V100 fp16/FP32-residual LoRA training detected: "
-                "auto-enabling use_custom_down_autograd for bounded eager "
-                "LoRA and MLP intermediates. Rank GEMMs remain fp32; frozen "
-                "sublayer matmuls remain fp16. Set "
-                "use_custom_down_autograd=false to disable for A/B testing."
-            )
+        net_kwargs = _apply_v100_adapter_runtime_policy(
+            args, accelerator, dict(resolve_network_kwargs(args))
+        )
 
         factory_weights_sd = None
         if args.dim_from_weights:
@@ -1950,6 +2439,7 @@ class AnimaTrainer:
         args,
         accelerator,
         network,
+        model,
         train_dataset_group,
         val_dataset_group,
         collator,
@@ -1998,6 +2488,30 @@ class AnimaTrainer:
         optimizer_name, optimizer_args, optimizer = get_optimizer(
             args, trainable_params
         )
+
+        # Do this after the real adapter optimizer exists, but before
+        # ``accelerator.prepare`` can move/wrap it.  Block swapping only saves
+        # resident frozen DiT blocks; adapter parameters, gradients, optimizer
+        # state and the largest token-family workspace remain live.  Failing at
+        # this point gives an actionable message before a misleading first-step
+        # OOM or skipped optimizer update.
+        if int(getattr(args, "blocks_to_swap", 0) or 0) > 0:
+            prepare_swap = getattr(model, "prepare_block_swap_before_forward", None)
+            if callable(prepare_swap):
+                # ``enable_block_swap`` is installed during model loading, but
+                # the tail weights are not parked until the first accelerator
+                # preparation. Park them once here so the measured free memory
+                # reflects the actual block-swap residency rather than the
+                # full DiT, while keeping the check before accelerator.prepare.
+                prepare_swap()
+            check_block_swap_budget(
+                args,
+                model=model,
+                network=network,
+                optimizer=optimizer,
+                token_budget=getattr(self, "_compile_token_budget", None),
+                device=getattr(accelerator, "device", None),
+            )
         optimizer_train_fn, optimizer_eval_fn = get_optimizer_train_eval_fn(
             optimizer, args
         )
@@ -2053,16 +2567,19 @@ class AnimaTrainer:
             **dataloader_kwargs,
         )
 
-        # Calculate training steps
-        if args.max_train_epochs is not None:
-            args.max_train_steps = args.max_train_epochs * math.ceil(
-                len(train_dataloader)
-                / accelerator.num_processes
-                / args.gradient_accumulation_steps
-            )
-            accelerator.print(
-                f"override steps. steps for {args.max_train_epochs} epochs is"
-            )
+        # Calculate training steps. Explicit max_train_steps is authoritative;
+        # epochs are only a derivation source when no step budget was supplied.
+        _finalize_training_budget(
+            args,
+            dataloader_length=len(train_dataloader),
+            num_processes=accelerator.num_processes,
+        )
+        accelerator.print(
+            "training budget: "
+            f"source={args.training_budget_source}, "
+            f"origin={args.training_budget_origin}, "
+            f"max_train_steps={args.max_train_steps}"
+        )
 
         train_dataset_group.set_max_train_steps(args.max_train_steps)
 
@@ -2198,6 +2715,19 @@ class AnimaTrainer:
     def train(self, args):
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
+        selected_preprocess_run = _apply_preprocess_run(args)
+        output_layout = layout_from_args(args)
+        # Resolve block-swap compatibility and the hardware-dependent reliable
+        # mode before computing the resume signature or constructing
+        # Accelerator.  A V100 must never reach accelerator/model setup with a
+        # stale high-peak compile request.
+        _validate_block_swap_config(args)
+        _resolve_block_swap_reliable_mode(args)
+        args.config_signature = _resume_config_signature(args)
+        # The daemon supplies ANIMA_DAEMON_STOP_FILE on Windows and sends a
+        # process-group signal on Linux.  The controller only flips a flag;
+        # loop.py consumes it after a complete optimizer step.
+        self._stop_controller = StopController.from_environment()
         configure_staged_resolution(args)
         normalize_sample_args(args)
         verify_training_args(args)
@@ -2247,6 +2777,16 @@ class AnimaTrainer:
         ds = self._prepare_dataset(args)
         train_dataset_group = ds.train_group
         val_dataset_group = ds.val_group
+        _validate_preprocess_dataset_paths(
+            train_dataset_group, selected_preprocess_run
+        )
+        _validate_preprocess_dataset_paths(val_dataset_group, selected_preprocess_run)
+        args.dataset_signature = signature(
+            {
+                "train": _dataset_group_signature(train_dataset_group),
+                "val": _dataset_group_signature(val_dataset_group),
+            }
+        )
         current_epoch = ds.current_epoch
         current_step = ds.current_step
         collator = ds.collator
@@ -2479,6 +3019,7 @@ class AnimaTrainer:
             args,
             accelerator,
             network,
+            unet,
             train_dataset_group,
             val_dataset_group,
             collator,
@@ -2652,6 +3193,8 @@ class AnimaTrainer:
         resume_from_local_or_hf_if_specified(accelerator, args)
         steps_from_state = saver.steps_from_state
         loaded_train_state = saver.loaded_train_state
+        if loaded_train_state.get("rng_state"):
+            restore_rng_state(loaded_train_state.get("rng_state"))
 
         # calculate steps to skip when resuming or starting from a specific step
         initial_step = 0
@@ -2727,11 +3270,53 @@ class AnimaTrainer:
                     logger.info(
                         "initial_step is specified but not resuming. lr scheduler will be started from the beginning"
                     )
-                logger.info(f"skipping {initial_step} steps")
-                initial_step *= args.gradient_accumulation_steps
-
-                epoch_to_start = initial_step // math.ceil(
-                    len(train_dataloader) / args.gradient_accumulation_steps
+                initial_global_step = initial_step
+                batches_per_epoch = len(train_dataloader)
+                explicit_cursor = (
+                    int(loaded_train_state.get("schema_version", 1) or 1) >= 2
+                    and "current_epoch" in loaded_train_state
+                    and "micro_batch_offset" in loaded_train_state
+                )
+                if explicit_cursor:
+                    try:
+                        epoch_to_start, initial_step = (
+                            resolve_persisted_resume_position(
+                                initial_global_step,
+                                batches_per_epoch,
+                                args.gradient_accumulation_steps,
+                                current_epoch=loaded_train_state["current_epoch"],
+                                micro_batch_offset=loaded_train_state[
+                                    "micro_batch_offset"
+                                ],
+                            )
+                        )
+                    except ValueError as exc:
+                        # A few early schema-v2 snapshots were written before
+                        # the cursor was made absolute across a resumed epoch.
+                        # Keep those states usable through the legacy step
+                        # conversion, while refusing to silently trust a
+                        # contradictory cursor.
+                        logger.warning(
+                            "ignoring inconsistent persisted resume cursor: %s",
+                            exc,
+                        )
+                        epoch_to_start, initial_step = resolve_resume_position(
+                            initial_global_step,
+                            batches_per_epoch,
+                            args.gradient_accumulation_steps,
+                        )
+                else:
+                    epoch_to_start, initial_step = resolve_resume_position(
+                        initial_global_step,
+                        batches_per_epoch,
+                        args.gradient_accumulation_steps,
+                    )
+                logger.info(
+                    "resolved resume position: global_step=%s, "
+                    "start_epoch=%s, batch_offset=%s",
+                    initial_global_step,
+                    epoch_to_start,
+                    initial_step,
                 )
             else:
                 epoch_to_start = initial_step // math.ceil(
@@ -2781,6 +3366,7 @@ class AnimaTrainer:
             initial_global_step=initial_global_step,
             stage_batch_cursor=stage_batch_cursor,
             stage_loader_generator_state=stage_loader_generator_state,
+            stop_controller=getattr(self, "_stop_controller", None),
         )
         loop_state.stage_index = (
             stage_plan.initial_index if stage_plan is not None else -1
@@ -2793,44 +3379,167 @@ class AnimaTrainer:
             self.progress_sink,
             final_step=lambda: loop_state.global_step,
             extra_fields=self._liveness.run_end_fields,
+            stopped=lambda: loop_state.stop_requested,
         ):
-            run_training_loop(self, loop_state)
+            loop_completed = False
+            try:
+                run_training_loop(self, loop_state)
+                loop_completed = True
+            except BaseException:
+                # Python exceptions can often still persist the most recently
+                # committed optimizer state. SIGKILL, host OOM and power loss
+                # cannot reach this block and fall back to the last complete
+                # atomic state directory.
+                if loop_state.at_optimizer_boundary:
+                    try:
+                        optimizer_eval_fn()
+                        saver.save_interrupt_state(
+                            network,
+                            loop_state.global_step,
+                            max(1, int(current_epoch.value)),
+                        )
+                    except Exception:
+                        logger.exception("best-effort exception checkpoint failed")
+                else:
+                    # A failure in the middle of gradient accumulation cannot
+                    # be represented by an Accelerate state (partial gradients
+                    # are not a committed optimizer step). Keep the previous
+                    # complete rolling/interrupted state instead of publishing
+                    # a cursor that would silently skip the unfinished window.
+                    logger.warning(
+                        "skipping exception checkpoint inside an optimizer step; "
+                        "resume will use the last complete state"
+                    )
+                raise
+            finally:
+                if loop_state.stop_requested:
+                    # A cooperative stop has already committed the interrupt
+                    # checkpoint at an optimizer boundary.  Accelerate's
+                    # teardown can wait on DataLoader/CUDA/NCCL worker state
+                    # after that point, defeating the daemon's stop deadline;
+                    # the daemon path hard-exits after run_scope flushes the
+                    # terminal progress event below.
+                    logger.info(
+                        "skipping accelerator cleanup after cooperative stop"
+                    )
+                elif not loop_completed:
+                    try:
+                        accelerator.end_training()
+                    except Exception:
+                        logger.exception("accelerator cleanup failed")
 
-            accelerator.end_training()
-            optimizer_eval_fn()
+            if not loop_state.stop_requested:
+                optimizer_eval_fn()
 
-            # Catch-all sample decode for any latents not already decoded inline
-            # (block-swapping runs defer the whole batch to here, and a latent
-            # that failed an inline decode is left on disk for retry). The VAE
-            # gets the full budget now that the loop has freed its activation /
-            # block-swap memory; no-op when inline decode already drained them.
-            # Park the DiT on CPU first so the VAE decode gets the full budget.
-            if is_main_process and args.sample_prompts:
-                try:
-                    accelerator.unwrap_model(loop_state.unet).to("cpu")
-                except Exception:
-                    pass
-                clean_memory_on_device(accelerator.device)
-                anima_train_utils.decode_pending_samples(
+            if loop_state.stop_requested:
+                logger.info(
+                    "training stopped cooperatively at global_step=%s; "
+                    "deferred sample latents remain in the job directory",
+                    loop_state.global_step,
+                )
+                if is_main_process:
+                    write_run_manifest(
+                        output_layout,
+                        {
+                            "status": "stopped",
+                            "global_step": loop_state.global_step,
+                            "config_signature": getattr(args, "config_signature", None),
+                            "dataset_signature": getattr(args, "dataset_signature", None),
+                            "preprocess_run": getattr(args, "preprocess_run", None),
+                            **_training_budget_manifest_fields(args),
+                            **_block_swap_manifest_fields(args),
+                        },
+                    )
+
+            else:
+                # Catch-all sample decode for any latents not already decoded
+                # inline. Explicit stop skips this path so preview work can never
+                # consume the daemon's stop timeout.
+                _decode_pending_samples_at_exit(
                     accelerator,
                     args,
                     vae,
+                    loop_state.unet,
+                    is_main_process=is_main_process,
                     progress_sink=getattr(self, "progress_sink", None),
                 )
 
-            if is_main_process and (args.save_state or args.save_state_on_train_end):
-                save_state_on_train_end(args, accelerator)
+                # Every rank contributes its Accelerate RNG/sampler payload;
+                # the checkpoint helper publishes the shared directory on rank 0.
+                if args.save_state or args.save_state_on_train_end:
+                    save_state_on_train_end(args, accelerator)
 
-            saver.cleanup_resumable()
-            saver.save_final(network, loop_state.global_step, num_train_epochs)
+                saver.cleanup_resumable()
+                saver.save_final(network, loop_state.global_step, num_train_epochs)
+                if is_main_process:
+                    write_run_manifest(
+                        output_layout,
+                        {
+                            "status": "done",
+                            "global_step": loop_state.global_step,
+                            "config_signature": getattr(args, "config_signature", None),
+                            "dataset_signature": getattr(args, "dataset_signature", None),
+                            "preprocess_run": getattr(args, "preprocess_run", None),
+                            **_training_budget_manifest_fields(args),
+                            **_block_swap_manifest_fields(args),
+                        },
+                    )
+
+                # ``end_training`` destroys the distributed process group. It
+                # must run only after every rank has contributed its final state
+                # and rank 0 has published the model/manifest.
+                try:
+                    accelerator.end_training()
+                except Exception:
+                    logger.exception("accelerator cleanup failed")
+
+        # The daemon's cooperative-stop contract ends at the flushed
+        # ``run_end(stopped)`` event.  Do not enter Python/CUDA interpreter
+        # teardown afterward: DataLoader workers and accelerator atexit hooks
+        # can block indefinitely on a V100.  ``os._exit`` mirrors the profiler
+        # path in ``library/training/loop.py``; the OS releases all GPU/process
+        # resources and the accelerate launcher observes a clean rc=0.
+        if loop_state.stop_requested and os.environ.get("ANIMA_DAEMON_STOP_FILE"):
+            getattr(self, "_stop_controller", None) and self._stop_controller.close()
+            _hard_exit_after_cooperative_stop(True)
 
         # Remove the TensorBoard log dir for runs shorter than 2 steps — they
         # add noise to the runs list (e.g. aborted starts, dry-runs) and carry
         # no useful loss curves.
         if is_main_process and loop_state.global_step < 2:
             _cleanup_short_log_dir(args)
+        getattr(self, "_stop_controller", None) and self._stop_controller.close()
 
     # endregion
+
+
+def _decode_pending_samples_at_exit(
+    accelerator,
+    args,
+    vae,
+    unet,
+    *,
+    is_main_process: bool,
+    progress_sink=None,
+) -> None:
+    """Best-effort normal/error preview drain; explicit stops bypass it."""
+
+    if not is_main_process or not args.sample_prompts:
+        return
+    try:
+        accelerator.unwrap_model(unet).to("cpu")
+    except Exception as exc:
+        logger.warning("could not park DiT before deferred sample decode: %s", exc)
+    clean_memory_on_device(accelerator.device)
+    try:
+        anima_train_utils.decode_pending_samples(
+            accelerator,
+            args,
+            vae,
+            progress_sink=progress_sink,
+        )
+    except Exception as exc:
+        logger.error("deferred sample decode during cleanup failed: %s", exc)
 
 
 def _cleanup_short_log_dir(args) -> None:
@@ -2847,6 +3556,22 @@ def _cleanup_short_log_dir(args) -> None:
         print(
             f"warn: could not remove short-run log dir {log_dir}: {e}", file=sys.stderr
         )
+
+
+def _hard_exit_after_cooperative_stop(stop_requested: bool) -> None:
+    """Exit a daemon-owned stopped worker after its terminal event is flushed.
+
+    ``sys.exit`` runs Python/CUDA atexit handlers, which can wait forever for a
+    DataLoader worker or an Accelerate process group that has already been
+    interrupted.  The interrupted checkpoint and ``run_end(stopped)`` have
+    been committed before this helper is called; the OS can reclaim the rest
+    of the process tree safely.
+    """
+    if not stop_requested or not os.environ.get("ANIMA_DAEMON_STOP_FILE"):
+        return
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def setup_parser() -> argparse.ArgumentParser:

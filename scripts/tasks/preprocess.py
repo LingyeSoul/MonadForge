@@ -3,9 +3,203 @@
 from __future__ import annotations
 
 import os
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ._common import PY, ROOT, _path, run
+
+
+try:
+    from library.preprocess.runs import (
+        PreprocessRun,
+        PreprocessRunError,
+        resolve_preprocess_run,
+    )
+except ImportError:  # pragma: no cover - keeps lightweight task discovery usable
+    PreprocessRun = object  # type: ignore[assignment,misc]
+    PreprocessRunError = RuntimeError  # type: ignore[assignment,misc]
+    resolve_preprocess_run = None  # type: ignore[assignment]
+
+
+# A full preprocess command owns one run for every stage.  The context is
+# intentionally process-local: daemon jobs are separate processes and each
+# single-stage CLI invocation can still use the historical fixed directories.
+_ACTIVE_PREPROCESS_RUN: PreprocessRun | None = None
+
+
+def _consume_preprocess_run(extra: list[str]) -> tuple[str | None, list[str]]:
+    """Extract the run manifest flag without leaking it to worker scripts."""
+
+    selected = os.environ.get("PREPROCESS_RUN") or os.environ.get(
+        "ANIMA_PREPROCESS_RUN"
+    )
+    explicit: str | None = None
+    cleaned: list[str] = []
+    i = 0
+    while i < len(extra):
+        token = str(extra[i])
+        if token in {"--preprocess_run", "--preprocess-run"}:
+            if i + 1 >= len(extra) or str(extra[i + 1]).startswith("--"):
+                raise SystemExit(f"{token} requires a manifest path")
+            explicit = str(extra[i + 1])
+            i += 2
+            continue
+        if token.startswith(("--preprocess_run=", "--preprocess-run=")):
+            explicit = token.split("=", 1)[1]
+            value = explicit
+            if not value:
+                raise SystemExit("--preprocess_run requires a manifest path")
+            i += 1
+            continue
+        cleaned.append(extra[i])
+        i += 1
+    return explicit or selected, cleaned
+
+
+def _preprocess_config(extra: list[str]) -> dict[str, object]:
+    """Build the stable identity inputs used by ``manifest.json``.
+
+    The resolver itself projects this mapping to resize/filter/caption/cache
+    knobs, so path and model entries remain useful metadata without fragmenting
+    the cache namespace.
+    """
+
+    from ._common import _path_overrides
+
+    config: dict[str, object] = dict(_path_overrides())
+    config["target_res"] = _target_res_values(extra)
+    config["multires_per_image"] = _multires_per_image_enabled(extra)
+    config["cache_schema_version"] = 1
+    for env_key, config_key in (
+        ("DROP_LOWRES_IMAGES", "drop_lowres_images"),
+        ("MIN_PIXELS", "min_pixels"),
+        ("PREPROCESS_PATH_PATTERN", "path_pattern"),
+        ("CAPTION_SHUFFLE_VARIANTS", "caption_shuffle_variants"),
+        ("CAPTION_TAG_DROPOUT_RATE", "caption_tag_dropout_rate"),
+        ("CAPTION_TAG_RANDOMIZE_RATE", "caption_tag_randomize_rate"),
+    ):
+        if env_key in os.environ:
+            config[config_key] = os.environ[env_key]
+    caption, _ = _caption_correction_config(extra)
+    config["caption"] = caption
+    # Include explicit preprocessing switches in a named field.  The canonical
+    # fingerprint keeps this field while ignoring unrelated training flags.
+    config["preprocess_options"] = [str(item) for item in extra]
+    return config
+
+
+def _resolve_stage_run(
+    extra: list[str], *, create: bool = False
+) -> tuple[PreprocessRun | None, list[str]]:
+    selected, cleaned = _consume_preprocess_run(list(extra))
+    if _ACTIVE_PREPROCESS_RUN is not None:
+        return _ACTIVE_PREPROCESS_RUN, cleaned
+    if not selected and not create:
+        return None, cleaned
+    source = _path("source_image_dir", "image_dataset")
+    post_root = _path("post_image_dataset", "post_image_dataset")
+    if resolve_preprocess_run is None:
+        raise SystemExit("preprocess run support is unavailable")
+    try:
+        expected = resolve_preprocess_run(
+            source,
+            _preprocess_config(cleaned),
+            post_image_dataset=post_root,
+            create=False,
+        )
+        if selected:
+            manifest = Path(selected).expanduser()
+            if manifest.is_dir() or manifest.suffix.lower() != ".json":
+                manifest = manifest / "manifest.json"
+            if manifest.resolve(strict=False) != expected.manifest_path.resolve(
+                strict=False
+            ):
+                raise PreprocessRunError(
+                    "preprocess run does not match the current source/config: "
+                    f"expected {expected.manifest_path}, got {manifest}"
+                )
+        resolved = resolve_preprocess_run(
+            source,
+            _preprocess_config(cleaned),
+            post_image_dataset=post_root,
+            create=True,
+        )
+    except PreprocessRunError as exc:
+        raise SystemExit(str(exc)) from exc
+    return resolved, cleaned
+
+
+@contextmanager
+def _use_preprocess_run(run_obj: PreprocessRun | None):
+    global _ACTIVE_PREPROCESS_RUN
+    previous = _ACTIVE_PREPROCESS_RUN
+    _ACTIVE_PREPROCESS_RUN = run_obj
+    try:
+        yield run_obj
+    finally:
+        _ACTIVE_PREPROCESS_RUN = previous
+
+
+def _preprocess_path(
+    key: str, default: str, run_obj: PreprocessRun | None = None
+) -> str:
+    active = run_obj or _ACTIVE_PREPROCESS_RUN
+    if active is not None:
+        paths = active.path_overrides()
+        if key in paths:
+            return str(paths[key])
+        if key == "mask_dir":
+            return str(active.masks_dir)
+        if key == "multires_image_dir":
+            return str(active.multires_dir)
+    return _path(key, default)
+
+
+def _run_file_counts(run_obj: PreprocessRun) -> dict[str, int]:
+    suffixes = {
+        "resized": {".png", ".jpg", ".jpeg", ".webp", ".bmp"},
+        "lora": {".npz", ".safetensors"},
+        "masks": {".png"},
+        "multires": {".png", ".npz"},
+        "conditioning": {".png", ".npz", ".safetensors"},
+    }
+    result: dict[str, int] = {}
+    for kind, root in run_obj.directories.items():
+        if kind not in suffixes or not root.exists():
+            continue
+        result[kind] = sum(
+            1
+            for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in suffixes[kind]
+        )
+    lora_root = run_obj.lora_cache_dir
+    if lora_root.is_dir():
+        result["latents"] = 0
+        result["te"] = 0
+        result["pe"] = 0
+        for path in lora_root.rglob("*"):
+            if not path.is_file():
+                continue
+            name = path.name
+            if name.endswith("_anima_te.safetensors"):
+                result["te"] += 1
+            elif name.endswith(("_anima_pe.safetensors", "_anima_pe_spatial.safetensors")):
+                result["pe"] += 1
+            elif name.endswith("_anima.npz"):
+                result["latents"] += 1
+    return result
+
+
+def _publish_run_status(run_obj: PreprocessRun, status: str, **extra: object) -> None:
+    """Best-effort manifest update; do not hide the worker's original error."""
+
+    payload = {
+        "updated_at": time.time(),
+        "artifacts": _run_file_counts(run_obj),
+        **extra,
+    }
+    run_obj.write_manifest(status=status, **payload)
 
 
 # Subfolders are walked by default (matches base.toml's `recursive = true`).
@@ -148,6 +342,9 @@ def _multires_root(extra, *, conditioning: bool = False) -> str:
     explicit = _explicit_option_value(extra, "--multires_dir")
     if explicit is not None:
         return explicit
+    active = _ACTIVE_PREPROCESS_RUN
+    if active is not None:
+        return str(active.multires_dir)
     key = "conditioning_multires_dir" if conditioning else "multires_image_dir"
     default = (
         "post_image_dataset/cond_multires"
@@ -328,7 +525,6 @@ def _resize_crop_args(extra) -> list[str]:
             DEFAULT_RESIZE_CROP_ANCHOR,
             RESIZE_CROP_ANCHORS,
         )
-
         from ._common import _path_overrides
 
         anchor = str(
@@ -566,6 +762,7 @@ def _drop_option_with_value(extra, names: set[str]) -> list[str]:
 
 
 def cmd_preprocess_resize(extra):
+    run_obj, extra = _resolve_stage_run(extra)
     mp_args, extra = _resolve_lowres_filter(extra)
     tr_args = _target_res_args(extra)
     pp_args = _preprocess_path_pattern_args(extra)
@@ -578,9 +775,9 @@ def cmd_preprocess_resize(extra):
             PY,
             "scripts/preprocess/resize_images.py",
             "--src",
-            _path("source_image_dir", "image_dataset"),
+            _preprocess_path("source_image_dir", "image_dataset", run_obj),
             "--dst",
-            _path("resized_image_dir", "post_image_dataset/resized"),
+            _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj),
             "--no_copy_captions",
             "--recursive",
             *mp_args,
@@ -603,6 +800,7 @@ def cmd_preprocess_reconcile(extra):
     wins. Useful after adding/dropping a tier so re-running preprocess + mask
     regenerates only the images whose bucket moved.
     """
+    run_obj, extra = _resolve_stage_run(extra)
     # _target_res_args returns [] for a bare [1024]/absent config AND when ARGS
     # already carries --target_res. Inject the 1024 default only in the former case.
     tr_args = _target_res_args(extra)
@@ -613,13 +811,13 @@ def cmd_preprocess_reconcile(extra):
             PY,
             "scripts/preprocess/reconcile_caches.py",
             "--image-dir",
-            _path("source_image_dir", "image_dataset"),
+            _preprocess_path("source_image_dir", "image_dataset", run_obj),
             "--resized-dir",
-            _path("resized_image_dir", "post_image_dataset/resized"),
+            _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj),
             "--cache-dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
             "--mask-dir",
-            _path("mask_dir", "post_image_dataset/masks"),
+            _preprocess_path("mask_dir", "post_image_dataset/masks", run_obj),
             *tr_args,
             *extra,
         ]
@@ -627,12 +825,15 @@ def cmd_preprocess_reconcile(extra):
 
 
 def cmd_preprocess_vae(extra):
+    run_obj, extra = _resolve_stage_run(extra)
     multires = _multires_per_image_enabled(extra)
     cleaned = _pop_resize_only_args(extra)
     _, cleaned = _resolve_lowres_filter(cleaned)
     cleaned = _drop_option_with_value(cleaned, {"--min_pixels"})
     pp_args = _preprocess_path_pattern_args(cleaned)
-    data_dirs = [_path("resized_image_dir", "post_image_dataset/resized")]
+    data_dirs = [
+        _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj)
+    ]
     if multires:
         root = _multires_root(extra)
         data_dirs = [
@@ -646,7 +847,7 @@ def cmd_preprocess_vae(extra):
                 "--dir",
                 data_dir,
                 "--cache_dir",
-                _path("lora_cache_dir", "post_image_dataset/lora"),
+                _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
                 "--vae",
                 _path("vae", "models/vae/qwen_image_vae.safetensors"),
                 "--batch_size",
@@ -662,6 +863,7 @@ def cmd_preprocess_vae(extra):
 
 def cmd_preprocess_cond_resize(extra):
     """Resize conditioning images to match target bucket resolutions."""
+    run_obj, extra = _resolve_stage_run(extra)
     tr_args = _target_res_args(extra)
     mr_args = _multires_resize_args(extra, conditioning=True)
     run(
@@ -674,11 +876,12 @@ def cmd_preprocess_cond_resize(extra):
                 os.environ.get("CONDITIONING_DATA_DIR", "conditioning_data"),
             ),
             "--dst",
-            _path(
+            _preprocess_path(
                 "conditioning_resized_dir",
                 os.environ.get(
                     "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
                 ),
+                run_obj,
             ),
             "--no_copy_captions",
             "--recursive",
@@ -691,17 +894,19 @@ def cmd_preprocess_cond_resize(extra):
 
 def cmd_preprocess_cond_vae(extra):
     """Cache VAE latents for conditioning images."""
+    run_obj, extra = _resolve_stage_run(extra)
     multires = _multires_per_image_enabled(extra)
     cleaned = _pop_resize_only_args(extra)
     _, cleaned = _resolve_lowres_filter(cleaned)
     cleaned = _drop_option_with_value(cleaned, {"--min_pixels"})
     pp_args = _preprocess_path_pattern_args(cleaned)
     data_dirs = [
-        _path(
+        _preprocess_path(
             "conditioning_resized_dir",
             os.environ.get(
                 "CONDITIONING_RESIZED_DIR", "post_image_dataset/cond_resized"
             ),
+            run_obj,
         )
     ]
     if multires:
@@ -717,7 +922,7 @@ def cmd_preprocess_cond_vae(extra):
                 "--dir",
                 data_dir,
                 "--cache_dir",
-                _path("lora_cache_dir", "post_image_dataset/lora"),
+                _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
                 "--vae",
                 _path("vae", "models/vae/qwen_image_vae.safetensors"),
                 "--batch_size",
@@ -785,6 +990,7 @@ def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = No
     caption and the shuffle/dropout/randomize sidecars ride alongside, so the
     user can see the train-time variants directly in ``resized/``.
     """
+    run_obj, extra = _resolve_stage_run(extra)
     if caption_config is None:
         caption_config, extra = _caption_correction_config(extra)
     correct = _caption_correction_enabled(caption_config)
@@ -798,9 +1004,9 @@ def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = No
         PY,
         "scripts/preprocess/correct_captions.py",
         "--src",
-        _path("source_image_dir", "image_dataset"),
+        _preprocess_path("source_image_dir", "image_dataset", run_obj),
         "--dst",
-        _path("resized_image_dir", "post_image_dataset/resized"),
+        _preprocess_path("resized_image_dir", "post_image_dataset/resized", run_obj),
         "--recursive",
         *pp_args,
     ]
@@ -820,6 +1026,7 @@ def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = No
 
 
 def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
+    run_obj, extra = _resolve_stage_run(extra)
     if caption_config is None:
         caption_config, extra = _caption_correction_config(extra)
     shuffle, dropout, randomize = _variant_settings()
@@ -834,16 +1041,21 @@ def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
         _, extra = _resolve_lowres_filter(extra)
         extra = _drop_option_with_value(extra, {"--min_pixels"})
         pp_args = _preprocess_path_pattern_args(extra)
-        cmd_preprocess_captions(extra, caption_config=caption_config)
-        text_dir = _path("resized_image_dir", "post_image_dataset/resized")
+        with _use_preprocess_run(run_obj):
+            cmd_preprocess_captions(extra, caption_config=caption_config)
+        text_dir = _preprocess_path(
+            "resized_image_dir", "post_image_dataset/resized", run_obj
+        )
         match_args: list[str] = []
         mp_args: list[str] = ["--min_pixels", "0"]
     else:
         pp_args = _preprocess_path_pattern_args(extra)
-        text_dir = _path("source_image_dir", "image_dataset")
+        text_dir = _preprocess_path("source_image_dir", "image_dataset", run_obj)
         match_args = [
             "--match_images_from",
-            _path("resized_image_dir", "post_image_dataset/resized"),
+            _preprocess_path(
+                "resized_image_dir", "post_image_dataset/resized", run_obj
+            ),
         ]
         mp_args, extra = _resolve_lowres_filter(extra)
     run(
@@ -853,7 +1065,7 @@ def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
             "--dir",
             text_dir,
             "--cache_dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
             *match_args,
             "--qwen3",
             _path("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
@@ -890,14 +1102,17 @@ def cmd_preprocess_pe(extra):
     (``post_image_dataset/ip_adapter/anima_pe_centroid_pe.safetensors``) via
     ``--centroid`` so IP-Adapter mean-centering works without a separate pass.
     """
+    run_obj, extra = _resolve_stage_run(extra)
     run(
         [
             PY,
             "scripts/preprocess/cache_pe_encoder.py",
             "--dir",
-            _path("resized_image_dir", "post_image_dataset/resized"),
+            _preprocess_path(
+                "resized_image_dir", "post_image_dataset/resized", run_obj
+            ),
             "--cache_dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
             "--encoder",
             "pe",
             "--recursive",
@@ -916,14 +1131,17 @@ def cmd_preprocess_pe_spatial(extra):
     REPA aligns per-patch, not against a dataset mean. Run before a
     ``use_repa=true`` training arm.
     """
+    run_obj, extra = _resolve_stage_run(extra)
     run(
         [
             PY,
             "scripts/preprocess/cache_pe_encoder.py",
             "--dir",
-            _path("resized_image_dir", "post_image_dataset/resized"),
+            _preprocess_path(
+                "resized_image_dir", "post_image_dataset/resized", run_obj
+            ),
             "--cache_dir",
-            _path("lora_cache_dir", "post_image_dataset/lora"),
+            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
             "--encoder",
             "pe_spatial",
             "--recursive",
@@ -942,13 +1160,14 @@ def cmd_caption_index(extra):
     distinct-pair sampler, artist balancing, and dataset analytics. Regenerate
     when the dataset or vocab changes.
     """
+    run_obj, extra = _resolve_stage_run(extra)
     pp_args = _preprocess_path_pattern_args(extra)
     run(
         [
             PY,
             "scripts/preprocess/build_caption_index.py",
             "--src",
-            _path("source_image_dir", "image_dataset"),
+            _preprocess_path("source_image_dir", "image_dataset", run_obj),
             *pp_args,
             *extra,
         ]
@@ -962,6 +1181,8 @@ _CAPTION_INDEX_VOCAB = "models/captioners/anima-tagger-v2/vocab.json"
 
 
 def cmd_preprocess(extra):
+    run_obj, extra = _resolve_stage_run(extra, create=True)
+    assert run_obj is not None
     caption_config, extra = _caption_correction_config(extra)
     # PE features are NOT cached here by default (CMMD/DCW v4 chain `preprocess-pe`
     # explicitly) — keeps the default LoRA preprocess fast. Exception: a
@@ -974,48 +1195,63 @@ def cmd_preprocess(extra):
     encoder = _repa_pe_encoder()
     if encoder is not None:
         _require_repa_encoder_model(encoder)
-    cmd_preprocess_resize(extra)
-    # VAE/TE steps read on-disk shapes — strip the low-res convenience flags AND
-    # the resize-only --target_res so their argparse never sees an undefined arg.
-    downstream = _pop_resize_only_args(extra)
-    cmd_preprocess_vae(extra)
-    cmd_preprocess_te(downstream, caption_config=caption_config)
-    # Caption index as a free by-product — consumed by the IP-Adapter pair sampler,
-    # artist balancing, analytics, AND soft-tokens (which hard-errors without it).
-    vocab = _path("caption_index_vocab", _CAPTION_INDEX_VOCAB)
-    if not os.path.exists(vocab):
-        # GUI users reach preprocess without `make download-models`, so fetch the
-        # tiny tagger vocab on demand. Catch broadly (SystemExit from run(), OSError
-        # from a missing `hf`) so we skip rather than abort the already-done GPU work.
-        print("  [preprocess] tagger vocab missing; fetching it for caption-index")
+
+    print(f"  [preprocess] run manifest: {run_obj.manifest_path}")
+    with _use_preprocess_run(run_obj):
+        _publish_run_status(run_obj, "running", started_at=time.time())
         try:
-            from .downloads import cmd_download_tagger
+            cmd_preprocess_resize(extra)
+            # VAE/TE steps read on-disk shapes — strip the low-res convenience
+            # flags and resize-only options before their own argparse layers.
+            downstream = _pop_resize_only_args(extra)
+            cmd_preprocess_vae(extra)
+            cmd_preprocess_te(downstream, caption_config=caption_config)
 
-            cmd_download_tagger([])
-        except (SystemExit, OSError) as e:
-            print(f"  [preprocess] tagger vocab auto-download failed: {e}")
-    if os.path.exists(vocab):
-        # Caption correction writes TE-only sidecars under resized_image_dir. The
-        # caption index intentionally stays on source captions because its
-        # consumers care about tag presence/relations, not corrected order.
-        cmd_caption_index([])
-    else:
-        print(
-            f"  [preprocess] skipping caption-index: tagger vocab not found at "
-            f"{_CAPTION_INDEX_VOCAB} and auto-download failed. Run "
-            f"`make download-tagger`, then `make caption-index` "
-            f"(soft-tokens contrastive training needs it)."
-        )
+            # Caption index as a free by-product — consumed by the IP-Adapter pair
+            # sampler, analytics and soft-tokens contrastive training.
+            vocab = _path("caption_index_vocab", _CAPTION_INDEX_VOCAB)
+            if not os.path.exists(vocab):
+                print(
+                    "  [preprocess] tagger vocab missing; fetching it for caption-index"
+                )
+                try:
+                    from .downloads import cmd_download_tagger
 
-    # REPA arm: a `use_repa=true` variant needs the PE sidecars REPA aligns against
-    # (train.py errors without them); chaining here builds them in one pass. `encoder`
-    # was resolved (and its checkpoint required) at the top.
-    if encoder is not None:
-        print(f"  [preprocess] use_repa=true → caching REPA PE features ({encoder})")
-        if encoder == "pe_spatial":
-            cmd_preprocess_pe_spatial([])
+                    cmd_download_tagger([])
+                except (SystemExit, OSError) as e:
+                    print(f"  [preprocess] tagger vocab auto-download failed: {e}")
+            if os.path.exists(vocab):
+                cmd_caption_index([])
+            else:
+                print(
+                    f"  [preprocess] skipping caption-index: tagger vocab not found at "
+                    f"{_CAPTION_INDEX_VOCAB} and auto-download failed. Run "
+                    f"`make download-tagger`, then `make caption-index` "
+                    f"(soft-tokens contrastive training needs it)."
+                )
+
+            if encoder is not None:
+                print(
+                    f"  [preprocess] use_repa=true -> caching REPA PE features ({encoder})"
+                )
+                if encoder == "pe_spatial":
+                    cmd_preprocess_pe_spatial([])
+                else:
+                    cmd_preprocess_pe([])
+        except BaseException as exc:
+            try:
+                _publish_run_status(
+                    run_obj,
+                    "failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                    failed_at=time.time(),
+                )
+            except Exception:
+                pass
+            raise
         else:
-            cmd_preprocess_pe([])
+            _publish_run_status(run_obj, "ready", completed_at=time.time())
+            print(f"  [preprocess] ready: {run_obj.manifest_path}")
 
 
 def cmd_preprocess_config(extra):
