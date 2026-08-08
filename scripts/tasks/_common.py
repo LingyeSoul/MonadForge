@@ -52,6 +52,39 @@ def _preset(default: str = "default") -> str:
 
 _PATH_OVERRIDES_CACHE: dict | None = None
 
+# These values describe the on-disk preprocessing contract, not a training
+# method or hardware preset.  Keep them shared when a GUI task happens to set
+# METHOD/PRESET for the subsequent training command; otherwise changing the
+# method would silently create a second cache run for the same dataset.
+_SHARED_PREPROCESS_KEYS = frozenset(
+    {
+        "source_image_dir",
+        "resized_image_dir",
+        "lora_cache_dir",
+        "conditioning_data_dir",
+        "conditioning_resized_dir",
+        "target_res",
+        "multires_per_image",
+        "drop_lowres_images",
+        "min_pixels",
+        "preprocess_path_pattern",
+        "caption_shuffle_variants",
+        "caption_tag_dropout_rate",
+        "caption_tag_randomize_rate",
+        "caption_correct_order",
+        "caption_insert_no_artist",
+        "caption_trigger_word",
+        "caption_trigger_at_front",
+        "resize_crop_anchor",
+        "resize_bucket_resos",
+        "resize_crop_margins",
+        "freefit_max_ratio",
+        "multires_image_dir",
+        "conditioning_multires_dir",
+        "curation_decisions",
+    }
+)
+
 
 def _path_overrides() -> dict:
     """Top-level path scalars from base.toml → preset → method file (cached).
@@ -82,6 +115,17 @@ def _path_overrides() -> dict:
                 method=os.environ.get("METHOD") or None,
                 methods_subdir=os.environ.get("METHODS_SUBDIR") or "methods",
             )
+
+        # Re-read only the preprocessing layer without method/preset overrides.
+        # Training still receives its selected method and preset elsewhere; this
+        # overlay is consumed by preprocessing helpers and keeps their run
+        # identity stable across training-method changes.
+        shared = load_path_overrides(
+            preset="default", method=None, methods_subdir="methods"
+        )
+        for key in _SHARED_PREPROCESS_KEYS:
+            if key in shared:
+                _PATH_OVERRIDES_CACHE[key] = shared[key]
     except Exception as e:  # noqa: BLE001 — fall back silently to defaults
         print(f"warn: could not read base.toml path overrides: {e}", file=sys.stderr)
         _PATH_OVERRIDES_CACHE = {}

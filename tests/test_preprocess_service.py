@@ -228,6 +228,42 @@ def test_run_listing_status_and_manifest_paths(tmp_path, monkeypatch):
     assert paths["lora_cache_dir"] == str(run.lora_dir)
 
 
+def test_run_listing_is_independent_of_training_method_and_preset(tmp_path, monkeypatch):
+    from library.preprocess.runs import resolve_preprocess_run
+
+    source = tmp_path / "source"
+    source.mkdir()
+    post = tmp_path / "post"
+    run = resolve_preprocess_run(
+        source,
+        {"target_res": [1024], "caption_shuffle_variants": 4},
+        post_image_dataset=post,
+    )
+    run.write_manifest(status="ready", updated_at=1.0)
+
+    monkeypatch.setattr(svc, "ROOT", tmp_path)
+
+    def fake_paths(preset="default", variant=None):
+        # A method-specific path must not redirect run discovery.
+        if variant == "tlora":
+            return {
+                "resized_image_dir": str(tmp_path / "other" / "resized"),
+                "lora_cache_dir": str(tmp_path / "other" / "lora"),
+                "conditioning_resized_dir": str(tmp_path / "other" / "cond_resized"),
+            }
+        return {
+            "resized_image_dir": str(post / "resized"),
+            "lora_cache_dir": str(post / "lora"),
+            "conditioning_resized_dir": str(post / "cond_resized"),
+        }
+
+    monkeypatch.setattr(svc, "get_path_overrides", fake_paths)
+    default_runs = svc.list_runs(variant="lora", preset="default", source=str(source))
+    tlora_runs = svc.list_runs(variant="tlora", preset="low_vram", source=str(source))
+    assert [item["manifest"] for item in default_runs] == [str(run.manifest_path.resolve())]
+    assert [item["manifest"] for item in tlora_runs] == [str(run.manifest_path.resolve())]
+
+
 def test_manifest_paths_reject_incomplete_run(tmp_path):
     import pytest
 

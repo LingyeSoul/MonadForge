@@ -164,6 +164,37 @@ def test_target_res_args_env_wins_over_config(monkeypatch):
     assert _target_res_args(["--target_res", "768"]) == []
 
 
+def test_preprocess_overrides_keep_method_specific_training_values_out(monkeypatch):
+    from scripts.tasks import _common
+
+    monkeypatch.setattr(_common, "_PATH_OVERRIDES_CACHE", None)
+    monkeypatch.setenv("METHOD", "tlora")
+    monkeypatch.setenv("PRESET", "low_vram")
+
+    calls = []
+
+    def fake_load(*, preset, method, methods_subdir):
+        calls.append((preset, method, methods_subdir))
+        if method is None:
+            return {"target_res": [1024], "min_pixels": 250000}
+        return {
+            "target_res": [896, 1024],
+            "min_pixels": 1,
+            "network_dim": 64,
+        }
+
+    monkeypatch.setattr("library.config.io.load_path_overrides", fake_load)
+    values = _common._path_overrides()
+
+    assert values["target_res"] == [1024]
+    assert values["min_pixels"] == 250000
+    assert values["network_dim"] == 64
+    assert calls == [
+        ("low_vram", "tlora", "methods"),
+        ("default", None, "methods"),
+    ]
+
+
 def test_multires_resize_and_vae_commands_cover_every_tier(monkeypatch):
     from scripts.tasks import preprocess
 

@@ -66,6 +66,25 @@ def test_config_fingerprint_is_stable_and_covers_preprocess_axes():
     assert config_fingerprint(_config(optimizer_type="SGD")) == config_fingerprint(config)
 
 
+def test_training_method_and_preset_do_not_split_preprocess_identity():
+    base = _config(target_res=[896, 1024])
+    lora = {
+        **base,
+        "method": "lora",
+        "preset": "default",
+        "network_dim": 32,
+        "blocks_to_swap": 0,
+    }
+    tlora = {
+        **base,
+        "method": "tlora",
+        "preset": "low_vram",
+        "network_dim": 64,
+        "blocks_to_swap": 1,
+    }
+    assert config_fingerprint(lora) == config_fingerprint(tlora)
+
+
 def test_resolve_run_layout_manifest_and_idempotent_reuse(tmp_path: Path, monkeypatch):
     source = tmp_path / "nested source" / "charA"
     source.mkdir(parents=True)
