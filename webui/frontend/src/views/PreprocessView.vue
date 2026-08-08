@@ -505,7 +505,7 @@ interface PreprocessRunSummary {
 
 const runs = ref<PreprocessRunSummary[]>([])
 function readSelectedRun(): string | null {
-  return readPreprocessRun(configStore.variant, configStore.preset)
+  return readPreprocessRun()
 }
 
 const selectedRun = ref<string | null>(readSelectedRun())
@@ -536,12 +536,12 @@ const status = reactive({
 
 async function fetchStatus() {
   try {
-    const v = configStore.variant
-    const p = configStore.preset
     const qs = new URLSearchParams()
-    if (v) qs.set('variant', v)
-    if (p) qs.set('preset', p)
     if (selectedRun.value) qs.set('manifest', selectedRun.value)
+    else {
+      if (configStore.variant) qs.set('variant', configStore.variant)
+      if (configStore.preset) qs.set('preset', configStore.preset)
+    }
     const url = '/api/preprocess/status' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
     if (!res.ok) return
@@ -646,12 +646,12 @@ async function fetchPaths() {
   pathsLoading.value = true
   try {
     await ensureVariant()
-    const v = configStore.variant
-    const p = configStore.preset
     const qs = new URLSearchParams()
-    if (v) qs.set('variant', v)
-    if (p) qs.set('preset', p)
     if (selectedRun.value) qs.set('manifest', selectedRun.value)
+    else {
+      if (configStore.variant) qs.set('variant', configStore.variant)
+      if (configStore.preset) qs.set('preset', configStore.preset)
+    }
     const url = '/api/preprocess/paths' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
     if (!res.ok) return
@@ -709,8 +709,6 @@ async function fetchRuns(selectNewest: boolean) {
   runsLoading.value = true
   try {
     const qs = new URLSearchParams()
-    if (configStore.variant) qs.set('variant', configStore.variant)
-    if (configStore.preset) qs.set('preset', configStore.preset)
     if (paths.source) qs.set('source', paths.source)
     const url = '/api/preprocess/runs' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
@@ -726,12 +724,13 @@ async function fetchRuns(selectNewest: boolean) {
 }
 
 watch(selectedRun, async () => {
-  writePreprocessRun(selectedRun.value, configStore.variant, configStore.preset)
+  writePreprocessRun(selectedRun.value)
   await Promise.all([fetchStatus(), fetchPaths()])
 })
 
 watch([() => configStore.variant, () => configStore.preset], async () => {
-  selectedRun.value = readSelectedRun()
+  // A preprocessing manifest is shared across training methods/presets. Keep
+  // the selection stable while refreshing the source-filtered run list.
   await fetchRuns(false)
 })
 

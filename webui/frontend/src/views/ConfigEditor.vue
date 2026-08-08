@@ -509,11 +509,11 @@ const selectedVariant = ref('')
 const selectedPreset = ref('default')
 
 function selectedPreprocessRun(): string | null {
-  return readPreprocessRun(selectedVariant.value, selectedPreset.value)
+  return readPreprocessRun()
 }
 
 function storePreprocessRun(manifest: string | null) {
-  writePreprocessRun(manifest, selectedVariant.value, selectedPreset.value)
+  writePreprocessRun(manifest)
 }
 
 const trainingLaunching = ref(false)
