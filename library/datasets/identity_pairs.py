@@ -1,8 +1,10 @@
 """Identity-pair reference sampler for IP-Adapter distinct-pair training.
 
 Consumes the *method-agnostic* caption index built by
-``scripts/preprocess/build_caption_index.py`` (``post_image_dataset/captions/
-caption_index.json``) and owns the IP-Adapter **policy** on top of it: a
+``scripts/preprocess/build_caption_index.py`` (normally the selected run's
+``captions/caption_index.json``; legacy runs may use
+``post_image_dataset/captions/caption_index.json``) and owns the IP-Adapter
+**policy** on top of it: a
 tiered character → copyright → artist back-off that, given a target image,
 returns a *different* image of the same identity to feed the IP path.
 

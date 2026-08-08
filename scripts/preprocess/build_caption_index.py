@@ -4,8 +4,9 @@
 Walks caption ``.txt`` sidecars under a source dir, classifies each
 comma-separated tag into character / copyright / artist / count via the Anima
 Tagger vocab (artist additionally by the ``@`` prefix, which is exact and not
-limited by the vocab's frequency cutoff), and writes a single JSON index to
-``post_image_dataset/captions/caption_index.json``::
+limited by the vocab's frequency cutoff), and writes a single JSON index. The
+preprocess task passes a run-local output path; direct legacy CLI use defaults
+to ``post_image_dataset/captions/caption_index.json``::
 
     {
       "meta":  {... provenance: vocab path+mtime, src, n_images, generated ...},

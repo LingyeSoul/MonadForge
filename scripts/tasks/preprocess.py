@@ -163,6 +163,7 @@ def _run_file_counts(run_obj: PreprocessRun) -> dict[str, int]:
         "masks": {".png"},
         "multires": {".png", ".npz"},
         "conditioning": {".png", ".npz", ".safetensors"},
+        "captions": {".json"},
     }
     result: dict[str, int] = {}
     for kind, root in run_obj.directories.items():
@@ -1155,13 +1156,17 @@ def cmd_caption_index(extra):
 
     Walks caption sidecars under the source dir, classifies tags into
     character / copyright / artist / count via the Anima Tagger vocab, and
-    writes ``post_image_dataset/captions/caption_index.json`` (per-image typed
-    tags + group inversions). Pure data, no GPU. Consumed by the IP-Adapter
-    distinct-pair sampler, artist balancing, and dataset analytics. Regenerate
-    when the dataset or vocab changes.
+    writes the selected run's ``captions/caption_index.json`` (or the legacy
+    ``post_image_dataset/captions/caption_index.json`` when no run is selected).
+    Pure data, no GPU. Consumed by the IP-Adapter distinct-pair sampler, artist
+    balancing, and dataset analytics. Regenerate when the dataset, run filter,
+    or vocab changes.
     """
     run_obj, extra = _resolve_stage_run(extra)
     pp_args = _preprocess_path_pattern_args(extra)
+    out_args = (
+        ["--out", str(run_obj.caption_index_path)] if run_obj is not None else []
+    )
     run(
         [
             PY,
@@ -1169,9 +1174,12 @@ def cmd_caption_index(extra):
             "--src",
             _preprocess_path("source_image_dir", "image_dataset", run_obj),
             *pp_args,
+            *out_args,
             *extra,
         ]
     )
+    if run_obj is not None and _ACTIVE_PREPROCESS_RUN is None:
+        _publish_run_status(run_obj, "ready")
 
 
 # `cmd_preprocess` auto-fetches this (~0.7 MB) vocab on demand: the caption index

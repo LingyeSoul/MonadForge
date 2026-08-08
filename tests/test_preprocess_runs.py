@@ -73,7 +73,7 @@ def test_resolve_run_layout_manifest_and_idempotent_reuse(tmp_path: Path, monkey
 
     assert run.root == tmp_path / "post" / "runs" / f"charA-{source_path_hash(source)}" / run.config_hash
     assert run.manifest_path.is_file()
-    for name in ("resized", "lora", "masks", "multires", "conditioning"):
+    for name in ("resized", "lora", "masks", "multires", "conditioning", "captions"):
         assert (run.root / name).is_dir()
     assert run.conditioning_data_dir.is_dir()
     assert run.conditioning_resized_dir.is_dir()

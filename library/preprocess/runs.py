@@ -41,13 +41,14 @@ PREPROCESS_RUN_SCHEMA_VERSION = 1
 SOURCE_HASH_LENGTH = 12
 CONFIG_HASH_LENGTH = 12
 
-RUN_KINDS = ("resized", "lora", "masks", "multires", "conditioning")
+RUN_KINDS = ("resized", "lora", "masks", "multires", "conditioning", "captions")
 _LEGACY_KIND_DIRS = {
     "resized": ("resized",),
     "lora": ("lora",),
     "masks": ("masks", "mask"),
     "multires": ("multires",),
     "conditioning": ("conditioning", "conditioning_data", "cond_resized"),
+    "captions": ("captions",),
 }
 
 _WINDOWS_RESERVED = {
@@ -187,6 +188,16 @@ class PreprocessRun:
         return self.conditioning_dir / "resized"
 
     @property
+    def captions_dir(self) -> Path:
+        """Run-local derived caption artifacts."""
+
+        return self.root / "captions"
+
+    @property
+    def caption_index_path(self) -> Path:
+        return self.captions_dir / "caption_index.json"
+
+    @property
     def directories(self) -> dict[str, Path]:
         return {
             "resized": self.resized_dir,
@@ -196,6 +207,7 @@ class PreprocessRun:
             "conditioning": self.conditioning_dir,
             "conditioning_data": self.conditioning_data_dir,
             "conditioning_resized": self.conditioning_resized_dir,
+            "captions": self.captions_dir,
         }
 
     @property
@@ -215,6 +227,8 @@ class PreprocessRun:
             "multires_dir": str(self.multires_dir),
             "conditioning_data_dir": str(self.conditioning_data_dir),
             "conditioning_resized_dir": str(self.conditioning_resized_dir),
+            "caption_index_dir": str(self.captions_dir),
+            "caption_index_path": str(self.caption_index_path),
             "preprocess_run": str(self.manifest_path),
         }
 
@@ -697,6 +711,7 @@ def legacy_paths(
         "conditioning_data": root / "conditioning_data",
         "conditioning_resized": root / "cond_resized",
         "cond_resized": root / "cond_resized",
+        "captions": root / "captions",
     }
 
 

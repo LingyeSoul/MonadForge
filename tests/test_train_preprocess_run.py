@@ -33,6 +33,7 @@ def test_apply_preprocess_run_pins_all_training_cache_scalars(tmp_path):
     assert args.multires_image_dir == str(run.multires_dir)
     assert args.conditioning_data_dir == str(run.conditioning_data_dir)
     assert args.conditioning_resized_dir == str(run.conditioning_resized_dir)
+    assert args.caption_index_path == str(run.caption_index_path)
 
 
 def test_apply_preprocess_run_rejects_incomplete_manifest(tmp_path):

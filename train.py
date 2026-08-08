@@ -248,6 +248,7 @@ def _apply_preprocess_run(args) -> PreprocessRun | None:
     args.multires_image_dir = str(run.multires_dir)
     args.conditioning_data_dir = str(run.conditioning_data_dir)
     args.conditioning_resized_dir = str(run.conditioning_resized_dir)
+    args.caption_index_path = str(run.caption_index_path)
     logger.info(
         "preprocess run pinned: manifest=%s source=%s resized=%s cache=%s",
         run.manifest_path,
@@ -1047,9 +1048,15 @@ class AnimaTrainer:
             if con_weight > 0.0:
                 con_k = int(net_kwargs.get("contrastive_k", 1) or 1)
                 con_mode = str(net_kwargs.get("contrastive_negative_mode", "shuffled"))
-                # The negative grouping always comes from the shared caption
-                # index `make caption-index` writes — not a user knob.
-                con_index = "post_image_dataset/captions/caption_index.json"
+                # The negative grouping comes from this preprocess run's
+                # caption index; legacy runs fall back to the historical path.
+                run_index = getattr(args, "caption_index_path", None)
+                legacy_index = "post_image_dataset/captions/caption_index.json"
+                con_index = (
+                    run_index
+                    if run_index and os.path.exists(run_index)
+                    else legacy_index
+                )
                 if not os.path.exists(con_index):
                     raise FileNotFoundError(
                         f"contrastive_index not found: {con_index}. "

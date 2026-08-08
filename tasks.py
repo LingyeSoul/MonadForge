@@ -324,7 +324,7 @@ COMMANDS = {
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (
         masking.cmd_mask,
-        "Run SAM + MIT (via tempdir) and write merged masks under post_image_dataset/masks/",
+        "Run SAM + MIT (via tempdir) and write merged masks into the selected preprocess run",
     ),
     "mask-clean": (
         masking.cmd_mask_clean,
