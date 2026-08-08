@@ -346,6 +346,29 @@ def test_preprocess_run_alias_is_stripped_and_explicit_value_wins(monkeypatch):
     assert cleaned == ["--overwrite"]
 
 
+def test_execution_controls_do_not_change_preprocess_fingerprint(monkeypatch):
+    from library.preprocess.runs import config_fingerprint
+    from scripts.tasks import preprocess
+
+    _stub_overrides(monkeypatch, {"target_res": [1024]})
+    baseline = preprocess._preprocess_config(["--resize_crop_anchor", "center"])
+    controlled = preprocess._preprocess_config(
+        [
+            "--overwrite",
+            "--workers=8",
+            "--batch_size",
+            "4",
+            "--device",
+            "cuda",
+            "--resize_crop_anchor",
+            "center",
+        ]
+    )
+
+    assert controlled["preprocess_options"] == ["--resize_crop_anchor", "center"]
+    assert config_fingerprint(controlled) == config_fingerprint(baseline)
+
+
 def test_full_preprocess_failure_keeps_manifest_incomplete(tmp_path, monkeypatch):
     import json
     import pytest

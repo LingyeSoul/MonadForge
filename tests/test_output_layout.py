@@ -48,6 +48,26 @@ def test_legacy_root_is_still_discoverable(tmp_path):
     assert discover_weights(root, name="legacy") == [final]
 
 
+def test_discovery_excludes_weights_inside_managed_state_and_temp_directories(tmp_path):
+    root = tmp_path / "ckpt"
+    final = root / "artist" / "artist.safetensors"
+    final.parent.mkdir(parents=True)
+    final.write_bytes(b"final")
+
+    excluded_dirs = (
+        root / "artist" / "artist-state",
+        root / "artist" / "artist-checkpoint-state",
+        root / "artist" / "artist-interrupted-state",
+        root / "artist" / ".artist-interrupted-state.tmp",
+        root / "artist" / ".artist-state.old-123",
+    )
+    for directory in excluded_dirs:
+        directory.mkdir()
+        (directory / "model.safetensors").write_bytes(b"state")
+
+    assert discover_weights(root) == [final]
+
+
 def test_manifest_relative_path_resolution(tmp_path):
     manifest = tmp_path / "run" / "run_manifest.json"
     manifest.parent.mkdir()

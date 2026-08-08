@@ -40,4 +40,6 @@ elif command -v open &>/dev/null; then
 fi
 
 echo "WebUI PID: $WEBUI_PID / Analyzer PID: $ANALYZER_PID (Ctrl+C to stop)"
-wait "$WEBUI_PID" "$ANALYZER_PID"
+# The two processes form one supervised unit. If either sidecar exits, return
+# its status immediately; the EXIT trap terminates the survivor.
+wait -n "$WEBUI_PID" "$ANALYZER_PID"

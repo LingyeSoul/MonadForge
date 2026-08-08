@@ -15,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from tqdm import tqdm
+from sr.padding import safe_spatial_pad
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -129,7 +130,7 @@ def _sample_tile(cfg, diff, vqgan, student, hr_t, align, device, amp=True,
     h, w = hr_t.shape[2:]
     ph, pw = (-h) % align, (-w) % align
     if ph or pw:
-        hr_t = F.pad(hr_t, (0, pw, 0, ph), mode="reflect")
+        hr_t = safe_spatial_pad(hr_t, (0, pw, 0, ph))
     ctx = torch.autocast("cuda", dtype=amp_dtype) if amp else nullcontext()
     vdt = next(vqgan.parameters()).dtype   # resolved AMP dtype when enabled, else fp32
     z_y = vqgan.encode(hr_t.to(vdt)) * cfg.diffusion.params.scale_factor

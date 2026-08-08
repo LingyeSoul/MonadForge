@@ -4,7 +4,7 @@ import { $, $$, parseHash } from './core/dom.js';
 import { initLightbox } from './components/lightbox.js';
 import { initShortcuts } from './core/shortcuts.js';
 import { initRuns, loadRuns, refreshRuns } from './views/runs.js';
-import { getDetail, loadDetail } from './views/detail.js';
+import { getDetail, loadDetail, stopDetailPolling } from './views/detail.js';
 import { loadCompare, initCompare } from './views/compare.js';
 import { loadMonitor } from './views/monitor.js';
 
@@ -12,6 +12,7 @@ export const views = { runs: '#view-runs', run: '#view-detail', compare: '#view-
 
 function route() {
   const r = parseHash();
+  if (r.view !== 'run') stopDetailPolling();
   Object.entries(views).forEach(([k, sel]) => $(sel).classList.toggle('hidden', k !== r.view));
   $$('.rail-item').forEach(a => a.classList.toggle('active', a.dataset.view === r.view));
   if (r.view === 'runs') loadRuns();

@@ -58,6 +58,7 @@ async function runCompare() {
 
 export function renderCompareChart(d) {
   const runs = d.runs || [];
+  const runLabel = r => `${r.run_name} [${String(r.id).slice(-8)}]`;
   const palette = [C.paper, C.g7, C.g5, C.g3, C.g2, C.g4, C.g6, C.g1];
   const showEpAvg = $('#cmp-epavg').checked;
   const showSpans = $('#cmp-spans').checked;
@@ -89,7 +90,7 @@ export function renderCompareChart(d) {
       const yMin = vals.length ? Math.min(...vals) * 0.5 : 0.01;
       const yMax = vals.length ? Math.max(...vals) : 1;
       bandSeries.push({
-        name: `${r.run_name} · epochs`, type: 'custom', z: 1, silent: true,
+        id: `epochs-${r.id}`, name: `${runLabel(r)} · epochs`, type: 'custom', z: 1, silent: true,
         tooltip: { show: false },
         data: eps.map(ep => [spans[ep][0], spans[ep][1], yMin, yMax]),
         renderItem: (p, api) => {
@@ -108,7 +109,7 @@ export function renderCompareChart(d) {
       /* E# 标注统一置于图表顶部留白区（全局 max 之上，分两级错开防重叠） */
       const labelY = globalMax * (1.06 + 0.035 * (i % 2));
       labelSeries.push({
-        name: `${r.run_name} · E#`, type: 'scatter', z: 8, symbol: 'none', silent: true,
+        id: `labels-${r.id}`, name: `${runLabel(r)} · E#`, type: 'scatter', z: 8, symbol: 'none', silent: true,
         tooltip: { show: false },
         data: eps.map(ep => ({
           value: [(spans[ep][0] + spans[ep][1]) / 2, labelY],
@@ -122,7 +123,7 @@ export function renderCompareChart(d) {
   const lines = runs.map((r, i) => {
     const lineStyle = { width: 1.6, color: palette[i % palette.length] };
     const out = {
-      name: r.run_name, type: 'line', data: r.loss_average || [], z: 4,
+      id: r.id, name: runLabel(r), type: 'line', data: r.loss_average || [], z: 4,
       symbol: 'none', lineStyle,
       emphasis: { lineStyle: { width: 2.4, color: C.volt } },
     };
@@ -151,9 +152,9 @@ export function renderCompareChart(d) {
     if (!p0 || p0.value == null) return '';
     const step = p0.value[0];
     const rows = arr
-      .filter(p => p.seriesName && !p.seriesName.includes(' · ') && p.value != null && Number.isFinite(p.value[1]))
+      .filter(p => p.seriesType === 'line' && p.value != null && Number.isFinite(p.value[1]))
       .map(p => {
-        const run = runs.find(x => x.run_name === p.seriesName);
+        const run = runs.find(x => x.id === p.seriesId);
         let epStr = '';
         if (run && run.epoch_spans) {
           const ep = epochAt(step, run.epoch_spans);
@@ -167,7 +168,7 @@ export function renderCompareChart(d) {
   const chart = mountChart('cmp-chart', opt);
   const tb = $('#cmp-table tbody');
   tb.innerHTML = runs.map(r => `<tr>
-    <td>${esc(r.run_name)}</td>
+    <td>${esc(runLabel(r))}</td>
     <td>${fmtNum(r.final_avr_loss)}</td>
     <td>${r.steps ?? '—'}</td>
     <td>${r.actual_epochs != null ? `${r.actual_epochs}/${r.total_epochs ?? '?'}` : '—'}</td>

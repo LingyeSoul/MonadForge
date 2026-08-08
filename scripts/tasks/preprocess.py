@@ -27,6 +27,45 @@ except ImportError:  # pragma: no cover - keeps lightweight task discovery usabl
 # single-stage CLI invocation can still use the historical fixed directories.
 _ACTIVE_PREPROCESS_RUN: PreprocessRun | None = None
 
+_FINGERPRINT_CONTROL_FLAGS = {
+    "--dry-run",
+    "--dry_run",
+    "--force",
+    "--overwrite",
+    "--quiet",
+    "--verbose",
+}
+_FINGERPRINT_CONTROL_OPTIONS = {
+    "--batch-size",
+    "--batch_size",
+    "--chunk-size",
+    "--chunk_size",
+    "--device",
+    "--num-workers",
+    "--num_workers",
+    "--prefetch-factor",
+    "--prefetch_factor",
+    "--workers",
+}
+
+
+def _fingerprint_preprocess_options(extra: list[str]) -> list[str]:
+    """Drop execution controls that cannot change preprocess artifacts."""
+    semantic: list[str] = []
+    index = 0
+    while index < len(extra):
+        token = str(extra[index])
+        option = token.split("=", 1)[0]
+        if option in _FINGERPRINT_CONTROL_FLAGS:
+            index += 1
+            continue
+        if option in _FINGERPRINT_CONTROL_OPTIONS:
+            index += 1 if "=" in token else 2
+            continue
+        semantic.append(token)
+        index += 1
+    return semantic
+
 
 def _consume_preprocess_run(extra: list[str]) -> tuple[str | None, list[str]]:
     """Extract the run manifest flag without leaking it to worker scripts."""
@@ -85,7 +124,7 @@ def _preprocess_config(extra: list[str]) -> dict[str, object]:
     config["caption"] = caption
     # Include explicit preprocessing switches in a named field.  The canonical
     # fingerprint keeps this field while ignoring unrelated training flags.
-    config["preprocess_options"] = [str(item) for item in extra]
+    config["preprocess_options"] = _fingerprint_preprocess_options(extra)
     return config
 
 

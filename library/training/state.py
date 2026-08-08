@@ -205,6 +205,8 @@ def normalize_train_state(data: Mapping[str, Any] | None) -> dict[str, Any]:
         offset = max(0, int(offset))
     except (TypeError, ValueError):
         offset = 0
+    stage_index = raw.get("stage_index", -1)
+    stage_outer_epoch = raw.get("stage_outer_epoch", epoch)
     out = dict(raw)
     out.update(
         {
@@ -213,9 +215,11 @@ def normalize_train_state(data: Mapping[str, Any] | None) -> dict[str, Any]:
             "current_step": global_step,  # legacy reader/writer contract
             "current_epoch": epoch,
             "micro_batch_offset": offset,
-            "stage_index": int(raw.get("stage_index", -1) or -1),
+            "stage_index": int(-1 if stage_index is None else stage_index),
             "stage_batch_cursor": int(raw.get("stage_batch_cursor", 0) or 0),
-            "stage_outer_epoch": int(raw.get("stage_outer_epoch", epoch) or epoch),
+            "stage_outer_epoch": int(
+                epoch if stage_outer_epoch is None else stage_outer_epoch
+            ),
         }
     )
     return out

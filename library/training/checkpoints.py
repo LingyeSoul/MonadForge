@@ -550,6 +550,14 @@ class CheckpointSaver:
             # duplicate keyword error when the hook serializes the state.
             runtime.pop("global_step", None)
             provider_interrupted = bool(runtime.pop("interrupted", False))
+            stage_index = runtime.pop("stage_index", -1)
+            if stage_index is None:
+                stage_index = -1
+            stage_outer_epoch = runtime.pop(
+                "stage_outer_epoch", self.current_epoch.value
+            )
+            if stage_outer_epoch is None:
+                stage_outer_epoch = self.current_epoch.value
             logger.info(
                 f"save train state to {train_state_file} at epoch "
                 f"{self.current_epoch.value} step {global_step}"
@@ -558,12 +566,9 @@ class CheckpointSaver:
                 global_step=global_step,
                 current_epoch=int(runtime.pop("current_epoch", self.current_epoch.value)),
                 micro_batch_offset=int(runtime.pop("micro_batch_offset", 0) or 0),
-                stage_index=int(runtime.pop("stage_index", -1) or -1),
+                stage_index=int(stage_index),
                 stage_batch_cursor=int(runtime.pop("stage_batch_cursor", 0) or 0),
-                stage_outer_epoch=int(
-                    runtime.pop("stage_outer_epoch", self.current_epoch.value)
-                    or self.current_epoch.value
-                ),
+                stage_outer_epoch=int(stage_outer_epoch),
                 rng_state=runtime.pop("rng_state", None),
                 config_signature=runtime.pop("config_signature", None),
                 dataset_signature=runtime.pop("dataset_signature", None),

@@ -174,6 +174,21 @@ def is_checkpoint_weight(path: Path, *, name: str | None = None) -> bool:
     return True
 
 
+def _is_managed_nonfinal_path(path: Path, root: Path) -> bool:
+    """Return whether a weight lives in an internal state/temp directory."""
+    for parent in path.parents:
+        directory = parent.name
+        if directory.endswith("-state"):
+            return True
+        if directory.startswith(".") and (
+            directory.endswith(".tmp") or ".old-" in directory
+        ):
+            return True
+        if parent == root:
+            break
+    return False
+
+
 def discover_weights(
     directory: str | os.PathLike,
     *,
@@ -193,7 +208,11 @@ def discover_weights(
         iterator = (
             path for ext in OUTPUT_WEIGHT_EXTENSIONS for path in root.glob(f"*{ext}")
         )
-    files = [p for p in iterator if is_checkpoint_weight(p, name=name)]
+    files = [
+        p
+        for p in iterator
+        if not _is_managed_nonfinal_path(p, root) and is_checkpoint_weight(p, name=name)
+    ]
 
     # A canonical run manifest is authoritative for its directory.  This keeps
     # any unusual method-specific trajectory name from winning merely because
@@ -206,7 +225,11 @@ def discover_weights(
         if manifest is None:
             continue
         final = resolve_manifest_path(manifest_path, manifest.get("final_weight"))
-        if final is not None and is_checkpoint_weight(final, name=name):
+        if (
+            final is not None
+            and not _is_managed_nonfinal_path(final, root)
+            and is_checkpoint_weight(final, name=name)
+        ):
             manifest_finals[manifest_path.parent] = final
     if manifest_finals:
         files = [

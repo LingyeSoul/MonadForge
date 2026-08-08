@@ -15,7 +15,7 @@ MUSIQ for SR and the bicubic baseline, means, peak VRAM) + contact_sheet.png of
 Local versions default -o to output/sr/<version>/infer; released x4 keeps sr/data/results.
 
     python -m sr.scripts.sr_infer -i <img|dir> -o <out_dir> [--version v3] [--chop_size 512]
-    python -m sr.scripts.sr_infer -i <img|dir> --version x2 [--ckpt output/sr/x2/resshift_x2_final.pth]
+    python -m sr.scripts.sr_infer -i <img|dir> --version x2 [--ckpt output/sr/x2_lpips_30k/resshift_x2_final.pth]
 """
 import argparse
 import json
@@ -27,6 +27,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
+from sr.padding import safe_spatial_pad
 
 # vendored ResShift source + rsd_models builders
 HERE = Path(__file__).resolve().parent          # sr/scripts
@@ -51,7 +52,7 @@ _VERSIONS = {
 # our locally-trained art models (no release URL — checkpoint is produced by make sr-train).
 # version -> (config, default ckpt dir); the dirs mirror train_sr/train.py's VERSIONS.
 _LOCAL = {
-    "x2":   (SR / "configs" / "realsr_x2_art.yaml", SR.parent / "output" / "sr" / "x2"),
+    "x2":   (SR / "configs" / "realsr_x2_art.yaml", SR.parent / "output" / "sr" / "x2_lpips_30k"),
     "x4ft": (SR / "configs" / "realsr_x4_art.yaml", SR.parent / "output" / "sr" / "x4_art"),
     "x4s4": (SR / "configs" / "realsr_x4_s4_art.yaml", SR.parent / "output" / "sr" / "x4_s4_art"),
 }
@@ -194,7 +195,7 @@ class ResShiftInfer:
         pad_h = (-ori_h) % self.offset
         pad_w = (-ori_w) % self.offset
         if pad_h or pad_w:
-            y0 = F.pad(y0, (0, pad_w, 0, pad_h), mode="reflect")
+            y0 = safe_spatial_pad(y0, (0, pad_w, 0, pad_h))
         z_y = self.diffusion.encode_first_stage(y0, self.autoencoder, up_sample=True)
         z = self.diffusion.prior_sample(z_y)
         # z_y is the residual-shift BASE; the model's `lq` input is a separate conditioning

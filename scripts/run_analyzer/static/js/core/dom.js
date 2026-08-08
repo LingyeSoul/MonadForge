@@ -53,10 +53,18 @@ export function toast(msg) {
 
 export function parseHash() {
   const h = location.hash || '#runs';
-  if (h.startsWith('#run/')) return { view: 'run', id: h.slice(5).split('/')[0] };
+  if (h.startsWith('#run/')) {
+    const raw = h.slice(5).split('/')[0];
+    try { return { view: 'run', id: decodeURIComponent(raw) }; }
+    catch (e) { return { view: 'run', id: raw }; }
+  }
   if (h.startsWith('#monitor')) return { view: 'monitor' };
   if (h.startsWith('#compare')) return { view: 'compare' };
   return { view: 'runs' };
+}
+
+export function runHash(id) {
+  return `#run/${encodeURIComponent(String(id))}`;
 }
 
 export async function api(path, opts) {

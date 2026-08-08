@@ -221,6 +221,7 @@ def daemon(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "jobs")
     monkeypatch.setattr(config, "PIDFILE", tmp_path / "daemon.json")
     monkeypatch.setattr(config, "DAEMON_LOG", tmp_path / "daemon.log")
+    monkeypatch.setattr(config, "STOP_GRACE_SECONDS", 0.1)
     monkeypatch.setattr(JobManager, "_build_cmd", _fake_build_cmd)
     # Fake trainers don't touch the GPU; stub the guard so the test doesn't
     # block on whatever real workload happens to hold VRAM on the host.

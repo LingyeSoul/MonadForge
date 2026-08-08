@@ -21,10 +21,21 @@ from scripts.run_analyzer.sources.tensorboard import TbRun, parse as parse_tb
 from scripts.run_analyzer.sources.snapshot import Snapshot, parse as parse_snapshot
 from scripts.run_analyzer.sources.stdout_log import StdoutRun, parse as parse_stdout
 
-_TRAINING_METHODS = {"lora-gui", "lora", "easycontrol", "exp", "turbo", "exp-spd", "lora8", "lora-8gb"}
+_TRAINING_METHODS = {
+    "lora-gui",
+    "lora",
+    "easycontrol",
+    "exp",
+    "turbo",
+    "exp-spd",
+    "lora8",
+    "lora-8gb",
+}
 _LOG_DIR_RE = re.compile(r"^(.*)_(\d{8})-(\d{4})$")
 
-MONADFORGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+MONADFORGE_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 JOBS_DIR = os.path.join(MONADFORGE_ROOT, "output", "daemon", "jobs")
 LOGS_DIR = os.path.join(MONADFORGE_ROOT, "output", "logs")
 
@@ -36,6 +47,7 @@ class Run:
     dir: str
     job: Optional[dict] = None
     jsonl: Optional[JsonlRun] = None
+    jsonl_path: Optional[str] = None
     tb: Optional[TbRun] = None
     snapshot: Optional[Snapshot] = None
     stdout: Optional[StdoutRun] = None
@@ -59,6 +71,8 @@ class Run:
 
 
 def _is_training_job(job: dict) -> bool:
+    if (job.get("kind") or "").lower() == "train":
+        return True
     method = (job.get("method") or "").lower()
     if method in _TRAINING_METHODS:
         return True
@@ -77,6 +91,38 @@ def _load_job(job_dir: str) -> Optional[dict]:
         return None
 
 
+def _normalized_path(path: str) -> str:
+    return os.path.normcase(os.path.realpath(os.path.normpath(path)))
+
+
+def _resolve_log_dir(path: Optional[str]) -> Optional[str]:
+    if not path:
+        return None
+    resolved = path if os.path.isabs(path) else os.path.join(MONADFORGE_ROOT, path)
+    return os.path.normpath(resolved)
+
+
+def apply_jsonl_metadata(run: Run, jl: JsonlRun) -> None:
+    """Apply structured progress metadata, whose terminal event is authoritative."""
+
+    run.jsonl = jl
+    run.run_name = jl.run or run.run_name
+    run.method = jl.method or run.method
+    run.preset = jl.preset or run.preset
+    if jl.total_steps is not None:
+        run.total_steps = jl.total_steps
+    if jl.total_epochs is not None:
+        run.total_epochs = jl.total_epochs
+    if jl.log_dir:
+        run.log_dir = _resolve_log_dir(jl.log_dir)
+    terminal_states = {"ok": "done", "error": "error", "stopped": "stopped"}
+    if jl.run_end_status in terminal_states:
+        run.state = terminal_states[jl.run_end_status]
+        run.stop_requested = jl.run_end_status == "stopped" or run.stop_requested
+    if jl.run_end_error and not run.error:
+        run.error = jl.run_end_error
+
+
 def _scan_daemon_jobs() -> list[Run]:
     runs: list[Run] = []
     if not os.path.isdir(JOBS_DIR):
@@ -88,12 +134,14 @@ def _scan_daemon_jobs() -> list[Run]:
         job = _load_job(job_dir)
         if job is None or not _is_training_job(job):
             continue
+        jsonl_path = os.path.join(job_dir, "progress.jsonl")
         run = Run(
             id=name,
             kind="daemon",
             dir=job_dir,
             job=job,
-            jsonl=parse_jsonl(os.path.join(job_dir, "progress.jsonl")),
+            jsonl=parse_jsonl(jsonl_path),
+            jsonl_path=jsonl_path,
             stdout=parse_stdout(os.path.join(job_dir, "stdout.log")),
             sample_dir=job.get("sample_dir") or os.path.join(job_dir, "sample"),
             method=(job.get("method") or ""),
@@ -108,17 +156,7 @@ def _scan_daemon_jobs() -> list[Run]:
         )
         jl = run.jsonl
         if jl is not None:
-            run.run_name = jl.run or run.run_name
-            run.method = jl.method or run.method
-            run.preset = jl.preset or run.preset
-            run.total_steps = jl.total_steps
-            run.total_epochs = jl.total_epochs
-            if jl.log_dir:
-                run.log_dir = os.path.join(MONADFORGE_ROOT, jl.log_dir)
-            if jl.run_end_status == "error" and run.state != "running":
-                run.state = "error"
-            elif jl.run_end_status == "stopped" and run.state != "running":
-                run.state = "stopped"
+            apply_jsonl_metadata(run, jl)
         run.sources = _source_flags(run)
         runs.append(run)
     return runs
@@ -129,26 +167,48 @@ def _scan_inline_logs(known_log_dirs: set) -> list[Run]:
     runs: list[Run] = []
     if not os.path.isdir(LOGS_DIR):
         return runs
+    jsonl_by_log_dir: dict[str, tuple[str, JsonlRun]] = {}
+    for filename in os.listdir(LOGS_DIR):
+        if not filename.endswith(".progress.jsonl"):
+            continue
+        jsonl_path = os.path.join(LOGS_DIR, filename)
+        jl = parse_jsonl(jsonl_path)
+        log_dir = _resolve_log_dir(jl.log_dir if jl else None)
+        if jl is not None and log_dir:
+            jsonl_by_log_dir[_normalized_path(log_dir)] = (jsonl_path, jl)
+
+    normalized_known = {_normalized_path(path) for path in known_log_dirs if path}
     for name in sorted(os.listdir(LOGS_DIR), reverse=True):
         log_dir = os.path.join(LOGS_DIR, name)
-        if not os.path.isdir(log_dir) or log_dir in known_log_dirs:
+        normalized_log_dir = _normalized_path(log_dir)
+        if not os.path.isdir(log_dir) or normalized_log_dir in normalized_known:
             continue
         snaps = [f for f in os.listdir(log_dir) if f.endswith(".snapshot.toml")]
-        if not snaps:
+        jsonl_entry = jsonl_by_log_dir.get(normalized_log_dir)
+        if not snaps and jsonl_entry is None:
             continue
-        run_name = snaps[0][: -len(".snapshot.toml")]
+        jsonl_path, jl = jsonl_entry if jsonl_entry else (None, None)
+        run_name = (jl.run if jl else None) or (
+            snaps[0][: -len(".snapshot.toml")] if snaps else name
+        )
         run = Run(
             id=f"inline-{name}",
             kind="inline",
             dir=log_dir,
             log_dir=log_dir,
-            snapshot=parse_snapshot(os.path.join(log_dir, snaps[0])),
+            jsonl=jl,
+            jsonl_path=jsonl_path,
+            snapshot=(
+                parse_snapshot(os.path.join(log_dir, snaps[0])) if snaps else None
+            ),
             tb=parse_tb(log_dir),
             run_name=run_name,
             state="orphan",
         )
+        if jl is not None:
+            apply_jsonl_metadata(run, jl)
         run.sources = _source_flags(run)
-        if run.tb is not None:
+        if run.tb is not None and run.jsonl is None:
             run.total_steps = None
         runs.append(run)
     return runs
@@ -156,7 +216,7 @@ def _scan_inline_logs(known_log_dirs: set) -> list[Run]:
 
 def _source_flags(run: Run) -> dict:
     return {
-        "jsonl": run.jsonl is not None and bool(run.jsonl.series),
+        "jsonl": run.jsonl is not None,
         "tensorboard": run.tb is not None,
         "snapshot": run.snapshot is not None,
         "stdout": run.stdout is not None,

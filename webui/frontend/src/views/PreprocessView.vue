@@ -102,6 +102,7 @@
           v-model="paths.source"
           :label="t('ppPathSource')"
           :loading="pathsLoading"
+          :readonly="Boolean(selectedRun)"
           density="compact"
           hide-details="auto"
           class="mb-2"
@@ -109,6 +110,7 @@
         <v-text-field
           v-model="paths.resized"
           :label="t('ppPathResized')"
+          :readonly="Boolean(selectedRun)"
           density="compact"
           hide-details="auto"
           class="mb-2"
@@ -116,6 +118,7 @@
         <v-text-field
           v-model="paths.cache"
           :label="t('ppPathCache')"
+          :readonly="Boolean(selectedRun)"
           density="compact"
           hide-details="auto"
           class="mb-2"
@@ -123,6 +126,7 @@
         <v-text-field
           v-model="paths.condSource"
           :label="t('ppPathCondSource')"
+          :readonly="Boolean(selectedRun)"
           density="compact"
           hide-details="auto"
           class="mb-2"
@@ -130,12 +134,13 @@
         <v-text-field
           v-model="paths.condResized"
           :label="t('ppPathCondResized')"
+          :readonly="Boolean(selectedRun)"
           density="compact"
           hide-details="auto"
         />
       </v-card-text>
       <v-card-actions>
-        <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="pathsSaving" @click="savePaths">
+        <v-btn color="primary" size="small" prepend-icon="mdi-content-save" :loading="pathsSaving" :disabled="Boolean(selectedRun)" @click="savePaths">
           {{ t('ppSavePaths') }}
         </v-btn>
       </v-card-actions>
@@ -587,6 +592,7 @@ const defaultSettings = () => ({
 })
 
 const settings = reactive(defaultSettings())
+let settingsHydrating = false
 
 // Allowed free-fit tier edges (mirror of ALLOWED_TARGET_RES in the backend).
 const TARGET_RES_OPTIONS = [512, 768, 896, 1024, 1280, 1536]
@@ -604,6 +610,7 @@ const samPromptsText = computed({
 })
 
 async function fetchSettings() {
+  settingsHydrating = true
   try {
     const res = await fetch('/api/preprocess/settings')
     if (!res.ok) return
@@ -622,9 +629,14 @@ async function fetchSettings() {
       : [1024]
     settings.multires_per_image = data.multires_per_image ?? false
   } catch { /* ignore */ }
+  finally { settingsHydrating = false }
 }
 
 onMounted(fetchSettings)
+
+watch(settings, () => {
+  if (!settingsHydrating && selectedRun.value) selectedRun.value = null
+}, { deep: true, flush: 'sync' })
 
 // ── Dataset paths ──────────────────────────────────────────────
 
@@ -666,6 +678,7 @@ async function fetchPaths() {
 }
 
 async function savePaths() {
+  if (selectedRun.value) return
   pathsSaving.value = true
   try {
     await ensureVariant()

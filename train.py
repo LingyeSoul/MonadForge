@@ -280,6 +280,7 @@ def _apply_preprocess_run(args) -> PreprocessRun | None:
     # as well so generated blueprints stay inside the selected run unless they
     # deliberately provide another path that is checked below.
     args.text_cache_dir = str(run.lora_dir)
+    args.mask_dir = str(run.masks_dir)
     args.multires_image_dir = str(run.multires_dir)
     args.conditioning_data_dir = str(run.conditioning_data_dir)
     args.conditioning_resized_dir = str(run.conditioning_resized_dir)
@@ -303,6 +304,7 @@ def _validate_preprocess_dataset_paths(group, run: PreprocessRun | None) -> None
         "image": (run.resized_dir, run.multires_dir, run.conditioning_resized_dir),
         "cache": (run.lora_dir,),
         "text": (run.lora_dir,),
+        "mask": (run.masks_dir,),
         "conditioning": (run.conditioning_dir, run.conditioning_resized_dir),
     }
 
@@ -325,6 +327,7 @@ def _validate_preprocess_dataset_paths(group, run: PreprocessRun | None) -> None
             image_dir = getattr(subset, "image_dir", None)
             cache_dir = getattr(subset, "cache_dir", None)
             text_cache_dir = getattr(subset, "text_cache_dir", None)
+            mask_dir = getattr(subset, "mask_dir", None)
             cond_dir = getattr(subset, "cond_cache_dir", None)
             if not inside(image_dir, roots["image"]):
                 violations.append(f"image_dir={image_dir}")
@@ -332,6 +335,8 @@ def _validate_preprocess_dataset_paths(group, run: PreprocessRun | None) -> None
                 violations.append(f"cache_dir={cache_dir}")
             if not inside(text_cache_dir, roots["text"]):
                 violations.append(f"text_cache_dir={text_cache_dir}")
+            if not inside(mask_dir, roots["mask"]):
+                violations.append(f"mask_dir={mask_dir}")
             if not inside(cond_dir, roots["conditioning"]):
                 violations.append(f"cond_cache_dir={cond_dir}")
     if violations:
@@ -339,6 +344,21 @@ def _validate_preprocess_dataset_paths(group, run: PreprocessRun | None) -> None
             "--preprocess_run cache mixing detected; all dataset paths must belong "
             f"to {run.manifest_path}: " + ", ".join(violations[:8])
         )
+
+
+def _resolve_contrastive_index(args) -> str:
+    """Resolve the authoritative caption index for contrastive training."""
+    explicit = getattr(args, "caption_index_path", None)
+    path = (
+        os.fspath(explicit)
+        if explicit
+        else "post_image_dataset/captions/caption_index.json"
+    )
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"contrastive_index not found: {path}. Run `make caption-index`."
+        )
+    return path
 
 
 def _resolve_v100_flash_stability(args) -> str:
@@ -1084,19 +1104,9 @@ class AnimaTrainer:
                 con_k = int(net_kwargs.get("contrastive_k", 1) or 1)
                 con_mode = str(net_kwargs.get("contrastive_negative_mode", "shuffled"))
                 # The negative grouping comes from this preprocess run's
-                # caption index; legacy runs fall back to the historical path.
-                run_index = getattr(args, "caption_index_path", None)
-                legacy_index = "post_image_dataset/captions/caption_index.json"
-                con_index = (
-                    run_index
-                    if run_index and os.path.exists(run_index)
-                    else legacy_index
-                )
-                if not os.path.exists(con_index):
-                    raise FileNotFoundError(
-                        f"contrastive_index not found: {con_index}. "
-                        f"Run `make caption-index`."
-                    )
+                # caption index. An explicit run-local path is authoritative:
+                # falling back to a global index would silently mix datasets.
+                con_index = _resolve_contrastive_index(args)
                 if not getattr(args, "cache_llm_adapter_outputs", False):
                     raise ValueError(
                         "soft_tokens contrastive requires "

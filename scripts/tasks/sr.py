@@ -65,6 +65,27 @@ def _run_module(script: Path, extra: list[str], cwd=ROOT) -> None:
     _run([_venv_py(), "-m", _module_for_script(script), *extra], cwd=cwd)
 
 
+def _verify_sr_runtime() -> None:
+    """Verify the vendored SR imports without relying on a POSIX shell."""
+    code = """
+import sys
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path("resshift").resolve()))
+from models.unet import UNetModelSwin  # noqa: F401
+from ldm.models.autoencoder import VQModelTorch  # noqa: F401
+
+print(
+    "torch", torch.__version__, "cuda", torch.cuda.is_available(),
+    "cap", torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None,
+)
+print("vendored ResShift import OK")
+"""
+    _run([_venv_py(), "-c", code], cwd=SR)
+
+
 def _probe_runtime() -> dict:
     """Probe the target venv without importing it into the task dispatcher."""
     code = r'''
@@ -241,7 +262,7 @@ def cmd_sr_setup(extra):
         _check_v100_after_install(before, after)
     print(f"[sr-setup] completed profile={profile} runtime={after}")
     # Sanity-check the vendored, basicsr-free ResShift import resolves.
-    _run([str(SR / "scripts" / "setup_env.sh")], cwd=SR)
+    _verify_sr_runtime()
 
 
 def cmd_sr_prep(extra):

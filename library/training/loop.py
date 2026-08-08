@@ -646,12 +646,9 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                 if controller is not None and controller.requested:
                     state.stop_requested = True
                     state.optimizer_eval_fn()
-                    try:
-                        state.saver.save_interrupt_state(
-                            state.network, state.global_step, epoch + 1
-                        )
-                    except Exception:
-                        logger.exception("best-effort interrupted-state save failed")
+                    state.saver.save_interrupt_state(
+                        state.network, state.global_step, epoch + 1
+                    )
                     return
 
                 _sample_at_step(trainer, state)

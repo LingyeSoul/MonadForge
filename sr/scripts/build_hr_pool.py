@@ -86,6 +86,29 @@ def _init_worker(min_edge, lap_floor):
     _MIN_EDGE, _LAP_FLOOR = min_edge, lap_floor
 
 
+def _load_managed_links(out: Path) -> set[str]:
+    """Return symlink names owned by the previous generated pool."""
+    try:
+        manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return set()
+    links = manifest.get("managed_links", [])
+    if not isinstance(links, list):
+        return set()
+    return {name for name in links if isinstance(name, str)}
+
+
+def _remove_stale_managed_links(out: Path, previous: set[str], current: set[str]) -> int:
+    """Remove stale symlinks owned by this generated pool, leaving other files alone."""
+    removed = 0
+    for name in sorted(previous - current):
+        link = out / name
+        if link.is_symlink():
+            link.unlink()
+            removed += 1
+    return removed
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -108,6 +131,9 @@ def main():
     out = Path(args.out)
     if not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
+        previous_links = _load_managed_links(out)
+    else:
+        previous_links = set()
 
     print(f"sources: {[str(s) for s in srcs]}")
     print(f"filters: min_edge={args.min_edge}  lap_floor={args.lap_floor}  workers={args.workers}")
@@ -143,9 +169,13 @@ def main():
     for k, v in stats.items():
         print(f"  {k:12s} {v}")
     if not args.dry_run:
+        removed = _remove_stale_managed_links(out, previous_links, seen_names)
+        if removed:
+            print(f"  removed {removed} stale managed links")
         manifest = {"out": str(out), "srcs": [str(s) for s in srcs],
-                    "min_edge": args.min_edge, "lap_floor": args.lap_floor, "stats": stats}
-        (out / "manifest.json").write_text(json.dumps(manifest, indent=2))
+                    "min_edge": args.min_edge, "lap_floor": args.lap_floor,
+                    "managed_links": sorted(seen_names), "stats": stats}
+        (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         print(f"\nsymlinked {stats['kept']} masters -> {out}")
         print(f"manifest: {out / 'manifest.json'}")
         print(f"\nnext:  make sr-train   (defaults --src to {out})")

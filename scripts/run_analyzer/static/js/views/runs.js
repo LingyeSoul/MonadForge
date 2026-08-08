@@ -1,6 +1,6 @@
 /* views/runs.js — 档案索引（B4 迷你曲线 / B5 勾选对比 / B6 状态计数） */
 
-import { $, $$, api, esc, fmtNum, fmtDur, toast, parseHash } from '../core/dom.js';
+import { $, $$, api, esc, fmtNum, fmtDur, toast, parseHash, runHash } from '../core/dom.js';
 import { ST } from '../theme.js';
 import { loadState } from '../core/state.js';
 import { cmpSel } from '../core/state.js';
@@ -57,7 +57,7 @@ function bindPick(tr, r) {
     if (e.key === 'Enter' || e.key === ' ') {
       if (e.target === cb) return;
       e.preventDefault();
-      location.hash = `#run/${r.id}`;
+      location.hash = runHash(r.id);
     }
   });
 }
@@ -119,7 +119,7 @@ export function renderRuns() {
       <td class="num">${fmtDur(r.duration_s)}</td>
       <td><span class="src-badges">${badges}</span></td>
       <td class="ta-spark">${sparkSvg(r.spark)}</td>`;
-    tr.addEventListener('click', () => { location.hash = `#run/${r.id}`; });
+    tr.addEventListener('click', () => { location.hash = runHash(r.id); });
     bindPick(tr, r);
     tb.appendChild(tr);
   });

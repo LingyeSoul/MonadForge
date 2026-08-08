@@ -51,6 +51,56 @@ def test_legacy_current_step_is_normalized():
     assert state["micro_batch_offset"] == 0
 
 
+def test_zero_stage_cursor_survives_save_normalize_and_resume(tmp_path):
+    from library.training.checkpoints import CheckpointSaver
+
+    class Accelerator:
+        is_main_process = True
+
+        def unwrap_model(self, model):
+            return model
+
+        def register_save_state_pre_hook(self, hook):
+            self.save_hook = hook
+
+        def register_load_state_pre_hook(self, hook):
+            self.load_hook = hook
+
+    accelerator = Accelerator()
+    network = object()
+    saver = CheckpointSaver(
+        args=SimpleNamespace(),
+        accelerator=accelerator,
+        save_dtype=None,
+        metadata={},
+        minimum_metadata={},
+        get_sai_model_spec_fn=lambda _args: {},
+        current_epoch=SimpleNamespace(value=4),
+        current_step=SimpleNamespace(value=7),
+    )
+    saver.set_runtime_state_provider(
+        lambda: {
+            "global_step": 8,
+            "current_epoch": 4,
+            "stage_index": 0,
+            "stage_outer_epoch": 0,
+        }
+    )
+    saver.register_hooks(network)
+    accelerator.save_hook([network], [], str(tmp_path))
+    write_complete_marker(tmp_path)
+
+    saved = json.loads((tmp_path / "train_state.json").read_text(encoding="utf-8"))
+    assert saved["stage_index"] == 0
+    assert saved["stage_outer_epoch"] == 0
+    assert normalize_train_state(saved)["stage_index"] == 0
+    assert normalize_train_state(saved)["stage_outer_epoch"] == 0
+
+    accelerator.load_hook([network], str(tmp_path))
+    assert saver.loaded_train_state["stage_index"] == 0
+    assert saver.loaded_train_state["stage_outer_epoch"] == 0
+
+
 def test_resume_signature_ignores_daemon_snapshot_path_but_not_training_config():
     base = {
         "config_file": "/tmp/job-a/config.snapshot.toml",
@@ -72,14 +122,14 @@ def test_resume_signature_ignores_daemon_snapshot_path_but_not_training_config()
         }
     )
 
-    assert _resume_config_signature(SimpleNamespace(**base)) == _resume_config_signature(
-        SimpleNamespace(**next_job)
-    )
+    assert _resume_config_signature(
+        SimpleNamespace(**base)
+    ) == _resume_config_signature(SimpleNamespace(**next_job))
 
     changed = dict(next_job, learning_rate=2e-5)
-    assert _resume_config_signature(SimpleNamespace(**next_job)) != _resume_config_signature(
-        SimpleNamespace(**changed)
-    )
+    assert _resume_config_signature(
+        SimpleNamespace(**next_job)
+    ) != _resume_config_signature(SimpleNamespace(**changed))
 
 
 def test_numpy_rng_round_trip_preserves_sequence():
@@ -230,7 +280,9 @@ def test_interrupt_save_forces_explicit_interrupted_marker(tmp_path):
     state_dir = saver.save_interrupt_state(
         network, global_step=7, epoch=2, save_weights=False
     )
-    state = json.loads((tmp_path / "unit-interrupted-state" / "train_state.json").read_text())
+    state = json.loads(
+        (tmp_path / "unit-interrupted-state" / "train_state.json").read_text()
+    )
 
     assert state_dir == str(tmp_path / "unit-interrupted-state")
     assert state["global_step"] == 7

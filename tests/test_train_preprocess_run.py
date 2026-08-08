@@ -30,6 +30,7 @@ def test_apply_preprocess_run_pins_all_training_cache_scalars(tmp_path):
     assert args.resized_image_dir == str(run.resized_dir)
     assert args.lora_cache_dir == str(run.lora_dir)
     assert args.text_cache_dir == str(run.lora_dir)
+    assert args.mask_dir == str(run.masks_dir)
     assert args.multires_image_dir == str(run.multires_dir)
     assert args.conditioning_data_dir == str(run.conditioning_data_dir)
     assert args.conditioning_resized_dir == str(run.conditioning_resized_dir)
@@ -111,6 +112,45 @@ def test_validate_preprocess_run_allows_text_cache_in_run(tmp_path):
     )
 
     train._validate_preprocess_dataset_paths(group, run)
+
+
+def test_validate_preprocess_run_rejects_mixed_mask_root(tmp_path):
+    import train
+
+    run = _completed_run(tmp_path)
+    group = SimpleNamespace(
+        datasets=[
+            SimpleNamespace(
+                subsets=[
+                    SimpleNamespace(
+                        image_dir=run.resized_dir,
+                        cache_dir=run.lora_dir,
+                        mask_dir=tmp_path / "legacy" / "masks",
+                    )
+                ]
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="mask_dir"):
+        train._validate_preprocess_dataset_paths(group, run)
+
+
+def test_explicit_run_caption_index_never_falls_back_to_global(tmp_path, monkeypatch):
+    import train
+
+    global_index = tmp_path / "post_image_dataset" / "captions" / "caption_index.json"
+    global_index.parent.mkdir(parents=True)
+    global_index.write_text("{}", encoding="utf-8")
+    missing_run_index = (
+        tmp_path / "runs" / "selected" / "captions" / "caption_index.json"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(FileNotFoundError, match="runs.*selected.*caption_index"):
+        train._resolve_contrastive_index(
+            Namespace(caption_index_path=str(missing_run_index))
+        )
 
 
 def test_no_preprocess_run_preserves_legacy_args():

@@ -12,8 +12,14 @@ import { renderEvents } from './events.js';
 
 let detail = null;
 let detailTimer = null;
+let detailObserver = null;
 
 export function getDetail() { return detail; }
+
+export function stopDetailPolling() {
+  if (detailTimer) clearInterval(detailTimer);
+  detailTimer = null;
+}
 
 function renderDetailHead() {
   const st = ST[detail.state] || { label: detail.state, cls: 'st-stopped' };
@@ -61,9 +67,10 @@ function renderDetailHead() {
 }
 
 function setupSecNav() {
+  if (detailObserver) detailObserver.disconnect();
   const links = $$('.sec-nav a');
   const targets = links.map(a => $(a.getAttribute('href')));
-  const spy = new IntersectionObserver(entries => {
+  detailObserver = new IntersectionObserver(entries => {
     entries.forEach(en => {
       if (en.isIntersecting) {
         const i = targets.indexOf(en.target);
@@ -71,7 +78,7 @@ function setupSecNav() {
       }
     });
   }, { rootMargin: '-40% 0px -55% 0px' });
-  targets.forEach(t => spy.observe(t));
+  targets.forEach(t => detailObserver.observe(t));
   links.forEach(a => a.addEventListener('click', e => {
     e.preventDefault();
     $(a.getAttribute('href')).scrollIntoView({ behavior: 'smooth' });
@@ -135,7 +142,7 @@ function renderOverview() {
 
 /* ── 加载与实时刷新 ── */
 export async function loadDetail(id) {
-  if (detailTimer) { clearInterval(detailTimer); detailTimer = null; }
+  stopDetailPolling();
   const root = $('#detail-root');
   root.innerHTML = loadingHtml();
   startTyping($('#loading-type'), 'LOADING…');
@@ -150,15 +157,33 @@ export async function loadDetail(id) {
   const running = detail.state === 'running' || detail.state === 'queued';
   $('#rail-status').textContent = running ? 'LIVE' : 'IDLE';
   if (running) {
+    const polledId = detail.id;
     detailTimer = setInterval(async () => {
       try {
-        const fresh = await api(`/api/runs/${encodeURIComponent(detail.id)}`);
-        const oldSteps = detail.kpis && detail.kpis.steps;
+        const fresh = await api(`/api/runs/${encodeURIComponent(polledId)}`);
+        const previous = JSON.stringify({
+          steps: detail.kpis && detail.kpis.steps,
+          state: detail.state,
+          ended_at: detail.ended_at,
+          error: detail.error,
+          run_end: detail.run_end,
+        });
         detail = fresh;
-        if (fresh.kpis.steps !== oldSteps) {
+        const current = JSON.stringify({
+          steps: fresh.kpis && fresh.kpis.steps,
+          state: fresh.state,
+          ended_at: fresh.ended_at,
+          error: fresh.error,
+          run_end: fresh.run_end,
+        });
+        if (current !== previous) {
           const scrollTop = document.documentElement.scrollTop;
           renderDetailHead();
           window.scrollTo(0, scrollTop);
+        }
+        if (fresh.state !== 'running' && fresh.state !== 'queued') {
+          stopDetailPolling();
+          $('#rail-status').textContent = 'IDLE';
         }
       } catch (e) { /* transient */ }
     }, 2000);

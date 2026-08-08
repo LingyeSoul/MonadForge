@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from statistics import fmean, pstdev
 from typing import Optional
 
 from scripts.run_analyzer.discovery import Run, MONADFORGE_ROOT
-from scripts.run_analyzer.sources.jsonl import JsonlRun
 from scripts.run_analyzer.sources.snapshot import keyline as snapshot_keyline
 
 _LOSS_TAGS = ("loss/current", "loss/average")
@@ -260,7 +258,7 @@ def overview_payload(run: Run) -> dict:
             "dir": run.dir,
             "log_dir": run.log_dir,
             "sample_dir": run.sample_dir,
-            "progress": os.path.join(run.dir, "progress.jsonl") if run.kind == "daemon" else None,
+            "progress": run.jsonl_path,
             "stdout": os.path.join(run.dir, "stdout.log") if run.kind == "daemon" else None,
         },
     }
@@ -301,7 +299,7 @@ def full_payload(run: Run) -> dict:
         "ckpts": [dict(c, path=_resolve_path(run, c.get("path"))) for c in (jl.ckpts if jl else [])],
         "samples": sample_list(run),
         "vals": [dict(v) for v in (jl.vals if jl else [])],
-        "logs": [dict(l) for l in (jl.logs if jl else [])],
+        "logs": [dict(log) for log in (jl.logs if jl else [])],
         "params": {
             "sections": run.snapshot.sections if run.snapshot else [],
             "keyline": snapshot_keyline(run.snapshot) if run.snapshot else [],

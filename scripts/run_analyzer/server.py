@@ -21,7 +21,6 @@ import argparse
 import json
 import os
 import threading
-import time
 import webbrowser
 from typing import Optional
 
@@ -31,7 +30,13 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from scripts.run_analyzer import analyze
-from scripts.run_analyzer.discovery import Run, discover
+from scripts.run_analyzer.discovery import (
+    JOBS_DIR,
+    LOGS_DIR,
+    Run,
+    apply_jsonl_metadata,
+    discover,
+)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -52,16 +57,15 @@ def _dir_mtime_key() -> str:
     文件 mtime 变化但目录 mtime 不变，会导致索引冻结在旧解析。
     因此对每个 job/日志目录额外取关键文件自身的 mtime。
     """
-    jobs = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "output", "daemon", "jobs")
-    logs = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "output", "logs")
     parts = []
-    for base in (jobs, logs):
+    for base in (JOBS_DIR, LOGS_DIR):
         if not os.path.isdir(base):
             continue
         for name in sorted(os.listdir(base)):
             p = os.path.join(base, name)
             try:
-                parts.append(f"{name}:{os.path.getmtime(p)}")
+                stat = os.stat(p)
+                parts.append(f"{base}/{name}:{stat.st_mtime_ns}:{stat.st_size}")
             except OSError:
                 continue
             if not os.path.isdir(p):
@@ -69,15 +73,26 @@ def _dir_mtime_key() -> str:
             for sub in _INDEX_WATCH_FILES:
                 fp = os.path.join(p, sub)
                 try:
-                    parts.append(f"{name}/{sub}:{os.path.getmtime(fp)}")
+                    stat = os.stat(fp)
+                    parts.append(
+                        f"{base}/{name}/{sub}:{stat.st_mtime_ns}:{stat.st_size}"
+                    )
                 except OSError:
                     continue
             tb = os.path.join(p, "network_train")
             if os.path.isdir(tb):
-                try:
-                    parts.append(f"{name}/network_train:{os.path.getmtime(tb)}")
-                except OSError:
-                    continue
+                for root, _dirs, files in os.walk(tb):
+                    for filename in sorted(files):
+                        if not filename.startswith("events.out.tfevents."):
+                            continue
+                        event_path = os.path.join(root, filename)
+                        try:
+                            stat = os.stat(event_path)
+                            parts.append(
+                                f"{event_path}:{stat.st_mtime_ns}:{stat.st_size}"
+                            )
+                        except OSError:
+                            continue
     return "|".join(parts)
 
 
@@ -111,24 +126,36 @@ def _freshen_run(run: Run) -> None:
         from scripts.run_analyzer.sources.jsonl import parse as parse_jsonl
         from scripts.run_analyzer.sources.stdout_log import parse as parse_stdout
 
-        jl = parse_jsonl(os.path.join(run.dir, "progress.jsonl"))
+        jl = parse_jsonl(run.jsonl_path or os.path.join(run.dir, "progress.jsonl"))
         if jl is not None:
-            run.jsonl = jl
-            if jl.run:
-                run.run_name = jl.run
-            if jl.method:
-                run.method = jl.method
-            if jl.preset:
-                run.preset = jl.preset
-            if jl.total_steps:
-                run.total_steps = jl.total_steps
-            if jl.total_epochs:
-                run.total_epochs = jl.total_epochs
-            if jl.log_dir:
-                run.log_dir = os.path.join(analyze.MONADFORGE_ROOT, jl.log_dir)
-        so = parse_stdout(os.path.join(run.dir, "stdout.log"))
-        if so is not None:
-            run.stdout = so
+            apply_jsonl_metadata(run, jl)
+        if run.kind == "daemon":
+            job_path = os.path.join(run.dir, "job.json")
+            try:
+                with open(job_path, encoding="utf-8") as handle:
+                    job = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                job = None
+            if job is not None:
+                run.job = job
+                run.state = job.get("state") or run.state
+                run.submitted_at = job.get("submitted_at")
+                run.started_at = job.get("started_at")
+                run.ended_at = job.get("ended_at")
+                run.ckpt_path = job.get("ckpt_path")
+                run.error = job.get("error")
+                run.stop_requested = bool(job.get("stop_requested"))
+                if jl is not None:
+                    apply_jsonl_metadata(run, jl)
+            so = parse_stdout(os.path.join(run.dir, "stdout.log"))
+            if so is not None:
+                run.stdout = so
+        run.sources = {
+            "jsonl": run.jsonl is not None,
+            "tensorboard": run.tb is not None,
+            "snapshot": run.snapshot is not None,
+            "stdout": run.stdout is not None,
+        }
     except Exception:
         pass
 
@@ -144,6 +171,8 @@ def api_runs():
     with _index_lock:
         runs = _index
     return {"runs": analyze.index_payload(runs)}
+
+
 @app.get("/api/runs/{run_id}/overview")
 def api_run_overview(run_id: str):
     r = _find(run_id)
@@ -182,7 +211,7 @@ def api_stdout(run_id: str, tail: int = Query(400, ge=1, le=20000), q: str = "")
         return {"lines": [], "warnings": [], "errors": []}
     lines = so.lines
     if q:
-        lines = [l for l in lines if q.lower() in l.lower()]
+        lines = [line for line in lines if q.lower() in line.lower()]
     return {
         "lines": lines[-tail:],
         "warnings": so.warnings[-200:],
