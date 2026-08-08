@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from webui.services import preprocess_service as svc
 
@@ -27,6 +29,9 @@ class PreprocessSettings(BaseModel):
     caption_tag_dropout_rate: float = 0.1
     mit_text_threshold: float = 0.8
     mit_dilate: int = 5
+    # CTD text-block gate removes decorative-line false positives from the
+    # Manga text segmentation mask. Keep it enabled by default.
+    mit_ctd_gate: bool = True
     # Free-fit tier edges (allowed: 512 768 896 1024 1280 1536). This is the
     # value resize actually consumes — the old vestigial resize_resolution
     # scalar was dropped under free-fit. Saved to configs/custom/preprocess.toml
@@ -66,6 +71,22 @@ class PreprocessStatus(BaseModel):
     masks: int = 0
     cache: CacheCounts = CacheCounts()
     cond_resized: int = 0
+    preprocess_run: "PreprocessRunSummary | None" = None
+
+
+class PreprocessRunSummary(BaseModel):
+    manifest: str
+    run_id: str = ""
+    source: str | None = None
+    source_group: str | None = None
+    config_hash: str | None = None
+    status: str = "unknown"
+    complete: bool = False
+    artifacts: dict[str, int] = Field(default_factory=dict)
+    directories: dict[str, str] = Field(default_factory=dict)
+    paths: dict[str, str] = Field(default_factory=dict)
+    updated_at: str | float | None = None
+    error: str | None = None
 
 
 class DatasetPaths(BaseModel):
@@ -115,18 +136,42 @@ def put_settings(body: PreprocessSettings):
 def get_status(
     variant: str | None = Query(None),
     preset: str | None = Query(None),
+    manifest: str | None = Query(None),
 ):
     """Return current preprocess pipeline counts."""
-    return svc.get_status(variant=variant, preset=preset)
+    return svc.get_status(variant=variant, preset=preset, manifest=manifest)
 
 
 @router.get("/paths", response_model=DatasetPaths)
 def get_paths(
     variant: str | None = Query(None),
     preset: str | None = Query(None),
+    manifest: str | None = Query(None),
 ):
     """Return resolved dataset paths from the config chain."""
-    return svc.get_paths(variant=variant, preset=preset)
+    try:
+        return svc.get_paths(variant=variant, preset=preset, manifest=manifest)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/runs", response_model=list[PreprocessRunSummary])
+def list_runs(
+    variant: str | None = Query(None),
+    preset: str | None = Query(None),
+    source: str | None = Query(None),
+):
+    """List isolated preprocessing manifests available to training."""
+    return svc.list_runs(variant=variant, preset=preset, source=source)
+
+
+@router.get("/run-status", response_model=PreprocessRunSummary)
+def get_run_status(manifest: str = Query(..., min_length=1)):
+    """Return completion and artifact state for one preprocessing manifest."""
+    info = svc.get_run_status(manifest)
+    if info.get("status") == "invalid" and not Path(manifest).exists():
+        raise HTTPException(status_code=404, detail=info.get("error") or "manifest not found")
+    return info
 
 
 @router.put("/paths", response_model=DatasetPaths)

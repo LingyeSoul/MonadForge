@@ -171,3 +171,19 @@ def test_wipe_does_not_touch_final_checkpoint(fake_root: Path):
     cs.wipe_checkpoint("output/ckpt", "lora")
 
     assert final.exists()
+
+
+def test_wipe_removes_checkpoint_sidecars_for_all_supported_weight_formats(
+    fake_root: Path,
+):
+    out_dir = fake_root / "output" / "ckpt"
+    out_dir.mkdir(parents=True)
+    for ext in (".safetensors", ".ckpt", ".pt"):
+        (out_dir / f"lora-interrupted{ext}").write_text("weights")
+        (out_dir / f"lora-checkpoint{ext}").write_text("weights")
+
+    cs.wipe_checkpoint("output/ckpt", "lora")
+
+    for ext in (".safetensors", ".ckpt", ".pt"):
+        assert not (out_dir / f"lora-interrupted{ext}").exists()
+        assert not (out_dir / f"lora-checkpoint{ext}").exists()

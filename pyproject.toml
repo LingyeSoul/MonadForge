@@ -143,3 +143,24 @@ build-backend = "setuptools.build_meta"
 dev = [
     "markdownify",
 ]
+# ResShift/RSD super-resolution sidecar. Kept opt-in because pyiqa pulls a
+# comparatively large metrics/runtime closure that is not needed by Anima LoRA.
+sr = [
+    "scipy",
+    "timm",
+    "pandas",
+    "scikit-image",
+    "lpips",
+    "loguru",
+    "omegaconf",
+    "six",
+    "imageio",
+    "loralib",
+    "pyiqa",
+    "albumentations",
+    "einops",
+    "matplotlib",
+    "opencv-python",
+    "scikit-learn",
+    "tqdm",
+]

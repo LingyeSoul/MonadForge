@@ -29,6 +29,7 @@ archive/graft/runtime/survivors/
 archive/graft/runtime/generation_prompts.txt
 /models/
 !library/models/
+sr/weights/
 test_output/
 output_temp/
 /workflows

@@ -9,7 +9,7 @@ from webui.services.paths import resolve_path
 
 
 def list_adapter_dirs() -> list[dict]:
-    """List directories likely to contain .safetensors adapter files."""
+    """List directories likely to contain supported adapter weights."""
     candidates = [
         ("output/ckpt", ROOT / "output" / "ckpt"),
         ("output_temp", ROOT / "output_temp"),
@@ -18,8 +18,10 @@ def list_adapter_dirs() -> list[dict]:
     dirs: list[dict] = []
     seen: set[str] = set()
 
+    from library.io.output_layout import discover_weights
+
     for name, path in candidates:
-        if path.exists() and any(path.glob("*.safetensors")):
+        if path.exists() and discover_weights(path):
             dirs.append({"name": name, "path": str(path)})
             seen.add(str(path))
 
@@ -34,7 +36,7 @@ def list_adapter_dirs() -> list[dict]:
             if (
                 p.is_dir()
                 and not p.name.endswith("-checkpoint-state")
-                and any(p.glob("*.safetensors"))
+                and discover_weights(p)
             ):
                 key = str(p)
                 if key not in seen:
@@ -45,13 +47,36 @@ def list_adapter_dirs() -> list[dict]:
 
 
 def list_files(dir_path: str) -> list[dict]:
-    """List .safetensors files in a directory, newest first."""
+    """List supported adapter weight files in a directory, newest first."""
     d = resolve_path(dir_path, expect_file=False)
     if d is None:
         return []
     files = []
+    from library.io.output_layout import (
+        OUTPUT_WEIGHT_EXTENSIONS,
+        is_checkpoint_weight,
+        read_run_manifest,
+        resolve_manifest_path,
+    )
+    manifest = read_run_manifest(d)
+    manifest_final = resolve_manifest_path(
+        d / "run_manifest.json", (manifest or {}).get("final_weight")
+    )
+    # An incomplete/torn manifest must not hide otherwise readable legacy
+    # weights. Once a manifest names a real final file it is authoritative.
+    manifest_authoritative = manifest_final is not None and manifest_final.is_file()
     for p in sorted(
-        (f for f in d.iterdir() if f.is_file() and f.suffix == ".safetensors"),
+        (
+            f
+            for f in d.iterdir()
+            if f.is_file()
+            and f.suffix.lower() in OUTPUT_WEIGHT_EXTENSIONS
+            and (
+                f == manifest_final
+                if manifest_authoritative
+                else is_checkpoint_weight(f)
+            )
+        ),
         key=lambda f: f.stat().st_mtime,
         reverse=True,
     ):
@@ -79,23 +104,36 @@ def _human_size(n: int) -> str:
 
 
 def scan_adapter(file_path: str) -> dict:
-    """Scan a .safetensors file for bakeability.
+    """Scan an adapter weight file for bakeability.
 
     Classifies keys into families and returns a severity verdict.
     """
-    try:
-        from safetensors import safe_open
-    except ImportError:
-        return {"error": "safetensors package not installed", "verdict": "unknown"}
-
     p = resolve_path(file_path, expect_file=True)
     if p is None:
         return {"error": f"File not found: {file_path}", "verdict": "unknown"}
 
     try:
-        with safe_open(str(p), framework="numpy") as f:
-            keys = list(f.keys())
-            metadata = f.metadata() or {}
+        if p.suffix.lower() == ".safetensors":
+            from safetensors import safe_open
+
+            with safe_open(str(p), framework="numpy") as f:
+                keys = list(f.keys())
+                metadata = f.metadata() or {}
+        else:
+            import torch
+
+            state = torch.load(
+                str(p),
+                map_location="cpu",
+                weights_only=True,
+            )
+            if not isinstance(state, dict):
+                raise TypeError("checkpoint does not contain a state dict")
+            nested = state.get("state_dict")
+            if isinstance(nested, dict):
+                state = nested
+            keys = list(state.keys())
+            metadata = {}
     except Exception as e:
         return {"error": str(e), "verdict": "unknown"}
 

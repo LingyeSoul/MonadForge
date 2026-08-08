@@ -139,25 +139,15 @@ def bespoke_preset_flags(preset: str) -> list[str]:
 
 
 def latest_output(prefix: str = "", exclude: str | None = None) -> Path:
-    """Return the most recently modified .safetensors file in output/ckpt/ matching prefix.
+    """Return the newest final adapter from canonical or legacy output trees."""
+    from library.io.output_layout import discover_weights
 
-    If `exclude` is given, any filename containing that substring is skipped. Useful
-    to disambiguate overlapping prefixes (e.g. anima_postfix vs anima_postfix_exp).
-    HydraLoRA multi-head sibling files (`*_moe.safetensors`) and backup files
-    (containing `.bak.`) are always excluded.
-    """
-    outputs = sorted(
-        (
-            f
-            for f in (ROOT / "output" / "ckpt").glob("*.safetensors")
-            if f.name.startswith(prefix)
-            and not f.name.endswith("_moe.safetensors")
-            and ".bak." not in f.name
-            and (exclude is None or exclude not in f.name)
-        ),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    outputs = [
+        path
+        for path in discover_weights(ROOT / "output" / "ckpt")
+        if path.name.startswith(prefix)
+        and (exclude is None or exclude not in path.name)
+    ]
     if not outputs:
         label = f"'{prefix}*.safetensors'" if prefix else "*.safetensors"
         print(f"No {label} files found in output/ckpt/", file=sys.stderr)
@@ -173,11 +163,17 @@ def latest_lora() -> Path:
 
 def latest_hydra() -> Path:
     """Latest HydraLoRA multi-head file (`anima_hydra*_moe.safetensors`)."""
+    # Hydra's router-live ``*_moe`` sibling is intentionally not a normal final
+    # adapter, so use a dedicated recursive scan while keeping the same
+    # checkpoint/backup exclusions as the shared layout resolver.
+    root = ROOT / "output" / "ckpt"
     outputs = sorted(
         (
             f
-            for f in (ROOT / "output" / "ckpt").glob("anima_hydra*_moe.safetensors")
-            if ".bak." not in f.name
+            for f in root.rglob("anima_hydra*_moe.safetensors")
+            if f.name.startswith("anima_hydra") and f.name.endswith("_moe.safetensors")
+            and ".bak." not in f.name
+            and "-checkpoint" not in f.stem
         ),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
@@ -294,8 +290,9 @@ def run(cmd: list[str], **kwargs):
         resolved = shutil.which(cmd[0], path=env["PATH"])
         if resolved:
             cmd[0] = resolved
-    if sys.platform == "win32" and not _has_console():
-        kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
+    if not _has_console():
+        if sys.platform == "win32":
+            kwargs.setdefault("creationflags", subprocess.CREATE_NO_WINDOW)
         # Stdout is a pipe to the parent (WebUI / QProcess / GUI) — no
         # one is actively draining the read end at terminal speed.  High-
         # volume tqdm output fills the OS pipe buffer and stalls the

@@ -3,6 +3,64 @@
     <div class="text-h5 mb-1">{{ t('ppTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('ppSubtitle') }}</div>
 
+    <!-- Isolated preprocess run -->
+    <v-card variant="tonal" class="mb-4">
+      <v-card-title class="text-subtitle-1 d-flex align-center">
+        <v-icon icon="mdi-source-branch" class="mr-2" />
+        {{ t('ppRunSelection') }}
+        <v-spacer />
+        <v-btn
+          icon="mdi-refresh"
+          size="small"
+          variant="text"
+          :loading="runsLoading"
+          :title="t('ppRefreshRuns')"
+          @click="fetchRuns(false)"
+        />
+      </v-card-title>
+      <v-card-text>
+        <v-select
+          v-model="selectedRun"
+          :items="runItems"
+          item-title="title"
+          item-value="manifest"
+          :label="t('ppRunManifest')"
+          :loading="runsLoading"
+          :no-data-text="t('ppNoRuns')"
+          clearable
+          density="compact"
+          hide-details="auto"
+        />
+        <div v-if="selectedRunInfo" class="d-flex flex-wrap align-center ga-2 mt-3">
+          <v-chip
+            size="small"
+            :color="runStatusColor(selectedRunInfo.status)"
+            variant="tonal"
+          >
+            {{ t('ppRunStatus') }}: {{ selectedRunInfo.status }}
+          </v-chip>
+          <v-chip size="small" variant="tonal">
+            {{ selectedRunInfo.source_group || selectedRunInfo.run_id }}
+          </v-chip>
+        </div>
+        <div v-if="selectedRun" class="text-caption text-medium-emphasis mt-2 run-manifest-path">
+          {{ selectedRun }}
+        </div>
+        <v-alert
+          v-if="selectedRunInfo?.error"
+          type="error"
+          variant="tonal"
+          density="compact"
+          class="mt-3"
+        >
+          {{ selectedRunInfo.error }}
+        </v-alert>
+        <div v-if="!selectedRun" class="text-caption text-medium-emphasis mt-2">
+          {{ t('ppRunAutomatic') }}
+        </div>
+      </v-card-text>
+    </v-card>
+
     <!-- Status Dashboard -->
     <v-card variant="tonal" class="mb-4">
       <v-card-title class="text-subtitle-1">
@@ -181,6 +239,14 @@
                 step="1"
                 min="0"
                 max="64"
+                density="compact"
+                hide-details="auto"
+              />
+              <v-switch
+                v-model="settings.mit_ctd_gate"
+                :label="t('ppMitCtdGate')"
+                :hint="t('ppMitCtdGateHint')"
+                persistent-hint
                 density="compact"
                 hide-details="auto"
               />
@@ -410,6 +476,7 @@ import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
+import { readPreprocessRun, writePreprocessRun } from '../composables/usePreprocessRunStorage'
 
 const taskStore = useTaskStore()
 const notify = useNotifyStore()
@@ -422,6 +489,41 @@ const preprocessCommands = [
   'preprocess-pe', 'preprocess-cond-resize', 'preprocess-cond-vae',
   'mask', 'mask-clean',
 ]
+
+interface PreprocessRunSummary {
+  manifest: string
+  run_id: string
+  source?: string | null
+  source_group?: string | null
+  config_hash?: string | null
+  status: string
+  complete: boolean
+  artifacts?: Record<string, number>
+  updated_at?: string | number | null
+  error?: string | null
+}
+
+const runs = ref<PreprocessRunSummary[]>([])
+function readSelectedRun(): string | null {
+  return readPreprocessRun(configStore.variant, configStore.preset)
+}
+
+const selectedRun = ref<string | null>(readSelectedRun())
+const runsLoading = ref(false)
+const selectedRunInfo = computed(() =>
+  runs.value.find(run => run.manifest === selectedRun.value) ?? null
+)
+const runItems = computed(() => runs.value.map(run => ({
+  manifest: run.manifest,
+  title: `${run.source_group || run.run_id} · ${run.config_hash || ''} · ${run.status}`,
+})))
+
+function runStatusColor(state: string) {
+  if (state === 'ready') return 'success'
+  if (state === 'running') return 'info'
+  if (state === 'failed' || state === 'invalid') return 'error'
+  return undefined
+}
 
 // ── Status dashboard ──────────────────────────────────────────
 
@@ -439,6 +541,7 @@ async function fetchStatus() {
     const qs = new URLSearchParams()
     if (v) qs.set('variant', v)
     if (p) qs.set('preset', p)
+    if (selectedRun.value) qs.set('manifest', selectedRun.value)
     const url = '/api/preprocess/status' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
     if (!res.ok) return
@@ -459,7 +562,10 @@ const runningCount = computed(() =>
   taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command) && tp.state === 'running').length
 )
 watch(runningCount, (newVal, oldVal) => {
-  if (oldVal > newVal) fetchStatus()
+  if (oldVal > newVal) {
+    fetchRuns(true)
+    fetchStatus()
+  }
 })
 
 // ── Settings ──────────────────────────────────────────────────
@@ -472,6 +578,7 @@ const defaultSettings = () => ({
   caption_tag_dropout_rate: 0.1,
   mit_text_threshold: 0.8,
   mit_dilate: 5,
+  mit_ctd_gate: true,
   // Free-fit tier edges (allowed: 512 768 896 1024 1280 1536). This is the
   // value resize actually consumes — the old resize_resolution scalar was a
   // no-op under free-fit. Persisted to configs/preprocess.toml.
@@ -508,6 +615,7 @@ async function fetchSettings() {
     settings.caption_tag_dropout_rate = data.caption_tag_dropout_rate ?? 0.1
     settings.mit_text_threshold = data.mit_text_threshold ?? 0.8
     settings.mit_dilate = data.mit_dilate ?? 5
+    settings.mit_ctd_gate = data.mit_ctd_gate ?? true
     // Backend normalizes (drops invalid edges, guarantees ≥[1024]); trust it.
     settings.target_res = Array.isArray(data.target_res) && data.target_res.length
       ? data.target_res
@@ -543,6 +651,7 @@ async function fetchPaths() {
     const qs = new URLSearchParams()
     if (v) qs.set('variant', v)
     if (p) qs.set('preset', p)
+    if (selectedRun.value) qs.set('manifest', selectedRun.value)
     const url = '/api/preprocess/paths' + (qs.toString() ? '?' + qs : '')
     const res = await fetch(url)
     if (!res.ok) return
@@ -596,7 +705,40 @@ async function savePaths() {
   finally { pathsSaving.value = false }
 }
 
-onMounted(fetchPaths)
+async function fetchRuns(selectNewest: boolean) {
+  runsLoading.value = true
+  try {
+    const qs = new URLSearchParams()
+    if (configStore.variant) qs.set('variant', configStore.variant)
+    if (configStore.preset) qs.set('preset', configStore.preset)
+    if (paths.source) qs.set('source', paths.source)
+    const url = '/api/preprocess/runs' + (qs.toString() ? '?' + qs : '')
+    const res = await fetch(url)
+    if (!res.ok) return
+    const data = await res.json()
+    runs.value = Array.isArray(data) ? data : []
+    const currentExists = runs.value.some(run => run.manifest === selectedRun.value)
+    if (!currentExists || selectNewest) {
+      selectedRun.value = runs.value.find(run => run.complete && run.status === 'ready')?.manifest ?? null
+    }
+  } catch { /* ignore */ }
+  finally { runsLoading.value = false }
+}
+
+watch(selectedRun, async () => {
+  writePreprocessRun(selectedRun.value, configStore.variant, configStore.preset)
+  await Promise.all([fetchStatus(), fetchPaths()])
+})
+
+watch([() => configStore.variant, () => configStore.preset], async () => {
+  selectedRun.value = readSelectedRun()
+  await fetchRuns(false)
+})
+
+onMounted(async () => {
+  await fetchPaths()
+  await fetchRuns(false)
+})
 
 async function saveSettings(): Promise<boolean> {
   try {
@@ -680,6 +822,7 @@ async function runTask(command: string) {
   if (['mask', 'preprocess'].includes(command)) {
     env.MIT_TEXT_THRESHOLD = String(settings.mit_text_threshold)
     env.MIT_DILATE = String(settings.mit_dilate)
+    env.MIT_CTD_GATE = settings.mit_ctd_gate ? '1' : '0'
     env.RUN_SAM_MASK = settings.run_sam_mask ? '1' : '0'
     env.RUN_MIT_MASK = settings.run_mit_mask ? '1' : '0'
   }
@@ -690,6 +833,9 @@ async function runTask(command: string) {
   if (['preprocess-cond-resize', 'preprocess-cond-vae'].includes(command)) {
     if (paths.condSource) env.CONDITIONING_DATA_DIR = paths.condSource
     if (paths.condResized) env.CONDITIONING_RESIZED_DIR = paths.condResized
+  }
+  if (selectedRun.value) {
+    env.PREPROCESS_RUN = selectedRun.value
   }
 
   const taskId = await taskStore.startTask(command, args, Object.keys(env).length > 0 ? env : undefined)
@@ -703,6 +849,7 @@ async function runTask(command: string) {
 function refresh() {
   taskStore.fetchTasks()
   fetchStatus()
+  fetchRuns(false)
 }
 </script>
 
@@ -711,6 +858,10 @@ function refresh() {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+}
+
+.run-manifest-path {
+  overflow-wrap: anywhere;
 }
 
 /* Pipeline action cards: hover transition */

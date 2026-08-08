@@ -1,0 +1,85 @@
+# ResShift ×2 finetune config for the art SR sidecar.
+#
+# Derived from resshift/configs/realsr_swinunet_realesrgan256.yaml (the released x4
+# v2 teacher's config) by changing ONLY the scale factor 4 -> 2. Everything else —
+# UNet arch, noise schedule (steps=15, min_noise_level=0.04, kappa=2.0),
+# predict_type=xstart, VQ-f4 autoencoder — is kept identical so the released x4 v2
+# checkpoint warm-starts as a STRICT load:
+#   - lq_size stays 64 == image_size  ->  feature_extractor = nn.Identity()
+#     (the shipped realsr_realesrgan256_x2.yaml uses lq_size=128, which builds extra
+#      conv/downsample layers AND assumes a 2x-latent LR convention we don't use —
+#      our pipeline bicubic-upsamples LR to HR size before encoding, see
+#      distill_rsd/data.py + infer.py. That config would NOT warm-start cleanly.)
+#   - the residual-shift schedule (etas) is derived from steps/min_noise/kappa, NOT
+#     from sf, so keeping it identical means the model finetunes on easier (2x) data
+#     with the exact noise schedule it already knows — the ideal warm-start.
+#
+# The degradation / data / trainer sections of the upstream config are intentionally
+# dropped: train_x2/train.py runs its OWN loop with ArtSRDataset (live bicubic +
+# light-JPEG degradation over our HR pool), not the basicsr RealESRGAN pipeline.
+
+model:
+  target: models.unet.UNetModelSwin
+  ckpt_path: ~
+  params:
+    image_size: 64
+    in_channels: 3
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: True
+    dims: 2
+    use_fp16: False
+    num_head_channels: 32
+    use_scale_shift_norm: True
+    resblock_updown: False
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: True
+    lq_size: 64
+
+diffusion:
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 2                         # <-- the ONLY change vs the x4 v2 config
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.3
+    etas_end: 0.99
+    steps: 15
+    min_noise_level: 0.04
+    kappa: 2.0
+    weighted_mse: False
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: True
+    latent_flag: True
+
+autoencoder:
+  target: ldm.models.autoencoder.VQModelTorch
+  ckpt_path: weights/autoencoder_vq_f4.pth
+  use_fp16: True
+  params:
+    embed_dim: 3
+    n_embed: 8192
+    ddconfig:
+      double_z: False
+      z_channels: 3
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult:
+      - 1
+      - 2
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+      padding_mode: zeros

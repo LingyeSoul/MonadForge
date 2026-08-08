@@ -1,0 +1,85 @@
+# ResShift ×4 **4-step** (v3 / journal) finetune config for the art SR sidecar.
+#
+# Same trim as realsr_x4_art.yaml (trainer/degradation/data dropped — train_sr/train.py
+# owns the loop), but derived from resshift/configs/realsr_swinunet_realesrgan256_journal
+# .yaml so `resshift_realsrx4_s4_v3.pth` warm-starts as a STRICT load. The only things
+# that differ from the 15-step config are the schedule knobs the v3 weights were trained
+# under:
+#     steps: 4  (vs 15)          min_noise_level: 0.2  (vs 0.04)
+# The UNet arch is identical (the journal config's `out_channels:
+# ${autoencoder.params.embed_dim}` resolves to 3), so the two configs are weight-
+# compatible on paper — but the timestep conditioning is NOT: a v3 checkpoint stepped
+# on the 15-step schedule (or vice versa) trains against a schedule it never saw. Pair
+# the config with its checkpoint.
+#
+# Why this variant exists: on the 30-img frozen art eval the 4-step v3 teacher scored
+# HIGHER than 15-step v2 (MUSIQ 68.4), so it's the more promising finetune target — and
+# it's ~4x cheaper to roll out for evals/distillation. Downside: the RSD distiller's
+# `x4`/`x4ft` versions assume the released 15-step config, so distilling from an s4
+# finetune needs `--config sr/configs/realsr_x4_s4_art.yaml` passed explicitly.
+
+model:
+  target: models.unet.UNetModelSwin
+  ckpt_path: ~
+  params:
+    image_size: 64
+    in_channels: 3
+    model_channels: 160
+    out_channels: 3
+    attention_resolutions: [64,32,16,8]
+    dropout: 0
+    channel_mult: [1, 2, 2, 4]
+    num_res_blocks: [2, 2, 2, 2]
+    conv_resample: True
+    dims: 2
+    use_fp16: False
+    num_head_channels: 32
+    use_scale_shift_norm: True
+    resblock_updown: False
+    swin_depth: 2
+    swin_embed_dim: 192
+    window_size: 8
+    mlp_ratio: 4
+    cond_lq: True
+    lq_size: 64
+
+diffusion:
+  target: models.script_util.create_gaussian_diffusion
+  params:
+    sf: 4
+    schedule_name: exponential
+    schedule_kwargs:
+      power: 0.3
+    etas_end: 0.99
+    steps: 4                      # <-- v3 schedule
+    min_noise_level: 0.2          # <-- v3 schedule
+    kappa: 2.0
+    weighted_mse: False
+    predict_type: xstart
+    timestep_respacing: ~
+    scale_factor: 1.0
+    normalize_input: True
+    latent_flag: True
+
+autoencoder:
+  target: ldm.models.autoencoder.VQModelTorch
+  ckpt_path: weights/autoencoder_vq_f4.pth
+  use_fp16: True
+  params:
+    embed_dim: 3
+    n_embed: 8192
+    ddconfig:
+      double_z: False
+      z_channels: 3
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult:
+      - 1
+      - 2
+      - 4
+      num_res_blocks: 2
+      attn_resolutions: []
+      dropout: 0.0
+      padding_mode: zeros

@@ -15,6 +15,7 @@ import toml
 import yaml
 
 from webui.services.config_service import ROOT, get_path_overrides
+from library.preprocess.runs import run_from_manifest
 
 # ── Paths ─────────────────────────────────────────────────────────
 
@@ -52,8 +53,21 @@ def _get_paths(
     }
 
 
-def get_paths(variant: str | None = None, preset: str | None = None) -> dict[str, str]:
+def get_paths(
+    variant: str | None = None,
+    preset: str | None = None,
+    manifest: str | None = None,
+) -> dict[str, str]:
     """Return the raw resolved path strings for the frontend."""
+    if manifest:
+        run = run_from_manifest(manifest)
+        return {
+            "source_image_dir": str(run.source_dir),
+            "resized_image_dir": str(run.resized_image_dir),
+            "lora_cache_dir": str(run.lora_cache_dir),
+            "conditioning_data_dir": str(run.conditioning_data_dir),
+            "conditioning_resized_dir": str(run.conditioning_resized_dir),
+        }
     paths = get_path_overrides(preset=preset or "default", variant=variant)
     return {
         "source_image_dir": paths["source_image_dir"],
@@ -122,6 +136,7 @@ DEFAULTS = {
     "caption_tag_dropout_rate": 0.1,
     "mit_text_threshold": 0.8,
     "mit_dilate": 5,
+    "mit_ctd_gate": True,
     # free-fit tier edges that preprocess actually resizes into. The legacy
     # single-number `resize_resolution` was vestigial under free-fit (the
     # `--resolution` it fed is dropped in library/preprocess/images.py), so it
@@ -299,6 +314,7 @@ def get_settings() -> dict:
             "mit_text_threshold", DEFAULTS["mit_text_threshold"]
         ),
         "mit_dilate": gui.get("mit_dilate", DEFAULTS["mit_dilate"]),
+        "mit_ctd_gate": gui.get("mit_ctd_gate", DEFAULTS["mit_ctd_gate"]),
         # From the config chain (configs/custom/preprocess.toml → preset → method),
         # not webui_settings.json — it's the value resize actually uses.
         "target_res": target_res,
@@ -338,6 +354,7 @@ def save_settings(data: dict) -> dict:
         "caption_tag_dropout_rate",
         "mit_text_threshold",
         "mit_dilate",
+        "mit_ctd_gate",
     ):
         if key in data:
             gui[key] = data[key]
@@ -427,7 +444,7 @@ def adapter_stats(source_dir: str) -> dict:
             # Check if this cache file belongs to any source stem
             matched = False
             for stem in stems:
-                if n.startswith(stem + "_") or n.startswith(stem + "."):
+                if n.startswith((stem + "_", stem + ".")):
                     matched = True
                     break
             if not matched:
@@ -476,8 +493,23 @@ def get_status(
     cache_dir: Path | None = None,
     variant: str | None = None,
     preset: str | None = None,
+    manifest: str | None = None,
 ) -> dict:
     """Return a snapshot of preprocess pipeline counts."""
+    if manifest:
+        info = get_run_status(manifest)
+        artifacts = info.get("artifacts") or {}
+        return {
+            "resized": int(artifacts.get("resized", 0)),
+            "masks": int(artifacts.get("masks", 0)),
+            "cache": {
+                "latents": int(artifacts.get("latents", artifacts.get("lora", 0))),
+                "te": int(artifacts.get("te", 0)),
+                "pe": int(artifacts.get("pe", 0)),
+            },
+            "cond_resized": int(artifacts.get("conditioning", 0)),
+            "preprocess_run": info,
+        }
     p = _get_paths(variant=variant, preset=preset)
     return {
         "resized": _count_images(p["resized"]),
@@ -485,3 +517,120 @@ def get_status(
         "cache": _count_cache_files(p["cache"], cache_dir),
         "cond_resized": _count_images(p["cond_resized"]),
     }
+
+
+def _run_roots(
+    variant: str | None = None, preset: str | None = None
+) -> list[Path]:
+    """Resolve canonical ``post_image_dataset/runs`` roots without side effects."""
+
+    paths = get_path_overrides(preset=preset or "default", variant=variant)
+    candidates: list[Path] = []
+    configured_root = os.environ.get("POST_IMAGE_DATASET")
+    if configured_root:
+        candidates.append(_resolve(configured_root))
+    # ``get_path_overrides`` intentionally exposes only dataset paths. Derive a
+    # custom run root when a caller has already configured one of those paths
+    # below ``.../runs/<source>/<config>/...``; otherwise retain the default.
+    for key in ("resized_image_dir", "lora_cache_dir", "conditioning_resized_dir"):
+        value = paths.get(key)
+        if not value:
+            continue
+        path = _resolve(value)
+        parts = path.parts
+        if "runs" in parts:
+            index = len(parts) - 1 - tuple(reversed(parts)).index("runs")
+            candidates.append(Path(*parts[:index]))
+        elif path.name in {"resized", "lora", "masks", "cond_resized"}:
+            candidates.append(path.parent)
+    candidates.append(_resolve("post_image_dataset"))
+    roots: list[Path] = []
+    for candidate in candidates:
+        root = candidate if candidate.name == "runs" else candidate / "runs"
+        root = root.resolve()
+        if root not in roots:
+            roots.append(root)
+    return roots
+
+
+def _manifest_summary(path: Path) -> dict:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {
+            "manifest": str(path),
+            "status": "invalid",
+            "complete": False,
+            "error": str(exc),
+        }
+    if not isinstance(raw, dict):
+        return {
+            "manifest": str(path),
+            "status": "invalid",
+            "complete": False,
+            "error": "manifest is not an object",
+        }
+    source = raw.get("source") or {}
+    return {
+        "manifest": str(path),
+        "run_id": f"{raw.get('source_group', '')}/{raw.get('config_hash', '')}",
+        "source": raw.get("source_dir") or source.get("path"),
+        "source_group": raw.get("source_group") or source.get("safe_name"),
+        "config_hash": raw.get("config_hash") or raw.get("config_fingerprint"),
+        "status": raw.get("status") or raw.get("preprocess_status") or "unknown",
+        "complete": bool(raw.get("complete", raw.get("status") == "ready")),
+        "artifacts": raw.get("artifacts") or {},
+        "directories": raw.get("directories") or {},
+        "updated_at": raw.get("updated_at") or raw.get("completed_at"),
+        "error": raw.get("error"),
+    }
+
+
+def list_runs(
+    variant: str | None = None,
+    preset: str | None = None,
+    source: str | None = None,
+) -> list[dict]:
+    """List isolated preprocessing runs, newest manifest first."""
+
+    source_abs = _resolve(source).resolve() if source else None
+    found: list[dict] = []
+    seen: set[Path] = set()
+    for root in _run_roots(variant=variant, preset=preset):
+        if not root.is_dir():
+            continue
+        for manifest in root.glob("*/*/manifest.json"):
+            manifest = manifest.resolve()
+            if manifest in seen:
+                continue
+            seen.add(manifest)
+            item = _manifest_summary(manifest)
+            if source_abs is not None:
+                try:
+                    if Path(str(item.get("source") or "")).resolve() != source_abs:
+                        continue
+                except OSError:
+                    continue
+            found.append(item)
+    found.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return found
+
+
+def get_run_status(manifest: str | Path) -> dict:
+    """Return one manifest summary and validate complete runs when possible."""
+
+    path = Path(manifest)
+    if path.is_dir():
+        path = path / "manifest.json"
+    summary = _manifest_summary(path)
+    if summary.get("complete"):
+        try:
+            run = run_from_manifest(path)
+            summary["paths"] = {
+                key: str(value) for key, value in run.directories.items()
+            }
+        except Exception as exc:  # malformed identity should be visible in UI
+            summary["status"] = "invalid"
+            summary["complete"] = False
+            summary["error"] = str(exc)
+    return summary

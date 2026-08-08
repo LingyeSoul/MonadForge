@@ -496,6 +496,7 @@ import { useI18n } from '../composables/useI18n'
 import ConfigField from '../components/ConfigField.vue'
 import PreviewPromptEditor from '../components/PreviewPromptEditor.vue'
 import HelpPanel from '../components/HelpPanel.vue'
+import { readPreprocessRun, writePreprocessRun } from '../composables/usePreprocessRunStorage'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()
@@ -506,6 +507,14 @@ const { t } = useI18n()
 const selectedMethod = ref('')
 const selectedVariant = ref('')
 const selectedPreset = ref('default')
+
+function selectedPreprocessRun(): string | null {
+  return readPreprocessRun(selectedVariant.value, selectedPreset.value)
+}
+
+function storePreprocessRun(manifest: string | null) {
+  writePreprocessRun(manifest, selectedVariant.value, selectedPreset.value)
+}
 
 const trainingLaunching = ref(false)
 const testLaunching = ref(false)
@@ -882,6 +891,8 @@ async function fetchPrelaunch(): Promise<any> {
     variant: selectedVariant.value,
     preset: selectedPreset.value,
   })
+  const manifest = selectedPreprocessRun()
+  if (manifest) params.set('preprocess_run', manifest)
   const res = await fetch(`/api/config/prelaunch-check?${params}`)
   if (!res.ok) throw new Error(`Prelaunch check failed: ${res.status}`)
   return res.json()
@@ -940,6 +951,9 @@ async function startTraining() {
 
 async function launchTrainingTask() {
   const env: Record<string, string> = { PRESET: selectedPreset.value }
+  const args = [selectedVariant.value]
+  const manifest = selectedPreprocessRun()
+  if (manifest) args.push('--preprocess_run', manifest)
 
   // Inject wandb env vars when enabled
   if (wandb.value.enabled) {
@@ -953,7 +967,7 @@ async function launchTrainingTask() {
     if (wandb.value.log_checkpoint_artifact) env['WANDB_LOG_ARTIFACT'] = '1'
   }
 
-  const taskId = await taskStore.startTask('lora-gui', [selectedVariant.value], env)
+  const taskId = await taskStore.startTask('lora-gui', args, env)
   if (taskId) {
     notify.show(t('notifyTrainingLaunched'), 'success')
   } else {
@@ -1055,12 +1069,20 @@ async function runPreprocessThenTrain() {
   showNoCacheDlg.value = false
   preprocessRunning.value = true
   try {
-    const taskId = await taskStore.startTask('preprocess')
+    const selectedBeforeRun = selectedPreprocessRun()
+    const env: Record<string, string> = {
+      PRESET: selectedPreset.value,
+      METHOD: selectedVariant.value,
+      METHODS_SUBDIR: 'gui-methods',
+    }
+    if (selectedBeforeRun) env.PREPROCESS_RUN = selectedBeforeRun
+    const taskId = await taskStore.startTask('preprocess', [], env)
     if (!taskId) {
       configStore.error = 'Failed to start preprocessing'
       return
     }
     await waitForTask(taskId)
+    if (!selectedBeforeRun) await adoptLatestPreprocessRun()
     const result = await fetchPrelaunch()
     if (result.has_cache) {
       if (result.checkpoint) {
@@ -1076,6 +1098,26 @@ async function runPreprocessThenTrain() {
     preprocessRunning.value = false
     trainingLaunching.value = false
   }
+}
+
+async function adoptLatestPreprocessRun() {
+  try {
+    const common = new URLSearchParams({
+      variant: selectedVariant.value,
+      preset: selectedPreset.value,
+    })
+    const pathRes = await fetch(`/api/preprocess/paths?${common}`)
+    if (!pathRes.ok) return
+    const paths = await pathRes.json()
+    if (paths.source_image_dir) common.set('source', paths.source_image_dir)
+    const runsRes = await fetch(`/api/preprocess/runs?${common}`)
+    if (!runsRes.ok) return
+    const runs = await runsRes.json()
+    const latest = Array.isArray(runs)
+      ? runs.find(run => run?.complete && run?.status === 'ready')
+      : null
+    storePreprocessRun(latest?.manifest ?? null)
+  } catch { /* prelaunch will surface a missing cache */ }
 }
 
 // ── Test inference ────────────────────────────────────────────

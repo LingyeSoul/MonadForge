@@ -52,27 +52,22 @@ class NonBakeableError(RuntimeError):
 
 
 def pick_latest_adapter(adapter_dir: Path) -> Path:
-    """Latest `*.safetensors` in adapter_dir that is bakeable.
+    """Latest supported adapter weight in ``adapter_dir`` that is bakeable.
 
     Skips ``*_moe.safetensors`` (HydraLoRA router-live), ``*.bak.*`` (backups),
     and any file whose name contains ``postfix`` / ``prefix`` (those are
     separate non-weight-delta adapters).
     """
-    candidates = sorted(
-        (
-            f
-            for f in adapter_dir.glob("*.safetensors")
-            if not f.name.endswith("_moe.safetensors")
-            and ".bak." not in f.name
-            and "postfix" not in f.name.lower()
-            and "prefix" not in f.name.lower()
-        ),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    from library.io.output_layout import discover_weights
+
+    candidates = [
+        f
+        for f in discover_weights(adapter_dir)
+        if "postfix" not in f.name.lower() and "prefix" not in f.name.lower()
+    ]
     if not candidates:
         raise FileNotFoundError(
-            f"No bakeable *.safetensors found in {adapter_dir} "
+            f"No bakeable adapter weights found in {adapter_dir} "
             "(excludes *_moe, *postfix*, *prefix*, and *.bak.*)"
         )
     return candidates[0]
@@ -87,6 +82,27 @@ def scan_non_bakeable_keys(weights_sd: dict) -> dict[str, int]:
                 found[kind] = found.get(kind, 0) + 1
                 break
     return found
+
+
+def _load_adapter_state_dict(adapter: Path) -> dict:
+    """Load adapter tensors without executing pickled user code."""
+
+    if adapter.suffix.lower() == ".safetensors":
+        from safetensors.torch import load_file
+
+        weights_sd = load_file(str(adapter))
+    else:
+        weights_sd = torch.load(
+            str(adapter),
+            map_location="cpu",
+            weights_only=True,
+        )
+    if not isinstance(weights_sd, dict):
+        raise TypeError(f"Adapter checkpoint must contain a state dict: {adapter}")
+    nested = weights_sd.get("state_dict")
+    if isinstance(nested, dict):
+        weights_sd = nested
+    return weights_sd
 
 
 def merge_adapter_into_dit(
@@ -111,9 +127,7 @@ def merge_adapter_into_dit(
 
     logger.info(f"adapter: {adapter}")
 
-    from safetensors.torch import load_file
-
-    weights_sd = load_file(str(adapter))
+    weights_sd = _load_adapter_state_dict(adapter)
     non_bakeable = scan_non_bakeable_keys(weights_sd)
     if non_bakeable:
         parts = [f"{count} {kind}" for kind, count in non_bakeable.items()]

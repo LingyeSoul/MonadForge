@@ -156,6 +156,35 @@ def _save_batch(items: list[tuple[Path, np.ndarray, tuple[int, int]]]) -> None:
         np.savez(npz_path, **kwargs)
 
 
+def _encode_batch_with_oom_backoff(vae, img_batch: torch.Tensor) -> torch.Tensor:
+    """Encode a batch, bisecting CUDA OOMs until each sub-batch fits."""
+    batch_size = int(img_batch.shape[0])
+    try:
+        with torch.no_grad():
+            return vae.encode_pixels_to_latents(img_batch).cpu()
+    except torch.cuda.OutOfMemoryError:
+        if batch_size <= 1:
+            raise
+
+    # Retry outside the exception handler so its traceback cannot retain the
+    # failed forward's intermediate CUDA tensors.
+    clear_cache = getattr(vae, "clear_cache", None)
+    if callable(clear_cache):
+        clear_cache()
+    torch.cuda.empty_cache()
+
+    split_at = batch_size // 2
+    height, width = (int(dim) for dim in img_batch.shape[-2:])
+    print(
+        f"\nVAE CUDA OOM at batch_size={batch_size} for {width}x{height}; "
+        f"retrying as {split_at}+{batch_size - split_at}.",
+        flush=True,
+    )
+    left = _encode_batch_with_oom_backoff(vae, img_batch[:split_at])
+    right = _encode_batch_with_oom_backoff(vae, img_batch[split_at:])
+    return torch.cat((left, right), dim=0)
+
+
 def cache_latents(
     data_dir: Path,
     vae,
@@ -180,7 +209,8 @@ def cache_latents(
     per-batch disk decode + image transform and the npz read-modify-write are
     CPU/IO, so they're farmed to thread pools that overlap the GPU — the GPU no
     longer idles between batches. ``io_workers`` sizes those pools (default
-    ``min(8, cpu_count)``). Output is byte-identical to the serial path."""
+    ``min(8, cpu_count)``). CUDA OOMs bisect the affected batch until it fits;
+    a single-image OOM is re-raised. Output order and cache format are unchanged."""
     image_files = walk_images(data_dir, recursive=recursive, pattern=path_pattern)
     reso_groups = group_by_shape(image_files)
     stats = PreprocessStats(seen=len(image_files))
@@ -234,8 +264,7 @@ def cache_latents(
                 continue
 
             img_batch = img_batch.to(device=vae.device, dtype=vae.dtype)
-            with torch.no_grad():
-                latents = vae.encode_pixels_to_latents(img_batch).cpu()
+            latents = _encode_batch_with_oom_backoff(vae, img_batch)
 
             items: list[tuple[Path, np.ndarray, tuple[int, int]]] = []
             for i, (p, size) in enumerate(kept):

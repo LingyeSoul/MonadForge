@@ -64,6 +64,7 @@ downloads = _LazyModule("scripts.tasks.downloads")
 inference = _LazyModule("scripts.tasks.inference")
 masking = _LazyModule("scripts.tasks.masking")
 preprocess = _LazyModule("scripts.tasks.preprocess")
+sr = _LazyModule("scripts.tasks.sr")
 staged_resolution = _LazyModule("scripts.tasks.staged_resolution")
 tagger = _LazyModule("scripts.tasks.tagger")
 training = _LazyModule("scripts.tasks.training")
@@ -117,6 +118,47 @@ COMMANDS = {
         training.cmd_easycontrol_preprocess,
         "Full EasyControl preprocess: latents + text emb. "
         "Source: easycontrol-dataset/  Cache: post_image_dataset/easycontrol/.",
+    ),
+    # ── ResShift SR/RSD sidecar (optional `sr` dependency group) ────────
+    "sr-setup": (
+        sr.cmd_sr_setup,
+        "Install the optional SR dependencies and verify the vendored ResShift tree.",
+    ),
+    "sr-prep": (
+        sr.cmd_sr_prep,
+        "Build the frozen synthetic-LR evaluation set from image_dataset/.",
+    ),
+    "sr-phase0": (
+        sr.cmd_sr_phase0,
+        "Run released ResShift x4 on the evaluation set and produce metrics/montage.",
+    ),
+    "sr-test": (
+        sr.cmd_sr_test,
+        "Run tiled SR on IN=<image|dir> (VERSION=v3|v2|x2|x4ft|x4s4).",
+    ),
+    "sr-build-hr-pool": (
+        sr.cmd_sr_build_hr_pool,
+        "Build a sharp HR pool for SR/RSD training.",
+    ),
+    "sr-detect-text": (
+        sr.cmd_sr_detect_text,
+        "Detect CTD text regions for SR crop sampling (not OCR transcription).",
+    ),
+    "sr-train": (
+        sr.cmd_sr_train,
+        "Finetune a ResShift teacher on the HR pool (VERSION=x2|x4|x4s4).",
+    ),
+    "sr-rsd-train": (
+        sr.cmd_sr_rsd_train,
+        "Distill a ResShift teacher to a one-step RSD student.",
+    ),
+    "sr-rsd-dryrun": (
+        sr.cmd_sr_rsd_dryrun,
+        "Run the RSD VRAM feasibility dry-run without training.",
+    ),
+    "sr-rsd-infer": (
+        sr.cmd_sr_rsd_infer,
+        "Run one-step RSD inference and MUSIQ scoring.",
     ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (
@@ -282,7 +324,7 @@ COMMANDS = {
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (
         masking.cmd_mask,
-        "Run SAM + MIT (via tempdir) and write merged masks under post_image_dataset/masks/",
+        "Run SAM + MIT (via tempdir) and write merged masks into the selected preprocess run",
     ),
     "mask-clean": (
         masking.cmd_mask_clean,

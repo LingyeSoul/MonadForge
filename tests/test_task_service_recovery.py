@@ -190,12 +190,25 @@ def test_webui_command_catalog_only_contains_real_cli_commands():
     assert set(COMMAND_CATALOG) <= set(COMMANDS)
     assert "easycontrol" in COMMAND_CATALOG
     assert "test-easycontrol" in COMMAND_CATALOG
+    assert {
+        "sr-prep",
+        "sr-phase0",
+        "sr-test",
+        "sr-build-hr-pool",
+        "sr-detect-text",
+        "sr-train",
+        "sr-rsd-train",
+        "sr-rsd-dryrun",
+        "sr-rsd-infer",
+    } <= set(COMMAND_CATALOG)
+    assert "sr-setup" not in COMMAND_CATALOG
     assert "exp-easycontrol" not in COMMAND_CATALOG
     assert "exp-ip-adapter" not in COMMAND_CATALOG
 
 
 def test_task_api_rejects_removed_command_before_submission():
     from fastapi import HTTPException
+
     from webui.api.tasks import TaskStartRequest, start_task
 
     with pytest.raises(HTTPException) as exc_info:
@@ -206,6 +219,7 @@ def test_task_api_rejects_removed_command_before_submission():
 
 def test_task_api_maps_daemon_failure_to_502(monkeypatch):
     from fastapi import HTTPException
+
     from webui.api import tasks as tasks_api
     from webui.services.daemon_client import DaemonError
 

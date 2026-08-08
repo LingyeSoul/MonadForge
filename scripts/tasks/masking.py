@@ -2,9 +2,10 @@
 
 ``make mask`` is a one-shot orchestrator: it runs SAM and MIT into a
 ``tempfile.TemporaryDirectory()`` (cross-platform — honors ``TMPDIR`` /
-``TEMP``) and writes only the merged result to
-``post_image_dataset/masks/<rel>/{stem}_mask.png``. Per-tool intermediates
-are never persisted under the project root.
+``TEMP``) and writes only the merged result to the selected preprocess run's
+``masks/<rel>/{stem}_mask.png``. Per-tool intermediates are never persisted
+under the project root. A direct legacy invocation without a run manifest keeps
+using the fixed ``post_image_dataset/masks`` compatibility path.
 
 Either backend can be turned off via the ``RUN_SAM_MASK`` /
 ``RUN_MIT_MASK`` env vars (set by the GUI's Preprocessing tab) — values
@@ -19,9 +20,23 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 from ._common import PY, ROOT, _path, run
+
+try:
+    from library.preprocess.runs import (
+        PreprocessRunError,
+        atomic_write_manifest,
+        load_manifest,
+        run_from_manifest,
+    )
+except ImportError:  # pragma: no cover - lightweight task discovery fallback
+    PreprocessRunError = RuntimeError  # type: ignore[assignment]
+    atomic_write_manifest = None  # type: ignore[assignment]
+    load_manifest = None  # type: ignore[assignment]
+    run_from_manifest = None  # type: ignore[assignment]
 
 MASK_OUTPUT_DIR = ROOT / "post_image_dataset" / "masks"
 RESIZED_IMAGE_DIR = ROOT / "post_image_dataset" / "resized"
@@ -29,7 +44,55 @@ SAM_CONFIG = ROOT / "configs" / "custom" / "sam_mask.yaml"
 _UNSET = object()
 
 
-def _resized_image_dir() -> Path:
+def _selected_run(extra: list[str]):
+    from .preprocess import _consume_preprocess_run
+
+    selected, cleaned = _consume_preprocess_run(extra)
+    if not selected:
+        return None, cleaned
+    if run_from_manifest is None:
+        raise SystemExit("preprocess run support is unavailable")
+    manifest = Path(selected).expanduser()
+    if manifest.is_dir() or manifest.suffix.lower() != ".json":
+        manifest = manifest / "manifest.json"
+    try:
+        return run_from_manifest(manifest), cleaned
+    except (OSError, ValueError, PreprocessRunError) as exc:
+        raise SystemExit(f"invalid preprocess run {manifest}: {exc}") from exc
+
+
+def _mask_paths(
+    extra: list[str] | None = None,
+) -> tuple[object | None, Path, Path, list[str]]:
+    """Resolve image and output roots, preferring the selected run."""
+
+    run_obj, cleaned = _selected_run(list(extra or []))
+    if run_obj is not None:
+        return run_obj, run_obj.resized_image_dir, run_obj.masks_dir, cleaned
+    resized_dir = _resized_image_dir_legacy()
+    return None, resized_dir, _scoped_mask_output_dir(resized_dir), cleaned
+
+
+def _update_run_mask_count(run_obj: object | None, mask_dir: Path) -> None:
+    """Refresh only the selected run's mask count without dropping metadata."""
+
+    if run_obj is None or load_manifest is None or atomic_write_manifest is None:
+        return
+    try:
+        manifest_path = run_obj.manifest_path  # type: ignore[attr-defined]
+        payload = load_manifest(manifest_path)
+        artifacts = dict(payload.get("artifacts") or {})
+        artifacts["masks"] = sum(
+            1 for path in mask_dir.rglob("*_mask.png") if path.is_file()
+        )
+        payload["artifacts"] = artifacts
+        payload["updated_at"] = time.time()
+        atomic_write_manifest(manifest_path, payload)
+    except (OSError, PreprocessRunError) as exc:
+        print(f"Warning: unable to update preprocess run mask count: {exc}")
+
+
+def _resized_image_dir_legacy() -> Path:
     """Scoped resized dir to mask, honoring GUI ``path_scope``.
 
     Reads ``resized_image_dir`` from the merged config chain (the GUI passes a
@@ -40,6 +103,12 @@ def _resized_image_dir() -> Path:
     CLI behavior is unchanged.
     """
     return ROOT / _path("resized_image_dir", "post_image_dataset/resized")
+
+
+def _resized_image_dir() -> Path:
+    """Backward-compatible alias for callers that only need the legacy path."""
+
+    return _resized_image_dir_legacy()
 
 
 def _scoped_mask_output_dir(resized_dir: Path) -> Path:
@@ -171,7 +240,7 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 def cmd_mask(extra):
-    """Run SAM + MIT into a tempdir, merge, write to post_image_dataset/masks/.
+    """Run SAM + MIT into a tempdir and write masks for the selected run.
 
     ``RUN_SAM_MASK`` / ``RUN_MIT_MASK`` env vars gate each backend
     independently (default on). If both are disabled the command is a no-op.
@@ -181,12 +250,11 @@ def cmd_mask(extra):
     if not (run_sam or run_mit):
         print("Both SAM and MIT masking are disabled — nothing to do.")
         return
+    run_obj, resized_dir, mask_output_dir, extra = _mask_paths(list(extra))
     runtime_sam_cfg = _runtime_sam_config()
     sam_cfg = _load_sam_config(runtime_sam_cfg)
     pattern = _config_path_pattern(sam_cfg)
     pattern_args = ["--path-pattern", pattern] if pattern else []
-    resized_dir = _resized_image_dir()
-    mask_output_dir = _scoped_mask_output_dir(resized_dir)
     with tempfile.TemporaryDirectory(prefix="anima-masks-") as tmp_root:
         sam_config_path = _sam_config_path(
             sam_cfg,
@@ -213,9 +281,16 @@ def cmd_mask(extra):
                 *extra,
             ]
         )
+    _update_run_mask_count(run_obj, mask_output_dir)
 
 
-def cmd_mask_clean(_extra):
-    if MASK_OUTPUT_DIR.exists():
-        shutil.rmtree(MASK_OUTPUT_DIR)
-        print(f"  Removed {MASK_OUTPUT_DIR.relative_to(ROOT)}/")
+def cmd_mask_clean(extra):
+    run_obj, _, mask_output_dir, _ = _mask_paths(list(extra))
+    if mask_output_dir.exists():
+        shutil.rmtree(mask_output_dir)
+        try:
+            display = mask_output_dir.relative_to(ROOT)
+        except ValueError:
+            display = mask_output_dir
+        print(f"  Removed {display}/")
+    _update_run_mask_count(run_obj, mask_output_dir)

@@ -151,6 +151,7 @@ class PrelaunchCheckResponse(BaseModel):
     has_cache: bool
     checkpoint: dict | None = None
     requires_pe: bool = False
+    preprocess_run: str | None = None
 
 
 class WipeCheckpointRequest(BaseModel):
@@ -162,10 +163,11 @@ class WipeCheckpointRequest(BaseModel):
 def prelaunch_check(
     variant: str = Query(...),
     preset: str = Query("default"),
+    preprocess_run: str | None = Query(None),
 ):
     """Check cache counts and checkpoint state before training launch."""
     try:
-        result = svc.prelaunch_check(variant, preset)
+        result = svc.prelaunch_check(variant, preset, preprocess_run=preprocess_run)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return PrelaunchCheckResponse(**result)

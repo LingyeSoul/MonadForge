@@ -32,6 +32,7 @@ from library.datasets import LossRecorder
 from library.runtime.device import clean_memory_on_device
 from library.training.checkpoints import CheckpointSaver
 from library.training.contexts import TrainCtx, ValCtx
+from library.training.log_dispatch import dispatch_wandb_extras, effective_lr
 from library.training.method_adapter import StepCtx
 from library.training.metrics import MetricContext, collect_metrics
 from library.training.stage_schedule import (
@@ -41,13 +42,14 @@ from library.training.stage_schedule import (
     progress_from_steps,
     resolve_stage_index,
 )
+from library.training.state import capture_rng_state
+from library.training.stop import StopController
 from library.training.validation import run_validation
 from library.training.wandb_metrics import (
     GradientHistogramCollector,
     SystemMetricsCollector,
     WeightSnapshotCollector,
 )
-from library.training.log_dispatch import dispatch_wandb_extras, effective_lr
 
 logger = logging.getLogger(__name__)
 
@@ -125,17 +127,43 @@ class LoopState:
     stage_loader_generator_state: Any = None
     outer_epoch_index: int = 0
 
+    # Cooperative daemon/CLI stop state.  The flag is inspected only after a
+    # complete optimizer step so an interrupted run never saves half a gradient
+    # accumulation window.
+    stop_controller: Optional[StopController] = None
+    stop_requested: bool = False
+    micro_batch_offset: int = 0
+    at_optimizer_boundary: bool = True
+
     global_step: int = 0
     profile_started: bool = False
 
     def checkpoint_runtime_state(self) -> dict[str, Any]:
+        # Keep the provider tolerant of lightweight test/embedding owners that
+        # predate the explicit cursor fields.  The saver supplies its shared
+        # epoch/step defaults when a field is omitted; real LoopState instances
+        # always expose every field below.
+        runtime_state: dict[str, Any] = {}
+        if hasattr(self, "global_step"):
+            runtime_state["global_step"] = int(self.global_step)
+        if hasattr(self, "current_epoch"):
+            runtime_state["current_epoch"] = int(
+                getattr(self.current_epoch, "value", self.current_epoch)
+            )
+        if hasattr(self, "micro_batch_offset"):
+            runtime_state["micro_batch_offset"] = int(self.micro_batch_offset)
+        runtime_state["rng_state"] = capture_rng_state()
+        args = getattr(self, "args", None)
+        if args is not None:
+            runtime_state["config_signature"] = getattr(args, "config_signature", None)
+            runtime_state["dataset_signature"] = getattr(args, "dataset_signature", None)
         if self.stage_plan is None:
-            return {}
-        runtime_state: dict[str, Any] = {
+            return runtime_state
+        runtime_state.update({
             "stage_index": self.stage_index,
             "stage_batch_cursor": self.stage_batch_cursor,
             "stage_outer_epoch": self.outer_epoch_index,
-        }
+        })
         if self.stage_loader_generator_state is not None:
             runtime_state["stage_loader_generator_state"] = (
                 self.stage_loader_generator_state.tolist()
@@ -181,6 +209,7 @@ def build_loop_state(
     initial_global_step=None,
     stage_batch_cursor=0,
     stage_loader_generator_state=None,
+    stop_controller: Optional[StopController] = None,
 ) -> LoopState:
     """Build :class:`LoopState`. Mirrors the pre-loop setup that used to sit
     between ``_prepare_with_accelerator()`` and the for-epoch loop in
@@ -382,6 +411,7 @@ def build_loop_state(
         stage_plan=stage_plan,
         stage_batch_cursor=stage_batch_cursor,
         stage_loader_generator_state=stage_loader_generator_state,
+        stop_controller=stop_controller,
         global_step=global_step,
     )
 
@@ -442,6 +472,8 @@ def run_training_loop(trainer, state: LoopState) -> None:
         )
 
         _run_epoch_steps(trainer, state, epoch)
+        if state.stop_requested:
+            break
         schedule_finished = (
             state.stage_plan is not None and state.global_step >= args.max_train_steps
         )
@@ -490,7 +522,8 @@ def run_training_loop(trainer, state: LoopState) -> None:
         if schedule_finished:
             break
 
-    _audit_liveness(trainer, state, where="run end")
+    if not state.stop_requested:
+        _audit_liveness(trainer, state, where="run end")
 
     state.metadata["ss_training_finished_at"] = str(time.time())
 
@@ -558,13 +591,18 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         generator.set_state(state.stage_loader_generator_state)
 
     skipped_dataloader = None
-    if state.initial_step > 0:
+    resume_batch_offset = max(0, int(state.initial_step))
+    if resume_batch_offset > 0:
         skipped_dataloader = accelerator.skip_first_batches(
-            state.train_dataloader, state.initial_step - 1
+            state.train_dataloader, resume_batch_offset - 1
         )
         state.initial_step = 1
 
-    step = -1
+    # ``step`` is the zero-based micro-batch index within the current epoch.
+    # Keep it absolute when a resumed loader is used; otherwise a later
+    # interrupted save would report offset=1/2 again and lose the explicit
+    # cursor promised by train_state.json.
+    step = resume_batch_offset - 2 if resume_batch_offset > 0 else -1
     while state.global_step < args.max_train_steps:
         _maybe_apply_stage_schedule(state)
         loader = skipped_dataloader or state.train_dataloader
@@ -576,11 +614,13 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
         for batch in loader:
             step += 1
             state.current_step.value = state.global_step
+            state.micro_batch_offset = max(0, step + 1)
             if state.initial_step > 0:
                 state.initial_step -= 1
                 continue
 
             _profiler_step_begin(state)
+            state.at_optimizer_boundary = False
             loss = _run_step(trainer, state, batch)
             if state.stage_plan is not None:
                 state.stage_batch_cursor += 1
@@ -593,10 +633,27 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
             if accelerator.sync_gradients:
                 state.progress_bar.update(1)
                 state.global_step += 1
+                state.current_step.value = state.global_step
+                state.at_optimizer_boundary = True
                 if state.global_step == LIVENESS_EARLY_CHECK_STEP:
                     _audit_liveness(
                         trainer, state, where=f"step {state.global_step} early check"
                     )
+                # Stop only after the optimizer has committed a complete
+                # update.  Save the semantic cursor and Accelerate payload
+                # before returning so a daemon stop can resume exactly here.
+                controller = getattr(state, "stop_controller", None)
+                if controller is not None and controller.requested:
+                    state.stop_requested = True
+                    state.optimizer_eval_fn()
+                    try:
+                        state.saver.save_interrupt_state(
+                            state.network, state.global_step, epoch + 1
+                        )
+                    except Exception:
+                        logger.exception("best-effort interrupted-state save failed")
+                    return
+
                 _sample_at_step(trainer, state)
                 state.saver.maybe_save_step(state.network, state.global_step, epoch)
                 _log_checkpoint_artifact(trainer, args, state, epoch)
@@ -727,6 +784,17 @@ def _run_step(trainer, state: LoopState, batch) -> torch.Tensor:
         if state.profile_started:
             torch.cuda.nvtx.range_push("backward")
         accelerator.backward(loss)
+        # Block-swap backward hooks enqueue device transfers.  Do not let an
+        # optimizer step (or a cooperative stop checkpoint) observe stale
+        # parameters; wait here so worker exceptions reach the training thread.
+        unet_for_swap = state.unet
+        try:
+            unet_for_swap = accelerator.unwrap_model(unet_for_swap)
+        except (AttributeError, RuntimeError, TypeError) as exc:
+            logger.debug("could not unwrap DiT for block-swap wait: %s", exc)
+        wait_for_swap = getattr(unet_for_swap, "wait_for_block_swap", None)
+        if callable(wait_for_swap):
+            wait_for_swap()
         if state.profile_started:
             torch.cuda.nvtx.range_pop()
 

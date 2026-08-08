@@ -267,17 +267,60 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
             return False
         if not os.path.exists(cache_path):
             return False
-        if self.skip_disk_cache_validity_check:
-            return True
-
         try:
             with _safe_open(cache_path, framework="pt") as f:
                 keys = set(f.keys())
-                if "num_variants" in keys:
-                    num_variants = int(f.get_tensor("num_variants"))
-            # Adapter-output caches prune the unused Qwen tensors and store only
-            # crossattn_emb (+ t5_attn_mask); plain (no-adapter) caches store the
-            # Qwen prompt_embeds tuple. Require whichever set the mode consumes.
+                num_variants = (
+                    int(f.get_tensor("num_variants"))
+                    if "num_variants" in keys
+                    else 0
+                )
+                # ``num_randomized`` is emitted alongside the v-family by the
+                # preprocessing writer.  Its presence is the compatibility
+                # marker for r1..rN; unlike an absent marker (where the loader
+                # intentionally falls back to legacy v-family sampling), a
+                # present marker with missing keys is an incomplete cache and
+                # must be rejected before the first DataLoader batch.
+                num_randomized = (
+                    int(f.get_tensor("num_randomized"))
+                    if "num_randomized" in keys
+                    else 0
+                )
+
+            # ``skip_cache_check`` only skips expensive shape/metadata checks.
+            # The loader still needs one complete key family, otherwise a
+            # wrong cache mode survives startup and fails in DataLoader[0].
+            has_adapter_family = any(
+                key == "crossattn_emb" or key.startswith("crossattn_emb_")
+                for key in keys
+            )
+            has_prompt_family = any(
+                key == "prompt_embeds" or key.startswith("prompt_embeds_")
+                for key in keys
+            )
+            if (
+                self.cache_llm_adapter_outputs
+                and not has_adapter_family
+                and has_prompt_family
+            ):
+                raise RuntimeError(
+                    f"Text cache mode mismatch for {cache_path}: found plain "
+                    "prompt_embeds_* but training expects crossattn_emb_* adapter "
+                    "outputs. Set cache_llm_adapter_outputs=false or re-run "
+                    "preprocess with cache_llm_adapter_outputs=true."
+                )
+            if (
+                not self.cache_llm_adapter_outputs
+                and not has_prompt_family
+                and has_adapter_family
+            ):
+                raise RuntimeError(
+                    f"Text cache mode mismatch for {cache_path}: found "
+                    "crossattn_emb_* adapter outputs but training expects plain "
+                    "prompt_embeds_*. Set cache_llm_adapter_outputs=true, or "
+                    "re-run preprocess with cache_llm_adapter_outputs=false."
+                )
+
             if self.cache_llm_adapter_outputs:
                 required = ("crossattn_emb", "t5_attn_mask")
             else:
@@ -287,17 +330,38 @@ class AnimaTextEncoderOutputsCachingStrategy(TextEncoderOutputsCachingStrategy):
                     "t5_input_ids",
                     "t5_attn_mask",
                 )
-            if "num_variants" in keys:
-                for vi in range(num_variants):
-                    for stem in required:
-                        if f"{stem}_v{vi}" not in keys:
-                            return False
-            else:
+            if num_variants < 0:
+                return False
+            if self.use_randomized_caption_variants and num_randomized < 0:
+                return False
+            if (
+                self.use_randomized_caption_variants
+                and num_randomized
+                and num_variants < 1
+            ):
+                return False
+            suffixes = (
+                [f"_v{vi}" for vi in range(num_variants)]
+                if num_variants
+                else [""]
+            )
+            for suffix in suffixes:
                 for stem in required:
-                    if stem not in keys:
+                    if f"{stem}{suffix}" not in keys:
                         return False
+            if self.use_randomized_caption_variants and num_randomized:
+                for ri in range(1, num_randomized + 1):
+                    suffix = f"_r{ri}"
+                    for stem in required:
+                        if f"{stem}{suffix}" not in keys:
+                            return False
             if "caption_dropout_rate" not in keys:
                 return False
+
+            # Preserve the old opt-in behavior for deeper validation below;
+            # required key-family/schema checks above are intentionally cheap.
+            if self.skip_disk_cache_validity_check:
+                return True
         except Exception as e:
             logger.error(f"Error loading file: {cache_path}")
             raise e

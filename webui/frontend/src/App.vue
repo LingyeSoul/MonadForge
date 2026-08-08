@@ -170,6 +170,7 @@ const navItems = [
   { icon: 'mdi-layers-triple-outline', titleKey: 'navStagedResolution', to: '/staged-resolution' },
   { icon: 'mdi-puzzle-outline', titleKey: 'navAdapter', to: '/adapter' },
   { icon: 'mdi-flask', titleKey: 'navDistill', to: '/distill' },
+  { icon: 'mdi-image-filter-center-focus-strong', titleKey: 'navSuperResolution', to: '/sr' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },
   { icon: 'mdi-console-line', titleKey: 'navTasks', to: '/tasks' },
   { icon: 'mdi-chart-line', titleKey: 'navDashboard', to: '/dashboard' },

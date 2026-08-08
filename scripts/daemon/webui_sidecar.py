@@ -52,6 +52,7 @@ class WebUISidecar:
         self._port = port
         self._host = host
         self._popen = None  # type: ignore[assignment]
+        self._create_time: Optional[float] = None
         self._monitor_thread: Optional[threading.Thread] = None
         self._stop_requested = threading.Event()
         self._lock = threading.Lock()  # guards _popen across spawn/kill
@@ -88,9 +89,11 @@ class WebUISidecar:
             stdout_path=stdout_path,
             env=self._env(),
         )
+        create_time = proc.create_time(popen.pid)
         with self._lock:
             self._popen = popen
-        self._write_pidfile(popen.pid)
+            self._create_time = create_time
+        self._write_pidfile(popen.pid, create_time=create_time)
 
     # ── monitor ────────────────────────────────────────────────────────
 
@@ -159,10 +162,21 @@ class WebUISidecar:
         self._stop_requested.set()
         with self._lock:
             popen = self._popen
+            create_time = self._create_time
             self._popen = None
+            self._create_time = None
         if popen is not None and popen.poll() is None:
             try:
-                proc.kill_tree(popen.pid)
+                if create_time is None:
+                    logger.warning(
+                        "refusing to kill WebUI sidecar pid %s without create_time",
+                        popen.pid,
+                    )
+                else:
+                    proc.kill_tree(
+                        popen.pid,
+                        expected_create_time=create_time,
+                    )
             except Exception:  # noqa: BLE001 — best-effort during shutdown
                 logger.warning("could not kill WebUI sidecar tree", exc_info=True)
         self._clear_pidfile()
@@ -171,9 +185,10 @@ class WebUISidecar:
 
     # ── pidfile ────────────────────────────────────────────────────────
 
-    def _write_pidfile(self, pid: int) -> None:
+    def _write_pidfile(self, pid: int, *, create_time: Optional[float]) -> None:
         record = {
             "pid": pid,
+            "create_time": create_time,
             "port": self._port,
             "host": self._host,
             "url": f"http://{self._host}:{self._port}",

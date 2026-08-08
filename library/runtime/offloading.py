@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import time
 from typing import Any, Optional, Union, Callable, Tuple
 import torch
@@ -26,6 +27,11 @@ def swap_weight_devices_cuda(
                 module_to_cpu is not None
                 and module_to_cpu.weight.shape == module_to_cuda.weight.shape
             ):
+                # Adapter/LoRA parameters are trainable and must remain on the
+                # training device for the entire autograd graph.  Only the
+                # frozen DiT storage participates in block swapping.
+                if module_to_cuda.weight.requires_grad or module_to_cpu.weight.requires_grad:
+                    continue
                 weight_swap_jobs.append(
                     (
                         module_to_cpu,
@@ -80,7 +86,14 @@ def swap_weight_devices_no_cuda(
     for module_to_cpu, module_to_cuda in zip(
         layer_to_cpu.modules(), layer_to_cuda.modules()
     ):
-        if hasattr(module_to_cpu, "weight") and module_to_cpu.weight is not None:
+        if (
+            hasattr(module_to_cpu, "weight")
+            and module_to_cpu.weight is not None
+            and hasattr(module_to_cuda, "weight")
+            and module_to_cuda.weight is not None
+            and not module_to_cpu.weight.requires_grad
+            and not module_to_cuda.weight.requires_grad
+        ):
             weight_swap_jobs.append(
                 (
                     module_to_cpu,
@@ -133,6 +146,7 @@ class Offloader:
 
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
         self.futures = {}
+        self._future_lock = threading.RLock()
         self.cuda_available = device.type == "cuda"
 
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
@@ -142,6 +156,13 @@ class Offloader:
             swap_weight_devices_no_cuda(self.device, block_to_cpu, block_to_cuda)
 
     def _submit_move_blocks(self, blocks, block_idx_to_cpu, block_idx_to_cuda):
+        # Never overwrite a future for the same destination.  Doing so loses
+        # its exception and leaves a transfer racing the next forward.
+        with self._future_lock:
+            existing = self.futures.get(block_idx_to_cuda)
+        if existing is not None:
+            self._wait_blocks_move(block_idx_to_cuda)
+
         def move_blocks(bidx_to_cpu, block_to_cpu, bidx_to_cuda, block_to_cuda):
             if self.debug:
                 start_time = time.perf_counter()
@@ -160,23 +181,26 @@ class Offloader:
         block_to_cpu = blocks[block_idx_to_cpu]
         block_to_cuda = blocks[block_idx_to_cuda]
 
-        self.futures[block_idx_to_cuda] = self.thread_pool.submit(
+        future = self.thread_pool.submit(
             move_blocks,
             block_idx_to_cpu,
             block_to_cpu,
             block_idx_to_cuda,
             block_to_cuda,
         )
+        with self._future_lock:
+            self.futures[block_idx_to_cuda] = future
 
     def _wait_blocks_move(self, block_idx):
-        if block_idx not in self.futures:
+        with self._future_lock:
+            future = self.futures.pop(block_idx, None)
+        if future is None:
             return
 
         if self.debug:
             print(f"Wait for block {block_idx}")
             start_time = time.perf_counter()
 
-        future = self.futures.pop(block_idx)
         _, bidx_to_cuda = future.result()
 
         assert block_idx == bidx_to_cuda, (
@@ -187,6 +211,24 @@ class Offloader:
             print(
                 f"Waited for block {block_idx}: {time.perf_counter() - start_time:.2f}s"
             )
+
+    def wait_for_all(self) -> None:
+        """Drain every pending transfer and propagate the first worker error."""
+
+        first_error: BaseException | None = None
+        while True:
+            with self._future_lock:
+                keys = list(self.futures)
+            if not keys:
+                break
+            for key in keys:
+                try:
+                    self._wait_blocks_move(key)
+                except BaseException as exc:
+                    if first_error is None:
+                        first_error = exc
+        if first_error is not None:
+            raise first_error
 
 
 _grad_t = Union[tuple[torch.Tensor, ...], torch.Tensor]
@@ -222,8 +264,7 @@ class ModelOffloader(Offloader):
 
     def set_forward_only(self, forward_only: bool):
         # switching must wait for all pending transfers
-        for block_idx in list(self.futures.keys()):
-            self._wait_blocks_move(block_idx)
+        self.wait_for_all()
         self.forward_only = forward_only
 
     def __del__(self):
@@ -241,7 +282,8 @@ class ModelOffloader(Offloader):
         )
         waiting = block_index > 0 and block_index <= self.blocks_to_swap
 
-        if not swapping and not waiting:
+        finishing = self.supports_backward and block_index == 0
+        if not swapping and not waiting and not finishing:
             return None
 
         block_idx_to_cpu = self.num_blocks - num_blocks_propagated
@@ -256,6 +298,8 @@ class ModelOffloader(Offloader):
                 self._submit_move_blocks(blocks, block_idx_to_cpu, block_idx_to_cuda)
             if waiting:
                 self._wait_blocks_move(block_idx_to_wait)
+            if finishing:
+                self.wait_for_all()
             return None
 
         return backward_hook
@@ -274,8 +318,7 @@ class ModelOffloader(Offloader):
         if self.debug:
             print("Prepare block devices before forward")
 
-        for block_idx in list(self.futures.keys()):
-            self._wait_blocks_move(block_idx)
+        self.wait_for_all()
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
             b.to(self.device)
@@ -285,7 +328,9 @@ class ModelOffloader(Offloader):
             b.to(
                 self.device
             )  # move block to device first. this makes sure that buffers (non weights) are on the device
-            weighs_to_device(b, torch.device("cpu"))  # make sure weights are on cpu
+            weighs_to_device(
+                b, torch.device("cpu"), include_trainable=False
+            )  # keep LoRA weights resident on the training device
 
         synchronize_device(self.device)
         if free_cache:
