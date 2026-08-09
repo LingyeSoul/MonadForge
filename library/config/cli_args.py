@@ -758,6 +758,77 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
         default=None,
         help="[EXPERIMENTAL] Sets the number of blocks to swap during the forward and backward passes.",
     )
+    parser.add_argument(
+        "--base_compute",
+        type=str,
+        default="bf16",
+        choices=["bf16", "w8a16_convrot", "w8a8_convrot"],
+        help=(
+            "[EXPERIMENTAL] Frozen DiT base Linear compute path. bf16 keeps the "
+            "default path; w8a16_convrot uses int8 weights with bf16/fp16 "
+            "activations; w8a8_convrot additionally quantizes activations."
+        ),
+    )
+    parser.add_argument(
+        "--convrot_group_size",
+        type=int,
+        default=256,
+        choices=[64, 256, 1024],
+        help="[EXPERIMENTAL] ConvRot RHT group size (must divide in_features).",
+    )
+    parser.add_argument(
+        "--convrot_hadamard",
+        type=str,
+        default="sylvester",
+        choices=["sylvester", "regular"],
+        help="[EXPERIMENTAL] Hadamard construction for grouped RHT.",
+    )
+    parser.add_argument(
+        "--convrot_scope",
+        type=str,
+        default="mlp",
+        help=(
+            "[EXPERIMENTAL] Linear scope: mlp, attention, all, "
+            "self_attn_qkv, attention_out, or comma combinations."
+        ),
+    )
+    parser.add_argument(
+        "--convrot_weight_source",
+        type=str,
+        default="online_from_bf16",
+        choices=["online_from_bf16", "prequant_checkpoint"],
+        help="[EXPERIMENTAL] Build int8 payloads online or load a prequant checkpoint.",
+    )
+    parser.add_argument(
+        "--convrot_prequant_path",
+        type=str,
+        default=None,
+        help="[EXPERIMENTAL] Safetensors/pt payload for prequant_checkpoint mode.",
+    )
+    parser.add_argument(
+        "--convrot_min_in_features",
+        type=int,
+        default=0,
+        help="[EXPERIMENTAL] Skip matching Linears below this in_features threshold.",
+    )
+    parser.add_argument(
+        "--convrot_largest_in_features_only",
+        action="store_true",
+        help="[EXPERIMENTAL] Quantize only the largest matching in_features group.",
+    )
+    parser.add_argument(
+        "--convrot_large_layer_mode",
+        type=str,
+        default=None,
+        choices=["none", "w8a16", "w8a8", "w8a16_convrot", "w8a8_convrot"],
+        help="[EXPERIMENTAL] Override compute mode for large matching Linears.",
+    )
+    parser.add_argument(
+        "--convrot_large_min_in_features",
+        type=int,
+        default=None,
+        help="[EXPERIMENTAL] Threshold required by convrot_large_layer_mode.",
+    )
 
 
 def add_network_arguments(parser: argparse.ArgumentParser):

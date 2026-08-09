@@ -989,6 +989,9 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
 
     def fuse_weights(self):
         """Merge all LoRA deltas into base model weights for zero-overhead inference."""
+        from networks.lora_anima.merge_guard import raise_if_convrot_active
+
+        raise_if_convrot_active(self, context="fuse_weights")
         for lora in self.text_encoder_loras + self.unet_loras:
             lora.fuse_weight()
 
@@ -2091,6 +2094,9 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     org_module._lora_restored = True
 
     def pre_calculation(self):
+        from networks.lora_anima.merge_guard import raise_if_convrot_active
+
+        raise_if_convrot_active(self, context="pre_calculation")
         loras: List[LoRAModule] = self.text_encoder_loras + self.unet_loras
         with torch.no_grad():
             for lora in loras:

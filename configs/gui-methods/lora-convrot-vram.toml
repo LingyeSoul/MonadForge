@@ -1,0 +1,47 @@
+# gui-methods/lora-convrot-vram.toml — Plain LoRA + ConvRot W8A16 VRAM profile.
+#
+# Experimental. Free-base W8A16 on mlp+attn (scope=all) so the same 10GB-class
+# card can raise network_dim and/or train_batch_size vs bf16@r4.
+# Measured on RTX 3080 (compile, 2026-07-26):
+#   all@r32@b1 ~3.63GB; all@r32@b2 ~4.62GB  (bf16@r4@b1 ~4.95GB)
+# Step time is ~1.08× bf16 — not a speed win. Keep base_compute=bf16 for
+# production long runs until short-train quality is checked on your data.
+#
+# Mutually exclusive with block_swap_transfer_dtype=int8.
+# Quality opt-in: set convrot_hadamard="regular" and convrot_group_size=64.
+
+network_dim = 32
+network_alpha = 32
+
+learning_rate = 2e-5
+max_train_epochs = 4
+save_every_n_epochs = 2
+checkpointing_epochs = 2
+
+use_shuffled_caption_variants = true
+cache_llm_adapter_outputs = true
+caption_dropout_rate = 0.1
+
+output_name = "anima_convrot_vram"
+
+# Prefer activation headroom over block-swap for this profile (ConvRot already
+# frees patched base Linear storage; keep transfer dtype bf16).
+blocks_to_swap = 0
+gradient_checkpointing = true
+# Match common low-VRAM LoRA gui defaults; offload is orthogonal to ConvRot.
+unsloth_offload_checkpointing = true
+
+# ConvRot Phase-1 VRAM profile (see docs/experimental/convrot_int8_training.md §G.16–G.20)
+base_compute = "w8a16_convrot"
+convrot_scope = "all"
+convrot_group_size = 256
+convrot_hadamard = "sylvester"
+# train_batch_size left to preset/base; all@b2 still under bf16@b1 peak on 3080.
+
+use_cmmd = false
+
+[variant]
+family = "lora"
+label = "LoRA + ConvRot W8A16 (VRAM)"
+description = "Experimental free-base W8A16 on all Linear scopes — same-VRAM larger rank/batch. Not faster than bf16; short-train before long runs."
+order = 35

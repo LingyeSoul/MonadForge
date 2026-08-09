@@ -65,7 +65,7 @@ def build_training_metadata(
     """Build the base training-session metadata dict from args and locals."""
     from library.training.hashing import get_git_revision_hash
 
-    return {
+    metadata = {
         "ss_session_id": session_id,
         "ss_training_started_at": training_started_at,
         "ss_output_name": args.output_name,
@@ -119,6 +119,42 @@ def build_training_metadata(
         "ss_validate_every_n_steps": args.validate_every_n_steps,
         "ss_resize_interpolation": args.resize_interpolation,
     }
+    base_compute = str(getattr(args, "base_compute", "bf16") or "bf16")
+    metadata["ss_base_compute"] = base_compute
+    if base_compute.strip().lower() not in {"bf16", "fp16", "none", "off", ""}:
+        metadata["ss_convrot_group_size"] = str(
+            getattr(args, "convrot_group_size", 256)
+        )
+        metadata["ss_convrot_scope"] = str(getattr(args, "convrot_scope", "mlp"))
+        hadamard = str(
+            getattr(args, "convrot_hadamard", "sylvester") or "sylvester"
+        ).strip().lower()
+        metadata["ss_convrot_hadamard"] = (
+            "regular"
+            if hadamard in {"regular", "reg", "paper", "convrot"}
+            else "sylvester"
+        )
+        metadata["ss_convrot_weight_source"] = str(
+            getattr(args, "convrot_weight_source", "online_from_bf16")
+        )
+        metadata["ss_convrot_min_in_features"] = str(
+            getattr(args, "convrot_min_in_features", 0) or 0
+        )
+        metadata["ss_convrot_largest_in_features_only"] = str(
+            bool(getattr(args, "convrot_largest_in_features_only", False))
+        ).lower()
+        large_mode = str(
+            getattr(args, "convrot_large_layer_mode", None) or ""
+        ).strip()
+        if large_mode.lower() not in {"", "none", "off"}:
+            metadata["ss_convrot_large_layer_mode"] = str(large_mode)
+            metadata["ss_convrot_large_min_in_features"] = str(
+                getattr(args, "convrot_large_min_in_features", "") or ""
+            )
+        mode = base_compute.strip().lower().removesuffix("_convrot")
+        if mode in {"w8a16", "w8a8"}:
+            metadata["ss_convrot_mode"] = mode
+    return metadata
 
 
 def _build_subset_metadata(subset) -> dict[str, Any]:

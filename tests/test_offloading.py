@@ -7,6 +7,9 @@ import pytest
 import torch
 from torch import nn
 
+from library.runtime.block_swap_payload import BlockSwapManagedTensor
+from library.runtime.convrot.free_base import free_linear_weight_storage
+from library.runtime.device import is_weight_swap_excluded, weighs_to_device
 from library.runtime.offloading import ModelOffloader, swap_weight_devices_no_cuda
 
 
@@ -63,3 +66,29 @@ def test_cpu_swap_skips_trainable_adapter_parameters():
 
     assert right.weight.requires_grad is True
     assert torch.equal(right.weight.detach(), before)
+
+
+def test_block_swap_skips_convrot_free_base_meta_weight():
+    linear = nn.Linear(4, 4, bias=False)
+    linear.weight.requires_grad_(False)
+    free_linear_weight_storage(linear)
+
+    assert is_weight_swap_excluded(linear)
+    weighs_to_device(linear, torch.device("cpu"))
+    assert linear.weight.device.type == "meta"
+
+
+def test_block_swap_payload_preserves_runtime_dtypes_and_stays_ephemeral():
+    owner = nn.Module()
+    owner.add_module(
+        "quantized", BlockSwapManagedTensor(torch.ones(4, 4, dtype=torch.int8))
+    )
+    owner.add_module(
+        "scale", BlockSwapManagedTensor(torch.ones(4, dtype=torch.float32))
+    )
+
+    owner.to(dtype=torch.float16)
+
+    assert owner.quantized.weight.dtype == torch.int8
+    assert owner.scale.weight.dtype == torch.float32
+    assert owner.state_dict() == {}

@@ -140,6 +140,7 @@ from library.training.stage_schedule import (
     prepare_stage_runtime,
     stage_epoch_upper_bound,
 )
+from library.training.convrot import maybe_apply_convrot_base
 from library.training.staged_resolution import configure_staged_resolution
 from library.training.sampling_config import normalize_sample_args
 from library.training.log_dispatch import (
@@ -2449,6 +2450,13 @@ class AnimaTrainer:
                 "Sublayer matmuls still run fp16 under autocast; bf16/fp32 "
                 "runs are unaffected."
             )
+
+        maybe_apply_convrot_base(
+            args,
+            network,
+            unet=unet,
+            network_kwargs=net_kwargs,
+        )
 
         if args.torch_compile:
             # Block swap coexists with compile: compile_blocks compiles only the

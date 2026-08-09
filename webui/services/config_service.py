@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 from pathlib import Path
 from typing import Any, Optional
 
@@ -118,6 +117,29 @@ _METHOD_ORDER = (
 _ATTN_MODES = ["flash", "torch", "mem_efficient", "sageattn", "flex", "xformers"]
 _SAMPLER_CHOICES = ["euler", "er_sde"]
 _SAMPLE_DECODE_INLINE_CHOICES = ["auto", "true", "false"]
+_BASE_COMPUTE_CHOICES = ["bf16", "w8a16_convrot", "w8a8_convrot"]
+_CONVROT_HADAMARD_CHOICES = ["sylvester", "regular"]
+_CONVROT_SCOPE_CHOICES = [
+    "mlp",
+    "all",
+    "attention",
+    "self_attn_qkv",
+    "attention_out",
+]
+_CONVROT_WEIGHT_SOURCE_CHOICES = ["online_from_bf16", "prequant_checkpoint"]
+_CONVROT_LARGE_MODE_CHOICES = ["none", "w8a16", "w8a8"]
+_CONVROT_FIELDS = {
+    "base_compute",
+    "convrot_group_size",
+    "convrot_hadamard",
+    "convrot_scope",
+    "convrot_weight_source",
+    "convrot_prequant_path",
+    "convrot_min_in_features",
+    "convrot_largest_in_features_only",
+    "convrot_large_layer_mode",
+    "convrot_large_min_in_features",
+}
 
 # Curated to exactly what library/training/optimizers.py::get_optimizer and
 # library/training/schedulers.py::get_scheduler_fix accept. Keep in sync with
@@ -129,6 +151,11 @@ _SAMPLE_DECODE_INLINE_CHOICES = ["auto", "true", "false"]
 _SELECT_OPTIONS: dict[str, list[str]] = {
     "attn_mode": _ATTN_MODES,
     "v100_flash_stability": ["off", "hybrid", "safe"],
+    "base_compute": _BASE_COMPUTE_CHOICES,
+    "convrot_hadamard": _CONVROT_HADAMARD_CHOICES,
+    "convrot_scope": _CONVROT_SCOPE_CHOICES,
+    "convrot_weight_source": _CONVROT_WEIGHT_SOURCE_CHOICES,
+    "convrot_large_layer_mode": _CONVROT_LARGE_MODE_CHOICES,
     "optimizer_type": [
         "AdamW",
         "CAME",
@@ -236,6 +263,7 @@ _GROUPS = {
     "Performance": {
         "attn_mode",
         "v100_flash_stability",
+        *_CONVROT_FIELDS,
         "debug_finite_checks",
         "gradient_checkpointing",
         "unsloth_offload_checkpointing",
@@ -296,7 +324,7 @@ _VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats
 # Most inherited fields are intentionally read-only in the WebUI. Preview decode
 # timing is safe to override per variant, and save_variant_config persists that
 # choice in the user overlay without touching base.toml.
-_EDITABLE_INHERITED_KEYS = {"sample_decode_inline"}
+_EDITABLE_INHERITED_KEYS = {"sample_decode_inline", *_CONVROT_FIELDS}
 
 # Resume & Warm-start defaults. These keys are NOT in base.toml (which is
 # overwritten by `make update`), so merged_gui_variant_preset injects them with
@@ -326,6 +354,7 @@ def _strip_neutral_resume_defaults(data: dict) -> dict:
 
 
 _BASIC = {
+    "base_compute",
     "learning_rate",
     "max_train_epochs",
     "save_every_n_epochs",
@@ -1068,6 +1097,76 @@ def validate_config(data: dict) -> list[str]:
         )
         if not valid:
             errors.append("sample_decode_inline must be auto, true, or false")
+    if "base_compute" in data:
+        value = str(data["base_compute"] or "").strip().lower()
+        if value not in _BASE_COMPUTE_CHOICES:
+            errors.append(
+                "base_compute must be bf16, w8a16_convrot, or w8a8_convrot"
+            )
+    if "convrot_group_size" in data:
+        value = data["convrot_group_size"]
+        if type(value) is not int or value not in {64, 256, 1024}:
+            errors.append("convrot_group_size must be 64, 256, or 1024")
+    if "convrot_hadamard" in data:
+        value = str(data["convrot_hadamard"] or "").strip().lower()
+        if value not in _CONVROT_HADAMARD_CHOICES:
+            errors.append("convrot_hadamard must be sylvester or regular")
+    if "convrot_scope" in data:
+        try:
+            from library.runtime.convrot.scope import selected_convrot_modules
+
+            selected_convrot_modules(str(data["convrot_scope"] or ""))
+        except ValueError as exc:
+            errors.append(str(exc).replace("int8 linear", "ConvRot"))
+    if "convrot_weight_source" in data or "convrot_prequant_path" in data:
+        source = str(
+            data.get("convrot_weight_source") or "online_from_bf16"
+        ).strip().lower()
+        if source not in _CONVROT_WEIGHT_SOURCE_CHOICES:
+            errors.append(
+                "convrot_weight_source must be online_from_bf16 or prequant_checkpoint"
+            )
+        prequant_path = str(data.get("convrot_prequant_path") or "").strip()
+        if source == "prequant_checkpoint" and not prequant_path:
+            errors.append(
+                "convrot_prequant_path is required for prequant_checkpoint"
+            )
+        if source == "online_from_bf16" and prequant_path:
+            errors.append(
+                "convrot_prequant_path is only valid with prequant_checkpoint"
+            )
+    if "convrot_min_in_features" in data:
+        value = data["convrot_min_in_features"]
+        if type(value) is not int or value < 0:
+            errors.append("convrot_min_in_features must be a non-negative integer")
+    if (
+        "convrot_large_layer_mode" in data
+        or "convrot_large_min_in_features" in data
+    ):
+        mode = str(data.get("convrot_large_layer_mode") or "none").strip().lower()
+        threshold = data.get("convrot_large_min_in_features", 0)
+        if mode not in {
+            "none",
+            "w8a16",
+            "w8a8",
+            "w8a16_convrot",
+            "w8a8_convrot",
+        }:
+            errors.append(
+                "convrot_large_layer_mode must be none, w8a16, or w8a8"
+            )
+        if type(threshold) is not int or threshold < 0:
+            errors.append(
+                "convrot_large_min_in_features must be a non-negative integer"
+            )
+        elif mode in {"none", "off", ""} and threshold > 0:
+            errors.append(
+                "convrot_large_min_in_features requires convrot_large_layer_mode"
+            )
+        elif mode not in {"none", "off", ""} and threshold <= 0:
+            errors.append(
+                "convrot_large_layer_mode requires convrot_large_min_in_features > 0"
+            )
     if data.get("use_lokr") is True and data.get("use_timestep_mask") is True:
         errors.append(
             "use_timestep_mask is not supported by LoKr; set it to false"

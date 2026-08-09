@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
 import toml
 
 from library.anima.training import add_anima_training_arguments
@@ -357,3 +358,99 @@ def test_piecewise_constant_still_offered():
     name-acceptance loop above. This just pins that it remains offered (so
     the WebUI dropdown stays in sync with what the trainer accepts)."""
     assert "piecewise_constant" in _SELECT_OPTIONS["lr_scheduler"]
+
+
+def test_convrot_fields_are_editable_and_grouped_for_webui():
+    result = config_service.build_merged_config("lora", "default", lang="en")
+    fields = {field["key"]: field for field in result["fields"]}
+    expected = {
+        "base_compute",
+        "convrot_group_size",
+        "convrot_hadamard",
+        "convrot_scope",
+        "convrot_weight_source",
+        "convrot_prequant_path",
+        "convrot_min_in_features",
+        "convrot_largest_in_features_only",
+        "convrot_large_layer_mode",
+        "convrot_large_min_in_features",
+    }
+
+    assert expected <= fields.keys()
+    assert {fields[key]["group"] for key in expected} == {"Performance"}
+    assert all(fields[key]["read_only"] is False for key in expected)
+    assert fields["base_compute"]["options"] == [
+        "bf16",
+        "w8a16_convrot",
+        "w8a8_convrot",
+    ]
+    assert fields["convrot_group_size"]["field_type"] == "int"
+    assert fields["convrot_large_layer_mode"]["options"] == [
+        "none",
+        "w8a16",
+        "w8a8",
+    ]
+    assert all(fields[key]["description"] for key in expected)
+
+
+def test_convrot_vram_profile_is_discoverable_and_resolves() -> None:
+    assert "lora-convrot-vram" in config_service.list_gui_variants("lora")
+
+    result = config_service.build_merged_config(
+        "lora-convrot-vram", "default", lang="en"
+    )
+    fields = {field["key"]: field for field in result["fields"]}
+    assert fields["base_compute"]["value"] == "w8a16_convrot"
+    assert fields["convrot_scope"]["value"] == "all"
+    assert fields["convrot_group_size"]["value"] == 256
+    assert fields["base_compute"]["origin"] == "method"
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        ({"base_compute": "int8"}, "base_compute must be"),
+        ({"convrot_group_size": 128}, "convrot_group_size must be"),
+        ({"convrot_scope": "decoder"}, "unknown ConvRot scope"),
+        (
+            {"convrot_weight_source": "prequant_checkpoint"},
+            "convrot_prequant_path is required",
+        ),
+        (
+            {"convrot_prequant_path": "weights.safetensors"},
+            "convrot_prequant_path is only valid",
+        ),
+        (
+            {
+                "convrot_large_layer_mode": "w8a8",
+                "convrot_large_min_in_features": 0,
+            },
+            "convrot_large_layer_mode requires",
+        ),
+        (
+            {
+                "convrot_large_layer_mode": "none",
+                "convrot_large_min_in_features": 4096,
+            },
+            "convrot_large_min_in_features requires",
+        ),
+    ],
+)
+def test_convrot_config_validation_rejects_invalid_combinations(config, message):
+    assert any(message in error for error in validate_config(config))
+
+
+def test_convrot_config_validation_accepts_supported_profile():
+    assert validate_config(
+        {
+            "base_compute": "w8a16_convrot",
+            "convrot_group_size": 64,
+            "convrot_hadamard": "regular",
+            "convrot_scope": "mlp,attention_out",
+            "convrot_weight_source": "online_from_bf16",
+            "convrot_prequant_path": "",
+            "convrot_min_in_features": 0,
+            "convrot_large_layer_mode": "none",
+            "convrot_large_min_in_features": 0,
+        }
+    ) == []

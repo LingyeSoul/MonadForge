@@ -84,6 +84,27 @@ def scan_non_bakeable_keys(weights_sd: dict) -> dict[str, int]:
     return found
 
 
+def read_adapter_metadata(adapter: Path) -> dict[str, str]:
+    """Read safetensors metadata without loading adapter tensors."""
+    if adapter.suffix.lower() != ".safetensors":
+        return {}
+    from safetensors import safe_open
+
+    with safe_open(str(adapter), framework="pt") as handle:
+        return dict(handle.metadata() or {})
+
+
+def scan_non_bakeable_metadata(metadata: dict[str, str]) -> dict[str, int]:
+    """Return runtime base modes that cannot be reproduced by a plain bake."""
+    from library.runtime.convrot.metadata import metadata_indicates_convrot
+
+    if metadata_indicates_convrot(metadata):
+        return {
+            "ConvRot base_compute (requires a dedicated dequantize-and-fold path)": 1
+        }
+    return {}
+
+
 def _load_adapter_state_dict(adapter: Path) -> dict:
     """Load adapter tensors without executing pickled user code."""
 
@@ -127,8 +148,10 @@ def merge_adapter_into_dit(
 
     logger.info(f"adapter: {adapter}")
 
+    metadata = read_adapter_metadata(adapter)
     weights_sd = _load_adapter_state_dict(adapter)
     non_bakeable = scan_non_bakeable_keys(weights_sd)
+    non_bakeable.update(scan_non_bakeable_metadata(metadata))
     if non_bakeable:
         parts = [f"{count} {kind}" for kind, count in non_bakeable.items()]
         msg = "Non-bakeable keys detected: " + ", ".join(parts) + "."

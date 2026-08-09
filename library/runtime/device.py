@@ -33,6 +33,36 @@ def synchronize_device(device: Optional[Union[str, torch.device]]):
         torch.cuda.synchronize()
 
 
+def is_weight_swap_excluded(module: nn.Module) -> bool:
+    """Return whether ``module.weight`` has no movable backing storage."""
+    if bool(getattr(module, "_convrot_weight_freed", False)):
+        return True
+    weight = getattr(module, "weight", None)
+    if weight is None:
+        return False
+    device = getattr(getattr(weight, "data", weight), "device", None)
+    return getattr(device, "type", None) == "meta"
+
+
+def should_move_weight_to_device(
+    module: nn.Module,
+    device: torch.device,
+    *,
+    include_trainable: bool = True,
+) -> bool:
+    weight = getattr(module, "weight", None)
+    if weight is None or is_weight_swap_excluded(module):
+        return False
+    target_device = torch.device(device)
+    if (
+        not include_trainable
+        and target_device.type == "cpu"
+        and getattr(weight, "requires_grad", False)
+    ):
+        return False
+    return True
+
+
 def weighs_to_device(
     layer: nn.Module, device: torch.device, *, include_trainable: bool = True
 ):
@@ -43,9 +73,9 @@ def weighs_to_device(
     outside the offloader; swap preparation passes ``include_trainable=False``.
     """
     for module in layer.modules():
-        if hasattr(module, "weight") and module.weight is not None:
-            if not include_trainable and module.weight.requires_grad:
-                continue
+        if should_move_weight_to_device(
+            module, device, include_trainable=include_trainable
+        ):
             module.weight.data = module.weight.data.to(device, non_blocking=True)
 
 

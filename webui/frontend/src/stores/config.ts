@@ -85,7 +85,10 @@ export const useConfigStore = defineStore('config', () => {
     const lang = appStore.language
     const labels = _GROUP_LABELS[lang] ?? _GROUP_LABELS.en
     const groups: Record<string, FieldMeta[]> = {}
+    const convrotActive = String(getFieldValue('base_compute') ?? 'bf16') !== 'bf16'
+    const convrotEdited = Object.keys(editedValues.value).some(key => key.startsWith('convrot_'))
     for (const f of advancedFields.value) {
+      if (!convrotActive && !convrotEdited && f.key.startsWith('convrot_')) continue
       const raw = f.group || 'Other'
       // Prefer the i18n catalog (cfgGroup*) for groups that have a message key
       // (Other, Resume & Warm-start); fall back to the language label table,

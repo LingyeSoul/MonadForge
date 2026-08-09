@@ -7,9 +7,11 @@ import torch.nn as nn
 
 from library.runtime.device import (
     clean_memory_on_device,
+    is_weight_swap_excluded,
     synchronize_device,
     weighs_to_device,
 )
+from library.runtime.block_swap_payload import set_block_swap_payload_placement
 
 
 def swap_weight_devices_cuda(
@@ -22,9 +24,12 @@ def swap_weight_devices_cuda(
     modules_to_cpu = {k: v for k, v in layer_to_cpu.named_modules()}
     for module_to_cuda_name, module_to_cuda in layer_to_cuda.named_modules():
         if hasattr(module_to_cuda, "weight") and module_to_cuda.weight is not None:
+            if is_weight_swap_excluded(module_to_cuda):
+                continue
             module_to_cpu = modules_to_cpu.get(module_to_cuda_name, None)
             if (
                 module_to_cpu is not None
+                and not is_weight_swap_excluded(module_to_cpu)
                 and module_to_cpu.weight.shape == module_to_cuda.weight.shape
             ):
                 # Adapter/LoRA parameters are trainable and must remain on the
@@ -89,8 +94,10 @@ def swap_weight_devices_no_cuda(
         if (
             hasattr(module_to_cpu, "weight")
             and module_to_cpu.weight is not None
+            and not is_weight_swap_excluded(module_to_cpu)
             and hasattr(module_to_cuda, "weight")
             and module_to_cuda.weight is not None
+            and not is_weight_swap_excluded(module_to_cuda)
             and not module_to_cpu.weight.requires_grad
             and not module_to_cuda.weight.requires_grad
         ):
@@ -319,6 +326,9 @@ class ModelOffloader(Offloader):
             print("Prepare block devices before forward")
 
         self.wait_for_all()
+
+        for block in blocks:
+            set_block_swap_payload_placement(block, active=True)
 
         for b in blocks[0 : self.num_blocks - self.blocks_to_swap]:
             b.to(self.device)

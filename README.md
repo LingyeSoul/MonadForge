@@ -193,6 +193,7 @@ MonadForge WebUI 提供完整的训练工作流覆盖，从数据准备到模型
 | **实时训练仪表盘** | ✅ 完整 — 损失曲线、LR 曲线、GPU 监控、预览图流 | ❌ 仅基础日志输出 |
 | **双语界面** | ✅ 内置 EN/CN 切换 | ❌ 仅英文 |
 | **训练预览图流** | ✅ WebSocket 实时推送 sample 图片 | ❌ 需手动查看输出目录 |
+| **ConvRot int8 底模训练** | ✅ 实验性 W8A16/W8A8 冻结底模路径，WebUI 配置、数值探针与 block-swap 支持（[说明](docs/experimental/convrot_int8_training.md)） | ❌ |
 | **WD Tagger 集成** | ✅ 内置 timm-based WD 标签器，WebUI 一键打标 | ❌ 仅命令行 |
 | **ControlNet 预处理** | ✅ 内置 canny/depth/pose 预处理与数据集生成 | ❌ 实验性 / 缺失 |
 | **蒸馏 UI** | ✅ 完整的 Modulation Guidance 蒸馏配置界面 | ❌ 仅命令行 |
