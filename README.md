@@ -1,4 +1,4 @@
-# MonadForge
+<h1 align="center">太初玄鼎 · MonadForge</h1>
 
 <p align="center">
   <img src="webui/frontend/public/logo.svg" alt="MonadForge" width="120">
