@@ -721,10 +721,11 @@ async function savePaths() {
 async function fetchRuns(selectNewest: boolean) {
   runsLoading.value = true
   try {
-    const qs = new URLSearchParams()
-    if (paths.source) qs.set('source', paths.source)
-    const url = '/api/preprocess/runs' + (qs.toString() ? '?' + qs : '')
-    const res = await fetch(url)
+    // Runs are shared across training methods and source directories. Do not
+    // filter by the currently selected run's source here: a persisted run can
+    // belong to an older dataset, and filtering by it would hide a newly
+    // completed run until the user manually cleared browser storage.
+    const res = await fetch('/api/preprocess/runs')
     if (!res.ok) return
     const data = await res.json()
     runs.value = Array.isArray(data) ? data : []
