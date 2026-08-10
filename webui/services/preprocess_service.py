@@ -522,9 +522,18 @@ def get_status(
 def _run_roots(
     variant: str | None = None, preset: str | None = None
 ) -> list[Path]:
-    """Resolve canonical ``post_image_dataset/runs`` roots without side effects."""
+    """Resolve canonical run roots independently of training context.
 
-    paths = get_path_overrides(preset=preset or "default", variant=variant)
+    ``variant`` and ``preset`` remain accepted for API compatibility with older
+    WebUI clients, but they must not affect discovery of a preprocessing run.
+    A manifest is a source/config identity, not a training-method identity. The
+    global path layer is still consulted so installations that moved the
+    dataset root continue to be discoverable.
+    """
+
+    # Deliberately ignore the method/preset arguments here. They are only valid
+    # for legacy fixed-directory fallback in ``get_status``/``get_paths``.
+    paths = get_path_overrides(preset="default", variant=None)
     candidates: list[Path] = []
     configured_root = os.environ.get("POST_IMAGE_DATASET")
     if configured_root:
@@ -596,7 +605,7 @@ def list_runs(
     source_abs = _resolve(source).resolve() if source else None
     found: list[dict] = []
     seen: set[Path] = set()
-    for root in _run_roots(variant=variant, preset=preset):
+    for root in _run_roots():
         if not root.is_dir():
             continue
         for manifest in root.glob("*/*/manifest.json"):
