@@ -95,6 +95,10 @@ class OutputLayout:
         return self.root / f"{self.name}-interrupted-state"
 
     @property
+    def rolling_state(self) -> Path:
+        return self.root / f"{self.name}-rolling-state"
+
+    @property
     def checkpoint_state(self) -> Path:
         return self.root / f"{self.name}-checkpoint-state"
 

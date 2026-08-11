@@ -40,6 +40,7 @@ STEP_DIFFUSERS_DIR_NAME = "{}-step{:08d}"
 CHECKPOINT_STATE_NAME = "{}-checkpoint-state"
 CHECKPOINT_FILE_NAME = "{}-checkpoint"
 INTERRUPTED_STATE_NAME = "{}-interrupted-state"
+ROLLING_STATE_NAME = "{}-rolling-state"
 
 
 def default_if_none(value, default):
@@ -207,6 +208,11 @@ def get_interrupted_state_dir(args: argparse.Namespace) -> str:
     return os.path.join(args.output_dir, INTERRUPTED_STATE_NAME.format(model_name))
 
 
+def get_rolling_state_dir(args: argparse.Namespace) -> str:
+    model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+    return os.path.join(args.output_dir, ROLLING_STATE_NAME.format(model_name))
+
+
 def get_checkpoint_ckpt_name(args: argparse.Namespace, ext: str):
     model_name = default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
     return CHECKPOINT_FILE_NAME.format(model_name) + ext
@@ -219,6 +225,14 @@ def save_checkpoint_state(args: argparse.Namespace, accelerator):
     logger.info(f"saving checkpoint state to {state_dir} (overwriting)")
     os.makedirs(args.output_dir, exist_ok=True)
 
+    _atomic_accelerator_save_state(accelerator, state_dir)
+
+
+def save_rolling_state(args: argparse.Namespace, accelerator):
+    """Publish the latest complete optimizer-boundary state atomically."""
+    state_dir = get_rolling_state_dir(args)
+    logger.info("saving rolling resume state to %s", state_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
     _atomic_accelerator_save_state(accelerator, state_dir)
 
 
@@ -645,6 +659,10 @@ class CheckpointSaver:
                 default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
             )
         ]
+        rolling_suffix = ROLLING_STATE_NAME.format(
+            default_if_none(args.output_name, DEFAULT_LAST_OUTPUT_NAME)
+        )
+        suffixes.append(rolling_suffix)
         if getattr(args, "checkpointing_epochs", None):
             suffixes.append(
                 CHECKPOINT_STATE_NAME.format(
@@ -804,6 +822,14 @@ class CheckpointSaver:
             ckpt_name = get_checkpoint_ckpt_name(args, "." + args.save_model_as)
             self.save(ckpt_name, network, global_step, epoch_no)
         save_checkpoint_state(args, accelerator)
+
+    def maybe_save_rolling_state(self, global_step: int) -> None:
+        """Save a rolling state after a committed optimizer/global step."""
+        cadence = int(getattr(self.args, "resume_state_every_n_steps", 50) or 0)
+        if cadence <= 0 or global_step <= 0 or global_step % cadence:
+            return
+        self.accelerator.wait_for_everyone()
+        save_rolling_state(self.args, self.accelerator)
 
     def cleanup_resumable(self) -> None:
         """At training end, remove the resumable checkpoint state dir + ckpt

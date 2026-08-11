@@ -1336,7 +1336,7 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
     # The latter two remain gated by their historical save flags to avoid
     # surprising a user who intentionally disabled auto-resume; interrupted
     # states are always considered because they represent an explicit stop.
-    suffixes = [f"{safe_name}-interrupted-state"]
+    suffixes = [f"{safe_name}-interrupted-state", f"{safe_name}-rolling-state"]
     if merged.get("checkpointing_epochs"):
         suffixes.append(f"{safe_name}-checkpoint-state")
     if merged.get("save_state_on_train_end"):
@@ -1350,6 +1350,7 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
                 suffixes.append(suffix)
 
     seen: set[Path] = set()
+    eligible: list[tuple[int, int, int, Path]] = []
     for root in roots:
         for suffix in suffixes:
             state_dir = root / suffix
@@ -1364,8 +1365,17 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
             if expected_dataset and data.get("dataset_signature") not in (None, expected_dataset):
                 continue
             step = int(data.get("global_step", data.get("current_step", 0)) or 0)
-            return state_dir, step
-    return None
+            # Legacy states predate an explicit committed-step schema; retain
+            # their historical suffix order because their cursor may not match
+            # the binary payload. New schema states are ordered by max step.
+            modern = int(data.get("schema_version", 1) or 1) >= 2 and "global_step" in data
+            eligible.append((step, 0 if modern else -1, suffixes.index(suffix), state_dir))
+    if not eligible:
+        return None
+    step, modern, priority, state_dir = min(
+        eligible, key=lambda item: ((-item[0], item[2], str(item[3])) if item[1] >= 0 else (0, item[2], str(item[3])))
+    )
+    return state_dir, step
 
 
 def prelaunch_check(

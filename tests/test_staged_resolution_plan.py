@@ -282,6 +282,62 @@ def test_staged_task_argument_parser_rejects_browser_overrides():
         _profile_arg(["default", "--network_dim", "128"], allow_training_flags=True)
 
 
+def test_staged_resume_uses_pinned_config_without_recompiling_profile(
+    monkeypatch, tmp_path
+):
+    from scripts.tasks import staged_resolution as task
+
+    snapshot = tmp_path / "config.snapshot.toml"
+    snapshot.write_text('output_name = "pinned"\n', encoding="utf-8")
+    state = tmp_path / "rolling-state"
+    progress = tmp_path / "progress.jsonl"
+    samples = tmp_path / "sample"
+    launched: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(
+        task,
+        "load_profile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resume must not reload a mutable profile")
+        ),
+    )
+    monkeypatch.setattr(
+        task,
+        "compile_runtime_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("resume must not recompile a mutable profile")
+        ),
+    )
+    monkeypatch.setattr(task, "accelerate_launch", lambda *args: launched.append(args))
+
+    task.cmd_staged_train(
+        [
+            "default",
+            "--config_file",
+            str(snapshot),
+            "--resume",
+            str(state),
+            "--progress_jsonl",
+            str(progress),
+            "--sample_dir",
+            str(samples),
+        ]
+    )
+
+    assert launched == [
+        (
+            "--config_file",
+            str(snapshot),
+            "--resume",
+            str(state),
+            "--progress_jsonl",
+            str(progress),
+            "--sample_dir",
+            str(samples),
+        )
+    ]
+
+
 def test_staged_preprocess_uses_lowres_matching_and_caption_variant_flags(
     monkeypatch, tmp_path
 ):
@@ -402,4 +458,40 @@ def test_cross_origin_staged_action_is_rejected_before_handler(monkeypatch):
         json={"version": 1},
     )
     assert allowed.status_code == 200
+    assert called == 1
+
+
+def test_same_origin_mutation_allows_runtime_webui_port(monkeypatch):
+    import library.config.io as config_io
+    from webui import server
+    from webui.api import staged_resolution as api
+
+    called = 0
+
+    async def fake_start(_name: str, _command: str):
+        nonlocal called
+        called += 1
+        return {"task_id": "test-task"}
+
+    monkeypatch.setattr(config_io, "migrate_custom_configs", lambda: None)
+    monkeypatch.setattr(api, "_start_profile_task", fake_start)
+    client = TestClient(server.create_app())
+    runtime_origin = "http://127.0.0.1:7460"
+
+    allowed = client.post(
+        "/api/staged-resolution/profiles/default/preprocess",
+        headers={"Host": "127.0.0.1:7460", "Origin": runtime_origin},
+        json={"version": 1},
+    )
+
+    assert allowed.status_code == 200
+    assert called == 1
+
+    rejected = client.post(
+        "/api/staged-resolution/profiles/default/preprocess",
+        headers={"Host": "127.0.0.1:7460", "Origin": "http://127.0.0.1:7459"},
+        json={"version": 1},
+    )
+
+    assert rejected.status_code == 403
     assert called == 1

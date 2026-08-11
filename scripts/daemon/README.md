@@ -102,10 +102,23 @@ but hold the queue paused, omitted/`null` → leave the gate as-is.
 
 Response: `201 {"job_id": "20260611-142233-a1b2c3", "state": "queued"}`.
 
-### `GET /jobs` — list
+### `GET /jobs` — list and history
 
-Returns `[job, …]` (full records, submission order). Each job has `state` ∈
-`queued | running | done | error | stopped`.
+Returns historical and active records; terminal job directories are retained
+until explicitly deleted. With no query string the response remains a list for
+older clients. Add query parameters to receive `{jobs, total, offset, limit}`:
+
+| param | meaning |
+|-------|---------|
+| `state` / `status` | one or more comma-separated states: `queued`, `running`, `done`, `error`, `stopped` |
+| `resumable` | only jobs with a complete signature-matched recovery state (`true`/`false`) |
+| `before` / `after` | submission-time Unix timestamp bounds |
+| `offset` / `limit` | zero-based pagination; `limit` defaults to 100 |
+
+Each job also exposes `recovery_state`, `recovery_step`, `target_steps`,
+`target_epochs`, `stop_requested`, `forced_stop`, and `legacy`. A legacy job was
+created before immutable config snapshots existed and needs manual config/data
+verification before resuming.
 
 ### `GET /jobs/{id}` — status
 
@@ -134,10 +147,30 @@ curve at 1-in-50 resolution plus any warnings:
 GET /jobs/{id}/progress?events=step,log&every_nth=50
 ```
 
-### `POST /jobs/{id}/stop` — abort
+### `POST /jobs/{id}/stop` — cancel
 
-Stops a running or queued job (tree-kills the process). Returns `{job_id, state}`.
-The Python client's `stop()` with no id resolves the active job from `/health`.
+The endpoint is idempotent. Queued jobs become `stopped` immediately. Training
+jobs first receive a cooperative stop request and save an interrupted state at a
+complete optimizer boundary; only after `STOP_GRACE_SECONDS` does the daemon
+tree-kill the process and persist `forced_stop=true`. The Python client's
+`stop()` with no id resolves the active job from `/health`.
+
+### `POST /jobs/{id}/resume` — continue training
+
+Creates a **new** queued training job from the newest complete state among
+`interrupted-state`, rolling state, checkpoint state, and compatible legacy
+state directories. Selection is by committed `global_step`, then state type as
+a tie-break. Config and dataset signatures must match when present. A missing
+state, signature mismatch, or an already-reached `target_steps`/`target_epochs`
+returns HTTP 409 and does not start a fresh run. The original job and its logs
+remain intact.
+
+### `DELETE /jobs/{id}` — delete history
+
+Only terminal jobs may be deleted. This removes that job's `job.json`,
+`stdout.log`, `progress.jsonl`, and `sample/` metadata. Model weights and all
+training state directories under `output/ckpt` are outside the job directory and
+are never removed.
 
 ### `POST /queue/pause` · `POST /queue/start`
 
@@ -166,7 +199,12 @@ false — has died (a bug worth a report).
 
 ### `POST /shutdown`
 
-`{"kill_jobs": true}` → stop the daemon, optionally killing the running job.
+Use `{"mode": "detach"}` to stop the daemon while leaving live and queued jobs
+for a replacement daemon to adopt, `{"mode": "cooperative-stop"}` to request
+checkpoint-capable stopping before exit, or `{"mode": "force"}` to explicitly
+tree-kill the running process (`forced_stop=true`, latest state not guaranteed).
+The old `kill_jobs` boolean is accepted as an alias (`true` = `force`, `false` =
+`detach`).
 
 ## Python client (`scripts.daemon.client`)
 

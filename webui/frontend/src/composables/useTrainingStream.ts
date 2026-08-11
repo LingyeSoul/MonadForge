@@ -16,6 +16,7 @@ interface WsMessage {
   epoch?: number | null
   prompt?: string | null
   ts?: number | null
+  attempt_id?: string | null
 }
 
 export function useTrainingStream(taskId: string) {
@@ -140,6 +141,7 @@ export function useTrainingStream(taskId: string) {
           // A new preview image landed in the training output dir. Append
           // to the gallery (the store dedupes by path).
           store.recordSample({
+            attempt_id: msg.attempt_id ?? null,
             path: msg.path,
             step: msg.step ?? null,
             epoch: msg.epoch ?? null,

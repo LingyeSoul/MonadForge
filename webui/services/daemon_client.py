@@ -23,6 +23,7 @@ import asyncio
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
@@ -123,7 +124,52 @@ class DaemonClient:
     # ── jobs ───────────────────────────────────────────────────────────
 
     async def list_jobs(self) -> list[dict]:
-        return await self._request("GET", "/jobs")
+        """Return the default job page as a list for legacy callers."""
+        # Reconciliation and queue-position calculation need the complete FIFO
+        # view. The old no-query endpoint capped this at 100 records, which
+        # could hide a current job behind a large terminal history.
+        payload = await self.list_jobs_page(limit=500)
+        return payload["jobs"]
+
+    async def list_jobs_page(
+        self,
+        *,
+        state: str | None = None,
+        resumable: bool | None = None,
+        before: float | None = None,
+        after: float | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+        newest_first: bool = False,
+    ) -> dict:
+        """Return a daemon job page and its exact filtered total."""
+        params: list[str] = []
+        if state:
+            params.append(f"state={urllib.parse.quote(state)}")
+        if resumable is not None:
+            params.append(f"resumable={'true' if resumable else 'false'}")
+        if before is not None:
+            params.append(f"before={before}")
+        if after is not None:
+            params.append(f"after={after}")
+        if offset:
+            params.append(f"offset={int(offset)}")
+        if limit is not None:
+            params.append(f"limit={int(limit)}")
+        if newest_first:
+            params.append("order=desc")
+        path = "/jobs" + ("?" + "&".join(params) if params else "")
+        payload = await self._request("GET", path)
+        if isinstance(payload, dict):
+            jobs = list(payload.get("jobs") or [])
+            return {
+                "jobs": jobs,
+                "total": int(payload.get("total", len(jobs)) or 0),
+                "offset": int(payload.get("offset", offset) or 0),
+                "limit": int(payload.get("limit", limit or len(jobs)) or 0),
+            }
+        jobs = list(payload or [])
+        return {"jobs": jobs, "total": len(jobs), "offset": offset, "limit": limit or len(jobs)}
 
     async def submit_command(
         self,
@@ -132,6 +178,7 @@ class DaemonClient:
         label: str,
         extra_env: Optional[dict] = None,
         chain_train: Optional[dict] = None,
+        config_snapshot: Optional[dict] = None,
         start: bool = True,
     ) -> dict:
         """Enqueue a ``command`` job (a plain ``python <argv>``).
@@ -151,6 +198,8 @@ class DaemonClient:
             body["extra_env"] = extra_env
         if chain_train:
             body["chain_train"] = chain_train
+        if config_snapshot:
+            body["config_snapshot"] = config_snapshot
         return await self._request("POST", "/jobs", body=body)
 
     async def submit_training(
@@ -192,6 +241,46 @@ class DaemonClient:
 
     async def stop(self, job_id: str) -> dict:
         return await self._request("POST", f"/jobs/{job_id}/stop")
+
+    async def resume(self, job_id: str) -> dict:
+        return await self._request("POST", f"/jobs/{job_id}/resume")
+
+    async def list_job_groups_page(
+        self,
+        *,
+        state: str | None = None,
+        resumable: bool | None = None,
+        offset: int = 0,
+        limit: int = 100,
+        newest_first: bool = False,
+    ) -> dict:
+        params: list[str] = [f"offset={int(offset)}", f"limit={int(limit)}"]
+        if state:
+            params.append(f"state={urllib.parse.quote(state)}")
+        if resumable is not None:
+            params.append(f"resumable={'true' if resumable else 'false'}")
+        if newest_first:
+            params.append("order=desc")
+        payload = await self._request("GET", "/job-groups?" + "&".join(params))
+        groups = list((payload or {}).get("groups") or [])
+        return {
+            "groups": groups,
+            "total": int((payload or {}).get("total", len(groups)) or 0),
+            "offset": int((payload or {}).get("offset", offset) or 0),
+            "limit": int((payload or {}).get("limit", limit) or 0),
+        }
+
+    async def get_job_group(self, job_id: str) -> dict:
+        return await self._request("GET", f"/job-groups/{job_id}")
+
+    def get_job_group_sync(self, job_id: str) -> dict:
+        return self._request_sync("GET", f"/job-groups/{job_id}")
+
+    async def delete_job_group(self, job_id: str) -> dict:
+        return await self._request("DELETE", f"/job-groups/{job_id}")
+
+    async def delete(self, job_id: str) -> dict:
+        return await self._request("DELETE", f"/jobs/{job_id}")
 
     def stop_sync(self, job_id: str) -> dict:
         return self._request_sync("POST", f"/jobs/{job_id}/stop")
@@ -235,11 +324,15 @@ class DaemonClient:
     def start_queue_sync(self) -> dict:
         return self._request_sync("POST", "/queue/start")
 
-    async def shutdown(self, *, kill_jobs: bool = True) -> dict:
-        return await self._request("POST", "/shutdown", body={"kill_jobs": kill_jobs})
+    async def shutdown(self, *, kill_jobs: bool = True, mode: str | None = None) -> dict:
+        return await self._request(
+            "POST", "/shutdown", body={"kill_jobs": kill_jobs, "mode": mode}
+        )
 
-    def shutdown_sync(self, *, kill_jobs: bool = True, timeout: float = _DEFAULT_TIMEOUT) -> dict:
-        return self._request_sync("POST", "/shutdown", body={"kill_jobs": kill_jobs}, timeout=timeout)
+    def shutdown_sync(self, *, kill_jobs: bool = True, mode: str | None = None, timeout: float = _DEFAULT_TIMEOUT) -> dict:
+        return self._request_sync(
+            "POST", "/shutdown", body={"kill_jobs": kill_jobs, "mode": mode}, timeout=timeout
+        )
 
 
 # Module-level singleton — the WebUI process talks to one daemon.

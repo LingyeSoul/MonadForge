@@ -3175,6 +3175,8 @@ class AnimaTrainer:
                     pid=os.getpid(),
                     log_dir=resolve_run_log_dir(args),
                     sampling_enabled=sampling_enabled,
+                    config_signature=getattr(args, "config_signature", None),
+                    dataset_signature=getattr(args, "dataset_signature", None),
                 )
                 # Mirror WARNING+ records into the stream so a reader debugging
                 # the run gets them structured instead of buried in tqdm stdout.

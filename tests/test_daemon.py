@@ -83,6 +83,20 @@ def test_job_roundtrip(tmp_path, monkeypatch):
     assert loaded["j1"].overrides == {"network_dim": 16}
 
 
+def test_filtered_history_can_page_newest_first():
+    manager = JobManager.__new__(JobManager)
+    manager._lock = threading.RLock()
+    manager._jobs = {
+        "old": jobs.Job(id="old", method="old", preset="", submitted_at=1.0),
+        "new": jobs.Job(id="new", method="new", preset="", submitted_at=2.0),
+    }
+
+    page, total = manager.list_jobs_filtered(offset=0, limit=1, newest_first=True)
+
+    assert total == 2
+    assert [job.id for job in page] == ["new"]
+
+
 def test_liveness_pid_create_time():
     me = os.getpid()
     ct = proc.create_time(me)
@@ -651,6 +665,293 @@ def test_reconcile_orphan_requeue_adopt(tmp_path, monkeypatch):
     assert "live" in mgr._adopt  # re-attached for monitoring
 
 
+def test_resume_selects_newest_complete_state_with_matching_run_signatures(
+    tmp_path, monkeypatch
+):
+    from library.training.state import build_train_state, write_complete_marker
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    output_dir = tmp_path / "ckpt"
+    output_root = output_dir / "unit"
+    snapshot = tmp_path / "source.snapshot.toml"
+    snapshot.write_text(
+        f'output_dir = "{output_dir.as_posix()}"\n'
+        'output_name = "unit"\n'
+        "max_train_steps = 100\n",
+        encoding="utf-8",
+    )
+
+    def write_state(name, step, config_signature, dataset_signature, *, complete=True):
+        path = output_root / name
+        path.mkdir(parents=True)
+        (path / "train_state.json").write_text(
+            json.dumps(
+                build_train_state(
+                    global_step=step,
+                    config_signature=config_signature,
+                    dataset_signature=dataset_signature,
+                )
+            ),
+            encoding="utf-8",
+        )
+        if complete:
+            write_complete_marker(path)
+        return path
+
+    matching = write_state("unit-rolling-state", 75, "cfg-a", "data-a")
+    write_state("unit-checkpoint-state", 90, "cfg-other", "data-a")
+    write_state("unit-interrupted-state", 95, "cfg-a", "data-a", complete=False)
+
+    source = jobs.Job(
+        id="source",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        config_file=str(snapshot),
+        progress_path=str(tmp_path / "source.progress.jsonl"),
+        target_steps=100,
+    )
+    with open(source.progress_path, "w", encoding="utf-8") as stream:
+        stream.write(
+            json.dumps(
+                {
+                    "ev": "run_start",
+                    "config_signature": "cfg-a",
+                    "dataset_signature": "data-a",
+                }
+            )
+            + "\n"
+        )
+
+    manager = JobManager()
+    manager._jobs[source.id] = source
+    manager._refresh_recovery_metadata(source)
+    resumed = manager.resume_job(source.id)
+
+    assert source.config_signature == "cfg-a"
+    assert source.dataset_signature == "data-a"
+    assert source.recovery_state == str(matching)
+    assert source.recovery_step == 75
+    assert resumed is not None
+    assert resumed.recovery_state == str(matching)
+    assert resumed.recovery_step == 75
+    assert resumed.extra[-2:] == ["--resume", str(matching)]
+    assert resumed.root_job_id == source.id
+    assert resumed.parent_job_id == source.id
+    assert resumed.attempt_index == 1
+    group = manager.job_group(source.id)
+    assert group is not None
+    assert group["id"] == source.id
+    assert group["current_job_id"] == resumed.id
+    assert group["attempt_count"] == 2
+
+    with pytest.raises(ValueError, match="only the latest attempt"):
+        manager.resume_job(source.id)
+
+
+def test_resume_discovers_raw_output_name_inside_safe_output_root(tmp_path, monkeypatch):
+    from library.training.state import build_train_state, write_complete_marker
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    output_dir = tmp_path / "ckpt"
+    output_root = output_dir / "Tlora-_artist"
+    state_dir = output_root / "Tlora-@artist-checkpoint-state"
+    state_dir.mkdir(parents=True)
+    (state_dir / "train_state.json").write_text(
+        json.dumps(
+            build_train_state(
+                global_step=840,
+                config_signature="cfg-special",
+                dataset_signature="data-special",
+            )
+        ),
+        encoding="utf-8",
+    )
+    write_complete_marker(state_dir)
+    snapshot = tmp_path / "special.snapshot.toml"
+    snapshot.write_text(
+        f'output_dir = "{output_dir.as_posix()}"\n'
+        'output_name = "Tlora-@artist"\n'
+        "max_train_epochs = 12\n",
+        encoding="utf-8",
+    )
+    job = jobs.Job(
+        id="special",
+        method="lora-gui",
+        preset="",
+        kind="command",
+        argv=["tasks.py", "lora-gui", "tlora"],
+        state=jobs.STATE_ERROR,
+        config_file=str(snapshot),
+        config_signature="cfg-special",
+        dataset_signature="data-special",
+    )
+
+    candidates = JobManager._state_candidates(job)
+
+    assert candidates == [(840, state_dir)]
+
+
+def test_job_groups_filter_latest_attempt_and_delete_whole_chain(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    manager = JobManager()
+    root = jobs.Job(
+        id="root",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        root_job_id="root",
+        submitted_at=1.0,
+    )
+    child = jobs.Job(
+        id="child",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_DONE,
+        root_job_id="root",
+        parent_job_id="root",
+        attempt_index=1,
+        submitted_at=2.0,
+    )
+    for job in (root, child):
+        manager._jobs[job.id] = job
+        job.persist()
+
+    groups, total = manager.list_job_groups_filtered(
+        state=jobs.STATE_DONE, newest_first=True
+    )
+
+    assert total == 1
+    assert [group["id"] for group in groups] == ["root"]
+    assert groups[0]["current_job_id"] == "child"
+    assert [attempt["job_id"] for attempt in groups[0]["attempts"]] == [
+        "root",
+        "child",
+    ]
+    assert manager.delete_group("child") == ["root", "child"]
+    assert not root.dir.exists()
+    assert not child.dir.exists()
+
+
+def test_job_groups_http_list_get_and_delete_whole_chain(daemon):
+    cl, manager = daemon
+    root = jobs.Job(
+        id="http-root",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        root_job_id="http-root",
+        attempt_index=0,
+        submitted_at=1.0,
+    )
+    child = jobs.Job(
+        id="http-child",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_DONE,
+        root_job_id="http-root",
+        parent_job_id="http-root",
+        attempt_index=1,
+        submitted_at=2.0,
+    )
+    with manager._lock:
+        for job in (root, child):
+            manager._jobs[job.id] = job
+            job.persist()
+
+    page = cl._request("GET", "/job-groups?state=done&offset=0&limit=1")
+    assert page["total"] == 1
+    assert page["offset"] == 0
+    assert page["limit"] == 1
+    assert [group["id"] for group in page["groups"]] == ["http-root"]
+
+    detail = cl.get_job_group("http-child")
+    assert detail["root_job_id"] == "http-root"
+    assert detail["current_job_id"] == "http-child"
+    assert [attempt["job_id"] for attempt in detail["attempts"]] == [
+        "http-root",
+        "http-child",
+    ]
+
+    deleted = cl.delete_job_group("http-child")
+    assert deleted == {
+        "ok": True,
+        "root_job_id": "http-root",
+        "job_ids": ["http-root", "http-child"],
+    }
+    assert manager.get("http-root") is None
+    assert manager.get("http-child") is None
+    assert not root.dir.exists()
+    assert not child.dir.exists()
+
+
+def test_lineage_fields_survive_job_table_reload(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    root = jobs.Job(
+        id="root",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        root_job_id="root",
+        attempt_index=0,
+    )
+    child = jobs.Job(
+        id="child",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_DONE,
+        root_job_id="root",
+        parent_job_id="root",
+        attempt_index=1,
+    )
+    root.persist()
+    child.persist()
+
+    reloaded = jobs.load_all()
+    manager = JobManager()
+    manager._jobs = reloaded
+    group = manager.job_group("child")
+
+    assert group is not None
+    assert group["id"] == "root"
+    assert group["current_job_id"] == "child"
+    assert [attempt["attempt_index"] for attempt in group["attempts"]] == [0, 1]
+    assert reloaded["child"].parent_job_id == "root"
+
+
+def test_resume_rejects_lineage_with_active_attempt(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    manager = JobManager()
+    root = jobs.Job(
+        id="root",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        root_job_id="root",
+        attempt_index=0,
+    )
+    active = jobs.Job(
+        id="active",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_RUNNING,
+        root_job_id="root",
+        parent_job_id="root",
+        attempt_index=1,
+    )
+    manager._jobs = {root.id: root, active.id: active}
+
+    with pytest.raises(ValueError, match="only the latest attempt"):
+        manager.resume_job(root.id)
+    assert manager.resume_job(active.id) is None
+    assert set(manager._jobs) == {"root", "active"}
+
+
 def test_command_job_build_cmd():
     """A `kind="command"` job builds a plain `python <argv>` call (no
     accelerate launch) and merges its extra_env over the inherited env."""
@@ -674,6 +975,58 @@ def test_command_job_build_cmd():
     assert env["PYTHONUNBUFFERED"] == "1"
     # tqdm throttled so stdout.log stays tail-readable (redraws every 10s, not 0.1s)
     assert env["TQDM_MININTERVAL"] == "10"
+
+
+def test_resumed_training_command_uses_immutable_config_snapshot():
+    job = jobs.Job(
+        id="resume-command",
+        method="lora-gui",
+        preset="",
+        kind="command",
+        argv=["tasks.py", "lora-gui", "lokr", "--resume", "/tmp/state"],
+        config_file="/tmp/job/config.snapshot.toml",
+        recovery_state="/tmp/state",
+        progress_path="/tmp/job/progress.jsonl",
+        sample_dir="/tmp/job/sample",
+    )
+    mgr = JobManager.__new__(JobManager)
+
+    cmd, _env = mgr._build_cmd(job)
+
+    assert cmd.count("--config_file") == 1
+    assert cmd[cmd.index("--config_file") + 1] == job.config_file
+    assert cmd.count("--resume") == 1
+
+
+def test_resumed_staged_training_forwards_snapshot_resume_and_daemon_paths():
+    """Staged training must use the pinned runtime config on resume.
+
+    The command wrapper accepts only the profile plus daemon-injected
+    ``--config_file``/``--resume``/telemetry paths.  This guards the recovery
+    path against silently recompiling a profile that may have changed after the
+    original job was submitted.
+    """
+    job = jobs.Job(
+        id="resume-staged",
+        method="staged-train",
+        preset="",
+        kind="command",
+        argv=["tasks.py", "staged-train", "default", "--resume", "/tmp/state"],
+        config_file="/tmp/job/config.snapshot.toml",
+        recovery_state="/tmp/state",
+        progress_path="/tmp/job/progress.jsonl",
+        sample_dir="/tmp/job/sample",
+    )
+    mgr = JobManager.__new__(JobManager)
+
+    cmd, _env = mgr._build_cmd(job)
+
+    assert cmd.count("--config_file") == 1
+    assert cmd[cmd.index("--config_file") + 1] == job.config_file
+    assert cmd.count("--resume") == 1
+    assert cmd[cmd.index("--resume") + 1] == "/tmp/state"
+    assert cmd[cmd.index("--progress_jsonl") + 1] == job.progress_path
+    assert cmd[cmd.index("--sample_dir") + 1] == job.sample_dir
 
 
 def test_command_job_loads_with_train_default():

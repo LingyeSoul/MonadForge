@@ -40,6 +40,7 @@ function renderDetailHead() {
           <span class="badge">${esc(detail.method || '—')}</span>
           <span class="badge">PRESET ${esc(detail.preset || '—')}</span>
           <span class="badge ${detail.state === 'running' ? 'volt' : 'gray'}">${st.label}</span>
+          ${detail.attempt_count > 1 ? `<span class="badge gray">已恢复 ${detail.attempt_count - 1} 次</span>` : ''}
         </div>
         <div class="badge-row">
           ${['jsonl', 'tensorboard', 'snapshot', 'stdout'].filter(k => detail.sources[k]).map(k => `<span class="badge gray">${k.toUpperCase()}</span>`).join('')}
@@ -103,6 +104,8 @@ function renderOverview() {
   ];
   const meta = [
     ['job id', detail.id],
+    ['current job', detail.current_job_id || detail.id],
+    ['attempts', String(detail.attempt_count || 1)],
     ['kind', detail.kind],
     ['state', detail.state + (detail.stop_requested ? ' (stop requested)' : '')],
     ['started', fmtTs(detail.started_at)],

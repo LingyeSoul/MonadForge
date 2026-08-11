@@ -32,6 +32,11 @@ def _profile_arg(
 
     forwarded: list[str] = []
     allowed = {"--progress_jsonl", "--sample_dir"}
+    if allow_training_flags:
+        # Resume jobs receive an immutable config snapshot and explicit state
+        # path from the daemon.  Keep these flags out of preprocessing, which
+        # has no training-state contract.
+        allowed |= {"--config_file", "--resume"}
     while args:
         flag = args.pop(0)
         if flag not in allowed or not args:
@@ -145,8 +150,27 @@ def cmd_staged_preprocess(extra):
 def cmd_staged_train(extra):
     """Train from a validated, generated full config for a saved profile."""
     name, forwarded = _profile_arg(extra, allow_training_flags=True)
-    plan = load_profile(name)
-    require_ready(name, plan)
-    config_path = compile_runtime_config(name, plan)
+    config_override = None
+    clean_forwarded: list[str] = []
+    index = 0
+    while index < len(forwarded):
+        token = forwarded[index]
+        if token == "--config_file" and index + 1 < len(forwarded):
+            config_override = forwarded[index + 1]
+            index += 2
+            continue
+        clean_forwarded.append(token)
+        if token in {"--resume", "--progress_jsonl", "--sample_dir"} and index + 1 < len(forwarded):
+            clean_forwarded.append(forwarded[index + 1])
+            index += 2
+            continue
+        index += 1
+
+    if config_override:
+        config_path = config_override
+    else:
+        plan = load_profile(name)
+        require_ready(name, plan)
+        config_path = compile_runtime_config(name, plan)
     print(f"[staged-resolution] training profile={name} config={config_path}")
-    accelerate_launch("--config_file", str(config_path), *forwarded)
+    accelerate_launch("--config_file", str(config_path), *clean_forwarded)

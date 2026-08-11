@@ -20,6 +20,8 @@ import re
 import shutil
 import threading
 import time
+import json
+from pathlib import Path
 from typing import Optional
 
 import toml
@@ -116,16 +118,26 @@ class JobManager:
         self._reconcile()
         self._worker.start()
 
-    def shutdown(self, *, kill_jobs: bool) -> None:
+    def shutdown(self, *, kill_jobs: bool = False, mode: str | None = None) -> None:
         """Stop accepting work and unblock the worker. With ``kill_jobs`` the
         active job tree is torn down and the GPU freed before the daemon exits.
         """
+        # ``mode`` is the durable public contract.  Keep kill_jobs as a
+        # backwards-compatible alias used by older clients.
+        mode = mode or ("force" if kill_jobs else "detach")
+        if mode not in {"detach", "cooperative-stop", "force"}:
+            raise ValueError("shutdown mode must be detach, cooperative-stop, or force")
         with self._lock:
             self._stopping = True
-            self._kill_on_shutdown = kill_jobs
+            self._kill_on_shutdown = mode == "force"
             current = self._current_running_locked()
-        if kill_jobs and current is not None:
+        if current is not None and mode == "cooperative-stop":
+            self.stop(current.id)
+        elif current is not None and mode == "force":
             current.stop_requested = True
+            current.forced_stop = True
+            current.status_detail = "force shutdown requested; latest checkpoint not guaranteed"
+            current.persist()
             self._kill_job_tree(current)
         self._run_gate.set()  # release a worker parked on a paused queue
         self._queue.put(_SENTINEL)  # wake the worker so it can exit
@@ -141,6 +153,9 @@ class JobManager:
         overrides: Optional[dict] = None,
         extra: Optional[list[str]] = None,
         from_chain: bool = False,
+        root_job_id: Optional[str] = None,
+        parent_job_id: Optional[str] = None,
+        attempt_index: int = 0,
         start: Optional[bool] = None,
     ) -> Job:
         job = Job(
@@ -151,6 +166,9 @@ class JobManager:
             overrides=dict(overrides or {}),
             extra=list(extra or []),
             from_chain=from_chain,
+            root_job_id=root_job_id,
+            parent_job_id=parent_job_id,
+            attempt_index=attempt_index,
         )
         self._attach_config_file(
             job, config_snapshot=config_snapshot, config_file=config_file
@@ -166,6 +184,9 @@ class JobManager:
         chain_train: Optional[dict] = None,
         config_snapshot: Optional[dict] = None,
         config_file: Optional[str] = None,
+        root_job_id: Optional[str] = None,
+        parent_job_id: Optional[str] = None,
+        attempt_index: int = 0,
         start: Optional[bool] = None,
     ) -> Job:
         """Enqueue a plain ``python <argv>`` task (preprocess / mask).
@@ -188,6 +209,9 @@ class JobManager:
             argv=list(argv or []),
             extra_env=dict(extra_env or {}),
             chain_train=dict(chain_train) if chain_train else None,
+            root_job_id=root_job_id,
+            parent_job_id=parent_job_id,
+            attempt_index=attempt_index,
         )
         self._attach_config_file(
             job, config_snapshot=config_snapshot, config_file=config_file
@@ -219,6 +243,21 @@ class JobManager:
             if os.path.abspath(str(dst)) != src:
                 shutil.copyfile(src, dst)
         job.config_file = str(dst)
+        try:
+            merged = toml.load(dst)
+            job.config_signature = merged.get("config_signature") or merged.get("_config_signature")
+            target = merged.get("max_train_steps") or merged.get("max_train_steps_target")
+            job.target_steps = int(target) if target is not None else None
+            epochs = merged.get("max_train_epochs")
+            job.target_epochs = int(epochs) if epochs is not None else None
+            manifest = (
+                merged.get("preprocess_run")
+                or merged.get("dataset_manifest")
+                or merged.get("staged_profile_manifest")
+            )
+            job.data_manifest = str(manifest) if manifest else None
+        except (OSError, ValueError, TypeError):
+            job.legacy = True
 
     def _register_and_queue(self, job: Job, *, start: Optional[bool] = None) -> Job:
         # ``start`` controls the run gate atomically with enqueue, so there's no
@@ -232,6 +271,7 @@ class JobManager:
         #           stalled auto-advance the moment the running job finished.
         #   True  → enqueue, then resume (run now — flushes any held backlog);
         #   None  → leave the gate as-is (legacy: runs if not currently paused).
+        job.root_job_id = job.root_job_id or job.id
         if start is False:
             with self._lock:
                 queue_idle = self._queue_is_idle_locked()
@@ -244,6 +284,31 @@ class JobManager:
         # locate the gallery even after a WebUI restart (it reads this back
         # over HTTP, not from the injected argv).
         job.sample_dir = str(d / "sample")
+        if self._job_runs_train(job) and not job.config_file:
+            job.legacy = True
+        tokens = list(job.extra if job.kind == "train" else job.argv)
+        for key, attr in (("--preprocess_run", "data_manifest"), ("--dataset_config", "data_manifest")):
+            if key in tokens and tokens.index(key) + 1 < len(tokens):
+                setattr(job, attr, str(tokens[tokens.index(key) + 1]))
+                break
+        target = (job.overrides or {}).get("max_train_steps")
+        if target is None and "--max_train_steps" in tokens:
+            index = tokens.index("--max_train_steps")
+            target = tokens[index + 1] if index + 1 < len(tokens) else None
+        if target is not None:
+            try:
+                job.target_steps = int(target)
+            except (TypeError, ValueError):
+                pass
+        epochs = (job.overrides or {}).get("max_train_epochs")
+        if epochs is None and "--max_train_epochs" in tokens:
+            index = tokens.index("--max_train_epochs")
+            epochs = tokens[index + 1] if index + 1 < len(tokens) else None
+        if epochs is not None:
+            try:
+                job.target_epochs = int(epochs)
+            except (TypeError, ValueError):
+                pass
         with self._lock:
             self._jobs[job.id] = job
             job.persist()
@@ -272,6 +337,307 @@ class JobManager:
     def list_jobs(self) -> list[Job]:
         with self._lock:
             return sorted(self._jobs.values(), key=lambda j: j.submitted_at)
+
+    def delete(self, job_id: str) -> bool:
+        """Delete only a terminal daemon job record and its owned artifacts."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None or job.state not in TERMINAL_STATES:
+                return False
+            path = job.dir
+            self._jobs.pop(job_id, None)
+        # The job directory contains metadata/logs/progress/sample only.  State
+        # and model outputs live elsewhere and are intentionally untouched.
+        shutil.rmtree(path, ignore_errors=False)
+        self._broadcast({"ev": "deleted", "job_id": job_id})
+        return True
+
+    @staticmethod
+    def _attempt_sort_key(job: Job) -> tuple[int, float, str]:
+        return (int(job.attempt_index or 0), float(job.submitted_at or 0.0), job.id)
+
+    def lineage(self, job_or_id: Job | str) -> list[Job]:
+        """Return one logical task's physical attempts in execution order."""
+        with self._lock:
+            job = job_or_id if isinstance(job_or_id, Job) else self._jobs.get(job_or_id)
+            if job is None:
+                return []
+            root_id = job.root_job_id or job.id
+            attempts = [
+                candidate
+                for candidate in self._jobs.values()
+                if (candidate.root_job_id or candidate.id) == root_id
+            ]
+        return sorted(attempts, key=self._attempt_sort_key)
+
+    @staticmethod
+    def _attempt_public(job: Job) -> dict:
+        payload = job.public()
+        payload["job_id"] = job.id
+        return payload
+
+    def job_group(self, job_id: str) -> dict | None:
+        attempts = self.lineage(job_id)
+        if not attempts:
+            return None
+        first, latest = attempts[0], attempts[-1]
+        payload = latest.public()
+        root_id = first.root_job_id or first.id
+        payload.update(
+            {
+                "id": root_id,
+                "root_job_id": root_id,
+                "current_job_id": latest.id,
+                "attempt_count": len(attempts),
+                "attempts": [self._attempt_public(attempt) for attempt in attempts],
+                "submitted_at": first.submitted_at,
+                "started_at": first.started_at or latest.started_at,
+                "ended_at": latest.ended_at,
+            }
+        )
+        return payload
+
+    def list_job_groups_filtered(
+        self,
+        *,
+        state: str | None = None,
+        resumable: bool | None = None,
+        before: float | None = None,
+        after: float | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+        newest_first: bool = False,
+    ) -> tuple[list[dict], int]:
+        with self._lock:
+            root_ids = {
+                job.root_job_id or job.id
+                for job in self._jobs.values()
+            }
+        groups = [self.job_group(root_id) for root_id in root_ids]
+        states = {part.strip() for part in (state or "").split(",") if part.strip()}
+        filtered: list[dict] = []
+        for group in groups:
+            if group is None:
+                continue
+            if states and group.get("state") not in states:
+                continue
+            submitted_at = float(group.get("submitted_at") or 0.0)
+            if before is not None and submitted_at >= before:
+                continue
+            if after is not None and submitted_at < after:
+                continue
+            if resumable is not None and bool(group.get("recovery_state")) != resumable:
+                continue
+            filtered.append(group)
+        filtered.sort(
+            key=lambda group: (float(group.get("submitted_at") or 0.0), str(group.get("id") or "")),
+            reverse=newest_first,
+        )
+        total = len(filtered)
+        start = max(0, int(offset))
+        end = None if limit is None else start + max(0, int(limit))
+        return filtered[start:end], total
+
+    def delete_group(self, job_id: str) -> list[str] | None:
+        """Delete all terminal attempt records for one logical task."""
+        attempts = self.lineage(job_id)
+        if not attempts or any(job.state not in TERMINAL_STATES for job in attempts):
+            return None
+        paths = [job.dir for job in attempts]
+        ids = [job.id for job in attempts]
+        with self._lock:
+            for attempt_id in ids:
+                self._jobs.pop(attempt_id, None)
+        try:
+            for path in paths:
+                shutil.rmtree(path, ignore_errors=False)
+        except OSError:
+            # Keep the in-memory table consistent with the surviving records.
+            with self._lock:
+                for job in attempts:
+                    if job.dir.exists():
+                        self._jobs[job.id] = job
+            raise
+        self._broadcast({"ev": "deleted_group", "root_job_id": attempts[0].root_job_id or attempts[0].id, "job_ids": ids})
+        return ids
+
+    def list_jobs_filtered(self, *, state: str | None = None, resumable: bool | None = None,
+                           before: float | None = None, after: float | None = None,
+                           offset: int = 0, limit: int | None = None,
+                           newest_first: bool = False) -> tuple[list[Job], int]:
+        jobs = self.list_jobs()
+        states = {part.strip() for part in (state or "").split(",") if part.strip()}
+        filtered = []
+        for job in jobs:
+            if states and job.state not in states:
+                continue
+            if before is not None and job.submitted_at >= before:
+                continue
+            if after is not None and job.submitted_at < after:
+                continue
+            if resumable is not None and bool(job.recovery_state) != resumable:
+                continue
+            filtered.append(job)
+        filtered.sort(key=lambda job: (job.submitted_at, job.id), reverse=newest_first)
+        total = len(filtered)
+        start = max(0, int(offset))
+        end = None if limit is None else start + max(0, int(limit))
+        return filtered[start:end], total
+
+    @staticmethod
+    def _read_state_sidecar(path: Path) -> dict | None:
+        try:
+            data = json.loads((path / "train_state.json").read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or "global_step" not in data and "current_step" not in data:
+                return None
+            if int(data.get("schema_version", 1) or 1) >= 2 and not (path / "complete.marker").is_file():
+                return None
+            data["global_step"] = int(data.get("global_step", data.get("current_step", 0)) or 0)
+            return data
+        except (OSError, ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _state_candidates(job: Job) -> list[tuple[int, Path]]:
+        """Discover complete state dirs from a pinned config/output contract."""
+        try:
+            from library.io.output_layout import resolve_output_layout
+            import toml
+            cfg = toml.load(job.config_file) if job.config_file and os.path.isfile(job.config_file) else {}
+            if not cfg:
+                method = job.method
+                preset = job.preset or (job.extra_env or {}).get("PRESET") or "default"
+                methods_subdir = job.methods_subdir or "methods"
+                if job.kind == "command" and job.argv:
+                    if len(job.argv) >= 3 and str(job.argv[0]).endswith("tasks.py") and job.argv[1] == "lora-gui":
+                        method, methods_subdir = job.argv[2], "gui-methods"
+                    elif len(job.argv) >= 3 and str(job.argv[0]).endswith("tasks.py") and job.argv[1] == "staged-train":
+                        try:
+                            from library.training.staged_resolution_plan import (
+                                compile_runtime_config,
+                                load_profile,
+                            )
+                            profile = str(job.argv[2])
+                            cfg_path = compile_runtime_config(
+                                profile, load_profile(profile), config.ROOT
+                            )
+                            cfg = toml.load(cfg_path)
+                        except Exception:
+                            cfg = {}
+                    elif len(job.argv) >= 2 and str(job.argv[0]).endswith("tasks.py"):
+                        method = {"lora": "lora", "easycontrol": "easycontrol"}.get(job.argv[1], method)
+                try:
+                    from library.config.io import load_method_preset
+                    cfg = load_method_preset(method, preset, methods_subdir=methods_subdir)
+                except Exception:
+                    cfg = {}
+            output_dir = cfg.get("output_dir", "output/ckpt")
+            output_name = cfg.get("output_name") or job.method or "last"
+            if job.target_steps is None and cfg.get("max_train_steps") is not None:
+                try:
+                    job.target_steps = int(cfg["max_train_steps"])
+                except (TypeError, ValueError):
+                    pass
+            if job.target_epochs is None and cfg.get("max_train_epochs") is not None:
+                try:
+                    job.target_epochs = int(cfg["max_train_epochs"])
+                except (TypeError, ValueError):
+                    pass
+            layout = resolve_output_layout(output_dir, output_name, cwd=config.ROOT)
+            suffixes = ("-interrupted-state", "-rolling-state", "-checkpoint-state", "-state")
+            raw_name = Path(str(output_name)).name
+            candidate_names = [layout.name]
+            if raw_name and raw_name not in candidate_names:
+                candidate_names.append(raw_name)
+            out = []
+            for root in layout.legacy_candidates():
+                paths = [
+                    root / f"{name}{suffix}"
+                    for name in candidate_names
+                    for suffix in suffixes
+                ]
+                for name in candidate_names:
+                    paths.extend(sorted(root.glob(f"{name}-step*-state")))
+                    paths.extend(sorted(root.glob(f"{name}-[0-9]*-state")))
+                for path in paths:
+                    data = JobManager._read_state_sidecar(path)
+                    if data is None:
+                        continue
+                    if job.config_signature and data.get("config_signature") != job.config_signature:
+                        continue
+                    if job.dataset_signature and data.get("dataset_signature") != job.dataset_signature:
+                        continue
+                    out.append((int(data.get("global_step", 0) or 0), path))
+            def priority(path: Path) -> int:
+                name = path.name
+                if name.endswith("-interrupted-state"): return 0
+                if name.endswith("-rolling-state"): return 1
+                if name.endswith("-checkpoint-state"): return 2
+                if name == f"{layout.name}-state": return 3
+                return 4
+            return sorted({(step, path) for step, path in out}, key=lambda item: (-item[0], priority(item[1]), str(item[1])))
+        except Exception:
+            logger.exception("resume state discovery failed for job %s", job.id)
+            return []
+
+    def resume_job(self, job_id: str) -> Job | None:
+        source = self.get(job_id)
+        if source is None or source.state not in {STATE_STOPPED, STATE_ERROR} or source.kind != "train" and not self._command_runs_train(source.argv):
+            return None
+        attempts = self.lineage(source)
+        if not attempts:
+            return None
+        latest = attempts[-1]
+        if latest.id != source.id:
+            raise ValueError(
+                f"only the latest attempt can be resumed; latest_job_id={latest.id}"
+            )
+        if any(attempt.state in {STATE_QUEUED, STATE_RUNNING} for attempt in attempts):
+            raise ValueError("this training already has an active attempt")
+        candidates = self._state_candidates(source)
+        if not candidates:
+            raise ValueError("no complete signature-matched training state found")
+        step, state_dir = candidates[0]
+        state_data = self._read_state_sidecar(state_dir) or {}
+        if source.target_steps is not None and step >= source.target_steps:
+            raise ValueError(f"training target already reached at global_step={step}")
+        if source.target_epochs is not None:
+            current_epoch = int(state_data.get("current_epoch", state_data.get("epoch", 0)) or 0)
+            if current_epoch >= source.target_epochs:
+                raise ValueError(
+                    f"training target already reached at epoch={current_epoch}"
+                )
+        if source.kind == "command":
+            argv = list(source.argv)
+            argv += ["--resume", str(state_dir)]
+            job = self.submit_command(label=source.method, argv=argv, extra_env=source.extra_env,
+                                      config_file=source.config_file,
+                                      root_job_id=source.root_job_id or source.id,
+                                      parent_job_id=source.id,
+                                      attempt_index=int(source.attempt_index or 0) + 1,
+                                      start=False)
+        else:
+            extra = list(source.extra)
+            extra += ["--resume", str(state_dir)]
+            job = self.submit(method=source.method, preset=source.preset, methods_subdir=source.methods_subdir,
+                              config_file=source.config_file, overrides=source.overrides, extra=extra,
+                              root_job_id=source.root_job_id or source.id,
+                              parent_job_id=source.id,
+                              attempt_index=int(source.attempt_index or 0) + 1,
+                              start=False)
+        job.config_signature = source.config_signature
+        job.dataset_signature = source.dataset_signature
+        job.target_steps = source.target_steps
+        job.target_epochs = source.target_epochs
+        job.data_manifest = source.data_manifest
+        job.recovery_state = str(state_dir)
+        job.recovery_step = step
+        job.persist()
+        # Publish all recovery metadata before allowing the worker to launch;
+        # otherwise a fast queue can build the command before --config_file is
+        # injected for command-style training jobs.
+        self.resume()
+        return job
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
@@ -685,6 +1051,7 @@ class JobManager:
             # ``_finalize_from_daemon`` sees it atomically with the state flip.
             job.rc = rc
             job.ckpt_path = tail.last_ckpt_path(job.progress_path)
+            self._refresh_recovery_metadata(job)
             # Auto-chain: a done command job with a chain_train spec enqueues its
             # follow-on train job here (survives the GUI closing). chained_job_id
             # persists in the same write that flips us to `done` → atomic for a
@@ -714,6 +1081,32 @@ class JobManager:
                 )
             job.persist()
         self._broadcast({"ev": "ended", "job_id": job.id, "state": state})
+
+    def _refresh_recovery_metadata(self, job: Job) -> None:
+        """Persist the best available state/signature metadata after a run."""
+        # Signatures are computed only after train.py has parsed the pinned
+        # config and materialized the dataset. Persist them in run_start so the
+        # daemon can distinguish this job's state from an older run that reused
+        # the same output_name, even after a daemon restart.
+        starts = tail.read_events(job.progress_path, events=["run_start"], last_n=1)
+        if starts:
+            started = starts[-1]
+            if started.get("config_signature"):
+                job.config_signature = started["config_signature"]
+            if started.get("dataset_signature"):
+                job.dataset_signature = started["dataset_signature"]
+        candidates = self._state_candidates(job)
+        if not candidates:
+            return
+        step, path = candidates[0]
+        job.recovery_state = str(path)
+        job.recovery_step = step
+        try:
+            data = self._read_state_sidecar(path) or {}
+            job.config_signature = job.config_signature or data.get("config_signature")
+            job.dataset_signature = job.dataset_signature or data.get("dataset_signature")
+        except Exception:
+            logger.debug("could not read recovery metadata for job %s", job.id)
 
     def _gpu_guard(
         self,
@@ -1019,6 +1412,10 @@ class JobManager:
             if self._command_runs_train(argv):
                 env["TQDM_MININTERVAL"] = "0.5"
                 env["TQDM_MINITERS"] = "1"
+                # A resumed command job uses its immutable submission snapshot;
+                # the original command remains unchanged for compatibility.
+                if job.recovery_state and job.config_file:
+                    self._ensure_flag(argv, "--config_file", job.config_file)
                 # Per-job progress + preview paths. The WebUI reads
                 # job.progress_path / job.sample_dir back over HTTP (the argv
                 # here is only the train process's copy, not visible to the
@@ -1072,6 +1469,9 @@ class JobManager:
     def _reconcile(self) -> None:
         self._jobs = load_all()
         for job in self._jobs.values():
+            if self._job_runs_train(job) and not job.config_file and not job.legacy:
+                job.legacy = True
+                job.persist()
             if job.state == STATE_RUNNING:
                 if proc.is_alive(job.pid, job.create_time):
                     logger.info("reconcile: re-attaching live job %s", job.id)
@@ -1084,6 +1484,17 @@ class JobManager:
                         self._start_stop_worker(job)
                 else:
                     logger.info("reconcile: job %s died while we were down", job.id)
+                    # The progress stream is the only durable terminal proof
+                    # available when the daemon did not own/reap the child.
+                    # Prefer it over a synthetic orphan/error classification.
+                    terminal = tail.last_event(job.progress_path)
+                    if terminal and terminal.get("ev") == "run_end":
+                        status = terminal.get("status")
+                        mapped = {"ok": STATE_DONE, "stopped": STATE_STOPPED, "error": STATE_ERROR}.get(status)
+                        if mapped:
+                            self._finalize(job, mapped, error=terminal.get("error"), rc=None,
+                                           detail="reconciled from progress run_end")
+                            continue
                     if job.stop_requested:
                         self._finalize(
                             job,
@@ -1103,6 +1514,11 @@ class JobManager:
                         )
             elif job.state == STATE_QUEUED:
                 self._queue.put(job.id)
+            elif job.state in TERMINAL_STATES:
+                previous = (job.recovery_state, job.recovery_step)
+                self._refresh_recovery_metadata(job)
+                if previous != (job.recovery_state, job.recovery_step):
+                    job.persist()
 
     def _current_running_locked(self) -> Optional[Job]:
         for job in self._jobs.values():

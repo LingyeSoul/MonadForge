@@ -192,7 +192,7 @@
           <template #append>
             <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
             <v-btn
-              v-if="task.state === 'running'"
+              v-if="task.state === 'running' || task.state === 'pending'"
               icon="mdi-stop"
               size="small"
               variant="text"
@@ -387,7 +387,7 @@ function stopTraining() {
 }
 
 function stateColor(state: string) {
-  if (state === 'running') return 'info'
+  if (state === 'running' || state === 'stopping') return 'info'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
   return undefined

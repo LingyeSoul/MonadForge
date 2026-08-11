@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 
 export interface SampleInfo {
+  attempt_id: string | null
   path: string         // absolute on-disk path emitted by the training process
   filename: string     // basename used for the FileResponse URL
   step: number | null
@@ -84,14 +85,15 @@ export const useTrainingStore = defineStore('training', () => {
   const connected = ref(false)
   const done = ref(false)
 
-  // Set of on-disk paths we've already recorded — path is the natural
-  // dedupe key (training process writes one PNG per sample event).
+  // Attempt + path is the durable key: resumed attempts use independent
+  // sample directories and may legitimately emit the same basename.
   const seenSamplePaths = new Set<string>()
 
   function recordSample(info: Omit<SampleInfo, 'filename' | 'received_at'>) {
     if (!info.path) return
-    if (seenSamplePaths.has(info.path)) return
-    seenSamplePaths.add(info.path)
+    const sampleKey = `${info.attempt_id || ''}\u0000${info.path}`
+    if (seenSamplePaths.has(sampleKey)) return
+    seenSamplePaths.add(sampleKey)
 
     const sample: SampleInfo = {
       ...info,
@@ -105,7 +107,9 @@ export const useTrainingStore = defineStore('training', () => {
     const overflow = metrics.value.sample_history.length - MAX_SAMPLE_HISTORY
     if (overflow > 0) {
       const dropped = metrics.value.sample_history.splice(0, overflow)
-      for (const d of dropped) seenSamplePaths.delete(d.path)
+      for (const d of dropped) {
+        seenSamplePaths.delete(`${d.attempt_id || ''}\u0000${d.path}`)
+      }
     }
   }
 
@@ -152,6 +156,7 @@ export const useTrainingStore = defineStore('training', () => {
       // and ``latest_sample`` ends up pointing at the newest file.
       for (const it of items.slice().reverse()) {
         recordSample({
+          attempt_id: it.attempt_id || null,
           path: it.path,
           step: null,
           epoch: null,

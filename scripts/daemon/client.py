@@ -13,6 +13,7 @@ import socket
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Iterator, Optional
@@ -210,8 +211,15 @@ class DaemonClient:
         """Hold the queue — queued jobs wait until ``start_queue``."""
         return self._request("POST", "/queue/pause")
 
-    def list_jobs(self) -> list:
-        return self._request("GET", "/jobs") or []
+    def list_jobs(self, *, state: str | None = None, resumable: bool | None = None,
+                  offset: int = 0, limit: int | None = None) -> list:
+        query = []
+        if state: query.append(f"state={urllib.parse.quote(state)}")
+        if resumable is not None: query.append(f"resumable={'true' if resumable else 'false'}")
+        if offset: query.append(f"offset={int(offset)}")
+        if limit is not None: query.append(f"limit={int(limit)}")
+        payload = self._request("GET", "/jobs" + ("?" + "&".join(query) if query else "")) or []
+        return payload.get("jobs", []) if isinstance(payload, dict) else payload
 
     def get(self, job_id: str) -> dict:
         return self._request("GET", f"/jobs/{job_id}")
@@ -226,9 +234,29 @@ class DaemonClient:
                 return {"error": "no active job"}
         return self._request("POST", f"/jobs/{job_id}/stop")
 
-    def shutdown(self, *, kill_jobs: bool = True) -> Optional[dict]:
+    def resume(self, job_id: str) -> dict:
+        return self._request("POST", f"/jobs/{job_id}/resume")
+
+    def list_job_groups(self, *, state: str | None = None, offset: int = 0,
+                        limit: int = 100) -> list:
+        query = [f"offset={int(offset)}", f"limit={int(limit)}"]
+        if state:
+            query.append(f"state={urllib.parse.quote(state)}")
+        payload = self._request("GET", "/job-groups?" + "&".join(query)) or {}
+        return list(payload.get("groups") or [])
+
+    def get_job_group(self, job_id: str) -> dict:
+        return self._request("GET", f"/job-groups/{job_id}")
+
+    def delete_job_group(self, job_id: str) -> dict:
+        return self._request("DELETE", f"/job-groups/{job_id}")
+
+    def delete(self, job_id: str) -> dict:
+        return self._request("DELETE", f"/jobs/{job_id}")
+
+    def shutdown(self, *, kill_jobs: bool = True, mode: str | None = None) -> Optional[dict]:
         try:
-            return self._request("POST", "/shutdown", {"kill_jobs": kill_jobs})
+            return self._request("POST", "/shutdown", {"kill_jobs": kill_jobs, "mode": mode})
         except (urllib.error.URLError, OSError, ValueError):
             return None
 

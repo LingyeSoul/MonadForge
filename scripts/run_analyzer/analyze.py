@@ -25,6 +25,29 @@ def _resolve_path(run: Run, p: Optional[str]) -> Optional[str]:
     return os.path.normpath(os.path.join(MONADFORGE_ROOT, p))
 
 
+def _attempt_for(run: Run, attempt_id: Optional[str]) -> Optional[Run]:
+    if not attempt_id:
+        return None
+    return next(
+        (attempt for attempt in run.attempts if attempt.id == attempt_id),
+        None,
+    )
+
+
+def _resolve_sample_path(
+    run: Run, p: Optional[str], attempt_id: Optional[str]
+) -> Optional[str]:
+    path = _resolve_path(run, p)
+    if path and os.path.isfile(path):
+        return path
+    attempt = _attempt_for(run, attempt_id)
+    if attempt is not None and attempt.sample_dir and p:
+        candidate = os.path.join(attempt.sample_dir, os.path.basename(p))
+        if os.path.isfile(candidate):
+            return candidate
+    return path
+
+
 def sparkline(run: Run, n: int = 60) -> list:
     """loss/average 降采样为 n 点（用于索引行内迷你曲线）。
 
@@ -185,10 +208,12 @@ def sample_list(run: Run) -> list[dict]:
     if jl is not None:
         for s in jl.samples:
             p = s.get("path")
-            path = _resolve_path(run, p)
+            attempt_id = s.get("attempt_id")
+            path = _resolve_sample_path(run, p, attempt_id)
             size = _sample_size(path)
             items.append(
                 {
+                    "attempt_id": attempt_id,
                     "global_step": s.get("global_step"),
                     "epoch": s.get("epoch"),
                     "path": path,
@@ -198,20 +223,29 @@ def sample_list(run: Run) -> list[dict]:
                     "h": size[1] if size else None,
                 }
             )
-    # PNG files in sample_dir not covered by events (defensive)
-    sdir = run.sample_dir
-    if sdir and os.path.isdir(sdir):
-        have = {os.path.basename(i["path"]) for i in items if i["path"]}
+    # Image files not covered by events (defensive), across every attempt.
+    scan_runs = run.attempts or [run]
+    have = {
+        (item.get("attempt_id"), os.path.basename(item["path"]))
+        for item in items
+        if item["path"]
+    }
+    for attempt in scan_runs:
+        sdir = attempt.sample_dir
+        if not sdir or not os.path.isdir(sdir):
+            continue
+        scan_attempt_id = attempt.id if run.kind == "daemon" else None
         for fn in sorted(os.listdir(sdir)):
             if not fn.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
                 continue
-            if fn in have:
+            if (scan_attempt_id, fn) in have:
                 continue
             m = re.match(r".*_e(\d{6})_(\d{2})_", fn)
             path = os.path.join(sdir, fn)
             size = _sample_size(path)
             items.append(
                 {
+                    "attempt_id": scan_attempt_id,
                     "global_step": None,
                     "epoch": int(m.group(1)) if m else None,
                     "path": path,
@@ -221,7 +255,36 @@ def sample_list(run: Run) -> list[dict]:
                     "h": size[1] if size else None,
                 }
             )
-    return items
+    return sorted(
+        items,
+        key=lambda item: (
+            float(item.get("ts") or 0.0),
+            int(item.get("global_step") or -1),
+            str(item.get("path") or ""),
+        ),
+    )
+
+
+def _attempt_payload(run: Run) -> list[dict]:
+    attempts = run.attempts or ([run] if run.kind == "daemon" else [])
+    out = []
+    for position, attempt in enumerate(attempts):
+        job = attempt.job or {}
+        out.append(
+            {
+                "id": attempt.id,
+                "attempt_index": int(job.get("attempt_index") or position),
+                "parent_job_id": job.get("parent_job_id"),
+                "state": attempt.state,
+                "submitted_at": attempt.submitted_at,
+                "started_at": attempt.started_at,
+                "ended_at": attempt.ended_at,
+                "recovery_step": job.get("recovery_step"),
+                "rc": job.get("rc"),
+                "error": attempt.error,
+            }
+        )
+    return out
 
 
 def overview_payload(run: Run) -> dict:
@@ -229,6 +292,12 @@ def overview_payload(run: Run) -> dict:
     job = run.job or {}
     return {
         "id": run.id,
+        "root_job_id": run.id if run.kind == "daemon" else None,
+        "current_job_id": (
+            run.attempts[-1].id if run.attempts else run.id
+        ) if run.kind == "daemon" else None,
+        "attempt_count": len(run.attempts) if run.attempts else 1,
+        "attempts": _attempt_payload(run),
         "kind": run.kind,
         "run_name": run.run_name or run.id,
         "method": run.method or "",
@@ -260,6 +329,17 @@ def overview_payload(run: Run) -> dict:
             "sample_dir": run.sample_dir,
             "progress": run.jsonl_path,
             "stdout": os.path.join(run.dir, "stdout.log") if run.kind == "daemon" else None,
+            "attempts": [
+                {
+                    "id": attempt.id,
+                    "dir": attempt.dir,
+                    "log_dir": attempt.log_dir,
+                    "sample_dir": attempt.sample_dir,
+                    "progress": attempt.jsonl_path,
+                    "stdout": os.path.join(attempt.dir, "stdout.log"),
+                }
+                for attempt in run.attempts
+            ],
         },
     }
 
@@ -315,6 +395,10 @@ def index_payload(runs: list[Run]) -> list[dict]:
         out.append(
             {
                 "id": r.id,
+                "current_job_id": (
+                    r.attempts[-1].id if r.attempts else r.id
+                ) if r.kind == "daemon" else None,
+                "attempt_count": len(r.attempts) if r.attempts else 1,
                 "kind": r.kind,
                 "run_name": r.run_name or r.id,
                 "method": r.method or "",

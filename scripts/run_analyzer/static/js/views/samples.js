@@ -1,7 +1,7 @@
 /* views/samples.js — 采样画廊 */
 
 import { $, $$, esc } from '../core/dom.js';
-import { openLightbox } from '../components/lightbox.js';
+import { openLightbox, sampleUrl } from '../components/lightbox.js';
 import { emptyHtml } from '../components/states.js';
 
 export function renderSamples(d) {
@@ -13,7 +13,7 @@ export function renderSamples(d) {
       const ar = s.w && s.h ? ` style="--ar: ${s.w} / ${s.h}"` : '';
       const size = s.w && s.h ? `<span class="g-size">${s.w}×${s.h}</span>` : '';
       return `<div class="g-item" tabindex="0" data-i="${i}" role="button" aria-label="sample ${fn}"${ar}>
-        <img src="/api/runs/${encodeURIComponent(d.id)}/samples/${encodeURIComponent(fn)}" alt="sample ${fn}" loading="lazy">
+        <img src="${sampleUrl(s, d.id)}" alt="sample ${fn}" loading="lazy">
         <div class="g-cap"><span title="${esc(fn)}">${esc(fn)}</span>${size}${s.global_step ? `<span class="g-step">step ${s.global_step}</span>` : ''}</div>
       </div>`;
     }).join('')}</div>` : emptyHtml('NO SAMPLES — 无采样记录')}`;

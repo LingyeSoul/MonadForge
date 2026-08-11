@@ -6,8 +6,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 
-from scripts.run_analyzer import discovery, server
+from scripts.run_analyzer import analyze, discovery, server
+from scripts.run_analyzer.sources.tensorboard import TbRun
 
 
 def _write_jsonl(path: Path, *events: dict) -> None:
@@ -107,6 +109,140 @@ def test_freshen_run_reloads_job_and_maps_run_end_to_terminal(tmp_path) -> None:
     assert run.ended_at == 3.0
     assert run.state == "done"
     assert run.jsonl is not None and run.jsonl.run_end_final_step == 4
+
+
+def test_daemon_resume_attempts_are_one_logical_run(tmp_path, monkeypatch) -> None:
+    jobs_dir = tmp_path / "jobs"
+    logs_dir = tmp_path / "logs"
+    root_id = "20260811-161531-98bd8a"
+    child_id = "20260811-180000-deadbe"
+    root_dir = jobs_dir / root_id
+    child_dir = jobs_dir / child_id
+    for path in (root_dir, child_dir):
+        (path / "sample").mkdir(parents=True)
+    logs_dir.mkdir()
+
+    (root_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "id": root_id,
+                "kind": "train",
+                "method": "lora",
+                "state": "error",
+                "root_job_id": root_id,
+                "parent_job_id": None,
+                "attempt_index": 0,
+                "submitted_at": 90.0,
+                "started_at": 100.0,
+                "ended_at": 120.0,
+                "rc": 1,
+                "sample_dir": str(root_dir / "sample"),
+                "error": "first attempt failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (child_dir / "job.json").write_text(
+        json.dumps(
+            {
+                "id": child_id,
+                "kind": "train",
+                "method": "lora",
+                "state": "done",
+                "root_job_id": root_id,
+                "parent_job_id": root_id,
+                "attempt_index": 1,
+                "submitted_at": 190.0,
+                "started_at": 200.0,
+                "ended_at": 220.0,
+                "rc": 0,
+                "recovery_step": 2,
+                "sample_dir": str(child_dir / "sample"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_jsonl(
+        root_dir / "progress.jsonl",
+        {"ev": "run_start", "run": "lineage", "method": "lora", "total_steps": 3},
+        {"ev": "step", "ts": 1.0, "global_step": 1, "epoch": 1, "loss/current": 0.9},
+        {"ev": "step", "ts": 2.0, "global_step": 2, "epoch": 1, "loss/current": 0.8},
+        {"ev": "sample", "ts": 10.0, "global_step": 2, "path": str(root_dir / "sample" / "same.png")},
+        {"ev": "run_end", "ts": 20.0, "status": "error", "final_step": 2, "error": "nan"},
+    )
+    _write_jsonl(
+        child_dir / "progress.jsonl",
+        {"ev": "run_start", "run": "lineage", "method": "lora", "total_steps": 3},
+        {"ev": "step", "ts": 1.0, "global_step": 2, "epoch": 1, "loss/current": 0.7},
+        {"ev": "step", "ts": 2.0, "global_step": 3, "epoch": 1, "loss/current": 0.6},
+        {"ev": "sample", "ts": 5.0, "global_step": 3, "path": str(child_dir / "sample" / "same.png")},
+        {"ev": "run_end", "ts": 20.0, "status": "ok", "final_step": 3},
+    )
+    (root_dir / "stdout.log").write_text("root output\n", encoding="utf-8")
+    (child_dir / "stdout.log").write_text("child output\n", encoding="utf-8")
+    (root_dir / "sample" / "same.png").write_bytes(b"root")
+    (child_dir / "sample" / "same.png").write_bytes(b"child")
+    monkeypatch.setattr(discovery, "MONADFORGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(discovery, "JOBS_DIR", str(jobs_dir))
+    monkeypatch.setattr(discovery, "LOGS_DIR", str(logs_dir))
+
+    runs = discovery.discover()
+
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.id == root_id
+    assert [attempt.id for attempt in run.attempts] == [root_id, child_id]
+    assert run.state == "done"
+    assert run.jsonl is not None
+    assert run.jsonl.series["loss/current"] == [[1, 0.9], [2, 0.7], [3, 0.6]]
+    assert [sample["ts"] for sample in run.jsonl.samples] == [10.0, 105.0]
+    assert [sample["attempt_id"] for sample in run.jsonl.samples] == [root_id, child_id]
+    assert run.stdout is not None
+    assert run.stdout.lines == [
+        f"[attempt 1/2 - {root_id}]",
+        "root output",
+        f"[attempt 2/2 - {child_id} from step 2]",
+        "child output",
+    ]
+
+    payload = analyze.full_payload(run)
+    assert payload["id"] == root_id
+    assert payload["current_job_id"] == child_id
+    assert payload["attempt_count"] == 2
+    assert [sample["attempt_id"] for sample in payload["samples"]] == [root_id, child_id]
+
+    monkeypatch.setattr(server, "_index", [run])
+    monkeypatch.setattr(server, "_refresh_index", lambda force=False: None)
+    root_response = server.api_sample_file(root_id, "same.png", attempt_id=root_id)
+    child_response = server.api_sample_file(root_id, "same.png", attempt_id=child_id)
+    latest_response = server.api_sample_file(root_id, "same.png")
+    assert Path(root_response.path).read_bytes() == b"root"
+    assert Path(child_response.path).read_bytes() == b"child"
+    assert Path(latest_response.path).read_bytes() == b"child"
+    with pytest.raises(HTTPException):
+        server.api_sample_file(root_id, "../same.png", attempt_id=root_id)
+
+
+def test_tensorboard_overlap_prefers_newer_attempt() -> None:
+    root = discovery.Run(
+        id="root",
+        kind="daemon",
+        dir="/tmp/root",
+        job={"id": "root", "root_job_id": "root", "attempt_index": 0},
+        tb=TbRun(series={"loss/current": [[1, 0.9], [2, 0.8]]}, steps=[1, 2]),
+    )
+    child = discovery.Run(
+        id="child",
+        kind="daemon",
+        dir="/tmp/child",
+        job={"id": "child", "root_job_id": "root", "attempt_index": 1},
+        tb=TbRun(series={"loss/current": [[2, 0.7], [3, 0.6]]}, steps=[2, 3]),
+    )
+
+    merged = discovery.merge_daemon_attempts([root, child])
+
+    assert merged.tb is not None
+    assert merged.tb.series["loss/current"] == [[1, 0.9], [2, 0.7], [3, 0.6]]
 
 
 def test_tensorboard_append_changes_index_cache_key(tmp_path, monkeypatch) -> None:

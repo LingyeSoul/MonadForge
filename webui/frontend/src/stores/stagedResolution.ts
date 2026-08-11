@@ -219,7 +219,7 @@ export const useStagedResolutionStore = defineStore('stagedResolution', () => {
     const task = taskStore.tasks.find(item => item.task_id === taskId)
     if (!task) return
     preprocessTaskState.value = task.state
-    if (task.state === 'pending' || task.state === 'running') {
+    if (task.state === 'pending' || task.state === 'running' || task.state === 'stopping') {
       await fetchStatus()
       return
     }

@@ -63,6 +63,14 @@ class Job:
     # guarding here only races the just-exited step's not-yet-released VRAM.
     from_chain: bool = False
 
+    # One user-visible training may span several physical daemon processes.
+    # Each process keeps its own immutable job directory; these additive fields
+    # link resumed attempts into one logical task without breaking old records.
+    # Legacy job.json files omit them and are treated as independent roots.
+    root_job_id: Optional[str] = None
+    parent_job_id: Optional[str] = None
+    attempt_index: int = 0
+
     state: str = STATE_QUEUED
     submitted_at: float = field(default_factory=time.time)
     started_at: Optional[float] = None
@@ -98,6 +106,18 @@ class Job:
     stop_requested_at: Optional[float] = None
     forced_stop: bool = False
 
+    # Immutable recovery contract captured at submission time.  These fields
+    # are deliberately additive so older job.json records remain readable.
+    config_signature: Optional[str] = None
+    dataset_signature: Optional[str] = None
+    target_steps: Optional[int] = None
+    target_epochs: Optional[int] = None
+    data_manifest: Optional[str] = None
+    legacy: bool = False
+    recovery_state: Optional[str] = None
+    recovery_step: Optional[int] = None
+    terminal_reason: Optional[str] = None
+
     @property
     def dir(self) -> Path:
         return config.job_dir(self.id)
@@ -132,7 +152,9 @@ class Job:
     def public(self) -> dict:
         """The dict shape returned over HTTP (drops nothing sensitive — this is
         localhost — but keeps the field order stable for clients)."""
-        return asdict(self)
+        payload = asdict(self)
+        payload["root_job_id"] = self.root_job_id or self.id
+        return payload
 
 
 def load_all() -> dict[str, Job]:

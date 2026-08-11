@@ -97,7 +97,9 @@ function open(i: number) {
 
 function fileUrl(s: SampleInfo): string {
   // filename is the basename the server uses for its whitelist check.
-  return `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples/file?path=${encodeURIComponent(s.filename)}`
+  const params = new URLSearchParams({ path: s.filename })
+  if (s.attempt_id) params.set('attempt_id', s.attempt_id)
+  return `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples/file?${params.toString()}`
 }
 
 function labelFor(s: SampleInfo): string {

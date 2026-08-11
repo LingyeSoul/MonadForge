@@ -68,6 +68,8 @@ class Run:
     error: Optional[str] = None
     stop_requested: bool = False
     sources: dict = field(default_factory=dict)
+    # Physical daemon attempts, oldest first. Inline runs leave this empty.
+    attempts: list["Run"] = field(default_factory=list)
 
 
 def _is_training_job(job: dict) -> bool:
@@ -123,10 +125,199 @@ def apply_jsonl_metadata(run: Run, jl: JsonlRun) -> None:
         run.error = jl.run_end_error
 
 
+def _link_log_sources(run: Run) -> None:
+    log_dir = run.log_dir
+    if log_dir is None or not os.path.isdir(log_dir):
+        run.sources = _source_flags(run)
+        return
+    if run.snapshot is None:
+        snaps = [f for f in os.listdir(log_dir) if f.endswith(".snapshot.toml")]
+        if snaps:
+            run.snapshot = parse_snapshot(os.path.join(log_dir, snaps[0]))
+    if run.tb is None:
+        run.tb = parse_tb(log_dir)
+    run.sources = _source_flags(run)
+
+
+def _attempt_sort_key(run: Run) -> tuple[int, float, str]:
+    job = run.job or {}
+    try:
+        attempt_index = int(job.get("attempt_index") or 0)
+    except (TypeError, ValueError):
+        attempt_index = 0
+    submitted = run.submitted_at
+    try:
+        submitted_value = float(submitted) if submitted is not None else 0.0
+    except (TypeError, ValueError):
+        submitted_value = 0.0
+    return attempt_index, submitted_value, run.id
+
+
+def _shift_event(event: dict, attempt_id: str, offset: float) -> dict:
+    copied = dict(event)
+    copied["attempt_id"] = attempt_id
+    ts = copied.get("ts")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        copied["ts"] = float(ts) + offset
+    return copied
+
+
+def _merge_jsonl(attempts: list[Run]) -> Optional[JsonlRun]:
+    available = [run for run in attempts if run.jsonl is not None]
+    if not available:
+        return None
+
+    out = JsonlRun()
+    series_by_step: dict[str, dict[int, float]] = {}
+    step_times: list[float] = []
+    starts = [float(run.started_at) for run in attempts if run.started_at is not None]
+    root_started_at = min(starts) if starts else None
+
+    for run in attempts:
+        jl = run.jsonl
+        if jl is None:
+            continue
+        if jl.run:
+            out.run = jl.run
+        if jl.method:
+            out.method = jl.method
+        if jl.preset:
+            out.preset = jl.preset
+        if jl.total_steps is not None:
+            out.total_steps = jl.total_steps
+        if jl.total_epochs is not None:
+            out.total_epochs = jl.total_epochs
+        if jl.pid is not None:
+            out.pid = jl.pid
+        if jl.log_dir:
+            out.log_dir = jl.log_dir
+        out.sampling_enabled = out.sampling_enabled or jl.sampling_enabled
+
+        offset = 0.0
+        if root_started_at is not None and run.started_at is not None:
+            offset = max(0.0, float(run.started_at) - root_started_at)
+        for tag, points in jl.series.items():
+            merged = series_by_step.setdefault(tag, {})
+            for step, value in points:
+                merged[int(step)] = float(value)
+        out.gs_epoch.update({int(step): int(epoch) for step, epoch in jl.gs_epoch.items()})
+        out.ckpts.extend(_shift_event(event, run.id, offset) for event in jl.ckpts)
+        out.samples.extend(_shift_event(event, run.id, offset) for event in jl.samples)
+        out.vals.extend(_shift_event(event, run.id, offset) for event in jl.vals)
+        out.logs.extend(_shift_event(event, run.id, offset) for event in jl.logs)
+        out.error_count += jl.error_count
+        for ts in (jl.first_step_ts, jl.last_step_ts):
+            if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+                step_times.append(float(ts) + offset)
+
+    out.series = {
+        tag: [[step, values[step]] for step in sorted(values)]
+        for tag, values in series_by_step.items()
+    }
+    all_steps = sorted({step for values in series_by_step.values() for step in values})
+    if all_steps:
+        out.first_step = all_steps[0]
+        out.last_step = all_steps[-1]
+    if step_times:
+        out.first_step_ts = min(step_times)
+        out.last_step_ts = max(step_times)
+    latest_jsonl = attempts[-1].jsonl
+    if latest_jsonl is not None:
+        out.run_end_status = latest_jsonl.run_end_status
+        out.run_end_final_step = latest_jsonl.run_end_final_step
+        out.run_end_error = latest_jsonl.run_end_error
+        out.run_end_extra = dict(latest_jsonl.run_end_extra)
+    return out
+
+
+def _merge_tensorboard(attempts: list[Run]) -> Optional[TbRun]:
+    series_by_step: dict[str, dict[int, float]] = {}
+    latest_file: Optional[str] = None
+    for run in attempts:
+        if run.tb is None:
+            continue
+        latest_file = run.tb.file or latest_file
+        for tag, points in run.tb.series.items():
+            merged = series_by_step.setdefault(tag, {})
+            for step, value in points:
+                merged[int(step)] = float(value)
+    if not series_by_step:
+        return None
+    series = {
+        tag: [[step, values[step]] for step in sorted(values)]
+        for tag, values in series_by_step.items()
+    }
+    steps = sorted({step for values in series_by_step.values() for step in values})
+    return TbRun(series=series, steps=steps, file=latest_file)
+
+
+def _merge_stdout(attempts: list[Run]) -> Optional[StdoutRun]:
+    if not any(run.stdout is not None for run in attempts):
+        return None
+    out = StdoutRun()
+    for position, run in enumerate(attempts, start=1):
+        stdout = run.stdout
+        if stdout is None:
+            continue
+        recovery_step = (run.job or {}).get("recovery_step")
+        detail = f" from step {recovery_step}" if recovery_step is not None else ""
+        out.lines.append(f"[attempt {position}/{len(attempts)} - {run.id}{detail}]")
+        out.lines.extend(stdout.lines)
+        out.warnings.extend(stdout.warnings)
+        out.errors.extend(stdout.errors)
+        out.markers.extend(stdout.markers)
+    return out
+
+
+def merge_daemon_attempts(attempts: list[Run]) -> Run:
+    """Aggregate physical daemon attempts into one logical training run."""
+    ordered = sorted(attempts, key=_attempt_sort_key)
+    current = ordered[-1]
+    current_job = current.job or {}
+    root_id = str(current_job.get("root_job_id") or ordered[0].id)
+    merged_jsonl = _merge_jsonl(ordered)
+    merged = Run(
+        id=root_id,
+        kind="daemon",
+        dir=current.dir,
+        job=current.job,
+        jsonl=merged_jsonl,
+        jsonl_path=current.jsonl_path,
+        tb=_merge_tensorboard(ordered),
+        snapshot=next((run.snapshot for run in reversed(ordered) if run.snapshot), None),
+        stdout=_merge_stdout(ordered),
+        log_dir=next((run.log_dir for run in reversed(ordered) if run.log_dir), None),
+        sample_dir=current.sample_dir,
+        run_name=(merged_jsonl.run if merged_jsonl else current.run_name),
+        method=(merged_jsonl.method if merged_jsonl else current.method),
+        preset=(merged_jsonl.preset if merged_jsonl else current.preset),
+        state=current.state,
+        submitted_at=min(
+            (run.submitted_at for run in ordered if run.submitted_at is not None),
+            default=current.submitted_at,
+        ),
+        started_at=min(
+            (run.started_at for run in ordered if run.started_at is not None),
+            default=current.started_at,
+        ),
+        ended_at=current.ended_at,
+        total_steps=(merged_jsonl.total_steps if merged_jsonl else current.total_steps),
+        total_epochs=(merged_jsonl.total_epochs if merged_jsonl else current.total_epochs),
+        ckpt_path=current.ckpt_path,
+        error=current.error,
+        stop_requested=current.stop_requested,
+        attempts=ordered,
+    )
+    if merged_jsonl is not None:
+        apply_jsonl_metadata(merged, merged_jsonl)
+    merged.sources = _source_flags(merged)
+    return merged
+
+
 def _scan_daemon_jobs() -> list[Run]:
-    runs: list[Run] = []
+    physical_runs: list[Run] = []
     if not os.path.isdir(JOBS_DIR):
-        return runs
+        return []
     for name in sorted(os.listdir(JOBS_DIR), reverse=True):
         job_dir = os.path.join(JOBS_DIR, name)
         if not os.path.isdir(job_dir):
@@ -157,9 +348,19 @@ def _scan_daemon_jobs() -> list[Run]:
         jl = run.jsonl
         if jl is not None:
             apply_jsonl_metadata(run, jl)
-        run.sources = _source_flags(run)
-        runs.append(run)
-    return runs
+        _link_log_sources(run)
+        physical_runs.append(run)
+
+    grouped: dict[str, list[Run]] = {}
+    for run in physical_runs:
+        root_id = str((run.job or {}).get("root_job_id") or run.id)
+        grouped.setdefault(root_id, []).append(run)
+    runs = [merge_daemon_attempts(group) for group in grouped.values()]
+    return sorted(
+        runs,
+        key=lambda run: float(run.submitted_at or 0.0),
+        reverse=True,
+    )
 
 
 def _scan_inline_logs(known_log_dirs: set) -> list[Run]:
@@ -226,21 +427,12 @@ def _source_flags(run: Run) -> dict:
 def discover(use_cache: bool = True) -> list[Run]:
     """Build the full run index (daemon jobs first, then inline runs)."""
     runs = _scan_daemon_jobs()
-    known = {r.log_dir for r in runs if r.log_dir}
+    known = {
+        attempt.log_dir
+        for run in runs
+        for attempt in (run.attempts or [run])
+        if attempt.log_dir
+    }
     inline = _scan_inline_logs(known)
     runs.extend(inline)
-    # link missing snapshot/tb for daemon runs whose log_dir exists
-    for run in runs:
-        if run.kind != "daemon":
-            continue
-        ld = run.log_dir
-        if ld is None or not os.path.isdir(ld):
-            continue
-        if run.snapshot is None:
-            snaps = [f for f in os.listdir(ld) if f.endswith(".snapshot.toml")]
-            if snaps:
-                run.snapshot = parse_snapshot(os.path.join(ld, snaps[0]))
-        if run.tb is None:
-            run.tb = parse_tb(ld)
-        run.sources = _source_flags(run)
     return runs

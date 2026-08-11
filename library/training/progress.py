@@ -187,6 +187,8 @@ class ProgressSink:
         pid: int,
         log_dir: Optional[str] = None,
         sampling_enabled: bool = False,
+        config_signature: Optional[str] = None,
+        dataset_signature: Optional[str] = None,
     ) -> None:
         """Open the file fresh (truncating any stale stream) and write the
         opening event.
@@ -211,6 +213,10 @@ class ProgressSink:
             self._fh = None
             return
         extra = {"log_dir": log_dir} if log_dir is not None else {}
+        if config_signature is not None:
+            extra["config_signature"] = config_signature
+        if dataset_signature is not None:
+            extra["dataset_signature"] = dataset_signature
         self._emit(
             "run_start",
             run=self._run,

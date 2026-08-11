@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from webui.services.daemon_client import DaemonError
@@ -45,9 +46,26 @@ _COMMAND_DESCRIPTIONS = COMMAND_CATALOG
 
 
 @router.get("", response_model=list[dict])
-def list_tasks():
-    """List all active tasks."""
-    return task_service.list_tasks()
+async def list_tasks(
+    response: Response,
+    state: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List one durable task-history page.
+
+    Keep the response body backward-compatible as a list.  Pagination metadata
+    is exposed in headers so older consumers do not need a schema migration.
+    """
+    page, total = await task_service.list_tasks_page(
+        state=state,
+        limit=min(max(limit, 1), 500),
+        offset=max(offset, 0),
+    )
+    response.headers["X-Total-Count"] = str(total)
+    response.headers["X-Page-Offset"] = str(max(offset, 0))
+    response.headers["X-Page-Limit"] = str(min(max(limit, 1), 500))
+    return page
 
 
 @router.get("/commands", response_model=TaskCommandListResponse)
@@ -91,6 +109,7 @@ async def queue_resume():
 
 class DaemonShutdownRequest(BaseModel):
     kill_jobs: bool = True
+    mode: Optional[str] = None
 
 
 @router.post("/daemon/shutdown")
@@ -101,8 +120,13 @@ async def daemon_shutdown(body: DaemonShutdownRequest):
     as a sidecar — its shutdown tree-kills this server too. The shutdown has
     still been triggered in that case.
     """
+    if body.mode is not None and body.mode not in {"detach", "cooperative-stop", "force"}:
+        raise HTTPException(
+            status_code=400,
+            detail="shutdown mode must be detach, cooperative-stop, or force",
+        )
     try:
-        return await task_service.shutdown_daemon(kill_jobs=body.kill_jobs)
+        return await task_service.shutdown_daemon(kill_jobs=body.kill_jobs, mode=body.mode)
     except DaemonError as exc:
         raise HTTPException(status_code=502, detail=f"daemon: {exc}") from exc
 
@@ -168,10 +192,32 @@ def _reject_forbidden_args(args: list[str]) -> None:
 
 @router.delete("/{task_id}")
 async def stop_task(task_id: str):
-    """Cancel a running task."""
+    """Request cancellation; completion is reported after daemon teardown."""
     ok = await task_service.cancel_task(task_id)
     if not ok:
         raise HTTPException(
-            status_code=404, detail=f"Task {task_id} not found or not running"
+            status_code=404, detail=f"Task {task_id} not found or not cancellable"
         )
-    return {"status": "cancelled", "task_id": task_id}
+    return {"status": "stopping", "task_id": task_id}
+
+
+@router.post("/{task_id}/resume")
+async def resume_task(task_id: str):
+    try:
+        task = await task_service.resume_task(task_id)
+    except DaemonError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    return task.info()
+
+
+@router.delete("/{task_id}/history")
+async def delete_history(task_id: str):
+    try:
+        ok = await task_service.delete_task(task_id)
+    except DaemonError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=409, detail="Only terminal tasks can be deleted")
+    return {"status": "deleted", "task_id": task_id}
