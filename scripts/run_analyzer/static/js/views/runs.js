@@ -109,7 +109,7 @@ export function renderRuns() {
     tr.innerHTML = `
       <td class="ta-pick"><input type="checkbox" class="run-pick" ${cmpSel.has(r.id) ? 'checked' : ''} aria-label="选择 ${esc(r.run_name)}"></td>
       <td class="num">${String(i + 1).padStart(2, '0')}</td>
-      <td><span class="ta-run-name">${esc(r.run_name)}</span><span class="ta-run-id">${esc(r.id)}</span></td>
+      <td><span class="ta-run-name">${esc(r.run_name)}${r.attempt_count > 1 ? ` · R+${r.attempt_count - 1}` : ''}</span><span class="ta-run-id">${esc(r.id)}</span></td>
       <td><span class="st-dot ${st.cls}"><i></i>${st.label}</span></td>
       <td class="num">${esc(r.method || '—')} · ${esc(r.preset || '—')}</td>
       <td class="num">${r.actual_epochs != null ? `${r.actual_epochs}/${r.total_epochs ?? '?'}` : '—'}</td>

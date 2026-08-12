@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import logging
+from bisect import bisect_left
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,22 @@ class TrainingMetrics:
     # the gallery can show "sampling disabled" instead of appearing broken
     # when no preview images will ever be produced.
     sampling_enabled: bool = False
+
+    def upsert_step(self, step: int, loss: float, lr: float) -> None:
+        """Insert or replace one scalar point while keeping step order stable."""
+        index = bisect_left(self.step_history, step)
+        if index < len(self.step_history) and self.step_history[index] == step:
+            self.loss_history[index] = loss
+            self.lr_history[index] = lr
+        else:
+            self.step_history.insert(index, step)
+            self.loss_history.insert(index, loss)
+            self.lr_history.insert(index, lr)
+        if len(self.step_history) > _MAX_HISTORY:
+            stride = len(self.step_history) // _MAX_HISTORY + 1
+            self.step_history = self.step_history[::stride]
+            self.loss_history = self.loss_history[::stride]
+            self.lr_history = self.lr_history[::stride]
 
     def snapshot(self) -> dict:
         """Return a JSON-serializable snapshot of current metrics."""
@@ -151,17 +168,7 @@ class TrainingLogParser:
         if m.group(8):  # avr_loss
             loss = float(m.group(8))
             self.metrics.avr_loss = loss
-            # Append to rolling history (downsample if exceeding max)
-            if not self.metrics.step_history or step != self.metrics.step_history[-1]:
-                self.metrics.loss_history.append(loss)
-                self.metrics.step_history.append(step)
-                self.metrics.lr_history.append(self.metrics.lr)
-                if len(self.metrics.loss_history) > _MAX_HISTORY:
-                    # Keep every Nth point to stay under limit
-                    stride = len(self.metrics.loss_history) // _MAX_HISTORY + 1
-                    self.metrics.loss_history = self.metrics.loss_history[::stride]
-                    self.metrics.step_history = self.metrics.step_history[::stride]
-                    self.metrics.lr_history = self.metrics.lr_history[::stride]
+            self.metrics.upsert_step(step, loss, self.metrics.lr)
 
         if m.group(10):  # router_H
             self.metrics.router_h = float(m.group(10))
@@ -184,15 +191,7 @@ class TrainingLogParser:
         if m.group(3):  # loss
             loss = float(m.group(3))
             self.metrics.avr_loss = loss
-            if not self.metrics.step_history or step != self.metrics.step_history[-1]:
-                self.metrics.loss_history.append(loss)
-                self.metrics.step_history.append(step)
-                self.metrics.lr_history.append(self.metrics.lr)
-                if len(self.metrics.loss_history) > _MAX_HISTORY:
-                    stride = len(self.metrics.loss_history) // _MAX_HISTORY + 1
-                    self.metrics.loss_history = self.metrics.loss_history[::stride]
-                    self.metrics.step_history = self.metrics.step_history[::stride]
-                    self.metrics.lr_history = self.metrics.lr_history[::stride]
+            self.metrics.upsert_step(step, loss, self.metrics.lr)
 
         if m.group(5):  # speed
             self.metrics.speed = m.group(5)

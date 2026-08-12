@@ -29,14 +29,27 @@
             {{ task.command }}
             <v-spacer />
             <v-chip size="x-small" variant="outlined">{{ task.state }}</v-chip>
+            <v-chip v-if="task.legacy" size="x-small" color="warning" variant="tonal" class="ml-1">
+              {{ t('taskLegacy') }}
+            </v-chip>
           </v-card-title>
-          <v-card-subtitle class="text-caption">
+          <v-card-subtitle class="task-card-subtitle text-caption">
             {{ task.task_id.slice(0, 8) }} &middot; PID {{ task.pid ?? '—' }}
+            <span v-if="task.recovery_step != null"> &middot; step {{ task.recovery_step }}</span>
+            <span v-if="task.last_progress?.step != null"> &middot; {{ t('taskLastProgress') }} {{ task.last_progress.step }}<span v-if="task.last_progress.total_steps != null">/{{ task.last_progress.total_steps }}</span></span>
           </v-card-subtitle>
-          <v-card-text v-if="task.state === 'running'" class="pt-0">
-            <v-progress-linear indeterminate color="primary" height="3" class="anim-progress-stripe" />
+          <v-card-text v-if="task.terminal_reason" class="text-caption pt-0 text-medium-emphasis">
+            {{ t('taskTerminalReason') }}: {{ task.terminal_reason }}
+          </v-card-text>
+          <v-card-text v-if="task.legacy" class="text-caption pt-0 text-warning">
+            {{ t('taskLegacyDescription') }}
+          </v-card-text>
+          <TaskAttemptHistory :task="task" />
+          <v-card-text v-if="task.state === 'running' || task.state === 'pending' || task.state === 'stopping'" class="pt-0">
+            <v-progress-linear v-if="task.state === 'running' || task.state === 'stopping'" indeterminate color="primary" height="3" class="anim-progress-stripe" />
             <div class="d-flex justify-end mt-1">
               <v-btn
+                v-if="task.state === 'running' || task.state === 'pending'"
                 size="x-small"
                 color="error"
                 variant="text"
@@ -46,7 +59,22 @@
               </v-btn>
             </div>
           </v-card-text>
-          <v-card-actions v-if="task.state === 'running' || task.output_lines > 0">
+          <v-card-actions class="task-card-actions">
+            <v-btn
+              v-if="task.resumable && (task.state === 'failed' || task.state === 'cancelled')"
+              size="x-small"
+              color="primary"
+              variant="text"
+              prepend-icon="mdi-play-circle"
+              @click="taskStore.resumeTask(task.task_id)"
+            >{{ t('taskResume') }}</v-btn>
+            <v-btn
+              v-if="task.state === 'success' || task.state === 'failed' || task.state === 'cancelled'"
+              size="x-small"
+              variant="text"
+              prepend-icon="mdi-delete-outline"
+              @click="taskStore.deleteHistory(task.task_id)"
+            >{{ t('taskDeleteHistory') }}</v-btn>
             <v-btn
               size="x-small"
               variant="text"
@@ -70,14 +98,27 @@
             {{ task.command }}
             <v-spacer />
             <v-chip size="x-small" variant="outlined">{{ task.state }}</v-chip>
+            <v-chip v-if="task.legacy" size="x-small" color="warning" variant="tonal" class="ml-1">
+              {{ t('taskLegacy') }}
+            </v-chip>
           </v-card-title>
-          <v-card-subtitle class="text-caption flex-shrink-0">
+          <v-card-subtitle class="task-card-subtitle text-caption flex-shrink-0">
             {{ task.task_id.slice(0, 8) }} &middot; PID {{ task.pid ?? '—' }}
+            <span v-if="task.recovery_step != null"> &middot; step {{ task.recovery_step }}</span>
+            <span v-if="task.last_progress?.step != null"> &middot; {{ t('taskLastProgress') }} {{ task.last_progress.step }}<span v-if="task.last_progress.total_steps != null">/{{ task.last_progress.total_steps }}</span></span>
           </v-card-subtitle>
-          <v-card-text v-if="task.state === 'running'" class="pt-0 flex-shrink-0">
-            <v-progress-linear indeterminate color="primary" height="3" class="anim-progress-stripe" />
+          <div v-if="task.terminal_reason" class="text-caption text-medium-emphasis px-2">
+            {{ t('taskTerminalReason') }}: {{ task.terminal_reason }}
+          </div>
+          <div v-if="task.legacy" class="text-caption text-warning px-2">
+            {{ t('taskLegacyDescription') }}
+          </div>
+          <TaskAttemptHistory :task="task" />
+          <v-card-text v-if="task.state === 'running' || task.state === 'pending' || task.state === 'stopping'" class="pt-0 flex-shrink-0">
+            <v-progress-linear v-if="task.state === 'running' || task.state === 'stopping'" indeterminate color="primary" height="3" class="anim-progress-stripe" />
             <div class="d-flex justify-end mt-1">
               <v-btn
+                v-if="task.state === 'running' || task.state === 'pending'"
                 size="x-small"
                 color="error"
                 variant="text"
@@ -90,7 +131,22 @@
           <v-card-text class="d-flex flex-column pt-0" style="flex: 1 1 0; min-height: 0;">
             <LogStream :task-id="task.task_id" />
           </v-card-text>
-          <v-card-actions class="flex-shrink-0">
+          <v-card-actions class="task-card-actions flex-shrink-0">
+            <v-btn
+              v-if="task.resumable && (task.state === 'failed' || task.state === 'cancelled')"
+              size="x-small"
+              color="primary"
+              variant="text"
+              prepend-icon="mdi-play-circle"
+              @click="taskStore.resumeTask(task.task_id)"
+            >{{ t('taskResume') }}</v-btn>
+            <v-btn
+              v-if="task.state === 'success' || task.state === 'failed' || task.state === 'cancelled'"
+              size="x-small"
+              variant="text"
+              prepend-icon="mdi-delete-outline"
+              @click="taskStore.deleteHistory(task.task_id)"
+            >{{ t('taskDeleteHistory') }}</v-btn>
             <v-btn
               size="x-small"
               variant="text"
@@ -110,23 +166,44 @@ import { ref } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
 import LogStream from './LogStream.vue'
+import TaskAttemptHistory from './TaskAttemptHistory.vue'
 
 const taskStore = useTaskStore()
 const { t } = useI18n()
 const selectedTask = ref('')
 
 function stateColor(state: string) {
-  if (state === 'running') return 'primary'
+  if (state === 'running' || state === 'stopping') return 'primary'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
   return undefined
 }
 
 function stateIcon(state: string) {
-  if (state === 'running') return 'mdi-progress-clock'
+  if (state === 'running' || state === 'stopping') return 'mdi-progress-clock'
   if (state === 'success') return 'mdi-check-circle'
   if (state === 'failed') return 'mdi-alert-circle'
   if (state === 'cancelled') return 'mdi-cancel'
   return 'mdi-clock-outline'
 }
 </script>
+
+<style scoped>
+@media (max-width: 600px) {
+  .task-card-subtitle {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .task-card-actions {
+    flex-wrap: wrap;
+    gap: 2px 4px;
+    justify-content: flex-start;
+  }
+
+  .task-card-actions :deep(.v-btn) {
+    margin-inline-start: 0 !important;
+  }
+}
+</style>

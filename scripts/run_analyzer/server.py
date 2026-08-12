@@ -36,6 +36,7 @@ from scripts.run_analyzer.discovery import (
     Run,
     apply_jsonl_metadata,
     discover,
+    merge_daemon_attempts,
 )
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -107,6 +108,10 @@ def _refresh_index(force: bool = False) -> None:
 
 
 def _find(run_id: str) -> Run:
+    # A resumed attempt creates a new job directory while the browser may stay
+    # on the existing root run. Refresh first so that poll immediately adopts
+    # the new physical attempt into the same logical run.
+    _refresh_index()
     with _index_lock:
         runs = _index
     for r in runs:
@@ -115,41 +120,53 @@ def _find(run_id: str) -> Run:
     raise HTTPException(status_code=404, detail=f"run {run_id} not found")
 
 
+def _freshen_physical_attempt(run: Run) -> None:
+    """Reload one physical attempt from its durable files."""
+    from scripts.run_analyzer.sources.jsonl import parse as parse_jsonl
+    from scripts.run_analyzer.sources.stdout_log import parse as parse_stdout
+
+    jl = parse_jsonl(run.jsonl_path or os.path.join(run.dir, "progress.jsonl"))
+    if jl is not None:
+        apply_jsonl_metadata(run, jl)
+    job_path = os.path.join(run.dir, "job.json")
+    try:
+        with open(job_path, encoding="utf-8") as handle:
+            job = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        job = None
+    if job is not None:
+        run.job = job
+        run.state = job.get("state") or run.state
+        run.submitted_at = job.get("submitted_at")
+        run.started_at = job.get("started_at")
+        run.ended_at = job.get("ended_at")
+        run.ckpt_path = job.get("ckpt_path")
+        run.sample_dir = job.get("sample_dir") or run.sample_dir
+        run.error = job.get("error")
+        run.stop_requested = bool(job.get("stop_requested"))
+        if jl is not None:
+            apply_jsonl_metadata(run, jl)
+    stdout = parse_stdout(os.path.join(run.dir, "stdout.log"))
+    if stdout is not None:
+        run.stdout = stdout
+
+
 def _freshen_run(run: Run) -> None:
-    """按需重解析单个 run 的 jsonl/stdout（毫秒级），不触发全量 discover。
+    """按需重解析逻辑 run 的所有 attempt，不触发全量 discover。
 
     监控 2s 轮询调 /api/runs/{id}：index 里的 Run.jsonl 是上次 discover 的
     快照，progress.jsonl 是内容追加写入（文件 mtime 变、目录 mtime 不变），
     必须按请求重读才能拿到最新 step。index 列表仍由 _dir_mtime_key 控制。
     """
     try:
-        from scripts.run_analyzer.sources.jsonl import parse as parse_jsonl
-        from scripts.run_analyzer.sources.stdout_log import parse as parse_stdout
-
-        jl = parse_jsonl(run.jsonl_path or os.path.join(run.dir, "progress.jsonl"))
-        if jl is not None:
-            apply_jsonl_metadata(run, jl)
         if run.kind == "daemon":
-            job_path = os.path.join(run.dir, "job.json")
-            try:
-                with open(job_path, encoding="utf-8") as handle:
-                    job = json.load(handle)
-            except (OSError, json.JSONDecodeError):
-                job = None
-            if job is not None:
-                run.job = job
-                run.state = job.get("state") or run.state
-                run.submitted_at = job.get("submitted_at")
-                run.started_at = job.get("started_at")
-                run.ended_at = job.get("ended_at")
-                run.ckpt_path = job.get("ckpt_path")
-                run.error = job.get("error")
-                run.stop_requested = bool(job.get("stop_requested"))
-                if jl is not None:
-                    apply_jsonl_metadata(run, jl)
-            so = parse_stdout(os.path.join(run.dir, "stdout.log"))
-            if so is not None:
-                run.stdout = so
+            if run.attempts:
+                for attempt in run.attempts:
+                    _freshen_physical_attempt(attempt)
+                refreshed = merge_daemon_attempts(run.attempts)
+                run.__dict__.update(refreshed.__dict__)
+            else:
+                _freshen_physical_attempt(run)
         run.sources = {
             "jsonl": run.jsonl is not None,
             "tensorboard": run.tb is not None,
@@ -176,6 +193,7 @@ def api_runs():
 @app.get("/api/runs/{run_id}/overview")
 def api_run_overview(run_id: str):
     r = _find(run_id)
+    _freshen_run(r)
     return analyze.overview_payload(r)
 
 
@@ -206,6 +224,7 @@ def api_live(run_id: str, since: float = 0.0):
 @app.get("/api/runs/{run_id}/stdout")
 def api_stdout(run_id: str, tail: int = Query(400, ge=1, le=20000), q: str = ""):
     r = _find(run_id)
+    _freshen_run(r)
     so = r.stdout
     if so is None:
         return {"lines": [], "warnings": [], "errors": []}
@@ -233,15 +252,29 @@ def api_compare(ids: list[str] = Body(..., embed=True)):
 
 
 @app.get("/api/runs/{run_id}/samples/{fn}")
-def api_sample_file(run_id: str, fn: str):
+def api_sample_file(run_id: str, fn: str, attempt_id: Optional[str] = None):
     r = _find(run_id)
-    sdir = r.sample_dir
-    if not sdir or not os.path.isdir(sdir):
-        raise HTTPException(status_code=404, detail="no sample dir")
-    p = os.path.normpath(os.path.join(sdir, fn))
-    if not p.startswith(os.path.normpath(sdir)) or not os.path.isfile(p):
+    if os.path.basename(fn) != fn or fn in {".", ".."}:
         raise HTTPException(status_code=404, detail="not found")
-    return FileResponse(p)
+    attempts = r.attempts or [r]
+    if attempt_id:
+        attempts = [attempt for attempt in attempts if attempt.id == attempt_id]
+        if not attempts:
+            raise HTTPException(status_code=404, detail="attempt not found")
+    for attempt in reversed(attempts):
+        sdir = attempt.sample_dir
+        if not sdir or not os.path.isdir(sdir):
+            continue
+        root = os.path.realpath(sdir)
+        path = os.path.realpath(os.path.join(root, fn))
+        try:
+            if os.path.commonpath([root, path]) != root:
+                continue
+        except ValueError:
+            continue
+        if os.path.isfile(path):
+            return FileResponse(path)
+    raise HTTPException(status_code=404, detail="not found")
 
 
 app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

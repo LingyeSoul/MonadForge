@@ -40,6 +40,7 @@ _UNSAFE_PATH = re.compile(r"[\x00-\x1f\\/]|\.\.|^\.")
 
 
 class SampleImage(BaseModel):
+    attempt_id: str
     path: str  # relative to the task's sample dir
     filename: str
     stem: str
@@ -55,7 +56,7 @@ class SampleListResponse(BaseModel):
     total: int
 
 
-def _resolve_task_sample_dir(task_id: str) -> Path | None:
+def _resolve_task_sample_dir(task_id: str, attempt_id: str | None = None) -> Path | None:
     """Resolve the on-disk sample directory for *task_id*.
 
     Resolution order (mirrors how ``--progress_jsonl`` is located):
@@ -76,7 +77,29 @@ def _resolve_task_sample_dir(task_id: str) -> Path | None:
     task = task_service.get_task(task_id)
     sample_dir_raw: str | None = None
     if task is not None:
-        sample_dir_raw = task.sample_dir or task_service._arg_value(
+        if attempt_id:
+            if task.attempts:
+                attempt = next(
+                    (
+                        item
+                        for item in task.attempts
+                        if str(item.get("id") or item.get("job_id")) == attempt_id
+                    ),
+                    None,
+                )
+                if attempt is None:
+                    return None
+                sample_dir_raw = attempt.get("sample_dir")
+                if not sample_dir_raw:
+                    return None
+            else:
+                current_attempt_id = str(task.job_id or task.id)
+                if attempt_id != current_attempt_id:
+                    return None
+                sample_dir_raw = task.sample_dir
+        else:
+            sample_dir_raw = task.sample_dir
+        sample_dir_raw = sample_dir_raw or task_service._arg_value(
             task.args, "--sample_dir"
         )
         if not sample_dir_raw:
@@ -87,7 +110,7 @@ def _resolve_task_sample_dir(task_id: str) -> Path | None:
     else:
         # Session-only task list lost (WebUI restarted). The daemon persists
         # job records (including sample_dir) to job.json — recover from there.
-        sample_dir_raw = _sample_dir_from_daemon_job(task_id)
+        sample_dir_raw = _sample_dir_from_daemon_job(task_id, attempt_id)
 
     if not sample_dir_raw:
         return None
@@ -103,7 +126,7 @@ def _resolve_task_sample_dir(task_id: str) -> Path | None:
     return resolved if resolved.is_dir() else None
 
 
-def _sample_dir_from_daemon_job(job_id: str) -> str | None:
+def _sample_dir_from_daemon_job(job_id: str, attempt_id: str | None = None) -> str | None:
     """Recover ``sample_dir`` from the daemon's persisted job record.
 
     Used when the WebUI's in-memory task list no longer knows about *job_id*
@@ -111,12 +134,45 @@ def _sample_dir_from_daemon_job(job_id: str) -> str | None:
     rather than propagating, so preview simply reports "no samples".
     """
     try:
-        job = _daemon_client.get_job_sync(job_id)
+        group = _daemon_client.get_job_group_sync(job_id)
     except (DaemonError, OSError):
+        try:
+            group = _daemon_client.get_job_sync(job_id)
+        except (DaemonError, OSError):
+            return None
+    if not isinstance(group, dict):
         return None
-    if not isinstance(job, dict):
-        return None
-    return job.get("sample_dir")
+    attempts = list(group.get("attempts") or [group])
+    target_id = attempt_id or str(group.get("current_job_id") or job_id)
+    attempt = next(
+        (
+            item
+            for item in attempts
+            if str(item.get("id") or item.get("job_id")) == target_id
+        ),
+        None,
+    )
+    if attempt is None and attempt_id is None and attempts:
+        attempt = attempts[-1]
+    return attempt.get("sample_dir") if attempt else None
+
+
+def _resolve_task_sample_dirs(task_id: str) -> list[tuple[str, Path]]:
+    task = task_service.get_task(task_id)
+    if task is None:
+        return []
+    attempts = task.attempts or [
+        {"id": task.job_id or task.id, "sample_dir": task.sample_dir}
+    ]
+    out: list[tuple[str, Path]] = []
+    for attempt in attempts:
+        attempt_id = str(attempt.get("id") or attempt.get("job_id") or "")
+        if not attempt_id:
+            continue
+        sample_dir = _resolve_task_sample_dir(task_id, attempt_id)
+        if sample_dir is not None:
+            out.append((attempt_id, sample_dir))
+    return out
 
 
 def _scan_sample_dir(sample_dir: Path) -> list[Path]:
@@ -143,23 +199,29 @@ def list_task_samples(
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    sample_dir = _resolve_task_sample_dir(task_id)
-    if sample_dir is None:
+    sample_dirs = _resolve_task_sample_dirs(task_id)
+    if not sample_dirs:
         return SampleListResponse(task_id=task_id, sample_dir=None, items=[], total=0)
 
-    all_files = _scan_sample_dir(sample_dir)
+    all_files = [
+        (attempt_id, sample_dir, path)
+        for attempt_id, sample_dir in sample_dirs
+        for path in _scan_sample_dir(sample_dir)
+    ]
+    all_files.sort(key=lambda item: item[2].stat().st_mtime, reverse=True)
     total = len(all_files)
     start = (page - 1) * page_size
     page_files = all_files[start : start + page_size]
 
     items: list[SampleImage] = []
-    for p in page_files:
+    for attempt_id, _sample_dir, p in page_files:
         try:
             stat = p.stat()
         except OSError:
             continue
         items.append(
             SampleImage(
+                attempt_id=attempt_id,
                 path=p.name,
                 filename=p.name,
                 stem=p.stem,
@@ -173,7 +235,7 @@ def list_task_samples(
 
     return SampleListResponse(
         task_id=task_id,
-        sample_dir=str(sample_dir),
+        sample_dir=str(sample_dirs[-1][1]),
         items=items,
         total=total,
     )
@@ -183,6 +245,7 @@ def list_task_samples(
 def get_sample_file(
     task_id: str,
     path: str = Query(..., description="Filename within the task's sample dir"),
+    attempt_id: str | None = None,
 ):
     """Stream a preview PNG by filename.
 
@@ -196,7 +259,17 @@ def get_sample_file(
     if _UNSAFE_PATH.search(path):
         raise HTTPException(status_code=400, detail="Invalid sample path")
 
-    sample_dir = _resolve_task_sample_dir(task_id)
+    sample_dir = _resolve_task_sample_dir(task_id, attempt_id)
+    if sample_dir is None and attempt_id is None:
+        # Backward compatibility for clients that only send a filename: pick
+        # the newest matching artifact across the logical task.
+        matches = []
+        for _candidate_attempt, candidate_dir in _resolve_task_sample_dirs(task_id):
+            candidate = (candidate_dir / path).resolve()
+            if candidate.is_file():
+                matches.append((candidate.stat().st_mtime, candidate_dir))
+        if matches:
+            sample_dir = max(matches, key=lambda item: item[0])[1]
     if sample_dir is None:
         raise HTTPException(
             status_code=404,

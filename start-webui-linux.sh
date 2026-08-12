@@ -32,8 +32,8 @@ trap cleanup EXIT INT TERM
 
 sleep 3
 if command -v xdg-open &>/dev/null; then
-    xdg-open "$WEBUI_URL" 2>/dev/null || true
-    xdg-open "$ANALYZER_URL" 2>/dev/null || true
+    setsid xdg-open "$WEBUI_URL" 2>/dev/null || true
+    setsid xdg-open "$ANALYZER_URL" 2>/dev/null || true
 elif command -v open &>/dev/null; then
     open "$WEBUI_URL" 2>/dev/null || true
     open "$ANALYZER_URL" 2>/dev/null || true

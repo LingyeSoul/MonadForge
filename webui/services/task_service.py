@@ -46,6 +46,7 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 class TaskState(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
+    STOPPING = "stopping"
     SUCCESS = "success"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -85,10 +86,40 @@ class Task:
     # ``eta`` / ``total_steps``). Disabling either channel makes
     # half the dashboard go blank, so we keep both.
     is_training: bool = field(default=False, repr=False)
+    recovery_step: Optional[int] = None
+    resume_state: Optional[str] = field(default=None, repr=False)
+    terminal_reason: Optional[str] = field(default=None, repr=False)
+    resumable: bool = False
+    legacy: bool = False
+    target_steps: Optional[int] = None
+    target_epochs: Optional[int] = None
+    # Full physical daemon records for this logical task, oldest first.
+    attempts: list[dict] = field(default_factory=list, repr=False)
+    monitored_job_id: Optional[str] = field(default=None, repr=False)
 
     def info(self) -> dict:
+        attempt_infos = [
+            {
+                "job_id": str(attempt.get("id") or attempt.get("job_id") or ""),
+                "attempt_index": int(attempt.get("attempt_index") or 0),
+                "state": attempt.get("state"),
+                "started_at": TaskService._format_daemon_timestamp(
+                    attempt.get("started_at") or attempt.get("submitted_at")
+                ),
+                "ended_at": TaskService._format_daemon_timestamp(attempt.get("ended_at")),
+                "recovery_step": attempt.get("recovery_step"),
+                "exit_code": attempt.get("rc"),
+                "terminal_reason": attempt.get("terminal_reason")
+                or attempt.get("status_detail")
+                or attempt.get("error"),
+            }
+            for attempt in self.attempts
+        ]
         return {
             "task_id": self.id,
+            "current_job_id": self.job_id,
+            "attempt_count": max(1, len(attempt_infos)),
+            "attempts": attempt_infos,
             "command": self.command,
             "state": self.state.value,
             "pid": self.pid,
@@ -97,6 +128,18 @@ class Task:
             "started_at": self.started_at,
             "wandb_run_url": self.wandb_run_url,
             "category": task_category(self.command),
+            "recovery_step": self.recovery_step,
+            "resume_state": self.resume_state,
+            "terminal_reason": self.terminal_reason,
+            "resumable": self.resumable,
+            "legacy": self.legacy,
+            "target_steps": self.target_steps,
+            "target_epochs": self.target_epochs,
+            "last_progress": {
+                "step": self.parser.metrics.step,
+                "total_steps": self.parser.metrics.total_steps,
+                "epoch": self.parser.metrics.epoch,
+            },
         }
 
 
@@ -119,23 +162,58 @@ class TaskService:
     async def reconcile_daemon_jobs(self) -> None:
         """Restore active daemon jobs after a WebUI process restart."""
         try:
-            jobs = await daemon_client.list_jobs()
+            page = await self._list_job_groups_page(limit=500)
         except DaemonError as exc:
             logger.warning("Could not reconcile daemon jobs at WebUI startup: %s", exc)
             return
 
-        self._reconcile_job_list(jobs)
+        self._reconcile_job_list(list(page.get("groups") or []))
+
+    @staticmethod
+    def _physical_job_group(info: dict) -> dict:
+        job_id = str(info.get("id") or "")
+        group = dict(info)
+        group.update(
+            {
+                "id": str(info.get("root_job_id") or job_id),
+                "root_job_id": str(info.get("root_job_id") or job_id),
+                "current_job_id": job_id,
+                "attempt_count": 1,
+                "attempts": [dict(info)],
+            }
+        )
+        return group
+
+    async def _list_job_groups_page(self, **kwargs) -> dict:
+        """Use lineage-aware daemon APIs, with one-attempt compatibility."""
+        try:
+            return await daemon_client.list_job_groups_page(**kwargs)
+        except DaemonError:
+            page = await daemon_client.list_jobs_page(**kwargs)
+            jobs = list(page.get("jobs") or [])
+            states = {
+                part.strip()
+                for part in str(kwargs.get("state") or "").split(",")
+                if part.strip()
+            }
+            if states:
+                jobs = [job for job in jobs if job.get("state") in states]
+            return {
+                "groups": [self._physical_job_group(job) for job in jobs],
+                "total": len(jobs) if states else int(page.get("total", len(jobs)) or 0),
+                "offset": int(page.get("offset", kwargs.get("offset", 0)) or 0),
+                "limit": int(page.get("limit", kwargs.get("limit", len(jobs))) or 0),
+            }
 
     def _reconcile_job_list(self, jobs: list[dict]) -> None:
         """Merge active daemon jobs into the WebUI's in-memory task table."""
 
-        for info in jobs:
-            if info.get("state") not in ("queued", "running"):
+        for raw_info in jobs:
+            info = raw_info if raw_info.get("attempts") else self._physical_job_group(raw_info)
+            root_id = info.get("root_job_id") or info.get("id")
+            if not root_id:
                 continue
-            job_id = info.get("id")
-            if not job_id:
-                continue
-            task = self._tasks.get(str(job_id))
+            task = self._tasks.get(str(root_id))
             if task is None:
                 task = self._task_from_daemon(info)
                 self._tasks[task.id] = task
@@ -144,29 +222,48 @@ class TaskService:
             self._ensure_monitors(task, info.get("progress_path"))
 
     def _task_from_daemon(self, info: dict) -> Task:
-        job_id = str(info["id"])
-        argv = [str(value) for value in (info.get("argv") or [])]
-        command = str(info.get("method") or "unknown")
+        group = info if info.get("attempts") else self._physical_job_group(info)
+        attempts = list(group.get("attempts") or [])
+        current_job_id = str(group.get("current_job_id") or attempts[-1].get("id") or group["id"])
+        current = next(
+            (attempt for attempt in attempts if str(attempt.get("id")) == current_job_id),
+            attempts[-1] if attempts else group,
+        )
+        root_id = str(group.get("root_job_id") or group.get("id") or current_job_id)
+        argv = [str(value) for value in (current.get("argv") or [])]
+        command = str(current.get("method") or "unknown")
         args: list[str] = []
         if len(argv) >= 2 and Path(argv[0]).name.lower() == "tasks.py":
             command = argv[1]
             args = argv[2:]
 
         task = Task(
-            id=job_id,
+            id=root_id,
             command=command,
             args=args,
-            state=self._map_daemon_state(info.get("state")),
-            pid=info.get("pid"),
-            exit_code=info.get("rc"),
-            job_id=job_id,
-            sample_dir=info.get("sample_dir"),
-            stdout_path=info.get("stdout_path"),
+            state=self._map_daemon_state(current.get("state"), stop_requested=bool(current.get("stop_requested"))),
+            pid=current.get("pid"),
+            exit_code=current.get("rc"),
+            job_id=current_job_id,
+            sample_dir=current.get("sample_dir"),
+            stdout_path=current.get("stdout_path"),
             started_at=self._format_daemon_timestamp(
-                info.get("started_at") or info.get("submitted_at")
+                group.get("started_at") or group.get("submitted_at")
             ),
+            attempts=attempts,
         )
-        task.is_training = self._command_runs_training(command)
+        task.is_training = current.get("kind") == "train" or self._command_runs_training(command)
+        task.recovery_step = current.get("recovery_step")
+        task.resume_state = current.get("recovery_state")
+        task.terminal_reason = current.get("terminal_reason") or current.get("status_detail") or current.get("error")
+        # A terminal status alone does not imply that a complete, signature-
+        # matched state exists. Keep Continue hidden until the daemon has
+        # discovered and persisted an actual recovery directory.
+        task.resumable = bool(current.get("recovery_state"))
+        task.legacy = bool(current.get("legacy"))
+        task.target_steps = current.get("target_steps")
+        task.target_epochs = current.get("target_epochs")
+        self._load_historical_output(task, group)
         return task
 
     @staticmethod
@@ -181,29 +278,163 @@ class TaskService:
             return None
 
     @staticmethod
-    def _map_daemon_state(state: Optional[str]) -> TaskState:
+    def _map_daemon_state(state: Optional[str], *, stop_requested: bool = False) -> TaskState:
         return {
             "queued": TaskState.PENDING,
-            "running": TaskState.RUNNING,
+            "running": TaskState.STOPPING if stop_requested else TaskState.RUNNING,
             "done": TaskState.SUCCESS,
             "stopped": TaskState.CANCELLED,
             "error": TaskState.FAILED,
         }.get(state or "", TaskState.PENDING)
 
     def _apply_daemon_state(self, task: Task, info: dict) -> None:
-        task.state = self._map_daemon_state(info.get("state"))
-        task.pid = info.get("pid")
-        task.exit_code = info.get("rc")
-        task.sample_dir = info.get("sample_dir") or task.sample_dir
-        task.stdout_path = info.get("stdout_path") or task.stdout_path
+        group = info if info.get("attempts") else self._physical_job_group(info)
+        attempts = list(group.get("attempts") or [])
+        current_job_id = str(
+            group.get("current_job_id")
+            or (attempts[-1].get("id") if attempts else task.job_id or task.id)
+        )
+        current = next(
+            (attempt for attempt in attempts if str(attempt.get("id")) == current_job_id),
+            attempts[-1] if attempts else group,
+        )
+        attempt_ids_before = [str(attempt.get("id")) for attempt in task.attempts]
+        attempt_ids_after = [str(attempt.get("id")) for attempt in attempts]
+        current_changed = task.job_id != current_job_id
+
+        task.state = self._map_daemon_state(
+            current.get("state"), stop_requested=bool(current.get("stop_requested"))
+        )
+        task.pid = current.get("pid")
+        task.exit_code = current.get("rc")
+        task.job_id = current_job_id
+        task.attempts = attempts
+        task.sample_dir = current.get("sample_dir") or task.sample_dir
+        task.stdout_path = current.get("stdout_path") or task.stdout_path
+        task.recovery_step = current.get("recovery_step")
+        task.resume_state = current.get("recovery_state")
+        task.terminal_reason = current.get("terminal_reason") or current.get("status_detail") or current.get("error")
+        task.resumable = bool(current.get("recovery_state"))
+        task.legacy = bool(current.get("legacy"))
+        task.target_steps = current.get("target_steps")
+        task.target_epochs = current.get("target_epochs")
+        if current_changed or attempt_ids_before != attempt_ids_after:
+            task.monitored_job_id = None
+            self._load_historical_output(task, group)
+        elif task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            self._load_historical_output(task, group)
+
+    @staticmethod
+    def _load_historical_output(task: Task, info: dict) -> None:
+        """Rebuild one logical task from all physical attempt artifacts."""
+        attempts = list(info.get("attempts") or [info])
+        task.lines = []
+        task.parser = TrainingLogParser()
+        task.stdout_offset = 0
+        task.progress_last_step = 0
+        task.progress_last_ts = None
+        points: dict[int, tuple[float, float, int | None]] = {}
+        final_steps: list[int] = []
+
+        for position, attempt in enumerate(attempts, start=1):
+            attempt_id = str(attempt.get("id") or attempt.get("job_id") or position)
+            if len(attempts) > 1:
+                recovery = attempt.get("recovery_step")
+                detail = f" from step {recovery}" if recovery is not None else ""
+                task.lines.append(
+                    f"[attempt {position}/{len(attempts)} · {attempt_id}{detail}]"
+                )
+
+            stdout_path = attempt.get("stdout_path")
+            if stdout_path:
+                try:
+                    raw = Path(stdout_path).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                    lines = [line for line in re.split(r"\r?\n", raw) if line]
+                    task.lines.extend(lines)
+                    for line in lines:
+                        task.parser.feed(line)
+                    if attempt_id == str(task.job_id):
+                        task.stdout_offset = len(raw.encode("utf-8"))
+                except OSError:
+                    pass
+
+            progress_path = attempt.get("progress_path")
+            if not progress_path or not task.is_training:
+                continue
+            try:
+                raw_events = Path(progress_path).read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
+            except OSError:
+                continue
+            for raw_event in raw_events:
+                try:
+                    ev = json.loads(raw_event)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    continue
+                kind = ev.get("ev")
+                metrics = task.parser.metrics
+                if kind == "run_start":
+                    if ev.get("total_steps") is not None:
+                        metrics.total_steps = int(ev["total_steps"])
+                    if ev.get("total_epochs") is not None:
+                        metrics.total_epochs = int(ev["total_epochs"])
+                    metrics.sampling_enabled = (
+                        metrics.sampling_enabled
+                        or bool(ev.get("sampling_enabled", False))
+                    )
+                elif kind == "step" and ev.get("global_step") is not None:
+                    step = int(ev["global_step"])
+                    loss = ev.get("loss/average", ev.get("avr_loss"))
+                    lr = ev.get("lr/d*lr/unet", ev.get("lr/unet", ev.get("lr")))
+                    epoch = ev.get("epoch")
+                    if loss is not None:
+                        previous_lr = points.get(step, (0.0, metrics.lr, None))[1]
+                        points[step] = (
+                            float(loss),
+                            float(lr) if lr is not None else previous_lr,
+                            int(epoch) if epoch is not None else None,
+                        )
+                    task.progress_last_step = max(task.progress_last_step, step)
+                elif kind == "run_end" and ev.get("final_step") is not None:
+                    final_steps.append(int(ev["final_step"]))
+
+        metrics = task.parser.metrics
+        # Structured JSONL is authoritative for chart points; stdout is retained
+        # for speed/ETA and event parsing only.
+        metrics.step_history = []
+        metrics.loss_history = []
+        metrics.lr_history = []
+        for step in sorted(points):
+            loss, lr, epoch = points[step]
+            metrics.upsert_step(step, loss, lr)
+            metrics.avr_loss = loss
+            metrics.lr = lr
+            if epoch is not None:
+                metrics.epoch = epoch
+        metrics.step = max(
+            [task.progress_last_step, *final_steps, *(points.keys() or [0])]
+        )
 
     def _ensure_monitors(self, task: Task, progress_path: Optional[str] = None) -> None:
         """Start the per-job pollers once, including for restored jobs."""
         if task.job_id is None or task.state not in (
             TaskState.PENDING,
             TaskState.RUNNING,
+            TaskState.STOPPING,
         ):
             return
+
+        if task.monitored_job_id != task.job_id:
+            old_poller = self._pollers.get(task.id)
+            old_watcher = self._progress_watchers.get(task.id)
+            if old_poller is not None and not old_poller.done():
+                old_poller.cancel()
+            if old_watcher is not None and not old_watcher.done():
+                old_watcher.cancel()
+            task.monitored_job_id = task.job_id
 
         poller = self._pollers.get(task.id)
         if poller is None or poller.done():
@@ -245,8 +476,93 @@ class TaskService:
         self._pollers.clear()
         self._progress_watchers.clear()
 
-    def list_tasks(self) -> list[dict]:
-        return [t.info() for t in self._tasks.values()]
+    def list_tasks(
+        self, *, state: Optional[str] = None, limit: int = 100, offset: int = 0
+    ) -> list[dict]:
+        items = sorted(
+            (t.info() for t in self._tasks.values()),
+            key=lambda item: item.get("started_at") or "",
+            reverse=True,
+        )
+        if state:
+            items = [item for item in items if item.get("state") == state]
+        start = max(0, int(offset))
+        return items[start : start + max(0, int(limit))]
+
+    async def list_tasks_page(
+        self, *, state: Optional[str] = None, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict], int]:
+        """Read one exact page from the daemon's durable job table.
+
+        The in-memory task map remains the WebSocket authority, but it must not
+        be the source of pagination: after a WebUI restart it only contains the
+        pages that have been requested so far.  The daemon therefore supplies
+        both the filtered page and its total; reconciliation hydrates the page
+        into the existing Task objects so historical logs still work.
+        """
+        daemon_state = {
+            "success": "done",
+            "failed": "error",
+            "cancelled": "stopped",
+            "active": "queued,running",
+        }.get(state or "")
+        page = await self._list_job_groups_page(
+            state=daemon_state,
+            offset=max(0, int(offset)),
+            limit=max(1, min(int(limit), 500)),
+            newest_first=True,
+        )
+        jobs = list(page.get("groups") or [])
+        total = int(page.get("total", len(jobs)) or 0)
+        self._reconcile_job_list(jobs)
+        items_by_id = {task.id: task.info() for task in self._tasks.values()}
+        items = [
+            items_by_id[str(job["id"])]
+            for job in jobs
+            if str(job.get("id")) in items_by_id
+        ]
+        items.sort(key=lambda item: item.get("started_at") or "", reverse=True)
+        if state == "stopping":
+            items = [item for item in items if item.get("state") == "stopping"]
+        return items, total
+
+    async def resume_task(self, task_id: str) -> Optional[Task]:
+        source = self._tasks.get(task_id)
+        if source is None:
+            try:
+                info = await daemon_client.get_job_group(task_id)
+            except DaemonError:
+                return None
+            source = self._task_from_daemon(info)
+            self._tasks[source.id] = source
+        try:
+            response = await daemon_client.resume(source.job_id or task_id)
+            info = await daemon_client.get_job_group(
+                str(response.get("root_job_id") or source.id)
+            )
+        except DaemonError:
+            raise
+        self._apply_daemon_state(source, info)
+        self._ensure_monitors(source, info.get("progress_path"))
+        return source
+
+    async def delete_task(self, task_id: str) -> bool:
+        task = self._tasks.get(task_id)
+        if task is None:
+            try:
+                info = await daemon_client.get_job_group(task_id)
+            except DaemonError:
+                return False
+            state = self._map_daemon_state(
+                info.get("state"), stop_requested=bool(info.get("stop_requested"))
+            )
+            if state not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+                return False
+        elif task.state not in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            return False
+        await daemon_client.delete_job_group(task_id)
+        self._tasks.pop(task_id, None)
+        return True
 
     async def get_queue_status(self) -> dict:
         """Snapshot of the daemon queue: paused flag + per-job queue position.
@@ -266,6 +582,7 @@ class TaskService:
         """
         try:
             jobs = await daemon_client.list_jobs()
+            group_page = await self._list_job_groups_page(limit=500)
             health = await daemon_client.health()
         except DaemonError:
             return {
@@ -277,7 +594,7 @@ class TaskService:
         # Queue status is already polled by the task page. Reuse that daemon
         # snapshot to heal a startup race (WebUI came up before the daemon) or
         # an unexpectedly exited monitor without adding another HTTP request.
-        self._reconcile_job_list(jobs)
+        self._reconcile_job_list(list(group_page.get("groups") or []))
 
         # Daemon returns the full table incl. terminal + running jobs; only
         # queued jobs need a position. FIFO by submitted_at.
@@ -289,7 +606,7 @@ class TaskService:
             jid = j.get("id")
             if jid is None:
                 continue
-            positions[jid] = idx
+            positions[str(j.get("root_job_id") or jid)] = idx
 
         return {
             "daemon_up": True,
@@ -314,7 +631,7 @@ class TaskService:
         """
         return await daemon_client.start_queue()
 
-    async def shutdown_daemon(self, *, kill_jobs: bool = True) -> dict:
+    async def shutdown_daemon(self, *, kill_jobs: bool = True, mode: str | None = None) -> dict:
         """Fully stop the training daemon — a complete exit (process + worker).
 
         Posts to the daemon's ``/shutdown``; by default ``kill_jobs=True`` also
@@ -325,22 +642,38 @@ class TaskService:
 
         Raises :class:`DaemonError` if the daemon is unreachable.
         """
-        return await daemon_client.shutdown(kill_jobs=kill_jobs)
+        return await daemon_client.shutdown(kill_jobs=kill_jobs, mode=mode)
 
     def get_task(self, task_id: str) -> Optional[Task]:
-        return self._tasks.get(task_id)
+        return self._get_or_load_task(task_id)
 
     def get_task_info(self, task_id: str) -> Optional[dict]:
-        t = self._tasks.get(task_id)
+        t = self._get_or_load_task(task_id)
         return t.info() if t else None
 
     def get_task_metrics(self, task_id: str) -> Optional[dict]:
-        t = self._tasks.get(task_id)
+        t = self._get_or_load_task(task_id)
         if t is None:
             return None
         snapshot = t.parser.metrics.snapshot()
         snapshot["wandb_run_url"] = t.wandb_run_url
         return snapshot
+
+    def _get_or_load_task(self, task_id: str) -> Optional[Task]:
+        """Hydrate a task on demand for direct historical REST/WS access."""
+        task = self._tasks.get(task_id)
+        if task is not None:
+            return task
+        try:
+            info = daemon_client.get_job_group_sync(task_id)
+        except DaemonError:
+            try:
+                info = self._physical_job_group(daemon_client.get_job_sync(task_id))
+            except DaemonError:
+                return None
+        task = self._task_from_daemon(info)
+        self._tasks[task.id] = task
+        return task
 
     async def start_task(
         self,
@@ -357,6 +690,7 @@ class TaskService:
         # (manager._build_cmd), so we only forward caller-provided env (e.g.
         # PRESET overrides).
         extra_env = dict(env) if env else None
+        config_snapshot = self._training_config_snapshot(command, argv, extra_env or {})
 
         logger.info(
             "Submitting task to daemon: tasks.py %s %s (env override keys: %s)",
@@ -384,6 +718,7 @@ class TaskService:
                 argv,
                 label=command,
                 extra_env=extra_env,
+                config_snapshot=config_snapshot,
                 start=True,
             )
         except DaemonError as exc:
@@ -415,11 +750,76 @@ class TaskService:
 
         return task
 
+    @staticmethod
+    def _training_config_snapshot(
+        command: str, argv: list[str], env: dict[str, str]
+    ) -> Optional[dict]:
+        """Capture the GUI merged config at submission time.
+
+        The daemon stores this under the job directory and uses it for an
+        explicit resume. Staged-resolution training gets the generated runtime
+        config plus its profile manifest pinned at submission time; other
+        command jobs do not need a synthetic snapshot.
+        """
+        if command == "staged-train":
+            profile = argv[2] if len(argv) >= 3 and not argv[2].startswith("-") else "default"
+            try:
+                import toml
+                from library.training.staged_resolution_plan import (
+                    compile_runtime_config,
+                    load_profile,
+                    manifest_path,
+                )
+
+                plan = load_profile(str(profile), ROOT)
+                runtime_path = compile_runtime_config(str(profile), plan, ROOT)
+                snapshot = toml.load(runtime_path)
+                snapshot["dataset_manifest"] = str(manifest_path(str(profile), ROOT))
+                return snapshot
+            except (FileNotFoundError, ValueError, OSError):
+                logger.warning("Could not capture staged training snapshot for %s", profile)
+                return None
+        if command != "lora-gui":
+            return None
+        variant = env.get("GUI_PRESETS")
+        if not variant and len(argv) >= 3 and not argv[2].startswith("-"):
+            variant = argv[2]
+        variant = variant or "lora"
+        try:
+            from webui.services.config_service import merged_gui_variant_preset
+
+            merged, origin = merged_gui_variant_preset(
+                str(variant), env.get("PRESET") or "default"
+            )
+        except (FileNotFoundError, ValueError, OSError):
+            logger.warning("Could not capture GUI config snapshot for %s", variant)
+            return None
+        # ``base.toml`` carries argparse's default max_train_steps for legacy
+        # configs, while GUI variants normally select an epoch-only budget.
+        # Persisting that inherited default in a standalone snapshot would make
+        # read_config_from_file treat it as an explicit step budget on resume.
+        if (
+            origin.get("max_train_steps") == "base"
+            and origin.get("max_train_epochs") in {"method", "preset"}
+        ):
+            merged.pop("max_train_steps", None)
+        for index, token in enumerate(argv):
+            if token == "--preprocess_run" and index + 1 < len(argv):
+                merged["preprocess_run"] = argv[index + 1]
+                break
+        return merged
+
     async def cancel_task(self, task_id: str) -> bool:
-        """Stop a running/queued task via the daemon (tree-kill on its process)."""
+        """Request a stop and mirror the daemon until it reaches a terminal state.
+
+        A training stop can spend time saving a complete checkpoint, so the
+        local ``stopping`` state must not terminate the daemon poller early.
+        """
         task = self._tasks.get(task_id)
         if not task or task.job_id is None:
             return False
+        if task.state == TaskState.STOPPING:
+            return True
         # Allow cancel from PENDING (queued) or RUNNING.
         if task.state not in (TaskState.RUNNING, TaskState.PENDING):
             return False
@@ -427,16 +827,25 @@ class TaskService:
             await daemon_client.stop(task.job_id)
         except DaemonError:
             logger.exception("Failed to stop job %s", task.job_id)
-            return False
-        task.state = TaskState.CANCELLED
-        task.lines.append(f"[cancelled] Task {task_id} terminated by user")
-        await self._notify_subscribers(task, {"type": "cancelled", "task_id": task_id})
+            # The poller may have observed a terminal daemon record while the
+            # stop request was in flight. Do not report a spurious failure in
+            # that race, and never overwrite the authoritative terminal state.
+            return task.state in (
+                TaskState.SUCCESS,
+                TaskState.FAILED,
+                TaskState.CANCELLED,
+            )
+        if task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+            return True
+        task.state = TaskState.STOPPING
+        task.lines.append(f"[stopping] Stop requested for task {task_id}")
+        await self._notify_subscribers(task, {"type": "stopping", "task_id": task_id})
         return True
 
     def subscribe(self, task_id: str) -> asyncio.Queue:
         """Subscribe to log lines for a task. Returns an asyncio.Queue."""
         queue: asyncio.Queue = asyncio.Queue()
-        task = self._tasks.get(task_id)
+        task = self._get_or_load_task(task_id)
         if task:
             task._subscribers.append(queue)
             # Replay existing lines
@@ -472,7 +881,11 @@ class TaskService:
         """
         assert task.job_id is not None
         poll_interval = 0.5
-        while task.state in (TaskState.PENDING, TaskState.RUNNING):
+        while task.state in (
+            TaskState.PENDING,
+            TaskState.RUNNING,
+            TaskState.STOPPING,
+        ):
             try:
                 info = await daemon_client.get_job(task.job_id)
             except asyncio.CancelledError:
@@ -492,10 +905,12 @@ class TaskService:
 
             dstate = info.get("state")
             if dstate == "running":
-                task.state = TaskState.RUNNING
+                if task.state != TaskState.STOPPING:
+                    task.state = TaskState.RUNNING
                 task.pid = info.get("pid")
             elif dstate == "queued":
-                task.state = TaskState.PENDING
+                if task.state != TaskState.STOPPING:
+                    task.state = TaskState.PENDING
             elif dstate in ("done", "error", "stopped"):
                 await self._safe_drain_stdout(task)
                 await self._finalize_from_daemon(task, info)
@@ -516,6 +931,10 @@ class TaskService:
     async def _finalize_from_daemon(self, task: Task, info: dict) -> None:
         """Map a terminal daemon job record onto the Task + emit ``done``."""
         dstate = info.get("state")
+        task.recovery_step = info.get("recovery_step")
+        task.resume_state = info.get("recovery_state")
+        task.terminal_reason = info.get("terminal_reason") or info.get("status_detail") or info.get("error")
+        task.resumable = bool(info.get("recovery_state"))
         if task.state == TaskState.CANCELLED:
             pass  # cancel_task already set it
         elif dstate == "done":
@@ -828,7 +1247,9 @@ class TaskService:
                             task.progress_started_at = (
                                 float(ts) if ts is not None else 0.0
                             )
-                            task.progress_last_step = 0
+                            task.progress_last_step = int(
+                                task.recovery_step or metrics.step or 0
+                            )
                             task.progress_last_ts = task.progress_started_at
                             if "total_steps" in ev:
                                 metrics.total_steps = int(ev["total_steps"])
@@ -905,13 +1326,9 @@ class TaskService:
                             # so a replayed event can't double-append.
                             if loss is not None:
                                 s = metrics.step
-                                if (
-                                    not metrics.step_history
-                                    or s != metrics.step_history[-1]
-                                ):
-                                    metrics.loss_history.append(metrics.avr_loss)
-                                    metrics.step_history.append(s)
-                                    metrics.lr_history.append(metrics.lr)
+                                metrics.upsert_step(
+                                    int(s), metrics.avr_loss, metrics.lr
+                                )
                             self._update_jsonl_timing_metrics(task, ev)
                             # Emit a fresh snapshot per step event. The
                             # earlier debounce was meant to coalesce a
@@ -948,6 +1365,7 @@ class TaskService:
                                     "epoch": ev.get("epoch"),
                                     "prompt": ev.get("prompt"),
                                     "ts": ev.get("ts"),
+                                    "attempt_id": task.job_id,
                                 },
                             )
                         elif ev_type == "run_end":

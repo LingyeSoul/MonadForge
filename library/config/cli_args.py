@@ -233,6 +233,12 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         default=None,
         help="save resumable checkpoint every N epochs (overwrites previous, auto-resumes on next run)",
     )
+    parser.add_argument(
+        "--resume_state_every_n_steps",
+        type=int,
+        default=50,
+        help="atomically publish a rolling resume state every N optimizer steps (0 disables)",
+    )
 
     parser.add_argument(
         "--train_batch_size",

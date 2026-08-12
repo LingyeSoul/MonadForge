@@ -12,17 +12,18 @@ Endpoints
     POST /jobs              {method, preset, methods_subdir, overrides, extra} → {job_id}
                             or {kind:"command", label, argv, extra_env,
                                  chain_train?}                                 → {job_id}
-    GET  /jobs              → [job, …]
+    GET  /jobs              → [job, …] or {jobs, total, offset, limit} with query filters
     GET  /jobs/{id}         → job (+ latest progress event, stale_for)
     GET  /jobs/{id}/progress → filtered progress.jsonl events
                             ?events=step,val&since_step=N&every_nth=N&last_n=N
-    POST /jobs/{id}/stop    → {job}
+    POST /jobs/{id}/stop    → {job}; training stops cooperatively before timeout
     POST /queue/start       → {ok, paused:false}  (resume a paused queue)
     POST /queue/pause       → {ok, paused:true}   (hold queued jobs)
     GET  /jobs/{id}/logs    → SSE: tail of the job's stdout.log
     GET  /events            → SSE: daemon-level lifecycle events
     GET  /health            → {ok, pid, port, root, active_job, paused, worker_alive, worker_idle_for}
-    POST /shutdown          {kill_jobs} → {ok}
+    DELETE /jobs/{id}       → delete terminal job metadata only
+    POST /shutdown          {mode: detach|cooperative-stop|force} → {ok}
 """
 
 from __future__ import annotations
@@ -39,13 +40,17 @@ from pathlib import Path
 
 from . import config, tail
 from .manager import JobManager
+from .jobs import TERMINAL_STATES
 
 logger = logging.getLogger("anima.daemon")
 
 _JOB_RE = re.compile(r"^/jobs/(?P<id>[^/]+)$")
 _JOB_STOP_RE = re.compile(r"^/jobs/(?P<id>[^/]+)/stop$")
+_JOB_RESUME_RE = re.compile(r"^/jobs/(?P<id>[^/]+)/resume$")
+_JOB_DELETE_RE = re.compile(r"^/jobs/(?P<id>[^/]+)$")
 _JOB_LOGS_RE = re.compile(r"^/jobs/(?P<id>[^/]+)/logs$")
 _JOB_PROGRESS_RE = re.compile(r"^/jobs/(?P<id>[^/]+)/progress$")
+_JOB_GROUP_RE = re.compile(r"^/job-groups/(?P<id>[^/]+)$")
 
 _README = Path(__file__).resolve().parent / "README.md"
 
@@ -157,10 +162,13 @@ TOOLS = [
     },
     {
         "name": "list_jobs",
-        "description": "List all jobs (full records, submission order). Each has state ∈ queued|running|done|error|stopped.",
+        "description": "List historical and active jobs. Supports state/status, resumable, before/after time filters and offset/limit pagination.",
         "method": "GET",
         "path": "/jobs",
-        "input_schema": {"type": "object", "properties": {}},
+        "input_schema": {"type": "object", "properties": {
+            "state": {"type": "string"}, "resumable": {"type": "boolean"},
+            "offset": {"type": "integer"}, "limit": {"type": "integer"}
+        }},
     },
     {
         "name": "get_job",
@@ -217,7 +225,7 @@ TOOLS = [
     },
     {
         "name": "stop_job",
-        "description": "Abort a running or queued job (tree-kills the process). Returns {job_id, state}.",
+        "description": "Cancel a running or queued job. Training first saves cooperatively and is tree-killed only after the grace deadline. Returns {job_id, state}.",
         "method": "POST",
         "path": "/jobs/{id}/stop",
         "input_schema": {
@@ -225,6 +233,20 @@ TOOLS = [
             "required": ["id"],
             "properties": {"id": {"type": "string", "description": "Job id to stop."}},
         },
+    },
+    {
+        "name": "resume_job",
+        "description": "Create a new training job from the newest complete signature-matched state of a stopped/error/orphaned job.",
+        "method": "POST",
+        "path": "/jobs/{id}/resume",
+        "input_schema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}},
+    },
+    {
+        "name": "delete_job_history",
+        "description": "Delete terminal job metadata/logs/progress/sample only. Model weights and training state directories are preserved.",
+        "method": "DELETE",
+        "path": "/jobs/{id}",
+        "input_schema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}},
     },
     {
         "name": "tail_logs",
@@ -274,7 +296,12 @@ TOOLS = [
                     "type": "boolean",
                     "default": True,
                     "description": "Kill the running job on the way down.",
-                }
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["detach", "cooperative-stop", "force"],
+                    "description": "Detach preserves live/queued jobs for reattach; cooperative-stop waits for a checkpoint; force tree-kills explicitly."
+                },
             },
         },
     },
@@ -347,7 +374,11 @@ class _Handler(BaseHTTPRequestHandler):
         elif path == "/health":
             self._handle_health()
         elif path == "/jobs":
-            self._handle_list()
+            self._handle_list(query)
+        elif path == "/job-groups":
+            self._handle_group_list(query)
+        elif m := _JOB_GROUP_RE.match(path):
+            self._handle_group_get(m.group("id"))
         elif path == "/events":
             self._handle_events()
         elif m := _JOB_LOGS_RE.match(path):
@@ -371,10 +402,44 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "paused": True})
         elif path == "/shutdown":
             self._handle_shutdown()
+        elif m := _JOB_RESUME_RE.match(path):
+            self._handle_resume(m.group("id"))
         elif m := _JOB_STOP_RE.match(path):
             self._handle_stop(m.group("id"))
         else:
             self._send_json({"error": "not found", "path": path}, 404)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        if m := _JOB_GROUP_RE.match(path):
+            group = self.manager.job_group(m.group("id"))
+            if group is None:
+                self._send_json({"error": "no such job group", "root_job_id": m.group("id")}, 404)
+            elif any(attempt.get("state") not in TERMINAL_STATES for attempt in group["attempts"]):
+                self._send_json({"error": "active job groups cannot be deleted", "root_job_id": group["root_job_id"]}, 409)
+            else:
+                try:
+                    deleted = self.manager.delete_group(m.group("id"))
+                except OSError as exc:
+                    self._send_json({"error": f"could not delete job group: {exc}", "root_job_id": group["root_job_id"]}, 500)
+                else:
+                    self._send_json({"ok": True, "root_job_id": group["root_job_id"], "job_ids": deleted or []})
+            return
+        if m := _JOB_DELETE_RE.match(path):
+            job = self.manager.get(m.group("id"))
+            if job is None:
+                self._send_json({"error": "no such job", "job_id": m.group("id")}, 404)
+            elif job.state not in TERMINAL_STATES:
+                self._send_json({"error": "running jobs cannot be deleted", "job_id": job.id}, 409)
+            else:
+                try:
+                    self.manager.delete(job.id)
+                except OSError as exc:
+                    self._send_json({"error": f"could not delete job: {exc}", "job_id": job.id}, 500)
+                else:
+                    self._send_json({"ok": True, "job_id": job.id})
+            return
+        self._send_json({"error": "not found", "path": path}, 404)
 
     def _handle_readme(self) -> None:
         try:
@@ -443,8 +508,74 @@ class _Handler(BaseHTTPRequestHandler):
             201,
         )
 
-    def _handle_list(self) -> None:
-        self._send_json([j.public() for j in self.manager.list_jobs()])
+    def _handle_list(self, query: str = "") -> None:
+        params = urllib.parse.parse_qs(query)
+        state = (params.get("state") or params.get("status") or [None])[0]
+        raw_resume = (params.get("resumable") or [None])[0]
+        resumable = None if raw_resume is None else raw_resume.lower() in {"1", "true", "yes"}
+        def integer(name, default):
+            try: return int((params.get(name) or [default])[0])
+            except (TypeError, ValueError): return default
+        def number(name):
+            try: return float((params.get(name) or [None])[0])
+            except (TypeError, ValueError): return None
+        order = (params.get("order") or ["asc"])[0].lower()
+        jobs, total = self.manager.list_jobs_filtered(state=state, resumable=resumable,
+                                                       before=number("before") if number("before") is not None else number("to"),
+                                                       after=number("after") if number("after") is not None else number("from"),
+                                                       offset=integer("offset", 0), limit=integer("limit", 100),
+                                                       newest_first=order in {"desc", "newest"})
+        if not query:
+            self._send_json([j.public() for j in jobs])
+        else:
+            self._send_json({"jobs": [j.public() for j in jobs], "total": total,
+                             "offset": integer("offset", 0), "limit": integer("limit", 100)})
+
+    def _handle_group_list(self, query: str = "") -> None:
+        params = urllib.parse.parse_qs(query)
+        state = (params.get("state") or params.get("status") or [None])[0]
+        raw_resume = (params.get("resumable") or [None])[0]
+        resumable = None if raw_resume is None else raw_resume.lower() in {"1", "true", "yes"}
+
+        def integer(name, default):
+            try:
+                return int((params.get(name) or [default])[0])
+            except (TypeError, ValueError):
+                return default
+
+        def number(name):
+            try:
+                return float((params.get(name) or [None])[0])
+            except (TypeError, ValueError):
+                return None
+
+        order = (params.get("order") or ["asc"])[0].lower()
+        before = number("before")
+        after = number("after")
+        groups, total = self.manager.list_job_groups_filtered(
+            state=state,
+            resumable=resumable,
+            before=before if before is not None else number("to"),
+            after=after if after is not None else number("from"),
+            offset=integer("offset", 0),
+            limit=integer("limit", 100),
+            newest_first=order in {"desc", "newest"},
+        )
+        self._send_json(
+            {
+                "groups": groups,
+                "total": total,
+                "offset": integer("offset", 0),
+                "limit": integer("limit", 100),
+            }
+        )
+
+    def _handle_group_get(self, job_id: str) -> None:
+        group = self.manager.job_group(job_id)
+        if group is None:
+            self._send_json({"error": "no such job group", "root_job_id": job_id}, 404)
+            return
+        self._send_json(group)
 
     def _handle_get(self, job_id: str) -> None:
         job = self.manager.get(job_id)
@@ -500,15 +631,40 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"job_id": job.id, "state": job.state})
 
+    def _handle_resume(self, job_id: str) -> None:
+        try:
+            job = self.manager.resume_job(job_id)
+        except ValueError as exc:
+            self._send_json({"error": str(exc), "job_id": job_id}, 409)
+            return
+        if job is None:
+            self._send_json({"error": "job is not a resumable training terminal", "job_id": job_id}, 409)
+            return
+        self._send_json({"job_id": job.id, "source_job_id": job_id, "root_job_id": job.root_job_id or job.id,
+                         "parent_job_id": job.parent_job_id, "attempt_index": job.attempt_index,
+                         "state": job.state, "resume_state": job.recovery_state,
+                         "resume_step": job.recovery_step}, 201)
+
     def _handle_shutdown(self) -> None:
         body = self._read_json()
-        kill = bool(body.get("kill_jobs", True))
-        self._send_json({"ok": True, "kill_jobs": kill})
+        mode = body.get("mode")
+        if mode is None:
+            mode = "force" if bool(body.get("kill_jobs", True)) else "detach"
+        if mode not in {"detach", "cooperative-stop", "force"}:
+            self._send_json(
+                {
+                    "error": "shutdown mode must be detach, cooperative-stop, or force",
+                    "mode": mode,
+                },
+                400,
+            )
+            return
+        self._send_json({"ok": True, "mode": mode})
         # Trigger shutdown after the response is flushed, off the handler thread
         # (server.shutdown() must not run in a request thread).
         threading.Thread(
             target=self.server.request_shutdown,  # type: ignore[attr-defined]
-            args=(kill,),
+            args=(mode,),
             daemon=True,
         ).start()
 
@@ -570,8 +726,19 @@ class _Server(ThreadingHTTPServer):
         super().__init__(addr, _Handler)
         self.manager = manager
 
-    def request_shutdown(self, kill_jobs: bool) -> None:
-        self.manager.shutdown(kill_jobs=kill_jobs)
+    def request_shutdown(self, mode: str | bool) -> None:
+        # Older in-process callers passed ``kill_jobs`` positionally. Keep that
+        # contract working while the HTTP/API surface uses explicit modes.
+        if isinstance(mode, bool):
+            mode = "force" if mode else "detach"
+        self.manager.shutdown(mode=mode)
+        if mode == "cooperative-stop":
+            deadline = time.time() + max(5.0, config.STOP_GRACE_SECONDS + 15.0)
+            while time.time() < deadline:
+                active = self.manager.active_job()
+                if active is None or active.state in TERMINAL_STATES:
+                    break
+                time.sleep(0.25)
         self.shutdown()  # unblocks serve_forever()
 
 

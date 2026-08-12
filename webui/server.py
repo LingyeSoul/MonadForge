@@ -42,6 +42,16 @@ _ALLOWED_ORIGINS = [
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
+def _origin_is_allowed(request: Request, origin: str) -> bool:
+    """Accept configured dev origins and the WebUI's actual serving origin."""
+    if origin in _ALLOWED_ORIGINS:
+        return True
+    host = request.headers.get("host")
+    if not host:
+        return False
+    return origin == f"{request.url.scheme}://{host}"
+
+
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     await task_service.reconcile_daemon_jobs()
@@ -84,7 +94,7 @@ def create_app(dev: bool = False) -> FastAPI:
             fetch_site = request.headers.get("sec-fetch-site", "").lower()
             origin = request.headers.get("origin")
             if fetch_site == "cross-site" or (
-                origin is not None and origin not in _ALLOWED_ORIGINS
+                origin is not None and not _origin_is_allowed(request, origin)
             ):
                 return JSONResponse(
                     status_code=403,

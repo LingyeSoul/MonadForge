@@ -1,7 +1,12 @@
 /* view-runs.css — 档案索引页 */
 
-.table-wrap { border-top: var(--line); }
-.runs-table { width: 100%; border-collapse: collapse; }
+.table-wrap {
+  max-width: 100%;
+  border-top: var(--line);
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.runs-table { width: 100%; min-width: 980px; border-collapse: collapse; }
 .runs-table th {
   font-family: var(--font-mono);
   font-size: var(--ts-micro);
@@ -71,3 +76,15 @@
 .cmp-bar .cb-count b { color: var(--volt); font-weight: 500; }
 .cmp-bar .text-btn { color: var(--g5); }
 .cmp-bar .text-btn:hover { color: var(--paper); border-bottom-color: var(--paper); }
+
+@media (max-width: 600px) {
+  .runs-table { min-width: 920px; }
+  .runs-table th { padding: 10px 8px; }
+  .runs-table td { padding: 12px 8px; }
+  .ta-run { min-width: 230px; }
+  .cmp-bar {
+    width: calc(100% - 32px);
+    justify-content: space-between;
+    gap: 10px;
+  }
+}

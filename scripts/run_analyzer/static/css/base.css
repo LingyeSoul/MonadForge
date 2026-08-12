@@ -189,18 +189,63 @@ body.rail-open .main { margin-left: var(--rail-w-open); }
   .kpi-grid { grid-template-columns: repeat(2, 1fr); }
   .view { padding: 32px 24px 80px; }
   .rail {
-    inset: auto 0 auto 0; width: 100%; height: 56px;
+    inset: 0 0 auto 0; width: 100%; height: 56px;
     border-right: none; border-bottom: var(--line);
   }
   body.rail-open .rail { width: 100%; height: auto; }
   .rail-inner { width: 100%; height: auto; flex-direction: row; align-items: center; }
   .rail-brand { height: 56px; border-bottom: none; padding: 0 16px; align-items: center; }
-  .rail-nav { flex: 1; display: flex; padding: 0; }
-  .rail-item { height: 56px; border-left: none; border-bottom: 2px solid transparent; padding: 0 16px; }
+  .rail-nav {
+    flex: 1; min-width: 0; display: flex; padding: 0;
+    overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+  }
+  .rail-nav::-webkit-scrollbar { display: none; }
+  .rail-item { flex: none; height: 56px; border-left: none; border-bottom: 2px solid transparent; padding: 0 16px; }
   .rail-item.active { border-bottom-color: var(--ink); background: none; }
   .rail-foot { display: none; }
   .main { margin-left: 0; margin-top: 56px; }
   body.rail-open .main { margin-left: 0; }
+}
+
+@media (max-width: 600px) {
+  .view { padding: 24px 16px 64px; }
+
+  .rail-brand { flex: none; padding: 0 12px; }
+  .rb-mark { letter-spacing: 0.12em; }
+  .rb-mark::before { margin-right: 4px; }
+  .rail-item { gap: 8px; padding: 0 12px; }
+
+  .masthead {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 10px 14px;
+    padding-bottom: 20px;
+    margin-bottom: 20px;
+  }
+  .mh-index { font-size: var(--ts-xl); }
+  .mh-title {
+    font-size: var(--ts-3xl);
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+  .mh-sub { font-size: var(--ts-sm); }
+  .mh-deco { display: none; }
+
+  .index-tools {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .search-box { max-width: none; width: 100%; }
+  .chips {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  .chip { flex: none; }
+
+  .toast { width: calc(100% - 32px); max-width: 420px; }
 }
 
 /* ═══════════════ 减少动态偏好：关闭全部动画 ═══════════════ */

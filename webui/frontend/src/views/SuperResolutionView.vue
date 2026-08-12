@@ -410,7 +410,7 @@ function isRunning(command: string) {
 }
 
 function stateColor(state: string) {
-  if (state === 'running') return 'info'
+  if (state === 'running' || state === 'stopping') return 'info'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
   return undefined

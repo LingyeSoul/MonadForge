@@ -18,7 +18,8 @@ from typing import Any, Mapping
 
 import torch
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+COMPLETE_MARKER_SCHEMA_VERSION = 2
 COMPLETE_MARKER = "complete.marker"
 
 
@@ -236,6 +237,8 @@ def build_train_state(
     rng_state: Mapping[str, Any] | None = None,
     config_signature: str | None = None,
     dataset_signature: str | None = None,
+    job_id: str | None = None,
+    root_job_id: str | None = None,
     interrupted: bool = False,
     **extra: Any,
 ) -> dict[str, Any]:
@@ -259,6 +262,10 @@ def build_train_state(
         state["config_signature"] = str(config_signature)
     if dataset_signature is not None:
         state["dataset_signature"] = str(dataset_signature)
+    if job_id is not None:
+        state["job_id"] = str(job_id)
+    if root_job_id is not None:
+        state["root_job_id"] = str(root_job_id)
     state.update({key: _json_value(value) for key, value in extra.items()})
     return state
 
@@ -296,7 +303,11 @@ def state_is_complete(
         if "global_step" not in raw and "current_step" not in raw:
             return False
         normalize_train_state(raw)
-        if require_marker and int(raw.get("schema_version", 1) or 1) >= SCHEMA_VERSION:
+        if (
+            require_marker
+            and int(raw.get("schema_version", 1) or 1)
+            >= COMPLETE_MARKER_SCHEMA_VERSION
+        ):
             if not (path / COMPLETE_MARKER).is_file():
                 return False
         # The marker is deliberately checked after parsing so a torn write

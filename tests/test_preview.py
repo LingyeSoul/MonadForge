@@ -379,6 +379,54 @@ def test_sample_file_with_spaces_and_cjk_is_served(preview_env):
     assert resp.status_code == 200
 
 
+def test_logical_task_samples_select_exact_attempt(preview_env):
+    """Same-named samples remain independently addressable across attempts."""
+    svc, tmp = preview_env
+    from fastapi import HTTPException
+
+    from webui.api.preview import get_sample_file, list_task_samples
+    from webui.services.task_service import Task, TaskState
+
+    root_dir = _mkdir(tmp / "output" / "daemon" / "jobs" / "root" / "sample")
+    child_dir = _mkdir(tmp / "output" / "daemon" / "jobs" / "child" / "sample")
+    filename = "same.png"
+    (root_dir / filename).write_bytes(b"root-attempt")
+    (child_dir / filename).write_bytes(b"child-attempt")
+
+    task = Task(id="root", command="lora", args=[], state=TaskState.FAILED)
+    task.job_id = "child"
+    task.sample_dir = "output/daemon/jobs/child/sample"
+    task.attempts = [
+        {
+            "id": "root",
+            "attempt_index": 0,
+            "sample_dir": "output/daemon/jobs/root/sample",
+        },
+        {
+            "id": "child",
+            "attempt_index": 1,
+            "sample_dir": "output/daemon/jobs/child/sample",
+        },
+    ]
+    svc._tasks[task.id] = task
+
+    listing = list_task_samples("root", page=1, page_size=60)
+    assert listing.total == 2
+    assert {(item.attempt_id, item.path) for item in listing.items} == {
+        ("root", filename),
+        ("child", filename),
+    }
+
+    root_response = get_sample_file("root", path=filename, attempt_id="root")
+    child_response = get_sample_file("root", path=filename, attempt_id="child")
+    assert Path(root_response.path).read_bytes() == b"root-attempt"
+    assert Path(child_response.path).read_bytes() == b"child-attempt"
+
+    with pytest.raises(HTTPException) as exc:
+        get_sample_file("root", path=filename, attempt_id="missing")
+    assert exc.value.status_code == 404
+
+
 @pytest.mark.parametrize(
     "bad_path",
     [

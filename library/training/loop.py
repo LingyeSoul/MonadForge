@@ -651,6 +651,9 @@ def _run_epoch_steps(trainer, state: LoopState, epoch: int) -> None:
                     )
                     return
 
+                # Publish recovery state only after the complete optimizer
+                # update/scheduler step in _run_step has committed.
+                state.saver.maybe_save_rolling_state(state.global_step)
                 _sample_at_step(trainer, state)
                 state.saver.maybe_save_step(state.network, state.global_step, epoch)
                 _log_checkpoint_artifact(trainer, args, state, epoch)

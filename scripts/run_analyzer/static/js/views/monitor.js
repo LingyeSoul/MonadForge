@@ -5,7 +5,7 @@ import { ST } from '../theme.js';
 import { chartRegistry, mountChart, preserveZoom, zoomTo } from '../core/charts.js';
 import { lossChartOption } from '../charts/loss.js';
 import { lrChartOption } from '../charts/lr.js';
-import { openLightbox } from '../components/lightbox.js';
+import { openLightbox, sampleUrl } from '../components/lightbox.js';
 import { createDropdown } from '../components/dropdown.js';
 import { loadState, saveState } from '../core/state.js';
 
@@ -225,7 +225,7 @@ function renderMonFilm() {
     const ar = s.w && s.h ? ` style="--ar: ${s.w} / ${s.h}"` : '';
     const size = s.w && s.h ? `<span class="g-size">${s.w}×${s.h}</span>` : '';
     return `<div class="g-item${flash}" tabindex="0" data-i="${i}" role="button" aria-label="sample"${ar}>
-      <img src="/api/runs/${encodeURIComponent(monData.id)}/samples/${encodeURIComponent(fn)}" alt="sample" loading="lazy">
+      <img src="${sampleUrl(s, monData.id)}" alt="sample" loading="lazy">
       <div class="g-cap"><span>${s.global_step != null ? `step ${s.global_step}` : ''}</span>${size}</div>
     </div>`;
   }).join('') || '<div class="g-cap" style="flex:1;color:#999">无采样</div>';

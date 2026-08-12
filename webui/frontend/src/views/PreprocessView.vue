@@ -467,7 +467,7 @@
       >
         <template #append>
           <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
-          <v-btn v-if="task.state === 'running'" icon="mdi-stop" size="small" variant="text" color="error" @click="taskStore.cancelTask(task.task_id)" />
+          <v-btn v-if="task.state === 'running' || task.state === 'pending'" icon="mdi-stop" size="small" variant="text" color="error" @click="taskStore.cancelTask(task.task_id)" />
         </template>
       </v-list-item>
     </v-list>
@@ -783,7 +783,7 @@ function isRunning(command: string) {
 }
 
 function stateColor(state: string) {
-  if (state === 'running') return 'info'
+  if (state === 'running' || state === 'stopping') return 'info'
   if (state === 'success') return 'success'
   if (state === 'failed') return 'error'
   return undefined

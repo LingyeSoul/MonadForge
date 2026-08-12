@@ -3175,6 +3175,8 @@ class AnimaTrainer:
                     pid=os.getpid(),
                     log_dir=resolve_run_log_dir(args),
                     sampling_enabled=sampling_enabled,
+                    config_signature=getattr(args, "config_signature", None),
+                    dataset_signature=getattr(args, "dataset_signature", None),
                 )
                 # Mirror WARNING+ records into the stream so a reader debugging
                 # the run gets them structured instead of buried in tqdm stdout.
@@ -3545,7 +3547,6 @@ class AnimaTrainer:
                 if args.save_state or args.save_state_on_train_end:
                     save_state_on_train_end(args, accelerator)
 
-                saver.cleanup_resumable()
                 saver.save_final(network, loop_state.global_step, num_train_epochs)
                 if is_main_process:
                     write_run_manifest(
@@ -3560,6 +3561,7 @@ class AnimaTrainer:
                             **_block_swap_manifest_fields(args),
                         },
                     )
+                saver.cleanup_resumable()
 
                 # ``end_training`` destroys the distributed process group. It
                 # must run only after every rank has contributed its final state

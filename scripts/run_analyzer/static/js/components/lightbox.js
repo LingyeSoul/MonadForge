@@ -10,12 +10,20 @@ function _metaBase() {
   return `${fn}  ·  epoch ${(_cur && _cur.epoch) ?? '—'}  ·  step ${(_cur && _cur.global_step) ?? '—'}`;
 }
 
+export function sampleUrl(s, runId) {
+  const fn = s && s.path ? s.path.split('/').pop() : '';
+  const params = new URLSearchParams();
+  if (s && s.attempt_id) params.set('attempt_id', s.attempt_id);
+  const query = params.toString();
+  return `/api/runs/${encodeURIComponent(runId)}/samples/${encodeURIComponent(fn)}${query ? `?${query}` : ''}`;
+}
+
 export function openLightbox(s, runId) {
   _cur = s;
   _curRunId = runId;
   const size = s && s.w && s.h ? `  ·  ${s.w}×${s.h}` : '';
   $('#lb-meta').textContent = _metaBase() + size;
-  $('#lb-img').src = `/api/runs/${encodeURIComponent(runId)}/samples/${encodeURIComponent(s.path ? s.path.split('/').pop() : '')}`;
+  $('#lb-img').src = sampleUrl(s, runId);
   $('#lb-prompt').textContent = (s && s.prompt) || '';
   $('#lightbox').classList.remove('hidden');
   $('#lb-close').focus();

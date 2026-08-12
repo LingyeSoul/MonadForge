@@ -130,3 +130,4 @@ Repo-wide planning docs.
 |-----|-------------|
 | [multi_model_support.md](multi_model_support.md) | Terrain map for adding a second image model (e.g. Z-Image-Base) alongside Anima — exploratory |
 | [separation_plan.md](separation_plan.md) | Working plan to split inference into a standalone `../anima_inference` |
+| [changes/pr-9-logical-training-resume.md](changes/pr-9-logical-training-resume.md) | PR 9 record: logical training attempts, immutable snapshots, safe recovery ownership, rolling-state lifecycle, WebUI/run-analyzer aggregation, and review fixes |
