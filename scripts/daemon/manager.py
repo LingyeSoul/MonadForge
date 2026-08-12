@@ -88,6 +88,7 @@ class JobManager:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
+        self._resuming_roots: set[str] = set()
         self._queue: "queue.Queue[str]" = queue.Queue()
         self._popens: dict[str, object] = {}  # job_id -> Popen (spawned only)
         # A stop request runs on a helper thread so the worker can keep serving
@@ -563,6 +564,12 @@ class JobManager:
                     data = JobManager._read_state_sidecar(path)
                     if data is None:
                         continue
+                    if int(data.get("schema_version", 1) or 1) < 3:
+                        continue
+                    if not data.get("job_id"):
+                        continue
+                    if data.get("root_job_id") != (job.root_job_id or job.id):
+                        continue
                     if job.config_signature and data.get("config_signature") != job.config_signature:
                         continue
                     if job.dataset_signature and data.get("dataset_signature") != job.dataset_signature:
@@ -581,63 +588,97 @@ class JobManager:
             return []
 
     def resume_job(self, job_id: str) -> Job | None:
-        source = self.get(job_id)
-        if source is None or source.state not in {STATE_STOPPED, STATE_ERROR} or source.kind != "train" and not self._command_runs_train(source.argv):
-            return None
-        attempts = self.lineage(source)
-        if not attempts:
-            return None
-        latest = attempts[-1]
-        if latest.id != source.id:
-            raise ValueError(
-                f"only the latest attempt can be resumed; latest_job_id={latest.id}"
+        with self._lock:
+            source = self._jobs.get(job_id)
+            if (
+                source is None
+                or source.state not in {STATE_STOPPED, STATE_ERROR}
+                or source.kind != "train"
+                and not self._command_runs_train(source.argv)
+            ):
+                return None
+            root_job_id = source.root_job_id or source.id
+            attempts = sorted(
+                (
+                    attempt
+                    for attempt in self._jobs.values()
+                    if (attempt.root_job_id or attempt.id) == root_job_id
+                ),
+                key=self._attempt_sort_key,
             )
-        if any(attempt.state in {STATE_QUEUED, STATE_RUNNING} for attempt in attempts):
-            raise ValueError("this training already has an active attempt")
-        candidates = self._state_candidates(source)
-        if not candidates:
-            raise ValueError("no complete signature-matched training state found")
-        step, state_dir = candidates[0]
-        state_data = self._read_state_sidecar(state_dir) or {}
-        if source.target_steps is not None and step >= source.target_steps:
-            raise ValueError(f"training target already reached at global_step={step}")
-        if source.target_epochs is not None:
-            current_epoch = int(state_data.get("current_epoch", state_data.get("epoch", 0)) or 0)
-            if current_epoch >= source.target_epochs:
+            if not attempts:
+                return None
+            latest = attempts[-1]
+            if latest.id != source.id:
                 raise ValueError(
-                    f"training target already reached at epoch={current_epoch}"
+                    f"only the latest attempt can be resumed; latest_job_id={latest.id}"
                 )
-        if source.kind == "command":
-            argv = list(source.argv)
-            argv += ["--resume", str(state_dir)]
-            job = self.submit_command(label=source.method, argv=argv, extra_env=source.extra_env,
-                                      config_file=source.config_file,
-                                      root_job_id=source.root_job_id or source.id,
-                                      parent_job_id=source.id,
-                                      attempt_index=int(source.attempt_index or 0) + 1,
-                                      start=False)
-        else:
-            extra = list(source.extra)
-            extra += ["--resume", str(state_dir)]
-            job = self.submit(method=source.method, preset=source.preset, methods_subdir=source.methods_subdir,
-                              config_file=source.config_file, overrides=source.overrides, extra=extra,
-                              root_job_id=source.root_job_id or source.id,
-                              parent_job_id=source.id,
-                              attempt_index=int(source.attempt_index or 0) + 1,
-                              start=False)
-        job.config_signature = source.config_signature
-        job.dataset_signature = source.dataset_signature
-        job.target_steps = source.target_steps
-        job.target_epochs = source.target_epochs
-        job.data_manifest = source.data_manifest
-        job.recovery_state = str(state_dir)
-        job.recovery_step = step
-        job.persist()
-        # Publish all recovery metadata before allowing the worker to launch;
-        # otherwise a fast queue can build the command before --config_file is
-        # injected for command-style training jobs.
-        self.resume()
-        return job
+            if any(
+                attempt.state in {STATE_QUEUED, STATE_RUNNING}
+                for attempt in attempts
+            ):
+                raise ValueError("this training already has an active attempt")
+            if root_job_id in self._resuming_roots:
+                raise ValueError(
+                    "a resume is already being created for this training"
+                )
+            self._resuming_roots.add(root_job_id)
+
+        try:
+            candidates = self._state_candidates(source)
+            if not candidates:
+                raise ValueError(
+                    "no complete owner- and signature-matched training state found"
+                )
+            step, state_dir = candidates[0]
+            if source.target_steps is not None and step >= source.target_steps:
+                raise ValueError(
+                    f"training target already reached at global_step={step}"
+                )
+            if source.kind == "command":
+                argv = list(source.argv)
+                argv += ["--resume", str(state_dir)]
+                job = self.submit_command(
+                    label=source.method,
+                    argv=argv,
+                    extra_env=source.extra_env,
+                    config_file=source.config_file,
+                    root_job_id=root_job_id,
+                    parent_job_id=source.id,
+                    attempt_index=int(source.attempt_index or 0) + 1,
+                    start=False,
+                )
+            else:
+                extra = list(source.extra)
+                extra += ["--resume", str(state_dir)]
+                job = self.submit(
+                    method=source.method,
+                    preset=source.preset,
+                    methods_subdir=source.methods_subdir,
+                    config_file=source.config_file,
+                    overrides=source.overrides,
+                    extra=extra,
+                    root_job_id=root_job_id,
+                    parent_job_id=source.id,
+                    attempt_index=int(source.attempt_index or 0) + 1,
+                    start=False,
+                )
+            job.config_signature = source.config_signature
+            job.dataset_signature = source.dataset_signature
+            job.target_steps = source.target_steps
+            job.target_epochs = source.target_epochs
+            job.data_manifest = source.data_manifest
+            job.recovery_state = str(state_dir)
+            job.recovery_step = step
+            job.persist()
+            # Publish all recovery metadata before allowing the worker to launch;
+            # otherwise a fast queue can build the command before --config_file is
+            # injected for command-style training jobs.
+            self.resume()
+            return job
+        finally:
+            with self._lock:
+                self._resuming_roots.discard(root_job_id)
 
     def get(self, job_id: str) -> Optional[Job]:
         with self._lock:
@@ -816,6 +857,8 @@ class JobManager:
                 except OSError:
                     pass
                 env["ANIMA_DAEMON_STOP_FILE"] = str(stop_path)
+                env["ANIMA_DAEMON_JOB_ID"] = job.id
+                env["ANIMA_DAEMON_ROOT_JOB_ID"] = job.root_job_id or job.id
             popen = proc.spawn_detached(
                 cmd,
                 cwd=config.ROOT,
@@ -1097,6 +1140,8 @@ class JobManager:
                 job.dataset_signature = started["dataset_signature"]
         candidates = self._state_candidates(job)
         if not candidates:
+            job.recovery_state = None
+            job.recovery_step = None
             return
         step, path = candidates[0]
         job.recovery_state = str(path)

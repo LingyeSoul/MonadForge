@@ -223,6 +223,40 @@ def test_auto_resume_prefers_interrupted_state_when_steps_are_equal(tmp_path):
     assert args.resume == layout.interrupted_state
 
 
+def test_daemon_auto_resume_only_selects_same_logical_root(tmp_path, monkeypatch):
+    from library.io.output_layout import layout_from_args
+
+    args = SimpleNamespace(
+        resume=None,
+        output_dir=str(tmp_path),
+        output_name="unit",
+        max_train_steps=20,
+        checkpointing_epochs=None,
+        save_state_on_train_end=False,
+        auto_resume=True,
+    )
+    layout = layout_from_args(args)
+    _write_resume_state(layout.rolling_state, 4)
+    mismatched = json.loads(
+        (layout.rolling_state / "train_state.json").read_text(encoding="utf-8")
+    )
+    mismatched.update(job_id="other-attempt", root_job_id="other-root")
+    (layout.rolling_state / "train_state.json").write_text(
+        json.dumps(mismatched), encoding="utf-8"
+    )
+    monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", "root-a")
+
+    _auto_resume_saver(args).auto_resume()
+    assert args.resume is None
+
+    matching = dict(mismatched, job_id="attempt-1", root_job_id="root-a")
+    (layout.rolling_state / "train_state.json").write_text(
+        json.dumps(matching), encoding="utf-8"
+    )
+    _auto_resume_saver(args).auto_resume()
+    assert args.resume == layout.rolling_state
+
+
 def test_interrupt_save_forces_explicit_interrupted_marker(tmp_path):
     from library.training.checkpoints import CheckpointSaver
 
@@ -289,6 +323,129 @@ def test_interrupt_save_forces_explicit_interrupted_marker(tmp_path):
     assert state["micro_batch_offset"] == 3
     assert state["interrupted"] is True
     assert (tmp_path / "unit-interrupted-state" / "complete.marker").is_file()
+
+
+def test_daemon_ownership_is_saved_and_validated(tmp_path, monkeypatch):
+    from library.training.checkpoints import CheckpointSaver
+
+    class Accelerator:
+        is_main_process = True
+
+        def unwrap_model(self, model):
+            return model
+
+        def register_save_state_pre_hook(self, hook):
+            self.save_hook = hook
+
+        def register_load_state_pre_hook(self, hook):
+            self.load_hook = hook
+
+    accelerator = Accelerator()
+    network = object()
+    saver = CheckpointSaver(
+        args=SimpleNamespace(),
+        accelerator=accelerator,
+        save_dtype=None,
+        metadata={},
+        minimum_metadata={},
+        get_sai_model_spec_fn=lambda _args: {},
+        current_epoch=SimpleNamespace(value=1),
+        current_step=SimpleNamespace(value=2),
+    )
+    saver.register_hooks(network)
+    monkeypatch.setenv("ANIMA_DAEMON_JOB_ID", "attempt-2")
+    monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", "root-a")
+
+    accelerator.save_hook([network], [], str(tmp_path))
+    write_complete_marker(tmp_path)
+    state = json.loads((tmp_path / "train_state.json").read_text(encoding="utf-8"))
+
+    assert state["schema_version"] == 3
+    assert state["job_id"] == "attempt-2"
+    assert state["root_job_id"] == "root-a"
+    accelerator.load_hook([network], str(tmp_path))
+
+    monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", "root-b")
+    with pytest.raises(ValueError, match="logical task owner mismatch"):
+        accelerator.load_hook([network], str(tmp_path))
+
+    state.pop("root_job_id")
+    (tmp_path / "train_state.json").write_text(json.dumps(state), encoding="utf-8")
+    monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", "root-a")
+    with pytest.raises(ValueError, match="missing logical task owner"):
+        accelerator.load_hook([network], str(tmp_path))
+
+
+def test_manual_resume_keeps_legacy_ownerless_state_compatible(tmp_path, monkeypatch):
+    from library.training.checkpoints import CheckpointSaver
+
+    class Accelerator:
+        is_main_process = True
+
+        def unwrap_model(self, model):
+            return model
+
+        def register_save_state_pre_hook(self, hook):
+            self.save_hook = hook
+
+        def register_load_state_pre_hook(self, hook):
+            self.load_hook = hook
+
+    state = build_train_state(global_step=4)
+    state["schema_version"] = 2
+    state.pop("job_id", None)
+    state.pop("root_job_id", None)
+    (tmp_path / "train_state.json").write_text(json.dumps(state), encoding="utf-8")
+    write_complete_marker(tmp_path)
+    monkeypatch.delenv("ANIMA_DAEMON_JOB_ID", raising=False)
+    monkeypatch.delenv("ANIMA_DAEMON_ROOT_JOB_ID", raising=False)
+
+    accelerator = Accelerator()
+    network = object()
+    saver = CheckpointSaver(
+        args=SimpleNamespace(),
+        accelerator=accelerator,
+        save_dtype=None,
+        metadata={},
+        minimum_metadata={},
+        get_sai_model_spec_fn=lambda _args: {},
+        current_epoch=SimpleNamespace(value=0),
+        current_step=SimpleNamespace(value=0),
+    )
+    saver.register_hooks(network)
+
+    accelerator.load_hook([network], str(tmp_path))
+    assert saver.steps_from_state == 4
+
+
+def test_success_cleanup_always_removes_rolling_state(tmp_path):
+    from library.training.checkpoints import CheckpointSaver, get_rolling_state_dir
+
+    args = SimpleNamespace(
+        output_dir=str(tmp_path),
+        output_name="unit",
+        save_model_as="safetensors",
+        checkpointing_epochs=None,
+    )
+    rolling = get_rolling_state_dir(args)
+    rolling_path = tmp_path / "unit-rolling-state"
+    rolling_path.mkdir()
+    (rolling_path / "optimizer.bin").write_bytes(b"large-state")
+    saver = CheckpointSaver(
+        args=args,
+        accelerator=SimpleNamespace(is_main_process=True),
+        save_dtype=None,
+        metadata={},
+        minimum_metadata={},
+        get_sai_model_spec_fn=lambda _args: {},
+        current_epoch=SimpleNamespace(value=0),
+        current_step=SimpleNamespace(value=0),
+    )
+
+    saver.cleanup_resumable()
+
+    assert rolling == str(rolling_path)
+    assert not rolling_path.exists()
 
 
 def test_explicit_resume_rejects_incomplete_or_mismatched_state(tmp_path):

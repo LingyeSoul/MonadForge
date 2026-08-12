@@ -691,6 +691,8 @@ def test_resume_selects_newest_complete_state_with_matching_run_signatures(
                     global_step=step,
                     config_signature=config_signature,
                     dataset_signature=dataset_signature,
+                    job_id="source",
+                    root_job_id="source",
                 )
             ),
             encoding="utf-8",
@@ -765,6 +767,8 @@ def test_resume_discovers_raw_output_name_inside_safe_output_root(tmp_path, monk
                 global_step=840,
                 config_signature="cfg-special",
                 dataset_signature="data-special",
+                job_id="special",
+                root_job_id="special",
             )
         ),
         encoding="utf-8",
@@ -792,6 +796,167 @@ def test_resume_discovers_raw_output_name_inside_safe_output_root(tmp_path, monk
     candidates = JobManager._state_candidates(job)
 
     assert candidates == [(840, state_dir)]
+
+
+def test_recovery_state_requires_matching_logical_root_owner(tmp_path, monkeypatch):
+    from library.training.state import build_train_state, write_complete_marker
+
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    output_dir = tmp_path / "ckpt"
+    output_root = output_dir / "unit"
+    snapshot = tmp_path / "source.snapshot.toml"
+    snapshot.write_text(
+        f'output_dir = "{output_dir.as_posix()}"\n'
+        'output_name = "unit"\n',
+        encoding="utf-8",
+    )
+
+    def write_state(name: str, **ownership):
+        path = output_root / name
+        path.mkdir(parents=True)
+        (path / "train_state.json").write_text(
+            json.dumps(
+                build_train_state(
+                    global_step=12,
+                    config_signature="cfg-a",
+                    dataset_signature="data-a",
+                    **ownership,
+                )
+            ),
+            encoding="utf-8",
+        )
+        write_complete_marker(path)
+        return path
+
+    mismatched = write_state(
+        "unit-interrupted-state",
+        job_id="other-attempt",
+        root_job_id="other-root",
+    )
+    unowned = write_state("unit-rolling-state")
+    source = jobs.Job(
+        id="source",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        root_job_id="source",
+        config_file=str(snapshot),
+        config_signature="cfg-a",
+        dataset_signature="data-a",
+    )
+
+    assert JobManager._state_candidates(source) == []
+    assert mismatched.is_dir()
+    assert unowned.is_dir()
+
+
+def test_concurrent_resume_reserves_one_attempt_per_logical_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "train_state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "global_step": 12,
+                "job_id": "root",
+                "root_job_id": "root",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = JobManager()
+    root = jobs.Job(
+        id="root",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_ERROR,
+        root_job_id="root",
+    )
+    manager._jobs[root.id] = root
+    first_in_discovery = threading.Event()
+    allow_first_to_continue = threading.Event()
+    discovery_calls = 0
+    discovery_lock = threading.Lock()
+
+    def candidates(_job):
+        nonlocal discovery_calls
+        with discovery_lock:
+            discovery_calls += 1
+            call_number = discovery_calls
+        if call_number == 1:
+            first_in_discovery.set()
+            assert allow_first_to_continue.wait(timeout=5)
+        return [(12, state_dir)]
+
+    monkeypatch.setattr(manager, "_state_candidates", candidates)
+    results: list[object] = []
+
+    def run_resume():
+        try:
+            results.append(manager.resume_job(root.id))
+        except Exception as exc:  # noqa: BLE001 - assertion captures the public error
+            results.append(exc)
+
+    first = threading.Thread(target=run_resume)
+    second = threading.Thread(target=run_resume)
+    first.start()
+    assert first_in_discovery.wait(timeout=5)
+    second.start()
+    second.join(timeout=5)
+    allow_first_to_continue.set()
+    first.join(timeout=5)
+
+    assert not first.is_alive() and not second.is_alive()
+    created = [result for result in results if isinstance(result, jobs.Job)]
+    errors = [result for result in results if isinstance(result, ValueError)]
+    assert len(created) == 1
+    assert len(errors) == 1
+    assert "resume is already being created" in str(errors[0])
+    assert [job.attempt_index for job in manager.lineage(root)] == [0, 1]
+
+
+def test_resume_allows_interruption_inside_target_epoch(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "STATE_DIR", tmp_path / "daemon")
+    monkeypatch.setattr(config, "JOBS_DIR", tmp_path / "daemon" / "jobs")
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "train_state.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "global_step": 12,
+                "current_epoch": 3,
+                "job_id": "root",
+                "root_job_id": "root",
+                "interrupted": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = JobManager()
+    root = jobs.Job(
+        id="root",
+        method="lora",
+        preset="default",
+        state=jobs.STATE_STOPPED,
+        root_job_id="root",
+        target_epochs=3,
+    )
+    manager._jobs[root.id] = root
+    monkeypatch.setattr(manager, "_state_candidates", lambda _job: [(12, state_dir)])
+    monkeypatch.setattr(manager, "resume", lambda: None)
+
+    resumed = manager.resume_job(root.id)
+
+    assert resumed is not None
+    assert resumed.parent_job_id == root.id
+    assert resumed.target_epochs == 3
+    assert resumed.recovery_step == 12
 
 
 def test_job_groups_filter_latest_attempt_and_delete_whole_chain(tmp_path, monkeypatch):

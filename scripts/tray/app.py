@@ -150,31 +150,45 @@ class TrayApp:
                 job = daemon_client.get_job_sync(active_id)
             except DaemonError:
                 job = {}
-            self._active_job = job
-            self._state = "running"
-            label = job.get("method") or job.get("label") or "job"
-            step = ""
-            latest = (
-                (job.get("latest") or {}).get("data")
-                if isinstance(job.get("latest"), dict)
-                else None
-            )
-            if isinstance(latest, dict) and "global_step" in latest:
-                step = self._tr("(step {n})", n=latest["global_step"])
-            self._tooltip = self._brand("running {label}{step}", label=label, step=step)
-        else:
-            self._active_job = None
-            # Retain an error indicator briefly after a job fails, else idle.
-            if self._last_error:
-                self._state = "error"
-                self._tooltip = self._brand(
-                    "last job errored: {err}", err=self._last_error[:48]
+            if self._job_is_live(job):
+                self._active_job = job
+                self._state = "running"
+                label = job.get("method") or job.get("label") or "job"
+                step = ""
+                latest = (
+                    (job.get("latest") or {}).get("data")
+                    if isinstance(job.get("latest"), dict)
+                    else None
                 )
-            else:
-                self._state = "idle"
-                suffix = self._tr("(paused)") if self._paused else ""
-                self._tooltip = self._brand("idle") + suffix
+                if isinstance(latest, dict) and "global_step" in latest:
+                    step = self._tr("(step {n})", n=latest["global_step"])
+                self._tooltip = self._brand(
+                    "running {label}{step}", label=label, step=step
+                )
+                self._refresh_icon()
+                return
+
+        self._active_job = None
+        # Retain an error indicator briefly after a job fails, else idle.
+        if self._last_error:
+            self._state = "error"
+            self._tooltip = self._brand(
+                "last job errored: {err}", err=self._last_error[:48]
+            )
+        else:
+            self._state = "idle"
+            suffix = self._tr("(paused)") if self._paused else ""
+            self._tooltip = self._brand("idle") + suffix
         self._refresh_icon()
+
+    @staticmethod
+    def _job_is_live(job: dict) -> bool:
+        """Confirm a health hint still names the same running process."""
+        if job.get("state") != "running":
+            return False
+        from scripts.daemon import proc
+
+        return proc.is_alive(job.get("pid"), job.get("create_time"))
 
     # ── menu actions ───────────────────────────────────────────────────
 

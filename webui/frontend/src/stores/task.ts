@@ -44,19 +44,21 @@ export interface TaskInfo {
 
 export type TaskFilter = 'all' | 'active' | 'success' | 'failed' | 'cancelled'
 
+export interface TaskPage {
+  tasks: TaskInfo[]
+  total: number
+}
+
 export const useTaskStore = defineStore('task', () => {
   const tasks = ref<TaskInfo[]>([])
   const commands = ref<Record<string, string>>({})
   const loading = ref(false)
-  const totalTasks = ref(0)
-  const page = ref(1)
-  const pageSize = ref(25)
-  const taskFilter = ref<TaskFilter>('all')
   const taskListError = ref(false)
   // Queue state — driven by GET /api/tasks/queue/status (polled alongside
   // fetchTasks in the Tasks view).
   const daemonPaused = ref(false)
   const daemonUp = ref(true)
+  const queuePositions = ref<Record<string, number>>({})
   // Tracks the daemon_up transition so we only toast once per down-edge
   // (polls every 5s — without this the toast would fire on every tick).
   const daemonWasDown = ref(false)
@@ -64,34 +66,40 @@ export const useTaskStore = defineStore('task', () => {
   const notify = useNotifyStore()
   const { t } = useI18n()
 
-  async function fetchTasks(options: {
+  async function fetchTaskPage(options: {
     state?: TaskFilter
     page?: number
     pageSize?: number
-  } = {}) {
+  } = {}): Promise<TaskPage> {
+    const page = Math.max(1, options.page ?? 1)
+    const pageSize = Math.max(1, options.pageSize ?? 25)
+    const params = new URLSearchParams({
+      limit: String(pageSize),
+      offset: String((page - 1) * pageSize),
+    })
+    if (options.state && options.state !== 'all') params.set('state', options.state)
+    const res = await fetch(`/api/tasks?${params.toString()}`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (!Array.isArray(data)) throw new Error('invalid task page')
+    const rawTotal = res.headers.get('X-Total-Count')
+    const parsedTotal = rawTotal === null ? data.length : Number(rawTotal)
+    return {
+      tasks: data.map((task: TaskInfo) => ({
+        ...task,
+        queue_position: queuePositions.value[task.task_id] ?? null,
+      })),
+      total: Number.isFinite(parsedTotal) ? parsedTotal : data.length,
+    }
+  }
+
+  async function fetchTasks() {
     try {
-      if (options.state !== undefined) taskFilter.value = options.state
-      if (options.page !== undefined) page.value = Math.max(1, options.page)
-      if (options.pageSize !== undefined) pageSize.value = Math.max(1, options.pageSize)
-      const params = new URLSearchParams({
-        limit: String(pageSize.value),
-        offset: String((page.value - 1) * pageSize.value),
-      })
-      if (taskFilter.value !== 'all') params.set('state', taskFilter.value)
-      const res = await fetch(`/api/tasks?${params.toString()}`)
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
-      if (Array.isArray(data)) {
-        tasks.value = data
-        taskListError.value = false
-        const headerTotal = Number(res.headers.get('X-Total-Count'))
-        totalTasks.value = Number.isFinite(headerTotal) ? headerTotal : data.length
-      }
+      const page = await fetchTaskPage({ page: 1, pageSize: 500 })
+      tasks.value = page.tasks
+      taskListError.value = false
     } catch {
-      // Do not leave a stale page visible when a filter/poll request failed.
-      // Otherwise the toggle changes while the old task cards remain on screen.
       tasks.value = []
-      totalTasks.value = 0
       taskListError.value = true
     }
   }
@@ -125,6 +133,7 @@ export const useTaskStore = defineStore('task', () => {
       // position; running/terminal tasks get cleared so a job that just left
       // the queue doesn't keep a stale #N.
       const positions: Record<string, number> = data.positions || {}
+      queuePositions.value = positions
       tasks.value = tasks.value.map((task) => ({
         ...task,
         queue_position: positions[task.task_id] ?? null,
@@ -132,6 +141,7 @@ export const useTaskStore = defineStore('task', () => {
     } catch {
       daemonUp.value = false
       daemonPaused.value = false
+      queuePositions.value = {}
       if (!daemonWasDown.value) {
         notify.show(t('notifyDaemonDown'), 'warning')
       }
@@ -198,7 +208,7 @@ export const useTaskStore = defineStore('task', () => {
       })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
-      await fetchTasks({ page: 1 })
+      await fetchTasks()
       await fetchQueueStatus()
       return data.task_id || null
     } catch {
@@ -234,8 +244,8 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function resumeTask(taskId: string): Promise<boolean> {
-    const source = tasks.value.find((task) => task.task_id === taskId)
+  async function resumeTask(taskId: string, sourceTask?: TaskInfo): Promise<boolean> {
+    const source = sourceTask ?? tasks.value.find((task) => task.task_id === taskId)
     if (source?.legacy && !window.confirm(t('taskLegacyResumeConfirm'))) return false
     let failureDetail = ''
     try {
@@ -269,8 +279,6 @@ export const useTaskStore = defineStore('task', () => {
       const res = await fetch(`/api/tasks/${taskId}/history`, { method: 'DELETE' })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       tasks.value = tasks.value.filter((task) => task.task_id !== taskId)
-      totalTasks.value = Math.max(0, totalTasks.value - 1)
-      if (tasks.value.length === 0 && page.value > 1) page.value -= 1
       await fetchTasks()
       notify.show(t('notifyTaskDeleted'), 'success')
       return true
@@ -288,14 +296,11 @@ export const useTaskStore = defineStore('task', () => {
     tasks,
     commands,
     loading,
-    totalTasks,
-    page,
-    pageSize,
-    taskFilter,
     taskListError,
     daemonPaused,
     daemonUp,
     fetchTasks,
+    fetchTaskPage,
     fetchCommands,
     fetchQueueStatus,
     pauseQueue,

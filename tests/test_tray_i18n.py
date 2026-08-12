@@ -234,3 +234,70 @@ def test_set_language_rejects_unsupported(tmp_path, monkeypatch):
     t = TrayApp()
     t._set_language("fr")  # not in LANGUAGES
     assert t._lang == "cn"
+
+
+def _tray_for_tick():
+    from scripts.tray.app import TrayApp
+
+    tray = TrayApp()
+    tray._icon = None
+    tray._last_error = None
+    return tray
+
+
+def test_tick_ignores_stale_active_job_that_is_already_terminal(monkeypatch):
+    from webui.services import daemon_client as daemon_module
+
+    class Client:
+        def health_sync(self):
+            return {"paused": False, "active_job": "job-1"}
+
+        def get_job_sync(self, _job_id):
+            return {
+                "id": "job-1",
+                "state": "done",
+                "pid": 123,
+                "create_time": 456.0,
+            }
+
+    monkeypatch.setattr(daemon_module, "daemon_client", Client())
+    tray = _tray_for_tick()
+    tray._state = "running"
+    tray._active_job = {"id": "previous-job", "state": "running"}
+
+    tray._tick()
+
+    assert tray._state == "idle"
+    assert tray._active_job is None
+
+
+def test_tick_requires_live_process_identity_before_showing_running(monkeypatch):
+    from scripts.daemon import proc
+    from webui.services import daemon_client as daemon_module
+
+    class Client:
+        def health_sync(self):
+            return {"paused": False, "active_job": "job-1"}
+
+        def get_job_sync(self, _job_id):
+            return {
+                "id": "job-1",
+                "state": "running",
+                "pid": 123,
+                "create_time": 456.0,
+                "method": "lora",
+            }
+
+    monkeypatch.setattr(daemon_module, "daemon_client", Client())
+    monkeypatch.setattr(proc, "is_alive", lambda pid, create_time: False)
+    tray = _tray_for_tick()
+
+    tray._tick()
+
+    assert tray._state == "idle"
+    assert tray._active_job is None
+
+    monkeypatch.setattr(proc, "is_alive", lambda pid, create_time: True)
+    tray._tick()
+    assert tray._state == "running"
+    assert tray._active_job["id"] == "job-1"

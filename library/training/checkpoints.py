@@ -564,6 +564,8 @@ class CheckpointSaver:
             # duplicate keyword error when the hook serializes the state.
             runtime.pop("global_step", None)
             provider_interrupted = bool(runtime.pop("interrupted", False))
+            runtime.pop("job_id", None)
+            runtime.pop("root_job_id", None)
             stage_index = runtime.pop("stage_index", -1)
             if stage_index is None:
                 stage_index = -1
@@ -586,6 +588,8 @@ class CheckpointSaver:
                 rng_state=runtime.pop("rng_state", None),
                 config_signature=runtime.pop("config_signature", None),
                 dataset_signature=runtime.pop("dataset_signature", None),
+                job_id=os.environ.get("ANIMA_DAEMON_JOB_ID"),
+                root_job_id=os.environ.get("ANIMA_DAEMON_ROOT_JOB_ID"),
                 interrupted=bool(self._saving_interrupted_state or provider_interrupted),
                 **runtime,
             )
@@ -609,6 +613,19 @@ class CheckpointSaver:
                 with open(train_state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 data = normalize_train_state(data)
+                expected_root_job_id = os.environ.get("ANIMA_DAEMON_ROOT_JOB_ID")
+                if expected_root_job_id:
+                    actual_root_job_id = data.get("root_job_id")
+                    if not actual_root_job_id:
+                        raise ValueError(
+                            "resume state is missing logical task owner: "
+                            f"expected root_job_id={expected_root_job_id}"
+                        )
+                    if actual_root_job_id != expected_root_job_id:
+                        raise ValueError(
+                            "resume state logical task owner mismatch: "
+                            f"state={actual_root_job_id}, expected={expected_root_job_id}"
+                        )
                 expected_config = getattr(self.args, "config_signature", None)
                 actual_config = data.get("config_signature")
                 if expected_config and actual_config not in (None, expected_config):
@@ -705,6 +722,18 @@ class CheckpointSaver:
                 continue
             ckpt_data = read_train_state(state_dir) or {}
             ckpt_step = int(ckpt_data.get("global_step", 0) or 0)
+            expected_root_job_id = os.environ.get("ANIMA_DAEMON_ROOT_JOB_ID")
+            if expected_root_job_id:
+                if (
+                    int(ckpt_data.get("schema_version", 1) or 1) < 3
+                    or not ckpt_data.get("job_id")
+                    or ckpt_data.get("root_job_id") != expected_root_job_id
+                ):
+                    logger.warning(
+                        "ignoring resume state owned by another logical task: %s",
+                        state_dir,
+                    )
+                    continue
             expected_config = getattr(args, "config_signature", None)
             expected_dataset = getattr(args, "dataset_signature", None)
             if expected_config and ckpt_data.get("config_signature") not in (None, expected_config):
@@ -832,12 +861,17 @@ class CheckpointSaver:
         save_rolling_state(self.args, self.accelerator)
 
     def cleanup_resumable(self) -> None:
-        """At training end, remove the resumable checkpoint state dir + ckpt
-        file. Main-process only; no-op when ``checkpointing_epochs`` is unset."""
+        """Retire crash-only state after a successful training completion."""
         args = self.args
-        if not getattr(args, "checkpointing_epochs", None):
-            return
         if not self.accelerator.is_main_process:
+            return
+        rolling_state_dir = get_rolling_state_dir(args)
+        if os.path.exists(rolling_state_dir):
+            logger.info(
+                f"training complete, removing rolling state: {rolling_state_dir}"
+            )
+            remove_path_with_retry(Path(rolling_state_dir))
+        if not getattr(args, "checkpointing_epochs", None):
             return
         checkpoint_state_dir = get_checkpoint_state_dir(args)
         if os.path.exists(checkpoint_state_dir):

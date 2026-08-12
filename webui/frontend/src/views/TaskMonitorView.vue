@@ -25,7 +25,7 @@
         >
           {{ t('taskShutdownDaemon') }}
         </v-btn>
-        <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="taskStore.poll()">
+        <v-btn variant="text" size="small" prepend-icon="mdi-refresh" @click="refreshView">
           {{ t('ppRefresh') }}
         </v-btn>
       </div>
@@ -40,7 +40,7 @@
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('taskSubtitle') }}</div>
 
     <v-alert
-      v-if="taskStore.taskListError"
+      v-if="historyError"
       type="error"
       variant="tonal"
       density="compact"
@@ -110,21 +110,21 @@
               color="primary"
               variant="text"
               prepend-icon="mdi-play-circle"
-              @click="taskStore.resumeTask(task.task_id)"
+              @click="resumeTask(task)"
             >{{ t('taskResume') }}</v-btn>
             <v-btn
               v-if="task.state === 'success' || task.state === 'failed' || task.state === 'cancelled'"
               size="x-small"
               variant="text"
               prepend-icon="mdi-delete-outline"
-              @click="taskStore.deleteHistory(task.task_id)"
+              @click="deleteHistory(task)"
             >{{ t('taskDeleteHistory') }}</v-btn>
             <v-btn
               v-if="task.state === 'running' || task.state === 'pending'"
               size="x-small"
               color="error"
               variant="text"
-              @click="taskStore.cancelTask(task.task_id)"
+              @click="cancelTask(task)"
             >
               {{ t('taskCancel') }}
             </v-btn>
@@ -190,21 +190,21 @@
               color="primary"
               variant="text"
               prepend-icon="mdi-play-circle"
-              @click="taskStore.resumeTask(task.task_id)"
+              @click="resumeTask(task)"
             >{{ t('taskResume') }}</v-btn>
             <v-btn
               v-if="task.state === 'success' || task.state === 'failed' || task.state === 'cancelled'"
               size="x-small"
               variant="text"
               prepend-icon="mdi-delete-outline"
-              @click="taskStore.deleteHistory(task.task_id)"
+              @click="deleteHistory(task)"
             >{{ t('taskDeleteHistory') }}</v-btn>
             <v-btn
               v-if="task.state === 'running' || task.state === 'pending'"
               size="x-small"
               color="error"
               variant="text"
-              @click="taskStore.cancelTask(task.task_id)"
+              @click="cancelTask(task)"
             >
               {{ t('taskCancel') }}
             </v-btn>
@@ -218,9 +218,9 @@
     </div>
 
     <v-pagination
-      v-if="taskStore.totalTasks > taskStore.pageSize"
-      v-model="taskStore.page"
-      :length="Math.ceil(taskStore.totalTasks / taskStore.pageSize)"
+      v-if="historyTotal > historyPageSize"
+      v-model="historyPage"
+      :length="Math.ceil(historyTotal / historyPageSize)"
       density="compact"
       class="flex-shrink-0 mt-2"
       @update:model-value="loadPage"
@@ -265,7 +265,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
-import { useTaskStore } from '../stores/task'
+import { useTaskStore, type TaskFilter, type TaskInfo } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
 import LogStream from '../components/LogStream.vue'
 import TaskAttemptHistory from '../components/TaskAttemptHistory.vue'
@@ -273,22 +273,41 @@ import TaskAttemptHistory from '../components/TaskAttemptHistory.vue'
 const taskStore = useTaskStore()
 const { t } = useI18n()
 const selectedTask = ref('')
-const taskFilter = ref('all')
-const visibleTasks = computed(() => taskStore.tasks)
+const taskFilter = ref<TaskFilter>('all')
+const historyTasks = ref<TaskInfo[]>([])
+const historyTotal = ref(0)
+const historyPage = ref(1)
+const historyPageSize = 25
+const historyError = ref(false)
+let historyRequestId = 0
+const visibleTasks = computed(() => historyTasks.value)
 const displayedTasks = computed(() => {
   if (!selectedTask.value) return visibleTasks.value
   return visibleTasks.value.filter((task) => task.task_id === selectedTask.value)
 })
 
 async function loadPage() {
-  await taskStore.fetchTasks({
-    state: taskFilter.value as 'all' | 'active' | 'success' | 'failed' | 'cancelled',
-    page: taskStore.page,
-  })
+  const requestId = ++historyRequestId
+  try {
+    const result = await taskStore.fetchTaskPage({
+      state: taskFilter.value,
+      page: historyPage.value,
+      pageSize: historyPageSize,
+    })
+    if (requestId !== historyRequestId) return
+    historyTasks.value = result.tasks
+    historyTotal.value = result.total
+    historyError.value = false
+  } catch {
+    if (requestId !== historyRequestId) return
+    historyTasks.value = []
+    historyTotal.value = 0
+    historyError.value = true
+  }
 }
 
 watch(taskFilter, () => {
-  taskStore.page = 1
+  historyPage.value = 1
   void loadPage()
 })
 
@@ -320,18 +339,37 @@ async function confirmShutdown() {
 
 let pollTimer = 0
 
+async function refreshView() {
+  await taskStore.poll()
+  await loadPage()
+}
+
 onMounted(() => {
-  void loadPage()
-  void taskStore.fetchQueueStatus()
-  pollTimer = window.setInterval(() => taskStore.poll(), 5000)
+  void refreshView()
+  pollTimer = window.setInterval(() => void refreshView(), 5000)
 })
 
 onUnmounted(() => {
   clearInterval(pollTimer)
 })
 
+async function resumeTask(task: TaskInfo) {
+  if (await taskStore.resumeTask(task.task_id, task)) await loadPage()
+}
+
+async function deleteHistory(task: TaskInfo) {
+  if (!await taskStore.deleteHistory(task.task_id)) return
+  const maxPage = Math.max(1, Math.ceil(Math.max(0, historyTotal.value - 1) / historyPageSize))
+  historyPage.value = Math.min(historyPage.value, maxPage)
+  await loadPage()
+}
+
+async function cancelTask(task: TaskInfo) {
+  if (await taskStore.cancelTask(task.task_id)) await loadPage()
+}
+
 function onTaskDone() {
-  taskStore.fetchTasks()
+  void refreshView()
 }
 
 function stateColor(state: string) {

@@ -115,10 +115,11 @@ older clients. Add query parameters to receive `{jobs, total, offset, limit}`:
 | `before` / `after` | submission-time Unix timestamp bounds |
 | `offset` / `limit` | zero-based pagination; `limit` defaults to 100 |
 
-Each job also exposes `recovery_state`, `recovery_step`, `target_steps`,
-`target_epochs`, `stop_requested`, `forced_stop`, and `legacy`. A legacy job was
-created before immutable config snapshots existed and needs manual config/data
-verification before resuming.
+Each job also exposes `root_job_id`, `parent_job_id`, `attempt_index`,
+`recovery_state`, `recovery_step`, `target_steps`, `target_epochs`,
+`stop_requested`, `forced_stop`, and `legacy`. Resumed physical jobs are grouped
+under one logical root by `GET /job-groups`. A legacy job was created before
+immutable config snapshots existed and needs manual config/data verification.
 
 ### `GET /jobs/{id}` — status
 
@@ -158,12 +159,24 @@ tree-kill the process and persist `forced_stop=true`. The Python client's
 ### `POST /jobs/{id}/resume` — continue training
 
 Creates a **new** queued training job from the newest complete state among
-`interrupted-state`, rolling state, checkpoint state, and compatible legacy
-state directories. Selection is by committed `global_step`, then state type as
-a tie-break. Config and dataset signatures must match when present. A missing
-state, signature mismatch, or an already-reached `target_steps`/`target_epochs`
-returns HTTP 409 and does not start a fresh run. The original job and its logs
+`interrupted-state`, rolling state, checkpoint state, and explicit end-state
+directories. Selection is by committed `global_step`, then state type as a
+tie-break. Automatic daemon recovery only accepts schema-v3 state whose
+`root_job_id` matches the logical task and whose config/data signatures match.
+Schema-v1/v2 ownerless state remains available to an operator through explicit
+CLI `--resume`, but is never auto-associated with a daemon job. A missing or
+mismatched state, an already-reached `target_steps`, or a second concurrent
+resume for the same root returns HTTP 409. `current_epoch` identifies the epoch
+in progress rather than a completed epoch, so epoch-only jobs remain resumable
+when interrupted inside their final epoch. The original attempts and their logs
 remain intact.
+
+The daemon injects `ANIMA_DAEMON_JOB_ID` and `ANIMA_DAEMON_ROOT_JOB_ID` into
+training processes; `CheckpointSaver` persists both in `train_state.json` and
+validates the root again while loading. A successful training completion
+deletes the crash-only rolling state (including optimizer artifacts), so a later
+fresh run cannot silently resume it. Explicit end-state and final model outputs
+are not removed.
 
 ### `DELETE /jobs/{id}` — delete history
 
