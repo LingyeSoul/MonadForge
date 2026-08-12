@@ -9,12 +9,13 @@ of (baseline / user / new) sha256 hashes:
   - Configs in configs/methods/, configs/gui-methods/,
     configs/preprocess.toml, configs/presets.toml, configs/sam_mask.yaml: prompt on conflict
     (keep yours / overwrite / backup-and-overwrite / show diff).
-  - Code files (library/, scripts/, train.py, etc.) AND configs/base.toml:
+  - Code files (library/, scripts/, train.py, etc.) AND configs/base.toml /
+    configs/model.toml:
     overwritten silently when unmodified; user-modified versions are copied to
-    .anima-update-backups/<timestamp>/ before being overwritten. base.toml is
-    deliberately treated as code — it's shared infrastructure, so new keys added
-    upstream must always reach the user (even under --keep-conflicts), with the
-    user's prior copy preserved in the backup dir.
+    .anima-update-backups/<timestamp>/ before being overwritten. These files are
+    deliberately treated as code — user model paths live under configs/custom/,
+    so upstream defaults and shared keys must always reach the user (even under
+    --keep-conflicts), with the user's prior copy preserved in the backup dir.
 
 The baseline manifest lives at .anima_release.json. If it doesn't exist
 (first run after upgrading from a release that predates this script), every
@@ -80,6 +81,7 @@ PRESERVE_DIRS: tuple[str, ...] = (
     "output_temp",
     "workflows",
     "archive/graft/runtime",
+    "configs/custom",
     "__pycache__",
     "anima_lora.egg-info",
     ".anima-update-backups",

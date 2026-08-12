@@ -5,7 +5,7 @@ Three progressive parts — each builds on the previous, each opt-in via a flag 
 the cheap part runs by default and the GPU-heavy parts stay explicit:
 
   1. load_method_preset() — the config merge chain (default; no GPU, no weights)
-     base.toml → presets.toml[<preset>] → methods/<method>.toml → (CLI on top).
+     model config → base.toml → presets.toml[<preset>] → methods/<method>.toml → (CLI on top).
      This is what `train.py` does before it touches a single weight. The LoRA
      family is routed by a three-axis surface — use_moe_style / route_per_layer /
      router_source — which is just three keys in the merged dict; we print them.

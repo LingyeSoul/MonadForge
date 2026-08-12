@@ -179,7 +179,7 @@ make lora                 # 또는: PRESET=fast_16gb make lora / PRESET=low_vram
 make test                 # 최신 학습된 LoRA로 샘플 생성
 ```
 
-설정 체인: `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI 인자`. `PRESET=low_vram make lora` 또는 `--network_dim 32 --max_train_epochs 64` 형태로 오버라이드. 전체 플래그는 [docs/guidelines/training.md](docs/guidelines/training.md), [docs/guidelines/inference.md](docs/guidelines/inference.md)에.
+설정 체인: `configs/model.toml → configs/custom/model.toml → configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI 인자`. `PRESET=low_vram make lora` 또는 `--network_dim 32 --max_train_epochs 64` 형태로 오버라이드. 전체 플래그는 [docs/guidelines/training.md](docs/guidelines/training.md), [docs/guidelines/inference.md](docs/guidelines/inference.md)에.
 
 ---
 

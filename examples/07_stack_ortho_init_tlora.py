@@ -70,7 +70,7 @@ from library.runtime.harness import (
 from library.training.forward.router_conditioning import apply_router_conditioning
 from networks.lora_anima.factory import create_network
 
-# env ANIMA_DIT (incl. a project-root `.env`) → configs/base.toml → fallback.
+# env ANIMA_DIT (incl. a project-root `.env`) → model config → fallback.
 DIT = default_checkpoints().dit
 
 # Anima DiT contract (library/anima/weights.py + models.py): 16 latent channels,

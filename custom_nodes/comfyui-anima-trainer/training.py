@@ -6,8 +6,8 @@ Instead we replicate its merge by calling ``load_method_preset`` directly, then
 fill argparse defaults by parsing an empty argv against a pre-populated
 namespace.
 
-Relative paths in ``configs/base.toml`` (model / VAE / text encoder) are
-rewritten to absolute so the trainer can run from any CWD.
+Relative paths from the shared model configuration are rewritten to absolute
+so the trainer can run from any CWD.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def build_training_namespace(
 ) -> argparse.Namespace:
     """Produce a fully-populated argparse.Namespace ready for AnimaTrainer.train.
 
-    Merge order: ``base.toml`` → ``presets.toml[<preset>]`` →
+    Merge order: model config → ``base.toml`` → ``presets.toml[<preset>]`` →
     ``<methods_subdir>/<method>.toml`` → ``overrides``. Then argparse defaults
     fill any remaining required fields.
     """

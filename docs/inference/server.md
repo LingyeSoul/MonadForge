@@ -111,5 +111,5 @@ adapters every request defeats the warm-reuse — group requests by adapter.
 | `ANIMA_INFERENCE_PIDFILE` | `~/.anima/inference.json` | per-user pidfile mirror location |
 
 Model paths default to `default_checkpoints()` (`ANIMA_DIT` / `ANIMA_VAE` /
-`ANIMA_TEXT_ENCODER` → `configs/base.toml` → built-ins); a request may override
+`ANIMA_TEXT_ENCODER` → `configs/custom/model.toml` → `configs/model.toml` → built-ins); a request may override
 `dit` / `vae` / `text_encoder` per call.

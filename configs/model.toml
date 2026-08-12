@@ -1,0 +1,7 @@
+# Model checkpoint defaults. Do not put machine-specific absolute paths here.
+# Put local overrides in configs/custom/model.toml; that directory is ignored
+# by Git and preserved across updates. Relative paths resolve from the repo root.
+
+pretrained_model_name_or_path = "models/diffusion_models/anima-base-v1.0.safetensors"
+qwen3 = "models/text_encoders/qwen_3_06b_base.safetensors"
+vae = "models/vae/qwen_image_vae.safetensors"

@@ -345,7 +345,7 @@ The **Dataset** tab is for getting your `image_dataset/` into shape before prepr
 
 ## 8. 训练执行
 
-所有训练均通过 TOML 配置文件和 HuggingFace Accelerate 执行。配置合并顺序为 `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI 参数`，方法配置会覆盖预设配置。
+所有训练均通过 TOML 配置文件和 HuggingFace Accelerate 执行。模型默认路径来自 `configs/model.toml`，本机路径由 `configs/custom/model.toml` 覆盖；随后合并 `configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI 参数`，方法配置会覆盖预设配置。
 
 ### 8.1 快速开始
 

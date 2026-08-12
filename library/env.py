@@ -16,7 +16,6 @@ up from this file (``anima_lora/``).
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -89,14 +88,14 @@ def load_dotenv(path: Optional[Path] = None) -> dict[str, str]:
 # encoder a bench script or example needs. Resolution order, highest first:
 #   1. env vars ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER (incl. anything
 #      promoted from .env by load_dotenv)
-#   2. configs/base.toml (the real source of truth shared with training)
-#   3. the literals below (only if base.toml is missing/unreadable)
+#   2. configs/model.toml + configs/custom/model.toml (shared with training)
+#   3. the literals below (only if model config is missing/unreadable)
 _CKPT_ENV = {
     "dit": "ANIMA_DIT",
     "vae": "ANIMA_VAE",
     "text_encoder": "ANIMA_TEXT_ENCODER",
 }
-_CKPT_BASE_TOML_KEY = {
+_CKPT_CONFIG_KEY = {
     "dit": "pretrained_model_name_or_path",
     "vae": "vae",
     "text_encoder": "qwen3",
@@ -125,7 +124,7 @@ def default_checkpoints() -> DefaultCheckpoints:
     """Resolve the default DiT / VAE / text-encoder paths.
 
     Env (``ANIMA_DIT`` / ``ANIMA_VAE`` / ``ANIMA_TEXT_ENCODER``) wins over
-    ``configs/base.toml``, which wins over hardcoded fallbacks. ``.env`` is
+    the model config, which wins over hardcoded fallbacks. ``.env`` is
     consulted (via :func:`load_dotenv`, which never clobbers real env vars), so
     callers need not load it themselves. This is the one place bench scripts and
     examples should reach for these paths instead of re-deriving the
@@ -133,22 +132,25 @@ def default_checkpoints() -> DefaultCheckpoints:
     """
     load_dotenv()
 
-    base: dict[str, str] = {}
-    base_path = anima_home() / "configs" / "base.toml"
-    if base_path.exists():
-        try:
-            with base_path.open("rb") as fh:
-                data = tomllib.load(fh)
-            base = {
-                k: data[toml_key]
-                for k, toml_key in _CKPT_BASE_TOML_KEY.items()
-                if isinstance(data.get(toml_key), str)
-            }
-        except (OSError, tomllib.TOMLDecodeError):
-            base = {}
+    from library.config.model_paths import load_model_config
+
+    configured: dict[str, str] = {}
+    try:
+        data = load_model_config(anima_home() / "configs")
+        configured = {
+            kind: data[toml_key]
+            for kind, toml_key in _CKPT_CONFIG_KEY.items()
+            if isinstance(data.get(toml_key), str)
+        }
+    except OSError:
+        configured = {}
 
     def pick(kind: str) -> str:
-        return os.environ.get(_CKPT_ENV[kind]) or base.get(kind) or _CKPT_FALLBACK[kind]
+        return (
+            os.environ.get(_CKPT_ENV[kind])
+            or configured.get(kind)
+            or _CKPT_FALLBACK[kind]
+        )
 
     return DefaultCheckpoints(
         dit=pick("dit"), vae=pick("vae"), text_encoder=pick("text_encoder")

@@ -321,7 +321,7 @@ For detailed behavior, see [Section 8.6 Auto-Resume](#86-auto-resume-checkpointi
 
 ## 8. Training Execution
 
-All training is executed via TOML configuration files and HuggingFace Accelerate. The configuration merge order is `configs/base.toml -> configs/presets.toml[<preset>] -> configs/methods/<method>.toml -> CLI arguments`, with method configuration overriding preset configuration.
+All training is executed via TOML configuration files and HuggingFace Accelerate. Model defaults come from `configs/model.toml` and machine-local paths override them in `configs/custom/model.toml`; the remaining chain is `configs/base.toml -> configs/presets.toml[<preset>] -> configs/methods/<method>.toml -> CLI arguments`, with method configuration overriding preset configuration.
 
 ### 8.1 Quick Start
 

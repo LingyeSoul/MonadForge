@@ -92,7 +92,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 # Default DiT / VAE / text-encoder paths, resolved through the façade so a bench
-# honors ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER + configs/base.toml + .env
+# honors ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER + model config + .env
 # instead of re-hardcoding the "models/…/anima-base-v1.0.safetensors" strings.
 # Reach for these (or `add_model_args`) rather than copy-pasting path literals.
 _CKPTS = default_checkpoints()

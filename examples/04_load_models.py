@@ -38,7 +38,7 @@ from library.inference.text import (
 from library.models import qwen_vae
 
 # env (ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER, incl. a project-root `.env`)
-# → configs/base.toml → built-in fallbacks. See `.env.example`.
+# → configs/custom/model.toml → configs/model.toml → built-in fallbacks. See `.env.example`.
 _ckpt = default_checkpoints()
 DIT = _ckpt.dit
 VAE = _ckpt.vae

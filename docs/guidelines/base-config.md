@@ -1,13 +1,13 @@
 # `base.toml` Reference
 
-`configs/base.toml` is the bottom layer of the config merge chain:
+`configs/base.toml` is the shared training layer of the config merge chain:
 
 ```
-configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args
+configs/model.toml → configs/base.toml (legacy model keys) → configs/custom/model.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args
 ```
 
 It holds **shared infrastructure** that rarely changes between experiments —
-model paths, the dataset blueprint, optimizer/schedule defaults, the noise
+the dataset blueprint, optimizer/schedule defaults, the noise
 schedule, caching, compile, and the memory knobs. Presets override hardware
 profile values on top; method TOMLs override method-specific values; CLI args
 win last. **Method settings beat preset settings on overlap**, so a frozen-DiT
@@ -22,7 +22,11 @@ fully merged result for any combo with:
 make print-config METHOD=lora PRESET=default
 ```
 
-> **Two sub-files split off from base.toml** — both documented at the bottom:
+> **Model paths are split out of base.toml.** The repository defaults are in
+> `configs/model.toml`; put machine-local absolute paths in the Git-ignored
+> `configs/custom/model.toml`. The WebUI System page writes that custom file.
+>
+> **Other split configuration:**
 > - `configs/preprocess.toml` — preprocess-only knobs (`source_image_dir`, …).
 > - The `[general]` / `[[datasets]]` dataset blueprint — *in* base.toml but
 >   **skipped by the flat merge** (it's consumed separately by the dataset
@@ -31,6 +35,9 @@ make print-config METHOD=lora PRESET=default
 ---
 
 ## Model paths
+
+These keys live in `configs/model.toml`. Override any subset of them in
+`configs/custom/model.toml`; local values win without dirtying the worktree.
 
 | Key | Default | What it controls |
 |---|---|---|

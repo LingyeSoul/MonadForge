@@ -28,7 +28,9 @@ from library.config.io import (
     load_method_preset,
     load_preset_section,
     list_presets,
+    migrate_custom_configs,
 )
+from library.config.model_paths import load_model_config
 from tests.conftest import iter_method_names
 
 
@@ -137,10 +139,99 @@ def test_list_presets_includes_new_and_legacy_custom_layouts(tmp_path: Path):
     (configs / "custom" / "legacy.toml").write_text(
         'attn_mode = "torch"\n', encoding="utf-8"
     )
+    (configs / "custom" / "model.toml").write_text(
+        'vae = "local-vae.safetensors"\n', encoding="utf-8"
+    )
+    (configs / "custom" / "preprocess.toml").write_text(
+        "target_res = [1024]\n", encoding="utf-8"
+    )
+    (configs / "custom" / "presets" / "model.toml").write_text(
+        'attn_mode = "torch"\n', encoding="utf-8"
+    )
+    (configs / "custom" / "presets" / "preprocess.toml").write_text(
+        'attn_mode = "torch"\n', encoding="utf-8"
+    )
 
     assert list_presets(str(configs)) == ["V100", "default", "legacy"]
     assert load_preset_section("V100", str(configs)) == {"attn_mode": "torch"}
     assert load_preset_section("legacy", str(configs)) == {"attn_mode": "torch"}
+
+
+def test_model_config_layers_and_training_provenance(tmp_path: Path):
+    configs = tmp_path / "configs"
+    (configs / "methods").mkdir(parents=True)
+    (configs / "custom").mkdir()
+    (configs / "model.toml").write_text(
+        'pretrained_model_name_or_path = "default-dit"\n'
+        'qwen3 = "default-te"\n'
+        'vae = "default-vae"\n',
+        encoding="utf-8",
+    )
+    (configs / "base.toml").write_text(
+        'vae = "legacy-vae"\nnetwork_module = "networks.lora_anima"\n',
+        encoding="utf-8",
+    )
+    (configs / "custom" / "model.toml").write_text(
+        'pretrained_model_name_or_path = "local-dit"\n', encoding="utf-8"
+    )
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (configs / "methods" / "lora.toml").write_text(
+        "network_dim = 16\n", encoding="utf-8"
+    )
+
+    model = load_model_config(configs)
+    assert model == {
+        "pretrained_model_name_or_path": "local-dit",
+        "qwen3": "default-te",
+        "vae": "legacy-vae",
+    }
+
+    merged, provenance = load_method_preset(
+        "lora", "default", str(configs), return_provenance=True
+    )
+    assert merged["pretrained_model_name_or_path"] == "local-dit"
+    assert merged["qwen3"] == "default-te"
+    assert merged["vae"] == "legacy-vae"
+    assert provenance["pretrained_model_name_or_path"].endswith(
+        "configs/custom/model.toml"
+    )
+    assert provenance["qwen3"].endswith("configs/model.toml")
+    assert provenance["vae"].endswith("configs/base.toml")
+
+
+def test_model_config_rejects_invalid_path_value(tmp_path: Path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "model.toml").write_text("vae = 42\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="vae must be a non-empty string"):
+        load_model_config(configs)
+
+
+def test_model_config_reports_invalid_toml_path(tmp_path: Path):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    path = configs / "model.toml"
+    path.write_text('vae = "unterminated\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"model\.toml: invalid TOML"):
+        load_model_config(configs)
+
+
+def test_custom_config_migration_preserves_first_class_files(tmp_path: Path):
+    configs = tmp_path / "configs"
+    custom = configs / "custom"
+    custom.mkdir(parents=True)
+    (custom / "model.toml").write_text('vae = "local"\n', encoding="utf-8")
+    (custom / "preprocess.toml").write_text("target_res = [1024]\n", encoding="utf-8")
+    (custom / "legacy.toml").write_text('attn_mode = "torch"\n', encoding="utf-8")
+
+    migrate_custom_configs(str(configs))
+
+    assert (custom / "model.toml").is_file()
+    assert (custom / "preprocess.toml").is_file()
+    assert not (custom / "legacy.toml").exists()
+    assert (custom / "presets" / "legacy.toml").is_file()
 
 
 @pytest.mark.parametrize("method", METHODS)

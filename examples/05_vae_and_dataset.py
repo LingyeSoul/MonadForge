@@ -36,7 +36,7 @@ from library.datasets.cache import CachedDataset
 from library.env import default_checkpoints
 from library.models import qwen_vae
 
-# env ANIMA_VAE (incl. a project-root `.env`) → configs/base.toml → fallback.
+# env ANIMA_VAE (incl. a project-root `.env`) → model config → fallback.
 VAE = default_checkpoints().vae
 
 

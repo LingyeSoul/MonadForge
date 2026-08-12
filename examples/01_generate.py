@@ -60,7 +60,7 @@ from library.runtime.device import clean_memory_on_device
 # Default checkpoint locations. default_checkpoints() resolves them in order
 # (highest wins): ANIMA_DIT / ANIMA_VAE / ANIMA_TEXT_ENCODER env vars — a
 # project-root `.env` is loaded automatically, see `.env.example` — then
-# configs/base.toml, then built-in fallbacks. To point at weights elsewhere,
+# configs/custom/model.toml, configs/model.toml, then built-in fallbacks. To point at weights elsewhere,
 # set those keys in `.env` rather than editing this file.
 _ckpt = default_checkpoints()
 DIT = _ckpt.dit

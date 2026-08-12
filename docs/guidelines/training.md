@@ -1,7 +1,7 @@
 # Training Reference
 
 Every training run resolves a method + hardware preset via the merge chain
-`configs/base.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`
+`configs/model.toml → configs/base.toml (legacy model keys) → configs/custom/model.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args`
 (method beats preset on overlap — so e.g. postfix forces `blocks_to_swap = 0`).
 Method TOMLs in `configs/methods/` are toggle-block files that hold several
 variants behind comments; the clean per-variant tree lives in

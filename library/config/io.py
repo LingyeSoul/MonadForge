@@ -1,6 +1,8 @@
 """TOML config loading, merging, and snapshot rendering.
 
-Chain: ``base.toml`` → ``presets.toml[<preset>]`` → ``methods/<method>.toml`` → CLI.
+Chain: ``model.toml`` → ``base.toml`` (including legacy model keys) →
+``custom/model.toml`` → ``presets.toml[<preset>]`` →
+``methods/<method>.toml`` → CLI.
 Method settings win over preset settings on overlap (so a method can force its
 own hardware constraints, e.g. ``blocks_to_swap=0``).
 
@@ -22,6 +24,7 @@ from typing import Any, Optional, Sequence
 import toml
 
 from library.config import schema as _config_schema
+from library.config.model_paths import read_model_config_file
 from library.env import anima_home, resolve_under_home
 from library.runtime.proc import no_window_kwargs
 
@@ -468,8 +471,8 @@ def load_path_overrides(
     method: Optional[str] = None,
     methods_subdir: str = "methods",
 ) -> dict:
-    """Top-level scalar keys from ``preprocess.toml`` → base.toml →
-    ``presets.toml[<preset>]`` → ``<methods_subdir>/<method>.toml`` (when given).
+    """Top-level scalar keys from model/preprocess → base → custom model →
+    preset → method (when given).
 
     ``configs/preprocess.toml`` holds the preprocess-only knobs
     (``source_image_dir`` / ``drop_lowres_images`` / ``min_pixels``) split out
@@ -557,6 +560,7 @@ def _display_path(path: str) -> str:
 
 
 _CUSTOM_PRESET_SUBDIRS = ("custom/presets", "custom")
+_CUSTOM_CONFIG_FILENAMES = frozenset({"model.toml", "preprocess.toml"})
 
 
 def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, str, str]:
@@ -586,6 +590,8 @@ def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, st
         for subdir in _CUSTOM_PRESET_SUBDIRS
     ]
     for cp in custom_paths:
+        if os.path.basename(cp) in _CUSTOM_CONFIG_FILENAMES:
+            continue
         if os.path.exists(cp):
             with open(cp, "r", encoding="utf-8") as f:
                 data = toml.load(f)
@@ -600,7 +606,11 @@ def _resolve_preset(preset: str, configs_dir: str = "configs") -> tuple[dict, st
         custom_dir = os.path.join(configs_dir, subdir)
         if os.path.isdir(custom_dir):
             available.extend(
-                sorted(n[:-5] for n in os.listdir(custom_dir) if n.endswith(".toml"))
+                sorted(
+                    n[:-5]
+                    for n in os.listdir(custom_dir)
+                    if n.endswith(".toml") and n not in _CUSTOM_CONFIG_FILENAMES
+                )
             )
     custom_locations = " or ".join(custom_paths)
     raise KeyError(
@@ -632,7 +642,11 @@ def list_presets(configs_dir: str = "configs") -> list[str]:
     for subdir in _CUSTOM_PRESET_SUBDIRS:
         custom_dir = os.path.join(configs_dir, subdir)
         if os.path.isdir(custom_dir):
-            names.update(n[:-5] for n in os.listdir(custom_dir) if n.endswith(".toml"))
+            names.update(
+                n[:-5]
+                for n in os.listdir(custom_dir)
+                if n.endswith(".toml") and n not in _CUSTOM_CONFIG_FILENAMES
+            )
     return sorted(names)
 
 
@@ -644,10 +658,10 @@ def _iter_method_preset_layers(
     *,
     require_files: bool,
 ):
-    """Yield ``(kind, path, tag, raw_dict)`` for the base → preset → method
+    """Yield ``(kind, path, tag, raw_dict)`` for the model/base → preset → method
     merge spine, in lowest→highest priority order.
 
-    ``kind`` ∈ {``"base"``, ``"preset"``, ``"method"``}. ``path`` is the actual
+    ``kind`` ∈ {``"model"``, ``"base"``, ``"preset"``, ``"method"``}. ``path`` is the actual
     file on disk (used as the ``_flatten_toml`` validation source); ``tag`` is
     the human-readable provenance label. ``raw_dict`` is the un-flattened TOML
     so each caller applies its own projection — ``load_method_preset`` flattens
@@ -663,6 +677,8 @@ def _iter_method_preset_layers(
     unknown presets silently.
     """
     base_path = os.path.join(configs_dir, "base.toml")
+    model_path = os.path.join(configs_dir, "model.toml")
+    custom_model_path = os.path.join(configs_dir, "custom", "model.toml")
     # gui-methods: the effective method layer is {**builtin, **overlay} (see
     # _load_gui_method_merged) — a sparse user overlay must inherit the
     # builtin's knobs, not replace them wholesale. Other subdirs keep the
@@ -681,9 +697,25 @@ def _iter_method_preset_layers(
         if require_files and method_path and not os.path.exists(method_path):
             raise FileNotFoundError(f"Config file not found: {method_path}")
 
+    if os.path.exists(model_path):
+        yield (
+            "model",
+            model_path,
+            _display_path(model_path),
+            read_model_config_file(pathlib.Path(model_path)),
+        )
+
     if os.path.exists(base_path):
         with open(base_path, "r", encoding="utf-8") as f:
             yield "base", base_path, _display_path(base_path), toml.load(f)
+
+    if os.path.exists(custom_model_path):
+        yield (
+            "model",
+            custom_model_path,
+            _display_path(custom_model_path),
+            read_model_config_file(pathlib.Path(custom_model_path)),
+        )
 
     if require_files:
         section, preset_path, tag = _resolve_preset(preset, configs_dir)
@@ -716,7 +748,7 @@ def load_method_preset(
     strict: bool = False,
     return_provenance: bool = False,
 ):
-    """Merge base.toml → presets.toml[<preset>] → <methods_subdir>/<method>.toml into a flat dict.
+    """Merge model paths → base → preset → method into a flat dict.
 
     Method settings win over preset settings on overlap (e.g. postfix can force
     blocks_to_swap=0 regardless of the hardware preset).
@@ -864,23 +896,32 @@ def _render_merged_toml(
         lines.append(f"# Git: {sha}")
     lines.append("")
 
-    # Group by source so the dump reads top-down: base → preset → method → CLI.
+    # Group by source so the dump reads top-down: model → base → preset → method → CLI.
     by_source: dict[str, list[tuple[str, Any]]] = {}
     for key, value, source in entries:
         by_source.setdefault(source, []).append((key, value))
 
     def _rank(src: str) -> int:
-        if src == "configs/base.toml":
+        if src == "configs/custom/preprocess.toml":
             return 0
-        if src.startswith("configs/presets.toml") or src.startswith("configs/custom/"):
+        if src == "configs/model.toml":
             return 1
-        if src == "CLI":
+        if src == "configs/base.toml":
+            return 2
+        if src == "configs/custom/model.toml":
+            return 3
+        if src.startswith("configs/presets.toml") or (
+            src.startswith("configs/custom/")
+            and not src.startswith("configs/custom/variants/")
+        ):
             return 4
+        if src == "CLI":
+            return 6
         # Method file — lives under configs/methods/ by default, configs/
         # gui-methods/ when --methods_subdir=gui-methods, or its own
         # configs/<method>/<method>.toml dir (self-contained per-method layout).
-        # Anything that isn't base/preset/custom/CLI is the method layer.
-        return 2
+        # Anything that isn't model/base/preset/CLI is the method layer.
+        return 5
 
     order = sorted(by_source, key=_rank)
 
@@ -984,7 +1025,8 @@ def read_config_from_file(
     methods_subdir = getattr(args, "methods_subdir", None) or "methods"
     if method is not None and not args.config_file:
         logger.info(
-            f"Loading chain: base → presets/{preset} → {methods_subdir}/{method}"
+            f"Loading chain: model → base → custom/model → "
+            f"presets/{preset} → {methods_subdir}/{method}"
         )
         try:
             merged, provenance = load_method_preset(
@@ -1101,6 +1143,9 @@ def migrate_custom_configs(configs_dir: str = "configs") -> None:
     Moves:
       configs/gui-methods/custom/*.toml  ->  configs/custom/variants/*.toml
       configs/custom/*.toml              ->  configs/custom/presets/*.toml
+
+    ``model.toml`` and ``preprocess.toml`` are current first-class custom
+    configuration files and are never treated as legacy presets.
     Skips files that already exist at the destination.
     """
     import shutil
@@ -1127,7 +1172,7 @@ def migrate_custom_configs(configs_dir: str = "configs") -> None:
     new_presets = os.path.join(cd, "presets")
     if os.path.isdir(cd):
         for f in os.listdir(cd):
-            if f.endswith(".toml"):
+            if f.endswith(".toml") and f not in _CUSTOM_CONFIG_FILENAMES:
                 src = os.path.join(cd, f)
                 dst = os.path.join(new_presets, f)
                 if os.path.isfile(src) and not os.path.exists(dst):

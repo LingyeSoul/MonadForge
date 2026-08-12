@@ -648,13 +648,16 @@ def _base_sample_ratio(base_data: dict) -> float:
 
 
 def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str, str]]:
-    """Merge base + preset + gui-methods/<variant>.toml.
+    """Merge model paths + base + preset + gui-methods/<variant>.toml.
 
     Returns (merged_dict, origin_map) where origin_map[key] is
     'base' | 'preset' | 'method'.
     """
     _safe_variant(variant)
+    from library.config.model_paths import load_model_config
+
     base = _load(CONFIGS_DIR / "base.toml")
+    model = load_model_config(CONFIGS_DIR)
     pset = _load_all_presets().get(preset, {})
     if variant.startswith("custom/"):
         meth = _load(_resolve_variant_path(variant))
@@ -678,6 +681,7 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
                 origin[k] = src
 
     _merge_layer(base, "base")
+    _merge_layer(model, "base")
     _merge_layer(pset, "preset")
     _merge_layer(meth, "method")
 

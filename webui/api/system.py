@@ -7,16 +7,17 @@ from pathlib import Path
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from webui.services.config_service import ROOT, read_layer
+from library.config.model_paths import (
+    MODEL_CONFIG_DEFAULTS,
+    MODEL_CONFIG_KEYS,
+    load_model_config,
+)
+from webui.services.config_service import ROOT
 
 router = APIRouter()
 
-# Model groups — the anima group reads actual paths from base.toml; others are fixed.
-_ANIMA_PATH_KEYS = [
-    ("pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
-    ("qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
-    ("vae", "models/vae/qwen_image_vae.safetensors"),
-]
+# Model groups — the anima group reads the effective model config; others are fixed.
+_ANIMA_PATH_KEYS = [(key, default) for key, default in MODEL_CONFIG_DEFAULTS.items()]
 _STATIC_GROUPS: list[dict] = [
     {
         "id": "sam3",
@@ -45,10 +46,10 @@ def _resolve_path(path_str: str) -> Path:
 
 
 def _check_anima_group() -> dict:
-    base = read_layer("base")
+    model = load_model_config(ROOT / "configs")
     files_info = []
     for toml_key, default_ in _ANIMA_PATH_KEYS:
-        raw = base.get(toml_key, default_)
+        raw = model.get(toml_key, default_)
         resolved = _resolve_path(raw)
         files_info.append({"path": raw, "exists": resolved.is_file()})
     installed = all(f["exists"] for f in files_info)
@@ -75,11 +76,15 @@ def get_model_groups():
 
 # ── Model paths (configurable from System page) ────────────────
 
-# Keys in base.toml that hold model weight paths.
+# Model path keys exposed by the System page.
 _MODEL_PATH_KEYS: list[tuple[str, str, str]] = [
-    ("anima_dit", "pretrained_model_name_or_path", "models/diffusion_models/anima-base-v1.0.safetensors"),
-    ("anima_te", "qwen3", "models/text_encoders/qwen_3_06b_base.safetensors"),
-    ("anima_vae", "vae", "models/vae/qwen_image_vae.safetensors"),
+    (
+        "anima_dit",
+        "pretrained_model_name_or_path",
+        MODEL_CONFIG_DEFAULTS["pretrained_model_name_or_path"],
+    ),
+    ("anima_te", "qwen3", MODEL_CONFIG_DEFAULTS["qwen3"]),
+    ("anima_vae", "vae", MODEL_CONFIG_DEFAULTS["vae"]),
 ]
 
 
@@ -99,38 +104,39 @@ def _resolve_and_check(path_str: str) -> tuple[str, bool]:
 @router.get("/model-paths")
 def get_model_paths():
     """Return the configured model paths with existence status."""
-    base = read_layer("base")
+    model = load_model_config(ROOT / "configs")
     paths = []
     for id_, toml_key, default_ in _MODEL_PATH_KEYS:
-        raw = base.get(toml_key, default_)
+        raw = model.get(toml_key, default_)
         resolved, exists = _resolve_and_check(raw)
-        paths.append({
-            "id": id_,
-            "toml_key": toml_key,
-            "path": raw,
-            "resolved": resolved,
-            "exists": exists,
-        })
+        paths.append(
+            {
+                "id": id_,
+                "toml_key": toml_key,
+                "path": raw,
+                "resolved": resolved,
+                "exists": exists,
+            }
+        )
     return {"paths": paths}
 
 
 @router.put("/model-paths")
 def update_model_paths(body: list[ModelPathUpdate]):
-    """Update model paths in base.toml.
-
-    Does a targeted update of only the model path keys to avoid
-    destroying ``[[datasets]]`` and ``[general]`` sections.
-    """
+    """Update machine-local paths in gitignored custom/model.toml."""
     import toml as _toml
 
-    base_path = Path(__file__).resolve().parent.parent.parent / "configs" / "base.toml"
-    # Read raw to preserve all sections (datasets, general, etc.)
-    base = _toml.loads(base_path.read_text(encoding="utf-8")) if base_path.exists() else {}
-    valid_keys = {tk for _, tk, _ in _MODEL_PATH_KEYS}
+    custom_path = ROOT / "configs" / "custom" / "model.toml"
+    custom = (
+        _toml.loads(custom_path.read_text(encoding="utf-8"))
+        if custom_path.exists()
+        else {}
+    )
     for item in body:
-        if item.key in valid_keys:
-            base[item.key] = item.value
-    base_path.write_text(_toml.dumps(base), encoding="utf-8")
+        if item.key in MODEL_CONFIG_KEYS:
+            custom[item.key] = item.value
+    custom_path.parent.mkdir(parents=True, exist_ok=True)
+    custom_path.write_text(_toml.dumps(custom), encoding="utf-8")
     return {"ok": True}
 
 

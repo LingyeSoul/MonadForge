@@ -45,7 +45,7 @@ from library.runtime.harness import (
 )
 from networks.lora_anima.factory import create_network
 
-# env ANIMA_DIT (incl. a project-root `.env`) → configs/base.toml → fallback.
+# env ANIMA_DIT (incl. a project-root `.env`) → model config → fallback.
 DIT = default_checkpoints().dit
 
 

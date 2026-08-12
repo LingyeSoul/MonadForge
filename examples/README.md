@@ -53,7 +53,7 @@ make download-models      # DiT, text encoder, VAE, …
 make preprocess
 ```
 
-Model paths default to the `configs/base.toml` locations. To point at weights
+Model paths default to `configs/custom/model.toml` over `configs/model.toml`. To point at weights
 stored elsewhere, set `ANIMA_DIT` / `ANIMA_VAE` / `ANIMA_TEXT_ENCODER` — either
 as real env vars (one-off override) or in a project-root `.env` file (persistent,
 gitignored). Copy the template and edit:
@@ -63,7 +63,7 @@ cp .env.example .env       # then uncomment ANIMA_DIT / ANIMA_VAE / … as neede
 ```
 
 Every script here resolves its paths through `default_checkpoints()`, which
-loads `.env` automatically (env vars win → `.env` → `configs/base.toml` →
+loads `.env` automatically (env vars win → `.env` → model config →
 built-in fallbacks), so you never have to export them in your shell. Set
 `ANIMA_HOME` in the same `.env` if you `import anima_lora` from another project.
 
