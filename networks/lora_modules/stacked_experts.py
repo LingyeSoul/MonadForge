@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 import torch
 
 from networks.attn_fuse import match_fused_spec
-from networks.lora_modules.base import BaseLoRAModule
+from networks.lora_modules.base import BaseLoRAModule, preserve_lora_output_dtype
 from networks.lora_modules.router_state import (
     RouterStateMixin,
     _register_routing_weights_buffer,
@@ -168,7 +168,9 @@ class StackedExpertsLoRAModule(RouterStateMixin, BaseLoRAModule):
         if not self.enabled:
             return org_forwarded
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         # _routing_weights is (B, E); broadcast to (B, 1, ..., 1, E, 1) over
         # the (B, ..., E, r) rank-level activations.
@@ -244,7 +246,7 @@ class StackedExpertsLoRAModule(RouterStateMixin, BaseLoRAModule):
                 )
 
         lora_out = adapter * self.multiplier * self.scale
-        return org_forwarded + lora_out.to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, lora_out)
 
     def regularization(self):
         """No-op: Cayley structural in ortho mode, no constraint in free mode."""

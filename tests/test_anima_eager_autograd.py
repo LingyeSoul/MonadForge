@@ -33,7 +33,10 @@ def _lora_linear_reference(
         rank_x = rank_x * inv_scale.float()
     rank = F.linear(rank_x, down_weight.float()) * rank_mask.float()
     delta = F.linear(rank, up_weight.float()) * residual_scale
-    return F.linear(x.to(base_weight.dtype), base_weight) + delta.to(base_weight.dtype)
+    base = F.linear(x.to(base_weight.dtype), base_weight)
+    if base.dtype == torch.float16:
+        return base.float() + delta.float()
+    return base + delta.to(base.dtype)
 
 
 def test_fused_lora_mlp_forward_and_grads_match_reference():
@@ -113,10 +116,15 @@ def test_fused_lora_mlp_fp16_parameter_grads_accumulate_before_cast():
 
     def reference(x, down1, up1, down2, up2):
         rank1 = F.linear(x.float() * inv1, down1.float()) * mask
-        pre_activation = F.linear(x, base1) + (F.linear(rank1, up1.float()) * 0.75).half()
+        pre_activation = (
+            F.linear(x, base1).float() + F.linear(rank1, up1.float()) * 0.75
+        )
         hidden = F.gelu(pre_activation)
         rank2 = F.linear(hidden.float() * inv2, down2.float()) * mask
-        return F.linear(hidden, base2) + (F.linear(rank2, up2.float()) * 1.25).half()
+        return (
+            F.linear(hidden.to(base2.dtype), base2).float()
+            + F.linear(rank2, up2.float()) * 1.25
+        )
 
     reference_inputs = [
         value.clone().requires_grad_()
@@ -473,9 +481,10 @@ def _lokr_linear_reference(
     delta = F.linear(projected.transpose(-1, -2), c)
     delta = delta.transpose(-1, -2).reshape(x.shape[0], -1)
     delta = delta * scalar.float() * residual_scale
-    return F.linear(x.to(base_weight.dtype), base_weight) + delta.to(
-        base_weight.dtype
-    )
+    base = F.linear(x.to(base_weight.dtype), base_weight)
+    if base.dtype == torch.float16:
+        return base.float() + delta.float()
+    return base + delta.to(base.dtype)
 
 
 @pytest.mark.parametrize(

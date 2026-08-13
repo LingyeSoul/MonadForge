@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import torch
 
 from networks.attn_fuse import match_fused_spec
-from networks.lora_modules.base import BaseLoRAModule
+from networks.lora_modules.base import BaseLoRAModule, preserve_lora_output_dtype
 from networks.lora_modules.router_state import (
     RouterStateMixin,
     _apply_sigma_band_mask,
@@ -374,7 +374,9 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
             return org_forwarded
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         # Training: compute in the model COMPUTE dtype (``org_forwarded.dtype`` =
         # the frozen base's output = the autocast/model dtype), not x.dtype.
@@ -427,7 +429,7 @@ class HydraLoRAModule(RouterStateMixin, BaseLoRAModule):
             out = torch.bmm(lx_3d, combined.transpose(1, 2))
             out = out.reshape(*orig_shape[:-1], -1)
 
-        return org_forwarded + (out * self.multiplier * scale).to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, out * self.multiplier * scale)
 
     # Save-pipeline hook. The training runtime keeps experts stacked under
     # ``.lora_up_weight (E, out, r)`` — ComfyUI's HydraLoRA custom node

@@ -65,6 +65,41 @@ uv run python -m bench.fp16_residual.run_bench [--steps N] [--num_blocks N]
 not representative of V100 throughput. Run on GPU for representative speedup and
 flag-overhead numbers.
 
+### LoRA merge overflow A/B (2026-08-13, CPU)
+
+The same bench also isolates the adapter merge that originally converted a
+finite FP32 LoRA update back to the frozen layer's FP16 dtype. The fixture adds
+an FP16 base activation of `40000` to an FP32 adapter update of `30000`; the
+mathematically correct result, `70000`, is finite in FP32 but cannot be
+represented in FP16.
+
+```powershell
+& '.venv\Scripts\python.exe' -m bench.fp16_residual.run_bench `
+  --steps 5 --num_blocks 2 --label fp32-lora-merge
+```
+
+| merge | finite | max | ms/step | output dtype | output bytes |
+|---|:---:|---:|---:|---|---:|
+| legacy FP16 merge | no | `inf` | 0.112 | float16 | 6,291,456 |
+| FP32-safe merge | yes | 70,000 | 0.792 | float32 | 12,582,912 |
+
+The FP32-safe path doubles this output activation's storage and is slower in
+the CPU fixture. That cost is intentional: when `lora_fp32_compute=true` and
+the frozen layer returns FP16 during training, additive LoRA-family variants
+keep the merged activation in FP32 so values above 65504 remain representable.
+BF16, FP32, evaluation, and `lora_fp32_compute=false` keep their prior output
+dtype behavior. GLoKr uses a replacement-weight forward rather than this
+additive residual merge and is outside this activation guarantee.
+
+Separately, the trainer pins LoRA-family trainable parameters and floating
+buffers to FP32 only when the V100/sm_70 FP16 protection path is active and
+effective `lora_fp32_compute=true`. Checkpoints from that protected run are
+also written in FP32 even if `save_precision` requests FP16/BF16. Other GPUs,
+BF16/full-FP32 runs, and V100 runs with the protection explicitly disabled keep
+the existing storage and requested checkpoint dtype. Frozen DiT weights always
+follow the selected mixed-precision policy. On the protected V100 path, an
+adapter checkpoint is approximately twice as large as FP16/BF16 storage.
+
 ### Overflow reproduction — not in this bench (by design)
 
 The >65504 overflow only bites on a **trained** model at **large resolution**

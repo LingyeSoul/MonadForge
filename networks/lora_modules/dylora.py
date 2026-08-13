@@ -3,7 +3,7 @@ import random
 
 import torch
 
-from networks.lora_modules.base import BaseLoRAModule
+from networks.lora_modules.base import BaseLoRAModule, preserve_lora_output_dtype
 
 
 class DyLoRAModule(BaseLoRAModule):
@@ -83,7 +83,9 @@ class DyLoRAModule(BaseLoRAModule):
             return org_forwarded + self._eval_delta(x, org_forwarded)
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         r = self._random_rank()
         scale = self.multiplier * self.alpha / r
@@ -105,7 +107,7 @@ class DyLoRAModule(BaseLoRAModule):
                 )
                 lx = torch.nn.functional.conv2d(lx, self.lora_up.weight.to(work)[:, :r])
 
-        return org_forwarded + (lx * scale).to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, lx * scale)
 
     def _eval_delta(self, x, org_forwarded):
         x_lora = self._rebalance(x)

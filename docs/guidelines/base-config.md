@@ -131,7 +131,7 @@ during `make preprocess`, then training reads only the caches.
 | `attn_mode` | `flash` | Attention backend for training: `flash` (FA2), `torch` (SDPA), `sageattn`, `flex`. `flash` requires an installed `flash_attn`; use `torch` as the portable fallback. **V100 production training should use `torch`** — real Anima fp16 tests found `flash-attention-v100` produces self-attention NaNs. |
 | `v100_flash_stability` | `off` | Diagnostic guard for `flash-attention-v100` on Volta/V100 fp16 training: `off` = normal flash, `hybrid` = self-attn flash + cross-attn torch SDPA, `safe` = flash with finite-check diagnostics. Real V100 tests showed `hybrid` still fails in self-attn, so this is for debugging only. Also settable with `ANIMA_V100_FLASH_STABILITY`. |
 | `debug_finite_checks` | `false` | Optional fail-fast NaN/Inf diagnostics for q/k/v, attention outputs, block residuals, loss, and gradients. Also enabled with `ANIMA_DEBUG_FINITE=1`. Use this to capture the first failing tensor; do not hide training NaNs with `nan_to_num`. |
-| `save_precision` | `bf16` | Dtype for saved adapter weights. Stored params stay bf16 even though LoRA/Hydra bottleneck matmuls always accumulate in fp32. |
+| `save_precision` | `bf16` | Requested checkpoint dtype. It is honored normally, including for LoRA-family runs on non-V100 GPUs and BF16/full-FP32 runs. The narrow exception is a V100/sm_70 FP16 run with effective `lora_fp32_compute=true`: the trainer keeps adapter parameters/buffers in FP32 and forces its checkpoint floating tensors to FP32, warning if FP16/BF16 was requested. Frozen base-model weights still follow `mixed_precision`; only a checkpoint from this protected path is about 2x the size of FP16/BF16 storage. |
 
 ## Memory & throughput knobs
 

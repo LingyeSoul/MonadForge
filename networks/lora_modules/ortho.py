@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 
 import torch
 
-from networks.lora_modules.base import BaseLoRAModule
+from networks.lora_modules.base import BaseLoRAModule, preserve_lora_output_dtype
 from networks.lora_modules.router_state import (
     RouterStateMixin,
     _apply_sigma_band_mask,
@@ -110,7 +110,9 @@ class OrthoLoRAModule(BaseLoRAModule):
         org_forwarded = self.org_forward(x)
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         work = self._rank_compute_dtype(org_forwarded, default_dtype=self.P_basis.dtype)
 
@@ -141,7 +143,7 @@ class OrthoLoRAModule(BaseLoRAModule):
             out = torch.nn.functional.linear(lx, P_eff)
 
         lora_out = out * self.multiplier * scale
-        return org_forwarded + lora_out.to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, lora_out)
 
     def regularization(self):
         """No-op: Cayley guarantees orthogonality structurally."""
@@ -568,7 +570,9 @@ class OrthoHydraLoRAModule(RouterStateMixin, BaseLoRAModule):
             return org_forwarded
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         work = self._rank_compute_dtype(org_forwarded, default_dtype=self.P_bases.dtype)
 
@@ -620,7 +624,7 @@ class OrthoHydraLoRAModule(RouterStateMixin, BaseLoRAModule):
             out = out.reshape(*orig_shape[:-1], -1)
 
         lora_out = out * self.multiplier * scale
-        return org_forwarded + lora_out.to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, lora_out)
 
     def regularization(self):
         """No-op: Cayley guarantees orthogonality structurally."""

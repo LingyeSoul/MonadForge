@@ -22,6 +22,26 @@ Pluggable adapter implementations selected at runtime via the `network_module` c
 | `dcw.py` | DCW post-step correction for SNR-t bias on flow-matching DiTs at the sampler boundary. See `docs/inference/dcw.md`. |
 | `calibration/` | Shipped calibration artifacts: `channel_stats.safetensors` + `cond_channel_stats.safetensors` (per-channel scaling, main + EasyControl cond stream — see `docs/optimizations/channel_scaling.md`; inert on frozen-basis ortho variants) + `cns_gamma.npz` (CNS γ schedule, also auto-downloaded from a release) + `dave_alpha.npz` (DAVE). |
 
+**V100 FP16 dtype contract:** `lora_fp32_compute=true` covers both the adapter
+rank/factor arithmetic and the additive merge. When a frozen layer returns
+FP16 during training, additive LoRA-family modules return
+`base.float() + delta.float()` and keep that activation FP32; module dropout
+must preserve the same output dtype. Attention backends that require a
+low-precision triple cast q/k/v together to the active autocast dtype at the
+dispatch boundary. BF16, FP32, evaluation, and an explicitly disabled flag
+retain their prior dtype behavior. GLoKr is a replacement-weight forward, not
+an additive merge, so it is not covered by this activation rule.
+
+The storage contract is enabled only by the trainer's V100/sm_70 FP16 guard
+when effective `lora_fp32_compute=true`: it pins adapter floating
+parameters/buffers to FP32 without converting the referenced frozen DiT and
+marks `save_weights()` to emit FP32 floating tensors regardless of the
+requested save dtype. Without that runtime mark, `save_weights()` continues to
+honor the caller's dtype, so other GPUs and precision modes are unchanged.
+Variant-specific distillation/layout still runs unchanged before the file is
+written. GLoKr does not use the additive activation rule above, but its adapter
+state and checkpoint follow this same storage mark on a protected V100 run.
+
 ## Three-axis routing surface (plan2)
 
 As of commit `1dca212`, the LoRA-family routing flags collapsed into three orthogonal cfg axes consumed by `lora_anima/config.py::LoRANetworkCfg.from_kwargs` and dispatched by `__init__.py::resolve_network_spec`:

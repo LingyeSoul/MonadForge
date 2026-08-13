@@ -113,3 +113,31 @@ def test_sdpa_kernel_context_is_compile_traceable():
 
     assert explanation.graph_count == 1
     assert explanation.graph_break_count == 0
+
+
+def test_attention_casts_fp32_lora_qkv_at_half_only_backend_boundary(monkeypatch):
+    from library.anima.models import Attention
+
+    attention = Attention(query_dim=8, n_heads=2, head_dim=4).to(torch.float16)
+    seen = []
+
+    def compute_qkv(x, context, rope_cos_sin=None):
+        del context, rope_cos_sin
+        shape = (*x.shape[:-1], 2, 4)
+        q = torch.ones(shape, dtype=torch.float32)
+        return q, q.clone(), q.clone()
+
+    def dispatch(qkv, *, attn_params):
+        del attn_params
+        seen.extend(t.dtype for t in qkv)
+        return qkv[0].flatten(-2)
+
+    monkeypatch.setattr(attention, "compute_qkv", compute_qkv)
+    monkeypatch.setattr(attention_dispatch, "dispatch_attention", dispatch)
+    params = AttentionParams.create_attention_params("mem_efficient")
+
+    with torch.autocast("cpu", dtype=torch.float16):
+        output = attention(torch.zeros(1, 3, 8), params, torch.zeros(1, 3, 8))
+
+    assert seen == [torch.float16, torch.float16, torch.float16]
+    assert output.dtype == torch.float16

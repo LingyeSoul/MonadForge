@@ -16,6 +16,7 @@ from lycoris.functional.lokr import (
 from lycoris.functional.lokr import diff_weight as lycoris_lokr_diff_weight
 from lycoris.modules.lokr import LokrModule as LycorisLokrModule
 
+from networks.lora_modules.base import merge_lora_residual, preserve_lora_output_dtype
 from networks.lora_modules.custom_autograd import eager_lokr_residual
 
 
@@ -80,7 +81,10 @@ class LoKRModule(LycorisLokrModule):
             and self.training
             and torch.rand(1) < self.module_dropout
         ):
-            return self.org_forward(x, *args, **kwargs)
+            return preserve_lora_output_dtype(
+                self.org_forward(x, *args, **kwargs),
+                preserve_fp32=self.fp32_compute,
+            )
 
         # LyCORIS 3.4.0's bypass_forward passes only ``multiplier`` and omits
         # ``self.scale``. Its regular forward and get_weight both include the
@@ -99,7 +103,11 @@ class LoKRModule(LycorisLokrModule):
                 delta = self._fp32_bypass_forward_diff(x)
         else:
             delta = self.bypass_forward_diff(x, scale=self.multiplier * self.scale)
-        return base + delta.to(base.dtype)
+        return merge_lora_residual(
+            base,
+            delta,
+            preserve_fp32=self.training and self.fp32_compute,
+        )
 
     def _eager_fp32_bypass_residual(
         self,

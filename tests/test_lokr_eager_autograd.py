@@ -97,7 +97,7 @@ def _run_function(layout: str, custom: bool):
             None,
             gamma=rank,
         )
-        output = base + (delta * residual_scale * scalar).to(base.dtype)
+        output = base.float() + delta.float() * residual_scale * scalar.float()
 
     requested = (
         source,
@@ -117,7 +117,7 @@ def test_eager_lokr_forward_and_grads_match_official_bypass(layout):
     expected_output, expected_grads = _run_function(layout, custom=False)
     actual_output, actual_grads = _run_function(layout, custom=True)
 
-    assert torch.equal(actual_output, expected_output)
+    assert torch.allclose(actual_output, expected_output, rtol=1e-3, atol=2e-3)
     for index, (actual, expected) in enumerate(
         zip(actual_grads, expected_grads)
     ):
@@ -200,7 +200,7 @@ def test_eager_lokr_fp32_factor_grads_stay_within_chunked_reduction_tolerance(
                 None,
                 gamma=rank,
             )
-            output = base + (delta * 0.75 * scalar).to(base.dtype)
+            output = base.float() + delta.float() * 0.75 * scalar.float()
         requested = (
             x,
             *(factor for factor in factors if factor is not None),
@@ -222,7 +222,7 @@ def test_eager_lokr_fp32_factor_grads_stay_within_chunked_reduction_tolerance(
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
-def test_eager_lokr_cuda_stays_within_public_fp16_tolerance():
+def test_eager_lokr_cuda_stays_within_fp32_merge_tolerance():
     factors0, in_features, out_features = _factors("full", torch.float32)
     factors0 = tuple(
         factor.cuda() if factor is not None else None for factor in factors0
@@ -258,7 +258,7 @@ def test_eager_lokr_cuda_stays_within_public_fp16_tolerance():
                 None,
                 gamma=1,
             )
-            output = base + (delta * 0.75 * scalar).to(base.dtype)
+            output = base.float() + delta.float() * 0.75 * scalar.float()
         requested = (
             x,
             *(factor for factor in factors if factor is not None),
@@ -341,7 +341,7 @@ def test_full_factor_module_custom_path_preserves_unit_scale_and_multiplier():
     )
 
     assert expected_scale == actual_scale == 1.0
-    assert torch.equal(actual_output, expected_output)
+    assert torch.allclose(actual_output, expected_output, rtol=1e-3, atol=2e-3)
     assert torch.equal(actual_x_grad, expected_x_grad)
     assert actual_grads.keys() == expected_grads.keys()
     for name in actual_grads:
@@ -376,5 +376,5 @@ def test_compile_trace_bypasses_eager_lokr_function(monkeypatch):
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
 
     output = module(torch.randn(2, 3, 16, dtype=torch.float16))
-    assert output.dtype == torch.float16
+    assert output.dtype == torch.float32
     assert called is False

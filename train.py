@@ -657,6 +657,16 @@ def _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs: dict) -
     return _is_v100_fp16_training(args, accelerator)
 
 
+def _should_force_fp32_lora_storage(args, accelerator, net_kwargs: dict) -> bool:
+    """Keep LoRA master/checkpoint storage FP32 only for the V100 guard path."""
+
+    return (
+        getattr(args, "network_module", None) == "networks.lora_anima"
+        and _is_v100_fp16_training(args, accelerator)
+        and _as_boolish(net_kwargs.get("lora_fp32_compute"))
+    )
+
+
 def _should_auto_enable_eager_lora_down_autograd(
     args, accelerator, net_kwargs: dict
 ) -> bool:
@@ -2415,6 +2425,17 @@ class AnimaTrainer:
                 info = network.load_weights(args.network_weights)
             accelerator.print(
                 f"load network weights from {args.network_weights}: {info}"
+            )
+
+        force_fp32_storage = getattr(network, "force_fp32_storage", None)
+        if callable(force_fp32_storage) and _should_force_fp32_lora_storage(
+            args, accelerator, net_kwargs
+        ):
+            force_fp32_storage()
+            logger.info(
+                "V100/sm_70 FP16 protection: LoRA adapter parameters, optimizer "
+                "inputs, and checkpoints remain FP32; frozen DiT weights keep "
+                "the model dtype."
             )
 
         if args.gradient_checkpointing:

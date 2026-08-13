@@ -231,12 +231,13 @@ def test_fp32_compute_casts_all_official_bypass_operands(monkeypatch):
     monkeypatch.setattr(lokr_impl, "lycoris_lokr_bypass_forward_diff", spy)
     module.apply_to()
     x = torch.randn(2, 3, 64, dtype=torch.float16)
-    expected = module.org_forward(x) + torch.nn.functional.linear(
-        x.float(), module.get_weight()
-    ).to(torch.float16)
+    expected = (
+        module.org_forward(x).float()
+        + torch.nn.functional.linear(x.float(), module.get_weight()).float()
+    )
     output = base(x)
 
-    assert output.dtype == torch.float16
+    assert output.dtype == torch.float32
     assert torch.allclose(output, expected, atol=1e-3, rtol=1e-3)
     assert seen_dtypes
     assert set(seen_dtypes) == {torch.float32}

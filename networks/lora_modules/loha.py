@@ -14,6 +14,8 @@ import torch
 from lycoris.functional.loha import diff_weight as lycoris_loha_diff_weight
 from lycoris.modules.loha import LohaModule as LycorisLohaModule
 
+from networks.lora_modules.base import merge_lora_residual, preserve_lora_output_dtype
+
 
 class LoHaModule(LycorisLohaModule):
     """Official LyCORIS LoHa with the MonadForge adapter protocol.
@@ -83,7 +85,10 @@ class LoHaModule(LycorisLohaModule):
             and self.training
             and torch.rand(1) < self.module_dropout
         ):
-            return self.org_forward(x, *args, **kwargs)
+            return preserve_lora_output_dtype(
+                self.org_forward(x, *args, **kwargs),
+                preserve_fp32=self.fp32_compute,
+            )
 
         base = self.org_forward(x, *args, **kwargs)
         if self.training and self.fp32_compute and base.dtype == torch.float16:
@@ -93,7 +98,11 @@ class LoHaModule(LycorisLohaModule):
             # The official bypass bakes ``self.scale`` in via ``get_weight``
             # — multiplier only.
             delta = self.bypass_forward_diff(x, scale=self.multiplier)
-        return base + delta.to(base.dtype)
+        return merge_lora_residual(
+            base,
+            delta,
+            preserve_fp32=self.training and self.fp32_compute,
+        )
 
     def bypass_forward_diff(self, x, scale=1):
         # Byte-equal to the official implementation except for the

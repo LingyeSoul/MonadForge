@@ -14,6 +14,27 @@ import logging  # noqa: E402
 logger = logging.getLogger(__name__)
 
 
+def merge_lora_residual(
+    org_forwarded: torch.Tensor,
+    delta: torch.Tensor,
+    *,
+    preserve_fp32: bool,
+) -> torch.Tensor:
+    """Merge an adapter delta without reintroducing FP16 range overflow."""
+    if preserve_fp32 and org_forwarded.dtype == torch.float16:
+        return org_forwarded.float() + delta.float()
+    return org_forwarded + delta.to(org_forwarded.dtype)
+
+
+def preserve_lora_output_dtype(
+    org_forwarded: torch.Tensor, *, preserve_fp32: bool
+) -> torch.Tensor:
+    """Keep dynamic adapter-skip branches dtype-compatible with FP32 merges."""
+    if preserve_fp32 and org_forwarded.dtype == torch.float16:
+        return org_forwarded.float()
+    return org_forwarded
+
+
 def _absorb_channel_scale(
     weight: torch.Tensor, channel_scale: torch.Tensor, eps: float = 1e-12
 ) -> torch.Tensor:
@@ -193,7 +214,9 @@ class BaseLoRAModule(torch.nn.Module):
             return org_forwarded + self._eval_delta(x, org_forwarded)
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         # THE dtype policy, stated once. By default rank GEMMs run in the model
         # COMPUTE dtype (``org_forwarded.dtype`` — what the frozen base just
@@ -232,7 +255,17 @@ class BaseLoRAModule(torch.nn.Module):
     ) -> torch.Tensor:
         """Run the up projection and merge it into the frozen-base residual."""
         lx = self._up(lx.to(work), work)
-        return org_forwarded + (lx * self.multiplier * scale).to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, lx * self.multiplier * scale)
+
+    def _merge_residual(
+        self, org_forwarded: torch.Tensor, delta: torch.Tensor
+    ) -> torch.Tensor:
+        """Keep the V100 FP32 adapter path in range through the residual add."""
+        return merge_lora_residual(
+            org_forwarded,
+            delta,
+            preserve_fp32=self.training and self.fp32_compute,
+        )
 
     def _gate(self, lx: torch.Tensor, work: torch.dtype) -> torch.Tensor:
         """Default T-LoRA gate: ``lx * mask``. The fp32 mask promotes ``lx``;

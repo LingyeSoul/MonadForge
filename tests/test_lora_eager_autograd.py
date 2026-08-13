@@ -249,8 +249,11 @@ def test_eager_up_residual_chunks_forward_and_backward(org_dtype, scale):
     rank_ref = rank0.clone().requires_grad_()
     weight_ref = weight0.clone().requires_grad_()
     org_ref = base(x_ref)
-    out_ref = org_ref + (F.linear(rank_ref.float(), weight_ref.float()) * scale).to(
-        org_ref.dtype
+    delta_ref = F.linear(rank_ref.float(), weight_ref.float()) * scale
+    out_ref = (
+        org_ref.float() + delta_ref
+        if org_dtype == torch.float16
+        else org_ref + delta_ref.to(org_ref.dtype)
     )
     out_ref.backward(grad_out)
 
@@ -266,13 +269,14 @@ def test_eager_up_residual_chunks_forward_and_backward(org_dtype, scale):
         scale,
         chunk_size=3,
     )
-    assert out_got.data_ptr() == org_storage
+    if org_dtype == torch.float16:
+        assert out_got.dtype == torch.float32
+        assert out_got.data_ptr() != org_storage
+    else:
+        assert out_got.data_ptr() == org_storage
     out_got.backward(grad_out)
 
-    if org_dtype == torch.float16:
-        assert torch.equal(out_ref, out_got)
-    else:
-        assert torch.allclose(out_ref, out_got, rtol=1e-6, atol=3e-7)
+    assert torch.allclose(out_ref, out_got, rtol=1e-6, atol=3e-7)
     assert torch.equal(x_ref.grad, x_got.grad)
     assert torch.allclose(rank_ref.grad, rank_got.grad, rtol=1e-6, atol=3e-7)
     assert torch.equal(weight_ref.grad, weight_got.grad)
@@ -334,7 +338,7 @@ def test_eager_up_backward_handles_frozen_weight():
     grad_out = torch.randn(9, 11, dtype=torch.float16)
 
     rank_ref = rank0.clone().requires_grad_()
-    expected = (F.linear(rank_ref, weight) * 0.375).half()
+    expected = F.linear(rank_ref, weight) * 0.375
     expected.backward(grad_out)
 
     rank_got = rank0.clone().requires_grad_()
@@ -348,8 +352,25 @@ def test_eager_up_backward_handles_frozen_weight():
     )
     actual.backward(grad_out)
 
+    assert actual.dtype == torch.float32
     assert torch.equal(actual, expected)
     assert torch.allclose(rank_got.grad, rank_ref.grad, rtol=1e-6, atol=3e-7)
+
+
+def test_eager_up_residual_keeps_large_finite_merge_in_fp32():
+    base = torch.full((1, 1), 40_000.0, dtype=torch.float16, requires_grad=True)
+    rank_input = torch.ones((1, 1), dtype=torch.float32, requires_grad=True)
+    weight = torch.full((1, 1), 30_000.0, dtype=torch.float32, requires_grad=True)
+
+    out = eager_lora_up_residual(base + 0.0, rank_input, weight, 1.0)
+    out.sum().backward()
+
+    assert out.dtype == torch.float32
+    assert torch.equal(out, torch.tensor([[70_000.0]], dtype=torch.float32))
+    assert torch.isfinite(out).all()
+    assert torch.isfinite(base.grad).all()
+    assert torch.isfinite(rank_input.grad).all()
+    assert torch.isfinite(weight.grad).all()
 
 
 def test_eager_up_frozen_weight_does_not_scale_fp32_residual_gradient():
@@ -414,7 +435,7 @@ def test_eager_up_cuda_stays_within_fp16_tolerance():
                 chunk_size=3072,
             )
             if custom
-            else base + (F.linear(rank_input, weight.float()) * scale).half()
+            else base.float() + F.linear(rank_input, weight.float()) * scale
         )
         grads = torch.autograd.grad(output, (base_leaf, rank_input, weight), grad_out)
         return output.detach(), grads

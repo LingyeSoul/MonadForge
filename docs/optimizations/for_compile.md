@@ -243,9 +243,11 @@ module overhead on wide-input Linears). Measured in the `lora_fp32_bottleneck` b
 * 200-step Adam probe: final ΔW deviation vs an fp64 run indistinguishable
   across fp32-bottleneck / bf16 / live-autocast regimes.
 
-The training forwards now compute the rank GEMMs directly in the activation
-dtype (`weight.to(x.dtype)` at the matmul boundary — the same cast autocast
-performed, now explicit and autocast-independent). Inference paths
+The training forwards normally compute rank GEMMs in the frozen model's
+compute dtype (`org_forwarded.dtype`, explicit and autocast-independent).
+V100/FP16 is the narrow exception: `lora_fp32_compute=true` disables autocast
+around the adapter path and keeps the subsequent additive merge in FP32.
+Inference paths
 (HydraLoRAModule at eval, `ChimeraHydraInferenceModule`, EasyControl KV
 prefill) kept their historical fp32 compute since the inference engine runs
 without autocast. Regression tests: `tests/test_lora_dtype_policy.py`
@@ -288,8 +290,10 @@ which is why the compiled run fits even though parameters are unchanged.
 
 The non-compiled V100 path now mirrors those memory properties narrowly:
 
-* FP32 LoRA down/up GEMMs are row-chunked; original FP16/FP32 input storage is
-  saved and the fresh frozen-base output is reused for the residual merge;
+* FP32 LoRA down/up GEMMs are row-chunked and original FP16/FP32 input storage
+  is saved. The merge allocates one final FP32 activation instead of reusing
+  the FP16 frozen-base output, because converting a finite update back to FP16
+  can overflow before the next operation;
 * native `F.rms_norm` retains stable accumulation without eager full-width FP32
   q/k/v temporaries;
 * RoPE mutates fresh q/k norm outputs and reconstructs its linear gradient;
@@ -299,6 +303,9 @@ The non-compiled V100 path now mirrors those memory properties narrowly:
 This remains mixed precision rather than an FP16→FP32 conversion: frozen
 sublayer matmuls stay FP16, LoRA rank GEMMs and the DiT residual/gated add are
 FP32, and the FP32 residual stream is the NaN/overflow guard for FP16 training.
+Only this V100/sm_70 FP16 guard path also pins LoRA-family adapter storage and
+checkpoint tensors to FP32; other GPUs and precision modes retain their
+existing parameter storage and requested `save_precision` behavior.
 A real Tesla V100-SXM2-16GB smoke run completed two optimizer steps with
 `torch_compile=false`, `gradient_checkpointing=false`, and `blocks_to_swap=0`.
 The bounded eager path trades speed for memory (512-row test: about 21 seconds

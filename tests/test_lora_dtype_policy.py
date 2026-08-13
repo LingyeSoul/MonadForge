@@ -421,7 +421,146 @@ def test_lora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
     x = torch.randn(2, 8, 32, dtype=torch.float16)
     y = module.forward(x)
     assert seen == {"down": True, "up": True}
+    assert y.dtype == torch.float32
+
+
+def test_lora_fp32_compute_keeps_large_finite_merge_in_fp32():
+    """A finite FP32 adapter update must not overflow at the FP16 merge."""
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(1, 1, bias=False).to(torch.float16)
+    base.weight.requires_grad_(False)
+    module = LoRAModule("m", base, multiplier=1.0, lora_dim=1, alpha=1)
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+    module.org_forward = lambda x: torch.full_like(x, 40_000.0)
+    module._down = lambda x_lora, work: x_lora.to(work)
+    module._up = lambda lx, work: lx.to(work) * 30_000.0
+
+    x = torch.ones(1, 1, dtype=torch.float16, requires_grad=True)
+    y = module(x)
+    y.sum().backward()
+
+    assert y.dtype == torch.float32
+    assert torch.equal(y, torch.tensor([[70_000.0]], dtype=torch.float32))
+    assert torch.isfinite(y).all()
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+
+
+def test_lora_fp16_merge_is_unchanged_without_fp32_compute():
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(1, 1, bias=False).to(torch.float16)
+    module = LoRAModule("m", base, multiplier=1.0, lora_dim=1, alpha=1)
+    module.apply_to()
+    module.train()
+    module.org_forward = lambda x: torch.zeros_like(x)
+    module._down = lambda x_lora, work: x_lora.to(work)
+    module._up = lambda lx, work: lx.to(work)
+
+    y = module(torch.ones(1, 1, dtype=torch.float16))
+
     assert y.dtype == torch.float16
+
+
+def test_lora_network_force_fp32_storage_does_not_cast_frozen_base():
+    from networks.lora_anima.network import LoRANetwork
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(4, 3, bias=False).to(torch.float16)
+    module = LoRAModule("m", base, multiplier=1.0, lora_dim=2, alpha=2)
+    module.apply_to()
+    module.to(dtype=torch.float16)
+
+    network = LoRANetwork.__new__(LoRANetwork)
+    torch.nn.Module.__init__(network)
+    network.add_module("m", module)
+    network.force_fp32_storage()
+
+    assert base.weight.dtype == torch.float16
+    assert {p.dtype for p in network.parameters()} == {torch.float32}
+    assert {b.dtype for b in network.buffers() if b.is_floating_point()} == {
+        torch.float32
+    }
+    assert network._force_fp32_checkpoint_storage is True
+
+
+def test_lora_network_checkpoint_forces_fp32_when_fp16_is_requested(tmp_path, caplog):
+    from safetensors.torch import load_file
+
+    from networks.lora_anima.config import LoRANetworkCfg
+    from networks.lora_anima.network import LoRANetwork
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(4, 3, bias=False).to(torch.float16)
+    module = LoRAModule("lora_unet_test", base, multiplier=1.0, lora_dim=2, alpha=2)
+
+    network = LoRANetwork.__new__(LoRANetwork)
+    torch.nn.Module.__init__(network)
+    network.cfg = LoRANetworkCfg(lora_dim=2, alpha=2)
+    network.text_encoder_loras = []
+    network.unet_loras = [module]
+    network.add_module(module.lora_name, module)
+    network.force_fp32_storage()
+
+    output = tmp_path / "adapter.safetensors"
+    network.save_weights(str(output), torch.float16, metadata={})
+
+    saved = load_file(str(output))
+    floating_dtypes = {
+        value.dtype for value in saved.values() if value.is_floating_point()
+    }
+    assert floating_dtypes == {torch.float32}
+    assert "V100/sm_70 FP16 protection" in caplog.text
+
+
+def test_lora_network_checkpoint_respects_requested_dtype_without_v100_guard(
+    tmp_path, caplog
+):
+    from safetensors.torch import load_file
+
+    from networks.lora_anima.config import LoRANetworkCfg
+    from networks.lora_anima.network import LoRANetwork
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(4, 3, bias=False).to(torch.float16)
+    module = LoRAModule("lora_unet_test", base, multiplier=1.0, lora_dim=2, alpha=2)
+
+    network = LoRANetwork.__new__(LoRANetwork)
+    torch.nn.Module.__init__(network)
+    network.cfg = LoRANetworkCfg(lora_dim=2, alpha=2)
+    network.text_encoder_loras = []
+    network.unet_loras = [module]
+    network.add_module(module.lora_name, module)
+
+    for requested_dtype in (torch.float16, torch.bfloat16):
+        output = tmp_path / f"adapter-{requested_dtype}.safetensors"
+        network.save_weights(str(output), requested_dtype, metadata={})
+
+        saved = load_file(str(output))
+        floating_dtypes = {
+            value.dtype for value in saved.values() if value.is_floating_point()
+        }
+        assert floating_dtypes == {requested_dtype}
+    assert "ignoring requested save dtype" not in caplog.text
+
+
+def test_lora_fp32_compute_module_dropout_keeps_output_dtype_stable():
+    from networks.lora_modules.lora import LoRAModule
+
+    base = torch.nn.Linear(2, 2, bias=False).to(torch.float16)
+    module = LoRAModule(
+        "m", base, multiplier=1.0, lora_dim=1, alpha=1, module_dropout=1.0
+    )
+    module.apply_to()
+    module.train()
+    module.fp32_compute = True
+
+    output = module(torch.ones(1, 2, dtype=torch.float16))
+
+    assert output.dtype == torch.float32
 
 
 def test_lora_fp32_compute_is_inert_on_bf16_base():
@@ -780,7 +919,7 @@ def test_ortholora_fp32_compute_uses_fp32_rank_path_on_fp16_base():
     y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
     assert seen["forward"]
     assert seen.get("work") == torch.float32, f"expected fp32, got {seen.get('work')}"
-    assert y.dtype == torch.float16
+    assert y.dtype == torch.float32
 
 
 def _capture_rank_dtype(x, module, seen, orig):
@@ -852,7 +991,7 @@ def test_orthohydra_fp32_compute_uses_fp32_rank_path_on_fp16_base():
 
     module._rank_compute_dtype = probe
     y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
-    assert y.dtype == torch.float16
+    assert y.dtype == torch.float32
 
 
 def test_orthohydra_fp32_compute_is_inert_on_bf16_base():
@@ -913,7 +1052,7 @@ def test_chimera_cayley_fp32_compute_uses_fp32_rank_path_on_fp16_base():
 
     module._rank_compute_dtype = probe
     y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
-    assert y.dtype == torch.float16
+    assert y.dtype == torch.float32
 
 
 def test_chimera_cayley_fp32_compute_is_inert_on_bf16_base():
@@ -982,7 +1121,7 @@ def test_stacked_experts_ortho_fp32_compute_uses_fp32_rank_path_on_fp16_base():
     # Set routing weights so the forward doesn't crash on missing router output.
     module._routing_weights = torch.full((2, 2), 0.5)
     y = module.forward(torch.randn(2, 8, 32, dtype=torch.float16))
-    assert y.dtype == torch.float16
+    assert y.dtype == torch.float32
 
 
 def test_stacked_experts_ortho_fp32_compute_is_inert_on_bf16_base():

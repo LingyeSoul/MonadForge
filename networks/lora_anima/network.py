@@ -1593,6 +1593,25 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
             lora.apply_to()
             self.add_module(lora.lora_name, lora)
 
+    def force_fp32_storage(self) -> None:
+        """Pin adapter state/checkpoints to FP32 for the V100 FP16 guard path."""
+        self.to(dtype=torch.float32)
+        non_fp32 = [
+            f"{name}={param.dtype}"
+            for name, param in self.named_parameters()
+            if param.is_floating_point() and param.dtype != torch.float32
+        ]
+        non_fp32.extend(
+            f"{name}={buffer.dtype}"
+            for name, buffer in self.named_buffers()
+            if buffer.is_floating_point() and buffer.dtype != torch.float32
+        )
+        if non_fp32:
+            raise RuntimeError(
+                "LoRA FP32 storage invariant failed: " + ", ".join(non_fp32[:8])
+            )
+        self._force_fp32_checkpoint_storage = True
+
     def is_mergeable(self):
         return True
 
@@ -1921,6 +1940,15 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
 
     def save_weights(self, file, dtype, metadata):
         spec: NetworkSpec = getattr(self, "_network_spec", NETWORK_REGISTRY["lora"])
+        force_fp32 = bool(
+            getattr(self, "_force_fp32_checkpoint_storage", False)
+        )
+        if force_fp32 and dtype not in (None, torch.float32):
+            logger.warning(
+                "V100/sm_70 FP16 protection saves LoRA-family checkpoints in "
+                f"FP32; ignoring requested save dtype {dtype}."
+            )
+        save_dtype = torch.float32 if force_fp32 else dtype
         if metadata is None:
             metadata = {}
         # Stamp the spec name unconditionally (even on an empty dict) so
@@ -2071,7 +2099,7 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         lora_save.save_network_weights(
             state_dict,
             file=file,
-            dtype=dtype,
+            dtype=save_dtype,
             metadata=metadata,
             save_variant=spec.save_variant,
         )

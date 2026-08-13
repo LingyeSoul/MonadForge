@@ -43,7 +43,11 @@ from typing import Dict, List, Optional
 import torch
 
 from networks.attn_fuse import match_fused_spec
-from networks.lora_modules.base import BaseLoRAModule, _absorb_channel_scale
+from networks.lora_modules.base import (
+    BaseLoRAModule,
+    _absorb_channel_scale,
+    preserve_lora_output_dtype,
+)
 from networks.lora_modules.lora import defuse_standard_qkv
 
 logger = logging.getLogger(__name__)
@@ -430,7 +434,9 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
             return org_forwarded
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         K_c = self.num_experts_content
         K_f = self.num_experts_freq
@@ -574,7 +580,7 @@ class ChimeraHydraLoRAModule(_ChimeraRoutingMixin, BaseLoRAModule):
                 lx_c.to(comp), lx_f.to(comp), P_combined_c, P_combined_f, rank_scale
             )
 
-        return org_forwarded + (out * self.multiplier).to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, out * self.multiplier)
 
     def regularization(self):
         """No-op on both paths: Cayley guarantees orthogonality structurally,
@@ -906,7 +912,9 @@ class ChimeraHydraInferenceModule(_ChimeraRoutingMixin, BaseLoRAModule):
             return org_forwarded
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         x_lora = self._rebalance(x)
         x_f32 = x_lora.float()
@@ -939,4 +947,4 @@ class ChimeraHydraInferenceModule(_ChimeraRoutingMixin, BaseLoRAModule):
 
         out = self._combine_up(lx_c, lx_f, comb_c, comb_f, scale_c)
 
-        return org_forwarded + (out * self.multiplier).to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, out * self.multiplier)

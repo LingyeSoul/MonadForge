@@ -8,7 +8,7 @@ from typing import Dict
 
 import torch
 
-from networks.lora_modules.base import BaseLoRAModule
+from networks.lora_modules.base import BaseLoRAModule, preserve_lora_output_dtype
 
 
 class VeRAModule(BaseLoRAModule):
@@ -92,7 +92,9 @@ class VeRAModule(BaseLoRAModule):
             return org_forwarded + self._eval_delta(x, org_forwarded)
 
         if self._skip_module():
-            return org_forwarded
+            return preserve_lora_output_dtype(
+                org_forwarded, preserve_fp32=self.fp32_compute
+            )
 
         work = self._rank_compute_dtype(org_forwarded)
         with self._rank_autocast_context(x, work):
@@ -112,7 +114,7 @@ class VeRAModule(BaseLoRAModule):
             if self.dropout is not None:
                 lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-        return org_forwarded + (lx * self.multiplier * self.scale).to(org_forwarded.dtype)
+        return self._merge_residual(org_forwarded, lx * self.multiplier * self.scale)
 
     def _eval_delta(self, x, org_forwarded):
         x_r = self._rebalance(x)

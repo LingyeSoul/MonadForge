@@ -142,15 +142,16 @@ class EagerScaledLoRADownProjectFn(torch.autograd.Function):
 
 
 class EagerLoRAUpResidualFn(torch.autograd.Function):
-    """Chunked FP32 LoRA up projection fused into an FP16 residual.
+    """Chunked FP32 LoRA up projection merged into an FP32-safe residual.
 
     Plain eager evaluation materializes the complete FP32 ``lora_up`` output
     and then another equally large tensor for scalar multiplication before it
     can cast back to the model dtype.  At ~4k image tokens, the first qkv LoRA
     alone therefore needs another ~96 MiB allocation.  Compiled graphs fuse
-    that elementwise tail; this eager Function obtains the same memory shape by
-    updating the freshly-created frozen-base output in place and limiting the
-    FP32 projection temporary to ``chunk_size`` rows.
+    that elementwise tail; this eager Function bounds the FP32 projection
+    temporary to ``chunk_size`` rows. For an FP16 base it retains one full FP32
+    final output so the merge cannot overflow; for other dtypes it can still
+    update the freshly-created frozen-base output in place.
 
     Backward is chunked as well so converting ``grad_out`` to FP32 cannot
     recreate the full-width temporary.  The LoRA rank activation is small and
@@ -168,26 +169,28 @@ class EagerLoRAUpResidualFn(torch.autograd.Function):
     ) -> torch.Tensor:
         scale = float(residual_scale)
         chunk = max(1, int(chunk_size))
-        org_flat = _flatten_last(org_forwarded)
+        preserve_fp32 = org_forwarded.dtype == torch.float16
+        output = org_forwarded.float() if preserve_fp32 else org_forwarded
+        org_flat = _flatten_last(output)
         rank_flat = _flatten_last(rank_input)
         weight_fp32 = weight.float()
 
-        # ``org_forwarded`` is the fresh output of the frozen base Linear.  Its
-        # backward does not consume the output value, so it is safe to reuse its
-        # storage as the final residual rather than allocating another FP16
-        # tensor of the same full output shape.
-        ctx.mark_dirty(org_forwarded)
+        # ``org_forwarded`` is the fresh output of the frozen base Linear. Its
+        # backward does not consume the value, so non-FP16 paths can reuse that
+        # storage. FP16 must allocate one FP32 final output to preserve range.
+        if not preserve_fp32:
+            ctx.mark_dirty(org_forwarded)
         for start in range(0, org_flat.shape[0], chunk):
             end = min(start + chunk, org_flat.shape[0])
             delta = F.linear(rank_flat[start:end].float(), weight_fp32)
             if scale != 1.0:
                 delta.mul_(scale)
-            org_flat[start:end].add_(delta.to(org_forwarded.dtype))
+            org_flat[start:end].add_(delta.to(output.dtype))
 
         ctx.save_for_backward(rank_input, weight)
         ctx.residual_scale = scale
         ctx.chunk_size = chunk
-        return org_forwarded
+        return output
 
     @staticmethod
     def backward(ctx, grad_out: torch.Tensor):
@@ -336,17 +339,20 @@ class EagerLoKrResidualFn(torch.autograd.Function):
         scale = float(residual_scale)
         chunk = max(1, int(chunk_size))
         x_flat = _flatten_last(x)
-        out_flat = _flatten_last(org_forwarded)
+        preserve_fp32 = org_forwarded.dtype == torch.float16
+        output = org_forwarded.float() if preserve_fp32 else org_forwarded
+        out_flat = _flatten_last(output)
         factors = (w1, w1a, w1b, w2, w2a, w2b)
 
-        ctx.mark_dirty(org_forwarded)
+        if not preserve_fp32:
+            ctx.mark_dirty(org_forwarded)
         for start in range(0, x_flat.shape[0], chunk):
             end = min(start + chunk, x_flat.shape[0])
             delta = _lokr_linear_chunk(x_flat[start:end], *factors)
             if scale != 1.0:
                 delta.mul_(scale)
             delta.mul_(scalar.float())
-            out_flat[start:end].add_(delta.to(org_forwarded.dtype))
+            out_flat[start:end].add_(delta.to(output.dtype))
 
         present = tuple(factor is not None for factor in factors)
         ctx.save_for_backward(
@@ -357,7 +363,7 @@ class EagerLoKrResidualFn(torch.autograd.Function):
         ctx.factor_present = present
         ctx.residual_scale = scale
         ctx.chunk_size = chunk
-        return org_forwarded
+        return output
 
     @staticmethod
     @torch.autograd.function.once_differentiable

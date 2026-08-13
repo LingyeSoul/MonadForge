@@ -37,6 +37,7 @@ import time
 import torch
 
 from bench._common import make_run_dir, write_result
+from networks.lora_modules.base import merge_lora_residual
 
 _FP16_MAX = torch.finfo(torch.float16).max
 
@@ -89,10 +90,41 @@ def _run_steps(model, x, timesteps, emb, dtype, n_steps):
     return finite, (elapsed / n_steps) * 1000.0, last_out.dtype
 
 
+def _run_lora_merge_bench(rows: int, width: int, n_steps: int):
+    """Compare the retired FP16 adapter merge with the FP32-safe merge."""
+    base = torch.full((rows, width), 40_000.0, dtype=torch.float16)
+    delta = torch.full((rows, width), 30_000.0, dtype=torch.float32)
+
+    def legacy():
+        return base + delta.to(base.dtype)
+
+    def safe():
+        return merge_lora_residual(base, delta, preserve_fp32=True)
+
+    def measure(fn):
+        for _ in range(3):
+            output = fn()
+        t0 = time.perf_counter()
+        for _ in range(n_steps):
+            output = fn()
+        elapsed = time.perf_counter() - t0
+        return {
+            "finite": bool(torch.isfinite(output).all().item()),
+            "max": float(output.max().item()),
+            "ms_per_step": round(elapsed / n_steps * 1000.0, 3),
+            "out_dtype": str(output.dtype),
+            "output_bytes": output.numel() * output.element_size(),
+        }
+
+    return {"legacy_fp16_merge": measure(legacy), "fp32_safe_merge": measure(safe)}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--steps", type=int, default=20, help="Forward steps per config.")
     p.add_argument("--num_blocks", type=int, default=8, help="DiT block count.")
+    p.add_argument("--merge_rows", type=int, default=1024)
+    p.add_argument("--merge_width", type=int, default=3072)
     p.add_argument(
         "--label",
         type=str,
@@ -153,6 +185,9 @@ def main():
         "speedup_fp16_on_vs_bf16": round(bf16_ms / fp16_on_ms, 3),
         "flag_overhead_fp16_on_vs_off_pct": round(
             (fp16_on_ms - fp16_off_ms) / fp16_off_ms * 100.0, 1
+        ),
+        "lora_merge": _run_lora_merge_bench(
+            args.merge_rows, args.merge_width, args.steps
         ),
     }
 

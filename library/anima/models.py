@@ -482,12 +482,15 @@ class Attention(nn.Module):
             _assert_finite_tensor(
                 v, f"{kind}.v before attention backend={attn_params.attn_mode}"
             )
-        if q.dtype != v.dtype:
-            if not attn_params.supports_fp32 and torch.is_autocast_enabled():
-                # FlashAttention requires fp16/bf16; only cast when autocast is active.
-                target_dtype = v.dtype
-                q = q.to(target_dtype)
-                k = k.to(target_dtype)
+        if not attn_params.supports_fp32 and torch.is_autocast_enabled(q.device.type):
+            # FP32 LoRA residual merges can promote q/k/v together. FlashAttention
+            # and memory-efficient SDPA require the active autocast dtype even when
+            # all three operands agree, so cast the complete triplet at the backend
+            # boundary rather than keying only off a q/v mismatch.
+            target_dtype = torch.get_autocast_dtype(q.device.type)
+            q = q.to(target_dtype)
+            k = k.to(target_dtype)
+            v = v.to(target_dtype)
         qkv = [q, k, v]
         del q, k, v
         result = attention_dispatch.dispatch_attention(qkv, attn_params=attn_params)

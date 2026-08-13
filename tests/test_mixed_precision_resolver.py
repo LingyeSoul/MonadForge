@@ -164,6 +164,44 @@ def test_auto_lora_fp32_compute_respects_explicit_true(train_mod, monkeypatch):
     )
 
 
+def test_force_fp32_lora_storage_only_on_v100_fp16_guard(train_mod, monkeypatch):
+    kwargs = {"lora_fp32_compute": "true"}
+
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    assert train_mod._should_force_fp32_lora_storage(
+        _fake_args("fp16"), _fake_accelerator(), kwargs
+    )
+    for mixed_precision in ("bf16", "no", "fp32"):
+        assert not train_mod._should_force_fp32_lora_storage(
+            _fake_args(mixed_precision), _fake_accelerator(), kwargs
+        )
+
+    _patch_cuda(monkeypatch, capability=(8, 0))
+    assert not train_mod._should_force_fp32_lora_storage(
+        _fake_args("fp16"), _fake_accelerator(), kwargs
+    )
+
+    args = _fake_args("fp16")
+    args.network_module = "networks.methods.easycontrol"
+    assert not train_mod._should_force_fp32_lora_storage(
+        args, _fake_accelerator(), kwargs
+    )
+
+
+def test_force_fp32_lora_storage_requires_effective_guard_flag(
+    train_mod, monkeypatch
+):
+    _patch_cuda(monkeypatch, capability=(7, 0))
+    args = _fake_args("fp16")
+
+    assert not train_mod._should_force_fp32_lora_storage(
+        args, _fake_accelerator(), {"lora_fp32_compute": "false"}
+    )
+    assert not train_mod._should_force_fp32_lora_storage(
+        args, _fake_accelerator(), {}
+    )
+
+
 def test_auto_eager_lora_down_autograd_for_fp32_rank_path(train_mod, monkeypatch):
     _patch_cuda(monkeypatch, capability=(7, 0))
     args = _fake_args("fp16")

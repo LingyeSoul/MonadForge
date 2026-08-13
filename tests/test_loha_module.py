@@ -237,12 +237,13 @@ def test_fp32_compute_casts_all_official_operands(monkeypatch):
         (module.hada_w1_a.float() @ module.hada_w1_b.float())
         * (module.hada_w2_a.float() @ module.hada_w2_b.float())
     ) * module.scale
-    expected = module.org_forward(x) + torch.nn.functional.linear(
-        x.float(), expected_delta
-    ).to(torch.float16)
+    expected = (
+        module.org_forward(x).float()
+        + torch.nn.functional.linear(x.float(), expected_delta).float()
+    )
     output = base(x)
 
-    assert output.dtype == torch.float16
+    assert output.dtype == torch.float32
     assert torch.allclose(output, expected, atol=1e-3, rtol=1e-3)
     assert seen_dtypes
     assert set(seen_dtypes) == {torch.float32}

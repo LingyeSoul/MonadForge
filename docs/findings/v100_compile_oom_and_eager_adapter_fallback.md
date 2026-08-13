@@ -34,8 +34,9 @@ The precision policy remains mixed precision:
 - frozen DiT sublayer GEMMs run in FP16;
 - LoRA-family adapter projections run in FP32 on V100 for stability;
 - the DiT residual stream and gated residual products accumulate in FP32; and
-- adapter outputs are cast back only when they merge into the frozen sublayer
-  result.
+- additive adapter outputs merge with FP16 frozen-layer results in FP32 and
+  remain FP32. Attention backends that require low precision cast the complete
+  q/k/v triple back to the active autocast dtype at their dispatch boundary.
 
 This is not full-FP32 training. Keeping the frozen model matmuls in FP16 is
 required for practical V100 throughput and memory use.
@@ -197,7 +198,9 @@ copy for every adapted projection.
 
 The Anima eager helpers bound the remaining wide intermediates:
 
-- LoRA-up/residual work is processed in row chunks.
+- LoRA-up/residual work is processed in row chunks. The final activation is a
+  single FP32 output rather than reusing the FP16 frozen-base storage; this is
+  required to represent finite merged values above 65504.
 - native RMSNorm forward avoids explicit full-width FP32 temporary chains;
   its custom backward rematerializes the established explicit formula while
   recursively slicing the largest leading dimension so every chunk contains
@@ -226,8 +229,9 @@ recreate the wide grouped FP32 workspace that caused the memory failure. At a
 production-sized 4200-row fixture the observed relative difference is on the
 order of `1e-4`; the invariant test states both relative and absolute tolerances
 rather than treating one seed's maximum as a universal bound.
-Forward values and activation gradients remain within FP16 rounding tolerance
-at the adapter's public dtype.
+Forward values and activation gradients remain within the established FP16
+rounding tolerance relative to the reference calculation. Under the V100 FP32
+adapter policy the public merged activation itself remains FP32.
 
 It supports all four LyCORIS layouts used by the wrapper:
 
@@ -282,9 +286,13 @@ time:           approximately 10.93 s per optimizer step
 saved modules:  280 native LoKr modules
 ```
 
-The resulting BF16 checkpoint contained 27,543,320 parameters and occupied
+The historical run produced a 27,543,320-parameter BF16 checkpoint occupying
 52.63 MiB, confirming that checkpoint parameter volume was not the dominant
-source of the original failure.
+source of the original failure. On a current V100/sm_70 FP16 run with effective
+`lora_fp32_compute=true`, the protection path forces LoRA-family checkpoint
+storage to FP32, so the same tensor payload is expected to occupy approximately
+105.26 MiB. Other hardware and precision paths still honor `save_precision`;
+this does not change the activation/workspace diagnosis above.
 
 The isolated wide-projection V100 benchmark used
 `4200 x 3072 -> 9216` full-factor LoKr:

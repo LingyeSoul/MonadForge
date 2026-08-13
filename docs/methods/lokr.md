@@ -92,7 +92,8 @@ path is designed to avoid. The changed summation order can differ from the
 official eager bypass at about `1e-4` relative scale. The production-sized
 regression fixture locks both relative and absolute tolerances rather than
 claiming a universal absolute bound. Forward values and activation gradients
-remain within FP16 rounding tolerance at the adapter's public dtype.
+remain within FP16 rounding tolerance relative to the reference; with the V100
+FP32 adapter policy, the merged public activation itself remains FP32.
 
 On July 25, 2026, the unchanged 1024px V100 16 GiB configuration OOMed on its
 first forward before the LoKr-aware MLP path was added: PyTorch had 15.30 GiB
@@ -100,9 +101,13 @@ allocated, 31.44 MiB free, and failed a 64 MiB allocation in the frozen MLP
 `layer1` linear. With both rematerialization paths enabled, the same
 configuration completed 6/6 steps twice, saved all 280 native LoKr modules,
 and measured a PyTorch peak of 14.2324 GiB allocated and 14.3164 GiB reserved.
-The instrumented run averaged 10.93 seconds per optimizer step. Its
-27,543,320-parameter BF16 checkpoint is 55,186,240 bytes (52.63 MiB), so
-checkpoint parameter volume was not the dominant source of the original OOM.
+The instrumented run averaged 10.93 seconds per optimizer step. Under the
+save policy used for that historical run, its 27,543,320-parameter BF16
+checkpoint was 55,186,240 bytes (52.63 MiB), so checkpoint parameter volume
+was not the dominant source of the original OOM. On the V100/sm_70 FP16
+protection path, effective `lora_fp32_compute=true` now also forces FP32
+checkpoint storage; the same payload is therefore approximately 105.26 MiB.
+Other GPU and precision paths retain their requested save dtype.
 
 The corresponding wide-FFN microbenchmark (`4200 x 3072 -> 9216`, full-factor
 LoKr, V100) reduced saved tensors from 198.6 MiB to 25.5 MiB. At the default

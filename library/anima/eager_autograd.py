@@ -280,12 +280,10 @@ def _lora_linear_chunk(
         delta = torch.nn.functional.linear(rank, up_weight.float())
         if residual_scale != 1.0:
             delta = delta * residual_scale
-    # Match the regular ``F.linear(...) + delta`` expression's accumulation
-    # order.  ``Tensor.add_`` can round half values differently on CPU/Volta,
-    # which makes the eager path diverge bit-for-bit from the reference even
-    # though the mathematical result is identical.  The allocation is bounded
-    # by the row chunk, so retaining the functional add does not reintroduce a
-    # full-sequence activation peak.
+    # Match the regular FP32-safe LoRA merge. The allocation is bounded by the
+    # row chunk; only the final MLP output remains full-size FP32.
+    if base.dtype == torch.float16:
+        return base.float() + delta.float()
     return base + delta.to(base.dtype)
 
 
@@ -337,7 +335,11 @@ class EagerFusedLoRAMLPFn(torch.autograd.Function):
         )
         out = torch.empty(
             (*x.shape[:-1], base_weight2.shape[0]),
-            dtype=base_weight2.dtype,
+            dtype=(
+                torch.float32
+                if base_weight2.dtype == torch.float16
+                else base_weight2.dtype
+            ),
             device=x.device,
         )
         out_flat = _flatten_last(out)
@@ -565,8 +567,9 @@ def _lokr_linear_chunk(
         if residual_scale != 1.0:
             delta.mul_(residual_scale)
         delta.mul_(scalar.float())
-    base.add_(delta.to(base.dtype))
-    return base
+    if base.dtype == torch.float16:
+        return base.float() + delta.float()
+    return base + delta.to(base.dtype)
 
 
 class EagerFusedLoKrMLPFn(torch.autograd.Function):
@@ -600,7 +603,11 @@ class EagerFusedLoKrMLPFn(torch.autograd.Function):
         x_flat = _flatten_last(x)
         out = torch.empty(
             (*x.shape[:-1], base_weight2.shape[0]),
-            dtype=base_weight2.dtype,
+            dtype=(
+                torch.float32
+                if base_weight2.dtype == torch.float16
+                else base_weight2.dtype
+            ),
             device=x.device,
         )
         out_flat = _flatten_last(out)
