@@ -27,6 +27,8 @@ from pathlib import Path
 import torch
 
 from library.anima import weights as anima_weights
+from library.anima.checkpoint import anima_checkpoint_sha256, inspect_anima_checkpoint
+from library.anima.compat import validate_adapter_compatibility
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +151,25 @@ def merge_adapter_into_dit(
     logger.info(f"adapter: {adapter}")
 
     metadata = read_adapter_metadata(adapter)
+    metadata_non_bakeable = scan_non_bakeable_metadata(metadata)
+    if metadata_non_bakeable and not allow_partial:
+        parts = [
+            f"{count} {kind}" for kind, count in metadata_non_bakeable.items()
+        ]
+        raise NonBakeableError(
+            "Non-bakeable keys detected: "
+            + ", ".join(parts)
+            + ". Re-run with allow_partial to drop them and bake the LoRA portion, "
+            "or retrain without these components. These cannot be folded into "
+            "DiT Linear weights."
+        )
+
+    checkpoint_layout = inspect_anima_checkpoint(dit)
+    base_sha256 = anima_checkpoint_sha256(dit)
+    validate_adapter_compatibility(adapter, checkpoint_layout, base_sha256)
     weights_sd = _load_adapter_state_dict(adapter)
     non_bakeable = scan_non_bakeable_keys(weights_sd)
-    non_bakeable.update(scan_non_bakeable_metadata(metadata))
+    non_bakeable.update(metadata_non_bakeable)
     if non_bakeable:
         parts = [f"{count} {kind}" for kind, count in non_bakeable.items()]
         msg = "Non-bakeable keys detected: " + ", ".join(parts) + "."
@@ -172,6 +190,7 @@ def merge_adapter_into_dit(
         attn_mode="torch",  # merge never runs a forward pass
         loading_device=device,
         dit_weight_dtype=dtype,
+        checkpoint_layout=checkpoint_layout,
     )
 
     logger.info(f"building adapter network from weights (multiplier={multiplier})")

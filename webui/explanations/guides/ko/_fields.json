@@ -56,6 +56,7 @@
   "torch_compile": "포워드 패스에 torch.compile 활성화. 초기 컴파일 후 학습 속도 향상. 각 DiT 블록을 네이티브 형상으로 컴파일 — 토큰 수 버킷 패밀리당 하나의 그래프, 정적 패딩 없음.",
   "compile_dynamic_seq": "컴파일된 DiT 블록에서 네이티브 토큰 시퀀스 축만 동적으로 표시합니다. free-fit 형상에서 토큰 수마다 다시 컴파일하지 않고 티어당 하나의 그래프를 재사용하려면 필요합니다.",
   "v100_flash_stability": "V100 FlashAttention 진단 모드. off는 전체 Flash, hybrid는 크로스 어텐션을 Torch SDPA로 보내고, safe는 Flash를 유지하며 유한성 검사를 추가합니다. 모든 로컬 검증 게이트를 통과한 경우에만 off 운영 프리셋을 생성하며 safe는 진단 전용입니다.",
+  "lora_fp32_compute": "LoRA 계열 FP32 보호 모드입니다. auto는 V100/sm_70 + FP16 학습에서만 자동 활성화하고, true는 FP32 어댑터 계산을 강제하며, false는 일반적으로 비활성화하지만 V100 reliable block-swap 모드에서는 안전 계약을 유지하기 위해 false를 덮어씁니다. 활성화되면 어댑터 파라미터, 옵티마이저 입력, 저장 체크포인트 텐서는 FP32를 유지하고 동결된 DiT 가중치는 모델 정밀도를 유지합니다. 일반적으로 auto를 사용하세요.",
   "debug_finite_checks": "어텐션 입출력, 블록 잔차, loss 또는 그래디언트에 NaN/Inf가 나타나면 즉시 실패합니다. 잘못된 값을 수정하거나 숨기지 않습니다.",
   "cache_llm_adapter_outputs": "LLM 어댑터 레이어 출력을 디스크에 캐싱. 매 에폭 텍스트 인코더 투영 재계산 회피.",
   "masked_loss": "마스크되지 않은 영역에만 손실 적용 (예: 말풍선 제외). post_image_dataset/masks/ (또는 레거시 masks/merged/) 에 마스크 파일 필요 — `make mask` 로 생성.",

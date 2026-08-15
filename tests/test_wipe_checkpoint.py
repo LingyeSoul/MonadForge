@@ -42,11 +42,15 @@ def fake_root(tmp_path: Path, monkeypatch):
     return tmp_path
 
 
-def _write_state(state_dir: Path, *, step: int, epoch: int = 0) -> None:
+def _write_state(
+    state_dir: Path, *, step: int, epoch: int = 0, extra: dict | None = None
+) -> None:
     """Write a minimal ``train_state.json`` like CheckpointSaver persists."""
     state_dir.mkdir(parents=True, exist_ok=True)
+    payload = {"current_epoch": epoch, "current_step": step}
+    payload.update(extra or {})
     (state_dir / "train_state.json").write_text(
-        json.dumps({"current_epoch": epoch, "current_step": step}),
+        json.dumps(payload),
         encoding="utf-8",
     )
 
@@ -98,6 +102,36 @@ def test_find_resumable_returns_none_without_flags(fake_root: Path):
 
     merged = {"output_dir": "output/ckpt", "output_name": "lora"}
     assert cs.find_resumable_checkpoint(merged) is None
+
+
+def test_find_resumable_requires_matching_signature_for_40_blocks(fake_root: Path):
+    out_dir = fake_root / "output" / "ckpt"
+    state_dir = out_dir / "lora-state"
+    merged = {
+        "output_dir": "output/ckpt",
+        "output_name": "lora",
+        "save_state_on_train_end": True,
+        "anima_num_blocks": 40,
+        "anima_model_signature": "expected",
+    }
+
+    _write_state(state_dir, step=10)
+    assert cs.find_resumable_checkpoint(merged) is None
+
+    _write_state(
+        state_dir,
+        step=10,
+        extra={"anima_model_signature": "mismatch"},
+    )
+    assert cs.find_resumable_checkpoint(merged) is None
+
+    _write_state(
+        state_dir,
+        step=10,
+        extra={"anima_model_signature": "expected"},
+    )
+    found = cs.find_resumable_checkpoint(merged)
+    assert found is not None and found[1] == 10
 
 
 # ---------------------------------------------------------------------------

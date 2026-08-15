@@ -42,6 +42,7 @@ _NON_FLAT_SECTIONS = _DATASET_CONFIG_SECTIONS | _METADATA_CONFIG_SECTIONS
 # on a typo — a path-string typo fails loudly (file not found), but a
 # comparison typo would route a gui variant through the flat-methods path.
 GUI_METHODS_SUBDIR = "gui-methods"
+_LORA_FP32_COMPUTE_KEY = "lora_fp32_compute"
 _SNAPSHOT_SUFFIX = ".snapshot.toml"
 _EMPTY_STRING_IS_UNSET = frozenset({"network_weights"})
 _DUMP_SKIP_KEYS = {
@@ -241,6 +242,31 @@ def _resolve_method_path(
     return os.path.join(configs_dir, methods_subdir, f"{method}.toml")
 
 
+def _canonicalize_lora_fp32_compute_layer(data: dict) -> dict:
+    """Move legacy ``network_args`` values into normal layer precedence."""
+    out = dict(data)
+    network_args = out.get("network_args")
+    if not isinstance(network_args, list):
+        return out
+
+    cleaned: list = []
+    legacy_value = None
+    for item in network_args:
+        if isinstance(item, str) and "=" in item:
+            key, value = item.split("=", 1)
+            if key.strip() == _LORA_FP32_COMPUTE_KEY:
+                legacy_value = value.strip().lower()
+                continue
+        cleaned.append(item)
+    if legacy_value is not None:
+        out[_LORA_FP32_COMPUTE_KEY] = legacy_value
+    if cleaned:
+        out["network_args"] = cleaned
+    else:
+        out.pop("network_args", None)
+    return out
+
+
 def _load_gui_method_merged(configs_dir: str, method: str) -> tuple[dict, str]:
     """Load a gui-methods variant as ``{**builtin, **overlay}``.
 
@@ -261,10 +287,12 @@ def _load_gui_method_merged(configs_dir: str, method: str) -> tuple[dict, str]:
     merged: dict = {}
     if os.path.exists(builtin_path):
         with open(builtin_path, "r", encoding="utf-8") as f:
-            merged.update(toml.load(f))
+            merged.update(_canonicalize_lora_fp32_compute_layer(toml.load(f)))
     if os.path.exists(overlay_path):
         with open(overlay_path, "r", encoding="utf-8") as f:
-            merged.update(toml.load(f))  # overlay wins on conflict
+            merged.update(
+                _canonicalize_lora_fp32_compute_layer(toml.load(f))
+            )  # overlay wins on conflict
     # source_path: absolute path for _flatten_toml's schema line lookup
     # (prefers the overlay so line numbers point at the user-owned file).
     # source_tag: display path for provenance / print-config output.
@@ -796,6 +824,7 @@ def load_method_preset(
     for kind, path, tag, raw in _iter_method_preset_layers(
         preset, configs_dir, methods_subdir, method, require_files=True
     ):
+        raw = _canonicalize_lora_fp32_compute_layer(raw)
         # Preset sections are flat scalar tables, so wrap them as
         # ``{preset: section}`` to mirror base/method top-level section tables —
         # ``_flatten_toml`` then descends one level into the section contents.
@@ -805,6 +834,10 @@ def load_method_preset(
                 continue
             merged[k] = v
             provenance[k] = tag
+
+    if str(merged.get(_LORA_FP32_COMPUTE_KEY, "")).strip().lower() == "auto":
+        merged.pop(_LORA_FP32_COMPUTE_KEY, None)
+        provenance.pop(_LORA_FP32_COMPUTE_KEY, None)
 
     _drop_unset_config_values(merged, provenance)
 

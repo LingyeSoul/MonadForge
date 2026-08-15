@@ -12,6 +12,9 @@ from safetensors.torch import load_file
 from library.runtime.device import synchronize_device
 
 
+_MAX_SAFETENSORS_HEADER_SIZE = 100_000_000
+
+
 def mem_eff_save_file(
     tensors: Dict[str, torch.Tensor], filename: str, metadata: Dict[str, Any] = None
 ):
@@ -107,7 +110,11 @@ class MemoryEfficientSafeOpen:
         """
         self.filename = filename
         self.file = open(filename, "rb")
-        self.header, self.header_size = self._read_header()
+        try:
+            self.header, self.header_size = self._read_header()
+        except Exception:
+            self.file.close()
+            raise
         self.disable_numpy_memmap = disable_numpy_memmap
 
     def __enter__(self):
@@ -140,8 +147,22 @@ class MemoryEfficientSafeOpen:
         Returns:
             tuple: (header_dict, header_size) containing parsed header and its size.
         """
-        # Header size is 8 bytes, little-endian unsigned long long.
-        header_size = struct.unpack("<Q", self.file.read(8))[0]
+        # Match safetensors' bounded-header behavior before allocating the
+        # declared length. This reader is also used on untrusted checkpoints.
+        size_bytes = self.file.read(8)
+        if len(size_bytes) != 8:
+            raise ValueError("Invalid safetensors file: missing 8-byte header size")
+        header_size = struct.unpack("<Q", size_bytes)[0]
+        file_size = os.fstat(self.file.fileno()).st_size
+        if header_size > _MAX_SAFETENSORS_HEADER_SIZE:
+            raise ValueError(
+                "Invalid safetensors file: header size exceeds "
+                f"{_MAX_SAFETENSORS_HEADER_SIZE} bytes"
+            )
+        if header_size > file_size - 8:
+            raise ValueError(
+                "Invalid safetensors file: header size exceeds remaining file size"
+            )
         header_json = self.file.read(header_size).decode("utf-8")
         return json.loads(header_json), header_size
 

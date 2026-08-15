@@ -26,8 +26,6 @@ alpha_rank_scale = 1.0
 
 output_name = "anima_tlora_ortho"
 
-blocks_to_swap = 0
-
 use_cmmd = false
 
 [variant]

@@ -52,6 +52,14 @@ from library.anima import (
     strategy as strategy_anima,
     text_strategies,
 )
+from library.anima.checkpoint import (
+    apply_layout_to_args,
+)
+from library.anima.compat import (
+    adapter_identity_metadata,
+    preflight_anima_training,
+)
+from library.env import resolve_under_home
 from library.models import qwen_vae as qwen_image_autoencoder_kl
 from library.models import sai_spec as sai_model_spec
 from library.runtime import noise as noise_utils
@@ -223,6 +231,15 @@ _RESUME_SIGNATURE_EXCLUDES = {
     "block_swap_effective_lora_fp32_compute",
     "block_swap_effective_use_custom_down_autograd",
     "block_swap_effective_network_spec",
+    # Compared independently so old 28-block state signatures remain valid.
+    "anima_arch",
+    "anima_variant",
+    "anima_num_blocks",
+    "anima_model_channels",
+    "anima_num_heads",
+    "anima_base_sha256",
+    "anima_model_signature",
+    "anima_training_profile",
 }
 
 
@@ -235,6 +252,63 @@ def _resume_config_signature(args) -> str:
         if not key.startswith("_") and key not in _RESUME_SIGNATURE_EXCLUDES
     }
     return signature(payload)
+
+
+def _anima_manifest_fields(args) -> dict[str, Any]:
+    return {
+        "anima_arch": getattr(args, "anima_arch", None),
+        "anima_variant": getattr(args, "anima_variant", None),
+        "anima_num_blocks": getattr(args, "anima_num_blocks", None),
+        "anima_model_channels": getattr(args, "anima_model_channels", None),
+        "anima_base_sha256": getattr(args, "anima_base_sha256", None),
+        "anima_model_signature": getattr(args, "anima_model_signature", None),
+        "anima_training_profile": getattr(args, "anima_training_profile", None),
+    }
+
+
+def _prepare_anima_checkpoint_identity(args) -> None:
+    """Inspect/checksum the base and reject incompatible 40-block runs early."""
+
+    raw_path = getattr(args, "pretrained_model_name_or_path", None)
+    if not raw_path:
+        raise ValueError("pretrained_model_name_or_path is required")
+    checkpoint_path = str(resolve_under_home(raw_path))
+    adapter_paths: list[str] = []
+    for value in (
+        getattr(args, "network_weights", None),
+        getattr(args, "lora_path", None),
+    ):
+        if value:
+            adapter_paths.append(str(value))
+    base_weights = getattr(args, "base_weights", None) or []
+    if isinstance(base_weights, (str, os.PathLike)):
+        base_weights = [base_weights]
+    adapter_paths.extend(str(path) for path in base_weights)
+    resolved_adapters = tuple(resolve_under_home(path) for path in adapter_paths)
+    layout, base_sha256, compatibility = preflight_anima_training(
+        args,
+        checkpoint_path,
+        adapter_paths=resolved_adapters,
+    )
+    apply_layout_to_args(args, layout, base_sha256)
+    args._anima_checkpoint_path = checkpoint_path
+    args.anima_training_profile = compatibility.profile
+
+    provenance = getattr(args, "_config_snapshot_provenance", None)
+    if isinstance(provenance, dict):
+        for key in _anima_manifest_fields(args):
+            provenance[key] = "runtime/checkpoint"
+    refresh_config_snapshot(args)
+    logger.info(
+        "Anima checkpoint preflight: variant=%s arch=%s blocks=%s channels=%s "
+        "sha256=%s profile=%s",
+        layout.variant,
+        layout.arch,
+        layout.num_blocks,
+        layout.model_channels,
+        base_sha256,
+        args.anima_training_profile,
+    )
 
 
 def _dataset_group_signature(group) -> str | None:
@@ -1265,7 +1339,9 @@ class AnimaTrainer:
             attn_softmax_scale=attn_softmax_scale,
             v100_flash_stability=v100_flash_stability,
             debug_finite_checks=debug_finite_checks,
+            checkpoint_layout=getattr(args, "_anima_checkpoint_layout", None),
         )
+        model.anima_base_sha256 = getattr(args, "anima_base_sha256", None)
 
         # NOTE: torch.compile (compile_blocks) is intentionally NOT done here.
         # It must run AFTER the adapter's apply_to monkey-patches the targeted
@@ -1999,6 +2075,10 @@ class AnimaTrainer:
         metadata["ss_block_swap_effective_use_custom_down_autograd"] = bool(
             getattr(args, "block_swap_effective_use_custom_down_autograd", False)
         )
+        layout = getattr(args, "_anima_checkpoint_layout", None)
+        base_sha256 = getattr(args, "anima_base_sha256", None)
+        if layout is not None and base_sha256:
+            metadata.update(adapter_identity_metadata(layout, base_sha256))
 
     def is_text_encoder_not_needed_for_training(self, args):
         return args.cache_text_encoder_outputs and not self.is_train_text_encoder(args)
@@ -2813,6 +2893,7 @@ class AnimaTrainer:
         training_started_at = time.time()
         selected_preprocess_run = _apply_preprocess_run(args)
         output_layout = layout_from_args(args)
+        _prepare_anima_checkpoint_identity(args)
         # Resolve block-swap compatibility and the hardware-dependent reliable
         # mode before computing the resume signature or constructing
         # Accelerator.  A V100 must never reach accelerator/model setup with a
@@ -3198,6 +3279,11 @@ class AnimaTrainer:
                     sampling_enabled=sampling_enabled,
                     config_signature=getattr(args, "config_signature", None),
                     dataset_signature=getattr(args, "dataset_signature", None),
+                    anima_arch=getattr(args, "anima_arch", None),
+                    anima_variant=getattr(args, "anima_variant", None),
+                    anima_num_blocks=getattr(args, "anima_num_blocks", None),
+                    anima_model_channels=getattr(args, "anima_model_channels", None),
+                    anima_base_sha256=getattr(args, "anima_base_sha256", None),
                 )
                 # Mirror WARNING+ records into the stream so a reader debugging
                 # the run gets them structured instead of buried in tqdm stdout.
@@ -3547,6 +3633,7 @@ class AnimaTrainer:
                             "preprocess_run": getattr(args, "preprocess_run", None),
                             **_training_budget_manifest_fields(args),
                             **_block_swap_manifest_fields(args),
+                            **_anima_manifest_fields(args),
                         },
                     )
 
@@ -3580,6 +3667,7 @@ class AnimaTrainer:
                             "preprocess_run": getattr(args, "preprocess_run", None),
                             **_training_budget_manifest_fields(args),
                             **_block_swap_manifest_fields(args),
+                            **_anima_manifest_fields(args),
                         },
                     )
                 saver.cleanup_resumable()

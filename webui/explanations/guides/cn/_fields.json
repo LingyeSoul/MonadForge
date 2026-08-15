@@ -56,6 +56,7 @@
   "torch_compile": "为前向传播启用torch.compile。初始编译后训练速度加快。以原生形状编译每个DiT块 — 每个令牌数桶系列一张计算图，无静态填充。",
   "compile_dynamic_seq": "在每个已编译DiT块内部仅将原生令牌序列轴标记为动态。free-fit形状必须启用，使同一分辨率层级复用一张图，而不是每个令牌数各编译一张。",
   "v100_flash_stability": "V100 FlashAttention诊断模式。off使用完整Flash；hybrid将交叉注意力路由到Torch SDPA；safe保留Flash并检查注意力边界有限性。只有本机全部验证门禁通过后才生成使用off的生产预设；safe仅用于诊断。",
+  "lora_fp32_compute": "LoRA 系列的 FP32 保护模式。auto：仅在 V100/sm_70 + FP16 训练时自动开启；true：强制使用 FP32 适配器计算；false：通常关闭，但 V100 可靠块交换模式会为维持安全约束而覆盖 false。保护生效时，适配器参数、优化器输入和保存的检查点张量会保持 FP32，冻结的 DiT 权重仍使用模型精度。通常保持 auto。",
   "debug_finite_checks": "当注意力输入/输出、块残差、loss或梯度出现NaN/Inf时立即失败。它只用于诊断，不修复或隐藏无效值。",
   "cache_llm_adapter_outputs": "将LLM适配器层输出缓存到磁盘。避免每轮重新计算文本编码器投影。",
   "masked_loss": "仅在未被遮罩的区域（如排除文字气泡）应用损失。需要post_image_dataset/masks/（或旧版masks/merged/）中的遮罩文件 — 运行`make mask`生成。",
