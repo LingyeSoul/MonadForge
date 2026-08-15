@@ -145,7 +145,7 @@ _FUSED_TO_SPLIT_SUFFIXES = (
 )
 
 
-def dump_channel_stats_safetensors(stats, out_path, prefix="lora_unet_"):
+def dump_channel_stats_safetensors(stats, out_path, prefix="lora_unet_", metadata=None):
     """Save full per-input-channel mean_abs vectors keyed by LoRA module name.
 
     Each entry in `stats` is keyed by a dot-separated module path (e.g.
@@ -163,6 +163,11 @@ def dump_channel_stats_safetensors(stats, out_path, prefix="lora_unet_"):
         if stat.get("count", 0) == 0:
             continue
         mean_abs = (stat["sum_abs"] / stat["count"]).float().contiguous()
+        if not torch.isfinite(mean_abs).all():
+            raise ValueError(
+                "non-finite channel statistics for "
+                f"{module_path}; rerun calibration with a numerically safe dtype"
+            )
         lora_name = prefix + module_path.replace(".", "_")
         tensors[lora_name] = mean_abs
         for fused_suffix, split_suffixes in _FUSED_TO_SPLIT_SUFFIXES:
@@ -174,7 +179,7 @@ def dump_channel_stats_safetensors(stats, out_path, prefix="lora_unet_"):
     out_dir = os.path.dirname(out_path)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    save_file(tensors, out_path)
+    save_file(tensors, out_path, metadata=metadata)
     logger.info(
         f"wrote per-channel mean|x| stats for {len(tensors)} keys to {out_path} "
         f"(fused qkv/kv mirrored to per-component q/k/v)"
@@ -364,6 +369,9 @@ def print_group_summary(group_name, modules, n_worst):
 def main():
     args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_fp16 = device.type == "cuda" and torch.cuda.get_device_capability(device)[0] < 8
+    activation_dtype = torch.float16 if use_fp16 else torch.bfloat16
+    args.dtype = "fp16" if use_fp16 else "bf16"
     torch.manual_seed(args.seed)
 
     stems = find_sample_stems(
@@ -383,7 +391,6 @@ def main():
     # input stats in eval (for_inference=True): T-LoRA's mask is training-only, so
     # the inference full-rank forward is the regime channel scaling is consumed in.
     args.device = str(device)
-    args.dtype = "bf16"
     if args.lora_weight:
         logger.info(f"loading DiT + LoRA adapter from {args.lora_weight}")
     else:
@@ -392,6 +399,10 @@ def main():
         args, dit_path=args.dit, adapter=args.lora_weight, train_mode=False
     )
     anima = bundle.anima
+    if use_fp16:
+        # Volta FP16 needs the same residual-stream protection as training;
+        # without it later 40-block activations can overflow before hooks run.
+        anima.enable_fp32_residual()
 
     stats, _handles = install_channel_hooks(anima)
     if not stats:
@@ -406,21 +417,21 @@ def main():
             emb = (  # [1, L, D]
                 load_cached_crossattn_emb(te_path)
                 .unsqueeze(0)
-                .to(device, dtype=torch.bfloat16)
+                .to(device, dtype=activation_dtype)
             )
             h_lat, w_lat = lat_4d.shape[-2], lat_4d.shape[-1]
             padding_mask = torch.zeros(
-                1, 1, h_lat, w_lat, dtype=torch.bfloat16, device=device
+                1, 1, h_lat, w_lat, dtype=activation_dtype, device=device
             )
 
             for sigma in sigmas:
                 noise = torch.randn_like(lat_4d)
                 sv = torch.tensor(sigma, device=device).view(1, 1, 1, 1)
-                noisy = ((1.0 - sv) * lat_4d + sv * noise).to(torch.bfloat16)
+                noisy = ((1.0 - sv) * lat_4d + sv * noise).to(activation_dtype)
                 noisy_5d = noisy.unsqueeze(2)  # [1, C, 1, H, W]
-                t = torch.tensor([sigma], device=device, dtype=torch.bfloat16)
+                t = torch.tensor([sigma], device=device, dtype=activation_dtype)
 
-                with torch.autocast(device_type=device.type, dtype=torch.bfloat16):
+                with torch.autocast(device_type=device.type, dtype=activation_dtype):
                     _ = anima(noisy_5d, t, emb, padding_mask=padding_mask)
 
                 n_forward += 1
@@ -477,7 +488,22 @@ def main():
         print_group_summary(group_name, groups[group_name], args.print_top_n_modules)
 
     if args.dump_channel_stats:
-        dump_channel_stats_safetensors(stats, args.dump_channel_stats)
+        from library.anima.checkpoint import (
+            anima_checkpoint_sha256,
+            inspect_anima_checkpoint,
+        )
+
+        layout = inspect_anima_checkpoint(args.dit)
+        metadata = {
+            "anima_stats_schema": "1",
+            "anima_arch": layout.arch,
+            "anima_num_blocks": str(layout.num_blocks),
+            "anima_model_channels": str(layout.model_channels),
+            "anima_base_sha256": anima_checkpoint_sha256(args.dit),
+        }
+        dump_channel_stats_safetensors(
+            stats, args.dump_channel_stats, metadata=metadata
+        )
 
 
 if __name__ == "__main__":

@@ -473,7 +473,9 @@ def test_legacy_inv_scale_checkpoint_converts_to_standard_lora():
 def test_runtime_harness_loads_factory_converted_legacy_checkpoint(
     tmp_path, monkeypatch
 ):
+    from library.anima import checkpoint as checkpoint_module
     from library.anima import weights as anima_weights
+    from library.anima.checkpoint import AnimaCheckpointLayout
     from library.runtime.harness import build_anima
 
     legacy_sd = _legacy_inv_scale_state()
@@ -489,6 +491,16 @@ def test_runtime_harness_loads_factory_converted_legacy_checkpoint(
         anima_weights,
         "load_anima_model",
         lambda **kwargs: model,
+    )
+    monkeypatch.setattr(
+        checkpoint_module,
+        "inspect_anima_checkpoint",
+        lambda _path: AnimaCheckpointLayout(
+            "anima-2048-28", "anima-2.1b-base-v1", 28, 2048, 16, "net."
+        ),
+    )
+    monkeypatch.setattr(
+        checkpoint_module, "anima_checkpoint_sha256", lambda _path: "a" * 64
     )
     args = argparse.Namespace(
         device="cpu",

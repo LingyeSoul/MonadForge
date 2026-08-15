@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import re
@@ -1324,6 +1325,7 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
     output_name = merged.get("output_name") or "last"
     if not output_dir:
         return None
+    from library.anima.compat import validate_resume_model_signature
     from library.io.output_layout import resolve_output_layout, safe_output_name
     from library.training.state import read_train_state, state_is_complete
 
@@ -1368,6 +1370,14 @@ def find_resumable_checkpoint(merged: dict) -> tuple[Path, int] | None:
                 continue
             if expected_dataset and data.get("dataset_signature") not in (None, expected_dataset):
                 continue
+            try:
+                validate_resume_model_signature(
+                    data,
+                    expected_signature=merged.get("anima_model_signature"),
+                    num_blocks=merged.get("anima_num_blocks"),
+                )
+            except ValueError:
+                continue
             step = int(data.get("global_step", data.get("current_step", 0)) or 0)
             # Legacy states predate an explicit committed-step schema; retain
             # their historical suffix order because their cursor may not match
@@ -1396,6 +1406,48 @@ def prelaunch_check(
     errors = validate_config(merged)
     if errors:
         raise ValueError("; ".join(errors))
+
+    from library.anima.checkpoint import apply_layout_to_args
+    from library.anima.compat import (
+        preflight_anima_training,
+    )
+    from library.env import resolve_under_home
+
+    raw_model_path = merged.get("pretrained_model_name_or_path")
+    if not raw_model_path:
+        raise ValueError("pretrained_model_name_or_path is required")
+    model_path = str(resolve_under_home(str(raw_model_path)))
+    adapter_paths: list[str] = []
+    for value in (merged.get("network_weights"), merged.get("lora_path")):
+        if value:
+            adapter_paths.append(str(value))
+    base_weights = merged.get("base_weights") or []
+    if isinstance(base_weights, str):
+        base_weights = [base_weights]
+    adapter_paths.extend(str(path) for path in base_weights)
+    try:
+        model_layout, base_sha256, preflight = preflight_anima_training(
+            merged,
+            model_path,
+            adapter_paths=tuple(resolve_under_home(path) for path in adapter_paths),
+            raise_on_blockers=False,
+        )
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        raise ValueError(f"invalid Anima checkpoint: {exc}") from exc
+
+    identity = SimpleNamespace()
+    apply_layout_to_args(identity, model_layout, base_sha256)
+    merged.update(
+        {
+            "anima_arch": identity.anima_arch,
+            "anima_variant": identity.anima_variant,
+            "anima_num_blocks": identity.anima_num_blocks,
+            "anima_model_channels": identity.anima_model_channels,
+            "anima_base_sha256": identity.anima_base_sha256,
+            "anima_model_signature": identity.anima_model_signature,
+        }
+    )
+    compatibility = preflight.as_dict()
 
     # Resolve cache directory. A selected preprocess manifest is authoritative;
     # this keeps the preflight check aligned with train.py's run pinning.
@@ -1442,6 +1494,8 @@ def prelaunch_check(
         "checkpoint": checkpoint_info,
         "requires_pe": requires_pe,
         "preprocess_run": str(selected_run.manifest_path) if selected_run else None,
+        "model_layout": model_layout.as_dict(),
+        "compatibility": compatibility,
     }
 
 

@@ -11,6 +11,7 @@ output/
 # small (~3.5MB), strictly an input-magnitude prior on the base DiT, not a
 # checkpoint. Regenerate via `bench/channel_stats/analyze_lora_input_channels.py`.
 !networks/calibration/channel_stats.safetensors
+!networks/calibration/channel_stats_anima40.safetensors
 !networks/calibration/cond_channel_stats.safetensors
 *.ckpt
 *.pt

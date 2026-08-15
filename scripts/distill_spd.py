@@ -35,6 +35,7 @@ import torch.nn as nn  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
+from library.anima.compat import preflight_anima_training  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
@@ -238,6 +239,15 @@ def main():
         logger.info("Dry run OK: stage-target construction + collation clean.")
         return
 
+    preflight_config = {
+        **vars(c),
+        "method": "spd",
+        "network_module": "networks.lora_anima",
+    }
+    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
+        preflight_config, c.dit_path
+    )
+
     # SNR gate: orthonormal-DCT per-coefficient power, radially binned — measured
     # not power-law-fitted (anime latents carry line-art HF a 2-param fit smooths
     # over). Train split only; a dataset statistic, so a small sample suffices.
@@ -271,7 +281,9 @@ def main():
         attn_mode=attn_mode,
         loading_device="cpu" if args.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
+        checkpoint_layout=checkpoint_layout,
     )
+    model.anima_base_sha256 = base_sha256
     patch = model.patch_spatial
 
     # Plain LoRA adapter (paper-faithful: no MoE / ortho / T-LoRA).

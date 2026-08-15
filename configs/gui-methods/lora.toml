@@ -8,7 +8,6 @@ use_shuffled_caption_variants = true
 cache_llm_adapter_outputs = true
 caption_dropout_rate = 0.1
 output_name = "anima"
-blocks_to_swap = 0
 use_cmmd = false
 
 [variant]

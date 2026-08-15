@@ -1461,7 +1461,7 @@ class Block(nn.Module):
 class Anima(nn.Module):
     """Cosmos-Predict2 DiT model for image/video generation.
 
-    28 transformer blocks with AdaLN-LoRA modulation, 3D RoPE, and optional LLM Adapter.
+    28 or 40 transformer blocks with AdaLN-LoRA modulation, 3D RoPE, and optional LLM Adapter.
     """
 
     LATENT_CHANNELS = 16
