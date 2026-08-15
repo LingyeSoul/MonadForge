@@ -361,16 +361,44 @@ def _strip_neutral_resume_defaults(data: dict) -> dict:
     }
 
 
-def _normalize_lora_fp32_compute(data: dict) -> dict:
-    """Convert the WebUI tri-state sentinel to the trainer's optional bool."""
+def _canonicalize_lora_fp32_compute_layer(data: dict) -> dict:
+    """Promote the legacy network_args spelling into the normal merge layer."""
     out = dict(data)
+    network_args = out.get("network_args")
+    if not isinstance(network_args, list):
+        return out
+
+    cleaned: list = []
+    legacy_value = None
+    for item in network_args:
+        if isinstance(item, str) and "=" in item:
+            key, value = item.split("=", 1)
+            if key.strip() == "lora_fp32_compute":
+                legacy_value = value.strip().lower()
+                continue
+        cleaned.append(item)
+    if legacy_value is not None:
+        out["lora_fp32_compute"] = legacy_value
+    if cleaned:
+        out["network_args"] = cleaned
+    else:
+        out.pop("network_args", None)
+    return out
+
+
+def _normalize_lora_fp32_compute(data: dict, *, keep_auto: bool = False) -> dict:
+    """Convert the WebUI tri-state sentinel to the trainer's optional bool."""
+    out = _canonicalize_lora_fp32_compute_layer(data)
     if "lora_fp32_compute" not in out:
         return out
     normalized = str(out["lora_fp32_compute"]).strip().lower()
     if normalized not in _LORA_FP32_COMPUTE_CHOICES:
         raise ValueError("lora_fp32_compute must be auto, true, or false")
     if normalized == "auto":
-        out.pop("lora_fp32_compute", None)
+        if keep_auto:
+            out["lora_fp32_compute"] = "auto"
+        else:
+            out.pop("lora_fp32_compute", None)
     else:
         out["lora_fp32_compute"] = normalized == "true"
     return out
@@ -679,14 +707,22 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     _safe_variant(variant)
     from library.config.model_paths import load_model_config
 
-    base = _load(CONFIGS_DIR / "base.toml")
-    model = load_model_config(CONFIGS_DIR)
-    pset = _load_all_presets().get(preset, {})
+    base = _canonicalize_lora_fp32_compute_layer(_load(CONFIGS_DIR / "base.toml"))
+    model = _canonicalize_lora_fp32_compute_layer(load_model_config(CONFIGS_DIR))
+    pset = _canonicalize_lora_fp32_compute_layer(
+        _load_all_presets().get(preset, {})
+    )
     if variant.startswith("custom/"):
-        meth = _load(_resolve_variant_path(variant))
+        meth = _canonicalize_lora_fp32_compute_layer(
+            _load(_resolve_variant_path(variant))
+        )
     else:
-        builtin = _load(GUI_METHODS_DIR / f"{variant}.toml")
-        overlay = _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
+        builtin = _canonicalize_lora_fp32_compute_layer(
+            _load(GUI_METHODS_DIR / f"{variant}.toml")
+        )
+        overlay = _canonicalize_lora_fp32_compute_layer(
+            _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
+        )
         meth = {**builtin, **overlay}
     merged: dict = {}
     origin: dict[str, str] = {}
@@ -711,13 +747,15 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     # The V100 FP16 protection is intentionally tri-state. An omitted
     # lora_fp32_compute lets train.py auto-enable it only for V100/sm_70 FP16;
     # explicit true/false force the user's choice. Surface the omitted state as
-    # "auto" in the WebUI without writing that sentinel into the training TOML.
-    if (
-        merged.get("network_module") == "networks.lora_anima"
-        and "lora_fp32_compute" not in merged
-    ):
-        merged["lora_fp32_compute"] = "auto"
-        origin["lora_fp32_compute"] = "base"
+    # "auto" in the WebUI; the training merge consumes that sentinel before
+    # network kwargs are built.
+    if merged.get("network_module") == "networks.lora_anima":
+        if "lora_fp32_compute" not in merged:
+            merged["lora_fp32_compute"] = "auto"
+            origin["lora_fp32_compute"] = "base"
+    else:
+        merged.pop("lora_fp32_compute", None)
+        origin.pop("lora_fp32_compute", None)
 
     # Inject virtual keys from [[datasets]]
     variant_override = _validation_enabled_from_datasets(meth.get("datasets"))
@@ -1238,7 +1276,7 @@ def save_variant_config(variant: str, data: dict) -> None:
     else:
         # Built-in variant: always save to custom overlay, never to template
         path = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
-    current = _load(path)
+    current = _canonicalize_lora_fp32_compute_layer(_load(path))
 
     # Handle extra_args: parse as TOML and merge as overrides
     extra_text = data.pop("extra_args", None)
@@ -1311,7 +1349,11 @@ def save_variant_config(variant: str, data: dict) -> None:
     if extras:
         current.update(extras)
 
-    current = _normalize_lora_fp32_compute(current)
+    # Keep an explicit auto sentinel at the method layer so it can clear a
+    # custom preset's true/false. The training config loader consumes this
+    # sentinel after all layers have merged and does not forward it as a
+    # network kwarg.
+    current = _normalize_lora_fp32_compute(current, keep_auto=True)
 
     # Validate the prospective effective method config, not only the sparse
     # overlay. Built-in LoKR flags live in gui-methods/lokr.toml while a user
