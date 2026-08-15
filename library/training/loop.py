@@ -157,6 +157,9 @@ class LoopState:
         if args is not None:
             runtime_state["config_signature"] = getattr(args, "config_signature", None)
             runtime_state["dataset_signature"] = getattr(args, "dataset_signature", None)
+            runtime_state["anima_model_signature"] = getattr(
+                args, "anima_model_signature", None
+            )
         if self.stage_plan is None:
             return runtime_state
         runtime_state.update({

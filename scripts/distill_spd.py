@@ -35,6 +35,7 @@ import torch.nn as nn  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
+from library.anima.compat import preflight_anima_training  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
 from library.datasets.cache import CachedDataset  # noqa: E402
@@ -80,6 +81,14 @@ logging.basicConfig(
 def main():
     args = build_argparser().parse_args()
     c = resolve_config(args, load_toml(args.config))
+    preflight_config = {
+        **vars(c),
+        "method": "spd",
+        "network_module": "networks.lora_anima",
+    }
+    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
+        preflight_config, c.dit_path
+    )
 
     # Unpack the resolved frozen config to locals (the training loop below is
     # unchanged). The argparser + CLI/TOML precedence + schedule sanity now live
@@ -271,7 +280,9 @@ def main():
         attn_mode=attn_mode,
         loading_device="cpu" if args.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
+        checkpoint_layout=checkpoint_layout,
     )
+    model.anima_base_sha256 = base_sha256
     patch = model.patch_spatial
 
     # Plain LoRA adapter (paper-faithful: no MoE / ortho / T-LoRA).

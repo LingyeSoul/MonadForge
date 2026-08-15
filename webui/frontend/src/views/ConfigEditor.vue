@@ -236,6 +236,29 @@
       {{ t('cfgExperimentalWarning') }}
     </v-alert>
 
+    <v-alert
+      v-if="prelaunchResult?.model_layout"
+      :type="prelaunchResult.compatibility?.supported ? 'success' : 'error'"
+      variant="tonal"
+      density="compact"
+      class="mb-4"
+      :icon="prelaunchResult.compatibility?.supported ? 'mdi-shield-check-outline' : 'mdi-shield-alert-outline'"
+    >
+      <div class="text-subtitle-2">{{ t('cfgModelCompatibility') }}</div>
+      <div>
+        {{ t('cfgModelDetected', {
+          variant: prelaunchResult.model_layout.variant,
+          blocks: prelaunchResult.model_layout.num_blocks,
+          profile: prelaunchResult.compatibility?.profile,
+        }) }}
+      </div>
+      <ul v-if="prelaunchResult.compatibility?.blockers?.length" class="mt-2 pl-5">
+        <li v-for="blocker in prelaunchResult.compatibility.blockers" :key="blocker">
+          {{ localizeAnimaBlocker(blocker) }}
+        </li>
+      </ul>
+    </v-alert>
+
     <!-- Two-column layout: form left, help panel right -->
     <v-row>
       <v-col cols="12" :lg="selectedVariant ? 8 : 12" class="form-column">
@@ -504,6 +527,40 @@ const notify = useNotifyStore()
 const appStore = useAppStore()
 const { t } = useI18n()
 
+const animaBlockerKeys: Record<string, string> = {
+  REPA: 'cfgModelBlockerRepa',
+  'VR loss': 'cfgModelBlockerVr',
+  LoKr: 'cfgModelBlockerLokr',
+  GLoKr: 'cfgModelBlockerGlokr',
+  LoHa: 'cfgModelBlockerLoha',
+  ControlNet: 'cfgModelBlockerControl',
+  EasyControl: 'cfgModelBlockerEasycontrol',
+  BYG: 'cfgModelBlockerByg',
+  SoftTokens: 'cfgModelBlockerSoftTokens',
+  'Soft Tokens': 'cfgModelBlockerSoftTokens',
+  'Hydra/route_per_layer': 'cfgModelBlockerHydra',
+  'Hydra/router_source': 'cfgModelBlockerHydra',
+  'Turbo step experts': 'cfgModelBlockerTurbo',
+  train_llm_adapter: 'cfgModelBlockerTextEncoder',
+  'text-encoder-only training': 'cfgModelBlockerTextEncoder',
+}
+
+function localizeAnimaBlocker(blocker: unknown): string {
+  const detail = String(blocker)
+  const directKey = animaBlockerKeys[detail]
+  if (directKey) return t(directKey)
+  if (detail.startsWith('uncertified 40-block checkpoint')) {
+    return t('cfgModelBlockerUncertified', { detail })
+  }
+  if (detail.startsWith('profile must')) {
+    return t('cfgModelBlockerUnsupportedProfile')
+  }
+  if (detail.includes('channel stats')) {
+    return t('cfgModelBlockerChannelStats', { detail })
+  }
+  return t('cfgModelBlockerDetail', { detail })
+}
+
 const selectedMethod = ref('')
 const selectedVariant = ref('')
 const selectedPreset = ref('default')
@@ -665,6 +722,7 @@ async function onVariantChange() {
 
 async function loadConfig() {
   if (selectedVariant.value) {
+    prelaunchResult.value = null
     await configStore.fetchMerged(selectedVariant.value, selectedPreset.value)
     await fetchFieldHelp()
     await checkExperimental()
@@ -894,8 +952,16 @@ async function fetchPrelaunch(): Promise<any> {
   const manifest = selectedPreprocessRun()
   if (manifest) params.set('preprocess_run', manifest)
   const res = await fetch(`/api/config/prelaunch-check?${params}`)
-  if (!res.ok) throw new Error(`Prelaunch check failed: ${res.status}`)
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.detail || `Prelaunch check failed: ${res.status}`)
+  }
   return res.json()
+}
+
+function acceptsPrelaunch(result: any): boolean {
+  prelaunchResult.value = result
+  return result.compatibility?.supported !== false
 }
 
 async function autoSaveIfDirty() {
@@ -928,7 +994,7 @@ async function startTraining() {
     }
 
     const result = await fetchPrelaunch()
-    prelaunchResult.value = result
+    if (!acceptsPrelaunch(result)) return
 
     if (!result.has_cache) {
       showNoCacheDlg.value = true
@@ -1050,7 +1116,7 @@ async function confirmRemoveConditioning() {
       // 'train' — persist the stripped state, then resume the launch flow.
       await autoSaveIfDirty()
       const result = await fetchPrelaunch()
-      prelaunchResult.value = result
+      if (!acceptsPrelaunch(result)) return
       if (!result.has_cache) {
         showNoCacheDlg.value = true
       } else if (result.checkpoint) {
@@ -1087,6 +1153,7 @@ async function runPreprocessThenTrain() {
     await waitForTask(taskId)
     if (!selectedBeforeRun) await adoptLatestPreprocessRun()
     const result = await fetchPrelaunch()
+    if (!acceptsPrelaunch(result)) return
     if (result.has_cache) {
       if (result.checkpoint) {
         checkpointInfo.value = result.checkpoint

@@ -105,6 +105,11 @@ def build_anima(
     # Late imports — this module should import cheaply even on CPU-only smoke
     # runs that never load a DiT.
     from library.anima import weights as anima_utils
+    from library.anima.checkpoint import (
+        anima_checkpoint_sha256,
+        inspect_anima_checkpoint,
+    )
+    from library.anima.compat import validate_adapter_compatibility
     from library.runtime.device import str_to_dtype
 
     device = torch.device(getattr(args, "device", "cuda"))
@@ -119,6 +124,11 @@ def build_anima(
             "--dit in your argparse."
         )
 
+    checkpoint_layout = inspect_anima_checkpoint(dit_path)
+    base_sha256 = anima_checkpoint_sha256(dit_path)
+    if adapter is not None:
+        validate_adapter_compatibility(adapter, checkpoint_layout, base_sha256)
+
     log.info(f"loading base DiT: {dit_path}")
     anima = anima_utils.load_anima_model(
         device=device,
@@ -126,7 +136,9 @@ def build_anima(
         attn_mode=attn_mode,
         loading_device=device,
         dit_weight_dtype=dtype,
+        checkpoint_layout=checkpoint_layout,
     )
+    anima.anima_base_sha256 = base_sha256
     anima.to(device, dtype=dtype).requires_grad_(False)
     anima.reset_mod_guidance()
 

@@ -8,9 +8,44 @@ import torch
 from safetensors.torch import load_file
 
 from library.anima import models as anima_models, weights as anima_utils
+from library.anima.checkpoint import (
+    anima_checkpoint_sha256,
+    apply_layout_to_args,
+    inspect_anima_checkpoint,
+)
+from library.anima.compat import validate_adapter_compatibility
+from library.env import resolve_under_home
 from library.runtime.device import clean_memory_on_device
 
 logger = logging.getLogger(__name__)
+
+
+def _prepare_inference_anima_identity(
+    args: argparse.Namespace,
+    adapter_paths: list[str] | tuple[str, ...] | None = None,
+):
+    """Validate base/adapters before any inference adapter tensor is loaded."""
+
+    dit = getattr(args, "dit", None)
+    adapters = tuple(
+        adapter_paths
+        if adapter_paths is not None
+        else (getattr(args, "lora_weight", None) or ())
+    )
+    if not dit:
+        return None
+    dit_path = str(resolve_under_home(dit))
+    cached = getattr(args, "_anima_inference_identity", None)
+    if cached is not None and cached[0] == dit_path and cached[1] == adapters:
+        return cached[2]
+
+    layout = inspect_anima_checkpoint(dit_path)
+    base_sha256 = anima_checkpoint_sha256(dit_path)
+    apply_layout_to_args(args, layout, base_sha256)
+    for adapter in adapters:
+        validate_adapter_compatibility(adapter, layout, base_sha256)
+    args._anima_inference_identity = (dit_path, adapters, layout)
+    return layout
 
 
 def _is_hydra_moe(path: str) -> bool:
@@ -141,6 +176,7 @@ def attach_adapters(
     ``pgraft_mode`` / ``hydra_mode`` are passed in (not recomputed) because the
     caller already derives them to decide whether to skip the static merge.
     """
+    _prepare_inference_anima_identity(args)
     # GLoKr (Kronecker + BoRA weight decomposition): kept-live weight-replacement
     # hooks. Not routable through the static merge (keys aren't down/up; the
     # merged weight replaces rather than adds). Metadata must ride along —
@@ -345,6 +381,7 @@ def load_dit_model(
     """
 
     loading_device = device
+    checkpoint_layout = _prepare_inference_anima_identity(args)
 
     # HydraLoRA moe (incl. FeRA-style stacked-experts global FEI): router-live
     # inference can't go through static merge. Detect early so we can skip the
@@ -469,7 +506,10 @@ def load_dit_model(
         dit_weight_dtype,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier,
+        checkpoint_layout=checkpoint_layout,
     )
+    if checkpoint_layout is not None:
+        model.anima_base_sha256 = getattr(args, "anima_base_sha256", None)
 
     # Modulation guidance: load trained pooled_text_proj weights before .to()
     # (pooled_text_proj params are meta tensors when not in the pretrained checkpoint)
@@ -548,6 +588,8 @@ def load_text_encoder(
         if lora_multiplier is not None
         else getattr(args, "lora_multiplier", 1.0)
     )
+    if args is not None and lw and getattr(args, "dit", None):
+        _prepare_inference_anima_identity(args, lw)
 
     lora_weights_list = None
     if lw is not None and len(lw) > 0 and any(_has_te_keys(p) for p in lw):
@@ -581,6 +623,7 @@ def load_shared_models(args: argparse.Namespace) -> Dict:
     Models are loaded to CPU to save memory. VAE is NOT loaded here.
     DiT model is also NOT loaded here, handled by process_batch_prompts or generate.
     """
+    _prepare_inference_anima_identity(args)
     shared_models = {}
     text_encoder_dtype = torch.bfloat16
     text_encoder = load_text_encoder(

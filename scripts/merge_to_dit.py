@@ -14,6 +14,12 @@ from pathlib import Path
 
 import torch
 
+# ``make merge`` launches this file by path, which otherwise makes ``scripts/``
+# the only project-local import root.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from library.anima.merge import (  # noqa: E402
     DTYPE_MAP,
     NonBakeableError,

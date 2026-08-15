@@ -21,6 +21,7 @@ import torch.nn as nn
 from tqdm import tqdm
 
 from library.anima import weights as anima_utils
+from library.anima.compat import preflight_anima_training
 from library.anima.models import Anima
 from library.datasets.cache import CachedDataset
 from library.inference.sampling import get_timesteps_sigmas
@@ -294,6 +295,14 @@ def selective_block_grad_ckpt(model: Anima):
 def main():
     args = build_argparser().parse_args()
     cfg = resolve_config(args, load_turbo_config(args.config))
+    preflight_config = {
+        **vars(cfg),
+        "method": "turbo",
+        "network_module": "networks.lora_anima",
+    }
+    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
+        preflight_config, cfg.dit_path
+    )
 
     torch.manual_seed(cfg.seed)
     device, dtype = resolve_device_dtype()
@@ -321,7 +330,9 @@ def main():
         attn_mode=cfg.attn_mode,
         loading_device="cpu" if cfg.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
+        checkpoint_layout=checkpoint_layout,
     )
+    model.anima_base_sha256 = base_sha256
 
     # Block swap (per-forward prepare hook done at each forward call below).
     # compile_dit_blocks is deferred until AFTER the student/fake apply_to below

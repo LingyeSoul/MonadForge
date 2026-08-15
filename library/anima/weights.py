@@ -8,6 +8,7 @@ from accelerate import init_empty_weights
 
 from networks.lora_utils import load_safetensors_with_lora
 from library.anima import models as anima_models
+from library.anima.checkpoint import AnimaCheckpointLayout, inspect_anima_checkpoint
 from library.env import resolve_under_home
 from library.io.safetensors import WeightTransformHooks
 from library.log import setup_logging
@@ -32,6 +33,12 @@ _ADALN_DOWN_RE = re.compile(
 )
 _ADALN_UP_RE = re.compile(
     r"(blocks\.\d+)\.adaln_modulation_(self_attn|cross_attn|mlp)\.2\."
+)
+_SELF_ATTN_QKV_FUSED_RE = re.compile(r"(blocks\.\d+\.self_attn)\.qkv_proj(\.weight)")
+_CROSS_ATTN_KV_FUSED_RE = re.compile(r"(blocks\.\d+\.cross_attn)\.kv_proj(\.weight)")
+_ADALN_FUSED_DOWN_RE = re.compile(r"(blocks\.\d+)\.adaln_fused_down\.1(\.weight)")
+_ADALN_UP_FUSED_RE = re.compile(
+    r"(blocks\.\d+)\.adaln_up_(self_attn|cross_attn|mlp)(\.weight)"
 )
 
 _SELF_ATTN_QKV_ORDER = ("q_proj", "k_proj", "v_proj")
@@ -108,6 +115,57 @@ def _dit_concat_hook(
     return None, None
 
 
+def _dit_export_tensors(
+    key: str, tensor: torch.Tensor
+) -> "list[tuple[str, torch.Tensor]]":
+    """Restore runtime-fused DiT tensors to the public checkpoint layout."""
+
+    clean = _strip_net_prefix(key)
+    match = _SELF_ATTN_QKV_FUSED_RE.fullmatch(clean)
+    if match:
+        if tensor.shape[0] % len(_SELF_ATTN_QKV_ORDER):
+            raise ValueError(f"Invalid fused self-attention QKV tensor: {key}")
+        chunks = tensor.chunk(len(_SELF_ATTN_QKV_ORDER), dim=0)
+        return [
+            (f"{match.group(1)}.{projection}{match.group(2)}", chunk)
+            for projection, chunk in zip(_SELF_ATTN_QKV_ORDER, chunks, strict=True)
+        ]
+
+    match = _CROSS_ATTN_KV_FUSED_RE.fullmatch(clean)
+    if match:
+        if tensor.shape[0] % len(_CROSS_ATTN_KV_ORDER):
+            raise ValueError(f"Invalid fused cross-attention KV tensor: {key}")
+        chunks = tensor.chunk(len(_CROSS_ATTN_KV_ORDER), dim=0)
+        return [
+            (f"{match.group(1)}.{projection}{match.group(2)}", chunk)
+            for projection, chunk in zip(_CROSS_ATTN_KV_ORDER, chunks, strict=True)
+        ]
+
+    match = _ADALN_FUSED_DOWN_RE.fullmatch(clean)
+    if match:
+        if tensor.shape[0] % len(_ADALN_BRANCH_ORDER):
+            raise ValueError(f"Invalid fused AdaLN down tensor: {key}")
+        chunks = tensor.chunk(len(_ADALN_BRANCH_ORDER), dim=0)
+        return [
+            (
+                f"{match.group(1)}.adaln_modulation_{branch}.1{match.group(2)}",
+                chunk,
+            )
+            for branch, chunk in zip(_ADALN_BRANCH_ORDER, chunks, strict=True)
+        ]
+
+    match = _ADALN_UP_FUSED_RE.fullmatch(clean)
+    if match:
+        return [
+            (
+                f"{match.group(1)}.adaln_modulation_{match.group(2)}.2{match.group(3)}",
+                tensor,
+            )
+        ]
+
+    return [(clean, tensor)]
+
+
 def load_anima_model(
     device: Union[str, torch.device],
     dit_path: str,
@@ -119,6 +177,7 @@ def load_anima_model(
     attn_softmax_scale: Optional[float] = None,
     v100_flash_stability: str = "off",
     debug_finite_checks: bool = False,
+    checkpoint_layout: Optional[AnimaCheckpointLayout] = None,
 ) -> anima_models.Anima:
     """
     Load Anima model from the specified checkpoint.
@@ -142,10 +201,11 @@ def load_anima_model(
         dit_weight_dtype = torch.bfloat16
 
     dit_path = str(resolve_under_home(dit_path))
+    if checkpoint_layout is None:
+        checkpoint_layout = inspect_anima_checkpoint(dit_path)
     device = torch.device(device)
     loading_device = torch.device(loading_device)
 
-    # We currently support fixed DiT config for Anima models
     dit_config = {
         "max_img_h": 512,
         "max_img_w": 512,
@@ -158,6 +218,9 @@ def load_anima_model(
         "attn_softmax_scale": attn_softmax_scale,
         "v100_flash_stability": v100_flash_stability,
         "debug_finite_checks": debug_finite_checks,
+        "model_channels": checkpoint_layout.model_channels,
+        "num_blocks": checkpoint_layout.num_blocks,
+        "num_heads": checkpoint_layout.num_heads,
     }
 
     with init_empty_weights():
@@ -165,7 +228,13 @@ def load_anima_model(
         if dit_weight_dtype is not None:
             model.to(dit_weight_dtype)
 
-    logger.info(f"Loading DiT model from {dit_path}, device={loading_device}")
+    logger.info(
+        "Loading DiT model from %s, device=%s, variant=%s, blocks=%s",
+        dit_path,
+        loading_device,
+        checkpoint_layout.variant,
+        checkpoint_layout.num_blocks,
+    )
     rename_hooks = WeightTransformHooks(
         rename_hook=_dit_rename_hook,
         concat_hook=_dit_concat_hook,
@@ -516,11 +585,9 @@ def save_anima_model(
     """
     prefixed_sd = {}
     for k, v in dit_state_dict.items():
-        if dtype is not None:
-            v = (
-                v.detach().clone().to("cpu").to(dtype)
-            )  # Reduce GPU memory usage during save
-        prefixed_sd["net." + k] = v.contiguous()
+        v = v.detach().to(device="cpu", dtype=dtype or v.dtype)
+        for export_key, export_tensor in _dit_export_tensors(k, v):
+            prefixed_sd["net." + export_key] = export_tensor.contiguous()
 
     if metadata is None:
         metadata = {}
