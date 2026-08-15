@@ -118,6 +118,7 @@ _METHOD_ORDER = (
 _ATTN_MODES = ["flash", "torch", "mem_efficient", "sageattn", "flex", "xformers"]
 _SAMPLER_CHOICES = ["euler", "er_sde"]
 _SAMPLE_DECODE_INLINE_CHOICES = ["auto", "true", "false"]
+_LORA_FP32_COMPUTE_CHOICES = ["auto", "true", "false"]
 _BASE_COMPUTE_CHOICES = ["bf16", "w8a16_convrot", "w8a8_convrot"]
 _CONVROT_HADAMARD_CHOICES = ["sylvester", "regular"]
 _CONVROT_SCOPE_CHOICES = [
@@ -198,6 +199,7 @@ _SELECT_OPTIONS: dict[str, list[str]] = {
     ],
     "sample_sampler": ["euler", "er_sde"],
     "sample_decode_inline": _SAMPLE_DECODE_INLINE_CHOICES,
+    "lora_fp32_compute": _LORA_FP32_COMPUTE_CHOICES,
 }
 
 _GROUPS = {
@@ -276,6 +278,7 @@ _GROUPS = {
         "cache_llm_adapter_outputs",
         "masked_loss",
         "mixed_precision",
+        "lora_fp32_compute",
         "vae_chunk_size",
         "vae_disable_cache",
         "cache_latents",
@@ -325,7 +328,11 @@ _VIRTUAL_KEYS = {"use_valid", "validation_split_num", "batch_size", "num_repeats
 # Most inherited fields are intentionally read-only in the WebUI. Preview decode
 # timing is safe to override per variant, and save_variant_config persists that
 # choice in the user overlay without touching base.toml.
-_EDITABLE_INHERITED_KEYS = {"sample_decode_inline", *_CONVROT_FIELDS}
+_EDITABLE_INHERITED_KEYS = {
+    "sample_decode_inline",
+    "lora_fp32_compute",
+    *_CONVROT_FIELDS,
+}
 
 # Resume & Warm-start defaults. These keys are NOT in base.toml (which is
 # overwritten by `make update`), so merged_gui_variant_preset injects them with
@@ -352,6 +359,49 @@ def _strip_neutral_resume_defaults(data: dict) -> dict:
         for key, value in data.items()
         if not _is_neutral_resume_value(key, value)
     }
+
+
+def _canonicalize_lora_fp32_compute_layer(data: dict) -> dict:
+    """Promote the legacy network_args spelling into the normal merge layer."""
+    out = dict(data)
+    network_args = out.get("network_args")
+    if not isinstance(network_args, list):
+        return out
+
+    cleaned: list = []
+    legacy_value = None
+    for item in network_args:
+        if isinstance(item, str) and "=" in item:
+            key, value = item.split("=", 1)
+            if key.strip() == "lora_fp32_compute":
+                legacy_value = value.strip().lower()
+                continue
+        cleaned.append(item)
+    if legacy_value is not None:
+        out["lora_fp32_compute"] = legacy_value
+    if cleaned:
+        out["network_args"] = cleaned
+    else:
+        out.pop("network_args", None)
+    return out
+
+
+def _normalize_lora_fp32_compute(data: dict, *, keep_auto: bool = False) -> dict:
+    """Convert the WebUI tri-state sentinel to the trainer's optional bool."""
+    out = _canonicalize_lora_fp32_compute_layer(data)
+    if "lora_fp32_compute" not in out:
+        return out
+    normalized = str(out["lora_fp32_compute"]).strip().lower()
+    if normalized not in _LORA_FP32_COMPUTE_CHOICES:
+        raise ValueError("lora_fp32_compute must be auto, true, or false")
+    if normalized == "auto":
+        if keep_auto:
+            out["lora_fp32_compute"] = "auto"
+        else:
+            out.pop("lora_fp32_compute", None)
+    else:
+        out["lora_fp32_compute"] = normalized == "true"
+    return out
 
 
 _BASIC = {
@@ -553,7 +603,7 @@ def create_custom_preset(name: str, data: dict) -> list[str]:
     CUSTOM_PRESETS_DIR.mkdir(parents=True, exist_ok=True)
     _save(
         CUSTOM_PRESETS_DIR / f"{name}.toml",
-        _strip_neutral_resume_defaults(data),
+        _normalize_lora_fp32_compute(_strip_neutral_resume_defaults(data)),
     )
     return list_presets()
 
@@ -657,14 +707,22 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     _safe_variant(variant)
     from library.config.model_paths import load_model_config
 
-    base = _load(CONFIGS_DIR / "base.toml")
-    model = load_model_config(CONFIGS_DIR)
-    pset = _load_all_presets().get(preset, {})
+    base = _canonicalize_lora_fp32_compute_layer(_load(CONFIGS_DIR / "base.toml"))
+    model = _canonicalize_lora_fp32_compute_layer(load_model_config(CONFIGS_DIR))
+    pset = _canonicalize_lora_fp32_compute_layer(
+        _load_all_presets().get(preset, {})
+    )
     if variant.startswith("custom/"):
-        meth = _load(_resolve_variant_path(variant))
+        meth = _canonicalize_lora_fp32_compute_layer(
+            _load(_resolve_variant_path(variant))
+        )
     else:
-        builtin = _load(GUI_METHODS_DIR / f"{variant}.toml")
-        overlay = _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
+        builtin = _canonicalize_lora_fp32_compute_layer(
+            _load(GUI_METHODS_DIR / f"{variant}.toml")
+        )
+        overlay = _canonicalize_lora_fp32_compute_layer(
+            _load(CUSTOM_VARIANTS_DIR / f"{variant}.toml")
+        )
         meth = {**builtin, **overlay}
     merged: dict = {}
     origin: dict[str, str] = {}
@@ -685,6 +743,19 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     _merge_layer(model, "base")
     _merge_layer(pset, "preset")
     _merge_layer(meth, "method")
+
+    # The V100 FP16 protection is intentionally tri-state. An omitted
+    # lora_fp32_compute lets train.py auto-enable it only for V100/sm_70 FP16;
+    # explicit true/false force the user's choice. Surface the omitted state as
+    # "auto" in the WebUI; the training merge consumes that sentinel before
+    # network kwargs are built.
+    if merged.get("network_module") == "networks.lora_anima":
+        if "lora_fp32_compute" not in merged:
+            merged["lora_fp32_compute"] = "auto"
+            origin["lora_fp32_compute"] = "base"
+    else:
+        merged.pop("lora_fp32_compute", None)
+        origin.pop("lora_fp32_compute", None)
 
     # Inject virtual keys from [[datasets]]
     variant_override = _validation_enabled_from_datasets(meth.get("datasets"))
@@ -1102,6 +1173,14 @@ def validate_config(data: dict) -> list[str]:
         )
         if not valid:
             errors.append("sample_decode_inline must be auto, true, or false")
+    if "lora_fp32_compute" in data:
+        value = data["lora_fp32_compute"]
+        valid = isinstance(value, bool) or (
+            isinstance(value, str)
+            and value.strip().lower() in _LORA_FP32_COMPUTE_CHOICES
+        )
+        if not valid:
+            errors.append("lora_fp32_compute must be auto, true, or false")
     if "base_compute" in data:
         value = str(data["base_compute"] or "").strip().lower()
         if value not in _BASE_COMPUTE_CHOICES:
@@ -1197,7 +1276,7 @@ def save_variant_config(variant: str, data: dict) -> None:
     else:
         # Built-in variant: always save to custom overlay, never to template
         path = CUSTOM_VARIANTS_DIR / f"{variant}.toml"
-    current = _load(path)
+    current = _canonicalize_lora_fp32_compute_layer(_load(path))
 
     # Handle extra_args: parse as TOML and merge as overrides
     extra_text = data.pop("extra_args", None)
@@ -1258,6 +1337,9 @@ def save_variant_config(variant: str, data: dict) -> None:
             else:
                 current[key] = normalized == "true"
             continue
+        if key == "lora_fp32_compute":
+            current[key] = value
+            continue
         if _is_neutral_resume_value(key, value):
             current.pop(key, None)
             continue
@@ -1266,6 +1348,12 @@ def save_variant_config(variant: str, data: dict) -> None:
     # Extra args override form values
     if extras:
         current.update(extras)
+
+    # Keep an explicit auto sentinel at the method layer so it can clear a
+    # custom preset's true/false. The training config loader consumes this
+    # sentinel after all layers have merged and does not forward it as a
+    # network kwarg.
+    current = _normalize_lora_fp32_compute(current, keep_auto=True)
 
     # Validate the prospective effective method config, not only the sparse
     # overlay. Built-in LoKR flags live in gui-methods/lokr.toml while a user

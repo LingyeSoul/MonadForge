@@ -105,6 +105,179 @@ def test_sample_decode_inline_validation_rejects_unknown_mode():
     ]
 
 
+def test_lora_fp32_compute_is_editable_tri_state_and_round_trips(
+    monkeypatch, tmp_path
+):
+    configs = tmp_path / "configs"
+    methods = configs / "gui-methods"
+    overlays = configs / "custom" / "variants"
+    methods.mkdir(parents=True)
+    overlays.mkdir(parents=True)
+    (configs / "base.toml").write_text(
+        'network_module = "networks.lora_anima"\n', encoding="utf-8"
+    )
+    (configs / "model.toml").write_text("", encoding="utf-8")
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (methods / "lora.toml").write_text("network_dim = 16\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_service, "CONFIGS_DIR", configs)
+    monkeypatch.setattr(config_service, "GUI_METHODS_DIR", methods)
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_VARIANTS_DIR", overlays)
+
+    result = config_service.build_merged_config("lora", "default", lang="en")
+    field = next(f for f in result["fields"] if f["key"] == "lora_fp32_compute")
+    assert field["value"] == "auto"
+    assert field["origin"] == "base"
+    assert field["field_type"] == "select"
+    assert field["group"] == "Performance"
+    assert field["read_only"] is False
+    assert field["options"] == ["auto", "true", "false"]
+    assert field["description"]
+
+    config_service.save_variant_config("lora", {"lora_fp32_compute": "true"})
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert saved["lora_fp32_compute"] is True
+
+    merged, origin = config_service.merged_gui_variant_preset("lora", "default")
+    assert merged["lora_fp32_compute"] is True
+    assert origin["lora_fp32_compute"] == "method"
+
+    config_service.save_variant_config("lora", {"lora_fp32_compute": "false"})
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert saved["lora_fp32_compute"] is False
+
+    config_service.save_variant_config("lora", {"lora_fp32_compute": "auto"})
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert saved["lora_fp32_compute"] == "auto"
+
+    training = load_method_preset(
+        "lora", "default", configs_dir=str(configs), methods_subdir="gui-methods"
+    )
+    assert "lora_fp32_compute" not in training
+
+
+def test_lora_fp32_auto_clears_preset_and_legacy_network_args(monkeypatch, tmp_path):
+    configs = tmp_path / "configs"
+    methods = configs / "gui-methods"
+    overlays = configs / "custom" / "variants"
+    custom_presets = configs / "custom" / "presets"
+    methods.mkdir(parents=True)
+    overlays.mkdir(parents=True)
+    custom_presets.mkdir(parents=True)
+    (configs / "base.toml").write_text(
+        'network_module = "networks.lora_anima"\n', encoding="utf-8"
+    )
+    (configs / "model.toml").write_text("", encoding="utf-8")
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (custom_presets / "forced.toml").write_text(
+        'network_args = ["lora_fp32_compute=true"]\n', encoding="utf-8"
+    )
+    (methods / "lora.toml").write_text(
+        'network_args = ["use_timestep_mask=true", "lora_fp32_compute=false"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(config_service, "CONFIGS_DIR", configs)
+    monkeypatch.setattr(config_service, "GUI_METHODS_DIR", methods)
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_PRESETS_DIR", custom_presets)
+    monkeypatch.setattr(config_service, "CUSTOM_VARIANTS_DIR", overlays)
+
+    result = config_service.build_merged_config("lora", "forced", lang="en")
+    field = next(f for f in result["fields"] if f["key"] == "lora_fp32_compute")
+    assert field["value"] == "false"
+    assert field["origin"] == "method"
+
+    config_service.save_variant_config("lora", {"lora_fp32_compute": "true"})
+    training = load_method_preset(
+        "lora", "forced", configs_dir=str(configs), methods_subdir="gui-methods"
+    )
+    assert str(training["lora_fp32_compute"]).lower() == "true"
+    assert training["network_args"] == ["use_timestep_mask=true"]
+
+    config_service.save_variant_config("lora", {"lora_fp32_compute": "auto"})
+    merged, origin = config_service.merged_gui_variant_preset("lora", "forced")
+    assert merged["lora_fp32_compute"] == "auto"
+    assert origin["lora_fp32_compute"] == "method"
+
+    training = load_method_preset(
+        "lora", "forced", configs_dir=str(configs), methods_subdir="gui-methods"
+    )
+    assert "lora_fp32_compute" not in training
+    assert training["network_args"] == ["use_timestep_mask=true"]
+
+
+def test_lora_fp32_compute_not_shown_for_non_lora_network(monkeypatch, tmp_path):
+    configs = tmp_path / "configs"
+    methods = configs / "gui-methods"
+    custom_presets = configs / "custom" / "presets"
+    methods.mkdir(parents=True)
+    custom_presets.mkdir(parents=True)
+    (configs / "base.toml").write_text(
+        'network_module = "networks.lora_anima"\n', encoding="utf-8"
+    )
+    (configs / "model.toml").write_text("", encoding="utf-8")
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (custom_presets / "forced.toml").write_text(
+        "lora_fp32_compute = true\n", encoding="utf-8"
+    )
+    (methods / "easycontrol.toml").write_text(
+        'network_module = "networks.methods.easycontrol"\n', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(config_service, "CONFIGS_DIR", configs)
+    monkeypatch.setattr(config_service, "GUI_METHODS_DIR", methods)
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_PRESETS_DIR", custom_presets)
+    monkeypatch.setattr(
+        config_service, "CUSTOM_VARIANTS_DIR", configs / "custom" / "variants"
+    )
+
+    result = config_service.build_merged_config(
+        "easycontrol", "forced", lang="en"
+    )
+    assert "lora_fp32_compute" not in {field["key"] for field in result["fields"]}
+
+
+def test_lora_fp32_compute_validation_rejects_unknown_mode():
+    assert validate_config({"lora_fp32_compute": "sometimes"}) == [
+        "lora_fp32_compute must be auto, true, or false"
+    ]
+
+
+def test_lora_fp32_compute_help_documents_reliable_mode_override():
+    description = config_service._field_desc("lora_fp32_compute", "en")
+    assert description is not None
+    assert "reliable block-swap mode overrides false" in description
+
+
+def test_create_custom_preset_normalizes_lora_fp32_compute(monkeypatch, tmp_path):
+    configs = tmp_path / "configs"
+    custom_presets = configs / "custom" / "presets"
+    custom_presets.mkdir(parents=True)
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_PRESETS_DIR", custom_presets)
+
+    config_service.create_custom_preset(
+        "auto-protection", {"lora_fp32_compute": "auto"}
+    )
+    auto_saved = toml.loads(
+        (custom_presets / "auto-protection.toml").read_text(encoding="utf-8")
+    )
+    assert "lora_fp32_compute" not in auto_saved
+
+    config_service.create_custom_preset(
+        "forced-protection", {"lora_fp32_compute": "true"}
+    )
+    forced_saved = toml.loads(
+        (custom_presets / "forced-protection.toml").read_text(encoding="utf-8")
+    )
+    assert forced_saved["lora_fp32_compute"] is True
+
+
 def test_create_custom_preset_strips_neutral_resume_defaults(monkeypatch, tmp_path):
     """A fresh WebUI preset must not turn an empty warm-start into a path."""
     configs = tmp_path / "configs"
