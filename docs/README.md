@@ -112,6 +112,7 @@ User-facing guides and references.
 | [guidelines/가이드북.md](guidelines/가이드북.md) | 종합 가이드 (Korean) |
 | [guidelines/ガイドブック.md](guidelines/ガイドブック.md) | 総合ガイド (Japanese) |
 | [guidelines/指南书.md](guidelines/指南书.md) | 综合指南 (Chinese) |
+| [guidelines/太初玄鼎训练炉使用指南.md](guidelines/太初玄鼎训练炉使用指南.md) | AutoDL + RTX 5090 风格 LoRA 训练全流程指南 (Chinese) |
 
 ## Proposals
 

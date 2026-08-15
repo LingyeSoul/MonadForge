@@ -124,6 +124,16 @@ set ANIMA_DAEMON_HOST_WEBUI=0 && python tasks.py daemon
 右键菜单可：打开 WebUI、暂停/恢复队列、停止当前作业、重启 daemon、**切换语言（中/英）**。
 托盘语言独立于 WebUI，默认中文，选择持久化在 `output/daemon/tray-prefs.json`。
 
+### 📖 详细训练教程
+
+如果你在 **AutoDL 云端** 用 **RTX 5090** 训练 Anima 风格 LoRA，建议阅读完整教程：
+
+📘 [`docs/guidelines/太初玄鼎训练炉使用指南.md`](docs/guidelines/太初玄鼎训练炉使用指南.md)
+
+该文档涵盖：选机与镜像、首次部署、日常开机重启、数据集准备与打标、Preprocess 三步流水线、
+Config 页面参数详解、训练启动与 resume 策略、Loss / LR / 预览图解读、风格 LoRA 调参配方，
+以及常见错误排查表与命令速查。
+
 ---
 
 ## 功能概览
