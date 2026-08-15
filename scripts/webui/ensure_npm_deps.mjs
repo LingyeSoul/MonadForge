@@ -173,11 +173,31 @@ function npmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
+function npmInvocation() {
+  // On Windows, spawning npm.cmd directly can fail with EINVAL on newer Node
+  // releases because the command shim is not a native executable.  Invoke the
+  // npm CLI through the current Node binary so the build uses the same runtime
+  // that launched this checker.
+  if (process.platform === "win32") {
+    const npmCli = resolve(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
+    if (existsSync(npmCli)) {
+      return { command: process.execPath, prefix: [npmCli], options: {} };
+    }
+  }
+  return {
+    command: npmCommand(),
+    prefix: [],
+    options: process.platform === "win32" ? { shell: true } : {},
+  };
+}
+
 function runNpm(args) {
-  return spawnSync(npmCommand(), args, {
+  const invocation = npmInvocation();
+  return spawnSync(invocation.command, [...invocation.prefix, ...args], {
     cwd: frontendDir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    ...invocation.options,
   });
 }
 

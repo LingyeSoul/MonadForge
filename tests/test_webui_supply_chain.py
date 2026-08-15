@@ -60,3 +60,12 @@ def test_lock_checker_enforces_keyv_alias_and_native_probe_boundaries():
     assert "transformSync" in checker
     assert "r.rollup" in checker
     assert "--offline" in checker
+
+
+def test_lock_checker_resolves_windows_npm_without_command_shim():
+    checker = (ROOT / "scripts" / "webui" / "ensure_npm_deps.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert "process.execPath" in checker
+    assert "node_modules/npm/bin/npm-cli.js" in checker
+    assert "shell: true" in checker
