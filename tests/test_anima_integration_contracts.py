@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +22,48 @@ LAYOUT_28 = AnimaCheckpointLayout(
 LAYOUT_40 = AnimaCheckpointLayout(
     "anima-2048-40", "anima-2.9b-preview-v1", 40, 2048, 16, "net."
 )
+
+
+@pytest.mark.parametrize(
+    "relative_path,dry_run_owner",
+    [
+        ("scripts/distill_mod/distill.py", "cfg"),
+        ("scripts/distill_spd.py", "args"),
+    ],
+)
+def test_distillation_dry_run_returns_before_checkpoint_preflight(
+    relative_path, dry_run_owner
+):
+    source = (Path(__file__).resolve().parents[1] / relative_path).read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    main = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    )
+    preflight = next(
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "preflight_anima_training"
+    )
+    dry_run_if = next(
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Attribute)
+        and isinstance(node.test.value, ast.Name)
+        and node.test.value.id == dry_run_owner
+        and node.test.attr == "dry_run"
+    )
+    dry_run_return = next(
+        node for node in ast.walk(dry_run_if) if isinstance(node, ast.Return)
+    )
+
+    assert preflight.lineno > dry_run_return.lineno
 
 
 def _prelaunch_config(tmp_path) -> dict[str, object]:
@@ -231,6 +275,41 @@ def test_inference_rejects_adapter_before_loading_tensor_payload(monkeypatch):
     assert loaded == []
 
 
+def test_inference_identity_cache_revalidates_replaced_adapter(tmp_path, monkeypatch):
+    from library.inference import models
+
+    base = tmp_path / "base.safetensors"
+    adapter = tmp_path / "adapter.safetensors"
+    base.write_bytes(b"base")
+    adapter.write_bytes(b"adapter-v1")
+    validated: list[Path] = []
+
+    monkeypatch.setattr(models, "inspect_anima_checkpoint", lambda _path: LAYOUT_28)
+    monkeypatch.setattr(models, "anima_checkpoint_sha256", lambda _path: "d" * 64)
+    monkeypatch.setattr(
+        models,
+        "validate_adapter_compatibility",
+        lambda path, *_args: validated.append(Path(path)),
+    )
+    args = argparse.Namespace(dit=str(base), lora_weight=[str(adapter)])
+
+    models._prepare_inference_anima_identity(args)
+    models._prepare_inference_anima_identity(args)
+    assert validated == [adapter]
+
+    original_stat = adapter.stat()
+    replacement = tmp_path / "adapter-replacement.safetensors"
+    replacement.write_bytes(b"adapter-v2")
+    os.utime(replacement, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    replacement.replace(adapter)
+    os.utime(adapter, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    assert adapter.stat().st_size == original_stat.st_size
+    assert adapter.stat().st_mtime_ns == original_stat.st_mtime_ns
+    models._prepare_inference_anima_identity(args)
+    assert validated == [adapter, adapter]
+
+
 def test_merge_rejects_adapter_before_loading_tensor_payload(tmp_path, monkeypatch):
     from library.anima import merge
 
@@ -303,12 +382,15 @@ def test_anima_save_restores_public_unfused_checkpoint_keys(tmp_path):
         )
 
 
-def test_harness_attaches_base_identity_before_adapter_construction(monkeypatch):
+def test_harness_attaches_base_identity_before_adapter_construction(tmp_path, monkeypatch):
     from library.runtime import harness
 
     loaded: list[object] = []
+    inspected: list[Path] = []
+    monkeypatch.setenv("ANIMA_HOME", str(tmp_path))
 
-    def fake_inspect(_path):
+    def fake_inspect(path):
+        inspected.append(Path(path))
         return LAYOUT_40
 
     monkeypatch.setattr(
@@ -330,8 +412,9 @@ def test_harness_attaches_base_identity_before_adapter_construction(monkeypatch)
         lambda **_kwargs: loaded.append(DummyAnima()) or loaded[-1],
     )
     args = argparse.Namespace(device="cpu", dtype="fp16", attn_mode="torch")
-    bundle = harness.build_anima(args, dit_path="base.safetensors")
+    bundle = harness.build_anima(args, dit_path="models/base.safetensors")
 
+    assert inspected == [tmp_path / "models/base.safetensors"]
     assert bundle.anima.anima_base_sha256 == "e" * 64
 
 

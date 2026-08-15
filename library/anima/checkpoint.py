@@ -7,7 +7,6 @@ import os
 import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from library.io.safetensors import MemoryEfficientSafeOpen, get_split_weight_filenames
@@ -215,9 +214,7 @@ def inspect_anima_checkpoint(
     )
 
 
-@lru_cache(maxsize=32)
-def _sha256_file_cached(path: str, size: int, mtime_ns: int) -> bytes:
-    del size, mtime_ns
+def _sha256_file(path: str) -> bytes:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
         while chunk := handle.read(16 * 1024 * 1024):
@@ -233,8 +230,7 @@ def anima_checkpoint_sha256(
     files = resolve_checkpoint_files(path_or_files)
     digests = []
     for path in files:
-        stat = path.stat()
-        digests.append(_sha256_file_cached(str(path), stat.st_size, stat.st_mtime_ns))
+        digests.append(_sha256_file(str(path)))
     if len(digests) == 1:
         return digests[0].hex()
     combined = hashlib.sha256()

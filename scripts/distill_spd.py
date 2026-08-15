@@ -81,14 +81,6 @@ logging.basicConfig(
 def main():
     args = build_argparser().parse_args()
     c = resolve_config(args, load_toml(args.config))
-    preflight_config = {
-        **vars(c),
-        "method": "spd",
-        "network_module": "networks.lora_anima",
-    }
-    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
-        preflight_config, c.dit_path
-    )
 
     # Unpack the resolved frozen config to locals (the training loop below is
     # unchanged). The argparser + CLI/TOML precedence + schedule sanity now live
@@ -246,6 +238,15 @@ def main():
                 break
         logger.info("Dry run OK: stage-target construction + collation clean.")
         return
+
+    preflight_config = {
+        **vars(c),
+        "method": "spd",
+        "network_module": "networks.lora_anima",
+    }
+    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
+        preflight_config, c.dit_path
+    )
 
     # SNR gate: orthonormal-DCT per-coefficient power, radially binned — measured
     # not power-law-fitted (anime latents carry line-art HF a 2-param fit smooths

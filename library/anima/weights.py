@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 
 
 def _strip_net_prefix(key: str) -> str:
-    return key[len("net.") :] if key.startswith("net.") else key
+    for prefix in ("model.diffusion_model.", "net."):
+        if key.startswith(prefix):
+            return key[len(prefix) :]
+    return key
 
 
 # Match DiT blocks (blocks.N.) only, NOT LLM adapter blocks (llm_adapter.blocks.N.)

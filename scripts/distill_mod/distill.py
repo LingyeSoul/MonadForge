@@ -163,14 +163,6 @@ def _draw_gad_pair(
 def main():
     args = build_argparser().parse_args()
     cfg = resolve_config(args)
-    preflight_config = {
-        **vars(cfg),
-        "method": "distill_mod",
-        "network_module": "networks.lora_anima",
-    }
-    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
-        preflight_config, cfg.dit_path
-    )
 
     torch.manual_seed(cfg.seed)
     random.seed(cfg.seed)
@@ -201,6 +193,15 @@ def main():
                 )
         logger.info(f"Dry run OK: {total} batches, no collation errors.")
         return
+
+    preflight_config = {
+        **vars(cfg),
+        "method": "distill_mod",
+        "network_module": "networks.lora_anima",
+    }
+    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
+        preflight_config, cfg.dit_path
+    )
 
     device, dtype = resolve_device_dtype()
 

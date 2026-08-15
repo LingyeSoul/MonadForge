@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from pathlib import Path
 from typing import Optional, Dict
 
 import torch
@@ -20,6 +21,26 @@ from library.runtime.device import clean_memory_on_device
 logger = logging.getLogger(__name__)
 
 
+def _checkpoint_file_fingerprint(
+    path: str,
+) -> tuple[str, int | None, int | None, int | None, int | None, int | None]:
+    """Return a cheap cache key that changes when a checkpoint path is replaced."""
+
+    resolved = Path(path).expanduser().resolve()
+    try:
+        stat = resolved.stat()
+    except OSError:
+        return str(resolved), None, None, None, None, None
+    return (
+        str(resolved),
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        stat.st_dev,
+        stat.st_ino,
+    )
+
+
 def _prepare_inference_anima_identity(
     args: argparse.Namespace,
     adapter_paths: list[str] | tuple[str, ...] | None = None,
@@ -35,16 +56,20 @@ def _prepare_inference_anima_identity(
     if not dit:
         return None
     dit_path = str(resolve_under_home(dit))
+    cache_key = (
+        _checkpoint_file_fingerprint(dit_path),
+        tuple(_checkpoint_file_fingerprint(path) for path in adapters),
+    )
     cached = getattr(args, "_anima_inference_identity", None)
-    if cached is not None and cached[0] == dit_path and cached[1] == adapters:
-        return cached[2]
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
 
     layout = inspect_anima_checkpoint(dit_path)
     base_sha256 = anima_checkpoint_sha256(dit_path)
     apply_layout_to_args(args, layout, base_sha256)
     for adapter in adapters:
         validate_adapter_compatibility(adapter, layout, base_sha256)
-    args._anima_inference_identity = (dit_path, adapters, layout)
+    args._anima_inference_identity = (cache_key, layout)
     return layout
 
 

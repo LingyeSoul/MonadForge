@@ -542,6 +542,7 @@ const animaBlockerKeys: Record<string, string> = {
   'Hydra/router_source': 'cfgModelBlockerHydra',
   'Turbo step experts': 'cfgModelBlockerTurbo',
   train_llm_adapter: 'cfgModelBlockerTextEncoder',
+  'text encoder training': 'cfgModelBlockerTextEncoder',
   'text-encoder-only training': 'cfgModelBlockerTextEncoder',
 }
 

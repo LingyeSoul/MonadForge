@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from library.anima.checkpoint import (
     _BLOCK_SHAPES,
     _BLOCK_SUFFIXES,
     AnimaCheckpointLayout,
+    anima_checkpoint_sha256,
     inspect_anima_checkpoint,
 )
 from library.anima.compat import (
@@ -137,6 +139,50 @@ def test_inspector_never_reads_tensor_payload(tmp_path, monkeypatch):
     assert inspect_anima_checkpoint(checkpoint).num_blocks == 28
 
 
+def test_inspector_rejects_oversized_header_without_allocating(tmp_path):
+    checkpoint = tmp_path / "oversized.safetensors"
+    checkpoint.write_bytes(struct.pack("<Q", 2**40))
+
+    with pytest.raises(ValueError, match="header size exceeds"):
+        inspect_anima_checkpoint(checkpoint)
+
+
+def test_checkpoint_sha_rehashes_replaced_path_with_preserved_size_and_mtime(tmp_path):
+    checkpoint = tmp_path / "model.safetensors"
+    checkpoint.write_bytes(b"first-version")
+    original_stat = checkpoint.stat()
+    first_hash = anima_checkpoint_sha256(checkpoint)
+
+    replacement = tmp_path / "replacement.safetensors"
+    replacement.write_bytes(b"other-version")
+    os.utime(
+        replacement,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+    replacement.replace(checkpoint)
+    os.utime(
+        checkpoint,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+    )
+
+    assert checkpoint.stat().st_size == original_stat.st_size
+    assert checkpoint.stat().st_mtime_ns == original_stat.st_mtime_ns
+    assert anima_checkpoint_sha256(checkpoint) != first_hash
+
+
+@pytest.mark.parametrize("prefix", ["", "net.", "model.diffusion_model."])
+def test_loader_normalizes_every_inspected_checkpoint_prefix(prefix):
+    from library.anima.weights import _dit_concat_hook, _dit_rename_hook
+
+    direct_key = f"{prefix}blocks.0.mlp.layer1.weight"
+    assert _dit_rename_hook(direct_key) == "blocks.0.mlp.layer1.weight"
+
+    projection_key = f"{prefix}blocks.0.self_attn.q_proj.weight"
+    fused_key, tensor = _dit_concat_hook(projection_key, None)
+    assert fused_key == "blocks.0.self_attn.qkv_proj.weight"
+    assert tensor is None
+
+
 LAYOUT_28 = AnimaCheckpointLayout(
     "anima-2048-28", "anima-base-v1.0", 28, 2048, 16, "net."
 )
@@ -165,10 +211,11 @@ def test_40_block_profile_matrix():
     fp16 = compatibility_for_layout(_plain(base_compute="fp16"), LAYOUT_40)
     assert fp16.supported and fp16.profile == "plain_lora"
 
-    tlora = compatibility_for_layout(
+    svd_tlora = compatibility_for_layout(
         _plain(use_timestep_mask=True, down_init="weight_svd"), LAYOUT_40
     )
-    assert tlora.supported and tlora.profile == "tlora_ortho"
+    assert not svd_tlora.supported
+    assert svd_tlora.profile == "unsupported"
 
     explicit_ortho = compatibility_for_layout(
         _plain(use_timestep_mask=True, use_ortho=True), LAYOUT_40
@@ -181,6 +228,12 @@ def test_40_block_profile_matrix():
     assert not blocked.supported
     assert blocked.profile == "unsupported"
     assert {"REPA", "LoKr", "VR loss"}.issubset(blocked.blockers)
+
+    text_encoder = compatibility_for_layout(
+        _plain(network_train_unet_only=False), LAYOUT_40
+    )
+    assert not text_encoder.supported
+    assert "text encoder training" in text_encoder.blockers
 
 
 def test_28_block_keeps_existing_feature_matrix():

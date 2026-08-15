@@ -110,6 +110,7 @@ def build_anima(
         inspect_anima_checkpoint,
     )
     from library.anima.compat import validate_adapter_compatibility
+    from library.env import resolve_under_home
     from library.runtime.device import str_to_dtype
 
     device = torch.device(getattr(args, "device", "cuda"))
@@ -123,6 +124,7 @@ def build_anima(
             "build_anima: no DiT path. Pass dit_path= explicitly or expose "
             "--dit in your argparse."
         )
+    dit_path = str(resolve_under_home(dit_path))
 
     checkpoint_layout = inspect_anima_checkpoint(dit_path)
     base_sha256 = anima_checkpoint_sha256(dit_path)

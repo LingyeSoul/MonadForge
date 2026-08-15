@@ -117,6 +117,14 @@ def classify_anima_training(config: Any) -> AnimaCompatibility:
         if _bool(options.get(key, _get(config, key, False))):
             blockers.append(label)
 
+    if not _bool(
+        options.get(
+            "network_train_unet_only",
+            _get(config, "network_train_unet_only", True),
+        )
+    ):
+        blockers.append("text encoder training")
+
     try:
         if float(_get(config, "vr_loss_weight", 0.0) or 0.0) > 0:
             blockers.append("VR loss")
@@ -146,10 +154,7 @@ def classify_anima_training(config: Any) -> AnimaCompatibility:
     down_init = str(options.get("down_init", "kaiming") or "kaiming").lower()
     if not timestep_mask and not use_ortho and down_init == "kaiming":
         profile = "plain_lora"
-    elif timestep_mask and (
-        (not use_ortho and down_init == "weight_svd")
-        or (use_ortho and down_init == "kaiming")
-    ):
+    elif timestep_mask and use_ortho and down_init == "kaiming":
         profile = "tlora_ortho"
     else:
         profile = "unsupported"
