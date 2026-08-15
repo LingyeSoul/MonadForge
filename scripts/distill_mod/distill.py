@@ -44,6 +44,7 @@ from safetensors.torch import save_file  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from library.anima import weights as anima_utils  # noqa: E402
+from library.anima.compat import preflight_anima_training  # noqa: E402
 from library.anima.models import Anima  # noqa: E402
 from library.config.resolved import dataclass_tb_text  # noqa: E402
 from library.datasets.cache import make_cached_collate  # noqa: E402
@@ -193,6 +194,15 @@ def main():
         logger.info(f"Dry run OK: {total} batches, no collation errors.")
         return
 
+    preflight_config = {
+        **vars(cfg),
+        "method": "distill_mod",
+        "network_module": "networks.lora_anima",
+    }
+    checkpoint_layout, base_sha256, _compatibility = preflight_anima_training(
+        preflight_config, cfg.dit_path
+    )
+
     device, dtype = resolve_device_dtype()
 
     # Load the T5("") uncond sidecar (staged by `make distill-prep`).
@@ -210,7 +220,9 @@ def main():
         attn_mode=cfg.attn_mode,
         loading_device="cpu" if cfg.blocks_to_swap > 0 else device,
         dit_weight_dtype=dtype,
+        checkpoint_layout=checkpoint_layout,
     )
+    model.anima_base_sha256 = base_sha256
 
     # pooled_text_proj isn't in the pretrained checkpoint, so its params are
     # meta tensors after load_state_dict — materialize on CPU before any .to().

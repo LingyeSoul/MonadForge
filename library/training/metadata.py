@@ -14,6 +14,10 @@ SS_METADATA_KEY_NETWORK_MODULE = "ss_network_module"
 SS_METADATA_KEY_NETWORK_DIM = "ss_network_dim"
 SS_METADATA_KEY_NETWORK_ALPHA = "ss_network_alpha"
 SS_METADATA_KEY_NETWORK_ARGS = "ss_network_args"
+SS_METADATA_KEY_ANIMA_ARCH = "ss_anima_arch"
+SS_METADATA_KEY_ANIMA_NUM_BLOCKS = "ss_anima_num_blocks"
+SS_METADATA_KEY_ANIMA_MODEL_CHANNELS = "ss_anima_model_channels"
+SS_METADATA_KEY_BASE_MODEL_SHA256 = "ss_new_sd_model_hash"
 
 SS_METADATA_MINIMUM_KEYS = [
     SS_METADATA_KEY_V2,
@@ -22,6 +26,10 @@ SS_METADATA_MINIMUM_KEYS = [
     SS_METADATA_KEY_NETWORK_DIM,
     SS_METADATA_KEY_NETWORK_ALPHA,
     SS_METADATA_KEY_NETWORK_ARGS,
+    SS_METADATA_KEY_ANIMA_ARCH,
+    SS_METADATA_KEY_ANIMA_NUM_BLOCKS,
+    SS_METADATA_KEY_ANIMA_MODEL_CHANNELS,
+    SS_METADATA_KEY_BASE_MODEL_SHA256,
 ]
 
 
@@ -303,7 +311,9 @@ def add_model_hash_metadata(metadata: dict[str, Any], args) -> None:
         sd_model_name = args.pretrained_model_name_or_path
         if os.path.exists(sd_model_name):
             metadata["ss_sd_model_hash"] = model_hash(sd_model_name)
-            metadata["ss_new_sd_model_hash"] = calculate_sha256(sd_model_name)
+            metadata["ss_new_sd_model_hash"] = getattr(
+                args, "anima_base_sha256", None
+            ) or calculate_sha256(sd_model_name)
             sd_model_name = os.path.basename(sd_model_name)
         metadata["ss_sd_model_name"] = sd_model_name
 

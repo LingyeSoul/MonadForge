@@ -7,6 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from library.anima.compat import validate_resume_model_signature
 from library.io.output_layout import (
     atomic_replace_dir,
     atomic_write_json,
@@ -640,6 +641,13 @@ class CheckpointSaver:
                         "resume state dataset signature mismatch: "
                         f"state={actual_dataset}, expected={expected_dataset}"
                     )
+                validate_resume_model_signature(
+                    data,
+                    expected_signature=getattr(
+                        self.args, "anima_model_signature", None
+                    ),
+                    num_blocks=getattr(self.args, "anima_num_blocks", None),
+                )
                 self.loaded_train_state = data
                 self.steps_from_state = data["global_step"]
                 logger.info(f"load train state from {train_state_file}: {data}")
@@ -741,6 +749,19 @@ class CheckpointSaver:
                 continue
             if expected_dataset and ckpt_data.get("dataset_signature") not in (None, expected_dataset):
                 logger.warning("ignoring resume state with mismatched dataset signature: %s", state_dir)
+                continue
+            try:
+                validate_resume_model_signature(
+                    ckpt_data,
+                    expected_signature=getattr(args, "anima_model_signature", None),
+                    num_blocks=getattr(args, "anima_num_blocks", None),
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "ignoring incompatible Anima resume state %s: %s",
+                    state_dir,
+                    exc,
+                )
                 continue
             eligible.append((ckpt_step, state_priority, root_priority, state_dir))
 

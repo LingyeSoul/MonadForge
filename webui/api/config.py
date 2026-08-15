@@ -152,6 +152,8 @@ class PrelaunchCheckResponse(BaseModel):
     checkpoint: dict | None = None
     requires_pe: bool = False
     preprocess_run: str | None = None
+    model_layout: dict
+    compatibility: dict
 
 
 class WipeCheckpointRequest(BaseModel):

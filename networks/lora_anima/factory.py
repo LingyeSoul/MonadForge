@@ -5,6 +5,7 @@
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -12,7 +13,7 @@ import torch
 
 from library.log import setup_logging
 from networks import NETWORK_REGISTRY, resolve_network_spec
-from networks.lora_anima.config import LoRANetworkCfg
+from networks.lora_anima.config import _DEFAULT_EXCLUDE, LoRANetworkCfg, _as_str_list
 from networks.lora_anima.loading import (
     _normalize_native_lokr_keys,
     _refuse_split_chimera_keys,
@@ -35,6 +36,56 @@ logger = logging.getLogger(__name__)
 _CHANNEL_STATS_PATH = (
     Path(__file__).resolve().parent.parent / "calibration" / "channel_stats.safetensors"
 )
+_CHANNEL_STATS_40_PATH = _CHANNEL_STATS_PATH.with_name(
+    "channel_stats_anima40.safetensors"
+)
+_STATS_BLOCK_RE = re.compile(r"^lora_unet_blocks_(\d+)_")
+_TARGET_BLOCK_RE = re.compile(r"blocks\.(\d+)\.")
+
+
+def _channel_stats_target_filter(kwargs: dict[str, object]):
+    """Build the same name filters used by ``LoRANetwork.create_modules``."""
+
+    exclude_patterns = _as_str_list(kwargs.get("exclude_patterns")) or []
+    exclude_patterns.append(_DEFAULT_EXCLUDE)
+    include_patterns = _as_str_list(kwargs.get("include_patterns")) or []
+
+    def compile_patterns(patterns: list[str]) -> list[re.Pattern]:
+        compiled = []
+        for pattern in patterns:
+            try:
+                compiled.append(re.compile(pattern))
+            except re.error as exc:
+                logger.error("Invalid pattern %r: %s", pattern, exc)
+        return compiled
+
+    exclude_re_patterns = compile_patterns(exclude_patterns)
+    include_re_patterns = compile_patterns(include_patterns)
+    layer_start = kwargs.get("layer_start")
+    layer_start = int(layer_start) if layer_start is not None else None
+    layer_end = kwargs.get("layer_end")
+    layer_end = int(layer_end) if layer_end is not None else None
+
+    def is_target(original_name: str) -> bool:
+        excluded = any(
+            pattern.fullmatch(original_name) for pattern in exclude_re_patterns
+        )
+        included = any(
+            pattern.fullmatch(original_name) for pattern in include_re_patterns
+        )
+        if excluded and not included:
+            return False
+
+        block_match = _TARGET_BLOCK_RE.match(original_name)
+        if block_match:
+            block_idx = int(block_match.group(1))
+            if layer_start is not None and block_idx < layer_start:
+                return False
+            if layer_end is not None and block_idx >= layer_end:
+                return False
+        return True
+
+    return is_target
 
 
 def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor], stem: str = "lokr") -> int:
@@ -118,6 +169,7 @@ def _infer_lokr_factor(state_dict: Dict[str, torch.Tensor], stem: str = "lokr") 
 
 def _load_channel_scales(
     kwargs: Dict[str, object],
+    unet=None,
 ) -> Optional[Dict[str, torch.Tensor]]:
     """Load per-channel input pre-scaling stats, gated on ``channel_scaling_alpha``.
 
@@ -136,16 +188,94 @@ def _load_channel_scales(
     if channel_scaling_alpha == 0.0:
         return None
 
-    if not _CHANNEL_STATS_PATH.is_file():
+    num_blocks = int(getattr(unet, "num_blocks", 28) or 28)
+    stats_path = _CHANNEL_STATS_40_PATH if num_blocks == 40 else _CHANNEL_STATS_PATH
+    if not stats_path.is_file():
         raise FileNotFoundError(
-            f"vendored channel stats missing at {_CHANNEL_STATS_PATH}. "
+            f"vendored channel stats missing at {stats_path}. "
             f"Regenerate with:\n"
             f"  python scripts/calibration/analyze_lora_input_channels.py "
-            f"--per_artist --dump_channel_stats {_CHANNEL_STATS_PATH}"
+            f"--per_artist --dump_channel_stats {stats_path}"
         )
     from safetensors.torch import load_file as _load_channel_stats_file
 
-    raw_stats = _load_channel_stats_file(str(_CHANNEL_STATS_PATH))
+    if num_blocks == 40:
+        from safetensors import safe_open
+
+        with safe_open(str(stats_path), framework="pt") as handle:
+            metadata = dict(handle.metadata() or {})
+        expected_metadata = {
+            "anima_stats_schema": "1",
+            "anima_arch": "anima-2048-40",
+            "anima_num_blocks": "40",
+            "anima_model_channels": "2048",
+        }
+        mismatches = [
+            f"{key}={metadata.get(key)!r} (expected {value!r})"
+            for key, value in expected_metadata.items()
+            if metadata.get(key) != value
+        ]
+        source_hash = metadata.get("anima_base_sha256")
+        current_hash = getattr(unet, "anima_base_sha256", None)
+        if not source_hash:
+            mismatches.append("anima_base_sha256 is missing")
+        elif not current_hash:
+            mismatches.append("current DiT is missing anima_base_sha256 identity")
+        elif source_hash.lower() != str(current_hash).lower():
+            mismatches.append(
+                f"anima_base_sha256={source_hash!r} (expected {current_hash!r})"
+            )
+        if mismatches:
+            raise ValueError(
+                f"invalid 40-block channel stats metadata in {stats_path}: "
+                + "; ".join(mismatches)
+            )
+
+    raw_stats = _load_channel_stats_file(str(stats_path))
+    if num_blocks == 40:
+        block_indices = {
+            int(match.group(1))
+            for key in raw_stats
+            if (match := _STATS_BLOCK_RE.match(key)) is not None
+        }
+        if block_indices != set(range(40)):
+            raise ValueError(
+                "40-block channel stats must cover exactly blocks 0..39; "
+                f"found {sorted(block_indices)}"
+            )
+
+        expected_shapes: dict[str, int] = {}
+        is_target = _channel_stats_target_filter(kwargs)
+        target_classes = set(LoRANetwork.ANIMA_TARGET_REPLACE_MODULE)
+        for name, module in unet.named_modules():
+            if module.__class__.__name__ not in target_classes:
+                continue
+            for child_name, child in module.named_modules():
+                if not isinstance(child, torch.nn.Linear):
+                    continue
+                original_name = ((name + ".") if name else "") + child_name
+                original_name = original_name.replace("_orig_mod.", "")
+                if not is_target(original_name):
+                    continue
+                lora_name = "lora_unet_" + original_name.replace(".", "_")
+                expected_shapes[lora_name] = int(child.in_features)
+        missing = sorted(set(expected_shapes) - set(raw_stats))
+        malformed = sorted(
+            key
+            for key, in_features in expected_shapes.items()
+            if key in raw_stats
+            and (
+                raw_stats[key].ndim != 1
+                or raw_stats[key].numel() != in_features
+                or not torch.isfinite(raw_stats[key]).all()
+            )
+        )
+        if missing or malformed:
+            raise ValueError(
+                "40-block channel stats do not cover the actual LoRA targets: "
+                f"missing={missing[:5]}, malformed={malformed[:5]}"
+            )
+
     out: Dict[str, torch.Tensor] = {}
     for _lora_name, _mean_abs in raw_stats.items():
         _s = _mean_abs.float().clamp_min(1e-6).pow(channel_scaling_alpha)
@@ -153,7 +283,7 @@ def _load_channel_scales(
         out[_lora_name] = _s
     logger.info(
         f"channel_scaling: alpha={channel_scaling_alpha}, "
-        f"stats={_CHANNEL_STATS_PATH.name} ({len(out)} calibrated modules)"
+        f"stats={stats_path.name} ({len(out)} calibrated modules)"
     )
     return out
 
@@ -183,7 +313,7 @@ def create_network(
             "and MLP intermediates (compile path unchanged)"
         )
 
-    channel_scales_dict = _load_channel_scales(kwargs)
+    channel_scales_dict = _load_channel_scales(kwargs, unet)
 
     # LoKR/LoHa + channel_scaling is incompatible: LoKR's Kronecker
     # factorization can't absorb a full-length channel_scale (lokr.py:126),

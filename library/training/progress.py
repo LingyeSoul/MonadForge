@@ -189,6 +189,11 @@ class ProgressSink:
         sampling_enabled: bool = False,
         config_signature: Optional[str] = None,
         dataset_signature: Optional[str] = None,
+        anima_arch: Optional[str] = None,
+        anima_variant: Optional[str] = None,
+        anima_num_blocks: Optional[int] = None,
+        anima_model_channels: Optional[int] = None,
+        anima_base_sha256: Optional[str] = None,
     ) -> None:
         """Open the file fresh (truncating any stale stream) and write the
         opening event.
@@ -217,6 +222,15 @@ class ProgressSink:
             extra["config_signature"] = config_signature
         if dataset_signature is not None:
             extra["dataset_signature"] = dataset_signature
+        for key, value in {
+            "anima_arch": anima_arch,
+            "anima_variant": anima_variant,
+            "anima_num_blocks": anima_num_blocks,
+            "anima_model_channels": anima_model_channels,
+            "anima_base_sha256": anima_base_sha256,
+        }.items():
+            if value is not None:
+                extra[key] = value
         self._emit(
             "run_start",
             run=self._run,

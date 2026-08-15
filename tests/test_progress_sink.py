@@ -49,6 +49,11 @@ def test_full_lifecycle_schema(tmp_path):
         pid=4242,
         config_signature="cfg-1",
         dataset_signature="data-1",
+        anima_arch="anima-2048-40",
+        anima_variant="anima-2.9b-preview-v1",
+        anima_num_blocks=40,
+        anima_model_channels=2048,
+        anima_base_sha256="a" * 64,
     )
     sink.log({"loss": 0.5, "lr": 1e-4}, global_step=10, epoch=1)
     sink.log({"loss/val_average": 0.03, "loss/val_cmmd": 0.03}, global_step=10, epoch=1)
@@ -64,6 +69,11 @@ def test_full_lifecycle_schema(tmp_path):
     assert start["total_steps"] == 100 and start["pid"] == 4242
     assert start["config_signature"] == "cfg-1"
     assert start["dataset_signature"] == "data-1"
+    assert start["anima_arch"] == "anima-2048-40"
+    assert start["anima_variant"] == "anima-2.9b-preview-v1"
+    assert start["anima_num_blocks"] == 40
+    assert start["anima_model_channels"] == 2048
+    assert start["anima_base_sha256"] == "a" * 64
 
     step = evs[1]
     assert step["global_step"] == 10 and step["epoch"] == 1 and step["loss"] == 0.5
