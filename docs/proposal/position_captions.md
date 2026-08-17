@@ -192,6 +192,39 @@ A/B (Phase 3), never as a default until the A/B clears.
   +59/−3. Full mechanism table, plus the two refuted mask-quality gates and the
   measured-harmful containment rule, in
   [`docs/experimental/position_captions.md`](../experimental/position_captions.md#triaging-the-skips-2026-08-17).
+
+  Three fixes landed 2026-08-17 on top of that sweep, all found by reading the
+  report against the exported crops (`ama_mitsuki`, whose sheets are a full body
+  next to headless close-up panels). Whole-corpus net: proposals 373 → **394**
+  (404 with the opt-in part prompts), identity contradictions 520 → **0**:
+
+  - **Comic pages are a layout, not a subject count.** `multiple views` was
+    special-cased from the start; comic panels are the same thing and were not.
+    A `1girl, 2koma` page draws the same girl once per panel, so 22 of the 26
+    comic-layout images failed the prefilter as `single-subject`. `page number`
+    is excluded — it marks a scanned art-book page, not a layout. The waiver
+    also removed the count backstop, letting one girl detected twice through
+    (`kase_daiki/11645055`, an overlapping pair at IoMin 0.99); `Nkoma` names
+    the panel count, so `caption_panel_ceiling` bounds detections at
+    `panels × (girls + boys)`. That ceiling changed exactly one corpus row.
+
+  - **Identity gate** (default on). `select` emitted the hair/eye/hair-length
+    winner with no check against the caption, and the discriminative rule then
+    promoted whichever value was *wrong* — a value every crop agrees on is
+    suppressed, so an outlier is what survives. 520 of 1600 identity clause tags
+    (33%) contradicted the caption; 78% of single-character `multiple views`
+    sheets bound conflicting hair or eye colors to views of the same girl. Now
+    **0** and **16%**, at zero cost in proposals (total clause tags rose, 7173 →
+    7255 — a blocked slot refills from the ranked tail). `--ungated_identity`
+    reverts. **This is not v2**: it declines to *emit* a contradicting clause
+    tag, and never removes anything from the flat bag.
+  - **Body-part detection fallback** (`--part_prompts`, opt-in). Recovers
+    headless panels the `girl` prompt cannot see at any threshold:
+    `too-few-instances` 27 → 18, proposals 373 → 382. Required three part-typed
+    rules (containment on, no mask-blanking, no identity groups) plus a top-up
+    cap; the win is real but modest, and 1 of 3 spot-checked recoveries is still
+    poor. Details and the failure analysis in the experimental doc.
+
   Remaining exit criterion: spot-check
   ~30 proposed clauses from `post_image_dataset/captions/position/report.json`
   (weighted toward grids, overlapping pairs, N≥4) against the exported crops —

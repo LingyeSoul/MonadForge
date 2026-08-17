@@ -29,10 +29,16 @@ Two systematic errors Phase-0 probe B found are fixed here mechanically:
   threshold. Note the threshold has to reach the *detector* — SAM3 applies its
   own confidence floor before returning boxes, so post-filtering the result at a
   lower number is a no-op. See ``build_detect_fn`` in the CLI.
+* **headless panels** — a close-up of a hip or a backside is a bindable panel
+  that the ``girl`` prompt cannot see at *any* threshold. Under the same
+  undershoot condition, opt-in ``part_prompts`` run a second grounding pass over
+  the already-encoded image and their boxes are merged in without displacing a
+  subject. Off by default (``part_prompts=()``).
 
 The gate is the number of **detected** instances (≥2), never the girls-count
-tag: a ``1girl, multiple views`` outfit sheet is four bindable subjects and is
-handled by exactly the same machinery.
+tag: a ``1girl, multiple views`` outfit sheet is four bindable subjects, a
+``1girl, 2koma`` comic page is two, and both are handled by exactly the same
+machinery.
 """
 
 from __future__ import annotations
@@ -114,6 +120,26 @@ SUBJECT_GROUPS = frozenset(
 # disambiguate a subject. Everything else follows, ranked.
 _PRIORITY_GROUPS = ("hair_color", "eye_color", "hair_length", "hairstyle")
 
+# The groups you read off a **face**. A crop without a head in it has no
+# evidence for any of them, so they are suppressed on a body-part crop
+# (``allow_identity=False``).
+_IDENTITY_GROUPS = frozenset({"hair_color", "eye_color", "hair_length", "hairstyle"})
+
+# Groups where the flat bag outranks the crop tagger. Once the caption names a
+# hair color, a clause may only pick from the colors it named — a crop claiming
+# a value the curated caption never listed is a hallucination, and
+# discriminative-only *promotes* exactly those (a value shared by every crop is
+# suppressed, so a wrong outlier is what survives). Measured over the first
+# full-corpus dry run: 520 of 1600 identity clause tags claimed a value the
+# caption contradicted, 33% of the total.
+#
+# ``hairstyle`` is deliberately NOT gated even though it is a priority group:
+# a crop legitimately reveals a ``hair bun`` or ``sidelocks`` the booru caption
+# never bothered to tag, and unlike a color it does not contradict what is
+# there. ``body_shape`` and ``fashion_style`` are left out for the same reason —
+# a per-subject value the bag omitted is real information, not a contradiction.
+_BAG_GATED_GROUPS = ("hair_color", "eye_color", "hair_length")
+
 _GIRLS_COUNT_RE = re.compile(r"^(\d+)girls?$")
 _BOYS_COUNT_RE = re.compile(r"^(\d+)boys?$")
 # ``6+girls`` is an open-ended crowd tag, not the number six — matching it
@@ -121,7 +147,39 @@ _BOYS_COUNT_RE = re.compile(r"^(\d+)boys?$")
 # unknown, trust detection.
 _OPEN_GIRLS_RE = re.compile(r"^\d+\+girls?$")
 _OPEN_BOYS_RE = re.compile(r"^\d+\+boys?$")
+# ``2koma`` / ``4koma`` name the panel count. Deliberately anchored, so the
+# open-ended ``multiple 4koma`` does not match and stays unbounded.
+_KOMA_COUNT_RE = re.compile(r"^(\d+)koma$")
 _MULTI_VIEW_TAGS = frozenset({"multiple views", "multiple_views"})
+
+# Panel layouts: a comic page draws the same character once per panel, so like
+# ``multiple views`` its girls-count counts *characters*, not bindable subjects
+# — ``1girl, 2koma`` is routinely two. Without this a comic page fails the
+# candidate prefilter as ``single-subject``: 22 of the corpus's 26 comic pages
+# that carry no ``multiple views`` tag, including clean vertical 2-panel pages
+# whose panels differ exactly the way clauses are good at.
+#
+# ``page number`` is deliberately **excluded** despite tagging 15 more images.
+# It marks a scanned art-book page, not a layout — the images it catches are
+# single illustrations with a number in the margin (``mignon/10831765``), so it
+# is a false signal, not a weak one.
+_PANEL_LAYOUT_TAGS = frozenset(
+    {
+        "comic",
+        "silent comic",
+        "silent_comic",
+        "sequential",
+        "2koma",
+        "3koma",
+        "4koma",
+        "multiple 4koma",
+        "multiple_4koma",
+    }
+)
+
+# Every layout tag that decouples the girls-count from the bindable-subject
+# count. Both branches of the prefilter and the count check read this.
+_LAYOUT_TAGS = _MULTI_VIEW_TAGS | _PANEL_LAYOUT_TAGS
 
 
 @dataclass(frozen=True)
@@ -172,6 +230,8 @@ class ClauseVocabulary:
         name_confidence: float,
         allow_unlisted_names: bool,
         discriminative_only: bool = True,
+        allow_identity: bool = True,
+        bag_gated_identity: bool = True,
     ) -> list[str]:
         """Clause tags for one crop, ordered most-disambiguating first.
 
@@ -189,11 +249,33 @@ class ClauseVocabulary:
         swimsuit that actually distinguishes the views. Those shared attributes
         are already in the flat bag — v1 is additive and never removes them —
         so nothing is lost by leaving them there.
+
+        ``allow_identity=False`` suppresses the hair/eye/hairstyle groups
+        entirely. It is set for a **body-part crop**, which has no head in it:
+        those groups have no evidence to read, the tagger emits a guess anyway,
+        and discriminative-only then *promotes* the guess precisely because it
+        disagrees with the full-body crop. Measured on ama_mitsuki, every part
+        crop came back with a hair color and an eye color, all invented.
+
+        ``bag_gated_identity`` (on by default) applies the milder form of the
+        same rule to *every* crop: for a group in ``_BAG_GATED_GROUPS`` the flat
+        bag outranks the tagger, so a clause carries a hair color the caption
+        named or none at all. See that constant for the measurement.
         """
         out: list[str] = []
         seen: set[str] = set()
         taken_groups: set[str] = set()
         blocked = shared if discriminative_only else frozenset()
+        # Which identity groups the caption has already spoken for. A crop may
+        # only pick from those members; see ``bag_gated`` in ``add``.
+        bag_members = (
+            {
+                group: {t for t in flat_bag if self.group_of(t) == group}
+                for group in _BAG_GATED_GROUPS
+            }
+            if bag_gated_identity
+            else {}
+        )
 
         def add(tag: str) -> bool:
             if not tag or tag in seen or tag in blocked:
@@ -201,6 +283,10 @@ class ClauseVocabulary:
             group = self.group_of(tag)
             if group in self.exclusive_groups and group in taken_groups:
                 return False  # one hair color / one eye color per subject
+            if not allow_identity and group in _IDENTITY_GROUPS:
+                return False  # no head in this crop — nothing to read it off
+            if bag_members.get(group) and tag not in flat_bag:
+                return False  # the caption named this attribute; it wins
             seen.add(tag)
             if group:
                 taken_groups.add(group)
@@ -298,15 +384,19 @@ def caption_subject_count(caption: str) -> int | None:
     """How many bindable subjects the caption itself claims, if it says.
 
     ``Ngirls`` gives a number. ``None`` means "more than one, count unknown" —
-    the count-consistency check then trusts detection instead of skipping. A
-    ``multiple views`` sheet is always ``None`` even when it also carries a
-    girls-count: the count tags how many *characters* are drawn, while each view
-    is its own bindable subject (``1girl, multiple views`` is routinely four).
+    the count-consistency check then trusts detection instead of skipping.
+
+    A **layout** tag (``_LAYOUT_TAGS``: ``multiple views`` or a comic-panel tag)
+    always forces ``None`` even when the caption also carries a girls-count,
+    because the count tags how many *characters* are drawn while each view or
+    panel is its own bindable subject — ``1girl, multiple views`` is routinely
+    four, ``1girl, 2koma`` is two.
+
     ``multiple girls`` and the open-ended ``N+girls`` crowd tag are ``None`` too
     — an exact match against "six or more" can only ever fail.
     """
     tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
-    if tags & _MULTI_VIEW_TAGS:
+    if tags & _LAYOUT_TAGS:
         return None
     counts = [int(m.group(1)) for t in tags if (m := _GIRLS_COUNT_RE.match(t))]
     if not counts and (
@@ -314,6 +404,41 @@ def caption_subject_count(caption: str) -> int | None:
     ):
         return None
     return max(counts) if counts else 0
+
+
+def caption_panel_ceiling(caption: str) -> int | None:
+    """Most bindable subjects an ``Nkoma`` page can hold, or ``None`` if unbounded.
+
+    A layout tag makes :func:`caption_subject_count` return ``None`` — the
+    girls-count no longer bounds anything, because the same girl is drawn once
+    per panel. That waives the count check entirely, and on a comic page the
+    check is exactly what used to catch a subject detected twice:
+    ``kase_daiki/11645055`` is a 2-panel page with one girl per panel that SAM3
+    returns **three** boxes for, the bottom girl split into an overlapping pair
+    at IoMin 0.99 with a shredded mask on the second.
+
+    ``Nkoma`` names the panel count, so the ceiling is
+    ``panels × (girls + boys)`` — every panel drawing every character at once.
+    That is generous by construction and still catches the split: a
+    ``1girl, 2koma`` page tops out at 2. Plain ``comic`` carries no panel count
+    and stays unbounded, as does ``multiple views``.
+
+    ``None`` whenever any term is unknown (no koma tag, or an open-ended crowd
+    count) — an unbounded check can only produce false skips.
+    """
+    tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
+    panels = [int(m.group(1)) for t in tags if (m := _KOMA_COUNT_RE.match(t))]
+    if not panels:
+        return None
+    girls = [int(m.group(1)) for t in tags if (m := _GIRLS_COUNT_RE.match(t))]
+    if not girls and ("multiple girls" in tags or any(map(_OPEN_GIRLS_RE.match, tags))):
+        return None
+    boys = caption_boy_count(caption)
+    if boys is None:
+        return None
+    # A page with no counted character at all still draws somebody per panel.
+    per_panel = max(max(girls, default=0) + boys, 1)
+    return max(panels) * per_panel
 
 
 def caption_boy_count(caption: str) -> int | None:
@@ -339,6 +464,8 @@ def is_candidate(caption: str) -> tuple[bool, str]:
     tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
     if tags & _MULTI_VIEW_TAGS:
         return True, "multiple-views"
+    if tags & _PANEL_LAYOUT_TAGS:
+        return True, "panel-layout"
     expected = caption_subject_count(caption)
     if expected is None or expected > 1:
         return True, "multi-girl"
@@ -352,11 +479,17 @@ def is_candidate(caption: str) -> tuple[bool, str]:
 
 @dataclass(frozen=True)
 class Detection:
-    """One detected subject: box in pixels, score, and optional instance mask."""
+    """One detected subject: box in pixels, score, and optional instance mask.
+
+    ``source`` records which detector pass produced the box — ``"subject"`` for
+    the ``girl`` prompt, the part prompt itself for a body-part fallback box.
+    Carried into the report so a reviewer can tell the two apart.
+    """
 
     box: tuple[float, float, float, float]
     score: float
     mask: np.ndarray | None = None
+    source: str = "subject"
 
 
 def box_iou(a: Sequence[float], b: Sequence[float]) -> float:
@@ -419,6 +552,44 @@ def dedupe_detections(
     return keep
 
 
+def merge_part_detections(
+    subjects: Sequence[Detection],
+    parts: Iterable[Detection],
+    *,
+    iou_threshold: float,
+    containment_threshold: float,
+) -> list[Detection]:
+    """Add body-part boxes that the subject prompt missed, never displacing one.
+
+    The failure this exists for: a sheet whose panels are headless close-ups of
+    a hip / crotch / backside next to one small full body. SAM3's ``girl``
+    prompt sees only the full body, so the image dies on ``too-few-instances``
+    with its two most attribute-dense panels never tagged.
+
+    Containment is applied here even though :func:`dedupe_detections` leaves it
+    off by default, and the asymmetry is the point. That rule is off globally
+    because a *subject* nested in another subject is routinely real (one girl in
+    front of another). A **part** nested in a subject never is — an ``ass`` box
+    inside a girl box is that same girl's backside, a second position for a
+    subject that already has one. Typing the rule to the part pass gets the
+    duplicate suppression without the 32 real subjects the global rule cost.
+
+    Subjects are kept unconditionally and win every tie; parts are considered
+    highest-score first and tested against everything kept so far, so two part
+    boxes on the same panel collapse to one.
+    """
+    keep = list(subjects)
+    for det in sorted(parts, key=lambda d: -d.score):
+        if any(
+            box_iou(det.box, k.box) >= iou_threshold
+            or box_containment(det.box, k.box) >= containment_threshold
+            for k in keep
+        ):
+            continue
+        keep.append(det)
+    return keep
+
+
 def crop_instance(
     image: Image.Image,
     det: Detection,
@@ -466,6 +637,7 @@ class InstanceProposal:
     score: float
     tags: list[str]
     crop: str | None = None
+    source: str = "subject"
 
 
 @dataclass
@@ -508,6 +680,13 @@ class PositionCaptionOptions:
     prompt: str = "girl"
     score_threshold: float = 0.5
     retry_score_threshold: float = 0.35
+    # Body-part fallback: extra SAM3 prompts run *only* when the subject prompt
+    # undershoots, to recover headless close-up panels. Empty tuple = off, which
+    # is the default — on a sheet the subject prompt already resolved, part
+    # boxes only add nested duplicates. See ``merge_part_detections``.
+    part_prompts: tuple[str, ...] = ()
+    part_score_threshold: float = 0.5
+    part_containment_threshold: float = 0.7
     iou_threshold: float = 0.65
     # Containment suppression is OFF by default: measured, it costs far more
     # than it buys (see ``box_containment``).
@@ -523,6 +702,7 @@ class PositionCaptionOptions:
     max_instances: int = 8
     strict_count: bool = True
     discriminative_only: bool = True
+    bag_gated_identity: bool = True
 
 
 def detect_subjects(
@@ -530,13 +710,21 @@ def detect_subjects(
     detect_fn: Callable[[Image.Image, float], list[Detection]],
     options: PositionCaptionOptions,
     expected: int | None,
+    part_detect_fn: Callable[[Image.Image, str, float], list[Detection]] | None = None,
 ) -> list[Detection]:
-    """Detect + dedupe, with the low-threshold retry when the count falls short.
+    """Detect + dedupe, with two escalations when the count falls short.
 
-    ``detect_fn(image, score_threshold)`` returns raw detections. The retry only
-    fires when we detected fewer subjects than we have reason to expect — an
-    unconditional low threshold would flood grids with duplicate
-    part-detections.
+    ``detect_fn(image, score_threshold)`` returns raw detections. Neither
+    escalation is unconditional — they fire only when we detected fewer subjects
+    than we have reason to expect, because on an image the subject prompt
+    already resolved they can only add duplicates:
+
+    1. **Lower the score threshold** — recovers an extreme close-up scored under
+       the 0.5 gate.
+    2. **Body-part prompts** (``part_detect_fn(image, prompt, threshold)``, when
+       supplied) — recovers a panel the subject prompt cannot see at any
+       threshold because it has no head. Merged via
+       :func:`merge_part_detections`, which never displaces a subject box.
 
     The target is ``expected or min_instances``, **not** ``expected`` alone: a
     ``multiple views`` sheet reports ``expected=None`` on purpose (the count tag
@@ -559,7 +747,26 @@ def detect_subjects(
         retry = run(options.retry_score_threshold)
         if len(retry) > len(dets):
             dets = retry
-    return dets
+
+    if len(dets) >= target or part_detect_fn is None or not options.part_prompts:
+        return dets
+
+    parts: list[Detection] = []
+    for prompt in options.part_prompts:
+        parts.extend(part_detect_fn(image, prompt, options.part_score_threshold))
+    parts = drop_small_boxes(parts, image.size, options.min_area_frac)
+    merged = merge_part_detections(
+        dets,
+        parts,
+        iou_threshold=options.iou_threshold,
+        containment_threshold=options.part_containment_threshold,
+    )
+    # Top up to the target, no further. A part prompt is a looser concept than
+    # ``girl`` and fragments: on ama_mitsuki/6040950 ``thighs`` returned four
+    # boxes for two panels, which would have bound five clauses to a three-panel
+    # image. Taking only the highest-scoring boxes needed to clear the gate
+    # bounds that, and an image the part pass cannot fill still skips.
+    return merged[: max(target, len(dets))]
 
 
 def drop_small_boxes(
@@ -588,6 +795,7 @@ def propose_for_image(
     vocabulary: ClauseVocabulary,
     options: PositionCaptionOptions,
     crop_sink: Callable[[int, str, Image.Image], str] | None = None,
+    part_detect_fn: Callable[[Image.Image, str, float], list[Detection]] | None = None,
 ) -> ImageProposal:
     """Build the clause proposal for one image. Never writes any caption."""
     parsed = parse_caption(caption)
@@ -602,10 +810,14 @@ def propose_for_image(
         original=caption,
     )
 
-    dets = detect_subjects(image, detect_fn, options, expected)
+    dets = detect_subjects(image, detect_fn, options, expected, part_detect_fn)
     proposal.detected = len(dets)
     proposal.detections = [
-        {"box": [int(v) for v in d.box], "score": round(float(d.score), 3)}
+        {
+            "box": [int(v) for v in d.box],
+            "score": round(float(d.score), 3),
+            "source": d.source,
+        }
         for d in dets
     ]
     if len(dets) < options.min_instances:
@@ -627,6 +839,14 @@ def propose_for_image(
         if len(dets) < expected or (upper is not None and len(dets) > upper):
             proposal.status = "skip:count-mismatch"
             return proposal
+    # A layout tag waives the check above (``expected`` is None by design), which
+    # leaves a comic page with no backstop against one subject detected twice.
+    # An ``Nkoma`` tag names the panel count and restores a generous ceiling.
+    if options.strict_count and not expected:
+        ceiling = caption_panel_ceiling(caption)
+        if ceiling is not None and len(dets) > ceiling:
+            proposal.status = "skip:count-mismatch"
+            return proposal
 
     order = ordered_indices([d.box for d in dets], image.size, row_tol=options.row_tol)
     dets = [dets[i] for i in order]
@@ -634,8 +854,18 @@ def propose_for_image(
         [d.box for d in dets], image.size, row_tol=options.row_tol
     )
 
+    # Mask-blanking is a *subject*-crop fix (it stops a neighbor's hair bleeding
+    # into the padded bbox). On a part box the mask IS the part, so blanking
+    # deletes the panel's content — the torn jeans, the pantyhose, the panties,
+    # i.e. exactly the tags the part pass exists to recover — and hands the
+    # tagger a bare skin blob. Part crops therefore take the plain padded bbox.
     crops = [
-        crop_instance(image, d, pad=options.pad, blank=options.blank_crops)
+        crop_instance(
+            image,
+            d,
+            pad=options.pad,
+            blank=options.blank_crops and d.source == "subject",
+        )
         for d in dets
     ]
     predictions = [tag_fn(crop) for crop in crops]
@@ -662,6 +892,8 @@ def propose_for_image(
             name_confidence=options.name_confidence,
             allow_unlisted_names=options.allow_unlisted_names,
             discriminative_only=options.discriminative_only,
+            allow_identity=det.source == "subject",
+            bag_gated_identity=options.bag_gated_identity,
         )
         crop_name = crop_sink(i, positions[i], crops[i]) if crop_sink else None
         proposal.instances.append(
@@ -671,6 +903,7 @@ def propose_for_image(
                 score=round(float(det.score), 3),
                 tags=tags,
                 crop=crop_name,
+                source=det.source,
             )
         )
 
@@ -745,6 +978,7 @@ def run_position_captions(
     crops_dir: Path | None = None,
     token_count_fn: Callable[[str], int] | None = None,
     progress: Callable[[int, int, str], None] | None = None,
+    part_detect_fn: Callable[[Image.Image, str, float], list[Detection]] | None = None,
 ) -> tuple[list[ImageProposal], PositionCaptionStats]:
     """Walk the resized tree, propose clauses, and (with ``apply``) write them.
 
@@ -792,6 +1026,7 @@ def run_position_captions(
             vocabulary=vocabulary,
             options=options,
             crop_sink=crop_sink,
+            part_detect_fn=part_detect_fn,
         )
         proposal.image = str(image_path.relative_to(resized_dir))
         proposal.caption_path = str(rel)

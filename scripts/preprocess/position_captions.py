@@ -95,6 +95,35 @@ def parse_args() -> argparse.Namespace:
         "This is SAM3's own confidence floor, not a post-filter — see "
         "build_detect_fn",
     )
+    g.add_argument(
+        "--part_prompts",
+        "--part-prompts",
+        dest="part_prompts",
+        default="",
+        help="Comma-separated body-part prompts, tried only when the subject "
+        "prompt undershoots — recovers headless close-up panels (a hip / "
+        "backside crop next to one full body) that 'girl' cannot see at any "
+        'threshold. Off by default; try "buttocks,hips,thighs"',
+    )
+    g.add_argument(
+        "--part_score_threshold",
+        "--part-score-threshold",
+        dest="part_score_threshold",
+        type=float,
+        default=0.5,
+        help="Confidence floor for a body-part box (kept separate from the "
+        "subject threshold — part prompts are the looser concept)",
+    )
+    g.add_argument(
+        "--part_containment_threshold",
+        "--part-containment-threshold",
+        dest="part_containment_threshold",
+        type=float,
+        default=0.7,
+        help="Drop a part box this nested inside an already-kept box. Unlike "
+        "--containment_threshold this is safe to leave on: a part inside a "
+        "subject is that subject's own body, never a second subject",
+    )
     g.add_argument("--iou_threshold", type=float, default=0.65)
     g.add_argument(
         "--containment_threshold",
@@ -167,6 +196,18 @@ def parse_args() -> argparse.Namespace:
         "(they stay in the flat bag either way — v1 never removes anything).",
     )
     c.add_argument(
+        "--ungated_identity",
+        "--ungated-identity",
+        dest="bag_gated_identity",
+        action="store_false",
+        help="Let a clause carry a hair/eye color the flat caption never listed. "
+        "Gated by default: the caption is the curated ground truth, the crop "
+        "tagger guesses one for every crop including headless ones, and "
+        "discriminative-only then promotes the guess precisely because it "
+        "disagrees — 520 of 1600 identity clause tags in the first full-corpus "
+        "dry run contradicted the caption",
+    )
+    c.add_argument(
         "--qwen3",
         default=None,
         help="Qwen3 tokenizer path — enables the token-budget column in the report",
@@ -191,9 +232,16 @@ def build_detect_fn(args: argparse.Namespace):
       the returned list against a *lower* retry threshold is therefore a no-op:
       the low-score boxes were already discarded. The processor is built at the
       lowest threshold we might ask for, and the score gate is applied here.
-    * **The retry must not re-encode.** ``detect_subjects`` calls this twice for
-      the same image, so the raw detections are memoised per image and the retry
-      is a pure re-filter.
+    * **Neither escalation may re-encode.** ``detect_subjects`` calls back into
+      this for the low-threshold retry and again per body-part prompt, all on the
+      same image. The image encoding (``set_image``) and every prompt's raw
+      detections are memoised per image, so the retry is a pure re-filter and a
+      part prompt costs only a grounding pass — ``set_text_prompt`` re-grounds
+      against the cached ``backbone_out`` and erases the previous text prompt, so
+      running several over one state is safe.
+
+    Returns ``(detect, part_detect, model, processor)``. ``part_detect`` takes
+    the prompt as an argument; ``detect`` is pinned to ``args.prompt``.
     """
     import torch
     from sam3.model_builder import build_sam3_image_model
@@ -206,15 +254,26 @@ def build_detect_fn(args: argparse.Namespace):
         checkpoint_path=str(_under_root(args.checkpoint)),
         load_from_HF=False,
     )
-    floor = min(args.score_threshold, args.retry_score_threshold)
+    floor = min(
+        args.score_threshold, args.retry_score_threshold, args.part_score_threshold
+    )
     processor = Sam3Processor(model, confidence_threshold=floor)
-    cache: dict[str, object] = {"key": None, "dets": []}
+    cache: dict[str, object] = {"key": None, "state": None, "dets": {}}
 
-    def _detect_all(image) -> list[Detection]:
+    def _ground(image, prompt: str) -> list[Detection]:
+        """Raw detections for one prompt, reusing this image's encoded state."""
+        if cache["key"] is not image:
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                cache["state"] = processor.set_image(image)
+            cache["key"] = image
+            cache["dets"] = {}
+        memo: dict = cache["dets"]  # type: ignore[assignment]
+        if prompt in memo:
+            return memo[prompt]
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            state = processor.set_image(image)
-            out = processor.set_text_prompt(prompt=args.prompt, state=state)
+            out = processor.set_text_prompt(prompt=prompt, state=cache["state"])
         masks = out.get("masks")
+        source = "subject" if prompt == args.prompt else prompt
         dets: list[Detection] = []
         for i, (box, score) in enumerate(zip(out["boxes"], out["scores"])):
             coords = box.tolist() if torch.is_tensor(box) else list(box)
@@ -224,18 +283,22 @@ def build_detect_fn(args: argparse.Namespace):
                 mask = m.cpu().numpy() if torch.is_tensor(m) else np.asarray(m)
             dets.append(
                 Detection(
-                    box=tuple(float(v) for v in coords), score=float(score), mask=mask
+                    box=tuple(float(v) for v in coords),
+                    score=float(score),
+                    mask=mask,
+                    source=source,
                 )
             )
+        memo[prompt] = dets
         return dets
 
     def detect(image, score_threshold: float) -> list[Detection]:
-        if cache["key"] is not image:
-            cache["key"] = image
-            cache["dets"] = _detect_all(image)
-        return [d for d in cache["dets"] if d.score >= score_threshold]
+        return [d for d in _ground(image, args.prompt) if d.score >= score_threshold]
 
-    return detect, model, processor
+    def part_detect(image, prompt: str, score_threshold: float) -> list[Detection]:
+        return [d for d in _ground(image, prompt) if d.score >= score_threshold]
+
+    return detect, part_detect, model, processor
 
 
 def main() -> None:
@@ -248,7 +311,7 @@ def main() -> None:
     # detection has to finish before any crop exists to tag. Unlike the probe
     # they must both stay resident here — the pipeline is per-image, not
     # two dataset-wide passes, so a proposal never outlives its crop.
-    detect_fn, sam_model, sam_processor = build_detect_fn(args)
+    detect_fn, part_detect_fn, sam_model, sam_processor = build_detect_fn(args)
 
     from library.captioning.anima_tagger import (
         DEFAULT_TAGGER_DIR,
@@ -276,6 +339,11 @@ def main() -> None:
         prompt=args.prompt,
         score_threshold=args.score_threshold,
         retry_score_threshold=args.retry_score_threshold,
+        part_prompts=tuple(
+            t.strip() for t in args.part_prompts.split(",") if t.strip()
+        ),
+        part_score_threshold=args.part_score_threshold,
+        part_containment_threshold=args.part_containment_threshold,
         iou_threshold=args.iou_threshold,
         containment_threshold=args.containment_threshold,
         min_area_frac=args.min_area_frac,
@@ -289,6 +357,7 @@ def main() -> None:
         max_instances=args.max_instances,
         strict_count=args.strict_count,
         discriminative_only=args.discriminative_only,
+        bag_gated_identity=args.bag_gated_identity,
     )
 
     def progress(index: int, total: int, rel: str) -> None:
@@ -299,6 +368,7 @@ def main() -> None:
         resized_dir=dst,
         source_dir=src,
         detect_fn=detect_fn,
+        part_detect_fn=part_detect_fn,
         tag_fn=tagger.predict,
         vocabulary=vocabulary,
         options=options,
@@ -320,6 +390,12 @@ def main() -> None:
         "proposed": stats.proposed,
         "written": stats.written,
         "skipped": dict(sorted(stats.skipped.items(), key=lambda kv: -kv[1])),
+        "part_prompts": list(options.part_prompts),
+        # Images the body-part fallback actually rescued: at least one bound
+        # instance whose box came from a part prompt. Zero with the feature off.
+        "part_recovered": sum(
+            1 for r in rows if any(i.source != "subject" for i in r.instances)
+        ),
         "max_tokens": max(
             (r.tokens for r in rows if r.tokens is not None), default=None
         ),

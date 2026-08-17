@@ -266,6 +266,8 @@ def pipeline_bits():
             "green hair": "hair_color",
             "red eyes": "eye_color",
             "twintails": "hairstyle",
+            "ass": "body_parts",
+            "thighs": "body_parts",
             "simple background": "background_detail",
             "white background": "background_detail",
         },
@@ -428,7 +430,9 @@ def test_retry_fires_when_the_caption_gives_no_count(pipeline_bits):
     image, vocabulary, _, Options = pipeline_bits
     proposal = propose_for_image(
         image,
-        "sensitive, 1girl, multiple views, blonde hair",
+        # Both colors are in the bag so the identity gate stays out of the way —
+        # this test is about the retry, not about clause content.
+        "sensitive, 1girl, multiple views, blonde hair, aqua hair",
         detect_fn=_detector(
             {
                 0.5: [((0, 0, 400, 500), 0.9)],
@@ -500,6 +504,104 @@ def test_open_ended_crowd_counts_defer_to_detection():
     assert caption_boy_count("safe, 3+boys, 2girls") is None
 
 
+def test_comic_panels_defer_the_count_to_detection():
+    """A comic page draws the same girl once per panel — 1girl, 2 subjects.
+
+    22 of the corpus's 26 comic pages that carry no ``multiple views`` tag were
+    failing the prefilter as ``single-subject``.
+    """
+    from library.preprocess.position_captions import (
+        caption_subject_count,
+        is_candidate,
+    )
+
+    for layout in ("comic", "2koma", "4koma", "silent comic", "sequential"):
+        caption = f"safe, 1girl, {layout}, blonde hair"
+        assert caption_subject_count(caption) is None, layout
+        assert is_candidate(caption) == (True, "panel-layout"), layout
+    # A girls-count alongside the layout tag does not override it.
+    assert caption_subject_count("safe, 1girl, 2koma, blonde hair") is None
+
+
+def test_koma_count_bounds_a_page_that_has_no_girls_count_check():
+    """``Nkoma`` names the panel count, restoring the ceiling the layout waived.
+
+    ``kase_daiki/11645055`` is a 2-panel page with one girl per panel that SAM3
+    returns three boxes for — the bottom girl split into an overlapping pair at
+    IoMin 0.99. Without a ceiling the waived count check lets that through.
+    """
+    from library.preprocess.position_captions import caption_panel_ceiling
+
+    assert caption_panel_ceiling("safe, 1girl, 2koma") == 2
+    assert caption_panel_ceiling("safe, 2girls, 1boy, 2koma") == 6
+    assert caption_panel_ceiling("safe, 4koma") == 4  # nobody counted, 1/panel
+    # Unbounded layouts stay unbounded — no panel count to multiply.
+    assert caption_panel_ceiling("safe, 1girl, comic") is None
+    assert caption_panel_ceiling("safe, 1girl, multiple views") is None
+    assert caption_panel_ceiling("safe, 1girl, multiple 4koma") is None
+    # An open-ended character count cannot produce a ceiling either.
+    assert caption_panel_ceiling("safe, multiple girls, 2koma") is None
+    assert caption_panel_ceiling("safe, 1girl, multiple boys, 2koma") is None
+
+
+def test_a_koma_page_over_its_ceiling_is_skipped(pipeline_bits):
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "safe, 1girl, 2koma, blonde hair",  # ceiling 2
+        detect_fn=_detector(
+            {
+                0.5: [
+                    ((0, 0, 300, 500), 0.9),
+                    ((320, 0, 620, 500), 0.9),
+                    ((640, 0, 940, 500), 0.9),
+                ]
+            }
+        ),
+        tag_fn=_two_hair_colors(),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.status == "skip:count-mismatch"
+    assert proposal.detected == 3
+
+
+def test_a_koma_page_at_its_ceiling_proposes(pipeline_bits):
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "safe, 1girl, 2koma, blonde hair, aqua hair",  # ceiling 2
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_two_hair_colors(),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.ok, proposal.status
+    assert proposal.detected == 2
+
+
+def test_page_number_is_not_a_layout_tag():
+    """A scanned art-book page is one illustration with a number in the margin.
+
+    It tags 15 more images than the comic tags do and every one checked was a
+    single subject — a false signal, not a weak one.
+    """
+    from library.preprocess.position_captions import (
+        caption_subject_count,
+        is_candidate,
+    )
+
+    caption = "safe, 1girl, page number, blonde hair"
+    assert caption_subject_count(caption) == 1
+    assert is_candidate(caption) == (False, "single-subject")
+
+
 def test_low_threshold_retry_recovers_the_missing_instance(pipeline_bits):
     from library.preprocess.position_captions import propose_for_image
 
@@ -534,6 +636,226 @@ def test_low_threshold_retry_recovers_the_missing_instance(pipeline_bits):
         "middle",
         "right",
     ]
+
+
+def _part_detector(boxes_by_prompt):
+    """Stub ``part_detect_fn``: prompt → list of (box, score)."""
+    from library.preprocess.position_captions import Detection
+
+    def detect(image, prompt, score_threshold):
+        return [
+            Detection(box=b, score=s, source=prompt)
+            for b, s in boxes_by_prompt.get(prompt, ())
+            if s >= score_threshold
+        ]
+
+    return detect
+
+
+def test_part_prompt_recovers_a_headless_panel(pipeline_bits):
+    """The ama_mitsuki layout: one full body plus a headless close-up panel."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "safe, 1girl, multiple views, blonde hair",
+        detect_fn=_detector({0.5: [((700, 0, 1000, 500), 0.9)]}),
+        part_detect_fn=_part_detector({"buttocks": [((0, 0, 600, 500), 0.8)]}),
+        # Crops are tagged in reading order, so the recovered left panel first.
+        tag_fn=_tagger(
+            [
+                {"kept": {"blonde hair": 0.8, "ass": 0.7}, "groups": {}},
+                {"kept": {"blonde hair": 0.8, "twintails": 0.7}, "groups": {}},
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(part_prompts=("buttocks",)),
+    )
+    assert proposal.ok, proposal.status
+    assert proposal.detected == 2
+    # ``detections`` is recorded as merged (subjects first); ``instances`` is in
+    # reading order, so the recovered panel lands on the left where it was drawn.
+    assert [d["source"] for d in proposal.detections] == ["subject", "buttocks"]
+    assert [(i.position, i.source) for i in proposal.instances] == [
+        ("left", "buttocks"),
+        ("right", "subject"),
+    ]
+    assert [c.position for c in parse_caption(proposal.proposed).clauses] == [
+        "left",
+        "right",
+    ]
+
+
+def test_part_prompts_are_inert_when_the_subject_prompt_suffices(pipeline_bits):
+    """No undershoot → no second grounding pass, so no nested duplicate boxes."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    calls = []
+
+    def part_detect(image, prompt, score_threshold):
+        calls.append(prompt)
+        return []
+
+    proposal = propose_for_image(
+        image,
+        "safe, 2girls, blonde hair, aqua hair",
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        part_detect_fn=part_detect,
+        tag_fn=_tagger(
+            [
+                {"kept": {"blonde hair": 0.8}, "groups": {}},
+                {"kept": {"aqua hair": 0.8}, "groups": {}},
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(part_prompts=("buttocks", "hips")),
+    )
+    assert proposal.ok
+    assert calls == []
+    assert proposal.detected == 2
+
+
+def test_part_crop_carries_no_hair_or_eye_color(pipeline_bits):
+    """A headless crop has no evidence for identity — the tagger guesses anyway."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "safe, 1girl, multiple views, blonde hair",
+        detect_fn=_detector({0.5: [((700, 0, 1000, 500), 0.9)]}),
+        part_detect_fn=_part_detector({"buttocks": [((0, 0, 600, 500), 0.8)]}),
+        # Crops are tagged in reading order: the recovered left panel, then the
+        # full body on the right.
+        tag_fn=_tagger(
+            [
+                # Part crop: the tagger invents a color and an eye color on top
+                # of the one tag it can actually see.
+                {
+                    "kept": {
+                        "green hair": 0.8,
+                        "red eyes": 0.7,
+                        "twintails": 0.6,
+                        "ass": 0.9,
+                    },
+                    "groups": {"hair_color": "green hair", "eye_color": "red eyes"},
+                },
+                # Full body: real hair color, and it is in the caption.
+                {"kept": {"blonde hair": 0.8}, "groups": {"hair_color": "blonde hair"}},
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(part_prompts=("buttocks",)),
+    )
+    assert proposal.ok, proposal.status
+    part = next(i for i in proposal.instances if i.source == "buttocks")
+    assert "green hair" not in part.tags
+    assert "red eyes" not in part.tags
+    assert "twintails" not in part.tags  # hairstyle is identity too
+    assert part.tags == ["ass"]  # only what a headless crop can actually show
+
+
+def test_clause_cannot_contradict_a_hair_color_the_caption_named(pipeline_bits):
+    """Item 2: the flat bag outranks the crop tagger on identity groups."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    # One girl, two views. The caption says blonde; the back view guesses green.
+    tags = _tagger(
+        [
+            {"kept": {"blonde hair": 0.8}, "groups": {"hair_color": "blonde hair"}},
+            {
+                "kept": {"green hair": 0.8, "red eyes": 0.7},
+                "groups": {"hair_color": "green hair", "eye_color": "red eyes"},
+            },
+        ]
+    )
+    proposal = propose_for_image(
+        image,
+        "safe, 1girl, multiple views, blonde hair",
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=tags,
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.ok, proposal.status
+    clauses = parse_caption(proposal.proposed).clauses
+    assert not any("green hair" in c.tags for c in clauses)
+    # ``red eyes`` survives: the caption named no eye color at all, so it is new
+    # information rather than a contradiction.
+    assert any("red eyes" in c.tags for c in clauses)
+
+
+def test_bag_gate_still_allows_every_color_the_caption_listed(pipeline_bits):
+    """A real 2girls image names both colors — neither clause may be blocked."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "safe, 2girls, blonde hair, aqua hair",
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(
+            [
+                {"kept": {"blonde hair": 0.8}, "groups": {"hair_color": "blonde hair"}},
+                {"kept": {"aqua hair": 0.8}, "groups": {"hair_color": "aqua hair"}},
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.ok
+    clauses = parse_caption(proposal.proposed).clauses
+    assert [c.tags[0] for c in clauses] == ["blonde hair", "aqua hair"]
+
+
+def test_part_top_up_stops_at_the_target(pipeline_bits):
+    """A fragmenting part prompt must not bind more clauses than the gate needs."""
+    from library.preprocess.position_captions import detect_subjects
+
+    image, _, Detection, Options = pipeline_bits
+    parts = {
+        "thighs": [
+            ((0, 0, 300, 240), 0.67),
+            ((0, 260, 300, 500), 0.65),
+            ((320, 0, 620, 240), 0.63),
+            ((320, 260, 620, 500), 0.61),
+        ]
+    }
+    dets = detect_subjects(
+        image,
+        _detector({0.5: [((700, 0, 1000, 500), 0.9)]}),
+        Options(part_prompts=("thighs",)),
+        None,  # ``multiple views`` → expected unknown → target is min_instances
+        _part_detector(parts),
+    )
+    assert len(dets) == 2
+    assert [d.source for d in dets] == ["subject", "thighs"]
+    assert dets[1].score == 0.67  # the highest-scoring part box, not the first
+
+
+def test_part_box_nested_in_a_subject_is_dropped(pipeline_bits):
+    """A part inside a subject is that subject's own body, not a new position."""
+    from library.preprocess.position_captions import merge_part_detections
+
+    _, _, Detection, _ = pipeline_bits
+    subjects = [Detection(box=(0, 0, 400, 500), score=0.9)]
+    parts = [
+        Detection(box=(50, 200, 350, 480), score=0.8, source="buttocks"),  # nested
+        Detection(box=(600, 0, 1000, 500), score=0.7, source="hips"),  # its own panel
+    ]
+    merged = merge_part_detections(
+        subjects, parts, iou_threshold=0.65, containment_threshold=0.7
+    )
+    assert [d.source for d in merged] == ["subject", "hips"]
 
 
 def test_unlisted_character_name_is_rejected(pipeline_bits):
