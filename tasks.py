@@ -270,6 +270,12 @@ COMMANDS = {
         "Build the typed-tag caption index (character/copyright/artist groups) "
         "at post_image_dataset/captions/caption_index.json. Pure data, no GPU.",
     ),
+    "caption-position": (
+        preprocess.cmd_caption_position,
+        "Append position-aware clauses ('On the left, <tags>. ...') to "
+        "multi-subject captions via SAM3 + Anima Tagger. Dry-run by default; "
+        'ARGS="--apply" writes, then `make preprocess-te` is REQUIRED.',
+    ),
     # ── Curation ──────────────────────────────────────────────────────
     "curate-group": (
         curate.cmd_curate_group,

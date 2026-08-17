@@ -1247,6 +1247,34 @@ def cmd_caption_index(extra):
         _publish_run_status(run_obj, "ready")
 
 
+def cmd_caption_position(extra):
+    """Append position-aware clauses to multi-subject captions (GPU, daemon-routed).
+
+    SAM3 ``girl`` instances → reading order → mask-blanked crops → Anima Tagger →
+    ``… On the left, <tags>. On the right, <tags>.`` appended to the caption
+    master. Dry-run by default; ``ARGS="--apply"`` writes, and must be followed
+    by ``make preprocess-te`` (caption edits do NOT invalidate the TE caches, and
+    the ``.variants.txt`` sidecars override the CLI dropout rate).
+
+    Routed through the daemon like every other agent-launched GPU job — it holds
+    SAM3 + the tagger resident for the whole sweep and would otherwise
+    OOM-collide with a live train run.
+    """
+    from ._common import _resolve_run_mode, run_command
+
+    mode, extra = _resolve_run_mode(extra)
+    argv = [
+        "scripts/preprocess/position_captions.py",
+        "--src",
+        _path("source_image_dir", "image_dataset"),
+        "--dst",
+        _path("resized_image_dir", "post_image_dataset/resized"),
+        *_resolved_path_pattern_args(extra),
+        *extra,
+    ]
+    run_command("caption-position", argv, mode=mode)
+
+
 # `cmd_preprocess` auto-fetches this (~0.7 MB) vocab on demand: the caption index
 # it gates is a hard requirement for soft-tokens contrastive training (train.py
 # raises FileNotFoundError without it). Fetch is best-effort.
