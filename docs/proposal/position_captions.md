@@ -184,8 +184,15 @@ A/B (Phase 3), never as a default until the A/B clears.
 
 - **Phase 0 — probes: DONE** (numbers above).
 - **Phase 1 — v1 implementation + dry-run sweep: IMPLEMENTED, sweep run,
-  spot-check pending.** Pipeline built + tested (40 unit tests); the
-  clause-shredding fix landed alongside. Remaining exit criterion: spot-check
+  skips triaged, spot-check pending.** Pipeline built + tested (45 unit tests);
+  the clause-shredding fix landed alongside. The first sweep's 102 skips were
+  investigated 2026-08-17 and four mechanical causes fixed (dead retry, retry
+  never attempted for multi-view, girls-only count vs. a prompt that catches
+  males, `6+girls` read as exactly six) — 373 proposals now, up from 317, net
+  +59/−3. Full mechanism table, plus the two refuted mask-quality gates and the
+  measured-harmful containment rule, in
+  [`docs/experimental/position_captions.md`](../experimental/position_captions.md#triaging-the-skips-2026-08-17).
+  Remaining exit criterion: spot-check
   ~30 proposed clauses from `post_image_dataset/captions/position/report.json`
   (weighted toward grids, overlapping pairs, N≥4) against the exported crops —
   clause proposals right at ≥90%, count-disagreement skip rate reported. **No

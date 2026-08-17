@@ -363,6 +363,143 @@ def test_count_mismatch_is_skipped_not_guessed(pipeline_bits):
     assert proposal.proposed is None
 
 
+def _two_hair_colors():
+    return _tagger(
+        [
+            {"kept": {"blonde hair": 0.8}, "groups": {"hair_color": "blonde hair"}},
+            {"kept": {"aqua hair": 0.8}, "groups": {"hair_color": "aqua hair"}},
+            {"kept": {"green hair": 0.8}, "groups": {"hair_color": "green hair"}},
+        ]
+    )
+
+
+def test_a_detected_male_is_inside_the_count_range(pipeline_bits):
+    # `expected` counts girls, but the `girl` prompt picks up males
+    # inconsistently — it found the boy in 7 of the 19 first-run mismatches and
+    # missed him in 89 images that passed. Equality can't be right for both;
+    # girls..girls+boys is.
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "sensitive, 1boy, 2girls, blonde hair, aqua hair",
+        detect_fn=_detector(
+            {
+                0.5: [
+                    ((0, 0, 300, 500), 0.9),
+                    ((350, 0, 650, 500), 0.9),
+                    ((700, 0, 1000, 500), 0.9),
+                ]
+            }
+        ),
+        tag_fn=_two_hair_colors(),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.ok, proposal.status
+    # One boy of slack, not unlimited slack.
+    over = propose_for_image(
+        image,
+        "sensitive, 1boy, 2girls, blonde hair, aqua hair",
+        detect_fn=_detector(
+            {
+                0.5: [
+                    ((0, 0, 240, 500), 0.9),
+                    ((260, 0, 490, 500), 0.9),
+                    ((510, 0, 740, 500), 0.9),
+                    ((760, 0, 1000, 500), 0.9),
+                ]
+            }
+        ),
+        tag_fn=_two_hair_colors(),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert over.status == "skip:count-mismatch"
+
+
+def test_retry_fires_when_the_caption_gives_no_count(pipeline_bits):
+    # A `multiple views` sheet reports expected=None on purpose. Gating the
+    # low-threshold retry on `if expected` skipped it for that whole population
+    # — 35 of the 81 too-few-instances skips in the first full-corpus run.
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "sensitive, 1girl, multiple views, blonde hair",
+        detect_fn=_detector(
+            {
+                0.5: [((0, 0, 400, 500), 0.9)],
+                0.35: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.4)],
+            }
+        ),
+        tag_fn=_two_hair_colors(),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.ok, proposal.status
+    assert proposal.detected == 2
+
+
+def test_a_nested_subject_survives_dedupe():
+    # A real second subject is as nested as a group box — one girl in front of
+    # another, an embrace, a background figure inside a foreground box. Ablated
+    # over the 34 rows that regressed when containment suppression was first
+    # enabled, 32 recover with it off, so the rule must stay opt-in.
+    from library.preprocess.position_captions import Detection, dedupe_detections
+
+    host = Detection(box=(0, 0, 1000, 500), score=0.9)
+    inside = Detection(box=(400, 200, 600, 480), score=0.6)
+    assert len(dedupe_detections([host, inside], 0.65)) == 2
+    # Opting in suppresses the contained box (the group-box case).
+    kept = dedupe_detections([host, inside], 0.65, containment_threshold=0.8)
+    assert kept == [host]
+    # Plain IoU duplicates still go, either way.
+    dup = Detection(box=(10, 10, 990, 490), score=0.7)
+    assert dedupe_detections([host, dup], 0.65) == [host]
+
+
+def test_an_inset_is_too_small_to_be_a_subject(pipeline_bits):
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "sensitive, 2girls, blonde hair, aqua hair",
+        detect_fn=_detector(
+            {
+                0.5: [
+                    ((0, 0, 400, 500), 0.9),
+                    # 0.4% of the canvas, and disjoint — containment won't catch it.
+                    ((900, 400, 950, 440), 0.8),
+                ]
+            }
+        ),
+        tag_fn=_two_hair_colors(),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.status == "skip:too-few-instances"
+    assert proposal.detected == 1
+
+
+def test_open_ended_crowd_counts_defer_to_detection():
+    # `6+girls` is "six or more", not six — an exact match can only ever fail.
+    from library.preprocess.position_captions import (
+        caption_boy_count,
+        caption_subject_count,
+    )
+
+    assert caption_subject_count("safe, 6+girls, cheering") is None
+    assert caption_subject_count("safe, 2girls, blonde hair") == 2
+    assert caption_boy_count("safe, 1boy, 2girls") == 1
+    assert caption_boy_count("safe, 2girls, blonde hair") == 0
+    assert caption_boy_count("safe, multiple boys, 2girls") is None
+    assert caption_boy_count("safe, 3+boys, 2girls") is None
+
+
 def test_low_threshold_retry_recovers_the_missing_instance(pipeline_bits):
     from library.preprocess.position_captions import propose_for_image
 

@@ -23,9 +23,12 @@ Two systematic errors Phase-0 probe B found are fixed here mechanically:
 * **crop contamination** — a neighbor's hair bleeding into the padded bbox made
   the crop tagger call the wrong hair color. SAM3 already returns a per-instance
   mask, so non-instance pixels are blanked before tagging.
-* **weak detections** — an extreme close-up scored below the 0.5 gate. When the
-  caption's own girls-count says more subjects exist than were detected, the
-  detection is retried at a lower threshold.
+* **weak detections** — an extreme close-up scored below the 0.5 gate. When
+  fewer subjects were detected than we have reason to expect (the caption's own
+  count, or failing that ``min_instances``), the detection is retried at a lower
+  threshold. Note the threshold has to reach the *detector* — SAM3 applies its
+  own confidence floor before returning boxes, so post-filtering the result at a
+  lower number is a no-op. See ``build_detect_fn`` in the CLI.
 
 The gate is the number of **detected** instances (≥2), never the girls-count
 tag: a ``1girl, multiple views`` outfit sheet is four bindable subjects and is
@@ -111,7 +114,13 @@ SUBJECT_GROUPS = frozenset(
 # disambiguate a subject. Everything else follows, ranked.
 _PRIORITY_GROUPS = ("hair_color", "eye_color", "hair_length", "hairstyle")
 
-_GIRLS_COUNT_RE = re.compile(r"^(\d+)\+?girls?$")
+_GIRLS_COUNT_RE = re.compile(r"^(\d+)girls?$")
+_BOYS_COUNT_RE = re.compile(r"^(\d+)boys?$")
+# ``6+girls`` is an open-ended crowd tag, not the number six — matching it
+# exactly is impossible, so it is treated like ``multiple girls``: count
+# unknown, trust detection.
+_OPEN_GIRLS_RE = re.compile(r"^\d+\+girls?$")
+_OPEN_BOYS_RE = re.compile(r"^\d+\+boys?$")
 _MULTI_VIEW_TAGS = frozenset({"multiple views", "multiple_views"})
 
 
@@ -293,12 +302,32 @@ def caption_subject_count(caption: str) -> int | None:
     ``multiple views`` sheet is always ``None`` even when it also carries a
     girls-count: the count tags how many *characters* are drawn, while each view
     is its own bindable subject (``1girl, multiple views`` is routinely four).
+    ``multiple girls`` and the open-ended ``N+girls`` crowd tag are ``None`` too
+    — an exact match against "six or more" can only ever fail.
     """
     tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
     if tags & _MULTI_VIEW_TAGS:
         return None
     counts = [int(m.group(1)) for t in tags if (m := _GIRLS_COUNT_RE.match(t))]
-    if "multiple girls" in tags and not counts:
+    if not counts and (
+        "multiple girls" in tags or any(map(_OPEN_GIRLS_RE.match, tags))
+    ):
+        return None
+    return max(counts) if counts else 0
+
+
+def caption_boy_count(caption: str) -> int | None:
+    """How many *male* subjects the caption claims — the count check's slack.
+
+    The SAM3 ``girl`` prompt does not reliably exclude males: on the same corpus
+    it detects the boy in some images and not in others, so neither counting him
+    nor ignoring him works as an equality. The count gate therefore accepts the
+    range ``girls .. girls + boys``. ``None`` = "some boys, count unknown",
+    which drops the upper bound entirely.
+    """
+    tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
+    counts = [int(m.group(1)) for t in tags if (m := _BOYS_COUNT_RE.match(t))]
+    if not counts and ("multiple boys" in tags or any(map(_OPEN_BOYS_RE.match, tags))):
         return None
     return max(counts) if counts else 0
 
@@ -338,15 +367,55 @@ def box_iou(a: Sequence[float], b: Sequence[float]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def box_area(box: Sequence[float]) -> float:
+    return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+
+def box_containment(a: Sequence[float], b: Sequence[float]) -> float:
+    """Intersection over the *smaller* box — how nested the pair is.
+
+    IoU is blind to nesting: a box wholly inside another scores ``area_small /
+    area_large``, which is tiny exactly when the size gap is large. Both
+    over-detection families this pipeline hits are nested, not overlapping — an
+    inset (a character icon on a phone screen inside the main subject, IoU
+    0.003) and a *group* box spanning every subject (IoU 0.44 vs. each member).
+    Containment scores both at ~1.0.
+
+    **Suppressing on it is nonetheless off by default**, because a *real* second
+    subject is just as nested: one girl standing in front of another, an
+    embrace, a background figure inside a foreground figure's box. Ablated over
+    the 34 rows that regressed when it was first enabled, 32 recover with the
+    rule off — the corpus has far more legitimately-nested subjects than group
+    boxes. Kept as an opt-in knob; the inset half of the problem is handled by
+    :func:`drop_small_boxes` instead, and a surviving group box costs one
+    ``count-mismatch`` skip, which is the safe direction.
+    """
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    smallest = min(box_area(a), box_area(b))
+    return (ix * iy) / smallest if smallest > 0 else 0.0
+
+
 def dedupe_detections(
-    detections: Iterable[Detection], iou_threshold: float
+    detections: Iterable[Detection],
+    iou_threshold: float,
+    containment_threshold: float = 1.01,
 ) -> list[Detection]:
-    """Greedy IoU suppression, highest score first."""
+    """Greedy IoU + containment suppression, highest score first.
+
+    A threshold above 1.0 disables the containment rule — a box can never be
+    more than fully inside another — leaving plain-IoU behaviour.
+    """
     ranked = sorted(detections, key=lambda d: -d.score)
     keep: list[Detection] = []
     for det in ranked:
-        if all(box_iou(det.box, k.box) < iou_threshold for k in keep):
-            keep.append(det)
+        if any(
+            box_iou(det.box, k.box) >= iou_threshold
+            or box_containment(det.box, k.box) >= containment_threshold
+            for k in keep
+        ):
+            continue
+        keep.append(det)
     return keep
 
 
@@ -409,6 +478,10 @@ class ImageProposal:
     original: str = ""
     proposed: str | None = None
     instances: list[InstanceProposal] = field(default_factory=list)
+    # Boxes as detected, recorded even when a gate rejects the image — the
+    # skipped rows are exactly the ones a reviewer needs evidence for, and
+    # ``instances`` is only populated once every gate has passed.
+    detections: list[dict] = field(default_factory=list)
     tokens: int | None = None
 
     @property
@@ -434,8 +507,12 @@ class PositionCaptionOptions:
 
     prompt: str = "girl"
     score_threshold: float = 0.5
-    retry_score_threshold: float = 0.3
+    retry_score_threshold: float = 0.35
     iou_threshold: float = 0.65
+    # Containment suppression is OFF by default: measured, it costs far more
+    # than it buys (see ``box_containment``).
+    containment_threshold: float = 1.01
+    min_area_frac: float = 0.005
     pad: float = 0.06
     blank_crops: bool = True
     row_tol: float = 0.25
@@ -457,23 +534,49 @@ def detect_subjects(
     """Detect + dedupe, with the low-threshold retry when the count falls short.
 
     ``detect_fn(image, score_threshold)`` returns raw detections. The retry only
-    fires when the caption claims a specific count we missed — an unconditional
-    low threshold would flood grids with duplicate part-detections.
+    fires when we detected fewer subjects than we have reason to expect — an
+    unconditional low threshold would flood grids with duplicate
+    part-detections.
+
+    The target is ``expected or min_instances``, **not** ``expected`` alone: a
+    ``multiple views`` sheet reports ``expected=None`` on purpose (the count tag
+    counts characters, not views), and gating on truthiness used to skip the
+    retry for that entire population — 35 of the 81 ``too-few-instances`` skips
+    in the first full-corpus run.
     """
-    dets = dedupe_detections(
-        detect_fn(image, options.score_threshold), options.iou_threshold
-    )
-    if (
-        expected
-        and len(dets) < expected
-        and options.retry_score_threshold < options.score_threshold
-    ):
-        retry = dedupe_detections(
-            detect_fn(image, options.retry_score_threshold), options.iou_threshold
+
+    def run(threshold: float) -> list[Detection]:
+        dets = dedupe_detections(
+            detect_fn(image, threshold),
+            options.iou_threshold,
+            options.containment_threshold,
         )
+        return drop_small_boxes(dets, image.size, options.min_area_frac)
+
+    dets = run(options.score_threshold)
+    target = expected or options.min_instances
+    if len(dets) < target and options.retry_score_threshold < options.score_threshold:
+        retry = run(options.retry_score_threshold)
         if len(retry) > len(dets):
             dets = retry
     return dets
+
+
+def drop_small_boxes(
+    detections: Iterable[Detection],
+    image_size: tuple[int, int],
+    min_area_frac: float,
+) -> list[Detection]:
+    """Discard boxes too small to be a bindable subject.
+
+    A detection covering 0.3% of the canvas is an inset — a character drawn on a
+    phone screen, a poster, a chibi in a corner — not a subject a position clause
+    can meaningfully describe.
+    """
+    if min_area_frac <= 0:
+        return list(detections)
+    floor = min_area_frac * image_size[0] * image_size[1]
+    return [d for d in detections if box_area(d.box) >= floor]
 
 
 def propose_for_image(
@@ -501,6 +604,10 @@ def propose_for_image(
 
     dets = detect_subjects(image, detect_fn, options, expected)
     proposal.detected = len(dets)
+    proposal.detections = [
+        {"box": [int(v) for v in d.box], "score": round(float(d.score), 3)}
+        for d in dets
+    ]
     if len(dets) < options.min_instances:
         proposal.status = "skip:too-few-instances"
         return proposal
@@ -509,9 +616,17 @@ def propose_for_image(
         return proposal
     # Detection and the caption's own count must agree, or we would be writing
     # clauses we cannot ground — probe B saw this on 2/13. Skip and log.
-    if options.strict_count and expected and len(dets) != expected:
-        proposal.status = "skip:count-mismatch"
-        return proposal
+    #
+    # "Agree" is a range, not equality: ``expected`` counts girls, while the
+    # ``girl`` prompt picks up males inconsistently (it found the boy in 7 of
+    # the 19 first-run mismatches and missed him in 89 that passed). Anything
+    # from girls to girls+boys is consistent with the caption.
+    if options.strict_count and expected:
+        boys = caption_boy_count(caption)
+        upper = None if boys is None else expected + boys
+        if len(dets) < expected or (upper is not None and len(dets) > upper):
+            proposal.status = "skip:count-mismatch"
+            return proposal
 
     order = ordered_indices([d.box for d in dets], image.size, row_tol=options.row_tol)
     dets = [dets[i] for i in order]
@@ -591,6 +706,32 @@ def _crop_sink(crops_dir: Path, rel: Path) -> Callable[[int, str, Image.Image], 
     return sink
 
 
+def _save_skip_overlay(
+    crops_dir: Path, rel: Path, image: Image.Image, proposal: ImageProposal
+) -> None:
+    """Draw the detected boxes over a skipped image, under ``_skipped/``.
+
+    A skip produces no crops (``crop_sink`` runs only once every gate passes),
+    which left the dry-run report with zero visual evidence for exactly the rows
+    a reviewer has to adjudicate — is this an over-detection, a missing subject,
+    or a wrong caption count? The overlay answers that at a glance.
+    """
+    from PIL import ImageDraw
+
+    target = crops_dir / "_skipped" / rel.parent
+    target.mkdir(parents=True, exist_ok=True)
+    canvas = image.copy()
+    draw = ImageDraw.Draw(canvas)
+    for i, det in enumerate(proposal.detections):
+        box = det["box"]
+        draw.rectangle(box, outline=(255, 0, 0), width=4)
+        draw.text(
+            (box[0] + 6, box[1] + 6), f"{i}:{det['score']:.2f}", fill=(255, 255, 0)
+        )
+    status = proposal.status.removeprefix("skip:")
+    canvas.save(target / f"{rel.stem}_{status}.png")
+
+
 def run_position_captions(
     *,
     resized_dir: Path,
@@ -658,6 +799,8 @@ def run_position_captions(
 
         if not proposal.ok:
             stats.skip(proposal.status.removeprefix("skip:"))
+            if crops_dir is not None:
+                _save_skip_overlay(crops_dir, rel, image, proposal)
             continue
         stats.proposed += 1
         if token_count_fn is not None and proposal.proposed:

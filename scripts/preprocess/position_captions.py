@@ -90,10 +90,32 @@ def parse_args() -> argparse.Namespace:
     g.add_argument(
         "--retry_score_threshold",
         type=float,
-        default=0.3,
-        help="Retry threshold when detection undershoots the caption's count",
+        default=0.35,
+        help="Retry threshold when detection undershoots the expected count. "
+        "This is SAM3's own confidence floor, not a post-filter — see "
+        "build_detect_fn",
     )
     g.add_argument("--iou_threshold", type=float, default=0.65)
+    g.add_argument(
+        "--containment_threshold",
+        "--containment-threshold",
+        dest="containment_threshold",
+        type=float,
+        default=1.01,
+        help="Suppress a box this nested inside a kept one (intersection over "
+        "the smaller box). Off by default (>1.0 disables): a real second "
+        "subject is as nested as a group box — enabling it cost 32 real "
+        "subjects to save 12 group boxes",
+    )
+    g.add_argument(
+        "--min_area_frac",
+        "--min-area-frac",
+        dest="min_area_frac",
+        type=float,
+        default=0.005,
+        help="Drop detections smaller than this fraction of the image — an "
+        "inset (a character on a phone screen) is not a bindable subject",
+    )
     g.add_argument("--pad", type=float, default=0.06, help="bbox padding fraction")
     g.add_argument(
         "--no_blank_crops",
@@ -159,7 +181,20 @@ def _under_root(path: str) -> Path:
 
 
 def build_detect_fn(args: argparse.Namespace):
-    """SAM3 text-prompt detector returning per-instance boxes + masks."""
+    """SAM3 text-prompt detector returning per-instance boxes + masks.
+
+    Two things this has to get right, both of which the first version didn't:
+
+    * **SAM3 filters before we do.** ``Sam3Processor`` carries its own
+      ``confidence_threshold`` (default 0.5) and applies it inside
+      ``_forward_grounding`` — boxes below it never reach the caller. Filtering
+      the returned list against a *lower* retry threshold is therefore a no-op:
+      the low-score boxes were already discarded. The processor is built at the
+      lowest threshold we might ask for, and the score gate is applied here.
+    * **The retry must not re-encode.** ``detect_subjects`` calls this twice for
+      the same image, so the raw detections are memoised per image and the retry
+      is a pure re-filter.
+    """
     import torch
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
@@ -171,27 +206,34 @@ def build_detect_fn(args: argparse.Namespace):
         checkpoint_path=str(_under_root(args.checkpoint)),
         load_from_HF=False,
     )
-    processor = Sam3Processor(model)
+    floor = min(args.score_threshold, args.retry_score_threshold)
+    processor = Sam3Processor(model, confidence_threshold=floor)
+    cache: dict[str, object] = {"key": None, "dets": []}
 
-    def detect(image, score_threshold: float) -> list[Detection]:
+    def _detect_all(image) -> list[Detection]:
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
             state = processor.set_image(image)
             out = processor.set_text_prompt(prompt=args.prompt, state=state)
         masks = out.get("masks")
         dets: list[Detection] = []
         for i, (box, score) in enumerate(zip(out["boxes"], out["scores"])):
-            score = float(score)
-            if score < score_threshold:
-                continue
             coords = box.tolist() if torch.is_tensor(box) else list(box)
             mask = None
             if masks is not None and i < len(masks):
                 m = masks[i]
                 mask = m.cpu().numpy() if torch.is_tensor(m) else np.asarray(m)
             dets.append(
-                Detection(box=tuple(float(v) for v in coords), score=score, mask=mask)
+                Detection(
+                    box=tuple(float(v) for v in coords), score=float(score), mask=mask
+                )
             )
         return dets
+
+    def detect(image, score_threshold: float) -> list[Detection]:
+        if cache["key"] is not image:
+            cache["key"] = image
+            cache["dets"] = _detect_all(image)
+        return [d for d in cache["dets"] if d.score >= score_threshold]
 
     return detect, model, processor
 
@@ -235,6 +277,8 @@ def main() -> None:
         score_threshold=args.score_threshold,
         retry_score_threshold=args.retry_score_threshold,
         iou_threshold=args.iou_threshold,
+        containment_threshold=args.containment_threshold,
+        min_area_frac=args.min_area_frac,
         pad=args.pad,
         blank_crops=args.blank_crops,
         row_tol=args.row_tol,
