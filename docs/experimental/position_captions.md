@@ -229,7 +229,7 @@ corroboration-only behaviour, which is what the pre-gate arm did.
 
 ## What leaves the flat bag (v2)
 
-A tag moves out of the bag into its clause when **all four** hold. Fail any one
+A tag moves out of the bag into its clause when **all five** hold. Fail any one
 and it stays flat *and* stays bound — i.e. that single tag degrades to v1's
 additive behaviour, which is why nothing here can produce a wrong caption, only
 a less-resolved one.
@@ -239,7 +239,8 @@ a less-resolved one.
 | 1 | **Not a character name** | The cast list stays flat and is bound as well — the hand-written convention, measured (19/19 duplicated ground-truth tags are names, 0 are attributes). The bag answers *who is in this image* and is how a prompt summons them; the clause answers *which one is where* |
 | 2 | **Exactly one clause claims it** | Two clauses claiming a tag means it is shared, and a shared attribute belongs to the bag |
 | 3 | **Corroboration**, for a character-invariant group | Hair color, eyes, body shape, species … are properties of a *character*, not of a view. On a `1girl, multiple views` sheet they hold in every panel, so moving `aqua hair` into one view would make the caption claim the other views are *not* aqua-haired. Such a tag moves only when the bag names **≥2 values of that group** — i.e. the caption is already enumerating per-subject values. Outfit / pose / expression carry no such implication and move freely |
-| 4 | **Attribution margin** (`--attribution_margin`, 0.35) | The winning crop must clear every other crop's probability for the tag. A tag the tagger *nearly* kept on the second subject is a shared attribute the threshold happened to split, and removing it would deny it of that subject |
+| 4 | **Exclusive keep** | No *other* crop kept the tag. A crop that reached the tag's own calibrated threshold has the attribute, whatever the clause builder later did with it — kept twice but bound once is a selection artifact (clause budget, discriminative filter, view gate), not an attribution. This is the tagger's own per-tag decision answering the question rule 5 can only approximate |
+| 5 | **Relative attribution margin** (`--attribution_margin`, 0.25) | The runner-up's probability must fall below `(1 - margin)` of the winner's, so a tag the tagger *nearly* kept on the second subject stays in the bag. Measured **relative to the winner**, not as an absolute gap — see below |
 
 Rule 3's exception: booru tags a **single** character with two hair colors when
 the hair is two-toned, so `multicolored hair` / `two-tone hair` / `gradient
@@ -250,6 +251,42 @@ ungrouped in `groups.yaml`, so they are matched by name.
 Rule 3 is deliberately **evidence-based rather than count-based**: 219 of the 373
 first-sweep proposals carry no girls-count tag at all, so a `detected ==
 characters` gate would have pinned nearly the whole corpus.
+
+#### Why the margin is relative, and why rule 4 exists (2026-08-17)
+
+Rules 4–5 replaced a single **absolute** gap test (`winner - runner_up ≥ 0.35`).
+That test asked a question the numbers cannot answer: the tagger's decision
+boundaries are **per-tag F1 thresholds spanning ~0.05–0.85**, so a fixed
+probability gap is a different — and mostly impossible — test for every tag.
+Re-scoring the 89 margin pins of the `ama_mitsuki` sweep against those
+thresholds:
+
+- **77 of 89** pinned tags had a runner-up the tagger **did not keep**. Rule 4's
+  own premise — "a tag the tagger nearly kept on a second subject" — described
+  only the other 12.
+- Low-threshold tags could never clear the gap no matter how one-sided the call:
+  `sleeves past fingers` (threshold 0.05) pinned at winner **0.342** vs
+  runner-up **0.000**; `pulling own clothes` 0.254 vs 0.001; `upshorts` 0.234 vs
+  0.001; `drink` 0.132 vs 0.000; `vest` 0.064 vs 0.000. A hard-zero runner-up is
+  not a shared attribute.
+- Meanwhile a high-threshold tag cleared the gap on genuinely ambiguous calls,
+  because 0.35 is cheap when both probabilities live near 1.
+
+The fix splits the question in two. Rule 4 takes the *categorical* half from the
+tagger itself (`kept`, i.e. the per-tag threshold), which needs no tuning. Rule
+5 keeps a *graded* guard for the runner-up that fell just short, but scores it as
+`1 - runner_up/winner`, which is scale-free and so means the same thing across
+the vocabulary. At the shipped 0.25 the pin population drops **89 → 28** (16
+margin + 12 exclusive-keep) and moved tags rise **309 → 370** on the same
+corpus, with the residual pins landing exactly where they should: `high heels`
+0.800 vs 1.000, `shoes` 0.719 vs 0.960, `black jacket` 0.765 vs 0.863, plus the
+genuinely-shared `long sleeves` / `jewelry` / `school uniform` / `sitting`. The
+motivating case was `ama_mitsuki/12948301` — `underwear`, visible on the left
+girl only, pinned flat at a 0.262 absolute gap because the right (clothed) crop
+carried the tagger's generic 0.581 prior against a 0.600 threshold.
+
+`--attribution_margin 0.0` reduces to rule 4 alone (trust the thresholds); the
+old behaviour is not recoverable by a flag, and should not be.
 
 The dry-run report records both sides per image — `moved[{tag, position,
 margin}]` and `pinned{tag: rule}` — so a reviewer can see exactly why a tag
@@ -371,7 +408,10 @@ over-budget caption (`kat_(bu-kunn)/dan_8451598`) would have had its tail
 silently truncated at TE-cache time, and stating each attribute once instead of
 twice puts it back under the cap. Mean saving 14.5 tokens (6.5%).
 
-Which rule pinned the tags that stayed flat, corpus-wide:
+Which rule pinned the tags that stayed flat, corpus-wide. **These counts predate
+the relative margin** (rules 4–5 above) — that change cut the `margin` class by
+~2/3 on the re-scored `ama_mitsuki` slice, so the corpus-wide `margin` row here
+should be read as the old absolute-gap behaviour pending a full re-sweep:
 
 | rule | tags |
 |---|---|
@@ -626,7 +666,7 @@ same shape as the problem the identity gate fixes and is **not** addressed.
 | `--keep_shared_tags` | — | Keep tags every crop agrees on (disables the discriminative rule) |
 | `--bind_view_traits` | — | On a repeated-subject layout (`multiple views` / comic panels), let a clause carry the character's name and traits. Gated by default — every view is the same girl; see the section above |
 | `--no_rewrite` | — | Additive v1: append the clauses, leave the flat bag untouched (so every bound attribute is asserted twice). The A/B control arm |
-| `--attribution_margin` | 0.35 | How far the winning crop must clear every other before a tag may **leave** the bag. The clause carries it either way |
+| `--attribution_margin` | 0.25 | How far the winning crop must clear every other **relative to its own probability** (`1 - runner_up/winner`) before a tag may **leave** the bag, on top of the hard rule that no other crop kept it. `0.0` trusts the tagger's per-tag thresholds alone. The clause carries the tag either way |
 | `--flatten` | off | Inverse pass — merge clauses back into the bag and drop them. Text only (no models). The undo, and the clause-free A/B corpus |
 | `--qwen3` / `--max_tokens` | — / 512 | Token-budget column + over-budget flag |
 
@@ -703,13 +743,14 @@ from) — which is why the checkbox ships off by default.
   separately; nothing is hardcoded to `girl`.
 - **Bag-removal tolerance is the open risk of v2.** Probe A validated clause
   *comprehension* (48/48 sides correct) — it did not validate that removing a
-  tag from the flat bag is safe for a model pretrained on flat bags. The four
+  tag from the flat bag is safe for a model pretrained on flat bags. The five
   rules above bound *which* tags move, not whether the model likes the resulting
   distribution; that is what the training A/B below answers.
-- **Is the margin in the right place?** 730 tags — the largest pinned class —
-  stay flat because the runner-up crop scored within 0.35. Deliberately
-  conservative; the report carries the per-move margin, so retune it against the
-  spot-check rather than by guess.
+- **Is the margin in the right place?** The absolute-gap version was measurably
+  *not* (see "Why the margin is relative"); the relative one at 0.25 is now
+  calibrated against one artist slice, not the corpus. The report carries the
+  per-move margin on the same scale as the knob, so retune it against a
+  full-corpus spot-check rather than by guess.
 - **`sole-value` on non-identity invariants.** `body_shape` / `skin` /
   `face_features` are in the invariant set, so a `2girls` caption naming one
   `large breasts` keeps it flat even when only one girl has it. Safe, and the

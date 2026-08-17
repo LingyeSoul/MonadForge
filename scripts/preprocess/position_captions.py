@@ -250,11 +250,13 @@ def parse_args() -> argparse.Namespace:
         "--attribution-margin",
         dest="attribution_margin",
         type=float,
-        default=0.35,
+        default=0.25,
         help="How far the winning crop's probability must clear every other "
-        "crop's before a tag may LEAVE the flat bag (the clause carries it "
-        "either way). Guards the one thing v2 can get wrong that v1 cannot: "
-        "removing an attribute the other subjects also have",
+        "crop's, RELATIVE to its own (1 - rival/winner), before a tag may LEAVE "
+        "the flat bag (the clause carries it either way). Applies on top of the "
+        "hard rule that no other crop kept the tag; 0.0 trusts the tagger's "
+        "per-tag thresholds alone. Guards the one thing v2 can get wrong that "
+        "v1 cannot: removing an attribute the other subjects also have",
     )
     c.add_argument(
         "--qwen3",

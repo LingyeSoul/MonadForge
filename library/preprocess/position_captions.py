@@ -19,7 +19,7 @@ Nothing is destroyed by the move — a moved tag is still in the caption, inside
 clause — and :func:`library.captioning.position_clauses.flatten_caption` merges
 it back, so an ``--apply`` run is reversible.
 
-Two rules bound what may leave the bag, because a wrong move is worse than a
+Three rules bound what may leave the bag, because a wrong move is worse than a
 wrong clause (it makes the caption assert that the *other* subjects lack the
 attribute):
 
@@ -29,9 +29,14 @@ attribute):
   only move when the bag names **two or more** values of that group (see
   ``_CHARACTER_INVARIANT_GROUPS``) — i.e. the caption is already enumerating
   per-subject values and binding them loses nothing.
-* **Attribution margin.** The winning crop's probability must clear every other
-  crop's by ``attribution_margin``, so a tag the tagger nearly kept on a second
-  subject stays in the bag (and stays duplicated in the clause).
+* **Exclusive keep.** No other crop may have *kept* the tag. This is the
+  tagger's own calibrated per-tag threshold answering "does this subject have
+  it too", which is the question the rule is actually asking.
+* **Relative attribution margin.** The runner-up crop's probability must fall
+  below ``(1 - attribution_margin)`` of the winner's, so a tag the tagger
+  *nearly* kept on a second subject stays in the bag (and stays duplicated in
+  the clause). Relative, not an absolute gap: per-tag thresholds span
+  ~0.05–0.85, so an absolute gap is a different test for every tag.
 
 On a **repeated-subject layout** — ``multiple views`` or a comic-panel page, the
 ``_LAYOUT_TAGS`` set — a third, stricter rule applies one level earlier, to what
@@ -803,7 +808,13 @@ def crop_instance(
 
 @dataclass(frozen=True)
 class MovedTag:
-    """One flat-bag tag the rewrite bound to a position and removed from the bag."""
+    """One flat-bag tag the rewrite bound to a position and removed from the bag.
+
+    ``margin`` is the *relative* slack the move cleared, ``1 - rival/winner``
+    over the two crops' probabilities — the same scale as
+    ``attribution_margin``, so a reviewer can read a report row against the knob
+    that let it through.
+    """
 
     tag: str
     position: str
@@ -850,7 +861,7 @@ def plan_bag_removals(
 ) -> RemovalPlan:
     """Decide which flat-bag tags the clauses have earned the right to take.
 
-    A tag moves out of the bag when all four hold:
+    A tag moves out of the bag when all five hold:
 
     1. **It is not a character name.** The cast list stays flat and is *also*
        bound — the hand-written convention, measured (see the ``character-name``
@@ -860,10 +871,18 @@ def plan_bag_removals(
     3. **Corroboration**, for a character-invariant group: the bag names ≥2
        values of that group, with no two-tone marker to explain them away. See
        ``_CHARACTER_INVARIANT_GROUPS``.
-    4. **Margin**: the winning crop beats every other crop's probability for the
-       tag by ``margin``. A tag the tagger nearly kept on a second subject is a
-       shared attribute the threshold happened to split, and removing it would
-       make the caption deny it of that subject.
+    4. **Exclusive keep**: no *other* crop kept the tag. A crop that reached the
+       tag's own calibrated threshold has the attribute, whatever the clause
+       builder later did with it — a tag kept twice but bound once is a
+       selection artifact (clause budget, discriminative filter, view gate), not
+       an attribution.
+    5. **Relative margin**: the runner-up's probability is below
+       ``(1 - margin)`` of the winner's. Scored *relative to the winner*, not as
+       an absolute gap, because the tagger's decision boundaries are per-tag and
+       span ~0.05–0.85: an absolute gap pins a 0.34-vs-**0.000** call on a
+       0.05-threshold tag (``sleeves past fingers``) while passing a
+       0.99-vs-0.60 call on a high-threshold one. The ratio is scale-free, so
+       one knob means the same thing across the vocabulary.
 
     Failing any of them is not an error — the tag simply stays in the bag *and*
     in its clause, which is exactly v1's additive behaviour for that one tag.
@@ -917,23 +936,24 @@ def plan_bag_removals(
                 blocked[key] = "sole-value"
                 continue
         winner = indices[0]
+        others = [j for j in range(len(clause_tags)) if j != winner]
+        if any(key in kept_sets[j] for j in others):
+            blocked[key] = "multi-kept"
+            continue
         mine = _score_of(score_sets[winner], kept_sets[winner], key)
         rival = max(
-            (
-                _score_of(score_sets[j], kept_sets[j], key)
-                for j in range(len(clause_tags))
-                if j != winner
-            ),
+            (_score_of(score_sets[j], kept_sets[j], key) for j in others),
             default=0.0,
         )
-        if mine - rival < margin:
+        slack = 1.0 - rival / mine if mine > 0.0 else 0.0
+        if slack < margin:
             blocked[key] = "margin"
             continue
         moved.append(
             MovedTag(
                 tag=bag[key],
                 position=positions[winner],
-                margin=round(mine - rival, 3),
+                margin=round(slack, 3),
             )
         )
     return RemovalPlan(moved=tuple(moved), blocked=blocked)
@@ -1030,10 +1050,12 @@ class PositionCaptionOptions:
     # v2: move an attributable tag out of the flat bag into its clause. False is
     # the additive v1 behaviour (bag untouched), kept for the training A/B.
     rewrite: bool = True
-    # How far the winning crop must clear every other crop before a tag is
-    # allowed to *leave* the bag. Only the removal is gated — a tag that fails
-    # the margin still enters its clause, so the caption degrades to v1 for it.
-    attribution_margin: float = 0.35
+    # How far the winning crop must clear every other crop, *relative to its own
+    # probability* (``1 - rival/winner``), before a tag may leave the bag — on
+    # top of the hard rule that no other crop kept it. Only the removal is gated
+    # — a tag that fails still enters its clause, so the caption degrades to v1
+    # for it. 0.0 = trust the tagger's thresholds alone.
+    attribution_margin: float = 0.25
 
 
 def detect_subjects(

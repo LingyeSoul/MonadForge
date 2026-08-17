@@ -14,9 +14,12 @@ Four invariants worth pinning:
    too few instances, and hallucinated character names all skip.
 4. **The v2 rewrite only removes what it has earned.** A tag leaves the flat bag
    when exactly one clause claims it, the bag corroborates a per-subject reading
-   (two views of one girl are not two girls), and the winning crop clears every
-   other by the attribution margin. Failing any of those degrades to v1 for that
-   one tag — bound *and* still flat — never to a wrong deletion.
+   (two views of one girl are not two girls), no other crop *kept* it, and the
+   winner clears the runner-up by the attribution margin — measured relative to
+   the winner's own probability, because per-tag thresholds span ~0.05–0.85 and
+   an absolute gap is therefore a different test for every tag. Failing any of
+   those degrades to v1 for that one tag — bound *and* still flat — never to a
+   wrong deletion.
 """
 
 from __future__ import annotations
@@ -523,6 +526,58 @@ def test_a_contested_tag_stays_in_the_bag(pipeline_bits):
     assert proposal.pinned["maid"] == "margin"
     assert "maid" in parsed.clauses[0].tags  # still bound, just also still flat
     assert "playboy bunny" not in parsed.flat_tags  # 0.9 vs 0.0 clears the margin
+
+
+def test_a_low_threshold_tag_the_other_crop_never_saw_moves(pipeline_bits):
+    """The absolute-gap bug: a tag whose F1 threshold is ~0.05 can be a decisive
+    0.34-vs-0.000 call and still never produce a 0.35 probability gap. Judged
+    relative to the winner, the runner-up's 0.000 is what it looks like.
+    """
+    proposal = _views_proposal(
+        pipeline_bits,
+        "safe, 2girls, akita neru, hatsune miku, sleeves past fingers, maid",
+        [
+            {
+                # 0.342 clears the tag's own (low) threshold, so it is kept.
+                "kept": {"akita neru": 0.9, "sleeves past fingers": 0.342},
+                "scores": {"sleeves past fingers": 0.342, "maid": 0.01},
+                "groups": {},
+            },
+            {
+                "kept": {"hatsune miku": 0.9, "maid": 0.9},
+                "scores": {"sleeves past fingers": 0.0, "maid": 0.9},
+                "groups": {},
+            },
+        ],
+    )
+    parsed = parse_caption(proposal.proposed)
+    assert "sleeves past fingers" not in parsed.flat_tags
+    assert "sleeves past fingers" in parsed.clauses[0].tags
+    assert "margin" not in proposal.pinned.get("sleeves past fingers", "")
+
+
+def test_a_tag_the_other_crop_kept_stays_in_the_bag(pipeline_bits):
+    """Kept twice, bound once: the second clause dropped it (budget /
+    discriminative filter / view gate), not the tagger. That is a selection
+    artifact, so the bag keeps the tag no matter how wide the score gap is.
+    """
+    from library.preprocess.position_captions import (
+        ClauseVocabulary,
+        RemovalPlan,
+        plan_bag_removals,
+    )
+
+    vocabulary = ClauseVocabulary(tag_to_group={"maid": "costume"})
+    plan = plan_bag_removals(
+        ("2girls", "maid"),
+        [["maid"], []],
+        ["left", "right"],
+        [{"maid": 0.99}, {"maid": 0.55}],
+        [{"maid": 0.99}, {"maid": 0.55}],
+        vocabulary=vocabulary,
+        margin=0.25,
+    )
+    assert plan == RemovalPlan(moved=(), blocked={"maid": "multi-kept"})
 
 
 def test_a_tag_bound_to_two_subjects_stays_in_the_bag(pipeline_bits):
