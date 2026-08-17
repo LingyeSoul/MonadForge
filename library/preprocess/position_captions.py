@@ -793,26 +793,80 @@ def box_containment(a: Sequence[float], b: Sequence[float]) -> float:
     return (ix * iy) / smallest if smallest > 0 else 0.0
 
 
+def mask_box_fill(det: Detection) -> float | None:
+    """Fraction of the detection's own box that its mask actually claims.
+
+    ``None`` when the detection carries no mask (stub tests, part boxes) so
+    callers can fall back to score-only behaviour.
+    """
+    if det.mask is None:
+        return None
+    mask = np.asarray(det.mask)
+    if mask.ndim == 3:
+        mask = mask[0]
+    height, width = mask.shape
+    x1, y1, x2, y2 = det.box
+    window = (
+        mask[
+            max(0, int(y1)) : min(height, int(y2)),
+            max(0, int(x1)) : min(width, int(x2)),
+        ]
+        > 0.5
+    )
+    return float(window.mean()) if window.size else 0.0
+
+
 def dedupe_detections(
     detections: Iterable[Detection],
     iou_threshold: float,
     containment_threshold: float = 1.01,
+    fill_ratio_threshold: float = 0.0,
 ) -> list[Detection]:
     """Greedy IoU + containment suppression, highest score first.
 
     A threshold above 1.0 disables the containment rule — a box can never be
     more than fully inside another — leaving plain-IoU behaviour.
+
+    ``fill_ratio_threshold`` > 0 enables the mask-quality tie-break
+    (``docs/proposal/dedupe_mask_quality.md``, Phase 0 fixed the default at
+    2.0): when a candidate collides with a kept box — the pair already judged
+    to be the same object — and the candidate's :func:`mask_box_fill` beats the
+    kept box's by at least this ratio, the candidate *replaces* the kept box
+    instead of being dropped. SAM3's score is box-level confidence and says
+    nothing about mask coherence, so a near-empty duplicate can outscore the
+    clean mask by a hair and hand every downstream consumer a blank crop.
+    Instance count is invariant by construction — the swap only changes which
+    of two matched duplicates represents the object. This is deliberately NOT
+    an absolute fill gate (settled negative: clean figures live at fill ~0.27);
+    the ratio only ever compares the two halves of one matched pair. When
+    either mask is missing, the pair falls back to score-only suppression.
+    Single-pass: the swapped-in geometry is not re-checked against other kept
+    boxes (bounded, order-stable; no cascade observed over the full corpus).
     """
     ranked = sorted(detections, key=lambda d: -d.score)
     keep: list[Detection] = []
     for det in ranked:
-        if any(
-            box_iou(det.box, k.box) >= iou_threshold
-            or box_containment(det.box, k.box) >= containment_threshold
-            for k in keep
-        ):
+        hit = next(
+            (
+                i
+                for i, k in enumerate(keep)
+                if box_iou(det.box, k.box) >= iou_threshold
+                or box_containment(det.box, k.box) >= containment_threshold
+            ),
+            None,
+        )
+        if hit is None:
+            keep.append(det)
             continue
-        keep.append(det)
+        if fill_ratio_threshold > 0:
+            kept_fill = mask_box_fill(keep[hit])
+            det_fill = mask_box_fill(det)
+            if (
+                kept_fill is not None
+                and det_fill is not None
+                and det_fill / max(kept_fill, 1e-9) >= fill_ratio_threshold
+            ):
+                keep[hit] = det
     return keep
 
 
@@ -1128,6 +1182,10 @@ class PositionCaptionOptions:
     # Containment suppression is OFF by default: measured, it costs far more
     # than it buys (see ``box_containment``).
     containment_threshold: float = 1.01
+    # Mask-quality tie-break inside an NMS-matched pair — see
+    # ``dedupe_detections``. 2.0 sits in the measured empty ratio band
+    # (multiview_audit.md §5.4); 0 disables (score-only survivor).
+    dedupe_fill_ratio: float = 2.0
     min_area_frac: float = 0.005
     pad: float = 0.06
     blank_crops: bool = True
@@ -1195,6 +1253,7 @@ def detect_subjects(
             detect_fn(image, threshold),
             options.iou_threshold,
             options.containment_threshold,
+            options.dedupe_fill_ratio,
         )
         return drop_small_boxes(dets, image.size, options.min_area_frac)
 

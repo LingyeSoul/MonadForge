@@ -170,6 +170,15 @@ def parse_args() -> argparse.Namespace:
         "subjects to save 12 group boxes",
     )
     g.add_argument(
+        "--dedupe_fill_ratio",
+        "--dedupe-fill-ratio",
+        dest="dedupe_fill_ratio",
+        type=float,
+        default=2.0,
+        help="Mask-quality tie-break inside an NMS-matched pair; 0 = off "
+        "(score-only survivor). See docs/proposal/dedupe_mask_quality.md.",
+    )
+    g.add_argument(
         "--min_area_frac",
         "--min-area-frac",
         dest="min_area_frac",
@@ -461,6 +470,7 @@ def main() -> None:
         part_containment_threshold=args.part_containment_threshold,
         iou_threshold=args.iou_threshold,
         containment_threshold=args.containment_threshold,
+        dedupe_fill_ratio=args.dedupe_fill_ratio,
         min_area_frac=args.min_area_frac,
         pad=args.pad,
         blank_crops=args.blank_crops,

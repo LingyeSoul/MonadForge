@@ -28,6 +28,7 @@ import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -764,6 +765,68 @@ def test_a_nested_subject_survives_dedupe():
     # Plain IoU duplicates still go, either way.
     dup = Detection(box=(10, 10, 990, 490), score=0.7)
     assert dedupe_detections([host, dup], 0.65) == [host]
+
+
+def test_mask_box_fill():
+    from library.preprocess.position_captions import Detection, mask_box_fill
+
+    assert mask_box_fill(Detection(box=(0, 0, 10, 10), score=0.5)) is None
+    mask = np.zeros((100, 100), dtype=np.float32)
+    mask[0:50, 0:100] = 1.0
+    det = Detection(box=(0, 0, 100, 100), score=0.5, mask=mask)
+    assert mask_box_fill(det) == pytest.approx(0.5)
+    # The window clips to the mask, so an out-of-range box doesn't blow up.
+    wide = Detection(box=(-10, -10, 200, 50), score=0.5, mask=mask)
+    assert mask_box_fill(wide) == pytest.approx(1.0)
+
+
+def test_fill_ratio_swaps_the_survivor_inside_a_matched_pair():
+    # The 5847152 shape: a near-empty duplicate outscores the clean mask by a
+    # hair; with the tie-break on, the clean mask survives instead.
+    from library.preprocess.position_captions import Detection, dedupe_detections
+
+    speckle = np.zeros((100, 100), dtype=np.float32)
+    speckle[0:5, :] = 1.0  # fill 0.05 in its own box
+    clean = np.zeros((100, 100), dtype=np.float32)
+    clean[0:90, :] = 1.0  # fill 1.0 in its own box
+    garbage = Detection(box=(0, 0, 100, 100), score=0.9, mask=speckle)
+    good = Detection(box=(0, 0, 100, 90), score=0.87, mask=clean)  # IoU 0.9
+
+    # Off (default): score alone picks the survivor — today's behaviour.
+    assert dedupe_detections([garbage, good], 0.65) == [garbage]
+    # On: the pair is matched either way, but the far better mask wins.
+    kept = dedupe_detections([garbage, good], 0.65, fill_ratio_threshold=2.0)
+    assert kept == [good]
+    # Count is invariant by construction — an unrelated box is untouched.
+    other = Detection(box=(200, 200, 300, 300), score=0.5, mask=clean)
+    kept = dedupe_detections([garbage, good, other], 0.65, fill_ratio_threshold=2.0)
+    assert len(kept) == 2 and good in kept and other in kept
+
+
+def test_fill_ratio_below_threshold_keeps_score_order():
+    # A benign inversion (ratio < R) must not swap — a missed swap is today's
+    # behaviour, a wrong swap is a regression.
+    from library.preprocess.position_captions import Detection, dedupe_detections
+
+    kept_mask = np.zeros((100, 100), dtype=np.float32)
+    kept_mask[0:40, :] = 1.0  # fill 0.40
+    better_mask = np.zeros((100, 100), dtype=np.float32)
+    better_mask[0:50, :] = 1.0  # fill ~0.56 in a (0,0,100,90) box: ratio ~1.4
+    a = Detection(box=(0, 0, 100, 100), score=0.9, mask=kept_mask)
+    b = Detection(box=(0, 0, 100, 90), score=0.85, mask=better_mask)
+    assert dedupe_detections([a, b], 0.65, fill_ratio_threshold=2.0) == [a]
+
+
+def test_fill_ratio_falls_back_to_score_when_a_mask_is_missing():
+    from library.preprocess.position_captions import Detection, dedupe_detections
+
+    clean = np.ones((100, 100), dtype=np.float32)
+    a = Detection(box=(0, 0, 100, 100), score=0.9)  # no mask (stub / part box)
+    b = Detection(box=(0, 0, 100, 90), score=0.85, mask=clean)
+    assert dedupe_detections([a, b], 0.65, fill_ratio_threshold=2.0) == [a]
+    c = Detection(box=(0, 0, 100, 90), score=0.85)  # candidate lacks the mask
+    d = Detection(box=(0, 0, 100, 100), score=0.9, mask=clean)
+    assert dedupe_detections([d, c], 0.65, fill_ratio_threshold=2.0) == [d]
 
 
 def test_an_inset_is_too_small_to_be_a_subject(pipeline_bits):
