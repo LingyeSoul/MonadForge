@@ -187,6 +187,19 @@ def parse_args() -> argparse.Namespace:
     c = p.add_argument_group("clause composition")
     c.add_argument("--max_clause_tags", type=int, default=8)
     c.add_argument(
+        "--max_novel_tags",
+        "--max-novel-tags",
+        dest="max_novel_tags",
+        type=int,
+        default=1,
+        help="How many tags a clause may introduce that the caption never "
+        "contained. The rest of the clause is filled from the flat bag first. "
+        "Only a bag tag can MOVE — a novel one is a pure addition the curated "
+        "caption never made. 0 = never invent, --max_clause_tags = the old "
+        "bag-blind behaviour (46%% novel; on ama_mitsuki, 1 vs 8 cut novel tags "
+        "515 to 115 and the caption 40%% shorter, with the moved set unchanged)",
+    )
+    c.add_argument(
         "--name_confidence",
         type=float,
         default=0.5,
@@ -440,6 +453,7 @@ def main() -> None:
         blank_crops=args.blank_crops,
         row_tol=args.row_tol,
         max_clause_tags=args.max_clause_tags,
+        max_novel_tags=args.max_novel_tags,
         name_confidence=args.name_confidence,
         allow_unlisted_names=args.allow_unlisted_names,
         min_instances=args.min_instances,
@@ -487,6 +501,17 @@ def main() -> None:
         # the two safety rules pinned the rest. Zero under --no_rewrite.
         "rewritten": stats.rewritten,
         "moved_tags": stats.moved_tags,
+        # Clause composition. ``reuse_ratio`` is the headline for the
+        # move-don't-invent rule: a bag tag is a candidate move, a novel one can
+        # only ever be an addition.
+        "max_novel_tags": args.max_novel_tags,
+        "clause_tags": stats.clause_tags,
+        "novel_tags": stats.novel_tags,
+        "reuse_ratio": (
+            round(1.0 - stats.novel_tags / stats.clause_tags, 3)
+            if stats.clause_tags
+            else None
+        ),
         "pinned_tags": dict(sorted(stats.pinned_tags.items(), key=lambda kv: -kv[1])),
         "skipped": dict(sorted(stats.skipped.items(), key=lambda kv: -kv[1])),
         "part_prompts": list(options.part_prompts),

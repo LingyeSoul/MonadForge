@@ -267,7 +267,9 @@ def pipeline_bits():
     vocabulary = ClauseVocabulary(
         characters=frozenset({"akita neru", "hatsune miku"}),
         excluded=frozenset({"vocaloid"}),
-        exclusive_groups=frozenset({"hair_color", "eye_color"}),
+        # ``body_shape`` is exclusive in the shipped groups.yaml, and the bag
+        # gate is derived from this set — see ClauseVocabulary.gated_groups.
+        exclusive_groups=frozenset({"hair_color", "eye_color", "body_shape"}),
         tag_to_group={
             "blonde hair": "hair_color",
             "aqua hair": "hair_color",
@@ -276,6 +278,7 @@ def pipeline_bits():
             "twintails": "hairstyle",
             "long hair": "hair_length",
             "large breasts": "body_shape",
+            "flat chest": "body_shape",
             "maid": "costume",
             "playboy bunny": "costume",
             "ass": "body_parts",
@@ -1089,6 +1092,189 @@ def test_bag_gate_still_allows_every_color_the_caption_listed(pipeline_bits):
     assert proposal.ok
     clauses = parse_caption(proposal.proposed).clauses
     assert [c.tags[0] for c in clauses] == ["blonde hair", "aqua hair"]
+
+
+_CROWDED_CAPTION = (
+    "safe, 2girls, akita neru, hatsune miku, blonde hair, aqua hair, maid, ass"
+)
+
+
+def _crowded_proposal(pipeline_bits, **option_overrides):
+    """A crop the tagger is far more talkative about than the caption is.
+
+    Four of its kept tags are in the bag; five are not. With eight clause slots
+    the bag-blind selector filled most of them with the novel five — none of
+    which can ever *move*, because ``plan_bag_removals`` only removes what is in
+    the bag.
+    """
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    return propose_for_image(
+        image,
+        _CROWDED_CAPTION,
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(
+            [
+                {
+                    "kept": {
+                        "akita neru": 0.9,
+                        "blonde hair": 0.8,
+                        "maid": 0.7,
+                        "ass": 0.6,
+                        # Nothing in the caption claims any of these.
+                        "red eyes": 0.75,
+                        "long hair": 0.95,
+                        "large breasts": 0.9,
+                        "thighs": 0.85,
+                        "playboy bunny": 0.5,
+                    },
+                    "groups": {"hair_color": "blonde hair"},
+                },
+                {
+                    "kept": {"hatsune miku": 0.9, "aqua hair": 0.8},
+                    "groups": {"hair_color": "aqua hair"},
+                },
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(**option_overrides),
+    )
+
+
+def test_a_clause_fills_from_the_bag_before_inventing(pipeline_bits):
+    """The crop decides *where*; the caption decides *what*.
+
+    Every bag tag this crop kept is bound, and exactly one novel tag rides
+    along. Ordering is still the ranking (name → hair → eyes → the rest), not
+    the admission order.
+    """
+    proposal = _crowded_proposal(pipeline_bits)
+    assert proposal.ok, proposal.status
+    clause = parse_caption(proposal.proposed).clauses[0]
+    assert clause.tags == ("akita neru", "blonde hair", "red eyes", "maid", "ass")
+    assert proposal.instances[0].novel == 1
+
+
+def test_max_novel_tags_zero_never_invents(pipeline_bits):
+    proposal = _crowded_proposal(pipeline_bits, max_novel_tags=0)
+    bag = set(parse_caption(_CROWDED_CAPTION).flat_tags)
+    bound = {t for c in parse_caption(proposal.proposed).clauses for t in c.tags}
+    assert bound <= bag
+    assert all(inst.novel == 0 for inst in proposal.instances)
+
+
+def test_the_bag_blind_budget_is_still_reachable(pipeline_bits):
+    """``max_novel_tags == max_clause_tags`` restores the pre-budget behaviour.
+
+    Kept as the A/B arm: the reuse-first default is a caption-quality claim, and
+    the arm it has to beat is the one that filled every slot with whatever the
+    crop tagger scored highest.
+    """
+    proposal = _crowded_proposal(pipeline_bits, max_novel_tags=8)
+    clause = parse_caption(proposal.proposed).clauses[0]
+    assert len(clause.tags) == 8
+    assert {"large breasts", "thighs", "long hair"} <= set(clause.tags)
+
+
+def test_the_novel_budget_never_costs_a_move(pipeline_bits):
+    """Tightening the budget may only remove padding, never a binding.
+
+    This is the invariant the measurement actually supports: on ama_mitsuki the
+    budget cut novel clause tags 515 → 115 while the bound bag tags and all 370
+    moves came out byte-identical. It cannot rescue a crowded-out bag tag either
+    — ``rest`` is already ranked bag-first, so the clause cap is only reached
+    once the bag is spent — so equality in both directions is the contract.
+    """
+    budgeted = _crowded_proposal(pipeline_bits)
+    bag_blind = _crowded_proposal(pipeline_bits, max_novel_tags=8)
+    assert {m["tag"] for m in budgeted.moved} == {m["tag"] for m in bag_blind.moved}
+    assert {"maid", "ass"} <= {m["tag"] for m in budgeted.moved}
+    # …and the padding really is gone.
+    assert budgeted.instances[0].novel == 1
+    assert bag_blind.instances[0].novel > 1
+
+
+def test_the_bag_gate_covers_every_exclusive_group_not_just_identity(pipeline_bits):
+    """Item 2, generalized: an exclusive group holds exactly one value.
+
+    So a crop naming a second one is a contradiction, not extra detail. The
+    hand-picked identity trio left the rest open, and the full-corpus dry run
+    emitted 150 such contradictions — 103 of them ``body_shape``, the bag
+    saying ``flat chest`` while the clause said ``large breasts``.
+    """
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+
+    def run(**overrides):
+        return propose_for_image(
+            image,
+            "safe, 2girls, flat chest, blonde hair, aqua hair",
+            detect_fn=_detector(
+                {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+            ),
+            tag_fn=_tagger(
+                [
+                    {
+                        "kept": {"blonde hair": 0.8, "large breasts": 0.9},
+                        "groups": {"hair_color": "blonde hair"},
+                    },
+                    {"kept": {"aqua hair": 0.8}, "groups": {"hair_color": "aqua hair"}},
+                ]
+            ),
+            vocabulary=vocabulary,
+            options=Options(**overrides),
+        )
+
+    gated = run()
+    assert gated.ok, gated.status
+    assert not any(
+        "large breasts" in c.tags for c in parse_caption(gated.proposed).clauses
+    )
+    # The novel budget is not what blocked it: with the gate off, the same tag
+    # takes the same free slot.
+    ungated = run(bag_gated_identity=False)
+    assert any(
+        "large breasts" in c.tags for c in parse_caption(ungated.proposed).clauses
+    )
+
+
+def test_a_kept_bag_value_outranks_the_softmax_winner(pipeline_bits):
+    """The gate and the priority path must not fight each other.
+
+    The crop's softmax says ``green hair``; the caption never listed it, so the
+    gate rejects it. Taking the softmax winner unconditionally then left the
+    group empty even though the crop *also* kept the ``blonde hair`` the caption
+    did list — the clause lost a bindable tag to a rejected guess.
+    """
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        "safe, 2girls, blonde hair, aqua hair",
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(
+            [
+                {
+                    "kept": {"blonde hair": 0.7, "green hair": 0.9},
+                    "groups": {"hair_color": "green hair"},
+                },
+                {"kept": {"aqua hair": 0.8}, "groups": {"hair_color": "aqua hair"}},
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(),
+    )
+    assert proposal.ok, proposal.status
+    clauses = parse_caption(proposal.proposed).clauses
+    assert clauses[0].tags[0] == "blonde hair"
+    assert not any("green hair" in c.tags for c in clauses)
 
 
 def test_part_top_up_stops_at_the_target(pipeline_bits):

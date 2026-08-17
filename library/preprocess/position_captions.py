@@ -19,6 +19,23 @@ Nothing is destroyed by the move — a moved tag is still in the caption, inside
 clause — and :func:`library.captioning.position_clauses.flatten_caption` merges
 it back, so an ``--apply`` run is reversible.
 
+**A clause moves tags; it does not invent them.** The crop decides *where* an
+attribute belongs, the caption decides *what* is in the image — so the bag fills
+each clause first and only ``max_novel_tags`` (1) slots are left for something
+the caption never contained. A novel clause tag cannot be a move
+(:func:`plan_bag_removals` only removes what is in the bag), so bag-blind
+selection spent 46% of the clause budget on assertions the curated caption never
+made and that bind nothing.
+
+Measured on ``ama_mitsuki`` (55 proposed images, 131 clauses) against the same
+pass with ``max_novel_tags=8``: clause tags 983 → 583, novel 515 → 115, reuse
+0.476 → 0.803. The bound bag tags and all 370 moves are **byte-identical** — the
+budget removes only the novel padding. It does not buy extra bindings, and it
+was never crowding them out: the candidate ranking already put bag tags ahead of
+novel ones, so the clause cap was reached only after the bag was exhausted. What
+it buys is a caption that asserts 400 fewer unverified things and is 40%
+shorter.
+
 Three rules bound what may leave the bag, because a wrong move is worse than a
 wrong clause (it makes the caption assert that the *other* subjects lack the
 attribute):
@@ -168,12 +185,23 @@ _IDENTITY_GROUPS = frozenset({"hair_color", "eye_color", "hair_length", "hairsty
 # full-corpus dry run: 520 of 1600 identity clause tags claimed a value the
 # caption contradicted, 33% of the total.
 #
-# ``hairstyle`` is deliberately NOT gated even though it is a priority group:
-# a crop legitimately reveals a ``hair bun`` or ``sidelocks`` the booru caption
-# never bothered to tag, and unlike a color it does not contradict what is
-# there. ``body_shape`` and ``fashion_style`` are left out for the same reason —
-# a per-subject value the bag omitted is real information, not a contradiction.
-_BAG_GATED_GROUPS = ("hair_color", "eye_color", "hair_length")
+# These three are the *hand-picked* additions. The gate's main body is derived,
+# not listed: **every exclusive (softmax) subject group the vocabulary declares**
+# is gated the same way, because an exclusive group holds exactly one value by
+# construction — so a crop naming a second one is not extra detail, it is a
+# contradiction. Hand-picking three left the rest open, and the 2026-08-17
+# full-corpus dry run emitted 150 clause tags that contradicted a value the bag
+# already named: 103 ``body_shape`` (bag ``flat chest`` → clause ``large
+# breasts``), 39 ``fashion_style`` (``nude`` → ``completely nude``), plus
+# ``species_nonhuman`` (``fox girl`` → ``cat girl``), ``age`` and ``gesture``.
+# ``hair_length`` is the one member here that is *not* exclusive in
+# ``groups.yaml``, which is why the hand list survives the derivation.
+#
+# Multi-value groups stay ungated, deliberately: ``hairstyle`` legitimately
+# reveals a ``hair bun`` or ``sidelocks`` the booru caption never bothered to
+# tag, and unlike a color it does not contradict what is there. See
+# ``_gated_groups``.
+_BAG_GATED_GROUPS = frozenset({"hair_color", "eye_color", "hair_length"})
 
 # Groups whose value belongs to a **character**, not to a view of one. The v2
 # rewrite treats them specially: on a ``1girl, multiple views`` sheet every panel
@@ -330,6 +358,17 @@ class ClauseVocabulary:
     def group_of(self, tag: str) -> str | None:
         return self.tag_to_group.get(tag)
 
+    def gated_groups(self) -> frozenset[str]:
+        """Groups where a clause may only pick a value the flat bag already named.
+
+        The hand-picked ``_BAG_GATED_GROUPS`` plus every **exclusive** subject
+        group the checkpoint declares. Derived rather than listed so the gate
+        cannot drift from ``groups.yaml``: whatever the tagger models as a
+        softmax over one subject is, by construction, a group where a second
+        value is a contradiction rather than extra detail.
+        """
+        return _BAG_GATED_GROUPS | (self.exclusive_groups & SUBJECT_GROUPS)
+
     def is_subject_tag(self, tag: str) -> bool:
         return self.group_of(tag) in SUBJECT_GROUPS
 
@@ -353,6 +392,7 @@ class ClauseVocabulary:
         allow_identity: bool = True,
         bag_gated_identity: bool = True,
         view_invariant: bool = False,
+        max_novel_tags: int = 1,
     ) -> list[str]:
         """Clause tags for one crop, ordered most-disambiguating first.
 
@@ -361,6 +401,27 @@ class ClauseVocabulary:
         image — the crop only decides *where*); ``attributable`` is the set of
         tags this crop is the **only** one to keep; ``shared`` is the set *every*
         crop keeps.
+
+        **The bag fills the clause first.** Candidates are ranked once, then
+        admitted in two passes: everything already in ``flat_bag``, and only
+        then up to ``max_novel_tags`` tags the caption never contained. The
+        emitted order is the ranking, not the admission order, so a clause still
+        reads hair-color-first.
+
+        The split exists because a novel clause tag is structurally dead weight
+        for this feature. :func:`plan_bag_removals` can only *move* a tag that is
+        in the bag, so a tag the caption never had is a pure v1-style addition:
+        it binds nothing that was ambiguous and asserts something the curated
+        caption declined to. The 2026-08-17 full-corpus dry run emitted 7538
+        clause tags of which 3447 (45.7%) were novel, against 4.8 moves per image
+        out of 19.1 clause tags.
+
+        The budget does **not** rescue crowded-out bag tags — measured, the bound
+        bag set is identical with and without it, because ``rest`` below is
+        already ranked bag-first and the clause cap is reached only once the bag
+        is spent. It removes padding, not competition. A small budget rather than
+        zero: a crop genuinely does reveal a per-subject detail the booru caption
+        skipped, and that is worth one slot.
 
         **A clause only carries what tells its subject apart.** With
         ``discriminative_only`` (the default), ``shared`` tags are suppressed:
@@ -379,9 +440,12 @@ class ClauseVocabulary:
         crop came back with a hair color and an eye color, all invented.
 
         ``bag_gated_identity`` (on by default) applies the milder form of the
-        same rule to *every* crop: for a group in ``_BAG_GATED_GROUPS`` the flat
-        bag outranks the tagger, so a clause carries a hair color the caption
-        named or none at all. See that constant for the measurement.
+        same rule to *every* crop: for a group in :meth:`gated_groups` — the
+        identity trio plus every exclusive subject group — the flat bag outranks
+        the tagger, so a clause carries a hair color, or a bust size, or a
+        species the caption named, or none at all. See ``_BAG_GATED_GROUPS`` for
+        the measurement. Note the gate only fires once the bag has spoken for
+        that group; a group the caption never mentions stays open to the crop.
 
         ``view_invariant`` is the repeated-subject-layout form, and it is the
         strongest of the three: the subjects are one character drawn several
@@ -394,12 +458,12 @@ class ClauseVocabulary:
         seen: set[str] = set()
         taken_groups: set[str] = set()
         blocked = shared if discriminative_only else frozenset()
-        # Which identity groups the caption has already spoken for. A crop may
-        # only pick from those members; see ``bag_gated`` in ``add``.
+        # Which gated groups the caption has already spoken for. A crop may only
+        # pick from those members; see the ``bag_members`` test in ``add``.
         bag_members = (
             {
                 group: {t for t in flat_bag if self.group_of(t) == group}
-                for group in _BAG_GATED_GROUPS
+                for group in self.gated_groups()
             }
             if bag_gated_identity
             else {}
@@ -431,6 +495,9 @@ class ClauseVocabulary:
             out.append(tag)
             return True
 
+        # ---- Rank the candidates (this is the *emitted* order) --------------
+        candidates: list[str] = []
+
         # 1. Character name. A name the caption never claimed is a crop
         #    hallucination, so by default it must appear in the flat bag.
         #
@@ -455,30 +522,35 @@ class ClauseVocabulary:
         )
         for name in names:
             if allow_unlisted_names or name in flat_bag:
-                add(name)  # no-op when the name is shared by every crop
+                candidates.append(name)
                 break  # one identity per subject
 
         # 2. Exclusive-group winners (hair color, eye color, …). These are the
         #    softmax_when_solo groups, and a single-subject crop is exactly the
         #    condition under which they fire — the whole point of cropping.
         for group in _PRIORITY_GROUPS:
-            winner = groups.get(group)
+            members = sorted(
+                (t for t in kept if self.group_of(t) == group),
+                key=lambda t: -kept[t],
+            )
+            # A kept member the caption already named outranks the softmax
+            # winner. Without this the gate and the winner fight each other: on
+            # a gated group a novel winner is rejected by ``add`` and the group
+            # then emits nothing, even though the crop also kept the very value
+            # the bag listed. Reuse is the whole point, so it wins the slot.
+            winner = next((t for t in members if t in flat_bag), None)
             if winner is None:
                 # Group didn't fire (contaminated / multi-person crop): fall
                 # back to the highest-probability kept member of that group.
-                members = sorted(
-                    (t for t in kept if self.group_of(t) == group),
-                    key=lambda t: -kept[t],
-                )
-                winner = members[0] if members else None
+                winner = groups.get(group) or (members[0] if members else None)
             if winner:
-                add(winner)
+                candidates.append(winner)
 
-        # 3. Everything else, preferring tags the caption already curated.
+        # 3. Everything else, ranking tags the caption already curated first.
         rest = [
             t
             for t in kept
-            if t not in seen
+            if t not in candidates
             and not is_count_tag(t)
             and not is_rating_tag(t)
             and not is_artist_tag(t)
@@ -488,10 +560,22 @@ class ClauseVocabulary:
             and (self.is_subject_tag(t) or (t in flat_bag and t in attributable))
         ]
         rest.sort(key=lambda t: (t not in flat_bag, -kept[t]))
-        for tag in rest:
-            if len(out) >= max_tags:
-                break
-            add(tag)
+        candidates.extend(rest)
+
+        # ---- Admit: the bag first, then a bounded number of novel tags ------
+        rank = {tag: i for i, tag in enumerate(candidates)}
+        novel_budget = max(0, max_novel_tags)
+        for reuse_pass in (True, False):
+            for tag in candidates:
+                if len(out) >= max_tags:
+                    break
+                if (tag in flat_bag) is not reuse_pass:
+                    continue
+                if not reuse_pass and novel_budget <= 0:
+                    break
+                if add(tag) and not reuse_pass:
+                    novel_budget -= 1
+        out.sort(key=lambda t: rank[t])
         return out[:max_tags]
 
 
@@ -967,6 +1051,11 @@ class InstanceProposal:
     tags: list[str]
     crop: str | None = None
     source: str = "subject"
+    # How many of ``tags`` the flat bag did not already contain. The reuse
+    # ratio is the headline number for this feature — a clause tag that came
+    # from the bag is a candidate *move*, a novel one can only ever be an
+    # addition — so it is reported per instance rather than recomputed offline.
+    novel: int = 0
 
 
 @dataclass
@@ -1003,6 +1092,10 @@ class PositionCaptionStats:
     written: int = 0
     rewritten: int = 0
     moved_tags: int = 0
+    # Clause composition: how many tags the clauses carry in total and how many
+    # of those the caption never had. ``clause_tags - novel_tags`` is reuse.
+    clause_tags: int = 0
+    novel_tags: int = 0
     pinned_tags: dict[str, int] = field(default_factory=dict)
     skipped: dict[str, int] = field(default_factory=dict)
 
@@ -1036,6 +1129,13 @@ class PositionCaptionOptions:
     blank_crops: bool = True
     row_tol: float = 0.25
     max_clause_tags: int = 8
+    # How many tags the caption never contained a single clause may introduce.
+    # The rest of its budget is filled from the flat bag, because only a bag tag
+    # can actually *move* — a novel one is a pure v1-style addition. Measured on
+    # ama_mitsuki, going from 8 to 1 cut novel clause tags 515 → 115 (reuse 0.476
+    # → 0.803) with the moved set unchanged. 0 = never invent;
+    # ``max_clause_tags`` = the old bag-blind behaviour.
+    max_novel_tags: int = 1
     name_confidence: float = 0.5
     allow_unlisted_names: bool = False
     min_instances: int = 2
@@ -1250,6 +1350,7 @@ def propose_for_image(
             allow_identity=det.source == "subject",
             bag_gated_identity=options.bag_gated_identity,
             view_invariant=view_invariant,
+            max_novel_tags=options.max_novel_tags,
         )
         crop_name = crop_sink(i, positions[i], crops[i]) if crop_sink else None
         proposal.instances.append(
@@ -1260,6 +1361,7 @@ def propose_for_image(
                 tags=tags,
                 crop=crop_name,
                 source=det.source,
+                novel=sum(1 for t in tags if t.strip().lower() not in flat_bag),
             )
         )
 
@@ -1423,6 +1525,8 @@ def run_position_captions(
                 _save_skip_overlay(crops_dir, rel, image, proposal)
             continue
         stats.proposed += 1
+        stats.clause_tags += sum(len(i.tags) for i in proposal.instances)
+        stats.novel_tags += sum(i.novel for i in proposal.instances)
         if proposal.moved:
             stats.rewritten += 1
             stats.moved_tags += len(proposal.moved)

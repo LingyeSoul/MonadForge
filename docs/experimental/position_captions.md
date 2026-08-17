@@ -163,6 +163,49 @@ single-subject crop is exactly the condition under which they fire, which is the
 whole point of cropping) → everything else ranked, preferring tags the caption
 already curated. Cap 8 tags per clause.
 
+### Move, don't invent — the flat bag fills a clause first (2026-08-17)
+
+Candidates are ranked once (the order above), then admitted in **two passes**:
+everything already in the flat bag, and only then up to `--max_novel_tags` (**1**)
+tags the caption never contained. What gets *emitted* is still the ranking, so a
+clause reads name → hair → eyes → the rest.
+
+The reason is mechanical: a novel clause tag cannot be a **move**.
+`plan_bag_removals` only removes what is in the bag, so a tag the caption never
+had is a pure v1-style addition — it disambiguates nothing and asserts something
+the curated caption declined to. Bag-blind selection spent **45.7% of the clause
+budget** that way (3447 of 7538 clause tags on the first full-corpus sweep,
+against 4.8 moves per image out of 19.1 clause tags).
+
+Measured on `ama_mitsuki` (55 proposed images, 131 clauses), budget 1 vs. 8:
+
+| | `--max_novel_tags 8` | `--max_novel_tags 1` |
+|---|---|---|
+| clause tags | 983 | **583** |
+| novel tags | 515 | **115** |
+| reuse ratio | 0.476 | **0.803** |
+| moved tags | 370 | 370 |
+| clauses at the 8-tag cap | 127 / 131 | 23 / 131 |
+
+Same 55 images, same 131 clauses — nothing falls through to
+`no-discriminative-tags`. **The bound bag tags and all 370 moves are
+byte-identical**: the budget removes padding, it does not buy extra bindings, and
+it was never rescuing crowded-out bag tags either — the ranked tail was already
+bag-first, so the cap was only reached once the bag was spent. What it buys is a
+caption that asserts 400 fewer unverified things and is 40% shorter.
+
+`--max_novel_tags 0` never invents at all; `--max_novel_tags 8` is the bag-blind
+arm, kept for the A/B. The report carries `clause_tags` / `novel_tags` /
+`reuse_ratio` in its summary and a per-instance `novel` count, so the ratio is a
+first-class dry-run number.
+
+One thing deliberately **not** built: collapsing a novel tag onto the bag tag it
+refines (`breasts` → `large breasts`, `nude` → `completely nude`). Measured it is
+94 tags under a safe same-group word-boundary rule — 3% of the problem — and the
+looser rule that would catch the rest also collapses `on stomach` → `stomach` and
+`looking back` → `back`. Doing it properly needs a tag *implication* table, which
+neither `taxonomy.py` nor `groups.yaml` has. With a budget of 1 it is moot.
+
 A **character name** needs both floors conjunctively: `--name_confidence` (0.5)
 *and* membership in the flat bag — probe B scored names 4/7 on crops, so an
 unlisted name is most likely a crop artifact. `--allow_unlisted_names` relaxes
@@ -566,13 +609,32 @@ Measured over the first full-corpus dry run: **520 of 1600 identity clause tags
 single-character `1girl, multiple views` sheets (78%)** bound contradictory hair
 or eye colors to different views of the same girl.
 
-The gate: for a group in `_BAG_GATED_GROUPS` (`hair_color`, `eye_color`,
-`hair_length`) a clause may carry a value the caption named, or nothing. Nothing
-is lost — a value no clause carries is a value the rewrite never takes, so it
-stays in the flat bag. `hairstyle` is deliberately **not** gated even though it is a priority group: a
-crop legitimately reveals a `hair bun` or `sidelocks` the booru caption never
-tagged, and unlike a color that does not contradict what is there.
-`body_shape` / `fashion_style` are left out for the same reason.
+The gate: for a group in `ClauseVocabulary.gated_groups()` a clause may carry a
+value the caption named, or nothing. Nothing is lost — a value no clause carries
+is a value the rewrite never takes, so it stays in the flat bag. `hairstyle` is
+deliberately **not** gated even though it is a priority group: a crop
+legitimately reveals a `hair bun` or `sidelocks` the booru caption never tagged,
+and unlike a color that does not contradict what is there.
+
+**The gated set is derived, not hand-picked (2026-08-17).** It is
+`_BAG_GATED_GROUPS` (`hair_color`, `eye_color`, `hair_length`) **plus every
+exclusive subject group the checkpoint declares** — an exclusive (softmax) group
+holds exactly one value by construction, so a crop naming a second one is a
+contradiction rather than extra detail, which is precisely the argument the
+original three were picked on. Hand-picking left the rest open: the 2026-08-17
+full-corpus sweep emitted **150 clause tags contradicting a value the bag already
+named** — 103 `body_shape` (bag `flat chest`, clause `large breasts`), 39
+`fashion_style` (`nude` → `completely nude`), plus `species_nonhuman` (`fox girl`
+→ `cat girl`), `age` and `gesture`. On `ama_mitsuki` that count goes **9 → 0**.
+Deriving it from `groups.yaml` also means the gate cannot drift from the tagger.
+`hair_length` is the one member that is *not* exclusive, which is why the hand
+list survives alongside the derivation.
+
+A companion fix in the same place: an exclusive-group slot now prefers a **kept
+tag the caption already named** over the crop's softmax winner. Previously the
+winner was taken unconditionally, the gate then rejected it, and the group
+emitted *nothing* — even when the crop had also kept the very value the bag
+listed. The clause lost a bindable tag to a rejected guess.
 
 | | before | after |
 |---|---|---|
@@ -658,10 +720,11 @@ same shape as the problem the identity gate fixes and is **not** addressed.
 | `--row_tol` | 0.25 | Row-clustering gap as a fraction of image height |
 | `--part_prompts` | off | Comma-separated body-part prompts, tried **only** when the subject prompt undershoots — recovers headless close-up panels. Try `buttocks,hips,thighs`; see below |
 | `--part_score_threshold` / `--part_containment_threshold` | 0.5 / 0.7 | Part-box confidence floor; drop a part box this nested inside an already-kept box |
-| `--ungated_identity` | — | Let a clause carry a hair/eye color the caption never listed (disables the identity gate below) |
+| `--ungated_identity` | — | Let a clause carry a value the caption never listed for a gated group — the identity trio plus every exclusive subject group (disables the bag gate below) |
 | `--min_instances` / `--max_instances` | 2 / 8 | Instance-count window |
 | `--no_strict_count` | — | Propose even when detection disagrees with the girls-count |
 | `--max_clause_tags` | 8 | Cap per clause |
+| `--max_novel_tags` | 1 | How many tags a clause may introduce that the caption never contained — the bag fills it first. Only a bag tag can *move*. `0` never invents; `8` is the bag-blind A/B arm. See the section above |
 | `--name_confidence` / `--allow_unlisted_names` | 0.5 / off | Character-name floors |
 | `--keep_shared_tags` | — | Keep tags every crop agrees on (disables the discriminative rule) |
 | `--bind_view_traits` | — | On a repeated-subject layout (`multiple views` / comic panels), let a clause carry the character's name and traits. Gated by default — every view is the same girl; see the section above |
