@@ -270,6 +270,13 @@ COMMANDS = {
         "Build the typed-tag caption index (character/copyright/artist groups) "
         "at post_image_dataset/captions/caption_index.json. Pure data, no GPU.",
     ),
+    "caption-autotag": (
+        preprocess.cmd_caption_autotag,
+        "Auto-tag the dataset with the Anima Tagger and write .txt caption "
+        'sidecars. ARGS="--mode missing|merge|overwrite" (default missing = '
+        'only uncaptioned images). Dry-run by default; ARGS="--apply" writes, '
+        "then `make preprocess-te` is REQUIRED.",
+    ),
     "caption-position": (
         preprocess.cmd_caption_position,
         "Append position-aware clauses ('On the left, <tags>. ...') to "

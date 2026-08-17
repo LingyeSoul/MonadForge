@@ -447,10 +447,121 @@ def test_preprocess_skips_position_clauses_when_unset(monkeypatch):
     calls: list[list[str]] = []
     monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
     monkeypatch.delenv("CAPTION_POSITION_CLAUSES", raising=False)
+    monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
 
     preprocess.cmd_preprocess([])
 
     assert calls == []
+
+
+def test_caption_autotag_is_not_a_correction_flag():
+    """Like ``position_clauses``: own stage, must never reach correct_captions.py."""
+    from scripts.tasks.preprocess import (
+        _caption_correction_args,
+        _caption_correction_config,
+        _caption_correction_enabled,
+    )
+
+    config, cleaned = _caption_correction_config(
+        ["--caption_autotag", "--caption_autotag_mode", "merge", "--other"]
+    )
+
+    assert config["autotag"] is True
+    assert config["autotag_mode"] == "merge"
+    assert cleaned == ["--other"]
+    assert _caption_correction_enabled(config) is False
+    assert _caption_correction_args(config) == []
+
+    off, _ = _caption_correction_config(["--no_caption_autotag"])
+    assert off["autotag"] is False
+    # Mode defaults to the non-destructive one when nothing selects it.
+    assert off["autotag_mode"] == "missing"
+
+
+def test_caption_autotag_rejects_an_unknown_mode():
+    """Fail at argv-parse time, not minutes into a GPU job."""
+    import pytest
+
+    from scripts.tasks.preprocess import _caption_correction_config
+
+    with pytest.raises(SystemExit):
+        _caption_correction_config(["--caption_autotag_mode", "clobber"])
+
+
+def test_caption_autotag_args_always_apply():
+    """In-pipeline the user already opted in; a dry run there writes nothing."""
+    from scripts.tasks.preprocess import _caption_autotag_args
+
+    assert _caption_autotag_args({"autotag_mode": "missing"}) == [
+        "--mode",
+        "missing",
+        "--apply",
+    ]
+    # A zero floor is left off entirely so the tagger's own thresholds rule.
+    assert "--min_confidence" not in _caption_autotag_args(
+        {"autotag_mode": "merge", "autotag_min_confidence": 0.0}
+    )
+    assert _caption_autotag_args(
+        {"autotag_mode": "merge", "autotag_min_confidence": 0.35}
+    ) == ["--mode", "merge", "--min_confidence", "0.35", "--apply"]
+
+
+def test_preprocess_chains_autotag_first(monkeypatch):
+    """Autotag *creates* the captions every later stage reads, so it goes first.
+
+    Ordering is the contract: position clauses append to the master, correction
+    and TE read it. An autotag that ran after any of them would leave this run
+    encoding the un-tagged caption.
+    """
+    from scripts.tasks import preprocess
+
+    order: list[str] = []
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_resize", lambda *_a, **_k: order.append("resize")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_vae", lambda *_a, **_k: order.append("vae")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_te", lambda *_a, **_k: order.append("te")
+    )
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        order.append("autotag" if "autotag_captions.py" in cmd[1] else "position")
+
+    monkeypatch.setattr(preprocess, "run", fake_run)
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess([])
+
+    assert order == ["resize", "autotag", "vae", "position", "te"]
+    autotag_cmd = calls[0]
+    assert autotag_cmd[:2] == [
+        preprocess.PY,
+        "scripts/preprocess/autotag_captions.py",
+    ]
+    assert autotag_cmd[-3:] == ["--mode", "merge", "--apply"]
+
+
+def test_preprocess_autotag_blank_env_confidence_is_zero(monkeypatch):
+    """The GUI writes ``""`` for an empty field — that must not raise."""
+    from scripts.tasks.preprocess import _caption_correction_config
+
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MIN_CONFIDENCE", "")
+
+    config, _ = _caption_correction_config([])
+    assert config["autotag_min_confidence"] == 0.0
 
 
 def test_preprocess_run_alias_is_stripped_and_explicit_value_wins(monkeypatch):
