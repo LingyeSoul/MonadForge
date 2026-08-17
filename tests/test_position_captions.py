@@ -1746,3 +1746,107 @@ def test_mask_blanking_removes_the_neighbour(pipeline_bits):
     )
     assert not (crop == (0, 0, 255)).all(axis=-1).any()
     assert (crop == (255, 0, 0)).all(axis=-1).any()
+
+
+# ----- where the rewrite lands --------------------------------------------
+
+
+def _corpus(tmp_path, caption):
+    """A one-image master + resized pair, ready for ``run_position_captions``."""
+    from PIL import Image
+
+    src, dst = tmp_path / "image_dataset", tmp_path / "resized"
+    (src / "artistA").mkdir(parents=True)
+    (dst / "artistA").mkdir(parents=True)
+    Image.new("RGB", (1000, 500), "white").save(dst / "artistA" / "a.png")
+    (src / "artistA" / "a.txt").write_text(caption, encoding="utf-8")
+    return src, dst
+
+
+def _run_io(pipeline_bits, src, dst, **kwargs):
+    from library.preprocess.position_captions import run_position_captions
+
+    _, vocabulary, _, Options = pipeline_bits
+    return run_position_captions(
+        resized_dir=dst,
+        source_dir=src,
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(
+            [
+                {
+                    "kept": {"akita neru": 0.9, "blonde hair": 0.8},
+                    "groups": {"hair_color": "blonde hair"},
+                },
+                {
+                    "kept": {"hatsune miku": 0.9, "aqua hair": 0.8},
+                    "groups": {"hair_color": "aqua hair"},
+                },
+            ]
+        ),
+        vocabulary=vocabulary,
+        options=Options(),
+        **kwargs,
+    )
+
+
+def test_apply_writes_the_resized_caption_and_never_the_master(pipeline_bits, tmp_path):
+    """Clauses are generated data — the hand-written master stays byte-identical."""
+    src, dst = _corpus(tmp_path, _TWO_GIRLS_CAPTION)
+
+    _rows, stats = _run_io(pipeline_bits, src, dst, apply=True)
+
+    assert stats.written == 1
+    assert (src / "artistA" / "a.txt").read_text(encoding="utf-8") == _TWO_GIRLS_CAPTION
+    written = (dst / "artistA" / "a.txt").read_text(encoding="utf-8")
+    assert has_clauses(written)
+    assert "On the left" in written
+
+
+def test_dry_run_writes_nothing_at_all(pipeline_bits, tmp_path):
+    src, dst = _corpus(tmp_path, _TWO_GIRLS_CAPTION)
+
+    _rows, stats = _run_io(pipeline_bits, src, dst)
+
+    assert stats.proposed == 1 and stats.written == 0
+    assert not (dst / "artistA" / "a.txt").exists()
+
+
+def test_apply_drops_the_stale_variant_sidecar(pipeline_bits, tmp_path):
+    """The sidecar wins at encode time — a pre-clause one would keep training."""
+    from library.preprocess.caption_variants import variants_sidecar_path
+
+    src, dst = _corpus(tmp_path, _TWO_GIRLS_CAPTION)
+    sidecar = variants_sidecar_path(dst / "artistA" / "a.png")
+    sidecar.write_text(f"# stale\nv0\t{_TWO_GIRLS_CAPTION}\n", encoding="utf-8")
+
+    _run_io(pipeline_bits, src, dst, apply=True)
+
+    assert not sidecar.exists()
+
+
+def test_a_second_pass_reads_the_derived_caption_and_skips_it(pipeline_bits, tmp_path):
+    """Idempotent: the clauses it wrote are what `is_candidate` sees next run."""
+    src, dst = _corpus(tmp_path, _TWO_GIRLS_CAPTION)
+    _run_io(pipeline_bits, src, dst, apply=True)
+    first = (dst / "artistA" / "a.txt").read_text(encoding="utf-8")
+
+    _rows, stats = _run_io(pipeline_bits, src, dst, apply=True)
+
+    assert stats.written == 0
+    assert stats.skipped.get("already-has-clauses") == 1
+    assert (dst / "artistA" / "a.txt").read_text(encoding="utf-8") == first
+
+
+def test_flatten_backs_out_the_derived_caption_only(pipeline_bits, tmp_path):
+    from library.preprocess.position_captions import flatten_captions
+
+    src, dst = _corpus(tmp_path, _TWO_GIRLS_CAPTION)
+    _run_io(pipeline_bits, src, dst, apply=True)
+
+    _rows, stats = flatten_captions(resized_dir=dst, source_dir=src, apply=True)
+
+    assert stats.written == 1
+    assert not has_clauses((dst / "artistA" / "a.txt").read_text(encoding="utf-8"))
+    assert (src / "artistA" / "a.txt").read_text(encoding="utf-8") == _TWO_GIRLS_CAPTION

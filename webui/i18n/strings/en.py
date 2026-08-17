@@ -106,11 +106,15 @@ STRINGS: dict[str, str] = {
     "preprocess_caption_position_clauses": "Position clauses (multi-subject)",
     "preprocess_caption_position_clauses_tip": (
         "Detect the subjects in a multi-subject image (SAM3), tag each one, and "
-        "append 'On the left, …' clauses to the caption so attributes bind to a "
-        "subject instead of floating in the flat tag bag. Runs before caching "
-        "and edits the source captions in place; images that already have "
-        "clauses, or where detection disagrees with the caption's girl count, "
-        "are left alone. GPU stage — adds a SAM3 + tagger pass over the "
+        "rewrite the caption into 'On the left, …' clauses so attributes bind to "
+        "a subject instead of floating in the flat tag bag. A tag bound to one "
+        "subject is MOVED out of the flat bag, so each attribute is stated "
+        "exactly once; character names stay in the bag as well. Runs before "
+        "caching and writes the caption next to the RESIZED image "
+        "(post_image_dataset/) — your captions in image_dataset/ are never "
+        "touched; images that already have clauses, or where detection "
+        "disagrees with the caption's girl "
+        "count, are left alone. GPU stage — adds a SAM3 + tagger pass over the "
         "dataset. Run `make caption-position` first for a dry-run report if you "
         "want to review the proposals before writing them."
     ),

@@ -10,14 +10,24 @@ attribute is asserted exactly once and bound to its subject (v2). ``--no_rewrite
 restores the additive v1 behaviour for the training A/B; ``--flatten`` is the
 inverse pass that merges clauses back into the bag.
 
+**The caption master is never written.** Clauses are generated data, so they land
+on the *derived* caption next to the resized image (``--dst``, i.e.
+``post_image_dataset/resized/<rel>.txt``) — the same file the caption-correction
+step writes and the TE step encodes. ``image_dataset/`` keeps the hand-written
+caption and is only the read fallback for an image the caption step has not
+mirrored yet. The correction step re-attaches clauses it finds on a destination
+caption, so a later ``make preprocess-captions`` re-corrects the flat bag instead
+of dropping them.
+
 **Dry-run is the default.** Nothing is written to any caption until ``--apply``
 is passed; a dry run emits ``report.json`` (+ the mask-blanked crops with
 ``--crops``) so the proposals can be eyeballed first.
 
-After an ``--apply`` run the TE caches are stale but *look* current — caption
-edits do not invalidate them. Follow with ``make preprocess-te``, which
-regenerates the ``.variants.txt`` sidecars first (those override the CLI dropout
-rate, so a stale sidecar would keep training the pre-clause caption).
+An ``--apply`` run bumps the caption's mtime, so the TE caches are correctly
+stale — but nothing re-encodes them until you say so. Follow with
+``make preprocess-te``, which regenerates the ``.variants.txt`` sidecars first
+(those override ``{stem}.txt`` at encode time; the apply pass drops the stale
+ones so an un-regenerated sidecar can never train the pre-clause caption).
 
     make caption-position                      # dry run over the whole dataset
     make caption-position ARGS="--apply"       # write the clauses
@@ -61,8 +71,16 @@ DEFAULT_MAX_TOKENS = 512
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--src", default="image_dataset", help="Caption master dir")
-    p.add_argument("--dst", default="post_image_dataset/resized", help="Resized images")
+    p.add_argument(
+        "--src",
+        default="image_dataset",
+        help="Caption master dir (read-only fallback — never written)",
+    )
+    p.add_argument(
+        "--dst",
+        default="post_image_dataset/resized",
+        help="Resized images — and where the rewritten caption is written",
+    )
     p.add_argument(
         "--path_pattern",
         "--path-pattern",
@@ -73,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--apply",
         action="store_true",
-        help="Write the proposed clauses into the caption master (default: dry run)",
+        help="Write the proposed clauses into the resized captions (default: dry run)",
     )
     p.add_argument(
         "--report_dir",
@@ -386,7 +404,7 @@ def _run_flatten(args, src: Path, dst: Path, report_dir: Path) -> None:
     print(f"\nreport: {report_dir / 'flatten_report.json'}")
     if args.apply:
         print(
-            "\nCaption edits do NOT invalidate the TE caches. Run "
+            "\nWritten to the resized captions (the master is untouched). Run "
             "`make preprocess-te` now to regenerate the variant sidecars and "
             "re-encode."
         )
@@ -539,7 +557,7 @@ def main() -> None:
         )
     if args.apply:
         print(
-            "\nCaption edits do NOT invalidate the TE caches. Run "
+            "\nWritten to the resized captions (the master is untouched). Run "
             "`make preprocess-te` now to regenerate the variant sidecars and "
             "re-encode."
         )

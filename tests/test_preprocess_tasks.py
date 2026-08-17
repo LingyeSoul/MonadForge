@@ -392,12 +392,12 @@ def test_caption_position_clauses_is_not_a_correction_flag():
 
 
 def test_preprocess_chains_position_clauses_before_the_caption_step(monkeypatch):
-    """The stage rewrites the caption master, so it must land before TE.
+    """The stage rewrites the derived caption, so it must land before the mirror.
 
-    Ordering is the whole contract: the caption/TE steps read the master and
-    write the variant sidecars, so a position pass that ran after them would be
-    encoded only on the *next* preprocess. It also has to run inline (plain
-    ``run``) — this process is itself a daemon job on a serial queue.
+    Ordering is the whole contract: the caption step re-corrects that same file
+    and writes the variant sidecars around it, so a position pass that ran after
+    it would be encoded only on the *next* preprocess. It also has to run inline
+    (plain ``run``) — this process is itself a daemon job on a serial queue.
     """
     from scripts.tasks import preprocess
 
@@ -513,6 +513,9 @@ def test_master_stages_inherit_an_explicit_path_pattern(monkeypatch):
     assert [cmd[1] for cmd in calls] == [
         "scripts/preprocess/autotag_captions.py",
         "scripts/preprocess/position_captions.py",
+        # The mirror rides along whenever position clauses are on — they land in
+        # `resized/`, so every other caption has to be mirrored there too.
+        "scripts/preprocess/correct_captions.py",
     ]
     for cmd in calls:
         # Present, and emitted exactly once — the argv builder resolves the
@@ -532,12 +535,17 @@ def test_standalone_caption_target_does_not_duplicate_the_path_pattern():
 
 
 def test_preprocess_captions_runs_the_stages_even_with_correction_off(monkeypatch):
-    """The early "correction disabled" return must not swallow the stages."""
+    """The early "correction disabled" return must not swallow the stages.
+
+    With position clauses on, the mirror has to run as well even though nothing
+    is being corrected or shuffled: the clause rewrite lands in ``resized/`` and
+    the TE step therefore reads that tree, so every image the rewrite did *not*
+    touch still needs its master caption mirrored there.
+    """
     from scripts.tasks import preprocess
 
     monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
     monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
-    # No correction knobs, no variants → correct_captions.py never runs.
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
 
     calls: list[list[str]] = []
@@ -547,14 +555,25 @@ def test_preprocess_captions_runs_the_stages_even_with_correction_off(monkeypatc
 
     preprocess.cmd_preprocess_captions([])
 
-    assert [cmd[1] for cmd in calls] == ["scripts/preprocess/position_captions.py"]
+    assert [cmd[1] for cmd in calls] == [
+        "scripts/preprocess/position_captions.py",
+        "scripts/preprocess/correct_captions.py",
+    ]
+    # Nothing to correct and no variants — the mirror runs in passthrough.
+    assert "--no_correct" in calls[1]
 
 
-def test_preprocess_te_runs_the_position_stage_without_a_caption_step(monkeypatch):
-    """No correction + no variants: TE reads the master directly, stage still runs."""
+def test_preprocess_te_reads_resized_when_position_clauses_are_on(monkeypatch):
+    """Clauses live in ``resized/``, so TE must encode that tree, not the master.
+
+    No correction + no variants would normally encode the caption master
+    directly with a match filter — which would silently train the pre-clause
+    caption, since the position pass never writes the master.
+    """
     from scripts.tasks import preprocess
 
     monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
     monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
 
     calls: list[list[str]] = []
@@ -566,8 +585,12 @@ def test_preprocess_te_runs_the_position_stage_without_a_caption_step(monkeypatc
 
     assert [cmd[1] for cmd in calls] == [
         "scripts/preprocess/position_captions.py",
+        "scripts/preprocess/correct_captions.py",
         "scripts/preprocess/cache_text_embeddings.py",
     ]
+    te_cmd = calls[-1]
+    assert te_cmd[te_cmd.index("--dir") + 1] == "post_image_dataset/resized"
+    assert "--match_images_from" not in te_cmd
 
 
 def test_preprocess_chain_runs_each_master_stage_once(monkeypatch):
@@ -598,7 +621,7 @@ def test_preprocess_chain_runs_each_master_stage_once(monkeypatch):
     scripts = [cmd[1] for cmd in calls]
     assert scripts.count("scripts/preprocess/autotag_captions.py") == 1
     assert scripts.count("scripts/preprocess/position_captions.py") == 1
-    # Order is unchanged: master rewrites, then the mirror, then the encode.
+    # Order is unchanged: the caption rewrites, then the mirror, then the encode.
     assert scripts == [
         "scripts/preprocess/autotag_captions.py",
         "scripts/preprocess/position_captions.py",

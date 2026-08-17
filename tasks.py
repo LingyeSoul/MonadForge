@@ -280,8 +280,10 @@ COMMANDS = {
     "caption-position": (
         preprocess.cmd_caption_position,
         "Append position-aware clauses ('On the left, <tags>. ...') to "
-        "multi-subject captions via SAM3 + Anima Tagger. Dry-run by default; "
-        'ARGS="--apply" writes, then `make preprocess-te` is REQUIRED.',
+        "multi-subject captions via SAM3 + Anima Tagger. Writes the resized "
+        "captions (post_image_dataset/), never the image_dataset/ master. "
+        'Dry-run by default; ARGS="--apply" writes, then `make preprocess-te` '
+        "is REQUIRED.",
     ),
     # ── Curation ──────────────────────────────────────────────────────
     "curate-group": (

@@ -3,9 +3,10 @@
 The dataset-wide counterpart to the Dataset tab's single-image autotag button
 (``scripts.anima_tagger.autotag``, which is stdout-only and tags one file).
 This walks the resized tree and writes ``.txt`` sidecars back into the caption
-**master** under ``image_dataset/`` — the same write target as
-:mod:`library.preprocess.position_captions`, and for the same reason: the master
-is what ``preprocess-captions`` mirrors and the TE step then encodes.
+**master** under ``image_dataset/``, because it *creates* the caption every later
+stage reads — unlike :mod:`library.preprocess.position_captions`, which writes
+only the derived caption in ``resized/``. The master is what
+``preprocess-captions`` mirrors and the TE step then encodes.
 
 Three modes, because the right policy depends on whether the corpus is
 hand-captioned:

@@ -17,7 +17,11 @@ resolve. ``rewrite=False`` restores v1 for the A/B arm.
 
 Nothing is destroyed by the move — a moved tag is still in the caption, inside a
 clause — and :func:`library.captioning.position_clauses.flatten_caption` merges
-it back, so an ``--apply`` run is reversible.
+it back, so an ``--apply`` run is reversible. It is also written to the
+**derived** caption layer (``post_image_dataset/resized/<rel>.txt``), never to
+the hand-written master under ``image_dataset/``: clauses are generated data,
+and the master stays the user's file. See :func:`run_position_captions` for how
+the mirror pass keeps them across a re-correct.
 
 **A clause moves tags; it does not invent them.** The crop decides *where* an
 attribute belongs, the caption decides *what* is in the image — so the bag fills
@@ -1465,18 +1469,28 @@ def run_position_captions(
 ) -> tuple[list[ImageProposal], PositionCaptionStats]:
     """Walk the resized tree, propose clauses, and (with ``apply``) write them.
 
-    Captions are written back to the **master** under ``source_dir``
-    (``image_dataset/``), which is what ``preprocess-captions`` mirrors into
-    ``resized/`` and the TE step then encodes. Detection runs on the *resized*
-    image because that is the pixel data training actually sees.
+    **The caption master is never touched.** Clauses are a *derived* caption
+    layer, so the rewrite lands next to the resized image (``resized_dir/<rel>``)
+    — the same file ``preprocess-captions`` writes and the TE step encodes. The
+    hand-written caption under ``source_dir`` (``image_dataset/``) stays exactly
+    as the user left it; it is only the *read* fallback for an image whose
+    resized caption has not been mirrored yet. Detection runs on the resized
+    image either way, because that is the pixel data training actually sees.
+
+    Two things make the derived layer safe to write into. The mirror pass
+    (:func:`library.captioning.preprocess.write_corrected_preprocess_captions`)
+    re-attaches clauses it finds on a destination caption whose master has none,
+    so a later ``preprocess-captions`` re-corrects the flat bag instead of
+    dropping the clauses; and the write bumps the caption's mtime, which is what
+    the TE cache staleness check keys on — so the next TE pass re-encodes rather
+    than silently keeping a pre-clause cache. Any ``{stem}.variants.txt`` sidecar
+    is dropped here for the same reason: the sidecar wins over ``{stem}.txt`` at
+    encode time, so a stale one would train the pre-clause caption.
 
     Under v2 the write is a **rewrite**, not an append — a bound tag leaves the
-    flat bag. It is still recoverable (:func:`flatten_captions`), but it is not a
-    no-op on the master, which is the other reason ``apply`` defaults off.
-
-    Caption edits do **not** invalidate the TE caches — the caller must follow
-    an ``apply`` run with ``make preprocess-te`` (which regenerates the variant
-    sidecars first). That silent-failure trap is why ``apply`` defaults off.
+    flat bag. It is recoverable (:func:`flatten_captions`), and the master always
+    holds the pre-clause caption, but it is not a no-op, which is why ``apply``
+    defaults off.
     """
     from library.preprocess._dataset import walk_images
 
@@ -1489,7 +1503,11 @@ def run_position_captions(
 
     for index, image_path in enumerate(images, 1):
         rel = image_path.relative_to(resized_dir).with_suffix(".txt")
-        caption_path = source_dir / rel
+        dst_caption = resized_dir / rel
+        # Prefer the derived caption (already order-corrected, and carrying an
+        # earlier run's clauses so `is_candidate` skips it) and fall back to the
+        # master for an image the caption step has not mirrored yet.
+        caption_path = dst_caption if dst_caption.exists() else source_dir / rel
         if progress is not None:
             progress(index, len(images), str(rel))
         if not caption_path.exists():
@@ -1535,10 +1553,27 @@ def run_position_captions(
         if token_count_fn is not None and proposal.proposed:
             proposal.tokens = token_count_fn(proposal.proposed)
         if apply:
-            caption_path.write_text(proposal.proposed, encoding="utf-8")
+            _write_derived_caption(dst_caption, proposal.proposed)
             stats.written += 1
 
     return rows, stats
+
+
+def _write_derived_caption(dst_caption: Path, text: str) -> None:
+    """Write a caption into the resized tree and drop its variant sidecar.
+
+    The sidecar is the encode source of truth when present, so leaving a
+    pre-clause one behind would keep training the pre-clause caption however
+    fresh ``{stem}.txt`` is. Dropping it makes the TE step either regenerate the
+    variants in-process or pick up the one the next caption pass writes.
+    """
+    from library.preprocess.caption_variants import variants_sidecar_path
+
+    dst_caption.parent.mkdir(parents=True, exist_ok=True)
+    dst_caption.write_text(text, encoding="utf-8")
+    sidecar = variants_sidecar_path(dst_caption)
+    if sidecar.exists():
+        sidecar.unlink()
 
 
 def flatten_captions(
@@ -1555,13 +1590,16 @@ def flatten_captions(
     Two uses: backing out an ``--apply`` run, and building the clause-free
     control corpus for a training A/B.
 
-    Walks ``resized_dir`` and maps to the caption master exactly like
-    :func:`run_position_captions`, so ``path_pattern`` means the same thing in
-    both and the nested-symlink layout of ``image_dataset/`` is never globbed.
+    Reads and writes the same derived caption as :func:`run_position_captions`
+    (``resized_dir/<rel>``, falling back to the master only for the read), so
+    ``path_pattern`` means the same thing in both and the nested-symlink layout
+    of ``image_dataset/`` is never globbed.
 
     Hand-written clauses are flattened too — the pass cannot tell them from
-    generated ones, and that is a real loss of curation, hence the dry-run
-    default.
+    generated ones. In the derived layer that is recoverable (the master still
+    holds them, and the next mirror re-writes them), but on a caption whose
+    clauses only ever existed here it is a real loss of curation, hence the
+    dry-run default.
     """
     from library.preprocess._dataset import walk_images
 
@@ -1571,7 +1609,8 @@ def flatten_captions(
     stats.seen = len(images)
     for image_path in images:
         rel = image_path.relative_to(resized_dir).with_suffix(".txt")
-        caption_path = source_dir / rel
+        dst_caption = resized_dir / rel
+        caption_path = dst_caption if dst_caption.exists() else source_dir / rel
         if not caption_path.exists():
             stats.skip("no-caption")
             continue
@@ -1593,6 +1632,6 @@ def flatten_captions(
             }
         )
         if apply:
-            caption_path.write_text(flattened, encoding="utf-8")
+            _write_derived_caption(dst_caption, flattened)
             stats.written += 1
     return rows, stats

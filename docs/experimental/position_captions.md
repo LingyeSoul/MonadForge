@@ -9,8 +9,10 @@ the clause of the subject it belongs to.
 Status: **v2 shipped and runnable as `make caption-position`.** v2 *replaces* v1
 — same pipeline, but the flat bag is rewritten instead of merely appended to;
 `--no_rewrite` keeps the additive v1 behaviour for the A/B arm. Dry run is the
-default and **nothing has been applied to the caption master yet** — two gates
-are still owed (spot-check, then a training A/B), spelled out at the bottom.
+default and **nothing has been applied to the corpus yet** — two gates are still
+owed (spot-check, then a training A/B), spelled out at the bottom. The rewrite
+targets the derived captions under `post_image_dataset/resized/`; the
+hand-written master in `image_dataset/` is never written.
 
 This is the canonical doc: what it does, how to run it, what to watch. It is
 kept deliberately short — the measurement logs behind each rule (sweep tables,
@@ -127,9 +129,10 @@ Per candidate image (`library/preprocess/position_captions.py`):
    standing inside the padded box contributes their hair to this subject's tags.
 4. **Tag** — Anima Tagger per crop, then clause selection (below).
 5. **Rewrite** — the tags a clause has earned leave the flat bag, and
-   `compose_caption(flat_tags, clauses)` is written back to the caption
-   **master** (`image_dataset/*.txt`), which `preprocess-captions` mirrors into
-   `resized/` and the TE step then encodes.
+   `compose_caption(flat_tags, clauses)` is written to the **derived** caption
+   (`post_image_dataset/resized/*.txt`) that `preprocess-captions` re-corrects
+   and the TE step encodes. The caption master (`image_dataset/*.txt`) is read
+   as a fallback and never written — see "Where the rewrite lands" below.
 
 Models are injected as `detect_fn` / `tag_fn` callables, so the orchestration
 module imports neither SAM3 nor the tagger and unit-tests with stubs; the CLI
@@ -400,15 +403,40 @@ here — asserting each attribute once instead of twice saves ~6.5% of tokens an
 took the corpus's one over-budget caption back under the cap — but check
 `summary.over_token_budget` before applying anyway.
 
-### Two silent-failure traps in the ops sequence
+### Where the rewrite lands, and the one trap left in the ops sequence
 
-1. **Caption edits do NOT invalidate the TE caches.** After `--apply` the caches
-   still *look* current and training keeps using the pre-clause embeddings until
-   an explicit `make preprocess-te`. The script prints this reminder.
-2. **`*.variants.txt` sidecars override the CLI dropout rate**, so a stale
-   sidecar keeps training the pre-clause caption even after re-encoding.
-   `preprocess-te` chains `preprocess-captions` and regenerates them first, which
-   is why it — and not a bare TE re-encode — is the required follow-up.
+The clauses are written to the **derived** caption next to the resized image
+(`post_image_dataset/resized/<rel>.txt`) — the same file `preprocess-captions`
+writes and the TE step encodes. The hand-written master under `image_dataset/`
+is **never** written; it is only the read fallback for an image the caption step
+has not mirrored yet. Clauses are generated data, so the user's captions stay
+the user's.
+
+Three things make that safe:
+
+* **The mirror re-attaches them.** `write_corrected_preprocess_captions` finds
+  clauses on a destination caption whose master has none and composes them back
+  onto the freshly corrected bag — minus the tags the v2 rewrite moved (a tag in
+  a clause that the destination's own bag lacks), so each attribute stays
+  asserted exactly once. Without that, the next `preprocess-captions` would mirror
+  the clause-free master straight over the rewrite.
+* **The write invalidates the TE cache.** `_cache_is_current` compares the cache
+  mtime against the caption and its sidecar, and the caption now lives in the
+  tree TE reads — so a re-encode picks the change up instead of skipping it.
+* **The stale variant sidecar is dropped.** `{stem}.variants.txt` is the encode
+  source of truth when present, so a pre-clause one would keep training the old
+  caption however fresh `{stem}.txt` is. The apply pass unlinks it; the caption
+  step redraws it (v0 changed) on the next run.
+
+The trap that remains: **nothing re-encodes on its own.** After a standalone
+`--apply` the caches are correctly stale but training keeps using them until an
+explicit `make preprocess-te` (which chains `preprocess-captions`, so the
+sidecars are regenerated first). The script prints the reminder.
+
+Because the clauses live in `resized/`, `preprocess-te` also **forces the caption
+mirror** whenever the stage knob is on, even with correction and variants both
+off: TE then reads `resized/` and every image the rewrite did not touch needs its
+master caption mirrored there.
 
 ### Reading the skip reasons
 
@@ -446,7 +474,7 @@ the detection floor trades `too-few-instances` for `count-mismatch`.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--apply` | off | Write to the caption master (else dry run) |
+| `--apply` | off | Write to the resized captions (else dry run) |
 | `--path_pattern` | `*` | fnmatch glob (`\|` to OR) relative to the resized dir |
 | `--crops` | off | Export the mask-blanked crops next to the report |
 | `--prompt` | `girl` | SAM3 subject prompt (`person` sweeps the rare on-screen-boy images) |
@@ -502,14 +530,16 @@ the detection floor trades `too-few-instances` for `count-mismatch`.
 
 Off by default in all three surfaces; each of them runs the stage **with
 `--apply`** (no dry run) inline in `make preprocess`, after the VAE cache and
-before the caption/TE steps — because it rewrites the caption master those two
-then read, and the same job re-encodes, so the TE-staleness trap is handled for
-you. Only the standalone `--apply` path needs the manual `make preprocess-te`.
+before the caption/TE steps — because it rewrites the same resized caption the
+mirror re-corrects and TE encodes, and the same job re-encodes, so the staleness
+trap is handled for you. Only the standalone `--apply` path needs the manual
+`make preprocess-te`.
 
 The two caption-only entry points honour the same knob: `make preprocess-captions`
 (mirror + variant sidecars) and `make preprocess-te` (which chains it) run the
-stage before they read the master, so a caption-only re-encode can never mirror a
-pre-clause caption. In the full chain it still runs exactly once — the "already
+stage before they mirror, so the correction pass re-buckets the bag around the
+fresh clauses instead of a caption-only re-encode falling back to a pre-clause
+one. In the full chain it still runs exactly once — the "already
 ran" mark rides on the caption-config dict `cmd_preprocess` threads down into
 `cmd_preprocess_te` → `cmd_preprocess_captions`, so the later calls no-op instead
 of re-paying the SAM3 + tagger load. The GPU order stays VAE → SAM3/tagger
@@ -526,9 +556,21 @@ Precedence is env → config, with the CLI flag winning over both; the GUI alway
 exports the env var (persisting the checkbox to its variant's `[variant]` table),
 so it wins over `preprocess.toml` and the ConfigTab Train auto-chain honours it.
 
-Two things follow from applying without a review step: it **rewrites the source
+Because the GUI always exports, the checkbox **initializes from the config key**
+(`_pp_default` in `gui/tabs/preprocess_tab.py`, the same rule `source_image_dir`
+already used): `caption_position_clauses = true` in `preprocess.toml` shows up
+checked, so flipping the key on the CLI side can't be silently cancelled by a GUI
+run exporting `0`. A variant's own `[variant]` value still wins over the file —
+and an unchecked box now *persists as `false`* rather than being dropped, since
+dropping it would let the file's `true` come back on the next load. Same wiring
+for `caption_autotag` / `_mode` / `_min_confidence`.
+
+Two things follow from applying without a review step: it **rewrites the derived
 captions in place** (under v2 that includes taking bound tags out of the flat
-bag), and there is no undo button in the GUI. The pass is idempotent — a caption
+bag), and there is no undo button in the GUI. Nothing of yours is at risk — the
+hand-written master is untouched, so the worst case is a `make preprocess` away
+from a clean rebuild — but the rewritten text is what trains until you look at
+it. The pass is idempotent — a caption
 that already carries clauses is skipped by the prefilter — and reversible from the
 CLI (`--flatten --apply`), but `make caption-position` (dry run, `report.json`,
 `--crops`) is still the way to eyeball proposals first, and is worth doing once on
