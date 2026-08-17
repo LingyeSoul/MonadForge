@@ -3,14 +3,19 @@
 A preprocessing pass that gives multi-subject images spatially bound captions
 in the dataset's existing hand-written convention: SAM3 detects the subjects,
 they are put in reading order, each mask-blanked crop is tagged by the Anima
-Tagger, and the result is **appended** to the caption as trailing clauses.
+Tagger, and the caption is **rewritten** so each attribute is asserted once, in
+the clause of the subject it belongs to.
 
-Status: **v1 shipped and runnable as `make caption-position`.** Dry-run is the
-default and **nothing has been applied to the caption master yet** — the
-remaining Phase-1 gate is a spot-check of the dry-run report. Design rationale,
-Phase-0 probe evidence and the phase plan live in
-[`docs/proposal/position_captions.md`](../proposal/position_captions.md); this
-doc is the operational one — what it does, how to run it, and what to watch.
+Status: **v2 shipped and runnable as `make caption-position`.** v2 *replaces* v1
+— it is the same pipeline with the flat bag rewritten instead of merely
+appended to; `--no_rewrite` keeps the old additive behaviour for the A/B arm.
+Dry-run is the default and **nothing has been applied to the caption master
+yet** — two gates are still owed (spot-check, then a training A/B), both spelled
+out at the bottom of this doc. This is now the **canonical** doc for the
+feature: what it does, how to run it, what to watch. The design proposal is
+retired at
+[`_archive/proposals/position_captions.md`](../../_archive/proposals/position_captions.md)
+— Phase-0 probe evidence and the rationale behind each rule, not kept current.
 
 ## Why
 
@@ -37,17 +42,23 @@ explicit, 3girls, kisaki (blue archive), black hair, white hair, pink hair, …
 
   ↓ make caption-position
 
-… , blue archive, @aak. On the left, kisaki (blue archive), black hair, blue
-eyes, hair bun, back, double bun, ass, loli. On the middle, white hair, purple
-eyes, hair between eyes, underwear only, black bra, navel, black wings,
-underwear. On the right, pink hair, blue eyes, ahoge, halo, loli,
-heterochromia, standing, black wings.
+explicit, 3girls, kisaki (blue archive), blue archive, @aak. On the left,
+kisaki (blue archive), black hair, blue eyes, hair bun, back, double bun, ass,
+loli. On the middle, white hair, purple eyes, hair between eyes, underwear
+only, black bra, navel, black wings, underwear. On the right, pink hair, blue
+eyes, ahoge, halo, loli, heterochromia, standing, black wings.
 ```
 
-v1 is **purely additive** — the flat bag is byte-identical, so a caption gains
-binding without losing anything the model was pretrained on. Moving attributable
-tags *out* of the bag is v2 (`--rewrite`, unbuilt, phase-gated on a training
-A/B).
+The three hair colors **leave** the flat bag: each is now asserted exactly once,
+by the subject that has it. That is the whole feature — a bag that still lists
+`black hair, white hair, pink hair` alongside the clauses is still claiming all
+three of all three girls, which is the ambiguity the clauses exist to remove.
+
+**This is the convention, not an invention.** Measured across the 14
+hand-written ground-truth captions: 244 clause tags, of which 19 also appear in
+the flat bag — and **all 19 are character names**. Not one attribute is
+duplicated. So the hand-written form is exactly "cast list flat, attributes
+bound", which is what v2 emits and what the additive v1 did not.
 
 ## The clause grammar — read this before touching any caption code
 
@@ -114,9 +125,10 @@ Per candidate image (`library/preprocess/position_captions.py`):
    contributes their hair to this subject's tags, which was *both* of that
    probe's hair-color misses.
 4. **Tag** — Anima Tagger per crop, then clause selection (below).
-5. **Compose** — `compose_caption(flat_tags, clauses)` written back to the
-   caption **master** (`image_dataset/*.txt`), which `preprocess-captions`
-   mirrors into `resized/` and the TE step then encodes.
+5. **Rewrite** — the tags a clause has earned leave the flat bag (next section),
+   and `compose_caption(flat_tags, clauses)` is written back to the caption
+   **master** (`image_dataset/*.txt`), which `preprocess-captions` mirrors into
+   `resized/` and the TE step then encodes.
 
 Models are injected as `detect_fn` / `tag_fn` callables, so the orchestration
 module imports neither SAM3 nor the tagger and unit-tests with stubs; the CLI
@@ -158,10 +170,51 @@ Any tag *every* crop keeps is suppressed (`--keep_shared_tags` disables). On a
 `1girl, multiple views` outfit sheet all views are the same character with the
 same hair and eyes; repeating `hatsune miku, aqua hair, twintails` four times
 binds nothing and crowds out the maid / bunny / bikini that actually tells the
-views apart. Those attributes are already in the flat bag and v1 never removes
-anything, so nothing is lost. When suppression empties every clause the image is
-skipped as `no-discriminative-tags` — the subjects are genuinely
-indistinguishable to the tagger and there is nothing to ground.
+views apart. A shared attribute keeps its place in the flat bag, which is where
+an attribute that belongs to *everyone* belongs — the rewrite only takes what one
+clause alone claims. When suppression empties every clause the image is skipped
+as `no-discriminative-tags` — the subjects are genuinely indistinguishable to the
+tagger and there is nothing to ground.
+
+## What leaves the flat bag (v2)
+
+A tag moves out of the bag into its clause when **all four** hold. Fail any one
+and it stays flat *and* stays bound — i.e. that single tag degrades to v1's
+additive behaviour, which is why nothing here can produce a wrong caption, only
+a less-resolved one.
+
+| # | Rule | Why |
+|---|---|---|
+| 1 | **Not a character name** | The cast list stays flat and is bound as well — the hand-written convention, measured (19/19 duplicated ground-truth tags are names, 0 are attributes). The bag answers *who is in this image* and is how a prompt summons them; the clause answers *which one is where* |
+| 2 | **Exactly one clause claims it** | Two clauses claiming a tag means it is shared, and a shared attribute belongs to the bag |
+| 3 | **Corroboration**, for a character-invariant group | Hair color, eyes, body shape, species … are properties of a *character*, not of a view. On a `1girl, multiple views` sheet they hold in every panel, so moving `aqua hair` into one view would make the caption claim the other views are *not* aqua-haired. Such a tag moves only when the bag names **≥2 values of that group** — i.e. the caption is already enumerating per-subject values. Outfit / pose / expression carry no such implication and move freely |
+| 4 | **Attribution margin** (`--attribution_margin`, 0.35) | The winning crop must clear every other crop's probability for the tag. A tag the tagger *nearly* kept on the second subject is a shared attribute the threshold happened to split, and removing it would deny it of that subject |
+
+Rule 3's exception: booru tags a **single** character with two hair colors when
+the hair is two-toned, so `multicolored hair` / `two-tone hair` / `gradient
+hair` / `heterochromia` (and friends) in the bag pin that group flat — the "≥2
+values" evidence is explained without a second subject. Those markers are
+ungrouped in `groups.yaml`, so they are matched by name.
+
+Rule 3 is deliberately **evidence-based rather than count-based**: 219 of the 373
+first-sweep proposals carry no girls-count tag at all, so a `detected ==
+characters` gate would have pinned nearly the whole corpus.
+
+The dry-run report records both sides per image — `moved[{tag, position,
+margin}]` and `pinned{tag: rule}` — so a reviewer can see exactly why a tag
+stayed. `summary.pinned_tags` aggregates the rules corpus-wide.
+
+### Backing it out
+
+The rewrite **moves** tags; it never deletes them, so a rewritten caption still
+contains every tag it started with. `make caption-position ARGS="--flatten
+--apply"` merges every clause back into its flat bag and drops the clauses —
+text only, no SAM3, no tagger, no images. That is both the undo for an `--apply`
+run and the way to build the clause-free control corpus for a training A/B.
+Tag *order* is not restored byte-for-byte (a moved tag comes back at the end),
+and `correct_caption` re-buckets it anyway. Note it flattens **hand-written**
+clauses too — it cannot tell them apart — which is a real loss of curation on
+those 14 captions.
 
 ## Running it
 
@@ -171,6 +224,8 @@ make caption-position ARGS="--crops --qwen3 models/text_encoders/qwen_3_06b_base
 make caption-position ARGS="--path_pattern 'artist_a/*'"   # scope a slice
 make caption-position ARGS="--apply"                   # write (after the review)
 make preprocess-te                                     # REQUIRED after --apply
+make caption-position ARGS="--no_rewrite --apply"      # additive v1 (A/B arm)
+make caption-position ARGS="--flatten --apply"         # undo: clauses → flat bag
 ```
 
 GPU job (SAM3 + tagger held resident for the whole sweep), so it is
@@ -181,10 +236,12 @@ live train run instead of OOM-colliding. `--queue` detaches, `--inline` bypasses
 `post_image_dataset/captions/position/report.json`:
 
 ```
-summary: {applied, seen, candidates, proposed, written, skipped{reason: n},
-          max_tokens, over_token_budget[]}
+summary: {applied, rewrite, attribution_margin, seen, candidates, proposed,
+          written, rewritten, moved_tags, pinned_tags{rule: n},
+          skipped{reason: n}, max_tokens, over_token_budget[]}
 images[]: {image, caption_path, status, detected, expected, original, proposed,
-           tokens, instances[{position, box, score, tags, crop}]}
+           tokens, instances[{position, box, score, tags, crop}],
+           moved[{tag, position, margin}], pinned{tag: rule}}
 ```
 
 With `--crops` it also exports the **exact mask-blanked pixels the tagger saw**,
@@ -195,8 +252,9 @@ proposed clause next to its crop.
 `--qwen3 <tokenizer>` adds a token count per proposal and flags anything past
 512 (`qwen3_max_token_length` / `t5_max_token_length`). Past that the tail is
 truncated **silently** at TE-cache time and, given the padding invariant, simply
-never reaches the model. The first sweep found one caption at 522 tokens
-(median 214) — check `summary.over_token_budget` before applying.
+never reaches the model. The current sweep is clear (median 198, max 491, none
+over budget) — the additive v1 arm had one caption at 524. Check
+`summary.over_token_budget` before applying anyway.
 
 ### Two silent-failure traps in the ops sequence
 
@@ -240,6 +298,42 @@ skip, not a wrong write.
 Of the 373 proposals: 249 are 2-subject, 58 are 3, 33 are ≥4; 152 come from
 `multiple views` sheets; median 8 tags per clause (i.e. the cap binds). 48
 proposals rest on at least one sub-0.5 detection — see the mask caveat below.
+
+### What the rewrite does to the corpus (paired v1 / v2 sweep, 2026-08-17)
+
+Both arms run the same code over the same 3008 images, differing only in
+`--no_rewrite`. **The clauses come out byte-identical in both** — asserted over
+all 394 proposals — which is the separation the design intends: the rewrite
+decides what the *bag* keeps, never what a clause says.
+
+| | v1 (`--no_rewrite`) | v2 (default) |
+|---|---|---|
+| proposals | 394 | 394 |
+| captions whose bag changed | — | **380** |
+| flat-bag tags across the proposals | 18334 | **16429** (−1905, −10.4%) |
+| tags moved per caption (median / max) | — | 5 / 13 |
+| caption tokens, median / max | 213 / **524** | 198 / **491** |
+| captions over the 512-token budget | **1** | **0** |
+
+The token column is a real ops win, not a rounding effect: v1's single
+over-budget caption (`kat_(bu-kunn)/dan_8451598`) would have had its tail
+silently truncated at TE-cache time, and stating each attribute once instead of
+twice puts it back under the cap. Mean saving 14.5 tokens (6.5%).
+
+Which rule pinned the tags that stayed flat, corpus-wide:
+
+| rule | tags |
+|---|---|
+| `margin` (runner-up crop too close) | 730 |
+| `multi-clause` (shared — belongs to the bag) | 431 |
+| `sole-value` (character-invariant, one value in the bag) | 404 |
+| `character-name` (the cast list stays flat) | 54 |
+| `two-tone-marker` (`multicolored hair` etc. explains the second value) | 30 |
+
+So 1905 of the 3554 bag tags a clause claimed actually moved (54%) — the rest
+degrade to v1's duplicate-assert, which is the safe direction by construction.
+The margin is the single biggest brake; moved tags clear it by a median of 0.69
+(floor 0.35), so the population that moves is not marginal.
 
 ### Triaging the skips (2026-08-17)
 
@@ -383,8 +477,8 @@ or eye colors to different views of the same girl.
 
 The gate: for a group in `_BAG_GATED_GROUPS` (`hair_color`, `eye_color`,
 `hair_length`) a clause may carry a value the caption named, or nothing. Nothing
-is lost — v1 is additive, so the attribute is still in the flat bag.
-`hairstyle` is deliberately **not** gated even though it is a priority group: a
+is lost — a value no clause carries is a value the rewrite never takes, so it
+stays in the flat bag. `hairstyle` is deliberately **not** gated even though it is a priority group: a
 crop legitimately reveals a `hair bun` or `sidelocks` the booru caption never
 tagged, and unlike a color that does not contradict what is there.
 `body_shape` / `fashion_style` are left out for the same reason.
@@ -403,9 +497,10 @@ are new information rather than a contradiction, and the gate only fires when
 the bag has already spoken for that group. `--ungated_identity` restores the old
 behaviour for A/B.
 
-This is **not** the v2 rewrite. v2 *moves* a bound tag out of the flat bag and
-is gated on the Phase 3 training A/B; the identity gate only declines to *emit*
-a clause tag the caption contradicts, and never touches the bag.
+The gate is upstream of the v2 rewrite and load-bearing for it: the rewrite can
+only remove what a clause carries, so gating emission to values the caption
+already named is what keeps a hallucinated hair color from *replacing* the real
+one in the bag.
 
 ### Body-part detection fallback (2026-08-17)
 
@@ -478,6 +573,9 @@ same shape as the problem the identity gate fixes and is **not** addressed.
 | `--max_clause_tags` | 8 | Cap per clause |
 | `--name_confidence` / `--allow_unlisted_names` | 0.5 / off | Character-name floors |
 | `--keep_shared_tags` | — | Keep tags every crop agrees on (disables the discriminative rule) |
+| `--no_rewrite` | — | Additive v1: append the clauses, leave the flat bag untouched (so every bound attribute is asserted twice). The A/B control arm |
+| `--attribution_margin` | 0.35 | How far the winning crop must clear every other before a tag may **leave** the bag. The clause carries it either way |
+| `--flatten` | off | Inverse pass — merge clauses back into the bag and drop them. Text only (no models). The undo, and the clause-free A/B corpus |
 | `--qwen3` / `--max_tokens` | — / 512 | Token-budget column + over-budget flag |
 
 ## How clauses behave downstream
@@ -488,6 +586,15 @@ same shape as the problem the identity gate fixes and is **not** addressed.
   inside, header never randomized. Per-tag dropout inside a clause would leave a
   half-described position. Clause-free captions keep the historical raw split,
   so v0 stays byte-identical.
+
+  **v2 changes what a dropped clause costs.** Under the additive v1 the
+  attributes were still in the flat bag, so dropping a clause removed only the
+  *binding*; under v2 they are nowhere else, so a dropped clause drops that
+  subject's attributes from the variant entirely. The variant is still a
+  truthful (if less complete) caption — this is correlated tag-dropout, not
+  corruption — but it is a stronger perturbation than the same rate applied
+  per-tag. Set `clause_dropout_rate = 0.0` to keep every variant fully bound;
+  that is the conservative setting on a rewritten corpus.
 - **Order correction** (`correct_caption`) splits clauses off before
   bucket-reordering the flat bag — clauses are already ordered left→right and
   their tags are position-scoped, so reordering them across the caption is
@@ -511,9 +618,11 @@ ConfigTab Train auto-chain honours it too.
 
 Two things follow from applying without a review step:
 
-- It **edits the source captions in place**. The pass is idempotent — a caption
-  that already carries clauses is skipped by the prefilter — but it is not
-  undoable from the GUI. `make caption-position` (dry run, `report.json`,
+- It **rewrites the source captions in place**, and under v2 that includes
+  taking bound tags out of the flat bag. The pass is idempotent — a caption that
+  already carries clauses is skipped by the prefilter — and it is reversible
+  from the CLI (`make caption-position ARGS="--flatten --apply"`), but there is
+  no undo button in the GUI. `make caption-position` (dry run, `report.json`,
   `--crops`) is still the way to eyeball proposals first, and is worth doing
   once on a new dataset.
 - The TE-cache staleness trap is handled for you here: the stage runs *inside*
@@ -524,9 +633,10 @@ Two things follow from applying without a review step:
 CLI equivalents: `--caption_position_clauses` / `--no_caption_position_clauses`
 on `make preprocess`, or `caption_position_clauses = true` in the merged config.
 
-**The Phase-1 spot-check is still owed** (≥90% of proposed clauses right on ~30
-reviewed images, weighted toward grids, overlapping pairs and N≥4) — which is
-why the checkbox ships off by default.
+**The spot-check is still owed** (≥90% of proposed clauses right on ~30 reviewed
+images, weighted toward grids, overlapping pairs and N≥4; under v2, also that no
+reviewed image *lost* an attribute that belonged to a subject it was taken
+from) — which is why the checkbox ships off by default.
 
 ## Limits / open
 
@@ -537,22 +647,57 @@ why the checkbox ships off by default.
   spot-check.
 - **Character names on crops** are the weakest signal (probe B: 4/7), which is
   why they need the flat-bag floor.
-- **Boys / POV** are out of v1 by default — `--prompt person` sweeps them
+- **Boys / POV** are out of the default sweep — `--prompt person` sweeps them
   separately; nothing is hardcoded to `girl`.
-- **v2 (`--rewrite`)** — moving attributable tags out of the flat bag — changes
-  the token distribution the base model was pretrained on. Probe A validated
-  clause *comprehension*, not bag-*removal* tolerance, so it stays phase-gated
-  on a training A/B.
+- **Bag-removal tolerance is the open risk of v2.** Probe A validated clause
+  *comprehension* (48/48 sides correct) — it did not validate that removing a
+  tag from the flat bag is safe for a model pretrained on flat bags. The four
+  rules above bound *which* tags move, not whether the model likes the resulting
+  distribution; that is what the training A/B below answers.
+- **Is the margin in the right place?** 730 tags — the largest pinned class —
+  stay flat because the runner-up crop scored within 0.35. Deliberately
+  conservative; the report carries the per-move margin, so retune it against the
+  spot-check rather than by guess.
+- **`sole-value` on non-identity invariants.** `body_shape` / `skin` /
+  `face_features` are in the invariant set, so a `2girls` caption naming one
+  `large breasts` keeps it flat even when only one girl has it. Safe, and the
+  class most likely to be over-pinned — count it in the spot-check before
+  loosening.
+
+## Owed work — the two gates before this is on by default
+
+The design proposal is retired (`_archive/proposals/position_captions.md`); what
+it left open lives here.
+
+**1. Spot-check the dry run.** ~30 proposed clauses from
+`post_image_dataset/captions/position/report.json`, weighted toward grids,
+overlapping pairs and N≥4, read against the exported `--crops`. Exit: clause
+proposals right at **≥90%**, count-disagreement skip rate reported, and — v2's
+own criterion — **no reviewed image losing an attribute that belonged to a
+subject it was taken from**. Until this passes, no `--apply` and the GUI
+checkbox stays off.
+
+**2. Training A/B.** `--apply`, regenerate variants + TE caches, train the
+standard LoRA recipe on a multi-girl-dense slice against a twin control on the
+same seed. Compare **renders, not raw ΔW cosines** — the paired-ΔW chaos floor
+makes absolute cosines unreadable without a twin control. Eval: a probe-A-style
+render test through the trained LoRA (does binding survive the artist style?)
+plus multi-character sample grids. Exit: binding ≥ control, no regression on
+single-girl renders.
+
+Three corpora are available for that A/B at one preprocess each — v2 (default),
+v1 (`--no_rewrite`), clause-free (`--flatten`) — so *do clauses help* and *does
+bag-removal hurt* are separable in one experiment instead of sequential phases.
 
 ## Code map
 
 | Path | Role |
 |---|---|
-| `library/captioning/position_clauses.py` | Clause grammar (torch-free) — parse / compose / position vocabulary |
-| `library/preprocess/position_captions.py` | Pipeline orchestration; models injected as `detect_fn` / `tag_fn` |
+| `library/captioning/position_clauses.py` | Clause grammar (torch-free) — parse / compose / `flatten_caption` / position vocabulary |
+| `library/preprocess/position_captions.py` | Pipeline orchestration (`plan_bag_removals` = the v2 rules, `flatten_captions` = the undo); models injected as `detect_fn` / `tag_fn` |
 | `scripts/preprocess/position_captions.py` | CLI shell — argparse + SAM3/tagger loading |
 | `scripts/tasks/preprocess.py::cmd_caption_position` | `make caption-position` (daemon-routed) |
 | `library/preprocess/caption_variants.py` | Atomic-clause variant generation |
 | `library/captioning/correction.py` | Clause-aware order correction |
-| `tests/test_position_captions.py` | 40 unit tests (grammar round-trip, ordering, selection, skip paths) |
+| `tests/test_position_captions.py` | 65 unit tests (grammar round-trip, ordering, selection, skip paths, the four rewrite rules) |
 | `bench/position_captions/` | Phase-0 probe envelopes (`20260817-1122-autocaption`, `20260817-1123-binding`) |

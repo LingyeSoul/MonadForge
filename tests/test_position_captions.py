@@ -1,6 +1,6 @@
-"""Position-aware caption clauses — parse/compose, variants, and the v1 pipeline.
+"""Position-aware caption clauses — parse/compose, variants, and the pipeline.
 
-Three invariants worth pinning:
+Four invariants worth pinning:
 
 1. **Clause parsing round-trips.** The convention delimits clauses with ``.``
    and tags with ``,``. A naive ``split(",")`` glues the header onto the
@@ -12,6 +12,11 @@ Three invariants worth pinning:
    feature exists to remove.
 3. **The pipeline never writes a clause it can't ground.** Count disagreement,
    too few instances, and hallucinated character names all skip.
+4. **The v2 rewrite only removes what it has earned.** A tag leaves the flat bag
+   when exactly one clause claims it, the bag corroborates a per-subject reading
+   (two views of one girl are not two girls), and the winning crop clears every
+   other by the attribution margin. Failing any of those degrades to v1 for that
+   one tag — bound *and* still flat — never to a wrong deletion.
 """
 
 from __future__ import annotations
@@ -266,6 +271,10 @@ def pipeline_bits():
             "green hair": "hair_color",
             "red eyes": "eye_color",
             "twintails": "hairstyle",
+            "long hair": "hair_length",
+            "large breasts": "body_shape",
+            "maid": "costume",
+            "playboy bunny": "costume",
             "ass": "body_parts",
             "thighs": "body_parts",
             "simple background": "background_detail",
@@ -302,14 +311,20 @@ def _tagger(per_crop):
     return tag
 
 
-def test_propose_binds_hair_color_to_each_side(pipeline_bits):
+_TWO_GIRLS_CAPTION = (
+    "safe, 2girls, akita neru, hatsune miku, @channel, blonde hair, aqua hair, "
+    "simple background"
+)
+
+
+def _two_girls_proposal(pipeline_bits, **option_overrides):
+    """The canonical two-subject image: one name + one hair color per side."""
     from library.preprocess.position_captions import propose_for_image
 
     image, vocabulary, _, Options = pipeline_bits
-    caption = "safe, 2girls, akita neru, hatsune miku, @channel, blonde hair, aqua hair, simple background"
-    proposal = propose_for_image(
+    return propose_for_image(
         image,
-        caption,
+        _TWO_GIRLS_CAPTION,
         detect_fn=_detector(
             {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
         ),
@@ -335,16 +350,201 @@ def test_propose_binds_hair_color_to_each_side(pipeline_bits):
             ]
         ),
         vocabulary=vocabulary,
-        options=Options(),
+        options=Options(**option_overrides),
     )
+
+
+def test_propose_binds_hair_color_to_each_side(pipeline_bits):
+    proposal = _two_girls_proposal(pipeline_bits)
     assert proposal.ok
     parsed = parse_caption(proposal.proposed)
-    # v1 is additive: the flat bag comes through untouched.
-    assert parsed.flat_tags == tuple(t.strip() for t in caption.split(","))
     assert parsed.clauses[0].tags[:2] == ("akita neru", "blonde hair")
     assert parsed.clauses[1].tags[:2] == ("hatsune miku", "aqua hair")
     # Kept on BOTH crops → not attributable → stays out of every clause.
     assert not any("simple background" in c.tags for c in parsed.clauses)
+
+
+def test_v2_moves_each_bound_attribute_out_of_the_flat_bag(pipeline_bits):
+    """The point of v2: every attribute asserted exactly once, where it belongs."""
+    proposal = _two_girls_proposal(pipeline_bits)
+    parsed = parse_caption(proposal.proposed)
+    # The bag keeps the cast list and what describes the image — not the
+    # attributes, which now live in the clause that owns them.
+    assert parsed.flat_tags == (
+        "safe",
+        "2girls",
+        "akita neru",
+        "hatsune miku",
+        "@channel",
+        "simple background",
+    )
+    assert {m["tag"] for m in proposal.moved} == {"blonde hair", "aqua hair"}
+    # Nothing is lost — every moved tag is still in the caption, in one clause.
+    bound = {t for c in parsed.clauses for t in c.tags}
+    assert {"blonde hair", "aqua hair"} <= bound
+
+
+def test_the_cast_list_stays_in_the_flat_bag(pipeline_bits):
+    """Hand-written convention: names are bound *and* kept flat.
+
+    Across the 14 ground-truth captions, 19 of 244 clause tags also appear in the
+    bag and every one of them is a character name — no attribute is ever
+    duplicated. The bag is the cast list a prompt uses to summon the characters;
+    the clause says which one is where.
+    """
+    proposal = _two_girls_proposal(pipeline_bits)
+    flat = parse_caption(proposal.proposed).flat_tags
+    assert "akita neru" in flat and "hatsune miku" in flat
+    assert proposal.pinned["akita neru"] == "character-name"
+
+
+def test_no_rewrite_restores_the_additive_v1_caption(pipeline_bits):
+    proposal = _two_girls_proposal(pipeline_bits, rewrite=False)
+    parsed = parse_caption(proposal.proposed)
+    assert parsed.flat_tags == tuple(t.strip() for t in _TWO_GIRLS_CAPTION.split(","))
+    assert not proposal.moved
+    # …and the clauses are identical to the rewritten arm's.
+    rewritten = parse_caption(_two_girls_proposal(pipeline_bits).proposed)
+    assert [c.render() for c in parsed.clauses] == [
+        c.render() for c in rewritten.clauses
+    ]
+
+
+def _views_proposal(pipeline_bits, caption, per_crop, **option_overrides):
+    """A two-view sheet of ONE character: same girl, different outfit per view."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    return propose_for_image(
+        image,
+        caption,
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(per_crop),
+        vocabulary=vocabulary,
+        options=Options(**option_overrides),
+    )
+
+
+def test_a_single_characters_attributes_never_leave_the_bag(pipeline_bits):
+    """The v2 hazard: two views of one girl are not two girls.
+
+    ``blonde hair`` read off the left view only would, if moved, make the caption
+    claim the right view is *not* blonde — of the same character. One hair color
+    in the bag is a property of the character, so it stays flat; the outfit that
+    genuinely differs per view moves.
+    """
+    proposal = _views_proposal(
+        pipeline_bits,
+        "safe, 1girl, multiple views, akita neru, blonde hair, maid, playboy bunny",
+        [
+            {
+                "kept": {"blonde hair": 0.9, "maid": 0.8},
+                "scores": {"blonde hair": 0.9, "maid": 0.8, "playboy bunny": 0.01},
+                "groups": {"hair_color": "blonde hair"},
+            },
+            {
+                "kept": {"playboy bunny": 0.8},
+                "scores": {"blonde hair": 0.2, "maid": 0.02, "playboy bunny": 0.8},
+                "groups": {},
+            },
+        ],
+    )
+    assert proposal.ok
+    parsed = parse_caption(proposal.proposed)
+    assert "blonde hair" in parsed.flat_tags
+    assert proposal.pinned["blonde hair"] == "sole-value"
+    # …and it is still bound to the view it was read off (v1 behaviour for it).
+    assert "blonde hair" in parsed.clauses[0].tags
+    # The per-view outfits move: that is what the sheet was ambiguous about.
+    assert "maid" not in parsed.flat_tags and "playboy bunny" not in parsed.flat_tags
+    assert "maid" in parsed.clauses[0].tags
+    assert "playboy bunny" in parsed.clauses[1].tags
+
+
+def test_two_tone_hair_is_one_character_not_two(pipeline_bits):
+    """``multicolored hair`` explains the second hair color without a second girl."""
+    proposal = _views_proposal(
+        pipeline_bits,
+        "safe, 1girl, multiple views, multicolored hair, blonde hair, aqua hair, "
+        "maid, playboy bunny",
+        [
+            {
+                "kept": {"blonde hair": 0.9, "maid": 0.8},
+                "scores": {"blonde hair": 0.9, "aqua hair": 0.1, "maid": 0.8},
+                "groups": {"hair_color": "blonde hair"},
+            },
+            {
+                "kept": {"aqua hair": 0.9, "playboy bunny": 0.8},
+                "scores": {"blonde hair": 0.1, "aqua hair": 0.9, "playboy bunny": 0.8},
+                "groups": {"hair_color": "aqua hair"},
+            },
+        ],
+    )
+    assert {"blonde hair", "aqua hair"} <= set(
+        parse_caption(proposal.proposed).flat_tags
+    )
+    assert proposal.pinned["blonde hair"] == "two-tone-marker"
+    assert proposal.pinned["aqua hair"] == "two-tone-marker"
+
+
+def test_a_contested_tag_stays_in_the_bag(pipeline_bits):
+    """Below the margin the tag is shared, not attributable — v1 for that one tag."""
+    proposal = _views_proposal(
+        pipeline_bits,
+        "safe, 2girls, akita neru, hatsune miku, maid, playboy bunny",
+        [
+            {
+                "kept": {"akita neru": 0.9, "maid": 0.55},
+                "scores": {"maid": 0.55, "playboy bunny": 0.01},
+                "groups": {},
+            },
+            {
+                # Just under the keep threshold — the tagger nearly kept `maid`
+                # here too, so removing it from the bag would deny it of this
+                # girl. Both girls in maid outfits is exactly this shape.
+                "kept": {"hatsune miku": 0.9, "playboy bunny": 0.9},
+                "scores": {"maid": 0.45, "playboy bunny": 0.9},
+                "groups": {},
+            },
+        ],
+    )
+    parsed = parse_caption(proposal.proposed)
+    assert "maid" in parsed.flat_tags
+    assert proposal.pinned["maid"] == "margin"
+    assert "maid" in parsed.clauses[0].tags  # still bound, just also still flat
+    assert "playboy bunny" not in parsed.flat_tags  # 0.9 vs 0.0 clears the margin
+
+
+def test_a_tag_bound_to_two_subjects_stays_in_the_bag(pipeline_bits):
+    from library.preprocess.position_captions import (
+        ClauseVocabulary,
+        RemovalPlan,
+        plan_bag_removals,
+    )
+
+    vocabulary = ClauseVocabulary(tag_to_group={"maid": "costume"})
+    plan = plan_bag_removals(
+        ("2girls", "maid"),
+        [["maid"], ["maid"]],
+        ["left", "right"],
+        [{"maid": 0.9}, {"maid": 0.9}],
+        [{"maid": 0.9}, {"maid": 0.9}],
+        vocabulary=vocabulary,
+        margin=0.35,
+    )
+    assert plan == RemovalPlan(moved=(), blocked={"maid": "multi-clause"})
+
+
+def test_flatten_undoes_the_rewrite(pipeline_bits):
+    from library.captioning.position_clauses import flatten_caption
+
+    proposal = _two_girls_proposal(pipeline_bits)
+    flat = {t.strip() for t in flatten_caption(proposal.proposed).split(",")}
+    # Tag *set* restored (order is not promised — the corrector re-buckets it).
+    assert {t.strip() for t in _TWO_GIRLS_CAPTION.split(",")} <= flat
+    assert "On the" not in flatten_caption(proposal.proposed)
 
 
 def test_count_mismatch_is_skipped_not_guessed(pipeline_bits):

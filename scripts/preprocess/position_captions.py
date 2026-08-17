@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Append position-aware clauses to multi-subject captions (SAM3 + Anima Tagger).
+"""Rewrite multi-subject captions into position clauses (SAM3 + Anima Tagger).
 
 Thin CLI over ``library.preprocess.position_captions``: loads SAM3 and the Anima
 Tagger, drives the detect → order → crop+blank → tag → compose pipeline over the
 resized dataset, and writes a review report.
+
+An attributable tag is **moved** out of the flat bag into its clause, so each
+attribute is asserted exactly once and bound to its subject (v2). ``--no_rewrite``
+restores the additive v1 behaviour for the training A/B; ``--flatten`` is the
+inverse pass that merges clauses back into the bag.
 
 **Dry-run is the default.** Nothing is written to any caption until ``--apply``
 is passed; a dry run emits ``report.json`` (+ the mask-blanked crops with
@@ -17,6 +22,7 @@ rate, so a stale sidecar would keep training the pre-clause caption).
     make caption-position                      # dry run over the whole dataset
     make caption-position ARGS="--apply"       # write the clauses
     make preprocess-te                         # re-encode (required after apply)
+    make caption-position ARGS="--flatten --apply"   # back the rewrite out
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ from library.env import resolve_under_home  # noqa: E402
 from library.preprocess.position_captions import (  # noqa: E402
     Detection,
     PositionCaptionOptions,
+    flatten_captions,
     load_clause_vocabulary,
     run_position_captions,
 )
@@ -79,6 +86,14 @@ def parse_args() -> argparse.Namespace:
         "--crops",
         action="store_true",
         help="Also export the mask-blanked crops next to the report (review aid)",
+    )
+    p.add_argument(
+        "--flatten",
+        action="store_true",
+        help="Inverse pass: merge every caption's clauses back into its flat bag "
+        "and drop the clauses. Text-only (no SAM3, no tagger) — this is how an "
+        "--apply run is backed out, and how the clause-free control corpus for a "
+        "training A/B is built. Flattens hand-written clauses too.",
     )
     p.add_argument("--checkpoint", default="models/sam3/sam3.pt", help="SAM3 weights")
     p.add_argument("--tagger_dir", "--tagger-dir", dest="tagger_dir", default=None)
@@ -208,6 +223,27 @@ def parse_args() -> argparse.Namespace:
         "dry run contradicted the caption",
     )
     c.add_argument(
+        "--no_rewrite",
+        "--no-rewrite",
+        dest="rewrite",
+        action="store_false",
+        help="Additive v1: append the clauses but leave the flat bag untouched, "
+        "so every bound attribute is asserted twice. Default is the v2 rewrite, "
+        "which moves an attributable tag out of the bag into its clause. Kept for "
+        "the training A/B arm",
+    )
+    c.add_argument(
+        "--attribution_margin",
+        "--attribution-margin",
+        dest="attribution_margin",
+        type=float,
+        default=0.35,
+        help="How far the winning crop's probability must clear every other "
+        "crop's before a tag may LEAVE the flat bag (the clause carries it "
+        "either way). Guards the one thing v2 can get wrong that v1 cannot: "
+        "removing an attribute the other subjects also have",
+    )
+    c.add_argument(
         "--qwen3",
         default=None,
         help="Qwen3 tokenizer path — enables the token-budget column in the report",
@@ -301,11 +337,49 @@ def build_detect_fn(args: argparse.Namespace):
     return detect, part_detect, model, processor
 
 
+def _run_flatten(args, src: Path, dst: Path, report_dir: Path) -> None:
+    """The inverse pass — text only, so it short-circuits before any model load."""
+    rows, stats = flatten_captions(
+        resized_dir=dst,
+        source_dir=src,
+        path_pattern=args.path_pattern,
+        apply=args.apply,
+    )
+    summary = {
+        "mode": "flatten",
+        "applied": bool(args.apply),
+        "seen": stats.seen,
+        "with_clauses": stats.candidates,
+        "flattened": stats.proposed,
+        "written": stats.written,
+        "skipped": dict(sorted(stats.skipped.items(), key=lambda kv: -kv[1])),
+    }
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "flatten_report.json").write_text(
+        json.dumps({"summary": summary, "images": rows}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    print(f"\nreport: {report_dir / 'flatten_report.json'}")
+    if args.apply:
+        print(
+            "\nCaption edits do NOT invalidate the TE caches. Run "
+            "`make preprocess-te` now to regenerate the variant sidecars and "
+            "re-encode."
+        )
+    else:
+        print("\nDry run — no captions written. Re-run with --apply to write.")
+
+
 def main() -> None:
     args = parse_args()
     src = _under_root(args.src)
     dst = _under_root(args.dst)
     report_dir = _under_root(args.report_dir)
+
+    if args.flatten:
+        _run_flatten(args, src, dst, report_dir)
+        return
 
     # SAM3 first, tagger second: the DiT-free pair still costs a few GB each and
     # detection has to finish before any crop exists to tag. Unlike the probe
@@ -358,6 +432,8 @@ def main() -> None:
         strict_count=args.strict_count,
         discriminative_only=args.discriminative_only,
         bag_gated_identity=args.bag_gated_identity,
+        rewrite=args.rewrite,
+        attribution_margin=args.attribution_margin,
     )
 
     def progress(index: int, total: int, rel: str) -> None:
@@ -385,10 +461,17 @@ def main() -> None:
     ]
     summary = {
         "applied": bool(args.apply),
+        "rewrite": bool(args.rewrite),
+        "attribution_margin": args.attribution_margin,
         "seen": stats.seen,
         "candidates": stats.candidates,
         "proposed": stats.proposed,
         "written": stats.written,
+        # v2: how much of the flat bag the clauses actually took, and which of
+        # the two safety rules pinned the rest. Zero under --no_rewrite.
+        "rewritten": stats.rewritten,
+        "moved_tags": stats.moved_tags,
+        "pinned_tags": dict(sorted(stats.pinned_tags.items(), key=lambda kv: -kv[1])),
         "skipped": dict(sorted(stats.skipped.items(), key=lambda kv: -kv[1])),
         "part_prompts": list(options.part_prompts),
         # Images the body-part fallback actually rescued: at least one bound
@@ -424,6 +507,12 @@ def main() -> None:
             "`make preprocess-te` now to regenerate the variant sidecars and "
             "re-encode."
         )
+        if args.rewrite and stats.moved_tags:
+            print(
+                f"{stats.moved_tags} tag(s) moved out of the flat bag across "
+                f"{stats.rewritten} caption(s). To back that out: "
+                '`make caption-position ARGS="--flatten --apply"`.'
+            )
     else:
         print("\nDry run — no captions written. Re-run with --apply to write.")
 

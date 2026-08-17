@@ -73,6 +73,50 @@ STRINGS: dict[str, str] = {
         "including the first @artist marker are never dropped. Ignored when "
         "shuffle variants ≤ 0."
     ),
+    "preprocess_caption_autotag_box": "Auto-tagging",
+    "preprocess_caption_autotag": "Auto-tag with Anima Tagger",
+    "preprocess_caption_autotag_tip": (
+        "Run the Anima Tagger over the dataset and write .txt captions. Runs "
+        "first, right after resize, because everything else in Caption "
+        "rewriting edits captions this stage may have just created. GPU stage — "
+        "adds one tagger pass over the dataset; the checkpoint is downloaded "
+        "automatically the first time. Run `make caption-autotag` for a dry-run "
+        "report if you want to review the captions before writing them."
+    ),
+    "preprocess_caption_autotag_mode": "Mode",
+    "preprocess_caption_autotag_mode_missing": "Uncaptioned images only",
+    "preprocess_caption_autotag_mode_merge": "Merge into existing captions",
+    "preprocess_caption_autotag_mode_overwrite": "Overwrite all captions",
+    "preprocess_caption_autotag_mode_tip": (
+        "Uncaptioned only: tag images with no .txt sidecar and leave every "
+        "existing caption untouched — the safe default.\n"
+        "Merge: tag everything but only append tags the caption lacks; position "
+        "clauses and their tags are preserved.\n"
+        "Overwrite: replace every caption with the tagger's output. This "
+        "discards hand-written captions."
+    ),
+    "preprocess_caption_autotag_min_confidence": "Confidence threshold",
+    "preprocess_caption_autotag_min_confidence_tip": (
+        "Extra probability floor on top of the tagger's own per-tag "
+        "thresholds — a kept tag below it is dropped. 0 (default) leaves the "
+        "tagger's calibrated decisions alone; raise it for fewer, safer tags. "
+        "The rating is always emitted regardless."
+    ),
+    "preprocess_caption_editing": "Caption rewriting",
+    "preprocess_caption_position_clauses": "Position clauses (multi-subject)",
+    "preprocess_caption_position_clauses_tip": (
+        "Detect the subjects in a multi-subject image (SAM3), tag each one, and "
+        "rewrite the caption into 'On the left, …' clauses so attributes bind to "
+        "a subject instead of floating in the flat tag bag. A tag bound to one "
+        "subject is MOVED out of the flat bag, so each attribute is stated "
+        "exactly once; character names stay in the bag as well. Runs before "
+        "caching and edits the source captions in place; images that already "
+        "have clauses, or where detection disagrees with the caption's girl "
+        "count, are left alone. GPU stage — adds a SAM3 + tagger pass over the "
+        "dataset. Run `make caption-position` first for a dry-run report if you "
+        "want to review the proposals before writing them; "
+        '`make caption-position ARGS="--flatten --apply"` undoes a run.'
+    ),
     "preprocess_caption_correct_order": "Correct caption order",
     "preprocess_caption_correct_order_tip": (
         "Write corrected .txt captions next to resized images and use them for "

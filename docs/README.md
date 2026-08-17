@@ -52,6 +52,7 @@ Wired and runnable, but not part of the default stack — may break or change.
 | [experimental/anima_tagger.md](experimental/anima_tagger.md) | Anima Tagger — multi-label tagger emitting Anima-format tag strings (DirectEdit ψ_src source) |
 | [experimental/vr_loss.md](experimental/vr_loss.md) | Variance-reduced FM loss — AsymFlow §5.2 control-variate correction at the loss level |
 | [experimental/convrot_int8_training.md](experimental/convrot_int8_training.md) | ConvRot int8 frozen-base training — W8A16/W8A8 VRAM path, compatibility, probes, and merge policy |
+| [experimental/position_captions.md](experimental/position_captions.md) | Position-aware captions — SAM3 + tagger rewrite multi-subject captions into `On the left, …` clauses, moving each bound tag out of the flat bag |
 
 ## Structure
 

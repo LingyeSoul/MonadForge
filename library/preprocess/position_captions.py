@@ -1,16 +1,37 @@
-"""Position-aware caption enhance (v1) — detect subjects, bind tags to sides.
+"""Position-aware caption rewrite (v2) — detect subjects, bind tags to sides.
 
 Orchestration for ``make caption-position``: for every multi-subject image,
 detect the ``girl`` instances, order them into reading order, tag each
-mask-blanked crop, and **append** positional clauses to the caption in the
-dataset's hand-written convention::
+mask-blanked crop, and rewrite the caption in the dataset's hand-written
+convention::
 
     <flat tag bag>. On the left, akita neru, yellow eyes. On the right, ...
 
-v1 is purely **additive** — the flat tag bag is left exactly as it was, so a
-caption gains binding without losing anything the model was pretrained on.
-(Moving attributable tags *out* of the bag is v2; see
-``docs/proposal/position_captions.md``.)
+**v2 moves an attributable tag out of the flat bag into its clause** rather than
+asserting it twice: ``2girls, blonde hair, aqua hair`` becomes ``2girls. On the
+left, blonde hair. On the right, aqua hair.`` — each attribute stated exactly
+once, bound to the subject it belongs to. That is the whole point of the feature;
+the additive v1 (clause appended, bag untouched) left the bag still claiming
+every attribute of every subject, which is the ambiguity clauses exist to
+resolve. ``rewrite=False`` restores v1 for the A/B arm.
+
+Nothing is destroyed by the move — a moved tag is still in the caption, inside a
+clause — and :func:`library.captioning.position_clauses.flatten_caption` merges
+it back, so an ``--apply`` run is reversible.
+
+Two rules bound what may leave the bag, because a wrong move is worse than a
+wrong clause (it makes the caption assert that the *other* subjects lack the
+attribute):
+
+* **Character-invariant groups need corroboration.** Hair color, eyes, body
+  shape, species … are properties of a *character*, not of a view, so on a
+  ``1girl, multiple views`` sheet they are true of every panel. Such a tag may
+  only move when the bag names **two or more** values of that group (see
+  ``_CHARACTER_INVARIANT_GROUPS``) — i.e. the caption is already enumerating
+  per-subject values and binding them loses nothing.
+* **Attribution margin.** The winning crop's probability must clear every other
+  crop's by ``attribution_margin``, so a tag the tagger nearly kept on a second
+  subject stays in the bag (and stays duplicated in the clause).
 
 Layering: this module holds the "drive the primitives over a dataset" logic and
 takes its two models as **injected callables** (``detect_fn`` / ``tag_fn``), so
@@ -55,6 +76,7 @@ from library.captioning.position_clauses import (
     PositionClause,
     assign_positions,
     compose_caption,
+    flatten_caption,
     has_clauses,
     ordered_indices,
     parse_caption,
@@ -139,6 +161,67 @@ _IDENTITY_GROUPS = frozenset({"hair_color", "eye_color", "hair_length", "hairsty
 # there. ``body_shape`` and ``fashion_style`` are left out for the same reason —
 # a per-subject value the bag omitted is real information, not a contradiction.
 _BAG_GATED_GROUPS = ("hair_color", "eye_color", "hair_length")
+
+# Groups whose value belongs to a **character**, not to a view of one. The v2
+# rewrite treats them specially: on a ``1girl, multiple views`` sheet every panel
+# is the same girl, so binding ``aqua hair`` to one view and removing it from the
+# bag makes the caption claim the other views are *not* aqua-haired. Outfit /
+# pose / expression / framing groups carry no such implication — a maid view and
+# a bunny view genuinely differ — so they move freely.
+#
+# The corroboration rule: a tag in one of these groups may leave the bag only
+# when the bag names **≥2 distinct values of that group**. A caption listing
+# ``black hair, white hair, pink hair`` is already enumerating per-subject values
+# and gains from binding them; a caption listing one hair color is describing the
+# character, and that value stays flat. Deliberately evidence-based rather than
+# count-based: 219 of the 373 first-sweep proposals carry no girls-count tag at
+# all, so a ``detected == characters`` gate would pin nearly everything.
+_CHARACTER_INVARIANT_GROUPS = frozenset(
+    {
+        "hair_color",
+        "hair_length",
+        "hairstyle",
+        "eye_color",
+        "eye_shape",
+        "face_features",
+        "age",
+        "gender",
+        "skin",
+        "body_shape",
+        "species_nonhuman",
+        "animal_parts",
+    }
+)
+
+# …and the exception to the corroboration rule. Booru tags a *single* character
+# with two hair colors when the hair itself is two-toned, so the "≥2 values"
+# evidence is explained without there being two subjects. These markers are
+# ungrouped in ``groups.yaml`` (checked), hence a plain name set rather than
+# group membership: when one is in the bag, that group is pinned flat.
+_MULTI_VALUE_MARKERS: Mapping[str, frozenset[str]] = {
+    "hair_color": frozenset(
+        {
+            "multicolored hair",
+            "two-tone hair",
+            "gradient hair",
+            "streaked hair",
+            "colored inner hair",
+            "split-color hair",
+            "rainbow hair",
+            "colored tips",
+            "multicolored bangs",
+            "alternate hair color",
+        }
+    ),
+    "eye_color": frozenset(
+        {
+            "heterochromia",
+            "multicolored eyes",
+            "gradient eyes",
+            "two-tone eyes",
+        }
+    ),
+}
 
 _GIRLS_COUNT_RE = re.compile(r"^(\d+)girls?$")
 _BOYS_COUNT_RE = re.compile(r"^(\d+)boys?$")
@@ -630,6 +713,144 @@ def crop_instance(
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class MovedTag:
+    """One flat-bag tag the rewrite bound to a position and removed from the bag."""
+
+    tag: str
+    position: str
+    margin: float
+
+
+@dataclass(frozen=True)
+class RemovalPlan:
+    """What the rewrite moves, and why it declined to move the rest.
+
+    ``blocked`` maps a bag tag that *reached* a clause but stays flat to the rule
+    that kept it there — the review artifact for tuning the two safety rules.
+    """
+
+    moved: tuple[MovedTag, ...] = ()
+    blocked: Mapping[str, str] = field(default_factory=dict)
+
+
+def _score_of(
+    scores: Mapping[str, float], kept: Mapping[str, float], tag: str
+) -> float:
+    """This crop's probability for ``tag``.
+
+    ``predict`` returns ``scores`` for the *whole* vocabulary, which is what the
+    margin needs — the runner-up crop's probability is interesting precisely when
+    it fell below the keep threshold. Falls back to ``kept`` (0.0 for a crop that
+    did not keep the tag) when a caller supplies no ``scores``, which only the
+    unit-test stubs do.
+    """
+    if tag in scores:
+        return float(scores[tag])
+    return float(kept.get(tag, 0.0))
+
+
+def plan_bag_removals(
+    flat_tags: Sequence[str],
+    clause_tags: Sequence[Sequence[str]],
+    positions: Sequence[str],
+    kept_sets: Sequence[Mapping[str, float]],
+    score_sets: Sequence[Mapping[str, float]],
+    *,
+    vocabulary: ClauseVocabulary,
+    margin: float,
+) -> RemovalPlan:
+    """Decide which flat-bag tags the clauses have earned the right to take.
+
+    A tag moves out of the bag when all four hold:
+
+    1. **It is not a character name.** The cast list stays flat and is *also*
+       bound — the hand-written convention, measured (see the ``character-name``
+       branch below).
+    2. **It reached exactly one clause.** Two clauses claiming it means the
+       attribute is shared, and a shared attribute belongs to the bag.
+    3. **Corroboration**, for a character-invariant group: the bag names ≥2
+       values of that group, with no two-tone marker to explain them away. See
+       ``_CHARACTER_INVARIANT_GROUPS``.
+    4. **Margin**: the winning crop beats every other crop's probability for the
+       tag by ``margin``. A tag the tagger nearly kept on a second subject is a
+       shared attribute the threshold happened to split, and removing it would
+       make the caption deny it of that subject.
+
+    Failing any of them is not an error — the tag simply stays in the bag *and*
+    in its clause, which is exactly v1's additive behaviour for that one tag.
+    """
+    bag: dict[str, str] = {}
+    for tag in flat_tags:
+        bag.setdefault(tag.strip().lower(), tag)
+
+    where: dict[str, list[int]] = {}
+    for i, tags in enumerate(clause_tags):
+        for tag in tags:
+            where.setdefault(tag.strip().lower(), []).append(i)
+
+    # Census of the bag: which tags are characters (rule 1) and how many values
+    # of each invariant group it names (rule 3).
+    values_per_group: dict[str, set[str]] = {}
+    names_in_bag: set[str] = set()
+    for key in bag:
+        group = vocabulary.group_of(key)
+        if group in _CHARACTER_INVARIANT_GROUPS:
+            values_per_group.setdefault(group, set()).add(key)
+        if key in vocabulary.characters:
+            names_in_bag.add(key)
+    pinned_groups = {
+        group for group, markers in _MULTI_VALUE_MARKERS.items() if markers & bag.keys()
+    }
+
+    moved: list[MovedTag] = []
+    blocked: dict[str, str] = {}
+    for key, indices in sorted(where.items()):
+        if key not in bag:
+            continue  # the clause tag was never in the bag — nothing to move
+        if len(indices) != 1:
+            blocked[key] = "multi-clause"
+            continue
+        group = vocabulary.group_of(key)
+        if key in names_in_bag:
+            # The cast list stays flat — this is the hand-written convention,
+            # measured rather than assumed: across the 14 ground-truth captions,
+            # 19 of 244 clause tags are also in the bag and **all 19 are
+            # character names**; not one non-name attribute is duplicated. The
+            # bag answers "who is in this image" (and is how a prompt summons
+            # them), the clause answers "which one is where".
+            blocked[key] = "character-name"
+            continue
+        if group in _CHARACTER_INVARIANT_GROUPS:
+            if group in pinned_groups:
+                blocked[key] = "two-tone-marker"
+                continue
+            if len(values_per_group.get(group, ())) < 2:
+                blocked[key] = "sole-value"
+                continue
+        winner = indices[0]
+        mine = _score_of(score_sets[winner], kept_sets[winner], key)
+        rival = max(
+            (
+                _score_of(score_sets[j], kept_sets[j], key)
+                for j in range(len(clause_tags))
+                if j != winner
+            ),
+            default=0.0,
+        )
+        if mine - rival < margin:
+            blocked[key] = "margin"
+            continue
+        moved.append(
+            MovedTag(
+                tag=bag[key],
+                position=positions[winner],
+                margin=round(mine - rival, 3),
+            )
+        )
+    return RemovalPlan(moved=tuple(moved), blocked=blocked)
+
+
 @dataclass
 class InstanceProposal:
     position: str
@@ -655,6 +876,11 @@ class ImageProposal:
     # ``instances`` is only populated once every gate has passed.
     detections: list[dict] = field(default_factory=list)
     tokens: int | None = None
+    # v2 bookkeeping: which bag tags the clauses took, and which reached a clause
+    # but stayed flat (tag → the rule that pinned it). Both empty under
+    # ``rewrite=False``.
+    moved: list[dict] = field(default_factory=list)
+    pinned: dict[str, str] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -667,15 +893,21 @@ class PositionCaptionStats:
     candidates: int = 0
     proposed: int = 0
     written: int = 0
+    rewritten: int = 0
+    moved_tags: int = 0
+    pinned_tags: dict[str, int] = field(default_factory=dict)
     skipped: dict[str, int] = field(default_factory=dict)
 
     def skip(self, reason: str) -> None:
         self.skipped[reason] = self.skipped.get(reason, 0) + 1
 
+    def pin(self, reason: str) -> None:
+        self.pinned_tags[reason] = self.pinned_tags.get(reason, 0) + 1
+
 
 @dataclass(frozen=True)
 class PositionCaptionOptions:
-    """Knobs for one pass. Defaults are the shipped v1 recipe."""
+    """Knobs for one pass. Defaults are the shipped v2 recipe."""
 
     prompt: str = "girl"
     score_threshold: float = 0.5
@@ -703,6 +935,13 @@ class PositionCaptionOptions:
     strict_count: bool = True
     discriminative_only: bool = True
     bag_gated_identity: bool = True
+    # v2: move an attributable tag out of the flat bag into its clause. False is
+    # the additive v1 behaviour (bag untouched), kept for the training A/B.
+    rewrite: bool = True
+    # How far the winning crop must clear every other crop before a tag is
+    # allowed to *leave* the bag. Only the removal is gated — a tag that fails
+    # the margin still enters its clause, so the caption degrades to v1 for it.
+    attribution_margin: float = 0.35
 
 
 def detect_subjects(
@@ -870,6 +1109,7 @@ def propose_for_image(
     ]
     predictions = [tag_fn(crop) for crop in crops]
     kept_sets = [dict(p.get("kept") or {}) for p in predictions]
+    score_sets = [dict(p.get("scores") or {}) for p in predictions]
     # A tag only *this* crop keeps is attributable to it. One that *every* crop
     # keeps discriminates nothing — the same character in four outfit views
     # scores the same name, hair, and eyes on all four — so it stays in the flat
@@ -917,7 +1157,32 @@ def propose_for_image(
         # indistinguishable to the tagger, so there is nothing to bind.
         proposal.status = "skip:no-discriminative-tags"
         return proposal
-    proposal.proposed = compose_caption(parsed.flat_tags, clauses)
+
+    flat = list(parsed.flat_tags)
+    if options.rewrite:
+        plan = plan_bag_removals(
+            parsed.flat_tags,
+            [inst.tags for inst in proposal.instances],
+            [inst.position for inst in proposal.instances],
+            kept_sets,
+            score_sets,
+            vocabulary=vocabulary,
+            margin=options.attribution_margin,
+        )
+        proposal.pinned = dict(plan.blocked)
+        taken = {m.tag.strip().lower() for m in plan.moved}
+        remaining = [t for t in flat if t.strip().lower() not in taken]
+        # A caption that is nothing but clauses has no scene, rating or count
+        # left to condition on. Unreachable in practice (those tags never enter a
+        # clause) but the rewrite removes text, so it is asserted, not assumed.
+        if remaining:
+            flat = remaining
+            proposal.moved = [
+                {"tag": m.tag, "position": m.position, "margin": m.margin}
+                for m in plan.moved
+            ]
+
+    proposal.proposed = compose_caption(flat, clauses)
     return proposal
 
 
@@ -987,6 +1252,10 @@ def run_position_captions(
     ``resized/`` and the TE step then encodes. Detection runs on the *resized*
     image because that is the pixel data training actually sees.
 
+    Under v2 the write is a **rewrite**, not an append — a bound tag leaves the
+    flat bag. It is still recoverable (:func:`flatten_captions`), but it is not a
+    no-op on the master, which is the other reason ``apply`` defaults off.
+
     Caption edits do **not** invalidate the TE caches — the caller must follow
     an ``apply`` run with ``make preprocess-te`` (which regenerates the variant
     sidecars first). That silent-failure trap is why ``apply`` defaults off.
@@ -1038,10 +1307,72 @@ def run_position_captions(
                 _save_skip_overlay(crops_dir, rel, image, proposal)
             continue
         stats.proposed += 1
+        if proposal.moved:
+            stats.rewritten += 1
+            stats.moved_tags += len(proposal.moved)
+        for reason in proposal.pinned.values():
+            stats.pin(reason)
         if token_count_fn is not None and proposal.proposed:
             proposal.tokens = token_count_fn(proposal.proposed)
         if apply:
             caption_path.write_text(proposal.proposed, encoding="utf-8")
             stats.written += 1
 
+    return rows, stats
+
+
+def flatten_captions(
+    *,
+    resized_dir: Path,
+    source_dir: Path,
+    path_pattern: str | None = None,
+    apply: bool = False,
+) -> tuple[list[dict], PositionCaptionStats]:
+    """Undo a rewrite: merge every caption's clauses back into its flat bag.
+
+    The v2 rewrite *moves* tags rather than deleting them, so a clause-free
+    caption is recoverable from the text alone — no SAM3, no tagger, no pixels.
+    Two uses: backing out an ``--apply`` run, and building the clause-free
+    control corpus for a training A/B.
+
+    Walks ``resized_dir`` and maps to the caption master exactly like
+    :func:`run_position_captions`, so ``path_pattern`` means the same thing in
+    both and the nested-symlink layout of ``image_dataset/`` is never globbed.
+
+    Hand-written clauses are flattened too — the pass cannot tell them from
+    generated ones, and that is a real loss of curation, hence the dry-run
+    default.
+    """
+    from library.preprocess._dataset import walk_images
+
+    stats = PositionCaptionStats()
+    rows: list[dict] = []
+    images = walk_images(resized_dir, recursive=True, pattern=path_pattern)
+    stats.seen = len(images)
+    for image_path in images:
+        rel = image_path.relative_to(resized_dir).with_suffix(".txt")
+        caption_path = source_dir / rel
+        if not caption_path.exists():
+            stats.skip("no-caption")
+            continue
+        original = caption_path.read_text(encoding="utf-8").strip()
+        if not has_clauses(original):
+            stats.skip("no-clauses")
+            continue
+        stats.candidates += 1
+        flattened = flatten_caption(original)
+        if flattened == original:
+            stats.skip("unchanged")
+            continue
+        stats.proposed += 1
+        rows.append(
+            {
+                "caption_path": str(rel),
+                "original": original,
+                "proposed": flattened,
+            }
+        )
+        if apply:
+            caption_path.write_text(flattened, encoding="utf-8")
+            stats.written += 1
     return rows, stats

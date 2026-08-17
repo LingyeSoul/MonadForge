@@ -170,6 +170,31 @@ def parse_caption(caption: str) -> ParsedCaption:
     )
 
 
+def flatten_caption(caption: str) -> str:
+    """Merge every clause's tags back into the flat bag, dropping the clauses.
+
+    The inverse of the v2 rewrite, and the reason that rewrite is safe to apply
+    in place: v2 *moves* a bound tag out of the bag rather than deleting it, so
+    every tag is still in the caption — just inside a clause. Flattening
+    recovers a clause-free caption (bag order first, then each clause left→right,
+    duplicates dropped), which is both the undo for an ``--apply`` run and the
+    control arm for a clause A/B.
+
+    Order is *not* guaranteed byte-identical to the pre-rewrite caption — a moved
+    tag comes back at the end rather than its original slot — but the tag *set*
+    is exactly restored, and the order-correction pass re-buckets it anyway.
+    """
+    parsed = parse_caption(caption)
+    seen: set[str] = set()
+    flat: list[str] = []
+    for tag in (*parsed.flat_tags, *(t for c in parsed.clauses for t in c.tags)):
+        key = tag.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            flat.append(tag)
+    return compose_caption(flat)
+
+
 def compose_caption(
     flat_tags: Iterable[str], clauses: Iterable[PositionClause] = ()
 ) -> str:
