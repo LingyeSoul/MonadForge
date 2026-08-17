@@ -365,6 +365,94 @@ def test_caption_correction_config_parses_trigger_cli_args():
     assert cleaned == ["--other"]
 
 
+def test_caption_position_clauses_is_not_a_correction_flag():
+    """It gates its own stage — it must never reach ``correct_captions.py``.
+
+    ``position_clauses`` rides in the caption-correction config dict (same
+    family of caption-master rewrites, one GUI box), but enabling it alone must
+    not turn the correction pass on or add an argv flag it doesn't know.
+    """
+    from scripts.tasks.preprocess import (
+        _caption_correction_args,
+        _caption_correction_config,
+        _caption_correction_enabled,
+    )
+
+    config, cleaned = _caption_correction_config(
+        ["--caption_position_clauses", "--other"]
+    )
+
+    assert config["position_clauses"] is True
+    assert cleaned == ["--other"]
+    assert _caption_correction_enabled(config) is False
+    assert _caption_correction_args(config) == []
+
+    off, _ = _caption_correction_config(["--no_caption_position_clauses"])
+    assert off["position_clauses"] is False
+
+
+def test_preprocess_chains_position_clauses_before_the_caption_step(monkeypatch):
+    """The stage rewrites the caption master, so it must land before TE.
+
+    Ordering is the whole contract: the caption/TE steps read the master and
+    write the variant sidecars, so a position pass that ran after them would be
+    encoded only on the *next* preprocess. It also has to run inline (plain
+    ``run``) — this process is itself a daemon job on a serial queue.
+    """
+    from scripts.tasks import preprocess
+
+    order: list[str] = []
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_resize", lambda *_a, **_k: order.append("resize")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_vae", lambda *_a, **_k: order.append("vae")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_te", lambda *_a, **_k: order.append("te")
+    )
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        order.append("position")
+
+    monkeypatch.setattr(preprocess, "run", fake_run)
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess([])
+
+    assert order == ["resize", "vae", "position", "te"]
+    (cmd,) = calls
+    assert cmd[:2] == [preprocess.PY, "scripts/preprocess/position_captions.py"]
+    assert cmd[-1] == "--apply"
+
+
+def test_preprocess_skips_position_clauses_when_unset(monkeypatch):
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    for name in ("cmd_preprocess_resize", "cmd_preprocess_vae", "cmd_preprocess_te"):
+        monkeypatch.setattr(preprocess, name, lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.delenv("CAPTION_POSITION_CLAUSES", raising=False)
+
+    preprocess.cmd_preprocess([])
+
+    assert calls == []
+
+
 def test_preprocess_run_alias_is_stripped_and_explicit_value_wins(monkeypatch):
     from scripts.tasks.preprocess import _consume_preprocess_run
 

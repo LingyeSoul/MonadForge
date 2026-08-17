@@ -73,6 +73,7 @@ STRINGS: dict[str, str] = {
         "最初の @artist マーカー以前のタグはドロップされません。"
         "シャッフルバリアント ≤ 0 の場合は無視されます。"
     ),
+<<<<<<< HEAD:webui/i18n/strings/ja.py
     "preprocess_caption_autotag_box": "自動タグ付け",
     "preprocess_caption_autotag": "Anima Tagger で自動タグ付け",
     "preprocess_caption_autotag_tip": (
@@ -117,6 +118,20 @@ STRINGS: dict[str, str] = {
         "まず `make caption-position` でドライラン レポートを出してください。"
         '`make caption-position ARGS="--flatten --apply"` で元に戻せます。'
     ),
+||||||| parent of d2de2879 (position captions: docs/experimental + preprocess-tab knob):gui/i18n/ja.py
+=======
+    "preprocess_caption_editing": "キャプション編集",
+    "preprocess_caption_position_clauses": "位置節の生成 (複数被写体)",
+    "preprocess_caption_position_clauses_tip": (
+        "複数被写体の画像から SAM3 で被写体を検出し、それぞれをタグ付けして "
+        "'On the left, …' の位置節をキャプション末尾に追加します。属性がフラットな"
+        "タグ列に浮いたままにならず、各被写体に紐づきます。キャッシュ前に実行され、"
+        "ソースキャプションを直接書き換えます。すでに位置節がある画像や、検出数が"
+        "キャプションの人数と食い違う画像はそのまま残します。GPU ステージです — "
+        "SAM3 + タガーのパスが1回追加されます。書き込む前に提案を確認したい場合は、"
+        "まず `make caption-position` でドライラン レポートを出してください。"
+    ),
+>>>>>>> d2de2879 (position captions: docs/experimental + preprocess-tab knob):gui/i18n/ja.py
     "preprocess_caption_correct_order": "キャプション順序補正",
     "preprocess_caption_correct_order_tip": (
         "補正済み .txt キャプションをリサイズ画像の隣に保存し、"

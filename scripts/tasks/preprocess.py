@@ -501,6 +501,15 @@ def _caption_correction_config(extra) -> tuple[dict[str, object], list[str]]:
             os.environ.get("CAPTION_TRIGGER_AT_FRONT"),
             _boolish(overrides.get("caption_trigger_at_front"), False),
         ),
+        # Not a `correct_captions.py` flag — it gates a separate stage that runs
+        # BEFORE the caption/TE steps (see `cmd_preprocess`). It rides in this
+        # dict because it is the same family of caption-master rewrites and the
+        # GUI groups them together; `_caption_correction_enabled` /
+        # `_caption_correction_args` deliberately ignore it.
+        "position_clauses": _boolish(
+            os.environ.get("CAPTION_POSITION_CLAUSES"),
+            _boolish(overrides.get("caption_position_clauses"), False),
+        ),
     }
 
     cleaned: list[str] = []
@@ -530,6 +539,15 @@ def _caption_correction_config(extra) -> tuple[dict[str, object], list[str]]:
             "--no-caption-trigger-at-front",
         }:
             config["trigger_at_front"] = False
+            i += 1
+        elif tok in {"--caption_position_clauses", "--caption-position-clauses"}:
+            config["position_clauses"] = True
+            i += 1
+        elif tok in {
+            "--no_caption_position_clauses",
+            "--no-caption-position-clauses",
+        }:
+            config["position_clauses"] = False
             i += 1
         elif tok in {"--caption_trigger_word", "--caption-trigger-word"}:
             if i + 1 >= len(extra):
@@ -1247,6 +1265,23 @@ def cmd_caption_index(extra):
         _publish_run_status(run_obj, "ready")
 
 
+def _caption_position_argv(extra) -> list[str]:
+    """Child argv (no interpreter) for the position-clause pass.
+
+    Shared by the standalone ``caption-position`` target and the in-pipeline
+    stage ``cmd_preprocess`` chains, so the two can't drift on paths/scoping.
+    """
+    return [
+        "scripts/preprocess/position_captions.py",
+        "--src",
+        _path("source_image_dir", "image_dataset"),
+        "--dst",
+        _path("resized_image_dir", "post_image_dataset/resized"),
+        *_resolved_path_pattern_args(extra),
+        *extra,
+    ]
+
+
 def cmd_caption_position(extra):
     """Append position-aware clauses to multi-subject captions (GPU, daemon-routed).
 
@@ -1263,16 +1298,7 @@ def cmd_caption_position(extra):
     from ._common import _resolve_run_mode, run_command
 
     mode, extra = _resolve_run_mode(extra)
-    argv = [
-        "scripts/preprocess/position_captions.py",
-        "--src",
-        _path("source_image_dir", "image_dataset"),
-        "--dst",
-        _path("resized_image_dir", "post_image_dataset/resized"),
-        *_resolved_path_pattern_args(extra),
-        *extra,
-    ]
-    run_command("caption-position", argv, mode=mode)
+    run_command("caption-position", _caption_position_argv(extra), mode=mode)
 
 
 # `cmd_preprocess` auto-fetches this (~0.7 MB) vocab on demand: the caption index
@@ -1306,6 +1332,15 @@ def cmd_preprocess(extra):
             # flags and resize-only options before their own argparse layers.
             downstream = _pop_resize_only_args(extra)
             cmd_preprocess_vae(extra)
+            # Position clauses rewrite the caption MASTER, so the stage has to
+            # land before the caption/TE steps read it (they write the variant
+            # sidecars and encode). Inline rather than through
+            # `cmd_caption_position`: this process is itself a daemon job on a
+            # serial queue, so submitting a nested job would wait on a queue
+            # that can't advance.
+            if caption_config.get("position_clauses"):
+                print("  [preprocess] position clauses: SAM3 + tagger → caption master")
+                run([PY, *_caption_position_argv([]), "--apply"])
             cmd_preprocess_te(downstream, caption_config=caption_config)
 
             # Caption index as a free by-product — consumed by the IP-Adapter pair

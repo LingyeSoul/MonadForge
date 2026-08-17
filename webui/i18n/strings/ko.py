@@ -70,6 +70,7 @@ STRINGS: dict[str, str] = {
         "첫 번째 @artist 마커까지의 태그는 절대 드롭되지 않습니다. "
         "셔플 변형 수가 0 이하이면 무시됩니다."
     ),
+<<<<<<< HEAD:webui/i18n/strings/ko.py
     "preprocess_caption_autotag_box": "자동 태깅",
     "preprocess_caption_autotag": "Anima Tagger로 자동 태깅",
     "preprocess_caption_autotag_tip": (
@@ -114,6 +115,20 @@ STRINGS: dict[str, str] = {
         '뽑으세요. `make caption-position ARGS="--flatten --apply"`로 되돌릴 수 '
         "있습니다."
     ),
+||||||| parent of d2de2879 (position captions: docs/experimental + preprocess-tab knob):gui/i18n/ko.py
+=======
+    "preprocess_caption_editing": "캡션 편집",
+    "preprocess_caption_position_clauses": "위치 절 생성 (다중 인물)",
+    "preprocess_caption_position_clauses_tip": (
+        "다중 인물 이미지에서 SAM3로 인물을 검출하고 각각을 태깅해 "
+        "'On the left, …' 형태의 위치 절을 캡션 뒤에 덧붙입니다. 속성이 "
+        "평면 태그 나열에 떠 있지 않고 각 인물에 묶입니다. 캐싱 전에 실행되며 "
+        "소스 캡션을 직접 수정합니다. 이미 위치 절이 있거나 검출 수가 캡션의 "
+        "인원 수와 어긋나는 이미지는 건드리지 않습니다. GPU 단계입니다 — "
+        "SAM3 + 태거 패스가 한 번 더 돌아갑니다. 쓰기 전에 제안을 검토하려면 "
+        "먼저 `make caption-position`으로 드라이런 리포트를 뽑으세요."
+    ),
+>>>>>>> d2de2879 (position captions: docs/experimental + preprocess-tab knob):gui/i18n/ko.py
     "preprocess_caption_correct_order": "캡션 순서 교정",
     "preprocess_caption_correct_order_tip": (
         "교정된 .txt 캡션을 리사이즈 이미지 옆에 저장하고 텍스트 인코더 "

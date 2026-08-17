@@ -72,6 +72,7 @@ STRINGS: dict[str, str] = {
         "直到首个 @artist 标记之前的标签 (含该标记) 永不丢弃。"
         "当随机变体数 ≤ 0 时忽略。"
     ),
+<<<<<<< HEAD:webui/i18n/strings/cn.py
     "preprocess_caption_autotag_box": "自动打标",
     "preprocess_caption_autotag": "使用 Anima Tagger 自动打标",
     "preprocess_caption_autotag_tip": (
@@ -111,6 +112,19 @@ STRINGS: dict[str, str] = {
         "`make caption-position` 生成试运行报告；"
         '`make caption-position ARGS="--flatten --apply"` 可以撤销。'
     ),
+||||||| parent of d2de2879 (position captions: docs/experimental + preprocess-tab knob):gui/i18n/cn.py
+=======
+    "preprocess_caption_editing": "标注改写",
+    "preprocess_caption_position_clauses": "位置子句 (多人物)",
+    "preprocess_caption_position_clauses_tip": (
+        "用 SAM3 检测多人物图像中的各个人物，分别打标，并在标注末尾追加 "
+        "'On the left, …' 形式的位置子句，使属性绑定到具体人物，而不是浮在"
+        "扁平标签串里。该步骤在缓存之前运行，并直接修改源标注；已带位置子句、"
+        "或检测数量与标注人数不一致的图像会被跳过。这是 GPU 步骤 —— 会额外"
+        "跑一遍 SAM3 + 打标器。若想先审阅提案再写入，请先运行 "
+        "`make caption-position` 生成试运行报告。"
+    ),
+>>>>>>> d2de2879 (position captions: docs/experimental + preprocess-tab knob):gui/i18n/cn.py
     "preprocess_caption_correct_order": "校正标注顺序",
     "preprocess_caption_correct_order_tip": (
         "将校正后的 .txt 标注保存到已调整大小的图像旁边，并用于文本编码器缓存。"
