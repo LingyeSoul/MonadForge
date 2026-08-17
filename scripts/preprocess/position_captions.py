@@ -223,6 +223,19 @@ def parse_args() -> argparse.Namespace:
         "dry run contradicted the caption",
     )
     c.add_argument(
+        "--bind_view_traits",
+        "--bind-view-traits",
+        dest="multi_view_gate",
+        action="store_false",
+        help="On a repeated-subject layout (`multiple views`, comic panels), "
+        "let a clause carry the character's name and traits (hair, eyes, body, "
+        "anatomy). Gated by default: every view or panel is the SAME girl, so "
+        "those belong to her, not to a view — 45%% of the multiple-views clause "
+        "tags in the first full-corpus dry run were view-invariant, and the ones "
+        "that survived shared-tag suppression did so precisely because a crop "
+        "disagreed",
+    )
+    c.add_argument(
         "--no_rewrite",
         "--no-rewrite",
         dest="rewrite",
@@ -432,6 +445,7 @@ def main() -> None:
         strict_count=args.strict_count,
         discriminative_only=args.discriminative_only,
         bag_gated_identity=args.bag_gated_identity,
+        multi_view_gate=args.multi_view_gate,
         rewrite=args.rewrite,
         attribution_margin=args.attribution_margin,
     )

@@ -434,6 +434,10 @@ def test_a_single_characters_attributes_never_leave_the_bag(pipeline_bits):
     claim the right view is *not* blonde — of the same character. One hair color
     in the bag is a property of the character, so it stays flat; the outfit that
     genuinely differs per view moves.
+
+    Pinned here at ``multi_view_gate=False``, the arm where the tag still enters
+    its clause: this is the *removal* rule, and the gate is the stricter
+    *emission* layer stacked on top of it (see the multi-view tests below).
     """
     proposal = _views_proposal(
         pipeline_bits,
@@ -450,6 +454,7 @@ def test_a_single_characters_attributes_never_leave_the_bag(pipeline_bits):
                 "groups": {},
             },
         ],
+        multi_view_gate=False,
     )
     assert proposal.ok
     parsed = parse_caption(proposal.proposed)
@@ -481,6 +486,9 @@ def test_two_tone_hair_is_one_character_not_two(pipeline_bits):
                 "groups": {"hair_color": "aqua hair"},
             },
         ],
+        # The removal layer again — the multi-view gate would keep both colors
+        # out of the clauses entirely, leaving this rule nothing to decide.
+        multi_view_gate=False,
     )
     assert {"blonde hair", "aqua hair"} <= set(
         parse_caption(proposal.proposed).flat_tags
@@ -641,7 +649,10 @@ def test_retry_fires_when_the_caption_gives_no_count(pipeline_bits):
         ),
         tag_fn=_two_hair_colors(),
         vocabulary=vocabulary,
-        options=Options(),
+        # …and the multi-view gate stays off for the same reason: with it on,
+        # hair color never reaches a clause and the row skips as
+        # no-discriminative-tags before the retry's effect can be read.
+        options=Options(multi_view_gate=False),
     )
     assert proposal.ok, proposal.status
     assert proposal.detected == 2
@@ -780,7 +791,9 @@ def test_a_koma_page_at_its_ceiling_proposes(pipeline_bits):
         ),
         tag_fn=_two_hair_colors(),
         vocabulary=vocabulary,
-        options=Options(),
+        # The ceiling is a detection-count gate; the multi-view gate is off so a
+        # koma page still has clause content left to propose with.
+        options=Options(multi_view_gate=False),
     )
     assert proposal.ok, proposal.status
     assert proposal.detected == 2
@@ -870,7 +883,9 @@ def test_part_prompt_recovers_a_headless_panel(pipeline_bits):
             ]
         ),
         vocabulary=vocabulary,
-        options=Options(part_prompts=("buttocks",)),
+        # Multi-view gate off: this is about the second grounding pass and the
+        # reading order it lands in, not about what the clauses end up carrying.
+        options=Options(part_prompts=("buttocks",), multi_view_gate=False),
     )
     assert proposal.ok, proposal.status
     assert proposal.detected == 2
@@ -949,7 +964,9 @@ def test_part_crop_carries_no_hair_or_eye_color(pipeline_bits):
             ]
         ),
         vocabulary=vocabulary,
-        options=Options(part_prompts=("buttocks",)),
+        # ``allow_identity`` is a per-crop rule and must hold on its own — the
+        # multi-view gate would suppress the same tags image-wide and hide it.
+        options=Options(part_prompts=("buttocks",), multi_view_gate=False),
     )
     assert proposal.ok, proposal.status
     part = next(i for i in proposal.instances if i.source == "buttocks")
@@ -982,7 +999,9 @@ def test_clause_cannot_contradict_a_hair_color_the_caption_named(pipeline_bits):
         ),
         tag_fn=tags,
         vocabulary=vocabulary,
-        options=Options(),
+        # The bag gate applies to every image; the multi-view gate is the
+        # stricter layer above it and is switched off so this one is observable.
+        options=Options(multi_view_gate=False),
     )
     assert proposal.ok, proposal.status
     clauses = parse_caption(proposal.proposed).clauses
@@ -1136,9 +1155,148 @@ def test_keep_shared_tags_restores_the_repeated_attributes(pipeline_bits):
             ]
         ),
         vocabulary=vocabulary,
-        options=Options(discriminative_only=False),
+        # ``--keep_shared_tags`` and the multi-view gate suppress overlapping
+        # sets; the gate is off so this flag's own effect is what is measured.
+        options=Options(discriminative_only=False, multi_view_gate=False),
     )
     assert "hatsune miku" in parse_caption(proposal.proposed).clauses[0].tags
+
+
+# ----- the multi-view gate ------------------------------------------------
+
+
+def _layout_proposal(pipeline_bits, caption, per_crop, **option_overrides):
+    """Two subjects on a repeated-subject page: same girl, drawn twice."""
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    return propose_for_image(
+        image,
+        caption,
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(per_crop),
+        vocabulary=vocabulary,
+        options=Options(**option_overrides),
+    )
+
+
+# The crop tagger disagreeing with itself across two views of one girl. Note the
+# disagreement is exactly what shared-tag suppression fails to catch: each of
+# these reaches only one crop, so it reads as "attributable" when it is a miss.
+_DISAGREEING_VIEWS = [
+    {
+        "kept": {
+            "hatsune miku": 0.9,  # name the other crop dropped
+            "aqua hair": 0.9,  # appearance
+            "large breasts": 0.8,  # body shape
+            "ass": 0.7,  # anatomy
+            "maid": 0.8,  # outfit — the only real per-view difference
+        },
+        "groups": {"hair_color": "aqua hair"},
+    },
+    {
+        "kept": {"twintails": 0.8, "long hair": 0.7, "playboy bunny": 0.8},
+        "groups": {},
+    },
+]
+
+_LAYOUT_CAPTION = (
+    "safe, 1girl, {layout}, hatsune miku, aqua hair, twintails, long hair, "
+    "large breasts, ass, maid, playboy bunny"
+)
+
+
+@pytest.mark.parametrize("layout", ["multiple views", "2koma", "comic"])
+def test_a_repeated_subject_page_binds_only_what_a_view_can_differ_in(
+    pipeline_bits, layout
+):
+    """One girl drawn twice: her name and her traits belong to her, not a view.
+
+    ``multiple views`` is the clean case, but an ``Nkoma`` page and a bare
+    ``comic`` redraw the same character panel by panel — every ``_LAYOUT_TAGS``
+    member takes the gate.
+    """
+    proposal = _layout_proposal(
+        pipeline_bits, _LAYOUT_CAPTION.format(layout=layout), _DISAGREEING_VIEWS
+    )
+    assert proposal.ok, proposal.status
+    parsed = parse_caption(proposal.proposed)
+    bound = {t for c in parsed.clauses for t in c.tags}
+    # Nothing the character owns — name, hair, eyes, body shape, anatomy.
+    assert bound.isdisjoint(
+        {"hatsune miku", "aqua hair", "twintails", "long hair", "large breasts", "ass"}
+    )
+    # …only the outfits, which is what one view has and the other does not.
+    assert bound == {"maid", "playboy bunny"}
+    # Nothing was destroyed: a tag that never reached a clause cannot be moved
+    # out of the bag, so every suppressed trait is still asserted, flat.
+    assert {
+        "hatsune miku",
+        "aqua hair",
+        "twintails",
+        "long hair",
+        "large breasts",
+        "ass",
+    } <= set(parsed.flat_tags)
+
+
+def test_the_gate_is_off_for_a_genuine_multi_character_image(pipeline_bits):
+    """No layout tag → two different girls → identity is the point of the clause."""
+    proposal = _layout_proposal(
+        pipeline_bits,
+        "safe, 2girls, hatsune miku, aqua hair, large breasts, ass, maid, "
+        "playboy bunny",
+        _DISAGREEING_VIEWS,
+    )
+    assert proposal.ok, proposal.status
+    bound = {t for c in parse_caption(proposal.proposed).clauses for t in c.tags}
+    assert {"hatsune miku", "aqua hair", "large breasts", "ass"} <= bound
+
+
+def test_bind_view_traits_reverts_the_gate(pipeline_bits):
+    """The A/B arm: ``--bind_view_traits`` restores the pre-gate clauses."""
+    proposal = _layout_proposal(
+        pipeline_bits,
+        _LAYOUT_CAPTION.format(layout="multiple views"),
+        _DISAGREEING_VIEWS,
+        multi_view_gate=False,
+    )
+    bound = {t for c in parse_caption(proposal.proposed).clauses for t in c.tags}
+    assert {"hatsune miku", "aqua hair", "large breasts", "ass"} <= bound
+
+
+def test_an_excluded_tag_cannot_ride_the_priority_path_into_a_clause(pipeline_bits):
+    """Copyright / deprecated tags are filtered on *every* path, not just the last.
+
+    ``light brown hair`` is a deprecated alias that ``groups.yaml`` still files
+    under ``hair_color``, so it used to enter through the exclusive-group step,
+    which never consulted ``excluded`` — 4 images of the first full-corpus run.
+    """
+    from library.preprocess.position_captions import ClauseVocabulary
+
+    _, _, _, Options = pipeline_bits
+    vocabulary = ClauseVocabulary(
+        excluded=frozenset({"vocaloid", "light brown hair"}),
+        exclusive_groups=frozenset({"hair_color"}),
+        tag_to_group={
+            "light brown hair": "hair_color",
+            "aqua hair": "hair_color",
+            "maid": "costume",
+        },
+    )
+    tags = vocabulary.select(
+        {"light brown hair": 0.9, "vocaloid": 0.9, "maid": 0.8},
+        {"hair_color": "light brown hair"},
+        flat_bag=frozenset({"light brown hair", "vocaloid", "maid"}),
+        attributable=frozenset({"light brown hair", "maid"}),
+        shared=frozenset(),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+    )
+    assert tags == ["maid"]
 
 
 def test_indistinguishable_subjects_are_skipped(pipeline_bits):

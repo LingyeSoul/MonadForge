@@ -144,8 +144,12 @@ heuristics, so the two can't drift:
 - **Scene groups never bind** — lighting, background, framing, medium,
   `interaction`, `character_relationship`.
 - **Copyright / artist / metadata / deprecated / count / rating are excluded
-  outright.** A franchise tag fires on every crop and would otherwise ride the
-  ranked path into every clause.
+  outright**, on *every* emission path. A franchise tag fires on every crop and
+  would otherwise ride the ranked path into every clause. The check lives in
+  `add()` rather than only on the ranked path because an excluded tag can also
+  be *grouped*: `light brown hair` is a deprecated alias `groups.yaml` still
+  files under `hair_color`, so it rode the exclusive-group step straight into a
+  clause on 4 images of the first full-corpus run.
 - **Ungrouped tags** — where curated compounds like `pink jacket` live — are
   admitted only when they are both **in the flat bag** and **attributable**
   (kept on exactly one crop).
@@ -175,6 +179,53 @@ an attribute that belongs to *everyone* belongs — the rewrite only takes what 
 clause alone claims. When suppression empties every clause the image is skipped
 as `no-discriminative-tags` — the subjects are genuinely indistinguishable to the
 tagger and there is nothing to ground.
+
+### On a repeated-subject layout, only what a view can differ in
+
+Shared-tag suppression is the *right* rule but it is evidence-based, and on a
+`multiple views` sheet or a comic page the evidence is a crop tagger disagreeing
+with itself. Any `_LAYOUT_TAGS` image is **one character drawn several times**
+— a turnaround, an outfit sheet, a girl once per panel — so nothing that belongs
+to *her* can discriminate between the subjects. A trait that survived shared-tag
+suppression there did so precisely because some crop missed it, and the
+discriminative rule then *promotes* the miss.
+
+The multi-view gate (on by default, `--bind_view_traits` reverts) therefore
+suppresses at emission time, before any of the rewrite's removal rules see it:
+
+- **The character name.** Every view is the same girl, so binding her name to
+  one says the others are somebody else. All 16 `multiple views` rows that got a
+  name into a clause on the first full-corpus run were single-character sheets
+  (`hatsune miku` bound to 2 of 4 views).
+- **Every `_VIEW_INVARIANT_GROUPS` trait** = `_CHARACTER_INVARIANT_GROUPS`
+  (hair color/length/style, eyes, face, age, gender, skin, body shape, species,
+  animal parts) **+ `body_parts`**. Anatomy is owned by the character the same
+  way hair color is — a girl does not grow a navel between panel 1 and panel 3 —
+  but its *visibility* genuinely varies with the view, so `body_parts` joins the
+  set for this rule **only** and stays freely bindable on a real multi-character
+  image.
+
+What is left is what one view or panel has and another does not: outfit, pose,
+expression, framing. Measured over the 2026-08-17 full-corpus dry run
+(`--attribution_margin 0.35`, 394 proposals):
+
+| | Gated rows | Clause tags dropped | Clauses emptied | Rows falling under `min_instances` |
+|---|---|---|---|---|
+| `multiple views` | 157 | 1454 / 3201 (45%) | 1 | 0 |
+| comic panels only | 23 | 216 / 440 (49%) | 0 | 0 |
+| **all layouts** | **180** | **1670 / 3641 (46%)** | **1** | **0** |
+
+(Clause-count figures are an upper bound on the loss: the real run refills the
+freed slots from the ranked tail up to `--max_clause_tags`.) Top surviving
+groups across the gated set: expression 274, clothing_details 193, underwear
+173, pose 166, bottom_clothing 130, top_clothing 118, swimwear 106. Nothing is
+destroyed — a tag that never reaches a clause cannot be moved out of the bag, so
+every suppressed trait stays asserted, flat.
+
+This is strictly stronger than the corroboration rule under "What leaves the flat
+bag" below, which only governs whether a tag may *leave* the bag; here it never
+enters the clause. The rules stack: `--bind_view_traits` drops back to the
+corroboration-only behaviour, which is what the pre-gate arm did.
 
 ## What leaves the flat bag (v2)
 
@@ -573,6 +624,7 @@ same shape as the problem the identity gate fixes and is **not** addressed.
 | `--max_clause_tags` | 8 | Cap per clause |
 | `--name_confidence` / `--allow_unlisted_names` | 0.5 / off | Character-name floors |
 | `--keep_shared_tags` | — | Keep tags every crop agrees on (disables the discriminative rule) |
+| `--bind_view_traits` | — | On a repeated-subject layout (`multiple views` / comic panels), let a clause carry the character's name and traits. Gated by default — every view is the same girl; see the section above |
 | `--no_rewrite` | — | Additive v1: append the clauses, leave the flat bag untouched (so every bound attribute is asserted twice). The A/B control arm |
 | `--attribution_margin` | 0.35 | How far the winning crop must clear every other before a tag may **leave** the bag. The clause carries it either way |
 | `--flatten` | off | Inverse pass — merge clauses back into the bag and drop them. Text only (no models). The undo, and the clause-free A/B corpus |

@@ -33,6 +33,14 @@ attribute):
   crop's by ``attribution_margin``, so a tag the tagger nearly kept on a second
   subject stays in the bag (and stays duplicated in the clause).
 
+On a **repeated-subject layout** — ``multiple views`` or a comic-panel page, the
+``_LAYOUT_TAGS`` set — a third, stricter rule applies one level earlier, to what
+may **enter** a clause at all. The subjects there are one character drawn
+several times, so her name and her traits (appearance *and* anatomy,
+``_VIEW_INVARIANT_GROUPS``) discriminate nothing and are dropped from every
+clause; a view or panel keeps only what one can differ in — outfit, pose,
+expression, framing. ``multi_view_gate=False`` reverts it.
+
 Layering: this module holds the "drive the primitives over a dataset" logic and
 takes its two models as **injected callables** (``detect_fn`` / ``tag_fn``), so
 it imports neither SAM3 nor the tagger and stays unit-testable with stubs. The
@@ -193,6 +201,30 @@ _CHARACTER_INVARIANT_GROUPS = frozenset(
     }
 )
 
+# On a repeated-subject layout (``_LAYOUT_TAGS`` — a ``multiple views`` sheet or
+# a comic page) the subjects are not different characters; they are the *same*
+# character drawn from several angles, in several outfits, or once per panel. No
+# clause there may carry a trait the character owns. That is a stronger rule than
+# the corroboration gate above, which only governs whether a tag may LEAVE the
+# bag: here the tag may not enter the clause at all, because a per-view emission
+# is either redundant (every view really does share it, and discriminative-only
+# was supposed to catch that) or a crop hallucination (a view the tagger
+# disagreed with, which discriminative-only actively *promotes*).
+#
+# ``body_parts`` joins the character-invariant groups for this rule and this rule
+# only. Anatomy is owned by the character the same way hair color is — a girl
+# does not grow a navel between panel 1 and panel 3 — but its *visibility*
+# genuinely varies with the view, so it stays freely bindable on a real
+# multi-character image. Measured on the first full-corpus v2 dry run, the 157
+# ``multiple views`` proposals emitted 3201 clause tags of which 1429 (45%) were
+# view-invariant: 445 ``body_parts``, 330 ``hairstyle``, 127 ``eye_color``, 118
+# ``body_shape``, 113 ``hair_color``, 105 ``hair_length``, the rest spread over
+# skin / animal_parts / face_features / age, plus 25 character names. The 23
+# comic-panel proposals ran 33% view-invariant on the same measure. What
+# survives — outfit, pose, expression, framing — is exactly what one view or
+# panel has and another does not.
+_VIEW_INVARIANT_GROUPS = _CHARACTER_INVARIANT_GROUPS | {"body_parts"}
+
 # …and the exception to the corroboration rule. Booru tags a *single* character
 # with two hair colors when the hair itself is two-toned, so the "≥2 values"
 # evidence is explained without there being two subjects. These markers are
@@ -315,6 +347,7 @@ class ClauseVocabulary:
         discriminative_only: bool = True,
         allow_identity: bool = True,
         bag_gated_identity: bool = True,
+        view_invariant: bool = False,
     ) -> list[str]:
         """Clause tags for one crop, ordered most-disambiguating first.
 
@@ -344,6 +377,13 @@ class ClauseVocabulary:
         same rule to *every* crop: for a group in ``_BAG_GATED_GROUPS`` the flat
         bag outranks the tagger, so a clause carries a hair color the caption
         named or none at all. See that constant for the measurement.
+
+        ``view_invariant`` is the repeated-subject-layout form, and it is the
+        strongest of the three: the subjects are one character drawn several
+        times, so the clause drops the character name **and** every
+        ``_VIEW_INVARIANT_GROUPS`` trait — appearance and anatomy alike — and
+        keeps only what a view or panel can differ in. See that constant for the
+        measurement; :func:`is_repeated_subject_layout` decides when it applies.
         """
         out: list[str] = []
         seen: set[str] = set()
@@ -363,11 +403,21 @@ class ClauseVocabulary:
         def add(tag: str) -> bool:
             if not tag or tag in seen or tag in blocked:
                 return False
+            # Copyright / artist / metadata / deprecated describe the *image*.
+            # Checked here rather than only on the ranked path below, because
+            # they can be grouped: ``light brown hair`` is a deprecated alias
+            # that ``groups.yaml`` still files under ``hair_color``, so it rode
+            # the priority path straight into a clause on 4 images of the first
+            # full-corpus dry run.
+            if tag in self.excluded:
+                return False
             group = self.group_of(tag)
             if group in self.exclusive_groups and group in taken_groups:
                 return False  # one hair color / one eye color per subject
             if not allow_identity and group in _IDENTITY_GROUPS:
                 return False  # no head in this crop — nothing to read it off
+            if view_invariant and group in _VIEW_INVARIANT_GROUPS:
+                return False  # same girl in every view/panel — the bag owns this
             if bag_members.get(group) and tag not in flat_bag:
                 return False  # the caption named this attribute; it wins
             seen.add(tag)
@@ -378,9 +428,25 @@ class ClauseVocabulary:
 
         # 1. Character name. A name the caption never claimed is a crop
         #    hallucination, so by default it must appear in the flat bag.
-        names = sorted(
-            (t for t in kept if t in self.characters and kept[t] >= name_confidence),
-            key=lambda t: -kept[t],
+        #
+        #    Skipped entirely on a repeated-subject layout: every view is the
+        #    same girl, so a bound name says the *other* views are somebody
+        #    else. Shared-tag suppression already hides the name when all crops
+        #    agree — which means the only names that got through were the ones a
+        #    crop missed. All 16 such ``multiple views`` rows in the first
+        #    full-corpus dry run were single-character sheets (``hatsune miku``
+        #    bound to 2 of 4 views).
+        names = (
+            []
+            if view_invariant
+            else sorted(
+                (
+                    t
+                    for t in kept
+                    if t in self.characters and kept[t] >= name_confidence
+                ),
+                key=lambda t: -kept[t],
+            )
         )
         for name in names:
             if allow_unlisted_names or name in flat_bag:
@@ -538,6 +604,28 @@ def caption_boy_count(caption: str) -> int | None:
     if not counts and ("multiple boys" in tags or any(map(_OPEN_BOYS_RE.match, tags))):
         return None
     return max(counts) if counts else 0
+
+
+def is_repeated_subject_layout(caption: str) -> bool:
+    """Is this one character drawn several times, rather than several characters?
+
+    Any ``_LAYOUT_TAGS`` member says yes — the same set that decouples the
+    girls-count from the bindable-subject count in :func:`caption_subject_count`,
+    and for the same reason. ``multiple views`` is the clean case (an outfit
+    sheet, a turnaround), but an ``Nkoma`` page or a ``comic`` is the same
+    situation panel-by-panel: the girl in panel 3 is the girl in panel 1, drawn
+    again. Whatever belongs to *her* therefore discriminates nothing between
+    subjects, and :meth:`ClauseVocabulary.select` drops the whole class
+    (``view_invariant``).
+
+    A comic can of course introduce a new character mid-page, which a turnaround
+    cannot — but that only makes a bound trait *sometimes* right instead of
+    never, and the tags this suppresses are the ones the crop tagger is worst at
+    (a name or a hair color the other panels' crops disagreed with). The bag
+    keeps every one of them either way; only the per-panel binding is dropped.
+    """
+    tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
+    return bool(tags & _LAYOUT_TAGS)
 
 
 def is_candidate(caption: str) -> tuple[bool, str]:
@@ -935,6 +1023,10 @@ class PositionCaptionOptions:
     strict_count: bool = True
     discriminative_only: bool = True
     bag_gated_identity: bool = True
+    # On a repeated-subject layout (``multiple views`` / comic panels), keep the
+    # character's own traits — and her name — out of every clause: they belong
+    # to the girl, not to a view of her.
+    multi_view_gate: bool = True
     # v2: move an attributable tag out of the flat bag into its clause. False is
     # the additive v1 behaviour (bag untouched), kept for the training A/B.
     rewrite: bool = True
@@ -1120,6 +1212,7 @@ def propose_for_image(
             counts[tag] = counts.get(tag, 0) + 1
     attributable = frozenset(t for t, n in counts.items() if n == 1)
     shared = frozenset(t for t, n in counts.items() if n == len(kept_sets))
+    view_invariant = options.multi_view_gate and is_repeated_subject_layout(caption)
 
     for i, (det, kept, pred) in enumerate(zip(dets, kept_sets, predictions)):
         tags = vocabulary.select(
@@ -1134,6 +1227,7 @@ def propose_for_image(
             discriminative_only=options.discriminative_only,
             allow_identity=det.source == "subject",
             bag_gated_identity=options.bag_gated_identity,
+            view_invariant=view_invariant,
         )
         crop_name = crop_sink(i, positions[i], crops[i]) if crop_sink else None
         proposal.instances.append(
