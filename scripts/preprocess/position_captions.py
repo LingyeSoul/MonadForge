@@ -280,11 +280,6 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _under_root(path: str) -> Path:
-    p = Path(path)
-    return p if p.is_absolute() else ROOT / p
-
-
 def build_detect_fn(args: argparse.Namespace):
     """SAM3 text-prompt detector returning per-instance boxes + masks.
 
@@ -315,7 +310,7 @@ def build_detect_fn(args: argparse.Namespace):
     model = build_sam3_image_model(
         device=args.device,
         eval_mode=True,
-        checkpoint_path=str(_under_root(args.checkpoint)),
+        checkpoint_path=str(resolve_under_home(args.checkpoint)),
         load_from_HF=False,
     )
     floor = min(
@@ -401,9 +396,9 @@ def _run_flatten(args, src: Path, dst: Path, report_dir: Path) -> None:
 
 def main() -> None:
     args = parse_args()
-    src = _under_root(args.src)
-    dst = _under_root(args.dst)
-    report_dir = _under_root(args.report_dir)
+    src = resolve_under_home(args.src)
+    dst = resolve_under_home(args.dst)
+    report_dir = resolve_under_home(args.report_dir)
 
     if args.flatten:
         _run_flatten(args, src, dst, report_dir)

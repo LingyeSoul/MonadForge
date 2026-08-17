@@ -100,6 +100,38 @@ def test_has_clauses_detects_both_forms():
     assert not has_clauses("1girl, blue hair, on the beach")
 
 
+def test_lowercase_period_form_parses_and_canonicalizes():
+    """`has_clauses` and `parse_caption` must agree on a lowercase header.
+
+    The split regex is case-insensitive, so a hand-written ``. on the left,``
+    made ``has_clauses`` true; the header test was not, so ``parse_caption``
+    returned zero clauses. The position pass then skipped the caption as
+    already annotated while correction/variants shuffled the header around as
+    an ordinary flat tag — shredding the clause it was told to leave alone.
+    """
+    caption = "safe, 2girls. on the left, red eyes. on the right, aqua eyes."
+    assert has_clauses(caption)
+    parsed = parse_caption(caption)
+    assert parsed.flat_tags == ("safe", "2girls")
+    assert [c.header for c in parsed.clauses] == ["On the left", "On the right"]
+    assert parsed.clauses[0].tags == ("red eyes",)
+    # Emission is canonical regardless of how it was written.
+    assert parsed.render() == (
+        "safe, 2girls. On the left, red eyes. On the right, aqua eyes."
+    )
+
+
+def test_a_lowercase_scene_tag_in_the_bag_is_not_a_header():
+    """Only the period form is case-insensitive.
+
+    With no delimiter, a bare ``on the beach`` mid-bag is a scene tag — the
+    comma-form header stays strict so it can't be promoted into a clause.
+    """
+    parsed = parse_caption("1girl, blue hair, on the beach")
+    assert parsed.flat_tags == ("1girl", "blue hair", "on the beach")
+    assert not parsed.clauses
+
+
 def test_compose_without_clauses_is_a_plain_join():
     assert compose_caption(["a", "b"]) == "a, b"
 

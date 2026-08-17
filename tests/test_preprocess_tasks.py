@@ -486,6 +486,51 @@ def test_preprocess_captions_runs_the_master_stages_when_configured(monkeypatch)
     assert calls[1][-1] == "--apply"
 
 
+def test_master_stages_inherit_an_explicit_path_pattern(monkeypatch):
+    """A scoped preprocess must not rewrite captions dataset-wide.
+
+    The caption-MASTER stages are driven from the caption-config dict alone —
+    the caller's ``extra`` never reaches them — so the resolved subset scope
+    has to ride in that dict. Without it, ``make preprocess-captions
+    ARGS="--path_pattern artistA/*"`` would cache the requested slice while
+    autotag ``merge``/``overwrite`` rewrote every caption in the master.
+    """
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+    monkeypatch.delenv("PREPROCESS_PATH_PATTERN", raising=False)
+
+    preprocess.cmd_preprocess_captions(["--path_pattern", "artistA/*"])
+
+    assert [cmd[1] for cmd in calls] == [
+        "scripts/preprocess/autotag_captions.py",
+        "scripts/preprocess/position_captions.py",
+    ]
+    for cmd in calls:
+        # Present, and emitted exactly once — the argv builder resolves the
+        # scope and drops it from the tail rather than splatting it twice.
+        assert cmd.count("--path_pattern") == 1
+        assert cmd[cmd.index("--path_pattern") + 1] == "artistA/*"
+
+
+def test_standalone_caption_target_does_not_duplicate_the_path_pattern():
+    """`make caption-position ARGS="--path_pattern x"` passes it through once."""
+    from scripts.tasks import preprocess
+
+    argv = preprocess._caption_position_argv(["--path_pattern", "artistA/*", "--apply"])
+    assert argv.count("--path_pattern") == 1
+    assert argv[argv.index("--path_pattern") + 1] == "artistA/*"
+    assert argv[-1] == "--apply"
+
+
 def test_preprocess_captions_runs_the_stages_even_with_correction_off(monkeypatch):
     """The early "correction disabled" return must not swallow the stages."""
     from scripts.tasks import preprocess

@@ -578,6 +578,13 @@ def _caption_correction_config(extra) -> tuple[dict[str, object], list[str]]:
             overrides.get("caption_autotag_min_confidence"),
             default=0.0,
         ),
+        # The caption-MASTER stages are driven from this dict alone — the
+        # caller's ``extra`` never reaches them — so the subset scope has to
+        # ride along. Without it a ``--path_pattern``-scoped preprocess would
+        # cache latents for the requested slice while rewriting captions across
+        # the WHOLE master, which autotag ``merge``/``overwrite`` makes
+        # destructive.
+        "path_pattern_args": _resolved_path_pattern_args(extra),
     }
 
     cleaned: list[str] = []
@@ -1392,21 +1399,31 @@ def cmd_caption_index(extra):
         _publish_run_status(run_obj, "ready")
 
 
+def _caption_master_argv(script: str, extra) -> list[str]:
+    """Child argv (no interpreter) for a caption-MASTER rewrite pass.
+
+    Resolves the subset scope once (explicit flag in ``extra`` > env > config)
+    and drops it from the tail so an explicitly-passed ``--path_pattern`` is
+    emitted exactly once rather than twice.
+    """
+    return [
+        script,
+        "--src",
+        _path("source_image_dir", "image_dataset"),
+        "--dst",
+        _path("resized_image_dir", "post_image_dataset/resized"),
+        *_resolved_path_pattern_args(extra),
+        *_drop_option_with_value(extra, {"--path_pattern", "--path-pattern"}),
+    ]
+
+
 def _caption_position_argv(extra) -> list[str]:
     """Child argv (no interpreter) for the position-clause pass.
 
     Shared by the standalone ``caption-position`` target and the in-pipeline
     stage ``cmd_preprocess`` chains, so the two can't drift on paths/scoping.
     """
-    return [
-        "scripts/preprocess/position_captions.py",
-        "--src",
-        _path("source_image_dir", "image_dataset"),
-        "--dst",
-        _path("resized_image_dir", "post_image_dataset/resized"),
-        *_resolved_path_pattern_args(extra),
-        *extra,
-    ]
+    return _caption_master_argv("scripts/preprocess/position_captions.py", extra)
 
 
 def _caption_autotag_argv(extra) -> list[str]:
@@ -1415,15 +1432,7 @@ def _caption_autotag_argv(extra) -> list[str]:
     Shared by the standalone ``caption-autotag`` target and the in-pipeline
     stage ``cmd_preprocess`` chains, so the two can't drift on paths/scoping.
     """
-    return [
-        "scripts/preprocess/autotag_captions.py",
-        "--src",
-        _path("source_image_dir", "image_dataset"),
-        "--dst",
-        _path("resized_image_dir", "post_image_dataset/resized"),
-        *_resolved_path_pattern_args(extra),
-        *extra,
-    ]
+    return _caption_master_argv("scripts/preprocess/autotag_captions.py", extra)
 
 
 # Caption-MASTER rewrite stages (autotag, position clauses) mutate
@@ -1452,13 +1461,24 @@ def _stage_already_ran(config: dict[str, object], stage: str) -> bool:
     return False
 
 
+def _stage_path_pattern_args(config: dict[str, object]) -> list[str]:
+    """Subset scope stashed by :func:`_caption_correction_config`.
+
+    Empty for a hand-rolled dict — the argv builder then falls back to the
+    env/config pattern exactly as the standalone targets do.
+    """
+    args = config.get("path_pattern_args")
+    return list(args) if isinstance(args, (list, tuple)) else []
+
+
 def _run_caption_autotag_stage(config: dict[str, object]) -> None:
     """Run the in-pipeline autotag pass if enabled and not yet run."""
     if not config.get("autotag") or _stage_already_ran(config, "autotag"):
         return
     mode = str(config.get("autotag_mode") or "missing")
     print(f"  [preprocess] autotag ({mode}): Anima Tagger → caption master")
-    run([PY, *_caption_autotag_argv(_caption_autotag_args(config))])
+    argv = [*_stage_path_pattern_args(config), *_caption_autotag_args(config)]
+    run([PY, *_caption_autotag_argv(argv)])
 
 
 def _run_caption_position_stage(config: dict[str, object]) -> None:
@@ -1471,7 +1491,7 @@ def _run_caption_position_stage(config: dict[str, object]) -> None:
     if not config.get("position_clauses") or _stage_already_ran(config, "position"):
         return
     print("  [preprocess] position clauses: SAM3 + tagger → caption master")
-    run([PY, *_caption_position_argv([]), "--apply"])
+    run([PY, *_caption_position_argv([*_stage_path_pattern_args(config), "--apply"])])
 
 
 def cmd_caption_autotag(extra):

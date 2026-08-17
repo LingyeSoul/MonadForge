@@ -26,8 +26,9 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Sequence
 
-# Clause headers the convention uses. ``In the`` is accepted on read (it appears
-# in a handful of hand-written captions for scene regions) but never emitted.
+# Clause headers the convention uses, in canonical emission form. ``In the`` is
+# accepted on read (it appears in a handful of hand-written captions for scene
+# regions) but never emitted.
 CLAUSE_PREFIXES = ("On the ", "In the ")
 
 # ``. `` immediately before a clause header is the segment delimiter. Matched
@@ -115,6 +116,12 @@ def is_clause_header(tag: str) -> bool:
     Used by consumers that already hold a comma-split token list — e.g. a
     caption written in the *comma* form (``…, white socks, On the left, …``),
     which :func:`parse_caption` also accepts.
+
+    Deliberately case-SENSITIVE, unlike ``_CLAUSE_SPLIT_RE``. With no period to
+    delimit it, a bare lowercase ``on the beach`` in the middle of a tag bag is
+    a scene tag, not a clause header — only the capitalized canonical form is
+    unambiguous enough to promote. The period-delimited form has the delimiter
+    to go on, so :func:`parse_caption` accepts either case *there*.
     """
     return tag.startswith(CLAUSE_PREFIXES)
 
@@ -143,9 +150,18 @@ def parse_caption(caption: str) -> ParsedCaption:
         if not parts:
             continue
         # Every segment past the first starts at a clause header by construction
-        # of the split; within a segment only the comma form can introduce one.
+        # of the split, so trust the position rather than re-testing the text —
+        # the split regex is case-insensitive, and a hand-written
+        # ``safe. on the left, red hair.`` used to fail the capitalized
+        # ``is_clause_header`` here and yield ZERO clauses while
+        # ``has_clauses`` said yes: the position pass then skipped the caption
+        # as already annotated and the correction/variant passes shuffled the
+        # lowercase header around as an ordinary flat tag. Within a segment only
+        # the comma form can introduce a header, and that one stays strict.
         for j, part in enumerate(parts):
-            header = is_clause_header(part) and (j == 0 or i == 0)
+            header = (i > 0 and j == 0) or (
+                is_clause_header(part) and (j == 0 or i == 0)
+            )
             tokens.append((_strip_trailing_period(part), header))
 
     flat: list[str] = []
