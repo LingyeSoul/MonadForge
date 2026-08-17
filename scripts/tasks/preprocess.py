@@ -1146,10 +1146,18 @@ def cmd_preprocess_captions(extra, caption_config: dict[str, object] | None = No
     + variants on runs in passthrough (``--no_correct``): v0 mirrors the raw
     caption and the shuffle/dropout/randomize sidecars ride alongside, so the
     user can see the train-time variants directly in ``resized/``.
+
+    The caption-MASTER stages (autotag, position clauses) run first when their
+    config knob is on: this step *mirrors* the master, so a rewrite that landed
+    after it would be invisible to the sidecars — and to the TE caches encoded
+    from them. In the full ``preprocess`` chain they already ran (earlier, in
+    their GPU-ordered slots) and the guard makes these calls no-ops.
     """
     run_obj, extra = _resolve_stage_run(extra)
     if caption_config is None:
         caption_config, extra = _caption_correction_config(extra)
+    _run_caption_autotag_stage(caption_config)
+    _run_caption_position_stage(caption_config)
     correct = _caption_correction_enabled(caption_config)
     shuffle, dropout, randomize = _variant_settings()
     n_variants = int(_float_or_zero(shuffle))
@@ -1186,6 +1194,11 @@ def cmd_preprocess_te(extra, caption_config: dict[str, object] | None = None):
     run_obj, extra = _resolve_stage_run(extra)
     if caption_config is None:
         caption_config, extra = _caption_correction_config(extra)
+    # Master rewrites before anything reads the master. `cmd_preprocess_captions`
+    # runs them too, but the no-correction + no-variants path below skips that
+    # step entirely and encodes the source captions directly.
+    _run_caption_autotag_stage(caption_config)
+    _run_caption_position_stage(caption_config)
     shuffle, dropout, randomize = _variant_settings()
     n_variants = int(_float_or_zero(shuffle))
     # The caption step writes the variant sidecars (the encode source of truth);
@@ -1383,6 +1396,54 @@ def _caption_autotag_argv(extra) -> list[str]:
     ]
 
 
+# Caption-MASTER rewrite stages (autotag, position clauses) mutate
+# ``image_dataset/*.txt``, and every entry point that reads the master needs them
+# to have happened first — `preprocess` (in its own early, GPU-ordered slots),
+# `preprocess-te`, and `preprocess-captions` run on its own. So each of those
+# calls the stage, and this key on the shared caption-config dict records that it
+# already ran in this chain: `cmd_preprocess` threads ONE dict through
+# `cmd_preprocess_te` → `cmd_preprocess_captions`, so the later calls no-op while
+# a standalone target still gets its own dict and runs the stage. Both passes are
+# idempotent on an already-rewritten caption (autotag `missing` sees a sidecar,
+# position skips `already-has-clauses`) but neither is free — each pays a tagger /
+# SAM3 load over the whole tree.
+_STAGE_RAN_KEY = "_master_stages_ran"
+
+
+def _stage_already_ran(config: dict[str, object], stage: str) -> bool:
+    """Has ``stage`` run for this caption-config dict? Marks it if not."""
+    ran = config.setdefault(_STAGE_RAN_KEY, set())
+    if not isinstance(ran, set):  # a caller hand-rolled the dict — treat as fresh
+        ran = set()
+        config[_STAGE_RAN_KEY] = ran
+    if stage in ran:
+        return True
+    ran.add(stage)
+    return False
+
+
+def _run_caption_autotag_stage(config: dict[str, object]) -> None:
+    """Run the in-pipeline autotag pass if enabled and not yet run."""
+    if not config.get("autotag") or _stage_already_ran(config, "autotag"):
+        return
+    mode = str(config.get("autotag_mode") or "missing")
+    print(f"  [preprocess] autotag ({mode}): Anima Tagger → caption master")
+    run([PY, *_caption_autotag_argv(_caption_autotag_args(config))])
+
+
+def _run_caption_position_stage(config: dict[str, object]) -> None:
+    """Run the in-pipeline position-clause pass if enabled and not yet run.
+
+    Inline rather than through ``cmd_caption_position``: the caller is itself a
+    daemon job on a serial queue, so submitting a nested job would wait on a
+    queue that can't advance.
+    """
+    if not config.get("position_clauses") or _stage_already_ran(config, "position"):
+        return
+    print("  [preprocess] position clauses: SAM3 + tagger → caption master")
+    run([PY, *_caption_position_argv([]), "--apply"])
+
+
 def cmd_caption_autotag(extra):
     """Auto-tag the dataset with the Anima Tagger (GPU, daemon-routed).
 
@@ -1452,26 +1513,20 @@ def cmd_preprocess(extra):
             # Auto-tagging *creates* the caption master every later caption
             # stage reads (position clauses, correction, TE), so it has to land
             # first — right after resize, because it tags the resized pixels
-            # training actually sees. Inline for the same reason as the
-            # position stage: this process is itself a daemon job on a serial
-            # queue.
-            if caption_config.get("autotag"):
-                mode = str(caption_config.get("autotag_mode") or "missing")
-                print(f"  [preprocess] autotag ({mode}): Anima Tagger → caption master")
-                run([PY, *_caption_autotag_argv(_caption_autotag_args(caption_config))])
+            # training actually sees. The caption/TE steps would run it
+            # themselves, but only after the VAE pass; the early call here
+            # fixes the order and the stage guard makes theirs a no-op.
+            _run_caption_autotag_stage(caption_config)
             # VAE/TE steps read on-disk shapes — strip the low-res convenience
             # flags and resize-only options before their own argparse layers.
             downstream = _pop_resize_only_args(extra)
             cmd_preprocess_vae(extra)
             # Position clauses rewrite the caption MASTER, so the stage has to
             # land before the caption/TE steps read it (they write the variant
-            # sidecars and encode). Inline rather than through
-            # `cmd_caption_position`: this process is itself a daemon job on a
-            # serial queue, so submitting a nested job would wait on a queue
-            # that can't advance.
-            if caption_config.get("position_clauses"):
-                print("  [preprocess] position clauses: SAM3 + tagger → caption master")
-                run([PY, *_caption_position_argv([]), "--apply"])
+            # sidecars and encode). Pinned here rather than left to
+            # `cmd_preprocess_te` so the GPU order stays VAE → SAM3/tagger;
+            # the guard keeps it from running twice.
+            _run_caption_position_stage(caption_config)
             cmd_preprocess_te(downstream, caption_config=caption_config)
 
             # Caption index as a free by-product — consumed by the IP-Adapter pair
