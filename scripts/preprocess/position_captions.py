@@ -176,7 +176,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2.0,
         help="Mask-quality tie-break inside an NMS-matched pair; 0 = off "
-        "(score-only survivor). See docs/proposal/dedupe_mask_quality.md.",
+        "(score-only survivor). See docs/experimental/multiview_audit.md §5.",
     )
     g.add_argument(
         "--min_area_frac",
@@ -276,6 +276,29 @@ def parse_args() -> argparse.Namespace:
         "disagreed",
     )
     c.add_argument(
+        "--gate_view_anatomy",
+        "--gate-view-anatomy",
+        dest="bind_view_anatomy",
+        action="store_false",
+        help="On a repeated-subject layout, keep anatomy (`ass`, `thighs`, "
+        "`body_parts`) out of every clause — the pre-2026-08-19 behaviour, when "
+        "`body_parts` sat in the view-invariant set. Bound by default: unlike "
+        "hair color, what anatomy is *visible* is a fact about the panel, so on "
+        "a sheet of one girl from the front and the same girl from behind it is "
+        "the tag that separates them",
+    )
+    c.add_argument(
+        "--no_framing",
+        "--no-framing",
+        dest="bind_framing",
+        action="store_false",
+        help="Keep `framing` out of every clause (the pre-2026-08-19 behaviour). "
+        "On by default: it is the only group that says a view is a headless "
+        "close-up rather than a whole figure, which on a `multiple views` sheet "
+        "of one full body plus a hip/backside panel is the single thing that "
+        "tells the clauses apart. Off restores the A side for an A/B.",
+    )
+    c.add_argument(
         "--no_rewrite",
         "--no-rewrite",
         dest="rewrite",
@@ -305,6 +328,47 @@ def parse_args() -> argparse.Namespace:
     )
     c.add_argument("--max_tokens", type=int, default=DEFAULT_MAX_TOKENS)
     return p.parse_args()
+
+
+def build_options_from_args(args: argparse.Namespace) -> PositionCaptionOptions:
+    """Parsed CLI -> the options one pass runs under.
+
+    Split out of ``main`` so a second entry point (``ab_position_captions.py``,
+    which builds two of these from two flag sets) reuses the shipping
+    construction instead of a copy that would silently drift the moment a knob
+    is added.
+    """
+    return PositionCaptionOptions(
+        prompt=args.prompt,
+        score_threshold=args.score_threshold,
+        retry_score_threshold=args.retry_score_threshold,
+        part_prompts=tuple(
+            t.strip() for t in args.part_prompts.split(",") if t.strip()
+        ),
+        part_score_threshold=args.part_score_threshold,
+        part_containment_threshold=args.part_containment_threshold,
+        iou_threshold=args.iou_threshold,
+        containment_threshold=args.containment_threshold,
+        dedupe_fill_ratio=args.dedupe_fill_ratio,
+        min_area_frac=args.min_area_frac,
+        pad=args.pad,
+        blank_crops=args.blank_crops,
+        row_tol=args.row_tol,
+        max_clause_tags=args.max_clause_tags,
+        max_novel_tags=args.max_novel_tags,
+        name_confidence=args.name_confidence,
+        allow_unlisted_names=args.allow_unlisted_names,
+        min_instances=args.min_instances,
+        max_instances=args.max_instances,
+        strict_count=args.strict_count,
+        discriminative_only=args.discriminative_only,
+        bag_gated_identity=args.bag_gated_identity,
+        multi_view_gate=args.multi_view_gate,
+        bind_framing=args.bind_framing,
+        bind_view_anatomy=args.bind_view_anatomy,
+        rewrite=args.rewrite,
+        attribution_margin=args.attribution_margin,
+    )
 
 
 def build_detect_fn(args: argparse.Namespace):
@@ -459,35 +523,7 @@ def main() -> None:
         def token_count_fn(text: str) -> int:
             return len(tokenizer(text, add_special_tokens=True)["input_ids"])
 
-    options = PositionCaptionOptions(
-        prompt=args.prompt,
-        score_threshold=args.score_threshold,
-        retry_score_threshold=args.retry_score_threshold,
-        part_prompts=tuple(
-            t.strip() for t in args.part_prompts.split(",") if t.strip()
-        ),
-        part_score_threshold=args.part_score_threshold,
-        part_containment_threshold=args.part_containment_threshold,
-        iou_threshold=args.iou_threshold,
-        containment_threshold=args.containment_threshold,
-        dedupe_fill_ratio=args.dedupe_fill_ratio,
-        min_area_frac=args.min_area_frac,
-        pad=args.pad,
-        blank_crops=args.blank_crops,
-        row_tol=args.row_tol,
-        max_clause_tags=args.max_clause_tags,
-        max_novel_tags=args.max_novel_tags,
-        name_confidence=args.name_confidence,
-        allow_unlisted_names=args.allow_unlisted_names,
-        min_instances=args.min_instances,
-        max_instances=args.max_instances,
-        strict_count=args.strict_count,
-        discriminative_only=args.discriminative_only,
-        bag_gated_identity=args.bag_gated_identity,
-        multi_view_gate=args.multi_view_gate,
-        rewrite=args.rewrite,
-        attribution_margin=args.attribution_margin,
-    )
+    options = build_options_from_args(args)
 
     def progress(index: int, total: int, rel: str) -> None:
         if index % 200 == 0 or index == total:

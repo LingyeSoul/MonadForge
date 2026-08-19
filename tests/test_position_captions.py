@@ -302,7 +302,11 @@ def pipeline_bits():
         excluded=frozenset({"vocaloid"}),
         # ``body_shape`` is exclusive in the shipped groups.yaml, and the bag
         # gate is derived from this set — see ClauseVocabulary.gated_groups.
-        exclusive_groups=frozenset({"hair_color", "eye_color", "body_shape"}),
+        # ``framing`` is exclusive too (``softmax_when_solo``), which is exactly
+        # why it needs the gate exemption these tests pin.
+        exclusive_groups=frozenset(
+            {"hair_color", "eye_color", "body_shape", "framing"}
+        ),
         tag_to_group={
             "blonde hair": "hair_color",
             "aqua hair": "hair_color",
@@ -318,6 +322,11 @@ def pipeline_bits():
             "thighs": "body_parts",
             "simple background": "background_detail",
             "white background": "background_detail",
+            "full body": "framing",
+            "ass focus": "framing",
+            "close-up": "framing",
+            "solo focus": "framing",
+            "white border": "framing",
         },
     )
     image = Image.new("RGB", (1000, 500), "white")
@@ -1560,12 +1569,14 @@ def test_a_repeated_subject_page_binds_only_what_a_view_can_differ_in(
     assert proposal.ok, proposal.status
     parsed = parse_caption(proposal.proposed)
     bound = {t for c in parsed.clauses for t in c.tags}
-    # Nothing the character owns — name, hair, eyes, body shape, anatomy.
+    # Nothing the character owns — name, hair, eyes, body shape.
     assert bound.isdisjoint(
-        {"hatsune miku", "aqua hair", "twintails", "long hair", "large breasts", "ass"}
+        {"hatsune miku", "aqua hair", "twintails", "long hair", "large breasts"}
     )
-    # …only the outfits, which is what one view has and the other does not.
-    assert bound == {"maid", "playboy bunny"}
+    # …only what one view has and the other does not: the outfits, and the
+    # anatomy that is *visible* in one panel (`body_parts` left the invariant
+    # set — see `--gate_view_anatomy`).
+    assert bound == {"maid", "playboy bunny", "ass"}
     # Nothing was destroyed: a tag that never reached a clause cannot be moved
     # out of the bag, so every suppressed trait is still asserted, flat.
     assert {
@@ -1574,7 +1585,6 @@ def test_a_repeated_subject_page_binds_only_what_a_view_can_differ_in(
         "twintails",
         "long hair",
         "large breasts",
-        "ass",
     } <= set(parsed.flat_tags)
 
 
@@ -1913,3 +1923,171 @@ def test_flatten_backs_out_the_derived_caption_only(pipeline_bits, tmp_path):
     assert stats.written == 1
     assert not has_clauses((dst / "artistA" / "a.txt").read_text(encoding="utf-8"))
     assert (src / "artistA" / "a.txt").read_text(encoding="utf-8") == _TWO_GIRLS_CAPTION
+
+
+# ----- framing: which view a clause is describing --------------------------
+
+
+def test_framing_binds_to_the_view_it_describes(pipeline_bits):
+    """A headless close-up panel says so in its own clause.
+
+    The population: one full-body view next to a hip/backside crop. `framing`
+    is the only group that separates them — every other attribute either
+    belongs to the character (and is gated out on a view layout) or is simply
+    absent from a crop with no head in it.
+    """
+    _, vocabulary, _, _ = pipeline_bits
+    tags = vocabulary.select(
+        {"ass focus": 0.77, "underwear": 0.8, "denim": 0.6},
+        {"framing": "ass focus"},
+        flat_bag=frozenset({"full body", "underwear", "denim", "ass"}),
+        attributable=frozenset({"ass focus", "underwear"}),
+        shared=frozenset(),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+        max_novel_tags=1,
+    )
+    assert "ass focus" in tags
+
+
+def test_the_bag_gate_does_not_claim_framing(pipeline_bits):
+    """`framing` is exclusive, so it lands in the derived gate unless exempted.
+
+    Without the exemption the bag's `full body` — true of the *other* panel —
+    pins every clause to `full body` and the crop's own reading is discarded,
+    which would make the whole feature inert on exactly the sheets it targets.
+    """
+    _, vocabulary, _, _ = pipeline_bits
+    gated = vocabulary.gated_groups()
+    assert "framing" not in gated
+    # …while the reasoning it is exempted from still applies to real subject
+    # attributes: one girl has one body shape.
+    assert "body_shape" in gated
+
+
+def test_page_level_framing_never_binds_to_a_view(pipeline_bits):
+    """`solo focus` / `white border` are filed under `framing` but describe the page.
+
+    v2 *moves* a bound tag out of the flat bag, so binding one of these would
+    not merely add noise to a clause — it would delete a true statement about
+    the image from the bag and re-assert it about one panel.
+    """
+    _, vocabulary, _, _ = pipeline_bits
+    for tag in ("solo focus", "white border"):
+        assert vocabulary.is_scene_tag(tag)
+        assert not vocabulary.is_subject_tag(tag)
+    tags = vocabulary.select(
+        {"solo focus": 0.9, "white border": 0.9, "maid": 0.8},
+        {"framing": "solo focus"},
+        flat_bag=frozenset({"solo focus", "white border", "maid"}),
+        attributable=frozenset({"solo focus", "white border", "maid"}),
+        shared=frozenset(),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+    )
+    assert tags == ["maid"]
+
+
+def test_framing_survives_the_multi_view_gate(pipeline_bits):
+    """The strictest gate must not eat the one thing that varies between views.
+
+    `view_invariant` drops whatever the *character* owns. How a panel is
+    cropped is owned by the panel, so it is precisely what should get through.
+    """
+    _, vocabulary, _, _ = pipeline_bits
+    tags = vocabulary.select(
+        {"ass focus": 0.77, "aqua hair": 0.95, "ass": 0.9},
+        {"framing": "ass focus", "hair_color": "aqua hair"},
+        flat_bag=frozenset({"aqua hair", "ass", "full body"}),
+        attributable=frozenset({"ass focus"}),
+        shared=frozenset(),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+        view_invariant=True,
+        max_novel_tags=1,
+    )
+    # Hair belongs to the character and is gated; framing and the anatomy that
+    # is visible in this panel are facts about the view, so both survive.
+    assert tags == ["ass focus", "ass"]
+
+
+def test_two_panels_of_the_same_kind_still_share_their_framing(pipeline_bits):
+    """Known limitation, pinned so it is a decision and not a surprise.
+
+    A sheet whose views are *both* backside crops has `ass focus` on both, so
+    `discriminative_only` suppresses it on both — the same residual the
+    identity gate has. Recovering it needs a different rule, not this one.
+    """
+    _, vocabulary, _, _ = pipeline_bits
+    tags = vocabulary.select(
+        {"ass focus": 0.6, "denim": 0.7},
+        {"framing": "ass focus"},
+        flat_bag=frozenset({"denim", "ass"}),
+        attributable=frozenset({"denim"}),
+        shared=frozenset({"ass focus"}),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+        max_novel_tags=1,
+    )
+    assert "ass focus" not in tags
+
+
+def test_no_framing_restores_the_pre_change_clause(pipeline_bits):
+    """`--no_framing` is the A side: same call, framing gone, nothing else moves."""
+    _, vocabulary, _, _ = pipeline_bits
+    kwargs = dict(
+        flat_bag=frozenset({"full body", "underwear", "denim"}),
+        attributable=frozenset({"ass focus", "underwear"}),
+        shared=frozenset(),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+        max_novel_tags=1,
+    )
+    args = (
+        {"ass focus": 0.77, "underwear": 0.8, "denim": 0.6},
+        {"framing": "ass focus"},
+    )
+    on = vocabulary.select(*args, bind_framing=True, **kwargs)
+    off = vocabulary.select(*args, bind_framing=False, **kwargs)
+    assert on[0] == "ass focus"
+    assert "ass focus" not in off
+    assert off == [t for t in on if t != "ass focus"]
+
+
+def test_visible_anatomy_binds_on_a_view_layout(pipeline_bits):
+    """`ass` separates a from-behind panel from a front one — the gate ate it.
+
+    Anatomy is owned by the character the way hair color is, but unlike hair
+    color what is *visible* is a fact about the panel. Measured on
+    `ama_mitsuki/13247180`: one girl from behind beside the same girl from the
+    front, and `ass` (in the caption's own bag) reached neither clause.
+    """
+    proposal = _layout_proposal(
+        pipeline_bits,
+        _LAYOUT_CAPTION.format(layout="multiple views"),
+        _DISAGREEING_VIEWS,
+    )
+    bound = {t for c in parse_caption(proposal.proposed).clauses for t in c.tags}
+    assert "ass" in bound
+    # …and the character's own traits are still gated — this loosened one group,
+    # not the rule.
+    assert bound.isdisjoint({"hatsune miku", "aqua hair", "large breasts"})
+
+
+def test_gate_view_anatomy_restores_the_old_gate(pipeline_bits):
+    """The A side of the anatomy A/B: `body_parts` back in the invariant set."""
+    proposal = _layout_proposal(
+        pipeline_bits,
+        _LAYOUT_CAPTION.format(layout="multiple views"),
+        _DISAGREEING_VIEWS,
+        bind_view_anatomy=False,
+    )
+    parsed = parse_caption(proposal.proposed)
+    bound = {t for c in parsed.clauses for t in c.tags}
+    assert "ass" not in bound
+    assert "ass" in set(parsed.flat_tags)  # suppressed, never destroyed

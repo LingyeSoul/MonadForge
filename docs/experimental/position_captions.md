@@ -159,8 +159,10 @@ so the two can't drift:
 
 - **Per-subject groups bind** — hair (color/length/style/accessory), eyes,
   expression, body, all clothing groups, pose/gesture/action (`SUBJECT_GROUPS`).
-- **Scene groups never bind** — lighting, background, framing, medium,
-  `interaction`, `character_relationship`.
+- **`framing` binds too, and is the one group that isn't about the subject** —
+  see [Framing](#framing--which-view-a-clause-is-describing) below.
+- **Scene groups never bind** — lighting, background, medium, `interaction`,
+  `character_relationship`.
 - **Copyright / artist / metadata / deprecated / count / rating are excluded
   outright**, on *every* emission path — the check lives in `add()`, not only on
   the ranked path, because an excluded tag can also be *grouped* (`light brown
@@ -231,18 +233,107 @@ emission time, before any removal rule sees it:
   says the others are somebody else.
 - **Every `_VIEW_INVARIANT_GROUPS` trait** = `_CHARACTER_INVARIANT_GROUPS` (hair
   color/length/style, eyes, face, age, gender, skin, body shape, species, animal
-  parts) **+ `body_parts`**. Anatomy is owned by the character the same way hair
-  color is, but its *visibility* genuinely varies with the view — so `body_parts`
-  joins the set for this rule **only** and stays freely bindable on a real
-  multi-character image.
+  parts).
+
+`body_parts` **used to be in that set and no longer is** (`--gate_view_anatomy`
+restores it). Anatomy is owned by the character the way hair color is, but unlike
+hair color what is *visible* is a fact about the panel: on `13247180` — one girl
+from behind beside the same girl from the front — `ass` sat in the caption's own
+bag and reached neither clause, losing the single thing that separated the two
+views. The reading a clause now asserts is **visible in this panel**, so a
+from-behind view takes `ass`/`back` and its front sibling takes `breasts`.
 
 What is left is what one view or panel has and another does not: outfit, pose,
-expression, framing. It drops ~46% of clause tags on gated rows and empties
-essentially none of them — a suppressed trait stays asserted, flat, and the
-freed slots refill from the ranked tail.
+expression, framing, visible anatomy. It drops ~46% of clause tags on gated rows
+and empties essentially none of them — a suppressed trait stays asserted, flat,
+and the freed slots refill from the ranked tail.
+
+**A/B over `ama_mitsuki`** (70 candidates): 53 differ, no status changes. 83
+anatomy tags bind — `ass` ×38, `navel` ×9, `breasts` ×9, `bare legs` ×4 — of
+which **76 came from the hand-written master** and 7 were crop inventions
+(`saliva`, `cleavage`, `anus`, one `breasts`). Only 12 tags were displaced from a
+clause and, as with the framing A/B, **not one came from the master**. The
+guard that makes this safe is unchanged: `discriminative_only` still requires
+that no other crop kept the tag, and `--attribution_margin` still gates the
+removal — a panel whose sibling merely *missed* the anatomy is the residual
+risk, not a hypothetical, so spot-check the sheets rather than trusting the
+counts.
 
 This is strictly stronger than the corroboration rule below, which only governs
 whether a tag may *leave* the bag; here it never enters the clause.
+
+### Framing — which view a clause is describing
+
+The gate above leaves "outfit, pose, expression, framing" as what a view may
+differ in — but `framing` was in a scene group and could never bind, so a sheet
+of one full body plus a headless hip/backside panel had no way to say which
+clause was which. `framing` is now in `SUBJECT_GROUPS`, so a clause can read
+`On the left, ass focus, denim, underwear.`
+
+It is the only member of that set that describes the **view** rather than the
+girl, and that costs three exceptions:
+
+- **It is exempt from the bag gate** (`_UNGATED_EXCLUSIVE_GROUPS`). `framing` is
+  `softmax_when_solo`, so `gated_groups()` would otherwise derive it, and the
+  gate's premise — one value per group, a second contradicts the first — is
+  false here: a sheet's bag legitimately says `full body` for the standing panel
+  while the backside panel is `ass focus`, both true at once. Without the
+  exemption the whole thing is inert on exactly the sheets it targets.
+- **Three of its members never bind** (`_PAGE_LEVEL_FRAMING`): `solo focus` is a
+  statement about the other characters, `size difference` about a pair,
+  `white border` about the canvas. Binding one would not merely add clause noise
+  — v2 *moves* a bound tag, so it would delete a true statement about the image
+  from the bag and re-assert it about one panel. The check lives in `add()`, not
+  only in `is_scene_tag`, because `framing` is a priority group and that step
+  reads the group's winner straight off the tagger without consulting either
+  predicate — the same shape as the `excluded` bug two bullets up.
+- **It joins `_PRIORITY_GROUPS`, last** — for the novel budget, not the emission
+  order. Candidates are admitted bag-first and then only `--max_novel_tags` (1)
+  novel ones in candidate order, so a framing tag the caption never named loses
+  the slot to whatever else the crop scored higher. Measured: on `5969173` a
+  hallucinated `torn clothes` beat `ass focus` at 0.774 and the clause said
+  nothing about being a backside panel. It sits after the identity groups
+  because on a real multi-character image hair and eyes disambiguate harder; on
+  a view layout those are gated out and framing leads by itself.
+
+Measured on the `ama_mitsuki` body-part sheets, the crop tagger's `framing` head
+separates cleanly: `ass focus` 0.54–0.77 on body-part panels against 0.000 on
+the full-body ones, `full body` 0.87–1.0 the other way (`close-up` 0.69 on a
+crotch close-up). A plain standing view usually returns the group's sentinel,
+i.e. nothing — which is the right answer. What that yields end-to-end:
+
+```
+5969173  On the left, ass focus, underwear, black pantyhose.  On the right, standing, hood, …
+9760144  On the left, ass focus, see-through clothes, …       On the right, full body, open mouth, blush.
+6377728  On the top, close-up, bag.  On the bottom left, close-up, …, lower body, …  On the bottom right, full body, …
+6378107  `solo focus` stayed flat — the page-level guard, on real data.
+```
+
+**A/B over `ama_mitsuki`** (`ab_position_captions.py`, 106 images → 70
+candidates): 45 captions differ, 25 identical, and **no image changes status** —
+nothing is newly skipped or newly proposed. 67 framing tags enter (`full body`
+32, `ass focus` 16, `close-up` 10, rest single digits) and 54 tags leave a
+clause. The decisive number is what those 54 were: **every one of them was a
+crop invention, not one came from the hand-written master.** The framing tag
+takes the single `--max_novel_tags` slot that previously went to whatever the
+crop hallucinated hardest — `swimsuit` ×5 on non-swimsuit images,
+`pulling own clothes` ×4, `torn clothes`, `mask`. Bounding crop invention is
+what that budget is *for*, so the displacement is the feature working, not its
+cost.
+
+Two things it does **not** do:
+
+- **A panel kind shared by *every* crop still says nothing.** `discriminative_only`
+  blocks a tag only when all crops kept it, so the two-backside-panel sheet is
+  the failing case while `6377728`'s three panels keep `close-up` on two of them.
+  Same residual the identity gate has; recovering the all-crops case needs a
+  different rule.
+- **`torso only` / `cropped torso` are not reachable.** They are not in the
+  tagger's vocabulary at all, so no wiring can emit them; the group's 14 members
+  are what is available. `lower body` *is* in the vocabulary but ungrouped, so it
+  rides only the in-the-bag-and-attributable path and can never be novel (it does
+  land on `6377728` that way). Widening this is a tagger vocabulary change, not a
+  clause-pipeline one.
 
 ### The identity gate — the flat bag outranks the crop tagger
 
@@ -494,6 +585,8 @@ the detection floor trades `too-few-instances` for `count-mismatch`.
 | `--name_confidence` / `--allow_unlisted_names` | 0.5 / off | Character-name floors |
 | `--keep_shared_tags` | — | Keep tags every crop agrees on (disables the discriminative rule) |
 | `--bind_view_traits` | — | On a repeated-subject layout, let a clause carry the character's name and view-invariant traits (disables the multi-view gate) |
+| `--no_framing` | — | Keep `framing` out of every clause, so no clause says whether its view is a close-up or a whole figure. The A side of the framing A/B |
+| `--gate_view_anatomy` | — | On a repeated-subject layout, keep `body_parts` out of every clause (`ass`, `navel`, `breasts`). The pre-2026-08-19 behaviour and the A side of the anatomy A/B |
 | `--no_rewrite` | — | Additive v1: append the clauses, leave the flat bag untouched (every bound attribute asserted twice). The A/B control arm |
 | `--attribution_margin` | 0.25 | How far the winning crop must clear every other **relative to its own probability** (`1 - runner_up/winner`) before a tag may **leave** the bag, on top of the hard rule that no other crop kept it. `0.0` trusts the per-tag thresholds alone. The clause carries the tag either way |
 | `--flatten` | off | Inverse pass — merge clauses back into the bag and drop them. Text only (no models). The undo, and the clause-free A/B corpus |
@@ -612,7 +705,8 @@ ships off.
 |---|---|
 | `library/captioning/position_clauses.py` | Clause grammar (torch-free) — parse / compose / `flatten_caption` / position vocabulary |
 | `library/preprocess/position_captions.py` | Pipeline orchestration (`plan_bag_removals` = the v2 rules, `flatten_captions` = the undo); models injected as `detect_fn` / `tag_fn` |
-| `scripts/preprocess/position_captions.py` | CLI shell — argparse + SAM3/tagger loading |
+| `scripts/preprocess/position_captions.py` | CLI shell — argparse + SAM3/tagger loading (`build_options_from_args` is shared with the A/B tool) |
+| `scripts/preprocess/ab_position_captions.py` | A/B two flag sets off **one** detect+tag pass; contact sheet + `index.html` per differing image, into `post_image_dataset/captions/position_ab/`. Pass sides as `--a_flags=--foo` — the `=` is required, argparse reads a `-`-leading value as the next option |
 | `scripts/tasks/preprocess.py::cmd_caption_position` | `make caption-position` (daemon-routed) + the in-chain stage |
 | `library/preprocess/caption_variants.py` | Atomic-clause variant generation |
 | `library/captioning/correction.py` | Clause-aware order correction |
