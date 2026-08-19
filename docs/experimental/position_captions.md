@@ -550,12 +550,14 @@ the detection floor trades `too-few-instances` for `count-mismatch`.
 
 **Two settled negatives — don't re-propose without new evidence:**
 
-- **Containment suppression ships off** (`--containment_threshold 1.01`). It
+- **Box containment suppression ships off** (`--containment_threshold 1.01`). It
   looks like the obvious fix for nested boxes (insets, group boxes), and it was
   measured to break 34 previously-proposing rows to recover ~2. A real second
   subject is exactly as nested as a group box — one girl in front of another, an
   embrace — and this corpus has far more of those. Only the inset half is handled
-  automatically, by `--min_area_frac` (0.005 of the canvas).
+  automatically, by `--min_area_frac` (0.005 of the canvas). **The fix was the
+  signal, not the threshold** — see mask containment below; do not retune this
+  one.
 - **No automatic gate on fragmentary masks.** ~6% of instances recovered in the
   0.35–0.5 band have a broken mask, and the blanked crop feeds the tagger a mix.
   Mask *fill* does not separate them (a clean 0.87-score figure sits at the same
@@ -563,6 +565,60 @@ the detection floor trades `too-few-instances` for `count-mismatch`.
   blobs are diagonally offset, and `main_frac` correlates but also flags visually
   clean crops whose hair or limbs simply split. The report carries a per-detection
   `score`; the low-score instances are the ones worth eyeballing.
+
+### Mask containment (shipped on, 2026-08-19)
+
+`--mask_containment_threshold 0.8` suppresses a detection whose **mask** is that
+nested inside a kept detection's mask. It is the box rule's discriminating
+sibling, and it is on by default for the reason the box rule is off: two boxes
+nest identically whether the inner detection is a fragment of the outer figure
+or a second girl standing in front of her, but their masks do not — a fragment's
+mask is a subset of the figure's, an occluding subject's is disjoint from the
+figure behind her, because SAM3 segments the two separately.
+
+The measurement (`scripts/preprocess/probe_nms_pairs.py`-style A/B replay off one
+grounding pass per image; both arms re-derive the retry escalation, so arm B
+suppressing harder can itself trigger a retry):
+
+| | box containment | mask containment |
+|---|---|---|
+| rows broken | 34 | **2** |
+| rows recovered | ~2 | **7** |
+| sample | full corpus | all 480 candidates |
+
+Net `proposed` goes 432 → 437; 11 further rows change their box count without
+changing status. **Every one of the 7 recoveries lands on the caption's own
+girls-count** (3 → 2 at `expected=2`, 4 → 3 at `expected=3`) — an independent
+corroboration that the merge produced the *right* number, not merely a smaller
+one.
+
+Every box-nested pair in the pair-level probe landed either **above 0.98**
+(genuinely one object) or **below 0.02** (two subjects) — no middle ground, so
+0.8 is not a tuned edge. On `dikko/10188286` (two girls, embracing) box
+containment reads 0.995 and would delete one of them; mask containment reads
+0.005 and keeps both.
+
+**The known failure mode** is the mask analogue of the group box: when SAM3
+emits one mask spanning *both* girls, the individual's mask is a subset of it
+and gets suppressed. Both regressions are this shape — `hews/10607820` and
+`tottotonero/14431796`, each 2 → 1 and then `too-few-instances`. It fires where
+the box rule's group-box case would have, minus the far larger population of
+merely-nested real subjects, which is the whole reason the ledger flips sign.
+Not mitigated: any guard would be tuned on n=2. Both failures are skips, not
+wrong writes.
+
+**Scope**: this is a duplicate-suppression fix, not a detection fix. On the
+pathological `ama_mitsuki/5828766` it takes 5 kept boxes down to 3, but that
+image's proposals are all manufactured by the retry escalation (SAM3 returns
+**zero** at the 0.5 floor and six sub-threshold fragments at 0.35) and 3 still
+clears the instance window, so the image still writes ungrounded clauses. The
+retry path is a separate, open problem: `detect_subjects` targets
+`expected or min_instances`, so a `multiple views` caption (`expected=None`)
+always retries down to 0.35 when the subject prompt finds nothing, and no gate
+downstream re-checks that the survivors cleared the shipped floor.
+
+A pair with no usable mask — stub detections, part boxes, mismatched shapes —
+falls back to the box rules, so `merge_part_detections` is unaffected.
 
 ## Knobs
 
@@ -577,6 +633,7 @@ the detection floor trades `too-few-instances` for `count-mismatch`.
 | `--score_threshold` / `--retry_score_threshold` | 0.5 / 0.35 | Detection floor; retry floor when the count undershoots. These are SAM3's **own** confidence floor, not a post-filter |
 | `--iou_threshold` / `--pad` | 0.65 / 0.06 | Dedupe IoU; bbox padding fraction |
 | `--containment_threshold` | 1.01 (off) | Suppress a box this nested inside a kept one (intersection over the *smaller* box). Measured harmful on this corpus — see above before enabling |
+| `--mask_containment_threshold` | 0.8 (**on**) | Same rule on the *masks* instead of the boxes, which is what separates a fragment from a second subject. `>1.0` disables, restoring the pre-2026-08-19 behaviour |
 | `--min_area_frac` | 0.005 | Drop detections below this fraction of the image (insets are not subjects) |
 | `--no_blank_crops` | — | Skip mask-blanking (diagnostic only — it is what causes cross-subject hair bleed) |
 | `--row_tol` | 0.25 | Row-clustering gap as a fraction of image height |

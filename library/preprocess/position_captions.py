@@ -142,6 +142,7 @@ from library.preprocess.instance_detection import (
     dedupe_detections,
     drop_small_boxes,
     mask_box_fill,
+    mask_containment,
     merge_part_detections,
 )
 
@@ -175,6 +176,7 @@ __all__ = [
     "load_clause_groups",
     "load_clause_vocabulary",
     "mask_box_fill",
+    "mask_containment",
     "merge_part_detections",
     "plan_bag_removals",
     "propose_for_image",
@@ -268,6 +270,10 @@ class PositionCaptionOptions:
     # Containment suppression is OFF by default: measured, it costs far more
     # than it buys (see ``box_containment``).
     containment_threshold: float = 1.01
+    # On by default, unlike its box counterpart — see ``mask_containment``. Two
+    # boxes nest identically whether the inner one is a fragment or a second
+    # girl in front of the first; their masks do not.
+    mask_containment_threshold: float = 0.8
     # Mask-quality tie-break inside an NMS-matched pair — see
     # ``dedupe_detections``. 2.0 sits in the measured empty ratio band
     # (multiview_audit.md §5.4); 0 disables (score-only survivor).
@@ -345,6 +351,7 @@ def detect_subjects(
             options.iou_threshold,
             options.containment_threshold,
             options.dedupe_fill_ratio,
+            options.mask_containment_threshold,
         )
         return drop_small_boxes(dets, image.size, options.min_area_frac)
 

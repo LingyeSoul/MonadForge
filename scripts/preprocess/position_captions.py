@@ -170,6 +170,17 @@ def parse_args() -> argparse.Namespace:
         "subjects to save 12 group boxes",
     )
     g.add_argument(
+        "--mask_containment_threshold",
+        "--mask-containment-threshold",
+        dest="mask_containment_threshold",
+        type=float,
+        default=0.8,
+        help="Suppress a detection whose MASK is this nested inside a kept "
+        "one. On by default, unlike its box counterpart: a second girl in "
+        "front of the first nests identically by box but her mask is disjoint. "
+        ">1.0 disables (the pre-2026-08-19 behaviour)",
+    )
+    g.add_argument(
         "--dedupe_fill_ratio",
         "--dedupe-fill-ratio",
         dest="dedupe_fill_ratio",
@@ -349,6 +360,7 @@ def build_options_from_args(args: argparse.Namespace) -> PositionCaptionOptions:
         part_containment_threshold=args.part_containment_threshold,
         iou_threshold=args.iou_threshold,
         containment_threshold=args.containment_threshold,
+        mask_containment_threshold=args.mask_containment_threshold,
         dedupe_fill_ratio=args.dedupe_fill_ratio,
         min_area_frac=args.min_area_frac,
         pad=args.pad,

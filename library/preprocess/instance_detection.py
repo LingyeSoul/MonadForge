@@ -65,6 +65,48 @@ def box_containment(a: Sequence[float], b: Sequence[float]) -> float:
     return (ix * iy) / smallest if smallest > 0 else 0.0
 
 
+def _binary_mask(det: Detection) -> np.ndarray | None:
+    """The detection's mask as a 2-D boolean array, or ``None`` if it has none."""
+    if det.mask is None:
+        return None
+    mask = np.asarray(det.mask)
+    while mask.ndim > 2:
+        mask = mask[0]
+    return mask > 0.5
+
+
+def mask_containment(a: Detection, b: Detection) -> float | None:
+    """Intersection over the *smaller* mask — how nested the pair really is.
+
+    The mask analogue of :func:`box_containment`, and the discriminator that one
+    cannot provide: two boxes nest identically whether the inner detection is a
+    fragment of the outer figure or a second girl standing in front of her, but
+    their *masks* do not. A fragment's mask is a subset of the whole figure's;
+    an occluding subject's mask is disjoint from the figure behind it, because
+    SAM3 segments the two separately.
+
+    Every box-nested pair in the pair-level probe landed either above 0.98
+    (genuinely one object) or below 0.02 (two subjects) — no middle ground, so
+    the 0.8 default is not a tuned edge.
+
+    KNOWN FAILURE: when SAM3 emits a *group* mask spanning both girls, an
+    individual's mask is a subset of it and gets suppressed. That is the mask
+    analogue of the group-box problem and it cost 2 of 480 candidate rows; see
+    ``docs/experimental/position_captions.md``.
+
+    ``None`` when either detection carries no mask, or when the two masks are
+    differently shaped, so callers fall back to box-only behaviour — the same
+    convention :func:`mask_box_fill` uses for the fill tie-break.
+    """
+    ma, mb = _binary_mask(a), _binary_mask(b)
+    if ma is None or mb is None or ma.shape != mb.shape:
+        return None
+    smallest = min(float(ma.sum()), float(mb.sum()))
+    if smallest <= 0:
+        return None
+    return float(np.logical_and(ma, mb).sum()) / smallest
+
+
 def mask_box_fill(det: Detection) -> float | None:
     """Fraction of the detection's own box that its mask actually claims.
 
@@ -93,11 +135,23 @@ def dedupe_detections(
     iou_threshold: float,
     containment_threshold: float = 1.01,
     fill_ratio_threshold: float = 0.0,
+    mask_containment_threshold: float = 1.01,
 ) -> list[Detection]:
     """Greedy IoU + containment suppression, highest score first.
 
-    A threshold above 1.0 disables the containment rule — a box can never be
-    more than fully inside another — leaving plain-IoU behaviour.
+    A threshold above 1.0 disables either containment rule — nothing can be more
+    than fully inside something else — leaving plain-IoU behaviour.
+
+    ``mask_containment_threshold`` suppresses on :func:`mask_containment`
+    instead of box geometry, and unlike the box rule it ships **on** (0.8). The
+    box rule is a settled negative because it cannot tell a fragment from a real
+    second subject; the mask rule mostly can, and the full candidate ledger
+    bears that out — 480 candidates, **7 rows recovered, 2 broken** (the box
+    rule's ledger was 2 recovered, 34 broken). Every recovery landed on the
+    caption's own girls-count, which is an independent corroboration that the
+    merge produced the *right* number and not merely a smaller one. A pair with
+    no usable mask falls back to the box rules, so stub detections and part
+    boxes are unaffected.
 
     ``fill_ratio_threshold`` > 0 enables the mask-quality tie-break
     (``docs/experimental/multiview_audit.md`` §5.4 fixed the default at
@@ -115,16 +169,22 @@ def dedupe_detections(
     Single-pass: the swapped-in geometry is not re-checked against other kept
     boxes (bounded, order-stable; no cascade observed over the full corpus).
     """
+
+    def matches(det: Detection, kept: Detection) -> bool:
+        if box_iou(det.box, kept.box) >= iou_threshold:
+            return True
+        if box_containment(det.box, kept.box) >= containment_threshold:
+            return True
+        if mask_containment_threshold > 1.0:
+            return False
+        overlap = mask_containment(det, kept)
+        return overlap is not None and overlap >= mask_containment_threshold
+
     ranked = sorted(detections, key=lambda d: -d.score)
     keep: list[Detection] = []
     for det in ranked:
         hit = next(
-            (
-                i
-                for i, k in enumerate(keep)
-                if box_iou(det.box, k.box) >= iou_threshold
-                or box_containment(det.box, k.box) >= containment_threshold
-            ),
+            (i for i, k in enumerate(keep) if matches(det, k)),
             None,
         )
         if hit is None:

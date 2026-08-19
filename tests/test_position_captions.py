@@ -776,6 +776,59 @@ def test_a_nested_subject_survives_dedupe():
     assert dedupe_detections([host, dup], 0.65) == [host]
 
 
+def test_mask_containment_separates_a_fragment_from_a_second_subject():
+    # The discriminator the box rule cannot provide. Both pairs below are box-
+    # nested to ~1.0; only the mask tells them apart, so only the fragment goes.
+    from library.preprocess.position_captions import (
+        Detection,
+        box_containment,
+        dedupe_detections,
+        mask_containment,
+    )
+
+    figure = np.zeros((100, 100), dtype=np.float32)
+    figure[:, 0:50] = 1.0  # a girl occupying the left half
+    fragment = np.zeros((100, 100), dtype=np.float32)
+    fragment[0:30, 0:50] = 1.0  # her head — a subset of her own mask
+    neighbour = np.zeros((100, 100), dtype=np.float32)
+    neighbour[0:30, 50:100] = 1.0  # a second girl, same box, disjoint pixels
+
+    host = Detection(box=(0, 0, 100, 100), score=0.9, mask=figure)
+    part = Detection(box=(0, 0, 50, 30), score=0.6, mask=fragment)
+    other = Detection(box=(0, 0, 100, 30), score=0.6, mask=neighbour)
+
+    assert mask_containment(part, host) == pytest.approx(1.0)
+    assert mask_containment(other, host) == pytest.approx(0.0)
+    # Box geometry cannot separate them: both are fully inside the host box.
+    assert box_containment(part.box, host.box) == pytest.approx(1.0)
+    assert box_containment(other.box, host.box) == pytest.approx(1.0)
+
+    assert dedupe_detections([host, part], 0.65, mask_containment_threshold=0.8) == [
+        host
+    ]
+    kept = dedupe_detections([host, other], 0.65, mask_containment_threshold=0.8)
+    assert len(kept) == 2
+
+
+def test_mask_containment_falls_back_to_boxes_without_masks():
+    # Stub detections and part boxes carry no mask; the rule must abstain rather
+    # than suppress, so the box-only behaviour is exactly preserved.
+    from library.preprocess.position_captions import Detection, dedupe_detections
+
+    host = Detection(box=(0, 0, 1000, 500), score=0.9)
+    inside = Detection(box=(400, 200, 600, 480), score=0.6)
+    assert (
+        len(dedupe_detections([host, inside], 0.65, mask_containment_threshold=0.8))
+        == 2
+    )
+    # Above 1.0 disables the rule outright, restoring the pre-flag behaviour.
+    speckle = np.zeros((100, 100), dtype=np.float32)
+    speckle[:, 0:50] = 1.0
+    a = Detection(box=(0, 0, 100, 100), score=0.9, mask=speckle)
+    b = Detection(box=(0, 0, 50, 100), score=0.6, mask=speckle)
+    assert len(dedupe_detections([a, b], 0.65, mask_containment_threshold=1.01)) == 2
+
+
 def test_mask_box_fill():
     from library.preprocess.position_captions import Detection, mask_box_fill
 
