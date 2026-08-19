@@ -185,6 +185,84 @@ def test_single_subject_row_gets_the_bare_row_word():
     ]
 
 
+def test_magazine_layout_names_columns_not_fake_rows():
+    """A full-height subject beside a column of stacked panels (`9760139`).
+
+    Center-y clustering split the tall girl from the panels she overlaps by
+    ~85% into fake rows; interval overlap chains all three into one row, so
+    the x-axis separates instead: the stacked panels take `top left`/`bottom
+    left` and the girl who spans the whole height is just `right`.
+    """
+    boxes = [
+        (0, 0, 455, 450),  # panel, upper left
+        (0, 405, 478, 890),  # panel, lower left
+        (440, 78, 625, 830),  # full-height girl, right
+    ]
+    assert assign_positions(boxes, (639, 900)) == [
+        "top left",
+        "bottom left",
+        "right",
+    ]
+    # Reading order is column-major here: the left stack, then the girl.
+    assert ordered_indices(boxes, (639, 900)) == [0, 1, 2]
+
+
+def test_a_lone_end_hugging_panel_earns_its_row_qualifier():
+    """`9760121`: one close-up panel in the upper left, the girl on the right.
+
+    The panel leaves the bottom half empty, so bare `left` under-describes it
+    — it reads `top left`; the girl spans the height and stays bare `right`
+    (`bottom`, the old name, was simply wrong).
+    """
+    boxes = [(375, 80, 600, 860), (0, 10, 420, 435)]
+    assert assign_positions(boxes, (619, 900)) == ["right", "top left"]
+
+
+def test_a_diagonal_pair_reads_by_its_corners():
+    boxes = [(0, 0, 400, 500), (600, 400, 1000, 1000)]
+    assert assign_positions(boxes, (1000, 1000)) == ["top left", "bottom right"]
+
+
+def test_a_wide_panel_bleeding_under_a_neighbour_stays_in_its_lane():
+    """`5828187`: the bottom-left panel's box reaches under the right girl (a
+    leg drawn across the sheet), overlapping her x-extent completely. Interval
+    overlap chained everything into one column and degraded the sheet to
+    left/middle/right; center-gap lanes keep the panel in the left column."""
+    boxes = [(15, 0, 450, 515), (0, 395, 585, 890), (410, 90, 585, 820)]
+    assert assign_positions(boxes, (639, 900)) == [
+        "top left",
+        "bottom left",
+        "right",
+    ]
+    assert ordered_indices(boxes, (639, 900)) == [0, 1, 2]
+
+
+def test_nested_boxes_fall_back_to_left_right_in_reading_order():
+    """`5828184`: the lying girl's box spans the full width and CONTAINS the
+    standing girl's x-extent. Their centers still sit in separate lanes, both
+    span the height, and the caption must read left→right — not open with
+    `On the right`."""
+    boxes = [(375, 70, 600, 840), (0, 90, 619, 890)]
+    assert assign_positions(boxes, (619, 900)) == ["right", "left"]
+    assert ordered_indices(boxes, (619, 900)) == [1, 0]
+
+
+def test_a_panel_reaching_the_halfway_line_stays_bare_left():
+    """`6183990`: near-identical layout to `9760121`, but the panel's bottom
+    reaches the frame's halfway line (empty gap 0.452 < _EDGE_CLEAR) — the
+    curated call is bare `left`/`right` here, `top left` there. Pins the
+    calibrated boundary between the two."""
+    boxes = [(16, 0, 491, 466), (406, 87, 573, 851)]
+    assert assign_positions(boxes, (627, 900)) == ["left", "right"]
+
+
+def test_same_height_subjects_stay_bare_left_right():
+    """The qualifier must not fire on ordinary side-by-side pairs — a sitting
+    girl beside a standing one is still `left`/`right`, not `bottom left`."""
+    boxes = [(0, 0, 400, 1000), (600, 380, 1000, 1000)]
+    assert assign_positions(boxes, (1000, 1000)) == ["left", "right"]
+
+
 # ----- caption variants: clauses are atomic -------------------------------
 
 
@@ -2233,3 +2311,140 @@ def test_a_typo_in_the_policy_is_reported(tmp_path, caplog):
     # The shipped policy names many groups this toy checkpoint lacks.
     assert "silently disable" in caplog.text
     assert vocabulary.gated_groups() >= {"hair_color"}
+
+
+# ----- bag-tag keep relaxation --------------------------------------------
+
+
+_RELAX_CAPTION = (
+    "safe, 2girls, akita neru, hatsune miku, @channel, blonde hair, aqua hair, "
+    "maid, playboy bunny, simple background"
+)
+
+
+def _relax_predictions(left_scores, right_scores, thresholds):
+    """Two crops with full scores/thresholds, kept = the strict decision."""
+
+    def crop(scores, groups):
+        return {
+            "kept": {t: s for t, s in scores.items() if s >= thresholds.get(t, 1.0)},
+            "scores": dict(scores),
+            "thresholds": dict(thresholds),
+            "groups": groups,
+        }
+
+    return [
+        crop(left_scores, {"hair_color": "blonde hair"}),
+        crop(right_scores, {"hair_color": "aqua hair"}),
+    ]
+
+
+_RELAX_THRESHOLDS = {
+    "akita neru": 0.5,
+    "hatsune miku": 0.5,
+    "blonde hair": 0.5,
+    "aqua hair": 0.5,
+    "maid": 0.8,
+    "playboy bunny": 0.8,
+}
+
+
+def _relax_proposal(pipeline_bits, left_scores, right_scores, **option_overrides):
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    return propose_for_image(
+        image,
+        _RELAX_CAPTION,
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(
+            _relax_predictions(left_scores, right_scores, _RELAX_THRESHOLDS)
+        ),
+        vocabulary=vocabulary,
+        options=Options(**option_overrides),
+    )
+
+
+_RELAX_LEFT = {"akita neru": 0.9, "blonde hair": 0.8, "maid": 0.45}
+_RELAX_RIGHT = {"hatsune miku": 0.9, "aqua hair": 0.8, "maid": 0.05}
+
+
+def test_bag_relax_defaults_off(pipeline_bits):
+    """`maid` is in the bag but under its 0.8 threshold on both crops — the
+    strict pipeline never sees it."""
+    proposal = _relax_proposal(pipeline_bits, _RELAX_LEFT, _RELAX_RIGHT)
+    parsed = parse_caption(proposal.proposed)
+    assert not any("maid" in c.tags for c in parsed.clauses)
+    assert "maid" in parsed.flat_tags
+
+
+def test_bag_relax_binds_and_moves_a_corroborated_tag(pipeline_bits):
+    """0.45 clears 0.8 * 0.5 on the left crop only → attributable → moved.
+
+    The motivating case: 5828184's `black panties` at 0.498 against a 0.800
+    threshold on the lying-girl crop, 0.066 on the standing one.
+    """
+    proposal = _relax_proposal(pipeline_bits, _RELAX_LEFT, _RELAX_RIGHT, bag_relax=0.5)
+    parsed = parse_caption(proposal.proposed)
+    assert "maid" in parsed.clauses[0].tags
+    assert "maid" not in parsed.flat_tags
+    assert "maid" in {m["tag"] for m in proposal.moved}
+
+
+def test_bag_relax_never_admits_a_novel_tag(pipeline_bits):
+    """Relaxation reads the bag only — a sub-threshold tag the caption never
+    contained stays invisible however low the floor goes."""
+    left = dict(_RELAX_LEFT, apron=0.79)  # sub-threshold and NOT in the bag
+    thresholds = dict(_RELAX_THRESHOLDS, apron=0.8)
+    from library.preprocess.position_captions import propose_for_image
+
+    image, vocabulary, _, Options = pipeline_bits
+    proposal = propose_for_image(
+        image,
+        _RELAX_CAPTION,
+        detect_fn=_detector(
+            {0.5: [((0, 0, 400, 500), 0.9), ((600, 0, 1000, 500), 0.9)]}
+        ),
+        tag_fn=_tagger(_relax_predictions(left, _RELAX_RIGHT, thresholds)),
+        vocabulary=vocabulary,
+        options=Options(bag_relax=0.1),
+    )
+    assert "apron" not in proposal.proposed
+
+
+def test_bag_word_relax_compounds_per_extra_word(pipeline_bits):
+    """`playboy bunny` (two words) at 0.55: 0.8 * 0.7 = 0.56 misses, and the
+    0.9 word bonus lowers the floor to 0.504 — specificity earns the slack."""
+    left = dict(_RELAX_LEFT, **{"playboy bunny": 0.55})
+    without = _relax_proposal(pipeline_bits, left, _RELAX_RIGHT, bag_relax=0.7)
+    assert "playboy bunny" not in {
+        t for c in parse_caption(without.proposed).clauses for t in c.tags
+    }
+    bonus = _relax_proposal(
+        pipeline_bits, left, _RELAX_RIGHT, bag_relax=0.7, bag_word_relax=0.9
+    )
+    assert "playboy bunny" in parse_caption(bonus.proposed).clauses[0].tags
+
+
+def test_bag_relax_blocks_a_move_the_strict_sets_grant(pipeline_bits):
+    """Cuts both ways: a rival crop's borderline score becomes a keep, making
+    the tag shared — so it stays flat instead of wrongly leaving the bag.
+
+    On 5828184 this is the bogus `sweater` move: both girls wear it, the
+    standing crop just scored it 0.551 against 0.6.
+
+    The rival's 0.6 clears the 0.25 attribution margin (1 - 0.6/0.9 = 0.33),
+    so the strict pipeline moves the tag; the relaxed kept set is the only
+    rule that catches it.
+    """
+    left = dict(_RELAX_LEFT, maid=0.9)
+    right = dict(_RELAX_RIGHT, maid=0.6)  # sub-threshold, but clearly there
+    strict = _relax_proposal(pipeline_bits, left, right)
+    assert "maid" in {m["tag"] for m in strict.moved}
+    relaxed = _relax_proposal(pipeline_bits, left, right, bag_relax=0.7)
+    parsed = parse_caption(relaxed.proposed)
+    assert "maid" in parsed.flat_tags
+    assert not any("maid" in c.tags for c in parsed.clauses)
+    assert "maid" not in {m["tag"] for m in relaxed.moved}

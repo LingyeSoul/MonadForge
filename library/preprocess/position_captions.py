@@ -307,6 +307,19 @@ class PositionCaptionOptions:
     # Let a view layout's clause carry anatomy (`ass`, `thighs`) — what is
     # *visible* in that panel. False re-gates it, the pre-2026-08-19 behaviour.
     bind_view_anatomy: bool = True
+    # Bag-tag keep relaxation: a tag already in the flat bag can only MOVE into
+    # a clause, never be invented — the curated caption corroborates it, so the
+    # crop tagger only has to *localize* it, and its per-tag F1 threshold may be
+    # relaxed for exactly that population. 1.0 = off (a bag tag needs the
+    # tagger's own keep decision, the pre-relaxation behaviour); e.g. 0.5 keeps
+    # a bag tag at half its calibrated threshold. Applied to every crop before
+    # the attributable/shared census, so a rival crop's borderline score also
+    # BLOCKS a move the strict kept set would have waved through.
+    bag_relax: float = 1.0
+    # Extra relaxation multiplier per word beyond the first (compounds with
+    # ``bag_relax``): `black panties` is more specific than `panties`, so a
+    # sub-threshold hit on it is less likely to be noise. 1.0 = off.
+    bag_word_relax: float = 1.0
     # v2: move an attributable tag out of the flat bag into its clause. False is
     # the additive v1 behaviour (bag untouched), kept for the training A/B.
     rewrite: bool = True
@@ -381,6 +394,39 @@ def detect_subjects(
     # image. Taking only the highest-scoring boxes needed to clear the gate
     # bounds that, and an image the part pass cannot fill still skips.
     return merged[: max(target, len(dets))]
+
+
+def _relax_bag_keeps(
+    kept_sets: list[dict[str, float]],
+    score_sets: list[dict[str, float]],
+    predictions: list[Mapping[str, object]],
+    flat_bag: frozenset[str],
+    options: PositionCaptionOptions,
+) -> None:
+    """Admit sub-threshold flat-bag tags into each crop's kept set, in place.
+
+    The bag is the curated ground truth: a bag tag can only *move* into a
+    clause (never be invented), so the crop tagger's job for it is attribution,
+    not detection, and its calibrated keep threshold may be relaxed by
+    ``bag_relax`` (times ``bag_word_relax`` per word beyond the first — a more
+    specific tag is less likely to clear on noise). Runs on every crop before
+    the attributable/shared census, which cuts both ways: a rival crop's
+    borderline score now also blocks a move the strict kept sets would have
+    granted. Needs the per-tag thresholds ``AnimaTagger.predict`` attaches;
+    silently a no-op per crop when a stub ``tag_fn`` omits them.
+    """
+    relax = options.bag_relax
+    word_relax = options.bag_word_relax
+    if relax >= 1.0 and word_relax >= 1.0:
+        return
+    for kept, scores, pred in zip(kept_sets, score_sets, predictions):
+        thresholds = pred.get("thresholds") or {}
+        for tag in flat_bag:
+            if tag in kept or tag not in scores or tag not in thresholds:
+                continue
+            floor = thresholds[tag] * relax * word_relax ** (len(tag.split()) - 1)
+            if scores[tag] >= floor:
+                kept[tag] = float(scores[tag])
 
 
 def propose_for_image(
@@ -468,10 +514,10 @@ def propose_for_image(
     predictions = [tag_fn(crop) for crop in crops]
     kept_sets = [dict(p.get("kept") or {}) for p in predictions]
     score_sets = [dict(p.get("scores") or {}) for p in predictions]
-    # A tag only *this* crop keeps is attributable to it. One that *every* crop
-    # keeps discriminates nothing — the same character in four outfit views
-    # scores the same name, hair, and eyes on all four — so it stays in the flat
-    # bag rather than padding every clause identically.
+    _relax_bag_keeps(kept_sets, score_sets, predictions, flat_bag, options)
+    # A tag only *this* crop keeps is attributable to it; one every crop keeps
+    # discriminates nothing, so it stays in the flat bag instead of padding
+    # every clause identically.
     counts: dict[str, int] = {}
     for kept in kept_sets:
         for tag in kept:

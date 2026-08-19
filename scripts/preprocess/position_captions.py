@@ -210,7 +210,9 @@ def parse_args() -> argparse.Namespace:
         "--row_tol",
         type=float,
         default=0.25,
-        help="Row-clustering gap as a fraction of image height (grid sheets)",
+        help="Minimum fractional overlap (of the narrower box extent) for two "
+        "subjects to share a row — and a column, on magazine layouts where a "
+        "full-height subject bridges a stack of panels",
     )
     g.add_argument("--min_instances", type=int, default=2)
     g.add_argument("--max_instances", type=int, default=8)
@@ -320,6 +322,31 @@ def parse_args() -> argparse.Namespace:
         "the training A/B arm",
     )
     c.add_argument(
+        "--bag_relax",
+        "--bag-relax",
+        dest="bag_relax",
+        type=float,
+        default=1.0,
+        help="Multiplier on the tagger's per-tag keep threshold for tags the "
+        "flat bag already contains (they can only MOVE into a clause, never be "
+        "invented, so the curated caption corroborates them — the crop only "
+        "attributes). 1.0 = off. Applied to every crop before the "
+        "attributable/shared census, so a rival crop's borderline score also "
+        "blocks a move the strict kept sets would have granted. Motivating "
+        "case: 5828184's `black panties` scored 0.498 against a 0.800 "
+        "threshold on the lying crop and stayed unbound",
+    )
+    c.add_argument(
+        "--bag_word_relax",
+        "--bag-word-relax",
+        dest="bag_word_relax",
+        type=float,
+        default=1.0,
+        help="Extra threshold multiplier per word beyond the first, compounding "
+        "with --bag_relax (`black panties` is more specific than `panties`, so "
+        "a sub-threshold hit on it is less likely noise). 1.0 = off",
+    )
+    c.add_argument(
         "--attribution_margin",
         "--attribution-margin",
         dest="attribution_margin",
@@ -380,6 +407,8 @@ def build_options_from_args(args: argparse.Namespace) -> PositionCaptionOptions:
         bind_view_anatomy=args.bind_view_anatomy,
         rewrite=args.rewrite,
         attribution_margin=args.attribution_margin,
+        bag_relax=args.bag_relax,
+        bag_word_relax=args.bag_word_relax,
     )
 
 

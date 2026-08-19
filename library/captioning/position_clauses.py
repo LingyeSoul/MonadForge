@@ -276,28 +276,122 @@ def horizontal_names(n: int) -> list[str]:
     return names
 
 
-def cluster_rows(
-    centers_y: Sequence[float], height: float, tol: float = 0.25
-) -> list[int]:
-    """Assign each subject a row index by clustering its box center-y.
+# A lone box in a group is qualified with the end it hugs ("top left") only
+# when it sits within _EDGE_HUG of that end of the subjects' combined extent
+# AND leaves at least _EDGE_CLEAR of the other end empty — a full-height
+# subject beside stacked panels stays bare "right", and two same-height girls
+# stay bare "left"/"right" however their boxes wobble.
+#
+# _EDGE_CLEAR is calibrated on two curated judgment calls (2026-08-19), and
+# the margin is thin: `9760121`'s top-left panel (bottom gap 0.488) reads
+# "top left", while `6183990`'s near-identical layout (0.452) reads bare
+# "left" — the intuition being "qualify only when the panel stops clearly
+# above the halfway line". Both sit within box-jitter of the threshold; if a
+# review sweep shows flapping, resolve it toward the user's calls above.
+_EDGE_HUG = 0.15
+_EDGE_CLEAR = 0.47
 
-    Grid sheets (``multiple views`` 2×2 contact sheets) interleave under pure
-    x-ordering, so rows are resolved first. Single-linkage on center-y with a
-    gap threshold of ``tol × height``: subjects whose centers are closer than
-    the threshold share a row. Returns a row index per input, top row = 0.
+
+def _cluster_intervals(
+    intervals: Sequence[tuple[float, float]], min_overlap: float
+) -> list[int]:
+    """Single-linkage grouping of 1-D intervals by fractional overlap.
+
+    Two intervals share a group when they overlap by at least ``min_overlap``
+    of the narrower one, and groups chain through a shared member (a
+    full-height box bridges every panel it overlaps — which is exactly the
+    signal that they are NOT stacked rows). Center-distance clustering, which
+    this replaced, split a tall box from a short neighbour it overlapped by
+    80%+, misnaming a magazine layout ``top``/``bottom``. Returns a group
+    index per input, group 0 = lowest coordinate.
     """
-    if not centers_y:
+    if not intervals:
         return []
-    gap = tol * float(height)
-    order = sorted(range(len(centers_y)), key=lambda i: centers_y[i])
-    rows = [0] * len(centers_y)
-    row = 0
-    rows[order[0]] = 0
+    order = sorted(range(len(intervals)), key=lambda i: intervals[i])
+    groups = [0] * len(intervals)
+    group = 0
+    lo, hi = intervals[order[0]]
+    for cur in order[1:]:
+        c0, c1 = float(intervals[cur][0]), float(intervals[cur][1])
+        overlap = min(hi, c1) - max(lo, c0)
+        narrow = min(hi - lo, c1 - c0)
+        if narrow <= 0 or overlap < min_overlap * narrow:
+            group += 1
+            lo, hi = c0, c1
+        else:
+            lo, hi = min(lo, c0), max(hi, c1)
+        groups[cur] = group
+    return groups
+
+
+# Two subjects share a lane (column) when their center-x gap is under
+# _LANE_GAP of the NARROWER box's width. Deliberately not interval overlap:
+# a wide panel whose content bleeds under the neighbouring subject (a leg
+# drawn across the sheet) overlaps that subject's x-extent completely, but its
+# center still sits squarely in its own lane — overlap-chaining glued such a
+# layout into one column and degraded it to left/middle/right.
+_LANE_GAP = 0.5
+
+
+def _cluster_lanes(intervals: Sequence[tuple[float, float]]) -> list[int]:
+    """Lane grouping of 1-D intervals by center gap vs the narrower width.
+
+    Adjacent-in-center-order comparison, chained: a new lane starts when the
+    gap to the previous interval's center exceeds ``_LANE_GAP`` of the
+    narrower of the two. Returns a group index per input, lane 0 = leftmost.
+    """
+    if not intervals:
+        return []
+    order = sorted(
+        range(len(intervals)),
+        key=lambda i: (intervals[i][0] + intervals[i][1]) / 2,
+    )
+    groups = [0] * len(intervals)
+    group = 0
     for prev, cur in zip(order, order[1:]):
-        if centers_y[cur] - centers_y[prev] > gap:
-            row += 1
-        rows[cur] = row
-    return rows
+        p0, p1 = intervals[prev]
+        c0, c1 = intervals[cur]
+        gap = (c0 + c1) / 2 - (p0 + p1) / 2
+        narrow = min(p1 - p0, c1 - c0)
+        if gap > _LANE_GAP * narrow:
+            group += 1
+        groups[cur] = group
+    return groups
+
+
+def _layout(boxes: Sequence[Sequence[float]], tol: float) -> tuple[str, list[int]]:
+    """Group boxes along the axis that actually separates them.
+
+    Rows first (grid sheets read row-major, matching the hand-written
+    convention), by y-interval overlap — rows only exist where nothing spans
+    them. When every box lands in one y-group — the magazine layout: a
+    full-height subject bridging a column of stacked panels — the x-axis is
+    grouped into center-gap lanes instead (see :func:`_cluster_lanes` for why
+    not overlap). Returns ``("row"|"column", group_index_per_box)``.
+    """
+    y_groups = _cluster_intervals([(float(b[1]), float(b[3])) for b in boxes], tol)
+    if max(y_groups) + 1 >= 2:
+        return "row", y_groups
+    x_groups = _cluster_lanes([(float(b[0]), float(b[2])) for b in boxes])
+    return "column", x_groups
+
+
+def _end_word(
+    lo: float, hi: float, frame: tuple[float, float], words: tuple[str, str]
+) -> str:
+    """``top``/``bottom`` (or ``left``/``right``) for a box hugging one end of
+    the subjects' combined extent, ``""`` for one that spans it."""
+    f0, f1 = frame
+    span = f1 - f0
+    if span <= 0:
+        return ""
+    near0 = (lo - f0) / span
+    near1 = (f1 - hi) / span
+    if near0 <= _EDGE_HUG and near1 >= _EDGE_CLEAR:
+        return words[0]
+    if near1 <= _EDGE_HUG and near0 >= _EDGE_CLEAR:
+        return words[1]
+    return ""
 
 
 def assign_positions(
@@ -308,51 +402,110 @@ def assign_positions(
 ) -> list[str]:
     """Position phrase per box, ordered to match ``boxes``.
 
-    Rows are clustered first (``top``/``bottom``), then each row is named
-    left→right. With one row — or more rows than the row vocabulary covers
-    (:data:`MAX_ROWS`) — this degrades to the plain horizontal names, which is
-    also the ordering the hand-written captions use for side-by-side subjects.
+    Boxes are grouped by *interval overlap* (``row_tol`` = the minimum
+    fractional overlap of the narrower extent), rows first: row groups are
+    named ``top``/``bottom`` with left→right names inside a row, and a row's
+    lone subject takes the bare row word — plus the side it hugs when it
+    leaves the other side clear (a diagonal pair reads ``top left`` /
+    ``bottom right``). When everything shares one row — the magazine layout: a
+    full-height subject beside a column of stacked panels, which center-y
+    clustering used to split into fake ``top``/``bottom`` rows — columns are
+    named left→right instead, a stacked column takes ``top left``/``bottom
+    left``, and the full-height subject stays bare ``right`` (an end-hugging
+    lone panel is qualified: ``top left``). Degrades to the plain horizontal
+    names when nothing separates, or when a grouping outgrows the row
+    vocabulary (:data:`MAX_ROWS`).
+
+    ``size`` is unused (the frame is the subjects' own combined extent) but
+    kept for signature stability.
     """
     if not boxes:
         return []
-    width, height = size
+    n = len(boxes)
     centers_x = [(float(b[0]) + float(b[2])) / 2 for b in boxes]
     centers_y = [(float(b[1]) + float(b[3])) / 2 for b in boxes]
-    rows = cluster_rows(centers_y, height, tol=row_tol)
-    n_rows = max(rows) + 1
+    frame_x = (min(float(b[0]) for b in boxes), max(float(b[2]) for b in boxes))
+    frame_y = (min(float(b[1]) for b in boxes), max(float(b[3]) for b in boxes))
+    axis, groups = _layout(boxes, tol=row_tol)
+    n_groups = max(groups) + 1
 
-    if n_rows == 1 or n_rows > MAX_ROWS:
-        names = horizontal_names(len(boxes))
-        order = sorted(range(len(boxes)), key=lambda i: centers_x[i])
-        out = [""] * len(boxes)
+    def fallback() -> list[str]:
+        names = horizontal_names(n)
+        order = sorted(range(n), key=lambda i: centers_x[i])
+        out = [""] * n
         for slot, idx in enumerate(order):
             out[idx] = names[slot]
         return out
 
-    row_words = _ROW_WORDS[n_rows]
-    out = [""] * len(boxes)
-    for r in range(n_rows):
-        members = sorted(
-            (i for i in range(len(boxes)) if rows[i] == r), key=lambda i: centers_x[i]
-        )
-        # A row holding a single subject reads better as bare "top" than
-        # "top center" — the row word alone is already unambiguous.
-        names = horizontal_names(len(members))
-        for slot, idx in enumerate(members):
-            out[idx] = (
-                row_words[r] if len(members) == 1 else f"{row_words[r]} {names[slot]}"
+    if n_groups == 1:
+        return fallback()
+
+    out = [""] * n
+    if axis == "row":
+        if n_groups > MAX_ROWS:
+            return fallback()
+        row_words = _ROW_WORDS[n_groups]
+        for r in range(n_groups):
+            members = sorted(
+                (i for i in range(n) if groups[i] == r), key=lambda i: centers_x[i]
             )
+            if len(members) == 1:
+                # Bare "top" reads better than "top center"; the side is added
+                # only when it genuinely places the subject ("top left").
+                idx = members[0]
+                side = _end_word(
+                    float(boxes[idx][0]),
+                    float(boxes[idx][2]),
+                    frame_x,
+                    ("left", "right"),
+                )
+                out[idx] = f"{row_words[r]} {side}".strip()
+            else:
+                names = horizontal_names(len(members))
+                for slot, idx in enumerate(members):
+                    out[idx] = f"{row_words[r]} {names[slot]}"
+        return out
+
+    by_column = [
+        sorted((i for i in range(n) if groups[i] == c), key=lambda i: centers_y[i])
+        for c in range(n_groups)
+    ]
+    if any(len(members) > MAX_ROWS for members in by_column):
+        return fallback()
+    col_names = horizontal_names(n_groups)
+    for c, members in enumerate(by_column):
+        if len(members) == 1:
+            idx = members[0]
+            vert = _end_word(
+                float(boxes[idx][1]),
+                float(boxes[idx][3]),
+                frame_y,
+                ("top", "bottom"),
+            )
+            out[idx] = f"{vert} {col_names[c]}".strip()
+        else:
+            row_words = _ROW_WORDS[len(members)]
+            for slot, idx in enumerate(members):
+                out[idx] = f"{row_words[slot]} {col_names[c]}"
     return out
 
 
 def ordered_indices(
     boxes: Sequence[Sequence[float]], size: tuple[int, int], *, row_tol: float = 0.25
 ) -> list[int]:
-    """Reading order (row-major, left→right within a row) for ``boxes``."""
+    """Reading order for ``boxes`` — row-major (left→right within a row), or
+    column-major (top→bottom within a column) on a magazine layout, matching
+    the grouping :func:`assign_positions` names by."""
     if not boxes:
         return []
-    _, height = size
     centers_x = [(float(b[0]) + float(b[2])) / 2 for b in boxes]
     centers_y = [(float(b[1]) + float(b[3])) / 2 for b in boxes]
-    rows = cluster_rows(centers_y, height, tol=row_tol)
-    return sorted(range(len(boxes)), key=lambda i: (rows[i], centers_x[i]))
+    axis, groups = _layout(boxes, tol=row_tol)
+    # One undivided group means neither axis separates (nested/overlapping
+    # boxes): assign_positions names that fallback left→right, so it must also
+    # READ left→right — sorting it by center-y would open with "On the right".
+    if axis == "row" or max(groups) == 0:
+        minor = centers_x
+    else:
+        minor = centers_y
+    return sorted(range(len(boxes)), key=lambda i: (groups[i], minor[i]))
