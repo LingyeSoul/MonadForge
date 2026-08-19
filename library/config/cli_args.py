@@ -359,6 +359,18 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "trusting it on a new config.",
     )
     parser.add_argument(
+        "--compile_seq_bands",
+        action="store_true",
+        help="With --compile_dynamic_seq: dispatch one tight mark_dynamic band "
+        "per token-count cluster (per tier) instead of a single union range "
+        "spanning the inter-tier dead zone. Each band gets its own dynamo "
+        "specialization — own triton autotune configs, tighter guard "
+        "reasoning; mix_order_reduction stays enabled when no band straddles "
+        "4096. Costs ~x(bands) step-0 compile wall. No-op on single-tier "
+        "pools (one band == the union range). Phase 0 flag — see "
+        "_archive/proposals/perband_dynamic_seq.md and bench/perband_seq.",
+    )
+    parser.add_argument(
         "--vae", type=str, default=None, help="path to checkpoint of vae to replace"
     )
     parser.add_argument(

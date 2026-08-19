@@ -142,24 +142,28 @@ def unsloth_checkpoint(function, *args):
     return UnslothOffloadedGradientCheckpointer.apply(function, *args)
 
 
-def _make_dynamic_seq_forward(compiled_inner, lo, hi):
+def _make_dynamic_seq_forward(compiled_inner, bands):
     """Wrap a compiled ``Block._forward`` in an eager ``mark_dynamic`` prologue.
 
-    compile_dynamic_seq collapses the per-token-count block graphs to one by
-    marking the seq axis dynamic. The marks MUST live inside the checkpointed
-    callable, not in a one-shot prologue before ``Block.forward`` dispatches:
-    under grad checkpointing the inner is recomputed in BACKWARD via
-    ``detach_variable``, which detaches the tensor args (``x``) into fresh
-    tensors that LOSE the dynamic mark — while the ``rope_cos_sin`` *tuple* is
-    passed through unchanged (``detach_variable`` skips non-tensors) and KEEPS
-    it. That asymmetry (rope hard-dynamic, x specialized to a constant token
-    count) is the ``ConstraintViolationError``. Marking inside the recomputed
-    callable re-applies the marks to the detached inputs every pass, so forward
-    and backward agree. Mirrors the EasyControl two-stream fix
-    (networks/methods/easycontrol.py). ``x`` is fake-5D ``(B,1,seq,1,D)`` under
-    native_flatten (guaranteed on when compile_blocks set dynamic_seq), so the
-    seq axis is dim 2; each RoPE table rides dim 0. Marking is idempotent.
+    ``bands`` is a sorted list of ``(lo, hi)`` token-count ranges. The classic
+    union-range mode is a single band; per-band mode (``--compile_seq_bands``)
+    passes one tight band per tier so dynamo accumulates one specialization
+    per band instead of a single graph spanning the inter-tier dead zone
+    (_archive/proposals/perband_dynamic_seq.md). A seq outside every band (should
+    be prevented upstream by the OOR sample guard) is left unmarked — it
+    specializes statically on that exact count rather than widening a band.
+
+    GOTCHA: marks MUST be applied inside the checkpointed callable, not a
+    one-shot prologue — under grad checkpointing, backward's
+    ``detach_variable`` recompute detaches ``x`` into a fresh tensor that LOSES
+    the mark, while ``rope_cos_sin`` keeps it, and that asymmetry raises
+    ``ConstraintViolationError``. Re-marking here keeps fwd/bwd in agreement
+    (mirrors the EasyControl fix in networks/methods/easycontrol.py). ``x`` is
+    fake-5D ``(B,1,seq,1,D)``: seq is dim 2, each RoPE table rides dim 0.
     """
+    from library.datasets.buckets import band_for_seq
+
+    warned_oob = set()
 
     def marked_forward(
         x_B_T_H_W_D,
@@ -169,10 +173,21 @@ def _make_dynamic_seq_forward(compiled_inner, lo, hi):
         rope_cos_sin=None,
         adaln_lora_B_T_3D=None,
     ):
-        torch._dynamo.mark_dynamic(x_B_T_H_W_D, 2, min=lo, max=hi)
-        if rope_cos_sin is not None:
-            torch._dynamo.mark_dynamic(rope_cos_sin[0], 0, min=lo, max=hi)
-            torch._dynamo.mark_dynamic(rope_cos_sin[1], 0, min=lo, max=hi)
+        band = band_for_seq(bands, x_B_T_H_W_D.shape[2])
+        if band is not None:
+            lo, hi = band
+            torch._dynamo.mark_dynamic(x_B_T_H_W_D, 2, min=lo, max=hi)
+            if rope_cos_sin is not None:
+                torch._dynamo.mark_dynamic(rope_cos_sin[0], 0, min=lo, max=hi)
+                torch._dynamo.mark_dynamic(rope_cos_sin[1], 0, min=lo, max=hi)
+        else:
+            seq = int(x_B_T_H_W_D.shape[2])
+            if seq not in warned_oob:
+                warned_oob.add(seq)
+                logger.warning(
+                    f"dynamic-seq: {seq} tokens falls outside every compiled "
+                    f"band {bands}; running an unmarked (static) specialization"
+                )
         return compiled_inner(
             x_B_T_H_W_D,
             emb_B_T_D,
@@ -1538,6 +1553,9 @@ class Anima(nn.Module):
         # (min, max) token-count bound. Both inert on the static/eager paths.
         self._dynamic_seq: bool = False
         self._dynamic_seq_range: Optional[tuple] = None
+        # Per-band mode (--compile_seq_bands): list of (lo, hi) token bands,
+        # one dynamo specialization each. [_dynamic_seq_range] otherwise.
+        self._dynamic_seq_bands: Optional[list] = None
 
         self.build_patch_embed()
         self.build_pos_embed()
@@ -1735,6 +1753,7 @@ class Anima(nn.Module):
         n_token_families: Optional[int] = None,
         dynamic_seq: bool = False,
         seq_range: Optional[tuple] = None,
+        seq_bands: Optional[list] = None,
     ):
         """Enable native-shape flattening and torch.compile each block's _forward.
 
@@ -1795,6 +1814,12 @@ class Anima(nn.Module):
         the trusted one until benched (graph count via ``TORCH_LOGS=recompiles``,
         peak via ``mem_get_info``, step time, bit-exactness vs eager). See
         [[project_compile_context_vram_climb]].
+        ``seq_bands`` (a sorted list of ``(lo, hi)``, e.g. ``train.py``'s
+        ``cluster_token_bands`` output) switches to per-band dispatch: one
+        tight mark range — one specialization — per band, instead of one union
+        range spanning the inter-tier gaps
+        (_archive/proposals/perband_dynamic_seq.md). The mix_order_reduction
+        pin then becomes conditional: only when some band straddles 4096.
         """
         self._native_flatten = True
 
@@ -1826,6 +1851,37 @@ class Anima(nn.Module):
                 from library.datasets.buckets import token_count_range
 
                 self._dynamic_seq_range = token_count_range((1024,))
+            if seq_bands:
+                self._dynamic_seq_bands = sorted(
+                    (int(lo), int(hi)) for lo, hi in seq_bands
+                )
+            else:
+                self._dynamic_seq_bands = [self._dynamic_seq_range]
+            # GOTCHA: inductor's mix-order-reduction fusion (torch 2.12,
+            # default-on) records a guard_or_true(Ge(seq, 4096)) that contradicts
+            # any dynamic-seq mark range straddling 4096 -> ConstraintViolationError.
+            # MUST pin via pin_inductor_flag, not plain assignment — inductor
+            # config overrides are thread-local ContextVars and a plain override
+            # is absent in the grad-enabled step-0 compile context.
+            # Per-band mode pins only when some band actually straddles 4096
+            # (a tight band entirely on one side of it can't contradict the
+            # guard). Union mode keeps today's unconditional pin — Phase 0
+            # leaves the flag-off path byte-identical.
+            straddles_4096 = (
+                any(lo < 4096 <= hi for lo, hi in self._dynamic_seq_bands)
+                if seq_bands
+                else True
+            )
+            import torch._inductor.config as _inductor_config
+
+            if _inductor_config.triton.mix_order_reduction and straddles_4096:
+                from library.runtime.dynamo import pin_inductor_flag
+
+                pin_inductor_flag("triton.mix_order_reduction", False)
+                print(
+                    "Anima: inductor mix_order_reduction disabled — default pinned "
+                    "(hint-derived 4096-boundary guard breaks strict dynamic-seq marks)"
+                )
 
         compile_kwargs = {"backend": backend, "dynamic": False}
         if mode is not None:
@@ -1855,18 +1911,23 @@ class Anima(nn.Module):
                 continue
             compiled_inner = torch.compile(block._forward, **compile_kwargs)
             if dynamic_seq:
-                # Mark the seq axis dynamic INSIDE the checkpointed callable so the
-                # marks re-apply on the grad-checkpoint backward recompute, not just
-                # forward. See _make_dynamic_seq_forward.
-                lo, hi = self._dynamic_seq_range
-                block._forward = _make_dynamic_seq_forward(compiled_inner, lo, hi)
+                # See _make_dynamic_seq_forward for why the marks must go here.
+                block._forward = _make_dynamic_seq_forward(
+                    compiled_inner, self._dynamic_seq_bands
+                )
             else:
                 block._forward = compiled_inner
-        graph_mode = (
-            f"dynamic-seq mark_dynamic seq∈{self._dynamic_seq_range} (1 graph)"
-            if dynamic_seq
-            else f"static ({n} graphs)"
-        )
+        if dynamic_seq and len(self._dynamic_seq_bands) > 1:
+            graph_mode = (
+                f"dynamic-seq per-band mark_dynamic seq∈{self._dynamic_seq_bands} "
+                f"({len(self._dynamic_seq_bands)} graphs)"
+            )
+        elif dynamic_seq:
+            graph_mode = (
+                f"dynamic-seq mark_dynamic seq∈{self._dynamic_seq_range} (1 graph)"
+            )
+        else:
+            graph_mode = f"static ({n} graphs)"
         swap_note = (
             f"{n_resident} resident compiled / {n_swap} swapped (eager)"
             if n_swap

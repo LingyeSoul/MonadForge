@@ -2513,11 +2513,15 @@ class AnimaTrainer:
         unioned with the token counts the sample prompts will request (see
         ``_sample_prompt_token_counts``). This sizes ``compile_blocks``' dynamo
         cache to exactly the tiers on disk for this run — independent of
-        ``args.target_res``. Returns ``(None, None)`` when no bucketed resos are
-        available (e.g. a MinimalDataset), leaving compile_blocks on its own
-        defaults.
-        """
-        from library.datasets.buckets import token_counts_for_resos
+        ``args.target_res``. ``seq_bands`` is the per-tier clustering of the same count
+        set (``cluster_token_bands``), consumed only under
+        ``--compile_seq_bands``. Returns ``(None, None, None)`` when no bucketed
+        resos are available (e.g. a MinimalDataset), leaving compile_blocks on
+        its own defaults.        """
+        from library.datasets.buckets import (
+            cluster_token_bands,
+            token_counts_for_resos,
+        )
 
         resos: set = set()
         for group in (train_group, val_group):
@@ -2528,9 +2532,9 @@ class AnimaTrainer:
                 if bm is not None:
                     resos.update(bm.resos)
         if not resos:
-            return None, None
+            return None, None, None
         counts = token_counts_for_resos(resos) | self._sample_prompt_token_counts(args)
-        return len(counts), (min(counts), max(counts))
+        return len(counts), (min(counts), max(counts)), cluster_token_bands(counts)
 
     def _sample_prompt_token_counts(self, args) -> set:
         """Token counts the sample prompts will request; empty when sampling is off.
@@ -2723,12 +2727,26 @@ class AnimaTrainer:
             # special-casing here — see Anima.compile_blocks.
             from library.runtime.harness import compile_blocks_for_training
 
-            # Token-family budget derived from the buckets the dataset actually
-            # populated (see _derive_token_budget) — not args.target_res, which is
-            # a preprocess-only knob and inert at train time.
-            n_token_families, seq_range = getattr(
-                self, "_compile_token_budget", (None, None)
+            # Token-family budget from buckets the dataset actually populated
+            # (_derive_token_budget) — not args.target_res (preprocess-only).
+            n_token_families, seq_range, seq_bands = getattr(
+                self, "_compile_token_budget", (None, None, None)
             )
+            if not getattr(args, "compile_seq_bands", False):
+                seq_bands = None
+            # Register tokens grow the seq by a constant K, so widen the
+            # dynamic-seq bound's MAX by K or the compiled block's bound is
+            # violated (the min/family-count stay: mid-stack insertion still
+            # runs blocks before the insert at the bare seq). Per-band mode
+            # widens each band's hi; widen_bands raises if K would make
+            # adjacent bands touch (silent merging would un-tighten them).
+            extra_seq = int(getattr(network, "extra_seq_tokens", 0) or 0)
+            if extra_seq and seq_range is not None:
+                seq_range = (seq_range[0], seq_range[1] + extra_seq)
+                if seq_bands:
+                    from library.datasets.buckets import widen_bands
+
+                    seq_bands = widen_bands(seq_bands, extra_seq)
             compile_blocks_for_training(
                 unet,
                 network,
@@ -2736,6 +2754,7 @@ class AnimaTrainer:
                 mode=getattr(args, "compile_inductor_mode", None),
                 n_token_families=n_token_families,
                 seq_range=seq_range,
+                seq_bands=seq_bands,
                 dynamic_seq=bool(getattr(args, "compile_dynamic_seq", False)),
                 activation_memory_budget=float(
                     getattr(args, "activation_memory_budget", 1.0) or 1.0

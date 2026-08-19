@@ -1278,15 +1278,24 @@ def _sample_image_inference(
     # dynamic-seq mark_dynamic range and would crash the run with a
     # ConstraintViolationError (#42). Skip it instead.
     seq_len = (width // 16) * (height // 16)
+    # Band-aware: under --compile_seq_bands the graphs are per-band, so a
+    # seq_len in an inter-band gap has no tight graph even though the union
+    # range "covers" it. _dynamic_seq_bands is [union range] in classic mode,
+    # so the membership check degenerates to the old range check there.
+    from library.datasets.buckets import band_for_seq
+
     seq_range = getattr(dit, "_dynamic_seq_range", None)
+    seq_bands = getattr(dit, "_dynamic_seq_bands", None) or (
+        [seq_range] if seq_range is not None else None
+    )
     if (
         getattr(dit, "_dynamic_seq", False)
-        and seq_range is not None
-        and not (seq_range[0] <= seq_len <= seq_range[1])
+        and seq_bands is not None
+        and band_for_seq(seq_bands, seq_len) is None
     ):
         logger.warning(
             f"Skipping sample prompt at {width}x{height} ({seq_len} tokens): outside "
-            f"the compiled dynamic-seq token range {seq_range}. The compile budget "
+            f"the compiled dynamic-seq token band(s) {seq_bands}. The compile budget "
             "covers the training buckets plus the sample prompts present at startup; "
             "to sample at this resolution, restart training with it in the prompt "
             "file, lower --w/--h, or disable torch_compile."
