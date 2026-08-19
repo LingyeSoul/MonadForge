@@ -326,22 +326,23 @@ def parse_args() -> argparse.Namespace:
         "--bag-relax",
         dest="bag_relax",
         type=float,
-        default=1.0,
+        default=0.35,
         help="Multiplier on the tagger's per-tag keep threshold for tags the "
         "flat bag already contains (they can only MOVE into a clause, never be "
         "invented, so the curated caption corroborates them — the crop only "
-        "attributes). 1.0 = off. Applied to every crop before the "
-        "attributable/shared census, so a rival crop's borderline score also "
-        "blocks a move the strict kept sets would have granted. Motivating "
-        "case: 5828184's `black panties` scored 0.498 against a 0.800 "
-        "threshold on the lying crop and stayed unbound",
+        "attributes). 1.0 = off, the pre-2026-08-19 behaviour. Applied to "
+        "every crop before the attributable/shared census, so a rival crop's "
+        "borderline score also blocks a move the strict kept sets would have "
+        "granted. Motivating case: 5828184's `black panties` scored 0.498 "
+        "against a 0.800 threshold on the lying crop and stayed unbound; the "
+        "0.35 default is what recovers pose tags off mask-blanked crops",
     )
     c.add_argument(
         "--bag_word_relax",
         "--bag-word-relax",
         dest="bag_word_relax",
         type=float,
-        default=1.0,
+        default=0.85,
         help="Extra threshold multiplier per word beyond the first, compounding "
         "with --bag_relax (`black panties` is more specific than `panties`, so "
         "a sub-threshold hit on it is less likely noise). 1.0 = off",

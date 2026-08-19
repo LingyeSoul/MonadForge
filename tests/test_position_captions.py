@@ -2371,10 +2371,24 @@ _RELAX_LEFT = {"akita neru": 0.9, "blonde hair": 0.8, "maid": 0.45}
 _RELAX_RIGHT = {"hatsune miku": 0.9, "aqua hair": 0.8, "maid": 0.05}
 
 
-def test_bag_relax_defaults_off(pipeline_bits):
-    """`maid` is in the bag but under its 0.8 threshold on both crops — the
-    strict pipeline never sees it."""
+def test_bag_relax_defaults_to_the_shipped_recipe(pipeline_bits):
+    """The shipped default is 0.35/0.85 (chosen by curation 2026-08-19):
+    `maid` at 0.45 clears 0.8 * 0.35 on the left crop with no options set."""
+    from library.preprocess.position_captions import PositionCaptionOptions
+
+    assert PositionCaptionOptions().bag_relax == 0.35
+    assert PositionCaptionOptions().bag_word_relax == 0.85
     proposal = _relax_proposal(pipeline_bits, _RELAX_LEFT, _RELAX_RIGHT)
+    assert "maid" in parse_caption(proposal.proposed).clauses[0].tags
+
+
+def test_bag_relax_one_restores_the_strict_pipeline(pipeline_bits):
+    """`1.0` is the off switch (the A/B control arm): `maid` is in the bag but
+    under its 0.8 threshold on both crops — the strict pipeline never sees
+    it."""
+    proposal = _relax_proposal(
+        pipeline_bits, _RELAX_LEFT, _RELAX_RIGHT, bag_relax=1.0, bag_word_relax=1.0
+    )
     parsed = parse_caption(proposal.proposed)
     assert not any("maid" in c.tags for c in parsed.clauses)
     assert "maid" in parsed.flat_tags
@@ -2418,7 +2432,9 @@ def test_bag_word_relax_compounds_per_extra_word(pipeline_bits):
     """`playboy bunny` (two words) at 0.55: 0.8 * 0.7 = 0.56 misses, and the
     0.9 word bonus lowers the floor to 0.504 — specificity earns the slack."""
     left = dict(_RELAX_LEFT, **{"playboy bunny": 0.55})
-    without = _relax_proposal(pipeline_bits, left, _RELAX_RIGHT, bag_relax=0.7)
+    without = _relax_proposal(
+        pipeline_bits, left, _RELAX_RIGHT, bag_relax=0.7, bag_word_relax=1.0
+    )
     assert "playboy bunny" not in {
         t for c in parse_caption(without.proposed).clauses for t in c.tags
     }
@@ -2441,7 +2457,9 @@ def test_bag_relax_blocks_a_move_the_strict_sets_grant(pipeline_bits):
     """
     left = dict(_RELAX_LEFT, maid=0.9)
     right = dict(_RELAX_RIGHT, maid=0.6)  # sub-threshold, but clearly there
-    strict = _relax_proposal(pipeline_bits, left, right)
+    strict = _relax_proposal(
+        pipeline_bits, left, right, bag_relax=1.0, bag_word_relax=1.0
+    )
     assert "maid" in {m["tag"] for m in strict.moved}
     relaxed = _relax_proposal(pipeline_bits, left, right, bag_relax=0.7)
     parsed = parse_caption(relaxed.proposed)

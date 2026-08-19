@@ -311,15 +311,17 @@ class PositionCaptionOptions:
     # a clause, never be invented — the curated caption corroborates it, so the
     # crop tagger only has to *localize* it, and its per-tag F1 threshold may be
     # relaxed for exactly that population. 1.0 = off (a bag tag needs the
-    # tagger's own keep decision, the pre-relaxation behaviour); e.g. 0.5 keeps
-    # a bag tag at half its calibrated threshold. Applied to every crop before
-    # the attributable/shared census, so a rival crop's borderline score also
-    # BLOCKS a move the strict kept set would have waved through.
-    bag_relax: float = 1.0
+    # tagger's own keep decision, the pre-relaxation behaviour). Applied to
+    # every crop before the attributable/shared census, so a rival crop's
+    # borderline score also BLOCKS a move the strict kept set would have waved
+    # through. 0.35 shipped as the default 2026-08-19 (the "aggressive" A/B
+    # arm): it is what recovers pose tags (`lying`, `on back`, `sleeping`)
+    # whose scores collapse when mask-blanking removes the scene context.
+    bag_relax: float = 0.35
     # Extra relaxation multiplier per word beyond the first (compounds with
     # ``bag_relax``): `black panties` is more specific than `panties`, so a
     # sub-threshold hit on it is less likely to be noise. 1.0 = off.
-    bag_word_relax: float = 1.0
+    bag_word_relax: float = 0.85
     # v2: move an attributable tag out of the flat bag into its clause. False is
     # the additive v1 behaviour (bag untouched), kept for the training A/B.
     rewrite: bool = True
