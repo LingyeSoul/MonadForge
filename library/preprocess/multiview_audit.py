@@ -1,7 +1,7 @@
 """Find images that draw one character several times but are captioned ``1girl``.
 
-The blind spot this closes: :func:`library.preprocess.position_captions.is_candidate`
-skips any caption whose girls-count is 1 and which carries no ``_LAYOUT_TAGS``
+The blind spot this closes: :func:`library.captioning.caption_layout.is_candidate`
+skips any caption whose girls-count is 1 and which carries no ``LAYOUT_TAGS``
 member, so a sheet that *is* ``multiple views`` but was never tagged as one never
 reaches detection at all. Worse, if it did, the missing layout tag would flip
 :func:`is_repeated_subject_layout` to ``False`` and the clause writer would bind
@@ -43,24 +43,22 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 from PIL import Image
 
+from library.captioning.caption_layout import (
+    GIRLS_COUNT_RE,
+    caption_boy_count,
+    is_candidate,
+)
+from library.captioning.clause_vocabulary import ClauseVocabulary, default_clause_groups
 from library.captioning.position_clauses import (
     assign_positions,
     compose_caption,
+    flat_tag_set,
     ordered_indices,
     parse_caption,
 )
+from library.preprocess.instance_detection import Detection, crop_instance
 
-from .position_captions import (
-    _GIRLS_COUNT_RE,
-    _IDENTITY_GROUPS,
-    ClauseVocabulary,
-    Detection,
-    PositionCaptionOptions,
-    caption_boy_count,
-    crop_instance,
-    detect_subjects,
-    is_candidate,
-)
+from .position_captions import PositionCaptionOptions, detect_subjects
 
 # The audit population, named by `is_candidate`'s own reason string. Keeping the
 # link explicit means the two can't drift apart: whatever that function starts
@@ -187,8 +185,9 @@ def is_audit_target(caption: str) -> tuple[bool, str]:
 
 
 def _girls_count(caption: str) -> int | None:
-    tags = {t.strip().lower() for t in parse_caption(caption).flat_tags}
-    counts = [int(m.group(1)) for t in tags if (m := _GIRLS_COUNT_RE.match(t))]
+    counts = [
+        int(m.group(1)) for t in flat_tag_set(caption) if (m := GIRLS_COUNT_RE.match(t))
+    ]
     return max(counts) if counts else None
 
 
@@ -216,7 +215,7 @@ def identity_agreement(
         return None, 0
     agree = 0
     comparable = 0
-    for group in sorted(_IDENTITY_GROUPS):
+    for group in sorted(default_clause_groups().identity):
         values = [c.groups.get(group) for c in usable]
         if any(v is None for v in values):
             continue
@@ -308,10 +307,10 @@ def propose_caption(caption: str, tag: str) -> str:
     if tag.lower() in lowered:
         return caption.strip()
     count_at = next(
-        (i for i, t in enumerate(lowered) if _GIRLS_COUNT_RE.match(t)),
+        (i for i, t in enumerate(lowered) if GIRLS_COUNT_RE.match(t)),
         None,
     )
-    if _GIRLS_COUNT_RE.match(tag.lower()) and count_at is not None:
+    if GIRLS_COUNT_RE.match(tag.lower()) and count_at is not None:
         flat[count_at] = tag
     else:
         flat.append(tag)
@@ -404,7 +403,7 @@ def audit_image(
         raw = {
             g: v
             for g, v in (out.get("groups") or {}).items()
-            if g in _IDENTITY_GROUPS and v
+            if g in vocabulary.clause_groups.identity and v
         }
         kept = out.get("kept") or {}
         crop_scores = out.get("scores") or {}

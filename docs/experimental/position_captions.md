@@ -155,7 +155,12 @@ prompt picks males up inconsistently. Open-ended crowd tags (`6+girls`,
 ## What goes into a clause
 
 Eligibility comes from the tagger's own `groups.yaml`, not substring heuristics,
-so the two can't drift:
+so the two can't drift. Which of those groups bind — and every gate below — is
+**configuration**, not code: `configs/clause_vocabulary.yaml` holds the sets
+(`ClauseGroups`), carries the rationale for each inline, and is validated
+against the checkpoint's declared groups at load. Pass an alternative through
+`load_clause_groups(path)` → `load_clause_vocabulary(ckpt, clause_groups=…)` to
+A/B a rule set without touching Python.
 
 - **Per-subject groups bind** — hair (color/length/style/accessory), eyes,
   expression, body, all clothing groups, pose/gesture/action (`SUBJECT_GROUPS`).
@@ -704,7 +709,12 @@ ships off.
 | Path | Role |
 |---|---|
 | `library/captioning/position_clauses.py` | Clause grammar (torch-free) — parse / compose / `flatten_caption` / position vocabulary |
-| `library/preprocess/position_captions.py` | Pipeline orchestration (`plan_bag_removals` = the v2 rules, `flatten_captions` = the undo); models injected as `detect_fn` / `tag_fn` |
+| `configs/clause_vocabulary.yaml` | **The clause policy as data** — every group set below (`subject_groups`, `page_level_framing`, `priority_groups`, the gates, `multi_value_markers`) with its rationale inline. Edit here, not in Python; `make update` prompts on conflict |
+| `library/captioning/clause_vocabulary.py` | Loads that YAML into `ClauseGroups`, and `ClauseVocabulary` = "which tags may enter a clause, in what order" (`select`). Warns when the policy names a group the checkpoint's `groups.yaml` doesn't declare — a typo would otherwise silently disable a gate |
+| `library/captioning/clause_rewrite.py` | The v2 move rules — `plan_bag_removals` (which bag tags a clause has earned) + the `RemovalPlan` block reasons |
+| `library/captioning/caption_layout.py` | Text-only prefilter — subject/boy counts, `Nkoma` ceiling, layout tags, `is_candidate` |
+| `library/preprocess/instance_detection.py` | `Detection`, box geometry, NMS + part merge, mask-blanked `crop_instance` (detector-agnostic) |
+| `library/preprocess/position_captions.py` | Pipeline orchestration (`propose_for_image` = one image end to end, `flatten_captions` = the undo); models injected as `detect_fn` / `tag_fn`. Re-exports the pieces above, so existing `from library.preprocess.position_captions import …` keeps working |
 | `scripts/preprocess/position_captions.py` | CLI shell — argparse + SAM3/tagger loading (`build_options_from_args` is shared with the A/B tool) |
 | `scripts/preprocess/ab_position_captions.py` | A/B two flag sets off **one** detect+tag pass; contact sheet + `index.html` per differing image, into `post_image_dataset/captions/position_ab/`. Pass sides as `--a_flags=--foo` — the `=` is required, argparse reads a `-`-leading value as the next option |
 | `scripts/tasks/preprocess.py::cmd_caption_position` | `make caption-position` (daemon-routed) + the in-chain stage |

@@ -7,7 +7,8 @@ of (baseline / user / new) sha256 hashes:
 
   - Datasets, outputs, models, caches, .venv: never touched.
   - Configs in configs/methods/, configs/gui-methods/,
-    configs/preprocess.toml, configs/presets.toml, configs/sam_mask.yaml: prompt on conflict
+    configs/preprocess.toml, configs/presets.toml, configs/sam_mask.yaml,
+    configs/clause_vocabulary.yaml: prompt on conflict
     (keep yours / overwrite / backup-and-overwrite / show diff).
   - Code files (library/, scripts/, train.py, etc.) AND configs/base.toml /
     configs/model.toml:
@@ -101,6 +102,7 @@ CONFLICT_GLOBS: tuple[str, ...] = (
     "configs/preprocess.toml",
     "configs/presets.toml",
     "configs/sam_mask.yaml",
+    "configs/clause_vocabulary.yaml",
     "configs/datasets/*",
     # Self-contained per-method dirs (EasyControl pilot) — same policy as
     # configs/methods/*.toml.

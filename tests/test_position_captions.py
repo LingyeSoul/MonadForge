@@ -2091,3 +2091,92 @@ def test_gate_view_anatomy_restores_the_old_gate(pipeline_bits):
     bound = {t for c in parsed.clauses for t in c.tags}
     assert "ass" not in bound
     assert "ass" in set(parsed.flat_tags)  # suppressed, never destroyed
+
+
+# ----- the clause policy is configuration, not code ------------------------
+
+
+def test_shipped_policy_is_internally_consistent():
+    """``configs/clause_vocabulary.yaml`` still says what the pipeline assumes.
+
+    Each assertion is a coupling that fails *silently* if the YAML drifts: a
+    priority group that can't bind emits nothing, `framing` missing from the
+    ungated set lets the bag gate pin every clause to the caption's first
+    framing tag, and a marker group outside the invariant set gates nothing.
+    """
+    from library.captioning.clause_vocabulary import default_clause_groups
+
+    cfg = default_clause_groups()
+    assert set(cfg.priority) <= cfg.subject
+    assert cfg.identity <= cfg.subject
+    assert cfg.bag_gated <= cfg.subject
+    assert "framing" in cfg.subject and "framing" in cfg.ungated_exclusive
+    assert set(cfg.multi_value_markers) <= cfg.character_invariant
+    # The anatomy gate is opt-in (`--gate_view_anatomy`), so `body_parts` is
+    # named on its own rather than sitting in the view-invariant set.
+    assert cfg.view_anatomy and cfg.view_anatomy.isdisjoint(cfg.view_invariant)
+
+
+def test_view_invariant_defaults_to_the_character_invariant_set(tmp_path):
+    """The shipped YAML omits the key; the two sets are one rule read twice."""
+    from library.captioning.clause_vocabulary import load_clause_groups
+
+    path = tmp_path / "policy.yaml"
+    path.write_text("character_invariant_groups: [hair_color]\n", encoding="utf-8")
+    assert load_clause_groups(path).view_invariant == frozenset({"hair_color"})
+
+
+def test_the_policy_drives_selection(pipeline_bits):
+    """Editing the YAML must change what binds — else it is decoration.
+
+    Dropping `framing` from `subject_groups` + `priority_groups` is the config
+    spelling of ``--no_framing``, and has to reach ``select`` the same way.
+    """
+    import dataclasses
+
+    _, vocabulary, _, _ = pipeline_bits
+    cfg = vocabulary.clause_groups
+    no_framing = dataclasses.replace(
+        cfg,
+        subject=cfg.subject - {"framing"},
+        priority=tuple(g for g in cfg.priority if g != "framing"),
+    )
+    kwargs = dict(
+        flat_bag=frozenset({"maid", "ass focus"}),
+        attributable=frozenset({"ass focus"}),
+        shared=frozenset(),
+        max_tags=8,
+        name_confidence=0.5,
+        allow_unlisted_names=False,
+        max_novel_tags=1,
+    )
+    args = ({"ass focus": 0.77, "maid": 0.7}, {"framing": "ass focus"})
+    assert "ass focus" in vocabulary.select(*args, **kwargs)
+    unbound = dataclasses.replace(vocabulary, clause_groups=no_framing)
+    assert "ass focus" not in unbound.select(*args, **kwargs)
+
+
+def test_a_typo_in_the_policy_is_reported(tmp_path, caplog):
+    """A group the checkpoint doesn't declare matches nothing — say so loudly.
+
+    Silence here is the failure mode: the rule keyed to that name simply stops
+    firing, and the only evidence is a dry-run diff nobody reads as a bug.
+    """
+    import json
+    import logging
+
+    from library.captioning.clause_vocabulary import load_clause_vocabulary
+
+    (tmp_path / "vocab.json").write_text(
+        json.dumps({"tags": [{"name": "blonde hair", "category": "general"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "groups.yaml").write_text(
+        "hair_color:\n  mode: softmax_when_solo\n  tags: [blonde hair]\n",
+        encoding="utf-8",
+    )
+    with caplog.at_level(logging.WARNING):
+        vocabulary = load_clause_vocabulary(tmp_path)
+    # The shipped policy names many groups this toy checkpoint lacks.
+    assert "silently disable" in caplog.text
+    assert vocabulary.gated_groups() >= {"hair_color"}

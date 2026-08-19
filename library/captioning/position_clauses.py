@@ -91,6 +91,17 @@ class ParsedCaption:
     def has_clauses(self) -> bool:
         return bool(self.clauses)
 
+    @property
+    def tag_keys(self) -> frozenset[str]:
+        """The flat bag as a lookup set, lowercased and whitespace-stripped.
+
+        Every "does the caption already say this?" test keys off this form —
+        the rewrite compares crop tags against it, the prefilter matches count
+        and layout tags in it. Shared so the normalization can't drift between
+        the consumer that writes a tag and the one that looks it up.
+        """
+        return frozenset(t.strip().lower() for t in self.flat_tags)
+
     def render(self) -> str:
         return compose_caption(self.flat_tags, self.clauses)
 
@@ -184,6 +195,15 @@ def parse_caption(caption: str) -> ParsedCaption:
             for prefix, pos, tags in clauses
         ),
     )
+
+
+def flat_tag_set(caption: str) -> frozenset[str]:
+    """``caption``'s flat bag as a lookup set — clause tags excluded.
+
+    Shorthand for ``parse_caption(caption).tag_keys``; see that property for why
+    the normalization is shared.
+    """
+    return parse_caption(caption).tag_keys
 
 
 def flatten_caption(caption: str) -> str:
