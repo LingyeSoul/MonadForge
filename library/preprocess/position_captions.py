@@ -322,6 +322,18 @@ class PositionCaptionOptions:
     # ``bag_relax``): `black panties` is more specific than `panties`, so a
     # sub-threshold hit on it is less likely to be noise. 1.0 = off.
     bag_word_relax: float = 0.85
+    # Absolute probability floor under the relaxation: however far bag_relax ×
+    # bag_word_relax drags a tag's keep threshold down, a relaxed admission
+    # still needs at least this raw score. The compounded relax can push a
+    # 2-word tag's floor to ~0.16×, where near-noise activations clear it —
+    # measured: `white gloves` bound to a hands-out-of-frame crop whose rival
+    # (the true owner) under-fired because white mask-blanking ate the white
+    # gloves. The motivating relax case (`black panties` at 0.498) sits well
+    # above 0.3, so the floor removes noise fires without costing the
+    # population the relax exists for. Only the relax path is floored — a tag
+    # the tagger keeps at its own calibrated threshold is never touched.
+    # 0.0 = off (the pre-floor behaviour).
+    bag_relax_min_score: float = 0.3
     # v2: move an attributable tag out of the flat bag into its clause. False is
     # the additive v1 behaviour (bag untouched), kept for the training A/B.
     rewrite: bool = True
@@ -427,6 +439,7 @@ def _relax_bag_keeps(
             if tag in kept or tag not in scores or tag not in thresholds:
                 continue
             floor = thresholds[tag] * relax * word_relax ** (len(tag.split()) - 1)
+            floor = max(floor, options.bag_relax_min_score)
             if scores[tag] >= floor:
                 kept[tag] = float(scores[tag])
 

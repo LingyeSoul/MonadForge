@@ -30,14 +30,18 @@ def calibrate_thresholds(
     skip_indices: Optional[
         torch.Tensor
     ] = None,  # LongTensor of tag indices to leave at default
+    min_support: int = 1,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Per-tag F1-optimal threshold sweep.
 
-    Returns ``(thresholds[n_tags], best_f1[n_tags])``. Tags with no positives
-    in the val split keep ``default`` (they can't be calibrated and the
-    F1 sweep is degenerate — a 0.5 floor is harmless and keeps the head
-    well-formed for inference). Same fallback for tags whose best
-    achievable F1 is 0 (model never predicts them at any threshold).
+    Returns ``(thresholds[n_tags], best_f1[n_tags])``. Tags with fewer than
+    ``min_support`` positives in the val split keep ``default`` — with a
+    handful of positives the F1-optimal threshold is noise, and the sweep
+    routinely lands on hair-trigger values (measured on the v4 checkpoint:
+    62% of the vocab has <5 val positives and ~300 of those swept to ≤0.3,
+    e.g. `shaded face` at 0.20 from a single positive — which then over-fires
+    at inference). Same fallback for tags whose best achievable F1 is 0
+    (model never predicts them at any threshold).
 
     ``skip_indices`` is the trainer-side hint that some tags belong to a
     softmax group and shouldn't be sigmoid-thresholded (inference uses
@@ -48,7 +52,7 @@ def calibrate_thresholds(
     best_thresh = torch.full((n_tags,), default)
     best_f1 = torch.zeros(n_tags)
     pos_count = targets.sum(dim=0)  # [n_tags]
-    has_pos = pos_count > 0
+    has_pos = pos_count >= max(1, min_support)
     if skip_indices is not None and skip_indices.numel() > 0:
         skip_mask = torch.zeros(n_tags, dtype=torch.bool)
         skip_mask[skip_indices.cpu()] = True
@@ -208,6 +212,7 @@ def cmd_calibrate(args: argparse.Namespace) -> None:
         sweep,
         default=0.5,
         skip_indices=all_softmax_idx,
+        min_support=args.calib_min_support,
     )
 
     st_save(

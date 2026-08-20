@@ -59,6 +59,39 @@ def cache_dir_for(feature_root: Path, pool_kind: str, encoder: str) -> Path:
     return feature_root / f"{sub}-{encoder}"
 
 
+def _stroke_stems_for(args: argparse.Namespace, manifest) -> frozenset:
+    """Deterministically pick the train-split stems that get white strokes.
+
+    ``--stroke_frac`` of the TRAIN split (val stays clean so metrics keep
+    measuring the real serving distribution), chosen by a stable per-stem
+    hash of ``--stroke_seed`` so a rebuild — or the second encoder's build in
+    the same run — selects the identical set. Empty when the knob is off.
+    """
+    frac = float(getattr(args, "stroke_frac", 0.0) or 0.0)
+    if frac <= 0.0:
+        return frozenset()
+    import hashlib
+
+    seed = int(getattr(args, "stroke_seed", 0))
+    threshold = int(frac * 2**32)
+    picked = frozenset(
+        stem
+        for stem in manifest.train_stems
+        if int.from_bytes(
+            hashlib.sha1(f"pick:{seed}:{stem}".encode()).digest()[:4], "big"
+        )
+        < threshold
+    )
+    logger.info(
+        "stroke augmentation: %d/%d train stems selected (frac=%.2f seed=%d)",
+        len(picked),
+        len(manifest.train_stems),
+        frac,
+        seed,
+    )
+    return picked
+
+
 def _build_one_encoder(
     args: argparse.Namespace,
     manifest,
@@ -88,6 +121,8 @@ def _build_one_encoder(
         encoder_name=encoder_name,
         num_workers=args.feature_cache_workers,
         batch_size=getattr(args, "feature_cache_batch_size", 8),
+        stroke_stems=_stroke_stems_for(args, manifest),
+        stroke_seed=getattr(args, "stroke_seed", 0),
     )
     if pool_kind == "map":
         builder = TokenCacheBuilder(**builder_kwargs)

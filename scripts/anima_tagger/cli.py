@@ -323,6 +323,38 @@ def parse_args() -> argparse.Namespace:
     )
 
     p.add_argument(
+        "--stroke_frac",
+        type=float,
+        default=0.0,
+        help="build_features: paint random white brush strokes onto this "
+        "fraction of TRAIN-split images before encoding (val stays clean). "
+        "Domain alignment for the position-caption serving path, whose "
+        "mask-blanked crops put flat white voids through the subject — a "
+        "distribution full-image training never contains (white-garment "
+        "false fires, eaten white clothing). Strokes are small enough that "
+        "labels stay valid, and deterministic in --stroke_seed. 0 (default) "
+        "= off. Use a separate --feature_cache_dir for a stroked cache — the "
+        "builder skips already-cached stems, so it will NOT restroke an "
+        "existing clean cache in place.",
+    )
+    p.add_argument(
+        "--stroke_seed",
+        type=int,
+        default=1234,
+        help="build_features: seed for --stroke_frac stem selection and "
+        "per-stem stroke geometry (default: 1234).",
+    )
+    p.add_argument(
+        "--calib_min_support",
+        type=int,
+        default=5,
+        help="calibrate: minimum val-split positives a tag needs before its "
+        "F1-swept threshold is trusted; below this the tag keeps the 0.5 "
+        "default. With ~800 val images 62%% of the vocab has <5 positives and "
+        "the sweep lands on hair-trigger thresholds that over-fire at "
+        "inference. 1 restores the old trust-any-positive behaviour.",
+    )
+    p.add_argument(
         "--image",
         default=None,
         help="Image path for --mode predict.",

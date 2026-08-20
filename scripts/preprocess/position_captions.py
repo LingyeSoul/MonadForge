@@ -348,6 +348,20 @@ def parse_args() -> argparse.Namespace:
         "a sub-threshold hit on it is less likely noise). 1.0 = off",
     )
     c.add_argument(
+        "--bag_relax_min_score",
+        "--bag-relax-min-score",
+        dest="bag_relax_min_score",
+        type=float,
+        default=0.3,
+        help="Absolute score floor under the bag relaxation: a relaxed "
+        "admission still needs at least this raw probability, however low "
+        "bag_relax × bag_word_relax drags the per-tag threshold. Blocks "
+        "near-noise fires (measured: `white gloves` bound to a crop with no "
+        "hands in frame at a ~0.16 relaxed floor) while keeping the genuine "
+        "recoveries (`black panties` at 0.498). Only the relax path is "
+        "floored. 0.0 = off, the pre-floor behaviour",
+    )
+    c.add_argument(
         "--attribution_margin",
         "--attribution-margin",
         dest="attribution_margin",
@@ -409,6 +423,7 @@ def build_options_from_args(args: argparse.Namespace) -> PositionCaptionOptions:
         rewrite=args.rewrite,
         attribution_margin=args.attribution_margin,
         bag_relax=args.bag_relax,
+        bag_relax_min_score=args.bag_relax_min_score,
         bag_word_relax=args.bag_word_relax,
     )
 

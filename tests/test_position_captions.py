@@ -2428,6 +2428,34 @@ def test_bag_relax_never_admits_a_novel_tag(pipeline_bits):
     assert "apron" not in proposal.proposed
 
 
+def test_bag_relax_min_score_floors_near_noise_admissions(pipeline_bits):
+    """A relaxed admission still needs the absolute score floor: `maid` at
+    0.29 clears the relaxed threshold (0.8 * 0.35 = 0.28) but not the 0.3
+    default floor — the channel4 `white gloves` shape, where a near-noise
+    activation on the wrong crop won attribution because the true owner
+    under-fired. With the floor off it binds again (the pre-floor arm)."""
+    left = dict(_RELAX_LEFT, maid=0.29)
+    floored = _relax_proposal(pipeline_bits, left, _RELAX_RIGHT)
+    parsed = parse_caption(floored.proposed)
+    assert not any("maid" in c.tags for c in parsed.clauses)
+    assert "maid" in parsed.flat_tags
+
+    unfloored = _relax_proposal(
+        pipeline_bits, left, _RELAX_RIGHT, bag_relax_min_score=0.0
+    )
+    assert "maid" in parse_caption(unfloored.proposed).clauses[0].tags
+
+
+def test_bag_relax_min_score_never_touches_the_taggers_own_keeps(pipeline_bits):
+    """The floor gates only the relax path: a tag the tagger keeps at its own
+    calibrated threshold binds even when that score is under the floor."""
+    left = dict(_RELAX_LEFT, maid=0.85)  # above its own 0.8 threshold
+    proposal = _relax_proposal(
+        pipeline_bits, left, _RELAX_RIGHT, bag_relax_min_score=0.9
+    )
+    assert "maid" in parse_caption(proposal.proposed).clauses[0].tags
+
+
 def test_bag_word_relax_compounds_per_extra_word(pipeline_bits):
     """`playboy bunny` (two words) at 0.55: 0.8 * 0.7 = 0.56 misses, and the
     0.9 word bonus lowers the floor to 0.504 — specificity earns the slack."""
