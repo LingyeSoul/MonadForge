@@ -840,6 +840,12 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                 f"chimera modules={len(self._chimera_aware_loras)}"
             )
 
+        # Depth of the DiT this adapter is being trained against, stamped into
+        # save_weights metadata as ss_num_blocks. Read here rather than derived
+        # from module names later, which layer_start/layer_end filtering would
+        # under-count.
+        self._trained_num_blocks = len(unet.blocks) if hasattr(unet, "blocks") else 0
+
     def _wire_shared_sigma_buffers(self) -> None:
         """Replace each HydraLoRA / OrthoHydraLoRA module's ``_sigma`` and
         ``_sigma_features`` buffers with references to a single network-level
@@ -1964,6 +1970,13 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
         # create_network_from_weights can route the checkpoint back to its
         # module class from ``ss_network_spec`` (factory.py key-sniff).
         metadata["ss_network_spec"] = spec.name
+        # Adapters are depth-specific: module names carry the block index, so
+        # a 40-block (Anima-2.9B) adapter merged onto the 28-block base drops
+        # its tail blocks with only a "not all LoRA keys are used" warning.
+        # Stamp the depth so the mismatch is machine-detectable.
+        num_blocks = getattr(self, "_trained_num_blocks", 0)
+        if num_blocks:
+            metadata["ss_num_blocks"] = str(num_blocks)
 
         if spec.name == "lokr":
             metadata.setdefault("ss_network_dim", str(self.cfg.lora_dim))

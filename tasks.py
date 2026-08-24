@@ -323,8 +323,8 @@ COMMANDS = {
     "download-anima": (downloads.cmd_download_anima, "Download Anima model"),
     "download-anima-variant": (
         downloads.cmd_download_anima_variant,
-        "Download an alternate Anima base DiT (aesthetic / turbo / preview); "
-        "ARGS=<name>, no args lists them",
+        "Download an alternate Anima base DiT (aesthetic / turbo / preview / "
+        "2.9B); ARGS=<name>, no args lists them",
     ),
     "download-sam3": (downloads.cmd_download_sam3, "Download SAM3 model"),
     "download-mit": (downloads.cmd_download_mit, "Download MIT model"),

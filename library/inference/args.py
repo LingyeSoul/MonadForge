@@ -265,10 +265,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mod_end_layer",
         type=int,
-        default=27,
+        default=None,
         help="Last block + 1 (exclusive) that receives the steering delta. "
-        "Default 27 skips the final compensation block on Anima's 28-block DiT. "
-        "Use -1 to apply through the final block.",
+        "Default (unset) is num_blocks-1, which skips the final compensation "
+        "block on whatever depth the checkpoint has (27 on the 28-block base, "
+        "39 on the 40-block Anima-2.9B). Use -1 to apply through the final block.",
     )
     parser.add_argument(
         "--mod_taper",

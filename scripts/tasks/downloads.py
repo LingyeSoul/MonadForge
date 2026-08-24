@@ -311,18 +311,43 @@ def cmd_download_anima(_extra):
         shutil.rmtree(split)
 
 
-# Official base-model variants beyond anima-base-v1.0. Same 685-key DiT
-# architecture — they differ only in weights and in the state-dict prefix
+# Alternate base DiTs, as name -> (repo_id, path within the repo).
+#
+# The official circlestone-labs variants are the same 28-block DiT as
+# anima-base-v1.0 and differ only in weights and in the state-dict prefix
 # ("model.diffusion_model." vs base's "net."), which the loader strips either
-# way (library/anima/weights.py::_DIT_PREFIXES). So any of these is a valid
-# LoRA training base.
-ANIMA_VARIANTS = (
-    "anima-aesthetic-v1.0",
-    "anima-aesthetic-v1.0b",
-    "anima-aesthetic-v1.1",
-    "anima-turbo-v1.0",
-    "anima-preview3-base",
-)
+# way (library/anima/weights.py::_DIT_PREFIXES).
+#
+# Anima-2.9B is a community depth-expansion of the same architecture: 40 blocks
+# instead of 28, same width, same Qwen3-0.6B text encoder and Qwen-Image VAE.
+# The loader counts depth off the checkpoint (``probe_dit_arch``), so it needs
+# no flag. Its LoRAs are NOT interchangeable with 28-block ones.
+ANIMA_VARIANTS = {
+    "anima-aesthetic-v1.0": (
+        "circlestone-labs/Anima",
+        "split_files/diffusion_models/anima-aesthetic-v1.0.safetensors",
+    ),
+    "anima-aesthetic-v1.0b": (
+        "circlestone-labs/Anima",
+        "split_files/diffusion_models/anima-aesthetic-v1.0b.safetensors",
+    ),
+    "anima-aesthetic-v1.1": (
+        "circlestone-labs/Anima",
+        "split_files/diffusion_models/anima-aesthetic-v1.1.safetensors",
+    ),
+    "anima-turbo-v1.0": (
+        "circlestone-labs/Anima",
+        "split_files/diffusion_models/anima-turbo-v1.0.safetensors",
+    ),
+    "anima-preview3-base": (
+        "circlestone-labs/Anima",
+        "split_files/diffusion_models/anima-preview3-base.safetensors",
+    ),
+    "Anima-2.9B-preview-v1": (
+        "Gazingstars123/Anima-2.9B",
+        "Anima-2.9B-preview-v1.safetensors",
+    ),
+}
 
 
 def cmd_download_anima_variant(_extra):
@@ -344,16 +369,16 @@ def cmd_download_anima_variant(_extra):
     if _skip(f"Anima variant(s) {', '.join(names)}", finals, _extra):
         return
     dst.mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "hf",
-            "download",
-            "circlestone-labs/Anima",
-            *[f"split_files/diffusion_models/{n}.safetensors" for n in names],
-            "--local-dir",
-            "models",
-        ]
-    )
+    # Group by repo so one `hf download` covers every variant from the same repo.
+    by_repo: dict[str, list[str]] = {}
+    for n in names:
+        repo, path = ANIMA_VARIANTS[n]
+        by_repo.setdefault(repo, []).append(path)
+    for repo, paths in by_repo.items():
+        run(["hf", "download", repo, *paths, "--local-dir", "models"])
+    # Repos nest the file differently (circlestone under split_files/, others at
+    # the root), so normalize by moving whatever landed under models/ into
+    # diffusion_models/.
     split = models / "split_files"
     src = split / "diffusion_models"
     if src.exists():
@@ -361,6 +386,10 @@ def cmd_download_anima_variant(_extra):
             shutil.move(str(f), str(dst / f.name))
     if split.exists():
         shutil.rmtree(split)
+    for n in names:
+        stray = models / Path(ANIMA_VARIANTS[n][1]).name
+        if stray.exists() and stray.parent != dst:
+            shutil.move(str(stray), str(dst / stray.name))
     print(
         "\nTrain against one with:\n"
         f"  make lora ARGS='--pretrained_model_name_or_path "

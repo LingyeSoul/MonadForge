@@ -6,7 +6,7 @@ from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 from accelerate import init_empty_weights
 
-from networks.lora_utils import load_safetensors_with_lora
+from networks.lora_utils import get_split_weight_filenames, load_safetensors_with_lora
 from library.anima import models as anima_models
 from library.anima.checkpoint import AnimaCheckpointLayout, inspect_anima_checkpoint
 from library.env import resolve_under_home
@@ -53,6 +53,56 @@ _ADALN_UP_FUSED_RE = re.compile(
 _SELF_ATTN_QKV_ORDER = ("q_proj", "k_proj", "v_proj")
 _CROSS_ATTN_KV_ORDER = ("k_proj", "v_proj")
 _ADALN_BRANCH_ORDER = ("self_attn", "cross_attn", "mlp")
+
+# Top-level DiT block index, after prefix strip. Anchored so llm_adapter.blocks.N.
+# (a separate 6-layer stack) never contributes to the DiT depth count.
+_DIT_BLOCK_IDX_RE = re.compile(r"^blocks\.(\d+)\.")
+
+# model_channels -> num_heads, keyed by the released Cosmos-Predict2 / Anima widths.
+# Depth is NOT in this table: it is counted from the checkpoint, so a
+# depth-expanded derivative (Anima-2.9B = 40 blocks at 2048ch) loads as-is.
+_MODEL_CHANNELS_TO_HEADS = {1280: 20, 2048: 16, 5120: 40}
+
+
+def probe_dit_arch(dit_path: str) -> Dict[str, int]:
+    """Read DiT depth/width off a checkpoint's safetensors header.
+
+    Only the header is parsed — no tensor data is materialized — so this is
+    cheap enough to run before every model build. Sharded checkpoints are
+    expanded the same way ``load_safetensors_with_lora`` expands them, so a
+    path naming shard 1 of N does not undercount the depth.
+    """
+    resolved = str(resolve_under_home(dit_path))
+    files = get_split_weight_filenames(resolved) or [resolved]
+
+    max_idx = -1
+    width: Optional[int] = None
+    for file in files:
+        with safe_open(file, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                clean = _strip_net_prefix(key)
+                m = _DIT_BLOCK_IDX_RE.match(clean)
+                if m:
+                    max_idx = max(max_idx, int(m.group(1)))
+                elif width is None and clean == "x_embedder.proj.1.weight":
+                    width = f.get_slice(key).get_shape()[0]
+
+    if max_idx < 0:
+        raise RuntimeError(
+            f"No DiT blocks found in {resolved} — not an Anima DiT checkpoint? "
+            f"(expected keys like 'net.blocks.0....')"
+        )
+
+    arch: Dict[str, int] = {"num_blocks": max_idx + 1}
+    if width is not None:
+        if width not in _MODEL_CHANNELS_TO_HEADS:
+            raise RuntimeError(
+                f"Unsupported DiT width model_channels={width} in {resolved}; "
+                f"known widths: {sorted(_MODEL_CHANNELS_TO_HEADS)}"
+            )
+        arch["model_channels"] = width
+        arch["num_heads"] = _MODEL_CHANNELS_TO_HEADS[width]
+    return arch
 
 
 def _dit_rename_hook(key: str) -> str:
@@ -215,6 +265,9 @@ def load_anima_model(
     device = torch.device(device)
     loading_device = torch.device(loading_device)
 
+    # Everything but depth/width is fixed across Anima releases; those two are
+    # read off the checkpoint so depth-expanded derivatives (Anima-2.9B: 40
+    # blocks vs base's 28) build the matching module list.
     dit_config = {
         "max_img_h": 512,
         "max_img_w": 512,
