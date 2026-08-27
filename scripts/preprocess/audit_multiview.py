@@ -34,6 +34,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from library.env import resolve_under_home  # noqa: E402
+from library.preprocess.instance_detection import (  # noqa: E402
+    DEFAULT_SUBJECT_PROMPT_EMBED,
+)
 from library.preprocess.multiview_audit import (  # noqa: E402
     DEFAULT_IDENTITY_CONFIDENCE,
     DEFAULT_MULTIVIEW_PROB,
@@ -110,6 +113,12 @@ def parse_args() -> argparse.Namespace:
 
     g = p.add_argument_group("detection")
     g.add_argument("--prompt", default="girl", help="SAM3 text prompt for a subject")
+    g.add_argument(
+        "--prompt_embed",
+        default=DEFAULT_SUBJECT_PROMPT_EMBED,
+        help="learned soft prompt (.safetensors) standing in for --prompt on the "
+        "subject pass (part prompts stay text); default = shipped, `none` = text",
+    )
     g.add_argument(
         "--score_threshold",
         type=float,

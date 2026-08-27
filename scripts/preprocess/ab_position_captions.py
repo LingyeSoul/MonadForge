@@ -236,12 +236,25 @@ def main() -> None:
     )
 
     a_options, detect_args = build_options(args.a_flags)
-    b_options, _ = build_options(args.b_flags)
+    b_options, b_detect_args = build_options(args.b_flags)
 
     from scripts.preprocess.position_captions import build_detect_fn
 
     detect_args.device = args.device
     detect_fn, part_detect_fn, _model, _proc = build_detect_fn(detect_args)
+    # Detector-side A/B: a B side with a different subject prompt (text or
+    # `--prompt_embed`) gets its own detector on the same loaded SAM3, so the
+    # two sides no longer share one detection pass.
+    b_detect_fn, b_part_detect_fn = detect_fn, part_detect_fn
+    if (b_detect_args.prompt, b_detect_args.prompt_embed) != (
+        detect_args.prompt,
+        detect_args.prompt_embed,
+    ):
+        b_detect_args.device = args.device
+        b_detect_fn, b_part_detect_fn, _, _ = build_detect_fn(
+            b_detect_args, model=_model, processor=_proc
+        )
+        print("detector A/B: B side runs its own detection pass", flush=True)
 
     from library.captioning.anima_tagger import (
         DEFAULT_TAGGER_DIR,
@@ -262,6 +275,7 @@ def main() -> None:
 
     rows: list[dict] = []
     stats = {"seen": 0, "candidates": 0, "identical": 0, "differ": 0, "no_caption": 0}
+    status_counts: dict[str, dict[str, int]] = {"a": {}, "b": {}}
     for index, image_path in enumerate(images, 1):
         stats["seen"] += 1
         rel = str(image_path.relative_to(dst))
@@ -278,15 +292,28 @@ def main() -> None:
         stats["candidates"] += 1
 
         image = Image.open(image_path).convert("RGB")
-        shared = dict(
+        shared = dict(tag_fn=tagger.predict, vocabulary=vocabulary)
+        a_prop = propose_for_image(
+            image,
+            caption,
+            options=a_options,
             detect_fn=detect_fn,
-            tag_fn=tagger.predict,
-            vocabulary=vocabulary,
             part_detect_fn=part_detect_fn,
+            **shared,
         )
-        a_prop = propose_for_image(image, caption, options=a_options, **shared)
-        b_prop = propose_for_image(image, caption, options=b_options, **shared)
-        if a_prop.proposed == b_prop.proposed:
+        b_prop = propose_for_image(
+            image,
+            caption,
+            options=b_options,
+            detect_fn=b_detect_fn,
+            part_detect_fn=b_part_detect_fn,
+            **shared,
+        )
+        for side, prop in (("a", a_prop), ("b", b_prop)):
+            status_counts[side][prop.status] = (
+                status_counts[side].get(prop.status, 0) + 1
+            )
+        if a_prop.proposed == b_prop.proposed and a_prop.status == b_prop.status:
             stats["identical"] += 1
             continue
         stats["differ"] += 1
@@ -315,14 +342,18 @@ def main() -> None:
     rows.sort(key=lambda r: -r["gained"])
     (out_dir / "report.json").write_text(
         json.dumps(
-            {"labels": list(labels), "summary": stats, "rows": rows},
+            {
+                "labels": list(labels),
+                "summary": {**stats, "status": status_counts},
+                "rows": rows,
+            },
             indent=1,
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
     index_path = write_index(out_dir, rows, labels)
-    print(json.dumps(stats, indent=2))
+    print(json.dumps({**stats, "status": status_counts}, indent=2))
     print(f"\nindex:  {index_path}\nreport: {out_dir / 'report.json'}")
 
 

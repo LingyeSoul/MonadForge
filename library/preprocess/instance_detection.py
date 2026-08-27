@@ -13,10 +13,52 @@ these functions only reason about boxes, masks, and pixels.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
 from PIL import Image
+
+
+# Shipped SAM3 soft prompt for the subject pass (textual inversion of
+# ``anime girl``, bench/sam3_soft_prompt/ keeper 20260826-2310, 1024 params):
+# keeps ``anime girl``'s recall (zero-proposal images 310 -> 4 corpus-wide) with
+# ``girl``'s junk profile (0 degenerate survivors). Part prompts stay textual.
+# ``resolve_prompt_embed`` turns a CLI value into a path or None.
+DEFAULT_SUBJECT_PROMPT_EMBED = "networks/calibration/sam3_girl_prompt.safetensors"
+_PROMPT_EMBED_OFF = {"", "none", "off", "text"}
+
+
+def resolve_prompt_embed(spec: str | None) -> Path | None:
+    """``None``/``none``/``off``/``""`` -> text prompt; else the resolved file.
+
+    A missing *default* file degrades to the text prompt with a warning (a
+    relocated checkout without the artifact); an explicit missing path raises.
+    """
+    import warnings
+
+    from library.env import resolve_under_home
+
+    if spec is None or spec.strip().lower() in _PROMPT_EMBED_OFF:
+        return None
+    path = resolve_under_home(spec)
+    if path.exists():
+        return path
+    if spec == DEFAULT_SUBJECT_PROMPT_EMBED:
+        warnings.warn(
+            f"shipped soft prompt missing at {path}; falling back to the text prompt",
+            stacklevel=2,
+        )
+        return None
+    raise FileNotFoundError(f"--prompt_embed {spec!r} not found at {path}")
+
+
+def prompt_embed_sha256(path: Path | None) -> str | None:
+    import hashlib
+
+    if path is None:
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @dataclass(frozen=True)

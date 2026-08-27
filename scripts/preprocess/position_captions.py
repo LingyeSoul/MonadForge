@@ -54,6 +54,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from library.env import resolve_under_home  # noqa: E402
+from library.preprocess.instance_detection import (  # noqa: E402
+    DEFAULT_SUBJECT_PROMPT_EMBED,
+    prompt_embed_sha256,
+    resolve_prompt_embed,
+)
 from library.preprocess.position_captions import (  # noqa: E402
     Detection,
     PositionCaptionOptions,
@@ -119,6 +124,13 @@ def parse_args() -> argparse.Namespace:
 
     g = p.add_argument_group("detection")
     g.add_argument("--prompt", default="girl", help="SAM3 text prompt for a subject")
+    g.add_argument(
+        "--prompt_embed",
+        default=DEFAULT_SUBJECT_PROMPT_EMBED,
+        help="learned soft prompt (.safetensors) used in place of --prompt for "
+        "the subject pass; part prompts stay textual. Default = the shipped "
+        f"{DEFAULT_SUBJECT_PROMPT_EMBED}; pass `none` for the plain text prompt",
+    )
     g.add_argument("--score_threshold", type=float, default=0.5)
     g.add_argument(
         "--retry_score_threshold",
@@ -428,10 +440,18 @@ def build_options_from_args(args: argparse.Namespace) -> PositionCaptionOptions:
     )
 
 
-def build_detect_fn(args: argparse.Namespace):
+def build_detect_fn(args: argparse.Namespace, *, model=None, processor=None):
     """SAM3 text-prompt detector returning per-instance boxes + masks.
 
-    Two things this has to get right, both of which the first version didn't:
+    Pass ``model``/``processor`` from a previous call to build a second
+    detector (different ``--prompt`` / ``--prompt_embed``) on the same loaded
+    SAM3 — the A/B script uses this for a detector-side A/B.
+
+    GOTCHA 1: ``Sam3Processor`` carries its own ``confidence_threshold`` and
+    applies it before the caller ever sees the boxes, so filtering the result
+    against a *lower* retry threshold is a no-op unless the processor itself is
+    built at the lowest threshold we might ask for (which it is here — the
+    score gate is then applied on top, in ``detect``/``part_detect``).
 
     * **SAM3 filters before we do.** ``Sam3Processor`` carries its own
       ``confidence_threshold`` (default 0.5) and applies it inside
@@ -454,17 +474,26 @@ def build_detect_fn(args: argparse.Namespace):
     from sam3.model_builder import build_sam3_image_model
     from sam3.model.sam3_image_processor import Sam3Processor
 
-    print("Loading SAM3...", flush=True)
-    model = build_sam3_image_model(
-        device=args.device,
-        eval_mode=True,
-        checkpoint_path=str(resolve_under_home(args.checkpoint)),
-        load_from_HF=False,
-    )
     floor = min(
         args.score_threshold, args.retry_score_threshold, args.part_score_threshold
     )
-    processor = Sam3Processor(model, confidence_threshold=floor)
+    if model is None:
+        print("Loading SAM3...", flush=True)
+        model = build_sam3_image_model(
+            device=args.device,
+            eval_mode=True,
+            checkpoint_path=str(resolve_under_home(args.checkpoint)),
+            load_from_HF=False,
+        )
+    if processor is None or processor.confidence_threshold > floor:
+        processor = Sam3Processor(model, confidence_threshold=floor)
+    soft_prompt = None
+    embed_path = resolve_prompt_embed(getattr(args, "prompt_embed", None))
+    if embed_path is not None:
+        from bench.sam3_soft_prompt.common import load_soft_prompt
+
+        soft_prompt = load_soft_prompt(embed_path, args.device)
+        print(f"soft prompt: {embed_path} (replaces {args.prompt!r})", flush=True)
     cache: dict[str, object] = {"key": None, "state": None, "dets": {}}
 
     def _ground(image, prompt: str) -> list[Detection]:
@@ -478,7 +507,16 @@ def build_detect_fn(args: argparse.Namespace):
         if prompt in memo:
             return memo[prompt]
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            out = processor.set_text_prompt(prompt=prompt, state=cache["state"])
+            if soft_prompt is not None and prompt == args.prompt:
+                # Learned prompt tensor stands in for the subject phrase; the
+                # processor's text encode is skipped and its grounding pass
+                # reused as-is (bench/sam3_soft_prompt/).
+                state = cache["state"]
+                state["backbone_out"].update(soft_prompt)
+                state.setdefault("geometric_prompt", model._get_dummy_prompt())
+                out = processor._forward_grounding(state)
+            else:
+                out = processor.set_text_prompt(prompt=prompt, state=cache["state"])
         masks = out.get("masks")
         source = "subject" if prompt == args.prompt else prompt
         dets: list[Detection] = []
@@ -605,9 +643,15 @@ def main() -> None:
     over_budget = [
         r for r in rows if r.tokens is not None and r.tokens > args.max_tokens
     ]
+    embed_path = resolve_prompt_embed(args.prompt_embed)
     summary = {
         "applied": bool(args.apply),
         "rewrite": bool(args.rewrite),
+        # Which detector produced these boxes — a soft prompt is a file, so
+        # two runs are only comparable when the sha matches.
+        "prompt": args.prompt,
+        "prompt_embed": str(embed_path) if embed_path else None,
+        "prompt_embed_sha256": prompt_embed_sha256(embed_path),
         "attribution_margin": args.attribution_margin,
         "seen": stats.seen,
         "candidates": stats.candidates,

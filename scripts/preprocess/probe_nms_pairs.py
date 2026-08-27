@@ -42,6 +42,9 @@ if str(ROOT) not in sys.path:
 from PIL import Image  # noqa: E402
 
 from library.env import resolve_under_home  # noqa: E402
+from library.preprocess.instance_detection import (  # noqa: E402
+    DEFAULT_SUBJECT_PROMPT_EMBED,
+)
 from library.preprocess._dataset import walk_images  # noqa: E402
 from library.preprocess.position_captions import (  # noqa: E402
     box_containment,
@@ -57,6 +60,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--path_pattern", dest="path_pattern", default="*")
     p.add_argument("--out", default="post_image_dataset/captions/nms_pairs.json")
     p.add_argument("--prompt", default="girl")
+    p.add_argument(
+        "--prompt_embed",
+        default=DEFAULT_SUBJECT_PROMPT_EMBED,
+        help="soft prompt .safetensors replacing --prompt (default: shipped; `none` = text)",
+    )
     # Every floor gets its own NMS replay off one shared detection pass; the
     # lowest one is what SAM3 is actually asked for. 0.5 = primary pipeline
     # floor, 0.35 = the floor the audit's retry reaches.

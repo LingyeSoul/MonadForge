@@ -401,6 +401,19 @@ needs its own gated evaluation: eyeball the gained survivors, re-run the
 R sweep under the new prompt, and re-measure the audit/caption-position
 verdict deltas. The shipped prompt stays `girl` until then.
 
+### 5.6 Closure — the learned prompt ships (2026-08-27)
+
+§5.5's gated evaluation ran on a *learned* prompt instead of the text
+`anime girl` (`docs/experimental/soft_prompt_for_sam.md`): recall of `anime girl`
+(zero-proposal 310 → 4) with `girl`'s junk profile (degenerate survivors 0/0,
+whole-canvas fill < 0.10 junk 53 → 0). R sweep under it: one pair ≥ 2.0 (2.55,
+kept fill 0.274 — clean), so the R = 2.0 swap is inert; the `girl`-calibrated
+floors stay. Audit girl vs soft, same tagger: findings 51 → 56, all deltas
+weak `unsure` (inset second views, low-score body parts, drawn boys), one
+dubious flip on a 0.01-area chibi sticker (`otokakoto/11809823`). It is the
+shipped default of this audit and of `caption-position`
+(`--prompt_embed none` for the text prompt).
+
 ## 6. Verified vs not
 
 Verified:
