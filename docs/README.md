@@ -19,7 +19,7 @@ Shipped training algorithms — adapter families.
 | Doc | Description |
 |-----|-------------|
 | [methods/lokr.md](methods/lokr.md) | LoKr - official LyCORIS backend, Anima integration, and checkpoint compatibility |
-| [methods/loha.md](methods/loha.md) | LoHa — Hadamard-product adapter (LyCORIS backend), effective rank r² and the 3.4.0 scale quirks the wrapper routes around |
+| [methods/loha.md](methods/loha.md) | LoHa — Hadamard-product adapter (LyCORIS backend), effective rank r² and the upstream scale quirks the wrapper routes around |
 | [methods/psoft-integrated-ortholora.md](methods/psoft-integrated-ortholora.md) | OrthoLoRA (Cayley) — SVD-informed init, structural orthogonality via tiny skew-symmetric seeds |
 | [methods/hydra-lora.md](methods/hydra-lora.md) | HydraLoRA — MoE multi-head routing (shared-A experts), one cell of the three-axis routing surface in `configs/methods/lora.toml` |
 | [methods/timestep_mask.md](methods/timestep_mask.md) | T-LoRA — timestep-dependent rank masking (full rank at noise, rank 1 at clean) |

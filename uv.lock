@@ -1286,17 +1286,19 @@ wheels = [
 
 [[package]]
 name = "lycoris-lora"
-version = "3.4.0"
+version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "einops" },
+    { name = "numpy" },
+    { name = "safetensors" },
     { name = "toml" },
     { name = "torch", version = "2.12.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.12.0+cu132", source = { registry = "https://download.pytorch.org/whl/cu132" }, marker = "sys_platform != 'darwin'" },
     { name = "tqdm" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5d/f4/55195fdfad5f183aa7f03d87c2b2e3f7df042b5704cef76b54cecbf56d81/lycoris_lora-3.4.0-py3-none-any.whl", hash = "sha256:88ce950017206b9932209d8f17c472d65e117115dbe693da94e3307061631379", size = 76319, upload-time = "2025-11-12T01:02:42.249Z" },
+    { url = "https://files.pythonhosted.org/packages/9c/26/dfb3de84fbdc67603a78aca329b0d04fa49ea3ca98e87bd5fcb8d86f20be/lycoris_lora-4.0.0-py3-none-any.whl", hash = "sha256:7b2c6a82107ce4ce8950ef876959c7e38ecbed88fdd5cea80cb0f2e6306700b7", size = 179544, upload-time = "2026-09-01T15:20:16.000Z" },
 ]
 
 [[package]]
@@ -1554,7 +1556,7 @@ requires-dist = [
     { name = "imagesize", specifier = ">=1.4.1" },
     { name = "kornia", specifier = ">=0.8.2" },
     { name = "lion-pytorch", specifier = ">=0.2.3" },
-    { name = "lycoris-lora", specifier = "==3.4.0" },
+    { name = "lycoris-lora", specifier = "==4.0.0" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "onnxruntime-gpu", specifier = ">=1.27.0" },

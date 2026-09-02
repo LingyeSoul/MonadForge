@@ -9,9 +9,8 @@ delta_W = (hada_w1_a @ hada_w1_b) ⊙ (hada_w2_a @ hada_w2_b) * (alpha / rank)
 ```
 
 Two rank-`r` factor pairs give an effective rank up to `r²` at 2× the
-parameter count of a rank-`r` LoRA. MonadForge uses `lycoris-lora==3.4.0` as
-the backend (same pin and source baseline as LoKr: LyCORIS commit
-`5ec93d24fcb8f27d6b16d3d706e69c60404d4b39`). The Anima integration only adds
+parameter count of a rank-`r` LoRA. MonadForge uses `lycoris-lora==4.0.0` as
+the backend (same pin as LoKr). The Anima integration only adds
 module targeting, fused-attention splitting, lifecycle, and checkpoint
 metadata around the official implementation — factorization, initialization
 (`hada_w2_a` zero-init ⇒ ΔW=0 at step 0), dropout semantics, and the
@@ -31,29 +30,41 @@ use_loha = true
 `python tasks.py lora-gui loha`). Non-MoE only — `use_loha` composes with
 none of the three-axis routing knobs (resolver precedence routes MoE first).
 
-## LyCORIS 3.4.0 quirks the wrapper routes around
+## LyCORIS quirks the wrapper routes around (states at the 4.0.0 pin)
 
 The wrapper (`networks/lora_modules/loha.py`) subclasses the official
 `LohaModule` and pins `bypass_mode=True`. Three version-specific behaviors are
 handled — they differ from the LoKr wrapper, so don't copy fixes between the
 two blindly:
 
-1. **No missing-scale bug in LoHa's bypass** (unlike LoKr). LoHa's
-   `bypass_forward_diff` routes through `get_weight`, which already applies
-   `alpha/rank` — the forward passes `scale=multiplier` only. Re-adding
-   `self.scale` (the LoKr fix) would double-scale.
-2. **`get_diff_weight`/`get_merged_weight` double-apply `self.scale`** in
-   3.4.0 (same defect as LoKr) — both are overridden to scale once.
-3. **`lycoris.functional.loha.bypass_forward_diff` is broken as shipped**
-   (passes `gamma` positionally into a 6-target unpack) — never call it. The
-   fp32 path (`lora_fp32_compute`, V100/fp16 only) uses
-   `functional.loha.diff_weight` + `F.linear` instead. Note the gamma
+1. **No missing-scale bug in LoHa's bypass** (unlike LoKr 3.4.0). LoHa's
+   bypass applies `alpha/rank` — via `get_weight` in 3.4.0, folded into the
+   dispatched gamma in 4.0 — so the forward passes `scale=multiplier` only.
+   Re-adding `self.scale` (the call form the LoKr wrapper needed before 4.0)
+   would double-scale.
+2. **`get_diff_weight`/`get_merged_weight` double-apply `self.scale`** —
+   same defect as LoKr, **still present in 4.0.0** — both are overridden to
+   scale once.
+3. **`lycoris.functional.loha.bypass_forward_diff` was broken as shipped in
+   3.4.0** (passed `gamma` positionally into a 6-target unpack); 4.0 fixed it
+   and it now dispatches to the fused kernels. The fp32 path
+   (`lora_fp32_compute`, V100/fp16 only) still uses
+   `functional.loha.diff_weight` + `F.linear`, pinned to `backend="torch"` so
+   the experimental kernel tiers stay out of that lane. Note the gamma
    convention also differs from LoKr's functional: LoHa's `gamma` is the
    **full** `alpha/rank` scale (no internal rank division).
 
-Unlike LoKr, LoHa's bypass still materializes the full ΔW every forward — a
-Hadamard product cannot factor through the input — so bypass only saves the
-base-weight read/subtract of the rebuild path, not the materialization.
+4.0 also fixes the tucker-core LoHa backward (the w1u/w2u gradients previously
+contracted the wrong side's chain) — irrelevant here because Tucker cores are
+conv-only and MonadForge's LoHa is Linear-only, but don't re-port the old
+backward math from 3.4.0 sources.
+
+The Hadamard product cannot factor through the input, so LoHa's eager
+fallback tiers still materialize the full ΔW every forward; the 4.0 fused
+LoHa bypass kernel chains the factor products tile-wise instead and never
+builds it. The 4.0 fused-kernel story and `LYCORIS_KERNEL_BACKEND` selection
+are described in `docs/methods/lokr.md`; LoHa's bypass and `diff_weight`
+dispatch ride the same selector.
 
 ## Save format & inference
 

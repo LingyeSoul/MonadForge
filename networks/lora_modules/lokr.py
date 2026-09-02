@@ -86,10 +86,10 @@ class LoKRModule(LycorisLokrModule):
                 preserve_fp32=self.fp32_compute,
             )
 
-        # LyCORIS 3.4.0's bypass_forward passes only ``multiplier`` and omits
-        # ``self.scale``. Its regular forward and get_weight both include the
-        # scale. Keep the memory-efficient official bypass operations while
-        # restoring that required alpha/rank factor.
+        # The official bypass_forward_diff applies ``self.scale`` (alpha/dim)
+        # itself in LyCORIS 4.0 — 3.4.0 omitted it and this wrapper had to
+        # compensate with ``multiplier * self.scale``. Pass the multiplier
+        # only or the alpha/rank factor is applied twice.
         base = self.org_forward(x, *args, **kwargs)
         if self.training and self.fp32_compute and base.dtype == torch.float16:
             with torch.autocast(device_type=x.device.type, enabled=False):
@@ -102,7 +102,7 @@ class LoKRModule(LycorisLokrModule):
                     return self._eager_fp32_bypass_residual(base, x)
                 delta = self._fp32_bypass_forward_diff(x)
         else:
-            delta = self.bypass_forward_diff(x, scale=self.multiplier * self.scale)
+            delta = self.bypass_forward_diff(x, scale=self.multiplier)
         return merge_lora_residual(
             base,
             delta,
@@ -148,6 +148,9 @@ class LoKRModule(LycorisLokrModule):
             else 1
         )
         gamma = float(self.scale) * rank
+        # backend="torch" keeps the V100/fp16 critical path on the reference
+        # eager ops: the auto-dispatched fused Triton tiers stay opt-in
+        # elsewhere and must not silently change this branch's numerics.
         delta = lycoris_lokr_bypass_forward_diff(
             x.to(dtype=torch.float32),
             None,
@@ -159,6 +162,7 @@ class LoKRModule(LycorisLokrModule):
             w2b,
             None,
             gamma=gamma,
+            backend="torch",
         )
         return self.drop(delta * self.multiplier * self.scalar.float())
 

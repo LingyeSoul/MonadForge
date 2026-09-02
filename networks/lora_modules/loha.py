@@ -22,22 +22,23 @@ class LoHaModule(LycorisLohaModule):
 
     ΔW = (hada_w1_a @ hada_w1_b) ⊙ (hada_w2_a @ hada_w2_b) · (alpha/rank) —
     effective rank up to r² from two rank-r factor pairs. Linear LoHa runs in
-    LyCORIS bypass mode; note the Hadamard product cannot factor through the
-    input, so bypass still materializes ΔW per forward (it just skips the
-    base-weight read/subtract of the rebuild path).
+    LyCORIS bypass mode; the Hadamard product cannot factor through the input,
+    so the eager fallback tiers still materialize ΔW per forward (the 4.0
+    fused-kernel tier chains the products tile-wise and never builds it).
 
-    Two LyCORIS 3.4.0 quirks this wrapper routes around:
+    LyCORIS quirks this wrapper routes around (states as of the 4.0.0 pin):
 
-    * Unlike LoKr, LoHa's official bypass already applies ``self.scale`` (it
-      goes through ``get_weight``), so ``forward`` passes ``scale=multiplier``
-      only — copying the LoKr wrapper's ``multiplier * self.scale`` fix here
-      would double-scale.
+    * Unlike LoKr, LoHa's official bypass applies ``self.scale`` — through
+      ``get_weight`` in 3.4.0, folded into the dispatched gamma in 4.0 — so
+      ``forward`` passes ``scale=multiplier`` only. Copying the LoKr
+      bypass-call form here would double-scale.
     * ``get_diff_weight``/``get_merged_weight`` multiply ``self.scale`` a
-      second time on top of ``get_weight`` — both are overridden.
+      second time on top of ``get_weight`` (still present in 4.0.0) — both
+      are overridden.
 
-    ``lycoris.functional.loha.bypass_forward_diff`` is broken as shipped
-    (passes ``gamma`` positionally into a 6-target unpack) — never call it;
-    the fp32 path uses ``diff_weight`` + ``self.op`` instead.
+    The 3.4.0 ``lycoris.functional.loha.bypass_forward_diff`` positional-gamma
+    crash was fixed upstream in 4.0; the fp32 path still uses ``diff_weight``
+    + ``self.op`` so it can pin the reference backend on V100.
     """
 
     supports_conv2d = False
@@ -95,8 +96,8 @@ class LoHaModule(LycorisLohaModule):
             with torch.autocast(device_type=x.device.type, enabled=False):
                 delta = self._fp32_bypass_forward_diff(x)
         else:
-            # The official bypass bakes ``self.scale`` in via ``get_weight``
-            # — multiplier only.
+            # The official bypass bakes ``self.scale`` in (via get_weight in
+            # 3.4.0, the dispatched gamma in 4.0) — multiplier only.
             delta = self.bypass_forward_diff(x, scale=self.multiplier)
         return merge_lora_residual(
             base,
@@ -105,15 +106,18 @@ class LoHaModule(LycorisLohaModule):
         )
 
     def bypass_forward_diff(self, x, scale=1):
-        # Byte-equal to the official implementation except for the
-        # NON-virtual ``get_weight`` call: the wrapper's ``get_weight``
-        # override is a merge/fuse surface (fp32 output, rank_dropout
-        # suppressed) and must not leak into the training forward, where
-        # LoHa's rank_dropout lives inside the official ``get_weight``.
-        diff_weight = (
-            LycorisLohaModule.get_weight(self, self.shape) * self.scalar * scale
-        )
-        return self.drop(self.op(x, diff_weight, **self.kw_dict))
+        # The official 4.0 implementation is the dispatched path (fused
+        # kernels where available, ΔW never materialized) and is safe to
+        # inherit for the plain-Linear case. Only the rank_dropout branch is
+        # kept local: it would call the virtual ``get_weight`` — this class's
+        # merge/fuse override (fp32 output, dropout suppressed) — and leak it
+        # into the training forward.
+        if self.training and self.rank_dropout:
+            diff_weight = (
+                LycorisLohaModule.get_weight(self, self.shape) * self.scalar * scale
+            )
+            return self.drop(self.op(x, diff_weight, **self.kw_dict))
+        return LycorisLohaModule.bypass_forward_diff(self, x, scale=scale)
 
     def _fp32_bypass_forward_diff(self, x: torch.Tensor) -> torch.Tensor:
         """Rebuild the official LoHa delta with fp32 rank operands.
@@ -129,7 +133,11 @@ class LoHaModule(LycorisLohaModule):
         w2a = self.hada_w2_a.to(dtype=torch.float32)
         w2b = self.hada_w2_b.to(dtype=torch.float32)
         gamma = torch.tensor(float(self.scale), dtype=torch.float32, device=x.device)
-        diff_w = lycoris_loha_diff_weight(w1b, w1a, w2b, w2a, None, None, gamma=gamma)
+        # backend="torch" keeps the V100/fp16 critical path on the reference
+        # eager ops, mirroring the LoKr wrapper's fp32 branch.
+        diff_w = lycoris_loha_diff_weight(
+            w1b, w1a, w2b, w2a, None, None, gamma=gamma, backend="torch"
+        )
         delta = self.op(x.to(dtype=torch.float32), diff_w, **self.kw_dict)
         return self.drop(delta * self.multiplier * self.scalar.float())
 
@@ -158,8 +166,9 @@ class LoHaModule(LycorisLohaModule):
         return weight.float() * float(multiplier)
 
     def get_diff_weight(self, multiplier=1.0, shape=None, device=None):
-        # LyCORIS 3.4.0's implementation multiplies ``self.scale`` on top of a
-        # ``get_weight`` that already applied it — this override scales once.
+        # LyCORIS's implementation (still in 4.0.0) multiplies ``self.scale``
+        # on top of a ``get_weight`` that already applied it — this override
+        # scales once.
         target_shape = self.shape if shape is None else shape
         diff = self.get_weight(multiplier=multiplier, shape=target_shape)
         if device is not None:

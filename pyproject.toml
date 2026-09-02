@@ -11,7 +11,7 @@ dependencies = [
     "transformers>=5.10.1",
     "diffusers>=0.37.0",
     "einops>=0.7.0",
-    "lycoris-lora==3.4.0",
+    "lycoris-lora==4.0.0",
     "bitsandbytes>=0.45.0",
     # Optimizers
     "pytorch-optimizer>=3.9.0",

@@ -109,9 +109,10 @@ class GLoKRModule(BaseLoRAModule):
             self.scale = float(alpha) / math.sqrt(lora_dim)
             self.alpha = torch.tensor(self.scale * lora_dim)
 
-        # Init mirrors LyCORIS 3.4.0 LokrModule (use_scalar=False path):
-        # kaiming_uniform(a=√5) on every non-zero factor, zero on the w2 chain
-        # end so ΔW = 0 at step 0.
+        # Init mirrors LyCORIS 4.0 LokrModule (use_scalar=False path; the
+        # factorization init is unchanged since 3.4.0): kaiming_uniform(a=√5)
+        # on every non-zero factor, zero on the w2 chain end so ΔW = 0 at
+        # step 0.
         if self.use_w1:
             self.glokr_w1 = torch.nn.Parameter(torch.empty(out_l, in_m))
             torch.nn.init.kaiming_uniform_(self.glokr_w1, a=math.sqrt(5))
