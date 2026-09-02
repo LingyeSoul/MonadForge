@@ -4,14 +4,15 @@ Three LoHa numerics surfaces are reported, on real Anima DiT Linear shapes:
 
 1. **Wrapper-vs-official equivalence**: the MonadForge wrapper
    (``networks/lora_modules/loha.py``, official bypass ops) against the
-   official LyCORIS 3.4.0 regular (rebuild) forward — max abs output error at
-   fixed seed. Also quantifies the 3.4.0 scale asymmetry: what the error
-   would be if the LoKr wrapper's ``multiplier * self.scale`` bypass fix were
-   copied to LoHa (it double-scales — the bench prints the resulting blowup
-   so the asymmetry stays visible).
+   official LyCORIS (4.0.0) regular (rebuild) forward — max abs output error
+   at fixed seed. Also quantifies the bypass-scale asymmetry: what the error
+   would be if the pre-4.0 LoKr ``multiplier * self.scale`` compensator form
+   were copied to LoHa (it double-scales — the bench prints the resulting
+   blowup so the asymmetry stays visible).
 
-2. **get_diff_weight double-scale bug**: official 3.4.0 ``get_diff_weight``
-   vs the wrapper override — the official/raw ratio equals ``alpha/rank``.
+2. **get_diff_weight double-scale bug**: official ``get_diff_weight``
+   (double-scale still present in 4.0.0) vs the wrapper override — the
+   official/raw ratio equals ``alpha/rank``.
 
 3. **Capacity math vs plain LoRA**: LoHa spends 2× the params of a rank-r
    LoRA for an effective-rank ceiling of r²; the bench measures the numerical
@@ -94,8 +95,9 @@ def _equivalence_row(
         wrapped_out = base(x)
         official_out = official_base(x)
         base_out = wrapped.org_forward(x)
-        # The LoKr-style fix (scale=multiplier*self.scale) double-applies the
-        # scale for LoHa — reproduce it to quantify the blowup it would cause.
+        # The pre-4.0 LoKr compensator form (scale=multiplier*self.scale)
+        # double-applies the scale for LoHa — reproduce it to quantify the
+        # blowup it would cause.
         double_scaled = base_out + wrapped.bypass_forward_diff(
             x, scale=wrapped.multiplier * wrapped.scale
         )
@@ -260,12 +262,13 @@ def main() -> None:
             f"{r['merge_vs_get_weight_max_abs_err']:>10.2e}"
         )
     print(
-        "\n  gdw_ratio = official 3.4.0 get_diff_weight / wrapper override "
+        "\n  gdw_ratio = official get_diff_weight / wrapper override "
         "(equals scale => upstream double-applies it)."
     )
     print(
-        "  lokr_fix_err = output error IF the LoKr bypass fix were copied "
-        "(double-scale) -- must stay large, max_err must stay ~0."
+        "  lokr_fix_err = output error IF the pre-4.0 LoKr bypass "
+        "compensator were copied (double-scale) -- must stay large, "
+        "max_err must stay ~0."
     )
 
     print("\n-- capacity vs plain LoRA --")

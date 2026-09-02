@@ -115,6 +115,12 @@ class LoKRModule(LycorisLokrModule):
         x: torch.Tensor,
     ) -> torch.Tensor:
         """Merge a chunked FP32 LoKr bypass into the fresh base output."""
+        # The combined ``multiplier * self.scale`` below is NOT the 3.4.0-era
+        # bypass compensator banned in networks/CLAUDE.md: eager_lokr_residual
+        # evaluates the raw Kronecker formula locally (no alpha/dim factor
+        # anywhere) and applies this residual scale exactly once, so it must
+        # carry both factors — unlike the official 4.0 bypass call in
+        # ``forward``, which applies ``self.scale`` itself.
         return eager_lokr_residual(
             base,
             x,
@@ -149,8 +155,9 @@ class LoKRModule(LycorisLokrModule):
         )
         gamma = float(self.scale) * rank
         # backend="torch" keeps the V100/fp16 critical path on the reference
-        # eager ops: the auto-dispatched fused Triton tiers stay opt-in
-        # elsewhere and must not silently change this branch's numerics.
+        # eager ops: the fused Triton tiers are default-on in the
+        # auto-dispatched lanes (LYCORIS_KERNEL_BACKEND opts out) and must
+        # not silently change this branch's numerics.
         delta = lycoris_lokr_bypass_forward_diff(
             x.to(dtype=torch.float32),
             None,

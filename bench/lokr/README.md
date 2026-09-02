@@ -1,8 +1,10 @@
 # bench/lokr
 
 Tier 1.5 numerics gate for the LoKr migration from the former local threshold
-to the official `lycoris-lora==3.4.0` decomposition/full-matrix behavior, plus
-the SVD rank-cap path in `networks/lora_save.py`.
+to the official `lycoris-lora==4.0.0` decomposition/full-matrix behavior, plus
+the SVD rank-cap path in `networks/lora_save.py`. (Originally gated the
+3.4.0 migration; re-run green after the 4.0.0 upgrade — the official
+decomposition math this bench pins is unchanged between the two pins.)
 
 Pure parameter math — no DiT load (`bench/_anima.py` is opt-in per
 `CONTRIBUTING.md`, this is an analytical simulator). CPU-friendly; runs in

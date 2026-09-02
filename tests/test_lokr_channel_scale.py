@@ -172,8 +172,9 @@ def test_wrapper_forward_and_gradients_equal_direct_lycoris():
         alpha=16,
         factor=16,
         # The official regular path is the numerical reference. MonadForge's
-        # wrapper uses the official bypass operations with the missing
-        # alpha/rank scale restored for large Anima matrices.
+        # wrapper uses the official bypass operations (LyCORIS 4.0 applies
+        # the alpha/rank scale inside the bypass itself; pre-4.0 the wrapper
+        # had to restore it at the call site).
         bypass_mode=False,
     )
     official.load_state_dict(wrapped.state_dict())
@@ -206,6 +207,28 @@ def test_wrapper_forward_and_gradients_equal_direct_lycoris():
         )
 
 
+def test_bypass_scale_applied_once_and_pre40_compensator_double_scales():
+    # Locks the 4.0 call-site invariant: the wrapper passes multiplier only
+    # (the official bypass applies ``self.scale`` itself), so reviving the
+    # pre-4.0 ``multiplier * self.scale`` compensator at the call site would
+    # inflate the residual by exactly ``self.scale``.
+    base, module = _make_module(rank=4, alpha=16, factor=16, multiplier=0.75)
+    _make_delta_nonzero(module)
+    module.apply_to()
+    x = torch.randn(2, 3, 512)
+    with torch.no_grad():
+        base_out = module.org_forward(x)
+        wrapped_out = base(x)
+        legacy_form = base_out + module.bypass_forward_diff(
+            x, scale=module.multiplier * module.scale
+        )
+
+    delta_norm = (wrapped_out - base_out).norm()
+    legacy_norm = (legacy_form - base_out).norm()
+    assert delta_norm > 0
+    assert (legacy_norm / delta_norm).item() == pytest.approx(module.scale, rel=1e-3)
+
+
 def test_fp32_compute_casts_all_official_bypass_operands(monkeypatch):
     base, module = _make_module(
         in_dim=64,
@@ -221,11 +244,13 @@ def test_fp32_compute_casts_all_official_bypass_operands(monkeypatch):
     _make_delta_nonzero(module)
 
     seen_dtypes: list[torch.dtype] = []
+    seen_backends: list[object] = []
     original = lokr_impl.lycoris_lokr_bypass_forward_diff
 
     def spy(h, org_out, *weights, **kwargs):
         seen_dtypes.append(h.dtype)
         seen_dtypes.extend(weight.dtype for weight in weights if weight is not None)
+        seen_backends.append(kwargs.get("backend"))
         return original(h, org_out, *weights, **kwargs)
 
     monkeypatch.setattr(lokr_impl, "lycoris_lokr_bypass_forward_diff", spy)
@@ -241,6 +266,9 @@ def test_fp32_compute_casts_all_official_bypass_operands(monkeypatch):
     assert torch.allclose(output, expected, atol=1e-3, rtol=1e-3)
     assert seen_dtypes
     assert set(seen_dtypes) == {torch.float32}
+    # The fp32 lane must pin the reference backend: fused Triton tiers stay
+    # out of the V100/fp16 protection lane (see networks/CLAUDE.md).
+    assert seen_backends == ["torch"]
 
 
 def test_zero_init_trains_the_official_w2_chain_end_first():

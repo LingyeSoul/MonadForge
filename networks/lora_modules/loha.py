@@ -109,12 +109,16 @@ class LoHaModule(LycorisLohaModule):
         # The official 4.0 implementation is the dispatched path (fused
         # kernels where available, ΔW never materialized) and is safe to
         # inherit for the plain-Linear case. Only the rank_dropout branch is
-        # kept local: it would call the virtual ``get_weight`` — this class's
-        # merge/fuse override (fp32 output, dropout suppressed) — and leak it
-        # into the training forward.
+        # kept local, term-for-term the official 4.0 branch (scalar pre-cast
+        # to x's dtype, ΔW cast to x) with one deliberate swap: the NON-virtual
+        # ``get_weight`` call — the virtual one is this class's merge/fuse
+        # override (fp32 output, dropout suppressed) and must not leak into
+        # the training forward.
         if self.training and self.rank_dropout:
             diff_weight = (
-                LycorisLohaModule.get_weight(self, self.shape) * self.scalar * scale
+                LycorisLohaModule.get_weight(self, self.shape).to(x)
+                * self.scalar.to(device=x.device, dtype=x.dtype)
+                * scale
             )
             return self.drop(self.op(x, diff_weight, **self.kw_dict))
         return LycorisLohaModule.bypass_forward_diff(self, x, scale=scale)

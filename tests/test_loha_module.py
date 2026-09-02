@@ -2,9 +2,10 @@
 
 Mirrors the LoKr wrapper suite (``test_lokr_channel_scale.py``) — same
 wrapper-vs-official reference style, no Linux-only goldens. The scale
-assertions are load-bearing: LyCORIS 3.4.0's LoHa bypass already includes
-``self.scale`` (unlike LoKr's, which omits it), and ``get_diff_weight``
-double-applies it (like LoKr's) — see ``networks/lora_modules/loha.py``.
+assertions are load-bearing: LyCORIS' LoHa bypass applies ``self.scale``
+(officially via the dispatched gamma since 4.0; LoKr's bypass omitted the
+factor before 4.0), and ``get_diff_weight`` double-applies it (still in
+4.0.0) — see ``networks/lora_modules/loha.py``.
 """
 
 from __future__ import annotations
@@ -120,9 +121,10 @@ def test_forward_is_identity_at_init():
 
 
 def test_forward_applies_scale_exactly_once():
-    # Guards the 3.4.0 asymmetry: LoHa's official bypass already bakes in
-    # ``self.scale`` — the wrapper must NOT re-add it (the LoKr fix would
-    # double-scale here).
+    # Guards the LoHa/LoKr bypass-scale asymmetry: LoHa's official bypass
+    # bakes in ``self.scale`` — the wrapper must NOT re-add it (the pre-4.0
+    # LoKr compensator form ``multiplier * self.scale`` would double-scale
+    # here).
     base, module = _make_module(rank=4, alpha=16, multiplier=0.75)
     _make_delta_nonzero(module)
     module.apply_to()
@@ -199,8 +201,8 @@ def test_zero_init_trains_the_official_w2_chain_end_first():
 
 
 def test_get_diff_weight_scales_once():
-    # LyCORIS 3.4.0's own get_diff_weight multiplies self.scale on top of a
-    # get_weight that already applied it; the override must scale once.
+    # LyCORIS' own get_diff_weight (still in 4.0.0) multiplies self.scale on
+    # top of a get_weight that already applied it; the override scales once.
     _, module = _make_module(rank=4, alpha=16, multiplier=0.75)
     _make_delta_nonzero(module)
 
@@ -218,10 +220,12 @@ def test_fp32_compute_casts_all_official_operands(monkeypatch):
     _make_delta_nonzero(module)
 
     seen_dtypes: list[torch.dtype] = []
+    seen_backends: list[object] = []
     original = loha_impl.lycoris_loha_diff_weight
 
     def spy(*weights, **kwargs):
         seen_dtypes.extend(w.dtype for w in weights if w is not None)
+        seen_backends.append(kwargs.get("backend"))
         gamma = kwargs.get("gamma")
         if gamma is not None:
             seen_dtypes.append(gamma.dtype)
@@ -247,6 +251,9 @@ def test_fp32_compute_casts_all_official_operands(monkeypatch):
     assert torch.allclose(output, expected, atol=1e-3, rtol=1e-3)
     assert seen_dtypes
     assert set(seen_dtypes) == {torch.float32}
+    # The fp32 lane must pin the reference backend: fused Triton tiers stay
+    # out of the V100/fp16 protection lane (see networks/CLAUDE.md).
+    assert seen_backends == ["torch"]
 
 
 def test_merge_uses_official_functional_delta():
@@ -292,8 +299,10 @@ def test_fuse_unfuse_is_reversible_with_rank_dropout_in_training_mode():
 
 def test_rank_dropout_still_fires_in_training_forward():
     # The wrapper's get_weight override suppresses rank_dropout for merge/fuse
-    # determinism; the training forward must keep official row-dropout (it
-    # lives inside the official get_weight the bypass calls non-virtually).
+    # determinism; the training forward must keep official row-dropout (the
+    # local rank_dropout branch applies it inside the official get_weight,
+    # called non-virtually; with rank_dropout off the wrapper delegates to
+    # the 4.0 dispatched bypass, which never touches get_weight).
     torch.manual_seed(0)
     base, module = _make_module(rank=4, alpha=16, rank_dropout=0.5)
     _make_delta_nonzero(module)
@@ -308,6 +317,70 @@ def test_rank_dropout_still_fires_in_training_forward():
     eval_a = base(x)
     eval_b = base(x)
     assert torch.equal(eval_a, eval_b)
+
+
+def test_rank_dropout_branch_matches_official_branch_under_matched_mask():
+    # Numeric pin for the local rank_dropout branch: it must stay
+    # term-for-term equal to the official 4.0 branch (only the get_weight
+    # call is non-virtual), so with identical RNG state both produce the
+    # same masked delta.
+    torch.manual_seed(123)
+    wrapped_base = torch.nn.Linear(512, 512, bias=False)
+    wrapped_base.weight.requires_grad_(False)
+    official_base = copy.deepcopy(wrapped_base)
+
+    torch.manual_seed(456)
+    wrapped = LoHaModule(
+        "wrapped",
+        wrapped_base,
+        multiplier=0.75,
+        lora_dim=4,
+        alpha=16,
+        rank_dropout=0.5,
+    )
+    official = LycorisLohaModule(
+        "official",
+        official_base,
+        multiplier=0.75,
+        lora_dim=4,
+        alpha=16,
+        rank_dropout=0.5,
+        bypass_mode=True,
+    )
+    _make_delta_nonzero(wrapped)
+    official.load_state_dict(wrapped.state_dict())
+    wrapped.train()
+    official.train()
+    x = torch.randn(2, 3, 512)
+
+    torch.manual_seed(7)
+    wrapped_delta = wrapped.bypass_forward_diff(x, scale=wrapped.multiplier)
+    torch.manual_seed(7)
+    official_delta = official.bypass_forward_diff(x, scale=official.multiplier)
+
+    assert torch.allclose(wrapped_delta, official_delta, atol=1e-6, rtol=1e-6)
+
+
+def test_rank_dropout_training_forward_never_calls_virtual_get_weight(monkeypatch):
+    # The local branch exists so the training forward never routes through
+    # this class's merge/fuse get_weight override (fp32 output, dropout
+    # suppressed) — pin that no virtual call happens.
+    calls: list[str] = []
+    original = LoHaModule.get_weight
+
+    def spy(self, *args, **kwargs):
+        calls.append("virtual")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(LoHaModule, "get_weight", spy)
+
+    base, module = _make_module(rank=4, alpha=16, rank_dropout=0.5)
+    _make_delta_nonzero(module)
+    module.apply_to()
+    module.train()
+    _ = base(torch.randn(2, 3, 512))
+
+    assert calls == []
 
 
 def test_native_checkpoint_keeps_keys_and_infers_rank():
