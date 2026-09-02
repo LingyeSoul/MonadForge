@@ -1,6 +1,8 @@
-import { ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import { useTrainingStore } from '../stores/training'
 import type { TrainingMetrics } from '../stores/training'
+import { MAX_RENDERED_LINES, makeLogLine, type LogLine } from '../utils/logLines'
+import type { LogStreamHandle } from './useTask'
 
 interface WsMessage {
   type: 'connected' | 'log' | 'done' | 'cancelled' | 'error' | 'metrics' | 'wandb_url' | 'sample'
@@ -19,16 +21,29 @@ interface WsMessage {
   attempt_id?: string | null
 }
 
-export function useTrainingStream(taskId: string) {
+// Coalesce metrics snapshots (each carries the full loss/lr/step histories)
+// into at most one store commit per window — the dashboard re-maps two chart
+// datasets and re-renders two SVG charts per commit, so commit rate, not
+// message rate, is what has to stay low.
+const METRICS_COMMIT_INTERVAL = 500
+
+export function useTrainingStream(taskId: string): LogStreamHandle & {
+  exitCode: Ref<number | null>
+  connect: () => Promise<void>
+  disconnect: () => void
+} {
   const store = useTrainingStore()
+  const lines = ref<LogLine[]>([])
   const connected = ref(false)
   const done = ref(false)
   const exitCode = ref<number | null>(null)
-  const logLines = ref<string[]>([])
+  const activity = ref(0)
+  const historyTotal = ref(0)
   let ws: WebSocket | null = null
   let reconnectTimer = 0
   let reconnectAttempt = 0
   let manuallyClosed = false
+  let seq = 0
 
   // Skip WS replay lines already loaded via REST
   let replayRemaining = 0
@@ -40,13 +55,44 @@ export function useTrainingStream(taskId: string) {
   function flushPending() {
     rafId = 0
     if (pendingLines.length === 0) return
-    logLines.value.push(...pendingLines.splice(0))
+    for (const line of pendingLines.splice(0)) {
+      lines.value.push(makeLogLine(seq++, line))
+    }
+    const overflow = lines.value.length - MAX_RENDERED_LINES
+    if (overflow > 0) lines.value.splice(0, overflow)
+    activity.value++
   }
 
   function enqueueLine(line: string) {
     pendingLines.push(line)
     if (!rafId) {
       rafId = requestAnimationFrame(flushPending)
+    }
+  }
+
+  // ── metrics commit throttle ────────────────────────────────────
+  let pendingMetrics: Partial<TrainingMetrics> | null = null
+  let metricsTimer = 0
+
+  function scheduleMetricsCommit(data: Partial<TrainingMetrics>) {
+    pendingMetrics = pendingMetrics ? { ...pendingMetrics, ...data } : data
+    if (!metricsTimer) {
+      metricsTimer = window.setTimeout(() => {
+        metricsTimer = 0
+        if (pendingMetrics) store.updateFromWs(pendingMetrics)
+        pendingMetrics = null
+      }, METRICS_COMMIT_INTERVAL)
+    }
+  }
+
+  function flushMetricsCommit() {
+    if (metricsTimer) {
+      clearTimeout(metricsTimer)
+      metricsTimer = 0
+    }
+    if (pendingMetrics) {
+      store.updateFromWs(pendingMetrics)
+      pendingMetrics = null
     }
   }
 
@@ -82,10 +128,12 @@ export function useTrainingStream(taskId: string) {
         const data = await res.json()
         if (Array.isArray(data.lines)) {
           historyCount = data.lines.length
+          historyTotal.value = data.total ?? historyCount
           pendingLines.length = 0
           if (rafId) cancelAnimationFrame(rafId)
           rafId = 0
-          logLines.value = [...data.lines]
+          lines.value = data.lines.slice(-MAX_RENDERED_LINES).map((line: string) => makeLogLine(seq++, line))
+          activity.value++
         }
         if (data.state && data.state !== 'running' && data.state !== 'pending') {
           done.value = true
@@ -122,13 +170,14 @@ export function useTrainingStream(taskId: string) {
           }
           enqueueLine(msg.line)
         } else if (msg.type === 'metrics' && msg.data) {
-          console.debug('[TrainingStream] metrics received:', msg.data.step, msg.data.total_steps, msg.data.avr_loss)
-          store.updateFromWs(msg.data)
+          scheduleMetricsCommit(msg.data)
         } else if (msg.type === 'done') {
+          flushMetricsCommit()
           done.value = true
           exitCode.value = msg.exit_code ?? null
           store.done = true
         } else if (msg.type === 'cancelled') {
+          flushMetricsCommit()
           done.value = true
           exitCode.value = -1
           store.done = true
@@ -173,10 +222,13 @@ export function useTrainingStream(taskId: string) {
     done.value = false
     exitCode.value = null
     store.reset()
-    logLines.value = []
+    lines.value = []
     pendingLines.length = 0
     if (rafId) cancelAnimationFrame(rafId)
     rafId = 0
+    if (metricsTimer) clearTimeout(metricsTimer)
+    metricsTimer = 0
+    pendingMetrics = null
     if (reconnectTimer) clearTimeout(reconnectTimer)
     reconnectTimer = 0
     await open()
@@ -192,7 +244,10 @@ export function useTrainingStream(taskId: string) {
     pendingLines.length = 0
     if (rafId) cancelAnimationFrame(rafId)
     rafId = 0
+    if (metricsTimer) clearTimeout(metricsTimer)
+    metricsTimer = 0
+    pendingMetrics = null
   }
 
-  return { logLines, connected, done, exitCode, connect, disconnect }
+  return { lines, connected, done, exitCode, activity, historyTotal, connect, disconnect }
 }

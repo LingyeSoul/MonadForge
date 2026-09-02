@@ -23,9 +23,10 @@
         :title="t('dashSampleEnlarge')"
       >
         <img
-          :src="fileUrl(s)"
+          :src="thumbUrl(s)"
           :alt="s.filename"
           loading="lazy"
+          decoding="async"
           class="sample-thumb"
         />
         <div class="sample-overlay">
@@ -100,6 +101,15 @@ function fileUrl(s: SampleInfo): string {
   const params = new URLSearchParams({ path: s.filename })
   if (s.attempt_id) params.set('attempt_id', s.attempt_id)
   return `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples/file?${params.toString()}`
+}
+
+/** Grid tiles render at ~140px — load the server-generated WebP thumbnail
+ * instead of decoding the full-resolution PNG for every tile. The
+ * click-to-enlarge dialog keeps using the original via fileUrl(). */
+function thumbUrl(s: SampleInfo): string {
+  const params = new URLSearchParams({ path: s.filename, size: '320' })
+  if (s.attempt_id) params.set('attempt_id', s.attempt_id)
+  return `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples/thumb?${params.toString()}`
 }
 
 function labelFor(s: SampleInfo): string {

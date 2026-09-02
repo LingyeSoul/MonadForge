@@ -265,7 +265,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
-import { useTaskStore, type TaskFilter, type TaskInfo } from '../stores/task'
+import { useTaskStore, mergeTaskList, type TaskFilter, type TaskInfo } from '../stores/task'
 import { useI18n } from '../composables/useI18n'
 import LogStream from '../components/LogStream.vue'
 import TaskAttemptHistory from '../components/TaskAttemptHistory.vue'
@@ -295,7 +295,7 @@ async function loadPage() {
       pageSize: historyPageSize,
     })
     if (requestId !== historyRequestId) return
-    historyTasks.value = result.tasks
+    historyTasks.value = mergeTaskList(historyTasks.value, result.tasks)
     historyTotal.value = result.total
     historyError.value = false
   } catch {

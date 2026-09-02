@@ -77,6 +77,58 @@ const container = ref<HTMLElement>()
 const width = ref(600)
 const gradientId = `lg-${Math.random().toString(36).slice(2, 8)}`
 
+// Metrics commits re-map the whole history into `data`; plotting every
+// point means rebuilding a multi-thousand-point SVG string and re-rastering
+// it per commit. LTTB keeps the curve's shape (including spikes) with a
+// bounded point budget.
+const PLOT_POINT_BUDGET = 400
+const PLOT_DOWNSAMPLE_ABOVE = 600
+
+interface ChartPoint {
+  step: number
+  value: number
+}
+
+function lttb(data: ChartPoint[], threshold: number): ChartPoint[] {
+  const n = data.length
+  if (n <= threshold) return data
+  const sampled: ChartPoint[] = [data[0]]
+  const bucketSize = (n - 2) / (threshold - 2)
+  let anchor = data[0]
+  let anchorIndex = 0
+  for (let i = 0; i < threshold - 2; i++) {
+    const curStart = Math.floor(i * bucketSize) + 1
+    const curEnd = Math.floor((i + 1) * bucketSize) + 1
+    const nextStart = curEnd
+    const nextEnd = Math.min(Math.floor((i + 2) * bucketSize) + 1, n)
+    let avgIndex = 0
+    let avgValue = 0
+    for (let j = nextStart; j < nextEnd; j++) {
+      avgIndex += j
+      avgValue += data[j].value
+    }
+    const avgN = nextEnd - nextStart
+    const avgX = avgN > 0 ? avgIndex / avgN : (nextStart + nextEnd) / 2
+    const avgY = avgN > 0 ? avgValue / avgN : 0
+    let bestIndex = curStart
+    let bestScore = -1
+    for (let j = curStart; j < curEnd; j++) {
+      const dx = avgX - anchorIndex
+      const dy = avgY - anchor.value
+      const score = ((j - anchorIndex) * dy - (data[j].value - anchor.value) * dx) ** 2
+      if (score > bestScore) {
+        bestScore = score
+        bestIndex = j
+      }
+    }
+    anchor = data[bestIndex]
+    anchorIndex = bestIndex
+    sampled.push(anchor)
+  }
+  sampled.push(data[n - 1])
+  return sampled
+}
+
 const paddingLeft = 50
 const paddingRight = 16
 const paddingTop = 12
@@ -95,11 +147,16 @@ onMounted(() => {
 })
 onUnmounted(() => ro?.disconnect())
 
+// Domain from the FULL series so LTTB's point selection can't clip the
+// true min/max off the y-axis.
 const yDomain = computed(() => {
   if (props.data.length === 0) return { min: 0, max: 1 }
-  const vals = props.data.map((d) => d.value)
-  let min = Math.min(...vals)
-  let max = Math.max(...vals)
+  let min = Infinity
+  let max = -Infinity
+  for (const d of props.data) {
+    if (d.value < min) min = d.value
+    if (d.value > max) max = d.value
+  }
   if (min === max) {
     // Degenerate (constant) series: expand symmetrically around the value
     // by a magnitude-relative margin, not a hardcoded ±0.001. A hardcoded
@@ -112,12 +169,20 @@ const yDomain = computed(() => {
   return { min: min - pad, max: max + pad }
 })
 
+const plotData = computed<ChartPoint[]>(() => {
+  if (props.data.length > PLOT_DOWNSAMPLE_ABOVE) {
+    return lttb(props.data, PLOT_POINT_BUDGET)
+  }
+  return props.data
+})
+
 const plotWidth = computed(() => width.value - paddingLeft - paddingRight)
 const plotHeight = computed(() => props.height - paddingTop - paddingBottom)
 
 function xFor(i: number): number {
-  if (props.data.length <= 1) return paddingLeft
-  return paddingLeft + (i / (props.data.length - 1)) * plotWidth.value
+  const count = plotData.value.length
+  if (count <= 1) return paddingLeft
+  return paddingLeft + (i / (count - 1)) * plotWidth.value
 }
 
 function yFor(val: number): number {
@@ -127,14 +192,14 @@ function yFor(val: number): number {
 }
 
 const linePoints = computed(() =>
-  props.data.map((d, i) => `${xFor(i).toFixed(1)},${yFor(d.value).toFixed(1)}`).join(' ')
+  plotData.value.map((d, i) => `${xFor(i).toFixed(1)},${yFor(d.value).toFixed(1)}`).join(' ')
 )
 
 const areaPoints = computed(() => {
-  if (props.data.length === 0) return ''
+  if (plotData.value.length === 0) return ''
   const bottom = paddingTop + plotHeight.value
   const first = `${xFor(0).toFixed(1)},${bottom}`
-  const last = `${xFor(props.data.length - 1).toFixed(1)},${bottom}`
+  const last = `${xFor(plotData.value.length - 1).toFixed(1)},${bottom}`
   return `${first} ${linePoints.value} ${last}`
 })
 

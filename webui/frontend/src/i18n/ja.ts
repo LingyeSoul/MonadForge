@@ -123,6 +123,7 @@ export default {
   taskFilterCancelled: 'キャンセル済み',
   taskState: '状態',
   taskConnecting: '接続中...',
+  taskLogTruncated: '最新の {kept} / {total} 行のみ表示 — 完全なログはディスクに保存されています',
   taskPauseQueue: '一時停止',
   taskResumeQueue: '再開',
   taskQueuePosition: 'キュー位置',

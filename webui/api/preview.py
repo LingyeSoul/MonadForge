@@ -11,13 +11,16 @@ matching a non-image extension) is rejected with 404.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
+from PIL import Image
 from pydantic import BaseModel
 
 from webui.services.daemon_client import DaemonError, daemon_client as _daemon_client
@@ -252,6 +255,12 @@ def get_sample_file(
     ``path`` must be a plain filename (no slashes, no ``..``); we still
     resolve it under the task's sample dir and verify it stays inside.
     """
+    candidate = _locate_sample_file(task_id, path, attempt_id)
+    return FileResponse(str(candidate))
+
+
+def _locate_sample_file(task_id: str, path: str, attempt_id: str | None) -> Path:
+    """Resolve + validate a sample filename to an on-disk path."""
     task = task_service.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
@@ -285,5 +294,51 @@ def get_sample_file(
         raise HTTPException(status_code=404, detail=f"Sample not found: {path}")
     if candidate.suffix.lower() not in _SAMPLE_IMAGE_EXTS:
         raise HTTPException(status_code=400, detail="Not a sample image")
+    return candidate
 
-    return FileResponse(str(candidate))
+
+_THUMB_CACHE_DIR = Path(tempfile.gettempdir()) / "monadforge_thumbs"
+_THUMB_SIZE_DEFAULT = 320
+_THUMB_SIZE_MAX = 640
+
+
+@router.get("/runs/{task_id}/samples/thumb")
+def get_sample_thumb(
+    task_id: str,
+    path: str = Query(..., description="Filename within the task's sample dir"),
+    attempt_id: str | None = None,
+    size: int = Query(_THUMB_SIZE_MAX, ge=64, le=_THUMB_SIZE_MAX),
+):
+    """Serve a small WebP thumbnail for a sample image.
+
+    The gallery renders previews at ~140px; decoding full-resolution PNGs
+    for every tile costs hundreds of MB of decoded texture memory and
+    re-decodes on every scroll pass. Thumbnails are generated once into a
+    shared temp cache keyed by (source path, mtime, size), so regenerated
+    previews get fresh thumbnails for free. Sync endpoint on purpose —
+    FastAPI runs it in its threadpool, keeping the event loop free.
+    """
+    candidate = _locate_sample_file(task_id, path, attempt_id)
+    stat = candidate.stat()
+
+    key = hashlib.sha1(
+        f"{candidate}|{stat.st_mtime_ns}|{stat.st_size}|{size}".encode()
+    ).hexdigest()
+    thumb_path = _THUMB_CACHE_DIR / f"{key}.webp"
+    if thumb_path.is_file():
+        return FileResponse(str(thumb_path), media_type="image/webp")
+
+    try:
+        with Image.open(candidate) as img:
+            img = img.convert("RGB")
+            img.thumbnail((size, size))
+            _THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            tmp_path = thumb_path.with_suffix(".tmp")
+            img.save(tmp_path, "WEBP", quality=80)
+            tmp_path.replace(thumb_path)
+    except OSError:
+        # Undecodable source — fall back to the original file rather than
+        # 500-ing the whole gallery.
+        return FileResponse(str(candidate))
+
+    return FileResponse(str(thumb_path), media_type="image/webp")

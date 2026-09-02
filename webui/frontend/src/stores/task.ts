@@ -49,6 +49,21 @@ export interface TaskPage {
   total: number
 }
 
+/**
+ * Preserve object identity for task entries whose serialized content is
+ * unchanged. Polls rebuild every TaskInfo from fresh JSON every few
+ * seconds; without this, every card on the monitor page re-renders each
+ * tick even when nothing visibly changed.
+ */
+export function mergeTaskList(prev: TaskInfo[], next: TaskInfo[]): TaskInfo[] {
+  if (prev.length === 0) return next
+  const prevById = new Map(prev.map((t) => [t.task_id, t]))
+  return next.map((t) => {
+    const old = prevById.get(t.task_id)
+    return old !== undefined && JSON.stringify(old) === JSON.stringify(t) ? old : t
+  })
+}
+
 export const useTaskStore = defineStore('task', () => {
   const tasks = ref<TaskInfo[]>([])
   const commands = ref<Record<string, string>>({})
@@ -96,7 +111,7 @@ export const useTaskStore = defineStore('task', () => {
   async function fetchTasks() {
     try {
       const page = await fetchTaskPage({ page: 1, pageSize: 500 })
-      tasks.value = page.tasks
+      tasks.value = mergeTaskList(tasks.value, page.tasks)
       taskListError.value = false
     } catch {
       tasks.value = []
@@ -131,13 +146,22 @@ export const useTaskStore = defineStore('task', () => {
       daemonPaused.value = !!data.paused
       // Merge positions onto the matching tasks. Only queued tasks carry a
       // position; running/terminal tasks get cleared so a job that just left
-      // the queue doesn't keep a stale #N.
+      // the queue doesn't keep a stale #N. Skipped entirely while the
+      // position map is unchanged — rebuilding the array would otherwise
+      // churn every task object (and every bound card) on each poll.
       const positions: Record<string, number> = data.positions || {}
+      const positionsChanged =
+        JSON.stringify(queuePositions.value) !== JSON.stringify(positions)
       queuePositions.value = positions
-      tasks.value = tasks.value.map((task) => ({
-        ...task,
-        queue_position: positions[task.task_id] ?? null,
-      }))
+      if (positionsChanged) {
+        tasks.value = mergeTaskList(
+          tasks.value,
+          tasks.value.map((task) => ({
+            ...task,
+            queue_position: positions[task.task_id] ?? null,
+          })),
+        )
+      }
     } catch {
       daemonUp.value = false
       daemonPaused.value = false

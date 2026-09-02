@@ -1,4 +1,5 @@
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted, type Ref } from 'vue'
+import { MAX_RENDERED_LINES, makeLogLine, type LogLine } from '../utils/logLines'
 
 interface WsMessage {
   type: 'connected' | 'log' | 'done' | 'cancelled' | 'error'
@@ -10,17 +11,37 @@ interface WsMessage {
   message?: string
 }
 
-export function useTaskStream(taskId: string | (() => string)) {
-  const messages = ref<string[]>([])
+/** Reactive view of a task's log stream, consumable by LogStream either
+ * directly (self-managed WS) or handed across components as a handle. */
+export interface LogStreamHandle {
+  lines: Ref<LogLine[]>
+  connected: Ref<boolean>
+  done: Ref<boolean>
+  /** Bumped once per coalesced flush — the render-side autoscroll ticks
+   * on this instead of deep-watching the (ever-growing) line array. */
+  activity: Ref<number>
+  /** All-time line count reported by the server at (re)connect; larger
+   * than ``lines.length`` means the FIFO window dropped older lines. */
+  historyTotal: Ref<number>
+}
+
+export function useTaskStream(taskId: string | (() => string)): LogStreamHandle & {
+  exitCode: Ref<number | null>
+  disconnect: () => void
+} {
+  const lines = ref<LogLine[]>([])
   const connected = ref(false)
   const done = ref(false)
   const exitCode = ref<number | null>(null)
+  const activity = ref(0)
+  const historyTotal = ref(0)
   let ws: WebSocket | null = null
   let reconnectTimer = 0
   let reconnectAttempt = 0
   let manuallyClosed = false
   let connectionVersion = 0
   let replayRemaining = 0
+  let seq = 0
 
   const resolvedId = typeof taskId === 'function' ? taskId : () => taskId
 
@@ -33,12 +54,18 @@ export function useTaskStream(taskId: string | (() => string)) {
     if (pendingLines.length === 0) return
     const batch = pendingLines.splice(0)
     for (const { line, replace } of batch) {
-      if (replace && messages.value.length > 0) {
-        messages.value.splice(messages.value.length - 1, 1, line)
+      if (replace && lines.value.length > 0) {
+        const last = lines.value[lines.value.length - 1]
+        lines.value.splice(lines.value.length - 1, 1, makeLogLine(last.seq, line))
       } else {
-        messages.value.push(line)
+        lines.value.push(makeLogLine(seq++, line))
       }
     }
+    // FIFO window: drop the oldest lines past the render cap. Keys are
+    // ``seq`` so Vue removes just the head nodes instead of re-mounting.
+    const overflow = lines.value.length - MAX_RENDERED_LINES
+    if (overflow > 0) lines.value.splice(0, overflow)
+    activity.value++
   }
 
   function enqueueLine(line: string, replace = false) {
@@ -78,10 +105,14 @@ export function useTaskStream(taskId: string | (() => string)) {
         const data = await res.json()
         if (Array.isArray(data.lines)) {
           historyCount = data.lines.length
+          historyTotal.value = data.total ?? historyCount
           pendingLines.length = 0
           if (rafId) cancelAnimationFrame(rafId)
           rafId = 0
-          messages.value = [...data.lines]
+          // Keep only the newest window for rendering; replay counting
+          // still uses the full history so the WS skip stays aligned.
+          lines.value = data.lines.slice(-MAX_RENDERED_LINES).map((line: string) => makeLogLine(seq++, line))
+          activity.value++
         }
         if (data.state && data.state !== 'running' && data.state !== 'pending') {
           done.value = true
@@ -151,7 +182,7 @@ export function useTaskStream(taskId: string | (() => string)) {
     disconnect()
     manuallyClosed = false
     reconnectAttempt = 0
-    messages.value = []
+    lines.value = []
     done.value = false
     exitCode.value = null
     const version = connectionVersion
@@ -165,5 +196,5 @@ export function useTaskStream(taskId: string | (() => string)) {
 
   onUnmounted(disconnect)
 
-  return { messages, connected, done, exitCode, disconnect }
+  return { lines, connected, done, exitCode, activity, historyTotal, disconnect }
 }

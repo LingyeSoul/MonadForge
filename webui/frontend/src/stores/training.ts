@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { shallowRef, ref } from 'vue'
 
 export interface SampleInfo {
   attempt_id: string | null
@@ -81,7 +81,11 @@ function basename(path: string): string {
 }
 
 export const useTrainingStore = defineStore('training', () => {
-  const metrics = ref<TrainingMetrics>({ ...emptyMetrics })
+  // shallowRef: metrics carries loss/step/lr history arrays (up to 2000
+  // points each, replaced on every commit). Deep reactivity would proxy
+  // every element on every commit for data nobody mutates in place —
+  // commits replace the whole object instead.
+  const metrics = shallowRef<TrainingMetrics>({ ...emptyMetrics })
   const connected = ref(false)
   const done = ref(false)
 
@@ -100,32 +104,31 @@ export const useTrainingStore = defineStore('training', () => {
       filename: basename(info.path),
       received_at: Date.now(),
     }
-    metrics.value.sample_history.push(sample)
-    metrics.value.latest_sample = sample
-
-    // Drop oldest entries past the cap.
-    const overflow = metrics.value.sample_history.length - MAX_SAMPLE_HISTORY
+    const history = [...metrics.value.sample_history, sample]
+    let trimmed = history
+    const overflow = history.length - MAX_SAMPLE_HISTORY
     if (overflow > 0) {
-      const dropped = metrics.value.sample_history.splice(0, overflow)
-      for (const d of dropped) {
+      trimmed = history.slice(overflow)
+      for (const d of history.slice(0, overflow)) {
         seenSamplePaths.delete(`${d.attempt_id || ''}\u0000${d.path}`)
       }
     }
+    metrics.value = { ...metrics.value, sample_history: trimmed, latest_sample: sample }
   }
 
   function updateFromWs(data: Partial<TrainingMetrics>) {
-    Object.assign(metrics.value, data)
+    metrics.value = { ...metrics.value, ...data }
   }
 
   function reset() {
-    Object.assign(metrics.value, {
+    metrics.value = {
       ...emptyMetrics,
       events: [],
       loss_history: [],
       step_history: [],
       lr_history: [],
       sample_history: [],
-    })
+    }
     seenSamplePaths.clear()
     connected.value = false
     done.value = false
@@ -136,7 +139,7 @@ export const useTrainingStore = defineStore('training', () => {
       const res = await fetch(`/api/tasks/${taskId}/metrics`)
       if (res.ok) {
         const data = await res.json()
-        Object.assign(metrics.value, data)
+        metrics.value = { ...metrics.value, ...data }
       }
     } catch {
       // ignore — WS will catch up

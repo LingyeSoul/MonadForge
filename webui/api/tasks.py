@@ -142,11 +142,21 @@ def get_task(task_id: str):
 
 @router.get("/{task_id}/output")
 def get_task_output(task_id: str):
-    """Get all accumulated output lines for a task."""
+    """Get accumulated output lines for a task.
+
+    ``lines`` is capped server-side (oldest dropped FIFO); ``total`` is the
+    all-time line count so clients can show a truncation notice.
+    """
     task = task_service.get_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    return {"lines": task.lines, "state": task.state.value, "exit_code": task.exit_code}
+    return {
+        "lines": task.lines,
+        "state": task.state.value,
+        "exit_code": task.exit_code,
+        "total": task.lines_total,
+        "truncated": task.lines_total > len(task.lines),
+    }
 
 
 @router.get("/{task_id}/metrics")

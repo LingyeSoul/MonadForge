@@ -209,22 +209,29 @@
         </div>
       </v-card>
 
-      <!-- Row 4: Live Log (fixed height, scrolls internally) -->
-      <v-card variant="tonal" style="flex: 0 0 320px; display: flex; flex-direction: column; overflow: hidden;">
+      <!-- Row 4: Live Log (fixed height, scrolls internally). Shares the
+           dashboard's single WS via :external instead of opening its own. -->
+      <v-card v-if="selectedTaskId" variant="tonal" style="flex: 0 0 320px; display: flex; flex-direction: column; overflow: hidden;">
         <v-card-title class="text-subtitle-2 d-flex align-center pa-3 pb-0">
           <v-icon icon="mdi-console-line" size="small" class="mr-2" />
           {{ t('dashLiveLog') }}
         </v-card-title>
         <v-card-text class="pa-2 d-flex flex-column" style="flex: 1 1 0; min-height: 0; overflow: hidden;">
-          <LogStream :task-id="selectedTaskId" />
+          <LogStream :task-id="selectedTaskId" :external="streamHandle" />
         </v-card-text>
+      </v-card>
+      <v-card v-else variant="tonal" style="flex: 0 0 auto;">
+        <div class="d-flex align-center pa-4 text-body-2 text-medium-emphasis">
+          <v-icon icon="mdi-console-line" size="small" class="mr-2" />
+          {{ t('dashSelectTask') }}
+        </div>
       </v-card>
     </div>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, shallowRef, onMounted, onUnmounted } from 'vue'
 import { useTrainingStore } from '../stores/training'
 import { useTaskStore } from '../stores/task'
 import { useTrainingStream } from '../composables/useTrainingStream'
@@ -250,7 +257,7 @@ async function fetchHwStats() {
 }
 
 const selectedTaskId = ref('')
-let stream: ReturnType<typeof useTrainingStream> | null = null
+const streamHandle = shallowRef<ReturnType<typeof useTrainingStream> | null>(null)
 
 const trainingTasks = computed(() =>
   taskStore.tasks.filter((t) => t.category === 'training')
@@ -341,12 +348,10 @@ function autoSelect() {
 
 // Connect/disconnect WS when selected task changes
 watch(selectedTaskId, (id) => {
-  stream?.disconnect()
+  streamHandle.value?.disconnect()
   trainingStore.reset()
-  if (id) {
-    stream = useTrainingStream(id)
-    stream.connect()
-  }
+  streamHandle.value = id ? useTrainingStream(id) : null
+  if (streamHandle.value) void streamHandle.value.connect()
 })
 
 // Periodically refresh task list + hw stats
@@ -361,7 +366,7 @@ onMounted(() => {
   }, 5000)
 })
 onUnmounted(() => {
-  stream?.disconnect()
+  streamHandle.value?.disconnect()
   if (refreshTimer) clearInterval(refreshTimer)
   if (hwTimer) clearInterval(hwTimer)
 })

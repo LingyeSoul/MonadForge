@@ -1231,16 +1231,22 @@ async function startTest() {
 
 function waitForTask(taskId: string): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Poll the single-task endpoint, not the full task list — fetching
+    // every task (up to 500) every 2s just to watch one state flag.
     const interval = setInterval(async () => {
-      await taskStore.fetchTasks()
-      const task = taskStore.tasks.find(t => t.task_id === taskId)
-      if (!task) return
-      if (task.state === 'success') {
-        clearInterval(interval)
-        resolve()
-      } else if (task.state === 'failed' || task.state === 'cancelled') {
-        clearInterval(interval)
-        reject(new Error(`Task ${task.state}`))
+      try {
+        const res = await fetch(`/api/tasks/${taskId}`)
+        if (!res.ok) return
+        const task = await res.json()
+        if (task.state === 'success') {
+          clearInterval(interval)
+          resolve()
+        } else if (task.state === 'failed' || task.state === 'cancelled') {
+          clearInterval(interval)
+          reject(new Error(`Task ${task.state}`))
+        }
+      } catch {
+        // transient network error — retry on the next tick
       }
     }, 2000)
   })

@@ -678,12 +678,19 @@ async function runAnalyze() {
 
 async function pollAnalyze(taskId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/tasks/${taskId}/output`)
+    // Poll state via the single-task endpoint; the full (capped) output is
+    // fetched exactly once, at terminal state, for the result trailer.
+    const res = await fetch(`/api/tasks/${taskId}`)
     if (!res.ok) return false
-    const data = await res.json()
-    const state: string = data.state
+    const info = await res.json()
+    const state: string = info.state
     if (state === 'running' || state === 'pending') return false
-    // terminal — parse the ANALYZE_RESULT trailer from accumulated lines.
+    const outRes = await fetch(`/api/tasks/${taskId}/output`)
+    if (!outRes.ok) {
+      analyzeBanner.value = null
+      return true
+    }
+    const data = await outRes.json()
     const lines: string[] = data.lines || []
     analyzeBanner.value = parseAnalyzeBanner(lines, state)
     return true

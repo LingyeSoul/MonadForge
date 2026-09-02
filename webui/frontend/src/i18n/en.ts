@@ -123,6 +123,7 @@ export default {
   taskFilterCancelled: 'Cancelled',
   taskState: 'State',
   taskConnecting: 'Connecting...',
+  taskLogTruncated: 'Showing last {kept} of {total} lines — full log is kept on disk',
   taskPauseQueue: 'Pause Queue',
   taskResumeQueue: 'Resume Queue',
   taskQueuePosition: 'Queue Position',

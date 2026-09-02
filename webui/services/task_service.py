@@ -27,6 +27,7 @@ import logging
 import os
 import re
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
@@ -41,6 +42,19 @@ from webui.services.training_log_parser import TrainingLogParser
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent.parent
+
+# Cap on the in-memory output buffer per task. The full stdout stays on
+# disk (the daemon's stdout.log); this buffer only feeds the UI, so once
+# the cap trips, oldest lines are dropped FIFO. Keeps WS replay, the
+# /output REST payload and frontend memory bounded on multi-day runs.
+MAX_LINES = 5000
+TRIM_LINES_TO = 4000
+
+# Minimum wall-clock interval between metrics snapshot broadcasts per
+# task. Both the stdout tqdm parser and the JSONL watcher emit cumulative
+# snapshots, so dropping intermediates loses nothing — the next snapshot
+# that does go out carries the full state.
+METRICS_MIN_INTERVAL = 0.4
 
 
 class TaskState(str, Enum):
@@ -61,6 +75,9 @@ class Task:
     pid: Optional[int] = None
     exit_code: Optional[int] = None
     lines: list[str] = field(default_factory=list)
+    # Total lines ever seen (incl. ones dropped by the MAX_LINES cap) so
+    # the /output endpoint can flag the buffer as truncated.
+    lines_total: int = field(default=0, repr=False)
     # The daemon owns the subprocess now; we keep no live process handle.
     # `job_id` == `id` (the daemon's sortable job id is adopted as task_id);
     # `stdout_path` is the daemon-managed <job_dir>/stdout.log we tail.
@@ -96,6 +113,13 @@ class Task:
     # Full physical daemon records for this logical task, oldest first.
     attempts: list[dict] = field(default_factory=list, repr=False)
     monitored_job_id: Optional[str] = field(default=None, repr=False)
+    # Attempt-id signature the on-disk output was last rebuilt from. The
+    # periodic queue-status reconcile calls _apply_daemon_state for every
+    # task; without this guard each pass re-read every terminal task's
+    # stdout files from disk (synchronously, on the event loop).
+    loaded_attempt_ids: list[str] = field(default_factory=list, repr=False)
+    # monotonic() timestamp of the last metrics snapshot broadcast.
+    last_metrics_ts: float = field(default=0.0, repr=False)
 
     def info(self) -> dict:
         attempt_infos = [
@@ -321,7 +345,12 @@ class TaskService:
         if current_changed or attempt_ids_before != attempt_ids_after:
             task.monitored_job_id = None
             self._load_historical_output(task, group)
-        elif task.state in (TaskState.SUCCESS, TaskState.FAILED, TaskState.CANCELLED):
+        elif task.loaded_attempt_ids != attempt_ids_after:
+            # First _apply_daemon_state for a task that was created without
+            # its on-disk output (e.g. a stale in-memory row). Guarded by the
+            # loaded-attempt signature so the periodic queue-status reconcile
+            # — which lands here for every terminal task — stops re-reading
+            # every attempt's stdout files from disk on each pass.
             self._load_historical_output(task, group)
 
     @staticmethod
@@ -329,6 +358,7 @@ class TaskService:
         """Rebuild one logical task from all physical attempt artifacts."""
         attempts = list(info.get("attempts") or [info])
         task.lines = []
+        task.lines_total = 0
         task.parser = TrainingLogParser()
         task.stdout_offset = 0
         task.progress_last_step = 0
@@ -417,6 +447,22 @@ class TaskService:
         metrics.step = max(
             [task.progress_last_step, *final_steps, *(points.keys() or [0])]
         )
+        task.lines_total = len(task.lines)
+        TaskService._cap_lines(task)
+        task.loaded_attempt_ids = [
+            str(a.get("id") or a.get("job_id") or pos)
+            for pos, a in enumerate(attempts, start=1)
+        ]
+
+    @staticmethod
+    def _cap_lines(task: Task) -> None:
+        """Trim the UI output buffer FIFO once it outgrows MAX_LINES.
+
+        Batched (trim to TRIM_LINES_TO only past MAX_LINES) so a chatty
+        tqdm stream doesn't pay an O(n) splice on every line.
+        """
+        if len(task.lines) > MAX_LINES:
+            del task.lines[: len(task.lines) - TRIM_LINES_TO]
 
     def _ensure_monitors(self, task: Task, progress_path: Optional[str] = None) -> None:
         """Start the per-job pollers once, including for restored jobs."""
@@ -839,6 +885,7 @@ class TaskService:
             return True
         task.state = TaskState.STOPPING
         task.lines.append(f"[stopping] Stop requested for task {task_id}")
+        task.lines_total += 1
         await self._notify_subscribers(task, {"type": "stopping", "task_id": task_id})
         return True
 
@@ -949,6 +996,7 @@ class TaskService:
             err = info.get("error") or info.get("status_detail")
             if err:
                 task.lines.append(f"[error] {err}")
+                task.lines_total += 1
                 await self._notify_subscribers(
                     task, {"type": "log", "line": f"[error] {err}"}
                 )
@@ -1345,10 +1393,13 @@ class TaskService:
                             # only emits one ``step`` per
                             # ``log_every_n_steps`` (every 2 by
                             # default) so the WS load is bounded.
-                            await self._notify_subscribers(
-                                task,
-                                {"type": "metrics", "data": metrics.snapshot()},
-                            )
+                            # ``_metrics_due`` rate-limits the full
+                            # snapshot copies on top of that.
+                            if self._metrics_due(task):
+                                await self._notify_subscribers(
+                                    task,
+                                    {"type": "metrics", "data": metrics.snapshot()},
+                                )
                         elif ev_type == "sample":
                             # Training emitted a preview image; relay as a
                             # dedicated ``sample`` message so the dashboard
@@ -1449,6 +1500,21 @@ class TaskService:
             return f"{hours:d}:{minutes:02d}:{secs:02d}"
         return f"{minutes:02d}:{secs:02d}"
 
+    @staticmethod
+    def _metrics_due(task: Task) -> bool:
+        """True when a metrics snapshot may be broadcast for *task* now.
+
+        Rate-limits the per-step/per-tqdm snapshot broadcasts (each carries
+        the full loss/step/lr histories) to one per METRICS_MIN_INTERVAL.
+        Snapshots are cumulative, so a dropped intermediate is fully covered
+        by the next one that goes out.
+        """
+        now = time.monotonic()
+        if now - task.last_metrics_ts < METRICS_MIN_INTERVAL:
+            return False
+        task.last_metrics_ts = now
+        return True
+
     async def _flush_metrics_emit(self, task: Task) -> None:
         """No-op now that the watcher emits per step event directly.
 
@@ -1500,6 +1566,8 @@ class TaskService:
             task.lines[-1] = line
         else:
             task.lines.append(line)
+            task.lines_total += 1
+        self._cap_lines(task)
 
         msg: dict = {"type": "log", "line": line}
         if replace:
@@ -1515,16 +1583,12 @@ class TaskService:
         # same parser object so the debounced JSONL emit and the
         # stdout emit both carry the merged snapshot — no data race,
         # just two channels covering two halves of the dashboard.
-        if task.parser.feed(line):
-            snapshot = task.parser.metrics.snapshot()
-            print(
-                f"[metrics] step={snapshot.get('step')}/{snapshot.get('total_steps')} "
-                f"loss={snapshot.get('avr_loss')} lr={snapshot.get('lr')} speed={snapshot.get('speed')}",
-                flush=True,
-            )
+        # Broadcasts are rate-limited by ``_metrics_due``: snapshots are
+        # cumulative, so dropping intermediates loses nothing.
+        if task.parser.feed(line) and self._metrics_due(task):
             await self._notify_subscribers(
                 task,
-                {"type": "metrics", "data": snapshot},
+                {"type": "metrics", "data": task.parser.metrics.snapshot()},
             )
 
         # Capture wandb run URL from stdout (wandb prints "Run page: https://...")

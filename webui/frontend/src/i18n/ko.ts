@@ -123,6 +123,7 @@ export default {
   taskFilterCancelled: '취소됨',
   taskState: '상태',
   taskConnecting: '연결 중...',
+  taskLogTruncated: '최근 {kept} / {total}줄만 표시 — 전체 로그는 디스크에 저장됩니다',
   taskPauseQueue: '일시정지',
   taskResumeQueue: '재개',
   taskQueuePosition: '대기 위치',

@@ -123,6 +123,7 @@ export default {
   taskFilterCancelled: '已取消',
   taskState: '状态',
   taskConnecting: '连接中...',
+  taskLogTruncated: '仅显示最近 {kept} / {total} 行日志——完整日志保留在磁盘上',
   taskPauseQueue: '暂停队列',
   taskResumeQueue: '恢复队列',
   taskQueuePosition: '队列位置',
