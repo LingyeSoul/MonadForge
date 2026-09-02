@@ -232,18 +232,26 @@ function installedLockMatches() {
   return true;
 }
 
-function treeIsHealthy() {
+function treeHealthIssue() {
   const result = runNpm(["ls", "--all", "--ignore-scripts", "--offline", "--json"]);
   let tree = {};
   try {
     tree = JSON.parse(result.stdout || "{}");
   } catch {
-    return false;
+    return "npm ls produced unparseable output";
   }
-  if (result.status !== 0 || (Array.isArray(tree.problems) && tree.problems.length)) {
-    return false;
+  if (result.status !== 0) {
+    return `npm ls exited with status ${result.status}`;
   }
-  if (treeHasBlockedPackage(tree) || !installedLockMatches()) return false;
+  if (Array.isArray(tree.problems) && tree.problems.length) {
+    return `npm ls reported problems: ${tree.problems.slice(0, 5).join("; ")}`;
+  }
+  if (treeHasBlockedPackage(tree)) {
+    return "installed tree contains a blocked package";
+  }
+  if (!installedLockMatches()) {
+    return "installed tree does not match the lockfile";
+  }
   // With lifecycle scripts disabled, esbuild must still resolve its pinned
   // platform package. Otherwise its install hook could fall back to a dynamic
   // network install during the first build.
@@ -272,7 +280,35 @@ if (!transformed.code || !transformed.code.includes('x')) process.exit(1);
       stdio: "ignore",
     },
   );
-  return probe.status === 0;
+  if (probe.error) {
+    return `runtime probe failed to spawn: ${probe.error.message}`;
+  }
+  if (probe.status !== 0) {
+    return "esbuild/rollup runtime probe failed";
+  }
+  return null;
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function treeIsHealthy() {
+  return treeHealthIssue() === null;
+}
+
+function verifyAfterInstall() {
+  // Windows AV scanners transiently lock freshly written files right after
+  // npm ci, which can fail a read-only verification pass.  Retry briefly
+  // before declaring the tree broken; a real mismatch persists and still
+  // fails every attempt.
+  for (let attempt = 1; ; attempt++) {
+    const issue = treeHealthIssue();
+    if (!issue) return null;
+    if (attempt >= 3) return issue;
+    console.log(`[npm-security] verification attempt ${attempt} failed (${issue}); retrying`);
+    sleep(2000);
+  }
 }
 
 function installFromLock() {
@@ -301,8 +337,13 @@ if (!force && treeIsHealthy()) {
   console.log("[npm-security] existing frontend tree matches the lockfile");
   process.exit(0);
 }
-if (!installFromLock() || !treeIsHealthy()) {
-  fail("npm ci completed but the installed tree is not a clean lockfile tree");
+if (!installFromLock()) {
+  fail("npm ci failed; see npm output above");
+  process.exit(1);
+}
+const issue = verifyAfterInstall();
+if (issue) {
+  fail(`npm ci completed but the installed tree failed verification: ${issue}`);
   process.exit(1);
 }
 console.log("[npm-security] frontend tree ready");
