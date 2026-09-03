@@ -88,6 +88,10 @@ python tasks.py daemon                     # 启动 daemon（它会自动拉起 
 
 服务启动后访问 `http://127.0.0.1:8000`。
 
+### 云端一键镜像
+1. [**AutoDL**](https://www.autodl.art/i/LingyeSoul/MonadForge/MonadForge)
+2. [**优云智算**](https://www.compshare.cn/images/detail?ImageId=Nft7l3N9ADXX) [点我送注册送5元赠金](https://passport.compshare.cn/register?referral_code=9xjVxsANjSLG2FM8mm6NIQ)
+
 ### 训练守护进程（Daemon）与系统托盘
 
 MonadForge 由一个**本地训练守护进程**（`scripts/daemon/`，`127.0.0.1:8765`）统筹：
