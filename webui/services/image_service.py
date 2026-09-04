@@ -7,13 +7,20 @@ from __future__ import annotations
 
 import json
 import re
+import tarfile
+import threading
+import time
+import uuid
+import zipfile
 from datetime import datetime
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PurePosixPath
+from typing import Any, Callable
 
 from webui.services.config_service import ROOT, get_path_overrides
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+ARCHIVE_SUFFIXES = (".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz")
 
 # Reject only the path-traversal vectors: NUL/control bytes and a ``..``
 # segment. We deliberately do NOT use a positive character whitelist here:
@@ -102,8 +109,13 @@ def resolve_directory(name: str) -> Path | None:
     if name in candidates:
         p = candidates[name]
         return p if p.exists() else None
-    # Absolute path fallback (user-added directory)
+    # Absolute path fallback (user-added directory); relative names are
+    # anchored to ROOT so uploaded/extracted dataset paths stay browsable.
     p = Path(name)
+    if not p.is_absolute():
+        if ".." in p.parts:
+            return None
+        p = ROOT / p
     return p if p.exists() and p.is_dir() else None
 
 
@@ -367,6 +379,259 @@ def batch_update_captions(
             errors.append(f"{rel_path}: {e}")
 
     return {"updated": updated, "failed": failed, "errors": errors}
+
+
+# ── archive upload / extraction ────────────────────────────────
+
+
+def _resolve_extract_target(target: str) -> Path:
+    """Resolve the extraction target directory without requiring it to exist.
+
+    Relative paths are anchored to ROOT and rejected on ``..`` components or
+    containment escapes; absolute paths are accepted as-is (localhost tool,
+    mirrors ``resolve_path``). Raises ``ValueError`` for invalid targets.
+    """
+    target = (target or "").strip()
+    if not target:
+        raise ValueError("Extraction target path is required")
+    p = Path(target)
+    if p.is_absolute():
+        resolved = p
+    else:
+        if ".." in p.parts:
+            raise ValueError("Target path may not contain '..'")
+        resolved = (ROOT / p).resolve()
+        try:
+            resolved.relative_to(ROOT)
+        except ValueError as e:
+            raise ValueError("Target path escapes the project root") from e
+    if resolved.exists() and not resolved.is_dir():
+        raise ValueError(f"Target exists and is not a directory: {target}")
+    return resolved
+
+
+def _zip_member_dest(member: zipfile.ZipInfo) -> PurePosixPath | None:
+    """Return the sanitized relative destination for a zip member, or None.
+
+    Zip archives are extracted member-by-member (no built-in safe filter),
+    so this enforces the traversal checks ourselves: reject absolute paths,
+    drive letters, ``..`` segments, and NUL/control characters.
+    """
+    name = member.filename.replace("\\", "/")
+    if "\x00" in name or any(ord(c) < 32 for c in name):
+        return None
+    parts = PurePosixPath(name).parts
+    if not parts:
+        return None
+    if parts[0].startswith("/") or ":" in parts[0]:
+        return None
+    if any(part == ".." for part in parts):
+        return None
+    return PurePosixPath(*parts)
+
+
+def _archive_display(target_dir: Path) -> str:
+    """Target path for display/API use: ROOT-relative when possible."""
+    try:
+        display = str(target_dir.relative_to(ROOT))
+    except ValueError:
+        display = str(target_dir)
+    return display.replace("\\", "/")
+
+
+def extract_archive(
+    archive_path: Path,
+    target: str,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+    archive_name: str | None = None,
+) -> dict[str, Any]:
+    """Extract an uploaded archive into *target* as a dataset directory.
+
+    Creates the target directory (including parents) if needed. Supports
+    zip and tar (``.tar``, ``.tar.gz``/``.tgz``, ``.tar.bz2``/``.tbz2``,
+    ``.tar.xz``/``.txz``). Unsafe members are skipped and counted, never
+    extracted. Returns ``{"target", "extracted", "skipped"}``.
+
+    *progress*, when given, is called as ``progress(extracted, skipped)``
+    after each member so long extractions can surface live progress.
+    *archive_name* overrides the name used for format detection — needed
+    when *archive_path* is a temp file whose suffix was truncated
+    (``pack.tar.gz`` → ``.gz``).
+    """
+    target_dir = _resolve_extract_target(target)
+    name = (archive_name or archive_path.name).lower()
+
+    if name.endswith(".zip"):
+        extracted, skipped = _extract_zip(archive_path, target_dir, progress=progress)
+    elif name.endswith(ARCHIVE_SUFFIXES):
+        extracted, skipped = _extract_tar(archive_path, target_dir, progress=progress)
+    else:
+        raise ValueError(
+            "Unsupported archive format: expected .zip, .tar, .tar.gz, .tgz, .tar.bz2 or .tar.xz"
+        )
+
+    return {"target": _archive_display(target_dir), "extracted": extracted, "skipped": skipped}
+
+
+def _extract_zip(
+    archive_path: Path,
+    target_dir: Path,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[int, int]:
+    extracted = 0
+    skipped = 0
+    with zipfile.ZipFile(archive_path) as zf:
+        for member in zf.infolist():
+            dest = _zip_member_dest(member)
+            if dest is None:
+                skipped += 1
+            else:
+                final = (target_dir / dest).resolve()
+                try:
+                    final.relative_to(target_dir.resolve())
+                except ValueError:
+                    skipped += 1
+                else:
+                    if member.is_dir():
+                        final.mkdir(parents=True, exist_ok=True)
+                    else:
+                        final.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(member) as src, open(final, "wb") as dst:
+                            while chunk := src.read(1 << 20):
+                                dst.write(chunk)
+                        extracted += 1
+            if progress is not None:
+                progress(extracted, skipped)
+    return extracted, skipped
+
+
+def _extract_tar(
+    archive_path: Path,
+    target_dir: Path,
+    *,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[int, int]:
+    extracted = 0
+    skipped = 0
+    with tarfile.open(archive_path) as tf:
+        for member in tf:
+            # filter="data" (Python 3.12+) blocks path traversal and link
+            # targets outside the extraction directory; absolute paths are
+            # sanitized to land inside the target.
+            try:
+                if member.isfile():
+                    tf.extract(member, target_dir, filter="data")
+                    extracted += 1
+                elif member.isdir():
+                    tf.extract(member, target_dir, filter="data")
+                else:
+                    skipped += 1
+            except (tarfile.FilterError, tarfile.TarError, OSError):
+                skipped += 1
+            if progress is not None:
+                progress(extracted, skipped)
+    return extracted, skipped
+
+
+# ── background extraction tasks ────────────────────────────────
+#
+# In-memory registry: the WebUI is a single localhost process, so task
+# state need not survive a restart — clients treat an unknown id as a
+# failure (the server is typically gone too).
+
+_EXTRACT_TASK_TTL = 3600.0  # seconds to keep finished tasks around
+_extract_tasks: dict[str, dict[str, Any]] = {}
+_extract_tasks_lock = threading.Lock()
+
+_TASK_PUBLIC_KEYS = ("task_id", "status", "target", "extracted", "skipped", "error")
+
+
+def _public_task(task: dict[str, Any]) -> dict[str, Any]:
+    return {k: task[k] for k in _TASK_PUBLIC_KEYS}
+
+
+def _purge_stale_tasks() -> None:
+    cutoff = time.monotonic() - _EXTRACT_TASK_TTL
+    for tid in [t for t, v in _extract_tasks.items() if v["created"] < cutoff]:
+        _extract_tasks.pop(tid, None)
+
+
+def start_extract_task(
+    archive_path: Path,
+    target: str,
+    *,
+    archive_name: str | None = None,
+) -> dict[str, Any]:
+    """Validate *target*, register a background extraction task, start it.
+
+    Raises ``ValueError`` synchronously for invalid targets so the caller
+    can reject the upload with 400 before any work starts. Extraction runs
+    in a daemon thread; poll :func:`get_extract_task` until *status* is
+    ``"done"`` or ``"error"``. The archive temp file is removed by the
+    worker when it finishes.
+    """
+    display = _archive_display(_resolve_extract_target(target))
+    with _extract_tasks_lock:
+        _purge_stale_tasks()
+        task: dict[str, Any] = {
+            "task_id": uuid.uuid4().hex,
+            "status": "extracting",
+            "target": display,
+            "extracted": 0,
+            "skipped": 0,
+            "error": None,
+            "created": time.monotonic(),
+        }
+        _extract_tasks[task["task_id"]] = task
+    threading.Thread(
+        target=_extract_task_worker,
+        args=(task["task_id"], archive_path, target, archive_name),
+        daemon=True,
+    ).start()
+    return _public_task(task)
+
+
+def get_extract_task(task_id: str) -> dict[str, Any] | None:
+    """Return the current state of an extraction task, or None."""
+    with _extract_tasks_lock:
+        task = _extract_tasks.get(task_id)
+        return _public_task(task) if task is not None else None
+
+
+def _extract_task_worker(
+    task_id: str,
+    archive_path: Path,
+    target: str,
+    archive_name: str | None,
+) -> None:
+    def progress(extracted: int, skipped: int) -> None:
+        with _extract_tasks_lock:
+            task = _extract_tasks.get(task_id)
+            if task is not None:
+                task["extracted"] = extracted
+                task["skipped"] = skipped
+
+    try:
+        result = extract_archive(archive_path, target, progress=progress, archive_name=archive_name)
+        with _extract_tasks_lock:
+            task = _extract_tasks.get(task_id)
+            if task is not None:
+                task.update(
+                    status="done",
+                    target=result["target"],
+                    extracted=result["extracted"],
+                    skipped=result["skipped"],
+                    error=None,
+                )
+    except Exception as e:  # noqa: BLE001 — surfaced verbatim to the poller
+        with _extract_tasks_lock:
+            task = _extract_tasks.get(task_id)
+            if task is not None:
+                task.update(status="error", error=str(e))
+    finally:
+        archive_path.unlink(missing_ok=True)
 
 
 # ── mask resolution ────────────────────────────────────────────

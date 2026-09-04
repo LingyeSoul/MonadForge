@@ -86,6 +86,12 @@
           </v-btn>
         </v-col>
         <v-col cols="auto">
+          <v-btn variant="tonal" density="compact" @click="openUploadDialog">
+            <v-icon icon="mdi-upload" class="mr-1" />
+            {{ t('dsUpload') }}
+          </v-btn>
+        </v-col>
+        <v-col cols="auto">
           <v-btn
             color="primary"
             variant="tonal"
@@ -652,6 +658,66 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Upload dataset dialog -->
+    <v-dialog v-model="uploadDialog" max-width="560" :persistent="uploading">
+      <v-card>
+        <v-card-title class="d-flex align-center ga-2">
+          <v-icon icon="mdi-upload" />
+          {{ t('dsUploadTitle') }}
+        </v-card-title>
+        <v-card-text>
+          <v-file-input
+            v-model="uploadFile"
+            :label="t('dsUploadArchive')"
+            :accept="ARCHIVE_ACCEPT"
+            prepend-icon="mdi-folder-zip-outline"
+            variant="outlined"
+            density="compact"
+            show-size
+            :disabled="uploading"
+            @update:model-value="onUploadFileChange"
+          />
+          <v-text-field
+            v-model="uploadTarget"
+            :label="t('dsUploadTarget')"
+            prepend-inner-icon="mdi-folder-outline"
+            variant="outlined"
+            density="compact"
+            :disabled="uploading"
+          />
+          <div class="text-caption text-medium-emphasis">{{ t('dsUploadTargetHint') }}</div>
+          <v-progress-linear
+            v-if="uploading"
+            :model-value="uploadPhase === 'uploading' ? uploadProgress : undefined"
+            :indeterminate="uploadPhase === 'extracting'"
+            color="primary"
+            height="20"
+            rounded
+            class="mt-4"
+          >
+            <template #default>
+              <span class="text-caption">
+                {{ uploadPhase === 'uploading' ? t('dsUploadUploading') : extractStatusText }}
+              </span>
+            </template>
+          </v-progress-linear>
+        </v-card-text>
+        <v-card-actions class="pa-3">
+          <v-spacer />
+          <v-btn variant="text" :disabled="uploading" @click="uploadDialog = false">{{ t('dsCancel') }}</v-btn>
+          <v-btn
+            color="primary"
+            :loading="uploading"
+            :disabled="uploading || uploadFile.length === 0 || !uploadTarget.trim()"
+            @click="uploadArchive"
+          >
+            <v-icon icon="mdi-cloud-upload-outline" class="mr-1" />
+            {{ t('dsUploadBtn') }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -768,6 +834,163 @@ async function executeBatch() {
     notify.show(err.message || 'Batch operation failed', 'error')
   } finally {
     batchProcessing.value = false
+  }
+}
+
+// Upload dataset
+const ARCHIVE_ACCEPT = '.zip,.tar,.tar.gz,.tgz,.tar.bz2,.tbz2,.tar.xz,.txz'
+const POLL_INTERVAL_MS = 700
+
+interface ExtractTask {
+  task_id: string
+  status: 'extracting' | 'done' | 'error'
+  target: string
+  extracted: number
+  skipped: number
+  error: string | null
+}
+
+const uploadDialog = ref(false)
+const uploadFile = ref<File[]>([])
+const uploadTarget = ref('')
+const uploading = ref(false)
+const uploadProgress = ref(0)
+const uploadPhase = ref<'uploading' | 'extracting'>('uploading')
+const extractCount = ref(0)
+
+const extractStatusText = computed(() =>
+  extractCount.value > 0
+    ? t('dsUploadExtractCount', { count: extractCount.value })
+    : t('dsUploadExtracting'),
+)
+
+function openUploadDialog() {
+  uploadFile.value = []
+  uploadTarget.value = ''
+  uploadProgress.value = 0
+  uploading.value = false
+  uploadDialog.value = true
+}
+
+function onUploadFileChange() {
+  if (!uploadTarget.value.trim() && uploadFile.value.length > 0) {
+    const stem = uploadFile.value[0].name.replace(/\.(zip|tar(\.gz|\.bz2|\.xz)?|t?g?z|tbz2|txz)$/i, '')
+    if (stem) uploadTarget.value = `datasets/${stem}`
+  }
+}
+
+function uploadArchiveFile(file: File, target: string): Promise<ExtractTask> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData()
+    form.append('file', file)
+    form.append('target', target)
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/images/upload-archive')
+    xhr.upload.onprogress = (e) => {
+      // Headroom below 100% while the server still has to acknowledge the upload.
+      if (e.lengthComputable) uploadProgress.value = Math.min(95, (e.loaded / e.total) * 95)
+    }
+    xhr.onload = () => {
+      uploadProgress.value = 100
+      let parsed: any = null
+      try { parsed = JSON.parse(xhr.responseText) } catch { /* non-JSON error page */ }
+      if (xhr.status >= 200 && xhr.status < 300 && parsed) resolve(parsed)
+      else reject(new Error(parsed?.detail || `HTTP ${xhr.status}`))
+    }
+    xhr.onerror = () => reject(new Error('Network error'))
+    xhr.send(form)
+  })
+}
+
+async function pollExtractTask(taskId: string): Promise<ExtractTask> {
+  let networkFailures = 0
+  while (true) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS))
+    try {
+      const res = await fetch(`/api/images/upload-archive/${taskId}`)
+      if (res.status === 404) {
+        // Task lost — usually the server restarted mid-extraction.
+        return {
+          task_id: taskId,
+          status: 'error',
+          target: '',
+          extracted: 0,
+          skipped: 0,
+          error: t('dsUploadTaskLost'),
+        }
+      }
+      if (!res.ok) {
+        return {
+          task_id: taskId,
+          status: 'error',
+          target: '',
+          extracted: 0,
+          skipped: 0,
+          error: `HTTP ${res.status}`,
+        }
+      }
+      networkFailures = 0
+      const data: ExtractTask = await res.json()
+      extractCount.value = data.extracted
+      if (data.status !== 'extracting') return data
+    } catch {
+      // Tolerate transient network blips; give up after several in a row.
+      if (++networkFailures >= 5) {
+        return {
+          task_id: taskId,
+          status: 'error',
+          target: '',
+          extracted: 0,
+          skipped: 0,
+          error: t('dsUploadTaskLost'),
+        }
+      }
+    }
+  }
+}
+
+async function uploadArchive() {
+  if (!uploadFile.value.length || !uploadTarget.value.trim()) return
+  uploading.value = true
+  uploadPhase.value = 'uploading'
+  uploadProgress.value = 0
+  extractCount.value = 0
+
+  try {
+    const task = await uploadArchiveFile(uploadFile.value[0], uploadTarget.value.trim())
+    uploadPhase.value = 'extracting'
+    const result = await pollExtractTask(task.task_id)
+    if (result.status === 'error') {
+      throw new Error(result.error || t('dsUploadFailed'))
+    }
+
+    notify.show(
+      t('dsUploadSuccess', { count: result.extracted, path: result.target }) +
+        (result.skipped > 0 ? ` (${t('dsUploadSkipped', { count: result.skipped })})` : ''),
+      result.skipped > 0 ? 'warning' : 'success',
+    )
+    uploadDialog.value = false
+
+    // Add the extraction dir to the list and browse it, mirroring addCustomPath
+    const raw = result.target
+    if (!directories.value.some(d => d.name === raw)) {
+      const entry: Directory = { name: raw, path: raw }
+      directories.value.push(entry)
+      const saved = _loadCustomPaths()
+      if (!saved.some(d => d.name === raw)) {
+        saved.push(entry)
+        _saveCustomPaths(saved)
+        customDirNames.value = new Set(saved.map(d => d.name))
+      }
+    }
+    directory.value = raw
+    page.value = 1
+    loadImages()
+    loadTagIndex()
+  } catch (err: any) {
+    notify.show(err.message || t('dsUploadFailed'), 'error')
+  } finally {
+    uploading.value = false
   }
 }
 

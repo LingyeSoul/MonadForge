@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -152,6 +154,51 @@ def batch_caption(body: BatchCaptionRequest):
         replace=body.replace,
         use_regex=body.use_regex,
     )
+
+
+# ── dataset upload ─────────────────────────────────────────────
+
+
+@router.post("/upload-archive", status_code=202)
+async def upload_archive(
+    file: UploadFile = File(...),
+    target: str = Form(..., description="Extraction directory (relative to project root or absolute)"),
+):
+    """Upload a dataset archive (zip / tar.*) and start extracting into *target*.
+
+    The upload is streamed to a temp file so large archives don't sit in
+    memory. Extraction runs as a background task — the response carries the
+    task id; poll ``GET /upload-archive/{task_id}`` until *status* becomes
+    ``"done"`` or ``"error"``.
+    """
+    filename = file.filename or ""
+    if not filename.lower().endswith(svc.ARCHIVE_SUFFIXES):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported archive format: expected .zip, .tar, .tar.gz, .tgz, .tar.bz2 or .tar.xz",
+        )
+    tmp = tempfile.NamedTemporaryFile(suffix=Path(filename).suffix, delete=False)
+    try:
+        while chunk := await file.read(1 << 20):
+            tmp.write(chunk)
+        tmp.close()
+        # Raises ValueError (→ 400) synchronously for invalid targets; once
+        # the task starts, the worker owns the temp file's cleanup.
+        # The original filename is passed for format detection: the temp
+        # file's suffix is truncated (pack.tar.gz → .gz).
+        return svc.start_extract_task(Path(tmp.name), target, archive_name=filename)
+    except ValueError as e:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/upload-archive/{task_id}")
+def get_upload_task(task_id: str):
+    """Poll a background extraction task started by POST /upload-archive."""
+    task = svc.get_extract_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"Unknown extraction task: {task_id}")
+    return task
 
 
 # ── mask info ──────────────────────────────────────────────────
