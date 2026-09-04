@@ -31,6 +31,8 @@
   "specialize_experts_by_sigma_buckets": "전문가 풀을 σ-밴드로 하드 분할: 각 타임스텝 버킷은 할당된 전문가만 사용. 소프트 σ-라우터 바이어스 위에 강제 특화 부여. sigma_bucket_boundaries와 함께 사용.",
   "sigma_bucket_boundaries": "사용자 지정 σ-버킷 경계, 길이 = num_sigma_buckets + 1, 0.0 → 1.0 단조 증가. 생략 시 uniform linspace(0, 1, N+1) 사용. 예: [0.0, 0.5, 0.8, 1.0].",
   "network_args": "네트워크 모듈에 전달되는 추가 kwargs. postfix의 경우 'key=value' 문자열 리스트 (예: 'mode=cond', 'splice_position=end_of_sequence', 'cond_hidden_dim=256'). Variant 선택으로 자동 채우기 가능.",
+  "network_reg_dims": "정규식 집합으로 레이어별 LoRA rank를 덮어씁니다: `정규식=rank` 규칙을 쉼표로 구분해 지정합니다 (예: `blocks\\.0\\..*=8, blocks\\.[12].*=16`). 각 규칙은 레이어의 원본 모듈 이름과 fullmatch하며, 첫 번째로 일치한 규칙이 적용됩니다. 일치하지 않는 층은 `network_dim`을 유지합니다. rank 0은 해당 모듈을 완전히 건너뜁니다. 쉼표로 규칙을 구분하므로 정규식 안에 쉼표를 쓸 수 없습니다.",
+  "network_reg_lrs": "정규식 집합으로 레이어별 학습률을 덮어씁니다: `정규식=lr` 규칙을 쉼표로 구분해 지정합니다 (예: `blocks\\.[01]\\..*=1e-4, .*cross_attn.*=5e-5`). 각 규칙은 원본 모듈 이름과 fullmatch하며, 첫 번째 일치가 적용됩니다. 일치한 모듈은 해당 학습률의 별도 옵티마이저 파라미터 그룹에 들어갑니다. 정규식 안에 쉼표를 쓸 수 없습니다.",
   "min_rank": "T-LoRA 타임스텝 마스킹 사용 시 최소 활성 랭크. 가장 낮은 노이즈에서 이 값까지 감소.",
   "alpha_rank_scale": "T-LoRA가 랭크를 줄일 때 alpha를 비례적으로 조정하여 타임스텝별 실효 학습률 유지.",
   "network_train_unet_only": "DiT(U-Net)만 학습. 텍스트 인코더 가중치는 동결. 대부분의 LoRA 학습에 권장.",

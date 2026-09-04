@@ -674,6 +674,14 @@ export default {
   cfOrigin: 'base',
   cfVirtual: 'virtual',
   cfInvalidNumber: 'Invalid number',
+  cfRegexAdd: 'Add rule',
+  cfRegexPattern: 'Regex (fullmatch)',
+  cfRegexValue: 'Value',
+  cfRegexInvalid: 'Invalid regex',
+  cfRegexInvalidValue: 'Must be a non-negative number',
+  cfRegexPatternRequired: 'Pattern required',
+  cfRegexDelete: 'Delete rule',
+  cfRegexHint: 'First matching rule wins; comma-separated — no commas inside patterns',
 
   // Model Path Field
   cfBrowse: 'Browse',

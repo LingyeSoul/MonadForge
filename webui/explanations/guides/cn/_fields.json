@@ -31,6 +31,8 @@
   "specialize_experts_by_sigma_buckets": "将专家池硬分区为σ频带：每个时间步桶只路由到其分配的专家。在软σ路由器偏置之上强制专业化。与sigma_bucket_boundaries配合使用。",
   "sigma_bucket_boundaries": "自定义σ桶边界，长度 = num_sigma_buckets + 1，单调递增0.0→1.0。省略时默认为linspace(0, 1, N+1)。例如：[0.0, 0.5, 0.8, 1.0]。",
   "network_args": "传递给网络模块的额外kwargs。对于postfix：'key=value'字符串列表（如'mode=cond'、'splice_position=end_of_sequence'、'cond_hidden_dim=256'）。选择变体可自动填充。",
+  "network_reg_dims": "按正则集覆盖逐层 LoRA 秩：逗号分隔的 `正则=秩` 规则，如 `blocks\\.0\\..*=8, blocks\\.[12].*=16`。每条规则对层的原始模块名做 fullmatch，第一条命中的规则生效，未命中的层沿用 `network_dim`。秩为 0 表示完全跳过该模块。正则中不能包含逗号（解析器按逗号切分规则）。",
+  "network_reg_lrs": "按正则集覆盖逐层学习率：逗号分隔的 `正则=学习率` 规则，如 `blocks\\.[01]\\..*=1e-4, .*cross_attn.*=5e-5`。每条规则对层的原始模块名做 fullmatch，第一条命中生效，命中的模块会进入独立的学习率参数组。正则中不能包含逗号。",
   "min_rank": "启用T-LoRA时间步掩码时的最小活跃秩。在最低噪声时间步时，秩降至此值。",
   "alpha_rank_scale": "T-LoRA降低秩时按比例调整alpha，保持各时间步的有效学习率稳定。",
   "network_train_unet_only": "仅训练DiT（U-Net）。文本编码器权重冻结。推荐大多数LoRA训练使用。",

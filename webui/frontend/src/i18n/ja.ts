@@ -674,6 +674,14 @@ export default {
   cfOrigin: 'base',
   cfVirtual: '仮想',
   cfInvalidNumber: '無効な数値',
+  cfRegexAdd: 'ルール追加',
+  cfRegexPattern: '正規表現（fullmatch）',
+  cfRegexValue: '値',
+  cfRegexInvalid: '無効な正規表現',
+  cfRegexInvalidValue: '0以上の数値を指定',
+  cfRegexPatternRequired: '正規表現は必須',
+  cfRegexDelete: 'ルール削除',
+  cfRegexHint: '最初に一致したルールが優先。カンマ区切り — 正規表現内にカンマは不可',
 
   // Model Path Field
   cfBrowse: '参照',

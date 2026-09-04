@@ -674,6 +674,14 @@ export default {
   cfOrigin: 'base',
   cfVirtual: '가상',
   cfInvalidNumber: '잘못된 숫자',
+  cfRegexAdd: '규칙 추가',
+  cfRegexPattern: '정규식 (fullmatch)',
+  cfRegexValue: '값',
+  cfRegexInvalid: '잘못된 정규식',
+  cfRegexInvalidValue: '0 이상의 숫자여야 합니다',
+  cfRegexPatternRequired: '패턴이 필요합니다',
+  cfRegexDelete: '규칙 삭제',
+  cfRegexHint: '첫 번째로 일치한 규칙이 적용됩니다. 쉼표로 구분 — 정규식 안에 쉼표 금지',
 
   // Model Path Field
   cfBrowse: '찾아보기',

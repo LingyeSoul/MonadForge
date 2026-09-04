@@ -627,3 +627,158 @@ def test_convrot_config_validation_accepts_supported_profile():
             "convrot_large_min_in_features": 0,
         }
     ) == []
+
+
+# ── network_reg_dims / network_reg_lrs (regex sets) ─────────────────────────
+
+
+def _patch_regex_set_config_dirs(monkeypatch, tmp_path):
+    """Isolate the config layers the same way the sample_decode_inline tests do."""
+    configs = tmp_path / "configs"
+    methods = configs / "gui-methods"
+    overlays = configs / "custom" / "variants"
+    methods.mkdir(parents=True)
+    overlays.mkdir(parents=True)
+    (configs / "base.toml").write_text(
+        'network_module = "networks.lora_anima"\n', encoding="utf-8"
+    )
+    (configs / "presets.toml").write_text("[default]\n", encoding="utf-8")
+    (methods / "lora.toml").write_text("network_dim = 16\n", encoding="utf-8")
+
+    monkeypatch.setattr(config_service, "CONFIGS_DIR", configs)
+    monkeypatch.setattr(config_service, "GUI_METHODS_DIR", methods)
+    monkeypatch.setattr(config_service, "PRESETS_FILE", configs / "presets.toml")
+    monkeypatch.setattr(config_service, "CUSTOM_VARIANTS_DIR", overlays)
+    return overlays
+
+
+def test_regex_set_fields_render_in_architecture_group(monkeypatch, tmp_path):
+    """The regex sets must surface as editable Architecture fields by default."""
+    _patch_regex_set_config_dirs(monkeypatch, tmp_path)
+
+    result = config_service.build_merged_config("lora", "default", lang="en")
+    fields = {f["key"]: f for f in result["fields"]}
+    for key in ("network_reg_dims", "network_reg_lrs"):
+        assert key in fields, f"{key} missing from merged config"
+        field = fields[key]
+        assert field["field_type"] == "regex_set"
+        assert field["group"] == "Architecture"
+        assert field["read_only"] is False
+        assert field["origin"] == "method"
+        assert field["value"] == ""
+        assert field["description"], f"{key} has no field help"
+
+
+def test_regex_set_field_help_present_in_all_languages():
+    from webui.explanations import _read_fields
+
+    for lang in ("en", "cn", "ja", "ko"):
+        help_texts = _read_fields(lang)
+        assert help_texts.get("network_reg_dims"), f"missing dims help: {lang}"
+        assert help_texts.get("network_reg_lrs"), f"missing lrs help: {lang}"
+
+
+def test_regex_set_value_round_trips_through_variant_toml(monkeypatch, tmp_path):
+    overlays = _patch_regex_set_config_dirs(monkeypatch, tmp_path)
+    dims = r"blocks\.0\..*=8, blocks\.[12].*=16"
+    lrs = r"blocks\.[01]\..*=1e-4, .*cross_attn.*=5e-5"
+
+    config_service.save_variant_config(
+        "lora", {"network_reg_dims": dims, "network_reg_lrs": lrs}
+    )
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert saved["network_reg_dims"] == dims
+    assert saved["network_reg_lrs"] == lrs
+
+    merged, origin = config_service.merged_gui_variant_preset("lora", "default")
+    assert merged["network_reg_dims"] == dims
+    assert merged["network_reg_lrs"] == lrs
+    assert origin["network_reg_dims"] == "method"
+
+    # Saving empty strings clears the keys again — an empty value means the
+    # feature is off and must not land in the TOML.
+    config_service.save_variant_config(
+        "lora", {"network_reg_dims": "", "network_reg_lrs": ""}
+    )
+    saved = toml.loads((overlays / "lora.toml").read_text(encoding="utf-8"))
+    assert "network_reg_dims" not in saved
+    assert "network_reg_lrs" not in saved
+
+
+def test_regex_set_save_rejects_invalid_payloads():
+    bad_dims = [
+        "blocks.*",              # no '=' segment
+        "blocks.*=abc",          # non-integer rank
+        "blocks.*=-4",           # negative rank
+        "([unclosed=8",          # regex does not compile
+        "=8",                    # empty pattern
+    ]
+    for value in bad_dims:
+        errors = validate_config({"network_reg_dims": value})
+        assert errors, f"network_reg_dims={value!r} should fail validation"
+
+    bad_lrs = [
+        "blocks.*=1e-4x",        # not a number
+        "blocks.*=-1e-4",        # negative LR
+        "blocks.*",              # no '=' segment
+    ]
+    for value in bad_lrs:
+        errors = validate_config({"network_reg_lrs": value})
+        assert errors, f"network_reg_lrs={value!r} should fail validation"
+
+
+def test_regex_set_validation_accepts_trainer_parseable_values():
+    assert validate_config({"network_reg_dims": ""}) == []
+    assert validate_config({"network_reg_lrs": ""}) == []
+    assert validate_config(
+        {
+            "network_reg_dims": r"blocks\.0\..*=8, blocks\.[12].*=16",
+            "network_reg_lrs": r"blocks\.[01]\..*=1e-4",
+        }
+    ) == []
+
+
+def test_regex_set_reaches_trainer_network_kwargs(monkeypatch, tmp_path):
+    """Full exposure seam: WebUI variant TOML → trainer network kwargs.
+
+    Mirrors the GUI launch path: `make lora-gui` / the daemon merge
+    ``gui-methods/<variant>.toml`` through ``load_method_preset``, the values
+    land on the training args namespace, and ``resolve_network_kwargs``
+    forwards allowlisted top-level keys into ``create_network``. If the WebUI
+    saves a regex set, the trainer must see exactly that string.
+    """
+    from library.config.io import load_method_preset
+    from train import resolve_network_kwargs
+    from networks.lora_anima.config import LoRANetworkCfg
+    from networks.lora_anima.network import LoRAModule
+
+    overlays = _patch_regex_set_config_dirs(monkeypatch, tmp_path)
+    dims = r"blocks\.0\..*=8"
+    lrs = r"blocks\.[01]\..*=1e-4"
+    config_service.save_variant_config(
+        "lora", {"network_reg_dims": dims, "network_reg_lrs": lrs}
+    )
+
+    merged = load_method_preset(
+        "lora",
+        "default",
+        configs_dir=str(overlays.parent.parent),
+        methods_subdir="gui-methods",
+    )
+    assert merged["network_reg_dims"] == dims
+    assert merged["network_reg_lrs"] == lrs
+
+    args = argparse.Namespace(**merged)
+    kwargs = resolve_network_kwargs(args)
+    assert kwargs["network_reg_dims"] == dims
+    assert kwargs["network_reg_lrs"] == lrs
+
+    cfg = LoRANetworkCfg.from_kwargs(
+        kwargs,
+        network_dim=16,
+        network_alpha=1.0,
+        neuron_dropout=None,
+        module_class=LoRAModule,
+    )
+    assert cfg.reg_dims == {r"blocks\.0\..*": 8}
+    assert cfg.reg_lrs == {r"blocks\.[01]\..*": 1e-4}

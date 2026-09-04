@@ -674,6 +674,14 @@ export default {
   cfOrigin: 'base',
   cfVirtual: '虚拟',
   cfInvalidNumber: '无效数字',
+  cfRegexAdd: '添加规则',
+  cfRegexPattern: '正则（fullmatch）',
+  cfRegexValue: '值',
+  cfRegexInvalid: '无效正则',
+  cfRegexInvalidValue: '必须是非负数字',
+  cfRegexPatternRequired: '正则不能为空',
+  cfRegexDelete: '删除规则',
+  cfRegexHint: '第一条命中的规则生效；多条规则用逗号分隔——正则内不能包含逗号',
 
   // Model Path Field
   cfBrowse: '浏览',

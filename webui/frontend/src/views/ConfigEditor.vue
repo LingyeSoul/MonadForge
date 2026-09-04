@@ -300,8 +300,8 @@
                 <v-col
                   v-for="field in groupFields"
                   :key="field.key"
-                  :cols="field.key === 'sample_prompts' ? 12 : undefined"
-                  :md="field.key === 'sample_prompts' ? 12 : 6"
+                  :cols="field.key === 'sample_prompts' || field.field_type === 'regex_set' ? 12 : undefined"
+                  :md="field.key === 'sample_prompts' || field.field_type === 'regex_set' ? 12 : 6"
                 >
                   <PreviewPromptEditor
                     v-if="field.key === 'sample_prompts'"

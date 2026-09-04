@@ -141,6 +141,13 @@
       </template>
     </v-text-field>
 
+    <RegexSetEditor
+      v-else-if="field.field_type === 'regex_set'"
+      :field="field"
+      @update="emit('update', $event)"
+      @help-click="emit('help-click', field.key)"
+    />
+
     <v-text-field
       v-else
       :model-value="currentValue"
@@ -174,6 +181,7 @@ import { computed, ref, watch } from 'vue'
 import type { FieldMeta } from '../stores/config'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
+import RegexSetEditor from './RegexSetEditor.vue'
 
 const props = defineProps<{ field: FieldMeta }>()
 const emit = defineEmits<{ update: [value: unknown]; 'help-click': [key: string] }>()

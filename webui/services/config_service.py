@@ -244,6 +244,8 @@ _GROUPS = {
         "dylora_algo",
         "use_ve",
         "vera_seed",
+        "network_reg_dims",
+        "network_reg_lrs",
     },
     "Training": {
         "learning_rate",
@@ -345,6 +347,18 @@ _RESUME_DEFAULTS = {
     "dim_from_weights": False,
     "save_state_on_train_end": False,
 }
+
+# Regex-set keys (network_reg_dims / network_reg_lrs) are never present in
+# base.toml, so inject them with an empty default the same way Resume &
+# Warm-start keys are handled — otherwise the fields would never render in
+# the form. Empty string = feature off; stripped again on save.
+_REGEX_SET_DEFAULTS = {
+    "network_reg_dims": "",
+    "network_reg_lrs": "",
+}
+
+# Frontend widget type for the regex-set keys (RegexSetEditor).
+_REGEX_SET_KEYS = frozenset(_REGEX_SET_DEFAULTS)
 
 
 def _is_neutral_resume_value(key: str, value: Any) -> bool:
@@ -841,7 +855,7 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
     # Resume & Warm-start keys are not in base.toml (base.toml is overwritten by
     # `make update`), so inject them with neutral defaults so the group always
     # renders in the form. A value already present at the method layer wins.
-    for key, default in _RESUME_DEFAULTS.items():
+    for key, default in {**_RESUME_DEFAULTS, **_REGEX_SET_DEFAULTS}.items():
         if key not in merged:
             merged[key] = default
             origin[key] = "method"  # editable on built-in presets
@@ -864,6 +878,8 @@ def _field_desc_en(key: str) -> str | None:
 
 def get_field_type(key: str, value: Any) -> str:
     """Map a Python value + key to a frontend widget type."""
+    if key in _REGEX_SET_KEYS:
+        return "regex_set"
     if key in _SELECT_OPTIONS:
         return "select"
     if key == "sample_sampler":
@@ -1138,6 +1154,48 @@ def _apply_sample_ratio(out: dict, value: float, base_value: float) -> None:
     first_sub["sample_ratio"] = value
 
 
+def _validate_regex_set(key: str, value: Any, *, is_int: bool) -> list[str]:
+    """Validate a ``network_reg_dims`` / ``network_reg_lrs`` kv-pair string.
+
+    Mirrors what ``networks.lora_anima.config._parse_kv_pairs`` will accept at
+    train time: comma-separated ``pattern=number`` segments, where *pattern*
+    must survive ``re.compile`` (fullmatch target) and must not contain a
+    literal comma (the trainer's parser splits on commas — a comma inside a
+    pattern would silently truncate it into two broken segments).
+    """
+    text = str(value or "").strip()
+    if not text:
+        return []
+    errors: list[str] = []
+    for segment in text.split(","):
+        segment = segment.strip()
+        if not segment:
+            continue
+        if "=" not in segment:
+            errors.append(f"{key}: expected 'regex=value', got {segment!r}")
+            continue
+        pattern, _, raw_value = segment.partition("=")
+        pattern = pattern.strip()
+        raw_value = raw_value.strip()
+        if not pattern:
+            errors.append(f"{key}: empty regex in {segment!r}")
+            continue
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            errors.append(f"{key}: invalid regex {pattern!r} ({exc})")
+            continue
+        try:
+            number = int(raw_value) if is_int else float(raw_value)
+        except ValueError:
+            kind = "integer" if is_int else "number"
+            errors.append(f"{key}: {raw_value!r} is not a valid {kind}")
+            continue
+        if number < 0:
+            errors.append(f"{key}: {raw_value!r} must be non-negative")
+    return errors
+
+
 def validate_config(data: dict) -> list[str]:
     """Validate a config dict. Returns a list of error strings (empty = valid)."""
     errors: list[str] = []
@@ -1187,6 +1245,14 @@ def validate_config(data: dict) -> list[str]:
             errors.append(
                 "base_compute must be bf16, w8a16_convrot, or w8a8_convrot"
             )
+    if "network_reg_dims" in data:
+        errors.extend(
+            _validate_regex_set("network_reg_dims", data["network_reg_dims"], is_int=True)
+        )
+    if "network_reg_lrs" in data:
+        errors.extend(
+            _validate_regex_set("network_reg_lrs", data["network_reg_lrs"], is_int=False)
+        )
     if "convrot_group_size" in data:
         value = data["convrot_group_size"]
         if type(value) is not int or value not in {64, 256, 1024}:
@@ -1325,8 +1391,18 @@ def save_variant_config(variant: str, data: dict) -> None:
     # Write flat keys. Strip Resume & Warm-start keys left at their neutral
     # default (empty path / False) so the variant TOML stays clean and the
     # flag isn't forwarded to train.py as a literal empty/false arg.
+    # Regex-set keys get the same treatment: an empty string means "feature
+    # off" and must not land in the TOML (train.py forwards any non-None
+    # top-level value into the network kwargs).
     for key, value in data.items():
         if key in _SKIP:
+            continue
+        if key in _REGEX_SET_KEYS:
+            normalized = str(value or "").strip()
+            if normalized:
+                current[key] = normalized
+            else:
+                current.pop(key, None)
             continue
         if key == "sample_decode_inline":
             normalized = str(value).strip().lower()
