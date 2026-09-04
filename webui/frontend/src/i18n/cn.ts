@@ -92,6 +92,8 @@ export default {
   guidebook: '指南手册',
   guidebookClose: '关闭',
   reportIssue: '报告问题',
+  themeDark: '暗色模式',
+  themeLight: '亮色模式',
 
   // Task Panel
   taskTitle: '任务监控',

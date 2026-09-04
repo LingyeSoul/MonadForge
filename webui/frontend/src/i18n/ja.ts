@@ -92,6 +92,8 @@ export default {
   guidebook: 'ガイドブック',
   guidebookClose: '閉じる',
   reportIssue: '問題を報告',
+  themeDark: 'ダークモード',
+  themeLight: 'ライトモード',
 
   // Task Panel
   taskTitle: 'タスクモニター',

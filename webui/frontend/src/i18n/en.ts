@@ -92,6 +92,8 @@ export default {
   guidebook: 'Guidebook',
   guidebookClose: 'Close',
   reportIssue: 'Report Issue',
+  themeDark: 'Dark Mode',
+  themeLight: 'Light Mode',
 
   // Task Panel
   taskTitle: 'Task Monitor',

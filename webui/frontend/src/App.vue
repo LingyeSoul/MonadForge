@@ -64,6 +64,17 @@
           />
         </v-list>
         <div class="pa-2">
+          <v-btn
+            variant="outlined"
+            density="comfortable"
+            block
+            :class="{ 'px-0': rail }"
+            :title="t(appStore.theme === 'dark' ? 'themeLight' : 'themeDark')"
+            @click="toggleTheme"
+          >
+            <v-icon :icon="appStore.theme === 'dark' ? 'mdi-white-balance-sunny' : 'mdi-weather-night'" />
+            <span v-if="!rail" class="ml-2">{{ t(appStore.theme === 'dark' ? 'themeLight' : 'themeDark') }}</span>
+          </v-btn>
           <v-btn-toggle
             :model-value="appStore.language"
             density="compact"
@@ -106,6 +117,7 @@
 
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount } from 'vue'
+import { useTheme } from 'vuetify'
 import { useAppStore } from './stores/app'
 import { useNotifyStore } from './stores/notify'
 import { useI18n } from './composables/useI18n'
@@ -114,6 +126,17 @@ import GuidebookDialog from './components/GuidebookDialog.vue'
 const appStore = useAppStore()
 const notifyStore = useNotifyStore()
 const { t, setLanguage } = useI18n()
+const vuetifyTheme = useTheme()
+
+// Store state is the single source of truth; mirror it onto Vuetify's
+// global theme (theme keys 'dark'/'light' match the store values 1:1).
+watch(() => appStore.theme, (name) => {
+  vuetifyTheme.global.name.value = name
+}, { immediate: true })
+
+function toggleTheme() {
+  appStore.setTheme(appStore.theme === 'dark' ? 'light' : 'dark')
+}
 
 const snackbarOpen = ref(false)
 const snackbarTimer = ref<ReturnType<typeof setTimeout> | null>(null)

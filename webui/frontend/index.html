@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>MonadForge</title>
+    <script>
+      // Paint the background before the app mounts to avoid a theme flash.
+      // Key must stay in sync with stores/app.ts (monadforge-theme).
+      try {
+        var t = localStorage.getItem('monadforge-theme')
+        document.documentElement.style.background = t === 'light' ? '#F7F5F2' : '#0C0C10'
+      } catch (e) { /* localStorage unavailable — fall through to default */ }
+    </script>
   </head>
   <body>
     <div id="app"></div>

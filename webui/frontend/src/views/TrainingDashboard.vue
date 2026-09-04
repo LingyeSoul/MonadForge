@@ -100,7 +100,7 @@
         <div class="text-subtitle-2 mb-3">{{ t('dashSysMon') }}</div>
         <v-row dense>
           <v-col v-for="card in sysCards" :key="card.key" cols="6" sm="4" md="2">
-            <div class="metric-card pa-3 rounded-lg" style="background: rgba(255,255,255,0.03);">
+            <div class="metric-card pa-3 rounded-lg">
               <div class="text-caption text-medium-emphasis mb-1">{{ card.label }}</div>
               <div class="text-h6 font-weight-medium" :style="{ color: card.color }">
                 {{ card.value }}

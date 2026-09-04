@@ -10,7 +10,7 @@ import 'vuetify/styles'
 import { createVuetify } from 'vuetify'
 import { md3 } from 'vuetify/blueprints'
 
-const monadForgeDark = {
+const dark = {
   dark: true,
   colors: {
     background:           '#0C0C10',
@@ -39,11 +39,42 @@ const monadForgeDark = {
   },
 }
 
+// Light variant keeps the forge brand (ember/amber) but flips surfaces to
+// warm paper tones; primary/secondary are darkened for contrast on light bg.
+const light = {
+  dark: false,
+  colors: {
+    background:           '#F7F5F2',
+    surface:              '#FFFFFF',
+    'surface-bright':     '#FFFFFF',
+    'surface-variant':    '#ECE8E2',
+    'on-surface':         '#201D1A',
+    'on-surface-variant': '#6B625C',
+    primary:              '#A84A12',  // Deep ember
+    secondary:            '#A66A14',  // Bronze amber
+    'on-primary':         '#FFFFFF',
+    'on-secondary':       '#FFFFFF',
+    error:                '#B3261E',
+    info:                 '#1E88E5',
+    success:              '#2E7D32',
+    warning:              '#C77700',
+    outline:              '#D3CCC3',
+    'outline-variant':    '#E4DFD8',
+  },
+  variables: {
+    'border-color':          '#DED8D0',
+    'border-opacity':        '0.3',
+    'high-emphasis-opacity': '0.92',
+    'medium-emphasis-opacity': '0.64',
+    'disabled-opacity':      '0.32',
+  },
+}
+
 export default createVuetify({
   blueprint: md3,
   theme: {
-    defaultTheme: 'monadForgeDark',
-    themes: { monadForgeDark },
+    defaultTheme: 'dark',
+    themes: { dark, light },
   },
   defaults: {
     VTextField: { variant: 'outlined', density: 'compact' },

@@ -92,6 +92,8 @@ export default {
   guidebook: '가이드북',
   guidebookClose: '닫기',
   reportIssue: '문제 신고',
+  themeDark: '다크 모드',
+  themeLight: '라이트 모드',
 
   // Task Panel
   taskTitle: '작업 모니터',

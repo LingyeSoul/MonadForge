@@ -50,6 +50,29 @@
   --fs-micro:   11px;
 }
 
+// Light theme overrides — Vuetify swaps v-theme--dark/v-theme--light on the
+// app root (and teleported overlays), so every var(--bg-*/--text-*/--border-*)
+// consumer below flips without per-component changes.
+.v-theme--light {
+  // Surface hierarchy (4 levels)
+  --bg-deep:       #EFECE6;
+  --bg-base:       #F2EFEA;
+  --bg-surface:    #FFFFFF;
+  --bg-elevated:   #FFFFFF;
+  --bg-hover:      #ECE8E2;
+
+  // Text
+  --text-primary:   #201D1A;
+  --text-secondary: #6B625C;
+  --text-muted:     #8A817A;
+  --text-disabled:  #B5ADA5;
+
+  // Borders
+  --border-subtle:  #E4DFD8;
+  --border-default: #D3CCC3;
+  --border-strong:  #B8AFA4;
+}
+
 // ---- Vuetify SCSS variable overrides ----
 $body-font-family: 'Roboto', 'Noto Sans SC', sans-serif;
 $border-radius-root: 10px;
@@ -90,7 +113,7 @@ body {
 
 // ---- Metric cards ----
 .metric-card {
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(var(--v-theme-on-surface), 0.03);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
 }
