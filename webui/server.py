@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -43,14 +45,61 @@ _ALLOWED_ORIGINS = [
 _UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
-def _origin_is_allowed(request: Request, origin: str) -> bool:
-    """Accept configured dev origins and the WebUI's actual serving origin."""
-    if origin in _ALLOWED_ORIGINS:
-        return True
+def _extra_allowed_origins() -> list[str]:
+    """Extra browser origins accepted via ``ANIMA_WEBUI_ALLOWED_ORIGINS``.
+
+    Cloud-mirror gateways that rewrite ``Host`` without setting any
+    ``X-Forwarded-*`` header leave the server no way to reconstruct the
+    public URL, so operators list those origins explicitly (comma-separated).
+    """
+    raw = os.environ.get("ANIMA_WEBUI_ALLOWED_ORIGINS", "")
+    return [o.strip().rstrip("/") for o in raw.split(",") if o.strip()]
+
+
+def _peer_may_forward(request: Request) -> bool:
+    """Whether the direct peer is allowed to set ``X-Forwarded-*`` headers.
+
+    Only loopback/private peers are trusted: a cloud-mirror gateway connects
+    from inside the container's own network, while a client hitting an
+    exposed port directly is public — its spoofed forwarded headers must not
+    relax the CSRF check.
+    """
+    if request.client is None:
+        return False
+    try:
+        ip = ipaddress.ip_address(request.client.host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private
+
+
+def _serving_origin(request: Request) -> str | None:
+    """The origin the browser actually sees, honoring proxy rewrite headers.
+
+    TLS-terminating gateways (cloud port forwarding, local reverse proxies)
+    talk plain HTTP to us and often rewrite ``Host``, so the raw
+    ``scheme://host`` pair is an internal URL that never matches the
+    browser's ``Origin``. Rebuild the browser-visible origin from the
+    forwarded headers instead, falling back to the wire values.
+    """
     host = request.headers.get("host")
     if not host:
-        return False
-    return origin == f"{request.url.scheme}://{host}"
+        return None
+    scheme = request.url.scheme
+    if _peer_may_forward(request):
+        # First entry wins: the outermost hop is the one the browser used.
+        proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+        fwd_host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        if proto:
+            scheme = proto
+        if fwd_host:
+            host = fwd_host
+    return f"{scheme}://{host}"
+
+
+def _origin_is_allowed(request: Request, origin: str, allowed: list[str]) -> bool:
+    """Accept configured origins and the WebUI's actual serving origin."""
+    return origin in allowed or origin == _serving_origin(request)
 
 
 @asynccontextmanager
@@ -81,7 +130,9 @@ def create_app(dev: bool = False) -> FastAPI:
 
     app = FastAPI(title="MonadForge WebUI", version="0.1.0", lifespan=_lifespan)
 
-    origins = ["*"] if dev else _ALLOWED_ORIGINS
+    allowed_origins = _ALLOWED_ORIGINS + _extra_allowed_origins()
+
+    origins = ["*"] if dev else allowed_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
@@ -95,7 +146,8 @@ def create_app(dev: bool = False) -> FastAPI:
             fetch_site = request.headers.get("sec-fetch-site", "").lower()
             origin = request.headers.get("origin")
             if fetch_site == "cross-site" or (
-                origin is not None and not _origin_is_allowed(request, origin)
+                origin is not None
+                and not _origin_is_allowed(request, origin, allowed_origins)
             ):
                 return JSONResponse(
                     status_code=403,

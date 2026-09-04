@@ -92,6 +92,11 @@ python tasks.py daemon                     # 启动 daemon（它会自动拉起 
 1. [**AutoDL**](https://www.autodl.art/i/LingyeSoul/MonadForge/MonadForge)
 2. [**优云智算**](https://www.compshare.cn/images/detail?ImageId=Nft7l3N9ADXX) [点我送注册送5元赠金](https://passport.compshare.cn/register?referral_code=9xjVxsANjSLG2FM8mm6NIQ)
 
+> **端口转发直接用**：通过平台提供的端口转发/自定义服务域名访问 WebUI 时，服务端会自动识别
+> 网关的 `X-Forwarded-*` 请求头放行同源校验，无需额外配置。个别网关若改写 Host 且不转发这些头
+> （提交仍提示 403），启动前设置 `ANIMA_WEBUI_ALLOWED_ORIGINS=https://你的转发域名`
+> （多个用逗号分隔；daemon 拉起的 WebUI sidecar 会继承该环境变量）。
+
 ### 训练守护进程（Daemon）与系统托盘
 
 MonadForge 由一个**本地训练守护进程**（`scripts/daemon/`，`127.0.0.1:8765`）统筹：
