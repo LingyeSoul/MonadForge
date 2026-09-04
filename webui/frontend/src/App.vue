@@ -172,6 +172,7 @@ const navItems = [
   { icon: 'mdi-flask', titleKey: 'navDistill', to: '/distill' },
   { icon: 'mdi-image-filter-center-focus-strong', titleKey: 'navSuperResolution', to: '/sr' },
   { icon: 'mdi-call-merge', titleKey: 'navMerge', to: '/merge' },
+  { icon: 'mdi-cube-outline', titleKey: 'navModels', to: '/models' },
   { icon: 'mdi-console-line', titleKey: 'navTasks', to: '/tasks' },
   { icon: 'mdi-chart-line', titleKey: 'navDashboard', to: '/dashboard' },
 ]

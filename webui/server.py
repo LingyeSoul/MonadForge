@@ -20,6 +20,7 @@ from webui.api import files as files_api
 from webui.api import i18n as i18n_api
 from webui.api import images as images_api
 from webui.api import merge as merge_api
+from webui.api import models as models_api
 from webui.api import preprocess as preprocess_api
 from webui.api import preview as preview_api
 from webui.api import system as system_api
@@ -112,6 +113,7 @@ def create_app(dev: bool = False) -> FastAPI:
     app.include_router(i18n_api.router, prefix="/api/i18n")
     app.include_router(images_api.router, prefix="/api/images")
     app.include_router(merge_api.router, prefix="/api/merge")
+    app.include_router(models_api.router, prefix="/api/models")
     app.include_router(preprocess_api.router, prefix="/api/preprocess")
     app.include_router(preview_api.router, prefix="/api/preview")
     app.include_router(system_api.router, prefix="/api/system")

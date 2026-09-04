@@ -45,6 +45,11 @@ const router = createRouter({
       component: () => import('./views/MergeView.vue'),
     },
     {
+      path: '/models',
+      name: 'models',
+      component: () => import('./views/ModelsView.vue'),
+    },
+    {
       path: '/tasks',
       name: 'tasks',
       component: () => import('./views/TaskMonitorView.vue'),
