@@ -11,12 +11,7 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append>
-        <v-icon
-          icon="mdi-information-outline"
-          size="small"
-          class="ml-1 help-icon"
-          @click.stop="emit('help-click', field.key)"
-        />
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -43,12 +38,7 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append>
-        <v-icon
-          icon="mdi-information-outline"
-          size="small"
-          class="ml-1 help-icon"
-          @click.stop="emit('help-click', field.key)"
-        />
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" class="ml-2" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -71,12 +61,7 @@
       @update:model-value="emit('update', Number($event))"
     >
       <template #append-inner>
-        <v-icon
-          icon="mdi-information-outline"
-          size="small"
-          class="help-icon"
-          @click.stop="emit('help-click', field.key)"
-        />
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -100,12 +85,7 @@
       @blur="onFloatBlur"
     >
       <template #append-inner>
-        <v-icon
-          icon="mdi-information-outline"
-          size="small"
-          class="help-icon"
-          @click.stop="emit('help-click', field.key)"
-        />
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -126,12 +106,7 @@
       @update:model-value="tryParse($event)"
     >
       <template #append-inner>
-        <v-icon
-          icon="mdi-information-outline"
-          size="small"
-          class="help-icon"
-          @click.stop="emit('help-click', field.key)"
-        />
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -159,12 +134,7 @@
       @update:model-value="emit('update', $event)"
     >
       <template #append-inner>
-        <v-icon
-          icon="mdi-information-outline"
-          size="small"
-          class="help-icon"
-          @click.stop="emit('help-click', field.key)"
-        />
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-chip v-if="field.read_only" size="x-small" variant="outlined" color="grey" prepend-icon="mdi-lock">
           {{ t('cfReadOnly') }}
         </v-chip>
@@ -182,6 +152,7 @@ import type { FieldMeta } from '../stores/config'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
 import RegexSetEditor from './RegexSetEditor.vue'
+import FieldHelpButton from './FieldHelpButton.vue'
 
 const props = defineProps<{ field: FieldMeta }>()
 const emit = defineEmits<{ update: [value: unknown]; 'help-click': [key: string] }>()
@@ -252,19 +223,14 @@ function tryParse(val: string) {
 </script>
 
 <style scoped>
-.help-icon {
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 0.2s;
-}
-.help-icon:hover {
-  opacity: 1;
-  color: rgb(var(--v-theme-primary));
+:deep(.v-switch .v-label) {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* Focus glow on all fields in this component */
 :deep(.v-field--focused) {
-  box-shadow: 0 0 0 2px rgba(199, 91, 26, 0.15);
+  box-shadow: 0 0 0 3px var(--glow-ember);
   border-radius: var(--radius-md);
 }
 

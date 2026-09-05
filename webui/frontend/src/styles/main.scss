@@ -1,244 +1,237 @@
-// ====== MonadForge Brand System ======
-// Global design tokens + Vuetify overrides + animation system
-
-// ---- CSS Custom Properties (brand tokens) ----
+// Shared workbench tokens. Semantic colors remain independent of the brand accent.
 :root {
-  // Brand color ramp
-  --forge-ember:   #C75B1A;
-  --forge-amber:   #D4912A;
-  --forge-gold:    #E8C547;
-  --forge-copper:  #B87333;
-  --forge-bronze:  #6B4226;
-
-  // Surface hierarchy (4 levels)
-  --bg-deep:       #0C0C10;
-  --bg-base:       #121218;
-  --bg-surface:    #1A1A22;
-  --bg-elevated:   #22222C;
-  --bg-hover:      #2A2A36;
-
-  // Text
-  --text-primary:   #F0EDE8;
-  --text-secondary: #A8A0A0;
-  --text-muted:     #706868;
-  --text-disabled:  #4A4444;
-
-  // Borders
-  --border-subtle:  #1E1E28;
-  --border-default: #2A2A36;
-  --border-strong:  #3A3A48;
-
-  // Glow & gradients
-  --glow-ember:    rgba(199, 91, 26, 0.15);
-  --gradient-fire: linear-gradient(135deg, #8B3A0F, #C75B1A, #D4912A, #E8C547);
-
-  // Typography
+  --forge-ember: #eba375;
+  --forge-amber: #88bdb5;
+  --forge-gold: #e3bc75;
+  --forge-copper: #eba375;
+  --forge-bronze: #906e57;
+  --bg-deep: #111315;
+  --bg-base: #141618;
+  --bg-surface: #1c1f22;
+  --bg-elevated: #272b2f;
+  --bg-hover: #2c3136;
+  --text-primary: #eef0f2;
+  --text-secondary: #a8afb6;
+  --text-muted: #929aa3;
+  --text-disabled: #69727b;
+  --border-subtle: #2a2e33;
+  --border-default: #383e44;
+  --border-strong: #555f69;
+  --glow-ember: rgb(235 163 117 / 12%);
+  --success: rgb(var(--v-theme-success));
+  --error: rgb(var(--v-theme-error));
+  --font-sans: 'Geist', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
-
-  // Radius
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-
-  // Typography scale (responsive clamp)
-  --fs-display: clamp(28px, 3.5vw, 48px);
-  --fs-h1:      clamp(24px, 2.5vw, 32px);
-  --fs-h2:      clamp(20px, 2vw, 24px);
-  --fs-h3:      16px;
-  --fs-body:    14px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --fs-display: 32px;
+  --fs-h1: 26px;
+  --fs-h2: 20px;
+  --fs-h3: 16px;
+  --fs-body: 14px;
   --fs-caption: 12px;
-  --fs-micro:   11px;
+  --fs-micro: 11px;
 }
 
-// Light theme overrides — Vuetify swaps v-theme--dark/v-theme--light on the
-// app root (and teleported overlays), so every var(--bg-*/--text-*/--border-*)
-// consumer below flips without per-component changes.
 .v-theme--light {
-  // Surface hierarchy (4 levels)
-  --bg-deep:       #EFECE6;
-  --bg-base:       #F2EFEA;
-  --bg-surface:    #FFFFFF;
-  --bg-elevated:   #FFFFFF;
-  --bg-hover:      #ECE8E2;
-
-  // Text
-  --text-primary:   #201D1A;
-  --text-secondary: #6B625C;
-  --text-muted:     #8A817A;
-  --text-disabled:  #B5ADA5;
-
-  // Borders
-  --border-subtle:  #E4DFD8;
-  --border-default: #D3CCC3;
-  --border-strong:  #B8AFA4;
+  --forge-ember: #9d4c23;
+  --forge-amber: #34756c;
+  --forge-gold: #956914;
+  --forge-copper: #9d4c23;
+  --bg-deep: #edf0f2;
+  --bg-base: #f6f7f8;
+  --bg-surface: #fff;
+  --bg-elevated: #fff;
+  --bg-hover: #e9edf0;
+  --text-primary: #242a30;
+  --text-secondary: #626c76;
+  --text-muted: #68737e;
+  --text-disabled: #8a959f;
+  --border-subtle: #e0e5e9;
+  --border-default: #cbd3da;
+  --border-strong: #9aa6b0;
+  --glow-ember: rgb(157 76 35 / 10%);
 }
 
-// ---- Vuetify SCSS variable overrides ----
-$body-font-family: 'Roboto', 'Noto Sans SC', sans-serif;
-$border-radius-root: 10px;
-$card-border-radius: 14px;
-$card-elevation: 0;
+html { overflow-y: auto; }
+body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+*, *::before, *::after { letter-spacing: 0 !important; }
 
-// ---- Base overrides ----
-html {
-  overflow-y: auto;
-  scroll-behavior: smooth;
+.v-application, .v-overlay, .v-field, .v-btn {
+  font-family: var(--font-sans) !important;
 }
 
-body {
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+.v-application {
+  font-size: 14px;
+  .text-h5 { font: 600 24px/1.35 var(--font-sans) !important; }
+  .text-h6 { font: 600 18px/1.4 var(--font-sans) !important; }
+  .text-subtitle-1 { font-size: 15px !important; font-weight: 600; }
+  .text-subtitle-2 { font-size: 13px !important; font-weight: 600; }
 }
 
-// Scrollbar theming
-::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb {
-  background: var(--border-default);
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--forge-copper);
-}
+::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
 
-.monadforge-logo {
-  font-weight: 700;
-  letter-spacing: 0.02em;
-}
-
-// Numeric / code fields use JetBrains Mono
-.font-mono-field {
-  font-family: var(--font-mono) !important;
-}
-
-// ---- Metric cards ----
-.metric-card {
-  background: rgba(var(--v-theme-on-surface), 0.03);
+:focus-visible { outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: 3px; }
+.v-field input:focus-visible, .v-field textarea:focus-visible { outline: none; }
+.v-btn { text-transform: none !important; font-weight: 500; }
+.v-btn:not(.v-btn--icon) { min-height: 34px; }
+.v-btn--icon { flex-shrink: 0; }
+.v-btn__content { gap: 2px; }
+.v-btn:not(.v-btn--disabled):active { transform: translateY(1px); }
+.v-card, .v-alert, .v-expansion-panel { border-radius: var(--radius-md) !important; }
+.v-card-title { white-space: normal; overflow-wrap: anywhere; }
+.v-card--variant-tonal {
+  background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
+  > .v-card__underlay { opacity: 0; }
 }
+.v-field {
+  border-radius: var(--radius-sm) !important;
+  font-size: 13px;
+  background: var(--bg-surface);
+  transition: box-shadow 160ms ease;
+}
+.v-field__outline { --v-field-border-opacity: 0.28; }
+.v-field--focused { box-shadow: 0 0 0 3px var(--glow-ember); }
+.v-label { font-size: 13px; }
+.v-input { min-width: 0; }
+.v-col, [class*='v-col-'] { min-width: 0; }
+.v-expansion-panel {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  &::after { display: none; }
+}
+.v-expansion-panel-title { min-height: 50px; font-size: 13px; }
+.v-expansion-panel-title--active { min-height: 54px; }
+.v-expansion-panel__shadow { display: none; }
+.v-expansion-panels--variant-accordion > .v-expansion-panel:not(:first-child) { border-top: 0; }
+.v-chip { font-weight: 500; }
+.v-table { background: transparent; }
+.v-table th { color: var(--text-secondary); font-size: 12px; }
+.v-table td { font-size: 13px; }
+.font-mono-field, .font-mono-field input { font-family: var(--font-mono) !important; }
 
-// ---- Focus / interaction glow ----
-.v-field--focused {
-  .v-field__outline {
-    border-color: var(--forge-ember) !important;
+.workspace-nav {
+  background: var(--bg-deep) !important;
+  border-right: 1px solid var(--border-subtle) !important;
+  .v-navigation-drawer__content { scrollbar-width: thin; }
+  .v-list { background: transparent; padding: 0 12px; }
+  .v-list-item {
+    min-height: 38px;
+    margin-bottom: 3px;
+    border-radius: 5px !important;
+    color: var(--text-secondary);
+    transition: color 140ms ease, background 140ms ease;
+    .v-list-item-title { font-size: 13px; font-weight: 500; }
+    .v-list-item__prepend > .v-icon { opacity: 0.85; font-size: 19px; }
+    .v-list-item__prepend > .v-list-item__spacer { width: 12px; }
+    .v-list-item__overlay { opacity: 0; }
+    &:hover { background: var(--bg-hover); color: var(--text-primary); }
+    &.v-list-item--active {
+      color: var(--forge-ember);
+      background: var(--glow-ember);
+      box-shadow: inset 2px 0 var(--forge-ember);
+    }
   }
-  box-shadow: 0 0 0 2px var(--glow-ember);
-  border-radius: var(--radius-md);
+  &.v-navigation-drawer--rail {
+    .workspace-brand { justify-content: center; padding: 0; }
+    .nav-group { padding-top: 12px; }
+    .nav-group + .nav-group { margin-top: 12px; border-top: 1px solid var(--border-subtle); }
+  }
 }
 
-// Button press micro-interaction
-.v-btn:not(.v-btn--disabled):active {
-  transform: scale(0.97);
-  filter: brightness(1.1);
-  transition: transform 0.1s ease, filter 0.1s ease;
+.workspace-brand {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  height: 80px;
+  padding: 0 21px;
+  color: var(--text-primary);
+  text-decoration: none;
+  img { flex: 0 0 32px; border-radius: 6px; }
+}
+.workspace-brand__text {
+  display: grid;
+  gap: 3px;
+  white-space: nowrap;
+  strong { font-size: 17px; font-weight: 650; }
+  span { color: var(--text-muted); font-size: 11px; }
+}
+.nav-group { padding: 8px 0; }
+.nav-group__label { padding: 0 24px 8px; font-size: 11px; font-weight: 500; color: var(--text-muted); }
+.workspace-nav__utilities { padding-top: 14px !important; border-top: 1px solid var(--border-subtle); }
+.workspace-nav__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 62px;
+  gap: 2px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-subtle);
+  &.is-rail { flex-direction: column; padding: 8px; }
+}
+.workspace-local { display: flex; align-items: center; gap: 7px; margin-left: 7px; font-size: 11px; color: var(--text-muted); }
+.workspace-topbar { background: var(--bg-base) !important; border-bottom: 1px solid var(--border-subtle) !important; }
+.workspace-breadcrumb { display: flex; align-items: center; gap: 14px; font-size: 13px; font-weight: 500; min-width: 0; }
+.workspace-breadcrumb__group { color: var(--text-muted); font-weight: 400; }
+.workspace-engine {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  span { font-family: var(--font-mono); font-size: 10px; border: 1px solid var(--border-default); padding: 2px 5px; border-radius: 3px; }
+}
+#workspace-main > .v-container {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
 }
 
-// ---- Skeleton / loading ----
-.skeleton-block {
-  border-radius: var(--radius-sm);
-  @extend .anim-shimmer;
-  min-height: 16px;
-}
+.workspace-heading { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }
+.workspace-heading h1 { margin: 0; font-size: 26px; line-height: 1.35; font-weight: 600; }
+.workspace-heading p { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; }
+.workspace-section-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 1.5; }
+.workspace-empty { display: grid; align-content: center; justify-items: center; gap: 16px; padding: 48px 20px; text-align: center; }
+.workspace-empty h2 { margin: 0; font-size: 18px; font-weight: 500; color: var(--text-secondary); }
+.workspace-empty__mark { width: 72px; height: 72px; display: grid; place-items: center; border: 1px solid var(--border-default); border-radius: 8px; color: var(--text-muted); }
+.metric-card { padding: 16px; min-width: 0; }
 
-// ---- Shake animation for validation ----
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  20%, 60% { transform: translateX(-4px); }
-  40%, 80% { transform: translateX(4px); }
-}
+.skeleton-block { border-radius: 4px; min-height: 16px; background: var(--bg-elevated); animation: shimmer 1.5s ease infinite; }
+.anim-shimmer { animation: shimmer 1.5s ease infinite; }
+.anim-fade-up, .stagger-item { animation: fadeSlideUp 240ms ease-out both; }
+.anim-shake { animation: shake 300ms ease-in-out; }
+.anim-pulse-glow { animation: shimmer 2s ease-in-out infinite; }
+.anim-progress-stripe { background: rgb(var(--v-theme-primary)); }
+@keyframes fadeSlideUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes shimmer { 50% { opacity: 0.5; } }
+@keyframes shake { 20%, 60% { transform: translateX(-3px); } 40%, 80% { transform: translateX(3px); } }
+@keyframes confetti-fall { to { transform: translateY(40px) rotate(180deg); opacity: 0; } }
 
-.anim-shake {
-  animation: shake 0.3s ease-in-out;
+@media (min-width: 960px) {
+  #workspace-main > .v-container { padding: 26px 32px !important; }
 }
-
-// ---- Confetti burst ----
-@keyframes confetti-fall {
-  0% { transform: translateY(-10px) rotate(0deg); opacity: 1; }
-  100% { transform: translateY(40px) rotate(360deg); opacity: 0; }
+@media (max-width: 959px) {
+  .workspace-heading { margin-bottom: 20px; flex-wrap: wrap; }
+  .workspace-heading h1 { font-size: 22px; }
 }
-
-// ---- Stagger item utility ----
-.stagger-item {
-  animation: fadeSlideUp 0.3s ease-out both;
+@media (max-width: 599px) {
+  .workspace-breadcrumb__group, .workspace-engine { display: none; }
+  .v-dialog .v-card-actions { flex-wrap: wrap; }
+  .v-dialog .v-card-title { font-size: 18px; }
+  .v-application .text-h5 { font-size: 22px !important; }
 }
-
-// ---- Animation Keyframes ----
-@keyframes fadeSlideUp {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes pulseGlow {
-  0%, 100% { box-shadow: 0 0 12px var(--glow-ember); }
-  50%      { box-shadow: 0 0 24px rgba(199, 91, 26, 0.3); }
-}
-
-@keyframes shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-@keyframes progressStripe {
-  0%   { background-position: 0 0; }
-  100% { background-position: 40px 0; }
-}
-
-// ---- Animation utility classes ----
-.anim-fade-up {
-  animation: fadeSlideUp 0.3s ease-out both;
-}
-
-.anim-pulse-glow {
-  animation: pulseGlow 2s ease-in-out infinite;
-}
-
-.anim-shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--bg-surface) 25%,
-    var(--bg-elevated) 50%,
-    var(--bg-surface) 75%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s ease infinite;
-}
-
-.anim-progress-stripe {
-  background: repeating-linear-gradient(
-    45deg,
-    var(--forge-ember),
-    var(--forge-ember) 10px,
-    rgba(199, 91, 26, 0.7) 10px,
-    rgba(199, 91, 26, 0.7) 20px
-  );
-  background-size: 40px 100%;
-  animation: progressStripe 1s linear infinite;
-}
-
-// ---- Vue route transitions ----
-.fade-slide-enter-active {
-  transition: opacity 0.2s ease-out, transform 0.2s ease-out;
-}
-.fade-slide-leave-active {
-  transition: opacity 0.15s ease-in, transform 0.15s ease-in;
-}
-.fade-slide-enter-from {
-  opacity: 0;
-  transform: translateY(6px);
-}
-.fade-slide-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
-// ---- Accessibility: reduced motion ----
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

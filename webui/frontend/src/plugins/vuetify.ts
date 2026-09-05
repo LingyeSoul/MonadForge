@@ -1,10 +1,10 @@
-import '@fontsource/roboto/300.css'
-import '@fontsource/roboto/400.css'
-import '@fontsource/roboto/500.css'
-import '@fontsource/roboto/700.css'
-import '@fontsource/jetbrains-mono/400.css'
-import '@fontsource/jetbrains-mono/500.css'
-import '@fontsource/jetbrains-mono/600.css'
+import '@fontsource/geist/latin-400.css'
+import '@fontsource/geist/latin-500.css'
+import '@fontsource/geist/latin-600.css'
+import '@fontsource/geist/latin-700.css'
+import '@fontsource/jetbrains-mono/latin-400.css'
+import '@fontsource/jetbrains-mono/latin-500.css'
+import '@fontsource/jetbrains-mono/latin-600.css'
 import '@mdi/font/css/materialdesignicons.css'
 import 'vuetify/styles'
 import { createVuetify } from 'vuetify'
@@ -13,57 +13,55 @@ import { md3 } from 'vuetify/blueprints'
 const dark = {
   dark: true,
   colors: {
-    background:           '#0C0C10',
-    surface:              '#1A1A22',
-    'surface-bright':     '#22222C',
-    'surface-variant':    '#2A2A36',
-    'on-surface':         '#F0EDE8',
-    'on-surface-variant': '#A8A0A0',
-    primary:              '#C75B1A',  // Ember
-    secondary:            '#D4912A',  // Amber
-    'on-primary':         '#FFFFFF',
-    'on-secondary':       '#1A1A22',
-    error:                '#CF6679',
-    info:                 '#64B5F6',
-    success:              '#4CAF50',
-    warning:              '#FB8C00',
-    outline:              '#2A2A36',
-    'outline-variant':    '#1E1E28',
+    background:           '#141618',
+    surface:              '#1C1F22',
+    'surface-bright':     '#272B2F',
+    'surface-variant':    '#34393E',
+    'on-surface':         '#EEF0F2',
+    'on-surface-variant': '#A8AFB6',
+    primary:              '#EBA375',
+    secondary:            '#88BDB5',
+    'on-primary':         '#251C16',
+    'on-secondary':       '#152522',
+    error:                '#F18C96',
+    info:                 '#91B9EA',
+    success:              '#89C5A2',
+    warning:              '#E3BC75',
+    outline:              '#42484E',
+    'outline-variant':    '#2A2E33',
   },
   variables: {
-    'border-color':          '#2A2A36',
-    'border-opacity':        '0.12',
+    'border-color':          '#A8AFB6',
+    'border-opacity':        '0.18',
     'high-emphasis-opacity': '0.92',
     'medium-emphasis-opacity': '0.64',
     'disabled-opacity':      '0.32',
   },
 }
 
-// Light variant keeps the forge brand (ember/amber) but flips surfaces to
-// warm paper tones; primary/secondary are darkened for contrast on light bg.
 const light = {
   dark: false,
   colors: {
-    background:           '#F7F5F2',
+    background:           '#F6F7F8',
     surface:              '#FFFFFF',
     'surface-bright':     '#FFFFFF',
-    'surface-variant':    '#ECE8E2',
-    'on-surface':         '#201D1A',
-    'on-surface-variant': '#6B625C',
-    primary:              '#A84A12',  // Deep ember
-    secondary:            '#A66A14',  // Bronze amber
+    'surface-variant':    '#E7EBEE',
+    'on-surface':         '#242A30',
+    'on-surface-variant': '#626C76',
+    primary:              '#9D4C23',
+    secondary:            '#34756C',
     'on-primary':         '#FFFFFF',
     'on-secondary':       '#FFFFFF',
-    error:                '#B3261E',
-    info:                 '#1E88E5',
-    success:              '#2E7D32',
-    warning:              '#C77700',
-    outline:              '#D3CCC3',
-    'outline-variant':    '#E4DFD8',
+    error:                '#BA3B50',
+    info:                 '#356FA8',
+    success:              '#327653',
+    warning:              '#956914',
+    outline:              '#B7C0C8',
+    'outline-variant':    '#E0E5E9',
   },
   variables: {
-    'border-color':          '#DED8D0',
-    'border-opacity':        '0.3',
+    'border-color':          '#626C76',
+    'border-opacity':        '0.2',
     'high-emphasis-opacity': '0.92',
     'medium-emphasis-opacity': '0.64',
     'disabled-opacity':      '0.32',
@@ -80,8 +78,9 @@ export default createVuetify({
     VTextField: { variant: 'outlined', density: 'compact' },
     VSelect:    { variant: 'outlined', density: 'compact' },
     VSwitch:    { color: 'secondary', density: 'compact' },
-    VBtn:       { variant: 'flat' },
-    VCard:      { elevation: 0 },
+    VBtn:       { variant: 'flat', rounded: 'sm' },
+    VCard:      { elevation: 0, rounded: 'sm' },
+    VTooltip:   { openDelay: 350 },
     VTextarea:  { variant: 'outlined', density: 'compact' },
     VChip:      { size: 'small', variant: 'tonal' },
   },

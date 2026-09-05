@@ -1,7 +1,16 @@
 <template>
   <v-container fluid class="pa-4 config-editor">
-    <v-row align="center" class="mb-4">
-      <v-col cols="12" md="2">
+    <header class="workspace-heading">
+      <div>
+        <h1>{{ t('cfgWorkspaceTitle') }}</h1>
+        <p>{{ t('cfgWorkspaceMeta') }}</p>
+      </div>
+      <span v-if="configStore.dirty || extraArgs" class="config-dirty" role="status">
+        <v-icon icon="mdi-circle-small" size="20" />{{ t('cfgPendingChanges') }}
+      </span>
+    </header>
+    <div class="config-toolbar">
+      <div class="config-toolbar__method">
         <v-select
           v-model="selectedMethod"
           :items="configStore.methods"
@@ -11,8 +20,8 @@
           hide-details
           @update:model-value="onMethodChange"
         />
-      </v-col>
-      <v-col cols="12" md="3">
+      </div>
+      <div class="config-toolbar__variant">
         <v-select
           v-model="selectedVariant"
           :items="variantItems"
@@ -25,8 +34,6 @@
           :disabled="!selectedMethod"
           @update:model-value="onVariantChange"
         />
-      </v-col>
-      <v-col cols="12" md="1" class="d-flex align-center ga-1">
         <v-btn
           icon="mdi-plus"
           variant="text"
@@ -34,11 +41,14 @@
           size="small"
           :disabled="!selectedMethod"
           :title="t('cfgNewVariant')"
+          :aria-label="t('cfgNewVariant')"
           @click="openCreateVariant"
-        />
-      </v-col>
-      <v-col cols="12" md="2">
-        <div class="d-flex align-center ga-1">
+        >
+          <v-icon icon="mdi-plus" />
+          <v-tooltip activator="parent">{{ t('cfgNewVariant') }}</v-tooltip>
+        </v-btn>
+      </div>
+      <div class="config-toolbar__preset">
           <v-select
             v-model="selectedPreset"
             :items="configStore.presets"
@@ -54,6 +64,7 @@
             density="compact"
             size="small"
             :title="t('cfgPresetCreate')"
+            :aria-label="t('cfgPresetCreate')"
             @click="openCreatePreset"
           />
           <v-btn
@@ -66,37 +77,43 @@
             :title="t('cfgPresetDelete')"
             @click="deleteCurrentPreset"
           />
-        </div>
-      </v-col>
-      <v-col cols="12" md="4" class="d-flex justify-end ga-2 flex-wrap">
+      </div>
+      <div class="config-toolbar__actions">
         <v-btn
           :color="(configStore.dirty || extraArgs) ? 'warning' : 'primary'"
           :loading="configStore.loading"
           :disabled="!configStore.dirty && !extraArgs"
-          prepend-icon="mdi-content-save"
+          icon="mdi-content-save-outline"
+          variant="text"
+          size="small"
+          :aria-label="t('cfgSave')"
           @click="onSave"
         >
-          {{ t('cfgSave') }}{{ (configStore.dirty || extraArgs) ? ' *' : '' }}
+          <v-icon icon="mdi-content-save-outline" />
+          <v-tooltip activator="parent">{{ t('cfgSave') }}</v-tooltip>
         </v-btn>
         <v-btn
-          variant="outlined"
+          variant="text"
           :disabled="!selectedVariant"
-          prepend-icon="mdi-refresh"
+          icon="mdi-refresh"
+          size="small"
+          :aria-label="t('cfgReload')"
           @click="loadConfig"
         >
-          {{ t('cfgReload') }}
+          <v-icon icon="mdi-refresh" />
+          <v-tooltip activator="parent">{{ t('cfgReload') }}</v-tooltip>
         </v-btn>
         <v-btn
-          color="success"
+          color="primary"
           :disabled="!selectedVariant"
           :loading="trainingLaunching"
-          prepend-icon="mdi-play-circle"
+          prepend-icon="mdi-play"
           @click="startTraining"
         >
           {{ t('cfgTrain') }}
         </v-btn>
         <v-btn
-          color="secondary"
+          variant="outlined"
           :disabled="!selectedVariant"
           :loading="testLaunching"
           prepend-icon="mdi-test-tube"
@@ -104,11 +121,11 @@
         >
           {{ t('cfgTest') }}
         </v-btn>
-      </v-col>
-    </v-row>
+      </div>
+    </div>
 
     <!-- WandB Tracking Panel -->
-    <v-expansion-panels v-model="wandbPanel" class="mb-4" variant="accordion">
+    <v-expansion-panels v-if="selectedVariant" v-model="wandbPanel" class="mb-4 config-tracking" variant="accordion">
       <v-expansion-panel elevation="0">
         <v-expansion-panel-title class="text-subtitle-2">
           <v-icon icon="mdi-chart-box" class="mr-2" />
@@ -126,7 +143,7 @@
           />
         </v-expansion-panel-title>
         <v-expansion-panel-text>
-          <v-row dense>
+          <v-row density="comfortable">
             <v-col cols="12" md="4">
               <v-text-field
                 v-model="wandb.project"
@@ -159,7 +176,7 @@
               />
             </v-col>
           </v-row>
-          <v-row dense class="mt-2">
+          <v-row density="comfortable" class="mt-2">
             <v-col cols="12" md="3">
               <v-text-field
                 v-model.number="wandb.log_every_n_steps"
@@ -259,10 +276,21 @@
       </ul>
     </v-alert>
 
-    <!-- Two-column layout: form left, help panel right -->
-    <v-row>
-      <v-col cols="12" :lg="selectedVariant ? 8 : 12" class="form-column">
-        <v-card v-if="configStore.basicFields.length > 0" class="mb-4" variant="tonal">
+    <div v-if="selectedVariant && configStore.fields.length" class="config-filterbar">
+      <span class="config-field-count">{{ t('cfgParametersCount', { n: visibleFieldCount }) }}</span>
+      <v-text-field v-model="fieldSearch" :label="t('cfgSearchFields')" prepend-inner-icon="mdi-magnify"
+        clearable hide-details density="compact" class="config-search" />
+      <v-btn :icon="showGuide ? 'mdi-book-open-page-variant' : 'mdi-book-open-page-variant-outline'"
+        :color="showGuide ? 'primary' : undefined" variant="text" :aria-label="t('cfgOpenGuide')"
+        :aria-pressed="showGuide" @click="showGuide = !showGuide">
+        <v-icon :icon="showGuide ? 'mdi-book-open-page-variant' : 'mdi-book-open-page-variant-outline'" />
+        <v-tooltip activator="parent">{{ t('cfgOpenGuide') }}</v-tooltip>
+      </v-btn>
+    </div>
+
+    <v-row class="config-body">
+      <v-col cols="12" :lg="selectedVariant && showGuide ? 8 : 12" class="form-column">
+        <v-card v-if="filteredBasic.length > 0" class="mb-4 config-section" variant="flat">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-tune" class="mr-2" />
             {{ t('cfgBasicSettings') }}
@@ -270,10 +298,10 @@
           <v-card-text>
             <v-row>
               <v-col
-                v-for="field in configStore.basicFields"
+                v-for="field in filteredBasic"
                 :key="field.key"
                 cols="12"
-                md="6"
+                sm="6"
               >
                 <ConfigField
                   :field="field"
@@ -285,10 +313,13 @@
           </v-card-text>
         </v-card>
 
-        <v-expansion-panels v-if="Object.keys(configStore.groupedAdvanced).length > 0" variant="accordion">
+        <v-expansion-panels v-if="Object.keys(filteredAdvanced).length > 0"
+          :model-value="fieldSearch ? Object.keys(filteredAdvanced) : expandedGroups"
+          multiple variant="accordion" @update:model-value="onExpandedGroups">
           <v-expansion-panel
-            v-for="(groupFields, groupName) in configStore.groupedAdvanced"
+            v-for="(groupFields, groupName) in filteredAdvanced"
             :key="groupName"
+            :value="groupName"
           >
             <v-expansion-panel-title>
               <v-icon icon="mdi-cog-outline" class="mr-2" size="small" />
@@ -300,8 +331,8 @@
                 <v-col
                   v-for="field in groupFields"
                   :key="field.key"
-                  :cols="field.key === 'sample_prompts' || field.field_type === 'regex_set' ? 12 : undefined"
-                  :md="field.key === 'sample_prompts' || field.field_type === 'regex_set' ? 12 : 6"
+                  cols="12"
+                  :sm="field.key === 'sample_prompts' || field.field_type === 'regex_set' ? 12 : 6"
                 >
                   <PreviewPromptEditor
                     v-if="field.key === 'sample_prompts'"
@@ -318,9 +349,14 @@
             </v-expansion-panel-text>
           </v-expansion-panel>
         </v-expansion-panels>
+        <div v-if="fieldSearch && !filteredBasic.length && !Object.keys(filteredAdvanced).length" class="workspace-empty" role="status">
+          <v-icon icon="mdi-magnify" size="32" />
+          <h2>{{ t('cfgNoMatchingFields') }}</h2>
+          <v-btn variant="outlined" @click="fieldSearch = ''">{{ t('cfgClearSearch') }}</v-btn>
+        </div>
 
         <!-- Extra Args section -->
-        <v-card v-if="selectedVariant" class="mt-4" variant="outlined">
+        <v-card v-if="selectedVariant" class="mt-4 config-section" variant="flat">
           <v-card-title
             class="text-subtitle-1 d-flex align-center cursor-pointer"
             @click="showExtraArgs = !showExtraArgs"
@@ -347,21 +383,35 @@
           </v-expand-transition>
         </v-card>
 
-        <div v-if="!configStore.loading && configStore.fields.length === 0" class="text-center pa-12">
-          <v-icon icon="mdi-cog-transfer-outline" size="64" color="grey" class="mb-4" />
-          <div class="text-h6 text-medium-emphasis">{{ t('cfgSelectHint') }}</div>
-        </div>
+        <section v-if="!selectedVariant" class="method-library">
+          <div class="method-library__heading">
+            <h2 class="workspace-section-title">{{ t(selectedMethod ? 'cfgVariantLibrary' : 'cfgMethodLibrary') }}</h2>
+            <span class="config-field-count">{{ selectedMethod ? variantItems.length : configStore.methods.length }}</span>
+          </div>
+          <div class="method-grid">
+            <button v-for="item in pickerItems" :key="item.value" type="button" class="method-option"
+              :disabled="configStore.loading || choosingMethod" @click="chooseConfiguration(item.value)">
+              <v-icon :icon="selectedMethod ? 'mdi-file-document-outline' : 'mdi-vector-combine'" size="22" />
+              <span>{{ item.label }}</span>
+              <v-icon icon="mdi-arrow-top-right" size="17" class="method-option__arrow" />
+            </button>
+          </div>
+          <div v-if="!pickerItems.length" class="workspace-empty">
+            <v-icon icon="mdi-cog-transfer-outline" size="36" />
+            <h2>{{ t('cfgSelectHint') }}</h2>
+          </div>
+        </section>
       </v-col>
 
       <!-- Help panel: only shown when a variant is selected -->
-      <v-col v-if="selectedVariant" cols="12" lg="4">
+      <v-col v-if="selectedVariant && showGuide" cols="12" lg="4" class="config-reference">
         <div class="help-panel-sticky">
           <HelpPanel
             ref="helpPanelRef"
             :variant="selectedVariant"
             :field-help="fieldHelpData"
             :guide-html="guideHtml"
-            height="calc(100vh - 140px)"
+            height="min(680px, calc(100dvh - 120px))"
           />
         </div>
       </v-col>
@@ -510,7 +560,7 @@ decompose_both = false</pre>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
@@ -520,12 +570,49 @@ import ConfigField from '../components/ConfigField.vue'
 import PreviewPromptEditor from '../components/PreviewPromptEditor.vue'
 import HelpPanel from '../components/HelpPanel.vue'
 import { readPreprocessRun, writePreprocessRun } from '../composables/usePreprocessRunStorage'
+import { matchesConfigSearch } from '../utils/configSearch'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()
 const notify = useNotifyStore()
 const appStore = useAppStore()
 const { t } = useI18n()
+const fieldSearch = ref<string | null>('')
+const expandedGroups = ref<string[]>([])
+const showGuide = ref(true)
+const choosingMethod = ref(false)
+const filteredBasic = computed(() => selectedVariant.value
+  ? configStore.basicFields.filter(field => matchesConfigSearch(field, fieldSearch.value)) : [])
+const filteredAdvanced = computed(() => {
+  if (!selectedVariant.value) return {}
+  return Object.fromEntries(Object.entries(configStore.groupedAdvanced)
+    .map(([group, fields]) => [group, fields.filter(field => matchesConfigSearch(field, fieldSearch.value))] as const)
+    .filter(([, fields]) => fields.length))
+})
+const visibleFieldCount = computed(() => filteredBasic.value.length
+  + Object.values(filteredAdvanced.value).reduce((total, fields) => total + fields.length, 0))
+const pickerItems = computed(() => selectedMethod.value
+  ? variantItems.value
+  : configStore.methods.map(method => ({ value: method, label: method })))
+
+function onExpandedGroups(value: unknown) {
+  if (!fieldSearch.value && Array.isArray(value)) expandedGroups.value = value
+}
+
+async function chooseConfiguration(value: string) {
+  choosingMethod.value = true
+  try {
+    if (selectedMethod.value) {
+      selectedVariant.value = value
+      await onVariantChange()
+    } else {
+      selectedMethod.value = value
+      await onMethodChange(value)
+    }
+  } finally {
+    choosingMethod.value = false
+  }
+}
 
 const animaBlockerKeys: Record<string, string> = {
   REPA: 'cfgModelBlockerRepa',
@@ -815,8 +902,16 @@ function stripConditioningFromExtraArgs(text: string): string {
     .trim()
 }
 
-function onFieldHelp(key: string, origin: string) {
+async function onFieldHelp(key: string, origin: string) {
+  showGuide.value = true
+  await nextTick()
   helpPanelRef.value?.showFieldHelp(key, origin)
+  if (window.matchMedia('(max-width: 1279px)').matches) {
+    document.querySelector('.config-reference')?.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth',
+      block: 'start',
+    })
+  }
 }
 
 onMounted(async () => {
@@ -1269,6 +1364,7 @@ function waitForTask(taskId: string): Promise<void> {
   flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .help-panel-sticky {
@@ -1276,12 +1372,88 @@ function waitForTask(taskId: string): Promise<void> {
   top: 16px;
 }
 
-/* Config section cards: subtle hover lift */
-:deep(.v-card) {
-  transition: border-color 0.2s, box-shadow 0.2s;
+.config-dirty {
+  display: flex;
+  align-items: center;
+  color: rgb(var(--v-theme-warning));
+  font-size: 12px;
 }
-:deep(.v-card:hover) {
-  border-color: var(--border-default);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+.config-toolbar {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.85fr) minmax(190px, 1.4fr) minmax(160px, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 20px 0;
+  margin-bottom: 24px;
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.config-toolbar__variant, .config-toolbar__preset, .config-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.config-toolbar__actions { justify-content: flex-end; }
+.config-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 18px;
+}
+.config-search { max-width: 320px; margin-left: auto; }
+.config-field-count { color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.config-body { margin-top: 0; }
+.config-section {
+  background: transparent;
+  border-radius: 0 !important;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.config-section > :deep(.v-card-title) { padding: 0 0 22px; }
+.config-section > :deep(.v-card-text) { padding: 0 0 20px; }
+.config-reference { border-left: 1px solid var(--border-subtle); }
+.method-library { padding-top: 4px; }
+.method-library__heading { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.method-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  grid-auto-flow: dense;
+  gap: 12px;
+}
+.method-option {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 84px;
+  padding: 20px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+.method-option > .v-icon:first-child { color: var(--forge-amber); flex-shrink: 0; }
+.method-option span { flex: 1; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.method-option__arrow { color: var(--text-muted); transition: transform 160ms ease; }
+.method-option:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--border-strong); }
+.method-option:hover:not(:disabled) .method-option__arrow { transform: translate(2px, -2px); }
+.method-option:disabled { opacity: 0.55; cursor: wait; }
+@media (max-width: 1399px) {
+  .config-toolbar { grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.4fr) minmax(160px, 1fr); }
+  .config-toolbar__actions { grid-column: 1 / -1; }
+}
+@media (max-width: 1279px) {
+  .config-reference { border-left: 0; border-top: 1px solid var(--border-subtle); }
+  .help-panel-sticky { position: static; }
+}
+@media (max-width: 599px) {
+  .config-toolbar { grid-template-columns: 1fr; gap: 16px; padding: 18px 0; }
+  .config-toolbar__actions { flex-wrap: wrap; justify-content: flex-start; }
+  .config-filterbar { flex-wrap: wrap; }
+  .config-field-count { margin-right: auto; }
+  .config-search { order: 3; flex-basis: 100%; max-width: none; }
+  .method-option { min-height: 72px; }
+  .config-tracking :deep(.v-expansion-panel-title) { padding-inline: 12px; flex-wrap: wrap; gap: 4px; }
 }
 </style>

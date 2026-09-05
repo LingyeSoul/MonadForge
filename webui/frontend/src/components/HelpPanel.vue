@@ -1,5 +1,5 @@
 <template>
-  <v-card class="help-panel" variant="outlined" :height="height">
+  <v-card class="help-panel" variant="flat" :height="height">
     <v-card-title class="d-flex align-center text-subtitle-1 pa-3 pb-1">
       <v-icon :icon="showField ? 'mdi-information-outline' : 'mdi-book-open-page-variant-outline'" class="mr-2" size="small" />
       {{ showField ? t('cfgFieldHelp') : t('cfgMethodGuide') }}
@@ -115,6 +115,9 @@ defineExpose({ showFieldHelp })
 .help-content {
   overflow-y: auto;
   flex: 1;
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .field-help-text {
@@ -131,6 +134,9 @@ defineExpose({ showFieldHelp })
   margin-top: 0.75em;
   margin-bottom: 0.5em;
 }
+.guide-html :deep(h1) { font-size: 20px; line-height: 1.4; }
+.guide-html :deep(h2) { font-size: 17px; line-height: 1.5; }
+.guide-html :deep(h3) { font-size: 14px; line-height: 1.5; }
 
 .guide-html :deep(p) {
   margin-bottom: 0.5em;
@@ -207,7 +213,8 @@ defineExpose({ showFieldHelp })
 
 /* Brand: active topic indicator */
 .help-panel {
-  border-left: 3px solid var(--forge-ember);
+  background: transparent;
+  border-radius: 0 !important;
 }
 
 /* Code blocks: bg-deep terminal style */
@@ -227,5 +234,9 @@ defineExpose({ showFieldHelp })
   border-radius: 3px;
   font-family: var(--font-mono);
   font-size: 0.85em;
+}
+@media (max-width: 599px) {
+  .help-panel { max-height: 520px; }
+  .guide-html :deep(table) { display: block; overflow-x: auto; }
 }
 </style>

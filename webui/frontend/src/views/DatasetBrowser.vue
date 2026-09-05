@@ -1,14 +1,14 @@
 <template>
   <v-container fluid class="dataset-page pa-4">
     <!-- Header row -->
-    <div class="ds-header mb-2">
-      <div class="text-h5">{{ t('dsTitle') }}</div>
-      <div class="text-body-2 text-medium-emphasis">{{ t('dsSubtitle') }}</div>
-    </div>
+    <header class="ds-header workspace-heading">
+      <div><h1>{{ t('dsTitle') }}</h1></div>
+      <span class="text-caption text-medium-emphasis">{{ totalLabel }}</span>
+    </header>
 
     <!-- Toolbar: directory, search, sort, view toggle -->
-    <v-card variant="tonal" class="mb-4 pa-3 ds-header">
-      <v-row align="center" dense>
+    <v-card variant="flat" class="mb-4 pa-3 ds-header dataset-toolbar">
+      <v-row align="center" density="comfortable">
         <v-col cols="12" sm="4" md="3" class="toolbar-dir">
           <v-select
             v-model="directory"
@@ -74,9 +74,15 @@
         </v-col>
         <v-col cols="auto">
           <v-btn-toggle v-model="viewMode" mandatory density="compact" variant="outlined">
-            <v-btn value="grid" icon="mdi-view-grid" />
-            <v-btn value="list" icon="mdi-view-list" />
-            <v-btn value="tree" icon="mdi-file-tree" />
+            <v-btn value="grid" icon="mdi-view-grid" :aria-label="t('dsGridView')">
+              <v-icon icon="mdi-view-grid" /><v-tooltip activator="parent">{{ t('dsGridView') }}</v-tooltip>
+            </v-btn>
+            <v-btn value="list" icon="mdi-view-list" :aria-label="t('dsListView')">
+              <v-icon icon="mdi-view-list" /><v-tooltip activator="parent">{{ t('dsListView') }}</v-tooltip>
+            </v-btn>
+            <v-btn value="tree" icon="mdi-file-tree" :aria-label="t('dsTreeView')">
+              <v-icon icon="mdi-file-tree" /><v-tooltip activator="parent">{{ t('dsTreeView') }}</v-tooltip>
+            </v-btn>
           </v-btn-toggle>
         </v-col>
         <v-col cols="auto">
@@ -121,7 +127,7 @@
         </v-col>
       </v-row>
       <!-- Custom path row -->
-      <v-row align="center" dense class="mt-1">
+      <v-row align="center" density="comfortable" class="mt-1">
         <v-col>
           <v-text-field
             v-model="customPath"
@@ -149,7 +155,7 @@
       </v-row>
       <!-- Tagger settings row -->
       <v-expand-transition>
-        <v-row v-if="showTaggerSettings" align="center" dense class="mt-1">
+        <v-row v-if="showTaggerSettings" align="center" density="comfortable" class="mt-1">
           <v-col cols="12" sm="4">
             <v-select
               v-model="taggerSettings.model_name"
@@ -217,7 +223,7 @@
     <!-- Batch operations toolbar -->
     <v-expand-transition>
       <v-card v-if="selectionMode && selectedCount > 0" variant="tonal" class="mb-4 pa-3">
-        <v-row align="center" dense>
+        <v-row align="center" density="comfortable">
           <v-col cols="auto">
             <span class="text-body-2">{{ t('dsSelected', { n: selectedCount }) }}</span>
           </v-col>
@@ -1828,18 +1834,18 @@ onUnmounted(() => {
 }
 
 .tag-plain {
-  border-color: #888;
-  color: #ccc;
+  border-color: var(--border-strong);
+  color: var(--text-secondary);
 }
 
 .tag-artist {
-  border-color: #d4a017;
-  color: #d4a017;
+  border-color: rgb(var(--v-theme-warning));
+  color: rgb(var(--v-theme-warning));
 }
 
 .tag-section {
-  border-color: #5e8eb0;
-  color: #5e8eb0;
+  border-color: rgb(var(--v-theme-info));
+  color: rgb(var(--v-theme-info));
 }
 
 /* Diff display */
@@ -1858,39 +1864,39 @@ onUnmounted(() => {
 
 .diff-add {
   background: rgba(72, 199, 142, 0.15);
-  color: #9ad17a;
+  color: rgb(var(--v-theme-success));
 }
 
 .diff-del {
   background: rgba(224, 122, 122, 0.15);
-  color: #e07a7a;
+  color: rgb(var(--v-theme-error));
 }
 
 .diff-hunk {
-  color: #7aa6da;
+  color: rgb(var(--v-theme-info));
 }
 
 .diff-ctx {
-  color: #aaa;
+  color: var(--text-secondary);
 }
 
 /* Grammar guide */
 .grammar-guide {
   font-size: 11px;
   line-height: 1.5;
-  color: #888;
+  color: var(--text-muted);
   padding: 4px 8px;
   border-radius: 4px;
   background: rgba(var(--v-theme-on-surface), 0.03);
 }
 
 .grammar-guide :deep(.tag-artist-hint) {
-  color: #c9a227;
+  color: rgb(var(--v-theme-warning));
   font-weight: 500;
 }
 
 .grammar-guide :deep(.tag-section-hint) {
-  color: #5e8eb0;
+  color: rgb(var(--v-theme-info));
   font-weight: 500;
 }
 
@@ -1910,13 +1916,13 @@ onUnmounted(() => {
 
 .diff-inline-add {
   background: rgba(72, 199, 142, 0.25);
-  color: #9ad17a;
+  color: rgb(var(--v-theme-success));
   text-decoration: none;
 }
 
 .diff-inline-del {
   background: rgba(224, 122, 122, 0.25);
-  color: #e07a7a;
+  color: rgb(var(--v-theme-error));
   text-decoration: line-through;
 }
 
@@ -1952,14 +1958,14 @@ onUnmounted(() => {
   transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .dataset-card:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  border-color: var(--border-strong);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
 }
 
 /* Selected image: amber border */
 .dataset-card.selected {
   border-color: var(--forge-amber) !important;
-  box-shadow: 0 0 0 2px rgba(212, 145, 42, 0.2);
+  box-shadow: 0 0 0 1px var(--forge-amber);
 }
 
 /* View toggle brand styling */
@@ -1968,7 +1974,14 @@ onUnmounted(() => {
   border-radius: var(--radius-sm);
 }
 :deep(.v-btn-toggle .v-btn--selected) {
-  background: rgba(199, 91, 26, 0.12) !important;
+  background: var(--glow-ember) !important;
   color: var(--forge-amber) !important;
+}
+.dataset-toolbar {
+  background: transparent;
+  border-radius: 0 !important;
+  border-block: 1px solid var(--border-subtle);
+  padding: 18px 0 !important;
+  overflow: visible;
 }
 </style>

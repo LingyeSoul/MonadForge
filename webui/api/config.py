@@ -185,6 +185,21 @@ def wipe_checkpoint(body: WipeCheckpointRequest):
     return {"status": "ok"}
 
 
+# Static settings routes must precede the single-segment layer catch-all.
+
+
+@router.get("/wandb-settings")
+def get_wandb_settings():
+    """Read wandb tracking settings from webui_settings.json."""
+    return svc.get_wandb_settings()
+
+
+@router.put("/wandb-settings")
+def update_wandb_settings(body: dict):
+    """Write wandb tracking settings to webui_settings.json."""
+    return svc.save_wandb_settings(body)
+
+
 # ── Layer read/write (catch-all) ───────────────────────────────
 
 
@@ -234,15 +249,3 @@ def validate_config(body: ConfigUpdateRequest):
 def get_groups():
     """Return field groupings for the form layout."""
     return svc.get_field_groups()
-
-
-@router.get("/wandb-settings")
-def get_wandb_settings():
-    """Read wandb tracking settings from webui_settings.json."""
-    return svc.get_wandb_settings()
-
-
-@router.put("/wandb-settings")
-def update_wandb_settings(body: dict):
-    """Write wandb tracking settings to webui_settings.json."""
-    return svc.save_wandb_settings(body)

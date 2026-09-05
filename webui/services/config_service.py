@@ -1791,17 +1791,24 @@ def get_field_help_data(variant: str, lang: str = "cn") -> dict:
 
 _GUIDES_DIR = Path(__file__).resolve().parent.parent / "explanations" / "guides"
 _NOT_MERGEABLE = frozenset({"postfix", "hydralora", "reft", "fera"})
-_KNOWN_GUIDE_METHODS = frozenset({"lora", "tlora", "postfix", "hydralora", "reft", "fera"})
+_KNOWN_GUIDE_METHODS = frozenset(
+    {
+        "lora", "tlora", "postfix", "hydralora", "reft", "fera", "chimera",
+        "soft_tokens", "easycontrol", "colorize", "turbo", "spd",
+    }
+)
 
 
 def _read_guide(name: str, lang: str) -> str:
-    """Read a guide HTML file with fallback: lang → en."""
-    path = _GUIDES_DIR / f"{name}.{lang}.html"
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
-    path = _GUIDES_DIR / f"{name}.en.html"
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
+    """Prefer locale directories, retaining legacy files and English fallback."""
+    language = lang if lang in ("en", "cn", "ja", "ko") else "en"
+    for locale in dict.fromkeys((language, "en")):
+        for path in (
+            _GUIDES_DIR / locale / f"{name}.html",
+            _GUIDES_DIR / f"{name}.{locale}.html",
+        ):
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
     return ""
 
 
