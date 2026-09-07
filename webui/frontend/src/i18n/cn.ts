@@ -117,6 +117,15 @@ export default {
   reportIssue: '报告问题',
   themeDark: '暗色模式',
   themeLight: '亮色模式',
+  appearance: '外观设置',
+  appearanceGlass: '毛玻璃效果',
+  appearanceGlassHint: '界面表面半透明，并模糊其背后的内容',
+  appearanceWallpaper: '自定义背景图',
+  appearanceWallpaperHint: '为整个工作台铺一张背景图片',
+  appearanceWallpaperUrl: '图片链接',
+  appearanceWallpaperUpload: '上传图片',
+  appearanceWallpaperClear: '移除背景',
+  appearanceWallpaperLoadError: '背景图片加载失败',
 
   // Task Panel
   taskTitle: '任务监控',

@@ -162,6 +162,11 @@
           </v-card-text>
         </v-card>
       </v-col>
+
+      <!-- Appearance -->
+      <v-col cols="12" md="6">
+        <AppearanceSettings />
+      </v-col>
     </v-row>
 
     <v-divider class="my-4" />
@@ -272,6 +277,7 @@ import { onMounted, ref, computed } from 'vue'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useI18n } from '../composables/useI18n'
+import AppearanceSettings from '../components/AppearanceSettings.vue'
 
 const taskStore = useTaskStore()
 const notify = useNotifyStore()

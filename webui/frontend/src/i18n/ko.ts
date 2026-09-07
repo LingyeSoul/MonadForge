@@ -117,6 +117,15 @@ export default {
   reportIssue: '문제 신고',
   themeDark: '다크 모드',
   themeLight: '라이트 모드',
+  appearance: '외관 설정',
+  appearanceGlass: '글래스 효과',
+  appearanceGlassHint: '표면을 반투명하게 하고 뒤쪽을 흐리게 표시합니다',
+  appearanceWallpaper: '배경 이미지',
+  appearanceWallpaperHint: '작업 공간 전체에 배경 이미지를 설정합니다',
+  appearanceWallpaperUrl: '이미지 URL',
+  appearanceWallpaperUpload: '이미지 업로드',
+  appearanceWallpaperClear: '배경 제거',
+  appearanceWallpaperLoadError: '배경 이미지를 불러오지 못했습니다',
 
   // Task Panel
   taskTitle: '작업 모니터',

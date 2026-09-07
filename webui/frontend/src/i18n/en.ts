@@ -117,6 +117,15 @@ export default {
   reportIssue: 'Report Issue',
   themeDark: 'Dark Mode',
   themeLight: 'Light Mode',
+  appearance: 'Appearance',
+  appearanceGlass: 'Frosted Glass',
+  appearanceGlassHint: 'Translucent surfaces with a backdrop blur',
+  appearanceWallpaper: 'Background Image',
+  appearanceWallpaperHint: 'Set an image behind the whole workspace',
+  appearanceWallpaperUrl: 'Image URL',
+  appearanceWallpaperUpload: 'Upload Image',
+  appearanceWallpaperClear: 'Remove Background',
+  appearanceWallpaperLoadError: 'Failed to load background image',
 
   // Task Panel
   taskTitle: 'Task Monitor',

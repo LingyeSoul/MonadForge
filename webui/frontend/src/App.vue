@@ -141,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, watchEffect, onBeforeUnmount } from 'vue'
 import { useDisplay, useTheme } from 'vuetify'
 import { useRoute } from 'vue-router'
 import { gsap } from 'gsap'
@@ -166,6 +166,25 @@ watch(() => appStore.theme, (name) => {
 function toggleTheme() {
   appStore.setTheme(appStore.theme === 'dark' ? 'light' : 'dark')
 }
+
+// Mirror glass/wallpaper preferences onto <html> so teleported overlays
+// (dialogs, menus) inherit glass styles and the page canvas itself carries
+// the background image beneath every surface.
+const wallpaperActive = computed(() => appStore.wallpaper.enabled && appStore.wallpaper.src !== '')
+watchEffect(() => {
+  document.documentElement.classList.toggle('forge-glass', appStore.glass)
+  document.documentElement.classList.toggle('forge-wallpaper-on', wallpaperActive.value)
+  if (wallpaperActive.value) {
+    // A theme-tinted veil keeps text legible over arbitrary images.
+    const veil = appStore.theme === 'dark' ? 'rgb(10 11 13 / 55%)' : 'rgb(246 247 248 / 66%)'
+    const src = appStore.wallpaper.src.replace(/"/g, '\\"')
+    document.documentElement.style.backgroundImage = `linear-gradient(${veil}, ${veil}), url("${src}")`
+    document.documentElement.style.backgroundSize = 'cover'
+    document.documentElement.style.backgroundPosition = 'center'
+  } else {
+    document.documentElement.style.backgroundImage = 'none'
+  }
+})
 
 const snackbarOpen = ref(false)
 const snackbarTimer = ref<ReturnType<typeof setTimeout> | null>(null)

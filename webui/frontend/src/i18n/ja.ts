@@ -117,6 +117,15 @@ export default {
   reportIssue: '問題を報告',
   themeDark: 'ダークモード',
   themeLight: 'ライトモード',
+  appearance: '外観設定',
+  appearanceGlass: 'すりガラス効果',
+  appearanceGlassHint: '表面を半透明にして背後をぼかします',
+  appearanceWallpaper: '背景画像',
+  appearanceWallpaperHint: 'ワークスペース全体に背景画像を設定します',
+  appearanceWallpaperUrl: '画像 URL',
+  appearanceWallpaperUpload: '画像をアップロード',
+  appearanceWallpaperClear: '背景を削除',
+  appearanceWallpaperLoadError: '背景画像の読み込みに失敗しました',
 
   // Task Panel
   taskTitle: 'タスクモニター',

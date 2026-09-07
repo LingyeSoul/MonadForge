@@ -235,3 +235,47 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
     scroll-behavior: auto !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Appearance options (opt-in, persisted in stores/app.ts, toggled from
+ * AppearanceDialog). Class hooks live on <html> so teleported overlays
+ * (dialogs, menus) pick them up too.
+ * ------------------------------------------------------------------------- */
+
+/* Frosted glass: flip the shared surface tokens to translucent values and
+ * blur the major surfaces. Fields keep their translucency but no blur —
+ * hundred-field forms pay too high a compositing cost otherwise. */
+html.forge-glass {
+  --bg-deep: rgb(17 19 21 / 74%);
+  --bg-base: rgb(20 22 24 / 62%);
+  --bg-surface: rgb(28 31 34 / 82%);
+  --bg-elevated: rgb(39 43 47 / 86%);
+  --bg-hover: rgb(44 49 54 / 70%);
+
+  .workspace-nav,
+  .workspace-topbar,
+  .v-card,
+  .v-expansion-panel {
+    -webkit-backdrop-filter: blur(16px) saturate(1.25);
+    backdrop-filter: blur(16px) saturate(1.25);
+  }
+
+  /* Plain cards take their fill from the Vuetify "surface" theme color, not
+   * the tokens above — pull them onto the translucent token as well. */
+  .v-card { background: var(--bg-surface); }
+}
+
+html.forge-glass .v-theme--light {
+  --bg-deep: rgb(255 255 255 / 70%);
+  --bg-base: rgb(246 247 248 / 62%);
+  --bg-surface: rgb(255 255 255 / 76%);
+  --bg-elevated: rgb(255 255 255 / 86%);
+  --bg-hover: rgb(233 237 240 / 70%);
+}
+
+/* Wallpaper: the image itself is painted on the <html> canvas background
+ * (see App.vue) so it sits beneath every surface with no z-index juggling.
+ * Only the app's own opaque fill needs to step aside. */
+html.forge-wallpaper-on .v-application {
+  background: transparent !important;
+}
