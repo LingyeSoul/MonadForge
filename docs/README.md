@@ -105,7 +105,10 @@ User-facing guides and references.
 
 | Doc | Description |
 |-----|-------------|
+| [guidelines/config-chain.md](guidelines/config-chain.md) | Config merge chain (`model → base → custom → preset → method → CLI`) and `{placeholder}` substitution into the dataset blueprint — precedence, recipes, gotchas |
+| [guidelines/base-config.md](guidelines/base-config.md) | `base.toml` key reference — shared infrastructure knobs and the dataset blueprint |
 | [guidelines/training.md](guidelines/training.md) | Training reference — LoRA variants, caption shuffle, masked loss, dataset config |
+| [guidelines/staged-resolution-training.md](guidelines/staged-resolution-training.md) | Staged-resolution training — one model staged across resolution tiers |
 | [guidelines/inference.md](guidelines/inference.md) | Inference reference — flags, prompt files, LoRA format conversion |
 | [guidelines/difference_between_comfy.md](guidelines/difference_between_comfy.md) | anima_lora vs ComfyUI implementation differences |
 | [guidelines/guidebook.md](guidelines/guidebook.md) | Comprehensive guide (English) |

@@ -6,6 +6,10 @@
 configs/model.toml → configs/base.toml (legacy model keys) → configs/custom/model.toml → configs/presets.toml[<preset>] → configs/methods/<method>.toml → CLI args
 ```
 
+For how the chain merges, how `{placeholder}` substitution wires these path
+keys into the dataset blueprint, and path-anchoring rules, see
+[`config-chain.md`](config-chain.md) — this doc is the per-key reference.
+
 It holds **shared infrastructure** that rarely changes between experiments —
 the dataset blueprint, optimizer/schedule defaults, the noise
 schedule, caching, compile, and the memory knobs. Presets override hardware
@@ -218,6 +222,7 @@ stays in base.toml because the dataset blueprint interpolates those directories.
 
 ## See also
 
+- [`config-chain.md`](config-chain.md) — merge chain, `{placeholder}` substitution, path anchoring.
 - [`training.md`](training.md) — method/variant selection and the three-axis LoRA surface.
 - [`inference.md`](inference.md) — generation flags and workflows.
 - [`guidebook.md`](guidebook.md) — end-to-end setup → preprocess → train → infer walkthrough.
