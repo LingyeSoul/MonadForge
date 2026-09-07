@@ -10,6 +10,9 @@
   --bg-surface: #1c1f22;
   --bg-elevated: #272b2f;
   --bg-hover: #2c3136;
+  /* Floating overlays (dialogs, menus) sit on top of page content, so their
+   * frost is clamped near-opaque — see html.forge-glass below. */
+  --bg-overlay: #1c1f22;
   --text-primary: #eef0f2;
   --text-secondary: #a8afb6;
   --text-muted: #929aa3;
@@ -44,6 +47,7 @@
   --bg-surface: #fff;
   --bg-elevated: #fff;
   --bg-hover: #e9edf0;
+  --bg-overlay: #fff;
   --text-primary: #242a30;
   --text-secondary: #626c76;
   --text-muted: #68737e;
@@ -113,6 +117,21 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
 .v-table { background: transparent; }
 .v-table th { color: var(--text-secondary); font-size: 12px; }
 .v-table td { font-size: 13px; }
+/* Lists inherit the surrounding surface (cards, page) instead of Vuetify's
+ * opaque theme color, so frosted cards stay uniformly translucent. Only
+ * dropdown menus — a v-list as the overlay's direct child — keep a readable
+ * surface panel of their own. */
+.v-list { background: transparent; }
+.v-overlay__content > .v-list { background: var(--bg-overlay); }
+/* Elevated/flat buttons (incl. v-btn-toggle defaults) paint Vuetify's opaque
+ * theme surface, which never turns translucent under frosted mode — route
+ * them through the shared token like fields and cards. This file is unlayered
+ * so it would also beat Vuetify's @layer bg-* utilities: exclude buttons with
+ * an explicit color class to keep their own background. */
+.v-btn--variant-elevated:not([class*='bg-']),
+.v-btn--variant-flat:not([class*='bg-']) {
+  background: var(--bg-surface);
+}
 .font-mono-field, .font-mono-field input { font-family: var(--font-mono) !important; }
 
 .workspace-nav {
@@ -242,20 +261,24 @@ body { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; 
  * (dialogs, menus) pick them up too.
  * ------------------------------------------------------------------------- */
 
-/* Frosted glass: flip the shared surface tokens to translucent values and
- * blur the major surfaces. Fields keep their translucency but no blur —
- * hundred-field forms pay too high a compositing cost otherwise. */
+/* Frosted glass: flip the shared surface tokens to translucent values.
+ * backdrop-filter stays on the two single-instance chrome surfaces only —
+ * per-card backdrop sampling over the blurred wallpaper layer both costs too
+ * much compositing and trips GPU rasterization bugs (cards + their text
+ * vanish entirely on some drivers). The wallpaper is already blurred by its
+ * own layer, so card frost comes free without resampling. */
 html.forge-glass {
-  --bg-deep: rgb(17 19 21 / 74%);
-  --bg-base: rgb(20 22 24 / 62%);
-  --bg-surface: rgb(28 31 34 / 82%);
-  --bg-elevated: rgb(39 43 47 / 86%);
-  --bg-hover: rgb(44 49 54 / 70%);
+  --bg-deep: rgb(17 19 21 / calc(74% * var(--forge-glass-strength, 1)));
+  --bg-base: rgb(20 22 24 / calc(62% * var(--forge-glass-strength, 1)));
+  --bg-surface: rgb(28 31 34 / calc(82% * var(--forge-glass-strength, 1)));
+  --bg-elevated: rgb(39 43 47 / calc(86% * var(--forge-glass-strength, 1)));
+  --bg-hover: rgb(44 49 54 / calc(70% * var(--forge-glass-strength, 1)));
+  /* Overlays hover above busy page content: keep a legibility floor instead of
+   * following the surface opacity slider all the way down. */
+  --bg-overlay: rgb(28 31 34 / max(calc(82% * var(--forge-glass-strength, 1)), 90%));
 
   .workspace-nav,
-  .workspace-topbar,
-  .v-card,
-  .v-expansion-panel {
+  .workspace-topbar {
     -webkit-backdrop-filter: blur(16px) saturate(1.25);
     backdrop-filter: blur(16px) saturate(1.25);
   }
@@ -263,19 +286,27 @@ html.forge-glass {
   /* Plain cards take their fill from the Vuetify "surface" theme color, not
    * the tokens above — pull them onto the translucent token as well. */
   .v-card { background: var(--bg-surface); }
+
+  /* Dialog cards float over the page instead of inside it — same override as
+   * the card rule above but on the clamped overlay token. v-sheet covers the
+   * select/autocomplete menu panels (v-list sits inside a v-sheet there). */
+  .v-overlay .v-card,
+  .v-overlay .v-sheet { background: var(--bg-overlay); }
 }
 
 html.forge-glass .v-theme--light {
-  --bg-deep: rgb(255 255 255 / 70%);
-  --bg-base: rgb(246 247 248 / 62%);
-  --bg-surface: rgb(255 255 255 / 76%);
-  --bg-elevated: rgb(255 255 255 / 86%);
-  --bg-hover: rgb(233 237 240 / 70%);
+  --bg-deep: rgb(255 255 255 / calc(70% * var(--forge-glass-strength, 1)));
+  --bg-base: rgb(246 247 248 / calc(62% * var(--forge-glass-strength, 1)));
+  --bg-surface: rgb(255 255 255 / calc(76% * var(--forge-glass-strength, 1)));
+  --bg-elevated: rgb(255 255 255 / calc(86% * var(--forge-glass-strength, 1)));
+  --bg-hover: rgb(233 237 240 / calc(70% * var(--forge-glass-strength, 1)));
+  --bg-overlay: rgb(255 255 255 / max(calc(76% * var(--forge-glass-strength, 1)), 90%));
 }
 
-/* Wallpaper: the image itself is painted on the <html> canvas background
- * (see App.vue) so it sits beneath every surface with no z-index juggling.
- * Only the app's own opaque fill needs to step aside. */
+/* Wallpaper: painted on the <html> canvas background by App.vue — no DOM
+ * layer element. Full-viewport layer elements above the app trip content
+ * culling in Edge at fractional device scale factors (cards + text vanish),
+ * and the canvas is the browser's bottom-most paint, beneath everything. */
 html.forge-wallpaper-on .v-application {
   background: transparent !important;
 }

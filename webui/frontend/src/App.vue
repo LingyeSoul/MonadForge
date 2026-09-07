@@ -167,17 +167,28 @@ function toggleTheme() {
   appStore.setTheme(appStore.theme === 'dark' ? 'light' : 'dark')
 }
 
-// Mirror glass/wallpaper preferences onto <html> so teleported overlays
-// (dialogs, menus) inherit glass styles and the page canvas itself carries
-// the background image beneath every surface.
-const wallpaperActive = computed(() => appStore.wallpaper.enabled && appStore.wallpaper.src !== '')
+// Light backgrounds need a stronger veil than dark ones for the same legibility.
+const veilColor = computed(() => {
+  const rgb = appStore.theme === 'dark' ? '10 11 13' : '246 247 248'
+  const alpha = appStore.theme === 'dark' ? appStore.veilOpacity : Math.min(90, appStore.veilOpacity + 10)
+  return `rgb(${rgb} / ${alpha}%)`
+})
+
+// Mirror glass/wallpaper preferences onto <html>: the class hooks drive the
+// CSS in main.scss and the strength custom property scales glass surface
+// opacity. Teleported overlays (dialogs, menus) inherit them too.
+const wallpaperActive = computed(() => appStore.wallpaper.enabled && appStore.wallpaperDisplay !== '')
 watchEffect(() => {
   document.documentElement.classList.toggle('forge-glass', appStore.glass)
   document.documentElement.classList.toggle('forge-wallpaper-on', wallpaperActive.value)
+  document.documentElement.style.setProperty('--forge-glass-strength', String(appStore.surfaceOpacity / 100))
+  // The wallpaper is painted on the <html> canvas — the browser's bottom-most
+  // paint — never as a DOM layer. Edge at fractional device scale factors
+  // culls sibling content when a full-viewport layer element sits above it
+  // (cards + text vanish), so no element may carry the image.
   if (wallpaperActive.value) {
-    // A theme-tinted veil keeps text legible over arbitrary images.
-    const veil = appStore.theme === 'dark' ? 'rgb(10 11 13 / 55%)' : 'rgb(246 247 248 / 66%)'
-    const src = appStore.wallpaper.src.replace(/"/g, '\\"')
+    const veil = veilColor.value
+    const src = appStore.wallpaperDisplay.replace(/"/g, '\\"')
     document.documentElement.style.backgroundImage = `linear-gradient(${veil}, ${veil}), url("${src}")`
     document.documentElement.style.backgroundSize = 'cover'
     document.documentElement.style.backgroundPosition = 'center'

@@ -688,7 +688,9 @@ onBeforeUnmount(() => {
   gap: 16px;
   padding: 12px 0;
   border-top: 1px solid var(--border-strong);
-  background: rgba(12, 12, 16, 0.96);
+  /* Floating chrome over scrolling content — clamped overlay token, not the
+   * page-surface slider (was a hardcoded near-black that never went glass). */
+  background: var(--bg-overlay);
   backdrop-filter: blur(8px);
 }
 

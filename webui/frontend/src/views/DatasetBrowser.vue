@@ -7,7 +7,7 @@
     </header>
 
     <!-- Toolbar: directory, search, sort, view toggle -->
-    <v-card variant="flat" class="mb-4 pa-3 ds-header dataset-toolbar">
+    <v-card variant="flat" class="mb-4 ds-header dataset-toolbar">
       <v-row align="center" density="comfortable">
         <v-col cols="12" sm="4" md="3" class="toolbar-dir">
           <v-select
@@ -222,7 +222,7 @@
 
     <!-- Batch operations toolbar -->
     <v-expand-transition>
-      <v-card v-if="selectionMode && selectedCount > 0" variant="tonal" class="mb-4 pa-3">
+      <v-card v-if="selectionMode && selectedCount > 0" variant="tonal" class="mb-4 pa-4">
         <v-row align="center" density="comfortable">
           <v-col cols="auto">
             <span class="text-body-2">{{ t('dsSelected', { n: selectedCount }) }}</span>
@@ -1806,6 +1806,11 @@ onUnmounted(() => {
 .caption-editor-wrapper { position: relative; }
 .autocomplete-dropdown { position: absolute; bottom: 100%; left: 0; right: 0; z-index: 10; max-height: 200px; overflow-y: auto; }
 .autocomplete-list { padding: 0; }
+/* This popup is a bare floating card (no v-overlay), so it misses the
+ * html.forge-glass .v-overlay rule — clamp it to the overlay token too. */
+:global(html.forge-glass) .autocomplete-dropdown {
+  background: var(--bg-overlay);
+}
 
 .caption-editor :deep(.v-field) {
   font-family: monospace;
@@ -1981,7 +1986,7 @@ onUnmounted(() => {
   background: transparent;
   border-radius: 0 !important;
   border-block: 1px solid var(--border-subtle);
-  padding: 18px 0 !important;
+  padding: 18px 24px !important;
   overflow: visible;
 }
 </style>

@@ -126,6 +126,9 @@ export default {
   appearanceWallpaperUpload: '上传图片',
   appearanceWallpaperClear: '移除背景',
   appearanceWallpaperLoadError: '背景图片加载失败',
+  appearanceSurfaceOpacity: '控件透明度',
+  appearanceWallpaperBlur: '图片模糊',
+  appearanceVeil: '遮罩浓度',
 
   // Task Panel
   taskTitle: '任务监控',

@@ -126,6 +126,9 @@ export default {
   appearanceWallpaperUpload: 'Upload Image',
   appearanceWallpaperClear: 'Remove Background',
   appearanceWallpaperLoadError: 'Failed to load background image',
+  appearanceSurfaceOpacity: 'Surface Opacity',
+  appearanceWallpaperBlur: 'Image Blur',
+  appearanceVeil: 'Veil Strength',
 
   // Task Panel
   taskTitle: 'Task Monitor',

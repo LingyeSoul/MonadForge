@@ -126,6 +126,9 @@ export default {
   appearanceWallpaperUpload: '이미지 업로드',
   appearanceWallpaperClear: '배경 제거',
   appearanceWallpaperLoadError: '배경 이미지를 불러오지 못했습니다',
+  appearanceSurfaceOpacity: 'UI 불투명도',
+  appearanceWallpaperBlur: '이미지 흐림',
+  appearanceVeil: '베일 농도',
 
   // Task Panel
   taskTitle: '작업 모니터',

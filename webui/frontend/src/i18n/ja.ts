@@ -126,6 +126,9 @@ export default {
   appearanceWallpaperUpload: '画像をアップロード',
   appearanceWallpaperClear: '背景を削除',
   appearanceWallpaperLoadError: '背景画像の読み込みに失敗しました',
+  appearanceSurfaceOpacity: 'パーツの不透明度',
+  appearanceWallpaperBlur: '画像のぼかし',
+  appearanceVeil: 'ベールの濃さ',
 
   // Task Panel
   taskTitle: 'タスクモニター',
