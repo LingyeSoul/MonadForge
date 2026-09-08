@@ -12,6 +12,7 @@
   "network_dim": "LoRA 랭크 (저랭크 행렬의 차원). 높을수록 표현력이 좋지만 VRAM 사용량 증가. 일반적: 8–64.",
   "network_alpha": "LoRA 스케일링 계수. 실효 스케일 = alpha / dim. alpha == dim이면 1.0. 낮을수록 보수적 업데이트.",
   "lokr_full_factor": "LoKr 전체 행렬 모드(공식 LyCORIS full_matrix). w1과 w2를 전체 팩터로 유지하며 유효 스케일은 1로 고정됩니다.",
+  "lokr_backend": "LoKr 백엔드: torch(기본값) 또는 triton. torch_compile 및 환경 변수와 독립적입니다. Triton에는 CUDA와 패딩 후 각 인자 축 128 이하가 필요합니다. 표준 Anima 어텐션 및 MLP에는 lokr_factor=64를 사용할 수 있습니다. 지원하지 않는 크기는 시작 전에 거부되며 자동 폴백하지 않습니다.",
   "use_loha": "LoHa(저랭크 Hadamard 곱, LyCORIS 백엔드) 활성화: deltaW = (w1a@w1b) ⊙ (w2a@w2b) * (alpha/rank). rank-r 인수 쌍 2개로 LoRA-r의 2배 파라미터로 최대 r²의 유효 랭크를 제공. 표준 hada_* 키로 저장; channel scaling은 자동 비활성화.",
   "network_module": "LoRA 네트워크 구현의 Python 모듈 경로.",
   "use_timestep_mask": "T-LoRA 활성화: 디노이징 타임스텝에 따라 유효 랭크 변동. 높은 노이즈에서 전체 랭크, 낮은 노이즈에서 축소.",

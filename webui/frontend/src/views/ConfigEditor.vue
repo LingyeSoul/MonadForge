@@ -24,6 +24,7 @@
       <div class="config-toolbar__variant">
         <v-select
           v-model="selectedVariant"
+          data-testid="config-variant"
           :items="variantItems"
           item-title="label"
           item-value="value"

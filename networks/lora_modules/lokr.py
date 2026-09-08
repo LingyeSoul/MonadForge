@@ -14,8 +14,10 @@ from lycoris.functional.lokr import (
     bypass_forward_diff as lycoris_lokr_bypass_forward_diff,
 )
 from lycoris.functional.lokr import diff_weight as lycoris_lokr_diff_weight
+from lycoris.functional.lokr import kron_bypass
 from lycoris.modules.lokr import LokrModule as LycorisLokrModule
 
+from library.config.lokr import LoKrBackend, validate_lokr_triton_shape
 from networks.lora_modules.base import merge_lora_residual, preserve_lora_output_dtype
 from networks.lora_modules.custom_autograd import eager_lokr_residual
 
@@ -72,6 +74,8 @@ class LoKRModule(LycorisLokrModule):
         self._fused = False
         self.fp32_compute = False
         self.use_custom_down_autograd = False
+        self.lokr_backend: LoKrBackend = "torch"
+        self.lokr_factor = lokr_factor
 
     def forward(self, x: torch.Tensor, *args, **kwargs):
         if not self.enabled or self._fused:
@@ -86,12 +90,13 @@ class LoKRModule(LycorisLokrModule):
                 preserve_fp32=self.fp32_compute,
             )
 
-        # The official bypass_forward_diff applies ``self.scale`` (alpha/dim)
-        # itself in LyCORIS 4.0 — 3.4.0 omitted it and this wrapper had to
-        # compensate with ``multiplier * self.scale``. Pass the multiplier
-        # only or the alpha/rank factor is applied twice.
         base = self.org_forward(x, *args, **kwargs)
         if self.training and self.fp32_compute and base.dtype == torch.float16:
+            if self.lokr_backend != "torch":
+                raise ValueError(
+                    "lora_fp32_compute with FP16 training requires "
+                    "lokr_backend='torch'; the protected FP32 path cannot use Triton."
+                )
             with torch.autocast(device_type=x.device.type, enabled=False):
                 if (
                     self.use_custom_down_autograd
@@ -102,12 +107,45 @@ class LoKRModule(LycorisLokrModule):
                     return self._eager_fp32_bypass_residual(base, x)
                 delta = self._fp32_bypass_forward_diff(x)
         else:
-            delta = self.bypass_forward_diff(x, scale=self.multiplier)
+            delta = self._kernel_bypass_forward_diff(x, base.dtype)
         return merge_lora_residual(
             base,
             delta,
             preserve_fp32=self.training and self.fp32_compute,
         )
+
+    def _kernel_bypass_forward_diff(
+        self, x: torch.Tensor, compute_dtype: torch.dtype
+    ) -> torch.Tensor:
+        """Keep input, reconstructed factors and backward operands in one dtype."""
+        if self.lokr_backend == "triton":
+            if x.device.type != "cuda":
+                raise ValueError("lokr_backend='triton' requires CUDA tensors")
+            validate_lokr_triton_shape(
+                self.lora_name, self.shape[1], self.shape[0], self.lokr_factor
+            )
+        h = x.to(dtype=compute_dtype)
+
+        def prepare(value: torch.Tensor | None) -> torch.Tensor | None:
+            return None if value is None else value.to(h)
+
+        # Unlike module.bypass_forward_diff, kron_bypass takes the complete
+        # scale and an explicit backend. Disable outer autocast so factor
+        # reconstruction cannot change dtype after the boundary conversion.
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            delta = kron_bypass(
+                h,
+                prepare(self.lokr_w1 if self.use_w1 else None),
+                prepare(None if self.use_w1 else self.lokr_w1_a),
+                prepare(None if self.use_w1 else self.lokr_w1_b),
+                prepare(self.lokr_w2 if self.use_w2 else None),
+                prepare(None if self.use_w2 else self.lokr_w2_a),
+                prepare(None if self.use_w2 else self.lokr_w2_b),
+                None,
+                scale=self.scale * self.multiplier,
+                backend=self.lokr_backend,
+            )
+        return self.drop(delta * self.scalar.to(h))
 
     def _eager_fp32_bypass_residual(
         self,
@@ -115,12 +153,7 @@ class LoKRModule(LycorisLokrModule):
         x: torch.Tensor,
     ) -> torch.Tensor:
         """Merge a chunked FP32 LoKr bypass into the fresh base output."""
-        # The combined ``multiplier * self.scale`` below is NOT the 3.4.0-era
-        # bypass compensator banned in networks/CLAUDE.md: eager_lokr_residual
-        # evaluates the raw Kronecker formula locally (no alpha/dim factor
-        # anywhere) and applies this residual scale exactly once, so it must
-        # carry both factors — unlike the official 4.0 bypass call in
-        # ``forward``, which applies ``self.scale`` itself.
+        # The local chunked formula takes the complete residual scale once.
         return eager_lokr_residual(
             base,
             x,
@@ -155,9 +188,7 @@ class LoKRModule(LycorisLokrModule):
         )
         gamma = float(self.scale) * rank
         # backend="torch" keeps the V100/fp16 critical path on the reference
-        # eager ops: the fused Triton tiers are default-on in the
-        # auto-dispatched lanes (LYCORIS_KERNEL_BACKEND opts out) and must
-        # not silently change this branch's numerics.
+        # eager ops and must not change the protected branch's numerics.
         delta = lycoris_lokr_bypass_forward_diff(
             x.to(dtype=torch.float32),
             None,

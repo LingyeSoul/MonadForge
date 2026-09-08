@@ -6,11 +6,13 @@ import json
 import logging
 import os
 import re
+from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
 
+from library.config.lokr import parse_lokr_backend, validate_lokr_legacy_options
 from library.log import setup_logging
 from networks import NETWORK_REGISTRY, resolve_network_spec
 from networks.lora_anima.config import _DEFAULT_EXCLUDE, LoRANetworkCfg, _as_str_list
@@ -548,6 +550,7 @@ def create_network_from_weights(
     metadata: Optional[Dict[str, str]] = None,
     **kwargs,
 ):
+    validate_lokr_legacy_options(kwargs)
     # Metadata flows independently of tensors: ``load_file()`` drops safetensors
     # ``__metadata__``, so a caller passing ``weights_sd=`` would lose the
     # three-axis stamps and trip from_weights' "missing stamps" raise (blaming the
@@ -1282,6 +1285,9 @@ def create_network_from_weights(
         use_dylora=use_dylora,
     )
 
+    cfg = replace(
+        cfg, lokr_backend=parse_lokr_backend(kwargs.get("lokr_backend", "torch"))
+    )
     network = LoRANetwork(text_encoders, unet, cfg, multiplier=multiplier)
     # Mirror create_network: defaults first, then spec.post_init overrides.
     network._use_hydra = False

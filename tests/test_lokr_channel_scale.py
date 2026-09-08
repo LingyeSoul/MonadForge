@@ -95,6 +95,22 @@ def test_backend_is_official_lycoris_module():
     assert issubclass(LoKRModule, LycorisLokrModule)
 
 
+def test_explicit_backend_reaches_fresh_and_weight_derived_modules():
+    network = create_network(
+        1.0, 4, 16, None, None, _TinyDiT(), use_lokr="true",
+        lokr_factor="16", lokr_backend="triton",
+    )
+    assert network.cfg.lokr_backend == "triton"
+    assert all(module.lokr_backend == "triton" for module in network.unet_loras)
+    network.apply_to(None, None, apply_text_encoder=False, apply_unet=True)
+    restored, _ = create_network_from_weights(
+        1.0, None, None, None, _TinyDiT(), weights_sd=network.state_dict(),
+        lokr_backend="triton",
+    )
+    assert restored.cfg.lokr_backend == "triton"
+    assert all(module.lokr_backend == "triton" for module in restored.unet_loras)
+
+
 def test_decomposed_layout_and_state_keys_match_lycoris():
     _, module = _make_module(rank=4, alpha=16, factor=-1)
 

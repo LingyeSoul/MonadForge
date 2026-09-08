@@ -16,6 +16,9 @@ import re
 
 import toml
 
+from library.config.lokr import (
+    LOKR_BACKENDS,
+)
 from webui.explanations import (
     field_help_lang as _field_help_lang,
     preprocess_field_help_lang as _pre_field_help_lang,
@@ -151,6 +154,7 @@ _CONVROT_FIELDS = {
 # (cosine_with_restarts / polynomial / warmup_stable_decay). The Adafactor +
 # 5 LR-scheduler names were pruned from the trainer in commit 772dda7.
 _SELECT_OPTIONS: dict[str, list[str]] = {
+    "lokr_backend": list(LOKR_BACKENDS),
     "attn_mode": _ATTN_MODES,
     "v100_flash_stability": ["off", "hybrid", "safe"],
     "base_compute": _BASE_COMPUTE_CHOICES,
@@ -231,6 +235,7 @@ _GROUPS = {
         "network_train_unet_only",
         "use_lokr",
         "lokr_factor",
+        "lokr_backend",
         "decompose_both",
         "lokr_full_factor",
         "use_glokr",
@@ -860,6 +865,10 @@ def merged_gui_variant_preset(variant: str, preset: str) -> tuple[dict, dict[str
             merged[key] = default
             origin[key] = "method"  # editable on built-in presets
 
+    if merged.get("use_lokr") is True and "lokr_backend" not in merged:
+        merged["lokr_backend"] = "torch"
+        origin["lokr_backend"] = "method"
+
     return merged, origin
 
 
@@ -1199,6 +1208,17 @@ def _validate_regex_set(key: str, value: Any, *, is_int: bool) -> list[str]:
 def validate_config(data: dict) -> list[str]:
     """Validate a config dict. Returns a list of error strings (empty = valid)."""
     errors: list[str] = []
+    try:
+        from library.anima.compat import (
+            _network_options,
+            validate_lokr_training_options,
+        )
+
+        validate_lokr_training_options(
+            _network_options(data), int(data.get("anima_num_blocks", 28))
+        )
+    except ValueError as exc:
+        errors.append(str(exc))
     if "learning_rate" in data:
         lr = data["learning_rate"]
         if isinstance(lr, (int, float)) and lr <= 0:

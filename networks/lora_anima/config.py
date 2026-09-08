@@ -20,6 +20,11 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Type, Union
 
 import torch
 
+from library.config.lokr import (
+    LoKrBackend,
+    parse_lokr_backend,
+    validate_lokr_legacy_options,
+)
 from networks.lora_modules import LoRAModule
 
 # Three-axis routing config (see plan2.md §three-axis-config).
@@ -262,6 +267,7 @@ class LoRANetworkCfg:
     # Selects ``LoKRModule`` via ``resolve_network_spec``. Non-MoE only.
     use_lokr: bool = False
     lokr_factor: int = -1
+    lokr_backend: LoKrBackend = "torch"
     decompose_both: bool = False
     # Compatibility name for LyCORIS ``full_matrix``. When both factors are
     # full, official LyCORIS forces alpha=lora_dim and scale=1.
@@ -545,6 +551,8 @@ class LoRANetworkCfg:
 
         # LoKR knobs.
         use_lokr = _as_bool(kwargs.get("use_lokr"))
+        validate_lokr_legacy_options(kwargs)
+        lokr_backend = parse_lokr_backend(kwargs.get("lokr_backend", "torch"))
         lokr_factor = int(kwargs.get("lokr_factor", -1))
         decompose_both = _as_bool(kwargs.get("decompose_both"))
         lokr_full_factor = _as_bool(kwargs.get("lokr_full_factor"))
@@ -825,6 +833,7 @@ class LoRANetworkCfg:
             use_ortho_init=use_ortho_init,
             use_lokr=use_lokr,
             lokr_factor=lokr_factor,
+            lokr_backend=lokr_backend,
             decompose_both=decompose_both,
             lokr_full_factor=lokr_full_factor,
             use_glokr=use_glokr,

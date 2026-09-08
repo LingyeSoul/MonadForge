@@ -331,6 +331,19 @@ def validate_entry(
     populated), returns the input unchanged — this keeps ``load_method_preset``
     usable in contexts that never call ``populate_schema``.
     """
+    from library.config.lokr import (
+        LOKR_OBSOLETE_KEYS,
+        parse_lokr_backend,
+        validate_lokr_legacy_options,
+    )
+
+    if key in LOKR_OBSOLETE_KEYS or key == "lokr_backend":
+        try:
+            validate_lokr_legacy_options({key: value})
+            if key == "lokr_backend":
+                parse_lokr_backend(value)
+        except ValueError as exc:
+            raise ConfigSchemaError(f"{source or '<config>'}:{line}: {exc}") from exc
     if not CONFIG_SCHEMA:
         return key, value
 

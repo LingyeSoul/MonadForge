@@ -14,33 +14,36 @@ adds module targeting, fused-attention splitting, lifecycle, and checkpoint
 metadata around the official implementation.
 
 The wrapper uses official factorization, initialization, canonical state keys,
-and bypass operations. LyCORIS 4.0's module-level bypass applies `self.scale`
-(the `alpha / rank` factor) itself, so the wrapper passes only the multiplier —
-under 3.4.0 the bypass omitted that factor and the wrapper compensated with
-`multiplier * self.scale`. The efficient path remains equivalent to the
+and bypass operations. The wrapper calls the functional `kron_bypass` with
+the complete `self.scale * multiplier` factor exactly once. The efficient
+path remains equivalent to the
 official regular forward without materializing a full DiT-sized delta.
 
 ## LyCORIS 4.0 fused kernels
 
-4.0 ships optional hand-written Triton/TileLang kernels for the LoKr rebuild
-(`kron_weight`) and bypass (`kron_bypass`) paths, in merge-forward,
-merge-backward, bypass-forward, and bypass-backward directions; the Kronecker
-delta is never materialized on the fused path. Backend selection is automatic
-per call — triton > tilelang > `torch.compile` > eager — and every fallback
-tier is the same reference math, so a call outside a kernel's scope steps one
-tier down instead of failing. The functional and module APIs the wrapper
-builds on dispatch to the kernels themselves; no wrapper call site changed
-shape for this. `LYCORIS_KERNEL_BACKEND=auto|triton|tilelang|compile|torch`
-pins the tier process-wide.
+`lokr_backend` explicitly selects `torch` (default) or `triton` for the
+adapter forward/backward, including dimension-from-checkpoint training.
+The WebUI exposes it under Architecture. It is independent of
+`torch_compile` and `LYCORIS_KERNEL_BACKEND`; an unsupported explicit
+selection fails instead of switching implementations.
 
-Because `triton-windows` is already pinned in `pyproject.toml` (Windows) and
-torch bundles Triton on Linux, the fused path is active by default on training
-machines. The two V100-only fp32 branches (`_fp32_bypass_forward_diff` and the
-LoHa equivalent) pin `backend="torch"` explicitly: that path is the
-production-critical FP16 protection lane, and experimental kernel tiers must
-not silently change its numerics. Merge/bake paths (`get_weight`,
-`diff_weight` in `merge_to`) keep the automatic selection so they benefit from
-the kernels too; CPU tensors fall to eager on their own.
+The Triton bypass requires CUDA and reconstructed Kronecker factors whose
+power-of-two padded axes are all at most 128. Configuration/prelaunch checks
+cover the targeted Anima attention and MLP shapes; module assembly checks
+the actual dimensions again. Standard Anima attention and MLP projections
+fit with `lokr_factor=64`, while `8` exceeds the limit. Rank and image
+resolution do not change the reconstructed factor dimensions.
+
+Input and factors use the base linear output's compute dtype. Factor
+reconstruction runs with autocast disabled after this conversion, keeping
+the Triton forward and backward operands consistent even when AdaLN supplies
+FP32 input under BF16/FP16 autocast. Protected V100 FP32 adapter training
+requires `lokr_backend="torch"`. Merge/bake retains the upstream rebuild
+backend policy.
+
+`bypass`, `ypass`, `use_triton`, and `apply_bypass` are rejected with migration
+instructions: remove them and set `lokr_backend`. Linear LoKr always uses
+bypass mode.
 
 ## AnimaLoraToolkit comparison
 

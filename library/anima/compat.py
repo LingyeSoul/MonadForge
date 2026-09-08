@@ -363,6 +363,10 @@ def preflight_anima_training(
     base_sha256 = anima_checkpoint_sha256(checkpoint_path)
     classified = compatibility_for_layout(config, layout)
     blockers = list(classified.blockers)
+    try:
+        validate_lokr_training_options(_network_options(config), layout.num_blocks)
+    except ValueError as exc:
+        blockers.append(str(exc))
     if layout.num_blocks == 40 and base_sha256.lower() != ANIMA29_PREVIEW_V1_SHA256:
         blockers.append(
             "uncertified 40-block checkpoint: "
@@ -391,3 +395,57 @@ def preflight_anima_training(
             "this training run: " + "; ".join(result.blockers)
         )
     return layout, base_sha256, result
+
+
+def validate_lokr_training_options(
+    options: Mapping[str, object], num_blocks: int
+) -> None:
+    """Validate LoKr against header-certified block shapes before GPU loading."""
+    from library.config.lokr import (
+        parse_lokr_backend,
+        validate_lokr_legacy_options,
+        validate_lokr_triton_shape,
+    )
+
+    validate_lokr_legacy_options(options)
+    backend = parse_lokr_backend(options.get("lokr_backend", "torch"))
+    if not _bool(options.get("use_lokr")) or backend != "triton":
+        return
+
+    import importlib.util
+    import re
+
+    from library.anima.checkpoint import _BLOCK_SHAPES
+    from networks.lora_anima.config import _parse_kv_pairs
+    from networks.lora_anima.factory import _channel_stats_target_filter
+
+    if importlib.util.find_spec("triton") is None:
+        raise ValueError(
+            "lokr_backend='triton' requires Triton in the project environment; "
+            "install the project dependencies or select lokr_backend='torch'."
+        )
+    if _bool(options.get("lora_fp32_compute")):
+        raise ValueError(
+            "lokr_backend='triton' cannot enable lora_fp32_compute; "
+            "select lokr_backend='torch' for protected FP32 adapter training."
+        )
+    # This mode derives factors and targeted layers from checkpoint tensors.
+    # Module assembly checks those actual shapes before the training loop.
+    if _bool(options.get("dim_from_weights")):
+        return
+    factor = int(str(options.get("lokr_factor", -1)))
+    is_target = _channel_stats_target_filter(dict(options))
+    raw_dims = options.get("network_reg_dims")
+    dims = _parse_kv_pairs(str(raw_dims), is_int=True) if raw_dims else {}
+    for block in range(num_blocks):
+        for suffix, shape in _BLOCK_SHAPES.items():
+            name = f"blocks.{block}.{suffix.removesuffix('.weight')}"
+            if len(shape) != 2 or not is_target(name):
+                continue
+            rank = next(
+                (value for pattern, value in dims.items() if re.fullmatch(pattern, name)),
+                options.get("network_dim", 4),
+            )
+            if int(str(rank)) == 0:
+                continue
+            validate_lokr_triton_shape(name, shape[1], shape[0], factor)

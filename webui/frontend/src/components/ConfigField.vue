@@ -28,6 +28,7 @@
 
     <v-select
       v-else-if="field.field_type === 'select'"
+      :data-testid="`config-field-${field.key}`"
       :model-value="String(currentValue ?? '')"
       :label="field.key"
       :items="selectItems"

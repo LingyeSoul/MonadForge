@@ -525,6 +525,13 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     getattr(cfg, "use_lokr", False)
                     and effective_module_class is LoKRModule
                 ):
+                    if is_unet and cfg.lokr_backend == "triton":
+                        from library.config.lokr import validate_lokr_triton_shape
+
+                        validate_lokr_triton_shape(
+                            original_name, child_module.in_features,
+                            child_module.out_features, cfg.lokr_factor,
+                        )
                     if cfg.lokr_factor != -1:
                         extra_kwargs["lokr_factor"] = cfg.lokr_factor
                     if cfg.decompose_both:
@@ -590,6 +597,8 @@ class LoRANetwork(_NetworkMetricsMixin, torch.nn.Module):
                     **extra_kwargs,
                 )
                 lora.fp32_compute = bool(cfg.lora_fp32_compute)
+                if isinstance(lora, LoKRModule):
+                    lora.lokr_backend = cfg.lokr_backend
                 lora.use_custom_down_autograd = bool(
                     cfg.use_custom_down_autograd
                 )

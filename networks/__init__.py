@@ -113,6 +113,7 @@ NETWORK_KWARGS: frozenset[str] = frozenset(
         # LoKR (Low-Rank Kronecker product) variant.
         "use_lokr",
         "lokr_factor",
+        "lokr_backend",
         "decompose_both",
         "lokr_full_factor",
         # GLoKr: native Kronecker delta + BoRA bi-dimensional weight
