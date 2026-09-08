@@ -460,7 +460,7 @@
 
     <v-list v-if="preprocessTasks.length > 0" density="compact">
       <v-list-item
-        v-for="task in preprocessTasks"
+        v-for="task in visibleTasks"
         :key="task.task_id"
         :title="task.command"
         :subtitle="`${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
@@ -472,6 +472,16 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('ppNoTasks') }}</div>
+    <v-btn
+      v-if="hasHiddenTasks"
+      variant="text"
+      size="small"
+      class="mt-1"
+      :prepend-icon="showAllTasks ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+      @click="showAllTasks = !showAllTasks"
+    >
+      {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: preprocessTasks.length }) }}
+    </v-btn>
   </v-container>
 </template>
 
@@ -777,6 +787,14 @@ async function saveSettings(): Promise<boolean> {
 const preprocessTasks = computed(() =>
   taskStore.tasks.filter(tp => preprocessCommands.includes(tp.command))
 )
+
+// Collapse long task lists: show the first few, expand on demand
+const TASK_PREVIEW_LIMIT = 4
+const showAllTasks = ref(false)
+const visibleTasks = computed(() =>
+  showAllTasks.value ? preprocessTasks.value : preprocessTasks.value.slice(0, TASK_PREVIEW_LIMIT)
+)
+const hasHiddenTasks = computed(() => preprocessTasks.value.length > TASK_PREVIEW_LIMIT)
 
 function isRunning(command: string) {
   return taskStore.tasks.some(tp => tp.command === command && tp.state === 'running')

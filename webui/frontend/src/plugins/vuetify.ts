@@ -77,7 +77,7 @@ export default createVuetify({
   defaults: {
     VTextField: { variant: 'outlined', density: 'compact' },
     VSelect:    { variant: 'outlined', density: 'compact' },
-    VSwitch:    { color: 'secondary', density: 'compact' },
+    VSwitch:    { color: 'primary', density: 'compact' },
     VBtn:       { variant: 'flat', rounded: 'sm' },
     VCard:      { elevation: 0, rounded: 'sm' },
     VTooltip:   { openDelay: 350 },

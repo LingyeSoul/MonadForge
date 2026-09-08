@@ -4,8 +4,8 @@
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('sysSubtitle') }}</div>
 
     <v-row>
-      <!-- Core Model Paths -->
-      <v-col cols="12" md="6">
+      <!-- Left column: model paths, downloads, update -->
+      <v-col cols="12" md="6" class="d-flex flex-column ga-4">
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-cube-outline" class="mr-2" />
@@ -63,10 +63,8 @@
             </v-btn>
           </v-card-text>
         </v-card>
-      </v-col>
 
-      <!-- Download Status -->
-      <v-col cols="12" md="6">
+        <!-- Download Status -->
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-download" class="mr-2" />
@@ -105,10 +103,8 @@
             </v-btn>
           </v-card-text>
         </v-card>
-      </v-col>
 
-      <!-- Self Update -->
-      <v-col cols="12" md="6">
+        <!-- Self Update -->
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-update" class="mr-2" />
@@ -123,8 +119,9 @@
         </v-card>
       </v-col>
 
-      <!-- Environment -->
-      <v-col cols="12" md="6">
+      <!-- Right column: environment, quick actions, appearance -->
+      <v-col cols="12" md="6" class="d-flex flex-column ga-4">
+        <!-- Environment -->
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-information-outline" class="mr-2" />
@@ -138,10 +135,8 @@
             </v-list>
           </v-card-text>
         </v-card>
-      </v-col>
 
-      <!-- Quick Actions -->
-      <v-col cols="12" md="6">
+        <!-- Quick Actions -->
         <v-card variant="tonal">
           <v-card-title class="text-subtitle-1">
             <v-icon icon="mdi-lightning-bolt" class="mr-2" />
@@ -161,10 +156,8 @@
             </div>
           </v-card-text>
         </v-card>
-      </v-col>
 
-      <!-- Appearance -->
-      <v-col cols="12" md="6">
+        <!-- Appearance -->
         <AppearanceSettings />
       </v-col>
     </v-row>
@@ -181,7 +174,7 @@
 
     <v-list v-if="taskStore.tasks.length > 0" density="compact">
       <v-list-item
-        v-for="task in taskStore.tasks"
+        v-for="task in visibleTasks"
         :key="task.task_id"
         :title="task.command"
         :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
@@ -193,6 +186,16 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('sysNoTasks') }}</div>
+    <v-btn
+      v-if="hasHiddenTasks"
+      variant="text"
+      size="small"
+      class="mt-1"
+      :prepend-icon="showAllTasks ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+      @click="showAllTasks = !showAllTasks"
+    >
+      {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: taskStore.tasks.length }) }}
+    </v-btn>
 
     <!-- Model file browser dialog -->
     <v-dialog v-model="showBrowserDlg" max-width="700" scrollable>
@@ -442,6 +445,15 @@ function runUpdate() {
     }
   })
 }
+
+// ── Task list preview (collapse long lists) ────────────────────
+
+const TASK_PREVIEW_LIMIT = 4
+const showAllTasks = ref(false)
+const visibleTasks = computed(() =>
+  showAllTasks.value ? taskStore.tasks : taskStore.tasks.slice(0, TASK_PREVIEW_LIMIT)
+)
+const hasHiddenTasks = computed(() => taskStore.tasks.length > TASK_PREVIEW_LIMIT)
 
 // ── Helpers ────────────────────────────────────────────────────
 

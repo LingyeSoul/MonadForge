@@ -160,6 +160,8 @@ export default {
   taskFilterFailed: '실패',
   taskFilterCancelled: '취소됨',
   taskState: '상태',
+  taskShowAll: '모두 표시 ({count}개)',
+  taskShowLess: '접기',
   taskConnecting: '연결 중...',
   taskLogTruncated: '최근 {kept} / {total}줄만 표시 — 전체 로그는 디스크에 저장됩니다',
   taskPauseQueue: '일시정지',
