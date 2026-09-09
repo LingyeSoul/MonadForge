@@ -17,7 +17,13 @@
         <div v-else-if="error" class="text-center pa-8 text-error">
           {{ error }}
         </div>
-        <div v-else class="markdown-body" v-html="renderedContent" />
+        <div
+          v-else
+          ref="contentRoot"
+          class="markdown-body"
+          v-html="renderedContent"
+          @click="onContentClick"
+        />
       </v-card-text>
 
       <v-divider />
@@ -34,9 +40,9 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
-import { marked } from 'marked'
 import { useI18n } from '../composables/useI18n'
 import { useAppStore } from '../stores/app'
+import { renderGuidebook } from '../utils/guidebook'
 
 const { t } = useI18n()
 const appStore = useAppStore()
@@ -45,11 +51,37 @@ const visible = defineModel<boolean>({ default: false })
 const content = ref('')
 const loading = ref(false)
 const error = ref('')
+const contentRoot = ref<HTMLElement | null>(null)
 
 const renderedContent = computed(() => {
   if (!content.value) return ''
-  return marked(content.value, { breaks: true }) as string
+  return renderGuidebook(content.value)
 })
+
+// In-dialog anchor navigation. The default browser fragment navigation
+// writes location.hash, which vue-router surfaces as a route change and
+// Vuetify's closeOnBack overlay handling mistakes for a back button —
+// closing the dialog and rolling the URL back. Handle TOC clicks here
+// instead: never touch the URL, scroll the target heading into view.
+function onContentClick(event: MouseEvent) {
+  if (event.defaultPrevented || event.button !== 0
+    || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+  const anchor = (event.target as HTMLElement).closest('a')
+  if (!anchor) return
+  const href = anchor.getAttribute('href') ?? ''
+  if (!href.startsWith('#')) return
+  // Swallow every in-dialog fragment navigation, target found or not:
+  // a leaked default navigation is exactly what closes the dialog.
+  event.preventDefault()
+  const raw = href.slice(1)
+  if (!raw) return
+  // marked percent-encodes hrefs while our heading ids keep the raw
+  // (e.g. CJK) characters, so decode before matching.
+  let id = raw
+  try { id = decodeURIComponent(raw) } catch { /* keep raw on malformed input */ }
+  const target = contentRoot.value?.querySelector(`[id="${CSS.escape(id)}"]`)
+  target?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 async function fetchGuidebook() {
   loading.value = true
@@ -80,7 +112,15 @@ watch(visible, (val) => {
 
 .markdown-body :deep(h1),
 .markdown-body :deep(h2),
-.markdown-body :deep(h3) {
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  scroll-margin-top: 12px;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
   margin-top: 1.2em;
   margin-bottom: 0.5em;
   font-weight: 600;
@@ -89,6 +129,7 @@ watch(visible, (val) => {
 .markdown-body :deep(h1) { font-size: 1.5em; }
 .markdown-body :deep(h2) { font-size: 1.3em; }
 .markdown-body :deep(h3) { font-size: 1.1em; }
+.markdown-body :deep(h4) { font-size: 1em; }
 
 .markdown-body :deep(p) {
   margin-bottom: 0.75em;

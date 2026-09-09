@@ -329,7 +329,7 @@ The **Dataset** tab is for getting your `image_dataset/` into shape before prepr
 **Autotag — auto-generate captions.** Select an image and click **Autotag** to run the **Anima Tagger**, which predicts tags in the correct Anima order (`[meta] [character] [series] [artist] [general]`) and fills them into the caption box. The first click downloads the tagger model automatically and may take a moment; after that the model stays loaded in the background so subsequent images tag almost instantly. A small status line shows whether the tagger is loading or ready.
 
 - The tagger frees its GPU memory automatically before you start any other GPU work (grouping, preprocessing, or training), so you never have to unload it by hand.
-- Autotag is a **starting point, not a final answer** — review the tags and fix mistakes (especially character/series/artist names) before training. See the caption tips in [§5.1](#51-caption-writing-tips).
+- Autotag is a **starting point, not a final answer** — review the tags and fix mistakes (especially character/series/artist names) before training. See the caption tips in [§5.1](#51-标注编写建议).
 - CLI equivalent for a single image: `make autotag --image <path>`.
 
 **Grouping — cluster similar images.** Click **Group** to scan the dataset and cluster images that look near-identical or show the same scene/character. When it finishes, the image list folds these into collapsible **green group headers**, so duplicates, alternate versions, and near-twins sit together — making it easy to thin out redundancy or balance how much of each concept you keep.
