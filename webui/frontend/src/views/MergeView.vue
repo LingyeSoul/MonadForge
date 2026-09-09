@@ -313,10 +313,10 @@
     <div class="text-subtitle-1 mb-2">{{ t('mgActiveTasks') }}</div>
     <v-list v-if="mergeTasks.length > 0" density="compact">
       <v-list-item
-        v-for="task in mergeTasks"
+        v-for="task in visibleTasks"
         :key="task.task_id"
         :title="task.command"
-        :subtitle="`${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
+        :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
       >
         <template #append>
           <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
@@ -325,6 +325,16 @@
       </v-list-item>
     </v-list>
     <div v-else class="text-medium-emphasis text-body-2">{{ t('mgNoTasks') }}</div>
+    <v-btn
+      v-if="hasHiddenTasks"
+      variant="text"
+      size="small"
+      class="mt-1"
+      :prepend-icon="showAllTasks ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+      @click="showAllTasks = !showAllTasks"
+    >
+      {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: mergeTasks.length }) }}
+    </v-btn>
     </div>
   </v-container>
 </template>
@@ -796,6 +806,15 @@ function isRunning(command: string) {
 const mergeTasks = computed(() =>
   taskStore.tasks.filter(tp => tp.command === 'merge' || tp.command === 'merge-loras')
 )
+
+// ── Task list preview (collapse long lists) ────────────────────
+
+const TASK_PREVIEW_LIMIT = 4
+const showAllTasks = ref(false)
+const visibleTasks = computed(() =>
+  showAllTasks.value ? mergeTasks.value : mergeTasks.value.slice(0, TASK_PREVIEW_LIMIT)
+)
+const hasHiddenTasks = computed(() => mergeTasks.value.length > TASK_PREVIEW_LIMIT)
 
 function stateColor(state: string) {
   if (state === 'running' || state === 'stopping') return 'info'

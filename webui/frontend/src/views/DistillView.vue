@@ -184,10 +184,10 @@
       </div>
       <v-list v-if="distillTasks.length > 0" density="compact">
         <v-list-item
-          v-for="task in distillTasks"
+          v-for="task in visibleTasks"
           :key="task.task_id"
           :title="task.command"
-          :subtitle="`${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
+          :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '—'}`"
         >
           <template #append>
             <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
@@ -203,6 +203,16 @@
         </v-list-item>
       </v-list>
       <div v-else class="text-medium-emphasis text-body-2">{{ t('distNoTasks') }}</div>
+      <v-btn
+        v-if="hasHiddenTasks"
+        variant="text"
+        size="small"
+        class="mt-1"
+        :prepend-icon="showAllTasks ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+        @click="showAllTasks = !showAllTasks"
+      >
+        {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: distillTasks.length }) }}
+      </v-btn>
     </template>
   </v-container>
 </template>
@@ -274,6 +284,15 @@ const distillTasks = computed(() => {
   const cmds = new Set(methods.value.map(m => m.task_command))
   return taskStore.tasks.filter(tp => cmds.has(tp.command))
 })
+
+// ── Task list preview (collapse long lists) ────────────────────
+
+const TASK_PREVIEW_LIMIT = 4
+const showAllTasks = ref(false)
+const visibleTasks = computed(() =>
+  showAllTasks.value ? distillTasks.value : distillTasks.value.slice(0, TASK_PREVIEW_LIMIT)
+)
+const hasHiddenTasks = computed(() => distillTasks.value.length > TASK_PREVIEW_LIMIT)
 
 const currentHash = computed(() => {
   return JSON.stringify(config.sections.map(s => ({ name: s.name, fields: s.fields.map(f => ({ key: f.key, value: f.value })) })))

@@ -345,7 +345,7 @@
         <v-btn icon="mdi-refresh" variant="text" size="small" :title="t('ppRefresh')" :aria-label="t('ppRefresh')" @click="taskStore.poll" />
       </div>
       <v-list v-if="activeTasks.length" density="compact" class="task-list">
-        <v-list-item v-for="task in activeTasks" :key="task.task_id" :title="task.command" :subtitle="`${t('taskState')}: ${task.state} | PID: ${task.pid ?? '-'}`">
+        <v-list-item v-for="task in visibleTasks" :key="task.task_id" :title="task.command" :subtitle="`${task.task_id.slice(0, 8)} | ${t('taskState')}: ${task.state} | PID: ${task.pid ?? '-'}`">
           <template #append>
             <v-chip size="small" :color="stateColor(task.state)" variant="tonal">{{ task.state }}</v-chip>
             <v-btn v-if="task.state === 'running' || task.state === 'pending'" icon="mdi-stop" size="small" variant="text" color="error" :title="t('superResStop')" :aria-label="t('superResStop')" @click="taskStore.cancelTask(task.task_id)" />
@@ -353,6 +353,16 @@
         </v-list-item>
       </v-list>
       <div v-else class="text-medium-emphasis text-body-2">{{ t('superResNoTasks') }}</div>
+      <v-btn
+        v-if="hasHiddenTasks"
+        variant="text"
+        size="small"
+        class="mt-1"
+        :prepend-icon="showAllTasks ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+        @click="showAllTasks = !showAllTasks"
+      >
+        {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: activeTasks.length }) }}
+      </v-btn>
     </section>
   </v-container>
 </template>
@@ -404,6 +414,15 @@ const dryRun = reactive({ version: 'x4', bs: 1, amp: true, amp_dtype: 'auto' as 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 const activeTasks = computed(() => taskStore.tasks.filter(task => srCommands.has(task.command)))
+
+// ── Task list preview (collapse long lists) ────────────────────
+
+const TASK_PREVIEW_LIMIT = 4
+const showAllTasks = ref(false)
+const visibleTasks = computed(() =>
+  showAllTasks.value ? activeTasks.value : activeTasks.value.slice(0, TASK_PREVIEW_LIMIT)
+)
+const hasHiddenTasks = computed(() => activeTasks.value.length > TASK_PREVIEW_LIMIT)
 
 function isRunning(command: string) {
   return taskStore.tasks.some(task => task.command === command && task.state === 'running')
