@@ -63,15 +63,15 @@ def test_hf_download_classifies_only_transport_errors():
 
     import requests
 
-    assert H._is_network_error(requests.exceptions.ConnectionError()) is True
-    assert H._is_network_error(requests.exceptions.ConnectTimeout()) is True
-    assert H._is_network_error(requests.exceptions.ReadTimeout()) is True
-    assert H._is_network_error(socket.timeout()) is True
-    assert H._is_network_error(TimeoutError()) is True
+    assert H.is_network_error(requests.exceptions.ConnectionError()) is True
+    assert H.is_network_error(requests.exceptions.ConnectTimeout()) is True
+    assert H.is_network_error(requests.exceptions.ReadTimeout()) is True
+    assert H.is_network_error(socket.timeout()) is True
+    assert H.is_network_error(TimeoutError()) is True
     # Non-transport must propagate unchanged (e.g. a 404 EntryNotFoundError the
     # tagger catches for best-effort optional files).
-    assert H._is_network_error(ValueError()) is False
-    assert H._is_network_error(KeyError()) is False
+    assert H.is_network_error(ValueError()) is False
+    assert H.is_network_error(KeyError()) is False
 
 
 def test_ensure_hf_timeouts_pins_env(monkeypatch):

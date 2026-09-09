@@ -35,7 +35,7 @@ def ensure_hf_timeouts() -> None:
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", _DEFAULT_TIMEOUT)
 
 
-def _is_network_error(exc: BaseException) -> bool:
+def is_network_error(exc: BaseException) -> bool:
     """True only for *transport* failures (the ones that hang): connection and
     read timeouts, refused/reset connections.
 
@@ -43,6 +43,9 @@ def _is_network_error(exc: BaseException) -> bool:
     ``RepositoryNotFoundError`` (HfHubHTTPError 404s) — those are *fast*
     responses, never a hang, and callers catch them specifically (e.g. the
     tagger's best-effort optional files), so they must propagate unchanged.
+
+    Shared with ``ms_download`` (same transport-failure contract), so this is
+    public API despite the module's internal flavor.
     """
     import socket
 
@@ -55,6 +58,10 @@ def _is_network_error(exc: BaseException) -> bool:
     except ImportError:
         pass
     return isinstance(exc, tuple(net))
+
+
+# Pre-raise name; kept so external callers/tests don't break.
+_is_network_error = is_network_error
 
 
 def hf_download(*, what: str, hint: str = "make download-models", **kwargs):
@@ -71,7 +78,7 @@ def hf_download(*, what: str, hint: str = "make download-models", **kwargs):
     try:
         return hf_hub_download(**kwargs)
     except Exception as exc:  # noqa: BLE001
-        if _is_network_error(exc):
+        if is_network_error(exc):
             raise FileNotFoundError(
                 f"{what}: download from HuggingFace stalled or failed "
                 f"({type(exc).__name__}: {exc}). Check connectivity (or set "

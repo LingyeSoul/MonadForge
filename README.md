@@ -79,6 +79,11 @@ cd ../..
 
 # 3. 下载模型
 python tasks.py download-models          # DiT + Qwen3 TE + QwenImage VAE
+#    HuggingFace 不可达时走魔搭镜像（对单个组件也可加 --source modelscope）：
+#      ANIMA_DOWNLOAD_SOURCE=modelscope python tasks.py download-models
+#      python tasks.py download-ms <org/name>   # 下载任意魔搭仓库到 models/
+#    注意：仅 Anima / SAM3 / PE-Core 有镜像；MIT、Tagger 词表、PE-Spatial 等无
+#    镜像组件会打印跳过提示（仍需 HuggingFace），其余模型用 download-ms 任意仓库。
 
 # 4. 启动服务
 python tasks.py daemon                     # 启动 daemon（它会自动拉起 WebUI）
@@ -392,7 +397,8 @@ python tasks.py mask                     # 生成 SAM3 掩码
 
 # 工具
 python tasks.py merge                    # 合并 LoRA 到 DiT
-python tasks.py download-models          # 下载基础模型
+python tasks.py download-models          # 下载基础模型（--source modelscope 走魔搭镜像）
+python tasks.py download-ms <org/name>   # 下载任意魔搭仓库到 models/
 python tasks.py --help                   # 查看所有命令
 ```
 

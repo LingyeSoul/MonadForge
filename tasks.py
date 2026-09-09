@@ -301,7 +301,10 @@ COMMANDS = {
         "one-shot — the GUI Dataset tab uses a resident worker instead.",
     ),
     # ── Downloads ─────────────────────────────────────────────────────
-    "download-models": (downloads.cmd_download_models, "Download all models"),
+    "download-models": (
+        downloads.cmd_download_models,
+        "Download all models (--source modelscope fetches from 魔搭 mirrors)",
+    ),
     "download-anima": (downloads.cmd_download_anima, "Download Anima model"),
     "download-sam3": (downloads.cmd_download_sam3, "Download SAM3 model"),
     "download-mit": (downloads.cmd_download_mit, "Download MIT model"),
@@ -320,6 +323,13 @@ COMMANDS = {
     "download-danbooru-tags": (
         downloads.cmd_download_danbooru_tags,
         "Download danbooru tag tables (KR base + EN sibling) for caption correction",
+    ),
+    "download-ms": (
+        downloads.cmd_download_ms,
+        "Download any ModelScope (魔搭) repo: download-ms <org/name> "
+        "[--local-dir DIR] [--include GLOB]... [--force]. The download-* "
+        "commands also accept --source modelscope to fetch from verified "
+        "ModelScope mirrors instead of HuggingFace",
     ),
     # ── Masking ───────────────────────────────────────────────────────
     "mask": (

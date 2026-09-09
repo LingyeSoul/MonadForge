@@ -165,6 +165,11 @@ Linear 가중치 델타가 아닌 변형(ReFT / HydraLoRA `_moe`)은 기본적�
 uv sync                   # Python 3.13 with pre-built flash attention 2
 hf auth login
 make download-models      # DiT + Qwen3 TE + QwenImage VAE (+ SAM3 / MIT / PE, 마스킹 및 이미지 조건화용)를 models/로
+# HuggingFace 접근이 어려운 네트워크에서는 ModelScope(魔搭) 미러 사용:
+#   ANIMA_DOWNLOAD_SOURCE=modelscope python tasks.py download-models
+#   python tasks.py download-ms <org/name>   # 임의의 ModelScope 저장소를 models/로
+# 주의: 미러는 Anima / SAM3 / PE-Core에만 있음 — MIT·Tagger 어휘·PE-Spatial 등
+# 미러 없는 구성요소는 건너뛰며 안내를 출력함(여전히 HuggingFace 필요).
 # 학습 이미지를 image_dataset/에 배치 (.txt 캡션 사이드카 함께)
 python -m webui            # 추천 — 설정 에디터 + 데이터셋 브라우저 + 학습 모니터
 ```

@@ -12,6 +12,9 @@ Anima — LoRA/T-LoRA training and inference pipeline for the Anima diffusion mo
 uv sync                    # Install dependencies (Python 3.13)
 hf auth login              # Authenticate for model downloads
 make download-models       # Download DiT, text encoder, VAE, SAM3, MIT, PE-Core, PE-Spatial
+# HuggingFace unreachable? Only Anima/SAM3/PE-Core are mirrored (others print a
+# skip notice): ANIMA_DOWNLOAD_SOURCE=modelscope python tasks.py download-models
+# Any repo: python tasks.py download-ms <org/name> [--local-dir DIR] [--force]
 # Training images go in image_dataset/ with .txt caption sidecars
 make preprocess            # Resize → post_image_dataset/resized/, cache → post_image_dataset/lora/
 ```

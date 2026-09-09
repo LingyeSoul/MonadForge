@@ -431,3 +431,150 @@ def test_full_preprocess_failure_keeps_manifest_incomplete(tmp_path, monkeypatch
     assert manifest["status"] == "failed"
     assert manifest["complete"] is False
     assert "resize failed" in manifest["error"]
+
+
+def _make_preprocess_run(tmp_path, source_name="source", config=None):
+    from library.preprocess.runs import resolve_preprocess_run
+
+    source = tmp_path / source_name
+    source.mkdir(exist_ok=True)
+    return resolve_preprocess_run(
+        source,
+        config or {"target_res": [1024]},
+        post_image_dataset=tmp_path / "post",
+    )
+
+
+def _select_stage_source(monkeypatch, source) -> None:
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(
+        preprocess,
+        "_path",
+        lambda key, default: str(source) if key == "source_image_dir" else default,
+    )
+
+
+def test_stage_run_adopts_explicit_manifest_despite_env_drift(tmp_path, monkeypatch):
+    from scripts.tasks import preprocess
+
+    run = _make_preprocess_run(
+        tmp_path,
+        config={"target_res": [1024], "caption_shuffle_variants": "4"},
+    )
+    _select_stage_source(monkeypatch, run.source_dir)
+    monkeypatch.setenv("PREPROCESS_RUN", str(run.manifest_path))
+    # The standalone stage task runs with different ambient env than the full
+    # preprocess that created the run (the WebUI forwards CAPTION_*/TARGET_RES
+    # only to `preprocess`/`preprocess-te`). The explicit selection must win.
+    monkeypatch.setenv("CAPTION_SHUFFLE_VARIANTS", "2")
+    monkeypatch.setenv("TARGET_RES", "896")
+
+    resolved, cleaned = preprocess._resolve_stage_run([])
+
+    assert resolved.root == run.root
+    assert cleaned == []
+
+
+def test_stage_run_rejects_manifest_from_other_source(tmp_path, monkeypatch):
+    import pytest
+
+    from scripts.tasks import preprocess
+
+    run = _make_preprocess_run(tmp_path, source_name="source-a")
+    other = tmp_path / "source-b"
+    other.mkdir()
+    _select_stage_source(monkeypatch, other)
+    monkeypatch.setenv("PREPROCESS_RUN", str(run.manifest_path))
+
+    with pytest.raises(SystemExit, match="different source dataset"):
+        preprocess._resolve_stage_run([])
+
+
+def test_stage_run_missing_manifest_fails_with_clear_error(tmp_path, monkeypatch):
+    import pytest
+
+    from scripts.tasks import preprocess
+
+    source = tmp_path / "source"
+    source.mkdir()
+    _select_stage_source(monkeypatch, source)
+    monkeypatch.setenv("PREPROCESS_RUN", str(tmp_path / "gone" / "manifest.json"))
+
+    with pytest.raises(SystemExit, match="not found"):
+        preprocess._resolve_stage_run([])
+
+
+def test_stage_run_adopts_failed_run_for_resume(tmp_path, monkeypatch):
+    import pytest
+
+    from library.preprocess.runs import PreprocessRunError, run_from_manifest
+    from scripts.tasks import preprocess
+
+    run = _make_preprocess_run(tmp_path)
+    run.write_manifest(status="failed", error="RuntimeError: resize failed")
+    _select_stage_source(monkeypatch, run.source_dir)
+    monkeypatch.setenv("PREPROCESS_RUN", str(run.manifest_path))
+
+    resolved, _ = preprocess._resolve_stage_run([])
+    assert resolved.root == run.root
+
+    # Strict consumers of finished runs still reject an incomplete manifest.
+    with pytest.raises(PreprocessRunError):
+        run_from_manifest(run.manifest_path)
+
+
+def test_preprocess_pe_routes_centroid_into_selected_run(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from scripts.tasks import preprocess
+
+    run = _make_preprocess_run(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (run, list(extra)),
+    )
+
+    preprocess.cmd_preprocess_pe([])
+
+    cmd = calls[0]
+    out = Path(cmd[cmd.index("--centroid_out") + 1])
+    assert out == run.lora_cache_dir / "anima_pe_centroid_pe.safetensors"
+
+
+def test_preprocess_pe_without_run_keeps_legacy_centroid(monkeypatch):
+    from scripts.tasks import preprocess
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (None, list(extra)),
+    )
+
+    preprocess.cmd_preprocess_pe([])
+
+    assert "--centroid_out" not in calls[0]
+
+
+def test_preprocess_pe_respects_explicit_centroid_out(tmp_path, monkeypatch):
+    from scripts.tasks import preprocess
+
+    run = _make_preprocess_run(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd: calls.append(cmd))
+    monkeypatch.setattr(
+        preprocess,
+        "_resolve_stage_run",
+        lambda extra, create=False: (run, list(extra)),
+    )
+
+    preprocess.cmd_preprocess_pe(["--centroid_out", "custom/centroid.safetensors"])
+
+    cmd = calls[0]
+    assert cmd.count("--centroid_out") == 1
+    assert cmd[cmd.index("--centroid_out") + 1] == "custom/centroid.safetensors"

@@ -117,9 +117,11 @@ def _load_pe_variant(
     """Build a vendored PE vision tower and load Meta's official ``.pt`` weights.
 
     ``config_name`` selects the ``PE_CONFIGS`` entry to instantiate;
-    ``repo_id`` / ``filename`` parameterize the HF auto-download fallback.
-    Used by both PE-Core and PE-Spatial registry entries — the only thing
-    that differs between them is the build name and the download tuple.
+    ``repo_id`` / ``filename`` parameterize the auto-download fallback
+    (ModelScope mirror when ``ANIMA_DOWNLOAD_SOURCE=modelscope`` — a repo
+    without a mirror there raises rather than hitting HuggingFace; HuggingFace
+    otherwise). Used by both PE-Core and PE-Spatial registry entries — the only
+    thing that differs between them is the build name and the download tuple.
 
     ``dtype`` is the compute dtype the model is cast to. Meta ships the ``.pt``
     in fp32; the default bf16 cast matches the live training/CMMD path, but
@@ -143,15 +145,24 @@ def _load_pe_variant(
             f"{repo_id}/{filename} (one-time)."
         )
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-        downloaded = Path(
-            hf_download(
-                what=f"{config_name} checkpoint",
-                hint=f"make {download_make_target}",
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=str(ckpt_path.parent),
-            )
+        from library.runtime.ms_download import maybe_ms_download
+
+        downloaded = maybe_ms_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=ckpt_path.parent,
+            what=f"{config_name} checkpoint",
         )
+        if downloaded is None:
+            downloaded = Path(
+                hf_download(
+                    what=f"{config_name} checkpoint",
+                    hint=f"make {download_make_target}",
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=str(ckpt_path.parent),
+                )
+            )
         if downloaded.resolve() != ckpt_path.resolve():
             shutil.move(str(downloaded), str(ckpt_path))
         if not ckpt_path.is_file():

@@ -7,7 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from ._common import PY, ROOT, _path, run
+from ._common import PY, ROOT, _path, explicit_option_value, run
 
 
 try:
@@ -15,11 +15,15 @@ try:
         PreprocessRun,
         PreprocessRunError,
         resolve_preprocess_run,
+        run_from_manifest,
+        source_path_hash,
     )
 except ImportError:  # pragma: no cover - keeps lightweight task discovery usable
     PreprocessRun = object  # type: ignore[assignment,misc]
     PreprocessRunError = RuntimeError  # type: ignore[assignment,misc]
     resolve_preprocess_run = None  # type: ignore[assignment]
+    run_from_manifest = None  # type: ignore[assignment]
+    source_path_hash = None  # type: ignore[assignment]
 
 
 # A full preprocess command owns one run for every stage.  The context is
@@ -140,6 +144,37 @@ def _resolve_stage_run(
     post_root = _path("post_image_dataset", "post_image_dataset")
     if resolve_preprocess_run is None:
         raise SystemExit("preprocess run support is unavailable")
+    manifest: Path | None = None
+    if selected:
+        manifest = Path(selected).expanduser()
+        if manifest.is_dir() or manifest.suffix.lower() != ".json":
+            manifest = manifest / "manifest.json"
+    # A single-stage command with an explicit run selection adopts that
+    # manifest as-is (mirrors masking._selected_run): the manifest records the
+    # config that actually produced the on-disk artifacts, so re-deriving the
+    # fingerprint from the ambient env/config would reject a valid selection
+    # whenever the caller's environment drifts between invocations — e.g. the
+    # WebUI forwards CAPTION_*/TARGET_RES for `preprocess` but not for
+    # `preprocess-pe`, which made every standalone cache stage fail with a
+    # spurious identity mismatch. Only the source dataset has to agree; the
+    # full preprocess (create=True) still resolves a fresh identity so changed
+    # settings create a new run instead of silently mixing into a stale one.
+    if manifest is not None and not create:
+        if not manifest.exists():
+            raise SystemExit(
+                f"selected preprocess run manifest not found: {manifest} "
+                "(refresh the run list and pick an existing run)"
+            )
+        try:
+            adopted = run_from_manifest(manifest, require_complete=False)
+        except PreprocessRunError as exc:
+            raise SystemExit(f"cannot use selected preprocess run: {exc}") from exc
+        if adopted.source_hash != source_path_hash(source):
+            raise SystemExit(
+                "selected preprocess run belongs to a different source dataset: "
+                f"run source {adopted.source_dir}, current source {source}"
+            )
+        return adopted, cleaned
     try:
         expected = resolve_preprocess_run(
             source,
@@ -148,9 +183,6 @@ def _resolve_stage_run(
             create=False,
         )
         if selected:
-            manifest = Path(selected).expanduser()
-            if manifest.is_dir() or manifest.suffix.lower() != ".json":
-                manifest = manifest / "manifest.json"
             if manifest.resolve(strict=False) != expected.manifest_path.resolve(
                 strict=False
             ):
@@ -330,23 +362,6 @@ def _target_res_values(extra) -> list[int]:
     return normalized or [1024]
 
 
-def _explicit_option_value(extra, option: str) -> str | None:
-    """Return the last explicit value for a single-value option."""
-    prefix = option + "="
-    for index in range(len(extra) - 1, -1, -1):
-        token = extra[index]
-        if token.startswith(prefix):
-            value = token[len(prefix) :]
-            if not value:
-                raise ValueError(f"{option} requires a value")
-            return value
-        if token == option:
-            if index + 1 >= len(extra) or extra[index + 1].startswith("--"):
-                raise ValueError(f"{option} requires a value")
-            return extra[index + 1]
-    return None
-
-
 def _target_res_args(extra) -> list[str]:
     """``--target_res E1 E2 …`` derived from the merged TOML's ``target_res`` key.
 
@@ -379,7 +394,7 @@ def _multires_per_image_enabled(extra) -> bool:
 
 
 def _multires_root(extra, *, conditioning: bool = False) -> str:
-    explicit = _explicit_option_value(extra, "--multires_dir")
+    explicit = explicit_option_value(extra, "--multires_dir")
     if explicit is not None:
         return explicit
     active = _ACTIVE_PREPROCESS_RUN
@@ -398,7 +413,7 @@ def _multires_resize_args(extra, *, conditioning: bool = False) -> list[str]:
     if not _multires_per_image_enabled(extra):
         return []
     args = [] if "--multires_per_image" in extra else ["--multires_per_image"]
-    if _explicit_option_value(extra, "--multires_dir") is None:
+    if explicit_option_value(extra, "--multires_dir") is None:
         args.extend(
             ["--multires_dir", _multires_root(extra, conditioning=conditioning)]
         )
@@ -1139,27 +1154,38 @@ def cmd_preprocess_pe(extra):
     DCW v4 fusion head's pooled-image-feature input channel.
 
     Also emits the dataset-mean PE centroid sidecar
-    (``post_image_dataset/ip_adapter/anima_pe_centroid_pe.safetensors``) via
-    ``--centroid`` so IP-Adapter mean-centering works without a separate pass.
+    (``anima_pe_centroid_pe.safetensors``) via ``--centroid`` so IP-Adapter
+    mean-centering works without a separate pass. Under a preprocess run the
+    centroid lands in that run's ``lora/`` dir next to the caches it pools;
+    a legacy no-run invocation keeps the historical
+    ``post_image_dataset/ip_adapter/`` location. An explicit ``--centroid_out``
+    in ARGS always wins.
     """
     run_obj, extra = _resolve_stage_run(extra)
-    run(
-        [
-            PY,
-            "scripts/preprocess/cache_pe_encoder.py",
-            "--dir",
-            _preprocess_path(
-                "resized_image_dir", "post_image_dataset/resized", run_obj
-            ),
-            "--cache_dir",
-            _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
-            "--encoder",
-            "pe",
-            "--recursive",
-            "--centroid",
-            *extra,
+    cmd = [
+        PY,
+        "scripts/preprocess/cache_pe_encoder.py",
+        "--dir",
+        _preprocess_path(
+            "resized_image_dir", "post_image_dataset/resized", run_obj
+        ),
+        "--cache_dir",
+        _preprocess_path("lora_cache_dir", "post_image_dataset/lora", run_obj),
+        "--encoder",
+        "pe",
+        "--recursive",
+        "--centroid",
+        *extra,
+    ]
+    if (
+        run_obj is not None
+        and explicit_option_value(extra, "--centroid_out") is None
+    ):
+        cmd += [
+            "--centroid_out",
+            str(run_obj.lora_cache_dir / "anima_pe_centroid_pe.safetensors"),
         ]
-    )
+    run(cmd)
 
 
 def cmd_preprocess_pe_spatial(extra):

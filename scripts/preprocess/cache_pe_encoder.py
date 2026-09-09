@@ -25,10 +25,13 @@ Centroid sidecar
 Pass ``--centroid`` to also emit ``anima_pe_centroid_{encoder}.safetensors``
 (dataset-mean of mean-over-patch-tokens pooled features, ``[D]`` fp32) after
 the cache pass. Pass ``--centroid_only`` to skip encoding entirely and just
-pool existing caches under ``--cache_dir``. Consumed by IP-Adapter
-(``ip_centroid_path``) and DCW v4 (``cos(c_pool, μ_centroid)`` channel) --
-targets the participation-ratio-6 manifold collapse on this dataset (see
-``bench/ip_adapter/analysis.md``).
+pool existing caches under ``--cache_dir``. Default output is
+``post_image_dataset/ip_adapter/anima_pe_centroid_{encoder}.safetensors``;
+``preprocess-pe`` under a stage run passes ``--centroid_out`` so the centroid
+lands in that run's ``lora/`` dir next to the caches it pools. Consumed by
+IP-Adapter (``ip_centroid_path``) and DCW v4 (``cos(c_pool, μ_centroid)``
+channel) -- targets the participation-ratio-6 manifold collapse on this
+dataset (see ``bench/ip_adapter/analysis.md``).
 """
 
 import argparse

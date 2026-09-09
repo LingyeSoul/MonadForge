@@ -1,7 +1,13 @@
 """Model download entry-points (Anima base, SAM3, MIT, PE-Core, Tagger vocab).
 
 All targets shell out to ``hf download`` (rather than the SDK) so the user's
-``hf auth login`` cache is honored.
+``hf auth login`` cache is honored — unless ``--source modelscope`` (or
+``ANIMA_DOWNLOAD_SOURCE=modelscope``) selects the ModelScope (魔搭) mirror,
+in which case the mapped targets fetch in-process via
+``library.runtime.ms_download`` (zero-dependency, resumable, same skip rules).
+Mirrors are verified in ``ms_download.MIRRORS``; components without one print
+a skip notice instead of silently falling back to a network the user just
+said they can't reach.
 
 Idempotency contract (see GH #21): every target skips when its final
 destination files already exist, so a re-run *verifies* rather than re-fetching
@@ -21,7 +27,9 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from ._common import PY, ROOT, run
+from library.runtime import ms_download
+
+from ._common import PY, ROOT, explicit_option_value, run
 
 
 DANBOORU_TAGS_PATH = ROOT / "models" / "danbooru_tags_classified.csv"
@@ -36,9 +44,14 @@ def _present(paths: list[Path]) -> bool:
     return all(p.exists() for p in paths)
 
 
+def _force(extra) -> bool:
+    """True when ``--force`` re-fetches regardless of existing files."""
+    return "--force" in (extra or [])
+
+
 def _skip(name: str, paths: list[Path], extra) -> bool:
     """Return True (caller should skip) when files exist and ``--force`` absent."""
-    if "--force" in (extra or []):
+    if _force(extra):
         return False
     if _present(paths):
         print(f"  ✓ {name} already present (pass --force to re-download)")
@@ -46,12 +59,47 @@ def _skip(name: str, paths: list[Path], extra) -> bool:
     return False
 
 
+def _wants_modelscope(extra) -> bool:
+    """True when ``--source modelscope`` (flag) or ``ANIMA_DOWNLOAD_SOURCE``
+    (env) selects the ModelScope mirror for this invocation."""
+    if ms_download.source_enabled():
+        return True
+    source = explicit_option_value(extra or [], "--source")
+    return (source or "").strip().lower() == "modelscope"
+
+
+def _ms_unmapped(name: str) -> None:
+    """Notice for a component the ModelScope source can't serve (no mirror)."""
+    print(f"  ✗ {name}: no ModelScope mirror (HuggingFace only) — skipped")
+
+
+def _ms_fetch(name: str, hf_repo: str, filename: str, dst_dir: Path, extra) -> bool:
+    """Fetch one file from the component's ModelScope mirror; False when it
+    has none (caller should skip). Honors ``--force``."""
+    ms_repo = ms_download.mirror_repo(hf_repo)
+    if ms_repo is None:
+        _ms_unmapped(name)
+        return False
+    ms_download.fetch_file(
+        ms_repo=ms_repo,
+        filename=filename,
+        local_dir=dst_dir,
+        what=name,
+        force=_force(extra),
+    )
+    return True
+
+
 def cmd_download_sam3(_extra):
     dst = ROOT / "models" / "sam3"
-    # SAM3 is a gated repo; the full snapshot lands a config.json + weights.
+    # SAM3 is a gated repo on HF; the full snapshot lands a config.json + weights.
+    # The ModelScope mirror is public — no token needed there.
     if _skip("SAM3", [dst / "config.json"], _extra):
         return
     dst.mkdir(parents=True, exist_ok=True)
+    if _wants_modelscope(_extra):
+        ms_download.snapshot_download("facebook/sam3", dst, force=_force(_extra))
+        return
     run(["hf", "download", "facebook/sam3", "--local-dir", "models/sam3"])
 
 
@@ -62,16 +110,21 @@ def cmd_download_pe(_extra):
     # may be missing even when PE-Core is on disk.
     if not _skip("PE-Core", [dst / "PE-Core-L14-336.pt"], _extra):
         dst.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                "hf",
-                "download",
-                "facebook/PE-Core-L14-336",
-                "PE-Core-L14-336.pt",
-                "--local-dir",
-                "models/pe",
-            ]
-        )
+        if _wants_modelscope(_extra):
+            _ms_fetch(
+                "PE-Core", "facebook/PE-Core-L14-336", "PE-Core-L14-336.pt", dst, _extra
+            )
+        else:
+            run(
+                [
+                    "hf",
+                    "download",
+                    "facebook/PE-Core-L14-336",
+                    "PE-Core-L14-336.pt",
+                    "--local-dir",
+                    "models/pe",
+                ]
+            )
     # PE-Spatial is the default REPA alignment encoder — fetch it alongside PE-Core.
     cmd_download_pe_spatial(_extra)
 
@@ -80,6 +133,16 @@ def cmd_download_pe_spatial(_extra):
     # Auxiliary encoder for the Anima Tagger's dual-encoder config; only the .pt.
     dst = ROOT / "models" / "pe"
     if _skip("PE-Spatial", [dst / "PE-Spatial-B16-512.pt"], _extra):
+        return
+    if _wants_modelscope(_extra):
+        # No known mirror — _ms_fetch prints the skip notice.
+        _ms_fetch(
+            "PE-Spatial",
+            "facebook/PE-Spatial-B16-512",
+            "PE-Spatial-B16-512.pt",
+            dst,
+            _extra,
+        )
         return
     dst.mkdir(parents=True, exist_ok=True)
     run(
@@ -99,6 +162,16 @@ def cmd_download_tagger(_extra):
     # The full model is not fetched here, so this won't clobber a local model.safetensors.
     dst = ROOT / "models" / "captioners" / "anima-tagger-v2"
     if _skip("Anima Tagger vocab", [dst / "vocab.json"], _extra):
+        return
+    if _wants_modelscope(_extra):
+        # No known mirror — _ms_fetch prints the skip notice.
+        _ms_fetch(
+            "Anima Tagger vocab",
+            "sorryhyun/anima-tagger",
+            "vocab.json",
+            dst,
+            _extra,
+        )
         return
     dst.mkdir(parents=True, exist_ok=True)
     run(
@@ -167,6 +240,12 @@ def cmd_download_mit(_extra):
     dst = ROOT / "models" / "mit"
     if _skip("MIT", [dst / "model.pth"], _extra):
         return
+    if _wants_modelscope(_extra):
+        # No known mirror — _ms_fetch prints the skip notice.
+        _ms_fetch(
+            "MIT", "a-b-c-x-y-z/Manga-Text-Segmentation-2025", "model.pth", dst, _extra
+        )
+        return
     dst.mkdir(parents=True, exist_ok=True)
     run(
         [
@@ -193,20 +272,34 @@ def cmd_download_anima(_extra):
         return
     for d in ["diffusion_models", "text_encoders", "vae"]:
         (models / d).mkdir(parents=True, exist_ok=True)
-    run(
-        [
-            "hf",
-            "download",
+    if _wants_modelscope(_extra):
+        # The official ModelScope repo mirrors the HF split_files/ layout exactly,
+        # so the shared move below works for both sources.
+        ms_download.snapshot_download(
             "circlestone-labs/Anima",
-            "split_files/diffusion_models/anima-base-v1.0.safetensors",
-            "split_files/text_encoders/qwen_3_06b_base.safetensors",
-            "split_files/vae/qwen_image_vae.safetensors",
-            "--local-dir",
-            "models",
-            "--include",
-            "split_files/*",
-        ]
-    )
+            models,
+            filenames=[
+                "split_files/diffusion_models/anima-base-v1.0.safetensors",
+                "split_files/text_encoders/qwen_3_06b_base.safetensors",
+                "split_files/vae/qwen_image_vae.safetensors",
+            ],
+            force=_force(_extra),
+        )
+    else:
+        run(
+            [
+                "hf",
+                "download",
+                "circlestone-labs/Anima",
+                "split_files/diffusion_models/anima-base-v1.0.safetensors",
+                "split_files/text_encoders/qwen_3_06b_base.safetensors",
+                "split_files/vae/qwen_image_vae.safetensors",
+                "--local-dir",
+                "models",
+                "--include",
+                "split_files/*",
+            ]
+        )
     split = models / "split_files"
     for subdir in ["diffusion_models", "text_encoders", "vae"]:
         src = split / subdir
@@ -252,3 +345,67 @@ def cmd_download_models(_extra):
         )
         print("Successful components are cached; re-running only retries the failures.")
         raise SystemExit(1)
+
+
+def cmd_download_ms(extra):
+    """``download-ms <org/name> [--local-dir DIR] [--include GLOB]... [--force]``
+
+    Fetch any ModelScope repo (e.g. a base model only mirrored there) into
+    ``models/<name>`` (or ``--local-dir``). Plain files, no symlink cache;
+    complete files are skipped by size unless ``--force``.
+    """
+    args = list(extra or [])
+    positional: list[str] = []
+    local_dir: str | None = None
+    include: list[str] = []
+    force = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--local-dir" and i + 1 < len(args):
+            local_dir = args[i + 1]
+            i += 2
+        elif a.startswith("--local-dir="):
+            local_dir = a.split("=", 1)[1]
+            i += 1
+        elif a == "--include" and i + 1 < len(args):
+            include.append(args[i + 1])
+            i += 2
+        elif a.startswith("--include="):
+            include.append(a.split("=", 1)[1])
+            i += 1
+        elif a == "--force":
+            force = True
+            i += 1
+        elif a.startswith("--"):
+            raise SystemExit(
+                f"unknown option {a} — supported: --local-dir DIR, "
+                "--include GLOB, --force"
+            )
+        else:
+            positional.append(a)
+            i += 1
+    if not positional:
+        raise SystemExit(
+            "usage: tasks.py download-ms <modelscope_repo_id> "
+            "[--local-dir DIR] [--include GLOB]... [--force]"
+        )
+    repo_id = positional[0]
+    if "/" not in repo_id:
+        raise SystemExit(
+            f"{repo_id!r} is not a ModelScope repo id — expected 'org/name' "
+            "(see https://modelscope.cn/models/...)"
+        )
+    if local_dir is None:
+        local_dir = str(ROOT / "models" / repo_id.split("/")[-1])
+    print(f"  source: ModelScope {repo_id} -> {local_dir}")
+    try:
+        downloaded = ms_download.snapshot_download(
+            repo_id, local_dir, include=include or None, force=force
+        )
+    except FileNotFoundError as e:
+        raise SystemExit(str(e))
+    if downloaded:
+        print(f"  ✓ {len(downloaded)} file(s) downloaded from ModelScope")
+    else:
+        print("  ✓ all files already present (pass --force to re-download)")

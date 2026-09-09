@@ -62,6 +62,7 @@ _WEBUI_COMMAND_NAMES = frozenset(
         "download-mit",
         "download-pe",
         "download-pe-spatial",
+        "download-ms",
         "test-unit",
         "print-config",
         "update",

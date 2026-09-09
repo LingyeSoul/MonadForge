@@ -50,6 +50,28 @@ def _preset(default: str = "default") -> str:
     return os.environ.get("PRESET", default)
 
 
+def explicit_option_value(args, option: str) -> str | None:
+    """Return the last explicit value for a single-value ``--option`` in ``args``.
+
+    Accepts both ``--option value`` and ``--option=value`` forms; raises
+    ``ValueError`` when the flag is present without a value (a following
+    ``--``-token counts as missing). ``None`` when the flag is absent.
+    """
+    prefix = option + "="
+    for index in range(len(args) - 1, -1, -1):
+        token = args[index]
+        if token.startswith(prefix):
+            value = token[len(prefix) :]
+            if not value:
+                raise ValueError(f"{option} requires a value")
+            return value
+        if token == option:
+            if index + 1 >= len(args) or args[index + 1].startswith("--"):
+                raise ValueError(f"{option} requires a value")
+            return args[index + 1]
+    return None
+
+
 _PATH_OVERRIDES_CACHE: dict | None = None
 
 # These values describe the on-disk preprocessing contract, not a training
@@ -215,7 +237,8 @@ def latest_hydra() -> Path:
         (
             f
             for f in root.rglob("anima_hydra*_moe.safetensors")
-            if f.name.startswith("anima_hydra") and f.name.endswith("_moe.safetensors")
+            if f.name.startswith("anima_hydra")
+            and f.name.endswith("_moe.safetensors")
             and ".bak." not in f.name
             and "-checkpoint" not in f.stem
         ),

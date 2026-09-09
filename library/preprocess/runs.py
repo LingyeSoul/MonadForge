@@ -581,8 +581,18 @@ def _new_run(
     )
 
 
-def load_manifest(path: str | os.PathLike | PreprocessRun) -> dict[str, Any]:
-    """Read a run manifest and reject malformed/incomplete JSON."""
+def load_manifest(
+    path: str | os.PathLike | PreprocessRun,
+    *,
+    require_complete: bool = True,
+) -> dict[str, Any]:
+    """Read a run manifest and reject malformed/incomplete JSON.
+
+    ``require_complete=False`` lets stage commands adopt a ``running``/``failed``
+    manifest of the same identity (a daemon interruption) for resume; the
+    default keeps the strict completion contract for consumers of finished
+    runs.
+    """
 
     manifest_path = (
         path.manifest_path if isinstance(path, PreprocessRun) else Path(path)
@@ -599,7 +609,7 @@ def load_manifest(path: str | os.PathLike | PreprocessRun) -> dict[str, Any]:
         raise PreprocessRunError(f"Preprocess manifest must be an object: {manifest_path}")
     if data.get("kind", "preprocess_run") != "preprocess_run":
         raise PreprocessRunError(f"Unsupported preprocess manifest kind: {manifest_path}")
-    if not bool(data.get("complete", data.get("status") == "ready")):
+    if require_complete and not bool(data.get("complete", data.get("status") == "ready")):
         raise PreprocessRunError(f"Incomplete preprocess manifest: {manifest_path}")
     return data
 
@@ -998,13 +1008,21 @@ def migrate_legacy_cache(
     )
 
 
-def run_from_manifest(path: str | os.PathLike) -> PreprocessRun:
-    """Reconstruct a :class:`PreprocessRun` from a complete manifest."""
+def run_from_manifest(
+    path: str | os.PathLike,
+    *,
+    require_complete: bool = True,
+) -> PreprocessRun:
+    """Reconstruct a :class:`PreprocessRun` from a complete manifest.
+
+    Pass ``require_complete=False`` to also reconstruct in-progress/failed runs
+    (see :func:`load_manifest`).
+    """
 
     manifest_path = Path(path)
     if manifest_path.is_dir():
         manifest_path = manifest_path / "manifest.json"
-    data = load_manifest(manifest_path)
+    data = load_manifest(manifest_path, require_complete=require_complete)
     source = (
         data.get("source_dir")
         or data.get("source_path")
