@@ -48,6 +48,7 @@ configs/gui-methods/custom/
 /docs/plans
 /docs/compose
 /webui/frontend/node_modules
+*.tsbuildinfo
 /wandb
 /.playwright-mcp
 near_twins_temp.toml
