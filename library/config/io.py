@@ -982,7 +982,16 @@ def _write_config_snapshot(
         return None
     from library.io.output_layout import layout_from_args
 
+    # Route continuation writes before the first parser snapshot is emitted.
+    # The source snapshot and checkpoints must stay immutable.
+    from library.training.continuation import setup_continuation
+
+    setup_continuation(args)
     layout = layout_from_args(args)
+    if os.environ.get("ANIMA_TRAIN_FRESH") == "1" and not getattr(args, "_fresh_output_checked", False):
+        if layout.root.exists() and (any(layout.root.rglob("*.safetensors")) or any(layout.root.rglob("train_state.json"))):
+            raise ValueError("输出名称已存在，请选择原训练任务或修改新任务输出名称")
+        args._fresh_output_checked = True
     output_dir = str(layout.root)
     output_name = layout.name
     os.makedirs(output_dir, exist_ok=True)

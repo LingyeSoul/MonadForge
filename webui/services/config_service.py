@@ -912,6 +912,11 @@ def build_merged_config(variant: str, preset: str, lang: str = "cn") -> dict:
     """
     merged, origin = merged_gui_variant_preset(variant, preset)
     custom_preset = not is_builtin_preset(preset)
+    return describe_config(merged, origin, variant, preset, lang, custom_preset=custom_preset)
+
+
+def describe_config(merged: dict, origin: dict, variant: str, preset: str, lang: str, *, custom_preset: bool = False) -> dict:
+    """Describe an already pinned config without reading mutable presets."""
     fields = []
     for key, value in sorted(merged.items()):
         if key in _SKIP:

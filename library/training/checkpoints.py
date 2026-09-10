@@ -670,7 +670,14 @@ class CheckpointSaver:
         ``save_state_on_train_end`` is set. No-op when ``args.resume`` is
         already set or no eligible dir exists."""
         args = self.args
+        if os.environ.get("ANIMA_TRAIN_FRESH") == "1":
+            if args.resume:
+                raise ValueError("Fresh training cannot also resume a state")
+            return
         if args.resume:
+            if getattr(args, "_continuation", None):
+                args.skip_until_initial_step = True
+                args.initial_epoch = args.initial_step = None
             return
 
         layout = _layout(args)

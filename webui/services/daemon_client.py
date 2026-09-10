@@ -245,6 +245,19 @@ class DaemonClient:
     async def resume(self, job_id: str) -> dict:
         return await self._request("POST", f"/jobs/{job_id}/resume")
 
+    async def continuation_candidates(self, variant: str) -> dict:
+        return await self._request("GET", f"/continuation-candidates?variant={urllib.parse.quote(variant)}", timeout=60)
+
+    async def continuation_detail(self, task_id: str) -> dict:
+        return await self._request("GET", f"/jobs/{task_id}/continuation", timeout=60)
+
+    async def prepare_continuation(self, task_id: str, body: dict) -> dict:
+        return await self._request("POST", f"/jobs/{task_id}/continuation/prepare", body=body, timeout=60)
+
+    async def continue_training(self, task_id: str, body: dict) -> dict:
+        # A large optimizer state may need a physical copy on non-CoW volumes.
+        return await self._request("POST", f"/jobs/{task_id}/continuation", body=body, timeout=300)
+
     async def list_job_groups_page(
         self,
         *,

@@ -15,6 +15,7 @@
           v-model="selectedMethod"
           :items="configStore.methods"
           :label="t('cfgMethod')"
+          :disabled="continuation.active || trainingLaunching"
           variant="outlined"
           density="compact"
           hide-details
@@ -32,7 +33,7 @@
           variant="outlined"
           density="compact"
           hide-details
-          :disabled="!selectedMethod"
+          :disabled="!selectedMethod || continuation.active || trainingLaunching"
           @update:model-value="onVariantChange"
         />
         <v-btn
@@ -40,7 +41,7 @@
           variant="text"
           density="compact"
           size="small"
-          :disabled="!selectedMethod"
+          :disabled="!selectedMethod || continuation.active"
           :title="t('cfgNewVariant')"
           :aria-label="t('cfgNewVariant')"
           @click="openCreateVariant"
@@ -52,7 +53,8 @@
       <div class="config-toolbar__preset">
           <v-select
             v-model="selectedPreset"
-            :items="configStore.presets"
+            :items="continuation.presetItems"
+            :disabled="continuation.active || trainingLaunching"
             :label="t('cfgPreset')"
             variant="outlined"
             density="compact"
@@ -64,6 +66,7 @@
             variant="text"
             density="compact"
             size="small"
+            :disabled="continuation.active"
             :title="t('cfgPresetCreate')"
             :aria-label="t('cfgPresetCreate')"
             @click="openCreatePreset"
@@ -75,10 +78,29 @@
             density="compact"
             size="small"
             color="error"
+            :disabled="continuation.active"
             :title="t('cfgPresetDelete')"
             @click="deleteCurrentPreset"
           />
       </div>
+      <v-select
+        :model-value="continuation.selected"
+        :items="trainingTaskItems"
+        :label="t('cfgTrainingTask')"
+        :placeholder="t('cfgTrainingTaskEmpty')"
+        :loading="continuation.loading || continuation.listLoading"
+        :disabled="!selectedVariant || trainingLaunching || configStore.loading"
+        item-title="title"
+        item-value="value"
+        clearable
+        persistent-placeholder
+        variant="outlined"
+        density="compact"
+        hide-details
+        data-testid="training-task-select"
+        @update:model-value="continuation.select"
+        @update:menu="(open) => open && continuation.fetchCandidates(selectedVariant)"
+      />
       <div class="config-toolbar__actions">
         <v-btn
           :color="(configStore.dirty || extraArgs) ? 'warning' : 'primary'"
@@ -95,7 +117,7 @@
         </v-btn>
         <v-btn
           variant="text"
-          :disabled="!selectedVariant"
+          :disabled="!selectedVariant || continuation.loading"
           icon="mdi-refresh"
           size="small"
           :aria-label="t('cfgReload')"
@@ -106,7 +128,7 @@
         </v-btn>
         <v-btn
           color="primary"
-          :disabled="!selectedVariant"
+          :disabled="!selectedVariant || (continuation.active && !continuation.ready)"
           :loading="trainingLaunching"
           prepend-icon="mdi-play"
           @click="startTraining"
@@ -336,7 +358,7 @@
                   :sm="field.key === 'sample_prompts' || field.field_type === 'regex_set' ? 12 : 6"
                 >
                   <PreviewPromptEditor
-                    v-if="field.key === 'sample_prompts'"
+                    v-if="field.key === 'sample_prompts' && !continuation.active"
                     :prompt-path="String(field.value ?? 'sample_prompts.txt')"
                   />
                   <ConfigField
@@ -371,6 +393,7 @@
             <v-card-text v-show="showExtraArgs">
               <v-textarea
                 v-model="extraArgs"
+                :disabled="continuation.active"
                 :placeholder="t('cfgExtraArgsHint')"
                 variant="outlined"
                 density="compact"
@@ -451,26 +474,6 @@ decompose_both = false</pre>
           </v-btn>
           <v-btn color="primary" prepend-icon="mdi-auto-fix" @click="applyLokrFullFactorMigration">
             {{ t('cfgLokrLegacyApply') }}
-          </v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-
-    <!-- Checkpoint resume dialog -->
-    <v-dialog v-model="showCheckpointDlg" max-width="500">
-      <v-card>
-        <v-card-title>{{ t('cfgCheckpointFound') }}</v-card-title>
-        <v-card-text>
-          {{ t('cfgCheckpointStep', { step: checkpointInfo?.step ?? 0 }) }}
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn variant="text" @click="showCheckpointDlg = false">{{ t('dsCancel') }}</v-btn>
-          <v-btn color="warning" @click="wipeAndTrain">
-            {{ t('cfgWipe') }}
-          </v-btn>
-          <v-btn color="success" @click="resumeTrain">
-            {{ t('cfgResume') }}
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -561,7 +564,7 @@ decompose_both = false</pre>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { ref, reactive, computed, nextTick, onMounted, watch } from 'vue'
 import { useConfigStore } from '../stores/config'
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
@@ -572,6 +575,7 @@ import PreviewPromptEditor from '../components/PreviewPromptEditor.vue'
 import HelpPanel from '../components/HelpPanel.vue'
 import { readPreprocessRun, writePreprocessRun } from '../composables/usePreprocessRunStorage'
 import { matchesConfigSearch } from '../utils/configSearch'
+import { useTrainingContinuation } from '../composables/useTrainingContinuation'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()
@@ -669,6 +673,12 @@ const preprocessRunning = ref(false)
 // Extra args state
 const extraArgs = ref('')
 const showExtraArgs = ref(false)
+const continuation = reactive(useTrainingContinuation(selectedPreset, extraArgs))
+const trainingTaskItems = computed(() => continuation.candidates.map(candidate => ({
+  value: candidate.task_id,
+  title: `${candidate.name} · ${new Date(candidate.submitted_at * 1000).toLocaleDateString()} · ${t(`cfgTrainingState_${candidate.state}`)} · ${candidate.epoch} epoch / ${candidate.step} step · ${candidate.job_id.slice(-6)}`,
+  props: { disabled: !candidate.available, subtitle: candidate.reason || undefined },
+})))
 
 // Experimental feature tracking
 const isExperimental = ref(false)
@@ -680,9 +690,7 @@ const guideHtml = ref('')
 
 // Dialog state
 const showNoCacheDlg = ref(false)
-const showCheckpointDlg = ref(false)
 const showLegacyLokrDlg = ref(false)
-const checkpointInfo = ref<{ state_dir: string; step: number } | null>(null)
 const prelaunchResult = ref<any>(null)
 
 // Conditioning interception — block conditioning_data_dir / cond_cache_dir
@@ -777,6 +785,7 @@ function promptLegacyLokrSentinel(): boolean {
 }
 
 function onConfigFieldUpdate(key: string, value: unknown) {
+  if (continuation.active && (!continuation.ready || key !== continuation.budgetKey)) return
   configStore.setFieldValue(key, value)
   if (key === 'network_dim' && Number(value) === 114514) {
     promptLegacyLokrSentinel()
@@ -799,22 +808,32 @@ function applyLokrFullFactorMigration() {
 // ── Navigation ────────────────────────────────────────────────
 
 async function onMethodChange(method: string) {
+  continuation.exit()
   selectedVariant.value = ''
   await configStore.fetchVariants(method)
 }
 
 async function onVariantChange() {
+  const requestedPreset = selectedPreset.value
+  continuation.exit()
+  selectedPreset.value = requestedPreset
   if (selectedVariant.value) {
     await loadConfig()
   }
 }
 
 async function loadConfig() {
+  if (continuation.selected) {
+    await continuation.select(continuation.selected)
+    await continuation.fetchCandidates(selectedVariant.value)
+    return
+  }
   if (selectedVariant.value) {
     prelaunchResult.value = null
     await configStore.fetchMerged(selectedVariant.value, selectedPreset.value)
     await fetchFieldHelp()
     await checkExperimental()
+    await continuation.fetchCandidates(selectedVariant.value)
   }
 }
 
@@ -942,6 +961,11 @@ watch(() => appStore.language, () => {
 // ── Save ───────────────────────────────────────────────────────
 
 async function onSave() {
+  if (continuation.active) {
+    try { continuation.saveDraft(); notify.show(t('cfgContinuationDraftSaved'), 'success') }
+    catch (e: any) { configStore.error = e.message }
+    return
+  }
   if (promptLegacyLokrSentinel()) return
   try {
     const args = extraArgs.value.trim() || undefined
@@ -1062,6 +1086,7 @@ function acceptsPrelaunch(result: any): boolean {
 }
 
 async function autoSaveIfDirty() {
+  if (continuation.active) return
   if (configStore.dirty || extraArgs.value.trim()) {
     const args = extraArgs.value.trim() || undefined
     await configStore.save(args)
@@ -1073,6 +1098,18 @@ async function autoSaveIfDirty() {
 
 async function startTraining() {
   if (!selectedVariant.value) return
+  if (continuation.active) {
+    configStore.error = ''
+    trainingLaunching.value = true
+    try {
+      await continuation.submit()
+      await taskStore.fetchTasks()
+      await taskStore.fetchQueueStatus()
+      notify.show(t('notifyTrainingLaunched'), 'success')
+    } catch (e: any) { configStore.error = e.message }
+    finally { trainingLaunching.value = false }
+    return
+  }
   if (promptLegacyLokrSentinel()) return
   trainingLaunching.value = true
   try {
@@ -1098,12 +1135,6 @@ async function startTraining() {
       return
     }
 
-    if (result.checkpoint) {
-      checkpointInfo.value = result.checkpoint
-      showCheckpointDlg.value = true
-      return
-    }
-
     await launchTrainingTask()
   } catch (e: any) {
     configStore.error = e.message
@@ -1113,7 +1144,7 @@ async function startTraining() {
 }
 
 async function launchTrainingTask() {
-  const env: Record<string, string> = { PRESET: selectedPreset.value }
+  const env: Record<string, string> = { PRESET: selectedPreset.value, ANIMA_TRAIN_FRESH: '1' }
   const args = [selectedVariant.value]
   const manifest = selectedPreprocessRun()
   if (manifest) args.push('--preprocess_run', manifest)
@@ -1130,54 +1161,11 @@ async function launchTrainingTask() {
     if (wandb.value.log_checkpoint_artifact) env['WANDB_LOG_ARTIFACT'] = '1'
   }
 
-  const taskId = await taskStore.startTask('lora-gui', args, env)
+  const taskId = await taskStore.startTask('lora-gui', args, env, true)
   if (taskId) {
     notify.show(t('notifyTrainingLaunched'), 'success')
   } else {
     notify.show(t('notifyTaskStartFailed', { command: t('cfgTrain') }), 'error')
-  }
-}
-
-async function resumeTrain() {
-  showCheckpointDlg.value = false
-  trainingLaunching.value = true
-  try {
-    await launchTrainingTask()
-  } finally {
-    trainingLaunching.value = false
-  }
-}
-
-async function wipeAndTrain() {
-  showCheckpointDlg.value = false
-  if (!checkpointInfo.value) return
-  trainingLaunching.value = true
-  try {
-    const stateDir = checkpointInfo.value.state_dir
-    const stateDirName = stateDir.split(/[/\\]/).pop() || ''
-    // A resumable state dir is named ``<output_name>-checkpoint-state`` (the
-    // mid-training snapshot written by ``checkpointing_epochs``) OR
-    // ``<output_name>-interrupted-state`` (a cooperative stop) OR
-    // ``<output_name>-state`` (the end-of-training snapshot written by
-    // ``save_state_on_train_end``). Strip whichever suffix is present so the
-    // backend gets the real output_name; otherwise the end-state dir is never
-    // matched and the "wipe" silently no-ops (training resumes anyway).
-    const outputName = stateDirName.replace(
-      /(?:-checkpoint-state|-interrupted-state|-state)$/,
-      '',
-    )
-    const outputDir = stateDir.replace(/[/\\][^/\\]+$/, '').replace(/\\/g, '/')
-
-    await fetch('/api/config/wipe-checkpoint', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ output_dir: outputDir, output_name: outputName }),
-    })
-    await launchTrainingTask()
-  } catch (e: any) {
-    configStore.error = e.message
-  } finally {
-    trainingLaunching.value = false
   }
 }
 
@@ -1216,9 +1204,6 @@ async function confirmRemoveConditioning() {
       if (!acceptsPrelaunch(result)) return
       if (!result.has_cache) {
         showNoCacheDlg.value = true
-      } else if (result.checkpoint) {
-        checkpointInfo.value = result.checkpoint
-        showCheckpointDlg.value = true
       } else {
         await launchTrainingTask()
       }
@@ -1252,12 +1237,7 @@ async function runPreprocessThenTrain() {
     const result = await fetchPrelaunch()
     if (!acceptsPrelaunch(result)) return
     if (result.has_cache) {
-      if (result.checkpoint) {
-        checkpointInfo.value = result.checkpoint
-        showCheckpointDlg.value = true
-      } else {
-        await launchTrainingTask()
-      }
+      await launchTrainingTask()
     }
   } catch (e: any) {
     configStore.error = e.message
@@ -1381,7 +1361,7 @@ function waitForTask(taskId: string): Promise<void> {
 }
 .config-toolbar {
   display: grid;
-  grid-template-columns: minmax(120px, 0.85fr) minmax(190px, 1.4fr) minmax(160px, 1fr) auto;
+  grid-template-columns: minmax(110px, .7fr) minmax(160px, 1fr) minmax(150px, .9fr) minmax(210px, 1.2fr) auto;
   gap: 16px;
   align-items: center;
   padding: 20px 0;
@@ -1441,7 +1421,7 @@ function waitForTask(taskId: string): Promise<void> {
 .method-option:hover:not(:disabled) .method-option__arrow { transform: translate(2px, -2px); }
 .method-option:disabled { opacity: 0.55; cursor: wait; }
 @media (max-width: 1399px) {
-  .config-toolbar { grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.4fr) minmax(160px, 1fr); }
+  .config-toolbar { grid-template-columns: repeat(2, minmax(180px, 1fr)); }
   .config-toolbar__actions { grid-column: 1 / -1; }
 }
 @media (max-width: 1279px) {

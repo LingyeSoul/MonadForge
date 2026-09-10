@@ -222,7 +222,7 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
-  async function startTask(command: string, args: string[] = [], env?: Record<string, string>): Promise<string | null> {
+  async function startTask(command: string, args: string[] = [], env?: Record<string, string>, throwOnError = false): Promise<string | null> {
     loading.value = true
     try {
       const res = await fetch('/api/tasks', {
@@ -230,12 +230,13 @@ export const useTaskStore = defineStore('task', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command, args, env: env || {} }),
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
       await fetchTasks()
       await fetchQueueStatus()
       return data.task_id || null
-    } catch {
+    } catch (error) {
+      if (throwOnError) throw error
       return null
     } finally {
       loading.value = false

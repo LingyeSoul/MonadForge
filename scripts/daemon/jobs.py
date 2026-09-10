@@ -117,6 +117,7 @@ class Job:
     recovery_state: Optional[str] = None
     recovery_step: Optional[int] = None
     terminal_reason: Optional[str] = None
+    continuation: Optional[dict] = None
 
     @property
     def dir(self) -> Path:

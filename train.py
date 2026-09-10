@@ -251,6 +251,8 @@ def _resume_config_signature(args) -> str:
         for key, value in vars(args).items()
         if not key.startswith("_") and key not in _RESUME_SIGNATURE_EXCLUDES
     }
+    if hasattr(args, "_continuation_signature_output"):
+        payload["output_dir"] = args._continuation_signature_output
     return signature(payload)
 
 
@@ -509,10 +511,15 @@ def _block_swap_rejection_reasons(args) -> list[str]:
     method = str(getattr(args, "method", "") or "").strip().lower()
     reasons: list[str] = []
 
-    if module.endswith(".soft_tokens") or module == "soft_tokens" or method in {
-        "soft_tokens",
-        "soft-tokens",
-    }:
+    if (
+        module.endswith(".soft_tokens")
+        or module == "soft_tokens"
+        or method
+        in {
+            "soft_tokens",
+            "soft-tokens",
+        }
+    ):
         reasons.append("Soft Tokens")
     if (
         module.endswith(".easycontrol")
@@ -574,7 +581,14 @@ def _resolve_block_swap_reliable_mode(args) -> bool:
 
     try:
         major, minor = torch.cuda.get_device_capability()
-    except (AssertionError, IndexError, NotImplementedError, RuntimeError, TypeError, ValueError):
+    except (
+        AssertionError,
+        IndexError,
+        NotImplementedError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ):
         logger.warning(
             "block swap requested but GPU compute capability could not be read; "
             "leaving compile settings unchanged and disabling reliable-mode claim."
@@ -664,7 +678,9 @@ def _training_budget_manifest_fields(args) -> dict[str, Any]:
     }
 
 
-def _finalize_training_budget(args, *, dataloader_length: int, num_processes: int) -> int:
+def _finalize_training_budget(
+    args, *, dataloader_length: int, num_processes: int
+) -> int:
     """Resolve the optimizer-step budget without letting epochs overwrite it.
 
     ``argparse`` supplies a default step value even when the user only set
@@ -698,13 +714,22 @@ def _finalize_training_budget(args, *, dataloader_length: int, num_processes: in
 
     if effective <= 0:
         raise ValueError(f"resolved max_train_steps must be positive, got {effective}")
+    context = getattr(args, "_continuation", None)
+    if context and effective != context["target_steps"]:
+        raise ValueError(
+            "Continuation training budget changed after dataset resolution"
+        )
     args.max_train_steps = effective
     args.effective_max_train_steps = effective
     args.training_budget_source = source
     if source == "max_train_steps":
-        args.training_budget_origin = getattr(args, "_max_train_steps_source", "unknown")
+        args.training_budget_origin = getattr(
+            args, "_max_train_steps_source", "unknown"
+        )
     elif source == "max_train_epochs":
-        args.training_budget_origin = getattr(args, "_max_train_epochs_source", "unknown")
+        args.training_budget_origin = getattr(
+            args, "_max_train_epochs_source", "unknown"
+        )
     else:
         args.training_budget_origin = "argparse default"
     refresh_config_snapshot(args)
@@ -778,9 +803,7 @@ def _apply_v100_adapter_runtime_policy(
 ) -> dict[str, Any]:
     """Apply and record the effective V100 LoRA eager-memory policy."""
 
-    reliable_block_swap = bool(
-        getattr(args, "block_swap_reliable_mode", False)
-    )
+    reliable_block_swap = bool(getattr(args, "block_swap_reliable_mode", False))
     if _should_auto_enable_lora_fp32_compute(args, accelerator, net_kwargs):
         if reliable_block_swap and str(
             net_kwargs.get("lora_fp32_compute", "")
@@ -803,9 +826,7 @@ def _apply_v100_adapter_runtime_policy(
                 "frozen base remains fp16. Set lora_fp32_compute=false to "
                 "disable for A/B testing."
             )
-    if _should_auto_enable_eager_lora_down_autograd(
-        args, accelerator, net_kwargs
-    ):
+    if _should_auto_enable_eager_lora_down_autograd(args, accelerator, net_kwargs):
         if reliable_block_swap and str(
             net_kwargs.get("use_custom_down_autograd", "")
         ).strip().lower() in {"0", "false", "no", "off"}:
@@ -2232,7 +2253,17 @@ class AnimaTrainer:
             blueprint_generator = BlueprintGenerator(
                 ConfigSanitizer(support_dropout=True)
             )
-            if use_user_config:
+            pinned_blueprint = (getattr(args, "_continuation", None) or {}).get(
+                "dataset_blueprint"
+            )
+            if pinned_blueprint is not None:
+                from library.training.continuation import (
+                    complete_continuation_blueprint,
+                )
+
+                user_config = complete_continuation_blueprint(pinned_blueprint, args)
+                use_user_config = True
+            elif use_user_config:
                 logger.info(f"Loading dataset config from {args.dataset_config}")
                 user_config = config_util.load_user_config(args.dataset_config)
                 ignored = ["train_data_dir", "reg_data_dir", "in_json"]
@@ -2287,6 +2318,15 @@ class AnimaTrainer:
                             }
                         ]
                     }
+
+            # Keep the actual blueprint with the immutable attempt inputs so a
+            # future continuation does not re-read mutable GUI dataset settings.
+            from library.training.continuation import dataset_blueprint_path
+            from library.io.output_layout import atomic_write_json
+
+            blueprint_path = dataset_blueprint_path(args)
+            if blueprint_path is not None:
+                atomic_write_json(blueprint_path, user_config)
 
             # Global --sample_ratio override (used by the `[half]` preset).
             sample_ratio = getattr(args, "sample_ratio", None)
@@ -2893,6 +2933,13 @@ class AnimaTrainer:
         training_started_at = time.time()
         selected_preprocess_run = _apply_preprocess_run(args)
         output_layout = layout_from_args(args)
+        from library.training.continuation import (
+            setup_continuation,
+            validate_continuation_signatures,
+        )
+
+        setup_continuation(args)
+        output_layout = layout_from_args(args)
         _prepare_anima_checkpoint_identity(args)
         # Resolve block-swap compatibility and the hardware-dependent reliable
         # mode before computing the resume signature or constructing
@@ -2901,6 +2948,7 @@ class AnimaTrainer:
         _validate_block_swap_config(args)
         _resolve_block_swap_reliable_mode(args)
         args.config_signature = _resume_config_signature(args)
+        validate_continuation_signatures(args)
         # The daemon supplies ANIMA_DAEMON_STOP_FILE on Windows and sends a
         # process-group signal on Linux.  The controller only flips a flag;
         # loop.py consumes it after a complete optimizer step.
@@ -2954,9 +3002,7 @@ class AnimaTrainer:
         ds = self._prepare_dataset(args)
         train_dataset_group = ds.train_group
         val_dataset_group = ds.val_group
-        _validate_preprocess_dataset_paths(
-            train_dataset_group, selected_preprocess_run
-        )
+        _validate_preprocess_dataset_paths(train_dataset_group, selected_preprocess_run)
         _validate_preprocess_dataset_paths(val_dataset_group, selected_preprocess_run)
         args.dataset_signature = signature(
             {
@@ -2965,6 +3011,7 @@ class AnimaTrainer:
             }
         )
         current_epoch = ds.current_epoch
+        validate_continuation_signatures(args)
         current_step = ds.current_step
         collator = ds.collator
         use_user_config = ds.use_user_config
@@ -3604,9 +3651,7 @@ class AnimaTrainer:
                     # after that point, defeating the daemon's stop deadline;
                     # the daemon path hard-exits after run_scope flushes the
                     # terminal progress event below.
-                    logger.info(
-                        "skipping accelerator cleanup after cooperative stop"
-                    )
+                    logger.info("skipping accelerator cleanup after cooperative stop")
                 elif not loop_completed:
                     try:
                         accelerator.end_training()
@@ -3629,7 +3674,9 @@ class AnimaTrainer:
                             "status": "stopped",
                             "global_step": loop_state.global_step,
                             "config_signature": getattr(args, "config_signature", None),
-                            "dataset_signature": getattr(args, "dataset_signature", None),
+                            "dataset_signature": getattr(
+                                args, "dataset_signature", None
+                            ),
                             "preprocess_run": getattr(args, "preprocess_run", None),
                             **_training_budget_manifest_fields(args),
                             **_block_swap_manifest_fields(args),
@@ -3663,7 +3710,9 @@ class AnimaTrainer:
                             "status": "done",
                             "global_step": loop_state.global_step,
                             "config_signature": getattr(args, "config_signature", None),
-                            "dataset_signature": getattr(args, "dataset_signature", None),
+                            "dataset_signature": getattr(
+                                args, "dataset_signature", None
+                            ),
                             "preprocess_run": getattr(args, "preprocess_run", None),
                             **_training_budget_manifest_fields(args),
                             **_block_swap_manifest_fields(args),
