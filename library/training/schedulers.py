@@ -1,7 +1,7 @@
 import ast
 import importlib
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import torch
 from torch.optim import Optimizer
@@ -81,12 +81,8 @@ def get_scheduler_fix(args, optimizer: Optimizer, num_processes: int):
         return get_dummy_scheduler(optimizer)
 
     name = args.lr_scheduler
-    num_training_steps = args.max_train_steps * num_processes
-    num_warmup_steps: Optional[int] = (
-        int(args.lr_warmup_steps * num_training_steps)
-        if isinstance(args.lr_warmup_steps, float)
-        else args.lr_warmup_steps
-    )
+    from library.training.continuation import scheduler_budget
+    num_training_steps, num_warmup_steps = scheduler_budget(args, num_processes)
     lr_scheduler_kwargs = {}
     if args.lr_scheduler_args is not None and len(args.lr_scheduler_args) > 0:
         for arg in args.lr_scheduler_args:

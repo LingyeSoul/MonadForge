@@ -971,6 +971,21 @@ def _render_merged_toml(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def assert_fresh_output_root(root, message: Optional[str] = None) -> None:
+    """Reject a new-training output root that already holds trained artifacts.
+
+    Shared by the daemon submission path and the trainer's first write, so a
+    fresh run can never silently adopt (or overwrite) a same-named model or
+    train state."""
+    if root.exists() and (
+        any(root.rglob("*.safetensors")) or any(root.rglob("train_state.json"))
+    ):
+        raise ValueError(
+            message
+            or "输出名称已存在，请选择原训练任务进行续训，或为新任务修改输出名称"
+        )
+
+
 def _write_config_snapshot(
     args: argparse.Namespace,
     parser: argparse.ArgumentParser,
@@ -982,7 +997,17 @@ def _write_config_snapshot(
         return None
     from library.io.output_layout import layout_from_args
 
+    # Route continuation writes before the first parser snapshot is emitted.
+    # The source snapshot and checkpoints must stay immutable.
+    from library.training.continuation import setup_continuation
+
+    setup_continuation(args)
     layout = layout_from_args(args)
+    if os.environ.get("ANIMA_TRAIN_FRESH") == "1" and not getattr(
+        args, "_fresh_output_checked", False
+    ):
+        assert_fresh_output_root(layout.root)
+        args._fresh_output_checked = True
     output_dir = str(layout.root)
     output_name = layout.name
     os.makedirs(output_dir, exist_ok=True)

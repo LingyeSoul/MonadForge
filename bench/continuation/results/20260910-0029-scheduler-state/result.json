@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "script": "bench/continuation/run_bench.py",
+  "label": null,
+  "timestamp_utc": "2026-09-09T16:29:50Z",
+  "git": {
+    "sha": "d85aeb1d",
+    "branch": "codex/lora-training-continuation",
+    "dirty": true
+  },
+  "env": {
+    "python": "3.13.14",
+    "platform": "Linux-7.1.6-1-cachyos-x86_64-with-glibc2.44",
+    "torch": "2.10.0+cu129",
+    "cuda": "12.9",
+    "device": "cuda",
+    "gpu_name": "Tesla V100-SXM2-16GB"
+  },
+  "args": {},
+  "metrics": {
+    "comparisons": {
+      "2": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      },
+      "6": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      },
+      "10": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      }
+    },
+    "elapsed_seconds": 1.1666086409968557
+  },
+  "artifacts": []
+}

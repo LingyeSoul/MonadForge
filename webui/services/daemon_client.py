@@ -37,6 +37,19 @@ _DEFAULT_TIMEOUT = 15.0
 class DaemonError(RuntimeError):
     """Raised when the daemon is unreachable or returns an HTTP error."""
 
+    # Optional structured i18n info attached from the daemon's JSON error body
+    # (``{"key": ..., "params": ...}``) so the WebUI can localize the failure.
+    key: Optional[str] = None
+    params: Optional[dict] = None
+
+
+class DaemonUnreachableError(DaemonError):
+    """The daemon could not be contacted at all (down / port unknown)."""
+
+
+class DaemonNotFoundError(DaemonError):
+    """The daemon answered 404 for the requested resource."""
+
 
 class DaemonClient:
     """Async facade over the daemon's localhost HTTP API.
@@ -89,10 +102,28 @@ class DaemonClient:
                     return None
                 return json.loads(raw)
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", errors="replace")[:500]
-            raise DaemonError(f"HTTP {e.code} {method} {path}: {detail}") from e
+            raw = e.read().decode("utf-8", errors="replace")[:500]
+            # Prefer the structured message inside the JSON body so the UI does
+            # not have to show the raw `{"error": ...}` envelope.
+            try:
+                parsed = json.loads(raw)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                detail = parsed.get("error") or parsed.get("detail") or raw
+            else:
+                detail = raw
+                parsed = None
+            error_cls = DaemonNotFoundError if e.code == 404 else DaemonError
+            error = error_cls(f"HTTP {e.code} {method} {path}: {detail}")
+            if isinstance(parsed, dict) and parsed.get("key"):
+                error.key = parsed.get("key")
+                error.params = parsed.get("params")
+            raise error from e
         except urllib.error.URLError as e:
-            raise DaemonError(f"daemon unreachable at {url}: {e.reason}") from e
+            raise DaemonUnreachableError(
+                f"daemon unreachable at {url}: {e.reason}"
+            ) from e
 
     async def _request(
         self,
@@ -244,6 +275,19 @@ class DaemonClient:
 
     async def resume(self, job_id: str) -> dict:
         return await self._request("POST", f"/jobs/{job_id}/resume")
+
+    async def continuation_candidates(self, variant: str) -> dict:
+        return await self._request("GET", f"/continuation-candidates?variant={urllib.parse.quote(variant)}", timeout=60)
+
+    async def continuation_detail(self, task_id: str) -> dict:
+        return await self._request("GET", f"/jobs/{task_id}/continuation", timeout=60)
+
+    async def prepare_continuation(self, task_id: str, body: dict) -> dict:
+        return await self._request("POST", f"/jobs/{task_id}/continuation/prepare", body=body, timeout=60)
+
+    async def continue_training(self, task_id: str, body: dict) -> dict:
+        # A large optimizer state may need a physical copy on non-CoW volumes.
+        return await self._request("POST", f"/jobs/{task_id}/continuation", body=body, timeout=300)
 
     async def list_job_groups_page(
         self,

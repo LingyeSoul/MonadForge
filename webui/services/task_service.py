@@ -736,6 +736,9 @@ class TaskService:
         # (manager._build_cmd), so we only forward caller-provided env (e.g.
         # PRESET overrides).
         extra_env = dict(env) if env else None
+        if command == "lora-gui":
+            extra_env = dict(extra_env or {}, ANIMA_TRAIN_FRESH="1")
+            extra_env.pop("ANIMA_CONTINUATION_FILE", None)
         config_snapshot = self._training_config_snapshot(command, argv, extra_env or {})
 
         logger.info(

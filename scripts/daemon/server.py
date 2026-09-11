@@ -367,6 +367,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path, _, query = self.path.partition("?")
+        if self._handle_continuation(path, query=query):
+            return
         if path in ("/", "/readme"):
             self._handle_readme()
         elif path == "/tools":
@@ -392,6 +394,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
+        if "/continuation" in path and self._handle_continuation(path, body=self._read_json()):
+            return
         if path == "/jobs":
             self._handle_submit()
         elif path == "/queue/start":
@@ -408,6 +412,37 @@ class _Handler(BaseHTTPRequestHandler):
             self._handle_stop(m.group("id"))
         else:
             self._send_json({"error": "not found", "path": path}, 404)
+
+    def _handle_continuation(self, path: str, *, query: str = "", body=None) -> bool:
+        match = re.fullmatch(r"/jobs/([^/]+)/continuation(?:/(prepare))?", path)
+        if path != "/continuation-candidates" and not match:
+            return False
+        try:
+            service = self.manager.continuations
+            if path == "/continuation-candidates" and body is None:
+                params = urllib.parse.parse_qs(query)
+                result = service.candidates(params.get("variant", ["lora"])[0])
+            elif match and body is None and not match[2]:
+                result = service.detail(match[1])
+            elif match and body is not None and match[2] == "prepare":
+                result = service.prepare(match[1], body)
+            elif match and body is not None:
+                job = service.submit(match[1], body)
+                result = {"job_id": job.id, "root_job_id": job.root_job_id}
+            else:
+                raise ValueError("Unsupported continuation request")
+            self._send_json(result)
+        except (ValueError, OSError, TypeError, KeyError) as exc:
+            # Unknown task id is a missing resource, not a conflict. Errors may
+            # carry an i18n key (+ params) so the WebUI can localize them.
+            status = 404 if getattr(exc, "key", None) == "task_missing" else 409
+            body = {"error": str(exc)}
+            if getattr(exc, "key", None):
+                body["key"] = exc.key
+                if getattr(exc, "params", None):
+                    body["params"] = exc.params
+            self._send_json(body, status)
+        return True
 
     def do_DELETE(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
@@ -467,7 +502,12 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
     def _handle_submit(self) -> None:
-        body = self._read_json()
+        try:
+            self._submit_body(self._read_json())
+        except (ValueError, OSError) as exc:
+            self._send_json({"error": str(exc)}, 409)
+
+    def _submit_body(self, body: dict) -> None:
         # start: True → run now (resume queue), False → enqueue paused, None → as-is.
         start = body.get("start")
         if (body.get("kind") or "train") == "command":

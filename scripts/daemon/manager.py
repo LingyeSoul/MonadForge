@@ -89,6 +89,9 @@ class JobManager:
         self._lock = threading.RLock()
         self._jobs: dict[str, Job] = {}
         self._resuming_roots: set[str] = set()
+        from .continuation import Continuations
+
+        self.continuations = Continuations(self)
         self._queue: "queue.Queue[str]" = queue.Queue()
         self._popens: dict[str, object] = {}  # job_id -> Popen (spawned only)
         # A stop request runs on a helper thread so the worker can keep serving
@@ -137,7 +140,9 @@ class JobManager:
         elif current is not None and mode == "force":
             current.stop_requested = True
             current.forced_stop = True
-            current.status_detail = "force shutdown requested; latest checkpoint not guaranteed"
+            current.status_detail = (
+                "force shutdown requested; latest checkpoint not guaranteed"
+            )
             current.persist()
             self._kill_job_tree(current)
         self._run_gate.set()  # release a worker parked on a paused queue
@@ -246,8 +251,12 @@ class JobManager:
         job.config_file = str(dst)
         try:
             merged = toml.load(dst)
-            job.config_signature = merged.get("config_signature") or merged.get("_config_signature")
-            target = merged.get("max_train_steps") or merged.get("max_train_steps_target")
+            job.config_signature = merged.get("config_signature") or merged.get(
+                "_config_signature"
+            )
+            target = merged.get("max_train_steps") or merged.get(
+                "max_train_steps_target"
+            )
             job.target_steps = int(target) if target is not None else None
             epochs = merged.get("max_train_epochs")
             job.target_epochs = int(epochs) if epochs is not None else None
@@ -261,6 +270,15 @@ class JobManager:
             job.legacy = True
 
     def _register_and_queue(self, job: Job, *, start: Optional[bool] = None) -> Job:
+        if job.extra_env.get("ANIMA_TRAIN_FRESH") == "1" and job.config_file:
+            from library.config.io import assert_fresh_output_root
+            from library.io.output_layout import resolve_output_layout
+
+            snapshot = toml.load(job.config_file)
+            layout = resolve_output_layout(
+                snapshot.get("output_dir"), snapshot.get("output_name"), cwd=config.ROOT
+            )
+            assert_fresh_output_root(layout.root)
         # ``start`` controls the run gate atomically with enqueue, so there's no
         # window where a "hold this one" job could slip past the worker:
         #   False → "add to queue". Hold this job for a later Start Queue ONLY
@@ -288,7 +306,10 @@ class JobManager:
         if self._job_runs_train(job) and not job.config_file:
             job.legacy = True
         tokens = list(job.extra if job.kind == "train" else job.argv)
-        for key, attr in (("--preprocess_run", "data_manifest"), ("--dataset_config", "data_manifest")):
+        for key, attr in (
+            ("--preprocess_run", "data_manifest"),
+            ("--dataset_config", "data_manifest"),
+        ):
             if key in tokens and tokens.index(key) + 1 < len(tokens):
                 setattr(job, attr, str(tokens[tokens.index(key) + 1]))
                 break
@@ -410,10 +431,7 @@ class JobManager:
         newest_first: bool = False,
     ) -> tuple[list[dict], int]:
         with self._lock:
-            root_ids = {
-                job.root_job_id or job.id
-                for job in self._jobs.values()
-            }
+            root_ids = {job.root_job_id or job.id for job in self._jobs.values()}
         groups = [self.job_group(root_id) for root_id in root_ids]
         states = {part.strip() for part in (state or "").split(",") if part.strip()}
         filtered: list[dict] = []
@@ -431,7 +449,10 @@ class JobManager:
                 continue
             filtered.append(group)
         filtered.sort(
-            key=lambda group: (float(group.get("submitted_at") or 0.0), str(group.get("id") or "")),
+            key=lambda group: (
+                float(group.get("submitted_at") or 0.0),
+                str(group.get("id") or ""),
+            ),
             reverse=newest_first,
         )
         total = len(filtered)
@@ -459,13 +480,26 @@ class JobManager:
                     if job.dir.exists():
                         self._jobs[job.id] = job
             raise
-        self._broadcast({"ev": "deleted_group", "root_job_id": attempts[0].root_job_id or attempts[0].id, "job_ids": ids})
+        self._broadcast(
+            {
+                "ev": "deleted_group",
+                "root_job_id": attempts[0].root_job_id or attempts[0].id,
+                "job_ids": ids,
+            }
+        )
         return ids
 
-    def list_jobs_filtered(self, *, state: str | None = None, resumable: bool | None = None,
-                           before: float | None = None, after: float | None = None,
-                           offset: int = 0, limit: int | None = None,
-                           newest_first: bool = False) -> tuple[list[Job], int]:
+    def list_jobs_filtered(
+        self,
+        *,
+        state: str | None = None,
+        resumable: bool | None = None,
+        before: float | None = None,
+        after: float | None = None,
+        offset: int = 0,
+        limit: int | None = None,
+        newest_first: bool = False,
+    ) -> tuple[list[Job], int]:
         jobs = self.list_jobs()
         states = {part.strip() for part in (state or "").split(",") if part.strip()}
         filtered = []
@@ -489,11 +523,20 @@ class JobManager:
     def _read_state_sidecar(path: Path) -> dict | None:
         try:
             data = json.loads((path / "train_state.json").read_text(encoding="utf-8"))
-            if not isinstance(data, dict) or "global_step" not in data and "current_step" not in data:
+            if (
+                not isinstance(data, dict)
+                or "global_step" not in data
+                and "current_step" not in data
+            ):
                 return None
-            if int(data.get("schema_version", 1) or 1) >= 2 and not (path / "complete.marker").is_file():
+            if (
+                int(data.get("schema_version", 1) or 1) >= 2
+                and not (path / "complete.marker").is_file()
+            ):
                 return None
-            data["global_step"] = int(data.get("global_step", data.get("current_step", 0)) or 0)
+            data["global_step"] = int(
+                data.get("global_step", data.get("current_step", 0)) or 0
+            )
             return data
         except (OSError, ValueError, TypeError):
             return None
@@ -504,20 +547,34 @@ class JobManager:
         try:
             from library.io.output_layout import resolve_output_layout
             import toml
-            cfg = toml.load(job.config_file) if job.config_file and os.path.isfile(job.config_file) else {}
+
+            cfg = (
+                toml.load(job.config_file)
+                if job.config_file and os.path.isfile(job.config_file)
+                else {}
+            )
             if not cfg:
                 method = job.method
                 preset = job.preset or (job.extra_env or {}).get("PRESET") or "default"
                 methods_subdir = job.methods_subdir or "methods"
                 if job.kind == "command" and job.argv:
-                    if len(job.argv) >= 3 and str(job.argv[0]).endswith("tasks.py") and job.argv[1] == "lora-gui":
+                    if (
+                        len(job.argv) >= 3
+                        and str(job.argv[0]).endswith("tasks.py")
+                        and job.argv[1] == "lora-gui"
+                    ):
                         method, methods_subdir = job.argv[2], "gui-methods"
-                    elif len(job.argv) >= 3 and str(job.argv[0]).endswith("tasks.py") and job.argv[1] == "staged-train":
+                    elif (
+                        len(job.argv) >= 3
+                        and str(job.argv[0]).endswith("tasks.py")
+                        and job.argv[1] == "staged-train"
+                    ):
                         try:
                             from library.training.staged_resolution_plan import (
                                 compile_runtime_config,
                                 load_profile,
                             )
+
                             profile = str(job.argv[2])
                             cfg_path = compile_runtime_config(
                                 profile, load_profile(profile), config.ROOT
@@ -526,13 +583,20 @@ class JobManager:
                         except Exception:
                             cfg = {}
                     elif len(job.argv) >= 2 and str(job.argv[0]).endswith("tasks.py"):
-                        method = {"lora": "lora", "easycontrol": "easycontrol"}.get(job.argv[1], method)
+                        method = {"lora": "lora", "easycontrol": "easycontrol"}.get(
+                            job.argv[1], method
+                        )
                 try:
                     from library.config.io import load_method_preset
-                    cfg = load_method_preset(method, preset, methods_subdir=methods_subdir)
+
+                    cfg = load_method_preset(
+                        method, preset, methods_subdir=methods_subdir
+                    )
                 except Exception:
                     cfg = {}
             output_dir = cfg.get("output_dir", "output/ckpt")
+            if job.continuation:
+                output_dir = job.continuation["output_dir"]
             output_name = cfg.get("output_name") or job.method or "last"
             if job.target_steps is None and cfg.get("max_train_steps") is not None:
                 try:
@@ -545,7 +609,12 @@ class JobManager:
                 except (TypeError, ValueError):
                     pass
             layout = resolve_output_layout(output_dir, output_name, cwd=config.ROOT)
-            suffixes = ("-interrupted-state", "-rolling-state", "-checkpoint-state", "-state")
+            suffixes = (
+                "-interrupted-state",
+                "-rolling-state",
+                "-checkpoint-state",
+                "-state",
+            )
             raw_name = Path(str(output_name)).name
             candidate_names = [layout.name]
             if raw_name and raw_name not in candidate_names:
@@ -570,24 +639,69 @@ class JobManager:
                         continue
                     if data.get("root_job_id") != (job.root_job_id or job.id):
                         continue
-                    if job.config_signature and data.get("config_signature") != job.config_signature:
+                    if (
+                        job.config_signature
+                        and data.get("config_signature") != job.config_signature
+                    ):
                         continue
-                    if job.dataset_signature and data.get("dataset_signature") != job.dataset_signature:
+                    if (
+                        job.dataset_signature
+                        and data.get("dataset_signature") != job.dataset_signature
+                    ):
                         continue
                     out.append((int(data.get("global_step", 0) or 0), path))
+
             def priority(path: Path) -> int:
                 name = path.name
-                if name.endswith("-interrupted-state"): return 0
-                if name.endswith("-rolling-state"): return 1
-                if name.endswith("-checkpoint-state"): return 2
-                if name == f"{layout.name}-state": return 3
+                if name.endswith("-interrupted-state"):
+                    return 0
+                if name.endswith("-rolling-state"):
+                    return 1
+                if name.endswith("-checkpoint-state"):
+                    return 2
+                if name == f"{layout.name}-state":
+                    return 3
                 return 4
-            return sorted({(step, path) for step, path in out}, key=lambda item: (-item[0], priority(item[1]), str(item[1])))
+
+            return sorted(
+                {(step, path) for step, path in out},
+                key=lambda item: (-item[0], priority(item[1]), str(item[1])),
+            )
         except Exception:
             logger.exception("resume state discovery failed for job %s", job.id)
             return []
 
     def resume_job(self, job_id: str) -> Job | None:
+        source = self.get(job_id)
+        if (
+            source
+            and source.continuation
+            and source.state in {STATE_STOPPED, STATE_ERROR}
+        ):
+            from .continuation import ContinuationError
+
+            candidate, _ = self.continuations.describe(source)
+            if not candidate["available"]:
+                raise ContinuationError(
+                    candidate["reason"] or "该任务无法继续训练",
+                    key=candidate.get("reason_key") or "task_unresumable",
+                    **(candidate.get("reason_params") or {}),
+                )
+            plan = self.continuations.prepare(
+                source.root_job_id or source.id,
+                {
+                    "source_job_id": candidate["job_id"],
+                    "budget_key": candidate["budget_key"],
+                    "target": source.continuation["target"],
+                },
+            )
+            return self.continuations.submit(
+                source.root_job_id or source.id,
+                {
+                    "token": plan["token"],
+                    "idempotency_key": plan["token"],
+                },
+            )
         with self._lock:
             source = self._jobs.get(job_id)
             if (
@@ -614,14 +728,11 @@ class JobManager:
                     f"only the latest attempt can be resumed; latest_job_id={latest.id}"
                 )
             if any(
-                attempt.state in {STATE_QUEUED, STATE_RUNNING}
-                for attempt in attempts
+                attempt.state in {STATE_QUEUED, STATE_RUNNING} for attempt in attempts
             ):
                 raise ValueError("this training already has an active attempt")
             if root_job_id in self._resuming_roots:
-                raise ValueError(
-                    "a resume is already being created for this training"
-                )
+                raise ValueError("a resume is already being created for this training")
             self._resuming_roots.add(root_job_id)
 
         try:
@@ -1149,7 +1260,9 @@ class JobManager:
         try:
             data = self._read_state_sidecar(path) or {}
             job.config_signature = job.config_signature or data.get("config_signature")
-            job.dataset_signature = job.dataset_signature or data.get("dataset_signature")
+            job.dataset_signature = job.dataset_signature or data.get(
+                "dataset_signature"
+            )
         except Exception:
             logger.debug("could not read recovery metadata for job %s", job.id)
 
@@ -1317,9 +1430,7 @@ class JobManager:
                 job.status_detail = "stop timeout; process tree force-killed"
                 job.persist()
 
-    def _stop_job_tree_worker(
-        self, job: Job, event: threading.Event
-    ) -> None:
+    def _stop_job_tree_worker(self, job: Job, event: threading.Event) -> None:
         """Run tree teardown and always release the monitor's wait gate."""
         try:
             self._stop_job_tree(job)
@@ -1435,6 +1546,10 @@ class JobManager:
         from library.runtime.compat import prepare_python_child_env
 
         env = os.environ.copy()
+        # These are attempt-owned controls, never inherited from the process
+        # that happened to start the daemon.
+        for key in ("ANIMA_TRAIN_FRESH", "ANIMA_CONTINUATION_FILE"):
+            env.pop(key, None)
         prepare_python_child_env(env)
         # tqdm redraws ride "\r"; at 0.1s cadence they drown stdout.log's real
         # lines (warnings/tracebacks). 10s is plenty — the GUI tracker parses
@@ -1448,6 +1563,11 @@ class JobManager:
         # (stdout still lands via spawn_detached's file redirect).
         if job.kind == "command":
             env.update(job.extra_env or {})
+            if job.continuation:
+                for key in ("GUI_PRESETS", "ARTIST", "PROFILE_STEPS"):
+                    env.pop(key, None)
+                if "CONFIG_FILE" not in (job.extra_env or {}):
+                    env.pop("CONFIG_FILE", None)
             argv = list(job.argv)
             # WebUI training commands are still submitted through the command
             # surface for compatibility with tasks.py, but they must use the
@@ -1459,7 +1579,11 @@ class JobManager:
                 env["TQDM_MINITERS"] = "1"
                 # A resumed command job uses its immutable submission snapshot;
                 # the original command remains unchanged for compatibility.
-                if job.recovery_state and job.config_file:
+                # Continuation and first-run GUI jobs must keep the method/preset
+                # chain. Injecting --config_file skips that chain and changes the
+                # resume signature. History resume of a non-continuation job still
+                # pins the original snapshot.
+                if job.recovery_state and job.config_file and not job.continuation:
                     self._ensure_flag(argv, "--config_file", job.config_file)
                 # Per-job progress + preview paths. The WebUI reads
                 # job.progress_path / job.sample_dir back over HTTP (the argv
@@ -1535,10 +1659,19 @@ class JobManager:
                     terminal = tail.last_event(job.progress_path)
                     if terminal and terminal.get("ev") == "run_end":
                         status = terminal.get("status")
-                        mapped = {"ok": STATE_DONE, "stopped": STATE_STOPPED, "error": STATE_ERROR}.get(status)
+                        mapped = {
+                            "ok": STATE_DONE,
+                            "stopped": STATE_STOPPED,
+                            "error": STATE_ERROR,
+                        }.get(status)
                         if mapped:
-                            self._finalize(job, mapped, error=terminal.get("error"), rc=None,
-                                           detail="reconciled from progress run_end")
+                            self._finalize(
+                                job,
+                                mapped,
+                                error=terminal.get("error"),
+                                rc=None,
+                                detail="reconciled from progress run_end",
+                            )
                             continue
                     if job.stop_requested:
                         self._finalize(

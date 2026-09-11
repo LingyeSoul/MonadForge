@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "script": "bench\\continuation\\run_bench.py",
+  "label": null,
+  "timestamp_utc": "2026-09-10T16:03:24Z",
+  "git": {
+    "sha": "b75455e8",
+    "branch": "pr/12",
+    "dirty": true
+  },
+  "env": {
+    "python": "3.13.9",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "torch": "2.12.0+cu132",
+    "cuda": "13.2",
+    "device": "cuda",
+    "gpu_name": "NVIDIA GeForce RTX 4060 Laptop GPU"
+  },
+  "args": {},
+  "metrics": {
+    "extend": {
+      "2": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      },
+      "6": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      },
+      "10": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      }
+    },
+    "cosine_resume": {
+      "4": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      }
+    },
+    "chained_extend": {
+      "2-6": {
+        "max_abs_error": 0.0,
+        "identical_lrs": true
+      }
+    },
+    "elapsed_seconds": 4.684642699998221
+  },
+  "artifacts": []
+}

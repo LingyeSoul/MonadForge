@@ -57,3 +57,7 @@ bench/x0_contradiction/prompts/
 /refs
 /__research__/AnimaLoraToolkit/
 /__research__/LyCORIS/
+
+# Local pytest scratch dirs (see tests README: --basetemp=.pytest_tmp)
+.pytest_tmp/
+.pytest_tmp_base/
