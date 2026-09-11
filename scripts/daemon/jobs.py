@@ -154,6 +154,22 @@ class Job:
         """The dict shape returned over HTTP (drops nothing sensitive — this is
         localhost — but keeps the field order stable for clients)."""
         payload = asdict(self)
+        if self.continuation:
+            # The full context (blueprint, fingerprints, submit token) stays in
+            # job.json; listings only need the display-level summary.
+            context = self.continuation
+            payload["continuation"] = {
+                name: context[name]
+                for name in (
+                    "mode",
+                    "continuation_kind",
+                    "budget_key",
+                    "target",
+                    "target_steps",
+                    "source_job_id",
+                )
+                if name in context
+            }
         payload["root_job_id"] = self.root_job_id or self.id
         return payload
 

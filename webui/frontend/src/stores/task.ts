@@ -230,8 +230,10 @@ export const useTaskStore = defineStore('task', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command, args, env: env || {} }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+      // A 502 from the proxy is HTML, not JSON — don't let the parse error
+      // mask the real status code.
+      const data = await res.json().catch(() => ({} as Record<string, unknown>))
+      if (!res.ok) throw new Error((data as { detail?: string }).detail || `HTTP ${res.status}`)
       await fetchTasks()
       await fetchQueueStatus()
       return data.task_id || null

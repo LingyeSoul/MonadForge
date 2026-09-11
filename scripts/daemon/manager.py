@@ -271,19 +271,14 @@ class JobManager:
 
     def _register_and_queue(self, job: Job, *, start: Optional[bool] = None) -> Job:
         if job.extra_env.get("ANIMA_TRAIN_FRESH") == "1" and job.config_file:
+            from library.config.io import assert_fresh_output_root
             from library.io.output_layout import resolve_output_layout
 
             snapshot = toml.load(job.config_file)
             layout = resolve_output_layout(
                 snapshot.get("output_dir"), snapshot.get("output_name"), cwd=config.ROOT
             )
-            if layout.root.exists() and (
-                any(layout.root.rglob("*.safetensors"))
-                or any(layout.root.rglob("train_state.json"))
-            ):
-                raise ValueError(
-                    "输出名称已存在。请选择原训练任务进行续训，或为新任务修改输出名称。"
-                )
+            assert_fresh_output_root(layout.root)
         # ``start`` controls the run gate atomically with enqueue, so there's no
         # window where a "hold this one" job could slip past the worker:
         #   False → "add to queue". Hold this job for a later Start Queue ONLY
@@ -683,9 +678,15 @@ class JobManager:
             and source.continuation
             and source.state in {STATE_STOPPED, STATE_ERROR}
         ):
+            from .continuation import ContinuationError
+
             candidate, _ = self.continuations.describe(source)
             if not candidate["available"]:
-                raise ValueError(candidate["reason"] or "该任务无法继续训练")
+                raise ContinuationError(
+                    candidate["reason"] or "该任务无法继续训练",
+                    key=candidate.get("reason_key") or "task_unresumable",
+                    **(candidate.get("reason_params") or {}),
+                )
             plan = self.continuations.prepare(
                 source.root_job_id or source.id,
                 {

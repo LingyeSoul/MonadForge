@@ -39,7 +39,7 @@
 3. **恢复中断**：已有进度低于原目标，保持现有“最大轮次”值直接点“训练”，从状态继续完成原目标；调大该值则恢复后训练到新目标。
 4. **完成后加训**：例如原来完成 30 轮，将现有“最大轮次”改为 40，再点同一个“训练”按钮；后端判定为加训，接着训练剩余 10 轮。未调大时使用现有字段错误/通知机制提示“已达到 30 轮，请提高最大轮次”。不自动选择目标，不新开模式选择或启动确认弹窗。
 5. **启动**：原按钮触发后台 prepare 与 submit，沿用现有加载、错误通知和监控跳转。新 attempt 归原逻辑任务，现有监控页读取新的累计目标，无需增加新 UI。
-6. **清空或切换**：清空任务恢复之前的新建配置草稿。主动切换训练方法、变体或预设时先退出任务模式，再加载对应的新建配置，避免把新预设偷偷用于旧状态；程序性回填原任务预设不能触发此清空逻辑。切换任务时隔离各自预算草稿，不能串用来源或目标。
+6. **清空或切换**：清空任务恢复之前的新建配置草稿。选中任务后训练方法、变体与预设下拉直接锁定（见 §8），需要修改这些参数必须先清空任务，避免把新预设偷偷用于旧状态；程序性回填原任务预设不能触发此清空逻辑。切换任务时隔离各自预算草稿，不能串用来源或目标。
 
 沿用现有“最大轮次”字段，它始终表示总轮次，不新增“再训练几轮”输入。epoch 中途中断时，下拉选项显示“第 N 轮中断，step S”，按真实 step/批次游标计算恢复位置，不能把 `current_epoch=N` 当作已完成 N 轮。
 
@@ -83,7 +83,7 @@
 4. 增加轮次的新目标必须大于原目标及恢复 step；普通恢复保持旧目标。不能只为复用旧恢复筛选器而先篡改旧任务的目标。
 5. 在现有 root reservation 下创建 child attempt：保持 `root_job_id`，`parent_job_id` 指向来源，递增 `attempt_index`，记录 `continuation_kind`、旧/新预算及来源状态。
 6. 从旧快照复制出新 attempt 的不可变快照，应用经过白名单验证的预算变化，显式注入 `--resume`。同步更新新 attempt 的 `target_steps/target_epochs`。旧 job 与旧快照保持不变。
-7. 元数据、快照和恢复引用完整写入后再入队，幂等重试返回同一个 attempt。双击不能创建两次加训。
+7. 元数据、快照和恢复引用完整写入后再入队，幂等重试返回同一个 attempt。双击不能创建两次加训：拷贝窗口内的重复提交等待首个提交完成后返回同一 attempt（而非报冲突）；daemon 重启后内存 plan 丢失，凭 job.json 中持久化的提交 token 仍返回已创建的 attempt。
 
 已有 continuation attempt 的旧 `/resume` 入口转调共享逻辑，保持目标不变；普通历史任务原恢复入口保留既有行为。保留任务所有权校验；不能为方便加训删除校验或修改旧状态的 owner。
 
@@ -99,13 +99,13 @@
 
 对依赖训练总长度的 cosine/linear 等调度器，普通“原目标恢复”继续支持；“增加目标”在完成逐种数值验收前明确显示不支持。后续可增加独立的加训阶段调度策略，不能静默把已经结束的调度曲线拉长。首版也不扩展 T-LoRA 动态 rank、分阶段分辨率和多卡训练。
 
-调度上下文作为显式 continuation 元数据持久化，参与准备与加载验证。配置签名的兼容处理只允许预算和受控输出定位等明确差异，不能为了通过签名检查忽略所有新增字段或配置变化。
+调度上下文作为显式 continuation 元数据持久化，参与准备与加载验证。调度器身份与原始预热取自来源 run 的完整生效快照（trainer 写入的 `<name>.snapshot.toml`），并叠加来源 argv 中的调度相关覆盖——经 daemon HTTP/CLI 提交、argv 携带 `--lr_scheduler` 的任务不会被稀疏快照误判为 constant。trainer 加载时把调度器身份钉扎为来源值，且当新预算超过钉住的 horizon 时二次断言 constant 族。配置签名以钉住的快照为身份：live argparse 哈希与方法链/快照合并会物化不同的默认键，整体重算比对不可行（显式决策，接受方法链与基础配置漂移）。但 step 换算与网络结构关键参数（`train_batch_size`、`gradient_accumulation_steps`、`network_module/dim/alpha/args/dropout`、`optimizer_type`、`lr_scheduler`、`lr_warmup_steps`）在 prepare 时从来源完整快照钉入 continuation 元数据，trainer 加载时逐项比对，漂移即拒绝——预算和受控输出定位仍是仅有的合法差异，不为通过签名检查忽略配置变化。
 
 ### 输出
 
 原最终模型及完整来源 state 保留为只读历史。每次加训把新模型和状态写入独立的 continuation 子目录，在原逻辑任务中展示并维护最新有效产物引用。不能直接覆盖原最终模型或来源状态，再指望失败后回滚。
 
-落地时需要把“训练语义配置”与“本次输出物理位置”分开：使用受控的 attempt 输出路由，避免仅改 `output_dir` 导致签名不兼容。扩展 `output_layout` 和候选发现，让后续中断恢复能找到最新 attempt 的状态。所有参数快照仍记录实际输出路径，且模型列表、推理和导出读取新产物引用。
+落地时需要把“训练语义配置”与“本次输出物理位置”分开：使用受控的 attempt 输出路由，避免仅改 `output_dir` 导致签名不兼容。候选发现经 daemon 侧对 `continuations/<attempt>/` 的扫描扩展（library 侧 `output_layout` 本身未动——continuation 运行总带显式 `--resume`，无需 auto_resume 再发现），让后续中断恢复能找到最新 attempt 的状态。所有参数快照仍记录实际输出路径，且模型列表、推理和导出读取新产物引用。
 
 ### 旧记录
 
@@ -137,7 +137,7 @@
 - V100 保留 Torch 2.10.0+cu129 / torchvision 0.25.0+cu129 / Triton 3.6.0；使用原任务精度与注意力配置，不安装依赖、不切换 FlashAttention。
 - 完成标准为任务成功且预期权重/状态产物有效；测试出图不是必需步骤。
 
-本轮只交付方案；实现时需要补充对应契约测试，涉及数值语义的调度处理按仓库 Tier 1.5 要求提供小型 bench 与不变量测试。
+本轮只交付方案；实现时需要补充对应契约测试，涉及数值语义的调度处理按仓库 Tier 1.5 要求提供小型 bench 与不变量测试。验收层级约定：调度/预算/幂等/归属等契约以单元与 HTTP 集成测试入库（`tests/test_training_continuation.py`，含 epoch 中途停止的 auto_resume 游标分支与显式 `max_train_steps` 预算路径）；数值等价以 bench 不变量入库；V100 实机覆盖端到端训练与产物校验，证据本地留档。
 
 
 ## 8. 实现与验收补充
@@ -149,4 +149,4 @@
 - 普通 LoRA、单进程完整状态是当前支持边界。增加目标仅支持 `constant`、`constant_with_warmup`，自定义调度器不支持；原目标恢复保留原调度 horizon。
 - 没有最新 attempt 的完整状态时显示不可用，不自动回退到更早 attempt。旧任务缺少签名、必需二进制状态、完成标志或源模型/数据文件时同样阻止。
 - 独立 UI 使用只读代理加提交桩验证；实际联调使用 18081 WebUI → 18765 隔离 daemon → V100 训练器。没有使用用户正式 LoRA 任务执行验收加训。
-- 数值基准：`bench/continuation/run_bench.py`；验收证据与已知测试限制：`output/validation/continuation/REPORT.md`。
+- 数值基准：`bench/continuation/run_bench.py`（extend / cosine 原目标恢复 / 链式 extend 三组不变量）；入库证据：`bench/continuation/results/<时间戳>-scheduler-state/result.json`（`results/` 受 gitignore 约束，提交时需 `git add -f`）。V100 实机验收证据与已知测试限制：`output/validation/continuation/REPORT.md`（output/ 不入库，属本地留档）。

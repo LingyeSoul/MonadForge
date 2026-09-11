@@ -1,4 +1,4 @@
-import { computed, onBeforeUnmount, ref, type Ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, type Ref } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useI18n } from './useI18n'
 import { useConfigStore, type FieldMeta } from '../stores/config'
@@ -15,6 +15,8 @@ export interface ContinuationCandidate {
   epoch: number
   available: boolean
   reason: string | null
+  reason_key?: string | null
+  reason_params?: Record<string, string | number> | null
   budget_key: 'max_train_epochs' | 'max_train_steps'
   target: number
 }
@@ -49,10 +51,34 @@ export function useTrainingContinuation(preset: Ref<string>, extraArgs: Ref<stri
   const budgetKey = computed(() => detail.value?.candidate.budget_key)
   const presetItems = computed(() => [...new Set([...config.presets, preset.value])])
 
+  /** Localize a daemon-side unavailability reason when it carries an i18n key. */
+  function reasonLabel(candidate: ContinuationCandidate | null | undefined): string | null {
+    if (!candidate?.reason) return null
+    if (candidate.reason_key) {
+      return t(`cfgContinuationReason_${candidate.reason_key}`, candidate.reason_params || {})
+    }
+    return candidate.reason
+  }
+
   async function request(url: string, init?: RequestInit) {
     const res = await fetch(url, init)
-    const data = await res.json()
-    if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`)
+    const data = await res.json().catch(() => ({} as Record<string, unknown>))
+    if (!res.ok) {
+      // Continuation endpoints return {message, key, params} on failure so the
+      // toast follows the UI language instead of the daemon's Chinese text.
+      const detail: unknown = (data as { detail?: unknown }).detail
+      if (detail && typeof detail === 'object') {
+        const { message, key, params } = detail as {
+          message?: string; key?: string; params?: Record<string, string | number>
+        }
+        throw new Error(
+          (key && t(`cfgContinuationReason_${key}`, params || {})) || message || `HTTP ${res.status}`
+        )
+      }
+      throw new Error(
+        (typeof detail === 'string' && detail) || `HTTP ${res.status}`
+      )
+    }
     return data
   }
 
@@ -67,21 +93,25 @@ export function useTrainingContinuation(preset: Ref<string>, extraArgs: Ref<stri
         const current = candidates.value.find(c => c.task_id === selected.value)
         if (!current?.available || (detail.value && current.job_id !== detail.value.candidate.job_id)) {
           ready.value = false
-          config.error = current?.reason || t('cfgContinuationChanged')
+          config.error = reasonLabel(current) || t('cfgContinuationChanged')
         }
       }
     } catch (e: any) {
       if (ticket !== listGeneration) return
       candidates.value = []
-      if (selected.value) ready.value = false
-      config.error = e.message
+      // Without a selection the config page is still a plain new-training
+      // form; a daemon hiccup must not turn into an error banner there.
+      if (selected.value) {
+        ready.value = false
+        config.error = e.message
+      }
     } finally {
       if (ticket === listGeneration) listLoading.value = false
     }
   }
 
   function draftKey() {
-    return detail.value ? `monadforge.continuation.${detail.value.candidate.job_id}` : ''
+    return detail.value ? `monadforge-continuation-${detail.value.candidate.job_id}` : ''
   }
 
   function rememberBudget() {
@@ -91,6 +121,7 @@ export function useTrainingContinuation(preset: Ref<string>, extraArgs: Ref<stri
   function exit() {
     rememberBudget()
     ++generation
+    ++listGeneration
     selected.value = null
     detail.value = null
     ready.value = false
@@ -130,7 +161,7 @@ export function useTrainingContinuation(preset: Ref<string>, extraArgs: Ref<stri
     try {
       const data: ContinuationDetail = await request(`/api/tasks/${encodeURIComponent(taskId)}/continuation?lang=${encodeURIComponent(app.language)}`)
       if (ticket !== generation) return
-      if (!data.candidate.available) throw new Error(data.candidate.reason || t('cfgContinuationUnavailable'))
+      if (!data.candidate.available) throw new Error(reasonLabel(data.candidate) || t('cfgContinuationUnavailable'))
       detail.value = data
       preset.value = data.candidate.preset
       config.preset = data.candidate.preset
@@ -175,13 +206,20 @@ export function useTrainingContinuation(preset: Ref<string>, extraArgs: Ref<stri
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: prepared.token, idempotency_key: prepared.token }),
     })
+    // The attempt is queued; hand the page back to the new-training draft so
+    // the (now running) task cannot strand the selector in a locked state.
     ready.value = false
-    config.dirty = false
-    config.fields = config.fields.map(f => ({ ...f, read_only: true }))
+    exit()
     return result
   }
 
+  // Field descriptions arrive pre-localized with the detail fetch; a language
+  // switch while a task is selected needs a re-fetch to follow along.
+  watch(() => app.language, () => {
+    if (selected.value && !loading.value) void select(selected.value)
+  })
+
   onBeforeUnmount(() => { ++listGeneration; exit() })
   return { selected, candidates, detail, loading, listLoading, ready, active,
-    budgetKey, presetItems, fetchCandidates, select, exit, saveDraft, submit }
+    budgetKey, presetItems, reasonLabel, fetchCandidates, select, exit, saveDraft, submit }
 }

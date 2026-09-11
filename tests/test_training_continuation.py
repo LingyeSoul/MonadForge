@@ -275,7 +275,10 @@ def test_http_contract_and_duplicate_submit(source):
         url = f"{base}/jobs/{job.id}/continuation"
         assert requests.get(url).json()["snapshot"] == cfg
         body = dict(source_job_id=job.id, budget_key="max_train_epochs", target=3)
-        assert requests.post(url + "/prepare", json=body).status_code == 409
+        rejected = requests.post(url + "/prepare", json=body)
+        assert rejected.status_code == 409
+        # The error body carries the i18n key so the WebUI can localize it.
+        assert rejected.json()["key"] == "target_reached"
         body["target"] = 4
         plan = requests.post(url + "/prepare", json=body).json()
         payload = dict(token=plan["token"], idempotency_key=plan["token"])
@@ -486,3 +489,321 @@ def test_continuation_ignores_inherited_launcher_overrides(source, monkeypatch):
     assert all(key not in env for key in ("GUI_PRESETS", "ARTIST", "PROFILE_STEPS"))
     assert env.get("CONFIG_FILE") == job.config_file
     assert env.get("CONFIG_FILE") != "unrelated"
+
+
+# ── explicit max_train_steps budget ──────────────────────────────────
+
+
+@pytest.fixture
+def source_steps(source):
+    manager, job, cfg, state = source
+    steps_cfg = {k: v for k, v in cfg.items() if k != "max_train_epochs"}
+    steps_cfg["max_train_steps"] = 30
+    Path(job.config_file).write_text(toml.dumps(steps_cfg))
+    job.persist()
+    return manager, job, steps_cfg, state
+
+
+def prepare_steps(manager, job, target):
+    return manager.continuations.prepare(
+        job.root_job_id,
+        dict(source_job_id=job.id, budget_key="max_train_steps", target=target),
+    )
+
+
+def test_steps_budget_extension(source_steps):
+    manager, job, _, _ = source_steps
+    child = submit(manager, job, prepare_steps(manager, job, 40))
+    assert child.target_steps == 40 and child.target_epochs is None
+    assert child.continuation["budget_key"] == "max_train_steps"
+    assert child.continuation["continuation_kind"] == "extend"
+    assert child.continuation["source_target"] == 30
+
+
+@pytest.mark.parametrize("target", [30, 29, 0, 30.5, True])
+def test_steps_budget_done_cannot_replay_or_shrink(source_steps, target):
+    manager, job, _, _ = source_steps
+    with pytest.raises(ValueError):
+        prepare_steps(manager, job, target)
+
+
+def test_steps_budget_stopped_resumes_original_goal(source_steps):
+    manager, job, _, state = source_steps
+    job.state = "stopped"
+    p = state / "train_state.json"
+    data = json.loads(p.read_text())
+    data.update(global_step=25)
+    p.write_text(json.dumps(data))
+    child = submit(manager, job, prepare_steps(manager, job, 30))
+    assert child.continuation["mode"] == "resume"
+    assert child.target_steps == 30 and child.recovery_step == 25
+
+
+# ── scheduler gate reads the effective config, not the sparse snapshot ──
+
+
+def test_scheduler_gate_reads_source_argv_over_sparse_snapshot(source):
+    manager, job, _, _ = source
+    job.argv = list(job.argv) + ["--lr_scheduler", "cosine"]
+    job.persist()
+    candidate = manager.continuations.describe(job)[0]
+    assert not candidate["available"]
+    assert candidate["reason_key"] == "scheduler_not_extensible"
+    with pytest.raises(ValueError, match="调度器"):
+        prepare(manager, job, 4)
+
+
+def test_absolute_warmup_steps_in_argv_stay_absolute(source):
+    manager, job, _, _ = source
+    job.argv = list(job.argv) + ["--lr_warmup_steps", "100"]
+    job.persist()
+    plan = prepare(manager, job, 4)
+    stored = manager.continuations.plans[plan["token"]]
+    assert stored["warmup_steps"] == 100  # not int(100 * 30)
+    assert stored["critical_params"] is None or stored["critical_params"] == {}
+
+
+def test_scheduler_gate_reads_trainer_written_snapshot(source):
+    manager, job, cfg, _ = source
+    root = resolve_output_layout(cfg["output_dir"], cfg["output_name"]).root
+    (root / "example.snapshot.toml").write_text(
+        toml.dumps(dict(lr_scheduler="cosine", lr_warmup_steps=0))
+    )
+    candidate = manager.continuations.describe(job)[0]
+    assert not candidate["available"]
+    assert candidate["reason_key"] == "scheduler_not_extensible"
+
+
+def test_cosine_stopped_task_resumes_original_goal(source):
+    manager, job, _, state = source
+    job.state = "stopped"
+    job.argv = list(job.argv) + ["--lr_scheduler", "cosine"]
+    job.persist()
+    p = state / "train_state.json"
+    data = json.loads(p.read_text())
+    data.update(global_step=10)
+    p.write_text(json.dumps(data))
+    plan = prepare(manager, job, 3)
+    assert plan["mode"] == "resume"
+    child = submit(manager, job, plan)
+    assert child.continuation["lr_scheduler"] == "cosine"
+
+
+def test_scheduler_budget_rejects_extension_beyond_pinned_horizon():
+    with pytest.raises(ValueError, match="constant"):
+        scheduler_budget(
+            SimpleNamespace(
+                max_train_steps=50,
+                lr_scheduler="cosine",
+                lr_scheduler_type=None,
+                _continuation=dict(scheduler_steps=30, warmup_steps=6),
+            ),
+            1,
+        )
+
+
+def test_scheduler_budget_allows_constant_extension_and_cosine_resume():
+    extend = scheduler_budget(
+        SimpleNamespace(
+            max_train_steps=50,
+            lr_scheduler="constant_with_warmup",
+            lr_scheduler_type=None,
+            _continuation=dict(scheduler_steps=30, warmup_steps=6),
+        ),
+        1,
+    )
+    assert extend == (30, 6)
+    resume = scheduler_budget(
+        SimpleNamespace(
+            max_train_steps=30,
+            lr_scheduler="cosine",
+            lr_scheduler_type=None,
+            _continuation=dict(scheduler_steps=30, warmup_steps=6),
+        ),
+        1,
+    )
+    assert resume == (30, 6)
+
+
+def test_setup_continuation_pins_scheduler_identity(source, monkeypatch):
+    manager, job, cfg, _ = source
+    child = submit(manager, job, prepare(manager, job))
+    monkeypatch.setenv("ANIMA_CONTINUATION_FILE", str(child.dir / "continuation.json"))
+    monkeypatch.setenv("ANIMA_DAEMON_JOB_ID", child.id)
+    monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", child.root_job_id)
+    args = SimpleNamespace(
+        **dict(cfg, lr_scheduler="cosine", lr_warmup_steps=0.9, resume=child.recovery_state)
+    )
+    setup_continuation(args)
+    assert args.lr_scheduler == "constant_with_warmup"
+    assert args.lr_warmup_steps == 0.2
+
+
+# ── critical-parameter drift against the trainer-written snapshot ─────
+
+
+def test_critical_param_drift_is_rejected(source, monkeypatch):
+    manager, job, cfg, _ = source
+    root = resolve_output_layout(cfg["output_dir"], cfg["output_name"]).root
+    (root / "example.snapshot.toml").write_text(
+        toml.dumps(dict(train_batch_size=1, network_dim=16))
+    )
+    child = submit(manager, job, prepare(manager, job))
+    monkeypatch.setenv("ANIMA_CONTINUATION_FILE", str(child.dir / "continuation.json"))
+    monkeypatch.setenv("ANIMA_DAEMON_JOB_ID", child.id)
+    monkeypatch.setenv("ANIMA_DAEMON_ROOT_JOB_ID", child.root_job_id)
+    args = SimpleNamespace(
+        **dict(cfg, train_batch_size=2, network_dim=16, resume=child.recovery_state)
+    )
+    setup_continuation(args)
+    assert args.train_batch_size == 2  # sparse snapshot may not carry it
+    args.dataset_signature = child.continuation["dataset_signature"]
+    with pytest.raises(ValueError, match="train_batch_size"):
+        validate_continuation_signatures(args)
+    args.train_batch_size = 1
+    validate_continuation_signatures(args)
+
+
+# ── auto_resume cursor for continuation (checkpoints.py branch) ───────
+
+
+def test_auto_resume_sets_explicit_cursor_for_continuation(tmp_path, monkeypatch):
+    from library.training.checkpoints import CheckpointSaver
+
+    monkeypatch.delenv("ANIMA_TRAIN_FRESH", raising=False)
+    saver = CheckpointSaver(
+        args=SimpleNamespace(),
+        accelerator=object(),
+        save_dtype=None,
+        metadata={},
+        minimum_metadata={},
+        get_sai_model_spec_fn=lambda _args: {},
+        current_epoch=SimpleNamespace(value=0),
+        current_step=SimpleNamespace(value=0),
+    )
+    args = SimpleNamespace(
+        resume=str(tmp_path),
+        _continuation={"job_id": "j"},
+        skip_until_initial_step=False,
+        initial_epoch=2,
+        initial_step=7,
+    )
+    saver.args = args
+    saver.auto_resume()
+    assert args.skip_until_initial_step is True
+    assert args.initial_epoch is None and args.initial_step is None
+    # A plain (non-continuation) resume keeps the caller-provided cursors.
+    plain = SimpleNamespace(
+        resume=str(tmp_path),
+        skip_until_initial_step=False,
+        initial_epoch=2,
+        initial_step=7,
+    )
+    saver.args = plain
+    saver.auto_resume()
+    assert plain.skip_until_initial_step is False
+    assert plain.initial_epoch == 2 and plain.initial_step == 7
+
+
+# ── submit hygiene: restart replay, copy window, orphan cleanup ──────
+
+
+def test_submit_after_plans_loss_returns_existing_attempt(source):
+    manager, job, _, _ = source
+    plan = prepare(manager, job)
+    child = submit(manager, job, plan)
+    # A daemon restart rebuilds jobs from disk but wipes in-memory plans.
+    manager.continuations.plans.clear()
+    assert submit(manager, job, plan).id == child.id
+
+
+def test_failed_submit_leaves_no_orphan_directory(source, monkeypatch):
+    from scripts.daemon import continuation as continuation_module
+
+    manager, job, _, _ = source
+    plan = prepare(manager, job)
+
+    def broken(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(continuation_module, "copy_state", broken)
+    with pytest.raises(OSError):
+        submit(manager, job, plan)
+    assert sorted(p.name for p in config.JOBS_DIR.iterdir()) == [job.id]
+
+
+def test_duplicate_submit_during_copy_returns_same_attempt(source, monkeypatch):
+    import threading
+
+    from scripts.daemon import continuation as continuation_module
+
+    manager, job, _, _ = source
+    entered = threading.Event()
+    release = threading.Event()
+    original = continuation_module.copy_state
+
+    def slow_copy(src, dst):
+        entered.set()
+        release.wait(10)
+        return original(src, dst)
+
+    monkeypatch.setattr(continuation_module, "copy_state", slow_copy)
+    plan = prepare(manager, job)
+    results: dict[str, object] = {}
+
+    def run(name: str) -> None:
+        try:
+            results[name] = submit(manager, job, plan)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            results[name] = exc
+
+    threads = [threading.Thread(target=run, args=(name,)) for name in ("a", "b")]
+    threads[0].start()
+    assert entered.wait(5)
+    threads[1].start()
+    release.set()
+    for thread in threads:
+        thread.join(10)
+    assert not any(isinstance(value, BaseException) for value in results.values())
+    assert results["a"].id == results["b"].id
+
+
+def test_candidates_cache_refreshed_after_submit(source):
+    manager, job, _, _ = source
+    manager.continuations.candidates("lora")  # warm the TTL cache
+    child = submit(manager, job, prepare(manager, job))
+    child.state = "running"
+    child.persist()
+    candidate = manager.continuations.candidates("lora")["candidates"][0]
+    assert not candidate["available"]
+    assert candidate["reason_key"] == "task_active"
+
+
+def test_public_payload_hides_continuation_internals(source):
+    manager, job, _, _ = source
+    child = submit(manager, job, prepare(manager, job))
+    payload = child.public()
+    assert payload["continuation"]["mode"] == "extend"
+    for secret in ("token", "dataset_blueprint", "critical_params", "fingerprint"):
+        assert secret not in payload["continuation"]
+
+
+def test_http_unknown_task_maps_to_404(source):
+    import requests
+    from scripts.daemon.server import serve
+
+    manager, _, _, _ = source
+    server = serve(manager, port=0)
+    import threading
+
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        response = requests.get(base + "/jobs/missing-task/continuation")
+        assert response.status_code == 404
+        assert "不存在" in response.json()["error"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

@@ -433,7 +433,15 @@ class _Handler(BaseHTTPRequestHandler):
                 raise ValueError("Unsupported continuation request")
             self._send_json(result)
         except (ValueError, OSError, TypeError, KeyError) as exc:
-            self._send_json({"error": str(exc)}, 409)
+            # Unknown task id is a missing resource, not a conflict. Errors may
+            # carry an i18n key (+ params) so the WebUI can localize them.
+            status = 404 if getattr(exc, "key", None) == "task_missing" else 409
+            body = {"error": str(exc)}
+            if getattr(exc, "key", None):
+                body["key"] = exc.key
+                if getattr(exc, "params", None):
+                    body["params"] = exc.params
+            self._send_json(body, status)
         return True
 
     def do_DELETE(self) -> None:  # noqa: N802

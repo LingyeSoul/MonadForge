@@ -575,7 +575,7 @@ import PreviewPromptEditor from '../components/PreviewPromptEditor.vue'
 import HelpPanel from '../components/HelpPanel.vue'
 import { readPreprocessRun, writePreprocessRun } from '../composables/usePreprocessRunStorage'
 import { matchesConfigSearch } from '../utils/configSearch'
-import { useTrainingContinuation } from '../composables/useTrainingContinuation'
+import { useTrainingContinuation, type ContinuationCandidate } from '../composables/useTrainingContinuation'
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()
@@ -674,10 +674,22 @@ const preprocessRunning = ref(false)
 const extraArgs = ref('')
 const showExtraArgs = ref(false)
 const continuation = reactive(useTrainingContinuation(selectedPreset, extraArgs))
+// current_epoch is the one-based epoch in progress, not epochs completed —
+// an interrupted task must read as "stopped inside epoch N", never "N done".
+function continuationProgress(candidate: ContinuationCandidate): string {
+  if (candidate.state === 'done') {
+    return candidate.budget_key === 'max_train_epochs'
+      ? t('cfgContinuationDoneEpochs', { epochs: candidate.target })
+      : t('cfgContinuationDoneSteps', { step: candidate.step })
+  }
+  return candidate.epoch > 0
+    ? t('cfgContinuationInterrupted', { epoch: candidate.epoch, step: candidate.step })
+    : t('cfgContinuationSteps', { step: candidate.step })
+}
 const trainingTaskItems = computed(() => continuation.candidates.map(candidate => ({
   value: candidate.task_id,
-  title: `${candidate.name} · ${new Date(candidate.submitted_at * 1000).toLocaleDateString()} · ${t(`cfgTrainingState_${candidate.state}`)} · ${candidate.epoch} epoch / ${candidate.step} step · ${candidate.job_id.slice(-6)}`,
-  props: { disabled: !candidate.available, subtitle: candidate.reason || undefined },
+  title: `${candidate.name} · ${new Date(candidate.submitted_at * 1000).toLocaleDateString()} · ${t(`cfgTrainingState_${candidate.state}`)} · ${continuationProgress(candidate)} · ${candidate.job_id.slice(-6)}`,
+  props: { disabled: !candidate.available, subtitle: continuation.reasonLabel(candidate) || undefined },
 })))
 
 // Experimental feature tracking
@@ -824,6 +836,10 @@ async function onVariantChange() {
 
 async function loadConfig() {
   if (continuation.selected) {
+    // Entering task mode: drop stale new-training checks so an old
+    // compatibility alert cannot hang over the pinned snapshot form.
+    prelaunchResult.value = null
+    isExperimental.value = false
     await continuation.select(continuation.selected)
     await continuation.fetchCandidates(selectedVariant.value)
     return

@@ -7,7 +7,12 @@ from typing import Literal, Optional
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
-from webui.services.daemon_client import DaemonError, daemon_client
+from webui.services.daemon_client import (
+    DaemonError,
+    DaemonNotFoundError,
+    DaemonUnreachableError,
+    daemon_client,
+)
 from webui.services.task_catalog import COMMAND_CATALOG
 from webui.services.task_service import task_service
 
@@ -56,12 +61,27 @@ class ContinuationSubmitRequest(BaseModel):
     idempotency_key: str = Field(min_length=16, max_length=128)
 
 
+def _daemon_http_error(exc: DaemonError) -> HTTPException:
+    """Map daemon failures to distinct statuses, keeping the continuation i18n
+    key (when present) so the frontend can localize the message."""
+    if isinstance(exc, DaemonUnreachableError):
+        status = 502
+    elif isinstance(exc, DaemonNotFoundError):
+        status = 404
+    else:
+        status = 409
+    detail: object = str(exc)
+    if exc.key:
+        detail = {"message": str(exc), "key": exc.key, "params": exc.params}
+    return HTTPException(status_code=status, detail=detail)
+
+
 @router.get("/continuation-candidates")
 async def continuation_candidates(variant: str = "lora"):
     try:
         return await daemon_client.continuation_candidates(variant)
     except DaemonError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _daemon_http_error(exc) from exc
 
 
 @router.get("/{task_id}/continuation")
@@ -70,7 +90,7 @@ async def continuation_detail(task_id: str, lang: str = "cn"):
     try:
         result = await daemon_client.continuation_detail(task_id)
     except DaemonError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _daemon_http_error(exc) from exc
     candidate = result["candidate"]
     described = describe_config(result["snapshot"], {}, candidate["variant"], candidate["preset"], lang)
     for field in described["fields"]:
@@ -83,7 +103,7 @@ async def prepare_continuation(task_id: str, body: ContinuationPrepareRequest):
     try:
         return await daemon_client.prepare_continuation(task_id, body.model_dump())
     except DaemonError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _daemon_http_error(exc) from exc
 
 
 @router.post("/{task_id}/continuation")
@@ -93,7 +113,7 @@ async def continue_training(task_id: str, body: ContinuationSubmitRequest):
         await task_service.list_tasks_page(limit=500)
         return {"task_id": result["root_job_id"], "job_id": result["job_id"]}
     except DaemonError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise _daemon_http_error(exc) from exc
 
 
 @router.get("", response_model=list[dict])
