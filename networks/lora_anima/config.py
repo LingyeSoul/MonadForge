@@ -300,10 +300,17 @@ class LoRANetworkCfg:
     use_ve: bool = False
 
     # SVD-Down: ``lora_down`` initialization for plain LoRA — ``"kaiming"``
-    # (default) or ``"weight_svd"`` (seed input basis from W0's top-r right
-    # singular vectors, scale-matched). Plain two-factor LoRAModule only;
-    # ignored by ortho/Hydra/Chimera classes. docs/proposal/svd_down_lora_init.md.
+    # (default), ``"weight_svd"`` (seed input basis from W0's top-r right
+    # singular vectors, scale-matched), or the gradient-seeded ``"grad_svd"`` /
+    # ``"basis_file"`` (top-r row space of the task gradient; the basis arrives
+    # in ``grad_basis_dict``). Plain two-factor LoRAModule only; ignored by
+    # ortho/Hydra/Chimera classes. docs/methods/svd-down-lora.md,
+    # docs/proposal/grad_basis_init.md.
     down_init: str = "kaiming"
+
+    # Gradient-SVD basis, {lora_name: V (in, r_store)} — required by
+    # down_init="grad_svd"/"basis_file", built by networks/grad_basis.py.
+    grad_basis_dict: Optional[Dict[str, torch.Tensor]] = None
 
     # σ-conditional router parameters (consumed when ``router_source="sigma"``).
     # Layer scope is shared with Hydra and FEI via ``router_targets`` above.
@@ -432,6 +439,7 @@ class LoRANetworkCfg:
         neuron_dropout: Optional[float],
         module_class: Type,
         channel_scales_dict: Optional[Dict[str, torch.Tensor]] = None,
+        grad_basis_dict: Optional[Dict[str, torch.Tensor]] = None,
     ) -> "LoRANetworkCfg":
         """Build cfg from train.py's stringified ``net_kwargs`` dict."""
         if network_dim is None:
@@ -482,9 +490,18 @@ class LoRANetworkCfg:
         router_lr_scale = float(router_lr_scale) if router_lr_scale is not None else 1.0
 
         down_init = str(kwargs.get("down_init", "kaiming"))
-        if down_init not in ("kaiming", "weight_svd"):
+        if down_init not in ("kaiming", "weight_svd", "grad_svd", "basis_file"):
             raise ValueError(
-                f"down_init={down_init!r}: expected 'kaiming' or 'weight_svd'."
+                f"down_init={down_init!r}: expected 'kaiming', 'weight_svd', "
+                f"'grad_svd' or 'basis_file'."
+            )
+        if down_init in ("grad_svd", "basis_file") and not grad_basis_dict:
+            raise ValueError(
+                f"down_init={down_init!r} needs a gradient basis. "
+                "basis_file: pass network_args grad_basis_file=<path> (build one "
+                "with bench/grad_init/build_universal_basis.py). grad_svd: run "
+                "through train.py, which sketches the run's own cached dataset "
+                "before the network is built."
             )
 
         _legacy_router_keys = [
@@ -740,7 +757,8 @@ class LoRANetworkCfg:
             route_per_layer = True
             router_source = "input"
 
-        # SVD-Down (down_init="weight_svd") targets the plain LoRAModule only —
+        # SVD-Down / gradient-SVD (down_init != "kaiming") target the plain
+        # LoRAModule only —
         # the ortho/Hydra/Chimera classes own their own SVD seeding and the
         # network.py pass-through is gated to LoRAModule, so a non-plain variant
         # would silently ignore it. Fail loudly instead of no-op'ing. T-LoRA
@@ -869,6 +887,7 @@ class LoRANetworkCfg:
             lora_fp32_compute=lora_fp32_compute,
             use_custom_down_autograd=use_custom_down_autograd,
             channel_scales_dict=channel_scales_dict,
+            grad_basis_dict=grad_basis_dict,
             verbose=verbose,
         )
 
