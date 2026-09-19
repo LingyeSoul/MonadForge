@@ -18,6 +18,36 @@ import logging  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# AdaLN LoRA key layouts: the DiT's runtime modules are
+# ``adaln_up_{branch}`` (post ``_dit_rename_hook``), while shipped checkpoints
+# carry the ComfyUI layout ``adaln_modulation_{branch}_2`` (lora_save relays
+# at write time). The pair of regexes + relayout functions map between them.
+_ADALN_BRANCHES = "self_attn|cross_attn|mlp"
+_ADALN_COMFY_KEY_RE = re.compile(
+    rf"^(lora_unet_blocks_\d+_)adaln_modulation_({_ADALN_BRANCHES})_2(\..+)$"
+)
+
+
+def relayout_adaln_comfy_to_runtime(
+    weights_sd: Dict[str, torch.Tensor],
+) -> Dict[str, torch.Tensor]:
+    """ComfyUI adaln keys back to in-repo runtime module names so a
+    comfy-native adaln LoRA also loads through ``create_network_from_weights``
+    (in-repo inference / merge)."""
+    return {
+        (
+            f"{m.group(1)}adaln_up_{m.group(2)}{m.group(3)}"
+            if (m := _ADALN_COMFY_KEY_RE.match(k))
+            else k
+        ): v
+        for k, v in weights_sd.items()
+    }
+
+
+def has_comfy_adaln_keys(weights_sd: Dict[str, torch.Tensor]) -> bool:
+    """True if any key is in the ComfyUI adaln layout (needs comfy→runtime rename)."""
+    return any(_ADALN_COMFY_KEY_RE.match(k) for k in weights_sd)
+
 
 def filter_lora_state_dict(
     weights_sd: Dict[str, torch.Tensor],
