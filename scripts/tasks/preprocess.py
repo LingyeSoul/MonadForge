@@ -472,6 +472,26 @@ def _boolish(value, default: bool = False) -> bool:
     return default
 
 
+def _floatish(*values, default: float = 0.0) -> float:
+    """First value that parses as a float, else ``default``.
+
+    Mirrors ``_boolish``'s env-then-config-then-default layering for the numeric
+    knobs; a blank env var (the GUI writes ``""`` for an empty field) falls
+    through rather than raising.
+    """
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        try:
+            return float(text)
+        except ValueError:
+            continue
+    return float(default)
+
+
 # Mirrors ``library.preprocess.autotag.MODES``; duplicated rather than imported
 # so this module stays free of the PIL/torch import chain.
 _AUTOTAG_MODES = ("missing", "merge", "overwrite")

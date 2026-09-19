@@ -50,3 +50,25 @@ def strip_artist_prefix(tag: str) -> str:
 
 # Raw-caption 4-class danbooru rating vocabulary (for stripping the leading rating band). Intentionally a superset of the tagger's 3-class MODEL-OUTPUT ratings (library.captioning.anima_tagger.RATINGS), which collapse questionable → sensitive.
 CAPTION_RATINGS = frozenset({"general", "sensitive", "questionable", "explicit"})
+
+# Anima-style spellings of the same band (upstream renamed ``general``→``safe``
+# and ``questionable``→``nsfw``; this tree keeps the danbooru literals as
+# canonical, so the Anima spellings read as legacy aliases). Captions and
+# corpora written in either vocabulary still parse as ratings.
+LEGACY_RATING_ALIASES = {"safe": "general", "nsfw": "questionable"}
+
+# Every literal that reads as a rating: canonical band + accepted legacy spellings.
+RATING_LITERALS = CAPTION_RATINGS | frozenset(LEGACY_RATING_ALIASES)
+
+
+def is_rating_tag(tag: str) -> bool:
+    """True for any accepted rating literal (danbooru canonical or Anima legacy)."""
+    return tag in RATING_LITERALS
+
+
+def canonical_rating(tag: str) -> str | None:
+    """The canonical rating for ``tag``, or None when it isn't a rating."""
+    if tag in CAPTION_RATINGS:
+        return tag
+    return LEGACY_RATING_ALIASES.get(tag)
+
