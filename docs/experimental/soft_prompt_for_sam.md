@@ -173,7 +173,7 @@ the dbv4 tagger*.
 - Corpus re-applied 2026-08-27: flatten 454 → apply **439 written** (rewritten
   436, 3916 tags moved, reuse 0.886) → TE re-encoded (468 caches). Gotcha:
   `make preprocess-te` is not `--queue`-aware (`cache_text_embeddings.py`
-  rejects the flag) — run that child through `make daemon-run`.
+  rejects the flag) — run that child through the daemon (WebUI submit) instead.
 
 ## 6. Caveats that remain
 
@@ -190,12 +190,12 @@ the dbv4 tagger*.
 ## 7. Usage
 
 ```
-make daemon-run ARGS="bench/sam3_soft_prompt/build_targets.py"          # pseudo-labels + splits
-make daemon-run ARGS="bench/sam3_soft_prompt/train_soft_prompt.py --init 'anime girl' --label x"
-make daemon-run ARGS="bench/sam3_soft_prompt/ab_sam3_prompt.py --which disagree --b <soft_prompt.safetensors>"
-make daemon-run ARGS="scripts/preprocess/probe_nms_pairs.py --prompt_embed <soft_prompt.safetensors>"
-make daemon-run ARGS="scripts/preprocess/ab_position_captions.py --a_flags= --b_flags='--prompt_embed <file>'"
-make daemon-run ARGS="bench/sam3_soft_prompt/pair_negatives.py build [--count_filter any_boy]"
+uv run bench/sam3_soft_prompt/build_targets.py  # (submit via the daemon/WebUI when a train job is live)          # pseudo-labels + splits
+uv run bench/sam3_soft_prompt/train_soft_prompt.py --init 'anime girl' --label x  # (submit via the daemon/WebUI when a train job is live)
+uv run bench/sam3_soft_prompt/ab_sam3_prompt.py --which disagree --b <soft_prompt.safetensors>  # (submit via the daemon/WebUI when a train job is live)
+uv run scripts/preprocess/probe_nms_pairs.py --prompt_embed <soft_prompt.safetensors>  # (submit via the daemon/WebUI when a train job is live)
+uv run scripts/preprocess/ab_position_captions.py --a_flags= --b_flags='--prompt_embed <file>'  # (submit via the daemon/WebUI when a train job is live)
+uv run bench/sam3_soft_prompt/pair_negatives.py build [--count_filter any_boy]  # (submit via the daemon/WebUI when a train job is live)
 make caption-position ARGS="--prompt_embed none"                        # back to the text prompt
 ```
 

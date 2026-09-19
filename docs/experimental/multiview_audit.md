@@ -42,7 +42,7 @@ close-up left, seated full body right), captioned `1girl`, no layout tag.
 | `scripts/preprocess/probe_sam_masks.py` | Diagnostic: dump SAM3's raw masks for one image, colour-coded |
 | `scripts/preprocess/probe_nms_pairs.py` | Diagnostic: replay NMS over a corpus, record every suppressed pair's scores + mask fills |
 
-Run: `make daemon-run ARGS="scripts/preprocess/audit_multiview.py [flags]"`
+Run: `uv run scripts/preprocess/audit_multiview.py [flags]  # (submit via the daemon/WebUI when a train job is live)`
 (GPU work from an agent must go through the daemon).
 
 **Population** — exactly the complement of the clause pipeline: every caption
