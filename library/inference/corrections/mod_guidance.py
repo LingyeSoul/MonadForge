@@ -56,7 +56,14 @@ def build_mod_schedule(args: argparse.Namespace, num_blocks: int) -> List[float]
     """
     w = float(args.mod_w)
     start = int(getattr(args, "mod_start_layer", 8))
-    end_raw = int(getattr(args, "mod_end_layer", -1))
+    end_raw = getattr(args, "mod_end_layer", None)
+    if end_raw is None:
+        # argparse default is None: "unset" skips this checkpoint's own final
+        # compensation block (depth-relative; 27 on the 28-block base, 39 on
+        # the 40-block 2.9B). int(None) here would crash the mod-w path.
+        end_raw = num_blocks - 1
+    else:
+        end_raw = int(end_raw)
     end = num_blocks if end_raw < 0 else min(end_raw, num_blocks)
     start = max(0, min(start, end))
     taper = int(getattr(args, "mod_taper", 0))

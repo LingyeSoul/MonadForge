@@ -128,7 +128,7 @@ To recover pre-0413 uniform behavior (not recommended — prone to pink-collapse
 | `--mod_pos_prompt` | `"absurdres, masterpiece, score_9"` | Positive quality prompt |
 | `--mod_neg_prompt` | `"worst quality, low quality, score_1"` | Negative quality prompt |
 | `--mod_start_layer` | `8` | Inclusive first block that receives the steering delta. `0` = uniform (pre-0413). `8` = protect tonal-DC blocks 0–7. `14` = safe option. |
-| `--mod_end_layer` | `27` | Exclusive last block + 1. `-1` = all remaining blocks. `27` skips Anima's final compensation block. |
+| `--mod_end_layer` | `num_blocks−1` | Exclusive last block + 1. `-1` = all remaining blocks. Unset (default) skips this checkpoint's own final compensation block — `27` on the 28-block base, `39` on the 40-block Anima-2.9B. |
 | `--mod_taper` | `0` | Number of late slots inside `[start, end)` to scale by `--mod_taper_scale`. `0` disables taper. |
 | `--mod_taper_scale` | `0.25` | Multiplier applied to tapered slots. |
 | `--mod_final_w` | `0.0` | `w` passed to `final_layer`. `0.0` = don't disturb the output head. |

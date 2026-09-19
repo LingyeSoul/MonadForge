@@ -2494,19 +2494,42 @@ class AnimaTrainer:
         # subsets' mask_dir here and say so once.
         if not getattr(args, "masked_loss", False):
             ignored: set[str] = set()
+            stripped_npz = False
             for group in (train_dataset_group, val_dataset_group):
                 for ds in getattr(group, "datasets", None) or []:
+                    strip = False
                     for subset in getattr(ds, "subsets", None) or []:
                         if getattr(subset, "mask_dir", None):
                             ignored.add(str(subset.mask_dir))
                             subset.mask_dir = None
                             subset.alpha_mask = False
+                            strip = True
+                    if not strip:
+                        continue
+                    # The dataset builders resolved mask_dir per image (and
+                    # preloaded the PNGs) while the group was constructed, so
+                    # clearing the subset fields alone leaves those masks live
+                    # in every batch; drop the per-image state as well. Latents
+                    # cached to npz carry their own mask copy — warned below.
+                    for info in (getattr(ds, "image_data", None) or {}).values():
+                        info.mask_path = None
+                        info.preloaded_alpha_mask = None
+                        info.alpha_mask = None
+                        if info.latents_npz is not None:
+                            stripped_npz = True
             if ignored:
                 logger.info(
                     "masked_loss = false: masks under %s are ignored "
                     "(set masked_loss = true to train with them)",
                     ", ".join(sorted(ignored)),
                 )
+                if stripped_npz:
+                    logger.warning(
+                        "masked_loss = false: some latents were cached to npz "
+                        "while a mask_dir was active and may carry their own "
+                        "mask copy — re-cache without masks to fully disable "
+                        "masked loss"
+                    )
 
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)

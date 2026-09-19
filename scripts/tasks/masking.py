@@ -222,6 +222,13 @@ def cmd_mask(extra):
     is a no-op. (The MIT text masker is gone since v2 — masking is SAM-only.)
     """
     run_sam = _env_flag("RUN_SAM_MASK")
+    if _env_flag("RUN_MIT_MASK", default=False):
+        # The GUI still round-trips the MIT fields; say plainly that they do
+        # nothing now instead of failing silently when only MIT is enabled.
+        print(
+            "Note: the MIT text masker was removed with v2 masking — the MIT "
+            "switch has no effect (masking is SAM-only)."
+        )
     if not run_sam:
         print("SAM masking is disabled — nothing to do.")
         return

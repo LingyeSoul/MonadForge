@@ -127,7 +127,7 @@ name = "near_twins"
 
 # Mining run knobs (legacy name [miner] still accepted). Any --flag dest works.
 [staging]
-# Discriminator — set exactly one of: tag_any / tag / region (bool) / signal.
+# Discriminator — set exactly one of: tag_any / tag / region (bool).
 tag_any = ["speech bubble", "thought bubble", "blank speech bubble"]
 # Source trees (<dir>/<artist>/<id>.<ext>).
 image_dirs = ["{CAPTION_CORPUS_DIR}/retrieved"]
