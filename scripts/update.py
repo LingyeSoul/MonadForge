@@ -70,7 +70,6 @@ PRESERVE_DIRS: tuple[str, ...] = (
     "output",
     "models",
     "masks",
-    "masks_mit",
     "masks_sam",
     "bench",
     "logs",

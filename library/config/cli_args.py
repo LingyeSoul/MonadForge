@@ -721,7 +721,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
 
 def add_masked_loss_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
-        "--masked_loss", action="store_true", help="apply mask for calculating loss."
+        "--masked_loss",
+        action="store_true",
+        help="apply mask for calculating loss. Off by default since v2: a mask "
+        "tree on disk is ignored (one log line) until this is set.",
     )
 
 

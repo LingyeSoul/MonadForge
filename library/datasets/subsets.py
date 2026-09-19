@@ -18,9 +18,9 @@ def _resolve_default_mask_dir() -> Optional[str]:
     """Resolve the default mask directory.
 
     Prefers the new ``post_image_dataset/masks/`` layout produced by
-    ``make mask``; falls back to the legacy ``masks/{merged,sam,mit}/``
-    triple so users who haven't re-run masking after the consolidation
-    keep training without manual intervention.
+    ``make mask``; falls back to the legacy ``masks/{merged,sam}/`` pair so
+    users who haven't re-run masking after the consolidation keep training
+    without manual intervention.
 
     Returned path is relative, matching how other paths are resolved from the
     training CWD (anima_lora/).
@@ -29,7 +29,6 @@ def _resolve_default_mask_dir() -> Optional[str]:
         "post_image_dataset/masks",
         "masks/merged",
         "masks/sam",
-        "masks/mit",
     )
     for candidate in candidates:
         if os.path.isdir(candidate):

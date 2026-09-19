@@ -114,7 +114,7 @@ def _resized_image_dir() -> Path:
 def _scoped_mask_output_dir(resized_dir: Path) -> Path:
     """Re-apply the ``path_scope`` offset onto the mask output root.
 
-    SAM/MIT emit masks with rel paths taken **relative to the scoped resized
+    SAM emits masks with rel paths taken **relative to the scoped resized
     dir** (``resized/<scope>``), so a scoped run drops the ``<scope>`` prefix.
     But training resolves masks relative to the **unscoped** cache root
     (``lora/<scope>/<rel>`` → ``masks/<scope>/<rel>``, see
@@ -207,30 +207,6 @@ def _run_sam(
     )
 
 
-def _run_mit(image_dir: Path, out_dir: Path, extra: list[str]) -> None:
-    # MIT_TEXT_THRESHOLD / MIT_DILATE let the GUI tune the MIT masker; defaults
-    # match the script's argparse so direct CLI use is unchanged.
-    cmd = [
-        PY,
-        "scripts/preprocess/generate_masks_mit.py",
-        "--image-dir",
-        str(image_dir),
-        "--mask-dir",
-        str(out_dir),
-        "--model-path",
-        "models/mit/model.pth",
-        "--recursive",
-    ]
-    text_threshold = os.environ.get("MIT_TEXT_THRESHOLD")
-    if text_threshold:
-        cmd += ["--text-threshold", text_threshold]
-    dilate = os.environ.get("MIT_DILATE")
-    if dilate:
-        cmd += ["--dilate", dilate]
-    cmd += ["--ctd-gate" if _env_flag("MIT_CTD_GATE") else "--no-ctd-gate"]
-    cmd += list(extra)
-    run(cmd)
-
 
 def _env_flag(name: str, default: bool = True) -> bool:
     raw = os.environ.get(name)
@@ -240,15 +216,14 @@ def _env_flag(name: str, default: bool = True) -> bool:
 
 
 def cmd_mask(extra):
-    """Run SAM + MIT into a tempdir and write masks for the selected run.
+    """Run SAM into a tempdir and write masks for the selected run.
 
-    ``RUN_SAM_MASK`` / ``RUN_MIT_MASK`` env vars gate each backend
-    independently (default on). If both are disabled the command is a no-op.
+    ``RUN_SAM_MASK`` gates the backend (default on). If disabled the command
+    is a no-op. (The MIT text masker is gone since v2 — masking is SAM-only.)
     """
     run_sam = _env_flag("RUN_SAM_MASK")
-    run_mit = _env_flag("RUN_MIT_MASK")
-    if not (run_sam or run_mit):
-        print("Both SAM and MIT masking are disabled — nothing to do.")
+    if not run_sam:
+        print("SAM masking is disabled — nothing to do.")
         return
     run_obj, resized_dir, mask_output_dir, extra = _mask_paths(list(extra))
     runtime_sam_cfg = _runtime_sam_config()
@@ -266,10 +241,6 @@ def cmd_mask(extra):
             tmp_sam = Path(tmp_root) / "sam"
             _run_sam(resized_dir, tmp_sam, [*pattern_args], sam_config_path)
             merge_sources.append(str(tmp_sam))
-        if run_mit:
-            tmp_mit = Path(tmp_root) / "mit"
-            _run_mit(resized_dir, tmp_mit, [*pattern_args])
-            merge_sources.append(str(tmp_mit))
         mask_output_dir.mkdir(parents=True, exist_ok=True)
         run(
             [

@@ -1,4 +1,4 @@
-"""Model download entry-points (Anima base, SAM3, MIT, PE-Core, Tagger vocab).
+"""Model download entry-points (Anima base, SAM3, PE-Core, Tagger vocab).
 
 All targets shell out to ``hf download`` (rather than the SDK) so the user's
 ``hf auth login`` cache is honored — unless ``--source modelscope`` (or
