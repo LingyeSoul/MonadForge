@@ -209,6 +209,9 @@ def main() -> None:
             _report_centroid(n, centroid, out_path)
         return
 
+    from library.runtime.backend import warn_if_cuda_unavailable
+
+    warn_if_cuda_unavailable(torch)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     save_dtype = {
         "bfloat16": torch.bfloat16,

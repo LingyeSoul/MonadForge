@@ -184,6 +184,9 @@ def main() -> None:
         )
         return
 
+    from library.runtime.backend import warn_if_cuda_unavailable
+
+    warn_if_cuda_unavailable(torch)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     N = args.caption_shuffle_variants
 
