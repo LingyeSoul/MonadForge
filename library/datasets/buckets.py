@@ -113,6 +113,60 @@ def token_counts_for_sample_prompts(prompts) -> set:
     return counts
 
 
+def cluster_token_bands(counts, rel_gap: float = 0.10) -> "list[tuple[int, int]]":
+    """Cluster a token-count set into per-tier ``(lo, hi)`` bands.
+
+    Data-driven (_archive/proposals/perband_dynamic_seq.md): sort the *actual*
+    counts and split wherever the relative gap to the previous count exceeds
+    ``rel_gap``. Handles every count source uniformly — tier buckets, sample
+    prompts, σ-demote siblings — with no ``EDGE_TOKEN_BANDS`` special-casing:
+    a sample prompt landing between tiers becomes its own singleton band, a
+    single-tier pool degenerates to one band == the old union range.
+    """
+    ordered = sorted({int(c) for c in counts})
+    if not ordered:
+        return []
+    bands: list[tuple[int, int]] = []
+    lo = prev = ordered[0]
+    for c in ordered[1:]:
+        if (c - prev) > rel_gap * prev:
+            bands.append((lo, prev))
+            lo = c
+        prev = c
+    bands.append((lo, prev))
+    return bands
+
+
+def band_for_seq(bands, seq: int) -> "tuple[int, int] | None":
+    """The band containing ``seq``, or None (gap / out of range). ``bands``
+    must be sorted and non-overlapping (``cluster_token_bands`` output)."""
+    import bisect
+
+    if not bands:
+        return None
+    i = bisect.bisect_right([b[0] for b in bands], seq) - 1
+    if i < 0 or seq > bands[i][1]:
+        return None
+    return bands[i]
+
+
+def widen_bands(bands, extra: int) -> "list[tuple[int, int]]":
+    """Widen each band's hi by ``extra`` (register tokens grow seq by a
+    constant K; mid-stack insertion runs pre-insert blocks at the bare seq,
+    so lo stays). Raises if widening would make adjacent bands touch/overlap
+    — silent band merging would un-tighten the per-band graphs."""
+    if extra <= 0:
+        return list(bands)
+    for (_, hi), (next_lo, _) in zip(bands, bands[1:]):
+        if hi + extra >= next_lo:
+            raise ValueError(
+                f"extra_seq_tokens={extra} >= inter-band gap "
+                f"({next_lo - hi} between hi={hi} and next lo={next_lo}); "
+                "bands would merge — widen the clustering gap or drop "
+                "--compile_seq_bands for this run"
+            )
+    return [(lo, hi + extra) for lo, hi in bands]
+
 def choose_edge(width: int, height: int, target_res) -> int:
     """Assign an image to the tier that resizes it the *least*.
 

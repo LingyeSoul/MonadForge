@@ -389,3 +389,118 @@ def test_reconcile_lists_and_deletes_orphan_variant_sidecars(tmp_path):
     assert removed["txt"] == 2
     assert not (resized / "gone.variants.txt").exists()
     assert (resized / "kept.variants.txt").exists()
+
+
+# ----- position clauses survive the mirror --------------------------------
+
+
+def _clause_corpus(tmp_path, master, derived):
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    dst.mkdir()
+    (src / "a.txt").write_text(master, encoding="utf-8")
+    (dst / "a.png").write_bytes(b"")
+    (dst / "a.txt").write_text(derived, encoding="utf-8")
+    return src, dst
+
+
+def test_mirror_keeps_clauses_the_master_does_not_have(tmp_path):
+    """`caption-position` writes only ``resized/`` — a plain mirror would undo it."""
+    src, dst = _clause_corpus(
+        tmp_path,
+        "1girl, blue hair, smile, @sincos",
+        "1girl, smile, @sincos. On the left, blue hair.",
+    )
+
+    stats = write_corrected_preprocess_captions(
+        src,
+        dst,
+        _kb(tmp_path),
+        options=CaptionCorrectionOptions(),
+        recursive=False,
+    )
+
+    assert stats.clauses_preserved == 1
+    out = (dst / "a.txt").read_text(encoding="utf-8")
+    assert out.endswith("On the left, blue hair.")
+    # The moved tag stays moved: asserted in the clause, not back in the bag.
+    assert "blue hair" not in out.split(". On the")[0]
+    # …and the bag is still bucket-corrected around it.
+    assert "@sincos" in out and "smile" in out
+
+
+def test_mirror_reruns_are_stable_on_a_clause_caption(tmp_path):
+    src, dst = _clause_corpus(
+        tmp_path,
+        "1girl, blue hair, smile, @sincos",
+        "1girl, smile, @sincos. On the left, blue hair.",
+    )
+    opts = CaptionCorrectionOptions()
+    write_corrected_preprocess_captions(
+        src, dst, _kb(tmp_path), options=opts, recursive=False
+    )
+    first = (dst / "a.txt").read_text(encoding="utf-8")
+
+    stats = write_corrected_preprocess_captions(
+        src, dst, _kb(tmp_path), options=opts, recursive=False
+    )
+
+    assert (dst / "a.txt").read_text(encoding="utf-8") == first
+    assert stats.unchanged == 1
+
+
+def test_mirror_picks_up_a_master_edit_around_the_clauses(tmp_path):
+    """The master is still the authority for the flat bag."""
+    src, dst = _clause_corpus(
+        tmp_path,
+        "1girl, blue hair, smile, @sincos, solo",
+        "1girl, smile, @sincos. On the left, blue hair.",
+    )
+
+    write_corrected_preprocess_captions(
+        src, dst, _kb(tmp_path), options=CaptionCorrectionOptions(), recursive=False
+    )
+
+    out = (dst / "a.txt").read_text(encoding="utf-8")
+    assert "solo" in out.split(". On the")[0]
+    assert out.endswith("On the left, blue hair.")
+
+
+def test_mirror_regenerates_the_sidecar_around_restored_clauses(tmp_path):
+    """v0 changed, so the sidecar the TE step encodes has to be redrawn."""
+    src, dst = _clause_corpus(
+        tmp_path,
+        "1girl, blue hair, smile, @sincos",
+        "1girl, smile, @sincos. On the left, blue hair.",
+    )
+    random.seed(0)
+
+    write_corrected_preprocess_captions(
+        src,
+        dst,
+        _kb(tmp_path),
+        options=CaptionCorrectionOptions(),
+        recursive=False,
+        num_variants=4,
+    )
+
+    rows = dict(read_variants_sidecar(variants_sidecar_path(dst / "a.png")))
+    assert rows["v0"] == (dst / "a.txt").read_text(encoding="utf-8")
+    # Clauses are atomic in every variant, never dissolved into the bag.
+    assert all("On the left, blue hair." in text for text in rows.values())
+
+
+def test_a_hand_written_master_clause_wins_over_the_derived_one(tmp_path):
+    """Preservation only fills a gap; it never overrides a curated caption."""
+    src, dst = _clause_corpus(
+        tmp_path,
+        "1girl, smile, @sincos. On the right, blue hair.",
+        "1girl, smile, @sincos. On the left, blue hair.",
+    )
+
+    stats = write_corrected_preprocess_captions(
+        src, dst, _kb(tmp_path), options=CaptionCorrectionOptions(), recursive=False
+    )
+
+    assert stats.clauses_preserved == 0
+    assert "On the right, blue hair." in (dst / "a.txt").read_text(encoding="utf-8")

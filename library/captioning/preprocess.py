@@ -11,6 +11,11 @@ from library.captioning.correction import (
     TagKnowledgeBase,
     correct_caption,
 )
+from library.captioning.position_clauses import (
+    compose_caption,
+    has_clauses,
+    parse_caption,
+)
 from library.preprocess._dataset import walk_images
 from library.preprocess.caption_variants import (
     build_erasure_token_pool,
@@ -30,6 +35,7 @@ class PreprocessCaptionStats:
     missing_source: int = 0
     variants_written: int = 0
     variants_removed: int = 0
+    clauses_preserved: int = 0
 
 
 def _resolve_n_rand(num_variants: int, tag_randomize_rate: float) -> int:
@@ -82,6 +88,39 @@ def _build_variant_rows(
     return rows
 
 
+def _reattach_clauses(corrected: str, existing: str) -> str:
+    """Put ``existing``'s position clauses back onto a freshly corrected caption.
+
+    Position clauses live in the *derived* layer: ``make caption-position``
+    writes them next to the resized image and leaves the hand-written master
+    alone (see :mod:`library.preprocess.position_captions`). A plain mirror would
+    therefore drop them on the next preprocess — the master has no clauses, so
+    the corrected caption has none either.
+
+    The v2 rewrite *moves* a bound tag out of the flat bag, so restoring the
+    clauses alone would re-assert every moved attribute twice. The moved set is
+    recoverable from the destination caption itself — a tag its clauses carry
+    that its own bag does not — so it is removed from the corrected bag again and
+    each attribute stays asserted exactly once.
+
+    A clause the master itself carries (the hand-written convention) survives the
+    correction pass on its own; this only fires when the destination has clauses
+    and the source does not.
+    """
+    prev = parse_caption(existing)
+    prev_bag = {t.strip().lower() for t in prev.flat_tags}
+    moved = {
+        key
+        for clause in prev.clauses
+        for t in clause.tags
+        if (key := t.strip().lower()) and key not in prev_bag
+    }
+    bag = [
+        t for t in parse_caption(corrected).flat_tags if t.strip().lower() not in moved
+    ]
+    return compose_caption(bag, prev.clauses)
+
+
 def _sidecar_is_current(
     path: Path, corrected: str, num_variants: int, n_rand: int
 ) -> bool:
@@ -129,6 +168,11 @@ def write_corrected_preprocess_captions(
     The source captions are never modified. The resized image tree is the
     authority because it already reflects low-res filtering, curation decisions,
     path_scope, and path_pattern from the resize stage.
+
+    Position clauses already on a destination caption are **preserved**: they are
+    generated into this tree by ``make caption-position`` and never written back
+    to the master, so a mirror that ignored them would drop them on every
+    preprocess (see :func:`_reattach_clauses`).
 
     ``correct`` (default True) bucket-reorders each caption via
     :func:`correct_caption`; pass ``correct=False`` to mirror the raw source
@@ -192,6 +236,11 @@ def write_corrected_preprocess_captions(
             corrected = correct_caption(raw, kb, options=options).text
         else:
             corrected = raw
+        if dst_caption.exists() and not has_clauses(corrected):
+            existing = dst_caption.read_text(encoding="utf-8").strip()
+            if has_clauses(existing):
+                corrected = _reattach_clauses(corrected, existing)
+                stats.clauses_preserved += 1
         entries.append(_Entry(src_caption, dst_caption, corrected))
 
     n_rand = _resolve_n_rand(num_variants, tag_randomize_rate)

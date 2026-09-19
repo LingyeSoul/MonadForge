@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from library.captioning.position_clauses import (
+    compose_caption as compose_position_caption,
+)
+from library.captioning.position_clauses import parse_caption as parse_position_caption
 from library.captioning.taxonomy import CAPTION_RATINGS, is_artist_tag, is_count_tag
 
 
@@ -228,6 +232,21 @@ def correct_caption(
     options: CaptionCorrectionOptions | None = None,
 ) -> CaptionCorrectionResult:
     options = options or CaptionCorrectionOptions()
+    # Trailing position clauses are already ordered (left→right) and their tags
+    # are bound to a subject — bucket-reordering would dissolve that binding back
+    # into the flat bag. Split them off, correct only the flat bag, re-append.
+    parsed = parse_position_caption(text)
+    if parsed.has_clauses:
+        flat = correct_caption(", ".join(parsed.flat_tags), kb, options=options)
+        corrected = compose_position_caption(
+            [t for t in flat.text.split(", ") if t], parsed.clauses
+        )
+        return CaptionCorrectionResult(
+            text=corrected,
+            changed=corrected != text.strip(),
+            inserted_no_artist=flat.inserted_no_artist,
+            unknown_tags=flat.unknown_tags,
+        )
     tags = _parse_tags(text)
     if not tags:
         return CaptionCorrectionResult(

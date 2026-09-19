@@ -19,7 +19,7 @@ output_dir = "output/ckpt"
 iterations = 750
 batch_size = 1
 seed = 42
-use_masked_loss = true
+use_masked_loss = false
 
 channel_scaling_alpha = 0.0 # channel scaling alpha harmed training
 

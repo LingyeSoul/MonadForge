@@ -73,6 +73,50 @@ STRINGS: dict[str, str] = {
         "最初の @artist マーカー以前のタグはドロップされません。"
         "シャッフルバリアント ≤ 0 の場合は無視されます。"
     ),
+    "preprocess_caption_autotag_box": "自動タグ付け",
+    "preprocess_caption_autotag": "Anima Tagger で自動タグ付け",
+    "preprocess_caption_autotag_tip": (
+        "データセット全体に Anima Tagger を実行し、.txt キャプションを書き出します。"
+        "リサイズ直後、最初に実行されます — 下の「キャプション編集」の各ステップは、"
+        "このステージが直前に作成したかもしれないキャプションを編集するためです。"
+        "GPU ステージです — タガーのパスがデータセットに対して1回追加され、"
+        "チェックポイントは初回実行時に自動でダウンロードされます。書き込む前に"
+        "キャプションを確認したい場合は、まず `make caption-autotag` でドライラン "
+        "レポートを出してください。"
+    ),
+    "preprocess_caption_autotag_mode": "モード",
+    "preprocess_caption_autotag_mode_missing": "キャプションのない画像のみ",
+    "preprocess_caption_autotag_mode_merge": "既存キャプションにマージ",
+    "preprocess_caption_autotag_mode_overwrite": "全キャプションを上書き",
+    "preprocess_caption_autotag_mode_tip": (
+        "キャプションのない画像のみ: .txt サイドカーがない画像だけをタグ付けし、"
+        "既存のキャプションには一切手を加えません — 安全なデフォルトです。\n"
+        "既存キャプションにマージ: 全画像をタグ付けしますが、キャプションに"
+        "ないタグのみを追加します。位置節とそのタグは保持されます。\n"
+        "全キャプションを上書き: すべてのキャプションをタガーの出力で置き換えます。"
+        "手書きのキャプションは失われます。"
+    ),
+    "preprocess_caption_autotag_min_confidence": "信頼度しきい値",
+    "preprocess_caption_autotag_min_confidence_tip": (
+        "タガー自体のタグごとのしきい値に加えて適用される、追加の確率下限です — "
+        "これを下回るタグは破棄されます。0 (デフォルト) はタガーの較正済みの"
+        "判断をそのまま使います。値を上げるとタグ数は減り、より安全になります。"
+        "レーティングはこの値に関わらず常に出力されます。"
+    ),
+    "preprocess_caption_editing": "キャプション編集",
+    "preprocess_caption_position_clauses": "位置節の生成 (複数被写体)",
+    "preprocess_caption_position_clauses_tip": (
+        "複数被写体の画像から SAM3 で被写体を検出し、それぞれをタグ付けして "
+        "キャプションを 'On the left, …' の位置節に書き換えます。属性がフラットな"
+        "タグ列に浮いたままにならず、各被写体に紐づきます。1人だけに紐づいたタグは"
+        "フラットなタグ列から**取り除かれて**その節へ移るので、各属性はちょうど1回"
+        "だけ記述されます（キャラクター名はタグ列にも残ります）。キャッシュ前に実行"
+        "され、キャプションはリサイズ画像の隣 (post_image_dataset/) に書き込みます —— "
+        "image_dataset/ の元のキャプションは変更しません。すでに位置節がある画像や、検出"
+        "数がキャプションの人数と食い違う画像はそのまま残します。GPU ステージです — "
+        "SAM3 + タガーのパスが1回追加されます。書き込む前に提案を確認したい場合は、"
+        "まず `make caption-position` でドライラン レポートを出してください。"
+    ),
     "preprocess_caption_correct_order": "キャプション順序補正",
     "preprocess_caption_correct_order_tip": (
         "補正済み .txt キャプションをリサイズ画像の隣に保存し、"

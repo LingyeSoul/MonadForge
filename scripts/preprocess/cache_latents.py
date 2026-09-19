@@ -112,6 +112,9 @@ def main() -> None:
         print(f"Latent caching: all {total} images already cached — skipping VAE load.")
         return
 
+    from library.runtime.backend import warn_if_cuda_unavailable
+
+    warn_if_cuda_unavailable(torch)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32 if args.no_half_vae else torch.bfloat16
 

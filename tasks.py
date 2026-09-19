@@ -270,6 +270,21 @@ COMMANDS = {
         "Build the typed-tag caption index (character/copyright/artist groups) "
         "at post_image_dataset/captions/caption_index.json. Pure data, no GPU.",
     ),
+    "caption-autotag": (
+        preprocess.cmd_caption_autotag,
+        "Auto-tag the dataset with the Anima Tagger and write .txt caption "
+        'sidecars. ARGS="--mode missing|merge|overwrite" (default missing = '
+        'only uncaptioned images). Dry-run by default; ARGS="--apply" writes, '
+        "then `make preprocess-te` is REQUIRED.",
+    ),
+    "caption-position": (
+        preprocess.cmd_caption_position,
+        "Append position-aware clauses ('On the left, <tags>. ...') to "
+        "multi-subject captions via SAM3 + Anima Tagger. Writes the resized "
+        "captions (post_image_dataset/), never the image_dataset/ master. "
+        'Dry-run by default; ARGS="--apply" writes, then `make preprocess-te` '
+        "is REQUIRED.",
+    ),
     # ── Curation ──────────────────────────────────────────────────────
     "curate-group": (
         curate.cmd_curate_group,
@@ -306,6 +321,11 @@ COMMANDS = {
         "Download all models (--source modelscope fetches from 魔搭 mirrors)",
     ),
     "download-anima": (downloads.cmd_download_anima, "Download Anima model"),
+    "download-anima-variant": (
+        downloads.cmd_download_anima_variant,
+        "Download an alternate Anima base DiT (aesthetic / turbo / preview / "
+        "2.9B); ARGS=<name>, no args lists them",
+    ),
     "download-sam3": (downloads.cmd_download_sam3, "Download SAM3 model"),
     "download-mit": (downloads.cmd_download_mit, "Download MIT model"),
     "download-pe": (

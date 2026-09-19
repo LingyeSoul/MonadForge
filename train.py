@@ -156,6 +156,12 @@ from library.training.log_dispatch import (
     generate_step_logs as _generate_step_logs,
 )
 from library.training.progress import ProgressSink, run_scope
+from library.training.mem_reweight import (
+    MemGapTracker,
+    adapted_logmse,
+    measure_base_logmse,
+    measure_grid_delta,
+)
 from library.training.forward import (
     ForwardConditioning,
     apply_router_conditioning,
@@ -1396,6 +1402,32 @@ class AnimaTrainer:
                 f"using trainable DiT with multiplier=0 as the control variate"
             )
 
+        # Online memorization Δ-gap tracker (same set_multiplier(0) trick as
+        # VR — _archive/proposals/memorization_lowsigma_reweight.md). The
+        # measurement is a second per-step DiT forward, unaudited against the
+        # block-swap offloader (cf.
+        # [[project_blockswap_extra_forwards_gradcache]]) — raise, not warn,
+        # same policy as the register-tokens guard.
+        mem_mode = str(getattr(args, "mem_reweight_mode", "") or "")
+        if mem_mode:
+            if self.is_swapping_blocks:
+                raise ValueError(
+                    "--mem_reweight_mode requires blocks_to_swap=0 — the "
+                    "Δ-gap measurement forward has not been validated against "
+                    "the block-swap offloader and can silently desync it. "
+                    "Use block compile for memory instead."
+                )
+            save_path = os.path.join(
+                args.output_dir,
+                f"{getattr(args, 'output_name', None) or 'lora'}_memgap.json",
+            )
+            self._state.mem_tracker = MemGapTracker(args, save_path)
+            logger.info(
+                f"memorization Δ-gap tracker enabled (mode={mem_mode}, "
+                f"σ≤{args.mem_sigma_max}, K={args.mem_measure_every}) — "
+                f"state → {save_path}"
+            )
+
         return model, text_encoders
 
     # Strategy construction + singleton installation lives in
@@ -1643,6 +1675,63 @@ class AnimaTrainer:
                 "state": self._state.vr,
             }
 
+        # Online memorization Δ-gap (mem_reweight.py). Producer half: the
+        # causal per-item weights (from state BEFORE this step's measurement)
+        # plus, on measurement steps with any σ ≤ sigma_max draw, the base
+        # forward's per-sample log-MSE on the identical (x_t, ε, σ). The
+        # consumer half (EMA update + loss_weights multiply) lives at the
+        # loss site in ``_process_batch_inner`` where model_pred/target exist.
+        tracker = self._state.mem_tracker
+        if (
+            is_train
+            and tracker is not None
+            and cond.crossattn_emb is not None
+            and "image_keys" in batch
+        ):
+            sig = sigmas.reshape(sigmas.shape[0], -1)[:, 0].float()
+            low_mask = sig <= tracker.sigma_max
+            keys = list(batch["image_keys"])
+            base_logmse = None
+            grid_deltas = None
+            if tracker.extra_sigmas:
+                # Multi-draw mode: fixed σ grid × antithetic ε, every visit
+                # (not gated on the train draw's σ) — the Δ is computed fully
+                # here; the consumer only folds it into the EMA.
+                if tracker.should_measure():
+                    grid_deltas = measure_grid_delta(
+                        anima_call=anima,
+                        network=ctx.network,
+                        latents=latents,
+                        crossattn_emb=cond.crossattn_emb,
+                        padding_mask=padding_mask,
+                        forward_kwargs=cond.kw,
+                        model_dtype=noisy_model_input.dtype,
+                        sigmas=tracker.extra_sigmas,
+                        n_noise=tracker.extra_noise,
+                        delta=tracker.delta,
+                        generator=tracker.noise_generator(latents.device),
+                    )
+            elif tracker.should_measure() and bool(low_mask.any()):
+                base_logmse = measure_base_logmse(
+                    anima_call=anima,
+                    network=ctx.network,
+                    noisy_model_input=noisy_model_input,
+                    timesteps=timesteps,
+                    crossattn_emb=cond.crossattn_emb,
+                    padding_mask=padding_mask,
+                    forward_kwargs=cond.kw,
+                    noise=noise,
+                    latents=latents,
+                    delta=tracker.delta,
+                )
+            self._state.extras_for_step["mem_gap"] = {
+                "keys": keys,
+                "weights": tracker.weights(keys, low_mask.tolist()),
+                "low_mask": low_mask,
+                "base_logmse": base_logmse,
+                "grid_deltas": grid_deltas,
+            }
+
     def _dispatch_adapter_extras(
         self, ctx: TrainCtx, primary: ForwardArtifacts
     ) -> None:
@@ -1745,7 +1834,7 @@ class AnimaTrainer:
 
         # Loss weighting
         weighting = anima_train_utils.compute_loss_weighting_for_anima(
-            weighting_scheme=ctx.args.weighting_scheme, sigmas=sigmas
+            weighting_scheme=ctx.args.weighting_scheme, sigmas=sigmas, args=ctx.args
         )
 
         return model_pred, target, timesteps, weighting
@@ -1989,6 +2078,34 @@ class AnimaTrainer:
         if func_loss is not None:
             loss_aux["func_loss"] = func_loss
 
+        # Online memorization Δ-gap, consumer half (producer: the mem_gap
+        # block in ``_attach_aux_losses``). Fold this step's paired Δ into the
+        # per-item EMA (measurement steps only), then apply the CAUSAL weights
+        # (computed from pre-step state) onto the per-sample loss_weights.
+        loss_weights = batch["loss_weights"]
+        mem_gap = loss_aux.pop("mem_gap", None)
+        if mem_gap is not None:
+            tracker = self._state.mem_tracker
+            if mem_gap.get("grid_deltas") is not None:
+                # Multi-draw Δ was fully computed in the producer, for every
+                # batch item regardless of the train draw's σ.
+                tracker.update(mem_gap["keys"], mem_gap["grid_deltas"].tolist())
+            elif mem_gap["base_logmse"] is not None:
+                with torch.no_grad():
+                    d = mem_gap["base_logmse"] - adapted_logmse(
+                        noise_pred, target, tracker.delta
+                    )
+                low = mem_gap["low_mask"].tolist()
+                tracker.update(
+                    [k for k, m in zip(mem_gap["keys"], low) if m],
+                    [v for v, m in zip(d.tolist(), low) if m],
+                )
+            w = mem_gap["weights"]
+            if any(x != 1.0 for x in w):
+                loss_weights = loss_weights * torch.tensor(
+                    w, device=loss_weights.device, dtype=loss_weights.dtype
+                )
+
         composer = build_loss_composer(
             args, getattr(self, "_network", network), ledger=self._liveness
         )
@@ -2002,7 +2119,7 @@ class AnimaTrainer:
                 timesteps=timesteps,
                 weighting=weighting,
                 huber_c=huber_c,
-                loss_weights=batch["loss_weights"],
+                loss_weights=loss_weights,
                 network=getattr(self, "_network", network),
                 aux=aux,
                 is_train=is_train,
@@ -2072,6 +2189,8 @@ class AnimaTrainer:
 
     def update_metadata(self, metadata, args):
         metadata["ss_weighting_scheme"] = args.weighting_scheme
+        if args.weighting_scheme == "min_snr":
+            metadata["ss_min_snr_gamma"] = getattr(args, "min_snr_gamma", 5.0)
         metadata["ss_logit_mean"] = args.logit_mean
         metadata["ss_logit_std"] = args.logit_std
         metadata["ss_mode_scale"] = args.mode_scale
@@ -2368,6 +2487,27 @@ class AnimaTrainer:
                 None  # placeholder until validation dataset supported for arbitrary
             )
 
+        # `masked_loss` is the one switch. A mask tree left on disk from an
+        # earlier `make mask` (config `mask_dir`, or the legacy `masks/{merged,
+        # sam}` auto-resolution) must not re-enable masking on its own — the
+        # loss applies whatever `alpha_masks` the batch carries, so strip the
+        # subsets' mask_dir here and say so once.
+        if not getattr(args, "masked_loss", False):
+            ignored: set[str] = set()
+            for group in (train_dataset_group, val_dataset_group):
+                for ds in getattr(group, "datasets", None) or []:
+                    for subset in getattr(ds, "subsets", None) or []:
+                        if getattr(subset, "mask_dir", None):
+                            ignored.add(str(subset.mask_dir))
+                            subset.mask_dir = None
+                            subset.alpha_mask = False
+            if ignored:
+                logger.info(
+                    "masked_loss = false: masks under %s are ignored "
+                    "(set masked_loss = true to train with them)",
+                    ", ".join(sorted(ignored)),
+                )
+
         current_epoch = Value("i", 0)
         current_step = Value("i", 0)
         for dataset_group in (train_dataset_group, val_dataset_group):
@@ -2396,11 +2536,15 @@ class AnimaTrainer:
         unioned with the token counts the sample prompts will request (see
         ``_sample_prompt_token_counts``). This sizes ``compile_blocks``' dynamo
         cache to exactly the tiers on disk for this run — independent of
-        ``args.target_res``. Returns ``(None, None)`` when no bucketed resos are
-        available (e.g. a MinimalDataset), leaving compile_blocks on its own
-        defaults.
-        """
-        from library.datasets.buckets import token_counts_for_resos
+        ``args.target_res``. ``seq_bands`` is the per-tier clustering of the same count
+        set (``cluster_token_bands``), consumed only under
+        ``--compile_seq_bands``. Returns ``(None, None, None)`` when no bucketed
+        resos are available (e.g. a MinimalDataset), leaving compile_blocks on
+        its own defaults.        """
+        from library.datasets.buckets import (
+            cluster_token_bands,
+            token_counts_for_resos,
+        )
 
         resos: set = set()
         for group in (train_group, val_group):
@@ -2411,9 +2555,9 @@ class AnimaTrainer:
                 if bm is not None:
                     resos.update(bm.resos)
         if not resos:
-            return None, None
+            return None, None, None
         counts = token_counts_for_resos(resos) | self._sample_prompt_token_counts(args)
-        return len(counts), (min(counts), max(counts))
+        return len(counts), (min(counts), max(counts)), cluster_token_bands(counts)
 
     def _sample_prompt_token_counts(self, args) -> set:
         """Token counts the sample prompts will request; empty when sampling is off.
@@ -2448,6 +2592,136 @@ class AnimaTrainer:
             )
             return set()
         return token_counts_for_sample_prompts(prompts)
+
+    def _maybe_sketch_grad_basis(
+        self, args, accelerator, unet, train_dataset_group, weight_dtype
+    ) -> None:
+        """``down_init="grad_svd"``: sketch this run's own gradient row space.
+
+        A LoRA-GA / LoRA-One style seed needs the task gradient *before* the
+        adapter exists, so this runs one frozen-DiT forward/backward per
+        (image, σ) over the run's cached latents+TE, takes the top-r right
+        singular vectors per target Linear, writes them beside the checkpoint,
+        and hands the path to the factory as ``grad_basis_file`` — the same
+        artifact ``down_init="basis_file"`` reads, so the two modes share one
+        load path. Output is an ordinary LoRA either way (B=0, ΔW=0 at step 0).
+
+        Refused under block swap: the swapper's residency plan assumes the
+        training loop's forward cadence and desyncs on extra forwards
+        (docs/optimizations/block_swap.md). Build the basis with
+        ``bench/grad_init/build_universal_basis.py`` and pass ``basis_file``
+        instead on a swap preset.
+        """
+        net_kwargs = resolve_network_kwargs(args)
+        if net_kwargs.get("down_init") != "grad_svd":
+            return
+        if net_kwargs.get("grad_basis_file"):
+            logger.info(
+                "down_init=grad_svd: grad_basis_file already set "
+                f"({net_kwargs['grad_basis_file']}); skipping the sketch pass."
+            )
+            return
+        if self.is_swapping_blocks:
+            raise ValueError(
+                "down_init='grad_svd' needs a resident DiT for its sketch pass, "
+                "but blocks_to_swap>0. Use down_init='basis_file' with a basis "
+                "built by bench/grad_init/build_universal_basis.py, or set "
+                "blocks_to_swap=0."
+            )
+
+        from library.env import resolve_under_home
+        from networks.grad_basis import (
+            BASIS_SUFFIX,
+            basis_from_sketches,
+            dit_num_blocks,
+            save_basis,
+            sketch_dataset,
+        )
+
+        pairs: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for info in train_dataset_group.image_data.values():
+            if info.is_reg:
+                continue
+            npz, te = info.latents_npz, info.text_encoder_outputs_npz
+            if not npz or not te or npz in seen:
+                continue
+            seen.add(npz)
+            pairs.append((npz, te))
+        pairs.sort()  # dict order follows the glob; keep the sketch reproducible
+        if not pairs:
+            raise RuntimeError(
+                "down_init='grad_svd' needs cached latents + text-encoder "
+                "outputs; none of the training images have both. Run "
+                "`make preprocess` first."
+            )
+
+        rank = int(args.network_dim or 4)
+        samples = int(net_kwargs.get("grad_basis_samples", 64) or 0)
+        passes = int(net_kwargs.get("grad_basis_passes", 1) or 1)
+        oversample = int(net_kwargs.get("grad_basis_oversample", 32) or 32)
+        seed = int(net_kwargs.get("grad_basis_seed", args.seed or 42) or 42)
+
+        out_path = resolve_under_home(
+            os.path.join(args.output_dir, f"{args.output_name}{BASIS_SUFFIX}")
+        )
+        logger.info(
+            f"down_init=grad_svd: sketching r={rank} (q={rank + oversample}) over "
+            f"{min(samples, len(pairs)) if samples else len(pairs)} of "
+            f"{len(pairs)} cached images x {passes} pass(es)"
+        )
+
+        was_training = unet.training
+        unet.requires_grad_(False)
+        unet.to(accelerator.device, dtype=weight_dtype)
+        # Gradient checkpointing is gated on module.training (models.py), and a
+        # 4k-token backward without it does not fit the 16 GB envelope — turn it
+        # on for the sketch regardless of args.gradient_checkpointing, then put
+        # the model back exactly as the trainer expects it.
+        had_ckpt = bool(getattr(unet, "gradient_checkpointing", False))
+        unet.train()
+        if not had_ckpt:
+            unet.enable_gradient_checkpointing()
+        try:
+            sketches, meta = sketch_dataset(
+                unet,
+                pairs,
+                rank=rank,
+                device=accelerator.device,
+                oversample=oversample,
+                passes=passes,
+                seed=seed,
+                max_samples=samples,
+            )
+        finally:
+            if not had_ckpt:
+                unet.disable_gradient_checkpointing()
+            if not was_training:
+                unet.eval()
+            unet.to("cpu")
+            unet.zero_grad(set_to_none=True)
+            clean_memory_on_device(accelerator.device)
+
+        basis = basis_from_sketches(sketches, rank)
+        save_basis(
+            out_path,
+            basis,
+            num_blocks=dit_num_blocks(unet),
+            extra_metadata={
+                "source": "grad_svd (per-run sketch)",
+                "n_used": meta["n_used"],
+                "passes": meta["passes"],
+                "seed": meta["seed"],
+                "mean_loss": round(meta["mean_loss"], 6),
+            },
+        )
+        logger.info(
+            f"down_init=grad_svd: basis written to {out_path} "
+            f"({len(basis)} layers, {meta['n_used']} samples, {meta['seconds']}s)"
+        )
+        # Mutating the cached dict is how the factory sees it — net_kwargs IS
+        # args._network_kwargs, which _create_and_apply_network re-reads.
+        net_kwargs["grad_basis_file"] = str(out_path)
 
     def _create_and_apply_network(
         self,
@@ -2606,12 +2880,26 @@ class AnimaTrainer:
             # special-casing here — see Anima.compile_blocks.
             from library.runtime.harness import compile_blocks_for_training
 
-            # Token-family budget derived from the buckets the dataset actually
-            # populated (see _derive_token_budget) — not args.target_res, which is
-            # a preprocess-only knob and inert at train time.
-            n_token_families, seq_range = getattr(
-                self, "_compile_token_budget", (None, None)
+            # Token-family budget from buckets the dataset actually populated
+            # (_derive_token_budget) — not args.target_res (preprocess-only).
+            n_token_families, seq_range, seq_bands = getattr(
+                self, "_compile_token_budget", (None, None, None)
             )
+            if not getattr(args, "compile_seq_bands", False):
+                seq_bands = None
+            # Register tokens grow the seq by a constant K, so widen the
+            # dynamic-seq bound's MAX by K or the compiled block's bound is
+            # violated (the min/family-count stay: mid-stack insertion still
+            # runs blocks before the insert at the bare seq). Per-band mode
+            # widens each band's hi; widen_bands raises if K would make
+            # adjacent bands touch (silent merging would un-tighten them).
+            extra_seq = int(getattr(network, "extra_seq_tokens", 0) or 0)
+            if extra_seq and seq_range is not None:
+                seq_range = (seq_range[0], seq_range[1] + extra_seq)
+                if seq_bands:
+                    from library.datasets.buckets import widen_bands
+
+                    seq_bands = widen_bands(seq_bands, extra_seq)
             compile_blocks_for_training(
                 unet,
                 network,
@@ -2619,6 +2907,7 @@ class AnimaTrainer:
                 mode=getattr(args, "compile_inductor_mode", None),
                 n_token_families=n_token_families,
                 seq_range=seq_range,
+                seq_bands=seq_bands,
                 dynamic_seq=bool(getattr(args, "compile_dynamic_seq", False)),
                 activation_memory_budget=float(
                     getattr(args, "activation_memory_budget", 1.0) or 1.0
@@ -2929,6 +3218,9 @@ class AnimaTrainer:
         )
 
     def train(self, args):
+        from library.runtime.backend import warn_if_cuda_unavailable
+
+        warn_if_cuda_unavailable(torch)
         session_id = random.randint(0, 2**32)
         training_started_at = time.time()
         selected_preprocess_run = _apply_preprocess_run(args)
@@ -3212,6 +3504,12 @@ class AnimaTrainer:
                 dtype=weight_dtype,
                 existing=self._state.uncond_crossattn_1,
             )
+
+        # Before the network exists: a grad_svd seed needs the task gradient of
+        # the *base* DiT (see _maybe_sketch_grad_basis). No-op otherwise.
+        self._maybe_sketch_grad_basis(
+            args, accelerator, unet, train_dataset_group, weight_dtype
+        )
 
         net = self._create_and_apply_network(
             args, accelerator, vae, text_encoder, unet, text_encoders, weight_dtype

@@ -359,6 +359,18 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
         "trusting it on a new config.",
     )
     parser.add_argument(
+        "--compile_seq_bands",
+        action="store_true",
+        help="With --compile_dynamic_seq: dispatch one tight mark_dynamic band "
+        "per token-count cluster (per tier) instead of a single union range "
+        "spanning the inter-tier dead zone. Each band gets its own dynamo "
+        "specialization — own triton autotune configs, tighter guard "
+        "reasoning; mix_order_reduction stays enabled when no band straddles "
+        "4096. Costs ~x(bands) step-0 compile wall. No-op on single-tier "
+        "pools (one band == the union range). Phase 0 flag — see "
+        "_archive/proposals/perband_dynamic_seq.md and bench/perband_seq.",
+    )
+    parser.add_argument(
         "--vae", type=str, default=None, help="path to checkpoint of vae to replace"
     )
     parser.add_argument(
@@ -709,7 +721,10 @@ def add_training_arguments(parser: argparse.ArgumentParser, support_dreambooth: 
 
 def add_masked_loss_arguments(parser: argparse.ArgumentParser):
     parser.add_argument(
-        "--masked_loss", action="store_true", help="apply mask for calculating loss."
+        "--masked_loss",
+        action="store_true",
+        help="apply mask for calculating loss. Off by default since v2: a mask "
+        "tree on disk is ignored (one log line) until this is set.",
     )
 
 
@@ -738,11 +753,16 @@ def add_dit_training_arguments(parser: argparse.ArgumentParser):
             "logit_normal",
             "mode",
             "cosmap",
+            "min_snr",
             "none",
             "uniform",
         ],
-        help="weighting scheme for timestep distribution. Default is uniform",
+        help="weighting scheme for timestep distribution. Default is uniform. "
+        "min_snr = v-pred Min-SNR-gamma, mean-1 normalized over the run's sigma "
+        "density (down-weights the high-sigma steps the gradient noise-scale "
+        "probe found 4-10x noisier for equal signal; see --min_snr_gamma)",
     )
+
     parser.add_argument(
         "--logit_mean",
         type=float,

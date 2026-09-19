@@ -365,6 +365,381 @@ def test_caption_correction_config_parses_trigger_cli_args():
     assert cleaned == ["--other"]
 
 
+def test_caption_position_clauses_is_not_a_correction_flag():
+    """It gates its own stage — it must never reach ``correct_captions.py``.
+
+    ``position_clauses`` rides in the caption-correction config dict (same
+    family of caption-master rewrites, one GUI box), but enabling it alone must
+    not turn the correction pass on or add an argv flag it doesn't know.
+    """
+    from scripts.tasks.preprocess import (
+        _caption_correction_args,
+        _caption_correction_config,
+        _caption_correction_enabled,
+    )
+
+    config, cleaned = _caption_correction_config(
+        ["--caption_position_clauses", "--other"]
+    )
+
+    assert config["position_clauses"] is True
+    assert cleaned == ["--other"]
+    assert _caption_correction_enabled(config) is False
+    assert _caption_correction_args(config) == []
+
+    off, _ = _caption_correction_config(["--no_caption_position_clauses"])
+    assert off["position_clauses"] is False
+
+
+def test_preprocess_chains_position_clauses_before_the_caption_step(monkeypatch):
+    """The stage rewrites the derived caption, so it must land before the mirror.
+
+    Ordering is the whole contract: the caption step re-corrects that same file
+    and writes the variant sidecars around it, so a position pass that ran after
+    it would be encoded only on the *next* preprocess. It also has to run inline
+    (plain ``run``) — this process is itself a daemon job on a serial queue.
+    """
+    from scripts.tasks import preprocess
+
+    order: list[str] = []
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_resize", lambda *_a, **_k: order.append("resize")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_vae", lambda *_a, **_k: order.append("vae")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_te", lambda *_a, **_k: order.append("te")
+    )
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        order.append("position")
+
+    monkeypatch.setattr(preprocess, "run", fake_run)
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess([])
+
+    assert order == ["resize", "vae", "position", "te"]
+    (cmd,) = calls
+    assert cmd[:2] == [preprocess.PY, "scripts/preprocess/position_captions.py"]
+    assert cmd[-1] == "--apply"
+
+
+def test_preprocess_skips_position_clauses_when_unset(monkeypatch):
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    for name in ("cmd_preprocess_resize", "cmd_preprocess_vae", "cmd_preprocess_te"):
+        monkeypatch.setattr(preprocess, name, lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.delenv("CAPTION_POSITION_CLAUSES", raising=False)
+    monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
+
+    preprocess.cmd_preprocess([])
+
+    assert calls == []
+
+
+def test_preprocess_captions_runs_the_master_stages_when_configured(monkeypatch):
+    """`preprocess-captions` mirrors the master, so it owns the stages too.
+
+    Run on its own (not through the full chain) it must still honour
+    ``caption_position_clauses`` / ``caption_autotag`` — otherwise the mirror,
+    and every TE cache encoded from it, silently predates the rewrite.
+    """
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("4", "0.1", "0.0"))
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess_captions([])
+
+    scripts = [cmd[1] for cmd in calls]
+    assert scripts == [
+        "scripts/preprocess/autotag_captions.py",
+        "scripts/preprocess/position_captions.py",
+        "scripts/preprocess/correct_captions.py",
+    ]
+    # In-pipeline stages write for real — a dry run here would leave the mirror
+    # encoding the un-rewritten caption.
+    assert calls[0][-1] == "--apply"
+    assert calls[1][-1] == "--apply"
+
+
+def test_master_stages_inherit_an_explicit_path_pattern(monkeypatch):
+    """A scoped preprocess must not rewrite captions dataset-wide.
+
+    The caption-MASTER stages are driven from the caption-config dict alone —
+    the caller's ``extra`` never reaches them — so the resolved subset scope
+    has to ride in that dict. Without it, ``make preprocess-captions
+    ARGS="--path_pattern artistA/*"`` would cache the requested slice while
+    autotag ``merge``/``overwrite`` rewrote every caption in the master.
+    """
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+    monkeypatch.delenv("PREPROCESS_PATH_PATTERN", raising=False)
+
+    preprocess.cmd_preprocess_captions(["--path_pattern", "artistA/*"])
+
+    assert [cmd[1] for cmd in calls] == [
+        "scripts/preprocess/autotag_captions.py",
+        "scripts/preprocess/position_captions.py",
+        # The mirror rides along whenever position clauses are on — they land in
+        # `resized/`, so every other caption has to be mirrored there too.
+        "scripts/preprocess/correct_captions.py",
+    ]
+    for cmd in calls:
+        # Present, and emitted exactly once — the argv builder resolves the
+        # scope and drops it from the tail rather than splatting it twice.
+        assert cmd.count("--path_pattern") == 1
+        assert cmd[cmd.index("--path_pattern") + 1] == "artistA/*"
+
+
+def test_standalone_caption_target_does_not_duplicate_the_path_pattern():
+    """`make caption-position ARGS="--path_pattern x"` passes it through once."""
+    from scripts.tasks import preprocess
+
+    argv = preprocess._caption_position_argv(["--path_pattern", "artistA/*", "--apply"])
+    assert argv.count("--path_pattern") == 1
+    assert argv[argv.index("--path_pattern") + 1] == "artistA/*"
+    assert argv[-1] == "--apply"
+
+
+def test_preprocess_captions_runs_the_stages_even_with_correction_off(monkeypatch):
+    """The early "correction disabled" return must not swallow the stages.
+
+    With position clauses on, the mirror has to run as well even though nothing
+    is being corrected or shuffled: the clause rewrite lands in ``resized/`` and
+    the TE step therefore reads that tree, so every image the rewrite did *not*
+    touch still needs its master caption mirrored there.
+    """
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess_captions([])
+
+    assert [cmd[1] for cmd in calls] == [
+        "scripts/preprocess/position_captions.py",
+        "scripts/preprocess/correct_captions.py",
+    ]
+    # Nothing to correct and no variants — the mirror runs in passthrough.
+    assert "--no_correct" in calls[1]
+
+
+def test_preprocess_te_reads_resized_when_position_clauses_are_on(monkeypatch):
+    """Clauses live in ``resized/``, so TE must encode that tree, not the master.
+
+    No correction + no variants would normally encode the caption master
+    directly with a match filter — which would silently train the pre-clause
+    caption, since the position pass never writes the master.
+    """
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("0", "0.0", "0.0"))
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.delenv("CAPTION_AUTOTAG", raising=False)
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess_te([])
+
+    assert [cmd[1] for cmd in calls] == [
+        "scripts/preprocess/position_captions.py",
+        "scripts/preprocess/correct_captions.py",
+        "scripts/preprocess/cache_text_embeddings.py",
+    ]
+    te_cmd = calls[-1]
+    assert te_cmd[te_cmd.index("--dir") + 1] == "post_image_dataset/resized"
+    assert "--match_images_from" not in te_cmd
+
+
+def test_preprocess_chain_runs_each_master_stage_once(monkeypatch):
+    """`preprocess` runs the stages early; the caption/TE steps must not repeat.
+
+    Both passes are idempotent on a rewritten caption, but each re-pays a SAM3 /
+    tagger load over the whole tree. The shared caption-config dict is what
+    carries "already ran" down the chain.
+    """
+    from scripts.tasks import preprocess
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    monkeypatch.setattr(preprocess, "_ensure_danbooru_tags", lambda: None)
+    monkeypatch.setattr(preprocess, "_variant_settings", lambda: ("4", "0.1", "0.0"))
+    monkeypatch.setattr(preprocess, "cmd_preprocess_resize", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess, "cmd_preprocess_vae", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(preprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess([])
+
+    scripts = [cmd[1] for cmd in calls]
+    assert scripts.count("scripts/preprocess/autotag_captions.py") == 1
+    assert scripts.count("scripts/preprocess/position_captions.py") == 1
+    # Order is unchanged: the caption rewrites, then the mirror, then the encode.
+    assert scripts == [
+        "scripts/preprocess/autotag_captions.py",
+        "scripts/preprocess/position_captions.py",
+        "scripts/preprocess/correct_captions.py",
+        "scripts/preprocess/cache_text_embeddings.py",
+    ]
+
+
+def test_caption_autotag_is_not_a_correction_flag():
+    """Like ``position_clauses``: own stage, must never reach correct_captions.py."""
+    from scripts.tasks.preprocess import (
+        _caption_correction_args,
+        _caption_correction_config,
+        _caption_correction_enabled,
+    )
+
+    config, cleaned = _caption_correction_config(
+        ["--caption_autotag", "--caption_autotag_mode", "merge", "--other"]
+    )
+
+    assert config["autotag"] is True
+    assert config["autotag_mode"] == "merge"
+    assert cleaned == ["--other"]
+    assert _caption_correction_enabled(config) is False
+    assert _caption_correction_args(config) == []
+
+    off, _ = _caption_correction_config(["--no_caption_autotag"])
+    assert off["autotag"] is False
+    # Mode defaults to the non-destructive one when nothing selects it.
+    assert off["autotag_mode"] == "missing"
+
+
+def test_caption_autotag_rejects_an_unknown_mode():
+    """Fail at argv-parse time, not minutes into a GPU job."""
+    import pytest
+
+    from scripts.tasks.preprocess import _caption_correction_config
+
+    with pytest.raises(SystemExit):
+        _caption_correction_config(["--caption_autotag_mode", "clobber"])
+
+
+def test_caption_autotag_args_always_apply():
+    """In-pipeline the user already opted in; a dry run there writes nothing."""
+    from scripts.tasks.preprocess import _caption_autotag_args
+
+    assert _caption_autotag_args({"autotag_mode": "missing"}) == [
+        "--mode",
+        "missing",
+        "--apply",
+    ]
+    # A zero floor is left off entirely so the tagger's own thresholds rule.
+    assert "--min_confidence" not in _caption_autotag_args(
+        {"autotag_mode": "merge", "autotag_min_confidence": 0.0}
+    )
+    assert _caption_autotag_args(
+        {"autotag_mode": "merge", "autotag_min_confidence": 0.35}
+    ) == ["--mode", "merge", "--min_confidence", "0.35", "--apply"]
+
+
+def test_preprocess_chains_autotag_first(monkeypatch):
+    """Autotag *creates* the captions every later stage reads, so it goes first.
+
+    Ordering is the contract: position clauses append to the master, correction
+    and TE read it. An autotag that ran after any of them would leave this run
+    encoding the un-tagged caption.
+    """
+    from scripts.tasks import preprocess
+
+    order: list[str] = []
+
+    monkeypatch.setattr(preprocess, "_path", lambda key, default: default)
+    monkeypatch.setattr(preprocess, "_repa_pe_encoder", lambda: None)
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_resize", lambda *_a, **_k: order.append("resize")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_vae", lambda *_a, **_k: order.append("vae")
+    )
+    monkeypatch.setattr(
+        preprocess, "cmd_preprocess_te", lambda *_a, **_k: order.append("te")
+    )
+    monkeypatch.setattr(preprocess, "cmd_caption_index", lambda *_a, **_k: None)
+    monkeypatch.setattr(preprocess.os.path, "exists", lambda _p: True)
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        order.append("autotag" if "autotag_captions.py" in cmd[1] else "position")
+
+    monkeypatch.setattr(preprocess, "run", fake_run)
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MODE", "merge")
+    monkeypatch.setenv("CAPTION_POSITION_CLAUSES", "1")
+
+    preprocess.cmd_preprocess([])
+
+    assert order == ["resize", "autotag", "vae", "position", "te"]
+    autotag_cmd = calls[0]
+    assert autotag_cmd[:2] == [
+        preprocess.PY,
+        "scripts/preprocess/autotag_captions.py",
+    ]
+    assert autotag_cmd[-3:] == ["--mode", "merge", "--apply"]
+
+
+def test_preprocess_autotag_blank_env_confidence_is_zero(monkeypatch):
+    """The GUI writes ``""`` for an empty field — that must not raise."""
+    from scripts.tasks.preprocess import _caption_correction_config
+
+    monkeypatch.setenv("CAPTION_AUTOTAG", "1")
+    monkeypatch.setenv("CAPTION_AUTOTAG_MIN_CONFIDENCE", "")
+
+    config, _ = _caption_correction_config([])
+    assert config["autotag_min_confidence"] == 0.0
+
+
 def test_preprocess_run_alias_is_stripped_and_explicit_value_wins(monkeypatch):
     from scripts.tasks.preprocess import _consume_preprocess_run
 

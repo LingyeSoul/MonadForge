@@ -153,3 +153,9 @@ class RuntimeState:
     # Set during dataset prep from subset.caption_dropout_rate; gates whether
     # ``ensure_uncond_crossattn`` actually stages the sidecar.
     caption_dropout_enabled: bool = False
+    # Online memorization Δ-gap tracker (library/training/mem_reweight.py),
+    # created at model-setup when --mem_reweight_mode is set. Producer: the
+    # mem_gap block in ``_attach_aux_losses`` (base forward on measurement
+    # steps + causal per-item weights). Consumer: the loss site in
+    # ``_process_batch_inner`` (EMA update + loss_weights multiply).
+    mem_tracker: object | None = None

@@ -92,6 +92,48 @@ def build_erasure_token_pool(
     return pool
 
 
+def _perturb_tags(
+    tags: list[str],
+    split_idx: int,
+    *,
+    tag_dropout_rate: float,
+    tag_randomize_rate: float,
+    protect_fn: Callable[[str], bool] | None,
+    pool: list[str] | None,
+    sentinel: str,
+) -> list[str]:
+    """Apply the presence (dropout) then identity (randomize) axes to ``tags``.
+
+    ``split_idx`` is the @artist-prefix boundary: both axes leave ``tags`` up to
+    it untouched. Shared by the flat tag bag and — with ``split_idx=0`` — the
+    body of each surviving position clause.
+    """
+    if tag_dropout_rate > 0.0 and len(tags) > split_idx:
+        kept = list(tags[:split_idx])
+        for tag in tags[split_idx:]:
+            if (protect_fn is not None and protect_fn(tag)) or (
+                random.random() >= tag_dropout_rate
+            ):
+                kept.append(tag)
+        if not kept:
+            kept = tags[:1]
+        tags = kept
+    if tag_randomize_rate > 0.0:
+        tags = [
+            random.choice(pool)
+            if (
+                i >= split_idx
+                and tag != sentinel
+                and not tag.startswith(("On the ", "In the "))
+                and not (protect_fn is not None and protect_fn(tag))
+                and random.random() < tag_randomize_rate
+            )
+            else tag
+            for i, tag in enumerate(tags)
+        ]
+    return tags
+
+
 def generate_caption_variants(
     caption: str,
     num_variants: int,
@@ -99,6 +141,7 @@ def generate_caption_variants(
     protect_fn: Callable[[str], bool] | None = None,
     tag_randomize_rate: float = 0.0,
     erasure_pool: Collection[str] | None = None,
+    clause_dropout_rate: float | None = None,
 ) -> list[str]:
     """Generate ``num_variants`` caption variants for stochastic train-time sampling.
 
@@ -126,8 +169,23 @@ def generate_caption_variants(
     erasure symbols: each randomized slot draws a fresh dual-single vocab token
     (clean one-token in both Qwen3 and T5). It is **required** whenever
     ``tag_randomize_rate > 0`` (no random-ASCII fallback); ignored otherwise.
+
+    **Position clauses are atomic.** A caption carrying the ``…, white socks.
+    On the left, blonde hair.`` convention is parsed into its flat bag plus its
+    clauses (:mod:`library.captioning.position_clauses`) and each clause is kept
+    or dropped *whole* at ``clause_dropout_rate`` (default: ``tag_dropout_rate``),
+    with its tags shuffled inside. Per-tag dropout inside a clause would leave a
+    half-described position, and — worse — the naive comma split glues the header
+    onto the preceding tag (``"white socks. On the left"``), which is what used
+    to scatter clause attributes across the whole caption and reassign them to
+    the wrong subject.
     """
     from library.anima import training as anima_train_utils
+    from library.captioning.position_clauses import (
+        PositionClause,
+        compose_caption,
+        parse_caption,
+    )
 
     sentinel = anima_train_utils.NO_ARTIST_SENTINEL
     if tag_randomize_rate > 0.0 and not erasure_pool:
@@ -136,44 +194,64 @@ def generate_caption_variants(
             "(build_erasure_token_pool); there is no random-ASCII fallback."
         )
     pool = list(erasure_pool) if erasure_pool else None
+    clause_rate = (
+        tag_dropout_rate if clause_dropout_rate is None else float(clause_dropout_rate)
+    )
 
-    tags = [t.strip() for t in caption.split(",")]
+    parsed = parse_caption(caption)
+    if parsed.has_clauses:
+        tags = list(parsed.flat_tags)
+    else:
+        # No clauses: keep the historical raw split so v0 stays byte-identical
+        # (parse_caption normalizes whitespace around commas).
+        tags = [t.strip() for t in caption.split(",")]
     split_idx = anima_train_utils.find_anima_prefix_end(tags)
 
     # v0 stays byte-identical to the source caption unless the sentinel is present
     # — re-joining would otherwise normalize whitespace around commas.
     if sentinel in tags:
-        variants = [", ".join(anima_train_utils.strip_no_artist_sentinel(tags))]
+        stripped = anima_train_utils.strip_no_artist_sentinel(tags)
+        variants = [compose_caption(stripped, parsed.clauses)]
     else:
         variants = [caption]
 
     for _ in range(max(0, num_variants - 1)):
         shuffled = anima_train_utils.anima_smart_shuffle_caption(tags.copy())
-        if tag_dropout_rate > 0.0 and len(shuffled) > split_idx:
-            kept = list(shuffled[:split_idx])
-            for tag in shuffled[split_idx:]:
-                if (protect_fn is not None and protect_fn(tag)) or (
-                    random.random() >= tag_dropout_rate
-                ):
-                    kept.append(tag)
-            if not kept:
-                kept = shuffled[:1]
-            shuffled = kept
-        if tag_randomize_rate > 0.0:
-            shuffled = [
-                random.choice(pool)
-                if (
-                    i >= split_idx
-                    and tag != sentinel
-                    and not tag.startswith(("On the ", "In the "))
-                    and not (protect_fn is not None and protect_fn(tag))
-                    and random.random() < tag_randomize_rate
-                )
-                else tag
-                for i, tag in enumerate(shuffled)
-            ]
+        shuffled = _perturb_tags(
+            shuffled,
+            split_idx,
+            tag_dropout_rate=tag_dropout_rate,
+            tag_randomize_rate=tag_randomize_rate,
+            protect_fn=protect_fn,
+            pool=pool,
+            sentinel=sentinel,
+        )
         shuffled = anima_train_utils.strip_no_artist_sentinel(shuffled)
-        variants.append(", ".join(shuffled))
+
+        clauses: list[PositionClause] = []
+        for clause in parsed.clauses:
+            protected = protect_fn is not None and any(
+                protect_fn(t) for t in clause.tags
+            )
+            if not protected and clause_rate > 0.0 and random.random() < clause_rate:
+                continue  # atomic: the whole clause goes, header included
+            body = list(clause.tags)
+            random.shuffle(body)
+            body = _perturb_tags(
+                body,
+                0,
+                tag_dropout_rate=0.0,  # clauses are all-or-nothing
+                tag_randomize_rate=tag_randomize_rate,
+                protect_fn=protect_fn,
+                pool=pool,
+                sentinel=sentinel,
+            )
+            clauses.append(
+                PositionClause(
+                    position=clause.position, tags=tuple(body), prefix=clause.prefix
+                )
+            )
+        variants.append(compose_caption(shuffled, clauses))
     return variants
 
 

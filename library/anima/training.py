@@ -598,6 +598,109 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
         "λ_ema ← (1−β)·λ_ema + β·λ_batch. Default 0.01 over typically B=4.",
     )
 
+    # Memorization-aware training — per-sample low-σ Δ-gap reweight
+    # (_archive/proposals/memorization_lowsigma_reweight.md). Gated off by default.
+    # LoRA-family train.py only; hard-requires blocks_to_swap=0 (the
+    # measurement is a second per-step DiT forward, unaudited vs the offloader).
+    parser.add_argument(
+        "--mem_reweight_mode",
+        type=str,
+        default="",
+        choices=["", "measure", "reweight"],
+        help="'' = off (default). 'measure' = track the per-item online Δ-gap "
+        "(log-MSE base − adapted on the same (x_t, ε, σ), adapter zeroed via "
+        "set_multiplier(0)) and dump <output_name>_memgap.json — no loss "
+        "change. 'reweight' = additionally downweight flagged items' FM loss "
+        "on σ ≤ mem_sigma_max draws (Arm A).",
+    )
+    parser.add_argument(
+        "--mem_sigma_max",
+        type=float,
+        default=0.7,
+        help="σ band for both measurement and reweighting (the MIA signal "
+        "lives at σ ≤ 0.7 — bench/memorization/loss_gap.py). High-σ draws are "
+        "never touched.",
+    )
+    parser.add_argument(
+        "--mem_measure_every",
+        type=int,
+        default=1,
+        help="Measure on every K-th train batch. Small datasets at bs=1 need "
+        "K=1 for enough per-item coverage; raise to bound overhead on long "
+        "runs (each measurement is one extra no-grad forward).",
+    )
+    parser.add_argument(
+        "--mem_ema_beta",
+        type=float,
+        default=0.3,
+        help="Per-item Δ-gap EMA rate (bias-corrected, Adam-style — per-item "
+        "measurement counts are tiny).",
+    )
+    parser.add_argument(
+        "--mem_z_threshold",
+        type=float,
+        default=1.5,
+        help="Flag items whose Δ-EMA z-scores above this against the dataset "
+        "distribution.",
+    )
+    parser.add_argument(
+        "--mem_weight_temp",
+        type=float,
+        default=0.5,
+        help="Softness of the logistic downweight gate "
+        "w = floor + (1−floor)·sigmoid((z_thr − z)/temp).",
+    )
+    parser.add_argument(
+        "--mem_weight_floor",
+        type=float,
+        default=0.0,
+        help="Minimum loss weight for a fully-flagged item (0 = its low-σ "
+        "loss can be suppressed entirely).",
+    )
+    parser.add_argument(
+        "--mem_warmup_updates",
+        type=int,
+        default=100,
+        help="No reweighting until this many total per-item measurements have "
+        "been folded in (the z-score needs a populated distribution first).",
+    )
+    parser.add_argument(
+        "--mem_delta",
+        type=float,
+        default=1e-3,
+        help="log offset δ in Δ = log(mse_base+δ) − log(mse_adapted+δ); "
+        "matches loss_gap.py's --delta so online and offline stats are "
+        "commensurable.",
+    )
+    parser.add_argument(
+        "--mem_snapshot_every",
+        type=int,
+        default=50,
+        help="Record the flagged-item set every N measurements into the "
+        "memgap JSON (for flag-churn analysis; 0 disables).",
+    )
+    parser.add_argument(
+        "--mem_extra_sigmas",
+        type=float,
+        nargs="*",
+        default=[],
+        help="Multi-draw measurement σ grid (e.g. 0.5 0.7). When set, each "
+        "measurement step scores every batch item at these σ × mem_extra_noise "
+        "antithetic ε draws (mirrors loss_gap.py's statistic; ~3× per-item "
+        "counts, ~4× lower variance) instead of the single train-draw pair. "
+        "Costs 2·len(grid)·n_noise extra no-grad forwards per step. Plain-LoRA "
+        "stacks only — grid forwards reuse the train step's per-step adapter "
+        "conditioning, so σ-conditioned state (use_timestep_mask, σ/FEI "
+        "routers) would be evaluated at the wrong σ.",
+    )
+    parser.add_argument(
+        "--mem_extra_noise",
+        type=int,
+        default=2,
+        help="Noise draws per grid σ in multi-draw measurement (antithetic "
+        "±ε pairs, matching the offline probe).",
+    )
+
     parser.add_argument(
         "--inversion_dir",
         type=str,
@@ -641,18 +744,83 @@ def add_anima_training_arguments(parser: argparse.ArgumentParser):
     )
 
 
+# E[w] = 1 normalizers for the min_snr scheme, keyed by (gamma, density). Mean-1
+# normalization is what keeps a reweighting arm from doubling as an LR change —
+# the same confound weight_svd's 1/sqrt(3) row-norm match avoids on the init side.
+_MIN_SNR_NORM_CACHE: dict[tuple, float] = {}
+
+
+def min_snr_weighting(sigmas: torch.Tensor, gamma: float) -> torch.Tensor:
+    """Min-SNR-γ in its v-prediction form, ``min(SNR, γ) / (SNR + 1)``.
+
+    Rectified flow regresses ``ε - x`` (a velocity), so the v-pred form is the
+    right analog: with ``SNR(σ) = ((1-σ)/σ)²`` the weight peaks where ``SNR = γ``
+    (σ ≈ 0.31 at γ=5) and rolls off toward both ends. The high-σ roll-off is the
+    point — ``bench/grad_init/README.md`` §gradient noise scale measured σ>0.5
+    samples carrying 4–10× the noise energy of low-σ ones for comparable signal
+    (``B_simple`` 111/81 vs 8/15 per band), so they buy less per step than a
+    uniform weighting spends on them.
+    """
+    snr = ((1.0 - sigmas) / sigmas.clamp_min(1e-4)) ** 2
+    return snr.clamp_max(gamma) / (snr + 1.0)
+
+
+def min_snr_normalizer(
+    gamma: float,
+    *,
+    timestep_sampling: str = "sigmoid",
+    sigmoid_scale: float = 1.0,
+    sigmoid_bias: float = 0.0,
+    n: int = 1 << 20,
+) -> float:
+    """``E[w]`` of :func:`min_snr_weighting` under the configured σ density.
+
+    Monte-Carlo with a fixed seed (so paired ``--deterministic`` arms get the
+    identical constant) over the trainer's own draw: logit-normal for
+    ``timestep_sampling="sigmoid"``, uniform otherwise — the modes that need the
+    scheduler grid fall back to uniform, which is within a few percent.
+    """
+    key = (round(float(gamma), 6), timestep_sampling, sigmoid_scale, sigmoid_bias, n)
+    hit = _MIN_SNR_NORM_CACHE.get(key)
+    if hit is not None:
+        return hit
+    gen = torch.Generator(device="cpu").manual_seed(0x5EED)
+    if timestep_sampling == "sigmoid":
+        sig = torch.sigmoid(
+            sigmoid_scale * torch.randn((n,), generator=gen) + sigmoid_bias
+        )
+    else:
+        sig = torch.rand((n,), generator=gen)
+    mean = float(min_snr_weighting(sig, float(gamma)).mean())
+    _MIN_SNR_NORM_CACHE[key] = mean
+    return mean
+
+
 def compute_loss_weighting_for_anima(
-    weighting_scheme: str, sigmas: torch.Tensor
+    weighting_scheme: str, sigmas: torch.Tensor, args=None
 ) -> torch.Tensor:
     """Compute loss weighting for Anima training.
 
-    Same schemes as SD3 but can add Anima-specific ones if needed in future.
+    Same schemes as SD3 plus ``min_snr`` (Anima-specific: the v-pred Min-SNR-γ
+    form, mean-1 normalized over the run's σ density). ``args`` supplies
+    ``min_snr_gamma`` and the density knobs; it is optional so callers that only
+    use the σ-only schemes keep the two-argument form.
     """
     if weighting_scheme == "sigma_sqrt":
         weighting = (sigmas**-2.0).float()
     elif weighting_scheme == "cosmap":
         bot = 1 - 2 * sigmas + 2 * sigmas**2
         weighting = 2 / (math.pi * bot)
+    elif weighting_scheme == "min_snr":
+        gamma = float(getattr(args, "min_snr_gamma", 5.0) or 5.0)
+        weighting = min_snr_weighting(sigmas.float(), gamma)
+        norm = min_snr_normalizer(
+            gamma,
+            timestep_sampling=str(getattr(args, "timestep_sampling", "sigmoid")),
+            sigmoid_scale=float(getattr(args, "sigmoid_scale", 1.0) or 1.0),
+            sigmoid_bias=float(getattr(args, "sigmoid_bias", 0.0) or 0.0),
+        )
+        weighting = weighting / max(norm, 1e-8)
     elif weighting_scheme == "none" or weighting_scheme is None:
         weighting = torch.ones_like(sigmas)
     else:
@@ -1175,15 +1343,24 @@ def _sample_image_inference(
     # dynamic-seq mark_dynamic range and would crash the run with a
     # ConstraintViolationError (#42). Skip it instead.
     seq_len = (width // 16) * (height // 16)
+    # Band-aware: under --compile_seq_bands the graphs are per-band, so a
+    # seq_len in an inter-band gap has no tight graph even though the union
+    # range "covers" it. _dynamic_seq_bands is [union range] in classic mode,
+    # so the membership check degenerates to the old range check there.
+    from library.datasets.buckets import band_for_seq
+
     seq_range = getattr(dit, "_dynamic_seq_range", None)
+    seq_bands = getattr(dit, "_dynamic_seq_bands", None) or (
+        [seq_range] if seq_range is not None else None
+    )
     if (
         getattr(dit, "_dynamic_seq", False)
-        and seq_range is not None
-        and not (seq_range[0] <= seq_len <= seq_range[1])
+        and seq_bands is not None
+        and band_for_seq(seq_bands, seq_len) is None
     ):
         logger.warning(
             f"Skipping sample prompt at {width}x{height} ({seq_len} tokens): outside "
-            f"the compiled dynamic-seq token range {seq_range}. The compile budget "
+            f"the compiled dynamic-seq token band(s) {seq_bands}. The compile budget "
             "covers the training buckets plus the sample prompts present at startup; "
             "to sample at this resolution, restart training with it in the prompt "
             "file, lower --w/--h, or disable torch_compile."

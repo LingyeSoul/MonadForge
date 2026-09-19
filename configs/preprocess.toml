@@ -37,6 +37,24 @@ caption_tag_dropout_rate = 0.1
 # Override: make preprocess ARGS="--caption_tag_randomize_rate 0.2"
 caption_tag_randomize_rate = 0.0
 
+# Position clauses ("On the left, …") for multi-subject images. true = `make
+# preprocess` runs the SAM3 + tagger pass inline after the VAE cache, WITH
+# --apply (no dry run, no report to review). It rewrites the caption next to the
+# RESIZED image (post_image_dataset/resized/) — your hand-written captions in
+# image_dataset/ are never touched — and the caption/TE steps right after it
+# re-correct the flat bag around the clauses and re-encode. The caption-only
+# entry points honour it too — `make preprocess-captions` and `make
+# preprocess-te` run the pass before they mirror/read the captions, so a
+# re-encode can't fall back to a pre-clause caption (in the full chain it runs
+# once, early). false =
+# the stage never runs in any chain; `make caption-position` stays the dry-run
+# front door. Eyeball a dry run once on a new dataset before flipping this on:
+#   make caption-position ARGS="--crops"    # report.json + the tagger's crops
+#   make caption-position ARGS="--flatten --apply"   # undo (clauses → flat bag)
+# Env: CAPTION_POSITION_CLAUSES. CLI: make preprocess ARGS="--caption_position_clauses"
+# (the GUI checkbox always exports the env var, so it wins over this key).
+# See docs/experimental/position_captions.md.
+caption_position_clauses = false
 # Preprocess input filter. drop_lowres_images = false keeps every image; otherwise
 # images under min_pixels are skipped at resize/VAE/TE. Override per-run:
 #   make preprocess ARGS="--min_pixels 0 | --no_drop_lowres | --drop_lowres"

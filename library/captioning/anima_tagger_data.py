@@ -25,8 +25,10 @@ storage layout → invalidate the cache dir → rebuild.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,7 +36,7 @@ from typing import Dict, Iterator, List, Optional, Sequence
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from safetensors import safe_open
 from safetensors.torch import load_file as st_load
 from safetensors.torch import save_file as st_save
@@ -73,11 +75,54 @@ def pil_resize_to_bucket(img: Image.Image, spec: BucketSpec) -> Image.Image:
     return img
 
 
+def paint_white_strokes(im: Image.Image, seed: int) -> Image.Image:
+    """Paint 1–3 random thick white brush strokes onto ``im`` (in place).
+
+    Augmentation for the position-caption serving domain: crops arrive
+    mask-blanked, so the encoder sees flat white voids cutting through the
+    subject — a distribution full-image training never contains, which shows
+    up as white-garment false fires (`white gloves`/`white shirt`) and eaten
+    white clothing. Strokes are deterministic in ``seed`` (derive it from the
+    stem so a rebuilt cache is bit-stable), small enough that every label
+    stays valid, and painted after the bucket resize so their width is
+    relative to what the encoder sees.
+    """
+    import random
+
+    rng = random.Random(seed)
+    draw = ImageDraw.Draw(im)
+    w, h = im.size
+    for _ in range(rng.randint(1, 3)):
+        width = max(3, int(min(w, h) * rng.uniform(0.03, 0.09)))
+        x, y = rng.uniform(0, w), rng.uniform(0, h)
+        angle = rng.uniform(0, 2 * math.pi)
+        points = [(x, y)]
+        for _seg in range(rng.randint(2, 4)):
+            step = min(w, h) * rng.uniform(0.15, 0.4)
+            angle += rng.uniform(-0.9, 0.9)
+            x += step * math.cos(angle)
+            y += step * math.sin(angle)
+            points.append((x, y))
+        draw.line(points, fill=(255, 255, 255), width=width, joint="curve")
+        r = width / 2
+        for px, py in (points[0], points[-1]):
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=(255, 255, 255))
+    return im
+
+
+def _stroke_seed_for(stem: str, base_seed: int) -> int:
+    """Stable per-stem stroke seed (never Python's salted ``hash``)."""
+    digest = hashlib.sha1(f"{base_seed}:{stem}".encode()).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
 class _ResizeDataset(Dataset):
     """CPU-side decode + bucket-resize + IMAGE_TRANSFORMS for one stem.
 
     Returns ``(stem, tensor[C,H,W] | None, err)``. Errors are surfaced as
-    a non-empty string so the consumer can log and continue.
+    a non-empty string so the consumer can log and continue. Stems listed in
+    ``stroke_stems`` get deterministic white brush strokes painted after the
+    resize (see :func:`paint_white_strokes`).
     """
 
     def __init__(
@@ -85,10 +130,14 @@ class _ResizeDataset(Dataset):
         stems: Sequence[str],
         image_paths: Sequence[Path],
         spec: BucketSpec,
+        stroke_stems: frozenset[str] = frozenset(),
+        stroke_seed: int = 0,
     ):
         self._stems = list(stems)
         self._paths = list(image_paths)
         self._spec = spec
+        self._stroke_stems = stroke_stems
+        self._stroke_seed = stroke_seed
 
     def __len__(self) -> int:
         return len(self._stems)
@@ -99,6 +148,10 @@ class _ResizeDataset(Dataset):
         try:
             with Image.open(path) as im:
                 im = pil_resize_to_bucket(im.convert("RGB"), self._spec)
+                if stem in self._stroke_stems:
+                    im = paint_white_strokes(
+                        im, _stroke_seed_for(stem, self._stroke_seed)
+                    )
                 arr = np.array(im)
             tensor = IMAGE_TRANSFORMS(arr)
             return stem, tensor, ""
@@ -167,6 +220,8 @@ def _run_pe_cache(
     batch_size: int,
     save_one,
     desc: str,
+    stroke_stems: frozenset[str] = frozenset(),
+    stroke_seed: int = 0,
 ) -> int:
     """Bucket-batched encode loop shared by the feature / token builders.
 
@@ -180,7 +235,13 @@ def _run_pe_cache(
     for i, err in header_errs:
         logger.warning("failed to read %s: %s", stems[i], err)
 
-    ds = _ResizeDataset(stems=stems, image_paths=image_paths, spec=spec)
+    ds = _ResizeDataset(
+        stems=stems,
+        image_paths=image_paths,
+        spec=spec,
+        stroke_stems=stroke_stems,
+        stroke_seed=stroke_seed,
+    )
     loader = DataLoader(
         ds,
         batch_sampler=batches,
@@ -279,6 +340,8 @@ class FeatureCacheBuilder:
         dtype: torch.dtype = torch.bfloat16,
         num_workers: int = 4,
         batch_size: int = 8,
+        stroke_stems: frozenset[str] = frozenset(),
+        stroke_seed: int = 0,
     ):
         self.manifest = manifest
         self.cache_dir = cache_dir
@@ -288,6 +351,8 @@ class FeatureCacheBuilder:
         self.dtype = dtype
         self.num_workers = num_workers
         self.batch_size = batch_size
+        self.stroke_stems = stroke_stems
+        self.stroke_seed = stroke_seed
         self._bundle: Optional[VisionEncoderBundle] = None
 
     def _bundle_lazy(self) -> VisionEncoderBundle:
@@ -341,6 +406,8 @@ class FeatureCacheBuilder:
             num_workers=self.num_workers,
             batch_size=self.batch_size,
             save_one=save_one,
+            stroke_stems=self.stroke_stems,
+            stroke_seed=self.stroke_seed,
             desc="pooled-pe",
         )
         logger.info("feature cache: wrote %d new entries", n_done)
@@ -373,6 +440,8 @@ class TokenCacheBuilder:
         dtype: torch.dtype = torch.bfloat16,
         num_workers: int = 4,
         batch_size: int = 8,
+        stroke_stems: frozenset[str] = frozenset(),
+        stroke_seed: int = 0,
     ):
         self.manifest = manifest
         self.cache_dir = cache_dir
@@ -382,6 +451,8 @@ class TokenCacheBuilder:
         self.dtype = dtype
         self.num_workers = num_workers
         self.batch_size = batch_size
+        self.stroke_stems = stroke_stems
+        self.stroke_seed = stroke_seed
         self._bundle: Optional[VisionEncoderBundle] = None
 
     def _bundle_lazy(self) -> VisionEncoderBundle:
@@ -435,6 +506,8 @@ class TokenCacheBuilder:
             num_workers=self.num_workers,
             batch_size=self.batch_size,
             save_one=save_one,
+            stroke_stems=self.stroke_stems,
+            stroke_seed=self.stroke_seed,
             desc="tokens-pe",
         )
         logger.info("token cache: wrote %d new entries", n_done)

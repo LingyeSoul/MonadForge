@@ -170,7 +170,8 @@ def main() -> None:
         "Corrected preprocess captions: "
         f"{stats.written} written, {stats.unchanged} unchanged, "
         f"{stats.missing_source} missing source, {stats.removed_stale} stale removed, "
-        f"{stats.variants_written} variant sidecars "
+        f"{stats.variants_written} variant sidecars, "
+        f"{stats.clauses_preserved} position clauses kept "
         f"({stats.seen} resized images)"
     )
 
