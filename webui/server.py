@@ -24,6 +24,7 @@ from webui.api import images as images_api
 from webui.api import merge as merge_api
 from webui.api import models as models_api
 from webui.api import preprocess as preprocess_api
+from webui.api import qwen21 as qwen21_api
 from webui.api import preview as preview_api
 from webui.api import system as system_api
 from webui.api import staged_resolution as staged_resolution_api
@@ -167,6 +168,7 @@ def create_app(dev: bool = False) -> FastAPI:
     app.include_router(merge_api.router, prefix="/api/merge")
     app.include_router(models_api.router, prefix="/api/models")
     app.include_router(preprocess_api.router, prefix="/api/preprocess")
+    app.include_router(qwen21_api.router, prefix="/api/qwen21")
     app.include_router(preview_api.router, prefix="/api/preview")
     app.include_router(system_api.router, prefix="/api/system")
     app.include_router(staged_resolution_api.router, prefix="/api/staged-resolution")

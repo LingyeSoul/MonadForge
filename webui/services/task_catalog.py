@@ -9,6 +9,10 @@ from tasks import COMMANDS as CLI_COMMANDS
 # cannot silently leave the WebUI pointing at a removed command.
 _WEBUI_COMMAND_NAMES = frozenset(
     {
+        "qwen21-cache",
+        "qwen21-train",
+        "qwen21-cache-train",
+        "qwen21-generate",
         "lora",
         "lora-gui",
         "staged-train",
@@ -82,6 +86,8 @@ COMMAND_CATALOG = {name: CLI_COMMANDS[name][1] for name in sorted(_WEBUI_COMMAND
 
 TRAINING_DASHBOARD_COMMANDS = frozenset(
     {
+        "qwen21-train",
+        "qwen21-cache-train",
         "lora",
         "lora-gui",
         "staged-train",

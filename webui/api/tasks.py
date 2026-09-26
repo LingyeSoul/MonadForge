@@ -247,6 +247,8 @@ async def start_task(body: TaskStartRequest):
     _reject_forbidden_args(body.args)
     try:
         task = await task_service.start_task(body.command, body.args, body.env or None)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except DaemonError as exc:
         raise HTTPException(
             status_code=502, detail="Training daemon is unavailable"

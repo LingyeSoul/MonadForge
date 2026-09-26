@@ -31,6 +31,18 @@ _STEP_RE = re.compile(
     r"(?:\s+speed=([\d.]+))?"
 )
 
+# Qwen sidecars publish progress independently of Anima's progress.jsonl.
+_QWEN_PROGRESS_RE = re.compile(
+    r"^progress\s+(\d+)/(\d+)\s+epoch\s+(\d+)/(\d+)"
+    r"\s+loss\s+([0-9.eE+\-]+)\s+eta\s+(\d+:\d+:\d+)\s*$"
+)
+_QWEN_STEP_RE = re.compile(
+    r"^step\s+(\d+)/(\d+)\s+loss\s+([0-9.eE+\-]+)"
+    r"\s+\|g\|\s+[0-9.eE+\-]+\s+sigma\s+[0-9.eE+\-]+"
+    r"\s+lr\s+([0-9.eE+\-]+)\s+peak\s+[0-9.eE+\-]+\s+GB"
+    r"\s+([0-9.eE+\-]+)s/step\s*$"
+)
+
 # epoch 3/10
 _EPOCH_RE = re.compile(r"^epoch\s+(\d+)/(\d+)\s*$")
 
@@ -119,6 +131,33 @@ class TrainingLogParser:
         """Feed a raw stdout line. Returns True if metrics were updated."""
         self._dirty = False
         stripped = line.strip()
+
+        qwen = _QWEN_PROGRESS_RE.match(stripped)
+        if qwen:
+            self.metrics.step = int(qwen.group(1))
+            self.metrics.total_steps = int(qwen.group(2))
+            self.metrics.epoch = int(qwen.group(3))
+            self.metrics.total_epochs = int(qwen.group(4))
+            self.metrics.avr_loss = float(qwen.group(5))
+            self.metrics.eta = qwen.group(6)
+            self.metrics.upsert_step(
+                self.metrics.step, self.metrics.avr_loss, self.metrics.lr
+            )
+            self._dirty = True
+            return True
+
+        qwen = _QWEN_STEP_RE.match(stripped)
+        if qwen:
+            step = int(qwen.group(1))
+            if self.metrics.step != step:
+                self.metrics.avr_loss = float(qwen.group(3))
+            self.metrics.step = step
+            self.metrics.total_steps = int(qwen.group(2))
+            self.metrics.lr = float(qwen.group(4))
+            self.metrics.speed = f"{qwen.group(5)} s/it"
+            self.metrics.upsert_step(step, self.metrics.avr_loss, self.metrics.lr)
+            self._dirty = True
+            return True
 
         # Try tqdm progress bar first (most informative)
         m = _TQDM_RE.search(stripped)

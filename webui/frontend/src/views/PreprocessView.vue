@@ -3,6 +3,8 @@
     <div class="text-h5 mb-1">{{ t('ppTitle') }}</div>
     <div class="text-body-2 text-medium-emphasis mb-4">{{ t('ppSubtitle') }}</div>
 
+    <QwenPreprocessContent v-if="workspace.family === 'qwen21'" />
+    <template v-else>
     <!-- Isolated preprocess run -->
     <v-card variant="tonal" class="mb-4">
       <v-card-title class="text-subtitle-1 d-flex align-center">
@@ -482,11 +484,15 @@
     >
       {{ showAllTasks ? t('taskShowLess') : t('taskShowAll', { count: preprocessTasks.length }) }}
     </v-btn>
+    </template>
   </v-container>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useModelWorkspace } from '../stores/modelWorkspace'
+import QwenPreprocessContent from '../components/QwenPreprocessContent.vue'
+const workspace = useModelWorkspace()
 import { useTaskStore } from '../stores/task'
 import { useNotifyStore } from '../stores/notify'
 import { useConfigStore } from '../stores/config'
@@ -570,7 +576,7 @@ async function fetchStatus() {
   } catch { /* ignore */ }
 }
 
-onMounted(fetchStatus)
+onMounted(() => { if (workspace.family === 'anima') return fetchStatus() })
 
 // Refresh status when tasks finish
 const runningCount = computed(() =>
@@ -642,7 +648,7 @@ async function fetchSettings() {
   finally { settingsHydrating = false }
 }
 
-onMounted(fetchSettings)
+onMounted(() => { if (workspace.family === 'anima') return fetchSettings() })
 
 watch(settings, () => {
   if (!settingsHydrating && selectedRun.value) selectedRun.value = null
@@ -748,17 +754,20 @@ async function fetchRuns(selectNewest: boolean) {
 }
 
 watch(selectedRun, async () => {
+  if (workspace.family !== 'anima') return
   writePreprocessRun(selectedRun.value)
   await Promise.all([fetchStatus(), fetchPaths()])
 })
 
 watch([() => configStore.variant, () => configStore.preset], async () => {
+  if (workspace.family !== 'anima') return
   // A preprocessing manifest is shared across training methods/presets. Keep
   // the selection stable while refreshing the source-filtered run list.
   await fetchRuns(false)
 })
 
 onMounted(async () => {
+  if (workspace.family !== 'anima') return
   await fetchPaths()
   await fetchRuns(false)
 })

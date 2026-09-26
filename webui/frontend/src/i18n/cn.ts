@@ -1,4 +1,8 @@
+import { qwenCn, workspaceCn } from './qwen21.ts'
+
 export default {
+  ...qwenCn,
+  ...workspaceCn,
   cfgContinuationChanged: "任务已有变化，请重新选择。",
   cfgContinuationUnavailable: "没有可用的完整训练状态。",
   cfgContinuationNotReady: "请重新选择任务，等待状态加载完成。",

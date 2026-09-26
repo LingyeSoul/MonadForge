@@ -17,6 +17,7 @@
       <div
         v-for="(s, i) in samples"
         :key="s.path"
+        :data-testid="`sample-${i}`"
         class="sample-card"
         :class="{ 'sample-card-latest': i === samples.length - 1 }"
         @click="open(i)"
@@ -81,7 +82,7 @@ import type { SampleInfo } from '../stores/training'
 
 const { t } = useI18n()
 
-const props = defineProps<{ samples: SampleInfo[]; taskId: string }>()
+const props = defineProps<{ samples: SampleInfo[]; taskId: string; imageRoot?: string }>()
 
 const dialogOpen = ref(false)
 const activeIndex = ref<number | null>(null)
@@ -100,7 +101,7 @@ function fileUrl(s: SampleInfo): string {
   // filename is the basename the server uses for its whitelist check.
   const params = new URLSearchParams({ path: s.filename })
   if (s.attempt_id) params.set('attempt_id', s.attempt_id)
-  return `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples/file?${params.toString()}`
+  return `${props.imageRoot ?? `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples`}/file?${params.toString()}`
 }
 
 /** Grid tiles render at ~140px — load the server-generated WebP thumbnail
@@ -109,10 +110,11 @@ function fileUrl(s: SampleInfo): string {
 function thumbUrl(s: SampleInfo): string {
   const params = new URLSearchParams({ path: s.filename, size: '320' })
   if (s.attempt_id) params.set('attempt_id', s.attempt_id)
-  return `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples/thumb?${params.toString()}`
+  return `${props.imageRoot ?? `/api/preview/runs/${encodeURIComponent(props.taskId)}/samples`}/thumb?${params.toString()}`
 }
 
 function labelFor(s: SampleInfo): string {
+  if (s.caption) return s.caption
   if (s.epoch != null && s.step != null) {
     return t('dashSampleStepEpoch', { step: s.step, epoch: s.epoch })
   }

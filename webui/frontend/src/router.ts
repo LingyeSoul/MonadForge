@@ -10,6 +10,10 @@ const router = createRouter({
       component: () => import('./views/ConfigEditor.vue'),
     },
     {
+      path: '/qwen21',
+      redirect: { path: '/config', query: { model: 'qwen21' } },
+    },
+    {
       path: '/dataset',
       name: 'dataset',
       component: () => import('./views/DatasetBrowser.vue'),

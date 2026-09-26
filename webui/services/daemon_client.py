@@ -211,6 +211,7 @@ class DaemonClient:
         chain_train: Optional[dict] = None,
         config_snapshot: Optional[dict] = None,
         start: bool = True,
+        stall_timeout: float | None = None,
     ) -> dict:
         """Enqueue a ``command`` job (a plain ``python <argv>``).
 
@@ -224,6 +225,7 @@ class DaemonClient:
             "label": label,
             "argv": list(argv),
             "start": start,
+            "stall_timeout": stall_timeout,
         }
         if extra_env:
             body["extra_env"] = extra_env
