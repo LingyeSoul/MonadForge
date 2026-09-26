@@ -707,7 +707,9 @@ def _queue_submit(
     )
 
 
-def queue_command(label: str, argv: list[str]) -> None:
+def queue_command(
+    label: str, argv: list[str], *, stall_timeout: float | None = None
+) -> None:
     """Enqueue a bespoke-loop distillation command on the local daemon.
 
     The training daemon is generic over "run this argv" via its ``kind="command"``
@@ -722,7 +724,7 @@ def queue_command(label: str, argv: list[str]) -> None:
     from scripts.daemon import client as _daemon_client
 
     cl = _daemon_client.ensure_daemon()
-    resp = cl.submit_command(label=label, argv=list(argv))
+    resp = cl.submit_command(label=label, argv=list(argv), stall_timeout=stall_timeout)
     job_id = resp.get("job_id")
     print(
         f"queued job {job_id} (label={label}). daemon: {cl.base}\n"

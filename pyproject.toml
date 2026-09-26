@@ -9,7 +9,7 @@ dependencies = [
     "torchvision>=0.27.0,<0.28",
     "accelerate>=1.13.0",
     "transformers>=5.10.1",
-    "diffusers>=0.37.0",
+    "diffusers>=0.41.0.dev0",
     "einops>=0.7.0",
     "lycoris-lora==4.0.0",
     "bitsandbytes>=0.45.0",
@@ -24,11 +24,11 @@ dependencies = [
     "toml>=0.10.2",
     "tomlkit>=0.13",  # style-preserving TOML for the sectioned distill-config editor
     "voluptuous>=0.15.2",
-    "safetensors>=0.7.0",
+    "safetensors>=0.8.0",
     "imagesize>=1.4.1",
     # Text processing
     "sentencepiece>=0.2.1",
-    "huggingface-hub>=1.9.0",
+    "huggingface-hub>=1.31.0",
     # Monitoring & Utilities
     "tensorboard",
     "rich>=14.0.0",
@@ -100,6 +100,10 @@ dev = [
 [project.gui-scripts]
 monadforge-tray = "scripts.tray.__main__:main"
 
+# Qwen-Image-2.1 is not available in the released Diffusers used by Anima.
+[tool.uv.sources]
+diffusers = { git = "https://github.com/huggingface/diffusers", rev = "80c7ed262aeffbeb43ef13ae04baeb9b84515a69" }
+
 [tool.uv]
 index-strategy = "unsafe-best-match"
 # Both wheels are looked up from these indexes — the version pin in
@@ -134,6 +138,7 @@ include = ["anima_lora*", "library*", "networks*", "bench*", "scripts*", "prepro
 # Ship the model-scoped T5("") CFG-uncond sidecar bundled in library/anima/assets/
 # (resolved package-relative in library/anima/uncond.py) inside wheels/sdists.
 "library.anima" = ["assets/*.safetensors"]
+"library.qwen21" = ["configs/*.json"]
 
 [build-system]
 requires = ["setuptools>=68.0"]

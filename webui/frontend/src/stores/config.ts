@@ -4,6 +4,11 @@ import { useAppStore } from './app'
 import { getFrontendTranslations } from '../i18n'
 
 export interface FieldMeta {
+  label?: string
+  nullable?: boolean
+  path_kind?: 'file' | 'directory' | 'either'
+  path_extensions?: string
+  multiline?: boolean
   key: string
   value: unknown
   default_value: unknown

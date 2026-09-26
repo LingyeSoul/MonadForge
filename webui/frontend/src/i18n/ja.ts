@@ -1,4 +1,8 @@
+import { qwenEn, workspaceJa } from './qwen21.ts'
+
 export default {
+  ...qwenEn,
+  ...workspaceJa,
   cfgContinuationChanged: "タスクが変更されました。選択し直してください。",
   cfgContinuationUnavailable: "完全な学習状態がありません。",
   cfgContinuationNotReady: "タスクを選択し直し、読み込み完了を待ってください。",

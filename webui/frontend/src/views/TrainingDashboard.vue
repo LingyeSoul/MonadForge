@@ -4,7 +4,7 @@
     <div class="workspace-heading dashboard-heading">
       <div>
         <h1>{{ t('dashTitle') }}</h1>
-        <p>Anima / {{ t('dashMetrics') }}</p>
+        <p>{{ selectedTaskModel }} / {{ t('dashMetrics') }}</p>
       </div>
       <v-spacer />
       <v-btn
@@ -272,6 +272,10 @@ async function fetchHwStats() {
 }
 
 const selectedTaskId = ref('')
+const selectedTaskModel = computed(() => {
+  const task = taskStore.tasks.find(item => item.task_id === selectedTaskId.value)
+  return task ? task.command.startsWith('qwen21-') ? 'Qwen-Image 2.1' : 'Anima' : '—'
+})
 const streamHandle = shallowRef<ReturnType<typeof useTrainingStream> | null>(null)
 
 const trainingTasks = computed(() =>

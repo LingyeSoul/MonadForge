@@ -187,6 +187,7 @@ class DaemonClient:
         config_snapshot: Optional[dict] = None,
         config_file: Optional[str] = None,
         start: Optional[bool] = None,
+        stall_timeout: float | None = None,
     ) -> dict:
         return self._request(
             "POST",
@@ -200,6 +201,7 @@ class DaemonClient:
                 "config_snapshot": config_snapshot or None,
                 "config_file": config_file,
                 "start": start,
+                "stall_timeout": stall_timeout,
             },
         )
 
