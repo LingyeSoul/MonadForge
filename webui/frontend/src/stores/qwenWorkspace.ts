@@ -19,6 +19,7 @@ export const useQwenWorkspace = defineStore('qwen-workspace', () => {
   const legacyAvailable = ref(localStorage.getItem(draftKey) !== null)
   const dirty = computed(() => draft.value !== null && JSON.stringify(draft.value) !== saved.value)
   let pending: Promise<void> | null = null
+  let loadSeq = 0
 
   function update(section: QwenSection, name: string, value: Scalar): void {
     if (!draft.value) throw new Error('Qwen workspace has not loaded')
@@ -31,7 +32,9 @@ export const useQwenWorkspace = defineStore('qwen-workspace', () => {
   }
   async function loadProfile(name: string): Promise<void> {
     if (!schema.value) throw new Error('Qwen schema has not loaded')
+    const seq = ++loadSeq
     const result = await requestJson(`/api/qwen21/profiles/${encodeURIComponent(name)}`, {})
+    if (seq !== loadSeq) return // a newer switch already superseded this request
     const parsed = readDraft(schema.value, JSON.stringify(result))
     localStorage.setItem('monadforge-qwen-profile', name)
     draft.value = parsed
@@ -71,7 +74,6 @@ export const useQwenWorkspace = defineStore('qwen-workspace', () => {
   function discard(): void {
     if (!schema.value) throw new Error('Qwen schema has not loaded')
     draft.value = saved.value ? readDraft(schema.value, saved.value) : initialDraft(schema.value)
-    if (!saved.value) saved.value = JSON.stringify(draft.value)
     cache.value = null
   }
   function importLegacy(): void {
@@ -113,7 +115,7 @@ export const useQwenWorkspace = defineStore('qwen-workspace', () => {
     catch (err) { error.value = err instanceof Error ? err.message : String(err) }
     finally { busy.value = false }
   }
-  return { schema, draft, profile, profiles, dirty, loading, busy, error, cache, legacyAvailable,
+  return { schema, draft, profile, profiles, dirty, loading, busy, error, cache, legacyAvailable, saved,
     update, values, loadProfile, ensureLoaded, save, createProfile, discard, importLegacy, resetDefaults,
     inspectCache, preflight, submit, chain, perform }
 })

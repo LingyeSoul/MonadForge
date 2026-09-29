@@ -653,8 +653,10 @@ async function applyWorkspaceChange(change: WorkspaceChange): Promise<void> {
 async function requestWorkspaceChange(change: WorkspaceChange): Promise<void> {
   workspaceError.value = ''
   if (workspaceDirty.value) { pendingChange.value = change; return }
+  qwen.busy = true // guard the profile/model selects while the switch is in flight
   try { await applyWorkspaceChange(change) }
   catch (err) { workspaceError.value = err instanceof Error ? err.message : String(err) }
+  finally { qwen.busy = false }
 }
 async function requestModelChange(family: ModelFamily): Promise<void> {
   if (family !== workspace.family) await requestWorkspaceChange({ kind: 'model', family })
@@ -688,9 +690,10 @@ async function saveWorkspaceChange(): Promise<void> {
 async function createQwenProfile(): Promise<void> {
   await qwen.perform(async () => {
     const previous = qwen.profile
+    const previousSaved = qwen.saved
     qwen.createProfile(profileName.value)
     try { await qwen.save() }
-    catch (err) { qwen.profile = previous; throw err }
+    catch (err) { qwen.profile = previous; qwen.saved = previousSaved; throw err }
     profileDialog.value = false
     profileName.value = ''
   })
@@ -723,6 +726,7 @@ async function chainQwenTraining(): Promise<void> {
     qwenCacheDialog.value = false
     await openQwenTask(id)
   })
+}
 
 const configStore = useConfigStore()
 const taskStore = useTaskStore()

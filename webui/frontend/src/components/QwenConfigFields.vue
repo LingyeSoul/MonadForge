@@ -39,7 +39,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from '../composables/useI18n'
 import { useQwenWorkspace, type QwenSection } from '../stores/qwenWorkspace'
 import { modelFields, requestJson, resolvedPaths, type QwenField } from '../utils/qwen21'
@@ -76,6 +76,7 @@ async function inspectPaths(): Promise<void> {
     paths.value = resolvedPaths(await requestJson('/api/qwen21/resolve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ values: qwen.draft?.models }) }))
   })
 }
+watch(() => qwen.draft?.models, () => { paths.value = null }, { deep: true })
 </script>
 
 <style scoped>
