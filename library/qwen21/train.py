@@ -322,179 +322,188 @@ def run_train(req: TrainRequest) -> Path:
         activation_reserve_gb=reserve_gb,
         label="transformer",
     )
-    blocks = transformer.transformer_blocks
-    placement = block_devices(blocks)
-    seq_range: tuple[int, int] | None = None
-    if req.compile:
-        # The joint sequence moves with both the image and caption size; the
-        # cache bounds it before the first step.
-        seq_range = (
-            (image_tokens[0] + text_lens[0], max_joint)
-            if req.compile_seq == "bounded"
-            else None
-        )
-        compile_blocks(
-            blocks,
-            mode=req.compile_mode,
-            dynamic=True,
-            decode_only=False,
-            seq_range=seq_range,
-        )
-    empty_cache()
-    print(f"free VRAM before training: {free_vram_gb():.2f} GB", flush=True)
-
-    params = list(network.parameters())
-    optimizer = torch.optim.AdamW(params, lr=req.lr)
-    total_steps = req.epochs * len(items)
-    warmup = max(1, int(total_steps * req.warmup_ratio))
-    scheduler_lr = torch.optim.lr_scheduler.LambdaLR(
-        optimizer, lambda step: min(1.0, (step + 1) / warmup)
-    )
-    print(
-        f"{req.epochs} epochs x {len(items)} = {total_steps} steps, warmup {warmup}",
-        flush=True,
-    )
-
-    out_path = resolve_under_home(req.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    metadata = {
-        "base_model": "Qwen-Image-2.1",
-        "rank": str(req.rank),
-        "alpha": str(network.alpha),
-        "targets": req.targets,
-        "lora_dtype": req.lora_dtype,
-        "image_tokens": f"{image_tokens[0]}-{image_tokens[-1]}",
-        "epochs": str(req.epochs),
-        "samples": str(len(items)),
-        "lr": str(req.lr),
-    }
-
-    def save(tag: str | None = None) -> Path:
-        path = (
-            out_path
-            if tag is None
-            else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
-        )
-        state = {
-            k: v.detach().to("cpu", save_dtype).contiguous()
-            for k, v in network.state_dict().items()
-        }
-        save_file(state, path, metadata=metadata)
-        return path
-
-    # The largest sample first, so step 1 is the worst case and the fit report
-    # below is a bound rather than a sample of the middle of the band.
-    order = sorted(
-        range(len(items)),
-        key=lambda i: items[i]["latents"].shape[0] + items[i]["prompt_embeds"].shape[0],
-        reverse=True,
-    )
-    history = []
-    step = 0
-    t_start = time.time()
-    torch.cuda.reset_peak_memory_stats()
-    for epoch in range(req.epochs):
-        losses = []
-        t_epoch = time.time()
-        for index in order:
-            item = items[index]
-            batch = {
-                "latents": item["latents"].unsqueeze(0).to(device),
-                "prompt_embeds": item["prompt_embeds"].unsqueeze(0).to(device),
-                "prompt_embeds_mask": item["prompt_embeds_mask"]
-                .unsqueeze(0)
-                .to(device),
-                "latent_h": item["latent_h"],
-                "latent_w": item["latent_w"],
-            }
-            mu = calculate_shift(item["latents"].shape[0], scheduler.config)
-            sigma = sample_sigma(scheduler, mu, req.logit_mean, req.logit_std, device)
-            loss = training_step(transformer, batch, sigma)
-            if not torch.isfinite(loss):
-                raise FloatingPointError(
-                    f"Qwen training produced non-finite loss for {item['stem']}: loss={loss.item()}, sigma={sigma.item()}"
-                )
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                params, req.max_grad_norm, error_if_nonfinite=True
+    # The swap hooks and mover threads exist from here on; the finally below
+    # runs the same detach the success path used to, so a mid-run OOM cannot
+    # leak them (empty_cache() comes from detach itself).
+    try:
+        blocks = transformer.transformer_blocks
+        placement = block_devices(blocks)
+        seq_range: tuple[int, int] | None = None
+        if req.compile:
+            # The joint sequence moves with both the image and caption size; the
+            # cache bounds it before the first step.
+            seq_range = (
+                (image_tokens[0] + text_lens[0], max_joint)
+                if req.compile_seq == "bounded"
+                else None
             )
-            optimizer.step()
-            scheduler_lr.step()
-            optimizer.zero_grad(set_to_none=True)
-            losses.append(loss.item())
-            step += 1
-            peak = torch.cuda.max_memory_allocated() / 1024**3
-            if step == 1:
-                report_fit(blocks, attached, batch)
-            # One short line per step for progress readers (the GUI bar); the
-            # full line below stays at every 20th step for the log.
-            per_step = (time.time() - t_start) / step
-            eta = int(per_step * (total_steps - step))
-            print(
-                f"  progress {step}/{total_steps} epoch {epoch + 1}/{req.epochs} "
-                f"loss {sum(losses) / len(losses):.4f} "
-                f"eta {eta // 3600}:{eta % 3600 // 60:02d}:{eta % 60:02d}",
-                flush=True,
+            compile_blocks(
+                blocks,
+                mode=req.compile_mode,
+                dynamic=True,
+                decode_only=False,
+                seq_range=seq_range,
             )
-            if step % 20 == 0 or step == 1:
-                print(
-                    f"  step {step}/{total_steps} loss {loss.item():.4f} "
-                    f"|g| {grad_norm.item():.3f} sigma {sigma.item():.3f} "
-                    f"lr {scheduler_lr.get_last_lr()[0]:.2e} "
-                    f"peak {peak:.2f} GB "
-                    f"{(time.time() - t_start) / step:.2f}s/step",
-                    flush=True,
-                )
-        mean = sum(losses) / len(losses)
-        drift = block_devices(blocks) != placement
-        history.append({"epoch": epoch, "loss": mean, "seconds": time.time() - t_epoch})
+        empty_cache()
+        print(f"free VRAM before training: {free_vram_gb():.2f} GB", flush=True)
+
+        params = list(network.parameters())
+        optimizer = torch.optim.AdamW(params, lr=req.lr)
+        total_steps = req.epochs * len(items)
+        warmup = max(1, int(total_steps * req.warmup_ratio))
+        scheduler_lr = torch.optim.lr_scheduler.LambdaLR(
+            optimizer, lambda step: min(1.0, (step + 1) / warmup)
+        )
         print(
-            f"epoch {epoch + 1}/{req.epochs}: loss {mean:.4f}  "
-            f"{time.time() - t_epoch:.0f}s  "
-            f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB"
-            f"{'  PLACEMENT DRIFTED' if drift else ''}",
+            f"{req.epochs} epochs x {len(items)} = {total_steps} steps, warmup {warmup}",
             flush=True,
         )
-        if req.save_every_epochs and (epoch + 1) % req.save_every_epochs == 0:
-            print(f"  saved {save(f'e{epoch + 1}')}", flush=True)
 
-    final = save()
-    if req.compile:
-        print(recompile_report(), flush=True)
-    summary = {
-        "output": str(final),
-        "metadata": metadata,
-        "effective_parameters": {
-            "alpha": network.alpha,
-            "alpha_auto": req.alpha is None,
-            "activation_reserve_gb": reserve_gb,
-            "activation_reserve_auto": req.activation_reserve_gb is None,
+        out_path = resolve_under_home(req.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata = {
+            "base_model": "Qwen-Image-2.1",
+            "rank": str(req.rank),
+            "alpha": str(network.alpha),
+            "targets": req.targets,
+            "lora_dtype": req.lora_dtype,
+            "image_tokens": f"{image_tokens[0]}-{image_tokens[-1]}",
+            "epochs": str(req.epochs),
+            "samples": str(len(items)),
+            "lr": str(req.lr),
+        }
+
+        def save(tag: str | None = None) -> Path:
+            path = (
+                out_path
+                if tag is None
+                else out_path.with_name(f"{out_path.stem}_{tag}{out_path.suffix}")
+            )
+            state = {
+                k: v.detach().to("cpu", save_dtype).contiguous()
+                for k, v in network.state_dict().items()
+            }
+            save_file(state, path, metadata=metadata)
+            return path
+
+        # The largest sample first, so step 1 is the worst case and the fit report
+        # below is a bound rather than a sample of the middle of the band.
+        order = sorted(
+            range(len(items)),
+            key=lambda i: items[i]["latents"].shape[0]
+            + items[i]["prompt_embeds"].shape[0],
+            reverse=True,
+        )
+        history = []
+        step = 0
+        t_start = time.time()
+        torch.cuda.reset_peak_memory_stats()
+        for epoch in range(req.epochs):
+            losses = []
+            t_epoch = time.time()
+            for index in order:
+                item = items[index]
+                batch = {
+                    "latents": item["latents"].unsqueeze(0).to(device),
+                    "prompt_embeds": item["prompt_embeds"].unsqueeze(0).to(device),
+                    "prompt_embeds_mask": item["prompt_embeds_mask"]
+                    .unsqueeze(0)
+                    .to(device),
+                    "latent_h": item["latent_h"],
+                    "latent_w": item["latent_w"],
+                }
+                mu = calculate_shift(item["latents"].shape[0], scheduler.config)
+                sigma = sample_sigma(
+                    scheduler, mu, req.logit_mean, req.logit_std, device
+                )
+                loss = training_step(transformer, batch, sigma)
+                if not torch.isfinite(loss):
+                    raise FloatingPointError(
+                        f"Qwen training produced non-finite loss for {item['stem']}: loss={loss.item()}, sigma={sigma.item()}"
+                    )
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    params, req.max_grad_norm, error_if_nonfinite=True
+                )
+                optimizer.step()
+                scheduler_lr.step()
+                optimizer.zero_grad(set_to_none=True)
+                losses.append(loss.item())
+                step += 1
+                peak = torch.cuda.max_memory_allocated() / 1024**3
+                if step == 1:
+                    report_fit(blocks, attached, batch)
+                # One short line per step for progress readers (the GUI bar); the
+                # full line below stays at every 20th step for the log.
+                per_step = (time.time() - t_start) / step
+                eta = int(per_step * (total_steps - step))
+                print(
+                    f"  progress {step}/{total_steps} epoch {epoch + 1}/{req.epochs} "
+                    f"loss {sum(losses) / len(losses):.4f} "
+                    f"eta {eta // 3600}:{eta % 3600 // 60:02d}:{eta % 60:02d}",
+                    flush=True,
+                )
+                if step % 20 == 0 or step == 1:
+                    print(
+                        f"  step {step}/{total_steps} loss {loss.item():.4f} "
+                        f"|g| {grad_norm.item():.3f} sigma {sigma.item():.3f} "
+                        f"lr {scheduler_lr.get_last_lr()[0]:.2e} "
+                        f"peak {peak:.2f} GB "
+                        f"{(time.time() - t_start) / step:.2f}s/step",
+                        flush=True,
+                    )
+            mean = sum(losses) / len(losses)
+            drift = block_devices(blocks) != placement
+            history.append(
+                {"epoch": epoch, "loss": mean, "seconds": time.time() - t_epoch}
+            )
+            print(
+                f"epoch {epoch + 1}/{req.epochs}: loss {mean:.4f}  "
+                f"{time.time() - t_epoch:.0f}s  "
+                f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB"
+                f"{'  PLACEMENT DRIFTED' if drift else ''}",
+                flush=True,
+            )
+            if req.save_every_epochs and (epoch + 1) % req.save_every_epochs == 0:
+                print(f"  saved {save(f'e{epoch + 1}')}", flush=True)
+
+        final = save()
+        if req.compile:
+            print(recompile_report(), flush=True)
+        summary = {
+            "output": str(final),
+            "metadata": metadata,
+            "effective_parameters": {
+                "alpha": network.alpha,
+                "alpha_auto": req.alpha is None,
+                "activation_reserve_gb": reserve_gb,
+                "activation_reserve_auto": req.activation_reserve_gb is None,
+                "blocks_to_swap": attached.offloader.blocks_to_swap if attached else 0,
+                "blocks_to_swap_auto": req.blocks_to_swap is None,
+                "image_token_range": [image_tokens[0], image_tokens[-1]],
+                "text_token_range": [text_lens[0], text_lens[-1]],
+                "max_joint_tokens": max_joint,
+                "compile": req.compile,
+                "compile_seq": req.compile_seq,
+                "compile_mode": req.compile_mode,
+                "compile_seq_range": seq_range,
+                "grad_checkpointing": req.grad_checkpointing,
+                "warmup_steps": warmup,
+            },
+            "total_steps": total_steps,
+            "minutes": (time.time() - t_start) / 60,
+            "history": history,
+            "peak_gb": torch.cuda.max_memory_allocated() / 1024**3,
             "blocks_to_swap": attached.offloader.blocks_to_swap if attached else 0,
-            "blocks_to_swap_auto": req.blocks_to_swap is None,
-            "image_token_range": [image_tokens[0], image_tokens[-1]],
-            "text_token_range": [text_lens[0], text_lens[-1]],
-            "max_joint_tokens": max_joint,
-            "compile": req.compile,
-            "compile_seq": req.compile_seq,
-            "compile_mode": req.compile_mode,
-            "compile_seq_range": seq_range,
-            "grad_checkpointing": req.grad_checkpointing,
-            "warmup_steps": warmup,
-        },
-        "total_steps": total_steps,
-        "minutes": (time.time() - t_start) / 60,
-        "history": history,
-        "peak_gb": torch.cuda.max_memory_allocated() / 1024**3,
-        "blocks_to_swap": attached.offloader.blocks_to_swap if attached else 0,
-    }
-    report = out_path.with_suffix(".json")
-    report.write_text(json.dumps(summary, indent=2))
-    print(
-        f"wrote {final} and {report} — {summary['minutes']:.1f} min, "
-        f"final epoch loss {history[-1]['loss']:.4f}",
-        flush=True,
-    )
-
-    if attached is not None:
-        attached.detach()
-    return final
+        }
+        report = out_path.with_suffix(".json")
+        report.write_text(json.dumps(summary, indent=2))
+        print(
+            f"wrote {final} and {report} — {summary['minutes']:.1f} min, "
+            f"final epoch loss {history[-1]['loss']:.4f}",
+            flush=True,
+        )
+        return final
+    finally:
+        if attached is not None:
+            attached.detach()

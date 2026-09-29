@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 from library.qwen21.requests import CONFIG_DIR, ModelPaths
 from library.qwen21.checkpoint import (
+    assert_unquantized_directory,
     read_checkpoint,
     transformer_keys,
     text_encoder_keys,
@@ -73,6 +74,7 @@ def load_text_encoder(
 
     validate_component_path(path)
     if path.is_dir():
+        assert_unquantized_directory(path)
         return (
             Qwen3VLForConditionalGeneration.from_pretrained(
                 path, dtype=dtype, local_files_only=True
@@ -98,6 +100,7 @@ def load_transformer(path: Path, dtype: torch.dtype) -> QwenImage21Transformer2D
 
     validate_component_path(path)
     if path.is_dir():
+        assert_unquantized_directory(path)
         return (
             QwenImage21Transformer2DModel.from_pretrained(
                 path, dtype=dtype, low_cpu_mem_usage=True, local_files_only=True
@@ -123,6 +126,7 @@ def load_vae(path: Path, dtype: torch.dtype) -> AutoencoderKLQwenImage21:
 
     validate_component_path(path)
     if path.is_dir():
+        assert_unquantized_directory(path)
         return (
             AutoencoderKLQwenImage21.from_pretrained(
                 path, dtype=dtype, low_cpu_mem_usage=True, local_files_only=True

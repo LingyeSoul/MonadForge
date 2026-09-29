@@ -91,20 +91,24 @@ def run_generate(req: GenerateRequest) -> Path:
         blocks_to_swap=req.te_blocks_to_swap,
         label="text_encoder",
     )
-    t0 = time.time()
-    to_encode = prompts + ([req.negative_prompt] if do_cfg else [])
-    encoded = encode_prompts(pipe, to_encode, device="cuda")
-    negative = encoded.pop() if do_cfg else None
-    print(
-        f"encode: {len(to_encode)} prompts in {time.time() - t0:.1f}s  "
-        f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
-        flush=True,
-    )
-    if te_attached is not None:
-        te_attached.detach()
-    del te
-    drop_text_encoder(pipe)
-    empty_cache()
+    # The finally runs the same teardown the success path ran, so an encode
+    # failure cannot leak the swap hooks, the mover threads, or the 17.5 GB.
+    try:
+        t0 = time.time()
+        to_encode = prompts + ([req.negative_prompt] if do_cfg else [])
+        encoded = encode_prompts(pipe, to_encode, device="cuda")
+        negative = encoded.pop() if do_cfg else None
+        print(
+            f"encode: {len(to_encode)} prompts in {time.time() - t0:.1f}s  "
+            f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
+            flush=True,
+        )
+    finally:
+        if te_attached is not None:
+            te_attached.detach()
+        del te
+        drop_text_encoder(pipe)
+        empty_cache()
 
     # ── phase 2: denoise, transformer swapped on, adapter attached ────
     pipe.transformer = load_transformer(paths.dit, torch.bfloat16)
@@ -126,68 +130,73 @@ def run_generate(req: GenerateRequest) -> Path:
         blocks_to_swap=req.blocks_to_swap,
         label="transformer",
     )
-    empty_cache()
-    print(f"free VRAM with DiT placed: {free_vram_gb():.2f} GB", flush=True)
+    # The finally runs phase 3's teardown on a failed denoise too, so the swap
+    # hooks, mover threads, and adapter patches cannot outlive the phase.
+    try:
+        empty_cache()
+        print(f"free VRAM with DiT placed: {free_vram_gb():.2f} GB", flush=True)
 
-    renders = []
-    t_all = time.time()
-    for multiplier in multipliers:
-        if network is not None:
-            network.set_multiplier(multiplier)
-        for index, (prompt, (embeds, mask, _pad)) in enumerate(zip(prompts, encoded)):
-            call = dict(
-                prompt_embeds=embeds.to(device),
-                prompt_embeds_mask=None if mask is None else mask.to(device),
-                num_inference_steps=req.steps,
-                width=width,
-                height=height,
-                true_cfg_scale=req.true_cfg_scale,
-            )
-            if do_cfg:
-                neg_embeds, neg_mask, _ = negative
-                call["negative_prompt_embeds"] = neg_embeds.to(device)
-                call["negative_prompt_embeds_mask"] = (
-                    None if neg_mask is None else neg_mask.to(device)
+        renders = []
+        t_all = time.time()
+        for multiplier in multipliers:
+            if network is not None:
+                network.set_multiplier(multiplier)
+            for index, (prompt, (embeds, mask, _pad)) in enumerate(
+                zip(prompts, encoded)
+            ):
+                call = dict(
+                    prompt_embeds=embeds.to(device),
+                    prompt_embeds_mask=None if mask is None else mask.to(device),
+                    num_inference_steps=req.steps,
+                    width=width,
+                    height=height,
+                    true_cfg_scale=req.true_cfg_scale,
                 )
-            t0 = time.time()
-            latents = pipe(
-                output_type="latent",
-                # Same seed per prompt across multipliers: the pair differs by
-                # the adapter and nothing else.
-                generator=torch.Generator("cuda").manual_seed(req.seed + index),
-                **call,
-            ).images
-            renders.append(
-                {
-                    "index": index,
-                    "multiplier": multiplier,
-                    "prompt": prompt,
-                    "seed": req.seed + index,
-                    "latents": latents,
-                    "seconds": time.time() - t0,
-                }
-            )
-            print(
-                f"  image {len(renders)}/{len(prompts) * len(multipliers)} "
-                f"m{multiplier} prompt {index + 1}: {renders[-1]['seconds']:.1f}s",
-                flush=True,
-            )
-    print(
-        f"denoise: {len(renders)} images in {(time.time() - t_all) / 60:.1f} min  "
-        f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
-        flush=True,
-    )
-
-    # ── phase 3: DiT off the card, then decode ────────────────────────
-    if dit_attached is not None:
-        dit_attached.detach()
-    pipe.transformer = None
-    pipe.register_to_config(transformer=None)
-    empty_cache()
-    if network is not None:
-        network.restore()
-    del network, dit_attached
-    empty_cache()
+                if do_cfg:
+                    neg_embeds, neg_mask, _ = negative
+                    call["negative_prompt_embeds"] = neg_embeds.to(device)
+                    call["negative_prompt_embeds_mask"] = (
+                        None if neg_mask is None else neg_mask.to(device)
+                    )
+                t0 = time.time()
+                latents = pipe(
+                    output_type="latent",
+                    # Same seed per prompt across multipliers: the pair differs by
+                    # the adapter and nothing else.
+                    generator=torch.Generator("cuda").manual_seed(req.seed + index),
+                    **call,
+                ).images
+                renders.append(
+                    {
+                        "index": index,
+                        "multiplier": multiplier,
+                        "prompt": prompt,
+                        "seed": req.seed + index,
+                        "latents": latents,
+                        "seconds": time.time() - t0,
+                    }
+                )
+                print(
+                    f"  image {len(renders)}/{len(prompts) * len(multipliers)} "
+                    f"m{multiplier} prompt {index + 1}: {renders[-1]['seconds']:.1f}s",
+                    flush=True,
+                )
+        print(
+            f"denoise: {len(renders)} images in {(time.time() - t_all) / 60:.1f} min  "
+            f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
+            flush=True,
+        )
+    finally:
+        # ── phase 3: DiT off the card, then decode ────────────────────────
+        if dit_attached is not None:
+            dit_attached.detach()
+        pipe.transformer = None
+        pipe.register_to_config(transformer=None)
+        empty_cache()
+        if network is not None:
+            network.restore()
+        del network, dit_attached
+        empty_cache()
     pipe.vae = load_vae(paths.vae, torch.bfloat16).to(device)
     print(f"free VRAM for decode: {free_vram_gb():.2f} GB", flush=True)
 

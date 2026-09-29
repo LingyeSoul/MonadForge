@@ -126,36 +126,39 @@ def cache_text(
         label="text_encoder",
     )
 
-    t0 = time.time()
-    lengths = []
-    with torch.no_grad():
-        for i, (stem, _path, caption) in enumerate(todo, 1):
-            print(f"  text {i}/{len(todo)} {stem}", flush=True)
-            embeds, mask, _pad = pipe.encode_prompt(prompt=caption, device=device)
-            embeds = embeds[0].detach().to("cpu", torch.bfloat16)
-            if mask is None:
-                mask = torch.ones(embeds.shape[0], dtype=torch.int64)
-            else:
-                mask = mask[0].detach().to("cpu", torch.int64)
-            save_file(
-                {"prompt_embeds": embeds.contiguous(), "prompt_embeds_mask": mask},
-                out_dir / f"{stem}.te.safetensors",
-                metadata={"tokens": str(embeds.shape[0])},
-            )
-            lengths.append(embeds.shape[0])
-    print(
-        f"text: {len(todo)} captions in {time.time() - t0:.1f}s  "
-        f"tokens min {min(lengths)} max {max(lengths)}  "
-        f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
-        flush=True,
-    )
-
-    if attached is not None:
-        attached.detach()
-    del te
-    drop_text_encoder(pipe)
-    del pipe
-    empty_cache()
+    # The finally runs the same teardown the success path ran, so an encode
+    # failure cannot leak the swap hooks, the mover threads, or the encoder.
+    try:
+        t0 = time.time()
+        lengths = []
+        with torch.no_grad():
+            for i, (stem, _path, caption) in enumerate(todo, 1):
+                print(f"  text {i}/{len(todo)} {stem}", flush=True)
+                embeds, mask, _pad = pipe.encode_prompt(prompt=caption, device=device)
+                embeds = embeds[0].detach().to("cpu", torch.bfloat16)
+                if mask is None:
+                    mask = torch.ones(embeds.shape[0], dtype=torch.int64)
+                else:
+                    mask = mask[0].detach().to("cpu", torch.int64)
+                save_file(
+                    {"prompt_embeds": embeds.contiguous(), "prompt_embeds_mask": mask},
+                    out_dir / f"{stem}.te.safetensors",
+                    metadata={"tokens": str(embeds.shape[0])},
+                )
+                lengths.append(embeds.shape[0])
+        print(
+            f"text: {len(todo)} captions in {time.time() - t0:.1f}s  "
+            f"tokens min {min(lengths)} max {max(lengths)}  "
+            f"peak {torch.cuda.max_memory_allocated() / 1024**3:.2f} GB",
+            flush=True,
+        )
+    finally:
+        if attached is not None:
+            attached.detach()
+        del te
+        drop_text_encoder(pipe)
+        del pipe
+        empty_cache()
 
 
 def cache_latents(

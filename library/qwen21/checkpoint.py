@@ -9,6 +9,7 @@ this loader never expands an INT8/FP8 checkpoint into a floating-point model.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -20,6 +21,9 @@ from safetensors import safe_open
 
 class CheckpointFormatError(ValueError):
     """A checkpoint does not satisfy the selected Qwen component's contract."""
+
+
+_SUPPORTED_WEIGHT_DTYPES = ("BF16", "F16", "F32")
 
 
 def transformer_keys(key: str) -> tuple[str, ...]:
@@ -127,7 +131,7 @@ def inspect_checkpoint(
                     f"Wrong tensor shape in {path}: {key} has {shape}, expected {wanted}"
                 )
             stored_dtype = source.get_slice(key).get_dtype()
-            if stored_dtype not in ("BF16", "F16", "F32"):
+            if stored_dtype not in _SUPPORTED_WEIGHT_DTYPES:
                 raise CheckpointFormatError(
                     f"Unsupported weight dtype in {path}: {key} = {stored_dtype}; "
                     "select the Comfy-Org BF16 safetensors component"
@@ -171,3 +175,38 @@ def read_checkpoint(
                 for name, piece in zip(destinations, pieces, strict=True)
             )
         return state
+
+
+def assert_unquantized_directory(directory: Path) -> None:
+    """Extend the quantization contract to official Diffusers directories.
+
+    Single-file loads are rejected in :func:`inspect_checkpoint`; a directory
+    fed to ``from_pretrained`` gets the same gate here before any weights are
+    touched: a ``quantization_config`` / ``quantization_method`` marker in
+    config.json / model_index.json, or any shard tensor outside the dtype
+    whitelist. Dtypes come from safetensors headers only (``get_slice`` never
+    materializes a tensor), so the check is bounded by header size. A plain
+    BF16/F16/F32 directory — with or without the json files — passes silently.
+    """
+    for name in ("config.json", "model_index.json"):
+        marker_path = directory / name
+        if not marker_path.is_file():
+            continue
+        config = json.loads(marker_path.read_text(encoding="utf-8"))
+        markers = sorted({"quantization_config", "quantization_method"} & config.keys())
+        if markers:
+            raise CheckpointFormatError(
+                f"Quantized Qwen checkpoint is unsupported: {marker_path}; found "
+                f"{markers[0]}. Select an unquantized Diffusers directory; "
+                "automatic dequantization is disabled"
+            )
+    for shard in sorted(directory.glob("*.safetensors")):
+        with safe_open(shard, framework="pt", device="cpu") as source:
+            for key in source.keys():
+                stored_dtype = source.get_slice(key).get_dtype()
+                if stored_dtype not in _SUPPORTED_WEIGHT_DTYPES:
+                    raise CheckpointFormatError(
+                        f"Unsupported weight dtype in {shard}: {key} = "
+                        f"{stored_dtype}; select the unquantized Diffusers "
+                        "directory (BF16/F16/F32)"
+                    )
