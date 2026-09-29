@@ -9,7 +9,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 QWEN_HOMES = ("library/qwen21/", "scripts/qwen21/", "tests/")
-WEBUI_BOUNDARY = {"webui/api/qwen21.py", "webui/services/qwen21_service.py"}
+# The only webui modules allowed to reference library.qwen21; the same set is
+# what test_qwen_configuration_and_web_forms_do_not_import_torch keeps torch-free.
+QWEN_WEBUI_MODULES = (
+    "webui.api.qwen21",
+    "webui.services.qwen21_service",
+    "webui.services.qwen21_workspace",
+)
+WEBUI_BOUNDARY = {module.replace(".", "/") + ".py" for module in QWEN_WEBUI_MODULES}
 SHARED = {
     "library.env",
     "library.runtime.device",
@@ -61,5 +68,6 @@ def test_anima_does_not_import_qwen():
 
 
 def test_qwen_configuration_and_web_forms_do_not_import_torch():
-    code = "import sys; import library.qwen21.requests, webui.services.qwen21_service; assert 'torch' not in sys.modules"
+    modules = ", ".join((*QWEN_WEBUI_MODULES, "library.qwen21.requests"))
+    code = f"import sys; import {modules}; assert 'torch' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], cwd=ROOT, check=True)

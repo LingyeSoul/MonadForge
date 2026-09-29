@@ -6,7 +6,9 @@ residency set, that schedule must keep three promises: every block is on the
 device when it runs, residency stays within what the layout starts with, and
 the end state equals the start state so the next forward needs no re-prepare.
 
-Pure Python — no torch import, no GPU.
+Collecting this file execs ``blockswap.py`` whole, which imports torch at
+module level (CPU-only under the suite's hidden CUDA devices); the test bodies
+below are pure-Python schedule replay — no tensors, no GPU work.
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ _SRC = Path(__file__).resolve().parents[1] / "library" / "qwen21"
 
 
 def _load_swap_schedule():
-    """Import the one function without importing the module's torch deps."""
+    """Exec the module whole (its torch import runs); only the schedule is used."""
     spec = importlib.util.spec_from_file_location(
         "_qwen21_blockswap", _SRC / "blockswap.py"
     )

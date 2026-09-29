@@ -48,6 +48,7 @@ def test_fp32_adapter_computes_in_the_model_dtype():
     torch.testing.assert_close(out, expected, rtol=0, atol=0)
 
 
+@pytest.mark.qwen_training
 def test_gradients_land_on_the_fp32_masters():
     adapter = _adapter(torch.float32)
     x = torch.randn(2, 8, 32, dtype=torch.bfloat16)

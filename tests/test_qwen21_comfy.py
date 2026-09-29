@@ -101,6 +101,7 @@ def test_comfy_transformer_inference_round_trip(tmp_path: Path):
     assert torch.isfinite(actual).all()
 
 
+@pytest.mark.qwen_training
 def test_comfy_round_trip_forward_backward_and_adapter_reload(tmp_path: Path):
     torch.manual_seed(12)
     original = tiny_transformer()
