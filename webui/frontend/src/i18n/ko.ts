@@ -1,4 +1,8 @@
+import { qwenEn, workspaceKo } from './qwen21.ts'
+
 export default {
+  ...qwenEn,
+  ...workspaceKo,
   cfgContinuationChanged: "작업이 변경되었습니다. 다시 선택하세요.",
   cfgContinuationUnavailable: "완전한 학습 상태가 없습니다.",
   cfgContinuationNotReady: "작업을 다시 선택하고 상태 로딩을 기다리세요.",

@@ -68,6 +68,7 @@ sr = _LazyModule("scripts.tasks.sr")
 staged_resolution = _LazyModule("scripts.tasks.staged_resolution")
 tagger = _LazyModule("scripts.tasks.tagger")
 training = _LazyModule("scripts.tasks.training")
+qwen21 = _LazyModule("scripts.tasks.qwen21")
 utilities = _LazyModule("scripts.tasks.utilities")
 v100_flash = _LazyModule("scripts.tasks.v100_flash")
 exp_inference = _LazyModule("scripts.experimental_tasks.inference")
@@ -404,6 +405,26 @@ COMMANDS = {
     "distill-mod": (
         utilities.cmd_distill_mod,
         "Distill pooled_text_proj MLP for modulation guidance",
+    ),
+    "qwen21-processor": (
+        qwen21.cmd_processor,
+        "Download only Qwen-Image-2.1 tokenizer/processor assets",
+    ),
+    "qwen21-cache": (
+        qwen21.cmd_cache,
+        "Cache Qwen-Image-2.1 text/latents from official or ComfyUI weights",
+    ),
+    "qwen21-train": (
+        qwen21.cmd_train,
+        "Train Qwen-Image-2.1 LoRA from official shards or a ComfyUI DiT file",
+    ),
+    "qwen21-cache-train": (
+        qwen21.cmd_cache_train,
+        "Cache then train Qwen-Image-2.1 in one sequential job",
+    ),
+    "qwen21-generate": (
+        qwen21.cmd_generate,
+        "Generate Qwen-Image-2.1 LoRA/base A/B images",
     ),
     "test-unit": (utilities.cmd_test_unit, "Run smoke/unit tests (pytest tests/)"),
     "export-logs": (

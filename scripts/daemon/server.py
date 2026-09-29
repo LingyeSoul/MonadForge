@@ -141,6 +141,11 @@ TOOLS = [
                     "type": "object",
                     "description": "Extra environment variables for the subprocess.",
                 },
+                "stall_timeout": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Per-job silence budget in seconds; 0 disables the watchdog. Omit to keep the daemon default.",
+                },
                 "chain_train": {
                     "type": "object",
                     "description": "Training spec {method, preset, methods_subdir, overrides} auto-enqueued when this command finishes successfully.",
@@ -523,6 +528,7 @@ class _Handler(BaseHTTPRequestHandler):
                 config_snapshot=body.get("config_snapshot") or None,
                 config_file=body.get("config_file") or None,
                 start=start,
+                stall_timeout=body.get("stall_timeout"),
             )
             self._send_json(
                 {"job_id": job.id, "state": job.state, "sample_dir": job.sample_dir},

@@ -111,7 +111,7 @@
         <span>{{ t(currentPage) }}</span>
       </div>
       <v-spacer />
-      <span class="workspace-engine">Anima <span>DiT</span></span>
+      <span v-if="!['/tasks', '/dashboard'].includes(route.path)" class="workspace-engine">{{ modelLabel(modelWorkspace.family) }} <span>DiT</span></span>
       <v-btn icon="mdi-book-open-page-variant-outline" variant="text" size="small" class="mx-3" :aria-label="t('guidebook')" @click="showGuidebook = true">
         <v-icon icon="mdi-book-open-page-variant-outline" />
         <v-tooltip activator="parent" location="bottom">{{ t('guidebook') }}</v-tooltip>
@@ -141,6 +141,8 @@
 </template>
 
 <script setup lang="ts">
+import { useModelWorkspace, modelLabel } from './stores/modelWorkspace'
+const modelWorkspace = useModelWorkspace()
 import { computed, ref, watch, watchEffect, onBeforeUnmount } from 'vue'
 import { useDisplay, useTheme } from 'vuetify'
 import { useRoute } from 'vue-router'

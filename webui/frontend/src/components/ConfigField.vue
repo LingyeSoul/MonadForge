@@ -1,14 +1,19 @@
 <template>
-  <div>
+  <div :data-testid="`config-field-${field.key}`">
+    <ModelPathField v-if="field.field_type === 'path'" :field="field" :model-value="String(currentValue ?? '')" @update="emit('update', $event)" @help-click="emit('help-click', field.key)" />
+    <v-textarea v-else-if="field.multiline" :model-value="String(currentValue ?? '')" :label="field.label ?? field.key" variant="outlined" density="compact" auto-grow rows="3" hide-details="auto" @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)">
+      <template #append><FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" /></template>
+    </v-textarea>
     <v-switch
-      v-if="field.field_type === 'bool'"
+      v-else-if="field.field_type === 'bool'"
       :model-value="currentValue"
-      :label="field.key"
+      :placeholder="field.nullable ? t('qwenAuto') : undefined"
+      :label="field.label ?? field.key"
       :disabled="field.read_only"
       color="primary"
       density="compact"
       hide-details="auto"
-      @update:model-value="emit('update', $event)"
+      @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)"
     >
       <template #append>
         <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
@@ -28,15 +33,14 @@
 
     <v-select
       v-else-if="field.field_type === 'select'"
-      :data-testid="`config-field-${field.key}`"
       :model-value="String(currentValue ?? '')"
-      :label="field.key"
+      :label="field.label ?? field.key"
       :items="selectItems"
       :disabled="field.read_only"
       variant="outlined"
       density="compact"
       hide-details="auto"
-      @update:model-value="emit('update', $event)"
+      @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)"
     >
       <template #append>
         <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
@@ -52,14 +56,15 @@
     <v-text-field
       v-else-if="field.field_type === 'int'"
       :model-value="currentValue"
-      :label="field.key"
+      :placeholder="field.nullable ? t('qwenAuto') : undefined"
+      :label="field.label ?? field.key"
       :disabled="field.read_only"
       type="number"
       variant="outlined"
       density="compact"
       hide-details="auto"
       class="font-mono-field"
-      @update:model-value="emit('update', Number($event))"
+      @update:model-value="emit('update', field.nullable && ($event === '' || $event === null) ? null : Number($event))"
     >
       <template #append-inner>
         <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
@@ -75,7 +80,7 @@
     <v-text-field
       v-else-if="field.field_type === 'float'"
       :model-value="floatDisplay"
-      :label="field.key"
+      :label="field.label ?? field.key"
       :disabled="field.read_only"
       variant="outlined"
       density="compact"
@@ -99,7 +104,7 @@
     <v-text-field
       v-else-if="field.field_type === 'list'"
       :model-value="JSON.stringify(currentValue)"
-      :label="field.key"
+      :label="field.label ?? field.key"
       :disabled="field.read_only"
       variant="outlined"
       density="compact"
@@ -127,12 +132,13 @@
     <v-text-field
       v-else
       :model-value="currentValue"
-      :label="field.key"
+      :placeholder="field.nullable ? t('qwenAuto') : undefined"
+      :label="field.label ?? field.key"
       :disabled="field.read_only"
       variant="outlined"
       density="compact"
       hide-details="auto"
-      @update:model-value="emit('update', $event)"
+      @update:model-value="emit('update', field.nullable && $event === '' ? null : $event)"
     >
       <template #append-inner>
         <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
@@ -153,14 +159,16 @@ import type { FieldMeta } from '../stores/config'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
 import RegexSetEditor from './RegexSetEditor.vue'
+import ModelPathField from './ModelPathField.vue'
+import type { Scalar } from '../utils/qwen21'
 import FieldHelpButton from './FieldHelpButton.vue'
 
-const props = defineProps<{ field: FieldMeta }>()
+const props = defineProps<{ field: FieldMeta; modelValue?: Scalar }>()
 const emit = defineEmits<{ update: [value: unknown]; 'help-click': [key: string] }>()
 const configStore = useConfigStore()
 const { t } = useI18n()
 
-const currentValue = computed(() => configStore.getFieldValue(props.field.key))
+const currentValue = computed(() => props.modelValue !== undefined ? props.modelValue : configStore.getFieldValue(props.field.key))
 
 // --- Float field with scientific notation support ---
 
@@ -194,7 +202,7 @@ function onFloatInput(val: string) {
 function onFloatBlur() {
   if (floatRaw.value !== null) {
     const parsed = parseFloatInput(floatRaw.value)
-    emit('update', parsed ?? currentValue.value)
+    emit('update', props.field.nullable && floatRaw.value.trim() === '' ? null : parsed ?? currentValue.value)
     floatRaw.value = null // snap back to formatted display
   }
 }

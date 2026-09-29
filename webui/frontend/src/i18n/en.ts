@@ -1,4 +1,8 @@
+import { qwenEn, workspaceEn } from './qwen21.ts'
+
 export default {
+  ...qwenEn,
+  ...workspaceEn,
   cfgContinuationChanged: "Training task changed. Select it again.",
   cfgContinuationUnavailable: "No complete training state is available.",
   cfgContinuationNotReady: "Select the task again and wait for its state to load.",

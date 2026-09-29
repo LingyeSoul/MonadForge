@@ -2,17 +2,17 @@
   <div>
     <v-text-field
       :model-value="currentValue"
-      :label="field.key"
+      :label="field.label ?? field.key"
       :hint="hintText"
       :loading="validating"
-      persistent-hint
-      variant="outlined"
+            variant="outlined"
       density="compact"
       hide-details="auto"
       class="font-mono-field"
       @update:model-value="onInput"
     >
       <template #append-inner>
+        <FieldHelpButton :field-key="field.key" @help="emit('help-click', field.key)" />
         <v-icon
           v-if="exists === true"
           icon="mdi-check-circle"
@@ -34,6 +34,7 @@
           icon="mdi-folder-open"
           size="x-small"
           variant="text"
+          :data-testid="`browse-${field.key}`"
           @click="openBrowser"
         />
       </template>
@@ -52,6 +53,7 @@
 
         <v-divider />
 
+        <v-alert v-if="browserError" type="error" variant="tonal">{{ browserError }}</v-alert>
         <v-card-text style="max-height: 50vh" class="pa-0">
           <v-list density="compact" class="py-0">
             <!-- Parent directory -->
@@ -75,7 +77,7 @@
 
             <!-- Files -->
             <v-list-item
-              v-for="file in files"
+              v-for="file in (field.path_kind === 'directory' ? [] : files)"
               :key="file.path"
               :active="selectedFile === file.path"
               @click="selectedFile = file.path"
@@ -106,6 +108,7 @@
         <v-divider />
 
         <v-card-actions>
+          <v-btn v-if="field.path_kind === 'directory' || field.path_kind === 'either'" :data-testid="`select-directory-${field.key}`" :disabled="!currentDir || !!browserError" variant="tonal" @click="selectDirectory">{{ t('qwUseDirectory') }}</v-btn>
           <v-spacer />
           <v-btn variant="text" @click="dialog = false">{{ t('cfCancel') }}</v-btn>
           <v-btn
@@ -122,17 +125,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import FieldHelpButton from './FieldHelpButton.vue'
 import type { FieldMeta } from '../stores/config'
 import { useConfigStore } from '../stores/config'
 import { useI18n } from '../composables/useI18n'
 
-const props = defineProps<{ field: FieldMeta }>()
-const emit = defineEmits<{ update: [value: unknown] }>()
+const props = defineProps<{ field: FieldMeta; modelValue?: string }>()
+const emit = defineEmits<{ update: [value: string]; 'help-click': [key: string] }>()
 const configStore = useConfigStore()
 const { t } = useI18n()
 
-const currentValue = computed(() => configStore.getFieldValue(props.field.key) as string)
+const currentValue = computed(() => props.modelValue !== undefined ? props.modelValue : configStore.getFieldValue(props.field.key) as string)
 
 const hintText = computed(() => {
   const desc = props.field.description
@@ -176,6 +180,12 @@ watch(currentValue, (val) => checkExists(val))
 // ── File browser dialog ───────────────────────────────────────
 
 const dialog = ref(false)
+const browserError = ref('')
+onBeforeUnmount(() => { if (validateTimer) clearTimeout(validateTimer) })
+function selectDirectory(): void {
+  emit('update', currentDir.value)
+  dialog.value = false
+}
 const currentDir = ref('')
 const parentDir = ref<string | null>(null)
 const subdirs = ref<{ name: string; path: string }[]>([])
@@ -204,23 +214,24 @@ function getInitialDir(): string {
 
 async function openBrowser() {
   selectedFile.value = null
-  await navigateTo(getInitialDir())
   dialog.value = true
+  await navigateTo(getInitialDir())
 }
 
 async function navigateTo(dirPath: string) {
   selectedFile.value = null
   try {
-    const ext = '.safetensors'
+    browserError.value = ''
+    const ext = props.field.path_extensions ?? '.safetensors'
     const res = await fetch(`/api/files/browse?dir=${encodeURIComponent(dirPath)}&ext=${encodeURIComponent(ext)}`)
     const data = await res.json()
-    if (data.error) return
+    if (!res.ok || data.error) throw new Error(data.detail ?? data.error ?? `HTTP ${res.status}`)
     currentDir.value = data.current_dir || data.current_dir_abs || dirPath
     parentDir.value = data.parent
     subdirs.value = data.subdirs || []
     files.value = data.files || []
-  } catch {
-    // silent
+  } catch (err) {
+    browserError.value = err instanceof Error ? err.message : String(err)
   }
 }
 

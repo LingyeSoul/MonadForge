@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { shallowRef, ref } from 'vue'
 
 export interface SampleInfo {
+  caption?: string
   attempt_id: string | null
   path: string         // absolute on-disk path emitted by the training process
   filename: string     // basename used for the FileResponse URL

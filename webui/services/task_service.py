@@ -731,6 +731,12 @@ class TaskService:
         # The daemon prepends its own venv interpreter (venv_python) to command
         # jobs, so argv leads with the script — NOT the python executable.
         # See scripts/daemon/manager.py::_build_cmd (job.kind == "command").
+        from webui.services.qwen21_service import QWEN_COMMANDS, prepare_job_args
+
+        if command in QWEN_COMMANDS:
+            if env:
+                raise ValueError("Qwen WebUI jobs require explicit form parameters; environment overrides are not supported")
+            args = prepare_job_args(command, args or [])
         argv = ["tasks.py", command, *(args or [])]
         # The daemon already sets PYTHONUNBUFFERED/PYTHONUTF8/PYTHONIOENCODING
         # (manager._build_cmd), so we only forward caller-provided env (e.g.
@@ -769,6 +775,7 @@ class TaskService:
                 extra_env=extra_env,
                 config_snapshot=config_snapshot,
                 start=True,
+                stall_timeout=900.0 if command in QWEN_COMMANDS else None,
             )
         except DaemonError as exc:
             self._tasks.pop(temp_id, None)

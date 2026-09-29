@@ -194,6 +194,7 @@ class JobManager:
         parent_job_id: Optional[str] = None,
         attempt_index: int = 0,
         start: Optional[bool] = None,
+        stall_timeout: float | None = None,
     ) -> Job:
         """Enqueue a plain ``python <argv>`` task (preprocess / mask).
 
@@ -207,11 +208,24 @@ class JobManager:
         auto-chain step: on successful completion the daemon enqueues that
         training job itself (see ``_finalize``), so the chain runs to the end
         even if the GUI that started it has since closed."""
+        if stall_timeout is not None:
+            import math
+
+            if (
+                isinstance(stall_timeout, bool)
+                or not isinstance(stall_timeout, (int, float))
+                or not math.isfinite(stall_timeout)
+                or stall_timeout < 0
+            ):
+                raise ValueError(
+                    f"stall_timeout must be a finite non-negative number of seconds; got {stall_timeout!r}"
+                )
         job = Job(
             id=new_job_id(),
             method=label,
             preset="",
             kind="command",
+            stall_timeout=stall_timeout,
             argv=list(argv or []),
             extra_env=dict(extra_env or {}),
             chain_train=dict(chain_train) if chain_train else None,
@@ -758,6 +772,7 @@ class JobManager:
                     parent_job_id=source.id,
                     attempt_index=int(source.attempt_index or 0) + 1,
                     start=False,
+                    stall_timeout=source.stall_timeout,
                 )
             else:
                 extra = list(source.extra)
@@ -1067,13 +1082,16 @@ class JobManager:
         (it never legitimately goes quiet for more than a model-load), while a
         train job is unwatched by default (budget 0 → skipped here) because its
         silent first-step torch.compile trace would false-positive; it can be
-        opted in via ANIMA_DAEMON_JOB_STALL_TIMEOUT.
+        opted in via ANIMA_DAEMON_JOB_STALL_TIMEOUT. An explicit per-job
+        stall_timeout overrides that default and persists across restarts.
         """
         timeout = (
             config.CMD_STALL_TIMEOUT
             if job.kind == "command"
             else config.JOB_STALL_TIMEOUT
         )
+        if job.stall_timeout is not None:
+            timeout = job.stall_timeout
         if not timeout or timeout <= 0 or job.started_at is None:
             return None
         last = job.started_at

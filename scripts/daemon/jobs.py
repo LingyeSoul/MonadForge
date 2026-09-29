@@ -50,6 +50,7 @@ class Job:
     kind: str = "train"
     argv: list[str] = field(default_factory=list)
     extra_env: dict = field(default_factory=dict)
+    stall_timeout: float | None = None
 
     # Auto-chain: a command job carrying a ``chain_train`` spec ({method, preset,
     # methods_subdir}) makes the manager enqueue that train job on success, so a
