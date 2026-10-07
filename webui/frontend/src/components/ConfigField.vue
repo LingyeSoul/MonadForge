@@ -163,7 +163,11 @@ import ModelPathField from './ModelPathField.vue'
 import type { Scalar } from '../utils/qwen21'
 import FieldHelpButton from './FieldHelpButton.vue'
 
-const props = defineProps<{ field: FieldMeta; modelValue?: Scalar }>()
+// Scalar includes Boolean: Vue otherwise casts an omitted modelValue to false,
+// masking the config store for every field rendered without an explicit value.
+const props = withDefaults(defineProps<{ field: FieldMeta; modelValue?: Scalar }>(), {
+  modelValue: undefined,
+})
 const emit = defineEmits<{ update: [value: unknown]; 'help-click': [key: string] }>()
 const configStore = useConfigStore()
 const { t } = useI18n()
