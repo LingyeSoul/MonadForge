@@ -368,6 +368,29 @@ def load_dit_model(
     if getattr(args, "compile", False):
         logger.info("Compiling DiT model with torch.compile...")
         model = torch.compile(model)
+    elif getattr(args, "compile_dynamic_seq", False):
+        # compile_seq_range / compile_token_bands are set by the batch path from
+        # every prompt's size; unset falls back to compile_blocks' 1024-tier band.
+        # A cached graph carries the seq-range guard of the run that built it
+        # (e.g. 4050 <= s); a later run with a wider band reuses it and hits
+        # ConstraintViolationError → eager fallback. Compile fresh instead.
+        import torch._functorch.config as functorch_config
+        from library.runtime.dynamo import pin_inductor_flag
+
+        pin_inductor_flag("fx_graph_cache", False)
+        functorch_config.enable_autograd_cache = False
+        functorch_config._config["enable_autograd_cache"].default = False
+
+        bands = getattr(args, "compile_token_bands", None)
+        model.compile_blocks(
+            mode=getattr(args, "compile_inductor_mode", None),
+            # recompile budget 2n+8: each band also splits on the cond/uncond
+            # requires_grad guard and the xattn_boost renorm toggle
+            n_token_families=2 * len(bands) if bands else None,
+            dynamic_seq=True,
+            seq_range=getattr(args, "compile_seq_range", None),
+            seq_bands=bands,
+        )
     elif getattr(args, "compile_blocks", False):
         model.compile_blocks(mode=getattr(args, "compile_inductor_mode", None))
 
