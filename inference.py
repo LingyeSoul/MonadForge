@@ -179,6 +179,17 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
     # 2. Load DiT Model once
     logger.info("Loading DiT model for batch generation...")
     first_prompt_args = all_prompt_args_list[0]
+    if getattr(args, "compile_dynamic_seq", False):
+        from library.datasets.buckets import cluster_token_bands
+
+        counts = [
+            (h // 16) * (w // 16)
+            for h, w in (a.image_size for a in all_prompt_args_list)
+        ]
+        # One mark range per tier cluster: a union range across the gap between
+        # tiers raises ConstraintViolationError and dynamo falls back to eager.
+        first_prompt_args.compile_seq_range = (min(counts), max(counts))
+        first_prompt_args.compile_token_bands = cluster_token_bands(counts)
     anima = load_dit_model(first_prompt_args, device, dit_weight_dtype)
 
     # 3. Precompute Text Data (Text Encoder)

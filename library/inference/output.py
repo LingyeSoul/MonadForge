@@ -105,6 +105,9 @@ def decode_latent(
 ) -> torch.Tensor:
     logger.info(f"Decoding image. Latent shape {latent.shape}, device {device}")
 
+    # Restore the caller's placement afterwards: a VAE the batch path parked on
+    # the GPU stays resident; a CPU-loaded one goes back to CPU.
+    home = next(vae.parameters()).device
     vae.to(device)
     with torch.no_grad():
         pixels = vae.decode_to_pixels(latent.to(device, dtype=vae.dtype))
@@ -116,7 +119,7 @@ def decode_latent(
     pixels = pixels.to(
         "cpu", dtype=torch.float32
     )  # move to CPU and convert to float32 (bfloat16 is not supported by numpy)
-    vae.to("cpu")
+    vae.to(home)
 
     logger.info(f"Decoded. Pixel shape {pixels.shape}")
     return pixels[0]  # remove batch dimension
