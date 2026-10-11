@@ -1,5 +1,6 @@
 """builder — a run's rows → ``<run>/data/`` (``img/``, ``train.jsonl``,
-``eval.json``, ``vocabs.json``, ``windows.json``, ``build.json``,
+``eval.json``, ``vocabs.json``, ``windows.json``, ``sentences.json`` (a
+``sent`` tier drawn), ``build.json``,
 ``sheet_<tier>.png``), in one pass::
 
     for each tier t of run.table() (n = ITEMS_PER_ROW × rows × t.share × frac):
@@ -24,7 +25,13 @@ from pathlib import Path
 
 from . import table as T
 from .config import Run
-from .pools import add_windows, build_pools
+from .pools import (
+    add_sentences,
+    add_windows,
+    build_pools,
+    focus_pools,
+    lang_caption,
+)
 from .recipes import RECIPES
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -55,15 +62,41 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
     (out / "img").mkdir(parents=True, exist_ok=True)
     workers = default_workers() if workers is None else max(1, int(workers))
     rng = random.Random(T.SEED)
-    pools = build_pools(list(run.rows), rng)
-    win = add_windows(pools, run.read, out)
+    pools = build_pools(list(run.rows), rng, run.lang, run.faces)
+    pools.pose = run.pose
+    # a run whose every row is lettered in another language (``lang``) draws
+    # no window — no JA line spells a KO / ZH row — so it reads no lines
+    phrase = (
+        "" if run.lang and set(pools.singles) <= set(run.lang) else run.phrase_file()
+    )
+    held = run.held_strings()
+    win = add_windows(pools, run.read, out, phrase, workers, held)
+    focus = focus_pools(pools, run.focus, run.focus_kanji[1]) if run.focus else None
+    n_rows = len(run.focus) if run.focus else len(pools.singles)
     table = run.table()
-    plan = [
-        (t, int(round(T.ITEMS_PER_ROW * len(pools.singles) * t.share * frac)))
-        for t in table
-    ]
+    plan = [(t, int(round(T.ITEMS_PER_ROW * n_rows * t.share * frac))) for t in table]
+    plan = [(t, n) for t, n in plan if n]  # a share-0 tier is not drawn
+    if run.lang:
+        plan, dropped = _lang_plan(run, plan, pools, n_rows, frac)
+    sent = [t.params["lengths"] for t, _n in plan if t.recipe == "sent"]
+    sents = (
+        add_sentences(
+            pools,
+            run.read,
+            (min(a for a, _ in sent), max(b for _, b in sent)),
+            out,
+            phrase,
+            held,
+            run.focus,
+            run.focus_kanji[0] if run.focus else 0,
+        )
+        if sent
+        else None
+    )
     print(
-        f"build {run.name} → {out}: {len(pools.singles)} rows; "
+        f"build {run.name} → {out}: {len(pools.singles)} rows"
+        + (f" ({n_rows} focus)" if run.focus else "")
+        + "; "
         + ", ".join(f"{t.name} σ {t.band[0]:g}–{t.band[1]:g} {n}" for t, n in plan)
         + f"; {workers} workers",
         flush=True,
@@ -74,7 +107,7 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         got, report[t.name] = _build_tier(t, n, pools, rng, out, len(recs), workers)
         recs += got
     assert recs, "nothing drawn"
-    _ink_stats(recs)
+    _ink_stats(recs, workers)
     (out / "train.jsonl").write_text(
         "\n".join(json.dumps(r, ensure_ascii=False) for r in recs) + "\n",
         encoding="utf-8",
@@ -83,7 +116,11 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         {
             "group": g,
             "text": s,
-            "caption": (TPL_EN if g == "en" else TPL_BUBBLE).format(s),
+            "caption": (
+                TPL_EN.format(s)
+                if g == "en"
+                else lang_caption(pools, TPL_BUBBLE.format(s), s)
+            ),
         }
         for g in EVAL_ORDER
         for s in pools.inv.evals.get(g, ())
@@ -101,9 +138,15 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         "n_rows": len(pools.singles),
         "seed": T.SEED,
         "seed_rows": str(run.seed_rows()),
+        "pack": os.environ.get("ANIMA_VOCAB_PACK", ""),
         "frac": frac,
-        "glyph_route": True,  # the windows: train.py routes the captions per glyph
+        "glyph_route": True,
+        "lines": phrase,  # the windows: train.py routes the captions per glyph
         "windows": win,
+        **({"focus": focus} if focus else {}),
+        **({"held": run.held} if run.held else {}),
+        **({"lang": run.lang, "dropped_tiers": dropped} if run.lang else {}),
+        **({"sentences": sents} if sents else {}),
         "scenes": {
             "pools": T.SCENES,
             "small": T.SMALL_POOL,
@@ -139,6 +182,26 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         flush=True,
     )
     return out
+
+
+def _lang_plan(run: Run, plan: list, pools, n_rows: int, frac: float):
+    """A ``lang`` run's plan: a ``bubbleN`` tier with no window for any row
+    drops (no dialogue line spells KO / ZH rows), the other tiers' shares
+    scaled back to the plan's Σ so the items per row stay. No ``sent`` tier:
+    its lines are JA dialogue. Returns ``(plan, dropped tier names)``."""
+    assert not any(t.recipe == "sent" for t, _n in plan), (
+        f"{run.name}: a lang run draws no sent tier (no KO / ZH dialogue lines)"
+    )
+    drop = {t.name for t, _n in plan if t.recipe == "bubbleN" and not pools.windows}
+    if not drop:
+        return plan, []
+    total = sum(t.share for t, _n in plan)
+    kept = [t for t, _n in plan if t.name not in drop]
+    k = total / sum(t.share for t in kept)
+    print(f"lang: no window for any row — {sorted(drop)} out, shares × {k:.3f}")
+    return [
+        (t, int(round(T.ITEMS_PER_ROW * n_rows * t.share * k * frac))) for t in kept
+    ], sorted(drop)
 
 
 # fork-inherited job state (set before the pool forks; never pickled)

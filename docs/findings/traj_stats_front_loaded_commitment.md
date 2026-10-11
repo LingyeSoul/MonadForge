@@ -20,7 +20,7 @@ The anime domain is latent-sparse (flat cel shading, line art, uniform
 backgrounds), so static corpus statistics scream redundancy — but the one
 intervention previously built on redundancy signals, the deferred-foveated
 merge, died because its damage lived in the *process*, not the endpoint
-([[project_foveated_denoise_p0]]: the periphery blur was constitutive, P4t).
+(`foveated_denoise.md`: the periphery blur was constitutive, P4t).
 This line inverted the order: record per-step / per-token / per-channel
 statistics of x̂₀ = z − σ·v during generation (bit-exact, 1.35 % overhead
 at 1024²), build the domain atlas, build a process-intactness gauge, and only
@@ -99,8 +99,7 @@ shape:
   is real (gap 0.074–0.147 vs re-encode control ≈ 0) but flat in static
   redundancy (quartile means indistinguishable, bootstrap P = 0.60), and
   per-image gap ranking has ~zero split-half reliability at K≤32. The
-  redundancy scalar predicts nothing about demotion safety
-  ([[project_tier_routing_phase3a_failed]]).
+  redundancy scalar predicts nothing about demotion safety.
 - Inference-side (committed-token compute reuse): killed by a free
   offline oracle replay of the 32 atlas sidecars
   (`_archive/sigma_lowres/bench/traj_stats/run_reuse_oracle.py`,

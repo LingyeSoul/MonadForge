@@ -110,7 +110,7 @@ L_total       = L_FM + λ_con · L_contrastive                         (post-war
 
 Only `crossattn_emb` differs across the forwards, so the gradient isolates text-conditioning. Each negative is one extra full DiT forward — `k=4` ≈ 5× step time — so keep `k ∈ {1, 2}`. To further amortize the cost, `contrastive_every_n` runs the negatives only every Nth optimizer step (the term is a small-weight auxiliary regularizer; the warmup window already proves the bank trains fine with it fully off for a stretch). It's a manual frequency knob, not auto-scaled: effective strength ≈ `weight × 1/N`, so bump `contrastive_weight` if you want to hold the average pull constant. Firing-step peak memory is unchanged and off-steps are cheaper, so it's a free throughput lever with no OOM risk.
 
-> Why not a fused single-backward instead? A tempting alternative is to run the `k` negatives with grad and do one combined backward (cutting `2k`→`k` DiT forwards). At the shipped default preset (no gradient checkpointing, `blocks_to_swap=0`) that holds a full second forward's activation graph co-resident — ~+6 GB on a ~13 GB run, OOM-risking a 16 GB card — which is exactly why `extra_forwards` keeps the `no_grad` value pass + `after_backward` grad-cache replay split ([[project_blockswap_extra_forwards_gradcache]]). `contrastive_every_n` gets the throughput win without the memory hit.
+> Why not a fused single-backward instead? A tempting alternative is to run the `k` negatives with grad and do one combined backward (cutting `2k`→`k` DiT forwards). At the shipped default preset (no gradient checkpointing, `blocks_to_swap=0`) that holds a full second forward's activation graph co-resident — ~+6 GB on a ~13 GB run, OOM-risking a 16 GB card — which is exactly why `extra_forwards` keeps the `no_grad` value pass + `after_backward` grad-cache replay split. `contrastive_every_n` gets the throughput win without the memory hit.
 
 Negative modes (`contrastive_negative_mode`):
 
@@ -166,7 +166,7 @@ PL-weighted EMA bank) was the third option and was removed 2026-05-30: in the
 live A/B its `w_matched` stayed pinned at chance (`1/(k+1)` for every epoch — "Δ
 rotates but w stays at chance"), while soft-rank's `matched_rank` descended
 monotonically toward 1 and won on eyeballed image quality. This matches the
-offline Tier-A gradient probe ([[project_softrank_agsm_gradient_probe]]): soft-rank's
+offline Tier-A gradient probe: soft-rank's
 `cos(∂L/∂V, ∂margin/∂V)` ≈ 0.86 vs AGSM's ≈ 0.25, at the same boundedness. The same
 chance-pin sank the mod-guidance AGSM probe, which was removed with it.
 
@@ -184,8 +184,8 @@ InfoNCE too; the live softrank run shows ψ⁻ training via `tokens_neg_mean_nor
 
 Gradient flow mirrors InfoNCE exactly — `L` rides the anchor's FM backward (grad
 via the live `v_pos`, negatives detached), and `∂L/∂v_neg` is deferred to
-`after_backward` (the block-swap-safe grad-cache split,
-[[project_blockswap_extra_forwards_gradcache]]). The objective leaves no learned
+`after_backward` (the block-swap-safe grad-cache split, `ModelOffloader` in
+`library/runtime/offloading.py`). The objective leaves no learned
 parameters beyond the bank(s) — inference ignores it entirely, same as InfoNCE.
 
 | Knob | Default | Meaning |

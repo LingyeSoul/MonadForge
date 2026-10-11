@@ -242,8 +242,7 @@ Compile interaction: under `compile_dynamic_seq`, an adaln LoRA gives the backwa
 seq-axis reduction that trips inductor's mix-order-reduction 4096 guard, so
 `compile_blocks` pins `triton.mix_order_reduction` off — this applies to any LoRA on a
 broadcast-consumed Linear, not just adaln. Mechanism:
-[`../optimizations/for_compile.md`](../optimizations/for_compile.md) §2.6 and
-[[project_inductor_mix_order_reduction_guard]].
+[`../optimizations/for_compile.md`](../optimizations/for_compile.md) §2.6.
 
 Shipping trained adaln: the save pipeline relays runtime-layout keys to the
 comfy layout for you — `lora_save.py::_relayout_adaln_to_comfy` runs on the
@@ -263,11 +262,10 @@ No text or spatial pathway. Plausible fits:
 
 - Turbo distillation — proven load-bearing: the σ→behavior remap is exactly
   what few-step distillation changes, and the official turbo moved adaln hardest
-  ([[project_official_turbo_v10_eval]] already lists adaln targets as a lever).
+  (adaln targets are already a listed lever).
 - Style LoRAs — speculative: a home for untagged global style (grade,
-  palette bias), given cross-attn only learns labeled tags
-  ([[project_lora_crossattn_learns_labeled_only]]). Could equally be inert or a
-  new coupling hazard. Bench decides.
+  palette bias), given cross-attn only learns labeled tags. Could equally be
+  inert or a new coupling hazard. Bench decides.
 
 ### Interaction with modulation guidance (MOD=1)
 
@@ -292,8 +290,8 @@ Consequences:
   (Turbo inference runs CFG 1.0 / 4-step without mod-guidance, so the turbo
   student arm is unaffected.)
 - The "adaln is text-blind" claim is stock-model-only. On a mod-distilled
-  model (`pooled_text_proj` installed and loaded — note the gotcha in
-  [[project_sea_delta_generalizes_guidance]]: it loads in `load_dit_model`),
+  model (`pooled_text_proj` installed and loaded — it loads only in
+  `load_dit_model`, gated on `--pooled_text_proj`),
   the t-embedding carries max-pooled text, so an adaln LoRA *trained on such a
   model* would learn a weakly pooled-text-conditioned modulation response
   (global tags, not token-level). Tested 2026-07-18 — refuted at Phase 0:
@@ -305,7 +303,7 @@ Consequences:
   effect is a cost: the checkpoint becomes proj-coupled (~1.7× higher
   injection dependence at render, i.e. off-distribution in a stock ComfyUI
   flow without the proj). Don't re-propose mod-aware LoRA training without an
-  explicit text→modulation objective. [[project_modaware_adaln_phase0]]
+  explicit text→modulation objective.
 - Independent evidence convergence: mod-guidance's effectiveness (ICLR'26
   result) and the official turbo's adaln movement both say the modulation
   pathway is the high-leverage lever for global behavior — and neither says
@@ -355,8 +353,8 @@ compensate through attn/MLP; see caveat below.
 1. Turbo student arm (highest expected value): student targets `adaln_up_`
    via include_patterns, warm-started from a runtime-layout adaln-inclusive
    extraction; vs current student. Rank by rendered 4-step grid
-   ([[project_turbo_lr_instability_threshold]] — never by fm_mse), CMMD
-   within-run only ([[project_cmmd_val_signal]]).
+   (never by fm_mse), CMMD
+   within-run only.
 2. Style-LoRA arm: same artist dataset ± adaln targeting, rendered A/B.
 3. Zero-training stacking probe (cheapest first signal): in ComfyUI, chain
    our published turbo student + an adaln-only comfy-layout extract of the

@@ -17,8 +17,7 @@ Two-line summary:
 
 Archived bench (driver, machinery, all runs + images): `_archive/bench/freetext/`
 (report `stage2_report.md`, Stage-1 writeup `stage1_progress.md`). Paper PDF archived
-alongside. Related memory: [[project_freetext_phase0_localization_go]],
-[[project_freetext_stage2_sgmi_deepwindow]], [[project_sigma_signal_resolves_by_045]].
+alongside.
 
 ---
 
@@ -130,8 +129,8 @@ Paths to native OOD text (neither pursued here):
   toward the glyph (`E = ‖M⊙(x̂₀ − z_ref)‖²`, nudge the velocity by `∇E`) so the model
   paints the sign itself. The only training-free route that could be native, but
   speculative on a base with zero Korean prior, and it needs a gradient through the
-  DiT (collides with the block-swap offloader — see
-  [[project_blockswap_extra_forwards_gradcache]]).
+  DiT (collides with the block-swap offloader — `ModelOffloader` in
+  `library/runtime/offloading.py`).
 
 ## Reusable lessons
 

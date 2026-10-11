@@ -1,0 +1,15 @@
+# stick_rk_nolonegrid — stick_nolonegrid on retrain_kana's rows (user, 10-04):
+# retrain_kana's 166 kana rows less their mean held, the mean trained alone on
+# stick_nolonegrid's data (kana_up's bubble tiers at their kana_up bands). Does
+# the stick-only re-fit move the arm that reads best.
+rows = [
+    "chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをん",
+    "chars:ァアィイゥウェエォオカガキギクグケゲコゴサザシジスズセゼソゾタダチヂッツヅテデトドナニヌネノハバパヒビピフブプヘベペホボポマミムメモャヤュユョヨラリルレロワヲン・ー",
+    "chars:ヴヶゔヵ",
+]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる", "テレビ", "カメラ", "パソコン", "アイドル"]
+seed = "0921"
+steps_per_row = 12
+stick_from = "kana_up"
+rows_from = "retrain_kana"
+drop_tiers = ["lone_44", "lone_28", "lone_16", "grid_44", "grid_29", "grid_16", "grid_64"]

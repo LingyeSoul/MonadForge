@@ -1,0 +1,10 @@
+# ball_rk_bubble — ball_rk on bubble data (user, 10-04, after ball_rk): the 81
+# hiragana rows cold at retrain_kana's mean over them, that mean held, the rows less
+# it trained on the reseed table's four bubble tiers alone (kana_mix's bubble
+# shares rescaled to 100, grids and lone out), each tier at its table band.
+rows = ["chars:ぁあぃいぅうぇえぉおかがきぎくぐけげこごさざしじすずせぜそぞただちぢっつづてでとどなにぬねのはばぱひびぴふぶぷへべぺほぼぽまみむめもゃやゅゆょよらりるれろわをんゔ"]
+read = ["こんにちは", "たいせつ", "かなしい", "かんがえ", "たすけて", "こうえん", "てつだう", "ことば", "なにしてる"]
+seed = "0921"
+steps_per_row = 135
+shares = { grid_44 = 0, grid_29 = 0, grid_16 = 0, lone_44 = 0, lone_28 = 0, lone_16 = 0, bubble1_52 = 20, bubble1_32 = 30, bubbleN_34 = 30, bubbleN_18 = 20, grid_64 = 0 }
+ball_on = "retrain_kana"

@@ -83,10 +83,11 @@ strategy and the DiT loader see the same table.
 
 ## Cache invalidation
 
-TE caches skip on **existence only** — no content hash. Enabling, disabling or
-swapping a pack changes the cached T5 ids and `crossattn_emb` for every caption
-that carries CJK, but the files still exist, so the trainer would silently use
-them. Two guards:
+TE caches invalidate on **caption mtime only** (`_cache_is_current` re-encodes a
+stem whose cache is older than its caption or `.variants.txt`) — no content hash
+of the encoder state. Enabling, disabling or swapping a pack changes the cached T5
+ids and `crossattn_emb` for every caption that carries CJK, but the caption did
+not change, so the trainer would silently use the stale files. Two guards:
 
 - Every cache written through a pack carries `vocab_pack` / `vocab_pack_sha`
   in its safetensors metadata. At train start the cache check compares the
@@ -132,7 +133,7 @@ EN-only datasets are unaffected either way (identical ids, identical caches).
   `models/vocab_packs/anima_cjk_vocab_pack_300fsp_line05/` no longer loads
   — and `bake_vocab_pack.py` has no `--line_*` flags. The retrain line
   composes through per-glyph routing on cold singles instead
-  (`project/cjk_anima_scale/retrain_experiments.md`).
+  (`project/finished/cjk_anima_scale/retrain_experiments.md`).
 
 ## The shipped pack: `_jp_v1` (2026-10-08)
 
@@ -141,9 +142,9 @@ encode rules and its retrained marks `～ … ♡ ♥ 、 。「」`, carried as
 `ce0ec15f7168…`. Kanji with a row cover 96.7 % of Manga109-s kanji
 occurrences (`_preview51`: 92.8 %). Trained glyph list:
 `anima_cjk_vocab_pack_jp_v1_trained.json` on the Hub. Recipe of record, all in
-`project/cjk_anima_reseed/` (`plan.md` § 3):
+`project/cjk_anima_reseed/` (`_archive/plan.md` § 3):
 
-1. **A — identity** (`retrain_kanji_b5`, `project/cjk_anima_scale/`): 225 new
+1. **A — identity** (`retrain_kanji_b5`, `project/finished/cjk_anima_scale/`): 225 new
    kanji trained cold on the scale table, every other row frozen at
    `_preview51`'s.
 2. **B — dialogue** (`sent_kanji_225`): every row free from A's, Manga109
