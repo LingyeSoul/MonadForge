@@ -21,9 +21,14 @@ needs no GPU locally first.
    assets (fonts, packs the catalog does not fetch), the `output/` trees a build reads,
    untracked files such as a new config. When a builder's reads are not obvious, run
    it once locally at a small fraction under a `sys.addaudithook` hook on `open` and
-   keep what it opened under the repo. Paths recorded absolute on the local box (in a
+   keep what it opened under the repo. Log each path as opened, not
+   `os.path.realpath`: a symlink inside the repo (`output/wake_probe/scenes_*` →
+   `../cjk_anima_scale/scenes_*`) resolves away, and the pod then lacks the path the
+   reader asks for. Push such a symlink with plain `rsync -a` beside its target. Paths recorded absolute on the local box (in a
    manifest or pool file) must resolve under `/app` on the pod; the reader re-anchors
-   them.
+   them. **A run's data build runs on the pod**, not locally: its output is GBs
+   (a reseed `data` dir: 6.5 GB for J128, ~13 GB for J256) against ~1 GB of inputs,
+   so push the inputs and build there; never push a built data dir.
 3. **`create`, then push code and inputs together** (§ Moving data). Then `uv sync` on
    the pod (a no-op when the lock matches the image).
 4. **Launch detached** (§ Launching).
