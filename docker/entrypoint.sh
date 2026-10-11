@@ -13,10 +13,11 @@ if [ -n "${PUBLIC_KEY:-}" ]; then
     mkdir -p /root/.ssh && chmod 700 /root/.ssh
     printf '%s\n' "$PUBLIC_KEY" > /root/.ssh/authorized_keys
     chmod 600 /root/.ssh/authorized_keys
-    # sshd sessions start from a bare env: hand them the image's PATH / ANIMA_* /
-    # HF_* (and RunPod's RUNPOD_*) through ~/.ssh/environment.
-    env | grep -E '^(PATH|ANIMA_|HF_|UV_|CUDA|NVIDIA_|RUNPOD_)' > /root/.ssh/environment
-    echo "PermitUserEnvironment yes" > /etc/ssh/sshd_config.d/anima.conf
+    # sshd sessions start from a bare env, and pam_env sets PATH from
+    # /etc/environment after ~/.ssh/environment is read — so the image's PATH /
+    # ANIMA_* / HF_* (and RunPod's RUNPOD_*) go into /etc/environment.
+    env | grep -E '^(PATH|ANIMA_|HF_|UV_|CUDA|NVIDIA_|RUNPOD_)' \
+        | sed -E 's/^([^=]+)=(.*)$/\1="\2"/' > /etc/environment
     ssh-keygen -A >/dev/null
     /usr/sbin/sshd
 fi
