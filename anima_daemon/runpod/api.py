@@ -37,6 +37,23 @@ USER_AGENT = "anima-lora-runpod/1"
 # docker/Dockerfile, pushed to Docker Hub. It runs sshd when PUBLIC_KEY is set
 # and fetches the first-run models into /app/models on start.
 DEFAULT_IMAGE = "sorryhyun96/anima_lora:latest"
+# The image's torch is cu132: pods go on hosts whose driver runs CUDA ≥ 13.2.
+DEFAULT_MIN_CUDA = "13.2"
+# v1 POST /pods allowedCudaVersions enum (newest first); v2 takes any major.minor.
+V1_CUDA_VERSIONS = (
+    "13.0",
+    "12.9",
+    "12.8",
+    "12.7",
+    "12.6",
+    "12.5",
+    "12.4",
+    "12.3",
+    "12.2",
+    "12.1",
+    "12.0",
+    "11.8",
+)
 
 
 class RunPodError(RuntimeError):
@@ -162,6 +179,11 @@ class RunPodClient:
 
     def create_pod(self, spec: dict) -> dict:
         return self._rest("POST", "/pods", body=spec)
+
+    def create_pod_v2(self, spec: dict) -> dict:
+        """v2 POST /pods: a single ``gpu.id``, ``gpu.minCudaVersion`` past
+        v1's 13.0 cap, no interruptible pods. The pod reads back through v1."""
+        return self._request("POST", f"{self.api_url}/pods", body=spec)
 
     def start_pod(self, pod_id: str) -> Any:
         return self._rest("POST", f"/pods/{pod_id}/start")

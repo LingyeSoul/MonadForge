@@ -451,21 +451,68 @@ verbatim), with three deviations:
 ## RunPod pods (`anima_daemon.runpod`)
 
 Not wired into the queue yet: a stdlib REST client (`api.RunPodClient`) and a
-CLI for renting a pod by hand. Pods / volumes go through the v1 REST API
-(`rest.runpod.io/v1`), GPU price and stock through the v2 catalog
-(`api.runpod.io/v2/catalog/gpus`). Key: `RUNPOD_API_KEY`, else `apikey` in
-`~/.runpod/config.toml`.
+CLI for renting a pod by hand. `create` goes through v2 (`POST
+api.runpod.io/v2/pods`, the only one that takes `gpu.minCudaVersion` past 13.0);
+reading, listing, start / stop / terminate and volumes through the v1 REST API
+(`rest.runpod.io/v1`), which reads v2-created pods; GPU price and stock through
+the v2 catalog (`api.runpod.io/v2/catalog/gpus`). Key: `RUNPOD_API_KEY` from the environment,
+then the repo `.env`, then `apikey` in `~/.runpod/config.toml`. Requests send
+their own User-Agent — Cloudflare in front of `api.runpod.io` 403s urllib's
+default `Python-urllib/x`.
 
 ```bash
 make runpod ARGS="gpus --min-vram 24"                  # price + stock, cheapest first
-make runpod ARGS="create --gpu 'NVIDIA GeForce RTX 4090' --image <img> --dry-run"
-make runpod ARGS="create --gpu … --image <img> --wait" # billing starts; blocks until ssh answers
+make runpod ARGS="create --gpu 'NVIDIA A40' --gpu 'NVIDIA L4' --dry-run"
+make runpod ARGS="create --gpu … --wait"               # billing starts; blocks until ssh answers
 make runpod ARGS="ls"                                  # anima-* pods (--all for every pod)
 make runpod ARGS="ssh <pod_id> -- nvidia-smi"
-make runpod ARGS="stop <pod_id>"                       # pod volume kept (and billed)
-make runpod ARGS="terminate <pod_id> --yes"            # pod and pod volume deleted
+make runpod ARGS="terminate <pod_id> --yes"            # pod and its disks deleted
 ```
 
-`create` prefixes the name with `anima-` and sets `PUBLIC_KEY` from
-`~/.ssh/id_*.pub` (sshd in RunPod images reads it), replacing the account's
-keys for that pod.
+`create` defaults to `sorryhyun96/anima_lora:latest` (`docker/Dockerfile`) on a
+200 GB container disk with no pod volume, on a host with CUDA ≥ 13.2 (the
+image's torch is cu132; `--min-cuda V`, `any` = no filter — `gpus` takes the same
+flag, so its stock column matches). The container disk is wiped on stop, so a pod
+is terminated after its job rather than stopped. v2 takes one GPU type per
+request; `--gpu` repeats and `create` tries each in order until one is placed.
+`--spot` (interruptible) exists only in v1, whose `allowedCudaVersions` stops at
+13.0, so it needs `--min-cuda any` (or ≤ 13.0). `create` prefixes the name with `anima-` and sets
+`PUBLIC_KEY` from `~/.ssh/id_*.pub`, replacing the account's keys for that pod.
+
+The image's entrypoint, with `PUBLIC_KEY` set: authorizes the key, starts sshd,
+writes the image env (PATH / `ANIMA_*` / `HF_*` …) to `/etc/environment` (pam_env
+overrides `~/.ssh/environment`), fetches the first-run models into `/app/models`
+unless `ANIMA_SKIP_DOWNLOAD=1`, and idles on `sleep infinity` (no TTY on a pod —
+a bare `bash` would exit and restart the container). An ssh session lands with
+`/app/.venv/bin/python` on PATH; `cd /app` for `tasks.py`.
+
+### Moving data to a pod
+
+`rsync -a --mkpath -e "ssh -p <port> …" <local>/ root@<ip>:/app/<same path>/`.
+
+- **`--mkpath` is required** for a path under `/app` that does not exist yet:
+  rsync creates only the last directory level and otherwise fails with
+  `mkdir "/app/post_image_dataset/lora/<artist>" failed: No such file or
+  directory (code 11)`.
+- `post_image_dataset` is a symlink to the dataset volume. Name the directory
+  under it (`post_image_dataset/lora/<artist>/`, trailing slash) so the local path
+  resolves through the link; `rsync -a` on the symlink itself copies the link.
+- One rsync stream is latency-bound; split the files over parallel streams
+  (one ssh connection each — no ControlMaster, which multiplexes them onto one
+  TCP connection). Measured 2026-10-11 from Korea, `wantan_meo` (139 files,
+  418 MB) to `EU-SE-1`:
+
+  | streams | time | MB/s |
+  |---|---|---|
+  | 1 | 133 s | 3.1 |
+  | 4 | 55 s | 7.7 |
+  | 8 | 47 s | 9.0 |
+
+  8 streams reach the line's upload ceiling (a `docker push` from it: 9.4 MB/s),
+  so a 1 GB artist cache takes ~2 min and `sincos` (4 GB) ~8 min. One stream to
+  `CA-MTL-1` measured the same 3.1 MB/s. Shard by size (largest first onto the
+  lightest shard) and hand each rsync its list with `--files-from`.
+
+ssh answered 159 s (`CA-MTL-1`) and 233 s (`EU-SE-1`) after `create`, most of it
+the image pull. Before the 13.2 filter, a host with driver 580 (CUDA 13.0) ran the
+cu132 image's `torch.compile` and FA2.
