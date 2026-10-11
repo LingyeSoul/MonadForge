@@ -110,3 +110,20 @@ def test_residual_and_init_state():
     got = sd["delta"]["raw"]
     assert torch.allclose(got[1], raw[1].detach())  # a trained row keeps its r
     assert torch.allclose(got[3], jm.b[0].detach())  # 나: the composition alone
+
+
+def test_own_rows():
+    syl = {10: "가", 11: "각"}
+    rows = _rows([5, 10, 11, 12], frozen={5})  # 12: no syllable (a compat jamo)
+    held = rows.delta.raw.detach().clone()
+    jm = J.Jamo(rows, syl, lr=1e-3)
+    assert jm.n_own == 1 and rows.params[0]["params"][-1] is jm.free
+    with torch.no_grad():
+        jm.V.normal_()
+    jm.apply()
+    raw = rows.delta.raw
+    assert torch.equal(raw[0], held[0]) and torch.equal(raw[3], held[3])
+    raw.sum().backward()
+    g = jm.free.grad
+    assert float(g[:3].abs().sum()) == 0 and float(g[3].abs().sum()) > 0
+    assert float(jm.V.grad.abs().sum()) > 0

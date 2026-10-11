@@ -376,12 +376,14 @@ def train(
         ext_syl = {e: s for s, e in syl_ext.items()}
         jamo = Jamo(
             rows,
-            {e: ext_syl[e] for e in p.idx},
+            {e: ext_syl[e] for e in p.idx if e in ext_syl},
             lr,
             residual=factor_residual is not None,
             pull=factor_residual or 0.0,
         )
-        p.record.update(factor=factor, factor_vectors=Jamo.N_VECTORS)
+        p.record.update(
+            factor=factor, factor_vectors=Jamo.N_VECTORS, factor_own_rows=jamo.n_own
+        )
         if factor_residual is not None:
             p.record["factor_residual"] = {"pull": float(factor_residual)}
         if factor_from:
@@ -405,9 +407,9 @@ def train(
             p.record["factor_init"] = {"from": str(src), "scale": scale, **norms}
             print(f"factor init: {src} × {scale} — {norms}", flush=True)
         print(
-            f"factor: {len(p.idx)} syllable rows composed from {Jamo.N_VECTORS} "
+            f"factor: {len(p.idx) - jamo.n_own} syllable rows composed from {Jamo.N_VECTORS} "
             f"jamo vectors (b + C[cho, cls] + V + F); trained.pt carries all "
-            f"{len(syl_ext)} syllables' rows",
+            f"{len(syl_ext)} syllables' rows; {jamo.n_own} rows free (no syllable)",
             flush=True,
         )
 

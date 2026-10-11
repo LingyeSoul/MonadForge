@@ -27,6 +27,11 @@ every syllable is among the ``N`` most frequent → ``chatbot_lines_top<N>.tsv``
 and the read sets → ``assets/micro<N>.json``: ``trained`` (the ``N``),
 ``next`` (ranks N+1 … N+``NEXT``: in no line of the file, every arm's data
 alike) and ``held`` (the held strings whose every syllable is in the ``N``).
+
+``--jamo N`` (user 10-11, the J line grown in this line): the reseed line's
+J256 (``assets/jamo_sets.json``) + the next ``N`` − 256 syllables of
+``chatbot_rows.txt`` by frequency, KS X 1001 only, J256 and H out →
+``assets/jamo<N>.json`` (``rows``: J256's order, then the added ones).
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ HELD = 32
 BINS = {"short": (2, 4), "mid": (5, 9), "long": (10, 20)}  # syllables, the JA ruler's
 NEXT = 64
 HOME = Path(__file__).resolve().parent
+RESEED = HOME.parent / "cjk_anima_reseed"
 MARKS = set(" ?!…")
 _DOTS = re.compile(r"\.{2,}|…+")
 
@@ -133,7 +139,9 @@ def micro(n: int) -> None:
     ]
     top = set(rows[:n])
     src = (DST / "chatbot_lines.tsv").read_text(encoding="utf-8").splitlines()
-    kept = [ln for ln in src if all(c in top for c in ln.split("\t")[0] if is_syllable(c))]
+    kept = [
+        ln for ln in src if all(c in top for c in ln.split("\t")[0] if is_syllable(c))
+    ]
     dst = DST / f"chatbot_lines_top{n}.tsv"
     dst.write_text("".join(f"{ln}\n" for ln in kept), encoding="utf-8")
     held = [
@@ -143,9 +151,7 @@ def micro(n: int) -> None:
     sets = {
         "trained": "".join(rows[:n]),
         "next": "".join(rows[n : n + NEXT]),
-        "held": [
-            [s, b] for s, b in held if all(c in top for c in s if is_syllable(c))
-        ],
+        "held": [[s, b] for s, b in held if all(c in top for c in s if is_syllable(c))],
     }
     out = HOME / "assets" / f"micro{n}.json"
     out.parent.mkdir(exist_ok=True)
@@ -158,10 +164,37 @@ def micro(n: int) -> None:
     )
 
 
+def jamo(n: int) -> None:
+    sys.path.insert(0, str(RESEED))
+    from reseed.jamo import in_ksx1001
+
+    sets = json.loads(
+        (RESEED / "assets" / "jamo_sets.json").read_text(encoding="utf-8")
+    )
+    base, out_ = list(sets["J256"]), set(sets["J256"]) | set(sets["H"])
+    rows = [
+        ln.split("\t")[0]
+        for ln in (DST / "chatbot_rows.txt").read_text(encoding="utf-8").splitlines()
+    ]
+    added = [c for c in rows if c not in out_ and in_ksx1001(c)][: n - len(base)]
+    assert len(added) == n - len(base), len(added)
+    out = HOME / "assets" / f"jamo{n}.json"
+    out.write_text(
+        json.dumps(
+            {"rows": "".join(base + added), "added": "".join(added)},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+    print(f"J{n}: J256 + {len(added)} by chatbot frequency → {out}", flush=True)
+
+
 if __name__ == "__main__":
     import argparse
 
     p = argparse.ArgumentParser()
     p.add_argument("--rows", type=int, default=0, help="the micro arms' line file")
+    p.add_argument("--jamo", type=int, default=0, help="J256 + chatbot rows to N")
     a = p.parse_args()
-    micro(a.rows) if a.rows else main()
+    jamo(a.jamo) if a.jamo else micro(a.rows) if a.rows else main()

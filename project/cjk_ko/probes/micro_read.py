@@ -19,7 +19,9 @@ every third of the 192 by frequency (64), ``next`` (ranks 193–256: no line of
 the arms' data holds them; A leaves them at the floor, B / B′ move them
 through the factors), ``held`` (the ruler's strings on the 192: 27).
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp; ``--arms`` picks some.
+_b / _bp, jamo_j1024_ko; ``--arms`` picks some. ``--groups`` (default the
+three above): also ``H`` (the jamo line's 32 held syllables) and ``jamo``
+(the 51 compat jamo, by eye — v4 reads no lone jamo).
 
     make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/micro_read.py render"
     make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/micro_read.py score"
@@ -54,27 +56,35 @@ ARMS = {
     "ko_micro_a": KO_OUT / "ko_micro_a",
     "ko_micro_b": KO_OUT / "ko_micro_b",
     "ko_micro_bp": KO_OUT / "ko_micro_bp",
+    "jamo_j1024_ko": KO_OUT / "jamo_j1024_ko",
 }
-GROUPS = ("trained", "next", "held")
+GROUPS = ("trained", "next", "held", "H", "jamo")
 SIZE = (512, 512)
 SEED = 0
 
 
-def items() -> dict:
-    """{group: [text, …]}."""
+def items(groups=GROUPS) -> dict:
+    """{group: [text, …]}; ``H`` = the jamo line's 32 held syllables
+    (``jamo_sets.json``), ``jamo`` = the 51 compat jamo (v4 reads none: by eye)."""
+    from reseed.jamo import COMPAT
+
     s = json.loads(SETS.read_text(encoding="utf-8"))
-    return {
+    js = json.loads((RESEED / "assets" / "jamo_sets.json").read_text(encoding="utf-8"))
+    out = {
         "trained": list(s["trained"])[::3],
         "next": list(s["next"]),
         "held": [t for t, _bin in s["held"]],
+        "H": list(js["H"]),
+        "jamo": list(COMPAT),
     }
+    return {g: out[g] for g in groups}
 
 
 def render_file(arm: str, t: str) -> Path:
     return RENDER / arm / f"bubble_{t}_s{SEED}.png"
 
 
-def render(arms: list) -> None:
+def render(arms: list, groups: tuple) -> None:
     from common.prompts import TPL_BUBBLE
     from reseed.pools import relang
 
@@ -87,7 +97,7 @@ def render(arms: list) -> None:
     _, tabs = tables(arms + ["retrain_kana"])
     r = Renderer()
     info = {"check_rk": check(r, tabs["retrain_kana"])}
-    its = [t for ts in items().values() for t in ts]
+    its = [t for ts in items(groups).values() for t in ts]
     t0 = time.time()
     for arm in arms:
         r.set_arm(tabs[arm])
@@ -107,7 +117,7 @@ def render(arms: list) -> None:
     print(f"→ {RENDER}: {len(arms)} arms × {len(its)} items; {info}", flush=True)
 
 
-def score(arms: list) -> None:
+def score(arms: list, groups: tuple) -> None:
     import numpy as np
     import torch
     from anime_tools.ocr.animetext import AnimeTextDetector
@@ -120,7 +130,7 @@ def score(arms: list) -> None:
     from bench._common import make_run_dir, write_result
 
     t0 = time.time()
-    groups = items()
+    groups = items(groups)
     recs, ims = [], []
     for arm in arms:
         for g, ts in groups.items():
@@ -178,7 +188,7 @@ def score(arms: list) -> None:
     write_result(
         out,
         script=__file__,
-        args={"arms": arms},
+        args={"arms": arms, "groups": list(groups)},
         label="micro-read",
         metrics={"per_arm": tab, "minutes": round((time.time() - t0) / 60, 1)},
         artifacts=sheets,
@@ -191,9 +201,12 @@ if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("mode", choices=("render", "score"))
     p.add_argument("--arms", default=",".join(ARMS), help="of ARMS, comma-separated")
+    p.add_argument("--groups", default="trained,next,held", help="of GROUPS")
     a = p.parse_args()
+    groups = tuple(x for x in a.groups.split(",") if x)
+    assert set(groups) <= set(GROUPS), sorted(set(groups) - set(GROUPS))
     arms = [x for x in a.arms.split(",") if x]
     assert set(arms) <= set(ARMS), sorted(set(arms) - set(ARMS))
     missing = [x for x in arms if not (ARMS[x] / "trained.pt").is_file()]
     assert not missing, f"no trained.pt for {missing}"
-    (render if a.mode == "render" else score)(arms)
+    (render if a.mode == "render" else score)(arms, groups)

@@ -115,10 +115,14 @@ class Jamo:
     (27, d) — the finals past 0, all zero at init (Δ 0: the cold start).
 
     ``rows`` is the run's ``Rows``; ``syl`` = {ext id: syllable} for its
-    trained rows, every one of them a syllable. ``apply`` writes the
-    composition into ``rows.delta.raw`` (out of place: the free ``raw``
-    keeps the frozen context rows, ``ExtDelta`` reads ``raw`` at forward
-    time); call it before each step's forward and before a save.
+    trained syllable rows. ``apply`` writes the composition into
+    ``rows.delta.raw`` (out of place: the free ``raw`` keeps the frozen
+    context rows, ``ExtDelta`` reads ``raw`` at forward time); call it before
+    each step's forward and before a save.
+
+    A trained row that is no syllable (cjk_ko J1024, 10-11: the 51 compat
+    jamo, ㅋㅋ / ㅠㅠ's own glyphs) stays a free row of ``raw``, in the
+    optimizer beside the factors; the composition never writes it.
 
     ``residual`` (cjk_ko B′, 10-11): a per-syllable free row ``r`` on top of
     the composition, 0 at init, in the optimizer beside the factors;
@@ -133,13 +137,18 @@ class Jamo:
         d = rows.delta.raw.shape[1]
         dev = rows.delta.raw.device
         ids = rows.delta.ext_ids
-        live = [i for i, m in enumerate(rows.frozen_mask.tolist()) if not m]
-        assert {ids[i] for i in live} == set(syl), (
-            "factor rows: every trained row is a syllable, every syllable trained"
-        )
+        trained = [i for i, m in enumerate(rows.frozen_mask.tolist()) if not m]
+        live = [i for i in trained if ids[i] in syl]
+        own = [i for i in trained if ids[i] not in syl]
+        assert {ids[i] for i in live} == set(syl), "factor rows: every syllable trained"
         self.rows = rows
-        # the frozen context rows: held, out of the optimizer
-        self.free = rows.delta.raw.requires_grad_(False)
+        self.n_own = len(own)
+        # the frozen context rows: held; the own rows (no syllable) train in place
+        self.free = rows.delta.raw.requires_grad_(bool(own))
+        if own:
+            keep = torch.zeros(len(ids), 1, device=dev)
+            keep[own] = 1.0
+            self.free.register_hook(lambda g: g * keep)
         self.loc = torch.tensor(live, dtype=torch.long, device=dev)
         self.code = codes([syl[ids[i]] for i in live]).to(dev)
 
@@ -155,6 +164,7 @@ class Jamo:
         self.r = p(len(live)) if residual else None
         self.pull = float(pull)
         ps = [self.b, self.C, self.V, self.F] + ([self.r] if residual else [])
+        ps += [self.free] if own else []
         rows.params = [{"params": ps, "lr": lr}]
 
     @torch.no_grad()
@@ -168,8 +178,7 @@ class Jamo:
         return {
             "row_scale_ratio": round(k, 4),
             "init_delta_norm": round(
-                float(self.compose(self.code).norm(dim=1).mean())
-                * self.rows.row_scale,
+                float(self.compose(self.code).norm(dim=1).mean()) * self.rows.row_scale,
                 1,
             ),
         }

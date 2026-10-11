@@ -22,7 +22,8 @@ def test_configs_load():
     for f in fs:
         run = load(str(f))
         assert run.dir == OUT.parent / "cjk_ko" / f.stem, run.dir
-        assert run.line_lang() == "korean", f.stem
+        if not f.stem.startswith("jamo_"):  # a jamo_* run draws no lines (phase 1)
+            assert run.line_lang() == "korean", f.stem
         assert set(run.lang) == {g for r in run.rows for g in r.split(":", 1)[1]}
 
 

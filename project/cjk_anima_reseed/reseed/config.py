@@ -66,7 +66,8 @@
                                   # composed each step from jamo factors, b + C[cho,
                                   # cls] + V[jung] + F[jong] (``jamo.Jamo``,
                                   # proposal_jamo § 2); cold, no ``row_lr``;
-                                  # ``trained.pt`` holds every syllable's composed row
+                                  # ``trained.pt`` holds every syllable's composed row.
+                                  # A compat jamo row (ㄱ … ㅣ) stays free beside them
     factor_init = { from = "jamo_lone", scale = 0.577 }  # optional, with ``factor``:
                                   # the jamo curriculum's stage 2 (user 10-11) — C[cho,
                                   # every cls] / V[jung] / F[jong] start at scale × that
@@ -377,15 +378,21 @@ def load(run: str) -> Run:
         )
     factor = raw.get("factor", "")
     if factor:
-        from .jamo import is_syllable
+        from .jamo import COMPAT, is_syllable
 
         assert factor in FACTORS, f"{path}: factor is one of {FACTORS}"
         assert (seed or raw.get("factor_from")) and not row_lr, (
             f"{path}: factor rows are cold or start at factor_from, without row_lr"
         )
-        bad = [g for r in raw["rows"] for g in r.split(":", 1)[1] if not is_syllable(g)]
+        bad = [
+            g
+            for r in raw["rows"]
+            for g in r.split(":", 1)[1]
+            if not (is_syllable(g) or g in COMPAT)
+        ]
         assert not bad and all(r.startswith("chars:") for r in raw["rows"]), (
-            f"{path}: factor rows are chars: specs of Hangul syllables — not {bad[:10]}"
+            f"{path}: factor rows are chars: specs of Hangul syllables / compat jamo "
+            f"— not {bad[:10]}"
         )
     fi = raw.get("factor_init")
     if fi is not None:
