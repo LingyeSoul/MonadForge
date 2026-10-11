@@ -181,6 +181,23 @@ def test_partition_cached(tmp_path: Path) -> None:
     assert [p.name for p in pending] == ["img0.png", "img2.png"]
 
 
+def test_a_cache_older_than_its_image_is_pending(tmp_path: Path) -> None:
+    """A resize that rewrites an image (e.g. the alpha composite fix) must
+    re-encode it even though its cache file still exists."""
+    import os
+
+    from library.preprocess import partition_cached
+
+    img = tmp_path / "img.png"
+    _write_image(img, (8, 8))
+    cache = tmp_path / "img.cached"
+    cache.touch()
+    os.utime(cache, (1_000_000, 1_000_000))
+
+    pending, skipped = partition_cached([img], lambda p: tmp_path / f"{p.stem}.cached")
+    assert (skipped, [q.name for q in pending]) == (0, ["img.png"])
+
+
 def test_count_preprocess_caches_path_pattern_filters_nested_caches(
     tmp_path: Path,
 ) -> None:
