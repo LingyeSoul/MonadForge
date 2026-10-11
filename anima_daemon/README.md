@@ -482,12 +482,9 @@ request; `--gpu` repeats and `create` tries each in order until one is placed.
 keys for that pod. `create --wait` and `ls` print the pod's ssh `ip` and `port`;
 `ssh` pins no host key (pod IP:port pairs are recycled).
 
-The image installs `libraqm0` (Pillow's text layout) and `fonts-noto-cjk` /
-`fonts-noto-cjk-extra` (system CJK faces) beside the CUDA toolchain and
-`openssh-server` / `rsync`. Its entrypoint exports `OMP_NUM_THREADS` = the
-container's cgroup CPU quota (`/sys/fs/cgroup/cpu.max`) in whole CPUs less one —
-`nproc` reports the host's cores. With `PUBLIC_KEY` set it authorizes the key,
-starts sshd and writes the image env (PATH / `ANIMA_*` / `HF_*` / `OMP_*` …) to
+The image carries the CUDA toolchain, `openssh-server` / `rsync`, `libraqm0` and the
+Noto CJK fonts; its entrypoint sets `OMP_NUM_THREADS` from the container's CPU quota.
+With `PUBLIC_KEY` set it authorizes the key, starts sshd and writes the image env (PATH / `ANIMA_*` / `HF_*` / `OMP_*` …) to
 `/etc/environment` (pam_env overrides `~/.ssh/environment`). It then fetches the
 first-run models into `/app/models` unless `ANIMA_SKIP_DOWNLOAD=1`, and idles on
 `sleep infinity` (no TTY on a pod — a bare `bash` would exit and restart the
