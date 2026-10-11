@@ -50,6 +50,13 @@ run draws what it drew.
   drops them); its letters count Hangul syllables.
 - L_pres's EN caption names `Korean text` / `korean text` English too.
 
+## Reads
+
+- `reports/micro_2026_10_11.md`: the micro arms A / B / B′ — every arm
+  learned to draw a line for a lone syllable (exact 18 → 1–2 / 64 against
+  j256_ko); B′ leads on the held strings (glyph F1 0.27 vs A 0.18); B / B′
+  carry the line habit to untrained syllables. The data mix comes first.
+
 ## Open
 
 - **The read.** No KO ruler yet: the 96 held strings are cut out of the data
