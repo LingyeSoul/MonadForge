@@ -760,6 +760,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inductor preset for --compile_blocks (e.g. 'default', "
         "'reduce-overhead'). None = inductor default.",
     )
+    parser.add_argument(
+        "--compile_dynamic_seq",
+        action="store_true",
+        help="--compile_blocks with the token-count axis marked dynamic, so one "
+        "graph covers every image size instead of one recompile per size. The "
+        "range is the min..max token count over the run's sizes (every "
+        "--from_file line), else the 1024 tier band. Implies --compile_blocks.",
+    )
     return parser
 
 
