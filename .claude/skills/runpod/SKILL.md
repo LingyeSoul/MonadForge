@@ -1,6 +1,6 @@
 ---
 name: runpod
-description: Operating a RunPod pod for a GPU run — settling the run and its input list before create, pushing code and inputs (rsync --mkpath, parallel streams, measured throughput), system packages and thread counts on the pod, launching detached, waiting with a background until loop, pulling back results and terminating. Load before renting, pushing to, running work on, or terminating a RunPod pod.
+description: Operating a RunPod pod for a GPU run — settling the run and its input list before create, pushing code and inputs (rsync --mkpath, parallel streams, measured throughput), launching detached, waiting with a background until loop, pulling back results and terminating. Load before renting, pushing to, running work on, or terminating a RunPod pod.
 ---
 
 # RunPod pods
@@ -26,10 +26,9 @@ needs no GPU locally first.
    them.
 3. **`create`, then push code and inputs together** (§ Moving data). Then `uv sync` on
    the pod (a no-op when the lock matches the image).
-4. **Check the pod's system packages and thread count** (§ On the pod).
-5. **Launch detached** (§ Launching).
-6. **Wait with one background Bash `until` loop** (§ Waiting).
-7. **Pull back the results only** — weights, logs, build manifests (tens of MB) — run
+4. **Launch detached** (§ Launching).
+5. **Wait with one background Bash `until` loop** (§ Waiting).
+6. **Pull back the results only** — weights, logs, build manifests (tens of MB) — run
    the reads locally, then `make runpod ARGS="terminate <pod_id> --yes"`. A stopped
    pod's container disk is wiped anyway, so a finished pod is terminated, not stopped.
 
@@ -80,16 +79,6 @@ Measured 2026-10-11 from a residential line, 139 files / 418 MB to `EU-SE-1`:
 
 ## On the pod
 
-- **System packages**: text rendering needs `libraqm0` (Pillow's text layout) and
-  `fonts-noto-cjk` / `fonts-noto-cjk-extra` (the system CJK faces); without them a
-  rendered dataset draws other faces and placements. The current image installs them.
-  A pod from an image built before that lacks them — check with `dpkg -s libraqm0
-  fonts-noto-cjk fonts-noto-cjk-extra` and `apt-get install` what is missing.
-- **Threads**: `nproc` reports the host's cores (128 on one 5090 pod), not the
-  container's quota (`/sys/fs/cgroup/cpu.max` `1360000 100000` = 13.6 CPUs). The
-  current image's entrypoint exports `OMP_NUM_THREADS` = the quota's whole CPUs less
-  one into ssh sessions (12 there). If `echo $OMP_NUM_THREADS` over ssh is empty, the
-  pod is on an older image; set it on the command.
 - **Worker count**: a build whose output depends on its worker count takes the same
   `--workers` as the local run it is compared against.
 
