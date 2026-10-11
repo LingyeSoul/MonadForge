@@ -68,6 +68,8 @@ def main():
             pres=run.pres,
             factor=run.factor,
             factor_init=run.factor_init_rows(),
+            factor_from=run.factor_from_rows(),
+            factor_residual=run.factor_residual,
         )
 
 

@@ -1,0 +1,17 @@
+# ko_micro_a — the micro arms (user 10-11): A, B, B′ on one small build, read by glyph
+# (assets/micro192.json). A = free rows: the 192 most frequent chatbot syllables warm
+# from jamo_j256_ko's merged rows, every row free; ko_chat_warm's recipe at 20 steps a
+# row (3 840 steps), no L_pres; the lines the ones on those 192 (3 153). Builds the
+# data the three arms share.
+rows = ["chars:요이어는하지다가고해나아사을도세거게보에기은까자한네데니면랑있만마서그로리야무들좋인생시안라일예겠싶남연정말봐없주내같의죠할친여구음너오으각제수려힘를람상대했별신많스잘진되전간더부었락짝바드않썸건애먹워때못비혼운미물저금러화중심헤장모래결받우걸알녀것늘선타살감좀소행당적날분습달뭐테돼히았든후직질와길복회동방차될트속집관끝공과잊실조계문치왜편르두재찮처답볼른던왔난귀렇유원줄괜또입새떻"]
+lang = { korean = "요이어는하지다가고해나아사을도세거게보에기은까자한네데니면랑있만마서그로리야무들좋인생시안라일예겠싶남연정말봐없주내같의죠할친여구음너오으각제수려힘를람상대했별신많스잘진되전간더부었락짝바드않썸건애먹워때못비혼운미물저금러화중심헤장모래결받우걸알녀것늘선타살감좀소행당적날분습달뭐테돼히았든후직질와길복회동방차될트속집관끝공과잊실조계문치왜편르두재찮처답볼른던왔난귀렇유원줄괜또입새떻" }
+rows_from = "cjk_anima_reseed/jamo_j256_ko"
+pack = "punct"
+lines = "ko_chat_192"
+held = "~/ko_corpus/derived/chatbot_held.tsv"
+steps_per_row = 20
+shares = { grid_44 = 0, grid_29 = 0, grid_16 = 0, lone_44 = 0, lone_28 = 0, lone_16 = 0, bubble1_52 = 2, bubble1_32 = 3, bubbleN_34 = 15, bubbleN_18 = 10, sentko_34 = 40, sentko_22 = 30 }
+free_residual = 0.0
+lr = 2e-4
+faces = { out = ["NanumPenScript-Regular.ttf"], dirs = ["ko_extra"], px_min = { "BlackHanSans-Regular.ttf" = 32, "DoHyeon-Regular.ttf" = 24, "GangwonEduTeunteun.ttf" = 28, "Pretendard-Black.ttf" = 22, "GangwonEduHyeonokSaem.ttf" = 24, "GangwonEduSaeeum.ttf" = 24, "KyoboHandwriting2025lyb.ttf" = 18 } }
+pose = true

@@ -72,6 +72,14 @@
                                   # every cls] / V[jung] / F[jong] start at scale × that
                                   # reseed run's compatibility-jamo rows (pack + Δ,
                                   # centred over the 51), ``b`` at 0
+    factor_from = "cjk_anima_reseed/jamo_j256_ko"  # optional, with ``factor``: the
+                                  # factors start at that factor run's (its
+                                  # ``trained.pt`` ``jamo``; a name or ``<line>/<run>``
+                                  # as ``rows_from``); with ``rows_from`` the factor
+                                  # rows run warm (cjk_ko B / B′, 10-11)
+    factor_residual = 0.0         # optional, with ``factor``: a per-syllable residual
+                                  # on the composition, its norm pull this weight
+                                  # (``jamo.Jamo`` ``residual``; cjk_ko B′)
     faces = { out = ["NanumPenScript-Regular.ttf"], px_min = { "BlackHanSans-Regular.ttf" = 32 } }
                                   # optional, with ``lang``: faces (file names) left
                                   # out of the draw, and the font px under which a
@@ -117,6 +125,8 @@ KEYS = (
     "lang",
     "factor",
     "factor_init",
+    "factor_from",
+    "factor_residual",
     "faces",
     "pose",
 )
@@ -142,9 +152,11 @@ LINES = {
     "m109_pack": "$MANGA109S/derived/dialogue_pack.tsv",
     "m109_b5": "$MANGA109S/derived/dialogue_pack_b5.tsv",
     "ko_chat": "~/ko_corpus/derived/chatbot_lines.tsv",
+    # ko_chat's lines on its 192 most frequent syllables (cjk_ko's micro arms)
+    "ko_chat_192": "~/ko_corpus/derived/chatbot_lines_top192.tsv",
 }
 # the line files not in Japanese: their language (``LANGS``)
-LINE_LANG = {"ko_chat": "korean"}
+LINE_LANG = {"ko_chat": "korean", "ko_chat_192": "korean"}
 UPPER_MAX = 0.9  # tests/test_boundary.py: no band past it
 
 
@@ -171,6 +183,8 @@ class Run:
     lang: dict | None = None  # glyph → language for the rows not lettered as Japanese
     factor: str = ""  # the rows composed from factors (``FACTORS``); "" = free rows
     factor_init: tuple = ()  # (reseed run, scale): the factors' start; () = Δ 0
+    factor_from: str = ""  # a factor run: the factors' start; "" = Δ 0
+    factor_residual: float | None = None  # the pull on r; None = no residual
     faces: dict | None = None  # {out: (face, …), px_min: {face: px}}; None = every face
     pose: bool = False  # text centred / tilted with its bubble
 
@@ -255,6 +269,13 @@ class Run:
         if self.rows_from:
             return SCALE_OUT / self.rows_from / "trained.pt"
         return {"0930": SEED_ROWS, "1008": SEED_1008}[self.seed]
+
+    def factor_from_rows(self) -> Path | None:
+        """``factor_from``'s ``trained.pt``; ``None`` without it."""
+        if not self.factor_from:
+            return None
+        name = self.factor_from
+        return (OUT.parent / name if "/" in name else OUT / name) / "trained.pt"
 
     def factor_init_rows(self) -> tuple:
         """``(trained.pt, scale)`` of ``factor_init``; () without it."""
@@ -359,7 +380,9 @@ def load(run: str) -> Run:
         from .jamo import is_syllable
 
         assert factor in FACTORS, f"{path}: factor is one of {FACTORS}"
-        assert seed and not row_lr, f"{path}: factor rows are cold, without row_lr"
+        assert (seed or raw.get("factor_from")) and not row_lr, (
+            f"{path}: factor rows are cold or start at factor_from, without row_lr"
+        )
         bad = [g for r in raw["rows"] for g in r.split(":", 1)[1] if not is_syllable(g)]
         assert not bad and all(r.startswith("chars:") for r in raw["rows"]), (
             f"{path}: factor rows are chars: specs of Hangul syllables — not {bad[:10]}"
@@ -371,6 +394,13 @@ def load(run: str) -> Run:
         assert "/" not in fi["from"], f"{path}: factor_init from names a reseed run"
         assert 0 < float(fi["scale"]) <= 2, f"{path}: factor_init scale {fi['scale']}"
         fi = (fi["from"], float(fi["scale"]))
+    ff, fres = raw.get("factor_from", ""), raw.get("factor_residual")
+    assert not ff or (factor and fi is None), (
+        f"{path}: factor_from needs factor, not with factor_init"
+    )
+    assert fres is None or (factor and 0 <= float(fres) < 1), (
+        f"{path}: factor_residual (a pull in [0, 1)) needs factor"
+    )
     faces = raw.get("faces")
     if faces is not None:
         fonts = Path(__file__).resolve().parents[1] / "assets" / "fonts"
@@ -412,6 +442,8 @@ def load(run: str) -> Run:
         lang=lang,
         factor=factor,
         factor_init=tuple(fi or ()),
+        factor_from=ff,
+        factor_residual=None if fres is None else float(fres),
         faces=faces,
         pose=bool(raw.get("pose", False)),
     )

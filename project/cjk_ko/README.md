@@ -18,6 +18,9 @@ reseed line's `reseed/` package, run through `run.py`. Outputs:
 | `run.py` | front door: `run.py <run> data [--frac f] \| train` → the reseed line's `run.py` on `configs/<run>.toml` |
 | `configs/ko_chat_warm.toml` | warm A: every syllable of the lines free, warm from `cjk_anima_reseed/jamo_j256_ko`, sent_kanji_pres's recipe (lr 2e-4, free_residual 0, 40 steps a row, L_pres λ 10 at σ 0.8–0.9 every 2nd step) |
 
+| `configs/ko_micro_{a,b,bp}.toml` | the micro arms (user 10-11): the 192 most frequent syllables, 20 steps a row (3 840), no L_pres, on the lines of those 192 (`corpus.py --rows 192` → `ko_chat_192`). A = free rows; B = the jamo factors only, warm from j256_ko's (`factor_from`); B′ = B + a per-syllable residual (`factor_residual`). One data build (`ko_micro_a`), B / B′ `data_from` it |
+| `probes/micro_read.py` | GPU: `render` (each read item alone in a KO bubble, seed 0, under `floor` = jamo_j256_ko and the micro arms; cached under `output/cjk_ko/micro_read/render/`) and `score` (v4 free read; per arm × group exact and glyph / jamo P R F1 with chance) → `results/<ts>-micro-read/`. Groups (`assets/micro192.json`): every third of the 192 (64), the next 64 by frequency (in no line), the 27 held strings on the 192 |
+
 ```bash
 .venv/bin/python project/cjk_ko/corpus.py
 .venv/bin/python project/cjk_ko/run.py ko_chat_warm data --frac 0.03   # sizes: sheet_<tier>.png

@@ -21,11 +21,18 @@ and it holds 2+ syllables; deduplicated, Q before A. Writes under
   5-gram cut).
 - ``chatbot_rows.txt``: every syllable the line file holds, by frequency
   (``syllable\\tcount``) — a run's ``rows``.
+
+``--rows N`` (the micro arms, user 10-11), from those files: the lines whose
+every syllable is among the ``N`` most frequent → ``chatbot_lines_top<N>.tsv``,
+and the read sets → ``assets/micro<N>.json``: ``trained`` (the ``N``),
+``next`` (ranks N+1 … N+``NEXT``: in no line of the file, every arm's data
+alike) and ``held`` (the held strings whose every syllable is in the ``N``).
 """
 
 from __future__ import annotations
 
 import csv
+import json
 import random
 import re
 import sys
@@ -38,6 +45,8 @@ DST = ROOT / "derived"
 SEED = 0
 HELD = 32
 BINS = {"short": (2, 4), "mid": (5, 9), "long": (10, 20)}  # syllables, the JA ruler's
+NEXT = 64
+HOME = Path(__file__).resolve().parent
 MARKS = set(" ?!…")
 _DOTS = re.compile(r"\.{2,}|…+")
 
@@ -117,5 +126,42 @@ def main() -> None:
     )
 
 
+def micro(n: int) -> None:
+    rows = [
+        ln.split("\t")[0]
+        for ln in (DST / "chatbot_rows.txt").read_text(encoding="utf-8").splitlines()
+    ]
+    top = set(rows[:n])
+    src = (DST / "chatbot_lines.tsv").read_text(encoding="utf-8").splitlines()
+    kept = [ln for ln in src if all(c in top for c in ln.split("\t")[0] if is_syllable(c))]
+    dst = DST / f"chatbot_lines_top{n}.tsv"
+    dst.write_text("".join(f"{ln}\n" for ln in kept), encoding="utf-8")
+    held = [
+        ln.split("\t")[:2]
+        for ln in (DST / "chatbot_held.tsv").read_text(encoding="utf-8").splitlines()
+    ]
+    sets = {
+        "trained": "".join(rows[:n]),
+        "next": "".join(rows[n : n + NEXT]),
+        "held": [
+            [s, b] for s, b in held if all(c in top for c in s if is_syllable(c))
+        ],
+    }
+    out = HOME / "assets" / f"micro{n}.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps(sets, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(
+        f"top {n}: {len(kept)} of {len(src)} lines → {dst}; reads → {out}: "
+        f"{n} trained, {len(sets['next'])} next, {len(sets['held'])} held "
+        f"({dict(Counter(b for _, b in sets['held']))})",
+        flush=True,
+    )
+
+
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    p = argparse.ArgumentParser()
+    p.add_argument("--rows", type=int, default=0, help="the micro arms' line file")
+    a = p.parse_args()
+    micro(a.rows) if a.rows else main()

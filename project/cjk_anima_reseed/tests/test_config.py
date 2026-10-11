@@ -1,5 +1,6 @@
-"""Every kept run config loads, and every ``KEYS`` entry is used by one of
-them (a key only archived configs used is dropped with its code)."""
+"""Every kept run config loads (cjk_ko's too), and every ``KEYS`` entry is
+used by one of them (a key only archived configs used is dropped with its
+code)."""
 
 import sys
 import tomllib
@@ -10,7 +11,10 @@ sys.path.insert(0, str(HOME))
 
 
 def _configs() -> list:
-    return sorted((HOME / "configs").glob("*.toml"))
+    """This line's configs and cjk_ko's (it runs on this package)."""
+    return sorted((HOME / "configs").glob("*.toml")) + sorted(
+        (HOME.parent / "cjk_ko" / "configs").glob("*.toml")
+    )
 
 
 def test_configs_load():
@@ -18,7 +22,7 @@ def test_configs_load():
 
     assert _configs()
     for f in _configs():
-        run = load(f.stem)
+        run = load(str(f))
         assert run.seed_rows().name == "trained.pt", f.stem
 
 

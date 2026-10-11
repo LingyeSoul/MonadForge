@@ -85,3 +85,28 @@ def test_merge_all():
     raw = sd["delta"]["raw"]
     assert torch.allclose(raw[4], raw[2])  # 나 = 가 (C[ㄴ] still 0)
     assert torch.allclose(raw[0], jm.V[2].detach())  # 갸: ㅑ
+
+
+def test_residual_and_init_state():
+    syl = {10: "가", 11: "각"}
+    rows = _rows([5, 10, 11], frozen={5})
+    rows.row_scale = 2.0
+    src = {"b": torch.ones(1, 8), "C": torch.zeros(19, 3, 8), "V": torch.zeros(21, 8)}
+    src["F"] = torch.zeros(27, 8)
+    jm = J.Jamo(rows, syl, lr=1e-3, residual=True, pull=0.5)
+    assert rows.params[0]["params"] == [jm.b, jm.C, jm.V, jm.F, jm.r]
+    jm.init_state(src, row_scale=4.0)  # rescaled into this run's row_scale
+    assert torch.allclose(jm.b.detach(), torch.full((1, 8), 2.0))
+    with torch.no_grad():
+        jm.r.normal_()
+    jm.apply()
+    raw = rows.delta.raw
+    assert torch.allclose(raw[1], jm.b[0] + jm.r[0])  # composition + r
+    assert torch.allclose(jm.penalty(), 0.5 * (jm.r**2).sum(1).mean())
+    sd = {
+        "delta": {"ext_ids": [5, 10, 11], "raw": raw.detach().clone(), "row_scale": 2.0}
+    }
+    jm.merge_all(sd, {"가": 10, "각": 11, "나": 20})
+    got = sd["delta"]["raw"]
+    assert torch.allclose(got[1], raw[1].detach())  # a trained row keeps its r
+    assert torch.allclose(got[3], jm.b[0].detach())  # 나: the composition alone

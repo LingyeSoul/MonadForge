@@ -118,11 +118,18 @@ class Jamo:
     trained rows, every one of them a syllable. ``apply`` writes the
     composition into ``rows.delta.raw`` (out of place: the free ``raw``
     keeps the frozen context rows, ``ExtDelta`` reads ``raw`` at forward
-    time); call it before each step's forward and before a save."""
+    time); call it before each step's forward and before a save.
+
+    ``residual`` (cjk_ko B′, 10-11): a per-syllable free row ``r`` on top of
+    the composition, 0 at init, in the optimizer beside the factors;
+    ``penalty`` = ``pull`` · mean ‖r‖² (the norm pull on ``r`` only, so the
+    factors carry what they can)."""
 
     N_VECTORS = 1 + N_CHO * len(CLASSES) + N_JUNG + (N_JONG - 1)
 
-    def __init__(self, rows, syl: dict, lr: float):
+    def __init__(
+        self, rows, syl: dict, lr: float, residual: bool = False, pull: float = 0.0
+    ):
         d = rows.delta.raw.shape[1]
         dev = rows.delta.raw.device
         ids = rows.delta.ext_ids
@@ -145,7 +152,33 @@ class Jamo:
             p(N_JUNG),
             p(N_JONG - 1),
         )
-        rows.params = [{"params": [self.b, self.C, self.V, self.F], "lr": lr}]
+        self.r = p(len(live)) if residual else None
+        self.pull = float(pull)
+        ps = [self.b, self.C, self.V, self.F] + ([self.r] if residual else [])
+        rows.params = [{"params": ps, "lr": lr}]
+
+    @torch.no_grad()
+    def init_state(self, state: dict, row_scale: float) -> dict:
+        """The factors at a factor run's (``trained.pt`` ``jamo``: b / C / V /
+        F, raw units at that run's ``row_scale``), rescaled into this run's;
+        ``r`` stays 0 (cjk_ko, 10-11). Returns the norms for the record."""
+        k = float(row_scale) / float(self.rows.row_scale)
+        for n in ("b", "C", "V", "F"):
+            getattr(self, n).copy_(state[n].float().to(self.b.device) * k)
+        return {
+            "row_scale_ratio": round(k, 4),
+            "init_delta_norm": round(
+                float(self.compose(self.code).norm(dim=1).mean())
+                * self.rows.row_scale,
+                1,
+            ),
+        }
+
+    def penalty(self) -> torch.Tensor | float:
+        """``pull`` · mean ‖r‖² (0 without a residual or a pull)."""
+        if self.r is None or not self.pull:
+            return 0.0
+        return self.pull * (self.r**2).sum(1).mean()
 
     @torch.no_grad()
     def init_from(self, lone: dict, scale: float) -> dict:
@@ -180,29 +213,46 @@ class Jamo:
         )
 
     def apply(self) -> None:
-        self.rows.delta.raw = self.free.index_put((self.loc,), self.compose(self.code))
+        live = self.compose(self.code)
+        if self.r is not None:
+            live = live + self.r
+        self.rows.delta.raw = self.free.index_put((self.loc,), live)
 
     def state(self) -> dict:
-        return {
+        out = {
             "model": "b + C[cho, cls] + V[jung] + F[jong]",
             "classes": list(CLASSES),
             **{k: getattr(self, k).detach().cpu() for k in ("b", "C", "V", "F")},
         }
+        if self.r is not None:
+            ids = self.rows.delta.ext_ids
+            out["r"] = self.r.detach().cpu()
+            out["r_ext_ids"] = [int(ids[i]) for i in self.loc.tolist()]
+            out["r_pull"] = self.pull
+        return out
 
     @torch.no_grad()
     def merge_all(self, sd: dict, ext_of: dict) -> int:
         """Every syllable's composed row into ``sd['delta']`` (``Rows
         .state_dict``'s), in place of whatever it holds for that id — the
         held-out syllables read zero-shot from the file as written.
-        ``ext_of`` = {syllable: ext id}. Returns how many rows were added."""
+        ``ext_of`` = {syllable: ext id}. Returns how many rows were added.
+        With a residual, a trained row keeps its composition + ``r`` (what
+        ``apply`` wrote)."""
         delta = sd["delta"]
         have = {int(e): i for i, e in enumerate(delta["ext_ids"])}
+        ids0 = self.rows.delta.ext_ids
+        keep = (
+            {int(ids0[i]) for i in self.loc.tolist()} if self.r is not None else set()
+        )
         syls = sorted(ext_of)
         comp = self.compose(codes(syls).to(self.b.device)).cpu().to(delta["raw"].dtype)
         raw = delta["raw"].clone()
         new_ids, new_rows = [], []
         for s, r in zip(syls, comp):
             e = int(ext_of[s])
+            if e in keep:
+                continue
             if e in have:
                 raw[have[e]] = r
             else:
