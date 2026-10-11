@@ -52,3 +52,19 @@ all 11 172 too, so a lang run draws Hangul in it beside the faces here. All SIL 
 
 Re-fetch: google/fonts faces from `https://github.com/google/fonts/raw/main/ofl/<dir>/<file>`, the rest from
 the release / repo paths above, into `kozh/`.
+
+## `ko_extra/` — more Korean faces (2026-10-11)
+
+User's download (`~/Downloads/Pretendard-1.3.9`, a bundle of four families). Not globbed by `lang_fonts`
+on its own: a run names it in `faces.dirs` (`configs/jamo_j128_ko.toml`), so the lang runs of record draw
+as they did. Every face covers all 11 172 Hangul syllables. File names are ASCII copies of the bundle's.
+
+| file | face | role | licence | source |
+|---|---|---|---|---|
+| `Pretendard-{Regular,Bold,Black}.ttf` | Pretendard 1.3.9 (3 of its 9 weights; `public/static/alternative/`) | KO dialogue / emphasis gothic | SIL OFL 1.1 (`licenses/ko_extra/Pretendard_OFL.txt`) | orioncactus/pretendard |
+| `KMU80TTFHaeongSans.ttf`, `KMU80TTFSungkokSerif.ttf` | KMU80 해옹 Sans / 성곡 Serif (`TTF/`) | heavy sans / serif | no licence file in the bundle, none in the name table | user download |
+| `KyoboHandwriting2025lyb.ttf` | 교보손글씨 2025 | handwriting | no licence file in the bundle (name table: kyobobook.co.kr) | user download |
+| `GangwonEdu{All-Bold,Saeeum,Teunteun,HyeonokSaem}.ttf` | 강원교육 모두 Bold / 새음 / 튼튼 / 현옥샘 (`강원교육 서체(5종)_TTF`; 모두 Light left out) | gothic / handwriting / poster / handwriting | no licence file in the bundle (name table: gwe.go.kr) | user download |
+
+At 14 px the handwriting faces (새음, 현옥샘, 교보) draw small in the em box and blur, 튼튼 and
+Pretendard Black fill their counters: `jamo_j128_ko` floors them in `faces.px_min`.

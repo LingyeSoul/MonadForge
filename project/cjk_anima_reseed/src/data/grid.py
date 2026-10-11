@@ -71,6 +71,7 @@ def render_grid(
     cell_jitter=None,
     line_cells=(),
     bgs=None,
+    bubble_centre: bool = False,
 ):
     """Draw ``units[i]`` in cell ``i`` (row-major). Returns ``(image, boxes)``,
     ``boxes[i]`` the ink bbox of cell i's unit in canvas pixels. ``box`` = the
@@ -89,7 +90,10 @@ def render_grid(
     reseed_anchor 2026-10-03): cell indices always drawn as a line, with no
     orientation draw and no entry in ``lines`` — an EN word has no column
     form, so nothing to mark. ``bgs`` collects the canvas colour drawn
-    (`JITTER_BG_LIGHT`'s entry: ``"white"`` or an RGB tint)."""
+    (`JITTER_BG_LIGHT`'s entry: ``"white"`` or an RGB tint).
+    ``bubble_centre`` (opt-in, jamo 2026-10-11): a bubble cell's ink bbox
+    sits on its bubble's centre — the cell's, or the ink's own under
+    ``bubble_fit`` — instead of anywhere its room allows."""
     from PIL import Image, ImageDraw, ImageFont
 
     W, H = size
@@ -143,6 +147,8 @@ def render_grid(
         if cell_jitter is not None:
             cx = x0 + cw / 2 + (rng.random() - 0.5) * 2 * cell_jitter * cw
             cy = y0 + ch / 2 + (rng.random() - 0.5) * 2 * cell_jitter * ch
+        if bubble and bubble_centre and not bubble_fit:
+            cx, cy = x0 + cw / 2, y0 + ch / 2
         if bubble:
             frame = (x0 + pad, y0 + pad, x0 + cw - pad, y0 + ch - pad)
             kwb = {"fill": "white", "outline": "black", "width": rng.randint(2, 5)}
@@ -158,6 +164,14 @@ def render_grid(
                 d.ellipse(frame, **kwb)
         ox, oy = cx - tw / 2 - bx[0], cy - th / 2 - bx[1]
         kw = {"font": font, "spacing": fs * 0.05, "align": "center"}
+        if bubble and bubble_centre:
+            # the ink's bbox, not the metrics', on the centre
+            probe = Image.new("L", (W, H), 0)
+            ImageDraw.Draw(probe).multiline_text((ox, oy), txt, fill=255, **kw)
+            pb = probe.getbbox()
+            if pb is not None:
+                ox += cx - (pb[0] + pb[2]) / 2
+                oy += cy - (pb[1] + pb[3]) / 2
         d.multiline_text((ox, oy), txt, fill=rng.choice(JITTER_INK_DARK), **kw)
         # the ink's own bbox: textbbox is off by a font's bearings (デ, ロ)
         mask = Image.new("L", (W, H), 0)

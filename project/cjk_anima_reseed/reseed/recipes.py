@@ -161,7 +161,7 @@ def _draw_scene(
         drawn = render_into_scene(
             scene=sc,
             text=text,
-            font_path=pick_font(text, pools.fonts, rng),
+            font_path=pick_font(text, pools.fonts_at(target_px), rng),
             rng=rng,
             min_glyph=min_glyph,
             stroke=False,
@@ -173,6 +173,7 @@ def _draw_scene(
             tategaki=lettering,
             vert_forms=lettering,
             keep_outline=True,
+            pose=pools.pose,
         )
         if drawn is None:
             continue
@@ -366,7 +367,7 @@ def sent(pools: Pools, rng: random.Random, p: dict):
         drawn = render_into_scene(
             scene=sc,
             text=text,
-            font_path=pick_font(text, pools.fonts, rng),
+            font_path=pick_font(text, pools.fonts_at(target), rng),
             rng=rng,
             min_glyph=min_glyph,
             stroke=False,
@@ -378,6 +379,7 @@ def sent(pools: Pools, rng: random.Random, p: dict):
             tategaki=True,
             vert_forms=True,
             keep_outline=True,
+            pose=pools.pose,
         )
         if drawn is None:
             continue
@@ -448,15 +450,27 @@ def grid(pools: Pools, rng: random.Random, p: dict):
     bubble = rng.random() < float(p.get("bubble_frac", 0.5))
     size = size or pools.shapes.draw() or (512, 512)
     cell = min(size[0] / cols, size[1] / rows)
-    fill = _target(rng, p) / cell  # render_grid starts at fill × cell and only shrinks
+    target = _target(rng, p)
+    fill = target / cell  # render_grid starts at fill × cell and only shrinks
     kw = {}
     if p.get("bubble_fit"):
         kw["bubble_fit"] = tuple(p["bubble_fit"])
     if p.get("cell_jitter") is not None:
         kw["cell_jitter"] = float(p["cell_jitter"])
+    if pools.pose:
+        kw["bubble_centre"] = True
     bgs = []
     im, boxes = render_grid(
-        got, cols, rows, size, pools.fonts, rng, bubble, (fill, fill), bgs=bgs, **kw
+        got,
+        cols,
+        rows,
+        size,
+        pools.fonts_at(target),
+        rng,
+        bubble,
+        (fill, fill),
+        bgs=bgs,
+        **kw,
     )
     # a flat canvas not full white is captioned `simple background` alone
     frame = "bubble" if bubble else "flat" if bgs[0] == "white" else "tint"

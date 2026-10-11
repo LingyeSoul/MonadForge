@@ -324,6 +324,60 @@ def anchor_residual(arr, tb, reg, tol: int = 24, open_ok: bool = False) -> float
 _VERT: dict = {}
 
 
+# bubble_pose: the core is the interior this far in (share of its deepest
+# point's distance to the outline) — the tail and the notches a hand cuts in
+# a sign fall out of it; a core this rectangular (area / its min-area rect)
+# is a sign, its rectangle's edge the axis; else an ellipse whose axes differ
+# by this ratio gives its long axis; a pose past POSE_MAX_DEG is not taken
+POSE_CORE = 0.5
+POSE_RECT = 0.88
+POSE_ELONG = 1.2
+POSE_MAX_DEG = 30.0
+
+
+def bubble_pose(interior):
+    """``(cx, cy, deg)`` of a bubble / sign interior mask: the centre of its
+    core (``POSE_CORE``) and the tilt its text takes (PIL ``rotate``'s
+    degrees, counter-clockwise; ``None`` for a round bubble or a pose past
+    ``POSE_MAX_DEG``). ``None`` when the mask holds no core."""
+    import math
+
+    import cv2
+    import numpy as np
+
+    dist = cv2.distanceTransform(interior.astype(np.uint8), cv2.DIST_L2, 5)
+    peak = float(dist.max())
+    if peak < 2:
+        return None
+    core = (dist >= POSE_CORE * peak).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(core, connectivity=8)
+    core = (lab == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))).astype(np.uint8)
+    m = cv2.moments(core, binaryImage=True)
+    cx, cy = m["m10"] / m["m00"], m["m01"] / m["m00"]
+    cnts, _ = cv2.findContours(core, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    rect = cv2.minAreaRect(max(cnts, key=cv2.contourArea))
+    (rw, rh) = rect[1]
+    axis = None  # image-space angle of the shape's axis, y down
+    if rw * rh > 0 and m["m00"] / (rw * rh) >= POSE_RECT:
+        pts = cv2.boxPoints(rect)
+        e1, e2 = pts[1] - pts[0], pts[2] - pts[1]
+        e = e1 if np.hypot(*e1) >= np.hypot(*e2) else e2
+        axis = math.degrees(math.atan2(e[1], e[0]))
+    else:
+        mu20, mu02, mu11 = m["mu20"], m["mu02"], m["mu11"]
+        tr, det = mu20 + mu02, mu20 * mu02 - mu11**2
+        disc = max(0.0, tr * tr / 4 - det) ** 0.5
+        l1, l2 = tr / 2 + disc, tr / 2 - disc
+        if l2 > 0 and (l1 / l2) ** 0.5 >= POSE_ELONG:
+            axis = math.degrees(0.5 * math.atan2(2 * mu11, mu20 - mu02))
+    deg = None
+    if axis is not None:
+        fold = (axis + 45) % 90 - 45  # the nearest of the shape's axes to level
+        if abs(fold) <= POSE_MAX_DEG:
+            deg = -fold
+    return cx, cy, deg
+
+
 def _has_vert(font, ch: str) -> bool:
     """Does ``font`` carry a vertical alternate (OpenType ``vert``) of ``ch``
     — one that draws differently from the horizontal glyph? False without
@@ -408,6 +462,7 @@ def render_into_scene(
     tategaki: bool = False,
     vert_forms: bool = False,
     keep_outline: bool = False,
+    pose: bool = False,
 ):
     """Erase every anchor bubble's usable region (plus the text box padded by
     a quarter of its size — detector boxes run tight) with the bubble's
@@ -442,6 +497,12 @@ def render_into_scene(
     the horizontal glyph, at the bottom of its cell.
     ``keep_outline`` (opt-in, reseed 2026-10-03; off = every data dir of
     record): the erase spares the bubble outline (``erase_paint``).
+    ``pose`` (opt-in, jamo 2026-10-11; off = every data dir of record): the
+    ink's bbox sits on the centre of the anchor bubble's core and the text
+    tilts with the bubble / sign (``bubble_pose``) — a round bubble keeps
+    the random tilt — instead of the block's metrics centred on the usable
+    region; a draw whose ink leaves the interior is a miss. A bubble-less
+    (open) anchor draws as without it.
 
     ``ref_text`` (ΔFM, plan_synth2): a sibling of the same glyph count drawn
     by the *same* fit — same erase, font, size, line lengths, positions,
@@ -461,6 +522,11 @@ def render_into_scene(
     # frame): paint the rectangle
     bubbles = scene.get("bubbles") or [None] * len(scene["regions"])
     ink = anchor_ink(arr, scene["boxes_anchor"][head])  # read before the erase
+    interior = None
+    if pose and bubbles[head] is not None:
+        m = bubble_mask(arr, scene["boxes_anchor"][head])
+        interior = bubble_interior(m) if m is not None else None
+    got_pose = bubble_pose(interior) if interior is not None else None
     for tb, reg, bub in zip(scene["boxes_anchor"], scene["regions"], bubbles):
         fill = ring_median(arr, tb)
         fills.append(fill)
@@ -541,6 +607,11 @@ def render_into_scene(
     # 30 % of composites, ±7°, about the text block's centre. The tilt is
     # drawn once so a sibling gets the same one.
     tilt = rng.uniform(-tilt_deg, tilt_deg) if rng.random() < tilt_frac else None
+    shift = None  # pose: the ink-bbox centre's offset, read off ``text``'s draw
+    if got_pose is not None:
+        tx, ty, deg = got_pose
+        if deg is not None:
+            tilt = deg
 
     def draw(text_lines):
         layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
@@ -573,8 +644,26 @@ def render_into_scene(
                 w = ld.textlength(ln, font=font)
                 ld.text((cx - w / 2, y), ln, fill=color, font=font, **kw)
                 y += fs * H_GAP
+        nonlocal shift
+        if got_pose is not None:
+            if shift is None:
+                b0 = layer.getbbox()
+                if b0 is None:
+                    return None
+                shift = (
+                    round(tx - (b0[0] + b0[2]) / 2),
+                    round(ty - (b0[1] + b0[3]) / 2),
+                )
+            moved = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            moved.paste(layer, shift)
+            layer = moved
         if tilt is not None:
-            layer = layer.rotate(tilt, resample=Image.BICUBIC, center=(cx, cy))
+            centre = (tx, ty) if got_pose is not None else (cx, cy)
+            layer = layer.rotate(tilt, resample=Image.BICUBIC, center=centre)
+        if got_pose is not None:
+            alpha = np.array(layer.getchannel("A")) > 0
+            if (alpha & ~interior).any():
+                return None  # the posed text leaves the bubble
         bb = layer.getbbox()  # alpha bbox: the drawn (and tilted) glyphs
         if bb is None:
             return None

@@ -62,7 +62,8 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
     (out / "img").mkdir(parents=True, exist_ok=True)
     workers = default_workers() if workers is None else max(1, int(workers))
     rng = random.Random(T.SEED)
-    pools = build_pools(list(run.rows), rng, run.lang)
+    pools = build_pools(list(run.rows), rng, run.lang, run.faces)
+    pools.pose = run.pose
     # a run whose every row is lettered in another language (``lang``) draws
     # no window — no JA line spells a KO / ZH row — so it reads no lines
     phrase = (

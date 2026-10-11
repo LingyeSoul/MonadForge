@@ -1,0 +1,14 @@
+# jamo_j128_ko — jamo_j128_pose with 10 more Hangul faces (10-11, user's download:
+# assets/fonts/ko_extra/, FONTS.md): Pretendard Regular / Bold / Black, KMU80 Haeong Sans /
+# Sungkok Serif, Kyobo Handwriting 2025, 강원교육 모두 Bold / 새음 / 튼튼 / 현옥샘. Floored
+# by font px where they blur or fill in at 14 px: the handwriting faces draw small in
+# the em box, 튼튼 and Pretendard Black fill their counters. Same rows, recipe and steps
+# as jamo_j128.
+rows = ["chars:이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서"]
+lang = { korean = "이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서" }
+factor = "jamo"
+seed = "1008"
+steps_per_row = 56
+pack = "punct"
+faces = { out = ["NanumPenScript-Regular.ttf"], dirs = ["ko_extra"], px_min = { "BlackHanSans-Regular.ttf" = 32, "DoHyeon-Regular.ttf" = 24, "GangwonEduTeunteun.ttf" = 28, "Pretendard-Black.ttf" = 22, "GangwonEduHyeonokSaem.ttf" = 24, "GangwonEduSaeeum.ttf" = 24, "KyoboHandwriting2025lyb.ttf" = 18 } }
+pose = true

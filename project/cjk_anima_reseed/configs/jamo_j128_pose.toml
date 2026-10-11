@@ -1,0 +1,12 @@
+# jamo_j128_pose — jamo_j128_faces with ``pose`` (10-11, the j128 bubble1 sheets): the
+# glyph's ink centred in its scene bubble / sign and tilted with it, a grid bubble's
+# ink on its centre — instead of the font metrics centred on the detector's usable
+# region and a random ±7° tilt. Same rows, recipe and steps as jamo_j128.
+rows = ["chars:이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서"]
+lang = { korean = "이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서" }
+factor = "jamo"
+seed = "1008"
+steps_per_row = 56
+pack = "punct"
+faces = { out = ["NanumPenScript-Regular.ttf"], px_min = { "BlackHanSans-Regular.ttf" = 32, "DoHyeon-Regular.ttf" = 24 } }
+pose = true

@@ -44,6 +44,15 @@ class Pools:
     scene_cap: int | None = None  # the draw loop's: items a scene may take
     decks: dict = field(default_factory=dict)
     lang: dict = field(default_factory=dict)  # glyph → language (a ``lang`` run's rows)
+    px_min: dict = field(default_factory=dict)  # face path → font px it is drawn from
+    pose: bool = False  # config.Run.pose
+
+    def fonts_at(self, px: float | None) -> list:
+        """The faces drawn at ``px`` font px (``px_min``; every face without a
+        px or a floor)."""
+        if px is None or not self.px_min:
+            return self.fonts
+        return [f for f in self.fonts if px >= self.px_min.get(f, 0)] or self.fonts
 
 
 def _quietly(fn, *args):
@@ -60,11 +69,15 @@ def _quietly(fn, *args):
     return out
 
 
-def build_pools(rows: list, rng: random.Random, lang: dict | None = None) -> Pools:
+def build_pools(
+    rows: list, rng: random.Random, lang: dict | None = None, faces: dict | None = None
+) -> Pools:
     """``rows``: ``data.vocabs`` specs (``chars:…``), single glyphs only —
     the stage resolvers on them, so a row means what it meant in every read
     of record (and the eval groups ``eval.json`` carries). ``lang`` (glyph →
-    language): the ``KOZH_FONTS`` faces join the fonts (``lang_fonts``)."""
+    language): the ``KOZH_FONTS`` faces join the fonts (``lang_fonts``);
+    ``faces`` (``config.Run.faces``) leaves its ``out`` faces out and floors
+    its ``px_min`` ones."""
     import tempfile
     from types import SimpleNamespace
 
@@ -133,8 +146,17 @@ def build_pools(rows: list, rng: random.Random, lang: dict | None = None) -> Poo
         flush=True,
     )
     fonts = find_fonts()
+    px_min = {}
     if lang:
-        fonts = lang_fonts(fonts, singles)
+        fonts = lang_fonts(fonts, singles, (faces or {}).get("dirs", ()))
+    if faces:
+        fonts = [f for f in fonts if Path(f).name not in faces["out"]]
+        floors = faces["px_min"]
+        px_min = {f: floors[Path(f).name] for f in fonts if Path(f).name in floors}
+        print(
+            f"fonts: {len(fonts)} less {list(faces['out'])}; px_min {floors}",
+            flush=True,
+        )
     return Pools(
         fonts=fonts,
         tokq=tokq,
@@ -147,6 +169,7 @@ def build_pools(rows: list, rng: random.Random, lang: dict | None = None) -> Poo
         mono=mono,
         shapes=ShapePool(T.SHAPES, T.SEED),
         lang=dict(lang or {}),
+        px_min=px_min,
     )
 
 
@@ -175,13 +198,18 @@ def empty_glyphs(font: str, glyphs) -> str:
     return out
 
 
-def lang_fonts(fonts: list, singles) -> list:
-    """``fonts`` + the ``KOZH_FONTS`` faces, less every face that maps a row
-    to an empty outline."""
+def lang_fonts(fonts: list, singles, dirs=()) -> list:
+    """``fonts`` + the ``KOZH_FONTS`` faces (+ every face in ``dirs``, a
+    run's ``faces.dirs``), less every face that maps a row to an empty
+    outline."""
     from common.render.flat import FONT_DIR
 
     kozh = sorted(str(p) for p in (FONT_DIR / KOZH_FONTS).glob("*.[ot]tf"))
     assert kozh, f"no faces in {FONT_DIR / KOZH_FONTS} (FONTS.md: re-fetch)"
+    for d in dirs:
+        extra = sorted(str(p) for p in (FONT_DIR / d).glob("*.[ot]tf"))
+        assert extra, f"no faces in {FONT_DIR / d} (FONTS.md: re-fetch)"
+        kozh += extra
     out = []
     for f in fonts + kozh:
         bad = empty_glyphs(f, singles)

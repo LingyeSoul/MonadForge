@@ -67,6 +67,19 @@
                                   # every cls] / V[jung] / F[jong] start at scale × that
                                   # reseed run's compatibility-jamo rows (pack + Δ,
                                   # centred over the 51), ``b`` at 0
+    faces = { out = ["NanumPenScript-Regular.ttf"], px_min = { "BlackHanSans-Regular.ttf" = 32 } }
+                                  # optional, with ``lang``: faces (file names) left
+                                  # out of the draw, and the font px under which a
+                                  # face is not drawn (the item's target px: grid,
+                                  # bubble1 / sent ``glyph_px``) — the faces that
+                                  # break a syllable small (``jamo_j128_faces``);
+                                  # ``dirs = ["ko_extra"]``: every face in these
+                                  # ``assets/fonts/`` subdirs joins the draw too
+                                  # (``jamo_j128_ko``)
+    pose = true                   # optional: the glyph's ink centred in its scene
+                                  # bubble / sign and tilted with it, a grid bubble's
+                                  # ink on its centre (``render_into_scene(pose=)``,
+                                  # ``render_grid(bubble_centre=)``)
 
 Its outputs land in ``output/cjk_anima_reseed/<run>/`` (``data/``,
 ``trained.pt``).
@@ -99,6 +112,8 @@ KEYS = (
     "lang",
     "factor",
     "factor_init",
+    "faces",
+    "pose",
 )
 # a run's ``seed``: the rows every other row rides frozen at
 SEEDS = ("0930", "1008")
@@ -146,6 +161,8 @@ class Run:
     lang: dict | None = None  # glyph → language for the rows not lettered as Japanese
     factor: str = ""  # the rows composed from factors (``FACTORS``); "" = free rows
     factor_init: tuple = ()  # (reseed run, scale): the factors' start; () = Δ 0
+    faces: dict | None = None  # {out: (face, …), px_min: {face: px}}; None = every face
+    pose: bool = False  # text centred / tilted with its bubble
 
     def phrase_file(self) -> str:
         """The dialogue line file, ``LINES[lines]``."""
@@ -326,6 +343,25 @@ def load(run: str) -> Run:
         assert "/" not in fi["from"], f"{path}: factor_init from names a reseed run"
         assert 0 < float(fi["scale"]) <= 2, f"{path}: factor_init scale {fi['scale']}"
         fi = (fi["from"], float(fi["scale"]))
+    faces = raw.get("faces")
+    if faces is not None:
+        fonts = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+        assert lang, f"{path}: faces needs lang"
+        assert set(faces) <= {"out", "px_min", "dirs"}, (
+            f"{path}: faces {{out, px_min, dirs}}"
+        )
+        dirs = tuple(faces.get("dirs", ()))
+        bad = [d for d in dirs if "/" in d or not any((fonts / d).glob("*.[ot]tf"))]
+        assert not bad, f"{path}: faces dirs with no face under {fonts}: {bad}"
+        named = set(faces.get("out", ())) | set(faces.get("px_min", {}))
+        have = {f.name for f in fonts.rglob("*.[ot]tf")}
+        have |= {f.name for f in Path("/usr/share/fonts/opentype/noto").glob("*.ttc")}
+        assert named <= have, f"{path}: faces not in {fonts}: {sorted(named - have)}"
+        faces = {
+            "out": tuple(faces.get("out", ())),
+            "px_min": {k: float(v) for k, v in faces.get("px_min", {}).items()},
+            "dirs": dirs,
+        }
     return Run(
         name=path.stem,
         path=path,
@@ -348,4 +384,6 @@ def load(run: str) -> Run:
         lang=lang,
         factor=factor,
         factor_init=tuple(fi or ()),
+        faces=faces,
+        pose=bool(raw.get("pose", False)),
     )
