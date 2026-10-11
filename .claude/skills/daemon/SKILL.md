@@ -112,16 +112,6 @@ by state rather than trusting the newest-15 slice to contain it. `make daemon-lo
 - Job dirs are retention-bounded. `make daemon-prune` is the manual sweep — dry-run
   unless `ARGS="--apply"`. Rules and knobs: `anima_daemon/README.md` § Retention.
 
-## RunPod pods
-
-`make runpod ARGS="gpus|ls|create|ssh|terminate …"` (`anima_daemon/runpod/`) rents a
-pod by hand; it is not a job backend yet. Creating a pod starts billing, so ask the
-user before running `create`. Pushing data:
-`rsync -a --mkpath` (**without `--mkpath`** a new path under `/app` fails with
-code 11), naming the directory under the `post_image_dataset` symlink, split over
-~8 parallel streams (one stream: 3.1 MB/s; 8: 9.0 MB/s, the uplink's ceiling). Image,
-entrypoint, measured throughput: `anima_daemon/README.md` § RunPod pods.
-
 ## Batch generation: `make gen`
 
 Daemon-routed batch generation — same argv + env levers as `make test`, submitted as a

@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         cuda-nvcc-13-2 cuda-cudart-dev-13-2 \
         build-essential git make curl ca-certificates \
         libgl1 libglib2.0-0 \
+        libraqm0 fonts-noto-cjk fonts-noto-cjk-extra \
         openssh-server rsync \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /run/sshd

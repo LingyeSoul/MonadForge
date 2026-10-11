@@ -9,6 +9,18 @@
 # then idles on `sleep infinity` instead.
 set -e
 
+# nproc reports the host's cores, not the container's CPU quota (cgroup v2
+# cpu.max: "<quota> <period>"), so thread pools sized from it oversubscribe.
+if [ -z "${OMP_NUM_THREADS:-}" ]; then
+    read -r quota period < /sys/fs/cgroup/cpu.max 2>/dev/null || quota=max
+    if [ "$quota" != "max" ]; then
+        cpus=$(( quota / period - 1 ))
+    else
+        cpus=$(nproc)
+    fi
+    export OMP_NUM_THREADS=$(( cpus > 1 ? cpus : 1 ))
+fi
+
 if [ -n "${PUBLIC_KEY:-}" ]; then
     mkdir -p /root/.ssh && chmod 700 /root/.ssh
     printf '%s\n' "$PUBLIC_KEY" > /root/.ssh/authorized_keys
@@ -16,7 +28,7 @@ if [ -n "${PUBLIC_KEY:-}" ]; then
     # sshd sessions start from a bare env, and pam_env sets PATH from
     # /etc/environment after ~/.ssh/environment is read — so the image's PATH /
     # ANIMA_* / HF_* (and RunPod's RUNPOD_*) go into /etc/environment.
-    env | grep -E '^(PATH|ANIMA_|HF_|UV_|CUDA|NVIDIA_|RUNPOD_)' \
+    env | grep -E '^(PATH|ANIMA_|HF_|UV_|CUDA|NVIDIA_|RUNPOD_|OMP_)' \
         | sed -E 's/^([^=]+)=(.*)$/\1="\2"/' > /etc/environment
     ssh-keygen -A >/dev/null
     /usr/sbin/sshd
