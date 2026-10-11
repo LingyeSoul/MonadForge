@@ -19,6 +19,9 @@ greedily: the most cells not yet covered, then the most covered once,
 then the most new (cho, jung) / (jung, jong) / (cho, jong) pairs, then the
 most frequent — the jamo combinations as varied as common syllables allow.
 
+**J256** (``proposal_jamo.md`` § 3, user 10-11: D128 tied J128): ``J128`` +
+the next 128 most frequent outside it and H.
+
 **H.** The 32 most frequent syllables outside ``J128`` whose four cells
 ``J64`` covers: no arm trains them (the zero-shot read, R2).
 
@@ -49,6 +52,7 @@ SIZES = (64, 96, 128)
 N_HELD = 32
 D_POOL = 1000  # D128 draws from the most frequent this many
 D_SIZES = (128,)
+J_NEXT = 128  # J256 = J128 + this many by frequency
 
 
 def qwen_rank() -> dict:
@@ -168,6 +172,9 @@ def main() -> None:
     common = [c for c in sorted(KSX1001, key=rank.get) if c not in h][:D_POOL]
     dtop = order_diverse(common, rank, max(D_SIZES))
     sets |= {f"D{n}": "".join(dtop[:n]) for n in D_SIZES}
+    j = sets[f"J{max(SIZES)}"]
+    nxt = [c for c in sorted(KSX1001, key=rank.get) if c not in j and c not in h]
+    sets[f"J{len(j) + J_NEXT}"] = j + "".join(nxt[:J_NEXT])
     report = {}
     for name, s in {**sets, "H": h}.items():
         cov = Counter(x for c in s for x in cells(c))
