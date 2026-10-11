@@ -83,6 +83,7 @@ RENDER = {
     "jamo_j64_lone": ("jamo_j64", ("H", "words")),
     "jamo_j64_112": ("jamo_j64", ("H", "words")),
     "jamo_d128": ("jamo_j64", ("H", "words")),
+    "jamo_j256": ("jamo_j64", ("H", "words")),
     "jamo_lone": ("jamo_lone", ("jamo",)),
     "seed_1008": ("jamo_lone", ("jamo",)),
 }

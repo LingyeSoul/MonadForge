@@ -194,8 +194,10 @@ At J128's total steps J64 falls back (`jamo_j64_112`: H jamo F1 0.17 vs
 J64's 0.25 and J128's 0.27, chance ~0.13; `reports/jamo_vl_reads_2026_10_11.md`
 § 4): more syllables, not more steps a row. D128 (common syllables, the
 most varied jamo pairs) at the same budget ties J128 on H (exact 1 vs 3,
-jamo F1 0.30 vs 0.27; `reports/jamo_d128_2026_10_11.md`). Next J256
-(`proposal_jamo.md` § 3).
+jamo F1 0.30 vs 0.27; `reports/jamo_d128_2026_10_11.md`). J256 (J128 +
+the next 128, 14 336 steps) is the first step that moves precision, not
+recall: exact 5 vs 3, jamo P 0.27 vs 0.20, glyph P 0.14 vs 0.05, jamo R flat
+(`reports/jamo_j256_2026_10_11.md`).
 
 From `_archive/task_report.md` § 2 / § 4:
 

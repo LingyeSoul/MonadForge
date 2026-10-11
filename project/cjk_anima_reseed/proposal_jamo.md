@@ -1,6 +1,6 @@
 # proposal_jamo — Hangul rows from jamo identity, then warm (2026-10-09)
 
-**Status (10-11): phase 1 done, G1 not passed; D128 ties J128; next J256.** The jamo factors
+**Status (10-11): D128 ties J128; J256 lifts H precision (exact 5 vs 3, jamo P 0.27 vs 0.20) — G1 under review.** The jamo factors
 carry glyph form and jamo positions to held-out syllables, not syllable
 identity. The runs and their reads:
 
@@ -10,6 +10,7 @@ identity. The runs and their reads:
 | the jamo curriculum (`jamo_lone` → `jamo_j64_lone`) | `reports/jamo_curriculum_2026_10_11.md` | 1 · 0.23: a jamo's standalone row is not its block component |
 | J64 at J128's steps (`jamo_j64_112`) | `reports/jamo_vl_reads_2026_10_11.md` § 4 | 0 · 0.17: more steps on the same 64 cost the transfer |
 | D128 at J128's steps (`jamo_d128`) | `reports/jamo_d128_2026_10_11.md` | 1 · 0.30: a tie with J128 (jamo P 0.23 vs 0.20, exact 1 vs 3) |
+| J256 = J128 + the next 128 (`jamo_j256`) | `reports/jamo_j256_2026_10_11.md` | 5 · 0.32: jamo P 0.27, glyph P 0.14 (J128 0.20 / 0.05), jamo R flat |
 
 Settled on the way: R3 keeps `C × cls` over plain `C`; F64's free rows hold
 no additive jamo structure; the KO reader is v4 (`probes/jamo_vl.py`, 71 %
