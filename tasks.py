@@ -166,9 +166,11 @@ COMMANDS = {
     ),
     "runpod": (
         daemon.cmd_runpod,
-        'RunPod pods (needs RUNPOD_API_KEY): ARGS="gpus" (price/stock), "ls", '
-        '"create --gpu ID --image IMG [--dry-run] [--wait]", "wait|ssh|stop|'
-        'terminate <pod_id>". Same as python -m anima_daemon.runpod.',
+        "RunPod pods (RUNPOD_API_KEY from the env or .env): "
+        'ARGS="gpus" (price/stock), "ls", "create --gpu ID [--gpu ID …] '
+        '[--dry-run] [--wait]" (sorryhyun96/anima_lora, 200 GB disk, CUDA ≥ 13.2; '
+        'bills from create), "wait|ssh|terminate <pod_id>". '
+        "Same as python -m anima_daemon.runpod; anima_daemon/README.md § RunPod pods.",
     ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (
