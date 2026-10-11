@@ -558,6 +558,16 @@ def cmd_daemon_prune(extra):
         sys.exit(rc)
 
 
+def cmd_runpod(extra):
+    """RunPod pods: ``ARGS="gpus|ls|create|wait|ssh|stop|terminate …"``, forwarded
+    to ``python -m anima_daemon.runpod`` (``anima_daemon/runpod/cli.py``)."""
+    from anima_daemon.runpod import cli as _rp_cli
+
+    rc = _rp_cli.main(list(extra or []))
+    if rc:
+        sys.exit(rc)
+
+
 def cmd_daemon_terminate(extra):
     """Stop the whole daemon. The active job tree is killed and the GPU freed."""
     if not _client.is_running():
