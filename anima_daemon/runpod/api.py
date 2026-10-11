@@ -4,8 +4,9 @@
 the v1 REST API (``rest.runpod.io/v1``); GPU prices and stock only exist in the
 v2 catalog (``api.runpod.io/v2/catalog/gpus``).
 
-The API key comes from ``RUNPOD_API_KEY``, else ``apikey`` in
-``~/.runpod/config.toml`` (the file ``runpodctl config --apiKey`` writes).
+The API key comes from ``RUNPOD_API_KEY`` (the environment, then the repo's
+``.env``), else ``apikey`` in ``~/.runpod/config.toml`` (the file
+``runpodctl config --apiKey`` writes).
 """
 
 from __future__ import annotations
@@ -24,10 +25,14 @@ from typing import Any, Optional
 REST_URL = "https://rest.runpod.io/v1"
 API_URL = "https://api.runpod.io/v2"
 CONFIG_PATH = Path.home() / ".runpod" / "config.toml"
+DOTENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 # Pods this tooling creates carry the prefix, so the daemon can tell its own
 # pods from ones made in the web console.
 NAME_PREFIX = "anima-"
+
+# Cloudflare in front of api.runpod.io 403s urllib's default "Python-urllib/x".
+USER_AGENT = "anima-lora-runpod/1"
 
 # docker/Dockerfile, pushed to Docker Hub. It runs sshd when PUBLIC_KEY is set
 # and fetches the first-run models into /app/models on start.
@@ -44,8 +49,20 @@ class RunPodError(RuntimeError):
         self.message = message
 
 
+def _dotenv_value(name: str) -> Optional[str]:
+    try:
+        lines = DOTENV_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        k, sep, v = line.strip().removeprefix("export ").partition("=")
+        if sep and k.strip() == name:
+            return v.strip().strip("'\"") or None
+    return None
+
+
 def resolve_api_key() -> Optional[str]:
-    key = os.environ.get("RUNPOD_API_KEY")
+    key = os.environ.get("RUNPOD_API_KEY") or _dotenv_value("RUNPOD_API_KEY")
     if key:
         return key.strip()
     try:
@@ -74,7 +91,8 @@ class RunPodClient:
         if not key:
             raise RunPodError(
                 401,
-                f"no API key: set RUNPOD_API_KEY or write apikey to {CONFIG_PATH}",
+                f"no API key: set RUNPOD_API_KEY (environment or the repo .env) "
+                f"or write apikey to {CONFIG_PATH}",
             )
         self._key = key
         self.rest_url = rest_url.rstrip("/")
@@ -96,6 +114,7 @@ class RunPodClient:
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Authorization", f"Bearer {self._key}")
         req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", USER_AGENT)
         if data is not None:
             req.add_header("Content-Type", "application/json")
         try:
