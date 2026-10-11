@@ -447,3 +447,25 @@ verbatim), with three deviations:
 - Only `submit_training` / `submit_command` auto-start the daemon; every other
   tool is passive, so "is anything running?" never boots one (`health` returns
   `{"up": false}` instead of erroring).
+
+## RunPod pods (`anima_daemon.runpod`)
+
+Not wired into the queue yet: a stdlib REST client (`api.RunPodClient`) and a
+CLI for renting a pod by hand. Pods / volumes go through the v1 REST API
+(`rest.runpod.io/v1`), GPU price and stock through the v2 catalog
+(`api.runpod.io/v2/catalog/gpus`). Key: `RUNPOD_API_KEY`, else `apikey` in
+`~/.runpod/config.toml`.
+
+```bash
+make runpod ARGS="gpus --min-vram 24"                  # price + stock, cheapest first
+make runpod ARGS="create --gpu 'NVIDIA GeForce RTX 4090' --image <img> --dry-run"
+make runpod ARGS="create --gpu … --image <img> --wait" # billing starts; blocks until ssh answers
+make runpod ARGS="ls"                                  # anima-* pods (--all for every pod)
+make runpod ARGS="ssh <pod_id> -- nvidia-smi"
+make runpod ARGS="stop <pod_id>"                       # pod volume kept (and billed)
+make runpod ARGS="terminate <pod_id> --yes"            # pod and pod volume deleted
+```
+
+`create` prefixes the name with `anima-` and sets `PUBLIC_KEY` from
+`~/.ssh/id_*.pub` (sshd in RunPod images reads it), replacing the account's
+keys for that pod.

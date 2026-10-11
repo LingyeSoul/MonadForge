@@ -164,6 +164,12 @@ COMMANDS = {
         "Delete old terminal job dirs (the daemon also sweeps at boot). Dry-run "
         'unless ARGS="--apply"; --days N / --keep N override the retention knobs.',
     ),
+    "runpod": (
+        daemon.cmd_runpod,
+        'RunPod pods (needs RUNPOD_API_KEY): ARGS="gpus" (price/stock), "ls", '
+        '"create --gpu ID --image IMG [--dry-run] [--wait]", "wait|ssh|stop|'
+        'terminate <pod_id>". Same as python -m anima_daemon.runpod.',
+    ),
     # ── Inference ─────────────────────────────────────────────────────
     "test": (
         inference.cmd_test,
