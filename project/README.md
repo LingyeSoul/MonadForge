@@ -56,5 +56,11 @@ Active projects:
   `status.md` (state); next `proposal_jamo.md`. Its live work is on the
   `cjk-reseed` branch.
 
+- [`cjk_ko/`](cjk_ko/) — opened 2026-10-11 out of the reseed line's
+  `proposal_jamo.md` § 4: Hangul rows warm from `jamo_j256_ko` on KO
+  dialogue (songys Chatbot_data), built and trained through reseed's
+  `reseed/` package. Home: `README.md`. Its live work is on the `cjk-ko`
+  branch.
+
 - [`qwen21_lora/`](qwen21_lora/) — the Qwen-Image-2.1 LoRA line (not Anima;
   `library/qwen21/CLAUDE.md`).

@@ -17,7 +17,9 @@
     rows_from = "seed_fixed_1005_stick080"  # instead of ``seed``: warm from this
                                   # scale-line run's merged rows
                                   # (``output/cjk_anima_scale/<it>/trained.pt``), every
-                                  # row free (``sent_kanji``)
+                                  # row free (``sent_kanji``); ``<line>/<run>`` names
+                                  # ``output/<line>/<run>/trained.pt`` instead
+                                  # (``cjk_ko``: ``cjk_anima_reseed/jamo_j256_ko``)
     data_from = "sent_kanji"      # optional: that reseed run's ``data/`` instead of a
                                   # build (``sent_kanji_pres``; ``jamo_f64`` on
                                   # ``jamo_j64``'s)
@@ -27,7 +29,10 @@
                                   # pack — its routing at build, train and read
     lines = "m109_pack"           # optional: the dialogue line file (``LINES``) the windows
                                   # and ``sent`` lines draw from; ``dialogue_2_10`` (the
-                                  # scale line's) without it
+                                  # scale line's) without it. A KO file
+                                  # (``LINE_LANG``) gives a ``lang`` run its windows and
+                                  # ``sent`` lines, lettered horizontal, and its build
+                                  # routes Hangul per syllable (``glyph_route_ko``)
     free_residual = 0.0           # optional: the trainer's norm pull μ‖f‖² (``trainer
                                   # .FREE_RESIDUAL`` without it); 0 off — under AdamW it
                                   # walks a rare warm row to the pack row (``sent_kanji``)
@@ -91,7 +96,7 @@ import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from . import CONFIGS, OUT, SCALE_OUT, SEED_ROWS
+from . import CONFIGS, HOME, OUT, SCALE_OUT, SEED_ROWS
 
 KEYS = (
     "rows",
@@ -130,11 +135,16 @@ PACKS = {"punct": "models/vocab_packs/anima_cjk_vocab_pack_punct"}
 # ``m109_pack`` = every Manga109-s text on the pack's rows (10-05; dialogue_2_10
 # holds the old cjk_renderable charset — no 応 / 転 / 壊)
 # ``m109_b5`` = the same on the pack's rows + retrain_kanji_b5's 225 (10-08)
+# ``ko_chat`` = songys Chatbot_data's lines, the ruler's strings held out
+# (``project/cjk_ko/corpus.py``, 10-11)
 LINES = {
     "dialogue_2_10": "$MANGA109S/derived/dialogue_2_10.tsv",
     "m109_pack": "$MANGA109S/derived/dialogue_pack.tsv",
     "m109_b5": "$MANGA109S/derived/dialogue_pack_b5.tsv",
+    "ko_chat": "~/ko_corpus/derived/chatbot_lines.tsv",
 }
+# the line files not in Japanese: their language (``LANGS``)
+LINE_LANG = {"ko_chat": "korean"}
 UPPER_MAX = 0.9  # tests/test_boundary.py: no band past it
 
 
@@ -217,17 +227,31 @@ class Run:
             replace(t, share=total * self.shares.get(t.name, 0) / 100) for t in TABLE
         )
 
+    def line_lang(self) -> str:
+        """The language of the line file (``LINE_LANG``); "" = Japanese."""
+        return LINE_LANG.get(self.lines, "")
+
+    @property
+    def out_root(self) -> Path:
+        """``OUT``, or ``output/<line>`` for another line's config
+        (``project/<line>/configs/<run>.toml``: ``cjk_ko``)."""
+        p = self.path.resolve()
+        return OUT if HOME in p.parents else OUT.parent / p.parents[1].name
+
     @property
     def dir(self) -> Path:
-        return OUT / self.name
+        return self.out_root / self.name
 
     @property
     def data(self) -> Path:
-        return (OUT / self.data_from if self.data_from else self.dir) / "data"
+        root = self.out_root
+        return (root / self.data_from if self.data_from else self.dir) / "data"
 
     def seed_rows(self) -> Path:
         """The rows the run sits on: ``rows_from``'s (merged), else the
         seed's."""
+        if "/" in self.rows_from:
+            return OUT.parent / self.rows_from / "trained.pt"
         if self.rows_from:
             return SCALE_OUT / self.rows_from / "trained.pt"
         return {"0930": SEED_ROWS, "1008": SEED_1008}[self.seed]
@@ -283,6 +307,10 @@ def load(run: str) -> Run:
     assert not pack or pack in PACKS, f"{path}: pack is one of {sorted(PACKS)}"
     lines = raw.get("lines", "dialogue_2_10")
     assert lines in LINES, f"{path}: lines is one of {sorted(LINES)}"
+    if lines in LINE_LANG:
+        assert LINE_LANG[lines] in (raw.get("lang") or {}), (
+            f"{path}: lines {lines} letters {LINE_LANG[lines]} rows — a lang run"
+        )
     fr = raw.get("free_residual")
     assert fr is None or 0 <= float(fr) < 1, f"{path}: free_residual {fr}"
     row_lr = tuple(float(f) for f in raw.get("row_lr", ()))

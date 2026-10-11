@@ -13,7 +13,9 @@ render miss. Bands are the table's: a recipe knows nothing of σ.
               length over the bubble's) and ``cross_min`` (its font px over
               the bubble's width across it)
     sent      a dialogue line in 2–3 columns of a scene bubble at
-              ``glyph_px`` (``pools.sentences``; ``lengths`` [lo, hi] cells)
+              ``glyph_px`` (``pools.sentences``; ``lengths`` [lo, hi] cells);
+              ``horizontal``: a KO line in 1–``SENT_H_LINES`` lines broken at
+              its spaces, ``SENT_H_LEFT`` of them left-aligned
     grid      one glyph per cell at ``glyph_px``; ``1x1`` = the lone glyph.
               The plain caption: no language, one ``GRID_CLAUSES`` wording
               per item
@@ -24,7 +26,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from .pools import Pools, lang_caption
+from .pools import Pools, item_lang, lang_caption
 from . import table as T
 
 MIN_FIT_SCENES = (
@@ -105,14 +107,16 @@ def _draw_scene(
     ``fill_min`` / ``cross_min`` keep only the bubbles it fills along /
     across. ``HORIZONTAL_FRAC`` of the multi-glyph texts are drawn as a
     left-to-right line on the ``HORIZONTAL_SCENES`` only (marked in the
-    caption)."""
+    caption); a KO text always, on any scene, unmarked (KO lettering is
+    horizontal)."""
     from common.render.flat import pick_font
     from common.render.scene import region_capacity, render_into_scene
     from data.synth import scene_caption
 
     n = len(text)
-    horiz = n > 1 and rng.random() < T.HORIZONTAL_FRAC
-    if horiz:
+    ko = item_lang(pools, text) == "korean"
+    horiz = n > 1 and (ko or rng.random() < T.HORIZONTAL_FRAC)
+    if horiz and not ko:
         cands = sorted(pools.horiz_idx)
     cap = pools.scene_cap
     fitting = [
@@ -187,7 +191,7 @@ def _draw_scene(
             layout="scene",
             boxes=[box],
             caption=lang_caption(
-                pools, scene_caption(sc, text, horizontal=horiz), text
+                pools, scene_caption(sc, text, horizontal=horiz and not ko), text
             ),
             src="scene",
             shape=im.size,
@@ -292,6 +296,39 @@ def _sent_cuts(pools: Pools, text: str) -> list:
     return [c for c in cuts if c < len(text) and text[c] != "…"]
 
 
+def _word_cuts(text: str) -> list:
+    """Line breaks at the starts of a KO line's words."""
+    return [i for i in range(1, len(text)) if text[i - 1] == " "]
+
+
+def _sent_plan_h(region, text: str, cuts: list, target: float, min_glyph: int):
+    """``(lines, fill)`` that lands a KO ``text`` at ``target`` font px in
+    ``region`` as 1–``SENT_H_LINES`` horizontal lines broken at its spaces —
+    the fewest lines ``fit_text(fewest_lines=True, words=True)`` will take at
+    that fill, every fewer one missing ``min_glyph`` there — or ``None`` (the
+    region is too small or too roomy)."""
+    from common.render.scene import H_GAP, H_PITCH, split_lines
+
+    rw, rh = region[2] - region[0], region[3] - region[1]
+    lo, hi = T.SENT_FILL
+    fs1 = {}  # lines → font px at fill 1
+    for k in range(1, T.SENT_H_LINES + 1):
+        lines = split_lines(text, k, cuts)
+        if lines is None:
+            continue
+        m = max(len(ln.strip(" ")) for ln in lines)
+        fs1[k] = min(rh / (1 + (k - 1) * H_GAP), rw / (m * H_PITCH))
+        f = target / max(fs1[k], 1e-6)
+        if f > hi:
+            continue  # this many lines cannot reach the target here
+        if f < lo:
+            return None
+        if any(fs1[j] * f >= min_glyph for j in fs1 if j < k):
+            return None  # the fit would stop at fewer lines
+        return k, f
+    return None
+
+
 def _sent_plan(region, text: str, cuts: list, target: float, min_glyph: int):
     """``(columns, fill)`` that lands ``text`` at ``target`` font px in
     ``region`` as 2–3 columns no square (``SENT_BLOCK_AR``) — the fewest
@@ -330,7 +367,9 @@ def sent(pools: Pools, rng: random.Random, p: dict):
     ``glyph_px`` font px — with mark rows, a mark drawn first and a line
     holding it (``pools.sent_marks``) — on the scenes ``_sent_plan`` places it in (and
     ``scene_pools``'), none framed as a sign (``SENT_FRAMES_OUT``); routed
-    per glyph at encode like the windows."""
+    per glyph at encode like the windows. ``horizontal``: a KO line in
+    left-to-right lines broken at its spaces (``_sent_plan_h``), left-aligned
+    at ``SENT_H_LEFT`` else centred, the caption unmarked."""
     from common.render.flat import pick_font
     from common.render.scene import render_into_scene
     from data.synth import scene_caption
@@ -341,9 +380,15 @@ def sent(pools: Pools, rng: random.Random, p: dict):
         by = pools.sent_marks[rng.choice(sorted(pools.sent_marks))]
     ns = [n for n in range(int(lo), int(hi) + 1) if by.get(n)]
     text = rng.choice(by[rng.choice(ns)])
+    horiz = bool(p.get("horizontal"))
+    assert not horiz or item_lang(pools, text) == "korean", (
+        f"a horizontal sent tier letters KO lines: {text}"
+    )
     target = _target(rng, p)
     min_glyph = int(0.85 * target)
-    cuts = _sent_cuts(pools, text)
+    cuts = _word_cuts(text) if horiz else _sent_cuts(pools, text)
+    planner = _sent_plan_h if horiz else _sent_plan
+    align = "left" if horiz and rng.random() < T.SENT_H_LEFT else "center"
     held = set().union(*pools.opt_in.values())
     cands = [j for j in range(len(pools.scenes)) if j not in held]
     cands += sorted(_opted(pools, p))
@@ -353,7 +398,7 @@ def sent(pools: Pools, rng: random.Random, p: dict):
     for j in cands:
         if cap is not None and pools.tier_used[j] >= cap:
             continue
-        got = _sent_plan(pools.scenes[j]["region"], text, cuts, target, min_glyph)
+        got = planner(pools.scenes[j]["region"], text, cuts, target, min_glyph)
         if got is not None:
             plans[j] = got
     pool, tries = sorted(plans), []
@@ -374,12 +419,15 @@ def sent(pools: Pools, rng: random.Random, p: dict):
             fill_frac=f,
             max_lines=k,
             cuts=cuts,
-            vertical_only=True,
+            vertical_only=not horiz,
             fewest_lines=True,
-            tategaki=True,
-            vert_forms=True,
+            horizontal=horiz,
+            tategaki=not horiz,
+            vert_forms=not horiz,
             keep_outline=True,
             pose=pools.pose,
+            words=horiz,
+            align=align,
         )
         if drawn is None:
             continue
@@ -403,8 +451,8 @@ def sent(pools: Pools, rng: random.Random, p: dict):
                 "mono": j in pools.mono,
                 "fill": round(f, 3),
                 "glyph_px": round(target, 1),
-                "columns": k,
-                "horizontal": False,
+                **({"lines": k, "align": align} if horiz else {"columns": k}),
+                "horizontal": horiz,
             },
         )
     return None
