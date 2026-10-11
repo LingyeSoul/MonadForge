@@ -24,7 +24,12 @@ from PIL import Image
 from library.io.cache import LATENT_CACHE_SUFFIX, resolve_cache_path
 from library.io.cache_names import demoted_latents_key
 from library.datasets.image_utils import IMAGE_TRANSFORMS
-from library.preprocess._dataset import PreprocessStats, group_by_shape, walk_images
+from library.preprocess._dataset import (
+    PreprocessStats,
+    cache_is_current,
+    group_by_shape,
+    walk_images,
+)
 from library.preprocess._progress import ProgressFn
 
 
@@ -52,13 +57,15 @@ def get_latents_npz_path(
     )
 
 
-def _latent_cached(npz_path: Path, w: int, h: int) -> bool:
-    """True iff ``npz_path`` already holds the ``(w, h)`` latent.
+def _latent_cached(npz_path: Path, w: int, h: int, image_path: Path) -> bool:
+    """True iff ``npz_path`` already holds the ``(w, h)`` latent of the current
+    ``image_path``.
 
     A single NPZ can carry several resolutions (one ``latents_{H}x{W}`` key
     each), so the check is per-resolution, not whole-file existence. A
-    truncated / unreadable NPZ counts as not-cached (it'll be re-encoded)."""
-    if not npz_path.exists():
+    truncated / unreadable NPZ, or one older than the image, counts as
+    not-cached (it'll be re-encoded)."""
+    if not cache_is_current(npz_path, image_path):
         return False
     key = f"latents_{h // 8}x{w // 8}"
     try:
@@ -91,7 +98,7 @@ def count_pending_latents(
             npz_path = get_latents_npz_path(
                 p, (w, h), cache_dir=cache_dir, image_dir=data_dir
             )
-            if not _latent_cached(npz_path, w, h):
+            if not _latent_cached(npz_path, w, h, p):
                 pending += 1
     return pending, len(image_files)
 
@@ -126,7 +133,7 @@ def _decode_batch(
         npz_path = get_latents_npz_path(
             p, (w, h), cache_dir=cache_dir, image_dir=data_dir
         )
-        if not overwrite and _latent_cached(npz_path, w, h):
+        if not overwrite and _latent_cached(npz_path, w, h, p):
             skipped.append(p)
             continue
         try:
@@ -142,15 +149,17 @@ def _decode_batch(
     return skipped, failed, kept, img_batch
 
 
-def _save_batch(items: list[tuple[Path, np.ndarray, tuple[int, int]]]) -> None:
-    """IO stage: write each ``(npz_path, latent, size)``. Preserves any
-    other-resolution keys already in the file (read-modify-write). Each npz_path
-    is written exactly once per ``cache_latents`` call, so threaded saves of a
-    batch don't race. Runs on a worker thread, overlapping the next GPU encode."""
-    for npz_path, lat_np, size in items:
+def _save_batch(items: list[tuple[Path, Path, np.ndarray, tuple[int, int]]]) -> None:
+    """IO stage: write each ``(npz_path, image_path, latent, size)``. Preserves
+    any other-resolution / σ-demote keys already in the file (read-modify-write)
+    unless the file is older than the image — those keys encode the old pixels,
+    so the file starts over. Each npz_path is written exactly once per
+    ``cache_latents`` call, so threaded saves of a batch don't race. Runs on a
+    worker thread, overlapping the next GPU encode."""
+    for npz_path, image_path, lat_np, size in items:
         key_reso_suffix = f"_{lat_np.shape[-2]}x{lat_np.shape[-1]}"
         kwargs: dict = {}
-        if npz_path.exists():
+        if cache_is_current(npz_path, image_path):
             npz = np.load(npz_path)
             for key in npz.files:
                 kwargs[key] = npz[key]
@@ -291,10 +300,12 @@ def cache_demoted_latents(
                 npz_path = get_latents_npz_path(
                     p, (w, h), cache_dir=cache_dir, image_dir=data_dir
                 )
-                if not npz_path.exists():
+                # A native npz older than its image holds the old pixels' latent:
+                # a sibling merged into it would bump its mtime and hide that.
+                if not cache_is_current(npz_path, p):
                     stats.failed += 1
                     if progress is not None:
-                        progress(1, detail=f"NO NATIVE NPZ {p.name}")
+                        progress(1, detail=f"NO CURRENT NATIVE NPZ {p.name}")
                     continue
                 if not overwrite and _demoted_cached(npz_path, key):
                     stats.skipped += 1
@@ -426,12 +437,12 @@ def cache_latents(
             with torch.no_grad():
                 latents = vae.encode_pixels_to_latents(img_batch).cpu()
 
-            items: list[tuple[Path, np.ndarray, tuple[int, int]]] = []
+            items: list[tuple[Path, Path, np.ndarray, tuple[int, int]]] = []
             for i, (p, size) in enumerate(kept):
                 npz_path = get_latents_npz_path(
                     p, size, cache_dir=cache_dir, image_dir=data_dir
                 )
-                items.append((npz_path, latents[i].float().numpy(), size))
+                items.append((npz_path, p, latents[i].float().numpy(), size))
                 stats.written += 1
                 if progress is not None:
                     progress(1, detail=f"{p.name} → {size[0]}x{size[1]}")
