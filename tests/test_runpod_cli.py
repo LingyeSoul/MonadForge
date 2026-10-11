@@ -50,6 +50,7 @@ def fake_http(monkeypatch):
 
 def test_api_key_from_runpodctl_config(monkeypatch, tmp_path):
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    monkeypatch.setattr(api, "DOTENV_PATH", tmp_path / "no.env")
     cfg = tmp_path / "config.toml"
     cfg.write_text('apikey = "rk_file"\n')
     monkeypatch.setattr(api, "CONFIG_PATH", cfg)
@@ -147,6 +148,7 @@ def test_create_spec_prefixes_name_and_injects_pubkey(tmp_path, monkeypatch):
 def test_create_dry_run_needs_no_key(monkeypatch, capsys):
     monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
     monkeypatch.setattr(api, "CONFIG_PATH", api.Path("/nonexistent/config.toml"))
+    monkeypatch.setattr(api, "DOTENV_PATH", api.Path("/nonexistent/.env"))
     rc = cli.main(["create", "--gpu", "G", "--no-ssh-key", "--dry-run"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["imageName"] == api.DEFAULT_IMAGE
@@ -185,3 +187,12 @@ def test_ssh_argv():
     assert argv[-2:] == ["root@1.2.3.4", "nvidia-smi"]
     with pytest.raises(SystemExit):
         cli.ssh_argv({"id": "p2", "publicIp": None})
+
+
+def test_api_key_from_repo_dotenv(monkeypatch, tmp_path):
+    monkeypatch.delenv("RUNPOD_API_KEY", raising=False)
+    env = tmp_path / ".env"
+    env.write_text('HF=hf_x\nexport RUNPOD_API_KEY="rk_env"\n')
+    monkeypatch.setattr(api, "DOTENV_PATH", env)
+    monkeypatch.setattr(api, "CONFIG_PATH", tmp_path / "missing.toml")
+    assert api.resolve_api_key() == "rk_env"
