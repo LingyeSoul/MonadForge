@@ -100,49 +100,54 @@ def test_http_error_carries_status_and_message(fake_http):
     assert e.value.status == 404 and e.value.message == "pod not found"
 
 
-def test_create_spec_prefixes_name_and_injects_pubkey(tmp_path, monkeypatch):
+def _create_args(*argv):
+    return cli.build_parser().parse_args(["create", *argv])
+
+
+def test_create_spec_v2(tmp_path, monkeypatch):
     (tmp_path / ".ssh").mkdir()
     (tmp_path / ".ssh" / "id_ed25519.pub").write_text("ssh-ed25519 AAAA me\n")
     monkeypatch.setattr(cli.Path, "home", lambda: tmp_path)
-    a = cli.build_parser().parse_args(
-        [
-            "create",
-            "--gpu",
-            "G1",
-            "--gpu",
-            "G2",
-            "--image",
-            "img",
-            "--name",
-            "run1",
-            "--env",
-            "A=b=c",
-            "--spot",
-        ]
-    )
-    spec = cli.build_create_spec(a)
+    a = _create_args("--gpu", "G1", "--gpu", "G2", "--name", "run1", "--env", "A=b=c")
+    spec = cli.build_create_spec(a, "G2")
     assert spec["name"] == "anima-run1"
-    assert spec["gpuTypeIds"] == ["G1", "G2"]
+    assert spec["gpu"] == {"id": "G2", "count": 1, "minCudaVersion": "13.2"}
     assert spec["env"] == {"A": "b=c", "PUBLIC_KEY": "ssh-ed25519 AAAA me"}
-    assert spec["interruptible"] is True and spec["volumeInGb"] == 0
-    assert spec["containerDiskInGb"] == 200
-    assert "networkVolumeId" not in spec
+    assert spec["image"] == api.DEFAULT_IMAGE and spec["disk"] == 200
+    assert "mounts" not in spec
 
-    a = cli.build_parser().parse_args(
-        [
-            "create",
-            "--gpu",
-            "G1",
-            "--image",
-            "img",
-            "--no-ssh-key",
-            "--network-volume",
-            "nv1",
-        ]
+    a = _create_args(
+        "--gpu", "G1", "--no-ssh-key", "--network-volume", "nv1", "--min-cuda", "any"
     )
-    spec = cli.build_create_spec(a)
-    assert "PUBLIC_KEY" not in spec["env"]
-    assert spec["networkVolumeId"] == "nv1" and "volumeInGb" not in spec
+    spec = cli.build_create_spec(a, "G1")
+    assert "PUBLIC_KEY" not in spec["env"] and "minCudaVersion" not in spec["gpu"]
+    assert spec["mounts"] == {"network": [{"volumeId": "nv1", "path": "/workspace"}]}
+
+
+def test_create_spot_goes_v1_and_refuses_13_2():
+    with pytest.raises(SystemExit):
+        cli.build_create_spec_v1(_create_args("--gpu", "G1", "--spot", "--no-ssh-key"))
+    a = _create_args(
+        "--gpu", "G1", "--gpu", "G2", "--spot", "--no-ssh-key", "--min-cuda", "12.8"
+    )
+    spec = cli.build_create_spec_v1(a)
+    assert spec["gpuTypeIds"] == ["G1", "G2"] and spec["interruptible"] is True
+    assert spec["allowedCudaVersions"] == ["13.0", "12.9", "12.8"]
+
+
+def test_create_falls_back_to_next_gpu(fake_http, monkeypatch, capsys):
+    tried = []
+
+    def create_pod_v2(self, spec):
+        tried.append(spec["gpu"]["id"])
+        if spec["gpu"]["id"] == "G1":
+            raise api.RunPodError(409, "no instances available")
+        return {"id": "p9", "name": spec["name"], "cost": 0.5}
+
+    monkeypatch.setattr(api.RunPodClient, "create_pod_v2", create_pod_v2)
+    rc = cli.main(["create", "--gpu", "G1", "--gpu", "G2", "--no-ssh-key"])
+    assert rc == 0 and tried == ["G1", "G2"]
+    assert json.loads(capsys.readouterr().out)["id"] == "p9"
 
 
 def test_create_dry_run_needs_no_key(monkeypatch, capsys):
@@ -151,7 +156,7 @@ def test_create_dry_run_needs_no_key(monkeypatch, capsys):
     monkeypatch.setattr(api, "DOTENV_PATH", api.Path("/nonexistent/.env"))
     rc = cli.main(["create", "--gpu", "G", "--no-ssh-key", "--dry-run"])
     assert rc == 0
-    assert json.loads(capsys.readouterr().out)["imageName"] == api.DEFAULT_IMAGE
+    assert json.loads(capsys.readouterr().out)["image"] == api.DEFAULT_IMAGE
 
 
 def test_wait_ssh_polls_until_mapping(fake_http, monkeypatch):
