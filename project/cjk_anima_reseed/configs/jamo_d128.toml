@@ -1,0 +1,10 @@
+# jamo_d128 — proposal_jamo § 3: jamo_j128's recipe on probes/jamo_sets.py's D128 (128
+# syllables from the 1 000 most frequent, H out, picked for the most varied jamo pairs;
+# assets/jamo_sets.json), 56 steps a row (7 168 = J128's total). Read on H against
+# jamo_j128 at the same budget: the set's design apart from its size.
+rows = ["chars:이는력활로용함됐것최웹붙맺데밖냥퓨권싶쉬곧끊젊뚫짧쌓띄쫓흙몫폐책템봤뭘숍값듯켜앉꽤좋깥죄튜쏟뉘출뿐큼빠땅뤄얘퇴쾌잖몇찾삶높넓훼옳묶닭향의례를된과동버째턴복국품중평특없낌손쓰층씩킬떨줬뽑꼴뀐후뜻콘빨쯤놨뭐취쉽뢰뛰튀퀴뷔만생진결겠렇였약했현립획램넷념급석완율믿"]
+lang = { korean = "이는력활로용함됐것최웹붙맺데밖냥퓨권싶쉬곧끊젊뚫짧쌓띄쫓흙몫폐책템봤뭘숍값듯켜앉꽤좋깥죄튜쏟뉘출뿐큼빠땅뤄얘퇴쾌잖몇찾삶높넓훼옳묶닭향의례를된과동버째턴복국품중평특없낌손쓰층씩킬떨줬뽑꼴뀐후뜻콘빨쯤놨뭐취쉽뢰뛰튀퀴뷔만생진결겠렇였약했현립획램넷념급석완율믿" }
+factor = "jamo"
+seed = "1008"
+steps_per_row = 56
+pack = "punct"

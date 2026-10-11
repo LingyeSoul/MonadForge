@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from common.paths import OUT
+from common.paths import OUT, under_repo
 from common.prompts import TPL_SCENE_JA
 from common.text import KANJI_RE
 
@@ -51,6 +51,7 @@ def load_scenes(
             print(f"scenes {tag}: dropped {sorted(dropped[tag])}", flush=True)
         for s in got:
             s["pool"] = tag
+            s["file"] = under_repo(s["file"])
         if tag in one:
             single = [s for s in got if len(s["boxes_anchor"]) == 1]
             print(

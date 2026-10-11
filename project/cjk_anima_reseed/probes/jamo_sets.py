@@ -14,6 +14,11 @@ merge order — a syllable that is one Qwen token ranks by its id (이 0th,
 them. Two cells exist in one KS X 1001 syllable only (ㅉ before a compound
 vowel; the final ㄿ, 읊), so no prefix covers every cell twice.
 
+**D128** (``proposal_jamo.md`` § 3): from the 1 000 most frequent outside H,
+greedily: the most cells not yet covered, then the most covered once,
+then the most new (cho, jung) / (jung, jong) / (cho, jong) pairs, then the
+most frequent — the jamo combinations as varied as common syllables allow.
+
 **H.** The 32 most frequent syllables outside ``J128`` whose four cells
 ``J64`` covers: no arm trains them (the zero-shot read, R2).
 
@@ -42,6 +47,8 @@ bootstrap()
 OUT = HOME / "assets" / "jamo_sets.json"
 SIZES = (64, 96, 128)
 N_HELD = 32
+D_POOL = 1000  # D128 draws from the most frequent this many
+D_SIZES = (128,)
 
 
 def qwen_rank() -> dict:
@@ -85,6 +92,40 @@ def order(pool, rank: dict, n: int) -> list:
     return out
 
 
+def pairs(ch: str) -> set:
+    from reseed.jamo import decompose
+
+    cho, jung, jong = decompose(ch)
+    return {("CV", cho, jung), ("VF", jung, jong), ("CF", cho, jong)}
+
+
+def order_diverse(pool, rank: dict, n: int) -> list:
+    """``order``'s cells, then the most new jamo pairs, then frequency."""
+    from reseed.jamo import cells
+
+    seen: Counter = Counter()
+    have: set = set()
+    left = set(pool)
+    out = []
+    while len(out) < n:
+
+        def key(s):
+            c = cells(s)
+            return (
+                -sum(seen[x] == 0 for x in c),
+                -sum(seen[x] == 1 for x in c),
+                -len(pairs(s) - have),
+                rank[s],
+            )
+
+        s = min(left, key=key)
+        out.append(s)
+        left.discard(s)
+        seen.update(cells(s))
+        have |= pairs(s)
+    return out
+
+
 def held(pool, rank: dict, trained: list, cover: list) -> list:
     from reseed.jamo import cells
 
@@ -124,6 +165,9 @@ def main() -> None:
     sets = {f"J{n}": "".join(top[:n]) for n in SIZES}
     h = "".join(held(KSX1001, rank, top, top[:64]))
     assert len(h) == N_HELD, len(h)
+    common = [c for c in sorted(KSX1001, key=rank.get) if c not in h][:D_POOL]
+    dtop = order_diverse(common, rank, max(D_SIZES))
+    sets |= {f"D{n}": "".join(dtop[:n]) for n in D_SIZES}
     report = {}
     for name, s in {**sets, "H": h}.items():
         cov = Counter(x for c in s for x in cells(c))
@@ -133,8 +177,11 @@ def main() -> None:
             "cells_twice": sum(v >= 2 for v in cov.values()),
             "one_token": sum(rank[c] < 10**6 for c in s),
             "layouts": dict(sorted(Counter(map(layout, s)).items())),
+            "pairs": dict(
+                sorted(Counter(p[0] for p in set().union(*map(pairs, s))).items())
+            ),
         }
-    fonts = fonts_check("".join(dict.fromkeys(sets[f"J{max(SIZES)}"] + h)))
+    fonts = fonts_check("".join(dict.fromkeys("".join(sets.values()) + h)))
     for name, r in report.items():
         print(f"{name}: {r}")
         print(f"  {sets.get(name, h)}")

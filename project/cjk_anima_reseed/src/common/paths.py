@@ -19,6 +19,14 @@ CORPUS_HELD = REPO / "post_image_dataset" / "render" / "ja" / "heldout"
 FONT_DIR = Path(__file__).resolve().parents[2] / "assets" / "fonts"
 
 
+def under_repo(path: str) -> str:
+    """``path`` on this checkout: a scene pool records its files absolute,
+    under the checkout that drew it; the part from ``output/`` on is joined
+    to ``REPO`` (a pod's ``/app``). Unchanged on the drawing checkout."""
+    _head, sep, tail = path.partition("/output/")
+    return str(REPO / "output" / tail) if sep else path
+
+
 def data_dir(a) -> Path:
     assert a.data_path, "--data_path: name the data dir"
     return Path(a.data_path)

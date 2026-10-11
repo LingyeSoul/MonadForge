@@ -63,7 +63,11 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
     workers = default_workers() if workers is None else max(1, int(workers))
     rng = random.Random(T.SEED)
     pools = build_pools(list(run.rows), rng, run.lang)
-    phrase = run.phrase_file()
+    # a run whose every row is lettered in another language (``lang``) draws
+    # no window — no JA line spells a KO / ZH row — so it reads no lines
+    phrase = (
+        "" if run.lang and set(pools.singles) <= set(run.lang) else run.phrase_file()
+    )
     held = run.held_strings()
     win = add_windows(pools, run.read, out, phrase, workers, held)
     focus = focus_pools(pools, run.focus, run.focus_kanji[1]) if run.focus else None

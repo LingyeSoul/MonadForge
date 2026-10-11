@@ -244,25 +244,42 @@ def bubble_check(sc: dict) -> dict:
     return {"edge": min(edge) if edge else None, "left": round(left, 4)}
 
 
+def _scene_key(file: str) -> str:
+    """A scene cache's key: the scene file from ``output/`` on, so a pod's
+    checkout reads the caches the drawing checkout wrote."""
+    from common.paths import under_repo
+
+    from . import REPO
+
+    return str(Path(under_repo(file)).relative_to(REPO))
+
+
+def _scene_cache(path: Path) -> dict:
+    """A scene cache, its keys ``_scene_key``'s (the caches written before
+    10-11 hold absolute paths)."""
+    raw = json.loads(path.read_text("utf-8")) if path.exists() else {}
+    return {_scene_key(k): v for k, v in raw.items()}
+
+
 def whole_bubbles(scenes: list) -> list:
     """``scenes`` less those whose bubble the canvas cuts (``BUBBLE_EDGE_MIN``)
     or whose erase would leave the letters (``ERASE_LEFT_MAX``)."""
     from . import SCALE_OUT
 
     path = SCALE_OUT / "experiments" / "scene_bubble_check.json"
-    cache = json.loads(path.read_text("utf-8")) if path.exists() else {}
-    miss = [s for s in scenes if s["file"] not in cache]
+    cache = _scene_cache(path)
+    miss = [s for s in scenes if _scene_key(s["file"]) not in cache]
     for s in miss:
-        cache[s["file"]] = bubble_check(s)
+        cache[_scene_key(s["file"])] = bubble_check(s)
     if miss:
         path.write_text(json.dumps(cache, indent=0), encoding="utf-8")
 
     def cut(s) -> bool:
-        e = cache[s["file"]]["edge"]
+        e = cache[_scene_key(s["file"])]["edge"]
         return e is not None and e < T.BUBBLE_EDGE_MIN
 
     def left(s) -> bool:
-        return cache[s["file"]]["left"] > T.ERASE_LEFT_MAX
+        return cache[_scene_key(s["file"])]["left"] > T.ERASE_LEFT_MAX
 
     n_cut = sum(map(cut, scenes))
     n_left = sum(left(s) and not cut(s) for s in scenes)
@@ -297,13 +314,15 @@ def mono_scenes(scenes: list) -> set:
     from . import SCALE_OUT
 
     path = SCALE_OUT / "experiments" / "scene_colorful.json"
-    cache = json.loads(path.read_text("utf-8")) if path.exists() else {}
-    miss = [s["file"] for s in scenes if s["file"] not in cache]
+    cache = _scene_cache(path)
+    miss = [s["file"] for s in scenes if _scene_key(s["file"]) not in cache]
     for f in miss:
-        cache[f] = colorful(f)
+        cache[_scene_key(f)] = colorful(f)
     if miss:
         path.write_text(json.dumps(cache, indent=0), encoding="utf-8")
-    return {j for j, s in enumerate(scenes) if cache[s["file"]] < T.COLOR_MIN}
+    return {
+        j for j, s in enumerate(scenes) if cache[_scene_key(s["file"])] < T.COLOR_MIN
+    }
 
 
 # ----------------------------------------------------------------------------
@@ -608,15 +627,19 @@ def add_windows(
     held: tuple = (),
 ) -> dict:
     """``pools.windows`` (glyph → its windows) over the dialogue lines (``phrase``) and
-    the training set's own JA text, the read strings and ``held`` held out by
+    the training set's own JA text (neither read with ``phrase`` "": a lang run), the read strings and ``held`` held out by
     trigram, every window routed to its glyphs' rows and nothing else (else
     dropped). Writes ``windows.json``; returns the stats for ``build.json``."""
     glyphs = window_glyphs(pools.singles)
-    lines = [
-        ln.split("\t")[0]
-        for ln in Path(phrase).read_text(encoding="utf-8").splitlines()
-    ]
-    ds = dataset_ja_lines()
+    lines = (
+        [
+            ln.split("\t")[0]
+            for ln in Path(phrase).read_text(encoding="utf-8").splitlines()
+        ]
+        if phrase
+        else []
+    )
+    ds = dataset_ja_lines() if phrase else []
     ws = window_pool(glyphs, lines + ds, (*read, *held))
     ext = ext_encoder()
     ids = {}
