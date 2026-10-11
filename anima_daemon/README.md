@@ -472,47 +472,27 @@ make runpod ARGS="terminate <pod_id> --yes"            # pod and its disks delet
 `create` defaults to `sorryhyun96/anima_lora:latest` (`docker/Dockerfile`) on a
 200 GB container disk with no pod volume, on a host with CUDA ≥ 13.2 (the
 image's torch is cu132; `--min-cuda V`, `any` = no filter — `gpus` takes the same
-flag, so its stock column matches). The container disk is wiped on stop, so a pod
+flag, so its stock column matches). A driver-580 (CUDA 13.0) host has run the
+image's `torch.compile` and FA2. The container disk is wiped on stop, so a pod
 is terminated after its job rather than stopped. v2 takes one GPU type per
 request; `--gpu` repeats and `create` tries each in order until one is placed.
 `--spot` (interruptible) exists only in v1, whose `allowedCudaVersions` stops at
-13.0, so it needs `--min-cuda any` (or ≤ 13.0). `create` prefixes the name with `anima-` and sets
-`PUBLIC_KEY` from `~/.ssh/id_*.pub`, replacing the account's keys for that pod.
+13.0, so it needs `--min-cuda any` (or ≤ 13.0). `create` prefixes the name with
+`anima-` and sets `PUBLIC_KEY` from `~/.ssh/id_*.pub`, replacing the account's
+keys for that pod. `create --wait` and `ls` print the pod's ssh `ip` and `port`;
+`ssh` pins no host key (pod IP:port pairs are recycled).
 
-The image's entrypoint, with `PUBLIC_KEY` set: authorizes the key, starts sshd,
-writes the image env (PATH / `ANIMA_*` / `HF_*` …) to `/etc/environment` (pam_env
-overrides `~/.ssh/environment`), fetches the first-run models into `/app/models`
-unless `ANIMA_SKIP_DOWNLOAD=1`, and idles on `sleep infinity` (no TTY on a pod —
-a bare `bash` would exit and restart the container). An ssh session lands with
-`/app/.venv/bin/python` on PATH; `cd /app` for `tasks.py`.
+The image installs `libraqm0` (Pillow's text layout) and `fonts-noto-cjk` /
+`fonts-noto-cjk-extra` (system CJK faces) beside the CUDA toolchain and
+`openssh-server` / `rsync`. Its entrypoint exports `OMP_NUM_THREADS` = the
+container's cgroup CPU quota (`/sys/fs/cgroup/cpu.max`) in whole CPUs less one —
+`nproc` reports the host's cores. With `PUBLIC_KEY` set it authorizes the key,
+starts sshd and writes the image env (PATH / `ANIMA_*` / `HF_*` / `OMP_*` …) to
+`/etc/environment` (pam_env overrides `~/.ssh/environment`). It then fetches the
+first-run models into `/app/models` unless `ANIMA_SKIP_DOWNLOAD=1`, and idles on
+`sleep infinity` (no TTY on a pod — a bare `bash` would exit and restart the
+container). An ssh session lands with `/app/.venv/bin/python` on PATH; `cd /app`
+for `tasks.py`.
 
-### Moving data to a pod
-
-`rsync -a --mkpath -e "ssh -p <port> …" <local>/ root@<ip>:/app/<same path>/`.
-
-- **`--mkpath` is required** for a path under `/app` that does not exist yet:
-  rsync creates only the last directory level and otherwise fails with
-  `mkdir "/app/post_image_dataset/lora/<artist>" failed: No such file or
-  directory (code 11)`.
-- `post_image_dataset` is a symlink to the dataset volume. Name the directory
-  under it (`post_image_dataset/lora/<artist>/`, trailing slash) so the local path
-  resolves through the link; `rsync -a` on the symlink itself copies the link.
-- One rsync stream is latency-bound; split the files over parallel streams
-  (one ssh connection each — no ControlMaster, which multiplexes them onto one
-  TCP connection). Measured 2026-10-11 from Korea, `wantan_meo` (139 files,
-  418 MB) to `EU-SE-1`:
-
-  | streams | time | MB/s |
-  |---|---|---|
-  | 1 | 133 s | 3.1 |
-  | 4 | 55 s | 7.7 |
-  | 8 | 47 s | 9.0 |
-
-  8 streams reach the line's upload ceiling (a `docker push` from it: 9.4 MB/s),
-  so a 1 GB artist cache takes ~2 min and `sincos` (4 GB) ~8 min. One stream to
-  `CA-MTL-1` measured the same 3.1 MB/s. Shard by size (largest first onto the
-  lightest shard) and hand each rsync its list with `--files-from`.
-
-ssh answered 159 s (`CA-MTL-1`) and 233 s (`EU-SE-1`) after `create`, most of it
-the image pull. Before the 13.2 filter, a host with driver 580 (CUDA 13.0) ran the
-cu132 image's `torch.compile` and FA2.
+Operating a pod — staging a run, moving data, launching, waiting, terminating:
+the `runpod` skill (`.claude/skills/runpod/SKILL.md`).
