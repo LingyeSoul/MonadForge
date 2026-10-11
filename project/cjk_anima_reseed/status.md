@@ -198,6 +198,10 @@ jamo F1 0.30 vs 0.27; `reports/jamo_d128_2026_10_11.md`). J256 (J128 +
 the next 128, 14 336 steps) is the first step that moves precision, not
 recall: exact 5 vs 3, jamo P 0.27 vs 0.20, glyph P 0.14 vs 0.05, jamo R flat
 (`reports/jamo_j256_2026_10_11.md`).
+The same J256 on `jamo_j128_ko`'s data build (faces out / floored, the
+`ko_extra` faces, `pose`) moves both: exact 8 vs 5, jamo P 0.39 vs 0.27,
+jamo R 0.74 vs 0.55, chance flat at 0.13
+(`reports/jamo_j256_ko_2026_10_11.md`).
 
 From `_archive/task_report.md` § 2 / § 4:
 

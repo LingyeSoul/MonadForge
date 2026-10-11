@@ -72,7 +72,7 @@
                                   # out of the draw, and the font px under which a
                                   # face is not drawn (the item's target px: grid,
                                   # bubble1 / sent ``glyph_px``) — the faces that
-                                  # break a syllable small (``jamo_j128_faces``);
+                                  # break a syllable small (``jamo_j128_ko``);
                                   # ``dirs = ["ko_extra"]``: every face in these
                                   # ``assets/fonts/`` subdirs joins the draw too
                                   # (``jamo_j128_ko``)
