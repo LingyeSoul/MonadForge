@@ -1,11 +1,12 @@
 """``python -m anima_daemon.runpod <verb>`` — RunPod pods from the terminal.
 
-    gpus       [--cloud SECURE|COMMUNITY] [--count N] [--min-vram GB] [--all] [--json]
+    gpus       [--cloud SECURE|COMMUNITY] [--count N] [--min-vram GB] [--min-cuda V]
+               [--all] [--json]
     ls         [--all] [--json]
     get        <pod_id>
     create     --gpu ID [--gpu ID …] [--image IMG] [--name N] [--cloud C] [--count N]
                [--disk GB] [--volume GB] [--network-volume ID] [--env K=V …]
-               [--port P/proto …] [--spot] [--ssh-key PATH | --no-ssh-key]
+               [--port P/proto …] [--min-cuda V] [--spot] [--ssh-key PATH | --no-ssh-key]
                [--dry-run] [--wait]
     start|stop <pod_id>
     terminate  <pod_id> [--yes]
@@ -53,7 +54,7 @@ def _money(v) -> str:
 
 
 def cmd_gpus(cl: api.RunPodClient, a) -> int:
-    gpus = cl.gpu_types(cloud=a.cloud, count=a.count)
+    gpus = cl.gpu_types(cloud=a.cloud, count=a.count, min_cuda=_min_cuda(a))
     if a.min_vram:
         gpus = [g for g in gpus if (g.get("memory") or 0) >= a.min_vram]
     if not a.all:
@@ -132,29 +133,81 @@ def _parse_env(items: list[str]) -> dict:
     return env
 
 
-def build_create_spec(a) -> dict:
-    """The POST /pods body for a parsed ``create`` namespace."""
+def _min_cuda(a) -> Optional[str]:
+    """``--min-cuda``, defaulting to the image's CUDA; ``any`` = no filter."""
+    v = a.min_cuda or api.DEFAULT_MIN_CUDA
+    return None if v == "any" else v
+
+
+def _pod_env(a) -> dict:
     env = _parse_env(a.env)
     if not a.no_ssh_key and "PUBLIC_KEY" not in env:
-        # RunPod images start sshd with PUBLIC_KEY as authorized_keys; setting
-        # it replaces the account-level keys for this pod.
+        # The image's entrypoint starts sshd with PUBLIC_KEY as authorized_keys;
+        # setting it replaces the account-level keys for this pod.
         key = _find_ssh_pubkey(a.ssh_key)
         if key:
             env["PUBLIC_KEY"] = key
+    return env
+
+
+def _pod_name(a) -> str:
     name = a.name or time.strftime("%Y%m%d-%H%M%S")
-    if not name.startswith(api.NAME_PREFIX):
-        name = api.NAME_PREFIX + name
+    return name if name.startswith(api.NAME_PREFIX) else api.NAME_PREFIX + name
+
+
+def build_create_spec(a, gpu_id: str) -> dict:
+    """The v2 POST /pods body for one GPU type (v2 takes a single ``gpu.id``;
+    ``--gpu`` fallbacks are tried in order by ``cmd_create``)."""
+    gpu = {"id": gpu_id, "count": a.count}
+    if _min_cuda(a):
+        gpu["minCudaVersion"] = _min_cuda(a)
     spec = {
-        "name": name,
+        "name": _pod_name(a),
+        "gpu": gpu,
+        "cloud": a.cloud,
+        "disk": a.disk,
+        "ports": a.port or ["22/tcp"],
+        "env": _pod_env(a),
+    }
+    mount = a.volume_mount or "/workspace"
+    if a.network_volume:
+        spec["mounts"] = {"network": [{"volumeId": a.network_volume, "path": mount}]}
+    elif a.volume:
+        spec["mounts"] = {"persistent": {"size": a.volume, "path": mount}}
+    if a.template:
+        spec["templateId"] = a.template
+    if a.image or not a.template:
+        spec["image"] = a.image or api.DEFAULT_IMAGE
+    return spec
+
+
+def build_create_spec_v1(a) -> dict:
+    """The v1 POST /pods body — only ``--spot`` needs it (v2 has no
+    interruptible pods). v1 takes a GPU priority list but caps
+    ``allowedCudaVersions`` at 13.0, so it cannot ask for the image's 13.2."""
+    cuda = _min_cuda(a)
+    if cuda and cuda not in api.V1_CUDA_VERSIONS:
+        raise SystemExit(
+            f"--spot goes through the v1 API, whose CUDA filter stops at "
+            f"{api.V1_CUDA_VERSIONS[0]}; pass --min-cuda any (or ≤ "
+            f"{api.V1_CUDA_VERSIONS[0]}) to rent a spot pod"
+        )
+    spec = {
+        "name": _pod_name(a),
         "cloudType": a.cloud,
         "computeType": "GPU",
         "gpuTypeIds": a.gpu,
         "gpuCount": a.count,
         "containerDiskInGb": a.disk,
         "ports": a.port or ["22/tcp"],
-        "env": env,
-        "interruptible": a.spot,
+        "env": _pod_env(a),
+        "interruptible": True,
     }
+    if cuda:
+        # v1 matches exact versions; "at least" = every listed one from cuda up.
+        spec["allowedCudaVersions"] = [
+            v for v in api.V1_CUDA_VERSIONS if float(v) >= float(cuda)
+        ]
     if a.network_volume:
         spec["networkVolumeId"] = a.network_volume
     else:
@@ -175,20 +228,44 @@ def _redacted(spec: dict) -> dict:
     return out
 
 
+# Errors that are about the request or the account, not the GPU type's stock:
+# trying the next --gpu would fail the same way.
+_NO_FALLBACK_STATUS = (0, 400, 401, 403, 422)
+
+
 def cmd_create(cl: Optional[api.RunPodClient], a) -> int:
-    spec = build_create_spec(a)
+    specs = (
+        [build_create_spec_v1(a)]
+        if a.spot
+        else [build_create_spec(a, g) for g in a.gpu]
+    )
     if a.dry_run:
-        _print_json(_redacted(spec))
+        _print_json(
+            [_redacted(s) for s in specs] if len(specs) > 1 else _redacted(specs[0])
+        )
         return 0
-    if "PUBLIC_KEY" not in spec["env"] and not a.no_ssh_key:
+    if "PUBLIC_KEY" not in specs[0]["env"] and not a.no_ssh_key:
         print(
             "warning: no ~/.ssh/*.pub found; pod uses the account's SSH keys",
             file=sys.stderr,
         )
-    pod = cl.create_pod(spec)
+    if a.spot:
+        pod = cl.create_pod(specs[0])
+    else:
+        for i, spec in enumerate(specs):
+            try:
+                pod = cl.create_pod_v2(spec)
+                break
+            except api.RunPodError as e:
+                if e.status in _NO_FALLBACK_STATUS or i == len(specs) - 1:
+                    raise
+                print(
+                    f"{spec['gpu']['id']}: {e.message} — trying next --gpu",
+                    file=sys.stderr,
+                )
+    cost = pod.get("costPerHr", pod.get("cost"))
     print(
-        f"created {pod.get('id')} ({pod.get('name')}), "
-        f"${_money(pod.get('costPerHr'))}/h",
+        f"created {pod.get('id')} ({pod.get('name')}), ${_money(cost)}/h",
         file=sys.stderr,
     )
     if a.wait:
@@ -308,6 +385,12 @@ def cmd_volumes(cl: api.RunPodClient, a) -> int:
 # ── argparse ──────────────────────────────────────────────────────────
 
 
+_CUDA_HELP = (
+    f"lowest host CUDA version (default {api.DEFAULT_MIN_CUDA}, the image's; "
+    "'any' = no filter)"
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="python -m anima_daemon.runpod",
@@ -322,6 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--count", type=int, default=1, help="GPUs per pod (stock is per count)"
     )
     p.add_argument("--min-vram", type=int, default=0, metavar="GB")
+    p.add_argument("--min-cuda", metavar="V", help=_CUDA_HELP)
     p.add_argument("--all", action="store_true", help="include out-of-stock types")
     p.add_argument("--json", action="store_true")
 
@@ -376,6 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--env", action="append", default=[], metavar="K=V")
     p.add_argument("--port", action="append", metavar="P/proto", help="default 22/tcp")
+    p.add_argument("--min-cuda", metavar="V", help=_CUDA_HELP)
     p.add_argument(
         "--spot",
         action="store_true",
