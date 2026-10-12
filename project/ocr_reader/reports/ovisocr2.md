@@ -54,4 +54,24 @@ upper bound, and not comparable to crop exact. It is split at key length 3,
 because 1–2 char keys can hit by accident. It also counts rows that are hit
 only once the `<img>` blocks are kept, i.e. SFX the parser filed as a picture.
 
-Pending — job `20261012-184829-f88741`.
+`--bs 16`, 146 pages in 7.6 min (3.1 s / page; `--bs 2` was 8–14 s / page).
+Report: [`ocr_eval_page_ovis.md`](ocr_eval_page_ovis.md); raw output per page
+in `output/ocr/eval/page_ovis.jsonl`.
+
+| kind | rows | hit | hit, key ≥ 3 | hit only with `<img>` kept |
+|---|---|---|---|---|
+| sfx | 597 | 3 (0.5 %) | 3 / 558 | 0 |
+| speech | 272 | 49 (18.0 %) | 47 / 266 | 0 |
+
+- **Reading the whole page does not help: SFX recall is 3 / 597.** The SFX
+  are not filed as pictures. Only 19 `<img>` blocks appear over 146 pages, and
+  keeping them recovers no row. The parser just does not transcribe the
+  lettering on the art. The page reads in the sample are the balloon text.
+- **Speech recall is 18 %, and the page reads run away.** 77 of the 146
+  pages end in one block repeated ≥ 8 times (`うろろろ` × 40 on `10506513`).
+  The card's `_clean_truncated_repeats` is not applied: it only acts on output
+  ≥ 8 000 chars and would not change any hit. The speech labels are PP-OCRv6
+  text, so this is agreement, not accuracy.
+
+Page mode confirms the crop verdict: OvisOCR2 is a document parser, and manga
+lettering — the SFX especially — is outside what it reads.

@@ -34,7 +34,7 @@ split (tower LoRA + LM full FT). The first probe is in
 | P2a — rank-truncated tower eval | spectrum probe done; eval skipped |
 | P2b — tower LoRA + LM full FT arm | run 1 beats v3 on sincos (+31 strict, paired z 3.1), ties COO, 7.0 vs 12.1 GB — [`reports/p2b_tower_lora_lm_full.md`](reports/p2b_tower_lora_lm_full.md); seed 2 + attribution arm owed |
 | P3 — mixed-language v4 run | `vl16_p2b_kozh` = P2b + gelnote KO/ZH pseudo: KO/ZH back to stock level (v3 lost them: KO 1/48), JA gates flat or up — [`reports/p3_kozh.md`](reports/p3_kozh.md). ×2 epochs (`vl16_p2b_kozh_ep2`): sincos strict 316 → 346 (z +3.2, mostly hearts), COO SFX +49 (z +3.6), KO/ZH unchanged — [`reports/p3_kozh_ep2.md`](reports/p3_kozh_ep2.md); chosen to replace ep1 as Hub `v4/`. Owed: seed 2, more KO/ZH data to clear stock |
-| outside readers | OvisOCR2 (page parser, Qwen3.5-0.8B): ZH at stock, KO −9, sincos SFX 2 / 597 — not a candidate — [`reports/ovisocr2.md`](reports/ovisocr2.md) |
+| outside readers | OvisOCR2 (page parser, Qwen3.5-0.8B): ZH at stock, KO −9, sincos SFX 2 / 597 (crops) and 3 / 597 recall on whole pages — not a candidate — [`reports/ovisocr2.md`](reports/ovisocr2.md) |
 
 Plan and gates: [`roadmap.md`](roadmap.md). Open questions:
 [`questions.md`](questions.md).

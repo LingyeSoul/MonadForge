@@ -29,6 +29,7 @@ import time
 from pathlib import Path
 
 import cv2
+from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import eval_manga109 as ev  # noqa: E402
@@ -67,7 +68,14 @@ def main():
     reader.max_tokens = a.max_new_tokens
     reader.filter_imgtags = False
     t0 = time.time()
-    raw = reader.read(pages, [None] * len(pages), a.bs)
+    raw = []
+    bar = tqdm(total=len(pages), unit="page", mininterval=0, file=sys.stdout)
+    for s in range(0, len(pages), a.bs):
+        chunk = pages[s : s + a.bs]
+        raw += reader.read(chunk, [None] * len(chunk), a.bs)
+        bar.update(len(chunk))
+        bar.set_postfix(out_chars=len(raw[-1]))
+    bar.close()
     wall = time.time() - t0
 
     kept = {s: textnorm.exact_key(reader.drop_imgtags(r)) for s, r in zip(stems, raw)}
