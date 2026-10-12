@@ -95,7 +95,11 @@
                                   # break a syllable small (``jamo_j128_ko``);
                                   # ``dirs = ["ko_extra"]``: every face in these
                                   # ``assets/fonts/`` subdirs joins the draw too
-                                  # (``jamo_j128_ko``)
+                                  # (``jamo_j128_ko``);
+                                  # ``legible = { median = 1.5, p10 = 0.8,
+                                  # from_px = 28 }``: from that font px, a face
+                                  # is not drawn for a glyph whose stroke gaps it
+                                  # fuses (``legible.py``; ``jamo_j1024_ko_cf``)
     pose = true                   # optional: the glyph's ink centred in its scene
                                   # bubble / sign and tilted with it, a grid bubble's
                                   # ink on its centre (``render_into_scene(pose=)``,
@@ -194,7 +198,7 @@ class Run:
     factor_init: tuple = ()  # (reseed run, scale): the factors' start; () = Δ 0
     factor_from: str = ""  # a factor run: the factors' start; "" = Δ 0
     factor_residual: float | None = None  # the pull on r; None = no residual
-    faces: dict | None = None  # {out: (face, …), px_min: {face: px}}; None = every face
+    faces: dict | None = None  # {out, px_min: {face: px}, dirs, legible}; None = every face
     pose: bool = False  # text centred / tilted with its bubble
     # counterfactual (cjk_ko, 10-12): {host: form} (``counterfactual.plan``) —
     # the hosts and the CV syllables a final's removal gives are rows too
@@ -432,8 +436,12 @@ def load(run: str) -> Run:
     if faces is not None:
         fonts = Path(__file__).resolve().parents[1] / "assets" / "fonts"
         assert lang, f"{path}: faces needs lang"
-        assert set(faces) <= {"out", "px_min", "dirs"}, (
-            f"{path}: faces {{out, px_min, dirs}}"
+        assert set(faces) <= {"out", "px_min", "dirs", "legible"}, (
+            f"{path}: faces {{out, px_min, dirs, legible}}"
+        )
+        leg = faces.get("legible")
+        assert leg is None or set(leg) == {"median", "p10", "from_px"}, (
+            f"{path}: faces.legible {{median, p10, from_px}}"
         )
         dirs = tuple(faces.get("dirs", ()))
         bad = [d for d in dirs if "/" in d or not any((fonts / d).glob("*.[ot]tf"))]
@@ -446,6 +454,7 @@ def load(run: str) -> Run:
             "out": tuple(faces.get("out", ())),
             "px_min": {k: float(v) for k, v in faces.get("px_min", {}).items()},
             "dirs": dirs,
+            "legible": {k: float(v) for k, v in leg.items()} if leg else None,
         }
     rows, cf = tuple(raw["rows"]), None
     if raw.get("counterfactual"):

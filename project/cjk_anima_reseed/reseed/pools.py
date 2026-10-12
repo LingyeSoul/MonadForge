@@ -51,6 +51,7 @@ class Pools:
     lang: dict = field(default_factory=dict)  # glyph → language (a ``lang`` run's rows)
     px_min: dict = field(default_factory=dict)  # face path → font px it is drawn from
     pose: bool = False  # config.Run.pose
+    legible: dict | None = None  # ``faces.legible``: {median, p10, from_px}
 
     def fonts_at(self, px: float | None) -> list:
         """The faces drawn at ``px`` font px (``px_min``; every face without a
@@ -58,6 +59,19 @@ class Pools:
         if px is None or not self.px_min:
             return self.fonts
         return [f for f in self.fonts if px >= self.px_min.get(f, 0)] or self.fonts
+
+    def fonts_for(self, text: str, px: float | None, fonts: list | None = None) -> list:
+        """``fonts`` (default ``fonts_at(px)``) less the faces that fuse
+        ``text``'s strokes at ``px`` (``legible``; off, or no px: all)."""
+        fonts = self.fonts_at(px) if fonts is None else fonts
+        if self.legible is None or px is None:
+            return fonts
+        from common.render.flat import font_covers
+
+        from .legible import pick
+
+        # measured on the faces that draw it (a tofu passes any gap rule)
+        return pick([f for f in fonts if font_covers(f, text)] or fonts, text, px, self.legible)
 
 
 def _quietly(fn, *args):
@@ -86,7 +100,8 @@ def build_pools(
     of record (and the eval groups ``eval.json`` carries). ``lang`` (glyph →
     language): the ``KOZH_FONTS`` faces join the fonts (``lang_fonts``);
     ``faces`` (``config.Run.faces``) leaves its ``out`` faces out and floors
-    its ``px_min`` ones. ``cf`` (``Run.cf``): the counterfactual hosts — the
+    its ``px_min`` ones; its ``legible`` rule (``legible.py``) drops a face
+    per glyph and px at draw time. ``cf`` (``Run.cf``): the counterfactual hosts — the
     ``parts``, left out of the face check (no face but ``counterfactual.FACES``
     draws them)."""
     import tempfile
@@ -185,6 +200,7 @@ def build_pools(
         shapes=ShapePool(T.SHAPES, T.SEED),
         lang=dict(lang or {}),
         px_min=px_min,
+        legible=(faces or {}).get("legible"),
         parts=parts,
         cf=dict(cf or {}),
     )

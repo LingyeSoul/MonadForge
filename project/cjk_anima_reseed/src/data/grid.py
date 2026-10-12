@@ -74,6 +74,7 @@ def render_grid(
     bubble_centre: bool = False,
     spell=None,
     masks=None,
+    fonts_for=None,
 ):
     """Draw ``units[i]`` in cell ``i`` (row-major). Returns ``(image, boxes)``,
     ``boxes[i]`` the ink bbox of cell i's unit in canvas pixels. ``box`` = the
@@ -100,7 +101,8 @@ def render_grid(
     its fillers); the font is still picked on the unit. ``masks`` (opt-in,
     same date): ``masks(unit, font_path)`` → ``at(font_px)`` → an ``L`` ink
     image cropped to the ink, drawn in place of the unit's text (a
-    counterfactual syllable)."""
+    counterfactual syllable). ``fonts_for`` (opt-in, cjk_ko 2026-10-12):
+    unit → the faces it is picked among, instead of ``fonts``."""
     from PIL import Image, ImageDraw, ImageFont
 
     W, H = size
@@ -119,7 +121,7 @@ def render_grid(
     for i, u in enumerate(units):
         r, c = divmod(i, cols)
         x0, y0 = c * cw, r * ch
-        font_path = pick_font(u, fonts, rng)
+        font_path = pick_font(u, fonts_for(u) if fonts_for else fonts, rng)
         at = masks(u, font_path) if masks else None
         vertical = (
             len(u) > 1

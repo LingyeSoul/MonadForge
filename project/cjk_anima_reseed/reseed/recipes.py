@@ -166,7 +166,7 @@ def _draw_scene(
         drawn = render_into_scene(
             scene=sc,
             text=text,
-            font_path=pick_font(text, pools.fonts_at(target_px), rng),
+            font_path=pick_font(text, pools.fonts_for(text, target_px), rng),
             rng=rng,
             min_glyph=min_glyph,
             stroke=False,
@@ -414,7 +414,7 @@ def sent(pools: Pools, rng: random.Random, p: dict):
         drawn = render_into_scene(
             scene=sc,
             text=text,
-            font_path=pick_font(text, pools.fonts_at(target), rng),
+            font_path=pick_font(text, pools.fonts_for(text, target), rng),
             rng=rng,
             min_glyph=min_glyph,
             stroke=False,
@@ -520,6 +520,8 @@ def grid(pools: Pools, rng: random.Random, p: dict):
     srcs = []
     if p.get("cf"):
         fonts, kw["masks"] = _cf_masks(pools, fonts, rng, srcs)
+    elif pools.legible is not None and not spell:
+        kw["fonts_for"] = lambda u: pools.fonts_for(u, target, fonts)
     bgs = []
     im, boxes = render_grid(
         got,
