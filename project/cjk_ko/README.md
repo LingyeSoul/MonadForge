@@ -23,6 +23,7 @@ reseed line's `reseed/` package, run through `run.py`. Outputs:
 | `configs/jamo_j256_ko_g44.toml` | jamo_j256_ko with the 16 px tiers cut (user 10-12): lone_16 / grid_16 5 % each, grid_44 31.7 %, the rest as built; same rows, recipe, steps |
 | `configs/jamo_j256_ko_part.toml` | jamo_j256_ko + the 48 partial forms (user 10-12): the medial vowels ᅡ … ᅵ and finals ᆨ … ᇂ drawn with the initial left out (`jamo.PART_SPELL`, Noto Serif CJK), composed without the absent parts (ᅥ = b + V[ㅓ]); the opt-in `partial` tier at 15 %, J256_ko's mix at 85 %, 56 a row (17 024 steps) |
 | `configs/jamo_j256_ko_cf.toml` | jamo_j256_ko + counterfactual syllables (user 10-12; `../cjk_anima_reseed/reseed/counterfactual.py`): each trained syllable less its initial (언 → ㅓ ㄴ, b + V + F) or its vowel (언 → ㅇ ㄴ, b + C + F), the 287 forms on hosts; less the final = the CV syllable as a row (41, H out); the counterfactual tier 25 %, steps held at 14 336 (`steps`) |
+| `configs/jamo_j1024_ko_cf.toml` | jamo_j1024_ko + jamo_j256_ko_cf's counterfactual tier (25 %, its shares), steps held at 60 200; `faces.legible` on (user 10-12, `../cjk_anima_reseed/reseed/legible.py`): from 28 font px a face is re-picked for a glyph whose strokes it fuses (median gap < 1.5 px or p10 < 0.8 px) — ~7 % of the 28–40 px draws, the 16 px tiers untouched. Not run yet |
 | `probes/micro_read.py` | GPU: `render` (each read item alone in a KO bubble, seed 0, under `floor` = jamo_j256_ko and the micro arms; cached under `output/cjk_ko/micro_read/render/`) and `score` (v4 free read; per arm × group exact and glyph / jamo P R F1 with chance) → `results/<ts>-micro-read/`. Groups (`assets/micro192.json`): every third of the 192 (64), the next 64 by frequency (in no line), the 27 held strings on the 192; `--seeds` reads several renders an item |
 
 ```bash
@@ -81,6 +82,24 @@ syllables move H, tier reshuffles and × 4 scale do not.
 
 ## Open
 
+- **jamo_j1024_ko_cf, ready for a RunPod 5090** (10-12; no 5090 in stock that
+  night, not launched). Config and `faces.legible` committed; a 3 % build
+  checked locally (3 274 items, 1 718 rows; the bubble1_32 sheet draws no
+  fused glyph). On the pod, as J256_ko: the tracked code (`git ls-files -z`)
+  plus 1.24 GB of inputs over 8 `rsync -aL --mkpath` shards —
+  `../cjk_anima_reseed/assets/fonts/`, `output/cjk_anima_scale/scenes_{s1,
+  s1s,s1w,sl1w,ja_comic}/`, `output/cjk_anima_scale/experiments/
+  scene_{colorful,bubble_check}.json`, `models/vocab_packs/
+  anima_cjk_vocab_pack_punct.{json,safetensors}`,
+  `output/cjk_anima_reseed/seed_1008/trained.pt` — and the
+  `output/wake_probe/scenes_{s1,s1w,sl1w,ja_comic}` links with plain
+  `rsync -a` (the scenes' `scenes.jsonl` paths go through them). Then
+  `run.py jamo_j1024_ko_cf data --workers 12 && run.py jamo_j1024_ko_cf
+  train`; pull back `trained.pt`, `train_log.json`, `train_record.json`,
+  `eval_coverage.json`, the data's manifests and `sheet_*.png`. Estimate:
+  ~110 k items, ~10 min build, train ~3.7 h at J256_ko's 4.5 it/s (local:
+  J1024_ko took 419.8 min at 2.39 it/s), ~4–4.5 h and ~$5 on SECURE. Read
+  against jamo_j1024_ko: cf and the legible re-pick move together.
 - **The read.** No KO ruler yet: the 96 held strings are cut out of the data
   now; the renderer and v4 per-glyph read are still to build (the JA ruler's
   shape, `criteria.md`). Also H (the jamo line's 32 held syllables) — they
