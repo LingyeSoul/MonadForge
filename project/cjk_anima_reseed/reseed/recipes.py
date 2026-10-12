@@ -486,9 +486,12 @@ def grid(pools: Pools, rng: random.Random, p: dict):
     from data.grid import _Deck, render_grid
 
     # ``parts``: the partial forms (``jamo.PART_SPELL``), drawn behind their
-    # fillers where they sit in a syllable (cjk_ko, 10-12)
+    # fillers where they sit in a syllable; ``cf``: the counterfactual hosts,
+    # drawn as their form (cjk_ko, 10-12)
     src, spell = (pools.parts, PART_SPELL) if p.get("parts") else (_lone(pools), None)
-    key = "parts" if p.get("parts") else "singles"
+    if p.get("cf"):
+        src, spell = pools.parts, None
+    key = "parts" if p.get("parts") or p.get("cf") else "singles"
     deck = pools.decks.get(key)
     if deck is None:
         deck = pools.decks[key] = _Deck(src, rng)
@@ -513,13 +516,17 @@ def grid(pools: Pools, rng: random.Random, p: dict):
         kw["bubble_centre"] = True
     if spell:
         kw["spell"] = spell
+    fonts = pools.fonts_at(target)
+    srcs = []
+    if p.get("cf"):
+        fonts, kw["masks"] = _cf_masks(pools, fonts, rng, srcs)
     bgs = []
     im, boxes = render_grid(
         got,
         cols,
         rows,
         size,
-        pools.fonts_at(target),
+        fonts,
         rng,
         bubble,
         (fill, fill),
@@ -546,8 +553,28 @@ def grid(pools: Pools, rng: random.Random, p: dict):
             "bg": bgs[0] if isinstance(bgs[0], str) else list(bgs[0]),
             "fill": round(fill, 3),
             "clause": clause,
+            **({"cf_src": srcs} if srcs else {}),
         },
     )
+
+
+def _cf_masks(pools: Pools, fonts: list, rng: random.Random, srcs: list):
+    """The counterfactual tier's faces (``counterfactual.FACES``) and its
+    ``render_grid`` mask callable: a host drawn as one of its form's source
+    syllables (one draw a cell) with the form's jamo left out; ``srcs``
+    collects ``[source, drop]`` per cell."""
+    from .counterfactual import FACES, mask
+
+    faces = [f for f in fonts if FACES in f]
+    assert faces, f"counterfactual: no {FACES} face in the draw"
+
+    def cell(u, font_path):
+        f = pools.cf[u]
+        s = rng.choice(f["src"])
+        srcs.append([s, f["drop"]])
+        return lambda fs: mask(font_path, s, f["drop"], fs)
+
+    return faces, cell
 
 
 RECIPES = {"bubble1": bubble1, "bubbleN": bubbleN, "sent": sent, "grid": grid}

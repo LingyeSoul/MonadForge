@@ -155,3 +155,25 @@ def test_own_rows():
     g = jm.free.grad
     assert float(g[:3].abs().sum()) == 0 and float(g[3].abs().sum()) > 0
     assert float(jm.V.grad.abs().sum()) > 0
+
+
+def test_counterfactual_plan():
+    # 언 less ㅇ → ㅓ ㄴ, less ㅓ → ㅇ ㄴ, less ㄴ → 어 (a row unless held out)
+    from reseed.counterfactual import plan
+
+    extra, forms = plan("언안각", held="아")
+    assert extra == ["어", "가"]
+    by = {(f["drop"], tuple(f["code"])): f["src"] for f in forms.values()}
+    assert by["cho", (J.N_CHO, 0, 4, 4)] == ["언"]
+    assert by["jung", (11, 0, J.N_JUNG, 4)] == ["언", "안"]  # ㅇ (vertical) + ㄴ
+    assert len(forms) == 5 and not set(forms) & set(J.KSX1001)
+    syl = {10: "언", **{20 + k: tuple(f["code"]) for k, f in enumerate(forms.values())}}
+    rows = _rows(sorted(syl), frozen=set())
+    jm = J.Jamo(rows, syl, lr=1e-3)
+    with torch.no_grad():
+        for t in (jm.b, jm.C, jm.V, jm.F):
+            t.normal_()
+    jm.apply()
+    raw = dict(zip(sorted(syl), rows.delta.raw))
+    host = next(20 + k for k, f in enumerate(forms.values()) if f["src"] == ["언", "안"])
+    assert torch.allclose(raw[10] - raw[host], jm.V[4])  # 언 − (ㅇ ㄴ) = ㅓ

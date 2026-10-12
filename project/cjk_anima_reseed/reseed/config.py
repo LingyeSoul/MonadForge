@@ -11,6 +11,9 @@
                                  # (seed_retrain_0930) or "1008" (seed_1008 = jp_v1's
                                  # rows, on the punct pack); without ``rows_from`` only
     steps_per_row = 135
+    steps = 14336                # optional: the whole step count in place of
+                                 # steps_per_row × the rows (cjk_ko 10-12: a run held
+                                 # at another's total); the items still count the rows
     shares = { grid_44 = 10, … }  # optional: % of the items per tier, every tier
                                   # named but the opt-in ones (table share 0: left
                                   # out = 0), Σ 100; else table.TABLE's shares
@@ -133,6 +136,8 @@ KEYS = (
     "factor_residual",
     "faces",
     "pose",
+    "counterfactual",
+    "steps",
 )
 # a run's ``seed``: the rows every other row rides frozen at
 SEEDS = ("0930", "1008")
@@ -191,6 +196,10 @@ class Run:
     factor_residual: float | None = None  # the pull on r; None = no residual
     faces: dict | None = None  # {out: (face, …), px_min: {face: px}}; None = every face
     pose: bool = False  # text centred / tilted with its bubble
+    # counterfactual (cjk_ko, 10-12): {host: form} (``counterfactual.plan``) —
+    # the hosts and the CV syllables a final's removal gives are rows too
+    cf: dict | None = None
+    total_steps: int = 0  # ``steps``: the whole step count; 0 = steps_per_row's
 
     def phrase_file(self) -> str:
         """The dialogue line file, ``LINES[lines]``."""
@@ -210,7 +219,14 @@ class Run:
 
     def steps(self, steps_per_row: int | None = None) -> int | None:
         """The whole step count a ``focus`` run trains (its rows ×
-        ``steps_per_row``); ``None`` without one (every trained row's)."""
+        ``steps_per_row``), or a ``counterfactual`` run (its rows less the
+        hosts); ``steps`` when the config names it; ``None`` otherwise (every
+        trained row's)."""
+        if self.total_steps:
+            return self.total_steps
+        if self.cf:
+            n = len({g for r in self.rows for g in r.split(":", 1)[1]}) - len(self.cf)
+            return (steps_per_row or self.steps_per_row) * n
         if not self.focus:
             return None
         return (steps_per_row or self.steps_per_row) * len(self.focus)
@@ -431,10 +447,24 @@ def load(run: str) -> Run:
             "px_min": {k: float(v) for k, v in faces.get("px_min", {}).items()},
             "dirs": dirs,
         }
+    rows, cf = tuple(raw["rows"]), None
+    if raw.get("counterfactual"):
+        import json
+
+        from .counterfactual import plan
+        from .jamo import is_syllable
+
+        assert factor == "jamo", f"{path}: counterfactual needs factor = jamo"
+        syls = [g for r in rows for g in r.split(":", 1)[1] if is_syllable(g)]
+        held_h = json.loads((HOME / "assets" / "jamo_sets.json").read_text())["H"]
+        extra, cf = plan(syls, held_h)
+        rows += ("chars:" + "".join(extra) + "".join(cf),)
+        if lang:
+            lang = {**lang, **dict.fromkeys(extra + list(cf), "korean")}
     return Run(
         name=path.stem,
         path=path,
-        rows=tuple(raw["rows"]),
+        rows=rows,
         read=tuple(raw.get("read", ())),
         steps_per_row=int(raw["steps_per_row"]),
         seed=seed,
@@ -457,4 +487,6 @@ def load(run: str) -> Run:
         factor_residual=None if fres is None else float(fres),
         faces=faces,
         pose=bool(raw.get("pose", False)),
+        cf=cf,
+        total_steps=int(raw.get("steps", 0)),
     )

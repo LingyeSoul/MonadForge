@@ -39,6 +39,8 @@ class Pools:
     # the partial forms among the rows (``jamo.PART_SPELL``): drawn by the
     # ``partial`` tier only, never alone or in a grid of syllables
     parts: list = field(default_factory=list)
+    # counterfactual (``Run.cf``): host → form; its hosts are ``parts``
+    cf: dict = field(default_factory=dict)
     synth: list = field(default_factory=list)  # synthesised dialogue lines (hearts)
     used: Counter = field(default_factory=Counter)  # scene → items drawn on it
     tier_used: Counter = field(
@@ -73,14 +75,20 @@ def _quietly(fn, *args):
 
 
 def build_pools(
-    rows: list, rng: random.Random, lang: dict | None = None, faces: dict | None = None
+    rows: list,
+    rng: random.Random,
+    lang: dict | None = None,
+    faces: dict | None = None,
+    cf: dict | None = None,
 ) -> Pools:
     """``rows``: ``data.vocabs`` specs (``chars:…``), single glyphs only —
     the stage resolvers on them, so a row means what it meant in every read
     of record (and the eval groups ``eval.json`` carries). ``lang`` (glyph →
     language): the ``KOZH_FONTS`` faces join the fonts (``lang_fonts``);
     ``faces`` (``config.Run.faces``) leaves its ``out`` faces out and floors
-    its ``px_min`` ones."""
+    its ``px_min`` ones. ``cf`` (``Run.cf``): the counterfactual hosts — the
+    ``parts``, left out of the face check (no face but ``counterfactual.FACES``
+    draws them)."""
     import tempfile
     from types import SimpleNamespace
 
@@ -123,7 +131,7 @@ def build_pools(
     singles = list(dict.fromkeys(pool))
     from .jamo import is_part
 
-    parts = [u for u in singles if is_part(u)]
+    parts = list(cf) if cf else [u for u in singles if is_part(u)]
     if not inv.evals.get("single"):
         srng = random.Random(T.SEED + 47)
         inv.evals["single"] = sorted(srng.sample(singles, min(18, len(singles))))
@@ -154,7 +162,8 @@ def build_pools(
     fonts = find_fonts()
     px_min = {}
     if lang:
-        fonts = lang_fonts(fonts, singles, (faces or {}).get("dirs", ()))
+        drawn = [u for u in singles if u not in (cf or {})]
+        fonts = lang_fonts(fonts, drawn, (faces or {}).get("dirs", ()))
     if faces:
         fonts = [f for f in fonts if Path(f).name not in faces["out"]]
         floors = faces["px_min"]
@@ -177,6 +186,7 @@ def build_pools(
         lang=dict(lang or {}),
         px_min=px_min,
         parts=parts,
+        cf=dict(cf or {}),
     )
 
 

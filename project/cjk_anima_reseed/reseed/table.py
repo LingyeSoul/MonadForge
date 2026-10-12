@@ -224,4 +224,20 @@ TABLE = (
             "parts": True,
         },
     ),
+    # opt-in: the counterfactual syllables (``counterfactual``: a trained
+    # syllable less its initial or its vowel, the rest where it sits), drawn
+    # as ``partial`` is (cjk_ko, 10-12)
+    Tier(
+        "counterfactual",
+        "grid",
+        0.0,
+        (0.3, 0.75),
+        {
+            "grids": f"{LONE},{GRIDS}",
+            "glyph_px": [40, 72],
+            "bubble_frac": 0.0,
+            "cell_jitter": CELL_JITTER,
+            "cf": True,
+        },
+    ),
 )

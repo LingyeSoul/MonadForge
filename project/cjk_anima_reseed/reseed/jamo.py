@@ -136,9 +136,13 @@ def compat_rows() -> dict:
 
 def codes(syllables) -> torch.Tensor:
     """``(n, 4)`` long: cho, cls, jung, jong per syllable; a partial form's
-    absent initial is ``N_CHO`` (cls 0), its absent vowel ``N_JUNG``."""
+    absent initial is ``N_CHO`` (cls 0), its absent vowel ``N_JUNG``. A tuple
+    is a code already (a counterfactual form, ``counterfactual.plan``)."""
     out = []
     for s in syllables:
+        if isinstance(s, tuple):
+            out.append(tuple(s))
+            continue
         if s in PART_JUNG:
             j = PART_JUNG.index(s)
             out.append((N_CHO, 0, j, 0))

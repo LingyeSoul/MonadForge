@@ -376,6 +376,9 @@ def train(
         ext_syl = {e: s for s, e in syl_ext.items()}
         # partial forms (jamo.PART_SPELL) compose like a syllable, absent parts 0
         ext_syl.update({e: j for j, e in part_rows().items()})
+        # a counterfactual host carries its form's code (merge_all writes the
+        # host syllable's own composition over it at the save)
+        ext_syl.update({syl_ext[h]: tuple(f["code"]) for h, f in (run.cf or {}).items()})
         jamo = Jamo(
             rows,
             {e: ext_syl[e] for e in p.idx if e in ext_syl},

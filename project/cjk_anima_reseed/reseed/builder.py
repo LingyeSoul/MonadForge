@@ -62,7 +62,7 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
     (out / "img").mkdir(parents=True, exist_ok=True)
     workers = default_workers() if workers is None else max(1, int(workers))
     rng = random.Random(T.SEED)
-    pools = build_pools(list(run.rows), rng, run.lang, run.faces)
+    pools = build_pools(list(run.rows), rng, run.lang, run.faces, run.cf)
     pools.pose = run.pose
     # a run whose every row is lettered in another language (``lang``) draws
     # no window — no JA line spells a KO / ZH row — so it reads no lines,
@@ -85,7 +85,8 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         words=line_lang == "korean",
     )
     focus = focus_pools(pools, run.focus, run.focus_kanji[1]) if run.focus else None
-    n_rows = len(run.focus) if run.focus else len(pools.singles)
+    # the counterfactual hosts: drawn by their tier only, not counted
+    n_rows = len(run.focus) if run.focus else len(pools.singles) - len(pools.cf)
     table = run.table()
     plan = [(t, int(round(T.ITEMS_PER_ROW * n_rows * t.share * frac))) for t in table]
     plan = [(t, n) for t, n in plan if n]  # a share-0 tier is not drawn
@@ -162,6 +163,7 @@ def build(run: Run, workers: int | None = None, frac: float = 1.0) -> Path:
         **({"focus": focus} if focus else {}),
         **({"held": run.held} if run.held else {}),
         **({"lang": run.lang, "dropped_tiers": dropped} if run.lang else {}),
+        **({"counterfactual": run.cf} if run.cf else {}),
         **({"sentences": sents} if sents else {}),
         "scenes": {
             "pools": T.SCENES,
