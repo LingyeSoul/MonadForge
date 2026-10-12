@@ -88,6 +88,7 @@ RENDER = {
     # cjk_ko's micro_read renders (seed 0, same Renderer / bubble): H, no words
     "jamo_j1024_ko": ("../cjk_ko/micro_read", ("H",)),
     "jamo_j256_ko_g44": ("../cjk_ko/micro_read", ("H",)),
+    "jamo_j256_ko_cf": ("../cjk_ko/micro_read", ("H",)),
     "jamo_lone": ("jamo_lone", ("jamo",)),
     "seed_1008": ("jamo_lone", ("jamo",)),
 }

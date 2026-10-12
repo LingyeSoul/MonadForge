@@ -68,6 +68,11 @@ run draws what it drew.
   grid_44 — no gain; H and trained fall (H exact 8 → 6 / 32, glyph F1 0.31 →
   0.22). Size and σ band move together in the table, so it does not say
   which carried the loss.
+- `reports/jamo_j256_ko_cf_2026_10_12.md`: counterfactual syllables (one
+  jamo left out, 25 % of the items) — the first J arm to move H (exact 8 →
+  10 / 32, glyph F1 0.31 → 0.35, jamo F1 0.46 → 0.52), next 8 → 13 / 64, the
+  gain on syllables J256 did not train (13 → 20 / 93); held strings fall
+  (glyph F1 0.17 → 0.09). One seed; forms vs the tier itself not separated.
 
 ## Open
 

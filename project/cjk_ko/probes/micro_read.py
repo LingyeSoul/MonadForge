@@ -21,7 +21,7 @@ through the factors), ``held`` (the ruler's strings on the 192: 27).
 ``--seeds`` (default 0): one render per item and seed, each read; ``exact``
 and the F1s count every render, the sheets show the first seed.
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part; ``--arms`` picks some. ``--groups`` (default the
+_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf; ``--arms`` picks some. ``--groups`` (default the
 three above): also ``H`` (the jamo line's 32 held syllables) and ``jamo``
 (the 51 compat jamo, by eye — v4 reads no lone jamo).
 
@@ -61,6 +61,7 @@ ARMS = {
     "jamo_j1024_ko": KO_OUT / "jamo_j1024_ko",
     "jamo_j256_ko_g44": KO_OUT / "jamo_j256_ko_g44",
     "jamo_j256_ko_part": KO_OUT / "jamo_j256_ko_part",
+    "jamo_j256_ko_cf": KO_OUT / "jamo_j256_ko_cf",
 }
 GROUPS = ("trained", "next", "held", "H", "jamo")
 SIZE = (512, 512)
