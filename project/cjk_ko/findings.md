@@ -4,8 +4,8 @@ What the J arms (jamo-factored Hangul rows, cold on seed_1008, lone glyphs in
 bubbles / grids / signs) have shown so far, read by v4 per glyph against
 `floor` = jamo_j256_ko. The out-of-distribution test is **H**: 32 common
 syllables no arm trains, drawn only through the composition b + C[cho, cls] +
-V + F. Every read is seed 0, one render per item; the reports carry the full
-tables.
+V + F. Every read in the table is seed 0, one render per item (cf vs floor
+also on seeds 0–3, below); the reports carry the full tables.
 
 ## H across the line
 
@@ -21,6 +21,10 @@ tables.
 (~ = one syllable sharing a jamo with the target; jamo F1 chance ≈ 0.12–0.13
 on every arm.)
 
+Seeds 0–3, H / next only (`results/20261012-2005-micro-read/`): floor H 18 /
+128, cf **26 / 128** (glyph F1 0.17 → 0.25, jamo F1 0.37 → 0.43); next 17 →
+**32 / 256**. Seed 0 is the best seed for both arms.
+
 ## Verdict
 
 - **Better data moved H; reshuffling the mix did not.** J256 → J256_ko kept
@@ -33,12 +37,14 @@ on every arm.)
   grid_44, larger glyphs) gave nothing: H 8 → 6, trained 18 → 11, next
   flat, and every arm draws the glyph at the same size whatever size it
   trained on.
-- **Counterfactual syllables help composition.** Each trained syllable with
-  one jamo taken out (less the initial / less the vowel, the rest in place)
-  as 25 % of the items: H 8 → 10 / 32, jamo F1 0.46 → 0.52, next 8 → 13 / 64,
-  trained holding (18 → 19) at ~0.75× the exposure to the built tiers. The
-  gain sits on syllables J256 did not train (13 → 20 / 93; trained ones 19
-  → 18 / 56) — the first lift on the zero-shot side.
+- **Counterfactual syllables help composition, weakly.** Each trained
+  syllable with one jamo taken out (less the initial / less the vowel, the
+  rest in place) as 25 % of the items: H 8 → 10 / 32, jamo F1 0.46 → 0.52,
+  next 8 → 13 / 64, trained holding (18 → 19) at ~0.75× the exposure to the
+  built tiers. The gain sits on syllables J256 did not train (13 → 20 / 93;
+  trained ones 19 → 18 / 56) — the first lift on the zero-shot side. Four
+  seeds keep the direction at a smaller size: H 14 % → 20 % exact (paired by
+  item 8 ahead / 4 behind, t ≈ 1.6), next 7 % → 13 % (15 / 7, t ≈ 2.1).
 - **Scale buys trained rows, not OOD.** J1024_ko (rows and steps × 4) reads
   its new rows about as well as J256's own (5 → 17 / 61 new rows, next 8 →
   15 / 64), and the 51 jamo cost nothing to add (~30 drawn). H does not
@@ -55,10 +61,12 @@ on every arm.)
 
 ## Not separated
 
-- **One seed, one render per item.** Hits swap both ways between arms
-  (cf vs floor: 20 cf-only, 14 floor-only of 149); H's 8 vs 10 is two
-  syllables. The cf and J256_ko steps move every H column the same way,
-  which is what the verdict leans on.
+- **One seed, one render per item** for every arm but cf. Hits swap both
+  ways between arms (cf vs floor: 20 cf-only, 14 floor-only of 149), seeds
+  spread wider than the steps (cf on H: 10 / 5 / 9 / 2), and v4 itself flips
+  ±2 / 32 H reads on identical renders when the batch changes. The cf and
+  J256_ko steps move every H column the same way, which is what the verdict
+  leans on; cf's holds on four seeds, H short of significance.
 - **J256_ko's data change is three things** (faces out / floored, the
   `ko_extra` faces, `pose`); which carried the gain is not read.
 - **cf is three things too**: the dropped-jamo forms, a new 25 % flat-canvas
@@ -72,6 +80,6 @@ on every arm.)
 
 - `jamo_j256_ko_part` (the 48 partial forms, 15 %): stopped at step 1 525,
   no read.
-- More seeds on H / next for the cf step; the cf-tier-without-cf arm.
+- The cf-tier-without-cf arm (hosts as full syllables, tier kept).
 - The dialogue warm on J1024_ko (or J1024 + cf): coverage from scale,
   composition from cf, strings from a mix that does not cost lone identity.

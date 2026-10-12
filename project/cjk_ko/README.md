@@ -75,7 +75,9 @@ syllables move H, tier reshuffles and × 4 scale do not.
   jamo left out, 25 % of the items) — the first J arm to move H (exact 8 →
   10 / 32, glyph F1 0.31 → 0.35, jamo F1 0.46 → 0.52), next 8 → 13 / 64, the
   gain on syllables J256 did not train (13 → 20 / 93); held strings fall
-  (glyph F1 0.17 → 0.09). One seed; forms vs the tier itself not separated.
+  (glyph F1 0.17 → 0.09). Seeds 0–3 keep the direction, smaller: H 18 → 26
+  / 128, next 17 → 32 / 256 (H short of significance). Forms vs the tier
+  itself not separated.
 
 ## Open
 
