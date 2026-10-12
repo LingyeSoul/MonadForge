@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -413,6 +414,125 @@ class HunyuanReader:
         return out
 
 
+class OvisReader:
+    """`ATH-MaaS/OvisOCR2` (0.9 B, Qwen3.5-0.8B base, native ``qwen3_5`` — no
+    remote code), a page-level document parser (OmniDocBench v1.6 96.58) scored
+    on crops. The card ships one prompt and one decode, both used verbatim:
+    :data:`PROMPT`, thinking off, greedy, ``min_pixels`` 448² / ``max_pixels``
+    2880². ``<img src="images/bbox_…">`` blocks are dropped as the card's
+    ``filter_imgtags`` does; the rest is the read (``exact_key`` is
+    whitespace-blind, so its Markdown line breaks don't count against it).
+    ``ANIMA_OVIS_PROMPT`` swaps the prompt (off-recipe). ``--ckpt`` overrides
+    the local weights dir.
+    """
+
+    name = "ovis"
+    max_tokens = MAX_NEW_TOKENS
+    filter_imgtags = True  # eval_page.py turns it off to count the dropped blocks
+    DEFAULT = "models/ovis_ocr2"
+    PROMPT = (  # verbatim from the model card's vLLM example @ 1fc9221
+        "\nExtract all readable content from the image in natural human reading "
+        "order and output the result as a single Markdown document. For charts or "
+        'images, represent them using an HTML image tag: <img src="images/bbox_'
+        '{left}_{top}_{right}_{bottom}.jpg" />, where left, top, right, bottom are '
+        "bounding box coordinates scaled to [0, 1000). Format formulas as LaTeX. "
+        "Format tables as HTML: <table>...</table>. Transcribe all other text as "
+        "standard Markdown. Preserve the original text without translation or "
+        "paraphrasing."
+    )
+
+    def __init__(self, ckpt: str | None, device: str):
+        import os
+
+        import torch
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        path = ckpt or str(m109.REPO / self.DEFAULT)
+        self.torch = torch
+        self.prompt = os.environ.get("ANIMA_OVIS_PROMPT") or self.PROMPT
+        self.model = (
+            AutoModelForImageTextToText.from_pretrained(
+                path, dtype=torch.bfloat16, attn_implementation="sdpa"
+            )
+            .to(device)
+            .eval()
+        )
+        self.proc = AutoProcessor.from_pretrained(path)
+        self.device = device
+
+    def read(self, crops, orients, bs):
+        from PIL import Image
+
+        order = sorted(
+            range(len(crops)), key=lambda i: crops[i].shape[0] * crops[i].shape[1]
+        )
+        out = [""] * len(crops)
+        msgs = [
+            {
+                "role": "user",
+                "content": [{"type": "image"}, {"type": "text", "text": self.prompt}],
+            }
+        ]
+        text = self.proc.apply_chat_template(
+            msgs, add_generation_prompt=True, tokenize=False, enable_thinking=False
+        )
+        for s in range(0, len(order), bs):
+            idx = order[s : s + bs]
+            images = [Image.fromarray(crops[i][:, :, ::-1]) for i in idx]
+            inputs = self.proc(
+                text=[text] * len(images),
+                images=images,
+                padding=True,
+                padding_side="left",
+                return_tensors="pt",
+                images_kwargs={
+                    "size": {
+                        "shortest_edge": 448 * 448,
+                        "longest_edge": 2880 * 2880,
+                    }
+                },
+            ).to(self.device)
+            n = inputs["input_ids"].shape[-1]
+            with self.torch.inference_mode():
+                o = self.model.generate(
+                    **inputs,
+                    max_new_tokens=self.max_tokens,
+                    do_sample=False,
+                    use_cache=True,
+                    eos_token_id=self.eos,
+                    pad_token_id=self.proc.tokenizer.pad_token_id,
+                )
+            for i, row in zip(idx, o):
+                t = self.proc.tokenizer.decode(row[n:], skip_special_tokens=True)
+                t = self.plain(t)
+                out[i] = self.drop_imgtags(t) if self.filter_imgtags else t
+        return out
+
+    @property
+    def eos(self) -> list[int]:
+        # The repo ships no generation_config.json and config.json's eos is
+        # <|endoftext|>; the chat turn ends at <|im_end|> (the tokenizer's eos,
+        # which vLLM stops on). Without it generate runs past the answer.
+        tok = self.proc.tokenizer
+        return sorted({tok.eos_token_id, tok.convert_tokens_to_ids("<|endoftext|>")})
+
+    @staticmethod
+    def plain(text: str) -> str:
+        """Markdown → text: ``#`` heading markers off each line (the parser
+        files a short crop as a heading)."""
+        return "\n".join(
+            re.sub(r"^\s*#+\s*", "", ln) for ln in text.split("\n")
+        ).strip()
+
+    @staticmethod
+    def drop_imgtags(text: str) -> str:
+        return "\n\n".join(
+            b
+            for b in text.strip().split("\n\n")
+            if not b.strip().startswith('<img src="images/bbox_')
+        ).strip()
+
+
 READERS = {
     "manga_ocr": MangaOcrReader,
     "ppocr": PpocrReader,
@@ -420,6 +540,7 @@ READERS = {
     "sfx": SfxPkgReader,
     "hayai": HayaiReader,
     "hunyuan": HunyuanReader,
+    "ovis": OvisReader,
 }
 
 
