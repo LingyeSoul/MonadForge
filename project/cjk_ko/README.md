@@ -56,6 +56,9 @@ run draws what it drew.
 
 ## Reads
 
+`findings.md`: the J line's verdict so far — better data and counterfactual
+syllables move H, tier reshuffles and × 4 scale do not.
+
 - `reports/micro_2026_10_11.md`: the micro arms A / B / B′ — every arm
   learned to draw a line for a lone syllable (exact 18 → 1–2 / 64 against
   j256_ko); B′ leads on the held strings (glyph F1 0.27 vs A 0.18); B / B′
