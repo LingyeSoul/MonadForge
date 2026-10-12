@@ -19,7 +19,7 @@ every third of the 192 by frequency (64), ``next`` (ranks 193–256: no line of
 the arms' data holds them; A leaves them at the floor, B / B′ move them
 through the factors), ``held`` (the ruler's strings on the 192: 27).
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp, jamo_j1024_ko; ``--arms`` picks some. ``--groups`` (default the
+_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44; ``--arms`` picks some. ``--groups`` (default the
 three above): also ``H`` (the jamo line's 32 held syllables) and ``jamo``
 (the 51 compat jamo, by eye — v4 reads no lone jamo).
 
@@ -57,6 +57,7 @@ ARMS = {
     "ko_micro_b": KO_OUT / "ko_micro_b",
     "ko_micro_bp": KO_OUT / "ko_micro_bp",
     "jamo_j1024_ko": KO_OUT / "jamo_j1024_ko",
+    "jamo_j256_ko_g44": KO_OUT / "jamo_j256_ko_g44",
 }
 GROUPS = ("trained", "next", "held", "H", "jamo")
 SIZE = (512, 512)

@@ -20,6 +20,7 @@ reseed line's `reseed/` package, run through `run.py`. Outputs:
 
 | `configs/ko_micro_{a,b,bp}.toml` | the micro arms (user 10-11): the 192 most frequent syllables, 20 steps a row (3 840), no L_pres, on the lines of those 192 (`corpus.py --rows 192` → `ko_chat_192`). A = free rows; B = the jamo factors only, warm from j256_ko's (`factor_from`); B′ = B + a per-syllable residual (`factor_residual`). One data build (`ko_micro_a`), B / B′ `data_from` it |
 | `configs/jamo_j1024_ko.toml` | the J line to 1024 (user 10-11): jamo_j256_ko's rows + the next 768 chatbot syllables by frequency (KS X 1001, H out; `corpus.py --jamo 1024` → `assets/jamo1024.json`) composed from the jamo factors, plus the 51 compat jamo as free rows (`Jamo`'s own rows); jamo_j256_ko's recipe and data cold on seed_1008, 56 a row (60 200 steps) |
+| `configs/jamo_j256_ko_g44.toml` | jamo_j256_ko with the 16 px tiers cut (user 10-12): lone_16 / grid_16 5 % each, grid_44 31.7 %, the rest as built; same rows, recipe, steps |
 | `probes/micro_read.py` | GPU: `render` (each read item alone in a KO bubble, seed 0, under `floor` = jamo_j256_ko and the micro arms; cached under `output/cjk_ko/micro_read/render/`) and `score` (v4 free read; per arm × group exact and glyph / jamo P R F1 with chance) → `results/<ts>-micro-read/`. Groups (`assets/micro192.json`): every third of the 192 (64), the next 64 by frequency (in no line), the 27 held strings on the 192 |
 
 ```bash
@@ -61,6 +62,10 @@ run draws what it drew.
   51 jamo — trained rows read as J256's own (new rows exact 5 → 17 / 61), the
   jamo draw (~30 / 51, as jamo_lone alone); H flat (8 → 7 / 32): scale buys
   trained rows, not composition. A better start for the dialogue warm.
+- `reports/jamo_j256_ko_g44_2026_10_12.md`: the 16 px tiers cut into
+  grid_44 — no gain; H and trained fall (H exact 8 → 6 / 32, glyph F1 0.31 →
+  0.22). Size and σ band move together in the table, so it does not say
+  which carried the loss.
 
 ## Open
 
