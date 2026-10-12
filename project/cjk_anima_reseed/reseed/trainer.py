@@ -366,7 +366,7 @@ def train(
     assert rows.n_rows == len(p.idx), (rows.n_rows, len(p.idx))
     jamo = None
     if factor:
-        from .jamo import Jamo, syllable_rows
+        from .jamo import Jamo, part_rows, syllable_rows
 
         assert factor == "jamo", factor
         assert not row_step_scale, "factor rows take no row_lr"
@@ -374,6 +374,8 @@ def train(
         assert not (factor_init and factor_from), "factor_init or factor_from"
         syl_ext = syllable_rows()
         ext_syl = {e: s for s, e in syl_ext.items()}
+        # partial forms (jamo.PART_SPELL) compose like a syllable, absent parts 0
+        ext_syl.update({e: j for j, e in part_rows().items()})
         jamo = Jamo(
             rows,
             {e: ext_syl[e] for e in p.idx if e in ext_syl},

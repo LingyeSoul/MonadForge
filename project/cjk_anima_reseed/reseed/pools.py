@@ -36,6 +36,9 @@ class Pools:
     # the rows drawn alone (bubble1 / grid): a row whose lone quoted spelling
     # encodes to it (``…`` alone is T5's ``...``); ``None`` = every single
     lone: list | None = None
+    # the partial forms among the rows (``jamo.PART_SPELL``): drawn by the
+    # ``partial`` tier only, never alone or in a grid of syllables
+    parts: list = field(default_factory=list)
     synth: list = field(default_factory=list)  # synthesised dialogue lines (hearts)
     used: Counter = field(default_factory=Counter)  # scene → items drawn on it
     tier_used: Counter = field(
@@ -118,6 +121,9 @@ def build_pools(
     other = [u for u in pool if len(qpieces(tok, qmap, u)) != 1 or glyph_count(u) != 1]
     assert not other, f"reseed draws single glyphs only: {sorted(set(other))[:10]}"
     singles = list(dict.fromkeys(pool))
+    from .jamo import is_part
+
+    parts = [u for u in singles if is_part(u)]
     if not inv.evals.get("single"):
         srng = random.Random(T.SEED + 47)
         inv.evals["single"] = sorted(srng.sample(singles, min(18, len(singles))))
@@ -170,6 +176,7 @@ def build_pools(
         shapes=ShapePool(T.SHAPES, T.SEED),
         lang=dict(lang or {}),
         px_min=px_min,
+        parts=parts,
     )
 
 

@@ -1,0 +1,17 @@
+# jamo_j256_ko_part — jamo_j256_ko + the 48 partial forms (user 10-12): the 21 medial
+# vowels (ᅡ … ᅵ) and 27 finals (ᆨ … ᇂ), each drawn where it sits in a syllable with
+# the initial left out (jamo.PART_SPELL: 어 less ㅇ → the medial ㅓ) and composed
+# without the absent parts (ᅥ = b + V[ㅓ], ᆫ = b + F[ㄴ]), so V and F each draw their
+# letter alone, in place. The `partial` tier (Noto Serif CJK, the one face that shapes
+# the fillers) takes 15 % of the items, jamo_j256_ko's built mix the other 85 %; the
+# syllable items stay at J256_ko's count (304 rows × 0.85 ≈ 256), the steps follow the
+# rows (56 × 304). Read on H against jamo_j256_ko.
+rows = ["chars:이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서사상미여동재오게치개러나회간부름료되당들환경전대작비만식생색공버명분와위적든신른니져글메산진태목구결디야션거조운임턴내복류튼데업행교학님관계국건며겠렇였금무단실청런영통타었험려민히심선유약마직르연했던설차께근처련담본술럼더희았느견년안물법속각방점종양역중현ᅡᅢᅣᅤᅥᅦᅧᅨᅩᅪᅫᅬᅭᅮᅯᅰᅱᅲᅳᅴᅵᆨᆩᆪᆫᆬᆭᆮᆯᆰᆱᆲᆳᆴᆵᆶᆷᆸᆹᆺᆻᆼᆽᆾᆿᇀᇁᇂ"]
+lang = { korean = "이는력활로용함됐의것붙쉽맺벧챦최퓨권싶폐넣꽃짧묶흙퀭쟬닮뚫돐싻템봤숍뺏녘뤽값규죄뭐앉꽤좋쏟띄쫓깥훑읊캬톺떫눼출크뿐퇴쭤씌퓌뾔밖잖례찾삶닭몫끓핥곬를수트드면터보된과원주화능째까품평씀키축없큼때쪽빠씨뜻취봐좌쉬뢰뭔뇌뛰쁜뀌쾌튀얘얹엌쫙쏴퐈다하을에가기지한스자서사상미여동재오게치개러나회간부름료되당들환경전대작비만식생색공버명분와위적든신른니져글메산진태목구결디야션거조운임턴내복류튼데업행교학님관계국건며겠렇였금무단실청런영통타었험려민히심선유약마직르연했던설차께근처련담본술럼더희았느견년안물법속각방점종양역중현ᅡᅢᅣᅤᅥᅦᅧᅨᅩᅪᅫᅬᅭᅮᅯᅰᅱᅲᅳᅴᅵᆨᆩᆪᆫᆬᆭᆮᆯᆰᆱᆲᆳᆴᆵᆶᆷᆸᆹᆺᆻᆼᆽᆾᆿᇀᇁᇂ" }
+factor = "jamo"
+seed = "1008"
+steps_per_row = 56
+shares = { grid_44 = 9.6591, grid_29 = 19.3182, grid_16 = 19.3182, lone_44 = 6.4394, lone_28 = 6.4394, lone_16 = 6.4394, bubble1_52 = 9.6591, bubble1_32 = 7.7273, partial = 14.9999, bubbleN_34 = 0, bubbleN_18 = 0 }
+pack = "punct"
+faces = { out = ["NanumPenScript-Regular.ttf"], dirs = ["ko_extra"], px_min = { "BlackHanSans-Regular.ttf" = 32, "DoHyeon-Regular.ttf" = 24, "GangwonEduTeunteun.ttf" = 28, "Pretendard-Black.ttf" = 22, "GangwonEduHyeonokSaem.ttf" = 24, "GangwonEduSaeeum.ttf" = 24, "KyoboHandwriting2025lyb.ttf" = 18 } }
+pose = true

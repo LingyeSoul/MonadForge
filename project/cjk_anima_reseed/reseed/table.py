@@ -206,4 +206,22 @@ TABLE = (
             "scene_pools": [SMALL_POOL],
         },
     ),
+    # opt-in: the partial forms (``jamo.PART_SPELL``: a vowel or a final with
+    # its initial left out, in its in-syllable form), alone or in a grid of
+    # them on a flat canvas (cjk_ko, 10-12: a bubble fitted to a final's ink is
+    # a sliver), at font px 40–72 — the part is a share of that; the band spans
+    # grid_29 / grid_44's (not measured)
+    Tier(
+        "partial",
+        "grid",
+        0.0,
+        (0.3, 0.75),
+        {
+            "grids": f"{LONE},{GRIDS}",
+            "glyph_px": [40, 72],
+            "bubble_frac": 0.0,
+            "cell_jitter": CELL_JITTER,
+            "parts": True,
+        },
+    ),
 )

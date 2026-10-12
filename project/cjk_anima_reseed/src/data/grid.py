@@ -72,6 +72,7 @@ def render_grid(
     line_cells=(),
     bgs=None,
     bubble_centre: bool = False,
+    spell=None,
 ):
     """Draw ``units[i]`` in cell ``i`` (row-major). Returns ``(image, boxes)``,
     ``boxes[i]`` the ink bbox of cell i's unit in canvas pixels. ``box`` = the
@@ -93,7 +94,9 @@ def render_grid(
     (`JITTER_BG_LIGHT`'s entry: ``"white"`` or an RGB tint).
     ``bubble_centre`` (opt-in, jamo 2026-10-11): a bubble cell's ink bbox
     sits on its bubble's centre — the cell's, or the ink's own under
-    ``bubble_fit`` — instead of anywhere its room allows."""
+    ``bubble_fit`` — instead of anywhere its room allows. ``spell`` (opt-in,
+    cjk_ko 2026-10-12): unit → the text drawn for it (a partial form behind
+    its fillers); the font is still picked on the unit."""
     from PIL import Image, ImageDraw, ImageFont
 
     W, H = size
@@ -131,7 +134,7 @@ def render_grid(
         fs = int(rng.uniform(*fill) * min(cw, ch))
         while True:
             font = ImageFont.truetype(font_path, fs, index=0)
-            txt = "\n".join(u) if vertical else u
+            txt = "\n".join(u) if vertical else (spell or {}).get(u, u)
             bx = d.multiline_textbbox((0, 0), txt, font=font, spacing=fs * 0.05)
             tw, th = bx[2] - bx[0], bx[3] - bx[1]
             if (tw <= room_w and th <= room_h) or fs <= 12:

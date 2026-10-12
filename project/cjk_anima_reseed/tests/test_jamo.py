@@ -66,6 +66,34 @@ def test_compose_and_grad():
     assert rows.delta.raw is not jm.free and not jm.free.requires_grad
 
 
+def test_partial_forms():
+    # 어 less ㅇ → the medial ㅓ; 언 less ㅇ ㅓ → the final ㄴ (cjk_ko, 10-12)
+    assert len(J.PART_JUNG) == 21 and len(J.PART_JONG) == 27
+    assert J.PART_SPELL["\u1165"] == "\u115f\u1165"
+    assert J.PART_SPELL["\u11ab"] == "\u115f\u1160\u11ab"
+    assert J.is_part("\u1165") and not J.is_part("ㅓ") and not J.is_part("어")
+    assert J.codes(["\u1165", "\u11ab"]).tolist() == [
+        [J.N_CHO, 0, 4, 0],
+        [J.N_CHO, 0, J.N_JUNG, 4],
+    ]
+    syl = {10: "어", 11: "\u1165", 12: "\u11ab", 13: "언"}
+    rows = _rows([5, 10, 11, 12, 13], frozen={5})
+    jm = J.Jamo(rows, syl, lr=1e-3)
+    with torch.no_grad():
+        for t in (jm.b, jm.C, jm.V, jm.F):
+            t.normal_()
+    jm.apply()
+    raw = rows.delta.raw
+    b, C, V, F = jm.b[0], jm.C, jm.V, jm.F
+    assert torch.allclose(raw[1], b + C[11, 0] + V[4])  # 어
+    assert torch.allclose(raw[2], b + V[4])  # ᅥ: no initial
+    assert torch.allclose(raw[3], b + F[3])  # ᆫ: no initial, no vowel
+    assert torch.allclose(raw[4], raw[1] + F[3])  # 언
+    raw[2:4].sum().backward()
+    assert float(jm.C.grad.abs().sum()) == 0  # a partial form never reaches C
+    assert float(jm.V.grad[4].abs().sum()) > 0 and float(jm.F.grad[3].abs().sum()) > 0
+
+
 def test_merge_all():
     syl = {10: "가", 11: "각"}
     rows = _rows([5, 10, 11], frozen={5})

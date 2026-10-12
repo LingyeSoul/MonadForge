@@ -67,7 +67,10 @@
                                   # cls] + V[jung] + F[jong] (``jamo.Jamo``,
                                   # proposal_jamo § 2); cold, no ``row_lr``;
                                   # ``trained.pt`` holds every syllable's composed row.
-                                  # A compat jamo row (ㄱ … ㅣ) stays free beside them
+                                  # A compat jamo row (ㄱ … ㅣ) stays free beside them;
+                                  # a partial form (ᅡ … ᅵ, ᆨ … ᇂ: ``jamo.PART_SPELL``)
+                                  # composes without its absent parts, drawn by the
+                                  # opt-in ``partial`` tier only (cjk_ko, 10-12)
     factor_init = { from = "jamo_lone", scale = 0.577 }  # optional, with ``factor``:
                                   # the jamo curriculum's stage 2 (user 10-11) — C[cho,
                                   # every cls] / V[jung] / F[jong] start at scale × that
@@ -378,7 +381,7 @@ def load(run: str) -> Run:
         )
     factor = raw.get("factor", "")
     if factor:
-        from .jamo import COMPAT, is_syllable
+        from .jamo import COMPAT, is_part, is_syllable
 
         assert factor in FACTORS, f"{path}: factor is one of {FACTORS}"
         assert (seed or raw.get("factor_from")) and not row_lr, (
@@ -388,10 +391,11 @@ def load(run: str) -> Run:
             g
             for r in raw["rows"]
             for g in r.split(":", 1)[1]
-            if not (is_syllable(g) or g in COMPAT)
+            if not (is_syllable(g) or g in COMPAT or is_part(g))
         ]
         assert not bad and all(r.startswith("chars:") for r in raw["rows"]), (
             f"{path}: factor rows are chars: specs of Hangul syllables / compat jamo "
+            f"/ partial forms "
             f"— not {bad[:10]}"
         )
     fi = raw.get("factor_init")

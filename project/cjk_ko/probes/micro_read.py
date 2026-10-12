@@ -18,8 +18,10 @@ Items (``assets/micro192.json``, ``corpus.py --rows 192``): ``trained``
 every third of the 192 by frequency (64), ``next`` (ranks 193–256: no line of
 the arms' data holds them; A leaves them at the floor, B / B′ move them
 through the factors), ``held`` (the ruler's strings on the 192: 27).
+``--seeds`` (default 0): one render per item and seed, each read; ``exact``
+and the F1s count every render, the sheets show the first seed.
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44; ``--arms`` picks some. ``--groups`` (default the
+_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part; ``--arms`` picks some. ``--groups`` (default the
 three above): also ``H`` (the jamo line's 32 held syllables) and ``jamo``
 (the 51 compat jamo, by eye — v4 reads no lone jamo).
 
@@ -58,6 +60,7 @@ ARMS = {
     "ko_micro_bp": KO_OUT / "ko_micro_bp",
     "jamo_j1024_ko": KO_OUT / "jamo_j1024_ko",
     "jamo_j256_ko_g44": KO_OUT / "jamo_j256_ko_g44",
+    "jamo_j256_ko_part": KO_OUT / "jamo_j256_ko_part",
 }
 GROUPS = ("trained", "next", "held", "H", "jamo")
 SIZE = (512, 512)
@@ -81,11 +84,11 @@ def items(groups=GROUPS) -> dict:
     return {g: out[g] for g in groups}
 
 
-def render_file(arm: str, t: str) -> Path:
-    return RENDER / arm / f"bubble_{t}_s{SEED}.png"
+def render_file(arm: str, t: str, seed: int = SEED) -> Path:
+    return RENDER / arm / f"bubble_{t}_s{seed}.png"
 
 
-def render(arms: list, groups: tuple) -> None:
+def render(arms: list, groups: tuple, seeds: list) -> None:
     from common.prompts import TPL_BUBBLE
     from reseed.pools import relang
 
@@ -100,25 +103,29 @@ def render(arms: list, groups: tuple) -> None:
     info = {"check_rk": check(r, tabs["retrain_kana"])}
     its = [t for ts in items(groups).values() for t in ts]
     t0 = time.time()
+    jobs = [(t, sd) for sd in seeds for t in its]
     for arm in arms:
         r.set_arm(tabs[arm])
-        for n, t in enumerate(its):
+        for n, (t, sd) in enumerate(jobs):
             r.render(
-                render_file(arm, t),
+                render_file(arm, t, sd),
                 relang(TPL_BUBBLE.format(t), "korean"),
-                SEED,
+                sd,
                 SIZE,
             )
-            if n % 25 == 0 or n == len(its) - 1:
+            if n % 25 == 0 or n == len(jobs) - 1:
                 print(
-                    f"  {arm}: {n + 1} / {len(its)} ({(time.time() - t0) / 60:.1f} min)",
+                    f"  {arm}: {n + 1} / {len(jobs)} ({(time.time() - t0) / 60:.1f} min)",
                     flush=True,
                 )
     info["minutes"] = round((time.time() - t0) / 60, 1)
-    print(f"→ {RENDER}: {len(arms)} arms × {len(its)} items; {info}", flush=True)
+    print(
+        f"→ {RENDER}: {len(arms)} arms × {len(its)} items × seeds {seeds}; {info}",
+        flush=True,
+    )
 
 
-def score(arms: list, groups: tuple) -> None:
+def score(arms: list, groups: tuple, seeds: list) -> None:
     import numpy as np
     import torch
     from anime_tools.ocr.animetext import AnimeTextDetector
@@ -135,11 +142,12 @@ def score(arms: list, groups: tuple) -> None:
     recs, ims = [], []
     for arm in arms:
         for g, ts in groups.items():
-            for t in ts:
-                fn = render_file(arm, t)
-                assert fn.is_file(), f"{fn}: render it first"
-                recs.append({"arm": arm, "group": g, "text": t})
-                ims.append(Image.open(fn).convert("RGB"))
+            for sd in seeds:
+                for t in ts:
+                    fn = render_file(arm, t, sd)
+                    assert fn.is_file(), f"{fn}: render it first"
+                    recs.append({"arm": arm, "group": g, "text": t, "seed": sd})
+                    ims.append(Image.open(fn).convert("RGB"))
     device = "cuda" if torch.cuda.is_available() else "cpu"
     det = AnimeTextDetector.load(device=device)
     flat, owner = [], []
@@ -174,7 +182,11 @@ def score(arms: list, groups: tuple) -> None:
         for r in recs:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     sheets = []
-    at = {(r["arm"], r["text"]): (r, im) for r, im in zip(recs, ims)}
+    at = {
+        (r["arm"], r["text"]): (r, im)
+        for r, im in zip(recs, ims)
+        if r["seed"] == seeds[0]
+    }
     for g, ts in groups.items():
         tiles = [
             (at[a, t][1], [f"{t}  {a.removeprefix('ko_micro_')}", whole(at[a, t][0])])
@@ -189,7 +201,7 @@ def score(arms: list, groups: tuple) -> None:
     write_result(
         out,
         script=__file__,
-        args={"arms": arms, "groups": list(groups)},
+        args={"arms": arms, "groups": list(groups), "seeds": seeds},
         label="micro-read",
         metrics={"per_arm": tab, "minutes": round((time.time() - t0) / 60, 1)},
         artifacts=sheets,
@@ -203,11 +215,13 @@ if __name__ == "__main__":
     p.add_argument("mode", choices=("render", "score"))
     p.add_argument("--arms", default=",".join(ARMS), help="of ARMS, comma-separated")
     p.add_argument("--groups", default="trained,next,held", help="of GROUPS")
+    p.add_argument("--seeds", default=str(SEED), help="render seeds, comma-separated")
     a = p.parse_args()
+    seeds = [int(x) for x in a.seeds.split(",") if x]
     groups = tuple(x for x in a.groups.split(",") if x)
     assert set(groups) <= set(GROUPS), sorted(set(groups) - set(GROUPS))
     arms = [x for x in a.arms.split(",") if x]
     assert set(arms) <= set(ARMS), sorted(set(arms) - set(ARMS))
     missing = [x for x in arms if not (ARMS[x] / "trained.pt").is_file()]
     assert not missing, f"no trained.pt for {missing}"
-    (render if a.mode == "render" else score)(arms, groups)
+    (render if a.mode == "render" else score)(arms, groups, seeds)

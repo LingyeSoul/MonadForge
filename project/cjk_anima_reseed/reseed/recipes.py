@@ -26,6 +26,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
+from .jamo import PART_SPELL
 from .pools import Pools, item_lang, lang_caption
 from . import table as T
 
@@ -213,8 +214,9 @@ def _target(rng, p: dict):
 
 def _lone(pools: Pools) -> list:
     """The rows drawn alone: ``pools.lone`` (a mark whose lone spelling misses
-    its row is left out), else every single."""
-    return pools.singles if pools.lone is None else pools.lone
+    its row is left out), else every single — never a partial form."""
+    lone = pools.singles if pools.lone is None else pools.lone
+    return [g for g in lone if g not in pools.parts] if pools.parts else lone
 
 
 def bubble1(pools: Pools, rng: random.Random, p: dict):
@@ -483,13 +485,15 @@ def grid(pools: Pools, rng: random.Random, p: dict):
     from common.prompts import GRID_CLAUSES, GRID_CLAUSES_BUBBLE, grid_caption
     from data.grid import _Deck, render_grid
 
-    deck = pools.decks.get("singles")
+    # ``parts``: the partial forms (``jamo.PART_SPELL``), drawn behind their
+    # fillers where they sit in a syllable (cjk_ko, 10-12)
+    src, spell = (pools.parts, PART_SPELL) if p.get("parts") else (_lone(pools), None)
+    key = "parts" if p.get("parts") else "singles"
+    deck = pools.decks.get(key)
     if deck is None:
-        deck = pools.decks["singles"] = _Deck(_lone(pools), rng)
+        deck = pools.decks[key] = _Deck(src, rng)
     grids = [
-        (g, w)
-        for g, w in parse_grids(p["grids"])
-        if GRIDS[g][0] * GRIDS[g][1] <= len(_lone(pools))
+        (g, w) for g, w in parse_grids(p["grids"]) if GRIDS[g][0] * GRIDS[g][1] <= len(src)
     ]
     assert grids, "grid: no grid the rows can fill"
     name = rng.choices([g for g, _ in grids], weights=[w for _, w in grids])[0]
@@ -507,6 +511,8 @@ def grid(pools: Pools, rng: random.Random, p: dict):
         kw["cell_jitter"] = float(p["cell_jitter"])
     if pools.pose:
         kw["bubble_centre"] = True
+    if spell:
+        kw["spell"] = spell
     bgs = []
     im, boxes = render_grid(
         got,
