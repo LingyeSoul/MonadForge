@@ -82,6 +82,9 @@ syllables move H, tier reshuffles and × 4 scale do not.
 
 ## Open
 
+- **The dialogue warm on jamo_j1024_ko_cf** (user 10-13): `plan_warm_cf.md`
+  — the micro arms A / B / B′ from the cf start, read against the 10-11
+  arms in one score; the mix (§ 3) to choose before the build.
 - **jamo_j1024_ko_cf, ready for a RunPod 5090** (10-12; no 5090 in stock that
   night, not launched). Config and `faces.legible` committed; a 3 % build
   checked locally (3 274 items, 1 718 rows; the bubble1_32 sheet draws no
