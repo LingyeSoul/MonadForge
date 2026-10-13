@@ -19,7 +19,9 @@ the loaded soup module takes the raw-input path.
 
 ``truncated_soup`` additionally truncates each module's averaged ΔW to its
 top-r singular directions (Eckart–Young: the best rank-r Frobenius
-approximation) so the artifact stays single-adapter-sized. The full ΔW is
+approximation) so the artifact stays single-adapter-sized; r is capped per
+module at the ingredients' rank (a rank-16 adaln module stays 16 under
+``--rank 32``). The full ΔW is
 never materialized: QR on the concatenated factors reduces the SVD to an
 (R x R) core where R = sum of ingredient ranks. Per-module retained energy
 (sum sigma_kept^2 / sum sigma^2) is returned so the truncation loss is
@@ -202,7 +204,8 @@ def truncated_soup(
         qv, rv = torch.linalg.qr(v_cat.T)  # (in,R),(R,R)
         core = ru @ rv.T  # (R,R)
         cu, s, cvh = torch.linalg.svd(core)
-        r = min(rank, s.shape[0])
+        # A module trained below ``rank`` (adaln_rank) keeps its own rank.
+        r = min(rank, max(d.shape[0] for d in downs), s.shape[0])
         total = float((s**2).sum())
         kept = float((s[:r] ** 2).sum())
         energy[module] = kept / total if total > 0 else 1.0
