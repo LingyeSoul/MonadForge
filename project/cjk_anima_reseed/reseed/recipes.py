@@ -101,6 +101,9 @@ def _draw_scene(
     fill_min: float = 0.0,
     cross_min: float = 0.0,
     lettering: bool = False,
+    fonts: list | None = None,
+    mask=None,
+    extra: dict | None = None,
 ):
     """Text first, then a scene of ``cands`` whose bubble holds it in one
     column (one line when drawn horizontal), weighted by use and colour.
@@ -109,7 +112,9 @@ def _draw_scene(
     across. ``HORIZONTAL_FRAC`` of the multi-glyph texts are drawn as a
     left-to-right line on the ``HORIZONTAL_SCENES`` only (marked in the
     caption); a KO text always, on any scene, unmarked (KO lettering is
-    horizontal)."""
+    horizontal). ``fonts``: the faces picked among, instead of
+    ``pools.fonts_for``; ``mask`` (a counterfactual host, cjk_ko 2026-10-13):
+    font path → ``render_into_scene``'s ``mask``; ``extra`` joins the record's."""
     from common.render.flat import pick_font
     from common.render.scene import region_capacity, render_into_scene
     from data.synth import scene_caption
@@ -163,10 +168,13 @@ def _draw_scene(
         if target_px is not None:
             best = _fit_px(sc["region"], n, not horiz)
             f = max(0.15, min(fill, target_px / max(best, 1e-6)))
+        font_path = pick_font(
+            text, fonts if fonts else pools.fonts_for(text, target_px), rng
+        )
         drawn = render_into_scene(
             scene=sc,
             text=text,
-            font_path=pick_font(text, pools.fonts_for(text, target_px), rng),
+            font_path=font_path,
             rng=rng,
             min_glyph=min_glyph,
             stroke=False,
@@ -179,6 +187,7 @@ def _draw_scene(
             vert_forms=lettering,
             keep_outline=True,
             pose=pools.pose,
+            mask=mask(font_path) if mask else None,
         )
         if drawn is None:
             continue
@@ -202,6 +211,7 @@ def _draw_scene(
                 "mono": j in pools.mono,
                 "fill": round(f, 3),
                 "horizontal": horiz,
+                **(extra or {}),
             },
         )
     return None
@@ -220,8 +230,25 @@ def _lone(pools: Pools) -> list:
 
 
 def bubble1(pools: Pools, rng: random.Random, p: dict):
-    glyph = rng.choice(_lone(pools))
+    """``cf`` (cjk_ko 2026-10-13): a counterfactual host, drawn as one of its
+    form's source syllables with the form's jamo left out, as the
+    ``counterfactual`` tier draws a cell."""
+    cf = bool(p.get("cf"))
+    glyph = rng.choice(pools.parts if cf else _lone(pools))
     target = _target(rng, p)
+    kw = {}
+    if cf:
+        from .counterfactual import FACES, mask
+
+        form = pools.cf[glyph]
+        src, drop = rng.choice(form["src"]), form["drop"]
+        faces = [f for f in pools.fonts_at(target) if FACES in f]
+        assert faces, f"counterfactual: no {FACES} face in the draw"
+        kw = {
+            "fonts": faces,
+            "mask": lambda fp: lambda fs: mask(fp, src, drop, fs),
+            "extra": {"cf_src": [[src, drop]]},
+        }
     if target is None:
         cands, fill, lo = sorted(pools.single_idx), float(p["fit"]), 0.0
     else:
@@ -248,6 +275,7 @@ def bubble1(pools: Pools, rng: random.Random, p: dict):
         cands=cands,
         target_px=target,
         fill_min=lo,
+        **kw,
     )
 
 

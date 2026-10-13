@@ -33,3 +33,15 @@ def test_keys_used():
         *(tomllib.loads(f.read_text(encoding="utf-8")) for f in _configs())
     )
     assert set(KEYS) == used, f"unused {sorted(set(KEYS) - used)}"
+
+
+def test_cf_bubble_tiers_twin_bubble1():
+    # cf_bubble1_<px> draws as bubble1_<px> does, with the counterfactual hosts
+    from reseed.table import TABLE
+
+    by = {t.name: t for t in TABLE}
+    for px in ("52", "32"):
+        cf, twin = by[f"cf_bubble1_{px}"], by[f"bubble1_{px}"]
+        assert cf.share == 0 and cf.recipe == twin.recipe == "bubble1"
+        assert (cf.band, cf.px_keep) == (twin.band, twin.px_keep)
+        assert cf.params == {**twin.params, "cf": True}

@@ -240,4 +240,28 @@ TABLE = (
             "cf": True,
         },
     ),
+    # opt-in: the counterfactual syllables in a scene bubble, as bubble1_52 /
+    # bubble1_32 draw a glyph (cjk_ko, 10-13)
+    Tier(
+        "cf_bubble1_52",
+        "bubble1",
+        0.0,
+        (0.55, 0.8),
+        {"fit": 0.7, "min_glyph": 28, "cf": True},
+        px_keep=(40, None),
+    ),
+    Tier(
+        "cf_bubble1_32",
+        "bubble1",
+        0.0,
+        (0.35, 0.6),
+        {
+            "glyph_px": [28, 40],
+            "fill": [0.5, 0.8],
+            "min_glyph": 12,
+            "scene_pools": [SMALL_POOL],
+            "cf": True,
+        },
+        px_keep=(None, 40),
+    ),
 )

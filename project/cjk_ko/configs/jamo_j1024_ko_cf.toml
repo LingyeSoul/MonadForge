@@ -1,7 +1,10 @@
 # jamo_j1024_ko_cf — jamo_j1024_ko + counterfactual syllables (user 10-12): jamo_j1024_ko's
 # rows (1024 syllables + the 51 compat jamo), recipe, faces / pose and steps (60 200), plus
-# jamo_j256_ko_cf's counterfactual tier (25 %, the built mix the other 75 % at its
-# shares) planned on the 1024 syllables. New beside both: faces.legible (user 10-12,
+# jamo_j256_ko_cf's counterfactual forms planned on the 1024 syllables, 25 % of the items
+# (the built mix the other 75 % at its shares): 15 % on the flat canvas (the
+# counterfactual tier) and, new (user 10-13), 10 % in a scene bubble — cf_bubble1_52 /
+# cf_bubble1_32 at 5.5 / 4.5, bubble1_52 : bubble1_32's ratio, their σ bands and px_keep,
+# Noto Serif CJK only. New beside both: faces.legible (user 10-12,
 # reseed/legible.py) — from 28 font px, a face is not drawn for a glyph whose stroke gaps
 # it fuses (median < 1.5 px or p10 < 0.8 px; BlackHanSans 뤽 at 33 px in
 # jamo_j256_ko_cf's bubble1_32), re-picked among the faces that keep it apart; the 16 px
@@ -12,7 +15,7 @@ factor = "jamo"
 seed = "1008"
 steps_per_row = 56
 steps = 60200
-shares = { grid_44 = 8.5227, grid_29 = 17.0455, grid_16 = 17.0455, lone_44 = 5.6818, lone_28 = 5.6818, lone_16 = 5.6818, bubble1_52 = 8.5227, bubble1_32 = 6.8182, counterfactual = 25.0, bubbleN_34 = 0, bubbleN_18 = 0 }
+shares = { grid_44 = 8.5227, grid_29 = 17.0455, grid_16 = 17.0455, lone_44 = 5.6818, lone_28 = 5.6818, lone_16 = 5.6818, bubble1_52 = 8.5227, bubble1_32 = 6.8182, counterfactual = 15.0, cf_bubble1_52 = 5.5, cf_bubble1_32 = 4.5, bubbleN_34 = 0, bubbleN_18 = 0 }
 pack = "punct"
 faces = { out = ["NanumPenScript-Regular.ttf"], dirs = ["ko_extra"], px_min = { "BlackHanSans-Regular.ttf" = 32, "DoHyeon-Regular.ttf" = 24, "GangwonEduTeunteun.ttf" = 28, "Pretendard-Black.ttf" = 22, "GangwonEduHyeonokSaem.ttf" = 24, "GangwonEduSaeeum.ttf" = 24, "KyoboHandwriting2025lyb.ttf" = 18 }, legible = { median = 1.5, p10 = 0.8, from_px = 28 } }
 pose = true
