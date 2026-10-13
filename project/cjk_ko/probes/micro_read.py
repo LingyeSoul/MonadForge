@@ -21,8 +21,10 @@ through the factors), ``held`` (the ruler's strings on the 192: 27).
 ``--seeds`` (default 0): one render per item and seed, each read; ``exact``
 and the F1s count every render, the sheets show the first seed.
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf, jamo_j1024_ko_cf; ``--arms`` picks some. ``--groups`` (default the
-three above): also ``H`` (the jamo line's 32 held syllables) and ``jamo``
+_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf, jamo_j1024_ko_cf, ko_warm_cf_a / _b / _bp (the micro arms on jamo_j1024_ko_cf, plan_warm_cf.md); ``--arms`` picks some. ``--groups`` (default the
+three above): also ``H`` (the jamo line's 32 held syllables), split as
+``H_in`` (the 26 of them among the 192, trained by the micro arms) and
+``H_out`` (the other 6: 성 번 in next, 호 체 록 열 in neither), and ``jamo``
 (the 51 compat jamo, by eye — v4 reads no lone jamo).
 
     make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/micro_read.py render"
@@ -63,15 +65,19 @@ ARMS = {
     "jamo_j256_ko_part": KO_OUT / "jamo_j256_ko_part",
     "jamo_j256_ko_cf": KO_OUT / "jamo_j256_ko_cf",
     "jamo_j1024_ko_cf": KO_OUT / "jamo_j1024_ko_cf",
+    "ko_warm_cf_a": KO_OUT / "ko_warm_cf_a",
+    "ko_warm_cf_b": KO_OUT / "ko_warm_cf_b",
+    "ko_warm_cf_bp": KO_OUT / "ko_warm_cf_bp",
 }
-GROUPS = ("trained", "next", "held", "H", "jamo")
+GROUPS = ("trained", "next", "held", "H", "H_in", "H_out", "jamo")
 SIZE = (512, 512)
 SEED = 0
 
 
 def items(groups=GROUPS) -> dict:
     """{group: [text, …]}; ``H`` = the jamo line's 32 held syllables
-    (``jamo_sets.json``), ``jamo`` = the 51 compat jamo (v4 reads none: by eye)."""
+    (``jamo_sets.json``), ``H_in`` / ``H_out`` = those among / outside the 192,
+    ``jamo`` = the 51 compat jamo (v4 reads none: by eye)."""
     from reseed.jamo import COMPAT
 
     s = json.loads(SETS.read_text(encoding="utf-8"))
@@ -81,6 +87,8 @@ def items(groups=GROUPS) -> dict:
         "next": list(s["next"]),
         "held": [t for t, _bin in s["held"]],
         "H": list(js["H"]),
+        "H_in": [h for h in js["H"] if h in s["trained"]],
+        "H_out": [h for h in js["H"] if h not in s["trained"]],
         "jamo": list(COMPAT),
     }
     return {g: out[g] for g in groups}

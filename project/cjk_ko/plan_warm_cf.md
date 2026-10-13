@@ -2,7 +2,8 @@
 
 User 10-13: warm the KO sentence run from `jamo_j1024_ko_cf`, and read it as
 the 10-11 micro arms were read (`reports/micro_2026_10_11.md`), against those
-arms. Nothing below is built or run yet.
+arms. Option 1 chosen and run (10-13); the read is
+`reports/warm_cf_2026_10_13.md`.
 
 ## 1. The start
 
