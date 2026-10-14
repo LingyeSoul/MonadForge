@@ -3,7 +3,8 @@
 The JA vocab pack's rows re-seeded cold, then trained warm on dialogue lines;
 shipped `seed_1008` = jp_v1. Where the line stands — recipe of record, the
 ruler's table, what is settled, what is open: **`status.md`**. What an arm is
-judged on: `criteria.md`. Next: `proposal_jamo.md` (phase 1 read,
+judged on: `criteria.md`. Cold kana, next (10-14): `motivation2.md` (why,
+and § 8's two arms) and `idea.md` (per-occurrence credit). Next: `proposal_jamo.md` (phase 1 read,
 `reports/jamo_phase1_2026_10_10.md` § 5; the jamo curriculum,
 `reports/jamo_curriculum_2026_10_11.md`; the v4 reads by glyph,
 `reports/jamo_vl_reads_2026_10_11.md`). The live reads: `reports/` (the
@@ -13,7 +14,7 @@ jamo_curriculum, jamo_vl_reads).
 `_archive/` (force-tracked, skipped by search): the docs folded into
 `status.md` (progress, plan, idea / idea2 / idea3, structure_candidate,
 task_report), the banner-era and closed probes with their reports, the
-configs of the arms that lost, `stick_fit.py`, and the motivation docs. It
+configs of the arms that lost, and `stick_fit.py`. It
 runs from the freeze-point commit named in `status.md`, not from this tree.
 
 ## Code

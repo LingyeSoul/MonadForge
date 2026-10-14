@@ -143,7 +143,7 @@ From `_archive/idea.md` (10-05 review; its dialogue-length data became the
 `sent` tiers):
 
 - Per-occurrence credit: a glyph's local loss backpropagated only through
-  its own occurrence's embedding lookup.
+  its own occurrence's embedding lookup (`idea.md`, 10-14).
 - An OCR / spelling loss on decoded x̂₀ text crops.
 - A quote-scoped sequence adapter over the quoted string's adapter outputs
   (needs a runtime component; not a static pack).
