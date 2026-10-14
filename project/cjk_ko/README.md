@@ -36,6 +36,7 @@ reseed line's `reseed/` package, run through `run.py`. Outputs:
 | `probes/jamo_vl_sheet.py` | CPU: a `jamo_vl.py score` run glyph by glyph — one row per target, one column per arm, the render with v4's whole-image read under it (green exact, amber one jamo shared) + `reads.md`; per arm the glyph and positioned-jamo P / R / F1 of what was drawn against the target, and the jamo F1 against the other targets (chance) → `results/<ts>-jamo-vl-sheet/` (`reports/jamo_vl_reads_2026_10_11.md`) |
 | `probes/ko_reader_cal.py` | GPU: `vl` on font-drawn lone Hangul through the ruler's crop path, per syllable / face / px → `results/<ts>-ko-reader-cal/` |
 | `probes/micro_read.py` | GPU: `render` (each read item alone in a KO bubble, seed 0, under `floor` = jamo_j256_ko and the micro arms; cached under `output/cjk_ko/micro_read/render/`) and `score` (v4 free read; per arm × group exact and glyph / jamo P R F1 with chance) → `results/<ts>-micro-read/`. Groups (`assets/micro192.json`): every third of the 192 (64), the next 64 by frequency (in no line), the 27 held strings on the 192; `--seeds` reads several renders an item |
+| `probes/native_read.py` | GPU: the arms off the bubble (user 10-14) — `render` (48 strings of 1–5 syllables on the 192, each hung as a KO clause off one of the eight `NATIVE_PROMPTS`, seed 0, 512², plus the 8 EN references `English text reads as "hi"`, delta off; cached under `output/cjk_ko/native_read/render/`) and `score` (v4 free read as micro_read, per arm × length; `en_cos` / `en_cos_out` / `box_iou` against the EN reference) → `results/<ts>-native-read/` |
 
 ```bash
 .venv/bin/python project/cjk_ko/corpus.py
@@ -71,6 +72,14 @@ run draws what it drew.
 `findings.md`: the J line's verdict so far — better data and counterfactual
 syllables move H, tier reshuffles and × 4 scale do not.
 
+- `reports/x5_native_2026_10_14.md`: × 5 rows (`ko_x5_cf_bp`) and the
+  native read — the best held strings of any arm (glyph F1 .24 → .45 on the
+  192, .18 → .37 on the 960; exact 0), lone syllables at the start's level
+  or under (960 trained 14 / 64 = the start's), H 4 / 32 as mix3. In the
+  scene prompts x5 letters near-miss strings (잊어야하나? → 얼어야아나?;
+  3- / 5-syllable glyph F1 .47 / .49) but draws a line for a lone syllable
+  (exact 0 / 48); the scene holds on every arm (en_cos_out .93–.94).
+
 - `reports/mix2_2026_10_14.md`: the cf micro arms on bubble1 20 / bubbleN
   40 / sentko 40 — B / B′ lose less of the start (trained 0–1 → 6–7, next
   1–3 → 5–8), B′ leads held (glyph F1 0.30, jamo F1 0.57 over chance 0.31,
@@ -104,10 +113,10 @@ syllables move H, tier reshuffles and × 4 scale do not.
 
 ## Open
 
-- **× 5 rows** (user 10-14): `ko_x5_cf_bp` — B′ on mix3 over the 960
-  most frequent syllables, queued 10-14; read on the 960 sets (held 92)
-  against the start and ko_mix3_cf_bp. Option 3 (+ the counterfactual
-  tier) still needs the `Jamo.merge_all` residual fix.
+- **The line habit** (10-14, `reports/x5_native_2026_10_14.md`): every
+  dialogue arm draws a line for a short item, in a bubble or a scene; x5
+  made it no better. Option 3 (+ the counterfactual tier) still needs the
+  `Jamo.merge_all` residual fix.
 - **jamo_j1024_ko_cf, ready for a RunPod 5090** (10-12; no 5090 in stock that
   night, not launched). Config and `faces.legible` committed; a 3 % build
   checked locally (3 274 items, 1 718 rows; the bubble1_32 sheet draws no
