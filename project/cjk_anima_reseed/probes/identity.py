@@ -17,7 +17,11 @@ rows only, and its 81 rows are ``retrain_kana``'s.
 Renders: ``output/cjk_anima_reseed/identity/<arm>/``; a render on disk is not
 drawn again, reads cached per arm. Read → ``results/<ts>-identity-<label>/``:
 per arm exact / contained / ≤ 1 / CER / dup on words and singles, paired on
-exact against the floor, per-glyph single hits, sheets.
+exact against the floor, per-glyph single hits, sheets; and the EN-reference
+ruler (``eval/enref.py``: ``en_cos`` / ``en_cos_out`` / ``box_iou`` against the
+scale line's shared ``native_enref/512_28_4/`` — same prompt and seed,
+``English text reads as "<word>"``, delta off; the refs ``retrain_kana``'s plain
+read was scored on).
 
     make daemon-run ARGS="project/cjk_anima_reseed/probes/identity.py --arms seed_retrain_0930,hira_cold_hp,hira_cold_up --label hira_cold"
 """
@@ -41,6 +45,7 @@ SINGLES = "あうがくとひもりぬめねれわるろさちっゃぱぽぜゔ
 WORD_PROMPTS, SINGLE_PROMPTS, SEED = (0, 1), (0,), 0
 ROOT = OUT / "identity"
 SRC = SCALE_OUT / "retrain_kana" / "native_r4_plain" / "native_reads.json"
+ENREF = SCALE_OUT / "native_enref" / "512_28_4"
 
 
 def grid() -> list:
@@ -115,10 +120,37 @@ def read(names: list) -> dict:
                     load_bgr(ROOT / a / f"{m['stem']}.png"), whole=True
                 )
             f.write_text(json.dumps(got, ensure_ascii=False, indent=1), "utf-8")
-        recs[a] = {m["stem"]: {**m, **score_text(m["key"], got[m["stem"]])} for m in g}
+        recs[a] = {
+            m["stem"]: {
+                **m,
+                **score_text(m["key"], got[m["stem"]]),
+                "reads": got[m["stem"]],
+            }
+            for m in g
+        }
+    enref(recs, rd or Readers("cuda"))
     del rd
     torch.cuda.empty_cache()
     return recs
+
+
+def enref(recs: dict, rd) -> None:
+    """``en_cos`` / ``en_cos_out`` / ``box_iou`` on every record, the EN box
+    the largest box the readers find on the reference."""
+    from common.readers import load_bgr
+    from eval.enref import EnRef, enref_file, largest_box
+
+    boxes = {}
+    for pi in sorted({m["pi"] for r in recs.values() for m in r.values()}):
+        ref = enref_file(ENREF, pi, SEED)
+        assert ref.is_file(), f"no EN reference {ref}"
+        boxes[ref.name] = largest_box(rd.read_image(load_bgr(ref), whole=True))
+    er = EnRef("cuda", ENREF, boxes)
+    for a, r in recs.items():
+        for m in r.values():
+            m["text"], m["seed"] = m["key"], SEED
+            m["file"] = str(ROOT / a / f"{m['stem']}.png")
+            m["en_cos"], m["en_cos_out"], m["box_iou"] = er.score(m)
 
 
 def tally(rs: list) -> dict:
@@ -131,6 +163,9 @@ def tally(rs: list) -> dict:
         "le1": sum(r["le1"] for r in rs),
         "cer": mean("cer"),
         "dup": sum(r["dup"] for r in rs),
+        "en_cos": mean("en_cos"),
+        "en_cos_out": mean("en_cos_out"),
+        "box_iou": mean("box_iou"),
     }
 
 
