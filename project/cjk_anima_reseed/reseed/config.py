@@ -100,6 +100,11 @@
                                   # from_px = 28 }``: from that font px, a face
                                   # is not drawn for a glyph whose stroke gaps it
                                   # fuses (``legible.py``; ``jamo_j1024_ko_cf``)
+    upper_shift = 0.1             # optional: every item's upper σ edge moved up by
+                                  # this at train (capped at UPPER_MAX), over the
+                                  # bands its data stamped — with ``data_from``, an
+                                  # arm on another run's items in other bands
+                                  # (``hira_cold_up``; kana_up's knob, 10-04)
     pose = true                   # optional: the glyph's ink centred in its scene
                                   # bubble / sign and tilted with it, a grid bubble's
                                   # ink on its centre (``render_into_scene(pose=)``,
@@ -142,6 +147,7 @@ KEYS = (
     "pose",
     "counterfactual",
     "steps",
+    "upper_shift",
 )
 # a run's ``seed``: the rows every other row rides frozen at
 SEEDS = ("0930", "1008")
@@ -206,6 +212,7 @@ class Run:
     # the hosts and the CV syllables a final's removal gives are rows too
     cf: dict | None = None
     total_steps: int = 0  # ``steps``: the whole step count; 0 = steps_per_row's
+    upper_shift: float = 0.0  # added to every item's upper σ edge at train
 
     def phrase_file(self) -> str:
         """The dialogue line file, ``LINES[lines]``."""
@@ -458,6 +465,8 @@ def load(run: str) -> Run:
             "dirs": dirs,
             "legible": {k: float(v) for k, v in leg.items()} if leg else None,
         }
+    upper_shift = float(raw.get("upper_shift", 0.0))
+    assert 0 <= upper_shift <= 0.3, f"{path}: upper_shift {upper_shift}"
     rows, cf = tuple(raw["rows"]), None
     if raw.get("counterfactual"):
         import json
@@ -500,4 +509,5 @@ def load(run: str) -> Run:
         pose=bool(raw.get("pose", False)),
         cf=cf,
         total_steps=int(raw.get("steps", 0)),
+        upper_shift=upper_shift,
     )

@@ -214,6 +214,8 @@ def train(
     factor_init: tuple = (),
     factor_from: Path | None = None,
     factor_residual: float | None = None,
+    upper_shift: float = 0.0,
+    save_every: int | None = None,
 ) -> Path:
     """Train ``run`` (a ``reseed.config.Run``: its name, path and rows) on
     ``data`` into ``out``. ``context`` is the warm-from / frozen-context /
@@ -238,6 +240,12 @@ def train(
     σ ~ U(σ_lo, σ_hi), outside the dilated text box. The pass draws σ and ε
     from its own generator, so the data term's draws stay the run's without
     it; the EN captions are TE-cached in ``out/te_en``.
+    ``upper_shift`` moves every item's upper σ edge up by this (capped at
+    ``config.UPPER_MAX``) over the bands its data stamped, so an arm can train
+    on another run's items in other bands (``hira_cold_up``).
+    ``save_every`` replaces ``SAVE_EVERY`` and keeps each save as
+    ``out/s<step>/trained.pt`` (a dir the ruler reads as an arm) instead of
+    overwriting ``trained_partial.pt``.
     A data dir built with windows (``build.json`` ``glyph_route``) is
     trained routed: ``ANIMA_VOCAB_GLYPH_ROUTE=1`` is set in-process before
     the TE cache (whose key carries it); ``glyph_route_ko`` likewise sets
@@ -263,6 +271,12 @@ def train(
     torch.manual_seed(SEED)
     out.mkdir(parents=True, exist_ok=True)
     recs, ev, vocabs = load_items(data)
+    if upper_shift:
+        from .config import UPPER_MAX
+
+        for r in recs:
+            lo, hi = r["band"]
+            r["band"] = [lo, round(min(hi + upper_shift, UPPER_MAX), 4)]
     bj = data / "build.json"
     build = json.loads(bj.read_text(encoding="utf-8")) if bj.exists() else {}
     route, route_ko = (
@@ -440,6 +454,8 @@ def train(
             "seed": PRES_SEED,
         }
     steps, warmup, record = p.steps, p.warmup, p.record
+    if upper_shift:
+        record["upper_shift"] = upper_shift
     spr = (
         p.steps_per_row
         if not isinstance(p.steps_per_row, dict)
@@ -570,7 +586,11 @@ def train(
                 pres_acc[:] = [0.0, 0]
             log.append(rec)
             print(json.dumps(rec), flush=True)
-        if SAVE_EVERY and step % SAVE_EVERY == 0 and step < steps:
+        if save_every and step % save_every == 0 and step < steps:
+            (out / f"s{step}").mkdir(exist_ok=True)
+            save(out / f"s{step}" / "trained.pt", step)
+            (out / "train_log.json").write_text(json.dumps(log, indent=1))
+        elif SAVE_EVERY and step % SAVE_EVERY == 0 and step < steps:
             save(out / "trained_partial.tmp", step)
             os.replace(out / "trained_partial.tmp", out / "trained_partial.pt")
             (out / "train_log.json").write_text(json.dumps(log, indent=1))

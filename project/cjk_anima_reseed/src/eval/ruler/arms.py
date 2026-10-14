@@ -23,6 +23,12 @@ def arm_dirs() -> dict:
         "seed_fixed_1005_stick080": SCALE_OUT / "seed_fixed_1005_stick080",
         **PACK_ARMS.get(VIEW.pack, {}),
     }
+    # the cold hiragana arms (motivation2.md § 8) and their kept saves
+    # (``run.py train --save_every``: ``<run>/s<step>/``) as ``<run>_s<step>``
+    for run in ("hira_cold_hp", "hira_cold_up"):
+        dirs[run] = OUT / run
+        for d in sorted((OUT / run).glob("s[0-9]*")):
+            dirs[f"{run}_{d.name}"] = d
     return {a: d for a, d in dirs.items() if (d / "trained.pt").exists()}
 
 

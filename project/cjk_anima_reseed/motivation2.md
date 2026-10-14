@@ -360,3 +360,12 @@ prompt asks for is the candidate.
 
 **After.** The arm that holds against `retrain_kana` goes warm on
 `sent_kanji_pres`'s recipe (whole-warm, `free_residual = 0`, L_pres).
+
+**Read (10-14, `reports/hira_cold_2026_10_14.md`).** Both arms ran as
+`hira_cold_hp` (A) and `hira_cold_up` (B, A's items with `upper_shift = 0.1`)
+and were read on a 50-render identity grid (`probes/identity.py`). Both lose
+to `seed_retrain_0930`: words exact 10 / 26 against 19, singles 6 / 11 against
+18. The rows letter their glyph (singles contained 17 – 18 against 19), but
+they repeat it (dup 12 – 17 against 1): the risk above, in-word exposure at ¼.
+Words keep improving at every save up to 150 a row, so the step count does not
+come down. Neither arm goes warm.
