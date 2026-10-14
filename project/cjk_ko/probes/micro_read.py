@@ -18,10 +18,13 @@ Items (``assets/micro192.json``, ``corpus.py --rows 192``): ``trained``
 every third of the 192 by frequency (64), ``next`` (ranks 193–256: no line of
 the arms' data holds them; A leaves them at the floor, B / B′ move them
 through the factors), ``held`` (the ruler's strings on the 192: 27).
+``--sets 960`` reads ``assets/micro960.json`` (``corpus.py --rows 960``, the
+× 5 arm, 10-14) instead: ``trained`` every 15th of the 960 (64), ``next``
+ranks 961–1024, ``held`` the 92 strings on the 960.
 ``--seeds`` (default 0): one render per item and seed, each read; ``exact``
 and the F1s count every render, the sheets show the first seed.
 Arms (``ARMS``): ``floor`` = jamo_j256_ko (every arm's start), ko_micro_a /
-_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf, jamo_j1024_ko_cf, ko_warm_cf_a / _b / _bp (the micro arms on jamo_j1024_ko_cf, plan_warm_cf.md); ``--arms`` picks some. ``--groups`` (default the
+_b / _bp, jamo_j1024_ko, jamo_j256_ko_g44, jamo_j256_ko_part, jamo_j256_ko_cf, jamo_j1024_ko_cf, ko_warm_cf_a / _b / _bp (the micro arms on jamo_j1024_ko_cf, plan_warm_cf.md), ko_mix2_cf_a / _b / _bp (the same on plan § 3 option 2's mix), ko_mix3_cf_bp (B′ on bubble1 40 / bubbleN 30 / sentko 30), ko_x5_cf_bp (mix3 B′ on 960 rows); ``--arms`` picks some. ``--groups`` (default the
 three above): also ``H`` (the jamo line's 32 held syllables), split as
 ``H_in`` (the 26 of them among the 192, trained by the micro arms) and
 ``H_out`` (the other 6: 성 번 in next, 호 체 록 열 in neither), and ``jamo``
@@ -68,6 +71,11 @@ ARMS = {
     "ko_warm_cf_a": KO_OUT / "ko_warm_cf_a",
     "ko_warm_cf_b": KO_OUT / "ko_warm_cf_b",
     "ko_warm_cf_bp": KO_OUT / "ko_warm_cf_bp",
+    "ko_mix2_cf_a": KO_OUT / "ko_mix2_cf_a",
+    "ko_mix2_cf_b": KO_OUT / "ko_mix2_cf_b",
+    "ko_mix2_cf_bp": KO_OUT / "ko_mix2_cf_bp",
+    "ko_mix3_cf_bp": KO_OUT / "ko_mix3_cf_bp",
+    "ko_x5_cf_bp": KO_OUT / "ko_x5_cf_bp",
 }
 GROUPS = ("trained", "next", "held", "H", "H_in", "H_out", "jamo")
 SIZE = (512, 512)
@@ -83,7 +91,7 @@ def items(groups=GROUPS) -> dict:
     s = json.loads(SETS.read_text(encoding="utf-8"))
     js = json.loads((RESEED / "assets" / "jamo_sets.json").read_text(encoding="utf-8"))
     out = {
-        "trained": list(s["trained"])[::3],
+        "trained": list(s["trained"])[:: len(s["trained"]) // 64],
         "next": list(s["next"]),
         "held": [t for t, _bin in s["held"]],
         "H": list(js["H"]),
@@ -211,7 +219,7 @@ def score(arms: list, groups: tuple, seeds: list) -> None:
     write_result(
         out,
         script=__file__,
-        args={"arms": arms, "groups": list(groups), "seeds": seeds},
+        args={"arms": arms, "groups": list(groups), "seeds": seeds, "sets": SETS.name},
         label="micro-read",
         metrics={"per_arm": tab, "minutes": round((time.time() - t0) / 60, 1)},
         artifacts=sheets,
@@ -226,7 +234,9 @@ if __name__ == "__main__":
     p.add_argument("--arms", default=",".join(ARMS), help="of ARMS, comma-separated")
     p.add_argument("--groups", default="trained,next,held", help="of GROUPS")
     p.add_argument("--seeds", default=str(SEED), help="render seeds, comma-separated")
+    p.add_argument("--sets", type=int, default=192, help="assets/micro<N>.json")
     a = p.parse_args()
+    SETS = HOME / "assets" / f"micro{a.sets}.json"
     seeds = [int(x) for x in a.seeds.split(",") if x]
     groups = tuple(x for x in a.groups.split(",") if x)
     assert set(groups) <= set(GROUPS), sorted(set(groups) - set(GROUPS))

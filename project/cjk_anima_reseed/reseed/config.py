@@ -167,9 +167,11 @@ LINES = {
     "ko_chat": "~/ko_corpus/derived/chatbot_lines.tsv",
     # ko_chat's lines on its 192 most frequent syllables (cjk_ko's micro arms)
     "ko_chat_192": "~/ko_corpus/derived/chatbot_lines_top192.tsv",
+    # … on its 960 (cjk_ko 10-14: × 5 rows)
+    "ko_chat_960": "~/ko_corpus/derived/chatbot_lines_top960.tsv",
 }
 # the line files not in Japanese: their language (``LANGS``)
-LINE_LANG = {"ko_chat": "korean", "ko_chat_192": "korean"}
+LINE_LANG = {"ko_chat": "korean", "ko_chat_192": "korean", "ko_chat_960": "korean"}
 UPPER_MAX = 0.9  # tests/test_boundary.py: no band past it
 
 

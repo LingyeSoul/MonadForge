@@ -25,6 +25,9 @@ reseed line's `reseed/` package, run through `run.py`. Outputs:
 | `configs/jamo_j256_ko_cf.toml` | jamo_j256_ko + counterfactual syllables (user 10-12; `../cjk_anima_reseed/reseed/counterfactual.py`): each trained syllable less its initial (언 → ㅓ ㄴ, b + V + F) or its vowel (언 → ㅇ ㄴ, b + C + F), the 287 forms on hosts; less the final = the CV syllable as a row (41, H out); the counterfactual tier 25 %, steps held at 14 336 (`steps`) |
 | `configs/jamo_j1024_ko_cf.toml` | jamo_j1024_ko + jamo_j256_ko_cf's counterfactual forms at 25 % of the items — 15 % on the flat canvas (`counterfactual`) and 10 % in a scene bubble (user 10-13: `cf_bubble1_52` / `cf_bubble1_32` at 5.5 / 4.5, bubble1_52 / bubble1_32's bands and px_keep, Noto Serif CJK) — steps held at 60 200; `faces.legible` on (user 10-12, `../cjk_anima_reseed/reseed/legible.py`): from 28 font px a face is re-picked for a glyph whose strokes it fuses (median gap < 1.5 px or p10 < 0.8 px) — ~7 % of the 28–40 px draws, the 16 px tiers untouched. Not run yet |
 | `configs/ko_warm_cf_{a,b,bp}.toml` | the micro arms on `jamo_j1024_ko_cf` (user 10-13, `plan_warm_cf.md`): ko_micro_{a,b,bp} with `rows_from` / `factor_from` moved to `cjk_ko/jamo_j1024_ko_cf`, on ko_micro_a's data (the 10-11 mix, plan § 3 option 1) |
+| `configs/ko_mix2_cf_{a,b,bp}.toml` | the cf micro arms on plan § 3 option 2's mix (user 10-13): bubble1 20 / bubbleN 40 / sentko 40, steps held at 3 840; `ko_mix2_cf_a` builds, B / B′ `data_from` it |
+| `configs/ko_mix3_cf_bp.toml` | B′ alone on bubble1 40 / bubbleN 30 / sentko 30 (10-14, after the mix2 read); its own build |
+| `configs/ko_x5_cf_bp.toml` | ko_mix3_cf_bp on × 5 rows (user 10-14): the 960 most frequent chatbot syllables (`corpus.py --rows 960` → `assets/micro960.json`, `ko_chat_960`: 15 269 lines), 20 a row (19 200 steps); read with `micro_read.py --sets 960` (held 92) |
 | `probes/micro_read.py` | GPU: `render` (each read item alone in a KO bubble, seed 0, under `floor` = jamo_j256_ko and the micro arms; cached under `output/cjk_ko/micro_read/render/`) and `score` (v4 free read; per arm × group exact and glyph / jamo P R F1 with chance) → `results/<ts>-micro-read/`. Groups (`assets/micro192.json`): every third of the 192 (64), the next 64 by frequency (in no line), the 27 held strings on the 192; `--seeds` reads several renders an item |
 
 ```bash
@@ -61,6 +64,12 @@ run draws what it drew.
 `findings.md`: the J line's verdict so far — better data and counterfactual
 syllables move H, tier reshuffles and × 4 scale do not.
 
+- `reports/mix2_2026_10_14.md`: the cf micro arms on bubble1 20 / bubbleN
+  40 / sentko 40 — B / B′ lose less of the start (trained 0–1 → 6–7, next
+  1–3 → 5–8), B′ leads held (glyph F1 0.30, jamo F1 0.57 over chance 0.31,
+  exact 0 / 27); A unmoved. The line habit still on; § 4 not met. § 4 of
+  it: B′ on bubble1 40 / bubbleN 30 / sentko 30 (`ko_mix3_cf_bp`) holds the
+  start — trained 21 / 64 (glyph F1 0.35), next 16, held glyph F1 0.24.
 - `reports/warm_cf_2026_10_13.md`: the micro arms on jamo_j1024_ko_cf (the
   10-11 mix) — held strings no better than 10-11 (B′_cf glyph F1 0.26 vs
   ko_micro_bp 0.25, exact 0 / 27 on every arm); the line habit back (trained
@@ -88,10 +97,10 @@ syllables move H, tier reshuffles and × 4 scale do not.
 
 ## Open
 
-- **The dialogue mix** (after `reports/warm_cf_2026_10_13.md`):
-  `plan_warm_cf.md` § 3 option 2 (bubble1 20 / bubbleN 40 / sentko 40) or 3
-  (+ the counterfactual tier, after the `Jamo.merge_all` residual fix) on
-  jamo_j1024_ko_cf.
+- **× 5 rows** (user 10-14): `ko_x5_cf_bp` — B′ on mix3 over the 960
+  most frequent syllables, queued 10-14; read on the 960 sets (held 92)
+  against the start and ko_mix3_cf_bp. Option 3 (+ the counterfactual
+  tier) still needs the `Jamo.merge_all` residual fix.
 - **jamo_j1024_ko_cf, ready for a RunPod 5090** (10-12; no 5090 in stock that
   night, not launched). Config and `faces.legible` committed; a 3 % build
   checked locally (3 274 items, 1 718 rows; the bubble1_32 sheet draws no
