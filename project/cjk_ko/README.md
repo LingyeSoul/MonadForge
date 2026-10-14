@@ -1,7 +1,8 @@
 # cjk_ko
 
-Hangul rows on KO dialogue: `proposal_jamo.md` § 4 (phase 2) of the reseed
-line (`../cjk_anima_reseed/`), opened 2026-10-11 on the `cjk-ko` branch. The
+Hangul rows on KO dialogue: `proposal_jamo.md` § 4 (phase 2; the proposal,
+its phase-1 configs, probes and reports moved here from the reseed line on
+10-14) of the reseed line (`../cjk_anima_reseed/`), opened 2026-10-11 on the `cjk-ko` branch. The
 start is `jamo_j256_ko`'s merged rows: seed_1008's JA rows, the 256 syllables
 J256_ko trained, and the other 10 916 at their jamo composition
 (`reports/jamo_j256_ko_2026_10_11.md`: H exact 8 / 32, jamo F1 0.46).
@@ -28,6 +29,12 @@ reseed line's `reseed/` package, run through `run.py`. Outputs:
 | `configs/ko_mix2_cf_{a,b,bp}.toml` | the cf micro arms on plan § 3 option 2's mix (user 10-13): bubble1 20 / bubbleN 40 / sentko 40, steps held at 3 840; `ko_mix2_cf_a` builds, B / B′ `data_from` it |
 | `configs/ko_mix3_cf_bp.toml` | B′ alone on bubble1 40 / bubbleN 30 / sentko 30 (10-14, after the mix2 read); its own build |
 | `configs/ko_x5_cf_bp.toml` | ko_mix3_cf_bp on × 5 rows (user 10-14): the 960 most frequent chatbot syllables (`corpus.py --rows 960` → `assets/micro960.json`, `ko_chat_960`: 15 269 lines), 20 a row (19 200 steps); read with `micro_read.py --sets 960` (held 92) |
+| `configs/jamo_{j64,f64,j96,j128,j64_112,lone,j64_lone,d128,j256,j128_ko,j256_ko}.toml` | the jamo line's phase 1 (moved from the reseed line 10-14; `proposal_jamo.md`): `jamo_j64` / `jamo_f64` (factor vs free rows, one data dir), `jamo_j96` / `jamo_j128` (the factor arm on the larger sets), `jamo_j64_112` (J64 at J128's total steps), `jamo_lone` / `jamo_j64_lone` (the jamo curriculum), `jamo_d128`, `jamo_j256`, `jamo_j128_ko` (J128's data redrawn: `faces`, `pose`), `jamo_j256_ko` (J256 on that build). Their outputs of record stay in `output/cjk_anima_reseed/<run>/`; a re-run from here writes `output/cjk_ko/<run>/` |
+| `probes/jamo_sets.py` | CPU: `proposal_jamo`'s syllable sets (J64 ⊂ J96 ⊂ J128 by jamo-cell coverage, H held out) and the Hangul font check → `../cjk_anima_reseed/assets/jamo_sets.json` |
+| `probes/jamo_read.py` | `proposal_jamo` phase 1's reads: `fit` (CPU, R3: the jamo model fitted to F64's free rows, LOO cos; writes the regressed arm `jamo_f64_reg`), `render [--held a,b]` (GPU: each syllable alone in a KO bubble, the trained 64 and H, or H only under the named arms) → `results/<ts>-jamo-read/` |
+| `probes/jamo_vl.py` | GPU: the jamo arms read by VL — `cal` (font-drawn lone glyphs: the reader's ceiling) / `score [--groups H,words]` (the cached renders); v4 (`SfxReader`) free read by default, `--readers v4,stock` / `--forced` opt-in; the vision tower runs once per crop (`VisionCache`) → `results/<ts>-jamo-vl-<mode>/` (`reports/jamo_curriculum_2026_10_11.md` § 6) |
+| `probes/jamo_vl_sheet.py` | CPU: a `jamo_vl.py score` run glyph by glyph — one row per target, one column per arm, the render with v4's whole-image read under it (green exact, amber one jamo shared) + `reads.md`; per arm the glyph and positioned-jamo P / R / F1 of what was drawn against the target, and the jamo F1 against the other targets (chance) → `results/<ts>-jamo-vl-sheet/` (`reports/jamo_vl_reads_2026_10_11.md`) |
+| `probes/ko_reader_cal.py` | GPU: `vl` on font-drawn lone Hangul through the ruler's crop path, per syllable / face / px → `results/<ts>-ko-reader-cal/` |
 | `probes/micro_read.py` | GPU: `render` (each read item alone in a KO bubble, seed 0, under `floor` = jamo_j256_ko and the micro arms; cached under `output/cjk_ko/micro_read/render/`) and `score` (v4 free read; per arm × group exact and glyph / jamo P R F1 with chance) → `results/<ts>-micro-read/`. Groups (`assets/micro192.json`): every third of the 192 (64), the next 64 by frequency (in no line), the 27 held strings on the 192; `--seeds` reads several renders an item |
 
 ```bash

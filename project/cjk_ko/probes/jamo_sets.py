@@ -29,7 +29,7 @@ the next 128 most frequent outside it and H.
 ``find_fonts()`` + ``kozh/``): Hangul coverage of KS X 1001 and of all
 11 172, and the set glyphs it maps to an empty outline.
 
-    .venv/bin/python project/cjk_anima_reseed/probes/jamo_sets.py
+    .venv/bin/python project/cjk_ko/probes/jamo_sets.py
 
 CPU, seconds. Writes ``assets/jamo_sets.json``.
 """
@@ -41,7 +41,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[1]
+KO = Path(__file__).resolve().parents[1]
+HOME = KO.parent / "cjk_anima_reseed"  # the reseed package and its assets
 sys.path.insert(0, str(HOME))
 from reseed import bootstrap  # noqa: E402
 

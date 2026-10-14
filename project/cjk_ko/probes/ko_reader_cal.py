@@ -12,7 +12,7 @@ covers Hangul (one Noto Serif CJK weight, the six KO faces, LXGW WenKai), at
 ``PX`` font px, in a bubble and on a flat canvas. The detector and ``vl`` run
 batched over the crops; ``sfx`` (the JA reader) is not loaded.
 
-    make daemon-run ARGS="--stall-timeout 900 project/cjk_anima_reseed/probes/ko_reader_cal.py"
+    make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/ko_reader_cal.py"
 
 GPU, minutes. → ``results/<ts>-ko-reader-cal/``: ``reads.jsonl`` (every
 image), ``result.json`` (hit rates per syllable / face / px / frame, the
@@ -28,7 +28,8 @@ import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[1]
+KO = Path(__file__).resolve().parents[1]
+HOME = KO.parent / "cjk_anima_reseed"  # the reseed package and its assets
 sys.path.insert(0, str(HOME))
 from reseed import bootstrap  # noqa: E402
 
@@ -188,7 +189,7 @@ def main() -> None:
         ),
         "minutes": round((time.time() - t0) / 60, 1),
     }
-    out = make_run_dir("cjk_anima_reseed", label="ko-reader-cal", root=RH / "results")
+    out = make_run_dir("cjk_ko", label="ko-reader-cal", root=KO / "results")
     with (out / "reads.jsonl").open("w", encoding="utf-8") as f:
         for r in recs:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")

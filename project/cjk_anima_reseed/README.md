@@ -3,12 +3,11 @@
 The JA vocab pack's rows re-seeded cold, then trained warm on dialogue lines;
 shipped `seed_1008` = jp_v1. Where the line stands — recipe of record, the
 ruler's table, what is settled, what is open: **`status.md`**. What an arm is
-judged on: `criteria.md`. Next: `proposal_jamo.md` (phase 1 read,
-`reports/jamo_phase1_2026_10_10.md` § 5; the jamo curriculum,
-`reports/jamo_curriculum_2026_10_11.md`; the v4 reads by glyph,
-`reports/jamo_vl_reads_2026_10_11.md`). The live reads: `reports/` (the
-ruler, sent_kanji, probe_pres, sent_kanji_pres, kozh16, jamo_phase1,
-jamo_curriculum, jamo_vl_reads).
+judged on: `criteria.md`. The Hangul jamo line (`proposal_jamo.md`, its configs,
+probes and reports) moved to `../cjk_ko/` on 10-14; its code stays in
+`reseed/` (`jamo.py`, `counterfactual.py`, `legible.py`) with
+`assets/jamo_sets.json`. The live reads: `reports/` (the
+ruler, sent_kanji, probe_pres, sent_kanji_pres, kozh16).
 
 `_archive/` (force-tracked, skipped by search): the docs folded into
 `status.md` (progress, plan, idea / idea2 / idea3, structure_candidate,
@@ -26,12 +25,7 @@ runs from the freeze-point commit named in `status.md`, not from this tree.
 | `punct_pack.py` | CPU: the punct base pack (10-05, the green leaf's fix) → `models/vocab_packs/anima_cjk_vocab_pack_punct`: the raw pack plus wider folds, dot runs and a `…` row (ext 69 558, at T5's `...`); the rules in its docstring |
 | `probes/kozh_geometry.py` | CPU: a `lang` run's KO / ZH rows against its seed's kana / kanji balls — sticks, row norms, cos and stick components, the groups' spikes in either ball's top-40 beside 8 held-out seed rows, nearest seed rows (`reports/kozh16_2026_10_09.md`) |
 | `probes/kozh_render.py` | GPU: a `lang` run's rows drawn against its seed through the ruler's `Renderer` at 512², seed 0 — each row alone in a bubble, a few words in a bubble / on a sign / plain, captioned in the row's language → `results/<ts>-<run>-render/sheet.png` |
-| `probes/jamo_sets.py` | CPU: `proposal_jamo`'s syllable sets (J64 ⊂ J96 ⊂ J128 by jamo-cell coverage, H held out) and the Hangul font check → `assets/jamo_sets.json` |
-| `probes/jamo_read.py` | `proposal_jamo` phase 1's reads: `fit` (CPU, R3: the jamo model fitted to F64's free rows, LOO cos; writes the regressed arm `jamo_f64_reg`), `render [--held a,b]` (GPU: each syllable alone in a KO bubble, the trained 64 and H, or H only under the named arms) → `results/<ts>-jamo-read/` |
-| `probes/jamo_vl.py` | GPU: the jamo arms read by VL — `cal` (font-drawn lone glyphs: the reader's ceiling) / `score [--groups H,words]` (the cached renders); v4 (`SfxReader`) free read by default, `--readers v4,stock` / `--forced` opt-in; the vision tower runs once per crop (`VisionCache`) → `results/<ts>-jamo-vl-<mode>/` (`reports/jamo_curriculum_2026_10_11.md` § 6) |
-| `probes/jamo_vl_sheet.py` | CPU: a `jamo_vl.py score` run glyph by glyph — one row per target, one column per arm, the render with v4's whole-image read under it (green exact, amber one jamo shared) + `reads.md`; per arm the glyph and positioned-jamo P / R / F1 of what was drawn against the target, and the jamo F1 against the other targets (chance) → `results/<ts>-jamo-vl-sheet/` (`reports/jamo_vl_reads_2026_10_11.md`) |
-| `probes/ko_reader_cal.py` | GPU: `vl` on font-drawn lone Hangul through the ruler's crop path, per syllable / face / px → `results/<ts>-ko-reader-cal/` |
-| `configs/<run>.toml` | the run; keys and their meaning in `reseed/config.py`'s docstring. Kept: `punct` (the mark rows → seed_fixed_1005), `sent_kanji` (the data of f0 / pres), `sent_kanji_pres` (the rows of record), `sent_kanji_225` (the 225 of record), `kozh16` (KO / ZH rows on seed `1008`), `jamo_j64` / `jamo_f64` (`proposal_jamo` phase 1: factor vs free rows, one data dir), `jamo_j96` / `jamo_j128` (the factor arm on the larger sets), `jamo_j64_112` (J64 at J128's total steps), `jamo_lone` / `jamo_j64_lone` (the jamo curriculum: the 51 standalone jamo, then J64's factors started at them), `jamo_j128_ko` (J128's data redrawn: `faces` — NanumPenScript out, the faces that break a syllable small floored by px, the `ko_extra` faces in — and `pose`, the glyph centred in its bubble / sign and tilted with it), `jamo_j256_ko` (J256 on that data build) |
+| `configs/<run>.toml` | the run; keys and their meaning in `reseed/config.py`'s docstring. Kept: `punct` (the mark rows → seed_fixed_1005), `sent_kanji` (the data of f0 / pres), `sent_kanji_pres` (the rows of record), `sent_kanji_225` (the 225 of record), `kozh16` (KO / ZH rows on seed `1008`); the jamo runs moved to `../cjk_ko/configs/` (10-14) |
 | `reseed/table.py` | **the table**: one row per tier — recipe, share, σ band, glyph px, `px_keep` — and the scene knobs |
 | `reseed/recipes.py` | `bubble1` / `bubbleN` / `sent` / `grid` |
 | `reseed/pools.py` | rows, scenes (+ the `s1s` pool, mono weighting), the windowed word pool, the dialogue lines (`sent`), the KO / ZH faces and captions (`lang`) |

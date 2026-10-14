@@ -46,7 +46,7 @@ from pathlib import Path
 HOME = Path(__file__).resolve().parents[1]
 RESEED = HOME.parent / "cjk_anima_reseed"
 sys.path.insert(0, str(RESEED))
-sys.path.insert(0, str(RESEED / "probes"))
+sys.path.insert(0, str(HOME / "probes"))
 os.environ["ANIMA_VOCAB_PACK"] = "models/vocab_packs/anima_cjk_vocab_pack_punct"
 os.environ["ANIMA_VOCAB_GLYPH_ROUTE"] = "1"
 os.environ["ANIMA_VOCAB_GLYPH_ROUTE_KO"] = "1"

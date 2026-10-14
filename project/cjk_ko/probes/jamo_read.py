@@ -14,8 +14,8 @@ and a few H-only words under J64 and F64-reg. No floor arm (the pack's
 untrained Hangul rows; user 10-10: skip it). Sheets → ``results/<ts>-jamo-read/``,
 read by eye per jamo position.
 
-    .venv/bin/python project/cjk_anima_reseed/probes/jamo_read.py fit
-    make daemon-run ARGS="--stall-timeout 900 project/cjk_anima_reseed/probes/jamo_read.py render"
+    .venv/bin/python project/cjk_ko/probes/jamo_read.py fit
+    make daemon-run ARGS="--stall-timeout 900 project/cjk_ko/probes/jamo_read.py render"
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ import sys
 import time
 from pathlib import Path
 
-HOME = Path(__file__).resolve().parents[1]
+KO = Path(__file__).resolve().parents[1]
+HOME = KO.parent / "cjk_anima_reseed"  # the reseed package and its assets
 sys.path.insert(0, str(HOME))
 
 J, F, REG = "jamo_j64", "jamo_f64", "jamo_f64_reg"
@@ -166,7 +167,6 @@ def render(held: list | None) -> None:
     from common.prompts import TPL_BUBBLE
     from common.readers import contact_sheet
     from PIL import Image
-    from reseed import HOME as RH
     from reseed import OUT
     from reseed.pools import relang
 
@@ -200,7 +200,7 @@ def render(held: list | None) -> None:
                 f"  {arm}: {n + 1} / {len(its)} {t} ({(time.time() - t0) / 60:.1f} min)",
                 flush=True,
             )
-    out = make_run_dir("cjk_anima_reseed", label="jamo-read", root=RH / "results")
+    out = make_run_dir("cjk_ko", label="jamo-read", root=KO / "results")
     sheets = []
     for name, (arms, ts) in jobs.items():
         tiles = [

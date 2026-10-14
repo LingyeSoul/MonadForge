@@ -1,5 +1,5 @@
 """jamo — Hangul syllables as (initial, vowel, final) and the factor rows
-over them (``proposal_jamo.md`` § 2).
+over them (``../cjk_ko/proposal_jamo.md`` § 2).
 
 A syllable is ``0xAC00 + (cho · 21 + jung) · 28 + jong`` (19 × 21 × 28).
 ``cls`` is the vowel's class — vertical (the initial on the left), horizontal

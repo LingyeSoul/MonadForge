@@ -11,9 +11,9 @@ also on seeds 0–3, below); the reports carry the full tables.
 
 | arm | what changed | steps | H exact | ~ | glyph F1 | jamo F1 | report |
 |---|---|---|---|---|---|---|---|
-| J128 | — | 7 168 | 3 | 2 | 0.06 | 0.27 | `../cjk_anima_reseed/reports/jamo_vl_reads_2026_10_11.md` |
-| J256 | set + steps × 2 | 14 336 | 5 | 3 | 0.15 | 0.32 | `../cjk_anima_reseed/reports/jamo_j256_2026_10_11.md` |
-| **J256_ko** | the data redrawn (faces, pose) | 14 336 | **8** | 4 | **0.31** | **0.46** | `../cjk_anima_reseed/reports/jamo_j256_ko_2026_10_11.md` |
+| J128 | — | 7 168 | 3 | 2 | 0.06 | 0.27 | `reports/jamo_vl_reads_2026_10_11.md` |
+| J256 | set + steps × 2 | 14 336 | 5 | 3 | 0.15 | 0.32 | `reports/jamo_j256_2026_10_11.md` |
+| **J256_ko** | the data redrawn (faces, pose) | 14 336 | **8** | 4 | **0.31** | **0.46** | `reports/jamo_j256_ko_2026_10_11.md` |
 | J1024_ko | set + steps × 4 (+ 51 jamo) | 60 200 | 7 | 5 | 0.22 | 0.43 | `reports/jamo_j1024_ko_2026_10_12.md` |
 | J256_ko_g44 | tier mix: 16 px → grid_44 | 14 336 | 6 | 2 | 0.22 | 0.41 | `reports/jamo_j256_ko_g44_2026_10_12.md` |
 | **J256_ko_cf** | + counterfactual syllables (25 %) | 14 336 | **10** | 4 | **0.35** | **0.52** | `reports/jamo_j256_ko_cf_2026_10_12.md` |

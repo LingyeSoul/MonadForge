@@ -79,9 +79,9 @@ items inside the J64 run, more than one seed.
 
 ## Code
 
-`reseed/config.py` `factor_init`; `reseed/jamo.py` `COMPAT`, `compat_rows`,
-`Jamo.init_from`; `reseed/trainer.py` loads the `from` run's rows (pack + Δ)
-and records the init norms; `probes/kozh_render.py` registers its run as an
+`../cjk_anima_reseed/reseed/config.py` `factor_init`; `../cjk_anima_reseed/reseed/jamo.py` `COMPAT`, `compat_rows`,
+`Jamo.init_from`; `../cjk_anima_reseed/reseed/trainer.py` loads the `from` run's rows (pack + Δ)
+and records the init norms; `../cjk_anima_reseed/probes/kozh_render.py` registers its run as an
 arm (any `lang` run reads). `src/data/inventory.py`: the JA render corpus
 (`post_image_dataset/render/ja/`) was deleted 10-10 — `corpus_lines` returns
 `[]` without it (only the eval strings read it, and `build_pools` drops
