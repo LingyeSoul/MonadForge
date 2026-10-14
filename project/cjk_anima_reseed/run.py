@@ -60,7 +60,9 @@ def main():
             context=run.seed_rows(),
             cold=not run.rows_from,
             max_steps=a.max_steps,
-            steps_per_row=None if run.focus else a.steps_per_row or run.steps_per_row,
+            steps_per_row=None
+            if run.focus or run.cf or run.total_steps
+            else a.steps_per_row or run.steps_per_row,
             steps=run.steps(a.steps_per_row),
             lr=run.lr or None,
             row_step_scale=run.row_step_scale(),
@@ -68,6 +70,8 @@ def main():
             pres=run.pres,
             factor=run.factor,
             factor_init=run.factor_init_rows(),
+            factor_from=run.factor_from_rows(),
+            factor_residual=run.factor_residual,
         )
 
 

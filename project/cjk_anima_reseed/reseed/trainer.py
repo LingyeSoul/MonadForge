@@ -212,6 +212,8 @@ def train(
     pres: tuple | None = None,
     factor: str = "",
     factor_init: tuple = (),
+    factor_from: Path | None = None,
+    factor_residual: float | None = None,
 ) -> Path:
     """Train ``run`` (a ``reseed.config.Run``: its name, path and rows) on
     ``data`` into ``out``. ``context`` is the warm-from / frozen-context /
@@ -244,7 +246,10 @@ def train(
     syllables composed from jamo factors each step; ``trained.pt`` carries
     every syllable's composed row and the factors (``jamo``);
     ``factor_init`` = (trained.pt, scale) starts them at that run's
-    compatibility-jamo rows (``Jamo.init_from``)."""
+    compatibility-jamo rows (``Jamo.init_from``); ``factor_from`` (a factor
+    run's trained.pt) at that run's factors (``Jamo.init_state``), so a warm
+    run's factor rows start where its context has them; ``factor_residual``
+    (the pull on ``r``) adds a per-syllable residual (``Jamo``, cjk_ko B′)."""
     from common.models import checkpoints, dit_forward, gen_args
     from library.anima.ext_vocab import pack_digest
     from library.anima.vocab_pack import attached_pack_rows, strategy_pack
@@ -361,15 +366,37 @@ def train(
     assert rows.n_rows == len(p.idx), (rows.n_rows, len(p.idx))
     jamo = None
     if factor:
-        from .jamo import Jamo, syllable_rows
+        from .jamo import Jamo, part_rows, syllable_rows
 
         assert factor == "jamo", factor
         assert not row_step_scale, "factor rows take no row_lr"
-        assert cold, "factor rows start cold (Δ 0)"
+        assert cold or factor_from, "factor rows start cold (Δ 0) or at factor_from"
+        assert not (factor_init and factor_from), "factor_init or factor_from"
         syl_ext = syllable_rows()
         ext_syl = {e: s for s, e in syl_ext.items()}
-        jamo = Jamo(rows, {e: ext_syl[e] for e in p.idx}, lr)
-        p.record.update(factor=factor, factor_vectors=Jamo.N_VECTORS)
+        # partial forms (jamo.PART_SPELL) compose like a syllable, absent parts 0
+        ext_syl.update({e: j for j, e in part_rows().items()})
+        # a counterfactual host carries its form's code (merge_all writes the
+        # host syllable's own composition over it at the save)
+        ext_syl.update({syl_ext[h]: tuple(f["code"]) for h, f in (run.cf or {}).items()})
+        jamo = Jamo(
+            rows,
+            {e: ext_syl[e] for e in p.idx if e in ext_syl},
+            lr,
+            residual=factor_residual is not None,
+            pull=factor_residual or 0.0,
+        )
+        p.record.update(
+            factor=factor, factor_vectors=Jamo.N_VECTORS, factor_own_rows=jamo.n_own
+        )
+        if factor_residual is not None:
+            p.record["factor_residual"] = {"pull": float(factor_residual)}
+        if factor_from:
+            sd0 = torch.load(factor_from, map_location="cpu", weights_only=False)
+            assert "jamo" in sd0, f"factor_from {factor_from}: no factors"
+            norms = jamo.init_state(sd0["jamo"], sd0["delta"]["row_scale"])
+            p.record["factor_from"] = {"from": str(factor_from), **norms}
+            print(f"factor from: {factor_from} — {norms}", flush=True)
         if factor_init:
             from .jamo import compat_rows
 
@@ -385,9 +412,9 @@ def train(
             p.record["factor_init"] = {"from": str(src), "scale": scale, **norms}
             print(f"factor init: {src} × {scale} — {norms}", flush=True)
         print(
-            f"factor: {len(p.idx)} syllable rows composed from {Jamo.N_VECTORS} "
+            f"factor: {len(p.idx) - jamo.n_own} syllable rows composed from {Jamo.N_VECTORS} "
             f"jamo vectors (b + C[cho, cls] + V + F); trained.pt carries all "
-            f"{len(syl_ext)} syllables' rows",
+            f"{len(syl_ext)} syllables' rows; {jamo.n_own} rows free (no syllable)",
             flush=True,
         )
 
@@ -495,6 +522,8 @@ def train(
             pred, target, brecs, bs, BOX_SHARE_CAP, BOX_SHARE_GLYPHS, GRID_BOX
         )
         loss = rows.regularized(loss_fm)
+        if jamo is not None:
+            loss = loss + jamo.penalty()
         if is_scene:
             split.add(pred, target, brecs, ts)
         opt.zero_grad(set_to_none=True)

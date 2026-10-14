@@ -95,6 +95,7 @@ def fit_text(
     max_lines: int = 1,
     cuts=None,
     fewest_lines: bool = False,
+    words: bool = False,
 ):
     """Largest font size whose text block fits ``region`` (inner
     ``fill_frac`` — 0.9 fills the bubble edge to edge, ``--scene_fill`` 0.7
@@ -104,6 +105,7 @@ def fit_text(
     ``MORE_LINES_GAIN``× larger — never when ``fewest_lines`` (the sentence
     arm, user 2026-09-16: a line that fits in one column stays one column).
     The glyph cell must be at least ``min_glyph`` px, else ``None``.
+    ``words`` (KO lines, cut at the spaces): a line's edge spaces are dropped.
     Returns ``(font, fs, lines)``."""
     from PIL import ImageFont
 
@@ -114,6 +116,8 @@ def fit_text(
         lines = split_lines(text, k, cuts)
         if lines is None:
             continue
+        if words:
+            lines = [ln.strip(" ") for ln in lines]
         m = max(len(ln) for ln in lines)
         if vertical:
             fs = int(min(rw / (1 + (k - 1) * V_GAP), rh / (m * V_PITCH)))
@@ -463,6 +467,9 @@ def render_into_scene(
     vert_forms: bool = False,
     keep_outline: bool = False,
     pose: bool = False,
+    words: bool = False,
+    align: str = "center",
+    mask=None,
 ):
     """Erase every anchor bubble's usable region (plus the text box padded by
     a quarter of its size — detector boxes run tight) with the bubble's
@@ -503,6 +510,14 @@ def render_into_scene(
     the random tilt — instead of the block's metrics centred on the usable
     region; a draw whose ink leaves the interior is a miss. A bubble-less
     (open) anchor draws as without it.
+    ``words`` (opt-in, cjk_ko 2026-10-11): lines cut at ``cuts`` drop their
+    edge spaces (KO lines broken at the spaces between words).
+    ``align`` (horizontal lines): ``center`` each line on the block's centre,
+    or ``left`` every line on the block's left edge (cjk_ko 2026-10-11).
+    ``mask`` (opt-in, cjk_ko 2026-10-13; one glyph): ``mask(font_px)`` → an
+    ``L`` ink image cropped to the ink, drawn in the glyph's colour with its
+    ink centred on the ink ``text`` would draw (a counterfactual syllable);
+    the fit is ``text``'s.
 
     ``ref_text`` (ΔFM, plan_synth2): a sibling of the same glyph count drawn
     by the *same* fit — same erase, font, size, line lengths, positions,
@@ -511,8 +526,9 @@ def render_into_scene(
     pixel-identical outside the union of the two boxes, so the pair differs
     by the glyphs alone."""
     import numpy as np
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageColor, ImageDraw
 
+    assert mask is None or (len(text) == 1 and ref_text is None), text
     im = Image.open(scene["file"]).convert("RGB")
     arr = np.array(im)
     W, H = im.size
@@ -564,6 +580,7 @@ def render_into_scene(
             max_lines,
             cuts,
             fewest_lines,
+            words,
         )
         if vertical
         else None
@@ -583,6 +600,7 @@ def render_into_scene(
             max_lines,
             cuts,
             fewest_lines,
+            words,
         )
     if fit is None:
         return None
@@ -642,7 +660,21 @@ def render_into_scene(
             y = cy - th / 2 - fs * 0.1
             for ln in text_lines:
                 w = ld.textlength(ln, font=font)
-                ld.text((cx - w / 2, y), ln, fill=color, font=font, **kw)
+                x = cx - tw / 2 if align == "left" else cx - w / 2
+                if mask is not None:
+                    probe = Image.new("L", (W, H), 0)
+                    ImageDraw.Draw(probe).text((x, y), ln, fill=255, font=font)
+                    pb, m = probe.getbbox(), mask(fs)
+                    if pb is None or m is None:
+                        return None
+                    xy = (
+                        round((pb[0] + pb[2] - m.width) / 2),
+                        round((pb[1] + pb[3] - m.height) / 2),
+                    )
+                    rgb = ImageColor.getrgb(color) if isinstance(color, str) else color
+                    layer.paste((*rgb[:3], 255), xy, m)
+                else:
+                    ld.text((x, y), ln, fill=color, font=font, **kw)
                 y += fs * H_GAP
         nonlocal shift
         if got_pose is not None:

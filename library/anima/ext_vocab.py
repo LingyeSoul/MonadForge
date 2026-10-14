@@ -49,7 +49,7 @@ cjk_anima_scale line's P2 (``project/finished/cjk_anima_scale/retrain_experiment
 Off, the encoder is bit-identical to before. Hangul tokens (회사, `` 하세요``)
 split the same way only under their own key, ``mapping["glyph_route_ko"]``
 (or ``ANIMA_VOCAB_GLYPH_ROUTE_KO``): a token holding a Hangul syllable becomes
-its syllables' single rows (``project/cjk_anima_reseed/proposal_jamo.md`` § 3).
+its syllables' single rows (``project/cjk_ko/proposal_jamo.md`` § 3).
 Either key works without the other; a pack with neither encodes as before.
 
 Encode fold (``mapping["fold"]``: one char → one char): applied to the text

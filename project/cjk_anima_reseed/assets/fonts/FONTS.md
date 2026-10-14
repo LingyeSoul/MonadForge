@@ -31,7 +31,7 @@ For the reseed line's `lang` runs (`../cjk_anima_reseed/configs/kozh16.toml`): `
 every face here to `find_fonts()`'s list, which never globs `kozh/` — several ZH faces cover kana and would
 otherwise join every JA run. A face whose cmap maps a run's row to an empty outline leaves that run's draw
 (`TanukiMagic.ttf` maps 你 to one; `render_grid` divides by its zero width). Coverage checked with
-fontTools: KS X 1001 = 2 350 Hangul syllables, all = 11 172 (`probes/jamo_sets.py` re-checks the
+fontTools: KS X 1001 = 2 350 Hangul syllables, all = 11 172 (`../cjk_ko/probes/jamo_sets.py` re-checks the
 Hangul column, 10-09), GB2312 = 6 763 hanzi. Noto Serif CJK (every weight, in `find_fonts()`) covers
 all 11 172 too, so a lang run draws Hangul in it beside the faces here. All SIL OFL 1.1 (`licenses/kozh/`).
 
@@ -56,7 +56,7 @@ the release / repo paths above, into `kozh/`.
 ## `ko_extra/` — more Korean faces (2026-10-11)
 
 User's download (`~/Downloads/Pretendard-1.3.9`, a bundle of four families). Not globbed by `lang_fonts`
-on its own: a run names it in `faces.dirs` (`configs/jamo_j128_ko.toml`), so the lang runs of record draw
+on its own: a run names it in `faces.dirs` (`../cjk_ko/configs/jamo_j128_ko.toml`), so the lang runs of record draw
 as they did. Every face covers all 11 172 Hangul syllables. File names are ASCII copies of the bundle's.
 
 | file | face | role | licence | source |

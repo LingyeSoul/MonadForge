@@ -72,6 +72,9 @@ def render_grid(
     line_cells=(),
     bgs=None,
     bubble_centre: bool = False,
+    spell=None,
+    masks=None,
+    fonts_for=None,
 ):
     """Draw ``units[i]`` in cell ``i`` (row-major). Returns ``(image, boxes)``,
     ``boxes[i]`` the ink bbox of cell i's unit in canvas pixels. ``box`` = the
@@ -93,7 +96,13 @@ def render_grid(
     (`JITTER_BG_LIGHT`'s entry: ``"white"`` or an RGB tint).
     ``bubble_centre`` (opt-in, jamo 2026-10-11): a bubble cell's ink bbox
     sits on its bubble's centre — the cell's, or the ink's own under
-    ``bubble_fit`` — instead of anywhere its room allows."""
+    ``bubble_fit`` — instead of anywhere its room allows. ``spell`` (opt-in,
+    cjk_ko 2026-10-12): unit → the text drawn for it (a partial form behind
+    its fillers); the font is still picked on the unit. ``masks`` (opt-in,
+    same date): ``masks(unit, font_path)`` → ``at(font_px)`` → an ``L`` ink
+    image cropped to the ink, drawn in place of the unit's text (a
+    counterfactual syllable). ``fonts_for`` (opt-in, cjk_ko 2026-10-12):
+    unit → the faces it is picked among, instead of ``fonts``."""
     from PIL import Image, ImageDraw, ImageFont
 
     W, H = size
@@ -112,7 +121,8 @@ def render_grid(
     for i, u in enumerate(units):
         r, c = divmod(i, cols)
         x0, y0 = c * cw, r * ch
-        font_path = pick_font(u, fonts, rng)
+        font_path = pick_font(u, fonts_for(u) if fonts_for else fonts, rng)
+        at = masks(u, font_path) if masks else None
         vertical = (
             len(u) > 1
             and i not in line_cells
@@ -130,9 +140,14 @@ def render_grid(
             room_w, room_h = room_w / 2**0.5 - 6, room_h / 2**0.5 - 6
         fs = int(rng.uniform(*fill) * min(cw, ch))
         while True:
-            font = ImageFont.truetype(font_path, fs, index=0)
-            txt = "\n".join(u) if vertical else u
-            bx = d.multiline_textbbox((0, 0), txt, font=font, spacing=fs * 0.05)
+            if at is not None:
+                ink = at(fs)
+                assert ink is not None, (u, fs)
+                bx = (0, 0, *ink.size)
+            else:
+                font = ImageFont.truetype(font_path, fs, index=0)
+                txt = "\n".join(u) if vertical else (spell or {}).get(u, u)
+                bx = d.multiline_textbbox((0, 0), txt, font=font, spacing=fs * 0.05)
             tw, th = bx[2] - bx[0], bx[3] - bx[1]
             if (tw <= room_w and th <= room_h) or fs <= 12:
                 break
@@ -163,6 +178,18 @@ def render_grid(
             else:
                 d.ellipse(frame, **kwb)
         ox, oy = cx - tw / 2 - bx[0], cy - th / 2 - bx[1]
+        if at is not None:
+            from PIL import ImageColor
+
+            xy = (int(round(ox)), int(round(oy)))
+            c = rng.choice(JITTER_INK_DARK)
+            im.paste(ImageColor.getrgb(c) if isinstance(c, str) else c, xy, ink)
+            ink_at = Image.new("L", (W, H), 0)
+            ink_at.paste(ink, xy)
+            boxes.append(
+                list(ink_at.getbbox() or (int(x0), int(y0), int(x0 + cw), int(y0 + ch)))
+            )
+            continue
         kw = {"font": font, "spacing": fs * 0.05, "align": "center"}
         if bubble and bubble_centre:
             # the ink's bbox, not the metrics', on the centre
